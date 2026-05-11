@@ -120,6 +120,20 @@ All four open items locked.  All chose the recommended option.
    `_set_role_disconnected` path while keeping the channel-close
    path that already works.
 
+   > **⚠️ SUPERSEDED 2026-05-11 (Wave M3 step 5e / H12 fix).**
+   > The dual-trigger broke HEP-CORE-0034 §7.2 owner-lifetime
+   > semantics in the multi-channel-producer case: a producer
+   > alive on channels A and B would lose all owner-namespaced
+   > schemas the moment EITHER channel closed, even though the
+   > role itself was still alive on the other channel.  The
+   > per-producer cascade in `_on_channel_closed` has been
+   > REMOVED; schema eviction is now owner-lifetime ONLY, fired
+   > from `_dispatch_role_disconnected_if_dead` →
+   > `_set_role_disconnected` body when the role has no remaining
+   > alive presence.  Test pinning the new contract:
+   > `HubStateProducerDropped.MultiChannel_Producer_StaysAliveAfterOneDereg_SchemasSurvive`
+   > in `tests/test_layer2_service/test_hub_state.cpp`.
+
 3. **`disconnected_fired` memoization — DROPPED ENTIRELY.**
    Once terminal cleanup is in place, the entry being gone IS the
    proof that the event already fired — no second call can fire

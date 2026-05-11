@@ -817,16 +817,20 @@ struct RoleEntry
         return nullptr;
     }
 
-    /// Per-uid liveness: is ANY presence still alive (not Disconnected)?
-    /// Per HEP-CORE-0023 §2.6 line 504-507 — derived, not stored.
-    /// Used by admin queries that ask "is this role still around?" and by
-    /// the role-reaper to decide whether to delete the whole `RoleEntry`
-    /// when its last presence transitions Disconnected.
+    /// Per-uid liveness.  Wave M3 step 5h (2026-05-11): after the
+    /// tombstone-removal refactor, `on_dereg` and `on_pending_timeout`
+    /// ERASE the presence row (rather than marking it Disconnected),
+    /// so `presences[]` only contains live rows.  Liveness simplifies
+    /// to "any row present" — no need to walk + check state.
+    ///
+    /// Per HEP-CORE-0023 §2.6 — derived, not stored.  Used by admin
+    /// queries that ask "is this role still around?" and by the
+    /// role-reaper (`_dispatch_role_disconnected_if_dead`) to decide
+    /// whether to delete the whole `RoleEntry` when its last presence
+    /// transitions Disconnected.
     [[nodiscard]] bool any_presence_alive() const noexcept
     {
-        for (const auto &p : presences)
-            if (p.state != RoleState::Disconnected) return true;
-        return false;
+        return !presences.empty();
     }
 
     // ── Wave M3 controlled-access API (additive step 1, 2026-05-11) ──
@@ -923,38 +927,68 @@ struct RoleEntry
         return TransitionEffect::NoChange;
     }
 
-    /// Pending-timeout handler.  Pending → Disconnected only; any other
-    /// state is a no-op.  Per HEP-CORE-0023 §2.1 second-pass terminal
-    /// transition.  Channel teardown is HubState's responsibility — this
-    /// method only flips the FSM bit on this presence row.
+    /// Pending-timeout handler.  Pending → terminal: erases the
+    /// presence row.  Wave M3 step 5h (2026-05-11) — pre-fix this
+    /// marked `state = Disconnected` leaving a tombstone in
+    /// `presences[]`; tombstones leaked memory for long-lived roles
+    /// that churn channels.  Now the row is erased on terminal
+    /// transitions, and `any_presence_alive() == !presences.empty()`.
+    /// Per HEP-CORE-0023 §2.1 second-pass terminal transition.
+    /// Channel teardown is HubState's responsibility — this method
+    /// only deletes the presence row; the caller (`_on_pending_timeout`)
+    /// runs `drop_channel_if_orphaned` next.
     TransitionEffect on_pending_timeout(std::string_view channel_,
                                          std::string_view role_type_) noexcept
     {
-        for (auto &p : presences)
+        for (auto it = presences.begin(); it != presences.end(); ++it)
         {
-            if (p.channel != channel_ || p.role_type != role_type_) continue;
-            if (p.state != RoleState::Pending) return TransitionEffect::NoChange;
-            p.state       = RoleState::Disconnected;
-            p.state_since = std::chrono::steady_clock::now();
+            if (it->channel != channel_ || it->role_type != role_type_) continue;
+            if (it->state != RoleState::Pending) return TransitionEffect::NoChange;
+            presences.erase(it);
             return TransitionEffect::ToDisconnected;
         }
         return TransitionEffect::NoChange;
     }
 
-    /// DEREG / voluntary-disconnect handler.  Any-state → Disconnected
-    /// (no-op if already Disconnected).  Per HEP-CORE-0023 §2.1.
+    /// DEREG / voluntary-disconnect handler.  Erases the presence row
+    /// (Wave M3 step 5h — see `on_pending_timeout`).  Returns
+    /// `ToDisconnected` iff a row was erased; `NoChange` if no
+    /// matching row existed (already gone — idempotent).  Per
+    /// HEP-CORE-0023 §2.1.
     TransitionEffect on_dereg(std::string_view channel_,
                                std::string_view role_type_) noexcept
     {
-        for (auto &p : presences)
+        for (auto it = presences.begin(); it != presences.end(); ++it)
         {
-            if (p.channel != channel_ || p.role_type != role_type_) continue;
-            if (p.state == RoleState::Disconnected) return TransitionEffect::NoChange;
-            p.state       = RoleState::Disconnected;
-            p.state_since = std::chrono::steady_clock::now();
+            if (it->channel != channel_ || it->role_type != role_type_) continue;
+            presences.erase(it);
             return TransitionEffect::ToDisconnected;
         }
         return TransitionEffect::NoChange;
+    }
+
+    /// Wave M3 step 5d (2026-05-11) — cache invariant primitive.
+    ///
+    /// The `channels` member is a cache: it should contain `c` iff
+    /// at least one presence row references `c` (Wave M3 decision #1).
+    /// Step 5h simplified the rule to "any row references" because
+    /// `on_dereg` / `on_pending_timeout` now erase rows rather than
+    /// leaving Disconnected tombstones — every remaining presence is
+    /// live by construction.
+    ///
+    /// Returns true iff the cache entry was actually removed.
+    /// Idempotent: a second call (or one where the channel is already
+    /// absent, or where a presence still references it) is a safe no-op.
+    bool drop_channel_if_orphaned(std::string_view channel_) noexcept
+    {
+        for (const auto &p : presences)
+        {
+            if (p.channel == channel_) return false;  // still referenced
+        }
+        auto it = std::find(channels.begin(), channels.end(), channel_);
+        if (it == channels.end()) return false;
+        channels.erase(it);
+        return true;
     }
 };
 
@@ -1175,8 +1209,14 @@ class PYLABHUB_UTILS_EXPORT HubState
     using RoleDisconnectedHandler     = std::function<void(const std::string & /*role_uid*/)>;
     using BandJoinedHandler           = std::function<void(const std::string & /*band*/,
                                                            const BandMember &)>;
+    /// `reason` is the wire-protocol reason for the leave (HEP-CORE-0030
+    /// BAND_LEAVE_NOTIFY): `"voluntary"` for BAND_LEAVE_REQ, `"role_closed"`
+    /// for role-disconnect cascade.  Wave M3 step 5f (2026-05-11) added
+    /// the reason field so the broker subscriber can fan out the wire
+    /// notification with the correct reason for both paths.
     using BandLeftHandler             = std::function<void(const std::string & /*band*/,
-                                                           const std::string & /*role_uid*/)>;
+                                                           const std::string & /*role_uid*/,
+                                                           const std::string & /*reason*/)>;
     using PeerConnectedHandler        = std::function<void(const PeerEntry &)>;
     using PeerDisconnectedHandler     = std::function<void(const std::string & /*hub_uid*/)>;
 
@@ -1217,7 +1257,10 @@ class PYLABHUB_UTILS_EXPORT HubState
     void _set_role_registered(RoleEntry entry);
     void _set_role_disconnected(const std::string &uid);
     void _set_band_joined(const std::string &band, BandMember member);
-    void _set_band_left(const std::string &band, const std::string &role_uid);
+    /// `reason` carries the wire-protocol reason ("voluntary" /
+    /// "role_closed") through to the `BandLeftHandler`.  See M3 step 5f.
+    void _set_band_left(const std::string &band, const std::string &role_uid,
+                         const std::string &reason);
     void _set_peer_connected(PeerEntry entry);
     void _set_peer_disconnected(const std::string &hub_uid);
 
@@ -1344,6 +1387,34 @@ class PYLABHUB_UTILS_EXPORT HubState
     RemoveProducerResult
     _on_pending_timeout(const std::string &channel,
                          const std::string &role_uid);
+
+    /// Wave M3 step 5b (2026-05-11): production trigger for the
+    /// terminal cleanup defined at `_set_role_disconnected`.  Atomic
+    /// check-and-erase under the writer lock: verify the entry
+    /// exists AND `any_presence_alive() == false`, then run the
+    /// same schema cascade + erase + handler fan-out as the
+    /// unconditional setter.  Idempotent and TOCTOU-safe: a
+    /// concurrent REG_REQ that re-armed a presence between the
+    /// caller's transition and this call is observed under the
+    /// same lock and is a no-op.
+    ///
+    /// Wired into every op that can flip the role's last alive
+    /// presence to Disconnected (HEP-CORE-0023 §2.1 +
+    /// HEP-CORE-0034 §7.2):
+    ///   - `_on_pending_timeout`     (multi-producer path)
+    ///   - `_on_consumer_left`
+    ///   - `_on_channel_closed`      (per-producer)
+    /// Last-producer `_on_pending_timeout` falls through to
+    /// `_on_channel_closed`, which dispatches each producer uid;
+    /// no duplicate fan-out (handler fires once, entry-erase
+    /// guards the second call).
+    ///
+    /// Why a predicate-guarded helper instead of guarding
+    /// `_set_role_disconnected` itself: the unconditional setter is
+    /// the L2-test + admin/script force-erase entry point and must
+    /// stay unconditional.
+    void _dispatch_role_disconnected_if_dead(const std::string &uid);
+
     /// Dedicated metrics-report wire message (HEP-0033 §9.1 "Metrics report
     /// tick"). `_on_heartbeat` handles the piggyback case; this op handles
     /// the time-only METRICS_REPORT_REQ path that fires even when the role
@@ -1353,6 +1424,9 @@ class PYLABHUB_UTILS_EXPORT HubState
                               nlohmann::json                        metrics,
                               std::chrono::system_clock::time_point when);
     void _on_band_joined(const std::string &band, BandMember member);
+    /// Voluntary BAND_LEAVE_REQ entry point.  Passes
+    /// `reason = "voluntary"` to the `BandLeftHandler`.  Role-disconnect
+    /// cascade fires the handler directly with `reason = "role_closed"`.
     void _on_band_left(const std::string &band, const std::string &role_uid);
     void _on_peer_connected(PeerEntry peer);
     void _on_peer_disconnected(const std::string &hub_uid);

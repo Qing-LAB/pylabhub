@@ -317,6 +317,69 @@ void HubState::unsubscribe(HandlerId id) const noexcept
     erase_handler(pImpl->peer_disc, id);
 }
 
+// ─── Internal helpers used by terminal-cleanup paths ───────────────────────
+
+namespace
+{
+
+/// Wave M3 step 5f+i (2026-05-11) — terminal-cleanup cascade shared by
+/// `_set_role_disconnected` (unconditional force-erase) and
+/// `_dispatch_role_disconnected_if_dead` (predicate-guarded production
+/// trigger).  Caller holds the writer lock on `impl.mu`.  Performs:
+///   1. Schema cascade (HEP-CORE-0034 §7.2): evict every owner-namespaced
+///      schema record where `owner_uid == uid`.  Hub-globals immune.
+///   2. Band cascade (HEP-CORE-0030 §8): remove `uid` from every
+///      `BandEntry.members`; auto-delete empty bands.
+///
+/// Populates `bands_left_out` with the band names from which `uid` was
+/// actually removed (caller fires `band_left` handler per entry with
+/// reason="role_closed").  Returns schemas evicted count.
+template <typename Impl>
+inline std::size_t cascade_role_terminal_cleanup_locked(
+    Impl &impl,
+    const std::string &uid,
+    std::vector<std::string> &bands_left_out)
+{
+    // Schema cascade.
+    std::size_t schemas_evicted = 0;
+    for (auto sit = impl.schemas.begin(); sit != impl.schemas.end(); )
+    {
+        if (sit->first.first == uid)
+        {
+            sit = impl.schemas.erase(sit);
+            ++schemas_evicted;
+        }
+        else
+        {
+            ++sit;
+        }
+    }
+
+    // Band cascade.  Auto-delete empty bands matches `_set_band_left`'s
+    // behaviour (the band's last member leaving deletes the band).
+    bands_left_out.reserve(impl.bands.size());
+    const auto now = std::chrono::steady_clock::now();
+    for (auto bit = impl.bands.begin(); bit != impl.bands.end(); )
+    {
+        auto &m   = bit->second.members;
+        auto  old = m.size();
+        m.erase(std::remove_if(m.begin(), m.end(),
+                               [&](const BandMember &x) { return x.role_uid == uid; }),
+                m.end());
+        if (m.size() < old)
+        {
+            bands_left_out.push_back(bit->first);
+            bit->second.last_activity = now;
+        }
+        if (m.empty()) bit = impl.bands.erase(bit);
+        else           ++bit;
+    }
+
+    return schemas_evicted;
+}
+
+}  // namespace
+
 // ─── Private mutators (friend-only) ─────────────────────────────────────────
 
 void HubState::_set_channel_opened(ChannelEntry entry)
@@ -398,53 +461,81 @@ void HubState::_set_role_registered(RoleEntry entry)
 
 void HubState::_set_role_disconnected(const std::string &uid)
 {
-    // Wave M3 step 4 (2026-05-11): TERMINAL CLEANUP.
+    // Wave M3 step 4 (2026-05-11): TERMINAL CLEANUP — unconditional
+    // force-erase entry point.  Used by L2 tests + admin/script
+    // force-disconnect.  Production code uses
+    // `_dispatch_role_disconnected_if_dead` which is predicate-guarded.
     //
-    // Per design decision #3, the role-entry erase IS the memoization:
-    // a second call to this function finds no entry and returns
-    // without firing — no `disconnected_fired` flag needed.
+    // Cleanup cascades (under one writer lock):
+    //   1. Schema cascade (HEP-CORE-0034 §7.2 owner-lifetime).
+    //   2. Band cascade (Wave M3 step 5i, HEP-CORE-0030 §8): remove
+    //      this role from every band's member list; auto-delete empty
+    //      bands.  Replaces the broker's old imperative
+    //      `band_on_role_closed` trigger from channel-close fanout,
+    //      which fired too eagerly (a multi-presence role would be
+    //      evicted from bands when ONE of its channels closed, even
+    //      if the role itself was alive on another channel).  Now
+    //      band membership tracks role lifetime, not channel lifetime.
+    //   3. Erase role entry.
     //
-    // Schema cascade (HEP-CORE-0034 §7.2 — hub-globals immune,
-    // owned-by-uid records evicted on owner Disconnected) runs
-    // BEFORE erase so it can capture the uid.  Per design decision
-    // #2, this firing path co-exists with the per-producer cascade
-    // already firing from `_on_channel_closed`; eviction is
-    // idempotent (second iteration on an already-gone record is a
-    // no-op).
-    //
-    // Handler fires AFTER lock release.  Subscribers receive the
-    // uid by value — they MUST NOT attempt to look up the entry
-    // through `HubState::role(uid)` from inside the handler; the
-    // entry is already gone by the time the handler runs.
-    bool        fire           = false;
-    std::size_t schemas_evicted = 0;
+    // Handlers fire AFTER lock release.  Order: `role_disc(uid)` first,
+    // then `band_left(band, uid)` per affected band.  Subscribers
+    // (script runner; broker BAND_LEAVE_NOTIFY) observe state with the
+    // role already gone.
+    bool                      fire           = false;
+    std::size_t               schemas_evicted = 0;
+    std::vector<std::string>  bands_left;
     {
         std::unique_lock lk(pImpl->mu);
         auto             it = pImpl->roles.find(uid);
         if (it == pImpl->roles.end()) return;  // idempotent — already gone
         fire = true;
-        for (auto sit = pImpl->schemas.begin(); sit != pImpl->schemas.end(); )
-        {
-            if (sit->first.first == uid)
-            {
-                sit = pImpl->schemas.erase(sit);
-                ++schemas_evicted;
-            }
-            else
-            {
-                ++sit;
-            }
-        }
+        schemas_evicted = cascade_role_terminal_cleanup_locked(*pImpl, uid, bands_left);
         pImpl->counters.schema_evicted_total += schemas_evicted;
-        // Erase the role entry.  No need to walk presences and mark
-        // them Disconnected first — the snapshot view they
-        // contributed to before this call is preserved; readers that
-        // query AFTER this call observe no entry, which is the
-        // correct post-disconnect state.
         pImpl->roles.erase(it);
     }
     if (!fire) return;
     for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->role_disc)) h(uid);
+    for (const auto &band_name : bands_left)
+    {
+        for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->band_left))
+            h(band_name, uid, "role_closed");
+    }
+}
+
+void HubState::_dispatch_role_disconnected_if_dead(const std::string &uid)
+{
+    // Wave M3 step 5b (2026-05-11): production trigger for terminal
+    // cleanup.  Atomic check-and-erase under the writer lock; a
+    // concurrent REG_REQ that re-arms a presence between the caller's
+    // transition and this call (TOCTOU window) is observed and the
+    // cleanup becomes a no-op.  Idempotent.
+    //
+    // Shares the cascade body with `_set_role_disconnected` via
+    // `cascade_role_terminal_cleanup_locked` — single recipe for
+    // schema + band cleanup.  Step 5i (2026-05-11) added the band
+    // cascade so role-lifetime band membership tracking works for
+    // every terminal-cleanup path, not just channel-close.
+    bool                      fire           = false;
+    std::size_t               schemas_evicted = 0;
+    std::vector<std::string>  bands_left;
+    {
+        std::unique_lock lk(pImpl->mu);
+        auto             it = pImpl->roles.find(uid);
+        if (it == pImpl->roles.end()) return;       // already cleaned up
+        if (it->second.any_presence_alive()) return; // re-armed; skip
+        fire = true;
+        schemas_evicted = cascade_role_terminal_cleanup_locked(*pImpl, uid, bands_left);
+        pImpl->counters.schema_evicted_total += schemas_evicted;
+        pImpl->roles.erase(it);
+    }
+    if (!fire) return;
+    for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->role_disc)) h(uid);
+    for (const auto &band_name : bands_left)
+    {
+        for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->band_left))
+            h(band_name, uid, "role_closed");
+    }
 }
 
 void HubState::_set_band_joined(const std::string &band, BandMember member)
@@ -465,7 +556,8 @@ void HubState::_set_band_joined(const std::string &band, BandMember member)
     for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->band_joined)) h(band, fired);
 }
 
-void HubState::_set_band_left(const std::string &band, const std::string &role_uid)
+void HubState::_set_band_left(const std::string &band, const std::string &role_uid,
+                                const std::string &reason)
 {
     bool fire = false;
     {
@@ -482,7 +574,8 @@ void HubState::_set_band_left(const std::string &band, const std::string &role_u
         if (m.empty()) pImpl->bands.erase(it);
     }
     if (!fire) return;
-    for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->band_left)) h(band, role_uid);
+    for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->band_left))
+        h(band, role_uid, reason);
 }
 
 void HubState::_set_peer_connected(PeerEntry entry)
@@ -907,26 +1000,24 @@ HubState::_on_producer_dropped(const std::string& channel_name,
     }
 
     bool is_last_producer = false;
+    bool transitioned     = false;
     {
         std::unique_lock lk(pImpl->mu);
         auto             it = pImpl->channels.find(channel_name);
         if (it == pImpl->channels.end()) return result;  // removed=false
 
         // Probe before mutating: is the uid registered, and is it the
-        // LAST producer on this channel?  This ordering matters for
-        // the cascade eviction in `_on_channel_closed`: that function
-        // captures `producer_uids` by reading the channel's
-        // `producers[]` list to evict each owner's schemas (HEP-
-        // CORE-0034 §7.2).  If we removed the producer FIRST and then
-        // called `_on_channel_closed`, the producers list would be
-        // empty and no schemas would be evicted.  Two cases:
+        // LAST producer on this channel?
         //
         //  - Non-last (>=2 producers remain): remove now; channel
-        //    survives; return.
+        //    survives.  Wave M3 step 5c (2026-05-11) — also transition
+        //    the role's producer-presence Disconnected via on_dereg,
+        //    maintain the `channels` cache invariant, and dispatch
+        //    terminal cleanup after lock release.  Schema eviction
+        //    is owner-lifetime (HEP-CORE-0034 §7.2) — handled by
+        //    dispatch iff the role has no other alive presence.
         //  - Last (this drop empties the channel): leave the producer
-        //    in the list and call `_on_channel_closed` below, which
-        //    captures the uid + runs the schema cascade + erases the
-        //    channel record (including the lingering producer).
+        //    in the list and call `_on_channel_closed` below.
         if (it->second.find_producer(role_uid) == nullptr) return result;
         is_last_producer = (it->second.producer_count() == 1);
         if (!is_last_producer)
@@ -934,20 +1025,32 @@ HubState::_on_producer_dropped(const std::string& channel_name,
             auto rm = it->second.remove_producer(role_uid);
             result.removed             = rm.removed;
             result.channel_now_empty   = false;  // by construction
-            return result;
+            auto rit = pImpl->roles.find(role_uid);
+            if (rit != pImpl->roles.end())
+            {
+                (void)rit->second.on_dereg(channel_name, "producer");
+                (void)rit->second.drop_channel_if_orphaned(channel_name);
+                transitioned = true;
+            }
+            // Fall through to dispatch after lock release.
         }
-        // Last-producer path: fall through to _on_channel_closed
-        // (after lock release).  The producer stays in producers[]
-        // until then so the cascade can see it.
+        // Last-producer path: leave the producer in producers[] so
+        // _on_channel_closed can iterate it for atomic teardown.
+    }
+
+    if (!is_last_producer)
+    {
+        // Wave M3 step 5c: dispatch terminal cleanup iff the producer's
+        // role is now fully Disconnected.  Cheap no-op otherwise.
+        if (transitioned) _dispatch_role_disconnected_if_dead(role_uid);
+        return result;
     }
 
     // Last-producer path: atomic teardown per HEP-CORE-0023 §2.1.1.
-    // `_on_channel_closed` re-takes the writer lock; reads producers[]
-    // (with our uid still admitted); runs the schema-record cascade
-    // (HEP-CORE-0034 §7.2); fires `ch_closed` handler; erases the
-    // channel record.  Producer-presence row on RoleEntry stays until
-    // heartbeat-timeout / DEREG of the presence (Wave M3 routes this
-    // through the RoleEntry controlled-access API).
+    // `_on_channel_closed` re-takes the writer lock; transitions every
+    // producer + consumer presence on the channel; dispatches role
+    // cleanup for each (schema cascade fires from dispatch per
+    // HEP-CORE-0034 §7.2 owner-lifetime).
     _on_channel_closed(channel_name, reason);
     result.removed           = true;
     result.channel_now_empty = true;
@@ -962,15 +1065,18 @@ void HubState::_on_channel_closed(const std::string &name, ChannelCloseReason wh
         return;
     }
 
-    // HEP-CORE-0034 §7.2 — capture every producer uid BEFORE erasing the
-    // channel, so the cascade evictions below can iterate them.  In the
-    // multi-producer model (HEP-CORE-0023 §2.1.1) a channel can have
-    // 1..N producers; when channel-close fires (atomic teardown when the
-    // LAST live producer-presence transitions Disconnected, or
-    // voluntary admin/script close), every producer's
-    // private schema records must be evicted.  Hub-globals
-    // (owner=="hub") are immune.
+    // HEP-CORE-0023 §2.1.1 atomic teardown — collect every uid (producer
+    // AND consumer) currently associated with this channel BEFORE
+    // teardown.  All presences on the channel transition Disconnected
+    // here: when the channel is gone, every party on it is by
+    // definition terminated.  Producers transition first because they
+    // own the channel; consumers transition for the same atomic-
+    // teardown reason (HEP-CORE-0023 §2.1.1 — "all presences on a
+    // closed channel are terminal").  A separate eventual
+    // CONSUMER_DEREG_REQ from the consumer side is idempotent (the
+    // presence is already Disconnected).
     std::vector<std::string> producer_uids;
+    std::vector<std::string> consumer_uids;
     {
         std::shared_lock rlk(pImpl->mu);
         auto it = pImpl->channels.find(name);
@@ -979,45 +1085,54 @@ void HubState::_on_channel_closed(const std::string &name, ChannelCloseReason wh
             producer_uids.reserve(it->second.producers.size());
             for (const auto &p : it->second.producers)
                 if (!p.role_uid.empty()) producer_uids.push_back(p.role_uid);
+            consumer_uids.reserve(it->second.consumers.size());
+            for (const auto &c : it->second.consumers)
+                if (!c.role_uid.empty()) consumer_uids.push_back(c.role_uid);
         }
     }
 
     _set_channel_closed(name);
-    // Remove channel from each role's channels list and atomically mark
-    // every producer-presence on this channel as Disconnected
-    // (HEP-CORE-0023 §2.1.1 atomic teardown — when the channel is gone,
-    // all its producer-presences are terminal).  Other presences
-    // belonging to the same role on different channels are left alone.
     {
         std::unique_lock lk(pImpl->mu);
-        for (auto &[uid, role] : pImpl->roles)
-        {
-            auto it = std::find(role.channels.begin(), role.channels.end(), name);
-            if (it != role.channels.end()) role.channels.erase(it);
-        }
         for (const auto &producer_uid : producer_uids)
         {
             auto rit = pImpl->roles.find(producer_uid);
             if (rit == pImpl->roles.end()) continue;
-            if (auto *p = rit->second.find_presence(name, "producer");
-                p != nullptr && p->state != RoleState::Disconnected)
-            {
-                p->state       = RoleState::Disconnected;
-                p->state_since = std::chrono::steady_clock::now();
-            }
+            // Wave M3 step 5b: route presence termination through the
+            // controlled-access API.  `on_dereg` is any-state →
+            // Disconnected; idempotent if already Disconnected.
+            (void)rit->second.on_dereg(name, "producer");
+            // Wave M3 step 5d: cache invariant — drop the channel
+            // from the role's `channels` list iff no other alive
+            // presence references it.
+            (void)rit->second.drop_channel_if_orphaned(name);
+        }
+        for (const auto &consumer_uid : consumer_uids)
+        {
+            auto rit = pImpl->roles.find(consumer_uid);
+            if (rit == pImpl->roles.end()) continue;
+            (void)rit->second.on_dereg(name, "consumer");
+            (void)rit->second.drop_channel_if_orphaned(name);
         }
         pImpl->shm_blocks.erase(name);
     }
     _bump_counter(std::string("close:") + to_string(why));
 
-    // Cascade schema eviction — outside any lock held above
-    // (`_on_schemas_evicted_for_owner` takes its own writer lock).
-    // Wave M3 (RoleEntry controlled-access API) will move this to the
-    // role-disconnect cascade (HEP-CORE-0034 §7.2) so eviction follows
-    // owner-lifetime rather than channel-close; until then, evict
-    // per-producer here.
+    // Wave M3 step 5e (2026-05-11): schema cascade is now owner-lifetime
+    // ONLY, fired via `_dispatch_role_disconnected_if_dead`.  Removed
+    // the per-producer cascade that used to fire at channel-close —
+    // it incorrectly evicted owner-namespaced schemas for producers
+    // still alive on other channels (HEP-CORE-0034 §7.2 violation).
+    //
+    // Dispatch fires for every uid whose presence just transitioned
+    // Disconnected.  If the role has no remaining alive presence on
+    // any channel, terminal cleanup runs (schemas evict + role entry
+    // erased).  If the role is still alive elsewhere, dispatch is a
+    // no-op; their schemas survive intact.
     for (const auto &producer_uid : producer_uids)
-        _on_schemas_evicted_for_owner(producer_uid);
+        _dispatch_role_disconnected_if_dead(producer_uid);
+    for (const auto &consumer_uid : consumer_uids)
+        _dispatch_role_disconnected_if_dead(consumer_uid);
 }
 
 void HubState::_on_consumer_joined(const std::string &channel, ConsumerEntry consumer)
@@ -1059,27 +1174,23 @@ void HubState::_on_consumer_left(const std::string &channel, const std::string &
         return;
     }
     _remove_consumer(channel, role_uid);
-    // Remove this channel from the role's channels list and mark the
-    // consumer-presence Disconnected (HEP-CORE-0023 §2.1).  Do NOT mark
-    // the whole role disconnected — the role may still be producing on
-    // other channels or attached as a consumer elsewhere.
-    if (!role_uid.empty())
+    // Route the consumer-presence termination through the M3
+    // controlled-access API (`on_dereg`).  Do NOT mark the whole role
+    // disconnected here — the role may still be producing on other
+    // channels or attached as a consumer elsewhere.  Cache invariant
+    // (`channels` contains `c` iff some alive presence references `c`)
+    // is maintained via `drop_channel_if_orphaned`.  Terminal cleanup
+    // (entry erase) is decided after lock release by
+    // `_dispatch_role_disconnected_if_dead`.
+    if (role_uid.empty()) return;
     {
         std::unique_lock lk(pImpl->mu);
         auto it = pImpl->roles.find(role_uid);
-        if (it != pImpl->roles.end())
-        {
-            auto &chs = it->second.channels;
-            auto  rm  = std::find(chs.begin(), chs.end(), channel);
-            if (rm != chs.end()) chs.erase(rm);
-            if (auto *p = it->second.find_presence(channel, "consumer");
-                p != nullptr && p->state != RoleState::Disconnected)
-            {
-                p->state       = RoleState::Disconnected;
-                p->state_since = std::chrono::steady_clock::now();
-            }
-        }
+        if (it == pImpl->roles.end()) return;
+        (void)it->second.on_dereg(channel, "consumer");
+        (void)it->second.drop_channel_if_orphaned(channel);
     }
+    _dispatch_role_disconnected_if_dead(role_uid);
 }
 
 void HubState::_on_heartbeat(const std::string                   &channel,
@@ -1243,14 +1354,18 @@ HubState::_on_pending_timeout(const std::string &channel,
     //
     // The producer-presence's `Pending` state is the single-shot gate
     // — a concurrent timer fire that loses the writer-lock race
-    // observes Disconnected (or no presence) and bails without
+    // observes "presence absent" (post-H18 erase) and bails without
     // re-entering teardown or double-bumping the counter.
     //
-    // Ordering note: we transition the presence FSM AND probe whether
-    // this is the last producer BEFORE removing the producer from
-    // `ChannelEntry.producers[]`.  Removal-before-close-cascade would
-    // empty `producers[]` and skip schema eviction in
-    // `_on_channel_closed` (same bug class as Wave M2.5 step 4 fix).
+    // Ordering note: in the LAST-producer path we leave the producer
+    // in `ChannelEntry.producers[]` so `_on_channel_closed` can see
+    // the uid in its `producer_uids` snapshot and dispatch
+    // role-disconnect terminal cleanup for it.  Removal-before-
+    // close-cascade would empty `producers[]` and skip the dispatch
+    // for this uid, leaking the role entry.  Same bug class as Wave
+    // M2.5 step 4 fix; updated for Wave M3 step 5e (H12) which moved
+    // schema eviction from `_on_channel_closed` directly into the
+    // dispatch path (cascade_role_terminal_cleanup_locked).
     bool is_last_producer = false;
     bool eligible         = false;
     {
@@ -1276,22 +1391,35 @@ HubState::_on_pending_timeout(const std::string &channel,
         {
             // Multi-producer channel — drop just this one; channel
             // survives.  Producer-presence FSM already transitioned
-            // above; the row stays on RoleEntry (Wave M3 routes
-            // cleanup through the RoleEntry API).
+            // Disconnected above via on_pending_timeout; maintain the
+            // `channels` cache invariant (Wave M3 step 5d).
             auto rm                  = it->second.remove_producer(role_uid);
             result.removed           = rm.removed;
             result.channel_now_empty = false;
-            return result;
+            (void)rit->second.drop_channel_if_orphaned(channel);
+            // Fall through to the dispatch step.
         }
         // Last-producer path: leave the producer in producers[] so
-        // _on_channel_closed's cascade eviction can read its uid.
+        // `_on_channel_closed`'s producer_uids snapshot includes
+        // this uid → dispatch fires terminal cleanup for the role.
     }
 
-    if (eligible)
+    if (!eligible) return result;
+    if (is_last_producer)
     {
+        // Atomic channel teardown — `_on_channel_closed` dispatches
+        // role-disconnect terminal cleanup for every producer uid
+        // (Wave M3 step 5b, 2026-05-11).
         _on_channel_closed(channel, ChannelCloseReason::HeartbeatTimeout);
         result.removed           = true;
         result.channel_now_empty = true;
+    }
+    else
+    {
+        // Multi-producer path: this producer's presence just went
+        // Disconnected.  Dispatch terminal cleanup in case this was
+        // the role's last alive presence anywhere.
+        _dispatch_role_disconnected_if_dead(role_uid);
     }
     return result;
 }
@@ -1362,7 +1490,10 @@ void HubState::_on_band_left(const std::string &band, const std::string &role_ui
         bump_invalid_identifier(*pImpl);
         return;
     }
-    _set_band_left(band, role_uid);
+    // Voluntary BAND_LEAVE_REQ — pass reason="voluntary" through to
+    // the handler so the broker subscriber emits the correct wire
+    // reason in BAND_LEAVE_NOTIFY.
+    _set_band_left(band, role_uid, "voluntary");
 }
 
 void HubState::_on_peer_connected(PeerEntry peer)
