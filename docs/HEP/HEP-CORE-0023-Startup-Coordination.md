@@ -584,6 +584,15 @@ struct ProducerEntry {                    // mirrors ConsumerEntry shape
     std::string  inbox_schema_json;       // JSON; empty if no inbox
     std::string  inbox_packing;
     std::string  inbox_checksum;
+    // Per-producer data-plane endpoint (HEP-CORE-0021 §16.3 — Wave M2.5).
+    // Each Fan-In producer publishes from its own bound ZMQ socket.
+    std::string  zmq_node_endpoint;
+    // Per-producer CURVE pubkey for ZMQ ctrl socket auth (HEP-CORE-0021 §5.2).
+    std::string  zmq_pubkey;
+    // Producer-supplied free-form JSON blob (HEP-CORE-0007 §12.4).
+    // Channel-level DISC_REQ_ACK aggregates blobs into a tree keyed
+    // by role_uid (see `aggregate_metadata_tree()`).
+    nlohmann::json metadata;              // null if no metadata
 };
 
 struct ChannelEntry {

@@ -689,12 +689,12 @@ void HubState::_on_channel_registered(ChannelEntry entry)
         return;
     }
     // Validate every `role_uid` in `entry.producers` per HEP-CORE-0023
-    // §2.1.1 (multi-producer model).  Wave M2 MP2 made `producers` a
-    // vector; Wave M2.5 + MP3/MP4 will migrate the broker REG_REQ
-    // handler to append on subsequent admissions via
-    // `ChannelEntry::add_producer` rather than overwriting the channel
-    // record.  Until then, this op may be called with `producers`
-    // containing one entry per call.
+    // §2.1.1 (multi-producer model).  Wave M2.5 step 3 (commit
+    // ed15f02) migrated the broker REG_REQ handler to
+    // `_on_producer_added` — production no longer reaches this op.
+    // L2 test scaffolding (`HubStateTestAccess::on_channel_registered`)
+    // continues to use it; the input `entry.producers` may still
+    // contain a single producer per test call.
     for (const auto &prod : entry.producers)
     {
         if (!prod.role_uid.empty() &&
@@ -716,9 +716,10 @@ void HubState::_on_channel_registered(ChannelEntry entry)
     }
 
     // Capture pieces needed for role/shm derivation before moving entry.
-    // Single-producer derivation: REG_REQ today admits one producer.
-    // Multi-producer admission (Wave M2 MP4) will create role/presence
-    // for each ProducerEntry; until then, derive from the first one.
+    // This is the test-only legacy primitive path: callers pass an
+    // entry with one ProducerEntry per call.  Production REG_REQ
+    // routes through `_on_producer_added` (Wave M2.5 step 3); that
+    // op creates role/presence per admitted ProducerEntry.
     const std::string channel_name    = entry.name;
     const std::string producer_uid    = entry.producers.empty()
                                            ? std::string{}
@@ -949,9 +950,10 @@ void HubState::_on_channel_closed(const std::string &name, ChannelCloseReason wh
 
     // Cascade schema eviction — outside any lock held above
     // (`_on_schemas_evicted_for_owner` takes its own writer lock).
-    // Wave M2 MP3 will move this to the role-disconnect cascade
-    // (HEP-CORE-0034 §7.2) so eviction follows owner-lifetime rather
-    // than channel-close; until then, evict per-producer here.
+    // Wave M3 (RoleEntry controlled-access API) will move this to the
+    // role-disconnect cascade (HEP-CORE-0034 §7.2) so eviction follows
+    // owner-lifetime rather than channel-close; until then, evict
+    // per-producer here.
     for (const auto &producer_uid : producer_uids)
         _on_schemas_evicted_for_owner(producer_uid);
 }
@@ -1167,7 +1169,8 @@ void HubState::_on_pending_timeout(const std::string &channel)
         auto             it = pImpl->channels.find(channel);
         if (it == pImpl->channels.end()) return;
         // Single-producer transition today: pick the channel's first
-        // producer.  Wave M2 MP3 will replace this op with
+        // producer.  Wave M2.5 step 4 (DEREG_REQ rewrite) + step 6
+        // (sweep/heartbeat-timeout rewrite) will replace this op with
         // `_on_producer_dropped(channel, role_uid, reason)` so the
         // caller targets a specific producer-presence; channel close
         // then fires only when the LAST live producer transitions
@@ -1373,14 +1376,14 @@ schema::CitationOutcome HubState::_validate_schema_citation(
     // is rejected even on hash match (HEP-CORE-0034 §9.1, §9.3).
     // Cheap check, do it before taking lock.
     //
-    // Multi-producer note (Wave M2 MP4): the parameter is named
-    // `channel_producer_uid` (singular) because today the broker calls
-    // this once per channel admission with one producer's uid.  When
-    // MP4 admits multi-producer channels, the broker will iterate the
-    // channel's producers and call this once per producer (or the
-    // signature will evolve to take a set per HEP-CORE-0034 §7.1).
-    // Today's single-string check still matches the single-producer
-    // shape of the data.
+    // Multi-producer note: the parameter is named
+    // `channel_producer_uid` (singular) because the broker calls this
+    // once per admission with the admitted producer's uid (Wave M2.5
+    // step 3 — `_on_producer_added`).  For Fan-In channels, each
+    // producer's REG_REQ → CONSUMER citation runs through this check
+    // independently with the admitting producer's uid; the signature
+    // does not need to be widened because each call resolves a single
+    // producer's claim against the channel-wide invariant.
     if (cited_owner != "hub" && cited_owner != channel_producer_uid)
     {
         out.reason = R::kCrossCitation;

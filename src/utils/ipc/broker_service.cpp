@@ -2514,8 +2514,10 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
     const auto snap2 = hub_state_->snapshot();
     for (const auto& [channel_name, entry] : snap2.channels)
     {
-        // Wave M2 MP3 will rework _on_pending_timeout to be
-        // per-producer; today it picks the first producer.
+        // Wave M2.5 step 6 (sweep / heartbeat-timeout per-producer)
+        // will rework `_on_pending_timeout` to be per-producer; today
+        // it picks the first producer (transitional, OK for
+        // single-producer-only channels until step 6 lands).
         if (entry.producers.empty()) continue;
         const std::string &producer_uid = entry.producers.front().role_uid;
         if (producer_uid.empty()) continue;

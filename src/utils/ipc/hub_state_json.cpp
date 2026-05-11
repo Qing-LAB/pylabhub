@@ -49,7 +49,10 @@ nlohmann::json channel_to_json(const ChannelEntry &c, ChannelObservable obs)
     j["schema_owner"]        = c.schema_owner;
     j["has_shared_memory"]   = c.has_shared_memory;
     j["data_transport"]      = c.data_transport;
-    j["zmq_node_endpoint"]   = c.zmq_node_endpoint;
+    // zmq_node_endpoint moved into per-producer sub-objects below
+    // (Wave M2.5 step 3 — HEP-CORE-0021 §16.3 per-producer scope).
+    // Channel-scope ChannelEntry.zmq_node_endpoint is deprecated; admin
+    // clients iterate `producers[]`.
     j["_collected_at"]       = fmt_time(c.created_at);
     j["observable"]          = to_string(obs);
 
@@ -58,12 +61,14 @@ nlohmann::json channel_to_json(const ChannelEntry &c, ChannelObservable obs)
     for (const auto &prod : c.producers)
     {
         nlohmann::json pj;
-        pj["producer_pid"]   = prod.producer_pid;
-        pj["role_uid"]       = prod.role_uid;
-        pj["role_name"]      = prod.role_name;
+        pj["producer_pid"]      = prod.producer_pid;
+        pj["role_uid"]          = prod.role_uid;
+        pj["role_name"]         = prod.role_name;
         // Per-producer inbox metadata (HEP-CORE-0027 §3 — inbox is per-presence).
-        pj["inbox_endpoint"] = prod.inbox_endpoint;
-        pj["_collected_at"]  = fmt_time(prod.connected_at);
+        pj["inbox_endpoint"]    = prod.inbox_endpoint;
+        // Per-producer data-plane endpoint (HEP-CORE-0021 §16.3 — Wave M2.5).
+        pj["zmq_node_endpoint"] = prod.zmq_node_endpoint;
+        pj["_collected_at"]     = fmt_time(prod.connected_at);
         producers.push_back(std::move(pj));
     }
     j["producers"] = std::move(producers);
