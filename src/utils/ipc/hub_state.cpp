@@ -526,20 +526,35 @@ void HubState::_set_peer_disconnected(const std::string &hub_uid)
 void HubState::_set_channel_zmq_node_endpoint(const std::string &name,
                                               std::string        endpoint)
 {
+    // Wave M2.5 step 5 — this op is now a thin shim over the
+    // per-producer op (the channel-scope concept is retired).  Targets
+    // the FIRST producer for backwards compat with any caller not yet
+    // migrated to `_set_producer_zmq_node_endpoint`.  The broker's
+    // ENDPOINT_UPDATE_REQ handler routes directly to the per-producer
+    // op via the sender's resolved role_uid.
     std::unique_lock lk(pImpl->mu);
     auto             it = pImpl->channels.find(name);
     if (it == pImpl->channels.end()) return;
-    // Wave M2.5 step 3 transitional: write the endpoint on the channel
-    // record's FIRST producer (per-producer scope per HEP-CORE-0021
-    // §16.3 + controlled_access_api_design.md §3.2).  Step 5
-    // (ENDPOINT_UPDATE_REQ wire-shape migration) adds an explicit
-    // role_uid parameter so the right producer can be targeted on
-    // Fan-In channels.  For now: single-producer channels — there is
-    // exactly one to update — so first-producer is unambiguous.
     if (auto *p = it->second.first_producer())
     {
         p->zmq_node_endpoint = std::move(endpoint);
     }
+}
+
+bool HubState::_set_producer_zmq_node_endpoint(const std::string &channel_name,
+                                                const std::string &role_uid,
+                                                std::string        endpoint)
+{
+    // Per-producer endpoint update (HEP-CORE-0021 §16.3).  Identifier
+    // validation is the caller's responsibility (broker
+    // ENDPOINT_UPDATE_REQ handler runs the channel+uid checks before
+    // calling this — same convention as `_set_channel_zmq_node_endpoint`).
+    if (channel_name.empty() || role_uid.empty() || endpoint.empty())
+        return false;
+    std::unique_lock lk(pImpl->mu);
+    auto             it = pImpl->channels.find(channel_name);
+    if (it == pImpl->channels.end()) return false;
+    return it->second.set_producer_zmq_node_endpoint(role_uid, std::move(endpoint));
 }
 
 void HubState::_set_shm_block(ShmBlockRef ref)

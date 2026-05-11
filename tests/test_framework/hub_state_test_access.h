@@ -130,6 +130,17 @@ struct HubStateTestAccess
     {
         return s._on_producer_dropped(channel_name, role_uid, reason);
     }
+    /// Wave M2.5 step 5 — per-producer ENDPOINT_UPDATE_REQ entry point.
+    /// Returns true iff the channel exists AND the producer is admitted.
+    static bool
+    set_producer_zmq_node_endpoint(HubState&          s,
+                                    const std::string& channel_name,
+                                    const std::string& role_uid,
+                                    std::string        endpoint)
+    {
+        return s._set_producer_zmq_node_endpoint(channel_name, role_uid,
+                                                  std::move(endpoint));
+    }
     static void on_channel_closed(HubState &s, const std::string &n,
                                   ChannelCloseReason why)
     {

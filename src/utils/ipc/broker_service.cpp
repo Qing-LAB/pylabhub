@@ -2182,16 +2182,24 @@ nlohmann::json BrokerServiceImpl::handle_endpoint_update_req(
                           "Channel '" + channel_name + "' is not registered");
     }
 
-    // Verify sender is one of the channel's admitted producers
-    // (HEP-CORE-0023 §2.1.1 — multi-producer channels admit any
-    // registered producer to mutate the channel's zmq_node_endpoint).
+    // Wave M2.5 step 5: resolve which producer the ENDPOINT_UPDATE_REQ
+    // targets by matching the sender's ZMQ identity to a registered
+    // producer's `zmq_identity`.  Identity-based resolution is more
+    // secure than trusting a wire `role_uid` (the identity is bound
+    // to the actual connection by ZMTP).  Per HEP-CORE-0021 §16.3
+    // each Fan-In producer has its own zmq_node_endpoint — the
+    // sender can only update its own, not a sibling's.
     const std::string sender_id(static_cast<const char *>(identity.data()), identity.size());
-    bool sender_is_producer = false;
+    std::string sender_role_uid;
     for (const auto &prod : entry->producers)
     {
-        if (sender_id == prod.zmq_identity) { sender_is_producer = true; break; }
+        if (sender_id == prod.zmq_identity)
+        {
+            sender_role_uid = prod.role_uid;
+            break;
+        }
     }
-    if (!sender_is_producer)
+    if (sender_role_uid.empty())
     {
         LOGGER_WARN("Broker: ENDPOINT_UPDATE_REQ for '{}' rejected — sender is not a producer",
                     channel_name);
@@ -2232,22 +2240,28 @@ nlohmann::json BrokerServiceImpl::handle_endpoint_update_req(
                               endpoint_type + "'");
     }
 
-    // Check current value: already non-zero ->reject unless same value (idempotent).
-    const std::string &current_value = entry->zmq_node_endpoint;
+    // Wave M2.5 step 5 idempotency check: look up the SENDER's
+    // current per-producer endpoint (HEP-CORE-0021 §16.3 — Fan-In
+    // producers each have their own).  Per-producer scope means
+    // siblings' endpoints are untouched regardless of outcome.
+    const auto current_opt =
+        entry->producer_zmq_node_endpoint(sender_role_uid);
+    const std::string current_value = current_opt.value_or(std::string{});
     auto current = pylabhub::validate_tcp_endpoint(current_value);
     if (current.ok() && current.port != 0)
     {
         if (current_value == endpoint)
         {
-            LOGGER_DEBUG("Broker: ENDPOINT_UPDATE_REQ for '{}' {} — "
+            LOGGER_DEBUG("Broker: ENDPOINT_UPDATE_REQ for '{}' uid='{}' {} — "
                          "already set to '{}' (idempotent)",
-                         channel_name, endpoint_type, endpoint);
+                         channel_name, sender_role_uid, endpoint_type, endpoint);
         }
         else
         {
-            LOGGER_WARN("Broker: ENDPOINT_UPDATE_REQ for '{}' {} rejected — "
-                        "already set to '{}', cannot change to '{}'",
-                        channel_name, endpoint_type, current_value, endpoint);
+            LOGGER_WARN("Broker: ENDPOINT_UPDATE_REQ for '{}' uid='{}' {} "
+                        "rejected — already set to '{}', cannot change to '{}'",
+                        channel_name, sender_role_uid, endpoint_type,
+                        current_value, endpoint);
             return make_error(corr_id, "ENDPOINT_ALREADY_SET",
                               endpoint_type + " endpoint already set to '" +
                                   current_value + "'");
@@ -2255,9 +2269,24 @@ nlohmann::json BrokerServiceImpl::handle_endpoint_update_req(
     }
     else
     {
-        LOGGER_INFO("Broker: ENDPOINT_UPDATE_REQ for '{}' {} updated to '{}'",
-                    channel_name, endpoint_type, endpoint);
-        hub_state_->_set_channel_zmq_node_endpoint(channel_name, endpoint);
+        LOGGER_INFO("Broker: ENDPOINT_UPDATE_REQ for '{}' uid='{}' {} "
+                    "updated to '{}'",
+                    channel_name, sender_role_uid, endpoint_type, endpoint);
+        // Route to per-producer op: only the sender's endpoint is mutated;
+        // sibling producers on the same channel are untouched
+        // (HEP-CORE-0021 §16.3).
+        if (!hub_state_->_set_producer_zmq_node_endpoint(
+                channel_name, sender_role_uid, endpoint))
+        {
+            // Race: sender was admitted at the start of this handler
+            // but the producer has been removed (DEREG / heartbeat
+            // timeout) before we got here.
+            LOGGER_WARN("Broker: ENDPOINT_UPDATE_REQ for '{}' uid='{}' lost the race "
+                        "(producer no longer admitted)",
+                        channel_name, sender_role_uid);
+            return make_error(corr_id, "NOT_CHANNEL_OWNER",
+                              "Sender no longer registered (race condition)");
+        }
     }
 
     nlohmann::json resp;
