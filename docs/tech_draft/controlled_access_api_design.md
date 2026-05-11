@@ -403,6 +403,148 @@ next. Multi-producer L2 tests (step 2) are written **first** and must
 fail against the pre-M2.5 codebase, then pass after each step that
 should make them pass; this is the contract lock.
 
+## 7.5 Step 3 design — REG_REQ handler rewrite (F8)
+
+Step 3 of the migration plan rewrites the broker's REG_REQ handler to
+use `ChannelEntry::add_producer` instead of building a fresh
+`ChannelEntry` and calling `_set_channel_opened` (which uses
+`insert_or_assign`, overwriting any existing channel record).  The
+rewrite has three concerns:
+
+### 7.5.1 The HubState op
+
+**Decision: introduce `HubState::_on_producer_added(channel_name, producer_entry, schema_fields)` as a new op.**
+
+Today's `_on_channel_registered(entry)` semantics: "this entry IS the
+channel now."  It cannot be used for additive admission because
+internally it calls `_set_channel_opened` → `insert_or_assign` which
+replaces the record.
+
+Three options were considered (per `REVIEW_WaveM2.5_2026-05-10.md` F8):
+
+| | Option |
+|---|---|
+| (A) | New op `_on_producer_added` that branches: existing channel → `add_producer` + `upsert_role_locked`; missing channel → build fresh + `_set_channel_opened` + `upsert_role_locked`. |
+| (B) | Extend `_set_channel_opened` to detect existing channels and delegate. |
+| (C) | Two-call pattern in the broker handler, taking the write lock externally. |
+
+**Chosen: (A).**  Rationale:
+- Explicit caller intent at the API name.
+- `_set_channel_opened` keeps its existing "open new channel" meaning;
+  changing it (option B) would mutate the semantic of the only entry
+  point into the channels map, breaking the contract for every existing
+  caller / test that relies on it.
+- Option C leaks HubState's internal locking out to the broker handler,
+  which is exactly what Wave M2.5 is trying to avoid.
+
+### 7.5.2 Op signature
+
+```cpp
+struct ProducerAdmissionResult {
+    AddProducerResult   producer_result;  // Created / RejectedUidConflict /
+                                          //   RejectedShmCardinality
+    InvariantSetResult  invariant_result; // Created / IdempotentEqual /
+                                          //   RejectedMismatch
+    bool                channel_opened;   // true if this admission was
+                                          //   the first producer on the
+                                          //   channel
+};
+
+ProducerAdmissionResult _on_producer_added(
+    const std::string&             channel_name,
+    ChannelEntry::SchemaInvariants schema_fields,   // schema_hash, blds,
+                                                    //   version, id, owner
+    ChannelEntry::TransportInvariants transport,    // has_shm, shm_name,
+                                                    //   pattern, data_transport
+    ProducerEntry                  producer);
+```
+
+Behavior:
+1. Take writer lock on `pImpl->mu`.
+2. If channel does not exist → create `ChannelEntry`, set invariants,
+   `add_producer(producer)` (which is `Created` by construction), insert
+   into `pImpl->channels`, set `channel_opened=true`,
+   `invariant_result=Created`.
+3. If channel exists → compare incoming invariants vs stored:
+   - mismatch → `RejectedMismatch`, no state change, return.
+   - match (`IdempotentEqual` / `Created` resolved) →
+     `it->second.add_producer(producer)` and propagate the typed
+     result (`Created` / `RejectedUidConflict` / `RejectedShmCardinality`).
+   - If add_producer returned `Created`, also `upsert_role_locked` for
+     the new producer's uid + fire role-registered handler.
+4. Fire `ch_opened` handler ONLY when `channel_opened==true` (first
+   producer); subsequent admissions don't re-open the channel.
+
+`channel_opened` flag is what tells the caller whether to fire schema
+record creation (path B), HEP-CORE-0034 schema-record bookkeeping, etc.
+— those are per-producer-on-first-admission concerns.
+
+### 7.5.3 Broker REG_REQ handler shape (target)
+
+Today:
+1. Parse REG_REQ payload.
+2. Build a fresh `ChannelEntry entry`.
+3. Schema mismatch check against existing channel (Cat-1).
+4. HEP-CORE-0034 schema record path A/B/C.
+5. `hub_state_->_on_channel_registered(std::move(entry))`.
+
+After step 3:
+1. Parse REG_REQ payload.
+2. Build a `ProducerEntry producer` (the new admission only).
+3. Build `SchemaInvariants` + `TransportInvariants` from payload.
+4. Call `hub_state_->_on_producer_added(channel_name, schema, transport, std::move(producer))`.
+5. Inspect the typed result:
+   - `RejectedUidConflict` → wire-error `UID_CONFLICT` + LOGGER_ERROR.
+   - `RejectedShmCardinality` → wire-error `MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM`.
+   - `RejectedMismatch` (invariants) → wire-error `SCHEMA_MISMATCH` (or
+     `TRANSPORT_MISMATCH` if it's a transport field — refine the error
+     code per which invariant mismatched).
+   - `Created` (producer) → emit any per-admission notifications
+     (e.g., HEP-CORE-0034 schema record creation if `channel_opened`).
+6. The deprecated `ChannelEntry.metadata` / `.zmq_node_endpoint` /
+   `.zmq_pubkey` channel-scope fields stop being written here.  The
+   per-producer setters are called inside `_on_producer_added` (or just
+   after — the producer's `inbox_*`, `metadata`, `zmq_node_endpoint`,
+   `zmq_pubkey` are part of the `ProducerEntry` payload passed in).
+7. After verifying nothing else reads the channel-scope deprecated
+   fields, **delete them from `ChannelEntry`** (closes the F6 "field
+   duplication" risk).
+
+### 7.5.4 Deletion of `_on_channel_registered`?
+
+Currently `_on_channel_registered` is the ONLY caller of
+`_set_channel_opened` outside test scaffolding.  Once the broker
+REG_REQ migrates to `_on_producer_added`, `_on_channel_registered` has
+no production callers.  Two choices:
+- Keep it for test-access (existing L2 tests use it via
+  `HubStateTestAccess`).
+- Delete it; update tests to use `_on_producer_added` via test-access.
+
+**Recommendation: keep for now** as a test-access primitive (it's
+private; the public API surface doesn't change).  Mark in a comment as
+"test-only legacy entry."  Step 7 (privatize fields, finalize API) can
+revisit deletion after the broker handler is stable.
+
+### 7.5.5 Test plan
+
+Each new admission scenario gets an L2 test against
+`_on_producer_added` (via `HubStateTestAccess`):
+- First producer on a fresh channel → `Created` / channel_opened=true,
+  consumers preserved if there were existing consumers (edge case, rare
+  but possible if a consumer registered before any producer — should be
+  rejected as CHANNEL_NOT_FOUND elsewhere; verify).
+- Second producer on an existing channel, distinct uid, matching
+  invariants → `Created` / `IdempotentEqual` for invariants /
+  channel_opened=false.
+- Second producer, distinct uid, schema-hash mismatch →
+  `RejectedMismatch` (invariants).
+- Second producer, same uid as existing → `RejectedUidConflict`.
+- Second producer on SHM channel → `RejectedShmCardinality`.
+
+Each test asserts (1) the typed result, (2) channel state after (no
+partial mutation on reject), (3) consumer list preserved across the
+admission.
+
 ## 8. Return to main line — what M2.5 unblocks
 
 Once M2.5 lands, the rest of Wave M2 from `docs/TODO_MASTER.md`
