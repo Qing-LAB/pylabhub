@@ -112,13 +112,60 @@ through a single helper.
 
 - **Done:** M1.2 Phase 5+6+7 atomic sweep at `a41ce71`.
 - **Done:** MP1 (docs at `2df486c`/`db586d7`); MP2 + MP2 review pass 1 + pass 2 + pass 3 (`b285628`/`0d5c188`/`baede16`/`91bd657`).
-- **In flight:** MP2.5 controlled-access API.  Design locked (`4e3c68f`/`b9f0b3f`/`7ed2632`).  Step 1 additive API on ChannelEntry shipped (`6a81c2c`).  Step 2a/2b per-producer fields + first multi-producer L2 tests shipped (`e26bbb6`).  **Active code review:** `docs/code_review/REVIEW_WaveM2.5_2026-05-10.md` — 15 findings, 8 ❌ OPEN (4 blockers for step 3); fix-in-this-pass set listed at the end of the review.
-- **Next:** MP2.5 → MP3 → MP4 → MP5 (sequential; each builds on the previous).  MP3/MP4 scope reduces materially after M2.5 because the API surface absorbs most of their work as side effects of steps 3-6.
-- **Then (Wave M3):** RoleEntry / RolePresence controlled-access API — same shape as M2.5.  Retires the `disconnected_fired` 🚧 PATCH at `hub_state.hpp:339-360`.  Design pattern shared with M2.5 (see controlled_access_api_design.md §5.2).
-- **After MP5:** unified-cascade tests + multi-producer admission tests green ⇒ M1.2 wave fully closed.
-- **Then:** M1.4 (retire `metrics_store_`), M1.5 (role-side `on_forced_disconnect`).
-- **Then:** **MD1 — Role teardown sequence fix** (deferred since 2026-05-10 per user directive).  Use-after-free race in `do_role_teardown`: BrokerRequestComm destroyed in Step 13 while its ctrl-thread is still in `run_poll_loop`; ctrl thread joined only in Step 14.  Design principle locked: **"stop the machine before disassembling it"** — no object may be destroyed while another thread is still using it; the owning side guarantees all in-flight uses have observed stop *and returned* before destruction.  Preferred fix: make `BrokerRequestComm::disconnect()` synchronous with respect to external poll loops (signal + wait), so caller's `disconnect(); reset();` idiom is already correct by construction.  Full diagnosis in `docs/todo/TESTING_TODO.md` §9.
-- **Then:** Wave B M8 / MP6 — dual-hub processor B3-B5 scenarios — depends on MP1-MP5 landing first.
+- **Done:** MP2.5 controlled-access API on `ChannelEntry` (Wave M2.5).  All 8 design steps + 2 post-step retros + 1 multi-step audit pass shipped between 2026-05-10 and 2026-05-11.  Last commit: `416cbec` (post-review pass 3 fixing the `ChannelMetrics` overwrite-class bug).  Two code reviews on file: `docs/code_review/REVIEW_WaveM2.5_2026-05-10.md` (15 findings, 14 resolved + 1 ✅/OK) and `docs/code_review/REVIEW_WaveM2.5_PostStep6_2026-05-11.md` (15 findings, 11 resolved + 4 properly deferred).  Suite: 1801/1801.  The multi-producer overwrite-class bug is now structurally eliminated on both `ChannelEntry` (per-party fields) and `ChannelMetrics` (per-producer metrics keying).
+- **Done implicitly:** MP3 (HubState bookkeeping ops — `_on_producer_added` / `_on_producer_dropped` / `_on_pending_timeout(channel, uid)` / `_set_producer_zmq_node_endpoint` all shipped through M2.5 steps 3-6) and MP4 (broker handler rewrites — REG_REQ / DEREG_REQ / ENDPOINT_UPDATE_REQ / sweep all migrated).  MP5 (multi-producer L2 + L3 test coverage) — partial; 17 multi-producer admission/drop/endpoint/metrics tests shipped across `HubStateProducerAdmission` / `HubStateProducerDrop` / `HubStateProducerEndpointUpdate` / `HubStateProducerPendingTimeout` / `MetricsPlaneTest.FanIn_TwoProducers_MetricsDoNotOverwrite`.  Remaining MP5 work: end-to-end L3 scenarios (CHANNEL_ERROR_NOTIFY fan-out, CONSUMER_REG_REQ + DISC_REQ on multi-producer channels) opportunistic.
+
+#### Deferred items — explicit phase entries
+
+Each deferred item below has: **scope document**, **trigger condition**, and **subtopic-TODO link**.  If any of those is missing, it's a roadmap gap to fix BEFORE picking up the work.
+
+| Phase | Title | Scope doc | Trigger condition | Subtopic TODO |
+|---|---|---|---|---|
+| **M3** | RoleEntry / RolePresence controlled-access API.  Retires the `disconnected_fired` 🚧 PATCH at `hub_state.hpp:733-757` via terminal-cleanup `_set_role_disconnected`; mirrors M2.5 pattern at role scope.  Same residue-reject policy applies (any uid already in `pImpl->roles` rejects fresh `add_role`). | `docs/tech_draft/M3_role_entry_controlled_access.md` (created 2026-05-11) | Start immediately after user signs off on the design stub — the PATCH is a small but real correctness gap. | `docs/todo/MESSAGEHUB_TODO.md` (add an "M3 RoleEntry API" entry on commit) |
+| **M2.5 step 7** | Privatize `ChannelEntry` state-bearing fields (or move into Impl) once all writers go through the controlled-access API. | `docs/tech_draft/controlled_access_api_design.md` §7 step 7 (one-line description; sufficient for the mechanical refactor scope) | **Concrete bug surfaces from a new direct-access site.** The structural bug class is already eliminated by Wave M2.5; step 7 is polish that hardens the wall.  No timeline.  Bug-driven only. | `docs/todo/API_TODO.md` (add a deferred entry when step 7 starts) |
+| **M2.5 step 2d** | Deferred design-doc §5.1 API methods: `set_invariant_schema` / `set_invariant_transport` / `observable(roles_map)` member wrapper / `is_alive(roles_map)` / `producers()` + `consumers()` span accessors. | `docs/tech_draft/controlled_access_api_design.md` §7 step 2d | **First concrete caller needs one of these.** They are sugar; no current production code asks for them. Trigger is a caller-driven justification, not a calendar date. | `docs/todo/API_TODO.md` (add an entry when a caller asks) |
+| **M2.5 step 8** | Final HEP doc sweep.  **Most of this work already shipped** during Wave M2.5 — see "Step 8 audit" below.  Remaining: HEP-CORE-0019 §9 (metrics plane) per-producer metrics tree shape; possibly small cross-references between HEPs. | `docs/tech_draft/controlled_access_api_design.md` §7 step 8 | Land alongside HEP-0019 next edit (whenever metrics-plane HEP receives any other update).  Low priority — code is the truth; HEP-0019 lags. | (None — small enough to be a single sweep commit when convenient) |
+| **M1.4** | Retire `metrics_store_` + `METRICS_REPORT_REQ`.  G1 (commit `416cbec`) fixed the most pressing piece (`ChannelMetrics::producer` overwrite bug) by making it per-uid.  M1.4 finishes the job: delete the legacy store entirely; route admin metrics queries through HubState's per-presence rows (HEP-CORE-0019 §2.3 Phase 6 already specifies this); delete `update_producer_metrics` / `update_consumer_metrics` / `query_metrics` / `handle_metrics_report_req`. | `docs/tech_draft/M1_FSM_consolidation_handoff_2026-05-09.md` §M1.4 | Start after Wave M3 closes (M3 cleans up `RoleEntry` cascade, which is where the per-presence metrics rows live; sequencing M3 first means M1.4 has the right target API). | `docs/todo/MESSAGEHUB_TODO.md` |
+| **M1.5** | Role-side `FORCE_SHUTDOWN` handler + `on_forced_disconnect` script callback + automatic shutdown. | `docs/tech_draft/M1_FSM_consolidation_handoff_2026-05-09.md` §M1.5 | Start after M1.4 closes (M1.5 hooks into the post-M1.4 metrics + role-side disconnect cleanup paths). | `docs/todo/MESSAGEHUB_TODO.md` |
+| **MD1** | Role teardown sequence fix — use-after-free race in `do_role_teardown`: `BrokerRequestComm` destroyed in Step 13 while its ctrl-thread is still in `run_poll_loop`; ctrl-thread joined only in Step 14.  Design principle locked: **"stop the machine before disassembling it"** — no object may be destroyed while another thread is still using it; owning side guarantees all in-flight uses have observed stop and returned before destruction.  Preferred fix: make `BrokerRequestComm::disconnect()` synchronous with respect to external poll loops (signal + wait), so caller's `disconnect(); reset();` idiom is correct by construction. | `docs/todo/TESTING_TODO.md` §9 (full diagnosis) | After M1.5.  Or earlier if a hang/crash test failure points at the race. | `docs/todo/TESTING_TODO.md` §9 |
+| **Wave B M8 / MP6** | Federation/dual-hub HEP-CORE-0022 peer-hub producer-presence handling.  Dual-hub processor B3-B5 scenarios in `role_host_template_design.md` §14. | `docs/tech_draft/role_host_template_design.md` Wave B §M8 + `docs/HEP/HEP-CORE-0022.md` | After M3 + M1.4 + M1.5 + MD1 close.  Federation peer replication interacts with multi-producer presence model; the prereqs need to be stable first. | `docs/todo/MESSAGEHUB_TODO.md` |
+
+#### Step 8 audit — what's shipped vs remaining
+
+What ALREADY SHIPPED as part of Wave M2.5 (despite being "scheduled for step 8"):
+- HEP-CORE-0007 §12.4 DISC_REQ_ACK `metadata` per-producer tree wire shape (commit `25dc376`).
+- HEP-CORE-0007 §12.4a `UID_CONFLICT` error code (commit `25dc376`).
+- HEP-CORE-0007 §12.4a `MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM` rewording for strict-uid-reject (commit `25dc376`).
+- HEP-CORE-0021 §16 per-producer ZMQ endpoint registry semantics (commit `25dc376` + refined `9422ed8`).
+- HEP-CORE-0021 §16.3 identity-based ENDPOINT_UPDATE_REQ resolution (commit `9422ed8`).
+- HEP-CORE-0023 §2.6 struct schematic — explicit `ChannelEntry` + `ProducerEntry` + `ConsumerEntry` field lists (multiple commits, latest `9422ed8`).
+- HEP-CORE-0033 §8 entry-types table — `ChannelEntry` row spelled out (commit `25dc376`).
+
+What REMAINS for step 8:
+- HEP-CORE-0019 §9 — document the per-producer `producer_metrics` tree shape introduced by G1 (post-review pass 3, commit `416cbec`).  Currently the HEP describes a single-blob shape, mismatched with the code.
+- Cross-references between the HEPs (small): each HEP was updated in isolation; a survey pass to add "see also HEP-0027 / 0021 / 0034" links would tighten the navigation.
+
+Trigger: land alongside HEP-0019's next edit, or as a standalone small commit when convenient.
+
+#### Roadmap dependency graph (post-Wave-M2.5)
+
+```
+Wave M2.5 (DONE)
+   │
+   ├─► Wave M3 (RoleEntry API; small, fast — retires the PATCH)
+   │       │
+   │       └─► M1.4 (retire metrics_store_)
+   │              │
+   │              └─► M1.5 (FORCE_SHUTDOWN handler)
+   │                     │
+   │                     └─► MD1 (role teardown race fix)
+   │                            │
+   │                            └─► Wave B M8 / MP6 (federation)
+   │
+   ├─► [bug-driven] M2.5 step 7 (privatize fields)
+   ├─► [caller-driven] M2.5 step 2d (deferred API methods)
+   └─► [convenience] M2.5 step 8 (HEP-0019 sync + cross-refs)
+```
 
 #### Tracking
 

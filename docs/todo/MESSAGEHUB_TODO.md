@@ -14,6 +14,20 @@
 
 Canonical plan in `docs/TODO_MASTER.md` "Wave M2".
 
+**Status snapshot (2026-05-11):** Wave M2.5 controlled-access API is
+**DONE** (commit `416cbec`); MP3 + MP4 are implicit through M2.5
+steps 3-6; MP5 partial (17 multi-producer tests shipped, end-to-end
+L3 work opportunistic).  Suite 1801/1801.
+
+**Next on the wave roadmap:** Wave M3 (RoleEntry controlled-access
+API).  Design stub: `docs/tech_draft/M3_role_entry_controlled_access.md`.
+Pattern mirrors M2.5; retires the `disconnected_fired` 🚧 PATCH.
+
+**Then sequentially:** M1.4 (retire `metrics_store_`) → M1.5
+(`on_forced_disconnect`) → MD1 (role teardown race) → Wave B M8 /
+MP6 (federation).  See TODO_MASTER §"Deferred items — explicit
+phase entries" for scope-doc + trigger-condition links.
+
 **Scope expansion (2026-05-10):** new phase **MP2.5 — Controlled-access
 API on `ChannelEntry`** inserted between MP2 (done) and MP3.  Driven
 by three consecutive review passes that each found the same overwrite-
