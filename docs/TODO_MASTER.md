@@ -112,7 +112,7 @@ through a single helper.
 
 - **Done:** M1.2 Phase 5+6+7 atomic sweep at `a41ce71`.
 - **Done:** MP1 (docs at `2df486c`/`db586d7`); MP2 + MP2 review pass 1 + pass 2 + pass 3 (`b285628`/`0d5c188`/`baede16`/`91bd657`).
-- **In flight:** MP2.5 controlled-access API design (this session, 2026-05-10) — driven by repeated discovery of latent overwrite-class bugs in `ChannelEntry`.  Design doc at `docs/tech_draft/controlled_access_api_design.md`; awaiting field-classification + open-decision approval before code changes start.
+- **In flight:** MP2.5 controlled-access API.  Design locked (`4e3c68f`/`b9f0b3f`/`7ed2632`).  Step 1 additive API on ChannelEntry shipped (`6a81c2c`).  Step 2a/2b per-producer fields + first multi-producer L2 tests shipped (`e26bbb6`).  **Active code review:** `docs/code_review/REVIEW_WaveM2.5_2026-05-10.md` — 15 findings, 8 ❌ OPEN (4 blockers for step 3); fix-in-this-pass set listed at the end of the review.
 - **Next:** MP2.5 → MP3 → MP4 → MP5 (sequential; each builds on the previous).  MP3/MP4 scope reduces materially after M2.5 because the API surface absorbs most of their work as side effects of steps 3-6.
 - **Then (Wave M3):** RoleEntry / RolePresence controlled-access API — same shape as M2.5.  Retires the `disconnected_fired` 🚧 PATCH at `hub_state.hpp:339-360`.  Design pattern shared with M2.5 (see controlled_access_api_design.md §5.2).
 - **After MP5:** unified-cascade tests + multi-producer admission tests green ⇒ M1.2 wave fully closed.
