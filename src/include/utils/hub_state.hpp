@@ -138,12 +138,30 @@ struct ConsumerEntry
         std::chrono::system_clock::now()};
 };
 
+/// Producer attached to a channel.  Parallel shape to ConsumerEntry —
+/// channels admit 1..N producers per HEP-CORE-0023 §2.1.1 (ZMQ
+/// Fan-In; SHM stays single-producer by physical constraint).
+struct ProducerEntry
+{
+    uint64_t    producer_pid{0};
+    std::string producer_hostname;
+    std::string zmq_identity; ///< ROUTER identity for direct notifications.
+
+    std::string role_name;
+    std::string role_uid;
+
+    std::chrono::system_clock::time_point connected_at{
+        std::chrono::system_clock::now()};
+};
+
 /// Channel registered with the broker.
 struct ChannelEntry
 {
     std::string name;          ///< Key in HubState::channels.
     std::string shm_name;
-    std::string schema_hash;   ///< Hex (64 chars).
+    std::string schema_hash;   ///< Hex (64 chars).  Channel-wide
+                               ///< invariant — all producers MUST
+                               ///< agree (HEP-CORE-0023 §2.1.1).
     uint32_t    schema_version{0};
     std::string schema_id;     ///< Named-schema id; empty = anonymous.
     std::string schema_blds;
@@ -151,18 +169,13 @@ struct ChannelEntry
     /// HEP-CORE-0034 §11 — foreign key into `HubState.schemas`.  When
     /// non-empty, identifies the schema record this channel is contracted
     /// against.  Values: `"hub"` if the channel adopts a hub-global, or
-    /// the producer's role uid if the producer registered its own private
+    /// a producer's role uid if that producer registered its own private
     /// record via path-B.  Anonymous (legacy) channels leave both
     /// `schema_owner` and `schema_id` empty.
     std::string schema_owner;
 
-    uint64_t    producer_pid{0};
-    std::string producer_hostname;
-    std::string producer_role_name;
-    std::string producer_role_uid;
-    std::string producer_zmq_identity;
-
     nlohmann::json             metadata;
+    std::vector<ProducerEntry> producers; ///< 1..N producers (HEP-0023 §2.1.1).
     std::vector<ConsumerEntry> consumers;
 
     bool           has_shared_memory{false};
@@ -181,16 +194,58 @@ struct ChannelEntry
     std::chrono::system_clock::time_point created_at{
         std::chrono::system_clock::now()};
 
-    /// Derived: compute this channel's current observability from the
-    /// producer-role's presence (HEP-CORE-0023 §2.2 + §2.6).  Pure
+    // ── Producer-list helpers ───────────────────────────────────────
+    //
+    // Channel existence is "any live producer-presence" (HEP-CORE-0023
+    // §2.1.1).  Most caller intents fall into three shapes:
+    //   - "the single producer" — common for SHM channels; use
+    //     `first_producer()` and accept it as the only one.
+    //   - "this specific producer" — REG_REQ admission, DEREG_REQ,
+    //     CHANNEL_ERROR_NOTIFY target; use `find_producer(role_uid)`.
+    //   - "every producer" — fan-out paths (CHANNEL_CLOSING_NOTIFY,
+    //     CHANNEL_ERROR_NOTIFY broadcast); iterate `producers`
+    //     directly.
+
+    /// Returns the first registered producer, or nullptr if none.
+    /// Convenience for callers that operate on the single-producer
+    /// invariant (e.g. SHM channels).
+    const ProducerEntry *first_producer() const noexcept
+    {
+        return producers.empty() ? nullptr : &producers.front();
+    }
+    ProducerEntry *first_producer() noexcept
+    {
+        return producers.empty() ? nullptr : &producers.front();
+    }
+
+    /// Returns the producer whose role_uid matches, or nullptr.
+    const ProducerEntry *find_producer(const std::string &role_uid) const noexcept
+    {
+        for (const auto &p : producers)
+            if (p.role_uid == role_uid) return &p;
+        return nullptr;
+    }
+    ProducerEntry *find_producer(const std::string &role_uid) noexcept
+    {
+        for (auto &p : producers)
+            if (p.role_uid == role_uid) return &p;
+        return nullptr;
+    }
+
+    /// Derived: compute this channel's current observability from a
+    /// producer-presence pointer (HEP-CORE-0023 §2.2 + §2.6).  Pure
     /// function — no HubState lookup, no locking.  The caller resolves
     /// the producer-presence pointer (via
     /// `RoleEntry::find_presence(name, "producer")`) and passes it in;
     /// `nullptr` means "no producer-presence registered" → kAbsent.
     ///
-    /// Why a pointer parameter rather than a HubState reach-in: keeps
-    /// this a pure function with no implicit lock acquisition, callable
-    /// from broker sweep loops that already hold a snapshot.
+    /// Multi-producer note: this overload still takes a single
+    /// presence — the channel's observable is `kLive` iff ANY of its
+    /// producer-presences is `Connected` with `first_heartbeat_seen`.
+    /// `observe_channel(c, snapshot)` (free function below) does the
+    /// "best of all producers" scan.  This pointer-form variant is
+    /// retained for callers that already know which presence they
+    /// care about (e.g., DISC_REQ probing a specific producer).
     inline ChannelObservable observe(const struct RolePresence *producer) const noexcept;
 };
 
@@ -428,10 +483,14 @@ struct HubStateSnapshot
         std::chrono::system_clock::now()};
 };
 
-/// Resolve a channel's current observable from a hub snapshot.  Looks
-/// up the channel's producer-role and the matching producer-presence
-/// row, then delegates to `ChannelEntry::observe(producer)`.  Returns
-/// `kAbsent` when the producer-role is missing from the snapshot.
+/// Resolve a channel's current observable from a hub snapshot.  Scans
+/// every registered producer-role's presence on this channel and
+/// returns the "best" outcome: kLive if any producer is Connected
+/// with first_heartbeat_seen; kRegistering if at least one producer
+/// is Connected awaiting first heartbeat; kStalled if every producer
+/// is Pending; kAbsent if no producer-presence is registered or all
+/// are Disconnected.  Per HEP-CORE-0023 §2.1.1 (multi-producer
+/// channels: channel is alive iff any producer-presence is alive).
 ///
 /// Used by every JSON serializer that surfaces channel state on the
 /// wire (HEP-CORE-0023 §2.2 — `observable` is the protocol-defined
@@ -439,10 +498,29 @@ struct HubStateSnapshot
 inline ChannelObservable
 observe_channel(const ChannelEntry &ch, const HubStateSnapshot &snap) noexcept
 {
-    auto rit = snap.roles.find(ch.producer_role_uid);
-    if (rit == snap.roles.end())
-        return ch.observe(nullptr);
-    return ch.observe(rit->second.find_presence(ch.name, "producer"));
+    if (ch.producers.empty()) return ChannelObservable::kAbsent;
+
+    bool any_live       = false;
+    bool any_registering = false;
+    bool any_stalled    = false;
+    for (const auto &prod : ch.producers)
+    {
+        auto rit = snap.roles.find(prod.role_uid);
+        if (rit == snap.roles.end()) continue;
+        auto *p = rit->second.find_presence(ch.name, "producer");
+        if (p == nullptr) continue;
+        switch (ch.observe(p))
+        {
+        case ChannelObservable::kLive:        any_live = true;        break;
+        case ChannelObservable::kRegistering: any_registering = true; break;
+        case ChannelObservable::kStalled:     any_stalled = true;     break;
+        case ChannelObservable::kAbsent:                              break;
+        }
+    }
+    if (any_live)        return ChannelObservable::kLive;
+    if (any_registering) return ChannelObservable::kRegistering;
+    if (any_stalled)     return ChannelObservable::kStalled;
+    return ChannelObservable::kAbsent;
 }
 
 // ─── Event subscription ─────────────────────────────────────────────────────

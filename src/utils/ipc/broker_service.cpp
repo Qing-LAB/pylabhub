@@ -1060,15 +1060,24 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     entry.shm_name              = req.value("shm_name", "");
     entry.schema_hash           = attempted_schema;
     entry.schema_version        = req.value("schema_version", uint32_t{0});
-    entry.producer_pid          = attempted_pid;
-    entry.producer_hostname     = req.value("producer_hostname", "");
-    entry.producer_role_name    = role_name;
-    entry.producer_role_uid     = role_uid;
     entry.has_shared_memory     = req.value("has_shared_memory", false);
     entry.pattern               = channel_pattern_from_str(req.value("channel_pattern", "PubSub"));
     entry.zmq_ctrl_endpoint     = req.value("zmq_ctrl_endpoint", "");
     entry.zmq_data_endpoint     = req.value("zmq_data_endpoint", "");
     entry.zmq_pubkey            = req.value("zmq_pubkey", "");
+
+    // Producer admission — HEP-CORE-0023 §2.1.1.  Today's REG_REQ admits
+    // one producer; Wave M2 MP4 will admit additional producers (ZMQ
+    // Fan-In) by appending another ProducerEntry on a same-channel +
+    // new-role-uid REG_REQ.  For now, build a single-element producers
+    // list.
+    pylabhub::hub::ProducerEntry primary_producer;
+    primary_producer.producer_pid     = attempted_pid;
+    primary_producer.producer_hostname = req.value("producer_hostname", "");
+    primary_producer.role_name        = role_name;
+    primary_producer.role_uid         = role_uid;
+    // zmq_identity stamped below after `identity` is in scope.
+    entry.producers.push_back(std::move(primary_producer));
     // HEP-CORE-0021: ZMQ endpoint registry (broker records peer endpoint for discovery).
     entry.data_transport        = req.value("data_transport", std::string{"shm"});
     entry.zmq_node_endpoint     = req.value("zmq_node_endpoint", "");
@@ -1096,8 +1105,9 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
         entry.metadata = req["metadata"];
     }
     // Producer ZMQ identity: captured here for future unsolicited pushes.
-    entry.producer_zmq_identity.assign(static_cast<const char*>(identity.data()),
-                                        identity.size());
+    if (!entry.producers.empty())
+        entry.producers.front().zmq_identity.assign(
+            static_cast<const char*>(identity.data()), identity.size());
     // Producer-presence is created in `_on_channel_registered` (Connected,
     // first_heartbeat_seen=false) — channel observable starts at kRegistering.
 
@@ -1137,20 +1147,26 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
             LOGGER_ERROR(
                 "Broker: Cat1 schema mismatch on '{}': existing={} attempted={} attempted_pid={}",
                 channel_name, existing_schema, attempted_schema, attempted_pid);
-            if (!existing_opt->producer_zmq_identity.empty())
+            // CHANNEL_ERROR_NOTIFY fan-out per HEP-CORE-0007: notify
+            // every existing producer so all co-producers on this
+            // channel see the schema-mismatch event from the rejected
+            // newcomer.
+            nlohmann::json err;
+            err["channel_name"]          = channel_name;
+            err["event"]                 = "schema_mismatch_attempt";
+            err["existing_schema_hash"]  = existing_schema;
+            err["attempted_schema_hash"] = attempted_schema;
+            err["attempted_pid"]         = attempted_pid;
+            for (const auto &prod : existing_opt->producers)
             {
-                nlohmann::json err;
-                err["channel_name"]          = channel_name;
-                err["event"]                 = "schema_mismatch_attempt";
-                err["existing_schema_hash"]  = existing_schema;
-                err["attempted_schema_hash"] = attempted_schema;
-                err["attempted_pid"]         = attempted_pid;
-                send_to_identity(socket, existing_opt->producer_zmq_identity,
+                if (prod.zmq_identity.empty()) continue;
+                send_to_identity(socket, prod.zmq_identity,
                                  "CHANNEL_ERROR_NOTIFY", err);
                 LOGGER_ERROR("Broker: CHANNEL_ERROR_NOTIFY to producer of '{}': event={}, "
-                             "existing_hash={}, attempted_hash={}, attempted_pid={}",
+                             "existing_hash={}, attempted_hash={}, attempted_pid={}, target={}",
                              channel_name, "schema_mismatch_attempt",
-                             existing_schema, attempted_schema, attempted_pid);
+                             existing_schema, attempted_schema, attempted_pid,
+                             prod.role_uid);
             }
             return make_error(corr_id, "SCHEMA_MISMATCH",
                               "Schema hash differs from existing registration for channel '" +
@@ -1455,24 +1471,38 @@ nlohmann::json BrokerServiceImpl::handle_disc_req(const nlohmann::json& req)
     }
     const auto &entry_ref = cit->second;
 
-    // Resolve the producer-presence row that owns this channel.  Per
-    // HEP-CORE-0023 §2.2 the response variant is derived from the
-    // producer-presence's FSM state.
+    // Resolve a producer-presence row to base the response on.  Per
+    // HEP-CORE-0023 §2.2 + §2.1.1 (multi-producer): the channel is
+    // discoverable iff ANY producer-presence is alive — prefer one
+    // that is fully Live (Connected + first_heartbeat_seen); fall
+    // back to a not-yet-Live presence so we can return DISC_PENDING
+    // with a useful reason; only if no presence at all → NOT_FOUND.
     const pylabhub::hub::RolePresence *presence = nullptr;
+    const pylabhub::hub::RolePresence *fallback = nullptr;
+    for (const auto &prod : entry_ref.producers)
     {
-        auto rit = snap.roles.find(entry_ref.producer_role_uid);
-        if (rit != snap.roles.end())
-            presence = rit->second.find_presence(channel_name, "producer");
+        auto rit = snap.roles.find(prod.role_uid);
+        if (rit == snap.roles.end()) continue;
+        const auto *p = rit->second.find_presence(channel_name, "producer");
+        if (p == nullptr) continue;
+        if (p->state == pylabhub::hub::RoleState::Disconnected) continue;
+        if (p->state == pylabhub::hub::RoleState::Connected &&
+            p->first_heartbeat_seen)
+        {
+            presence = p;
+            break;
+        }
+        if (fallback == nullptr) fallback = p;
     }
+    if (presence == nullptr) presence = fallback;
 
-    if (presence == nullptr ||
-        presence->state == pylabhub::hub::RoleState::Disconnected)
+    if (presence == nullptr)
     {
-        // Channel exists but its producer is gone (presence row absent or
-        // reaped while atomic teardown is in flight).  From the
-        // consumer's perspective this channel is not discoverable.
+        // Channel exists but all producer-presences absent / Disconnected
+        // (presence rows reaped while atomic teardown is in flight).
+        // From the consumer's perspective this channel is not discoverable.
         LOGGER_DEBUG("Broker: DISC_REQ for '{}' -> CHANNEL_NOT_FOUND "
-                     "(producer-presence absent/Disconnected)", channel_name);
+                     "(no live producer-presence)", channel_name);
         return make_error(corr_id, "CHANNEL_NOT_FOUND",
                           "Channel '" + channel_name + "' is not registered");
     }
@@ -1554,9 +1584,18 @@ nlohmann::json BrokerServiceImpl::handle_dereg_req(const nlohmann::json& req,
 
     // HubState is the sole channel store.  Apply the deregister
     // NOT_REGISTERED gate: channel must exist AND producer_pid must
-    // match (rejecting cross-producer deregister requests).
+    // match one of the channel's admitted producers (rejecting
+    // cross-producer deregister requests).  HEP-CORE-0023 §2.1.1 —
+    // multi-producer channels may have several producers; DEREG_REQ
+    // targets the one whose pid matches.
     auto entry = hub_state_->channel(channel_name);
-    if (!entry.has_value() || entry->producer_pid != producer_pid)
+    bool pid_matches = false;
+    if (entry.has_value())
+    {
+        for (const auto &prod : entry->producers)
+            if (prod.producer_pid == producer_pid) { pid_matches = true; break; }
+    }
+    if (!entry.has_value() || !pid_matches)
     {
         LOGGER_WARN("Broker: DEREG_REQ failed for channel '{}' (pid={})", channel_name,
                     producer_pid);
@@ -1868,21 +1907,29 @@ void BrokerServiceImpl::handle_heartbeat_req(const nlohmann::json& req)
         LOGGER_WARN("Broker: HEARTBEAT_REQ for unknown channel '{}'", channel_name);
         return;
     }
-    const std::string producer_role_uid = cit->second.producer_role_uid;
-    const pylabhub::hub::RolePresence *prod_presence = nullptr;
+    // Channel observable is the BEST-of all producer-presences
+    // (HEP-CORE-0023 §2.1.1).  `was_pending` is true iff NO producer
+    // is currently Live — i.e., every registered producer-presence is
+    // sub-Live (Pending or Connected without first_heartbeat_seen).
+    bool was_pending = !cit->second.producers.empty();
+    for (const auto &prod : cit->second.producers)
     {
-        auto rit = snap.roles.find(producer_role_uid);
-        if (rit != snap.roles.end())
-            prod_presence = rit->second.find_presence(channel_name, "producer");
+        auto rit = snap.roles.find(prod.role_uid);
+        if (rit == snap.roles.end()) continue;
+        const auto *pp = rit->second.find_presence(channel_name, "producer");
+        if (pp == nullptr) continue;
+        if (pp->state == pylabhub::hub::RoleState::Connected &&
+            pp->first_heartbeat_seen)
+        {
+            was_pending = false;
+            break;
+        }
     }
-    // True iff the producer-presence is currently in a sub-Live state
-    // (Pending, or Connected without first_heartbeat_seen yet) — the
-    // upcoming `_on_heartbeat` will transition it to Live only when
-    // this heartbeat itself is the producer's (matching role_type).
-    const bool was_pending = (prod_presence != nullptr) &&
-                             (prod_presence->state ==
-                                  pylabhub::hub::RoleState::Pending ||
-                              !prod_presence->first_heartbeat_seen);
+    // Wire uid (used below for the per-presence heartbeat handler).
+    // Pre-Phase-6 fallback derives uid from the channel's first producer.
+    const std::string fallback_producer_uid =
+        cit->second.producers.empty() ? std::string{}
+                                      : cit->second.producers.front().role_uid;
 
     if (was_pending)
     {
@@ -1923,9 +1970,9 @@ void BrokerServiceImpl::handle_heartbeat_req(const nlohmann::json& req)
     if (req.contains("metrics") && req["metrics"].is_object())
         metrics_opt = req["metrics"];
     // Pre-M0 fallback: heartbeat without `uid`/`role_type` on the wire
-    // is attributed to the channel's producer-presence.
+    // is attributed to the channel's first registered producer.
     const std::string &hb_uid =
-        wire_uid.empty() ? producer_role_uid : wire_uid;
+        wire_uid.empty() ? fallback_producer_uid : wire_uid;
     const std::string &hb_role_type =
         wire_role_type.empty() ? std::string("producer") : wire_role_type;
     hub_state_->_on_heartbeat(channel_name,
@@ -1977,14 +2024,21 @@ nlohmann::json BrokerServiceImpl::handle_endpoint_update_req(
                           "Channel '" + channel_name + "' is not registered");
     }
 
-    // Verify sender is the channel creator.
+    // Verify sender is one of the channel's admitted producers
+    // (HEP-CORE-0023 §2.1.1 — multi-producer channels admit any
+    // registered producer to mutate the channel's zmq_node_endpoint).
     const std::string sender_id(static_cast<const char *>(identity.data()), identity.size());
-    if (sender_id != entry->producer_zmq_identity)
+    bool sender_is_producer = false;
+    for (const auto &prod : entry->producers)
     {
-        LOGGER_WARN("Broker: ENDPOINT_UPDATE_REQ for '{}' rejected — sender is not creator",
+        if (sender_id == prod.zmq_identity) { sender_is_producer = true; break; }
+    }
+    if (!sender_is_producer)
+    {
+        LOGGER_WARN("Broker: ENDPOINT_UPDATE_REQ for '{}' rejected — sender is not a producer",
                     channel_name);
         return make_error(corr_id, "NOT_CHANNEL_OWNER",
-                          "Sender is not the creator of channel '" + channel_name + "'");
+                          "Sender is not a registered producer of channel '" + channel_name + "'");
     }
 
     // Only `zmq_node` is mutable post-registration; reject everything else.
@@ -2308,40 +2362,48 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
     const auto now  = std::chrono::steady_clock::now();
 
     // ── Pass 1: Connected (live) -> Pending demotion (HEP-CORE-0023 §2.1) ─
-    // Iterate channels and read the PRODUCER-presence state directly.
-    // No producer-presence (or Disconnected) = no producer = no demotion.
-    // HubState's `_on_heartbeat_timeout` performs the transition.
+    // Iterate channels × producers and read each producer-presence state
+    // directly.  Multi-producer aware (HEP-CORE-0023 §2.1.1): each
+    // producer-presence demotes independently when its own heartbeat
+    // ages out; co-producers stay alive.
     for (const auto& [channel_name, entry] : snap.channels)
     {
-        if (entry.producer_role_uid.empty()) continue;
-        auto role_it = snap.roles.find(entry.producer_role_uid);
-        if (role_it == snap.roles.end()) continue;
-        const auto *p = role_it->second.find_presence(channel_name, "producer");
-        if (p == nullptr) continue;
-        if (p->state != pylabhub::hub::RoleState::Connected) continue;
-        // Per HEP-CORE-0023 §2.1: `last_heartbeat` is the timeout anchor
-        // regardless of `first_heartbeat_seen`.  At REG_REQ time the
-        // presence is created with `last_heartbeat = now`, so a role
-        // that registers and never heartbeats DOES demote here once
-        // ready_timeout elapses (then Pending → Disconnected via the
-        // pass-2 sweep).
-        if (now - p->last_heartbeat < ready_timeout) continue;
-        LOGGER_WARN("Broker: role '{}' demoted Ready -> Pending "
-                    "(no heartbeat within {} ms)",
-                    channel_name, ready_timeout.count());
-        hub_state_->_on_heartbeat_timeout(channel_name, entry.producer_role_uid);
+        for (const auto &prod : entry.producers)
+        {
+            if (prod.role_uid.empty()) continue;
+            auto role_it = snap.roles.find(prod.role_uid);
+            if (role_it == snap.roles.end()) continue;
+            const auto *p = role_it->second.find_presence(channel_name, "producer");
+            if (p == nullptr) continue;
+            if (p->state != pylabhub::hub::RoleState::Connected) continue;
+            // Per HEP-CORE-0023 §2.1: `last_heartbeat` is the timeout
+            // anchor regardless of `first_heartbeat_seen`.  At REG_REQ
+            // time the presence is created with `last_heartbeat = now`,
+            // so a producer that registers and never heartbeats DOES
+            // demote here once ready_timeout elapses (then
+            // Pending → Disconnected via the pass-2 sweep).
+            if (now - p->last_heartbeat < ready_timeout) continue;
+            LOGGER_WARN("Broker: role '{}' on channel '{}' demoted Ready -> Pending "
+                        "(no heartbeat within {} ms)",
+                        prod.role_uid, channel_name, ready_timeout.count());
+            hub_state_->_on_heartbeat_timeout(channel_name, prod.role_uid);
+        }
     }
 
     // ── Pass 2: Pending -> Disconnected (HEP-CORE-0023 §2.1, no grace) ──
-    // Re-snapshot to observe pass 1's transitions: presences demoted to
-    // Pending in this same call appear here with their freshly-stamped
-    // `state_since` (≈ now), so `now - state_since < pending_timeout`
-    // skips them — they get one full pending_timeout window before reclaim.
+    // Re-snapshot to observe pass 1's transitions.  Atomic teardown
+    // fires when the LAST live producer-presence transitions
+    // Disconnected (HEP-CORE-0023 §2.1.1) — handled inside
+    // `_on_pending_timeout`.  Iterate per-(channel, producer):
     const auto snap2 = hub_state_->snapshot();
     for (const auto& [channel_name, entry] : snap2.channels)
     {
-        if (entry.producer_role_uid.empty()) continue;
-        auto role_it = snap2.roles.find(entry.producer_role_uid);
+        // Wave M2 MP3 will rework _on_pending_timeout to be
+        // per-producer; today it picks the first producer.
+        if (entry.producers.empty()) continue;
+        const std::string &producer_uid = entry.producers.front().role_uid;
+        if (producer_uid.empty()) continue;
+        auto role_it = snap2.roles.find(producer_uid);
         if (role_it == snap2.roles.end()) continue;
         const auto *p = role_it->second.find_presence(channel_name, "producer");
         if (p == nullptr) continue;
@@ -2385,22 +2447,24 @@ void BrokerServiceImpl::check_dead_consumers(zmq::socket_t& socket)
         }
         for (const auto& dead_consumer : dead)
         {
-            // Cat 2: dead consumer — notify producer + clean state.
+            // Cat 2: dead consumer — notify every producer + clean state.
+            // Multi-producer fan-out per HEP-CORE-0023 §2.1.1.
             LOGGER_WARN(
                 "Broker: Cat2 dead consumer pid={} host='{}' on channel '{}' — removing",
                 dead_consumer.consumer_pid, dead_consumer.consumer_hostname, channel_name);
-            if (!entry.producer_zmq_identity.empty())
+            nlohmann::json notify;
+            notify["channel_name"]      = channel_name;
+            notify["consumer_pid"]      = dead_consumer.consumer_pid;
+            notify["consumer_hostname"] = dead_consumer.consumer_hostname;
+            notify["reason"]            = "process_dead";
+            for (const auto &prod : entry.producers)
             {
-                nlohmann::json notify;
-                notify["channel_name"]      = channel_name;
-                notify["consumer_pid"]      = dead_consumer.consumer_pid;
-                notify["consumer_hostname"] = dead_consumer.consumer_hostname;
-                notify["reason"]            = "process_dead";
-                send_to_identity(socket, entry.producer_zmq_identity, "CONSUMER_DIED_NOTIFY",
+                if (prod.zmq_identity.empty()) continue;
+                send_to_identity(socket, prod.zmq_identity, "CONSUMER_DIED_NOTIFY",
                                  notify);
                 LOGGER_INFO("Broker: CONSUMER_DIED_NOTIFY to producer of '{}': "
-                            "consumer_pid={}, reason=process_dead",
-                            channel_name, dead_consumer.consumer_pid);
+                            "consumer_pid={}, reason=process_dead, target_role={}",
+                            channel_name, dead_consumer.consumer_pid, prod.role_uid);
             }
             hub_state_->_on_consumer_left(channel_name, dead_consumer.role_uid);
             on_consumer_closed(socket, channel_name, dead_consumer, "process_dead");
@@ -2437,20 +2501,21 @@ void BrokerServiceImpl::send_closing_notify(zmq::socket_t&                     s
         }
     }
 
-    // Also notify the producer (new: broker now stores producer_zmq_identity).
-    if (!entry.producer_zmq_identity.empty())
+    // Also notify every registered producer (HEP-CORE-0023 §2.1.1).
+    for (const auto &prod : entry.producers)
     {
+        if (prod.zmq_identity.empty()) continue;
         try
         {
-            send_to_identity(socket, entry.producer_zmq_identity, "CHANNEL_CLOSING_NOTIFY",
+            send_to_identity(socket, prod.zmq_identity, "CHANNEL_CLOSING_NOTIFY",
                              body);
-            LOGGER_INFO("Broker: CHANNEL_CLOSING_NOTIFY for '{}' ->producer pid={}",
-                        channel_name, entry.producer_pid);
+            LOGGER_INFO("Broker: CHANNEL_CLOSING_NOTIFY for '{}' ->producer pid={} role={}",
+                        channel_name, prod.producer_pid, prod.role_uid);
         }
         catch (const zmq::error_t& e)
         {
-            LOGGER_WARN("Broker: failed to notify producer for '{}': {}", channel_name,
-                        e.what());
+            LOGGER_WARN("Broker: failed to notify producer {} for '{}': {}",
+                        prod.role_uid, channel_name, e.what());
         }
     }
 }
@@ -2467,7 +2532,10 @@ void BrokerServiceImpl::on_channel_closed(zmq::socket_t&                     soc
     // Keep this list small and explicit. When a new broker module needs to
     // react to role death, add one line here and implement the helper below.
     federation_on_channel_closed(channel_name, entry, reason);
-    band_on_role_closed(socket, entry.producer_role_uid);
+    // Multi-producer fan-out (HEP-CORE-0023 §2.1.1): clean up band
+    // membership for every producer of the closed channel.
+    for (const auto &prod : entry.producers)
+        band_on_role_closed(socket, prod.role_uid);
 }
 
 void BrokerServiceImpl::on_consumer_closed(zmq::socket_t&                      socket,
@@ -2554,10 +2622,11 @@ void BrokerServiceImpl::handle_checksum_error_report(zmq::socket_t&        socke
                                      fwd);
                 }
             }
-            if (!entry->producer_zmq_identity.empty())
+            // Fan-out to every producer (HEP-CORE-0023 §2.1.1).
+            for (const auto &prod : entry->producers)
             {
-                send_to_identity(socket, entry->producer_zmq_identity, "CHANNEL_EVENT_NOTIFY",
-                                 fwd);
+                if (prod.zmq_identity.empty()) continue;
+                send_to_identity(socket, prod.zmq_identity, "CHANNEL_EVENT_NOTIFY", fwd);
             }
             LOGGER_INFO("Broker: CHANNEL_EVENT_NOTIFY ->all members of '{}': "
                         "checksum_error slot={}, action=notify_only",
@@ -2585,14 +2654,15 @@ void BrokerServiceImpl::handle_channel_notify_req(zmq::socket_t&        socket,
     }
 
     auto entry = hub_state_->channel(target_channel);
-    if (!entry || entry->producer_zmq_identity.empty())
+    if (!entry || entry->producers.empty())
     {
         LOGGER_DEBUG("Broker: CHANNEL_NOTIFY_REQ for '{}' — channel not found or no producer",
                      target_channel);
         return;
     }
 
-    // Forward as CHANNEL_EVENT_NOTIFY to the producer.
+    // Forward as CHANNEL_EVENT_NOTIFY to every producer (HEP-CORE-0023
+    // §2.1.1 multi-producer fan-out).
     // [BR3] Include originator_uid="" (empty = local origin) so the script can detect
     // whether an event was originated locally or relayed from a federation peer, allowing
     // it to avoid re-notifying in response to a relayed event (application-layer loop guard).
@@ -2604,9 +2674,13 @@ void BrokerServiceImpl::handle_channel_notify_req(zmq::socket_t&        socket,
     if (req.contains("data") && req["data"].is_string())
         fwd["data"] = req["data"];
 
-    send_to_identity(socket, entry->producer_zmq_identity, "CHANNEL_EVENT_NOTIFY", fwd);
-    LOGGER_DEBUG("Broker: relayed CHANNEL_NOTIFY_REQ to producer of '{}' event='{}'",
-                 target_channel, event);
+    for (const auto &prod : entry->producers)
+    {
+        if (prod.zmq_identity.empty()) continue;
+        send_to_identity(socket, prod.zmq_identity, "CHANNEL_EVENT_NOTIFY", fwd);
+    }
+    LOGGER_DEBUG("Broker: relayed CHANNEL_NOTIFY_REQ to {} producer(s) of '{}' event='{}'",
+                 entry->producers.size(), target_channel, event);
 
     // HEP-CORE-0022: relay to federation peers subscribed to this channel.
     const std::string data_str = req.contains("data") && req["data"].is_string()
@@ -2664,23 +2738,25 @@ void BrokerServiceImpl::handle_channel_broadcast_req(zmq::socket_t&        socke
         }
     }
 
-    // Also send to the producer.
-    if (!entry->producer_zmq_identity.empty())
+    // Also send to every registered producer (HEP-CORE-0023 §2.1.1).
+    for (const auto &prod : entry->producers)
     {
+        if (prod.zmq_identity.empty()) continue;
         try
         {
-            send_to_identity(socket, entry->producer_zmq_identity,
+            send_to_identity(socket, prod.zmq_identity,
                              "CHANNEL_BROADCAST_NOTIFY", fwd);
         }
         catch (const zmq::error_t& e)
         {
-            LOGGER_WARN("Broker: broadcast to producer for '{}' failed: {}",
-                        target_channel, e.what());
+            LOGGER_WARN("Broker: broadcast to producer {} for '{}' failed: {}",
+                        prod.role_uid, target_channel, e.what());
         }
     }
 
-    LOGGER_DEBUG("Broker: CHANNEL_BROADCAST_REQ '{}' msg='{}' ->{} consumers + producer",
-                 target_channel, message, entry->consumers.size());
+    LOGGER_DEBUG("Broker: CHANNEL_BROADCAST_REQ '{}' msg='{}' ->{} consumers + {} producer(s)",
+                 target_channel, message, entry->consumers.size(),
+                 entry->producers.size());
 
     // HEP-CORE-0022: relay to federation peers subscribed to this channel.
     // [BR6] Use fixed event name "broadcast" and put the message in the payload field,
@@ -2707,8 +2783,16 @@ nlohmann::json BrokerServiceImpl::handle_channel_list_req(const nlohmann::json &
     for (const auto& [name, entry] : snap.channels)
     {
         nlohmann::json ch;
-        ch["name"]           = name;
-        ch["producer_uid"]   = entry.producer_role_uid;
+        ch["name"]            = name;
+        // Multi-producer channels (HEP-CORE-0023 §2.1.1): expose the
+        // full list as `producer_uids`; `producer_uid` is the first
+        // for back-compat with single-producer admin clients.
+        nlohmann::json producer_uids = nlohmann::json::array();
+        for (const auto &p : entry.producers) producer_uids.push_back(p.role_uid);
+        ch["producer_uids"]  = std::move(producer_uids);
+        ch["producer_uid"]   = entry.producers.empty()
+                                   ? std::string{}
+                                   : entry.producers.front().role_uid;
         ch["schema_id"]      = entry.schema_id;
         ch["consumer_count"] = entry.consumers.size();
         // HEP-CORE-0023 §2.2 — channel state is the protocol-defined
@@ -2745,11 +2829,12 @@ nlohmann::json BrokerServiceImpl::handle_role_presence_req(const nlohmann::json&
         return make_error(corr_id, "MISSING_ROLE_UID", "missing role_uid");
     }
 
-    // Scan all channels: check producer_role_uid and each consumer's role_uid.
+    // Scan all channels: check every producer + each consumer
+    // (HEP-CORE-0023 §2.1.1 multi-producer aware).
     const auto snap = hub_state_->snapshot();
     for (const auto& [name, entry] : snap.channels)
     {
-        if (!entry.producer_role_uid.empty() && entry.producer_role_uid == uid)
+        if (entry.find_producer(uid) != nullptr)
         {
             nlohmann::json resp;
             resp["present"] = true;
@@ -2802,11 +2887,12 @@ nlohmann::json BrokerServiceImpl::handle_role_info_req(const nlohmann::json& req
         return make_error(corr_id, "MISSING_ROLE_UID", "missing role_uid");
     }
 
-    // Search for a channel whose producer_role_uid matches.
+    // Search for a channel where `uid` is a registered producer
+    // (HEP-CORE-0023 §2.1.1 multi-producer aware).
     const auto snap = hub_state_->snapshot();
     for (const auto& [name, entry] : snap.channels)
     {
-        if (!entry.producer_role_uid.empty() && entry.producer_role_uid == uid)
+        if (entry.find_producer(uid) != nullptr)
         {
             nlohmann::json resp;
             resp["found"]           = !entry.inbox_endpoint.empty();
@@ -3016,11 +3102,20 @@ std::string BrokerService::list_channels_json_str() const
     {
         // HEP-CORE-0023 §2.2: `observable` is the protocol-defined
         // wire field — derived from the producer-presence row.
+        // Producer fields surface the first producer for back-compat
+        // with single-producer admin clients; full list is in
+        // `producer_pids`.
+        nlohmann::json producer_pids = nlohmann::json::array();
+        for (const auto &p : entry.producers)
+            producer_pids.push_back(p.producer_pid);
         result.push_back(nlohmann::json{
             {"name",           name},
             {"schema_hash",    entry.schema_hash},
             {"consumer_count", static_cast<int>(entry.consumers.size())},
-            {"producer_pid",   entry.producer_pid},
+            {"producer_pid",   entry.producers.empty()
+                                 ? uint64_t{0}
+                                 : entry.producers.front().producer_pid},
+            {"producer_pids",  std::move(producer_pids)},
             {"observable",     pylabhub::hub::to_string(
                                    pylabhub::hub::observe_channel(entry, snap))}
         });
@@ -3040,10 +3135,17 @@ ChannelSnapshot BrokerService::query_channel_snapshot() const
         e.observable         = pylabhub::hub::to_string(
             pylabhub::hub::observe_channel(entry, hub_snap));
         e.consumer_count     = static_cast<int>(entry.consumers.size());
-        e.producer_pid       = entry.producer_pid;
         e.schema_hash        = entry.schema_hash;
-        e.producer_role_name = entry.producer_role_name;
-        e.producer_role_uid  = entry.producer_role_uid;
+        // Producer-side fields surface the first producer for back-compat
+        // with single-producer admin clients; multi-producer admin
+        // tooling reads `producers[]` from `list_channels_json_str`
+        // (HEP-CORE-0023 §2.1.1).
+        if (const auto *fp = entry.first_producer())
+        {
+            e.producer_pid       = fp->producer_pid;
+            e.producer_role_name = fp->role_name;
+            e.producer_role_uid  = fp->role_uid;
+        }
         snap.channels.push_back(std::move(e));
     }
     return snap;
@@ -3098,9 +3200,14 @@ nlohmann::json BrokerServiceImpl::collect_shm_info(const std::string& channel) c
             BlockInfo bi;
             bi.channel       = name;
             bi.shm_name      = entry.shm_name;
-            bi.producer_pid  = entry.producer_pid;
-            bi.producer_uid  = entry.producer_role_uid;
-            bi.producer_name = entry.producer_role_name;
+            // SHM channels are physically single-producer (HEP-CORE-0023
+            // §2.1.1), so reading the first producer is correct here.
+            if (const auto *fp = entry.first_producer())
+            {
+                bi.producer_pid  = fp->producer_pid;
+                bi.producer_uid  = fp->role_uid;
+                bi.producer_name = fp->role_name;
+            }
             bi.consumers     = entry.consumers;
             blocks.push_back(std::move(bi));
         }
@@ -3655,10 +3762,11 @@ void BrokerServiceImpl::handle_hub_relay_msg(zmq::socket_t&        socket,
         return;
     }
 
-    // Deliver locally as CHANNEL_EVENT_NOTIFY (to channel producer only, like CHANNEL_NOTIFY_REQ).
-    // Include relayed_from so scripts can distinguish relayed events.
+    // Deliver locally as CHANNEL_EVENT_NOTIFY to every registered
+    // producer (HEP-CORE-0023 §2.1.1 multi-producer fan-out — relayed
+    // events apply to all producer-presences on the channel).
     auto entry = hub_state_->channel(channel);
-    if (!entry || entry->producer_zmq_identity.empty())
+    if (!entry || entry->producers.empty())
     {
         LOGGER_DEBUG("Broker: HUB_RELAY_MSG for '{}' — no local channel or producer", channel);
         return;
@@ -3674,9 +3782,13 @@ void BrokerServiceImpl::handle_hub_relay_msg(zmq::socket_t&        socket,
     if (payload.contains("payload"))
         fwd["data"] = payload["payload"];
 
-    send_to_identity(socket, entry->producer_zmq_identity, "CHANNEL_EVENT_NOTIFY", fwd);
-    LOGGER_DEBUG("Broker: HUB_RELAY_MSG '{}' event='{}' from hub '{}' ->local producer",
-                 channel, event, originator);
+    for (const auto &prod : entry->producers)
+    {
+        if (prod.zmq_identity.empty()) continue;
+        send_to_identity(socket, prod.zmq_identity, "CHANNEL_EVENT_NOTIFY", fwd);
+    }
+    LOGGER_DEBUG("Broker: HUB_RELAY_MSG '{}' event='{}' from hub '{}' ->{} local producer(s)",
+                 channel, event, originator, entry->producers.size());
 }
 
 void BrokerServiceImpl::handle_hub_targeted_msg(const nlohmann::json& payload)

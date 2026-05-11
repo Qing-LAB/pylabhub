@@ -678,11 +678,17 @@ void HubState::_on_channel_registered(ChannelEntry entry)
         bump_invalid_identifier(*pImpl);
         return;
     }
-    if (!entry.producer_role_uid.empty() &&
-        !is_valid_identifier(entry.producer_role_uid, IdentifierKind::RoleUid))
+    // Validate every producer_role_uid in `entry.producers` per HEP-CORE-0023
+    // §2.1.1.  REG_REQ admission today populates `producers` with the single
+    // producer; future multi-producer admission (Wave M2 MP4) appends.
+    for (const auto &prod : entry.producers)
     {
-        bump_invalid_identifier(*pImpl);
-        return;
+        if (!prod.role_uid.empty() &&
+            !is_valid_identifier(prod.role_uid, IdentifierKind::RoleUid))
+        {
+            bump_invalid_identifier(*pImpl);
+            return;
+        }
     }
     // schema_id is optional — validate only when set.  An old-format
     // '<base>@<version>' schema_id would fail `Schema` grammar and get
@@ -696,8 +702,13 @@ void HubState::_on_channel_registered(ChannelEntry entry)
     }
 
     // Capture pieces needed for role/shm derivation before moving entry.
+    // Single-producer derivation: REG_REQ today admits one producer.
+    // Multi-producer admission (Wave M2 MP4) will create role/presence
+    // for each ProducerEntry; until then, derive from the first one.
     const std::string channel_name    = entry.name;
-    const std::string producer_uid    = entry.producer_role_uid;
+    const std::string producer_uid    = entry.producers.empty()
+                                           ? std::string{}
+                                           : entry.producers.front().role_uid;
     const std::string producer_pubkey = entry.zmq_pubkey;
     const bool        has_shm         = entry.has_shared_memory;
     const std::string shm_name        = entry.shm_name;
@@ -727,27 +738,32 @@ void HubState::_on_channel_closed(const std::string &name, ChannelCloseReason wh
         return;
     }
 
-    // HEP-CORE-0034 §7.2 — capture the channel's producer uid BEFORE
-    // erasing the channel, then cascade-evict the producer's schema
-    // records once channel state is gone.  In the user's deployment
-    // model (1 role ↔ 1 data channel, HEP-0034 §11.4) channel closure
-    // is equivalent to the producer leaving the network, so its
-    // private schema records lose their authority and must be removed
-    // before any later citer can observe a stale entry.  Hub-globals
+    // HEP-CORE-0034 §7.2 — capture every producer uid BEFORE erasing the
+    // channel, so the cascade evictions below can iterate them.  In the
+    // multi-producer model (HEP-CORE-0023 §2.1.1) a channel can have
+    // 1..N producers; when channel-close fires (atomic teardown when the
+    // LAST live producer-presence transitions Disconnected, or
+    // voluntary admin/script close), every producer's
+    // private schema records must be evicted.  Hub-globals
     // (owner=="hub") are immune.
-    std::string producer_uid;
+    std::vector<std::string> producer_uids;
     {
         std::shared_lock rlk(pImpl->mu);
         auto it = pImpl->channels.find(name);
-        if (it != pImpl->channels.end()) producer_uid = it->second.producer_role_uid;
+        if (it != pImpl->channels.end())
+        {
+            producer_uids.reserve(it->second.producers.size());
+            for (const auto &p : it->second.producers)
+                if (!p.role_uid.empty()) producer_uids.push_back(p.role_uid);
+        }
     }
 
     _set_channel_closed(name);
     // Remove channel from each role's channels list and atomically mark
-    // the producer-presence on this channel as Disconnected (HEP-CORE-0023
-    // §2.1 atomic teardown — channel teardown drives the producer's
-    // presence FSM to its terminal state).  Other presences belonging to
-    // the same role on different channels are left alone.
+    // every producer-presence on this channel as Disconnected
+    // (HEP-CORE-0023 §2.1.1 atomic teardown — when the channel is gone,
+    // all its producer-presences are terminal).  Other presences
+    // belonging to the same role on different channels are left alone.
     {
         std::unique_lock lk(pImpl->mu);
         for (auto &[uid, role] : pImpl->roles)
@@ -755,17 +771,15 @@ void HubState::_on_channel_closed(const std::string &name, ChannelCloseReason wh
             auto it = std::find(role.channels.begin(), role.channels.end(), name);
             if (it != role.channels.end()) role.channels.erase(it);
         }
-        if (!producer_uid.empty())
+        for (const auto &producer_uid : producer_uids)
         {
             auto rit = pImpl->roles.find(producer_uid);
-            if (rit != pImpl->roles.end())
+            if (rit == pImpl->roles.end()) continue;
+            if (auto *p = rit->second.find_presence(name, "producer");
+                p != nullptr && p->state != RoleState::Disconnected)
             {
-                if (auto *p = rit->second.find_presence(name, "producer");
-                    p != nullptr && p->state != RoleState::Disconnected)
-                {
-                    p->state       = RoleState::Disconnected;
-                    p->state_since = std::chrono::steady_clock::now();
-                }
+                p->state       = RoleState::Disconnected;
+                p->state_since = std::chrono::steady_clock::now();
             }
         }
         pImpl->shm_blocks.erase(name);
@@ -774,7 +788,10 @@ void HubState::_on_channel_closed(const std::string &name, ChannelCloseReason wh
 
     // Cascade schema eviction — outside any lock held above
     // (`_on_schemas_evicted_for_owner` takes its own writer lock).
-    if (!producer_uid.empty())
+    // Wave M2 MP3 will move this to the role-disconnect cascade
+    // (HEP-CORE-0034 §7.2) so eviction follows owner-lifetime rather
+    // than channel-close; until then, evict per-producer here.
+    for (const auto &producer_uid : producer_uids)
         _on_schemas_evicted_for_owner(producer_uid);
 }
 
@@ -987,7 +1004,15 @@ void HubState::_on_pending_timeout(const std::string &channel)
         std::unique_lock lk(pImpl->mu);
         auto             it = pImpl->channels.find(channel);
         if (it == pImpl->channels.end()) return;
-        const std::string producer_uid = it->second.producer_role_uid;
+        // Single-producer transition today: pick the channel's first
+        // producer.  Wave M2 MP3 will replace this op with
+        // `_on_producer_dropped(channel, role_uid, reason)` so the
+        // caller targets a specific producer-presence; channel close
+        // then fires only when the LAST live producer transitions
+        // Disconnected (HEP-CORE-0023 §2.1.1).
+        const ProducerEntry *first = it->second.first_producer();
+        if (first == nullptr) return;
+        const std::string producer_uid = first->role_uid;
         if (producer_uid.empty()) return;
         auto rit = pImpl->roles.find(producer_uid);
         if (rit == pImpl->roles.end()) return;
