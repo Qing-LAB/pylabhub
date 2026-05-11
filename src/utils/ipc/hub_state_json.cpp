@@ -61,6 +61,8 @@ nlohmann::json channel_to_json(const ChannelEntry &c, ChannelObservable obs)
         pj["producer_pid"]   = prod.producer_pid;
         pj["role_uid"]       = prod.role_uid;
         pj["role_name"]      = prod.role_name;
+        // Per-producer inbox metadata (HEP-CORE-0027 §3 — inbox is per-presence).
+        pj["inbox_endpoint"] = prod.inbox_endpoint;
         pj["_collected_at"]  = fmt_time(prod.connected_at);
         producers.push_back(std::move(pj));
     }

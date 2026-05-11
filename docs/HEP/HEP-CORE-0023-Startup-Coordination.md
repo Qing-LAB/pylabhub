@@ -577,6 +577,13 @@ struct ProducerEntry {                    // mirrors ConsumerEntry shape
     std::string  producer_hostname;
     std::string  zmq_identity;            // ROUTER routing for direct notify
     std::chrono::system_clock::time_point connected_at;
+    // Per-producer inbox metadata (HEP-CORE-0027 §3 — inbox is per-presence,
+    // NOT channel-wide; a second producer joining a Fan-In channel brings
+    // its own inbox endpoint).
+    std::string  inbox_endpoint;          // empty if no inbox
+    std::string  inbox_schema_json;       // JSON; empty if no inbox
+    std::string  inbox_packing;
+    std::string  inbox_checksum;
 };
 
 struct ChannelEntry {
@@ -584,6 +591,8 @@ struct ChannelEntry {
     std::vector<ProducerEntry>             producers;                // 1..N (§2.1.1)
     std::vector<ConsumerEntry>             consumers;
     // No status field, no last_heartbeat field — FSM is on RoleEntry.
+    // No inbox_* fields — inbox is per-producer / per-consumer (see
+    // ProducerEntry / ConsumerEntry above; HEP-CORE-0027 §3).
     // Channel existence is derived:
     //   bool exists = !producers.empty() &&
     //                 std::any_of(producers, [&](const auto &p){
@@ -600,7 +609,12 @@ struct ConsumerEntry {
     std::string  role_name;
     uint64_t     consumer_pid;
     std::string  zmq_identity;            // ROUTER routing for direct notify
-    // ... inbox metadata, connected_at
+    std::chrono::system_clock::time_point connected_at;
+    // Per-consumer inbox metadata (HEP-CORE-0027 §3).
+    std::string  inbox_endpoint;          // empty if no inbox
+    std::string  inbox_schema_json;
+    std::string  inbox_packing;
+    std::string  inbox_checksum;
 };
 
 class HubState {
