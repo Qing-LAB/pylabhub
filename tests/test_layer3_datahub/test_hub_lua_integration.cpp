@@ -815,9 +815,6 @@ nlohmann::json make_reg_opts(const std::string &channel, const std::string &uid)
     opts["pattern"]           = "PubSub";
     opts["has_shared_memory"] = false;
     opts["producer_pid"]      = ::getpid();
-    opts["zmq_ctrl_endpoint"] = "tcp://127.0.0.1:0";
-    opts["zmq_data_endpoint"] = "tcp://127.0.0.1:0";
-    opts["zmq_pubkey"]        = "";
     opts["role_uid"]          = uid;
     opts["role_name"]         = "L3TestProducer";
     return opts;
