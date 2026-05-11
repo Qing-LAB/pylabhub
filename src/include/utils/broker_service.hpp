@@ -49,12 +49,12 @@ enum class ChecksumRepairPolicy
 
 /// POD snapshot of a single channel, safe to copy across thread boundaries.
 ///
-/// Multi-producer aware (HEP-CORE-0023 §2.1.1): channels admit 1..N
-/// producers.  The scalar `producer_pid` / `producer_role_name` /
-/// `producer_role_uid` fields surface the FIRST producer for back-compat
-/// with single-producer admin clients; the full producer list is
-/// available via `producer_uids` + `producer_pids` parallel vectors
-/// (same shape as `consumer_count`'s underlying list).
+/// Multi-producer (HEP-CORE-0023 §2.1.1): channels admit 1..N producers.
+/// The full producer list is in the parallel `producer_uids` +
+/// `producer_pids` vectors.  No first-producer back-compat scalars
+/// exist — they were retired in Wave M2.5 step 2c (2026-05-10) as part
+/// of the structural fix for the scalar-where-should-be-per-party bug
+/// class; admin clients must iterate the vectors.
 struct ChannelSnapshotEntry
 {
     std::string name;
@@ -65,11 +65,7 @@ struct ChannelSnapshotEntry
     /// Full list of admitted producers (HEP-CORE-0023 §2.1.1).
     std::vector<std::string> producer_uids;
     std::vector<uint64_t>    producer_pids;
-    /// Back-compat scalars — first producer only.
-    uint64_t    producer_pid{0};
     std::string schema_hash;
-    std::string producer_role_name;
-    std::string producer_role_uid;
 };
 
 /// Thread-safe snapshot of all channels at a point in time.

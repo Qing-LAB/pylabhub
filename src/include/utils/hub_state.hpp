@@ -180,6 +180,16 @@ struct ProducerEntry
     /// channel has its own).
     std::string zmq_node_endpoint;
 
+    /// HEP-CORE-0021 §5.2 + HEP-CORE-0002 — this producer's CURVE
+    /// public key (Z85, 40 chars).  Used to authenticate the
+    /// producer's ZMQ ctrl socket from the consumer side via
+    /// `CONSUMER_REG_ACK.producer_zmq_pubkey`.  Per-producer by
+    /// design (each producer publishes its own keypair).  Wave M2.5
+    /// migration: the wire field name on REG_REQ is still
+    /// `zmq_pubkey`; step 3 routes that into this field instead of
+    /// the deprecated channel-scope `ChannelEntry.zmq_pubkey`.
+    std::string zmq_pubkey;
+
     /// Producer-supplied free-form context blob (HEP-CORE-0007 §12.4).
     /// `null` if no metadata.  Channel-level DISC_REQ_ACK aggregates
     /// all producers' blobs into a tree keyed by `role_uid` via
@@ -281,8 +291,23 @@ struct ChannelEntry
 
     bool           has_shared_memory{false};
     ChannelPattern pattern{ChannelPattern::PubSub};
-    std::string    zmq_ctrl_endpoint;
-    std::string    zmq_data_endpoint;
+    // zmq_ctrl_endpoint / zmq_data_endpoint retired in Wave M2.5 step
+    // 2c (2026-05-10) — both were design-dead.  zmq_ctrl_endpoint:
+    // hub-mediated control plane (HEP-CORE-0017 / HEP-CORE-0033) means
+    // no per-channel ZMQ control endpoint exists in the architecture.
+    // zmq_data_endpoint: function fully replaced by per-producer
+    // `ProducerEntry.zmq_node_endpoint` (HEP-CORE-0021 §16).
+    //
+    // **DEPRECATED 2026-05-10 — `ChannelEntry.zmq_pubkey` is being
+    // retired by Wave M2.5 step 3.**  HEP-CORE-0021 §5.2 specifies the
+    // CURVE pubkey is per-producer (`producer_zmq_pubkey` in
+    // CONSUMER_REG_ACK).  Channel-scope placement here is the same
+    // overwrite-class bug as inbox/metadata.  Per-producer storage
+    // lives on `ProducerEntry.zmq_pubkey`; setter is
+    // `set_producer_zmq_pubkey(uid, key)`.  Direct write to this
+    // field is a transitional carry-over for the REG_REQ handler
+    // until step 3; new code MUST NOT read or write it.  See
+    // `docs/code_review/REVIEW_WaveM2.5_2026-05-10.md` F7.
     std::string    zmq_pubkey;
     std::string    data_transport{"shm"};
     /// **DEPRECATED 2026-05-10 — channel-scope `zmq_node_endpoint` is being
@@ -500,6 +525,35 @@ struct ChannelEntry
             }
         }
         return false;
+    }
+
+    /// Set the per-producer CURVE public key (HEP-CORE-0021 §5.2).
+    /// Returns true iff the producer was found.  Each Fan-In producer
+    /// has its own keypair; CONSUMER_REG_ACK exposes per-producer
+    /// pubkey for ZMQ ctrl socket auth.  Distinct from the deprecated
+    /// channel-scope `ChannelEntry::zmq_pubkey`.
+    bool set_producer_zmq_pubkey(std::string_view role_uid,
+                                   std::string pubkey) noexcept
+    {
+        for (auto &p : producers)
+        {
+            if (p.role_uid == role_uid)
+            {
+                p.zmq_pubkey = std::move(pubkey);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// Look up a producer's CURVE public key (empty if uid missing or
+    /// pubkey not set).
+    std::optional<std::string>
+    producer_zmq_pubkey(std::string_view role_uid) const
+    {
+        for (const auto &p : producers)
+            if (p.role_uid == role_uid) return p.zmq_pubkey;
+        return std::nullopt;
     }
 
     /// Look up a producer's data-plane ZMQ endpoint; nullopt if the

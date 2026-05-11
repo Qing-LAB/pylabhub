@@ -1479,6 +1479,187 @@ TEST(ChannelEntryApi, AggregateMetadataTree_Empty_ReturnsEmptyObject)
     EXPECT_EQ(tree.size(), 0u);
 }
 
+TEST(ChannelEntryApi, SetProducerInbox_KeyedByUid)
+{
+    // Inbox endpoint update on A must NOT mutate B's inbox endpoint
+    // (HEP-CORE-0027 §3 per-producer inbox).
+    ChannelEntry ch;
+    ch.name = "ch.fanin.inbox";
+    ch.data_transport = "zmq";
+    ASSERT_EQ(ch.add_producer(make_producer("prod.camA.uid00000001", 1001)),
+              AddProducerResult::Created);
+    ASSERT_EQ(ch.add_producer(make_producer("prod.camB.uid00000002", 1002)),
+              AddProducerResult::Created);
+
+    EXPECT_TRUE(ch.set_producer_inbox(
+        "prod.camA.uid00000001",
+        "tcp://10.0.0.1:7001", R"([{"name":"k","type":"int32"}])",
+        "aligned", "enforced"));
+
+    const auto *pa = ch.find_producer("prod.camA.uid00000001");
+    const auto *pb = ch.find_producer("prod.camB.uid00000002");
+    EXPECT_EQ(pa->inbox_endpoint,    "tcp://10.0.0.1:7001");
+    EXPECT_EQ(pa->inbox_packing,     "aligned");
+    EXPECT_EQ(pa->inbox_checksum,    "enforced");
+    // B remains untouched.
+    EXPECT_EQ(pb->inbox_endpoint,    "");
+    EXPECT_EQ(pb->inbox_packing,     "");
+
+    // Missing uid is a no-op (returns false).
+    EXPECT_FALSE(ch.set_producer_inbox("prod.ghost.uid00000099",
+                                         "tcp://10.0.0.99:7099", "[]",
+                                         "aligned", "none"));
+}
+
+TEST(ChannelEntryApi, SetConsumerInbox_KeyedByUid)
+{
+    ChannelEntry ch;
+    ch.name = "ch.viewer.inbox";
+    ch.data_transport = "zmq";
+
+    ConsumerEntry a = make_consumer("cons.view1.uid00000010");
+    ConsumerEntry b = make_consumer("cons.view2.uid00000011");
+    ASSERT_EQ(ch.add_consumer(std::move(a)), AddConsumerResult::Created);
+    ASSERT_EQ(ch.add_consumer(std::move(b)), AddConsumerResult::Created);
+
+    EXPECT_TRUE(ch.set_consumer_inbox(
+        "cons.view1.uid00000010",
+        "tcp://10.0.1.1:8001", R"([])", "packed", "none"));
+    EXPECT_EQ(ch.find_consumer("cons.view1.uid00000010")->inbox_endpoint,
+              "tcp://10.0.1.1:8001");
+    EXPECT_EQ(ch.find_consumer("cons.view1.uid00000010")->inbox_packing,
+              "packed");
+    // Sibling untouched.
+    EXPECT_EQ(ch.find_consumer("cons.view2.uid00000011")->inbox_endpoint, "");
+
+    EXPECT_FALSE(ch.set_consumer_inbox("cons.ghost.uid00000099",
+                                         "tcp://10.0.1.99:8099", "[]",
+                                         "aligned", "none"));
+}
+
+TEST(ChannelEntryApi, SetProducerMetadata_KeyedByUid_AndProducerMetadataLookup)
+{
+    // set_producer_metadata writes to ProducerEntry.metadata, keyed by
+    // uid.  producer_metadata(uid) returns nullptr for missing uids and
+    // a non-null pointer otherwise; aggregate_metadata_tree() is
+    // tested separately.  Pin both the set + the lookup contract.
+    ChannelEntry ch;
+    ch.name = "ch.fanin.meta-set";
+    ch.data_transport = "zmq";
+    ASSERT_EQ(ch.add_producer(make_producer("prod.alphaA.uid00000020", 5001)),
+              AddProducerResult::Created);
+    ASSERT_EQ(ch.add_producer(make_producer("prod.betaB.uid00000021",  5002)),
+              AddProducerResult::Created);
+
+    EXPECT_TRUE(ch.set_producer_metadata("prod.alphaA.uid00000020",
+        nlohmann::json::object({{"k","v-a"}})));
+    EXPECT_TRUE(ch.set_producer_metadata("prod.betaB.uid00000021",
+        nlohmann::json::object({{"k","v-b"}})));
+
+    const auto *ma = ch.producer_metadata("prod.alphaA.uid00000020");
+    const auto *mb = ch.producer_metadata("prod.betaB.uid00000021");
+    ASSERT_NE(ma, nullptr);
+    ASSERT_NE(mb, nullptr);
+    EXPECT_EQ(ma->at("k").get<std::string>(), "v-a");
+    EXPECT_EQ(mb->at("k").get<std::string>(), "v-b");
+
+    // Missing uid → nullptr; set returns false.
+    EXPECT_EQ(ch.producer_metadata("prod.ghost.uid00000099"), nullptr);
+    EXPECT_FALSE(ch.set_producer_metadata("prod.ghost.uid00000099",
+                                            nlohmann::json::object()));
+}
+
+TEST(ChannelEntryApi, ProducerZmqNodeEndpoint_LookupAccessor)
+{
+    // producer_zmq_node_endpoint(uid) is the getter counterpart of
+    // set_producer_zmq_node_endpoint — returns nullopt for missing
+    // uid, the stored value otherwise.
+    ChannelEntry ch;
+    ch.name = "ch.fanin.endpoint-get";
+    ch.data_transport = "zmq";
+
+    ProducerEntry a = make_producer("prod.alphaA.uid00000020", 5001);
+    a.zmq_node_endpoint = "tcp://10.0.0.1:5101";
+    ASSERT_EQ(ch.add_producer(std::move(a)), AddProducerResult::Created);
+
+    auto ep = ch.producer_zmq_node_endpoint("prod.alphaA.uid00000020");
+    ASSERT_TRUE(ep.has_value());
+    EXPECT_EQ(*ep, "tcp://10.0.0.1:5101");
+
+    EXPECT_FALSE(ch.producer_zmq_node_endpoint("prod.ghost.uid00000099").has_value());
+}
+
+TEST(ChannelEntryApi, SetProducerZmqPubkey_PerProducerStorage)
+{
+    // HEP-CORE-0021 §5.2: per-producer CURVE pubkey.  Wave M2.5
+    // step 2c adds the field on ProducerEntry; step 3 will migrate
+    // the REG_REQ handler to populate it.  This test pins the API
+    // contract: set/get is per-producer, sibling untouched.
+    ChannelEntry ch;
+    ch.name = "ch.fanin.pubkey";
+    ch.data_transport = "zmq";
+    ASSERT_EQ(ch.add_producer(make_producer("prod.alphaA.uid00000020", 5001)),
+              AddProducerResult::Created);
+    ASSERT_EQ(ch.add_producer(make_producer("prod.betaB.uid00000021", 5002)),
+              AddProducerResult::Created);
+
+    EXPECT_TRUE(ch.set_producer_zmq_pubkey("prod.alphaA.uid00000020",
+        "ALPHA-CURVE-KEY-Z85"));
+    auto pka = ch.producer_zmq_pubkey("prod.alphaA.uid00000020");
+    auto pkb = ch.producer_zmq_pubkey("prod.betaB.uid00000021");
+    ASSERT_TRUE(pka.has_value());
+    ASSERT_TRUE(pkb.has_value());
+    EXPECT_EQ(*pka, "ALPHA-CURVE-KEY-Z85");
+    EXPECT_EQ(*pkb, "");  // B untouched
+
+    EXPECT_FALSE(ch.set_producer_zmq_pubkey("prod.ghost.uid00000099", "X"));
+    EXPECT_FALSE(ch.producer_zmq_pubkey("prod.ghost.uid00000099").has_value());
+}
+
+TEST(ChannelEntryApi, RemoveConsumer_PresentAndMissing)
+{
+    ChannelEntry ch;
+    ch.name = "ch.viewer.test";
+    ch.data_transport = "zmq";
+    ASSERT_EQ(ch.add_consumer(make_consumer("cons.view1.uid00000010")),
+              AddConsumerResult::Created);
+    ASSERT_EQ(ch.add_consumer(make_consumer("cons.view2.uid00000011")),
+              AddConsumerResult::Created);
+    ASSERT_EQ(ch.consumer_count(), 2u);
+
+    EXPECT_TRUE(ch.remove_consumer("cons.view1.uid00000010"));
+    EXPECT_EQ(ch.consumer_count(), 1u);
+    EXPECT_EQ(ch.find_consumer("cons.view1.uid00000010"), nullptr);
+    EXPECT_NE(ch.find_consumer("cons.view2.uid00000011"), nullptr);
+
+    // Missing → returns false; state unchanged.
+    EXPECT_FALSE(ch.remove_consumer("cons.ghost.uid00000099"));
+    EXPECT_EQ(ch.consumer_count(), 1u);
+}
+
+TEST(ChannelEntryApi, IsShmAndCounts_DerivedFromState)
+{
+    ChannelEntry ch;
+    ch.name = "ch.thermo.shm-flag";
+    ch.data_transport = "shm";
+    EXPECT_TRUE(ch.is_shm());
+    EXPECT_EQ(ch.producer_count(), 0u);
+    EXPECT_EQ(ch.consumer_count(), 0u);
+
+    ASSERT_EQ(ch.add_producer(make_producer("prod.thermoA.uid00000003", 3001)),
+              AddProducerResult::Created);
+    ASSERT_EQ(ch.add_consumer(make_consumer("cons.viewer.uid00000010")),
+              AddConsumerResult::Created);
+    ASSERT_EQ(ch.add_consumer(make_consumer("cons.viewer2.uid00000011")),
+              AddConsumerResult::Created);
+    EXPECT_EQ(ch.producer_count(), 1u);
+    EXPECT_EQ(ch.consumer_count(), 2u);
+
+    ChannelEntry zmq_ch;
+    zmq_ch.data_transport = "zmq";
+    EXPECT_FALSE(zmq_ch.is_shm());
+}
+
 TEST(ChannelEntryApi, SetProducerZmqNodeEndpoint_KeyedByUid)
 {
     // ENDPOINT_UPDATE_REQ scoping: a producer's endpoint update must
