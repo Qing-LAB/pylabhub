@@ -361,6 +361,134 @@ int band_membership_cleaned_on_role_close()
         logger_module(), crypto_module(), zmq_module());
 }
 
+// ============================================================================
+// role_entry_terminal_cleanup_on_last_presence_dereg
+//   Wave M3 step 5b (2026-05-11): a producer DEREG that empties the
+//   channel must trigger `_dispatch_role_disconnected_if_dead` →
+//   `_set_role_disconnected`, erasing the RoleEntry.  Without the
+//   wiring, the entry lingers with all-Disconnected presences (the
+//   "stale residue" failure mode from Wave M2.5 §6.2).
+// ============================================================================
+
+int role_entry_terminal_cleanup_on_last_presence_dereg()
+{
+    return run_gtest_worker(
+        []() {
+            BrokerService::Config cfg;
+            cfg.endpoint                         = "tcp://127.0.0.1:0";
+            cfg.use_curve                        = true;
+            cfg.consumer_liveness_check_interval = std::chrono::seconds(0);
+            auto broker = start_broker_with_cfg(std::move(cfg));
+
+            const std::string ch  = make_test_channel_name("role_state.cleanup_prod");
+            const std::string uid = "prod." + ch;
+
+            BrcHandle bh;
+            bh.start(broker.endpoint, broker.pubkey, uid);
+
+            auto reg = bh.brc.register_channel(make_reg_opts(ch, uid), 3000);
+            ASSERT_TRUE(reg.has_value());
+
+            // Pre-condition: role entry exists post-REG.
+            ASSERT_TRUE(broker.hub_state->role(uid).has_value())
+                << "Role entry must exist after REG_REQ";
+
+            // Voluntary DEREG — last-producer path inside
+            // `_on_producer_dropped` falls through to
+            // `_on_channel_closed`, which marks the producer-presence
+            // Disconnected and dispatches terminal cleanup.
+            auto dereg = bh.brc.deregister_channel(ch);
+            ASSERT_TRUE(dereg.has_value());
+            ASSERT_EQ(dereg->value("status", std::string{}), "success");
+
+            // Post-condition: role entry must be GONE.  Broker handles
+            // dispatch on its IO thread; poll up to 2 s.
+            auto entry_gone = [&]() {
+                return !broker.hub_state->role(uid).has_value();
+            };
+            ASSERT_TRUE(poll_until(entry_gone, std::chrono::seconds(2)))
+                << "Role entry was not erased after last producer DEREG "
+                   "(H1 wiring gap — _dispatch_role_disconnected_if_dead "
+                   "did not fire).";
+
+            bh.stop();
+            broker.stop_and_join();
+        },
+        "role_state.role_entry_terminal_cleanup_on_last_presence_dereg",
+        logger_module(), crypto_module(), zmq_module());
+}
+
+// ============================================================================
+// role_entry_terminal_cleanup_on_consumer_left_last
+//   Wave M3 step 5b (2026-05-11): a consumer DEREG whose role had
+//   only that one presence must erase the role entry via
+//   `_on_consumer_left` → `_dispatch_role_disconnected_if_dead`.
+// ============================================================================
+
+int role_entry_terminal_cleanup_on_consumer_left_last()
+{
+    return run_gtest_worker(
+        []() {
+            BrokerService::Config cfg;
+            cfg.endpoint                         = "tcp://127.0.0.1:0";
+            cfg.use_curve                        = true;
+            cfg.consumer_liveness_check_interval = std::chrono::seconds(0);
+            auto broker = start_broker_with_cfg(std::move(cfg));
+
+            const std::string ch         = make_test_channel_name("role_state.cleanup_cons");
+            const std::string prod_uid   = "prod." + ch;
+            const std::string cons_uid   = "cons." + ch;
+
+            // Producer creates the channel; we only test the
+            // consumer-side cleanup, so prod_uid stays alive.
+            BrcHandle pb;
+            pb.start(broker.endpoint, broker.pubkey, prod_uid);
+            ASSERT_TRUE(pb.brc.register_channel(make_reg_opts(ch, prod_uid), 3000)
+                            .has_value());
+
+            // Consumer registers on the same channel with its own uid.
+            BrcHandle cb;
+            cb.start(broker.endpoint, broker.pubkey, cons_uid);
+
+            nlohmann::json cons_opts;
+            cons_opts["channel_name"]  = ch;
+            cons_opts["consumer_uid"]  = cons_uid;
+            cons_opts["consumer_name"] = "role_state_test_consumer";
+            cons_opts["consumer_pid"]  = ::getpid();
+            auto cons_reg = cb.brc.register_consumer(cons_opts, 3000);
+            ASSERT_TRUE(cons_reg.has_value())
+                << "CONSUMER_REG_REQ failed: " <<
+                   (cons_reg.has_value() ? "(none)" : "no response");
+
+            ASSERT_TRUE(broker.hub_state->role(cons_uid).has_value())
+                << "Consumer role entry must exist after CONSUMER_REG_REQ";
+
+            // Voluntary CONSUMER_DEREG_REQ → `_on_consumer_left` →
+            // dispatch.  Last-and-only presence on this role → erase.
+            auto dereg = cb.brc.deregister_consumer(ch, 3000);
+            ASSERT_TRUE(dereg.has_value());
+            ASSERT_EQ(dereg->value("status", std::string{}), "success");
+
+            auto entry_gone = [&]() {
+                return !broker.hub_state->role(cons_uid).has_value();
+            };
+            ASSERT_TRUE(poll_until(entry_gone, std::chrono::seconds(2)))
+                << "Consumer role entry was not erased after "
+                   "CONSUMER_DEREG_REQ (H1 wiring gap).";
+
+            // Producer side must be untouched (still alive).
+            EXPECT_TRUE(broker.hub_state->role(prod_uid).has_value())
+                << "Producer role entry must be unaffected by consumer "
+                   "DEREG on a separate uid.";
+
+            cb.stop();
+            pb.stop();
+            broker.stop_and_join();
+        },
+        "role_state.role_entry_terminal_cleanup_on_consumer_left_last",
+        logger_module(), crypto_module(), zmq_module());
+}
+
 } // namespace pylabhub::tests::worker::broker_role_state
 
 namespace
@@ -385,6 +513,10 @@ struct BrokerRoleStateWorkerRegistrar
                 if (scenario == "stuck_in_pending_reclaimed")  return stuck_in_pending_reclaimed();
                 if (scenario == "band_membership_cleaned_on_role_close")
                     return band_membership_cleaned_on_role_close();
+                if (scenario == "role_entry_terminal_cleanup_on_last_presence_dereg")
+                    return role_entry_terminal_cleanup_on_last_presence_dereg();
+                if (scenario == "role_entry_terminal_cleanup_on_consumer_left_last")
+                    return role_entry_terminal_cleanup_on_consumer_left_last();
                 return 1;
             });
     }

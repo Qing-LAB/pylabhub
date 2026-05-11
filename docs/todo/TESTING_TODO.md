@@ -415,9 +415,24 @@ each finding live in this section so they survive context resets.**
 - [ ] **S2c. Atomic-teardown contract assertion** (HEP-CORE-0023 §2.1).
       Tests verify CHANNEL_CLOSING_NOTIFY delivery but don't assert
       the channel is removed atomically.  Modify
-      `ClosingNotify_DeliveredToProducerAndConsumer` to also assert
-      `query_channel_snapshot()` shows no entry for the channel
-      immediately after the teardown trigger.
+      `ClosingNotify_DeliveredToProducerAndConsumer` (in
+      `tests/test_layer3_datahub/test_datahub_broker_protocol.cpp`)
+      to also assert `query_channel_snapshot()` shows no entry for
+      the channel immediately after the teardown trigger.
+
+      **Partially addressed by Wave M3 step 5b+e (2026-05-11):**
+      - L2 atomic-teardown is pinned by
+        `HubStateChannelClosed.ConsumerPresence_AtomicallyTransitionsDisconnected`
+        (`tests/test_layer2_service/test_hub_state.cpp`) — verifies
+        producer AND consumer presences transition Disconnected
+        atomically on channel close.
+      - L3 role-entry erase post-teardown pinned by
+        `RoleEntry_TerminalCleanup_OnLastPresenceDisconnect`
+        + `RoleEntry_TerminalCleanup_OnConsumerLeftLast`
+        (`tests/test_layer3_datahub/test_datahub_role_state_machine.cpp`).
+      - **Still TODO**: the specific channel-snapshot assertion on
+        `ClosingNotify_DeliveredToProducerAndConsumer` per the
+        original S2c scope.
 - [ ] **S2d. `ChannelEntry_HasNoStoredFSMFields`** structural test
       (also from M1 handoff Phase 8).  Add after Phase 6 deletion
       lands: `static_assert` (or runtime equivalent) that

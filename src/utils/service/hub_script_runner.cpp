@@ -291,9 +291,11 @@ void HubScriptRunner::worker_main_()
             enqueue("band_joined", band, std::move(j));
         });
     state.subscribe_band_left(
-        [enqueue](const std::string &band, const std::string &role_uid) {
+        [enqueue](const std::string &band, const std::string &role_uid,
+                  const std::string &reason) {
             enqueue("band_left", band,
-                    nlohmann::json{{"band", band}, {"role_uid", role_uid}});
+                    nlohmann::json{{"band", band}, {"role_uid", role_uid},
+                                    {"reason", reason}});
         });
     state.subscribe_peer_connected(
         [enqueue](const pylabhub::hub::PeerEntry &p) {

@@ -294,7 +294,8 @@ TEST(HubStateSkeleton, BandJoinLeave_MembershipAndHandlers)
     s.subscribe_band_joined(
         [&](const std::string &, const BandMember &m) { joined.push_back(m.role_uid); });
     s.subscribe_band_left(
-        [&](const std::string &, const std::string &uid) { left.push_back(uid); });
+        [&](const std::string &, const std::string &uid,
+            const std::string & /*reason*/) { left.push_back(uid); });
 
     BandMember m;
     m.role_uid     = "prod.r1.test";
@@ -525,8 +526,14 @@ TEST(HubStateOps, ChannelRegistered_EmptyProducerUid_SkipsRole)
     EXPECT_TRUE(s.snapshot().roles.empty());
 }
 
-TEST(HubStateOps, ChannelClosed_RemovesChannelAndScrubsRole)
+TEST(HubStateOps, ChannelClosed_RemovesChannelAndErasesRoleEntry)
 {
+    // Wave M3 step 5b contract (2026-05-11): when channel close is
+    // the role's ONLY presence transitioning Disconnected,
+    // `_on_channel_closed` calls `_dispatch_role_disconnected_if_dead`
+    // which erases the role entry (HEP-CORE-0023 §2.6 + HEP-CORE-0034
+    // §7.2 schema cascade).  This replaces the pre-M3 "scrub" pattern
+    // that left a stale RoleEntry with a Disconnected presence row.
     HubState s;
     HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
     ASSERT_EQ(s.role("prod.main.test")->channels.size(), 1u);
@@ -535,15 +542,10 @@ TEST(HubStateOps, ChannelClosed_RemovesChannelAndScrubsRole)
         s, "ch1", ChannelCloseReason::VoluntaryDereg);
     EXPECT_FALSE(s.channel("ch1").has_value());
     EXPECT_FALSE(s.shm_block("ch1").has_value());
-
-    auto r = s.role("prod.main.test");
-    ASSERT_TRUE(r.has_value());
-    EXPECT_TRUE(r->channels.empty());
-    // HEP-CORE-0023 §2.1 atomic teardown — producer-presence on the
-    // closed channel transitions Disconnected.
-    const auto *p = r->find_presence("ch1", "producer");
-    ASSERT_NE(p, nullptr);
-    EXPECT_EQ(p->state, RoleState::Disconnected);
+    // Terminal cleanup — entry gone, no stale Disconnected residue.
+    EXPECT_FALSE(s.role("prod.main.test").has_value())
+        << "Wave M3 step 5b — single-presence channel close must erase "
+           "the role entry; old pre-M3 behavior left it as residue.";
 
     EXPECT_EQ(s.counters().msg_type_counts.at("close:VoluntaryDereg"), 1u);
 }
@@ -564,12 +566,13 @@ TEST(HubStateOps, ChannelClosed_MultiChannel_LeavesOtherPresences)
     ASSERT_TRUE(r.has_value());
     ASSERT_EQ(r->channels.size(), 1u);
     EXPECT_EQ(r->channels[0], "ch2");
-    // ch1 presence Disconnected, ch2 presence still Connected.
-    const auto *p1 = r->find_presence("ch1", "producer");
+    // Wave M3 step 5h (2026-05-11): on_dereg erases the presence row
+    // rather than leaving a Disconnected tombstone.  ch1 producer-
+    // presence is GONE; ch2 producer-presence stays Connected.
+    EXPECT_EQ(r->find_presence("ch1", "producer"), nullptr)
+        << "Tombstone removal — Disconnected presence rows are erased";
     const auto *p2 = r->find_presence("ch2", "producer");
-    ASSERT_NE(p1, nullptr);
     ASSERT_NE(p2, nullptr);
-    EXPECT_EQ(p1->state, RoleState::Disconnected);
     EXPECT_EQ(p2->state, RoleState::Connected);
 }
 
@@ -594,8 +597,13 @@ TEST(HubStateOps, ConsumerJoined_UpsertsConsumerAndConsumerRole)
     ASSERT_NE(r->find_presence("ch1", "consumer"), nullptr);
 }
 
-TEST(HubStateOps, ConsumerLeft_RemovesFromChannelAndDisconnectsPresence)
+TEST(HubStateOps, ConsumerLeft_RemovesFromChannelAndErasesRoleEntry)
 {
+    // Wave M3 step 5b contract (2026-05-11): when the consumer's
+    // only presence is its (ch, "consumer") row, `_on_consumer_left`
+    // routes through `on_dereg` (Disconnected) then dispatches
+    // `_set_role_disconnected`, which erases the entry.  Pre-M3
+    // behavior left the role with a stale Disconnected presence row.
     HubState s;
     HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
     HubStateTestAccess::on_consumer_joined(s, "ch1", make_consumer("cons.A.test"));
@@ -605,12 +613,14 @@ TEST(HubStateOps, ConsumerLeft_RemovesFromChannelAndDisconnectsPresence)
     ASSERT_TRUE(ch.has_value());
     EXPECT_TRUE(ch->consumers.empty());
 
-    auto r = s.role("cons.A.test");
-    ASSERT_TRUE(r.has_value());
-    EXPECT_TRUE(r->channels.empty());
-    const auto *p = r->find_presence("ch1", "consumer");
-    ASSERT_NE(p, nullptr);
-    EXPECT_EQ(p->state, RoleState::Disconnected);
+    // Producer role (`prod.main.test`) is still alive (its presence on
+    // ch1 stays Connected); consumer role's only presence is now gone
+    // → entry erased.
+    EXPECT_FALSE(s.role("cons.A.test").has_value())
+        << "Wave M3 step 5b — single-presence consumer DEREG must "
+           "erase the role entry.";
+    EXPECT_TRUE(s.role("prod.main.test").has_value())
+        << "Producer role on the same channel must be unaffected.";
 }
 
 TEST(HubStateOps, Heartbeat_FirstTickFlipsObservableToLive)
@@ -2178,6 +2188,446 @@ TEST(HubStateProducerPendingTimeout, LastProducer_TearsChannelDown)
     EXPECT_EQ(s.counters().pending_to_deregistered_total, 1u);
 }
 
+// ──────────────────────────────────────────────────────────────────────
+// Wave M3 step 5c-e (2026-05-11) — cache invariant + schema cascade
+// owner-lifetime tests.  Pin the H9 / H10 / H11 / H12 / H13 contracts
+// surfaced by the second-pass review.
+// ──────────────────────────────────────────────────────────────────────
+
+TEST(HubStateProducerDropped,
+     MultiProducer_VoluntaryDereg_TransitionsPresenceAndCleansCache)
+{
+    // H9 contract: non-last producer voluntary DEREG on a Fan-In
+    // channel.  The role's `(channel, "producer")` presence must
+    // transition Disconnected (via `on_dereg`) AND the `channels` cache
+    // must be cleaned (via `drop_channel_if_orphaned`).  Without this,
+    // the role shows a ghost-Connected producer-presence on a channel
+    // where it no longer holds a slot.
+    HubState s;
+    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+                  s, "ch.h9.fanin",
+                  make_schema_invariants(),
+                  make_zmq_transport(),
+                  make_producer("prod.fanA.uid00000001", 1001))
+                  .producer_result, AddProducerResult::Created);
+    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+                  s, "ch.h9.fanin",
+                  make_schema_invariants(),
+                  make_zmq_transport(),
+                  make_producer("prod.fanB.uid00000002", 1002))
+                  .producer_result, AddProducerResult::Created);
+
+    auto r = HubStateTestAccess::on_producer_dropped(
+        s, "ch.h9.fanin", "prod.fanA.uid00000001",
+        ChannelCloseReason::VoluntaryDereg);
+    EXPECT_TRUE(r.removed);
+    EXPECT_FALSE(r.channel_now_empty);
+
+    // Channel still alive with just B.
+    auto ch = s.channel("ch.h9.fanin");
+    ASSERT_TRUE(ch.has_value());
+    EXPECT_EQ(ch->producer_count(), 1u);
+    EXPECT_NE(ch->find_producer("prod.fanB.uid00000002"), nullptr);
+    EXPECT_EQ(ch->find_producer("prod.fanA.uid00000001"), nullptr);
+
+    // Role A erased via terminal cleanup (its only presence was the
+    // producer on this channel; presence Disconnected → dispatch →
+    // erase).  Without H9 fix, A's presence would stay Connected and
+    // the role entry would linger.
+    EXPECT_FALSE(s.role("prod.fanA.uid00000001").has_value())
+        << "H9 + H1 dispatch: role with no alive presences must be erased "
+           "after voluntary DEREG on a Fan-In channel";
+
+    // Role B unaffected.
+    EXPECT_TRUE(s.role("prod.fanB.uid00000002").has_value());
+}
+
+TEST(HubStateProducerDropped,
+     MultiChannel_Producer_StaysAliveAfterOneDereg_SchemasSurvive)
+{
+    // H12 contract: schema eviction is owner-lifetime ONLY
+    // (HEP-CORE-0034 §7.2).  Before the H12 fix, the per-producer
+    // cascade fired from `_on_channel_closed` would evict owner-
+    // namespaced schemas the producer is still using on OTHER
+    // channels.  After H12: schemas survive until the OWNER role
+    // fully disconnects.
+    HubState s;
+
+    // Producer X on two distinct channels (single-producer each).
+    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+                  s, "ch.h12.a",
+                  make_schema_invariants(),
+                  make_zmq_transport(),
+                  make_producer("prod.multich.uid00000001", 1001))
+                  .producer_result, AddProducerResult::Created);
+    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+                  s, "ch.h12.b",
+                  make_schema_invariants(),
+                  make_zmq_transport(),
+                  make_producer("prod.multich.uid00000001", 1001))
+                  .producer_result, AddProducerResult::Created);
+
+    // X registers two owner-namespaced schemas.
+    HubStateTestAccess::on_schema_registered(
+        s, make_schema_rec("prod.multich.uid00000001", "frame", "aligned", 0xAA));
+    HubStateTestAccess::on_schema_registered(
+        s, make_schema_rec("prod.multich.uid00000001", "inbox", "aligned", 0xBB));
+    ASSERT_EQ(s.schema_count(), 2u);
+
+    // X DEREGs from ch.h12.a (its only producer → channel teardown).
+    auto r = HubStateTestAccess::on_producer_dropped(
+        s, "ch.h12.a", "prod.multich.uid00000001",
+        ChannelCloseReason::VoluntaryDereg);
+    EXPECT_TRUE(r.removed);
+    EXPECT_TRUE(r.channel_now_empty);
+    EXPECT_FALSE(s.channel("ch.h12.a").has_value());
+
+    // ch.h12.b still alive; X still alive there.
+    EXPECT_TRUE(s.channel("ch.h12.b").has_value());
+    auto role = s.role("prod.multich.uid00000001");
+    ASSERT_TRUE(role.has_value())
+        << "Role must survive while it has presence on ch.h12.b";
+
+    // Cache invariant: ch.h12.a dropped from cache; ch.h12.b remains.
+    EXPECT_EQ(role->channels.size(), 1u);
+    EXPECT_EQ(role->channels[0], "ch.h12.b");
+
+    // Wave M3 step 5h: presence on ch.h12.a is ERASED (tombstone
+    // removal), on ch.h12.b remains Connected.
+    EXPECT_EQ(role->find_presence("ch.h12.a", "producer"), nullptr);
+    const auto *p_b = role->find_presence("ch.h12.b", "producer");
+    ASSERT_NE(p_b, nullptr);
+    EXPECT_EQ(p_b->state, RoleState::Connected);
+
+    // Critical H12 assertion: schemas MUST survive.  The pre-H12
+    // per-producer cascade would have evicted both records here even
+    // though X is still alive on ch.h12.b.
+    EXPECT_EQ(s.schema_count(), 2u)
+        << "H12: producer schemas must survive while role is alive on "
+           "other channels";
+    EXPECT_TRUE(s.schema("prod.multich.uid00000001", "frame").has_value());
+    EXPECT_TRUE(s.schema("prod.multich.uid00000001", "inbox").has_value());
+    EXPECT_EQ(s.counters().schema_evicted_total, 0u)
+        << "Owner still alive → no eviction yet (HEP-CORE-0034 §7.2)";
+
+    // Now close ch.h12.b too → role fully disconnects → schemas evict.
+    HubStateTestAccess::on_channel_closed(
+        s, "ch.h12.b", ChannelCloseReason::AdminClose);
+    EXPECT_FALSE(s.role("prod.multich.uid00000001").has_value())
+        << "Role erased after last presence Disconnected";
+    EXPECT_EQ(s.schema_count(), 0u)
+        << "H12: schemas evict via dispatch (owner-lifetime) once role dies";
+    EXPECT_EQ(s.counters().schema_evicted_total, 2u);
+}
+
+TEST(HubStateChannelClosed, ConsumerPresence_AtomicallyTransitionsDisconnected)
+{
+    // H13 + HEP-CORE-0023 §2.1.1 atomic teardown: when a channel
+    // closes, ALL its presences transition Disconnected at the same
+    // moment.  Before this fix, consumer-presences stayed Connected
+    // until the eventual CONSUMER_DEREG_REQ — leaving a stale
+    // Connected presence on a non-existent channel.
+    HubState s;
+    HubStateTestAccess::on_channel_registered(s, make_channel("ch.h13"));
+    HubStateTestAccess::on_consumer_joined(s, "ch.h13",
+                                            make_consumer("cons.x.test"));
+
+    // Pre-condition: consumer presence Connected.
+    {
+        auto r = s.role("cons.x.test");
+        ASSERT_TRUE(r.has_value());
+        const auto *p = r->find_presence("ch.h13", "consumer");
+        ASSERT_NE(p, nullptr);
+        EXPECT_EQ(p->state, RoleState::Connected);
+    }
+
+    HubStateTestAccess::on_channel_closed(
+        s, "ch.h13", ChannelCloseReason::AdminClose);
+
+    // Both roles cleaned up via dispatch — producer (prod.main.test) and
+    // consumer (cons.x.test) each had only this channel.  H13:
+    // consumer-presence transitioned at atomic teardown, so
+    // dispatch sees `any_presence_alive() == false` and erases.
+    EXPECT_FALSE(s.role("prod.main.test").has_value())
+        << "Producer role erased (only presence Disconnected)";
+    EXPECT_FALSE(s.role("cons.x.test").has_value())
+        << "Consumer role erased (consumer-presence atomically "
+           "Disconnected per HEP-CORE-0023 §2.1.1)";
+    EXPECT_FALSE(s.channel("ch.h13").has_value());
+}
+
+TEST(HubStateBandCascade, TerminalCleanup_RemovesUidFromAllBands_FiresBandLeftWithReason)
+{
+    // Wave M3 step 5f+i (2026-05-11) — H16/H20 contract.  When a role
+    // terminal-cleans (e.g., via _dispatch_role_disconnected_if_dead),
+    // the cascade walks pImpl->bands, removes the uid from every band's
+    // members, auto-deletes empty bands, and fires `band_left` with
+    // reason="role_closed".  Replaces the previous broker-imperative
+    // path that fired too eagerly (eviction at channel-close even when
+    // the role survived on other channels).
+    HubState s;
+    HubStateTestAccess::set_role_registered(s, make_role("prod.cam.uid01234567"));
+    BandMember m;
+    m.role_uid = "prod.cam.uid01234567";
+    m.role_name = "cam";
+    m.zmq_identity = "id-cam";
+    HubStateTestAccess::set_band_joined(s, "!alpha", m);
+    HubStateTestAccess::set_band_joined(s, "!beta",  m);
+
+    std::vector<std::tuple<std::string,std::string,std::string>> band_left_events;
+    s.subscribe_band_left(
+        [&](const std::string &band, const std::string &uid,
+            const std::string &reason) {
+            band_left_events.emplace_back(band, uid, reason);
+        });
+
+    ASSERT_TRUE(s.band("!alpha").has_value());
+    ASSERT_TRUE(s.band("!beta").has_value());
+
+    // Force terminal cleanup (admin-style force-erase) — exercises the
+    // same cascade as the production dispatch path.
+    HubStateTestAccess::set_role_disconnected(s, "prod.cam.uid01234567");
+
+    EXPECT_FALSE(s.role("prod.cam.uid01234567").has_value())
+        << "Role erased by terminal cleanup";
+    EXPECT_FALSE(s.band("!alpha").has_value())
+        << "Empty band auto-deleted after last member left";
+    EXPECT_FALSE(s.band("!beta").has_value())
+        << "Empty band auto-deleted after last member left";
+
+    ASSERT_EQ(band_left_events.size(), 2u);
+    // Order can be either since unordered_map iteration order is unspecified.
+    std::sort(band_left_events.begin(), band_left_events.end());
+    EXPECT_EQ(std::get<0>(band_left_events[0]), "!alpha");
+    EXPECT_EQ(std::get<0>(band_left_events[1]), "!beta");
+    for (const auto &[band, uid, reason] : band_left_events)
+    {
+        EXPECT_EQ(uid,    "prod.cam.uid01234567");
+        EXPECT_EQ(reason, "role_closed");
+    }
+}
+
+TEST(HubStateBandCascade, MultiPresenceRole_StaysAlive_KeepsBandMembership)
+{
+    // Wave M3 step 5f semantic correction: pre-fix, the broker fired
+    // imperative band_on_role_closed from every channel-close fanout.
+    // For a multi-presence role X (producer on A, consumer on B), when
+    // channel A closes (last producer A → atomic teardown), X was
+    // incorrectly evicted from bands even though X is still alive on
+    // channel B.  Post-fix: band membership tracks role-lifetime, not
+    // channel-lifetime; X keeps band membership until its LAST presence
+    // dies.
+    HubState s;
+    // Register producer X on channel A.
+    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+                  s, "ch.bandcascade.a",
+                  make_schema_invariants(),
+                  make_zmq_transport(),
+                  make_producer("prod.cam.uid01234567", 1001))
+                  .producer_result, AddProducerResult::Created);
+    // X also consumes channel B (different role admission path).
+    HubStateTestAccess::on_channel_registered(s, [&]{
+        ChannelEntry e;
+        e.name           = "ch.bandcascade.b";
+        e.shm_name       = "ch.bandcascade.b-shm";
+        e.schema_hash    = std::string(64, 'a');
+        e.schema_version = 1;
+        ProducerEntry p;
+        p.producer_pid = 9999;
+        p.role_uid     = "prod.other.uid88888888";
+        p.role_name    = "other";
+        e.producers.push_back(std::move(p));
+        return e;
+    }());
+    HubStateTestAccess::on_consumer_joined(s, "ch.bandcascade.b",
+                                            make_consumer("prod.cam.uid01234567"));
+
+    // X joins band !shared.
+    BandMember m;
+    m.role_uid = "prod.cam.uid01234567";
+    m.role_name = "cam";
+    m.zmq_identity = "id-cam";
+    HubStateTestAccess::set_band_joined(s, "!shared", m);
+
+    // Close channel A (last producer X → atomic teardown).
+    HubStateTestAccess::on_channel_closed(
+        s, "ch.bandcascade.a", ChannelCloseReason::AdminClose);
+
+    // X's producer-presence on A is Disconnected; X's consumer-presence
+    // on B is still Connected.  Role X is alive.  Band membership must
+    // be intact.
+    auto r = s.role("prod.cam.uid01234567");
+    ASSERT_TRUE(r.has_value())
+        << "X is alive on channel B (consumer)";
+    auto b = s.band("!shared");
+    ASSERT_TRUE(b.has_value());
+    ASSERT_EQ(b->members.size(), 1u);
+    EXPECT_EQ(b->members[0].role_uid, "prod.cam.uid01234567")
+        << "X keeps band membership while alive on B "
+           "(H16 semantic fix: band tracks role-lifetime, not channel-lifetime)";
+}
+
+TEST(HubStateCacheInvariant,
+     RoleWithBothProducerAndConsumer_SameChannel_PartialDeregKeepsChannel)
+{
+    // H10 cache invariant: `channels` contains `c` iff at least one
+    // alive presence references `c`.  If a role is both producer AND
+    // consumer on the same channel, deregistering ONE type must NOT
+    // drop the channel from the cache while the other is still alive.
+    HubState s;
+
+    // Producer + consumer with the SAME role_uid on the same channel.
+    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+                  s, "ch.h10",
+                  make_schema_invariants(),
+                  make_zmq_transport(),
+                  make_producer("prod.dual.uid00000001", 1001))
+                  .producer_result, AddProducerResult::Created);
+    HubStateTestAccess::on_consumer_joined(
+        s, "ch.h10", make_consumer("prod.dual.uid00000001"));
+
+    {
+        auto r = s.role("prod.dual.uid00000001");
+        ASSERT_TRUE(r.has_value());
+        EXPECT_EQ(r->channels.size(), 1u);
+        EXPECT_EQ(r->presences.size(), 2u)
+            << "Both producer + consumer presences on the same channel";
+    }
+
+    // Consumer DEREGs.  Cache must NOT drop ch.h10 because producer-
+    // presence still references it.
+    HubStateTestAccess::on_consumer_left(s, "ch.h10",
+                                          "prod.dual.uid00000001");
+
+    auto r = s.role("prod.dual.uid00000001");
+    ASSERT_TRUE(r.has_value())
+        << "Role survives — producer-presence still Connected";
+    EXPECT_EQ(r->channels.size(), 1u)
+        << "H10 cache invariant: ch.h10 stays in cache because "
+           "producer-presence is still alive";
+    EXPECT_EQ(r->channels[0], "ch.h10");
+
+    // Now also DEREG the producer (last producer → channel teardown
+    // → atomic transition of all presences).
+    auto drop = HubStateTestAccess::on_producer_dropped(
+        s, "ch.h10", "prod.dual.uid00000001",
+        ChannelCloseReason::VoluntaryDereg);
+    EXPECT_TRUE(drop.removed);
+    EXPECT_TRUE(drop.channel_now_empty);
+    EXPECT_FALSE(s.role("prod.dual.uid00000001").has_value())
+        << "Role erased after all presences Disconnected";
+}
+
+TEST(HubStateLifecycle, ReRegister_AfterPartialDereg_PresenceFreshConnected)
+{
+    // Wave M3 step 5h (2026-05-11) — H17 contract.  Pre-fix scenario:
+    // role X is producer on channel A AND consumer on channel B; X
+    // DEREGs producer on A but role survives (consumer on B still
+    // alive); X re-REGs producer on A.  Pre-fix, `upsert_presence_row_locked`
+    // found the existing Disconnected presence and was a no-op,
+    // leaving the role in a three-view-mismatch state until first
+    // heartbeat.  Post-fix (H18 erase-on-dereg subsumes H17): the
+    // earlier DEREG erased the row; re-REG creates a FRESH Connected
+    // row.  No stale tombstone.
+    HubState s;
+    // Producer X on channel A.
+    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+                  s, "ch.rereg.a",
+                  make_schema_invariants(),
+                  make_zmq_transport(),
+                  make_producer("prod.dual.uid00000001", 1001))
+                  .producer_result, AddProducerResult::Created);
+    // X also consumer on channel B (we create B with a different producer
+    // so X's role is only consumer there).
+    HubStateTestAccess::on_channel_registered(s, [&]{
+        ChannelEntry e;
+        e.name           = "ch.rereg.b";
+        e.shm_name       = "ch.rereg.b-shm";
+        e.schema_hash    = std::string(64, 'a');
+        e.schema_version = 1;
+        ProducerEntry p;
+        p.producer_pid = 9999;
+        p.role_uid     = "prod.other.uid88888888";
+        p.role_name    = "other";
+        e.producers.push_back(std::move(p));
+        return e;
+    }());
+    HubStateTestAccess::on_consumer_joined(s, "ch.rereg.b",
+                                            make_consumer("prod.dual.uid00000001"));
+
+    auto pre_dereg = s.role("prod.dual.uid00000001");
+    ASSERT_TRUE(pre_dereg.has_value());
+    EXPECT_EQ(pre_dereg->presences.size(), 2u);
+
+    // X DEREGs as producer on A (last producer → channel A teardown).
+    // Wait — actually X is the only producer on A.  So DEREG triggers
+    // channel close → cascade marks consumer-presence on B too?  No —
+    // B is a different channel; only A's presences transition.
+    HubStateTestAccess::on_channel_closed(
+        s, "ch.rereg.a", ChannelCloseReason::AdminClose);
+
+    // Post-DEREG: X's producer-presence on A is erased; consumer-
+    // presence on B intact.
+    auto post_dereg = s.role("prod.dual.uid00000001");
+    ASSERT_TRUE(post_dereg.has_value());
+    EXPECT_EQ(post_dereg->presences.size(), 1u)
+        << "Producer-presence on A is gone (erased); only consumer-"
+           "presence on B remains";
+    EXPECT_EQ(post_dereg->find_presence("ch.rereg.a", "producer"), nullptr);
+    EXPECT_NE(post_dereg->find_presence("ch.rereg.b", "consumer"), nullptr);
+
+    // X re-REGs as producer on A.  Channel A is gone, so we admit X
+    // fresh via on_producer_added (recreating channel A).
+    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+                  s, "ch.rereg.a",
+                  make_schema_invariants(),
+                  make_zmq_transport(),
+                  make_producer("prod.dual.uid00000001", 1001))
+                  .producer_result, AddProducerResult::Created);
+
+    auto post_rereg = s.role("prod.dual.uid00000001");
+    ASSERT_TRUE(post_rereg.has_value());
+    const auto *p = post_rereg->find_presence("ch.rereg.a", "producer");
+    ASSERT_NE(p, nullptr);
+    EXPECT_EQ(p->state, RoleState::Connected)
+        << "H17 contract: re-REG creates a fresh Connected presence "
+           "(no stale Disconnected tombstone — H18 fix removed the row)";
+    EXPECT_FALSE(p->first_heartbeat_seen)
+        << "Fresh presence in 'registering' sub-state";
+}
+
+TEST(HubStateLifecycle, ChannelChurn_NoTombstoneAccumulation)
+{
+    // Wave M3 step 5h (2026-05-11) — H18 contract.  A long-lived role
+    // that attaches/detaches many channels must not accumulate
+    // tombstones in `presences[]`.  Each DEREG erases the row;
+    // `presences.size()` stays bounded by the number of currently-live
+    // attachments.
+    HubState s;
+    constexpr int kCycles = 50;
+    for (int i = 0; i < kCycles; ++i)
+    {
+        const std::string ch = "ch.churn." + std::to_string(i);
+        ASSERT_EQ(HubStateTestAccess::on_producer_added(
+                      s, ch,
+                      make_schema_invariants(),
+                      make_zmq_transport(),
+                      make_producer("prod.churn.uid00000001", 1001))
+                      .producer_result, AddProducerResult::Created);
+        HubStateTestAccess::on_channel_closed(
+            s, ch, ChannelCloseReason::AdminClose);
+        // After each cycle, role is fully disconnected → terminal
+        // cleanup erases the role.  Re-REG below creates a fresh role.
+        EXPECT_FALSE(s.role("prod.churn.uid00000001").has_value())
+            << "Cycle " << i << ": role erased after channel teardown";
+    }
+
+    // Final state: no leaks anywhere.
+    EXPECT_FALSE(s.role("prod.churn.uid00000001").has_value());
+    EXPECT_EQ(s.snapshot().channels.size(), 0u);
+    EXPECT_EQ(s.schema_count(), 0u);
+}
+
 TEST(HubStateProducerAdmission, SecondProducer_ShmChannel_RejectedShmCardinality)
 {
     HubState s;
@@ -2349,9 +2799,11 @@ TEST(RoleEntryApi, OnHeartbeatTimeout_ConnectedToPending_OnlyConnected)
     EXPECT_EQ(r.on_heartbeat_timeout("ch.test", "producer"),
               TransitionEffect::NoChange);
 
-    // After Disconnect, also NoChange.
+    // Wave M3 step 5h: on_pending_timeout ERASES the presence row.
+    // Subsequent on_heartbeat_timeout finds no row → NoChange.
     EXPECT_EQ(r.on_pending_timeout("ch.test", "producer"),
               TransitionEffect::ToDisconnected);
+    EXPECT_EQ(r.find_presence("ch.test", "producer"), nullptr);
     EXPECT_EQ(r.on_heartbeat_timeout("ch.test", "producer"),
               TransitionEffect::NoChange);
 
@@ -2360,48 +2812,56 @@ TEST(RoleEntryApi, OnHeartbeatTimeout_ConnectedToPending_OnlyConnected)
               TransitionEffect::NoChange);
 }
 
-TEST(RoleEntryApi, OnPendingTimeout_PendingToDisconnected_OnlyPending)
+TEST(RoleEntryApi, OnPendingTimeout_PendingToDisconnected_ErasesPresenceRow)
 {
+    // Wave M3 step 5h (2026-05-11): on_pending_timeout ERASES the
+    // presence row rather than marking Disconnected.  Eliminates the
+    // tombstone-accumulation bug class for long-lived roles that churn
+    // channels.  any_presence_alive() and the channels-cache invariant
+    // simplify accordingly.
     RoleEntry r = make_role("prod.cam.uid00000001");
     ASSERT_EQ(r.add_presence("ch.test", "producer"), AddPresenceResult::Created);
 
-    // Connected (not Pending) → NoChange.
+    // Connected (not Pending) → NoChange, row stays.
     EXPECT_EQ(r.on_pending_timeout("ch.test", "producer"),
               TransitionEffect::NoChange);
+    EXPECT_NE(r.find_presence("ch.test", "producer"), nullptr);
 
-    // Connected → Pending → Disconnected.
+    // Connected → Pending → Disconnected (erase).
     ASSERT_EQ(r.on_heartbeat_timeout("ch.test", "producer"),
               TransitionEffect::ToPending);
     EXPECT_EQ(r.on_pending_timeout("ch.test", "producer"),
               TransitionEffect::ToDisconnected);
-    EXPECT_EQ(r.find_presence("ch.test", "producer")->state,
-              RoleState::Disconnected);
+    EXPECT_EQ(r.find_presence("ch.test", "producer"), nullptr)
+        << "Wave M3 step 5h: tombstone removal";
 
-    // Already Disconnected → NoChange.
+    // Row gone → NoChange (idempotent — pre-fix this was 'already
+    // Disconnected', same semantic via different mechanism).
     EXPECT_EQ(r.on_pending_timeout("ch.test", "producer"),
               TransitionEffect::NoChange);
 }
 
-TEST(RoleEntryApi, OnDereg_AnyStateToDisconnected_NoOpIfAlreadyDisconnected)
+TEST(RoleEntryApi, OnDereg_ErasesPresenceRow_IdempotentSecondCall)
 {
+    // Wave M3 step 5h: on_dereg ERASES the presence row.
     RoleEntry r = make_role("prod.cam.uid00000001");
     ASSERT_EQ(r.add_presence("ch.a", "producer"), AddPresenceResult::Created);
     ASSERT_EQ(r.add_presence("ch.b", "producer"), AddPresenceResult::Created);
     r.on_heartbeat("ch.a", "producer", std::chrono::steady_clock::now());
 
-    // Connected → Disconnected.
+    // Connected → erase.
     EXPECT_EQ(r.on_dereg("ch.a", "producer"),
               TransitionEffect::ToDisconnected);
-    EXPECT_EQ(r.find_presence("ch.a", "producer")->state,
-              RoleState::Disconnected);
+    EXPECT_EQ(r.find_presence("ch.a", "producer"), nullptr);
 
-    // Already-Disconnected → NoChange.
+    // Row already gone → NoChange.
     EXPECT_EQ(r.on_dereg("ch.a", "producer"),
               TransitionEffect::NoChange);
 
-    // Sibling (ch.b) untouched.
-    EXPECT_EQ(r.find_presence("ch.b", "producer")->state,
-              RoleState::Connected);
+    // Sibling (ch.b) untouched (still Connected).
+    const auto *p_b = r.find_presence("ch.b", "producer");
+    ASSERT_NE(p_b, nullptr);
+    EXPECT_EQ(p_b->state, RoleState::Connected);
 }
 
 // ─── Terminal cleanup contract (M3 step 4) ─────────────────────────────────

@@ -162,6 +162,20 @@ public:
     /// [IPC-H2] Zero secret key material before member destructors run.
     ~BrokerServiceImpl()
     {
+        // Wave M3 step 5f defensive cleanup: if run() exited abnormally
+        // (exception, signal) without reaching its unsubscribe block, the
+        // band_left handler still holds `this` by capture.  Remove it
+        // here so HubState (which outlives BrokerServiceImpl) cannot
+        // fire a lambda into a destroyed object.  Idempotent: no-op if
+        // already unsubscribed or never subscribed.
+        if (hub_state_ != nullptr &&
+            band_left_handler_id_ != pylabhub::hub::kInvalidHandlerId)
+        {
+            hub_state_->unsubscribe(band_left_handler_id_);
+            band_left_handler_id_ = pylabhub::hub::kInvalidHandlerId;
+        }
+        active_router_ = nullptr;
+
         if (!server_secret_z85.empty())
             sodium_memzero(server_secret_z85.data(), server_secret_z85.size());
         if (!cfg.server_secret_key.empty())
@@ -192,6 +206,24 @@ public:
     mutable std::mutex    m_close_req_mu;
     /// Script-requested channel closes; drained in run() post-poll phase under m_query_mu.
     std::deque<std::string> close_request_queue_;
+
+    /// Wave M3 step 5f (2026-05-11) — handler-driven BAND_LEAVE_NOTIFY
+    /// fan-out.  HubState's `_set_role_disconnected` /
+    /// `_dispatch_role_disconnected_if_dead` cascade band cleanup and
+    /// fire `band_left` handlers; this broker subscribes to those and
+    /// emits the wire notification.  Replaces the previous imperative
+    /// `band_on_role_closed` calls from channel-close/consumer-close
+    /// fanouts (which fired too eagerly for multi-presence roles —
+    /// evicted a band member when ONE of its channels closed even if
+    /// the role itself was alive elsewhere).
+    ///
+    /// `active_router_` is set when run() starts (router socket lives
+    /// on the run() stack) and cleared on exit.  Handler reads it on
+    /// the broker IO thread (same thread that fires HubState
+    /// callbacks in production); off-thread firings (L2 tests with
+    /// no broker running) see nullptr and no-op.
+    zmq::socket_t          *active_router_{nullptr};
+    pylabhub::hub::HandlerId band_left_handler_id_{pylabhub::hub::kInvalidHandlerId};
 
     /// Guards broadcast_request_queue_ for thread-safe request_broadcast_channel().
     mutable std::mutex    m_broadcast_req_mu;
@@ -339,8 +371,17 @@ public:
     void federation_on_channel_closed(const std::string& channel_name,
                                        const pylabhub::hub::ChannelEntry& entry,
                                        const std::string& reason);
-    void band_on_role_closed(zmq::socket_t& socket,
-                             const std::string& role_uid);
+    /// Wave M3 step 5f (2026-05-11): handler-driven BAND_LEAVE_NOTIFY
+    /// fanout helper.  Reads the current member list (HubState already
+    /// removed the leaving uid via its band cascade) and sends the
+    /// notification to remaining members.  Replaces the prior
+    /// `band_on_role_closed` that also mutated HubState — now HubState
+    /// owns the state mutation and this helper only fans out the wire
+    /// notification.
+    void send_band_leave_notify(zmq::socket_t&    socket,
+                                 const std::string& band_name,
+                                 const std::string& role_uid,
+                                 const std::string& reason);
 
     void send_closing_notify(zmq::socket_t&                            socket,
                              const std::string&                        channel_name,
@@ -464,6 +505,24 @@ void BrokerServiceImpl::run()
     {
         LOGGER_INFO("Broker: server_public_key = {}", server_public_z85);
     }
+
+    // ── Wave M3 step 5f (2026-05-11): subscribe to band_left ──
+    // HubState's terminal cleanup cascades band membership removal
+    // and fires this handler.  The broker translates each removal
+    // into a BAND_LEAVE_NOTIFY wire message to remaining members.
+    //
+    // Handlers fire from whatever thread invoked the HubState op.  In
+    // production that's this broker IO thread (all wire dispatch +
+    // sweep timers run here), so `active_router_` is always valid at
+    // handler-fire time.  L2 tests with no broker running see
+    // `active_router_ == nullptr` and the handler no-ops.
+    active_router_       = &router;
+    band_left_handler_id_ = hub_state_->subscribe_band_left(
+        [this](const std::string &band, const std::string &uid,
+               const std::string &reason) {
+            if (active_router_ == nullptr) return;
+            send_band_leave_notify(*active_router_, band, uid, reason);
+        });
 
     // ── Federation: outbound DEALER sockets per peer (HEP-CORE-0022) ────────
     // Stored as unique_ptr so socket handles remain stable in the pollitem_t vector.
@@ -749,6 +808,15 @@ void BrokerServiceImpl::run()
             ps->socket.close();
         }
     }
+
+    // Wave M3 step 5f: unsubscribe before router goes out of scope so
+    // no handler fires against a dead socket reference.
+    if (band_left_handler_id_ != pylabhub::hub::kInvalidHandlerId)
+    {
+        hub_state_->unsubscribe(band_left_handler_id_);
+        band_left_handler_id_ = pylabhub::hub::kInvalidHandlerId;
+    }
+    active_router_ = nullptr;
 
     router.close();
     LOGGER_INFO("Broker: stopped.");
@@ -2768,28 +2836,33 @@ void BrokerServiceImpl::send_closing_notify(zmq::socket_t&                     s
 // Role-close cleanup API (HEP-CORE-0023 §2.5)
 // ============================================================================
 
-void BrokerServiceImpl::on_channel_closed(zmq::socket_t&                     socket,
+void BrokerServiceImpl::on_channel_closed(zmq::socket_t&                     /*socket*/,
                                            const std::string&                 channel_name,
                                            const pylabhub::hub::ChannelEntry& entry,
                                            const std::string&                 reason)
 {
-    // Keep this list small and explicit. When a new broker module needs to
-    // react to role death, add one line here and implement the helper below.
+    // Wave M3 step 5f (2026-05-11) — band cleanup MOVED from this
+    // per-producer imperative loop into HubState's terminal-cleanup
+    // cascade (`cascade_role_terminal_cleanup_locked`), which fires
+    // `band_left` for every band the disconnecting role was in.  The
+    // broker subscribes to `band_left` in `run()` and emits
+    // BAND_LEAVE_NOTIFY from there.  This fix tracks band membership
+    // by role-lifetime rather than channel-lifetime — a multi-presence
+    // role that loses ONE channel but remains alive elsewhere stays in
+    // its bands (the prior imperative code evicted it too eagerly).
     federation_on_channel_closed(channel_name, entry, reason);
-    // Multi-producer fan-out (HEP-CORE-0023 §2.1.1): clean up band
-    // membership for every producer of the closed channel.
-    for (const auto &prod : entry.producers)
-        band_on_role_closed(socket, prod.role_uid);
 }
 
-void BrokerServiceImpl::on_consumer_closed(zmq::socket_t&                      socket,
+void BrokerServiceImpl::on_consumer_closed(zmq::socket_t&                      /*socket*/,
                                             const std::string&                  /*channel_name*/,
-                                            const pylabhub::hub::ConsumerEntry& consumer,
+                                            const pylabhub::hub::ConsumerEntry& /*consumer*/,
                                             const std::string&                  /*reason*/)
 {
-    // Consumer's role may have joined bands independently of its channel
-    // participation — remove from all band memberships.
-    band_on_role_closed(socket, consumer.role_uid);
+    // Wave M3 step 5f (2026-05-11) — see `on_channel_closed`.  Consumer
+    // role-disconnect band cleanup is also handler-driven now.  This
+    // hook is kept for future broker-side reactions to consumer-close
+    // that don't fit the role-disconnect path (e.g., per-consumer
+    // observability).
 }
 
 void BrokerServiceImpl::federation_on_channel_closed(
@@ -2804,40 +2877,31 @@ void BrokerServiceImpl::federation_on_channel_closed(
     // channel is gone, no NOTIFY arrives.
 }
 
-void BrokerServiceImpl::band_on_role_closed(zmq::socket_t& socket,
-                                             const std::string& role_uid)
+void BrokerServiceImpl::send_band_leave_notify(zmq::socket_t&    socket,
+                                                 const std::string& band_name,
+                                                 const std::string& role_uid,
+                                                 const std::string& reason)
 {
-    if (role_uid.empty())
-        return;  // Anonymous role — never joined any band under a uid.
-    // Snapshot bands; identify those containing this role; for each, fire
-    // _on_band_left and notify the remaining members (HEP-CORE-0030: band
-    // fan-out correctness requires up-to-date membership).
-    const auto snap = hub_state_->snapshot();
-    std::vector<std::string> affected_bands;
-    for (const auto& [band_name, band_entry] : snap.bands)
+    if (role_uid.empty() || band_name.empty()) return;
+    // HubState has already removed the leaving uid from band members
+    // (under the writer lock, before firing this handler).  Query the
+    // current member list and notify each remaining member.  If the
+    // band was auto-deleted (uid was its last member), `band(name)` is
+    // nullopt and there's nothing to notify.
+    // Log the leave regardless of whether the band survived (matches
+    // prior imperative behaviour so diagnostic output is consistent).
+    LOGGER_INFO("Broker: role '{}' removed from band '{}' (reason={})",
+                role_uid, band_name, reason);
+    auto remaining = hub_state_->band(band_name);
+    if (!remaining.has_value()) return;  // auto-deleted; no NOTIFY targets
+    nlohmann::json notify;
+    notify["channel"]  = band_name;
+    notify["role_uid"] = role_uid;
+    notify["reason"]   = reason;
+    for (const auto& m : remaining->members)
     {
-        const bool is_member = std::any_of(
-            band_entry.members.begin(), band_entry.members.end(),
-            [&](const pylabhub::hub::BandMember& m) { return m.role_uid == role_uid; });
-        if (is_member) affected_bands.push_back(band_name);
-    }
-    for (const auto& band_name : affected_bands)
-    {
-        LOGGER_INFO("Broker: role '{}' removed from band '{}' (role closed)",
-                    role_uid, band_name);
-        hub_state_->_on_band_left(band_name, role_uid);
-        // Notify remaining members from a fresh snapshot of this band.
-        auto remaining = hub_state_->band(band_name);
-        if (!remaining.has_value()) continue; // band evicted (was last member)
-        nlohmann::json notify;
-        notify["channel"]  = band_name;
-        notify["role_uid"] = role_uid;
-        notify["reason"]   = "role_closed";
-        for (const auto& m : remaining->members)
-        {
-            if (!m.zmq_identity.empty())
-                send_to_identity(socket, m.zmq_identity, "BAND_LEAVE_NOTIFY", notify);
-        }
+        if (!m.zmq_identity.empty())
+            send_to_identity(socket, m.zmq_identity, "BAND_LEAVE_NOTIFY", notify);
     }
 }
 
@@ -4212,7 +4276,7 @@ nlohmann::json BrokerServiceImpl::handle_band_join_req(
 
 nlohmann::json BrokerServiceImpl::handle_band_leave_req(
     const nlohmann::json& req,
-    zmq::socket_t& socket)
+    zmq::socket_t& /*socket*/)
 {
     const std::string channel  = req.value("channel", "");
     const std::string role_uid = req.value("role_uid", "");
@@ -4222,8 +4286,17 @@ nlohmann::json BrokerServiceImpl::handle_band_leave_req(
         return make_error("", "INVALID_REQUEST", "Missing channel or role_uid");
     }
 
-    // Was the role actually a member?  Check against HubState snapshot so
-    // the BAND_LEAVE_NOTIFY only fires on a real removal.
+    // Wave M3 step 5f (2026-05-11): BAND_LEAVE_NOTIFY fanout is now
+    // handler-driven via `subscribe_band_left` wired in run().  The
+    // subscriber's `send_band_leave_notify` fires only on real removal
+    // (because `_on_band_left` fires its handler only when a member
+    // was actually removed).  Earlier-pre-fix this handler also did
+    // the fanout explicitly, which double-emitted under the new
+    // subscription model.
+    //
+    // Membership pre-check is still done here so the wire-arrival log
+    // line is gated on real action (matches pre-fix log semantics —
+    // log only when the request actually mutates state).
     bool was_member = false;
     if (auto pre = hub_state_->band(channel); pre.has_value())
     {
@@ -4232,27 +4305,10 @@ nlohmann::json BrokerServiceImpl::handle_band_leave_req(
             if (m.role_uid == role_uid) { was_member = true; break; }
         }
     }
-
     hub_state_->_on_band_left(channel, role_uid);
-
     if (was_member)
     {
         LOGGER_INFO("Broker: BAND_LEAVE '{}' role='{}'", channel, role_uid);
-
-        // Notify remaining members (if any — leaving the last member also
-        // erases the band from HubState; the snapshot is then empty).
-        nlohmann::json notify;
-        notify["channel"]  = channel;
-        notify["role_uid"] = role_uid;
-        notify["reason"]   = "voluntary";
-        if (auto post = hub_state_->band(channel); post.has_value())
-        {
-            for (const auto& m : post->members)
-            {
-                if (!m.zmq_identity.empty())
-                    send_to_identity(socket, m.zmq_identity, "BAND_LEAVE_NOTIFY", notify);
-            }
-        }
     }
 
     nlohmann::json resp;

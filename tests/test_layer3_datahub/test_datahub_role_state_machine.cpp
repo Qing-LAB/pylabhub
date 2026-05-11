@@ -49,3 +49,34 @@ TEST_F(DatahubRoleStateMachineTest, BandMembership_CleanedOnRoleClose)
     auto proc = SpawnWorker("broker_role_state.band_membership_cleaned_on_role_close", {});
     ExpectWorkerOk(proc);
 }
+
+TEST_F(DatahubRoleStateMachineTest, RoleEntry_TerminalCleanup_OnLastPresenceDisconnect)
+{
+    // Wave M3 step 5b (2026-05-11) — pins the H1 wiring contract.
+    // Without `_dispatch_role_disconnected_if_dead` fired from
+    // `_on_channel_closed`, the role entry would linger in
+    // `HubState::pImpl->roles` after the last presence transitions
+    // Disconnected (the "stale residue" concern from Wave M2.5 §6.2).
+    //
+    // Scenario:
+    //   1. Producer registers a channel (last-and-only producer).
+    //   2. Producer DEREGs → broker `_on_producer_dropped` (last) →
+    //      `_on_channel_closed` → marks producer-presence Disconnected
+    //      → dispatches terminal cleanup.
+    //   3. Worker asserts `hub_state.role(uid)` returns nullopt within
+    //      a short poll window (broker thread races with the worker
+    //      thread for the entry erase).
+    //
+    // A mutation that disables the dispatch must make this test fail.
+    auto proc = SpawnWorker("broker_role_state.role_entry_terminal_cleanup_on_last_presence_dereg", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubRoleStateMachineTest, RoleEntry_TerminalCleanup_OnConsumerLeftLast)
+{
+    // Wave M3 step 5b (2026-05-11) — pins dispatch from
+    // `_on_consumer_left`.  Consumer registers (its only presence) and
+    // DEREGs; role entry must be erased.
+    auto proc = SpawnWorker("broker_role_state.role_entry_terminal_cleanup_on_consumer_left_last", {});
+    ExpectWorkerOk(proc);
+}

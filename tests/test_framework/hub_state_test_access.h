@@ -66,9 +66,10 @@ struct HubStateTestAccess
         s._set_band_joined(b, std::move(m));
     }
     static void set_band_left(HubState &s, const std::string &b,
-                              const std::string &uid)
+                              const std::string &uid,
+                              const std::string &reason = "test")
     {
-        s._set_band_left(b, uid);
+        s._set_band_left(b, uid, reason);
     }
     static void set_peer_connected(HubState &s, PeerEntry e)
     {

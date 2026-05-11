@@ -16,17 +16,78 @@ Canonical plan in `docs/TODO_MASTER.md` "Wave M2".
 
 **Status snapshot (2026-05-11):** Wave M2.5 controlled-access API is
 **DONE** (commit `416cbec`); MP3 + MP4 are implicit through M2.5
-steps 3-6; MP5 partial (17 multi-producer tests shipped, end-to-end
-L3 work opportunistic).  Suite 1801/1801.
+steps 3-6; MP5 partial — 17 original multi-producer tests + 4 new L2
+tests added 2026-05-11 in the H9/H10/H11/H12 sweep that pin:
+- Fan-In multi-producer voluntary DEREG transitions presence + cleans
+  cache (`HubStateProducerDropped.MultiProducer_VoluntaryDereg_…`).
+- Multi-channel producer keeps schemas after one channel closes
+  (`HubStateProducerDropped.MultiChannel_…SchemasSurvive`).
+- Channel-close atomic teardown transitions consumer presences
+  (`HubStateChannelClosed.ConsumerPresence_…AtomicallyTransitions…`).
+- `channels` cache invariant respected when a role has multiple
+  presence types on the same channel
+  (`HubStateCacheInvariant.RoleWithBothProducerAndConsumer_…`).
 
-**Next on the wave roadmap:** Wave M3 (RoleEntry controlled-access
-API).  Design stub: `docs/tech_draft/M3_role_entry_controlled_access.md`.
-Pattern mirrors M2.5; retires the `disconnected_fired` 🚧 PATCH.
+Suite 1819/1819 (after Wave M3 step 5b+c+d+e).
 
-**Then sequentially:** M1.4 (retire `metrics_store_`) → M1.5
-(`on_forced_disconnect`) → MD1 (role teardown race) → Wave B M8 /
-MP6 (federation).  See TODO_MASTER §"Deferred items — explicit
-phase entries" for scope-doc + trigger-condition links.
+**Wave M3 status — CLOSED 2026-05-11.** All step work shipped:
+
+- Steps 1-4 + 6 + 8 shipped in prior commits (commits `3cf5074` →
+  `689444e`).
+- Step 5b (H1 wiring) — `_dispatch_role_disconnected_if_dead`.
+- Step 5c (H9) — `_on_producer_dropped` multi-producer transition + cache.
+- Step 5d (H10/H11) — cache invariant primitive `drop_channel_if_orphaned`.
+- Step 5e (H12) — schema cascade is owner-lifetime ONLY (per-producer
+  cascade removed from `_on_channel_closed`).
+- Step 5f+i (H16+H20) — band-cascade in HubState terminal cleanup +
+  broker subscribes to `band_left` for `BAND_LEAVE_NOTIFY` fanout
+  (replaces imperative `band_on_role_closed` from channel-close path).
+- Step 5g+h (H17+H18) — presence rows ERASED on `on_dereg`/
+  `on_pending_timeout` (no Disconnected tombstones).  `any_presence_alive()`
+  + `drop_channel_if_orphaned` simplified accordingly.  Re-REG creates
+  fresh Connected presence (no stale tombstone).
+- Step 5j (H23+H24+H25) — log gating restored on `handle_band_leave_req`;
+  `send_band_leave_notify` log fires before NOTIFY early-return;
+  defensive unsubscribe added to `~BrokerServiceImpl`.
+
+Six review passes (`REVIEW_WaveM3_*_2026-05-11.md`); 1823/1823 tests
+pass; two mutation tests verify contracts truly pinned.
+
+**Wave M3 explicitly DEFERRED items** (each with documented trigger):
+- Step 5 — strict `add_role` admission with global-uid uniqueness.
+  Trigger: spoofing-attempt observation OR security-design pass
+  requirement.  `docs/tech_draft/M3_role_entry_controlled_access.md` §5.
+- Step 7 — privatize `RolePresence` state-bearing fields.  Trigger:
+  concrete misuse bug OR audit observation.  Same condition as M2.5
+  step 7.
+- H15 — `_on_heartbeat` direct metrics-field mutation.  Trigger: a
+  `RoleEntry::set_presence_metrics(...)` API addition for a concrete
+  reason.  `src/utils/ipc/hub_state.cpp:1249-1261`.
+- H29, H36, H39 — cosmetic cleanup (dead `state == Disconnected` skip
+  in DISC_REQ; `_on_schemas_evicted_for_owner` is now test-only).
+  No functional impact.
+- H40 — `active_router_` concurrency hardening (atomic + DEBUG
+  assertion).  Trigger: any new HubState mutator caller from a
+  non-broker-IO thread.
+
+**Pre-existing issues surfaced but NOT in Wave M3 scope:**
+- **H34 — `metrics_store_` per-uid leak** in broker.  Multi-producer
+  DEREG / multi-producer pending-timeout / consumer-liveness sweep
+  remove from HubState but leave per-uid entries in
+  `metrics_store_[channel].{producers,consumers}[uid]` until channel
+  teardown.  Will be FULLY RETIRED by **M1.4** (replaces
+  `metrics_store_` with HubState's per-presence rows — naturally
+  clean under H18 erase semantics).  No piecemeal pre-M1.4 fix
+  needed.
+- **H43 — Federation propagation of role-disconnect**.  Peer hubs
+  don't learn about non-channel-close role disconnects.  Verify
+  requirement during **Wave B M8** (dual-hub processor); bands are
+  not federated per HEP-CORE-0030 §3, so this may be a non-issue.
+
+**Then sequentially:** M1.4 (retire `metrics_store_`, also closes H34) →
+M1.5 (`on_forced_disconnect`) → MD1 (role teardown race) → Wave B M8 /
+MP6 (federation, verify H43 requirement).  See TODO_MASTER §"Deferred
+items — explicit phase entries" for scope-doc + trigger-condition links.
 
 **Scope expansion (2026-05-10):** new phase **MP2.5 — Controlled-access
 API on `ChannelEntry`** inserted between MP2 (done) and MP3.  Driven
