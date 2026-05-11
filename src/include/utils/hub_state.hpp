@@ -162,6 +162,30 @@ struct ProducerEntry
     std::string inbox_packing;  ///< "aligned" | "packed"
     std::string inbox_checksum; ///< "enforced" | "manual" | "none"
 
+    // ── Wave M2.5 step 2a — per-producer fields ────────────────────────
+    //
+    // Migrated from `ChannelEntry` because they are producer
+    // attributes, not channel-wide invariants.  Each Fan-In producer
+    // can carry its own endpoint + metadata blob (see
+    // docs/tech_draft/controlled_access_api_design.md §3.2 + §6.1).
+    //
+    // STEP 2a ADDITIVE: these fields are added here; the matching
+    // fields on `ChannelEntry` remain until step 2b/3 migrates the
+    // callers (REG_REQ handler, DISC_REQ_ACK, ENDPOINT_UPDATE_REQ).
+    // After step 2b/3 those channel-scope copies are deleted.
+
+    /// HEP-CORE-0021 §16 — this producer's data-plane bound endpoint.
+    /// For SHM channels this is empty; for ZMQ channels it is the
+    /// producer's PUB socket address (each producer in a Fan-In
+    /// channel has its own).
+    std::string zmq_node_endpoint;
+
+    /// Producer-supplied free-form context blob (HEP-CORE-0007 §12.4).
+    /// `null` if no metadata.  Channel-level DISC_REQ_ACK aggregates
+    /// all producers' blobs into a tree keyed by `role_uid` via
+    /// `ChannelEntry::aggregate_metadata_tree()`.
+    nlohmann::json metadata;
+
     std::chrono::system_clock::time_point connected_at{
         std::chrono::system_clock::now()};
 };
@@ -440,6 +464,84 @@ struct ChannelEntry
             }
         }
         return false;
+    }
+
+    /// Set the per-producer data-plane ZMQ endpoint (HEP-CORE-0021).
+    /// Returns true iff the producer was found.  Distinct from the
+    /// channel-scope `ChannelEntry::zmq_node_endpoint` which is
+    /// retained during step 2a for callers not yet migrated.
+    bool set_producer_zmq_node_endpoint(std::string_view role_uid,
+                                          std::string endpoint) noexcept
+    {
+        for (auto &p : producers)
+        {
+            if (p.role_uid == role_uid)
+            {
+                p.zmq_node_endpoint = std::move(endpoint);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// Look up a producer's data-plane ZMQ endpoint; nullopt if the
+    /// uid is not registered on this channel.
+    std::optional<std::string>
+    producer_zmq_node_endpoint(std::string_view role_uid) const
+    {
+        for (const auto &p : producers)
+            if (p.role_uid == role_uid) return p.zmq_node_endpoint;
+        return std::nullopt;
+    }
+
+    /// Set the per-producer metadata blob (HEP-CORE-0007 §12.4).
+    /// Returns true iff the producer was found.  Producers may
+    /// publish orthogonal blobs; channel-level read paths aggregate
+    /// them via `aggregate_metadata_tree()`.
+    bool set_producer_metadata(std::string_view role_uid,
+                                nlohmann::json blob) noexcept
+    {
+        for (auto &p : producers)
+        {
+            if (p.role_uid == role_uid)
+            {
+                p.metadata = std::move(blob);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// Look up a single producer's metadata blob; nullptr if absent.
+    const nlohmann::json *producer_metadata(std::string_view role_uid) const noexcept
+    {
+        for (const auto &p : producers)
+            if (p.role_uid == role_uid) return &p.metadata;
+        return nullptr;
+    }
+
+    /// Channel-level metadata read: aggregate all producers' metadata
+    /// blobs into a tree keyed by `role_uid` (HEP-CORE-0007 §12.4 +
+    /// docs/tech_draft/controlled_access_api_design.md §6.1).
+    ///
+    /// Wire shape (returned object):
+    /// ```
+    /// {
+    ///   "<producer_role_uid_1>": { ...blob1... },
+    ///   "<producer_role_uid_2>": { ...blob2... }
+    /// }
+    /// ```
+    /// A producer whose metadata is `null` is omitted from the tree —
+    /// the result is `{}`, never `null`, so consumers can rely on
+    /// the field being an object.
+    nlohmann::json aggregate_metadata_tree() const
+    {
+        nlohmann::json out = nlohmann::json::object();
+        for (const auto &p : producers)
+        {
+            if (!p.metadata.is_null()) out[p.role_uid] = p.metadata;
+        }
+        return out;
     }
 };
 
