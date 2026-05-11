@@ -500,15 +500,30 @@ stateDiagram-v2
 ### 7.2 Private schemas
 
 Created by `REG_REQ` from a producer. Owner is the producer's uid. Evicted
-atomically when the producer-presence transitions to Disconnected (any
-reason: explicit DEREG_REQ, heartbeat-timeout reap per HEP-CORE-0023
-§2.1).
+atomically when the owner-role transitions to Disconnected (any reason:
+explicit DEREG_REQ, heartbeat-timeout reap per HEP-CORE-0023 §2.1).
+
+**Cascade trigger points (Wave M3, 2026-05-11):**
+- `_on_channel_closed(name, reason)` — fires per-producer eviction
+  when a channel is torn down (HEP-CORE-0023 §2.1.1 atomic teardown).
+  Each producer registered on the channel has its schemas evicted.
+- `_set_role_disconnected(uid)` — fires owner-uid eviction when the
+  role itself transitions to fully Disconnected (last presence gone).
+  Wave M3 step 4 makes this op a terminal cleanup: the `RoleEntry`
+  is erased from `pImpl->roles` AFTER the cascade runs.
+
+Both paths run idempotent evictions against `pImpl->schemas` (a
+second iteration on an already-evicted record is a no-op), so the
+dual-trigger has no behavior risk.  The role-disconnect path is the
+canonical owner-lifetime trigger; the channel-close path catches the
+multi-producer Fan-In sub-case where one producer leaves before the
+role itself is fully disconnected.
 
 ```mermaid
 stateDiagram-v2
     [*] --> Registered: REG_REQ(schema_id, hash, blds)\n_on_schema_registered
     Registered --> Registered: serve citations
-    Registered --> [*]: _on_role_deregistered(producer_uid)\n→ cascade evict all of producer's schemas
+    Registered --> [*]: _on_channel_closed\n  OR _set_role_disconnected\n  → cascade evict all of owner's schemas
 ```
 
 ### 7.3 No refcount
