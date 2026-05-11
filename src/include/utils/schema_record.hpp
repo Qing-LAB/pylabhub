@@ -91,19 +91,23 @@ enum class SchemaRegOutcome : uint8_t
 
 /// Outcome of `HubState::_validate_schema_citation`.
 ///
-/// Citation rules per HEP-CORE-0034 §9.1:
-///   - Cited owner must be either `"hub"` or the channel's producer uid.
+/// Citation rules per HEP-CORE-0034 §9.1 (multi-producer aware per
+/// HEP-CORE-0023 §2.1.1):
+///   - Cited owner must be either `"hub"` or a role_uid registered as
+///     a producer on the channel being connected to.  Channels admit
+///     1..N producers; the cited owner can be any of them.
 ///   - Cited record must exist and its hash + packing must match the
 ///     citer's expected fingerprint.
-///   - Cross-citation (cited owner is a third role) is rejected even when
-///     the fingerprint matches — see §9.3 for rationale.
+///   - Cross-citation (cited owner is a non-producer third role) is
+///     rejected even when the fingerprint matches — see §9.3.
 struct CitationOutcome
 {
     enum class Reason : uint8_t
     {
         kOk = 0,
 
-        /// Cited owner is neither "hub" nor the channel's producer uid.
+        /// Cited owner is neither "hub" nor any registered producer of
+        /// the channel.
         kCrossCitation,
 
         /// Cited owner uid is not registered as a producer in HubState

@@ -242,6 +242,39 @@ auto snapshot_handlers(std::mutex &mu, const Vec &v)
     return out;
 }
 
+/// Multi-producer-aware channel observable, computed against an
+/// already-locked role map (HEP-CORE-0023 §2.1.1).  Mirrors
+/// `observe_channel(c, snap)` from the public header but works on the
+/// live `roles` map under a writer-held lock — so call sites inside
+/// `_on_heartbeat` / `_on_heartbeat_timeout` (which need the channel's
+/// observable after a single presence transition) get the correct
+/// best-of-all-producers answer without copying state.
+template <typename RolesMap>
+ChannelObservable compute_observable_locked(const ChannelEntry &ch,
+                                            const RolesMap     &roles)
+{
+    if (ch.producers.empty()) return ChannelObservable::kAbsent;
+    bool any_live = false, any_reg = false, any_stalled = false;
+    for (const auto &prod : ch.producers)
+    {
+        auto rit = roles.find(prod.role_uid);
+        if (rit == roles.end()) continue;
+        const auto *pp = rit->second.find_presence(ch.name, "producer");
+        if (pp == nullptr) continue;
+        switch (ch.observe(pp))
+        {
+        case ChannelObservable::kLive:        any_live    = true; break;
+        case ChannelObservable::kRegistering: any_reg     = true; break;
+        case ChannelObservable::kStalled:     any_stalled = true; break;
+        case ChannelObservable::kAbsent:                          break;
+        }
+    }
+    if (any_live)    return ChannelObservable::kLive;
+    if (any_reg)     return ChannelObservable::kRegistering;
+    if (any_stalled) return ChannelObservable::kStalled;
+    return ChannelObservable::kAbsent;
+}
+
 } // namespace
 
 HandlerId HubState::subscribe_channel_opened(ChannelOpenedHandler h) const
@@ -922,7 +955,8 @@ void HubState::_on_heartbeat(const std::string                   &channel,
             if (cit != pImpl->channels.end())
             {
                 fired_entry        = cit->second;
-                new_obs            = cit->second.observe(p);
+                new_obs            = compute_observable_locked(
+                                         cit->second, pImpl->roles);
                 observable_changed = true;
             }
         }
@@ -973,7 +1007,7 @@ void HubState::_on_heartbeat_timeout(const std::string &channel,
         if (it != pImpl->channels.end())
         {
             fired_entry = it->second;
-            new_obs     = it->second.observe(p);
+            new_obs     = compute_observable_locked(it->second, pImpl->roles);
         }
     }
     if (transitioned)
@@ -1206,9 +1240,19 @@ schema::CitationOutcome HubState::_validate_schema_citation(
     using R = schema::CitationOutcome::Reason;
     schema::CitationOutcome out{R::kOk, {}};
 
-    // Rule 1 — cited owner must be either "hub" or the channel's producer.
-    // Cross-citation of a third role is rejected even on hash match
-    // (HEP-CORE-0034 §9.1, §9.3).  Cheap check, do it before taking lock.
+    // Rule 1 — cited owner must be either "hub" or A registered
+    // producer on the channel.  Cross-citation of a non-producer role
+    // is rejected even on hash match (HEP-CORE-0034 §9.1, §9.3).
+    // Cheap check, do it before taking lock.
+    //
+    // Multi-producer note (Wave M2 MP4): the parameter is named
+    // `channel_producer_uid` (singular) because today the broker calls
+    // this once per channel admission with one producer's uid.  When
+    // MP4 admits multi-producer channels, the broker will iterate the
+    // channel's producers and call this once per producer (or the
+    // signature will evolve to take a set per HEP-CORE-0034 §7.1).
+    // Today's single-string check still matches the single-producer
+    // shape of the data.
     if (cited_owner != "hub" && cited_owner != channel_producer_uid)
     {
         out.reason = R::kCrossCitation;
