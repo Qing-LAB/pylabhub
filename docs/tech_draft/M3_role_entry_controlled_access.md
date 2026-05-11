@@ -62,11 +62,10 @@ TransitionEffect on_heartbeat(string_view channel, string_view role_type,
 TransitionEffect on_pending_timeout(string_view channel, string_view role_type);
 TransitionEffect on_dereg(string_view channel, string_view role_type);
 
-// Retires the disconnected_fired PATCH:
-//   Returns true on the FIRST call after the role transitions to
-//   all-presences-disconnected, false thereafter.  Reset to true-eligible
-//   when a fresh presence is added.
-bool try_consume_disconnect_event() noexcept;
+// Decision #3 (2026-05-11): NO memoization API.  Terminal-erase of
+// the RoleEntry on last-presence-Disconnected IS the memoization —
+// a second call to `_set_role_disconnected` finds no entry and
+// returns immediately.  The 🚧 PATCH retires by construction.
 ```
 
 ## 4. HubState ops (post-M3 shape)
@@ -93,12 +92,36 @@ bool try_consume_disconnect_event() noexcept;
 | **7** | Privatize `RolePresence` state-bearing fields (or move into Impl) once all writers go through the API.  Optional polish; same trigger condition as M2.5 step 7 (a concrete misuse bug or audit observation). | `src/include/utils/hub_state.hpp` |
 | **8** | HEP doc sync.  Update HEP-CORE-0023 §2 (FSM rewrite mentions the new transition primitives), HEP-CORE-0034 §7.2 (cascade-on-role-disconnect already specified; add cross-ref to `_set_role_disconnected` terminal-cleanup behavior). | `docs/HEP/HEP-CORE-0023.md`, `docs/HEP/HEP-CORE-0034.md` |
 
-## 6. Open decisions (lock before code)
+## 6. Decisions locked 2026-05-11
 
-1. **`RoleEntry.channels[]` — cache vs derive?** Today it's a cache (appended on `add_channel`).  Derive option: iterate `presences[]` and unique-extract `channel`.  Trade-off: cache is O(1) read for "what channels is this role on" admin queries; derive is O(N) but never goes stale.  Lean: keep as cache; mutated alongside `add_presence` / `remove_presence`.  Document explicitly so contributors don't write a stale-cache bug.
-2. **Schema cascade timing.** HEP-CORE-0034 §7.2 already specifies "evict on owner Disconnected."  Today the eviction fires from `_on_channel_closed` per-producer (M2.5 ordering).  In M3 it should also fire from `_set_role_disconnected` (the canonical owner-lifetime trigger).  Avoid double-eviction by either (a) idempotent eviction (already is), or (b) move the trigger entirely to `_set_role_disconnected` and drop from `_on_channel_closed`.  Lean: (a) — cheaper.
-3. **`try_consume_disconnect_event` vs handler-side memoization.**  The 🚧 PATCH is in `RoleEntry`.  M3 retires it.  Question: do we need ANY memoization?  If `_set_role_disconnected` becomes terminal cleanup (erases the entry), then there's no "second call to fire again" risk — by construction the entry is gone.  Lean: drop the memoization entirely; the erase-on-last-presence pattern IS the memoization.
-4. **Wave B M3 naming** (already addressed in naming note above): Wave M3 ≠ Wave B M3.  When this design doc is committed, also add a clarifying note to `M1_FSM_consolidation_handoff_2026-05-09.md` so a future reader sees both.
+All four open items locked.  All chose the recommended option.
+
+1. **`RoleEntry.channels[]` — KEEP AS CACHE.**  Mutated alongside
+   `add_presence` / `remove_presence`.  O(1) read for "which channels
+   is this role on" admin queries.  Document explicitly so
+   contributors don't write a stale-cache bug; add a maintenance
+   invariant comment on the field.
+
+2. **Schema cascade — FIRE FROM BOTH PATHS (idempotent).**
+   `_on_channel_closed` continues to fire the per-producer cascade
+   (M2.5 ordering preserved); `_set_role_disconnected` adds a
+   second firing for the role-lifetime trigger.  Eviction is
+   already idempotent (second call on a gone record is a no-op),
+   so the dual-trigger has zero behavior risk.  Matches HEP-CORE-0034
+   §7.2 wording ("evict on owner Disconnected") via the
+   `_set_role_disconnected` path while keeping the channel-close
+   path that already works.
+
+3. **`disconnected_fired` memoization — DROPPED ENTIRELY.**
+   Once terminal cleanup is in place, the entry being gone IS the
+   proof that the event already fired — no second call can fire
+   because no entry survives.  This retires the 🚧 PATCH at
+   `hub_state.hpp:733-757` by construction.  No
+   `try_consume_disconnect_event()` API needed.
+
+4. **Wave B M3 vs Wave M3 naming** — resolved 2026-05-11 via a
+   top-of-doc note in `M1_FSM_consolidation_handoff_2026-05-09.md`
+   (commit `f124a69`).  Always use full prefix.
 
 ## 7. Trigger condition — when to start
 
