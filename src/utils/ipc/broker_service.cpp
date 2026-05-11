@@ -1062,8 +1062,9 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     entry.schema_version        = req.value("schema_version", uint32_t{0});
     entry.has_shared_memory     = req.value("has_shared_memory", false);
     entry.pattern               = channel_pattern_from_str(req.value("channel_pattern", "PubSub"));
-    entry.zmq_ctrl_endpoint     = req.value("zmq_ctrl_endpoint", "");
-    entry.zmq_data_endpoint     = req.value("zmq_data_endpoint", "");
+    // zmq_ctrl_endpoint / zmq_data_endpoint REG_REQ fields retired in
+    // Wave M2.5 step 2c (dead placeholders; never populated with real
+    // values, never read anywhere).  See REVIEW_WaveM2.5_2026-05-10.md F7.
     entry.zmq_pubkey            = req.value("zmq_pubkey", "");
 
     // Producer admission — HEP-CORE-0023 §2.1.1.  Today's REG_REQ admits
@@ -1566,8 +1567,9 @@ nlohmann::json BrokerServiceImpl::handle_disc_req(const nlohmann::json& req)
         static_cast<uint32_t>(entry_ref.consumers.size());
     resp["has_shared_memory"] = entry_ref.has_shared_memory;
     resp["channel_pattern"]   = channel_pattern_to_str(entry_ref.pattern);
-    resp["zmq_ctrl_endpoint"]  = entry_ref.zmq_ctrl_endpoint;
-    resp["zmq_data_endpoint"]  = entry_ref.zmq_data_endpoint;
+    // zmq_ctrl_endpoint / zmq_data_endpoint DISC_REQ_ACK echoes retired
+    // in Wave M2.5 step 2c (source fields never populated with real
+    // values).  See REVIEW_WaveM2.5_2026-05-10.md F7.
     resp["zmq_pubkey"]         = entry_ref.zmq_pubkey;
     // HEP-CORE-0021: ZMQ endpoint registry (echo stored peer endpoint for discovery).
     resp["data_transport"]     = entry_ref.data_transport;
@@ -3152,20 +3154,15 @@ ChannelSnapshot BrokerService::query_channel_snapshot() const
             pylabhub::hub::observe_channel(entry, hub_snap));
         e.consumer_count     = static_cast<int>(entry.consumers.size());
         e.schema_hash        = entry.schema_hash;
-        // Multi-producer (HEP-CORE-0023 §2.1.1): full lists + scalar
-        // back-compat fields populated from the first producer.
+        // Multi-producer (HEP-CORE-0023 §2.1.1): parallel uid/pid
+        // vectors; no first-producer back-compat scalars (retired in
+        // Wave M2.5 step 2c — admin clients must iterate the lists).
         e.producer_uids.reserve(entry.producers.size());
         e.producer_pids.reserve(entry.producers.size());
         for (const auto &prod : entry.producers)
         {
             e.producer_uids.push_back(prod.role_uid);
             e.producer_pids.push_back(prod.producer_pid);
-        }
-        if (const auto *fp = entry.first_producer())
-        {
-            e.producer_pid       = fp->producer_pid;
-            e.producer_role_name = fp->role_name;
-            e.producer_role_uid  = fp->role_uid;
         }
         snap.channels.push_back(std::move(e));
     }

@@ -67,8 +67,12 @@ inline nlohmann::json build_producer_reg_payload(const ProducerRegInputs &in)
     reg["role_uid"]          = in.role_uid;
     reg["role_name"]         = in.role_name;
     reg["role_type"]         = in.role_tag;
-    reg["zmq_ctrl_endpoint"] = "tcp://127.0.0.1:0";
-    reg["zmq_data_endpoint"] = "tcp://127.0.0.1:0";
+    // zmq_ctrl_endpoint / zmq_data_endpoint placeholder fields retired
+    // in Wave M2.5 step 2c (2026-05-10).  zmq_pubkey kept on the wire
+    // (broker still parses it into ChannelEntry.zmq_pubkey →
+    // RoleEntry.pubkey_z85); producer-side wire layer sends empty
+    // string today because the role's CURVE keypair is not yet
+    // surfaced here.  See REVIEW_WaveM2.5_2026-05-10.md F7 + F16.
     reg["zmq_pubkey"]        = "";
 
     if (in.is_zmq_transport)

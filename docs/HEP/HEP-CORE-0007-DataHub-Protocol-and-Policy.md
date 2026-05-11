@@ -896,10 +896,24 @@ Payload:
                                  docs/tech_draft/controlled_access_api_design.md
                                  §6.1.
   channel_pattern       string   "PubSub" or other ChannelPattern variant.
-  zmq_ctrl_endpoint     string   (if data_transport="zmq") Control-plane endpoint
-  zmq_data_endpoint     string   (if data_transport="zmq") Data-plane endpoint
-  zmq_pubkey            string   (if CURVE) Server public key (Z85, 40 chars)
+  zmq_pubkey            string   (if CURVE) Producer's published CURVE public
+                                 key (Z85, 40 chars).  HEP-CORE-0021 §5.2
+                                 specifies this is per-producer; Wave M2.5
+                                 stores it on `ProducerEntry.zmq_pubkey`.
+                                 This DISC_REQ_ACK field returns the FIRST
+                                 admitted producer's pubkey for the legacy
+                                 single-producer shape; consumers needing
+                                 every producer's pubkey should read the
+                                 per-producer entries via the admin API
+                                 (`query_channel_snapshot` →
+                                 `producer_uids` + per-producer queries).
   zmq_node_endpoint     string   (if data_transport="zmq") Producer's node endpoint
+                                 (HEP-CORE-0021).  Wave M2.5 makes this
+                                 per-producer; this field returns the FIRST
+                                 admitted producer's endpoint for the legacy
+                                 single-producer shape — consumers that
+                                 need every producer should read the
+                                 `producers[]` field instead.
   correlation_id        string   (opt) Echo of request correlation_id if provided.
 ```
 

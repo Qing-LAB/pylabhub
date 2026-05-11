@@ -78,7 +78,9 @@ category.
 | `inbox_endpoint` / `inbox_schema_json` / `inbox_packing` / `inbox_checksum` | Already moved to `ProducerEntry` in `91bd657`. | Done. |
 | `zmq_node_endpoint` | HEP-CORE-0021 endpoint registry — each Fan-In producer publishes from its own endpoint. Currently scalar on `ChannelEntry`. | **Move to `ProducerEntry`**. ENDPOINT_UPDATE_REQ keys by `(channel, role_uid)`. |
 | `metadata` | Producer-supplied free-form JSON.  Decided 2026-05-10: per-producer (§6.1). | **Move to `ProducerEntry`** as `metadata` (nlohmann::json).  Wire shape on DISC_REQ_ACK: tree keyed by producer `role_uid` — see §6.1. |
-| `zmq_data_endpoint` / `zmq_ctrl_endpoint` / `zmq_pubkey` | Dead — hard-coded placeholder values in `role_reg_payload.hpp`. | **Delete** the channel-level fields. If revived later, add to `ProducerEntry` from the start. |
+| `zmq_ctrl_endpoint` | Originally (HEP-CORE-0002) the channel's ZMQ control endpoint.  Retired in current architecture: control plane is hub-mediated (HEP-CORE-0017 / HEP-CORE-0033); no per-channel ctrl endpoint exists.  No replacement at any scope. | **Delete** the channel-level field. |
+| `zmq_data_endpoint` | Originally (HEP-CORE-0002) the channel's ZMQ data endpoint.  Function fully replaced by per-producer `ProducerEntry.zmq_node_endpoint` (HEP-CORE-0021 §16). | **Delete** the channel-level field. |
+| `zmq_pubkey` | HEP-CORE-0021 §5.2 explicitly names this `producer_zmq_pubkey` and uses it in CONSUMER_REG_ACK for ZMQ ctrl socket auth — per-producer by design.  Currently mis-scoped on `ChannelEntry`; the wire layer sends empty string today but the propagation chain into `RoleEntry.pubkey_z85` exists. | **Move to `ProducerEntry`** as `zmq_pubkey` (step 2c).  Step 3 migrates REG_REQ handler to write to per-producer; step 3 also deletes the deprecated `ChannelEntry.zmq_pubkey`. |
 
 ## 4. Field classification — `RoleEntry` / `RolePresence`
 

@@ -348,12 +348,12 @@ tests follow the same shape. No code change.
 | F1 | HEP-0007 §12.4a missing UID_CONFLICT; MULTI_PRODUCER entry contradicts strict reject | Blocker | ✅ FIXED 2026-05-10 |
 | F2 | HEP-0007 §12.4 DISC_REQ_ACK metadata wire shape drift | Blocker | ✅ FIXED 2026-05-10 |
 | F3 | HEP-0021 still describes single channel-level zmq_node_endpoint | Blocker | ✅ FIXED 2026-05-10 |
-| F4 | ChannelSnapshotEntry back-compat scalars dead but populated | Medium | ❌ OPEN (step 2c) |
+| F4 | ChannelSnapshotEntry back-compat scalars dead but populated | Medium | ✅ FIXED 2026-05-10 (step 2c) — three scalars + their population deleted; verified zero consumers in src/ + tests/ |
 | F5 | Stale `channel.producer_role_uid` comments in 5 files | Low | ✅ FIXED 2026-05-10 |
 | F6 | Field duplication during step 2a (transitional) | Medium | ✅ FIXED 2026-05-10 (DEPRECATED comments added) |
-| F7 | Dead `zmq_data_endpoint` / `zmq_ctrl_endpoint` / `zmq_pubkey` fields | Low | ❌ OPEN (step 2c) |
+| F7 | Dead `zmq_data_endpoint` / `zmq_ctrl_endpoint` / `zmq_pubkey` fields | Low | ✅ FIXED 2026-05-10 (step 2c) — DESIGN-DRIVEN OUTCOME: `zmq_ctrl_endpoint` + `zmq_data_endpoint` truly dead (deleted; HEP-0017/0021 explain why — see design doc §3.1 rows).  `zmq_pubkey` is NOT dead (HEP-CORE-0021 §5.2 designs it as per-producer for ZMQ ctrl socket auth); moved to `ProducerEntry.zmq_pubkey` with new `set_producer_zmq_pubkey` / `producer_zmq_pubkey` API methods; channel-scope `ChannelEntry.zmq_pubkey` carries DEPRECATED comment until step 3 migrates the REG_REQ handler. |
 | F8 | `_set_channel_opened` insert_or_assign blocks step 3 mechanism | Critical | ❌ OPEN (step 3 design pass next) |
-| F9 | Test coverage gaps for accessors | Low | ❌ OPEN (step 2c) |
+| F9 | Test coverage gaps for accessors | Low | ✅ FIXED 2026-05-10 (step 2c) — 7 new ChannelEntryApi tests added: SetProducerInbox_KeyedByUid, SetConsumerInbox_KeyedByUid, SetProducerMetadata_KeyedByUid_AndProducerMetadataLookup, ProducerZmqNodeEndpoint_LookupAccessor, SetProducerZmqPubkey_PerProducerStorage, RemoveConsumer_PresentAndMissing, IsShmAndCounts_DerivedFromState.  Suite 1778 → 1785. |
 | F10 | `inject_orphan_role` helper promised in §6.5, not delivered | Low | ⚠️ DEFERRED to M3 |
 | F11 | Design doc §5.1 API methods (`set_invariant_*`, `observable(...)`) not delivered | Low | ✅ RECORDED 2026-05-10 (step 2d row in design doc §7) |
 | F12 | `disconnected_fired` 🚧 PATCH still present | Tracked | ⚠️ DEFERRED to M3 |
