@@ -1193,7 +1193,19 @@ class PYLABHUB_UTILS_EXPORT HubState
                        std::chrono::steady_clock::time_point        when,
                        const std::optional<nlohmann::json>         &metrics);
     void _on_heartbeat_timeout(const std::string &channel, const std::string &role_uid);
-    void _on_pending_timeout(const std::string &channel);
+    /// Wave M2.5 step 6 per-producer signature: transition the matched
+    /// producer-presence Pending → Disconnected (HEP-CORE-0023 §2.1),
+    /// bump `pending_to_deregistered_total`, drop the producer from
+    /// `ChannelEntry.producers[]`, and fire `_on_channel_closed`
+    /// ONLY when this was the LAST producer (atomic teardown).
+    /// Returns the typed `RemoveProducerResult` so the sweep caller
+    /// can decide whether to fan-out CHANNEL_CLOSING_NOTIFY.
+    /// Idempotent: if the presence is already Disconnected or the
+    /// producer is no longer admitted, returns `{removed=false}`
+    /// without state mutation.
+    RemoveProducerResult
+    _on_pending_timeout(const std::string &channel,
+                         const std::string &role_uid);
     /// Dedicated metrics-report wire message (HEP-0033 §9.1 "Metrics report
     /// tick"). `_on_heartbeat` handles the piggyback case; this op handles
     /// the time-only METRICS_REPORT_REQ path that fires even when the role

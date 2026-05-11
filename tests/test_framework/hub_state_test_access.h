@@ -171,9 +171,15 @@ struct HubStateTestAccess
     {
         s._on_heartbeat_timeout(ch, uid);
     }
-    static void on_pending_timeout(HubState &s, const std::string &ch)
+    /// Wave M2.5 step 6: per-producer Pending-timeout signature.
+    /// Returns the typed RemoveProducerResult so tests can assert
+    /// channel survival (multi-producer) vs teardown (last producer).
+    static RemoveProducerResult
+    on_pending_timeout(HubState&         s,
+                        const std::string &ch,
+                        const std::string &uid)
     {
-        s._on_pending_timeout(ch);
+        return s._on_pending_timeout(ch, uid);
     }
     static void on_metrics_reported(HubState                             &s,
                                     const std::string                    &ch,
