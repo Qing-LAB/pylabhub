@@ -237,19 +237,23 @@ TEST_F(MetricsPlaneTest, HeartbeatMetrics_StoredByBroker)
     metrics["avg_period_us"]   = 1000;
     bh.brc.send_heartbeat(channel, uid, "producer", metrics);
 
-    ASSERT_TRUE(wait_for_metric(channel, [](const json &r) {
+    // Wave M2.5 G1 — producer metrics are per-uid tree, not single
+    // blob.  Tests now look up `producers[uid]`.
+    ASSERT_TRUE(wait_for_metric(channel, [&uid](const json &r) {
         return r.value("status", "") == "success"
             && r.contains("metrics")
-            && r["metrics"].contains("producer")
-            && r["metrics"]["producer"].value("iteration_count", 0) == 42;
+            && r["metrics"].contains("producers")
+            && r["metrics"]["producers"].contains(uid)
+            && r["metrics"]["producers"][uid].value("iteration_count", 0) == 42;
     })) << "broker did not record producer iteration_count=42 within 2s";
 
     auto result = query_metrics(channel);
     ASSERT_EQ(result.value("status", ""), "success");
     ASSERT_TRUE(result.contains("metrics"));
     auto &m = result["metrics"];
-    ASSERT_TRUE(m.contains("producer"));
-    EXPECT_EQ(m["producer"].value("iteration_count", 0), 42);
+    ASSERT_TRUE(m.contains("producers"));
+    ASSERT_TRUE(m["producers"].contains(uid));
+    EXPECT_EQ(m["producers"][uid].value("iteration_count", 0), 42);
 
     bh.stop();
 }
@@ -378,23 +382,27 @@ TEST_F(MetricsPlaneTest, MetricsUpdate_OverwriteOnHeartbeat)
     bh.brc.send_heartbeat(channel, uid, "producer", m1);
     // Wait until m1 propagated, so the m2 overwrite is observable as
     // a transition rather than a coincident write.
-    ASSERT_TRUE(wait_for_metric(channel, [](const json &r) {
-        return r.contains("metrics") && r["metrics"].contains("producer")
-            && r["metrics"]["producer"].value("iteration_count", 0) == 10;
+    // Wave M2.5 G1: per-uid producer tree.
+    ASSERT_TRUE(wait_for_metric(channel, [&uid](const json &r) {
+        return r.contains("metrics") && r["metrics"].contains("producers")
+            && r["metrics"]["producers"].contains(uid)
+            && r["metrics"]["producers"][uid].value("iteration_count", 0) == 10;
     })) << "first heartbeat (iteration_count=10) did not propagate within 2s";
 
     json m2;
     m2["iteration_count"] = 20;
     bh.brc.send_heartbeat(channel, uid, "producer", m2);
-    ASSERT_TRUE(wait_for_metric(channel, [](const json &r) {
-        return r.contains("metrics") && r["metrics"].contains("producer")
-            && r["metrics"]["producer"].value("iteration_count", 0) == 20;
+    ASSERT_TRUE(wait_for_metric(channel, [&uid](const json &r) {
+        return r.contains("metrics") && r["metrics"].contains("producers")
+            && r["metrics"]["producers"].contains(uid)
+            && r["metrics"]["producers"][uid].value("iteration_count", 0) == 20;
     })) << "second heartbeat (iteration_count=20) did not overwrite first within 2s";
 
     auto result = query_metrics(channel);
     auto &m = result["metrics"];
-    ASSERT_TRUE(m.contains("producer"));
-    EXPECT_EQ(m["producer"].value("iteration_count", 0), 20);
+    ASSERT_TRUE(m.contains("producers"));
+    ASSERT_TRUE(m["producers"].contains(uid));
+    EXPECT_EQ(m["producers"][uid].value("iteration_count", 0), 20);
 
     bh.stop();
 }
@@ -417,15 +425,18 @@ TEST_F(MetricsPlaneTest, ProducerPID_InQueryResult)
 
     // Wait until the producer record carries this process's PID.
     // Replaces a bare sleep_for(200ms) Class B ordering.
-    ASSERT_TRUE(wait_for_metric(channel, [](const json &r) {
-        return r.contains("metrics") && r["metrics"].contains("producer")
-            && r["metrics"]["producer"].value("pid", 0) == ::getpid();
+    // Wave M2.5 G1: per-uid producer tree carries per-producer pid.
+    ASSERT_TRUE(wait_for_metric(channel, [&uid](const json &r) {
+        return r.contains("metrics") && r["metrics"].contains("producers")
+            && r["metrics"]["producers"].contains(uid)
+            && r["metrics"]["producers"][uid].value("pid", 0) == ::getpid();
     })) << "producer PID did not appear in metrics within 2s";
 
     auto result = query_metrics(channel);
     auto &m = result["metrics"];
-    ASSERT_TRUE(m.contains("producer"));
-    EXPECT_EQ(m["producer"].value("pid", 0), ::getpid());
+    ASSERT_TRUE(m.contains("producers"));
+    ASSERT_TRUE(m["producers"].contains(uid));
+    EXPECT_EQ(m["producers"][uid].value("pid", 0), ::getpid());
 
     bh.stop();
 }
@@ -559,12 +570,15 @@ TEST_F(MetricsPlaneTest, QueryEngine_ChannelsHaveProducerAndConsumerMetrics)
 
     pylabhub::hub::MetricsFilter f;
     f.categories.insert(pylabhub::hub::metrics_category::kChannel);
-    // Wait until producer_metrics shows iteration_count=99.
+    // Wave M2.5 G1: producer_metrics is a per-uid tree (mirrors
+    // consumer_metrics), not a single blob.  Wait until uid's slot
+    // shows iteration_count=99.
     ASSERT_TRUE(::pylabhub::tests::helper::poll_until([&] {
         json r = svc().query_metrics(f);
         return r.contains("channels") && r["channels"].contains(channel)
             && r["channels"][channel].contains("producer_metrics")
-            && r["channels"][channel]["producer_metrics"]
+            && r["channels"][channel]["producer_metrics"].contains(uid)
+            && r["channels"][channel]["producer_metrics"][uid]
                    .value("iteration_count", 0) == 99;
     }, std::chrono::seconds(2)))
         << "channel producer_metrics iteration_count=99 not visible within 2s";
@@ -574,10 +588,77 @@ TEST_F(MetricsPlaneTest, QueryEngine_ChannelsHaveProducerAndConsumerMetrics)
     ASSERT_TRUE(result["channels"].contains(channel));
     const auto &c = result["channels"][channel];
     EXPECT_TRUE(c.contains("producer_metrics"));
-    EXPECT_EQ(c["producer_metrics"].value("iteration_count", 0), 99);
+    ASSERT_TRUE(c["producer_metrics"].contains(uid));
+    EXPECT_EQ(c["producer_metrics"][uid].value("iteration_count", 0), 99);
     EXPECT_TRUE(c.contains("_collected_at"));
 
     bh.stop();
+}
+
+// ── Wave M2.5 G1 — multi-producer metrics isolation ────────────────────────
+//
+// Pin the contract that two Fan-In producers' metrics reports do NOT
+// overwrite each other.  Pre-G1, `ChannelMetrics::producer` was a
+// single scalar field; this test would have FAILED (the second
+// reporter overwrote the first).  Post-G1 the storage is keyed by
+// role_uid; each producer's slot survives independently.
+TEST_F(MetricsPlaneTest, FanIn_TwoProducers_MetricsDoNotOverwrite)
+{
+    const std::string channel = pid_chan("metrics.fanin");
+    // Per HEP-CORE-0033 §G2.2.0b: each `tag.name.unique` component
+    // starts with a letter.  `pidNNN` prefix keeps the last component
+    // letter-led.
+    const std::string uid_a   = "prod.fanin.a.pid" + std::to_string(::getpid());
+    const std::string uid_b   = "prod.fanin.b.pid" + std::to_string(::getpid());
+
+    BrcHandle bh_a, bh_b;
+    bh_a.start(ep(), pk(), uid_a);
+    bh_b.start(ep(), pk(), uid_b);
+
+    // Both register on the same channel with the same schema (Fan-In).
+    // ZMQ transport — SHM forbids multi-producer (HEP-CORE-0023 §2.1.1).
+    auto opts_a = make_reg_opts(channel, uid_a);
+    opts_a["data_transport"] = "zmq";
+    auto reg_a = bh_a.brc.register_channel(opts_a, 3000);
+    ASSERT_TRUE(reg_a.has_value()) << reg_a.value_or(json{}).dump();
+    ASSERT_EQ(reg_a->value("status", ""), "success") << reg_a->dump();
+
+    auto opts_b = make_reg_opts(channel, uid_b);
+    opts_b["data_transport"] = "zmq";
+    auto reg_b = bh_b.brc.register_channel(opts_b, 3000);
+    ASSERT_TRUE(reg_b.has_value()) << reg_b.value_or(json{}).dump();
+    ASSERT_EQ(reg_b->value("status", ""), "success") << reg_b->dump();
+
+    // A reports iteration_count=100; B reports iteration_count=200.
+    json ma, mb;
+    ma["iteration_count"] = 100;
+    mb["iteration_count"] = 200;
+    bh_a.brc.send_heartbeat(channel, uid_a, "producer", ma);
+    bh_b.brc.send_heartbeat(channel, uid_b, "producer", mb);
+
+    // Wait until BOTH producers' slots exist with the expected values.
+    ASSERT_TRUE(wait_for_metric(channel, [&](const json &r) {
+        if (!r.contains("metrics")) return false;
+        const auto &m = r["metrics"];
+        if (!m.contains("producers")) return false;
+        const auto &p = m["producers"];
+        return p.contains(uid_a) && p[uid_a].value("iteration_count", 0) == 100
+            && p.contains(uid_b) && p[uid_b].value("iteration_count", 0) == 200;
+    })) << "Both producers' metrics must coexist in the per-uid tree "
+           "(pre-G1 the second report overwrote the first); within 2s";
+
+    // Final direct read also confirms.
+    auto result = query_metrics(channel);
+    const auto &p = result["metrics"]["producers"];
+    EXPECT_EQ(p[uid_a].value("iteration_count", 0), 100)
+        << "Producer A's slot must NOT be overwritten by B's report";
+    EXPECT_EQ(p[uid_b].value("iteration_count", 0), 200)
+        << "Producer B's slot must NOT be overwritten by A's report";
+    EXPECT_EQ(p[uid_a].value("pid", 0), ::getpid());
+    EXPECT_EQ(p[uid_b].value("pid", 0), ::getpid());
+
+    bh_b.stop();
+    bh_a.stop();
 }
 
 TEST_F(MetricsPlaneTest, QueryEngine_FilterEcho)

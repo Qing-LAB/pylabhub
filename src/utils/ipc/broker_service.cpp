@@ -238,14 +238,22 @@ public:
     };
     struct ChannelMetrics
     {
-        ParticipantMetrics                                          producer;
-        std::unordered_map<std::string, ParticipantMetrics>         consumers;
+        // Wave M2.5 (G1 fix, 2026-05-11) — per-producer keying.
+        // Pre-fix this was a single `ParticipantMetrics producer`, which
+        // overwrote on every Fan-In producer's report; same overwrite-
+        // class bug eliminated on ChannelEntry.  Now keyed by `role_uid`,
+        // mirroring the consumer side.  See
+        // REVIEW_WaveM2.5_PostStep6_2026-05-11.md G1.
+        std::unordered_map<std::string, ParticipantMetrics> producers;
+        std::unordered_map<std::string, ParticipantMetrics> consumers;
     };
     /// channel_name ->aggregated metrics.  Protected by m_query_mu.
     std::unordered_map<std::string, ChannelMetrics> metrics_store_;
 
     void update_producer_metrics(const std::string &channel,
-                                 const nlohmann::json &metrics, uint64_t pid);
+                                 const std::string &uid,
+                                 const nlohmann::json &metrics,
+                                 uint64_t pid);
     void update_consumer_metrics(const std::string &channel,
                                  const std::string &uid,
                                  const nlohmann::json &metrics);
@@ -2141,11 +2149,23 @@ void BrokerServiceImpl::handle_heartbeat_req(const nlohmann::json& req)
 
     // HEP-CORE-0019: keep the legacy metrics_store_ in sync until
     // G2.2.4 absorbs metrics.  After that, `_on_heartbeat`'s role-
-    // side metrics update is the only source.
-    if (req.contains("metrics") && req["metrics"].is_object())
+    // side metrics update is the only source.  Wave M2.5 (G1) —
+    // producer metrics are keyed by role_uid (`hb_uid` resolves
+    // either to the wire uid or to the fallback first-producer uid
+    // for pre-M0 clients) so Fan-In producers don't overwrite each
+    // other.  Consumer-presence heartbeats route to the consumer
+    // store via `update_consumer_metrics`; producer-presence
+    // heartbeats go here.
+    if (req.contains("metrics") && req["metrics"].is_object() &&
+        hb_role_type == "producer")
     {
         const uint64_t pid = req.value("producer_pid", uint64_t{0});
-        update_producer_metrics(channel_name, req["metrics"], pid);
+        update_producer_metrics(channel_name, hb_uid, req["metrics"], pid);
+    }
+    else if (req.contains("metrics") && req["metrics"].is_object() &&
+             hb_role_type == "consumer" && !hb_uid.empty())
+    {
+        update_consumer_metrics(channel_name, hb_uid, req["metrics"]);
     }
 }
 
@@ -3593,17 +3613,26 @@ BrokerService::query_metrics(const pylabhub::hub::MetricsFilter &filter) const
             if (!include(filter.channels, name))
                 continue;
             auto cj = channel_to_json(ch, observe_channel(ch, snap));
-            // Merge in role-pushed metrics (HEP-0019).
+            // Merge in role-pushed metrics (HEP-0019).  Wave M2.5
+            // (G1) — `producer_metrics` is now a per-uid tree
+            // mirroring `consumer_metrics`; pre-fix it was a single
+            // blob from whichever producer reported last.
             auto mit = metrics_copy.find(name);
             if (mit != metrics_copy.end())
             {
-                if (!mit->second.producer.data.is_null())
-                    cj["producer_metrics"] = mit->second.producer.data;
-                nlohmann::json cm = nlohmann::json::object();
-                for (const auto &[uid, pm] : mit->second.consumers)
+                nlohmann::json pm = nlohmann::json::object();
+                for (const auto &[uid, p] : mit->second.producers)
                 {
-                    if (!pm.data.is_null())
-                        cm[uid] = pm.data;
+                    if (!p.data.is_null())
+                        pm[uid] = p.data;
+                }
+                if (!pm.empty())
+                    cj["producer_metrics"] = std::move(pm);
+                nlohmann::json cm = nlohmann::json::object();
+                for (const auto &[uid, p] : mit->second.consumers)
+                {
+                    if (!p.data.is_null())
+                        cm[uid] = p.data;
                 }
                 if (!cm.empty())
                     cj["consumer_metrics"] = std::move(cm);
@@ -3735,15 +3764,27 @@ void BrokerService::send_hub_targeted_msg(const std::string& target_hub_uid,
 // ============================================================================
 
 void BrokerServiceImpl::update_producer_metrics(const std::string &channel,
+                                                 const std::string &uid,
                                                  const nlohmann::json &metrics,
                                                  uint64_t pid)
 {
     // Caller holds m_query_mu (called from process_message under lock).
+    // Wave M2.5 (G1) — keyed by role_uid so Fan-In producers each have
+    // their own metrics slot; previous single-field shape overwrote
+    // on every report.
+    if (uid.empty())
+    {
+        LOGGER_WARN("Broker: dropping producer metrics for '{}' — empty role_uid",
+                    channel);
+        return;
+    }
     auto &cm = metrics_store_[channel];
-    cm.producer.pid         = pid;
-    cm.producer.last_report = std::chrono::steady_clock::now();
-    cm.producer.data        = metrics;
-    LOGGER_DEBUG("Broker: stored producer metrics for channel '{}'", channel);
+    auto &pm = cm.producers[uid];
+    pm.pid         = pid;
+    pm.last_report = std::chrono::steady_clock::now();
+    pm.data        = metrics;
+    LOGGER_DEBUG("Broker: stored producer metrics for channel '{}' uid='{}'",
+                 channel, uid);
 }
 
 void BrokerServiceImpl::update_consumer_metrics(const std::string &channel,
@@ -3794,12 +3835,22 @@ nlohmann::json BrokerServiceImpl::query_metrics(const std::string &channel) cons
 
     auto build_channel_metrics = [](const ChannelMetrics &cm) -> nlohmann::json
     {
+        // Wave M2.5 (G1) — producers + consumers BOTH per-uid trees,
+        // matching the per-producer storage shape and HEP-CORE-0007
+        // §12.4 metadata-tree convention.  Pre-fix, `producer` was a
+        // single-blob object; admin clients reading the new shape
+        // should iterate `ch["producers"]`.
         nlohmann::json ch;
-        if (!cm.producer.data.is_null())
+        nlohmann::json producers = nlohmann::json::object();
+        for (const auto &[uid, pm] : cm.producers)
         {
-            ch["producer"] = cm.producer.data;
-            ch["producer"]["pid"] = cm.producer.pid;
+            if (pm.data.is_null()) continue;
+            nlohmann::json one = pm.data;
+            one["pid"] = pm.pid;
+            producers[uid] = std::move(one);
         }
+        if (!producers.empty())
+            ch["producers"] = std::move(producers);
         nlohmann::json consumers = nlohmann::json::object();
         for (const auto &[uid, pm] : cm.consumers)
         {

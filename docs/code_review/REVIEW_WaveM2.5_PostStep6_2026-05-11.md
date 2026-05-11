@@ -312,14 +312,14 @@ files import the helper.
 
 | ID | Title | Severity | Status |
 |---|---|---|---|
-| G1 | `ChannelMetrics::producer` single-producer scalar (overwrite-class bug) | Bug | ❌ OPEN |
+| G1 | `ChannelMetrics::producer` single-producer scalar (overwrite-class bug) | Bug | ✅ FIXED 2026-05-11 (per-uid map; per-producer wire shape on `producer_metrics` / `query_metrics`) |
 | G2 | 17 test files set obsolete REG_REQ wire keys | Cruft | ✅ FIXED 2026-05-11 (14 files swept, 51 lines deleted) |
 | G3 | Direct `producers[]` access still common (step 7 deferred) | Deferred | ⚠️ TRACKED |
 | G4 | Design doc §5.1 API methods never delivered (step 2d) | Deferred | ⚠️ TRACKED |
 | G5 | `_on_channel_registered` legacy path correctness | Verified | ✅ OK |
 | G6 | HEP-CORE-0021 §16.3 `role_uid` wire vs identity-based resolution | Doc drift | ✅ FIXED 2026-05-11 |
 | G7 | Stale "STEP 2a ADDITIVE" comments on `ProducerEntry` | Stale | ✅ FIXED 2026-05-11 |
-| G8 | Missing L2 test for `ChannelMetrics` multi-producer | Coverage | ❌ OPEN (couples with G1) |
+| G8 | Missing L2 test for `ChannelMetrics` multi-producer | Coverage | ✅ FIXED 2026-05-11 (`MetricsPlaneTest.FanIn_TwoProducers_MetricsDoNotOverwrite` + 4 existing tests updated to per-uid tree shape) |
 | G9 | HEP-CORE-0023 §2.6 schematic placeholder for `ChannelEntry` | Doc precision | ✅ FIXED 2026-05-11 |
 | G10 | `compute_channel_observable` template direct-field access | OK by design | ✅ OK |
 | G11 | `RoleEntry.disconnected_fired` 🚧 PATCH | Tracked | ⚠️ DEFERRED to M3 |
