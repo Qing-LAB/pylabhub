@@ -171,7 +171,97 @@ The **explicit invariant** that emerges:
 
 This is checkable at code-review time.  Any future addition to `do_role_teardown` must be classified A / B / C; reviewers reject mis-classifications.
 
-### 3.5.5 What this contract buys us beyond MD1
+### 3.5.5 Inside `teardown_infrastructure_` — step-by-step classification
+
+The role host's `teardown_infrastructure_` callback is identical in
+all three role kinds (producer / consumer / processor — verified
+2026-05-12 against `producer_role_host.cpp:447-472`,
+`consumer_role_host.cpp:406-428`, `processor_role_host.cpp:495-518`).
+Its four steps, today and post-MD1:
+
+```cpp
+void <RoleKind>RoleHost::teardown_infrastructure_()
+{
+    // 1.
+    core().clear_inbox_cache();
+
+    // 2.
+    if (inbox_queue_) {
+        inbox_queue_->stop();
+        inbox_queue_.reset();
+    }
+
+    // 3.
+    if (broker_comm_) {
+        broker_comm_->disconnect();
+        broker_comm_.reset();
+    }
+
+    // 4.
+    if (has_api())
+        api().close_queues();
+}
+```
+
+Classification of each step under the A/B/C contract (no step
+changes — only its surrounding context does):
+
+| # | Action | Phase | What it does | Why it's safe post-MD1 |
+|---|---|---|---|---|
+| **1** | `core().clear_inbox_cache()` | C | Drops the in-memory cache of inbox-message Python/Lua views held by `RoleHostCore`. | No threads access the cache except the worker thread; the worker is the one running `teardown_infrastructure_`. Always safe. |
+| **2a** | `inbox_queue_->stop()` | C | InboxQueue is the **inline / no-thread** pattern (no background reader; polled inline by `RoleAPIBase::drain_inbox_sync` from the worker thread). `stop()` just closes the ZMQ socket. | The worker is past the data loop; no one is polling the inbox. Closing the socket is safe. |
+| **2b** | `inbox_queue_.reset()` | C | Destroys the InboxQueue object. | Same — no thread holds a reference. |
+| **3a** | `broker_comm_->disconnect()` | C (with vestigial Phase A inside) | Closes BRC's monitor socket, signal-PAIR sockets, DEALER socket; marks `connected = false`. | Pre-MD1: the ctrl thread might still be polling these sockets → undefined ZMQ behaviour. **Post-MD1**: drain has returned → ctrl thread has exited `run_poll_loop` → sockets have no users → close is safe. |
+| **3b** | `broker_comm_.reset()` | C | Destroys `BrokerRequestComm` (frees `pImpl`). | **THIS IS THE BUG SITE PRE-MD1.** The ctrl thread's post-loop `pImpl->poll_loop_running.store(false, ...)` at `broker_request_comm.cpp:594` runs *after* `loop.run()` returns. Pre-MD1, drain happens AFTER this `reset()` — so the store hits freed memory. Post-MD1, drain has already joined the ctrl thread, guaranteeing its post-loop store has completed before `reset()` runs. |
+| **4** | `api().close_queues()` → for each queue: `stop()` then `reset()` | C (internally A+B+C) | ZmqQueue and ShmQueue are the **self-threaded** pattern: their own `stop()` synchronously joins their own private ThreadManager before closing the socket. Each queue therefore self-contains Phase A (signal own recv/send threads) + Phase B (join them) + Phase C (close socket). | Always safe — these queues never had the MD1 bug class because their threads live inside the object. Including this step in `teardown_infrastructure_` is for clean ordering only, not for race safety. |
+
+**Critical: nothing inside `teardown_infrastructure_` needs to
+change.**  The MD1 fix is *external* — it changes the ordering of
+the three things bracketing this callback:
+
+```
+Before MD1 (BUG):
+  Step 12: broker_comm->stop()   ← Phase A signal (BRC ctrl thread)
+  Step 13: teardown_infrastructure_()   ← Phase C — RUNS WHILE CTRL THREAD STILL ALIVE
+  Step 14: thread_manager.drain()   ← Phase B — TOO LATE
+
+After MD1 (FIXED):
+  Step 12: broker_comm->stop()   ← Phase A signal (BRC ctrl thread)
+  Step 13: thread_manager.drain()   ← Phase B — synchronization point
+  Step 14: teardown_infrastructure_()   ← Phase C — all internal steps now provably safe
+```
+
+The four steps inside `teardown_infrastructure_` keep their relative
+order; the order INSIDE is fine.  The fix is the position of the
+whole callback relative to drain.
+
+**Stale comment to update.**  All three role hosts have a comment
+"Broker and comm threads already joined via api_->thread_manager().drain()"
+at the top of their `teardown_infrastructure_` (line 449, 408, 497
+respectively).  Pre-MD1 this comment is a lie (drain hasn't run yet);
+post-MD1 it becomes accurate.  P1 should reword each to a stronger
+*precondition* claim:
+
+```cpp
+// PRECONDITION (Teardown Ordering Contract): caller has already
+// run thread_manager().drain() — every spawned thread under
+// api.thread_manager() has returned.  All steps below are
+// PHASE C (destroy) and rely on this precondition for safety.
+```
+
+**Dead-code observation (not a fix, just an audit note).**
+`BrokerRequestComm::disconnect()` itself sets
+`pImpl->stop_requested.store(true)` at line 496 — that's a Phase A
+signal inside what is otherwise a Phase C method.  Pre-MD1 the flip
+was meaningful because Step 12's `stop()` and Step 13.3a's
+`disconnect()` were both signaling against a live ctrl thread.
+Post-MD1, by the time `disconnect()` runs the ctrl thread is already
+joined; the flip becomes dead code.  Not load-bearing in either
+case (Step 12 sets the same flag earlier), but worth knowing —
+leaves the BRC API self-consistent without depending on the caller's
+ordering.
+
+### 3.5.6 What this contract buys us beyond MD1
 
 Once explicit, the contract clarifies a class of related races:
 
