@@ -23,11 +23,13 @@
 #include "pylabhub_utils_export.h"
 #include "utils/timeout_constants.hpp"     // kMidTimeoutMs (join/shutdown defaults)
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <functional>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace pylabhub::utils
@@ -36,6 +38,37 @@ namespace pylabhub::utils
 class PYLABHUB_UTILS_EXPORT ThreadManager
 {
   public:
+    /// Per-slot context handle passed into the thread body.  Lets the body
+    /// declare "I have exited my active loop and will not touch external
+    /// shared state from this point on" without coupling to its owner's
+    /// pImpl.  Per HEP-CORE-0031 §4.1 (Thread Shutdown Contract), every
+    /// managed thread MUST call `mark_active_loop_exited()` as soon as it
+    /// leaves its active loop function and MUST NOT touch any pImpl /
+    /// shared resource the teardown caller might destroy afterwards.
+    ///
+    /// SlotContext is non-copyable, non-movable — it lives on the thread's
+    /// stack frame inside the spawn wrapper for the body's duration.
+    struct PYLABHUB_UTILS_EXPORT SlotContext
+    {
+        /// Mark this slot's active_loop_exited flag = true.  Idempotent;
+        /// thread-safe (atomic release).  After this returns, the teardown
+        /// caller's `wait_for_active_loop_exit()` for this slot may return
+        /// success and the caller is free to destroy resources the thread
+        /// declared it would no longer touch.
+        void mark_active_loop_exited() noexcept;
+
+        SlotContext(const SlotContext &)            = delete;
+        SlotContext &operator=(const SlotContext &) = delete;
+        SlotContext(SlotContext &&)                 = delete;
+        SlotContext &operator=(SlotContext &&)      = delete;
+
+      private:
+        friend class ThreadManager;
+        explicit SlotContext(std::shared_ptr<std::atomic<bool>> flag) noexcept
+            : active_loop_exited_(std::move(flag)) {}
+        std::shared_ptr<std::atomic<bool>> active_loop_exited_;
+    };
+
     /// Per-thread spawn options.
     struct SpawnOptions
     {
@@ -102,12 +135,32 @@ class PYLABHUB_UTILS_EXPORT ThreadManager
     /// @param opts  Per-thread options (join timeout).
     /// @return true if spawned; false if drain() has already run (the
     ///   manager is in its closing phase and rejects new work).
-    /// Spawn with explicit options.
+    /// Spawn with explicit options.  Contract-aware overload — the body
+    /// receives a `SlotContext &` it uses to call `mark_active_loop_exited()`
+    /// at the moment it leaves its active loop (per HEP-CORE-0031 §4.1).
+    bool spawn(const std::string &                 name,
+               std::function<void(SlotContext &)>  body,
+               SpawnOptions                        opts);
+
+    /// Spawn with default join timeout (5 seconds per-thread).  Contract-
+    /// aware overload.
+    bool spawn(const std::string &                 name,
+               std::function<void(SlotContext &)>  body);
+
+    /// Backwards-compatible overload — body takes no arguments.  Internally
+    /// wraps the body in a SlotContext-ignoring trampoline.  For threads
+    /// that do not need to mark active-loop-exit explicitly: the wrapper
+    /// marks the flag automatically right before the wrapper exits (so
+    /// `is_active_loop_exited` returns true immediately before `done` is
+    /// set).  Use the SlotContext overload above if the thread needs to
+    /// signal loop exit BEFORE body return (e.g., to let the teardown
+    /// caller release resources while the thread does post-loop cleanup).
     bool spawn(const std::string &    name,
                std::function<void()>  body,
                SpawnOptions           opts);
 
-    /// Spawn with default join timeout (5 seconds per-thread).
+    /// Spawn with default join timeout (5 seconds per-thread).  Backwards-
+    /// compatible overload.
     bool spawn(const std::string &    name,
                std::function<void()>  body);
 
@@ -148,6 +201,29 @@ class PYLABHUB_UTILS_EXPORT ThreadManager
     ///   false if no such slot existed, drain() has already run, or the
     ///   slot was detached after timeout.
     [[nodiscard]] bool join_named(std::string_view name);
+
+    /// Query whether the named slot's active-loop-exited flag is set
+    /// (per HEP-CORE-0031 §4.1).  Returns true iff a slot with this name
+    /// exists AND its thread has called
+    /// `SlotContext::mark_active_loop_exited()` (or the spawn wrapper has
+    /// done it automatically after body return for old-overload spawns).
+    /// Returns false if no such slot exists.  Thread-safe (atomic load).
+    [[nodiscard]] bool is_active_loop_exited(std::string_view name) const noexcept;
+
+    /// Block until the named slot's active-loop-exited flag becomes true,
+    /// or until the timeout elapses.  Returns true iff the flag was set
+    /// within the timeout (success).  Returns false on timeout OR if no
+    /// slot with this name exists.  Polls in 10 ms granularity.
+    /// Thread-safe; callable from any thread.
+    ///
+    /// Used by the role-side teardown caller (HEP-CORE-0011 §"Role Host
+    /// worker_main_() Steps", Step 12.5) to honor the BRC ctrl thread's
+    /// shutdown contract before destroying `broker_comm_`.  Generalises
+    /// to any externally-threaded class whose `pImpl` the caller intends
+    /// to destroy.
+    [[nodiscard]] bool wait_for_active_loop_exit(
+        std::string_view          name,
+        std::chrono::milliseconds timeout) noexcept;
 
     /// Count of threads that were detached during the most recent drain()
     /// call (0 if no drain yet or last call was fully clean).
