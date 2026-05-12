@@ -262,9 +262,9 @@ TEST_F(MetricsPlaneTest, HeartbeatMetrics_StoredByBroker)
     bh.stop();
 }
 
-// ── Consumer metrics report ─────────────────────────────────────────────────
+// ── Consumer metrics via heartbeat-piggyback (post-M1.4) ───────────────────
 
-TEST_F(MetricsPlaneTest, MetricsReport_ConsumerStoredByBroker)
+TEST_F(MetricsPlaneTest, ConsumerHeartbeatMetrics_StoredByBroker)
 {
     const std::string channel  = pid_chan("metrics.consumer.stored");
     const std::string prod_uid = "prod." + channel;
