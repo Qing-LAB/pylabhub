@@ -35,6 +35,7 @@
 #include <string>
 #include <thread>
 
+#include <cppzmq/zmq_addon.hpp>
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
@@ -130,6 +131,53 @@ struct BrcHandle
 std::string pid_chan(const std::string &base)
 {
     return base + ".pid" + std::to_string(getpid());
+}
+
+// Wave M1.4 (2026-05-11): inline raw-wire request helper for tests that
+// need to send a literal msg_type (e.g., verifying the retired
+// `METRICS_REPORT_REQ` now returns UNKNOWN_MSG_TYPE).  Mirrors the
+// pattern from `tests/test_layer3_datahub/workers/datahub_broker_workers.cpp`
+// `raw_req`.  Single-shot DEALER, two-frame [type, payload].  Returns
+// the parsed reply body, or null JSON on timeout.
+json raw_request(const std::string &endpoint,
+                 const std::string &server_pubkey,
+                 const std::string &msg_type,
+                 const json        &payload,
+                 int                timeout_ms = 2000)
+{
+    zmq::context_t ctx(1);
+    zmq::socket_t  dealer(ctx, zmq::socket_type::dealer);
+
+    if (server_pubkey.size() == 40)
+    {
+        std::array<char, 41> client_pub{};
+        std::array<char, 41> client_sec{};
+        if (zmq_curve_keypair(client_pub.data(), client_sec.data()) != 0)
+            return {};
+        dealer.set(zmq::sockopt::curve_serverkey, server_pubkey);
+        dealer.set(zmq::sockopt::curve_publickey, std::string(client_pub.data(), 40));
+        dealer.set(zmq::sockopt::curve_secretkey, std::string(client_sec.data(), 40));
+    }
+
+    dealer.connect(endpoint);
+
+    static constexpr char kCtrl = 'C';
+    const std::string     body  = payload.dump();
+    std::vector<zmq::const_buffer> frames = {zmq::buffer(&kCtrl, 1),
+                                              zmq::buffer(msg_type),
+                                              zmq::buffer(body)};
+    if (!zmq::send_multipart(dealer, frames)) return {};
+
+    std::vector<zmq::pollitem_t> items = {{dealer.handle(), 0, ZMQ_POLLIN, 0}};
+    zmq::poll(items, std::chrono::milliseconds(timeout_ms));
+    if ((items[0].revents & ZMQ_POLLIN) == 0) return {};  // timeout
+
+    std::vector<zmq::message_t> recv_frames;
+    if (!zmq::recv_multipart(dealer, std::back_inserter(recv_frames))) return {};
+    if (recv_frames.size() < 2) return {};
+    // Frame layout from broker: [type_str, json_body] (no ctrl byte on reply).
+    return json::parse(std::string(recv_frames.back().data<char>(),
+                                    recv_frames.back().size()));
 }
 
 json make_reg_opts(const std::string &channel, const std::string &role_uid)
@@ -683,4 +731,114 @@ TEST_F(MetricsPlaneTest, QueryEngine_FilterEcho)
     ASSERT_EQ(echo["roles"].size(), 1u);
     EXPECT_EQ(echo["roles"][0].get<std::string>(),
               "prod.specific.uid12345678");
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Wave M1.4 (2026-05-11) — wire-protocol retirement tests.
+// ──────────────────────────────────────────────────────────────────────
+
+TEST_F(MetricsPlaneTest, OldMetricsReportReq_GetsUnknownMsgType)
+{
+    // M1.4 contract: METRICS_REPORT_REQ is RETIRED from the protocol.
+    // Old clients sending this wire message receive an UNKNOWN_MSG_TYPE
+    // error reply (and broker_proto_major is bumped 1 → 2 to signal
+    // the break — see plh_version_registry.hpp).
+    //
+    // Sensitivity: a regression that re-adds METRICS_REPORT_REQ to
+    // the dispatch table OR to kFireAndForgetTypes would make this
+    // test fail.
+    //
+    // The broker EMITS a WARN ("unknown msg_type 'METRICS_REPORT_REQ'")
+    // intentionally — declare it as expected so the log-capture
+    // fixture doesn't treat it as a regression signal.
+    ExpectLogWarn("unknown msg_type 'METRICS_REPORT_REQ'");
+
+    const std::string channel = pid_chan("metrics.retired");
+    const std::string uid     = "prod." + channel;
+
+    // Pre-register the channel so the broker has SOMETHING for the
+    // payload's channel_name to reference (proves the rejection is
+    // about msg_type, not channel-not-found).
+    BrcHandle bh;
+    bh.start(ep(), pk(), uid);
+    ASSERT_TRUE(bh.brc.register_channel(make_reg_opts(channel, uid), 3000)
+                    .has_value());
+
+    json payload;
+    payload["channel_name"] = channel;
+    payload["uid"]          = uid;
+    payload["metrics"]      = json{{"legacy_field", 1}};
+
+    json reply = raw_request(ep(), pk(), "METRICS_REPORT_REQ", payload);
+    ASSERT_FALSE(reply.is_null())
+        << "Expected an UNKNOWN_MSG_TYPE reply within 2 s; got nothing "
+           "(the broker may be silently dropping the request rather "
+           "than responding with an error)";
+    EXPECT_EQ(reply.value("status", std::string{}), "error");
+    EXPECT_EQ(reply.value("error_code", std::string{}), "UNKNOWN_MSG_TYPE")
+        << "Wire-protocol break must surface as UNKNOWN_MSG_TYPE per "
+           "broker_service.cpp dispatch fallback";
+
+    bh.stop();
+}
+
+TEST_F(MetricsPlaneTest, AllChannels_IncludesChannelsWithoutMetrics)
+{
+    // M1.4 behavioral change: pre-fix `query_metrics()` (all-channels)
+    // iterated `metrics_store_` (only channels with reports);
+    // post-fix iterates HubState's `snapshot().channels` (ALL
+    // registered channels).  Channels with no metrics appear with an
+    // empty `{}` metrics object.  This is a diagnostic improvement —
+    // admin can see registered channels even before any heartbeats.
+    const std::string channel_with    = pid_chan("metrics.has.metrics");
+    const std::string channel_without = pid_chan("metrics.no.metrics");
+    const std::string uid_with        = "prod." + channel_with;
+    const std::string uid_without     = "prod." + channel_without;
+
+    BrcHandle bh1, bh2;
+    bh1.start(ep(), pk(), uid_with);
+    bh2.start(ep(), pk(), uid_without);
+    ASSERT_TRUE(bh1.brc.register_channel(make_reg_opts(channel_with, uid_with), 3000)
+                    .has_value());
+    ASSERT_TRUE(bh2.brc.register_channel(make_reg_opts(channel_without, uid_without), 3000)
+                    .has_value());
+
+    // channel_with: heartbeat with metrics.
+    bh1.brc.send_heartbeat(channel_with, uid_with, "producer",
+                            json{{"data_point", 7}});
+    // channel_without: NO heartbeat.  Registered but never reported.
+
+    ASSERT_TRUE(::pylabhub::tests::helper::poll_until([&] {
+        auto r = query_metrics();
+        return r.contains("channels")
+            && r["channels"].contains(channel_with)
+            && r["channels"][channel_with].contains("producers");
+    }, std::chrono::seconds(2)))
+        << "channel_with did not record its metrics within 2s";
+
+    auto r = query_metrics();
+    ASSERT_TRUE(r.contains("channels"));
+
+    // Both channels MUST appear, even though channel_without has no
+    // metrics reports.  This is the M1.4 shape change.
+    ASSERT_TRUE(r["channels"].contains(channel_with))
+        << "Channel with metrics appears (was true pre-M1.4 too)";
+    ASSERT_TRUE(r["channels"].contains(channel_without))
+        << "M1.4 contract: channel WITHOUT metrics also appears in "
+           "all-channels query (with empty metrics object).  Pre-fix "
+           "this channel would have been silently absent because "
+           "`metrics_store_` only contained reported channels.";
+
+    // channel_with carries its metrics.
+    EXPECT_EQ(r["channels"][channel_with]["producers"][uid_with]["data_point"], 7);
+
+    // channel_without exists but its metrics object is empty (no
+    // "producers" or "consumers" keys because no presence reported).
+    auto &cw = r["channels"][channel_without];
+    EXPECT_FALSE(cw.contains("producers"))
+        << "Empty channel has no producers metrics";
+    EXPECT_FALSE(cw.contains("consumers"));
+
+    bh1.stop();
+    bh2.stop();
 }
