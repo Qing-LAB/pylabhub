@@ -411,24 +411,24 @@ relay state referencing it is dropped, before the next broadcast or
 relay is processed.  See `BrokerServiceImpl::on_role_disconnected`
 in `src/utils/ipc/broker_service.cpp`.
 
-**Role-side teardown ordering (Teardown Ordering Contract).**  The
-*role-side* end of this cleanup chain — `do_role_teardown` in
-`src/utils/service/role_host_lifecycle.cpp` — follows the
-PHASE A (signal) → PHASE B (drain) → PHASE C (destroy) contract.
-Phase A signals stop on the ctrl-plane (BRC) and worker-plane
-(core.set_running=false); Phase B is `thread_manager().drain()`;
-Phase C runs `teardown_infrastructure_()` (BRC `disconnect()`,
-queue/inbox destruction).  Hub-side `on_role_disconnected()` and
-its broker-side fan-out runs entirely on the broker's own thread
-and is unaffected — but role-side teardown order matters because
-`BrokerRequestComm`'s ctrl thread is externally-threaded (owned by
-`RoleAPIBase`'s ThreadManager, not by BRC).  Full contract +
-classification of every step lives in
-`docs/HEP/HEP-CORE-0031-ThreadManager.md` §4.1, with
-`docs/IMPLEMENTATION_GUIDANCE.md` "Teardown Ordering Contract" as
-the cross-cutting reference and
+**Role-side teardown — Thread Shutdown Contract.**  The *role-side*
+end of this cleanup chain — `do_role_teardown` in
+`src/utils/service/role_host_lifecycle.cpp` — honors the per-thread
+shutdown contract defined in HEP-CORE-0031 §4.1.  In particular, the
+BRC ctrl thread is externally-threaded (owned by `RoleAPIBase`'s
+`ThreadManager`, not by BRC).  Its contract: the thread's body
+calls `SlotContext::mark_active_loop_exited()` after `loop.run()`
+returns and MUST NOT touch BRC's `pImpl` after that point;
+`do_role_teardown` waits on the flag via
+`thread_manager().wait_for_active_loop_exit("ctrl", T)` before
+`teardown_infrastructure_` destroys `broker_comm_`.  Hub-side
+`on_role_disconnected()` and its broker-side fan-out run entirely
+on the broker's own thread and are unaffected by the role-side
+contract.  Cross-references: HEP-CORE-0031 §4.1 for the canonical
+contract, `docs/IMPLEMENTATION_GUIDANCE.md` "Thread Shutdown
+Contract" for the cross-cutting reference, and
 `docs/HEP/HEP-CORE-0011-ScriptHost-Abstraction-Framework.md`
-§"Role Host worker_main_() Steps" for the role-host instantiation.
+§"Role Host worker_main_() Steps" for the role-host step-by-step.
 
 ### 2.5.1 Role-side preferred cadence vs. hub authority
 

@@ -732,51 +732,55 @@ Step 7: Run data loop (invoke_produce / invoke_consume / invoke_process)
 Step 8: stop_accepting() + deregister_from_broker()
 Step 9: invoke_on_stop()           (ctrl thread still alive for final I/O)
 Step 10: engine->finalize()
-Step 11: broker_comm->stop() + set_running(false)   (PHASE A — signal ctrl to exit; non-destructive)
-Step 12: thread_manager().drain()                   (PHASE B — synchronous join; all spawned threads have returned)
-Step 13: teardown_infrastructure()                  (PHASE C — disconnect broker, close queues/inbox; provably safe)
+Step 11: broker_comm->stop() + set_running(false)                       (signal ctrl thread; non-destructive)
+Step 12: api.thread_manager().wait_for_active_loop_exit("ctrl", T)      (honor BRC ctrl thread's shutdown contract)
+Step 13: teardown_infrastructure()                                       (disconnect broker, close queues/inbox)
+Step 14: api.thread_manager().drain()                                    (final join; safety net)
 ```
 
-> **Ordering invariant (Teardown Ordering Contract).**  Steps 11-13
-> follow the **PHASE A → PHASE B → PHASE C** contract:
-> - **PHASE A — SIGNAL** (pre-drain): set stop flags, send wake-up
->   signals.  Destroy nothing that a live thread holds a reference
->   to or polls on.  After Phase A every spawned thread is
->   guaranteed to *observe* stop and have a path to return.
-> - **PHASE B — DRAIN**: `thread_manager().drain()` is the
->   synchronization point.  When it returns, no spawned thread is
->   running.
-> - **PHASE C — DESTROY** (post-drain): `disconnect()` / `reset()`
->   / dtor.  Provably safe — Phase B guarantees no thread can
->   touch destroyed resources.
+> **Thread Shutdown Contract** (canonical: HEP-CORE-0031 §4.1; cross-
+> cutting reference: `docs/IMPLEMENTATION_GUIDANCE.md`).  Steps 11-14
+> honor the contract:
 >
-> **Why Step 12 (drain) sits between signal and destruction.**  The
-> ctrl thread is owned by `RoleAPIBase`'s `ThreadManager`, NOT by
-> `BrokerRequestComm`.  BRC's `stop()` is therefore necessarily
-> fire-and-forget (signal only) — it cannot synchronously join a
-> thread it does not own.  Running Phase C before Phase B returns
-> would race against the ctrl thread's last access to BRC's
-> `pImpl->poll_loop_running.store(false)` at
-> `broker_request_comm.cpp:594` (use-after-free).  The pre-MD1
-> ordering exhibited this race and was captured under gdb
-> (see HEP-CORE-0031 §4.1 for the contract derivation; see
-> `docs/IMPLEMENTATION_GUIDANCE.md` "Teardown Ordering Contract"
-> for the cross-cutting reference).
+> - Step 11 signals the ctrl thread to exit (sets `stop_requested` +
+>   wakes the poll loop).  No destruction.  The ctrl thread observes
+>   the signal on its next iteration and exits `loop.run()`.
+> - **Step 12 (NEW under MD1)** waits up to a bounded timeout for the
+>   ctrl thread to mark `active_loop_exited` via its `SlotContext`.
+>   Per the contract (rule 4), once the flag is set the ctrl thread
+>   has released its `pImpl` dependencies — destroying `broker_comm_`
+>   is now safe.
+> - Step 13 runs `teardown_infrastructure_` (role-supplied callback)
+>   to release the role's owned resources in the historical handover
+>   order — `clear_inbox_cache`, inbox stop+reset, broker_comm
+>   disconnect+reset, `close_queues`.  This step preserves the
+>   pre-MD1 placement (resource handover before joins) and is now
+>   provably safe because Step 12 honored the BRC ctrl thread's
+>   contract.
+> - Step 14 drains the remaining slots (worker thread self-detaches
+>   since it's the caller; main-thread `EngineHost::shutdown_()`
+>   joins it later).  Acts as the final safety net.
 >
-> **API classification under the contract.**  Each lifecycle-managed
-> class falls into one of three patterns:
+> **Why this Step 12 was needed.**  `BrokerRequestComm` is
+> externally-threaded — its ctrl thread is spawned into
+> `RoleAPIBase::thread_manager()`, not BRC's own.  Pre-MD1, the
+> ctrl thread's body had dead post-loop pImpl stores at
+> `broker_request_comm.cpp:594-595` (verified zero readers); Step 13's
+> `broker_comm_.reset()` raced with those stores under concurrent
+> CPU pressure (1/13 reproductions under `ctest -j2`).  The MD1 fix
+> (a) cleaned the thread's body to honor rule 4 (no pImpl touch
+> after the active loop), and (b) added Step 12 to honor the
+> contract from the caller side.  See HEP-CORE-0031 §4.1.5 for the
+> historical detail.
 >
-> | Pattern | Owns its threads? | API shape | Example |
-> |---|---|---|---|
-> | **Externally-threaded** | No — caller's `ThreadManager` owns the thread(s) | `stop()` is a PHASE A signal; `disconnect()`/`reset()` are PHASE C | `BrokerRequestComm` |
-> | **Self-threaded** | Yes — class owns a private `ThreadManager` | `stop()` is self-contained (does A + B internally) | `ZmqQueue` |
-> | **Inline / no thread** | No threads of its own | `stop()` is Phase C only (no ordering vs threads) | `InboxQueue` |
+> **Per-class patterns** governing how each lifecycle-managed class
+> participates in the contract:
 >
-> An externally-threaded class's `stop()` MUST be fire-and-forget by
-> design.  Trying to make it "synchronous" requires it to know about
-> the caller's ThreadManager — which would invert ownership.  The
-> correct place to enforce A→B→C is at the call site that *owns* the
-> ThreadManager (the role host).
+> | Pattern | Owns its threads? | Contract obligation |
+> |---|---|---|
+> | **Externally-threaded** | No — caller's `ThreadManager` | Active-loop body calls `SlotContext::mark_active_loop_exited()` after loop returns; class's `disconnect()` / `reset()` are deferred by the caller until the flag is honored.  Example: `BrokerRequestComm`. |
+> | **Self-threaded** | Yes — class's private `ThreadManager` | `stop()` is one atomic step (signal + own-drain + destroy).  Callers treat it as a leaf.  Example: `ZmqQueue`. |
+> | **Inline / no thread** | No threads of its own | No contract — no separate thread.  Example: `InboxQueue`. |
 
 ---
 
@@ -1455,15 +1459,21 @@ Step 9:  stop_accepting()
 Step 9a: deregister_from_broker()
 Step 10: invoke_on_stop()        ← ctrl thread alive for final I/O
 Step 11: engine->finalize()
-Step 12: broker_comm->stop() + set_running(false)  ← PHASE A (signal only)
-Step 13: thread_manager().drain()                  ← PHASE B (drain — moved from Step 14 by MD1)
-Step 14: teardown_infrastructure()                 ← PHASE C (destroy — provably safe)
+Step 12: broker_comm->stop() + set_running(false)                       (signal ctrl thread)
+Step 12.5 (NEW under MD1): thread_manager().wait_for_active_loop_exit("ctrl", T)
+                                                                        (honor BRC ctrl thread's shutdown contract)
+Step 13: teardown_infrastructure()                                       (resource handover)
+Step 14: thread_manager().drain()                                        (final safety net)
 ```
 
 > See the §"Role Host `worker_main_()` Steps" subsection above for the
-> full **Teardown Ordering Contract** (PHASE A → B → C) that governs
-> Steps 12-14.  Pre-MD1 ordering had drain at Step 14 *after* destruction,
-> exposing a use-after-free race on `BrokerRequestComm.pImpl`.
+> full **Thread Shutdown Contract** that governs Steps 11-14.  Step
+> 12.5 is the contract-honoring synchronization point added by MD1
+> (2026-05-12); it eliminates the pre-MD1 use-after-free race on
+> `BrokerRequestComm.pImpl` by deterministically waiting for the
+> BRC ctrl thread to mark `active_loop_exited` before
+> `teardown_infrastructure_` destroys `broker_comm_`.  Final drain
+> at Step 14 is unchanged.
 
 ---
 

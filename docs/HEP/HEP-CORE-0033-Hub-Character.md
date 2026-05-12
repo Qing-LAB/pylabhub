@@ -286,35 +286,49 @@ reverse declaration order: ThreadManager (already drained — no-op)
 → BrokerService → HubState → HubConfig.  All threads have already
 joined by step 5, so subsystem destruction touches no live threads.
 
-> **Teardown Ordering Contract (HEP-CORE-0031 §4.1) — hub side
-> already follows it.**  Steps 1-5 above naturally instantiate the
-> **PHASE A (signal) → PHASE B (drain) → PHASE C (destroy)** pattern:
+> **Thread Shutdown Contract (HEP-CORE-0031 §4.1) — hub side honors
+> it via its existing shutdown sequence.**  Steps 1-5 map cleanly to
+> the per-thread shutdown contract:
 >
-> - **Phase A (signal):** Step 1 (`shutdown_flag_` + `wake_cv`),
->   Step 2's `admin.stop()`, Step 4's `broker.stop()`.  All
->   fire-and-forget signal atoms; no destruction yet.
-> - **Phase B (drain):** Step 2's `join_named("admin")` joins admin
->   synchronously; Step 5's `thread_mgr.drain()` joins the broker
->   thread.  Two drain points because admin must drain BEFORE the
->   runner shutdown in step 3 (see §4.2.1 rationale) and the broker
->   has its own poll loop that runs Step 4's signal asynchronously.
-> - **Phase C (destroy):** Step 3's `runner->shutdown_()` destroys
->   HubAPI *after* admin is drained (provably safe).  Subsystem
+> - **Signaling phase:** Step 1 (`shutdown_flag_` + `wake_cv`),
+>   Step 2's `admin.stop()`, Step 4's `broker.stop()`.  All are
+>   fire-and-forget signal atoms — they flip stop flags and wake
+>   the threads' poll loops; they do not destroy any shared state.
+> - **Honoring per-thread contracts (waits / joins):** Step 2's
+>   `join_named("admin")` synchronizes on admin thread exit
+>   *before* Step 3 destroys HubAPI (which admin's in-flight
+>   `augment_*` calls may reach into).  Step 5's
+>   `thread_mgr.drain()` joins the broker thread after Step 4's
+>   signal.  Two synchronization points because admin must be
+>   joined before the runner shutdown in Step 3 — see §4.2.1.
+> - **Resource destruction:** Step 3's `runner->shutdown_()`
+>   destroys HubAPI *after* admin is drained.  Subsystem
 >   destruction in the dtor destroys BrokerService / HubState /
->   HubConfig *after* the ThreadManager drain (provably safe).
+>   HubConfig *after* `thread_mgr.drain()`.
 >
-> **`BrokerService::stop()` is fire-and-forget by design** — it's
-> the same externally-threaded pattern documented in HEP-CORE-0031
-> §4.1.  The broker's `run()` loop lives on a thread spawned into
+> Hub-side threads (admin, broker) currently rely on `done` (set by
+> the spawn wrapper after the body returns) rather than the new
+> `active_loop_exited` primitive — but their bodies are written to
+> rule 4 of the contract (they don't access shared state after
+> their loops return), so the existing sequence is safe.  Adopting
+> `active_loop_exited` for these threads is a post-MD1 hardening
+> opportunity that would make the contract observation explicit
+> instead of implicit.
+>
+> **`BrokerService::stop()` is fire-and-forget by design** — same
+> externally-threaded pattern documented in HEP-CORE-0031 §4.1.4.
+> The broker's `run()` loop lives on a thread spawned into
 > `HubHost::thread_mgr`, not into a BrokerService-owned manager.
 > `stop()` therefore signals only; the synchronous join is the
 > caller's responsibility (Step 5 above).
 >
-> See `docs/IMPLEMENTATION_GUIDANCE.md` "Teardown Ordering Contract"
-> for the cross-cutting reference and HEP-CORE-0011 §"Role Host
-> worker_main_() Steps" for the role-side application of the same
-> contract (where pre-MD1 ordering had Phase C running before
-> Phase B — the bug MD1 fixed).
+> See HEP-CORE-0031 §4.1 for the canonical contract,
+> `docs/IMPLEMENTATION_GUIDANCE.md` "Thread Shutdown Contract" for
+> the cross-cutting reference, and HEP-CORE-0011 §"Role Host
+> worker_main_() Steps" for the role-side application (where the
+> contract required Step 12.5 — `wait_for_active_loop_exit("ctrl")` —
+> to honor BRC ctrl thread's contract before destroying
+> `broker_comm_`).
 
 `request_shutdown()` is the **async equivalent** of steps 1+4 only:
 flips the flag, calls `broker.stop()`, returns immediately without
