@@ -527,88 +527,89 @@ When adding a new engine type:
 
 ---
 
-### Teardown Ordering Contract — Phase A (signal) → B (drain) → C (destroy) (added 2026-05-12)
+### Thread Shutdown Contract (added 2026-05-12)
 
 > **Status**: cross-cutting reference for all role-side and hub-side
-> teardown sequences.  Hub side already follows the contract
-> (HEP-CORE-0033 §4.2); role side aligned to the contract 2026-05-12.
-> Future lifecycle additions must classify against this contract.
+> teardown sequences.  Replaces the earlier "Teardown Ordering
+> Contract — Phase A/B/C" framing (which was sequence-centric);
+> this framing is contract-centric and applies per thread.  The
+> canonical definition lives in HEP-CORE-0031 §4.1; this section
+> is the cross-cutting reference for implementation work.
 
-Every teardown sequence that involves spawned threads MUST execute in
-three explicitly-classified phases, in this order:
+**For every managed long-running thread:**
 
-**PHASE A — SIGNAL (pre-drain).**
-- Set stop flags / `running` = false.
-- Send wake-up signals (signal sockets, condition variables).
-- Do NOT destroy anything that a live thread holds a reference to or
-  polls on.
-- *Goal*: every spawned thread is now guaranteed to OBSERVE stop on
-  its next iteration AND have a path to return.
+1. The thread SHOULD minimize its touch on `pImpl` / shared
+   resources while running.
+2. On shutdown, the thread SHOULD exit its active loop quickly.
+3. As the thread leaves its active loop, it MUST call
+   `ThreadManager::SlotContext::mark_active_loop_exited()` to
+   signal that its external dependencies have been released.
+4. After the active loop has returned, the thread MUST NOT touch
+   any `pImpl` or shared resource that the teardown caller might
+   destroy.  Only the thread's own stack frame and its
+   `SlotContext` are accessible from that point on.
 
-**PHASE B — DRAIN (synchronization point).**
-- `thread_manager().drain()` (or `join_named("...")` for a single
-  named slot).
-- *Goal*: when this returns, no spawned thread is running, AND every
-  spawned thread has completed its post-loop store/cleanup.
+**For the teardown caller:**
 
-**PHASE C — DESTROY (post-drain).**
-- Close sockets the threads were polling.
-- Reset unique_ptrs holding pImpl that threads were accessing.
-- Run `*::disconnect()` / `*::reset()` / `*::~Dtor()` for resources
-  that any drained thread used or depended on.
-- *Goal*: free everything; no thread can possibly touch any destroyed
-  resource (proven by Phase B).
+A. For each thread whose shared resources you are about to destroy,
+   wait on its `active_loop_exited` flag via
+   `ThreadManager::wait_for_active_loop_exit(name, timeout)` with a
+   bounded timeout.  Destroy the thread's shared resources only
+   after this wait returns (success OR timeout — proceed best-effort
+   on timeout with a warning log).
+B. Once all `active_loop_exited` flags are honored (or timed out),
+   join the threads via `drain()` / `join_named()` and complete
+   the rest of the lifecycle destruction.
 
-**Invariant** (reviewable at code-review time):
-> Phase A actions never destroy anything.  Phase C actions never run
-> before Phase B returns.
+**Why rule 4 is the load-bearing one.**  Without rule 4, no caller
+ordering can prevent races — every caller becomes a hostage to
+whatever post-loop pImpl access the thread happened to do.  Rule 4
+plus the synchronization primitive (`wait_for_active_loop_exit`)
+makes the contract enforceable.
 
-**API patterns — every lifecycle-managed class falls into one of
-three categories**:
+**Per-class patterns** (which threads obey this contract differently):
 
-| Pattern | Owns its threads? | API shape | Examples |
-|---|---|---|---|
-| **Externally-threaded** | No — caller's `ThreadManager` owns the thread(s) | `stop()` is a PHASE A signal (fire-and-forget); `disconnect()` / `reset()` are PHASE C | `BrokerRequestComm` (ctrl thread lives in `RoleAPIBase::thread_manager()`); `BrokerService` (broker thread lives in `HubHost::thread_mgr`) |
-| **Self-threaded** | Yes — class owns a private `ThreadManager` | `stop()` is self-contained (does A + B internally); callers treat it as one atomic step | `ZmqQueue` |
-| **Inline / no thread** | No threads of its own | `stop()` is PHASE C only (no ordering vs threads) | `InboxQueue` (polled from the worker thread via `RoleAPIBase::drain_inbox_sync`) |
+| Pattern | Owns its threads? | Contract obligations |
+|---|---|---|
+| **Externally-threaded** | No — caller's `ThreadManager` owns the thread(s) | Class's `stop()` flips a stop flag (rule 2 trigger).  Class's active-loop function (e.g., `run_poll_loop`) calls `mark_active_loop_exited()` after the loop returns (rule 3).  Post-loop body must NOT touch pImpl (rule 4).  Caller's teardown waits on the flag before destroying pImpl (caller step A).  Examples: `BrokerRequestComm`, `BrokerService`. |
+| **Self-threaded** | Yes — class owns a private `ThreadManager` | Contract is internal.  Class's `stop()` does the signal + wait + destroy internally as one atomic step.  External callers treat `stop()` as a leaf operation.  Examples: `ZmqQueue`. |
+| **Inline / no thread** | No threads of its own | No shutdown contract because no separate thread exists.  Resource cleanup happens whenever the caller chooses.  Examples: `InboxQueue` (polled from the worker thread via `RoleAPIBase::drain_inbox_sync`). |
 
-**An externally-threaded class's `stop()` MUST be fire-and-forget by
-design.**  Trying to make it "synchronous" requires it to know about
-the caller's ThreadManager, which would invert ownership.  The correct
-place to enforce A→B→C is at the call site that *owns* the
-ThreadManager (the host orchestrating the teardown).
+**An externally-threaded class's `stop()` is correctly fire-and-forget
+by design.**  Making `stop()` "synchronous" would require the class
+to know about the caller's `ThreadManager`, which inverts ownership.
+The correct place to enforce the contract is at the call site that
+*owns* the `ThreadManager` (the host orchestrating the teardown).
 
-**Reviewer rule when adding a new lifecycle-managed class**:
-1. Determine the class's pattern (externally / self / inline).
-2. Document the pattern in the class's docstring.
-3. Verify every call site that destroys this class is in PHASE C
-   (after the relevant `drain()`).
-4. Verify the class's `stop()` semantics match its pattern.
-
-**Reviewer rule when adding a new step to an existing teardown
-sequence** (e.g. `do_role_teardown`, `HubHost::shutdown`):
-1. Classify the new step as A, B, or C.
-2. Insert it at the corresponding position; reject diffs that mix
-   destructive actions into the signal phase or skip the drain
-   between signal and destroy.
+**Reviewer rule when adding a new managed thread**:
+1. Choose the class's pattern (externally / self / inline) and
+   document it in the docstring.
+2. If the body is an active loop directly: call
+   `SlotContext::mark_active_loop_exited()` after the loop returns
+   and BEFORE any further pImpl access.
+3. At every destroy site, ensure the caller has waited on the
+   thread's `active_loop_exited` flag.  Reviewers reject sites that
+   destroy a thread's shared state without an upstream
+   `wait_for_active_loop_exit` (or equivalent guarantee).
 
 **Where the contract was first articulated**: 2026-05-12, after the
-role-side `do_role_teardown` was found to be running Phase C before
-Phase B — exposing a use-after-free race on `BrokerRequestComm.pImpl`
-at `broker_request_comm.cpp:594` (the post-poll-loop store of
-`poll_loop_running = false` was reading already-freed memory under
-concurrent CPU pressure; 1/13 reproductions under `ctest -j2`).
-HubHost-side teardown (HEP-CORE-0033 §4.2) was already correctly
-ordered; making the contract explicit prevents the bug class from
-recurring at any future role-side or hub-side teardown call site.
+role-side `do_role_teardown` was found to be destroying
+`BrokerRequestComm.pImpl` while the BRC ctrl thread was still
+executing its post-loop body (a use-after-free at
+`broker_request_comm.cpp:594`; 1/13 reproductions under `ctest -j2`).
+Fixing it required ALL FOUR thread-side rules + the
+`active_loop_exited` primitive — sequence reordering alone was
+insufficient.  Making the contract explicit prevents the bug class
+from recurring at any future teardown call site.
 
 **Canonical anchors**:
 - HEP-CORE-0031 §4.1 — thread-model expression of the contract +
-  classification of every existing lifecycle class.
+  the new `SlotContext::mark_active_loop_exited()` /
+  `ThreadManager::wait_for_active_loop_exit` primitive.
 - HEP-CORE-0011 §"Role Host worker_main_() Steps" — role-side
-  application (with the explicit A/B/C label on each of Steps 11-14).
-- HEP-CORE-0033 §4.2 — hub-side application (already-correct; the
-  contract names what was implicit).
+  application (Step 12.5: `wait_for_active_loop_exit("ctrl")`).
+- HEP-CORE-0033 §4.2 — hub-side application (already-correct in its
+  shape; the contract names what was implicit and aligns the API).
 - HEP-CORE-0023 §2.5 "Role-close cleanup API" — cross-reference from
   the role-disconnect dereg path.
 
