@@ -48,6 +48,15 @@ struct ThreadSlot
     /// shared_ptr keeps the atomic alive even after ThreadManager::Impl is
     /// destroyed, so a detached thread can finish writing 'true' without UAF.
     std::shared_ptr<std::atomic<bool>>       done;
+    /// Set by the thread body via `SlotContext::mark_active_loop_exited()`
+    /// (or automatically by the wrapper for old-overload spawns) when the
+    /// thread has exited its active loop AND released its dependencies on
+    /// external shared state.  Per HEP-CORE-0031 §4.1, after this is true
+    /// the teardown caller may destroy resources the thread had been
+    /// touching.  Always set before `done` (the gap is whatever post-loop
+    /// self-cleanup the thread chose to do, none for old-overload spawns).
+    /// Same shared_ptr lifetime guarantee as `done`.
+    std::shared_ptr<std::atomic<bool>>       active_loop_exited;
     std::string                              name;
     /// Default matches pylabhub::kMidTimeoutMs; the SpawnOptions default
     /// on the caller side is what actually feeds this in normal flow.
@@ -264,28 +273,49 @@ ThreadManager::~ThreadManager()
 // spawn / drain
 // ============================================================================
 
+// ── SlotContext::mark_active_loop_exited ───────────────────────────────────
+
+void ThreadManager::SlotContext::mark_active_loop_exited() noexcept
+{
+    if (active_loop_exited_)
+    {
+        active_loop_exited_->store(true, std::memory_order_release);
+    }
+}
+
+// ── spawn — contract-aware overloads (with SlotContext) ─────────────────────
+
 bool ThreadManager::spawn(const std::string &name,
-                          std::function<void()> body)
+                          std::function<void(SlotContext &)> body)
 {
     return spawn(name, std::move(body), SpawnOptions{});
 }
 
 bool ThreadManager::spawn(const std::string &name,
-                          std::function<void()> body,
+                          std::function<void(SlotContext &)> body,
                           SpawnOptions opts)
 {
     if (!pImpl) return false;
 
-    auto done = std::make_shared<std::atomic<bool>>(false);
+    auto done                = std::make_shared<std::atomic<bool>>(false);
+    auto active_loop_exited  = std::make_shared<std::atomic<bool>>(false);
 
-    // Wrap the body so completion sets the done flag. shared_ptr capture
-    // keeps the atomic alive for detached threads.
-    auto wrapped = [body = std::move(body), done, name,
+    // Wrap the body. The wrapper:
+    //   - constructs a SlotContext bound to the per-slot flag and passes it
+    //     into the user body;
+    //   - on body return (normal or exception), unconditionally marks
+    //     active_loop_exited (defensive — at WORST the flag is set right
+    //     before `done`; the body MAY have set it earlier);
+    //   - then sets `done` so the joiner can proceed.
+    // shared_ptr captures keep both atomics alive for detached threads.
+    auto wrapped = [body = std::move(body),
+                    done, active_loop_exited, name,
                     owner = pImpl->composed_identity]() mutable
     {
+        SlotContext ctx{active_loop_exited};
         try
         {
-            body();
+            body(ctx);
         }
         catch (const std::exception &e)
         {
@@ -297,6 +327,9 @@ bool ThreadManager::spawn(const std::string &name,
             LOGGER_ERROR("[ThreadManager:{}] thread '{}' body threw unknown exception",
                          owner, name);
         }
+        // Defensive mark — guarantees active_loop_exited is true before
+        // done is set, even if the body didn't call mark explicitly.
+        active_loop_exited->store(true, std::memory_order_release);
         done->store(true, std::memory_order_release);
     };
 
@@ -314,16 +347,90 @@ bool ThreadManager::spawn(const std::string &name,
         return false;
     }
     ThreadSlot slot;
-    slot.name         = name;
-    slot.join_timeout = opts.join_timeout;
-    slot.spawn_time   = std::chrono::steady_clock::now();
-    slot.done         = done;
-    slot.thread       = std::thread(std::move(wrapped));
+    slot.name                = name;
+    slot.join_timeout        = opts.join_timeout;
+    slot.spawn_time          = std::chrono::steady_clock::now();
+    slot.done                = done;
+    slot.active_loop_exited  = active_loop_exited;
+    slot.thread              = std::thread(std::move(wrapped));
     pImpl->slots.emplace_back(std::move(slot));
 
     LOGGER_INFO("[ThreadManager:{}] spawned thread '{}' (join_timeout={}ms)",
                 pImpl->composed_identity, name, opts.join_timeout.count());
     return true;
+}
+
+// ── spawn — backwards-compatible overloads (body takes no arguments) ────────
+
+bool ThreadManager::spawn(const std::string &name,
+                          std::function<void()> body)
+{
+    return spawn(name, std::move(body), SpawnOptions{});
+}
+
+bool ThreadManager::spawn(const std::string &name,
+                          std::function<void()> body,
+                          SpawnOptions opts)
+{
+    // Trampoline: ignore the SlotContext and call the no-arg body.  The
+    // contract-aware spawn() above marks active_loop_exited automatically
+    // right before `done`, so old-overload callers get a reasonable default
+    // (their `active_loop_exited` becomes true at body-return).  Callers
+    // that need to mark loop-exit BEFORE body-return must use the
+    // SlotContext overload directly.
+    return spawn(name,
+                 [body = std::move(body)](SlotContext &) mutable { body(); },
+                 opts);
+}
+
+// ── is_active_loop_exited / wait_for_active_loop_exit ───────────────────────
+
+bool ThreadManager::is_active_loop_exited(std::string_view name) const noexcept
+{
+    if (!pImpl) return false;
+    std::lock_guard<std::mutex> lock(pImpl->mu);
+    for (const auto &slot : pImpl->slots)
+    {
+        if (slot.name == name)
+        {
+            return slot.active_loop_exited &&
+                   slot.active_loop_exited->load(std::memory_order_acquire);
+        }
+    }
+    return false;  // no such slot
+}
+
+bool ThreadManager::wait_for_active_loop_exit(std::string_view          name,
+                                              std::chrono::milliseconds timeout) noexcept
+{
+    if (!pImpl) return false;
+
+    // Capture the shared_ptr to the flag under the lock, then poll outside
+    // the lock so concurrent spawns / drains are not blocked by the poll.
+    std::shared_ptr<std::atomic<bool>> flag;
+    {
+        std::lock_guard<std::mutex> lock(pImpl->mu);
+        for (const auto &slot : pImpl->slots)
+        {
+            if (slot.name == name)
+            {
+                flag = slot.active_loop_exited;
+                break;
+            }
+        }
+    }
+    if (!flag) return false;  // no such slot
+
+    if (flag->load(std::memory_order_acquire)) return true;  // fast path
+
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline)
+    {
+        if (flag->load(std::memory_order_acquire)) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds{10});
+    }
+    // Final check in case the flag was set right at the deadline boundary.
+    return flag->load(std::memory_order_acquire);
 }
 
 std::size_t ThreadManager::drain()
@@ -350,16 +457,44 @@ std::size_t ThreadManager::drain()
     // LIFO teardown convention used by LifecycleGuard for static modules
     // and gives deterministic join ordering when threads have ordering
     // dependencies (e.g. a worker depends on a ctrl thread to be alive).
+    //
+    // Per HEP-CORE-0031 §4.1, each slot is observed in two stages:
+    //   Stage 1 (first half of join_timeout): wait for active_loop_exited.
+    //   Stage 2 (second half):                wait for done.
+    // On detach-timeout, the diagnostic identifies which stage timed out —
+    // "stuck in active loop" vs "stuck in post-loop cleanup" — instead of
+    // conflating the two failure modes.
     for (auto it = to_join.rbegin(); it != to_join.rend(); ++it)
     {
         auto &slot = *it;
         if (!slot.thread.joinable())
             continue;  // already joined/detached — idempotent no-op
 
-        // Poll the done flag with a per-slot deadline. sleep_for(10ms) gives
-        // a bounded reaction time vs. tight spinning.
-        const auto deadline = std::chrono::steady_clock::now() + slot.join_timeout;
-        while (std::chrono::steady_clock::now() < deadline)
+        const auto half = slot.join_timeout / 2;
+
+        // Stage 1 — wait for active_loop_exited.  Fast path: if already
+        // set, skip the poll loop entirely.
+        bool exited_loop = slot.active_loop_exited &&
+                           slot.active_loop_exited->load(std::memory_order_acquire);
+        if (!exited_loop && slot.active_loop_exited)
+        {
+            const auto stage1_deadline = std::chrono::steady_clock::now() + half;
+            while (std::chrono::steady_clock::now() < stage1_deadline)
+            {
+                if (slot.active_loop_exited->load(std::memory_order_acquire))
+                {
+                    exited_loop = true;
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds{10});
+            }
+        }
+
+        // Stage 2 — wait for done.  If active_loop_exited was set fast,
+        // done is imminent (post-loop cleanup is by definition the small
+        // residual gap); use the full remaining timeout budget.
+        const auto stage2_deadline = std::chrono::steady_clock::now() + half;
+        while (std::chrono::steady_clock::now() < stage2_deadline)
         {
             if (slot.done->load(std::memory_order_acquire))
                 break;
@@ -377,12 +512,24 @@ std::size_t ThreadManager::drain()
             // Thread still running past deadline. Detach + ERROR log. The
             // shared_ptr<done> keeps the atomic alive so the runaway thread
             // can still safely write to it when it eventually finishes.
-            LOGGER_ERROR(
-                "[ThreadManager:{}] thread '{}' did NOT exit within {}ms — "
-                "detaching. Shutdown continuing; detached thread may still "
-                "hold resources (sockets, SHM, etc.). Investigate body logic "
-                "for shutdown-signal observation.",
-                pImpl->composed_identity, slot.name, slot.join_timeout.count());
+            if (!exited_loop)
+            {
+                LOGGER_ERROR(
+                    "[ThreadManager:{}] thread '{}' did NOT exit its active "
+                    "loop within {}ms — detaching.  Thread is stuck inside "
+                    "its active loop body.  Shutdown continuing; detached "
+                    "thread may still hold resources (sockets, SHM, etc.).",
+                    pImpl->composed_identity, slot.name, half.count());
+            }
+            else
+            {
+                LOGGER_ERROR(
+                    "[ThreadManager:{}] thread '{}' exited its active loop "
+                    "but did NOT return within {}ms post-loop — detaching.  "
+                    "Thread is stuck in post-loop cleanup.  Shutdown "
+                    "continuing; detached thread may still hold resources.",
+                    pImpl->composed_identity, slot.name, half.count());
+            }
             slot.thread.detach();
             ++detached;
             g_process_detached_count.fetch_add(1, std::memory_order_acq_rel);
@@ -433,8 +580,27 @@ bool ThreadManager::join_named(std::string_view name)
     if (!slot.thread.joinable())
         return true;  // already joined/detached — idempotent
 
-    const auto deadline = std::chrono::steady_clock::now() + slot.join_timeout;
-    while (std::chrono::steady_clock::now() < deadline)
+    // Two-stage wait (same shape as drain — see HEP-CORE-0031 §4.1.3).
+    const auto half = slot.join_timeout / 2;
+
+    bool exited_loop = slot.active_loop_exited &&
+                       slot.active_loop_exited->load(std::memory_order_acquire);
+    if (!exited_loop && slot.active_loop_exited)
+    {
+        const auto stage1_deadline = std::chrono::steady_clock::now() + half;
+        while (std::chrono::steady_clock::now() < stage1_deadline)
+        {
+            if (slot.active_loop_exited->load(std::memory_order_acquire))
+            {
+                exited_loop = true;
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds{10});
+        }
+    }
+
+    const auto stage2_deadline = std::chrono::steady_clock::now() + half;
+    while (std::chrono::steady_clock::now() < stage2_deadline)
     {
         if (slot.done->load(std::memory_order_acquire))
             break;
@@ -449,11 +615,22 @@ bool ThreadManager::join_named(std::string_view name)
         return true;
     }
 
-    LOGGER_ERROR(
-        "[ThreadManager:{}] join_named: thread '{}' did NOT exit within {}ms — "
-        "detaching.  Caller depending on this thread's exit may observe "
-        "stale state.",
-        pImpl->composed_identity, slot.name, slot.join_timeout.count());
+    if (!exited_loop)
+    {
+        LOGGER_ERROR(
+            "[ThreadManager:{}] join_named: thread '{}' did NOT exit its "
+            "active loop within {}ms — detaching.  Thread is stuck inside "
+            "its active loop body.  Caller may observe stale state.",
+            pImpl->composed_identity, slot.name, half.count());
+    }
+    else
+    {
+        LOGGER_ERROR(
+            "[ThreadManager:{}] join_named: thread '{}' exited its active "
+            "loop but did NOT return within {}ms post-loop — detaching.  "
+            "Thread is stuck in post-loop cleanup.",
+            pImpl->composed_identity, slot.name, half.count());
+    }
     slot.thread.detach();
     g_process_detached_count.fetch_add(1, std::memory_order_acq_rel);
     return false;

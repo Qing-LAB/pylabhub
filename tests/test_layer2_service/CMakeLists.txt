@@ -273,6 +273,36 @@ gtest_discover_tests(test_layer2_thread_manager_join_named
 )
 
 # ============================================================================
+# Test: ThreadManager active_loop_exited primitive (HEP-CORE-0031 §4.1)
+# ============================================================================
+
+add_executable(test_layer2_thread_manager_active_loop
+    test_thread_manager_active_loop.cpp
+)
+
+target_link_libraries(test_layer2_thread_manager_active_loop
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+        GTest::gmock
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_thread_manager_active_loop)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_thread_manager_active_loop
+    SUITE_NAME "Layer2_ThreadManagerActiveLoop"
+)
+layer2_require_staged_utils(test_layer2_thread_manager_active_loop)
+
+gtest_discover_tests(test_layer2_thread_manager_active_loop
+    PROPERTIES
+        LABELS "layer2;service;thread_manager"
+        TIMEOUT 30
+)
+
+# ============================================================================
 # Test: Lifecycle (static modules)
 # ============================================================================
 
