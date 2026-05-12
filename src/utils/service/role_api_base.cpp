@@ -704,12 +704,10 @@ bool RoleAPIBase::start_ctrl_thread(
         effective_interval_ms,
         [core_post] { return core_post->iteration_count(); });
 
-    // M1.4 (2026-05-11): `cfg.report_metrics` periodic task retired.
-    // Heartbeat tick (`on_heartbeat_tick_`) already carries metrics
-    // via `send_heartbeat(...metrics)` — separate METRICS_REPORT_REQ
-    // tick was redundant.  The `cfg.report_metrics` flag remains for
-    // back-compat but has no effect.
-    (void)cfg.report_metrics;
+    // M1.4 (2026-05-11): `cfg.report_metrics` field DELETED.  Heartbeat
+    // tick (`on_heartbeat_tick_`) carries metrics via
+    // `send_heartbeat(...metrics)` — separate METRICS_REPORT_REQ tick
+    // was redundant.  Per HEP-CORE-0019 §2.3 Phase 6.
 
     LOGGER_INFO("[{}] ctrl: broker communication ready (heartbeat={}ms)",
                 pImpl->role_tag, effective_interval_ms);

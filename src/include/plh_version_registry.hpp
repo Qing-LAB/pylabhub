@@ -87,10 +87,16 @@ struct ComponentVersions
     //     Covers the JSON message set between BrokerRequestComm and
     //     BrokerService: REG_REQ, DISC_REQ, DISC_ACK, HEARTBEAT_REQ,
     //     CHANNEL_CLOSING_NOTIFY, ROLE_PRESENCE_REQ,
-    //     ROLE_INFO_REQ, METRICS_REPORT_REQ, CHECKSUM_ERROR_REPORT,
+    //     ROLE_INFO_REQ, CHECKSUM_ERROR_REPORT,
     //     HUB_PEER_HELLO/BYE, HUB_RELAY_MSG, CONSUMER_REG_REQ, ...
     //     Spec: HEP-CORE-0007.  Bump major on removed/renamed fields or
-    //     changed semantics; minor on added optional fields. ---
+    //     changed semantics; minor on added optional fields.
+    //
+    //     RETIRED messages (no longer in the protocol surface):
+    //       - METRICS_REPORT_REQ (M1.4, 2026-05-11): metrics piggyback
+    //         on HEARTBEAT_REQ per HEP-CORE-0019 §2.3 Phase 6.  Old
+    //         clients sending this wire message receive UNKNOWN_MSG_TYPE.
+    //         broker_proto_major bumped 1→2 to signal the break. ---
     uint8_t broker_proto_major;
     uint8_t broker_proto_minor;
 
@@ -137,7 +143,10 @@ struct ComponentVersions
 
 inline constexpr uint8_t kShmMajor             = 1;
 inline constexpr uint8_t kShmMinor             = 0;
-inline constexpr uint8_t kBrokerProtoMajor     = 1;
+// broker_proto 1 → 2 (Wave M1.4, 2026-05-11): METRICS_REPORT_REQ retired;
+// metrics piggyback on HEARTBEAT_REQ per HEP-CORE-0019 §2.3 Phase 6.
+// Old clients sending METRICS_REPORT_REQ receive UNKNOWN_MSG_TYPE error.
+inline constexpr uint8_t kBrokerProtoMajor     = 2;
 inline constexpr uint8_t kBrokerProtoMinor     = 0;
 inline constexpr uint8_t kZmqFrameMajor        = 1;
 inline constexpr uint8_t kZmqFrameMinor        = 0;

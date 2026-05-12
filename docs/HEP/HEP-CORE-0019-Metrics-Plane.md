@@ -34,22 +34,31 @@
 > nudge handling exist in code.  Retained in this HEP as a deferred
 > design alternative; not the path forward.
 >
-> **Layer 3 — Phase 6 "per-presence keying" (2026-05-06, current normative).**
+> **Layer 3 — Phase 6 "per-presence keying" (✅ SHIPPED 2026-05-11, Wave M1.4).**
 > Heartbeats unconditionally carry `(channel_name, uid, role_type)` +
 > optional metrics.  Each presence (one per `(hub, channel, role_kind)`
-> tuple a role registers as) emits its own heartbeat.  The broker's
-> `MetricsStore` keys per `(channel, uid, role_type)` so a processor
-> with two presences (consumer-of-in_channel + producer-of-out_channel)
-> writes two distinct rows.  Each heartbeat refreshes only its own
-> presence row in `RoleEntry` — there is no separate channel-side
-> bookkeeping; channel observability is derived from the producer-
-> role's per-presence state (HEP-CORE-0023 §2.6).
-> `METRICS_REPORT_REQ` is **deprecated** but its broker-side handler
-> remains for one release for backward compatibility (no role
-> auto-emits it after the migration).  See `docs/tech_draft/role_host_template_design.md`
-> §6 for the full design and `HEP-CORE-0033 §18` for the canonical
-> four-class routing taxonomy that places metrics reports in
-> Class A and metrics queries in Class C.
+> tuple a role registers as) emits its own heartbeat.  Metrics live
+> directly on `RolePresence::latest_metrics` (per-presence row in
+> `HubState`), written by `_on_heartbeat`.  A processor with two
+> presences (consumer-of-in_channel + producer-of-out_channel) writes
+> two distinct rows.  Each heartbeat refreshes only its own presence
+> row — there is no separate channel-side bookkeeping; channel
+> observability is derived from the producer-role's per-presence
+> state (HEP-CORE-0023 §2.6).
+>
+> `METRICS_REPORT_REQ` is **RETIRED** (Wave M1.4, 2026-05-11) — the
+> wire-protocol message, role-side sender, broker-side handler, and
+> the broker's `metrics_store_` table are ALL deleted.  Old clients
+> sending the retired message receive UNKNOWN_MSG_TYPE.
+> `broker_proto_major` bumped 1 → 2 to signal the break.  Admin
+> queries (`METRICS_REQ`) route through
+> `HubState::channel_metrics_snapshot(channel)` which reads the
+> per-presence rows directly.
+>
+> See `docs/tech_draft/role_host_template_design.md` §6 for the
+> full design and `HEP-CORE-0033 §18` for the canonical four-class
+> routing taxonomy that places metrics piggyback in Class A and
+> metrics queries in Class C.
 
 ---
 

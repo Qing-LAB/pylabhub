@@ -254,11 +254,8 @@ void ConsumerRoleHost::worker_main_()
 
         scripting::RoleAPIBase::CtrlThreadConfig ctrl_cfg;
         ctrl_cfg.heartbeat_interval_ms = config_.timing().heartbeat_interval_ms;
-        // M1.4 (2026-05-11): `report_metrics` flag retired in effect.
-        // Heartbeat already carries metrics for both producers and
-        // consumers; the dedicated METRICS_REPORT_REQ tick was
-        // redundant.  Flag preserved for back-compat with no effect.
-        ctrl_cfg.report_metrics        = false;
+        // M1.4 (2026-05-11): no separate metrics-report tick — metrics
+        // piggyback on the heartbeat tick.  HEP-CORE-0019 §2.3 Phase 6.
 
         // Build consumer registration payload (CONSUMER_REG_REQ) via the
         // shared helper (HEP-CORE-0034 Phase 5b).  Schema fields layered
