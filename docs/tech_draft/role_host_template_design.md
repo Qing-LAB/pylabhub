@@ -87,10 +87,11 @@ draft makes it normative.
   `EngineHost<HubAPI>` instantiation is independent and unchanged.
 - **`RoleHostCore` core state.**  The state container (atomics,
   message queue, metrics counters, inbox cache) is unchanged.
-- **Removing the `METRICS_REPORT_REQ` wire message.**  We deprecate
-  its periodic-task installation (today's consumer-only path), but
-  the broker handler stays for one release to keep the wire-side
-  protocol additive.
+- **Removing the `METRICS_REPORT_REQ` wire message.**  Originally
+  planned as deprecate-then-remove-next-release.  **Wave M1.4
+  (2026-05-11) RETIRED in full** — wire message + role-side sender
+  + broker handler + `metrics_store_` all deleted in one step.
+  `broker_proto_major` bumped 1 → 2.
 
 ---
 
