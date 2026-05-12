@@ -179,14 +179,10 @@ struct HubStateTestAccess
     {
         return s._on_pending_timeout(ch, uid);
     }
-    static void on_metrics_reported(HubState                             &s,
-                                    const std::string                    &ch,
-                                    const std::string                    &uid,
-                                    nlohmann::json                        m,
-                                    std::chrono::system_clock::time_point when)
-    {
-        s._on_metrics_reported(ch, uid, std::move(m), when);
-    }
+    // M1.4 (2026-05-11): `on_metrics_reported` test forwarder deleted
+    // alongside `_on_metrics_reported`.  Use `on_heartbeat(s, ch, uid,
+    // role_type, when, metrics)` to test the metrics-via-heartbeat
+    // path (HEP-CORE-0019 §2.3 Phase 6).
     static void on_role_registered(HubState &s, RoleEntry e)
     {
         s._set_role_registered(std::move(e));

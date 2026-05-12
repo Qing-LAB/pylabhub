@@ -648,16 +648,9 @@ void BrokerRequestComm::send_heartbeat(const std::string &channel,
     pImpl->cmd_queue.push(SendCmd{"HEARTBEAT_REQ", std::move(payload)});
 }
 
-void BrokerRequestComm::send_metrics_report(const std::string &channel,
-                                                 const std::string &uid,
-                                                 const nlohmann::json &metrics)
-{
-    nlohmann::json payload;
-    payload["channel_name"] = channel;
-    payload["uid"] = uid;
-    payload["metrics"] = metrics;
-    pImpl->cmd_queue.push(SendCmd{"METRICS_REPORT_REQ", std::move(payload)});
-}
+// M1.4 (2026-05-11): `BrokerRequestComm::send_metrics_report` deleted.
+// Metrics piggyback on `send_heartbeat(channel, uid, role_type, metrics)`
+// per HEP-CORE-0019 §2.3 Phase 6.
 
 void BrokerRequestComm::send_notify(const std::string &target,
                                         const std::string &sender_uid,

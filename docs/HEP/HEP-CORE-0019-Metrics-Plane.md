@@ -4,7 +4,7 @@
 |----------------|----------------------------------------------------------------------------------|
 | **HEP**        | `HEP-CORE-0019`                                                                  |
 | **Title**      | Metrics Plane — Passive SHM Metrics, Broker-Initiated Pull, Global Role Table |
-| **Status**     | Phase 1 Implemented — 2026-03-05.  §3-4 partially superseded — see amendment notes below.  Phase 6 (per-presence keying) is the current normative model — 2026-05-06; lands with the role-host abstraction work tracked in `docs/tech_draft/role_host_template_design.md`. |
+| **Status**     | **Phase 6 — Per-presence keying — ✅ SHIPPED 2026-05-11 (Wave M1.4).**  Phase 1-5 (Layer 1) shipped 2026-03-05; Layer 2 (paper-only nudge model) never shipped.  M1.4 retired `METRICS_REPORT_REQ` + `metrics_store_` in full; metrics live exclusively on `RolePresence::latest_metrics` and route through `HubState::channel_metrics_snapshot(channel)`. |
 | **Created**    | 2026-03-02                                                                        |
 | **Area**       | Framework Architecture (`pylabhub-utils`, all binaries, `BrokerService`)          |
 | **Depends on** | HEP-CORE-0002 (DataHub), HEP-CORE-0007 (Protocol), HEP-CORE-0017 (Pipeline), HEP-CORE-0023 (Heartbeat semantics), HEP-CORE-0033 §8 (HubState entry types — `RoleEntry.latest_metrics`, `RoleEntry.metrics_collected_at` carry the per-presence rows), HEP-CORE-0033 §18 (broker routing classes — METRICS_REQ is Class C, HEARTBEAT_REQ metrics piggyback is Class A) |
@@ -719,41 +719,54 @@ backward compatibility — see §4.3.)
 2. Defaults applied at pybind11 level only (per pybind11 Default Parameter Rule —
    `docs/IMPLEMENTATION_GUIDANCE.md` § "pybind11 Default Parameter Rule").
 
-### Phase 6: Per-presence keying ⏸ pending — current normative design
+### Phase 6: Per-presence keying ✅ shipped (Wave M1.4, 2026-05-11)
 
 Resolves the latent bugs in Phase 1-5 where consumer's HEARTBEAT_REQ
 (carrying no `uid` / `role_type`) was silently attributed to the
 channel's producer-role in both `MetricsStore` and the producer-
 role's `RoleEntry` liveness bookkeeping.
 
-1. **Wire-format addition**: `HEARTBEAT_REQ` payload gains required
-   `uid` and `role_type` fields (additive — pre-Phase-6 brokers
-   ignored them harmlessly; post-Phase-6 broker requires them).
-2. **Broker handler keyed lookup**: `handle_heartbeat_req` reads
-   `(channel, uid, role_type)` from the payload, looks up the
-   matching presence row in `RoleEntry(uid)`, refreshes that
-   presence's `last_heartbeat` + FSM, and writes metrics under
-   `MetricsStore[(channel, uid, role_type)]`.  No heartbeat ever
-   touches another presence's bookkeeping.
-3. **Consumer-side heartbeat fix**: today's consumer auto-emission
-   path is removed; consumer's own heartbeat carries
-   `role_type="consumer"` and writes its own row.
-4. **Per-presence emission**: a role with N presences emits N
+1. ✅ **Wire-format addition**: `HEARTBEAT_REQ` payload gains required
+   `uid` and `role_type` fields.
+2. ✅ **Broker handler keyed lookup**: `handle_heartbeat_req` reads
+   `(channel, uid, role_type)`, looks up the matching presence row in
+   `RoleEntry(uid)`, refreshes `last_heartbeat` + FSM, writes metrics
+   to `RolePresence::latest_metrics`.
+3. ✅ **Consumer-side heartbeat fix**: consumer's own heartbeat
+   carries `role_type="consumer"` and writes its own row.
+4. ✅ **Per-presence emission**: a role with N presences emits N
    heartbeats per cycle, each with the right `(uid, role_type)`.
-5. **`METRICS_REPORT_REQ` deprecated**: broker handler retained one
-   release for compat; no role auto-emits.
-6. **`metrics_store_` legacy retired**: single per-presence-keyed
-   path going forward; query handlers updated to read the unified
-   store.
-7. **`ChannelEntry.status` / `ChannelEntry.last_heartbeat` removed**:
-   channel observability is derived from the producer-presence's
-   state in `RoleEntry` (HEP-CORE-0023 §2.6).
+5. ✅ **`METRICS_REPORT_REQ` retired** (Wave M1.4, 2026-05-11): the
+   wire-protocol message + broker handler + role-side sender are
+   **all deleted**.  Metrics piggyback on `HEARTBEAT_REQ` exclusively.
+   Was kept "one release for compat" in earlier plan; M1.4 retired it
+   in full as it was redundant (heartbeat + metrics-report were sent
+   at the same cadence with the same payload).
+6. ✅ **`metrics_store_` legacy retired** (Wave M1.4): the broker's
+   separate `metrics_store_` map (and `ChannelMetrics` /
+   `ParticipantMetrics` / `update_producer_metrics` /
+   `update_consumer_metrics` / `query_metrics(channel)`) are all
+   **deleted**.  Admin queries route through
+   `HubState::channel_metrics_snapshot(channel)` which reads
+   `RolePresence::latest_metrics` directly.  Closes H34 (per-uid
+   leak class structurally — Wave M3 H18 erases presence rows on
+   disconnect, so dead metrics naturally go away).
+7. ✅ **`ChannelEntry.status` / `ChannelEntry.last_heartbeat` removed**
+   (commit `a41ce71`): channel observability derived from the
+   producer-presence FSM (HEP-CORE-0023 §2.6).
 
-Implementation lands in
-`docs/tech_draft/role_host_template_design.md` Wave B (M0+M1+M2);
-HEP-CORE-0023 §2.2 sequence-diagram update lands alongside; this
-HEP's status closes when M9 ships.  Tests are revised + added per
-that draft's Wave B test plan (§14.2).
+**Wave M1.4 implementation summary (2026-05-11):**
+- `HubState::channel_metrics_snapshot(channel)` aggregates per-
+  presence rows for admin queries (O(producers + consumers)).
+- `BrokerService::query_metrics(MetricsFilter)`,
+  `BrokerService::query_metrics_json_str`,
+  `BrokerServiceImpl::handle_metrics_req` redirected to use the
+  helper.
+- L2 contract pinned by `HubStateChannelMetricsSnapshot.*` tests
+  (6 tests in `test_hub_state.cpp`).  L3 test migrated to use
+  `send_heartbeat(channel, uid, "consumer", metrics)` instead of
+  the retired `send_metrics_report`.
+- 1828/1828 tests pass post-M1.4.
 
 ### Test coverage
 

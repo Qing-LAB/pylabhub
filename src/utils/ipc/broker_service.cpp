@@ -125,8 +125,10 @@ constexpr std::array<std::string_view, 16> kRequestReplyTypes = {
     "HUB_PEER_HELLO",
 };
 
-constexpr std::array<std::string_view, 9> kFireAndForgetTypes = {
-    "HEARTBEAT_REQ", "METRICS_REPORT_REQ", "CHECKSUM_ERROR_REPORT",
+constexpr std::array<std::string_view, 8> kFireAndForgetTypes = {
+    // M1.4 (2026-05-11) — `METRICS_REPORT_REQ` retired.  Metrics now
+    // piggyback on `HEARTBEAT_REQ` per HEP-CORE-0019 §2.3 Phase 6.
+    "HEARTBEAT_REQ", "CHECKSUM_ERROR_REPORT",
     "CHANNEL_NOTIFY_REQ", "CHANNEL_BROADCAST_REQ", "BAND_BROADCAST_REQ",
     "HUB_PEER_BYE",
     // Inbound on outbound DEALER (peer→us); not request-reply but valid:
@@ -261,37 +263,16 @@ public:
     std::deque<HubTargetedRequest> hub_targeted_queue_;
 
     // ── Metrics store (HEP-CORE-0019) ──────────────────────────────────────
-    struct ParticipantMetrics
-    {
-        std::string                                uid;
-        uint64_t                                   pid{0};
-        std::chrono::steady_clock::time_point      last_report;
-        nlohmann::json                             data; ///< {base: {...}, custom: {...}}
-    };
-    struct ChannelMetrics
-    {
-        // Wave M2.5 (G1 fix, 2026-05-11) — per-producer keying.
-        // Pre-fix this was a single `ParticipantMetrics producer`, which
-        // overwrote on every Fan-In producer's report; same overwrite-
-        // class bug eliminated on ChannelEntry.  Now keyed by `role_uid`,
-        // mirroring the consumer side.  See
-        // REVIEW_WaveM2.5_PostStep6_2026-05-11.md G1.
-        std::unordered_map<std::string, ParticipantMetrics> producers;
-        std::unordered_map<std::string, ParticipantMetrics> consumers;
-    };
-    /// channel_name ->aggregated metrics.  Protected by m_query_mu.
-    std::unordered_map<std::string, ChannelMetrics> metrics_store_;
-
-    void update_producer_metrics(const std::string &channel,
-                                 const std::string &uid,
-                                 const nlohmann::json &metrics,
-                                 uint64_t pid);
-    void update_consumer_metrics(const std::string &channel,
-                                 const std::string &uid,
-                                 const nlohmann::json &metrics);
-    nlohmann::json query_metrics(const std::string &channel) const;
-
-    void handle_metrics_report_req(const nlohmann::json &req);
+    // M1.4 (2026-05-11): `metrics_store_`, `ChannelMetrics`,
+    // `ParticipantMetrics`, `update_producer_metrics`,
+    // `update_consumer_metrics`, `query_metrics(channel)`, and
+    // `handle_metrics_report_req` all DELETED.  Metrics now live
+    // exclusively on `HubState.roles[uid].presences[(ch, role_type)].latest_metrics`
+    // (HEP-CORE-0019 §2.3 Phase 6 "metrics piggyback on heartbeat").
+    // Admin queries route through `HubState::channel_metrics_snapshot(channel)`.
+    // Closes the H34 leak class (per-uid entries leaking on multi-
+    // producer DEREG) structurally — presence rows are erased on
+    // disconnect under Wave M3 H18.
     nlohmann::json handle_metrics_req(const nlohmann::json &req);
     nlohmann::json handle_shm_block_query(const nlohmann::json &req) const;
     nlohmann::json collect_shm_info(const std::string &channel) const;
@@ -944,11 +925,6 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
         LOGGER_TRACE("Broker: CHANNEL_LIST_ACK channels={}",
                      resp.value("channels", nlohmann::json::array()).size());
         send_reply(socket, identity, "CHANNEL_LIST_ACK", resp);
-    }
-    else if (msg_type == "METRICS_REPORT_REQ")
-    {
-        // HEP-CORE-0019: consumer metrics report (fire-and-forget).
-        handle_metrics_report_req(payload);
     }
     else if (msg_type == "METRICS_REQ")
     {
@@ -1827,9 +1803,9 @@ nlohmann::json BrokerServiceImpl::handle_dereg_req(const nlohmann::json& req,
         // map already has the channel erased by _on_producer_dropped).
         send_closing_notify(socket, channel_name, pre_drop, "producer_deregistered");
         on_channel_closed(socket, channel_name, pre_drop, "producer_deregistered");
-
-        // Remove accumulated metrics so the store doesn't grow unboundedly.
-        metrics_store_.erase(channel_name);
+        // M1.4 (2026-05-11): no metrics_store_.erase needed — metrics
+        // live on per-presence rows which are erased atomically by
+        // `_on_channel_closed`'s cascade.
         LOGGER_INFO("Broker: deregistered channel '{}' (last producer left — channel torn down)",
                     channel_name);
     }
@@ -2214,27 +2190,10 @@ void BrokerServiceImpl::handle_heartbeat_req(const nlohmann::json& req)
                              hb_role_type,
                              std::chrono::steady_clock::now(),
                              metrics_opt);
-
-    // HEP-CORE-0019: keep the legacy metrics_store_ in sync until
-    // G2.2.4 absorbs metrics.  After that, `_on_heartbeat`'s role-
-    // side metrics update is the only source.  Wave M2.5 (G1) —
-    // producer metrics are keyed by role_uid (`hb_uid` resolves
-    // either to the wire uid or to the fallback first-producer uid
-    // for pre-M0 clients) so Fan-In producers don't overwrite each
-    // other.  Consumer-presence heartbeats route to the consumer
-    // store via `update_consumer_metrics`; producer-presence
-    // heartbeats go here.
-    if (req.contains("metrics") && req["metrics"].is_object() &&
-        hb_role_type == "producer")
-    {
-        const uint64_t pid = req.value("producer_pid", uint64_t{0});
-        update_producer_metrics(channel_name, hb_uid, req["metrics"], pid);
-    }
-    else if (req.contains("metrics") && req["metrics"].is_object() &&
-             hb_role_type == "consumer" && !hb_uid.empty())
-    {
-        update_consumer_metrics(channel_name, hb_uid, req["metrics"]);
-    }
+    // M1.4 (2026-05-11): `_on_heartbeat` writes metrics directly to
+    // the per-presence row (HEP-CORE-0019 §2.3 Phase 6).  Legacy
+    // `metrics_store_` mirror retired — was kept in sync via
+    // update_{producer,consumer}_metrics here; that path is gone.
 }
 
 // ============================================================================
@@ -2715,7 +2674,8 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
                 // pre_drop snapshot (the channel record is now gone).
                 send_closing_notify(socket, channel_name, pre_drop, "pending_timeout");
                 on_channel_closed(socket, channel_name, pre_drop, "pending_timeout");
-                metrics_store_.erase(channel_name);
+                // M1.4 (2026-05-11): no metrics_store_.erase — see comment
+                // at handle_dereg_req last-producer path.
                 LOGGER_INFO("Broker: channel '{}' torn down (last producer "
                             "presence-timeout)", channel_name);
                 // Stop iterating producers — the channel record is gone.
@@ -3475,8 +3435,24 @@ RoleStateMetrics BrokerService::query_role_state_metrics() const
 
 std::string BrokerService::query_metrics_json_str(const std::string& channel) const
 {
-    std::lock_guard<std::mutex> lock(pImpl->m_query_mu);
-    return pImpl->query_metrics(channel).dump();
+    // M1.4 (2026-05-11): metrics live on HubState's per-presence rows
+    // (HEP-CORE-0019 §2.3 Phase 6).  Same shape as legacy query_metrics:
+    // `{status, channel/channels, metrics}`.
+    nlohmann::json resp;
+    resp["status"] = "success";
+    if (!channel.empty())
+    {
+        resp["channel"] = channel;
+        resp["metrics"] = pImpl->hub_state_->channel_metrics_snapshot(channel);
+    }
+    else
+    {
+        nlohmann::json channels = nlohmann::json::object();
+        for (const auto &[name, ch] : pImpl->hub_state_->snapshot().channels)
+            channels[name] = pImpl->hub_state_->channel_metrics_snapshot(name);
+        resp["channels"] = std::move(channels);
+    }
+    return resp.dump();
 }
 
 nlohmann::json BrokerServiceImpl::handle_shm_block_query(const nlohmann::json& req) const
@@ -3653,15 +3629,10 @@ BrokerService::query_metrics(const pylabhub::hub::MetricsFilter &filter) const
     namespace mc = pylabhub::hub::metrics_category;
 
     // Snapshot HubState under its own lock; release before SHM reads.
+    // M1.4 (2026-05-11): legacy `metrics_store_` snapshot retired —
+    // metrics live on `HubState.roles[uid].presences[(ch, role_type)].latest_metrics`
+    // and are aggregated per-channel via `channel_metrics_snapshot`.
     pylabhub::hub::HubStateSnapshot snap = pImpl->hub_state_->snapshot();
-
-    // Parallel snapshot of role-pushed channel metrics under broker mutex.
-    // ChannelMetrics is broker-internal — copy via decltype to avoid leaking
-    // the type into this header's public surface.
-    auto metrics_copy = [this] {
-        std::lock_guard<std::mutex> lock(pImpl->m_query_mu);
-        return pImpl->metrics_store_;
-    }();
 
     nlohmann::json result;
     result["status"]     = "success";
@@ -3677,30 +3648,16 @@ BrokerService::query_metrics(const pylabhub::hub::MetricsFilter &filter) const
             if (!include(filter.channels, name))
                 continue;
             auto cj = channel_to_json(ch, observe_channel(ch, snap));
-            // Merge in role-pushed metrics (HEP-0019).  Wave M2.5
-            // (G1) — `producer_metrics` is now a per-uid tree
-            // mirroring `consumer_metrics`; pre-fix it was a single
-            // blob from whichever producer reported last.
-            auto mit = metrics_copy.find(name);
-            if (mit != metrics_copy.end())
-            {
-                nlohmann::json pm = nlohmann::json::object();
-                for (const auto &[uid, p] : mit->second.producers)
-                {
-                    if (!p.data.is_null())
-                        pm[uid] = p.data;
-                }
-                if (!pm.empty())
-                    cj["producer_metrics"] = std::move(pm);
-                nlohmann::json cm = nlohmann::json::object();
-                for (const auto &[uid, p] : mit->second.consumers)
-                {
-                    if (!p.data.is_null())
-                        cm[uid] = p.data;
-                }
-                if (!cm.empty())
-                    cj["consumer_metrics"] = std::move(cm);
-            }
+            // M1.4 (2026-05-11): metrics now read from HubState's
+            // per-presence rows (HEP-CORE-0019 §2.3 Phase 6) via
+            // `channel_metrics_snapshot`.  Wave M2.5 G1's per-uid
+            // tree shape is preserved.  Pre-M1.4 path read from
+            // `metrics_store_`; that storage layer is retired.
+            auto pm = pImpl->hub_state_->channel_metrics_snapshot(name);
+            if (pm.contains("producers"))
+                cj["producer_metrics"] = std::move(pm["producers"]);
+            if (pm.contains("consumers"))
+                cj["consumer_metrics"] = std::move(pm["consumers"]);
             channels[name] = std::move(cj);
         }
         result["channels"] = std::move(channels);
@@ -3823,136 +3780,49 @@ void BrokerService::send_hub_targeted_msg(const std::string& target_hub_uid,
     pImpl->hub_targeted_queue_.push_back({target_hub_uid, channel, payload});
 }
 
-// ============================================================================
-// MetricsStore (HEP-CORE-0019)
-// ============================================================================
-
-void BrokerServiceImpl::update_producer_metrics(const std::string &channel,
-                                                 const std::string &uid,
-                                                 const nlohmann::json &metrics,
-                                                 uint64_t pid)
-{
-    // Caller holds m_query_mu (called from process_message under lock).
-    // Wave M2.5 (G1) — keyed by role_uid so Fan-In producers each have
-    // their own metrics slot; previous single-field shape overwrote
-    // on every report.
-    if (uid.empty())
-    {
-        LOGGER_WARN("Broker: dropping producer metrics for '{}' — empty role_uid",
-                    channel);
-        return;
-    }
-    auto &cm = metrics_store_[channel];
-    auto &pm = cm.producers[uid];
-    pm.pid         = pid;
-    pm.last_report = std::chrono::steady_clock::now();
-    pm.data        = metrics;
-    LOGGER_DEBUG("Broker: stored producer metrics for channel '{}' uid='{}'",
-                 channel, uid);
-}
-
-void BrokerServiceImpl::update_consumer_metrics(const std::string &channel,
-                                                 const std::string &uid,
-                                                 const nlohmann::json &metrics)
-{
-    auto &cm = metrics_store_[channel];
-    auto &cons = cm.consumers[uid];
-    cons.uid         = uid;
-    cons.last_report = std::chrono::steady_clock::now();
-    cons.data        = metrics;
-    LOGGER_DEBUG("Broker: stored consumer metrics for channel '{}' uid='{}'", channel, uid);
-}
-
-void BrokerServiceImpl::handle_metrics_report_req(const nlohmann::json &req)
-{
-    const std::string channel = req.value("channel_name", "");
-    const std::string uid     = req.value("uid", "");
-    if (channel.empty() || uid.empty())
-    {
-        LOGGER_WARN("Broker: METRICS_REPORT_REQ missing channel_name or uid");
-        return;
-    }
-    if (req.contains("metrics") && req["metrics"].is_object())
-    {
-        update_consumer_metrics(channel, uid, req["metrics"]);
-    }
-}
+// M1.4 (2026-05-11): `update_producer_metrics`, `update_consumer_metrics`,
+// `handle_metrics_report_req` deleted.  Metrics now piggyback on
+// HEARTBEAT_REQ and live on `HubState.roles[uid].presences[(ch, role_type)].latest_metrics`.
+// See `hub_state.cpp:_on_heartbeat` for the write path and
+// `HubState::channel_metrics_snapshot` for the read path.
 
 nlohmann::json BrokerServiceImpl::handle_metrics_req(const nlohmann::json &req)
 {
+    // M1.4 (2026-05-11): metrics sourced from `HubState`'s per-presence
+    // rows (HEP-CORE-0019 §2.3 Phase 6) via `channel_metrics_snapshot`.
+    // Legacy `metrics_store_` retired; the shape is preserved
+    // (`status`, `channel`/`channels`, `metrics`).
     const std::string corr_id = req.value("correlation_id", "");
     const std::string channel = req.value("channel_name", "");
-    nlohmann::json resp       = query_metrics(channel);
+
+    nlohmann::json resp;
+    resp["status"] = "success";
+    if (!channel.empty())
+    {
+        resp["channel"] = channel;
+        resp["metrics"] = hub_state_->channel_metrics_snapshot(channel);
+    }
+    else
+    {
+        // All-channels query: iterate snapshot to aggregate.  Pre-fix
+        // this iterated `metrics_store_`; post-M1.4 iterate
+        // `pImpl->hub_state_->snapshot().channels` and call the helper
+        // per channel.
+        nlohmann::json channels = nlohmann::json::object();
+        for (const auto &[name, ch] : hub_state_->snapshot().channels)
+            channels[name] = hub_state_->channel_metrics_snapshot(name);
+        resp["channels"] = std::move(channels);
+    }
     // HEP-CORE-0019 §3.2: merge live SHM-derived block metrics into the response.
-    // When a channel name is given we can look up the SHM block(s) directly.
-    // For the all-channels case the shm_info map is also populated.
     resp["shm_blocks"] = collect_shm_info(channel);
     if (!corr_id.empty())
         resp["correlation_id"] = corr_id;
     return resp;
 }
 
-nlohmann::json BrokerServiceImpl::query_metrics(const std::string &channel) const
-{
-    nlohmann::json result;
-    result["status"] = "success";
-
-    auto build_channel_metrics = [](const ChannelMetrics &cm) -> nlohmann::json
-    {
-        // Wave M2.5 (G1) — producers + consumers BOTH per-uid trees,
-        // matching the per-producer storage shape and HEP-CORE-0007
-        // §12.4 metadata-tree convention.  Pre-fix, `producer` was a
-        // single-blob object; admin clients reading the new shape
-        // should iterate `ch["producers"]`.
-        nlohmann::json ch;
-        nlohmann::json producers = nlohmann::json::object();
-        for (const auto &[uid, pm] : cm.producers)
-        {
-            if (pm.data.is_null()) continue;
-            nlohmann::json one = pm.data;
-            one["pid"] = pm.pid;
-            producers[uid] = std::move(one);
-        }
-        if (!producers.empty())
-            ch["producers"] = std::move(producers);
-        nlohmann::json consumers = nlohmann::json::object();
-        for (const auto &[uid, pm] : cm.consumers)
-        {
-            if (!pm.data.is_null())
-                consumers[uid] = pm.data;
-        }
-        if (!consumers.empty())
-            ch["consumers"] = std::move(consumers);
-        return ch;
-    };
-
-    if (!channel.empty())
-    {
-        // Single channel query.
-        auto it = metrics_store_.find(channel);
-        if (it != metrics_store_.end())
-        {
-            result["channel"]      = channel;
-            result["metrics"]      = build_channel_metrics(it->second);
-        }
-        else
-        {
-            result["channel"] = channel;
-            result["metrics"] = nlohmann::json::object();
-        }
-    }
-    else
-    {
-        // All channels.
-        nlohmann::json channels = nlohmann::json::object();
-        for (const auto &[name, cm] : metrics_store_)
-        {
-            channels[name] = build_channel_metrics(cm);
-        }
-        result["channels"] = std::move(channels);
-    }
-    return result;
-}
+// M1.4 (2026-05-11): `BrokerServiceImpl::query_metrics(channel)` deleted.
+// Replaced by `HubState::channel_metrics_snapshot(channel)` called from
+// `handle_metrics_req` and `BrokerService::query_metrics(MetricsFilter)`.
 
 // ============================================================================
 // Hub Federation handlers (HEP-CORE-0022)

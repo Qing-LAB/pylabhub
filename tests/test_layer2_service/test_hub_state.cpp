@@ -815,33 +815,10 @@ TEST(HubStateOps, PeerConnected_Inserts)
     EXPECT_EQ(s.counters().msg_type_counts.count("HUB_PEER_HELLO"), 0u);
 }
 
-TEST(HubStateOps, MetricsReported_StoresOnPresenceWithoutLivenessSideEffect)
-{
-    HubState s;
-    HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
-    const auto hb_time = std::chrono::steady_clock::now();
-    HubStateTestAccess::on_heartbeat(
-        s, "ch1", "prod.main.test", "producer", hb_time, std::nullopt);
-    std::chrono::steady_clock::time_point presence_hb_before;
-    {
-        auto snap = s.snapshot();
-        presence_hb_before =
-            find_producer_in(snap, "ch1", "prod.main.test")->last_heartbeat;
-    }
-
-    nlohmann::json m   = {{"rx_count", 42}};
-    const auto     now = std::chrono::system_clock::now();
-    HubStateTestAccess::on_metrics_reported(s, "ch1", "prod.main.test", m, now);
-
-    auto snap = s.snapshot();
-    const auto *p = find_producer_in(snap, "ch1", "prod.main.test");
-    ASSERT_NE(p, nullptr);
-    EXPECT_EQ(p->latest_metrics, m);
-    EXPECT_EQ(p->metrics_collected_at, now);
-    // Metrics report must NOT advance the presence's last_heartbeat.
-    EXPECT_EQ(p->last_heartbeat, presence_hb_before);
-    EXPECT_EQ(s.counters().msg_type_counts.count("METRICS_REPORT_REQ"), 0u);
-}
+// Wave M1.4 channel_metrics_snapshot tests deferred to after the
+// `make_producer` / `make_schema_invariants` / `make_zmq_transport`
+// helper definitions (they live in a later anon namespace).  Search
+// for "HubStateChannelMetricsSnapshot" below.
 
 TEST(HubStateOps, MessageProcessed_BumpsCounterAndBytes)
 {
@@ -2652,6 +2629,142 @@ TEST(HubStateProducerAdmission, SecondProducer_ShmChannel_RejectedShmCardinality
     ASSERT_TRUE(ch.has_value());
     EXPECT_EQ(ch->producer_count(), 1u);
     EXPECT_EQ(ch->find_producer("prod.thermoB.uid00000004"), nullptr);
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Wave M1.4 (2026-05-11) — channel_metrics_snapshot tests.  Replace the
+// retired `MetricsReported_StoresOnPresenceWithoutLivenessSideEffect`
+// test (the dedicated `_on_metrics_reported` op + `METRICS_REPORT_REQ`
+// wire message are gone; metrics piggyback on HEARTBEAT_REQ per
+// HEP-CORE-0019 §2.3 Phase 6).  Pin the new contract: per-presence-row
+// metrics aggregated by HubState::channel_metrics_snapshot.
+// ──────────────────────────────────────────────────────────────────────
+
+TEST(HubStateChannelMetricsSnapshot, UnknownChannel_ReturnsEmpty)
+{
+    HubState s;
+    auto m = s.channel_metrics_snapshot("no.such.channel");
+    EXPECT_TRUE(m.empty()) << "Unknown channel returns empty object";
+}
+
+TEST(HubStateChannelMetricsSnapshot, ChannelExistsNoMetrics_ReturnsEmpty)
+{
+    HubState s;
+    HubStateTestAccess::on_channel_registered(s, make_channel("ch.empty"));
+    // Presence created at REG time but `latest_metrics` is null until a
+    // heartbeat-with-metrics arrives.
+    auto m = s.channel_metrics_snapshot("ch.empty");
+    EXPECT_TRUE(m.empty())
+        << "Channel registered but no metrics reported → empty object";
+}
+
+TEST(HubStateChannelMetricsSnapshot, SingleProducer_IncludesPidAndMetrics)
+{
+    HubState s;
+    HubStateTestAccess::on_channel_registered(s, make_channel("ch.solo"));
+    nlohmann::json metrics = {{"qps", 100}, {"errors", 0}};
+    HubStateTestAccess::on_heartbeat(s, "ch.solo", "prod.main.test", "producer",
+                                      std::chrono::steady_clock::now(), metrics);
+
+    auto m = s.channel_metrics_snapshot("ch.solo");
+    ASSERT_TRUE(m.contains("producers"));
+    ASSERT_TRUE(m["producers"].contains("prod.main.test"));
+    EXPECT_EQ(m["producers"]["prod.main.test"]["qps"], 100);
+    EXPECT_EQ(m["producers"]["prod.main.test"]["errors"], 0);
+    EXPECT_EQ(m["producers"]["prod.main.test"]["pid"], 4242)
+        << "pid sourced from ChannelEntry.producers[].producer_pid";
+    EXPECT_FALSE(m.contains("consumers"))
+        << "No consumers → key omitted";
+}
+
+TEST(HubStateChannelMetricsSnapshot, MultiProducer_PerUidNoOverwrite)
+{
+    HubState s;
+    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+                  s, "ch.fanin",
+                  make_schema_invariants(),
+                  make_zmq_transport(),
+                  make_producer("prod.A.uid00000001", 1001))
+                  .producer_result, AddProducerResult::Created);
+    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+                  s, "ch.fanin",
+                  make_schema_invariants(),
+                  make_zmq_transport(),
+                  make_producer("prod.B.uid00000002", 1002))
+                  .producer_result, AddProducerResult::Created);
+
+    // Each producer reports distinct metrics via heartbeat — the H34
+    // overwrite-class bug at the metrics layer is eliminated by per-
+    // presence-row keying.
+    HubStateTestAccess::on_heartbeat(s, "ch.fanin", "prod.A.uid00000001", "producer",
+                                      std::chrono::steady_clock::now(),
+                                      nlohmann::json{{"qps", 10}});
+    HubStateTestAccess::on_heartbeat(s, "ch.fanin", "prod.B.uid00000002", "producer",
+                                      std::chrono::steady_clock::now(),
+                                      nlohmann::json{{"qps", 20}});
+
+    auto m = s.channel_metrics_snapshot("ch.fanin");
+    ASSERT_TRUE(m.contains("producers"));
+    auto &ps = m["producers"];
+    ASSERT_TRUE(ps.contains("prod.A.uid00000001"));
+    ASSERT_TRUE(ps.contains("prod.B.uid00000002"));
+    EXPECT_EQ(ps["prod.A.uid00000001"]["qps"], 10);
+    EXPECT_EQ(ps["prod.B.uid00000002"]["qps"], 20);
+    EXPECT_EQ(ps["prod.A.uid00000001"]["pid"], 1001);
+    EXPECT_EQ(ps["prod.B.uid00000002"]["pid"], 1002);
+}
+
+TEST(HubStateChannelMetricsSnapshot, ProducerAndConsumer_BothPresent)
+{
+    HubState s;
+    HubStateTestAccess::on_channel_registered(s, make_channel("ch.mix"));
+    HubStateTestAccess::on_consumer_joined(s, "ch.mix",
+                                            make_consumer("cons.X.test"));
+
+    HubStateTestAccess::on_heartbeat(s, "ch.mix", "prod.main.test", "producer",
+                                      std::chrono::steady_clock::now(),
+                                      nlohmann::json{{"qps", 50}});
+    HubStateTestAccess::on_heartbeat(s, "ch.mix", "cons.X.test", "consumer",
+                                      std::chrono::steady_clock::now(),
+                                      nlohmann::json{{"read_count", 99}});
+
+    auto m = s.channel_metrics_snapshot("ch.mix");
+    ASSERT_TRUE(m.contains("producers"));
+    ASSERT_TRUE(m.contains("consumers"));
+    EXPECT_EQ(m["producers"]["prod.main.test"]["qps"], 50);
+    EXPECT_EQ(m["consumers"]["cons.X.test"]["read_count"], 99);
+    EXPECT_FALSE(m["consumers"]["cons.X.test"].contains("pid"))
+        << "Consumers do not get a pid field (pid is per-producer)";
+}
+
+TEST(HubStateChannelMetricsSnapshot, RoleDisconnect_MetricsGoAway)
+{
+    // Wave M3 step 5h: presences erased on disconnect.  Metrics live
+    // on the presence row, so they go away naturally — H34 leak class
+    // closure (metrics_store_ used to leak per-uid entries after
+    // DEREG; per-presence-row keying eliminates that bug class).
+    HubState s;
+    HubStateTestAccess::on_channel_registered(s, make_channel("ch.fade"));
+    HubStateTestAccess::on_consumer_joined(s, "ch.fade",
+                                            make_consumer("cons.A.test"));
+    HubStateTestAccess::on_heartbeat(s, "ch.fade", "cons.A.test", "consumer",
+                                      std::chrono::steady_clock::now(),
+                                      nlohmann::json{{"read_count", 42}});
+
+    // Pre-DEREG: metrics visible.
+    {
+        auto m = s.channel_metrics_snapshot("ch.fade");
+        ASSERT_TRUE(m.contains("consumers"));
+        EXPECT_EQ(m["consumers"]["cons.A.test"]["read_count"], 42);
+    }
+
+    HubStateTestAccess::on_consumer_left(s, "ch.fade", "cons.A.test");
+
+    // Post-DEREG: consumer presence erased (under H18) → no consumer
+    // metrics; H34 leak class doesn't exist in this path.
+    auto m = s.channel_metrics_snapshot("ch.fade");
+    EXPECT_FALSE(m.contains("consumers"))
+        << "Consumer disconnect erases the presence row → metrics gone";
 }
 
 // ─── Wave M3 — RoleEntry controlled-access API ─────────────────────────────
