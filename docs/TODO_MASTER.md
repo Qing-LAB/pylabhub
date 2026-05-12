@@ -126,9 +126,9 @@ Each deferred item below has: **scope document**, **trigger condition**, and **s
 | **M2.5 step 2d** | Deferred design-doc §5.1 API methods: `set_invariant_schema` / `set_invariant_transport` / `observable(roles_map)` member wrapper / `is_alive(roles_map)` / `producers()` + `consumers()` span accessors. | `docs/tech_draft/controlled_access_api_design.md` §7 step 2d | **First concrete caller needs one of these.** They are sugar; no current production code asks for them. Trigger is a caller-driven justification, not a calendar date. | `docs/todo/API_TODO.md` (add an entry when a caller asks) |
 | **M2.5 step 8** | Final HEP doc sweep.  **Most of this work already shipped** during Wave M2.5 — see "Step 8 audit" below.  Remaining: HEP-CORE-0019 §9 (metrics plane) per-producer metrics tree shape; possibly small cross-references between HEPs. | `docs/tech_draft/controlled_access_api_design.md` §7 step 8 | Land alongside HEP-0019 next edit (whenever metrics-plane HEP receives any other update).  Low priority — code is the truth; HEP-0019 lags. | (None — small enough to be a single sweep commit when convenient) |
 | **M1.4** | Retire `metrics_store_` + `METRICS_REPORT_REQ`.  **CLOSED 2026-05-11.**  All five phases shipped: (1) audit confirmed `on_heartbeat_tick_` already carries metrics, `on_metrics_report_tick_` was redundant duplicate at same cadence; (2) `HubState::channel_metrics_snapshot(channel)` helper added — aggregates `RolePresence::latest_metrics` via `ChannelEntry.producers/consumers` bound; (3) `handle_metrics_req`, `BrokerService::query_metrics(MetricsFilter)`, `BrokerService::query_metrics_json_str` redirected; (4) DELETED — `metrics_store_`, `ChannelMetrics`, `ParticipantMetrics`, `update_producer_metrics`, `update_consumer_metrics`, `BrokerServiceImpl::query_metrics(channel)`, `handle_metrics_report_req`, `HubState::_on_metrics_reported`, `BrokerRequestComm::send_metrics_report`, `RoleAPIBase::on_metrics_report_tick_`, `METRICS_REPORT_REQ` wire-msg entry, `cfg.report_metrics` consumer-host setter; (5) HEP-CORE-0019 §9 Phase 6 marked ✅ SHIPPED with full implementation summary; status banner updated.  Closes **H34** structurally (per-uid metrics leak goes away with H18 presence-row erase on disconnect).  Test results: 1828/1828 passing (1823 + 6 new `HubStateChannelMetricsSnapshot.*` − 1 retired `MetricsReported_StoresOnPresenceWithoutLivenessSideEffect`).  L3 test `MetricsPlaneTest` migrated from `send_metrics_report` to `send_heartbeat(..., "consumer", metrics)`. | `docs/tech_draft/M1_FSM_consolidation_handoff_2026-05-09.md` §M1.4 | (closed) | `docs/todo/MESSAGEHUB_TODO.md` |
-| **M1.5** | Role-side `FORCE_SHUTDOWN` handler + `on_forced_disconnect` script callback + automatic shutdown. | `docs/tech_draft/M1_FSM_consolidation_handoff_2026-05-09.md` §M1.5 | Start after M1.4 closes (M1.5 hooks into the post-M1.4 metrics + role-side disconnect cleanup paths). | `docs/todo/MESSAGEHUB_TODO.md` |
-| **MD1** | Role teardown sequence fix — use-after-free race in `do_role_teardown`: `BrokerRequestComm` destroyed in Step 13 while its ctrl-thread is still in `run_poll_loop`; ctrl-thread joined only in Step 14.  Design principle locked: **"stop the machine before disassembling it"** — no object may be destroyed while another thread is still using it; owning side guarantees all in-flight uses have observed stop and returned before destruction.  Preferred fix: make `BrokerRequestComm::disconnect()` synchronous with respect to external poll loops (signal + wait), so caller's `disconnect(); reset();` idiom is correct by construction. | `docs/todo/TESTING_TODO.md` §9 (full diagnosis) | After M1.5.  Or earlier if a hang/crash test failure points at the race. | `docs/todo/TESTING_TODO.md` §9 |
-| **Wave B M8 / MP6** | Federation/dual-hub HEP-CORE-0022 peer-hub producer-presence handling.  Dual-hub processor B3-B5 scenarios in `role_host_template_design.md` §14.  **Verify H43** (Wave M3 sixth-pass review): peer hubs don't receive role-disconnect events for non-channel-close paths.  Bands are not federated per HEP-CORE-0030 §3, so this may be a non-issue — verify against dual-hub-processor scenarios before deciding to add propagation. | `docs/tech_draft/role_host_template_design.md` Wave B §M8 + `docs/HEP/HEP-CORE-0022.md` | After M3 + M1.4 + M1.5 + MD1 close.  Wave M3 closed 2026-05-11; M1.4 unblocked. | `docs/todo/MESSAGEHUB_TODO.md` |
+| **MD1** | Role teardown sequence fix — use-after-free race in `do_role_teardown`: `BrokerRequestComm` destroyed in Step 13 while its ctrl-thread is still in `run_poll_loop`; ctrl-thread joined only in Step 14.  **Verified 2026-05-12** — `BrokerRequestComm::stop()` is fire-and-forget (`broker_request_comm.cpp:598-620`), so the race remains real; gdb stack trace preserved in `docs/todo/TESTING_TODO.md` §9.  Design principle locked: **"stop the machine before disassembling it"** — no object may be destroyed while another thread is still using it; owning side guarantees all in-flight uses have observed stop and returned before destruction.  Preferred fix: make `BrokerRequestComm::disconnect()` synchronous with respect to external poll loops (signal + wait), so caller's `disconnect(); reset();` idiom is correct by construction. | `docs/todo/TESTING_TODO.md` §9 (full diagnosis) | **Now** — chain reordered 2026-05-12 to land MD1 before M1.5, because M1.5's auto-stop path adds load on the teardown sequence and stacking it on a known-buggy substrate would mask failure modes. | `docs/todo/TESTING_TODO.md` §9 |
+| **M1.5** | `on_channel_closing(channel, reason)` script callback + optional auto-stop policy.  **Re-framed 2026-05-12** — the 2026-05-09 plan targeted `FORCE_SHUTDOWN`/`on_forced_disconnect`, but M1.2 commit `a41ce71` removed `FORCE_SHUTDOWN` wholesale (along with `Closing` state, grace window, and the channel-side FSM).  M1.5 now adds a first-class script callback for the surviving `CHANNEL_CLOSING_NOTIFY` substitute + optional auto-stop, replacing today's "scan the generic per-cycle messages list" ergonomics.  See design doc for §6 open decisions awaiting user lock-in (auto-stop default, scope, exception policy). | `docs/tech_draft/M1.5_channel_closing_redesign_2026-05-12.md` | After MD1 closes.  Locks the teardown contract first, then layers the M1.5 callback on a stable substrate. | `docs/todo/MESSAGEHUB_TODO.md` |
+| **Wave B M8 / MP6** | Federation/dual-hub HEP-CORE-0022 peer-hub producer-presence handling.  Dual-hub processor B3-B5 scenarios in `role_host_template_design.md` §14.  **Verify H43** (Wave M3 sixth-pass review): peer hubs don't receive role-disconnect events for non-channel-close paths.  Bands are not federated per HEP-CORE-0030 §3, so this may be a non-issue — verify against dual-hub-processor scenarios before deciding to add propagation. | `docs/tech_draft/role_host_template_design.md` Wave B §M8 + `docs/HEP/HEP-CORE-0022.md` | After M3 + M1.4 + MD1 + M1.5 close.  Wave M3 + M1.4 closed; chain remaining: MD1 → M1.5 → Wave B M8. | `docs/todo/MESSAGEHUB_TODO.md` |
 
 #### Step 8 audit — what's shipped vs remaining
 
@@ -150,15 +150,16 @@ Trigger: land alongside HEP-0019's next edit, or as a standalone small commit wh
 #### Roadmap dependency graph (post-Wave-M2.5)
 
 ```
-Wave M2.5 (DONE)
+Wave M2.5 (DONE 2026-05-11)
    │
-   ├─► Wave M3 (RoleEntry API; small, fast — retires the PATCH)
+   ├─► Wave M3 (DONE 2026-05-11) — RoleEntry API; retired the PATCH
    │       │
-   │       └─► M1.4 (retire metrics_store_)
+   │       └─► M1.4 (DONE 2026-05-11) — retire metrics_store_
    │              │
-   │              └─► M1.5 (FORCE_SHUTDOWN handler)
+   │              └─► MD1 (role teardown use-after-free race; gdb-confirmed)
    │                     │
-   │                     └─► MD1 (role teardown race fix)
+   │                     └─► M1.5 (on_channel_closing callback + auto-stop;
+   │                     │         re-framed 2026-05-12, see tech_draft)
    │                            │
    │                            └─► Wave B M8 / MP6 (federation)
    │
@@ -221,12 +222,30 @@ recommend pulling in this order (smallest blast radius first):
 | **S4** M1.2 Phase 5-7 production cleanup | Phase 5: drop legacy writes in `_on_heartbeat`. Phase 6: delete `ChannelEntry.{status, last_heartbeat, state_since}`, `RoleEntry.{state, last_heartbeat, latest_metrics, metrics_collected_at}`, `ChannelStatus` enum, `_update_role_*` mutators, `observable_from_legacy_status` shim, dual channel-JSON serializer in `handle_channel_list_req`. Phase 7 (M1.3): retire FORCE_SHUTDOWN-as-grace-escalation, `closing_deadline`, `grace_heartbeats`, `effective_grace()`, `Closing` state arms. | All planned cleanup | 2–3 days |
 | **S5** Coverage broadening (lower priority) | HEP-0034 §12 multi-file hub-globals; positive-path `close_channel` + `broadcast_channel` admin RPCs; processor two-presence asymmetric failure; HEP-0030 band protocol round-trip | 4 moderate | 1 day |
 
-**Recommended sequence:** S1 → S2 → S4 (large but on the existing
-M1.2 wave plan; closes phases 5-8) → S3 (error-code coverage, can
-parallelise with S4) → S5.  After S2 + S4, the M1.2 + M1.3 work in
-the wave plan is closed; M1.4 (retire `metrics_store_`) and M1.5
-(role-side `on_forced_disconnect`) become the next milestones, then
-M2-M9 in `docs/tech_draft/role_host_template_design.md` §14.
+**Recommended sequence (original plan):** S1 → S2 → S4 (large but on
+the existing M1.2 wave plan; closes phases 5-8) → S3 (error-code
+coverage, can parallelise with S4) → S5.
+
+**Actual outcome by 2026-05-12:** S1 shipped (S1a / S1b commits); S2
+shipped (S2c atomic-teardown assertion landed); **S4 shipped in the
+M1.2 atomic deletion sweep commit `a41ce71`** (Phase 5+6+7 collapsed
+into one commit; went further than the strand plan — `FORCE_SHUTDOWN`
+was REMOVED WHOLESALE rather than rewired as best-effort
+notification); **M1.4 shipped 2026-05-11** (commit `4e902e1` + 4
+follow-on audit/test commits); Wave M3 + Wave M2.5 shipped in
+between.  S3 + S5 remain partially open as opportunistic coverage
+expansion.
+
+**Next-up milestones (re-framed 2026-05-12):**
+- **MD1** — role teardown use-after-free race fix (chain reordered
+  to land MD1 before M1.5 — see TODO_MASTER §"Deferred items" above).
+- **M1.5** — `on_channel_closing` callback + auto-stop (re-framed
+  from the original "FORCE_SHUTDOWN handler" framing; see
+  `docs/tech_draft/M1.5_channel_closing_redesign_2026-05-12.md`).
+- **Wave B M8 / MP6** — federation/dual-hub; verifies H43 (still open
+  as of 2026-05-12 per broker_service.cpp).
+- M2-M9 in `docs/tech_draft/role_host_template_design.md` §14 follow
+  after Wave B M8.
 
 **Detailed findings + suggested assertion shapes:** see
 `docs/todo/TESTING_TODO.md` §"Code review findings (2026-05-10)".
@@ -243,7 +262,16 @@ GIL-release-during-wait flag added for Flask/asyncio compat.  Below
 left in place for archival; the original problem statement / pending
 items list is no longer load-bearing.
 
-### 🔥 2026-05-07 — HIGHEST PRIORITY: Python lifecycle redesign (in progress)
+### 📜 2026-05-07 — ARCHIVED SNAPSHOT (was "HIGHEST PRIORITY: Python lifecycle redesign (in progress)")
+
+> Snapshot preserved verbatim for historical record only.  The "Pending"
+> list below was load-bearing on 2026-05-07; **all 7 items closed in
+> commit `49b65e5` (see the CLOSED summary above)**.  Subsequent
+> milestones referenced ("M1.1 / M1.2 / M1.3 / M2 / M3-M9") have also
+> all advanced — M1.1 → M1.4 + Wave M2.5 + Wave M3 shipped 2026-05-10
+> through 2026-05-11.  Use the active sections at the top of this file
+> for current state; this snapshot is for "what did we know on
+> 2026-05-07" archaeology only.
 
 **Status**: partially landed; MUST finish before resuming any other work.
 

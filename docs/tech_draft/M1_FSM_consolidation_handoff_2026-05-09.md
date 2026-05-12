@@ -17,11 +17,38 @@
 > skeleton).  When citing `M3` elsewhere, mean **Wave M3** (RoleEntry
 > API).  Use the full prefix in new docs and commit messages.
 
-> **Status:** Phase 4 + L3 broker test migration COMPLETE 2026-05-10;
->   Phases 5-8 + M1.3 + M1.4 + M1.5 still pending.
-> **As of:** 2026-05-10 — Phase 4 + 4 follow-on commits landed
->   (HEP-0007 unification, BrokerRequestComm error surfacing,
->   Bucket C harmonization, full broker test cluster migration).
+> **Status:** ⚠️ **SUPERSEDED 2026-05-12** — the work plan in this doc
+> is largely shipped; the remaining `M1.5` line is re-framed against
+> the post-M1.2 protocol surface.
+>
+> **What's closed since this handoff was written:**
+> - Phase 4 + Phase 5 + Phase 6 + Phase 7 (M1.3) all shipped in the
+>   M1.2 atomic-deletion sweep, commit `a41ce71` (2026-05-10).
+> - Phase 8 tests + tidy-ups shipped as part of the same sweep.
+> - **M1.4** (retire `metrics_store_` + `METRICS_REPORT_REQ`) shipped
+>   2026-05-11 in commits `4e902e1` (main) + `ad0aa87` + `00d810e` +
+>   `264382d` + `28f529b` (audit refinements and test hardening).
+> - **M1.3** intent (retire FORCE_SHUTDOWN-as-grace-escalation) shipped
+>   as part of the M1.2 sweep but went further than this doc planned:
+>   `FORCE_SHUTDOWN` was REMOVED WHOLESALE, not rewired as
+>   best-effort notification.  The surviving substitute on the wire
+>   is `CHANNEL_CLOSING_NOTIFY` (post-fact teardown signal).
+>
+> **What's re-framed:**
+> - **M1.5** below was framed as a role-side `FORCE_SHUTDOWN` handler.
+>   That wire message no longer exists.  The re-scoped M1.5 (a
+>   first-class `on_channel_closing` script callback + optional
+>   auto-stop) lives in
+>   `docs/tech_draft/M1.5_channel_closing_redesign_2026-05-12.md`.
+>   The §M1.5 section below is preserved as historical context but
+>   should NOT be used as the implementation plan.
+>
+> **Original (pre-2026-05-12) status line, preserved for history:**
+>   "Phase 4 + L3 broker test migration COMPLETE 2026-05-10; Phases
+>   5-8 + M1.3 + M1.4 + M1.5 still pending. As of 2026-05-10 — Phase
+>   4 + 4 follow-on commits landed (HEP-0007 unification,
+>   BrokerRequestComm error surfacing, Bucket C harmonization, full
+>   broker test cluster migration)."
 > **Authoritative design:** `docs/HEP/HEP-CORE-0023-Startup-Coordination.md` §2,
 > `docs/HEP/HEP-CORE-0019-Metrics-Plane.md` §2-3 (Phase 6), `docs/HEP/HEP-CORE-0033-Hub-Character.md` §18-19
 > **Wave plan reference:** `docs/tech_draft/role_host_template_design.md` §14
@@ -503,15 +530,25 @@ transitional ("keep the legacy metrics_store_ in sync until [...]").
 
 **Estimated LOC:** ~200 net deletion + ~50 helper additions.
 
-### M1.5 (NEW — clarified in this session)
+### M1.5 (HISTORICAL — superseded 2026-05-12; see redesign doc)
 
-**Title:** role-side `FORCE_SHUTDOWN` handler + `on_forced_disconnect`
-script callback + automatic shutdown
+> ⚠️ **The framing below is stale.**  The 2026-05-10 M1.2 atomic sweep
+> (commit `a41ce71`) REMOVED `FORCE_SHUTDOWN` entirely from both the
+> wire protocol and the broker code, rather than rewiring it as
+> best-effort notification.  Grep against current code confirms zero
+> matches: `grep -rn FORCE_SHUTDOWN src/`.  The role-side ergonomics
+> gap is real, but its target wire message changed.  Use
+> `docs/tech_draft/M1.5_channel_closing_redesign_2026-05-12.md` for
+> the implementation plan.
 
-**Why it's a phase:** today the broker sends `FORCE_SHUTDOWN` but
-**no role-side handler exists** — verified by `grep -rn
-"FORCE_SHUTDOWN" src/`.  Roles silently drop the frame.  M1.3 keeps
-the wire message but doesn't add a handler.  M1.5 closes the loop.
+**Original title (kept for record):** role-side `FORCE_SHUTDOWN`
+handler + `on_forced_disconnect` script callback + automatic shutdown
+
+**Original rationale (kept for record):** today the broker sends
+`FORCE_SHUTDOWN` but **no role-side handler exists** — verified by
+`grep -rn "FORCE_SHUTDOWN" src/`.  Roles silently drop the frame.
+M1.3 keeps the wire message but doesn't add a handler.  M1.5 closes
+the loop.
 
 **Scope:**
 - Role-side handler in `BrokerRequestComm` (or wherever
