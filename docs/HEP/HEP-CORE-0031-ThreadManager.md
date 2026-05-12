@@ -113,6 +113,97 @@ calls walk an empty slot list and return 0.
 
 ---
 
+## 4.1 Teardown Ordering Contract — when callers call `drain()`
+
+ThreadManager's `drain()` is just one of three phases a correct
+teardown sequence must run in order.  Callers (role hosts, hub host,
+test harnesses) MUST classify each teardown action against this
+contract:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ PHASE A — SIGNAL (pre-drain)                                    │
+│ • Set stop flags / `running` = false                            │
+│ • Send wake-up signals (signal sockets, condition variables)    │
+│ • Do NOT destroy anything that a live thread holds a reference  │
+│   to or polls on.                                                │
+│ Goal: every spawned thread is now guaranteed to OBSERVE stop    │
+│ on its next iteration AND have a path to return.                │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│ PHASE B — DRAIN (the synchronization point)                     │
+│ • `thread_manager().drain()`  ← ThreadManager's contribution    │
+│ Goal: when this returns, NO spawned thread is running, AND      │
+│ every spawned thread has completed its post-loop store/cleanup. │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│ PHASE C — DESTROY (post-drain)                                  │
+│ • Close sockets the threads were polling.                        │
+│ • Reset unique_ptrs holding pImpl that threads were accessing.  │
+│ • Run all `*::disconnect()` / `*::reset()` / `*::~Dtor()`        │
+│   for resources that ANY drained thread used or depended on.    │
+│ Goal: free everything; no thread can possibly touch any         │
+│ destroyed resource (proven by Phase B).                          │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Why this matters for `drain()` users.**  ThreadManager's `drain()`
+synchronously joins every slot — but only the slots it owns.  If a
+thread of interest is owned by a DIFFERENT ThreadManager (or by some
+external runtime), this ThreadManager's `drain()` does not know about
+it.  Callers who orchestrate cross-object teardown must therefore
+classify each lifecycle-managed class and call THE RIGHT
+ThreadManager's `drain()` between Phase A and Phase C.
+
+**API classification of the lifecycle-managed classes in this
+codebase** (this is the rule that determines where each class's
+`stop()` / `disconnect()` / dtor lands in the A/B/C ordering):
+
+| Pattern | Owns its threads? | How its API maps to A/B/C |
+|---|---|---|
+| **Externally-threaded** | No — caller's ThreadManager owns the thread(s).  Class's `stop()` is fire-and-forget (signal only). | `stop()` = Phase A; `disconnect()`/`reset()` = Phase C.  Drain happens between, in caller's ThreadManager. |
+| **Self-threaded** | Yes — class owns a private ThreadManager.  `stop()` self-contains both signal and drain. | `stop()` = leaf call (does A + B internally); callers treat the whole `stop()` as one atomic action.  No external drain needed for this object's threads. |
+| **Inline / no thread** | No threads of its own — driven inline by the caller's thread. | `stop()` = Phase C only.  No ordering vs threads needed. |
+
+Examples in the pylabhub codebase:
+- `BrokerRequestComm` is **externally-threaded** — its ctrl thread is
+  spawned into `RoleAPIBase::thread_manager()`, NOT BRC's own
+  ThreadManager.  BRC's `stop()` is therefore a PHASE A signal only.
+  BRC's `disconnect()` (sockets) and unique_ptr dtor (pImpl) are
+  PHASE C.  See HEP-CORE-0011 §"Role Host worker_main_() Steps" for
+  the role-side application.
+- `ZmqQueue` is **self-threaded** — owns its own ThreadManager
+  internally; `stop()` signals + drains its private threads + closes
+  its socket.  Callers treat `stop()` as one atomic step.
+- `InboxQueue` is **inline / no thread** — `recv_one()` is called from
+  the worker thread that runs `data_loop.hpp`.  No background thread
+  exists; `stop()` is just resource cleanup.
+
+**Reviewer rule**.  When adding a new lifecycle-managed class:
+1. Determine the class's pattern (externally / self / inline).
+2. Document the pattern in the class's docstring.
+3. Verify every call site that destroys this class is in PHASE C
+   (after the relevant `drain()`).
+4. Verify the class's `stop()` semantics match its pattern — never
+   give an externally-threaded class a "synchronous stop()" that
+   blocks until its (externally-owned) thread joins; that would
+   require it to know about the caller's ThreadManager, inverting
+   ownership.
+
+The contract was added 2026-05-12 in response to MD1 (use-after-free
+race on `BrokerRequestComm.pImpl`; gdb-captured trace preserved in
+`docs/todo/TESTING_TODO.md` §9; design rationale in
+`docs/tech_draft/MD1_role_teardown_ordering_2026-05-12.md` §3.5).
+The pre-MD1 sequence in `do_role_teardown` ran Phase C *before*
+Phase B, which exposed the race under concurrent CPU pressure
+(1/13 reproductions under `ctest -j2`).  When MD1 ships and this
+section migrates to `docs/IMPLEMENTATION_GUIDANCE.md`, the IG copy
+becomes the canonical reference; this HEP section cross-references it.
+
+---
+
 ## 5. Lifecycle Thunk Design
 
 `tm_shutdown()` is a **safe no-op**. Rationale:

@@ -527,6 +527,94 @@ When adding a new engine type:
 
 ---
 
+### Teardown Ordering Contract — Phase A (signal) → B (drain) → C (destroy) (added 2026-05-12)
+
+> **Status**: forward-declared during the MD1 design pass.  The
+> *ordering* documented here is already correct on the hub side
+> (HEP-CORE-0033 §4.2) and the *code* expression of it on the role
+> side ships under MD1 (`docs/tech_draft/MD1_role_teardown_ordering_2026-05-12.md`).
+> This section is the cross-cutting reference that future lifecycle
+> additions must classify against.
+
+Every teardown sequence that involves spawned threads MUST execute in
+three explicitly-classified phases, in this order:
+
+**PHASE A — SIGNAL (pre-drain).**
+- Set stop flags / `running` = false.
+- Send wake-up signals (signal sockets, condition variables).
+- Do NOT destroy anything that a live thread holds a reference to or
+  polls on.
+- *Goal*: every spawned thread is now guaranteed to OBSERVE stop on
+  its next iteration AND have a path to return.
+
+**PHASE B — DRAIN (synchronization point).**
+- `thread_manager().drain()` (or `join_named("...")` for a single
+  named slot).
+- *Goal*: when this returns, no spawned thread is running, AND every
+  spawned thread has completed its post-loop store/cleanup.
+
+**PHASE C — DESTROY (post-drain).**
+- Close sockets the threads were polling.
+- Reset unique_ptrs holding pImpl that threads were accessing.
+- Run `*::disconnect()` / `*::reset()` / `*::~Dtor()` for resources
+  that any drained thread used or depended on.
+- *Goal*: free everything; no thread can possibly touch any destroyed
+  resource (proven by Phase B).
+
+**Invariant** (reviewable at code-review time):
+> Phase A actions never destroy anything.  Phase C actions never run
+> before Phase B returns.
+
+**API patterns — every lifecycle-managed class falls into one of
+three categories**:
+
+| Pattern | Owns its threads? | API shape | Examples |
+|---|---|---|---|
+| **Externally-threaded** | No — caller's `ThreadManager` owns the thread(s) | `stop()` is a PHASE A signal (fire-and-forget); `disconnect()` / `reset()` are PHASE C | `BrokerRequestComm` (ctrl thread lives in `RoleAPIBase::thread_manager()`); `BrokerService` (broker thread lives in `HubHost::thread_mgr`) |
+| **Self-threaded** | Yes — class owns a private `ThreadManager` | `stop()` is self-contained (does A + B internally); callers treat it as one atomic step | `ZmqQueue` |
+| **Inline / no thread** | No threads of its own | `stop()` is PHASE C only (no ordering vs threads) | `InboxQueue` (polled from the worker thread via `RoleAPIBase::drain_inbox_sync`) |
+
+**An externally-threaded class's `stop()` MUST be fire-and-forget by
+design.**  Trying to make it "synchronous" requires it to know about
+the caller's ThreadManager, which would invert ownership.  The correct
+place to enforce A→B→C is at the call site that *owns* the
+ThreadManager (the host orchestrating the teardown).
+
+**Reviewer rule when adding a new lifecycle-managed class**:
+1. Determine the class's pattern (externally / self / inline).
+2. Document the pattern in the class's docstring.
+3. Verify every call site that destroys this class is in PHASE C
+   (after the relevant `drain()`).
+4. Verify the class's `stop()` semantics match its pattern.
+
+**Reviewer rule when adding a new step to an existing teardown
+sequence** (e.g. `do_role_teardown`, `HubHost::shutdown`):
+1. Classify the new step as A, B, or C.
+2. Insert it at the corresponding position; reject diffs that mix
+   destructive actions into the signal phase or skip the drain
+   between signal and destroy.
+
+**Where the contract was first articulated**: MD1 (2026-05-12).
+The role-side `do_role_teardown` had Phase C running before Phase B,
+exposing a use-after-free race on `BrokerRequestComm.pImpl`
+(`broker_request_comm.cpp:594` — `pImpl->poll_loop_running.store`
+on freed memory).  gdb-captured stack trace preserved in
+`docs/todo/TESTING_TODO.md` §9.  HubHost-side teardown
+(HEP-CORE-0033 §4.2) was already correctly ordered; MD1 made the
+*contract* explicit so the bug class can't recur.
+
+**Canonical anchors**:
+- HEP-CORE-0031 §4.1 — thread-model expression of the contract +
+  classification of every existing lifecycle class.
+- HEP-CORE-0011 §"Role Host worker_main_() Steps" — role-side
+  application (with the explicit A/B/C label on each of Steps 11-14).
+- HEP-CORE-0033 §4.2 — hub-side application (already-correct; the
+  contract names what was implicit).
+- HEP-CORE-0023 §2.5 "Role-close cleanup API" — cross-reference from
+  the role-disconnect dereg path.
+
+---
+
 ## DataBlock API, Concurrency, and Protocol
 
 This section documents the current API layers, class relationships, thread-safety model, and protocol behavior (including heartbeat and liveness). It reflects the removal of Layer 1.75 (SlotRWAccess) and the addition of internal mutex protection on Producer/Consumer.
