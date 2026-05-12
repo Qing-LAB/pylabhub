@@ -529,12 +529,10 @@ When adding a new engine type:
 
 ### Teardown Ordering Contract — Phase A (signal) → B (drain) → C (destroy) (added 2026-05-12)
 
-> **Status**: forward-declared during the MD1 design pass.  The
-> *ordering* documented here is already correct on the hub side
-> (HEP-CORE-0033 §4.2) and the *code* expression of it on the role
-> side ships under MD1 (`docs/tech_draft/MD1_role_teardown_ordering_2026-05-12.md`).
-> This section is the cross-cutting reference that future lifecycle
-> additions must classify against.
+> **Status**: cross-cutting reference for all role-side and hub-side
+> teardown sequences.  Hub side already follows the contract
+> (HEP-CORE-0033 §4.2); role side aligned to the contract 2026-05-12.
+> Future lifecycle additions must classify against this contract.
 
 Every teardown sequence that involves spawned threads MUST execute in
 three explicitly-classified phases, in this order:
@@ -594,14 +592,15 @@ sequence** (e.g. `do_role_teardown`, `HubHost::shutdown`):
    destructive actions into the signal phase or skip the drain
    between signal and destroy.
 
-**Where the contract was first articulated**: MD1 (2026-05-12).
-The role-side `do_role_teardown` had Phase C running before Phase B,
-exposing a use-after-free race on `BrokerRequestComm.pImpl`
-(`broker_request_comm.cpp:594` — `pImpl->poll_loop_running.store`
-on freed memory).  gdb-captured stack trace preserved in
-`docs/todo/TESTING_TODO.md` §9.  HubHost-side teardown
-(HEP-CORE-0033 §4.2) was already correctly ordered; MD1 made the
-*contract* explicit so the bug class can't recur.
+**Where the contract was first articulated**: 2026-05-12, after the
+role-side `do_role_teardown` was found to be running Phase C before
+Phase B — exposing a use-after-free race on `BrokerRequestComm.pImpl`
+at `broker_request_comm.cpp:594` (the post-poll-loop store of
+`poll_loop_running = false` was reading already-freed memory under
+concurrent CPU pressure; 1/13 reproductions under `ctest -j2`).
+HubHost-side teardown (HEP-CORE-0033 §4.2) was already correctly
+ordered; making the contract explicit prevents the bug class from
+recurring at any future role-side or hub-side teardown call site.
 
 **Canonical anchors**:
 - HEP-CORE-0031 §4.1 — thread-model expression of the contract +
