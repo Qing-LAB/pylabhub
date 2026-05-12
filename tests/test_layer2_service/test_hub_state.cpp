@@ -2640,22 +2640,69 @@ TEST(HubStateProducerAdmission, SecondProducer_ShmChannel_RejectedShmCardinality
 // metrics aggregated by HubState::channel_metrics_snapshot.
 // ──────────────────────────────────────────────────────────────────────
 
-TEST(HubStateChannelMetricsSnapshot, UnknownChannel_ReturnsEmpty)
+TEST(HubStateChannelMetricsSnapshot, UnknownChannel_ReturnsEmpty_PairedWithKnown)
 {
+    // Test pair: empty result for unknown channel must NOT be the same
+    // "always empty" output a broken helper would return.  Set up a
+    // known-good channel with metrics, then probe a separate unknown
+    // name — known returns non-empty, unknown returns empty.
+    // A mutation that always returns {} fails the known-good check.
     HubState s;
-    auto m = s.channel_metrics_snapshot("no.such.channel");
-    EXPECT_TRUE(m.empty()) << "Unknown channel returns empty object";
+    HubStateTestAccess::on_channel_registered(s, make_channel("ch.known"));
+    HubStateTestAccess::on_heartbeat(s, "ch.known", "prod.main.test", "producer",
+                                      std::chrono::steady_clock::now(),
+                                      nlohmann::json{{"qps", 1}});
+
+    // Baseline: known channel returns NON-EMPTY metrics.
+    auto m_known = s.channel_metrics_snapshot("ch.known");
+    ASSERT_TRUE(m_known.contains("producers"))
+        << "Helper must return non-empty for a known channel with "
+           "metrics — a 'returns {} unconditionally' mutation would "
+           "fail this assertion";
+    EXPECT_EQ(m_known["producers"]["prod.main.test"]["qps"], 1);
+
+    // Negative: unknown channel returns empty.
+    auto m_unknown = s.channel_metrics_snapshot("no.such.channel");
+    EXPECT_TRUE(m_unknown.empty())
+        << "Unknown channel returns empty object — and the paired "
+           "known-channel assertion above proves this isn't because "
+           "the helper is broken.";
 }
 
-TEST(HubStateChannelMetricsSnapshot, ChannelExistsNoMetrics_ReturnsEmpty)
+TEST(HubStateChannelMetricsSnapshot, ChannelExistsNoMetrics_PairedWithMetricsChannel)
 {
+    // Same defensive pair: one channel HAS metrics (positive baseline),
+    // another channel exists but no heartbeats reported (negative).
+    // Single test, two channels, single helper — catches both
+    // "always-empty" and "always-populated" mutations.
     HubState s;
-    HubStateTestAccess::on_channel_registered(s, make_channel("ch.empty"));
-    // Presence created at REG time but `latest_metrics` is null until a
-    // heartbeat-with-metrics arrives.
-    auto m = s.channel_metrics_snapshot("ch.empty");
-    EXPECT_TRUE(m.empty())
-        << "Channel registered but no metrics reported → empty object";
+    HubStateTestAccess::on_channel_registered(s, make_channel("ch.live"));
+    HubStateTestAccess::on_heartbeat(s, "ch.live", "prod.main.test", "producer",
+                                      std::chrono::steady_clock::now(),
+                                      nlohmann::json{{"qps", 7}});
+
+    // Empty channel: registered, never heartbeated.  make_channel
+    // uses producer "prod.main.test" for BOTH channels; under H18
+    // each presence row is per-(channel, role_type), so the empty
+    // channel has its own pristine producer presence row with null
+    // latest_metrics — separate from the live one.
+    HubStateTestAccess::on_channel_registered(s, make_channel("ch.silent"));
+
+    auto m_live   = s.channel_metrics_snapshot("ch.live");
+    auto m_silent = s.channel_metrics_snapshot("ch.silent");
+
+    // Baseline: channel with metrics returns non-empty.
+    ASSERT_TRUE(m_live.contains("producers"));
+    EXPECT_EQ(m_live["producers"]["prod.main.test"]["qps"], 7);
+
+    // Contract: channel registered but no metrics reported → empty
+    // object.  The helper walks ChannelEntry.producers/consumers and
+    // skips presences with null latest_metrics, so the silent
+    // channel's existing producer row contributes nothing.
+    EXPECT_TRUE(m_silent.empty())
+        << "Registered channel without any heartbeat-with-metrics "
+           "returns empty object; the paired ch.live check proves "
+           "the helper isn't simply returning {} for all inputs.";
 }
 
 TEST(HubStateChannelMetricsSnapshot, SingleProducer_IncludesPidAndMetrics)
@@ -3011,20 +3058,46 @@ TEST(HubStateChannelMetricsSnapshot, RoleDisconnect_MetricsGoAway)
                                       std::chrono::steady_clock::now(),
                                       nlohmann::json{{"read_count", 42}});
 
-    // Pre-DEREG: metrics visible.
+    // Pre-DEREG: metrics visible via helper AND directly on the
+    // presence row (proves the storage layer holds the data).
     {
         auto m = s.channel_metrics_snapshot("ch.fade");
         ASSERT_TRUE(m.contains("consumers"));
         EXPECT_EQ(m["consumers"]["cons.A.test"]["read_count"], 42);
+
+        auto snap = s.snapshot();
+        const auto *p_pre = find_presence_in(snap, "ch.fade",
+                                              "cons.A.test", "consumer");
+        ASSERT_NE(p_pre, nullptr) << "Consumer presence row exists pre-DEREG";
+        EXPECT_EQ(p_pre->latest_metrics["read_count"], 42)
+            << "Direct storage inspection: latest_metrics holds the "
+               "heartbeat value (not just JSON projection)";
     }
 
     HubStateTestAccess::on_consumer_left(s, "ch.fade", "cons.A.test");
 
-    // Post-DEREG: consumer presence erased (under H18) → no consumer
-    // metrics; H34 leak class doesn't exist in this path.
+    // Post-DEREG: consumer presence ERASED (under H18) — both
+    // helper output AND direct snapshot must agree.  A mutation
+    // that left the presence row as a tombstone (Disconnected
+    // state) would be caught by the direct check: find_presence
+    // would return a non-null pointer.
     auto m = s.channel_metrics_snapshot("ch.fade");
     EXPECT_FALSE(m.contains("consumers"))
-        << "Consumer disconnect erases the presence row → metrics gone";
+        << "Helper output: consumer metrics absent after DEREG";
+
+    auto snap = s.snapshot();
+    EXPECT_EQ(find_presence_in(snap, "ch.fade", "cons.A.test", "consumer"),
+              nullptr)
+        << "Direct storage inspection: consumer presence row ERASED "
+           "(not left as a Disconnected tombstone).  A mutation that "
+           "marks Disconnected instead of erasing would fail this.";
+
+    // Role X had only this one presence → entire role entry should
+    // also be erased by terminal cleanup (Wave M3 H1+H5).
+    EXPECT_FALSE(s.role("cons.A.test").has_value())
+        << "Role entry also erased — terminal-cleanup chain ran "
+           "through `_dispatch_role_disconnected_if_dead` per "
+           "Wave M3 step 5b";
 }
 
 // ─── Wave M3 — RoleEntry controlled-access API ─────────────────────────────

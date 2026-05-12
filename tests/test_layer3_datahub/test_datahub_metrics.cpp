@@ -782,6 +782,101 @@ TEST_F(MetricsPlaneTest, OldMetricsReportReq_GetsUnknownMsgType)
     bh.stop();
 }
 
+TEST_F(MetricsPlaneTest, MultiPresence_EndToEnd_NoCrossAttribution)
+{
+    // M1.4 + Wave M3 H34 end-to-end contract: multiple producers and
+    // consumers heartbeat distinct metrics; each presence row must
+    // hold ONLY its own data — no cross-attribution at any layer of
+    // the stack (wire → broker → HubState → query).
+    //
+    // The pre-Phase-6 bug class (H34 root) would have mis-attributed
+    // consumer heartbeats to the channel's producer row.  This test
+    // exercises that scenario at the full broker layer with raw
+    // BrcHandle clients, then asserts via the admin-query that every
+    // uid's metrics land on the right (channel, role_type) row.
+    const std::string ch_a   = pid_chan("metrics.multi.A");
+    const std::string ch_b   = pid_chan("metrics.multi.B");
+    const std::string p_a    = "prod.A." + ch_a;
+    const std::string p_b    = "prod.B." + ch_b;
+    const std::string c_a    = "cons.A." + ch_a;
+    const std::string c_b    = "cons.B." + ch_b;
+
+    // Producers: each registers its channel.
+    BrcHandle prod_a_bh, prod_b_bh;
+    prod_a_bh.start(ep(), pk(), p_a);
+    prod_b_bh.start(ep(), pk(), p_b);
+    ASSERT_TRUE(prod_a_bh.brc.register_channel(make_reg_opts(ch_a, p_a), 3000)
+                    .has_value());
+    ASSERT_TRUE(prod_b_bh.brc.register_channel(make_reg_opts(ch_b, p_b), 3000)
+                    .has_value());
+
+    // Consumers: each registers AS CONSUMER on the appropriate channel.
+    BrcHandle cons_a_bh, cons_b_bh;
+    cons_a_bh.start(ep(), pk(), c_a);
+    cons_b_bh.start(ep(), pk(), c_b);
+    ASSERT_TRUE(cons_a_bh.brc.register_consumer(make_cons_opts(ch_a, c_a), 3000)
+                    .has_value());
+    ASSERT_TRUE(cons_b_bh.brc.register_consumer(make_cons_opts(ch_b, c_b), 3000)
+                    .has_value());
+
+    // Each role heartbeats DISTINCT metrics.  Using literal values
+    // makes cross-attribution impossible to miss in the assertions.
+    prod_a_bh.brc.send_heartbeat(ch_a, p_a, "producer", json{{"tag", "P-A"}, {"v", 11}});
+    prod_b_bh.brc.send_heartbeat(ch_b, p_b, "producer", json{{"tag", "P-B"}, {"v", 22}});
+    cons_a_bh.brc.send_heartbeat(ch_a, c_a, "consumer", json{{"tag", "C-A"}, {"v", 33}});
+    cons_b_bh.brc.send_heartbeat(ch_b, c_b, "consumer", json{{"tag", "C-B"}, {"v", 44}});
+
+    // Wait for all four metrics rows to land.
+    ASSERT_TRUE(::pylabhub::tests::helper::poll_until([&] {
+        auto r = query_metrics();
+        if (!r.contains("channels")) return false;
+        const auto &chans = r["channels"];
+        return chans.contains(ch_a) && chans.contains(ch_b)
+            && chans[ch_a].contains("producers")
+            && chans[ch_a].contains("consumers")
+            && chans[ch_b].contains("producers")
+            && chans[ch_b].contains("consumers")
+            && chans[ch_a]["producers"].contains(p_a)
+            && chans[ch_a]["consumers"].contains(c_a)
+            && chans[ch_b]["producers"].contains(p_b)
+            && chans[ch_b]["consumers"].contains(c_b);
+    }, std::chrono::seconds(2)))
+        << "Not all four metrics rows appeared within 2 s";
+
+    auto r = query_metrics();
+    const auto &cha = r["channels"][ch_a];
+    const auto &chb = r["channels"][ch_b];
+
+    // Channel A: producer P-A's metrics on producer row, consumer C-A's
+    // metrics on consumer row.  NO cross-attribution.
+    EXPECT_EQ(cha["producers"][p_a]["tag"], "P-A");
+    EXPECT_EQ(cha["producers"][p_a]["v"],   11);
+    EXPECT_EQ(cha["consumers"][c_a]["tag"], "C-A");
+    EXPECT_EQ(cha["consumers"][c_a]["v"],   33);
+    EXPECT_FALSE(cha["producers"][p_a].contains("tag")
+                  && cha["producers"][p_a]["tag"] == "C-A")
+        << "Sanity: producer P-A row must NOT hold C-A's tag (H34-root)";
+
+    // Channel B: same isolation property.
+    EXPECT_EQ(chb["producers"][p_b]["tag"], "P-B");
+    EXPECT_EQ(chb["producers"][p_b]["v"],   22);
+    EXPECT_EQ(chb["consumers"][c_b]["tag"], "C-B");
+    EXPECT_EQ(chb["consumers"][c_b]["v"],   44);
+
+    // Cross-channel isolation: ch_a doesn't show ch_b's roles.
+    EXPECT_FALSE(cha["producers"].contains(p_b))
+        << "Channel A must NOT show channel B's producer";
+    EXPECT_FALSE(cha["consumers"].contains(c_b))
+        << "Channel A must NOT show channel B's consumer";
+    EXPECT_FALSE(chb["producers"].contains(p_a));
+    EXPECT_FALSE(chb["consumers"].contains(c_a));
+
+    prod_a_bh.stop();
+    prod_b_bh.stop();
+    cons_a_bh.stop();
+    cons_b_bh.stop();
+}
+
 TEST_F(MetricsPlaneTest, AllChannels_IncludesChannelsWithoutMetrics)
 {
     // M1.4 behavioral change: pre-fix `query_metrics()` (all-channels)
