@@ -732,7 +732,7 @@ Messages are grouped into four categories based on their flow pattern:
 | Category | Pattern | Examples |
 |----------|---------|---------|
 | **Request/Response** | Client → Broker → Client | REG_REQ/ACK, DISC_REQ/ACK, CHANNEL_LIST_REQ/ACK, METRICS_REQ/ACK, ROLE_PRESENCE_REQ/ACK, ROLE_INFO_REQ/ACK |
-| **Fire-and-Forget** | Client → Broker (no reply) | HEARTBEAT_REQ, CHECKSUM_ERROR_REPORT, BAND_BROADCAST_REQ, METRICS_REPORT_REQ |
+| **Fire-and-Forget** | Client → Broker (no reply) | HEARTBEAT_REQ, CHECKSUM_ERROR_REPORT, BAND_BROADCAST_REQ |
 | **Unsolicited Push** | Broker → Client (async) | CHANNEL_CLOSING_NOTIFY, CONSUMER_DIED_NOTIFY, BAND_JOIN_NOTIFY, BAND_LEAVE_NOTIFY, BAND_BROADCAST_NOTIFY, ROLE_REGISTERED_NOTIFY, ROLE_DEREGISTERED_NOTIFY |
 | **Band Pub/Sub** | Role → Broker → Members (HEP-CORE-0030) | BAND_JOIN_REQ/ACK, BAND_LEAVE_REQ/ACK, BAND_BROADCAST_REQ, BAND_MEMBERS_REQ/ACK |
 
@@ -1187,37 +1187,21 @@ See HEP-CORE-0030 §5.2 for the replacement.
 Replaced by `BAND_BROADCAST_REQ` in the new band pub/sub protocol.
 See HEP-CORE-0030 §5.2 for the replacement.
 
-#### ~~METRICS_REPORT_REQ~~ — **DEPRECATED** (Phase 6, HEP-CORE-0019 §4.3)
+#### ~~METRICS_REPORT_REQ~~ — **RETIRED** (Wave M1.4, 2026-05-11)
 
 ```
-Direction:  Consumer → Broker
-Status:     DEPRECATED — broker handler retained for one release for
-            backward compat; no role auto-emits this message after
-            Phase 6.  Consumers now send their own per-presence
-            HEARTBEAT_REQ with role_type="consumer", which carries
-            the same metrics piggyback under the same MetricsStore
-            keying — see HEARTBEAT_REQ above.
+Direction:  (was) Consumer → Broker
+Status:     RETIRED — message type removed from the protocol entirely.
+            Broker handler + role-side sender + wire-msg dispatch entry
+            are all deleted.  Old clients that send this wire message
+            receive UNKNOWN_MSG_TYPE error replies (broker_proto_major
+            bumped 1 → 2 to signal the break).
 
-Legacy payload (for the retained handler):
-  channel_name          string
-  consumer_pid          uint64
-  consumer_uid          string   Consumer UID
-  metrics               object   Metrics snapshot:
-    in_received          uint64   Slots consumed
-    script_errors        uint64   Script exception count
-    iteration_count      uint64   Loop iterations
-    custom               object   (opt) User-defined {key: number} pairs
-
-Effect (legacy):  Broker writes MetricsStore[(channel_name, consumer_uid,
-                  "consumer")] from the snapshot — same row a Phase 6
-                  consumer-presence HEARTBEAT_REQ would write.
-
-Why removed: pre-Phase-6 consumers did not send HEARTBEAT_REQ (the
-broker tracked liveness via PID checks), so a separate metrics
-report was needed.  Phase 6 unifies all presences under a single
-HEARTBEAT_REQ shape with `(uid, role_type)` keying — consumers
-become regular presences with their own FSM row in RoleEntry, and
-the dedicated METRICS_REPORT_REQ is no longer needed.
+Wave M1.4 (commit see git log Wave M1.4 — 2026-05-11) retired this
+message in full.  Consumers send their own per-presence
+HEARTBEAT_REQ with role_type="consumer"; metrics piggyback on that
+heartbeat per HEP-CORE-0019 §2.3 Phase 6.  No code path inside the
+broker, role hosts, or role API still references METRICS_REPORT_REQ.
 ```
 
 #### CHANNEL_LIST_REQ — Query Registered Channels

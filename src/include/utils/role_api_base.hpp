@@ -375,7 +375,11 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     struct CtrlThreadConfig
     {
         int  heartbeat_interval_ms{::pylabhub::kDefaultHeartbeatIntervalMs};
-        bool report_metrics{false};
+        // M1.4 (2026-05-11): `report_metrics` field deleted.  Metrics
+        // piggyback on the heartbeat tick per HEP-CORE-0019 §2.3 Phase 6;
+        // no separate periodic task needed.  Setters in
+        // consumer_role_host.cpp / producer_role_host.cpp /
+        // processor_role_host.cpp also deleted.
 
         /// Registration payload (REG_REQ for producers, CONSUMER_REG_REQ for
         /// consumers). Empty = skip registration. Role host builds this JSON

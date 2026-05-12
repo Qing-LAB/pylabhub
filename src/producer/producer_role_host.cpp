@@ -265,7 +265,8 @@ void ProducerRoleHost::worker_main_()
 
         scripting::RoleAPIBase::CtrlThreadConfig ctrl_cfg;
         ctrl_cfg.heartbeat_interval_ms = config_.timing().heartbeat_interval_ms;
-        ctrl_cfg.report_metrics        = false;
+        // M1.4 (2026-05-11): no separate metrics-report tick — metrics
+        // piggyback on the heartbeat tick.  HEP-CORE-0019 §2.3 Phase 6.
 
         // Build producer registration payload (REG_REQ) via the shared
         // helper (HEP-CORE-0034 Phase 5b).  Channel/identity/transport

@@ -785,13 +785,16 @@ Request-reply:
   HUB_PEER_HELLO         (HUB_PEER_HELLO_ACK)
 
 Fire-and-forget:
-  HEARTBEAT_REQ, METRICS_REPORT_REQ,
+  HEARTBEAT_REQ,
   CHECKSUM_ERROR_REPORT,
   CHANNEL_NOTIFY_REQ, CHANNEL_BROADCAST_REQ,
   BAND_BROADCAST_REQ,
   HUB_PEER_BYE,
   HUB_RELAY_MSG (peer-DEALER inbound),
   HUB_TARGETED_MSG (peer-DEALER inbound)
+
+  Retired (M1.4, 2026-05-11): METRICS_REPORT_REQ — metrics piggyback
+  on HEARTBEAT_REQ per HEP-CORE-0019 §2.3 Phase 6.
 ```
 
 When adding a new msg_type, the contributor MUST classify it
@@ -942,12 +945,18 @@ This contract is exercised in:
 
 ## 10. Metrics model (supersedes HEP-CORE-0019 §3-4)
 
-### 10.1 Ingress — role→hub push only (unchanged from today)
+### 10.1 Ingress — role→hub push only (post-Wave M1.4)
 
-- `HEARTBEAT_REQ` with `metrics` field, iteration-gated, stops when role stalls.
-- `METRICS_REPORT_REQ`, time-only, configurable via role's `cfg.report_metrics`.
+- `HEARTBEAT_REQ` with optional `metrics` field — the SOLE ingress path.
+  Every presence (producer + consumer) emits its own heartbeat with
+  `role_type` distinguishing the row.  Heartbeat tick is iteration-
+  gated for producers and processors; consumers use the same tick
+  cadence.
 
-No broker-initiated metrics pull exists or will exist.
+`METRICS_REPORT_REQ` is **RETIRED** (Wave M1.4, 2026-05-11) — wire
+message, role-side sender, broker handler, and the broker's
+`metrics_store_` are all deleted.  See HEP-CORE-0019 §9 Phase 6 for
+the full rationale.  No broker-initiated metrics pull exists or will exist.
 
 ```mermaid
 sequenceDiagram
@@ -955,14 +964,10 @@ sequenceDiagram
     participant Broker as BrokerService
     participant State as HubState
 
-    loop Heartbeat tick (iteration-gated — stops if role stalls)
-        Role->>Broker: HEARTBEAT_REQ{channel, metrics, pid}
-        Broker->>State: update_producer_metrics(ch, metrics, pid)
-    end
-
-    loop Metrics report tick (time-only; if cfg.report_metrics)
-        Role->>Broker: METRICS_REPORT_REQ{channel, uid, metrics}
-        Broker->>State: update_consumer_metrics(ch, uid, metrics)
+    loop Heartbeat tick (one per presence, iteration-gated)
+        Role->>Broker: HEARTBEAT_REQ{channel, uid, role_type, metrics}
+        Broker->>State: _on_heartbeat(channel, uid, role_type, when, metrics)
+        Note over State: writes RolePresence.latest_metrics
     end
 
     Note over Broker,Role: Broker NEVER sends METRICS_REQ to Role
@@ -2047,8 +2052,10 @@ uniformity.
 
 ## 13. Protocol — additions / unchanged
 
-- **Role→broker protocol**: unchanged. REG_REQ, DISC_REQ, HEARTBEAT_REQ,
-  METRICS_REPORT_REQ, notifies, etc. No wire-format break.
+- **Role→broker protocol**: REG_REQ, DISC_REQ, HEARTBEAT_REQ, notifies,
+  etc.  Wave M1.4 (2026-05-11) retired METRICS_REPORT_REQ; metrics
+  piggyback on HEARTBEAT_REQ per HEP-CORE-0019 §2.3 Phase 6.  This
+  was a wire-protocol break — `broker_proto_major` bumped 1 → 2.
 - **Role-side headers, config, lifecycle**: unchanged.
 - **New admin RPC on the admin socket**: methods above (§11).
 - **Internal callbacks**: `BrokerService` gains event hooks into `HubHost`
@@ -2525,7 +2532,7 @@ classes are also disjoint — no message dual-classifies.
 | `CHANNEL_LIST_REQ` | C | This-hub-only channel inventory. |
 | `METRICS_REQ` | C | This-hub-only `MetricsStore` query (HEP-CORE-0019 §4.2). |
 | `SHM_BLOCK_QUERY_REQ` | C | This-hub-only diagnostic. |
-| `METRICS_REPORT_REQ` (deprecated, see HEP-CORE-0019 §4.3) | A | Wire handler retained one release; no role auto-emits after Phase 6. |
+| ~~`METRICS_REPORT_REQ`~~ | — | **RETIRED 2026-05-11** (Wave M1.4).  Wire handler + role-side sender deleted; metrics piggyback on HEARTBEAT_REQ per HEP-CORE-0019 §2.3 Phase 6.  Old clients emitting this message receive UNKNOWN_MSG_TYPE; `broker_proto_major` bumped 1 → 2. |
 
 #### Inbound: hub → role
 

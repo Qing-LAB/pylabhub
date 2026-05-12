@@ -227,7 +227,9 @@ typedef struct PlhAbiInfo
 
 #define PLH_COMPONENT_SHM_MAJOR            1
 #define PLH_COMPONENT_SHM_MINOR            0
-#define PLH_COMPONENT_BROKER_PROTO_MAJOR   1
+/* broker_proto 1 → 2 (Wave M1.4, 2026-05-11): METRICS_REPORT_REQ retired.
+ * Keep in sync with `src/include/plh_version_registry.hpp` constants. */
+#define PLH_COMPONENT_BROKER_PROTO_MAJOR   2
 #define PLH_COMPONENT_BROKER_PROTO_MINOR   0
 #define PLH_COMPONENT_ZMQ_FRAME_MAJOR      1
 #define PLH_COMPONENT_ZMQ_FRAME_MINOR      0

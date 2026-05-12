@@ -3155,7 +3155,7 @@ control protocol, or embedding rate policy inside the transport).
 | **Band plane** | JSON coordination messages (pub/sub) | `BrokerRequestComm` → broker fan-out via `BandRegistry` | `band_join` / `band_broadcast` (HEP-CORE-0030) |
 | **Inbox plane** | Schema-enforced P2P messages | `InboxQueue` (ROUTER) + `InboxClient` (DEALER) | `open_inbox` / `send` (HEP-CORE-0027) |
 | **Timing plane** | Loop pacing — fixed rate, max rate, compensating | `LoopTimingPolicy` | HEP-CORE-0008 |
-| **Metrics plane** | Counter snapshots, custom KV pairs | Piggyback on HEARTBEAT + `METRICS_REPORT_REQ` → Broker `MetricsStore` | HEP-CORE-0019 |
+| **Metrics plane** | Counter snapshots, custom KV pairs | Piggyback on HEARTBEAT_REQ (every presence — producer + consumer); written to `RolePresence::latest_metrics` per-presence row.  `METRICS_REPORT_REQ` retired in Wave M1.4 (2026-05-11). | HEP-CORE-0019 |
 
 The planes are **orthogonal**: modifying the data transport (SHM → ZMQ) has no
 effect on the control, band, or inbox planes. Changing `LoopTimingPolicy` has

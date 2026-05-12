@@ -290,7 +290,8 @@ void ProcessorRoleHost::worker_main_()
 
         scripting::RoleAPIBase::CtrlThreadConfig ctrl_cfg;
         ctrl_cfg.heartbeat_interval_ms = config_.timing().heartbeat_interval_ms;
-        ctrl_cfg.report_metrics        = false;
+        // M1.4 (2026-05-11): no separate metrics-report tick — metrics
+        // piggyback on the heartbeat tick.  HEP-CORE-0019 §2.3 Phase 6.
 
         // Output producer registration (REG_REQ) via Phase 5b helper.
         {
