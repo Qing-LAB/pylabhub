@@ -192,15 +192,22 @@ Examples in the pylabhub codebase:
    require it to know about the caller's ThreadManager, inverting
    ownership.
 
-The contract was added 2026-05-12 in response to MD1 (use-after-free
-race on `BrokerRequestComm.pImpl`; gdb-captured trace preserved in
-`docs/todo/TESTING_TODO.md` §9; design rationale in
-`docs/tech_draft/MD1_role_teardown_ordering_2026-05-12.md` §3.5).
-The pre-MD1 sequence in `do_role_teardown` ran Phase C *before*
-Phase B, which exposed the race under concurrent CPU pressure
-(1/13 reproductions under `ctest -j2`).  When MD1 ships and this
-section migrates to `docs/IMPLEMENTATION_GUIDANCE.md`, the IG copy
-becomes the canonical reference; this HEP section cross-references it.
+The contract was articulated 2026-05-12 in response to a captured
+use-after-free race in role-side teardown.  `do_role_teardown`
+(role_host_lifecycle.cpp) ran Phase C *before* Phase B: it called
+`broker_comm->stop()` (signal), then destroyed `broker_comm_` via
+`teardown_infrastructure_`, then finally called
+`thread_manager().drain()`.  Between destruction and drain, the
+externally-owned ctrl thread could still dereference freed
+`BrokerRequestComm.pImpl` at `broker_request_comm.cpp:594`
+(`pImpl->poll_loop_running.store(false)`), exposing the race under
+concurrent CPU pressure (1/13 reproductions under `ctest -j2`).
+Moving drain to between signal and destruction eliminated the race
+and made the A→B→C ordering explicit at the role-side call site
+(HEP-CORE-0011 §"Role Host worker_main_() Steps").  See
+`docs/IMPLEMENTATION_GUIDANCE.md` "Teardown Ordering Contract" for
+the cross-cutting reference cited by every HEP that touches role
+or hub lifecycle.
 
 ---
 

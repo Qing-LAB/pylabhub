@@ -758,13 +758,11 @@ Step 13: teardown_infrastructure()                  (PHASE C — disconnect brok
 > thread it does not own.  Running Phase C before Phase B returns
 > would race against the ctrl thread's last access to BRC's
 > `pImpl->poll_loop_running.store(false)` at
-> `broker_request_comm.cpp:594` (use-after-free; gdb-captured 2026-05-10
-> as `PlhHubCliTest.RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters`
-> SIGSEGV).  MD1 (2026-05-12) made the contract explicit and moved
-> drain from step-13-final to step-12-mid.  See
-> `docs/IMPLEMENTATION_GUIDANCE.md` "Teardown Ordering Contract" for
-> the cross-cutting reference and `docs/tech_draft/MD1_role_teardown_ordering_2026-05-12.md`
-> §3.5 for the full derivation.
+> `broker_request_comm.cpp:594` (use-after-free).  The pre-MD1
+> ordering exhibited this race and was captured under gdb
+> (see HEP-CORE-0031 §4.1 for the contract derivation; see
+> `docs/IMPLEMENTATION_GUIDANCE.md` "Teardown Ordering Contract"
+> for the cross-cutting reference).
 >
 > **API classification under the contract.**  Each lifecycle-managed
 > class falls into one of three patterns:
