@@ -31,12 +31,17 @@
  * CLAUDE.md "Tests must pin path, timing, and structure" rule.
  */
 
+#include "plh_service.hpp"
+#include "utils/logger.hpp"
 #include "utils/thread_manager.hpp"
+
+#include "log_capture_fixture.h"
 
 #include <gtest/gtest.h>
 
 #include <atomic>
 #include <chrono>
+#include <memory>
 #include <thread>
 
 using namespace pylabhub::utils;
@@ -44,6 +49,54 @@ using namespace std::chrono_literals;
 
 namespace
 {
+
+// ─────────────────────────────────────────────────────────────────────
+// Fixture for drain-detach tests that need to verify the literal
+// diagnostic log text (not just the detach count).  Required for F1/F2:
+// the two-stage wait's value-add is the differentiated ERROR log; outcome-
+// only assertions silently accept regressions that emit the wrong-stage
+// message.
+//
+// SetUpTestSuite initializes the Logger lifecycle module so
+// LogCaptureFixture::Install() can call Logger::set_logfile() safely.
+// ─────────────────────────────────────────────────────────────────────
+class ThreadManagerActiveLoopDrainTest
+    : public ::testing::Test,
+      public ::pylabhub::tests::LogCaptureFixture
+{
+  public:
+    static void SetUpTestSuite()
+    {
+        s_lifecycle_ = std::make_unique<pylabhub::utils::LifecycleGuard>(
+            pylabhub::utils::MakeModDefList(
+                pylabhub::utils::Logger::GetLifecycleModule()),
+            std::source_location::current());
+    }
+    static void TearDownTestSuite() { s_lifecycle_.reset(); }
+
+  protected:
+    void SetUp() override
+    {
+        ThreadManager::reset_process_detached_count_for_testing();
+        LogCaptureFixture::Install();
+    }
+
+    void TearDown() override
+    {
+        AssertNoUnexpectedLogWarnError();
+        LogCaptureFixture::Uninstall();
+        // Deliberate-detach tests reset the process-wide counter so
+        // subsequent tests in this suite measure a clean baseline.
+        ThreadManager::reset_process_detached_count_for_testing();
+    }
+
+  private:
+    static std::unique_ptr<pylabhub::utils::LifecycleGuard> s_lifecycle_;
+};
+
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+std::unique_ptr<pylabhub::utils::LifecycleGuard>
+    ThreadManagerActiveLoopDrainTest::s_lifecycle_;
 
 // ──────────────────────────────────────────────────────────────────────
 // Tests
@@ -220,13 +273,22 @@ TEST(ThreadManagerActiveLoopTest, Drain_FastPath_AlreadyExited)
         << "Fast path: active_loop_exited already set, no Stage 1 polling";
 }
 
-TEST(ThreadManagerActiveLoopTest, Drain_StuckInActiveLoop_DetachesWithDiagnostic)
+TEST_F(ThreadManagerActiveLoopDrainTest,
+       Drain_StuckInActiveLoop_DetachesWithActiveLoopDiagnostic)
 {
-    // Thread never observes stop signal.  drain() should detach after
-    // the first half of join_timeout (Stage 1: active_loop_exited never
-    // set).  detached count goes up.
-    ThreadManager::reset_process_detached_count_for_testing();
-    ThreadManager tm("test", "stuck_loop");
+    // F1: Thread never observes stop signal — stuck inside its active
+    // loop.  drain() must:
+    //   (a) detach after Stage 1 timeout (active_loop_exited never set),
+    //   (b) emit the "stuck inside its active loop" ERROR log,
+    //   (c) NOT emit the post-loop diagnostic (the two messages are
+    //       differentiated and only ONE applies).
+    // The log-text assertion is what pins (c) — a regression that
+    // emits the wrong-stage message would silently pass the count-only
+    // assertion in the earlier version of this test.
+    ExpectLogErrorMustFire("stuck inside its active loop body");
+    ExpectLogErrorMustFire("UNCLEAN SHUTDOWN");  // summary line at end of drain
+
+    ThreadManager tm("test", "stuck_active");
 
     auto stop = std::make_shared<std::atomic<bool>>(false);
     ThreadManager::SpawnOptions opts;
@@ -248,15 +310,60 @@ TEST(ThreadManagerActiveLoopTest, Drain_StuckInActiveLoop_DetachesWithDiagnostic
     EXPECT_GE(elapsed, 80ms) << "Drain must respect both stage timeouts";
     EXPECT_LT(elapsed, 300ms) << "Should not over-wait beyond two stages";
 
-    // Cleanup the thread that's still running (detached).  Give it a
-    // moment to exit cleanly so the next test starts clean.
+    // Release the detached thread so it doesn't outlive the test.
     stop->store(true, std::memory_order_release);
     std::this_thread::sleep_for(50ms);
+}
 
-    // We deliberately exercised the detach path — clear the process-
-    // wide unclean-shutdown counter so the gtest harness's check at
-    // teardown doesn't fail this test on the leaked-thread guard.
-    ThreadManager::reset_process_detached_count_for_testing();
+TEST_F(ThreadManagerActiveLoopDrainTest,
+       Drain_StuckInPostLoop_DetachesWithPostLoopDiagnostic)
+{
+    // F2: Thread marks active_loop_exited promptly but then parks in
+    // post-loop cleanup, never returning from body.  drain() must:
+    //   (a) detach after Stage 2 timeout (done never set),
+    //   (b) emit the "stuck in post-loop cleanup" ERROR log,
+    //   (c) NOT emit the "stuck inside its active loop" diagnostic.
+    // This exercises the second branch of the two-stage diagnostic
+    // that the prior test could not reach.
+    ExpectLogErrorMustFire("stuck in post-loop cleanup");
+    ExpectLogErrorMustFire("UNCLEAN SHUTDOWN");
+
+    ThreadManager tm("test", "stuck_postloop");
+
+    auto release_body = std::make_shared<std::atomic<bool>>(false);
+    ThreadManager::SpawnOptions opts;
+    opts.join_timeout = 100ms;  // 50ms per stage
+    ASSERT_TRUE(tm.spawn("postloop",
+        [release_body](ThreadManager::SlotContext &ctx) {
+            // Immediately leave the active loop and mark.
+            ctx.mark_active_loop_exited();
+            // Park in post-loop cleanup; never return until released.
+            while (!release_body->load(std::memory_order_acquire))
+                std::this_thread::sleep_for(2ms);
+        },
+        opts));
+
+    // Give the body a moment to reach mark_active_loop_exited so drain's
+    // Stage 1 takes the fast path.
+    std::this_thread::sleep_for(30ms);
+    ASSERT_TRUE(tm.is_active_loop_exited("postloop"))
+        << "Body should have marked active_loop_exited before drain";
+
+    const auto t0 = std::chrono::steady_clock::now();
+    const auto detached = tm.drain();
+    const auto elapsed = std::chrono::steady_clock::now() - t0;
+
+    EXPECT_EQ(detached, 1u) << "Post-loop-stuck thread detached after Stage 2 timeout";
+    EXPECT_EQ(ThreadManager::process_detached_count(), 1u);
+    // Stage 1: fast path (active_loop_exited already set) → ~0ms.
+    // Stage 2: 50ms timeout polling done.
+    // Total ≈ 50ms (not 100ms — Stage 1 is skipped).
+    EXPECT_LT(elapsed, 150ms)
+        << "Stage 1 fast path: drain should finish in ~Stage 2 time only";
+
+    // Release the detached thread so it doesn't outlive the test.
+    release_body->store(true, std::memory_order_release);
+    std::this_thread::sleep_for(50ms);
 }
 
 }  // namespace
