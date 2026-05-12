@@ -1184,6 +1184,28 @@ class PYLABHUB_UTILS_EXPORT HubState
     [[nodiscard]] std::optional<ShmBlockRef>  shm_block(const std::string &channel_name) const;
     [[nodiscard]] BrokerCounters              counters() const;
 
+    /// Wave M1.4 (2026-05-11) — per-channel metrics aggregator.
+    ///
+    /// Reads `RolePresence::latest_metrics` from every producer and
+    /// consumer presence row on the named channel and returns a JSON
+    /// object of the same shape `BrokerServiceImpl::query_metrics(channel)`
+    /// used to build from the legacy `metrics_store_`:
+    ///
+    /// ```
+    /// {
+    ///   "producers": { "<uid>": { ...metrics, "pid": N }, ... },
+    ///   "consumers": { "<uid>": { ...metrics }, ... }
+    /// }
+    /// ```
+    ///
+    /// Empty sub-objects are omitted; the function returns an empty
+    /// object if the channel does not exist or has no presences with
+    /// non-null `latest_metrics`.  Metrics live on per-presence rows
+    /// per HEP-CORE-0019 §2.3 Phase 6; this aggregator replaces the
+    /// retired `BrokerServiceImpl::metrics_store_` path (M1.4).
+    [[nodiscard]] nlohmann::json
+    channel_metrics_snapshot(const std::string &channel) const;
+
     /// Look up one schema record by `(owner_uid, schema_id)`.  Returns
     /// nullopt if the record does not exist.  Per HEP-CORE-0034 §11 the
     /// hub is the authoritative source for schema records — citers should
@@ -1415,14 +1437,9 @@ class PYLABHUB_UTILS_EXPORT HubState
     /// stay unconditional.
     void _dispatch_role_disconnected_if_dead(const std::string &uid);
 
-    /// Dedicated metrics-report wire message (HEP-0033 §9.1 "Metrics report
-    /// tick"). `_on_heartbeat` handles the piggyback case; this op handles
-    /// the time-only METRICS_REPORT_REQ path that fires even when the role
-    /// has stopped its iteration-gated heartbeat cadence.
-    void _on_metrics_reported(const std::string                    &channel,
-                              const std::string                    &role_uid,
-                              nlohmann::json                        metrics,
-                              std::chrono::system_clock::time_point when);
+    // M1.4 (2026-05-11): `_on_metrics_reported` deleted.  Metrics now
+    // ONLY arrive via `_on_heartbeat` (HEP-CORE-0019 §2.3 Phase 6).
+    // The dedicated time-only path (METRICS_REPORT_REQ) is retired.
     void _on_band_joined(const std::string &band, BandMember member);
     /// Voluntary BAND_LEAVE_REQ entry point.  Passes
     /// `reason = "voluntary"` to the `BandLeftHandler`.  Role-disconnect

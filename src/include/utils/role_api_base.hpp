@@ -467,7 +467,8 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     // Access pImpl members directly — no bare pointers cross thread boundary.
 
     void on_heartbeat_tick_();
-    void on_metrics_report_tick_();
+    // M1.4 (2026-05-11): `on_metrics_report_tick_` deleted; metrics
+    // piggyback on heartbeat per HEP-CORE-0019 §2.3 Phase 6.
 };
 
 } // namespace pylabhub::scripting

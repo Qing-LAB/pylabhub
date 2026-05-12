@@ -4,12 +4,16 @@
  *
  * Suite: MetricsPlaneTest
  *
- * Tests metrics storage and retrieval through the broker:
- *   - Heartbeat with metrics payload → stored, queryable
- *   - METRICS_REPORT_REQ from consumer → stored
- *   - Query: single channel, all channels, unknown channel
- *   - Metrics overwrite on subsequent heartbeats
- *   - Producer PID in query result
+ * Tests metrics storage and retrieval through the broker.  Post-M1.4
+ * (2026-05-11), the dedicated METRICS_REPORT_REQ path is retired and
+ * metrics piggyback on HEARTBEAT_REQ exclusively (HEP-CORE-0019 §2.3
+ * Phase 6).
+ *
+ *   - Heartbeat with metrics payload → stored on per-presence row,
+ *     queryable.  Same wire path for producers AND consumers.
+ *   - Query: single channel, all channels, unknown channel.
+ *   - Metrics overwrite on subsequent heartbeats.
+ *   - Producer PID in query result.
  *
  * All tests use in-process LocalBrokerHandle + BrcHandle pattern.
  * Metrics are queried via broker admin API (query_metrics_json_str).
@@ -277,9 +281,13 @@ TEST_F(MetricsPlaneTest, MetricsReport_ConsumerStoredByBroker)
     auto cons_reg = cons_bh.brc.register_consumer(make_cons_opts(channel, cons_uid), 3000);
     ASSERT_TRUE(cons_reg.has_value());
 
+    // M1.4 (2026-05-11): metrics piggyback on HEARTBEAT_REQ
+    // (HEP-CORE-0019 §2.3 Phase 6).  Consumer-side heartbeat carries
+    // the metrics — `BrokerRequestComm::send_metrics_report` was
+    // retired alongside the dedicated METRICS_REPORT_REQ wire path.
     json cons_metrics;
     cons_metrics["read_count"] = 100;
-    cons_bh.brc.send_metrics_report(channel, cons_uid, cons_metrics);
+    cons_bh.brc.send_heartbeat(channel, cons_uid, "consumer", cons_metrics);
 
     ASSERT_TRUE(wait_for_metric(channel, [&](const json &r) {
         return r.contains("metrics")

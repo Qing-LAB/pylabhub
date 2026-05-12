@@ -526,15 +526,11 @@ void RoleAPIBase::on_heartbeat_tick_()
         eng->invoke("on_heartbeat");
 }
 
-void RoleAPIBase::on_metrics_report_tick_()
-{
-    auto *bc = pImpl->broker_channel;
-    if (!bc)
-        return;
-
-    LOGGER_TRACE("[{}] ctrl: sending metrics report", pImpl->role_tag);
-    bc->send_metrics_report(pImpl->channel, pImpl->uid, snapshot_metrics_json());
-}
+// M1.4 (2026-05-11): `on_metrics_report_tick_` deleted.  Metrics
+// piggyback on `on_heartbeat_tick_` via `send_heartbeat(...metrics)`
+// per HEP-CORE-0019 §2.3 Phase 6.  The dedicated tick was redundant
+// (heartbeat tick already calls `snapshot_metrics_json()` at the
+// same cadence).
 
 bool RoleAPIBase::start_ctrl_thread(
     const hub::BrokerRequestComm::Config &connect_cfg,
@@ -708,13 +704,12 @@ bool RoleAPIBase::start_ctrl_thread(
         effective_interval_ms,
         [core_post] { return core_post->iteration_count(); });
 
-    if (cfg.report_metrics)
-    {
-        bc_post->set_periodic_task(
-            [this] { on_metrics_report_tick_(); },
-            effective_interval_ms,
-            nullptr);
-    }
+    // M1.4 (2026-05-11): `cfg.report_metrics` periodic task retired.
+    // Heartbeat tick (`on_heartbeat_tick_`) already carries metrics
+    // via `send_heartbeat(...metrics)` — separate METRICS_REPORT_REQ
+    // tick was redundant.  The `cfg.report_metrics` flag remains for
+    // back-compat but has no effect.
+    (void)cfg.report_metrics;
 
     LOGGER_INFO("[{}] ctrl: broker communication ready (heartbeat={}ms)",
                 pImpl->role_tag, effective_interval_ms);

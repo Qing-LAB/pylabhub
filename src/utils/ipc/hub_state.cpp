@@ -205,6 +205,51 @@ std::size_t HubState::schema_count() const
     return pImpl->schemas.size();
 }
 
+nlohmann::json HubState::channel_metrics_snapshot(const std::string &channel) const
+{
+    // Wave M1.4 (2026-05-11) — replaces `BrokerServiceImpl::metrics_store_`
+    // as the source of channel metrics.  Reads per-presence rows
+    // directly from RoleEntry.presences[].latest_metrics, written by
+    // `_on_heartbeat` (HEP-CORE-0019 §2.3 Phase 6 "metrics piggyback on
+    // heartbeat").  Iterates the channel's `producers[]` + `consumers[]`
+    // to bound the scan; for each, looks up the owning role and reads
+    // the matching presence row.  O(producer_count + consumer_count).
+    nlohmann::json result    = nlohmann::json::object();
+    nlohmann::json producers = nlohmann::json::object();
+    nlohmann::json consumers = nlohmann::json::object();
+    {
+        std::shared_lock lk(pImpl->mu);
+        auto             cit = pImpl->channels.find(channel);
+        if (cit == pImpl->channels.end()) return result;
+
+        for (const auto &prod : cit->second.producers)
+        {
+            if (prod.role_uid.empty()) continue;
+            auto rit = pImpl->roles.find(prod.role_uid);
+            if (rit == pImpl->roles.end()) continue;
+            const auto *p = rit->second.find_presence(channel, "producer");
+            if (p == nullptr || p->latest_metrics.is_null()) continue;
+            nlohmann::json one = p->latest_metrics;
+            // pid is a per-channel-producer property, lives on
+            // ChannelEntry.producers[].producer_pid (not on RolePresence).
+            one["pid"]               = prod.producer_pid;
+            producers[prod.role_uid] = std::move(one);
+        }
+        for (const auto &cons : cit->second.consumers)
+        {
+            if (cons.role_uid.empty()) continue;
+            auto rit = pImpl->roles.find(cons.role_uid);
+            if (rit == pImpl->roles.end()) continue;
+            const auto *p = rit->second.find_presence(channel, "consumer");
+            if (p == nullptr || p->latest_metrics.is_null()) continue;
+            consumers[cons.role_uid] = p->latest_metrics;
+        }
+    }
+    if (!producers.empty()) result["producers"] = std::move(producers);
+    if (!consumers.empty()) result["consumers"] = std::move(consumers);
+    return result;
+}
+
 // ─── Subscribe / unsubscribe ────────────────────────────────────────────────
 
 namespace
@@ -1424,37 +1469,10 @@ HubState::_on_pending_timeout(const std::string &channel,
     return result;
 }
 
-void HubState::_on_metrics_reported(const std::string                    &channel,
-                                    const std::string                    &role_uid,
-                                    nlohmann::json                        metrics,
-                                    std::chrono::system_clock::time_point when)
-{
-    if (!is_valid_identifier(channel, IdentifierKind::Channel) ||
-        (!role_uid.empty() && !is_valid_identifier(role_uid, IdentifierKind::RoleUid)))
-    {
-        bump_invalid_identifier(*pImpl);
-        return;
-    }
-    // HEP-0033 §9.1 "Metrics report tick" — dedicated METRICS_REPORT_REQ
-    // path.  No liveness effect: a role could be stalled on the heartbeat
-    // axis but still drip metrics on this channel.  Metrics live on the
-    // per-presence row (HEP-CORE-0019 §2.3); we update every presence
-    // matching `(channel, role_uid)` — typically exactly one row, but a
-    // role registered on the same channel as both producer AND consumer
-    // would have two.
-    if (role_uid.empty()) return;
-    std::unique_lock lk(pImpl->mu);
-    auto             rit = pImpl->roles.find(role_uid);
-    if (rit == pImpl->roles.end()) return;
-    for (auto &p : rit->second.presences)
-    {
-        if (p.channel == channel)
-        {
-            p.latest_metrics       = metrics;
-            p.metrics_collected_at = when;
-        }
-    }
-}
+// M1.4 (2026-05-11): `HubState::_on_metrics_reported` deleted.
+// Metrics arrive only via `_on_heartbeat` per HEP-CORE-0019 §2.3
+// Phase 6.  The dedicated time-only METRICS_REPORT_REQ wire path
+// is retired.
 
 void HubState::_on_band_joined(const std::string &band, BandMember member)
 {

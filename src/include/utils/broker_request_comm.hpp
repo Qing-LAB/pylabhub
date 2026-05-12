@@ -117,9 +117,9 @@ class PYLABHUB_UTILS_EXPORT BrokerRequestComm
                         const std::string &uid,
                         const std::string &role_type,
                         const nlohmann::json &metrics);
-    void send_metrics_report(const std::string &channel,
-                             const std::string &uid,
-                             const nlohmann::json &metrics);
+    // M1.4 (2026-05-11): `send_metrics_report` retired.  Metrics
+    // piggyback on `send_heartbeat(..., metrics)` per HEP-CORE-0019
+    // §2.3 Phase 6.
     void send_notify(const std::string &target,
                      const std::string &sender_uid,
                      const std::string &event,
