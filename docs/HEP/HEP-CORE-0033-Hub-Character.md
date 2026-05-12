@@ -286,6 +286,36 @@ reverse declaration order: ThreadManager (already drained — no-op)
 → BrokerService → HubState → HubConfig.  All threads have already
 joined by step 5, so subsystem destruction touches no live threads.
 
+> **Teardown Ordering Contract (HEP-CORE-0031 §4.1) — hub side
+> already follows it.**  Steps 1-5 above naturally instantiate the
+> **PHASE A (signal) → PHASE B (drain) → PHASE C (destroy)** pattern:
+>
+> - **Phase A (signal):** Step 1 (`shutdown_flag_` + `wake_cv`),
+>   Step 2's `admin.stop()`, Step 4's `broker.stop()`.  All
+>   fire-and-forget signal atoms; no destruction yet.
+> - **Phase B (drain):** Step 2's `join_named("admin")` joins admin
+>   synchronously; Step 5's `thread_mgr.drain()` joins the broker
+>   thread.  Two drain points because admin must drain BEFORE the
+>   runner shutdown in step 3 (see §4.2.1 rationale) and the broker
+>   has its own poll loop that runs Step 4's signal asynchronously.
+> - **Phase C (destroy):** Step 3's `runner->shutdown_()` destroys
+>   HubAPI *after* admin is drained (provably safe).  Subsystem
+>   destruction in the dtor destroys BrokerService / HubState /
+>   HubConfig *after* the ThreadManager drain (provably safe).
+>
+> **`BrokerService::stop()` is fire-and-forget by design** — it's
+> the same externally-threaded pattern documented in HEP-CORE-0031
+> §4.1.  The broker's `run()` loop lives on a thread spawned into
+> `HubHost::thread_mgr`, not into a BrokerService-owned manager.
+> `stop()` therefore signals only; the synchronous join is the
+> caller's responsibility (Step 5 above).
+>
+> See `docs/IMPLEMENTATION_GUIDANCE.md` "Teardown Ordering Contract"
+> for the cross-cutting reference and HEP-CORE-0011 §"Role Host
+> worker_main_() Steps" for the role-side application of the same
+> contract (where pre-MD1 ordering had Phase C running before
+> Phase B — the bug MD1 fixed).
+
 `request_shutdown()` is the **async equivalent** of steps 1+4 only:
 flips the flag, calls `broker.stop()`, returns immediately without
 waiting for threads to join.  Typical use: signal handler / admin

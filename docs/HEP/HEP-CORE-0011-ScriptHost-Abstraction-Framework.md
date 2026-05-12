@@ -733,10 +733,53 @@ Step 7: Run data loop (invoke_produce / invoke_consume / invoke_process)
 Step 8: stop_accepting() + deregister_from_broker()
 Step 9: invoke_on_stop()           (ctrl thread still alive for final I/O)
 Step 10: engine->finalize()
-Step 11: broker_comm->stop() + set_running(false)   (signal ctrl to exit — non-destructive)
-Step 12: teardown_infrastructure()   (disconnect broker, close queues/inbox)
-Step 13: thread_manager().drain()    (last — join ctrl + all threads; immediate since signaled)
+Step 11: broker_comm->stop() + set_running(false)   (PHASE A — signal ctrl to exit; non-destructive)
+Step 12: thread_manager().drain()                   (PHASE B — synchronous join; all spawned threads have returned)
+Step 13: teardown_infrastructure()                  (PHASE C — disconnect broker, close queues/inbox; provably safe)
 ```
+
+> **Ordering invariant (Teardown Ordering Contract).**  Steps 11-13
+> follow the **PHASE A → PHASE B → PHASE C** contract:
+> - **PHASE A — SIGNAL** (pre-drain): set stop flags, send wake-up
+>   signals.  Destroy nothing that a live thread holds a reference
+>   to or polls on.  After Phase A every spawned thread is
+>   guaranteed to *observe* stop and have a path to return.
+> - **PHASE B — DRAIN**: `thread_manager().drain()` is the
+>   synchronization point.  When it returns, no spawned thread is
+>   running.
+> - **PHASE C — DESTROY** (post-drain): `disconnect()` / `reset()`
+>   / dtor.  Provably safe — Phase B guarantees no thread can
+>   touch destroyed resources.
+>
+> **Why Step 12 (drain) sits between signal and destruction.**  The
+> ctrl thread is owned by `RoleAPIBase`'s `ThreadManager`, NOT by
+> `BrokerRequestComm`.  BRC's `stop()` is therefore necessarily
+> fire-and-forget (signal only) — it cannot synchronously join a
+> thread it does not own.  Running Phase C before Phase B returns
+> would race against the ctrl thread's last access to BRC's
+> `pImpl->poll_loop_running.store(false)` at
+> `broker_request_comm.cpp:594` (use-after-free; gdb-captured 2026-05-10
+> as `PlhHubCliTest.RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters`
+> SIGSEGV).  MD1 (2026-05-12) made the contract explicit and moved
+> drain from step-13-final to step-12-mid.  See
+> `docs/IMPLEMENTATION_GUIDANCE.md` "Teardown Ordering Contract" for
+> the cross-cutting reference and `docs/tech_draft/MD1_role_teardown_ordering_2026-05-12.md`
+> §3.5 for the full derivation.
+>
+> **API classification under the contract.**  Each lifecycle-managed
+> class falls into one of three patterns:
+>
+> | Pattern | Owns its threads? | API shape | Example |
+> |---|---|---|---|
+> | **Externally-threaded** | No — caller's `ThreadManager` owns the thread(s) | `stop()` is a PHASE A signal; `disconnect()`/`reset()` are PHASE C | `BrokerRequestComm` |
+> | **Self-threaded** | Yes — class owns a private `ThreadManager` | `stop()` is self-contained (does A + B internally) | `ZmqQueue` |
+> | **Inline / no thread** | No threads of its own | `stop()` is Phase C only (no ordering vs threads) | `InboxQueue` |
+>
+> An externally-threaded class's `stop()` MUST be fire-and-forget by
+> design.  Trying to make it "synchronous" requires it to know about
+> the caller's ThreadManager — which would invert ownership.  The
+> correct place to enforce A→B→C is at the call site that *owns* the
+> ThreadManager (the role host).
 
 ---
 
@@ -1408,10 +1451,15 @@ Step 9:  stop_accepting()
 Step 9a: deregister_from_broker()
 Step 10: invoke_on_stop()        ← ctrl thread alive for final I/O
 Step 11: engine->finalize()
-Step 12: broker_comm->stop() + set_running(false)
-Step 13: teardown_infrastructure()
-Step 14: thread_manager().drain() ← last; all threads exit
+Step 12: broker_comm->stop() + set_running(false)  ← PHASE A (signal only)
+Step 13: thread_manager().drain()                  ← PHASE B (drain — moved from Step 14 by MD1)
+Step 14: teardown_infrastructure()                 ← PHASE C (destroy — provably safe)
 ```
+
+> See the §"Role Host `worker_main_()` Steps" subsection above for the
+> full **Teardown Ordering Contract** (PHASE A → B → C) that governs
+> Steps 12-14.  Pre-MD1 ordering had drain at Step 14 *after* destruction,
+> exposing a use-after-free race on `BrokerRequestComm.pImpl`.
 
 ---
 
