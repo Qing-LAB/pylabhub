@@ -1,4 +1,4 @@
-# MD1 — Role teardown ordering fix (use-after-free race in `do_role_teardown`)
+# Wave MD1 — Role teardown thread-shutdown contract (use-after-free fix)
 
 | | |
 |---|---|
@@ -6,7 +6,7 @@
 | **Created**      | 2026-05-12 |
 | **Drives**       | Eliminating the gdb-confirmed use-after-free race in role teardown (`PlhHubCliTest.RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters` SIGSEGV exit 139, 1/13 under `-j2`). |
 | **Wave**         | MD1 (precedes M1.5 per chain reordering 2026-05-12 — stabilize teardown before adding `on_channel_closing` auto-stop on top). |
-| **Resume point** | If interrupted, return to §7 implementation plan; all design decisions in §6 are locked. |
+| **Resume point** | If interrupted, return to §5 implementation plan; all design decisions in §6 are locked. |
 
 ---
 
@@ -29,248 +29,277 @@ Thread 5 (worker, concurrent teardown):
 
 Re-verified 2026-05-12: the race is real and the diagnosis correct.
 
-**Design principle (locked 2026-05-10, restated):** "**Stop the machine before disassembling it.**  No object may be destroyed while another thread is still using it.  The owning side must guarantee that all in-flight uses have observed stop *and returned* before destruction proceeds."
+The fix is not "reorder operations until the race goes away."  It is to make explicit, for each thread, the **contract** about what shared state that thread depends on during its own shutdown — and to give the thread a primitive to *signal when its dependencies are released*.  Then the teardown caller honors the contract per thread.
 
 ---
 
-## 2. Root cause
+## 2. Root cause — thread's contract is implicit and the thread breaks it
 
-`BrokerRequestComm` does NOT own its ctrl thread.  The thread is spawned by `RoleAPIBase::start_ctrl_thread` (`role_api_base.cpp:593-608`) into `api.thread_manager()`.  BRC therefore can't synchronously join — `BrokerRequestComm::stop()` is necessarily fire-and-forget:
+The BRC ctrl thread runs `BrokerRequestComm::run_poll_loop`:
 
 ```cpp
-// broker_request_comm.cpp:598-620
-void BrokerRequestComm::stop() noexcept {
-    pImpl->stop_requested.store(true, std::memory_order_release);
-    if (pImpl->signal_write) {
-        pImpl->signal_write->send(zmq::message_t("S", 1), zmq::send_flags::dontwait);
-    }
-    // returns immediately; ctrl thread may still be mid-iteration
+// broker_request_comm.cpp:552-596 (excerpt)
+void BrokerRequestComm::run_poll_loop(should_run) {
+    // ... build loop, register sockets ...
+    pImpl->active_loop_periodic_tasks = &loop.periodic_tasks;
+    pImpl->poll_loop_running.store(true, ...);     // line 590
+
+    loop.run();                                     // ← the active loop
+
+    pImpl->poll_loop_running.store(false, ...);     // line 594 — SIGSEGV site
+    pImpl->active_loop_periodic_tasks = nullptr;    // line 595
 }
 ```
 
-The ctrl thread's `run_poll_loop` exits the inner `loop.run()` and then stores `poll_loop_running = false` at line 594:
+The thread's IMPLICIT contract is "I depend on `pImpl` while my body executes."  The caller's IMPLICIT assumption is "after I signal stop, the thread exits its loop promptly and I can free `pImpl`."  Both are imprecise — they overlap on a few instructions.
 
-```cpp
-loop.run();
-pImpl->poll_loop_running.store(false, std::memory_order_release);  // ← SIGSEGV site
-```
+Three independent observations make this fixable cleanly:
 
-`do_role_teardown` currently runs Step 12 (`stop()`) → Step 13 (`teardown_infrastructure_()` which destroys `broker_comm_`) → Step 14 (`thread_manager().drain()`).  Between Step 13's BRC destruction and Step 14's join, the ctrl thread may dereference freed `pImpl` at line 594 → SIGSEGV.
+1. **The two post-loop stores are dead code.**  Verified 2026-05-12: `poll_loop_running` is *never read* anywhere in `src/` or `tests/` (`grep -rn poll_loop_running` returns three lines: declaration + two writes).  `active_loop_periodic_tasks = nullptr` is also unreachable as a load — it's only read by `handle_command`, which only runs on the poll loop thread, and only while `loop.run()` is executing.  These post-loop pImpl touches achieve nothing.
 
-The comment in `producer_role_host.cpp:449-450` already claims *"Broker and comm threads already joined via api_->thread_manager().drain()"* — currently a lie, since Step 14 hasn't run when `teardown_infrastructure_` runs.  The fix makes the comment true.
+2. **The flag the thread is *trying* to express belongs on the ThreadManager, not on the owner's pImpl.**  "Is the active loop still running?" is a thread-lifecycle property; it should live with the thread metadata, not with the application object the thread happens to be polling on behalf of.
+
+3. **The teardown caller has no primitive for "wait until the thread's active loop has exited, but don't necessarily wait for body to fully return."**  `ThreadManager::drain()` waits for body return.  `done` is set by the wrapper after body return.  There's no primitive that says "wait until the thread itself signals that its external dependencies are released."  Adding one makes the thread's contract first-class.
 
 ---
 
-## 3. Architecture — current vs target
+## 3. Architecture — threads, ownership, and the current race
 
 ```mermaid
 graph TB
-    subgraph Current ["Current sequence (race)"]
-        C12[Step 12: broker_comm->stop<br/>fire-and-forget signal]
-        C13a[Step 13.a: inbox stop+reset]
-        C13b[Step 13.b: broker_comm->disconnect+reset<br/>← DESTROYS pImpl]
-        C13c[Step 13.c: close_queues<br/>= queue stop+reset]
-        C14[Step 14: thread_manager.drain<br/>= ctrl-thread join]
-        Race[<b>RACE WINDOW</b><br/>ctrl thread may still touch pImpl<br/>between 13.b and 14]
-        C12 --> C13a --> C13b --> C13c --> C14
-        C13b -.-> Race
-        Race -.-> C14
+    subgraph apiTM ["api.thread_manager() — owned by RoleAPIBase"]
+        WT["worker thread<br/>runs worker_main_()<br/>spawned at engine_host.cpp:143"]
+        CT["ctrl thread<br/>runs run_poll_loop()<br/>spawned at role_api_base.cpp:593"]
     end
 
-    subgraph Target ["Target sequence (no race)"]
-        T12[Step 12: broker_comm->stop<br/>+ core.set_running false<br/>+ core.notify_incoming<br/>signals only]
-        T12b[Step 12.5 NEW: thread_manager.drain<br/>SYNCHRONOUS join — ctrl thread<br/>has returned by this point]
-        T13[Step 13: teardown_infrastructure<br/>now SAFE to destroy<br/>broker_comm + queues + inbox]
-        T12 --> T12b --> T13
+    subgraph BRC ["BrokerRequestComm.pImpl"]
+        sockets["dealer, monitor, signal sockets"]
+        stop_flag["stop_requested (atomic)"]
+        poll_flag["poll_loop_running (dead diagnostic)"]
+        periodic["active_loop_periodic_tasks (raw ptr)"]
     end
 
-    style Race fill:#ffe6e6
-    style T12b fill:#e6ffe6
+    subgraph zmq ["ZmqQueue.pImpl (self-threaded — owns its own ThreadManager)"]
+        recv["recv_thread"]
+        send["send_thread"]
+    end
+
+    subgraph ix ["InboxQueue (no background thread)"]
+        ixs["socket; recv_one() polled inline by worker"]
+    end
+
+    WT -. "calls do_role_teardown<br/>which calls thread_manager().drain()" .-> apiTM
+    CT -. "polls + drains cmd queue<br/>touches all of BRC.pImpl" .-> BRC
+    WT -. "drives queue stop/reset<br/>during teardown_infrastructure_" .-> zmq
+    WT -. "polls inline during data loop;<br/>destroys during teardown" .-> ix
 ```
 
-The fix is conceptually simple: **move drain from Step 14 to between Step 12 and Step 13**, then Step 13 (which the role host owns) is guaranteed quiescent.
+**Two threads live in `api.thread_manager()`** — the WORKER (current thread running teardown) and the CTRL (BRC poll loop).  All other threads (ZmqQueue's recv/send, InboxQueue is unthreaded) are managed elsewhere.
+
+**Current `do_role_teardown` sequence (the bug):**
+
+```
+Step 11: engine.finalize()
+Step 12: broker_comm->stop()  +  core.set_running(false)  +  core.notify_incoming()
+         [ ctrl thread observes stop on next poll iteration ]
+         [ but ctrl thread may still be executing post-loop stores at lines 594-595 ]
+Step 13: teardown_infrastructure_()    ← INCLUDES broker_comm_.reset()
+         [ pImpl freed HERE while ctrl thread is at line 594 ]    ⚠️ RACE
+Step 14: api.thread_manager().drain()  ← TOO LATE
+```
+
+The race is not about "destroy before drain" or "destroy after drain" as a global rule.  It is specifically about a *thread that touches pImpl after its loop exits* and a *caller that destroys pImpl without waiting for the thread to actually release pImpl*.
 
 ---
 
-## 3.5 The teardown-ordering contract (CRITICAL — primary content of MD1)
+## 3.5 Thread Shutdown Contracts (the principle)
 
-> User directive 2026-05-12 (verbatim): *"the most critical consideration is what should be torn down in the infrastructure before thread-joining and what should be after.  this is the most important explicitly documented fact we should nail down.  with this contract, we can clarify a lot of racing conditions and correctly ask thread to do the right thing."*
+> User directive 2026-05-12 (verbatim): *"we should think about the principle of what thread should know that would be destroyed when shutdown flag is set to true, and what can be guaranteed to be still functional. and the thread should work with that. then the post-joining teardown can properly finalize that process."*
 
-The bug exists because the **pre-drain / post-drain classification** of every teardown action has been implicit.  MD1 makes it explicit and tests against it.
+The teardown bug class is fundamentally about *each thread's contract with the caller about what state remains valid during its own shutdown*.  Sequencing is a CONSEQUENCE of the contracts, not the design itself.
 
-### 3.5.1 The classification question
+### 3.5.1 The principle
 
-For every resource `R` that a thread `T` interacts with, ask:
+For each long-running thread `T` in a role host (or any host), there is a **shutdown contract**:
 
-> **Does `T` DEPEND on `R` being alive to make progress toward exit?  Or does `T` USE `R` while running?**
+- `T` declares (in code) which external resources it touches between two well-defined moments:
+  - **Stop-observation point:** the first instant `T` notices that shutdown is requested (e.g., its loop predicate flipping false).
+  - **Loop-exit point:** the moment `T`'s active loop function returns.  After this, `T` has released its dependencies on shared state and is on a bounded countdown to body return.
+- Between these two points, `T` may touch the resources it depends on (sockets it polls, atomic flags, command queues).  The caller MUST keep those resources alive through `T`'s loop-exit point.
+- **After `T`'s loop-exit point**, `T` MUST NOT touch any external state the caller might tear down — only its own stack frame and its own ThreadManager handle.
+- The teardown caller's job: signal `T` to stop, wait for `T`'s loop-exit signal, then destroy the resources `T` had been touching.
 
-- **DEPEND** (R is `T`'s wake-up channel / stop-signal mechanism): destroying `R` pre-drain leaves `T` stuck forever.  R must stay alive *through* drain.  Destroy R **POST-DRAIN**.
-- **USE** (R is `T`'s working state / poll target / data structure): destroying `R` pre-drain races with `T`'s last access.  Destroy R **POST-DRAIN**.
-- **NEITHER** (R is independent of any thread `T` we're draining): order doesn't matter; either phase is fine.
+**This generalises across threads.**  The principle does not single out any particular thread; it tells every thread the same story.  For threads with no external dependencies, the contract is trivially satisfied.  For threads with substantial external dependencies (like BRC's ctrl thread), the contract requires that the thread COOPERATE: do not touch shared state after loop exit.
 
-For most resources the answer is "destroy POST-DRAIN."  The interesting pre-drain action is *signaling*, not destruction.
+### 3.5.2 Per-thread contracts in the role-side teardown
 
-### 3.5.2 Three phases — the contract
+| Thread | Where it lives | Active-loop body | External state it touches during shutdown | Contract |
+|---|---|---|---|---|
+| **Worker** | `api.thread_manager()` (spawned `engine_host.cpp:143`) | `worker_main_()` (which includes `do_role_teardown`) | Itself drives the teardown; releases its own resources via `teardown_infrastructure_` | Self-managed; no external-join contract.  After `worker_main_` returns, `ApiT::~ApiT` (via main thread's `EngineHost::shutdown_()` drain) joins it.  Resources the worker uses are all released by the worker itself before returning. |
+| **BRC ctrl** | `api.thread_manager()` (spawned `role_api_base.cpp:593`) | `BrokerRequestComm::run_poll_loop` → `loop.run()` | `pImpl` (sockets, atomic flags, cmd queue) — throughout `loop.run()` | After `loop.run()` returns, MUST NOT touch `pImpl`.  Caller MUST keep `pImpl` alive until the ctrl thread has reached its loop-exit point. |
+| **ZmqQueue recv/send** | Private `thread_mgr_` inside each `ZmqQueue` | `recv_thread_body` / `send_thread_body` | Queue's own `pImpl` only | Self-contained: `ZmqQueue::stop()` synchronously signals + joins its own threads + closes its socket.  No external contract — the caller treats `ZmqQueue::stop()` as one atomic step. |
+| **InboxQueue** | (no background thread) | n/a — polled inline by the worker from `data_loop.hpp` | n/a | No shutdown contract because there is no thread.  By the time `teardown_infrastructure_` runs, the worker has exited the data loop and no one polls the inbox. |
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│ PHASE A — SIGNAL (pre-drain)                                    │
-│ • Set stop flags / running=false                                │
-│ • Send wake-up signals (signal sockets, condition variables)    │
-│ • Do NOT destroy anything that a live thread holds a reference  │
-│   to or polls on.                                                │
-│ Goal: every spawned thread is now guaranteed to OBSERVE stop    │
-│ on its next iteration AND have a path to return.                │
-└─────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────┐
-│ PHASE B — DRAIN (the synchronization point)                     │
-│ • thread_manager().drain() — synchronous join.                  │
-│ Goal: when this returns, NO spawned thread is running, AND      │
-│ every spawned thread has completed its post-loop store/cleanup. │
-└─────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────┐
-│ PHASE C — DESTROY (post-drain)                                  │
-│ • Close sockets the threads were polling.                        │
-│ • Reset unique_ptrs holding pImpl that threads were accessing.  │
-│ • Run all `*::disconnect()` / `*::reset()` / `*::~Dtor()`        │
-│   for resources that ANY drained thread used or depended on.    │
-│ Goal: free everything; no thread can possibly touch any         │
-│ destroyed resource (proven by Phase B).                          │
-└─────────────────────────────────────────────────────────────────┘
-```
+The only non-trivial contract in the table is the **BRC ctrl thread's**.  MD1's fix is the explicit machinery to honor it.
 
-### 3.5.3 API conventions (no code change — just naming consistency)
+### 3.5.3 New ThreadManager primitive — `active_loop_exited`
 
-Each lifecycle-managed class falls into one of three patterns:
-
-| Pattern | Owns its threads? | API shape | Example |
-|---|---|---|---|
-| **Externally-threaded** | No — caller's ThreadManager owns the thread(s) | `stop()` is a PHASE A signal; `disconnect()` / `reset()` are PHASE C | `BrokerRequestComm` |
-| **Self-threaded** | Yes — class owns a private ThreadManager | `stop()` is *both* signal AND drain (self-contained); call site treats it as a leaf | `ZmqQueue` |
-| **Inline / no thread** | No threads of its own | `stop()` just closes resources; ordering only matters relative to whatever external thread USES it | `InboxQueue` |
-
-Critical: **an externally-threaded class's `stop()` MUST be fire-and-forget.**  It cannot synchronously drain because it doesn't own the thread.  This is a feature, not a bug.
-
-### 3.5.4 Classification of every teardown action in `do_role_teardown`
-
-| Step | Action | Phase | Why |
-|---|---|---|---|
-| 9 | `engine.stop_accepting()` | A (signal) | Tells non-owner threads to stop submitting invoke requests; doesn't destroy anything |
-| 9a | `api.deregister_from_broker()` | A (signal — protocol-layer) | Sends DEREG_REQ; broker-side cleanup happens.  Network round-trip, but doesn't destroy local resources.  **This DEPENDS on BRC ctrl thread being alive to process the reply** — must run before BRC stop. |
-| 10 | `engine.invoke_on_stop()` | A (script callback) | Last script call.  Engine still alive; ctrl thread still alive.  No destruction. |
-| 11 | `engine.finalize()` | A→ borderline | Engine releases Python/Lua state.  Other threads must not be invoking after this.  Currently runs before drain — implies engine-using threads are already in a no-invoke state (Step 9 + script return).  OK. |
-| 12 | `broker_comm->stop()` + `core.set_running(false)` + `core.notify_incoming()` | A (signal) | Pure signaling — sets flags, sends wake-ups.  Does NOT destroy. |
-| **13 (NEW)** | `api.thread_manager().drain()` | **B (drain)** | Synchronous join.  Currently happens at the end (Step 14) — MD1 moves it here. |
-| 14 (was 13) | `teardown_infrastructure_()` — destructive part: `broker_comm->disconnect()`, `broker_comm_.reset()`, `inbox_queue_.reset()`, `api.close_queues()` | **C (destroy)** | All threads quiescent (proven by Step 13's drain return).  Safe to free. |
-
-The **explicit invariant** that emerges:
-
-> **Phase A actions never destroy anything.  Phase C actions never run before Phase B returns.**
-
-This is checkable at code-review time.  Any future addition to `do_role_teardown` must be classified A / B / C; reviewers reject mis-classifications.
-
-### 3.5.5 Inside `teardown_infrastructure_` — step-by-step classification
-
-The role host's `teardown_infrastructure_` callback is identical in
-all three role kinds (producer / consumer / processor — verified
-2026-05-12 against `producer_role_host.cpp:447-472`,
-`consumer_role_host.cpp:406-428`, `processor_role_host.cpp:495-518`).
-Its four steps, today and post-MD1:
+The flag belongs with the thread, not with the application object.  `ThreadManager` gains a per-slot atomic flag that the thread sets when it exits its active loop:
 
 ```cpp
-void <RoleKind>RoleHost::teardown_infrastructure_()
+// Sketch — final API TBD during P1a implementation.
+
+namespace pylabhub::utils {
+
+class ThreadManager {
+public:
+    /// Handle passed into the spawned body.  Lets the body call back into
+    /// ThreadManager to mark its own progress without depending on the
+    /// application's pImpl.
+    struct SlotContext {
+        void mark_active_loop_exited() noexcept;
+    private:
+        std::shared_ptr<std::atomic<bool>> active_loop_exited_;
+        friend class ThreadManager;
+    };
+
+    bool spawn(const std::string &name,
+               std::function<void(SlotContext &)> body,
+               SpawnOptions opts = {});
+
+    /// Any-thread query.
+    bool is_active_loop_exited(std::string_view name) const noexcept;
+
+    /// Bounded sync — block until the named slot's active_loop_exited
+    /// flag becomes true, or timeout.  Returns true iff flag became true.
+    bool wait_for_active_loop_exit(std::string_view name,
+                                   std::chrono::milliseconds timeout) noexcept;
+};
+
+} // namespace
+```
+
+**Distinction from existing `done` flag:**
+- `done = true` — set by the spawn wrapper AFTER the body returns.  Means "thread is gone; safe to `join()`."
+- `active_loop_exited = true` — set by the THREAD ITSELF, from inside its body, at the point where the thread has finished touching external shared state.  Means "external dependencies released; safe for caller to destroy them, even though the thread body has not yet returned."
+
+The two flags answer different questions and are STRICTLY ORDERED: `active_loop_exited` is always set BEFORE `done` (because the thread sets it before returning, and `done` is set after the return).  The teardown caller chooses which to wait on:
+
+| Caller wants… | Wait on… | Why |
+|---|---|---|
+| "Safe to destroy state the thread was using" | `active_loop_exited` | Earliest point at which the contract is honored.  Used by Step 12.5 of `do_role_teardown`. |
+| "Thread is fully gone; safe to `join()`/reset its slot" | `done` (via `drain()` / `join_named()`) | Used by Step 14's final `drain()` and by `EngineHost::shutdown_()`. |
+
+**How `drain()` and `join_named()` interact with `active_loop_exited`** (this is the user's question):
+
+The primary signal each consumes is still `done` — they need the body to have returned before they can `std::thread::join()`.  However:
+
+- **Two-stage wait with better diagnostics.**  `drain()` can split its bounded timeout into two halves: first wait up to T/2 for `active_loop_exited` (this is the contract-honoring deadline), then wait up to T/2 for `done` (post-loop cleanup deadline).  On detach-timeout, the slot reports which stage timed out: "stuck in active loop" vs "stuck in post-loop cleanup."  Currently `drain` reports only "did not exit in {N}ms" with no clue which.
+- **Fast path for already-exited slots.**  If `active_loop_exited` is already true when `drain()` starts polling a slot, drain knows body return is imminent (post-loop is by definition cheap) and can skip its 10ms polling cadence in favor of a tight wait.
+- **Symmetric with `wait_for_active_loop_exit`.**  Adding `active_loop_exited` to the drain logic means there's one consistent state machine: signal → active_loop_exit → done → joined.  Any waiter can latch onto whichever transition matches its contract.
+
+For MD1 scope, the drain enhancement is OPTIONAL.  Step 12.5 already uses the new primitive directly via `wait_for_active_loop_exit`; Step 14's `drain()` doesn't need the two-stage refinement for correctness — it only sees the worker (which doesn't mark, because it self-manages teardown).  But P1a should include the drain enhancement because:
+- It's a small additional change (~10 LOC inside `drain`)
+- It improves diagnostics universally
+- It establishes the consistent state machine for future thread additions
+
+**Slot-handle plumbing (locked 2026-05-12):** `SlotContext &` passed into the body via the spawn lambda's first parameter.  Type-safe, no thread_local; the only churn is at the spawn call sites (worker, ctrl, future spawns) — each takes a `SlotContext &ctx` parameter and forwards.
+
+### 3.5.4 Applying the contract — the MD1 fix
+
+The fix has THREE parts, each from the contract:
+
+**(a) BRC ctrl thread's body honors its own contract.**
+
+```cpp
+// broker_request_comm.cpp — sketch of corrected run_poll_loop body
+
+void BrokerRequestComm::run_poll_loop(ThreadManager::SlotContext &ctx,
+                                       std::function<bool()> should_run)
 {
-    // 1.
-    core().clear_inbox_cache();
+    // ... build loop, register sockets ...
+    pImpl->active_loop_periodic_tasks = &loop.periodic_tasks;
 
-    // 2.
-    if (inbox_queue_) {
-        inbox_queue_->stop();
-        inbox_queue_.reset();
-    }
+    loop.run();   // <— the entire active loop; touches pImpl freely
 
-    // 3.
-    if (broker_comm_) {
-        broker_comm_->disconnect();
-        broker_comm_.reset();
-    }
+    // CONTRACT: after loop.run() returns, this thread MUST NOT touch pImpl.
+    // Mark active-loop-exit BEFORE returning so the teardown caller can
+    // safely release pImpl.
+    ctx.mark_active_loop_exited();
 
-    // 4.
-    if (has_api())
-        api().close_queues();
+    // Dead post-loop stores REMOVED:
+    //   pImpl->poll_loop_running.store(false, ...);    // had zero readers
+    //   pImpl->active_loop_periodic_tasks = nullptr;   // unreachable consumer
+    // The `poll_loop_running` member is removed from Impl entirely
+    // (replaced by ThreadManager's slot-level flag).
 }
 ```
 
-Classification of each step under the A/B/C contract (no step
-changes — only its surrounding context does):
+**(b) BRC's pImpl loses the dead diagnostic.**
 
-| # | Action | Phase | What it does | Why it's safe post-MD1 |
-|---|---|---|---|---|
-| **1** | `core().clear_inbox_cache()` | C | Drops the in-memory cache of inbox-message Python/Lua views held by `RoleHostCore`. | No threads access the cache except the worker thread; the worker is the one running `teardown_infrastructure_`. Always safe. |
-| **2a** | `inbox_queue_->stop()` | C | InboxQueue is the **inline / no-thread** pattern (no background reader; polled inline by `RoleAPIBase::drain_inbox_sync` from the worker thread). `stop()` just closes the ZMQ socket. | The worker is past the data loop; no one is polling the inbox. Closing the socket is safe. |
-| **2b** | `inbox_queue_.reset()` | C | Destroys the InboxQueue object. | Same — no thread holds a reference. |
-| **3a** | `broker_comm_->disconnect()` | C (with vestigial Phase A inside) | Closes BRC's monitor socket, signal-PAIR sockets, DEALER socket; marks `connected = false`. | Pre-MD1: the ctrl thread might still be polling these sockets → undefined ZMQ behaviour. **Post-MD1**: drain has returned → ctrl thread has exited `run_poll_loop` → sockets have no users → close is safe. |
-| **3b** | `broker_comm_.reset()` | C | Destroys `BrokerRequestComm` (frees `pImpl`). | **THIS IS THE BUG SITE PRE-MD1.** The ctrl thread's post-loop `pImpl->poll_loop_running.store(false, ...)` at `broker_request_comm.cpp:594` runs *after* `loop.run()` returns. Pre-MD1, drain happens AFTER this `reset()` — so the store hits freed memory. Post-MD1, drain has already joined the ctrl thread, guaranteeing its post-loop store has completed before `reset()` runs. |
-| **4** | `api().close_queues()` → for each queue: `stop()` then `reset()` | C (internally A+B+C) | ZmqQueue and ShmQueue are the **self-threaded** pattern: their own `stop()` synchronously joins their own private ThreadManager before closing the socket. Each queue therefore self-contains Phase A (signal own recv/send threads) + Phase B (join them) + Phase C (close socket). | Always safe — these queues never had the MD1 bug class because their threads live inside the object. Including this step in `teardown_infrastructure_` is for clean ordering only, not for race safety. |
+`std::atomic<bool> poll_loop_running` is deleted from `BrokerRequestComm::Impl`.  Whatever questions a future reader had about "is the active loop running?" are now answered by `tm.is_active_loop_exited("ctrl")` (inverted: true means NO, not running).
 
-**Critical: nothing inside `teardown_infrastructure_` needs to
-change.**  The MD1 fix is *external* — it changes the ordering of
-the three things bracketing this callback:
-
-```
-Before MD1 (BUG):
-  Step 12: broker_comm->stop()   ← Phase A signal (BRC ctrl thread)
-  Step 13: teardown_infrastructure_()   ← Phase C — RUNS WHILE CTRL THREAD STILL ALIVE
-  Step 14: thread_manager.drain()   ← Phase B — TOO LATE
-
-After MD1 (FIXED):
-  Step 12: broker_comm->stop()   ← Phase A signal (BRC ctrl thread)
-  Step 13: thread_manager.drain()   ← Phase B — synchronization point
-  Step 14: teardown_infrastructure_()   ← Phase C — all internal steps now provably safe
-```
-
-The four steps inside `teardown_infrastructure_` keep their relative
-order; the order INSIDE is fine.  The fix is the position of the
-whole callback relative to drain.
-
-**Stale comment to update.**  All three role hosts have a comment
-"Broker and comm threads already joined via api_->thread_manager().drain()"
-at the top of their `teardown_infrastructure_` (line 449, 408, 497
-respectively).  Pre-MD1 this comment is a lie (drain hasn't run yet);
-post-MD1 it becomes accurate.  P1 should reword each to a stronger
-*precondition* claim:
+**(c) Teardown caller honors the contract by waiting for the loop-exit flag.**
 
 ```cpp
-// PRECONDITION (Teardown Ordering Contract): caller has already
-// run thread_manager().drain() — every spawned thread under
-// api.thread_manager() has returned.  All steps below are
-// PHASE C (destroy) and rely on this precondition for safety.
+// role_host_lifecycle.cpp — corrected do_role_teardown
+
+// Step 12: signal stop (unchanged — Phase-A-style signaling)
+if (broker_comm) broker_comm->stop();
+core.set_running(false);
+core.notify_incoming();
+
+// Step 12.5 NEW: honor BRC ctrl thread's contract before destroying pImpl.
+//
+// The ctrl thread will: observe stop_requested → loop predicate fails →
+// loop.run() returns → mark_active_loop_exited() runs → body returns.
+// We wait for the loop-exit mark, not for body return — the difference
+// is precisely the dead-store window we eliminated above.
+if (broker_comm)
+{
+    const auto kCtrlExitTimeout = std::chrono::milliseconds(500);
+    if (!api.thread_manager().wait_for_active_loop_exit("ctrl",
+                                                         kCtrlExitTimeout))
+    {
+        LOGGER_WARN("[{}] do_role_teardown: ctrl thread did not exit its "
+                    "active loop within {}ms — proceeding anyway; teardown "
+                    "may race", api.role_tag(), kCtrlExitTimeout.count());
+    }
+}
+
+// Step 13 (UNCHANGED in shape and position): teardown_infrastructure_
+// runs the historical resource-handover sequence.  All four of its
+// internal steps were always meant to be safe at this point in the
+// sequence; what changed is that BRC ctrl thread's contract is now
+// PROVABLY HONORED (Step 12.5), so reset() on broker_comm_ at the
+// step-3 sub-step does not race.
+if (teardown_infrastructure)
+    teardown_infrastructure();
+
+// Step 14 (UNCHANGED): final drain — safety net for any other spawned
+// threads (worker is in here; it self-detaches because it's the caller,
+// joined later by main-thread shutdown_).
+api.thread_manager().drain();
 ```
 
-**Dead-code observation (not a fix, just an audit note).**
-`BrokerRequestComm::disconnect()` itself sets
-`pImpl->stop_requested.store(true)` at line 496 — that's a Phase A
-signal inside what is otherwise a Phase C method.  Pre-MD1 the flip
-was meaningful because Step 12's `stop()` and Step 13.3a's
-`disconnect()` were both signaling against a live ctrl thread.
-Post-MD1, by the time `disconnect()` runs the ctrl thread is already
-joined; the flip becomes dead code.  Not load-bearing in either
-case (Step 12 sets the same flag earlier), but worth knowing —
-leaves the BRC API self-consistent without depending on the caller's
-ordering.
+### 3.5.5 Why `teardown_infrastructure_` stays at Step 13 — historical reasoning preserved
 
-### 3.5.6 What this contract buys us beyond MD1
+The current ordering (teardown_infrastructure before final drain) is intentional and predates MD1:
 
-Once explicit, the contract clarifies a class of related races:
+- **Resource handover.**  Release role-owned resources (broker_comm, inbox_queue, queues) BEFORE the framework synchronously waits for thread exits.  If a thread eventually hangs and is detached, at least sockets/SHM/queues have been released cleanly — partial cleanup beats none.
+- **Drain at end is a safety net.**  The author's intent was that Step 12's signal makes the ctrl thread exit promptly; drain confirms.  Comment at `role_host_lifecycle.cpp:54-56`: *"Step 14: drain all managed threads — last.  Ctrl thread has already exited its poll loop (signaled in step 12), so join is immediate."*
+- **Symmetry with startup.**  Startup is framework-then-role (`spawn threads → setup_infrastructure`); teardown reverses (`teardown_infrastructure → drain`).
 
-- **Setup-failure paths.**  `producer_role_host.cpp:181` and `:239` call `teardown_infrastructure_` after a partial setup failure.  Under the contract, those paths must ALSO run Phase A → B → C ordering — even if Phase A is trivial (no threads to signal because nothing was spawned).  Verified safe (drain on empty thread set is a no-op).
-- **M1.5 auto-stop path.**  When `on_channel_closing` triggers auto-stop, it sets a stop reason then lets the main loop run `do_role_teardown` normally.  The contract automatically extends — no new ordering questions.
-- **Future lifecycle objects.**  Any new role-side thread (e.g., a metrics-flush thread, a future watchdog) plugs in by: register with `thread_manager()`, provide a Phase A signal, let `thread_manager().drain()` handle Phase B.  No new race patterns possible if the contract is followed.
-- **Concurrent teardown vs registration.**  If a script calls `api.stop()` during the initial REG_REQ wait, the same Phase A → B → C applies — no special case.
+MD1 does NOT invert this ordering.  It inserts a single new step (Step 12.5: `wait_for_active_loop_exit`) that makes the BRC ctrl thread's contract explicit.  `teardown_infrastructure_` runs at its historical position with the same internal sequence.
 
-This contract is the durable artifact of MD1; the code change is the smallest expression of it.
+### 3.5.6 What this primitive buys beyond MD1
+
+Once `active_loop_exited` is in ThreadManager:
+
+- **Future externally-threaded objects.**  Any class that runs on a caller-owned thread can adopt the same pattern: mark `active_loop_exited()` after the loop body; caller waits for the flag before destruction.  No new race patterns possible if the pattern is followed.
+- **Diagnostic without pImpl coupling.**  Liveness queries ("is the ctrl thread still in its active loop?") now route through ThreadManager rather than each application object owning its own flag.  No application-side races between flag write and pImpl free.
+- **Setup-failure paths trivially correct.**  If setup fails partway and the ctrl thread was never spawned, `wait_for_active_loop_exit("ctrl")` returns immediately (slot doesn't exist).  No special case needed.
+- **Hub-side adoption later.**  `HubHost`'s broker thread has the same pattern (broker.stop() is fire-and-forget; broker thread is in HubHost::thread_mgr).  HubHost already does the right thing via its current shutdown_ sequence, but adopting `active_loop_exited` for `BrokerService::run` would make the contract explicit there too.
 
 ---
 
@@ -278,32 +307,29 @@ This contract is the durable artifact of MD1; the code change is the smallest ex
 
 ### Changes
 
-1. **`src/utils/service/role_host_lifecycle.cpp` — `do_role_teardown`** (only file with semantic change):
-   - Renumber Steps 12 / 13 / 14 → 12 / 13 / 14 with semantics:
-     - Step 12 (unchanged): signal stop on all things owned by RoleAPIBase
-     - **Step 13 (NEW): `api.thread_manager().drain()`** — synchronous join, all spawned threads have returned
-     - Step 14 (was 13): `teardown_infrastructure_()` — now safe to destroy
-   - Old Step 14 (`thread_manager.drain` at end) is removed — drain has moved up.
+1. **`src/include/utils/thread_manager.hpp` + `src/utils/service/thread_manager.cpp`** — add `SlotContext`, `active_loop_exited` per-slot atomic, three new methods (`mark_active_loop_exited` on `SlotContext`, `is_active_loop_exited` + `wait_for_active_loop_exit` on `ThreadManager`).  `spawn()` signature changes to take `std::function<void(SlotContext &)>`.
 
-2. **`src/utils/service/role_host_lifecycle.hpp`** — update the docstring comment block (Steps 9-14 enumeration) to match the new ordering.
+2. **`src/utils/network_comm/broker_request_comm.cpp`** — `run_poll_loop` takes `SlotContext &` as a parameter, calls `mark_active_loop_exited()` after `loop.run()` returns.  Remove dead `pImpl->poll_loop_running` member entirely and the post-loop assignments.
 
-3. **`src/producer/producer_role_host.cpp` — `teardown_infrastructure_`** (lines 444-472): the comment at lines 449-450 ("Broker and comm threads already joined via api_->thread_manager().drain()") is now factually true — keep it, but reword to make the ordering invariant explicit (e.g. "PRECONDITION: `api.thread_manager().drain()` has returned").
+3. **`src/utils/service/role_api_base.cpp`** — `start_ctrl_thread` updated for the new spawn-body signature; forwards `SlotContext &` to `bc->run_poll_loop(ctx, should_run)`.
 
-4. **`src/consumer/consumer_role_host.cpp` — `teardown_infrastructure_`**: same comment/precondition update.
+4. **`src/utils/service/engine_host.cpp`** — `spawn("worker", ...)` updated for the new spawn-body signature.  Worker doesn't need `mark_active_loop_exited()` (it self-manages teardown), but spawn API requires `SlotContext &` parameter.
 
-5. **`src/processor/processor_role_host.cpp` — `teardown_infrastructure_`**: same.
+5. **`src/utils/service/role_host_lifecycle.cpp` — `do_role_teardown`** — insert Step 12.5 (`wait_for_active_loop_exit("ctrl", timeout)`) between current Step 12 and Step 13.  Update docstring to declare ctrl thread's contract as the precondition for Step 13.
+
+6. **`src/include/utils/role_host_lifecycle.hpp`** — docstring update.
+
+7. **`src/producer/producer_role_host.cpp` / `consumer_role_host.cpp` / `processor_role_host.cpp`** — `teardown_infrastructure_` comment reworded from "Broker and comm threads already joined" to "PRECONDITION: BRC ctrl thread's active loop has exited (signaled via ThreadManager::wait_for_active_loop_exit in role_host_lifecycle Step 12.5)."
 
 ### Does NOT change
 
-- `BrokerRequestComm::stop()` — stays as fire-and-forget signal. Correct given BRC doesn't own its ctrl thread.
+- `BrokerRequestComm::stop()` — stays as fire-and-forget signal.  Correct given BRC doesn't own its ctrl thread.
 - `BrokerRequestComm::disconnect()` — stays as protocol teardown.
+- `teardown_infrastructure_` position in the sequence (Step 13) — preserved.
+- `teardown_infrastructure_` internal sequence (clear_inbox_cache → inbox stop+reset → broker_comm disconnect+reset → close_queues) — preserved.
 - `ZmqQueue::stop()` — already synchronous (owns its threads).
 - `InboxQueue::stop()` — no background thread; polled inline from worker thread.
-- `BrokerService` (hub side) — different lifecycle (not affected by this race; it owns its own threads).
-
-### Why not change `BrokerRequestComm::stop()` to also drain?
-
-Because BRC doesn't own the ctrl thread.  The thread lives in `RoleAPIBase::thread_manager()`.  Making `stop()` "synchronous" would require passing in the ThreadManager pointer or asking `RoleAPIBase` to drain externally — exactly what Step 13 (NEW) does.  The current API split is correct; only the call-site ordering was wrong.
+- `BrokerService` (hub side) — different lifecycle; not affected by MD1.  Adopting `active_loop_exited` for the broker thread is a future improvement, not in MD1 scope.
 
 ---
 
@@ -311,25 +337,32 @@ Because BRC doesn't own the ctrl thread.  The thread lives in `RoleAPIBase::thre
 
 | Phase | Scope | LOC | Files |
 |---|---|---|---|
-| **P0 — Pre-flight audit** | Confirm InboxQueue + ZmqQueue audit findings (done 2026-05-12; ZmqQueue stop synchronous, InboxQueue inline-polled).  Document in this section before P1 starts. | 0 (verification only) | This doc §4 |
-| **P1 — Reorder `do_role_teardown`** | Insert drain between Step 12 and Step 13.  Remove the old Step 14 drain.  Update docstring comments in lifecycle.cpp + 3 role-host teardown_infrastructure_ functions. | ~20 LOC + ~50 lines comments | `role_host_lifecycle.cpp/.hpp`, `producer/consumer/processor_role_host.cpp` |
-| **P2 — L3 in-process test** | New test file driving real RoleHost (producer first; consumer + processor follow same shape) through register → stop → teardown.  Asserts: clean exit, no SIGSEGV, no leaked threads.  Mutation sweep: revert P1 reordering → test fails. | ~250 LOC | `tests/test_layer3_datahub/test_datahub_role_teardown_ordering.cpp` (new) |
-| **P3 — Regression-gate the L4 test** | Confirm `PlhHubCliTest.RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters` passes 30/30 (or higher N for confidence) under `-j2`.  This is the test that originally caught the bug; no new code needed, just verification + lift any `Wave-M2-deferred` skip tag if present. | 0 LOC + verification runs | `tests/test_layer4_plh_hub/test_plh_hub.cpp` |
-| **P4 — Doc sync** | `docs/todo/TESTING_TODO.md` §9: mark MD1 CLOSED with commit ref + test-pass evidence.  `docs/TODO_MASTER.md` MD1 row: status → CLOSED.  Update `docs/tech_draft/M1.5_channel_closing_redesign_2026-05-12.md` §11 to reference the closed fix. | ~40 lines docs | various TODO files |
+| **P0 — Pre-flight audit** | DONE 2026-05-12.  Per-thread contracts derived from code reading; ThreadManager primitive shape locked via user Q&A. | 0 | This doc §3.5 |
+| **P1a — ThreadManager primitive** | Add `SlotContext` struct + `active_loop_exited` atomic in `ThreadSlot` + three methods (`SlotContext::mark_active_loop_exited`, `ThreadManager::is_active_loop_exited`, `ThreadManager::wait_for_active_loop_exit`).  Modify `spawn()` to take `std::function<void(SlotContext &)>` and wire context into wrapper.  **Also**: enhance `drain()` and `join_named()` to use two-stage wait (first `active_loop_exited`, then `done`) so detach-timeouts can distinguish "stuck in active loop" from "stuck in post-loop cleanup."  L1 unit tests for the primitive in isolation + drain two-stage behavior. | ~100 LOC + ~150 LOC tests | `thread_manager.hpp/.cpp`, new `tests/test_layer2_service/test_thread_manager_active_loop.cpp` |
+| **P1b — BRC ctrl thread body honors contract** | `run_poll_loop` takes `SlotContext &`, calls `ctx.mark_active_loop_exited()` after `loop.run()` returns.  Remove `poll_loop_running` member from `Impl` entirely.  Remove dead post-loop assignments. | ~15 LOC | `broker_request_comm.cpp` + `broker_request_comm.hpp` |
+| **P1c — Spawn-site updates** | `RoleAPIBase::start_ctrl_thread` and `EngineHost::startup_`'s worker spawn updated for new spawn signature.  Worker body wrapped to ignore `SlotContext &` (worker doesn't need to mark exit). | ~10 LOC | `role_api_base.cpp`, `engine_host.cpp` |
+| **P1d — Teardown caller honors contract** | Insert Step 12.5 in `do_role_teardown`: `wait_for_active_loop_exit("ctrl", kBoundedTimeout)`.  Update docstring comments in lifecycle + 3 role hosts to declare contract precondition. | ~15 LOC + ~60 lines comments | `role_host_lifecycle.cpp/.hpp`, `producer/consumer/processor_role_host.cpp` |
+| **P2 — L3 production-scenario test** | Real RoleHost (producer first) driven through register → stop → teardown.  Asserts: clean exit, no SIGSEGV under `-j2`, bounded teardown latency, no stale "ctrl thread did not exit" log warnings.  Mutation sweep: revert P1d → test fails under -j2 stress. | ~250 LOC | new `tests/test_layer3_datahub/test_datahub_role_teardown.cpp` |
+| **P3 — Regression-gate L4** | Confirm `PlhHubCliTest.RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters` passes 30/30 under `-j2`.  Lift any `Wave-M2-deferred` skip tag. | 0 LOC + runs | existing `tests/test_layer4_plh_hub/` |
+| **P4 — Doc sync** | Update HEP-CORE-0031 §4 with the new primitive + the thread-shutdown contract principle (including the explicit "thread must not touch pImpl after observing shutdown / after active loop exit" rule).  Update IG "Teardown Ordering Contract" section to reflect contract-centric framing.  Update HEP-CORE-0011 step list for the new Step 12.5.  Update TODO_MASTER MD1 row → CLOSED.  Update TESTING_TODO §9.  Update M1.5 design doc §11 cross-ref. | ~150 lines docs | HEP-CORE-0031, IMPLEMENTATION_GUIDANCE, HEP-CORE-0011, various TODOs |
 
-**Total:** ~20 LOC code + 250 LOC tests + 90 lines comments/docs. Estimated effort: 0.5–1 day.
+**Total:** ~120 LOC code + ~350 LOC tests + ~210 lines docs.  Estimated effort: 1 day.
 
 ---
 
 ## 6. Locked decisions (2026-05-12 user Q&A)
 
-| Question | Decision | Reasoning |
-|---|---|---|
-| **D1 — Fix shape** | Option B: split teardown ordering (drain between signal and destroy) | Smaller blast radius than API changes to BRC; doesn't conflate the thread-lifecycle axis with the protocol-teardown axis. |
-| **D2 — Audit scope** | Verify ZmqQueue + InboxQueue stop/close patterns upfront | ZmqQueue confirmed safe (synchronous self-owned).  InboxQueue confirmed safe (no background thread).  Fix scope stays at BRC ordering only. |
-| **D3 — API axis** | KEEP `stop()` and `disconnect()` separate. They live on different conceptual axes (thread vs protocol).  No API change to BRC. | User pushback during 2026-05-12 Q&A: "disconnect is about things between roles/hubs, while stop is completely about managing threads/status... they have very different purpose." Captured as memory `feedback_api_conflation_connection_vs_lifecycle`. |
-| **D4 — Test strategy** | Both: L3 in-process test (P2) + L4 existing PlhHubCliTest under `-j2` (P3) | L3 for fast feedback during development; L4 for regression protection in CI.  No synthetic stress harnesses (per memory `feedback_tests_replicate_production_scenarios`). |
-| **D5 — Primary artifact is the contract, not the code change** | The PHASE A (signal) → PHASE B (drain) → PHASE C (destroy) classification in §3.5 is the durable output of MD1.  The 20-LOC code reorder is just the smallest expression of that contract.  Code reviews must reject teardown additions that don't classify against this contract. | User directive 2026-05-12: "with this contract, we can clarify a lot of racing conditions and correctly ask thread to do the right thing."  Without making the contract explicit, the bug class returns the next time someone adds a lifecycle object. |
+| # | Question | Decision | Reasoning |
+|---|---|---|---|
+| **D1** | Initial fix shape | (Superseded by D5) — initial Q&A picked "Option B: split teardown into pre/post drain"; corrected to D5 after user pushback on sequence-centric framing. | The split framing was still operation-ordering-centric.  D5 reframes around per-thread contracts. |
+| **D2** | Audit scope for other lifecycle objects | Verify ZmqQueue + InboxQueue stop/close patterns upfront | ZmqQueue confirmed safe (self-threaded synchronous).  InboxQueue confirmed safe (no background thread; polled inline).  MD1 scope stays at BRC ctrl thread only. |
+| **D3** | API axis: stop() vs disconnect() | KEEP separate — different conceptual axes (thread vs protocol).  No API change to BRC. | Captured as memory `feedback_api_conflation_connection_vs_lifecycle`. |
+| **D4** | Test strategy | Both: L3 in-process test (P2) + L4 existing PlhHubCliTest under `-j2` (P3) | No synthetic stress harnesses; production-scenario coverage only.  Captured as memory `feedback_tests_replicate_production_scenarios`. |
+| **D5** | Principle of MD1 | **Per-thread shutdown contracts** — each long-running thread declares what shared state it touches between observing stop and exiting its active loop; caller honors contract via a per-thread synchronization primitive.  The MD1 code change is one application of the principle. | User directive 2026-05-12: *"we should think about the principle of what thread should know that would be destroyed when shutdown flag is set to true, and what can be guaranteed to be still functional."* |
+| **D6** | New ThreadManager primitive needed? | YES — `active_loop_exited` per-slot atomic + 3 APIs (mark / is / wait).  Lives on ThreadManager (where thread metadata belongs), not on each application object's pImpl. | User directive 2026-05-12: *"we should add a local state variable in the thread manager which exposes a api or a way to the thread that it manages."* |
+| **D7** | Slot-handle mechanism for thread to call `mark_active_loop_exited` | `SlotContext &` passed as first parameter of the spawn lambda body | Type-safe; no thread_local; minor spawn-signature churn (only at worker + ctrl spawn sites today). |
+| **D8** | `teardown_infrastructure_` position | UNCHANGED — stays at Step 13 (the historical resource-handover position).  Only new addition is Step 12.5 (`wait_for_active_loop_exit("ctrl")`). | User correction 2026-05-12: *"we decided to do teardown before thread joining for a reason historically.  you need to carefully evaluate this."*  Historical reasons (resource handover before potential thread hangs; drain as safety net) remain valid; MD1 doesn't disturb them. |
+| **D9** | Do `drain()` / `join_named()` consult `active_loop_exited`? | YES — two-stage wait inside drain (active_loop_exited deadline, then done deadline) for richer diagnostics + fast path for already-exited slots.  Included in P1a scope. | User question 2026-05-12: *"and thread joining operation may need to wait/pending on the state flag?"*  `done` alone tells drain "thread is gone."  Adding `active_loop_exited` tells drain "where the thread is in its shutdown" — distinguishes hung-in-active-loop from hung-in-post-loop on detach. |
 
 ---
 
@@ -337,105 +370,75 @@ Because BRC doesn't own the ctrl thread.  The thread lives in `RoleAPIBase::thre
 
 Per `feedback_tests_replicate_production_scenarios` (2026-05-12): tests must mirror real production teardown triggers, not synthetic stress.
 
-| Trigger | Where it lives in production | L3 test exists? | Notes |
-|---|---|---|---|
-| `api.stop()` from script | Script-driven; main loop sees `core->request_stop()`; `worker_main_` runs Steps 9-14 | **P2 covers** | Most common production exit path |
-| SIGINT/SIGTERM | Signal handler sets g_shutdown; main loop notices; teardown runs | **P3 covers** (PlhHubCliTest issues SIGTERM to plh_role binary) | The path the captured crash came from |
-| Hub-dead callback | BRC's `on_hub_dead` fires; `core->set_stop_reason(HubDead); request_stop()` | **P2 can cover** (drop the test broker mid-flight) | Less critical for MD1; same teardown path |
-| Critical script error | Engine exception → `core->request_stop()` | Not in P2 scope | Same teardown path; opportunistic future coverage |
+| Trigger | Where it lives in production | Covered by |
+|---|---|---|
+| `api.stop()` from script | Script-driven; main loop sees `core->request_stop()`; `worker_main_` runs teardown | **P2** (drives via real role host) |
+| SIGINT/SIGTERM | Signal handler sets `g_shutdown`; main loop notices; teardown runs | **P3** (PlhHubCliTest issues SIGTERM to plh_role binary) |
+| Hub-dead callback | BRC's `on_hub_dead` fires; `core->set_stop_reason(HubDead); request_stop()` | **P2 variant** (drop the test broker mid-flight) |
+| Critical script error | Engine exception → `core->request_stop()` | Out of MD1 scope; same teardown path; opportunistic future coverage |
+| Setup-failure cleanup | `producer_role_host.cpp:181, 239` call `teardown_infrastructure_` after partial setup | **P2 variant** (force setup failure; assert no race because `wait_for_active_loop_exit` returns immediately on missing slot) |
 
-P2 (L3) drives at least one of `api.stop()` and `hub-dead`; P3 (L4) covers SIGTERM.  Together they exercise the two production triggers most likely to expose teardown bugs.
-
-### P2 assertion shape
-
-For each tested role kind (producer / consumer / processor):
+### P2 — assertion shape
 
 ```cpp
-TEST(RoleTeardownOrderingTest, Producer_CleanExit_NoCtrlThreadRace) {
-    // Spin up a real producer role host with a real broker.
+TEST(RoleTeardownTest, Producer_HonorsCtrlThreadContract_NoUseAfterFree) {
+    LogCaptureFixture lc;
     auto host = make_producer_host(...);
-    auto stop_token = host.run_async();  // worker_main_ on background thread
-
-    // Wait for registration to complete.
+    auto stop_token = host.run_async();
     wait_for_registered(host, std::chrono::seconds(2));
 
-    // Trigger production-shape teardown.
-    host.request_stop();   // = api.stop()
-
-    // Assert: teardown completes within bounded time, exit clean.
     const auto t0 = std::chrono::steady_clock::now();
+    host.request_stop();
     stop_token.join();
     const auto elapsed = std::chrono::steady_clock::now() - t0;
+
     EXPECT_LT(elapsed, std::chrono::milliseconds(500))
-        << "Teardown must complete promptly";
+        << "Teardown promptly honors ctrl thread contract via wait_for_active_loop_exit";
 
-    EXPECT_EQ(host.exit_code(), 0) << "Clean exit (no SIGSEGV)";
-    EXPECT_EQ(host.last_log_warn_count_for("BRC ctrl thread"), 0)
-        << "No 'thread did not exit in time' warnings";
+    EXPECT_EQ(host.exit_code(), 0)
+        << "Clean exit (no SIGSEGV — ctrl thread's pImpl access bounded by contract)";
+
+    EXPECT_EQ(lc.count_warns_matching("ctrl thread did not exit"), 0)
+        << "wait_for_active_loop_exit returned before timeout";
 }
 ```
 
-**Path discrimination per CLAUDE.md test-rigor rule:** test fails if exit code is non-zero, OR teardown takes >500ms (suggests blocked drain), OR any ctrl-thread-related warning appears in the LogCaptureFixture.
+**Mutation sweep:**
+- Disable `mark_active_loop_exited()` in `run_poll_loop` → `wait_for_active_loop_exit` times out → warning fires → test fails on the warning-count assertion AND likely on the SIGSEGV under `-j2`.
+- Remove Step 12.5 from `do_role_teardown` → race window restored → test fails under `-j2` stress.
 
-### P2b — direct contract assertion (the PHASE A/B/C invariant)
+### P3 — L4 regression-gate
 
-The above test asserts the OUTCOME (no SIGSEGV).  A complementary test
-asserts the CONTRACT directly: no Phase C action runs before Phase B
-returns.
-
-Achievable via the existing `LogCaptureFixture` + temporary `LOGGER_TRACE`
-instrumentation at each phase boundary in `do_role_teardown`:
-
-```cpp
-// Add (kept after MD1 ships) — minimal trace logs at phase boundaries:
-LOGGER_TRACE("teardown: phase-A signal complete (uid={})", uid);
-api.thread_manager().drain();
-LOGGER_TRACE("teardown: phase-B drain complete (uid={})", uid);
-teardown_infrastructure_();
-LOGGER_TRACE("teardown: phase-C destroy complete (uid={})", uid);
-```
-
-Then the contract test asserts the captured log order:
-
-```cpp
-TEST(RoleTeardownOrderingTest, ContractInvariant_PhaseOrderingHolds) {
-    LogCaptureFixture lc;
-    // ... spin up + tear down a role ...
-    const auto traces = lc.lines_matching("teardown: phase-");
-    ASSERT_EQ(traces.size(), 3u);
-    EXPECT_TRUE(traces[0].contains("phase-A signal complete"));
-    EXPECT_TRUE(traces[1].contains("phase-B drain complete"));
-    EXPECT_TRUE(traces[2].contains("phase-C destroy complete"));
-}
-```
-
-**Mutation sweep:** swap the order of two phase markers in
-`do_role_teardown` (e.g., emit phase-C trace before drain returns) →
-this test fails directly on the contract, independently of whether
-the underlying race manifests as a crash.  The contract test is more
-sensitive than the crash test — it catches mis-classification *before*
-it shows up under load.
+`PlhHubCliTest.RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters` passes 30/30 under `ctest -j2`.
 
 ---
 
 ## 8. Risks / open observations (NOT blockers, but worth noting)
 
-1. **`teardown_infrastructure_` is called from MORE than just `do_role_teardown`.** Check `producer_role_host.cpp:181` and `:239` — those are setup-failure paths.  If setup fails partway, `teardown_infrastructure_` runs *without* a ctrl thread ever having been spawned.  P1 must verify the new ordering is correct in setup-failure paths too (probably trivial — drain on empty thread set is a no-op — but worth a test).
+1. **`teardown_infrastructure_` is called from setup-failure paths too** (`producer_role_host.cpp:181, 239`).  Setup failure means ctrl thread may have never been spawned.  `wait_for_active_loop_exit("ctrl")` must handle "named slot does not exist" cleanly — return immediately, no error.  P2 covers this path.
 
-2. **MD1 is part of a chain (MD1 → M1.5 → Wave B M8).** M1.5 adds `on_channel_closing` callback + auto-stop, which itself triggers teardown.  P2 should include an `auto_stop_on_channel_close = true` variant once M1.5 lands, but for MD1 alone the script-driven `api.stop()` and SIGTERM cases are sufficient.
+2. **MD1 chains to M1.5.**  M1.5's auto-stop on `on_channel_closing` triggers teardown.  The new contract auto-applies — no separate effort for M1.5.  P2 should include an `auto_stop_on_channel_close=true` variant once M1.5 lands.
 
-3. **No new public API surface.** P1 only touches private/internal teardown ordering.  No HEP doc updates needed beyond TODO/TESTING bookkeeping.
+3. **Hub-side adoption later.**  `BrokerService::run` has the same externally-threaded shape as BRC ctrl thread.  Adopting `active_loop_exited` for the broker thread is a future improvement; HubHost's current `broker.stop()` + `thread_mgr.drain()` sequence works because the broker thread doesn't have dead post-loop pImpl access.  Still, propagating the primitive for uniformity is a candidate post-MD1 cleanup.
 
 ---
 
 ## 9. Doc + record updates triggered by MD1 closure
 
 When P4 lands, update atomically:
-1. **`docs/IMPLEMENTATION_GUIDANCE.md`** — promote §3.5 of this doc (the PHASE A/B/C teardown contract) into a permanent IG section: "**Teardown Ordering Contract — Phase A (signal) → B (drain) → C (destroy)**".  This is the *durable artifact* of MD1; future role-side lifecycle additions must classify against it.  Cross-reference from CLAUDE.md project-rules so reviewers cite it explicitly.
-2. `docs/TODO_MASTER.md` — MD1 row: status → CLOSED with commit ref + suite-passing count + pointer to the new IG section.
-3. `docs/todo/TESTING_TODO.md` §9 — mark MD1 race as fixed, retain the gdb stack trace as historical evidence + reference the contract test that pins the fix.
-4. `docs/tech_draft/M1.5_channel_closing_redesign_2026-05-12.md` §11 — update "MD1 status" subsection to reference closed fix; note that M1.5's auto-stop path inherits the contract automatically.
-5. `docs/todo/MESSAGEHUB_TODO.md` — chain pointer "MD1 → M1.5" updated to indicate MD1 is closed; M1.5 unblocked.
-6. **This tech_draft** — once §3.5 is promoted to IG, this doc becomes archive candidate per DOC_STRUCTURE.md §2.2.  Move to `docs/archive/transient-YYYY-MM-DD/` and log in `DOC_ARCHIVE_LOG.md`.
 
-No HEP changes (this is a teardown-ordering bug fix, not a protocol or API change).  But the contract is broad enough that several existing HEPs (HEP-CORE-0011 lifecycle, HEP-CORE-0023 role-close cleanup, HEP-CORE-0034 owner-managed teardown) can cite it as the canonical reference for "when is it safe to destroy resource X?"
+1. **`docs/HEP/HEP-CORE-0031-ThreadManager.md`** — add §4.x documenting the new `SlotContext` + `active_loop_exited` API; replace §4.1 framing from "Teardown Ordering Contract" to "**Thread Shutdown Contract — what a managed thread must not touch after observing shutdown**."  The explicit rule: *"a thread MUST NOT access shared state owned by another object (e.g., the application's pImpl) after observing the shutdown flag / after its active loop returns.  Use `SlotContext::mark_active_loop_exited()` to signal the loop-exit point; the teardown caller waits for that flag via `wait_for_active_loop_exit` before destroying the shared state."*
+
+2. **`docs/IMPLEMENTATION_GUIDANCE.md`** — rewrite the "Teardown Ordering Contract" section as "**Thread Shutdown Contracts**" with the per-thread-contract framing.  Cross-reference HEP-CORE-0031 §4.x as the canonical home for the ThreadManager primitive.
+
+3. **`docs/HEP/HEP-CORE-0011-ScriptHost-Abstraction-Framework.md`** — update the §"Role Host worker_main_() Steps" enumeration with the new Step 12.5.
+
+4. **`docs/TODO_MASTER.md`** — MD1 row: status → CLOSED with commit ref + suite-passing count.
+
+5. **`docs/todo/TESTING_TODO.md`** §9 — mark MD1 race as fixed; retain the gdb stack trace as historical evidence + reference the contract test that pins the fix.
+
+6. **`docs/tech_draft/M1.5_channel_closing_redesign_2026-05-12.md`** §11 — update "MD1 status" subsection to reference closed fix.
+
+7. **`docs/todo/MESSAGEHUB_TODO.md`** — chain pointer "MD1 → M1.5" updated to indicate MD1 closed; M1.5 unblocked.
+
+8. **This tech_draft** — promote §3.5 content to HEP-CORE-0031 + IG; once permanently homed, this draft becomes an archive candidate per DOC_STRUCTURE.md §2.2.
