@@ -2737,6 +2737,266 @@ TEST(HubStateChannelMetricsSnapshot, ProducerAndConsumer_BothPresent)
         << "Consumers do not get a pid field (pid is per-producer)";
 }
 
+TEST(HubStateChannelMetricsSnapshot, Overwrite_LatestWins)
+{
+    // M1.4 contract: subsequent heartbeats from the same uid REPLACE
+    // the prior metrics (HEP-CORE-0019 §2.3 — broker holds only the
+    // latest snapshot).  Pre-fix `metrics_store_[ch].producers[uid]`
+    // overwrote on every call; post-fix `RolePresence::latest_metrics`
+    // overwrites on every `_on_heartbeat` call.  Pin the contract via
+    // both the helper AND direct presence inspection.
+    HubState s;
+    HubStateTestAccess::on_channel_registered(s, make_channel("ch.over"));
+
+    nlohmann::json m1 = {{"qps", 100}, {"err", 0}};
+    HubStateTestAccess::on_heartbeat(s, "ch.over", "prod.main.test", "producer",
+                                      std::chrono::steady_clock::now(), m1);
+
+    // Helper sees the first reading.
+    {
+        auto m = s.channel_metrics_snapshot("ch.over");
+        EXPECT_EQ(m["producers"]["prod.main.test"]["qps"], 100);
+        EXPECT_EQ(m["producers"]["prod.main.test"]["err"], 0);
+    }
+
+    nlohmann::json m2 = {{"qps", 200}, {"err", 5}};
+    HubStateTestAccess::on_heartbeat(s, "ch.over", "prod.main.test", "producer",
+                                      std::chrono::steady_clock::now(), m2);
+
+    // Helper now sees the second reading; first is GONE (not merged).
+    auto m = s.channel_metrics_snapshot("ch.over");
+    EXPECT_EQ(m["producers"]["prod.main.test"]["qps"], 200)
+        << "Latest heartbeat must overwrite the prior metrics value";
+    EXPECT_EQ(m["producers"]["prod.main.test"]["err"], 5);
+
+    // Direct presence-row inspection — verifies the storage layer
+    // itself was overwritten (not just the helper output).
+    auto snap = s.snapshot();
+    const auto *p = find_producer_in(snap, "ch.over", "prod.main.test");
+    ASSERT_NE(p, nullptr);
+    EXPECT_EQ(p->latest_metrics, m2)
+        << "RolePresence::latest_metrics is the post-overwrite value";
+}
+
+TEST(HubStateChannelMetricsSnapshot, NullMetrics_PreservesPriorReading)
+{
+    // M1.4 contract: a heartbeat that doesn't carry a `metrics` field
+    // (std::nullopt) refreshes liveness but DOES NOT clobber
+    // `latest_metrics`.  Pre-fix `metrics_store_` had the same
+    // behavior (update_*_metrics only called when metrics present);
+    // post-fix `_on_heartbeat` guards the write with
+    // `if (metrics.has_value()) ...`.
+    HubState s;
+    HubStateTestAccess::on_channel_registered(s, make_channel("ch.nullhb"));
+
+    nlohmann::json initial = {{"qps", 42}};
+    HubStateTestAccess::on_heartbeat(s, "ch.nullhb", "prod.main.test", "producer",
+                                      std::chrono::steady_clock::now(), initial);
+
+    // Subsequent heartbeat with NO metrics.
+    HubStateTestAccess::on_heartbeat(s, "ch.nullhb", "prod.main.test", "producer",
+                                      std::chrono::steady_clock::now(), std::nullopt);
+
+    // Prior metrics still visible.
+    auto m = s.channel_metrics_snapshot("ch.nullhb");
+    ASSERT_TRUE(m.contains("producers"));
+    EXPECT_EQ(m["producers"]["prod.main.test"]["qps"], 42)
+        << "Null-metrics heartbeat must NOT overwrite prior reading";
+
+    // Direct presence-row inspection: latest_metrics still holds initial.
+    auto snap = s.snapshot();
+    const auto *p = find_producer_in(snap, "ch.nullhb", "prod.main.test");
+    ASSERT_NE(p, nullptr);
+    EXPECT_EQ(p->latest_metrics, initial);
+}
+
+TEST(HubStateChannelMetricsSnapshot, CrossChannel_Isolated)
+{
+    // M1.4 contract: metrics live on per-presence rows keyed by
+    // (channel, role_type) inside the role's RoleEntry.  Two roles
+    // on different channels must not bleed into each other's
+    // metrics queries.  The H34 root concern (pre-Phase-6 broker
+    // mis-attributed consumer heartbeats to producer-rows) is the
+    // overwrite-class bug this test guards against at the storage
+    // layer.
+    HubState s;
+    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+                  s, "ch.iso.a",
+                  make_schema_invariants(),
+                  make_zmq_transport(),
+                  make_producer("prod.A.uid00000001", 1001))
+                  .producer_result, AddProducerResult::Created);
+    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+                  s, "ch.iso.b",
+                  make_schema_invariants(),
+                  make_zmq_transport(),
+                  make_producer("prod.B.uid00000002", 1002))
+                  .producer_result, AddProducerResult::Created);
+
+    HubStateTestAccess::on_heartbeat(s, "ch.iso.a", "prod.A.uid00000001", "producer",
+                                      std::chrono::steady_clock::now(),
+                                      nlohmann::json{{"only_on_a", true}});
+    HubStateTestAccess::on_heartbeat(s, "ch.iso.b", "prod.B.uid00000002", "producer",
+                                      std::chrono::steady_clock::now(),
+                                      nlohmann::json{{"only_on_b", true}});
+
+    auto m_a = s.channel_metrics_snapshot("ch.iso.a");
+    auto m_b = s.channel_metrics_snapshot("ch.iso.b");
+
+    // ch.iso.a has prod.A's metrics, NOTHING from prod.B.
+    ASSERT_TRUE(m_a.contains("producers"));
+    ASSERT_TRUE(m_a["producers"].contains("prod.A.uid00000001"));
+    EXPECT_EQ(m_a["producers"]["prod.A.uid00000001"]["only_on_a"], true);
+    EXPECT_FALSE(m_a["producers"].contains("prod.B.uid00000002"))
+        << "Channel ch.iso.a must NOT see prod.B's metrics";
+
+    // ch.iso.b has prod.B's metrics, NOTHING from prod.A.
+    ASSERT_TRUE(m_b.contains("producers"));
+    ASSERT_TRUE(m_b["producers"].contains("prod.B.uid00000002"));
+    EXPECT_EQ(m_b["producers"]["prod.B.uid00000002"]["only_on_b"], true);
+    EXPECT_FALSE(m_b["producers"].contains("prod.A.uid00000001"))
+        << "Channel ch.iso.b must NOT see prod.A's metrics";
+}
+
+TEST(HubStateChannelMetricsSnapshot, SameUid_ProducerAndConsumer_DistinctRows)
+{
+    // The H34 ROOT contract: same uid can be a producer AND consumer on
+    // the same channel.  Pre-Phase-6, the broker derived role_type from
+    // the channel's producer entry and mis-attributed consumer
+    // heartbeats to the producer-row.  Post-Phase-6 + M1.4: each
+    // heartbeat carries explicit role_type, writes to the matching
+    // RolePresence row.  Two distinct presences, two distinct
+    // metrics blobs.  Verified via DIRECT inspection of
+    // RolePresence::latest_metrics (not just the helper output).
+    HubState s;
+    HubStateTestAccess::on_channel_registered(s, make_channel("ch.dual"));
+    // make_channel's producer is "prod.main.test"; consumer joins with
+    // the SAME uid so both presences belong to the same role.
+    HubStateTestAccess::on_consumer_joined(s, "ch.dual",
+                                            make_consumer("prod.main.test"));
+
+    // Pre-heartbeat: NEITHER presence has first_heartbeat_seen set
+    // (presence is created at REG-time in "registering" sub-state).
+    {
+        auto pre  = s.snapshot();
+        const auto *p_pre_p = find_presence_in(pre, "ch.dual",
+                                                "prod.main.test", "producer");
+        const auto *p_pre_c = find_presence_in(pre, "ch.dual",
+                                                "prod.main.test", "consumer");
+        ASSERT_NE(p_pre_p, nullptr);
+        ASSERT_NE(p_pre_c, nullptr);
+        ASSERT_FALSE(p_pre_p->first_heartbeat_seen);
+        ASSERT_FALSE(p_pre_c->first_heartbeat_seen);
+    }
+
+    // Producer heartbeat with role-specific metrics.
+    const auto prod_hb_time = std::chrono::steady_clock::now();
+    nlohmann::json prod_metrics = {{"qps", 100}, {"kind", "producer-only"}};
+    HubStateTestAccess::on_heartbeat(s, "ch.dual", "prod.main.test", "producer",
+                                      prod_hb_time, prod_metrics);
+
+    // After producer heartbeat: ONLY producer-presence has
+    // first_heartbeat_seen flipped.  This catches the H34-class bug
+    // where on_heartbeat matched only on (channel) and updated
+    // BOTH presences (or the wrong one) on a single heartbeat.
+    {
+        auto mid = s.snapshot();
+        const auto *p_mid_p = find_presence_in(mid, "ch.dual",
+                                                "prod.main.test", "producer");
+        const auto *p_mid_c = find_presence_in(mid, "ch.dual",
+                                                "prod.main.test", "consumer");
+        ASSERT_NE(p_mid_p, nullptr);
+        ASSERT_NE(p_mid_c, nullptr);
+        EXPECT_TRUE(p_mid_p->first_heartbeat_seen)
+            << "Producer-presence saw its first heartbeat (FSM step)";
+        EXPECT_FALSE(p_mid_c->first_heartbeat_seen)
+            << "Consumer-presence is UNTOUCHED by producer heartbeat — "
+               "this is the H34-root contract.  A mutation that drops "
+               "role_type from the on_heartbeat lookup would falsely "
+               "flip consumer's first_heartbeat_seen here.";
+        EXPECT_EQ(p_mid_p->last_heartbeat, prod_hb_time);
+    }
+
+    // Consumer heartbeat with DIFFERENT metrics.
+    const auto cons_hb_time = std::chrono::steady_clock::now() + std::chrono::milliseconds(1);
+    nlohmann::json cons_metrics = {{"reads", 50}, {"kind", "consumer-only"}};
+    HubStateTestAccess::on_heartbeat(s, "ch.dual", "prod.main.test", "consumer",
+                                      cons_hb_time, cons_metrics);
+
+    // DIRECT presence-row inspection — verifies the underlying
+    // storage layer, not just the snapshot helper's projection.
+    auto snap = s.snapshot();
+    const auto *p_prod = find_presence_in(snap, "ch.dual",
+                                           "prod.main.test", "producer");
+    const auto *p_cons = find_presence_in(snap, "ch.dual",
+                                           "prod.main.test", "consumer");
+    ASSERT_NE(p_prod, nullptr);
+    ASSERT_NE(p_cons, nullptr);
+    ASSERT_NE(p_prod, p_cons) << "Producer and consumer must be DISTINCT presence rows";
+
+    // Metrics keyed correctly.
+    EXPECT_EQ(p_prod->latest_metrics, prod_metrics)
+        << "Producer-presence row carries producer's metrics";
+    EXPECT_EQ(p_cons->latest_metrics, cons_metrics)
+        << "Consumer-presence row carries consumer's metrics";
+
+    // FSM state keyed correctly: each row's last_heartbeat reflects
+    // ONLY its own role's heartbeat (catches H34-root via FSM signal).
+    EXPECT_EQ(p_prod->last_heartbeat, prod_hb_time)
+        << "Producer last_heartbeat must equal producer-heartbeat time, "
+           "NOT consumer-heartbeat time";
+    EXPECT_EQ(p_cons->last_heartbeat, cons_hb_time)
+        << "Consumer last_heartbeat must equal consumer-heartbeat time, "
+           "NOT producer-heartbeat time";
+    EXPECT_TRUE(p_prod->first_heartbeat_seen);
+    EXPECT_TRUE(p_cons->first_heartbeat_seen);
+
+    // Helper sees both, correctly grouped by role_type.
+    auto m = s.channel_metrics_snapshot("ch.dual");
+    ASSERT_TRUE(m.contains("producers"));
+    ASSERT_TRUE(m.contains("consumers"));
+    EXPECT_EQ(m["producers"]["prod.main.test"]["qps"], 100);
+    EXPECT_EQ(m["producers"]["prod.main.test"]["kind"], "producer-only");
+    EXPECT_EQ(m["consumers"]["prod.main.test"]["reads"], 50);
+    EXPECT_EQ(m["consumers"]["prod.main.test"]["kind"], "consumer-only")
+        << "Same uid, different role_type → metrics rooted in distinct presence rows";
+}
+
+TEST(HubStateChannelMetricsSnapshot, CollectedAt_Progresses_OnEachHeartbeat)
+{
+    // M1.4 contract: `RolePresence::metrics_collected_at` advances on
+    // every heartbeat that carries a metrics payload.  Without this
+    // contract, freshness diagnostics break (admins can't tell when
+    // the last update happened).
+    HubState s;
+    HubStateTestAccess::on_channel_registered(s, make_channel("ch.time"));
+
+    HubStateTestAccess::on_heartbeat(s, "ch.time", "prod.main.test", "producer",
+                                      std::chrono::steady_clock::now(),
+                                      nlohmann::json{{"v", 1}});
+    std::chrono::system_clock::time_point t1;
+    {
+        auto snap = s.snapshot();
+        const auto *p = find_producer_in(snap, "ch.time", "prod.main.test");
+        ASSERT_NE(p, nullptr);
+        t1 = p->metrics_collected_at;
+        EXPECT_NE(t1, std::chrono::system_clock::time_point{})
+            << "First heartbeat with metrics stamps a collected_at";
+    }
+
+    // Brief wait to ensure timestamps differ.
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+
+    HubStateTestAccess::on_heartbeat(s, "ch.time", "prod.main.test", "producer",
+                                      std::chrono::steady_clock::now(),
+                                      nlohmann::json{{"v", 2}});
+    auto snap = s.snapshot();
+    const auto *p = find_producer_in(snap, "ch.time", "prod.main.test");
+    ASSERT_NE(p, nullptr);
+    EXPECT_GT(p->metrics_collected_at, t1)
+        << "Subsequent metrics heartbeat advances metrics_collected_at";
+}
+
 TEST(HubStateChannelMetricsSnapshot, RoleDisconnect_MetricsGoAway)
 {
     // Wave M3 step 5h: presences erased on disconnect.  Metrics live
