@@ -62,7 +62,10 @@ pass; two mutation tests verify contracts truly pinned.
   step 7.
 - H15 — `_on_heartbeat` direct metrics-field mutation.  Trigger: a
   `RoleEntry::set_presence_metrics(...)` API addition for a concrete
-  reason.  `src/utils/ipc/hub_state.cpp:1249-1261`.
+  reason.  Current site: `src/utils/ipc/hub_state.cpp:1294-1306`
+  (line refs re-verified 2026-05-12; the function still writes
+  `p->latest_metrics` and `p->metrics_collected_at` directly inside
+  the channel-aggregate locked block).
 - H29, H36, H39 — cosmetic cleanup (dead `state == Disconnected` skip
   in DISC_REQ; `_on_schemas_evicted_for_owner` is now test-only).
   No functional impact.
@@ -71,23 +74,32 @@ pass; two mutation tests verify contracts truly pinned.
   non-broker-IO thread.
 
 **Pre-existing issues surfaced but NOT in Wave M3 scope:**
-- **H34 — `metrics_store_` per-uid leak** in broker.  Multi-producer
-  DEREG / multi-producer pending-timeout / consumer-liveness sweep
-  remove from HubState but leave per-uid entries in
-  `metrics_store_[channel].{producers,consumers}[uid]` until channel
-  teardown.  Will be FULLY RETIRED by **M1.4** (replaces
-  `metrics_store_` with HubState's per-presence rows — naturally
-  clean under H18 erase semantics).  No piecemeal pre-M1.4 fix
-  needed.
-- **H43 — Federation propagation of role-disconnect**.  Peer hubs
-  don't learn about non-channel-close role disconnects.  Verify
-  requirement during **Wave B M8** (dual-hub processor); bands are
-  not federated per HEP-CORE-0030 §3, so this may be a non-issue.
+- **H34 — `metrics_store_` per-uid leak** — **CLOSED 2026-05-11 by
+  M1.4 commit `4e902e1`.**  `metrics_store_` and `update_*_metrics`
+  fully deleted; metrics now live on `RolePresence::latest_metrics`
+  per-presence row and clear automatically on `on_dereg` erase
+  (H18 contract).  Verified 2026-05-12: `grep -rn metrics_store_
+  src/` returns zero matches.  No follow-up pre-existing leak.
+- **H43 — Federation propagation of role-disconnect**.  **Still open
+  as of 2026-05-12.**  Verified by reading broker_service.cpp: no
+  call to `subscribe_role_disconnected` exists; only
+  `hub_script_runner.cpp:281` subscribes (for script-side
+  `on_role_disconnected` callback).  Peer hubs therefore do NOT
+  learn about non-channel-close role disconnects.  Whether they
+  need to is the verification deferred to **Wave B M8** (dual-hub
+  processor); bands are not federated per HEP-CORE-0030 §3, so this
+  may be a non-issue.
 
 **Then sequentially:** M1.4 (retire `metrics_store_`, also closes H34) →
-M1.5 (`on_forced_disconnect`) → MD1 (role teardown race) → Wave B M8 /
-MP6 (federation, verify H43 requirement).  See TODO_MASTER §"Deferred
-items — explicit phase entries" for scope-doc + trigger-condition links.
+**MD1** (role teardown use-after-free race fix — chain reordered
+2026-05-12 to land MD1 *before* M1.5 on a stable substrate) → **M1.5**
+(`on_channel_closing` callback + auto-stop — re-framed 2026-05-12; the
+original 2026-05-09 framing as "`on_forced_disconnect` / FORCE_SHUTDOWN
+handler" is stale because M1.2 commit `a41ce71` removed `FORCE_SHUTDOWN`
+wholesale; see `docs/tech_draft/M1.5_channel_closing_redesign_2026-05-12.md`
+for the redesign and §6 open decisions) → Wave B M8 / MP6 (federation,
+verify H43 requirement).  See TODO_MASTER §"Deferred items — explicit
+phase entries" for scope-doc + trigger-condition links.
 
 **Scope expansion (2026-05-10):** new phase **MP2.5 — Controlled-access
 API on `ChannelEntry`** inserted between MP2 (done) and MP3.  Driven

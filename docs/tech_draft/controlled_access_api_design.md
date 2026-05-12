@@ -2,11 +2,11 @@
 
 | | |
 |---|---|
-| **Status**  | Draft — design phase. **No code changes yet.** |
+| **Status**  | ✅ **SHIPPED 2026-05-11** — all 8 design steps + 2 post-step retros + 1 multi-step audit pass landed in commits between `b285628` and `416cbec`.  Two code reviews on file: `docs/code_review/REVIEW_WaveM2.5_2026-05-10.md` (15 findings, 14 resolved + 1 ✅/OK) and `docs/code_review/REVIEW_WaveM2.5_PostStep6_2026-05-11.md` (15 findings, 11 resolved + 4 properly deferred).  Suite at landing: 1801/1801.  The multi-producer overwrite-class bug is structurally eliminated on both `ChannelEntry` (per-party fields) and `ChannelMetrics` (per-producer keying).  **Status banner updated 2026-05-12** during the cross-record audit pass; this doc is retained in `tech_draft/` as the canonical design rationale (decisions, alternatives considered, why each step matters).  Per DOC_STRUCTURE.md §2.2, archive when the historical-reference value drops below the navigational cost. |
 | **Created** | 2026-05-10 |
 | **Wave**    | M2 (MP2.5 + MP3) and M3 (RoleEntry follow-up) |
 | **Drives**  | Eliminating the multi-producer / multi-presence "scalar-where-should-be-per-party" bug class structurally instead of fixing instances reactively. |
-| **Resume point — return to main line of work** | After this design is approved and implemented (M2.5), the original Wave M2 phase plan resumes at **MP3 Bookkeeping ops** (see `docs/TODO_MASTER.md` "Wave M2"). MP3 → MP4 → MP5 are unchanged in *intent*, but their implementation rewrites every handler to go through this API surface instead of touching `ChannelEntry` fields directly. |
+| **Resume point — return to main line of work** | Closed.  MP3/MP4 absorbed as side effects of M2.5 steps 3-6; MP5 multi-producer test coverage continues to grow opportunistically (17 multi-producer tests shipped under `HubStateProducerAdmission` / `HubStateProducerDrop` / `HubStateProducerEndpointUpdate` / `HubStateProducerPendingTimeout` / `MetricsPlaneTest.FanIn_TwoProducers_MetricsDoNotOverwrite`).  Remaining bug-driven follow-ups (step 7 privatization, step 2d sugar API methods) tracked in `docs/TODO_MASTER.md` as bug-driven / caller-driven deferrals. |
 
 ---
 

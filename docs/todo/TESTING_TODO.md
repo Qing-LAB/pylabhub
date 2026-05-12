@@ -95,9 +95,14 @@ scaffolding is open work (see "Audit work" subsection below).
 
 - [x] **Suite-wide audit** completed 2026-05-09.  Findings below.
 - [x] **Deleted `test_datahub_broker_shutdown.cpp`** (2026-05-09): 6 tests
-      pinning the grace-escalation shutdown protocol that M1.3 retires.
-      Fresh tests for the post-M1.3 force-disconnect notification semantic
-      will be designed when M1.5 lands.
+      pinning the grace-escalation shutdown protocol that M1.2/M1.3 retired.
+      The post-M1.2 close protocol is `CHANNEL_CLOSING_NOTIFY` (informational
+      only — no FORCE_SHUTDOWN escalation; the channel is already torn down
+      atomically when the notify is sent).  Role-side script-callback tests
+      for this notification will be designed under the re-framed **M1.5**
+      (`on_channel_closing` + auto-stop) — see
+      `docs/tech_draft/M1.5_channel_closing_redesign_2026-05-12.md` §8 test
+      matrix.
 - [x] **Migrated all 8 BrokerHandle mock-host instances** to real `HubHost`
       (closed 2026-05-10).  All 6 `test_datahub_broker*.cpp` files (the
       `broker_shutdown` 7th was deleted) + their workers now use real
@@ -137,8 +142,12 @@ Remaining audit items are folded into §6 (Code review findings,
       friend shim mirroring `HubStateTestAccess`.  L2 today has zero
       direct `BrokerService` coverage — every wire-protocol handler
       (REG_REQ / DISC_REQ / HEARTBEAT_REQ / DEREG_REQ /
-      CONSUMER_REG_REQ / FORCE_SHUTDOWN / HUB_PEER_HELLO /
-      HUB_TARGETED_MSG) is tested only at L3 through real `HubHost`.
+      CONSUMER_REG_REQ / HUB_PEER_HELLO / HUB_TARGETED_MSG / METRICS_REQ
+      / CHANNEL_BROADCAST_REQ) is tested only at L3 through real
+      `HubHost`.  **List corrected 2026-05-12** — removed
+      `FORCE_SHUTDOWN` (retired by M1.2 commit `a41ce71`; verified
+      via `grep -rn FORCE_SHUTDOWN src/` returning zero matches); added
+      `METRICS_REQ` and `CHANNEL_BROADCAST_REQ` which were missing.
 
 ### 6. Audit findings (2026-05-09)
 
@@ -237,14 +246,32 @@ in phase MP5:
   `entry.producer_role_uid` → either `entry.producers[k].role_uid`
   (specific producer) or a scan helper (any producer).
 
-### 9. Unresolved test failures — investigated, fix deferred to post-M2
+### 9. Unresolved test failures — MD1 race remains open; chain reordered 2026-05-12
 
-#### `PlhHubCliTest.RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters` — SIGSEGV exit 139
+#### `PlhHubCliTest.RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters` — SIGSEGV exit 139 (MD1)
 
-**Status:** root cause identified 2026-05-10 via gdb-batch capture of a
-real reproduction.  Fix deferred until after Wave M2 lands (user
-directive: "address this bug once we have the role/channel
-bookkeeping milestone finished").  Not Python/GIL related.
+**Status (refreshed 2026-05-12):** root cause from 2026-05-10 gdb-batch
+capture confirmed still valid.  Re-verified against current code on
+2026-05-12: `BrokerRequestComm::stop()` at `broker_request_comm.cpp:598-620`
+is still fire-and-forget (sets `stop_requested = true` + sends a
+wake-up signal, returns immediately — does NOT wait for
+`run_poll_loop` to exit).  `do_role_teardown` step ordering
+(`role_host_lifecycle.cpp:43-56`) is unchanged: Step 12 stop signal,
+Step 13 teardown_infrastructure, Step 14 thread drain.  The race
+remains real.
+
+Wave M2 has now closed (Wave M2.5 + Wave M3 + M1.4 all shipped
+2026-05-11), so MD1 is unblocked.  TODO_MASTER dependency chain
+reordered 2026-05-12 to land MD1 BEFORE M1.5 (the re-framed
+`on_channel_closing` callback) because M1.5's auto-stop path adds
+load on the same teardown sequence — stacking two layers on a
+known-buggy substrate would mask failure modes.  See
+`docs/tech_draft/M1.5_channel_closing_redesign_2026-05-12.md` §11
+for the rationale.
+
+Not Python/GIL related (the 2026-05-10 memory note about Python
+flake was a separate incident, since resolved; this race is purely
+the BRC ctrl-thread vs role-teardown ordering bug).
 
 **Root cause — use-after-free race between role teardown and
 BrokerRequestComm ctrl-thread poll loop.**
@@ -469,48 +496,42 @@ each finding live in this section so they survive context resets.**
       EXPECT_EQ(resp->value("error_code",""), "<expected>");
       EXPECT_FALSE(resp->value("message","").empty());`
 
-#### Strand S4 — M1.2 Phase 5-7 production cleanup (2–3 days, on plan)
+#### Strand S4 — M1.2 Phase 5-7 production cleanup — **CLOSED 2026-05-10 (commit `a41ce71`)**
 
-This was always the next M1.2 wave step; the review just confirms
-the punch list.  See `docs/tech_draft/M1_FSM_consolidation_handoff_2026-05-09.md`
-§4 for full sites + redirect rules.
+All three phases landed in a single atomic-sweep commit (24 files,
++551/-1385), exceeding the 2026-05-09 punch list because the cleanup
+went further than originally scoped: `FORCE_SHUTDOWN` was REMOVED
+WHOLESALE rather than being rewired as best-effort notification per
+the 2026-05-09 plan.  The wire-message slot vanished; the surviving
+substitute is `CHANNEL_CLOSING_NOTIFY` (post-fact "the channel is
+gone" — see `docs/HEP/HEP-CORE-0007-DataHub-Protocol-and-Policy.md`
+§12 "FORCE_SHUTDOWN — REMOVED 2026-05-07").
 
-- [ ] **Phase 5** — drop legacy writes in `_on_heartbeat` body
-      (`hub_state.cpp:828-984`) so heartbeats only refresh per-presence
-      rows, not the legacy channel/role-level fields.  Refit
-      `_set_role_disconnected` to walk `role.presences` instead of
-      writing `RoleEntry.state` (single caller in
-      `_on_schemas_evicted_for_owner` line 13).
-- [ ] **Phase 6** — delete legacy fields, enum, mutators:
-      - `enum class ChannelStatus` (hub_state.hpp:65-70)
-      - `ChannelEntry.{status, last_heartbeat, state_since,
-        closing_deadline}` (hub_state.hpp:178-183)
-      - `RoleEntry.{state, last_heartbeat, latest_metrics,
-        metrics_collected_at}` (hub_state.hpp:278-286)
-      - `to_string(ChannelStatus)`, `_set_channel_status`,
-        `_set_channel_closing_deadline`, `_update_role_heartbeat`,
-        `_update_role_metrics`
-      - `observable_from_legacy_status` shim in `hub_state.cpp:86-100`
-        — replace 3 fire-site call patterns with direct
-        `observe_channel(entry, snap)` calls.
-      - Dual channel-JSON serializer in `handle_channel_list_req`
-        (`broker_service.cpp:2825-2839`) — drop the ad-hoc switch;
-        use `channel_to_json(entry, observe_channel(entry, snap))`.
-      - Phase 4 transitional `j["status"]` emission (legacy + new
-        `j["observable"]`) — collapse to `j["observable"]` only
-        once consumers no longer read `j["status"]`.
-- [ ] **Phase 7 (M1.3)** — retire FORCE_SHUTDOWN-as-grace-escalation:
-      - `BrokerServiceImpl::check_closing_deadlines()` (broker_service.cpp:2403-2444)
-      - `cfg.effective_grace()`, `cfg.grace_heartbeats`, `kDefaultGraceHeartbeats`,
-        `PYLABHUB_DEFAULT_GRACE_HEARTBEATS`
-      - `grace_heartbeats` / `grace_ms` config fields + parsing
-      - `bcfg.grace_heartbeats = ...` line in `hub_host.cpp:177`
-      - `case ChannelStatus::Closing:` arms (gone with the enum)
-      - Rewire FORCE_SHUTDOWN as best-effort "you have been forcibly
-        removed by the broker" notification (per M1 handoff §2 "What
-        FORCE_SHUTDOWN means in the new design").  Receiver-side
-        handler + `on_forced_disconnect` script callback + automatic
-        shutdown is **M1.5** (separate phase).
+What the M1.2 sweep actually shipped (verified 2026-05-12 by
+`grep -rn FORCE_SHUTDOWN src/` returning zero matches in production
+code):
+
+- [x] **Phase 5** — `_on_heartbeat` body refit; legacy writes dropped;
+      `_set_role_disconnected` walks `role.presences` only.
+- [x] **Phase 6** — `enum class ChannelStatus` + `ChannelEntry.{status,
+      last_heartbeat, state_since, closing_deadline}` +
+      `RoleEntry.{state, last_heartbeat, latest_metrics,
+      metrics_collected_at}` + `to_string(ChannelStatus)` +
+      `_set_channel_status` + `_set_channel_closing_deadline` +
+      `_update_role_heartbeat` + `_update_role_metrics` +
+      `observable_from_legacy_status` shim + dual channel-JSON
+      serializer + transitional `j["status"]` emission — ALL deleted.
+- [x] **Phase 7 (M1.3)** — `BrokerServiceImpl::check_closing_deadlines`
+      + `cfg.effective_grace` + `cfg.grace_heartbeats` +
+      `kDefaultGraceHeartbeats` + `PYLABHUB_DEFAULT_GRACE_HEARTBEATS`
+      + `grace_heartbeats` / `grace_ms` config + `case
+      ChannelStatus::Closing` arms + `send_force_shutdown` paths —
+      ALL deleted.  `FORCE_SHUTDOWN` was NOT rewired as best-effort
+      notification (the 2026-05-09 plan); it was removed completely.
+      The role-side ergonomics gap left by atomic teardown is the
+      scope of re-framed **M1.5** (`on_channel_closing` callback +
+      optional auto-stop) — see
+      `docs/tech_draft/M1.5_channel_closing_redesign_2026-05-12.md`.
 
 #### Strand S5 — Coverage broadening (lower priority)
 
