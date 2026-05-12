@@ -9,7 +9,7 @@
 | **Area**       | `pylabhub-utils`, `pylabhub-scripting`, `plh_hub` binary (new)                           |
 | **Depends on** | HEP-CORE-0001 (Lifecycle), HEP-CORE-0007 (DataHub Protocol), HEP-CORE-0021 (ZMQ Registry), HEP-CORE-0022 (Federation), HEP-CORE-0023 (Startup Coordination), HEP-CORE-0024 (Role Directory Service), HEP-CORE-0030 (Band Messaging) |
 | **Amends**     | HEP-CORE-0019 §3-4 — the periodic broker-pull metrics model is replaced by a query-driven model. HEP-CORE-0019 §3.2 (live SHM-derived block merge) is retained. |
-| **Reference**  | Full design draft: `docs/tech_draft/HUB_CHARACTER_DESIGN.md`                             |
+| **Reference**  | This HEP is the authoritative design.                                                    |
 
 ---
 
@@ -743,7 +743,7 @@ struct HubState
 
 | Entry | Updated by | Holds |
 |---|---|---|
-| `ChannelEntry` | REG_REQ / CONSUMER_REG_REQ / CONSUMER_DEREG_REQ / CHANNEL_CLOSING / broker-internal | **Channel-wide invariants only**: name, schema_owner/schema_id/schema_hash/blds/packing (HEP-CORE-0023 §2.1.1 — all producers must agree), data_transport, channel_pattern, has_shared_memory, shm_name, created_at.  **Per-party rows**: `producers[]` (vector of `ProducerEntry`; 1..N per HEP-CORE-0023 §2.1.1), `consumers[]` (vector of `ConsumerEntry`).  **Per-producer attributes live on `ProducerEntry`**, NOT at channel scope (Wave M2.5): `zmq_node_endpoint`, `metadata`, `inbox_*` (HEP-CORE-0027), plus identity (`role_uid` / `role_name` / `producer_pid` / `producer_hostname` / `zmq_identity`).  DISC_REQ_ACK aggregates per-producer metadata into a tree keyed by `role_uid` (HEP-CORE-0007 §12.4).  **Does NOT store FSM state** — both channel **observability** (HEP-CORE-0023 §2.2) and channel **existence** (HEP-CORE-0023 §2.1.1) are derived queries over the producer-presences across roles.  Channel teardown is atomic on the LAST producer-presence transitioning to Disconnected; no separate channel FSM.  Controlled-access API per `docs/tech_draft/controlled_access_api_design.md`. |
+| `ChannelEntry` | REG_REQ / CONSUMER_REG_REQ / CONSUMER_DEREG_REQ / CHANNEL_CLOSING / broker-internal | **Channel-wide invariants only**: name, schema_owner/schema_id/schema_hash/blds/packing (HEP-CORE-0023 §2.1.1 — all producers must agree), data_transport, channel_pattern, has_shared_memory, shm_name, created_at.  **Per-party rows**: `producers[]` (vector of `ProducerEntry`; 1..N per HEP-CORE-0023 §2.1.1), `consumers[]` (vector of `ConsumerEntry`).  **Per-producer attributes live on `ProducerEntry`**, NOT at channel scope (Wave M2.5): `zmq_node_endpoint`, `metadata`, `inbox_*` (HEP-CORE-0027), plus identity (`role_uid` / `role_name` / `producer_pid` / `producer_hostname` / `zmq_identity`).  DISC_REQ_ACK aggregates per-producer metadata into a tree keyed by `role_uid` (HEP-CORE-0007 §12.4).  **Does NOT store FSM state** — both channel **observability** (HEP-CORE-0023 §2.2) and channel **existence** (HEP-CORE-0023 §2.1.1) are derived queries over the producer-presences across roles.  Channel teardown is atomic on the LAST producer-presence transitioning to Disconnected; no separate channel FSM.  All state-bearing fields are accessed through the controlled-access API on `ChannelEntry` (`add_producer` / `remove_producer` / per-producer setters / typed observable accessor); direct field mutation is forbidden, so the multi-producer overwrite-class bug cannot recur. |
 | `RoleEntry` | REG / per-presence HEARTBEAT_REQ / DISC / role-side timeout | uid, name, role_tag, first_seen, **`presences[]`** — one row per `(channel, role_type)` carrying the FSM `state` (Connected / Pending / Disconnected per HEP-CORE-0023 §2.1), `last_heartbeat`, `state_since`, `latest_metrics`, `metrics_collected_at`.  Each heartbeat refreshes only its matching presence row.  `MetricsStore` is keyed `(channel_name, uid, role_type)` — see §18.4. |
 | `BandEntry` | BAND_JOIN / BAND_LEAVE | name, members[], last_activity |
 | `PeerEntry` | HUB_PEER_HELLO / HUB_PEER_BYE / federation heartbeat | uid, endpoint, state, last_seen |
@@ -1108,8 +1108,7 @@ That entry was removed entirely — the hub deliberately accepts no
 arbitrary executable code over the wire.  Operator scripting access
 is provided via the future Python SDK (composes structured admin
 RPCs locally on the operator's host); see §17 "No remote code
-injection" for the policy and `docs/todo/API_TODO.md` "pylabhub
-Python client SDK" for the binding plan.
+injection" for the policy.
 
 ### 11.3 Authorization
 
@@ -1127,8 +1126,7 @@ Python client SDK" for the binding plan.
   so that the two REP-socket-owning hub subsystems — `BrokerService`
   and `AdminService` — sit side-by-side.  `src/utils/service/` is
   reserved for owned-services that are not transport-bound (HubHost,
-  HubVault, ThreadManager, etc.).  Decision recorded in
-  `docs/code_review/REVIEW_AdminService_2026-05-01.md` §2.4.
+  HubVault, ThreadManager, etc.).
 
 ### 11.5 Error code catalog
 
@@ -2366,7 +2364,7 @@ can land in parallel once P1 lands.
     decided not to introduce a new threat class.  Operator
     scripting access is provided via the future Python SDK that
     composes structured admin RPCs locally on the operator's
-    host (see §17 and `docs/todo/API_TODO.md`).  Phase 7 D-track
+    host (see §17).  Phase 7 D-track
     is the closure point for Phase 7 — there is no Phase 7
     Commit E follow-up.
 - **Phase 8** — Rich `HubAPI` callback surface beyond log/uid/metrics
@@ -2428,8 +2426,7 @@ can land in parallel once P1 lands.
     expectations updated; full suite 1757/1757.  Bundled with the
     F4 follow-up (HubNetworkConfig struct default also changed to
     `tcp://127.0.0.1:5570` to converge with the init-template
-    default fixed earlier in the audit cycle).  See
-    `docs/code_review/REVIEW_HEP_0033_PostP9_2026-05-05.md` F2.
+    default fixed earlier in the audit cycle).
 
 ## 17. Out of scope
 
@@ -2474,8 +2471,8 @@ think to type into an eval prompt.
   reviewable handler.
 
 **External scripting access — the supported path:**
-- Provided by a Python SDK (Phase 8+; tracked in
-  `docs/todo/API_TODO.md` "pylabhub Python client SDK").
+- Provided by a Python SDK (Phase 8+; deferred until external
+  scripting demand is concrete).
 - SDK runs on the operator's host, composes structured admin RPCs,
   sends only JSON envelopes over the wire.
 - Same pattern as `boto3` over the AWS HTTP API or
@@ -2679,9 +2676,7 @@ that fits producer / consumer / processor / future N-input roles
 under one abstraction.
 
 This section is the canonical home for the role-side multi-hub
-control-plane architecture.  Wave B (M0-M9) of
-`docs/tech_draft/role_host_template_design.md` is the implementation
-plan; this section is the normative spec.
+control-plane architecture.
 
 ### 19.1 The presence model
 
@@ -2837,9 +2832,7 @@ assumption — "each role talks to one broker via a single
    `in_channel` (BRC isn't connected to `in_hub`).
 
 The presence-list model + §18 routing classes resolve all five with
-one architectural change.  See `docs/tech_draft/role_host_template_design.md`
-§1 for the full bug analysis and Wave B (M0-M9) for the migration
-plan.
+one architectural change.
 
 ### 19.8 Implementation references
 
@@ -2876,10 +2869,9 @@ validator (`utils/naming.hpp`) is the single enforcement point.  HubState
 is the strong boundary — any identifier that reaches a `_on_*` op is
 guaranteed to match these rules.
 
-This grammar was originally drafted in
-`docs/tech_draft/HUB_CHARACTER_PREREQUISITES.md` §G2.2.0b (now archived
-under `docs/archive/transient-2026-04-30/`).  It moved here on
-2026-04-30 to make HEP-0033 the single source of truth.
+This grammar was promoted into this HEP on 2026-04-30 as the
+single source of truth (previously held in an in-flight prereqs
+draft that has since been archived).
 
 ### G2.2.0b.1 Grammar per identifier kind
 

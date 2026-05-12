@@ -729,7 +729,8 @@ HubScripts cannot react until the peer re-HELLOs.
 `hub_state_._on_peer_disconnected(uid)` and fire the
 `on_hub_disconnected` callback.  Roughly 30 LOC.
 
-**Status.**  Tracked in `docs/todo/MESSAGEHUB_TODO.md`.
+**Status.**  Deferred — implementation lands when peer-disconnect
+observability becomes a concrete requirement.
 
 ### 14.2 No relay backpressure / flow control (limitation by design)
 

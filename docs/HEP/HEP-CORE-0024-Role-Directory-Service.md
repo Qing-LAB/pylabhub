@@ -1081,7 +1081,7 @@ backwards compat; `plh_role` sets it true).
 tests (broker round-trip, pipeline, channel broadcast, processor pipeline,
 hub-dead, inbox) are **out of scope** for this HEP — they are
 system-integration tests and land with HEP-CORE-0033 Hub Character (where a
-working hub binary exists). Tracked in `docs/todo/MESSAGEHUB_TODO.md`.
+working hub binary exists).
 
 ### Commit order
 

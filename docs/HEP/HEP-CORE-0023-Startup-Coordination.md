@@ -543,9 +543,7 @@ Two consequences, both fixed by the Phase 6 split:
 per-presence; a role with N presences runs N tick callbacks per
 cycle.  Each callback emits a heartbeat for **its own**
 `(uid, role_type)` presence — the broker looks up the per-presence
-row.  See `docs/tech_draft/role_host_template_design.md` §6 for
-the role-side implementation; HEP-CORE-0033 §19 for the multi-
-presence connection model.
+row.  See HEP-CORE-0033 §19 for the multi-presence connection model.
 
 ---
 
@@ -970,10 +968,9 @@ Concrete consequences after the migration:
   `hub_dir`) collapse to one connection at runtime; the fall-through
   reduces to a single query — same wall-clock behaviour as today.
 
-The implementation lands in
-`docs/tech_draft/role_host_template_design.md` Wave B M8 along
-with the L4 dual-hub processor test.  Until then, the pre-Phase-6
-limitation above applies.
+The implementation is deferred to a future dual-hub processor
+work wave along with an L4 dual-hub processor test.  Until then,
+the pre-Phase-6 limitation above applies.
 
 ---
 

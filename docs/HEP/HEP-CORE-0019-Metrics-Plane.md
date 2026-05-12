@@ -55,10 +55,9 @@
 > `HubState::channel_metrics_snapshot(channel)` which reads the
 > per-presence rows directly.
 >
-> See `docs/tech_draft/role_host_template_design.md` §6 for the
-> full design and `HEP-CORE-0033 §18` for the canonical four-class
-> routing taxonomy that places metrics piggyback in Class A and
-> metrics queries in Class C.
+> See `HEP-CORE-0033 §18` for the canonical four-class routing
+> taxonomy that places metrics piggyback in Class A and metrics
+> queries in Class C.
 
 ---
 

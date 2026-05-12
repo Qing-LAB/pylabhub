@@ -931,7 +931,9 @@ These remain DataBlock-specific, not surfaced through QueueMetrics:
 
 ## 11. Config Single-Truth Propagation (2026-04-16)
 
-> Merged from `docs/tech_draft/config_single_truth.md` (implemented 2026-03-30).
+> Section content merged in 2026-04-16; source design ratified
+> 2026-03-30 and implemented in the same commit cycle.  Authoritative
+> here.
 
 ### 11.1 Timing — single derived path
 
@@ -984,5 +986,3 @@ transport, SHM, checksum, inbox, monitoring, startup, and auth sections.
 - HEP-CORE-0011: ScriptHost Abstraction Framework -- Python callback model
 - HEP-CORE-0006: SlotProcessor API -- C++ RAII transaction layer
 - HEP-CORE-0009: Policy Reference -- all policy enums in one place
-- `docs/tech_draft/schema_architecture.md` S6 -- Engine type caching and queue abstraction
-- `docs/todo/API_TODO.md` -- Queue Abstraction Unification phased implementation plan

@@ -21,7 +21,7 @@ All described APIs are implemented in `src/include/utils/lifecycle.hpp`, `src/in
 - `src/utils/service/lifecycle_dynamic.cpp` — all dynamic module operations (load/unload/wait/computeClosure/dynShutdownThread)
 
 They share the private header `src/utils/service/lifecycle_impl.hpp` (not installed).
-Static and dynamic modules, `LifecycleGuard` (single/multiple/vector constructors), `MakeModDefList`, and all convenience functions are in use. For current plan and priorities elsewhere, see `docs/TODO_MASTER.md` and `docs/todo/`.
+Static and dynamic modules, `LifecycleGuard` (single/multiple/vector constructors), `MakeModDefList`, and all convenience functions are in use.
 
 ### Source file reference
 
