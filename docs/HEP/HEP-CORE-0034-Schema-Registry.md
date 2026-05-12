@@ -1267,10 +1267,9 @@ Documentation:
   reference §2.4 by invariant id.
 - §3 file list rewritten to reflect post-Phase-4c state with §2.4
   cross-refs.
-- `docs/tech_draft/raii_layer_redesign.md` §6.15 added — reference
-  design for the typed RAII addon's schema integration; resolves §9
-  Q3; aligns RAII implementer expectations with the broker-as-validator
-  invariant (§2.4 I4).
+- Typed RAII addon's schema-integration design ratified alongside
+  Phase 4c — resolves §9 Q3 and aligns RAII implementer expectations
+  with the broker-as-validator invariant (§2.4 I4).
 
 **Phase 4d** (commit `3fcd0bb`, 2026-04-28) — ✅ shipped: wire-field naming alignment +
 canonical-form pinning.  Two related corrections surfaced by static
@@ -1382,11 +1381,12 @@ Both helpers are stateless wrappers over the existing
 (§2.4 I5+I6); they consult no registry (§2.4 I3) and perform no
 client-side validation (§2.4 I4).
 
-**Implementer reference**: see
-[`docs/tech_draft/raii_layer_redesign.md` §6.15](../tech_draft/raii_layer_redesign.md)
-for the full design, call-site map, compile-time check inventory,
-and what NOT to add. That section is the canonical specification for
-Phase 5d implementation; this paragraph is the index entry.
+**Implementer reference**: the typed RAII addon's call-site map,
+compile-time check inventory, and what-NOT-to-add list are tracked
+alongside Phase 5d implementation; consult the addon source headers
+(`raii_*.hpp`) for the current contract.  The invariants in §2.4
+above are authoritative for this HEP's contract; the addon
+implements but does not extend them.
 
 **Tests** for the full citation lifecycle (producer adopts
 hub-global, consumer cites it, all three paths round-trip) wait for

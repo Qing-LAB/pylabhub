@@ -586,8 +586,8 @@ Both sides must use identical schema + packing. `"natural"` is not a valid value
 **Deferred extensions**: ACK mechanism for ZmqQueue PUSH write path (requires PUSH→DEALER socket change; deferred); flexzone over ZMQ (second frame; deferred to HEP-0023).
 
 This HEP covers the **broker protocol** (virtual node registration, service directory).
-Full ZmqQueue implementation detail was drafted in `docs/tech_draft/zmq_queue_design.md`
-(archived 2026-03-10 to `docs/archive/transient-2026-03-10/`).
+ZmqQueue implementation detail was consolidated into this HEP at
+archive-time 2026-03-10.
 
 ---
 
@@ -766,8 +766,7 @@ After the ZmqQueue binds and starts (step 7), `establish_channel` sends an
 > channel publishes from its own bound socket and advertises its own
 > endpoint string.  ENDPOINT_UPDATE_REQ updates **one** producer's
 > endpoint at a time (the sender's own); sibling producers on the
-> same channel are untouched.  See
-> `docs/tech_draft/controlled_access_api_design.md` §3.2.
+> same channel are untouched.
 
 ### 16.4 Broker Readiness Guard
 

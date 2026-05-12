@@ -574,8 +574,7 @@ referenced only by the resolver itself; the deferred work is to
 either (a) make it a first-class staged artifact or (b) replace it
 with a proper platform-config system covering `python_home` plus
 other cross-cutting platform settings (Python venv search dir,
-LD_LIBRARY_PATH overrides, etc.).  Tracked in `docs/TODO_MASTER.md`
-under the 2026-05-07 entry.
+LD_LIBRARY_PATH overrides, etc.).
 
 **Per-instance Python config** (e.g. `script.python_venv` from
 `RoleConfig.script` / `HubConfig.script`) is **NOT** part of the
@@ -944,7 +943,14 @@ annotations in its doc comment:
 
 The Tier 1 callback-presence cache (populated under the runtime lock
 during `load_script`, read lock-free thereafter) backs the any-thread
-`has_callback` contract.  Full design: `docs/tech_draft/engine_callback_tiers.md`.
+`has_callback` contract.  The cache records which lifecycle and
+data-loop callback names the loaded script defines; subsequent
+`has_callback(name)` queries from any thread read the immutable
+post-load snapshot without acquiring the runtime lock.  A future
+**Tier 2** mechanism (reserved, capability-gated by
+`supports_dynamic_callbacks`) would allow scripts to register
+callbacks after `load_script` returns; until that capability is
+exposed, only Tier 1 names are queryable.
 
 ### Optional global-lock release during idle waits
 

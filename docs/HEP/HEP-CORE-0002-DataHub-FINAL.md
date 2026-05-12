@@ -31,10 +31,10 @@ This is the **authoritative, implementation-ready specification** for the Data E
 
 ### Implementation status (sync with TODO_MASTER)
 
-> **Current implementation status, test counts, and open tasks are tracked in
-> [`docs/TODO_MASTER.md`](../TODO_MASTER.md) and subtopic TODOs under `docs/todo/`.
-> This document describes the design; consult TODO_MASTER.md for the definitive
-> completion state.**
+> This document describes the design and is the authoritative spec.
+> Implementation status, test counts, and active task tracking live
+> outside the HEP corpus and follow the project's documentation
+> hierarchy.
 
 Design rationale and critical review (cross-platform, API consistency, flexible zone,
 integrity) were in **DATAHUB_DATABLOCK_CRITICAL_REVIEW**, **DATAHUB_DESIGN_DISCUSSION**,
