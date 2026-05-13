@@ -155,13 +155,22 @@ struct ZmqQueueImpl
     // ────────────────────────────────────────────────────────────────────────
     // recv thread body — cppzmq message_t reused across iterations (no per-frame
     // heap alloc beyond what libzmq internally does).
-    void run_recv_thread_()
+    //
+    // The loop runs inside a `ctx.with_active_loop` bracket (set up by
+    // the spawn-site wrapper).  HEP-CORE-0031 §4.1 Thread Shutdown
+    // Contract: while the bracket is open this thread may freely touch
+    // ZmqQueueImpl members; on bracket exit (loop return) it MUST NOT.
+    // The bracket also gives `ZmqQueue::stop()`'s drain a Stage 1 signal
+    // (active_loop_depth==0) that distinguishes "stuck inside a zmq op"
+    // from "stuck in post-loop cleanup" in the ERROR log on timeout.
+    void run_recv_thread_(pylabhub::utils::ThreadManager::SlotContext &ctx)
     {
         socket.set(zmq::sockopt::rcvtimeo, 100);  // 100ms poll tick for stop-flag checks
 
         zmq::message_t msg;
 
-        while (!recv_stop_.load(std::memory_order_relaxed))
+        while (!recv_stop_.load(std::memory_order_relaxed) &&
+               !ctx.shutdown_requested())
         {
             if (!socket) break;
 
@@ -275,15 +284,20 @@ struct ZmqQueueImpl
     // ────────────────────────────────────────────────────────────────────────
     // send thread body — drains send_ring_ FIFO; retries zmq_send on EAGAIN.
     // On stop signal: sends remaining items once (no retry), then exits.
-    void run_send_thread_()
+    //
+    // Runs inside a `ctx.with_active_loop` bracket (set up by the
+    // spawn-site wrapper); same contract as run_recv_thread_ above.
+    void run_send_thread_(pylabhub::utils::ThreadManager::SlotContext &ctx)
     {
-        while (true)
+        while (!ctx.shutdown_requested())
         {
             // ── Wait for a slot or stop ───────────────────────────────────
             {
                 std::unique_lock<std::mutex> lk(send_mu_);
-                send_cv_.wait(lk, [this] {
-                    return send_count_ > 0 || send_stop_.load(std::memory_order_relaxed);
+                send_cv_.wait(lk, [this, &ctx] {
+                    return send_count_ > 0
+                        || send_stop_.load(std::memory_order_relaxed)
+                        || ctx.shutdown_requested();
                 });
                 if (send_count_ == 0) break; // stop_ + empty → exit
 
@@ -634,13 +648,21 @@ bool ZmqQueue::start()
     {
         pImpl->recv_stop_.store(false, std::memory_order_release);
         pImpl->thread_mgr_->spawn("recv",
-            [impl_ptr] { impl_ptr->run_recv_thread_(); });
+            [impl_ptr](pylabhub::utils::ThreadManager::SlotContext &ctx) {
+                ctx.with_active_loop([impl_ptr, &ctx] {
+                    impl_ptr->run_recv_thread_(ctx);
+                });
+            });
     }
     else // Write
     {
         pImpl->send_stop_.store(false, std::memory_order_release);
         pImpl->thread_mgr_->spawn("send",
-            [impl_ptr] { impl_ptr->run_send_thread_(); });
+            [impl_ptr](pylabhub::utils::ThreadManager::SlotContext &ctx) {
+                ctx.with_active_loop([impl_ptr, &ctx] {
+                    impl_ptr->run_send_thread_(ctx);
+                });
+            });
     }
 
     return true;
@@ -661,12 +683,45 @@ void ZmqQueue::stop()
     pImpl->recv_cv_.notify_all();
     pImpl->send_cv_.notify_all(); // wake send_thread_ to drain remaining items
 
-    // ThreadManager::~destroy() (via unique_ptr reset) bounded-joins both
-    // recv_thread_ and send_thread_ (whichever was spawned for this mode).
-    // The stop atomics above signal shutdown; the threads observe and exit;
-    // the manager joins them with per-thread kMidTimeoutMs deadline. On
-    // timeout: ERROR log + detach + increment process_detached_count.
-    pImpl->thread_mgr_.reset();
+    // Explicit drain (NOT via ~ThreadManager) so we can observe the
+    // detach count and apply the grace gate BEFORE destroying state
+    // the runaway thread still touches.  Mirrors EngineHost::shutdown_()
+    // — see HEP-CORE-0031 §4.2 detach-safety gate.
+    if (pImpl->thread_mgr_)
+    {
+        const auto detached = pImpl->thread_mgr_->drain();
+        if (detached > 0)
+        {
+            // Grace-poll for the runaway thread.  Its body still holds
+            // `impl_ptr` (raw) and may still touch ZmqQueueImpl members
+            // (ring buffers, cv, socket).  We must keep pImpl alive
+            // until the thread returns — `~ZmqQueue` calls this stop()
+            // before destroying pImpl, so we honor the gate here.
+            constexpr auto kGrace = std::chrono::seconds{5};
+            const auto deadline   =
+                std::chrono::steady_clock::now() + kGrace;
+            while (!pImpl->thread_mgr_->all_detached_done() &&
+                   std::chrono::steady_clock::now() < deadline)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds{50});
+            }
+            if (!pImpl->thread_mgr_->all_detached_done())
+            {
+                // Grace expired.  Subsequent ~ZmqQueueImpl will UAF the
+                // runaway thread; we surface it so the operator sees it
+                // in the log.  No safe recovery path here — ZmqQueue's
+                // pImpl is a unique_ptr member, we can't leak it.
+                LOGGER_ERROR(
+                    "[hub::ZmqQueue:{}] {} thread(s) detached on stop() "
+                    "AND still running after {}s grace.  Subsequent "
+                    "~ZmqQueueImpl will UAF the runaway thread; if this "
+                    "fires, the thread body is stuck in a libzmq op "
+                    "that ignored the stop flag.",
+                    pImpl->queue_name, detached, kGrace.count());
+            }
+        }
+        pImpl->thread_mgr_.reset();
+    }
 
     // Close the socket AFTER threads have exited (threads were the only user).
     // The shared ZMQ context is owned by the ZMQContext lifecycle module —

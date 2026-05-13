@@ -44,6 +44,7 @@
 #include "utils/role_main_helpers.hpp"
 #include "utils/role_registry.hpp"
 #include "utils/script_engine_factory.hpp"  // scripting::init_scripting / ensure_python
+#include "utils/thread_manager.hpp"  // process_detached_count for exit code
 #include "../scripting/python_interpreter_module.hpp"  // ensure_python_interpreter_loaded
 
 #include "plh_datahub.hpp"   // LifecycleGuard + hub/utils prelude
@@ -400,5 +401,22 @@ int main(int argc, char *argv[])
 
     scripting::run_role_main_loop(g_shutdown, *host, "[plh_role]");
     host->shutdown_();
+
+    // HEP-CORE-0031 §4.2 — surface unclean teardown in the exit code.
+    // process_detached_count() is monotonic across every ThreadManager
+    // in this process; nonzero means at least one managed thread
+    // exceeded its bounded-join timeout and had to be detached.  The
+    // OS will reap the detached thread at process exit, but the
+    // operator (init system, orchestration layer) should see this
+    // surfaced rather than ignored.
+    if (pylabhub::utils::ThreadManager::process_detached_count() > 0)
+    {
+        std::cerr << "[plh_role] WARNING: "
+                  << pylabhub::utils::ThreadManager::process_detached_count()
+                  << " thread(s) were detached during shutdown — see "
+                     "earlier ERROR log(s) from ThreadManager for the "
+                     "stuck thread name(s).\n";
+        return 2;
+    }
     return 0;
 }
