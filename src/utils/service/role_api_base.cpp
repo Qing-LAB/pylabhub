@@ -60,6 +60,20 @@ struct RoleAPIBase::Impl
     ScriptEngine             *engine{nullptr};
     hub::BrokerRequestComm *broker_channel{nullptr};
 
+    // ── Thread-local / set-once-before-spawn state ─────────────────────
+    //
+    // Every field below this banner is either:
+    //   (a) set in the RoleAPIBase ctor (role_tag, uid), or
+    //   (b) set via the role host's startup wiring (build_tx_queue,
+    //       set_channel, set_name, set_engine, ...) which runs BEFORE
+    //       `start_ctrl_thread()` spawns any other thread.
+    //
+    // The thread spawn itself is the happens-before synchronization
+    // point — readers on the ctrl thread (e.g. `on_heartbeat_tick_`
+    // reading `out_channel` / `channel` / `uid`) observe the final
+    // value with no extra protection.  Adding a field here is a claim
+    // that it will NEVER be mutated after `start_ctrl_thread()`.  If
+    // that claim ever breaks, move the field into `Shared` below.
     std::string role_tag;   // "prod", "cons", "proc"
     hub::ChecksumPolicy checksum_policy{hub::ChecksumPolicy::Enforced};
     bool stop_on_script_error{false};
@@ -71,9 +85,58 @@ struct RoleAPIBase::Impl
     std::string script_dir;
     std::string role_dir;
 
-    // Broker registration state (for explicit deregister on shutdown).
-    std::string registered_producer_channel;   ///< Non-empty if REG_REQ succeeded.
-    std::string registered_consumer_channel;   ///< Non-empty if CONSUMER_REG_REQ succeeded.
+    // ── Shared state — touched outside the worker thread ───────────────
+    //
+    // Anything that may be read OR mutated from threads other than the
+    // worker (ctrl thread's notification dispatch / heartbeat /
+    // future paths) lives below.  Access ONLY via the controlled-
+    // access methods — never touch the fields directly.  The internal
+    // mutex protects every field in this sub-struct.
+    //
+    // Locking discipline (HEP-CORE-0031 spirit applied to in-process
+    // state): the mutex MUST NEVER be held across a `do_request` to
+    // the broker.  `do_request` blocks the worker thread waiting on
+    // the ctrl thread to send + receive a reply; if the ctrl thread
+    // ever tries to take this mutex, the two threads deadlock.  All
+    // methods below take the lock for a short critical section only
+    // (single field read/write/swap).  Deregister flows use
+    // `take_*_channel()` to atomically swap-with-empty under the
+    // lock and pass the captured value to the broker RPC outside
+    // the lock.
+    struct Shared
+    {
+        mutable std::mutex mu;
+        std::string producer_channel;   ///< Non-empty if REG_REQ succeeded.
+        std::string consumer_channel;   ///< Non-empty if CONSUMER_REG_REQ succeeded.
+
+        void set_producer_channel(std::string name) noexcept
+        {
+            std::lock_guard<std::mutex> g(mu);
+            producer_channel = std::move(name);
+        }
+        void set_consumer_channel(std::string name) noexcept
+        {
+            std::lock_guard<std::mutex> g(mu);
+            consumer_channel = std::move(name);
+        }
+        /// Atomic read-and-clear.  Caller passes the returned string
+        /// to the broker RPC — by that point the field is already
+        /// empty so no other path can race a concurrent mutator.
+        std::string take_producer_channel()
+        {
+            std::lock_guard<std::mutex> g(mu);
+            std::string out;
+            out.swap(producer_channel);
+            return out;
+        }
+        std::string take_consumer_channel()
+        {
+            std::lock_guard<std::mutex> g(mu);
+            std::string out;
+            out.swap(consumer_channel);
+            return out;
+        }
+    } shared;
 
     // Inbox client cache (keyed by target_uid).
     // Uses RoleHostCore::open_inbox() for atomic check-and-create.
@@ -471,20 +534,26 @@ void RoleAPIBase::deregister_from_broker()
     if (!bc || !bc->is_connected())
         return;
 
-    if (!pImpl->registered_producer_channel.empty())
+    // Atomic take-and-clear of any registered channel names; the
+    // broker RPC then runs OUTSIDE the lock on the captured locals.
+    // Holding the mutex across `do_request` would block the worker
+    // thread waiting on the ctrl thread to send + receive the reply,
+    // and any future ctrl-thread path that takes the same mutex
+    // would deadlock — see `Impl::Shared` docstring.
+    auto prod = pImpl->shared.take_producer_channel();
+    if (!prod.empty())
     {
         LOGGER_INFO("[{}] ctrl: deregistering producer channel '{}' from broker",
-                    pImpl->role_tag, pImpl->registered_producer_channel);
-        deregister_producer_channel(pImpl->registered_producer_channel);
-        pImpl->registered_producer_channel.clear();
+                    pImpl->role_tag, prod);
+        (void)deregister_producer_channel(prod);
     }
 
-    if (!pImpl->registered_consumer_channel.empty())
+    auto cons = pImpl->shared.take_consumer_channel();
+    if (!cons.empty())
     {
         LOGGER_INFO("[{}] ctrl: deregistering consumer from channel '{}' from broker",
-                    pImpl->role_tag, pImpl->registered_consumer_channel);
-        deregister_consumer(pImpl->registered_consumer_channel);
-        pImpl->registered_consumer_channel.clear();
+                    pImpl->role_tag, cons);
+        (void)deregister_consumer(cons);
     }
 }
 
@@ -590,17 +659,53 @@ bool RoleAPIBase::start_ctrl_thread(
     LOGGER_INFO("[{}] ctrl: starting control thread (heartbeat install "
                 "deferred to post-REG_ACK)", pImpl->role_tag);
 
+    // The ctrl thread is the MASTER of this ThreadManager
+    // (HEP-CORE-0031 §4.2).  Rationale:
+    //   * The worker thread's `do_role_teardown` Step 9a calls
+    //     `deregister_from_broker()`, which sends DEREG_REQ via the
+    //     ctrl thread's `BrokerRequestComm::do_request` and BLOCKS
+    //     on a CV waiting for DEREG_ACK.
+    //   * If ctrl exits before worker is done dereg'ing, the worker's
+    //     `do_request` waits for a reply that will never come, the
+    //     outer drain's bounded join times out, worker is detached,
+    //     `api_.reset()` destroys `RoleAPIBase::Impl`, and the
+    //     detached worker eventually returns from the timed-out
+    //     `do_request` and touches freed memory → SEGV.
+    // Pinned 5/5 deterministic 2026-05-13 via gdb + breadcrumbs; the
+    // pImpl pointer was observed to flip mid-call as the dtor ran.
+    //
+    // Marking ctrl as `is_master = true` tells ThreadManager:
+    //   * Don't signal ctrl from `request_shutdown_all()` — peers
+    //     (the worker) get the signal first.
+    //   * In `drain()`: wait for every peer's `done` before signaling
+    //     ctrl.  Ctrl's lifetime now envelopes every peer's runtime.
+    //
+    // Correspondingly the bracket's `should_run` predicate consults
+    // **only** `ctx.shutdown_requested()` (the per-slot flag
+    // ThreadManager controls) — NOT `core->is_shutdown_requested()`
+    // (a global flag that fires too early, before peers are done
+    // with us).  `core->is_running()` is still part of the predicate
+    // because the worker still flips it in `do_role_teardown` Step
+    // 12 (alongside `bc->stop()`) as a fast-path class-level wake-up
+    // — the per-slot signal alone doesn't unblock a thread parked
+    // in `zmq_poll`.
+    pylabhub::utils::ThreadManager::SpawnOptions ctrl_opts;
+    ctrl_opts.is_master = true;
     thread_manager().spawn("ctrl",
         [this](pylabhub::utils::ThreadManager::SlotContext &ctx)
     {
         // Capture every pImpl-borrowed reference locally at the start of
         // the thread body — per the Thread Shutdown Contract
-        // (HEP-CORE-0031 §4.1, MD1), once the active loop returns and
-        // we mark active_loop_exited, this thread MUST NOT touch
-        // RoleAPIBase's pImpl (or BRC's, or any other shared state the
-        // teardown caller might destroy).  Local captures stay valid
-        // for the rest of the body's lifetime, including the post-loop
-        // log calls below.
+        // (HEP-CORE-0031 §4.1, MD1), once we exit the `with_active_loop`
+        // bracket below, this thread MUST NOT touch BRC's pImpl (or any
+        // other shared state the teardown caller might destroy in
+        // do_role_teardown Step 13).  Local captures stay valid for the
+        // rest of the body's lifetime, including the post-bracket log
+        // calls below.  The `ThreadEngineGuard` destructor that runs at
+        // lambda exit touches `*eng` to release the engine's
+        // thread-affinity lock — safe because the engine is owned by
+        // the role host and outlives the ctrl thread; it is NOT in the
+        // MD1 teardown destroy set.
         auto *eng                       = pImpl->engine;
         auto *bc                        = pImpl->broker_channel;
         auto *core                      = pImpl->core;
@@ -610,25 +715,26 @@ bool RoleAPIBase::start_ctrl_thread(
         LOGGER_INFO("[{}/ctrl] thread started", role_tag_local);
         LOGGER_TRACE("[{}] ctrl: entering poll loop", role_tag_local);
 
-        bc->run_poll_loop([core] {
-            return core->is_running() && !core->is_shutdown_requested();
+        // Transactional active-loop bracket — the only window in
+        // which this thread may touch BRC's pImpl.  RAII decrements
+        // `active_loop_depth` on body return (including throw); the
+        // teardown caller's `wait_for_quiescence` then observes this
+        // thread quiescent (depth==0) and can safely destroy
+        // `broker_comm_`.
+        //
+        // Exit predicate uses `ctx.shutdown_requested()` (per-slot
+        // flag set by ThreadManager after peers are done) — NOT the
+        // global `core->is_shutdown_requested()` flag — to honor the
+        // master/peer contract documented above the spawn site.
+        ctx.with_active_loop([&] {
+            bc->run_poll_loop([core, &ctx] {
+                return core->is_running() && !ctx.shutdown_requested();
+            });
         });
 
-        // Active loop has returned.  Honor the contract: mark
-        // active_loop_exited so the teardown caller's
-        // `wait_for_active_loop_exit("ctrl")` can proceed to destroy
-        // broker_comm_.  All subsequent log/trace uses only local
-        // captures (no BRC or RoleAPIBase pImpl access).  The
-        // `ThreadEngineGuard` destructor that runs at lambda exit
-        // touches `*eng` to release the engine's thread-affinity
-        // lock, which is safe — the engine is owned by the role
-        // host and outlives the ctrl thread; it is NOT in the MD1
-        // teardown destroy set (do_role_teardown Step 13 destroys
-        // broker_comm_, not the engine).
-        ctx.mark_active_loop_exited();
         LOGGER_TRACE("[{}] ctrl: poll loop exited", role_tag_local);
         LOGGER_INFO("[{}/ctrl] thread exiting", role_tag_local);
-    });
+    }, ctrl_opts);
 
     // ── Step 4: Register with broker (main thread, blocks) ─────────────────
     // The ctrl thread is now running and can process REG_REQ via the cmd queue.
@@ -663,7 +769,7 @@ bool RoleAPIBase::start_ctrl_thread(
             LOGGER_ERROR("[{}] Broker producer registration failed", pImpl->role_tag);
             return false;
         }
-        pImpl->registered_producer_channel = reg.value("channel_name", "");
+        pImpl->shared.set_producer_channel(reg.value("channel_name", ""));
         if (result->contains("heartbeat") && (*result)["heartbeat"].is_object() &&
             (*result)["heartbeat"].contains("heartbeat_interval_ms"))
         {
@@ -683,7 +789,7 @@ bool RoleAPIBase::start_ctrl_thread(
             LOGGER_ERROR("[{}] Broker consumer registration failed", pImpl->role_tag);
             return false;
         }
-        pImpl->registered_consumer_channel = reg.value("channel_name", "");
+        pImpl->shared.set_consumer_channel(reg.value("channel_name", ""));
         if (result->contains("heartbeat") && (*result)["heartbeat"].is_object() &&
             (*result)["heartbeat"].contains("heartbeat_interval_ms"))
         {
