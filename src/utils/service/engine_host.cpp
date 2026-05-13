@@ -24,6 +24,8 @@
 #include "utils/thread_manager.hpp"  // api_->thread_manager() inside startup_
 
 #include <atomic>
+#include <chrono>     // detach safety gate grace period
+#include <thread>     // sleep_for during detach grace poll
 #include <typeinfo>   // typeid(ApiT).name() in destructor diagnostic
 #include <utility>
 
@@ -256,6 +258,65 @@ void EngineHost<ApiT>::shutdown_() noexcept
             "engine-owned resources (Python objects, sockets) may "
             "leak until then.",
             role_tag_);
+    }
+
+    // Detach safety gate (HEP-CORE-0031 §4.2; post-MD1.5 — bugs pinned
+    // 2026-05-13).  If ANY thread was detached on timeout, the
+    // process still holds at least one live thread that owns a
+    // pointer into `*api_` (typically through `RoleAPIBase::pImpl`).
+    // Resetting `api_` here would free that storage out from under
+    // the detached thread, which then triggers SIGSEGV on its next
+    // memory access — the exact bug the gdb investigation pinned to
+    // `pthread_mutex_lock+0x4` inside `deregister_from_broker`.
+    //
+    // Best-effort recovery before falling back to leak: drain retains
+    // each detached slot's `done` shared_ptr, so we can poll
+    // `all_detached_done()` for a bounded grace period.  If every
+    // runaway thread returns within the grace window we can safely
+    // call `api_.reset()` and let `~ApiT` run normally.  Otherwise we
+    // release ownership (leak) rather than UAF; the OS reaps the
+    // detached thread + its allocations at process exit.
+    if (api_ && api_->thread_manager().detached_count_last_drain() > 0)
+    {
+        constexpr auto kDetachGrace = std::chrono::seconds{10};
+        const auto      deadline    =
+            std::chrono::steady_clock::now() + kDetachGrace;
+        while (!api_->thread_manager().all_detached_done() &&
+               std::chrono::steady_clock::now() < deadline)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds{50});
+        }
+
+        if (api_->thread_manager().all_detached_done())
+        {
+            // Every detached thread has returned; their wrapper
+            // lambdas are done writing to retained state.  Safe to
+            // reset normally.
+            LOGGER_WARN(
+                "[EngineHost:{}] {} thread(s) were detached during "
+                "shutdown drain but all returned within the grace "
+                "window — proceeding with normal `api_.reset()`.",
+                role_tag_,
+                api_->thread_manager().detached_count_last_drain());
+            api_.reset();
+            return;
+        }
+
+        // Grace expired with at least one runaway still active.
+        // Leak as last resort — see comment block above.
+        LOGGER_ERROR(
+            "[EngineHost:{}] {} thread(s) were detached during shutdown "
+            "drain AND at least one is still running after a {}s grace "
+            "period.  Leaking `api_` rather than calling `api_.reset()` "
+            "— resetting would free state still owned by the runaway "
+            "thread (deterministic UAF; see HEP-CORE-0031 §4.2).  The "
+            "OS will reap the detached thread(s) and their allocations "
+            "at process exit.",
+            role_tag_,
+            api_->thread_manager().detached_count_last_drain(),
+            kDetachGrace.count());
+        (void)api_.release();  // drop ownership without running ~ApiT
+        return;
     }
 
     api_.reset();
