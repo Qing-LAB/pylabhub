@@ -12,12 +12,15 @@
  *    across all three hosts; the only role-specific input is which
  *    `HubRefConfig` to use (in_hub / out_hub).
  *
- *  - `do_role_teardown()` — runs Steps 9-14 of the worker_main
+ *  - `do_role_teardown()` — runs Steps 9-13 of the worker_main
  *    epilogue (stop_accepting → deregister → invoke_on_stop →
- *    finalize → notify → drain).  All three hosts run the same
- *    sequence; teardown_infrastructure_() (the role-specific cleanup)
- *    is invoked via the caller-provided callback because each host
- *    closes different infrastructure.
+ *    finalize → notify → wait_for_quiescence → teardown_infrastructure).
+ *    All three hosts run the same sequence; teardown_infrastructure_()
+ *    (the role-specific cleanup) is invoked via the caller-provided
+ *    callback because each host closes different infrastructure.
+ *    Step 14 (drain) is run later by `EngineHost::shutdown_()` on
+ *    the MAIN thread — the worker thread is itself a managed slot
+ *    and must not drain its own manager.
  *
  * Larger lifecycle dedup (extract the entire `worker_main_` skeleton
  * into a `RoleHostBase` template) is queued in TODO_MASTER as the
@@ -86,9 +89,16 @@ make_broker_comm_config(const ::pylabhub::config::HubRefConfig  &hub,
  *   11. engine.finalize()
  *   12. broker_comm.stop() (non-destructive); core.set_running(false);
  *       core.notify_incoming()
+ *   12.5. api.thread_manager().request_shutdown_all() +
+ *         wait_for_quiescence()  — signal peers, wait until every
+ *         managed thread is outside its `with_active_loop` bracket,
+ *         per HEP-CORE-0031 §4.1 Thread Shutdown Contract.
  *   13. teardown_infrastructure() — caller-supplied callback because
  *       each host closes different objects (queues, inbox, etc.)
- *   14. api.thread_manager().drain()
+ *   14. return.  The drain is performed on the MAIN thread by
+ *       `EngineHost::shutdown_()` after this worker returns; the
+ *       worker is itself a managed slot, so calling drain() here
+ *       would self-detach.  HEP-CORE-0031 §4.2.
  *
  * `broker_comm` may be nullptr when broker registration was never
  * established (matches the existing `if (broker_comm_) ...` guard
