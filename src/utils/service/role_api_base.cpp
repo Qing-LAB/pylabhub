@@ -617,8 +617,14 @@ bool RoleAPIBase::start_ctrl_thread(
         // Active loop has returned.  Honor the contract: mark
         // active_loop_exited so the teardown caller's
         // `wait_for_active_loop_exit("ctrl")` can proceed to destroy
-        // broker_comm_.  All log/trace from this point on uses ONLY
-        // local captures — no pImpl access.
+        // broker_comm_.  All subsequent log/trace uses only local
+        // captures (no BRC or RoleAPIBase pImpl access).  The
+        // `ThreadEngineGuard` destructor that runs at lambda exit
+        // touches `*eng` to release the engine's thread-affinity
+        // lock, which is safe — the engine is owned by the role
+        // host and outlives the ctrl thread; it is NOT in the MD1
+        // teardown destroy set (do_role_teardown Step 13 destroys
+        // broker_comm_, not the engine).
         ctx.mark_active_loop_exited();
         LOGGER_TRACE("[{}] ctrl: poll loop exited", role_tag_local);
         LOGGER_INFO("[{}/ctrl] thread exiting", role_tag_local);
