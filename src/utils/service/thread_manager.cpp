@@ -10,6 +10,7 @@
 #include "utils/logger.hpp"
 #include "utils/module_def.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <memory>
@@ -48,32 +49,58 @@ struct ThreadSlot
     /// shared_ptr keeps the atomic alive even after ThreadManager::Impl is
     /// destroyed, so a detached thread can finish writing 'true' without UAF.
     std::shared_ptr<std::atomic<bool>>       done;
-    /// Set by the thread body via `SlotContext::mark_active_loop_exited()`
-    /// (or automatically by the wrapper for old-overload spawns) when the
-    /// thread has exited its active loop AND released its dependencies on
-    /// external shared state.  Per HEP-CORE-0031 §4.1, after this is true
-    /// the teardown caller may destroy resources the thread had been
-    /// touching.  Always set before `done` (the gap is whatever post-loop
-    /// self-cleanup the thread chose to do, none for old-overload spawns).
-    /// Same shared_ptr lifetime guarantee as `done`.
+    /// Monotonic-mark API (HEP-CORE-0031 §4.1; handy-case family).  Set
+    /// by `SlotContext::mark_active_loop_exited()` or by the spawn
+    /// wrapper as a safety net at body exit.  Don't mix with the
+    /// transactional API on the same slot.  Same shared_ptr lifetime
+    /// guarantee as `done`.
     std::shared_ptr<std::atomic<bool>>       active_loop_exited;
+    /// Transactional bracket API (HEP-CORE-0031 §4.1; production
+    /// family).  Counter — incremented on `with_active_loop` entry,
+    /// decremented on body return (RAII), so nested bracket calls
+    /// on the same `SlotContext` are safe: the slot is "in active
+    /// loop" iff this counter is > 0.  Default 0 — threads that
+    /// never bracket stay safe (quiescent) forever.  Don't mix with
+    /// the monotonic-mark API on the same slot.
+    std::shared_ptr<std::atomic<int>>        active_loop_depth;
+    /// Per-slot shutdown flag.  Set by
+    /// `ThreadManager::request_shutdown(name)` or
+    /// `request_shutdown_all()`.  Observed by
+    /// `SlotContext::with_active_loop` (skips body if true at entry)
+    /// and `SlotContext::shutdown_requested()` (thread-side poll).
+    std::shared_ptr<std::atomic<bool>>       shutdown_requested;
     std::string                              name;
     /// Default matches pylabhub::kMidTimeoutMs; the SpawnOptions default
     /// on the caller side is what actually feeds this in normal flow.
     std::chrono::milliseconds                join_timeout{pylabhub::kMidTimeoutMs};
     std::chrono::steady_clock::time_point    spawn_time;
+    /// Master/peer flag (HEP-CORE-0031 §4.2; post-MD1.5).  At most
+    /// one master per ThreadManager — enforced at spawn time.  See
+    /// `SpawnOptions::is_master` for the why.
+    bool                                     is_master{false};
 };
 
 /// Shared per-slot bounded-join state machine used by both `drain()` and
-/// `join_named()`.  Implements the two-stage wait per HEP-CORE-0031 §4.1.3:
-///   Stage 1 (first half of join_timeout): wait for `active_loop_exited`.
-///   Stage 2 (second half):                wait for `done`.
+/// `join_named()`.  Implements the two-stage wait per HEP-CORE-0031 §4.1:
+///   Stage 1 (first half of join_timeout): wait for `active_loop_depth == 0`
+///                                          — slot has left every active
+///                                          `with_active_loop` bracket
+///                                          frame.
+///   Stage 2 (second half):                 wait for `done == true` —
+///                                          body has returned.
+///
+/// Threads that never call `with_active_loop` have `active_loop_depth = 0`
+/// by default, so Stage 1 passes immediately for them.  Threads using the
+/// monotonic-mark family (active_loop_exited) also pass Stage 1
+/// immediately — their `active_loop_depth` stays at 0.
 ///
 /// On success, joins the thread cleanly and returns true.  On timeout
 /// (both stages elapsed without `done` becoming true), detaches the
 /// thread, increments the process-wide unclean-shutdown counter, and
 /// emits a stage-differentiated ERROR log so operators can distinguish
-/// "stuck in active loop" from "stuck in post-loop cleanup".
+/// "stuck inside its active loop" (thread still in `with_active_loop`
+/// bracket) from "stuck in post-loop cleanup" (bracket exited but body
+/// hasn't returned).
 ///
 /// Caller is responsible for slot extraction from `pImpl->slots` and any
 /// surrounding orchestration (set `closing`, aggregate counts, etc.).
@@ -92,27 +119,31 @@ bool process_slot_bounded_join(ThreadSlot      &slot,
 
     const auto half = slot.join_timeout / 2;
 
-    // Stage 1 — wait for active_loop_exited.  Fast path: if already set,
-    // skip the poll loop entirely.
-    bool exited_loop = slot.active_loop_exited &&
-                       slot.active_loop_exited->load(std::memory_order_acquire);
-    if (!exited_loop && slot.active_loop_exited)
+    // Stage 1 — wait for active_loop_depth = 0.  Fast path: if already
+    // 0 (default-safe state, or thread already exited every bracket
+    // frame), skip the poll loop entirely.
+    auto in_loop_now = [&]() -> bool {
+        return slot.active_loop_depth &&
+               slot.active_loop_depth->load(std::memory_order_acquire) > 0;
+    };
+    bool was_in_loop = in_loop_now();
+    if (was_in_loop)
     {
         const auto stage1_deadline = std::chrono::steady_clock::now() + half;
         while (std::chrono::steady_clock::now() < stage1_deadline)
         {
-            if (slot.active_loop_exited->load(std::memory_order_acquire))
+            if (!in_loop_now())
             {
-                exited_loop = true;
+                was_in_loop = false;
                 break;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds{10});
         }
     }
 
-    // Stage 2 — wait for done.  If active_loop_exited was set fast, done
-    // is imminent (post-loop cleanup is by definition the small residual
-    // gap); use the full remaining timeout budget.
+    // Stage 2 — wait for done.  If Stage 1 succeeded fast, done is
+    // imminent (post-loop cleanup is the small residual gap); use the
+    // full remaining timeout budget.
     const auto stage2_deadline = std::chrono::steady_clock::now() + half;
     while (std::chrono::steady_clock::now() < stage2_deadline)
     {
@@ -131,15 +162,14 @@ bool process_slot_bounded_join(ThreadSlot      &slot,
 
     // Timeout — detach as last resort.  shared_ptr<atomic> captures in
     // the wrapper keep the atomics alive after slot destruction so the
-    // runaway thread can still safely write `active_loop_exited` and
-    // `done` on its way out.
-    if (!exited_loop)
+    // runaway thread can still safely write its flags on its way out.
+    if (was_in_loop)
     {
         LOGGER_ERROR(
             "[ThreadManager:{}] {}: thread '{}' did NOT exit its active "
             "loop within {}ms — detaching.  Thread is stuck inside its "
-            "active loop body.  Detached thread may still hold resources "
-            "(sockets, SHM, etc.).",
+            "active loop body (still in with_active_loop bracket).  "
+            "Detached thread may still hold resources (sockets, SHM, etc.).",
             owner_identity, caller_tag, slot.name, half.count());
     }
     else
@@ -189,6 +219,16 @@ struct ThreadManager::Impl
     /// (tests, process-exit policy) cannot mistake a timeout-detach for
     /// normal teardown.
     std::atomic<std::size_t>                 detached_count_last_drain{0};
+
+    /// Retained `done` flags of every slot that was detached during the
+    /// last drain.  We hold a `shared_ptr` so the underlying
+    /// `atomic<bool>` outlives the detached `std::thread` itself — the
+    /// runaway thread's wrapper lambda also holds it, so the flag is
+    /// safely writable from the thread until it returns and readable by
+    /// `all_detached_done()` from the owner (e.g.
+    /// `EngineHost::shutdown_()`'s best-effort grace-poll before
+    /// `api_.reset()`).  Cleared at the start of every drain.
+    std::vector<std::shared_ptr<std::atomic<bool>>> detached_done_flags;
 };
 
 // ============================================================================
@@ -366,7 +406,10 @@ ThreadManager::~ThreadManager()
 // spawn / drain
 // ============================================================================
 
-// ── SlotContext::mark_active_loop_exited ───────────────────────────────────
+// ── SlotContext — out-of-line members ───────────────────────────────────────
+//
+// (The transactional `with_active_loop` is an inline template in the
+// header; it has no out-of-line definition.)
 
 void ThreadManager::SlotContext::mark_active_loop_exited() noexcept
 {
@@ -374,6 +417,12 @@ void ThreadManager::SlotContext::mark_active_loop_exited() noexcept
     {
         active_loop_exited_->store(true, std::memory_order_release);
     }
+}
+
+bool ThreadManager::SlotContext::shutdown_requested() const noexcept
+{
+    return shutdown_requested_ &&
+           shutdown_requested_->load(std::memory_order_acquire);
 }
 
 // ── spawn — contract-aware overloads (with SlotContext) ─────────────────────
@@ -392,20 +441,25 @@ bool ThreadManager::spawn(const std::string &name,
 
     auto done                = std::make_shared<std::atomic<bool>>(false);
     auto active_loop_exited  = std::make_shared<std::atomic<bool>>(false);
+    auto active_loop_depth   = std::make_shared<std::atomic<int>>(0);
+    auto shutdown_requested  = std::make_shared<std::atomic<bool>>(false);
 
     // Wrap the body. The wrapper:
-    //   - constructs a SlotContext bound to the per-slot flag and passes it
-    //     into the user body;
-    //   - on body return (normal or exception), unconditionally marks
-    //     active_loop_exited (defensive — at WORST the flag is set right
-    //     before `done`; the body MAY have set it earlier);
+    //   - constructs a SlotContext bound to all per-slot flags and passes
+    //     it into the user body;
+    //   - on body return (normal or exception), defensively marks
+    //     `active_loop_exited` (monotonic-mark family safety net) and
+    //     forces `active_loop_depth` back to 0 (belt-and-suspenders —
+    //     RAII guarantees this for normal exit, but resetting here
+    //     catches any pathological path that left depth positive);
     //   - then sets `done` so the joiner can proceed.
-    // shared_ptr captures keep both atomics alive for detached threads.
+    // shared_ptr captures keep all atomics alive for detached threads.
     auto wrapped = [body = std::move(body),
-                    done, active_loop_exited, name,
+                    done, active_loop_exited, active_loop_depth,
+                    shutdown_requested, name,
                     owner = pImpl->composed_identity]() mutable
     {
-        SlotContext ctx{active_loop_exited};
+        SlotContext ctx{active_loop_exited, active_loop_depth, shutdown_requested};
         try
         {
             body(ctx);
@@ -420,8 +474,9 @@ bool ThreadManager::spawn(const std::string &name,
             LOGGER_ERROR("[ThreadManager:{}] thread '{}' body threw unknown exception",
                          owner, name);
         }
-        // Defensive mark — guarantees active_loop_exited is true before
-        // done is set, even if the body didn't call mark explicitly.
+        // Defensive marks — guarantees both quiescence flags are in the
+        // safe state before `done` is set, even on exception paths.
+        active_loop_depth->store(0, std::memory_order_release);
         active_loop_exited->store(true, std::memory_order_release);
         done->store(true, std::memory_order_release);
     };
@@ -439,12 +494,35 @@ bool ThreadManager::spawn(const std::string &name,
                     pImpl->composed_identity, name);
         return false;
     }
+    // Enforce single-master invariant per HEP-CORE-0031 §4.2.  A
+    // ThreadManager with two masters has no valid drain order — the
+    // contract assumes exactly one orchestrator whose lifetime
+    // envelopes the peers'.
+    if (opts.is_master)
+    {
+        for (const auto &existing : pImpl->slots)
+        {
+            if (existing.is_master)
+            {
+                LOGGER_ERROR(
+                    "[ThreadManager:{}] spawn('{}', is_master=true) "
+                    "rejected — slot '{}' is already master; a "
+                    "ThreadManager admits at most one master "
+                    "(HEP-CORE-0031 §4.2).",
+                    pImpl->composed_identity, name, existing.name);
+                return false;
+            }
+        }
+    }
     ThreadSlot slot;
     slot.name                = name;
     slot.join_timeout        = opts.join_timeout;
     slot.spawn_time          = std::chrono::steady_clock::now();
     slot.done                = done;
     slot.active_loop_exited  = active_loop_exited;
+    slot.active_loop_depth   = active_loop_depth;
+    slot.shutdown_requested  = shutdown_requested;
+    slot.is_master           = opts.is_master;
     slot.thread              = std::thread(std::move(wrapped));
     pImpl->slots.emplace_back(std::move(slot));
 
@@ -491,6 +569,104 @@ bool ThreadManager::is_active_loop_exited(std::string_view name) const noexcept
         }
     }
     return false;  // no such slot
+}
+
+bool ThreadManager::request_shutdown(std::string_view name) noexcept
+{
+    if (!pImpl) return false;
+    std::lock_guard<std::mutex> lock(pImpl->mu);
+    for (auto &slot : pImpl->slots)
+    {
+        if (slot.name == name)
+        {
+            if (slot.shutdown_requested)
+                slot.shutdown_requested->store(true, std::memory_order_release);
+            return true;
+        }
+    }
+    return false;  // no such slot
+}
+
+std::size_t ThreadManager::request_shutdown_all() noexcept
+{
+    if (!pImpl) return 0;
+    std::lock_guard<std::mutex> lock(pImpl->mu);
+    pImpl->closing.store(true, std::memory_order_release);
+    std::size_t count = 0;
+    for (auto &slot : pImpl->slots)
+    {
+        // Per HEP-CORE-0031 §4.2 master/peer model: signal peers
+        // only; the master's shutdown_requested is set later (inside
+        // drain) only after every peer's `done` is true.  Signaling
+        // the master here would defeat the purpose — the master is
+        // exactly the thread whose lifetime must envelope the peers'.
+        // See SpawnOptions::is_master in thread_manager.hpp.
+        if (slot.is_master) continue;
+        if (slot.shutdown_requested)
+        {
+            slot.shutdown_requested->store(true, std::memory_order_release);
+            ++count;
+        }
+    }
+    return count;
+}
+
+std::size_t ThreadManager::wait_for_quiescence(
+    std::chrono::milliseconds timeout) noexcept
+{
+    if (!pImpl) return 0;
+
+    // Snapshot the active_loop_depth counter of every spawned slot
+    // under the lock, EXCLUDING the calling thread (waiting on
+    // yourself deadlocks).  Threads whose depth is already 0 are
+    // filtered out — quiescent by definition.
+    struct Pending
+    {
+        std::string                          name;
+        std::shared_ptr<std::atomic<int>>    depth;
+    };
+    std::vector<Pending> pending;
+    {
+        std::lock_guard<std::mutex> lock(pImpl->mu);
+        const auto self_id = std::this_thread::get_id();
+        for (const auto &slot : pImpl->slots)
+        {
+            if (slot.thread.get_id() == self_id) continue;
+            if (!slot.active_loop_depth) continue;
+            if (slot.active_loop_depth->load(std::memory_order_acquire) == 0)
+                continue;  // already quiescent (default-safe or already exited)
+            pending.push_back({slot.name, slot.active_loop_depth});
+        }
+    }
+    if (pending.empty()) return 0;
+
+    auto erase_done = [](std::vector<Pending> &v) {
+        v.erase(
+            std::remove_if(v.begin(), v.end(),
+                           [](const Pending &p) {
+                               return p.depth->load(std::memory_order_acquire) == 0;
+                           }),
+            v.end());
+    };
+
+    // Shared wall-clock deadline (NOT per-slot — total wait bounded).
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline && !pending.empty())
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds{10});
+        erase_done(pending);
+    }
+    erase_done(pending);  // post-deadline final check
+
+    for (const auto &p : pending)
+    {
+        LOGGER_WARN(
+            "[ThreadManager:{}] wait_for_quiescence: thread '{}' still in "
+            "active loop after {}ms — caller's destructive operations may "
+            "race with this thread's pImpl access",
+            pImpl->composed_identity, p.name, timeout.count());
+    }
+    return pending.size();
 }
 
 bool ThreadManager::wait_for_active_loop_exit(std::string_view          name,
@@ -544,20 +720,134 @@ std::size_t ThreadManager::drain()
         pImpl->slots.clear();
     }
 
+    // ── Master/peer orchestration (HEP-CORE-0031 §4.2; post-MD1.5) ──
+    //
+    // Locate the master slot (at most one — enforced at spawn time).
+    // When present, drain runs the four-phase orchestrated path that
+    // guarantees the master outlives every peer: peers signaled +
+    // exit first, only then the master is signaled, only then is
+    // anyone joined.
+    //
+    // Without this, the role-host shutdown sequence deterministically
+    // crashes:
+    //   * `EngineHost::shutdown_()` flips `core.is_shutdown_requested`
+    //     (global flag — signals worker AND ctrl simultaneously);
+    //   * LIFO drain joins ctrl first → ctrl exits its with_active_loop
+    //     bracket immediately on the global flag;
+    //   * worker (still alive) enters `do_role_teardown` Step 9a
+    //     (`deregister_from_broker`), which sends DEREG_REQ via
+    //     `BrokerRequestComm::do_request`;
+    //   * `do_request` blocks on a CV waiting for DEREG_ACK from the
+    //     ctrl thread — but ctrl is gone, nobody will reply;
+    //   * worker's bounded-join timeout fires, drain detaches worker
+    //     and returns; `api_.reset()` destroys `RoleAPIBase::Impl`;
+    //   * the detached worker thread eventually returns from the
+    //     timed-out `do_request` and touches the freed pImpl → SEGV.
+    // Confirmed via gdb + libc backtrace + in-source breadcrumbs
+    // 2026-05-13; the SEGV reproduces 5/5 — not a race, a sequence
+    // violation.
+    //
+    // The master/peer orchestration encodes the dependency: "ctrl
+    // (master) must outlive every other slot's runtime needs."
+    int master_idx = -1;
+    for (std::size_t i = 0; i < to_join.size(); ++i)
+    {
+        if (to_join[i].is_master)
+        {
+            master_idx = static_cast<int>(i);
+            break;
+        }
+    }
+
+    if (master_idx >= 0)
+    {
+        // Phase 1 — signal every peer.  If the caller already invoked
+        // `request_shutdown_all()` upstream this is a re-signal (cheap
+        // idempotent atomic store).  Class-level wake-ups (sockets,
+        // CVs) that unblock a peer from a blocking operation are
+        // still the caller's responsibility — ThreadManager only
+        // flips per-slot flags.
+        for (std::size_t i = 0; i < to_join.size(); ++i)
+        {
+            if (static_cast<int>(i) == master_idx) continue;
+            if (to_join[i].shutdown_requested)
+                to_join[i].shutdown_requested->store(
+                    true, std::memory_order_release);
+        }
+
+        // Phase 2 — wait for every peer's `done` flag.  Bounded by
+        // each peer's per-slot `join_timeout`.  Polls in 10 ms
+        // granularity; per-slot wall-clock cap so a single
+        // unresponsive peer can't extend the overall drain
+        // arbitrarily.
+        for (std::size_t i = 0; i < to_join.size(); ++i)
+        {
+            if (static_cast<int>(i) == master_idx) continue;
+            auto &slot = to_join[i];
+            if (!slot.done) continue;
+            const auto deadline =
+                std::chrono::steady_clock::now() + slot.join_timeout;
+            while (!slot.done->load(std::memory_order_acquire) &&
+                   std::chrono::steady_clock::now() < deadline)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds{10});
+            }
+            // Don't act on timeout here — Phase 4's bounded-join is
+            // the single place that performs detach + ERROR log +
+            // process-wide counter increment, so any timing
+            // accounting and operator-facing diagnostic stay
+            // canonical.
+        }
+
+        // Phase 3 — signal the master.  All peers are now done (or
+        // we waited up to their timeouts).  Setting the master's
+        // shutdown_requested is what releases its `with_active_loop`
+        // bracket via the `ctx.shutdown_requested()` predicate the
+        // master is required to consult; see SpawnOptions::is_master.
+        if (to_join[master_idx].shutdown_requested)
+            to_join[master_idx].shutdown_requested->store(
+                true, std::memory_order_release);
+    }
+
     std::size_t detached = 0;
 
-    // Reverse spawn order: last spawned = first joined. This matches the
-    // LIFO teardown convention used by LifecycleGuard for static modules
-    // and gives deterministic join ordering when threads have ordering
-    // dependencies (e.g. a worker depends on a ctrl thread to be alive).
+    // Reset the retained-`done`-flags list at the start of the join
+    // phase.  Each detach in the loop below appends one entry so the
+    // owner can later poll `all_detached_done()` for a grace period
+    // before destroying state that the detached thread still touches
+    // (see `EngineHost::shutdown_()`'s safety gate).
+    {
+        std::lock_guard<std::mutex> lock(pImpl->mu);
+        pImpl->detached_done_flags.clear();
+    }
+
+    // Phase 4 (or sole path when no master): per-slot bounded join in
+    // reverse spawn order (LIFO).  This matches the LIFO convention
+    // used by LifecycleGuard for static modules and gives
+    // deterministic join ordering across the manager's tracked
+    // threads.  When a master was orchestrated above, every slot is
+    // already on its way to `done == true`; LIFO is just the final
+    // join order.
     //
     // Per-slot work delegates to the shared `process_slot_bounded_join`
     // helper (two-stage wait + join-or-detach + stage-differentiated
-    // ERROR log + process-wide detach counter).  See HEP-CORE-0031 §4.1.3.
+    // ERROR log + process-wide detach counter).  See
+    // HEP-CORE-0031 §4.1.3.
     for (auto it = to_join.rbegin(); it != to_join.rend(); ++it)
     {
         if (!process_slot_bounded_join(*it, pImpl->composed_identity, "drain"))
+        {
             ++detached;
+            // Retain the slot's `done` shared_ptr — the detached
+            // thread's wrapper lambda also holds it and will flip it
+            // true when the body finally returns; the owner can poll
+            // via `all_detached_done()` before tearing down state.
+            if (it->done)
+            {
+                std::lock_guard<std::mutex> lock(pImpl->mu);
+                pImpl->detached_done_flags.push_back(it->done);
+            }
+        }
     }
 
     pImpl->detached_count_last_drain.store(detached, std::memory_order_release);
@@ -577,11 +867,15 @@ bool ThreadManager::join_named(std::string_view name)
 {
     if (!pImpl) return false;
 
-    // Extract the named slot under the lock so the rest of the
-    // operation runs without blocking concurrent spawn / drain calls.
-    // Same per-slot bounded-join semantics as drain(); difference is
-    // we only touch one slot and we DON'T flip `closing` (other
-    // threads can still be spawned afterwards).
+    // Find + signal + extract the named slot, all under one lock
+    // acquisition.  Signaling means flipping the per-slot
+    // shutdown_requested flag — `with_active_loop` in this thread will
+    // skip a subsequent entry, and the body can poll
+    // `SlotContext::shutdown_requested()` if it wants to bail out
+    // promptly.  We do NOT flip the manager-wide `closing` flag (other
+    // threads can still spawn).  Class-level wake-up (sockets, CVs)
+    // must be done by the caller; ThreadManager has no visibility
+    // into class-specific blocking mechanisms.
     ThreadSlot slot;
     bool found = false;
     {
@@ -592,6 +886,11 @@ bool ThreadManager::join_named(std::string_view name)
         {
             if (it->name == name)
             {
+                // Signal first — this is the join_named internal
+                // shutdown_requested set per HEP-CORE-0031 §4.1.
+                if (it->shutdown_requested)
+                    it->shutdown_requested->store(true,
+                                                  std::memory_order_release);
                 slot = std::move(*it);
                 pImpl->slots.erase(it);
                 found = true;
@@ -601,9 +900,9 @@ bool ThreadManager::join_named(std::string_view name)
     }
     if (!found) return false;
 
-    // Per-slot work delegates to the shared helper (same algorithm as
-    // drain — two-stage wait + join-or-detach + stage-differentiated
-    // ERROR log + process-wide detach counter).  See HEP-CORE-0031 §4.1.3.
+    // Per-slot work delegates to the shared helper (two-stage wait +
+    // join-or-detach + stage-differentiated ERROR log + process-wide
+    // detach counter).  See HEP-CORE-0031 §4.1.
     return process_slot_bounded_join(slot, pImpl->composed_identity, "join_named");
 }
 
@@ -645,7 +944,7 @@ std::vector<ThreadManager::ThreadInfo> ThreadManager::snapshot() const
 const std::string &ThreadManager::owner_tag() const noexcept
 {
     static const std::string empty;
-    return pImpl ? pImpl->composed_identity : empty;
+    return pImpl ? pImpl->owner_tag : empty;
 }
 
 const std::string &ThreadManager::owner_id() const noexcept
@@ -669,6 +968,18 @@ std::size_t ThreadManager::detached_count_last_drain() const
 {
     return pImpl ? pImpl->detached_count_last_drain.load(std::memory_order_acquire)
                  : 0;
+}
+
+bool ThreadManager::all_detached_done() const noexcept
+{
+    if (!pImpl) return true;
+    std::lock_guard<std::mutex> lock(pImpl->mu);
+    for (const auto &flag : pImpl->detached_done_flags)
+    {
+        if (!flag) continue;
+        if (!flag->load(std::memory_order_acquire)) return false;
+    }
+    return true;
 }
 
 // ============================================================================

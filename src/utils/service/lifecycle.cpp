@@ -200,16 +200,29 @@ bool LifecycleManagerImpl::registerDynamicModule(lifecycle_internal::InternalMod
 {
     if (!m_is_initialized.load(std::memory_order_acquire))
     {
+        // Common cause: a test or embedding constructed a lifecycle-
+        // backed class (ThreadManager, HubHost, RoleHostBase, etc.)
+        // without any LifecycleGuard alive in the process — see
+        // docs/README/README_testing.md § "Choosing a test pattern"
+        // and HEP-CORE-0001 § "Testing implications".  The caller's
+        // module is REJECTED (no graph membership, no ordered
+        // teardown).  Robust callers (e.g. ThreadManager) tolerate
+        // this and fall back to a no-lifecycle mode; tests that hit
+        // this message are using the wrong test pattern.
         PLH_DEBUG("[PLH_LifeCycle]\n[{}]:PID[{}]\n  "
-                  "    **  ERROR: register_dynamic_module called before initialization.",
-                  m_app_name, m_pid);
+                  "    **  ERROR: register_dynamic_module('{}') rejected "
+                  "— LifecycleManager is not initialized "
+                  "(no LifecycleGuard alive in this process).",
+                  m_app_name, m_pid, def.name);
         return false;
     }
     if (m_is_finalized.load(std::memory_order_acquire))
     {
         PLH_DEBUG("[PLH_LifeCycle]\n[{}]:PID[{}]\n  "
-                  "    **  ERROR: register_dynamic_module called after finalization.",
-                  m_app_name, m_pid);
+                  "    **  ERROR: register_dynamic_module('{}') rejected "
+                  "— LifecycleManager already finalized "
+                  "(register before LifecycleGuard's dtor begins).",
+                  m_app_name, m_pid, def.name);
         return false;
     }
 
