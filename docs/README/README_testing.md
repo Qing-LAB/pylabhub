@@ -401,6 +401,16 @@ If **all are no**, Pattern 1 or 2 is allowed.
 | Linking the test binary against both `pylabhub::test_framework` and `GTest::gtest_main` | Two `main()` definitions → link error | Link `pylabhub::test_framework` only — it provides `main()` via `test_entrypoint.cpp` |
 | Worker body returning normally (falling off the end) | Runs pylabhub-utils + libzmq + luajit static dtors → potential 60s hang on CI | Call `run_gtest_worker(...)` and let it `_exit()` |
 
+> **Existing-codebase warning (2026-05-13 audit).** A grep over
+> `tests/test_layer{2,3,4}_*` will find ~23 files that still own an
+> in-process `LifecycleGuard` via `SetUpTestSuite` (full list and
+> migration plan: `docs/todo/TESTING_TODO.md` § "Pattern-3 migration
+> debt"). These are **migration debt, not exemplars** — do not copy
+> their shape into new tests.  They pass today only because each
+> binary has one suite and exits before static-dtor order matters in
+> the failure modes the antipatterns table above describes; the rule
+> still applies to any new code.
+
 ---
 
 ### Example 3: Lifecycle-backed test (Pattern 3)
@@ -551,6 +561,31 @@ For an inventory of compliance violations currently being swept, see
 4. **Use EXPECT_* for checks:** Test continues even if expectation fails
 5. **Test edge cases:** Empty inputs, null pointers, boundary values
 6. **Clean up resources:** Use fixtures for proper setup/teardown
+
+### Concurrent ordering — `sleep_for` is NOT a synchronization primitive
+
+When a test must wait for an asynchronous side effect (a thread published
+a value, a signal arrived, a queue has a message, a state machine
+transitioned), use a **condition-based wait**, NOT `std::this_thread::sleep_for`.
+
+- **Canonical helper**: `pylabhub::tests::poll_until(pred, timeout)` in
+  `tests/test_framework/test_sync_utils.h`. It polls `pred` at fine
+  granularity, returns true as soon as `pred()` is true, and returns
+  false on timeout. Pair every use with an `ASSERT_TRUE`/`EXPECT_TRUE`
+  on the return so a regression that fails to satisfy `pred()` within
+  the bound fails the test loudly.
+- **Why this rule**: `sleep_for(N ms)` either over-waits (slow CI gets
+  the test, fast CI wastes N ms × thousands of tests), under-waits and
+  flakes, or both. A condition wait completes the moment the actual
+  condition holds — it's both faster on average and free of races.
+- **The one acceptable use**: `sleep_for(100 ms)` after `zmq::socket::bind()`
+  or `socket::connect()` is acceptable as a workaround for TCP-stack
+  establishment timing. This is a libzmq-internal concern that has no
+  user-visible condition to poll; document it inline at the call site
+  so a future reader knows why a `sleep_for` is there. Anywhere else,
+  introduce a flag/CV/atomic and `poll_until` against it.
+
+
 
 ### Naming conventions (MANDATORY)
 

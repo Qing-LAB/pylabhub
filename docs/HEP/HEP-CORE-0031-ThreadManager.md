@@ -111,6 +111,27 @@ or observes `closing=true` and rejects (safe — no orphaned joinable thread).
 naturally idempotent — `joinable()` returns false after join/detach, so repeat
 calls walk an empty slot list and return 0.
 
+**Single coordinated drain per owner.** Each ThreadManager has ONE owner
+that drives the coordinated drain on shutdown.  Managed threads (peers
+AND the master) coordinate by *signal/flag* — never by calling drain()
+themselves.  Concrete sites:
+
+| Owner | Coordinated drain | Thread |
+|---|---|---|
+| `RoleAPIBase` (role hosts) | `EngineHost<RoleAPIBase>::shutdown_()` | MAIN |
+| `HubAPI` (hub host) | `HubHost::shutdown()` + `HubHost::startup()` rollback | MAIN |
+| `ZmqQueue` | `ZmqQueue::stop()` | caller of stop() |
+| direct (tests, etc.) | `~ThreadManager()` safety net | owner |
+
+A managed thread that calls `drain()` on its own manager would walk its
+own slot, find `done` still false (the wrapper sets it AFTER the body
+returns), time out, **detach itself**, and bump
+`process_detached_count`.  This was bug L1 — `do_role_teardown` Step 14
+called `api.thread_manager().drain()` from inside the worker thread,
+producing a deterministic self-detach.  Fixed by deleting the call;
+worker just returns and the MAIN thread's `EngineHost::shutdown_()`
+performs the single drain.
+
 ---
 
 ## 4.1 Thread Shutdown Contract
@@ -320,6 +341,141 @@ When adding a new step to an existing teardown sequence:
 
 ---
 
+## 4.2 Master / Peer Shutdown Ordering (post-MD1.5)
+
+### 4.2.1 What the bug looked like
+
+`PlhHubCliTest.RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters` failed
+**5/5 deterministic** on `feature/lua-role-support` after the MD1
+contract landed.  Exit code 139 (SIGSEGV) on `SIGTERM` shutdown.
+
+The gdb backtrace (libc `backtrace_symbols_fd`, 2026-05-13) pinned
+the fault to **`pthread_mutex_lock+0x4` inside
+`RoleAPIBase::deregister_from_broker`**.  In-source breadcrumbs that
+printed `this`, `pImpl.get()`, and `&shared.mu` at every step then
+showed the `pImpl` value flipping mid-call — `~RoleAPIBase` fired
+**while the worker thread was inside `deregister_from_broker`**.
+That's not a field race; it's the **entire `RoleAPIBase` being
+destroyed under a thread still calling methods on it**.
+
+### 4.2.2 The sequence that produced the UAF
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant main as main()
+    participant worker as worker (slave)
+    participant ctrl as ctrl (provides DEREG service)
+    participant tm as ThreadManager
+    main->>tm: shutdown_() → core.request_stop() (GLOBAL flag)
+    Note over worker,ctrl: BOTH threads observe the global flag
+    ctrl-->>tm: poll-loop predicate now false → exits bracket → done
+    main->>tm: drain() — joins ctrl FIRST (LIFO)
+    worker->>worker: enters do_role_teardown
+    worker->>ctrl: dereg → do_request("DEREG_REQ"...) BLOCKS for ACK
+    Note over ctrl: ctrl already joined — no reply will come
+    tm-->>tm: worker bounded-join times out → DETACHES worker
+    main->>main: api_.reset() — destroys Impl
+    worker-->>worker: do_request times out → returns
+    worker->>worker: touches pImpl → SIGSEGV (UAF)
+```
+
+The three actors had incompatible assumptions:
+
+| Actor | Assumption | Reality |
+|---|---|---|
+| `EngineHost::shutdown_()` | After `drain()` returns, no thread holds `api_` | drain detached one on timeout — that thread still holds `api_` |
+| `do_role_teardown` Step 9a | Ctrl is alive (we haven't called `bc->stop()` yet) | Outer drain already joined ctrl |
+| `ThreadManager::drain()` | LIFO is the right order | Doesn't know worker→ctrl is a producer/consumer pair at dereg time |
+
+### 4.2.3 The fix — master/peer ordering
+
+`SpawnOptions::is_master = true` marks ONE slot per ThreadManager as
+the **master**: the thread whose lifetime must envelope every peer's
+runtime.
+
+`request_shutdown_all()` signals **peers only** — master untouched.
+
+`drain()` runs four phases when a master is present:
+
+1. **Signal peers** (per-slot `shutdown_requested`).
+2. **Wait for every peer's `done`**, bounded by per-slot `join_timeout`.
+3. **Signal master** (per-slot `shutdown_requested`).
+4. **Per-slot bounded join** in LIFO (same algorithm as the
+   no-master path).
+
+The master's body **must consult `ctx.shutdown_requested()`** as its
+exit condition, NOT a globally-shared stop flag.  A global flag fires
+too early (before peers are done with the master) and re-introduces
+this bug class.
+
+`EngineHost::shutdown_()` also gained a **detach safety gate**: if
+`drain()` reports any detached threads, `api_` is **leaked**
+(`api_.release()`) rather than reset — the detached thread still
+owns pointers into `*api_`, and resetting would re-trigger the same
+UAF.  OS reaps the detached thread + its allocations at process exit.
+
+### 4.2.4 Role host wiring (the canonical example)
+
+In `RoleAPIBase::start_ctrl_thread` the ctrl thread is marked master:
+
+```cpp
+ThreadManager::SpawnOptions ctrl_opts;
+ctrl_opts.is_master = true;
+thread_manager().spawn("ctrl",
+    [this](ThreadManager::SlotContext &ctx) {
+        ...
+        ctx.with_active_loop([&] {
+            bc->run_poll_loop([core, &ctx] {
+                return core->is_running() && !ctx.shutdown_requested();
+            });
+        });
+        ...
+    },
+    ctrl_opts);
+```
+
+The poll-loop predicate consults `ctx.shutdown_requested()` —
+ThreadManager raises it only after peers (worker, etc.) are done.
+`core->is_running()` is kept because the worker still flips it in
+`do_role_teardown` Step 12 as a fast-path wake-up (alongside
+`bc->stop()`); the per-slot signal alone wouldn't unblock a thread
+parked in `zmq_poll`.
+
+### 4.2.5 Constraints and trade-offs
+
+- **`with_active_loop` uses a counter, not a flag** — the per-slot
+  state that `wait_for_quiescence` polls is `active_loop_depth`, an
+  `atomic<int>` that the bracket increments on entry and decrements
+  on exit (RAII).  The slot is considered "in active loop" iff
+  `depth > 0`.  This lets nested `with_active_loop` calls on the
+  same `SlotContext` compose safely: an inner exit only decrements
+  the depth; the outer frame's exit drives it back to 0.  A bool
+  flag would have allowed an inner RAII reset to clear the value
+  while an outer body was still running, and a concurrent
+  `wait_for_quiescence` would have mis-reported quiescence.
+- **At most one master per manager** — enforced at spawn time;
+  second master spawn is rejected with ERROR.  Two masters have no
+  defined drain order.
+- **Per-slot `join_timeout` still bounds the wait** — Phase 2 waits
+  per-peer up to that timeout, then proceeds.  If a peer doesn't
+  reach `done`, Phase 4 still detaches it; the safety gate in
+  `EngineHost::shutdown_()` then leaks `api_` rather than UAF.
+- **No master = unchanged behavior** — drain takes the same LIFO path
+  it always did.  Existing ThreadManager users (ZmqQueue, future
+  helpers) require no migration unless they exhibit the
+  producer/consumer-at-teardown dependency.
+- **The mutex inside `RoleAPIBase::Impl::Shared`** (the M2.5-style
+  controlled-access struct introduced in the same wave for the
+  `registered_*_channel` fields) is necessary even with master/peer
+  ordering — the two fixes address different bug classes:
+  - Master/peer = lifetime ordering between threads
+  - `Shared` mutex = data-race protection for fields that are
+    legitimately accessed across threads (heartbeat tick reads
+    `pImpl->{out_channel, channel, uid}` from ctrl)
+
+---
+
 ## 5. Lifecycle Thunk Design
 
 `tm_shutdown()` is a **safe no-op**. Rationale:
@@ -360,6 +516,36 @@ Logger can't depend on ThreadManager (it IS Logger). Accepted as-is.
 | ConsumerRoleHost | `"cons"` | role uid | `"worker"`, `"ctrl"` |
 | ProcessorRoleHost | `"proc"` | role uid | `"worker"`, `"ctrl"` |
 | ZmqQueue | `"ZmqQueue"` | `instance_id` or `endpoint@ptr` | `"send"` or `"recv"` |
+
+### 7.1 Contract adoption — call to module owners (post-Wave-MD1)
+
+Wave MD1 added the transactional `with_active_loop` bracket plus
+manager-wide `request_shutdown_all` / `wait_for_quiescence` primitives
+to the contract surface (see §4.1).  Existing modules using
+ThreadManager continue to work — the old `mark_active_loop_exited` /
+`wait_for_active_loop_exit` family is retained — but every owner
+should audit its spawn sites and teardown path and consider migrating:
+
+1. **Bracket pImpl-touching critical regions** with
+   `ctx.with_active_loop([&]{ ... })` instead of ad-hoc "I'm done"
+   flags.  The bracket gives default-safe quiescence (a thread that
+   never brackets stays quiescent forever) plus RAII reset on
+   exception.
+2. **Replace bespoke pre-destruction waits** with
+   `request_shutdown_all()` + `wait_for_quiescence(timeout)` before
+   destroying state that any thread might touch.  Pattern is
+   `do_role_teardown` Step 12.5.
+3. **Drop redundant per-slot stop flags** the owner used to manage by
+   hand if `ctx.shutdown_requested()` covers the same signal.
+4. **Audit dependency-ordered single-thread joins** (`join_named`) —
+   it now signals the slot's `shutdown_requested` internally.  The
+   class-level wake-up call (sockets, CVs) is still required for
+   threads that block in `zmq_poll` etc.
+
+Sweep tracking lives in `docs/todo/API_TODO.md` §"Wave MD1
+follow-up".  Do not mix the transactional bracket and the monotonic-
+mark families on the same slot — they track distinct flags and
+mixing produces two queues of observers waiting on different signals.
 
 ---
 
