@@ -590,21 +590,38 @@ bool RoleAPIBase::start_ctrl_thread(
     LOGGER_INFO("[{}] ctrl: starting control thread (heartbeat install "
                 "deferred to post-REG_ACK)", pImpl->role_tag);
 
-    thread_manager().spawn("ctrl", [this]()
+    thread_manager().spawn("ctrl",
+        [this](pylabhub::utils::ThreadManager::SlotContext &ctx)
     {
-        auto *eng = pImpl->engine;
+        // Capture every pImpl-borrowed reference locally at the start of
+        // the thread body — per the Thread Shutdown Contract
+        // (HEP-CORE-0031 §4.1, MD1), once the active loop returns and
+        // we mark active_loop_exited, this thread MUST NOT touch
+        // RoleAPIBase's pImpl (or BRC's, or any other shared state the
+        // teardown caller might destroy).  Local captures stay valid
+        // for the rest of the body's lifetime, including the post-loop
+        // log calls below.
+        auto *eng                       = pImpl->engine;
+        auto *bc                        = pImpl->broker_channel;
+        auto *core                      = pImpl->core;
+        const std::string role_tag_local = pImpl->role_tag;
+
         scripting::ThreadEngineGuard guard(*eng);
-        LOGGER_INFO("[{}/ctrl] thread started", pImpl->role_tag);
+        LOGGER_INFO("[{}/ctrl] thread started", role_tag_local);
+        LOGGER_TRACE("[{}] ctrl: entering poll loop", role_tag_local);
 
-        auto *bc   = pImpl->broker_channel;
-        auto *core = pImpl->core;
-
-        LOGGER_TRACE("[{}] ctrl: entering poll loop", pImpl->role_tag);
         bc->run_poll_loop([core] {
             return core->is_running() && !core->is_shutdown_requested();
         });
-        LOGGER_TRACE("[{}] ctrl: poll loop exited", pImpl->role_tag);
-        LOGGER_INFO("[{}/ctrl] thread exiting", pImpl->role_tag);
+
+        // Active loop has returned.  Honor the contract: mark
+        // active_loop_exited so the teardown caller's
+        // `wait_for_active_loop_exit("ctrl")` can proceed to destroy
+        // broker_comm_.  All log/trace from this point on uses ONLY
+        // local captures — no pImpl access.
+        ctx.mark_active_loop_exited();
+        LOGGER_TRACE("[{}] ctrl: poll loop exited", role_tag_local);
+        LOGGER_INFO("[{}/ctrl] thread exiting", role_tag_local);
     });
 
     // ── Step 4: Register with broker (main thread, blocks) ─────────────────
