@@ -595,16 +595,17 @@ void BrokerRequestComm::run_poll_loop(std::function<bool()> should_run)
     // (pre-MD1 this site had two dead diagnostic stores —
     // `poll_loop_running.store(false)` and
     // `active_loop_periodic_tasks = nullptr` — that exposed the
-    // gdb-captured use-after-free at line 594.  Both were removed:
-    // `poll_loop_running` is now tracked by ThreadManager's per-slot
-    // `active_loop_exited` flag, and `active_loop_periodic_tasks`'s
-    // only consumer is `handle_command` which only runs on this thread
-    // during loop.run() — once the loop has returned, no further reader
-    // will observe the pointer, dangling or not.)
+    // gdb-captured use-after-free at line 594.  Both were removed; the
+    // `active_loop_periodic_tasks` pointer's only consumer is
+    // `handle_command` which only runs on this thread during
+    // loop.run() — once the loop has returned, no further reader will
+    // observe the pointer, dangling or not.)
     //
-    // The spawn-site lambda calls `ctx.mark_active_loop_exited()`
-    // immediately after this function returns, which is the signal the
-    // teardown caller waits on via `wait_for_active_loop_exit("ctrl")`.
+    // The spawn-site invokes `loop.run()` from inside a
+    // `ctx.with_active_loop(...)` transactional bracket; RAII
+    // decrements `active_loop_depth` when this function returns, which
+    // is the signal the teardown caller waits on via
+    // `wait_for_quiescence`.
 }
 
 void BrokerRequestComm::stop() noexcept
