@@ -79,7 +79,8 @@ TEST_F(LifecycleDynamicTest, RegisterBeforeInitFails)
     // ERROR-level log lines one-to-one).
 #if defined(PYLABHUB_ENABLE_DEBUG_MESSAGES)
     expect_worker_ok(proc,
-                     {"ERROR: register_dynamic_module called before initialization."},
+                     {"ERROR: register_dynamic_module('DynA') rejected — "
+                      "LifecycleManager is not initialized"},
                      {});
 #else
     expect_worker_ok(proc);

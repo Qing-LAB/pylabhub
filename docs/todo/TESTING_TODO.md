@@ -565,6 +565,76 @@ code):
 
 ## Current Focus
 
+### 🔥 Open 2026-05-13: Pattern-3 migration debt — 23 files own in-process `LifecycleGuard`
+
+Audit (2026-05-13) found 23 files in `tests/test_layer{2,3,4}_*` using
+the `SetUpTestSuite`-owned `LifecycleGuard` antipattern explicitly
+ruled out by `docs/README/README_testing.md` § "Choosing a test
+pattern" / "Antipatterns" and `docs/HEP/HEP-CORE-0001-hybrid-lifecycle-model.md`
+§ "Testing implications".  The contract: any test whose body
+transitively reaches a lifecycle module MUST run in a worker
+subprocess (`IsolatedProcessTest` + `run_gtest_worker`).  Canonical
+example: `tests/test_layer2_service/test_role_data_loop.cpp` +
+`workers/role_data_loop_workers.cpp`.
+
+**Why this matters now:** the failure mode is "hides the 60 s
+static-dtor hang behind 'it passed on my machine'."  Each file in
+the list below works today only because each gtest binary has one
+suite and exits before static-dtor order matters in the specific
+failure modes the antipatterns table calls out.  Adding any new
+suite, fixture, or test that re-runs `initialize()` (death tests,
+re-entrant lifecycle, etc.) trips the half-init failure mode
+immediately.
+
+**Migration unit per file**: move every `TEST_F` body into a worker
+function under `workers/<file>_workers.cpp` calling
+`run_gtest_worker(lambda, name, Logger::GetLifecycleModule(), …)`;
+replace each parent `TEST_F` with `SpawnWorker("file.scenario") +
+ExpectWorkerOk(w)`; register the worker dispatcher; add the new
+source to the test target's `CMakeLists.txt`.
+
+**Files (sorted by `TEST_F` count, smallest first to validate
+mechanics before tackling the big ones):**
+
+| File | TEST_F count |
+|---|---|
+| `test_layer3_datahub/test_datahub_hub_python_integration.cpp` | 1 |
+| `test_layer3_datahub/test_datahub_hub_federation.cpp` | 3 |
+| `test_layer3_datahub/test_datahub_hub_host_integration.cpp` | 3 |
+| `test_layer3_datahub/test_datahub_broker_consumer.cpp` | 5 |
+| `test_layer3_datahub/test_datahub_broker_schema.cpp` | 5 |
+| `test_layer3_datahub/test_datahub_zmq_endpoint_registry.cpp` | 5 |
+| `test_layer3_datahub/test_datahub_broker_admin.cpp` | 8 |
+| `test_layer2_service/test_engine_factory.cpp` | 8 |
+| `test_layer4_plh_hub/test_hub_host.cpp` | 10 |
+| `test_layer3_datahub/test_datahub_channel_access_policy.cpp` | 11 |
+| `test_layer3_datahub/test_hub_lua_integration.cpp` | 11 |
+| `test_layer3_datahub/test_datahub_schema_loader.cpp` | 12 plain TEST + 4 TEST_F (**also has mixed-suites violation**) |
+| `test_layer2_service/test_log_capture_fixture.cpp` | 13 |
+| `test_layer2_service/test_slot_view_helpers.cpp` | 15 |
+| `test_layer3_datahub/test_datahub_hub_inbox_queue.cpp` | 16 |
+| `test_layer3_datahub/test_datahub_metrics.cpp` | 17 |
+| `test_layer3_datahub/test_datahub_zmq_poll_loop.cpp` | 17 (across 2 suites — **two STS guards in one binary**) |
+| `test_layer4_plh_hub/test_admin_service.cpp` | 22 |
+| `test_layer3_datahub/test_datahub_broker_protocol.cpp` | 23 |
+| `test_layer2_service/test_hub_api.cpp` | 23 |
+| `test_layer2_service/test_role_host_core.cpp` | 34 |
+| `test_layer2_service/test_role_config.cpp` | 47 |
+| `test_layer3_datahub/test_datahub_hub_zmq_queue.cpp` | 65 |
+
+**Plus** the two ThreadManager test files touched in MD1.5 work
+(`test_layer2_service/test_thread_manager_active_loop.cpp` 17 TEST_F,
+`test_layer2_service/test_thread_manager_join_named.cpp` 7 TEST_F) —
+both currently use the same antipattern and must migrate first as
+prototypes of the mechanics.
+
+**Tracking**: one commit per migrated file (bisectable); update the
+table above as each file ships.  Open question for the user: scope
+of single session (do we migrate all 25 in one wave, or batch into
+phases?).
+
+---
+
 ### Open 2026-05-03: PlhRoleCliTest.LogBackupsBelowSentinelRejectedByValidate stalls under parallel load (framework concern)
 
 `PlhRoleCliTest.LogBackupsBelowSentinelRejectedByValidate` passes solo

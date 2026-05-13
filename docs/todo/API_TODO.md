@@ -10,6 +10,82 @@
 
 ## Current Focus
 
+### 🔥 Wave MD1 follow-up — ThreadManager contract adoption sweep (2026-05-12)
+
+**Context.** Wave MD1 (commits forthcoming on `feature/lua-role-support`)
+introduced a transactional Thread Shutdown Contract on `ThreadManager`
+per HEP-CORE-0031 §4.1.  The new surface area:
+
+- `SlotContext::with_active_loop(body)` — RAII bracket; sets per-slot
+  `in_active_loop` true while body runs, false on exit (including
+  throw).  **Skips body entirely** if `shutdown_requested` is already
+  set at entry.  This is the production-recommended way to declare a
+  pImpl-touching critical region.
+- `SlotContext::shutdown_requested()` — thread-side poll of the
+  per-slot flag.  Useful inside long-running brackets that want to
+  bail out promptly without waiting for a class-level stop signal.
+- `ThreadManager::request_shutdown(name)` — per-slot signal.
+- `ThreadManager::request_shutdown_all()` — manager-wide:
+  flips `closing` (rejects new spawns) AND every slot's
+  `shutdown_requested`.
+- `ThreadManager::wait_for_quiescence(timeout)` — blocks until every
+  spawned slot (auto-excluding the calling thread) is outside its
+  `with_active_loop` bracket.  Threads that never call
+  `with_active_loop` are quiescent by default and pass instantly.
+- `ThreadManager::join_named(name)` — now signals
+  `shutdown_requested` for the named slot internally before
+  extracting + two-stage-waiting + joining (one call =
+  signal+wait+join).  Caller is still responsible for class-level
+  wake-up (sockets, CVs) that the slot might be blocked on.
+
+The previous `mark_active_loop_exited` / `wait_for_active_loop_exit`
+APIs (monotonic-mark family) are retained for handy-case signaling
+but **must not be mixed with `with_active_loop` on the same slot**
+— the two APIs track different flags.
+
+**Sweep scope.**  Every module that owns a ThreadManager should
+revisit its spawn sites and teardown path to consider adopting the
+new contract.  Inventory the spawn sites and decide for each:
+
+  1. Does the thread body touch shared state (pImpl / sockets / SHM)
+     that the teardown caller will destroy?  If yes — wrap the
+     critical region in `ctx.with_active_loop([&]{ ... })` and add a
+     `request_shutdown_all() + wait_for_quiescence(timeout)` step in
+     the owner's teardown before destroying that state.  Pattern is
+     `do_role_teardown` Step 12.5 (post-MD1).
+  2. Does the owner use a dependency-ordered single-thread join
+     (e.g. HEP-CORE-0033 §4.2 Step 2 admin-before-HubAPI)?  If yes —
+     the existing `join_named(name)` call now internally signals the
+     slot's `shutdown_requested` first.  Audit whether the owner's
+     pre-`join_named` class-level stop call is still required
+     (typically yes, for wake-up; per-slot flag alone doesn't
+     unblock a thread stuck in `zmq_poll`).
+  3. Does the thread body have its own ad-hoc "is teardown
+     starting?" flag that the owner pokes?  Consider deleting it in
+     favor of `ctx.shutdown_requested()`.
+
+**Known sites to audit (non-exhaustive — read the code, don't trust
+this list):**
+
+- `RoleAPIBase` ctrl thread — ✅ adopted in MD1 (the migration that
+  motivated the contract).
+- `BrokerService` ctrl/admin threads — still on monotonic-mark or
+  ad-hoc flags.
+- `AdminService` worker — review for `with_active_loop` adoption.
+- `ZmqQueue` recv/send threads — ✅ adopted 2026-05-13 (L2):
+  wrapped recv/send bodies in `ctx.with_active_loop`, added
+  `ctx.shutdown_requested()` to loop predicates, plus a grace gate
+  in `ZmqQueue::stop()` that polls `all_detached_done()` before
+  letting pImpl destruction proceed.  Pattern mirrors
+  `EngineHost::shutdown_()`.
+- `HubHost` admin thread — review for `join_named` signal-internal
+  simplification (drop now-redundant `admin_svc->stop()` if
+  AdminService run loop polls `shutdown_requested`).
+- Any future module that spawns under ThreadManager.
+
+Track per-module decisions inline in this section as they are made;
+move closed items to "Recent Completions".
+
 ### 🔥 Wave M2 — Multi-Producer Channel Bookkeeping (2026-05-10)
 
 Canonical plan in `docs/TODO_MASTER.md` "Wave M2".  API-layer items

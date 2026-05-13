@@ -248,6 +248,11 @@ gtest_discover_tests(test_layer2_crypto_utils
 
 add_executable(test_layer2_thread_manager_join_named
     test_thread_manager_join_named.cpp
+    workers/thread_manager_join_named_workers.cpp
+)
+
+target_include_directories(test_layer2_thread_manager_join_named PRIVATE
+    workers
 )
 
 target_link_libraries(test_layer2_thread_manager_join_named
@@ -278,6 +283,11 @@ gtest_discover_tests(test_layer2_thread_manager_join_named
 
 add_executable(test_layer2_thread_manager_active_loop
     test_thread_manager_active_loop.cpp
+    workers/thread_manager_active_loop_workers.cpp
+)
+
+target_include_directories(test_layer2_thread_manager_active_loop PRIVATE
+    workers
 )
 
 target_link_libraries(test_layer2_thread_manager_active_loop
