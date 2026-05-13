@@ -39,6 +39,7 @@
 #include "utils/config/hub_config.hpp"
 #include "utils/hub_cli.hpp"
 #include "utils/script_engine_factory.hpp"  // scripting::init_scripting()
+#include "utils/thread_manager.hpp"         // process_detached_count for exit code
 #include "../scripting/python_interpreter_module.hpp"  // ensure_python_interpreter_loaded
 #include "utils/hub_directory.hpp"
 #include "utils/hub_host.hpp"
@@ -405,5 +406,19 @@ int main(int argc, char *argv[])
 
     // 17. Synchronous, ordered teardown (HEP-0033 §4.2 step 2).
     host.shutdown();
+
+    // HEP-CORE-0031 §4.2 — surface unclean teardown in the exit code.
+    // See plh_role_main.cpp for the same gate; we propagate
+    // ThreadManager's process-wide detached counter so the operator
+    // can tell the OS-reaper-on-exit case apart from a clean exit.
+    if (pylabhub::utils::ThreadManager::process_detached_count() > 0)
+    {
+        std::cerr << "[plh_hub] WARNING: "
+                  << pylabhub::utils::ThreadManager::process_detached_count()
+                  << " thread(s) were detached during shutdown — see "
+                     "earlier ERROR log(s) from ThreadManager for the "
+                     "stuck thread name(s).\n";
+        return 2;
+    }
     return 0;
 }
