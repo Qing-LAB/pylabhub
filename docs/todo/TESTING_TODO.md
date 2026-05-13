@@ -596,9 +596,27 @@ source to the test target's `CMakeLists.txt`.
 **Files (sorted by `TEST_F` count, smallest first to validate
 mechanics before tackling the big ones):**
 
+Re-audit on 2026-05-13 against actual `LifecycleGuard` construction
+(not just textual mentions):
+
+  - ❌ DROPPED: `test_slot_view_helpers.cpp` — uses
+    `py::scoped_interpreter`, NOT `LifecycleGuard`.  Different
+    antipattern, not within this wave.
+  - ❌ DROPPED: `test_role_config.cpp` — already migrated to Pattern
+    3 (47 `SpawnWorker` calls, `IsolatedProcessTest` fixture).
+    Audit false-positive.
+  - 🔁 RENAMED: `test_datahub_hub_python_integration.cpp` →
+    `test_hub_python_integration.cpp` (same dir).
+  - 🔁 RENAMED: `test_layer4_plh_hub/test_hub_host.cpp` →
+    `test_layer2_service/test_hub_host.cpp`.
+  - 🔁 RENAMED: `test_layer4_plh_hub/test_admin_service.cpp` →
+    `test_layer2_service/test_admin_service.cpp`.
+
+**Active migration set: 21 files.**
+
 | File | TEST_F count |
 |---|---|
-| `test_layer3_datahub/test_datahub_hub_python_integration.cpp` | 1 |
+| `test_layer3_datahub/test_hub_python_integration.cpp` | 1 |
 | `test_layer3_datahub/test_datahub_hub_federation.cpp` | 3 |
 | `test_layer3_datahub/test_datahub_hub_host_integration.cpp` | 3 |
 | `test_layer3_datahub/test_datahub_broker_consumer.cpp` | 5 |
@@ -606,20 +624,18 @@ mechanics before tackling the big ones):**
 | `test_layer3_datahub/test_datahub_zmq_endpoint_registry.cpp` | 5 |
 | `test_layer3_datahub/test_datahub_broker_admin.cpp` | 8 |
 | `test_layer2_service/test_engine_factory.cpp` | 8 |
-| `test_layer4_plh_hub/test_hub_host.cpp` | 10 |
+| `test_layer2_service/test_hub_host.cpp` | 10 |
 | `test_layer3_datahub/test_datahub_channel_access_policy.cpp` | 11 |
 | `test_layer3_datahub/test_hub_lua_integration.cpp` | 11 |
 | `test_layer3_datahub/test_datahub_schema_loader.cpp` | 12 plain TEST + 4 TEST_F (**also has mixed-suites violation**) |
 | `test_layer2_service/test_log_capture_fixture.cpp` | 13 |
-| `test_layer2_service/test_slot_view_helpers.cpp` | 15 |
 | `test_layer3_datahub/test_datahub_hub_inbox_queue.cpp` | 16 |
 | `test_layer3_datahub/test_datahub_metrics.cpp` | 17 |
 | `test_layer3_datahub/test_datahub_zmq_poll_loop.cpp` | 17 (across 2 suites — **two STS guards in one binary**) |
-| `test_layer4_plh_hub/test_admin_service.cpp` | 22 |
+| `test_layer2_service/test_admin_service.cpp` | 22 |
 | `test_layer3_datahub/test_datahub_broker_protocol.cpp` | 23 |
 | `test_layer2_service/test_hub_api.cpp` | 23 |
 | `test_layer2_service/test_role_host_core.cpp` | 34 |
-| `test_layer2_service/test_role_config.cpp` | 47 |
 | `test_layer3_datahub/test_datahub_hub_zmq_queue.cpp` | 65 |
 
 **Plus** the two ThreadManager test files touched in MD1.5 work
