@@ -597,9 +597,9 @@ asymmetric sides.
   // NOTE: `broker.known_roles[]` and `broker.federation_trust_mode` are
   // deferred to HEP-CORE-0035 (Hub-Role Authentication & Federation
   // Trust).  They are NOT parsed; the placeholder
-  // `ConnectionPolicy` machinery in `BrokerService::Config` is unaffected
+  // `RoleIdentityPolicy` machinery in `BrokerService::Config` is unaffected
   // by config (still settable directly on the service Config struct,
-  // exercised only by `test_datahub_channel_access_policy.cpp`).
+  // exercised only by `test_datahub_role_identity_policy.cpp`).
 
   "federation": {
     "enabled":           false,
@@ -2197,7 +2197,7 @@ can land in parallel once P1 lands.
   **Auth/access fields (`broker.known_roles[]`,
   `broker.federation_trust_mode`, per-channel overrides) deliberately
   omitted from `HubBrokerConfig` — see HEP-CORE-0035** for the design that
-  must land before they are added.  The legacy `ConnectionPolicy` placeholder
+  must land before they are added.  The legacy `RoleIdentityPolicy` placeholder
   remains in `BrokerService::Config` (settable by tests directly, not by
   hub.json) until HEP-CORE-0035 retires it.
 

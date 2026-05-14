@@ -53,7 +53,7 @@ Topic-specific READMEs can summarize and link to IMPLEMENTATION_GUIDANCE and TOD
 | HEP-CORE-0006 | Pluggable Slot-Processor API | Implemented |
 | HEP-CORE-0007 | DataHub Protocol and Policy Reference | Implemented |
 | HEP-CORE-0008 | LoopPolicy and Iteration Metrics | Implemented |
-| HEP-CORE-0009 | Policy Reference (ConnectionPolicy, Identity) | Implemented |
+| HEP-CORE-0009 | Policy Reference (RoleIdentityPolicy, Identity) | Implemented |
 | HEP-CORE-0010 | Actor Thread Model and Unified Script Interface | **Archived** — actor eliminated; see HEP-CORE-0018 |
 | HEP-CORE-0011 | ScriptHost Abstraction Framework | Implemented (RoleHostCore + PythonRoleHostBase) |
 | HEP-CORE-0012 | Processor Role (actor-embedded) | **Archived** — actor eliminated; see HEP-CORE-0015 |

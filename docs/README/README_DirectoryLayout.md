@@ -375,7 +375,7 @@ The hub directory model is fully implemented:
 `CONS-{NAME}-{8HEX}`, `PROC-{NAME}-{8HEX}`),
 `hub_vault.hpp/cpp` (`HubVault::create()` / `HubVault::open()` / `publish_public_key()`),
 `pylabhub-hubshell --init <hub_dir>` CLI, `pylabhub-hubshell <hub_dir>` directory startup,
-`channel_access_policy.hpp` (ConnectionPolicy: Open/Tracked/Required/Verified enforcement),
+`role_identity_policy.hpp` (RoleIdentityPolicy: Open/Tracked/Required/Verified enforcement),
 role identity fields wired into REG_REQ/CONSUMER_REG_REQ broker protocol,
 single-file HubConfig (compiled-in defaults + hub.json; layered flat-config removed),
 producer/consumer/processor `--init` flows with correct config templates.

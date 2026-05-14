@@ -16,7 +16,7 @@
  * All socket I/O is single-threaded (run() loop); only stop() is thread-safe.
  */
 #include "pylabhub_utils_export.h"
-#include "utils/channel_access_policy.hpp"
+#include "utils/role_identity_policy.hpp"
 #include "utils/hub_metrics_filter.hpp"
 #include "utils/json_fwd.hpp"
 #include "utils/timeout_constants.hpp"
@@ -211,17 +211,23 @@ public:
         std::function<void(const std::string& bound_endpoint,
                            const std::string& pubkey)> on_ready;
 
-        // ── Connection policy (Phase 3) ─────────────────────────────────────
-        /// Hub-wide connection policy. Per-channel overrides in channel_policies take
-        /// precedence (first match wins). Defaults to Open.
-        ConnectionPolicy            connection_policy{ConnectionPolicy::Open};
+        // ── Role identity policy (placeholder — pending HEP-CORE-0035) ──────
+        // Renamed 2026-05-13 from `ConnectionPolicy` / `channel_policies`.
+        // See `role_identity_policy.hpp` for what these fields really do
+        // (verify role's self-asserted identity at REG_REQ — NOT a
+        // connection-layer auth gate).  Settable directly here by tests
+        // and (eventually) Phase 9 wiring; not parsed from hub.json today.
+        /// Hub-wide role identity policy.  Per-channel overrides in
+        /// `channel_policy_overrides` take precedence (first match wins).
+        /// Defaults to Open.
+        RoleIdentityPolicy             role_identity_policy{RoleIdentityPolicy::Open};
 
         /// Roles allowed to register when policy is Verified.
         /// Also consulted for logging in Tracked/Required modes.
-        std::vector<KnownRole>     known_roles;
+        std::vector<KnownRole>         known_roles;
 
         /// Per-channel policy overrides (first matching glob wins).
-        std::vector<ChannelPolicy>  channel_policies;
+        std::vector<ChannelPolicyOverride>  channel_policy_overrides;
 
         // ── Schema registry (HEP-CORE-0034) ─────────────────────────────────
         /// Directories to search for hub-global schema JSON files (`*.json`).

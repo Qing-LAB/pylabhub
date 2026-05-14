@@ -30,6 +30,6 @@
 #include "utils/broker_service.hpp"
 #include "utils/data_block.hpp"
 
-#include "utils/channel_access_policy.hpp"
+#include "utils/role_identity_policy.hpp"
 #include "utils/channel_pattern.hpp"
 #include "utils/data_block_mutex.hpp"

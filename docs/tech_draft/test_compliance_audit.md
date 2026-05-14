@@ -157,7 +157,7 @@ File locations: all under `tests/` (path prefix omitted).
 | `test_datahub_c_api_recovery.cpp` | 0 | 7 | **P3** | `IsolatedProcessTest`. |
 | `test_datahub_c_api_slot_protocol.cpp` | 0 | 17 | **P3** | `IsolatedProcessTest`. |
 | `test_datahub_c_api_validation.cpp` | 0 | 5 | **P3** | `IsolatedProcessTest`. |
-| `test_datahub_channel_access_policy.cpp` | 3 | 0 | **V1** | `static s_lifecycle_` + `SetUpTestSuite` at line 182. |
+| `test_datahub_role_identity_policy.cpp` | 3 | 0 | **V1** | `static s_lifecycle_` + `SetUpTestSuite` at line 182. |
 | `test_datahub_channel_group.cpp` | 0 | 7 | **P3** | `IsolatedProcessTest`. |
 | `test_datahub_config_validation.cpp` | 0 | 6 | **P3** | `IsolatedProcessTest`. |
 | `test_datahub_e2e.cpp` | 0 | 1 | **P3** | `IsolatedProcessTest`. |
@@ -243,7 +243,7 @@ All L4 test files spawn binaries as child processes (not via `SpawnWorker`-to-se
 - `test_datahub_broker_protocol.cpp`
 - `test_datahub_broker_schema.cpp`
 - `test_datahub_broker_shutdown.cpp`
-- `test_datahub_channel_access_policy.cpp`
+- `test_datahub_role_identity_policy.cpp`
 - `test_datahub_hub_config_script.cpp` *(deleted 2026-04-29 — legacy singleton retired)*
 - `test_datahub_hub_federation.cpp`
 - `test_datahub_hub_inbox_queue.cpp`
@@ -370,7 +370,7 @@ class of bug is still present:
 | `test_datahub_metrics.cpp` | 3 | 21.L5 large |
 | `test_datahub_hub_federation.cpp` | 3 | 21.L5 large |
 | `test_datahub_schema_registry.cpp` | 3 | 21.L4 small |
-| `test_datahub_channel_access_policy.cpp` | 3 | 21.L4 small |
+| `test_datahub_role_identity_policy.cpp` | 3 | 21.L4 small |
 | `test_datahub_broker_shutdown.cpp` | 3 | 21.L4 small |
 | `test_datahub_broker_schema.cpp` | 3 | 21.L4 small |
 | `test_datahub_broker_protocol.cpp` | 3 | 21.L4 small |
