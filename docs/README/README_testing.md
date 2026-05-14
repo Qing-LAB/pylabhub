@@ -486,6 +486,92 @@ context.
 
 ---
 
+### Pattern 1+ — binary-wide `LifecycleGuard` for in-process tests
+
+> Added 2026-05-14 with the `BinaryLifecycleEnvironment` framework
+> hook.  Use this **only after careful examination** — see the
+> decision criteria below.
+
+Some lifecycle-touching tests are pure-logic at the test level (no
+cross-test interference, no init-once invariant being re-violated,
+no library-global static-dtor hang risk at exit) but the subject
+under test emits `LOGGER_*`.  Forcing Pattern 3 subprocess isolation
+for these adds ~50 ms fork overhead per test with **no isolation
+gain**.
+
+`BinaryLifecycleEnvironment` (declared via the
+`PLH_BINARY_LIFECYCLE_MODULES` macro from `binary_lifecycle.h`)
+initializes the lifecycle modules **once for the binary's
+`RUN_ALL_TESTS` scope** — registered as a gtest
+`::testing::Environment`, so gtest's main runner calls SetUp/TearDown
+around `RUN_ALL_TESTS`.  Tests run in-process and use
+`LogCaptureFixture` per-test as usual.
+
+**Scope, vs. the other lifecycle mechanisms:**
+
+| Mechanism | Owner | Scope | Use case |
+|---|---|---|---|
+| `run_gtest_worker` / `run_worker_bare` | subprocess body | one subprocess test | Pattern 3 — lifecycle-touching tests with isolation |
+| `SetUpTestSuite` LifecycleGuard | test fixture (static) | one fixture's tests | **Antipattern** — migration target |
+| `BinaryLifecycleEnvironment` | gtest Environment | binary `RUN_ALL_TESTS` | **Pattern 1+** — in-process lifecycle-touching tests with no cross-test interference |
+
+`BinaryLifecycleEnvironment` is mutually compatible with Pattern 3
+in the same binary: subprocess workers spawn fresh, install their
+own guard via `run_gtest_worker`, and never see the parent's
+environment.
+
+#### Decision checklist — when to use binary-wide vs. subprocess
+
+Before adopting `BinaryLifecycleEnvironment`, **examine the
+interference vectors** for the tests in question:
+
+1. **Static state in the subject class(es).**  Are there any
+   `static` members, global state, or process singletons the tests
+   write that future tests in the same binary would see?  Examine
+   the source.  If yes → Pattern 3.
+2. **Init-once invariant violations.**  Does any test re-run
+   `initialize()` per TEST_F (e.g., construct multiple
+   `LifecycleGuard`s in a single binary scope)?  If yes → either
+   redesign or Pattern 3.
+3. **Library-global static-dtor hang risk at program exit.**
+   Does the binary leave libzmq / luajit / libsodium state alive
+   at `main()` return?  Per-test contexts that are destroyed in
+   TearDown are typically fine; long-lived contexts kept beyond
+   `RUN_ALL_TESTS` are not.  If unsure → Pattern 3.
+4. **Crash isolation needs.**  Do the tests deliberately panic /
+   abort / call `finalize()`?  If yes → Pattern 3 is the only
+   safe choice.
+
+If all four examinations come back clean, `BinaryLifecycleEnvironment`
+is appropriate.  When in doubt, use Pattern 3 — it's strictly safer.
+
+#### Usage
+
+In any TU of the test binary, at file scope:
+
+```cpp
+#include "binary_lifecycle.h"
+#include "utils/logger.hpp"
+
+PLH_BINARY_LIFECYCLE_MODULES(
+    pylabhub::utils::Logger::GetLifecycleModule()
+)
+```
+
+Then write tests as plain `::testing::Test` fixtures (with or
+without the `LogCaptureFixture` mixin).  No `SetUpTestSuite`-owned
+LifecycleGuard.  No subprocess workers.
+
+#### Reference implementation
+
+`tests/test_layer3_datahub/test_datahub_zmq_poll_loop.cpp` —
+`PeriodicTaskTest` (10 tests, no Logger touch → Pattern 1, no
+LogCaptureFixture) + `ZmqPollLoopTest` (7 tests, subject emits
+`LOGGER_INFO`/`LOGGER_WARN` → Pattern 1 with binary-wide Logger
+via `PLH_BINARY_LIFECYCLE_MODULES` + per-test `LogCaptureFixture`).
+
+---
+
 ### Example 3: Lifecycle-backed test (Pattern 3)
 
 For any test that reaches a lifecycle module (here: a fictional `FileCache`

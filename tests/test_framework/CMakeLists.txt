@@ -13,6 +13,7 @@ include(MsvcHelper)
 message(STATUS "-- start configuring pylabhub::test_framework static lib...")
 
 add_library(pylabhub-test-framework STATIC
+  binary_lifecycle.h
   shared_test_helpers.cpp
   shared_test_helpers.h
   test_entrypoint.cpp
