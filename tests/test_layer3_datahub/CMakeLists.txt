@@ -176,6 +176,7 @@ add_executable(test_layer3_datahub
 
     # ── HEP-CORE-0019 Metrics Plane tests ────────────────────────────────
     test_datahub_metrics.cpp
+    workers/datahub_metrics_workers.cpp
 
     # ── HEP-CORE-0021 ZMQ Endpoint Registry protocol tests ────────────
     test_datahub_zmq_endpoint_registry.cpp
