@@ -154,6 +154,7 @@ add_executable(test_layer3_datahub
 
     # ── HubHost ↔ BrokerService integration (HEP-CORE-0033 §4 / Phase 6.1b) ──
     test_datahub_hub_host_integration.cpp
+    workers/hub_host_integration_workers.cpp
 
     # ── HubHost + LuaEngine integration (HEP-CORE-0033 Phase 7 D3.3) ────────
     test_hub_lua_integration.cpp
