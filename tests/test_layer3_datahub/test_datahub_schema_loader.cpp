@@ -7,10 +7,25 @@
 // (HEP-CORE-0034 §2.4 I1+I3+I4); registry-state tests and validator tests have
 // been removed because the surfaces they covered no longer exist.
 //
-// Tests covered here:
-//   - load_from_string parser (12 tests covering BLDS / hash / size / flexzone)
-//   - load_from_file parser via temp-dir round-trip
-//   - load_all_from_dirs free-function walker (HEP-0034 §2.4 I2 entry-point)
+// ── Suite layout ────────────────────────────────────────────────────────────
+//
+//   Suite 1 — `DatahubSchemaParser` (12 plain `TEST` bodies, Pattern 1)
+//     Stateless parser tests for `SchemaLibrary::load_from_string` and the
+//     C++ `generate_schema_info<T>` macro path.  No `LOGGER_*`, no lifecycle
+//     module, no filesystem I/O — pure functions, run in-process.
+//
+//   Suite 2 — `DatahubSchemaFileLoadTest` (4 `TEST_F` bodies, Pattern 3)
+//     File-walker tests for `pylabhub::schema::load_all_from_dirs`
+//     (HEP-CORE-0034 §2.4 I2 entry-point).  `load_all_from_dirs` emits
+//     `LOGGER_WARN` on invalid-JSON-skip and duplicate-schema_id-skip;
+//     Logger is a lifecycle module, so these tests run in subprocess
+//     workers per `docs/README/README_testing.md` § "Choosing a test
+//     pattern".  Worker bodies live in
+//     `workers/datahub_schema_loader_workers.cpp`.
+//
+// Migrated 2026-05-14: the 4 file-walker `TEST_F`s moved from in-process
+// `SetUpTestSuite`-owned `LifecycleGuard` (single module: Logger) to Pattern 3.
+// The 12 plain `TEST`s stay in this file unchanged.
 //
 // Tests NOT covered here:
 //   - Registry state, lookup-by-id, reverse-by-hash → see test_hub_state.cpp
@@ -19,16 +34,14 @@
 //     validator (HEP-CORE-0034 §2.4 I4).
 
 #include "plh_datahub_client.hpp"
+#include "test_patterns.h"
 #include "utils/schema_loader.hpp"
-#include "log_capture_fixture.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <array>
 #include <cstring>
-#include <filesystem>
-#include <fstream>
 
 using namespace pylabhub::schema;
 
@@ -274,162 +287,43 @@ TEST(DatahubSchemaParser, CppStructMatchesJsonSchema)
 }
 
 // ============================================================================
-// File-based loading tests — `load_all_from_dirs` free function
+// Suite 2 — File-walker tests (Pattern 3; subprocess per TEST_F)
 //
-// Verifies the §2.4 I2 walker entry-point: pure parse, returns (path, entry)
-// pairs, no state held.  Translation into HubState.schemas is the caller's
-// responsibility (broker_service.cpp::load_hub_globals_).
+// `load_all_from_dirs` emits LOGGER_WARN on invalid-JSON-skip and duplicate-
+// schema_id-skip — Logger is a lifecycle module, so these run in workers.
+// Worker bodies live in `workers/datahub_schema_loader_workers.cpp`.
 // ============================================================================
 
-class DatahubSchemaFileLoadTest : public ::testing::Test,
-                                   public pylabhub::tests::LogCaptureFixture
+using pylabhub::tests::IsolatedProcessTest;
+
+class DatahubSchemaFileLoadTest : public IsolatedProcessTest
 {
-public:
-    static void SetUpTestSuite()
-    {
-        s_lifecycle_ = std::make_unique<pylabhub::utils::LifecycleGuard>(
-            pylabhub::utils::MakeModDefList(
-                pylabhub::utils::Logger::GetLifecycleModule()),
-            std::source_location::current());
-    }
-    static void TearDownTestSuite() { s_lifecycle_.reset(); }
-
-protected:
-    std::filesystem::path tmpdir_;
-
-    void SetUp() override
-    {
-        LogCaptureFixture::Install();
-        tmpdir_ = std::filesystem::temp_directory_path() /
-                  ("plh_schema_file_test_" + std::to_string(getpid()));
-        std::filesystem::create_directories(tmpdir_);
-    }
-
-    void TearDown() override
-    {
-        try
-        {
-            if (std::filesystem::exists(tmpdir_))
-                std::filesystem::remove_all(tmpdir_);
-        }
-        catch (...)
-        {
-        }
-        AssertNoUnexpectedLogWarnError();
-        LogCaptureFixture::Uninstall();
-    }
-
-    void write_json(const std::filesystem::path &relative, const std::string &content)
-    {
-        auto full_path = tmpdir_ / relative;
-        std::filesystem::create_directories(full_path.parent_path());
-        std::ofstream ofs(full_path);
-        ofs << content;
-    }
-
-private:
-    static std::unique_ptr<pylabhub::utils::LifecycleGuard> s_lifecycle_;
 };
-
-// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
-std::unique_ptr<pylabhub::utils::LifecycleGuard>
-    DatahubSchemaFileLoadTest::s_lifecycle_;
 
 TEST_F(DatahubSchemaFileLoadTest, LoadAllFromDirs_SingleFile)
 {
-    const std::string schema_json = R"({
-        "id": "test.simple",
-        "version": 1,
-        "slot": {
-            "packing": "aligned",
-            "fields": [{"name": "value", "type": "float32"}]
-        }
-    })";
-    write_json("test.simple.v1.json", schema_json);
-
-    const auto entries = pylabhub::schema::load_all_from_dirs({tmpdir_.string()});
-    ASSERT_EQ(entries.size(), 1u);
-    EXPECT_EQ(entries[0].second.schema_id, "$test.simple.v1");
-    // Path is returned alongside for diagnostic purposes.
-    EXPECT_NE(entries[0].first.find("test.simple.v1.json"), std::string::npos);
+    auto w = SpawnWorker(
+        "datahub_schema_loader.load_all_from_dirs_single_file");
+    ExpectWorkerOk(w);
 }
 
 TEST_F(DatahubSchemaFileLoadTest, LoadAllFromDirs_NestedPath)
 {
-    const std::string schema_json = R"({
-        "id": "lab.sensors.temperature.raw",
-        "version": 1,
-        "slot": {
-            "packing": "aligned",
-            "fields": [
-                {"name": "ts", "type": "uint64"},
-                {"name": "temperature", "type": "float64"}
-            ]
-        }
-    })";
-    write_json(std::filesystem::path("lab") / "sensors" / "temperature.raw.v1.json",
-               schema_json);
-
-    const auto entries = pylabhub::schema::load_all_from_dirs({tmpdir_.string()});
-    ASSERT_EQ(entries.size(), 1u);
-    EXPECT_EQ(entries[0].second.schema_id, "$lab.sensors.temperature.raw.v1");
+    auto w = SpawnWorker(
+        "datahub_schema_loader.load_all_from_dirs_nested_path");
+    ExpectWorkerOk(w);
 }
 
 TEST_F(DatahubSchemaFileLoadTest, LoadAllFromDirs_InvalidJsonSkipped)
 {
-    ExpectLogWarn("Failed to parse schema file");
-    const std::string valid_json = R"({
-        "id": "test.valid",
-        "version": 1,
-        "slot": {
-            "packing": "aligned",
-            "fields": [{"name": "x", "type": "int32"}]
-        }
-    })";
-    write_json("valid.json", valid_json);
-    write_json("broken.json", "{ this is not valid JSON }}}");
-
-    const auto entries = pylabhub::schema::load_all_from_dirs({tmpdir_.string()});
-    ASSERT_EQ(entries.size(), 1u) << "Valid schema should still load despite broken JSON file";
-    EXPECT_EQ(entries[0].second.schema_id, "$test.valid.v1");
+    auto w = SpawnWorker(
+        "datahub_schema_loader.load_all_from_dirs_invalid_json_skipped");
+    ExpectWorkerOk(w);
 }
 
 TEST_F(DatahubSchemaFileLoadTest, LoadAllFromDirs_FirstMatchWinsAcrossDirs)
 {
-    ExpectLogWarn("Duplicate schema_id");
-    // Two directories: dir_a has the "winning" version; dir_b has a duplicate
-    // schema_id with a different field. The walker should keep dir_a's copy
-    // and skip dir_b's.
-    const auto dir_a = tmpdir_ / "dir_a";
-    const auto dir_b = tmpdir_ / "dir_b";
-    std::filesystem::create_directories(dir_a);
-    std::filesystem::create_directories(dir_b);
-
-    {
-        std::ofstream(dir_a / "shared.v1.json") << R"({
-            "id": "shared",
-            "version": 1,
-            "slot": {
-                "packing": "aligned",
-                "fields": [{"name": "x", "type": "int32"}]
-            }
-        })";
-    }
-    {
-        std::ofstream(dir_b / "shared.v1.json") << R"({
-            "id": "shared",
-            "version": 1,
-            "slot": {
-                "packing": "aligned",
-                "fields": [{"name": "x", "type": "float64"}]
-            }
-        })";
-    }
-
-    const auto entries = pylabhub::schema::load_all_from_dirs(
-        {dir_a.string(), dir_b.string()});
-    ASSERT_EQ(entries.size(), 1u);
-    EXPECT_EQ(entries[0].second.slot.fields[0].type, "int32")
-        << "first-match-wins: dir_a should be retained over dir_b";
-    EXPECT_NE(entries[0].first.find("dir_a"), std::string::npos);
+    auto w = SpawnWorker(
+        "datahub_schema_loader.load_all_from_dirs_first_match_wins_across_dirs");
+    ExpectWorkerOk(w);
 }
