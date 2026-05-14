@@ -1281,6 +1281,47 @@ gtest_discover_tests(test_layer2_log_capture_fixture
 )
 
 # ============================================================================
+# Test: scripting::PeriodicTask + scripting::ZmqPollLoop utility classes
+#
+# Moved from tests/test_layer3_datahub/ 2026-05-14: subjects are L1/L2
+# utility classes, not L3 datahub protocol tests.  Uses the framework's
+# `BinaryLifecycleEnvironment` (binary-wide LifecycleGuard via gtest's
+# `::testing::Environment`) — requires being the only LifecycleGuard
+# owner in its binary, so this is a dedicated executable rather than
+# part of an aggregate target.  See test_zmq_poll_loop.cpp file header
+# for the per-suite rationale.
+# ============================================================================
+
+add_executable(test_layer2_zmq_poll_loop
+    test_zmq_poll_loop.cpp
+)
+
+target_include_directories(test_layer2_zmq_poll_loop PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+
+target_link_libraries(test_layer2_zmq_poll_loop
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_zmq_poll_loop)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_zmq_poll_loop
+    SUITE_NAME "Layer2_ZmqPollLoop"
+)
+layer2_require_staged_utils(test_layer2_zmq_poll_loop)
+
+gtest_discover_tests(test_layer2_zmq_poll_loop
+    PROPERTIES
+        LABELS "layer2;scripting;zmq_poll_loop"
+        TIMEOUT 30
+)
+
+# ============================================================================
 # Test: RoleConfig — unified config class
 # ============================================================================
 
