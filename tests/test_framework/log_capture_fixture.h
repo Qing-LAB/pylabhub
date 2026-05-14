@@ -60,6 +60,44 @@ namespace pylabhub::tests
 class LogCaptureFixture
 {
 public:
+    LogCaptureFixture() = default;
+
+    /// Destructor — best-effort cleanup if Install() was called but
+    /// Uninstall() was not (e.g., the test body asserted early via
+    /// ASSERT_* and skipped the explicit Uninstall call site).  This
+    /// closes the temp-file + sink-redirect leak on the assertion-
+    /// failure path.
+    ///
+    /// Safety: relies on the destruction order in Pattern-3 workers,
+    /// where `LogCaptureFixture log_cap;` is declared FIRST and
+    /// (HubHost / BrokerService / etc.) are declared LATER — LIFO
+    /// destruction joins the production threads BEFORE this dtor
+    /// runs, so the Logger sink switch races no concurrent writer.
+    /// The `LifecycleGuard` outside `run_gtest_worker` is still alive
+    /// at this point (Logger is finalized AFTER the lambda's locals).
+    /// Exceptions from Uninstall (theoretically possible from
+    /// `Logger::flush()`) are suppressed per destructor-safety
+    /// contract.
+    ~LogCaptureFixture()
+    {
+        if (installed_)
+        {
+            try
+            {
+                Uninstall();
+            }
+            catch (...)
+            {
+                // Suppressed: dtor must not propagate during unwind.
+            }
+        }
+    }
+
+    LogCaptureFixture(const LogCaptureFixture &)            = delete;
+    LogCaptureFixture &operator=(const LogCaptureFixture &) = delete;
+    LogCaptureFixture(LogCaptureFixture &&)                 = delete;
+    LogCaptureFixture &operator=(LogCaptureFixture &&)      = delete;
+
     /// Install per-test capture.  Switches Logger to a temp file under
     /// `/tmp/plh_logcap_<pid>_<seq>.log`.  Idempotent on re-Install
     /// within the same fixture (rotates to a fresh file).
@@ -75,11 +113,17 @@ public:
         expected_errors_.clear();
         must_fire_warns_.clear();
         must_fire_errors_.clear();
+        installed_ = true;
     }
 
     /// Stop capture, revert Logger to console, remove the temp file.
+    /// Idempotent: safe to call after the dtor's auto-cleanup would
+    /// have run, or twice in succession.  An `installed_` guard
+    /// suppresses the dtor's call when this has run explicitly.
     void Uninstall()
     {
+        if (!installed_)
+            return;
         ::pylabhub::utils::Logger::instance().flush();
         // Best effort: switch back to console so subsequent tests in
         // the same suite without LogCaptureFixture do not write into
@@ -87,6 +131,7 @@ public:
         (void) ::pylabhub::utils::Logger::instance().set_console();
         std::error_code ec;
         std::filesystem::remove(log_path_, ec);
+        installed_ = false;
     }
 
     /// Declare an expected WARN substring (PERMISSIVE allowlist).
@@ -243,6 +288,10 @@ private:
                 std::to_string(n) + ".log");
     }
 
+    /// True between Install() success and Uninstall() — guards the
+    /// dtor's auto-cleanup so it doesn't run when Install was never
+    /// called or when Uninstall ran explicitly.
+    bool                      installed_{false};
     std::filesystem::path     log_path_;
     std::vector<std::string>  expected_warns_;
     std::vector<std::string>  expected_errors_;

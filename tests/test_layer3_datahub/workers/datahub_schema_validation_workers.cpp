@@ -5,7 +5,9 @@
 // FlexZone and DataBlock schemas are stored in shared memory and validated on attach.
 //
 // Rewritten from old single-schema non-template API (removed) to dual-schema template API.
-// See: docs/TEST_REFACTOR_TODO.md T2.3, T4.1
+// (Historical: a `docs/TEST_REFACTOR_TODO.md` T2.3/T4.1 entry tracked this
+// rewrite; that tracker has since been archived — no current TODO entry
+// remains for this file.)
 
 #include "datahub_schema_validation_workers.h"
 #include "test_entrypoint.h"
