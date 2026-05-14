@@ -94,6 +94,7 @@ add_executable(test_layer3_datahub
 
     # ── Channel access policy enforcement tests (Phase 3) ─────────────────────
     test_datahub_channel_access_policy.cpp
+    workers/channel_access_policy_workers.cpp
 
     # ── Consumer registration protocol tests ─────────────────────────────────────
     test_datahub_broker_consumer.cpp
