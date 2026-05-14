@@ -18,6 +18,7 @@
 
 #include "utils/hub_api.hpp"
 
+#include "binary_lifecycle.h"
 #include "utils/role_host_core.hpp"
 #include "utils/script_engine.hpp"
 #include "plh_service.hpp"
@@ -32,26 +33,29 @@
 #include <vector>
 
 using pylabhub::utils::Logger;
-using pylabhub::utils::LifecycleGuard;
-using pylabhub::utils::MakeModDefList;
 using pylabhub::scripting::RoleHostCore;
 using pylabhub::hub_host::HubAPI;
+
+// Pattern 1+ (BinaryLifecycleEnvironment) — Logger only.  HubAPI tests
+// drive the script-visible API surface in isolation (no HubHost, no
+// broker, no ZMQ); Logger is needed because `HubAPI::log(...)` routes
+// through LOGGER_* macros and `LogCaptureFixture::Install` calls
+// `Logger::set_logfile()`.  All four Pattern 1+ interference vectors
+// (`README_testing.md` § "Decision checklist") came back clean for
+// this file:
+//   1. No static state in `HubAPI` / `RoleHostCore`.
+//   2. Single suite per binary (`test_layer2_hub_api` is dedicated).
+//   3. No libzmq / luajit / libsodium state — only Logger.
+//   4. No deliberate crashes / death tests.
+// Migrated 2026-05-14 from the SetUpTestSuite-owned `LifecycleGuard`
+// antipattern.
+PLH_BINARY_LIFECYCLE_MODULES(
+    pylabhub::utils::Logger::GetLifecycleModule()
+)
 
 class HubApiTest : public ::testing::Test,
                     public pylabhub::tests::LogCaptureFixture
 {
-public:
-    static void SetUpTestSuite()
-    {
-        // Logger module required so LogCaptureFixture::Install() can
-        // call Logger::set_logfile() — same pattern used by other
-        // standalone L2 fixtures (test_role_host_core, etc.).
-        s_lifecycle_ = std::make_unique<LifecycleGuard>(
-            MakeModDefList(Logger::GetLifecycleModule()),
-            std::source_location::current());
-    }
-    static void TearDownTestSuite() { s_lifecycle_.reset(); }
-
 protected:
     void SetUp() override    { LogCaptureFixture::Install(); }
     void TearDown() override
@@ -68,13 +72,7 @@ protected:
     }
 
     RoleHostCore core_;
-
-private:
-    static std::unique_ptr<LifecycleGuard> s_lifecycle_;
 };
-
-// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
-std::unique_ptr<LifecycleGuard> HubApiTest::s_lifecycle_;
 
 // ─── Construction invariants ─────────────────────────────────────────────────
 
