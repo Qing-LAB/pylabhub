@@ -121,6 +121,16 @@ All fields are nested under the `"hub"` key (except `admin`, `broker`, `paths`, 
 which have their own top-level objects — see `README_Deployment.md §4.3` for the complete
 field reference).
 
+> 🚧 **Auth/access fields below (`connection_policy`, `channel_policies`,
+> `known_roles`) are placeholders — not currently parsed by
+> `HubBrokerConfig`** (`src/include/utils/config/hub_broker_config.hpp:13-15`
+> deliberately omits them pending HEP-CORE-0035).  Setting them in `hub.json`
+> has no runtime effect; the broker runs with `RoleIdentityPolicy::Open`
+> regardless.  When HEP-0035 lands, these fields are replaced by the §5
+> operational schema (`broker.federation_trust_mode` +
+> `broker.known_roles[].pubkey` required).  Retained in this example as a
+> forward reference and to document the legacy schema shape.
+
 ```json
 {
   "hub": {
