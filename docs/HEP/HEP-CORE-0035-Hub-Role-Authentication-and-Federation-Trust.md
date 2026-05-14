@@ -33,6 +33,144 @@ the authentication story.
 
 ---
 
+## 1.5. What the placeholder really is (sec'y addendum, 2026-05-13)
+
+> Added 2026-05-13 in response to "what is this *channel access*
+> policy really doing?"  The placeholder code was named for its
+> historical role at REG_REQ time and for the per-channel glob
+> override list, but neither label captures the subject of
+> verification.  This section grounds the placeholder in current
+> code, so a future reader / implementer knows precisely what is
+> being retired when this HEP lands.
+
+### 1.5.1. Subject, action, and selector
+
+The placeholder is a **role-identity verification policy applied at
+broker registration time**:
+
+- **Subject:** the role's self-asserted identity strings `role_name`
+  + `role_uid` placed in the REG_REQ / CONSUMER_REG_REQ body by the
+  registering role itself.
+- **Action gated:** the broker's acceptance of a channel registration
+  (`BrokerServiceImpl::check_role_identity` is called from
+  `handle_reg_req` and the consumer-registration handler; see
+  `src/utils/ipc/broker_service.cpp` `check_role_identity` definition
+  and call sites).
+- **Selector:** the channel name being registered — used only to look
+  up which strictness mode applies (`channel_policy_overrides[]`
+  list, first-glob-match wins, falling back to the hub-wide default).
+
+The legacy `ConnectionPolicy` / "channel access policy" names
+misdescribed the subject in two ways: (a) the gate has nothing to do
+with the ZMQ connection layer (CURVE handles handshake; this gate
+runs at the *application* protocol layer after a message arrives);
+(b) "channel access" suggested the channel itself is being gated,
+when the channel is the lookup key for *which role-identity rule*
+applies.  Renamed to `RoleIdentityPolicy` + `ChannelPolicyOverride`
+on 2026-05-13 to reflect this.
+
+### 1.5.2. The four configuration surfaces involved
+
+A future implementer touching this gate will navigate four surfaces.
+Their relationship today (post-rename, pre-HEP-0035):
+
+| Surface                       | Owns                                                                                                                                            | Today's wiring to the gate                                                                                                                              |
+|-------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **Role directory + RoleConfig** (per-role JSON parsed by `pylabhub::config::RoleConfig`) | `IdentityConfig{uid, name}` for the role binary                                                                                                | Role copies `identity().uid` / `identity().name` into `BrokerRequestComm::Config` → REG_REQ body (`role_uid` / `role_name`).  This is what the gate reads. |
+| **Hub directory + HubConfig** (per-hub JSON parsed by `pylabhub::config::HubConfig` → `HubBrokerConfig`)                                       | Broker endpoint, heartbeat fields, checksum policy, federation peers                                                                            | **Deliberately omits** `role_identity_policy`, `known_roles`, `channel_policy_overrides` per `hub_broker_config.hpp:13-15`.  The gate's config fields therefore cannot be set from hub.json today. |
+| **`BrokerService::Config`** (C++ struct constructed by `HubHost`)                                                                              | `role_identity_policy` (default `Open`), `known_roles`, `channel_policy_overrides` — the gate's actual inputs                                   | Set to defaults by `HubHost` (because `HubConfig` doesn't carry these).  **Only callers that construct `BrokerService::Config` directly** (i.e., this HEP's L3 test) can set non-default values. |
+| **`HubState`** (in-memory state owned by `HubHost`)                                                                                            | Channel registry, schema registry, producer/consumer entries with their CURVE pubkeys, federation peers                                         | Today: holds CURVE pubkeys on entries but has **no pubkey-provenance index** — the `PubkeyOrigin` index this HEP designs (§4.2) is unimplemented.  Gate does **not** consult HubState. |
+
+Net consequence today:
+1. The check function runs at every REG_REQ in production.
+2. It always evaluates `policy == Open` (because nothing sets it
+   otherwise from hub.json).
+3. The Tracked / Required / Verified branches are unreachable from
+   production callers; only the L3 test exercises them via direct
+   `BrokerService::Config` construction.
+
+### 1.5.3. Why the placeholder cannot be production-wired by simply re-adding the fields
+
+`HubBrokerConfig`'s comment ("Auth/access fields deliberately
+omitted ... See HEP-CORE-0035 for the design that must land before
+they return") is precise.  Re-introducing the auth fields into the
+parser *without* the rest of this HEP would re-enable the legacy
+string-match enforcement at the application layer — but production
+roles can claim any `role_name` + `role_uid` they like in REG_REQ
+(the strings are self-asserted), so re-adding the fields alone would
+provide no actual authentication.  The CURVE socket-layer guarantee
+that "this connection comes from a key the operator authorized"
+requires the ZAP handler designed in §4.1, not anything in the
+placeholder.
+
+---
+
+## 1.6. Premise for this HEP's implementation (added 2026-05-13)
+
+This HEP cannot be implemented in isolation.  Two foundation pieces
+must land first, in order:
+
+### 1.6.1. HubState completion
+
+`PubkeyOrigin` (§4.2) is an index inside `HubState`.  Both the ZAP
+handler (Layer 1) and the federation-trust gate (Layer 2) read from
+that single index.  HubState's data model needs to stabilize before
+the index can be added without inviting churn:
+
+- The shape of `ChannelEntry` / `ProducerEntry` / `ConsumerEntry` /
+  federation peer entries determines what pubkey-bearing records the
+  index covers.
+- The thread-safety contract for HubState reads/writes determines
+  whether the ZAP handler (running on a separate `inproc` socket
+  per RFC 27) needs lock-free read paths into the index.
+- The lifecycle of pubkey-bearing entries (when do they get added /
+  removed) determines the index's update protocol.
+
+These questions belong to the broader HubState refactor work, not to
+this HEP.  Adding pubkey provenance to a HubState model still in
+flux would conflate concerns and likely require rework.
+
+### 1.6.2. `plh_hub` binary completion
+
+The hub binary (`plh_hub`) is what owns the hub config + HubHost
+composite end-to-end: it loads hub.json, constructs `HubConfig` →
+`HubBrokerConfig`, hands it to `HubHost::startup()`, and runs the
+main loop.  Today the binary is still finding its shape (D2.3 +
+ongoing work).  Auth concerns — hot-reloading the allowlist, AdminService
+RPCs for `add_known_role` / `remove_known_role` (currently deferred
+per `admin_service.cpp:315-326`), federation-peer hot-add/remove,
+audit logging — all live in the binary.  Adding auth list management
+to a binary whose shape is still moving would be premature; the
+authorization machinery is mounted *on top of* the binary's
+established lifecycle.
+
+### 1.6.3. Then: auth-list propagation + management design
+
+Once the foundations are in place, the open questions in §7 become
+addressable, plus:
+
+- **Source of truth for `known_roles`.** Static (hub.json) only?
+  Hot-reloadable via SIGHUP + file watch?  AdminService RPC
+  (`add_known_role` / `remove_known_role`) over an
+  operator-authenticated channel?  Some hybrid?
+- **Propagation across a federation.**  When Hub-A adds a role
+  pubkey, does Hub-B learn about it automatically (via augmented
+  HUB_PEER_HELLO per §4.4)?  What's the consistency model — eventual
+  via heartbeat, immediate via push, neither?
+- **Audit log model.**  Which Layer-1 + Layer-2 decisions get logged
+  at what level?  Where do the logs live (per-hub stdout, central
+  syslog, structured admin event stream)?
+- **Operator workflow for key rotation.**  §7 open question #1
+  (grace window vs hard-cut) needs an operator-facing answer.
+
+None of these are blockers for *this HEP's design* — they are
+prerequisites for *implementation* of Phase 1.  Until they're
+answered, the placeholder stays in place as the only role-identity
+gate; the L3 test guards it against accidental regressions during
+the wait.
+
+---
+
 ## 2. Invariants (the architectural decision being formalized)
 
 These were ratified prior to this HEP (decision logged 2026-04-29
