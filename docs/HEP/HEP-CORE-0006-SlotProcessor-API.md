@@ -38,7 +38,7 @@
 | `src/utils/hub/hub_zmq_queue.cpp` | impl | `ZmqQueue` PULL/PUSH with bounded internal queue |
 | `tests/test_layer3_datahub/test_datahub_hub_processor.cpp` | test | Processor: handler, hot-swap, timeout, critical error, zero-fill |
 | `tests/test_layer3_datahub/test_datahub_hub_queue.cpp` | test | ShmQueue read/write, overflow policy |
-| `tests/test_layer3_datahub/test_datahub_hub_zmq_queue.cpp` | test | ZmqQueue PULL/PUSH, overflow, close |
+| `tests/test_layer2_service/test_hub_zmq_queue.cpp` | test | ZmqQueue PULL/PUSH, overflow, close |
 
 ### Processor Pipeline Architecture
 

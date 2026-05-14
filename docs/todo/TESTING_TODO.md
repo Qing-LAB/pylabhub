@@ -565,7 +565,32 @@ code):
 
 ## Current Focus
 
-### 🔥 Open 2026-05-13: Pattern-3 migration debt — 23 files own in-process `LifecycleGuard`
+### ✅ Closed 2026-05-14: Pattern-3 migration debt wave — all 23 files migrated
+
+**Status (2026-05-14):** wave complete.  21 main files migrated as
+commits `6dfb86d`..`1ed9cc8` on `feature/lua-role-support`; the 2
+ThreadManager files were migrated earlier in the MD1.5 commit
+(`1f1eac4`).  Per-file table below is preserved for historical
+context — only the 6 files migrated in the closing session (this
+session) carry inline ✅ RESOLVED markers; the rest are documented
+by their per-file commit (`git log --grep "Pattern-3 migration\|Pattern 1+ migration\|Pattern 1+ via"`).
+
+Not every file became Pattern 3.  Single-class L2 modules (admin_service,
+zmq_poll_loop, hub_api, role_host_core, hub_zmq_queue) moved to
+Pattern 1+ (BinaryLifecycleEnvironment) in their own dedicated
+executables; L3 protocol files with multi-module collaboration
+stayed in the L3 aggregate with subprocess workers.  Decision
+rule: aggregate-binary residents that share a real semantic family
+with Pattern-3 siblings stay Pattern 3; files whose only "sibling"
+relationship is the aggregate lifecycle guard get split out +
+Pattern 1+.
+
+Below: historical file list preserved (was previously the migration
+target list).
+
+---
+
+### Historical 2026-05-13: Pattern-3 migration debt — 23 files own in-process `LifecycleGuard`
 
 Audit (2026-05-13) found 23 files in `tests/test_layer{2,3,4}_*` using
 the `SetUpTestSuite`-owned `LifecycleGuard` antipattern explicitly
