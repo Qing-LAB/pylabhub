@@ -411,6 +411,79 @@ If **all are no**, Pattern 1 or 2 is allowed.
 > the failure modes the antipatterns table above describes; the rule
 > still applies to any new code.
 
+#### gtest-spi macros are NOT usable in Pattern-3 worker bodies
+
+`EXPECT_NONFATAL_FAILURE`, `EXPECT_FATAL_FAILURE`, and
+`EXPECT_FATAL_FAILURE_ON_ALL_THREADS` (from
+`<gtest/gtest-spi.h>`) **do not work** inside `run_gtest_worker` /
+`run_worker_bare` bodies.  These macros are gtest's mechanism for
+testing assertion-emitting code: they install a
+`TestPartResultReporter` that intercepts failures going through the
+reporter chain, then assert the captured failure matches an expected
+substring.
+
+`run_gtest_worker` enables `GTEST_FLAG(throw_on_failure) = true` at
+entry (`shared_test_helpers.h:246`) so any `ADD_FAILURE` /
+`ASSERT_*` / `EXPECT_*` failure **throws** `::testing::internal::
+GoogleTestFailureException` instead of going through the reporter
+chain.  This is the silent-shortcircuit guard described in
+§"Worker completion milestones" above (it's what makes a body that
+short-circuits via early `return` from gtest's macro internals
+surface as a worker failure rather than a false pass).
+
+The throw mechanism **bypasses** gtest-spi's reporter — the
+exception escapes the macro entirely, lands in `run_gtest_worker`'s
+catch block, and the worker exits non-zero with a `[WORKER FAILURE]`
+marker.  The substring-match logic inside `EXPECT_NONFATAL_FAILURE`
+never executes.
+
+**Correct pattern for worker bodies that need to verify "this inner
+code emits an assertion failure":** plain try/catch on
+`GoogleTestFailureException`, inspect `e.what()` for the expected
+substring.  The exception's what() string includes the full
+`ADD_FAILURE` message (line + the streamed `<<` context), so the
+substring pin is equivalent.
+
+```cpp
+LOGGER_WARN("[test] this WARN was not declared");
+
+bool threw = false;
+std::string msg;
+try {
+    cap.AssertNoUnexpectedLogWarnError();   // expected to ADD_FAILURE
+}
+catch (const ::testing::internal::GoogleTestFailureException &e) {
+    threw = true;
+    msg = e.what();
+}
+EXPECT_TRUE(threw)
+    << "AssertNoUnexpectedLogWarnError() should have thrown on an "
+       "undeclared WARN line";
+EXPECT_NE(msg.find("unexpected WARN"), std::string::npos)
+    << "failure message did not pin 'unexpected WARN'; got:\n" << msg;
+```
+
+The pattern pins both that the inner code **did** fail (`threw`) AND
+that the failure message **named the right contract violation**
+(`find(needle)`) — same depth as the gtest-spi version, no
+mechanism mismatch.
+
+**Reference implementation**:
+`tests/test_layer2_service/workers/log_capture_fixture_workers.cpp`
+(the migration of `LogCaptureFixture`'s own self-tests).  The file's
+header comment documents the deviation in full.
+
+**Compile-time enforcement**: not currently enforced via static
+assertion.  If you see `EXPECT_NONFATAL_FAILURE` / `EXPECT_FATAL_FAILURE`
+in a file under `tests/.../workers/`, it is a bug.  Layer 1 tests
+running in the main gtest runner (no `run_gtest_worker`) may use
+these macros normally — the flag is `false` there.
+
+**Note on `EXPECT_NO_FATAL_FAILURE`**: that's a *different* macro
+(standard gtest, not gtest-spi) which checks that the wrapped
+statement did NOT trigger a fatal failure.  It works fine in either
+context.
+
 ---
 
 ### Example 3: Lifecycle-backed test (Pattern 3)
