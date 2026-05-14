@@ -139,6 +139,7 @@ add_executable(test_layer3_datahub
     # ── Schema parser unit tests (HEP-CORE-0034 §2.4 I5; renamed from
     # test_datahub_schema_library.cpp in Phase 4c, 2026-04-28) ────────────────
     test_datahub_schema_loader.cpp
+    workers/datahub_schema_loader_workers.cpp
 
     # ── Broker named schema protocol tests (HEP-CORE-0034 path B / inbox path A) ──
     test_datahub_broker_schema.cpp
