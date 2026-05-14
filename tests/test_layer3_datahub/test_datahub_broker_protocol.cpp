@@ -1,280 +1,28 @@
 /**
  * @file test_datahub_broker_protocol.cpp
- * @brief Broker control-plane protocol tests.
+ * @brief Pattern 3 driver — broker control-plane protocol tests.
  *
- * Suite: BrokerProtocolTest
+ * Migrated 2026-05-14 from the in-process `SetUpTestSuite`-owned
+ * `LifecycleGuard` antipattern.  Worker bodies live in
+ * `workers/datahub_broker_protocol_workers.cpp`.  Matches the
+ * sibling broker-family migrations (broker_consumer, broker_schema,
+ * broker_admin) — each `TEST_F` here is a thin `SpawnWorker(...)` +
+ * `ExpectWorkerOk(w)` stub that runs the body in a fresh subprocess
+ * with its own `LifecycleGuard`.
  *
- * Tests the broker protocol via BrokerRequestComm:
- *   - Registration: REG_REQ/ACK, duplicate hash handling
- *   - Heartbeat: PendingReady → Ready transition
- *   - Closing notify: CHANNEL_CLOSING_NOTIFY delivery to all members
- *   - Checksum error: forwarding as CHANNEL_EVENT_NOTIFY
- *   - Role discovery: ROLE_PRESENCE_REQ, ROLE_INFO_REQ
- *   - Transport arbitration: SHM/ZMQ consumer mismatch
- *
- * All tests use in-process LocalBrokerHandle + BrcHandle pattern.
- * CTest safety: all channel names are PID-suffixed.
+ * Suite name `BrokerProtocolTest` is preserved so `ctest` discovery
+ * is unchanged; the test names below match the original gtest names
+ * one-for-one (just the bodies moved out).
  */
-#include "plh_datahub.hpp"
-#include "plh_service.hpp"
-#include "utils/broker_request_comm.hpp"
-#include "utils/broker_service.hpp"
-#include "utils/config/hub_config.hpp"
-#include "utils/file_lock.hpp"
-#include "utils/hub_directory.hpp"
-#include "utils/hub_host.hpp"
-#include "utils/hub_state.hpp"
-#include "utils/json_config.hpp"
-#include "utils/scope_guard.hpp"
-#include "utils/timeout_constants.hpp"
-#include "test_sync_utils.h"
-#include "log_capture_fixture.h"
 
-#include <atomic>
-#include <chrono>
-#include <condition_variable>
-#include <filesystem>
-#include <fstream>
-#include <future>
-#include <iterator>
-#include <memory>
-#include <mutex>
-#include <optional>
-#include <string>
-#include <thread>
-#include <vector>
-
+#include "test_patterns.h"
 #include <gtest/gtest.h>
-#include <nlohmann/json.hpp>
 
-using namespace pylabhub::utils;
-using namespace pylabhub::hub;
-using namespace pylabhub::broker;
-using pylabhub::config::HubConfig;
-using pylabhub::hub_host::HubHost;
-using json = nlohmann::json;
-namespace fs = std::filesystem;
+using pylabhub::tests::IsolatedProcessTest;
 
-namespace
+class BrokerProtocolTest : public IsolatedProcessTest
 {
-
-// Real-HubHost RAII wrapper — replaces the legacy `LocalBrokerHandle` mock
-// per the test-design principle in `docs/todo/TESTING_TODO.md`
-// §"Test Design Principles".
-struct HubHostHandle
-{
-    fs::path                 hub_dir;
-    std::unique_ptr<HubHost> host;
-    std::string              endpoint;
-    std::string              pubkey;
-
-    HubHostHandle() = default;
-    HubHostHandle(HubHostHandle &&) noexcept = default;
-    HubHostHandle &operator=(HubHostHandle &&) noexcept = default;
-    ~HubHostHandle()
-    {
-        if (host)
-            host->shutdown();
-        host.reset();
-        if (!hub_dir.empty())
-        {
-            std::error_code ec;
-            fs::remove_all(hub_dir, ec);
-        }
-    }
 };
-
-HubHostHandle start_local_broker(BrokerService::Config legacy_cfg)
-{
-    static std::atomic<int> ctr{0};
-    fs::path dir = fs::temp_directory_path() /
-                   ("plh_l3_proto_" + std::to_string(::getpid()) + "_" +
-                    std::to_string(ctr.fetch_add(1)));
-    fs::remove_all(dir);
-    fs::create_directories(dir);
-    pylabhub::utils::HubDirectory::init_directory(dir, "ProtoTestHub");
-
-    const fs::path hub_json = dir / "hub.json";
-    json j;
-    {
-        std::ifstream f(hub_json);
-        if (f.is_open())
-            j = json::parse(f);
-    }
-    j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0";
-    j["admin"]["enabled"]           = false;
-    j["script"]["path"]             = "";
-
-    // Translate legacy `BrokerService::Config` heartbeat fields into the
-    // HubConfig broker section so callers that customise these values
-    // continue to work under real HubHost.
-    if (legacy_cfg.heartbeat_interval.count() > 0)
-        j["broker"]["heartbeat_interval_ms"] =
-            static_cast<int>(legacy_cfg.heartbeat_interval.count());
-    if (legacy_cfg.ready_miss_heartbeats > 0)
-        j["broker"]["ready_miss_heartbeats"] = legacy_cfg.ready_miss_heartbeats;
-    if (legacy_cfg.pending_miss_heartbeats > 0)
-        j["broker"]["pending_miss_heartbeats"] = legacy_cfg.pending_miss_heartbeats;
-    if (legacy_cfg.ready_timeout_override.has_value())
-        j["broker"]["ready_timeout_ms"] =
-            static_cast<int>(legacy_cfg.ready_timeout_override->count());
-    if (legacy_cfg.pending_timeout_override.has_value())
-        j["broker"]["pending_timeout_ms"] =
-            static_cast<int>(legacy_cfg.pending_timeout_override->count());
-    if (legacy_cfg.checksum_repair_policy ==
-        ChecksumRepairPolicy::NotifyOnly)
-        j["broker"]["checksum_repair_policy"] = "notify_only";
-    {
-        std::ofstream f(hub_json);
-        f << j.dump(2);
-    }
-    fs::create_directories(dir / "schemas");
-
-    HubHostHandle h;
-    h.hub_dir = std::move(dir);
-    h.host    = std::make_unique<HubHost>(
-        HubConfig::load_from_directory(h.hub_dir.string()));
-    h.host->startup();
-    h.endpoint = h.host->broker_endpoint();
-    h.pubkey   = h.host->broker_pubkey();
-    return h;
-}
-
-struct BrcHandle
-{
-    BrokerRequestComm brc;
-    std::atomic<bool> running{true};
-    std::thread       thread;
-
-    void start(const std::string &ep, const std::string &pk, const std::string &uid)
-    {
-        BrokerRequestComm::Config cfg;
-        cfg.broker_endpoint = ep;
-        cfg.broker_pubkey   = pk;
-        cfg.role_uid        = uid;
-        ASSERT_TRUE(brc.connect(cfg));
-        thread = std::thread([this] { brc.run_poll_loop([this] { return running.load(); }); });
-    }
-
-    void stop()
-    {
-        running.store(false);
-        brc.stop();
-        if (thread.joinable())
-            thread.join();
-        brc.disconnect();
-    }
-
-    ~BrcHandle()
-    {
-        if (thread.joinable())
-            stop();
-    }
-};
-
-std::string pid_chan(const std::string &base)
-{
-    return base + ".pid" + std::to_string(getpid());
-}
-
-json make_reg_opts(const std::string &channel, const std::string &role_uid)
-{
-    json opts;
-    opts["channel_name"]      = channel;
-    opts["pattern"]           = "PubSub";
-    opts["has_shared_memory"] = false;
-    opts["producer_pid"]      = ::getpid();
-    opts["role_uid"]          = role_uid;
-    opts["role_name"]         = "test_producer";
-    return opts;
-}
-
-json make_cons_opts(const std::string &channel, const std::string &consumer_uid)
-{
-    json opts;
-    opts["channel_name"]  = channel;
-    opts["consumer_uid"]  = consumer_uid;
-    opts["consumer_name"] = "test_consumer";
-    opts["consumer_pid"]  = ::getpid();
-    return opts;
-}
-
-/// Thread-safe event collector for notification callbacks.
-struct EventCollector
-{
-    std::mutex              mtx;
-    std::condition_variable cv;
-    std::vector<std::pair<std::string, json>> events;
-
-    void push(const std::string &type, const json &body)
-    {
-        {
-            std::lock_guard<std::mutex> lock(mtx);
-            events.emplace_back(type, body);
-        }
-        cv.notify_all();
-    }
-
-    bool wait_for(size_t count, int timeout_ms = 5000)
-    {
-        std::unique_lock<std::mutex> lock(mtx);
-        return cv.wait_for(lock, std::chrono::milliseconds(timeout_ms),
-                           [&] { return events.size() >= count; });
-    }
-
-    size_t size()
-    {
-        std::lock_guard<std::mutex> lock(mtx);
-        return events.size();
-    }
-};
-
-} // anonymous namespace
-
-// ============================================================================
-// BrokerProtocolTest fixture
-// ============================================================================
-
-class BrokerProtocolTest : public ::testing::Test,
-                            public pylabhub::tests::LogCaptureFixture
-{
-public:
-    static void SetUpTestSuite()
-    {
-        s_lifecycle_ = std::make_unique<LifecycleGuard>(MakeModDefList(
-            Logger::GetLifecycleModule(),
-            FileLock::GetLifecycleModule(),
-            JsonConfig::GetLifecycleModule(),
-            pylabhub::crypto::GetLifecycleModule(),
-            pylabhub::hub::GetZMQContextModule()), std::source_location::current());
-    }
-    static void TearDownTestSuite() { s_lifecycle_.reset(); }
-
-protected:
-    void SetUp() override
-    {
-        LogCaptureFixture::Install();
-        broker_.emplace(start_local_broker({}));
-    }
-
-    void TearDown() override
-    {
-        broker_.reset();
-        AssertNoUnexpectedLogWarnError();
-        LogCaptureFixture::Uninstall();
-    }
-
-    const std::string &ep() const { return broker_->endpoint; }
-    const std::string &pk() const { return broker_->pubkey; }
-    BrokerService     &svc() { return broker_->host->broker(); }
-
-    std::optional<HubHostHandle> broker_;
-
-private:
-    static std::unique_ptr<LifecycleGuard> s_lifecycle_;
-};
-
-std::unique_ptr<LifecycleGuard> BrokerProtocolTest::s_lifecycle_;
 
 // ============================================================================
 // 1. CHECKSUM_ERROR_REPORT — broker forwards as CHANNEL_EVENT_NOTIFY
@@ -282,71 +30,16 @@ std::unique_ptr<LifecycleGuard> BrokerProtocolTest::s_lifecycle_;
 
 TEST_F(BrokerProtocolTest, ChecksumErrorReport_ForwardedToProducer)
 {
-    ExpectLogWarn("Cat2 checksum error");
-    broker_.reset();
-    BrokerService::Config cfg;
-    cfg.endpoint               = "tcp://127.0.0.1:0";
-    cfg.schema_search_dirs     = {};
-    cfg.checksum_repair_policy = ChecksumRepairPolicy::NotifyOnly;
-    broker_.emplace(start_local_broker(std::move(cfg)));
-
-    const std::string channel = pid_chan("proto.checksum.prod");
-    const std::string uid     = "prod." + channel;
-
-    auto prod_events = std::make_shared<EventCollector>();
-    BrcHandle prod_bh;
-    prod_bh.brc.on_notification([prod_events](const std::string &type, const json &body)
-    {
-        if (type == "CHANNEL_EVENT_NOTIFY")
-            prod_events->push(type, body);
-    });
-    prod_bh.start(ep(), pk(), uid);
-
-    auto reg = prod_bh.brc.register_channel(make_reg_opts(channel, uid), 3000);
-    ASSERT_TRUE(reg.has_value());
-
-    // Reporter sends checksum error
-    BrcHandle reporter;
-    reporter.start(ep(), pk(), "REPORT-" + channel);
-
-    json report;
-    report["channel_name"] = channel;
-    report["slot_index"]   = 42;
-    report["error"]        = "bad CRC in slot 42";
-    report["reporter_pid"] = ::getpid();
-    reporter.brc.send_checksum_error(report);
-
-    ASSERT_TRUE(prod_events->wait_for(1, 3000))
-        << "Producer did not receive checksum error notify";
-
-    reporter.stop();
-    prod_bh.stop();
+    auto w = SpawnWorker(
+        "broker_protocol.checksum_error_report_forwarded_to_producer");
+    ExpectWorkerOk(w);
 }
 
 TEST_F(BrokerProtocolTest, ChecksumErrorReport_UnknownChannel_Silent)
 {
-    ExpectLogWarn("Cat2 checksum error");
-    BrcHandle reporter;
-    reporter.start(ep(), pk(), "REPORT-bogus");
-
-    json report;
-    report["channel_name"] = pid_chan("proto.checksum.bogus");
-    report["slot_index"]   = 0;
-    report["error"]        = "test";
-    report["reporter_pid"] = ::getpid();
-
-    EXPECT_NO_THROW(reporter.brc.send_checksum_error(report));
-
-    // An unknown-channel checksum report is silently dropped — there is
-    // no observable event (no callback, no metric bump, no log assertion
-    // we can pin) so we cannot poll_until a condition.  Give the broker
-    // a short async-processing window, then assert it is still operational
-    // by explicitly calling the admin API (not a vacuous `(void)snap`).
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    EXPECT_NO_THROW(svc().query_channel_snapshot())
-        << "broker must remain operational after unknown-channel checksum report";
-
-    reporter.stop();
+    auto w = SpawnWorker(
+        "broker_protocol.checksum_error_report_unknown_channel_silent");
+    ExpectWorkerOk(w);
 }
 
 // ============================================================================
@@ -355,397 +48,51 @@ TEST_F(BrokerProtocolTest, ChecksumErrorReport_UnknownChannel_Silent)
 
 TEST_F(BrokerProtocolTest, ClosingNotify_DeliveredToProducerAndConsumer)
 {
-    broker_.reset();
-    BrokerService::Config cfg;
-    cfg.endpoint               = "tcp://127.0.0.1:0";
-    cfg.schema_search_dirs     = {};
-    broker_.emplace(start_local_broker(std::move(cfg)));
-
-    const std::string channel  = pid_chan("proto.close.all");
-    const std::string prod_uid = "prod." + channel;
-    const std::string cons_uid = "cons." + channel;
-
-    std::atomic<int> prod_closing{0}, cons_closing{0};
-
-    BrcHandle prod_bh;
-    prod_bh.brc.on_notification([&](const std::string &type, const json &)
-    {
-        if (type == "CHANNEL_CLOSING_NOTIFY")
-            prod_closing.fetch_add(1);
-    });
-    prod_bh.start(ep(), pk(), prod_uid);
-
-    auto reg = prod_bh.brc.register_channel(make_reg_opts(channel, prod_uid), 3000);
-    ASSERT_TRUE(reg.has_value());
-
-    // CONSUMER_REG_REQ does not gate on Ready — no heartbeat needed here.
-    BrcHandle cons_bh;
-    cons_bh.brc.on_notification([&](const std::string &type, const json &)
-    {
-        if (type == "CHANNEL_CLOSING_NOTIFY")
-            cons_closing.fetch_add(1);
-    });
-    cons_bh.start(ep(), pk(), cons_uid);
-
-    auto cons_reg = cons_bh.brc.register_consumer(make_cons_opts(channel, cons_uid), 3000);
-    ASSERT_TRUE(cons_reg.has_value());
-
-    svc().request_close_channel(channel);
-
-    using pylabhub::tests::helper::poll_until;
-    EXPECT_TRUE(poll_until(
-        [&] { return prod_closing.load() > 0 && cons_closing.load() > 0; },
-        std::chrono::seconds(5)))
-        << "CHANNEL_CLOSING_NOTIFY not delivered to both members within 5s";
-
-    EXPECT_GE(prod_closing.load(), 1) << "Producer did not receive CHANNEL_CLOSING_NOTIFY";
-    EXPECT_GE(cons_closing.load(), 1) << "Consumer did not receive CHANNEL_CLOSING_NOTIFY";
-
-    cons_bh.stop();
-    prod_bh.stop();
+    auto w = SpawnWorker(
+        "broker_protocol.closing_notify_delivered_to_producer_and_consumer");
+    ExpectWorkerOk(w);
 }
 
 // ============================================================================
-// 3. Duplicate REG_REQ — schema hash conflict
+// 3. Duplicate REG_REQ — SHM cardinality + schema hash conflict
 // ============================================================================
 
-TEST_F(BrokerProtocolTest, DuplicateReg_TwoDistinctProducers_OnShmChannel_RejectedShmCardinality)
+TEST_F(BrokerProtocolTest,
+       DuplicateReg_TwoDistinctProducers_OnShmChannel_RejectedShmCardinality)
 {
-    // Wave M2.5 (controlled-access API design §6.3 + HEP-CORE-0023
-    // §2.1.1): SHM channels admit exactly one producer.  Pre-MP2.5
-    // this test passed because the second REG_REQ silently overwrote
-    // the channel record (the original multi-producer overwrite-class
-    // bug we're eliminating).  Post-MP2.5 the second admission is
-    // rejected with MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM — the SHM
-    // physical constraint is enforced at the controlled-access API
-    // (`ChannelEntry::add_producer`).  ZMQ Fan-In allows two distinct
-    // producers; that contract is pinned in
-    // `HubStateProducerAdmission.SecondDistinctUid_MatchingInvariants_Appends`.
-    ExpectLogWarn("SHM channels are physically single-producer");
-    const std::string channel  = pid_chan("proto.dup.same");
-    const std::string hash_hex = std::string(64, 'a');
-    const std::string uid1     = "prod.proto.dup.same.uid00000001";
-    const std::string uid2     = "prod.proto.dup.same.uid00000002";
-
-    BrcHandle bh1;
-    bh1.start(ep(), pk(), uid1);
-    auto opts1 = make_reg_opts(channel, uid1);
-    opts1["schema_hash"] = hash_hex;
-    auto h1 = bh1.brc.register_channel(opts1, 3000);
-    ASSERT_TRUE(h1.has_value());
-
-    BrcHandle bh2;
-    bh2.start(ep(), pk(), uid2);
-    auto opts2 = make_reg_opts(channel, uid2);
-    opts2["schema_hash"] = hash_hex;
-    auto h2 = bh2.brc.register_channel(opts2, 3000);
-    ASSERT_TRUE(h2.has_value())
-        << "Broker must return a structured error envelope, not transport failure";
-    EXPECT_EQ(h2->value("status", std::string{}), "error")
-        << "Second SHM producer must reject; got: " << h2->dump();
-    EXPECT_EQ(h2->value("error_code", std::string{}),
-              "MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM")
-        << "SHM cardinality reject must surface as "
-           "MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM; got: " << h2->dump();
-
-    bh2.stop();
-    bh1.stop();
+    auto w = SpawnWorker("broker_protocol.duplicate_reg_shm_cardinality");
+    ExpectWorkerOk(w);
 }
 
 TEST_F(BrokerProtocolTest, DuplicateReg_DifferentSchemaHash_Rejected)
 {
-    ExpectLogError("Cat1 schema mismatch");
-    ExpectLogError("CHANNEL_ERROR_NOTIFY");
-    const std::string channel = pid_chan("proto.dup.diff");
-    const std::string hash_a  = std::string(64, 'a');
-    const std::string hash_b  = std::string(64, 'b');
-    const std::string uid1    = "prod.proto.dup.diff.uid00000001";
-    const std::string uid2    = "prod.proto.dup.diff.uid00000002";
-
-    BrcHandle bh1;
-    bh1.start(ep(), pk(), uid1);
-    auto opts1 = make_reg_opts(channel, uid1);
-    opts1["schema_hash"] = hash_a;
-    auto h1 = bh1.brc.register_channel(opts1, 3000);
-    ASSERT_TRUE(h1.has_value());
-
-    BrcHandle bh2;
-    bh2.start(ep(), pk(), uid2);
-    auto opts2 = make_reg_opts(channel, uid2);
-    opts2["schema_hash"] = hash_b;
-    auto h2 = bh2.brc.register_channel(opts2, 3000);
-    // Per HEP-CORE-0007 §12.3 (post-Stage-2 contract): broker now surfaces
-    // its ERROR body via the optional<json> return; assert on status +
-    // error_code rather than on optional emptiness.  Schema-hash conflict
-    // on re-registration → SCHEMA_MISMATCH per HEP-0007 §12.4a taxonomy.
-    ASSERT_TRUE(h2.has_value())
-        << "Broker should respond with ERROR, not silent timeout";
-    EXPECT_EQ(h2->value("status", std::string{}), "error");
-    EXPECT_EQ(h2->value("error_code", std::string{}), "SCHEMA_MISMATCH");
-
-    bh2.stop();
-    bh1.stop();
+    auto w = SpawnWorker(
+        "broker_protocol.duplicate_reg_different_schema_hash");
+    ExpectWorkerOk(w);
 }
 
 // ============================================================================
-// 4. HEARTBEAT_REQ — PendingReady → Ready status transition
+// 4. HEARTBEAT_REQ — PendingReady → Ready + wire payload + keying
 // ============================================================================
 
 TEST_F(BrokerProtocolTest, Heartbeat_TransitionsToReady)
 {
-    const std::string channel = pid_chan("proto.heartbeat.ready");
-    const std::string uid     = "prod." + channel;
-
-    BrcHandle bh;
-    bh.start(ep(), pk(), uid);
-    auto reg = bh.brc.register_channel(make_reg_opts(channel, uid), 3000);
-    ASSERT_TRUE(reg.has_value());
-
-    // Before heartbeat: registering (producer registered, no heartbeat yet).
-    ChannelSnapshot snap = svc().query_channel_snapshot();
-    for (const auto &ch : snap.channels)
-    {
-        if (ch.name == channel)
-            EXPECT_EQ(ch.observable, "registering");
-    }
-
-    // Send heartbeat — broker flips observable registering → live asynchronously.
-    bh.brc.send_heartbeat(channel, uid, "producer", {});
-
-    using pylabhub::tests::helper::poll_until;
-    auto channel_is_live = [&] {
-        auto s = svc().query_channel_snapshot();
-        for (const auto &ch : s.channels)
-            if (ch.name == channel) return ch.observable == "live";
-        return false;
-    };
-    EXPECT_TRUE(poll_until(channel_is_live, std::chrono::seconds(3)))
-        << "channel did not transition to live within 3s after heartbeat";
-
-    bh.stop();
+    auto w = SpawnWorker("broker_protocol.heartbeat_transitions_to_ready");
+    ExpectWorkerOk(w);
 }
-
-// ─── HEARTBEAT_REQ wire format (Phase 6 — HEP-CORE-0019 §4.1, Wave B M0) ───
-//
-// Design contract: `BrokerRequestComm::send_heartbeat(channel, uid,
-// role_type, metrics)` puts `uid` and `role_type` on the wire under
-// those exact keys, and the broker reads them out of the payload —
-// per HEP-CORE-0019 §4.1 (Phase 6).
-//
-// This test verifies the end-to-end contract by capturing the
-// broker-side LOG_TRACE that echoes the read-from-payload fields.
-// This catches:
-//   - role-side bug: BRC fails to write the field (broker logs empty)
-//   - role-side bug: BRC writes under wrong key (broker reads empty)
-//   - broker-side bug: broker reads from the wrong key (logged value mismatches)
-//
-// Mutation kills (verified):
-//   - delete `payload["uid"] = uid;` in send_heartbeat → log shows uid=''  → test fails
-//   - rename to `payload["role_id"]` in send_heartbeat → log shows role_type='' → test fails
-//   - broker reads `req.value("user_id", "")` → log uid mismatches → test fails
-//
-// The pre-M1 broker handler does not yet enforce required-ness of
-// the fields; M1 will add that enforcement plus per-presence keying
-// in `MetricsStore` and split the producer-only channel-FSM refresh.
 
 TEST_F(BrokerProtocolTest, Heartbeat_WirePayloadIncludesUidAndRoleType)
 {
-    // Promote the runtime log level to DEBUG so the broker's
-    // wire-payload echo line (DEBUG-level by design — too noisy for
-    // INFO in production) is captured.  Restored at scope exit.
-    // (Compile-time DEBUG/TRACE is enabled for tests via the CMake-set
-    //  `LOGGER_COMPILE_LEVEL=0`; only runtime-level promotion is needed.)
-    const auto prev_level = pylabhub::utils::Logger::instance().level();
-    pylabhub::utils::Logger::instance().set_level(
-        pylabhub::utils::Logger::Level::L_DEBUG);
-    auto restore_level = pylabhub::basics::make_scope_guard([&] {
-        pylabhub::utils::Logger::instance().set_level(prev_level);
-    });
-
-    const std::string channel   = pid_chan("proto.heartbeat.wire.uid");
-    const std::string uid       = "prod." + channel;
-    const std::string role_type = "producer";
-
-    BrcHandle bh;
-    bh.start(ep(), pk(), uid);
-    auto reg = bh.brc.register_channel(make_reg_opts(channel, uid), 3000);
-    ASSERT_TRUE(reg.has_value()) << "REG_REQ should succeed";
-
-    // Send heartbeat with the new (uid, role_type) wire fields.  The
-    // broker's `handle_heartbeat_req` emits a DEBUG line that echoes
-    // the fields it READ from the payload — so this test verifies
-    // both write side (BRC put them on the wire) and read side (broker
-    // could decode them under those exact key names).
-    bh.brc.send_heartbeat(channel, uid, role_type, {});
-
-    // Build the expected log marker: the fields the broker logs back.
-    // Format pinned by `handle_heartbeat_req`'s LOGGER_DEBUG call;
-    // changes there must match here.
-    const std::string expected =
-        "Broker: HEARTBEAT_REQ channel='" + channel +
-        "' uid='" + uid +
-        "' role_type='" + role_type + "'";
-
-    auto read_log = [&]() {
-        std::ifstream f(log_path());
-        return std::string(std::istreambuf_iterator<char>(f),
-                           std::istreambuf_iterator<char>{});
-    };
-
-    using pylabhub::tests::helper::poll_until;
-    EXPECT_TRUE(poll_until(
-        [&] { return read_log().find(expected) != std::string::npos; },
-        std::chrono::seconds(2)))
-        << "broker did not log the expected wire-payload fields within 2s.\n"
-        << "Expected substring: " << expected << "\n"
-        << "Actual log tail:\n"
-        << ([&]() {
-               auto s = read_log();
-               return s.size() > 2000 ? s.substr(s.size() - 2000) : s;
-           })();
-
-    bh.stop();
+    auto w = SpawnWorker(
+        "broker_protocol.heartbeat_wire_payload_includes_uid_and_role_type");
+    ExpectWorkerOk(w);
 }
-
-// ─── HEARTBEAT_REQ per-presence keying (Wave B M1.1) ───────────────────────
-//
-// Design contract: each presence (one per `(uid, channel, role_type)` a
-// role is registered as) gets its own row in `RoleEntry.presences`.  A
-// producer's HEARTBEAT_REQ refreshes its own producer-presence row;
-// a consumer's HEARTBEAT_REQ refreshes its own consumer-presence row.
-// Neither heartbeat ever touches the other's bookkeeping.
-//
-// Per HEP-CORE-0019 §2.3 / Phase 6 + HEP-CORE-0023 §2.6.
-//
-// This test pins the **structural separation** that M1.1 introduces:
-// after a producer-uid emits HEARTBEAT_REQ with role_type="producer"
-// AND a (separate-uid) consumer emits HEARTBEAT_REQ with
-// role_type="consumer", the broker's HubState carries TWO distinct
-// presence rows under TWO different RoleEntries — each keyed by the
-// wire-decoded (uid, role_type).  The test reads HubState directly,
-// so it bypasses the still-pre-M1.2 metrics-query path and pins the
-// structural data contract that M1.2 will then move the FSM onto.
-//
-// Mutation kills (verified):
-//   - broker passes producer_role_uid (instead of wire_uid) to
-//     `_on_heartbeat` for the consumer heartbeat → consumer presence
-//     row would land under the producer's RoleEntry, the consumer's
-//     RoleEntry would have no presences → `cons_re->find_presence(
-//     channel, "consumer")` returns nullptr → test fails.
-//   - broker drops `role_type` before the keyed call (passes "" instead)
-//     → `find_presence(channel, "producer")` returns nullptr; lazy
-//     creation creates a row with role_type="" → test fails on the
-//     `role_type` field check.
-//   - `RolePresence.first_heartbeat_seen` not set on lazy-create →
-//     test fails on the EXPECT_TRUE(first_heartbeat_seen) check.
 
 TEST_F(BrokerProtocolTest, HeartbeatKeying_ProducerVsConsumer_DistinctRows)
 {
-    const std::string channel  = pid_chan("proto.heartbeat.keying");
-    const std::string prod_uid = "prod." + channel;
-    const std::string cons_uid = "cons." + channel;
-
-    BrcHandle prod_h, cons_h;
-    prod_h.start(ep(), pk(), prod_uid);
-    cons_h.start(ep(), pk(), cons_uid);
-
-    auto reg = prod_h.brc.register_channel(make_reg_opts(channel, prod_uid),
-                                            3000);
-    ASSERT_TRUE(reg.has_value()) << "REG_REQ should succeed";
-
-    // Heartbeat once so the channel reaches Ready and DISC_REQ resolves.
-    prod_h.brc.send_heartbeat(channel, prod_uid, "producer", {});
-
-    auto disc = cons_h.brc.discover_channel(channel,
-                                             nlohmann::json::object(), 3000);
-    ASSERT_TRUE(disc.has_value()) << "DISC_REQ should resolve";
-    auto cons_reg = cons_h.brc.register_consumer(
-        make_cons_opts(channel, cons_uid), 3000);
-    ASSERT_TRUE(cons_reg.has_value()) << "CONSUMER_REG_REQ should succeed";
-
-    // Send distinct metrics with each presence's heartbeat so we can
-    // pin that the row stores the SENDER's metrics, not the other
-    // presence's.  Producer's metrics use 'out_written' (producer-side
-    // counter); consumer's metrics use 'in_received' (consumer-side
-    // counter); the two should never co-mingle.
-    nlohmann::json prod_metrics = {{"out_written", 100}, {"drops", 0}};
-    nlohmann::json cons_metrics = {{"in_received", 100}, {"drops", 0}};
-
-    prod_h.brc.send_heartbeat(channel, prod_uid, "producer", prod_metrics);
-    cons_h.brc.send_heartbeat(channel, cons_uid, "consumer", cons_metrics);
-
-    // Both presence rows must reflect heartbeat processing.  Presence
-    // rows are now created EAGERLY at REG_REQ / CONSUMER_REG_REQ time
-    // (HEP-CORE-0023 §2.6 — M1.2 moved creation off the lazy
-    // first-heartbeat path) so we poll on `first_heartbeat_seen=true`
-    // — the only signal that the heartbeat with metrics has actually
-    // been processed by the broker.
-    using pylabhub::tests::helper::poll_until;
-    auto heartbeats_processed = [&] {
-        auto prod_re = broker_->host->state().role(prod_uid);
-        auto cons_re = broker_->host->state().role(cons_uid);
-        if (!prod_re.has_value() || !cons_re.has_value()) return false;
-        const auto *prod_p = prod_re->find_presence(channel, "producer");
-        const auto *cons_p = cons_re->find_presence(channel, "consumer");
-        return prod_p && cons_p
-            && prod_p->first_heartbeat_seen
-            && cons_p->first_heartbeat_seen;
-    };
-    EXPECT_TRUE(poll_until(heartbeats_processed, std::chrono::seconds(2)))
-        << "presence rows did not record first_heartbeat_seen within 2s";
-
-    // ── Producer presence row contract ──────────────────────────────────
-    auto prod_re = broker_->host->state().role(prod_uid);
-    ASSERT_TRUE(prod_re.has_value());
-    const RolePresence *prod_p = prod_re->find_presence(channel, "producer");
-    ASSERT_NE(prod_p, nullptr) << "producer-presence row missing";
-    EXPECT_EQ(prod_p->channel, channel);
-    EXPECT_EQ(prod_p->role_type, "producer");
-    EXPECT_TRUE(prod_p->first_heartbeat_seen);
-    EXPECT_EQ(prod_p->state, RoleState::Connected);
-    // Producer's metrics rode on the wire and landed in this presence row.
-    // Pre-flight type guard so a structural regression (latest_metrics
-    // assigned a non-object) gets a clear assertion message rather than
-    // a downstream JSON exception.
-    ASSERT_TRUE(prod_p->latest_metrics.is_object())
-        << "producer-presence latest_metrics is not a JSON object: "
-        << prod_p->latest_metrics.type_name();
-    ASSERT_TRUE(prod_p->latest_metrics.contains("out_written"));
-    EXPECT_EQ(prod_p->latest_metrics.value("out_written", 0), 100);
-
-    // ── Consumer presence row contract ──────────────────────────────────
-    auto cons_re = broker_->host->state().role(cons_uid);
-    ASSERT_TRUE(cons_re.has_value());
-    const RolePresence *cons_p = cons_re->find_presence(channel, "consumer");
-    ASSERT_NE(cons_p, nullptr) << "consumer-presence row missing";
-    EXPECT_EQ(cons_p->channel, channel);
-    EXPECT_EQ(cons_p->role_type, "consumer");
-    EXPECT_TRUE(cons_p->first_heartbeat_seen);
-    EXPECT_EQ(cons_p->state, RoleState::Connected);
-    ASSERT_TRUE(cons_p->latest_metrics.is_object())
-        << "consumer-presence latest_metrics is not a JSON object: "
-        << cons_p->latest_metrics.type_name();
-    ASSERT_TRUE(cons_p->latest_metrics.contains("in_received"));
-    EXPECT_EQ(cons_p->latest_metrics.value("in_received", 0), 100);
-
-    // ── Structural separation: rows live under DIFFERENT RoleEntries ────
-    // The producer's RoleEntry must contain ONLY producer-presence rows
-    // for `channel`; vice versa for the consumer's.  This pins that
-    // wire_uid is what the broker keys on, not a derived producer_uid.
-    EXPECT_EQ(prod_re->find_presence(channel, "consumer"), nullptr)
-        << "producer's RoleEntry incorrectly contains a consumer-presence "
-           "row — broker keyed off the channel's first producer instead "
-           "of the wire-decoded uid (B1+B2 latent bug returned)";
-    EXPECT_EQ(cons_re->find_presence(channel, "producer"), nullptr)
-        << "consumer's RoleEntry incorrectly contains a producer-presence "
-           "row";
-
-    // Each RoleEntry should have exactly one presence row for this channel.
-    EXPECT_EQ(prod_re->presences.size(), 1u);
-    EXPECT_EQ(cons_re->presences.size(), 1u);
-
-    cons_h.stop();
-    prod_h.stop();
+    auto w = SpawnWorker(
+        "broker_protocol.heartbeat_keying_producer_vs_consumer_distinct_rows");
+    ExpectWorkerOk(w);
 }
 
 // ============================================================================
@@ -754,102 +101,32 @@ TEST_F(BrokerProtocolTest, HeartbeatKeying_ProducerVsConsumer_DistinctRows)
 
 TEST_F(BrokerProtocolTest, RolePresenceReq_UnknownUid_ReturnsFalse)
 {
-    BrcHandle bh;
-    bh.start(ep(), pk(), "QUERIER-unknown");
-    // Post-Bucket-C: query_role_presence returns optional<json> with the
-    // broker's response body (`{"present": false}` for unknown UID).
-    auto resp = bh.brc.query_role_presence("prod.unknown.uiddeadbeef", 2000);
-    ASSERT_TRUE(resp.has_value()) << "Broker should respond, not time out";
-    EXPECT_FALSE(resp->value("present", true)) << "Unknown uid → present=false";
-    bh.stop();
+    auto w = SpawnWorker("broker_protocol.role_presence_req_unknown_uid");
+    ExpectWorkerOk(w);
 }
 
 TEST_F(BrokerProtocolTest, RoleInfoReq_UnknownUid_NotFound)
 {
-    BrcHandle bh;
-    bh.start(ep(), pk(), "QUERIER-unknown2");
-    auto info = bh.brc.query_role_info("prod.unknown.uiddeadbeef", 2000);
-    // BRC returns a JSON response (broker always replies), not nullopt.
-    // For unknown UIDs, the response has "found":false.
-    if (info.has_value())
-        EXPECT_FALSE(info->value("found", true)) << "Expected found=false for unknown UID";
-    // nullopt is also acceptable (timeout or error).
-    bh.stop();
+    auto w = SpawnWorker("broker_protocol.role_info_req_unknown_uid");
+    ExpectWorkerOk(w);
 }
 
 TEST_F(BrokerProtocolTest, RolePresenceReq_ProducerUid_ReturnsTrue)
 {
-    const std::string channel = pid_chan("proto.presence.prod");
-    const std::string uid     = "prod.prestest.uidaaaa0001";
-
-    BrcHandle prod_bh;
-    prod_bh.start(ep(), pk(), uid);
-    auto opts = make_reg_opts(channel, uid);
-    opts["role_name"] = "PresTestProd";
-    auto reg = prod_bh.brc.register_channel(opts, 3000);
-    ASSERT_TRUE(reg.has_value());
-
-    BrcHandle querier;
-    querier.start(ep(), pk(), "QUERIER-pres-prod");
-    EXPECT_TRUE(querier.brc.query_role_presence(uid, 2000));
-
-    querier.stop();
-    prod_bh.stop();
+    auto w = SpawnWorker("broker_protocol.role_presence_req_producer_uid");
+    ExpectWorkerOk(w);
 }
 
 TEST_F(BrokerProtocolTest, RolePresenceReq_ConsumerUid_ReturnsTrue)
 {
-    const std::string channel      = pid_chan("proto.presence.cons");
-    const std::string prod_uid     = "prod." + channel;
-    const std::string consumer_uid = "cons.prestest.uidbbbb0002";
-
-    BrcHandle prod_bh;
-    prod_bh.start(ep(), pk(), prod_uid);
-    auto reg = prod_bh.brc.register_channel(make_reg_opts(channel, prod_uid), 3000);
-    ASSERT_TRUE(reg.has_value());
-
-    BrcHandle cons_bh;
-    cons_bh.start(ep(), pk(), consumer_uid);
-    auto cons_reg = cons_bh.brc.register_consumer(make_cons_opts(channel, consumer_uid), 3000);
-    ASSERT_TRUE(cons_reg.has_value());
-
-    BrcHandle querier;
-    querier.start(ep(), pk(), "QUERIER-pres-cons");
-    EXPECT_TRUE(querier.brc.query_role_presence(consumer_uid, 2000));
-
-    querier.stop();
-    cons_bh.stop();
-    prod_bh.stop();
+    auto w = SpawnWorker("broker_protocol.role_presence_req_consumer_uid");
+    ExpectWorkerOk(w);
 }
 
 TEST_F(BrokerProtocolTest, RoleInfoReq_WithInbox_ReturnsInfo)
 {
-    const std::string channel     = pid_chan("proto.roleinfo.withinbox");
-    const std::string uid         = "prod.roleinfo.uiddddd0004";
-    const std::string inbox_ep    = "tcp://127.0.0.1:9987";
-    const std::string schema_json = R"([{"type":"float64","count":1,"length":0}])";
-    const std::string packing     = "aligned";
-
-    BrcHandle prod_bh;
-    prod_bh.start(ep(), pk(), uid);
-
-    auto opts = make_reg_opts(channel, uid);
-    opts["role_name"]         = "InboxProd";
-    opts["inbox_endpoint"]    = inbox_ep;
-    opts["inbox_schema_json"] = schema_json;
-    opts["inbox_packing"]     = packing;
-    auto reg = prod_bh.brc.register_channel(opts, 3000);
-    ASSERT_TRUE(reg.has_value());
-
-    BrcHandle querier;
-    querier.start(ep(), pk(), "QUERIER-roleinfo");
-    auto info = querier.brc.query_role_info(uid, 2000);
-    ASSERT_TRUE(info.has_value()) << "Expected role info, got nullopt";
-    EXPECT_EQ(info->value("inbox_endpoint", ""), inbox_ep);
-    EXPECT_EQ(info->value("inbox_packing", ""), packing);
-
-    querier.stop();
-    prod_bh.stop();
+    auto w = SpawnWorker("broker_protocol.role_info_req_with_inbox");
+    ExpectWorkerOk(w);
 }
 
 // ============================================================================
@@ -858,477 +135,77 @@ TEST_F(BrokerProtocolTest, RoleInfoReq_WithInbox_ReturnsInfo)
 
 TEST_F(BrokerProtocolTest, TransportMismatch_ShmProducer_ZmqConsumer_Fails)
 {
-    ExpectLogWarn("transport mismatch");
-    const std::string channel  = pid_chan("proto.transport.shm_zmq");
-    const std::string prod_uid = "prod." + channel;
-    const std::string cons_uid = "cons." + channel;
-
-    BrcHandle prod_bh;
-    prod_bh.start(ep(), pk(), prod_uid);
-    auto reg = prod_bh.brc.register_channel(make_reg_opts(channel, prod_uid), 3000);
-    ASSERT_TRUE(reg.has_value());
-
-    BrcHandle cons_bh;
-    cons_bh.start(ep(), pk(), cons_uid);
-    auto cons_opts = make_cons_opts(channel, cons_uid);
-    cons_opts["consumer_queue_type"] = "zmq";
-    auto cons_reg = cons_bh.brc.register_consumer(cons_opts, 3000);
-    // Transport mismatch → TRANSPORT_MISMATCH per HEP-CORE-0007 §12.4a.
-    ASSERT_TRUE(cons_reg.has_value())
-        << "Broker should respond with ERROR, not silent timeout";
-    EXPECT_EQ(cons_reg->value("status", std::string{}), "error");
-    EXPECT_EQ(cons_reg->value("error_code", std::string{}), "TRANSPORT_MISMATCH");
-
-    cons_bh.stop();
-    prod_bh.stop();
+    auto w = SpawnWorker(
+        "broker_protocol.transport_mismatch_shm_producer_zmq_consumer");
+    ExpectWorkerOk(w);
 }
 
 TEST_F(BrokerProtocolTest, TransportMatch_ShmConsumer_ShmProducer_Succeeds)
 {
-    const std::string channel  = pid_chan("proto.transport.shm_shm");
-    const std::string prod_uid = "prod." + channel;
-    const std::string cons_uid = "cons." + channel;
-
-    BrcHandle prod_bh;
-    prod_bh.start(ep(), pk(), prod_uid);
-    auto reg = prod_bh.brc.register_channel(make_reg_opts(channel, prod_uid), 3000);
-    ASSERT_TRUE(reg.has_value());
-
-    // CONSUMER_REG_REQ does not gate on Ready — no heartbeat/sleep needed.
-    BrcHandle cons_bh;
-    cons_bh.start(ep(), pk(), cons_uid);
-    auto cons_opts = make_cons_opts(channel, cons_uid);
-    cons_opts["consumer_queue_type"] = "shm";
-    auto cons_reg = cons_bh.brc.register_consumer(cons_opts, 3000);
-    EXPECT_TRUE(cons_reg.has_value()) << "Both sides use SHM — should succeed";
-
-    cons_bh.stop();
-    prod_bh.stop();
+    auto w = SpawnWorker(
+        "broker_protocol.transport_match_shm_consumer_shm_producer");
+    ExpectWorkerOk(w);
 }
 
 TEST_F(BrokerProtocolTest, TransportMatch_NoDriverField_AlwaysSucceeds)
 {
-    const std::string channel  = pid_chan("proto.transport.nofield");
-    const std::string prod_uid = "prod." + channel;
-    const std::string cons_uid = "cons." + channel;
-
-    BrcHandle prod_bh;
-    prod_bh.start(ep(), pk(), prod_uid);
-    auto reg = prod_bh.brc.register_channel(make_reg_opts(channel, prod_uid), 3000);
-    ASSERT_TRUE(reg.has_value());
-
-    prod_bh.brc.send_heartbeat(channel, prod_uid, "producer", {});
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-
-    BrcHandle cons_bh;
-    cons_bh.start(ep(), pk(), cons_uid);
-    // No consumer_queue_type field → broker skips validation
-    auto cons_reg = cons_bh.brc.register_consumer(make_cons_opts(channel, cons_uid), 3000);
-    EXPECT_TRUE(cons_reg.has_value())
-        << "Should succeed when consumer_queue_type is omitted";
-
-    cons_bh.stop();
-    prod_bh.stop();
+    auto w = SpawnWorker("broker_protocol.transport_match_no_driver_field");
+    ExpectWorkerOk(w);
 }
 
 // ============================================================================
-// REG_ACK / CONSUMER_REG_ACK heartbeat negotiation block (HEP-CORE-0023 §2.5)
+// 7. REG_ACK / CONSUMER_REG_ACK heartbeat-negotiation block
 // ============================================================================
 
 TEST_F(BrokerProtocolTest, RegAck_ContainsHeartbeatBlock_Defaults)
 {
-    const std::string channel = pid_chan("proto.regack.hb_default");
-    const std::string uid     = "prod." + channel;
-
-    BrcHandle bh;
-    bh.start(ep(), pk(), uid);
-    auto reg = bh.brc.register_channel(make_reg_opts(channel, uid), 3000);
-    ASSERT_TRUE(reg.has_value());
-
-    // The default fixture uses BrokerService::Config defaults, which pull
-    // from timeout_constants.hpp.  REG_ACK must surface them so the role
-    // can validate / align (HEP-CORE-0023 §2.5).
-    ASSERT_TRUE(reg->contains("heartbeat")) << "REG_ACK missing heartbeat block";
-    const auto &hb = (*reg)["heartbeat"];
-    ASSERT_TRUE(hb.is_object());
-
-    EXPECT_EQ(hb.value("heartbeat_interval_ms", -1),
-              ::pylabhub::kDefaultHeartbeatIntervalMs);
-    EXPECT_EQ(hb.value("ready_miss_heartbeats",   uint32_t{0}),
-              ::pylabhub::kDefaultReadyMissHeartbeats);
-    EXPECT_EQ(hb.value("pending_miss_heartbeats", uint32_t{0}),
-              ::pylabhub::kDefaultPendingMissHeartbeats);
-
-    bh.stop();
+    auto w = SpawnWorker(
+        "broker_protocol.reg_ack_contains_heartbeat_block_defaults");
+    ExpectWorkerOk(w);
 }
 
 TEST_F(BrokerProtocolTest, RegAck_HeartbeatBlock_HonorsCustomConfig)
 {
-    // Reset the default broker and start one with non-default heartbeat values.
-    broker_.reset();
-    BrokerService::Config cfg;
-    cfg.endpoint                = "tcp://127.0.0.1:0";
-    cfg.heartbeat_interval      = std::chrono::milliseconds(250);
-    cfg.ready_miss_heartbeats   = 12;
-    cfg.pending_miss_heartbeats = 8;
-    broker_.emplace(start_local_broker(std::move(cfg)));
-
-    const std::string channel = pid_chan("proto.regack.hb_custom");
-    const std::string uid     = "prod." + channel;
-
-    BrcHandle bh;
-    bh.start(ep(), pk(), uid);
-    auto reg = bh.brc.register_channel(make_reg_opts(channel, uid), 3000);
-    ASSERT_TRUE(reg.has_value());
-
-    ASSERT_TRUE(reg->contains("heartbeat"));
-    const auto &hb = (*reg)["heartbeat"];
-    EXPECT_EQ(hb.value("heartbeat_interval_ms",   -1),    250);
-    EXPECT_EQ(hb.value("ready_miss_heartbeats",    uint32_t{0}),  12u);
-    EXPECT_EQ(hb.value("pending_miss_heartbeats",  uint32_t{0}),  8u);
-
-    bh.stop();
+    auto w = SpawnWorker(
+        "broker_protocol.reg_ack_heartbeat_block_honors_custom_config");
+    ExpectWorkerOk(w);
 }
 
 TEST_F(BrokerProtocolTest, ConsumerRegAck_ContainsHeartbeatBlock)
 {
-    const std::string channel  = pid_chan("proto.cons_regack.hb");
-    const std::string prod_uid = "prod." + channel;
-    const std::string cons_uid = "cons." + channel;
-
-    BrcHandle prod_bh;
-    prod_bh.start(ep(), pk(), prod_uid);
-    auto reg = prod_bh.brc.register_channel(make_reg_opts(channel, prod_uid), 3000);
-    ASSERT_TRUE(reg.has_value());
-    prod_bh.brc.send_heartbeat(channel, prod_uid, "producer", {});
-
-    BrcHandle cons_bh;
-    cons_bh.start(ep(), pk(), cons_uid);
-    auto cons_reg = cons_bh.brc.register_consumer(
-        make_cons_opts(channel, cons_uid), 3000);
-    ASSERT_TRUE(cons_reg.has_value());
-
-    ASSERT_TRUE(cons_reg->contains("heartbeat"))
-        << "CONSUMER_REG_ACK missing heartbeat block";
-    const auto &hb = (*cons_reg)["heartbeat"];
-    EXPECT_TRUE(hb.contains("heartbeat_interval_ms"));
-    EXPECT_TRUE(hb.contains("ready_miss_heartbeats"));
-    EXPECT_TRUE(hb.contains("pending_miss_heartbeats"));
-
-    cons_bh.stop();
-    prod_bh.stop();
+    auto w = SpawnWorker(
+        "broker_protocol.consumer_reg_ack_contains_heartbeat_block");
+    ExpectWorkerOk(w);
 }
 
 // ============================================================================
 // 8. CHANNEL_BROADCAST_REQ — fan-out to producer + ALL consumers
 // ============================================================================
-//
-// HEP-CORE-0033 §12.4 (control plane).  Broadcast is fire-and-forget:
-// no ACK from broker to sender; broker fans out CHANNEL_BROADCAST_NOTIFY
-// to the channel's producer plus every registered consumer.  These
-// tests catch drift between payload keys (`target_channel`,
-// `sender_uid`, `message`, `data`) the BrokerRequestComm sends and
-// the keys the broker reads inside handle_channel_broadcast_req.
-//
-// Path discrimination:
-//   - BroadcastFanOut: NOTIFY content is checked field-by-field
-//     (channel_name, event="broadcast", sender_uid, message); a
-//     regression that delivers an empty/wrong body would still
-//     bump receive counters, so we pin the payload, not just the count.
-//   - BroadcastUnknownChannel: silent-drop is the documented
-//     behaviour — we negate "any NOTIFY arrives anywhere" within a
-//     bounded window.  Broker remaining operational is verified via
-//     a follow-up admin call.
-//   - BroadcastHubQueuePath: BrokerService::request_broadcast_channel
-//     queues into the broker's poll-loop drain where it is converted
-//     to a synthetic CHANNEL_BROADCAST_REQ; this test pins that the
-//     in-process path produces IDENTICAL fan-out semantics to the
-//     wire path.
 
 TEST_F(BrokerProtocolTest, BroadcastFanOut_DeliveredToProducerAndAllConsumers)
 {
-    const std::string channel   = pid_chan("proto.bcast.fanout");
-    const std::string prod_uid  = "prod." + channel;
-    // RoleUid format: first dotted component must be EXACTLY one of
-    // {prod, cons, proc} — `cons1.X` would fail validation in
-    // HubState::_on_consumer_joined and the entry would silently
-    // never get added to the channel.consumers list, so the
-    // broker's broadcast fan-out would skip them.  Distinct UIDs
-    // have to come from the body, not the tag.
-    const std::string cons1_uid = "cons.first." + channel;
-    const std::string cons2_uid = "cons.second." + channel;
-    const std::string send_uid  = "prod.broadcast.sender.pid" +
-                                   std::to_string(static_cast<unsigned long>(::getpid()));
-
-    auto prod_evts  = std::make_shared<EventCollector>();
-    auto cons1_evts = std::make_shared<EventCollector>();
-    auto cons2_evts = std::make_shared<EventCollector>();
-
-    auto only_bcast = [](std::shared_ptr<EventCollector> col) {
-        return [col](const std::string &t, const json &b) {
-            if (t == "CHANNEL_BROADCAST_NOTIFY") col->push(t, b);
-        };
-    };
-
-    // Broadcast does not require channel-Ready state — the broker's
-    // fan-out path keys off channel existence, not status — so we
-    // skip the heartbeat that other broker-protocol tests send.
-    BrcHandle prod_bh;
-    prod_bh.brc.on_notification(only_bcast(prod_evts));
-    prod_bh.start(ep(), pk(), prod_uid);
-    auto reg = prod_bh.brc.register_channel(make_reg_opts(channel, prod_uid), 3000);
-    ASSERT_TRUE(reg.has_value());
-
-    // Distinct synthetic consumer_pid values per consumer.  HubState's
-    // _add_consumer dedupes by (role_uid, consumer_pid) — when two
-    // consumers share a PID (which happens trivially in a single-
-    // process test), registering the second evicts the first.  Two
-    // distinct PIDs simulate two separate consumer processes.
-    BrcHandle cons1_bh;
-    cons1_bh.brc.on_notification(only_bcast(cons1_evts));
-    cons1_bh.start(ep(), pk(), cons1_uid);
-    {
-        auto opts = make_cons_opts(channel, cons1_uid);
-        opts["consumer_pid"] = static_cast<uint64_t>(::getpid()) * 100u + 1u;
-        ASSERT_TRUE(cons1_bh.brc.register_consumer(opts, 3000).has_value());
-    }
-
-    BrcHandle cons2_bh;
-    cons2_bh.brc.on_notification(only_bcast(cons2_evts));
-    cons2_bh.start(ep(), pk(), cons2_uid);
-    {
-        auto opts = make_cons_opts(channel, cons2_uid);
-        opts["consumer_pid"] = static_cast<uint64_t>(::getpid()) * 100u + 2u;
-        ASSERT_TRUE(cons2_bh.brc.register_consumer(opts, 3000).has_value());
-    }
-
-    // External sender — registered to the broker (DEALER must be
-    // connected to send) but not part of the channel.  Fan-out should
-    // still reach it ONLY if it were a member; we expect no echo here
-    // because send_uid is not registered as producer or consumer.
-    BrcHandle sender_bh;
-    auto sender_evts = std::make_shared<EventCollector>();
-    sender_bh.brc.on_notification(only_bcast(sender_evts));
-    sender_bh.start(ep(), pk(), send_uid);
-
-    sender_bh.brc.send_broadcast(channel, send_uid, "hello-fan-out", "");
-
-    // Three deliveries expected: producer + cons1 + cons2.  Watchdog
-    // bound is the ceiling, not the timing assertion — fan-out is
-    // synchronous fan-out from a single broker tick.
-    ASSERT_TRUE(prod_evts->wait_for(1, 5000))
-        << "producer did not receive CHANNEL_BROADCAST_NOTIFY";
-    ASSERT_TRUE(cons1_evts->wait_for(1, 5000))
-        << "cons1 did not receive CHANNEL_BROADCAST_NOTIFY";
-    ASSERT_TRUE(cons2_evts->wait_for(1, 5000))
-        << "cons2 did not receive CHANNEL_BROADCAST_NOTIFY";
-
-    auto check_payload = [&](const json &b, const char *who) {
-        EXPECT_EQ(b.value("channel_name", ""), channel) << who;
-        EXPECT_EQ(b.value("event", ""),        "broadcast") << who;
-        EXPECT_EQ(b.value("sender_uid", ""),   send_uid) << who;
-        EXPECT_EQ(b.value("message", ""),      "hello-fan-out") << who;
-    };
-    {
-        std::lock_guard<std::mutex> lk(prod_evts->mtx);
-        ASSERT_FALSE(prod_evts->events.empty());
-        check_payload(prod_evts->events.front().second, "producer");
-    }
-    {
-        std::lock_guard<std::mutex> lk(cons1_evts->mtx);
-        ASSERT_FALSE(cons1_evts->events.empty());
-        check_payload(cons1_evts->events.front().second, "cons1");
-    }
-    {
-        std::lock_guard<std::mutex> lk(cons2_evts->mtx);
-        ASSERT_FALSE(cons2_evts->events.empty());
-        check_payload(cons2_evts->events.front().second, "cons2");
-    }
-
-    // External sender (non-member) must NOT receive the NOTIFY.
-    // 200ms is a sanity window for ZMQ to deliver any queued frame
-    // — the broker's fan-out is single-tick and would already have
-    // happened by now if it were going to.
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    EXPECT_EQ(sender_evts->size(), 0u)
-        << "external (non-member) sender unexpectedly received NOTIFY";
-
-    sender_bh.stop();
-    cons2_bh.stop();
-    cons1_bh.stop();
-    prod_bh.stop();
+    auto w = SpawnWorker(
+        "broker_protocol.broadcast_fan_out_delivered_to_producer_and_consumers");
+    ExpectWorkerOk(w);
 }
 
 TEST_F(BrokerProtocolTest, BroadcastFanOut_DataPayloadRoundTrip)
 {
-    const std::string channel  = pid_chan("proto.bcast.payload");
-    const std::string prod_uid = "prod." + channel;
-    const std::string cons_uid = "cons." + channel;
-    const std::string send_uid = "ext.bcast.payload.uid00000077";
-    const std::string msg      = "payload-test";
-    const std::string data     = R"({"k":"v","n":42,"arr":[1,2,3]})";
-
-    auto cons_evts = std::make_shared<EventCollector>();
-
-    BrcHandle prod_bh;
-    prod_bh.start(ep(), pk(), prod_uid);
-    ASSERT_TRUE(prod_bh.brc.register_channel(
-        make_reg_opts(channel, prod_uid), 3000).has_value());
-
-    BrcHandle cons_bh;
-    cons_bh.brc.on_notification([cons_evts](const std::string &t, const json &b) {
-        if (t == "CHANNEL_BROADCAST_NOTIFY") cons_evts->push(t, b);
-    });
-    cons_bh.start(ep(), pk(), cons_uid);
-    ASSERT_TRUE(cons_bh.brc.register_consumer(
-        make_cons_opts(channel, cons_uid), 3000).has_value());
-
-    BrcHandle sender_bh;
-    sender_bh.start(ep(), pk(), send_uid);
-    sender_bh.brc.send_broadcast(channel, send_uid, msg, data);
-
-    ASSERT_TRUE(cons_evts->wait_for(1, 5000))
-        << "consumer did not receive broadcast NOTIFY with data payload";
-
-    std::lock_guard<std::mutex> lk(cons_evts->mtx);
-    ASSERT_FALSE(cons_evts->events.empty());
-    const auto &body = cons_evts->events.front().second;
-    EXPECT_EQ(body.value("channel_name", ""), channel);
-    EXPECT_EQ(body.value("event", ""),        "broadcast");
-    EXPECT_EQ(body.value("sender_uid", ""),   send_uid);
-    EXPECT_EQ(body.value("message", ""),      msg);
-    // The `data` field is a passthrough string — the broker MUST NOT
-    // re-encode/escape its content.  Pinning the literal verifies
-    // the fwd["data"] = req["data"] passthrough inside
-    // handle_channel_broadcast_req.
-    EXPECT_EQ(body.value("data", ""), data)
-        << "data payload was modified in transit";
-
-    sender_bh.stop();
-    cons_bh.stop();
-    prod_bh.stop();
+    auto w = SpawnWorker(
+        "broker_protocol.broadcast_fan_out_data_payload_round_trip");
+    ExpectWorkerOk(w);
 }
 
 TEST_F(BrokerProtocolTest, BroadcastUnknownChannel_NoNotifyDelivered)
 {
-    // No producer / no consumer registered for this channel name.
-    // Broker's handle_channel_broadcast_req emits LOGGER_DEBUG (not
-    // WARN) and returns silently.  Class-D gate passes naturally.
-    const std::string channel  = pid_chan("proto.bcast.unknown");
-    const std::string send_uid = "ext.bcast.unknown.uid00000088";
-
-    // Spectator BRC: registered as consumer of a DIFFERENT channel,
-    // so it is connected to the broker.  If broadcast fan-out
-    // accidentally leaks to non-target channels, this collector
-    // would catch it.
-    const std::string other_ch  = pid_chan("proto.bcast.other");
-    const std::string other_prd = "prod." + other_ch;
-    const std::string spec_uid  = "cons." + other_ch;
-    auto spec_evts = std::make_shared<EventCollector>();
-
-    BrcHandle other_prod;
-    other_prod.start(ep(), pk(), other_prd);
-    ASSERT_TRUE(other_prod.brc.register_channel(
-        make_reg_opts(other_ch, other_prd), 3000).has_value());
-
-    BrcHandle spec_bh;
-    spec_bh.brc.on_notification([spec_evts](const std::string &t, const json &b) {
-        if (t == "CHANNEL_BROADCAST_NOTIFY") spec_evts->push(t, b);
-    });
-    spec_bh.start(ep(), pk(), spec_uid);
-    ASSERT_TRUE(spec_bh.brc.register_consumer(
-        make_cons_opts(other_ch, spec_uid), 3000).has_value());
-
-    BrcHandle sender_bh;
-    sender_bh.start(ep(), pk(), send_uid);
-    sender_bh.brc.send_broadcast(channel, send_uid, "into-the-void", "");
-
-    // Bounded window: any leak would land in spec_evts within the
-    // broker's next single-tick fan-out (sub-second under load).
-    std::this_thread::sleep_for(std::chrono::milliseconds(300));
-    EXPECT_EQ(spec_evts->size(), 0u)
-        << "broadcast for unknown channel leaked to other-channel consumer";
-
-    // Broker stays operational — explicit admin call.  A vacuous (void)
-    // would not catch a hung broker thread; query_channel_snapshot
-    // forces a real RPC into the run loop.
-    EXPECT_NO_THROW({
-        auto snap = svc().query_channel_snapshot();
-        (void)snap;
-    }) << "broker stopped servicing requests after broadcast for unknown channel";
-
-    sender_bh.stop();
-    spec_bh.stop();
-    other_prod.stop();
+    auto w = SpawnWorker(
+        "broker_protocol.broadcast_unknown_channel_no_notify_delivered");
+    ExpectWorkerOk(w);
 }
 
 TEST_F(BrokerProtocolTest, BroadcastFanOut_HubQueuePath_FansOutSame)
 {
-    // HEP-CORE-0033 §13.2: HubAPI::broadcast_channel (script-side) +
-    // AdminService::handle_broadcast_channel both call
-    // BrokerService::request_broadcast_channel, which queues into
-    // broadcast_request_queue_ for the broker's poll-loop to drain
-    // and convert to a synthetic CHANNEL_BROADCAST_REQ.  This test
-    // pins that the in-process path produces IDENTICAL fan-out
-    // semantics + payload shape as the wire path.
-    const std::string channel  = pid_chan("proto.bcast.hubpath");
-    const std::string prod_uid = "prod." + channel;
-    const std::string cons_uid = "cons." + channel;
-    const std::string msg      = "from-hub-script";
-    const std::string data     = "extra";
-
-    auto cons_evts = std::make_shared<EventCollector>();
-    auto prod_evts = std::make_shared<EventCollector>();
-
-    BrcHandle prod_bh;
-    prod_bh.brc.on_notification([prod_evts](const std::string &t, const json &b) {
-        if (t == "CHANNEL_BROADCAST_NOTIFY") prod_evts->push(t, b);
-    });
-    prod_bh.start(ep(), pk(), prod_uid);
-    ASSERT_TRUE(prod_bh.brc.register_channel(
-        make_reg_opts(channel, prod_uid), 3000).has_value());
-
-    BrcHandle cons_bh;
-    cons_bh.brc.on_notification([cons_evts](const std::string &t, const json &b) {
-        if (t == "CHANNEL_BROADCAST_NOTIFY") cons_evts->push(t, b);
-    });
-    cons_bh.start(ep(), pk(), cons_uid);
-    ASSERT_TRUE(cons_bh.brc.register_consumer(
-        make_cons_opts(channel, cons_uid), 3000).has_value());
-
-    // The hub-side queue path — no wire request, no sender BRC.
-    svc().request_broadcast_channel(channel, msg, data);
-
-    ASSERT_TRUE(prod_evts->wait_for(1, 5000))
-        << "producer did not receive in-process broadcast";
-    ASSERT_TRUE(cons_evts->wait_for(1, 5000))
-        << "consumer did not receive in-process broadcast";
-
-    // sender_uid in this path is the hub's self_hub_uid (fallback to
-    // "hub" only when unset).  Real `HubHost` always populates
-    // self_hub_uid from `HubConfig::identity().uid` (hub_host.cpp:189),
-    // so the broadcast carries the actual hub uid generated when the
-    // test hub directory was initialised by `HubDirectory::init_directory`.
-    const std::string self_uid = broker_->host->config().identity().uid;
-    ASSERT_FALSE(self_uid.empty()) << "real HubHost must populate self_hub_uid";
-    auto check_hub_payload = [&](const json &b, const char *who) {
-        EXPECT_EQ(b.value("channel_name", ""), channel) << who;
-        EXPECT_EQ(b.value("event", ""),        "broadcast") << who;
-        EXPECT_EQ(b.value("sender_uid", ""),   self_uid) << who;
-        EXPECT_EQ(b.value("message", ""),      msg) << who;
-        EXPECT_EQ(b.value("data", ""),         data) << who;
-    };
-    {
-        std::lock_guard<std::mutex> lk(prod_evts->mtx);
-        ASSERT_FALSE(prod_evts->events.empty());
-        check_hub_payload(prod_evts->events.front().second, "producer");
-    }
-    {
-        std::lock_guard<std::mutex> lk(cons_evts->mtx);
-        ASSERT_FALSE(cons_evts->events.empty());
-        check_hub_payload(cons_evts->events.front().second, "consumer");
-    }
-
-    cons_bh.stop();
-    prod_bh.stop();
+    auto w = SpawnWorker(
+        "broker_protocol.broadcast_fan_out_hub_queue_path_fans_out_same");
+    ExpectWorkerOk(w);
 }
