@@ -1,13 +1,25 @@
 /**
  * @file test_admin_service.cpp
- * @brief AdminService Phase 6.2a skeleton — REP socket, token gate,
- *        localhost-bind invariant, round-trip ping, method dispatch
- *        stubs.  HEP-CORE-0033 §11.
+ * @brief AdminService — REP socket, token gate, localhost-bind
+ *        invariant, round-trip ping, method dispatch (HEP-CORE-0033 §11).
  *
- * Pattern 2 — in-process LifecycleGuard via SetUpTestSuite (mirrors
- * test_hub_host.cpp).  Each test constructs a fresh AdminService (or
- * HubHost wrapping one), exercises one slice, and lets the destructor
- * clean up.
+ * Pattern 1+ (BinaryLifecycleEnvironment) — binary-wide LifecycleGuard
+ * owning Logger + FileLock + JsonConfig + crypto + ZMQContext.  The
+ * 22 transplanted + 8 strengthening tests run in-process; each TEST_F
+ * uses `LogCaptureFixture` for per-test sink capture and constructs
+ * a fresh `AdminService` (standalone) or `HubHost` wrapping one.
+ *
+ * Migrated 2026-05-14 from the SetUpTestSuite-owned LifecycleGuard
+ * antipattern (`docs/todo/TESTING_TODO.md` § "Pattern-3 migration
+ * debt").  Interference-vector audit came back clean on all four
+ * `README_testing.md` § "Pattern 1+" criteria:
+ *   1. No static state in AdminService / HubHost.
+ *   2. No init-once invariant re-violation — single suite per binary.
+ *   3. No library-global static-dtor hang — temp ZMQ sockets and
+ *      HubHost threads are torn down per test.
+ *   4. No deliberate crashes / death tests.
+ * The binary `test_layer2_admin_service` is dedicated to this file
+ * (no aggregate-binary collision risk).
  *
  * Coverage:
  *   - Construction: token_required=false + non-loopback → throws.
@@ -28,6 +40,7 @@
 
 #include "utils/admin_service.hpp"
 
+#include "binary_lifecycle.h"
 #include "log_capture_fixture.h"
 #include "plh_service.hpp"
 #include "utils/broker_service.hpp"
@@ -63,10 +76,19 @@ using pylabhub::hub_host::HubHost;
 using pylabhub::utils::FileLock;
 using pylabhub::utils::HubDirectory;
 using pylabhub::utils::JsonConfig;
-using pylabhub::utils::LifecycleGuard;
 using pylabhub::utils::Logger;
-using pylabhub::utils::MakeModDefList;
 using nlohmann::json;
+
+// Binary-wide LifecycleGuard for the 5 modules AdminService /
+// HubHost touch.  See file header for the Pattern 1+ rationale and
+// the interference-vector audit.
+PLH_BINARY_LIFECYCLE_MODULES(
+    pylabhub::utils::Logger::GetLifecycleModule(),
+    pylabhub::utils::FileLock::GetLifecycleModule(),
+    pylabhub::utils::JsonConfig::GetLifecycleModule(),
+    pylabhub::crypto::GetLifecycleModule(),
+    pylabhub::hub::GetZMQContextModule()
+)
 
 namespace
 {
@@ -219,19 +241,6 @@ json req_reply(const std::string &endpoint, const json &request,
 class AdminServiceTest : public ::testing::Test,
                           public pylabhub::tests::LogCaptureFixture
 {
-public:
-    static void SetUpTestSuite()
-    {
-        s_lifecycle_ = std::make_unique<LifecycleGuard>(MakeModDefList(
-            Logger::GetLifecycleModule(),
-            FileLock::GetLifecycleModule(),
-            JsonConfig::GetLifecycleModule(),
-            pylabhub::crypto::GetLifecycleModule(),
-            pylabhub::hub::GetZMQContextModule()),
-            std::source_location::current());
-    }
-    static void TearDownTestSuite() { s_lifecycle_.reset(); }
-
 protected:
     void SetUp() override
     {
@@ -279,11 +288,8 @@ protected:
     }
 
 private:
-    static std::unique_ptr<LifecycleGuard> s_lifecycle_;
     std::vector<fs::path>                  paths_to_clean_;
 };
-
-std::unique_ptr<LifecycleGuard> AdminServiceTest::s_lifecycle_;
 
 // ─── Construction-time invariants ──────────────────────────────────────────
 
@@ -698,4 +704,187 @@ TEST_F(AdminServiceTest, HubHost_AdminDisabled_NoAdminConstructed)
     host.startup();
     EXPECT_EQ(host.admin(), nullptr) << "admin.enabled=false → no AdminService";
     host.shutdown();
+}
+
+// ============================================================================
+// Coverage additions (2026-05-14) — fill gaps from review of the
+// original 22 transplanted tests.  Each closes a branch in
+// `admin_service.cpp` that the originals didn't reach:
+//
+// dispatch() envelope validation (admin_service.cpp:243-249):
+//   - non-object request → invalid_request
+//   - missing/non-string `method` → invalid_request
+// run() parse-error catch (lines 201-205):
+//   - malformed JSON bytes on the wire → invalid_request
+// handle_ping echo branch (line 353):
+//   - ping without `params` → no `echo` field in result
+// handle_query_metrics filter-field validation (lines 470-507):
+//   - params.channels non-array         (shared opt_string_array)
+//   - params.channels non-string element (shared opt_string_array;
+//     channels/roles/bands/peers share the same lambda — one
+//     representative covers all four)
+//   - params.categories non-array        (separate code path —
+//     categories is an unordered_set, not a vector)
+//   - params.categories non-string element
+// ============================================================================
+
+TEST_F(AdminServiceTest, Dispatch_NonObjectRequest_Returns_InvalidRequest)
+{
+    auto [cfg, dir] = make_config("disp_array");
+    StandaloneAdmin a(std::move(cfg), kTestToken);
+
+    // Send a JSON array.  dispatch() (admin_service.cpp:245-246)
+    // rejects non-object requests with `invalid_request` BEFORE the
+    // token gate — otherwise a regression that gated only the
+    // object case could leak token-protected methods through
+    // malformed-shape requests.
+    const json reply = req_reply(a.endpoint(), json::array({"ping"}));
+    ASSERT_EQ(reply.value("status", ""), "error") << reply.dump();
+    EXPECT_EQ(reply["error"]["code"], "invalid_request");
+    EXPECT_NE(reply["error"]["message"].get<std::string>().find("object"),
+              std::string::npos);
+}
+
+TEST_F(AdminServiceTest, Dispatch_MissingMethodField_Returns_InvalidRequest)
+{
+    auto [cfg, dir] = make_config("disp_no_method");
+    StandaloneAdmin a(std::move(cfg), kTestToken);
+
+    // Object without `method` field (admin_service.cpp:248).  This is
+    // distinct from `unknown_method` (a present-but-unrecognized
+    // method string), and distinct from `not_implemented` (deferred
+    // method).  Triple-discrimination matters for client diagnostics.
+    const json reply = req_reply(a.endpoint(),
+                                  {{"token", kTestToken}});
+    ASSERT_EQ(reply.value("status", ""), "error") << reply.dump();
+    EXPECT_EQ(reply["error"]["code"], "invalid_request");
+    EXPECT_NE(reply["error"]["message"].get<std::string>().find("method"),
+              std::string::npos);
+}
+
+TEST_F(AdminServiceTest, Run_MalformedJsonBytes_Returns_InvalidRequest)
+{
+    auto [cfg, dir] = make_config("disp_garbage");
+    StandaloneAdmin a(std::move(cfg), kTestToken);
+
+    // Raw bytes that don't parse as JSON.  run()'s try/catch
+    // (admin_service.cpp:201-205) converts `json::parse_error` into
+    // the canonical `invalid_request` envelope so a malformed client
+    // doesn't crash the admin loop — bypass `req_reply` which
+    // serializes a valid JSON value, and write the raw bytes
+    // directly.
+    zmq::socket_t sock(pylabhub::hub::get_zmq_context(),
+                       zmq::socket_type::req);
+    sock.set(zmq::sockopt::linger, 0);
+    sock.set(zmq::sockopt::rcvtimeo, 2000);
+    sock.set(zmq::sockopt::sndtimeo, 2000);
+    sock.connect(a.endpoint());
+
+    const std::string_view garbage = "{not_valid_json";
+    sock.send(zmq::buffer(garbage.data(), garbage.size()),
+              zmq::send_flags::none);
+
+    zmq::message_t reply_msg;
+    auto rc = sock.recv(reply_msg, zmq::recv_flags::none);
+    ASSERT_TRUE(rc.has_value()) << "admin REP timed out on malformed JSON";
+    const json reply = json::parse(
+        std::string_view(static_cast<const char *>(reply_msg.data()),
+                         reply_msg.size()));
+    ASSERT_EQ(reply.value("status", ""), "error") << reply.dump();
+    EXPECT_EQ(reply["error"]["code"], "invalid_request");
+    // Pin the json::parse-error catch path specifically (not the
+    // non-object or missing-method branches, which also yield
+    // invalid_request but with different message hints).
+    EXPECT_NE(reply["error"]["message"].get<std::string>().find("malformed JSON"),
+              std::string::npos);
+}
+
+TEST_F(AdminServiceTest, Run_PingNoParams_OmitsEchoField)
+{
+    auto [cfg, dir] = make_config("ping_noparams");
+    StandaloneAdmin a(std::move(cfg), kTestToken);
+
+    // handle_ping conditionally adds `echo` only when `params` is
+    // present (admin_service.cpp:353-354).  A regression that
+    // unconditionally synthesized an empty echo would slip past the
+    // `Run_PingRoundTrip_TokenGate` test (which always sends params).
+    const json reply = req_reply(a.endpoint(),
+        {{"method", "ping"}, {"token", kTestToken}});
+    ASSERT_EQ(reply.value("status", ""), "ok") << reply.dump();
+    ASSERT_TRUE(reply.contains("result"));
+    EXPECT_EQ(reply["result"].value("pong", false), true);
+    EXPECT_FALSE(reply["result"].contains("echo"))
+        << "ping without params must not synthesize an empty echo field";
+}
+
+TEST_F(AdminServiceTest, QueryMetrics_ChannelsNotArray_Returns_InvalidParams)
+{
+    auto [cfg, dir] = make_config("qm_chan_notarr");
+    StandaloneAdmin a(std::move(cfg), kTestToken);
+
+    // handle_query_metrics validates each filter field via a shared
+    // `opt_string_array` lambda (admin_service.cpp:470-487).  A
+    // regression silently coercing non-array values to empty array
+    // would include EVERYTHING when the operator meant to filter to
+    // a subset.  `channels` is the representative — same lambda also
+    // serves `roles`, `bands`, `peers`.
+    const json reply = req_reply(a.endpoint(),
+        {{"method", "query_metrics"},
+         {"token",  kTestToken},
+         {"params", {{"channels", "not_an_array"}}}});
+    ASSERT_EQ(reply.value("status", ""), "error") << reply.dump();
+    EXPECT_EQ(reply["error"]["code"], "invalid_params");
+    EXPECT_NE(reply["error"]["message"].get<std::string>().find("channels"),
+              std::string::npos);
+}
+
+TEST_F(AdminServiceTest, QueryMetrics_ChannelsArrayWithNonString_Returns_InvalidParams)
+{
+    auto [cfg, dir] = make_config("qm_chan_badelem");
+    StandaloneAdmin a(std::move(cfg), kTestToken);
+
+    // Per-element type check inside the same shared lambda
+    // (admin_service.cpp:481-485).
+    const json reply = req_reply(a.endpoint(),
+        {{"method", "query_metrics"},
+         {"token",  kTestToken},
+         {"params", {{"channels", json::array({123})}}}});
+    ASSERT_EQ(reply.value("status", ""), "error") << reply.dump();
+    EXPECT_EQ(reply["error"]["code"], "invalid_params");
+    EXPECT_NE(reply["error"]["message"].get<std::string>().find("strings"),
+              std::string::npos);
+}
+
+TEST_F(AdminServiceTest, QueryMetrics_CategoriesNotArray_Returns_InvalidParams)
+{
+    auto [cfg, dir] = make_config("qm_cat_notarr");
+    StandaloneAdmin a(std::move(cfg), kTestToken);
+
+    // `categories` takes its own validation branch
+    // (admin_service.cpp:494-507) because it's an unordered_set,
+    // not a vector — separate code path from the shared
+    // opt_string_array lambda.
+    const json reply = req_reply(a.endpoint(),
+        {{"method", "query_metrics"},
+         {"token",  kTestToken},
+         {"params", {{"categories", "not_an_array"}}}});
+    ASSERT_EQ(reply.value("status", ""), "error") << reply.dump();
+    EXPECT_EQ(reply["error"]["code"], "invalid_params");
+    EXPECT_NE(reply["error"]["message"].get<std::string>().find("categories"),
+              std::string::npos);
+}
+
+TEST_F(AdminServiceTest, QueryMetrics_CategoriesArrayWithNonString_Returns_InvalidParams)
+{
+    auto [cfg, dir] = make_config("qm_cat_badelem");
+    StandaloneAdmin a(std::move(cfg), kTestToken);
+
+    const json reply = req_reply(a.endpoint(),
+        {{"method", "query_metrics"},
+         {"token",  kTestToken},
+         {"params", {{"categories", json::array({42})}}}});
+    ASSERT_EQ(reply.value("status", ""), "error") << reply.dump();
+    EXPECT_EQ(reply["error"]["code"], "invalid_params");
+    EXPECT_NE(reply["error"]["message"].get<std::string>().find("strings"),
+              std::string::npos);
 }

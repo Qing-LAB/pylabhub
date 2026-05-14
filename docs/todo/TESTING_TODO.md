@@ -632,7 +632,7 @@ Re-audit on 2026-05-13 against actual `LifecycleGuard` construction
 | `test_layer3_datahub/test_datahub_hub_inbox_queue.cpp` | 16 |
 | `test_layer3_datahub/test_datahub_metrics.cpp` | 17 |
 | ~~`test_layer3_datahub/test_datahub_zmq_poll_loop.cpp`~~ | ✅ RESOLVED 2026-05-14 via split (see below) |
-| `test_layer2_service/test_admin_service.cpp` | 22 |
+| ~~`test_layer2_service/test_admin_service.cpp`~~ | ✅ RESOLVED 2026-05-14 via Pattern 1+ migration |
 | `test_layer3_datahub/test_datahub_broker_protocol.cpp` | 23 |
 | `test_layer2_service/test_hub_api.cpp` | 23 |
 | `test_layer2_service/test_role_host_core.cpp` | 34 |
@@ -648,6 +648,63 @@ prototypes of the mechanics.
 table above as each file ships.  Open question for the user: scope
 of single session (do we migrate all 25 in one wave, or batch into
 phases?).
+
+#### ✅ Resolved 2026-05-14 — `test_admin_service.cpp` Pattern 1+ migration
+
+Audit (per `README_testing.md` § "Pattern 1+" four-vector checklist)
+came back clean on all four criteria: no static state in
+AdminService / HubHost; single suite per binary (so no init-once
+re-violation); temp ZMQ sockets and HubHost threads torn down per
+test (no static-dtor hang risk); no deliberate crashes.
+
+Action taken:
+- Replaced `SetUpTestSuite`/`TearDownTestSuite` + static
+  `s_lifecycle_` with `PLH_BINARY_LIFECYCLE_MODULES(Logger,
+  FileLock, JsonConfig, crypto, ZMQContext)` at file scope.
+- No CMakeLists change (executable `test_layer2_admin_service`
+  already dedicated to this file).
+- No layer relocation (already at L2 after earlier wave rename).
+
+Strengthening (+8 tests), all closing branches in
+`admin_service.cpp` not exercised by the original 22:
+
+dispatch() envelope validation:
+- `Dispatch_NonObjectRequest_Returns_InvalidRequest`
+  (admin_service.cpp:245-246)
+- `Dispatch_MissingMethodField_Returns_InvalidRequest` (line 248)
+- `Run_MalformedJsonBytes_Returns_InvalidRequest` (json::parse_error
+  catch at lines 201-205)
+
+handle_ping echo branch:
+- `Run_PingNoParams_OmitsEchoField` (line 353 conditional echo)
+
+handle_query_metrics filter validation:
+- `QueryMetrics_ChannelsNotArray_Returns_InvalidParams`
+  (lines 470-487; representative of the shared opt_string_array
+  lambda also serving roles/bands/peers)
+- `QueryMetrics_ChannelsArrayWithNonString_Returns_InvalidParams`
+- `QueryMetrics_CategoriesNotArray_Returns_InvalidParams`
+  (separate code path — categories is unordered_set, not vector)
+- `QueryMetrics_CategoriesArrayWithNonString_Returns_InvalidParams`
+
+Test counts: 30/30 (22 transplanted + 8 strengthening, ~3.4 s).
+
+Deferred (lower priority / out of L2 scope):
+- `close_channel` / `broadcast_channel` happy paths — need a
+  registered channel via REG_REQ wire protocol (L3 territory).
+- `is_loopback` `tcp://localhost:*` form — only the `127.0.0.1`
+  form is tested.  Trivial coverage of a single string branch.
+- `handle_request_shutdown` direct path on a NON-started HubHost —
+  one variant tested via `HubHost_AdminEnabled_RequestShutdown_StopsHost`;
+  the StandaloneAdmin variant would just confirm `host.request_shutdown()`
+  is non-UB without `startup()`, which is HubHost contract, not
+  AdminService.
+- LOGGER_INFO "listening on" / "stopped" content — the
+  `LogCaptureFixture` defense only catches WARN/ERROR; pinning
+  INFO content needs an additional `ExpectLogInfo` helper.
+
+The README reference list for Pattern 1+ now includes this file
+as the canonical multi-module example.
 
 #### ✅ Resolved 2026-05-14 — `test_datahub_zmq_poll_loop.cpp` split (NOT a Pattern-3 migration)
 

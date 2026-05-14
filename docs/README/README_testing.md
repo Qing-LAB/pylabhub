@@ -562,13 +562,20 @@ Then write tests as plain `::testing::Test` fixtures (with or
 without the `LogCaptureFixture` mixin).  No `SetUpTestSuite`-owned
 LifecycleGuard.  No subprocess workers.
 
-#### Reference implementation
+#### Reference implementations
 
-`tests/test_layer3_datahub/test_datahub_zmq_poll_loop.cpp` —
-`PeriodicTaskTest` (10 tests, no Logger touch → Pattern 1, no
-LogCaptureFixture) + `ZmqPollLoopTest` (7 tests, subject emits
-`LOGGER_INFO`/`LOGGER_WARN` → Pattern 1 with binary-wide Logger
-via `PLH_BINARY_LIFECYCLE_MODULES` + per-test `LogCaptureFixture`).
+- `tests/test_layer1_base/test_periodic_task.cpp` — pure Pattern 1
+  (PureApiTest); no Logger, no LogCaptureFixture.  Tests a
+  stack-local struct's `tick()` logic.
+- `tests/test_layer2_service/test_zmq_poll_loop.cpp` — Pattern 1+
+  with a one-module guard (Logger only).  Subject emits
+  `LOGGER_INFO`/`LOGGER_WARN`, so binary-wide Logger via
+  `PLH_BINARY_LIFECYCLE_MODULES` + per-test `LogCaptureFixture`.
+- `tests/test_layer2_service/test_admin_service.cpp` — Pattern 1+
+  with a five-module guard (Logger + FileLock + JsonConfig +
+  crypto + ZMQContext).  Demonstrates Pattern 1+ for tests that
+  drive real `HubHost` + `AdminService` in-process — the full
+  set of lifecycle modules a service-layer test needs.
 
 ---
 
