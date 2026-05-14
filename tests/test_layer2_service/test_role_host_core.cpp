@@ -49,6 +49,18 @@ class RoleHostCoreTest : public ::testing::Test,
                           public pylabhub::tests::LogCaptureFixture
 {
   protected:
+    // External shutdown flag for `ProcessExitRequested_*` tests.  Held
+    // as a fixture member so its lifetime mirrors the production
+    // contract: in production, `main()` owns the atomic and passes
+    // its address to `EngineHost`, which forwards to
+    // `core_.set_shutdown_flag()`.  The flag outlives `core_`.  A
+    // function-local atomic would invert that contract — `core_`
+    // would hold a dangling pointer once the test body returns.
+    // gtest constructs a fresh fixture per TEST_F, so the flag is
+    // value-initialised to `false` for every test independently;
+    // no cross-test bleed.
+    std::atomic<bool> external_shutdown_flag_{false};
+
     void SetUp()    override { LogCaptureFixture::Install(); }
     void TearDown() override
     {
@@ -175,16 +187,14 @@ TEST_F(RoleHostCoreTest, ProcessExitRequested_NullFlag_ReturnsFalse)
 
 TEST_F(RoleHostCoreTest, ProcessExitRequested_FlagNotSet_ReturnsFalse)
 {
-    std::atomic<bool> flag{false};
-    core_.set_shutdown_flag(&flag);
+    core_.set_shutdown_flag(&external_shutdown_flag_);
     EXPECT_FALSE(core_.is_process_exit_requested());
 }
 
 TEST_F(RoleHostCoreTest, ProcessExitRequested_FlagSet_ReturnsTrue)
 {
-    std::atomic<bool> flag{false};
-    core_.set_shutdown_flag(&flag);
-    flag.store(true, std::memory_order_relaxed);
+    core_.set_shutdown_flag(&external_shutdown_flag_);
+    external_shutdown_flag_.store(true, std::memory_order_relaxed);
     EXPECT_TRUE(core_.is_process_exit_requested());
 }
 
