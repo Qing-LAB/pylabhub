@@ -97,6 +97,7 @@ add_executable(test_layer3_datahub
 
     # ── Consumer registration protocol tests ─────────────────────────────────────
     test_datahub_broker_consumer.cpp
+    workers/broker_consumer_workers.cpp
 
     # ── End-to-end multi-process integration test ────────────────────────────────
     test_datahub_e2e.cpp
