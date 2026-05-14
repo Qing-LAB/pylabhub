@@ -635,7 +635,7 @@ Re-audit on 2026-05-13 against actual `LifecycleGuard` construction
 | ~~`test_layer2_service/test_admin_service.cpp`~~ | ✅ RESOLVED 2026-05-14 via Pattern 1+ migration |
 | ~~`test_layer3_datahub/test_datahub_broker_protocol.cpp`~~ | ✅ RESOLVED 2026-05-14 — Pattern 3 (matches sibling broker tests) |
 | ~~`test_layer2_service/test_hub_api.cpp`~~ | ✅ RESOLVED 2026-05-14 — Pattern 1+ (own binary, Logger only, no broker) |
-| `test_layer2_service/test_role_host_core.cpp` | 34 |
+| ~~`test_layer2_service/test_role_host_core.cpp`~~ | ✅ RESOLVED 2026-05-14 — Pattern 1+ (own binary, Logger only, no broker) |
 | `test_layer3_datahub/test_datahub_hub_zmq_queue.cpp` | 65 |
 
 **Plus** the two ThreadManager test files touched in MD1.5 work

@@ -13,6 +13,7 @@
  *   - Cross-thread metric visibility (write on one thread, read on another)
  */
 
+#include "binary_lifecycle.h"
 #include "plh_service.hpp"
 #include "utils/role_host_core.hpp"
 #include "log_capture_fixture.h"
@@ -27,23 +28,26 @@
 using pylabhub::scripting::IncomingMessage;
 using pylabhub::scripting::RoleHostCore;
 
+// Pattern 1+ (BinaryLifecycleEnvironment) — Logger only.
+// RoleHostCore is a pure shared-state container (atomics, mutex-guarded
+// maps, message queue) with no broker / ZMQ / script-engine dependency.
+// Logger is needed because `LogCaptureFixture::Install` calls
+// `Logger::set_logfile()`.  All four Pattern 1+ interference vectors
+// (`README_testing.md` § "Decision checklist") came back clean:
+//   1. No static state in `RoleHostCore` — each test gets a fresh
+//      stack-local instance via the fixture member.
+//   2. Single suite per binary (`test_layer2_role_host_core` dedicated).
+//   3. No libzmq / luajit / libsodium state — only Logger.
+//   4. No deliberate crashes / death tests.
+// Migrated 2026-05-14 from the SetUpTestSuite-owned `LifecycleGuard`
+// antipattern.
+PLH_BINARY_LIFECYCLE_MODULES(
+    pylabhub::utils::Logger::GetLifecycleModule()
+)
+
 class RoleHostCoreTest : public ::testing::Test,
                           public pylabhub::tests::LogCaptureFixture
 {
-public:
-    static void SetUpTestSuite()
-    {
-        // Logger module required so LogCaptureFixture::Install() can
-        // call Logger::set_logfile() without UB (the variant
-        // storage destructor crashes if the worker thread was never
-        // started — i.e. Logger module never initialized).
-        s_lifecycle_ = std::make_unique<pylabhub::utils::LifecycleGuard>(
-            pylabhub::utils::MakeModDefList(
-                pylabhub::utils::Logger::GetLifecycleModule()),
-            std::source_location::current());
-    }
-    static void TearDownTestSuite() { s_lifecycle_.reset(); }
-
   protected:
     void SetUp()    override { LogCaptureFixture::Install(); }
     void TearDown() override
@@ -53,13 +57,7 @@ public:
     }
 
     RoleHostCore core_;
-
-  private:
-    static std::unique_ptr<pylabhub::utils::LifecycleGuard> s_lifecycle_;
 };
-
-// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
-std::unique_ptr<pylabhub::utils::LifecycleGuard> RoleHostCoreTest::s_lifecycle_;
 
 // ============================================================================
 // Default state
