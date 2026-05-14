@@ -297,6 +297,42 @@ gtest_discover_tests(test_layer1_debug_info
         TIMEOUT 30
 )
 
+# ============================================================================
+# Test: scripting::PeriodicTask (utility class, function-level logic)
+#
+# Moved from tests/test_layer3_datahub/test_datahub_zmq_poll_loop.cpp
+# 2026-05-14 — PeriodicTask is a pure-logic utility (no LOGGER_*, no
+# lifecycle), correctly L1 by the test-layer purpose framework.
+# Sibling ZmqPollLoop tests (L2) live in
+# tests/test_layer2_service/test_zmq_poll_loop.cpp.
+# ============================================================================
+
+add_executable(test_layer1_periodic_task
+    test_periodic_task.cpp
+)
+
+target_link_libraries(test_layer1_periodic_task
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer1_periodic_task)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer1_periodic_task
+    SUITE_NAME "Layer1_PeriodicTask"
+)
+layer1_require_staged_utils(test_layer1_periodic_task)
+
+gtest_discover_tests(test_layer1_periodic_task
+    PROPERTIES
+        LABELS "layer1;base;periodic_task"
+        TIMEOUT 30
+)
+
 message(STATUS "Layer 1 (Base) tests configured successfully")
 message(STATUS "  - test_layer1_spinlock")
 message(STATUS "  - test_layer1_recursion_guard")
@@ -306,3 +342,4 @@ message(STATUS "  - test_layer1_result")
 message(STATUS "  - test_layer1_backoff_strategy")
 message(STATUS "  - test_layer1_module_def")
 message(STATUS "  - test_layer1_debug_info")
+message(STATUS "  - test_layer1_periodic_task")

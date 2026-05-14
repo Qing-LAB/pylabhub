@@ -171,8 +171,18 @@ add_executable(test_layer3_datahub
 
     # ── Messenger hex codec tests (deleted — Step 7 Messenger removal) ─
 
-    # ── ZmqPollLoop + HeartbeatTracker unit tests ────────────────────────────
-    test_datahub_zmq_poll_loop.cpp
+    # ── ZmqPollLoop + PeriodicTask unit tests ────────────────────────────────
+    # Moved 2026-05-14 to `tests/test_layer2_service/test_zmq_poll_loop.cpp`
+    # (own executable `test_layer2_zmq_poll_loop`).  The subjects
+    # (`pylabhub::scripting::PeriodicTask` + `ZmqPollLoop`) are
+    # utility classes — L1 / L2 by the test-layering purpose
+    # framework — not L3 datahub protocol tests.  The placement here
+    # was historical.  The new executable uses
+    # `BinaryLifecycleEnvironment` (binary-wide LifecycleGuard via
+    # gtest `::testing::Environment`) which requires being the only
+    # `LifecycleGuard` owner in its binary — incompatible with the
+    # antipattern SetUpTestSuite-owned guards still present in this
+    # aggregate.
 
     # ── HEP-CORE-0019 Metrics Plane tests ────────────────────────────────
     test_datahub_metrics.cpp

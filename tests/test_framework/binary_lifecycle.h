@@ -105,7 +105,11 @@ public:
 
     void SetUp() override
     {
-        guard_.emplace(mods_, std::source_location::current());
+        // `LifecycleGuard(std::vector<ModuleDef>&&, source_location)`
+        // moves the vector into the manager.  gtest calls Environment
+        // SetUp exactly once per `RUN_ALL_TESTS`, so the move-out is
+        // safe; mods_ is left empty after this.
+        guard_.emplace(std::move(mods_), std::source_location::current());
     }
 
     void TearDown() override
