@@ -761,14 +761,15 @@ gtest_discover_tests(test_layer2_hub_directory
 
 add_executable(test_layer2_hub_host
     test_hub_host.cpp
+    workers/hub_host_workers.cpp
 )
+target_include_directories(test_layer2_hub_host PRIVATE workers)
 
 target_link_libraries(test_layer2_hub_host
     PRIVATE
         pylabhub::utils
         pylabhub::test_framework
         GTest::gtest
-        GTest::gtest_main
 )
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_hub_host)
