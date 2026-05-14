@@ -631,7 +631,7 @@ Re-audit on 2026-05-13 against actual `LifecycleGuard` construction
 | `test_layer2_service/test_log_capture_fixture.cpp` | 13 |
 | `test_layer3_datahub/test_datahub_hub_inbox_queue.cpp` | 16 |
 | `test_layer3_datahub/test_datahub_metrics.cpp` | 17 |
-| `test_layer3_datahub/test_datahub_zmq_poll_loop.cpp` | 17 (across 2 suites — **two STS guards in one binary**) |
+| ~~`test_layer3_datahub/test_datahub_zmq_poll_loop.cpp`~~ | ✅ RESOLVED 2026-05-14 via split (see below) |
 | `test_layer2_service/test_admin_service.cpp` | 22 |
 | `test_layer3_datahub/test_datahub_broker_protocol.cpp` | 23 |
 | `test_layer2_service/test_hub_api.cpp` | 23 |
@@ -648,6 +648,85 @@ prototypes of the mechanics.
 table above as each file ships.  Open question for the user: scope
 of single session (do we migrate all 25 in one wave, or batch into
 phases?).
+
+#### ✅ Resolved 2026-05-14 — `test_datahub_zmq_poll_loop.cpp` split (NOT a Pattern-3 migration)
+
+The "two STS guards in one binary" entry was resolved by **layer-correct
+re-classification + split**, not by Pattern-3 subprocessing.  Audit
+found neither test group needed Pattern-3 (no static state, no
+deliberate crashes, no init-once re-violation; only Logger required
+for the WARN-emitting paths in `ZmqPollLoop::run()`).
+
+Three artifacts:
+
+1. New framework hook `tests/test_framework/binary_lifecycle.h` —
+   `BinaryLifecycleEnvironment` (gtest `::testing::Environment`
+   subclass) + `PLH_BINARY_LIFECYCLE_MODULES(...)` macro.  Provides
+   **binary-wide** `LifecycleGuard` ownership via the gtest
+   global-environment hook (one owner per binary, set once at
+   process start, torn down once at exit).  Documented in
+   `docs/README/README_testing.md` § "Pattern 1+ — binary-wide
+   LifecycleGuard".
+2. `tests/test_layer1_base/test_periodic_task.cpp` (NEW
+   executable `test_layer1_periodic_task`) — 10 PeriodicTask tests
+   (pure Pattern 1, no Logger, no LifecycleGuard).  Relocated from
+   L3 → L1 to match its real purpose (function-level test of a
+   stack-local struct).
+3. `tests/test_layer2_service/test_zmq_poll_loop.cpp` (NEW
+   executable `test_layer2_zmq_poll_loop`) — 7 ZmqPollLoop tests
+   (Pattern 1+, uses `PLH_BINARY_LIFECYCLE_MODULES(Logger)` +
+   per-test `LogCaptureFixture`).  Relocated from L3 → L2.  Lives
+   in its own executable because Pattern 1+ requires the binary's
+   only `LifecycleGuard` owner — coexisting with `SetUpTestSuite`-
+   owned guards would silently drop modules from second-or-later
+   owners (`init_owner_if_first` semantics).
+
+**Coverage strengthening (also 2026-05-14)**: review of the 17
+transplanted tests vs. `src/include/utils/zmq_poll_loop.hpp` found
+gaps in the *originals* (not introduced by the migration).  Closed
+the meaningful gaps in the same wave:
+
+- `test_periodic_task.cpp` +5 tests pinning `tick()`'s return-value
+  contract — the value consumed by `ZmqPollLoop::run()` for its
+  poll timeout.  Each of `tick()`'s four reachable branches plus
+  the iter-stalled past-interval clamp is now pinned.
+- `test_zmq_poll_loop.cpp` +3 tests for: falsy-socket entry skip
+  (line 160), min-timeout calculation with multiple `periodic_tasks`
+  (lines 200-209), drain-all-pending-bytes signal handling (lines
+  240-248, regression: 1-byte-per-iteration draining).
+
+Final test counts: L1 PeriodicTask 15/15, L2 ZmqPollLoop 10/10.
+Lower-priority untested paths remain (EINTR retry, non-EINTR poll
+error, `drain_commands == nullptr` guard, "started"/"exiting" log
+content) — recorded below for follow-up but NOT included in this
+wave.
+
+---
+
+### Open 2026-05-14: residual `ZmqPollLoop` coverage gaps (low priority)
+
+Surfaced during the 2026-05-14 split review; lower-impact than the
+gaps already closed.  All four require platform-specific setup or
+test wiring the current Pattern 1+ framework doesn't provide
+cheaply.
+
+1. **EINTR retry path** (`zmq_poll_loop.hpp:217`).  Requires a
+   signal handler that interrupts `zmq::poll` with EINTR (e.g.,
+   SIGUSR1 with `siginterrupt(true)` set on the thread).
+   Risk: spurious shutdown under signal load.
+2. **Non-EINTR `zmq::poll` error → LOGGER_WARN + break**
+   (line 221-222).  Hard to trigger from an inproc PAIR setup —
+   would need an invalidated socket or shutdown context.  The
+   regression defense is the `LogCaptureFixture::AssertNoUnexpectedLogWarnError`
+   in TearDown, which would catch a stray fire of this warn in
+   any of the other tests.
+3. **`drain_commands == nullptr` guard** (line 250).  Trivial
+   guard; tests always set drain_commands.  Risk: crash if a
+   future caller wires signal_socket without drain_commands.
+4. **"started" / "exiting" `LOGGER_INFO` content**.  Not pinned;
+   `LogCaptureFixture::AssertNoUnexpectedLogWarnError` only
+   defends WARN/ERROR.  Either add an `ExpectLogInfo(...)` helper
+   or accept that INFO content is currently unverified.
 
 ---
 
