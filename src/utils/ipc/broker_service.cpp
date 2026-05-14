@@ -438,19 +438,22 @@ public:
     /// Prune expired entries from relay_dedup_.
     void prune_relay_dedup();
 
-    // ── Connection policy (Phase 3) ────────────────────────────────────────────
+    // ── Role identity policy (placeholder — pending HEP-CORE-0035) ─────────────
     /// Resolve effective policy for a channel: per-channel override > hub-wide default.
-    [[nodiscard]] ConnectionPolicy effective_policy(const std::string& channel_name) const noexcept;
+    [[nodiscard]] RoleIdentityPolicy
+        effective_role_identity_policy(const std::string& channel_name) const noexcept;
 
-    /// Check whether the given identity is allowed by the effective policy.
-    /// Returns a non-empty error JSON if the connection should be rejected; std::nullopt if allowed.
+    /// Check whether the connecting role's self-asserted identity (role_name +
+    /// role_uid) is allowed by the effective policy.  Returns a non-empty
+    /// error JSON if the registration should be rejected; std::nullopt if
+    /// allowed.
     // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
     [[nodiscard]] std::optional<nlohmann::json>
-    check_connection_policy(const std::string& channel_name,
-                            const std::string& role_name,
-                            const std::string& role_uid,
-                            const std::string& corr_id,
-                            bool               is_consumer) const;
+    check_role_identity(const std::string& channel_name,
+                        const std::string& role_name,
+                        const std::string& role_uid,
+                        const std::string& corr_id,
+                        bool               is_consumer) const;
 };
 
 // ============================================================================
@@ -1098,11 +1101,11 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     const std::string attempted_schema = req.value("schema_hash", "");
     const uint64_t    attempted_pid    = req.value("producer_pid", uint64_t{0});
 
-    // ── Connection policy check (Phase 3) ───────────────────────────────────
+    // ── Role identity policy check (placeholder — pending HEP-CORE-0035) ────
     const std::string role_name = req.value("role_name", "");
     const std::string role_uid  = req.value("role_uid", "");
-    if (auto err = check_connection_policy(channel_name, role_name, role_uid, corr_id,
-                                           /*is_consumer=*/false))
+    if (auto err = check_role_identity(channel_name, role_name, role_uid, corr_id,
+                                       /*is_consumer=*/false))
     {
         return *err;
     }
@@ -2001,11 +2004,11 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     }
     // else: all expected_* empty → no validation (legacy consumer; backward compat).
 
-    // ── Connection policy check (Phase 3) ───────────────────────────────────
+    // ── Role identity policy check (placeholder — pending HEP-CORE-0035) ────
     const std::string role_name = req.value("consumer_name", "");
     const std::string role_uid  = req.value("consumer_uid", "");
-    if (auto err = check_connection_policy(channel_name, role_name, role_uid, corr_id,
-                                           /*is_consumer=*/true))
+    if (auto err = check_role_identity(channel_name, role_name, role_uid, corr_id,
+                                       /*is_consumer=*/true))
     {
         return *err;
     }
@@ -2499,44 +2502,45 @@ nlohmann::json BrokerServiceImpl::handle_schema_req(const nlohmann::json& req)
 }
 
 // ============================================================================
-// Connection policy helpers (Phase 3)
+// Role identity policy helpers (placeholder — pending HEP-CORE-0035)
 // ============================================================================
 
-ConnectionPolicy BrokerServiceImpl::effective_policy(const std::string& channel_name) const noexcept
+RoleIdentityPolicy
+BrokerServiceImpl::effective_role_identity_policy(const std::string& channel_name) const noexcept
 {
-    for (const auto& cp : cfg.channel_policies)
+    for (const auto& cp : cfg.channel_policy_overrides)
     {
         if (channel_name_matches_glob(channel_name, cp.channel_glob))
         {
             return cp.policy;
         }
     }
-    return cfg.connection_policy;
+    return cfg.role_identity_policy;
 }
 
 std::optional<nlohmann::json>
-BrokerServiceImpl::check_connection_policy(const std::string& channel_name,
-                                            const std::string& role_name,
-                                            const std::string& role_uid,
-                                            const std::string& corr_id,
-                                            bool               is_consumer) const
+BrokerServiceImpl::check_role_identity(const std::string& channel_name,
+                                       const std::string& role_name,
+                                       const std::string& role_uid,
+                                       const std::string& corr_id,
+                                       bool               is_consumer) const
 {
-    const ConnectionPolicy policy  = effective_policy(channel_name);
-    const std::string      role_str = is_consumer ? "consumer" : "producer";
+    const RoleIdentityPolicy policy   = effective_role_identity_policy(channel_name);
+    const std::string        role_str = is_consumer ? "consumer" : "producer";
 
-    if (policy == ConnectionPolicy::Required || policy == ConnectionPolicy::Verified)
+    if (policy == RoleIdentityPolicy::Required || policy == RoleIdentityPolicy::Verified)
     {
         if (role_name.empty() || role_uid.empty())
         {
             LOGGER_WARN("Broker: policy={} rejected {} for '{}': missing role_name/uid",
-                        connection_policy_to_str(policy), role_str, channel_name);
+                        role_identity_policy_to_str(policy), role_str, channel_name);
             return make_error(corr_id, "IDENTITY_REQUIRED",
-                              fmt::format("Connection policy '{}' requires role_name and role_uid",
-                                          connection_policy_to_str(policy)));
+                              fmt::format("Role identity policy '{}' requires role_name and role_uid",
+                                          role_identity_policy_to_str(policy)));
         }
     }
 
-    if (policy == ConnectionPolicy::Verified)
+    if (policy == RoleIdentityPolicy::Verified)
     {
         const bool found = std::any_of(
             cfg.known_roles.begin(), cfg.known_roles.end(),
@@ -2560,7 +2564,7 @@ BrokerServiceImpl::check_connection_policy(const std::string& channel_name,
         }
     }
 
-    if (policy != ConnectionPolicy::Open && (!role_name.empty() || !role_uid.empty()))
+    if (policy != RoleIdentityPolicy::Open && (!role_name.empty() || !role_uid.empty()))
     {
         LOGGER_INFO("Broker: {} identity recorded for '{}': name='{}' uid='{}'",
                     role_str, channel_name, role_name, role_uid);

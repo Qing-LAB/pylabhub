@@ -463,7 +463,7 @@ Replaced the application-level silence timer (`m_last_broker_recv_epoch_ms_`) wi
 
 ✅ **HEP-0023 Phase 1 — `startup.wait_for_roles` implemented (2026-03-11):** `WaitForRole` struct in `startup_wait.hpp`; config parsing in all 3 role configs (uid + timeout_ms per role, exact UID matching); poll loop in all 3 script hosts before `on_init` (GIL-released 200ms polls, per-role deadline). 16 new config tests → **1078/1078 tests**.
 
-✅ **Docs cleanup — stale actor/interval_ms references fixed (2026-03-11):** `README_DirectoryLayout.md` rewritten (role directories, UID formats); `README_testing.md` stale test binary names fixed; `HEP-0008` `interval_ms` → `target_period_ms`; `channel_access_policy.hpp` + `actor_vault.hpp` comments updated. `review_high_level.md` MEDIUM-3 ✅ FIXED.
+✅ **Docs cleanup — stale actor/interval_ms references fixed (2026-03-11):** `README_DirectoryLayout.md` rewritten (role directories, UID formats); `README_testing.md` stale test binary names fixed; `HEP-0008` `interval_ms` → `target_period_ms`; `role_identity_policy.hpp` + `actor_vault.hpp` comments updated. `review_high_level.md` MEDIUM-3 ✅ FIXED.
 
 ✅ **Code review REVIEW_DataHubInbox_2026-03-09.md CLOSED (2026-03-09):** 13 actionable items fixed (CR-02 inbox thread join order, CR-03 ShmQueue checksum ordering, HR-01 atomic script_errors_, HR-02 atomic reader_, HR-03 ZMQ_RCVTIMEO caching, HR-05 GIL release in open_inbox, HR-06, MR-05, MR-08, MR-10 send_stop_ guard, LR-04 memory_order_release, LR-05 error counting, LR-07 comment, IC-04 docstring). MR-04 confirmed false positive. 975/975 tests passing.
 

@@ -18,9 +18,9 @@
 | `src/include/plh_datahub.hpp` | L3 (public) | `SharedMemoryHeader` with identity block (char arrays) |
 | `src/include/utils/hub_producer.hpp` | L3 (public) | `ProducerOptions::producer_uid`, `producer_name` |
 | `src/include/utils/hub_consumer.hpp` | L3 (public) | `ConsumerOptions` |
-| `src/include/utils/channel_access_policy.hpp` | L3 (public) | `ConnectionPolicy` enum |
+| `src/include/utils/role_identity_policy.hpp` | L3 (public) | `RoleIdentityPolicy` enum |
 | `src/include/utils/actor_vault.hpp` | L3 (public) | Encrypted keypair vault (generic, legacy name) |
-| `src/utils/ipc/broker_service.cpp` | impl | `check_connection_policy()`, identity enforcement |
+| `src/utils/ipc/broker_service.cpp` | impl | `check_role_identity()`, identity enforcement |
 | `tests/test_layer2_service/test_uid_utils.cpp` | test | UID format validation, uniqueness, generation |
 | `tests/test_layer2_service/test_actor_vault.cpp` | test | Vault create/open, keypair storage |
 
@@ -55,7 +55,7 @@ char producer_name[64]; // Producer display name, null-terminated
 |---|---|---|---|
 | `hub_uid` | `HubConfig::hub_uid()` | `DataBlockProducer` at `create_channel()` | Verify identity; logging |
 | `hub_name` | `HubConfig::hub_name()` | `DataBlockProducer` at `create_channel()` | Logging and diagnostics |
-| `producer_uid` | `ProducerOptions::producer_uid` | `DataBlockProducer` at `create_channel()` | `ConnectionPolicy` enforcement |
+| `producer_uid` | `ProducerOptions::producer_uid` | `DataBlockProducer` at `create_channel()` | `RoleIdentityPolicy` enforcement |
 | `producer_name` | `ProducerOptions::producer_name` | `DataBlockProducer` at `create_channel()` | Logging and diagnostics |
 
 **Write contract**: all four fields are written atomically relative to producer startup —
@@ -110,7 +110,7 @@ classDiagram
         +proc_uid string
         +proc_name string
     }
-    class ConnectionPolicy {
+    class RoleIdentityPolicy {
         <<enumeration>>
         Open
         Tracked
@@ -121,7 +121,7 @@ classDiagram
     HubConfig --> ProducerOptions : hub identity
     ProducerConfig --> ProducerOptions : producer identity
     ProducerOptions --> SharedMemoryHeader : create_channel()
-    SharedMemoryHeader --> ConnectionPolicy : enforced by broker
+    SharedMemoryHeader --> RoleIdentityPolicy : enforced by broker
 ```
 
 ### Provenance Flow
@@ -167,7 +167,7 @@ BrokerService Registry         Consumer on attach
   channel.hub_uid                 (no broker query needed)
            │
            ▼
-ConnectionPolicy enforcement
+RoleIdentityPolicy enforcement
   (see HEP-CORE-0009 §3)
 ```
 
@@ -179,7 +179,7 @@ the hub's `HubConfig::hub_uid()` and `HubConfig::hub_name()` are injected into t
 standalone binaries when `hub_dir` is specified in the config.
 
 When running outside a hub (standalone dev mode), `hub_uid` and `hub_name` remain
-empty; `ConnectionPolicy` treats these as unmanaged channels and skips identity checks.
+empty; `RoleIdentityPolicy` treats these as unmanaged channels and skips identity checks.
 
 ### 3.2 Consumer provenance read
 
@@ -200,7 +200,7 @@ LOGGER_INFO("[consumer] Channel '{}' — producer: {} ({}), hub: {} ({})",
 
 ## 4. Connection Policy Integration
 
-The `ConnectionPolicy` system (HEP-CORE-0009) uses producer identity from the broker registry
+The `RoleIdentityPolicy` system (HEP-CORE-0009) uses producer identity from the broker registry
 (populated during `REG_REQ` handling) and from the `SharedMemoryHeader` identity block to
 enforce access rules.
 
@@ -210,14 +210,14 @@ enforce access rules.
 > physically single-producer), so the diagram below remains accurate.
 > For ZMQ Fan-In channels (HEP-CORE-0017 §4.6) policy enforcement
 > applies per-producer at REG_REQ admission time — each producer's
-> ConnectionPolicy gate is independent.
+> RoleIdentityPolicy gate is independent.
 
 ### 4.1 Policy enforcement flow
 
 ```
 Consumer → DISC_REQ → BrokerService
   BrokerService looks up the channel's admitted producer(s) and
-  applies ConnectionPolicy per producer (single-producer for SHM;
+  applies RoleIdentityPolicy per producer (single-producer for SHM;
   per ProducerEntry for ZMQ Fan-In):
     Open:     any producer allowed
     Tracked:  log producer_uid; allow all
@@ -225,7 +225,7 @@ Consumer → DISC_REQ → BrokerService
     Verified: producer_uid in KnownProducers AND CurveZMQ key matches; else DISC_NACK
 ```
 
-See **HEP-CORE-0009** for the full `ConnectionPolicy` enum and enforcement logic.
+See **HEP-CORE-0009** for the full `RoleIdentityPolicy` enum and enforcement logic.
 
 ### 4.2 Identity mismatch detection
 
@@ -244,11 +244,11 @@ in the vault. The `producer_uid` and CurveZMQ public key are permanently
 associated — both are stored together and derived from the same password.
 
 This means the `producer_uid` in the `SharedMemoryHeader` corresponds to a specific keypair.
-When `ConnectionPolicy = Verified`, the broker validates both:
+When `RoleIdentityPolicy = Verified`, the broker validates both:
 1. That `producer_uid` appears in the hub's `KnownProducers` table.
 2. That the producer's CurveZMQ public key matches the registered public key entry.
 
-See **HEP-CORE-0009 §3** (ConnectionPolicy and Verified policy) for full details.
+See **HEP-CORE-0009 §3** (RoleIdentityPolicy and Verified policy) for full details.
 
 ---
 

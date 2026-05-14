@@ -69,7 +69,7 @@ unknown keys; the cruft just clutters the test source.
 **Files:** all under `tests/test_layer3_datahub/`:
 - `test_hub_lua_integration.cpp:818-820`
 - `test_datahub_hub_host_integration.cpp:104-106`
-- `test_datahub_channel_access_policy.cpp:116-118`
+- `test_datahub_role_identity_policy.cpp:116-118`
 - `test_datahub_zmq_endpoint_registry.cpp:138-140`
 - `test_datahub_broker_admin.cpp:138-140`
 - `test_datahub_broker_protocol.cpp:187-189` (+ `make_reg_opts` helper)

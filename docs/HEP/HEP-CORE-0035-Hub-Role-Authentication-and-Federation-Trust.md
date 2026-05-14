@@ -4,21 +4,21 @@
 |-----------------|----------------------------------------------------------------------------------------------------|
 | **HEP**         | `HEP-CORE-0035`                                                                                    |
 | **Title**       | Hub-Role Authentication and Federation Trust                                                       |
-| **Status**      | 🚧 **NOT IMPLEMENTED — TODO NEXT.** Authoritative design; supersedes the legacy `ConnectionPolicy` placeholder documented in HEP-CORE-0009 §2.7. |
+| **Status**      | 🚧 **NOT IMPLEMENTED — TODO NEXT.** Authoritative design; supersedes the legacy `RoleIdentityPolicy` placeholder documented in HEP-CORE-0009 §2.7. |
 | **Created**     | 2026-04-29                                                                                         |
 | **Area**        | Framework Architecture (`BrokerService` socket layer, `HubConfig`, `BrokerService::Config`, federation) |
 | **Depends on**  | HEP-CORE-0022 (Federation), HEP-CORE-0024 (Role Directory), HEP-CORE-0033 (Hub Character)          |
-| **Supersedes**  | HEP-CORE-0009 §2.7 (`ConnectionPolicy` reference) — see §6                                         |
-| **Blocks**      | HEP-CORE-0033 §15 Phase 1 re-introduction of `broker.{known_roles, default_channel_policy, channel_policies}` in `HubBrokerConfig` |
+| **Supersedes**  | HEP-CORE-0009 §2.7 (`RoleIdentityPolicy` reference) — see §6                                         |
+| **Blocks**      | HEP-CORE-0033 §15 Phase 1 re-introduction of `broker.{known_roles, role_identity_policy, channel_policy_overrides}` in `HubBrokerConfig` |
 
 ---
 
 ## 1. Status banner
 
 **This HEP is the design contract — no part of it is implemented.** The
-existing code (`channel_access_policy.hpp::ConnectionPolicy`,
-`BrokerServiceImpl::check_connection_policy`,
-`BrokerService::Config::{connection_policy, known_roles, channel_policies}`)
+existing code (`role_identity_policy.hpp::RoleIdentityPolicy`,
+`BrokerServiceImpl::check_role_identity`,
+`BrokerService::Config::{role_identity_policy, known_roles, channel_policy_overrides}`)
 is a **placeholder** that pre-dates the CURVE-required model and the
 HEP-CORE-0022 federation model. It currently does string-matching on JSON
 identity fields without consulting any pubkey, has no ZAP handler attached
@@ -28,7 +28,7 @@ load-bearing for the security story this HEP describes.
 When HEP-0035 lands, the legacy machinery is retired in one sweep:
 the placeholder enum, the placeholder gate, and the legacy hub.json
 fields all go. Until then, the legacy machinery remains live (L3 test
-`test_datahub_channel_access_policy.cpp` still exercises it) but is not
+`test_datahub_role_identity_policy.cpp` still exercises it) but is not
 the authentication story.
 
 ---
@@ -91,7 +91,7 @@ issue REG_REQ.
 
 ### 3.2 Application gate — string match, no provenance
 
-`BrokerServiceImpl::check_connection_policy` (`broker_service.cpp:2118-2170`)
+`BrokerServiceImpl::check_role_identity` (`broker_service.cpp:2118-2170`)
 runs at the REG_REQ / CONSUMER_REG_REQ handler. The four levels:
 
 | Mode      | What it checks                                                                |
@@ -114,7 +114,7 @@ self-asserted string match, not pubkey check.
 
 ### 3.4 Net effect
 
-The mechanism the operator configures (`ConnectionPolicy` + `known_roles[].pubkey`)
+The mechanism the operator configures (`RoleIdentityPolicy` + `known_roles[].pubkey`)
 *looks* like an auth design but the runtime never actually uses pubkeys
 for access decisions. This HEP's job is to close that gap.
 
@@ -213,14 +213,14 @@ alone.
 
 The following from the legacy placeholder are **dropped, not renamed**:
 
-- `ConnectionPolicy::Required` — string-presence check; with CURVE+ZAP,
+- `RoleIdentityPolicy::Required` — string-presence check; with CURVE+ZAP,
   the connecting socket's pubkey is mandatory and verified, so a
   separate "did you put a name in your JSON" gate adds nothing.
-- `ConnectionPolicy::Verified` — string allowlist; redundant with ZAP
+- `RoleIdentityPolicy::Verified` — string allowlist; redundant with ZAP
   pubkey allowlist.
-- `ConnectionPolicy::Tracked` / `Open` — operator-observability concerns
+- `RoleIdentityPolicy::Tracked` / `Open` — operator-observability concerns
   belong in audit logging, not in the gate enum.
-- `ChannelPolicy` per-channel glob overrides — no use case has been
+- `ChannelPolicyOverride` per-channel glob overrides — no use case has been
   identified that the per-role + per-peer policy can't address. Revisit
   only if a concrete scenario emerges.
 
@@ -299,14 +299,14 @@ When HEP-0035 ships:
 | 3     | Re-add `broker.known_roles[]` to `HubBrokerConfig` with `pubkey` required    |
 | 4     | Layer-2 federation-trust gate; `federation_trust_mode` field                 |
 | 5     | HEP-0022 HUB_PEER_HELLO `roles[]` augmentation; `peer_delegated` support     |
-| 6     | Cleanup: delete `ConnectionPolicy` enum, `check_connection_policy`, `KnownRole`, `ChannelPolicy`, L3 test that exercises them |
+| 6     | Cleanup: delete `RoleIdentityPolicy` enum, `check_role_identity`, `KnownRole`, `ChannelPolicyOverride`, L3 test that exercises them |
 | 7     | HEP-0009 §2.7 retraction; HEP-0022 §6.1 update; HEP-0033 §6.2/§6.4/§15 cleanup |
 
 ---
 
 ## 9. References
 
-- HEP-CORE-0009 §2.7 — legacy `ConnectionPolicy` (superseded by this HEP).
+- HEP-CORE-0009 §2.7 — legacy `RoleIdentityPolicy` (superseded by this HEP).
 - HEP-CORE-0022 — Hub Federation (peer handshake, federation peer config).
 - HEP-CORE-0024 §11 — Role keygen + vault (source of `known_roles[].pubkey`).
 - HEP-CORE-0033 §6 — Hub config (where `broker.known_roles` lives).

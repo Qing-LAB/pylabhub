@@ -1926,7 +1926,7 @@ broker is used only for channel registration and consumer discovery.
 - **Required**: Producer name + UID must be present in the payload
 - **Verified**: Producer must be in the `known_producers` list
 
-Per-channel glob overrides are configured via `channel_policies[]`.
+Per-channel glob overrides are configured via `channel_policy_overrides[]`.
 
 > For complete message framing, handshake sequences, full BrokerService state machine,
 > health notification taxonomy, connection policy enforcement, and the CONSUMER_DIED /

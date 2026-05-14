@@ -1,36 +1,36 @@
 /**
- * @file channel_access_policy_workers.cpp
- * @brief Worker bodies for broker connection-policy enforcement tests
- *        (Pattern 3).  Migrated 2026-05-13 from the in-process
+ * @file role_identity_policy_workers.cpp
+ * @brief Worker bodies for broker role-identity-policy enforcement
+ *        tests (Pattern 3).  Migrated 2026-05-13 from the in-process
  *        `SetUpTestSuite`-owned `LifecycleGuard` antipattern.
  *
  * ─────────────────────────────────────────────────────────────────────────
  * IMPORTANT — placeholder-mechanism test, NOT production wiring.
  * ─────────────────────────────────────────────────────────────────────────
  *
- * This file tests `BrokerServiceImpl::check_connection_policy`, the
- * legacy role-identity gate that operates on self-asserted JSON
- * strings (`role_name` + `role_uid` from REG_REQ / CONSUMER_REG_REQ).
- * Per HEP-CORE-0035 §1 status banner, this mechanism is a
- * **placeholder pending retirement**: it never consults the CURVE
- * pubkey on the connecting socket and provides no actual
- * authentication.  HEP-0035 designs a two-layer ZAP-based replacement
- * (Layer 1: pubkey allowlist enforced at the ZMQ ZAP handler; Layer
- * 2: federation-trust gate consulting CURVE pubkey provenance).  As
- * of this commit, **no part of HEP-0035 is implemented** — the
- * placeholder is the only authorization mechanism in the broker.
+ * This file tests `BrokerServiceImpl::check_role_identity`, the legacy
+ * role-identity gate that operates on self-asserted JSON strings
+ * (`role_name` + `role_uid` from REG_REQ / CONSUMER_REG_REQ).  Per
+ * HEP-CORE-0035 §1 status banner, this mechanism is a **placeholder
+ * pending retirement**: it never consults the CURVE pubkey on the
+ * connecting socket and provides no actual authentication.  HEP-0035
+ * designs a two-layer ZAP-based replacement (Layer 1: pubkey
+ * allowlist enforced at the ZMQ ZAP handler; Layer 2: federation-trust
+ * gate consulting CURVE pubkey provenance).  As of this commit, **no
+ * part of HEP-0035 is implemented** — the placeholder is the only
+ * authorization mechanism in the broker.
  *
  * The placeholder is **structurally unreachable from production
  * hub.json today**: `HubBrokerConfig` (the hub.json `"broker":{...}`
- * parser at `src/include/utils/config/hub_broker_config.hpp:14-16`)
- * deliberately omits `connection_policy`, `known_roles`, and
- * `channel_policies` "pending HEP-CORE-0035."  The fields exist on
- * the C++ struct `BrokerService::Config` (defaulting to
- * `ConnectionPolicy::Open`) and `check_connection_policy` still runs
- * at every REG_REQ — but `effective_policy()` always evaluates to
- * Open in production because nothing else can set the fields.  This
- * test is therefore the only caller in the codebase that exercises
- * the Required / Verified / Tracked branches and the
+ * parser at `src/include/utils/config/hub_broker_config.hpp:13-15`)
+ * deliberately omits `role_identity_policy`, `known_roles`, and
+ * `channel_policy_overrides` "pending HEP-CORE-0035."  The fields
+ * exist on the C++ struct `BrokerService::Config` (defaulting to
+ * `RoleIdentityPolicy::Open`) and `check_role_identity` still runs at
+ * every REG_REQ — but `effective_role_identity_policy()` always
+ * evaluates to Open in production because nothing else can set the
+ * fields.  This test is therefore the only caller in the codebase
+ * that exercises the Required / Verified / Tracked branches and the
  * channel-glob-override path.
  *
  * Because production cannot wire the fields, **real-HubHost
@@ -44,6 +44,11 @@
  * the entire placeholder + this test file), this file disappears
  * with the mechanism it pins.
  *
+ * Renamed 2026-05-13 from `channel_access_policy_workers.cpp` to
+ * reflect what the mechanism actually does: verify role identity at
+ * registration time.  See `role_identity_policy.hpp` for the rename
+ * rationale.
+ *
  * ─────────────────────────────────────────────────────────────────────────
  *
  * Module surface: Logger + CryptoUtils + ZMQContext.  Matches the
@@ -52,11 +57,11 @@
  * loading entirely.
  *
  * @see HEP-CORE-0035 §1 (placeholder status), §3 (gap analysis), §8 (Phase 6 deletion plan)
- * @see src/include/utils/channel_access_policy.hpp (legacy types)
- * @see src/utils/ipc/broker_service.cpp::check_connection_policy (gate impl)
+ * @see src/include/utils/role_identity_policy.hpp (placeholder types)
+ * @see src/utils/ipc/broker_service.cpp::check_role_identity (gate impl)
  */
 
-#include "channel_access_policy_workers.h"
+#include "role_identity_policy_workers.h"
 
 #include "log_capture_fixture.h"
 #include "plh_datahub.hpp"
@@ -65,7 +70,7 @@
 #include "test_entrypoint.h"
 #include "utils/broker_request_comm.hpp"
 #include "utils/broker_service.hpp"
-#include "utils/channel_access_policy.hpp"
+#include "utils/role_identity_policy.hpp"
 #include "utils/hub_state.hpp"
 #include "utils/logger.hpp"
 
@@ -91,7 +96,7 @@ using json = nlohmann::json;
 
 namespace pylabhub::tests::worker
 {
-namespace channel_access_policy
+namespace role_identity_policy
 {
 
 namespace
@@ -236,9 +241,9 @@ BrokerService::Config base_cfg()
 int open_policy_accepts_anonymous()
 {
     auto cfg = base_cfg();
-    cfg.connection_policy = ConnectionPolicy::Open;
+    cfg.role_identity_policy = RoleIdentityPolicy::Open;
     return run_with_broker(
-        "channel_access_policy::open_policy_accepts_anonymous",
+        "role_identity_policy::open_policy_accepts_anonymous",
         std::move(cfg),
         [](const std::string &ep, const std::string &pk) {
             EXPECT_TRUE(try_register(ep, pk, pid_chan("lab.open.anon")));
@@ -248,9 +253,9 @@ int open_policy_accepts_anonymous()
 int open_policy_accepts_with_identity()
 {
     auto cfg = base_cfg();
-    cfg.connection_policy = ConnectionPolicy::Open;
+    cfg.role_identity_policy = RoleIdentityPolicy::Open;
     return run_with_broker(
-        "channel_access_policy::open_policy_accepts_with_identity",
+        "role_identity_policy::open_policy_accepts_with_identity",
         std::move(cfg),
         [](const std::string &ep, const std::string &pk) {
             EXPECT_TRUE(try_register(ep, pk, pid_chan("lab.open.id"),
@@ -262,9 +267,9 @@ int open_policy_accepts_with_identity()
 int required_policy_rejects_anonymous()
 {
     auto cfg = base_cfg();
-    cfg.connection_policy = ConnectionPolicy::Required;
+    cfg.role_identity_policy = RoleIdentityPolicy::Required;
     return run_with_broker(
-        "channel_access_policy::required_policy_rejects_anonymous",
+        "role_identity_policy::required_policy_rejects_anonymous",
         std::move(cfg),
         [](const std::string &ep, const std::string &pk) {
             EXPECT_FALSE(try_register(ep, pk, pid_chan("lab.req.anon")));
@@ -275,9 +280,9 @@ int required_policy_rejects_anonymous()
 int required_policy_accepts_with_identity()
 {
     auto cfg = base_cfg();
-    cfg.connection_policy = ConnectionPolicy::Required;
+    cfg.role_identity_policy = RoleIdentityPolicy::Required;
     return run_with_broker(
-        "channel_access_policy::required_policy_accepts_with_identity",
+        "role_identity_policy::required_policy_accepts_with_identity",
         std::move(cfg),
         [](const std::string &ep, const std::string &pk) {
             EXPECT_TRUE(try_register(ep, pk, pid_chan("lab.req.id"),
@@ -289,11 +294,11 @@ int required_policy_accepts_with_identity()
 int verified_policy_rejects_unknown_role()
 {
     auto cfg = base_cfg();
-    cfg.connection_policy = ConnectionPolicy::Verified;
+    cfg.role_identity_policy = RoleIdentityPolicy::Verified;
     cfg.known_roles.push_back(
         {"lab.sensor1", "prod.sensor.uidaabbccdd", "producer"});
     return run_with_broker(
-        "channel_access_policy::verified_policy_rejects_unknown_role",
+        "role_identity_policy::verified_policy_rejects_unknown_role",
         std::move(cfg),
         [](const std::string &ep, const std::string &pk) {
             EXPECT_FALSE(try_register(ep, pk, pid_chan("lab.ver.unknown"),
@@ -306,11 +311,11 @@ int verified_policy_rejects_unknown_role()
 int verified_policy_accepts_known_role()
 {
     auto cfg = base_cfg();
-    cfg.connection_policy = ConnectionPolicy::Verified;
+    cfg.role_identity_policy = RoleIdentityPolicy::Verified;
     cfg.known_roles.push_back(
         {"lab.sensor1", "prod.sensor.uidaabbccdd", "producer"});
     return run_with_broker(
-        "channel_access_policy::verified_policy_accepts_known_role",
+        "role_identity_policy::verified_policy_accepts_known_role",
         std::move(cfg),
         [](const std::string &ep, const std::string &pk) {
             EXPECT_TRUE(try_register(ep, pk, pid_chan("lab.ver.known"),
@@ -322,11 +327,11 @@ int verified_policy_accepts_known_role()
 int per_channel_glob_override_restricts_channel()
 {
     auto cfg = base_cfg();
-    cfg.connection_policy = ConnectionPolicy::Tracked;
-    cfg.channel_policies.push_back(
-        {"lab.secure.*", ConnectionPolicy::Verified});
+    cfg.role_identity_policy = RoleIdentityPolicy::Tracked;
+    cfg.channel_policy_overrides.push_back(
+        {"lab.secure.*", RoleIdentityPolicy::Verified});
     return run_with_broker(
-        "channel_access_policy::per_channel_glob_override_restricts_channel",
+        "role_identity_policy::per_channel_glob_override_restricts_channel",
         std::move(cfg),
         [](const std::string &ep, const std::string &pk) {
             // Non-matching channel: base Tracked policy allows anonymous.
@@ -341,7 +346,7 @@ int per_channel_glob_override_restricts_channel()
         {"Verified policy rejected producer"});
 }
 
-} // namespace channel_access_policy
+} // namespace role_identity_policy
 } // namespace pylabhub::tests::worker
 
 // ── Dispatcher registrar ────────────────────────────────────────────────────
@@ -349,9 +354,9 @@ int per_channel_glob_override_restricts_channel()
 namespace
 {
 
-struct ChannelAccessPolicyRegistrar
+struct RoleIdentityPolicyRegistrar
 {
-    ChannelAccessPolicyRegistrar()
+    RoleIdentityPolicyRegistrar()
     {
         register_worker_dispatcher(
             [](int argc, char **argv) -> int
@@ -360,10 +365,10 @@ struct ChannelAccessPolicyRegistrar
                 std::string_view mode = argv[1];
                 auto dot = mode.find('.');
                 if (dot == std::string_view::npos ||
-                    mode.substr(0, dot) != "channel_access_policy")
+                    mode.substr(0, dot) != "role_identity_policy")
                     return -1;
                 std::string sc(mode.substr(dot + 1));
-                using namespace pylabhub::tests::worker::channel_access_policy;
+                using namespace pylabhub::tests::worker::role_identity_policy;
 
                 if (sc == "open_policy_accepts_anonymous")
                     return open_policy_accepts_anonymous();

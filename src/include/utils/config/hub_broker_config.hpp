@@ -10,9 +10,9 @@
  * heartbeat block (HEP-CORE-0023 §2.5) — Phase 9 wiring is a literal copy,
  * no translation layer.
  *
- * **Auth/access fields deliberately omitted** (`default_channel_policy`,
- * `known_roles`, `channel_policies`).  See HEP-CORE-0035 for the design
- * that must land before they return.
+ * **Auth/access fields deliberately omitted** (`role_identity_policy`,
+ * `known_roles`, `channel_policy_overrides`).  See HEP-CORE-0035 for
+ * the design that must land before they return.
  *
  * Strict key whitelist per HEP-CORE-0033 §6.3.
  */

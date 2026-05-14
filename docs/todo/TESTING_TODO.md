@@ -192,7 +192,7 @@ what production roles actually send.  Checklist violation: **(f)**.
 
 Test files: `test_datahub_broker_admin.cpp`, `test_datahub_broker_protocol.cpp`,
 `test_datahub_broker_schema.cpp`, `test_datahub_broker_shutdown.cpp`,
-`test_datahub_channel_access_policy.cpp`, `test_datahub_hub_host_integration.cpp`,
+`test_datahub_role_identity_policy.cpp`, `test_datahub_hub_host_integration.cpp`,
 `test_datahub_metrics.cpp`, `test_datahub_zmq_endpoint_registry.cpp`,
 `test_hub_lua_integration.cpp`.
 
@@ -625,7 +625,7 @@ Re-audit on 2026-05-13 against actual `LifecycleGuard` construction
 | `test_layer3_datahub/test_datahub_broker_admin.cpp` | 8 |
 | `test_layer2_service/test_engine_factory.cpp` | 8 |
 | `test_layer2_service/test_hub_host.cpp` | 10 |
-| `test_layer3_datahub/test_datahub_channel_access_policy.cpp` | 11 |
+| `test_layer3_datahub/test_datahub_role_identity_policy.cpp` | 11 |
 | `test_layer3_datahub/test_hub_lua_integration.cpp` | 11 |
 | `test_layer3_datahub/test_datahub_schema_loader.cpp` | 12 plain TEST + 4 TEST_F (**also has mixed-suites violation**) |
 | `test_layer2_service/test_log_capture_fixture.cpp` | 13 |
@@ -761,7 +761,7 @@ introduce flakes.
   tests/test_layer3_datahub/test_datahub_broker_protocol.cpp
   tests/test_layer3_datahub/test_datahub_broker_schema.cpp
   tests/test_layer3_datahub/test_datahub_broker_shutdown.cpp
-  tests/test_layer3_datahub/test_datahub_channel_access_policy.cpp
+  tests/test_layer3_datahub/test_datahub_role_identity_policy.cpp
   tests/test_layer3_datahub/test_datahub_hub_host_integration.cpp
   tests/test_layer3_datahub/test_datahub_hub_inbox_queue.cpp
   tests/test_layer3_datahub/test_datahub_hub_zmq_queue.cpp
@@ -1540,7 +1540,7 @@ the new `pylabhub::config::HubConfig` (HEP-0033 §6.1) lives in
 - ✅ **Umbrella header reorganization** — 15 orphan headers added to appropriate umbrella:
   `result.hpp` → L1; `uid_utils/uuid_utils/interactive_signal_handler/zmq_context` → L2;
   `heartbeat_manager/recovery_api/slot_diagnostics/slot_recovery/integrity_validator` → L3a;
-  `channel_access_policy/channel_pattern/data_block_mutex` → L3b
+  `role_identity_policy/channel_pattern/data_block_mutex` → L3b
 - ✅ **Example build fix** — `0xBAD5ECRET` invalid literal → `0xBAD5EC` in both datahub examples
   **Total: 750/750 passing (no changes to test code).**
 
@@ -1740,7 +1740,7 @@ the new `pylabhub::config::HubConfig` (HEP-0033 §6.1) lives in
   as false positives or pre-existing fixes; deferred medium items documented in review.
 
 ### 2026-02-26 (Connection policy + security identity)
-- ✅ **Layer 3 tests: ConnectionPolicy enforcement** (11 tests) — new `test_datahub_connection_policy.cpp`:
+- ✅ **Layer 3 tests: RoleIdentityPolicy enforcement** (11 tests) — `test_datahub_role_identity_policy.cpp`:
   - Suite 1 (4 tests): `to_str`/`from_str` round-trips, unknown-string fallback to Open
   - Suite 2 (7 tests): Open/Required/Verified broker enforcement, per-channel glob override,
     ephemeral port (`tcp://127.0.0.1:0`) prevents parallel ctest-j collisions

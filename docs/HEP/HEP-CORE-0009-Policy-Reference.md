@@ -274,7 +274,7 @@ at parse time. Prevents typos, obsolete keys, and ambiguous configuration.
 ### 2.7 Hub-role authentication & federation trust
 
 > 🚧 **Superseded by [HEP-CORE-0035](HEP-CORE-0035-Hub-Role-Authentication-and-Federation-Trust.md) — in design, not implemented.**
-> This section previously documented `ConnectionPolicy` (`Open`/`Tracked`/`Required`/`Verified`)
+> This section previously documented `RoleIdentityPolicy` (`Open`/`Tracked`/`Required`/`Verified`)
 > as the broker-side access-control mechanism. That model **pre-dates the
 > CURVE-required role architecture and the HEP-CORE-0022 federation model**:
 > it operates only on self-asserted JSON identity strings, never consults the
@@ -289,12 +289,12 @@ at parse time. Prevents typos, obsolete keys, and ambiguous configuration.
 >   federation-trust gate).
 > - The replacement hub.json fields (`broker.known_roles[].pubkey` required;
 >   `broker.federation_trust_mode`).
-> - What is removed: `ConnectionPolicy::{Required,Verified,Tracked,Open}`,
->   `ChannelPolicy` per-channel overrides.
+> - What is removed: `RoleIdentityPolicy::{Required,Verified,Tracked,Open}`,
+>   `ChannelPolicyOverride` per-channel overrides.
 >
-> The legacy `ConnectionPolicy` enum, `BrokerServiceImpl::check_connection_policy`,
-> `KnownRole`, and `ChannelPolicy` types remain in the source tree (and in L3
-> test `test_datahub_channel_access_policy.cpp`) until HEP-CORE-0035 Phase 6
+> The legacy `RoleIdentityPolicy` enum, `BrokerServiceImpl::check_role_identity`,
+> `KnownRole`, and `ChannelPolicyOverride` types remain in the source tree (and in L3
+> test `test_datahub_role_identity_policy.cpp`) until HEP-CORE-0035 Phase 6
 > deletes them in one sweep. Do **not** treat them as the design.
 >
 > See HEP-CORE-0035 §1 (status), §2 (invariants), §3 (gap analysis of the
@@ -393,7 +393,7 @@ For **safety-critical** applications, set:
 | `QueueType` | `consumer_config.hpp` | `queue_type` | `ConsumerScriptHost` — selects SHM vs ZMQ as backing queue for the data plane |
 | `LoopTimingPolicy` | `producer_config.hpp`, `consumer_config.hpp` | `loop_timing` | `ProducerScriptHost` / `ConsumerScriptHost` when `target_period_ms > 0` |
 | `LoopPolicy` *(RAII Pass 2)* | `data_block_policy.hpp` | auto-set from `target_period_ms` | Sleep: `SlotIterator::operator++()`; overrun: `acquire_write_slot()` |
-| `ConnectionPolicy` *(legacy placeholder — see §2.7)* | `channel_access_policy.hpp` | **not parsed from hub.json** (HEP-0035 supersedes; auth fields deferred) | `BrokerServiceImpl::check_connection_policy()` (live for tests until HEP-0035 Phase 6) |
+| `RoleIdentityPolicy` *(legacy placeholder — see §2.7)* | `role_identity_policy.hpp` | **not parsed from hub.json** (HEP-0035 supersedes; auth fields deferred) | `BrokerServiceImpl::check_role_identity()` (live for tests until HEP-0035 Phase 6) |
 | `ChannelPattern` | `channel_pattern.hpp` | `ProducerOptions::channel_pattern` | `Messenger` (socket type) + `BrokerService` (CHANNEL_READY_NOTIFY) |
 
 ---
@@ -433,7 +433,7 @@ flowchart TB
 ```
 
 > Note: hub-role authentication / federation-trust enforcement
-> (formerly `ConnectionPolicy`) is **out of scope** for this graph
+> (formerly `RoleIdentityPolicy`) is **out of scope** for this graph
 > — it is being redesigned as part of HEP-CORE-0035 (in design, not
 > implemented).  See §2.7 for the retraction.
 
@@ -444,11 +444,11 @@ flowchart TB
 | File | Layer | Description |
 |------|-------|-------------|
 | `src/include/utils/data_block_policy.hpp` | L3 (public) | `DataBlockPolicy`, `ConsumerSyncPolicy`, `ChecksumPolicy`, `LoopPolicy` |
-| `src/include/utils/channel_access_policy.hpp` | L3 (public) | `ConnectionPolicy` enum *(legacy placeholder — superseded by HEP-CORE-0035)* |
+| `src/include/utils/role_identity_policy.hpp` | L3 (public) | `RoleIdentityPolicy` enum *(legacy placeholder — superseded by HEP-CORE-0035)* |
 | `src/include/utils/channel_pattern.hpp` | L3 (public) | `ChannelPattern` enum |
-| `src/include/utils/broker_service.hpp` | L3 (public) | `BrokerService::Config` — `ChecksumRepairPolicy`; carries `ConnectionPolicy` field, settable only by tests pending HEP-CORE-0035 |
+| `src/include/utils/broker_service.hpp` | L3 (public) | `BrokerService::Config` — `ChecksumRepairPolicy`; carries `RoleIdentityPolicy` field, settable only by tests pending HEP-CORE-0035 |
 | `src/producer/producer_config.hpp` | L4 | `ValidationPolicy` struct, `LoopTimingPolicy` |
 | `src/consumer/consumer_config.hpp` | L4 | Same policy config fields for consumer |
 | `src/processor/processor_config.hpp` | L4 | `overflow_policy`, validation policy for processor |
-| `src/utils/ipc/broker_service.cpp` | impl | `check_connection_policy()`, `effective_policy()` |
+| `src/utils/ipc/broker_service.cpp` | impl | `check_role_identity()`, `effective_role_identity_policy()` |
 | `src/utils/shm/data_block.cpp` | impl | Policy enforcement in slot acquire/release |

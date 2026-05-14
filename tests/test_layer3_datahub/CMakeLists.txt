@@ -92,9 +92,9 @@ add_executable(test_layer3_datahub
     test_datahub_broker.cpp
     workers/datahub_broker_workers.cpp
 
-    # ── Channel access policy enforcement tests (Phase 3) ─────────────────────
-    test_datahub_channel_access_policy.cpp
-    workers/channel_access_policy_workers.cpp
+    # ── Role identity policy enforcement tests (placeholder — HEP-0035) ───────
+    test_datahub_role_identity_policy.cpp
+    workers/role_identity_policy_workers.cpp
 
     # ── Consumer registration protocol tests ─────────────────────────────────────
     test_datahub_broker_consumer.cpp
