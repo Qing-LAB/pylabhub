@@ -864,14 +864,18 @@ gtest_discover_tests(test_layer2_role_registry
 # Test: make_engine_from_script_config (scripting layer helper)
 # ============================================================================
 
-add_executable(test_layer2_engine_factory test_engine_factory.cpp)
+add_executable(test_layer2_engine_factory
+    test_engine_factory.cpp
+    workers/engine_factory_workers.cpp)
 target_include_directories(test_layer2_engine_factory PRIVATE
-    ${CMAKE_SOURCE_DIR}/src/scripting)
+    ${CMAKE_SOURCE_DIR}/src/scripting
+    workers)
 target_link_libraries(test_layer2_engine_factory PRIVATE
     pylabhub::utils
     pylabhub::scripting
+    pylabhub::test_framework
     pylabhub::third_party::pybind11_embed
-    GTest::gtest GTest::gtest_main)
+    GTest::gtest)
 pylabhub_ensure_sanitizer_for_executable(test_layer2_engine_factory)
 pylabhub_register_test_for_staging(
     TARGET test_layer2_engine_factory SUITE_NAME "Layer2_EngineFactory")
