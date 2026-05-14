@@ -187,6 +187,7 @@ add_executable(test_layer3_datahub
 
     # ── Hub InboxQueue + InboxClient unit tests (Phase 3 Inbox Facility) ─
     test_datahub_hub_inbox_queue.cpp
+    workers/hub_inbox_queue_workers.cpp
 
     # ── MonitoredQueue unit tests (ctrl-send queue with backpressure) ─────
     test_datahub_hub_monitored_queue.cpp
