@@ -141,6 +141,7 @@ add_executable(test_layer3_datahub
 
     # ── Broker named schema protocol tests (HEP-CORE-0034 path B / inbox path A) ──
     test_datahub_broker_schema.cpp
+    workers/broker_schema_workers.cpp
 
     # NOTE: test_datahub_schema_registry.cpp (HEP-0016 SchemaStore lifecycle)
     # was deleted in HEP-0034 Phase 4a — the SchemaStore singleton was
