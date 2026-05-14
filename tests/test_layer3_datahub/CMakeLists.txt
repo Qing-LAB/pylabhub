@@ -175,6 +175,7 @@ add_executable(test_layer3_datahub
 
     # ── HEP-CORE-0021 ZMQ Endpoint Registry protocol tests ────────────
     test_datahub_zmq_endpoint_registry.cpp
+    workers/zmq_endpoint_registry_workers.cpp
 
     # ── HEP-CORE-0022 Hub Federation Broadcast protocol tests ────────────
     test_datahub_hub_federation.cpp
