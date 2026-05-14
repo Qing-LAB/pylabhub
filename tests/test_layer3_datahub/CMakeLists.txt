@@ -150,6 +150,7 @@ add_executable(test_layer3_datahub
 
     # ── BrokerService admin API tests ─────────────────────────────────────────
     test_datahub_broker_admin.cpp
+    workers/broker_admin_workers.cpp
 
     # ── Broker control-plane protocol tests (broadcast, notify, list_channels) ──
     test_datahub_broker_protocol.cpp
