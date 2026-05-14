@@ -1496,3 +1496,39 @@ gtest_discover_tests(test_layer2_role_data_loop
         TIMEOUT 30
 )
 endif() # PYLABHUB_SKIP_ENGINE_TESTS
+
+# ============================================================================
+# Test: hub::ZmqQueue (ZMQ PULL/PUSH-backed Queue) — single-class module.
+#
+# Relocated 2026-05-14 from `tests/test_layer3_datahub/` (where placement
+# was historical via the L3 aggregate's STS-LifecycleGuard).  Subject is
+# pure single-class — no broker, no protocol — so L2 is correct.  Uses
+# Pattern 1+ (BinaryLifecycleEnvironment) with Logger + crypto +
+# ZMQContext, in its own dedicated executable.
+# ============================================================================
+
+add_executable(test_layer2_hub_zmq_queue
+    test_hub_zmq_queue.cpp
+)
+
+target_link_libraries(test_layer2_hub_zmq_queue
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_hub_zmq_queue)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_hub_zmq_queue
+    SUITE_NAME "Layer2_HubZmqQueue"
+)
+layer2_require_staged_utils(test_layer2_hub_zmq_queue)
+
+gtest_discover_tests(test_layer2_hub_zmq_queue
+    PROPERTIES
+        LABELS "layer2;service;zmq_queue"
+        TIMEOUT 60
+)

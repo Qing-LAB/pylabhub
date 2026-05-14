@@ -1,12 +1,25 @@
 /**
- * @file test_datahub_hub_zmq_queue.cpp
- * @brief Unit tests for hub::ZmqQueue (ZMQ PULL/PUSH-backed Queue).
+ * @file test_hub_zmq_queue.cpp
+ * @brief L2 unit tests for `pylabhub::hub::ZmqQueue` — single-class
+ *        module (factory, lifecycle, schema computation + roundtrip,
+ *        metrics, concurrency, error paths, packing, checksum modes).
  *
  * Suite: ZmqQueueTest
  *
- * ZmqQueue creates its own private zmq_ctx_new() per instance, so no
- * shared ZmqContext lifecycle is needed. Tests use an in-process
- * LifecycleGuard for Logger only.
+ * Moved 2026-05-14 from `tests/test_layer3_datahub/test_datahub_hub_zmq_queue.cpp`.
+ * Previous placement was historical (shared the L3 aggregate's
+ * STS-owned `LifecycleGuard`); the actual subject is a single class
+ * with no broker / multi-module / protocol involvement, so L2 is the
+ * correct layer per the test-layering purpose framework
+ * (`docs/todo/TESTING_TODO.md` § "Test Design Principles" item 1).
+ * Same correction the L1/L2 split applied to `test_zmq_poll_loop`.
+ *
+ * Pattern 1+ — binary-wide `LifecycleGuard` for Logger + crypto +
+ * ZMQContext (the 3-module set the previous STS-guard registered,
+ * preserved defensively).  ZmqQueue creates its own private
+ * `zmq_ctx_new()` per instance per the production header, so the
+ * shared ZMQContext module is precautionary against a constructor-
+ * side dependency drifting in.
  *
  * Cross-platform notes:
  *   - All endpoints use tcp://127.0.0.1:<port> (never ipc://)
@@ -14,6 +27,7 @@
  *   - All tests use port 0 + actual_endpoint() for OS-assigned ports (no collisions)
  *   - schema_ep() uses a PID-based port range for factory-only tests (no bind/start)
  */
+#include "binary_lifecycle.h"
 #include "plh_service.hpp"
 #include "utils/hub_zmq_queue.hpp"
 #include "utils/hub_queue.hpp"
@@ -77,23 +91,20 @@ inline uint8_t data_pattern(size_t i) noexcept
 } // anonymous namespace
 
 // ============================================================================
-// Fixture — Logger lifecycle only (ZmqQueue creates its own ZMQ context)
+// Binary-wide LifecycleGuard (Pattern 1+) — preserves the 3-module set
+// the previous SetUpTestSuite-owned guard registered.  See file header
+// for the interference-vector audit.
 // ============================================================================
+
+PLH_BINARY_LIFECYCLE_MODULES(
+    pylabhub::utils::Logger::GetLifecycleModule(),
+    pylabhub::crypto::GetLifecycleModule(),
+    pylabhub::hub::GetZMQContextModule()
+)
 
 class ZmqQueueTest : public ::testing::Test,
                      public pylabhub::tests::LogCaptureFixture
 {
-public:
-    static void SetUpTestSuite()
-    {
-        s_lifecycle_ = std::make_unique<pylabhub::utils::LifecycleGuard>(
-            pylabhub::utils::MakeModDefList(
-                pylabhub::utils::Logger::GetLifecycleModule(),
-                pylabhub::crypto::GetLifecycleModule(),
-                pylabhub::hub::GetZMQContextModule()), std::source_location::current());
-    }
-    static void TearDownTestSuite() { s_lifecycle_.reset(); }
-
 protected:
     void SetUp()    override { LogCaptureFixture::Install(); }
     void TearDown() override
@@ -101,13 +112,7 @@ protected:
         AssertNoUnexpectedLogWarnError();
         LogCaptureFixture::Uninstall();
     }
-
-private:
-    static std::unique_ptr<pylabhub::utils::LifecycleGuard> s_lifecycle_;
 };
-
-// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
-std::unique_ptr<pylabhub::utils::LifecycleGuard> ZmqQueueTest::s_lifecycle_;
 
 // ============================================================================
 // Factory tests

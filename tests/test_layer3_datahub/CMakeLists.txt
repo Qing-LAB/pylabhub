@@ -134,7 +134,15 @@ add_executable(test_layer3_datahub
     workers/role_api_flexzone_workers.cpp
 
     # ── Hub ZmqQueue unit tests ──────────────────────────────────────────────
-    test_datahub_hub_zmq_queue.cpp
+    # NOTE: test_datahub_hub_zmq_queue.cpp was relocated 2026-05-14 to
+    # `tests/test_layer2_service/test_hub_zmq_queue.cpp` and given its
+    # own executable `test_layer2_hub_zmq_queue` using Pattern 1+
+    # (BinaryLifecycleEnvironment).  ZmqQueue is a single-class module
+    # (no broker / multi-module / protocol) — L2 is the correct layer
+    # per the test-layering purpose framework; previous L3 placement
+    # was historical (shared aggregate lifecycle guard).  Same
+    # correction the L1/L2 split applied to test_zmq_poll_loop.
+    # test_datahub_hub_zmq_queue.cpp
 
     # ── Schema parser unit tests (HEP-CORE-0034 §2.4 I5; renamed from
     # test_datahub_schema_library.cpp in Phase 4c, 2026-04-28) ────────────────

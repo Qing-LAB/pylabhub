@@ -636,7 +636,7 @@ Re-audit on 2026-05-13 against actual `LifecycleGuard` construction
 | ~~`test_layer3_datahub/test_datahub_broker_protocol.cpp`~~ | ✅ RESOLVED 2026-05-14 — Pattern 3 (matches sibling broker tests) |
 | ~~`test_layer2_service/test_hub_api.cpp`~~ | ✅ RESOLVED 2026-05-14 — Pattern 1+ (own binary, Logger only, no broker) |
 | ~~`test_layer2_service/test_role_host_core.cpp`~~ | ✅ RESOLVED 2026-05-14 — Pattern 1+ (own binary, Logger only, no broker) |
-| `test_layer3_datahub/test_datahub_hub_zmq_queue.cpp` | 65 |
+| ~~`test_layer3_datahub/test_datahub_hub_zmq_queue.cpp`~~ | ✅ RESOLVED 2026-05-14 — Pattern 1+ via L3→L2 relocation (single-class module) |
 
 **Plus** the two ThreadManager test files touched in MD1.5 work
 (`test_layer2_service/test_thread_manager_active_loop.cpp` 17 TEST_F,
