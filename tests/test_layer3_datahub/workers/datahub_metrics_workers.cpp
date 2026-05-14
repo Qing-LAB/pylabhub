@@ -16,20 +16,23 @@
  *     unified path; per-uid producer/consumer tree; multi-presence
  *     no-cross-attribution; retired-wire-path UNKNOWN_MSG_TYPE).
  *
- * **Mock-host carry-forward**: this worker preserves the original's
- * `LocalBrokerHandle` (raw HubState + bare BrokerService + raw
- * `std::thread`) for now.  The no-mocks principle in
- * `feedback_test_layering_and_no_mocks.md` says L3 broker tests must
- * use real HubHost; the IMMEDIATELY-FOLLOWING commit will refactor
- * to that shape (precedent: zmq_endpoint_registry's two-commit
- * sequence `a854497` + `07382d0`).  Splitting keeps the bisect
- * signal clean — first commit is pure subprocess-isolation, second
- * is pure wiring.
+ * **Real-production-wiring refactor (2026-05-14)**: switched from
+ * the legacy `LocalBrokerHandle` (raw HubState + bare BrokerService
+ * + raw `std::thread`) to real `HubHost` via
+ * `HubConfig::load_from_directory(...)`.  Per the test-design
+ * principle in `feedback_test_layering_and_no_mocks.md`: L3 broker
+ * tests MUST run against the real HubHost composite (real
+ * BrokerService + real HubState + real AdminService +
+ * ThreadManager-backed broker run-loop) so regressions in HubHost's
+ * threading / lifecycle / state-ownership wiring are actually
+ * caught.  Same refactor shape as zmq_endpoint_registry commit
+ * `07382d0`.
  *
- * Module surface (this commit): Logger + CryptoUtils + ZMQContext
- * (3 modules; matches original SetUpTestSuite).  Will expand to 5
- * in the real-HubHost follow-up commit (FileLock + JsonConfig
- * transitively required by HubConfig::load_from_directory).
+ * Module surface: Logger + FileLock + JsonConfig + CryptoUtils +
+ * ZMQContext (5 modules).  FileLock + JsonConfig added because
+ * `HubConfig::load_from_directory` reads hub.json via the
+ * JsonConfig module (which uses FileLock).  Matches the
+ * broker_schema / broker_admin / hub_lua_integration profile.
  *
  * @see HEP-CORE-0019 §2.3 (heartbeat-piggyback metrics, Phase 6 post-M1.4)
  * @see HEP-CORE-0033 §10.3 (unified query engine)
@@ -46,10 +49,16 @@
 #include "test_sync_utils.h"
 #include "utils/broker_request_comm.hpp"
 #include "utils/broker_service.hpp"
+#include "utils/config/hub_config.hpp"
+#include "utils/file_lock.hpp"
+#include "utils/hub_directory.hpp"
+#include "utils/hub_host.hpp"
 #include "utils/hub_metrics_filter.hpp"
 #include "utils/hub_state.hpp"
+#include "utils/json_config.hpp"
 #include "utils/logger.hpp"
 
+#include <fstream>
 #include <gtest/gtest.h>
 #include <cppzmq/zmq_addon.hpp>
 #include <nlohmann/json.hpp>
@@ -69,9 +78,14 @@
 #include <vector>
 
 namespace fs = std::filesystem;
+using pylabhub::config::HubConfig;
+using pylabhub::hub_host::HubHost;
 using pylabhub::tests::LogCaptureFixture;
 using pylabhub::tests::helper::poll_until;
 using pylabhub::tests::helper::run_gtest_worker;
+using pylabhub::utils::FileLock;
+using pylabhub::utils::HubDirectory;
+using pylabhub::utils::JsonConfig;
 using pylabhub::utils::Logger;
 using namespace pylabhub::broker;
 using json = nlohmann::json;
@@ -84,56 +98,33 @@ namespace datahub_metrics
 namespace
 {
 
-// ── LocalBrokerHandle (pre-existing mock-host; switched to real HubHost
-//    in the immediately-following commit) ─────────────────────────────────
+// ── Real-HubHost broker startup (matches plh_hub binary path) ──────────────
 
-struct LocalBrokerHandle
+fs::path make_test_hub_dir()
 {
-    std::unique_ptr<pylabhub::hub::HubState> hub_state;
-    std::unique_ptr<BrokerService>           service;
-    std::thread                              thread;
-    std::string                              endpoint;
-    std::string                              pubkey;
+    static std::atomic<int> ctr{0};
+    fs::path dir = fs::temp_directory_path() /
+                   ("plh_l3_metrics_" + std::to_string(::getpid()) + "_" +
+                    std::to_string(ctr.fetch_add(1)));
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    HubDirectory::init_directory(dir, "MetricsTestHub");
 
-    LocalBrokerHandle()                                          = default;
-    LocalBrokerHandle(LocalBrokerHandle &&) noexcept             = default;
-    LocalBrokerHandle &operator=(LocalBrokerHandle &&) noexcept  = default;
-    ~LocalBrokerHandle() { stop_and_join(); }
-
-    void stop_and_join()
+    const fs::path hub_json = dir / "hub.json";
+    json j;
     {
-        if (service)
-        {
-            service->stop();
-            if (thread.joinable())
-                thread.join();
-        }
+        std::ifstream f(hub_json);
+        if (f.is_open())
+            j = json::parse(f);
     }
-};
-
-LocalBrokerHandle start_local_broker(BrokerService::Config cfg)
-{
-    using ReadyInfo = std::pair<std::string, std::string>;
-    auto promise = std::make_shared<std::promise<ReadyInfo>>();
-    auto future  = promise->get_future();
-
-    cfg.on_ready = [promise](const std::string &ep, const std::string &pk)
-    { promise->set_value({ep, pk}); };
-
-    auto state   = std::make_unique<pylabhub::hub::HubState>();
-    auto svc     = std::make_unique<BrokerService>(std::move(cfg), *state);
-    auto raw_ptr = svc.get();
-    std::thread t([raw_ptr] { raw_ptr->run(); });
-
-    auto info = future.get();
-
-    LocalBrokerHandle h;
-    h.hub_state = std::move(state);
-    h.service   = std::move(svc);
-    h.thread    = std::move(t);
-    h.endpoint  = info.first;
-    h.pubkey    = info.second;
-    return h;
+    j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0";
+    j["admin"]["enabled"]           = false;
+    j["script"]["path"]             = "";
+    {
+        std::ofstream f(hub_json);
+        f << j.dump(2);
+    }
+    return dir;
 }
 
 struct BrcHandle
@@ -248,16 +239,21 @@ json make_cons_opts(const std::string &channel,
     return opts;
 }
 
-/// Module list for every worker in this TU.
+/// Module list for every worker in this TU.  Grown from the pre-
+/// refactor 3-module list (Logger + Crypto + ZMQContext) because
+/// HubConfig::load_from_directory + HubHost startup transitively
+/// require FileLock + JsonConfig.
 #define PLH_METRICS_MODS                                                       \
     Logger::GetLifecycleModule(),                                              \
+    FileLock::GetLifecycleModule(),                                            \
+    JsonConfig::GetLifecycleModule(),                                          \
     pylabhub::crypto::GetLifecycleModule(),                                    \
     pylabhub::hub::GetZMQContextModule()
 
-/// Per-worker fixture: install LogCaptureFixture, spin up a
-/// LocalBrokerHandle on tcp://127.0.0.1:0 with empty schema_search_dirs,
-/// run the body with refs to the broker.  Uninstall + log assertion at
-/// end.  Body receives:
+/// Per-worker fixture: install LogCaptureFixture, spin up a real
+/// HubHost via `HubConfig::load_from_directory(...)`, run the body
+/// with refs to the broker.  Uninstall + log assertion at end.  Body
+/// receives:
 ///   - `ep` / `pk`: broker endpoint + pubkey
 ///   - `svc`: BrokerService reference (for query_metrics / query_metrics_json_str)
 template <typename Body>
@@ -272,15 +268,20 @@ int run_with_broker(std::string_view worker_name, Body &&body,
             for (auto &w : expect_log_warns)
                 log_cap.ExpectLogWarn(w);
 
-            BrokerService::Config cfg;
-            cfg.endpoint               = "tcp://127.0.0.1:0";
-            cfg.schema_search_dirs     = {};
-            auto broker = start_local_broker(std::move(cfg));
+            const fs::path dir = make_test_hub_dir();
+            auto host = std::make_unique<HubHost>(
+                HubConfig::load_from_directory(dir.string()));
+            host->startup();
+            ASSERT_TRUE(host->is_running());
 
-            body(broker.endpoint, broker.pubkey, *broker.service);
+            body(host->broker_endpoint(), host->broker_pubkey(),
+                 host->broker());
 
+            host.reset();
             log_cap.AssertNoUnexpectedLogWarnError();
             log_cap.Uninstall();
+            std::error_code ec;
+            fs::remove_all(dir, ec);
         },
         std::string(worker_name).c_str(),
         PLH_METRICS_MODS);
