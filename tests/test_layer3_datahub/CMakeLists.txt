@@ -162,6 +162,7 @@ add_executable(test_layer3_datahub
 
     # ── HubHost + LuaEngine integration (HEP-CORE-0033 Phase 7 D3.3) ────────
     test_hub_lua_integration.cpp
+    workers/hub_lua_integration_workers.cpp
 
     # ── HubHost + PythonEngine integration (HEP-CORE-0033 Phase 7 D4.2) ────
     test_hub_python_integration.cpp
