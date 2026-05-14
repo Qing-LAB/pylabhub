@@ -33,7 +33,7 @@ the authentication story.
 
 ---
 
-## 1.5. What the placeholder really is (sec'y addendum, 2026-05-13)
+## 1.5. What the placeholder really is (addendum, 2026-05-13)
 
 > Added 2026-05-13 in response to "what is this *channel access*
 > policy really doing?"  The placeholder code was named for its

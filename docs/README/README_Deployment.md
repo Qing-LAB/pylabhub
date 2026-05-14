@@ -185,6 +185,15 @@ hub-dir/
 `hub.json` is **world-readable (0644)**. It must never contain secrets. The admin token and
 CurveZMQ private key live exclusively in `hub.vault` (0600, encrypted).
 
+> 🚧 **Auth/access fields shown below are placeholders — not currently parsed.**
+> `hub.connection_policy`, `hub.channel_policies`, and `hub.known_roles` are
+> retained in the schema as forward references but are **not** read by
+> `HubBrokerConfig` today (`src/include/utils/config/hub_broker_config.hpp:13-15`
+> deliberately omits them).  Setting them in `hub.json` has no runtime effect;
+> the broker runs with `RoleIdentityPolicy::Open` regardless.  HEP-CORE-0035 §5
+> defines the operational replacement schema (`broker.federation_trust_mode`
+> + `broker.known_roles[].pubkey` required) that will land with that HEP.
+
 ```json
 {
   "hub": {
@@ -1082,6 +1091,16 @@ authenticated). For mutual authentication (both sides verified), set `auth.keyfi
 both the hub and each role.
 
 ### 9.4 Connection policy
+
+> 🚧 **Placeholder mechanism — not currently configurable from `hub.json`.**
+> The four modes below describe the legacy `RoleIdentityPolicy` placeholder
+> (renamed 2026-05-13 from `ConnectionPolicy`).  `HubBrokerConfig` deliberately
+> omits the policy fields pending HEP-CORE-0035; the broker runs with
+> `RoleIdentityPolicy::Open` in every production deployment regardless of what
+> `hub.connection_policy` is set to.  When HEP-0035 lands, this entire section
+> is replaced by the §5 design (CURVE-required + ZAP-based pubkey allowlist
+> + federation-trust gate).  See HEP-CORE-0035 §1.5 for the current-state
+> explanation and §1.6 for the implementation premise.
 
 Controls which roles the broker accepts channel registrations from (set in `hub.json`
 under `hub.connection_policy`):
