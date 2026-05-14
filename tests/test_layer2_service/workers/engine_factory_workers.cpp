@@ -34,8 +34,11 @@
 #include "utils/file_lock.hpp"
 #include "utils/json_config.hpp"
 #include "utils/logger.hpp"
+#include "utils/native_engine.hpp"
 #include "utils/script_engine.hpp"
 #include "utils/script_engine_factory.hpp"
+#include "../../src/scripting/lua_engine.hpp"
+#include "../../src/scripting/python_engine.hpp"
 #include "../../src/scripting/python_interpreter_module.hpp"
 
 #include <gtest/gtest.h>
@@ -102,6 +105,45 @@ int run_with_python(std::string_view worker_name, Body &&body)
 
 } // namespace
 
+// Type-pin assertion helpers — verify the factory dispatched to the
+// expected concrete engine.  Closes the depth gap the original tests
+// acknowledged ("we can't distinguish Python from Lua by the abstract
+// return type"): the factory's contract IS type-correct dispatch on
+// `sc.type`, so a branch swap or string-literal typo in
+// engine_factory.cpp's dispatch must FAIL these tests, not silently
+// produce a non-null engine of the wrong type.
+
+void expect_native(const pylabhub::scripting::ScriptEngine *engine,
+                   const char *requested_type)
+{
+    EXPECT_NE(dynamic_cast<const pylabhub::scripting::NativeEngine *>(engine),
+              nullptr)
+        << "create_engine(\"" << requested_type
+        << "\") should return NativeEngine; got a different concrete type "
+           "(branch swap or dispatch typo in src/scripting/engine_factory.cpp?)";
+}
+
+void expect_lua(const pylabhub::scripting::ScriptEngine *engine,
+                const char *requested_type)
+{
+    EXPECT_NE(dynamic_cast<const pylabhub::scripting::LuaEngine *>(engine),
+              nullptr)
+        << "create_engine(\"" << requested_type
+        << "\") should return LuaEngine; got a different concrete type "
+           "(branch swap or dispatch typo in src/scripting/engine_factory.cpp?)";
+}
+
+void expect_python(const pylabhub::scripting::ScriptEngine *engine,
+                   const char *requested_type)
+{
+    EXPECT_NE(dynamic_cast<const pylabhub::scripting::PythonEngine *>(engine),
+              nullptr)
+        << "create_engine(\"" << requested_type
+        << "\") should return PythonEngine (default branch); got a different "
+           "concrete type (branch swap or fallback regression in "
+           "src/scripting/engine_factory.cpp?)";
+}
+
 int native_returns_non_null()
 {
     return run_with_scripting(
@@ -109,6 +151,7 @@ int native_returns_non_null()
         [] {
             auto engine = pylabhub::scripting::create_engine(make_cfg("native"));
             ASSERT_NE(engine, nullptr);
+            expect_native(engine.get(), "native");
         });
 }
 
@@ -121,6 +164,7 @@ int native_with_checksum_accepts()
             sc.checksum = "deadbeefdeadbeefdeadbeefdeadbeef";
             auto engine = pylabhub::scripting::create_engine(sc);
             ASSERT_NE(engine, nullptr);
+            expect_native(engine.get(), "native");
         });
 }
 
@@ -133,6 +177,7 @@ int native_without_checksum_accepts()
             sc.checksum = "";  // explicit empty — set_expected_checksum NOT called
             auto engine = pylabhub::scripting::create_engine(sc);
             ASSERT_NE(engine, nullptr);
+            expect_native(engine.get(), "native");
         });
 }
 
@@ -143,6 +188,7 @@ int lua_returns_non_null()
         [] {
             auto engine = pylabhub::scripting::create_engine(make_cfg("lua"));
             ASSERT_NE(engine, nullptr);
+            expect_lua(engine.get(), "lua");
         });
 }
 
@@ -153,6 +199,7 @@ int python_returns_non_null()
         [] {
             auto engine = pylabhub::scripting::create_engine(make_cfg("python"));
             ASSERT_NE(engine, nullptr);
+            expect_python(engine.get(), "python");
         });
 }
 
@@ -165,6 +212,7 @@ int python_with_venv_accepts()
             sc.python_venv = "/tmp/some_venv";
             auto engine = pylabhub::scripting::create_engine(sc);
             ASSERT_NE(engine, nullptr);
+            expect_python(engine.get(), "python");
         });
 }
 
@@ -173,13 +221,16 @@ int unknown_type_falls_through_to_python()
     return run_with_python(
         "engine_factory::unknown_type_falls_through_to_python",
         [] {
-            // Documented behavior: anything not "native"/"lua" → PythonEngine.
-            // We can't distinguish Python from Lua by the abstract return type,
-            // so the contract here is "non-null" only. Full-stack tests exercise
-            // the actual engine selection via --validate.
+            // Documented behavior (engine_factory.cpp:71 "preserves the
+            // prior per-main behaviour"): anything not "native"/"lua" →
+            // PythonEngine.  Type-correct dispatch verified via
+            // dynamic_cast below — a regression that changed the
+            // fallback to a different engine type would FAIL here, not
+            // silently produce a non-null engine of the wrong type.
             auto engine = pylabhub::scripting::create_engine(
                 make_cfg("some_unknown_flavor"));
             ASSERT_NE(engine, nullptr);
+            expect_python(engine.get(), "some_unknown_flavor");
         });
 }
 
@@ -190,6 +241,7 @@ int empty_type_falls_through_to_python()
         [] {
             auto engine = pylabhub::scripting::create_engine(make_cfg(""));
             ASSERT_NE(engine, nullptr);
+            expect_python(engine.get(), "");
         });
 }
 
