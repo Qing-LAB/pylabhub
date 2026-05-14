@@ -175,6 +175,7 @@ add_executable(test_layer3_datahub
 
     # ── HEP-CORE-0022 Hub Federation Broadcast protocol tests ────────────
     test_datahub_hub_federation.cpp
+    workers/hub_federation_workers.cpp
 
     # ── Hub InboxQueue + InboxClient unit tests (Phase 3 Inbox Facility) ─
     test_datahub_hub_inbox_queue.cpp
