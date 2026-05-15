@@ -40,6 +40,7 @@ set(UTILS_SOURCES
   service/engine_host.cpp
   service/role_registry.cpp
   service/role_api_base.cpp
+  service/role_handler.cpp        # Wave-B M3 — Presence/HubConnection/RoleHandler skeleton
   service/data_loop.cpp
   service/thread_manager.cpp
   service/engine_module_params.cpp
