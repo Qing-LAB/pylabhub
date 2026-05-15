@@ -93,21 +93,70 @@
 namespace pylabhub::scripting
 {
 
+class RoleAPIBase;  // fwd — full def in utils/role_api_base.hpp.  Used
+                    // only by `start(owner)` to read identity (uid /
+                    // name / auth keys) + access the ThreadManager.
+
 class PYLABHUB_UTILS_EXPORT RoleHandler
 {
   public:
     /// Build a role handler from the presence declaration.  Moves the
     /// vector in; dedups it into the `connections_` vector; wires up
     /// the channel index.  See file-header invariants for the post-
-    /// construction state.  M3 build-only — no network ops.
+    /// construction state.  No network ops.
     explicit RoleHandler(std::vector<Presence> presences);
 
-    ~RoleHandler() = default;
+    /// Calls `shutdown()` if `start()` was called and `shutdown()` was
+    /// not — RAII safety net for callers that forget the explicit
+    /// shutdown.  The contract still expects callers to call
+    /// `shutdown()` themselves before destruction (the dtor cannot
+    /// surface errors).
+    ~RoleHandler();
 
     RoleHandler(const RoleHandler &)            = delete;
     RoleHandler &operator=(const RoleHandler &) = delete;
     RoleHandler(RoleHandler &&)                 = delete;
     RoleHandler &operator=(RoleHandler &&)      = delete;
+
+    // ── Network lifecycle (Wave-B M4a) ───────────────────────────────────────
+
+    /// Allocate one `BrokerRequestComm` per `HubConnection` slot,
+    /// build its `Config` from `owner`'s identity + auth, call
+    /// `connect()`, and spawn one ctrl thread per HubConnection via
+    /// `owner.thread_manager().spawn(...)`.  The first spawned ctrl
+    /// thread is marked `is_master = true` (ThreadManager admits at
+    /// most one master per HEP-CORE-0031 §4.2); subsequent ctrl
+    /// threads are peers.  Per-BRC notification routing is wired to
+    /// the RoleHandler member callback at construction time; M4b will
+    /// fill the body with per-presence event routing.
+    ///
+    /// `owner` MUST outlive this `RoleHandler`.  The handler stores a
+    /// non-owning pointer to it for `shutdown()`'s ThreadManager
+    /// access; the pointer is cleared on `shutdown()`.
+    ///
+    /// Returns `true` if every HubConnection connected successfully.
+    /// On partial failure, the function returns `false` and the
+    /// caller MUST call `shutdown()` to release any already-spawned
+    /// threads + open BRC handles before the handler is destroyed.
+    ///
+    /// Idempotent: calling `start()` a second time without an
+    /// intervening `shutdown()` is an error (returns `false`).
+    [[nodiscard]] bool start(const RoleAPIBase &owner);
+
+    /// Tear down the network surface set up by `start()`.  Stops each
+    /// BRC's poll loop, waits for ctrl threads to quiesce via the
+    /// ThreadManager bracket contract (HEP-CORE-0031 §4.1), and
+    /// destroys the BRC instances.  After return, `presences_` and
+    /// `connections_` retain their topology layout but
+    /// `HubConnection::brc` is nullptr on every slot.
+    ///
+    /// Idempotent: calling `shutdown()` when the handler is not
+    /// started (or after a previous shutdown) is a no-op.
+    void shutdown() noexcept;
+
+    /// True iff `start()` succeeded and `shutdown()` has not been
+    /// called since.
+    [[nodiscard]] bool is_started() const noexcept { return owner_ != nullptr; }
 
     // ── Read-only accessors (M3 surface) ─────────────────────────────
 
@@ -183,6 +232,12 @@ class PYLABHUB_UTILS_EXPORT RoleHandler
     /// Class D routing (band-bound messages) — populated lazily on
     /// `band_join` once Wave-B M4 wires the network ops.  Empty in M3.
     std::unordered_map<std::string, Presence *> band_index_;
+
+    /// Set during `start()`, cleared during `shutdown()`.  Used to
+    /// reach the owner's `ThreadManager` at shutdown time without
+    /// requiring the caller to pass it in again.  The owner MUST
+    /// outlive this `RoleHandler` while `is_started()` is true.
+    const RoleAPIBase *owner_{nullptr};
 };
 
 }  // namespace pylabhub::scripting

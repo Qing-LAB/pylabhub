@@ -10,7 +10,10 @@
 
 #include "utils/role_handler.hpp"
 
+#include "utils/broker_request_comm.hpp"
 #include "utils/logger.hpp"
+#include "utils/role_api_base.hpp"
+#include "utils/thread_manager.hpp"
 
 namespace pylabhub::scripting
 {
@@ -125,6 +128,178 @@ RoleHandler::presence_count_for_channel(const std::string &channel) const noexce
         if (p.channel == channel)
             ++n;
     return n;
+}
+
+RoleHandler::~RoleHandler()
+{
+    // RAII safety: callers SHOULD invoke shutdown() explicitly so any
+    // failure to drain threads / disconnect BRCs surfaces with a log
+    // line.  The dtor mops up to avoid leaving live ctrl threads if
+    // a caller forgets.
+    if (is_started())
+    {
+        LOGGER_WARN("RoleHandler: shutdown() not called before destruction — "
+                    "draining via RAII safety net");
+        shutdown();
+    }
+}
+
+bool RoleHandler::start(const RoleAPIBase &owner)
+{
+    if (owner_ != nullptr)
+    {
+        LOGGER_ERROR("RoleHandler::start called twice without intervening "
+                     "shutdown — refusing (owner_={})",
+                     static_cast<const void *>(owner_));
+        return false;
+    }
+
+    owner_ = &owner;
+
+    // ── Phase 1: allocate + connect each HubConnection's BRC ──────────────
+    //
+    // Per role_host_template_design.md §5.4 dedup: connections_ has one
+    // entry per unique `(broker_endpoint, broker_pubkey)` in the role's
+    // declared presence list.  Each gets its own BRC.  Identity (uid,
+    // name, CURVE keys) is role-wide and comes from `owner`.
+    bool all_ok = true;
+    for (auto &c : connections_)
+    {
+        c.brc = std::make_unique<hub::BrokerRequestComm>();
+
+        hub::BrokerRequestComm::Config cfg;
+        cfg.broker_endpoint = c.broker_endpoint;
+        cfg.broker_pubkey   = c.broker_pubkey;
+        cfg.client_pubkey   = owner.auth_client_pubkey();
+        cfg.client_seckey   = owner.auth_client_seckey();
+        cfg.role_uid        = owner.uid();
+        cfg.role_name       = owner.name();
+
+        if (!c.brc->connect(cfg))
+        {
+            LOGGER_ERROR("RoleHandler: BRC connect failed for hub '{}' "
+                         "(role_uid='{}')",
+                         c.broker_endpoint, owner.uid());
+            all_ok = false;
+            break;
+        }
+
+        // M4b will install per-presence notification routing here.
+        // For M4a, a no-op notification callback is sufficient — the
+        // BRC will still poll and process replies; only async pushes
+        // are dropped (none expected before any REG is issued).
+        c.brc->on_notification(
+            [](const std::string &, const nlohmann::json &) {
+                // M4b: route to RoleHandler via inspection of body's
+                // channel_name / band_name.
+            });
+    }
+
+    if (!all_ok)
+    {
+        // Partial setup — release whatever connected so the caller can
+        // re-try cleanly or destroy the handler safely.  We do NOT
+        // clear owner_ because the spawn phase below didn't run; the
+        // dtor's safety net checks is_started() which only flips true
+        // after spawn completes.
+        for (auto &c : connections_)
+            if (c.brc)
+            {
+                c.brc->stop();
+                c.brc->disconnect();
+                c.brc.reset();
+            }
+        owner_ = nullptr;
+        return false;
+    }
+
+    // ── Phase 2: spawn one ctrl thread per HubConnection ──────────────────
+    //
+    // The first spawned ctrl thread is the master (HEP-CORE-0031 §4.2
+    // — at most one master per ThreadManager).  When M4c wires the
+    // handler into RoleAPIBase alongside today's `pImpl->broker_channel`
+    // ctrl thread, that conflict must be resolved (e.g., by retiring
+    // the legacy ctrl thread or making the handler's ctrl threads
+    // peers and adding a master elsewhere).
+    //
+    // Each ctrl thread runs `brc->run_poll_loop(should_run)` inside
+    // `ctx.with_active_loop(...)` per the Thread Shutdown Contract,
+    // matching the existing pattern at role_api_base.cpp:697.
+    auto &tm = const_cast<RoleAPIBase &>(owner).thread_manager();
+
+    bool master_spawned = false;
+    for (std::size_t i = 0; i < connections_.size(); ++i)
+    {
+        auto                                    *brc = connections_[i].brc.get();
+        pylabhub::utils::ThreadManager::SpawnOptions opts;
+        opts.is_master = !master_spawned;
+        master_spawned = true;
+
+        const std::string slot_name =
+            "handler_ctrl_" + std::to_string(i);
+
+        tm.spawn(
+            slot_name,
+            [brc, slot_name](pylabhub::utils::ThreadManager::SlotContext &ctx)
+            {
+                LOGGER_INFO("[{}] poll thread started", slot_name);
+                ctx.with_active_loop(
+                    [brc, &ctx]
+                    {
+                        brc->run_poll_loop(
+                            [&ctx] { return !ctx.shutdown_requested(); });
+                    });
+                LOGGER_INFO("[{}] poll thread exiting", slot_name);
+            },
+            opts);
+    }
+
+    return true;
+}
+
+void RoleHandler::shutdown() noexcept
+{
+    if (owner_ == nullptr)
+        return;  // not started or already shut down — idempotent.
+
+    // ── Phase 1: signal each BRC's poll loop to exit ─────────────────────
+    for (auto &c : connections_)
+        if (c.brc)
+            c.brc->stop();
+
+    // ── Phase 2: drive the ThreadManager Thread Shutdown Contract
+    //              (HEP-CORE-0031 §4.1) ───────────────────────────────────
+    // Threads observe `ctx.shutdown_requested()` via the predicate set
+    // in the spawn lambda; `wait_for_quiescence()` blocks until each
+    // ctrl thread has exited its `with_active_loop` bracket, after
+    // which the BRC pImpl is safe to destroy.
+    try
+    {
+        auto &tm =
+            const_cast<RoleAPIBase &>(*owner_).thread_manager();
+        tm.request_shutdown_all();
+        // 5s ceiling matches typical role-host teardown bounds; under
+        // load, ctrl threads should exit zmq_poll within ~100 ms of
+        // brc->stop() flipping their predicate.  A timeout here is
+        // logged as an ERROR (drain() in the role host's later
+        // teardown will catch + report any straggler).
+        (void)tm.wait_for_quiescence(std::chrono::seconds(5));
+    }
+    catch (const std::exception &e)
+    {
+        LOGGER_ERROR("RoleHandler::shutdown: ThreadManager drain threw — {}",
+                     e.what());
+    }
+
+    // ── Phase 3: disconnect + release each BRC ──────────────────────────
+    for (auto &c : connections_)
+    {
+        if (!c.brc) continue;
+        c.brc->disconnect();
+        c.brc.reset();
+    }
+
+    owner_ = nullptr;
 }
 
 }  // namespace pylabhub::scripting
