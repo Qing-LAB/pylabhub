@@ -566,12 +566,15 @@ void RoleAPIBase::on_heartbeat_tick_()
 
     // Per HEP-CORE-0019 §2.3 Phase 6 + HEP-CORE-0033 §19: heartbeat is
     // per-presence — one emission per `(channel, role_type)` row the role
-    // holds.  A processor holds two presences (consumer on `channel`,
-    // producer on `out_channel`) and must heartbeat BOTH so the broker's
-    // per-presence FSM (HEP-CORE-0023 §2.1) keeps both rows alive.
-    const auto metrics = snapshot_metrics_json();
+    // holds, AND each emission carries metrics shaped for THAT presence
+    // (not the role-wide aggregate).  A processor emits 2 heartbeats per
+    // cycle, each with its own per-presence metrics snapshot — the
+    // consumer-presence payload carries rx-queue + in_slots_received,
+    // the producer-presence payload carries tx-queue + out_slots_written
+    // + out_drop_count.  Closes audit H2 (2026-05-15).
     auto emit = [&](const std::string &ch, const char *role_type) {
         if (ch.empty()) return;
+        const auto metrics = snapshot_metrics_for_presence(role_type);
         LOGGER_TRACE("[{}] ctrl: sending heartbeat for '{}' (uid='{}' role_type='{}')",
                      pImpl->role_tag, ch, pImpl->uid, role_type);
         bc->send_heartbeat(ch, pImpl->uid, role_type, metrics);
@@ -1320,6 +1323,82 @@ void RoleAPIBase::clear_custom_metrics()
 // ============================================================================
 // Metrics snapshot — data-driven structure
 // ============================================================================
+
+nlohmann::json
+RoleAPIBase::snapshot_metrics_for_presence(const std::string &role_type) const
+{
+    // Per-presence emission shape per HEP-CORE-0019 §2.3 Phase 6.
+    // Producer-presence carries tx-side queue + producer-side role
+    // counters; consumer-presence carries rx-side queue + consumer-side
+    // role counters.  Role-wide fields (loop, inbox, custom) appear on
+    // every presence.
+    nlohmann::json result;
+
+    // Queue: only the direction relevant to this presence.  Single key
+    // ("queue", not "in_queue"/"out_queue") — the broker keys the row
+    // by (channel, uid, role_type), so direction is already implicit.
+    if (role_type == "consumer" && pImpl->rx_queue)
+    {
+        nlohmann::json q;
+        hub::queue_metrics_to_json(q, pImpl->rx_queue->metrics());
+        result["queue"] = std::move(q);
+    }
+    else if (role_type == "producer" && pImpl->tx_queue)
+    {
+        nlohmann::json q;
+        hub::queue_metrics_to_json(q, pImpl->tx_queue->metrics());
+        result["queue"] = std::move(q);
+    }
+
+    // Loop metrics: role-wide (one loop drives both directions of a
+    // processor).  Appears on every presence — admin queries can
+    // dedupe across rows or just read from either.
+    {
+        nlohmann::json lm;
+        hub::loop_metrics_to_json(lm, pImpl->core->loop_metrics());
+        result["loop"] = std::move(lm);
+    }
+
+    // Role-level counters: include only side-relevant fields.
+    // `script_error_count` is direction-agnostic so it appears on both
+    // (script errors do not have a producer/consumer side).
+    nlohmann::json role;
+    role["script_error_count"] = pImpl->core->script_error_count();
+    if (role_type == "consumer")
+    {
+        role["in_slots_received"] = pImpl->core->in_slots_received();
+    }
+    else if (role_type == "producer")
+    {
+        role["out_slots_written"] = pImpl->core->out_slots_written();
+        role["out_drop_count"]    = pImpl->core->out_drop_count();
+    }
+    result["role"] = std::move(role);
+
+    // Inbox metrics: per-role, not per-presence (one inbox per role).
+    if (pImpl->inbox_queue)
+    {
+        nlohmann::json ib;
+        hub::inbox_metrics_to_json(ib, pImpl->inbox_queue->inbox_metrics());
+        result["inbox"] = std::move(ib);
+    }
+
+    // Custom metrics: per-role (the report_metric() API doesn't
+    // distinguish sides today).
+    {
+        auto cm = pImpl->core->custom_metrics_snapshot();
+        if (!cm.empty())
+            result["custom"] = nlohmann::json(cm);
+    }
+
+    // Role-specific metrics hook — fires once per call.  Hooks that
+    // inject side-specific data can inspect `result["queue"]` /
+    // `result["role"]` to disambiguate which presence is being built.
+    if (pImpl->metrics_hook)
+        pImpl->metrics_hook(result);
+
+    return result;
+}
 
 nlohmann::json RoleAPIBase::snapshot_metrics_json() const
 {

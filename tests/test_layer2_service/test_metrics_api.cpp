@@ -81,6 +81,37 @@ TEST_F(MetricsApiTest, ProcessorAPI_ReportAndSnapshot)
     ExpectWorkerOk(w);
 }
 
+// ── Per-presence emission shape (HEP-CORE-0019 §2.3 Phase 6) ───────────────
+//
+// A processor's two heartbeats land separately keyed broker rows; each
+// row's metrics payload carries ONLY its own side's queue + side-
+// relevant role counters.  Pins audit-C2 (2026-05-15) fix that split
+// `snapshot_metrics_json()` (role-wide aggregate) from
+// `snapshot_metrics_for_presence(role_type)` (per-presence emission).
+// Mutation: revert the emission to use the role-wide aggregate → the
+// "leaked into emission" assertions in the workers fail.
+
+TEST_F(MetricsApiTest, Processor_PerPresence_ConsumerShape_NoProducerCountersLeak)
+{
+    auto w = SpawnWorker(
+        "metrics_api.processor_per_presence_consumer_shape", {});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(MetricsApiTest, Processor_PerPresence_ProducerShape_NoConsumerCountersLeak)
+{
+    auto w = SpawnWorker(
+        "metrics_api.processor_per_presence_producer_shape", {});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(MetricsApiTest, PerPresence_CustomMetrics_AppearOnBothPresences)
+{
+    auto w = SpawnWorker(
+        "metrics_api.per_presence_custom_metrics_on_both_sides", {});
+    ExpectWorkerOk(w);
+}
+
 // ── PyDict ──────────────────────────────────────────────────────────────────
 
 class MetricsApiPyDictTest : public IsolatedProcessTest

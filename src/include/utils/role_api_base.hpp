@@ -210,8 +210,13 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     void set_checksum_policy(hub::ChecksumPolicy p);
     void set_stop_on_script_error(bool v);
 
-    /// Optional hook called at the end of snapshot_metrics_json() to let
-    /// role hosts inject role-specific metrics fields into the JSON.
+    /// Optional hook called at the end of `snapshot_metrics_json()` AND
+    /// `snapshot_metrics_for_presence(role_type)` to let role hosts inject
+    /// role-specific metrics fields into the JSON.  The hook is called
+    /// once per snapshot — for a processor's per-presence emission it
+    /// fires once for the consumer-presence payload and once for the
+    /// producer-presence payload.  Hooks that inject side-specific data
+    /// can inspect the existing `queue` / `role` keys to disambiguate.
     /// Default: no-op (null function).
     void set_metrics_hook(std::function<void(nlohmann::json &)> hook);
 
@@ -336,7 +341,30 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
 
     // ── Metrics snapshot (data-driven, no virtual) ────────────────────────────
 
+    /// Role-wide aggregate snapshot — used by script-facing API surfaces
+    /// (`Producer/Consumer/ProcessorAPI::snapshot_metrics_json()`) and by
+    /// any caller that wants the full role-wide view.  Combines both
+    /// directions of a processor into a single JSON (`in_queue` +
+    /// `out_queue` keys when both sides are bound).
     [[nodiscard]] nlohmann::json snapshot_metrics_json() const;
+
+    /// Per-presence emission snapshot per HEP-CORE-0019 §2.3 Phase 6.
+    /// Returns metrics shaped for the `role_type` emission only:
+    ///   - `queue`: rx_queue metrics for `"consumer"`, tx_queue metrics
+    ///     for `"producer"`.  Single key (no `in_queue`/`out_queue`
+    ///     split) — the broker keys the row by `(channel, uid,
+    ///     role_type)` so the direction is already implicit.
+    ///   - `role`: side-relevant counters only (consumer →
+    ///     `in_slots_received`; producer → `out_slots_written`,
+    ///     `out_drop_count`).  `script_error_count` appears on both
+    ///     (direction-agnostic).
+    ///   - `loop`, `inbox`, `custom`: role-wide; appear on every
+    ///     presence (one role, one loop / inbox / custom map).
+    /// The `metrics_hook` fires once per call — for a processor's
+    /// 2-presence emission it fires once per side.
+    /// Used by `on_heartbeat_tick_` to populate per-presence heartbeats.
+    [[nodiscard]] nlohmann::json
+    snapshot_metrics_for_presence(const std::string &role_type) const;
 
     // ── Shared script state (delegates to RoleHostCore) ─────────────────────
 

@@ -116,13 +116,32 @@ through the broker as the single aggregation point.
    socket monitoring as a faster reap signal.  See HEP-CORE-0023
    §2.5 for the timeout math.
 
-4. **Per-presence emission.**  A role with N presences emits N
-   heartbeats per cycle, each carrying its own (channel, uid,
-   role_type) tuple, all over the appropriate `BrokerRequestComm`
-   (which may be one connection or multiple after dedup — see
+4. **Per-presence emission — both keying AND payload.**  A role with N
+   presences emits N heartbeats per cycle, each carrying its own
+   `(channel, uid, role_type)` tuple, all over the appropriate
+   `BrokerRequestComm` (one connection or multiple after dedup — see
    HEP-CORE-0033 §19).  Producer / consumer / single-hub processor
    each emit 1 / 1 / 2 heartbeats respectively over their single
    DEALER socket; dual-hub processor emits 1 + 1 over two sockets.
+
+   The metrics payload on each heartbeat is shaped for THAT presence,
+   not the role-wide aggregate.  Concretely:
+   - Consumer-presence emission: `queue` = rx-queue metrics; `role` =
+     `{in_slots_received, script_error_count}`; plus role-wide
+     `loop` / `inbox` / `custom` / hook output.
+   - Producer-presence emission: `queue` = tx-queue metrics; `role` =
+     `{out_slots_written, out_drop_count, script_error_count}`; plus
+     role-wide `loop` / `inbox` / `custom` / hook output.
+   - The `queue` key is unconditionally singular (not
+     `in_queue`/`out_queue`) — direction is already implicit in the
+     row's `role_type` key.  A processor's two heartbeats land
+     separately keyed rows; admin queries on `(channel, uid,
+     "consumer")` see ONLY rx-side metrics, not a role-wide blob.
+
+   The role-wide aggregate snapshot (`RoleAPIBase::snapshot_metrics_json()`)
+   is still exposed via the script-facing
+   `Producer/Consumer/ProcessorAPI` surfaces so scripts can query their
+   own full metrics view in one call; it is NOT used for emission.
 
 5. **Scripts extend via `api.report_metric()`**: Custom key-value metrics are
    accumulated on the API object and included in the next heartbeat-borne
