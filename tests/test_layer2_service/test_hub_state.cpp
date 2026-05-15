@@ -3361,3 +3361,144 @@ TEST(RoleEntryApi, SetRoleDisconnected_SchemaCascadeFires_HubGlobalsImmune)
     EXPECT_FALSE(s.schema(uid, "frame").has_value())
         << "Owner-uid schema evicted by cascade";
 }
+
+// ──────────────────────────────────────────────────────────────────────
+// Wave-B M2 (2/3) — consumer-presence FSM through HubState ops.
+// Producer side proven by HubStateOps / HubStateProducerPendingTimeout
+// above.  These pin the consumer branch added to `_on_heartbeat_timeout`
+// and `_on_pending_timeout` (HEP-CORE-0023 §2.1 + §2.1.1).
+// ──────────────────────────────────────────────────────────────────────
+
+TEST(HubStateConsumerHeartbeatTimeout, TransitionsConsumerPresenceToPending)
+{
+    HubState s;
+
+    // Channel registered → default producer "prod.main.test" landed
+    // with a producer-presence row.  Separate consumer uid joins to
+    // get an isolated consumer-presence row to demote.
+    HubStateTestAccess::on_channel_registered(s, make_channel("ch.cons.hb"));
+    HubStateTestAccess::on_consumer_joined(s, "ch.cons.hb",
+                                            make_consumer("cons.B.uid00000002"));
+
+    // Listener that would fire on a channel-status change.  The
+    // contract (HEP-CORE-0023 §2.1) says consumer transitions DO NOT
+    // affect ChannelObservable — handler must not fire.
+    std::vector<std::string> status_fires;
+    auto hid = s.subscribe_channel_status_changed(
+        [&](const ChannelEntry &e, ChannelObservable) {
+            status_fires.push_back(e.name);
+        });
+    ASSERT_NE(hid, kInvalidHandlerId);
+
+    // Anchor `last_heartbeat` for the consumer.
+    HubStateTestAccess::on_heartbeat(
+        s, "ch.cons.hb", "cons.B.uid00000002", "consumer",
+        std::chrono::steady_clock::now(), std::nullopt);
+
+    HubStateTestAccess::on_heartbeat_timeout(
+        s, "ch.cons.hb", "cons.B.uid00000002", "consumer");
+
+    // Consumer-presence demoted to Pending.
+    auto        snap = s.snapshot();
+    const auto *pc   = find_presence_in(snap, "ch.cons.hb",
+                                          "cons.B.uid00000002", "consumer");
+    ASSERT_NE(pc, nullptr);
+    EXPECT_EQ(pc->state, RoleState::Pending);
+
+    // Producer-presence untouched.
+    const auto *pp = find_presence_in(snap, "ch.cons.hb",
+                                       "prod.main.test", "producer");
+    ASSERT_NE(pp, nullptr);
+    EXPECT_EQ(pp->state, RoleState::Connected);
+
+    // Counter bumped — producer + consumer transitions both count
+    // toward ready_to_pending_total (per-role-presence FSM metric).
+    EXPECT_EQ(s.counters().ready_to_pending_total, 1u);
+
+    // ChannelStatusChangedHandler MUST NOT fire on a consumer-only
+    // transition.  Pinning this catches a regression where the
+    // producer-side fan-out leaked into the consumer branch.
+    EXPECT_TRUE(status_fires.empty())
+        << "Consumer-presence Connected→Pending must NOT fire "
+           "ChannelStatusChangedHandler (HEP-CORE-0023 §2.1).";
+
+    s.unsubscribe(hid);
+}
+
+TEST(HubStateConsumerPendingTimeout, TransitionsToDisconnected_ChannelSurvives)
+{
+    HubState s;
+    HubStateTestAccess::on_channel_registered(s, make_channel("ch.cons.pt"));
+    HubStateTestAccess::on_consumer_joined(s, "ch.cons.pt",
+                                            make_consumer("cons.B.uid00000002"));
+
+    // Drive Connected→Pending first; pending-timeout is a no-op on
+    // a Connected presence (TransitionEffect::NoChange).
+    HubStateTestAccess::on_heartbeat(
+        s, "ch.cons.pt", "cons.B.uid00000002", "consumer",
+        std::chrono::steady_clock::now(), std::nullopt);
+    HubStateTestAccess::on_heartbeat_timeout(
+        s, "ch.cons.pt", "cons.B.uid00000002", "consumer");
+
+    auto pt = HubStateTestAccess::on_pending_timeout(
+        s, "ch.cons.pt", "cons.B.uid00000002", "consumer");
+
+    EXPECT_TRUE(pt.removed)
+        << "ChannelEntry.consumers[] slot erased for cons.B";
+    EXPECT_FALSE(pt.channel_now_empty)
+        << "Consumer-presence disconnect MUST NOT mark the channel empty — "
+           "producer side owns channel teardown (HEP-CORE-0023 §2.1.1).";
+
+    // Channel still exists with producer-presence intact and the
+    // consumer slot gone.
+    auto ch = s.channel("ch.cons.pt");
+    ASSERT_TRUE(ch.has_value());
+    EXPECT_EQ(ch->producer_count(), 1u);
+    EXPECT_EQ(ch->consumer_count(), 0u);
+    EXPECT_NE(ch->find_producer("prod.main.test"), nullptr);
+    EXPECT_EQ(ch->find_consumer("cons.B.uid00000002"), nullptr);
+
+    // Wave M3 step 5h — pending-timeout erases the presence row, so
+    // the consumer-presence is no longer findable.
+    auto        snap = s.snapshot();
+    const auto *pc   = find_presence_in(snap, "ch.cons.pt",
+                                          "cons.B.uid00000002", "consumer");
+    EXPECT_EQ(pc, nullptr)
+        << "Consumer-presence row erased on pending-timeout (M3 step 5h)";
+
+    EXPECT_EQ(s.counters().pending_to_deregistered_total, 1u);
+}
+
+TEST(HubStateConsumerPendingTimeout, LastPresence_TriggersRoleDisconnected)
+{
+    // When a consumer-presence is the role's last alive presence,
+    // pending-timeout must dispatch the role-disconnect cascade so the
+    // RoleEntry is erased — symmetric with the multi-producer path
+    // (Wave M3 step 5b).  Verifies via observable role-disappearance:
+    // post-timeout, `s.role(uid)` returns nullopt.
+    HubState s;
+    HubStateTestAccess::on_channel_registered(s, make_channel("ch.cons.lp"));
+    HubStateTestAccess::on_consumer_joined(s, "ch.cons.lp",
+                                            make_consumer("cons.B.uid00000002"));
+
+    ASSERT_TRUE(s.role("cons.B.uid00000002").has_value());
+
+    HubStateTestAccess::on_heartbeat(
+        s, "ch.cons.lp", "cons.B.uid00000002", "consumer",
+        std::chrono::steady_clock::now(), std::nullopt);
+    HubStateTestAccess::on_heartbeat_timeout(
+        s, "ch.cons.lp", "cons.B.uid00000002", "consumer");
+    auto pt = HubStateTestAccess::on_pending_timeout(
+        s, "ch.cons.lp", "cons.B.uid00000002", "consumer");
+
+    EXPECT_TRUE(pt.removed);
+
+    // Role's last presence just went Disconnected →
+    // _dispatch_role_disconnected_if_dead erases the RoleEntry.
+    EXPECT_FALSE(s.role("cons.B.uid00000002").has_value())
+        << "Role entry erased after consumer-presence pending-timeout "
+           "leaves no alive presence (HEP-CORE-0023 §2.1 + M3 step 5b).";
+
+    // Channel still alive (producer remains).
+    EXPECT_TRUE(s.channel("ch.cons.lp").has_value());
+}

@@ -163,21 +163,42 @@ struct HubStateTestAccess
     {
         s._on_heartbeat(ch, uid, role_type, when, m);
     }
+    /// Wave-B M2 (2/3) per-presence Connected → Pending forwarder.
+    /// 2-arg overload defaults to producer for backward-compat with
+    /// pre-2/3 tests; consumer tests use the 3-arg form.
     static void on_heartbeat_timeout(HubState          &s,
                                      const std::string &ch,
                                      const std::string &uid)
     {
-        s._on_heartbeat_timeout(ch, uid);
+        s._on_heartbeat_timeout(ch, uid, "producer");
     }
-    /// Wave M2.5 step 6: per-producer Pending-timeout signature.
-    /// Returns the typed RemoveProducerResult so tests can assert
-    /// channel survival (multi-producer) vs teardown (last producer).
+    static void on_heartbeat_timeout(HubState          &s,
+                                     const std::string &ch,
+                                     const std::string &uid,
+                                     const std::string &role_type)
+    {
+        s._on_heartbeat_timeout(ch, uid, role_type);
+    }
+    /// Wave M2.5 step 6 + Wave-B M2 (2/3): per-presence Pending →
+    /// Disconnected forwarder.  2-arg overload defaults to producer for
+    /// backward-compat; consumer tests use the 3-arg form.  Returns
+    /// the typed RemoveProducerResult — for the consumer path,
+    /// `removed` reflects ChannelEntry.consumers[] erase and
+    /// `channel_now_empty` is always false (consumer never tears down).
     static RemoveProducerResult
     on_pending_timeout(HubState&         s,
                         const std::string &ch,
                         const std::string &uid)
     {
-        return s._on_pending_timeout(ch, uid);
+        return s._on_pending_timeout(ch, uid, "producer");
+    }
+    static RemoveProducerResult
+    on_pending_timeout(HubState&         s,
+                        const std::string &ch,
+                        const std::string &uid,
+                        const std::string &role_type)
+    {
+        return s._on_pending_timeout(ch, uid, role_type);
     }
     // M1.4 (2026-05-11): `on_metrics_reported` test forwarder deleted
     // alongside `_on_metrics_reported`.  Use `on_heartbeat(s, ch, uid,

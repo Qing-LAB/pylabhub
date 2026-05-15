@@ -1332,7 +1332,8 @@ void HubState::_on_heartbeat(const std::string                   &channel,
 }
 
 void HubState::_on_heartbeat_timeout(const std::string &channel,
-                                     const std::string &role_uid)
+                                     const std::string &role_uid,
+                                     const std::string &role_type)
 {
     if (!is_valid_identifier(channel, IdentifierKind::Channel) ||
         (!role_uid.empty() && !is_valid_identifier(role_uid, IdentifierKind::RoleUid)))
@@ -1340,16 +1341,20 @@ void HubState::_on_heartbeat_timeout(const std::string &channel,
         bump_invalid_identifier(*pImpl);
         return;
     }
-    // HEP-CORE-0023 §2.1: producer-presence Connected → Pending.  The
-    // role is NOT marked Disconnected here — Pending means "suspicious,
-    // may recover via the next heartbeat".  Disconnection (if any)
-    // happens at `_on_pending_timeout`.
+    if (role_uid.empty() || role_type.empty()) return;
+    // HEP-CORE-0023 §2.1: per-presence Connected → Pending.  The role
+    // is NOT marked Disconnected here — Pending means "suspicious, may
+    // recover via the next heartbeat".  Disconnection (if any) happens
+    // at `_on_pending_timeout`.  Channel observability (and the
+    // ChannelStatusChangedHandler fan-out) tracks producer presence
+    // only; consumer-presence transitions update the FSM + counter but
+    // do not affect channel state.
+    const bool        is_producer  = (role_type == "producer");
     bool              transitioned = false;
     ChannelEntry      fired_entry;
     ChannelObservable new_obs = ChannelObservable::kAbsent;
     {
         std::unique_lock lk(pImpl->mu);
-        if (role_uid.empty()) return;
         auto rit = pImpl->roles.find(role_uid);
         if (rit == pImpl->roles.end()) return;
 
@@ -1357,23 +1362,24 @@ void HubState::_on_heartbeat_timeout(const std::string &channel,
         // access API.  `first_heartbeat_seen` is NOT a gate — the
         // registered-but-never-heartbeat case demotes via this same
         // path once `last_heartbeat` (stamped at REG_REQ time) ages
-        // past ready_timeout.  HubState retains: the counter bump
-        // (Connected→Pending counts as ready_to_pending) and the
-        // ChannelStatusChangedHandler fan-out for producer presences.
+        // past ready_timeout.
         const TransitionEffect te =
-            rit->second.on_heartbeat_timeout(channel, "producer");
+            rit->second.on_heartbeat_timeout(channel, role_type);
         if (te != TransitionEffect::ToPending) return;
         ++pImpl->counters.ready_to_pending_total;
         transitioned = true;
 
-        auto it = pImpl->channels.find(channel);
-        if (it != pImpl->channels.end())
+        if (is_producer)
         {
-            fired_entry = it->second;
-            new_obs     = compute_channel_observable(it->second, pImpl->roles);
+            auto it = pImpl->channels.find(channel);
+            if (it != pImpl->channels.end())
+            {
+                fired_entry = it->second;
+                new_obs     = compute_channel_observable(it->second, pImpl->roles);
+            }
         }
     }
-    if (transitioned)
+    if (transitioned && is_producer)
     {
         for (auto &h : snapshot_handlers(pImpl->handlers_mu,
                                          pImpl->ch_status_changed))
@@ -1383,7 +1389,8 @@ void HubState::_on_heartbeat_timeout(const std::string &channel,
 
 RemoveProducerResult
 HubState::_on_pending_timeout(const std::string &channel,
-                               const std::string &role_uid)
+                               const std::string &role_uid,
+                               const std::string &role_type)
 {
     RemoveProducerResult result{false, false};
 
@@ -1393,6 +1400,47 @@ HubState::_on_pending_timeout(const std::string &channel,
         bump_invalid_identifier(*pImpl);
         return result;
     }
+    if (role_type.empty()) return result;
+
+    // ── Consumer-presence path ─────────────────────────────────────
+    // HEP-CORE-0023 §2.1 + §2.1.1: consumer-presence Pending →
+    // Disconnected does NOT tear down the channel — only the
+    // producer side controls channel observability + teardown.  Erase
+    // the consumer slot from `ChannelEntry.consumers[]`, run the
+    // role's `drop_channel_if_orphaned` cache cleanup, and dispatch
+    // the role-disconnect cascade in case this was the role's last
+    // alive presence anywhere.
+    if (role_type == "consumer")
+    {
+        bool eligible = false;
+        {
+            std::unique_lock lk(pImpl->mu);
+            auto it = pImpl->channels.find(channel);
+            if (it == pImpl->channels.end()) return result;
+
+            auto rit = pImpl->roles.find(role_uid);
+            if (rit == pImpl->roles.end()) return result;
+
+            const TransitionEffect te =
+                rit->second.on_pending_timeout(channel, "consumer");
+            if (te != TransitionEffect::ToDisconnected) return result;
+            ++pImpl->counters.pending_to_deregistered_total;
+            eligible = true;
+
+            // `remove_consumer` is best-effort: a consumer slot may
+            // not exist on `ChannelEntry.consumers[]` for every
+            // consumer-presence (e.g., presence created without an
+            // accompanying CONSUMER_REG_REQ).  Reflect the actual
+            // mutation in `result.removed`.
+            result.removed           = it->second.remove_consumer(role_uid);
+            result.channel_now_empty = false;
+            (void)rit->second.drop_channel_if_orphaned(channel);
+        }
+        if (eligible) _dispatch_role_disconnected_if_dead(role_uid);
+        return result;
+    }
+
+    // ── Producer-presence path (existing behavior) ─────────────────
     // HEP-CORE-0023 §2.1 + §2.1.1: producer-presence Pending →
     // Disconnected; atomic channel teardown fires ONLY on the LAST
     // producer's transition.  No grace window, no Closing state.

@@ -2629,7 +2629,8 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
             LOGGER_WARN("Broker: role '{}' on channel '{}' demoted Ready -> Pending "
                         "(no heartbeat within {} ms)",
                         prod.role_uid, channel_name, ready_timeout.count());
-            hub_state_->_on_heartbeat_timeout(channel_name, prod.role_uid);
+            hub_state_->_on_heartbeat_timeout(channel_name, prod.role_uid,
+                                              "producer");
         }
     }
 
@@ -2670,7 +2671,8 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
                 "(no heartbeat within {} ms)",
                 prod.role_uid, channel_name, pending_timeout.count());
 
-            auto drop = hub_state_->_on_pending_timeout(channel_name, prod.role_uid);
+            auto drop = hub_state_->_on_pending_timeout(channel_name, prod.role_uid,
+                                                        "producer");
             if (drop.removed && drop.channel_now_empty)
             {
                 // Last-producer drop → atomic channel teardown.
