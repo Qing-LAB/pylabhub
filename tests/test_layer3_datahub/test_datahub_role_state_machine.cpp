@@ -96,3 +96,27 @@ TEST_F(DatahubRoleStateMachineTest, ConsumerHeartbeatTimeout_FiresConsumerDiedNo
         "broker_role_state.consumer_heartbeat_timeout_fires_consumer_died_notify", {});
     ExpectWorkerOk(proc);
 }
+
+TEST_F(DatahubRoleStateMachineTest, RoleHandler_StartShutdown_Smoke)
+{
+    // Wave-B M4a — verify RoleHandler::start() allocates + connects
+    // BRC + spawns ctrl thread, and shutdown() drains cleanly.
+    // Single-presence (producer-only) topology against a live broker.
+    // No registration or dispatch — those are M4b territory.
+    auto proc = SpawnWorker(
+        "broker_role_state.role_handler_start_shutdown_smoke", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubRoleStateMachineTest, RoleHandler_DualHub_StartShutdown)
+{
+    // Wave-B M4a — dual-hub processor topology smoke test.  Two
+    // distinct brokers, two HubConnections, two BRCs, two ctrl
+    // threads (first is ThreadManager master, second is peer per
+    // HEP-CORE-0031 §4.2).  Pins the M8-payoff data shape end-to-end
+    // at the network layer; M8's actual data-flow tests build on
+    // this fixture in later phases.
+    auto proc = SpawnWorker(
+        "broker_role_state.role_handler_dual_hub_start_shutdown", {});
+    ExpectWorkerOk(proc);
+}
