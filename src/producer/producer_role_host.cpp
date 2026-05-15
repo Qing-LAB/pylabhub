@@ -459,7 +459,15 @@ void ProducerRoleHost::teardown_infrastructure_()
         inbox_queue_.reset();
     }
 
-    // Ctrl thread already joined. Deregistration done in step 9a.
+    // Ctrl thread is QUIESCED at this point — not yet joined.  Step 12.5
+    // in `do_role_teardown` (`role_host_lifecycle.cpp`) ran
+    // `wait_for_quiescence()`, which guarantees the ctrl thread is
+    // outside its `with_active_loop` bracket (HEP-CORE-0031 §4.1, MD1
+    // fix).  Per the Thread Shutdown Contract, a thread outside its
+    // bracket MUST NOT touch BRC's pImpl, so destroying `broker_comm_`
+    // here is safe.  The actual `std::thread::join` happens later in
+    // `EngineHost<ApiT>::shutdown_()` Phase 3.  Deregistration done in
+    // step 9a.
     if (broker_comm_)
     {
         broker_comm_->disconnect();
