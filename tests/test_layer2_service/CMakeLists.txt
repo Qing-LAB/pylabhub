@@ -178,6 +178,43 @@ gtest_discover_tests(test_layer2_hub_state
 )
 
 # ============================================================================
+# Test: RoleHandler — Wave-B M3 skeleton (Presence dedup + index lookup)
+# Pattern 1+ (BinaryLifecycleEnvironment) — RoleHandler emits LOGGER_ERROR
+# on a duplicate-channel input, so Logger needs the binary-wide guard.
+# Network-touching ops (start/shutdown/dispatch) arrive in Wave-B M4
+# and land as L3 IsolatedProcessTest scenarios.
+# ============================================================================
+
+add_executable(test_layer2_role_handler
+    test_role_handler.cpp
+)
+
+target_include_directories(test_layer2_role_handler PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+
+target_link_libraries(test_layer2_role_handler
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_role_handler)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_role_handler
+    SUITE_NAME "Layer2_RoleHandler"
+)
+layer2_require_staged_utils(test_layer2_role_handler)
+
+gtest_discover_tests(test_layer2_role_handler
+    PROPERTIES
+        LABELS "layer2;service;rolehandler"
+        TIMEOUT 30
+)
+
+# ============================================================================
 # Test: SharedSpinLock (foundational for DataBlock; Part 0 of test plan)
 # ============================================================================
 
