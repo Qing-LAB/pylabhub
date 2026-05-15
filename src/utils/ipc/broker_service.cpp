@@ -2176,40 +2176,45 @@ void BrokerServiceImpl::handle_heartbeat_req(const nlohmann::json& req)
             break;
         }
     }
-    // Wire uid (used below for the per-presence heartbeat handler).
-    // Pre-Phase-6 fallback derives uid from the channel's first producer.
-    const std::string fallback_producer_uid =
-        cit->second.producers.empty() ? std::string{}
-                                      : cit->second.producers.front().role_uid;
-
-    if (was_pending)
-    {
-        // `pending_to_ready_total` is bumped by `_on_heartbeat` itself
-        // when the producer-presence transitions to Live.  This LOG is
-        // pre-emptive — fires for every heartbeat that finds the
-        // producer-presence in a sub-Live state, even when this
-        // heartbeat is the consumer's (which won't actually transition
-        // the producer-presence).  Acceptable for diagnostics; a
-        // tighter test happens inside _on_heartbeat.
-        LOGGER_INFO("Broker: channel '{}' producer-presence sub-Live "
-                    "(may transition to Live on this heartbeat)", channel_name);
-    }
-    // Wire-format observability — HEP-CORE-0019 §4.1 (Phase 6).  The
+    // Wire-format enforcement — HEP-CORE-0019 §4.1 (Phase 6).  The
     // role-side `BrokerRequestComm::send_heartbeat(channel, uid,
-    // role_type, metrics)` puts these fields on the wire under those
-    // exact keys; this DEBUG line echoes what the broker DECODED so
-    // downstream diagnostics + L3 tests can verify the round-trip.
-    // Pre-Phase-6 wire payloads omit `uid` / `role_type` — those
-    // values render empty here, which is the visible signal that
-    // a pre-M0 client is talking to a post-M0 broker.  M1 will
-    // make the fields required (broker rejects empty).
+    // role_type, metrics)` MUST populate `uid` + `role_type` on the
+    // wire; broker_proto 2→3 (audit C4, 2026-05-15) removed the
+    // pre-Phase-6 fallback that derived uid from the channel's first
+    // producer.  Missing or empty fields → silent drop with WARN log
+    // (HEARTBEAT_REQ is fire-and-forget so there is no reply path for
+    // INVALID_REQUEST).
     const std::string wire_uid       = req.value("uid",       std::string{});
     const std::string wire_role_type = req.value("role_type", std::string{});
     LOGGER_DEBUG("Broker: HEARTBEAT_REQ channel='{}' uid='{}' role_type='{}'",
                  channel_name, wire_uid, wire_role_type);
 
+    if (wire_uid.empty() || wire_role_type.empty())
+    {
+        LOGGER_WARN("Broker: HEARTBEAT_REQ for '{}' rejected — missing "
+                    "'uid' or 'role_type' (HEP-CORE-0019 §4.1 Phase 6 "
+                    "wire format; broker_proto >=3)",
+                    channel_name);
+        return;
+    }
+
+    // Producer-presence-sub-Live diagnostic: gate on `role_type ==
+    // "producer"` so consumer heartbeats don't inflate log volume
+    // (audit L3 closure).  The actual FSM transition + counter bump
+    // happens inside `_on_heartbeat`; this is pre-emptive observability.
+    if (was_pending && wire_role_type == "producer")
+    {
+        LOGGER_INFO("Broker: channel '{}' producer-presence sub-Live "
+                    "(may transition to Live on this heartbeat)", channel_name);
+    }
+
     if (!req.contains("producer_pid") || req["producer_pid"].get<uint64_t>() == 0)
     {
+        // `producer_pid` is retained on the wire from Phase 1 for
+        // diagnostic / audit purposes only; the broker no longer uses
+        // it for presence resolution (the Phase 6 `(channel, uid,
+        // role_type)` tuple is authoritative).  Missing or zero pid
+        // is logged for diagnostics but does not reject the heartbeat.
         LOGGER_ERROR("Broker: HEARTBEAT_REQ for '{}' missing or zero producer_pid",
                      channel_name);
     }
@@ -2220,21 +2225,12 @@ void BrokerServiceImpl::handle_heartbeat_req(const nlohmann::json& req)
     std::optional<nlohmann::json> metrics_opt;
     if (req.contains("metrics") && req["metrics"].is_object())
         metrics_opt = req["metrics"];
-    // Pre-M0 fallback: heartbeat without `uid`/`role_type` on the wire
-    // is attributed to the channel's first registered producer.
-    const std::string &hb_uid =
-        wire_uid.empty() ? fallback_producer_uid : wire_uid;
-    const std::string &hb_role_type =
-        wire_role_type.empty() ? std::string("producer") : wire_role_type;
+
     hub_state_->_on_heartbeat(channel_name,
-                             hb_uid,
-                             hb_role_type,
+                             wire_uid,
+                             wire_role_type,
                              std::chrono::steady_clock::now(),
                              metrics_opt);
-    // M1.4 (2026-05-11): `_on_heartbeat` writes metrics directly to
-    // the per-presence row (HEP-CORE-0019 §2.3 Phase 6).  Legacy
-    // `metrics_store_` mirror retired — was kept in sync via
-    // update_{producer,consumer}_metrics here; that path is gone.
 }
 
 // ============================================================================
