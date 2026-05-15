@@ -391,10 +391,17 @@ emits two heartbeats per cycle — one with `role_type="consumer"`
 per HEP-CORE-0033 §19.
 
 The `metrics` field is OPTIONAL.  Roles emit it whenever they have
-new data (today's `snapshot_metrics_json()` clears-on-read; sending
-on every heartbeat is the simplest correct behaviour).  The broker
-stores the snapshot in `MetricsStore[(channel, uid, role_type)]`
-with a `_collected_at` timestamp.
+new data.  The role-side `snapshot_metrics_for_presence(role_type)`
+helper (`RoleAPIBase`) is read-only — `custom_metrics_snapshot()`
+returns a copy of the map without clearing it, so calling the
+helper twice per cycle (processor case) is safe and idempotent.
+The earlier "snapshot-and-clear" framing predated the per-presence
+emission refactor and never matched the shipped behavior; the
+in-source helper is and always was non-destructive.  Sending the
+snapshot on every heartbeat is the simplest correct behaviour.
+The broker stores the snapshot in `RolePresence::latest_metrics`
+(keyed by `(channel, uid, role_type)`) with a
+`metrics_collected_at` timestamp.
 
 `producer_pid` is retained from the Phase 1 wire format for
 backward audit / diagnostic purposes — the broker only uses it for
@@ -530,10 +537,16 @@ def on_produce(out_slot, fz, msgs, api):
 - `key`: string, max 64 chars, alphanumeric + `._-`
 - `value`: numeric (`int` or `float`), stored as `double`
 - Metrics accumulate in a `std::unordered_map<std::string, double>` on the API
-  object, guarded by a lightweight spinlock (updated from the script thread,
-  read from the zmq thread that builds heartbeat payloads).
-- The map is **snapshot-and-clear** on each heartbeat: the zmq thread takes a
-  copy, clears the map, and serializes the copy into the heartbeat JSON.
+  object (`RoleHostCore::custom_metrics_`), guarded by a mutex (updated
+  from the script thread, read from the zmq thread that builds heartbeat
+  payloads).
+- The map is **snapshot-only** on each heartbeat: the zmq thread takes a
+  copy via `custom_metrics_snapshot()` (read-only — does NOT clear) and
+  serializes the copy into the heartbeat JSON.  Scripts that want to
+  reset accumulated metrics call `api.clear_custom_metrics()`
+  explicitly.  Earlier doc revisions described this as "snapshot-and-
+  clear"; that framing never matched the shipped code (the helper is
+  `const` and only `clear_custom_metrics()` mutates the map).
 
 ### 5.2 `api.report_metrics(dict)`
 
@@ -706,7 +719,7 @@ graph LR
 1. Added `custom_metrics_` map + `InProcessSpinState` to `ProducerAPI`, `ConsumerAPI`,
    `ProcessorAPI`
 2. Added `report_metric()`, `report_metrics()`, `clear_custom_metrics()` methods
-3. Added `snapshot_metrics_json()` for zmq thread consumption (snapshot-and-clear)
+3. Added `snapshot_metrics_json()` for zmq thread consumption (snapshot-only; non-destructive — `clear_custom_metrics()` is the explicit reset)
 4. Added `MetricsStore` to `BrokerService` (Pimpl-internal, guarded by `m_query_mu`)
 
 ### Phase 2: Heartbeat extension (producer + processor) ✅ (historical)
@@ -852,7 +865,7 @@ role's `RoleEntry` liveness bookkeeping.
 
 | Component | Source file | Role in the metrics plane |
 |---|---|---|
-| **RoleAPIBase** | `src/include/utils/role_api_base.hpp` + `src/utils/service/role_api_base.cpp` | `report_metric()` / `report_metrics()` / `clear_custom_metrics()` script-API surface; `snapshot_metrics_json()` (snapshot-and-clear); periodic heartbeat tick installed via `start_ctrl_thread` (Phase 6: per-presence) |
+| **RoleAPIBase** | `src/include/utils/role_api_base.hpp` + `src/utils/service/role_api_base.cpp` | `report_metric()` / `report_metrics()` / `clear_custom_metrics()` script-API surface; `snapshot_metrics_json()` (role-wide aggregate, non-destructive); `snapshot_metrics_for_presence(role_type)` (per-presence emission shape, audit C2 2026-05-15); periodic heartbeat tick installed via `start_ctrl_thread` (Phase 6: per-presence) |
 | **ProducerAPI / ConsumerAPI / ProcessorAPI** | `src/{producer,consumer,processor}/{producer,consumer,processor}_api.{hpp,cpp}` | pybind11 thin wrappers exposing the `RoleAPIBase` surface to Python scripts |
 | **RoleHostCore** | `src/include/utils/role_host_core.hpp` + `src/utils/service/role_host_core.cpp` | Custom-metrics map (`custom_metrics_`), iteration counters, base loop metrics (HEP-0008) |
 | **BrokerRequestComm** | `src/include/utils/broker_request_comm.hpp` + `src/utils/network_comm/broker_request_comm.cpp` | `send_heartbeat(channel, uid, role_type, metrics)` wire emission (sole metrics path post-M1.4); `send_metrics_report(...)` **DELETED** in Wave M1.4 (2026-05-11) |

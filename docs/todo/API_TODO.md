@@ -240,6 +240,19 @@ A (file moves + rename), B (include reorg), C (umbrella + public/internal audit)
 
 ### Open follow-ups (lower priority)
 
+- [ ] **Source-comment archaeology sweep** (audit C5 follow-up, 2026-05-15) —
+  ~30 sites across `src/` carry inline phase markers like
+  "Wave M2.5 step N", "Wave M3 step Nx", "M1.4 (2026-05-11)",
+  "MD1.5".  Most are accurate historical narrative; post the
+  Wave-B / audit-C label-hygiene cleanup, the bare references
+  (`M2`, `M3 step 5h`) are ambiguous to readers without the side-
+  arc-vs-Arc-B context.  Sweep target: either delete (for purely
+  historical "X was retired" markers that no longer load-bear) or
+  qualify with the side-arc / arc-B prefix.  Audit findings doc:
+  the 2026-05-15 systematic review §L2.  Scope: header + `.cpp`
+  files under `src/utils/{ipc,service}` + `src/include/utils/`.
+  ~30 LOC delta total; no behavior change.  Defer until Wave-B M3
+  lands so labels don't churn again.
 - [ ] **ThreadManager introspection API** — add read-only accessors for
   listing currently registered threads (name, state, thread id, spawn time),
   and aggregate queries (count, names). Useful for diagnostics, hang
