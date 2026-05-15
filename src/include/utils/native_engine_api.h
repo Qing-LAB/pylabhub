@@ -228,8 +228,11 @@ typedef struct PlhAbiInfo
 #define PLH_COMPONENT_SHM_MAJOR            1
 #define PLH_COMPONENT_SHM_MINOR            0
 /* broker_proto 1 → 2 (Wave M1.4, 2026-05-11): METRICS_REPORT_REQ retired.
+ * broker_proto 2 → 3 (audit C3, 2026-05-15): `role_uid` REQUIRED on
+ *   DEREG_REQ + CONSUMER_DEREG_REQ wire payloads (HEP-CORE-0023 §2.1.1);
+ *   CONSUMER_DIED_NOTIFY gains `consumer_uid` field (additive).
  * Keep in sync with `src/include/plh_version_registry.hpp` constants. */
-#define PLH_COMPONENT_BROKER_PROTO_MAJOR   2
+#define PLH_COMPONENT_BROKER_PROTO_MAJOR   3
 #define PLH_COMPONENT_BROKER_PROTO_MINOR   0
 #define PLH_COMPONENT_ZMQ_FRAME_MAJOR      1
 #define PLH_COMPONENT_ZMQ_FRAME_MINOR      0

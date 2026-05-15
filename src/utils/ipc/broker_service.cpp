@@ -1742,24 +1742,38 @@ nlohmann::json BrokerServiceImpl::handle_dereg_req(const nlohmann::json& req,
         return make_error(corr_id, "INVALID_REQUEST", "Missing or empty 'channel_name'");
     }
 
-    const uint64_t producer_pid = req.value("producer_pid", uint64_t{0});
+    const uint64_t    producer_pid = req.value("producer_pid", uint64_t{0});
+    const std::string wire_role_uid = req.value("role_uid", "");
 
-    // Wave M2.5 step 4: resolve which producer the DEREG_REQ targets
-    // by matching `producer_pid` against the channel's admitted
-    // producers (the wire still carries pid only; per-presence
-    // role_uid migration is HEP-CORE-0021 §16.3 step 5 territory).
-    //
-    // HEP-CORE-0023 §2.1.1 + atomic-teardown contract: removing one
-    // producer leaves the channel alive iff other producers remain;
-    // channel teardown fires only when the LAST producer leaves.
-    // The new `_on_producer_dropped` op encapsulates this contract.
+    // broker_proto 2→3 (audit C3, 2026-05-15): `role_uid` REQUIRED.
+    // Multi-producer channels (HEP-CORE-0023 §2.1.1) admit multiple
+    // producers on the same channel; resolving by pid alone is racy
+    // under OS pid reuse across role restarts.  The (pid, role_uid)
+    // tuple disambiguates.
+    if (wire_role_uid.empty())
+    {
+        LOGGER_WARN("Broker: DEREG_REQ rejected for channel '{}' — "
+                    "missing required 'role_uid' field (pid={})",
+                    channel_name, producer_pid);
+        return make_error(corr_id, "INVALID_REQUEST",
+                          "Missing or empty 'role_uid' — required for "
+                          "multi-producer DEREG target resolution "
+                          "(HEP-CORE-0023 §2.1.1)");
+    }
+
+    // Resolve via (pid, role_uid) tuple — both must match the same
+    // admitted producer.  HEP-CORE-0023 §2.1.1 + atomic-teardown
+    // contract: removing one producer leaves the channel alive iff
+    // other producers remain; channel teardown fires only when the
+    // LAST producer leaves.  `_on_producer_dropped` encapsulates this.
     auto entry = hub_state_->channel(channel_name);
     std::string target_role_uid;
     if (entry.has_value())
     {
         for (const auto &prod : entry->producers)
         {
-            if (prod.producer_pid == producer_pid)
+            if (prod.producer_pid == producer_pid &&
+                prod.role_uid     == wire_role_uid)
             {
                 target_role_uid = prod.role_uid;
                 break;
@@ -1768,10 +1782,13 @@ nlohmann::json BrokerServiceImpl::handle_dereg_req(const nlohmann::json& req,
     }
     if (!entry.has_value() || target_role_uid.empty())
     {
-        LOGGER_WARN("Broker: DEREG_REQ failed for channel '{}' (pid={})", channel_name,
-                    producer_pid);
+        LOGGER_WARN("Broker: DEREG_REQ failed for channel '{}' "
+                    "(pid={} role_uid='{}')",
+                    channel_name, producer_pid, wire_role_uid);
         return make_error(corr_id, "NOT_REGISTERED",
-                          "Channel '" + channel_name + "' not registered or pid mismatch");
+                          "Channel '" + channel_name +
+                              "' not registered or no producer matches "
+                              "(pid, role_uid)");
     }
 
     // Capture the channel state (with the to-be-dropped producer
@@ -2050,9 +2067,26 @@ nlohmann::json BrokerServiceImpl::handle_consumer_dereg_req(zmq::socket_t& socke
         return make_error(corr_id, "INVALID_REQUEST", "Missing or empty 'channel_name'");
     }
 
-    const uint64_t consumer_pid = req.value("consumer_pid", uint64_t{0});
+    const uint64_t    consumer_pid  = req.value("consumer_pid", uint64_t{0});
+    const std::string wire_role_uid = req.value("role_uid", "");
+
+    // broker_proto 2→3 (audit C3, 2026-05-15): `role_uid` REQUIRED.
+    // Same rationale as DEREG_REQ: multi-consumer channels admit
+    // multiple consumers; pid-alone resolution is racy under OS pid
+    // reuse across consumer restarts.
+    if (wire_role_uid.empty())
+    {
+        LOGGER_WARN("Broker: CONSUMER_DEREG_REQ rejected for channel '{}' — "
+                    "missing required 'role_uid' field (pid={})",
+                    channel_name, consumer_pid);
+        return make_error(corr_id, "INVALID_REQUEST",
+                          "Missing or empty 'role_uid' — required for "
+                          "multi-consumer CONSUMER_DEREG target resolution "
+                          "(HEP-CORE-0023 §2.1.1)");
+    }
 
     // Fetch consumer entry BEFORE removal so the cleanup hook can read role_uid.
+    // Resolution by (pid, role_uid) tuple — both must match.
     pylabhub::hub::ConsumerEntry closing_entry{};
     bool have_entry = false;
     {
@@ -2061,7 +2095,8 @@ nlohmann::json BrokerServiceImpl::handle_consumer_dereg_req(zmq::socket_t& socke
         {
             for (const auto& c : ch->consumers)
             {
-                if (c.consumer_pid == consumer_pid)
+                if (c.consumer_pid == consumer_pid &&
+                    c.role_uid     == wire_role_uid)
                 {
                     closing_entry = c;
                     have_entry = true;
@@ -2073,11 +2108,14 @@ nlohmann::json BrokerServiceImpl::handle_consumer_dereg_req(zmq::socket_t& socke
 
     if (!have_entry)
     {
-        LOGGER_WARN("Broker: CONSUMER_DEREG_REQ failed for channel '{}' (pid={})", channel_name,
-                    consumer_pid);
+        LOGGER_WARN("Broker: CONSUMER_DEREG_REQ failed for channel '{}' "
+                    "(pid={} role_uid='{}')",
+                    channel_name, consumer_pid, wire_role_uid);
         return make_error(corr_id, "NOT_REGISTERED",
-                          "Consumer pid " + std::to_string(consumer_pid) +
-                              " not registered for channel '" + channel_name + "'");
+                          "Consumer (pid=" + std::to_string(consumer_pid) +
+                              ", role_uid='" + wire_role_uid +
+                              "') not registered for channel '" +
+                              channel_name + "'");
     }
 
     // Consumer voluntarily left.  `closing_entry.role_uid` may be empty
