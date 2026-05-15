@@ -33,6 +33,16 @@ void RoleHandler::build_connections_()
     // presence on a distinct hub).  Reserve up front so we can safely
     // hold `HubConnection *` from `presences_[i].connection` without
     // reallocation invalidating those pointers.
+    //
+    // CRITICAL: `connections_` must NOT be mutated after this build
+    // loop returns.  Every Presence in `presences_` will hold a raw
+    // `HubConnection *` into this vector; any subsequent `emplace_back`
+    // /  `erase` / `clear` / `resize` on `connections_` could trigger
+    // reallocation and silently dangle every Presence::connection
+    // pointer.  See `role_handler.hpp` § "Immutability contract" for
+    // the full pointer-stability rationale; future hub-failover work
+    // must re-architect to a stable-storage container before allowing
+    // post-build mutation.
     connections_.reserve(presences_.size());
 
     for (auto &p : presences_)
@@ -66,7 +76,17 @@ void RoleHandler::build_channel_index_()
     for (auto &p : presences_)
     {
         if (p.channel.empty())
-            continue;  // unbound presences are not indexed.
+            continue;
+        // Unbound presences (empty channel name) are NOT indexed.  In
+        // current topologies the caller passes channel-bound presences
+        // at ctor time, so this path is unused.  It exists as a
+        // forward-compat hook for future phases where a presence may
+        // be declared before its channel is resolved (e.g.,
+        // schema-resolve-driven late binding) — those phases will need
+        // to call `find_presence_for_channel` only AFTER binding
+        // completes.  Today, an empty-channel presence in production
+        // input is a caller bug; we skip-and-continue rather than
+        // throw so the rest of the index still builds.
 
         // Caller-responsibility invariant: no two presences on this
         // role share the same channel name.  See file-header §

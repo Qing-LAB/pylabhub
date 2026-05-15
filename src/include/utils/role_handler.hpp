@@ -29,6 +29,44 @@
  *     for the RoleHandler's lifetime — no insertions or removals.
  *     Pointers into either vector are safe to hold until shutdown.
  *
+ * Immutability contract (post-construction):
+ *   The VECTOR LAYOUT (presences_ and connections_) is frozen.  Pointer
+ *   stability follows from this — `connections_.reserve(presences_.size())`
+ *   in `build_connections_` guarantees no reallocation during the build
+ *   loop, and no later code path mutates either vector.  Future phases
+ *   that require dynamic hub failover (re-binding a presence to a new
+ *   HubConnection) must re-architect both vectors as stable-storage
+ *   containers (`std::list`, intrusive list, or a pinned allocator) —
+ *   the current `std::vector` shape cannot grow safely without
+ *   invalidating `Presence::connection` pointers.
+ *
+ *   Individual Presence FIELDS are mutated post-ctor in two scopes:
+ *     - `connection`: set during `build_connections_` (M3 ctor).  Never
+ *       reassigned afterward.
+ *     - `slot_spec`, `fz_spec`, `inbox_meta`: set during the role
+ *       host's schema-resolve step (M5+).  Once-write semantics; no
+ *       later mutation expected.
+ *     - All other fields (`hub`, `channel`, `role_kind`): set by the
+ *       caller before passing the vector to the ctor; never mutated
+ *       afterward.
+ *
+ * Thread safety:
+ *   All M3 accessors are `const` and read fields that are immutable
+ *   after construction (per the contract above).  RoleHandler is safe
+ *   to call from any thread without synchronization, AS LONG AS the
+ *   immutability contract holds.  Wave-B M4 will add `start()` /
+ *   `shutdown()` + dispatch ops that touch the network and spawn ctrl
+ *   threads — at that point M4 must document which methods are safe
+ *   from which threads.
+ *
+ * Topology stability:
+ *   The presence list passed to the ctor is the FULL list of presences
+ *   the role will ever hold.  Dynamic add/remove of presences (e.g.,
+ *   for hypothetical N-input routers with variable input count) is out
+ *   of scope through Wave-B M9; those would require relaxing the
+ *   "vectors are stable" invariant above.  Document any such future
+ *   feature explicitly when it's introduced — do not silently relax.
+ *
  * Wave-B M3 invariants verified by L2 tests:
  *   - Distinct hubs → distinct connections (count matches unique
  *     hub identities).
