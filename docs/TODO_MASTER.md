@@ -97,7 +97,7 @@ nominally open but not blocking.
 | **Wave A** (Arc B's docs foundation) | A1..A8 — HEP-CORE-0011/0017/0019/0023/0027/0033 staleness scrub + §18+§19 add | ✅ all shipped | `role_host_template_design.md` §15.1 table |
 | **Wave-B M0** | `send_heartbeat` wire payload gains `(uid, role_type)` | ✅ shipped | `src/include/utils/broker_request_comm.hpp:116`; commit `f353e1a` |
 | **Wave-B M1** | Broker keyed lookup via `find_presence`; per-presence FSM; retire `metrics_store_` | ✅ shipped | `src/utils/ipc/broker_service.cpp:2100,2132`; commits `f2e3bd7..a41ce71` (M1.2 side-arc) + `4e902e1` (M1.4 side-arc) |
-| **Wave-B M2** | Consumer heartbeat tick removed; `out_channel.empty() ? ...` hack deleted | ⏳ **NEXT** | Hack still live at `src/utils/service/role_api_base.cpp:203,567`; `:832` installs `on_heartbeat_tick_` unconditionally |
+| **Wave-B M2** | Heartbeat is per-presence on the role side; broker sweep iterates BOTH `entry.producers` and `entry.consumers`; consumer heartbeat-timeout fires `CONSUMER_DIED_NOTIFY` (`reason="heartbeat_timeout"`).  `out_channel.empty() ? ...` hack deleted. | ✅ shipped 2026-05-15 | Role side: `src/utils/service/role_api_base.cpp:560-602` per-presence emission.  HubState: `src/include/utils/hub_state.hpp:1393-1419` + `src/utils/ipc/hub_state.cpp:1334-1518` (`role_type` param on `_on_heartbeat_timeout` / `_on_pending_timeout`, consumer branch added).  Broker: `src/utils/ipc/broker_service.cpp:2594-2789` (consumer pass-1 + pass-2 + notification fan-out).  Tests: 3 L2 in `test_hub_state.cpp` + 1 L3 in `test_datahub_role_state_machine.cpp` (`ConsumerHeartbeatTimeout_FiresConsumerDiedNotify`). |
 | **Wave-B M3** | `Presence` / `HubConnection` / `RoleHandler` headers (build-only) | ⏳ pending | `grep -rE "class RoleHandler\|struct Presence\|class HubConnection"` over `src/` → 0 hits |
 | **Wave-B M4** | `RoleAPIBase` pImpl delegates via handler | ⏳ pending | 23 direct `pImpl->broker_channel` sites; 0 handler delegation |
 | **Wave-B M5** | `ProducerRoleHost` 1-presence list via handler | ⏳ pending | 9 direct `broker_comm_`; 0 handler |
@@ -108,7 +108,7 @@ nominally open but not blocking.
 | **Wave-C** | Closure — finalise HEP cross-refs depending on Wave-B; archive transient drafts | ⏳ after M9 |  |
 | **Wave-D** | Rewrite demos (`single-processor-shm`, `dual-processor-bridge`, `examples/`) | ⏳ after Wave-C |  |
 
-**Arc B net status**: Wave A + M0 + M1 done.  **M2-M9 is the active arc.**  No `RoleHandler` infrastructure exists yet.
+**Arc B net status**: Wave A + M0 + M1 + M2 done (M2 reframed during implementation — see row).  **M3-M9 is the active arc.**  No `RoleHandler` infrastructure exists yet.
 
 ### Combined view — what blocks "dual-hub plh_hub" end-to-end
 
@@ -116,34 +116,40 @@ Both arcs feed the end-state.  Concretely:
 
 | Blocker | Where it sits | Why it blocks |
 |---|---|---|
-| **Wave-B M2..M9** | Arc B, role side | Without `RoleHandler` + N-presence support, role binaries cannot register on more than one hub.  Even though `plh_hub` itself is ready (Arc A complete), a dual-hub deployment has no role binary to talk to it that way. |
+| **Wave-B M3..M9** | Arc B, role side | Without `RoleHandler` + N-presence support, role binaries cannot register on more than one hub.  Even though `plh_hub` itself is ready (Arc A complete), a dual-hub deployment has no role binary to talk to it that way. |
 | **HEP-CORE-0035 auth** | Hub character / security | Currently the `RoleIdentityPolicy` is a placeholder; CURVE is mandatory but key admission policy is not yet implemented.  Production-readiness gap, not a renovation blocker, but listed because it's a major remaining HUB-side item. |
 | **HUB_TARGETED_ACK wire frame** | HEP-0033 §12.3.6 / §13 | Peer-to-peer message ACK frame is deferred; `on_peer_message` C++ surface is in place (Phase 8c) but the wire bit isn't wired.  Independent of dual-hub; would only affect federation use cases. |
 | **HEP-0033 Phase 10 doc amendment** | Arc A docs | HEP-CORE-0019 §9 per-producer metrics tree shape and a cross-reference survey are listed as remaining.  Not blocking code; doc hygiene. |
 
-### Next concrete task — Wave-B M2
+### Next concrete task — Wave-B M3
 
-**Scope** (code-verified):
-- Delete `out_channel.empty() ? pImpl->channel : pImpl->out_channel`
-  hack at `src/utils/service/role_api_base.cpp:203` and `:567`.
-- Guard `on_heartbeat_tick_` installation at `:832` so consumer
-  roles do NOT install the tick (only producer + processor's
-  producer-presence install it).
-- Net change: ~5-10 LOC delete + small predicate additions.
+**Scope** (per `role_host_template_design.md` §14.2 Wave-B M3 row):
+- Build-only addition of three new headers:
+  - `Presence` struct.
+  - `HubConnection` class (one connection wraps the existing
+    `BrokerRequestComm`).
+  - `RoleHandler` class (owns N `HubConnection`s, holds the
+    presence list).
+- No call-site changes yet — pImpl swap happens in Wave-B M4.
 
-**Tests required** (per `role_host_template_design.md` §14.2 Wave-B M2 row):
-- L2 `RoleAPIBaseTest::Consumer_DoesNotInstallHeartbeatTick` — new.
-- B1+B2 end-to-end regression — new.  (B1) consumer's
-  HEARTBEAT_REQ does NOT refresh the producer's presence row.
-  (B2) consumer metrics correctly attributed.
-- Mutation: re-install the consumer tick → both tests must fail.
+**Tests required** (per the §14.2 row):
+- L2 `RolePresenceTest` — unit tests for `Presence`, dedup
+  logic, channel/band index lookup.  Pure data-structure tests.
 
-**Why Wave-B M2 first**: Wave-B M3..M9 introduce a new
-abstraction (`RoleHandler`) that supersedes the direct-broker-
-channel pattern.  Leaving Wave-B M2's bug in place during the
-refactor would mask whether the new abstraction actually fixed it.
-Wave-B M2 is also small (~half a day) and gives a clean baseline
-for the larger Wave-B M3-M7 changes.
+**Why this is next**: M3 is the "header skeleton" phase — it
+introduces the new abstraction without touching any existing
+behavior, so it lands cleanly and unblocks the M4 pImpl swap.
+Sized at ~half-day given that the data shape is already locked
+(`Presence` mirrors `RolePresence` from HubState).
+
+### Wave-B M2 closure note (2026-05-15)
+
+The original M2 description ("Consumer heartbeat tick removed")
+was wrong.  The actual bug spanned five gaps that all hit the
+same root: per-presence FSM mechanics were producer-only across
+the stack even though `RolePresence` rows are role-type-keyed.
+Shipped as a 3-commit sequence; full breakdown is in the M2 row
+above and in `role_host_template_design.md §14.2`.
 
 ### Side-arc cleanup waves completed (parallel to / between renovation phases)
 

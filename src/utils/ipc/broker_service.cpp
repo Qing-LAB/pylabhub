@@ -2632,6 +2632,27 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
             hub_state_->_on_heartbeat_timeout(channel_name, prod.role_uid,
                                               "producer");
         }
+
+        // Wave-B M2 (3/3): consumer-presence Connected → Pending
+        // (HEP-CORE-0023 §2.1).  Consumer FSM is independent of
+        // producer FSM; same timeout, different presence row.  The
+        // channel does NOT close on consumer demotion — that's a
+        // producer-only signal (§2.1.1).
+        for (const auto &cons : entry.consumers)
+        {
+            if (cons.role_uid.empty()) continue;
+            auto role_it = snap.roles.find(cons.role_uid);
+            if (role_it == snap.roles.end()) continue;
+            const auto *p = role_it->second.find_presence(channel_name, "consumer");
+            if (p == nullptr) continue;
+            if (p->state != pylabhub::hub::RoleState::Connected) continue;
+            if (now - p->last_heartbeat < ready_timeout) continue;
+            LOGGER_WARN("Broker: consumer '{}' on channel '{}' demoted Ready -> "
+                        "Pending (no heartbeat within {} ms)",
+                        cons.role_uid, channel_name, ready_timeout.count());
+            hub_state_->_on_heartbeat_timeout(channel_name, cons.role_uid,
+                                              "consumer");
+        }
     }
 
     // ── Pass 2: Pending -> Disconnected (HEP-CORE-0023 §2.1.1) ──
@@ -2651,6 +2672,7 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
     const auto snap2 = hub_state_->snapshot();
     for (const auto& [channel_name, entry] : snap2.channels)
     {
+        bool channel_torn_down = false;
         for (const auto &prod : entry.producers)
         {
             if (prod.role_uid.empty()) continue;
@@ -2685,6 +2707,7 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
                 LOGGER_INFO("Broker: channel '{}' torn down (last producer "
                             "presence-timeout)", channel_name);
                 // Stop iterating producers — the channel record is gone.
+                channel_torn_down = true;
                 break;
             }
             else if (drop.removed)
@@ -2695,6 +2718,61 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
                             prod.role_uid, channel_name,
                             static_cast<uint32_t>(pre_drop.producer_count() - 1));
             }
+        }
+
+        // Wave-B M2 (3/3): consumer-presence Pending → Disconnected.
+        // Skip on torn-down channels — `_on_channel_closed` already
+        // demoted every consumer-presence on this channel to
+        // Disconnected and the surviving consumer list is empty.
+        if (channel_torn_down) continue;
+
+        for (const auto &cons : entry.consumers)
+        {
+            if (cons.role_uid.empty()) continue;
+            auto role_it = snap2.roles.find(cons.role_uid);
+            if (role_it == snap2.roles.end()) continue;
+            const auto *p = role_it->second.find_presence(channel_name, "consumer");
+            if (p == nullptr) continue;
+            if (p->state != pylabhub::hub::RoleState::Pending) continue;
+            if (now - p->state_since < pending_timeout) continue;
+
+            // Capture pre-drop state for the producer fan-out target
+            // list (the consumer slot will be erased by the op).
+            const pylabhub::hub::ConsumerEntry pre_drop_consumer = cons;
+            const pylabhub::hub::ChannelEntry  pre_drop_channel  = entry;
+
+            LOGGER_WARN(
+                "Broker: consumer '{}' on '{}' reclaimed from Pending "
+                "(no heartbeat within {} ms)",
+                cons.role_uid, channel_name, pending_timeout.count());
+
+            auto drop = hub_state_->_on_pending_timeout(channel_name, cons.role_uid,
+                                                        "consumer");
+            if (!drop.removed) continue;
+
+            // Fan out CONSUMER_DIED_NOTIFY with reason="heartbeat_timeout"
+            // to every producer on the channel — symmetric with the
+            // PID-death path at `check_dead_consumers` (which uses
+            // reason="process_dead").  Producers consume the
+            // notification per HEP-CORE-0023 §2.1.1 to drop their
+            // per-consumer bookkeeping.
+            nlohmann::json notify;
+            notify["channel_name"]      = channel_name;
+            notify["consumer_pid"]      = pre_drop_consumer.consumer_pid;
+            notify["consumer_hostname"] = pre_drop_consumer.consumer_hostname;
+            notify["reason"]            = "heartbeat_timeout";
+            for (const auto &prod : pre_drop_channel.producers)
+            {
+                if (prod.zmq_identity.empty()) continue;
+                send_to_identity(socket, prod.zmq_identity, "CONSUMER_DIED_NOTIFY",
+                                 notify);
+                LOGGER_INFO("Broker: CONSUMER_DIED_NOTIFY to producer of '{}': "
+                            "consumer_uid={} reason=heartbeat_timeout target_role={}",
+                            channel_name, cons.role_uid, prod.role_uid);
+            }
+            // Federation / observer fan-out (mirrors the PID-death path).
+            on_consumer_closed(socket, channel_name, pre_drop_consumer,
+                                "heartbeat_timeout");
         }
     }
 }
