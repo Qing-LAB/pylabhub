@@ -1478,18 +1478,32 @@ hub.json.
 
 ```
 Direction:  Broker → Producer
-Trigger:    Broker's periodic check_dead_consumers() detects consumer PID no longer alive
+Trigger:    Broker detects a registered consumer is no longer alive.  Two
+            independent triggers, both emit the same wire-frame shape and
+            are distinguished by the `reason` field:
+              - reason="process_dead"        — `check_dead_consumers` sweep
+                                               sees the consumer PID is gone
+                                               (Cat 2 dead consumer).
+              - reason="heartbeat_timeout"   — `check_heartbeat_timeouts`
+                                               consumer-presence Pending →
+                                               Disconnected (HEP-CORE-0023
+                                               §2.1; Wave-B M2 3/3).
 Effect:     Producer informed that a consumer has died
 Dispatch:   `on_notification(cb)` callback receives msg_type
             "CONSUMER_DIED_NOTIFY"; producer role host queues an event for the script.
 
 Payload:
   channel_name          string
+  consumer_uid          string   (role_uid of the dead consumer — REQUIRED;
+                                  pid alone is not unique across role
+                                  restarts on the same OS pid)
   consumer_pid          uint64
-  reason                string   (e.g. "process_not_alive")
+  consumer_hostname     string   (may be empty if unknown)
+  reason                string   ("process_dead" | "heartbeat_timeout")
 
 Script host delivery: Event dict in msgs:
-  {"event": "consumer_died", "pid": <uint64>, "reason": "<string>"}
+  {"event": "consumer_died", "uid": "<string>", "pid": <uint64>,
+   "reason": "<string>"}
 ```
 
 #### CHANNEL_ERROR_NOTIFY — Category 1 Error (Invariant Violation)
@@ -1714,7 +1728,7 @@ through the `msgs` parameter.
 |-----------|--------|-----------|-------------|
 | ~~`consumer_joined`~~ | ~~P2P HELLO~~ | — | **REMOVED** — P2C protocol eliminated. Use BAND_JOIN_NOTIFY (HEP-CORE-0030) |
 | ~~`consumer_left`~~ | ~~P2P BYE~~ | — | **REMOVED** — P2C protocol eliminated. Use BAND_LEAVE_NOTIFY (HEP-CORE-0030) |
-| `consumer_died` | Broker CONSUMER_DIED_NOTIFY | Producer, Processor | `event`, `pid`, `reason`, `source_hub_uid` |
+| `consumer_died` | Broker CONSUMER_DIED_NOTIFY | Producer, Processor | `event`, `uid`, `pid`, `reason`, `source_hub_uid` |
 | `channel_closing` | Broker CHANNEL_CLOSING_NOTIFY | All roles | `event`, `channel_name`, `reason`, `source_hub_uid` |
 | `role_registered` | Broker ROLE_REGISTERED_NOTIFY | All roles | `event`, `role_uid`, `role_type`, `channel`, `source_hub_uid` |
 | `role_deregistered` | Broker ROLE_DEREGISTERED_NOTIFY | All roles | `event`, `role_uid`, `role_type`, `channel`, `reason`, `source_hub_uid` |

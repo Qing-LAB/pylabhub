@@ -2758,6 +2758,7 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
             // per-consumer bookkeeping.
             nlohmann::json notify;
             notify["channel_name"]      = channel_name;
+            notify["consumer_uid"]      = pre_drop_consumer.role_uid;
             notify["consumer_pid"]      = pre_drop_consumer.consumer_pid;
             notify["consumer_hostname"] = pre_drop_consumer.consumer_hostname;
             notify["reason"]            = "heartbeat_timeout";
@@ -2810,6 +2811,7 @@ void BrokerServiceImpl::check_dead_consumers(zmq::socket_t& socket)
                 dead_consumer.consumer_pid, dead_consumer.consumer_hostname, channel_name);
             nlohmann::json notify;
             notify["channel_name"]      = channel_name;
+            notify["consumer_uid"]      = dead_consumer.role_uid;
             notify["consumer_pid"]      = dead_consumer.consumer_pid;
             notify["consumer_hostname"] = dead_consumer.consumer_hostname;
             notify["reason"]            = "process_dead";
