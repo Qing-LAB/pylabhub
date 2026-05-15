@@ -1264,17 +1264,19 @@ void HubState::_on_heartbeat(const std::string                   &channel,
         auto             rit = pImpl->roles.find(role_uid);
         if (rit == pImpl->roles.end()) return;
 
-        // Wave M3 step 2 (commit forthcoming): route the presence-row
-        // mutation through the controlled-access API.  The method
-        // updates last_heartbeat + first_heartbeat_seen, transitions
-        // FSM to Connected if not already, and returns a rich
-        // HeartbeatEffect for counter decisions.  HubState retains
-        // ownership of: (a) the pending_to_ready_total counter bump
-        // (depends on prev_state); (b) the `disconnected_fired`
-        // memoization reset (🚧 PATCH; retired in M3 step 4); (c)
-        // metrics update (presence-row direct write — still here
-        // because the new API doesn't yet expose a per-presence
-        // metrics setter, M3 step-2 scope is FSM-only).
+        // Route the presence-row FSM mutation through RoleEntry's
+        // controlled-access API.  The method updates last_heartbeat +
+        // first_heartbeat_seen, transitions FSM to Connected if not
+        // already, and returns a rich HeartbeatEffect for the caller's
+        // counter decisions.  HubState retains ownership of:
+        //   (a) the `pending_to_ready_total` counter bump (depends on
+        //       prev_state, which only the wrapper knows).
+        //   (b) the metrics write — still a direct presence-row
+        //       mutation under the writer lock because the
+        //       controlled-access API does not yet expose a
+        //       per-presence metrics setter.  A future
+        //       `RoleEntry::set_presence_metrics(channel, role_type,
+        //       metrics)` would absorb the post-lock block below.
         const HeartbeatEffect eff =
             rit->second.on_heartbeat(channel, role_type, when);
         if (!eff.presence_found) return;
@@ -1282,19 +1284,9 @@ void HubState::_on_heartbeat(const std::string                   &channel,
         // Recovery from Pending counts as pending_to_ready (HEP-0023 §2.5).
         if (eff.prev_state == RoleState::Pending)
             ++pImpl->counters.pending_to_ready_total;
-        // `disconnected_fired` memoization retired by Wave M3 step 4
-        // (commit forthcoming).  Terminal cleanup of
-        // `_set_role_disconnected` means that if the role had been
-        // fully disconnected, the entry would be GONE — _on_heartbeat
-        // would have already returned via `rit == roles.end()` above.
-        // Reaching this point implies the role entry is still alive
-        // (at least one presence was non-Disconnected when the disc
-        // op last ran), so no memoization reset is needed.
 
-        // Metrics write — still a direct presence-row mutation.
-        // (M3 step-2 scope is FSM-only.  A future
-        // `entry.set_presence_metrics(channel, role_type, metrics)`
-        // method could absorb this; not in step 2.)
+        // Metrics write — direct presence-row mutation under the
+        // writer lock (see the (b) note on the API split above).
         if (metrics.has_value())
         {
             auto *p = rit->second.find_presence(channel, role_type);
