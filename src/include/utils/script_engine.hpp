@@ -527,6 +527,38 @@ class ScriptEngine
     virtual void invoke_on_stop() = 0;
 
     /**
+     * @brief Invoke on_channel_closing(channel, reason, api) if the
+     *        script defines it.
+     *
+     * Optional script-side callback (HEP-CORE-0011 lifecycle table).
+     * The role host calls this from the data loop when a
+     * `CHANNEL_CLOSING_NOTIFY` arrives in the drained per-cycle
+     * messages list AND the script has defined the callback (probed
+     * via `has_callback("on_channel_closing")`).  When the callback
+     * fires, the corresponding entry is consumed (removed from the
+     * messages list before `on_produce`/`on_consume` runs).
+     *
+     * If the script does NOT define this callback, the role host
+     * leaves the notify in the messages list — the script may still
+     * react by scanning `msgs` inside `on_produce`/`on_consume`.
+     * Either path is supported; the dedicated callback is the
+     * ergonomic option.
+     *
+     * Same threading contract as `invoke_on_stop` — fires on the
+     * owner (worker) thread; the engine handles internal locking.
+     * Implementations log + suppress script exceptions (do not
+     * propagate); the data loop continues.
+     *
+     * @param channel  Closed channel's name.
+     * @param reason   Reason string from the wire payload
+     *                 (e.g. "producer_deregistered",
+     *                 "pending_timeout", "script_requested").
+     */
+    virtual void invoke_on_channel_closing(
+        const std::string &channel,
+        const std::string &reason) = 0;
+
+    /**
      * @brief Invoke on_produce(tx, msgs, api).
      * @param tx   Output direction (writable slot + flexzone).
      * @param msgs Incoming messages (drained from RoleHostCore).

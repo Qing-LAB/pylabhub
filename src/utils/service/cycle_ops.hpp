@@ -28,6 +28,45 @@ namespace pylabhub::scripting
 {
 
 // ============================================================================
+// Channel-closing callback dispatch (HEP-CORE-0011 lifecycle table; M1.5)
+// ============================================================================
+//
+// CHANNEL_CLOSING_NOTIFY arrives in the role's incoming-message queue
+// and is drained into `msgs` each cycle (see `run_data_loop` Step C).
+// If the script defines `on_channel_closing(channel, reason, api)`,
+// the framework dispatches each notify to that callback and removes
+// it from `msgs` so `on_produce`/`on_consume` doesn't also see it.
+// If the script does NOT define the callback, the notify stays in
+// `msgs` — scripts that scan the messages list keep working.
+//
+// Single delivery: dedicated callback OR generic msgs scan, never
+// both.  See HEP-CORE-0011 §"Channel-close handling" for the contract.
+inline void dispatch_channel_closing(ScriptEngine &engine,
+                                     std::vector<IncomingMessage> &msgs)
+{
+    if (!engine.has_callback("on_channel_closing"))
+        return;
+
+    auto it = msgs.begin();
+    while (it != msgs.end())
+    {
+        if (it->event == "CHANNEL_CLOSING_NOTIFY")
+        {
+            const std::string channel =
+                it->details.value("channel_name", std::string{});
+            const std::string reason =
+                it->details.value("reason",       std::string{});
+            engine.invoke_on_channel_closing(channel, reason);
+            it = msgs.erase(it);
+        }
+        else
+        {
+            ++it;
+        }
+    }
+}
+
+// ============================================================================
 // ProducerCycleOps — single-side output. Branch IDs: P-A-*, P-S-*, P-I-*, P-X
 // ============================================================================
 
@@ -66,6 +105,11 @@ class ProducerCycleOps final
 
     bool invoke_and_commit(std::vector<IncomingMessage> &msgs)
     {
+        // Per HEP-CORE-0011 M1.5: dispatch on_channel_closing (and
+        // strip the notify from msgs) before the data callback runs,
+        // if the script defines the callback.  No-op otherwise.
+        dispatch_channel_closing(engine_, msgs);
+
         if (buf_) std::memset(buf_, 0, buf_sz_);
 
         auto result = engine_.invoke_produce(
@@ -143,6 +187,11 @@ class ConsumerCycleOps final
 
     bool invoke_and_commit(std::vector<IncomingMessage> &msgs)
     {
+        // Per HEP-CORE-0011 M1.5: dispatch on_channel_closing (and
+        // strip the notify from msgs) before the data callback runs,
+        // if the script defines the callback.  No-op otherwise.
+        dispatch_channel_closing(engine_, msgs);
+
         if (data_)
             core_.inc_in_slots_received();
 
@@ -237,6 +286,11 @@ class ProcessorCycleOps final
 
     bool invoke_and_commit(std::vector<IncomingMessage> &msgs)
     {
+        // Per HEP-CORE-0011 M1.5: dispatch on_channel_closing (and
+        // strip the notify from msgs) before the data callback runs,
+        // if the script defines the callback.  No-op otherwise.
+        dispatch_channel_closing(engine_, msgs);
+
         if (out_buf_) std::memset(out_buf_, 0, out_sz_);
 
         auto result = engine_.invoke_process(

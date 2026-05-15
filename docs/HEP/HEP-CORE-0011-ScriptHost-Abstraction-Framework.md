@@ -259,6 +259,7 @@ Unloaded --> Initialized --> ScriptLoaded --> ApiBuilt --> Finalized
 | `invoke_consume(rx, msgs)` | worker | Call `on_consume(rx, msgs, api)` -- hot path |
 | `invoke_process(rx, tx, msgs)` | worker | Call `on_process(rx, tx, msgs, api)` -- hot path |
 | `invoke_on_inbox(msg)` | worker | Call `on_inbox(msg, api)` |
+| `invoke_on_channel_closing(channel, reason)` | worker | Call `on_channel_closing(channel, reason, api)` if defined; no-op otherwise.  Dispatched from the data-loop classifier when a `CHANNEL_CLOSING_NOTIFY` arrives in `msgs` AND `has_callback("on_channel_closing")` is true — the notify is then removed from `msgs` (single-delivery contract). |
 | `invoke_on_stop()` | worker | Call `on_stop(api)` |
 | `invoke(name, args)` | any | Generic invocation (e.g., admin shell) |
 | `eval(code)` | any | Evaluate code string (admin shell) |
@@ -874,6 +875,26 @@ def on_inbox(msg, api):
     """Called per inbox message. msg.data = ctypes struct, msg.sender_uid, msg.seq."""
     pass
 
+def on_channel_closing(channel, reason, api):
+    """Called when a channel this role registered for has been
+    destroyed by the broker (last producer-presence reached
+    Disconnected, broker fanned out CHANNEL_CLOSING_NOTIFY).
+
+    Optional.  If defined, the framework dispatches this callback
+    instead of leaving the notify in the per-cycle msgs list.  If
+    NOT defined, the notify stays in msgs and on_produce / on_consume
+    can scan it.  No automatic stop — the script decides:
+    call api.stop() to exit, set internal state for a later cycle to
+    act on, or do nothing.
+
+    Args:
+        channel  (str): Closed channel name.
+        reason   (str): Reason from broker — one of
+                        'producer_deregistered', 'pending_timeout',
+                        'script_requested', etc.
+    """
+    pass
+
 def on_stop(api):
     """Called once before shutdown. Optional."""
     pass
@@ -896,6 +917,14 @@ function on_consume(rx, msgs, api)
     local slot = rx.slot
     api.log("info", "received: " .. tostring(slot.timestamp))
     return true
+end
+
+function on_channel_closing(channel, reason, api)
+    -- Optional.  Called when a channel this role used closes.
+    -- Script chooses: api.stop() to exit, set state for a later
+    -- on_tick/on_consume to retry, or do nothing.
+    api.log("warn", "channel " .. channel .. " closed: " .. reason)
+    api.stop()
 end
 
 function on_stop(api)

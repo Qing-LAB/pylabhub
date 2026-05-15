@@ -276,6 +276,8 @@ bool PythonEngine::load_script(const std::filesystem::path &script_dir,
         // Extract callback references.
         py_on_init_    = py::getattr(module_, "on_init",    py::none());
         py_on_stop_    = py::getattr(module_, "on_stop",    py::none());
+        py_on_channel_closing_ =
+            py::getattr(module_, "on_channel_closing", py::none());
         py_on_produce_ = py::getattr(module_, "on_produce", py::none());
         py_on_consume_ = py::getattr(module_, "on_consume", py::none());
         py_on_process_ = py::getattr(module_, "on_process", py::none());
@@ -291,6 +293,8 @@ bool PythonEngine::load_script(const std::filesystem::path &script_dir,
         reset_standard_callback_cache();
         set_standard_callback_present("on_init",    is_callable(py_on_init_));
         set_standard_callback_present("on_stop",    is_callable(py_on_stop_));
+        set_standard_callback_present("on_channel_closing",
+                                       is_callable(py_on_channel_closing_));
         set_standard_callback_present("on_produce", is_callable(py_on_produce_));
         set_standard_callback_present("on_consume", is_callable(py_on_consume_));
         set_standard_callback_present("on_process", is_callable(py_on_process_));
@@ -1103,6 +1107,27 @@ void PythonEngine::invoke_on_stop()
 }
 
 // ============================================================================
+// invoke_on_channel_closing — on_channel_closing(channel, reason, api)
+// ============================================================================
+
+void PythonEngine::invoke_on_channel_closing(const std::string &channel,
+                                              const std::string &reason)
+{
+    if (!is_callable(py_on_channel_closing_))
+        return;
+
+    py::gil_scoped_acquire g;
+    try
+    {
+        py_on_channel_closing_(channel, reason, api_obj_);
+    }
+    catch (py::error_already_set &e)
+    {
+        on_python_error_("on_channel_closing", e);
+    }
+}
+
+// ============================================================================
 // invoke_produce — on_produce(tx, msgs, api) -> bool
 // ============================================================================
 
@@ -1468,6 +1493,7 @@ void PythonEngine::clear_pyobjects_()
     release_to_none(module_);
     release_to_none(py_on_init_);
     release_to_none(py_on_stop_);
+    release_to_none(py_on_channel_closing_);
     release_to_none(py_on_produce_);
     release_to_none(py_on_consume_);
     release_to_none(py_on_process_);

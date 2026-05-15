@@ -1532,3 +1532,43 @@ gtest_discover_tests(test_layer2_hub_zmq_queue
         LABELS "layer2;service;zmq_queue"
         TIMEOUT 60
 )
+
+# ============================================================================
+# Test: dispatch_channel_closing helper (HEP-CORE-0011 M1.5).
+#
+# Unit tests for the per-cycle classifier that extracts
+# CHANNEL_CLOSING_NOTIFY entries from `msgs` and dispatches them
+# to the script's on_channel_closing callback (when defined).
+# Pattern 1+ with Logger-only guard — engine surface uses LOGGER_*
+# but the test doesn't spin up a HubHost or broker.
+# ============================================================================
+
+add_executable(test_layer2_dispatch_channel_closing
+    test_dispatch_channel_closing.cpp
+)
+
+target_include_directories(test_layer2_dispatch_channel_closing PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/utils   # service/cycle_ops.hpp is internal
+)
+
+target_link_libraries(test_layer2_dispatch_channel_closing
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_dispatch_channel_closing)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_dispatch_channel_closing
+    SUITE_NAME "Layer2_DispatchChannelClosing"
+)
+layer2_require_staged_utils(test_layer2_dispatch_channel_closing)
+
+gtest_discover_tests(test_layer2_dispatch_channel_closing
+    PROPERTIES
+        LABELS "layer2;service;channel_closing"
+        TIMEOUT 30
+)

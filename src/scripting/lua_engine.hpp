@@ -109,6 +109,8 @@ class LuaEngine : public ScriptEngine
 
     void invoke_on_init() override;
     void invoke_on_stop() override;
+    void invoke_on_channel_closing(const std::string &channel,
+                                    const std::string &reason) override;
 
     InvokeResult invoke_produce(
         InvokeTx tx,
@@ -155,6 +157,7 @@ class LuaEngine : public ScriptEngine
     // Lua registry references for callbacks
     int ref_on_init_{LUA_NOREF};
     int ref_on_stop_{LUA_NOREF};
+    int ref_on_channel_closing_{LUA_NOREF};
     int ref_on_produce_{LUA_NOREF};
     int ref_on_consume_{LUA_NOREF};
     int ref_on_process_{LUA_NOREF};
