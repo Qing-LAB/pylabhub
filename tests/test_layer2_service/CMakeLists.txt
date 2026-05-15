@@ -189,10 +189,6 @@ add_executable(test_layer2_role_handler
     test_role_handler.cpp
 )
 
-target_include_directories(test_layer2_role_handler PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-)
-
 target_link_libraries(test_layer2_role_handler
     PRIVATE
         pylabhub::utils

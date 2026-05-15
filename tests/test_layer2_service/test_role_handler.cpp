@@ -98,6 +98,8 @@ TEST(RoleKindWire, ParseRejectsUnknownAndEmpty)
     EXPECT_FALSE(parse_wire_string("", k));
     EXPECT_FALSE(parse_wire_string("processor", k));  // not a wire role_type
     EXPECT_FALSE(parse_wire_string("PRODUCER", k));   // case-sensitive
+    EXPECT_FALSE(parse_wire_string("producer ", k));  // trailing whitespace
+    EXPECT_FALSE(parse_wire_string(" producer", k));  // leading whitespace
     EXPECT_EQ(k, RoleKind::Producer)
         << "k must be left untouched on parse failure";
 }
@@ -317,12 +319,46 @@ TEST(RoleHandlerDuplicate, DuplicateChannelOnRole_LogsError_AndIndexOnlyFirst)
            "channel (declaration order wins).";
 }
 
-TEST(RoleHandlerStability, PresencePointersStableAfterMove)
+TEST(RoleHandlerDuplicate, DuplicateChannel_SameRoleKind_AlsoLogsError)
+{
+    // Stronger duplicate case: two presences with IDENTICAL
+    // `(hub, channel, role_kind)` tuples — design §5.1 forbids
+    // this by construction.  The current index dedups by channel
+    // name alone (role_kind is not part of the index key), so the
+    // same first-wins + LOGGER_ERROR behavior applies regardless
+    // of whether the duplicate is same-kind or cross-kind.  This
+    // test pins that contract; if a future refactor adds role_kind
+    // to the index key (and would silently accept same-channel
+    // different-kind), this test continues to verify the
+    // same-channel-same-kind path is still rejected.
+    auto hub = make_hub("tcp://127.0.0.1:5570");
+
+    std::vector<Presence> presences;
+    presences.push_back(make_presence("dup.chan", RoleKind::Producer, hub));
+    presences.push_back(make_presence("dup.chan", RoleKind::Producer, hub));
+
+    RoleHandler h(std::move(presences));
+
+    EXPECT_EQ(h.presence_count(), 2u);
+    EXPECT_EQ(h.presence_count_for_channel("dup.chan"), 2u);
+    const auto *p = h.find_presence_for_channel("dup.chan");
+    ASSERT_NE(p, nullptr);
+    EXPECT_EQ(p->role_kind, RoleKind::Producer);
+
+    // Dedup also collapses to a single connection (same hub).
+    EXPECT_EQ(h.connection_count(), 1u);
+}
+
+TEST(RoleHandlerStability, PresenceConnectionPointersAreValidPostConstruction)
 {
     // After construction, `presences()` returns refs into the
     // RoleHandler's owned vector.  The `Presence::connection` pointer
     // wired during construction must reference a slot in the same
     // RoleHandler's `connections_` — not a dangling temporary.
+    //
+    // (Renamed from the original "PresencePointersStableAfterMove" —
+    // the test never moves a RoleHandler, and RoleHandler is in fact
+    // move-deleted; the original name was misleading.)
     std::vector<Presence> presences;
     auto                  hub = make_hub("tcp://127.0.0.1:5570");
     presences.push_back(make_presence("proc.in",  RoleKind::Consumer, hub));
@@ -340,4 +376,68 @@ TEST(RoleHandlerStability, PresencePointersStableAfterMove)
     // pointer wiring is stable + correct.
     EXPECT_EQ(live_presences[0].connection, &live_connections[0]);
     EXPECT_EQ(live_presences[1].connection, &live_connections[0]);
+}
+
+// ── Edge cases ──────────────────────────────────────────────────────────────
+
+TEST(RoleHandlerEdgeCases, EmptyPresenceList_CtorSucceeds_LookupReturnsNullptr)
+{
+    // Defensive contract: an empty presence vector is valid input
+    // (no crash, no error log).  All accessors return well-defined
+    // empty/null results.  M4 callers that build the presence list
+    // from config can pass an empty vector when config parsing
+    // produces no presences; the handler does not assume ≥ 1.
+    RoleHandler h(std::vector<Presence>{});
+
+    EXPECT_EQ(h.presence_count(),   0u);
+    EXPECT_EQ(h.connection_count(), 0u);
+    EXPECT_EQ(h.find_presence_for_channel("anything"), nullptr);
+    EXPECT_EQ(h.find_presence_for_channel(""),         nullptr);
+    EXPECT_EQ(h.presence_count_for_channel("anything"), 0u);
+    EXPECT_TRUE(h.presences().empty());
+    EXPECT_TRUE(h.connections().empty());
+}
+
+TEST(RoleHandlerProcessor,
+     ConnectionsVector_FirstWinsOrdering_AcrossThreePresences)
+{
+    // 3-presence topology with a repeat: P0=hubA, P1=hubB, P2=hubA.
+    // Pins the load-bearing "first-wins" ordering documented at
+    // `role_handler.hpp::connections()` — important for M4's Class-B
+    // fall-through dispatch where the first connection in the vector
+    // is the primary target.  Mutation: change the dedup loop to
+    // "last-wins" or shuffle the connections vector → this test fails.
+    auto hubA = make_hub("tcp://127.0.0.1:5570", "pubkey-A");
+    auto hubB = make_hub("tcp://127.0.0.1:5571", "pubkey-B");
+
+    std::vector<Presence> presences;
+    presences.push_back(make_presence("ch.first",  RoleKind::Consumer, hubA));
+    presences.push_back(make_presence("ch.second", RoleKind::Consumer, hubB));
+    presences.push_back(make_presence("ch.third",  RoleKind::Producer, hubA));
+
+    RoleHandler h(std::move(presences));
+
+    ASSERT_EQ(h.presence_count(),   3u);
+    ASSERT_EQ(h.connection_count(), 2u)
+        << "Two unique hubs across three presences must dedup to "
+           "exactly two connections (hubA shared by P0 + P2).";
+
+    // First-wins ordering: hubA was named first (P0), so it occupies
+    // connections()[0]; hubB second.
+    const auto &conns = h.connections();
+    EXPECT_EQ(conns[0].broker_endpoint, "tcp://127.0.0.1:5570")
+        << "First-named hub (hubA via P0) must occupy connections()[0].";
+    EXPECT_EQ(conns[0].broker_pubkey,   "pubkey-A");
+    EXPECT_EQ(conns[1].broker_endpoint, "tcp://127.0.0.1:5571")
+        << "Second-named hub (hubB via P1) must occupy connections()[1].";
+    EXPECT_EQ(conns[1].broker_pubkey,   "pubkey-B");
+
+    // Presence-to-connection wiring: P0 + P2 share connections()[0]
+    // (both on hubA); P1 alone on connections()[1].
+    const auto &pres = h.presences();
+    EXPECT_EQ(pres[0].connection, &conns[0]);
+    EXPECT_EQ(pres[1].connection, &conns[1]);
+    EXPECT_EQ(pres[2].connection, &conns[0])
+        << "Third presence (hubA again) must bind to the existing "
+           "hubA slot, not create a new one.";
 }
