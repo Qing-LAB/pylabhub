@@ -387,16 +387,35 @@ chased through the old one):
       with the legacy `pylabhub::HubConfig` singleton it tested. Replaced
       by `tests/test_layer2_service/test_hub_config.cpp` (Pattern 3,
       9 tests) covering the new HEP-0033 §6.1 composite.
-- [ ] `test_datahub_hub_zmq_queue.cpp` (4) — ZmqQueue at hub layer;
-      couples to HEP-0033 §7 broker-owned queue integration.
-- [ ] `test_datahub_hub_inbox_queue.cpp` (4) — inbox at hub layer; likely
-      rewritten against the new `HubAPI` inbox surface.
-- [ ] `test_datahub_zmq_endpoint_registry.cpp` (3) — endpoint tracking;
-      couples to HEP-0033 §8 `HubState`.
-- [ ] `test_datahub_metrics.cpp` (3) — broker metrics; couples to HEP-0033
-      §9 query-driven metrics (supersedes HEP-0019 §3-4).
-- [ ] `test_datahub_hub_federation.cpp` (3) — federation peer map;
-      couples to HEP-0033 `HubState` federation view.
+- [x] ~~`test_datahub_hub_zmq_queue.cpp`~~ — **migrated 2026-05-14**
+      (commit `1ed9cc8`).  Relocated to `tests/test_layer2_service/test_hub_zmq_queue.cpp`
+      and converted to Pattern 1+ (BinaryLifecycleEnvironment).
+      All 65 tests are pure single-class `hub::ZmqQueue` module tests;
+      L3 placement was historical and was corrected during migration.
+      Deeper HEP-0033 §7 broker-owned queue integration tests, if
+      written later, would be a new L3 file — separate concern.
+- [x] ~~`test_datahub_hub_inbox_queue.cpp`~~ — **migrated** (commit `a04d74a`,
+      Pattern 3).  The deeper "rewrite against new `HubAPI` inbox
+      surface" remains a future task IF the inbox API actually changes
+      shape — separate from the lifecycle rework completed here.
+- [x] ~~`test_datahub_zmq_endpoint_registry.cpp`~~ — **migrated** (commit
+      `a854497`, Pattern 3).  HEP-0033 §8 `HubState` coupling is
+      reflected in the worker bodies' assertions; no further rework
+      currently required.
+- [x] ~~`test_datahub_metrics.cpp`~~ — **migrated** (commits `e2f77fd` +
+      `8542575`, Pattern 3).  HEP-0033 §9 query-driven metrics path
+      is what the tests now exercise.
+- [x] ~~`test_datahub_hub_federation.cpp`~~ — **migrated** (commit
+      `7281c91`, Pattern 3).  HEP-0033 federation peer map view
+      already reflected in the worker bodies.
+
+**List status (2026-05-14):** all 5 lifecycle-rework items checked
+off as part of the Pattern-3 migration wave closure
+(`docs/todo/TESTING_TODO.md` § "✅ Closed 2026-05-14").  Any deeper
+HEP-0033-driven test rewrites (e.g. against a future `HubAPI`
+inbox surface or a §7 queue-integration overhaul) would be new
+items here when those refactors land — not a continuation of
+this list.
 
 Conversion pattern per file: each TEST_F spawns a worker subprocess via
 `IsolatedProcessTest::SpawnWorker` + `run_gtest_worker(..., module_list)`
