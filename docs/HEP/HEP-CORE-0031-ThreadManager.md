@@ -24,13 +24,29 @@ handles only the join half of the shutdown.
 
 ## 2. API
 
-> Verified against `src/include/utils/thread_manager.hpp` (2026-04-16).
+> Verified against `src/include/utils/thread_manager.hpp`
+> (2026-05-14 — post-MD1 / MD1.5).  See §4.1.2 for the full
+> `SlotContext` surface (two co-equal APIs the thread body uses
+> to declare quiescence to the manager).
 
 ```cpp
 class ThreadManager {
 public:
+    // Per-slot context handle passed into the thread body — see §4.1.2.
+    // Exposes two co-equal synchronization APIs (pick one per thread,
+    // do not mix): the transactional bracket (`with_active_loop`) and
+    // the monotonic mark (`mark_active_loop_exited`).
+    struct SlotContext;  // full surface in §4.1.2
+
     struct SpawnOptions {
         std::chrono::milliseconds join_timeout{kMidTimeoutMs};  // 5s default
+
+        /// Master/peer shutdown ordering (HEP-CORE-0031 §4.2 — added
+        /// post-MD1.5).  At most one master per ThreadManager.  When
+        /// set, the slot is NOT signaled by `request_shutdown_all()`;
+        /// drain() waits for every peer's `done` first, then signals
+        /// the master, then waits for its `done`, then joins everyone.
+        bool is_master{false};
     };
 
     struct ThreadInfo {
@@ -49,13 +65,66 @@ public:
 
     // Non-copyable, non-movable (fixed identity + lifecycle module).
 
-    bool spawn(const std::string &name, std::function<void()> body, SpawnOptions opts);
-    bool spawn(const std::string &name, std::function<void()> body);
+    // Spawn overloads.  The SlotContext-taking overload is the
+    // post-MD1 form — body receives a per-slot context for the
+    // shutdown-contract APIs (§4.1.2).  The legacy std::function<void()>
+    // overload is preserved for callers that don't need the contract.
+    bool spawn(const std::string &name,
+               std::function<void(SlotContext &)> body,
+               SpawnOptions opts = {});
+    bool spawn(const std::string &name,
+               std::function<void()> body,
+               SpawnOptions opts = {});
 
-    // Per-slot bounded join in reverse-spawn order. Returns detach count.
+    // Per-slot bounded join in reverse-spawn order.  Two-stage wait
+    // per §4.1.4 (Stage 1: `active_loop_depth == 0`; Stage 2: `done`).
+    // Returns detach count.
     std::size_t drain();
 
+    // Targeted single-slot join — same two-stage wait as drain(),
+    // useful for dependency-ordered teardown.
+    [[nodiscard]] bool join_named(std::string_view name) noexcept;
+
+    // ── Shutdown-contract API (§4.1) ──────────────────────────────
+
+    // Per-slot shutdown signal.  Flips the named slot's
+    // `shutdown_requested` flag — observable thread-side via
+    // `ctx.shutdown_requested()` and used by `with_active_loop` as
+    // the skip-on-entry condition.  Does NOT wake blocked threads
+    // (caller must pair with a class-level wake-up signal when the
+    // thread might be in a blocking poll/wait).
+    [[nodiscard]] bool request_shutdown(std::string_view name) noexcept;
+
+    // Manager-wide shutdown signal.  Signals every PEER slot's
+    // `shutdown_requested` (skips the master, if any — see §4.2).
+    // Sets the manager's `closing` flag (rejects new spawns).
+    // Returns count of peers newly signaled.  Does NOT wait —
+    // pair with `wait_for_quiescence` and/or `drain()`.
+    std::size_t request_shutdown_all() noexcept;
+
+    // Bracket-API caller-side wait (§4.1.2).  Waits for every spawned
+    // slot's `active_loop_depth` to drop to 0 (i.e., every thread is
+    // outside its `with_active_loop` body).  Auto-excludes the
+    // calling thread.  Returns the count of slots that did NOT reach
+    // quiescence within the timeout (0 = success).
+    [[nodiscard]] std::size_t wait_for_quiescence(
+        std::chrono::milliseconds timeout) noexcept;
+
+    // Flag-API caller-side wait (§4.1.2).  Waits for the named slot's
+    // `active_loop_exited` flag (set either explicitly by the thread
+    // via `mark_active_loop_exited()` or by the spawn wrapper as a
+    // safety net at body return).  Returns true on success, false on
+    // timeout or unknown name.
+    [[nodiscard]] bool is_active_loop_exited(
+        std::string_view name) const noexcept;
+    [[nodiscard]] bool wait_for_active_loop_exit(
+        std::string_view name,
+        std::chrono::milliseconds timeout) noexcept;
+
+    // ── Diagnostics ───────────────────────────────────────────────
+
     std::size_t detached_count_last_drain() const;
+    [[nodiscard]] bool all_detached_done() const;  // §"Drain diagnostics"
     std::size_t active_count() const;
     std::vector<ThreadInfo> snapshot() const;
 
@@ -136,74 +205,109 @@ performs the single drain.
 
 ## 4.1 Thread Shutdown Contract
 
-> **The contract (added 2026-05-12).**
+> **The contract (added 2026-05-12; bracket+flag co-equal APIs
+> documented 2026-05-14).**
 >
 > **For every managed thread:**
 > 1. The thread SHOULD minimize its touch on `pImpl` / shared
 >    resources while running.
-> 2. On shutdown, the thread SHOULD exit its active loop quickly.
-> 3. As the thread leaves its active loop, it MUST mark the
->    per-slot `active_loop_exited` flag via
->    `SlotContext::mark_active_loop_exited()`.
-> 4. After the active loop has returned, the thread MUST NOT touch
->    any `pImpl` or other shared resource the teardown caller might
+> 2. On shutdown, the thread SHOULD exit its critical region quickly.
+> 3. The thread MUST declare quiescence to ThreadManager when it
+>    leaves its critical region.  Two equivalent declarations exist
+>    (see §4.1.2): the **transactional bracket** (RAII —
+>    quiescence is implicit when the `with_active_loop` body
+>    returns) or the **monotonic mark** (explicit —
+>    `mark_active_loop_exited()` is called at the chosen exit
+>    point).  A thread picks ONE API; the two MUST NOT be mixed on
+>    the same thread (they track independent per-slot atomics).
+> 4. After quiescence is declared, the thread MUST NOT touch any
+>    `pImpl` or other shared resource the teardown caller might
 >    destroy.  Only its own stack frame and its
 >    `ThreadManager::SlotContext` are accessible from that point on.
 >
 > **For the teardown caller:**
-> A. Honor each thread's `active_loop_exited` flag with a bounded
->    timeout (`wait_for_active_loop_exit(name, timeout)`).  Destroy
->    resources the thread had been using ONLY after that wait
->    returns.
-> B. Once all `active_loop_exited` flags are set (or their
+> A. Honor each thread's quiescence declaration with a bounded
+>    timeout: `wait_for_quiescence(timeout)` for threads using the
+>    bracket API, `wait_for_active_loop_exit(name, timeout)` for
+>    threads using the flag API.  Destroy resources the thread had
+>    been using ONLY after that wait returns.
+> B. Once all quiescence declarations are observed (or their
 >    timeouts elapsed), join the threads (via `drain()` or
 >    `join_named()`) and proceed with destruction of the rest of
 >    the lifecycle objects.
 
-The rest of §4.1 elaborates this contract — but the four thread-side
-rules and two caller-side steps above are the load-bearing
-specification.  Without rule 4 (no pImpl access after active loop),
-no caller ordering can fix the race; every caller becomes a hostage
-to the thread's implicit "extra" pImpl access.  With rule 4 plus
-the synchronization primitive, the caller can deterministically
-honor the contract.
+The rest of §4.1 elaborates this contract — but the four
+thread-side rules and two caller-side steps above are the
+load-bearing specification.  Without rule 4 (no pImpl access after
+quiescence is declared), no caller ordering can fix the race;
+every caller becomes a hostage to the thread's implicit "extra"
+pImpl access.  With rule 4 plus the synchronization primitives in
+§4.1.2, the caller can deterministically honor the contract.
 
 ### 4.1.1 Per-thread contracts
 
 Every long-running thread declares (in code or by structural
-property) which shared state it depends on during its own shutdown:
+property) which shared state it depends on during its own
+shutdown:
 
-- **Stop-observation point**: the first instant the thread notices
-  shutdown is requested.  This is typically a loop predicate
-  checking an atomic `stop_requested` flag plus a wake-up via a
-  signal socket or condition variable.
-- **Loop-exit point**: the moment the thread's active loop function
-  returns.  After this, the thread MUST be quiescent w.r.t. shared
-  state — no further pImpl reads/writes, no further socket
-  operations on a poll target the caller might close.
-- The thread signals "I've reached my loop-exit point" by calling
-  `SlotContext::mark_active_loop_exited()` (see §4.1.2 below) from
-  inside its body.
-- The teardown caller honors the contract by waiting for the
-  per-slot flag via `ThreadManager::wait_for_active_loop_exit(...)`
-  before destroying the resources the thread had been touching.
+- **Stop-observation point**: the first instant the thread
+  notices shutdown is requested.  This is typically a loop
+  predicate checking an atomic `stop_requested` flag plus a
+  wake-up via a signal socket or condition variable.  The
+  bracket API exposes this directly — the per-slot
+  `shutdown_requested` flag is observable via
+  `ctx.shutdown_requested()`, and `with_active_loop` itself
+  skips the body if the flag is already set at entry.  Flag-API
+  users source their own signal.
+- **Critical-region exit point**: the moment the thread leaves
+  the scope where it may touch destroyable shared state — the
+  bracket body's closing brace, or the explicit
+  `mark_active_loop_exited()` call site.  After this, the thread
+  MUST be quiescent w.r.t. shared state — no further pImpl
+  reads/writes, no further socket operations on a poll target
+  the caller might close.
+- **Body-return point**: the moment the thread's spawn-body
+  lambda itself returns.  Always ≥ critical-region exit (often
+  identical; can be later if the body does
+  thread-local-only post-quiescence work).  The spawn wrapper
+  sets the slot's `done` flag here; `drain()` and `join_named()`
+  join on this signal in their second stage.
 
-### 4.1.2 `SlotContext` and `active_loop_exited` — the primitive
+### 4.1.2 `SlotContext` — two co-equal synchronization APIs
 
-`ThreadManager::spawn` passes a `SlotContext &` reference into the
-spawned body as its first parameter.  The thread uses the context to
-declare progress without coupling to its owner's pImpl:
+`ThreadManager::spawn` passes a `SlotContext &` reference into
+the spawned body as its first parameter.  The slot exposes TWO
+synchronization primitives — both first-class, both backed by
+per-slot atomics owned by `shared_ptr` so they survive even if the
+slot is later detached and the manager destroyed:
+
+| | Bracket API (default-safe) | Flag API (flexible) |
+|---|---|---|
+| Thread-side declaration | `ctx.with_active_loop(body)` RAII scope | `ctx.mark_active_loop_exited()` (one-shot) |
+| Backing per-slot atomic | `active_loop_depth` (counter, default 0) | `active_loop_exited` (bool, default false) |
+| Caller-side wait | `tm.wait_for_quiescence(timeout)` (all slots) | `tm.wait_for_active_loop_exit(name, timeout)` (one slot) |
+| Skip-on-shutdown | Body skipped automatically if `shutdown_requested` is true at entry | Caller-controlled — thread must check separately |
+| Nested critical regions | Supported (counter increments per frame) | Not supported (flag is monotonic) |
+| Exception-path safety | RAII decrement on throw — quiescence reached automatically | Thread must place mark in a `scope_guard`/finally to guarantee on-error |
+| Compile-time enforcement of rule 4 | YES — pImpl accesses live INSIDE the lambda; after lambda returns they are physically out of reach | NO — author must obey rule 4 manually |
 
 ```cpp
-// Sketch of the API surface.
+// API surface (verbatim from src/include/utils/thread_manager.hpp)
 
 struct ThreadManager::SlotContext {
-    /// Called from inside the thread body, immediately after its
-    /// active loop function returns (or as the first action of any
-    /// post-loop self-cleanup that does NOT touch external shared
-    /// state).  Idempotent.  After this returns, the teardown
-    /// caller is free to destroy any resources the thread declared
-    /// it would no longer touch.
+    /// Transactional bracket — RAII; counter-based (nestable); body
+    /// skipped if per-slot shutdown_requested already set.
+    template <typename F>
+    void with_active_loop(F &&body);
+
+    /// Thread-side poll for the per-slot shutdown_requested flag.
+    /// Useful inside long-running loops that want to bail out
+    /// promptly without sourcing a separate class-level stop signal.
+    [[nodiscard]] bool shutdown_requested() const noexcept;
+
+    /// Monotonic mark — one-shot; flag-based; explicit at the
+    /// thread's chosen exit point.  Do not mix with `with_active_loop`
+    /// on the same thread.
     void mark_active_loop_exited() noexcept;
 };
 
@@ -213,79 +317,183 @@ public:
                std::function<void(SlotContext &)> body,
                SpawnOptions opts = {});
 
-    bool is_active_loop_exited(std::string_view name) const noexcept;
+    // Caller-side queries.  Both auto-exclude the calling thread
+    // (prevents self-deadlock when the calling thread is itself a
+    // spawned worker).
+    [[nodiscard]] std::size_t wait_for_quiescence(
+        std::chrono::milliseconds timeout) noexcept;
+    [[nodiscard]] bool        wait_for_active_loop_exit(
+        std::string_view name,
+        std::chrono::milliseconds timeout) noexcept;
 
-    bool wait_for_active_loop_exit(std::string_view name,
-                                   std::chrono::milliseconds timeout) noexcept;
+    // Independent of the per-slot primitives — manager-wide.
+    std::size_t request_shutdown_all() noexcept;
 };
 ```
 
+**Auto-flip safety net (flag API only).**  The spawn wrapper
+auto-flips `active_loop_exited` true when the body returns, even if
+the thread never called `mark_active_loop_exited()` explicitly.
+This is purely a safety net for old-style spawns and unit-test
+harnesses — production code using the flag API SHOULD still call
+`mark_active_loop_exited()` explicitly at the critical-region exit
+point, otherwise the caller's `wait_for_active_loop_exit` will wait
+all the way until body return (which may be later than the actual
+critical-region exit).
+
+**Skip-on-shutdown asymmetry.**  `with_active_loop` checks
+`shutdown_requested` at entry and skips the body if already set —
+the thread never enters the critical region, never touches pImpl,
+and `active_loop_depth` stays at 0.  This makes the bracket
+default-safe: a teardown that happens BEFORE the thread reaches
+its first bracket is handled automatically.  The flag API has no
+equivalent automatic guard.
+
 **Distinction from the existing `done` flag:**
 
-| Flag | Who sets it | When | What it means |
+| Signal | Who sets it | When | What it means |
 |---|---|---|---|
-| `done` | Spawn wrapper | After body returns | Thread is gone; `std::thread::join()` will return immediately |
-| `active_loop_exited` | Thread itself | Inside body, after active loop returns | External dependencies released; teardown caller may free them |
+| `done` | Spawn wrapper | After body returns | Thread is gone; `std::thread::join()` returns immediately |
+| `active_loop_depth = 0` (bracket API) | RAII guard inside `with_active_loop` | After body of `with_active_loop` returns (including throw) | Slot is outside every critical-region bracket frame; depth-0 is the quiescent state.  Reachable multiple times during a thread's lifetime. |
+| `active_loop_exited` (flag API) | Thread, via `mark_active_loop_exited()`; or spawn wrapper as safety net | At the thread's chosen exit point (or body return) | One-shot declaration of quiescence.  Reachable exactly once — afterwards the thread MUST NOT re-enter the critical region. |
 
-`active_loop_exited` is ALWAYS set BEFORE `done` (the thread sets it
-just before returning).  The gap is whatever post-loop self-cleanup
-the thread chooses to perform — none in the simplest case, possibly
-flushing local diagnostics in more complex bodies.  The teardown
-caller chooses which flag to wait on based on intent: waiting on
-`active_loop_exited` is enough to honor the shutdown contract;
-waiting on `done` (via `drain()` or `join_named`) is required to
-treat the slot as fully terminated.
+### 4.1.3 Choosing between bracket and flag — flexibility with risk
 
-### 4.1.3 `drain()` / `join_named()` consult `active_loop_exited`
+The two APIs are NOT a recommendation/fallback pair.  Both serve
+real cases.  Pick by structure:
 
-`drain()` and `join_named()` primarily synchronize on `done`, but
-they use `active_loop_exited` as an intermediate landmark:
+**Use the bracket API when:**
+- The whole critical region fits inside a lambda scope (the
+  common case for long-running loops: poll loop, message-pump
+  loop, work-stealing loop).
+- You want RAII to handle exit on the exception path
+  automatically.
+- You may have nested critical regions on the same thread —
+  bracket's counter handles this; flag does not.
+- You want the body skipped automatically if shutdown was
+  requested before entry.
 
-- **Two-stage wait.**  The per-slot `join_timeout` is split into two
-  halves.  First half: wait for `active_loop_exited`.  Second half:
-  wait for `done`.
-- **Detach-timeout diagnostics.**  If the second-half wait
-  times out, the error log says "stuck in active loop" (first half
-  timed out — thread hasn't even exited its loop) or "stuck in
-  post-loop cleanup" (first half succeeded but second half timed out
-  — thread exited its loop but didn't return).  Today's drain logs
-  conflate the two states.
-- **Fast path for already-exited slots.**  If `active_loop_exited`
-  is already true when drain starts polling a slot, drain knows
-  body-return is imminent and skips the 10ms polling cadence.
+**Use the flag API when:**
+- The critical region's exit point is decided BY THE THREAD AT
+  RUNTIME and cannot be expressed as a lexical scope (e.g., the
+  thread does work A that touches pImpl, then work B that does
+  not, then exits — A and B span branches/loops/calls that don't
+  fold into one bracket).
+- You need to declare quiescence WITHOUT waiting for the body
+  itself to return (the thread does post-quiescence work that may
+  take measurable time — flushing thread-local diagnostics,
+  finalising a worker-local cache, signing off observability
+  hooks — and you want the teardown caller to proceed in
+  parallel).
+- An external lifecycle constraint forces the synchronization
+  signal to be a one-shot atomic flag rather than a transactional
+  counter (e.g., a non-pylabhub adapter you're wrapping).
 
-### 4.1.4 Per-class pattern classification
+**Risks the flag-API user accepts** (not enforced by the type
+system or the compiler):
+
+1. **Exception paths.**  If the thread takes an exception between
+   "stop-observation" and `mark_active_loop_exited()`, the
+   explicit flag flip never happens.  The spawn-wrapper safety
+   net catches this AT BODY-RETURN time, but a caller's
+   `wait_for_active_loop_exit` may have already moved on (it
+   was waiting on the explicit mark that never came).
+   Mitigation: put the call inside a `pylabhub::basics::scope_guard`
+   or equivalent so it fires on both success and throw paths.
+2. **No compile-time enforcement of "don't touch pImpl after the
+   mark."**  The bracket API enforces this via lexical scope (the
+   pImpl accesses physically live INSIDE the lambda; after the
+   lambda returns they are out of reach).  The flag API doesn't —
+   nothing prevents writing
+   `ctx.mark_active_loop_exited(); pImpl->foo = bar;`.  The
+   contract relies on the thread author obeying rule 4 manually.
+   Code review and lint are the only enforcement.
+3. **Race-window expansion at startup.**  Bracket: body is
+   skipped if shutdown was requested BEFORE entry (the per-slot
+   `shutdown_requested` check at `with_active_loop` entry handles
+   this automatically).  Flag: there's no automatic skip — if
+   shutdown fires after spawn but before the thread's first
+   stop-check, the thread runs full body, touches pImpl, and the
+   caller's `wait_for_active_loop_exit` waits until the thread
+   voluntarily marks.  The thread must build its own
+   shutdown-check at the top of its body.
+4. **Re-entry is forbidden by construction.**  Once
+   `mark_active_loop_exited` is called, the slot is permanently
+   marked quiescent for that thread — any subsequent pImpl
+   access is a contract violation even if the thread "could
+   have" re-entered the critical region.  Bracket's counter
+   handles re-entry naturally (depth increments per frame); flag
+   does not.
+
+If you can't articulate which of these risks you're accepting,
+default to the bracket API.
+
+### 4.1.4 `drain()` / `join_named()` two-stage wait
+
+`drain()` and `join_named()` synchronize on `done` (body-return)
+but use `active_loop_depth` (the bracket counter) as an
+intermediate landmark:
+
+- **Two-stage wait.**  The per-slot `join_timeout` is split into
+  two halves.  Stage 1: wait for `active_loop_depth == 0`.
+  Stage 2: wait for `done == true`.
+- **Detach-timeout diagnostics.**  If the join times out, the
+  ERROR log distinguishes **"still in active loop"** (Stage 1
+  timed out — thread is still inside a `with_active_loop` body)
+  from **"stuck in post-loop cleanup"** (Stage 1 succeeded but
+  Stage 2 timed out — body left every bracket frame but hasn't
+  returned).
+- **Threads that don't use the bracket API.**  `active_loop_depth`
+  defaults to 0 and stays there — Stage 1 passes immediately,
+  Stage 2 owns the full timeout budget.  Flag-API users and
+  bracket-less threads pay no Stage 1 penalty.
+- **Fast path.**  If `active_loop_depth` is already 0 when drain
+  starts polling a slot, drain skips the 10 ms polling cadence.
+
+Note: `drain()` does NOT consult `active_loop_exited`.  The flag
+API's caller-side wait is `wait_for_active_loop_exit(name,
+timeout)`, invoked separately BEFORE drain by the teardown caller
+that wants to honor the contract.  After that wait returns, drain
+runs as usual to join the thread.
+
+### 4.1.5 Per-class pattern classification
 
 This codebase has three patterns for lifecycle-managed classes that
 own or are owned by threads:
 
 | Pattern | Owns its threads? | How its API maps to the contract |
 |---|---|---|
-| **Externally-threaded** | No — caller's ThreadManager owns the thread(s).  Class's `stop()` is a fire-and-forget signal. | Class's `stop()` flips a stop flag and wakes the thread.  The thread's body (run on the caller's ThreadManager) is responsible for calling `mark_active_loop_exited()` after the active loop returns.  Class's `disconnect()` / `reset()` are the destructive operations that the teardown caller delays until `wait_for_active_loop_exit` returns. |
-| **Self-threaded** | Yes — class owns a private ThreadManager.  `stop()` is self-contained (signal + drain of own threads). | The class's body internally calls `mark_active_loop_exited()` and the class's own `drain()` consumes it.  External callers treat the whole `stop()` as one atomic step. |
+| **Externally-threaded** | No — caller's ThreadManager owns the thread(s).  Class's `stop()` is a fire-and-forget signal. | The CALLER chooses bracket vs flag at the spawn site.  Class's `stop()` flips a class-level stop flag and wakes the thread.  Class's `disconnect()` / `reset()` are destructive operations that the teardown caller delays until quiescence is observed via the chosen API. |
+| **Self-threaded** | Yes — class owns a private ThreadManager.  `stop()` is self-contained (signal + wait + drain of own threads). | The class chooses bracket vs flag internally.  External callers treat the whole `stop()` as one atomic step; the contract is internal. |
 | **Inline / no thread** | No threads of its own — driven inline by the caller's thread. | No shutdown contract because there is no separate thread.  Resource cleanup happens whenever the caller chooses. |
 
 Examples in the pylabhub codebase:
 
-- `BrokerRequestComm` is **externally-threaded**.  Its ctrl thread is
-  spawned into `RoleAPIBase::thread_manager()`, NOT BRC's own
-  ThreadManager.  `BRC::stop()` is therefore a fire-and-forget
-  signal that flips `stop_requested`.  `BRC::run_poll_loop` (the
-  active loop function) takes `SlotContext &` and calls
-  `mark_active_loop_exited()` after `loop.run()` returns.  The
-  teardown caller (`do_role_teardown` Step 12.5) calls
-  `wait_for_active_loop_exit("ctrl")` before allowing
+- `BrokerRequestComm` is **externally-threaded using the bracket
+  API**.  Its ctrl thread is spawned into
+  `RoleAPIBase::thread_manager()`, NOT BRC's own ThreadManager.
+  `BRC::stop()` is therefore a fire-and-forget signal that flips
+  `stop_requested`.  `BRC::run_poll_loop` takes a plain
+  `std::function<bool()>` (NOT `SlotContext &`); the spawn site
+  in `src/utils/service/role_api_base.cpp:692-733` wraps the
+  whole `bc->run_poll_loop(...)` call inside
+  `ctx.with_active_loop(...)`.  Local captures of `bc / eng /
+  core` are taken BEFORE the bracket so post-bracket code can
+  log/etc. without touching pImpl.  The teardown caller
+  (`do_role_teardown` Step 12.5,
+  `src/utils/service/role_host_lifecycle.cpp:55-73`) calls
+  `wait_for_quiescence(kMidTimeoutMs)` before allowing Step 13's
   `teardown_infrastructure_` to destroy `broker_comm_`.
-- `ZmqQueue` is **self-threaded**.  Owns its own ThreadManager; its
-  recv/send threads run inside the queue's `Impl` and are joined by
-  the queue's own `stop()`.  Callers treat `stop()` as one
-  atomic step; the contract is internal.
+- `ZmqQueue` is **self-threaded**.  Owns its own ThreadManager;
+  its recv/send threads run inside the queue's `Impl` and are
+  joined by the queue's own `stop()`.  Callers treat `stop()`
+  as one atomic step; the contract is internal.
 - `InboxQueue` is **inline / no thread**.  `recv_one()` is called
   from the worker thread that runs `data_loop.hpp`.  No background
   thread exists; `stop()` is just resource cleanup, ordered by the
   caller's natural code flow.
 
-### 4.1.5 Historical context
+### 4.1.6 Historical context
 
 The contract was articulated 2026-05-12 in response to a captured
 use-after-free race in role-side teardown.  `do_role_teardown`
@@ -296,48 +504,74 @@ post-loop work.  The post-loop store at
 `broker_request_comm.cpp:594` dereferenced freed `pImpl` →
 SIGSEGV (1/13 reproductions under `ctest -j2`).
 
-The fix had THREE parts, each from this contract:
-1. The thread's body acknowledged the rule explicitly — call
-   `mark_active_loop_exited()` after `loop.run()`, then DO NOT
-   touch `pImpl` again.  Pre-MD1 the body violated the rule by
-   writing `pImpl->poll_loop_running` and
-   `pImpl->active_loop_periodic_tasks` post-loop (both dead-code
-   accesses; removed).
-2. ThreadManager gained the `active_loop_exited` primitive so the
-   thread's progress is observable without coupling to pImpl.
-3. The teardown caller inserted a `wait_for_active_loop_exit("ctrl")`
-   step between signaling stop and destroying `broker_comm_`,
-   honoring the contract.
+The fix landed across commits `42092cb` through `4a5347c` and uses
+the **bracket API**:
 
-The historical placement of `teardown_infrastructure_` (BEFORE the
-final `drain()` — see HEP-CORE-0011 §"Role Host worker_main_()
-Steps") is deliberate and unchanged: it lets the role host release
-its resources before potentially-hanging joins, leaving partial
-cleanup possible if a thread eventually wedges and is detached.
+1. The thread's body acknowledged rule 4 explicitly — the
+   post-loop dead pImpl writes (`pImpl->poll_loop_running.store`
+   and `pImpl->active_loop_periodic_tasks = nullptr`) were
+   removed from `BRC::run_poll_loop`.  See the comment at
+   `src/utils/network_comm/broker_request_comm.cpp:592-608`.
+2. ThreadManager gained the `active_loop_depth` counter + the
+   `with_active_loop` template (and the parallel
+   `active_loop_exited` flag API for cases the bracket can't
+   fit).
+3. The teardown caller wrapped the ctrl-thread spawn in
+   `ctx.with_active_loop(...)` (the bracket entry point) and
+   added Step 12.5 — `request_shutdown_all()` +
+   `wait_for_quiescence(kMidTimeoutMs)` — between Step 12
+   (signal stop) and Step 13 (destroy infrastructure).
+   `PlhHubCliTest.RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters`
+   passes 5/5 solo after the fix; the parallel race is gone.
 
-### 4.1.6 Reviewer rules
+The historical placement of `teardown_infrastructure_` (BEFORE
+the final `drain()` — see HEP-CORE-0011 §"Role Host
+worker_main_() Steps") is deliberate and unchanged: it lets the
+role host release its resources before potentially-hanging joins,
+leaving partial cleanup possible if a thread eventually wedges
+and is detached.
+
+### 4.1.7 Reviewer rules
 
 When adding a new managed thread:
-1. Choose whether the class is externally-threaded, self-threaded,
-   or inline (per §4.1.4).  Document the choice in the class's
-   docstring.
-2. If the thread's body is the active loop directly: call
-   `SlotContext::mark_active_loop_exited()` after the loop returns
-   and BEFORE any further pImpl access.  If the body must do
-   post-loop work that does NOT touch shared state (e.g., flush
-   thread-local diagnostics), mark first.
-3. At every site that destroys this class while a thread is
+
+1. Choose whether the class is externally-threaded,
+   self-threaded, or inline (per §4.1.5).  Document the choice in
+   the class's docstring.
+2. Choose bracket vs flag (per §4.1.3).  If unsure, default to
+   bracket.  Document the choice in the class's docstring.
+3. **Bracket users**: wrap the critical region in
+   `ctx.with_active_loop(...)` at the spawn site or inside the
+   thread body — wherever the lexical scope cleanly bounds pImpl
+   access.  Take local captures of any pImpl-borrowed pointers
+   BEFORE the bracket if you need to log or run safe-after-
+   quiescence code post-bracket.  Use `ctx.shutdown_requested()`
+   as the loop predicate (not a class-level flag) so the
+   automatic skip-on-shutdown at bracket entry works.
+4. **Flag users**: call `ctx.mark_active_loop_exited()` at the
+   chosen critical-region exit point.  Wrap the call in a
+   `pylabhub::basics::scope_guard` (or equivalent) so it fires on
+   both success and exception paths.  Audit every pImpl-touching
+   site after the call site — must be none.  Add an explicit
+   shutdown-check at the top of the body (the flag API has no
+   automatic skip-on-shutdown).
+5. At every site that destroys this class while a thread is
    potentially still running, verify the contract is honored:
-   either via `wait_for_active_loop_exit` (if the destroy site is
-   not in a `drain()`) or via the drain itself (if the slot is in
-   the drained set).
+   either via `wait_for_quiescence` (bracket users) or
+   `wait_for_active_loop_exit` (flag users) before the destroy
+   call.  Document the synchronization point at the destroy site
+   so future maintainers don't accidentally remove it.
 
 When adding a new step to an existing teardown sequence:
-1. Identify which thread's contract the step interacts with.
+
+1. Identify which thread's contract the step interacts with and
+   which API that thread uses.
 2. If the step destroys state any thread was touching, the step
-   must run AFTER that thread's `active_loop_exited` mark.
-3. Reviewers reject steps that destroy state without an
-   `active_loop_exited` synchronization upstream.
+   MUST run AFTER that thread's quiescence is observed (via the
+   thread's chosen wait API).
+3. Reviewers reject steps that destroy state without an upstream
+   `wait_for_quiescence` / `wait_for_active_loop_exit`
+   synchronization.
 
 ---
 
@@ -575,3 +809,6 @@ mixing produces two queues of observers waiting on different signals.
 | Version | Date | Change |
 |---------|------|--------|
 | 1.0 | 2026-04-16 | Initial HEP from tech draft merge. Verified against code. |
+| 1.1 | 2026-05-12 | §4.1 Thread Shutdown Contract added in response to captured MD1 use-after-free race. |
+| 1.2 | 2026-05-12 | §4.2 Master/Peer Shutdown Ordering added (post-MD1.5). |
+| 1.3 | 2026-05-14 | §2 API surface refreshed to current `thread_manager.hpp` (was 2026-04-16 snapshot, missing the SlotContext + shutdown-contract methods entirely).  §4.1.1-4.1.7 restructured to document both synchronization APIs (transactional bracket `with_active_loop`/`wait_for_quiescence` AND monotonic mark `mark_active_loop_exited`/`wait_for_active_loop_exit`) as co-equal first-class options.  New §4.1.3 covers the flexibility-with-risk trade-off when choosing between them (exception paths, no compile-time pImpl-touch enforcement, race-window at startup, no re-entry).  §4.1.4 corrected to reflect that `drain()` uses `active_loop_depth` (bracket counter), not `active_loop_exited` (flag).  §4.1.5 BRC example corrected: `run_poll_loop` takes `std::function<bool()>` not `SlotContext &`; bracket is at spawn site, not inside BRC.  §4.1.6 historical context corrected: the MD1 fix landed using the bracket API, not the flag API. |
