@@ -1,14 +1,37 @@
 # Test Compliance Audit — L1/L2/L3/L4
 
 **Date**: 2026-04-18 (audit snapshot); progress refreshed 2026-04-21.
-**Status**: **Active reference document.** §1-§5 are the authoritative
-contract + violation taxonomy + file-level verdicts — still accurate
-for the Pattern 3 conversion sweep. §7 progress tracker is updated
-through 2026-04-21 (L2 complete; L3 tracked in harness tasks
-`21.L4` + `21.L5`).
+**Status (closure 2026-05-14)**: **Audit findings resolved.** The
+Pattern-3 migration wave that this document scoped closed on
+2026-05-14 (21 files migrated; see `docs/todo/TESTING_TODO.md`
+§ "✅ Closed 2026-05-14: Pattern-3 migration debt wave").  The §3
+contract has since been extended with Pattern 1+ as a sanctioned
+in-process variant (`docs/README/README_testing.md` § "Pattern 1+");
+this audit pre-dates that section, so file-level verdicts written
+here as "P3 required" or "P1 (borderline — flagged)" should be
+re-read with Pattern 1+ as a now-available option for the
+single-class-module borderline cases.
+
+Notable post-audit decisions (resolved during the wave):
+- `test_datahub_zmq_poll_loop.cpp` (line 190 borderline) — split
+  into `test_layer1_base/test_periodic_task.cpp` (Pattern 1) +
+  `test_layer2_service/test_zmq_poll_loop.cpp` (Pattern 1+).
+- `test_datahub_hub_zmq_queue.cpp` (line 172 V1) — relocated to
+  `test_layer2_service/test_hub_zmq_queue.cpp` (Pattern 1+).
+- `test_admin_service.cpp` / `test_hub_api.cpp` / `test_role_host_core.cpp`
+  (V1 in the audit) — Pattern 1+ in their own dedicated executables.
+- `test_datahub_broker_protocol.cpp` (V1 in the audit) — Pattern 3
+  workers in the L3 aggregate (sibling consistency).
+
+§1-§5 contract + violation taxonomy remains accurate; §6-§7 progress
+trackers are now historical snapshots.  Per
+`docs/DOC_STRUCTURE.md`, the next step for this transient doc would
+be archival once any remaining audit-only references in
+permanent docs are re-pointed at `README_testing.md` (the
+authoritative pattern guide).
 **Purpose**: Ground-truth inventory of every test `.cpp` file under
 `tests/test_layer[1-4]_*/` against the framework contract. No fixes;
-findings only (remediation is tracked separately).
+findings only (remediation tracked in TESTING_TODO).
 **Scope**: 96 test files (excluding `workers/` subdirs, which are
 Pattern-3 implementation files not subject to fixture rules).
 

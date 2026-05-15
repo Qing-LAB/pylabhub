@@ -637,31 +637,31 @@ Re-audit on 2026-05-13 against actual `LifecycleGuard` construction
   - 🔁 RENAMED: `test_layer4_plh_hub/test_admin_service.cpp` →
     `test_layer2_service/test_admin_service.cpp`.
 
-**Active migration set: 21 files.**
+**Active migration set: 21 files — all ✅ RESOLVED 2026-05-14.**
 
-| File | TEST_F count |
-|---|---|
-| `test_layer3_datahub/test_hub_python_integration.cpp` | 1 |
-| `test_layer3_datahub/test_datahub_hub_federation.cpp` | 3 |
-| `test_layer3_datahub/test_datahub_hub_host_integration.cpp` | 3 |
-| `test_layer3_datahub/test_datahub_broker_consumer.cpp` | 5 |
-| `test_layer3_datahub/test_datahub_broker_schema.cpp` | 5 |
-| `test_layer3_datahub/test_datahub_zmq_endpoint_registry.cpp` | 5 |
-| `test_layer3_datahub/test_datahub_broker_admin.cpp` | 8 |
-| `test_layer2_service/test_engine_factory.cpp` | 8 |
-| `test_layer2_service/test_hub_host.cpp` | 10 |
-| `test_layer3_datahub/test_datahub_role_identity_policy.cpp` | 11 |
-| `test_layer3_datahub/test_hub_lua_integration.cpp` | 11 |
-| `test_layer3_datahub/test_datahub_schema_loader.cpp` | 12 plain TEST + 4 TEST_F (**also has mixed-suites violation**) |
-| `test_layer2_service/test_log_capture_fixture.cpp` | 13 |
-| `test_layer3_datahub/test_datahub_hub_inbox_queue.cpp` | 16 |
-| `test_layer3_datahub/test_datahub_metrics.cpp` | 17 |
-| ~~`test_layer3_datahub/test_datahub_zmq_poll_loop.cpp`~~ | ✅ RESOLVED 2026-05-14 via split (see below) |
-| ~~`test_layer2_service/test_admin_service.cpp`~~ | ✅ RESOLVED 2026-05-14 via Pattern 1+ migration |
-| ~~`test_layer3_datahub/test_datahub_broker_protocol.cpp`~~ | ✅ RESOLVED 2026-05-14 — Pattern 3 (matches sibling broker tests) |
-| ~~`test_layer2_service/test_hub_api.cpp`~~ | ✅ RESOLVED 2026-05-14 — Pattern 1+ (own binary, Logger only, no broker) |
-| ~~`test_layer2_service/test_role_host_core.cpp`~~ | ✅ RESOLVED 2026-05-14 — Pattern 1+ (own binary, Logger only, no broker) |
-| ~~`test_layer3_datahub/test_datahub_hub_zmq_queue.cpp`~~ | ✅ RESOLVED 2026-05-14 — Pattern 1+ via L3→L2 relocation (single-class module) |
+| File | TEST_F count | Status |
+|---|---|---|
+| ~~`test_layer3_datahub/test_hub_python_integration.cpp`~~ | 1 | ✅ Pattern 3 (commit `6dfb86d`, 1/21) |
+| ~~`test_layer3_datahub/test_datahub_hub_federation.cpp`~~ | 3 | ✅ Pattern 3 (commit `7281c91`, 2/21) |
+| ~~`test_layer3_datahub/test_datahub_hub_host_integration.cpp`~~ | 3 | ✅ Pattern 3 (commit `cd29a88`, 3/21) |
+| ~~`test_layer3_datahub/test_datahub_broker_consumer.cpp`~~ | 5 | ✅ Pattern 3 (commit `24e1585`, 4/21) |
+| ~~`test_layer3_datahub/test_datahub_broker_schema.cpp`~~ | 5 | ✅ Pattern 3 (commit `8c5dda3`, 5/21) |
+| ~~`test_layer3_datahub/test_datahub_zmq_endpoint_registry.cpp`~~ | 5 | ✅ Pattern 3 (commit `a854497`, 6/21) |
+| ~~`test_layer3_datahub/test_datahub_broker_admin.cpp`~~ | 8 | ✅ Pattern 3 (commit `ad87652`, 7/21) |
+| ~~`test_layer2_service/test_engine_factory.cpp`~~ | 8 | ✅ Pattern 3 (commit `1fb0458`, 8/21) |
+| ~~`test_layer2_service/test_hub_host.cpp`~~ | 10 | ✅ Pattern 3 (commit `e95b813`, 9/21) |
+| ~~`test_layer3_datahub/test_datahub_role_identity_policy.cpp`~~ (was named `test_datahub_channel_access_policy.cpp` at migration time; renamed in `c87dbd9` post-migration) | 11 | ✅ Pattern 3 (commit `d801812`, 10/21) |
+| ~~`test_layer3_datahub/test_hub_lua_integration.cpp`~~ | 11 | ✅ Pattern 3 (commit `a79494b`, 11/21) |
+| ~~`test_layer3_datahub/test_datahub_schema_loader.cpp`~~ | 12 plain TEST + 4 TEST_F | ✅ Pattern 3 (commit `ef75cc8`, 12/21) |
+| ~~`test_layer2_service/test_log_capture_fixture.cpp`~~ | 13 | ✅ Pattern 3 (commit `99fe50a`, 13/21) |
+| ~~`test_layer3_datahub/test_datahub_hub_inbox_queue.cpp`~~ | 16 | ✅ Pattern 3 (commit `a04d74a`, 14/21) |
+| ~~`test_layer3_datahub/test_datahub_metrics.cpp`~~ | 17 | ✅ Pattern 3 (commits `e2f77fd` + `8542575`, 15/21) |
+| ~~`test_layer3_datahub/test_datahub_zmq_poll_loop.cpp`~~ → split into `test_layer1_base/test_periodic_task.cpp` (15 in current source — 10 transplanted + 5 `tick()`-return strengthening from commit `3c33ad9`) + `test_layer2_service/test_zmq_poll_loop.cpp` (10 in current source — 7 transplanted + 3 gap-closing strengthening from `3c33ad9`) | 17 → 25 | ✅ Split (commit `70ea6aa`, 16/21) + coverage strengthening (`3c33ad9`) |
+| ~~`test_layer2_service/test_admin_service.cpp`~~ | 22 → 30 (22 transplanted + 8 dispatch/filter strengthening) | ✅ Pattern 1+ migration (commit `32692e9`, 17/21) |
+| ~~`test_layer3_datahub/test_datahub_broker_protocol.cpp`~~ | 23 | ✅ Pattern 3 — matches sibling broker tests (commit `e83781e`, 18/21) |
+| ~~`test_layer2_service/test_hub_api.cpp`~~ | 23 | ✅ Pattern 1+ — own binary, Logger only, no broker (commit `9bc8d34`, 19/21) |
+| ~~`test_layer2_service/test_role_host_core.cpp`~~ | 34 | ✅ Pattern 1+ — own binary, Logger only, no broker (commit `d9cff3f`, 20/21) |
+| ~~`test_layer3_datahub/test_datahub_hub_zmq_queue.cpp`~~ → relocated `test_layer2_service/test_hub_zmq_queue.cpp` | 65 | ✅ Pattern 1+ via L3→L2 relocation — single-class module (commit `1ed9cc8`, 21/21) |
 
 **Plus** the two ThreadManager test files touched in MD1.5 work
 (`test_layer2_service/test_thread_manager_active_loop.cpp` 17 TEST_F,
