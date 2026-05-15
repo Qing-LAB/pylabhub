@@ -594,7 +594,10 @@ int consumer_heartbeat_timeout_fires_consumer_died_notify()
             if (prod_hb_thread.joinable()) prod_hb_thread.join();
 
             // Body shape: reason="heartbeat_timeout" distinguishes this
-            // path from the PID-death path (reason="process_dead").
+            // path from the PID-death path (reason="process_dead").  The
+            // consumer_uid field disambiguates which consumer (across
+            // restarts on the same pid) died — producers cannot reliably
+            // correlate notifications on pid alone.
             {
                 std::lock_guard<std::mutex> lk(notify_mu);
                 ASSERT_FALSE(consumer_died_notifies.empty());
@@ -604,6 +607,10 @@ int consumer_heartbeat_timeout_fires_consumer_died_notify()
                     << "CONSUMER_DIED_NOTIFY must carry reason='heartbeat_timeout' "
                        "for the broker-sweep path; reason='process_dead' is "
                        "reserved for PID-death (check_dead_consumers).";
+                EXPECT_EQ(body.value("consumer_uid", std::string{}), cons_uid)
+                    << "CONSUMER_DIED_NOTIFY must carry consumer_uid so "
+                       "producers can disambiguate which consumer died "
+                       "(pid alone is not unique across role restarts).";
                 EXPECT_EQ(body.value("consumer_pid", uint64_t{0}),
                           static_cast<uint64_t>(::getpid()));
             }
