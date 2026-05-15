@@ -120,15 +120,11 @@ class PYLABHUB_UTILS_EXPORT RoleHandler
         return connections_;
     }
 
-    // NOTE: Wave-B M4 will add:
-    //   bool start();
-    //   void shutdown();
-    //   void send_class_A(channel, msg_type, body);
-    //   std::optional<json> query_role(uid, msg_type, body);
-    //   std::optional<json> query_hub(hub_side, msg_type, body);
-    //   void send_class_D(band_name, msg_type, body);
-    // along with the band_index_ lazy-population path.  See
-    // `docs/tech_draft/role_host_template_design.md §5.6` + §14.2.
+    // Network-touching surface (start/shutdown + four-class dispatch +
+    // band_join lazy index population) arrives in Wave-B M4 per
+    // `docs/tech_draft/role_host_template_design.md §5.6` (sketch) +
+    // §14.2 (M4 row).  See those sections for the authoritative list;
+    // duplicating the signatures here would rot the moment M4 ships.
 
   private:
     /// Group presences by `(hub.broker, hub.broker_pubkey)` and build

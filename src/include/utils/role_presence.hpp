@@ -67,8 +67,11 @@ enum class RoleKind : std::uint8_t
 
 /// Parse a wire-protocol `role_type` string back into a `RoleKind`.
 /// Returns `RoleKind::Producer` for `"producer"`, `RoleKind::Consumer`
-/// for `"consumer"`.  Other input is invalid — callers MUST validate
-/// before parsing (Phase 6 wire format rejects empty/unknown).
+/// for `"consumer"`.  Other input — including whitespace-padded
+/// variants like `"producer "`, case-different (`"PRODUCER"`), and
+/// the empty string — is invalid and returns false; `out` is left
+/// untouched.  Callers MUST validate before parsing (Phase 6 wire
+/// format rejects empty/unknown).
 [[nodiscard]] inline bool parse_wire_string(const std::string &s, RoleKind &out) noexcept
 {
     if (s == "producer") { out = RoleKind::Producer; return true; }

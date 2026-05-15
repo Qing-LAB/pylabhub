@@ -240,6 +240,14 @@ A (file moves + rename), B (include reorg), C (umbrella + public/internal audit)
 
 ### Open follow-ups (lower priority)
 
+- [ ] **CMakeLists `target_include_directories` audit** (Wave-B M3 review
+  follow-up, 2026-05-15) — `tests/test_layer2_service/test_layer2_zmq_poll_loop`
+  carries `target_include_directories(... PRIVATE ${CMAKE_SOURCE_DIR}/src)`
+  that's redundant with the transitive include from `pylabhub::utils`
+  link (verified by removing the same line from `test_layer2_role_handler`
+  with no build impact).  Probably present on other Pattern 1+ tests
+  too.  Sweep `tests/test_layer{2,3}/CMakeLists.txt` for the same line
+  and remove where redundant.  Low priority — pure hygiene.
 - [ ] **Source-comment archaeology sweep** (audit C5 follow-up, 2026-05-15) —
   ~30 sites across `src/` carry inline phase markers like
   "Wave M2.5 step N", "Wave M3 step Nx", "M1.4 (2026-05-11)",
