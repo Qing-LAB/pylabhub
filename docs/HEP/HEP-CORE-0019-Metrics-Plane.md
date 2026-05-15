@@ -781,8 +781,22 @@ role's `RoleEntry` liveness bookkeeping.
 7. ✅ **`ChannelEntry.status` / `ChannelEntry.last_heartbeat` removed**
    (commit `a41ce71`): channel observability derived from the
    producer-presence FSM (HEP-CORE-0023 §2.6).
+8. ✅ **Wire-field enforcement** (broker_proto 2→3, audit C4
+   2026-05-15): `handle_heartbeat_req` rejects HEARTBEAT_REQ with
+   empty `uid` or `role_type` — the pre-Phase-6 fallback that
+   derived `uid` from the channel's first producer is gone.
+   HEARTBEAT_REQ is fire-and-forget so the rejection is a silent
+   drop + WARN log; pre-Phase-6 clients are otherwise harmless
+   but their heartbeats no longer refresh anything.
+9. ✅ **Per-presence payload shape** (audit C2 2026-05-15): the
+   `metrics` payload on each heartbeat is shaped for THAT presence
+   (consumer-presence carries rx-queue + `in_slots_received`;
+   producer-presence carries tx-queue + `out_slots_written` /
+   `out_drop_count`).  See §2 Principle 4.  Pre-C2 the role-wide
+   aggregate was sent on every heartbeat — same blob on every
+   presence row, against Principle 2.
 
-**Wave M1.4 implementation summary (2026-05-11):**
+**Wave M1.4 + audit-C closure summary:**
 - `HubState::channel_metrics_snapshot(channel)` aggregates per-
   presence rows for admin queries (O(producers + consumers)).
 - `BrokerService::query_metrics(MetricsFilter)`,
@@ -790,10 +804,12 @@ role's `RoleEntry` liveness bookkeeping.
   `BrokerServiceImpl::handle_metrics_req` redirected to use the
   helper.
 - L2 contract pinned by `HubStateChannelMetricsSnapshot.*` tests
-  (6 tests in `test_hub_state.cpp`).  L3 test migrated to use
-  `send_heartbeat(channel, uid, "consumer", metrics)` instead of
-  the retired `send_metrics_report`.
-- 1828/1828 tests pass post-M1.4.
+  (6 tests in `test_hub_state.cpp`) + audit-C2 per-presence shape
+  tests (3 tests in `test_metrics_api.cpp`).  L3 test migrated to
+  use `send_heartbeat(channel, uid, "consumer", metrics)` instead
+  of the retired `send_metrics_report`.
+- broker_proto bumped 2→3 by the audit-C wave (DEREG role_uid +
+  CONSUMER_DIED_NOTIFY consumer_uid + HEARTBEAT enforcement).
 
 ### Test coverage
 
