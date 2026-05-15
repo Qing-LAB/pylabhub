@@ -786,8 +786,14 @@ BrokerRequestComm::register_consumer(const nlohmann::json &opts, int timeout_ms)
 std::optional<nlohmann::json>
 BrokerRequestComm::deregister_channel(const std::string &channel, int timeout_ms)
 {
+    // broker_proto 2→3: `role_uid` REQUIRED on the wire so the broker
+    // can resolve the target producer by (pid, uid) tuple instead of
+    // pid-alone.  HEP-CORE-0023 §2.1.1 multi-producer channels admit
+    // multiple producers; PID-only resolution was racy under OS pid
+    // reuse across role restarts.
     nlohmann::json payload;
     payload["channel_name"] = channel;
+    payload["role_uid"]     = pImpl->role_uid;
     payload["producer_pid"] = static_cast<uint64_t>(::getpid());
     return pImpl->do_request("DEREG_REQ", "DEREG_ACK",
                              std::move(payload), timeout_ms);
@@ -796,8 +802,12 @@ BrokerRequestComm::deregister_channel(const std::string &channel, int timeout_ms
 std::optional<nlohmann::json>
 BrokerRequestComm::deregister_consumer(const std::string &channel, int timeout_ms)
 {
+    // broker_proto 2→3: same as DEREG_REQ — `role_uid` REQUIRED on the
+    // wire so the broker resolves the target consumer by (pid, uid)
+    // tuple.  Closes the analogous race for multi-consumer channels.
     nlohmann::json payload;
     payload["channel_name"] = channel;
+    payload["role_uid"]     = pImpl->role_uid;
     payload["consumer_pid"] = static_cast<uint64_t>(::getpid());
     return pImpl->do_request("CONSUMER_DEREG_REQ", "CONSUMER_DEREG_ACK",
                              std::move(payload), timeout_ms);

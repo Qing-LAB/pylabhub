@@ -146,7 +146,15 @@ inline constexpr uint8_t kShmMinor             = 0;
 // broker_proto 1 → 2 (Wave M1.4, 2026-05-11): METRICS_REPORT_REQ retired;
 // metrics piggyback on HEARTBEAT_REQ per HEP-CORE-0019 §2.3 Phase 6.
 // Old clients sending METRICS_REPORT_REQ receive UNKNOWN_MSG_TYPE error.
-inline constexpr uint8_t kBrokerProtoMajor     = 2;
+//
+// broker_proto 2 → 3 (audit C3, 2026-05-15): `role_uid` REQUIRED on
+// DEREG_REQ + CONSUMER_DEREG_REQ wire payloads.  Multi-producer /
+// multi-consumer channels (HEP-CORE-0023 §2.1.1) need (pid, role_uid)
+// for target resolution; pid-alone is racy under OS pid reuse.  Old
+// clients sending DEREG without `role_uid` receive INVALID_REQUEST
+// error.  CONSUMER_DIED_NOTIFY payload also gains `consumer_uid`
+// (additive — same proto bump for the broader audit-C wave).
+inline constexpr uint8_t kBrokerProtoMajor     = 3;
 inline constexpr uint8_t kBrokerProtoMinor     = 0;
 inline constexpr uint8_t kZmqFrameMajor        = 1;
 inline constexpr uint8_t kZmqFrameMinor        = 0;

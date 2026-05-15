@@ -1013,13 +1013,25 @@ role_type field (added 2026-03-10):
 ```
 Direction:  Consumer → Broker → Consumer
 Trigger:    Consumer::close() or graceful shutdown
-Effect:     Broker removes the consumer matching (channel_name, consumer_pid) from
-            ChannelEntry.consumers[].  If pid does not match any registered
-            consumer, broker replies ERROR with error_code="NOT_REGISTERED".
+Effect:     Broker removes the consumer matching (channel_name, consumer_pid,
+            role_uid) from ChannelEntry.consumers[].  Resolution is by the
+            (pid, role_uid) tuple — both must match the same admitted
+            consumer.  pid-only resolution was racy under OS pid reuse
+            across consumer restarts (broker_proto 2→3 closure, 2026-05-15;
+            audit C3).
 
 Payload (CONSUMER_DEREG_REQ):
   channel_name          string
+  role_uid              string   REQUIRED — consumer's role_uid (the same
+                                  value carried on CONSUMER_REG_REQ).
+                                  Missing/empty → broker replies ERROR
+                                  with error_code="INVALID_REQUEST".
   consumer_pid          uint64
+
+  Resolution: the broker scans `ChannelEntry.consumers[]` for an entry
+  where BOTH `consumer_pid == wire.consumer_pid` AND
+  `role_uid == wire.role_uid`.  Mismatch on either field →
+  error_code="NOT_REGISTERED".
 
 Payload (CONSUMER_DEREG_ACK):
   status                string   "success"
@@ -1032,13 +1044,26 @@ Payload (CONSUMER_DEREG_ACK):
 ```
 Direction:  Producer → Broker → Producer
 Trigger:    BrokerRequestComm::deregister_channel() during role shutdown
-Effect:     Removes channel from registry; triggers CHANNEL_CLOSING_NOTIFY to consumers.
-            If producer_pid does not match the registered producer's pid, broker
-            replies ERROR with error_code="NOT_REGISTERED".
+Effect:     Removes the producer-presence (or, if this is the LAST
+            producer, the channel record itself + atomic CHANNEL_CLOSING_NOTIFY
+            fan-out per HEP-CORE-0023 §2.1.1).  Resolution is by the
+            (pid, role_uid) tuple — both must match the same admitted
+            producer.  HEP-CORE-0023 §2.1.1 multi-producer channels admit
+            multiple producers; pid-alone resolution was racy under OS
+            pid reuse (broker_proto 2→3 closure, 2026-05-15; audit C3).
 
 Payload (DEREG_REQ):
   channel_name          string
+  role_uid              string   REQUIRED — producer's role_uid (same
+                                  value carried on REG_REQ).  Missing or
+                                  empty → broker replies ERROR with
+                                  error_code="INVALID_REQUEST".
   producer_pid          uint64
+
+  Resolution: the broker scans `ChannelEntry.producers[]` for an entry
+  where BOTH `producer_pid == wire.producer_pid` AND
+  `role_uid == wire.role_uid`.  Mismatch on either field →
+  error_code="NOT_REGISTERED".
 
 Payload (DEREG_ACK):
   status                string   "success"
@@ -1364,7 +1389,7 @@ same change.
 | `CHANNEL_NOT_FOUND` | DISC_REQ / CONSUMER_REG_REQ / DEREG_REQ / CONSUMER_DEREG_REQ for a channel that is not registered, OR for a channel whose producer-presence has just been reaped (rare race per HEP-CORE-0023 §2.1). | Retry within the client's discover budget; producer may register shortly.  Give up after the timeout. |
 | `CHANNEL_NOT_READY` | DISC_REQ / CONSUMER_REG_REQ for a channel whose `data_transport=zmq` but `zmq_node_endpoint` has unresolved port `0`. | Wait briefly and retry; producer is still resolving its endpoint. |
 | `TRANSPORT_MISMATCH` | CONSUMER_REG_REQ where the consumer's declared transport (`shm`/`zmq`) doesn't match the producer's. | Programming error or misconfiguration; reconcile the channel's transport setting. |
-| `NOT_REGISTERED` | DEREG_REQ where `producer_pid` doesn't match the registered producer's pid; CONSUMER_DEREG_REQ where `consumer_pid` doesn't match any registered consumer's pid. | Verify the calling process actually registered first.  No retry — the request itself is logically wrong. |
+| `NOT_REGISTERED` | DEREG_REQ where the (producer_pid, role_uid) tuple doesn't match any admitted producer; CONSUMER_DEREG_REQ where the (consumer_pid, role_uid) tuple doesn't match any admitted consumer.  broker_proto 2→3 (2026-05-15): role_uid mismatch is a NOT_REGISTERED variant; missing role_uid is INVALID_REQUEST instead. | Verify the calling process actually registered first and is sending its own role_uid (not someone else's).  No retry — the request itself is logically wrong. |
 | `NOT_CHANNEL_OWNER` | An admin / control request (e.g. ENDPOINT_UPDATE_REQ) issued by a role whose uid doesn't match the channel's owner. | Cannot recover from non-owner side. |
 | `SCHEMA_MISMATCH` | REG_REQ for an existing channel where the new producer's schema_hash differs from the channel-wide invariant (HEP-CORE-0023 §2.1.1: all producers on a channel must agree). | Reconcile schemas across producers; the channel cannot be re-registered with a different schema. |
 | `MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM` | Second REG_REQ on a `data_transport == "shm"` channel from a different `role_uid` (HEP-CORE-0023 §2.1.1: SHM is physically single-producer; multi-producer channels require ZMQ transport).  Same-`role_uid` does NOT reach this code path — the broker resolves same-uid first and rejects with `UID_CONFLICT` (see next row).  Structurally, the check lives in `ChannelEntry::add_producer` itself rather than the wire layer, so the wire handler cannot bypass it. | Choose a different channel name, or use ZMQ transport for multi-producer Fan-In topologies (HEP-CORE-0017 §4.6). |

@@ -55,6 +55,19 @@ TEST_F(DatahubBrokerTest, DeregPidMismatch)
     ExpectWorkerOk(proc);
 }
 
+TEST_F(DatahubBrokerTest, DeregMissingRoleUid_Rejected)
+{
+    // broker_proto 2→3 (audit C3, 2026-05-15): DEREG_REQ and
+    // CONSUMER_DEREG_REQ both REQUIRE the `role_uid` field on the wire
+    // so the broker can resolve the target by (pid, uid) tuple instead
+    // of pid-alone (HEP-CORE-0023 §2.1.1 multi-producer rationale).
+    // Missing-field requests must receive INVALID_REQUEST.  Mutation:
+    // remove the `wire_role_uid.empty()` check from either handler →
+    // this test fails (broker either succeeds or returns NOT_REGISTERED).
+    auto proc = SpawnWorker("broker.broker_dereg_missing_role_uid_rejected", {});
+    ExpectWorkerOk(proc);
+}
+
 // ── HEP-CORE-0034 Phase 3a — schema record + citation wire paths ───────────
 
 TEST_F(DatahubBrokerTest, Sch_RegPathBCreated)

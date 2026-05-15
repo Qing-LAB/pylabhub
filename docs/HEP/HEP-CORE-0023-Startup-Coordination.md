@@ -175,6 +175,17 @@ removed.  Consumers leaving (`CONSUMER_DEREG_REQ`) does **not**
 trigger channel removal regardless of how many consumers were
 attached.
 
+**Multi-producer DEREG target resolution.**  Because a channel can
+admit multiple producers (and multiple consumers), `DEREG_REQ` and
+`CONSUMER_DEREG_REQ` MUST carry the calling role's `role_uid` on the
+wire alongside the pid.  The broker resolves the target by the
+`(pid, role_uid)` tuple — both must match the same admitted
+producer / consumer.  pid-alone resolution is racy under OS pid reuse
+across role restarts (multiple producers on the same channel can,
+across restart events, end up sharing a PID — see
+broker_proto 2→3 closure 2026-05-15 / audit C3).  Wire payload
+details: HEP-CORE-0007 §`DEREG_REQ` and §`CONSUMER_DEREG_REQ`.
+
 **Cross-tag admission.**  Per HEP-CORE-0017 (Pipeline Architecture),
 processors are producers on their `out_channel`.  A channel may have
 mixed-tag producers — e.g., `prod.X` and `proc.Y` may both be

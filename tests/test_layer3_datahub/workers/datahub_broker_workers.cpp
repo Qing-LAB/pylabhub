@@ -531,9 +531,15 @@ int broker_dereg_pid_mismatch()
             // Allow the heartbeat to be processed before DISC_REQ.
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
-            // DEREG_REQ with wrong pid → NOT_REGISTERED error.
+            // DEREG_REQ with wrong pid + correct role_uid → NOT_REGISTERED.
+            // broker_proto 2→3 (2026-05-15 audit C3): `role_uid` is now
+            // REQUIRED; the broker resolves the target by (pid, role_uid)
+            // tuple — a mismatch on EITHER half is NOT_REGISTERED.  This
+            // test pins the pid-mismatch half; missing-role_uid is pinned
+            // by `broker_dereg_missing_role_uid_rejected` below.
             nlohmann::json dereg_req;
             dereg_req["channel_name"] = channel;
+            dereg_req["role_uid"]     = role_uid;
             dereg_req["producer_pid"] = wrong_pid;
             nlohmann::json dereg_resp = raw_req(broker.endpoint, "DEREG_REQ", dereg_req);
             ASSERT_FALSE(dereg_resp.is_null()) << "DEREG_REQ timed out";
@@ -554,6 +560,89 @@ int broker_dereg_pid_mismatch()
             broker.stop_and_join();
         },
         "broker.broker_dereg_pid_mismatch",
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), hub_module(), zmq_module());
+}
+
+// ============================================================================
+// broker_dereg_missing_role_uid_rejected — broker_proto 2→3 enforcement.
+// DEREG_REQ + CONSUMER_DEREG_REQ now REQUIRE the `role_uid` field on the
+// wire; missing-field clients receive INVALID_REQUEST instead of the
+// previous pid-only-resolution fallback.  Audit C3 (2026-05-15) +
+// HEP-CORE-0023 §2.1.1 multi-producer rationale.
+// ============================================================================
+
+int broker_dereg_missing_role_uid_rejected()
+{
+    return run_gtest_worker(
+        []()
+        {
+            BrokerService::Config cfg;
+            cfg.endpoint  = "tcp://127.0.0.1:0";
+            cfg.use_curve = false;
+            auto broker = start_broker_in_thread(std::move(cfg));
+
+            const std::string channel  = "broker.missing_uid.ch";
+            const std::string role_uid = "prod.broker.missing_uid.uid00000001";
+            const uint64_t    pid      = 44444;
+
+            // Register a producer so the channel exists.
+            nlohmann::json reg_req;
+            reg_req["channel_name"]      = channel;
+            reg_req["shm_name"]          = "shm_missing_uid";
+            reg_req["schema_hash"]       = zero_hex();
+            reg_req["schema_version"]    = 1;
+            reg_req["producer_pid"]      = pid;
+            reg_req["producer_hostname"] = "localhost";
+            reg_req["role_uid"]          = role_uid;
+            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg_req)
+                          .value("status", std::string{}),
+                      "success");
+
+            // DEREG_REQ with NO role_uid → INVALID_REQUEST (pre-C3 this
+            // path succeeded by deriving role_uid from the matching pid).
+            nlohmann::json dereg;
+            dereg["channel_name"] = channel;
+            dereg["producer_pid"] = pid;
+            // deliberately omit role_uid
+            nlohmann::json resp = raw_req(broker.endpoint, "DEREG_REQ", dereg);
+            ASSERT_FALSE(resp.is_null()) << "DEREG_REQ timed out";
+            EXPECT_EQ(resp.value("status", std::string{}), "error")
+                << "Missing role_uid must be rejected; got: " << resp.dump();
+            EXPECT_EQ(resp.value("error_code", std::string{}), "INVALID_REQUEST")
+                << "Error code must be INVALID_REQUEST; got: " << resp.dump();
+
+            // Same shape for CONSUMER_DEREG_REQ — register a consumer
+            // first (CONSUMER_DEREG without a registered consumer is
+            // ambiguous between INVALID_REQUEST and NOT_REGISTERED;
+            // registering pins the path through the field-validation
+            // gate, not the resolution gate).
+            const std::string cons_uid = "cons.broker.missing_uid.uid00000001";
+            nlohmann::json cons_reg;
+            cons_reg["channel_name"]      = channel;
+            cons_reg["consumer_pid"]      = pid;
+            cons_reg["consumer_hostname"] = "localhost";
+            cons_reg["consumer_uid"]      = cons_uid;
+            ASSERT_EQ(raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons_reg)
+                          .value("status", std::string{}),
+                      "success");
+
+            nlohmann::json cons_dereg;
+            cons_dereg["channel_name"] = channel;
+            cons_dereg["consumer_pid"] = pid;
+            // deliberately omit role_uid
+            nlohmann::json cresp =
+                raw_req(broker.endpoint, "CONSUMER_DEREG_REQ", cons_dereg);
+            ASSERT_FALSE(cresp.is_null()) << "CONSUMER_DEREG_REQ timed out";
+            EXPECT_EQ(cresp.value("status", std::string{}), "error")
+                << "Missing role_uid on CONSUMER_DEREG must be rejected; got: "
+                << cresp.dump();
+            EXPECT_EQ(cresp.value("error_code", std::string{}), "INVALID_REQUEST")
+                << "Error code must be INVALID_REQUEST; got: " << cresp.dump();
+
+            broker.stop_and_join();
+        },
+        "broker.broker_dereg_missing_role_uid_rejected",
         logger_module(), file_lock_module(), json_module(),
         crypto_module(), hub_module(), zmq_module());
 }
@@ -1499,8 +1588,10 @@ int broker_sch_inbox_evicts_on_disconnect()
 
             // Trigger channel close via DEREG_REQ (cleaner than waiting
             // for heartbeat timeout — same `_on_channel_closed` cascade).
+            // broker_proto 2→3: `role_uid` REQUIRED on DEREG_REQ.
             nlohmann::json dereg;
             dereg["channel_name"] = ch;
+            dereg["role_uid"]     = uid;
             dereg["producer_pid"] = producer_pid;
             auto dr = raw_req(broker.endpoint, "DEREG_REQ", dereg);
             ASSERT_EQ(dr.value("status", std::string{}), "success") << dr.dump();
@@ -2171,6 +2262,8 @@ struct BrokerWorkerRegistrar
                     return broker_dereg_happy_path();
                 if (scenario == "broker_dereg_pid_mismatch")
                     return broker_dereg_pid_mismatch();
+                if (scenario == "broker_dereg_missing_role_uid_rejected")
+                    return broker_dereg_missing_role_uid_rejected();
                 if (scenario == "broker_sch_record_path_b_created")
                     return broker_sch_record_path_b_created();
                 if (scenario == "broker_sch_record_hash_mismatch_self")
