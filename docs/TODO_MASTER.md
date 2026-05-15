@@ -22,158 +22,169 @@ The Data Exchange Hub (DataHub) is a cross-platform IPC framework using shared m
 
 ## Current Sprint Focus
 
-### Snapshot — 2026-05-10 (M1.2 atomic sweep COMPLETE; Wave M2 multi-producer refactor planned)
+### Ultimate goal — finish hub/broker renovation, ship dual-hub-capable plh_hub
 
-**HEAD: `a41ce71`** on branch `feature/lua-role-support`.
+The pylabhub hub/broker is in a multi-track renovation.  The
+**end-state** is a dual-hub-capable system: a fully functional
+`plh_hub` binary (HUB-side complete) PLUS role binaries that can
+register presences on multiple hubs (ROLE-side renovation
+complete), so a processor role can run with input on hub-A and
+output on hub-B end-to-end.
 
-**Closed this session:**
-- M1.2 Phase 5+6+7 atomic deletion sweep (24 files, +551/-1385):
-  retired `FORCE_SHUTDOWN`, `Closing` channel state,
-  `ChannelEntry.{status, last_heartbeat, state_since, closing_deadline}`,
-  `RoleEntry.{state, last_heartbeat, latest_metrics, metrics_collected_at}`,
-  the `grace_*` config knobs, the `check_closing_deadlines` /
-  `send_force_shutdown` paths, the legacy `j["status"]` JSON emission,
-  and the matching test scaffolding.  Per-presence FSM is now the
-  single source of truth; channel state is derived
-  (`ChannelObservable` per HEP-CORE-0023 §2.2).  1768/1769 tests green
-  (the lone failure was a stale-binary artefact, see
-  `MEMORY.md` 2026-05-10 incident note — current binaries pass 20/20).
-- Code review on `a41ce71` (this same session) identified:
-  - Several stale comments / doc strings referencing removed concepts
-    (`PendingReady` literals, `legacy ChannelEntry.status`, `FORCE_SHUTDOWN`
-    in version-registry comment, `status:"Ready"` in
-    `broker_service.hpp` example, `e.status` admin-snapshot mismatch).
-    All fixed in working tree, pending commit.
-  - **Idempotency bug** in `_set_role_disconnected`: rewrite used a
-    flag (`any_alive_to_kill`) that double-fired the
-    `role_disconnected` handler on empty-presence roles.  Replaced
-    with `was_alive && now_dead` predicate based on
-    `RoleEntry::any_presence_alive()`.  Then dropped in favour of the
-    M2 unified cascade (see below).
-  - **Structural inconsistency** in `role_disconnected` semantics:
-    `_set_role_disconnected` fires the handler; `_on_channel_closed`
-    and `_on_consumer_left` don't, even when killing the role's last
-    presence.  Fix is part of M2 (unified cascade through one helper).
-  - **Multi-producer ZMQ control-plane bug** — see Wave M2 below.
+Two PARALLEL renovation arcs feed this goal.  They are tracked
+under different label spaces — **DO NOT MERGE THEM** in your
+head; the labels were chosen at different times for different
+sub-problems and the names sometimes look similar but mean
+different things.  Each arc has its own canonical doc:
+
+| Arc | Canonical doc | Label space |
+|---|---|---|
+| **Arc A — `plh_hub` renovation (HUB side)** | `docs/HEP/HEP-CORE-0033-Hub-Character.md` §15 | `HEP-0033 §15 Phase 1..10` |
+| **Arc B — Role-host renovation (ROLE side)** | `docs/tech_draft/role_host_template_design.md` §14 | `Wave-B M0..M9` (with hyphen — see §"Label hygiene" below) |
+
+Side-arcs (independent waves that addressed bugs / cleanups
+revealed DURING the renovation) are tracked under a third label
+space — **side-arc cleanup waves** — listed below the two arcs.
+
+### Label hygiene — read this before reading any "M*" label below
+
+The codebase has accumulated several M-series labels.  They are
+**different things** despite the naming collision.  When this
+file or any subtopic doc says an "M*" label, it means exactly one
+of the following:
+
+| Label prefix | Means | Examples |
+|---|---|---|
+| `Wave-B M0..M9` | Sequential phases of Arc B (role-host renovation; `role_host_template_design.md` §14) | `Wave-B M2`, `Wave-B M8` |
+| `HEP-0033 §15 Phase N` | Sequential phases of Arc A (plh_hub renovation) | `Phase 6.2`, `Phase 7 D4.2` |
+| `Wave-M2 / Wave-M2.5 / Wave-M3` | Multi-producer / controlled-access refactor side-arcs (closed) | `Wave-M2.5`, `Wave-M3` |
+| `M1.2 / M1.4 / M1.5` | Sequential FSM-consolidation cleanup side-arcs (closed) | `M1.4`, `M1.5` |
+| `MD1 / MD1.5` | Race-fix + ThreadManager-contract side-arcs (closed) | `MD1` |
+
+If you see a bare `M3` or `M8` without a prefix, it's almost
+certainly **Wave-B M3** or **Wave-B M8** in the renovation arc —
+but check context.  In particular: **Wave-B M3** (RoleHandler
+skeleton) is NOT the same as **Wave-M3** (RoleEntry controlled-
+access, side-arc, closed 2026-05-11).
+
+### Arc A — `plh_hub` renovation status (HEP-0033 §15, verified against code 2026-05-15)
+
+| Phase | Goal | Status | Evidence |
+|---|---|---|---|
+| **Phase 1** | `HubConfig` + role-facing config rename | ✅ shipped 2026-04-29 |  |
+| **Phase 2** | `hub_cli` | ✅ shipped 2026-04-25 (`9ba6ac1`) |  |
+| **Phase 3** | `HubDirectory` + `--init` | ✅ shipped 2026-04-29 |  |
+| **Phase 4** | `HubState` struct + accessors | ✅ already complete |  |
+| **Phase 5** | Query engine over `HubState` | ✅ (absorbed into Phase 6.2 AdminService query methods) |  |
+| **Phase 6.1a** | `HubState` ownership refactor | ✅ shipped 2026-04-30 |  |
+| **Phase 6.1b** | `HubHost` lifecycle owner | ✅ shipped 2026-04-30 | `src/utils/service/hub_host.cpp` |
+| **Phase 6.2** | `AdminService` structured RPC (6.2a/b/c) | ✅ shipped 2026-05-02 | `src/utils/ipc/admin_service.cpp`; 22 + 8 strengthening tests |
+| **Phase 7** | `HubScriptRunner` + per-engine `build_api_(HubAPI&)` (sub-commits A/B/C, D1/1.5/D2/D3/D4) | ✅ shipped 2026-05-03/04 | `src/utils/service/hub_script_runner.{cpp,hpp}` + `src/scripting/hub_api_python.cpp` + Lua bindings |
+| **Phase 8a** | `HubAPI` read accessors | ✅ shipped | `src/include/utils/hub_api.hpp:179-209` (list_channels, list_roles, list_bands, list_peers, query_metrics) |
+| **Phase 8b** | `HubAPI` control delegates | ✅ shipped | `hub_api.hpp:228-242` (close_channel, broadcast_channel, request_shutdown) |
+| **Phase 8c** | `HubAPI` response-augmentation hooks | ✅ shipped | `hub_api.hpp:308-325` (augment_query_metrics / list_roles / get_channel / peer_message); `ScriptEngine::invoke_returning` virtual in place |
+| **Phase 9** | `plh_hub` binary + L4 tests | ✅ shipped | `src/plh_hub/plh_hub_main.cpp`; `tests/test_layer4_plh_hub/` has 7 L4 test files (init, keygen, validate, runmode, errors, role_roundtrip, fixture) |
+| **Phase 10** | HEP-CORE-0019 §9 + README + deployment docs amendment | ⏳ **partial** | Many HEPs updated piecemeal; no explicit "Phase 10 ✅ closed" marker in HEP-0033.  Punch list: HEP-0019 §9 per-producer metrics tree (Wave M2.5 step 8 carryover), cross-references survey. |
+
+**Arc A net status**: substantially complete.  Binary + L4 tests +
+script bindings all in place; ONE doc-sweep item (Phase 10) is
+nominally open but not blocking.
+
+### Arc B — Role-host renovation status (Wave-B M0..M9, verified against code 2026-05-15)
+
+| Phase | Goal | Status | Code evidence |
+|---|---|---|---|
+| **Wave A** (Arc B's docs foundation) | A1..A8 — HEP-CORE-0011/0017/0019/0023/0027/0033 staleness scrub + §18+§19 add | ✅ all shipped | `role_host_template_design.md` §15.1 table |
+| **Wave-B M0** | `send_heartbeat` wire payload gains `(uid, role_type)` | ✅ shipped | `src/include/utils/broker_request_comm.hpp:116`; commit `f353e1a` |
+| **Wave-B M1** | Broker keyed lookup via `find_presence`; per-presence FSM; retire `metrics_store_` | ✅ shipped | `src/utils/ipc/broker_service.cpp:2100,2132`; commits `f2e3bd7..a41ce71` (M1.2 side-arc) + `4e902e1` (M1.4 side-arc) |
+| **Wave-B M2** | Consumer heartbeat tick removed; `out_channel.empty() ? ...` hack deleted | ⏳ **NEXT** | Hack still live at `src/utils/service/role_api_base.cpp:203,567`; `:832` installs `on_heartbeat_tick_` unconditionally |
+| **Wave-B M3** | `Presence` / `HubConnection` / `RoleHandler` headers (build-only) | ⏳ pending | `grep -rE "class RoleHandler\|struct Presence\|class HubConnection"` over `src/` → 0 hits |
+| **Wave-B M4** | `RoleAPIBase` pImpl delegates via handler | ⏳ pending | 23 direct `pImpl->broker_channel` sites; 0 handler delegation |
+| **Wave-B M5** | `ProducerRoleHost` 1-presence list via handler | ⏳ pending | 9 direct `broker_comm_`; 0 handler |
+| **Wave-B M6** | `ConsumerRoleHost` same | ⏳ pending | Same |
+| **Wave-B M7** | `ProcessorRoleHost` 2 presences → 1 connection (single-hub dedup) | ⏳ pending | Same |
+| **Wave-B M8** | Processor dual-hub: 2 presences → 2 connections | ⏳ pending — **THE PAYOFF** | No `DualHubProcessor*` tests; depends on M3-M7 |
+| **Wave-B M9** | Roles inherit `RoleHostFrame<HostT>`; `worker_main_` becomes `final` | ⏳ pending | No `RoleHostFrame` files in `src/` |
+| **Wave-C** | Closure — finalise HEP cross-refs depending on Wave-B; archive transient drafts | ⏳ after M9 |  |
+| **Wave-D** | Rewrite demos (`single-processor-shm`, `dual-processor-bridge`, `examples/`) | ⏳ after Wave-C |  |
+
+**Arc B net status**: Wave A + M0 + M1 done.  **M2-M9 is the active arc.**  No `RoleHandler` infrastructure exists yet.
+
+### Combined view — what blocks "dual-hub plh_hub" end-to-end
+
+Both arcs feed the end-state.  Concretely:
+
+| Blocker | Where it sits | Why it blocks |
+|---|---|---|
+| **Wave-B M2..M9** | Arc B, role side | Without `RoleHandler` + N-presence support, role binaries cannot register on more than one hub.  Even though `plh_hub` itself is ready (Arc A complete), a dual-hub deployment has no role binary to talk to it that way. |
+| **HEP-CORE-0035 auth** | Hub character / security | Currently the `RoleIdentityPolicy` is a placeholder; CURVE is mandatory but key admission policy is not yet implemented.  Production-readiness gap, not a renovation blocker, but listed because it's a major remaining HUB-side item. |
+| **HUB_TARGETED_ACK wire frame** | HEP-0033 §12.3.6 / §13 | Peer-to-peer message ACK frame is deferred; `on_peer_message` C++ surface is in place (Phase 8c) but the wire bit isn't wired.  Independent of dual-hub; would only affect federation use cases. |
+| **HEP-0033 Phase 10 doc amendment** | Arc A docs | HEP-CORE-0019 §9 per-producer metrics tree shape and a cross-reference survey are listed as remaining.  Not blocking code; doc hygiene. |
+
+### Next concrete task — Wave-B M2
+
+**Scope** (code-verified):
+- Delete `out_channel.empty() ? pImpl->channel : pImpl->out_channel`
+  hack at `src/utils/service/role_api_base.cpp:203` and `:567`.
+- Guard `on_heartbeat_tick_` installation at `:832` so consumer
+  roles do NOT install the tick (only producer + processor's
+  producer-presence install it).
+- Net change: ~5-10 LOC delete + small predicate additions.
+
+**Tests required** (per `role_host_template_design.md` §14.2 Wave-B M2 row):
+- L2 `RoleAPIBaseTest::Consumer_DoesNotInstallHeartbeatTick` — new.
+- B1+B2 end-to-end regression — new.  (B1) consumer's
+  HEARTBEAT_REQ does NOT refresh the producer's presence row.
+  (B2) consumer metrics correctly attributed.
+- Mutation: re-install the consumer tick → both tests must fail.
+
+**Why Wave-B M2 first**: Wave-B M3..M9 introduce a new
+abstraction (`RoleHandler`) that supersedes the direct-broker-
+channel pattern.  Leaving Wave-B M2's bug in place during the
+refactor would mask whether the new abstraction actually fixed it.
+Wave-B M2 is also small (~half a day) and gives a clean baseline
+for the larger Wave-B M3-M7 changes.
+
+### Side-arc cleanup waves completed (parallel to / between renovation phases)
+
+These addressed bugs and design issues revealed DURING the
+renovation.  They are substrate cleanups, NOT renovation phases.
+None of them belongs to Arc A or Arc B.
+
+| Side-arc label | What it did | Commit(s) | Note |
+|---|---|---|---|
+| Wave-M2 MP1-MP5 | Multi-producer `ChannelEntry` refactor (`ProducerEntry` vector) | `b285628`..`416cbec` | Data-shape prereq for Wave-B's multi-hub presence model |
+| Wave-M2.5 | Controlled-access API on `ChannelEntry` | `416cbec` | Closed 2026-05-11 |
+| **Wave-M3** (≠ **Wave-B M3**) | `RoleEntry` / `RolePresence` controlled-access API | `0fc942f` | Closed 2026-05-11.  Naming collision warning: this is the side-arc, not the Arc-B phase. |
+| M1.2 | Atomic channel teardown — retired `FORCE_SHUTDOWN`, `Closing`, channel-side FSM | `a41ce71` | Per-presence FSM became single source of truth |
+| M1.4 | Retire `metrics_store_` + `METRICS_REPORT_REQ` | `4e902e1` | Metrics live on `RolePresence::latest_metrics` |
+| M1.5 | `on_channel_closing` script callback | `c177c99` | Closed 2026-05-14 |
+| MD1 | Role teardown UAF — ThreadManager Thread Shutdown Contract | `42092cb`..`4a5347c` | Closed; HEP-CORE-0031 §4.1 |
+| MD1.5 | ThreadManager master/peer drain ordering | `eefa260` + `1f1eac4` | Post-MD1 follow-up |
+| Pattern-3 migration wave | 21 test files migrated off `SetUpTestSuite`-`LifecycleGuard` antipattern | `6dfb86d`..`1ed9cc8` | Closed 2026-05-14 |
+
+### Deferred polish (bug-/caller-triggered, not blocking renovation)
+
+| Item | Trigger | Scope |
+|---|---|---|
+| Wave-M2.5 step 7 | Concrete bug surfaces from a new direct-access site to `ChannelEntry` private state | Privatize `ChannelEntry` state-bearing fields. `controlled_access_api_design.md` §7 step 7 |
+| Wave-M2.5 step 2d | First caller asks for a deferred sugar method | `set_invariant_schema` / `set_invariant_transport` / `observable(roles_map)` / `is_alive(roles_map)` / span accessors |
+| Wave-M2.5 step 8 / HEP-0033 Phase 10 | Land alongside HEP-0019's next edit | HEP-0019 §9 per-producer metrics tree shape + cross-reference survey |
+| HEP-CORE-0035 auth implementation | Independent — production-readiness gap | 7-phase plan in HEP-0035 §8.  CURVE + ZAP pubkey allowlist + federation cross-trust delegation |
+| `HUB_TARGETED_ACK` wire frame | Federation use case needs it | HEP-0033 §12.3.6 / §13.  C++ augment_peer_message surface in place; wire frame deferred |
 
 ---
 
-### Wave M2 — Multi-Producer Channel Bookkeeping (2026-05-10)
-
-**Cause:** code review during M1.2 Phase 5+6+7 sweep exposed a latent
-design bug in the broker control plane.  `ChannelEntry`'s producer
-bookkeeping is **asymmetric** vs. consumer bookkeeping:
-
-| | Consumer | Producer |
-|---|---|---|
-| Container | `std::vector<ConsumerEntry>` | scalar `producer_pid` / `_hostname` / `_role_name` / `_role_uid` / `_zmq_identity` |
-| Multi-party | naturally supported | single only — second REG_REQ silently overwrites |
-
-REG_REQ from a second producer-role on an existing channel (same
-schema) is treated as "producer restart" and OVERWRITES the prior
-producer's bookkeeping (`broker_service.cpp:1131`).  The orphaned
-role-presence row stays in HubState but is invisible to the
-channel-driven sweep / timeout / notify paths.  Data plane (ZMQ
-queue) works; control plane is broken.
-
-The bug is **latent (predates M1.2)** and was masked by SHM channels
-being physically single-producer.  ZMQ multi-producer (PUSH–PULL,
-multi-PUB PUB–SUB) is supported by the queue abstraction but the
-broker control plane was never adapted to match — violating the
-HEP-CORE-0008 principle that role/hub code should operate
-transport-agnostically through the abstract queue base classes.
-
-**Goal:** restore symmetry; channel existence becomes "any live
-producer-presence (scan)" — naturally 1- or N-valued.  Unify the
-`role_disconnected` cascade so every presence-killing path goes
-through a single helper.
-
-#### Phase order (no skipping — document → data → ops → broker → tests)
-
-| Phase | Scope | Primary files |
-|---|---|---|
-| **MP1** Design (HEPs) | HEP-CORE-0017 §pipeline-architecture: explicit "1..N producers per ZMQ data channel" wording, transport-agnostic.  HEP-CORE-0023 §2.1: channel-existence predicate = "any producer-presence alive (scan across roles)".  HEP-CORE-0007: REG_REQ admission semantics (same channel + new role_uid ⇒ append; same role_uid ⇒ restart-replace); CHANNEL_ERROR_NOTIFY / CHANNEL_CLOSING_NOTIFY fan-out to all producers + all consumers.  HEP-CORE-0033 §8 ChannelEntry data shape (producers as vector).  HEP-CORE-0034: schemas remain owner-keyed under namespace-by-owner; multi-producer = each producer has its own (uid, schema_id) record. | `docs/HEP/HEP-CORE-0007/0017/0023/0033/0034.md` |
-| **MP2** Data structures | Define `ProducerEntry` (parallel to `ConsumerEntry`: pid, hostname, role_name, role_uid, zmq_identity, connected_at).  Replace `ChannelEntry` scalar producer_* fields with `std::vector<ProducerEntry> producers`.  Update `channel_to_json(c, obs)` to emit producers list. | `src/include/utils/hub_state.hpp`, `src/utils/ipc/hub_state_json.{hpp,cpp}` |
-| **MP2.5** Controlled-access API on `ChannelEntry` (scope expansion, 2026-05-10) | Driven by the recurring "scalar-where-should-be-per-party" bug class found across MP2 review passes 1-3.  Design doc: `docs/tech_draft/controlled_access_api_design.md`.  Step 0-8 there: classify every `ChannelEntry` field as channel-wide invariant vs per-producer attribute (move `zmq_node_endpoint` → `ProducerEntry`; delete dead `zmq_data_endpoint` / `zmq_ctrl_endpoint` / `zmq_pubkey`; decide `metadata` placement); add `upsert_producer` / `remove_producer` / per-producer setters / typed observable accessor; rewrite REG_REQ, DEREG_REQ, ENDPOINT_UPDATE_REQ, sweep handlers to go through the API instead of touching fields directly; make state-bearing fields private; HEP doc sweep (HEP-CORE-0021 / HEP-CORE-0023 §2.6 / HEP-CORE-0033 §8).  After M2.5: original MP3/MP4/MP5 resume — most of MP3 becomes trivial and most of MP4 is already done as a side effect of steps 3-6.  **Resume point if interrupted:** open `docs/tech_draft/controlled_access_api_design.md` §7 — every step has explicit scope/files/tests. | `src/include/utils/hub_state.{hpp,cpp}`, `src/utils/ipc/broker_service.cpp`, `src/utils/ipc/hub_state_json.cpp`, `docs/HEP/HEP-CORE-0021/0023/0033.md` |
-| **MP3** Bookkeeping ops (HubState) | New private `_dispatch_role_disconnected_if_dead(uid, was_alive_before, lk)` helper — single fire site.  New primary op `_on_producer_dropped(channel, role_uid, reason)`: mark this producer-presence Disconnected, remove the matching `ProducerEntry`; if `entry.producers.empty()`, remove channel + fire CHANNEL_CLOSED; call role-disconnect helper.  Rewrite `_on_pending_timeout(channel, role_uid)` as thin wrapper over `_on_producer_dropped`.  Rewrite `_on_consumer_left` to call role-disconnect helper after marking consumer-presence Disconnected.  Rewrite `_set_role_disconnected` to iterate this role's `(channel, "producer")` presences via `_on_producer_dropped`, then a single role-disconnect helper call. | `src/include/utils/hub_state.hpp`, `src/utils/ipc/hub_state.cpp` |
-| **MP4** Broker handlers | REG_REQ admission: same channel + same role_uid ⇒ restart-replace that producer's `ProducerEntry`; same channel + new role_uid ⇒ append.  Reject second REG_REQ when `data_transport == "shm"` (physical single-producer) with `MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM`.  DEREG_REQ → `_on_producer_dropped(channel, requester_uid, VoluntaryDereg)`.  Script-requested admin close → call `_on_producer_dropped` per producer in `entry.producers`.  CHANNEL_ERROR_NOTIFY iterates `entry.producers`.  Sweep loop scans all `(channel, "producer")` presences across roles for ready/pending timeouts.  ROLE_INFO_REQ / ROLE_PRESENCE_REQ search producers list.  CHANNEL_CLOSING_NOTIFY fan-out to all producers + all consumers. | `src/include/utils/broker_service.hpp`, `src/utils/ipc/broker_service.cpp` |
-| **MP5** Tests (L2 + L3) | L2: multi-producer admission, role_disconnected cascade unification, asymmetric expiry (A timeout / B alive ⇒ channel stays, observable stays `kLive`), atomic teardown on last-producer-drop, channel_to_json producers list shape, SHM-rejection of second producer.  L3: end-to-end multi-producer REG_REQ; CHANNEL_ERROR_NOTIFY fan-out; sweep covers all producers; CONSUMER_REG_REQ + DISC_REQ semantics on multi-producer channels.  Update all L2/L3 sites accessing `entry.producer_role_uid` to read `entry.producers[k].role_uid`. | `tests/test_layer2_service/test_hub_state.cpp`, `tests/test_layer3_datahub/*.cpp` |
-| **MP6** Federation/dual-hub (deferred to Wave B M8) | HEP-CORE-0022 peer-hub producer-presence handling — how peers replicate / observe producer-presence updates across hubs.  B3-B5 dual-hub processor scenarios in `docs/tech_draft/role_host_template_design.md` Wave B M8.  Depends on MP1-MP5 landing first because multi-producer presence model interacts with federation peer replication. | `docs/HEP/HEP-CORE-0022.md`, `src/utils/ipc/broker_service.cpp` peer-relay code |
-
-#### Open design decisions (lock during MP1 doc revision)
-
-1. **Same-uid restart semantics:** replace-in-place vs idempotent-on-equal-fields (no-op when identical)?  Current code does replace; lean toward keeping that for simplicity unless a use case demands idempotent.
-2. **Cross-tag admission:** can `prod.X` + `proc.Y` both be producers of channel C?  Per HEP-CORE-0017 pipeline architecture (processor's `out_channel` is a producer side), yes.  Document explicitly.
-3. **SHM physical-single-producer enforcement:** broker rejects second producer REG_REQ when `data_transport == "shm"` with `MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM`.  Lean: yes; document in HEP-CORE-0007 §12.4a Error Code Taxonomy.
-4. **Schema-record ownership in multi-producer:** per HEP-CORE-0034 namespace-by-owner, each producer owns its own `(uid, schema_id)` record.  Multi-producer same-channel ≠ shared schema record.  Document explicitly to prevent path-B citers from cross-citing across producers on the same channel.
-5. **Channel-level schema invariant:** all producers on the same channel MUST agree on `schema_hash` + `schema_blds` + `packing` (channel-wide invariant).  REG_REQ that fails this gate is rejected.  Already enforced by the existing schema-mismatch check at `broker_service.cpp:1131` — keep, but extend to also verify when admitting a new producer (not restart-replace).
-
-#### Where M2 fits in the wave plan
-
-- **Done:** M1.2 Phase 5+6+7 atomic sweep at `a41ce71`.
-- **Done:** MP1 (docs at `2df486c`/`db586d7`); MP2 + MP2 review pass 1 + pass 2 + pass 3 (`b285628`/`0d5c188`/`baede16`/`91bd657`).
-- **Done:** MP2.5 controlled-access API on `ChannelEntry` (Wave M2.5).  All 8 design steps + 2 post-step retros + 1 multi-step audit pass shipped between 2026-05-10 and 2026-05-11.  Last commit: `416cbec` (post-review pass 3 fixing the `ChannelMetrics` overwrite-class bug).  Two code reviews on file: `docs/code_review/REVIEW_WaveM2.5_2026-05-10.md` (15 findings, 14 resolved + 1 ✅/OK) and `docs/code_review/REVIEW_WaveM2.5_PostStep6_2026-05-11.md` (15 findings, 11 resolved + 4 properly deferred).  Suite: 1801/1801.  The multi-producer overwrite-class bug is now structurally eliminated on both `ChannelEntry` (per-party fields) and `ChannelMetrics` (per-producer metrics keying).
-- **Done implicitly:** MP3 (HubState bookkeeping ops — `_on_producer_added` / `_on_producer_dropped` / `_on_pending_timeout(channel, uid)` / `_set_producer_zmq_node_endpoint` all shipped through M2.5 steps 3-6) and MP4 (broker handler rewrites — REG_REQ / DEREG_REQ / ENDPOINT_UPDATE_REQ / sweep all migrated).  MP5 (multi-producer L2 + L3 test coverage) — partial; 17 multi-producer admission/drop/endpoint/metrics tests shipped across `HubStateProducerAdmission` / `HubStateProducerDrop` / `HubStateProducerEndpointUpdate` / `HubStateProducerPendingTimeout` / `MetricsPlaneTest.FanIn_TwoProducers_MetricsDoNotOverwrite`.  Remaining MP5 work: end-to-end L3 scenarios (CHANNEL_ERROR_NOTIFY fan-out, CONSUMER_REG_REQ + DISC_REQ on multi-producer channels) opportunistic.
-
-#### Deferred items — explicit phase entries
-
-Each deferred item below has: **scope document**, **trigger condition**, and **subtopic-TODO link**.  If any of those is missing, it's a roadmap gap to fix BEFORE picking up the work.
-
-| Phase | Title | Scope doc | Trigger condition | Subtopic TODO |
-|---|---|---|---|---|
-| **M3** | RoleEntry / RolePresence controlled-access API.  **CLOSED 2026-05-11** in a follow-up commit batch covering H1+H5 wiring, H9+H10+H11+H12 cache invariant + schema cascade owner-lifetime, H16+H17+H18+H20 cross-aggregate cleanup + presence row erase, H23+H24+H25 log gating + dtor + mutation verification.  Six review passes archived as `docs/code_review/REVIEW_WaveM3_*_2026-05-11.md`.  Two mutation tests verify contracts truly pinned.  Suite 1823/1823.  Wave M3 explicitly deferred: step 5 strict `add_role` admission + step 7 privatize fields + H15 metrics direct-mutation + H29/H36/H39 cosmetic dead-code + H40 concurrency hardening.  Pre-existing leaks surfaced (NOT in Wave M3 scope, owned by M1.4): H34 metrics_store_ per-uid leak.  Federation propagation gap H43 verified during Wave B M8.  See `docs/todo/MESSAGEHUB_TODO.md` "Wave M3 status — CLOSED 2026-05-11" for full inventory. | `docs/tech_draft/M3_role_entry_controlled_access.md` | (closed) | `docs/todo/MESSAGEHUB_TODO.md` "Wave M3 explicitly DEFERRED items" |
-| **M2.5 step 7** | Privatize `ChannelEntry` state-bearing fields (or move into Impl) once all writers go through the controlled-access API. | `docs/tech_draft/controlled_access_api_design.md` §7 step 7 (one-line description; sufficient for the mechanical refactor scope) | **Concrete bug surfaces from a new direct-access site.** The structural bug class is already eliminated by Wave M2.5; step 7 is polish that hardens the wall.  No timeline.  Bug-driven only. | `docs/todo/API_TODO.md` (add a deferred entry when step 7 starts) |
-| **M2.5 step 2d** | Deferred design-doc §5.1 API methods: `set_invariant_schema` / `set_invariant_transport` / `observable(roles_map)` member wrapper / `is_alive(roles_map)` / `producers()` + `consumers()` span accessors. | `docs/tech_draft/controlled_access_api_design.md` §7 step 2d | **First concrete caller needs one of these.** They are sugar; no current production code asks for them. Trigger is a caller-driven justification, not a calendar date. | `docs/todo/API_TODO.md` (add an entry when a caller asks) |
-| **M2.5 step 8** | Final HEP doc sweep.  **Most of this work already shipped** during Wave M2.5 — see "Step 8 audit" below.  Remaining: HEP-CORE-0019 §9 (metrics plane) per-producer metrics tree shape; possibly small cross-references between HEPs. | `docs/tech_draft/controlled_access_api_design.md` §7 step 8 | Land alongside HEP-0019 next edit (whenever metrics-plane HEP receives any other update).  Low priority — code is the truth; HEP-0019 lags. | (None — small enough to be a single sweep commit when convenient) |
-| **M1.4** | Retire `metrics_store_` + `METRICS_REPORT_REQ`.  **CLOSED 2026-05-11.**  All five phases shipped: (1) audit confirmed `on_heartbeat_tick_` already carries metrics, `on_metrics_report_tick_` was redundant duplicate at same cadence; (2) `HubState::channel_metrics_snapshot(channel)` helper added — aggregates `RolePresence::latest_metrics` via `ChannelEntry.producers/consumers` bound; (3) `handle_metrics_req`, `BrokerService::query_metrics(MetricsFilter)`, `BrokerService::query_metrics_json_str` redirected; (4) DELETED — `metrics_store_`, `ChannelMetrics`, `ParticipantMetrics`, `update_producer_metrics`, `update_consumer_metrics`, `BrokerServiceImpl::query_metrics(channel)`, `handle_metrics_report_req`, `HubState::_on_metrics_reported`, `BrokerRequestComm::send_metrics_report`, `RoleAPIBase::on_metrics_report_tick_`, `METRICS_REPORT_REQ` wire-msg entry, `cfg.report_metrics` consumer-host setter; (5) HEP-CORE-0019 §9 Phase 6 marked ✅ SHIPPED with full implementation summary; status banner updated.  Closes **H34** structurally (per-uid metrics leak goes away with H18 presence-row erase on disconnect).  Test results: 1828/1828 passing (1823 + 6 new `HubStateChannelMetricsSnapshot.*` − 1 retired `MetricsReported_StoresOnPresenceWithoutLivenessSideEffect`).  L3 test `MetricsPlaneTest` migrated from `send_metrics_report` to `send_heartbeat(..., "consumer", metrics)`. | `docs/tech_draft/M1_FSM_consolidation_handoff_2026-05-09.md` §M1.4 | (closed) | `docs/todo/MESSAGEHUB_TODO.md` |
-| **MD1** | Role teardown sequence fix — use-after-free race in `do_role_teardown`: `BrokerRequestComm` destroyed in Step 13 while its ctrl-thread is still in `run_poll_loop`; ctrl-thread joined only in Step 14.  **CLOSED 2026-05-14** via ThreadManager Thread Shutdown Contract (HEP-CORE-0031 §4.1).  Implemented as Option-2-generalized: `do_role_teardown` Step 12.5 (`role_host_lifecycle.cpp:55-73`) inserts `request_shutdown_all()` + `wait_for_quiescence()` between Step 12 (signal stop) and Step 13 (destroy infrastructure); ctrl-thread spawn site (`role_api_base.cpp:692-733`) wraps `run_poll_loop` in `ctx.with_active_loop(...)` RAII bracket; BRC poll-loop tail (`broker_request_comm.cpp:592-608`) had two dead pImpl writes removed.  Verification: `PlhHubCliTest.RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters` passes 5/5 solo.  Commits: `42092cb` → `23fbc90` → `192269e` → `79ec568` → `42fdcd7` → `eefa260` → `235f033` → `5fac040` → `4a5347c`. | `docs/todo/TESTING_TODO.md` §9 (full closure record) | (closed) | `docs/todo/TESTING_TODO.md` §9 |
-| **M1.5** | `on_channel_closing(channel, reason, api)` script callback.  **CLOSED 2026-05-14.**  Ships as a minimal-policy callback: framework dispatches it when `CHANNEL_CLOSING_NOTIFY` arrives AND the script defines it; entry is then removed from `msgs` (single-delivery contract).  If the script doesn't define the callback, the notify stays in `msgs` as today (zero regression).  No auto-stop default, no new `StopReason` enum value, no new stop machinery — script uses existing `api.stop()` if it wants to exit, or mutates instance state for later cycles to act on (retry / re-register / log).  Implementation: engine virtual added to all three engines (Python/Lua/Native); dispatch helper in `cycle_ops.hpp`; L2 unit test at `tests/test_layer2_service/test_dispatch_channel_closing.cpp` (6 tests).  Doc sync: HEP-CORE-0011 callback table updated.  Design discussion preserved in `docs/tech_draft/M1.5_channel_closing_redesign_2026-05-12.md` (now flipped to "Shipped"). | `docs/tech_draft/M1.5_channel_closing_redesign_2026-05-12.md` | (closed) | `docs/todo/MESSAGEHUB_TODO.md` |
-| **Wave B M8 / MP6** | Federation/dual-hub HEP-CORE-0022 peer-hub producer-presence handling.  Dual-hub processor B3-B5 scenarios in `role_host_template_design.md` §14.  **Verify H43** (Wave M3 sixth-pass review): peer hubs don't receive role-disconnect events for non-channel-close paths.  Bands are not federated per HEP-CORE-0030 §3, so this may be a non-issue — verify against dual-hub-processor scenarios before deciding to add propagation. | `docs/tech_draft/role_host_template_design.md` Wave B §M8 + `docs/HEP/HEP-CORE-0022.md` | After M1.5 closes.  Wave M3 + M1.4 + MD1 all closed; chain remaining: M1.5 → Wave B M8. | `docs/todo/MESSAGEHUB_TODO.md` |
-
-#### Step 8 audit — what's shipped vs remaining
-
-What ALREADY SHIPPED as part of Wave M2.5 (despite being "scheduled for step 8"):
-- HEP-CORE-0007 §12.4 DISC_REQ_ACK `metadata` per-producer tree wire shape (commit `25dc376`).
-- HEP-CORE-0007 §12.4a `UID_CONFLICT` error code (commit `25dc376`).
-- HEP-CORE-0007 §12.4a `MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM` rewording for strict-uid-reject (commit `25dc376`).
-- HEP-CORE-0021 §16 per-producer ZMQ endpoint registry semantics (commit `25dc376` + refined `9422ed8`).
-- HEP-CORE-0021 §16.3 identity-based ENDPOINT_UPDATE_REQ resolution (commit `9422ed8`).
-- HEP-CORE-0023 §2.6 struct schematic — explicit `ChannelEntry` + `ProducerEntry` + `ConsumerEntry` field lists (multiple commits, latest `9422ed8`).
-- HEP-CORE-0033 §8 entry-types table — `ChannelEntry` row spelled out (commit `25dc376`).
-
-What REMAINS for step 8:
-- HEP-CORE-0019 §9 — document the per-producer `producer_metrics` tree shape introduced by G1 (post-review pass 3, commit `416cbec`).  Currently the HEP describes a single-blob shape, mismatched with the code.
-- Cross-references between the HEPs (small): each HEP was updated in isolation; a survey pass to add "see also HEP-0027 / 0021 / 0034" links would tighten the navigation.
-
-Trigger: land alongside HEP-0019's next edit, or as a standalone small commit when convenient.
-
-#### Roadmap dependency graph (post-Wave-M2.5)
-
-```
-Wave M2.5 (DONE 2026-05-11)
-   │
-   ├─► Wave M3 (DONE 2026-05-11) — RoleEntry API; retired the PATCH
-   │       │
-   │       └─► M1.4 (DONE 2026-05-11) — retire metrics_store_
-   │              │
-   │              └─► MD1 (role teardown use-after-free race; gdb-confirmed)
-   │                     │
-   │                     └─► M1.5 (on_channel_closing callback + auto-stop;
-   │                     │         re-framed 2026-05-12, see tech_draft)
-   │                            │
-   │                            └─► Wave B M8 / MP6 (federation)
-   │
-   ├─► [bug-driven] M2.5 step 7 (privatize fields)
-   ├─► [caller-driven] M2.5 step 2d (deferred API methods)
-   └─► [convenience] M2.5 step 8 (HEP-0019 sync + cross-refs)
-```
-
-#### Tracking
-
-This wave plan is the canonical reference; detail per-phase issues live here.  Subtopic TODOs cross-reference back to this section:
-- `docs/todo/API_TODO.md` — adds an "MP3 Bookkeeping Ops" pointer
-- `docs/todo/TESTING_TODO.md` — adds an "MP5 Multi-Producer Coverage" section
-- `docs/todo/MESSAGEHUB_TODO.md` — adds an "MP4 Broker Handlers" pointer
+**[Historical note]** The block previously here (Wave M2
+multi-producer refactor with MP1-MP6 phases, open design decisions,
+roadmap dependency graph, etc.) was superseded by the
+"Side-arc cleanup waves completed" table earlier in this section
+on 2026-05-15.  All Wave M2 / MP1-MP5 work is closed; MP6
+(originally labeled "federation/dual-hub") was a mis-attribution
+that confused HEP-CORE-0022 federation with Wave-B M8 dual-hub
+presence — see the "Label hygiene" + "Combined view" sections
+above.  Detail for the closed Wave M2 work lives in commits
+`b285628`..`416cbec` and the `REVIEW_WaveM2.5_*` doc series.
 
 ---
 
