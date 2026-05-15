@@ -268,6 +268,121 @@ int processor_report_and_snapshot()
         Logger::GetLifecycleModule());
 }
 
+// ── Per-presence emission shape (Wave-B M2 + audit C2 follow-up) ───────────
+//
+// `snapshot_metrics_for_presence(role_type)` returns metrics shaped for a
+// single presence's heartbeat (HEP-CORE-0019 §2.3 Phase 6, Principle 4).
+// A processor's two heartbeats land separately keyed broker rows; each
+// row carries ONLY its own side's queue + side-relevant counters, with
+// role-wide fields (loop/inbox/custom) on every presence.
+
+int processor_per_presence_consumer_shape()
+{
+    return run_gtest_worker(
+        [&]()
+        {
+            TestContext ctx("proc");
+            // Bump both sides — verifies the producer-side counters do
+            // NOT leak into the consumer-presence emission body.
+            ctx.core.inc_in_slots_received();
+            ctx.core.inc_in_slots_received();
+            ctx.core.inc_out_slots_written();
+            ctx.core.inc_out_drop_count();
+
+            json snap = ctx.base->snapshot_metrics_for_presence("consumer");
+
+            ASSERT_TRUE(snap.contains("role"));
+            EXPECT_TRUE(snap["role"].contains("in_slots_received"));
+            EXPECT_EQ(snap["role"]["in_slots_received"], 2);
+            EXPECT_TRUE(snap["role"].contains("script_error_count"))
+                << "script_error_count is direction-agnostic and must "
+                   "appear on every presence";
+            EXPECT_FALSE(snap["role"].contains("out_slots_written"))
+                << "Producer-side counter leaked into consumer-presence "
+                   "emission — Phase 6 per-presence keying violated";
+            EXPECT_FALSE(snap["role"].contains("out_drop_count"))
+                << "Producer-side counter leaked into consumer-presence "
+                   "emission — Phase 6 per-presence keying violated";
+
+            // No rx_queue bound in TestContext → no `queue` key, but
+            // the absence is direction-specific: `out_queue` MUST NOT
+            // appear either (we only ever emit `queue` per-presence).
+            EXPECT_FALSE(snap.contains("queue"));
+            EXPECT_FALSE(snap.contains("in_queue"));
+            EXPECT_FALSE(snap.contains("out_queue"))
+                << "Consumer-presence emission must not carry producer-side "
+                   "queue metrics";
+
+            ASSERT_TRUE(snap.contains("loop"))
+                << "Loop metrics are role-wide; appear on every presence";
+        },
+        "metrics_api::processor_per_presence_consumer_shape",
+        Logger::GetLifecycleModule());
+}
+
+int processor_per_presence_producer_shape()
+{
+    return run_gtest_worker(
+        [&]()
+        {
+            TestContext ctx("proc");
+            ctx.core.inc_in_slots_received();
+            ctx.core.inc_out_slots_written();
+            ctx.core.inc_out_slots_written();
+            ctx.core.inc_out_drop_count();
+
+            json snap = ctx.base->snapshot_metrics_for_presence("producer");
+
+            ASSERT_TRUE(snap.contains("role"));
+            EXPECT_TRUE(snap["role"].contains("out_slots_written"));
+            EXPECT_EQ(snap["role"]["out_slots_written"], 2);
+            EXPECT_TRUE(snap["role"].contains("out_drop_count"));
+            EXPECT_EQ(snap["role"]["out_drop_count"], 1);
+            EXPECT_TRUE(snap["role"].contains("script_error_count"));
+            EXPECT_FALSE(snap["role"].contains("in_slots_received"))
+                << "Consumer-side counter leaked into producer-presence "
+                   "emission — Phase 6 per-presence keying violated";
+
+            EXPECT_FALSE(snap.contains("queue"));
+            EXPECT_FALSE(snap.contains("in_queue"))
+                << "Producer-presence emission must not carry consumer-side "
+                   "queue metrics";
+            EXPECT_FALSE(snap.contains("out_queue"));
+
+            ASSERT_TRUE(snap.contains("loop"));
+        },
+        "metrics_api::processor_per_presence_producer_shape",
+        Logger::GetLifecycleModule());
+}
+
+int per_presence_custom_metrics_on_both_sides()
+{
+    return run_gtest_worker(
+        [&]()
+        {
+            TestContext ctx("proc");
+            ctx.base->report_metric("temperature", 23.5);
+
+            // Custom + inbox + loop are role-wide; the same data
+            // appears on every presence's emission body.
+            json cons = ctx.base->snapshot_metrics_for_presence("consumer");
+            json prod = ctx.base->snapshot_metrics_for_presence("producer");
+
+            ASSERT_TRUE(cons.contains("custom"));
+            ASSERT_TRUE(prod.contains("custom"));
+            EXPECT_DOUBLE_EQ(cons["custom"]["temperature"].get<double>(), 23.5);
+            EXPECT_DOUBLE_EQ(prod["custom"]["temperature"].get<double>(), 23.5);
+
+            // Hook fires once per snapshot — calling it twice does NOT
+            // mutate state (custom_metrics_snapshot is read-only).
+            EXPECT_DOUBLE_EQ(
+                ctx.base->snapshot_metrics_json()["custom"]["temperature"].get<double>(),
+                23.5);
+        },
+        "metrics_api::per_presence_custom_metrics_on_both_sides",
+        Logger::GetLifecycleModule());
+}
+
 // ── PyDict workers ──────────────────────────────────────────────────────────
 //
 // Each PyDict worker owns its own py::scoped_interpreter; the interpreter
@@ -389,6 +504,12 @@ struct MetricsApiWorkerRegistrar
                     return consumer_pydict_hierarchical_no_queue();
                 if (sc == "processor_pydict_hierarchical_no_queue")
                     return processor_pydict_hierarchical_no_queue();
+                if (sc == "processor_per_presence_consumer_shape")
+                    return processor_per_presence_consumer_shape();
+                if (sc == "processor_per_presence_producer_shape")
+                    return processor_per_presence_producer_shape();
+                if (sc == "per_presence_custom_metrics_on_both_sides")
+                    return per_presence_custom_metrics_on_both_sides();
 
                 fmt::print(stderr,
                            "[metrics_api] ERROR: unknown scenario '{}'\n", sc);
