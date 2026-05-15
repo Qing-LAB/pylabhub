@@ -63,6 +63,8 @@ class PYLABHUB_UTILS_EXPORT NativeEngine : public ScriptEngine
 
     void invoke_on_init() override;
     void invoke_on_stop() override;
+    void invoke_on_channel_closing(const std::string &channel,
+                                    const std::string &reason) override;
 
     InvokeResult invoke_produce(
         InvokeTx tx,
@@ -130,6 +132,7 @@ class PYLABHUB_UTILS_EXPORT NativeEngine : public ScriptEngine
     FnNativeFinalize fn_finalize_{nullptr};
     FnVoid           fn_on_init_{nullptr};
     FnVoid           fn_on_stop_{nullptr};
+    FnVoid           fn_on_channel_closing_{nullptr};
     FnOnProduce      fn_on_produce_{nullptr};
     FnOnConsume      fn_on_consume_{nullptr};
     FnOnProcess      fn_on_process_{nullptr};

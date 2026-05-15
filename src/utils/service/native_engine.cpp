@@ -467,6 +467,8 @@ bool NativeEngine::load_script(const std::filesystem::path &script_dir,
     // ── Resolve optional callback symbols ──────────────────────────
     fn_on_init_       = reinterpret_cast<FnVoid>(resolve_sym_("on_init"));
     fn_on_stop_       = reinterpret_cast<FnVoid>(resolve_sym_("on_stop"));
+    fn_on_channel_closing_ =
+        reinterpret_cast<FnVoid>(resolve_sym_("on_channel_closing"));
     fn_on_produce_    = reinterpret_cast<FnOnProduce>(resolve_sym_("on_produce"));
     fn_on_consume_    = reinterpret_cast<FnOnConsume>(resolve_sym_("on_consume"));
     fn_on_process_    = reinterpret_cast<FnOnProcess>(resolve_sym_("on_process"));
@@ -564,6 +566,7 @@ void NativeEngine::finalize_engine_()
     fn_init_ = nullptr;
     fn_on_init_ = nullptr;
     fn_on_stop_ = nullptr;
+    fn_on_channel_closing_ = nullptr;
     fn_on_produce_ = nullptr;
     fn_on_consume_ = nullptr;
     fn_on_process_ = nullptr;
@@ -585,8 +588,9 @@ void NativeEngine::finalize_engine_()
 
 bool NativeEngine::has_callback(const std::string &name) const noexcept
 {
-    if (name == "on_init")       return fn_on_init_ != nullptr;
-    if (name == "on_stop")       return fn_on_stop_ != nullptr;
+    if (name == "on_init")             return fn_on_init_             != nullptr;
+    if (name == "on_stop")             return fn_on_stop_             != nullptr;
+    if (name == "on_channel_closing")  return fn_on_channel_closing_  != nullptr;
     if (name == "on_produce")    return fn_on_produce_ != nullptr;
     if (name == "on_consume")    return fn_on_consume_ != nullptr;
     if (name == "on_process")    return fn_on_process_ != nullptr;
@@ -712,6 +716,15 @@ void NativeEngine::invoke_on_stop()
 {
     if (fn_on_stop_)
         fn_on_stop_(nullptr);
+}
+
+void NativeEngine::invoke_on_channel_closing(const std::string &channel,
+                                              const std::string &reason)
+{
+    if (!fn_on_channel_closing_) return;
+    nlohmann::json args = {{"channel", channel}, {"reason", reason}};
+    const std::string s = args.dump();
+    fn_on_channel_closing_(s.c_str());
 }
 
 InvokeResult NativeEngine::invoke_produce(

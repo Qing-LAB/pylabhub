@@ -227,6 +227,7 @@ bool LuaEngine::load_script(const std::filesystem::path &script_dir,
     // Extract all callback refs.
     ref_on_init_ = extract_callback_ref_("on_init");
     ref_on_stop_ = extract_callback_ref_("on_stop");
+    ref_on_channel_closing_ = extract_callback_ref_("on_channel_closing");
     ref_on_produce_ = extract_callback_ref_("on_produce");
     ref_on_consume_ = extract_callback_ref_("on_consume");
     ref_on_process_ = extract_callback_ref_("on_process");
@@ -243,6 +244,8 @@ bool LuaEngine::load_script(const std::filesystem::path &script_dir,
     reset_standard_callback_cache();
     set_standard_callback_present("on_init",    state_.is_ref_callable(ref_on_init_));
     set_standard_callback_present("on_stop",    state_.is_ref_callable(ref_on_stop_));
+    set_standard_callback_present("on_channel_closing",
+                                  state_.is_ref_callable(ref_on_channel_closing_));
     set_standard_callback_present("on_produce", state_.is_ref_callable(ref_on_produce_));
     set_standard_callback_present("on_consume", state_.is_ref_callable(ref_on_consume_));
     set_standard_callback_present("on_process", state_.is_ref_callable(ref_on_process_));
@@ -1069,6 +1072,28 @@ void LuaEngine::invoke_on_stop()
 }
 
 // ============================================================================
+// invoke_on_channel_closing — on_channel_closing(channel, reason, api)
+// ============================================================================
+
+void LuaEngine::invoke_on_channel_closing(const std::string &channel,
+                                           const std::string &reason)
+{
+    if (!state_.is_ref_callable(ref_on_channel_closing_))
+        return;
+
+    lua_State *L = state_.raw();
+    lua_rawgeti(L, LUA_REGISTRYINDEX, ref_on_channel_closing_);
+    lua_pushlstring(L, channel.data(), channel.size());
+    lua_pushlstring(L, reason.data(),  reason.size());
+    lua_rawgeti(L, LUA_REGISTRYINDEX, ref_api_);
+
+    if (!state_.pcall(3, 0, "on_channel_closing"))
+    {
+        on_pcall_error_("on_channel_closing");
+    }
+}
+
+// ============================================================================
 // invoke_produce — on_produce(tx, msgs, api) -> bool
 // ============================================================================
 
@@ -1406,6 +1431,8 @@ void LuaEngine::clear_refs_()
     ref_on_init_ = LUA_NOREF;
     state_.unref(ref_on_stop_);
     ref_on_stop_ = LUA_NOREF;
+    state_.unref(ref_on_channel_closing_);
+    ref_on_channel_closing_ = LUA_NOREF;
     state_.unref(ref_on_produce_);
     ref_on_produce_ = LUA_NOREF;
     state_.unref(ref_on_consume_);

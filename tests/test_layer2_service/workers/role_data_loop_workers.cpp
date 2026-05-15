@@ -131,6 +131,8 @@ struct StubEngine : public ScriptEngine
     { return {InvokeStatus::NotFound, {}}; }
     void invoke_on_init() override {}
     void invoke_on_stop() override {}
+    void invoke_on_channel_closing(const std::string &,
+                                    const std::string &) override {}
     InvokeResult invoke_produce(InvokeTx, std::vector<IncomingMessage> &) override
     { return InvokeResult::Commit; }
     InvokeResult invoke_consume(InvokeRx, std::vector<IncomingMessage> &) override

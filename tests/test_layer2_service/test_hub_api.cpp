@@ -441,6 +441,8 @@ public:
 
     void invoke_on_init() override {}
     void invoke_on_stop() override {}
+    void invoke_on_channel_closing(const std::string &,
+                                    const std::string &) override {}
     pylabhub::scripting::InvokeResult invoke_produce(
         pylabhub::scripting::InvokeTx,
         std::vector<pylabhub::scripting::IncomingMessage> &) override

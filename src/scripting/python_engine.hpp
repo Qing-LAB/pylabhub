@@ -133,6 +133,8 @@ class PythonEngine : public ScriptEngine
 
     void invoke_on_init() override;
     void invoke_on_stop() override;
+    void invoke_on_channel_closing(const std::string &channel,
+                                    const std::string &reason) override;
 
     InvokeResult invoke_produce(
         InvokeTx tx,
@@ -213,6 +215,7 @@ class PythonEngine : public ScriptEngine
     py::object module_{py::none()};
     py::object py_on_init_{py::none()};
     py::object py_on_stop_{py::none()};
+    py::object py_on_channel_closing_{py::none()};
     py::object py_on_produce_{py::none()};
     py::object py_on_consume_{py::none()};
     py::object py_on_process_{py::none()};
