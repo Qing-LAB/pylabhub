@@ -1395,20 +1395,42 @@ class PYLABHUB_UTILS_EXPORT HubState
                        const std::string                           &role_type,
                        std::chrono::steady_clock::time_point        when,
                        const std::optional<nlohmann::json>         &metrics);
-    void _on_heartbeat_timeout(const std::string &channel, const std::string &role_uid);
-    /// Wave M2.5 step 6 per-producer signature: transition the matched
-    /// producer-presence Pending → Disconnected (HEP-CORE-0023 §2.1),
-    /// bump `pending_to_deregistered_total`, drop the producer from
-    /// `ChannelEntry.producers[]`, and fire `_on_channel_closed`
-    /// ONLY when this was the LAST producer (atomic teardown).
-    /// Returns the typed `RemoveProducerResult` so the sweep caller
-    /// can decide whether to fan-out CHANNEL_CLOSING_NOTIFY.
-    /// Idempotent: if the presence is already Disconnected or the
-    /// producer is no longer admitted, returns `{removed=false}`
-    /// without state mutation.
+    /// Connected → Pending transition for the `(channel, role_uid,
+    /// role_type)` presence (HEP-CORE-0023 §2.1).  Producer + consumer
+    /// transitions both bump `ready_to_pending_total`; only producer
+    /// transitions fan out `ChannelStatusChangedHandler` (consumer
+    /// presence does not affect `ChannelObservable` per §2.1).
+    /// `role_type` MUST be `"producer"` or `"consumer"`.
+    void _on_heartbeat_timeout(const std::string &channel,
+                               const std::string &role_uid,
+                               const std::string &role_type);
+    /// Pending → Disconnected transition for the `(channel, role_uid,
+    /// role_type)` presence (HEP-CORE-0023 §2.1 + §2.1.1).  Bumps
+    /// `pending_to_deregistered_total`.  Behavior by role_type:
+    ///
+    /// - `"producer"`: drops the matching `ProducerEntry` from
+    ///   `ChannelEntry.producers[]`.  Fires `_on_channel_closed`
+    ///   (atomic teardown) ONLY when this was the LAST producer; the
+    ///   caller inspects the returned `RemoveProducerResult` to decide
+    ///   whether to fan out CHANNEL_CLOSING_NOTIFY.  Multi-producer
+    ///   path: producer dropped, channel survives, role-disconnect
+    ///   cascade dispatched if the role's last presence anywhere just
+    ///   went Disconnected.
+    /// - `"consumer"`: removes the matching `ConsumerEntry` from
+    ///   `ChannelEntry.consumers[]` and runs `drop_channel_if_orphaned`
+    ///   + `_dispatch_role_disconnected_if_dead`.  Consumer presence
+    ///   never tears down channels (HEP-CORE-0023 §2.1.1) — the
+    ///   returned `RemoveProducerResult.channel_now_empty` is always
+    ///   `false` on this path.  `removed` reflects whether a consumer
+    ///   slot was actually erased.
+    ///
+    /// Idempotent in all role_type branches: if the presence is already
+    /// Disconnected or the matching channel/role row is gone, returns
+    /// `{removed=false, channel_now_empty=false}` without state mutation.
     RemoveProducerResult
     _on_pending_timeout(const std::string &channel,
-                         const std::string &role_uid);
+                         const std::string &role_uid,
+                         const std::string &role_type);
 
     /// Wave M3 step 5b (2026-05-11): production trigger for the
     /// terminal cleanup defined at `_set_role_disconnected`.  Atomic
