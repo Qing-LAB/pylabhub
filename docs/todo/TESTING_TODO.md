@@ -246,9 +246,62 @@ in phase MP5:
   `entry.producer_role_uid` → either `entry.producers[k].role_uid`
   (specific producer) or a scan helper (any producer).
 
-### 9. Unresolved test failures — MD1 race remains open; chain reordered 2026-05-12
+### 9. ✅ Closed 2026-05-14: MD1 race fixed via ThreadManager Thread Shutdown Contract
 
 #### `PlhHubCliTest.RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters` — SIGSEGV exit 139 (MD1)
+
+**Status (closure 2026-05-14):** root cause from 2026-05-10 gdb-batch
+capture FIXED.  Verification against current source:
+
+| Layer | Fix | Code reference |
+|---|---|---|
+| Teardown sequence | New Step 12.5 — `request_shutdown_all()` + `wait_for_quiescence(kMidTimeoutMs)` between Step 12 (signal stop) and Step 13 (destroy infrastructure) | `src/utils/service/role_host_lifecycle.cpp:55-73` (comment explicitly cites MD1 as the UAF root cause) |
+| ThreadManager primitive | `SlotContext::with_active_loop` (RAII bracket — increments `active_loop_depth` on entry, decrements on exit / throw) + `wait_for_quiescence` (waits all slots' depth == 0) | `src/include/utils/thread_manager.hpp:85-122` + 388-413 |
+| Ctrl-thread spawn | `bc->run_poll_loop(...)` now wrapped in `ctx.with_active_loop(...)`; local captures of `bc / eng / core` taken BEFORE bracket so post-bracket code never touches pImpl | `src/utils/service/role_api_base.cpp:692-733` (cites HEP-CORE-0031 §4.1 + MD1) |
+| BRC poll-loop tail | Removed the two dead pImpl writes (`poll_loop_running.store(false)`, `active_loop_periodic_tasks = nullptr`) that exposed the original UAF at line 594 | `src/utils/network_comm/broker_request_comm.cpp:592-608` (cites MD1 as motivating) |
+
+**Architectural shape (more robust than originally proposed):** the
+diagnosis offered two options (Option 1 — make `BRC::disconnect()`
+synchronous; Option 2 — split teardown_infrastructure into
+pre-drain / post-drain phases).  The actual implementation is
+**Option 2 generalized**: the synchronization point is a
+ThreadManager-level contract any thread can opt into via
+`with_active_loop`.  New thread types automatically participate
+in the drain barrier — no per-class quiescence logic needed.
+
+**Implementation commits**:
+- `42092cb` MD1 design — role teardown ordering + Phase A/B/C contract
+- `23fbc90` MD1 design rewrite — thread shutdown contracts (supersedes Phase A/B/C)
+- `192269e` MD1 P1a review fixes — refactor + log-text verification
+- `79ec568` MD1 P1b — BRC ctrl thread honors Thread Shutdown Contract
+- `42fdcd7` MD1 P1b R1 — clarify comment on engine-guard dtor + contract scope
+- `eefa260` MD1 P1c+P1d+MD1.5 — ThreadManager Thread Shutdown Contract + master/peer drain
+- `235f033` MD1.5 — EngineHost detach-safety gate in shutdown_()
+- `5fac040` MD1 — RoleAPIBase::Impl::Shared sub-struct + ctrl as master + BRC bracket
+- `4a5347c` MD1 + L1 — do_role_teardown Step 12.5 + delete worker-side drain
+
+**Test verification (2026-05-14):**
+`PlhHubCliTest.RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters` passes
+5/5 solo runs (~700 ms each).  Original race only reliably reproduced
+under `ctest -j2` parallel CPU pressure (1/13 in stressed runs, 0/30
+solo) — solo passing is consistent with the architectural fix.
+
+**Residual cleanup (2026-05-14 — outside the bug-fix scope):**
+1. Three false comments at `producer/consumer/processor_role_host.cpp`'s
+   `broker_comm_.reset()` sites still claim "Ctrl thread already
+   joined."  Wrong — at Step 13 the ctrl thread is **quiesced**
+   (outside its `with_active_loop` bracket) but still alive; the
+   actual join happens later in `EngineHost<ApiT>::shutdown_()`
+   Phase 3.  Functional safety holds (quiesced is sufficient per
+   the new contract); only the doc lies.
+2. HEP-CORE-0031 §4.1.4 describes the FLAG API
+   (`mark_active_loop_exited` / `wait_for_active_loop_exit`) as the
+   production mechanism — but no production caller uses it.  Actual
+   production uses the BRACKET API (`with_active_loop` /
+   `wait_for_quiescence`).  HEP needs updating to describe both
+   APIs and clarify which is canonical.
+
+#### Pre-2026-05-14 STATUS (preserved for history)
 
 **Status (refreshed 2026-05-12):** root cause from 2026-05-10 gdb-batch
 capture confirmed still valid.  Re-verified against current code on
