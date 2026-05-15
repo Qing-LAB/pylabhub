@@ -10,96 +10,76 @@
 
 ## Current Status
 
-### 🔥 Wave M2 — Multi-Producer Channel Bookkeeping (2026-05-10)
+**Canonical source**: `docs/TODO_MASTER.md` § "Current Sprint Focus"
+holds the authoritative renovation status (Arc A `plh_hub` /
+Arc B role-host + Wave-B M0..M9 + side-arc index).  This file
+holds the messenger/broker-specific detail.  Do NOT duplicate
+Wave-status tracking here — keep it in TODO_MASTER.
 
-Canonical plan in `docs/TODO_MASTER.md` "Wave M2".
+### Renovation status — short summary (verified 2026-05-15)
 
-**Status snapshot (2026-05-11):** Wave M2.5 controlled-access API is
-**DONE** (commit `416cbec`); MP3 + MP4 are implicit through M2.5
-steps 3-6; MP5 partial — 17 original multi-producer tests + 4 new L2
-tests added 2026-05-11 in the H9/H10/H11/H12 sweep that pin:
-- Fan-In multi-producer voluntary DEREG transitions presence + cleans
-  cache (`HubStateProducerDropped.MultiProducer_VoluntaryDereg_…`).
-- Multi-channel producer keeps schemas after one channel closes
-  (`HubStateProducerDropped.MultiChannel_…SchemasSurvive`).
-- Channel-close atomic teardown transitions consumer presences
-  (`HubStateChannelClosed.ConsumerPresence_…AtomicallyTransitions…`).
-- `channels` cache invariant respected when a role has multiple
-  presence types on the same channel
-  (`HubStateCacheInvariant.RoleWithBothProducerAndConsumer_…`).
+| Track | Where it stands | Active item |
+|---|---|---|
+| **Arc A — `plh_hub` renovation** (HEP-0033 §15 Phase 1..10) | ✅ Phases 1-9 shipped; Phase 10 doc-amendment partial.  `plh_hub` binary + 7 L4 tests exist. | (none blocking) |
+| **Arc B — role-host renovation** (`role_host_template_design.md` Wave-B M0..M9) | ✅ M0 + M1 shipped.  ⏳ **Wave-B M2 is the active item** (consumer heartbeat tick removal).  M3..M9 follow sequentially. | **Wave-B M2** |
+| **HEP-CORE-0035 auth** | 🚧 NOT IMPLEMENTED — design ratified, 7-phase plan in HEP-0035 §8 | (independent — production-readiness gap) |
+| **HUB_TARGETED_ACK wire frame** (HEP-0033 §12.3.6) | ⏸ Deferred — C++ augment_peer_message surface in place; wire bit not landed | (federation use-cases only) |
 
-Suite 1819/1819 (after Wave M3 step 5b+c+d+e).
+### Side-arc cleanup waves closed (2026-05-14 / 2026-05-15)
 
-**Wave M3 status — CLOSED 2026-05-11.** All step work shipped:
+All in TODO_MASTER's "Side-arc cleanup waves completed" table.
+Local-detail subsections preserved below for the messenger/broker
+specific items (Wave-M2, Wave-M3 messenger-internal closure
+notes, M1.4 metrics_store_ retirement detail).  These are
+**closed**; the detail is preserved as record only — see
+`git log` + REVIEW_Wave*_*.md for full history.
 
-- Steps 1-4 + 6 + 8 shipped in prior commits (commits `3cf5074` →
-  `689444e`).
-- Step 5b (H1 wiring) — `_dispatch_role_disconnected_if_dead`.
-- Step 5c (H9) — `_on_producer_dropped` multi-producer transition + cache.
-- Step 5d (H10/H11) — cache invariant primitive `drop_channel_if_orphaned`.
-- Step 5e (H12) — schema cascade is owner-lifetime ONLY (per-producer
-  cascade removed from `_on_channel_closed`).
-- Step 5f+i (H16+H20) — band-cascade in HubState terminal cleanup +
-  broker subscribes to `band_left` for `BAND_LEAVE_NOTIFY` fanout
-  (replaces imperative `band_on_role_closed` from channel-close path).
-- Step 5g+h (H17+H18) — presence rows ERASED on `on_dereg`/
-  `on_pending_timeout` (no Disconnected tombstones).  `any_presence_alive()`
-  + `drop_channel_if_orphaned` simplified accordingly.  Re-REG creates
-  fresh Connected presence (no stale tombstone).
-- Step 5j (H23+H24+H25) — log gating restored on `handle_band_leave_req`;
-  `send_band_leave_notify` log fires before NOTIFY early-return;
-  defensive unsubscribe added to `~BrokerServiceImpl`.
+### Specific deferred items local to messenger/broker
 
-Six review passes (`REVIEW_WaveM3_*_2026-05-11.md`); 1823/1823 tests
-pass; two mutation tests verify contracts truly pinned.
+- **H43 — Federation propagation of role-disconnect.**
+  Verified open 2026-05-12: `broker_service.cpp` does not call
+  `subscribe_role_disconnected`; only `hub_script_runner.cpp:281`
+  subscribes (for script-side `on_role_disconnected` callback).
+  Peer hubs therefore do NOT learn about non-channel-close role
+  disconnects.  Whether they NEED to is part of HEP-CORE-0022
+  federation scope, NOT part of Wave-B M8 (which is dual-hub
+  presence on the role side, not peer-hub state replication).
+  Trigger to address: a concrete federation scenario where
+  peer-hub bookkeeping diverges; bands are not federated per
+  HEP-CORE-0030 §3, so the impact is bounded.
+- **Wave-M3 deferred sub-items** (RoleEntry controlled-access
+  side-arc; closed 2026-05-11):
+  - Step 5 — strict `add_role` admission with global-uid
+    uniqueness.  Trigger: spoofing-attempt observation OR
+    security-design pass requirement.  `M3_role_entry_controlled_access.md` §5.
+  - Step 7 — privatize `RolePresence` state-bearing fields.
+    Trigger: concrete misuse bug OR audit observation.
+  - H15 — `_on_heartbeat` direct metrics-field mutation.
+    Trigger: a `RoleEntry::set_presence_metrics(...)` API
+    addition for a concrete reason.  Current site:
+    `src/utils/ipc/hub_state.cpp:1294-1306`.
+  - H29, H36, H39 — cosmetic cleanup (dead `state == Disconnected`
+    skip in DISC_REQ; `_on_schemas_evicted_for_owner` is now
+    test-only).  No functional impact.
+  - H40 — `active_router_` concurrency hardening (atomic + DEBUG
+    assertion).  Trigger: any new HubState mutator caller from a
+    non-broker-IO thread.
 
-**Wave M3 explicitly DEFERRED items** (each with documented trigger):
-- Step 5 — strict `add_role` admission with global-uid uniqueness.
-  Trigger: spoofing-attempt observation OR security-design pass
-  requirement.  `docs/tech_draft/M3_role_entry_controlled_access.md` §5.
-- Step 7 — privatize `RolePresence` state-bearing fields.  Trigger:
-  concrete misuse bug OR audit observation.  Same condition as M2.5
-  step 7.
-- H15 — `_on_heartbeat` direct metrics-field mutation.  Trigger: a
-  `RoleEntry::set_presence_metrics(...)` API addition for a concrete
-  reason.  Current site: `src/utils/ipc/hub_state.cpp:1294-1306`
-  (line refs re-verified 2026-05-12; the function still writes
-  `p->latest_metrics` and `p->metrics_collected_at` directly inside
-  the channel-aggregate locked block).
-- H29, H36, H39 — cosmetic cleanup (dead `state == Disconnected` skip
-  in DISC_REQ; `_on_schemas_evicted_for_owner` is now test-only).
-  No functional impact.
-- H40 — `active_router_` concurrency hardening (atomic + DEBUG
-  assertion).  Trigger: any new HubState mutator caller from a
-  non-broker-IO thread.
+### Naming hygiene (mirror TODO_MASTER)
 
-**Pre-existing issues surfaced but NOT in Wave M3 scope:**
-- **H34 — `metrics_store_` per-uid leak** — **CLOSED 2026-05-11 by
-  M1.4 commit `4e902e1`.**  `metrics_store_` and `update_*_metrics`
-  fully deleted; metrics now live on `RolePresence::latest_metrics`
-  per-presence row and clear automatically on `on_dereg` erase
-  (H18 contract).  Verified 2026-05-12: `grep -rn metrics_store_
-  src/` returns zero matches.  No follow-up pre-existing leak.
-- **H43 — Federation propagation of role-disconnect**.  **Still open
-  as of 2026-05-12.**  Verified by reading broker_service.cpp: no
-  call to `subscribe_role_disconnected` exists; only
-  `hub_script_runner.cpp:281` subscribes (for script-side
-  `on_role_disconnected` callback).  Peer hubs therefore do NOT
-  learn about non-channel-close role disconnects.  Whether they
-  need to is the verification deferred to **Wave B M8** (dual-hub
-  processor); bands are not federated per HEP-CORE-0030 §3, so this
-  may be a non-issue.
+Two label spaces with similar-looking names that must NOT be
+confused.  If a sentence says "M3" without prefix, check
+context — almost always **Wave-B M3** (renovation arc).
 
-**Then sequentially:** M1.4 (retire `metrics_store_`, also closes H34) →
-**MD1** (role teardown use-after-free race fix — chain reordered
-2026-05-12 to land MD1 *before* M1.5 on a stable substrate) → **M1.5**
-(`on_channel_closing` callback + auto-stop — re-framed 2026-05-12; the
-original 2026-05-09 framing as "`on_forced_disconnect` / FORCE_SHUTDOWN
-handler" is stale because M1.2 commit `a41ce71` removed `FORCE_SHUTDOWN`
-wholesale; see `docs/tech_draft/M1.5_channel_closing_redesign_2026-05-12.md`
-for the redesign and §6 open decisions) → Wave B M8 / MP6 (federation,
-verify H43 requirement).  See TODO_MASTER §"Deferred items — explicit
-phase entries" for scope-doc + trigger-condition links.
+| Looks like | Actually means | Status |
+|---|---|---|
+| Wave-B M3 | Arc B (role_host_template_design.md) Phase 3 — `RoleHandler` skeleton | ⏳ pending |
+| Wave-M3   | Side-arc — RoleEntry controlled-access | ✅ closed 2026-05-11 |
+| Wave-B M2 | Arc B Phase 2 — consumer heartbeat tick removal | ⏳ NEXT |
+| Wave-M2   | Side-arc — multi-producer ChannelEntry refactor | ✅ closed |
+| Wave-M2.5 | Side-arc — controlled-access ChannelEntry | ✅ closed |
+| M1.2 / M1.4 / M1.5 | Side-arc FSM-consolidation cleanups | ✅ all closed |
+| MD1 / MD1.5 | Side-arc race-fix + ThreadManager contract | ✅ all closed |
 
 **Scope expansion (2026-05-10):** new phase **MP2.5 — Controlled-access
 API on `ChannelEntry`** inserted between MP2 (done) and MP3.  Driven
