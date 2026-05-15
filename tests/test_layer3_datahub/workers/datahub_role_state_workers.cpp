@@ -489,6 +489,163 @@ int role_entry_terminal_cleanup_on_consumer_left_last()
         logger_module(), crypto_module(), zmq_module());
 }
 
+// ============================================================================
+// consumer_heartbeat_timeout_fires_consumer_died_notify
+//   Wave-B M2 (3/3): a consumer presence that stops heartbeating must
+//   transition Connected → Pending → Disconnected on the broker side,
+//   triggering `CONSUMER_DIED_NOTIFY` with `reason="heartbeat_timeout"`
+//   to every producer on the channel.  Symmetric with the PID-death
+//   path (`check_dead_consumers`, `reason="process_dead"`).  The
+//   channel itself must NOT close (HEP-CORE-0023 §2.1.1).
+// ============================================================================
+
+int consumer_heartbeat_timeout_fires_consumer_died_notify()
+{
+    return run_gtest_worker(
+        []() {
+            BrokerService::Config cfg;
+            cfg.endpoint                         = "tcp://127.0.0.1:0";
+            cfg.use_curve                        = true;
+            // Match the other state-machine tests: 150 ms each side
+            // gives ~300 ms minimum + ~100 ms broker sweep cadence.
+            // Poll window below is 3 s — generous against CI jitter.
+            cfg.ready_timeout_override           = std::chrono::milliseconds(150);
+            cfg.pending_timeout_override         = std::chrono::milliseconds(150);
+            // Disable the PID-death sweep to keep the notification path
+            // unambiguous — only the heartbeat-timeout path can fire.
+            cfg.consumer_liveness_check_interval = std::chrono::seconds(0);
+            auto broker = start_broker_with_cfg(std::move(cfg));
+
+            const std::string ch       = make_test_channel_name("role_state.cons_hb_timeout");
+            const std::string prod_uid = "prod." + ch;
+            const std::string cons_uid = "cons." + ch;
+
+            // ── Producer BRC: needs a notification callback BEFORE the
+            //    poll loop starts, so we build it inline rather than via
+            //    BrcHandle (which doesn't expose the callback hook).
+            std::mutex                  notify_mu;
+            std::vector<nlohmann::json> consumer_died_notifies;
+
+            BrokerRequestComm prod_brc;
+            prod_brc.on_notification(
+                [&](const std::string &msg_type, const nlohmann::json &body) {
+                    if (msg_type == "CONSUMER_DIED_NOTIFY")
+                    {
+                        std::lock_guard<std::mutex> lk(notify_mu);
+                        consumer_died_notifies.push_back(body);
+                    }
+                });
+
+            BrokerRequestComm::Config prod_cfg;
+            prod_cfg.broker_endpoint = broker.endpoint;
+            prod_cfg.broker_pubkey   = broker.pubkey;
+            prod_cfg.role_uid        = prod_uid;
+            ASSERT_TRUE(prod_brc.connect(prod_cfg));
+
+            std::atomic<bool> prod_poll_running{true};
+            std::thread       prod_poll_thread([&]() {
+                prod_brc.run_poll_loop([&]() { return prod_poll_running.load(); });
+            });
+
+            ASSERT_TRUE(prod_brc.register_channel(make_reg_opts(ch, prod_uid), 3000)
+                            .has_value());
+            prod_brc.send_heartbeat(ch, prod_uid, "producer", {});
+
+            // ── Consumer BRC: standard BrcHandle.
+            BrcHandle cons_bh;
+            cons_bh.start(broker.endpoint, broker.pubkey, cons_uid);
+
+            nlohmann::json cons_opts;
+            cons_opts["channel_name"]  = ch;
+            cons_opts["consumer_uid"]  = cons_uid;
+            cons_opts["consumer_name"] = "role_state_test_consumer";
+            cons_opts["consumer_pid"]  = ::getpid();
+            ASSERT_TRUE(cons_bh.brc.register_consumer(cons_opts, 3000).has_value());
+            cons_bh.brc.send_heartbeat(ch, cons_uid, "consumer", {});
+
+            // Keep the producer's own presence alive throughout the
+            // poll window — without this, the producer would itself
+            // be reclaimed (ready_timeout fires after 150 ms) before
+            // we observe the consumer's CONSUMER_DIED_NOTIFY arrival.
+            std::atomic<bool> prod_hb_running{true};
+            std::thread       prod_hb_thread([&]() {
+                while (prod_hb_running.load())
+                {
+                    prod_brc.send_heartbeat(ch, prod_uid, "producer", {});
+                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                }
+            });
+
+            // From this point the consumer stops heartbeating.  After
+            // ready_timeout + pending_timeout (≈300 ms + broker sweep
+            // cadence), broker reclaims the consumer-presence and
+            // emits CONSUMER_DIED_NOTIFY to the producer.
+            auto notify_arrived = [&]() {
+                std::lock_guard<std::mutex> lk(notify_mu);
+                return !consumer_died_notifies.empty();
+            };
+            ASSERT_TRUE(poll_until(notify_arrived, std::chrono::seconds(3)))
+                << "CONSUMER_DIED_NOTIFY did not arrive at producer within 3 s "
+                   "after consumer's heartbeat timeout (Wave-B M2 3/3 gap).";
+
+            // Stop the producer's heartbeat thread before asserting on
+            // the captured notification body.
+            prod_hb_running.store(false);
+            if (prod_hb_thread.joinable()) prod_hb_thread.join();
+
+            // Body shape: reason="heartbeat_timeout" distinguishes this
+            // path from the PID-death path (reason="process_dead").
+            {
+                std::lock_guard<std::mutex> lk(notify_mu);
+                ASSERT_FALSE(consumer_died_notifies.empty());
+                const auto &body = consumer_died_notifies.front();
+                EXPECT_EQ(body.value("channel_name", std::string{}), ch);
+                EXPECT_EQ(body.value("reason", std::string{}), "heartbeat_timeout")
+                    << "CONSUMER_DIED_NOTIFY must carry reason='heartbeat_timeout' "
+                       "for the broker-sweep path; reason='process_dead' is "
+                       "reserved for PID-death (check_dead_consumers).";
+                EXPECT_EQ(body.value("consumer_pid", uint64_t{0}),
+                          static_cast<uint64_t>(::getpid()));
+            }
+
+            // Channel survives — consumer-presence disconnect MUST NOT
+            // close the channel (HEP-CORE-0023 §2.1.1).
+            EXPECT_TRUE(broker.hub_state->channel(ch).has_value())
+                << "Channel must survive a consumer-only heartbeat timeout — "
+                   "channel teardown is producer-side only.";
+
+            // Producer still alive (its own presence kept fresh).
+            EXPECT_TRUE(broker.hub_state->role(prod_uid).has_value());
+
+            // Consumer role entry erased — last alive presence
+            // transitioned Disconnected, so the role-disconnect cascade
+            // fired (`_dispatch_role_disconnected_if_dead`).
+            auto cons_entry_gone = [&]() {
+                return !broker.hub_state->role(cons_uid).has_value();
+            };
+            EXPECT_TRUE(poll_until(cons_entry_gone, std::chrono::seconds(1)))
+                << "Consumer role entry must be erased after its last "
+                   "presence transitions Disconnected (H1 wiring cascade).";
+
+            // Counter bumped — pending_to_deregistered_total covers
+            // both producer and consumer per-presence transitions.
+            auto m = broker.service->query_role_state_metrics();
+            EXPECT_GE(m.pending_to_deregistered_total, 1u)
+                << "pending_to_deregistered_total must bump on the "
+                   "consumer-presence Pending→Disconnected path.";
+
+            // Tear down.
+            cons_bh.stop();
+            prod_poll_running.store(false);
+            prod_brc.stop();
+            if (prod_poll_thread.joinable()) prod_poll_thread.join();
+            prod_brc.disconnect();
+            broker.stop_and_join();
+        },
+        "role_state.consumer_heartbeat_timeout_fires_consumer_died_notify",
+        logger_module(), crypto_module(), zmq_module());
+}
+
 } // namespace pylabhub::tests::worker::broker_role_state
 
 namespace
@@ -517,6 +674,8 @@ struct BrokerRoleStateWorkerRegistrar
                     return role_entry_terminal_cleanup_on_last_presence_dereg();
                 if (scenario == "role_entry_terminal_cleanup_on_consumer_left_last")
                     return role_entry_terminal_cleanup_on_consumer_left_last();
+                if (scenario == "consumer_heartbeat_timeout_fires_consumer_died_notify")
+                    return consumer_heartbeat_timeout_fires_consumer_died_notify();
                 return 1;
             });
     }
