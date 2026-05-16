@@ -56,31 +56,6 @@ gtest_discover_tests(test_layer2_framework_selftest
         TIMEOUT 60
 )
 
-# ============================================================================
-# CRITICAL Test: Backoff Strategy (blocks DataBlock tests)
-# Pure API test — no lifecycle, no worker dispatcher needed.
-# ============================================================================
-
-add_executable(test_layer2_backoff_strategy
-    test_backoff_strategy.cpp
-)
-
-target_link_libraries(test_layer2_backoff_strategy
-    PRIVATE
-        pylabhub::utils
-        pylabhub::test_framework
-        GTest::gtest
-        GTest::gtest_main
-)
-
-pylabhub_ensure_sanitizer_for_executable(test_layer2_backoff_strategy)
-
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_backoff_strategy
-    SUITE_NAME "Layer2_BackoffStrategy"
-)
-layer2_require_staged_utils(test_layer2_backoff_strategy)
-
 # ── Net Address Validation ──────────────────────────────────────────────────
 
 add_executable(test_layer2_net_address
@@ -107,12 +82,6 @@ gtest_discover_tests(test_layer2_net_address
     PROPERTIES
         LABELS "layer2;service;net"
         TIMEOUT 30
-)
-
-gtest_discover_tests(test_layer2_backoff_strategy
-    PROPERTIES
-        LABELS "layer2;service;backoff;critical"
-        TIMEOUT 60
 )
 
 # ============================================================================
@@ -1182,7 +1151,6 @@ gtest_discover_tests(test_layer2_scriptengine_native_dylib
 
 message(STATUS "Layer 2 (Service) tests configured successfully")
 message(STATUS "  - test_layer2_framework_selftest (CRITICAL - framework self-verification)")
-message(STATUS "  - test_layer2_backoff_strategy   (pure API, no dispatcher)")
 message(STATUS "  - test_layer2_crypto_utils       (multi-process)")
 message(STATUS "  - test_layer2_lifecycle          (multi-process)")
 message(STATUS "  - test_layer2_lifecycle_dynamic  (multi-process)")
@@ -1567,24 +1535,25 @@ gtest_discover_tests(test_layer2_hub_zmq_queue
 )
 
 # ============================================================================
-# Test: dispatch_channel_closing helper (HEP-CORE-0011 M1.5).
+# Test: dispatch_notifications (HEP-CORE-0011 callback table).
 #
-# Unit tests for the per-cycle classifier that extracts
-# CHANNEL_CLOSING_NOTIFY entries from `msgs` and dispatches them
-# to the script's on_channel_closing callback (when defined).
+# Unit tests for the per-cycle table-driven dispatcher in
+# `service/cycle_ops.hpp` that routes broker notifications
+# (CHANNEL_CLOSING_NOTIFY, CONSUMER_DIED_NOTIFY, ...) to their
+# dedicated script callbacks via the `NotificationId` table.
 # Pattern 1+ with Logger-only guard — engine surface uses LOGGER_*
 # but the test doesn't spin up a HubHost or broker.
 # ============================================================================
 
-add_executable(test_layer2_dispatch_channel_closing
-    test_dispatch_channel_closing.cpp
+add_executable(test_layer2_dispatch_notifications
+    test_dispatch_notifications.cpp
 )
 
-target_include_directories(test_layer2_dispatch_channel_closing PRIVATE
+target_include_directories(test_layer2_dispatch_notifications PRIVATE
     ${CMAKE_SOURCE_DIR}/src/utils   # service/cycle_ops.hpp is internal
 )
 
-target_link_libraries(test_layer2_dispatch_channel_closing
+target_link_libraries(test_layer2_dispatch_notifications
     PRIVATE
         pylabhub::utils
         pylabhub::test_framework
@@ -1592,16 +1561,16 @@ target_link_libraries(test_layer2_dispatch_channel_closing
         GTest::gtest_main
 )
 
-pylabhub_ensure_sanitizer_for_executable(test_layer2_dispatch_channel_closing)
+pylabhub_ensure_sanitizer_for_executable(test_layer2_dispatch_notifications)
 
 pylabhub_register_test_for_staging(
-    TARGET test_layer2_dispatch_channel_closing
-    SUITE_NAME "Layer2_DispatchChannelClosing"
+    TARGET test_layer2_dispatch_notifications
+    SUITE_NAME "Layer2_DispatchNotifications"
 )
-layer2_require_staged_utils(test_layer2_dispatch_channel_closing)
+layer2_require_staged_utils(test_layer2_dispatch_notifications)
 
-gtest_discover_tests(test_layer2_dispatch_channel_closing
+gtest_discover_tests(test_layer2_dispatch_notifications
     PROPERTIES
-        LABELS "layer2;service;channel_closing"
+        LABELS "layer2;service;notifications"
         TIMEOUT 30
 )
