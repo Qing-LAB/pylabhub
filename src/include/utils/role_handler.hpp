@@ -81,7 +81,8 @@
  */
 
 #include "pylabhub_utils_export.h"
-#include "utils/hub_connection.hpp"
+#include "utils/hub_connection.hpp"   // exposes hub::BrokerRequestComm
+#include "utils/json_fwd.hpp"         // nlohmann::json fwd decl
 #include "utils/role_presence.hpp"
 
 #include <memory>
@@ -206,11 +207,82 @@ class PYLABHUB_UTILS_EXPORT RoleHandler
         return connections_;
     }
 
-    // Network-touching surface (start/shutdown + four-class dispatch +
-    // band_join lazy index population) arrives in Wave-B M4 per
-    // `docs/tech_draft/role_host_template_design.md §5.6` (sketch) +
-    // §14.2 (M4 row).  See those sections for the authoritative list;
-    // duplicating the signatures here would rot the moment M4 ships.
+    // ── Routing primitives (Wave-B M4b) ──────────────────────────────────────
+    //
+    // Per the four-class routing model (HEP-CORE-0033 §18 + design
+    // §4), every broker-bound message belongs to exactly one class:
+    //
+    //   Class A — channel-bound  → route by `channel_name`
+    //   Class B — role-bound     → route via any connection (hub-agnostic)
+    //   Class C — hub-bound      → route by hub index/identity
+    //   Class D — band-bound     → route by `band_name`
+    //
+    // M4b ships routing primitives that return the BRC for a given
+    // routing key.  Callers compose them with BRC's existing typed
+    // methods, e.g.:
+    //
+    //   auto *brc = handler.brc_for_channel(channel);
+    //   if (!brc) return error;
+    //   brc->register_channel(opts, timeout);
+    //
+    // No untyped dispatch wrappers — those would duplicate BRC's
+    // typed surface (register_channel / send_heartbeat / etc.) for
+    // no gain.  Class C ("hub-bound by side") is intentionally NOT
+    // wrapped — the "in"/"out" side mapping is role-host topology
+    // knowledge.  M4c/d/e migration sites that need Class C dispatch
+    // use `handler.connections()[i].brc.get()` directly with `i`
+    // chosen by the role host.
+
+    /// Class A — return the `BrokerRequestComm` pointer for the
+    /// presence registered on `channel`.  Returns nullptr if the
+    /// channel is not in this role's presence list OR if
+    /// `start_connections()` has not been called (BRC unallocated).
+    /// Disambiguate via `connections_started()`.
+    [[nodiscard]] hub::BrokerRequestComm *
+    brc_for_channel(const std::string &channel) const noexcept;
+
+    /// Class B — return a `BrokerRequestComm` for role-scope queries
+    /// (query_role_presence, query_role_info).  Today: the first
+    /// connection in `connections()`.  Role-scope answers from the
+    /// broker are not hub-specific — any of our connections suffices.
+    /// Returns nullptr if no connections (zero-presence role) or
+    /// `start_connections()` not called.
+    [[nodiscard]] hub::BrokerRequestComm *brc_for_role() const noexcept;
+
+    /// Class D — return the `BrokerRequestComm` for the presence
+    /// that joined `band_name`.  Returns nullptr if no presence has
+    /// joined that band (caller must have called `on_band_joined`
+    /// for that band first), or if `start_connections()` not called.
+    [[nodiscard]] hub::BrokerRequestComm *
+    brc_for_band(const std::string &band_name) const noexcept;
+
+    /// Record that `presence` successfully joined `band_name`.
+    /// Populates `band_index_` so subsequent `brc_for_band()` calls
+    /// route via `presence`'s connection.  Idempotent — calling with
+    /// the same `(band_name, presence)` is harmless.  Calling with
+    /// the same `band_name` but a different `presence` overwrites
+    /// the prior entry (a role can only be in one role-side
+    /// association with a band at a time; the role host decides
+    /// which presence "owns" the band).
+    void on_band_joined(const std::string &band_name,
+                        const Presence    *presence) noexcept;
+
+    /// Inverse of `on_band_joined` — remove the band's routing
+    /// entry after `band_leave` succeeds.  Safe to call when the
+    /// band is not indexed (no-op).
+    void on_band_left(const std::string &band_name) noexcept;
+
+    /// Extract the originating Presence from an inbound notification
+    /// body.  Inspects `body["channel_name"]` first (Class A), then
+    /// `body["band_name"]` (Class D).  Returns nullptr if neither
+    /// field is present in the body, or the named channel/band is
+    /// not in this role's index (role-scope or hub-scope
+    /// notification — caller routes via different logic).
+    /// `msg_type` is currently unused but reserved for future
+    /// per-msg-type routing rules.
+    [[nodiscard]] const Presence *
+    find_presence_from_notification(const std::string    &msg_type,
+                                    const nlohmann::json &body) const noexcept;
 
   private:
     /// Group presences by `(hub.broker, hub.broker_pubkey)` and build
