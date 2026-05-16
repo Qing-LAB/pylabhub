@@ -51,7 +51,6 @@ class HubConnection
     /// `RoleHandler::start()`.
     std::unique_ptr<hub::BrokerRequestComm> brc;
 
-    HubConnection() = default;
     HubConnection(std::string endpoint, std::string pubkey) noexcept
         : broker_endpoint(std::move(endpoint))
         , broker_pubkey(std::move(pubkey))
@@ -62,13 +61,6 @@ class HubConnection
     HubConnection &operator=(const HubConnection &) = delete;
     HubConnection(HubConnection &&) noexcept = default;
     HubConnection &operator=(HubConnection &&) noexcept = default;
-
-    /// Dedup-equality on the `(broker_endpoint, broker_pubkey)` pair.
-    [[nodiscard]] bool same_identity_as(const HubConnection &o) const noexcept
-    {
-        return broker_endpoint == o.broker_endpoint &&
-               broker_pubkey   == o.broker_pubkey;
-    }
 };
 
 }  // namespace pylabhub::scripting

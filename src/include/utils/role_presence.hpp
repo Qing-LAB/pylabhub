@@ -30,8 +30,6 @@
  */
 
 #include "utils/config/hub_ref_config.hpp"
-#include "utils/schema_types.hpp"  // hub::SchemaSpec
-#include "utils/json_fwd.hpp"
 
 #include <cstdint>
 #include <string>
@@ -53,8 +51,8 @@ enum class RoleKind : std::uint8_t
 };
 
 /// Convert a `RoleKind` to its wire-protocol string per HEP-CORE-0019
-/// §4.1.  Returned by `RolePresence` queries and consumed by the
-/// HEARTBEAT_REQ / REG_REQ / CONSUMER_REG_REQ path.
+/// §4.1.  Used by Wave-B M4b dispatch when populating `role_type`
+/// fields on outbound wire payloads.
 [[nodiscard]] inline const char *to_wire_string(RoleKind k) noexcept
 {
     switch (k)
@@ -62,21 +60,7 @@ enum class RoleKind : std::uint8_t
     case RoleKind::Producer: return "producer";
     case RoleKind::Consumer: return "consumer";
     }
-    return "";  // unreachable for valid input
-}
-
-/// Parse a wire-protocol `role_type` string back into a `RoleKind`.
-/// Returns `RoleKind::Producer` for `"producer"`, `RoleKind::Consumer`
-/// for `"consumer"`.  Other input — including whitespace-padded
-/// variants like `"producer "`, case-different (`"PRODUCER"`), and
-/// the empty string — is invalid and returns false; `out` is left
-/// untouched.  Callers MUST validate before parsing (Phase 6 wire
-/// format rejects empty/unknown).
-[[nodiscard]] inline bool parse_wire_string(const std::string &s, RoleKind &out) noexcept
-{
-    if (s == "producer") { out = RoleKind::Producer; return true; }
-    if (s == "consumer") { out = RoleKind::Consumer; return true; }
-    return false;
+    return "";  // unreachable: switch is exhaustive over RoleKind values
 }
 
 class HubConnection;
@@ -86,13 +70,17 @@ class HubConnection;
 /// the per-role-type presence-list shapes documented at the top of
 /// this file.  Fields are populated incrementally:
 ///
-///  - `hub`, `channel`, `role_kind`         set at construction (caller
-///                                          knows the topology).
-///  - `slot_spec`, `fz_spec`, `inbox_meta`  set during the role host's
-///                                          schema-resolve step (M5+).
-///  - `connection`                          set during dedup at
-///                                          `RoleHandler::build_connections_()`;
-///                                          NEVER reassigned after that.
+///  - `hub`, `channel`, `role_kind`  set at construction (caller
+///                                   knows the topology).
+///  - `connection`                   set during dedup at
+///                                   `RoleHandler::build_connections_()`;
+///                                   NEVER reassigned after that.
+///
+/// Schema / inbox metadata (slot_spec, fz_spec, inbox_meta in the
+/// design §5.6 sketch) are intentionally OMITTED until Wave-B M5+
+/// — they're set during the role host's schema-resolve step.
+/// Adding them in M4 would be anticipatory; M5 reintroduces them
+/// alongside the call sites that need them.
 ///
 /// Equality + sort are defined by `(hub.broker, hub.broker_pubkey,
 /// channel, role_kind)` — the natural identity tuple per
@@ -104,26 +92,11 @@ struct Presence
     std::string          channel;    ///< Channel name on `hub`.
     RoleKind             role_kind{RoleKind::Producer};
 
-    hub::SchemaSpec slot_spec;       ///< Set during schema-resolve (M5+).
-    hub::SchemaSpec fz_spec;         ///< Set during schema-resolve (M5+).
-
-    /// Per-role copy of the inbox metadata — same value on every
-    /// presence the role holds (inbox is per-role, not per-presence;
-    /// design §7).  Empty JSON object when the role has no inbox.
-    nlohmann::json inbox_meta;
-
     /// Non-owning pointer into the owning `RoleHandler::connections_`
     /// vector.  Set during dedup; nullptr before then.  The pointer is
     /// stable for the RoleHandler's lifetime (connections vector is
     /// not mutated after build).
     HubConnection *connection{nullptr};
-
-    /// Wire-protocol string for the `role_type` field on
-    /// HEARTBEAT_REQ / REG_REQ / CONSUMER_REG_REQ payloads.
-    [[nodiscard]] const char *role_type_wire() const noexcept
-    {
-        return to_wire_string(role_kind);
-    }
 };
 
 }  // namespace pylabhub::scripting
