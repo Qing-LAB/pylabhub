@@ -206,6 +206,48 @@ struct RoleAPIBase::Impl
         }
         return broker_channel;
     }
+
+    // Wave-B M4e: Class B (role-bound) — per HEP-CORE-0033 §18.3,
+    // role-scope queries (query_role_info / query_role_presence /
+    // open_inbox's lookup) fall through to any connection.  Today
+    // returns the first connection's BRC (via handler->brc_for_role()
+    // in handler-mode, else broker_channel).  Full multi-hub fall-
+    // through (try each connection until one returns a non-empty
+    // result) is M5+ work; pre-M5 single-hub callers see identical
+    // behaviour because the fallback view IS connections[0].
+    [[nodiscard]] hub::BrokerRequestComm *
+    resolve_bc_for_role() const noexcept
+    {
+        if (handler_)
+        {
+            if (auto *bc = handler_->brc_for_role())
+                return bc;
+        }
+        return broker_channel;
+    }
+
+    // Wave-B M4e: Class D (band-bound) — per HEP-CORE-0033 §18.3,
+    // route via the connection where the band was joined.  Falls
+    // back to broker_channel when:
+    //   - handler not active (legacy mode), OR
+    //   - handler-mode but band is not in band_index_ (caller hasn't
+    //     joined yet, or band_join's on_band_joined() registration
+    //     hasn't fired).
+    // For pre-M5 single-hub roles, broker_channel IS the only
+    // connection, so the fallback is the correct route.  For dual-
+    // hub (M8 payoff shape), band_join populates band_index_ via
+    // on_band_joined(); subsequent band_* calls then route to the
+    // right BRC.
+    [[nodiscard]] hub::BrokerRequestComm *
+    resolve_bc_for_band(const std::string &band) const noexcept
+    {
+        if (handler_)
+        {
+            if (auto *bc = handler_->brc_for_band(band))
+                return bc;
+        }
+        return broker_channel;
+    }
 };
 
 // ============================================================================
@@ -1308,31 +1350,64 @@ std::string RoleAPIBase::stop_reason() const    { return pImpl->core->stop_reaso
 
 std::optional<nlohmann::json> RoleAPIBase::band_join(const std::string &channel)
 {
-    if (!pImpl->broker_channel)
+    // Wave-B M4e: Class D — route via handler when active.  band_join
+    // is the FIRST touch for a band; band_index_ is empty until
+    // on_band_joined() registers it below.  resolve_bc_for_band falls
+    // back to broker_channel (connections[0]) for the unregistered case.
+    auto *bc = pImpl->resolve_bc_for_band(channel);
+    if (!bc)
         return std::nullopt;
-    return pImpl->broker_channel->band_join(channel);
+    auto result = bc->band_join(channel);
+
+    // On success, register this band in the handler's band_index_ so
+    // subsequent band_* calls route to the same BRC.  Pre-M5 single-
+    // presence roles always pick presences[0] as the band owner
+    // (only one choice).  M5+ multi-presence roles will need to
+    // decide which presence owns the band based on caller context
+    // (in_hub vs out_hub); the on_band_joined() call signature
+    // already accepts a Presence*, so the decision moves to the
+    // role-host layer without changing this code.
+    if (result.has_value() && pImpl->handler_)
+    {
+        const auto &presences = pImpl->handler_->presences();
+        if (!presences.empty())
+            pImpl->handler_->on_band_joined(channel, &presences.front());
+    }
+    return result;
 }
 
 std::optional<nlohmann::json>
 RoleAPIBase::band_leave(const std::string &channel)
 {
-    if (!pImpl->broker_channel)
+    // Wave-B M4e: Class D — route via handler when active.
+    auto *bc = pImpl->resolve_bc_for_band(channel);
+    if (!bc)
         return std::nullopt;
-    return pImpl->broker_channel->band_leave(channel);
+    auto result = bc->band_leave(channel);
+
+    // On success, remove the band → presence mapping so later
+    // band_* calls don't dangle on a stale route.  Safe to call
+    // when the band isn't indexed (no-op).
+    if (result.has_value() && pImpl->handler_)
+        pImpl->handler_->on_band_left(channel);
+    return result;
 }
 
 void RoleAPIBase::band_broadcast(const std::string &channel,
                                   const nlohmann::json &body)
 {
-    if (pImpl->broker_channel)
-        pImpl->broker_channel->band_broadcast(channel, body);
+    // Wave-B M4e: Class D — route via handler when active.
+    if (auto *bc = pImpl->resolve_bc_for_band(channel))
+        bc->band_broadcast(channel, body);
 }
 
 std::optional<nlohmann::json> RoleAPIBase::band_members(const std::string &channel)
 {
-    if (!pImpl->broker_channel)
+    // Wave-B M4e: Class D — route via handler when active.
+    auto *bc = pImpl->resolve_bc_for_band(channel);
+    if (!bc)
         return std::nullopt;
-    return pImpl->broker_channel->band_members(channel);
+    return bc->band_members(channel);
 }
 
 // ============================================================================
@@ -1342,7 +1417,14 @@ std::optional<nlohmann::json> RoleAPIBase::band_members(const std::string &chann
 std::optional<RoleAPIBase::InboxOpenResult>
 RoleAPIBase::open_inbox_client(const std::string &target_uid)
 {
-    if (!pImpl->core || !pImpl->broker_channel)
+    if (!pImpl->core)
+        return std::nullopt;
+    // Wave-B M4e: Class B (role-bound) — inbox discovery is a
+    // role-scope query (ROLE_INFO_REQ per HEP-CORE-0033 §18.2 +
+    // HEP-CORE-0027 §4.2).  Route via the first connection; pre-M5
+    // single-hub callers see identical behaviour.
+    auto *bc_role = pImpl->resolve_bc_for_role();
+    if (!bc_role)
         return std::nullopt;
 
     hub::SchemaSpec result_spec;
@@ -1351,7 +1433,7 @@ RoleAPIBase::open_inbox_client(const std::string &target_uid)
     auto entry = pImpl->core->open_inbox(target_uid,
         [&]() -> std::optional<RoleHostCore::InboxCacheEntry>
         {
-            auto info = pImpl->broker_channel->query_role_info(target_uid, 1000);
+            auto info = bc_role->query_role_info(target_uid, 1000);
             if (!info.has_value())
                 return std::nullopt;
 
@@ -1413,7 +1495,11 @@ RoleAPIBase::open_inbox_client(const std::string &target_uid)
 
 bool RoleAPIBase::wait_for_role(const std::string &uid, int timeout_ms)
 {
-    if (!pImpl->broker_channel)
+    // Wave-B M4e: Class B — query_role_presence is a role-scope
+    // query; route via the first connection (handler->brc_for_role()
+    // in handler-mode, broker_channel in legacy mode).
+    auto *bc = pImpl->resolve_bc_for_role();
+    if (!bc)
         return false;
     const auto deadline = std::chrono::steady_clock::now() +
                           std::chrono::milliseconds{timeout_ms};
@@ -1425,7 +1511,7 @@ bool RoleAPIBase::wait_for_role(const std::string &uid, int timeout_ms)
         // (`{present: true, channel, role}` on found, `{present: false}`
         // on not-found, or `{present: false, error}` on missing role_uid)
         // or `nullopt` on transport failure.
-        auto resp = pImpl->broker_channel->query_role_presence(uid, kPollMs);
+        auto resp = bc->query_role_presence(uid, kPollMs);
         if (resp.has_value() && resp->value("present", false))
             return true;
     }

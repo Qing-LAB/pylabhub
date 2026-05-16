@@ -99,7 +99,7 @@ nominally open but not blocking.
 | **Wave-B M1** | Broker keyed lookup via `find_presence`; per-presence FSM; retire `metrics_store_` | ✅ shipped | `src/utils/ipc/broker_service.cpp:2100,2132`; commits `f2e3bd7..a41ce71` (M1.2 side-arc) + `4e902e1` (M1.4 side-arc) |
 | **Wave-B M2** | Heartbeat is per-presence on the role side; broker sweep iterates BOTH `entry.producers` and `entry.consumers`; consumer heartbeat-timeout fires `CONSUMER_DIED_NOTIFY` (`reason="heartbeat_timeout"`).  `out_channel.empty() ? ...` hack deleted. | ✅ shipped 2026-05-15 | Role side: `src/utils/service/role_api_base.cpp:560-602` per-presence emission.  HubState: `src/include/utils/hub_state.hpp:1393-1419` + `src/utils/ipc/hub_state.cpp:1334-1518` (`role_type` param on `_on_heartbeat_timeout` / `_on_pending_timeout`, consumer branch added).  Broker: `src/utils/ipc/broker_service.cpp:2594-2789` (consumer pass-1 + pass-2 + notification fan-out).  Tests: 3 L2 in `test_hub_state.cpp` + 1 L3 in `test_datahub_role_state_machine.cpp` (`ConsumerHeartbeatTimeout_FiresConsumerDiedNotify`). |
 | **Wave-B M3** | `Presence` / `HubConnection` / `RoleHandler` headers (build-only) | ✅ shipped 2026-05-15 | `src/include/utils/role_handler.hpp` + `src/utils/service/role_handler.cpp`; commits `4bf8dd7..a23d3d1` (skeleton + 3-test polish + forward-looking review).  Includes Wave-B M3 review follow-ups: 29 L2 tests in `test_layer2_service/test_role_handler.cpp`. |
-| **Wave-B M4** | `RoleAPIBase` pImpl delegates via handler | ⏳ in progress (M4a-d shipped; M4e/M4f pending) | M4a-d: `src/include/utils/role_api_base.hpp` + `src/utils/service/role_api_base.cpp` route Class A through `pImpl->resolve_bc_for_channel(channel)` helper (handler-mode active when non-null `handler_`, fallback to legacy `broker_channel` view).  Commits `e1f4396..` (a, revert, a-state-only, a-cleanup, thread inventory doc, b-routing primitives, c-start_handler_threads + atomicity guard, c-followup, d-Class A migration).  M4e: migrate Class B/C/D sites.  M4f: delete `broker_channel`. |
+| **Wave-B M4** | `RoleAPIBase` pImpl delegates via handler | ⏳ in progress (M4a-e shipped; M4f pending) | M4a-e: `src/utils/service/role_api_base.cpp` routes Class A through `pImpl->resolve_bc_for_channel(channel)`, Class B through `pImpl->resolve_bc_for_role()` (HEP-CORE-0033 §18.3 fall-through; pre-M5 returns first connection), Class D through `pImpl->resolve_bc_for_band(band)` with `handler->on_band_joined/on_band_left` wiring on band_join/band_leave success.  All three helpers fall back to legacy `broker_channel` view when handler is null OR the lookup is empty.  M4f: delete `broker_channel` once `set_broker_comm` + `start_ctrl_thread` retire (M5+). |
 | **Wave-B M5** | `ProducerRoleHost` 1-presence list via handler | ⏳ pending | 9 direct `broker_comm_`; 0 handler |
 | **Wave-B M6** | `ConsumerRoleHost` same | ⏳ pending | Same |
 | **Wave-B M7** | `ProcessorRoleHost` 2 presences → 1 connection (single-hub dedup) | ⏳ pending | Same |
@@ -108,7 +108,7 @@ nominally open but not blocking.
 | **Wave-C** | Closure — finalise HEP cross-refs depending on Wave-B; archive transient drafts | ⏳ after M9 |  |
 | **Wave-D** | Rewrite demos (`single-processor-shm`, `dual-processor-bridge`, `examples/`) | ⏳ after Wave-C |  |
 
-**Arc B net status**: Wave A + M0 + M1 + M2 + M3 + M4a-d done (M2 reframed during implementation — see row; M4 is leaf-first sub-shipped per RoleHost-action-taker / RoleHandler-state-holder separation).  **M4e/M4f + M5..M9 is the active arc.**
+**Arc B net status**: Wave A + M0 + M1 + M2 + M3 + M4a-e done (M2 reframed during implementation — see row; M4 is leaf-first sub-shipped per RoleHost-action-taker / RoleHandler-state-holder separation).  **M4f + M5..M9 is the active arc.**
 
 ### Combined view — what blocks "dual-hub plh_hub" end-to-end
 
@@ -121,29 +121,30 @@ Both arcs feed the end-state.  Concretely:
 | **HUB_TARGETED_ACK wire frame** | HEP-0033 §12.3.6 / §13 | Peer-to-peer message ACK frame is deferred; `on_peer_message` C++ surface is in place (Phase 8c) but the wire bit isn't wired.  Independent of dual-hub; would only affect federation use cases. |
 | **HEP-0033 Phase 10 doc amendment** | Arc A docs | HEP-CORE-0019 §9 per-producer metrics tree shape and a cross-reference survey are listed as remaining.  Not blocking code; doc hygiene. |
 
-### Next concrete task — Wave-B M4e (Class B/C/D migration)
+### Next concrete task — Wave-B M4f (delete `broker_channel`)
 
-**Scope** (continuation of M4 sub-shipping):
-- Migrate the remaining direct `pImpl->broker_channel` Class B/C/D
-  sites in `src/utils/service/role_api_base.cpp` to route via the
-  handler when active:
-  - **Class B (role-bound):** `query_role_info` (line ~1334),
-    `open_inbox` (sub-call inside `query_role_info`),
-    `query_role_presence` (lines ~1405, ~1417).
-  - **Class C (hub-bound RPCs):** `band_join` (~1300), `band_leave`
-    (~1308), `band_members` (~1322).
-  - **Class D (band-bound notification):** `band_broadcast` (~1316).
-- Revisit `deregister_from_broker`'s outer `if (!bc || !bc->is_connected())`
-  guard — currently a "is any broker around at all?" check; decide
-  whether to keep it or fold into per-method guards.
-- After M4e: only `set_broker_comm` + `start_ctrl_thread` + the
-  fallback-view set/clear pair touch `broker_channel` directly.
-  Those are scheduled for M4f deletion (deleting the field +
-  `set_broker_comm` once no caller references it).
+**Scope**:
+- Delete `pImpl->broker_channel` field + `set_broker_comm()` +
+  `start_ctrl_thread()` (legacy single-hub ctrl thread path).
+- Strip the helper fallback (`return broker_channel;` line in each
+  of `resolve_bc_for_channel/role/band` — the helpers become pure
+  `handler->brc_for_*()` lookups; null result becomes `nullptr`
+  return, callers' existing `!bc` guards handle it).
+- Remove the M4c fallback-view set/clear pair in
+  `start_handler_threads`/`stop_handler_threads` (lines ~1135 +
+  ~1207).
+- Remove `deregister_from_broker`'s "is any broker around?" outer
+  guard — handler null check + per-method guards inside the dereg
+  helpers are sufficient.
+- Audit + delete any remaining role-binary callers that still own
+  a `broker_comm_` BRC + call `set_broker_comm` (producer /
+  consumer / processor role hosts).  All role binaries must be on
+  `start_handler_threads` by M4f land time.
 
-**Why this is next**: closes the Class A/B/C/D migration symmetry
-the four-class taxonomy was designed around (HEP-CORE-0033 §18),
-and is the prerequisite for M4f cleanup.
+**Blocked by**: M5..M7 — role hosts must migrate from legacy
+`start_ctrl_thread` + owned-BRC pattern to `start_handler_threads`
++ handler-owned BRC before `broker_channel` can disappear.  M4f
+is the final consolidation step after that migration.
 
 ### Wave-B M2 closure note (2026-05-15)
 
