@@ -131,6 +131,11 @@ namespace pylabhub::scripting
 {
 
 class ScriptEngine;   // forward declaration (defined in script_engine.hpp)
+class RoleHandler;    // fwd — defined in utils/role_handler.hpp.  Wave-B
+                      // M4c: RoleAPIBase owns the handler via
+                      // unique_ptr; the handler holds the role's
+                      // presence list + deduplicated HubConnection
+                      // vector + routing indexes.
 
 /// Identifies which side of the data path (Tx = producer/output, Rx = consumer/input).
 /// Used by spinlock and potentially other side-specific accessors.
@@ -456,6 +461,56 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     /// @return true if connection and registration succeeded.
     bool start_ctrl_thread(const hub::BrokerRequestComm::Config &connect_cfg,
                            const CtrlThreadConfig &cfg);
+
+    // ── Handler-mode control plane (Wave-B M4c) ──────────────────────────────
+    //
+    // Replacement for the single-BRC `start_ctrl_thread` path: spawns
+    // one ctrl thread per `RoleHandler::connections()` entry.  The
+    // first thread is master (HEP-CORE-0031 §4.2.1), the rest are
+    // peers.  The legacy `start_ctrl_thread` and these methods are
+    // MUTUALLY EXCLUSIVE — only one of them may be called per
+    // RoleAPIBase instance.  An atomicity guard enforces this:
+    // calling either method a second time (handler-mode or legacy)
+    // returns false and logs an ERROR.  Per HEP-CORE-0031 §4.3.6:
+    // "Legacy `ctrl` must retire atomically with introducing the
+    // first `handler_ctrl_0` master."  The guard makes that rule
+    // unviolatable.
+    //
+    // M4c sets `pImpl->broker_channel = handler->connections()[0].brc.get()`
+    // as a legacy fallback view, so the 24 unmigrated call sites that
+    // still dereference `pImpl->broker_channel` continue to work.
+    // M4d/e migrate those call sites to route via
+    // `handler->brc_for_channel/role/band(...)`.  M4f removes the
+    // fallback + the legacy `set_broker_comm` / `start_ctrl_thread`
+    // path.
+
+    /// Take ownership of `handler`, connect each `HubConnection`'s
+    /// BRC, install per-BRC notification + hub-dead callbacks, and
+    /// spawn one ctrl thread per connection (first = master).  Sets
+    /// `pImpl->broker_channel` to the first connection's BRC as the
+    /// legacy fallback view.
+    ///
+    /// Atomicity: refuses (returns false + ERROR log) if any ctrl
+    /// thread (handler-mode or legacy) is already running on this
+    /// RoleAPIBase.  Single-shot per instance.
+    ///
+    /// Diagnostics: emits per-step INFO logs so the spawn sequence
+    /// across N threads is observable in test + production logs.
+    /// `set_auth(...)` MUST be called before this method if the
+    /// brokers require CURVE (handler reads identity from `*this`).
+    [[nodiscard]] bool start_handler_threads(std::unique_ptr<RoleHandler> handler);
+
+    /// Symmetric teardown: signal each BRC's poll loop, drain the
+    /// ThreadManager via the §4.1 bracket contract, clear the
+    /// legacy fallback view, then disconnect + release BRCs, then
+    /// release the handler.  Idempotent + `noexcept`.
+    void stop_handler_threads() noexcept;
+
+    /// Read-only access to the handler (for migration sites that
+    /// need to call `handler.brc_for_*` or `find_presence_for_*`).
+    /// Returns nullptr if `start_handler_threads` has not been
+    /// called (or after `stop_handler_threads`).
+    [[nodiscard]] RoleHandler *handler() const noexcept;
 
     /// Explicitly deregister from broker while the ctrl thread is still
     /// running to process the command — call BEFORE the RoleAPIBase is
