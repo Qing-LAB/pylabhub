@@ -30,6 +30,7 @@
 #include "utils/role_handler.hpp"
 
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 
 // Binary-wide LifecycleGuard for Logger.  Required because
 // `RoleHandler::build_channel_index_` emits `LOGGER_ERROR` on a
@@ -418,4 +419,295 @@ TEST(RoleHandlerProcessor,
     EXPECT_EQ(pres[2].connection, &conns[0])
         << "Third presence (hubA again) must bind to the existing "
            "hubA slot, not create a new one.";
+}
+
+// ── Wave-B M4b routing primitives ───────────────────────────────────────────
+//
+// brc_for_channel / brc_for_role / brc_for_band route requests to the
+// right BrokerRequestComm.  on_band_joined / on_band_left populate the
+// band index.  find_presence_from_notification routes inbound messages
+// to their originating presence.
+//
+// These L2 tests verify the ROUTING LOGIC — the indexes are built
+// correctly, lookups resolve to the right presences, edge cases return
+// nullptr cleanly.  All `brc_for_*` tests run WITHOUT
+// `start_connections()`, so the BRC pointer is always nullptr — the
+// test asserts presence-routing via the slot identity, not via the
+// (always-null) BRC.  L3 tests (Pattern 3) verify the post-start_
+// `brc_for_*` returns non-null pointers that match `connections()[i].brc`.
+
+TEST(RoleHandlerRouting, BrcForChannel_UnknownChannel_ReturnsNullptr)
+{
+    std::vector<Presence> presences;
+    presences.push_back(make_presence(
+        "real.channel", RoleKind::Producer, make_hub("tcp://127.0.0.1:5570")));
+    RoleHandler h(std::move(presences));
+
+    EXPECT_EQ(h.brc_for_channel("unknown.channel"), nullptr);
+    EXPECT_EQ(h.brc_for_channel(""), nullptr);
+}
+
+TEST(RoleHandlerRouting, BrcForChannel_BeforeStart_ReturnsNullptr_ButPresenceFound)
+{
+    // Pre-start_connections, BRC is unallocated → brc_for_channel
+    // returns nullptr.  But find_presence_for_channel returns the
+    // matching Presence (proves the channel IS in the index; only
+    // the BRC is missing).  This is the disambiguation pattern
+    // documented in the brc_for_channel docstring.
+    std::vector<Presence> presences;
+    presences.push_back(make_presence(
+        "real.channel", RoleKind::Producer, make_hub("tcp://127.0.0.1:5570")));
+    RoleHandler h(std::move(presences));
+
+    EXPECT_FALSE(h.connections_started());
+    EXPECT_NE(h.find_presence_for_channel("real.channel"), nullptr)
+        << "Channel IS in the index — routing should resolve.";
+    EXPECT_EQ(h.brc_for_channel("real.channel"), nullptr)
+        << "BRC is unallocated pre-start — brc_for_channel returns "
+           "nullptr until start_connections() runs.";
+}
+
+TEST(RoleHandlerRouting, BrcForRole_NoConnections_ReturnsNullptr)
+{
+    RoleHandler h(std::vector<Presence>{});
+    EXPECT_EQ(h.brc_for_role(), nullptr)
+        << "Zero-presence handler has no connections → no role-bound "
+           "routing target.";
+}
+
+TEST(RoleHandlerRouting, BrcForRole_BeforeStart_ReturnsNullptr)
+{
+    std::vector<Presence> presences;
+    presences.push_back(make_presence(
+        "ch", RoleKind::Producer, make_hub("tcp://127.0.0.1:5570")));
+    RoleHandler h(std::move(presences));
+
+    EXPECT_EQ(h.connection_count(), 1u);
+    EXPECT_EQ(h.brc_for_role(), nullptr)
+        << "Pre-start, the first connection's BRC is nullptr.";
+}
+
+TEST(RoleHandlerRouting, BrcForBand_NotJoined_ReturnsNullptr)
+{
+    std::vector<Presence> presences;
+    presences.push_back(make_presence(
+        "ch", RoleKind::Producer, make_hub("tcp://127.0.0.1:5570")));
+    RoleHandler h(std::move(presences));
+
+    EXPECT_EQ(h.brc_for_band("not.joined.band"), nullptr);
+    EXPECT_EQ(h.brc_for_band(""), nullptr);
+}
+
+TEST(RoleHandlerRouting, OnBandJoined_PopulatesIndex_FindByNotification)
+{
+    std::vector<Presence> presences;
+    presences.push_back(make_presence(
+        "ch", RoleKind::Producer, make_hub("tcp://127.0.0.1:5570")));
+    RoleHandler h(std::move(presences));
+
+    const Presence *p = h.find_presence_for_channel("ch");
+    ASSERT_NE(p, nullptr);
+
+    // Before joining: band lookup returns nothing.
+    EXPECT_EQ(h.brc_for_band("my.band"), nullptr);
+
+    // Record join.
+    h.on_band_joined("my.band", p);
+
+    // Notification with band_name routes to this presence.
+    nlohmann::json body;
+    body["band_name"] = "my.band";
+    EXPECT_EQ(h.find_presence_from_notification("BAND_BROADCAST_NOTIFY", body), p)
+        << "After on_band_joined, find_presence_from_notification "
+           "resolves band_name to the joined presence.";
+}
+
+TEST(RoleHandlerRouting, OnBandJoined_Idempotent_SamePair)
+{
+    std::vector<Presence> presences;
+    presences.push_back(make_presence(
+        "ch", RoleKind::Producer, make_hub("tcp://127.0.0.1:5570")));
+    RoleHandler h(std::move(presences));
+
+    const Presence *p = h.find_presence_for_channel("ch");
+    ASSERT_NE(p, nullptr);
+
+    h.on_band_joined("my.band", p);
+    h.on_band_joined("my.band", p);  // idempotent
+
+    nlohmann::json body;
+    body["band_name"] = "my.band";
+    EXPECT_EQ(h.find_presence_from_notification("X", body), p);
+}
+
+TEST(RoleHandlerRouting, OnBandJoined_OverwriteDifferentPresence_LastWins)
+{
+    // Two presences on different hubs; same band joined via each
+    // sequentially — the second call overwrites the first per the
+    // docstring contract.
+    std::vector<Presence> presences;
+    presences.push_back(make_presence(
+        "ch1", RoleKind::Consumer, make_hub("tcp://127.0.0.1:5570")));
+    presences.push_back(make_presence(
+        "ch2", RoleKind::Producer, make_hub("tcp://127.0.0.1:5571")));
+    RoleHandler h(std::move(presences));
+
+    const Presence *p0 = h.find_presence_for_channel("ch1");
+    const Presence *p1 = h.find_presence_for_channel("ch2");
+    ASSERT_NE(p0, nullptr);
+    ASSERT_NE(p1, nullptr);
+
+    h.on_band_joined("shared.band", p0);
+    h.on_band_joined("shared.band", p1);
+
+    nlohmann::json body;
+    body["band_name"] = "shared.band";
+    EXPECT_EQ(h.find_presence_from_notification("X", body), p1)
+        << "Last-wins: second on_band_joined overrides the band-to-"
+           "presence mapping.";
+}
+
+TEST(RoleHandlerRouting, OnBandLeft_RemovesIndex)
+{
+    std::vector<Presence> presences;
+    presences.push_back(make_presence(
+        "ch", RoleKind::Producer, make_hub("tcp://127.0.0.1:5570")));
+    RoleHandler h(std::move(presences));
+
+    const Presence *p = h.find_presence_for_channel("ch");
+    ASSERT_NE(p, nullptr);
+
+    h.on_band_joined("my.band", p);
+    h.on_band_left("my.band");
+
+    nlohmann::json body;
+    body["band_name"] = "my.band";
+    EXPECT_EQ(h.find_presence_from_notification("X", body), nullptr)
+        << "Post-on_band_left, the band is no longer in the index.";
+
+    // Idempotent: calling on_band_left on an absent band is safe.
+    h.on_band_left("not.in.index");
+}
+
+TEST(RoleHandlerRouting, FindPresenceFromNotification_ChannelName_Routes)
+{
+    std::vector<Presence> presences;
+    presences.push_back(make_presence(
+        "ch.a", RoleKind::Consumer, make_hub("tcp://127.0.0.1:5570")));
+    presences.push_back(make_presence(
+        "ch.b", RoleKind::Producer, make_hub("tcp://127.0.0.1:5571")));
+    RoleHandler h(std::move(presences));
+
+    nlohmann::json body;
+    body["channel_name"] = "ch.b";
+    const Presence *p = h.find_presence_from_notification(
+        "CHANNEL_CLOSING_NOTIFY", body);
+    ASSERT_NE(p, nullptr);
+    EXPECT_EQ(p->channel, "ch.b");
+}
+
+TEST(RoleHandlerRouting, FindPresenceFromNotification_UnknownChannel_Nullptr)
+{
+    std::vector<Presence> presences;
+    presences.push_back(make_presence(
+        "ch.a", RoleKind::Producer, make_hub("tcp://127.0.0.1:5570")));
+    RoleHandler h(std::move(presences));
+
+    nlohmann::json body;
+    body["channel_name"] = "ch.not.in.role";
+    EXPECT_EQ(h.find_presence_from_notification("X", body), nullptr);
+}
+
+TEST(RoleHandlerRouting, FindPresenceFromNotification_NoChannelNoBand_Nullptr)
+{
+    std::vector<Presence> presences;
+    presences.push_back(make_presence(
+        "ch.a", RoleKind::Producer, make_hub("tcp://127.0.0.1:5570")));
+    RoleHandler h(std::move(presences));
+
+    // Role-scope notification example: ROLE_DEREGISTERED_NOTIFY
+    // typically has role_uid + reason, NOT channel_name or band_name.
+    nlohmann::json body;
+    body["role_uid"] = "prod.someone.uid";
+    body["reason"]   = "voluntary_close";
+    EXPECT_EQ(h.find_presence_from_notification("ROLE_DEREGISTERED_NOTIFY", body),
+              nullptr)
+        << "No channel_name or band_name → caller routes via other "
+           "logic (role-scope notifications don't bind to a "
+           "specific presence).";
+}
+
+TEST(RoleHandlerRouting, FindPresenceFromNotification_NotObject_Nullptr)
+{
+    std::vector<Presence> presences;
+    presences.push_back(make_presence(
+        "ch.a", RoleKind::Producer, make_hub("tcp://127.0.0.1:5570")));
+    RoleHandler h(std::move(presences));
+
+    nlohmann::json body_array  = nlohmann::json::array();
+    nlohmann::json body_string = "just a string";
+    nlohmann::json body_null;
+
+    EXPECT_EQ(h.find_presence_from_notification("X", body_array),  nullptr);
+    EXPECT_EQ(h.find_presence_from_notification("X", body_string), nullptr);
+    EXPECT_EQ(h.find_presence_from_notification("X", body_null),   nullptr);
+}
+
+TEST(RoleHandlerRouting, FindPresenceFromNotification_ChannelTakesPrecedenceOverBand)
+{
+    // When a notification body carries BOTH channel_name AND
+    // band_name (rare but possible if a relay forwards a band event
+    // through a channel context), channel routing wins.  Docstring
+    // says: "Inspects body['channel_name'] FIRST (Class A), then
+    // body['band_name'] (Class D)."
+    std::vector<Presence> presences;
+    presences.push_back(make_presence(
+        "ch.priority", RoleKind::Producer, make_hub("tcp://127.0.0.1:5570")));
+    presences.push_back(make_presence(
+        "ch.other",    RoleKind::Consumer, make_hub("tcp://127.0.0.1:5571")));
+    RoleHandler h(std::move(presences));
+
+    const Presence *p_ch   = h.find_presence_for_channel("ch.priority");
+    const Presence *p_band = h.find_presence_for_channel("ch.other");
+    ASSERT_NE(p_ch,   nullptr);
+    ASSERT_NE(p_band, nullptr);
+    h.on_band_joined("the.band", p_band);
+
+    nlohmann::json body;
+    body["channel_name"] = "ch.priority";
+    body["band_name"]    = "the.band";
+
+    EXPECT_EQ(h.find_presence_from_notification("X", body), p_ch)
+        << "Both fields present → channel wins per docstring "
+           "precedence rule.";
+}
+
+TEST(RoleHandlerRouting, OnBandJoined_NullPresence_NoOp)
+{
+    // Defensive: passing nullptr presence is a caller bug; the
+    // method silently skips rather than crashing.
+    RoleHandler h(std::vector<Presence>{});
+    h.on_band_joined("my.band", nullptr);
+
+    nlohmann::json body;
+    body["band_name"] = "my.band";
+    EXPECT_EQ(h.find_presence_from_notification("X", body), nullptr);
+}
+
+TEST(RoleHandlerRouting, OnBandJoined_EmptyBandName_NoOp)
+{
+    std::vector<Presence> presences;
+    presences.push_back(make_presence(
+        "ch", RoleKind::Producer, make_hub("tcp://127.0.0.1:5570")));
+    RoleHandler h(std::move(presences));
+
+    const Presence *p = h.find_presence_for_channel("ch");
+    ASSERT_NE(p, nullptr);
+
+    // Empty band name is a caller bug; silently skipped.
+    h.on_band_joined("", p);
+
+    nlohmann::json body;
+    body["band_name"] = "";
+    EXPECT_EQ(h.find_presence_from_notification("X", body), nullptr);
 }

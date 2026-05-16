@@ -21,6 +21,8 @@
 #include "utils/logger.hpp"
 #include "utils/role_api_base.hpp"
 
+#include <nlohmann/json.hpp>   // full json type for find_presence_from_notification
+
 namespace pylabhub::scripting
 {
 
@@ -214,6 +216,101 @@ void RoleHandler::stop_connections() noexcept
         c.brc->disconnect();
         c.brc.reset();
     }
+}
+
+// ============================================================================
+// Routing primitives (Wave-B M4b)
+// ============================================================================
+
+hub::BrokerRequestComm *
+RoleHandler::brc_for_channel(const std::string &channel) const noexcept
+{
+    auto it = channel_index_.find(channel);
+    if (it == channel_index_.end())   return nullptr;
+    if (it->second->connection == nullptr) return nullptr;
+    return it->second->connection->brc.get();
+}
+
+hub::BrokerRequestComm *RoleHandler::brc_for_role() const noexcept
+{
+    // Class B (role-bound) routing: any connection suffices because
+    // role-scope queries (query_role_presence / query_role_info) ask
+    // about a role, not about hub-specific state.  Today we pick the
+    // first connection by construction order.  If the role has no
+    // connections (zero presences), return nullptr.
+    if (connections_.empty()) return nullptr;
+    return connections_[0].brc.get();
+}
+
+hub::BrokerRequestComm *
+RoleHandler::brc_for_band(const std::string &band_name) const noexcept
+{
+    auto it = band_index_.find(band_name);
+    if (it == band_index_.end())   return nullptr;
+    if (it->second->connection == nullptr) return nullptr;
+    return it->second->connection->brc.get();
+}
+
+void RoleHandler::on_band_joined(const std::string &band_name,
+                                  const Presence    *presence) noexcept
+{
+    if (band_name.empty() || presence == nullptr) return;
+    // map::operator[] overwrites — consistent with the docstring's
+    // "calling with the same band_name but a different presence
+    // overwrites" rule.  const_cast: band_index_ stores non-const
+    // pointers (caller-side mutation is forbidden by the
+    // immutability contract, so the const_cast is safe);
+    // const-correctness of the public API hands the caller a const
+    // Presence*, and we strip it for storage parity with channel_index_.
+    band_index_[band_name] = const_cast<Presence *>(presence);
+}
+
+void RoleHandler::on_band_left(const std::string &band_name) noexcept
+{
+    band_index_.erase(band_name);
+}
+
+const Presence *
+RoleHandler::find_presence_from_notification(
+    const std::string    & /*msg_type*/,
+    const nlohmann::json &body) const noexcept
+{
+    // Class A — body has `channel_name`.  Check first because it's
+    // the most common case (REG / DEREG / HEARTBEAT / channel
+    // close-related notifications all carry it).
+    if (body.is_object())
+    {
+        auto ch_it = body.find("channel_name");
+        if (ch_it != body.end() && ch_it->is_string())
+        {
+            const auto channel = ch_it->get_ref<const std::string &>();
+            if (!channel.empty())
+            {
+                auto idx = channel_index_.find(channel);
+                if (idx != channel_index_.end()) return idx->second;
+            }
+        }
+
+        // Class D — body has `band_name`.  Fall through to band
+        // routing when no channel field is present (or channel
+        // didn't match).
+        auto band_it = body.find("band_name");
+        if (band_it != body.end() && band_it->is_string())
+        {
+            const auto band = band_it->get_ref<const std::string &>();
+            if (!band.empty())
+            {
+                auto idx = band_index_.find(band);
+                if (idx != band_index_.end()) return idx->second;
+            }
+        }
+    }
+
+    // Class B / C — neither channel_name nor band_name in the body.
+    // Caller routes via different logic (e.g., role-scope events
+    // like role_registered_notify don't bind to a specific
+    // presence).
+    return nullptr;
 }
 
 }  // namespace pylabhub::scripting

@@ -129,3 +129,17 @@ TEST_F(DatahubRoleStateMachineTest, RoleHandler_Connections_DoubleStart_Rejected
         "broker_role_state.role_handler_connections_double_start_rejected", {});
     ExpectWorkerOk(proc);
 }
+
+TEST_F(DatahubRoleStateMachineTest, RoleHandler_BrcForX_PostStart_PointerIdentity)
+{
+    // Wave-B M4b — verify routing primitives return the right
+    // non-null BRC pointer AFTER start_connections.  L2 tests
+    // (Pattern 1+) cover the lookup logic (returns nullptr pre-start
+    // / unknown channel / unjoined band).  This L3 test pins the
+    // post-start pointer identity: brc_for_channel(ch) ==
+    // connections()[0].brc.get(), and brc_for_band routes via the
+    // joined presence.
+    auto proc = SpawnWorker(
+        "broker_role_state.role_handler_brc_for_x_post_start", {});
+    ExpectWorkerOk(proc);
+}

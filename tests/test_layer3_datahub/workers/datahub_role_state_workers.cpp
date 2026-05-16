@@ -838,6 +838,75 @@ int role_handler_connections_double_start_rejected()
         logger_module(), crypto_module(), zmq_module());
 }
 
+// ============================================================================
+// role_handler_brc_for_x_post_start
+//   Wave-B M4b — verify the routing primitives return the right
+//   non-null BRC pointers AFTER start_connections.  L2 tests
+//   (Pattern 1+) verified the lookup logic returns nullptr pre-start;
+//   this L3 test pins the post-start pointer identity (matches
+//   `connections()[i].brc.get()`).
+// ============================================================================
+
+int role_handler_brc_for_x_post_start()
+{
+    return run_gtest_worker(
+        []() {
+            BrokerService::Config bcfg;
+            bcfg.endpoint  = "tcp://127.0.0.1:0";
+            bcfg.use_curve = false;
+            auto broker = start_broker_with_cfg(std::move(bcfg));
+
+            pylabhub::scripting::RoleHostCore core;
+            pylabhub::scripting::RoleAPIBase  api(
+                core, "prod", "prod.brc_routing.uid00000001");
+            api.set_name("brc_routing");
+            api.set_auth("", "");
+
+            pylabhub::config::HubRefConfig hub_cfg;
+            hub_cfg.broker = broker.endpoint;
+
+            std::vector<pylabhub::scripting::Presence> presences;
+            {
+                pylabhub::scripting::Presence p;
+                p.hub       = hub_cfg;
+                p.channel   = make_test_channel_name("role_handler.routing");
+                p.role_kind = pylabhub::scripting::RoleKind::Producer;
+                presences.push_back(std::move(p));
+            }
+            const std::string ch = presences[0].channel;
+            pylabhub::scripting::RoleHandler handler(std::move(presences));
+
+            ASSERT_TRUE(handler.start_connections(api));
+
+            // brc_for_channel must return the same pointer as
+            // connections()[0].brc.get() — single presence, single
+            // connection, unambiguous routing.
+            auto *expected_brc = handler.connections()[0].brc.get();
+            ASSERT_NE(expected_brc, nullptr);
+
+            EXPECT_EQ(handler.brc_for_channel(ch), expected_brc)
+                << "Class A routing: brc_for_channel must match the "
+                   "connection slot's BRC.";
+            EXPECT_EQ(handler.brc_for_role(), expected_brc)
+                << "Class B routing: brc_for_role returns the first "
+                   "connection's BRC (single-presence role).";
+
+            // Class D: band routing requires on_band_joined first.
+            EXPECT_EQ(handler.brc_for_band("test.band"), nullptr);
+            const auto *p = handler.find_presence_for_channel(ch);
+            ASSERT_NE(p, nullptr);
+            handler.on_band_joined("test.band", p);
+            EXPECT_EQ(handler.brc_for_band("test.band"), expected_brc)
+                << "Class D routing: brc_for_band returns the BRC "
+                   "of the presence that joined the band.";
+
+            handler.stop_connections();
+            broker.stop_and_join();
+        },
+        "role_state.role_handler_brc_for_x_post_start",
+        logger_module(), crypto_module(), zmq_module());
+}
+
 } // namespace pylabhub::tests::worker::broker_role_state
 
 namespace
@@ -874,6 +943,8 @@ struct BrokerRoleStateWorkerRegistrar
                     return role_handler_connections_dual_hub();
                 if (scenario == "role_handler_connections_double_start_rejected")
                     return role_handler_connections_double_start_rejected();
+                if (scenario == "role_handler_brc_for_x_post_start")
+                    return role_handler_brc_for_x_post_start();
                 return 1;
             });
     }
