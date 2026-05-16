@@ -260,6 +260,7 @@ Unloaded --> Initialized --> ScriptLoaded --> ApiBuilt --> Finalized
 | `invoke_process(rx, tx, msgs)` | worker | Call `on_process(rx, tx, msgs, api)` -- hot path |
 | `invoke_on_inbox(msg)` | worker | Call `on_inbox(msg, api)` |
 | `invoke_on_channel_closing(channel, reason)` | worker | Call `on_channel_closing(channel, reason, api)` if defined; no-op otherwise.  Dispatched from the data-loop classifier when a `CHANNEL_CLOSING_NOTIFY` arrives in `msgs` AND `has_callback("on_channel_closing")` is true — the notify is then removed from `msgs` (single-delivery contract). |
+| `invoke_on_consumer_died(channel, consumer_uid, reason)` | worker | Call `on_consumer_died(channel, consumer_uid, reason, api)` if defined; no-op otherwise.  Dispatched from the data-loop classifier when a `CONSUMER_DIED_NOTIFY` arrives in `msgs` AND `has_callback("on_consumer_died")` is true — the notify is then removed from `msgs` (single-delivery contract).  `reason` is one of `"heartbeat_timeout"` (consumer-presence Pending → Disconnected; HEP-CORE-0023 §2.1.1) or `"process_dead"` (broker PID-liveness check).  Lets producers symmetrically drop per-consumer bookkeeping; channel survives consumer death. |
 | `invoke_on_stop()` | worker | Call `on_stop(api)` |
 | `invoke(name, args)` | any | Generic invocation (e.g., admin shell) |
 | `eval(code)` | any | Evaluate code string (admin shell) |
@@ -895,6 +896,26 @@ def on_channel_closing(channel, reason, api):
     """
     pass
 
+def on_consumer_died(channel, consumer_uid, reason, api):
+    """Called on a producer when one of its registered consumers has
+    died (process exit or heartbeat timeout).  Channel survives —
+    only CHANNEL_CLOSING_NOTIFY indicates the channel itself is gone.
+
+    Optional.  Single-delivery: when defined, the framework removes
+    the notify from per-cycle msgs; when not defined, the notify
+    stays in msgs for generic scan.
+
+    Use this to drop per-consumer bookkeeping (open inbox state,
+    addressed-message tracking, etc.) symmetrically with the
+    consumer's own teardown.
+
+    Args:
+        channel       (str): Channel the dead consumer was on.
+        consumer_uid  (str): UID of the dead consumer presence.
+        reason        (str): 'heartbeat_timeout' or 'process_dead'.
+    """
+    pass
+
 def on_stop(api):
     """Called once before shutdown. Optional."""
     pass
@@ -925,6 +946,17 @@ function on_channel_closing(channel, reason, api)
     -- on_tick/on_consume to retry, or do nothing.
     api.log("warn", "channel " .. channel .. " closed: " .. reason)
     api.stop()
+end
+
+function on_consumer_died(channel, consumer_uid, reason, api)
+    -- Optional.  Called on a producer when one of its registered
+    -- consumers has died.  reason is "heartbeat_timeout" or
+    -- "process_dead".  Channel survives; only on_channel_closing
+    -- indicates the channel is going away.
+    api.log("warn", "consumer " .. consumer_uid
+                  .. " on " .. channel
+                  .. " died: " .. reason)
+    -- Drop any per-consumer state here (open inbox slots, etc.).
 end
 
 function on_stop(api)

@@ -559,6 +559,48 @@ class ScriptEngine
         const std::string &reason) = 0;
 
     /**
+     * @brief Invoke on_consumer_died(channel, consumer_uid, reason, api)
+     *        if the script defines it.
+     *
+     * Optional script-side callback (HEP-CORE-0011 lifecycle table).
+     * The role host calls this from the data loop when a
+     * `CONSUMER_DIED_NOTIFY` arrives in the drained per-cycle messages
+     * list AND the script has defined the callback (probed via
+     * `has_callback("on_consumer_died")`).  Single-delivery contract:
+     * when the callback fires, the entry is consumed (removed from
+     * the messages list before `on_produce`/`on_consume` runs);
+     * scripts that prefer to scan `msgs` won't see the same notify
+     * twice.
+     *
+     * If the script does NOT define this callback, the role host
+     * leaves the notify in `msgs` — the script may still scan it
+     * inside `on_produce`/`on_consume`.
+     *
+     * Same threading contract as `invoke_on_channel_closing`.
+     * Implementations log + suppress script exceptions (do not
+     * propagate); the data loop continues.
+     *
+     * Sent by the broker in two cases (HEP-CORE-0023 §2.1.1):
+     *   - `reason="heartbeat_timeout"` — consumer-presence
+     *     Pending→Disconnected via the broker's heartbeat sweep.
+     *   - `reason="process_dead"` — broker's PID-liveness check
+     *     detected the consumer process exited.
+     * Producer scripts receive both reasons via this callback so
+     * they can drop per-consumer bookkeeping (open inbox slots,
+     * addressed-message state) symmetrically.
+     *
+     * @param channel       Channel that the dead consumer was
+     *                      registered on.
+     * @param consumer_uid  UID of the consumer presence that died.
+     * @param reason        Reason string from the wire payload
+     *                      ("heartbeat_timeout" or "process_dead").
+     */
+    virtual void invoke_on_consumer_died(
+        const std::string &channel,
+        const std::string &consumer_uid,
+        const std::string &reason) = 0;
+
+    /**
      * @brief Invoke on_produce(tx, msgs, api).
      * @param tx   Output direction (writable slot + flexzone).
      * @param msgs Incoming messages (drained from RoleHostCore).

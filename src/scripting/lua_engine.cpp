@@ -228,6 +228,7 @@ bool LuaEngine::load_script(const std::filesystem::path &script_dir,
     ref_on_init_ = extract_callback_ref_("on_init");
     ref_on_stop_ = extract_callback_ref_("on_stop");
     ref_on_channel_closing_ = extract_callback_ref_("on_channel_closing");
+    ref_on_consumer_died_   = extract_callback_ref_("on_consumer_died");
     ref_on_produce_ = extract_callback_ref_("on_produce");
     ref_on_consume_ = extract_callback_ref_("on_consume");
     ref_on_process_ = extract_callback_ref_("on_process");
@@ -246,6 +247,8 @@ bool LuaEngine::load_script(const std::filesystem::path &script_dir,
     set_standard_callback_present("on_stop",    state_.is_ref_callable(ref_on_stop_));
     set_standard_callback_present("on_channel_closing",
                                   state_.is_ref_callable(ref_on_channel_closing_));
+    set_standard_callback_present("on_consumer_died",
+                                  state_.is_ref_callable(ref_on_consumer_died_));
     set_standard_callback_present("on_produce", state_.is_ref_callable(ref_on_produce_));
     set_standard_callback_present("on_consume", state_.is_ref_callable(ref_on_consume_));
     set_standard_callback_present("on_process", state_.is_ref_callable(ref_on_process_));
@@ -1094,6 +1097,30 @@ void LuaEngine::invoke_on_channel_closing(const std::string &channel,
 }
 
 // ============================================================================
+// invoke_on_consumer_died — on_consumer_died(channel, consumer_uid, reason, api)
+// ============================================================================
+
+void LuaEngine::invoke_on_consumer_died(const std::string &channel,
+                                         const std::string &consumer_uid,
+                                         const std::string &reason)
+{
+    if (!state_.is_ref_callable(ref_on_consumer_died_))
+        return;
+
+    lua_State *L = state_.raw();
+    lua_rawgeti(L, LUA_REGISTRYINDEX, ref_on_consumer_died_);
+    lua_pushlstring(L, channel.data(),      channel.size());
+    lua_pushlstring(L, consumer_uid.data(), consumer_uid.size());
+    lua_pushlstring(L, reason.data(),       reason.size());
+    lua_rawgeti(L, LUA_REGISTRYINDEX, ref_api_);
+
+    if (!state_.pcall(4, 0, "on_consumer_died"))
+    {
+        on_pcall_error_("on_consumer_died");
+    }
+}
+
+// ============================================================================
 // invoke_produce — on_produce(tx, msgs, api) -> bool
 // ============================================================================
 
@@ -1433,6 +1460,8 @@ void LuaEngine::clear_refs_()
     ref_on_stop_ = LUA_NOREF;
     state_.unref(ref_on_channel_closing_);
     ref_on_channel_closing_ = LUA_NOREF;
+    state_.unref(ref_on_consumer_died_);
+    ref_on_consumer_died_ = LUA_NOREF;
     state_.unref(ref_on_produce_);
     ref_on_produce_ = LUA_NOREF;
     state_.unref(ref_on_consume_);

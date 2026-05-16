@@ -465,15 +465,17 @@ bool NativeEngine::load_script(const std::filesystem::path &script_dir,
     }
 
     // ── Resolve optional callback symbols ──────────────────────────
-    fn_on_init_       = reinterpret_cast<FnVoid>(resolve_sym_("on_init"));
-    fn_on_stop_       = reinterpret_cast<FnVoid>(resolve_sym_("on_stop"));
+    fn_on_init_       = reinterpret_cast<FnVoidNoArgs>(resolve_sym_("on_init"));
+    fn_on_stop_       = reinterpret_cast<FnVoidNoArgs>(resolve_sym_("on_stop"));
     fn_on_channel_closing_ =
-        reinterpret_cast<FnVoid>(resolve_sym_("on_channel_closing"));
+        reinterpret_cast<FnOnChannelClosing>(resolve_sym_("on_channel_closing"));
+    fn_on_consumer_died_ =
+        reinterpret_cast<FnOnConsumerDied>(resolve_sym_("on_consumer_died"));
     fn_on_produce_    = reinterpret_cast<FnOnProduce>(resolve_sym_("on_produce"));
     fn_on_consume_    = reinterpret_cast<FnOnConsume>(resolve_sym_("on_consume"));
     fn_on_process_    = reinterpret_cast<FnOnProcess>(resolve_sym_("on_process"));
     fn_on_inbox_      = reinterpret_cast<FnOnInbox>(resolve_sym_("on_inbox"));
-    fn_on_heartbeat_  = reinterpret_cast<FnVoid>(resolve_sym_("on_heartbeat"));
+    fn_on_heartbeat_  = reinterpret_cast<FnVoidNoArgs>(resolve_sym_("on_heartbeat"));
     fn_is_thread_safe_ = reinterpret_cast<FnBool>(resolve_sym_("native_is_thread_safe"));
 
     // ── Check required callback ────────────────────────────────────
@@ -567,6 +569,7 @@ void NativeEngine::finalize_engine_()
     fn_on_init_ = nullptr;
     fn_on_stop_ = nullptr;
     fn_on_channel_closing_ = nullptr;
+    fn_on_consumer_died_ = nullptr;
     fn_on_produce_ = nullptr;
     fn_on_consume_ = nullptr;
     fn_on_process_ = nullptr;
@@ -591,6 +594,7 @@ bool NativeEngine::has_callback(const std::string &name) const noexcept
     if (name == "on_init")             return fn_on_init_             != nullptr;
     if (name == "on_stop")             return fn_on_stop_             != nullptr;
     if (name == "on_channel_closing")  return fn_on_channel_closing_  != nullptr;
+    if (name == "on_consumer_died")    return fn_on_consumer_died_    != nullptr;
     if (name == "on_produce")    return fn_on_produce_ != nullptr;
     if (name == "on_consume")    return fn_on_consume_ != nullptr;
     if (name == "on_process")    return fn_on_process_ != nullptr;
@@ -709,22 +713,37 @@ size_t NativeEngine::type_sizeof(const std::string &type_name) const
 void NativeEngine::invoke_on_init()
 {
     if (fn_on_init_)
-        fn_on_init_(nullptr);
+        fn_on_init_();
 }
 
 void NativeEngine::invoke_on_stop()
 {
     if (fn_on_stop_)
-        fn_on_stop_(nullptr);
+        fn_on_stop_();
 }
 
 void NativeEngine::invoke_on_channel_closing(const std::string &channel,
                                               const std::string &reason)
 {
     if (!fn_on_channel_closing_) return;
-    nlohmann::json args = {{"channel", channel}, {"reason", reason}};
-    const std::string s = args.dump();
-    fn_on_channel_closing_(s.c_str());
+    // Lifetime contract (see native_invoke_types.h): the args struct
+    // and its `const char *` fields are valid only for the duration
+    // of this call.  The backing `std::string`s outlive the callee.
+    const plh_channel_closing_args_t args{channel.c_str(), reason.c_str()};
+    fn_on_channel_closing_(&args);
+}
+
+void NativeEngine::invoke_on_consumer_died(const std::string &channel,
+                                            const std::string &consumer_uid,
+                                            const std::string &reason)
+{
+    if (!fn_on_consumer_died_) return;
+    // Lifetime contract (see native_invoke_types.h): args is valid
+    // only for this call; plugin MUST NOT retain pointers.
+    const plh_consumer_died_args_t args{channel.c_str(),
+                                        consumer_uid.c_str(),
+                                        reason.c_str()};
+    fn_on_consumer_died_(&args);
 }
 
 InvokeResult NativeEngine::invoke_produce(
@@ -817,9 +836,16 @@ bool NativeEngine::invoke(const std::string &name)
 {
     if (name == "on_heartbeat" && fn_on_heartbeat_)
     {
-        fn_on_heartbeat_(nullptr);
+        fn_on_heartbeat_();
         return true;
     }
+    // Generic invoke: ad-hoc plugin symbol with the FnVoid (JSON-string)
+    // ABI.  This is the contract for any plugin-defined callback NOT
+    // on the standard lifecycle list — plugin author opts in by
+    // writing `void symbol(const char *args_json)`.  Standard lifecycle
+    // callbacks (on_init/on_stop/on_channel_closing/on_consumer_died/
+    // on_heartbeat) are NOT reached via this fallback — they're cached
+    // at load_script with their typed signatures and special-cased above.
     auto fn = reinterpret_cast<FnVoid>(resolve_sym_(name.c_str()));
     if (fn)
     {
@@ -833,15 +859,11 @@ bool NativeEngine::invoke(const std::string &name, const nlohmann::json &args)
 {
     if (name == "on_heartbeat" && fn_on_heartbeat_)
     {
-        if (args.empty())
-        {
-            fn_on_heartbeat_(nullptr);
-        }
-        else
-        {
-            std::string json_str = args.dump();
-            fn_on_heartbeat_(json_str.c_str());
-        }
+        // on_heartbeat takes no args (uniform no-args lifecycle shape);
+        // args are dropped silently if the caller supplies any.  Plugin
+        // authors wanting heartbeat-with-args must use a different
+        // symbol via the generic invoke path below.
+        fn_on_heartbeat_();
         return true;
     }
     auto fn = reinterpret_cast<FnVoid>(resolve_sym_(name.c_str()));
