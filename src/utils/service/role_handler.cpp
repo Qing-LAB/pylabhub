@@ -1,16 +1,25 @@
 /**
  * @file role_handler.cpp
- * @brief Wave-B M3 skeleton — RoleHandler dedup + index build.
+ * @brief RoleHandler dedup + index build (M3) + network state ops (M4a).
  *
- * Pure logic; no network, no threading, no allocations of the
- * `BrokerRequestComm` pImpl (that arrives in Wave-B M4 with
- * `start()`/`shutdown()`).  See `role_handler.hpp` for the
- * construction contract + invariants.
+ * Per HEP-CORE-0019 + role_host_template_design.md §5, RoleHandler is
+ * a state holder + routing helper:
+ *   - M3: topology (presences) + dedup (connections) + indexes.
+ *   - M4a: per-connection BRC allocation + connect/disconnect.
+ *   - M4b: four-class dispatch (send_class_A/B/C/D).
+ *
+ * Threading is NOT inside RoleHandler.  The role host (via
+ * RoleAPIBase's ThreadManager) is the action taker: AFTER
+ * `start_connections()` returns, the host spawns one ctrl thread per
+ * BRC to drive its poll loop.  See `role_handler.hpp` § "Network
+ * state lifecycle" for the responsibility split.
  */
 
 #include "utils/role_handler.hpp"
 
+#include "utils/broker_request_comm.hpp"
 #include "utils/logger.hpp"
+#include "utils/role_api_base.hpp"
 
 namespace pylabhub::scripting
 {
@@ -125,6 +134,86 @@ RoleHandler::presence_count_for_channel(const std::string &channel) const noexce
         if (p.channel == channel)
             ++n;
     return n;
+}
+
+// ============================================================================
+// Network state lifecycle (Wave-B M4a)
+// ============================================================================
+//
+// STATE-only.  These methods manipulate BRC resources owned by each
+// HubConnection — they do NOT manage threads.  See role_handler.hpp
+// § "Network state lifecycle" for the contract + the responsibility
+// split between handler (state) and role host (execution).
+
+bool RoleHandler::connections_started() const noexcept
+{
+    // Derived state: BRCs are non-null iff start_connections succeeded.
+    // start_connections is all-or-nothing (rolls back on partial fail),
+    // so checking the first slot is sufficient for the steady-state
+    // invariant.  Empty handler (no connections) is "not started" by
+    // this definition — there is nothing to start.
+    return !connections_.empty() && connections_[0].brc != nullptr;
+}
+
+bool RoleHandler::start_connections(const RoleAPIBase &owner)
+{
+    if (connections_started())
+    {
+        // Programmer-error refusal — caller learns via the return
+        // value.  WARN (not ERROR) because the handler state stays
+        // consistent: connections remain in their previously-started
+        // state, no resources leak.
+        LOGGER_WARN("RoleHandler::start_connections called twice without "
+                    "intervening stop_connections — refusing");
+        return false;
+    }
+
+    // ── Per-HubConnection: allocate + connect ─────────────────────────────
+    //
+    // BrokerRequestComm::Config required fields (broker_request_comm.hpp
+    // §"Configuration"):
+    //   broker_endpoint, broker_pubkey, client_pubkey, client_seckey,
+    //   role_uid, role_name.
+    // Per-HubConnection (broker_endpoint/broker_pubkey) come from the
+    // dedup identity; role-wide fields come from `owner`.
+    for (auto &c : connections_)
+    {
+        c.brc = std::make_unique<hub::BrokerRequestComm>();
+
+        hub::BrokerRequestComm::Config cfg;
+        cfg.broker_endpoint = c.broker_endpoint;
+        cfg.broker_pubkey   = c.broker_pubkey;
+        cfg.client_pubkey   = owner.auth_client_pubkey();
+        cfg.client_seckey   = owner.auth_client_seckey();
+        cfg.role_uid        = owner.uid();
+        cfg.role_name       = owner.name();
+
+        if (!c.brc->connect(cfg))
+        {
+            // Log uid + pubkey (safe); never log seckey.
+            LOGGER_ERROR("RoleHandler: BRC connect failed for hub '{}' "
+                         "(role_uid='{}')",
+                         c.broker_endpoint, owner.uid());
+            // Roll back: any previously-connected BRCs in this loop get
+            // disconnected + released so we're back to the pre-start
+            // state.  No poll loops have been spawned (handler doesn't
+            // own threads), so `disconnect()` alone is sufficient.
+            stop_connections();
+            return false;
+        }
+    }
+
+    return true;
+}
+
+void RoleHandler::stop_connections() noexcept
+{
+    for (auto &c : connections_)
+    {
+        if (!c.brc) continue;
+        c.brc->disconnect();
+        c.brc.reset();
+    }
 }
 
 }  // namespace pylabhub::scripting

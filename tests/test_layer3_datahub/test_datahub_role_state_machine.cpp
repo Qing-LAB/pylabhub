@@ -96,3 +96,36 @@ TEST_F(DatahubRoleStateMachineTest, ConsumerHeartbeatTimeout_FiresConsumerDiedNo
         "broker_role_state.consumer_heartbeat_timeout_fires_consumer_died_notify", {});
     ExpectWorkerOk(proc);
 }
+
+TEST_F(DatahubRoleStateMachineTest, RoleHandler_Connections_StartStop_Smoke)
+{
+    // Wave-B M4a — state-only verification of RoleHandler's network
+    // surface.  start_connections() allocates + connects BRCs;
+    // stop_connections() releases.  NO threads are spawned by the
+    // handler (state holder); thread management lives at the role
+    // host layer and lands in M4c.  Mutation: revert start_connections
+    // to leave brc nullptr → smoke test fails.
+    auto proc = SpawnWorker(
+        "broker_role_state.role_handler_connections_start_stop_smoke", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubRoleStateMachineTest, RoleHandler_Connections_DualHub)
+{
+    // Wave-B M4a — dual-broker state shape (the M8-payoff data shape):
+    // two HubConnections, two BRCs each connected to a different
+    // broker.  Verifies the dedup-by-identity model materialises
+    // correct distinct connections.  Still state-only (no threads).
+    auto proc = SpawnWorker(
+        "broker_role_state.role_handler_connections_dual_hub", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubRoleStateMachineTest, RoleHandler_Connections_DoubleStart_Rejected)
+{
+    // Wave-B M4a — `start_connections()` rejects double-call without
+    // intervening `stop_connections()`.  Pins the idempotency contract.
+    auto proc = SpawnWorker(
+        "broker_role_state.role_handler_connections_double_start_rejected", {});
+    ExpectWorkerOk(proc);
+}

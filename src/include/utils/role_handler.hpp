@@ -93,6 +93,11 @@
 namespace pylabhub::scripting
 {
 
+class RoleAPIBase;  // fwd — full def in utils/role_api_base.hpp.  Used
+                    // only by `start_connections(owner)` to read identity
+                    // (uid / name / auth keys) during BRC Config build;
+                    // not stored on the handler.
+
 class PYLABHUB_UTILS_EXPORT RoleHandler
 {
   public:
@@ -108,6 +113,49 @@ class PYLABHUB_UTILS_EXPORT RoleHandler
     RoleHandler &operator=(const RoleHandler &) = delete;
     RoleHandler(RoleHandler &&)                 = delete;
     RoleHandler &operator=(RoleHandler &&)      = delete;
+
+    // ── Network state lifecycle (Wave-B M4a) ─────────────────────────────────
+    //
+    // STATE-only.  These methods manipulate the BRC resources owned by
+    // each `HubConnection` — they do NOT manage threads.  The role
+    // host (which owns the ThreadManager via RoleAPIBase) is the
+    // action taker: AFTER `start_connections()` returns, the host
+    // iterates `connections()` and spawns one ctrl thread per BRC to
+    // drive its poll loop.  BEFORE `stop_connections()` is called,
+    // the host MUST signal each BRC's poll loop and join the threads
+    // via the ThreadManager Shutdown Contract (HEP-CORE-0031 §4.1).
+    //
+    // Separation rationale: BrokerRequestComm itself is designed for
+    // external thread injection (`run_poll_loop(should_run)` takes the
+    // caller's predicate).  The handler mirrors that separation —
+    // resources here, execution outside.  This keeps M4-internal tests
+    // Pattern-1+ for the handler proper, and keeps thread-spawn policy
+    // (master/peer, count visibility, drain ordering) at a single
+    // location in the role host integration layer.
+
+    /// Allocate one `BrokerRequestComm` per `HubConnection` slot,
+    /// populate its `Config` from `owner`'s identity + auth, and
+    /// `connect()` the DEALER socket.  `owner` is borrowed for the
+    /// duration of this call only — NOT stored on the handler.
+    ///
+    /// Returns `true` if every HubConnection connected successfully.
+    /// On partial failure, the function returns `false` and releases
+    /// any BRCs that were already connected (via `disconnect()` +
+    /// `reset()`) so the handler is left in a clean pre-start state.
+    ///
+    /// Idempotent: calling twice without an intervening
+    /// `stop_connections()` returns `false` (no double-allocation).
+    [[nodiscard]] bool start_connections(const RoleAPIBase &owner);
+
+    /// Release every `HubConnection`'s BRC: `disconnect()` then reset
+    /// the `unique_ptr`.  ASSUMES the caller has already stopped any
+    /// threads that were running on these BRCs.  Safe to call when no
+    /// start_connections has been issued (no-op).  Idempotent.
+    void stop_connections() noexcept;
+
+    /// True iff `start_connections()` has been called and the BRCs
+    /// are allocated.  Returns false after `stop_connections()`.
+    [[nodiscard]] bool connections_started() const noexcept;
 
     // ── Read-only accessors (M3 surface) ─────────────────────────────
 

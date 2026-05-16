@@ -85,6 +85,12 @@ struct RoleAPIBase::Impl
     std::string script_dir;
     std::string role_dir;
 
+    // Role-side CurveZMQ keypair (Wave-B M4a) — read by
+    // `RoleHandler::start_connections` to populate BRC::Config.  Empty
+    // = plaintext (no CURVE).  Set-once before start_connections.
+    std::string auth_client_pubkey;
+    std::string auth_client_seckey;
+
     // ── Shared state — touched outside the worker thread ───────────────
     //
     // Anything that may be read OR mutated from threads other than the
@@ -401,6 +407,22 @@ void RoleAPIBase::set_stop_on_script_error(bool v)    { pImpl->stop_on_script_er
 void RoleAPIBase::set_metrics_hook(std::function<void(nlohmann::json &)> hook)
 {
     pImpl->metrics_hook = std::move(hook);
+}
+
+void RoleAPIBase::set_auth(std::string client_pubkey, std::string client_seckey)
+{
+    pImpl->auth_client_pubkey = std::move(client_pubkey);
+    pImpl->auth_client_seckey = std::move(client_seckey);
+}
+
+const std::string &RoleAPIBase::auth_client_pubkey() const
+{
+    return pImpl->auth_client_pubkey;
+}
+
+const std::string &RoleAPIBase::auth_client_seckey() const
+{
+    return pImpl->auth_client_seckey;
 }
 
 // ============================================================================
