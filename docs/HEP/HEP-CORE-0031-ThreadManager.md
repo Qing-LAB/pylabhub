@@ -710,6 +710,162 @@ parked in `zmq_poll`.
 
 ---
 
+## 4.3 Process Thread Inventory
+
+Authoritative inventory of every thread that exists in a running
+pylabhub process, who spawns it, who owns it, and which §4.1 / §4.2
+contract clause governs its shutdown.  Maintained against actual
+source — grep-verified at every edit.  When a phase change creates
+or retires a thread, this section MUST be updated in the same
+commit.
+
+This section exists because the thread set has grown organically
+(MD1 + MD1.5 closures added master/peer ordering; Wave-B M4
+scales the single ctrl thread to N).  Without an explicit
+inventory, future changes drift away from the master/peer
+contract and re-expose UAF classes the team has already closed.
+
+### 4.3.1 Role host process — mandatory threads
+
+Every role host process (plh_role binary) carries these three
+threads regardless of transport or role kind.  All three live
+in the role's own `pylabhub::utils::ThreadManager` instance,
+owned by `RoleAPIBase::Impl::thread_mgr_` (see
+`role_api_base.cpp::Impl` ctor — created eagerly from
+`(role_tag, uid)`).
+
+| Slot name | Spawned by                                         | Master/peer | Purpose                                                                                              | Bracket vs flag |
+|-----------|----------------------------------------------------|-------------|------------------------------------------------------------------------------------------------------|-----------------|
+| `worker`  | `engine_host.cpp::EngineHost::startup_`            | peer        | Runs `worker_main_()`: schema resolve, REG, run_data_loop, do_role_teardown.  The "action thread."   | bracket — wraps the data loop |
+| `ctrl`    | `role_api_base.cpp::start_ctrl_thread` (legacy)    | **master**  | Drives `pImpl->broker_channel->run_poll_loop()` — polls the role's single BRC's DEALER socket.       | bracket — wraps `run_poll_loop` |
+| (process) | OS process entry (not via ThreadManager)           | n/a         | Main thread.  Runs `plh_role_main.cpp`, constructs RoleHost, waits for worker, exits.                | n/a — not in TM |
+
+The ctrl thread is master per §4.2.4 — its lifetime envelopes
+every peer's (the worker's).  The worker's `do_role_teardown`
+calls `deregister_from_broker()`, which sends DEREG_REQ via the
+ctrl thread's BRC and blocks waiting for DEREG_ACK.  If ctrl
+exited first, worker would block forever; the master/peer
+ordering ensures ctrl outlives worker.
+
+### 4.3.2 Role host process — transport-conditional threads
+
+Data-plane queues (`hub::ZmqQueue`) own their OWN `ThreadManager`
+instances, separate from the role's primary one.  This is a
+deliberate isolation: the queue's I/O thread should join when the
+queue is torn down (during worker_main_'s setup/teardown), not
+coupled to the role-wide drain.
+
+| Slot name | Spawned by                          | Role TM? | When present                                                          |
+|-----------|-------------------------------------|----------|-----------------------------------------------------------------------|
+| `recv`    | `hub_zmq_queue.cpp:650`             | NO — queue's own TM | rx-side ZMQ transport (`data_transport == "zmq"` on input).  One per ZMQ rx queue. |
+| `send`    | `hub_zmq_queue.cpp:660`             | NO — queue's own TM | tx-side ZMQ transport on output.  One per ZMQ tx queue.               |
+
+Single-hub processor with ZMQ in + SHM out → 1 `recv` thread.
+Dual-direction ZMQ processor → 1 `recv` + 1 `send`.  SHM
+transport adds no threads.  None of these are master — each
+ZmqQueue's drain handles its own thread without master/peer
+sequencing because the worker thread (the only thing that touches
+the queue from outside) drives the start/stop sequence
+deterministically.
+
+### 4.3.3 plh_hub process threads
+
+A plh_hub process is separate from plh_role — different binary,
+different ThreadManager instance.
+
+| Slot name           | Spawned by                                   | Master/peer | Purpose                                                                              |
+|---------------------|----------------------------------------------|-------------|--------------------------------------------------------------------------------------|
+| `broker_io`         | `broker_service.cpp::BrokerService::run`     | n/a — single thread | Owns the ROUTER socket; processes every inbound message; emits all notifications.    |
+| (process)           | OS process entry                             | n/a         | Main thread.  Runs `plh_hub_main.cpp`; signal handler; cleans up.                    |
+
+If the hub script runner is enabled (HEP-CORE-0033 Phase 7 —
+script-driven hub-side logic), additional threads come from the
+script engine's worker pool.  Those are out of scope here; see
+HEP-CORE-0011 § "Threading Model".
+
+### 4.3.4 Process-global threads
+
+Threads that exist once per process regardless of role/hub kind,
+owned by static lifecycle modules.  Not under any role/hub TM.
+
+| Slot name              | Spawned by                                   | Owner                  | Purpose                                                                              |
+|------------------------|----------------------------------------------|------------------------|--------------------------------------------------------------------------------------|
+| `logger_worker`        | `logger.cpp:134` (`Logger::run`)             | Logger lifecycle module| Drains the async log queue.  Joined during `LifecycleGuard::~`.                      |
+| `dyn_shutdown_thread`  | `lifecycle_dynamic.cpp:492`                  | LifecycleManager       | Asynchronously finalizes dynamic modules at process exit.                            |
+
+These threads are joined by the `LifecycleGuard` destructor —
+NOT by any `ThreadManager` drain.  Per `docs/HEP/HEP-CORE-0001`,
+they're owned by their static modules and outlive every
+TM-managed thread in the process.
+
+### 4.3.5 Concrete thread counts per role topology (today)
+
+| Role topology                       | Role-scope threads (in role TM) | Queue threads (own TM)  | Process-global | Total |
+|-------------------------------------|---------------------------------|-------------------------|----------------|-------|
+| Producer (SHM out)                  | 2 (worker + ctrl)               | 0                       | 2              | 4 + main |
+| Producer (ZMQ out)                  | 2                               | 1 (send)                | 2              | 5 + main |
+| Consumer (SHM in)                   | 2                               | 0                       | 2              | 4 + main |
+| Consumer (ZMQ in)                   | 2                               | 1 (recv)                | 2              | 5 + main |
+| Processor (SHM/SHM)                 | 2                               | 0                       | 2              | 4 + main |
+| Processor (ZMQ in, SHM out)         | 2                               | 1 (recv)                | 2              | 5 + main |
+| Processor (ZMQ in, ZMQ out)         | 2                               | 2 (recv + send)         | 2              | 6 + main |
+
+"Main" is the OS process entry thread; "+1" added implicitly to
+every row above.
+
+### 4.3.6 Wave-B M4 transition plan
+
+Wave-B M4 splits the single `ctrl` thread into N — one per
+`RoleHandler::connections()` slot.  This scales the role-side
+control-plane I/O to dual-hub processor (Wave-B M8 payoff).
+
+The transition is incremental.  Each sub-commit must leave the
+process in a coherent thread state:
+
+| Phase                            | Thread set state                                                                                                                       |
+|----------------------------------|----------------------------------------------------------------------------------------------------------------------------------------|
+| **M4a (shipped 2026-05-15)**     | Unchanged from today.  RoleHandler allocates BRCs in `start_connections()` but spawns NO threads.  The BRCs are inert: connected DEALER sockets that no poll loop services.  The legacy single `ctrl` thread continues to poll `pImpl->broker_channel` only. |
+| **M4b (pending)**                | Unchanged.  Dispatch methods (`send_class_A/B/C/D`) route through `handler.connections()` BRCs, but those BRCs still have no poll thread driving them.  L3 tests of dispatch must stand up throwaway poll threads to exercise the round-trip.        |
+| **M4c (pending)**                | **Change.**  `RoleAPIBase::start_ctrl_thread` extends to: (a) spawn one ctrl-class thread per `handler.connections()` entry, or (b) a sibling `start_ctrl_threads()` method does the loop.  First spawn is master, rest are peers — the §4.2.1 single-master rule preserved because all N spawns happen from a single call site.  The legacy single `ctrl` retires; `pImpl->broker_channel` retires alongside. |
+| **M4d-f (pending)**              | Unchanged thread set; call sites migrate to dispatch via handler.                                                                       |
+| **M8 (pending)**                 | N=2 for dual-hub processor (one ctrl per hub).  Single-hub processor stays N=1 (dedup → 1 connection).                                  |
+
+**Thread name convention for M4c**: `handler_ctrl_<N>` where N is
+the connection index in `handler.connections()`.  Single-hub:
+`handler_ctrl_0`.  Dual-hub: `handler_ctrl_0` + `handler_ctrl_1`.
+
+**Why the legacy + new can't coexist transiently**: ThreadManager
+enforces at most one master per instance (§4.2.5).  M4c MUST
+retire the legacy `ctrl` thread atomically with introducing the
+first `handler_ctrl_0` master.  Coexistence (legacy master +
+handler_ctrl_0 master) is rejected by `tm.spawn()`.
+
+### 4.3.7 Drift-prevention checklist
+
+When adding or retiring a thread in any pylabhub binary, the
+commit MUST:
+
+1. **Update §4.3 of this HEP** — add or remove the row in the
+   relevant table.  Specify slot name, spawn site (file:line),
+   owning ThreadManager (role TM, queue TM, or process-global),
+   master/peer designation, and bracket-vs-flag choice per
+   §4.1.5.
+2. **Audit master/peer consistency** — if the new thread is
+   master, verify no other slot in the same ThreadManager is
+   already master.  If peer, document which master it should
+   outlast.
+3. **Specify the shutdown trigger** — what flips the predicate
+   the thread's poll loop / blocking call observes?  Where is
+   that flip located in the source?  Per §4.1.6, predicates
+   should be local (`ctx.shutdown_requested()`) plus, if
+   applicable, the role host's class-level wake-up
+   (`core->is_running()`).
+4. **Run the L3 lifecycle smoke tests** — `test_layer4_plh_role`
+   binary teardown should exit within the bounded join
+   (typically <500 ms) without detached-thread warnings.
+
+---
+
 ## 5. Lifecycle Thunk Design
 
 `tm_shutdown()` is a **safe no-op**. Rationale:
