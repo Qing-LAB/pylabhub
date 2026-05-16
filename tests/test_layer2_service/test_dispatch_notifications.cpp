@@ -1,26 +1,37 @@
 /**
- * @file test_dispatch_channel_closing.cpp
- * @brief L2 unit tests for the per-cycle lifecycle-callback dispatch
- *        helpers in `pylabhub::scripting`:
- *         - `dispatch_channel_closing` — routes CHANNEL_CLOSING_NOTIFY
- *           entries to `on_channel_closing(channel, reason, api)`.
- *         - `dispatch_consumer_died`   — routes CONSUMER_DIED_NOTIFY
- *           entries to `on_consumer_died(channel, consumer_uid,
- *           reason, api)`.  Reason value is one of
- *           {"heartbeat_timeout", "process_dead"} (HEP-CORE-0023
- *           §2.1.1).
+ * @file test_dispatch_notifications.cpp
+ * @brief L2 unit tests for `pylabhub::scripting::dispatch_notifications`
+ *        — the per-cycle table-driven dispatcher that routes broker
+ *        notifications carried in `IncomingMessage::notification_id`
+ *        to their dedicated script callback (or leaves them in `msgs`
+ *        for the script's generic scan).
  *
- * Both dispatchers share the same contract (HEP-CORE-0011 lifecycle
- * table; M1.5 for channel_closing):
- *   1. If the script does NOT define the callback → msgs is unchanged
- *      and the engine invoke method is NOT called.
- *   2. If defined → every matching notify is removed from msgs (single-
- *      delivery), and the engine invoke method is called once per entry.
- *   3. Non-matching entries stay in msgs in original order.
+ * Covered notifications (per `NotificationId` in role_host_core.hpp):
+ *   - CHANNEL_CLOSING_NOTIFY → on_channel_closing(channel, reason, api)
+ *   - CONSUMER_DIED_NOTIFY   → on_consumer_died(channel, consumer_uid,
+ *                                               reason, api)
+ *     reason ∈ {"heartbeat_timeout", "process_dead"} per HEP-CORE-0023 §2.1.1.
+ *
+ * Dispatcher contract (HEP-CORE-0011 callback table):
+ *   1. If the script does NOT define the callback → `msgs` is unchanged
+ *      for that entry; engine invoke method is NOT called.
+ *   2. If defined → every matching notify is removed from `msgs`
+ *      (single-delivery), and the engine invoke method is called once
+ *      per entry with values extracted from `details`.
+ *   3. Entries whose `notification_id` is `Unknown` (unrecognised wire
+ *      type) stay in `msgs` in original order.
+ *
+ * IncomingMessage wiring contract (the test mirrors what
+ * `role_api_base.cpp`'s BRC `on_notification` lambda does):
+ *   - `event` field carries the wire type string (kept for debug /
+ *     script-side generic scan).
+ *   - `notification_id` is set via `parse_notification_id(event)` at
+ *     the BRC enqueue boundary; dispatcher reads this field, not the
+ *     string.  Test message builders below set both.
  */
 
 #include "binary_lifecycle.h"
-#include "service/cycle_ops.hpp"   // dispatch_channel_closing
+#include "service/cycle_ops.hpp"   // dispatch_notifications
 #include "utils/logger.hpp"
 #include "utils/role_host_core.hpp"
 #include "utils/script_engine.hpp"
@@ -28,6 +39,7 @@
 #include <gtest/gtest.h>
 
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -38,13 +50,15 @@ using pylabhub::scripting::InvokeResult;
 using pylabhub::scripting::InvokeRx;
 using pylabhub::scripting::InvokeStatus;
 using pylabhub::scripting::InvokeTx;
+using pylabhub::scripting::NotificationId;
 using pylabhub::scripting::RoleAPIBase;
 using pylabhub::scripting::RoleHostCore;
 using pylabhub::scripting::ScriptEngine;
+using pylabhub::scripting::parse_notification_id;
 
-// `dispatch_channel_closing` calls into engine.has_callback() +
-// engine.invoke_on_channel_closing().  Engine surface uses LOGGER_*
-// on error paths.  Single-suite binary, Logger-only guard.
+// dispatch_notifications calls into engine.has_callback() +
+// engine.invoke_on_*().  Engine surface uses LOGGER_* on error paths.
+// Single-suite binary, Logger-only guard (Pattern 1+).
 PLH_BINARY_LIFECYCLE_MODULES(
     pylabhub::utils::Logger::GetLifecycleModule()
 )
@@ -165,12 +179,18 @@ class RecordingEngine : public ScriptEngine
     }
 };
 
+// Mirrors what `role_api_base.cpp`'s BRC `on_notification` lambda does:
+// sets `event` (wire string for debug + generic scan) AND
+// `notification_id` (parsed enum that the dispatcher reads).  Tests
+// that fail to set `notification_id` would silently fall through the
+// dispatcher's `Unknown` slot — these helpers prevent that mistake.
 IncomingMessage make_notify(const std::string &channel,
                             const std::string &reason)
 {
     IncomingMessage m;
-    m.event           = "CHANNEL_CLOSING_NOTIFY";
-    m.details         = nlohmann::json::object();
+    m.event                   = "CHANNEL_CLOSING_NOTIFY";
+    m.notification_id         = parse_notification_id(m.event);
+    m.details                 = nlohmann::json::object();
     m.details["channel_name"] = channel;
     m.details["reason"]       = reason;
     return m;
@@ -179,7 +199,8 @@ IncomingMessage make_notify(const std::string &channel,
 IncomingMessage make_other(const std::string &event)
 {
     IncomingMessage m;
-    m.event = event;
+    m.event           = event;
+    m.notification_id = parse_notification_id(m.event);   // typically Unknown
     return m;
 }
 
@@ -203,7 +224,7 @@ TEST_F(DispatchChannelClosingTest, NoCallback_LeavesMsgsUnchanged)
     msgs.push_back(make_other("HEARTBEAT_ACK"));
     msgs.push_back(make_notify("ch.b", "pending_timeout"));
 
-    pylabhub::scripting::dispatch_channel_closing(eng, msgs);
+    pylabhub::scripting::dispatch_notifications(eng, msgs);
 
     EXPECT_TRUE(eng.calls.empty())
         << "engine must not be called when has_callback returns false";
@@ -226,7 +247,7 @@ TEST_F(DispatchChannelClosingTest, Callback_DispatchesAndRemovesNotify)
     std::vector<IncomingMessage> msgs;
     msgs.push_back(make_notify("ch.alpha", "producer_deregistered"));
 
-    pylabhub::scripting::dispatch_channel_closing(eng, msgs);
+    pylabhub::scripting::dispatch_notifications(eng, msgs);
 
     ASSERT_EQ(eng.calls.size(), 1u);
     EXPECT_EQ(eng.calls[0].first,  "ch.alpha");
@@ -252,7 +273,7 @@ TEST_F(DispatchChannelClosingTest, Callback_PreservesNonNotifyEntries)
     msgs.push_back(make_notify("ch.b", "pending_timeout"));
     msgs.push_back(make_other("OTHER"));
 
-    pylabhub::scripting::dispatch_channel_closing(eng, msgs);
+    pylabhub::scripting::dispatch_notifications(eng, msgs);
 
     ASSERT_EQ(eng.calls.size(), 2u);
     EXPECT_EQ(eng.calls[0].first,  "ch.a");
@@ -276,7 +297,7 @@ TEST_F(DispatchChannelClosingTest, EmptyMsgs_NoOp_NoCallback)
     eng.has_on_channel_closing = false;
     std::vector<IncomingMessage> msgs;
 
-    pylabhub::scripting::dispatch_channel_closing(eng, msgs);
+    pylabhub::scripting::dispatch_notifications(eng, msgs);
 
     EXPECT_TRUE(eng.calls.empty());
     EXPECT_TRUE(msgs.empty());
@@ -288,7 +309,7 @@ TEST_F(DispatchChannelClosingTest, EmptyMsgs_NoOp_WithCallback)
     eng.has_on_channel_closing = true;
     std::vector<IncomingMessage> msgs;
 
-    pylabhub::scripting::dispatch_channel_closing(eng, msgs);
+    pylabhub::scripting::dispatch_notifications(eng, msgs);
 
     EXPECT_TRUE(eng.calls.empty())
         << "no notify entries to dispatch — callback must NOT fire";
@@ -306,13 +327,19 @@ TEST_F(DispatchChannelClosingTest, NotifyWithMissingFields_DispatchesWithEmptySt
 
     std::vector<IncomingMessage> msgs;
     {
+        // Mirror the BRC enqueue: event + notification_id MUST both
+        // be set or the dispatcher's table lookup falls through to
+        // the Unknown slot.  This test intentionally omits details
+        // fields (not the notification_id) to verify the dispatcher's
+        // value(..., default) extraction handles missing details.
         IncomingMessage m;
-        m.event   = "CHANNEL_CLOSING_NOTIFY";
-        m.details = nlohmann::json::object();   // no channel_name / reason
+        m.event           = "CHANNEL_CLOSING_NOTIFY";
+        m.notification_id = parse_notification_id(m.event);
+        m.details         = nlohmann::json::object();   // no channel_name / reason
         msgs.push_back(m);
     }
 
-    pylabhub::scripting::dispatch_channel_closing(eng, msgs);
+    pylabhub::scripting::dispatch_notifications(eng, msgs);
 
     ASSERT_EQ(eng.calls.size(), 1u);
     EXPECT_EQ(eng.calls[0].first,  "")
@@ -323,7 +350,7 @@ TEST_F(DispatchChannelClosingTest, NotifyWithMissingFields_DispatchesWithEmptySt
 }
 
 // ============================================================================
-// dispatch_consumer_died — symmetric tests for the CONSUMER_DIED_NOTIFY path
+// dispatch_notifications — CONSUMER_DIED_NOTIFY scenarios
 // ============================================================================
 
 namespace
@@ -335,6 +362,7 @@ IncomingMessage make_consumer_died(const std::string &channel,
 {
     IncomingMessage m;
     m.event                     = "CONSUMER_DIED_NOTIFY";
+    m.notification_id           = parse_notification_id(m.event);
     m.details                   = nlohmann::json::object();
     m.details["channel_name"]   = channel;
     m.details["consumer_uid"]   = consumer_uid;
@@ -359,7 +387,7 @@ TEST_F(DispatchConsumerDiedTest, NoCallback_LeavesMsgsUnchanged)
     msgs.push_back(make_other("HEARTBEAT_ACK"));
     msgs.push_back(make_consumer_died("ch.b", "cons-2", "process_dead"));
 
-    pylabhub::scripting::dispatch_consumer_died(eng, msgs);
+    pylabhub::scripting::dispatch_notifications(eng, msgs);
 
     EXPECT_TRUE(eng.consumer_died_calls.empty())
         << "engine must not be called when has_callback returns false";
@@ -381,7 +409,7 @@ TEST_F(DispatchConsumerDiedTest, Callback_DispatchesAndRemovesBothReasons)
     msgs.push_back(make_consumer_died("ch.alpha", "cons-hb",   "heartbeat_timeout"));
     msgs.push_back(make_consumer_died("ch.beta",  "cons-dead", "process_dead"));
 
-    pylabhub::scripting::dispatch_consumer_died(eng, msgs);
+    pylabhub::scripting::dispatch_notifications(eng, msgs);
 
     ASSERT_EQ(eng.consumer_died_calls.size(), 2u);
     EXPECT_EQ(std::get<0>(eng.consumer_died_calls[0]), "ch.alpha");
@@ -407,7 +435,7 @@ TEST_F(DispatchConsumerDiedTest, Callback_PreservesNonNotifyEntries)
     msgs.push_back(make_consumer_died("ch.b", "u2", "process_dead"));
     msgs.push_back(make_other("OTHER"));
 
-    pylabhub::scripting::dispatch_consumer_died(eng, msgs);
+    pylabhub::scripting::dispatch_notifications(eng, msgs);
 
     ASSERT_EQ(eng.consumer_died_calls.size(), 2u);
     ASSERT_EQ(msgs.size(), 3u);
@@ -423,7 +451,7 @@ TEST_F(DispatchConsumerDiedTest, EmptyMsgs_NoOp_NoCallback)
     eng.has_on_consumer_died = false;
     std::vector<IncomingMessage> msgs;
 
-    pylabhub::scripting::dispatch_consumer_died(eng, msgs);
+    pylabhub::scripting::dispatch_notifications(eng, msgs);
 
     EXPECT_TRUE(eng.consumer_died_calls.empty());
     EXPECT_TRUE(msgs.empty());
@@ -435,7 +463,7 @@ TEST_F(DispatchConsumerDiedTest, EmptyMsgs_NoOp_WithCallback)
     eng.has_on_consumer_died = true;
     std::vector<IncomingMessage> msgs;
 
-    pylabhub::scripting::dispatch_consumer_died(eng, msgs);
+    pylabhub::scripting::dispatch_notifications(eng, msgs);
 
     EXPECT_TRUE(eng.consumer_died_calls.empty())
         << "no notify entries to dispatch — callback must NOT fire";
@@ -450,13 +478,19 @@ TEST_F(DispatchConsumerDiedTest, NotifyWithMissingFields_DispatchesWithEmptyStri
 
     std::vector<IncomingMessage> msgs;
     {
+        // Mirror the BRC enqueue: event + notification_id MUST both
+        // be set or the dispatcher's table lookup falls through to
+        // the Unknown slot and the callback never fires.  This test
+        // intentionally omits details fields (not the event_id) to
+        // verify the dispatcher's value(..., default) extraction.
         IncomingMessage m;
-        m.event   = "CONSUMER_DIED_NOTIFY";
-        m.details = nlohmann::json::object();
+        m.event           = "CONSUMER_DIED_NOTIFY";
+        m.notification_id = parse_notification_id(m.event);
+        m.details         = nlohmann::json::object();
         msgs.push_back(m);
     }
 
-    pylabhub::scripting::dispatch_consumer_died(eng, msgs);
+    pylabhub::scripting::dispatch_notifications(eng, msgs);
 
     ASSERT_EQ(eng.consumer_died_calls.size(), 1u);
     EXPECT_EQ(std::get<0>(eng.consumer_died_calls[0]), "");
@@ -465,33 +499,58 @@ TEST_F(DispatchConsumerDiedTest, NotifyWithMissingFields_DispatchesWithEmptyStri
     EXPECT_TRUE(msgs.empty());
 }
 
-// Isolation: on_channel_closing and on_consumer_died dispatchers operate
-// independently on the same msgs list when both events arrive in one cycle.
-// Order in msgs: closing first, then consumer-died.  Both dispatchers
-// strip only their own event type; the other survives the first pass.
-TEST_F(DispatchConsumerDiedTest, MixedNotifies_BothDispatchersIndependent)
+// Single-pass dispatch: one call handles a mixed-event msgs vector
+// (both CHANNEL_CLOSING_NOTIFY and CONSUMER_DIED_NOTIFY in one cycle).
+// Replaces the previous design that required separate dispatcher calls
+// per event type.  Pins: (a) both handlers fire; (b) both consumed
+// from msgs; (c) wire arrival order = dispatch order.  Mutation:
+// swap the kNotificationHandlers slot for ChannelClosing with the one
+// for ConsumerDied → the channel-closing message gets sent to the
+// consumer_died handler and the test fails on argument mismatch.
+TEST_F(DispatchConsumerDiedTest, MixedNotifies_SinglePassDispatch)
 {
     RecordingEngine eng;
     eng.has_on_channel_closing = true;
     eng.has_on_consumer_died   = true;
 
     std::vector<IncomingMessage> msgs;
-    msgs.push_back(make_notify("ch.x", "producer_deregistered"));
-    msgs.push_back(make_consumer_died("ch.y", "cons-z", "heartbeat_timeout"));
+    msgs.push_back(make_notify("ch.x", "producer_deregistered"));   // first
+    msgs.push_back(make_consumer_died("ch.y", "cons-z", "heartbeat_timeout"));  // second
 
-    // Run channel-closing dispatch first: removes its notify, leaves the
-    // consumer-died one in place.
-    pylabhub::scripting::dispatch_channel_closing(eng, msgs);
+    pylabhub::scripting::dispatch_notifications(eng, msgs);
+
+    // Both handlers fired exactly once.
     ASSERT_EQ(eng.calls.size(), 1u);
     EXPECT_EQ(eng.calls[0].first,  "ch.x");
-    ASSERT_EQ(msgs.size(), 1u);
-    EXPECT_EQ(msgs[0].event, "CONSUMER_DIED_NOTIFY");
+    EXPECT_EQ(eng.calls[0].second, "producer_deregistered");
 
-    // Now run consumer-died dispatch on the remaining list.
-    pylabhub::scripting::dispatch_consumer_died(eng, msgs);
     ASSERT_EQ(eng.consumer_died_calls.size(), 1u);
     EXPECT_EQ(std::get<0>(eng.consumer_died_calls[0]), "ch.y");
     EXPECT_EQ(std::get<1>(eng.consumer_died_calls[0]), "cons-z");
     EXPECT_EQ(std::get<2>(eng.consumer_died_calls[0]), "heartbeat_timeout");
+
+    // Both consumed from msgs.
     EXPECT_TRUE(msgs.empty());
+}
+
+// Unrecognised notification_id (Unknown) — message stays in msgs
+// untouched even if scripts define every known callback.  This is
+// the "generic scan" path: future broker notifications not yet in
+// the NotificationId enum should not be silently lost.
+TEST_F(DispatchConsumerDiedTest, UnknownNotificationId_StaysInMsgs)
+{
+    RecordingEngine eng;
+    eng.has_on_channel_closing = true;
+    eng.has_on_consumer_died   = true;
+
+    std::vector<IncomingMessage> msgs;
+    msgs.push_back(make_other("SOME_FUTURE_NOTIFY"));   // notification_id = Unknown
+
+    pylabhub::scripting::dispatch_notifications(eng, msgs);
+
+    EXPECT_TRUE(eng.calls.empty());
+    EXPECT_TRUE(eng.consumer_died_calls.empty());
+    ASSERT_EQ(msgs.size(), 1u);
+    EXPECT_EQ(msgs[0].event, "SOME_FUTURE_NOTIFY");
+    EXPECT_EQ(msgs[0].notification_id, NotificationId::Unknown);
 }

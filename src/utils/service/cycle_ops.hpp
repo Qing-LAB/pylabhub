@@ -28,85 +28,89 @@ namespace pylabhub::scripting
 {
 
 // ============================================================================
-// Channel-closing callback dispatch (HEP-CORE-0011 lifecycle table; M1.5)
+// Broker-notification callback dispatch (HEP-CORE-0011 callback table)
 // ============================================================================
 //
-// CHANNEL_CLOSING_NOTIFY arrives in the role's incoming-message queue
-// and is drained into `msgs` each cycle (see `run_data_loop` Step C).
-// If the script defines `on_channel_closing(channel, reason, api)`,
-// the framework dispatches each notify to that callback and removes
-// it from `msgs` so `on_produce`/`on_consume` doesn't also see it.
-// If the script does NOT define the callback, the notify stays in
-// `msgs` — scripts that scan the messages list keep working.
+// Each cycle drains broker-emitted notifications (CHANNEL_CLOSING_NOTIFY,
+// CONSUMER_DIED_NOTIFY, etc.) into the role's incoming-message list.
+// The BRC-side enqueue tags each message with its `NotificationId` (see
+// `role_host_core.hpp` — parsed once at the wire boundary so dispatch
+// here is O(1) per message via integer index, not N string compares).
 //
-// Single delivery: dedicated callback OR generic msgs scan, never
-// both.  See HEP-CORE-0011 §"Channel-close handling" for the contract.
-inline void dispatch_channel_closing(ScriptEngine &engine,
-                                     std::vector<IncomingMessage> &msgs)
-{
-    if (!engine.has_callback("on_channel_closing"))
-        return;
+// Per-notification handlers below are pure functions of (engine, msg):
+//   - Return true  → callback fired; msg is "consumed" (erased from
+//                    msgs so `on_produce`/`on_consume` doesn't see it).
+//   - Return false → script didn't define the callback; msg stays in
+//                    msgs for the script's generic scan path.
+//
+// Single delivery contract: dedicated callback OR generic scan, never
+// both.  See HEP-CORE-0011 §"Channel-close handling" for the original
+// articulation; the same rule applies to every notify entry here.
+//
+// Adding a notification:
+//   1. Add the enum value in `role_host_core.hpp` (NotificationId).
+//   2. Map the wire string in `parse_notification_id`.
+//   3. Write the handler below + add it to `kNotificationHandlers[]`.
+//   4. Add the matching `invoke_on_X` pure virtual on `ScriptEngine`.
 
-    auto it = msgs.begin();
-    while (it != msgs.end())
-    {
-        if (it->event == "CHANNEL_CLOSING_NOTIFY")
-        {
-            const std::string channel =
-                it->details.value("channel_name", std::string{});
-            const std::string reason =
-                it->details.value("reason",       std::string{});
-            engine.invoke_on_channel_closing(channel, reason);
-            it = msgs.erase(it);
-        }
-        else
-        {
-            ++it;
-        }
-    }
+inline bool handle_channel_closing(ScriptEngine &engine,
+                                   const IncomingMessage &msg)
+{
+    if (!engine.has_callback("on_channel_closing")) return false;
+    engine.invoke_on_channel_closing(
+        msg.details.value("channel_name", std::string{}),
+        msg.details.value("reason",       std::string{}));
+    return true;
 }
 
-// ============================================================================
-// Consumer-died callback dispatch (HEP-CORE-0011 lifecycle table)
-// ============================================================================
-//
-// CONSUMER_DIED_NOTIFY arrives in the producer's incoming-message
-// queue when one of the registered consumers on a channel dies.
-// Two reason values are emitted by the broker:
-//   - "heartbeat_timeout" — consumer-presence Pending → Disconnected
-//     via the heartbeat sweep (HEP-CORE-0023 §2.1.1).
-//   - "process_dead"      — broker's PID-liveness check detected the
-//     consumer process exited.
-// Both flow through the same callback so producer scripts can drop
-// per-consumer bookkeeping (open inbox state, addressed-message
-// tracking) symmetrically.  Channel survives consumer death; only
-// CHANNEL_CLOSING_NOTIFY indicates the channel itself is going away.
-//
-// Single delivery: dedicated callback OR generic msgs scan, never
-// both — matches `dispatch_channel_closing`.
-inline void dispatch_consumer_died(ScriptEngine &engine,
-                                   std::vector<IncomingMessage> &msgs)
+inline bool handle_consumer_died(ScriptEngine &engine,
+                                 const IncomingMessage &msg)
 {
-    if (!engine.has_callback("on_consumer_died"))
-        return;
+    if (!engine.has_callback("on_consumer_died")) return false;
+    engine.invoke_on_consumer_died(
+        msg.details.value("channel_name", std::string{}),
+        msg.details.value("consumer_uid", std::string{}),
+        msg.details.value("reason",       std::string{}));
+    return true;
+}
 
+/// Handler signature: returns true if the msg was consumed (erase from
+/// msgs), false if the script didn't define the callback (keep in msgs).
+using NotificationHandlerFn = bool(*)(ScriptEngine&, const IncomingMessage&);
+
+/// Dispatch table indexed by NotificationId.  Slot for `Unknown` is nullptr
+/// (unrecognised types fall through to msgs untouched).  Sized by
+/// NotificationId::Count so the array stays in lockstep with the enum.
+inline constexpr NotificationHandlerFn
+kNotificationHandlers[static_cast<std::size_t>(NotificationId::Count)] = {
+    /* NotificationId::Unknown        */ nullptr,
+    /* NotificationId::ChannelClosing */ &handle_channel_closing,
+    /* NotificationId::ConsumerDied   */ &handle_consumer_died,
+};
+
+/// Single-pass dispatcher over the drained per-cycle msgs list.
+/// Replaces the previous N-helpers-each-scans-msgs design with one
+/// integer-indexed loop.  Order of dispatch matches wire arrival
+/// order; cascading events (e.g. CHANNEL_CLOSING followed by
+/// CONSUMER_DIED in the same cycle) are seen by the script in the
+/// order the broker emitted them.
+inline void dispatch_notifications(ScriptEngine &engine,
+                              std::vector<IncomingMessage> &msgs)
+{
     auto it = msgs.begin();
     while (it != msgs.end())
     {
-        if (it->event == "CONSUMER_DIED_NOTIFY")
+        const auto idx = static_cast<std::size_t>(it->notification_id);
+        NotificationHandlerFn fn = (idx < static_cast<std::size_t>(NotificationId::Count))
+                             ? kNotificationHandlers[idx]
+                             : nullptr;
+        if (fn && fn(engine, *it))
         {
-            const std::string channel =
-                it->details.value("channel_name", std::string{});
-            const std::string consumer_uid =
-                it->details.value("consumer_uid", std::string{});
-            const std::string reason =
-                it->details.value("reason",       std::string{});
-            engine.invoke_on_consumer_died(channel, consumer_uid, reason);
-            it = msgs.erase(it);
+            it = msgs.erase(it);    // consumed by callback
         }
         else
         {
-            ++it;
+            ++it;                    // leave in msgs for generic scan
         }
     }
 }
@@ -150,16 +154,13 @@ class ProducerCycleOps final
 
     bool invoke_and_commit(std::vector<IncomingMessage> &msgs)
     {
-        // Per HEP-CORE-0011 M1.5: dispatch on_channel_closing (and
-        // strip the notify from msgs) before the data callback runs,
-        // if the script defines the callback.  No-op otherwise.
-        dispatch_channel_closing(engine_, msgs);
-
-        // Per HEP-CORE-0011: dispatch on_consumer_died (and strip the
-        // notify from msgs) symmetrically.  Producers learn about
-        // individual consumer death via this callback before the data
-        // callback runs.  No-op if the script does not define it.
-        dispatch_consumer_died(engine_, msgs);
+        // Per HEP-CORE-0011: route every broker-emitted notification
+        // (CHANNEL_CLOSING_NOTIFY, CONSUMER_DIED_NOTIFY, …) to its
+        // dedicated script callback if defined, stripping the notify
+        // from msgs (single-delivery contract).  Unrecognised notifies
+        // and notifies whose callback isn't defined stay in msgs for
+        // the script's generic scan inside `on_produce`/`on_consume`.
+        dispatch_notifications(engine_, msgs);
 
         if (buf_) std::memset(buf_, 0, buf_sz_);
 
@@ -238,16 +239,13 @@ class ConsumerCycleOps final
 
     bool invoke_and_commit(std::vector<IncomingMessage> &msgs)
     {
-        // Per HEP-CORE-0011 M1.5: dispatch on_channel_closing (and
-        // strip the notify from msgs) before the data callback runs,
-        // if the script defines the callback.  No-op otherwise.
-        dispatch_channel_closing(engine_, msgs);
-
-        // Per HEP-CORE-0011: dispatch on_consumer_died (and strip the
-        // notify from msgs) symmetrically.  Producers learn about
-        // individual consumer death via this callback before the data
-        // callback runs.  No-op if the script does not define it.
-        dispatch_consumer_died(engine_, msgs);
+        // Per HEP-CORE-0011: route every broker-emitted notification
+        // (CHANNEL_CLOSING_NOTIFY, CONSUMER_DIED_NOTIFY, …) to its
+        // dedicated script callback if defined, stripping the notify
+        // from msgs (single-delivery contract).  Unrecognised notifies
+        // and notifies whose callback isn't defined stay in msgs for
+        // the script's generic scan inside `on_produce`/`on_consume`.
+        dispatch_notifications(engine_, msgs);
 
         if (data_)
             core_.inc_in_slots_received();
@@ -343,16 +341,13 @@ class ProcessorCycleOps final
 
     bool invoke_and_commit(std::vector<IncomingMessage> &msgs)
     {
-        // Per HEP-CORE-0011 M1.5: dispatch on_channel_closing (and
-        // strip the notify from msgs) before the data callback runs,
-        // if the script defines the callback.  No-op otherwise.
-        dispatch_channel_closing(engine_, msgs);
-
-        // Per HEP-CORE-0011: dispatch on_consumer_died (and strip the
-        // notify from msgs) symmetrically.  Producers learn about
-        // individual consumer death via this callback before the data
-        // callback runs.  No-op if the script does not define it.
-        dispatch_consumer_died(engine_, msgs);
+        // Per HEP-CORE-0011: route every broker-emitted notification
+        // (CHANNEL_CLOSING_NOTIFY, CONSUMER_DIED_NOTIFY, …) to its
+        // dedicated script callback if defined, stripping the notify
+        // from msgs (single-delivery contract).  Unrecognised notifies
+        // and notifies whose callback isn't defined stay in msgs for
+        // the script's generic scan inside `on_produce`/`on_consume`.
+        dispatch_notifications(engine_, msgs);
 
         if (out_buf_) std::memset(out_buf_, 0, out_sz_);
 

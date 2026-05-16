@@ -259,12 +259,63 @@ Unloaded --> Initialized --> ScriptLoaded --> ApiBuilt --> Finalized
 | `invoke_consume(rx, msgs)` | worker | Call `on_consume(rx, msgs, api)` -- hot path |
 | `invoke_process(rx, tx, msgs)` | worker | Call `on_process(rx, tx, msgs, api)` -- hot path |
 | `invoke_on_inbox(msg)` | worker | Call `on_inbox(msg, api)` |
-| `invoke_on_channel_closing(channel, reason)` | worker | Call `on_channel_closing(channel, reason, api)` if defined; no-op otherwise.  Dispatched from the data-loop classifier when a `CHANNEL_CLOSING_NOTIFY` arrives in `msgs` AND `has_callback("on_channel_closing")` is true — the notify is then removed from `msgs` (single-delivery contract). |
-| `invoke_on_consumer_died(channel, consumer_uid, reason)` | worker | Call `on_consumer_died(channel, consumer_uid, reason, api)` if defined; no-op otherwise.  Dispatched from the data-loop classifier when a `CONSUMER_DIED_NOTIFY` arrives in `msgs` AND `has_callback("on_consumer_died")` is true — the notify is then removed from `msgs` (single-delivery contract).  `reason` is one of `"heartbeat_timeout"` (consumer-presence Pending → Disconnected; HEP-CORE-0023 §2.1.1) or `"process_dead"` (broker PID-liveness check).  Lets producers symmetrically drop per-consumer bookkeeping; channel survives consumer death. |
+| `invoke_on_channel_closing(channel, reason)` | worker | Call `on_channel_closing(channel, reason, api)` if defined; no-op otherwise.  Routed via `dispatch_notifications` (see §"Notification dispatch" below) when an `IncomingMessage` carries `NotificationId::ChannelClosing` AND `has_callback("on_channel_closing")` is true — the notify is then removed from `msgs` (single-delivery contract). |
+| `invoke_on_consumer_died(channel, consumer_uid, reason)` | worker | Call `on_consumer_died(channel, consumer_uid, reason, api)` if defined; no-op otherwise.  Routed via `dispatch_notifications` when an `IncomingMessage` carries `NotificationId::ConsumerDied` AND `has_callback("on_consumer_died")` is true — the notify is then removed from `msgs` (single-delivery contract).  `reason` is one of `"heartbeat_timeout"` (consumer-presence Pending → Disconnected; HEP-CORE-0023 §2.1.1) or `"process_dead"` (broker PID-liveness check).  Lets producers symmetrically drop per-consumer bookkeeping; channel survives consumer death. |
 | `invoke_on_stop()` | worker | Call `on_stop(api)` |
 | `invoke(name, args)` | any | Generic invocation (e.g., admin shell) |
 | `eval(code)` | any | Evaluate code string (admin shell) |
 | `finalize()` | worker | Destroy interpreter, release resources |
+
+---
+
+### Notification dispatch
+
+Broker-emitted notifications (CHANNEL_CLOSING_NOTIFY,
+CONSUMER_DIED_NOTIFY, …) arrive at the role-host's BRC
+`on_notification(type, body)` callback (`broker_request_comm.cpp`).
+The role-host enqueues each as an `IncomingMessage`
+(`role_host_core.hpp`), tagging it at enqueue time with a
+`NotificationId` enum value parsed from the wire `type` via
+`parse_notification_id`.  The worker drains the message queue once
+per data cycle and calls `dispatch_notifications(engine, msgs)`
+(`service/cycle_ops.hpp`).
+
+`dispatch_notifications` is a single-pass loop driven by a
+fixed-size handler table `kNotificationHandlers` indexed by
+`NotificationId`.  For each message:
+
+  1. Look up `kNotificationHandlers[msg.notification_id]`.  Slot
+     for `NotificationId::Unknown` is `nullptr` (unrecognised wire
+     types fall through and stay in `msgs`).
+  2. Call the handler `handle_X(engine, msg)`.  Each handler
+     internally checks `engine.has_callback("on_X")`; if defined,
+     it invokes `engine.invoke_on_X(...)` and returns `true`
+     (consumed).  If not defined, it returns `false` (msg stays
+     in `msgs` for the script's generic scan inside
+     `on_produce`/`on_consume`).
+
+Adding a notification:
+
+  1. Append the enum value to `NotificationId` in
+     `role_host_core.hpp` (at the end, before `Count`).
+  2. Map the wire-string in `parse_notification_id`.
+  3. Add a handler function in `cycle_ops.hpp` + register it in
+     `kNotificationHandlers`.
+  4. Add the matching `invoke_on_X` pure virtual on
+     `ScriptEngine` and implement it across `NativeEngine`,
+     `LuaEngine`, `PythonEngine`.
+
+Design notes:
+
+  - Wire arrival order = dispatch order.  Cascading events
+    (CHANNEL_CLOSING_NOTIFY followed by CONSUMER_DIED_NOTIFY in
+    the same cycle) reach the script in the order the broker
+    emitted them.
+  - String compares are done once at the BRC enqueue boundary, not
+    per cycle.  Per-cycle dispatch is an integer-indexed table
+    lookup.
+  - The wire `type` string is preserved on `IncomingMessage::event`
+    for debug logging and the generic-scan path.
 
 ---
 
