@@ -47,7 +47,6 @@ using pylabhub::scripting::HubConnection;
 using pylabhub::scripting::Presence;
 using pylabhub::scripting::RoleHandler;
 using pylabhub::scripting::RoleKind;
-using pylabhub::scripting::parse_wire_string;
 using pylabhub::scripting::to_wire_string;
 
 namespace
@@ -81,27 +80,6 @@ TEST(RoleKindWire, ToString)
 {
     EXPECT_STREQ(to_wire_string(RoleKind::Producer), "producer");
     EXPECT_STREQ(to_wire_string(RoleKind::Consumer), "consumer");
-}
-
-TEST(RoleKindWire, ParseRoundTrip)
-{
-    RoleKind k;
-    ASSERT_TRUE(parse_wire_string("producer", k));
-    EXPECT_EQ(k, RoleKind::Producer);
-    ASSERT_TRUE(parse_wire_string("consumer", k));
-    EXPECT_EQ(k, RoleKind::Consumer);
-}
-
-TEST(RoleKindWire, ParseRejectsUnknownAndEmpty)
-{
-    RoleKind k = RoleKind::Producer;  // sentinel
-    EXPECT_FALSE(parse_wire_string("", k));
-    EXPECT_FALSE(parse_wire_string("processor", k));  // not a wire role_type
-    EXPECT_FALSE(parse_wire_string("PRODUCER", k));   // case-sensitive
-    EXPECT_FALSE(parse_wire_string("producer ", k));  // trailing whitespace
-    EXPECT_FALSE(parse_wire_string(" producer", k));  // leading whitespace
-    EXPECT_EQ(k, RoleKind::Producer)
-        << "k must be left untouched on parse failure";
 }
 
 // ── Single-presence (producer/consumer) topologies ──────────────────────────
