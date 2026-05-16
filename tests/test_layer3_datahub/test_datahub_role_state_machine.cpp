@@ -161,3 +161,20 @@ TEST_F(DatahubRoleStateMachineTest, RoleAPIBase_StartHandlerThreads_E2E)
         "broker_role_state.role_api_base_start_handler_threads_e2e", {});
     ExpectWorkerOk(proc);
 }
+
+TEST_F(DatahubRoleStateMachineTest, RoleAPIBase_StartHandlerThreads_DualHub_E2E)
+{
+    // Wave-B M4c review follow-up — multi-connection variant.
+    // Two brokers, two HubConnections, two ctrl threads (first =
+    // MASTER, second = peer per HEP-CORE-0031 §4.2.1).  REG_REQ
+    // dispatched per-connection via `handler->brc_for_channel(ch)`
+    // (not via the fallback view — that only reaches one of the
+    // two BRCs).  Each broker observes its own registration.  Pins
+    // the M8-payoff data-flow shape at the network layer: both
+    // ctrl threads actually drive their BRCs (not just spawned but
+    // running poll loops).
+    auto proc = SpawnWorker(
+        "broker_role_state.role_api_base_start_handler_threads_dual_hub_e2e",
+        {});
+    ExpectWorkerOk(proc);
+}

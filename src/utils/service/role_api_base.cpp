@@ -1014,8 +1014,9 @@ bool RoleAPIBase::start_handler_threads(std::unique_ptr<RoleHandler> handler)
             pImpl->handler_->connections()[i].broker_endpoint;
 
         LOGGER_INFO("[{}] start_handler_threads: spawning '{}' for "
-                    "hub='{}' (is_master={})",
-                    pImpl->role_tag, slot_name, endpoint, opts.is_master);
+                    "hub='{}' role=[{}]",
+                    pImpl->role_tag, slot_name, endpoint,
+                    opts.is_master ? "MASTER" : "peer");
 
         const bool spawn_ok = tm.spawn(
             slot_name,

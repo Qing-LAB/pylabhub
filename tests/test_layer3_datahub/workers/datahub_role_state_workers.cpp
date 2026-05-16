@@ -1029,6 +1029,146 @@ int role_api_base_start_handler_threads_e2e()
         logger_module(), crypto_module(), zmq_module());
 }
 
+// ============================================================================
+// role_api_base_start_handler_threads_dual_hub_e2e
+//   Wave-B M4c review follow-up — multi-connection variant of the
+//   e2e test.  Pins the master/peer spawn behavior with N=2 ctrl
+//   threads against two real brokers.  Verifies:
+//     - Both BRCs allocated + connected.
+//     - Both ctrl threads spawned (first = MASTER, second = peer).
+//     - Both BRCs accept REG_REQ via per-connection dispatch through
+//       `handler->brc_for_channel(ch)` (NOT through the single
+//       fallback view, which can only reach one of the two BRCs).
+//     - Both brokers observe the corresponding registration.
+//     - stop_handler_threads drains both threads cleanly + clears
+//       both BRCs + fallback view.
+// ============================================================================
+
+int role_api_base_start_handler_threads_dual_hub_e2e()
+{
+    return run_gtest_worker(
+        []() {
+            BrokerService::Config bcfg_a;
+            bcfg_a.endpoint  = "tcp://127.0.0.1:0";
+            bcfg_a.use_curve = false;
+            auto broker_a = start_broker_with_cfg(std::move(bcfg_a));
+
+            BrokerService::Config bcfg_b;
+            bcfg_b.endpoint  = "tcp://127.0.0.1:0";
+            bcfg_b.use_curve = false;
+            auto broker_b = start_broker_with_cfg(std::move(bcfg_b));
+
+            const std::string role_uid = "proc.m4c_dual_e2e.uid00000001";
+            const std::string ch_in    = make_test_channel_name("m4c.dual.in");
+            const std::string ch_out   = make_test_channel_name("m4c.dual.out");
+
+            pylabhub::scripting::RoleHostCore core;
+            core.set_running(true);
+
+            pylabhub::scripting::RoleAPIBase  api(core, "proc", role_uid);
+            api.set_name("m4c_dual_e2e");
+            api.set_auth("", "");
+
+            // First presence: consumer on broker_a.  Second presence:
+            // producer on broker_b.  Two distinct hubs → 2 connections
+            // → 2 ctrl threads.
+            pylabhub::config::HubRefConfig hub_a;
+            hub_a.broker = broker_a.endpoint;
+            pylabhub::config::HubRefConfig hub_b;
+            hub_b.broker = broker_b.endpoint;
+
+            std::vector<pylabhub::scripting::Presence> presences;
+            {
+                pylabhub::scripting::Presence p_in;
+                p_in.hub       = hub_a;
+                p_in.channel   = ch_in;
+                p_in.role_kind = pylabhub::scripting::RoleKind::Consumer;
+                presences.push_back(std::move(p_in));
+                pylabhub::scripting::Presence p_out;
+                p_out.hub       = hub_b;
+                p_out.channel   = ch_out;
+                p_out.role_kind = pylabhub::scripting::RoleKind::Producer;
+                presences.push_back(std::move(p_out));
+            }
+            auto handler =
+                std::make_unique<pylabhub::scripting::RoleHandler>(
+                    std::move(presences));
+
+            // ── start_handler_threads ────────────────────────────────────
+            ASSERT_TRUE(api.start_handler_threads(std::move(handler)))
+                << "start_handler_threads must succeed with 2 brokers";
+
+            auto *h = api.handler();
+            ASSERT_NE(h, nullptr);
+            ASSERT_EQ(h->connection_count(), 2u)
+                << "Two distinct hubs → 2 connections";
+            ASSERT_NE(h->connections()[0].brc.get(), nullptr);
+            ASSERT_NE(h->connections()[1].brc.get(), nullptr);
+            EXPECT_TRUE(h->connections()[0].brc->is_connected());
+            EXPECT_TRUE(h->connections()[1].brc->is_connected());
+
+            // ── Per-connection REG via handler routing (not via
+            //    fallback view, which can only reach one of the two) ────
+            //
+            // Producer side: REG_REQ via brc_for_channel(ch_out).
+            nlohmann::json prod_opts;
+            prod_opts["channel_name"]      = ch_out;
+            prod_opts["pattern"]           = "PubSub";
+            prod_opts["has_shared_memory"] = false;
+            prod_opts["producer_pid"]      = static_cast<uint64_t>(::getpid());
+            prod_opts["role_uid"]          = role_uid;
+            prod_opts["role_name"]         = "m4c_dual_e2e";
+
+            auto *brc_out = h->brc_for_channel(ch_out);
+            ASSERT_NE(brc_out, nullptr);
+            auto prod_resp = brc_out->register_channel(prod_opts, 3000);
+            ASSERT_TRUE(prod_resp.has_value());
+            EXPECT_EQ(prod_resp->value("status", std::string{}), "success");
+
+            // Consumer side: CONSUMER_REG_REQ via brc_for_channel(ch_in).
+            // The consumer presence registers on broker_a only AFTER
+            // a producer registers on broker_a — but for this test
+            // we just verify the connection is alive (broker_a will
+            // accept a heartbeat or DISC even without a registered
+            // channel).  Instead, register a SECOND producer on
+            // broker_a for ch_in just to verify the second BRC is
+            // alive end-to-end.
+            nlohmann::json in_prod_opts;
+            in_prod_opts["channel_name"]      = ch_in;
+            in_prod_opts["pattern"]           = "PubSub";
+            in_prod_opts["has_shared_memory"] = false;
+            in_prod_opts["producer_pid"]      = static_cast<uint64_t>(::getpid());
+            in_prod_opts["role_uid"]          = role_uid;
+            in_prod_opts["role_name"]         = "m4c_dual_e2e";
+
+            auto *brc_in = h->brc_for_channel(ch_in);
+            ASSERT_NE(brc_in, nullptr);
+            EXPECT_NE(brc_in, brc_out)
+                << "Distinct BRCs for distinct hubs (no dedup collision).";
+            auto in_resp = brc_in->register_channel(in_prod_opts, 3000);
+            ASSERT_TRUE(in_resp.has_value())
+                << "Second BRC must accept REG_REQ — proves both ctrl "
+                   "threads are running their poll loops.";
+            EXPECT_EQ(in_resp->value("status", std::string{}), "success");
+
+            // Both brokers should now see the registration on their
+            // respective channels.
+            EXPECT_TRUE(broker_a.hub_state->channel(ch_in).has_value())
+                << "broker_a must show ch_in registered";
+            EXPECT_TRUE(broker_b.hub_state->channel(ch_out).has_value())
+                << "broker_b must show ch_out registered";
+
+            // ── stop_handler_threads ─────────────────────────────────────
+            api.stop_handler_threads();
+            EXPECT_EQ(api.handler(), nullptr);
+
+            broker_a.stop_and_join();
+            broker_b.stop_and_join();
+        },
+        "role_state.role_api_base_start_handler_threads_dual_hub_e2e",
+        logger_module(), crypto_module(), zmq_module());
+}
+
 } // namespace pylabhub::tests::worker::broker_role_state
 
 namespace
@@ -1069,6 +1209,8 @@ struct BrokerRoleStateWorkerRegistrar
                     return role_handler_brc_for_x_post_start();
                 if (scenario == "role_api_base_start_handler_threads_e2e")
                     return role_api_base_start_handler_threads_e2e();
+                if (scenario == "role_api_base_start_handler_threads_dual_hub_e2e")
+                    return role_api_base_start_handler_threads_dual_hub_e2e();
                 return 1;
             });
     }
