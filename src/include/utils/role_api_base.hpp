@@ -220,22 +220,6 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     /// Default: no-op (null function).
     void set_metrics_hook(std::function<void(nlohmann::json &)> hook);
 
-    // ── Role-side CURVE identity (Wave-B M4a — used by RoleHandler) ──────────
-    //
-    // The role's CurveZMQ keypair, used as `client_pubkey` /
-    // `client_seckey` on every `BrokerRequestComm::Config` the handler
-    // builds at `RoleHandler::start()` time.  Empty values = no CURVE
-    // (plaintext), per BRC's existing semantics.  Set-once before
-    // `RoleHandler::start()` is called; mutating after start is
-    // undefined.  Today the role host (producer/consumer/processor)
-    // already plumbs these from its auth_config; M4 collects them on
-    // RoleAPIBase so RoleHandler can read them without depending on
-    // the host's auth_config type.
-    void set_auth(std::string client_pubkey, std::string client_seckey);
-
-    [[nodiscard]] const std::string &auth_client_pubkey() const;
-    [[nodiscard]] const std::string &auth_client_seckey() const;
-
     // ── Identity ──────────────────────────────────────────────────────────────
 
     [[nodiscard]] const std::string &role_tag() const;
