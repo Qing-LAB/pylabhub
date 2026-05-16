@@ -67,6 +67,51 @@ inline void dispatch_channel_closing(ScriptEngine &engine,
 }
 
 // ============================================================================
+// Consumer-died callback dispatch (HEP-CORE-0011 lifecycle table)
+// ============================================================================
+//
+// CONSUMER_DIED_NOTIFY arrives in the producer's incoming-message
+// queue when one of the registered consumers on a channel dies.
+// Two reason values are emitted by the broker:
+//   - "heartbeat_timeout" — consumer-presence Pending → Disconnected
+//     via the heartbeat sweep (HEP-CORE-0023 §2.1.1).
+//   - "process_dead"      — broker's PID-liveness check detected the
+//     consumer process exited.
+// Both flow through the same callback so producer scripts can drop
+// per-consumer bookkeeping (open inbox state, addressed-message
+// tracking) symmetrically.  Channel survives consumer death; only
+// CHANNEL_CLOSING_NOTIFY indicates the channel itself is going away.
+//
+// Single delivery: dedicated callback OR generic msgs scan, never
+// both — matches `dispatch_channel_closing`.
+inline void dispatch_consumer_died(ScriptEngine &engine,
+                                   std::vector<IncomingMessage> &msgs)
+{
+    if (!engine.has_callback("on_consumer_died"))
+        return;
+
+    auto it = msgs.begin();
+    while (it != msgs.end())
+    {
+        if (it->event == "CONSUMER_DIED_NOTIFY")
+        {
+            const std::string channel =
+                it->details.value("channel_name", std::string{});
+            const std::string consumer_uid =
+                it->details.value("consumer_uid", std::string{});
+            const std::string reason =
+                it->details.value("reason",       std::string{});
+            engine.invoke_on_consumer_died(channel, consumer_uid, reason);
+            it = msgs.erase(it);
+        }
+        else
+        {
+            ++it;
+        }
+    }
+}
+
+// ============================================================================
 // ProducerCycleOps — single-side output. Branch IDs: P-A-*, P-S-*, P-I-*, P-X
 // ============================================================================
 
@@ -109,6 +154,12 @@ class ProducerCycleOps final
         // strip the notify from msgs) before the data callback runs,
         // if the script defines the callback.  No-op otherwise.
         dispatch_channel_closing(engine_, msgs);
+
+        // Per HEP-CORE-0011: dispatch on_consumer_died (and strip the
+        // notify from msgs) symmetrically.  Producers learn about
+        // individual consumer death via this callback before the data
+        // callback runs.  No-op if the script does not define it.
+        dispatch_consumer_died(engine_, msgs);
 
         if (buf_) std::memset(buf_, 0, buf_sz_);
 
@@ -191,6 +242,12 @@ class ConsumerCycleOps final
         // strip the notify from msgs) before the data callback runs,
         // if the script defines the callback.  No-op otherwise.
         dispatch_channel_closing(engine_, msgs);
+
+        // Per HEP-CORE-0011: dispatch on_consumer_died (and strip the
+        // notify from msgs) symmetrically.  Producers learn about
+        // individual consumer death via this callback before the data
+        // callback runs.  No-op if the script does not define it.
+        dispatch_consumer_died(engine_, msgs);
 
         if (data_)
             core_.inc_in_slots_received();
@@ -290,6 +347,12 @@ class ProcessorCycleOps final
         // strip the notify from msgs) before the data callback runs,
         // if the script defines the callback.  No-op otherwise.
         dispatch_channel_closing(engine_, msgs);
+
+        // Per HEP-CORE-0011: dispatch on_consumer_died (and strip the
+        // notify from msgs) symmetrically.  Producers learn about
+        // individual consumer death via this callback before the data
+        // callback runs.  No-op if the script does not define it.
+        dispatch_consumer_died(engine_, msgs);
 
         if (out_buf_) std::memset(out_buf_, 0, out_sz_);
 

@@ -1,19 +1,22 @@
 /**
  * @file test_dispatch_channel_closing.cpp
- * @brief L2 unit tests for `pylabhub::scripting::dispatch_channel_closing`
- *        — the helper that routes CHANNEL_CLOSING_NOTIFY entries from the
- *        per-cycle `msgs` list to the script's `on_channel_closing`
- *        callback when defined.
+ * @brief L2 unit tests for the per-cycle lifecycle-callback dispatch
+ *        helpers in `pylabhub::scripting`:
+ *         - `dispatch_channel_closing` — routes CHANNEL_CLOSING_NOTIFY
+ *           entries to `on_channel_closing(channel, reason, api)`.
+ *         - `dispatch_consumer_died`   — routes CONSUMER_DIED_NOTIFY
+ *           entries to `on_consumer_died(channel, consumer_uid,
+ *           reason, api)`.  Reason value is one of
+ *           {"heartbeat_timeout", "process_dead"} (HEP-CORE-0023
+ *           §2.1.1).
  *
- * Behavior contract (HEP-CORE-0011 lifecycle table; M1.5):
- *   1. If `engine.has_callback("on_channel_closing")` is false → msgs
- *      is unchanged; engine.invoke_on_channel_closing is NOT called.
- *   2. If `has_callback` is true → every CHANNEL_CLOSING_NOTIFY entry
- *      is removed from msgs, and `invoke_on_channel_closing(channel,
- *      reason)` is called once per entry with values from
- *      `details.channel_name` / `details.reason`.
- *   3. Non-CHANNEL_CLOSING_NOTIFY entries stay in msgs in original
- *      order.
+ * Both dispatchers share the same contract (HEP-CORE-0011 lifecycle
+ * table; M1.5 for channel_closing):
+ *   1. If the script does NOT define the callback → msgs is unchanged
+ *      and the engine invoke method is NOT called.
+ *   2. If defined → every matching notify is removed from msgs (single-
+ *      delivery), and the engine invoke method is called once per entry.
+ *   3. Non-matching entries stay in msgs in original order.
  */
 
 #include "binary_lifecycle.h"
@@ -59,19 +62,34 @@ class RecordingEngine : public ScriptEngine
   public:
     /// When true, has_callback("on_channel_closing") returns true.
     bool has_on_channel_closing{false};
+    /// When true, has_callback("on_consumer_died") returns true.
+    bool has_on_consumer_died{false};
 
-    /// Recorded (channel, reason) pairs.
+    /// Recorded on_channel_closing (channel, reason) pairs.
     std::vector<std::pair<std::string, std::string>> calls;
+
+    /// Recorded on_consumer_died (channel, consumer_uid, reason) tuples.
+    std::vector<std::tuple<std::string, std::string, std::string>>
+        consumer_died_calls;
 
     [[nodiscard]] bool has_callback(const std::string &name) const noexcept override
     {
-        return name == "on_channel_closing" && has_on_channel_closing;
+        if (name == "on_channel_closing") return has_on_channel_closing;
+        if (name == "on_consumer_died")   return has_on_consumer_died;
+        return false;
     }
 
     void invoke_on_channel_closing(const std::string &channel,
                                     const std::string &reason) override
     {
         calls.emplace_back(channel, reason);
+    }
+
+    void invoke_on_consumer_died(const std::string &channel,
+                                  const std::string &consumer_uid,
+                                  const std::string &reason) override
+    {
+        consumer_died_calls.emplace_back(channel, consumer_uid, reason);
     }
 
     // ── No-op stubs for the rest of the ScriptEngine surface ────────
@@ -301,5 +319,179 @@ TEST_F(DispatchChannelClosingTest, NotifyWithMissingFields_DispatchesWithEmptySt
         << "missing channel_name must surface as empty string, not crash";
     EXPECT_EQ(eng.calls[0].second, "")
         << "missing reason must surface as empty string, not crash";
+    EXPECT_TRUE(msgs.empty());
+}
+
+// ============================================================================
+// dispatch_consumer_died — symmetric tests for the CONSUMER_DIED_NOTIFY path
+// ============================================================================
+
+namespace
+{
+
+IncomingMessage make_consumer_died(const std::string &channel,
+                                   const std::string &consumer_uid,
+                                   const std::string &reason)
+{
+    IncomingMessage m;
+    m.event                     = "CONSUMER_DIED_NOTIFY";
+    m.details                   = nlohmann::json::object();
+    m.details["channel_name"]   = channel;
+    m.details["consumer_uid"]   = consumer_uid;
+    m.details["reason"]         = reason;
+    return m;
+}
+
+} // namespace
+
+class DispatchConsumerDiedTest : public ::testing::Test
+{
+};
+
+// Contract 1: callback absent → msgs unchanged, engine not called.
+TEST_F(DispatchConsumerDiedTest, NoCallback_LeavesMsgsUnchanged)
+{
+    RecordingEngine eng;
+    eng.has_on_consumer_died = false;
+
+    std::vector<IncomingMessage> msgs;
+    msgs.push_back(make_consumer_died("ch.a", "cons-1", "heartbeat_timeout"));
+    msgs.push_back(make_other("HEARTBEAT_ACK"));
+    msgs.push_back(make_consumer_died("ch.b", "cons-2", "process_dead"));
+
+    pylabhub::scripting::dispatch_consumer_died(eng, msgs);
+
+    EXPECT_TRUE(eng.consumer_died_calls.empty())
+        << "engine must not be called when has_callback returns false";
+    ASSERT_EQ(msgs.size(), 3u);
+    EXPECT_EQ(msgs[0].event, "CONSUMER_DIED_NOTIFY");
+    EXPECT_EQ(msgs[1].event, "HEARTBEAT_ACK");
+    EXPECT_EQ(msgs[2].event, "CONSUMER_DIED_NOTIFY");
+}
+
+// Contract 2: callback present → all notify entries dispatched + removed.
+// Carries both reason variants — heartbeat_timeout (Wave-B M2) and
+// process_dead (PID-liveness path) — through the same dispatcher.
+TEST_F(DispatchConsumerDiedTest, Callback_DispatchesAndRemovesBothReasons)
+{
+    RecordingEngine eng;
+    eng.has_on_consumer_died = true;
+
+    std::vector<IncomingMessage> msgs;
+    msgs.push_back(make_consumer_died("ch.alpha", "cons-hb",   "heartbeat_timeout"));
+    msgs.push_back(make_consumer_died("ch.beta",  "cons-dead", "process_dead"));
+
+    pylabhub::scripting::dispatch_consumer_died(eng, msgs);
+
+    ASSERT_EQ(eng.consumer_died_calls.size(), 2u);
+    EXPECT_EQ(std::get<0>(eng.consumer_died_calls[0]), "ch.alpha");
+    EXPECT_EQ(std::get<1>(eng.consumer_died_calls[0]), "cons-hb");
+    EXPECT_EQ(std::get<2>(eng.consumer_died_calls[0]), "heartbeat_timeout");
+    EXPECT_EQ(std::get<0>(eng.consumer_died_calls[1]), "ch.beta");
+    EXPECT_EQ(std::get<1>(eng.consumer_died_calls[1]), "cons-dead");
+    EXPECT_EQ(std::get<2>(eng.consumer_died_calls[1]), "process_dead");
+    EXPECT_TRUE(msgs.empty())
+        << "CONSUMER_DIED_NOTIFY must be removed from msgs (single delivery)";
+}
+
+// Contract 3: mixed entries — only notifies removed, others preserved in order.
+TEST_F(DispatchConsumerDiedTest, Callback_PreservesNonNotifyEntries)
+{
+    RecordingEngine eng;
+    eng.has_on_consumer_died = true;
+
+    std::vector<IncomingMessage> msgs;
+    msgs.push_back(make_other("HEARTBEAT_ACK"));
+    msgs.push_back(make_consumer_died("ch.a", "u1", "heartbeat_timeout"));
+    msgs.push_back(make_other("CHANNEL_EVENT_NOTIFY"));
+    msgs.push_back(make_consumer_died("ch.b", "u2", "process_dead"));
+    msgs.push_back(make_other("OTHER"));
+
+    pylabhub::scripting::dispatch_consumer_died(eng, msgs);
+
+    ASSERT_EQ(eng.consumer_died_calls.size(), 2u);
+    ASSERT_EQ(msgs.size(), 3u);
+    EXPECT_EQ(msgs[0].event, "HEARTBEAT_ACK");
+    EXPECT_EQ(msgs[1].event, "CHANNEL_EVENT_NOTIFY");
+    EXPECT_EQ(msgs[2].event, "OTHER");
+}
+
+// Edge: empty msgs vector — no-op regardless of callback state.
+TEST_F(DispatchConsumerDiedTest, EmptyMsgs_NoOp_NoCallback)
+{
+    RecordingEngine eng;
+    eng.has_on_consumer_died = false;
+    std::vector<IncomingMessage> msgs;
+
+    pylabhub::scripting::dispatch_consumer_died(eng, msgs);
+
+    EXPECT_TRUE(eng.consumer_died_calls.empty());
+    EXPECT_TRUE(msgs.empty());
+}
+
+TEST_F(DispatchConsumerDiedTest, EmptyMsgs_NoOp_WithCallback)
+{
+    RecordingEngine eng;
+    eng.has_on_consumer_died = true;
+    std::vector<IncomingMessage> msgs;
+
+    pylabhub::scripting::dispatch_consumer_died(eng, msgs);
+
+    EXPECT_TRUE(eng.consumer_died_calls.empty())
+        << "no notify entries to dispatch — callback must NOT fire";
+    EXPECT_TRUE(msgs.empty());
+}
+
+// Edge: notify with missing fields — empty strings, no crash.
+TEST_F(DispatchConsumerDiedTest, NotifyWithMissingFields_DispatchesWithEmptyStrings)
+{
+    RecordingEngine eng;
+    eng.has_on_consumer_died = true;
+
+    std::vector<IncomingMessage> msgs;
+    {
+        IncomingMessage m;
+        m.event   = "CONSUMER_DIED_NOTIFY";
+        m.details = nlohmann::json::object();
+        msgs.push_back(m);
+    }
+
+    pylabhub::scripting::dispatch_consumer_died(eng, msgs);
+
+    ASSERT_EQ(eng.consumer_died_calls.size(), 1u);
+    EXPECT_EQ(std::get<0>(eng.consumer_died_calls[0]), "");
+    EXPECT_EQ(std::get<1>(eng.consumer_died_calls[0]), "");
+    EXPECT_EQ(std::get<2>(eng.consumer_died_calls[0]), "");
+    EXPECT_TRUE(msgs.empty());
+}
+
+// Isolation: on_channel_closing and on_consumer_died dispatchers operate
+// independently on the same msgs list when both events arrive in one cycle.
+// Order in msgs: closing first, then consumer-died.  Both dispatchers
+// strip only their own event type; the other survives the first pass.
+TEST_F(DispatchConsumerDiedTest, MixedNotifies_BothDispatchersIndependent)
+{
+    RecordingEngine eng;
+    eng.has_on_channel_closing = true;
+    eng.has_on_consumer_died   = true;
+
+    std::vector<IncomingMessage> msgs;
+    msgs.push_back(make_notify("ch.x", "producer_deregistered"));
+    msgs.push_back(make_consumer_died("ch.y", "cons-z", "heartbeat_timeout"));
+
+    // Run channel-closing dispatch first: removes its notify, leaves the
+    // consumer-died one in place.
+    pylabhub::scripting::dispatch_channel_closing(eng, msgs);
+    ASSERT_EQ(eng.calls.size(), 1u);
+    EXPECT_EQ(eng.calls[0].first,  "ch.x");
+    ASSERT_EQ(msgs.size(), 1u);
+    EXPECT_EQ(msgs[0].event, "CONSUMER_DIED_NOTIFY");
+
+    // Now run consumer-died dispatch on the remaining list.
+    pylabhub::scripting::dispatch_consumer_died(eng, msgs);
+    ASSERT_EQ(eng.consumer_died_calls.size(), 1u);
+    EXPECT_EQ(std::get<0>(eng.consumer_died_calls[0]), "ch.y");
+    EXPECT_EQ(std::get<1>(eng.consumer_died_calls[0]), "cons-z");
+    EXPECT_EQ(std::get<2>(eng.consumer_died_calls[0]), "heartbeat_timeout");
     EXPECT_TRUE(msgs.empty());
 }

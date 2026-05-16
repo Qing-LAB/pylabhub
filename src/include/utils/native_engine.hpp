@@ -65,6 +65,9 @@ class PYLABHUB_UTILS_EXPORT NativeEngine : public ScriptEngine
     void invoke_on_stop() override;
     void invoke_on_channel_closing(const std::string &channel,
                                     const std::string &reason) override;
+    void invoke_on_consumer_died(const std::string &channel,
+                                  const std::string &consumer_uid,
+                                  const std::string &reason) override;
 
     InvokeResult invoke_produce(
         InvokeTx tx,
@@ -116,29 +119,46 @@ class PYLABHUB_UTILS_EXPORT NativeEngine : public ScriptEngine
     void *dl_handle_{nullptr};
 
     // ── Resolved function pointers (C linkage) ──────────────────────────
-    using FnNativeInit     = bool (*)(const void *ctx);
-    using FnNativeFinalize = void (*)();
-    using FnVoid           = void (*)(const char *args_json);
-    using FnOnProduce      = bool (*)(const plh_tx_t *);
-    using FnOnConsume      = bool (*)(const plh_rx_t *);
-    using FnOnProcess      = bool (*)(const plh_rx_t *, const plh_tx_t *);
-    using FnOnInbox        = bool (*)(const plh_inbox_msg_t *);
-    using FnSchemaDesc     = const char *(*)();
-    using FnSizeof         = size_t (*)();
-    using FnBool           = bool (*)();
-    using FnCstr           = const char *(*)();
+    // Native callback ABI (uniform shapes):
+    //   - No-args lifecycle (on_init / on_stop / on_heartbeat):
+    //         `void(*)(void)`   -> FnVoidNoArgs
+    //   - Structured-args lifecycle (on_channel_closing / on_consumer_died):
+    //         `void(*)(const plh_X_args_t *)`   -> typed per event
+    //   - Hot-path data callbacks (on_produce / on_consume / on_process / on_inbox):
+    //         `bool(*)(const plh_X_t *)`   -> typed per direction, commit/discard
+    //   - Ad-hoc admin/generic invoke (any plugin-defined symbol):
+    //         `void(*)(const char *args_json)`   -> FnVoid (JSON-string ABI)
+    //     Lifecycle callbacks DO NOT use the FnVoid shape; the JSON-
+    //     string ABI is reserved for the generic `invoke(name, args)`
+    //     surface where the callee is plugin-defined and not on the
+    //     standard lifecycle list.
+    using FnNativeInit       = bool (*)(const void *ctx);
+    using FnNativeFinalize   = void (*)();
+    using FnVoidNoArgs       = void (*)();
+    using FnVoid             = void (*)(const char *args_json);
+    using FnOnChannelClosing = void (*)(const plh_channel_closing_args_t *);
+    using FnOnConsumerDied   = void (*)(const plh_consumer_died_args_t *);
+    using FnOnProduce        = bool (*)(const plh_tx_t *);
+    using FnOnConsume        = bool (*)(const plh_rx_t *);
+    using FnOnProcess        = bool (*)(const plh_rx_t *, const plh_tx_t *);
+    using FnOnInbox          = bool (*)(const plh_inbox_msg_t *);
+    using FnSchemaDesc       = const char *(*)();
+    using FnSizeof           = size_t (*)();
+    using FnBool             = bool (*)();
+    using FnCstr             = const char *(*)();
 
-    FnNativeInit     fn_init_{nullptr};
-    FnNativeFinalize fn_finalize_{nullptr};
-    FnVoid           fn_on_init_{nullptr};
-    FnVoid           fn_on_stop_{nullptr};
-    FnVoid           fn_on_channel_closing_{nullptr};
-    FnOnProduce      fn_on_produce_{nullptr};
-    FnOnConsume      fn_on_consume_{nullptr};
-    FnOnProcess      fn_on_process_{nullptr};
-    FnOnInbox        fn_on_inbox_{nullptr};
-    FnVoid           fn_on_heartbeat_{nullptr};
-    FnBool           fn_is_thread_safe_{nullptr};
+    FnNativeInit       fn_init_{nullptr};
+    FnNativeFinalize   fn_finalize_{nullptr};
+    FnVoidNoArgs       fn_on_init_{nullptr};
+    FnVoidNoArgs       fn_on_stop_{nullptr};
+    FnOnChannelClosing fn_on_channel_closing_{nullptr};
+    FnOnConsumerDied   fn_on_consumer_died_{nullptr};
+    FnOnProduce        fn_on_produce_{nullptr};
+    FnOnConsume        fn_on_consume_{nullptr};
+    FnOnProcess        fn_on_process_{nullptr};
+    FnOnInbox          fn_on_inbox_{nullptr};
+    FnVoidNoArgs       fn_on_heartbeat_{nullptr};
+    FnBool             fn_is_thread_safe_{nullptr};
 
     // ── Schema tracking ─────────────────────────────────────────────────
     std::unordered_map<std::string, size_t> type_sizes_;

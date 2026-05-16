@@ -263,23 +263,39 @@ typedef struct PlhAbiInfo
  * Role callback symbols (implement the ones your role needs)
  * ========================================================================= */
 
-/* void on_init(const char *args_json); */
-/* void on_stop(const char *args_json); */
-/* bool on_produce(const plh_tx_t *tx); */
-/* bool on_consume(const plh_rx_t *rx); */
-/* bool on_process(const plh_rx_t *rx, const plh_tx_t *tx); */
-/* bool on_inbox(const plh_inbox_msg_t *msg); */
-/**
- * @brief Heartbeat / generic invoke callback convention.
+/* Native callback ABI — three uniform shapes:
  *
- * Functions called via invoke() receive args as a JSON string:
- *   void my_func(const char *args_json);
- *     - args_json is NULL when no arguments
- *     - args_json is a JSON object string when arguments are provided
- *     - the string is valid for the duration of the call (stack-owned by host)
- *     - callee must copy if needed beyond return
+ *   1. No-args lifecycle:           void name(void);
+ *      on_init, on_stop, on_heartbeat
+ *
+ *   2. Structured-args lifecycle:   void name(const plh_X_args_t *);
+ *      on_channel_closing, on_consumer_died
+ *      See native_invoke_types.h for arg-struct definitions and the
+ *      pointer-lifetime contract (valid for call duration only;
+ *      plugin MUST NOT retain past return; strdup if a copy is needed).
+ *
+ *   3. Hot-path data:               bool name(const plh_X_t *);
+ *      on_produce, on_consume, on_process, on_inbox
+ *      Return value chooses commit (true) vs discard (false).
+ *
+ * Ad-hoc symbols invoked via the generic invoke(name [, args]) path
+ * (NOT on the standard lifecycle list) use the legacy JSON-string
+ * convention:
+ *      void my_admin_thing(const char *args_json);
+ *        - args_json is NULL when no arguments
+ *        - args_json is a JSON object string when arguments are provided
+ *        - string is valid for the duration of the call (stack-owned by host)
+ *        - callee must copy if needed beyond return
  */
-/* void on_heartbeat(const char *args_json); */
+/* void on_init(void); */
+/* void on_stop(void); */
+/* void on_heartbeat(void); */
+/* void on_channel_closing(const plh_channel_closing_args_t *args); */
+/* void on_consumer_died (const plh_consumer_died_args_t  *args); */
+/* bool on_produce (const plh_tx_t *tx); */
+/* bool on_consume (const plh_rx_t *rx); */
+/* bool on_process (const plh_rx_t *rx, const plh_tx_t *tx); */
+/* bool on_inbox   (const plh_inbox_msg_t *msg); */
 
 /* =========================================================================
  * Optional metadata symbols

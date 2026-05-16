@@ -46,4 +46,40 @@ typedef struct
     uint64_t    seq;        /**< Sender's monotonic sequence number. */
 } plh_inbox_msg_t;
 
+/* ============================================================================
+ * Lifecycle callback argument structs.
+ *
+ * All `const char *` fields are valid ONLY for the duration of the
+ * callback (the host holds the backing storage in its stack frame
+ * across the call).  Plugins MUST NOT free these pointers; MUST NOT
+ * retain them past return.  If a copy is needed, use `strdup` and
+ * own the copy.
+ *
+ * ABI versioning: fields may be APPENDED at the end of these structs
+ * without breaking plugins compiled against an older definition.
+ * Field types and existing field order are stable.  Do not reorder,
+ * remove, or change types of existing fields.
+ * ========================================================================== */
+
+/** on_channel_closing args (HEP-CORE-0011; HEP-CORE-0023 §2.1.1).
+ *  Fired when the broker closes a channel the role is registered on
+ *  (last-producer drop, script-requested close, etc.). */
+typedef struct
+{
+    const char *channel;        /**< Closed channel name. */
+    const char *reason;         /**< e.g. "producer_deregistered",
+                                     "pending_timeout", "script_requested". */
+} plh_channel_closing_args_t;
+
+/** on_consumer_died args (HEP-CORE-0011; HEP-CORE-0023 §2.1.1).
+ *  Fired on a producer when one of its registered consumers has died
+ *  (process exit or heartbeat timeout); channel stays alive.  Lets
+ *  producers drop per-consumer bookkeeping symmetrically. */
+typedef struct
+{
+    const char *channel;        /**< Channel the dead consumer was on. */
+    const char *consumer_uid;   /**< UID of the dead consumer presence. */
+    const char *reason;         /**< "heartbeat_timeout" or "process_dead". */
+} plh_consumer_died_args_t;
+
 #endif /* PYLABHUB_NATIVE_INVOKE_TYPES_H */
