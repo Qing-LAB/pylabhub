@@ -4,6 +4,7 @@
  */
 #include "utils/role_api_base.hpp"
 #include "utils/broker_request_comm.hpp"
+#include "utils/role_handler.hpp"         // Wave-B M4c: handler-mode ctrl threads
 #include "utils/script_engine.hpp"        // ScriptEngine, InvokeInbox, ThreadEngineGuard
 #include "utils/zmq_poll_loop.hpp"        // ZmqPollLoop, PeriodicTask
 
@@ -155,6 +156,19 @@ struct RoleAPIBase::Impl
     // bounded join, same process-wide leak aggregator. Constructed
     // eagerly in the Impl ctor from role_tag + uid.
     std::unique_ptr<pylabhub::utils::ThreadManager> thread_mgr_;
+
+    // Wave-B M4c: RoleHandler-mode network surface.  Either:
+    //   (a) `handler_` is non-null + `ctrl_threads_started_ == true`
+    //       (handler-mode active; N ctrl threads polling N BRCs).
+    //   (b) `handler_` is null + `ctrl_threads_started_ == true`
+    //       (legacy `start_ctrl_thread` path active; 1 ctrl thread
+    //       polling `broker_channel`).
+    //   (c) Both null/false (neither path active).
+    // `start_handler_threads` and `start_ctrl_thread` both flip
+    // `ctrl_threads_started_` to true on success.  Second call to
+    // either method is refused.
+    std::unique_ptr<RoleHandler> handler_;
+    bool                         ctrl_threads_started_{false};
 
     // Optional hook for role-specific metrics injection.
     std::function<void(nlohmann::json &)> metrics_hook;
@@ -635,6 +649,20 @@ bool RoleAPIBase::start_ctrl_thread(
     const hub::BrokerRequestComm::Config &connect_cfg,
     const CtrlThreadConfig &cfg)
 {
+    // Wave-B M4c atomicity guard: legacy and handler-mode paths are
+    // mutually exclusive.  HEP-CORE-0031 §4.3.6: "Legacy `ctrl` must
+    // retire atomically with introducing the first `handler_ctrl_0`
+    // master."  Enforced here + in `start_handler_threads`.
+    // WARN (not ERROR) — graceful refusal; state preserved.
+    if (pImpl->ctrl_threads_started_)
+    {
+        LOGGER_WARN("[{}] start_ctrl_thread: ctrl threads already started "
+                    "(handler-mode={}); refusing re-entry",
+                    pImpl->role_tag,
+                    pImpl->handler_ != nullptr);
+        return false;
+    }
+
     auto *bc   = pImpl->broker_channel;
     auto *core = pImpl->core;
 
@@ -643,6 +671,8 @@ bool RoleAPIBase::start_ctrl_thread(
         LOGGER_ERROR("[{}] start_ctrl_thread: no BrokerRequestComm set", pImpl->role_tag);
         return false;
     }
+
+    pImpl->ctrl_threads_started_ = true;
 
     // ── Step 1: Connect DEALER socket to broker ────────────────────────────
     if (!connect_cfg.broker_endpoint.empty())
@@ -871,6 +901,254 @@ bool RoleAPIBase::start_ctrl_thread(
     LOGGER_INFO("[{}] ctrl: broker communication ready (heartbeat={}ms)",
                 pImpl->role_tag, effective_interval_ms);
     return true;
+}
+
+// ============================================================================
+// Handler-mode control plane (Wave-B M4c)
+// ============================================================================
+
+bool RoleAPIBase::start_handler_threads(std::unique_ptr<RoleHandler> handler)
+{
+    // ── Atomicity guard ──────────────────────────────────────────────────
+    if (pImpl->ctrl_threads_started_)
+    {
+        // WARN (not ERROR) — graceful refusal; state preserved.
+        LOGGER_WARN("[{}] start_handler_threads: ctrl threads already "
+                    "started (handler-mode={}); refusing re-entry",
+                    pImpl->role_tag,
+                    pImpl->handler_ != nullptr);
+        return false;
+    }
+    if (handler == nullptr)
+    {
+        LOGGER_ERROR("[{}] start_handler_threads: handler is null",
+                     pImpl->role_tag);
+        return false;
+    }
+
+    const std::size_t n_conn = handler->connection_count();
+    const std::size_t n_pres = handler->presence_count();
+
+    LOGGER_INFO("[{}] start_handler_threads: ENTRY — {} presence(s) on {} "
+                "unique hub(s) (uid='{}' name='{}')",
+                pImpl->role_tag, n_pres, n_conn,
+                pImpl->uid, pImpl->name);
+
+    // ── Phase 1: Allocate + connect each BRC (via handler) ───────────────
+    LOGGER_INFO("[{}] start_handler_threads: Phase 1 — connecting {} BRC(s)",
+                pImpl->role_tag, n_conn);
+    if (!handler->start_connections(*this))
+    {
+        LOGGER_ERROR("[{}] start_handler_threads: Phase 1 FAILED — "
+                     "handler->start_connections returned false",
+                     pImpl->role_tag);
+        return false;
+    }
+    LOGGER_INFO("[{}] start_handler_threads: Phase 1 OK — {} BRC(s) connected",
+                pImpl->role_tag, n_conn);
+
+    // Take ownership of the handler now — Phase 1 succeeded, so the
+    // handler's BRCs are live + we will spawn threads for them.
+    pImpl->handler_ = std::move(handler);
+
+    auto *core = pImpl->core;
+    const std::string &tag_local = pImpl->role_tag;
+
+    // ── Phase 2: Per-BRC notification + hub-dead callbacks ───────────────
+    LOGGER_INFO("[{}] start_handler_threads: Phase 2 — wiring notification "
+                "and hub-dead callbacks on {} BRC(s)",
+                pImpl->role_tag, n_conn);
+    for (std::size_t i = 0; i < pImpl->handler_->connections().size(); ++i)
+    {
+        auto *brc = pImpl->handler_->connections()[i].brc.get();
+        if (brc == nullptr) continue;  // defensive; should be non-null
+
+        // Notification routing: enqueue every notification to the
+        // role's core message queue.  Per-presence tagging (using
+        // M4b's find_presence_from_notification) is deferred to M5+ —
+        // the script side already reads channel_name from the body.
+        brc->on_notification(
+            [core, tag_local, i](const std::string &type,
+                                  const nlohmann::json &body)
+            {
+                LOGGER_TRACE("[{}/handler_ctrl_{}] notification: {}",
+                             tag_local, i, type);
+                IncomingMessage msg;
+                msg.event   = type;
+                msg.details = body;
+                core->enqueue_message(std::move(msg));
+            });
+
+        // Hub-dead: any hub dying signals the role to stop (preserves
+        // legacy single-hub semantics).  Multi-hub failure policy
+        // (Wave-B M8) will refine — see HEP-CORE-0023.
+        brc->on_hub_dead(
+            [core, tag_local, i]()
+            {
+                LOGGER_WARN("[{}/handler_ctrl_{}] hub-dead: broker "
+                            "connection lost",
+                            tag_local, i);
+                core->set_stop_reason(RoleHostCore::StopReason::HubDead);
+                core->request_stop();
+            });
+    }
+    LOGGER_INFO("[{}] start_handler_threads: Phase 2 OK", pImpl->role_tag);
+
+    // ── Phase 3: Spawn one ctrl thread per HubConnection ─────────────────
+    LOGGER_INFO("[{}] start_handler_threads: Phase 3 — spawning {} ctrl "
+                "thread(s) (first = master per HEP-CORE-0031 §4.2.1)",
+                pImpl->role_tag, n_conn);
+
+    auto &tm = thread_manager();
+    bool master_spawned = false;
+    for (std::size_t i = 0; i < pImpl->handler_->connections().size(); ++i)
+    {
+        auto *brc = pImpl->handler_->connections()[i].brc.get();
+        if (brc == nullptr) continue;
+
+        pylabhub::utils::ThreadManager::SpawnOptions opts;
+        opts.is_master = !master_spawned;
+
+        const std::string slot_name = "handler_ctrl_" + std::to_string(i);
+        const std::string endpoint  =
+            pImpl->handler_->connections()[i].broker_endpoint;
+
+        LOGGER_INFO("[{}] start_handler_threads: spawning '{}' for "
+                    "hub='{}' (is_master={})",
+                    pImpl->role_tag, slot_name, endpoint, opts.is_master);
+
+        const bool spawn_ok = tm.spawn(
+            slot_name,
+            [brc, slot_name, core, tag_local]
+            (pylabhub::utils::ThreadManager::SlotContext &ctx)
+            {
+                LOGGER_INFO("[{}/{}] poll thread started",
+                            tag_local, slot_name);
+                ctx.with_active_loop(
+                    [brc, core, &ctx]
+                    {
+                        brc->run_poll_loop(
+                            [core, &ctx] {
+                                return core->is_running() &&
+                                       !ctx.shutdown_requested();
+                            });
+                    });
+                LOGGER_INFO("[{}/{}] poll thread exiting",
+                            tag_local, slot_name);
+            },
+            opts);
+
+        if (!spawn_ok)
+        {
+            LOGGER_ERROR("[{}] start_handler_threads: tm.spawn('{}', "
+                         "is_master={}) FAILED — rolling back",
+                         pImpl->role_tag, slot_name, opts.is_master);
+            // Roll back: signal any spawned BRCs, drain, release.
+            // `stop_handler_threads()` does the full sequence + clears
+            // state flags so subsequent re-entry isn't blocked by the
+            // partial setup.
+            stop_handler_threads();
+            return false;
+        }
+
+        master_spawned = true;
+    }
+    LOGGER_INFO("[{}] start_handler_threads: Phase 3 OK — {} ctrl thread(s) spawned",
+                pImpl->role_tag, n_conn);
+
+    // ── Phase 4: Legacy fallback view ────────────────────────────────────
+    // `pImpl->broker_channel` is a raw non-owning view into the first
+    // HubConnection's BRC.  Unmigrated call sites (the 24 sites in
+    // M4d/e's migration scope) continue to dereference broker_channel
+    // and reach the same BRC the first handler ctrl thread is driving.
+    // CLEARED by `stop_handler_threads` to prevent UAF post-shutdown.
+    if (!pImpl->handler_->connections().empty())
+    {
+        pImpl->broker_channel =
+            pImpl->handler_->connections()[0].brc.get();
+        LOGGER_INFO("[{}] start_handler_threads: Phase 4 OK — legacy "
+                    "broker_channel fallback view set to "
+                    "connections[0].brc",
+                    pImpl->role_tag);
+    }
+
+    pImpl->ctrl_threads_started_ = true;
+
+    LOGGER_INFO("[{}] start_handler_threads: COMPLETE — handler-mode "
+                "active ({} ctrl thread(s), {} presence(s))",
+                pImpl->role_tag, n_conn, n_pres);
+    return true;
+}
+
+void RoleAPIBase::stop_handler_threads() noexcept
+{
+    if (pImpl->handler_ == nullptr && !pImpl->ctrl_threads_started_)
+    {
+        // Never started, or already stopped — idempotent no-op.
+        return;
+    }
+
+    LOGGER_INFO("[{}] stop_handler_threads: ENTRY", pImpl->role_tag);
+
+    // ── Phase 1: Clear legacy fallback view BEFORE BRCs are destroyed ────
+    // Any code still reading `pImpl->broker_channel` from this point on
+    // observes nullptr (clean failure) instead of a dangling pointer
+    // (UAF after BRC destruction).
+    if (pImpl->broker_channel != nullptr)
+    {
+        pImpl->broker_channel = nullptr;
+        LOGGER_INFO("[{}] stop_handler_threads: Phase 1 — legacy "
+                    "broker_channel fallback view cleared",
+                    pImpl->role_tag);
+    }
+
+    // ── Phase 2: Signal each BRC to exit its poll loop ───────────────────
+    if (pImpl->handler_ != nullptr)
+    {
+        const std::size_t n_conn = pImpl->handler_->connections().size();
+        LOGGER_INFO("[{}] stop_handler_threads: Phase 2 — stopping {} "
+                    "BRC poll loop(s)",
+                    pImpl->role_tag, n_conn);
+        for (auto &c : pImpl->handler_->connections())
+        {
+            if (c.brc) c.brc->stop();
+        }
+    }
+
+    // ── Phase 3: Drain the ThreadManager (HEP-CORE-0031 §4.1) ────────────
+    LOGGER_INFO("[{}] stop_handler_threads: Phase 3 — draining ThreadManager",
+                pImpl->role_tag);
+    try
+    {
+        auto &tm = thread_manager();
+        tm.request_shutdown_all();
+        (void)tm.wait_for_quiescence(std::chrono::seconds(5));
+    }
+    catch (const std::exception &e)
+    {
+        LOGGER_ERROR("[{}] stop_handler_threads: ThreadManager drain "
+                     "threw — {}",
+                     pImpl->role_tag, e.what());
+    }
+
+    // ── Phase 4: Disconnect + release each BRC, release the handler ──────
+    if (pImpl->handler_ != nullptr)
+    {
+        LOGGER_INFO("[{}] stop_handler_threads: Phase 4 — releasing BRCs "
+                    "+ handler",
+                    pImpl->role_tag);
+        pImpl->handler_->stop_connections();
+        pImpl->handler_.reset();
+    }
+
+    pImpl->ctrl_threads_started_ = false;
+
+    LOGGER_INFO("[{}] stop_handler_threads: COMPLETE", pImpl->role_tag);
+}
+
+RoleHandler *RoleAPIBase::handler() const noexcept
+{
+    return pImpl->handler_.get();
 }
 
 // ============================================================================

@@ -907,6 +907,128 @@ int role_handler_brc_for_x_post_start()
         logger_module(), crypto_module(), zmq_module());
 }
 
+// ============================================================================
+// role_api_base_start_handler_threads_e2e
+//   Wave-B M4c — full lifecycle test for the handler-mode ctrl thread
+//   path.  Starts a broker, wires RoleAPIBase with a handler via
+//   `start_handler_threads`, sends REG_REQ via the legacy fallback
+//   view (`pImpl->broker_channel`), verifies the broker observes the
+//   registration, then tears down via `stop_handler_threads`.  This
+//   exercises EVERY M4c surface: atomicity guard (implicit — single
+//   call), Phase 1-4 init sequence, fallback view, and Phase 1-4
+//   teardown sequence with broker_channel cleared post-stop.
+// ============================================================================
+
+int role_api_base_start_handler_threads_e2e()
+{
+    return run_gtest_worker(
+        []() {
+            BrokerService::Config bcfg;
+            bcfg.endpoint  = "tcp://127.0.0.1:0";
+            bcfg.use_curve = false;
+            auto broker = start_broker_with_cfg(std::move(bcfg));
+
+            const std::string role_uid = "prod.m4c_e2e.uid00000001";
+            const std::string channel  = make_test_channel_name("m4c.e2e");
+
+            pylabhub::scripting::RoleHostCore core;
+            // Production role hosts flip `core.set_running(true)` early
+            // in `worker_main_()` so the ctrl thread's poll-loop
+            // predicate (`core->is_running() && !ctx.shutdown_requested()`)
+            // evaluates true and the loop spins.  This test has no
+            // worker_main_ — drive the flag directly so the spawned
+            // poll thread runs.
+            core.set_running(true);
+
+            pylabhub::scripting::RoleAPIBase  api(core, "prod", role_uid);
+            api.set_name("m4c_e2e");
+            api.set_channel(channel);
+            api.set_auth("", "");
+
+            pylabhub::config::HubRefConfig hub_cfg;
+            hub_cfg.broker = broker.endpoint;
+
+            std::vector<pylabhub::scripting::Presence> presences;
+            {
+                pylabhub::scripting::Presence p;
+                p.hub       = hub_cfg;
+                p.channel   = channel;
+                p.role_kind = pylabhub::scripting::RoleKind::Producer;
+                presences.push_back(std::move(p));
+            }
+            auto handler =
+                std::make_unique<pylabhub::scripting::RoleHandler>(
+                    std::move(presences));
+
+            // ── start_handler_threads ────────────────────────────────────
+            ASSERT_TRUE(api.start_handler_threads(std::move(handler)))
+                << "start_handler_threads must succeed against a live broker";
+
+            ASSERT_NE(api.handler(), nullptr)
+                << "handler() returns the stored RoleHandler post-start";
+            EXPECT_TRUE(api.handler()->connections_started())
+                << "RoleHandler is in started state";
+
+            // Atomicity guard — second call must be refused.
+            {
+                std::vector<pylabhub::scripting::Presence> p2;
+                pylabhub::scripting::Presence ep;
+                ep.hub       = hub_cfg;
+                ep.channel   = channel;
+                ep.role_kind = pylabhub::scripting::RoleKind::Producer;
+                p2.push_back(std::move(ep));
+                auto handler2 =
+                    std::make_unique<pylabhub::scripting::RoleHandler>(
+                        std::move(p2));
+                EXPECT_FALSE(api.start_handler_threads(std::move(handler2)))
+                    << "Atomicity guard: second start must be refused.";
+                EXPECT_NE(api.handler(), nullptr)
+                    << "Refused second start MUST NOT clear the first "
+                       "handler — original state preserved.";
+            }
+
+            // ── Exercise the legacy fallback view via REG_REQ ────────────
+            //
+            // register_producer_channel reads pImpl->broker_channel
+            // internally; if M4c's fallback view is correctly set to
+            // handler->connections()[0].brc, the REG_REQ goes through
+            // and the broker registers the channel.
+            nlohmann::json reg_opts;
+            reg_opts["channel_name"]      = channel;
+            reg_opts["pattern"]           = "PubSub";
+            reg_opts["has_shared_memory"] = false;
+            reg_opts["producer_pid"]      = static_cast<uint64_t>(::getpid());
+            reg_opts["role_uid"]          = role_uid;
+            reg_opts["role_name"]         = "m4c_e2e";
+
+            auto reg_resp = api.register_producer_channel(reg_opts, 3000);
+            ASSERT_TRUE(reg_resp.has_value())
+                << "REG_REQ via legacy fallback view must reach the broker.";
+            EXPECT_EQ(reg_resp->value("status", std::string{}), "success");
+
+            // Broker should have the role registered.  This is the
+            // end-to-end M4c verification: REG_REQ was sent via
+            // pImpl->broker_channel (legacy fallback), routed to the
+            // first BRC (which the handler's ctrl thread is polling),
+            // and the broker's handler accepted the registration.
+            EXPECT_TRUE(broker.hub_state->role(role_uid).has_value())
+                << "Broker's HubState must show the role registered "
+                   "(end-to-end M4c handler-mode path verified).";
+
+            // ── stop_handler_threads ─────────────────────────────────────
+            api.stop_handler_threads();
+            EXPECT_EQ(api.handler(), nullptr)
+                << "handler() returns nullptr post-stop";
+
+            // Idempotent: second stop is a no-op.
+            api.stop_handler_threads();
+
+            broker.stop_and_join();
+        },
+        "role_state.role_api_base_start_handler_threads_e2e",
+        logger_module(), crypto_module(), zmq_module());
+}
+
 } // namespace pylabhub::tests::worker::broker_role_state
 
 namespace
@@ -945,6 +1067,8 @@ struct BrokerRoleStateWorkerRegistrar
                     return role_handler_connections_double_start_rejected();
                 if (scenario == "role_handler_brc_for_x_post_start")
                     return role_handler_brc_for_x_post_start();
+                if (scenario == "role_api_base_start_handler_threads_e2e")
+                    return role_api_base_start_handler_threads_e2e();
                 return 1;
             });
     }

@@ -143,3 +143,21 @@ TEST_F(DatahubRoleStateMachineTest, RoleHandler_BrcForX_PostStart_PointerIdentit
         "broker_role_state.role_handler_brc_for_x_post_start", {});
     ExpectWorkerOk(proc);
 }
+
+TEST_F(DatahubRoleStateMachineTest, RoleAPIBase_StartHandlerThreads_E2E)
+{
+    // Wave-B M4c — end-to-end test for the handler-mode ctrl thread
+    // path.  Verifies:
+    //  - start_handler_threads succeeds against a real broker.
+    //  - api.handler() returns non-null + connections_started().
+    //  - Atomicity guard: second start refused without disturbing state.
+    //  - REG_REQ via the legacy fallback view (pImpl->broker_channel
+    //    set to handler->connections()[0].brc) reaches the broker.
+    //  - Broker HubState shows the role registered.
+    //  - stop_handler_threads cleanly drains + clears state +
+    //    fallback view (api.handler() == nullptr).
+    //  - Second stop is idempotent.
+    auto proc = SpawnWorker(
+        "broker_role_state.role_api_base_start_handler_threads_e2e", {});
+    ExpectWorkerOk(proc);
+}
