@@ -504,12 +504,29 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     /// ThreadManager via the §4.1 bracket contract, clear the
     /// legacy fallback view, then disconnect + release BRCs, then
     /// release the handler.  Idempotent + `noexcept`.
+    ///
+    /// Thread context: MUST be called from the owning thread (the
+    /// role-host worker thread driving teardown, or the
+    /// construction context if the role was never started end-to-end).
+    /// Concurrent invocation with other threads dereferencing
+    /// `pImpl->broker_channel` (via `register_producer_channel`,
+    /// `discover_channel`, etc.) is undefined — there is no lock
+    /// around the fallback-view raw pointer.  The production teardown
+    /// sequence calls this from the worker thread inside
+    /// `do_role_teardown`, where no concurrent reader exists.
     void stop_handler_threads() noexcept;
 
     /// Read-only access to the handler (for migration sites that
     /// need to call `handler.brc_for_*` or `find_presence_for_*`).
     /// Returns nullptr if `start_handler_threads` has not been
     /// called (or after `stop_handler_threads`).
+    ///
+    /// Pointer lifetime: VALID between the return of a successful
+    /// `start_handler_threads` and the call to `stop_handler_threads`.
+    /// Callers MUST NOT cache this pointer across a teardown
+    /// boundary — `stop_handler_threads` resets the unique_ptr,
+    /// invalidating any external copies.  Re-acquire via `handler()`
+    /// on every entry into a method that might run after teardown.
     [[nodiscard]] RoleHandler *handler() const noexcept;
 
     /// Explicitly deregister from broker while the ctrl thread is still
