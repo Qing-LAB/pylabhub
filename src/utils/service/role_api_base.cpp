@@ -172,6 +172,40 @@ struct RoleAPIBase::Impl
 
     // Optional hook for role-specific metrics injection.
     std::function<void(nlohmann::json &)> metrics_hook;
+
+    // Wave-B M4d: route a Class A (channel-bound) operation to the
+    // right BrokerRequestComm.
+    //
+    //   Handler-mode (handler_ != nullptr):
+    //     Look up `channel` in the handler's channel_index_.  Found →
+    //     return that presence's BRC.  Not found (e.g. DISC_REQ
+    //     asking about a channel not in our role's presence list) →
+    //     fall back to `broker_channel` (the legacy fallback view,
+    //     pointing at connections[0]'s BRC — same hub for single-hub
+    //     roles, whichever connection was first for dual-hub).
+    //
+    //   Legacy mode (handler_ == nullptr):
+    //     Return `broker_channel` directly.
+    //
+    // Both modes return nullptr if no BRC is available yet (no
+    // start_*_threads call yet, or post-stop_handler_threads).  Class A
+    // call sites then early-return like the pre-migration `if (!bc)`
+    // guard did.
+    //
+    // M4d migrates the role-api Class A surface (register / deregister /
+    // discover / heartbeat) to call this helper instead of touching
+    // `broker_channel` directly.  M4e migrates Class B/C/D; M4f deletes
+    // `broker_channel` once no caller references it.
+    [[nodiscard]] hub::BrokerRequestComm *
+    resolve_bc_for_channel(const std::string &channel) const noexcept
+    {
+        if (handler_)
+        {
+            if (auto *bc = handler_->brc_for_channel(channel))
+                return bc;
+        }
+        return broker_channel;
+    }
 };
 
 // ============================================================================
@@ -466,7 +500,10 @@ void RoleAPIBase::set_broker_comm(hub::BrokerRequestComm *bc)
 std::optional<nlohmann::json>
 RoleAPIBase::register_producer_channel(const nlohmann::json &opts, int timeout_ms)
 {
-    auto *bc = pImpl->broker_channel;
+    // Wave-B M4d: Class A (channel-bound) — route via handler when active,
+    // fall back to legacy broker_channel view otherwise.
+    const std::string ch = opts.value("channel_name", std::string{});
+    auto *bc = pImpl->resolve_bc_for_channel(ch);
     if (!bc || !bc->is_connected())
     {
         LOGGER_ERROR("[{}] register_producer_channel: broker comm not connected", pImpl->role_tag);
@@ -495,7 +532,11 @@ RoleAPIBase::register_producer_channel(const nlohmann::json &opts, int timeout_m
 std::optional<nlohmann::json>
 RoleAPIBase::discover_channel(const std::string &channel, int timeout_ms)
 {
-    auto *bc = pImpl->broker_channel;
+    // Wave-B M4d: Class A — `channel` may not be in our presence list
+    // (DISC_REQ asks about peers); resolve_bc_for_channel falls back
+    // to broker_channel (connections[0]) in that case, matching the
+    // pre-migration single-hub behavior.
+    auto *bc = pImpl->resolve_bc_for_channel(channel);
     if (!bc || !bc->is_connected())
     {
         LOGGER_ERROR("[{}] discover_channel: broker comm not connected", pImpl->role_tag);
@@ -518,7 +559,9 @@ RoleAPIBase::discover_channel(const std::string &channel, int timeout_ms)
 std::optional<nlohmann::json>
 RoleAPIBase::register_consumer(const nlohmann::json &opts, int timeout_ms)
 {
-    auto *bc = pImpl->broker_channel;
+    // Wave-B M4d: Class A — route via handler when active.
+    const std::string ch = opts.value("channel_name", std::string{});
+    auto *bc = pImpl->resolve_bc_for_channel(ch);
     if (!bc || !bc->is_connected())
     {
         LOGGER_ERROR("[{}] register_consumer: broker comm not connected", pImpl->role_tag);
@@ -542,7 +585,8 @@ RoleAPIBase::register_consumer(const nlohmann::json &opts, int timeout_ms)
 std::optional<nlohmann::json>
 RoleAPIBase::deregister_producer_channel(const std::string &channel, int timeout_ms)
 {
-    auto *bc = pImpl->broker_channel;
+    // Wave-B M4d: Class A — route via handler when active.
+    auto *bc = pImpl->resolve_bc_for_channel(channel);
     if (!bc || !bc->is_connected())
         return std::nullopt;
     return bc->deregister_channel(channel, timeout_ms);
@@ -551,7 +595,8 @@ RoleAPIBase::deregister_producer_channel(const std::string &channel, int timeout
 std::optional<nlohmann::json>
 RoleAPIBase::deregister_consumer(const std::string &channel, int timeout_ms)
 {
-    auto *bc = pImpl->broker_channel;
+    // Wave-B M4d: Class A — route via handler when active.
+    auto *bc = pImpl->resolve_bc_for_channel(channel);
     if (!bc || !bc->is_connected())
         return std::nullopt;
     return bc->deregister_consumer(channel, timeout_ms);
@@ -566,6 +611,12 @@ RoleAPIBase::deregister_consumer(const std::string &channel, int timeout_ms)
 
 void RoleAPIBase::deregister_from_broker()
 {
+    // Wave-B M4d note: this outer guard is a coarse "is any broker
+    // comm around?" early-exit, not a per-channel route — the actual
+    // dereg calls below (`deregister_producer_channel`,
+    // `deregister_consumer`) are Class A and route via the helper.
+    // M4e will revisit whether to drop the guard so state-clearing
+    // proceeds even when the fallback view is disconnected.
     auto *bc = pImpl->broker_channel;
     if (!bc || !bc->is_connected())
         return;
@@ -595,9 +646,14 @@ void RoleAPIBase::deregister_from_broker()
 
 void RoleAPIBase::on_heartbeat_tick_()
 {
-    auto *bc  = pImpl->broker_channel;
     auto *eng = pImpl->engine;
-    if (!bc)
+
+    // Wave-B M4d: skip the entire tick (incl. user callback) if neither
+    // path has a BRC available.  Mirrors the pre-migration `if (!bc)
+    // return;` guard — in handler-mode `handler_->connections()` is
+    // non-empty by start_handler_threads contract, in legacy mode
+    // `broker_channel` is set by start_ctrl_thread.
+    if (!pImpl->handler_ && !pImpl->broker_channel)
         return;
 
     // Per HEP-CORE-0019 §2.3 Phase 6 + HEP-CORE-0033 §19: heartbeat is
@@ -608,8 +664,14 @@ void RoleAPIBase::on_heartbeat_tick_()
     // consumer-presence payload carries rx-queue + in_slots_received,
     // the producer-presence payload carries tx-queue + out_slots_written
     // + out_drop_count.  Closes audit H2 (2026-05-15).
+    //
+    // Wave-B M4d: BC is resolved per-channel inside the lambda so that
+    // dual-hub processors (M8) route each presence's heartbeat to its
+    // own broker.  Single-hub roles resolve to the same BRC every time.
     auto emit = [&](const std::string &ch, const char *role_type) {
         if (ch.empty()) return;
+        auto *bc = pImpl->resolve_bc_for_channel(ch);
+        if (!bc) return;
         const auto metrics = snapshot_metrics_for_presence(role_type);
         LOGGER_TRACE("[{}] ctrl: sending heartbeat for '{}' (uid='{}' role_type='{}')",
                      pImpl->role_tag, ch, pImpl->uid, role_type);
