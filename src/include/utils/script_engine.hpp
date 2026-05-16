@@ -530,7 +530,7 @@ class ScriptEngine
      * @brief Invoke on_channel_closing(channel, reason, api) if the
      *        script defines it.
      *
-     * Optional script-side callback (HEP-CORE-0011 lifecycle table).
+     * Optional script-side callback (HEP-CORE-0011 callback table).
      * The role host calls this from the data loop when a
      * `CHANNEL_CLOSING_NOTIFY` arrives in the drained per-cycle
      * messages list AND the script has defined the callback (probed
@@ -562,7 +562,7 @@ class ScriptEngine
      * @brief Invoke on_consumer_died(channel, consumer_uid, reason, api)
      *        if the script defines it.
      *
-     * Optional script-side callback (HEP-CORE-0011 lifecycle table).
+     * Optional script-side callback (HEP-CORE-0011 callback table).
      * The role host calls this from the data loop when a
      * `CONSUMER_DIED_NOTIFY` arrives in the drained per-cycle messages
      * list AND the script has defined the callback (probed via

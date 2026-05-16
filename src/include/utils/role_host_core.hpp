@@ -33,6 +33,7 @@
 #include <optional>
 #include <shared_mutex>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <variant>
 #include <vector>
@@ -42,9 +43,58 @@ namespace pylabhub::hub { class InboxClient; }
 namespace pylabhub::scripting
 {
 
+// Wire-event ID for broker notifications carried by IncomingMessage.
+//
+// Notifications arrive at the BRC's `on_notification(type, body)`
+// callback as wire strings (e.g. "CHANNEL_CLOSING_NOTIFY").  Comparing
+// strings inside the per-cycle dispatcher loop is wasteful when the
+// vocabulary is fixed and small.  This enum gives every recognised
+// notification a stable integer ID, parsed once at the BRC enqueue
+// boundary so downstream dispatch is an O(1) integer-indexed lookup.
+//
+// Naming follows the wire `_NOTIFY` suffix and BRC's `on_notification`
+// terminology — distinct from the `Lifecycle*` vocabulary used by
+// process/thread lifecycle (HEP-CORE-0001 / 0031, LifecycleGuard,
+// BinaryLifecycleEnvironment).  These are broker-emitted async events,
+// not lifecycle phases.
+//
+// Versioning:
+//   - Append new IDs at the END (preserve ordinal stability across builds).
+//   - `Unknown` (0) is the default for messages whose `event` string is
+//     not in the catalog (data messages, untracked notifications,
+//     etc.) — the dispatcher leaves them in `msgs` for script-side
+//     generic scan.
+//   - `Count` is the sentinel; every valid ID is strictly less than
+//     `Count`, sizing the dispatcher's handler array.
+//
+// Adding a notification:
+//   1. Append the enum value here (before `Count`).
+//   2. Map the wire-string in `parse_notification_id` below.
+//   3. Add a handler entry in `cycle_ops.hpp` that calls the matching
+//      `engine.invoke_on_X(...)`.
+//   4. Add the matching pure virtual on `ScriptEngine`.
+enum class NotificationId : std::uint8_t
+{
+    Unknown        = 0,
+    ChannelClosing = 1,   ///< CHANNEL_CLOSING_NOTIFY  (HEP-CORE-0011 §callback table)
+    ConsumerDied   = 2,   ///< CONSUMER_DIED_NOTIFY    (HEP-CORE-0023 §2.1.1)
+    Count                 ///< sentinel — must be last
+};
+
+/// Parse a wire-string notification `type` into its `NotificationId`.
+/// Unknown / non-notification types map to `NotificationId::Unknown`.
+[[nodiscard]] constexpr NotificationId
+parse_notification_id(std::string_view type) noexcept
+{
+    if (type == "CHANNEL_CLOSING_NOTIFY") return NotificationId::ChannelClosing;
+    if (type == "CONSUMER_DIED_NOTIFY")   return NotificationId::ConsumerDied;
+    return NotificationId::Unknown;
+}
+
 struct IncomingMessage
 {
-    std::string              event;
+    std::string              event;                          ///< wire string (debug + generic scan path)
+    NotificationId                 notification_id{NotificationId::Unknown};   ///< parsed once at BRC enqueue; drives dispatch
     std::string              sender;
     std::vector<std::byte>   data;
     nlohmann::json           details;

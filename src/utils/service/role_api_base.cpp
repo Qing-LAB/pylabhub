@@ -757,8 +757,12 @@ bool RoleAPIBase::start_ctrl_thread(
     bc->on_notification([core, this](const std::string &type, const nlohmann::json &body) {
         LOGGER_TRACE("[{}] ctrl: notification received: {}", pImpl->role_tag, type);
         IncomingMessage msg;
-        msg.event   = type;
-        msg.details = body;
+        msg.event     = type;
+        // Parse-once at enqueue so cycle_ops dispatch is an O(1)
+        // table lookup; unrecognised types map to NotificationId::Unknown
+        // and stay in `msgs` for script-side generic scan.
+        msg.notification_id = pylabhub::scripting::parse_notification_id(type);
+        msg.details   = body;
         core->enqueue_message(std::move(msg));
     });
 
@@ -1036,8 +1040,9 @@ bool RoleAPIBase::start_handler_threads(std::unique_ptr<RoleHandler> handler)
                 LOGGER_TRACE("[{}/handler_ctrl_{}] notification: {}",
                              tag_local, i, type);
                 IncomingMessage msg;
-                msg.event   = type;
-                msg.details = body;
+                msg.event     = type;
+                msg.notification_id = pylabhub::scripting::parse_notification_id(type);
+                msg.details   = body;
                 core->enqueue_message(std::move(msg));
             });
 
