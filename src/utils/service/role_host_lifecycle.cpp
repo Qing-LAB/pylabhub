@@ -23,7 +23,6 @@ void do_role_teardown(
     ScriptEngine                       &engine,
     RoleAPIBase                        &api,
     RoleHostCore                       &core,
-    ::pylabhub::hub::BrokerRequestComm *broker_comm,
     bool                                has_api,
     std::function<void()>               teardown_infrastructure)
 {
@@ -46,9 +45,11 @@ void do_role_teardown(
     // Step 11: finalize engine (free script resources).
     engine.finalize();
 
-    // Step 12: signal ctrl thread's poll loop to exit (non-destructive —
-    // sets stop flag + wakes poll, does NOT close sockets).
-    if (broker_comm) broker_comm->stop();
+    // Step 12: signal ctrl thread(s) poll loop(s) to exit (non-destructive
+    // — sets stop flag + wakes poll, does NOT close sockets).  Mode-
+    // aware via Wave-B M5 prep helper (F2): handler-mode signals every
+    // connection's BRC, legacy mode signals the single broker_channel.
+    api.stop_ctrl_for_teardown();
     core.set_running(false);
     core.notify_incoming();
 

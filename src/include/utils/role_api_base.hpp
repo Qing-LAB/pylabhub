@@ -516,6 +516,22 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     /// `do_role_teardown`, where no concurrent reader exists.
     void stop_handler_threads() noexcept;
 
+    /// Mode-aware "signal ctrl threads to exit poll loop" — the
+    /// non-destructive signal used by `do_role_teardown` Step 12.
+    ///   - Handler-mode: calls `brc->stop()` on every connection's BRC
+    ///     so all N handler_ctrl_* threads observe the stop flag in
+    ///     their next poll iteration.
+    ///   - Legacy mode: calls `broker_channel->stop()` (the single
+    ///     pre-Wave-B BRC).
+    ///   - No-op if neither path is active (e.g. validate-only run).
+    ///
+    /// Does NOT join threads, disconnect sockets, or release BRCs —
+    /// that's `stop_handler_threads()` for handler-mode or the
+    /// role-host's `teardown_infrastructure_()` callback for legacy.
+    /// Safe to call multiple times; safe to call before any thread
+    /// is spawned (it's the "make sure no poll loop is wedged" signal).
+    void stop_ctrl_for_teardown() noexcept;
+
     /// Read-only access to the handler (for migration sites that
     /// need to call `handler.brc_for_*` or `find_presence_for_*`).
     /// Returns nullptr if `start_handler_threads` has not been

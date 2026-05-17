@@ -339,7 +339,7 @@ void ProcessorRoleHost::worker_main_()
     // Step 6b: Startup coordination — wait for prerequisite roles (HEP-0023).
     if (!config_.startup().wait_for_roles.empty())
     {
-        if (!scripting::wait_for_roles(*broker_comm_, config_.startup().wait_for_roles, "[proc]"))
+        if (!scripting::wait_for_roles(api_ref, config_.startup().wait_for_roles, "[proc]"))
         {
             LOGGER_ERROR("[proc] Startup coordination failed — required roles not available");
             promise_ref.set_value(false);
@@ -375,7 +375,7 @@ void ProcessorRoleHost::worker_main_()
 
     // Steps 9-14: shared epilogue (HEP-CORE-0034 Phase 5c).
     scripting::do_role_teardown(
-        engine_ref, api_ref, core_, broker_comm_.get(), has_api(),
+        engine_ref, api_ref, core_, has_api(),
         [this] { teardown_infrastructure_(); });
 }
 

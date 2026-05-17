@@ -11,6 +11,7 @@
 
 #include "utils/broker_request_comm.hpp"
 #include "utils/role_host_core.hpp"
+#include "utils/role_api_base.hpp"
 #include "utils/config/checksum_config.hpp"
 #include "utils/config/inbox_config.hpp"
 #include "utils/data_block_policy.hpp"
@@ -39,45 +40,32 @@ namespace pylabhub::scripting
 /**
  * @brief Wait for required peer roles to appear in the broker before continuing.
  *
- * Blocks for up to timeout_ms per role. Logs progress.
+ * Blocks for up to `wr.timeout_ms` per role.  Logs progress.
  *
- * @param brc           The BrokerRequestComm to query role presence.
+ * Pre-M5 (Wave-B M5 prep): takes `RoleAPIBase &api` instead of a raw
+ * `BrokerRequestComm &`.  The per-role polling delegates to
+ * `api.wait_for_role(uid, timeout_ms)`, which is handler-aware (Class B
+ * role-scope query via `pImpl->resolve_bc_for_role()`).  This decouples
+ * startup-wait from the role host's BRC ownership model, so M5 can
+ * delete `broker_comm_` from producer/consumer/processor without
+ * touching this helper.
+ *
+ * @param api           RoleAPIBase instance — must have either
+ *                      `start_ctrl_thread` (legacy) or
+ *                      `start_handler_threads` (handler-mode) running.
  * @param wait_list     List of roles to wait for (from config).
  * @param log_tag       Log prefix, e.g. "[prod]".
- * @return true if all roles found; false on timeout.
+ * @return true if all roles found; false on first timeout.
  */
-inline bool wait_for_roles(hub::BrokerRequestComm        &brc,
+inline bool wait_for_roles(RoleAPIBase                      &api,
                             const std::vector<WaitForRole>   &wait_list,
                             const char                       *log_tag)
 {
-    static constexpr int kPollMs = 200;
-
     for (const auto &wr : wait_list)
     {
         LOGGER_INFO("{} Startup: waiting for role '{}' (timeout {}ms)...",
                     log_tag, wr.uid, wr.timeout_ms);
-        const auto deadline = std::chrono::steady_clock::now() +
-                              std::chrono::milliseconds{wr.timeout_ms};
-        bool found = false;
-        while (std::chrono::steady_clock::now() < deadline)
-        {
-            const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
-                deadline - std::chrono::steady_clock::now()).count();
-            if (remaining <= 0)
-                break;
-            const int poll_ms = static_cast<int>(std::min<long long>(kPollMs, remaining));
-            // Post-Bucket-C contract: query_role_presence returns
-            // `optional<json>` carrying the broker's response body or
-            // `nullopt` on transport failure.  "present" is the field
-            // that signals the role was found.
-            auto resp = brc.query_role_presence(wr.uid, poll_ms);
-            if (resp.has_value() && resp->value("present", false))
-            {
-                found = true;
-                break;
-            }
-        }
-        if (!found)
+        if (!api.wait_for_role(wr.uid, wr.timeout_ms))
         {
             LOGGER_ERROR("{} Startup wait failed: role '{}' not present after {}ms",
                          log_tag, wr.uid, wr.timeout_ms);

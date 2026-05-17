@@ -87,28 +87,36 @@ make_broker_comm_config(const ::pylabhub::config::HubRefConfig  &hub,
  *   9a. if (has_api) api.deregister_from_broker()
  *   10. engine.invoke_on_stop()
  *   11. engine.finalize()
- *   12. broker_comm.stop() (non-destructive); core.set_running(false);
+ *   12. api.stop_ctrl_for_teardown() (non-destructive signal — handler-
+ *       aware: signals every connection's BRC poll loop in handler-mode,
+ *       broker_channel->stop() in legacy mode); core.set_running(false);
  *       core.notify_incoming()
  *   12.5. api.thread_manager().request_shutdown_all() +
  *         wait_for_quiescence()  — signal peers, wait until every
  *         managed thread is outside its `with_active_loop` bracket,
  *         per HEP-CORE-0031 §4.1 Thread Shutdown Contract.
  *   13. teardown_infrastructure() — caller-supplied callback because
- *       each host closes different objects (queues, inbox, etc.)
+ *       each host closes different objects (queues, inbox, etc.).
+ *       Handler-mode hosts (M5+) also call api.stop_handler_threads()
+ *       here to disconnect + release the handler's BRCs.  Legacy
+ *       hosts destroy their owned broker_comm_ here.
  *   14. return.  The drain is performed on the MAIN thread by
  *       `EngineHost::shutdown_()` after this worker returns; the
  *       worker is itself a managed slot, so calling drain() here
  *       would self-detach.  HEP-CORE-0031 §4.2.
  *
- * `broker_comm` may be nullptr when broker registration was never
- * established (matches the existing `if (broker_comm_) ...` guard
- * in each host).
+ * Wave-B M5 prep (F2): the `broker_comm` parameter was removed in
+ * favour of the handler-aware `api.stop_ctrl_for_teardown()` call.
+ * The legacy `broker_comm->stop()` path is still reached internally
+ * because in legacy mode `api.stop_ctrl_for_teardown()` falls
+ * through to `broker_channel->stop()` (the same BRC the role host
+ * set via `set_broker_comm`).  Handler-mode (M5+) signals every
+ * connection's BRC instead.
  */
 void do_role_teardown(
     ::pylabhub::scripting::ScriptEngine     &engine,
     ::pylabhub::scripting::RoleAPIBase      &api,
     ::pylabhub::scripting::RoleHostCore     &core,
-    ::pylabhub::hub::BrokerRequestComm      *broker_comm,
     bool                                     has_api,
     std::function<void()>                    teardown_infrastructure);
 
