@@ -33,6 +33,8 @@
 #include "utils/zmq_poll_loop.hpp"
 #include "utils/role_host_lifecycle.hpp"
 #include "utils/role_reg_payload.hpp"
+#include "utils/role_handler.hpp"     // Wave-B M7: handler-mode startup
+#include "utils/role_presence.hpp"    // Wave-B M7: Presence + RoleKind
 #include "utils/schema_utils.hpp"
 
 #include <algorithm>
@@ -213,10 +215,11 @@ void ProcessorRoleHost::worker_main_()
     if (!core_.is_validate_only())
     {
         api_ref.set_inbox_queue(inbox_queue_.get());
-
-        // Create BrokerRequestComm (connection deferred to step 6).
-        broker_comm_ = std::make_unique<hub::BrokerRequestComm>();
-        api_ref.set_broker_comm(broker_comm_.get());
+        // Wave-B M7: BrokerRequestComm allocation moved into RoleHandler,
+        // built lazily in Step 6 below.  See M5 (producer) for the same
+        // pattern.  Processor declares a 2-presence list — RoleHandler
+        // dedups to 1 connection for single-hub processor (the common
+        // case), 2 connections for dual-hub (M8).
     }
     api_ref.set_checksum_policy(config_.checksum().policy);
     api_ref.set_stop_on_script_error(sc.stop_on_script_error);
@@ -273,27 +276,56 @@ void ProcessorRoleHost::worker_main_()
     if (api_ref.has_tx_side() && core_.has_tx_fz())
         api_ref.sync_tx_flexzone_checksum();
 
-    // ── Step 6: Connect to broker, start ctrl thread, register ────────────
+    // ── Step 6: Connect to broker(s), start handler ctrl thread(s), register
+    // (Wave-B M7 — handler-mode replaces legacy start_ctrl_thread; first
+    // 2-presence migration.  Per HEP-CORE-0033 §19, RoleHandler dedups
+    // presences by (broker_endpoint, broker_pubkey) — single-hub
+    // processor where in_hub == out_hub gets 1 connection, dual-hub
+    // gets 2.  Wire trace for the single-hub case is byte-identical to
+    // legacy because both REGs go through the same BRC; dual-hub
+    // routing is the M8 payoff that this commit unlocks.)
     core_.set_running(true);
     {
         const auto &id  = config_.identity();
         const auto &shm = config_.out_shm();
         const auto &tr  = config_.out_transport();
 
-        // HEP-CORE-0034 Phase 5c — broker-comm config builder.
-        // Processor's ctrl thread connects to the OUTPUT-side hub
-        // (HEP-CORE-0015 §4 — that's where REG_REQ goes; the
-        // input-side hub is reached only for consumer-side discovery
-        // via DISC_REQ later, which uses a separate connection).
-        auto bc_cfg = scripting::make_broker_comm_config(
-            config_.out_hub(), config_.auth(), id.uid, id.name);
+        // 6a — Build 2-presence list: consumer (in_channel on in_hub)
+        // + producer (out_channel on out_hub).
+        std::vector<scripting::Presence> presences;
+        {
+            scripting::Presence cons;
+            cons.hub       = config_.in_hub();
+            cons.channel   = config_.in_channel();
+            cons.role_kind = scripting::RoleKind::Consumer;
+            presences.push_back(std::move(cons));
 
-        scripting::RoleAPIBase::CtrlThreadConfig ctrl_cfg;
-        ctrl_cfg.heartbeat_interval_ms = config_.timing().heartbeat_interval_ms;
-        // M1.4 (2026-05-11): no separate metrics-report tick — metrics
-        // piggyback on the heartbeat tick.  HEP-CORE-0019 §2.3 Phase 6.
+            scripting::Presence prod;
+            prod.hub       = config_.out_hub();
+            prod.channel   = config_.out_channel();
+            prod.role_kind = scripting::RoleKind::Producer;
+            presences.push_back(std::move(prod));
+        }
 
-        // Output producer registration (REG_REQ) via Phase 5b helper.
+        // 6b — Auth + start handler threads.  RoleHandler dedups
+        // connections; single-hub processor → 1 BRC, dual-hub → 2.
+        api_ref.set_auth(config_.auth().client_pubkey,
+                         config_.auth().client_seckey);
+
+        auto handler = std::make_unique<scripting::RoleHandler>(
+            std::move(presences));
+
+        if (!api_ref.start_handler_threads(std::move(handler)))
+        {
+            LOGGER_ERROR("[proc] start_handler_threads failed");
+            promise_ref.set_value(false);
+            return;
+        }
+
+        // 6c — Build BOTH registration payloads (HEP-CORE-0034 Phase 5b).
+        // Output producer REG_REQ — routes via brc_for_channel(out_channel)
+        // which the M3 dedup maps to the out_hub's BRC.
+        nlohmann::json prod_reg;
         {
             hub::ProducerRegInputs reg_in;
             reg_in.channel           = config_.out_channel();
@@ -303,37 +335,57 @@ void ProcessorRoleHost::worker_main_()
             reg_in.has_shm           = shm.enabled;
             reg_in.is_zmq_transport  = (tr.transport == config::Transport::Zmq);
             reg_in.zmq_node_endpoint = tr.zmq_endpoint;
-            ctrl_cfg.producer_reg_opts = hub::build_producer_reg_payload(reg_in);
+            prod_reg = hub::build_producer_reg_payload(reg_in);
         }
-
-        // HEP-CORE-0034 §10.1 — output schema fields (Phase 5a).
-        // Processor's REG_REQ for the OUTPUT channel populates the
-        // schema record under (uid, schema_id) so downstream consumers
-        // can cite (uid, "out_schema_id") via path A.  Same helper as
-        // producer_role_host uses.
         const auto &pf_for_wire = config_.role_data<ProcessorFields>();
         const auto out_wire = hub::make_wire_schema_fields(
             pf_for_wire.out_slot_schema_json, out_slot_spec_, core_.out_fz_spec());
-        hub::apply_producer_schema_fields(ctrl_cfg.producer_reg_opts, out_wire);
+        hub::apply_producer_schema_fields(prod_reg, out_wire);
+        api_ref.append_inbox_to_reg(prod_reg, inbox_cfg_);
 
-        if (inbox_cfg_.has_inbox())
-            ctrl_cfg.inbox = inbox_cfg_;
-
-        // Input consumer registration (CONSUMER_REG_REQ) via Phase 5b helper.
-        ctrl_cfg.consumer_reg_opts = hub::build_consumer_reg_payload(
+        // Input consumer CONSUMER_REG_REQ — routes via brc_for_channel(in_channel)
+        // which maps to the in_hub's BRC (or out_hub's BRC if dedup'd).
+        auto cons_reg = hub::build_consumer_reg_payload(
             hub::ConsumerRegInputs{config_.in_channel(), id.uid, id.name});
-
-        // HEP-CORE-0034 §10.3 — input citation fields (Phase 5a).
-        // Same helper as consumer_role_host; mode (named/anonymous)
-        // decided by what the config produced.
         const auto in_wire = hub::make_wire_schema_fields(
             pf_for_wire.in_slot_schema_json, in_slot_spec_, core_.in_fz_spec());
-        hub::apply_consumer_schema_fields(ctrl_cfg.consumer_reg_opts, in_wire);
+        hub::apply_consumer_schema_fields(cons_reg, in_wire);
+        api_ref.append_inbox_to_reg(cons_reg, inbox_cfg_);
 
-        if (!api_ref.start_ctrl_thread(bc_cfg, ctrl_cfg))
+        // 6d — Send both REGs (auto-record via M5a) + install heartbeat.
+        // We capture the hub-max from whichever REG returns it last,
+        // mirroring legacy behaviour (the legacy code path captured
+        // both REGs' heartbeat blocks and let the second overwrite the
+        // first; same precedence here).
+        std::optional<int> hub_max;
+
+        auto prod_result = api_ref.register_producer_channel(prod_reg);
+        if (!prod_result.has_value() ||
+            prod_result->value("status", std::string{}) != "success")
         {
-            LOGGER_ERROR("[proc] Broker registration failed");
+            LOGGER_ERROR("[proc] Output producer registration failed");
+            // Non-fatal: data loop may still run if discovery already happened.
         }
+        else
+        {
+            auto m = scripting::RoleAPIBase::extract_hub_heartbeat_max(*prod_result);
+            if (m.has_value()) hub_max = m;
+        }
+
+        auto cons_result = api_ref.register_consumer(cons_reg);
+        if (!cons_result.has_value() ||
+            cons_result->value("status", std::string{}) != "success")
+        {
+            LOGGER_ERROR("[proc] Input consumer registration failed");
+        }
+        else
+        {
+            auto m = scripting::RoleAPIBase::extract_hub_heartbeat_max(*cons_result);
+            if (m.has_value()) hub_max = m;  // consumer's wins (legacy parity)
+        }
+
+        api_ref.install_heartbeat(config_.timing().heartbeat_interval_ms,
+                                   hub_max);
     }
 
     // Step 6b: Startup coordination — wait for prerequisite roles (HEP-0023).
@@ -505,20 +557,14 @@ void ProcessorRoleHost::teardown_infrastructure_()
         inbox_queue_.reset();
     }
 
-    // Ctrl thread is QUIESCED at this point — not yet joined.  Step 12.5
-    // in `do_role_teardown` (`role_host_lifecycle.cpp`) ran
-    // `wait_for_quiescence()`, which guarantees the ctrl thread is
-    // outside its `with_active_loop` bracket (HEP-CORE-0031 §4.1, MD1
-    // fix).  Per the Thread Shutdown Contract, a thread outside its
-    // bracket MUST NOT touch BRC's pImpl, so destroying `broker_comm_`
-    // here is safe.  The actual `std::thread::join` happens later in
-    // `EngineHost<ApiT>::shutdown_()` Phase 3.  Deregistration done in
-    // step 9a.
-    if (broker_comm_)
-    {
-        broker_comm_->disconnect();
-        broker_comm_.reset();
-    }
+    // Wave-B M7: handler-mode teardown.  RoleHandler inside RoleAPIBase
+    // owns every BRC (1 for single-hub processor, 2 for dual-hub);
+    // api.stop_handler_threads() does the full signal/drain/disconnect/
+    // release sequence for all of them.  Safe AFTER do_role_teardown's
+    // Step 12.5 wait_for_quiescence (HEP-CORE-0031 §4.1, MD1 fix); the
+    // actual std::thread::join for master ctrl threads happens later in
+    // EngineHost::shutdown_() Phase 3.
+    if (has_api()) api().stop_handler_threads();
 
     // Close Tx/Rx queues (data-plane teardown happens inside RoleAPIBase).
     if (has_api())
