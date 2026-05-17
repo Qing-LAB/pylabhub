@@ -1455,6 +1455,119 @@ int role_api_base_hub_dead_master_exits_role()
         logger_module(), crypto_module(), zmq_module());
 }
 
+// ============================================================================
+// role_api_base_wait_for_role_dual_hub_fallthrough
+//   A3 (Wave-B M8 prep): Class B (role-bound) queries must fall
+//   through across all connections per HEP-CORE-0033 §18.3.
+//   Pre-A3 `wait_for_role` only polled `brc_for_role()` which
+//   returns `connections()[0].brc` — for dual-hub processor, a
+//   role registered on hub-B is invisible from the processor's
+//   query (which only asks hub-A).  Post-A3: iterate connections;
+//   first present-true answer wins.
+//
+//   Test pattern:
+//     - Spawn 2 brokers (hub-A, hub-B).
+//     - Register a "target" producer on hub-B ONLY.
+//     - Build dual-hub RoleHandler (connection[0] = hub-A,
+//       connection[1] = hub-B) for a "querier" role.
+//     - querier.wait_for_role(target_uid, timeout=1500).
+//     - Pre-A3: returns false (only asks hub-A; target is on hub-B).
+//     - Post-A3: returns true via fall-through to hub-B.
+//   Mutation sweep: revert iteration in wait_for_role → assertion
+//   fails on the returned boolean.
+// ============================================================================
+
+int role_api_base_wait_for_role_dual_hub_fallthrough()
+{
+    return run_gtest_worker(
+        []() {
+            BrokerService::Config cfg_a; cfg_a.endpoint = "tcp://127.0.0.1:0";
+            cfg_a.use_curve = false;
+            auto broker_a = start_broker_with_cfg(std::move(cfg_a));
+
+            BrokerService::Config cfg_b; cfg_b.endpoint = "tcp://127.0.0.1:0";
+            cfg_b.use_curve = false;
+            auto broker_b = start_broker_with_cfg(std::move(cfg_b));
+
+            // ── Register a "target" producer on hub-B only ────────────────
+            const std::string target_uid  = "prod.a3_target.uid00000099";
+            const std::string target_chan = make_test_channel_name("a3.target");
+            BrokerRequestComm target_brc;
+            BrokerRequestComm::Config target_cfg;
+            target_cfg.broker_endpoint = broker_b.endpoint;
+            target_cfg.role_uid        = target_uid;
+            target_cfg.role_name       = "a3_target";
+            ASSERT_TRUE(target_brc.connect(target_cfg));
+
+            // Spawn a poll thread so target_brc actually responds.
+            std::atomic<bool> target_running{true};
+            std::thread target_poll([&] {
+                target_brc.run_poll_loop([&]{ return target_running.load(); });
+            });
+
+            nlohmann::json target_reg;
+            target_reg["channel_name"]      = target_chan;
+            target_reg["pattern"]           = "PubSub";
+            target_reg["has_shared_memory"] = false;
+            target_reg["producer_pid"]      = static_cast<uint64_t>(::getpid());
+            target_reg["role_uid"]          = target_uid;
+            target_reg["role_name"]         = "a3_target";
+            auto target_reg_resp = target_brc.register_channel(target_reg, 3000);
+            ASSERT_TRUE(target_reg_resp.has_value());
+
+            // ── Build the querier with 2 presences (hub-A + hub-B) ────────
+            const std::string querier_uid  = "prod.a3_querier.uid00000001";
+            const std::string querier_ch_a = make_test_channel_name("a3.querier.a");
+            const std::string querier_ch_b = make_test_channel_name("a3.querier.b");
+
+            pylabhub::scripting::RoleHostCore core;
+            core.set_running(true);
+            pylabhub::scripting::RoleAPIBase api(core, "prod", querier_uid);
+            api.set_name("a3_querier");
+            api.set_auth("", "");
+
+            std::vector<pylabhub::scripting::Presence> presences;
+            {
+                pylabhub::scripting::Presence pa;
+                pa.hub.broker = broker_a.endpoint;
+                pa.channel    = querier_ch_a;
+                pa.role_kind  = pylabhub::scripting::RoleKind::Producer;
+                presences.push_back(std::move(pa));
+
+                pylabhub::scripting::Presence pb;
+                pb.hub.broker = broker_b.endpoint;
+                pb.channel    = querier_ch_b;
+                pb.role_kind  = pylabhub::scripting::RoleKind::Producer;
+                presences.push_back(std::move(pb));
+            }
+            auto handler = std::make_unique<pylabhub::scripting::RoleHandler>(
+                std::move(presences));
+            ASSERT_TRUE(api.start_handler_threads(std::move(handler)));
+            ASSERT_EQ(api.handler()->connections().size(), 2u);
+
+            // ── THE CORE A3 ASSERTION ────────────────────────────────────
+            // wait_for_role on target_uid must succeed via fall-through to
+            // hub-B, even though connection[0] is hub-A (which doesn't
+            // know about target_uid).  Pre-A3 this would return false.
+            EXPECT_TRUE(api.wait_for_role(target_uid, 2000))
+                << "A3 REGRESSION: wait_for_role failed to find a role "
+                   "registered on connection[1] (hub-B).  Class B routing "
+                   "must fall through across all connections per "
+                   "HEP-CORE-0033 §18.3.";
+
+            // ── Cleanup ───────────────────────────────────────────────────
+            api.stop_handler_threads();
+            target_running.store(false);
+            target_brc.stop();
+            target_poll.join();
+            target_brc.disconnect();
+            broker_a.stop_and_join();
+            broker_b.stop_and_join();
+        },
+        "role_state.role_api_base_wait_for_role_dual_hub_fallthrough",
+        logger_module(), crypto_module(), zmq_module());
+}
+
 } // namespace pylabhub::tests::worker::broker_role_state
 
 namespace
@@ -1503,6 +1616,8 @@ struct BrokerRoleStateWorkerRegistrar
                     return role_api_base_hub_dead_peer_keeps_role_alive();
                 if (scenario == "role_api_base_hub_dead_master_exits_role")
                     return role_api_base_hub_dead_master_exits_role();
+                if (scenario == "role_api_base_wait_for_role_dual_hub_fallthrough")
+                    return role_api_base_wait_for_role_dual_hub_fallthrough();
                 return 1;
             });
     }
