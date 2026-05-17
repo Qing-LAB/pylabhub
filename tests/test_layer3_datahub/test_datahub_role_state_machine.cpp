@@ -178,3 +178,24 @@ TEST_F(DatahubRoleStateMachineTest, RoleAPIBase_StartHandlerThreads_DualHub_E2E)
         {});
     ExpectWorkerOk(proc);
 }
+
+TEST_F(DatahubRoleStateMachineTest, RoleAPIBase_BandJoin_HandlerMode_Bootstrap)
+{
+    // A0 regression test (2026-05-17) — protects the bootstrap case
+    // of api.band_join() under handler-mode.  Post-M4f the legacy
+    // broker_channel fallback was deleted, but resolve_bc_for_band
+    // still relies on a "fall back to any connection" path for the
+    // first-time-join chicken-and-egg case (band_index_ is empty
+    // until on_band_joined fires AFTER a successful broker RPC).
+    // Without the fix, api.band_join returns std::nullopt without
+    // ever reaching the broker.  Pre-fix this test fails on the
+    // join_resp.has_value() assertion; post-fix the full round-trip
+    // succeeds + band_index_ is populated for subsequent band_*
+    // calls.  Coverage of api.band_join was lost during M4f when
+    // datahub_channel_group_workers.cpp's tests were migrated to
+    // call bc->band_join directly; this restores it at the public
+    // RoleAPIBase surface.
+    auto proc = SpawnWorker(
+        "broker_role_state.role_api_base_band_join_handler_mode", {});
+    ExpectWorkerOk(proc);
+}
