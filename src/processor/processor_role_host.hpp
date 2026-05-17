@@ -9,8 +9,16 @@
  * is_running(), wait_for_wakeup(), script_load_ok()).
  *
  * This class owns only processor-specific state:
- * - Layer 3: Infrastructure (BrokerRequestComm, InboxQueue, dual Rx+Tx queues
- *            via RoleAPIBase, ctrl_thread via start_ctrl_thread).
+ * - Layer 3: Infrastructure (InboxQueue, dual Rx+Tx queues via
+ *            RoleAPIBase, ctrl threads via api.start_handler_threads).
+ *            Post-M7 (Wave-B): broker connectivity is owned by the
+ *            RoleHandler inside RoleAPIBase.  The processor declares
+ *            a 2-presence list (1 Consumer on in_hub + 1 Producer on
+ *            out_hub); RoleHandler dedups by (broker_endpoint,
+ *            broker_pubkey) → 1 connection when both presences share
+ *            a hub (single-hub processor — the common case today),
+ *            2 connections when the hubs differ (dual-hub processor,
+ *            the M8 payoff).
  * - Layer 2: Data loop (dual-queue inner retry acquire, deadline wait,
  *            invoke, commit/release).
  *
@@ -31,7 +39,6 @@
 namespace pylabhub::hub
 {
 class InboxQueue;
-class BrokerRequestComm;
 } // namespace pylabhub::hub
 
 namespace pylabhub::processor
@@ -62,7 +69,8 @@ class PYLABHUB_UTILS_EXPORT ProcessorRoleHost final : public scripting::RoleHost
     //  in RoleHostBase and is reached via protected accessors.)
 
     // Infrastructure (created on worker thread in setup_infrastructure_).
-    std::unique_ptr<hub::BrokerRequestComm> broker_comm_;
+    // Wave-B M7: `broker_comm_` deleted — RoleHandler inside RoleAPIBase
+    // owns all BRCs (1 for single-hub, 2 for dual-hub via M3 dedup).
     std::unique_ptr<hub::InboxQueue>        inbox_queue_;
     config::InboxConfig                     inbox_cfg_;
 
