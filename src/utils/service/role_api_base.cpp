@@ -1153,11 +1153,19 @@ std::string RoleAPIBase::stop_reason() const    { return pImpl->core->stop_reaso
 
 std::optional<nlohmann::json> RoleAPIBase::band_join(const std::string &channel)
 {
-    // Wave-B M4e: Class D — route via handler when active.  band_join
-    // is the FIRST touch for a band; band_index_ is empty until
-    // on_band_joined() registers it below.  resolve_bc_for_band falls
-    // back to broker_channel (connections[0]) for the unregistered case.
-    auto *bc = pImpl->resolve_bc_for_band(channel);
+    // Class D — band_join is the BOOTSTRAP case: the handler's
+    // band_index_ is empty until on_band_joined() below registers it
+    // on a successful broker round-trip.  So `resolve_bc_for_band`
+    // returns nullptr here on first-time join.  Per HEP-CORE-0033
+    // §18.3, the role picks which hub to join the band on; pre-M5
+    // single-presence roles have one choice (any connection works),
+    // so route the initial REQ via `resolve_bc_for_role()` (returns
+    // connections()[0].brc).  M5+ multi-presence (processor) callers
+    // wanting to join a band on a specific hub will need explicit
+    // `api.in_hub.band_join` / `api.out_hub.band_join` accessors
+    // (out of scope here; same pattern as Class C).
+    auto *bc = pImpl->resolve_bc_for_band(channel);   // null on first-time join
+    if (!bc) bc = pImpl->resolve_bc_for_role();       // bootstrap fallback
     if (!bc)
         return std::nullopt;
     auto result = bc->band_join(channel);

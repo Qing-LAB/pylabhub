@@ -1169,6 +1169,94 @@ int role_api_base_start_handler_threads_dual_hub_e2e()
         logger_module(), crypto_module(), zmq_module());
 }
 
+// ============================================================================
+// role_api_base_band_join_handler_mode
+//   A0 regression test — protects the bootstrap case of api.band_join.
+//
+//   The bug: post-M4f, `resolve_bc_for_band(unknown_band)` returns nullptr
+//   (band_index_ is empty until on_band_joined fires AFTER a successful
+//   broker round-trip — chicken-and-egg).  Pre-M4f the legacy
+//   `broker_channel` fallback let band_join's initial REQ go out on
+//   connections[0]; M4f deleted the fallback without recognizing the
+//   bootstrap case.  This test was missing because all prior band L3
+//   coverage moved to `bc->band_join` direct calls in
+//   datahub_channel_group_workers.cpp during M4f migration.  Mutation
+//   sweep: revert the fix → `band_join` returns nullopt without
+//   contacting broker → this test fails on the has_value assertion.
+// ============================================================================
+
+int role_api_base_band_join_handler_mode()
+{
+    return run_gtest_worker(
+        []() {
+            BrokerService::Config bcfg;
+            bcfg.endpoint  = "tcp://127.0.0.1:0";
+            bcfg.use_curve = false;
+            auto broker = start_broker_with_cfg(std::move(bcfg));
+
+            const std::string role_uid = "prod.a0_band.uid00000001";
+            const std::string channel  = make_test_channel_name("a0.band");
+            const std::string band     = "test_band_a0";
+
+            pylabhub::scripting::RoleHostCore core;
+            core.set_running(true);
+
+            pylabhub::scripting::RoleAPIBase  api(core, "prod", role_uid);
+            api.set_name("a0_band");
+            api.set_channel(channel);
+            api.set_auth("", "");
+
+            pylabhub::config::HubRefConfig hub_cfg;
+            hub_cfg.broker = broker.endpoint;
+
+            std::vector<pylabhub::scripting::Presence> presences;
+            {
+                pylabhub::scripting::Presence p;
+                p.hub       = hub_cfg;
+                p.channel   = channel;
+                p.role_kind = pylabhub::scripting::RoleKind::Producer;
+                presences.push_back(std::move(p));
+            }
+            auto handler = std::make_unique<pylabhub::scripting::RoleHandler>(
+                std::move(presences));
+
+            ASSERT_TRUE(api.start_handler_threads(std::move(handler)));
+            ASSERT_NE(api.handler(), nullptr);
+
+            // BOOTSTRAP CASE — band has never been joined, so handler's
+            // band_index_ has no entry for it.  Pre-M4f: legacy
+            // broker_channel fallback carried the REQ.  Post-M4f-without-fix:
+            // resolve_bc_for_band returns nullptr → band_join returns
+            // nullopt without ever talking to broker (the bug).
+            auto join_resp = api.band_join(band);
+            ASSERT_TRUE(join_resp.has_value())
+                << "REGRESSION: api.band_join() returned nullopt without "
+                   "contacting broker.  Bootstrap case is broken — "
+                   "resolve_bc_for_band has no fallback for un-joined bands "
+                   "post-M4f.  Fix: route bootstrap via resolve_bc_for_role.";
+            EXPECT_EQ(join_resp->value("status", std::string{}), "success");
+
+            // Post-success: handler's band_index_ MUST be populated so
+            // subsequent band_* ops route to the same BRC.
+            ASSERT_NE(api.handler()->brc_for_band(band), nullptr)
+                << "band_index_ must be populated after successful band_join";
+
+            // Now exercise band_leave to confirm the round-trip works
+            // end-to-end and the band index gets cleared.
+            auto leave_resp = api.band_leave(band);
+            EXPECT_TRUE(leave_resp.has_value())
+                << "band_leave must succeed for a joined band";
+            EXPECT_EQ(leave_resp->value("status", std::string{}), "success");
+            EXPECT_EQ(api.handler()->brc_for_band(band), nullptr)
+                << "band_index_ must be cleared after band_leave";
+
+            api.stop_handler_threads();
+            broker.stop_and_join();
+        },
+        "role_state.role_api_base_band_join_handler_mode",
+        logger_module(), crypto_module(), zmq_module());
+}
+
 } // namespace pylabhub::tests::worker::broker_role_state
 
 namespace
@@ -1211,6 +1299,8 @@ struct BrokerRoleStateWorkerRegistrar
                     return role_api_base_start_handler_threads_e2e();
                 if (scenario == "role_api_base_start_handler_threads_dual_hub_e2e")
                     return role_api_base_start_handler_threads_dual_hub_e2e();
+                if (scenario == "role_api_base_band_join_handler_mode")
+                    return role_api_base_band_join_handler_mode();
                 return 1;
             });
     }
