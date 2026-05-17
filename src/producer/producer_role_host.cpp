@@ -31,6 +31,8 @@
 #include "utils/zmq_poll_loop.hpp"
 #include "utils/role_host_lifecycle.hpp"
 #include "utils/role_reg_payload.hpp"
+#include "utils/role_handler.hpp"     // Wave-B M5: handler-mode startup
+#include "utils/role_presence.hpp"    // Wave-B M5: Presence + RoleKind
 #include "utils/schema_utils.hpp"
 #include "utils/lifecycle.hpp"
 
@@ -197,10 +199,10 @@ void ProducerRoleHost::worker_main_()
     if (!core_.is_validate_only())
     {
         api_ref.set_inbox_queue(inbox_queue_.get());
-
-        // Create BrokerRequestComm (connection deferred to step 6).
-        broker_comm_ = std::make_unique<hub::BrokerRequestComm>();
-        api_ref.set_broker_comm(broker_comm_.get());
+        // Wave-B M5: BrokerRequestComm allocation moved into RoleHandler,
+        // built lazily in Step 6 below.  The role host no longer owns a
+        // BRC unique_ptr; api.start_handler_threads takes ownership of
+        // the RoleHandler which owns one BRC per HubConnection.
     }
     api_ref.set_checksum_policy(config_.checksum().policy);
     api_ref.set_stop_on_script_error(sc.stop_on_script_error);
@@ -256,24 +258,46 @@ void ProducerRoleHost::worker_main_()
     if (api_ref.has_tx_side() && core_.has_tx_fz())
         api_ref.sync_tx_flexzone_checksum();
 
-    // ── Step 6: Connect to broker, start ctrl thread, register ────────────
+    // ── Step 6: Connect to broker, start handler ctrl thread(s), register
+    // (Wave-B M5 — handler-mode replaces legacy start_ctrl_thread).
     core_.set_running(true);
     {
-        // HEP-CORE-0034 Phase 5c — broker-comm config builder.
-        auto bc_cfg = scripting::make_broker_comm_config(
-            config_.out_hub(), config_.auth(), id.uid, id.name);
+        // 6a — Build the role's presence list: 1 producer presence on
+        // the configured out_hub.  Per HEP-CORE-0033 §19, even single-
+        // presence roles go through RoleHandler so the routing helpers
+        // (resolve_bc_for_channel/role/band) work uniformly with the
+        // dual-hub processor shape that lands in M8.
+        std::vector<scripting::Presence> presences;
+        {
+            scripting::Presence p;
+            p.hub       = config_.out_hub();
+            p.channel   = config_.out_channel();
+            p.role_kind = scripting::RoleKind::Producer;
+            presences.push_back(std::move(p));
+        }
 
-        scripting::RoleAPIBase::CtrlThreadConfig ctrl_cfg;
-        ctrl_cfg.heartbeat_interval_ms = config_.timing().heartbeat_interval_ms;
-        // M1.4 (2026-05-11): no separate metrics-report tick — metrics
-        // piggyback on the heartbeat tick.  HEP-CORE-0019 §2.3 Phase 6.
+        // 6b — Auth: handler reads identity (uid/name) + CURVE keys
+        // (if any) from `api` during start_connections.
+        api_ref.set_auth(config_.auth().client_pubkey,
+                         config_.auth().client_seckey);
 
-        // Build producer registration payload (REG_REQ) via the shared
-        // helper (HEP-CORE-0034 Phase 5b).  Channel/identity/transport
-        // fields here; schema fields layered on below.
+        auto handler = std::make_unique<scripting::RoleHandler>(
+            std::move(presences));
+
+        if (!api_ref.start_handler_threads(std::move(handler)))
+        {
+            LOGGER_ERROR("[prod] start_handler_threads failed");
+            promise_ref.set_value(false);
+            return;
+        }
+
+        // 6c — Build REG_REQ payload (HEP-CORE-0034 Phase 5b).  Channel /
+        // identity / transport fields, then schema (§10.1), then inbox
+        // (§10.2).  Layered builder pattern identical to the pre-M5 code
+        // — only the dispatch target (api.register_producer_channel
+        // instead of bundling inside ctrl_cfg) changed.
         const auto &ch  = config_.out_channel();
         const auto &shm = config_.out_shm();
-
         hub::ProducerRegInputs reg_in;
         reg_in.channel           = ch;
         reg_in.role_uid          = id.uid;
@@ -282,26 +306,37 @@ void ProducerRoleHost::worker_main_()
         reg_in.has_shm           = shm.enabled;
         reg_in.is_zmq_transport  = (tr.transport == config::Transport::Zmq);
         reg_in.zmq_node_endpoint = tr.zmq_endpoint;
-        ctrl_cfg.producer_reg_opts = hub::build_producer_reg_payload(reg_in);
+        auto reg_opts = hub::build_producer_reg_payload(reg_in);
 
-        // HEP-CORE-0034 §10.1 — schema fields (Phase 5a wire population).
-        // The producer's slot/flexzone SchemaSpecs were resolved at Step 1
-        // above; here we serialize them onto the wire so the broker can
-        // run Stage-2 fingerprint verification (broker_service.cpp's
-        // FINGERPRINT_INCONSISTENT gate).  Backward compat: roles with
-        // no slot/flexzone schema produce empty fields → broker takes
-        // the legacy/anonymous path.
+        // Schema fields (HEP-CORE-0034 §10.1).  Empty fields → broker
+        // takes the legacy/anonymous path.
         const auto wire_schema = hub::make_wire_schema_fields(
             pf.out_slot_schema_json, out_slot_spec_, core_.out_fz_spec());
-        hub::apply_producer_schema_fields(ctrl_cfg.producer_reg_opts, wire_schema);
+        hub::apply_producer_schema_fields(reg_opts, wire_schema);
 
-        if (inbox_cfg_.has_inbox())
-            ctrl_cfg.inbox = inbox_cfg_;
+        // Inbox metadata (HEP-CORE-0034 §10.2; no-op if no inbox).
+        api_ref.append_inbox_to_reg(reg_opts, inbox_cfg_);
 
-        if (!api_ref.start_ctrl_thread(bc_cfg, ctrl_cfg))
+        // 6d — REG_REQ + heartbeat install (the post-spawn block legacy
+        // start_ctrl_thread ran internally; explicit at this layer in
+        // handler-mode).  register_producer_channel auto-records the
+        // channel into shared.producer_channel for dereg bookkeeping
+        // (Wave-B M5 auto-record).
+        auto reg_result = api_ref.register_producer_channel(reg_opts);
+        if (!reg_result.has_value() ||
+            reg_result->value("status", std::string{}) != "success")
         {
-            LOGGER_ERROR("[prod] Broker registration failed — consumers won't discover this producer");
-            // Non-fatal: producer can still operate locally without broker discovery.
+            LOGGER_ERROR("[prod] Broker registration failed — "
+                         "consumers won't discover this producer");
+            // Non-fatal: producer can still operate locally without
+            // broker discovery.  No heartbeat install in this branch —
+            // hub liveness tracking won't see this role anyway.
+        }
+        else
+        {
+            auto hub_max = scripting::RoleAPIBase::extract_hub_heartbeat_max(*reg_result);
+            api_ref.install_heartbeat(config_.timing().heartbeat_interval_ms,
+                                       hub_max);
         }
     }
 
@@ -459,20 +494,16 @@ void ProducerRoleHost::teardown_infrastructure_()
         inbox_queue_.reset();
     }
 
-    // Ctrl thread is QUIESCED at this point — not yet joined.  Step 12.5
-    // in `do_role_teardown` (`role_host_lifecycle.cpp`) ran
-    // `wait_for_quiescence()`, which guarantees the ctrl thread is
-    // outside its `with_active_loop` bracket (HEP-CORE-0031 §4.1, MD1
-    // fix).  Per the Thread Shutdown Contract, a thread outside its
-    // bracket MUST NOT touch BRC's pImpl, so destroying `broker_comm_`
-    // here is safe.  The actual `std::thread::join` happens later in
-    // `EngineHost<ApiT>::shutdown_()` Phase 3.  Deregistration done in
-    // step 9a.
-    if (broker_comm_)
-    {
-        broker_comm_->disconnect();
-        broker_comm_.reset();
-    }
+    // Wave-B M5: handler-mode teardown.  The role host no longer owns a
+    // broker_comm_ unique_ptr — the RoleHandler inside RoleAPIBase owns
+    // every BRC.  api.stop_handler_threads() does the full sequence:
+    // clear the legacy fallback view, signal each BRC, drain peer
+    // ctrl threads via the §4.1 bracket contract, disconnect + release
+    // BRCs, then reset the handler unique_ptr.  Safe to call multiple
+    // times (idempotent) and after do_role_teardown's Step 12.5 already
+    // signalled quiescence.  The actual std::thread::join for master
+    // ctrl threads happens later in EngineHost::shutdown_() Phase 3.
+    if (has_api()) api().stop_handler_threads();
 
     // Close producer (data-plane queue teardown happens inside RoleAPIBase).
     if (has_api())

@@ -9,8 +9,11 @@
  * is_running(), wait_for_wakeup(), script_load_ok()).
  *
  * This class owns only producer-specific state:
- * - Layer 3: Infrastructure (BrokerRequestComm, InboxQueue, producer-side
- *            queue via RoleAPIBase, ctrl_thread_ via start_ctrl_thread).
+ * - Layer 3: Infrastructure (InboxQueue, producer-side queue via
+ *            RoleAPIBase, ctrl threads via api.start_handler_threads).
+ *            Post-M5: broker connectivity is owned by the RoleHandler
+ *            inside RoleAPIBase (one BRC per HubConnection); the
+ *            role host no longer holds a `broker_comm_` member.
  * - Layer 2: Data loop (inner retry acquire, deadline wait, invoke, commit).
  *
  * The script engine (Layer 1) is injected via RoleHostBase.
@@ -30,7 +33,6 @@
 namespace pylabhub::hub
 {
 class InboxQueue;
-class BrokerRequestComm;
 } // namespace pylabhub::hub
 
 namespace pylabhub::producer
@@ -66,7 +68,10 @@ class PYLABHUB_UTILS_EXPORT ProducerRoleHost final : public scripting::RoleHostB
     //  in RoleHostBase and is reached via protected accessors.)
 
     // Infrastructure (created on worker thread in setup_infrastructure_).
-    std::unique_ptr<hub::BrokerRequestComm> broker_comm_;
+    // Wave-B M5: `broker_comm_` deleted — broker connectivity is owned
+    // by the RoleHandler inside RoleAPIBase (created lazily in worker_main_
+    // Step 6 and consumed by api.start_handler_threads).  The role host
+    // no longer holds a `unique_ptr<BrokerRequestComm>`.
     std::unique_ptr<hub::InboxQueue>        inbox_queue_;
     config::InboxConfig                     inbox_cfg_;  ///< Resolved copy.
 
