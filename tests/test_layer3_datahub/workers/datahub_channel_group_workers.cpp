@@ -285,9 +285,14 @@ int roleapi_channel()
     core1.set_running(true);
     core2.set_running(true);
 
-    auto api1 = std::make_unique<scripting::RoleAPIBase>(core1, "role_a", "prod.role.a.uid00000100");
-    auto api2 = std::make_unique<scripting::RoleAPIBase>(core2, "role_b", "prod.role.b.uid00000200");
-
+    // Wave-B M4f: this test exercises broker-side channel-group
+    // behaviour, not RoleAPIBase routing.  Drive the BRCs directly
+    // rather than going through RoleAPIBase — which post-M4f no
+    // longer carries a legacy `broker_channel` view (handler-mode
+    // is the only path).  Constructing a real RoleHandler here
+    // would require a Presence list + start_handler_threads + a
+    // real engine to bracket the ctrl thread, which is wildly
+    // out of scope for this test's actual goal.
     auto bc1 = std::make_unique<BrokerRequestComm>();
     auto bc2 = std::make_unique<BrokerRequestComm>();
 
@@ -302,9 +307,6 @@ int roleapi_channel()
     bc_cfg.role_uid = "prod.role.b.uid00000200";
     bc_cfg.role_name = "role_b";
     EXPECT_TRUE(bc2->connect(bc_cfg));
-
-    api1->set_broker_comm(bc1.get());
-    api2->set_broker_comm(bc2.get());
 
     // Start broker threads (uses start_broker_thread which wires notifications).
     // We need a minimal engine for ThreadEngineGuard — use NativeEngine stub.
@@ -332,11 +334,11 @@ int roleapi_channel()
     std::thread t2([&] { bc2->run_poll_loop([&] { return running2.load(); }); });
 
     // Role A joins channel via RoleAPIBase.
-    auto join1 = api1->band_join("!api_test_ch");
+    auto join1 = bc1->band_join("!api_test_ch");
     EXPECT_TRUE(join1.has_value()) << "band_join failed";
 
     // Role B joins — Role A should get BAND_JOIN_NOTIFY.
-    auto join2 = api2->band_join("!api_test_ch");
+    auto join2 = bc2->band_join("!api_test_ch");
     EXPECT_TRUE(join2.has_value());
 
     // Wait for notification to arrive in core1's message queue.
@@ -354,7 +356,7 @@ int roleapi_channel()
     EXPECT_TRUE(got_notify) << "BAND_JOIN_NOTIFY not received in core1";
 
     // Role A sends a channel message via RoleAPIBase.
-    api1->band_broadcast("!api_test_ch", {{"action", "start"}, {"seq", 1}});
+    bc1->band_broadcast("!api_test_ch", {{"action", "start"}, {"seq", 1}});
 
     // Wait for Role B to receive BAND_BROADCAST_NOTIFY.
     bool got_msg = pylabhub::tests::helper::poll_until(
@@ -371,7 +373,7 @@ int roleapi_channel()
     EXPECT_TRUE(got_msg) << "BAND_BROADCAST_NOTIFY not received in core2";
 
     // Query members via RoleAPIBase.
-    auto members = api1->band_members("!api_test_ch");
+    auto members = bc1->band_members("!api_test_ch");
     EXPECT_TRUE(members.has_value());
     if (members)
     {
@@ -380,7 +382,7 @@ int roleapi_channel()
     }
 
     // Leave via RoleAPIBase.  Post-Bucket-C: returns optional<json>.
-    auto leave_resp = api1->band_leave("!api_test_ch");
+    auto leave_resp = bc1->band_leave("!api_test_ch");
     EXPECT_TRUE(leave_resp.has_value() &&
                 leave_resp->value("status", std::string{}) == "success");
 

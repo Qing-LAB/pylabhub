@@ -18,8 +18,8 @@
 
 #include "pylabhub_utils_export.h"
 #include "utils/timeout_constants.hpp"
-#include "utils/broker_request_comm.hpp"   // hub::BrokerRequestComm (for Config in start_ctrl_thread)
-#include "utils/config/inbox_config.hpp"   // config::InboxConfig (for CtrlThreadConfig)
+#include "utils/broker_request_comm.hpp"   // hub::BrokerRequestComm (handler/Class A/B/D dispatch returns this ptr)
+#include "utils/config/inbox_config.hpp"   // config::InboxConfig (append_inbox_to_reg)
 #include "utils/data_block.hpp"            // DataBlockConfig (for TxQueueOptions::shm_config)
 #include "utils/data_block_policy.hpp"     // hub::ChecksumPolicy
 #include "utils/hub_zmq_queue.hpp"         // hub::OverflowPolicy, kZmqDefaultBufferDepth
@@ -42,7 +42,7 @@ namespace pylabhub::hub
 class InboxQueue;
 class InboxClient;
 class SharedSpinLock;
-// BrokerRequestComm: full definition from broker_request_comm.hpp (needed for Config in start_ctrl_thread).
+// BrokerRequestComm: full definition from broker_request_comm.hpp (handler/Class A/B/D dispatch returns this ptr).
 
 // ============================================================================
 // Queue options
@@ -420,79 +420,28 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     /// the ctor signature (role_tag + uid are required positional args).
     [[nodiscard]] pylabhub::utils::ThreadManager &thread_manager();
 
-    // ── Broker communication (control plane) ────────────────────────────────
-
-    /// Set the BrokerRequestComm (owned externally by role host).
-    void set_broker_comm(hub::BrokerRequestComm *bc);
-
-    /// Configuration for the control thread (broker communication).
-    struct CtrlThreadConfig
-    {
-        int  heartbeat_interval_ms{::pylabhub::kDefaultHeartbeatIntervalMs};
-        // M1.4 (2026-05-11): `report_metrics` field deleted.  Metrics
-        // piggyback on the heartbeat tick per HEP-CORE-0019 §2.3 Phase 6;
-        // no separate periodic task needed.  Setters in
-        // consumer_role_host.cpp / producer_role_host.cpp /
-        // processor_role_host.cpp also deleted.
-
-        /// Registration payload (REG_REQ for producers, CONSUMER_REG_REQ for
-        /// consumers). Empty = skip registration. Role host builds this JSON
-        /// from its config before calling start_ctrl_thread().
-        nlohmann::json producer_reg_opts{};   ///< Non-empty → send REG_REQ
-        nlohmann::json consumer_reg_opts{};   ///< Non-empty → send CONSUMER_REG_REQ
-
-        /// Inbox config (optional). If has_inbox(), start_ctrl_thread
-        /// appends inbox fields to the registration payload automatically.
-        /// actual_endpoint is queried from the InboxQueue set via set_inbox_queue().
-        std::optional<config::InboxConfig> inbox{};
-    };
-
-    /// Connect to broker, start the control thread (poll loop + heartbeat),
-    /// and register with the broker.
-    ///
-    /// Sequence:
-    ///   1. broker_comm_->connect(connect_cfg)
-    ///   2. Wire on_notification + on_hub_dead callbacks
-    ///   3. Spawn "ctrl" thread (periodic heartbeat + poll loop)
-    ///   4. Send REG_REQ / CONSUMER_REG_REQ (blocking, from main thread)
-    ///
-    /// @param connect_cfg  BRC connection config (endpoint, pubkey, etc.)
-    /// @param cfg          Heartbeat interval, metrics, registration payloads.
-    /// @return true if connection and registration succeeded.
-    bool start_ctrl_thread(const hub::BrokerRequestComm::Config &connect_cfg,
-                           const CtrlThreadConfig &cfg);
-
-    // ── Handler-mode control plane (Wave-B M4c) ──────────────────────────────
+    // ── Handler-mode control plane (Wave-B M4c, sole path after M4f) ────────
     //
-    // Replacement for the single-BRC `start_ctrl_thread` path: spawns
-    // one ctrl thread per `RoleHandler::connections()` entry.  The
-    // first thread is master (HEP-CORE-0031 §4.2.1), the rest are
-    // peers.  The legacy `start_ctrl_thread` and these methods are
-    // MUTUALLY EXCLUSIVE — only one of them may be called per
-    // RoleAPIBase instance.  An atomicity guard enforces this:
-    // calling either method a second time (handler-mode or legacy)
-    // returns false and logs an ERROR.  Per HEP-CORE-0031 §4.3.6:
-    // "Legacy `ctrl` must retire atomically with introducing the
-    // first `handler_ctrl_0` master."  The guard makes that rule
-    // unviolatable.
+    // Spawns one ctrl thread per `RoleHandler::connections()` entry.
+    // First thread is master (HEP-CORE-0031 §4.2.1), the rest are peers.
+    // Single-shot per RoleAPIBase instance — a second call is refused
+    // with a WARN log.
     //
-    // M4c sets `pImpl->broker_channel = handler->connections()[0].brc.get()`
-    // as a legacy fallback view, so the 24 unmigrated call sites that
-    // still dereference `pImpl->broker_channel` continue to work.
-    // M4d/e migrate those call sites to route via
-    // `handler->brc_for_channel/role/band(...)`.  M4f removes the
-    // fallback + the legacy `set_broker_comm` / `start_ctrl_thread`
-    // path.
+    // Pre-M4f, the legacy `start_ctrl_thread` / `set_broker_comm` /
+    // `pImpl->broker_channel` fallback view co-existed during the M5/
+    // M6/M7 role-host migration window.  M4f deleted those entirely
+    // once every production role host (producer/consumer/processor)
+    // moved to `start_handler_threads`.  Class A/B/D routing helpers
+    // (`resolve_bc_for_channel/role/band`) now go through handler-mode
+    // only; no fallback path remains.
 
     /// Take ownership of `handler`, connect each `HubConnection`'s
     /// BRC, install per-BRC notification + hub-dead callbacks, and
-    /// spawn one ctrl thread per connection (first = master).  Sets
-    /// `pImpl->broker_channel` to the first connection's BRC as the
-    /// legacy fallback view.
+    /// spawn one ctrl thread per connection (first = master).
     ///
-    /// Atomicity: refuses (returns false + ERROR log) if any ctrl
-    /// thread (handler-mode or legacy) is already running on this
-    /// RoleAPIBase.  Single-shot per instance.
+    /// Atomicity: refuses (returns false + WARN log) if ctrl threads
+    /// are already running on this RoleAPIBase.  Single-shot per
+    /// instance.
     ///
     /// Diagnostics: emits per-step INFO logs so the spawn sequence
     /// across N threads is observable in test + production logs.
@@ -501,35 +450,29 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     [[nodiscard]] bool start_handler_threads(std::unique_ptr<RoleHandler> handler);
 
     /// Symmetric teardown: signal each BRC's poll loop, drain the
-    /// ThreadManager via the §4.1 bracket contract, clear the
-    /// legacy fallback view, then disconnect + release BRCs, then
-    /// release the handler.  Idempotent + `noexcept`.
+    /// ThreadManager via the §4.1 bracket contract, disconnect +
+    /// release BRCs, then release the handler.  Idempotent + `noexcept`.
     ///
     /// Thread context: MUST be called from the owning thread (the
     /// role-host worker thread driving teardown, or the
     /// construction context if the role was never started end-to-end).
-    /// Concurrent invocation with other threads dereferencing
-    /// `pImpl->broker_channel` (via `register_producer_channel`,
-    /// `discover_channel`, etc.) is undefined — there is no lock
-    /// around the fallback-view raw pointer.  The production teardown
-    /// sequence calls this from the worker thread inside
-    /// `do_role_teardown`, where no concurrent reader exists.
+    /// Concurrent invocation with other readers of `handler()` is
+    /// undefined.  The production teardown sequence calls this from
+    /// the worker thread inside `do_role_teardown`, where no
+    /// concurrent reader exists.
     void stop_handler_threads() noexcept;
 
-    /// Mode-aware "signal ctrl threads to exit poll loop" — the
-    /// non-destructive signal used by `do_role_teardown` Step 12.
-    ///   - Handler-mode: calls `brc->stop()` on every connection's BRC
-    ///     so all N handler_ctrl_* threads observe the stop flag in
-    ///     their next poll iteration.
-    ///   - Legacy mode: calls `broker_channel->stop()` (the single
-    ///     pre-Wave-B BRC).
-    ///   - No-op if neither path is active (e.g. validate-only run).
+    /// Non-destructive "signal ctrl threads to exit poll loop" — the
+    /// signal used by `do_role_teardown` Step 12.  Calls `brc->stop()`
+    /// on every connection's BRC so all N handler_ctrl_* threads
+    /// observe the stop flag in their next poll iteration.  No-op
+    /// when no handler is attached (validate-only run, or after
+    /// `stop_handler_threads()`).
     ///
     /// Does NOT join threads, disconnect sockets, or release BRCs —
-    /// that's `stop_handler_threads()` for handler-mode or the
-    /// role-host's `teardown_infrastructure_()` callback for legacy.
-    /// Safe to call multiple times; safe to call before any thread
-    /// is spawned (it's the "make sure no poll loop is wedged" signal).
+    /// that's `stop_handler_threads()`.  Safe to call multiple times;
+    /// safe to call before any thread is spawned (it's the "make
+    /// sure no poll loop is wedged" signal).
     void stop_ctrl_for_teardown() noexcept;
 
     /// Read-only access to the handler (for migration sites that
@@ -546,13 +489,12 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     [[nodiscard]] RoleHandler *handler() const noexcept;
 
     /// Negotiate the heartbeat cadence with the hub + install the
-    /// periodic tick on the ctrl thread.  Wave-B M5 split-out of the
-    /// post-REG portion of legacy `start_ctrl_thread` so handler-mode
-    /// role hosts can call:
+    /// periodic tick on the master ctrl thread.  Called from the
+    /// role host after `start_handler_threads` + register_*_channel:
     ///     api.start_handler_threads(handler);
     ///     auto reg = api.register_producer_channel(opts);
     ///     api.install_heartbeat(cfg_ms,
-    ///                            extract_hub_heartbeat_max_ms(reg));
+    ///                            extract_hub_heartbeat_max(reg));
     ///
     /// Cadence policy (HEP-CORE-0023 §2.5): effective_ms =
     /// `min(role_cfg_ms, hub_max_ms)`.  If role exceeds hub's max, a
@@ -561,17 +503,17 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     /// If `hub_max_ms` is nullopt (hub didn't advertise a max), the
     /// role's configured cadence is used as-is.
     ///
-    /// Routing: schedules the tick on the FIRST connection's BRC in
-    /// handler-mode, on `broker_channel` in legacy mode.  The tick
-    /// body (`on_heartbeat_tick_`) routes each per-presence heartbeat
-    /// per-channel via `pImpl->resolve_bc_for_channel`, so the choice
-    /// of scheduling BRC is just "which thread runs the timer" — the
-    /// actual heartbeat wire frames go out on the correct BRC per
-    /// presence.
+    /// Routing: schedules the tick on the FIRST connection's BRC
+    /// (the master).  The tick body (`on_heartbeat_tick_`) routes
+    /// each per-presence heartbeat per-channel via
+    /// `pImpl->resolve_bc_for_channel`, so the choice of scheduling
+    /// BRC is just "which thread runs the timer" — the actual
+    /// heartbeat wire frames go out on the correct BRC per presence
+    /// (dual-hub processor → 2 BRCs, single-hub → 1 BRC).
     ///
     /// Idempotent within a single ctrl-thread lifetime; calling twice
     /// reinstalls the periodic task on the same slot (no leak).  Must
-    /// be called AFTER `start_handler_threads` or `start_ctrl_thread`.
+    /// be called AFTER `start_handler_threads`.
     ///
     /// @param role_cfg_ms  Role's preferred cadence (from config).
     /// @param hub_max_ms_opt Hub's tolerated max (parsed from REG_ACK
@@ -596,10 +538,8 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     /// inbox queue has been wired via `set_inbox_queue` (handler-mode
     /// role hosts MUST call `set_inbox_queue` before this method).
     ///
-    /// Wave-B M5 split-out of the `append_inbox` lambda that legacy
-    /// `start_ctrl_thread` ran internally between build_*_reg_payload
-    /// and register_*_channel.  Handler-mode role hosts (M5+) call
-    /// this directly:
+    /// Role hosts call this between `build_*_reg_payload` and
+    /// `register_*_channel`:
     ///
     ///     auto reg = hub::build_producer_reg_payload(...);
     ///     api.append_inbox_to_reg(reg, inbox_cfg);
@@ -607,11 +547,13 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     void append_inbox_to_reg(nlohmann::json &opts,
                               const config::InboxConfig &inbox_cfg) const;
 
-    /// Explicitly deregister from broker while the ctrl thread is still
-    /// running to process the command — call BEFORE the RoleAPIBase is
-    /// destroyed (the destructor's ThreadManager drain() will join ctrl).
-    /// Sends DEREG_REQ and/or CONSUMER_DEREG_REQ for whatever was registered
-    /// in start_ctrl_thread().
+    /// Explicitly deregister from broker while the ctrl threads are still
+    /// running to process the command — call BEFORE `stop_handler_threads()`
+    /// (which signals ctrl threads to exit; pending DEREG RPCs would
+    /// then hang waiting for an ACK that no thread will deliver).
+    /// Sends DEREG_REQ and/or CONSUMER_DEREG_REQ for whatever was recorded
+    /// in `shared.{producer,consumer}_channel` by the matching register_*
+    /// calls.
     void deregister_from_broker();
 
     // ── Broker protocol helpers (require ctrl thread running) ────────────

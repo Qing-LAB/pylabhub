@@ -59,7 +59,6 @@ struct RoleAPIBase::Impl
     std::unique_ptr<hub::QueueReader> rx_queue;
     hub::InboxQueue          *inbox_queue{nullptr};
     ScriptEngine             *engine{nullptr};
-    hub::BrokerRequestComm *broker_channel{nullptr};
 
     // ── Thread-local / set-once-before-spawn state ─────────────────────
     //
@@ -67,7 +66,7 @@ struct RoleAPIBase::Impl
     //   (a) set in the RoleAPIBase ctor (role_tag, uid), or
     //   (b) set via the role host's startup wiring (build_tx_queue,
     //       set_channel, set_name, set_engine, ...) which runs BEFORE
-    //       `start_ctrl_thread()` spawns any other thread.
+    //       `start_handler_threads()` spawns any other thread.
     //
     // The thread spawn itself is the happens-before synchronization
     // point — readers on the ctrl thread (e.g. `on_heartbeat_tick_`
@@ -157,96 +156,54 @@ struct RoleAPIBase::Impl
     // eagerly in the Impl ctor from role_tag + uid.
     std::unique_ptr<pylabhub::utils::ThreadManager> thread_mgr_;
 
-    // Wave-B M4c: RoleHandler-mode network surface.  Either:
-    //   (a) `handler_` is non-null + `ctrl_threads_started_ == true`
-    //       (handler-mode active; N ctrl threads polling N BRCs).
-    //   (b) `handler_` is null + `ctrl_threads_started_ == true`
-    //       (legacy `start_ctrl_thread` path active; 1 ctrl thread
-    //       polling `broker_channel`).
-    //   (c) Both null/false (neither path active).
-    // `start_handler_threads` and `start_ctrl_thread` both flip
-    // `ctrl_threads_started_` to true on success.  Second call to
-    // either method is refused.
+    // RoleHandler-mode network surface (Wave-B M4c; sole path after M4f).
+    //   (a) `handler_` non-null + `ctrl_threads_started_ == true`:
+    //       handler-mode active; N ctrl threads polling N BRCs.
+    //   (b) `handler_` null + `ctrl_threads_started_ == false`:
+    //       validate-only run, or post-stop_handler_threads.
+    // `start_handler_threads` flips `ctrl_threads_started_` to true on
+    // success; a second call is refused (single-shot per instance).
     std::unique_ptr<RoleHandler> handler_;
     bool                         ctrl_threads_started_{false};
 
     // Optional hook for role-specific metrics injection.
     std::function<void(nlohmann::json &)> metrics_hook;
 
-    // Wave-B M4d: route a Class A (channel-bound) operation to the
-    // right BrokerRequestComm.
+    // Wave-B M4d/M4e/M4f: route a Class A/B/D operation to the right
+    // BrokerRequestComm via the handler's index.  Returns nullptr if
+    // the handler isn't attached (validate-only / post-stop), if the
+    // handler's lookup misses (e.g. DISC_REQ for a channel not in our
+    // presence list, or band_* for a band we haven't joined), or if
+    // start_handler_threads hasn't run.  Class A/B/D call sites
+    // handle nullptr via the existing `if (!bc || !bc->is_connected())`
+    // guards — same shape as the pre-M4 `if (!bc)` guards they replaced.
     //
-    //   Handler-mode (handler_ != nullptr):
-    //     Look up `channel` in the handler's channel_index_.  Found →
-    //     return that presence's BRC.  Not found (e.g. DISC_REQ
-    //     asking about a channel not in our role's presence list) →
-    //     fall back to `broker_channel` (the legacy fallback view,
-    //     pointing at connections[0]'s BRC — same hub for single-hub
-    //     roles, whichever connection was first for dual-hub).
-    //
-    //   Legacy mode (handler_ == nullptr):
-    //     Return `broker_channel` directly.
-    //
-    // Both modes return nullptr if no BRC is available yet (no
-    // start_*_threads call yet, or post-stop_handler_threads).  Class A
-    // call sites then early-return like the pre-migration `if (!bc)`
-    // guard did.
-    //
-    // M4d migrates the role-api Class A surface (register / deregister /
-    // discover / heartbeat) to call this helper instead of touching
-    // `broker_channel` directly.  M4e migrates Class B/C/D; M4f deletes
-    // `broker_channel` once no caller references it.
+    // Per HEP-CORE-0033 §18.3:
+    //   - Class A (channel-bound): handler->brc_for_channel(channel)
+    //     hashes via channel_index_ → presence → connection.
+    //   - Class B (role-bound): handler->brc_for_role() returns the
+    //     first connection's BRC (any connection suffices for role-
+    //     scope queries).  Full multi-hub fall-through is M5+ scope.
+    //   - Class D (band-bound): handler->brc_for_band(band) hashes
+    //     via band_index_ (populated by on_band_joined() on a
+    //     successful band_join RPC).
+
     [[nodiscard]] hub::BrokerRequestComm *
     resolve_bc_for_channel(const std::string &channel) const noexcept
     {
-        if (handler_)
-        {
-            if (auto *bc = handler_->brc_for_channel(channel))
-                return bc;
-        }
-        return broker_channel;
+        return handler_ ? handler_->brc_for_channel(channel) : nullptr;
     }
 
-    // Wave-B M4e: Class B (role-bound) — per HEP-CORE-0033 §18.3,
-    // role-scope queries (query_role_info / query_role_presence /
-    // open_inbox's lookup) fall through to any connection.  Today
-    // returns the first connection's BRC (via handler->brc_for_role()
-    // in handler-mode, else broker_channel).  Full multi-hub fall-
-    // through (try each connection until one returns a non-empty
-    // result) is M5+ work; pre-M5 single-hub callers see identical
-    // behaviour because the fallback view IS connections[0].
     [[nodiscard]] hub::BrokerRequestComm *
     resolve_bc_for_role() const noexcept
     {
-        if (handler_)
-        {
-            if (auto *bc = handler_->brc_for_role())
-                return bc;
-        }
-        return broker_channel;
+        return handler_ ? handler_->brc_for_role() : nullptr;
     }
 
-    // Wave-B M4e: Class D (band-bound) — per HEP-CORE-0033 §18.3,
-    // route via the connection where the band was joined.  Falls
-    // back to broker_channel when:
-    //   - handler not active (legacy mode), OR
-    //   - handler-mode but band is not in band_index_ (caller hasn't
-    //     joined yet, or band_join's on_band_joined() registration
-    //     hasn't fired).
-    // For pre-M5 single-hub roles, broker_channel IS the only
-    // connection, so the fallback is the correct route.  For dual-
-    // hub (M8 payoff shape), band_join populates band_index_ via
-    // on_band_joined(); subsequent band_* calls then route to the
-    // right BRC.
     [[nodiscard]] hub::BrokerRequestComm *
     resolve_bc_for_band(const std::string &band) const noexcept
     {
-        if (handler_)
-        {
-            if (auto *bc = handler_->brc_for_band(band))
-                return bc;
-        }
-        return broker_channel;
+        return handler_ ? handler_->brc_for_band(band) : nullptr;
     }
 };
 
@@ -527,49 +484,17 @@ pylabhub::utils::ThreadManager &RoleAPIBase::thread_manager()
 }
 
 // ============================================================================
-// set_broker_comm
-// ============================================================================
-
-void RoleAPIBase::set_broker_comm(hub::BrokerRequestComm *bc)
-{
-    // Wave-B M5 prep (F3): refuse silently-broken setters when
-    // handler-mode is active.  `start_handler_threads` set
-    // `broker_channel` to `handler->connections()[0].brc.get()` as
-    // the legacy fallback view; a stray legacy caller overwriting
-    // that with a different BRC would silently route Class A/B/D
-    // ops through the wrong socket, with no test catching it until
-    // production traffic exposes the mismatch.
-    if (pImpl->handler_)
-    {
-        LOGGER_ERROR("[{}] set_broker_comm: refused — handler-mode is "
-                     "active; the fallback view is owned by "
-                     "start_handler_threads (HEP-CORE-0033 §18)",
-                     pImpl->role_tag);
-        return;
-    }
-    pImpl->broker_channel = bc;
-}
-
-// ============================================================================
-// stop_ctrl_for_teardown — mode-aware non-destructive ctrl signal (Wave-B M5 prep)
+// stop_ctrl_for_teardown — non-destructive signal of every BRC poll loop
 // ============================================================================
 
 void RoleAPIBase::stop_ctrl_for_teardown() noexcept
 {
-    if (pImpl->handler_)
+    if (!pImpl->handler_) return;   // validate-only run, or post-stop
+    for (const auto &conn : pImpl->handler_->connections())
     {
-        // Handler-mode: signal every connection's BRC poll loop.
-        for (const auto &conn : pImpl->handler_->connections())
-        {
-            if (auto *brc = conn.brc.get())
-                brc->stop();
-        }
-        return;
+        if (auto *brc = conn.brc.get())
+            brc->stop();
     }
-    // Legacy mode (pre-M5 single-hub) — broker_channel is the only
-    // BRC owned by the role host via set_broker_comm.
-    if (pImpl->broker_channel)
-        pImpl->broker_channel->stop();
 }
 
 // ============================================================================
@@ -606,23 +531,20 @@ void RoleAPIBase::install_heartbeat(int role_cfg_ms,
         }
     }
 
-    // Pick the BRC that runs the periodic-task timer:
-    //   - Handler-mode: connections()[0].brc — the master ctrl thread.
-    //     on_heartbeat_tick_ then routes each per-presence emission
-    //     per-channel via resolve_bc_for_channel, so heartbeats end
-    //     up on the correct BRC even in dual-hub processor (M8).
-    //   - Legacy mode: broker_channel (the single ctrl thread).
+    // Pick the BRC that runs the periodic-task timer: connections()[0].brc
+    // — the master ctrl thread.  on_heartbeat_tick_ then routes each
+    // per-presence emission per-channel via resolve_bc_for_channel, so
+    // heartbeats end up on the correct BRC even in dual-hub processor (M8).
     hub::BrokerRequestComm *bc_tick = nullptr;
     if (pImpl->handler_)
     {
         const auto &conns = pImpl->handler_->connections();
         if (!conns.empty()) bc_tick = conns[0].brc.get();
     }
-    if (!bc_tick) bc_tick = pImpl->broker_channel;
     if (!bc_tick)
     {
         LOGGER_ERROR("[{}] install_heartbeat: no BRC available — "
-                     "ctrl thread not started?",
+                     "start_handler_threads not called?",
                      pImpl->role_tag);
         return;
     }
@@ -673,8 +595,7 @@ RoleAPIBase::extract_hub_heartbeat_max(const nlohmann::json &reg_ack_body) noexc
 std::optional<nlohmann::json>
 RoleAPIBase::register_producer_channel(const nlohmann::json &opts, int timeout_ms)
 {
-    // Wave-B M4d: Class A (channel-bound) — route via handler when active,
-    // fall back to legacy broker_channel view otherwise.
+    // Class A (channel-bound) — route via handler's channel_index_.
     const std::string ch = opts.value("channel_name", std::string{});
     auto *bc = pImpl->resolve_bc_for_channel(ch);
     if (!bc || !bc->is_connected())
@@ -716,11 +637,16 @@ RoleAPIBase::register_producer_channel(const nlohmann::json &opts, int timeout_m
 std::optional<nlohmann::json>
 RoleAPIBase::discover_channel(const std::string &channel, int timeout_ms)
 {
-    // Wave-B M4d: Class A — `channel` may not be in our presence list
-    // (DISC_REQ asks about peers); resolve_bc_for_channel falls back
-    // to broker_channel (connections[0]) in that case, matching the
-    // pre-migration single-hub behavior.
+    // Class A — DISC_REQ asks the broker "what do you know about
+    // channel X?", which is valid for ANY channel name, not just
+    // ones in our presence list.  Prefer routing via the channel's
+    // BRC when we have a presence on it (multi-hub: send to the
+    // hub that owns the channel); fall back to brc_for_role() (any
+    // connection) for channels we're not registered on — single-hub
+    // roles get a deterministic route; dual-hub roles query the
+    // first connection (full multi-hub fall-through is M-future scope).
     auto *bc = pImpl->resolve_bc_for_channel(channel);
+    if (!bc) bc = pImpl->resolve_bc_for_role();
     if (!bc || !bc->is_connected())
     {
         LOGGER_ERROR("[{}] discover_channel: broker comm not connected", pImpl->role_tag);
@@ -801,15 +727,14 @@ RoleAPIBase::deregister_consumer(const std::string &channel, int timeout_ms)
 
 void RoleAPIBase::deregister_from_broker()
 {
-    // Wave-B M4d note: this outer guard is a coarse "is any broker
-    // comm around?" early-exit, not a per-channel route — the actual
-    // dereg calls below (`deregister_producer_channel`,
-    // `deregister_consumer`) are Class A and route via the helper.
-    // M4e will revisit whether to drop the guard so state-clearing
-    // proceeds even when the fallback view is disconnected.
-    auto *bc = pImpl->broker_channel;
-    if (!bc || !bc->is_connected())
-        return;
+    // No outer guard: the per-method dereg helpers below
+    // (`deregister_producer_channel`, `deregister_consumer`) each
+    // route via `resolve_bc_for_channel(channel)` and early-return
+    // on null/disconnected BRC.  State-clearing
+    // (`shared.take_*_channel()`) proceeds even when the broker
+    // connection is down — the role host is tearing down anyway,
+    // and we don't want stale registered-channel state to outlive
+    // a broker that went away first.
 
     // Atomic take-and-clear of any registered channel names; the
     // broker RPC then runs OUTSIDE the lock on the captured locals.
@@ -838,12 +763,11 @@ void RoleAPIBase::on_heartbeat_tick_()
 {
     auto *eng = pImpl->engine;
 
-    // Wave-B M4d: skip the entire tick (incl. user callback) if neither
-    // path has a BRC available.  Mirrors the pre-migration `if (!bc)
-    // return;` guard — in handler-mode `handler_->connections()` is
-    // non-empty by start_handler_threads contract, in legacy mode
-    // `broker_channel` is set by start_ctrl_thread.
-    if (!pImpl->handler_ && !pImpl->broker_channel)
+    // Skip the entire tick (incl. user callback) if the handler isn't
+    // attached.  The handler's connections() vector is non-empty by
+    // start_handler_threads contract, so when handler_ is non-null
+    // each per-channel resolve will produce a valid BRC.
+    if (!pImpl->handler_)
         return;
 
     // Per HEP-CORE-0019 §2.3 Phase 6 + HEP-CORE-0033 §19: heartbeat is
@@ -897,267 +821,14 @@ void RoleAPIBase::on_heartbeat_tick_()
 // (heartbeat tick already calls `snapshot_metrics_json()` at the
 // same cadence).
 
-bool RoleAPIBase::start_ctrl_thread(
-    const hub::BrokerRequestComm::Config &connect_cfg,
-    const CtrlThreadConfig &cfg)
-{
-    // Wave-B M4c atomicity guard: legacy and handler-mode paths are
-    // mutually exclusive.  HEP-CORE-0031 §4.3.6: "Legacy `ctrl` must
-    // retire atomically with introducing the first `handler_ctrl_0`
-    // master."  Enforced here + in `start_handler_threads`.
-    // WARN (not ERROR) — graceful refusal; state preserved.
-    if (pImpl->ctrl_threads_started_)
-    {
-        LOGGER_WARN("[{}] start_ctrl_thread: ctrl threads already started "
-                    "(handler-mode={}); refusing re-entry",
-                    pImpl->role_tag,
-                    pImpl->handler_ != nullptr);
-        return false;
-    }
-
-    auto *bc   = pImpl->broker_channel;
-    auto *core = pImpl->core;
-
-    if (!bc)
-    {
-        LOGGER_ERROR("[{}] start_ctrl_thread: no BrokerRequestComm set", pImpl->role_tag);
-        return false;
-    }
-
-    pImpl->ctrl_threads_started_ = true;
-
-    // ── Step 1: Connect DEALER socket to broker ────────────────────────────
-    if (!connect_cfg.broker_endpoint.empty())
-    {
-        if (!bc->connect(connect_cfg))
-        {
-            LOGGER_ERROR("[{}] start_ctrl_thread: broker connect failed", pImpl->role_tag);
-            return false;
-        }
-    }
-    else
-    {
-        LOGGER_WARN("[{}] start_ctrl_thread: no broker endpoint configured — "
-                    "running without broker", pImpl->role_tag);
-    }
-
-    // ── Step 2: Wire notification + hub-dead callbacks ──────────────────────
-    LOGGER_TRACE("[{}] ctrl: wiring notification and hub-dead callbacks", pImpl->role_tag);
-
-    bc->on_notification([core, this](const std::string &type, const nlohmann::json &body) {
-        LOGGER_TRACE("[{}] ctrl: notification received: {}", pImpl->role_tag, type);
-        IncomingMessage msg;
-        msg.event     = type;
-        // Parse-once at enqueue so cycle_ops dispatch is an O(1)
-        // table lookup; unrecognised types map to NotificationId::Unknown
-        // and stay in `msgs` for script-side generic scan.
-        msg.notification_id = pylabhub::scripting::parse_notification_id(type);
-        msg.details   = body;
-        core->enqueue_message(std::move(msg));
-    });
-
-    const auto &tag = pImpl->role_tag;
-    bc->on_hub_dead([core, tag]() {
-        LOGGER_WARN("[{}] hub-dead: broker connection lost", tag);
-        core->set_stop_reason(RoleHostCore::StopReason::HubDead);
-        core->request_stop();
-    });
-
-    // ── Step 3: Spawn ctrl thread — runs poll loop only ────────────────────
-    // Periodic tasks (heartbeat, metrics) are NOT scheduled here.  Per
-    // HEP-CORE-0023 §2.5 "Role-side preferred cadence vs. hub authority",
-    // the heartbeat cadence is negotiated at REG_ACK time: the role's
-    // configured `heartbeat_interval_ms` must be ≤ the hub's tolerated
-    // interval.  Scheduling happens in Step 5 below, after registration
-    // returns the hub's heartbeat block, with the negotiated effective
-    // interval.  set_periodic_task() routes through the cmd queue so
-    // post-startup install is supported without restructuring the loop.
-    LOGGER_INFO("[{}] ctrl: starting control thread (heartbeat install "
-                "deferred to post-REG_ACK)", pImpl->role_tag);
-
-    // The ctrl thread is the MASTER of this ThreadManager
-    // (HEP-CORE-0031 §4.2).  Rationale:
-    //   * The worker thread's `do_role_teardown` Step 9a calls
-    //     `deregister_from_broker()`, which sends DEREG_REQ via the
-    //     ctrl thread's `BrokerRequestComm::do_request` and BLOCKS
-    //     on a CV waiting for DEREG_ACK.
-    //   * If ctrl exits before worker is done dereg'ing, the worker's
-    //     `do_request` waits for a reply that will never come, the
-    //     outer drain's bounded join times out, worker is detached,
-    //     `api_.reset()` destroys `RoleAPIBase::Impl`, and the
-    //     detached worker eventually returns from the timed-out
-    //     `do_request` and touches freed memory → SEGV.
-    // Pinned 5/5 deterministic 2026-05-13 via gdb + breadcrumbs; the
-    // pImpl pointer was observed to flip mid-call as the dtor ran.
-    //
-    // Marking ctrl as `is_master = true` tells ThreadManager:
-    //   * Don't signal ctrl from `request_shutdown_all()` — peers
-    //     (the worker) get the signal first.
-    //   * In `drain()`: wait for every peer's `done` before signaling
-    //     ctrl.  Ctrl's lifetime now envelopes every peer's runtime.
-    //
-    // Correspondingly the bracket's `should_run` predicate consults
-    // **only** `ctx.shutdown_requested()` (the per-slot flag
-    // ThreadManager controls) — NOT `core->is_shutdown_requested()`
-    // (a global flag that fires too early, before peers are done
-    // with us).  `core->is_running()` is still part of the predicate
-    // because the worker still flips it in `do_role_teardown` Step
-    // 12 (alongside `bc->stop()`) as a fast-path class-level wake-up
-    // — the per-slot signal alone doesn't unblock a thread parked
-    // in `zmq_poll`.
-    pylabhub::utils::ThreadManager::SpawnOptions ctrl_opts;
-    ctrl_opts.is_master = true;
-    thread_manager().spawn("ctrl",
-        [this](pylabhub::utils::ThreadManager::SlotContext &ctx)
-    {
-        // Capture every pImpl-borrowed reference locally at the start of
-        // the thread body — per the Thread Shutdown Contract
-        // (HEP-CORE-0031 §4.1, MD1), once we exit the `with_active_loop`
-        // bracket below, this thread MUST NOT touch BRC's pImpl (or any
-        // other shared state the teardown caller might destroy in
-        // do_role_teardown Step 13).  Local captures stay valid for the
-        // rest of the body's lifetime, including the post-bracket log
-        // calls below.  The `ThreadEngineGuard` destructor that runs at
-        // lambda exit touches `*eng` to release the engine's
-        // thread-affinity lock — safe because the engine is owned by
-        // the role host and outlives the ctrl thread; it is NOT in the
-        // MD1 teardown destroy set.
-        auto *eng                       = pImpl->engine;
-        auto *bc                        = pImpl->broker_channel;
-        auto *core                      = pImpl->core;
-        const std::string role_tag_local = pImpl->role_tag;
-
-        scripting::ThreadEngineGuard guard(*eng);
-        LOGGER_INFO("[{}/ctrl] thread started", role_tag_local);
-        LOGGER_TRACE("[{}] ctrl: entering poll loop", role_tag_local);
-
-        // Transactional active-loop bracket — the only window in
-        // which this thread may touch BRC's pImpl.  RAII decrements
-        // `active_loop_depth` on body return (including throw); the
-        // teardown caller's `wait_for_quiescence` then observes this
-        // thread quiescent (depth==0) and can safely destroy
-        // `broker_comm_`.
-        //
-        // Exit predicate uses `ctx.shutdown_requested()` (per-slot
-        // flag set by ThreadManager after peers are done) — NOT the
-        // global `core->is_shutdown_requested()` flag — to honor the
-        // master/peer contract documented above the spawn site.
-        ctx.with_active_loop([&] {
-            bc->run_poll_loop([core, &ctx] {
-                return core->is_running() && !ctx.shutdown_requested();
-            });
-        });
-
-        LOGGER_TRACE("[{}] ctrl: poll loop exited", role_tag_local);
-        LOGGER_INFO("[{}/ctrl] thread exiting", role_tag_local);
-    }, ctrl_opts);
-
-    // ── Step 4: Register with broker (main thread, blocks) ─────────────────
-    // The ctrl thread is now running and can process REG_REQ via the cmd queue.
-
-    // Append inbox metadata to registration payload if inbox is configured.
-    auto append_inbox = [&](nlohmann::json &opts) {
-        if (cfg.inbox.has_value() && cfg.inbox->has_inbox())
-        {
-            if (pImpl->inbox_queue)
-                opts["inbox_endpoint"] = pImpl->inbox_queue->actual_endpoint();
-            opts["inbox_schema_json"] = cfg.inbox->schema_fields_json;
-            opts["inbox_packing"]     = cfg.inbox->packing;
-            opts["inbox_checksum"]    = cfg.inbox->checksum;
-        }
-    };
-
-    // Track the hub's negotiated heartbeat interval.  Either registration
-    // path populates it from the REG_ACK / CONSUMER_REG_ACK `heartbeat`
-    // block.  When neither registration is configured, we have no hub
-    // authority to defer to and use the role's local cadence as-is.
-    std::optional<int> hub_heartbeat_interval_ms;
-
-    if (!cfg.producer_reg_opts.empty())
-    {
-        LOGGER_INFO("[{}] ctrl: registering producer channel with broker",
-                    pImpl->role_tag);
-        nlohmann::json reg = cfg.producer_reg_opts;
-        append_inbox(reg);
-        auto result = register_producer_channel(reg);
-        if (!result.has_value())
-        {
-            LOGGER_ERROR("[{}] Broker producer registration failed", pImpl->role_tag);
-            return false;
-        }
-        pImpl->shared.set_producer_channel(reg.value("channel_name", ""));
-        if (result->contains("heartbeat") && (*result)["heartbeat"].is_object() &&
-            (*result)["heartbeat"].contains("heartbeat_interval_ms"))
-        {
-            hub_heartbeat_interval_ms =
-                (*result)["heartbeat"]["heartbeat_interval_ms"].get<int>();
-        }
-    }
-
-    if (!cfg.consumer_reg_opts.empty())
-    {
-        LOGGER_INFO("[{}] ctrl: registering consumer with broker", pImpl->role_tag);
-        nlohmann::json reg = cfg.consumer_reg_opts;
-        append_inbox(reg);
-        auto result = register_consumer(reg);
-        if (!result.has_value())
-        {
-            LOGGER_ERROR("[{}] Broker consumer registration failed", pImpl->role_tag);
-            return false;
-        }
-        pImpl->shared.set_consumer_channel(reg.value("channel_name", ""));
-        if (result->contains("heartbeat") && (*result)["heartbeat"].is_object() &&
-            (*result)["heartbeat"].contains("heartbeat_interval_ms"))
-        {
-            hub_heartbeat_interval_ms =
-                (*result)["heartbeat"]["heartbeat_interval_ms"].get<int>();
-        }
-    }
-
-    // ── Step 5: Negotiate heartbeat cadence + install periodic tasks ───────
-    // HEP-CORE-0023 §2.5 — hub's heartbeat_interval_ms is the **maximum
-    // tolerated silence** (timeout ceiling).  Role's configured cadence is
-    // its preferred (typically faster) pace.  Effective cadence is
-    // min(role, hub); a slower role triggers a warning + downgrade so the
-    // role doesn't get reaped by hub-side liveness.
-    int effective_interval_ms = cfg.heartbeat_interval_ms;
-    if (hub_heartbeat_interval_ms.has_value())
-    {
-        const int hub_max = *hub_heartbeat_interval_ms;
-        if (cfg.heartbeat_interval_ms > hub_max)
-        {
-            LOGGER_WARN(
-                "[{}] heartbeat: configured interval {} ms exceeds hub's "
-                "tolerated max {} ms — resetting to hub max to avoid "
-                "liveness timeout (HEP-CORE-0023 §2.5)",
-                pImpl->role_tag, cfg.heartbeat_interval_ms, hub_max);
-            effective_interval_ms = hub_max;
-        }
-        else
-        {
-            LOGGER_INFO(
-                "[{}] heartbeat: aligned with hub — role cadence {} ms, "
-                "hub max {} ms",
-                pImpl->role_tag, cfg.heartbeat_interval_ms, hub_max);
-        }
-    }
-
-    auto *bc_post   = pImpl->broker_channel;
-    auto *core_post = pImpl->core;
-    bc_post->set_periodic_task(
-        [this] { on_heartbeat_tick_(); },
-        effective_interval_ms,
-        [core_post] { return core_post->iteration_count(); });
-
-    // M1.4 (2026-05-11): `cfg.report_metrics` field DELETED.  Heartbeat
-    // tick (`on_heartbeat_tick_`) carries metrics via
-    // `send_heartbeat(...metrics)` — separate METRICS_REPORT_REQ tick
-    // was redundant.  Per HEP-CORE-0019 §2.3 Phase 6.
-
-    LOGGER_INFO("[{}] ctrl: broker communication ready (heartbeat={}ms)",
-                pImpl->role_tag, effective_interval_ms);
-    return true;
-}
+// Wave-B M4f (2026-05-16): `start_ctrl_thread` + `set_broker_comm` +
+// the `pImpl->broker_channel` raw-pointer view + `CtrlThreadConfig`
+// struct DELETED.  Pre-M5/M6/M7 the legacy single-BRC path co-existed
+// with handler-mode as a fallback view for role hosts not yet migrated;
+// after M5/M6/M7 every production role binary runs on handler-mode end-
+// to-end and the legacy path is dead.  Class A/B/D routing helpers
+// (`resolve_bc_for_channel/role/band`) now return nullptr when no
+// handler is attached — no fallback path.
 
 // ============================================================================
 // Handler-mode control plane (Wave-B M4c)
@@ -1170,9 +841,8 @@ bool RoleAPIBase::start_handler_threads(std::unique_ptr<RoleHandler> handler)
     {
         // WARN (not ERROR) — graceful refusal; state preserved.
         LOGGER_WARN("[{}] start_handler_threads: ctrl threads already "
-                    "started (handler-mode={}); refusing re-entry",
-                    pImpl->role_tag,
-                    pImpl->handler_ != nullptr);
+                    "started; refusing re-entry (single-shot per instance)",
+                    pImpl->role_tag);
         return false;
     }
     if (handler == nullptr)
@@ -1314,21 +984,13 @@ bool RoleAPIBase::start_handler_threads(std::unique_ptr<RoleHandler> handler)
     LOGGER_INFO("[{}] start_handler_threads: Phase 3 OK — {} ctrl thread(s) spawned",
                 pImpl->role_tag, n_conn);
 
-    // ── Phase 4: Legacy fallback view ────────────────────────────────────
-    // `pImpl->broker_channel` is a raw non-owning view into the first
-    // HubConnection's BRC.  Unmigrated call sites (the 24 sites in
-    // M4d/e's migration scope) continue to dereference broker_channel
-    // and reach the same BRC the first handler ctrl thread is driving.
-    // CLEARED by `stop_handler_threads` to prevent UAF post-shutdown.
-    if (!pImpl->handler_->connections().empty())
-    {
-        pImpl->broker_channel =
-            pImpl->handler_->connections()[0].brc.get();
-        LOGGER_INFO("[{}] start_handler_threads: Phase 4 OK — legacy "
-                    "broker_channel fallback view set to "
-                    "connections[0].brc",
-                    pImpl->role_tag);
-    }
+    // Wave-B M4f (2026-05-16): the previous Phase 4 set
+    // `pImpl->broker_channel = handler->connections()[0].brc.get()`
+    // as a legacy fallback view for unmigrated call sites.  After
+    // M4d/e migrated every Class A/B/D site through the routing
+    // helpers AND M5/M6/M7 retired the legacy role-host startup
+    // path, no caller dereferences `broker_channel` — the field
+    // (and its set/clear pair) was deleted.
 
     pImpl->ctrl_threads_started_ = true;
 
@@ -1348,17 +1010,10 @@ void RoleAPIBase::stop_handler_threads() noexcept
 
     LOGGER_INFO("[{}] stop_handler_threads: ENTRY", pImpl->role_tag);
 
-    // ── Phase 1: Clear legacy fallback view BEFORE BRCs are destroyed ────
-    // Any code still reading `pImpl->broker_channel` from this point on
-    // observes nullptr (clean failure) instead of a dangling pointer
-    // (UAF after BRC destruction).
-    if (pImpl->broker_channel != nullptr)
-    {
-        pImpl->broker_channel = nullptr;
-        LOGGER_INFO("[{}] stop_handler_threads: Phase 1 — legacy "
-                    "broker_channel fallback view cleared",
-                    pImpl->role_tag);
-    }
+    // Wave-B M4f (2026-05-16): the previous Phase 1 cleared the
+    // legacy `broker_channel` fallback view before BRCs were
+    // destroyed; the field is gone, so no clear is needed.  Numbering
+    // of the remaining phases preserved for log grep continuity.
 
     // ── Phase 2: Signal each BRC to exit its poll loop ───────────────────
     if (pImpl->handler_ != nullptr)
@@ -1643,9 +1298,8 @@ RoleAPIBase::open_inbox_client(const std::string &target_uid)
 
 bool RoleAPIBase::wait_for_role(const std::string &uid, int timeout_ms)
 {
-    // Wave-B M4e: Class B — query_role_presence is a role-scope
-    // query; route via the first connection (handler->brc_for_role()
-    // in handler-mode, broker_channel in legacy mode).
+    // Class B — query_role_presence is a role-scope query; route via
+    // the first connection (handler->brc_for_role()).
     auto *bc = pImpl->resolve_bc_for_role();
     if (!bc)
         return false;
