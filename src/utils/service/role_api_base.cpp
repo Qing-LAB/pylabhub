@@ -532,7 +532,44 @@ pylabhub::utils::ThreadManager &RoleAPIBase::thread_manager()
 
 void RoleAPIBase::set_broker_comm(hub::BrokerRequestComm *bc)
 {
+    // Wave-B M5 prep (F3): refuse silently-broken setters when
+    // handler-mode is active.  `start_handler_threads` set
+    // `broker_channel` to `handler->connections()[0].brc.get()` as
+    // the legacy fallback view; a stray legacy caller overwriting
+    // that with a different BRC would silently route Class A/B/D
+    // ops through the wrong socket, with no test catching it until
+    // production traffic exposes the mismatch.
+    if (pImpl->handler_)
+    {
+        LOGGER_ERROR("[{}] set_broker_comm: refused — handler-mode is "
+                     "active; the fallback view is owned by "
+                     "start_handler_threads (HEP-CORE-0033 §18)",
+                     pImpl->role_tag);
+        return;
+    }
     pImpl->broker_channel = bc;
+}
+
+// ============================================================================
+// stop_ctrl_for_teardown — mode-aware non-destructive ctrl signal (Wave-B M5 prep)
+// ============================================================================
+
+void RoleAPIBase::stop_ctrl_for_teardown() noexcept
+{
+    if (pImpl->handler_)
+    {
+        // Handler-mode: signal every connection's BRC poll loop.
+        for (const auto &conn : pImpl->handler_->connections())
+        {
+            if (auto *brc = conn.brc.get())
+                brc->stop();
+        }
+        return;
+    }
+    // Legacy mode (pre-M5 single-hub) — broker_channel is the only
+    // BRC owned by the role host via set_broker_comm.
+    if (pImpl->broker_channel)
+        pImpl->broker_channel->stop();
 }
 
 // ============================================================================
