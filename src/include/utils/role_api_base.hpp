@@ -545,6 +545,68 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     /// on every entry into a method that might run after teardown.
     [[nodiscard]] RoleHandler *handler() const noexcept;
 
+    /// Negotiate the heartbeat cadence with the hub + install the
+    /// periodic tick on the ctrl thread.  Wave-B M5 split-out of the
+    /// post-REG portion of legacy `start_ctrl_thread` so handler-mode
+    /// role hosts can call:
+    ///     api.start_handler_threads(handler);
+    ///     auto reg = api.register_producer_channel(opts);
+    ///     api.install_heartbeat(cfg_ms,
+    ///                            extract_hub_heartbeat_max_ms(reg));
+    ///
+    /// Cadence policy (HEP-CORE-0023 §2.5): effective_ms =
+    /// `min(role_cfg_ms, hub_max_ms)`.  If role exceeds hub's max, a
+    /// WARN log fires and the effective interval is downgraded to the
+    /// hub max so the role doesn't get reaped by hub-side liveness.
+    /// If `hub_max_ms` is nullopt (hub didn't advertise a max), the
+    /// role's configured cadence is used as-is.
+    ///
+    /// Routing: schedules the tick on the FIRST connection's BRC in
+    /// handler-mode, on `broker_channel` in legacy mode.  The tick
+    /// body (`on_heartbeat_tick_`) routes each per-presence heartbeat
+    /// per-channel via `pImpl->resolve_bc_for_channel`, so the choice
+    /// of scheduling BRC is just "which thread runs the timer" — the
+    /// actual heartbeat wire frames go out on the correct BRC per
+    /// presence.
+    ///
+    /// Idempotent within a single ctrl-thread lifetime; calling twice
+    /// reinstalls the periodic task on the same slot (no leak).  Must
+    /// be called AFTER `start_handler_threads` or `start_ctrl_thread`.
+    ///
+    /// @param role_cfg_ms  Role's preferred cadence (from config).
+    /// @param hub_max_ms_opt Hub's tolerated max (parsed from REG_ACK
+    ///                       `heartbeat.heartbeat_interval_ms`); pass
+    ///                       `std::nullopt` if not advertised.
+    void install_heartbeat(int role_cfg_ms,
+                            std::optional<int> hub_max_ms_opt) noexcept;
+
+    /// Extract the hub's advertised heartbeat-tolerated-max from a
+    /// REG_ACK body (or any reply that carries it).  REG_ACK shape
+    /// per HEP-CORE-0023 §2.5: `{..., "heartbeat": {"heartbeat_interval_ms": N}}`.
+    /// Returns `std::nullopt` if the field is missing or malformed —
+    /// caller then passes nullopt to `install_heartbeat` and the role
+    /// uses its configured cadence as-is.  Static so role hosts can
+    /// call it on a captured REG_ACK without an instance.
+    [[nodiscard]] static std::optional<int>
+    extract_hub_heartbeat_max(const nlohmann::json &reg_ack_body) noexcept;
+
+    /// Append inbox metadata (endpoint + schema_json + packing + checksum)
+    /// to a REG_REQ / CONSUMER_REG_REQ payload.  No-op if the role has
+    /// no inbox configured (`inbox_cfg.has_inbox() == false`) OR if no
+    /// inbox queue has been wired via `set_inbox_queue` (handler-mode
+    /// role hosts MUST call `set_inbox_queue` before this method).
+    ///
+    /// Wave-B M5 split-out of the `append_inbox` lambda that legacy
+    /// `start_ctrl_thread` ran internally between build_*_reg_payload
+    /// and register_*_channel.  Handler-mode role hosts (M5+) call
+    /// this directly:
+    ///
+    ///     auto reg = hub::build_producer_reg_payload(...);
+    ///     api.append_inbox_to_reg(reg, inbox_cfg);
+    ///     auto result = api.register_producer_channel(reg);
+    void append_inbox_to_reg(nlohmann::json &opts,
+                              const config::InboxConfig &inbox_cfg) const;
+
     /// Explicitly deregister from broker while the ctrl thread is still
     /// running to process the command — call BEFORE the RoleAPIBase is
     /// destroyed (the destructor's ThreadManager drain() will join ctrl).

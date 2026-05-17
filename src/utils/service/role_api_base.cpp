@@ -573,6 +573,100 @@ void RoleAPIBase::stop_ctrl_for_teardown() noexcept
 }
 
 // ============================================================================
+// install_heartbeat — Wave-B M5: post-REG cadence negotiation + tick install
+// ============================================================================
+
+void RoleAPIBase::install_heartbeat(int role_cfg_ms,
+                                     std::optional<int> hub_max_ms_opt) noexcept
+{
+    // HEP-CORE-0023 §2.5 — hub's heartbeat_interval_ms is the **maximum
+    // tolerated silence** (timeout ceiling).  Role's configured cadence is
+    // its preferred (typically faster) pace.  Effective cadence is
+    // min(role, hub); a slower role triggers a warning + downgrade so the
+    // role doesn't get reaped by hub-side liveness.
+    int effective_interval_ms = role_cfg_ms;
+    if (hub_max_ms_opt.has_value())
+    {
+        const int hub_max = *hub_max_ms_opt;
+        if (role_cfg_ms > hub_max)
+        {
+            LOGGER_WARN(
+                "[{}] heartbeat: configured interval {} ms exceeds hub's "
+                "tolerated max {} ms — resetting to hub max to avoid "
+                "liveness timeout (HEP-CORE-0023 §2.5)",
+                pImpl->role_tag, role_cfg_ms, hub_max);
+            effective_interval_ms = hub_max;
+        }
+        else
+        {
+            LOGGER_INFO(
+                "[{}] heartbeat: aligned with hub — role cadence {} ms, "
+                "hub max {} ms",
+                pImpl->role_tag, role_cfg_ms, hub_max);
+        }
+    }
+
+    // Pick the BRC that runs the periodic-task timer:
+    //   - Handler-mode: connections()[0].brc — the master ctrl thread.
+    //     on_heartbeat_tick_ then routes each per-presence emission
+    //     per-channel via resolve_bc_for_channel, so heartbeats end
+    //     up on the correct BRC even in dual-hub processor (M8).
+    //   - Legacy mode: broker_channel (the single ctrl thread).
+    hub::BrokerRequestComm *bc_tick = nullptr;
+    if (pImpl->handler_)
+    {
+        const auto &conns = pImpl->handler_->connections();
+        if (!conns.empty()) bc_tick = conns[0].brc.get();
+    }
+    if (!bc_tick) bc_tick = pImpl->broker_channel;
+    if (!bc_tick)
+    {
+        LOGGER_ERROR("[{}] install_heartbeat: no BRC available — "
+                     "ctrl thread not started?",
+                     pImpl->role_tag);
+        return;
+    }
+
+    auto *core_post = pImpl->core;
+    bc_tick->set_periodic_task(
+        [this] { on_heartbeat_tick_(); },
+        effective_interval_ms,
+        [core_post] { return core_post->iteration_count(); });
+
+    LOGGER_INFO("[{}] heartbeat: periodic tick installed at {}ms",
+                pImpl->role_tag, effective_interval_ms);
+}
+
+void RoleAPIBase::append_inbox_to_reg(nlohmann::json &opts,
+                                       const config::InboxConfig &inbox_cfg) const
+{
+    if (!inbox_cfg.has_inbox())
+        return;
+    // Per legacy `append_inbox` lambda in start_ctrl_thread: inbox_queue
+    // is optional even when inbox is configured (the role host wires it
+    // separately via set_inbox_queue); skip the endpoint field rather
+    // than emitting an empty string if no queue exists.
+    if (pImpl->inbox_queue)
+        opts["inbox_endpoint"] = pImpl->inbox_queue->actual_endpoint();
+    opts["inbox_schema_json"] = inbox_cfg.schema_fields_json;
+    opts["inbox_packing"]     = inbox_cfg.packing;
+    opts["inbox_checksum"]    = inbox_cfg.checksum;
+}
+
+std::optional<int>
+RoleAPIBase::extract_hub_heartbeat_max(const nlohmann::json &reg_ack_body) noexcept
+{
+    if (reg_ack_body.contains("heartbeat") &&
+        reg_ack_body["heartbeat"].is_object() &&
+        reg_ack_body["heartbeat"].contains("heartbeat_interval_ms") &&
+        reg_ack_body["heartbeat"]["heartbeat_interval_ms"].is_number_integer())
+    {
+        return reg_ack_body["heartbeat"]["heartbeat_interval_ms"].get<int>();
+    }
+    return std::nullopt;
+}
+
+// ============================================================================
 // Broker protocol helpers (require ctrl thread running)
 // ============================================================================
 
@@ -603,8 +697,19 @@ RoleAPIBase::register_producer_channel(const nlohmann::json &opts, int timeout_m
                      result->value("error_code", std::string{}),
                      result->value("message", std::string{}));
     else
+    {
         LOGGER_INFO("[{}] Registered producer channel '{}' with broker",
                     pImpl->role_tag, opts.value("channel_name", "?"));
+        // Wave-B M5: record the registered channel so deregister_from_broker's
+        // atomic take-and-clear can dereg it on teardown.  Pre-M5 legacy
+        // start_ctrl_thread did this manually after a successful REG; auto-
+        // recording here makes the API safer — every caller (handler-mode
+        // M5+ role hosts AND the legacy start_ctrl_thread path) gets dereg
+        // bookkeeping wired without an extra step.  Idempotent: calling
+        // shared.set_producer_channel twice with the same name is a no-op
+        // beyond the second write.
+        pImpl->shared.set_producer_channel(opts.value("channel_name", std::string{}));
+    }
     return result;
 }
 
@@ -656,8 +761,14 @@ RoleAPIBase::register_consumer(const nlohmann::json &opts, int timeout_ms)
                      result->value("error_code", std::string{}),
                      result->value("message", std::string{}));
     else
+    {
         LOGGER_INFO("[{}] Registered consumer on channel '{}' with broker",
                     pImpl->role_tag, opts.value("channel_name", "?"));
+        // Wave-B M5: see register_producer_channel for the auto-record
+        // rationale — every caller (handler-mode or legacy) gets dereg
+        // bookkeeping without an extra step.
+        pImpl->shared.set_consumer_channel(opts.value("channel_name", std::string{}));
+    }
     return result;
 }
 
