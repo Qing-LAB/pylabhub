@@ -249,6 +249,14 @@ int hubhost_shutdown_breaksclientconnection()
             std::vector<fs::path> cleanup;
 
             log_cap.ExpectLogWarn("REG_REQ timed out");
+            // After A2 (Wave-B M8 prep): BRC's socket monitor is now
+            // polled as a first-class poll item (was a side-effect of
+            // DEALER traffic), so ZMQ_EVENT_DISCONNECTED is detected
+            // promptly when host->shutdown() closes the broker socket.
+            // The hub-dead WARN was previously suppressed by the
+            // detection delay; now it fires within this test's window.
+            log_cap.ExpectLogWarn(
+                "BrokerRequestComm: hub-dead (ZMQ_EVENT_DISCONNECTED)");
 
             auto host = spawn_host("shutdown", cleanup);
 

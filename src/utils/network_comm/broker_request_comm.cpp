@@ -563,13 +563,33 @@ void BrokerRequestComm::run_poll_loop(std::function<bool()> should_run)
         },
         "broker"};
 
-    // Poll the DEALER socket for incoming broker messages.
+    // Poll the DEALER socket for incoming broker messages.  Also
+    // opportunistically check the monitor here when DEALER traffic
+    // wakes the poll — keeps the side-effect for the heartbeat-acks
+    // path; the monitor-socket-as-poll-item below is the authoritative
+    // hub-dead detector for idle periods (no DEALER traffic).
     loop.sockets.push_back(
         {zmq::socket_ref(zmq::from_handle, pImpl->dealer->handle()),
          [this] {
              pImpl->recv_and_dispatch();
              pImpl->check_monitor();
          }});
+
+    // Poll the socket-monitor PAIR socket as a first-class poll item
+    // so ZMQ_EVENT_DISCONNECTED is delivered to on_hub_dead promptly
+    // even when the role is idle (no DEALER traffic).  Pre-A2 the
+    // monitor was only drained as a DEALER side-effect — in
+    // production heartbeats kept DEALER busy enough to mask this,
+    // but role-side init code that connects and pauses (the A2 test
+    // case) waited up to the ZMTP heartbeat_timeout (30s) before
+    // observing a dead broker.  After this change the monitor PAIR
+    // wakes the poll itself on disconnect.
+    if (pImpl->monitor_sock)
+    {
+        loop.sockets.push_back(
+            {zmq::socket_ref(zmq::from_handle, pImpl->monitor_sock->handle()),
+             [this] { pImpl->check_monitor(); }});
+    }
 
     // Signal socket for command queue wake-up.
     if (pImpl->signal_read)

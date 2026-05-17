@@ -488,6 +488,32 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     /// on every entry into a method that might run after teardown.
     [[nodiscard]] RoleHandler *handler() const noexcept;
 
+    /// Per-connection liveness — true if connection `i` has not
+    /// observed a ZMQ_EVENT_DISCONNECTED since `start_handler_threads`.
+    /// Returns false for out-of-range `i` (`i >= handler()->connections().size()`)
+    /// and before `start_handler_threads`/after `stop_handler_threads`.
+    ///
+    /// Policy (A2 — Wave-B M8 prep): each connection's `on_hub_dead`
+    /// callback marks its own slot via this bitmask.  Master (i==0)
+    /// death additionally triggers role-wide shutdown
+    /// (`set_stop_reason(HubDead) + request_stop`); peer (i>0) deaths
+    /// log WARN and update the bitmask only — the role keeps running
+    /// on its master so partial work continues until the master also
+    /// dies OR the role host policy explicitly decides to exit on
+    /// peer loss.  See HEP-CORE-0023 §2.5 "Multi-hub failure policy."
+    ///
+    /// No reconnect tracking: once a connection is marked dead it
+    /// stays dead until the role exits.  ZMQ DEALER sockets do
+    /// auto-reconnect at the transport layer, but BRC only fires
+    /// hub-dead, not hub-resurrected.  Adding resurrection signal
+    /// is a separate task.
+    [[nodiscard]] bool is_connection_alive(std::size_t i) const noexcept;
+
+    /// Count of currently-alive connections (read of the same bitmask
+    /// `is_connection_alive` consults).  Useful for role-host policy
+    /// decisions like "exit if 0 connections alive."
+    [[nodiscard]] std::size_t connections_alive_count() const noexcept;
+
     /// Negotiate the heartbeat cadence with the hub + install the
     /// periodic tick on the master ctrl thread.  Called from the
     /// role host after `start_handler_threads` + register_*_channel:

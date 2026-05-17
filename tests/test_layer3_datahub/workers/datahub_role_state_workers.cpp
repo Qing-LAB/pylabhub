@@ -1257,6 +1257,204 @@ int role_api_base_band_join_handler_mode()
         logger_module(), crypto_module(), zmq_module());
 }
 
+// ============================================================================
+// role_api_base_hub_dead_peer_keeps_role_alive
+//   A2 (Wave-B M8 prep): dual-hub processor must survive a PEER broker
+//   death.  Pre-A2, any-of-N connections dying triggered role-wide
+//   shutdown — strictly worse fault tolerance than single-hub.  This
+//   test spawns 2 brokers, builds a 2-presence RoleHandler, kills
+//   broker_b (peer, i==1), and asserts:
+//     - is_connection_alive(0) stays true (master untouched).
+//     - is_connection_alive(1) flips to false (peer detected dead).
+//     - core.is_running() stays true (role did NOT exit).
+//     - core.stop_reason() is still Normal (not HubDead).
+//   Mutation sweep: revert the per-i check in on_hub_dead → both
+//   connections trigger role-wide shutdown → core.is_running() false
+//   → test fails on the is_running assertion.
+// ============================================================================
+
+int role_api_base_hub_dead_peer_keeps_role_alive()
+{
+    return run_gtest_worker(
+        []() {
+            BrokerService::Config cfg_a; cfg_a.endpoint = "tcp://127.0.0.1:0";
+            cfg_a.use_curve = false;
+            auto broker_a = start_broker_with_cfg(std::move(cfg_a));
+
+            BrokerService::Config cfg_b; cfg_b.endpoint = "tcp://127.0.0.1:0";
+            cfg_b.use_curve = false;
+            auto broker_b = start_broker_with_cfg(std::move(cfg_b));
+
+            const std::string role_uid = "prod.a2_peer.uid00000001";
+            const std::string ch_a     = make_test_channel_name("a2.peer.a");
+            const std::string ch_b     = make_test_channel_name("a2.peer.b");
+
+            pylabhub::scripting::RoleHostCore core;
+            core.set_running(true);
+
+            pylabhub::scripting::RoleAPIBase api(core, "prod", role_uid);
+            api.set_name("a2_peer");
+            api.set_auth("", "");
+
+            std::vector<pylabhub::scripting::Presence> presences;
+            {
+                pylabhub::scripting::Presence pa;
+                pa.hub.broker = broker_a.endpoint;
+                pa.channel    = ch_a;
+                pa.role_kind  = pylabhub::scripting::RoleKind::Producer;
+                presences.push_back(std::move(pa));
+
+                pylabhub::scripting::Presence pb;
+                pb.hub.broker = broker_b.endpoint;
+                pb.channel    = ch_b;
+                pb.role_kind  = pylabhub::scripting::RoleKind::Producer;
+                presences.push_back(std::move(pb));
+            }
+            auto handler = std::make_unique<pylabhub::scripting::RoleHandler>(
+                std::move(presences));
+
+            ASSERT_TRUE(api.start_handler_threads(std::move(handler)));
+            ASSERT_EQ(api.handler()->connections().size(), 2u);
+
+            // Initial state: both connections alive.
+            EXPECT_TRUE(api.is_connection_alive(0));
+            EXPECT_TRUE(api.is_connection_alive(1));
+            EXPECT_EQ(api.connections_alive_count(), 2u);
+            EXPECT_TRUE(core.is_running());
+
+            // Kill PEER (broker_b → connection index 1).
+            broker_b.stop_and_join();
+
+            // Poll for on_hub_dead to fire on the peer side.  ZMQ
+            // socket monitor delivers DISCONNECTED on next poll cycle
+            // after the broker socket closes.  3s ceiling is generous
+            // — locally fires in <100ms.
+            const auto deadline = std::chrono::steady_clock::now() +
+                                  std::chrono::seconds{3};
+            while (api.is_connection_alive(1) &&
+                   std::chrono::steady_clock::now() < deadline)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds{50});
+            }
+
+            EXPECT_FALSE(api.is_connection_alive(1))
+                << "Peer connection should be marked dead after broker_b "
+                   "stop (ZMQ_EVENT_DISCONNECTED timed out).";
+
+            // CORE ASSERTION OF A2: role must NOT request stop on peer
+            // death.  We check `is_shutdown_requested()` rather than
+            // `is_running()` because there's no worker thread in this
+            // unit-level test to flip `running_threads_=false` on
+            // teardown — `request_stop()` only sets the
+            // shutdown_requested flag, which is the signal the worker
+            // would respond to in production.
+            EXPECT_TRUE(api.is_connection_alive(0))
+                << "Master connection must remain alive after peer death.";
+            EXPECT_EQ(api.connections_alive_count(), 1u);
+            EXPECT_FALSE(core.is_shutdown_requested())
+                << "A2 REGRESSION: peer-broker death triggered request_stop.  "
+                   "Master must keep the role alive (HEP-CORE-0023 §2.5).";
+
+            // Give the role time to observe what would have been a
+            // stop request — if A2 is broken (peer triggers role exit),
+            // shutdown_requested would flip in this window.
+            std::this_thread::sleep_for(std::chrono::milliseconds{200});
+            EXPECT_FALSE(core.is_shutdown_requested())
+                << "Role MUST NOT have shutdown_requested 200ms after peer "
+                   "death.";
+
+            api.stop_handler_threads();
+            broker_a.stop_and_join();
+        },
+        "role_state.role_api_base_hub_dead_peer_keeps_role_alive",
+        logger_module(), crypto_module(), zmq_module());
+}
+
+// ============================================================================
+// role_api_base_hub_dead_master_exits_role
+//   A2 baseline: master broker death MUST still trigger role-wide
+//   shutdown — that's the single-hub semantics we preserved.  Twin of
+//   the peer-keeps-alive test above, but kills broker_a (master, i==0)
+//   instead.  Mutation: change `if (i == 0)` in on_hub_dead to
+//   `if (false)` → master death no longer triggers shutdown → role
+//   stays running → test fails on is_running false assertion.
+// ============================================================================
+
+int role_api_base_hub_dead_master_exits_role()
+{
+    return run_gtest_worker(
+        []() {
+            BrokerService::Config cfg_a; cfg_a.endpoint = "tcp://127.0.0.1:0";
+            cfg_a.use_curve = false;
+            auto broker_a = start_broker_with_cfg(std::move(cfg_a));
+
+            BrokerService::Config cfg_b; cfg_b.endpoint = "tcp://127.0.0.1:0";
+            cfg_b.use_curve = false;
+            auto broker_b = start_broker_with_cfg(std::move(cfg_b));
+
+            const std::string role_uid = "prod.a2_master.uid00000001";
+            const std::string ch_a     = make_test_channel_name("a2.master.a");
+            const std::string ch_b     = make_test_channel_name("a2.master.b");
+
+            pylabhub::scripting::RoleHostCore core;
+            core.set_running(true);
+
+            pylabhub::scripting::RoleAPIBase api(core, "prod", role_uid);
+            api.set_name("a2_master");
+            api.set_auth("", "");
+
+            std::vector<pylabhub::scripting::Presence> presences;
+            {
+                pylabhub::scripting::Presence pa;
+                pa.hub.broker = broker_a.endpoint;
+                pa.channel    = ch_a;
+                pa.role_kind  = pylabhub::scripting::RoleKind::Producer;
+                presences.push_back(std::move(pa));
+
+                pylabhub::scripting::Presence pb;
+                pb.hub.broker = broker_b.endpoint;
+                pb.channel    = ch_b;
+                pb.role_kind  = pylabhub::scripting::RoleKind::Producer;
+                presences.push_back(std::move(pb));
+            }
+            auto handler = std::make_unique<pylabhub::scripting::RoleHandler>(
+                std::move(presences));
+
+            ASSERT_TRUE(api.start_handler_threads(std::move(handler)));
+            EXPECT_FALSE(core.is_shutdown_requested());
+
+            // Kill MASTER (broker_a → connection index 0).
+            broker_a.stop_and_join();
+
+            // Poll for the master's on_hub_dead lambda to fire
+            // request_stop.  Check `is_shutdown_requested()` — we
+            // don't have a worker thread here to flip
+            // `running_threads_=false` on teardown observation.
+            const auto deadline = std::chrono::steady_clock::now() +
+                                  std::chrono::seconds{3};
+            while (!core.is_shutdown_requested() &&
+                   std::chrono::steady_clock::now() < deadline)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds{50});
+            }
+
+            EXPECT_TRUE(core.is_shutdown_requested())
+                << "A2 baseline: master death MUST trigger request_stop "
+                   "(shutdown_requested flag set within 3s).";
+            EXPECT_EQ(core.stop_reason_string(), "hub_dead")
+                << "stop_reason must be HubDead after master death.";
+            EXPECT_FALSE(api.is_connection_alive(0));
+            // Peer is untouched; bitmask still shows alive (we never
+            // killed broker_b in this scenario).
+            EXPECT_TRUE(api.is_connection_alive(1));
+
+            api.stop_handler_threads();
+            broker_b.stop_and_join();
+        },
+        "role_state.role_api_base_hub_dead_master_exits_role",
+        logger_module(), crypto_module(), zmq_module());
+}
+
 } // namespace pylabhub::tests::worker::broker_role_state
 
 namespace
@@ -1301,6 +1499,10 @@ struct BrokerRoleStateWorkerRegistrar
                     return role_api_base_start_handler_threads_dual_hub_e2e();
                 if (scenario == "role_api_base_band_join_handler_mode")
                     return role_api_base_band_join_handler_mode();
+                if (scenario == "role_api_base_hub_dead_peer_keeps_role_alive")
+                    return role_api_base_hub_dead_peer_keeps_role_alive();
+                if (scenario == "role_api_base_hub_dead_master_exits_role")
+                    return role_api_base_hub_dead_master_exits_role();
                 return 1;
             });
     }

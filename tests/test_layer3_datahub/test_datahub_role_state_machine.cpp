@@ -179,6 +179,34 @@ TEST_F(DatahubRoleStateMachineTest, RoleAPIBase_StartHandlerThreads_DualHub_E2E)
     ExpectWorkerOk(proc);
 }
 
+TEST_F(DatahubRoleStateMachineTest, RoleAPIBase_HubDead_PeerKeepsRoleAlive)
+{
+    // A2 (Wave-B M8 prep) — dual-hub fault tolerance: PEER broker
+    // death must NOT trigger role-wide shutdown.  Pre-A2 any-of-N
+    // on_hub_dead callbacks unconditionally called request_stop, so
+    // a dual-hub processor exited if EITHER broker hiccupped —
+    // strictly worse than single-hub.  Post-A2: master (i==0) death
+    // still triggers role exit (preserves single-hub semantics);
+    // peer (i>0) death marks the connection dead in the bitmask
+    // accessible via api.is_connection_alive(i) but the role keeps
+    // running on the master.  See HEP-CORE-0023 §2.5.
+    auto proc = SpawnWorker(
+        "broker_role_state.role_api_base_hub_dead_peer_keeps_role_alive", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubRoleStateMachineTest, RoleAPIBase_HubDead_MasterExitsRole)
+{
+    // A2 baseline — master broker death MUST still trigger role-wide
+    // shutdown (single-hub semantics preserved).  Twin of the peer-
+    // keeps-alive test; mutates broker_a (the master) instead of
+    // broker_b.  Asserts core.is_running() flips false within 3s and
+    // stop_reason becomes "hub_dead".
+    auto proc = SpawnWorker(
+        "broker_role_state.role_api_base_hub_dead_master_exits_role", {});
+    ExpectWorkerOk(proc);
+}
+
 TEST_F(DatahubRoleStateMachineTest, RoleAPIBase_BandJoin_HandlerMode_Bootstrap)
 {
     // A0 regression test (2026-05-17) — protects the bootstrap case
