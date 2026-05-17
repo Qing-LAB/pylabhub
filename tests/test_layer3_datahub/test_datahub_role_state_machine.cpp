@@ -207,6 +207,22 @@ TEST_F(DatahubRoleStateMachineTest, RoleAPIBase_HubDead_MasterExitsRole)
     ExpectWorkerOk(proc);
 }
 
+TEST_F(DatahubRoleStateMachineTest, RoleAPIBase_WaitForRole_DualHub_Fallthrough)
+{
+    // A3 (Wave-B M8 prep) — Class B (role-bound) queries must fall
+    // through across all connections per HEP-CORE-0033 §18.3.
+    // Spawns 2 brokers, registers a "target" role on hub-B only,
+    // builds a dual-hub querier (conn[0]=hub-A, conn[1]=hub-B), and
+    // asserts api.wait_for_role(target_uid) finds it via fall-through.
+    // Pre-A3 wait_for_role only polled connection[0] (hub-A) and
+    // returned false because hub-A doesn't know about target.
+    // Mutation: revert iteration → test fails on EXPECT_TRUE.
+    auto proc = SpawnWorker(
+        "broker_role_state.role_api_base_wait_for_role_dual_hub_fallthrough",
+        {});
+    ExpectWorkerOk(proc);
+}
+
 TEST_F(DatahubRoleStateMachineTest, RoleAPIBase_BandJoin_HandlerMode_Bootstrap)
 {
     // A0 regression test (2026-05-17) — protects the bootstrap case

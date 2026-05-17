@@ -1312,13 +1312,14 @@ RoleAPIBase::open_inbox_client(const std::string &target_uid)
 {
     if (!pImpl->core)
         return std::nullopt;
-    // Wave-B M4e: Class B (role-bound) — inbox discovery is a
-    // role-scope query (ROLE_INFO_REQ per HEP-CORE-0033 §18.2 +
-    // HEP-CORE-0027 §4.2).  Route via the first connection; pre-M5
-    // single-hub callers see identical behaviour.
-    auto *bc_role = pImpl->resolve_bc_for_role();
-    if (!bc_role)
-        return std::nullopt;
+    // Class B (role-bound) inbox discovery (ROLE_INFO_REQ per
+    // HEP-CORE-0033 §18.2 + HEP-CORE-0027 §4.2).  Iterate
+    // connections per §18.3 — first non-empty answer wins.  Target
+    // role's inbox lives on whichever hub it registered with; we
+    // don't know which hub a priori, so fall through.
+    if (!pImpl->handler_) return std::nullopt;
+    const auto &conns = pImpl->handler_->connections();
+    if (conns.empty()) return std::nullopt;
 
     hub::SchemaSpec result_spec;
     std::string result_packing;
@@ -1326,17 +1327,35 @@ RoleAPIBase::open_inbox_client(const std::string &target_uid)
     auto entry = pImpl->core->open_inbox(target_uid,
         [&]() -> std::optional<RoleHostCore::InboxCacheEntry>
         {
-            auto info = bc_role->query_role_info(target_uid, 1000);
-            if (!info.has_value())
-                return std::nullopt;
+            // Iterate connections; first query that returns a body
+            // with an inbox_schema wins.  A "not found" response
+            // (broker doesn't know this role) returns body without
+            // inbox_schema → fall to next connection.
+            nlohmann::json info;
+            bool found = false;
+            for (const auto &conn : conns)
+            {
+                auto *bc = conn.brc.get();
+                if (!bc) continue;
+                auto resp = bc->query_role_info(target_uid, 1000);
+                if (!resp.has_value()) continue;     // transport failure
+                auto sch = resp->value("inbox_schema", nlohmann::json{});
+                if (sch.is_object() && sch.contains("fields"))
+                {
+                    info  = std::move(*resp);
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) return std::nullopt;
 
-            auto inbox_schema = info->value("inbox_schema", nlohmann::json{});
+            auto inbox_schema = info.value("inbox_schema", nlohmann::json{});
             if (!inbox_schema.is_object() || !inbox_schema.contains("fields"))
                 return std::nullopt;
 
-            auto inbox_packing  = info->value("inbox_packing", std::string{});
-            auto inbox_endpoint = info->value("inbox_endpoint", std::string{});
-            auto inbox_checksum = info->value("inbox_checksum", std::string{});
+            auto inbox_packing  = info.value("inbox_packing", std::string{});
+            auto inbox_endpoint = info.value("inbox_endpoint", std::string{});
+            auto inbox_checksum = info.value("inbox_checksum", std::string{});
 
             hub::SchemaSpec spec;
             try
@@ -1388,11 +1407,18 @@ RoleAPIBase::open_inbox_client(const std::string &target_uid)
 
 bool RoleAPIBase::wait_for_role(const std::string &uid, int timeout_ms)
 {
-    // Class B — query_role_presence is a role-scope query; route via
-    // the first connection (handler->brc_for_role()).
-    auto *bc = pImpl->resolve_bc_for_role();
-    if (!bc)
-        return false;
+    // Class B (role-bound) per HEP-CORE-0033 §18.3: iterate all
+    // connections, first present-true wins.  For dual-hub processor
+    // (connections to N hubs), a role registered on hub-N may be
+    // invisible to a brc_for_role-only query (which returns
+    // connection[0]).  We fall through each connection per poll
+    // iteration until one reports the target present OR all answer
+    // not-present.  Each connection's query has its own kPollMs
+    // sub-budget; total poll period is N × kPollMs ≈ N × 200ms.
+    if (!pImpl->handler_) return false;
+    const auto &conns = pImpl->handler_->connections();
+    if (conns.empty()) return false;
+
     const auto deadline = std::chrono::steady_clock::now() +
                           std::chrono::milliseconds{timeout_ms};
     static constexpr int kPollMs = 200;
@@ -1402,10 +1428,20 @@ bool RoleAPIBase::wait_for_role(const std::string &uid, int timeout_ms)
         // `query_role_presence` returns the broker's response body
         // (`{present: true, channel, role}` on found, `{present: false}`
         // on not-found, or `{present: false, error}` on missing role_uid)
-        // or `nullopt` on transport failure.
-        auto resp = bc->query_role_presence(uid, kPollMs);
-        if (resp.has_value() && resp->value("present", false))
-            return true;
+        // or `nullopt` on transport failure.  Iterate connections;
+        // first present-true wins.
+        for (const auto &conn : conns)
+        {
+            auto *bc = conn.brc.get();
+            if (!bc) continue;
+            auto resp = bc->query_role_presence(uid, kPollMs);
+            if (resp.has_value() && resp->value("present", false))
+                return true;
+            // Short-circuit on deadline mid-iteration so a slow first
+            // connection doesn't lock us out of trying later ones.
+            if (std::chrono::steady_clock::now() >= deadline)
+                return false;
+        }
     }
     return false;
 }
