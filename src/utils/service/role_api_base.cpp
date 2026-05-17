@@ -166,6 +166,17 @@ struct RoleAPIBase::Impl
     std::unique_ptr<RoleHandler> handler_;
     bool                         ctrl_threads_started_{false};
 
+    // A2 (Wave-B M8 prep): per-connection liveness bitmask.  Bit `i`
+    // == 1 means handler->connections()[i] has not observed a
+    // ZMQ_EVENT_DISCONNECTED since start_handler_threads.  Sized by
+    // bit width: 64 connections is comfortably above any plausible
+    // role-side topology (single-hub = 1, dual-hub processor = 2,
+    // hypothetical many-hub federation = small N).  Atomic for
+    // any-thread reads + ctrl-thread writes via on_hub_dead lambda.
+    // Zero before start_handler_threads; bits 0..n-1 set on spawn;
+    // bits cleared individually as each connection dies.
+    std::atomic<std::uint64_t>   connection_alive_mask_{0};
+
     // Optional hook for role-specific metrics injection.
     std::function<void(nlohmann::json &)> metrics_hook;
 
@@ -906,17 +917,40 @@ bool RoleAPIBase::start_handler_threads(std::unique_ptr<RoleHandler> handler)
                 core->enqueue_message(std::move(msg));
             });
 
-        // Hub-dead: any hub dying signals the role to stop (preserves
-        // legacy single-hub semantics).  Multi-hub failure policy
-        // (Wave-B M8) will refine — see HEP-CORE-0023.
+        // Hub-dead policy (A2, Wave-B M8 prep — HEP-CORE-0023 §2.5):
+        //   * Master (i == 0): mark dead in bitmask + set HubDead +
+        //     request_stop.  Role exits because the master ctrl
+        //     thread is the one driving the heartbeat timer; without
+        //     it the broker will reap the role anyway, and any peer
+        //     work depends on the role still running.
+        //   * Peer (i > 0): mark dead in bitmask + WARN only.  Role
+        //     keeps running on the master; the role host or script
+        //     can poll `api.is_connection_alive(i)` to decide
+        //     whether to exit, fail RPCs that need that hub, or
+        //     just continue with degraded service.
+        // Bitmask write is relaxed (single producer per slot — the
+        // ctrl thread for connection i is the only writer).
+        auto *alive_mask = &pImpl->connection_alive_mask_;
         brc->on_hub_dead(
-            [core, tag_local, i]()
+            [core, alive_mask, tag_local, i]()
             {
-                LOGGER_WARN("[{}/handler_ctrl_{}] hub-dead: broker "
-                            "connection lost",
-                            tag_local, i);
-                core->set_stop_reason(RoleHostCore::StopReason::HubDead);
-                core->request_stop();
+                alive_mask->fetch_and(~(std::uint64_t{1} << i),
+                                       std::memory_order_relaxed);
+                if (i == 0)
+                {
+                    LOGGER_WARN("[{}/handler_ctrl_{}] hub-dead: MASTER "
+                                "broker connection lost — role will exit",
+                                tag_local, i);
+                    core->set_stop_reason(RoleHostCore::StopReason::HubDead);
+                    core->request_stop();
+                }
+                else
+                {
+                    LOGGER_WARN("[{}/handler_ctrl_{}] hub-dead: PEER "
+                                "broker connection lost — role continues "
+                                "on master (HEP-CORE-0023 §2.5)",
+                                tag_local, i);
+                }
             });
     }
     LOGGER_INFO("[{}] start_handler_threads: Phase 2 OK", pImpl->role_tag);
@@ -983,6 +1017,26 @@ bool RoleAPIBase::start_handler_threads(std::unique_ptr<RoleHandler> handler)
     }
     LOGGER_INFO("[{}] start_handler_threads: Phase 3 OK — {} ctrl thread(s) spawned",
                 pImpl->role_tag, n_conn);
+
+    // A2 (Wave-B M8 prep): mark every spawned connection alive in the
+    // bitmask.  Done AFTER spawn (so on_hub_dead lambdas observe a
+    // sane initial state if a connection dies racing the spawn loop).
+    // Bit width sanity-check: handler::connections().size() must fit
+    // in uint64; LOG + cap to 64 if exceeded (silently truncating
+    // would make is_connection_alive(i) lie for i >= 64).
+    if (n_conn > 64)
+    {
+        LOGGER_ERROR("[{}] start_handler_threads: connection count {} > 64; "
+                     "A2 per-connection liveness bitmask only supports up to "
+                     "64.  Tracking the first 64; the remainder will report "
+                     "is_connection_alive=false from start.",
+                     pImpl->role_tag, n_conn);
+    }
+    const std::size_t bits = (n_conn > 64) ? 64 : n_conn;
+    const std::uint64_t init_mask = (bits == 64)
+        ? ~std::uint64_t{0}
+        : ((std::uint64_t{1} << bits) - 1);
+    pImpl->connection_alive_mask_.store(init_mask, std::memory_order_relaxed);
 
     // Wave-B M4f (2026-05-16): the previous Phase 4 set
     // `pImpl->broker_channel = handler->connections()[0].brc.get()`
@@ -1062,6 +1116,34 @@ void RoleAPIBase::stop_handler_threads() noexcept
 RoleHandler *RoleAPIBase::handler() const noexcept
 {
     return pImpl->handler_.get();
+}
+
+bool RoleAPIBase::is_connection_alive(std::size_t i) const noexcept
+{
+    if (i >= 64) return false;   // beyond the bitmask
+    if (!pImpl->handler_) return false;
+    if (i >= pImpl->handler_->connections().size()) return false;
+    const auto mask = pImpl->connection_alive_mask_.load(std::memory_order_relaxed);
+    return (mask & (std::uint64_t{1} << i)) != 0;
+}
+
+std::size_t RoleAPIBase::connections_alive_count() const noexcept
+{
+    if (!pImpl->handler_) return 0;
+    const auto mask = pImpl->connection_alive_mask_.load(std::memory_order_relaxed);
+    // Mask out any bits beyond actual connections (defensive — should
+    // be 0 already since init_mask only sets bits 0..n-1).
+    const auto n = pImpl->handler_->connections().size();
+    const auto cap = (n >= 64) ? ~std::uint64_t{0}
+                                : ((std::uint64_t{1} << n) - 1);
+#if defined(__GNUC__) || defined(__clang__)
+    return static_cast<std::size_t>(__builtin_popcountll(mask & cap));
+#else
+    auto m = mask & cap;
+    std::size_t c = 0;
+    while (m) { c += m & 1; m >>= 1; }
+    return c;
+#endif
 }
 
 // ============================================================================
