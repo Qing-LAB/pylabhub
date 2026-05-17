@@ -31,6 +31,8 @@
 #include "utils/zmq_poll_loop.hpp"
 #include "utils/role_host_lifecycle.hpp"
 #include "utils/role_reg_payload.hpp"
+#include "utils/role_handler.hpp"     // Wave-B M6: handler-mode startup
+#include "utils/role_presence.hpp"    // Wave-B M6: Presence + RoleKind
 #include "utils/schema_utils.hpp"
 
 #include <chrono>
@@ -192,10 +194,9 @@ void ConsumerRoleHost::worker_main_()
     if (!core_.is_validate_only())
     {
         api_ref.set_inbox_queue(inbox_queue_.get());
-
-        // Create BrokerRequestComm (connection deferred to step 6).
-        broker_comm_ = std::make_unique<hub::BrokerRequestComm>();
-        api_ref.set_broker_comm(broker_comm_.get());
+        // Wave-B M6: BrokerRequestComm allocation moved into RoleHandler,
+        // built lazily in Step 6 below.  See M5 (producer) for the same
+        // pattern; consumer is the second role host to migrate.
     }
     api_ref.set_checksum_policy(config_.checksum().policy);
     api_ref.set_stop_on_script_error(sc.stop_on_script_error);
@@ -245,44 +246,67 @@ void ConsumerRoleHost::worker_main_()
     // ── Step 5: invoke on_init ───────────────────────────────────────────────
     engine_ref.invoke_on_init();
 
-    // ── Step 6: Connect to broker, start ctrl thread, register ────────────
+    // ── Step 6: Connect to broker, start handler ctrl thread(s), register
+    // (Wave-B M6 — handler-mode replaces legacy start_ctrl_thread; mirrors
+    // M5 producer migration with Consumer presence + register_consumer).
     core_.set_running(true);
     {
-        // HEP-CORE-0034 Phase 5c — broker-comm config builder.
-        auto bc_cfg = scripting::make_broker_comm_config(
-            config_.in_hub(), config_.auth(), id.uid, id.name);
+        // 6a — Build presence list: 1 Consumer presence on in_hub.
+        std::vector<scripting::Presence> presences;
+        {
+            scripting::Presence p;
+            p.hub       = config_.in_hub();
+            p.channel   = config_.in_channel();
+            p.role_kind = scripting::RoleKind::Consumer;
+            presences.push_back(std::move(p));
+        }
 
-        scripting::RoleAPIBase::CtrlThreadConfig ctrl_cfg;
-        ctrl_cfg.heartbeat_interval_ms = config_.timing().heartbeat_interval_ms;
-        // M1.4 (2026-05-11): no separate metrics-report tick — metrics
-        // piggyback on the heartbeat tick.  HEP-CORE-0019 §2.3 Phase 6.
+        // 6b — Auth + start handler threads.
+        api_ref.set_auth(config_.auth().client_pubkey,
+                         config_.auth().client_seckey);
 
-        // Build consumer registration payload (CONSUMER_REG_REQ) via the
-        // shared helper (HEP-CORE-0034 Phase 5b).  Schema fields layered
-        // on below.
+        auto handler = std::make_unique<scripting::RoleHandler>(
+            std::move(presences));
+
+        if (!api_ref.start_handler_threads(std::move(handler)))
+        {
+            LOGGER_ERROR("[cons] start_handler_threads failed");
+            promise_ref.set_value(false);
+            return;
+        }
+
+        // 6c — Build CONSUMER_REG_REQ payload (HEP-CORE-0034 Phase 5b).
         const auto &ch = config_.in_channel();
-        ctrl_cfg.consumer_reg_opts = hub::build_consumer_reg_payload(
+        auto reg_opts = hub::build_consumer_reg_payload(
             hub::ConsumerRegInputs{ch, id.uid, id.name});
 
-        // HEP-CORE-0034 §10.3 — citation fields (Phase 5a wire population).
-        // Mode (named vs anonymous) is decided by what the config
-        // produced: the JSON schema-id form yields named-mode citation,
-        // an inline schema yields anonymous-mode.  All-empty (no
-        // in_slot_schema in config) → no validation (legacy compat).
-        // Broker enforces the mode rules; we just paste whichever
-        // fields make_wire_schema_fields populated.
+        // Citation fields (HEP-CORE-0034 §10.3) — named-mode vs anonymous
+        // vs absent decided by the schema JSON shape; broker enforces the
+        // mode rules.
         const auto &cf_for_wire = config_.role_data<consumer::ConsumerFields>();
         const auto wire_schema = hub::make_wire_schema_fields(
             cf_for_wire.in_slot_schema_json, in_slot_spec_, core_.in_fz_spec());
-        hub::apply_consumer_schema_fields(ctrl_cfg.consumer_reg_opts, wire_schema);
+        hub::apply_consumer_schema_fields(reg_opts, wire_schema);
 
-        if (inbox_cfg_.has_inbox())
-            ctrl_cfg.inbox = inbox_cfg_;
+        // Inbox metadata (HEP-CORE-0034 §10.2; no-op if no inbox).
+        api_ref.append_inbox_to_reg(reg_opts, inbox_cfg_);
 
-        if (!api_ref.start_ctrl_thread(bc_cfg, ctrl_cfg))
+        // 6d — CONSUMER_REG_REQ + heartbeat install.  register_consumer
+        // auto-records the channel into shared.consumer_channel (M5a).
+        auto reg_result = api_ref.register_consumer(reg_opts);
+        if (!reg_result.has_value() ||
+            reg_result->value("status", std::string{}) != "success")
         {
             LOGGER_ERROR("[cons] Broker consumer registration failed — "
                          "broker won't track this consumer for liveness");
+            // Non-fatal: consumer can still receive data via the producer's
+            // direct ZMQ connection if discovery already happened.
+        }
+        else
+        {
+            auto hub_max = scripting::RoleAPIBase::extract_hub_heartbeat_max(*reg_result);
+            api_ref.install_heartbeat(config_.timing().heartbeat_interval_ms,
+                                       hub_max);
         }
     }
 
@@ -417,18 +441,14 @@ void ConsumerRoleHost::teardown_infrastructure_()
 
     // Ctrl thread is QUIESCED at this point — not yet joined.  Step 12.5
     // in `do_role_teardown` (`role_host_lifecycle.cpp`) ran
-    // `wait_for_quiescence()`, which guarantees the ctrl thread is
-    // outside its `with_active_loop` bracket (HEP-CORE-0031 §4.1, MD1
-    // fix).  Per the Thread Shutdown Contract, a thread outside its
-    // bracket MUST NOT touch BRC's pImpl, so destroying `broker_comm_`
-    // here is safe.  The actual `std::thread::join` happens later in
-    // `EngineHost<ApiT>::shutdown_()` Phase 3.  Broker detects role
-    // death via heartbeat timeout — no explicit deregister needed.
-    if (broker_comm_)
-    {
-        broker_comm_->disconnect();
-        broker_comm_.reset();
-    }
+    // Wave-B M6: handler-mode teardown.  RoleHandler inside RoleAPIBase
+    // owns every BRC; api.stop_handler_threads() does the full
+    // signal/drain/disconnect/release sequence.  See M5 (producer) for
+    // the same pattern.  Safe AFTER do_role_teardown's Step 12.5
+    // wait_for_quiescence (HEP-CORE-0031 §4.1, MD1 fix); the actual
+    // std::thread::join for master ctrl threads happens later in
+    // EngineHost::shutdown_() Phase 3.
+    if (has_api()) api().stop_handler_threads();
 
     if (has_api())
         api().close_queues();
