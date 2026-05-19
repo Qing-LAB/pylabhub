@@ -462,9 +462,11 @@ api.wait_for_role(uid, timeout_ms=5000)
     # Polls broker with GIL released between 200 ms polls.
     # Use in on_init() when startup order is deterministic.
 
-# Shutdown
-api.stop()                   # Request clean shutdown from inside callback
-api.set_critical_error()     # Mark as failed and trigger shutdown (no argument)
+# Shutdown — see HEP-CORE-0011 §"Stop / critical-error usage" for the full taxonomy
+api.stop()                          # Graceful exit; stop_reason="normal"
+api.set_critical_error("…")         # Critical + framework auto-log line
+                                    #   "[role_tag/uid] CRITICAL: …"
+                                    # msg is REQUIRED; stop_reason="critical_error"
 ```
 
 **Note on `api.last_seq()` gap detection:**

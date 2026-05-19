@@ -1730,7 +1730,7 @@ def on_produce(tx, msgs, api):
     assert api.stop_reason() == "normal", (
         f"pre-state: stop_reason must be 'normal', got {api.stop_reason()!r}")
 
-    api.set_critical_error()
+    api.set_critical_error("test triggered critical error")
 
     # Post-state: all three side-effects must be observable.
     assert api.critical_error() is True, (
@@ -2035,10 +2035,16 @@ def on_produce(tx, msgs, api):
                 << "stop_on_script_error is a controlled stop, NOT critical "
                    "— critical_error must remain false so the parent role "
                    "host doesn't treat this as a restart-worthy failure";
-            EXPECT_EQ(core.stop_reason_string(), "normal")
-                << "stop_reason stays 'normal' — the shutdown path here is "
-                   "explicit user policy, not the StopReason::CriticalError "
-                   "enum value";
+            // Audit S2 (2026-05-18) — stop_reason is now tagged
+            // `script_error` (was `normal`) so observers can distinguish
+            // a script-bug-driven stop from `api.stop()` / orderly stop.
+            // Distinct from `critical_error` (which is from
+            // api.set_critical_error()).
+            EXPECT_EQ(core.stop_reason_string(), "script_error")
+                << "stop_reason must be 'script_error' after a script "
+                   "callback raised AND stop_on_script_error=true "
+                   "(audit S2).  Distinct from 'critical_error' (which "
+                   "is from api.set_critical_error()).";
 
             engine.finalize();
         },

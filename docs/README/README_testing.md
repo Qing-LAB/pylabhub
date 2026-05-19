@@ -401,15 +401,17 @@ If **all are no**, Pattern 1 or 2 is allowed.
 | Linking the test binary against both `pylabhub::test_framework` and `GTest::gtest_main` | Two `main()` definitions → link error | Link `pylabhub::test_framework` only — it provides `main()` via `test_entrypoint.cpp` |
 | Worker body returning normally (falling off the end) | Runs pylabhub-utils + libzmq + luajit static dtors → potential 60s hang on CI | Call `run_gtest_worker(...)` and let it `_exit()` |
 
-> **Existing-codebase warning (2026-05-13 audit).** A grep over
-> `tests/test_layer{2,3,4}_*` will find ~23 files that still own an
-> in-process `LifecycleGuard` via `SetUpTestSuite` (full list and
-> migration plan: `docs/todo/TESTING_TODO.md` § "Pattern-3 migration
-> debt"). These are **migration debt, not exemplars** — do not copy
-> their shape into new tests.  They pass today only because each
-> binary has one suite and exits before static-dtor order matters in
-> the failure modes the antipatterns table above describes; the rule
-> still applies to any new code.
+> **Migration history (2026-05-14, closed).** The Pattern-3 migration
+> wave converted all 23 then-noncompliant files off the
+> `SetUpTestSuite`-owned `LifecycleGuard` antipattern.  Closure
+> record: `docs/todo/TESTING_TODO.md` § "✅ Closed 2026-05-14:
+> Pattern-3 migration debt wave — all 23 files migrated" +
+> commits `6dfb86d`..`1ed9cc8` (also in `TODO_MASTER.md`
+> § "Side-arc cleanup waves completed").  A grep across `tests/`
+> for `SetUpTestSuite` today returns only migration-history doc
+> comments (`"Migrated 2026-05-14 from the in-process ...
+> antipattern"`); no actual antipattern code remains.  Rule above
+> applies to all new tests.
 
 #### gtest-spi macros are NOT usable in Pattern-3 worker bodies
 

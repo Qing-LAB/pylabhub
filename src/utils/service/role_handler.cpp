@@ -128,6 +128,13 @@ RoleHandler::find_presence_for_channel(const std::string &channel) const noexcep
     return (it == channel_index_.end()) ? nullptr : it->second;
 }
 
+Presence *
+RoleHandler::find_presence_for_channel(const std::string &channel) noexcept
+{
+    auto it = channel_index_.find(channel);
+    return (it == channel_index_.end()) ? nullptr : it->second;
+}
+
 std::size_t
 RoleHandler::presence_count_for_channel(const std::string &channel) const noexcept
 {
@@ -270,14 +277,63 @@ void RoleHandler::on_band_left(const std::string &band_name) noexcept
     band_index_.erase(band_name);
 }
 
+std::size_t RoleHandler::mark_connection_disconnected(
+    const HubConnection *dead_conn) noexcept
+{
+    if (dead_conn == nullptr) return 0;
+    std::size_t n_transitioned = 0;
+    for (auto &p : presences_)
+    {
+        if (p.connection != dead_conn) continue;
+        const auto cur = p.registration_state.load(std::memory_order_acquire);
+        if (cur != RegistrationState::Registered &&
+            cur != RegistrationState::RegRequestPending)
+            continue;
+
+        // Race analysis (audit V2, 2026-05-18).
+        //
+        // This is a read-modify-write WITHOUT compare-and-swap:
+        // load → test → unconditional store of `Deregistered`.
+        // A concurrent `register_*` call on the caller thread could
+        // store `Registered` in between our load and our store —
+        // we would then overwrite that fresh `Registered` with
+        // `Deregistered`.  This is intentionally permitted, for
+        // two reasons:
+        //
+        //   1. **The dead-broker premise makes the outcome correct
+        //      either way.**  We're inside `on_hub_dead`, which
+        //      means ZMTP has declared this connection's broker
+        //      dead.  The broker either has already reaped our
+        //      presences via heartbeat-timeout or will reap them
+        //      shortly.  A `Registered` claim on the role side
+        //      against a dead broker is a LIE — the FSM truthfully
+        //      reflects reality as `Deregistered`.
+        //
+        //   2. **`Deregistered` is a sink state** in the role-side
+        //      FSM.  There is no transition out of it.  So clobbering
+        //      a transient `Registered` with `Deregistered` cannot
+        //      cause oscillation or further confusion — the FSM
+        //      stays at the terminal state from that point on.
+        //
+        // Compare-and-swap would prevent the clobber but would also
+        // leave the FSM at `Registered`, which is the WRONG state
+        // for a dead-broker presence.  Plain store is therefore
+        // both simpler and semantically correct.
+        p.registration_state.store(RegistrationState::Deregistered,
+                                    std::memory_order_release);
+        ++n_transitioned;
+    }
+    return n_transitioned;
+}
+
 const Presence *
 RoleHandler::find_presence_from_notification(
     const std::string    & /*msg_type*/,
     const nlohmann::json &body) const noexcept
 {
-    // Class A — body has `channel_name`.  Check first because it's
-    // the most common case (REG / DEREG / HEARTBEAT / channel
-    // close-related notifications all carry it).
+    // Class A — body has `channel_name` (HEP-CORE-0007 wire field on
+    // CHANNEL_CLOSING_NOTIFY / CONSUMER_DIED_NOTIFY / CHANNEL_EVENT_NOTIFY).
+    // Check first because it's the most common case.
     if (body.is_object())
     {
         auto ch_it = body.find("channel_name");
@@ -291,10 +347,12 @@ RoleHandler::find_presence_from_notification(
             }
         }
 
-        // Class D — body has `band_name`.  Fall through to band
-        // routing when no channel field is present (or channel
-        // didn't match).
-        auto band_it = body.find("band_name");
+        // Class D — body has `band` (HEP-CORE-0030 §5.1 wire field on
+        // BAND_JOIN_NOTIFY / BAND_LEAVE_NOTIFY / BAND_BROADCAST_NOTIFY).
+        // Pre-audit-B2 (2026-05-17) this looked for the never-emitted
+        // key `band_name`, an invention from Wave-B M4b
+        // (commit `8c3994c`) that never matched any broker payload.
+        auto band_it = body.find("band");
         if (band_it != body.end() && band_it->is_string())
         {
             const auto band = band_it->get_ref<const std::string &>();
@@ -306,7 +364,7 @@ RoleHandler::find_presence_from_notification(
         }
     }
 
-    // Class B / C — neither channel_name nor band_name in the body.
+    // Class B / C — neither channel_name nor band in the body.
     // Caller routes via different logic (e.g., role-scope events
     // like role_registered_notify don't bind to a specific
     // presence).

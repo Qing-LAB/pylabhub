@@ -71,6 +71,56 @@ namespace
 /// drive.  All other virtual methods are no-op stubs.  Calls to
 /// `invoke_on_channel_closing` are recorded in `calls` as
 /// (channel, reason) pairs in the order they were invoked.
+///
+/// ─── CONSTRAINED EXCEPTION to the no-mocks rule ──────────────────
+///
+/// pylabhub's testing discipline (`feedback_no_mocks_via_observability`
+/// / `feedback_test_layering_and_no_mocks`) says: **use real classes
+/// + extend their accessors for observability; don't write parallel
+/// implementations**.  This file violates that rule deliberately and
+/// in a specifically scoped way.  Read this BEFORE copying the
+/// pattern elsewhere.
+///
+/// **Why it's used here:** the dispatcher (`dispatch_notifications`
+/// in `service/cycle_ops.hpp`) is a pure C++ function whose entire
+/// contract with `ScriptEngine` is a narrow subset: `has_callback`,
+/// `invoke_on_channel_closing`, `invoke_on_consumer_died`,
+/// `invoke_on_hub_dead`.  Branch coverage of every dispatch path
+/// (callback-defined × callback-absent × notification-type) is the
+/// L2-level test goal.  Doing that with a real `LuaEngine` or
+/// `PythonEngine` means spinning up the interpreter + loading a
+/// script for each TEST_F — a 10–100× cost increase for tests whose
+/// job is to pin pure-C++ table-driven dispatch logic.
+///
+/// **What this exception costs:** every time `ScriptEngine` gains a
+/// new pure virtual, this class plus two siblings
+/// (`MockEngine` in `test_hub_api.cpp`, the stub in
+/// `workers/role_data_loop_workers.cpp`) must be updated by hand.
+/// Drift is a real risk.
+///
+/// **What still validates real-engine correctness:** the real
+/// `PythonEngine` / `LuaEngine` / `NativeEngine` implementations
+/// have their own end-to-end tests with real scripts in
+/// `test_python_engine.cpp` / `test_lua_engine.cpp` /
+/// `test_native_engine.cpp`.  Those tests pin the real engines'
+/// `has_callback` cache + every `invoke_on_*` actually invoking the
+/// script.  Composition: real-engine tests verify the engine's side
+/// of the contract; THIS file's `RecordingEngine` tests verify the
+/// dispatcher's side.
+///
+/// **DO NOT copy this pattern** for tests that exercise role-host
+/// loops, broker interactions, lifecycle modules, or any
+/// cross-cutting integration.  Those MUST use real production
+/// classes + observable side effects.  The narrow scope of
+/// `RecordingEngine` (branch coverage of a pure-C++ dispatch
+/// function with a 4-method interface) is what makes the exception
+/// defensible here.  If you're tempted to add the 5th method or to
+/// override `invoke_produce` / `invoke_consume` here for testing,
+/// **stop** — that's the boundary where you should reach for a
+/// real engine instead.
+///
+/// Related: HEP-CORE-0011 §"Notification dispatch" describes the
+/// dispatcher contract being tested.
 class RecordingEngine : public ScriptEngine
 {
   public:
@@ -78,6 +128,8 @@ class RecordingEngine : public ScriptEngine
     bool has_on_channel_closing{false};
     /// When true, has_callback("on_consumer_died") returns true.
     bool has_on_consumer_died{false};
+    /// When true, has_callback("on_hub_dead") returns true.
+    bool has_on_hub_dead{false};
 
     /// Recorded on_channel_closing (channel, reason) pairs.
     std::vector<std::pair<std::string, std::string>> calls;
@@ -86,10 +138,14 @@ class RecordingEngine : public ScriptEngine
     std::vector<std::tuple<std::string, std::string, std::string>>
         consumer_died_calls;
 
+    /// Recorded on_hub_dead (source_hub_uid) invocations.
+    std::vector<std::string> hub_dead_calls;
+
     [[nodiscard]] bool has_callback(const std::string &name) const noexcept override
     {
         if (name == "on_channel_closing") return has_on_channel_closing;
         if (name == "on_consumer_died")   return has_on_consumer_died;
+        if (name == "on_hub_dead")        return has_on_hub_dead;
         return false;
     }
 
@@ -104,6 +160,11 @@ class RecordingEngine : public ScriptEngine
                                   const std::string &reason) override
     {
         consumer_died_calls.emplace_back(channel, consumer_uid, reason);
+    }
+
+    void invoke_on_hub_dead(const std::string &source_hub_uid) override
+    {
+        hub_dead_calls.emplace_back(source_hub_uid);
     }
 
     // ── No-op stubs for the rest of the ScriptEngine surface ────────
@@ -204,6 +265,25 @@ IncomingMessage make_other(const std::string &event)
     return m;
 }
 
+// HUB_DEAD is synthetic (not a wire frame).  Mirrors role_api_base.cpp
+// Phase 2 `on_hub_dead` lambda: sets event="HUB_DEAD",
+// notification_id=HubDead, details["is_master"], source_hub_uid.
+// Tests MUST set both event AND notification_id (string vs enum drift
+// would silently route to the Unknown slot — these helpers prevent
+// that mistake; audit D1/D2, 2026-05-18).
+IncomingMessage make_hub_dead(const std::string &source_hub_uid,
+                              bool is_master)
+{
+    IncomingMessage m;
+    m.event              = "HUB_DEAD";
+    m.notification_id    = parse_notification_id(m.event);
+    m.details            = nlohmann::json::object();
+    m.details["is_master"] = is_master;
+    m.details["reason"]    = "ctrl_thread_on_hub_dead";
+    m.source_hub_uid     = source_hub_uid;
+    return m;
+}
+
 } // anonymous namespace
 
 class DispatchChannelClosingTest : public ::testing::Test
@@ -211,12 +291,19 @@ class DispatchChannelClosingTest : public ::testing::Test
 };
 
 // ============================================================================
-// Contract 1: callback absent → msgs unchanged, engine not called
+// Contract 1 (audit D1, 2026-05-18): channel-closing is PATTERN A
+// (default-action with overridable callback).  Callback absent →
+// framework MUST consume the notify AND request stop with
+// StopReason::ChannelClosed.  Reversal of M1.5 (2026-05-14) original
+// "no-default-action" behavior — see docs/tech_draft/
+// M1.5_channel_closing_redesign_2026-05-12.md §0 for the design call
+// (2026-05-15T03:29:14) and the corrected semantics.
 // ============================================================================
 
-TEST_F(DispatchChannelClosingTest, NoCallback_LeavesMsgsUnchanged)
+TEST_F(DispatchChannelClosingTest, NoCallback_DefaultStopsAndConsumes)
 {
     RecordingEngine eng;
+    RoleHostCore core;
     eng.has_on_channel_closing = false;
 
     std::vector<IncomingMessage> msgs;
@@ -224,15 +311,47 @@ TEST_F(DispatchChannelClosingTest, NoCallback_LeavesMsgsUnchanged)
     msgs.push_back(make_other("HEARTBEAT_ACK"));
     msgs.push_back(make_notify("ch.b", "pending_timeout"));
 
-    pylabhub::scripting::dispatch_notifications(eng, msgs);
+    EXPECT_FALSE(core.is_shutdown_requested())
+        << "precondition: stop must not yet be requested";
+
+    pylabhub::scripting::dispatch_notifications(eng, msgs,
+        pylabhub::scripting::StopRequestor{core});
 
     EXPECT_TRUE(eng.calls.empty())
         << "engine must not be called when has_callback returns false";
-    ASSERT_EQ(msgs.size(), 3u)
-        << "msgs must be unchanged when callback is absent";
-    EXPECT_EQ(msgs[0].event, "CHANNEL_CLOSING_NOTIFY");
-    EXPECT_EQ(msgs[1].event, "HEARTBEAT_ACK");
-    EXPECT_EQ(msgs[2].event, "CHANNEL_CLOSING_NOTIFY");
+    // Channel-closing notifies CONSUMED (default action took them).
+    // Only the non-notify entry remains.
+    ASSERT_EQ(msgs.size(), 1u)
+        << "all CHANNEL_CLOSING_NOTIFY entries must be consumed by the "
+           "default-stop path (audit D1)";
+    EXPECT_EQ(msgs[0].event, "HEARTBEAT_ACK");
+
+    EXPECT_TRUE(core.is_shutdown_requested())
+        << "default action MUST call request_stop() when no callback";
+    EXPECT_EQ(core.stop_reason_string(), "channel_closed")
+        << "default action MUST tag StopReason::ChannelClosed before "
+           "request_stop()";
+}
+
+// Mutation-sweep guard: if a future refactor removes the
+// set_stop_reason() call before request_stop(), the stop_reason will
+// fall back to Normal — this companion test pins that the reason is
+// distinguishable from a plain api.stop() call.
+TEST_F(DispatchChannelClosingTest, NoCallback_ReasonDistinguishableFromGenericStop)
+{
+    RecordingEngine eng;
+    RoleHostCore core;
+    eng.has_on_channel_closing = false;
+
+    std::vector<IncomingMessage> msgs;
+    msgs.push_back(make_notify("ch.x", "producer_deregistered"));
+
+    pylabhub::scripting::dispatch_notifications(eng, msgs,
+        pylabhub::scripting::StopRequestor{core});
+
+    EXPECT_NE(core.stop_reason_string(), "normal")
+        << "channel-closing default-stop must tag the reason; otherwise "
+           "downstream readers can't distinguish from generic api.stop()";
 }
 
 // ============================================================================
@@ -242,12 +361,14 @@ TEST_F(DispatchChannelClosingTest, NoCallback_LeavesMsgsUnchanged)
 TEST_F(DispatchChannelClosingTest, Callback_DispatchesAndRemovesNotify)
 {
     RecordingEngine eng;
+    RoleHostCore core;
     eng.has_on_channel_closing = true;
 
     std::vector<IncomingMessage> msgs;
     msgs.push_back(make_notify("ch.alpha", "producer_deregistered"));
 
-    pylabhub::scripting::dispatch_notifications(eng, msgs);
+    pylabhub::scripting::dispatch_notifications(eng, msgs,
+        pylabhub::scripting::StopRequestor{core});
 
     ASSERT_EQ(eng.calls.size(), 1u);
     EXPECT_EQ(eng.calls[0].first,  "ch.alpha");
@@ -255,6 +376,16 @@ TEST_F(DispatchChannelClosingTest, Callback_DispatchesAndRemovesNotify)
     EXPECT_TRUE(msgs.empty())
         << "CHANNEL_CLOSING_NOTIFY must be removed from msgs after "
            "dispatch (single-delivery contract)";
+
+    // Audit D1 (2026-05-18) — callback REPLACES the default action.
+    // The framework must NOT request_stop() when the script has
+    // chosen to handle the event itself (script may keep the role
+    // alive for reconnection / best-effort logic).
+    EXPECT_FALSE(core.is_shutdown_requested())
+        << "callback replaces default — framework must not call "
+           "request_stop() when on_channel_closing is defined";
+    EXPECT_EQ(core.stop_reason_string(), "normal")
+        << "no stop reason should be set when callback fires";
 }
 
 // ============================================================================
@@ -264,6 +395,7 @@ TEST_F(DispatchChannelClosingTest, Callback_DispatchesAndRemovesNotify)
 TEST_F(DispatchChannelClosingTest, Callback_PreservesNonNotifyEntries)
 {
     RecordingEngine eng;
+    RoleHostCore core;
     eng.has_on_channel_closing = true;
 
     std::vector<IncomingMessage> msgs;
@@ -273,7 +405,8 @@ TEST_F(DispatchChannelClosingTest, Callback_PreservesNonNotifyEntries)
     msgs.push_back(make_notify("ch.b", "pending_timeout"));
     msgs.push_back(make_other("OTHER"));
 
-    pylabhub::scripting::dispatch_notifications(eng, msgs);
+    pylabhub::scripting::dispatch_notifications(eng, msgs,
+        pylabhub::scripting::StopRequestor{core});
 
     ASSERT_EQ(eng.calls.size(), 2u);
     EXPECT_EQ(eng.calls[0].first,  "ch.a");
@@ -294,10 +427,12 @@ TEST_F(DispatchChannelClosingTest, Callback_PreservesNonNotifyEntries)
 TEST_F(DispatchChannelClosingTest, EmptyMsgs_NoOp_NoCallback)
 {
     RecordingEngine eng;
+    RoleHostCore core;
     eng.has_on_channel_closing = false;
     std::vector<IncomingMessage> msgs;
 
-    pylabhub::scripting::dispatch_notifications(eng, msgs);
+    pylabhub::scripting::dispatch_notifications(eng, msgs,
+        pylabhub::scripting::StopRequestor{core});
 
     EXPECT_TRUE(eng.calls.empty());
     EXPECT_TRUE(msgs.empty());
@@ -306,10 +441,12 @@ TEST_F(DispatchChannelClosingTest, EmptyMsgs_NoOp_NoCallback)
 TEST_F(DispatchChannelClosingTest, EmptyMsgs_NoOp_WithCallback)
 {
     RecordingEngine eng;
+    RoleHostCore core;
     eng.has_on_channel_closing = true;
     std::vector<IncomingMessage> msgs;
 
-    pylabhub::scripting::dispatch_notifications(eng, msgs);
+    pylabhub::scripting::dispatch_notifications(eng, msgs,
+        pylabhub::scripting::StopRequestor{core});
 
     EXPECT_TRUE(eng.calls.empty())
         << "no notify entries to dispatch — callback must NOT fire";
@@ -323,6 +460,7 @@ TEST_F(DispatchChannelClosingTest, EmptyMsgs_NoOp_WithCallback)
 TEST_F(DispatchChannelClosingTest, NotifyWithMissingFields_DispatchesWithEmptyStrings)
 {
     RecordingEngine eng;
+    RoleHostCore core;
     eng.has_on_channel_closing = true;
 
     std::vector<IncomingMessage> msgs;
@@ -339,7 +477,8 @@ TEST_F(DispatchChannelClosingTest, NotifyWithMissingFields_DispatchesWithEmptySt
         msgs.push_back(m);
     }
 
-    pylabhub::scripting::dispatch_notifications(eng, msgs);
+    pylabhub::scripting::dispatch_notifications(eng, msgs,
+        pylabhub::scripting::StopRequestor{core});
 
     ASSERT_EQ(eng.calls.size(), 1u);
     EXPECT_EQ(eng.calls[0].first,  "")
@@ -365,7 +504,7 @@ IncomingMessage make_consumer_died(const std::string &channel,
     m.notification_id           = parse_notification_id(m.event);
     m.details                   = nlohmann::json::object();
     m.details["channel_name"]   = channel;
-    m.details["consumer_uid"]   = consumer_uid;
+    m.details["role_uid"]   = consumer_uid;
     m.details["reason"]         = reason;
     return m;
 }
@@ -376,10 +515,16 @@ class DispatchConsumerDiedTest : public ::testing::Test
 {
 };
 
-// Contract 1: callback absent → msgs unchanged, engine not called.
-TEST_F(DispatchConsumerDiedTest, NoCallback_LeavesMsgsUnchanged)
+// Contract 1 (audit D1/D2, 2026-05-18): under the unified
+// "user-override-or-native-default" model, CONSUMER_DIED's default is
+// no-op — but the notify is STILL consumed.  Producers that don't
+// define on_consumer_died never see CONSUMER_DIED_NOTIFY in msgs.
+// Non-notify entries (HEARTBEAT_ACK etc.) are preserved.
+// No default stop fires (the producer survives consumer death).
+TEST_F(DispatchConsumerDiedTest, NoCallback_DefaultNoOpButConsumes)
 {
     RecordingEngine eng;
+    RoleHostCore core;
     eng.has_on_consumer_died = false;
 
     std::vector<IncomingMessage> msgs;
@@ -387,14 +532,20 @@ TEST_F(DispatchConsumerDiedTest, NoCallback_LeavesMsgsUnchanged)
     msgs.push_back(make_other("HEARTBEAT_ACK"));
     msgs.push_back(make_consumer_died("ch.b", "cons-2", "process_dead"));
 
-    pylabhub::scripting::dispatch_notifications(eng, msgs);
+    pylabhub::scripting::dispatch_notifications(eng, msgs,
+        pylabhub::scripting::StopRequestor{core});
 
     EXPECT_TRUE(eng.consumer_died_calls.empty())
         << "engine must not be called when has_callback returns false";
-    ASSERT_EQ(msgs.size(), 3u);
-    EXPECT_EQ(msgs[0].event, "CONSUMER_DIED_NOTIFY");
-    EXPECT_EQ(msgs[1].event, "HEARTBEAT_ACK");
-    EXPECT_EQ(msgs[2].event, "CONSUMER_DIED_NOTIFY");
+    ASSERT_EQ(msgs.size(), 1u)
+        << "CONSUMER_DIED_NOTIFY entries must be consumed by the "
+           "default-no-op path (unified dispatch — audit D1/D2)";
+    EXPECT_EQ(msgs[0].event, "HEARTBEAT_ACK");
+
+    EXPECT_FALSE(core.is_shutdown_requested())
+        << "consumer death is not by itself reason to stop the "
+           "producer; default action MUST be a no-op";
+    EXPECT_EQ(core.stop_reason_string(), "normal");
 }
 
 // Contract 2: callback present → all notify entries dispatched + removed.
@@ -403,13 +554,15 @@ TEST_F(DispatchConsumerDiedTest, NoCallback_LeavesMsgsUnchanged)
 TEST_F(DispatchConsumerDiedTest, Callback_DispatchesAndRemovesBothReasons)
 {
     RecordingEngine eng;
+    RoleHostCore core;
     eng.has_on_consumer_died = true;
 
     std::vector<IncomingMessage> msgs;
     msgs.push_back(make_consumer_died("ch.alpha", "cons-hb",   "heartbeat_timeout"));
     msgs.push_back(make_consumer_died("ch.beta",  "cons-dead", "process_dead"));
 
-    pylabhub::scripting::dispatch_notifications(eng, msgs);
+    pylabhub::scripting::dispatch_notifications(eng, msgs,
+        pylabhub::scripting::StopRequestor{core});
 
     ASSERT_EQ(eng.consumer_died_calls.size(), 2u);
     EXPECT_EQ(std::get<0>(eng.consumer_died_calls[0]), "ch.alpha");
@@ -426,6 +579,7 @@ TEST_F(DispatchConsumerDiedTest, Callback_DispatchesAndRemovesBothReasons)
 TEST_F(DispatchConsumerDiedTest, Callback_PreservesNonNotifyEntries)
 {
     RecordingEngine eng;
+    RoleHostCore core;
     eng.has_on_consumer_died = true;
 
     std::vector<IncomingMessage> msgs;
@@ -435,7 +589,8 @@ TEST_F(DispatchConsumerDiedTest, Callback_PreservesNonNotifyEntries)
     msgs.push_back(make_consumer_died("ch.b", "u2", "process_dead"));
     msgs.push_back(make_other("OTHER"));
 
-    pylabhub::scripting::dispatch_notifications(eng, msgs);
+    pylabhub::scripting::dispatch_notifications(eng, msgs,
+        pylabhub::scripting::StopRequestor{core});
 
     ASSERT_EQ(eng.consumer_died_calls.size(), 2u);
     ASSERT_EQ(msgs.size(), 3u);
@@ -448,10 +603,12 @@ TEST_F(DispatchConsumerDiedTest, Callback_PreservesNonNotifyEntries)
 TEST_F(DispatchConsumerDiedTest, EmptyMsgs_NoOp_NoCallback)
 {
     RecordingEngine eng;
+    RoleHostCore core;
     eng.has_on_consumer_died = false;
     std::vector<IncomingMessage> msgs;
 
-    pylabhub::scripting::dispatch_notifications(eng, msgs);
+    pylabhub::scripting::dispatch_notifications(eng, msgs,
+        pylabhub::scripting::StopRequestor{core});
 
     EXPECT_TRUE(eng.consumer_died_calls.empty());
     EXPECT_TRUE(msgs.empty());
@@ -460,10 +617,12 @@ TEST_F(DispatchConsumerDiedTest, EmptyMsgs_NoOp_NoCallback)
 TEST_F(DispatchConsumerDiedTest, EmptyMsgs_NoOp_WithCallback)
 {
     RecordingEngine eng;
+    RoleHostCore core;
     eng.has_on_consumer_died = true;
     std::vector<IncomingMessage> msgs;
 
-    pylabhub::scripting::dispatch_notifications(eng, msgs);
+    pylabhub::scripting::dispatch_notifications(eng, msgs,
+        pylabhub::scripting::StopRequestor{core});
 
     EXPECT_TRUE(eng.consumer_died_calls.empty())
         << "no notify entries to dispatch — callback must NOT fire";
@@ -474,6 +633,7 @@ TEST_F(DispatchConsumerDiedTest, EmptyMsgs_NoOp_WithCallback)
 TEST_F(DispatchConsumerDiedTest, NotifyWithMissingFields_DispatchesWithEmptyStrings)
 {
     RecordingEngine eng;
+    RoleHostCore core;
     eng.has_on_consumer_died = true;
 
     std::vector<IncomingMessage> msgs;
@@ -490,7 +650,8 @@ TEST_F(DispatchConsumerDiedTest, NotifyWithMissingFields_DispatchesWithEmptyStri
         msgs.push_back(m);
     }
 
-    pylabhub::scripting::dispatch_notifications(eng, msgs);
+    pylabhub::scripting::dispatch_notifications(eng, msgs,
+        pylabhub::scripting::StopRequestor{core});
 
     ASSERT_EQ(eng.consumer_died_calls.size(), 1u);
     EXPECT_EQ(std::get<0>(eng.consumer_died_calls[0]), "");
@@ -504,12 +665,13 @@ TEST_F(DispatchConsumerDiedTest, NotifyWithMissingFields_DispatchesWithEmptyStri
 // Replaces the previous design that required separate dispatcher calls
 // per event type.  Pins: (a) both handlers fire; (b) both consumed
 // from msgs; (c) wire arrival order = dispatch order.  Mutation:
-// swap the kNotificationHandlers slot for ChannelClosing with the one
+// swap the kNotificationTable row for ChannelClosing with the one
 // for ConsumerDied → the channel-closing message gets sent to the
 // consumer_died handler and the test fails on argument mismatch.
 TEST_F(DispatchConsumerDiedTest, MixedNotifies_SinglePassDispatch)
 {
     RecordingEngine eng;
+    RoleHostCore core;
     eng.has_on_channel_closing = true;
     eng.has_on_consumer_died   = true;
 
@@ -517,7 +679,8 @@ TEST_F(DispatchConsumerDiedTest, MixedNotifies_SinglePassDispatch)
     msgs.push_back(make_notify("ch.x", "producer_deregistered"));   // first
     msgs.push_back(make_consumer_died("ch.y", "cons-z", "heartbeat_timeout"));  // second
 
-    pylabhub::scripting::dispatch_notifications(eng, msgs);
+    pylabhub::scripting::dispatch_notifications(eng, msgs,
+        pylabhub::scripting::StopRequestor{core});
 
     // Both handlers fired exactly once.
     ASSERT_EQ(eng.calls.size(), 1u);
@@ -540,17 +703,160 @@ TEST_F(DispatchConsumerDiedTest, MixedNotifies_SinglePassDispatch)
 TEST_F(DispatchConsumerDiedTest, UnknownNotificationId_StaysInMsgs)
 {
     RecordingEngine eng;
+    RoleHostCore core;
     eng.has_on_channel_closing = true;
     eng.has_on_consumer_died   = true;
 
     std::vector<IncomingMessage> msgs;
     msgs.push_back(make_other("SOME_FUTURE_NOTIFY"));   // notification_id = Unknown
 
-    pylabhub::scripting::dispatch_notifications(eng, msgs);
+    pylabhub::scripting::dispatch_notifications(eng, msgs,
+        pylabhub::scripting::StopRequestor{core});
 
     EXPECT_TRUE(eng.calls.empty());
     EXPECT_TRUE(eng.consumer_died_calls.empty());
     ASSERT_EQ(msgs.size(), 1u);
     EXPECT_EQ(msgs[0].event, "SOME_FUTURE_NOTIFY");
     EXPECT_EQ(msgs[0].notification_id, NotificationId::Unknown);
+}
+
+// ============================================================================
+// HUB_DEAD dispatch — Pattern A (default-action with overridable callback).
+// Audit D1/D2 (2026-05-18).  Mirrors on_channel_closing semantics but
+// with an asymmetric default action (master → stop; peer → no-op)
+// because the master ctrl thread drives the heartbeat timer (HEP-0023
+// §2.5).  Script's `on_hub_dead` callback REPLACES the default for
+// BOTH master and peer hub-deaths.
+// ============================================================================
+
+class DispatchHubDeadTest : public ::testing::Test
+{
+};
+
+// Master hub-death, no callback → framework calls request_stop()
+// with StopReason::HubDead; notify consumed from msgs.
+TEST_F(DispatchHubDeadTest, NoCallback_MasterDefaultStopsAndConsumes)
+{
+    RecordingEngine eng;
+    RoleHostCore core;
+    eng.has_on_hub_dead = false;
+
+    std::vector<IncomingMessage> msgs;
+    msgs.push_back(make_hub_dead("tcp://broker-a:5555", /*is_master=*/true));
+    msgs.push_back(make_other("HEARTBEAT_ACK"));
+
+    EXPECT_FALSE(core.is_shutdown_requested())
+        << "precondition: stop must not yet be requested";
+
+    pylabhub::scripting::dispatch_notifications(eng, msgs,
+        pylabhub::scripting::StopRequestor{core});
+
+    EXPECT_TRUE(eng.hub_dead_calls.empty())
+        << "engine must not be called when has_callback returns false";
+    ASSERT_EQ(msgs.size(), 1u)
+        << "HUB_DEAD must be consumed by the default-action path";
+    EXPECT_EQ(msgs[0].event, "HEARTBEAT_ACK");
+
+    EXPECT_TRUE(core.is_shutdown_requested())
+        << "master hub-death default MUST call request_stop()";
+    EXPECT_EQ(core.stop_reason_string(), "hub_dead")
+        << "master hub-death default MUST tag StopReason::HubDead";
+}
+
+// Peer hub-death, no callback → framework does NOTHING (role keeps
+// running on master per HEP-CORE-0023 §2.5).  Notify still consumed
+// (Pattern A).
+TEST_F(DispatchHubDeadTest, NoCallback_PeerNoOpButConsumes)
+{
+    RecordingEngine eng;
+    RoleHostCore core;
+    eng.has_on_hub_dead = false;
+
+    std::vector<IncomingMessage> msgs;
+    msgs.push_back(make_hub_dead("tcp://broker-b:5555", /*is_master=*/false));
+
+    pylabhub::scripting::dispatch_notifications(eng, msgs,
+        pylabhub::scripting::StopRequestor{core});
+
+    EXPECT_TRUE(eng.hub_dead_calls.empty());
+    EXPECT_TRUE(msgs.empty())
+        << "peer HUB_DEAD must still be consumed even though no default "
+           "stop fires (Pattern A — handler returns true uniformly)";
+
+    EXPECT_FALSE(core.is_shutdown_requested())
+        << "peer hub-death without script callback MUST NOT stop the "
+           "role (HEP-CORE-0023 §2.5 — role keeps running on master)";
+    EXPECT_EQ(core.stop_reason_string(), "normal");
+}
+
+// Master hub-death with callback → callback fires, framework takes
+// NO default action.  Script may keep role alive for reconnection.
+TEST_F(DispatchHubDeadTest, MasterCallback_ReplacesDefaultStop)
+{
+    RecordingEngine eng;
+    RoleHostCore core;
+    eng.has_on_hub_dead = true;
+
+    std::vector<IncomingMessage> msgs;
+    msgs.push_back(make_hub_dead("tcp://broker-a:5555", /*is_master=*/true));
+
+    pylabhub::scripting::dispatch_notifications(eng, msgs,
+        pylabhub::scripting::StopRequestor{core});
+
+    ASSERT_EQ(eng.hub_dead_calls.size(), 1u);
+    EXPECT_EQ(eng.hub_dead_calls[0], "tcp://broker-a:5555")
+        << "source_hub_uid must reach the callback verbatim";
+    EXPECT_TRUE(msgs.empty());
+
+    EXPECT_FALSE(core.is_shutdown_requested())
+        << "callback REPLACES the default-stop — framework must not "
+           "call request_stop() even on master hub-death (audit D2)";
+}
+
+// Peer hub-death with callback → callback fires (script wants to
+// react to peer-death too); framework takes no default action.
+TEST_F(DispatchHubDeadTest, PeerCallback_FiresAndNoOp)
+{
+    RecordingEngine eng;
+    RoleHostCore core;
+    eng.has_on_hub_dead = true;
+
+    std::vector<IncomingMessage> msgs;
+    msgs.push_back(make_hub_dead("tcp://broker-b:5555", /*is_master=*/false));
+
+    pylabhub::scripting::dispatch_notifications(eng, msgs,
+        pylabhub::scripting::StopRequestor{core});
+
+    ASSERT_EQ(eng.hub_dead_calls.size(), 1u);
+    EXPECT_EQ(eng.hub_dead_calls[0], "tcp://broker-b:5555");
+    EXPECT_TRUE(msgs.empty());
+
+    EXPECT_FALSE(core.is_shutdown_requested())
+        << "peer-death callback path must not request stop (script "
+           "may call api.stop() itself if it wants to)";
+}
+
+// Mutation guard: if a future refactor flips the master/peer default
+// (stops on peer-death) the no-callback peer test catches it.  This
+// test pins the inverse (master stops even when peer is also dead in
+// the same cycle) — defends against accidental cross-wiring.
+TEST_F(DispatchHubDeadTest, NoCallback_MasterAndPeerSameCycle)
+{
+    RecordingEngine eng;
+    RoleHostCore core;
+    eng.has_on_hub_dead = false;
+
+    std::vector<IncomingMessage> msgs;
+    msgs.push_back(make_hub_dead("tcp://broker-a:5555", /*is_master=*/false));  // peer first
+    msgs.push_back(make_hub_dead("tcp://broker-b:5555", /*is_master=*/true));   // master second
+
+    pylabhub::scripting::dispatch_notifications(eng, msgs,
+        pylabhub::scripting::StopRequestor{core});
+
+    EXPECT_TRUE(eng.hub_dead_calls.empty());
+    EXPECT_TRUE(msgs.empty())
+        << "both HUB_DEAD entries consumed by Pattern-A dispatch";
+    EXPECT_TRUE(core.is_shutdown_requested())
+        << "master hub-death in the batch MUST request stop";
+    EXPECT_EQ(core.stop_reason_string(), "hub_dead");
 }

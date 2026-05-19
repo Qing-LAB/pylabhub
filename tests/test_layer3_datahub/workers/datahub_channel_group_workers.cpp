@@ -522,7 +522,8 @@ int channel_multi_channel()
     c1.ch.on_notification([&](const std::string &type, const nlohmann::json &payload) {
         if (type == "BAND_BROADCAST_NOTIFY")
         {
-            std::string ch = payload.value("channel", "");
+            // HEP-CORE-0030 §5.1 wire key is `band`.
+            std::string ch = payload.value("band", "");
             if (ch == "!ch_alpha")
                 msg_on_ch1.fetch_add(1);
             else if (ch == "!ch_beta")

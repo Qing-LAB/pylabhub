@@ -82,4 +82,19 @@ typedef struct
     const char *reason;         /**< "heartbeat_timeout" or "process_dead". */
 } plh_consumer_died_args_t;
 
+/** on_hub_dead args (audit D1/D2, 2026-05-18; HEP-CORE-0011;
+ *  HEP-CORE-0023 §2.5; HEP-CORE-0033 §19).
+ *  Fired when ZMTP declares a broker connection dead (master OR peer
+ *  per HEP-0033 §19.2 multi-presence model).  When the plugin defines
+ *  `on_hub_dead`, that callback REPLACES the framework's default action
+ *  (master: stop the role; peer: continue on master).  The plugin may
+ *  call `ctx->request_stop(ctx)` itself, mutate plugin state, attempt
+ *  reconnection logic in later iterations, or do nothing. */
+typedef struct
+{
+    const char *source_hub_uid; /**< Broker endpoint of the dead hub
+                                     (the role's stable identifier for
+                                     this connection per HEP-0033 §19.2). */
+} plh_hub_dead_args_t;
+
 #endif /* PYLABHUB_NATIVE_INVOKE_TYPES_H */

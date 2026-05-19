@@ -249,14 +249,23 @@ int hubhost_shutdown_breaksclientconnection()
             std::vector<fs::path> cleanup;
 
             log_cap.ExpectLogWarn("REG_REQ timed out");
+            // Audit S1 (2026-05-18) — after DISCONNECTED, the BRC's
+            // layer-1 connected-state gate suppresses subsequent
+            // sends to the dead broker (skips libzmq send entirely
+            // since reconnect_ivl=-1 means no future peer).
+            // HEP-CORE-0023 §2.5.3.
+            log_cap.ExpectLogWarn("suppressed — connection terminally dead");
             // After A2 (Wave-B M8 prep): BRC's socket monitor is now
             // polled as a first-class poll item (was a side-effect of
             // DEALER traffic), so ZMQ_EVENT_DISCONNECTED is detected
             // promptly when host->shutdown() closes the broker socket.
             // The hub-dead WARN was previously suppressed by the
             // detection delay; now it fires within this test's window.
-            log_cap.ExpectLogWarn(
-                "BrokerRequestComm: hub-dead (ZMQ_EVENT_DISCONNECTED)");
+            // Audit S1 (2026-05-18) — log line text updated to reflect
+            // the "disconnect is terminal" policy (HEP-CORE-0023
+            // §2.5.3); pin the stable substring "ZMQ_EVENT_DISCONNECTED"
+            // which is present in both the old and new formats.
+            log_cap.ExpectLogWarn("ZMQ_EVENT_DISCONNECTED");
 
             auto host = spawn_host("shutdown", cleanup);
 
@@ -273,12 +282,58 @@ int hubhost_shutdown_breaksclientconnection()
             host->shutdown();
             EXPECT_FALSE(host->is_running());
 
+            // Audit S1 (2026-05-18) — wait for the BRC's monitor
+            // poll to observe ZMQ_EVENT_DISCONNECTED and flip
+            // is_connected() to false (layer 1 of the 4-layer model).
+            // pylabhub policy says this is TERMINAL — the flag never
+            // flips back true.
+            const auto deadline =
+                std::chrono::steady_clock::now() + std::chrono::seconds{3};
+            while (client.brc.is_connected() &&
+                   std::chrono::steady_clock::now() < deadline)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds{20});
+            }
+            EXPECT_FALSE(client.brc.is_connected())
+                << "Audit S1: BRC's is_connected() MUST reflect the "
+                   "ZMQ monitor's DISCONNECTED event — flipping false "
+                   "within ~3s after host->shutdown().  This is the "
+                   "input to the layer-1 send gate; if it doesn't flip "
+                   "the subsequent send below would queue forever "
+                   "(pre-S1 behavior).";
+            EXPECT_TRUE(client.brc.reconnect_disabled())
+                << "Audit S1: BRC's DEALER socket MUST have "
+                   "ZMQ_RECONNECT_IVL=-1 — pylabhub policy 'disconnect "
+                   "is terminal' (HEP-CORE-0023 §2.5.3).";
+
+            // Second register_channel after broker death — should
+            // return failure FAST because the layer-1 gate suppresses
+            // the send immediately.  Pre-S1 (with reconnect_ivl=100ms
+            // + no gate) this would block in libzmq waiting for a
+            // peer-that-never-comes; the BRC poll loop would be
+            // pinned in send_multipart for the full request timeout.
+            const auto t0 = std::chrono::steady_clock::now();
             auto reg2 = client.brc.register_channel(
                 make_reg_opts(pid_chan("hubhost.shutdown.postcheck"),
                                "prod.test.uid_shutdown"),
                 3000);
+            const auto elapsed = std::chrono::steady_clock::now() - t0;
+            const auto elapsed_ms =
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    elapsed).count();
             EXPECT_FALSE(reg2.has_value())
                 << "REG_REQ unexpectedly succeeded after host->shutdown()";
+            // Layer-1 path-pin: register_channel must time out at the
+            // application-level 3000ms (no ACK ever comes because the
+            // send was suppressed).  This pins the END-OF-PATH; the
+            // SUPPRESS log line (whitelisted via ExpectLogWarn above)
+            // pins the START-OF-PATH.
+            EXPECT_LT(elapsed_ms, 3500)
+                << "register_channel took " << elapsed_ms
+                << "ms — must complete near the 3000ms application "
+                   "timeout (request never sent, ACK never came).  "
+                   "Significant overshoot would indicate the BRC poll "
+                   "thread got stuck somewhere — pre-S1 mode.";
 
             client.stop();
 

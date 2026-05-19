@@ -114,6 +114,7 @@ class LuaEngine : public ScriptEngine
     void invoke_on_consumer_died(const std::string &channel,
                                   const std::string &consumer_uid,
                                   const std::string &reason) override;
+    void invoke_on_hub_dead(const std::string &source_hub_uid) override;
 
     InvokeResult invoke_produce(
         InvokeTx tx,
@@ -162,6 +163,7 @@ class LuaEngine : public ScriptEngine
     int ref_on_stop_{LUA_NOREF};
     int ref_on_channel_closing_{LUA_NOREF};
     int ref_on_consumer_died_{LUA_NOREF};
+    int ref_on_hub_dead_{LUA_NOREF};
     int ref_on_produce_{LUA_NOREF};
     int ref_on_consume_{LUA_NOREF};
     int ref_on_process_{LUA_NOREF};

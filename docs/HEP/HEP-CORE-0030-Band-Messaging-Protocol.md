@@ -8,7 +8,7 @@
 | **Created**   | 2026-04-10                                           |
 | **Area**      | Control Plane Protocol                               |
 | **Depends on**| HEP-CORE-0007 (Protocol Reference)                   |
-| **Supersedes**| HEP-CORE-0007 §12 Peer-to-Peer category, CHANNEL_NOTIFY_REQ, CHANNEL_BROADCAST_REQ, CHANNEL_EVENT_NOTIFY, CHANNEL_BROADCAST_NOTIFY (old wire names) |
+| **Supersedes**| HEP-CORE-0007 §12 Peer-to-Peer category (HELLO/BYE, ChannelHandle/Pattern P2C sockets).  Note: the `CHANNEL_BROADCAST_REQ` / `CHANNEL_EVENT_NOTIFY` / `CHANNEL_BROADCAST_NOTIFY` channel-bound family is NOT superseded — see §9.1 for the channel-bound vs band-bound coexistence model (corrected 2026-05-17, audit T3). |
 
 ---
 
@@ -165,15 +165,23 @@ Purpose:    Send JSON message to all band members
 
 Payload:
   band                  string   "!band_name"
-  sender_uid            string   Sender's role UID
+  role_uid              string   Sender's role UID (must be a valid
+                                 RoleUid per HEP-CORE-0033 §G2.2.0b;
+                                 broker_proto 4→5 (audit R3.5b,
+                                 2026-05-19) renamed `sender_uid` →
+                                 `role_uid` for cross-message
+                                 uniformity)
   body                  object   Application-defined JSON body
 
 Broker behavior:
-  1. Look up band via `hub_state_.band(name)` snapshot
-  2. For each member (excluding sender):
+  1. Validate `band` (HEP-0030 §3 grammar) + `role_uid` (HEP-0033
+     §G2.2.0b RoleUid grammar) at gate entry.  Either failing →
+     drop + LOGGER_WARN (fire-and-forget — no reply path).
+  2. Look up band via `hub_state_.band(name)` snapshot
+  3. For each member (excluding sender):
        send_to_identity(socket, member.zmq_identity,
-           "BAND_BROADCAST_NOTIFY", {band, sender_uid, body})
-  3. If band doesn't exist → silently drop (no error)
+           "BAND_BROADCAST_NOTIFY", {band, role_uid, body})
+  4. If band doesn't exist → silently drop (no error)
 ```
 
 ### 5.3 Broker-Initiated Notifications
@@ -210,7 +218,9 @@ Trigger:    BAND_BROADCAST_REQ received from a member
 
 Payload:
   band                  string   "!band_name"
-  sender_uid            string   Sending role's UID
+  role_uid              string   Sending role's UID (was `sender_uid`;
+                                 renamed in broker_proto 4→5 audit
+                                 R3.5b 2026-05-19)
   body                  object   Application-defined JSON body (passthrough)
 ```
 
@@ -269,8 +279,10 @@ def on_produce(slot, fz, msgs):
         if msg.event == "BAND_JOIN_NOTIFY":
             print(f"Member joined: {msg.details['role_uid']}")
         elif msg.event == "BAND_BROADCAST_NOTIFY":
+            # broker_proto 4→5 (R3.5b): NOTIFY body uses `role_uid`
+            # (was `sender_uid`) for cross-message uniformity.
             body = msg.details["body"]
-            print(f"Band msg from {msg.details['sender_uid']}: {body}")
+            print(f"Band msg from {msg.details['role_uid']}: {body}")
 ```
 
 ---
@@ -362,13 +374,41 @@ The following elements from HEP-CORE-0007 are superseded by this HEP:
 | Old | Status | Replacement |
 |-----|--------|-------------|
 | §12.2 "Peer-to-Peer" message category | **SUPERSEDED** | Eliminated — no direct P2C sockets |
-| CHANNEL_NOTIFY_REQ (§12.4) | **SUPERSEDED** | BAND_BROADCAST_REQ |
-| CHANNEL_BROADCAST_REQ (§12.4) | **SUPERSEDED** | BAND_BROADCAST_REQ |
-| CHANNEL_EVENT_NOTIFY (§12.5) | **SUPERSEDED** | BAND_BROADCAST_NOTIFY |
-| CHANNEL_BROADCAST_NOTIFY (§12.5) | **SUPERSEDED** | BAND_BROADCAST_NOTIFY |
 | HELLO / BYE peer protocol (§12.2) | **SUPERSEDED** | BAND_JOIN/LEAVE_NOTIFY |
 | ChannelHandle (P2C socket RAII) | **SUPERSEDED** | Eliminated |
 | ChannelPattern (PubSub/Pipeline/Bidir) | **SUPERSEDED** | Eliminated — broker does fan-out |
+
+### 9.1 Coexisting (NOT superseded) — channel-bound vs band-bound broadcast
+
+An earlier draft of this section marked the entire `CHANNEL_*` broadcast
+family as superseded.  **Audit T3 (2026-05-17) corrected that:** bands
+ADD a new pub/sub primitive but do NOT replace the channel-bound
+broadcast plane.  They are complementary along different axes:
+
+| Message | Audience | Use case | Caller |
+|---|---|---|---|
+| `CHANNEL_BROADCAST_REQ` / `CHANNEL_BROADCAST_NOTIFY` (HEP-CORE-0007 §12.4-12.5) | Producer + ALL consumers of a registered data channel | "Tell everyone working with this data channel that X happened" | `HubAPI::broadcast_channel`, `AdminService::broadcast`, federation relay (`request_broadcast_channel`) — implemented at `broker_service.cpp:3083-handle_channel_broadcast_req` |
+| `BAND_BROADCAST_REQ` / `BAND_BROADCAST_NOTIFY` (this HEP §5) | Members of an explicit pub/sub band | "Tell everyone in the coordination group X that Y happened" | Role scripts via `api.band_broadcast(name, body)` |
+| `CHANNEL_EVENT_NOTIFY` (HEP-CORE-0007 §12.5) | Same as CHANNEL_BROADCAST_NOTIFY but for typed events (checksum reports, peer-relayed CHANNEL_NOTIFY_REQ) | Broker-initiated channel-bound event delivery | Emitted by broker from `handle_channel_notify_req` + `handle_checksum_error_report` (NotifyOnly policy) |
+
+Channel membership is **registry-derived** (broker tracks who REG'd /
+CONSUMER_REG'd on a channel).  Band membership is **opt-in** (a role
+must explicitly `band_join` to receive).  They serve different
+coordination needs; both stay in the protocol.
+
+`CHANNEL_NOTIFY_REQ` is a half-deprecated case:
+
+- **Role-side wire surface is dead** as of audit O1 (2026-05-17).
+  `BrokerRequestComm::send_notify` has zero src/tests/ callers and is a
+  cleanup candidate.
+- **Broker-side handler remains** at `handle_channel_notify_req` because
+  HEP-CORE-0022 federation peers may still relay channel events via
+  this wire message (`relay_notify_to_peers` forward path).  The handler
+  forwards as `CHANNEL_EVENT_NOTIFY` to local channel producers.
+
+When the federation relay is itself reworked, `CHANNEL_NOTIFY_REQ` can
+be folded into a federation-internal wire format.  Until then it
+remains a load-bearing intermediate.
 
 ---
 

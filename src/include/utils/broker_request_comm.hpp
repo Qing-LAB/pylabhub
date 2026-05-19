@@ -62,6 +62,16 @@ class PYLABHUB_UTILS_EXPORT BrokerRequestComm
     /// True after successful connect(), false after disconnect().
     [[nodiscard]] bool is_connected() const noexcept;
 
+    /// True if libzmq auto-reconnect is DISABLED on the DEALER socket
+    /// (`ZMQ_RECONNECT_IVL == -1`).  pylabhub policy is "disconnect
+    /// is terminal" (HEP-CORE-0023 §2.5.3) — every BRC sets this at
+    /// connect() time.  Exposed for: (a) production diagnostics
+    /// (e.g. a `/admin/status` endpoint reporting socket policy);
+    /// (b) tests pinning the policy via direct readback.  Returns
+    /// false if the dealer socket isn't initialized (pre-connect or
+    /// post-disconnect).
+    [[nodiscard]] bool reconnect_disabled() const noexcept;
+
     // ── Notification callbacks (set before run_poll_loop) ────────────────
 
     /// Called from the broker thread for each unsolicited broker notification.
@@ -114,16 +124,17 @@ class PYLABHUB_UTILS_EXPORT BrokerRequestComm
     /// `metrics` is optional — pass empty json `{}` when nothing
     /// new to report.
     void send_heartbeat(const std::string &channel,
-                        const std::string &uid,
+                        const std::string &role_uid,
                         const std::string &role_type,
                         const nlohmann::json &metrics);
     // M1.4 (2026-05-11): `send_metrics_report` retired.  Metrics
     // piggyback on `send_heartbeat(..., metrics)` per HEP-CORE-0019
     // §2.3 Phase 6.
-    void send_notify(const std::string &target,
-                     const std::string &sender_uid,
-                     const std::string &event,
-                     const std::string &data);
+    //
+    // Audit O1 (2026-05-17): `send_notify` removed — zero callers
+    // anywhere.  The matching CHANNEL_NOTIFY_REQ broker handler is
+    // kept for HEP-CORE-0022 federation peer-relay traffic.  See
+    // HEP-CORE-0030 §9.1 for the channel-bound family coexistence.
     void send_broadcast(const std::string &target,
                         const std::string &sender_uid,
                         const std::string &msg,
@@ -176,23 +187,25 @@ class PYLABHUB_UTILS_EXPORT BrokerRequestComm
     query_shm_info(const std::string &channel, int timeout_ms = 5000);
 
     // ── Band pub/sub messaging (HEP-CORE-0030) ────────────────────────
+    // Wire payload key is `band` per HEP-CORE-0030 §5.1.  Band names are
+    // `!`-prefixed identifiers (HEP-CORE-0030 §3 grammar).
 
     /// Join a band (auto-creates if it doesn't exist). Returns member list.
     [[nodiscard]] std::optional<nlohmann::json>
-    band_join(const std::string &channel, int timeout_ms = 5000);
+    band_join(const std::string &band, int timeout_ms = 5000);
 
     /// Leave a band.  Returns the broker's response body (success or
     /// error per HEP-CORE-0007 §12.3) or `nullopt` on transport failure.
     [[nodiscard]] std::optional<nlohmann::json>
-    band_leave(const std::string &channel, int timeout_ms = 5000);
+    band_leave(const std::string &band, int timeout_ms = 5000);
 
     /// Broadcast JSON message to all band members (fire-and-forget).
-    void band_broadcast(const std::string &channel,
+    void band_broadcast(const std::string &band,
                         const nlohmann::json &body);
 
     /// Query current band member list.
     [[nodiscard]] std::optional<nlohmann::json>
-    band_members(const std::string &channel, int timeout_ms = 5000);
+    band_members(const std::string &band, int timeout_ms = 5000);
 
   private:
     struct Impl;

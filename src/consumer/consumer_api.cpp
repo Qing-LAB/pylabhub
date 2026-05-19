@@ -212,7 +212,11 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_consumer, m) // NOLINT
         .def("logs_dir",     &ConsumerAPI::logs_dir)
         .def("run_dir",      &ConsumerAPI::run_dir)
         .def("stop",         &ConsumerAPI::stop)
-        .def("set_critical_error",    &ConsumerAPI::set_critical_error)
+        .def("set_critical_error",    &ConsumerAPI::set_critical_error,
+             py::arg("msg"),
+             "Flag a critical (unrecoverable) error and request shutdown. "
+             "msg is REQUIRED — logged at ERROR level by the framework. "
+             "stop_reason becomes 'critical_error'.")
         .def("critical_error",        &ConsumerAPI::critical_error)
         .def("band_join",         &ConsumerAPI::band_join, py::arg("channel"))
         .def("band_leave",        &ConsumerAPI::band_leave, py::arg("channel"))

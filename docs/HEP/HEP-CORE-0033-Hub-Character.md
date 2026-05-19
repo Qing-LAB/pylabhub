@@ -2810,19 +2810,59 @@ schema bytes.
 
 ### 19.6 Hub-dead detection
 
-Each `HubConnection` runs its own ZMTP socket monitor (broker-side
-`ZMQ_HEARTBEAT_IVL` = 5s, `ZMQ_HEARTBEAT_TIMEOUT` = 30s).  On
-disconnect, the BRC fires `on_hub_dead` which:
+Each `HubConnection` runs its own ZMTP socket monitor.  Configured:
+`ZMQ_HEARTBEAT_IVL=5s`, `ZMQ_HEARTBEAT_TIMEOUT=30s` (keep-alive),
+`ZMQ_RECONNECT_IVL=-1` (auto-reconnect DISABLED — see HEP-CORE-0023
+§2.5.3 "Disconnection is terminal" for the policy rationale).  On
+disconnect, the role-side ctrl-thread `on_hub_dead` lambda
+(installed in `role_api_base.cpp` Phase 2 of `start_handler_threads`):
 
-```
-core.set_stop_reason(StopReason::HubDead)
-core.request_stop()
-```
+  1. Clears the per-connection liveness bit in
+     `connection_alive_mask_` (relaxed atomic).
+  2. Transitions every presence rooted on the dead connection out
+     of `Registered` via `handler.mark_connection_disconnected(...)`
+     (audit R3.3, 2026-05-17).
+  3. Enqueues a synthetic `HUB_DEAD` `IncomingMessage` carrying
+     `source_hub_uid = broker_endpoint` and
+     `details["is_master"]` for the worker-thread dispatcher.
 
-For multi-presence roles: if EITHER hub dies, the role exits with
-`StopReason::HubDead` — its job is impossible without all hubs it
-participates in.  The first `on_hub_dead` to fire wins; later
-firings (if any) become no-ops.
+The worker dispatcher (`kNotificationTable[HubDead]` in
+`cycle_ops.hpp`) then applies the unified
+"user-override-or-native-default" model (audit D1/D2, 2026-05-18 —
+matches `on_channel_closing`; full taxonomy in HEP-CORE-0011
+§"Notification dispatch"):
+
+  * **If the script defines `on_hub_dead(source_hub_uid, api)`**,
+    it REPLACES the framework's default action.  The script may:
+    - call `api.stop()` to exit cleanly;
+    - keep the role alive with internal state mutation (zombie
+      mode — useful for best-effort reconnection logic in later
+      iterations);
+    - check `api.is_connection_alive(i)` /
+      `api.connections_alive_count()` to disambiguate master vs
+      peer and decide per-hub policy;
+    - do nothing.
+  * **If the script does NOT define `on_hub_dead`**, the framework
+    applies the default action:
+    - Master died (`is_master=true`) → `core.set_stop_reason(HubDead)`
+      + `core.request_stop()`.  The master ctrl thread drives the
+      heartbeat timer; without it the broker reaps the role.
+    - Peer died (`is_master=false`) → no-op.  Role keeps running on
+      the master per HEP-CORE-0023 §2.5.  Scripts wishing to exit
+      on peer-death must define `on_hub_dead` and call
+      `api.stop()` inside it.
+
+The notify is consumed from `msgs` in both paths (callback fired,
+or framework took the default).  Multi-presence implication: if the
+script defines `on_hub_dead`, EACH hub-death enqueues an independent
+HUB_DEAD msg with its own `source_hub_uid` — the script sees every
+event and may stop, mutate, or ignore on a per-hub basis.  Without a
+callback, only master-death stops the role (peer-deaths log+continue),
+matching pre-D1 behavior for scripts that haven't opted into the
+callback.
+
+See HEP-CORE-0011 §"Notification dispatch" for the Pattern-A/B
+taxonomy that unifies this with `on_channel_closing`.
 
 ### 19.7 What was wrong before this section
 
@@ -3051,10 +3091,32 @@ present (self-describing), else falls back to `[tag] name`.
    `require_valid_identifier()` at entry.  Invalid → silent drop +
    bump `sys.invalid_identifier_rejected` counter.  No exceptions
    thrown into the broker's handler thread.
-2. **Broker wire handlers**: call `is_valid_identifier()` before
-   calling the HubState op, and return an explicit error reply to the
-   client on failure.  This gives the UX path (clients see error)
-   while the HubState silent-drop is the backstop.
+2. **Broker wire handlers** (audit R3.5b, 2026-05-19 — broker_proto
+   4→5): call `is_valid_identifier()` on `channel_name`, `role_uid`,
+   and `role_name` (when non-empty) at handler entry, BEFORE any
+   HubState op.  An empty or malformed identifier returns
+   `INVALID_REQUEST` with `LOGGER_WARN`; fire-and-forget messages
+   (HEARTBEAT_REQ, BAND_BROADCAST_REQ) are dropped with WARN log
+   instead.  In addition, each gate constrains the role-tag set
+   embedded in the uid:
+
+   | Gate | Allowed tag set |
+   |---|---|
+   | `REG_REQ`, `DEREG_REQ` | `{prod, proc}` |
+   | `CONSUMER_REG_REQ`, `CONSUMER_DEREG_REQ` | `{cons, proc}` |
+   | `HEARTBEAT_REQ` | derived from `role_type` field |
+   | `ROLE_PRESENCE_REQ`, `ROLE_INFO_REQ`, `BAND_*_REQ` | `{prod, cons, proc}` |
+
+   Wrong-side tags return `INVALID_ROLE_TAG`.  Processor roles
+   carry a `proc.*` uid and are accepted on both sides per
+   HEP-CORE-0011's dual-presence model.  Implementation:
+   `BrokerServiceImpl::validate_identity_fields` +
+   `validate_role_uid_only` in `src/utils/ipc/broker_service.cpp`.
+   Grammar enforcement at the gate is **unconditional** —
+   `RoleIdentityPolicy` (G2.2.4 admission policy) only controls
+   verification against `known_roles` ON TOP of valid grammar, not
+   in place of it.  HubState silent-drop remains the defense-in-depth
+   backstop.  See HEP-CORE-0023 §2.5.4 for the wire-format table.
 3. **Role-side config parsers**: validate at `plh_role --validate`
    time so misconfigured role UIDs fail early, not at first REG_REQ.
 

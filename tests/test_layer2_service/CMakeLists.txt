@@ -1025,6 +1025,7 @@ add_executable(test_layer2_lua_engine
 target_include_directories(test_layer2_lua_engine PRIVATE
     workers
     ${CMAKE_SOURCE_DIR}/src/scripting
+    ${CMAKE_SOURCE_DIR}/src/utils   # service/cycle_ops.hpp for dispatcher test
     ${CMAKE_SOURCE_DIR}/tests/test_framework
 )
 

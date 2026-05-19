@@ -206,8 +206,8 @@ int register_and_discover()
 
     // Discover the channel.
     nlohmann::json disc_opts;
-    disc_opts["consumer_uid"]  = "cons.test.uid00000001";
-    disc_opts["consumer_name"] = "test_consumer";
+    disc_opts["role_uid"]  = "cons.test.uid00000001";
+    disc_opts["role_name"] = "test_consumer";
 
     auto disc_result = ch.discover_channel("test_ch", disc_opts, 5000);
     EXPECT_TRUE(disc_result.has_value()) << "DISC_REQ timed out";
@@ -254,8 +254,10 @@ int role_presence()
 
     // Not present yet.  Post-Bucket-C: query_role_presence returns
     // optional<json>; "present" is the response body field that signals
-    // the role was found.
-    auto presence_resp = ch.query_role_presence("nonexistent_uid", 3000);
+    // the role was found.  broker_proto 5 (R3.5b) requires the query
+    // uid to be well-formed (HEP-CORE-0033 §G2.2.0b); using a
+    // properly-tagged uid that simply isn't registered.
+    auto presence_resp = ch.query_role_presence("prod.nonexistent.uid00000001", 3000);
     EXPECT_TRUE(presence_resp.has_value());
     if (presence_resp.has_value())
         EXPECT_FALSE(presence_resp->value("present", false));

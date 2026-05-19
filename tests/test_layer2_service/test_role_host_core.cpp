@@ -75,11 +75,88 @@ class RoleHostCoreTest : public ::testing::Test,
 // Default state
 // ============================================================================
 
+TEST_F(RoleHostCoreTest, ContextValid_DefaultTrue_OneWayLatch)
+{
+    // V1 audit (2026-05-18) — `context_valid_` is initialized to true
+    // (handler / BRCs / presences ARE valid by default).  The latch
+    // is one-way: there is no inverse setter to flip it back to true.
+    // Mutation: change init to `false` → first assertion fails.
+    // Mutation: add a `set_context_valid()` setter that flips back to
+    // true → subsequent assertion fails because callers could
+    // re-enable after invalidation.
+
+    EXPECT_TRUE(core_.context_valid())
+        << "V1 contract: `context_valid()` must start TRUE on a fresh "
+           "RoleHostCore — handler/BRCs are valid by default.";
+
+    core_.set_context_invalid();
+    EXPECT_FALSE(core_.context_valid())
+        << "V1 contract: `set_context_invalid()` must flip the flag "
+           "to false.";
+
+    // Idempotent: calling set_context_invalid() again is harmless.
+    core_.set_context_invalid();
+    EXPECT_FALSE(core_.context_valid())
+        << "V1 contract: set_context_invalid() is idempotent — "
+           "calling it again keeps the latch at false.";
+
+    // One-way: there is no inverse setter in the public API.  This
+    // test pins that contract at runtime by attempting to construct
+    // a state where the latch flips back — which it cannot.  A
+    // future addition of a `set_context_valid(bool)` setter that
+    // accepts `true` would break the V1 invariant and should be
+    // explicitly rejected.
+}
+
+TEST_F(RoleHostCoreTest, ContextValid_IndependentOfIsRunning)
+{
+    // V1 audit clarification: `context_valid()` is a DIFFERENT
+    // concept from `is_running()`.  Even though both happen to flip
+    // false during teardown, they're independent observables:
+    //
+    //   * `is_running()` = "worker thread loop iterates" — re-flippable
+    //   * `context_valid()` = "handler/BRCs are alive for callbacks"
+    //                        — one-way latch
+    //
+    // This test pins the independence so a future refactor that
+    // tries to collapse them into one flag has to explain why.
+
+    core_.set_running(true);
+    EXPECT_TRUE(core_.is_running());
+    EXPECT_TRUE(core_.context_valid())
+        << "Default: both flags reflect their initial states "
+           "independently.";
+
+    // Flip is_running false (worker stopped) — context still valid.
+    core_.set_running(false);
+    EXPECT_FALSE(core_.is_running());
+    EXPECT_TRUE(core_.context_valid())
+        << "V1: stopping the worker loop does NOT invalidate the "
+           "callback context.  Callbacks may still fire during the "
+           "wait_for_quiescence window and need valid structures.";
+
+    // Re-start (it's re-flippable) — context still valid.
+    core_.set_running(true);
+    EXPECT_TRUE(core_.is_running());
+    EXPECT_TRUE(core_.context_valid());
+
+    // Invalidate context independently.
+    core_.set_context_invalid();
+    EXPECT_TRUE(core_.is_running())
+        << "V1: invalidating context does NOT stop the worker — they "
+           "operate on different concerns.";
+    EXPECT_FALSE(core_.context_valid());
+}
+
 TEST_F(RoleHostCoreTest, DefaultState_AllZero)
 {
     EXPECT_FALSE(core_.is_running());
     EXPECT_FALSE(core_.is_shutdown_requested());
     EXPECT_FALSE(core_.is_critical_error());
+    EXPECT_TRUE(core_.context_valid())
+        << "V1 audit (2026-05-18): context_valid_ defaults TRUE on a "
+           "fresh RoleHostCore — handler/BRCs/presences are valid by "
+           "default; teardown flips this to false exactly once.";
     EXPECT_EQ(core_.stop_reason_string(), "normal");
 
     EXPECT_EQ(core_.out_slots_written(),       0u);

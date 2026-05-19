@@ -15,6 +15,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 
 namespace py = pybind11;
@@ -41,7 +42,7 @@ class ConsumerAPI
 
     void log(const std::string &level, const std::string &msg) { base_->log(level, msg); }
     void stop() { base_->stop(); }
-    void set_critical_error() { base_->set_critical_error(); }
+    void set_critical_error(std::string_view msg) { base_->set_critical_error(msg); }
     [[nodiscard]] bool critical_error() const noexcept { return base_->critical_error(); }
 
     // Band pub/sub (HEP-CORE-0030)

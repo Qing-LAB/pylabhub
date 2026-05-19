@@ -601,6 +601,43 @@ class ScriptEngine
         const std::string &reason) = 0;
 
     /**
+     * @brief Invoke `on_hub_dead(source_hub_uid, api)` if the script
+     *        defines it.
+     *
+     * Audit D1 (2026-05-18) — uniform "callback replaces default
+     * `api.stop()`" pattern.  The role-side ctrl-thread `on_hub_dead`
+     * lambda (`role_api_base.cpp` Phase 2) enqueues a synthetic
+     * HUB_DEAD `IncomingMessage` when ZMTP declares the broker dead.
+     * The worker-thread dispatcher (`dispatch_notifications` in
+     * `cycle_ops.hpp`) routes it here.  Per the design call locked
+     * on 2026-05-15T03:29:
+     *
+     *   - If the script defines `on_hub_dead`, it REPLACES the
+     *     framework's default `api.stop()` action.  The script may
+     *     call `api.stop()` itself, keep the role alive with
+     *     internal state, attempt reconnection logic on later
+     *     iterations, or do nothing.
+     *   - If NOT defined, the framework calls `core.request_stop()`
+     *     (equivalent to `api.stop()`) so the role exits cleanly
+     *     instead of zombieing on a dead broker.
+     *
+     * Same threading contract as `invoke_on_channel_closing` — fires
+     * on the worker thread; engine handles internal locking;
+     * implementations log + suppress script exceptions (do not
+     * propagate); the data loop continues.
+     *
+     * @param source_hub_uid  Broker endpoint of the dead hub
+     *                        (the role's stable identifier for
+     *                        this connection per HEP-CORE-0033
+     *                        §19.2 — `(broker_endpoint,
+     *                        broker_pubkey)` dedup key; endpoint
+     *                        alone is unique among a role's
+     *                        connections).
+     */
+    virtual void invoke_on_hub_dead(
+        const std::string &source_hub_uid) = 0;
+
+    /**
      * @brief Invoke on_produce(tx, msgs, api).
      * @param tx   Output direction (writable slot + flexzone).
      * @param msgs Incoming messages (drained from RoleHostCore).

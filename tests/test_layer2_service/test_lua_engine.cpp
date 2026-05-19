@@ -547,11 +547,17 @@ TEST_F(LuaEngineIsolatedTest, ApiCriticalError_SetAndReadAndStopReason)
     auto w = SpawnWorker(
         "lua_engine.api_critical_error_set_and_read_and_stop_reason",
         {unique_dir("api_crit")});
-    // set_critical_error logs the user-supplied message at ERROR level
-    // (lua_engine.cpp:1342) — pin the exact format prefix.
+    // Audit S2 (2026-05-18) — log line now emitted by RoleAPIBase
+    // (uniform across Python / Lua / Native engines): format is
+    // "[role_tag/uid] CRITICAL: <msg>" replacing the old Lua-only
+    // "[uid-lua] CRITICAL: ..." prefix.  Pin BOTH the full prefix
+    // (role_tag + uid as set by lua_engine_workers.cpp:76) AND the
+    // worker-passed message — catches a regression in either the
+    // prefix format OR the message passthrough.
     ExpectWorkerOk(w, /*required=*/{},
                    /*expected_error_substrings=*/
-                   {"[test-lua] CRITICAL:"});
+                   {"[prod/prod.testengine.uid00000001] "
+                    "CRITICAL: deliberate test error"});
 }
 
 // NEW: exhaustive api.stop_reason() → StopReason enum mapping. Injects
@@ -1397,6 +1403,23 @@ TEST_F(LuaEngineIsolatedTest, FullStartup_Processor_Multifield)
     auto w = SpawnWorker(
         "lua_engine.full_startup_processor_multifield",
         {unique_dir("fs_proc_multi")});
+    ExpectWorkerOk(w);
+}
+
+// Audit Q-strengthen (2026-05-18) — supplements the
+// `RecordingEngine`-based branch-coverage tests in
+// `test_dispatch_notifications.cpp` with one real-engine
+// end-to-end path through `dispatch_notifications`.  Validates:
+//   - LuaEngine's has_callback cache reports correct truth.
+//   - dispatch_notifications routes through `invoke_user_X` adapter
+//     into the real Lua callback with correct args.
+//   - Single-delivery + override-replaces-default contracts hold
+//     with a real engine (not just the mock).
+TEST_F(LuaEngineIsolatedTest, Dispatcher_RealLuaEngine_RecordsArgs)
+{
+    auto w = SpawnWorker(
+        "lua_engine.dispatch_notifications_real_lua_engine_records_args",
+        {unique_dir("dispatcher_real")});
     ExpectWorkerOk(w);
 }
 

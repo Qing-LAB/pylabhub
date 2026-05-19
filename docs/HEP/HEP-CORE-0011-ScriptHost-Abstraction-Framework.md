@@ -259,8 +259,9 @@ Unloaded --> Initialized --> ScriptLoaded --> ApiBuilt --> Finalized
 | `invoke_consume(rx, msgs)` | worker | Call `on_consume(rx, msgs, api)` -- hot path |
 | `invoke_process(rx, tx, msgs)` | worker | Call `on_process(rx, tx, msgs, api)` -- hot path |
 | `invoke_on_inbox(msg)` | worker | Call `on_inbox(msg, api)` |
-| `invoke_on_channel_closing(channel, reason)` | worker | Call `on_channel_closing(channel, reason, api)` if defined; no-op otherwise.  Routed via `dispatch_notifications` (see §"Notification dispatch" below) when an `IncomingMessage` carries `NotificationId::ChannelClosing` AND `has_callback("on_channel_closing")` is true — the notify is then removed from `msgs` (single-delivery contract). |
-| `invoke_on_consumer_died(channel, consumer_uid, reason)` | worker | Call `on_consumer_died(channel, consumer_uid, reason, api)` if defined; no-op otherwise.  Routed via `dispatch_notifications` when an `IncomingMessage` carries `NotificationId::ConsumerDied` AND `has_callback("on_consumer_died")` is true — the notify is then removed from `msgs` (single-delivery contract).  `reason` is one of `"heartbeat_timeout"` (consumer-presence Pending → Disconnected; HEP-CORE-0023 §2.1.1) or `"process_dead"` (broker PID-liveness check).  Lets producers symmetrically drop per-consumer bookkeeping; channel survives consumer death. |
+| `invoke_on_channel_closing(channel, reason)` | worker | Adapter — pulls `(channel_name, reason)` from the notify and calls `on_channel_closing(channel, reason, api)`.  Invoked by the dispatcher ONLY when the script has defined the override (`has_callback("on_channel_closing") == true`).  When the override is absent, the dispatcher calls the framework's native default (`default_channel_closing` — graceful stop with `StopReason::ChannelClosed`) instead.  Either way, the notify is consumed from `msgs`.  Per design call 2026-05-15T03:29: "this is really just a callback that replaces the default straightforward stop()". |
+| `invoke_on_consumer_died(channel, consumer_uid, reason)` | worker | Adapter for the producer-side `on_consumer_died(channel, consumer_uid, reason, api)` override.  Dispatched under the unified model: override invoked iff the script defines it; otherwise the native default (`default_consumer_died` — no-op, producer survives) runs.  Notify is consumed from `msgs` either way.  `reason` is one of `"heartbeat_timeout"` (consumer-presence Pending → Disconnected; HEP-CORE-0023 §2.1.1) or `"process_dead"` (broker PID-liveness check). |
+| `invoke_on_hub_dead(source_hub_uid)` | worker | Adapter for the `on_hub_dead(source_hub_uid, api)` override.  Dispatched under the unified model: override invoked iff defined; otherwise the native default (`default_hub_dead`) runs — graceful stop with `StopReason::HubDead` if the dead connection was master, no-op if peer (role keeps running on master per HEP-CORE-0023 §2.5).  Audit D1/D2 (2026-05-18).  Synthetic notification: not a wire frame; enqueued by the role-side ctrl-thread `on_hub_dead` lambda (`role_api_base.cpp` Phase 2) when ZMTP declares a broker connection dead.  **Fires at most ONCE per (role lifetime, connection) pair** — pylabhub policy: disconnect is terminal (HEP-CORE-0023 §2.5.3), `ZMQ_RECONNECT_IVL=-1` on every BRC DEALER socket so a dead connection cannot be silently re-established by libzmq.  If the role wants to talk to a broker again after a disconnect it must do so explicitly at the lifecycle layer (tear down `RoleHandler` / build a fresh one) — not by waiting for the same socket to come back.  Script can check `api.is_connection_alive(i)` / `api.connections_alive_count()` to disambiguate master vs peer if needed, then call `api.stop()` or keep the role alive while it drives an explicit role-restart from outside. |
 | `invoke_on_stop()` | worker | Call `on_stop(api)` |
 | `invoke(name, args)` | any | Generic invocation (e.g., admin shell) |
 | `eval(code)` | any | Evaluate code string (admin shell) |
@@ -280,33 +281,94 @@ The role-host enqueues each as an `IncomingMessage`
 per data cycle and calls `dispatch_notifications(engine, msgs)`
 (`service/cycle_ops.hpp`).
 
-`dispatch_notifications` is a single-pass loop driven by a
-fixed-size handler table `kNotificationHandlers` indexed by
-`NotificationId`.  For each message:
+#### Unified dispatch model (audit D1/D2, 2026-05-18)
 
-  1. Look up `kNotificationHandlers[msg.notification_id]`.  Slot
-     for `NotificationId::Unknown` is `nullptr` (unrecognised wire
-     types fall through and stay in `msgs`).
-  2. Call the handler `handle_X(engine, msg)`.  Each handler
-     internally checks `engine.has_callback("on_X")`; if defined,
-     it invokes `engine.invoke_on_X(...)` and returns `true`
-     (consumed).  If not defined, it returns `false` (msg stays
-     in `msgs` for the script's generic scan inside
-     `on_produce`/`on_consume`).
+Every known notification follows the SAME recipe: the framework
+ships a **native default callback** (C++ function) for every
+notification, and the script may **override** any of them by
+defining the named Python/Lua/Native callback.  The dispatcher
+fires either the override or the native default — never both, never
+neither.  Replaced the earlier two-pattern A/B taxonomy with one
+uniform rule (user design call, 2026-05-18):
+
+  > "each slot/message has a default callback (this can be native
+  >  calls).  if user replace it, call that; if not, default is
+  >  called and the default is whatever needs to be done by default."
+
+`dispatch_notifications(engine, msgs, stop_req)` is a single-pass
+loop driven by a fixed-size table `kNotificationTable` in
+`cycle_ops.hpp`, indexed by `NotificationId`.  Each row holds:
+
+  - `callback_name`   — the script-side identifier (e.g.
+    `"on_channel_closing"`) the engine probes via `has_callback`.
+  - `invoke_user`     — C++ adapter that unpacks `details` from
+    the message and calls `engine.invoke_on_X(...)` to invoke the
+    script override.
+  - `default_native`  — C++ function called when the override is
+    NOT defined.  Takes the message + a `StopRequestor` capability
+    handle (defined in `role_host_core.hpp` — exposes only
+    `request(StopReason)`, not the rest of `RoleHostCore`'s API).
+    Defaults that never stop the role (e.g. `default_consumer_died`)
+    simply ignore the `StopRequestor`.
+
+Per-cycle loop:
+
+```
+for each msg in msgs:
+    entry = kNotificationTable[msg.notification_id]
+    if entry.invoke_user is nullptr:           // Unknown — never seen by table
+        leave in msgs                          // generic-scan fallback for
+                                               // future wire types not yet
+                                               // in the enum
+        continue
+    if engine.has_callback(entry.callback_name):
+        entry.invoke_user(engine, msg)         // user override
+    else:
+        entry.default_native(msg, stop_req)    // framework default
+    erase from msgs                            // always consumed for known types
+```
+
+Current rows (post-D1/D2):
+
+| Row | callback_name | default action |
+|---|---|---|
+| `ChannelClosing` | `on_channel_closing` | `default_channel_closing` → graceful stop with `StopReason::ChannelClosed` |
+| `ConsumerDied`   | `on_consumer_died`   | `default_consumer_died`   → no-op (producer survives consumer death) |
+| `HubDead`        | `on_hub_dead`        | `default_hub_dead`        → master: graceful stop with `StopReason::HubDead`; peer: no-op (role continues on master per HEP-CORE-0023 §2.5) |
 
 Adding a notification:
 
   1. Append the enum value to `NotificationId` in
      `role_host_core.hpp` (at the end, before `Count`).
-  2. Map the wire-string in `parse_notification_id`.
-  3. Add a handler function in `cycle_ops.hpp` + register it in
-     `kNotificationHandlers`.
-  4. Add the matching `invoke_on_X` pure virtual on
-     `ScriptEngine` and implement it across `NativeEngine`,
-     `LuaEngine`, `PythonEngine`.
+  2. Map the wire-string in `parse_notification_id`.  (Synthetic
+     non-wire events like `HUB_DEAD` get an enum value and an
+     identity mapping — see `HUB_DEAD` for the pattern.)
+  3. Add the matching `invoke_on_X` pure virtual on `ScriptEngine`
+     + implementations across `NativeEngine`, `LuaEngine`,
+     `PythonEngine` (including a `set_standard_callback_present`
+     entry in each engine's `load_script`).
+  4. Write the `invoke_user_X` adapter (one-liner) AND the
+     `default_X` native function (the framework's "what to do
+     when the script didn't override" answer) in `cycle_ops.hpp`.
+  5. Append a row `{ "on_X", &invoke_user_X, &default_X }` to
+     `kNotificationTable`.
+  6. If the default stops the role with a distinguishable reason,
+     add the variant to `RoleHostCore::StopReason` and a case to
+     `stop_reason_string()`.
 
 Design notes:
 
+  - **One mental model for script authors**: "Every event has a
+    default.  Define `on_X(...)` if you want different behavior.
+    The framework will never both stop AND fire your callback."
+    No "this one auto-stops, that one silently waits in `msgs`,
+    a third one fires only when you opt in."
+  - **No generic-scan fallback for known notifications**.  Once a
+    notification has a row in `kNotificationTable`, scripts that
+    don't define the override no longer find that notify type
+    sitting in `msgs` to scan inside `on_produce`/`on_consume`.
+    The native default IS what the framework wants done; relying
+    on `msgs` scan to bypass the default is no longer supported.
   - Wire arrival order = dispatch order.  Cascading events
     (CHANNEL_CLOSING_NOTIFY followed by CONSUMER_DIED_NOTIFY in
     the same cycle) reach the script in the order the broker
@@ -315,7 +377,120 @@ Design notes:
     per cycle.  Per-cycle dispatch is an integer-indexed table
     lookup.
   - The wire `type` string is preserved on `IncomingMessage::event`
-    for debug logging and the generic-scan path.
+    for debug logging.
+  - `HUB_DEAD` is synthetic — not a wire frame.  The role-side
+    ctrl-thread `on_hub_dead` lambda enqueues it directly (see
+    `role_api_base.cpp` Phase 2).  Treated as a notification for
+    dispatch uniformity, with `details["is_master"]` set so the
+    native default can branch on master vs peer.
+  - `StopRequestor` (in `role_host_core.hpp`) is a deliberate
+    narrowing of `RoleHostCore` to its lifecycle-stop surface so
+    native defaults can stop the role without being handed
+    access to the rest of `RoleHostCore`'s ~30 methods.  Reduces
+    re-entrance hazard (no `enqueue_message` from inside the
+    dispatcher) and keeps the contract obvious at the type level.
+
+---
+
+### Stop / critical-error usage (audit S2, 2026-05-18)
+
+Scripts have two explicit stop APIs and the framework auto-stops
+in several scenarios.  The resulting `stop_reason` is observable
+via `api.stop_reason()` (and the C plugin's `ctx->stop_reason(ctx)`)
+and is logged at shutdown.
+
+| Trigger | API call | `stop_reason` after stop | `critical_error()` flag |
+|---|---|---|---|
+| Script wants to stop the role gracefully | `api.stop()` | `"normal"` | false |
+| Script detects unrecoverable condition | `api.set_critical_error(msg)` | `"critical_error"` | **true** |
+| Script callback raised AND `stop_on_script_error=true` | (framework auto) | `"script_error"` | false |
+| `CHANNEL_CLOSING_NOTIFY` arrived, no `on_channel_closing` override | (framework auto via `default_channel_closing`) | `"channel_closed"` | false |
+| `HUB_DEAD` for master broker, no `on_hub_dead` override | (framework auto via `default_hub_dead`) | `"hub_dead"` | false |
+| Broker-initiated peer-death policy (future Wave-B M2) | (framework auto) | `"peer_dead"` | false |
+
+**`api.stop()` vs `api.set_critical_error()`:**
+
+- Use **`api.stop()`** for an orderly exit when the role has done
+  its job, hit a configured exit condition, or the user wants
+  graceful shutdown.  `stop_reason="normal"`.
+- Use **`api.set_critical_error([msg])`** for an unrecoverable
+  condition — corrupt schema, hardware fault, license check
+  failure, an invariant a downstream operator would want to be
+  paged about.  The role still shuts down via the same code path
+  (`shutdown_requested_=true`), but `critical_error()` latches
+  true so monitoring scripts / health checks can distinguish a
+  "stopped because of an error" exit from a "stopped because we
+  asked it to" exit.  `stop_reason="critical_error"`.
+- **Don't use `api.set_critical_error()` just because a script
+  callback raised** — that's already covered by the
+  `stop_on_script_error` config flag, which the framework
+  auto-tags with `stop_reason="script_error"`.
+
+**`api.set_critical_error(msg)` — REQUIRED message, uniform
+signature across all three engines (audit S2):**
+
+- Python — `api.set_critical_error("schema corrupt — field width mismatch")`
+- Lua — `api.set_critical_error("hardware fault: ADC overrun")`
+- Native C — `ctx->set_critical_error(ctx, "license expired")`
+  (C ABI v3 — v2 plugins must be rebuilt)
+- Native C++ wrapper — `ctx.set_critical_error("…")`
+
+The framework emits an ERROR-level log line
+`[role_tag/uid] CRITICAL: <msg>` BEFORE flipping state — so log
+scrapers ALWAYS see a breadcrumb explaining why a role flagged
+critical.  The message is mandatory by design: a "silent"
+critical error with no log line is considered a bug in the
+calling script.  Enforcement at each engine:
+
+- Python — pybind11 raises `TypeError` if `msg` is missing.
+- Lua — binding raises `luaL_error("api.set_critical_error(msg)
+  requires a string message argument")` if missing / non-string.
+- Native C — passing NULL is tolerated (host logs "(no message
+  — C plugin passed NULL; bug)") but considered a plugin bug;
+  plugin authors should always pass a real string.
+
+**Worked example — Python:**
+
+```python
+def on_produce(tx, msgs, api):
+    raw = read_sensor()
+    if raw.checksum != expected_checksum(raw.payload):
+        # Corrupt frame — not a transient read failure, the wire
+        # itself is wrong.  Set critical so an operator gets paged.
+        api.set_critical_error(
+            f"sensor frame checksum mismatch: got {raw.checksum:#x}")
+        return False  # discard this slot
+    tx.slot.value = raw.payload
+    return True
+```
+
+**Worked example — Lua:**
+
+```lua
+function on_consume(rx, msgs, api)
+    local slot = rx.slot
+    if slot.magic ~= 0xPLH then
+        api.set_critical_error(
+            "input slot magic invalid — schema drift?")
+        return true
+    end
+    handle(slot)
+    return true
+end
+```
+
+**Worked example — Native C plugin (API v3):**
+
+```c
+PLH_EXPORT bool on_produce(const plh_tx_t *tx) {
+    if (!sensor_ok()) {
+        g_ctx->set_critical_error(g_ctx, "sensor link down");
+        return false;
+    }
+    /* fill *tx->slot ... */
+    return true;
+}
+```
 
 ---
 
@@ -932,12 +1107,19 @@ def on_channel_closing(channel, reason, api):
     destroyed by the broker (last producer-presence reached
     Disconnected, broker fanned out CHANNEL_CLOSING_NOTIFY).
 
-    Optional.  If defined, the framework dispatches this callback
-    instead of leaving the notify in the per-cycle msgs list.  If
-    NOT defined, the notify stays in msgs and on_produce / on_consume
-    can scan it.  No automatic stop — the script decides:
-    call api.stop() to exit, set internal state for a later cycle to
-    act on, or do nothing.
+    Optional override (audit D1, 2026-05-18).  When defined, this
+    REPLACES the framework's default action; the framework will
+    NOT also call api.stop().  When NOT defined, the framework's
+    `default_channel_closing` runs — graceful stop with
+    StopReason::ChannelClosed.  In both cases the notify is
+    consumed from per-cycle msgs (no fall-through to generic scan).
+
+    Override use-cases:
+        - reconnection / retry: leave the role running, mutate
+          internal state, and let the next iteration re-register;
+        - clean stop: just call api.stop() (equivalent to default,
+          but the script may want to log first);
+        - bookkeeping: drop per-channel state then api.stop().
 
     Args:
         channel  (str): Closed channel name.
@@ -952,9 +1134,12 @@ def on_consumer_died(channel, consumer_uid, reason, api):
     died (process exit or heartbeat timeout).  Channel survives —
     only CHANNEL_CLOSING_NOTIFY indicates the channel itself is gone.
 
-    Optional.  Single-delivery: when defined, the framework removes
-    the notify from per-cycle msgs; when not defined, the notify
-    stays in msgs for generic scan.
+    Optional override (audit D1, 2026-05-18).  When defined, the
+    framework fires this callback and consumes the notify.  When
+    NOT defined, the framework's `default_consumer_died` runs — a
+    no-op (the producer survives consumer death; no framework
+    action needed) — and the notify is consumed.  Either way the
+    notify is removed from msgs.
 
     Use this to drop per-consumer bookkeeping (open inbox state,
     addressed-message tracking, etc.) symmetrically with the
@@ -964,6 +1149,39 @@ def on_consumer_died(channel, consumer_uid, reason, api):
         channel       (str): Channel the dead consumer was on.
         consumer_uid  (str): UID of the dead consumer presence.
         reason        (str): 'heartbeat_timeout' or 'process_dead'.
+    """
+    pass
+
+def on_hub_dead(source_hub_uid, api):
+    """Called when ZMTP declares one of the role's broker
+    connections dead.
+
+    Optional override (audit D2, 2026-05-18).  When defined, this
+    REPLACES the framework's default action.  When NOT defined,
+    the framework's `default_hub_dead` runs — graceful stop with
+    StopReason::HubDead if the dead connection was master, no-op
+    if peer (role keeps running on master per HEP-CORE-0023 §2.5).
+    Either way the synthetic HUB_DEAD msg is consumed.
+
+    The role-side ctrl-thread `on_hub_dead` lambda
+    (`role_api_base.cpp` Phase 2) enqueues the synthetic
+    HUB_DEAD msg for the worker-thread dispatcher.  Use
+    `api.is_connection_alive(i)` / `api.connections_alive_count()`
+    inside the override to disambiguate master vs peer if needed.
+
+    Override use-cases:
+        - exit on any hub death (`api.stop()` unconditionally) —
+          restores the HEP-0033 §19.6 "either-hub-exits" original;
+        - survive master death by setting internal "reconnect"
+          state for the next iteration (caveat: master ctrl
+          thread drives heartbeat; broker WILL reap the role —
+          best-effort reconnection logic should plan for that);
+        - degrade quietly on peer death and continue on master.
+
+    Args:
+        source_hub_uid (str): Broker endpoint of the dead hub —
+                              the role's stable identifier per
+                              HEP-0033 §19.2.
     """
     pass
 
@@ -992,22 +1210,39 @@ function on_consume(rx, msgs, api)
 end
 
 function on_channel_closing(channel, reason, api)
-    -- Optional.  Called when a channel this role used closes.
-    -- Script chooses: api.stop() to exit, set state for a later
-    -- on_tick/on_consume to retry, or do nothing.
+    -- Optional override (audit D1, 2026-05-18).
+    -- When defined, REPLACES the framework default
+    -- (graceful stop with StopReason::ChannelClosed).
+    -- Script chooses: api.stop(), retry on next iteration via
+    -- internal state, or do nothing (zombie mode).
     api.log("warn", "channel " .. channel .. " closed: " .. reason)
     api.stop()
 end
 
 function on_consumer_died(channel, consumer_uid, reason, api)
-    -- Optional.  Called on a producer when one of its registered
-    -- consumers has died.  reason is "heartbeat_timeout" or
-    -- "process_dead".  Channel survives; only on_channel_closing
-    -- indicates the channel is going away.
+    -- Optional override.  When defined, the framework fires this
+    -- and consumes the notify; when not defined, the framework's
+    -- default_consumer_died is a no-op (producer survives consumer
+    -- death) and the notify is still consumed.  reason is
+    -- "heartbeat_timeout" or "process_dead".  Channel survives;
+    -- only on_channel_closing indicates the channel itself is gone.
     api.log("warn", "consumer " .. consumer_uid
                   .. " on " .. channel
                   .. " died: " .. reason)
     -- Drop any per-consumer state here (open inbox slots, etc.).
+end
+
+function on_hub_dead(source_hub_uid, api)
+    -- Optional override (audit D2, 2026-05-18).
+    -- When defined, REPLACES the framework default
+    -- (master-death: stop with StopReason::HubDead; peer-death:
+    -- no-op so role survives on master per HEP-0023 §2.5).
+    -- source_hub_uid is the dead broker's endpoint string
+    -- (HEP-0033 §19.2).  Use api.is_connection_alive(i) to
+    -- disambiguate master vs peer.
+    api.log("warn", "hub dead: " .. source_hub_uid)
+    -- Default-mimicking implementation; remove for non-fatal logic:
+    api.stop()
 end
 
 function on_stop(api)

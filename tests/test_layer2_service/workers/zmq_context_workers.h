@@ -25,5 +25,23 @@ int create_socket_works();
 /** N concurrent threads calling get_zmq_context() see the same pointer. */
 int multithread_get_context_safe();
 
+/// `apply_socket_policy(sock, TcpConnect)` sets every option in the
+/// full policy block (linger=0, sndtimeo=500, heartbeat 5s/30s,
+/// reconnect_ivl=-1, reconnect_ivl_max=0).  Mutation: removing any
+/// `.set(...)` from the helper → readback fails.  See
+/// HEP-CORE-0023 §2.5.3 + utils/zmq_socket_policy.hpp.
+int apply_socket_policy_tcp_connect_sets_all();
+
+/// `apply_socket_policy(sock, TcpBind)` sets the heartbeat + sndtimeo
+/// + linger subset BUT does NOT set reconnect_ivl (bind sockets
+/// don't initiate connections — option would be a no-op).  Verifies
+/// the role-branching logic in the helper.
+int apply_socket_policy_tcp_bind_subset();
+
+/// `apply_socket_policy(sock, InprocSignal)` sets ONLY linger=0
+/// (inproc PAIR sockets used for wake-up don't need ZMTP heartbeat
+/// or reconnect policy).  Verifies the inproc branch.
+int apply_socket_policy_inproc_signal_minimal();
+
 } // namespace zmq_context
 } // namespace pylabhub::tests::worker

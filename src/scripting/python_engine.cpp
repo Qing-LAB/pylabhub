@@ -280,6 +280,8 @@ bool PythonEngine::load_script(const std::filesystem::path &script_dir,
             py::getattr(module_, "on_channel_closing", py::none());
         py_on_consumer_died_ =
             py::getattr(module_, "on_consumer_died", py::none());
+        py_on_hub_dead_ =
+            py::getattr(module_, "on_hub_dead",       py::none());
         py_on_produce_ = py::getattr(module_, "on_produce", py::none());
         py_on_consume_ = py::getattr(module_, "on_consume", py::none());
         py_on_process_ = py::getattr(module_, "on_process", py::none());
@@ -299,6 +301,8 @@ bool PythonEngine::load_script(const std::filesystem::path &script_dir,
                                        is_callable(py_on_channel_closing_));
         set_standard_callback_present("on_consumer_died",
                                        is_callable(py_on_consumer_died_));
+        set_standard_callback_present("on_hub_dead",
+                                       is_callable(py_on_hub_dead_));
         set_standard_callback_present("on_produce", is_callable(py_on_produce_));
         set_standard_callback_present("on_consume", is_callable(py_on_consume_));
         set_standard_callback_present("on_process", is_callable(py_on_process_));
@@ -1154,6 +1158,34 @@ void PythonEngine::invoke_on_consumer_died(const std::string &channel,
 }
 
 // ============================================================================
+// invoke_on_hub_dead — on_hub_dead(source_hub_uid, api)
+// ============================================================================
+//
+// Audit D1 (2026-05-18) — script callback replaces the framework's
+// default `api.stop()` action.  The dispatcher in
+// `cycle_ops.hpp::invoke_user_hub_dead` calls this method ONLY when
+// `has_callback("on_hub_dead")` is true; the default-stop branch
+// fires `core.request_stop()` instead and never reaches this code.
+// So an `is_callable` guard here would be redundant — it's kept
+// defensively to match the shape of the other invoke_on_* methods.
+
+void PythonEngine::invoke_on_hub_dead(const std::string &source_hub_uid)
+{
+    if (!is_callable(py_on_hub_dead_))
+        return;
+
+    py::gil_scoped_acquire g;
+    try
+    {
+        py_on_hub_dead_(source_hub_uid, api_obj_);
+    }
+    catch (py::error_already_set &e)
+    {
+        on_python_error_("on_hub_dead", e);
+    }
+}
+
+// ============================================================================
 // invoke_produce — on_produce(tx, msgs, api) -> bool
 // ============================================================================
 
@@ -1475,7 +1507,14 @@ InvokeResult PythonEngine::handle_script_error_(const char *callback_tag)
         LOGGER_ERROR("[{}] stop_on_script_error: requesting shutdown after {} error",
                      log_tag_, callback_tag);
         if (core)
+        {
+            // Audit S2 (2026-05-18) — typed StopReason::ScriptError so
+            // operators reading stop_reason can distinguish a script
+            // bug from a clean api.stop().  Distinct from CriticalError
+            // (which is for set_critical_error()).
+            core->set_stop_reason(RoleHostCore::StopReason::ScriptError);
             core->request_stop();
+        }
     }
     return InvokeResult::Error;
 }
@@ -1521,6 +1560,7 @@ void PythonEngine::clear_pyobjects_()
     release_to_none(py_on_stop_);
     release_to_none(py_on_channel_closing_);
     release_to_none(py_on_consumer_died_);
+    release_to_none(py_on_hub_dead_);
     release_to_none(py_on_produce_);
     release_to_none(py_on_consume_);
     release_to_none(py_on_process_);

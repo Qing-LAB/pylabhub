@@ -12,6 +12,7 @@
 #include "utils/logger.hpp"
 #include "utils/zmq_context.hpp"
 #include "utils/zmq_poll_loop.hpp"
+#include "utils/zmq_socket_policy.hpp"
 
 #include "cppzmq/zmq.hpp"
 #include "cppzmq/zmq_addon.hpp"
@@ -98,6 +99,10 @@ struct BrokerRequestComm::Impl
     std::optional<zmq::socket_t> dealer;
     std::optional<zmq::socket_t> monitor_sock;
     std::string                  monitor_endpoint;
+    // Broker endpoint cached from Config for log lines (esp. the
+    // terminal-disconnect WARN — operators reading multi-hub roles
+    // need to know WHICH broker just died).  Set once at init.
+    std::string                  broker_endpoint;
 
     // Inproc PAIR for wake-up.
     std::optional<zmq::socket_t> signal_read;
@@ -136,6 +141,21 @@ struct BrokerRequestComm::Impl
     {
         if (!dealer)
             return;
+        // Audit S1 (2026-05-18) — layer 1 of the 4-layer time-bound
+        // model (HEP-0023 §2.5.3).  After ZMQ_EVENT_DISCONNECTED has
+        // flipped `connected` to false, skip the send immediately —
+        // with reconnect_ivl=-1 there's no future peer to deliver to,
+        // and libzmq's send would block waiting for a peer until
+        // sndtimeo (500ms) fires.  Skipping early saves the wait and
+        // makes the role-side caller's per-request timeout the
+        // canonical "did this work?" signal (layer 3).
+        if (!connected.load(std::memory_order_acquire))
+        {
+            LOGGER_WARN("BrokerRequestComm[{}]: send '{}' suppressed — "
+                        "connection terminally dead (policy)",
+                        broker_endpoint, msg_type);
+            return;
+        }
         const std::string body = payload.dump();
         std::vector<zmq::const_buffer> frames = {
             zmq::buffer(&kFrameTypeControl, 1),
@@ -270,7 +290,24 @@ struct BrokerRequestComm::Impl
                 (static_cast<uint16_t>(data[1]) << 8);
             if (event_id == ZMQ_EVENT_DISCONNECTED)
             {
-                LOGGER_WARN("BrokerRequestComm: hub-dead (ZMQ_EVENT_DISCONNECTED)");
+                // Audit S1 (2026-05-18) — pylabhub policy:
+                // disconnect is TERMINAL.  reconnect_ivl=-1 (set
+                // by apply_socket_policy at socket init) prevents
+                // auto-recovery; the role-side `on_hub_dead_cb`
+                // runs next and either stops the role (default)
+                // or fires the script's `on_hub_dead` override.
+                // See HEP-CORE-0023 §2.5.3 "Disconnection is
+                // terminal".
+                //
+                // Flip `connected = false` BEFORE firing the
+                // callback so any concurrent `send_message` calls
+                // observe the dead state and skip enqueueing
+                // doomed messages (layer 1 of the 4-layer model).
+                connected.store(false, std::memory_order_release);
+                LOGGER_WARN("BrokerRequestComm[{}]: ZMQ_EVENT_DISCONNECTED — "
+                            "connection TERMINAL (auto-reconnect disabled by "
+                            "policy); role-side on_hub_dead will fire next",
+                            broker_endpoint);
                 if (on_hub_dead_cb)
                     on_hub_dead_cb();
             }
@@ -392,9 +429,16 @@ bool BrokerRequestComm::connect(const Config &cfg)
     {
         auto &ctx = get_zmq_context();
 
-        // Create DEALER socket.
+        // Create DEALER socket + apply pylabhub's standard ZMQ socket
+        // policy (linger=0, sndtimeo=500ms, heartbeat 5s/30s,
+        // reconnect_ivl=-1).  Policy contract: HEP-CORE-0023 §2.5.3
+        // "Disconnection is terminal".  Implementation: helper in
+        // `utils/zmq_socket_policy.hpp`.  Subsystem-specific options
+        // (CURVE, ROUTING_ID, HWMs, etc.) are set below.
         pImpl->dealer.emplace(ctx, zmq::socket_type::dealer);
-        pImpl->dealer->set(zmq::sockopt::linger, 0);
+        ::pylabhub::utils::apply_socket_policy(
+            *pImpl->dealer,
+            ::pylabhub::utils::ZmqSocketRole::TcpConnect);
 
         // CurveZMQ.
         if (!cfg.broker_pubkey.empty())
@@ -423,11 +467,14 @@ bool BrokerRequestComm::connect(const Config &cfg)
             }
         }
 
-        // ZMTP heartbeats for hub-dead detection.
-        pImpl->dealer->set(zmq::sockopt::heartbeat_ivl, 5000);
-        pImpl->dealer->set(zmq::sockopt::heartbeat_timeout, 30000);
+        // (Heartbeat 5s/30s + reconnect-disable + sndtimeo=500ms +
+        // linger=0 are all applied above by `apply_socket_policy`,
+        // uniform across every pylabhub ZMQ subsystem.  Per HEP-0023
+        // §2.5.3 + IMPLEMENTATION_GUIDANCE.md
+        // §"Role-side ZMQ socket policy".)
 
         pImpl->dealer->connect(cfg.broker_endpoint);
+        pImpl->broker_endpoint = cfg.broker_endpoint;  // cache for log lines
 
         // Socket monitor for ZMQ_EVENT_DISCONNECTED.
         static std::atomic<int> s_monitor_id{0};
@@ -512,6 +559,20 @@ void BrokerRequestComm::disconnect()
 bool BrokerRequestComm::is_connected() const noexcept
 {
     return pImpl->connected.load(std::memory_order_acquire);
+}
+
+bool BrokerRequestComm::reconnect_disabled() const noexcept
+{
+    // Audit S1 (2026-05-18) — pylabhub policy: disconnect is
+    // terminal (HEP-CORE-0023 §2.5.3).  Read the live socket
+    // option (rather than echoing a stored config value) so the
+    // assertion is true END-TO-END including any libzmq quirks.
+    if (!pImpl || !pImpl->dealer) return false;
+    try {
+        return pImpl->dealer->get(zmq::sockopt::reconnect_ivl) == -1;
+    } catch (...) {
+        return false;
+    }
 }
 
 // ============================================================================
@@ -657,23 +718,25 @@ void BrokerRequestComm::stop() noexcept
 // ============================================================================
 
 void BrokerRequestComm::send_heartbeat(const std::string &channel,
-                                           const std::string &uid,
+                                           const std::string &role_uid,
                                            const std::string &role_type,
                                            const nlohmann::json &metrics)
 {
     // HEP-CORE-0019 §4.1 / HEP-CORE-0023 §2.5.2 / HEP-CORE-0033 §18
-    // (Phase 6 per-presence wire format).  The `uid` and `role_type`
-    // fields are required as of M0; the broker handler reads them
+    // (Phase 6 per-presence wire format).  The `role_uid` and
+    // `role_type` fields are required; the broker handler reads them
     // from the payload and resolves the matching `ProducerEntry` /
     // `ConsumerEntry` row in the channel's `producers[]` /
-    // `consumers[]` list per HEP-CORE-0023 §2.1.1 (multi-producer
-    // model — no channel-scope producer scalar exists post-MP2).
+    // `consumers[]` list per HEP-CORE-0023 §2.1.1.
+    // broker_proto 4→5 (audit R3.5b, 2026-05-19): the wire key was
+    // renamed `uid` → `role_uid` for cross-message consistency with
+    // REG_REQ / CONSUMER_REG_REQ / DEREG_REQ / ROLE_*_REQ.
     // `producer_pid` is retained from the Phase 1 wire format for
-    // backward audit / diagnostics; the broker uses it only for an
-    // ERROR log when missing or zero.
+    // diagnostics; the broker uses it only for an ERROR log when
+    // missing or zero.
     nlohmann::json payload;
     payload["channel_name"] = channel;
-    payload["uid"]          = uid;
+    payload["role_uid"]     = role_uid;
     payload["role_type"]    = role_type;
     payload["producer_pid"] = pylabhub::platform::get_pid();
     if (!metrics.empty())
@@ -684,19 +747,13 @@ void BrokerRequestComm::send_heartbeat(const std::string &channel,
 // M1.4 (2026-05-11): `BrokerRequestComm::send_metrics_report` deleted.
 // Metrics piggyback on `send_heartbeat(channel, uid, role_type, metrics)`
 // per HEP-CORE-0019 §2.3 Phase 6.
-
-void BrokerRequestComm::send_notify(const std::string &target,
-                                        const std::string &sender_uid,
-                                        const std::string &event,
-                                        const std::string &data)
-{
-    nlohmann::json payload;
-    payload["target_channel"] = target;
-    payload["sender_uid"] = sender_uid;
-    payload["event"] = event;
-    payload["data"] = data;
-    pImpl->cmd_queue.push(SendCmd{"CHANNEL_NOTIFY_REQ", std::move(payload)});
-}
+//
+// Audit O1 (2026-05-17): `BrokerRequestComm::send_notify` removed —
+// zero callers in src/ + tests/ + examples/ as of 2026-05-17.  The
+// matching broker-side handler `handle_channel_notify_req` is kept
+// because HEP-CORE-0022 federation peers may still emit
+// `CHANNEL_NOTIFY_REQ` on the wire (relay path).  See HEP-CORE-0030
+// §9.1 for the channel-bound-vs-band-bound coexistence rationale.
 
 void BrokerRequestComm::send_broadcast(const std::string &target,
                                             const std::string &sender_uid,
@@ -876,12 +933,18 @@ BrokerRequestComm::query_shm_info(const std::string &channel, int timeout_ms)
 // ============================================================================
 // Band pub/sub messaging (HEP-CORE-0030)
 // ============================================================================
+// Wire payload key is `band` per HEP-CORE-0030 §5.1.  The 2026-04-11
+// rename refactor (`8d3ee1e`) renamed C++ classes, file names, API
+// methods, and wire message types from "channel pub/sub" to "band" but
+// missed the payload key strings — the audit-B1 sweep (2026-05-17)
+// completes that rename on the wire.  Broker proto bumped 3→4 to
+// signal the break.
 
 std::optional<nlohmann::json>
-BrokerRequestComm::band_join(const std::string &channel, int timeout_ms)
+BrokerRequestComm::band_join(const std::string &band, int timeout_ms)
 {
     nlohmann::json payload;
-    payload["channel"] = channel;
+    payload["band"] = band;
     payload["role_uid"] = pImpl->role_uid;
     payload["role_name"] = pImpl->role_name;
     return pImpl->do_request("BAND_JOIN_REQ", "BAND_JOIN_ACK",
@@ -889,31 +952,36 @@ BrokerRequestComm::band_join(const std::string &channel, int timeout_ms)
 }
 
 std::optional<nlohmann::json>
-BrokerRequestComm::band_leave(const std::string &channel, int timeout_ms)
+BrokerRequestComm::band_leave(const std::string &band, int timeout_ms)
 {
     nlohmann::json payload;
-    payload["channel"] = channel;
+    payload["band"] = band;
     payload["role_uid"] = pImpl->role_uid;
     return pImpl->do_request("BAND_LEAVE_REQ", "BAND_LEAVE_ACK",
                              std::move(payload), timeout_ms);
 }
 
-void BrokerRequestComm::band_broadcast(const std::string &channel,
+void BrokerRequestComm::band_broadcast(const std::string &band,
                                            const nlohmann::json &body)
 {
+    // broker_proto 4→5 (audit R3.5b, 2026-05-19): sender wire key
+    // renamed `sender_uid` → `role_uid` — uniform with all other
+    // role-context gates.  Federation peer-context `sender_uid` (used
+    // for HUB_TARGETED_MSG / CHANNEL_BROADCAST_REQ from hubs) carries
+    // a peer.uid not a role.uid and keeps its name.
     nlohmann::json payload;
-    payload["channel"] = channel;
-    payload["sender_uid"] = pImpl->role_uid;
+    payload["band"] = band;
+    payload["role_uid"] = pImpl->role_uid;
     payload["body"] = body;
     pImpl->cmd_queue.push(SendCmd{"BAND_BROADCAST_REQ", std::move(payload)});
 }
 
 std::optional<nlohmann::json>
-BrokerRequestComm::band_members(const std::string &channel,
+BrokerRequestComm::band_members(const std::string &band,
                                     int timeout_ms)
 {
     nlohmann::json payload;
-    payload["channel"] = channel;
+    payload["band"] = band;
     return pImpl->do_request("BAND_MEMBERS_REQ", "BAND_MEMBERS_ACK",
                              std::move(payload), timeout_ms);
 }

@@ -44,12 +44,16 @@ struct ProducerRegInputs
     std::string zmq_node_endpoint;
 };
 
-/// Inputs to `build_consumer_reg_payload`.
+/// Inputs to `build_consumer_reg_payload`.  broker_proto 4→5 (audit
+/// R3.5b, 2026-05-19) — these were `consumer_uid` / `consumer_name`
+/// pre-rename; unified onto `role_uid` / `role_name` for consistency
+/// with `ProducerRegInputs`.  The role tag (`cons.` for pure
+/// consumers, `proc.` for processors) lives inside the uid value.
 struct ConsumerRegInputs
 {
     std::string channel;
-    std::string consumer_uid;
-    std::string consumer_name;
+    std::string role_uid;
+    std::string role_name;
 };
 
 /// Build the producer-side REG_REQ payload (channel/identity/transport
@@ -87,11 +91,15 @@ inline nlohmann::json build_producer_reg_payload(const ProducerRegInputs &in)
 /// no schema).
 inline nlohmann::json build_consumer_reg_payload(const ConsumerRegInputs &in)
 {
+    // broker_proto 4→5 (audit R3.5b, 2026-05-19): wire keys unified —
+    // CONSUMER_REG_REQ now sends `role_uid`/`role_name` instead of
+    // `consumer_uid`/`consumer_name`.  Role tag is embedded in the
+    // uid value (HEP-CORE-0033 §G2.2.0b).
     nlohmann::json reg;
-    reg["channel_name"]  = in.channel;
-    reg["consumer_uid"]  = in.consumer_uid;
-    reg["consumer_name"] = in.consumer_name;
-    reg["consumer_pid"]  = pylabhub::platform::get_pid();
+    reg["channel_name"] = in.channel;
+    reg["role_uid"]     = in.role_uid;
+    reg["role_name"]    = in.role_name;
+    reg["consumer_pid"] = pylabhub::platform::get_pid();
     return reg;
 }
 

@@ -446,6 +446,7 @@ public:
     void invoke_on_consumer_died(const std::string &,
                                   const std::string &,
                                   const std::string &) override {}
+    void invoke_on_hub_dead(const std::string &) override {}
     pylabhub::scripting::InvokeResult invoke_produce(
         pylabhub::scripting::InvokeTx,
         std::vector<pylabhub::scripting::IncomingMessage> &) override

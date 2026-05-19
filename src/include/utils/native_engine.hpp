@@ -68,6 +68,7 @@ class PYLABHUB_UTILS_EXPORT NativeEngine : public ScriptEngine
     void invoke_on_consumer_died(const std::string &channel,
                                   const std::string &consumer_uid,
                                   const std::string &reason) override;
+    void invoke_on_hub_dead(const std::string &source_hub_uid) override;
 
     InvokeResult invoke_produce(
         InvokeTx tx,
@@ -138,6 +139,7 @@ class PYLABHUB_UTILS_EXPORT NativeEngine : public ScriptEngine
     using FnVoid             = void (*)(const char *args_json);
     using FnOnChannelClosing = void (*)(const plh_channel_closing_args_t *);
     using FnOnConsumerDied   = void (*)(const plh_consumer_died_args_t *);
+    using FnOnHubDead        = void (*)(const plh_hub_dead_args_t *);
     using FnOnProduce        = bool (*)(const plh_tx_t *);
     using FnOnConsume        = bool (*)(const plh_rx_t *);
     using FnOnProcess        = bool (*)(const plh_rx_t *, const plh_tx_t *);
@@ -153,6 +155,7 @@ class PYLABHUB_UTILS_EXPORT NativeEngine : public ScriptEngine
     FnVoidNoArgs       fn_on_stop_{nullptr};
     FnOnChannelClosing fn_on_channel_closing_{nullptr};
     FnOnConsumerDied   fn_on_consumer_died_{nullptr};
+    FnOnHubDead        fn_on_hub_dead_{nullptr};
     FnOnProduce        fn_on_produce_{nullptr};
     FnOnConsume        fn_on_consume_{nullptr};
     FnOnProcess        fn_on_process_{nullptr};

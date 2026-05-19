@@ -1266,11 +1266,13 @@ void HubState::_on_heartbeat(const std::string                   &channel,
 
         // Route the presence-row FSM mutation through RoleEntry's
         // controlled-access API.  The method updates last_heartbeat +
-        // first_heartbeat_seen, transitions FSM to Connected if not
-        // already, and returns a rich HeartbeatEffect for the caller's
-        // counter decisions.  HubState retains ownership of:
+        // first_heartbeat_seen, transitions FSM to Connected (legacy
+        // counter name: "Ready" — see BrokerCounters docstring) if
+        // not already, and returns a rich HeartbeatEffect for the
+        // caller's counter decisions.  HubState retains ownership of:
         //   (a) the `pending_to_ready_total` counter bump (depends on
-        //       prev_state, which only the wrapper knows).
+        //       prev_state, which only the wrapper knows; "ready"
+        //       here is the legacy term for the Connected state).
         //   (b) the metrics write — still a direct presence-row
         //       mutation under the writer lock because the
         //       controlled-access API does not yet expose a

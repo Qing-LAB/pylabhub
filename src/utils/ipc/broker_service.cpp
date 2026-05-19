@@ -2,6 +2,7 @@
 #include "utils/format_tools.hpp"
 #include "utils/hub_state.hpp"
 #include "utils/hub_state_json.hpp"
+#include "utils/naming.hpp"   // is_valid_identifier (audit R3.5)
 #include "utils/net_address.hpp"
 
 #include "utils/channel_pattern.hpp"
@@ -129,7 +130,12 @@ constexpr std::array<std::string_view, 8> kFireAndForgetTypes = {
     // M1.4 (2026-05-11) — `METRICS_REPORT_REQ` retired.  Metrics now
     // piggyback on `HEARTBEAT_REQ` per HEP-CORE-0019 §2.3 Phase 6.
     "HEARTBEAT_REQ", "CHECKSUM_ERROR_REPORT",
-    "CHANNEL_NOTIFY_REQ", "CHANNEL_BROADCAST_REQ", "BAND_BROADCAST_REQ",
+    // Audit R3.6 (2026-05-17): CHANNEL_NOTIFY_REQ removed.  Role-side
+    // BRC::send_notify was deleted in O1; federation peer-relay uses
+    // HUB_RELAY_MSG (broker↔broker), not CHANNEL_NOTIFY_REQ.  No
+    // caller exists anywhere in src/.  Old clients sending
+    // CHANNEL_NOTIFY_REQ now receive UNKNOWN_MSG_TYPE.
+    "CHANNEL_BROADCAST_REQ", "BAND_BROADCAST_REQ",
     "HUB_PEER_BYE",
     // Inbound on outbound DEALER (peer→us); not request-reply but valid:
     "HUB_RELAY_MSG", "HUB_TARGETED_MSG",
@@ -372,8 +378,7 @@ public:
     void handle_checksum_error_report(zmq::socket_t&        socket,
                                       const nlohmann::json& req);
 
-    void handle_channel_notify_req(zmq::socket_t&        socket,
-                                   const nlohmann::json& req);
+    // CHANNEL_NOTIFY_REQ handler removed — audit R3.6 (2026-05-17).
 
     void handle_channel_broadcast_req(zmq::socket_t&        socket,
                                       const nlohmann::json& req);
@@ -454,6 +459,51 @@ public:
                         const std::string& role_uid,
                         const std::string& corr_id,
                         bool               is_consumer) const;
+
+    // ── Audit R3.5b (2026-05-19) — wire-boundary grammar + side-aware tag ───
+    /// Validate identifier-field grammar at the gate per HEP-CORE-0033
+    /// §G2.2.0b + enforce per-handler role-tag policy.
+    ///
+    /// Pre-fix, `check_role_identity` only enforced emptiness under
+    /// policy ≥ Required; the default Open policy admitted empty /
+    /// malformed uids that broke downstream presence indexing silently
+    /// (e.g. _on_heartbeat / _on_consumer_joined skip when uid empty).
+    /// Grammar is now REQUIRED unconditionally — RoleIdentityPolicy
+    /// controls known_roles verification ON TOP of valid grammar, not
+    /// in place of.
+    ///
+    /// `expected_tags` constrains the role tag carried inside the uid
+    /// (e.g. {"prod","proc"} on REG_REQ rejects a `cons.x.y` uid).
+    /// Processor roles register on both sides under one `proc.*` uid,
+    /// so the producer-side handlers accept {"prod","proc"} and the
+    /// consumer-side accept {"cons","proc"}.  Side-agnostic handlers
+    /// (ROLE_INFO, BAND_*) pass {"prod","cons","proc"}.
+    ///
+    /// Validates channel_name (Channel kind), role_uid (RoleUid kind,
+    /// empty rejected, tag must be in expected_tags), role_name
+    /// (RoleName kind, only when non-empty — Open policy still permits
+    /// anonymous registration).  Returns INVALID_REQUEST on grammar
+    /// failure or INVALID_ROLE_TAG on tag-set mismatch, with
+    /// LOGGER_ERROR + handler_label context.
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+    [[nodiscard]] std::optional<nlohmann::json>
+    validate_identity_fields(const std::string& channel_name,
+                             const std::string& role_uid,
+                             const std::string& role_name,
+                             std::initializer_list<std::string_view> expected_tags,
+                             const std::string& corr_id,
+                             const char*        handler_label) const;
+
+    /// Narrower form for handlers that don't carry a channel context
+    /// (ROLE_INFO_REQ, ROLE_PRESENCE_REQ, BAND_*_REQ — band already
+    /// validates the band identifier).  Returns INVALID_REQUEST on
+    /// empty/malformed role_uid or INVALID_ROLE_TAG when the tag is
+    /// not in `expected_tags`.
+    [[nodiscard]] std::optional<nlohmann::json>
+    validate_role_uid_only(const std::string& role_uid,
+                           std::initializer_list<std::string_view> expected_tags,
+                           const std::string& corr_id,
+                           const char*        handler_label) const;
 };
 
 // ============================================================================
@@ -911,11 +961,11 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
             (resp.value("status", "") == "success") ? "SCHEMA_ACK" : "ERROR";
         send_reply(socket, identity, ack, resp);
     }
-    else if (msg_type == "CHANNEL_NOTIFY_REQ")
-    {
-        // Fire-and-forget: relay event to target channel's producer.
-        handle_channel_notify_req(socket, payload);
-    }
+    // CHANNEL_NOTIFY_REQ dispatch removed (audit R3.6, 2026-05-17) —
+    // the wire path is dead end-to-end: O1 deleted role-side
+    // BRC::send_notify (no caller), and federation peer-relay uses
+    // HUB_RELAY_MSG (broker↔broker), not CHANNEL_NOTIFY_REQ.  Old
+    // clients receive UNKNOWN_MSG_TYPE via the dispatch fall-through.
     else if (msg_type == "CHANNEL_BROADCAST_REQ")
     {
         // Fire-and-forget: fan out broadcast to ALL members of a channel.
@@ -996,7 +1046,12 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
     else if (msg_type == "BAND_MEMBERS_REQ")
     {
         auto resp = handle_band_members_req(payload);
-        send_reply(socket, identity, "BAND_MEMBERS_ACK", resp);
+        // Audit R3.5: BAND_MEMBERS_REQ now can return INVALID_BAND_NAME.
+        // Match the BAND_JOIN/LEAVE dispatch shape — send ERROR when the
+        // handler emits a non-success status (validation rejection).
+        const std::string ack =
+            (resp.value("status", "") == "error") ? "ERROR" : "BAND_MEMBERS_ACK";
+        send_reply(socket, identity, ack, resp);
     }
     // No final `else` branch: unknown msg_types are short-circuited at the
     // top of process_message (R1).  If we reach here, msg_type was on the
@@ -1093,17 +1148,29 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
 {
     const std::string corr_id = req.value("correlation_id", "");
     const std::string channel_name = req.value("channel_name", "");
-    if (channel_name.empty())
+    const std::string role_name    = req.value("role_name", "");
+    const std::string role_uid     = req.value("role_uid", "");
+
+    // Audit R3.5b (2026-05-19): wire-boundary grammar + side-aware tag
+    // check.  Empty or malformed channel_name / role_uid are rejected
+    // unconditionally before any state-machine entry — downstream
+    // presence indexing (_on_producer_added, _on_heartbeat) is keyed on
+    // these and would silently no-op an empty uid.  Tag policy on
+    // REG_REQ accepts {prod, proc} — `proc.*` registers on the
+    // producer side for its output channel.  Runs before
+    // check_role_identity so policy verification never sees a
+    // malformed input.
+    if (auto err = validate_identity_fields(channel_name, role_uid, role_name,
+                                            {"prod", "proc"},
+                                            corr_id, "REG_REQ"))
     {
-        return make_error(corr_id, "INVALID_REQUEST", "Missing or empty 'channel_name'");
+        return *err;
     }
 
     const std::string attempted_schema = req.value("schema_hash", "");
     const uint64_t    attempted_pid    = req.value("producer_pid", uint64_t{0});
 
     // ── Role identity policy check (placeholder — pending HEP-CORE-0035) ────
-    const std::string role_name = req.value("role_name", "");
-    const std::string role_uid  = req.value("role_uid", "");
     if (auto err = check_role_identity(channel_name, role_name, role_uid, corr_id,
                                        /*is_consumer=*/false))
     {
@@ -1745,20 +1812,19 @@ nlohmann::json BrokerServiceImpl::handle_dereg_req(const nlohmann::json& req,
     const uint64_t    producer_pid = req.value("producer_pid", uint64_t{0});
     const std::string wire_role_uid = req.value("role_uid", "");
 
-    // broker_proto 2→3 (audit C3, 2026-05-15): `role_uid` REQUIRED.
-    // Multi-producer channels (HEP-CORE-0023 §2.1.1) admit multiple
-    // producers on the same channel; resolving by pid alone is racy
-    // under OS pid reuse across role restarts.  The (pid, role_uid)
-    // tuple disambiguates.
-    if (wire_role_uid.empty())
+    // broker_proto 2→3 (audit C3, 2026-05-15): `role_uid` REQUIRED for
+    // multi-producer DEREG target resolution.
+    // Audit R3.5b (2026-05-19): grammar + side-aware tag check
+    // (HEP-CORE-0033 §G2.2.0b).  Tag {prod, proc} — producer-side
+    // deregistration only.  Pre-fix, a malformed uid would fall
+    // through to the NOT_REGISTERED branch — typed grammar error is
+    // more diagnostic.
+    if (auto err = validate_identity_fields(channel_name, wire_role_uid,
+                                            /*role_name=*/"",
+                                            {"prod", "proc"},
+                                            corr_id, "DEREG_REQ"))
     {
-        LOGGER_WARN("Broker: DEREG_REQ rejected for channel '{}' — "
-                    "missing required 'role_uid' field (pid={})",
-                    channel_name, producer_pid);
-        return make_error(corr_id, "INVALID_REQUEST",
-                          "Missing or empty 'role_uid' — required for "
-                          "multi-producer DEREG target resolution "
-                          "(HEP-CORE-0023 §2.1.1)");
+        return *err;
     }
 
     // Resolve via (pid, role_uid) tuple — both must match the same
@@ -1854,11 +1920,28 @@ nlohmann::json BrokerServiceImpl::handle_dereg_req(const nlohmann::json& req,
 nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& req,
                                                            const zmq::message_t& identity)
 {
-    const std::string corr_id = req.value("correlation_id", "");
+    const std::string corr_id      = req.value("correlation_id", "");
     const std::string channel_name = req.value("channel_name", "");
-    if (channel_name.empty())
+    // broker_proto 4→5 (audit R3.5b, 2026-05-19): wire fields unified
+    // across all gates onto `role_uid`/`role_name` (HEP-CORE-0033
+    // §G2.2.0b — role tag is embedded in the uid; consumer-specific
+    // names are redundant).  Old `consumer_uid`/`consumer_name` removed.
+    const std::string role_name    = req.value("role_name", "");
+    const std::string role_uid     = req.value("role_uid",  "");
+
+    // Audit R3.5b (2026-05-19): wire-boundary grammar + side-aware tag
+    // check before any state-machine entry.  Pre-fix, empty uid sailed
+    // through check_role_identity under default Open policy, was stored
+    // on ConsumerEntry, then `_on_consumer_joined` silently skipped
+    // `upsert_role_locked` (gated on `!role_uid.empty()`) — no
+    // role-presence row was created, so subsequent heartbeats / inbox
+    // discovery silently no-op'd.  Tag policy {cons, proc} — `proc.*`
+    // registers on the consumer side for its input channel.
+    if (auto err = validate_identity_fields(channel_name, role_uid, role_name,
+                                            {"cons", "proc"},
+                                            corr_id, "CONSUMER_REG_REQ"))
     {
-        return make_error(corr_id, "INVALID_REQUEST", "Missing or empty 'channel_name'");
+        return *err;
     }
 
     const auto channel_entry = hub_state_->channel(channel_name);
@@ -2022,8 +2105,8 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     // else: all expected_* empty → no validation (legacy consumer; backward compat).
 
     // ── Role identity policy check (placeholder — pending HEP-CORE-0035) ────
-    const std::string role_name = req.value("consumer_name", "");
-    const std::string role_uid  = req.value("consumer_uid", "");
+    // Grammar check already ran at handler entry (audit R3.5b); this
+    // is the policy / known_roles verification layer on top.
     if (auto err = check_role_identity(channel_name, role_name, role_uid, corr_id,
                                        /*is_consumer=*/true))
     {
@@ -2070,19 +2153,16 @@ nlohmann::json BrokerServiceImpl::handle_consumer_dereg_req(zmq::socket_t& socke
     const uint64_t    consumer_pid  = req.value("consumer_pid", uint64_t{0});
     const std::string wire_role_uid = req.value("role_uid", "");
 
-    // broker_proto 2→3 (audit C3, 2026-05-15): `role_uid` REQUIRED.
-    // Same rationale as DEREG_REQ: multi-consumer channels admit
-    // multiple consumers; pid-alone resolution is racy under OS pid
-    // reuse across consumer restarts.
-    if (wire_role_uid.empty())
+    // broker_proto 2→3 (audit C3, 2026-05-15): `role_uid` REQUIRED for
+    // multi-consumer DEREG target resolution.
+    // Audit R3.5b (2026-05-19): grammar + side-aware tag check
+    // (HEP-CORE-0033 §G2.2.0b).  Tag {cons, proc} — consumer-side.
+    if (auto err = validate_identity_fields(channel_name, wire_role_uid,
+                                            /*role_name=*/"",
+                                            {"cons", "proc"},
+                                            corr_id, "CONSUMER_DEREG_REQ"))
     {
-        LOGGER_WARN("Broker: CONSUMER_DEREG_REQ rejected for channel '{}' — "
-                    "missing required 'role_uid' field (pid={})",
-                    channel_name, consumer_pid);
-        return make_error(corr_id, "INVALID_REQUEST",
-                          "Missing or empty 'role_uid' — required for "
-                          "multi-consumer CONSUMER_DEREG target resolution "
-                          "(HEP-CORE-0023 §2.1.1)");
+        return *err;
     }
 
     // Fetch consumer entry BEFORE removal so the cleanup hook can read role_uid.
@@ -2138,9 +2218,16 @@ nlohmann::json BrokerServiceImpl::handle_consumer_dereg_req(zmq::socket_t& socke
 void BrokerServiceImpl::handle_heartbeat_req(const nlohmann::json& req)
 {
     const std::string channel_name = req.value("channel_name", "");
-    if (channel_name.empty())
+    // Audit R3.5b (2026-05-19): channel_name grammar check at the gate
+    // (HEP-CORE-0033 §G2.2.0b).  HEARTBEAT_REQ is fire-and-forget so
+    // we log + drop on failure (no reply path) — matches the existing
+    // pattern for missing uid/role_type further below.
+    if (!pylabhub::hub::is_valid_identifier(
+            channel_name, pylabhub::hub::IdentifierKind::Channel))
     {
-        LOGGER_WARN("Broker: HEARTBEAT_REQ missing channel_name");
+        LOGGER_WARN("Broker: HEARTBEAT_REQ dropped — invalid "
+                    "channel_name '{}' (HEP-CORE-0033 §G2.2.0b)",
+                    channel_name);
         return;
     }
     // Peek existence + producer-presence state before applying the
@@ -2177,25 +2264,56 @@ void BrokerServiceImpl::handle_heartbeat_req(const nlohmann::json& req)
         }
     }
     // Wire-format enforcement — HEP-CORE-0019 §4.1 (Phase 6).  The
-    // role-side `BrokerRequestComm::send_heartbeat(channel, uid,
-    // role_type, metrics)` MUST populate `uid` + `role_type` on the
-    // wire; broker_proto 2→3 (audit C4, 2026-05-15) removed the
+    // role-side `BrokerRequestComm::send_heartbeat(channel, role_uid,
+    // role_type, metrics)` MUST populate `role_uid` + `role_type` on
+    // the wire; broker_proto 2→3 (audit C4, 2026-05-15) removed the
     // pre-Phase-6 fallback that derived uid from the channel's first
-    // producer.  Missing or empty fields → silent drop with WARN log
-    // (HEARTBEAT_REQ is fire-and-forget so there is no reply path for
-    // INVALID_REQUEST).
-    const std::string wire_uid       = req.value("uid",       std::string{});
+    // producer.  broker_proto 4→5 (audit R3.5b, 2026-05-19) renamed
+    // the wire key `uid` → `role_uid` for cross-message consistency.
+    // Missing/empty fields → silent drop with WARN log (HEARTBEAT_REQ
+    // is fire-and-forget so there is no reply path for INVALID_REQUEST).
+    const std::string wire_uid       = req.value("role_uid",  std::string{});
     const std::string wire_role_type = req.value("role_type", std::string{});
-    LOGGER_DEBUG("Broker: HEARTBEAT_REQ channel='{}' uid='{}' role_type='{}'",
+    LOGGER_DEBUG("Broker: HEARTBEAT_REQ channel='{}' role_uid='{}' role_type='{}'",
                  channel_name, wire_uid, wire_role_type);
 
     if (wire_uid.empty() || wire_role_type.empty())
     {
         LOGGER_WARN("Broker: HEARTBEAT_REQ for '{}' rejected — missing "
-                    "'uid' or 'role_type' (HEP-CORE-0019 §4.1 Phase 6 "
-                    "wire format; broker_proto >=3)",
+                    "'role_uid' or 'role_type' (HEP-CORE-0019 §4.1 "
+                    "Phase 6 wire format; broker_proto >=5)",
                     channel_name);
         return;
+    }
+    // Audit R3.5b (2026-05-19): role_uid grammar + side-aware tag
+    // check (HEP-CORE-0033 §G2.2.0b).  Tag must match role_type:
+    // producer → {prod, proc}; consumer → {cons, proc}.  Drop with
+    // WARN log (fire-and-forget; no reply path).
+    if (!pylabhub::hub::is_valid_identifier(
+            wire_uid, pylabhub::hub::IdentifierKind::RoleUid))
+    {
+        LOGGER_WARN("Broker: HEARTBEAT_REQ for '{}' dropped — invalid "
+                    "role_uid '{}' (HEP-CORE-0033 §G2.2.0b)",
+                    channel_name, wire_uid);
+        return;
+    }
+    {
+        const auto tag_opt = pylabhub::hub::extract_role_tag(wire_uid);
+        const std::string_view tag = tag_opt.value_or(std::string_view{"?"});
+        bool tag_ok = false;
+        if (wire_role_type == "producer")
+            tag_ok = (tag == "prod" || tag == "proc");
+        else if (wire_role_type == "consumer")
+            tag_ok = (tag == "cons" || tag == "proc");
+        if (!tag_ok)
+        {
+            LOGGER_WARN("Broker: HEARTBEAT_REQ for '{}' dropped — "
+                        "role_uid tag '{}' does not match role_type "
+                        "'{}' (producer expects prod/proc; consumer "
+                        "expects cons/proc — HEP-CORE-0033 §G2.2.0b)",
+                        channel_name, tag, wire_role_type);
+            return;
+        }
     }
 
     // Producer-presence-sub-Live diagnostic: gate on `role_type ==
@@ -2608,6 +2726,139 @@ BrokerServiceImpl::check_role_identity(const std::string& channel_name,
 }
 
 // ============================================================================
+// Audit R3.5b (2026-05-19) — wire-boundary grammar + side-aware tag check
+// ============================================================================
+
+namespace
+{
+
+/// Build a comma-separated list of allowed tags for error/log messages.
+std::string format_expected_tags(std::initializer_list<std::string_view> tags)
+{
+    std::string out;
+    bool first = true;
+    for (auto t : tags)
+    {
+        if (!first) out += ',';
+        out += t;
+        first = false;
+    }
+    return out;
+}
+
+/// Returns true iff the uid's role tag is in `expected_tags`.  Requires
+/// the uid already grammar-valid (caller checks `is_valid_identifier`
+/// with `RoleUid` first; `extract_role_tag` is defined as nullopt on
+/// invalid input).
+bool role_tag_matches(const std::string& role_uid,
+                      std::initializer_list<std::string_view> expected_tags)
+{
+    const auto tag_opt = pylabhub::hub::extract_role_tag(role_uid);
+    if (!tag_opt.has_value()) return false;
+    for (auto t : expected_tags)
+    {
+        if (*tag_opt == t) return true;
+    }
+    return false;
+}
+
+} // anonymous namespace
+
+std::optional<nlohmann::json>
+BrokerServiceImpl::validate_identity_fields(const std::string& channel_name,
+                                            const std::string& role_uid,
+                                            const std::string& role_name,
+                                            std::initializer_list<std::string_view> expected_tags,
+                                            const std::string& corr_id,
+                                            const char*        handler_label) const
+{
+    using pylabhub::hub::is_valid_identifier;
+    using pylabhub::hub::IdentifierKind;
+
+    if (!is_valid_identifier(channel_name, IdentifierKind::Channel))
+    {
+        LOGGER_WARN("Broker: {} rejected — invalid channel_name '{}' "
+                     "(HEP-CORE-0033 §G2.2.0b — empty or grammar violation)",
+                     handler_label, channel_name);
+        return make_error(corr_id, "INVALID_REQUEST",
+                          "channel_name '" + channel_name +
+                              "' failed grammar validation "
+                              "(HEP-CORE-0033 §G2.2.0b)");
+    }
+    if (!is_valid_identifier(role_uid, IdentifierKind::RoleUid))
+    {
+        LOGGER_WARN("Broker: {} rejected on channel '{}' — invalid "
+                     "role_uid '{}' (HEP-CORE-0033 §G2.2.0b — must be "
+                     "(prod|cons|proc).<name>.<unique>, non-empty)",
+                     handler_label, channel_name, role_uid);
+        return make_error(corr_id, "INVALID_REQUEST",
+                          "role_uid '" + role_uid +
+                              "' failed grammar validation "
+                              "(HEP-CORE-0033 §G2.2.0b)");
+    }
+    if (!role_tag_matches(role_uid, expected_tags))
+    {
+        const auto tag_opt = pylabhub::hub::extract_role_tag(role_uid);
+        const auto tag = tag_opt.has_value() ? std::string{*tag_opt} : std::string{"?"};
+        const auto allowed = format_expected_tags(expected_tags);
+        LOGGER_WARN("Broker: {} rejected on channel '{}' — role_uid '{}' "
+                     "has tag '{}' but handler expects {{{}}} "
+                     "(HEP-CORE-0033 §G2.2.0b — processor roles use "
+                     "'proc.' on both sides)",
+                     handler_label, channel_name, role_uid, tag, allowed);
+        return make_error(corr_id, "INVALID_ROLE_TAG",
+                          "role_uid tag '" + tag + "' not allowed on this "
+                          "wire message (expected one of: " + allowed + ")");
+    }
+    if (!role_name.empty() &&
+        !is_valid_identifier(role_name, IdentifierKind::RoleName))
+    {
+        LOGGER_WARN("Broker: {} rejected on channel '{}' uid='{}' — "
+                     "invalid role_name '{}' (HEP-CORE-0033 §G2.2.0b)",
+                     handler_label, channel_name, role_uid, role_name);
+        return make_error(corr_id, "INVALID_REQUEST",
+                          "role_name '" + role_name +
+                              "' failed grammar validation "
+                              "(HEP-CORE-0033 §G2.2.0b)");
+    }
+    return std::nullopt;
+}
+
+std::optional<nlohmann::json>
+BrokerServiceImpl::validate_role_uid_only(const std::string& role_uid,
+                                          std::initializer_list<std::string_view> expected_tags,
+                                          const std::string& corr_id,
+                                          const char*        handler_label) const
+{
+    if (!pylabhub::hub::is_valid_identifier(
+            role_uid, pylabhub::hub::IdentifierKind::RoleUid))
+    {
+        LOGGER_WARN("Broker: {} rejected — invalid role_uid '{}' "
+                     "(HEP-CORE-0033 §G2.2.0b — must be "
+                     "(prod|cons|proc).<name>.<unique>, non-empty)",
+                     handler_label, role_uid);
+        return make_error(corr_id, "INVALID_REQUEST",
+                          "role_uid '" + role_uid +
+                              "' failed grammar validation "
+                              "(HEP-CORE-0033 §G2.2.0b)");
+    }
+    if (!role_tag_matches(role_uid, expected_tags))
+    {
+        const auto tag_opt = pylabhub::hub::extract_role_tag(role_uid);
+        const auto tag = tag_opt.has_value() ? std::string{*tag_opt} : std::string{"?"};
+        const auto allowed = format_expected_tags(expected_tags);
+        LOGGER_WARN("Broker: {} rejected — role_uid '{}' has tag '{}' "
+                     "but handler expects {{{}}} "
+                     "(HEP-CORE-0033 §G2.2.0b)",
+                     handler_label, role_uid, tag, allowed);
+        return make_error(corr_id, "INVALID_ROLE_TAG",
+                          "role_uid tag '" + tag + "' not allowed on this "
+                          "wire message (expected one of: " + allowed + ")");
+    }
+    return std::nullopt;
+}
+
+// ============================================================================
 // Heartbeat negotiation block (HEP-CORE-0023 §2.5)
 // ============================================================================
 
@@ -2790,9 +3041,13 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
             // reason="process_dead").  Producers consume the
             // notification per HEP-CORE-0023 §2.1.1 to drop their
             // per-consumer bookkeeping.
+            // broker_proto 4→5 (audit R3.5b, 2026-05-19): notify body
+            // uses `role_uid` (the consumer's role.uid; tag `cons.` or
+            // `proc.` is embedded in the value) — replaces the legacy
+            // `consumer_uid` field for cross-message uniformity.
             nlohmann::json notify;
             notify["channel_name"]      = channel_name;
-            notify["consumer_uid"]      = pre_drop_consumer.role_uid;
+            notify["role_uid"]          = pre_drop_consumer.role_uid;
             notify["consumer_pid"]      = pre_drop_consumer.consumer_pid;
             notify["consumer_hostname"] = pre_drop_consumer.consumer_hostname;
             notify["reason"]            = "heartbeat_timeout";
@@ -2802,7 +3057,7 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
                 send_to_identity(socket, prod.zmq_identity, "CONSUMER_DIED_NOTIFY",
                                  notify);
                 LOGGER_INFO("Broker: CONSUMER_DIED_NOTIFY to producer of '{}': "
-                            "consumer_uid={} reason=heartbeat_timeout target_role={}",
+                            "role_uid={} reason=heartbeat_timeout target_role={}",
                             channel_name, cons.role_uid, prod.role_uid);
             }
             // Federation / observer fan-out (mirrors the PID-death path).
@@ -2843,9 +3098,11 @@ void BrokerServiceImpl::check_dead_consumers(zmq::socket_t& socket)
             LOGGER_WARN(
                 "Broker: Cat2 dead consumer pid={} host='{}' on channel '{}' — removing",
                 dead_consumer.consumer_pid, dead_consumer.consumer_hostname, channel_name);
+            // broker_proto 4→5 (audit R3.5b, 2026-05-19): `consumer_uid`
+            // → `role_uid` for cross-message uniformity.
             nlohmann::json notify;
             notify["channel_name"]      = channel_name;
-            notify["consumer_uid"]      = dead_consumer.role_uid;
+            notify["role_uid"]          = dead_consumer.role_uid;
             notify["consumer_pid"]      = dead_consumer.consumer_pid;
             notify["consumer_hostname"] = dead_consumer.consumer_hostname;
             notify["reason"]            = "process_dead";
@@ -2975,7 +3232,7 @@ void BrokerServiceImpl::send_band_leave_notify(zmq::socket_t&    socket,
     auto remaining = hub_state_->band(band_name);
     if (!remaining.has_value()) return;  // auto-deleted; no NOTIFY targets
     nlohmann::json notify;
-    notify["channel"]  = band_name;
+    notify["band"]     = band_name;     // HEP-CORE-0030 §5.1 wire key
     notify["role_uid"] = role_uid;
     notify["reason"]   = reason;
     for (const auto& m : remaining->members)
@@ -3025,56 +3282,19 @@ void BrokerServiceImpl::handle_checksum_error_report(zmq::socket_t&        socke
 }
 
 // ============================================================================
-// CHANNEL_NOTIFY_REQ — relay event to target channel's producer
+// CHANNEL_NOTIFY_REQ handler removed — audit R3.6 (2026-05-17)
 // ============================================================================
-
-void BrokerServiceImpl::handle_channel_notify_req(zmq::socket_t&        socket,
-                                                   const nlohmann::json& req)
-{
-    const auto target_channel = req.value("target_channel", std::string{});
-    const auto sender_uid     = req.value("sender_uid",     std::string{});
-    const auto event          = req.value("event",          std::string{});
-
-    if (target_channel.empty() || event.empty())
-    {
-        LOGGER_WARN("Broker: CHANNEL_NOTIFY_REQ with empty target_channel or event");
-        return;
-    }
-
-    auto entry = hub_state_->channel(target_channel);
-    if (!entry || entry->producers.empty())
-    {
-        LOGGER_DEBUG("Broker: CHANNEL_NOTIFY_REQ for '{}' — channel not found or no producer",
-                     target_channel);
-        return;
-    }
-
-    // Forward as CHANNEL_EVENT_NOTIFY to every producer (HEP-CORE-0023
-    // §2.1.1 multi-producer fan-out).
-    // [BR3] Include originator_uid="" (empty = local origin) so the script can detect
-    // whether an event was originated locally or relayed from a federation peer, allowing
-    // it to avoid re-notifying in response to a relayed event (application-layer loop guard).
-    nlohmann::json fwd;
-    fwd["channel_name"]   = target_channel;
-    fwd["event"]          = event;
-    fwd["sender_uid"]     = sender_uid;
-    fwd["originator_uid"] = "";   // Empty = originated on this hub
-    if (req.contains("data") && req["data"].is_string())
-        fwd["data"] = req["data"];
-
-    for (const auto &prod : entry->producers)
-    {
-        if (prod.zmq_identity.empty()) continue;
-        send_to_identity(socket, prod.zmq_identity, "CHANNEL_EVENT_NOTIFY", fwd);
-    }
-    LOGGER_DEBUG("Broker: relayed CHANNEL_NOTIFY_REQ to {} producer(s) of '{}' event='{}'",
-                 entry->producers.size(), target_channel, event);
-
-    // HEP-CORE-0022: relay to federation peers subscribed to this channel.
-    const std::string data_str = req.contains("data") && req["data"].is_string()
-                                     ? req["data"].get<std::string>() : std::string{};
-    relay_notify_to_peers(socket, target_channel, event, sender_uid, data_str);
-}
+//
+// `handle_channel_notify_req` deleted along with the dispatch entry,
+// the `is_known_msg_type` list entry, and the declaration above.
+// Pre-2026-05-17 this handler stayed because we believed
+// HEP-CORE-0022 federation peers emitted CHANNEL_NOTIFY_REQ on
+// peer-relay paths.  Investigation found federation actually uses
+// `HUB_RELAY_MSG` (broker↔broker, `handle_hub_relay_msg` —
+// broker_service.cpp:4073), NOT CHANNEL_NOTIFY_REQ.  The role-side
+// `BRC::send_notify` (the only emitter of CHANNEL_NOTIFY_REQ) was
+// already deleted in O1.  Net: handler was 100% dead.  Old clients
+// sending CHANNEL_NOTIFY_REQ now receive UNKNOWN_MSG_TYPE.
 
 // ============================================================================
 // CHANNEL_BROADCAST_REQ — fan out message to ALL members of a channel
@@ -3216,6 +3436,16 @@ nlohmann::json BrokerServiceImpl::handle_role_presence_req(const nlohmann::json&
         // message, correlation_id}` shape.
         return make_error(corr_id, "MISSING_ROLE_UID", "missing role_uid");
     }
+    // Audit R3.5b (2026-05-19): grammar check (HEP-CORE-0033 §G2.2.0b).
+    // Side-agnostic — any role kind may be queried.  Pre-fix, a
+    // malformed role_uid would scan-miss and return `present:false`,
+    // making "absent" indistinguishable from "malformed query".
+    if (auto err = validate_role_uid_only(uid,
+                                          {"prod", "cons", "proc"},
+                                          corr_id, "ROLE_PRESENCE_REQ"))
+    {
+        return *err;
+    }
 
     // Scan all channels: check every producer + each consumer
     // (HEP-CORE-0023 §2.1.1 multi-producer aware).
@@ -3273,6 +3503,14 @@ nlohmann::json BrokerServiceImpl::handle_role_info_req(const nlohmann::json& req
         // an ad-hoc `{"found": false, "error": "..."}` shape that
         // diverged from the broker-wide error envelope.
         return make_error(corr_id, "MISSING_ROLE_UID", "missing role_uid");
+    }
+    // Audit R3.5b (2026-05-19): grammar check (HEP-CORE-0033 §G2.2.0b).
+    // Mirrors ROLE_PRESENCE_REQ — side-agnostic.
+    if (auto err = validate_role_uid_only(uid,
+                                          {"prod", "cons", "proc"},
+                                          corr_id, "ROLE_INFO_REQ"))
+    {
+        return *err;
     }
 
     // Search for a channel where `uid` is a registered producer
@@ -4209,13 +4447,61 @@ nlohmann::json BrokerServiceImpl::handle_band_join_req(
     const zmq::message_t& identity,
     zmq::socket_t& socket)
 {
-    const std::string channel   = req.value("channel", "");
+    // Wire payload key is `band` per HEP-CORE-0030 §5.1.  The C++
+    // variable holds the band identifier (`!`-prefixed per §3); name
+    // it `band` to match the wire and the HEP — completes the
+    // 2026-04-11 rename refactor (`8d3ee1e`) for the wire layer.
+    const std::string band      = req.value("band", "");
     const std::string role_uid  = req.value("role_uid", "");
     const std::string role_name = req.value("role_name", "");
 
-    if (channel.empty() || role_uid.empty())
+    if (band.empty() || role_uid.empty())
     {
-        return make_error("", "INVALID_REQUEST", "Missing channel or role_uid");
+        return make_error("", "INVALID_REQUEST", "Missing band or role_uid");
+    }
+
+    // Audit R3.5 (2026-05-17): validate the band identifier
+    // explicitly at the handler boundary BEFORE invoking
+    // `hub_state_->_on_band_joined`.  Pre-fix, an invalid identifier
+    // (e.g., no `!` prefix per HEP-CORE-0030 §3) was silently
+    // swallowed by `_on_band_joined`'s validator + counter-bump
+    // pattern — but the handler ignored the validation outcome and
+    // still returned `status: success` to the role, creating a
+    // phantom "joined" state on the role side with no broker-side
+    // membership.  Fix returns a typed error so the role can act.
+    if (!pylabhub::hub::is_valid_identifier(band, pylabhub::hub::IdentifierKind::Band))
+    {
+        LOGGER_WARN("Broker: BAND_JOIN_REQ rejected — invalid band "
+                    "identifier '{}' (HEP-CORE-0030 §3 — must be "
+                    "`!`-prefixed dotted identifier)", band);
+        return make_error("", "INVALID_BAND_NAME",
+                          "Band identifier failed validation "
+                          "(HEP-CORE-0030 §3 grammar)");
+    }
+    // Audit R3.5b (2026-05-19): role_uid grammar + tag check — any
+    // role may join a band, so accept {prod, cons, proc}.  Pre-fix, a
+    // malformed value (e.g. empty) would survive into `BandMember.
+    // role_uid` and fail downstream BAND_LEAVE matches + BAND_LEAVE_
+    // NOTIFY fan-out.
+    if (auto err = validate_role_uid_only(role_uid,
+                                          {"prod", "cons", "proc"},
+                                          /*corr_id=*/"",
+                                          "BAND_JOIN_REQ"))
+    {
+        return *err;
+    }
+    if (!role_name.empty() &&
+        !pylabhub::hub::is_valid_identifier(
+            role_name, pylabhub::hub::IdentifierKind::RoleName))
+    {
+        LOGGER_WARN("Broker: BAND_JOIN_REQ rejected on band '{}' "
+                     "uid='{}' — invalid role_name '{}' "
+                     "(HEP-CORE-0033 §G2.2.0b)",
+                     band, role_uid, role_name);
+        return make_error("", "INVALID_REQUEST",
+                          "role_name '" + role_name +
+                              "' failed grammar validation "
+                              "(HEP-CORE-0033 §G2.2.0b)");
     }
 
     const std::string id_str(
@@ -4225,10 +4511,10 @@ nlohmann::json BrokerServiceImpl::handle_band_join_req(
     // snapshot so the strict identifier validation has the final say on
     // which bands/members exist.
     nlohmann::json notify;
-    notify["channel"]   = channel;
+    notify["band"]      = band;
     notify["role_uid"]  = role_uid;
     notify["role_name"] = role_name;
-    if (auto pre_band = hub_state_->band(channel); pre_band.has_value())
+    if (auto pre_band = hub_state_->band(band); pre_band.has_value())
     {
         for (const auto& m : pre_band->members)
         {
@@ -4241,12 +4527,12 @@ nlohmann::json BrokerServiceImpl::handle_band_join_req(
     member.role_uid     = role_uid;
     member.role_name    = role_name;
     member.zmq_identity = id_str;
-    hub_state_->_on_band_joined(channel, std::move(member));
+    hub_state_->_on_band_joined(band, std::move(member));
 
-    LOGGER_INFO("Broker: BAND_JOIN '{}' role='{}'", channel, role_uid);
+    LOGGER_INFO("Broker: BAND_JOIN '{}' role='{}'", band, role_uid);
 
     nlohmann::json members_json = nlohmann::json::array();
-    if (auto post_band = hub_state_->band(channel); post_band.has_value())
+    if (auto post_band = hub_state_->band(band); post_band.has_value())
     {
         for (const auto& m : post_band->members)
         {
@@ -4259,7 +4545,7 @@ nlohmann::json BrokerServiceImpl::handle_band_join_req(
 
     nlohmann::json resp;
     resp["status"]  = "success";
-    resp["channel"] = channel;
+    resp["band"]    = band;
     resp["members"] = std::move(members_json);
     return resp;
 }
@@ -4268,12 +4554,37 @@ nlohmann::json BrokerServiceImpl::handle_band_leave_req(
     const nlohmann::json& req,
     zmq::socket_t& /*socket*/)
 {
-    const std::string channel  = req.value("channel", "");
+    // Wire payload key is `band` per HEP-CORE-0030 §5.1.
+    const std::string band     = req.value("band", "");
     const std::string role_uid = req.value("role_uid", "");
 
-    if (channel.empty() || role_uid.empty())
+    if (band.empty() || role_uid.empty())
     {
-        return make_error("", "INVALID_REQUEST", "Missing channel or role_uid");
+        return make_error("", "INVALID_REQUEST", "Missing band or role_uid");
+    }
+
+    // Audit R3.5 (2026-05-17): explicit band-name validation —
+    // mirror of handle_band_join_req.  An invalid identifier hitting
+    // `_on_band_left` would be silently swallowed without us telling
+    // the caller.
+    if (!pylabhub::hub::is_valid_identifier(band, pylabhub::hub::IdentifierKind::Band))
+    {
+        LOGGER_WARN("Broker: BAND_LEAVE_REQ rejected — invalid band "
+                    "identifier '{}'", band);
+        return make_error("", "INVALID_BAND_NAME",
+                          "Band identifier failed validation "
+                          "(HEP-CORE-0030 §3 grammar)");
+    }
+    // Audit R3.5b (2026-05-19): role_uid grammar + tag check (HEP-
+    // CORE-0033 §G2.2.0b).  Any role may leave a band — same tag set
+    // as BAND_JOIN_REQ.  Pre-fix, malformed uid would scan-miss in
+    // the membership loop and skip the LEAVE log.
+    if (auto err = validate_role_uid_only(role_uid,
+                                          {"prod", "cons", "proc"},
+                                          /*corr_id=*/"",
+                                          "BAND_LEAVE_REQ"))
+    {
+        return *err;
     }
 
     // Wave M3 step 5f (2026-05-11): BAND_LEAVE_NOTIFY fanout is now
@@ -4288,17 +4599,17 @@ nlohmann::json BrokerServiceImpl::handle_band_leave_req(
     // line is gated on real action (matches pre-fix log semantics —
     // log only when the request actually mutates state).
     bool was_member = false;
-    if (auto pre = hub_state_->band(channel); pre.has_value())
+    if (auto pre = hub_state_->band(band); pre.has_value())
     {
         for (const auto& m : pre->members)
         {
             if (m.role_uid == role_uid) { was_member = true; break; }
         }
     }
-    hub_state_->_on_band_left(channel, role_uid);
+    hub_state_->_on_band_left(band, role_uid);
     if (was_member)
     {
-        LOGGER_INFO("Broker: BAND_LEAVE '{}' role='{}'", channel, role_uid);
+        LOGGER_INFO("Broker: BAND_LEAVE '{}' role='{}'", band, role_uid);
     }
 
     nlohmann::json resp;
@@ -4311,22 +4622,50 @@ void BrokerServiceImpl::handle_band_broadcast_req(
     const nlohmann::json& req,
     const zmq::message_t& /*identity*/)
 {
-    const std::string channel    = req.value("channel", "");
-    const std::string sender_uid = req.value("sender_uid", "");
+    // Wire payload key is `band` per HEP-CORE-0030 §5.1.
+    // broker_proto 4→5 (audit R3.5b, 2026-05-19): the sender field
+    // was renamed `sender_uid` → `role_uid` for consistency with all
+    // other gates.  The sender IS a role, no different identifier
+    // shape — uniform naming simplifies role-side code.
+    const std::string band_name = req.value("band",     "");
+    const std::string role_uid  = req.value("role_uid", "");
 
-    if (channel.empty()) return;
+    if (band_name.empty()) return;
+
+    // Audit R3.5 (2026-05-17): silent-drop on invalid identifier.
+    // BAND_BROADCAST_REQ is fire-and-forget so there is no error
+    // response to return; we log + drop.  The caller cannot
+    // observe the failure (matches existing fire-and-forget
+    // semantics) — operators see the WARN log.
+    if (!pylabhub::hub::is_valid_identifier(band_name, pylabhub::hub::IdentifierKind::Band))
+    {
+        LOGGER_WARN("Broker: BAND_BROADCAST_REQ dropped — invalid band "
+                    "identifier '{}' (HEP-CORE-0030 §3)", band_name);
+        return;
+    }
+    // Audit R3.5b (2026-05-19): role_uid grammar + tag check.  Any
+    // role may broadcast — accept {prod, cons, proc}.  Drop with
+    // WARN log (fire-and-forget).
+    if (!pylabhub::hub::is_valid_identifier(
+            role_uid, pylabhub::hub::IdentifierKind::RoleUid))
+    {
+        LOGGER_WARN("Broker: BAND_BROADCAST_REQ dropped on band '{}' — "
+                    "invalid role_uid '{}' (HEP-CORE-0033 §G2.2.0b)",
+                    band_name, role_uid);
+        return;
+    }
 
     nlohmann::json notify;
-    notify["channel"]    = channel;
-    notify["sender_uid"] = sender_uid;
-    notify["body"]       = req.value("body", nlohmann::json::object());
+    notify["band"]      = band_name;
+    notify["role_uid"]  = role_uid;
+    notify["body"]      = req.value("body", nlohmann::json::object());
 
     std::size_t recipients = 0;
-    if (auto band = hub_state_->band(channel); band.has_value())
+    if (auto band = hub_state_->band(band_name); band.has_value())
     {
         for (const auto& m : band->members)
         {
-            if (m.role_uid == sender_uid) continue;
+            if (m.role_uid == role_uid) continue;
             if (m.zmq_identity.empty()) continue;
             send_to_identity(socket, m.zmq_identity, "BAND_BROADCAST_NOTIFY", notify);
             ++recipients;
@@ -4334,16 +4673,33 @@ void BrokerServiceImpl::handle_band_broadcast_req(
     }
 
     LOGGER_DEBUG("Broker: BAND_BROADCAST '{}' from '{}' ->{} recipients",
-                 channel, sender_uid, recipients);
+                 band_name, role_uid, recipients);
 }
 
 nlohmann::json BrokerServiceImpl::handle_band_members_req(
     const nlohmann::json& req)
 {
-    const std::string channel = req.value("channel", "");
+    // Wire payload key is `band` per HEP-CORE-0030 §5.1.
+    const std::string band_name = req.value("band", "");
+
+    // Audit R3.5 (2026-05-17): explicit band-name validation.  Pre-fix
+    // an invalid identifier would silently miss in `hub_state_->band()`
+    // (because no band by that invalid name exists) and we'd return
+    // an empty members array — indistinguishable from "valid name,
+    // empty membership".  Returning a typed error lets callers
+    // distinguish the two.
+    if (!band_name.empty() &&
+        !pylabhub::hub::is_valid_identifier(band_name, pylabhub::hub::IdentifierKind::Band))
+    {
+        LOGGER_WARN("Broker: BAND_MEMBERS_REQ rejected — invalid band "
+                    "identifier '{}'", band_name);
+        return make_error("", "INVALID_BAND_NAME",
+                          "Band identifier failed validation "
+                          "(HEP-CORE-0030 §3 grammar)");
+    }
 
     nlohmann::json members_json = nlohmann::json::array();
-    if (auto band = hub_state_->band(channel); band.has_value())
+    if (auto band = hub_state_->band(band_name); band.has_value())
     {
         for (const auto& m : band->members)
         {
@@ -4355,7 +4711,7 @@ nlohmann::json BrokerServiceImpl::handle_band_members_req(
     }
 
     nlohmann::json resp;
-    resp["channel"] = channel;
+    resp["band"]    = band_name;
     resp["members"] = std::move(members_json);
     return resp;
 }
