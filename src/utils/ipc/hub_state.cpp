@@ -711,11 +711,23 @@ namespace
 /// Callers must hold no lock on entry; this helper takes the state
 /// writer lock briefly and returns the post-mutation entry for event
 /// dispatch.
-/// Insert-or-update a `RolePresence` row on @p role.  Idempotent: if the
-/// `(channel, role_type)` row already exists, it is left untouched
-/// (re-registration after voluntary close is handled by the heartbeat
-/// path which transitions Disconnected → Connected when a fresh
-/// heartbeat arrives).  Pure helper — caller must hold the impl mutex.
+/// Insert-or-update a `RolePresence` row on @p role.  Idempotent: if a
+/// LIVE `(channel, role_type)` row already exists, it is left untouched
+/// (re-REG of the same channel from the same role).  Post-H18 tombstone
+/// removal (Wave-M3 step 5h, 2026-05-11), `on_dereg` and
+/// `on_pending_timeout` ERASE the row instead of marking it
+/// Disconnected — so the early-return path here only handles a live
+/// presence's idempotent re-REG.  A Disconnected presence in
+/// `presences[]` is now structurally impossible; re-REG after a prior
+/// dereg lands on the create-new path (presence absent → push fresh
+/// Connected/registering row).  Pure helper — caller must hold the
+/// impl mutex.
+///
+/// Assertion is deliberately omitted here: the only way to reach the
+/// early-return is `find_presence(...) != nullptr`, and every site
+/// that erases a presence (`on_dereg`, `on_pending_timeout`) is the
+/// inverse of this push.  If somehow a Disconnected row leaks into
+/// `presences[]` in the future, audit those erasure sites first.
 inline void upsert_presence_row_locked(
     RoleEntry          &role,
     const std::string  &channel,
