@@ -265,7 +265,28 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
 
     void log(const std::string &level, const std::string &msg);
     void stop();
-    void set_critical_error();
+    /// Flag a critical (unrecoverable) error and request shutdown.
+    ///
+    /// Atomic combo (`RoleHostCore::set_critical_error`): sets
+    /// `critical_error_=true`, `stop_reason_=CriticalError`, and
+    /// `shutdown_requested_=true` in one operation.  Role exits
+    /// with `stop_reason_string() == "critical_error"`.
+    ///
+    /// The framework emits a uniform ERROR-level log line
+    /// `[role_tag/uid] CRITICAL: <msg>` BEFORE flipping state — so
+    /// log scrapers see the message adjacent to the stop event.
+    ///
+    /// Audit S2 (2026-05-18) — `msg` is REQUIRED (no default).  All
+    /// three engines (Python / Lua / Native C) enforce a non-empty
+    /// message at the binding layer so operators ALWAYS get a
+    /// breadcrumb explaining why a role flagged critical.  An empty
+    /// string is technically allowed (skips the log line) but is
+    /// considered a bug in the calling script — prefer
+    /// `api.set_critical_error("brief reason")` over `api.set_critical_error("")`.
+    /// Use for unrecoverable conditions (corrupt schema, hardware
+    /// fault, etc.).  For ordinary stop, use `api.stop()`
+    /// (reason = "normal").
+    void set_critical_error(std::string_view msg);
     [[nodiscard]] bool critical_error() const;
     [[nodiscard]] std::string stop_reason() const;
 

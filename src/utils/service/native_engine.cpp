@@ -97,10 +97,28 @@ void ctx_request_stop(const PlhNativeContext *ctx)
     static_cast<RoleHostCore *>(ctx->_core)->request_stop();
 }
 
-void ctx_set_critical_error(const PlhNativeContext *ctx)
+void ctx_set_critical_error(const PlhNativeContext *ctx, const char *msg)
 {
-    if (!ctx || !ctx->_core) return;
-    static_cast<RoleHostCore *>(ctx->_core)->set_critical_error();
+    // Audit S2 (2026-05-18) — `msg` is REQUIRED per the C ABI v3
+    // contract.  A NULL msg from a plugin is a plugin bug; we log a
+    // placeholder so the role still gets a breadcrumb in the log
+    // and still flag critical (graceful degradation rather than
+    // crashing in LOGGER_ERROR on NULL deref).  Plugin authors:
+    // always pass a non-NULL string describing the unrecoverable
+    // condition.  Routed through RoleAPIBase so the log format
+    // matches Python and Lua.
+    if (!ctx) return;
+    const std::string_view sv = msg
+        ? std::string_view{msg}
+        : std::string_view{"(no message — C plugin passed NULL; bug)"};
+    if (ctx->_api)
+    {
+        auto *api = static_cast<RoleAPIBase *>(ctx->_api);
+        api->set_critical_error(sv);
+        return;
+    }
+    if (ctx->_core)
+        static_cast<RoleHostCore *>(ctx->_core)->set_critical_error();
 }
 
 int ctx_is_critical_error(const PlhNativeContext *ctx)
@@ -471,6 +489,8 @@ bool NativeEngine::load_script(const std::filesystem::path &script_dir,
         reinterpret_cast<FnOnChannelClosing>(resolve_sym_("on_channel_closing"));
     fn_on_consumer_died_ =
         reinterpret_cast<FnOnConsumerDied>(resolve_sym_("on_consumer_died"));
+    fn_on_hub_dead_ =
+        reinterpret_cast<FnOnHubDead>(resolve_sym_("on_hub_dead"));
     fn_on_produce_    = reinterpret_cast<FnOnProduce>(resolve_sym_("on_produce"));
     fn_on_consume_    = reinterpret_cast<FnOnConsume>(resolve_sym_("on_consume"));
     fn_on_process_    = reinterpret_cast<FnOnProcess>(resolve_sym_("on_process"));
@@ -570,6 +590,7 @@ void NativeEngine::finalize_engine_()
     fn_on_stop_ = nullptr;
     fn_on_channel_closing_ = nullptr;
     fn_on_consumer_died_ = nullptr;
+    fn_on_hub_dead_ = nullptr;
     fn_on_produce_ = nullptr;
     fn_on_consume_ = nullptr;
     fn_on_process_ = nullptr;
@@ -595,6 +616,7 @@ bool NativeEngine::has_callback(const std::string &name) const noexcept
     if (name == "on_stop")             return fn_on_stop_             != nullptr;
     if (name == "on_channel_closing")  return fn_on_channel_closing_  != nullptr;
     if (name == "on_consumer_died")    return fn_on_consumer_died_    != nullptr;
+    if (name == "on_hub_dead")         return fn_on_hub_dead_         != nullptr;
     if (name == "on_produce")    return fn_on_produce_ != nullptr;
     if (name == "on_consume")    return fn_on_consume_ != nullptr;
     if (name == "on_process")    return fn_on_process_ != nullptr;
@@ -744,6 +766,15 @@ void NativeEngine::invoke_on_consumer_died(const std::string &channel,
                                         consumer_uid.c_str(),
                                         reason.c_str()};
     fn_on_consumer_died_(&args);
+}
+
+void NativeEngine::invoke_on_hub_dead(const std::string &source_hub_uid)
+{
+    if (!fn_on_hub_dead_) return;
+    // Lifetime contract (see native_invoke_types.h): args is valid
+    // only for this call; plugin MUST NOT retain pointers.
+    const plh_hub_dead_args_t args{source_hub_uid.c_str()};
+    fn_on_hub_dead_(&args);
 }
 
 InvokeResult NativeEngine::invoke_produce(

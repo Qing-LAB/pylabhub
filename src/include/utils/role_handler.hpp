@@ -51,13 +51,25 @@
  *       afterward.
  *
  * Thread safety:
- *   All M3 accessors are `const` and read fields that are immutable
- *   after construction (per the contract above).  RoleHandler is safe
- *   to call from any thread without synchronization, AS LONG AS the
- *   immutability contract holds.  Wave-B M4 will add `start()` /
- *   `shutdown()` + dispatch ops that touch the network and spawn ctrl
- *   threads — at that point M4 must document which methods are safe
- *   from which threads.
+ *   The M3-vintage read accessors (`find_presence_for_channel(...)
+ *   const`, `presences() const`, `connections() const`,
+ *   `presence_count()`, `connection_count()`) are `const` and read
+ *   fields that are immutable after construction (per the contract
+ *   above) — safe to call from any thread without synchronization.
+ *
+ *   Audit S1+O4 (2026-05-17) added a non-const overload of
+ *   `find_presence_for_channel(channel)` returning `Presence *`
+ *   solely to allow the registration FSM mutator
+ *   (`presence->registration_state.store(...)`) to be reached
+ *   through the standard lookup.  The non-const overload does NOT
+ *   add any mutex; per-presence `registration_state` is a
+ *   `std::atomic` so concurrent reads/writes are safe by
+ *   construction.
+ *
+ *   Audit R3.3 (2026-05-17) added `mark_connection_disconnected(
+ *   HubConnection *)` — a per-connection FSM transition called
+ *   from the `on_hub_dead` callback (ctrl thread).  Same atomic
+ *   discipline: per-presence atomics, no mutex.
  *
  * Topology stability:
  *   The presence list passed to the ctor is the FULL list of presences
@@ -67,7 +79,7 @@
  *   "vectors are stable" invariant above.  Document any such future
  *   feature explicitly when it's introduced — do not silently relax.
  *
- * Wave-B M3 invariants verified by L2 tests:
+ * Invariants verified by L2 tests:
  *   - Distinct hubs → distinct connections (count matches unique
  *     hub identities).
  *   - Same hub → shared connection (single-hub processor with two
@@ -181,6 +193,14 @@ class PYLABHUB_UTILS_EXPORT RoleHandler
     [[nodiscard]] const Presence *
     find_presence_for_channel(const std::string &channel) const noexcept;
 
+    /// Non-const overload — same lookup, returns a mutable pointer
+    /// so callers can update `Presence::registration_state` (audit
+    /// S1+O4, 2026-05-17).  The handler-level vector layout remains
+    /// frozen post-construction; only the atomic field on the
+    /// Presence can change through this pointer.
+    [[nodiscard]] Presence *
+    find_presence_for_channel(const std::string &channel) noexcept;
+
     /// Number of presences this role holds on a given channel.  Used
     /// to verify the "no duplicate channel within a role" invariant
     /// during testing (M3) and asserted on construction (above).
@@ -272,14 +292,31 @@ class PYLABHUB_UTILS_EXPORT RoleHandler
     /// band is not indexed (no-op).
     void on_band_left(const std::string &band_name) noexcept;
 
+    /// Audit R3.3 (2026-05-17) — transition every Presence whose
+    /// `connection` field matches @p dead_conn from
+    /// `Registered`/`RegRequestPending` to `Deregistered`.  Called
+    /// from the role's `on_hub_dead` callback so the registration
+    /// FSM reflects the loss of the broker connection: when ZMTP
+    /// declares the peer dead, the broker has already reaped (or
+    /// will reap) our presences via heartbeat-timeout; the role's
+    /// local FSM should mirror that truth instead of claiming
+    /// `Registered` against a dead broker.
+    ///
+    /// Returns the number of presences transitioned (for log /
+    /// telemetry purposes).  Safe to call multiple times — already-
+    /// Deregistered or Unregistered presences are skipped.
+    std::size_t mark_connection_disconnected(
+        const HubConnection *dead_conn) noexcept;
+
     /// Extract the originating Presence from an inbound notification
-    /// body.  Inspects `body["channel_name"]` first (Class A), then
-    /// `body["band_name"]` (Class D).  Returns nullptr if neither
-    /// field is present in the body, or the named channel/band is
-    /// not in this role's index (role-scope or hub-scope
-    /// notification — caller routes via different logic).
-    /// `msg_type` is currently unused but reserved for future
-    /// per-msg-type routing rules.
+    /// body.  Inspects `body["channel_name"]` first (Class A —
+    /// HEP-CORE-0007 wire field on CHANNEL_*_NOTIFY), then
+    /// `body["band"]` (Class D — HEP-CORE-0030 §5.1 wire field on
+    /// BAND_*_NOTIFY).  Returns nullptr if neither field is present
+    /// in the body, or the named channel/band is not in this role's
+    /// index (role-scope or hub-scope notification — caller routes
+    /// via different logic).  `msg_type` is currently unused but
+    /// reserved for future per-msg-type routing rules.
     [[nodiscard]] const Presence *
     find_presence_from_notification(const std::string    &msg_type,
                                     const nlohmann::json &body) const noexcept;

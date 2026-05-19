@@ -1,7 +1,7 @@
 #pragma once
 /**
  * @file role_presence.hpp
- * @brief Per-role presence model — Wave-B M3 skeleton (build-only).
+ * @brief Per-role presence model — `Presence` row + `RegistrationState` FSM.
  *
  * A `Presence` is a single `(hub, channel, role_kind, schemas, inbox)`
  * tuple identifying ONE registration that a role maintains.  A role's
@@ -23,14 +23,22 @@
  * single-broker-connection assumptions in today's RoleAPIBase and is
  * the structural pre-requisite for Wave-B M8 (dual-hub processor).
  *
- * Wave-B M3 ships this as a HEADER-ONLY data type — no allocations,
- * no network methods.  M4 swaps `RoleAPIBase::pImpl` to delegate via
- * `RoleHandler` (which owns the presence vector).  M5..M9 migrate
- * the role kinds and collapse `worker_main_` into the template.
+ * **History.**  Originally shipped in Wave-B M3 as a header-only
+ * skeleton (no allocations, no network methods).  M4 added the
+ * `HubConnection *` non-owning pointer set during dedup at
+ * `RoleHandler::build_connections_()`.  **Audit S1+O4 (2026-05-17)**
+ * added the per-presence registration FSM (`RegistrationState` enum
+ * + atomic field below) — this replaced the prior implicit
+ * "registered if the channel string is non-empty in
+ * `Impl::Shared`" inference with an explicit four-state machine.
+ * The atomic field forced an explicit move ctor (atomics are not
+ * trivially movable); both the field and the move semantics are
+ * documented inline.
  */
 
 #include "utils/config/hub_ref_config.hpp"
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 
@@ -49,6 +57,59 @@ enum class RoleKind : std::uint8_t
     Producer = 1,
     Consumer = 2,
 };
+
+/// Role-side registration FSM for a single Presence (audit S1+O4,
+/// 2026-05-17).  Per HEP-CORE-0023 §2 + the Round-2 audit, pre-S1 the
+/// role had no enumerable registration state — it was implicit in the
+/// non-emptiness of `Impl::Shared::producer_channel` /
+/// `consumer_channel`, which couldn't distinguish "never registered"
+/// from "registered then deregistered" and didn't observe the
+/// in-flight window.  This enum makes the four legitimate states
+/// explicit on the Presence record:
+///
+///   Unregistered         — initial state at handler construction; no
+///                          REG_REQ has been attempted for this
+///                          presence yet.
+///   RegRequestPending    — REG_REQ / CONSUMER_REG_REQ has been
+///                          dispatched; we are waiting for the broker
+///                          to ACK.  Observable: the role-side
+///                          intends to register but the broker has
+///                          not yet confirmed.
+///   Registered           — broker returned a success ACK; the
+///                          presence is admitted into HubState and
+///                          counts as a member of its channel.
+///   Deregistered         — voluntary DEREG_REQ / CONSUMER_DEREG_REQ
+///                          has succeeded (or the broker disappeared
+///                          mid-teardown so we cleared our side
+///                          unilaterally).  Terminal for this
+///                          process; the presence's Presence row
+///                          stays in `handler_->presences()` for
+///                          identity/dedup purposes but no longer
+///                          drives broker traffic.
+///
+/// Mapping to the user's "explicit and confirmed state without
+/// ambiguity" requirement (Round-2 R2.1 S1): callers ask
+/// `presence.registration_state.load()` and get a single enum
+/// instead of inferring state from two string fields' non-emptiness.
+enum class RegistrationState : std::uint8_t
+{
+    Unregistered      = 0,
+    RegRequestPending = 1,
+    Registered        = 2,
+    Deregistered      = 3,
+};
+
+[[nodiscard]] inline const char *to_string(RegistrationState s) noexcept
+{
+    switch (s)
+    {
+    case RegistrationState::Unregistered:      return "Unregistered";
+    case RegistrationState::RegRequestPending: return "RegRequestPending";
+    case RegistrationState::Registered:        return "Registered";
+    case RegistrationState::Deregistered:      return "Deregistered";
+    }
+    return "<unknown>";
+}
 
 /// Convert a `RoleKind` to its wire-protocol string per HEP-CORE-0019
 /// §4.1.  Used by Wave-B M4b dispatch when populating `role_type`
@@ -97,6 +158,58 @@ struct Presence
     /// stable for the RoleHandler's lifetime (connections vector is
     /// not mutated after build).
     HubConnection *connection{nullptr};
+
+    /// Per-presence registration FSM (audit S1+O4, 2026-05-17).
+    /// Mutated only from the role's caller threads
+    /// (`register_*` succeed/fail paths and `deregister_from_broker`
+    /// teardown); atomic to give defensible read semantics from any
+    /// thread that probes state (script handlers, admin RPCs, future
+    /// observers).  See `RegistrationState` docstring above for the
+    /// four states and HEP-CORE-0023 §2 cross-reference.
+    ///
+    /// Default `Unregistered` at construction.  No `Created` /
+    /// `Connecting` / etc. — those concerns live on
+    /// `HubConnection`; this state is strictly about REG_REQ /
+    /// DEREG_REQ admission with the broker.
+    std::atomic<RegistrationState> registration_state{
+        RegistrationState::Unregistered};
+
+    // ── Move semantics ──────────────────────────────────────────────
+    // `std::atomic<T>` is non-movable by default, so we provide an
+    // explicit move that loads the source value and stores it into
+    // the destination.  This is only needed during the
+    // `RoleHandler(std::vector<Presence>)` construction phase — once
+    // the handler's vector is built, no Presence is ever moved.
+
+    Presence() = default;
+    Presence(const Presence &) = delete;
+    Presence &operator=(const Presence &) = delete;
+
+    Presence(Presence &&other) noexcept
+        : hub(std::move(other.hub))
+        , channel(std::move(other.channel))
+        , role_kind(other.role_kind)
+        , connection(other.connection)
+    {
+        registration_state.store(
+            other.registration_state.load(std::memory_order_relaxed),
+            std::memory_order_relaxed);
+    }
+
+    Presence &operator=(Presence &&other) noexcept
+    {
+        if (this != &other)
+        {
+            hub        = std::move(other.hub);
+            channel    = std::move(other.channel);
+            role_kind  = other.role_kind;
+            connection = other.connection;
+            registration_state.store(
+                other.registration_state.load(std::memory_order_relaxed),
+                std::memory_order_relaxed);
+        }
+        return *this;
+    }
 };
 
 }  // namespace pylabhub::scripting

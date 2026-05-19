@@ -209,3 +209,54 @@ TEST_F(BrokerProtocolTest, BroadcastFanOut_HubQueuePath_FansOutSame)
         "broker_protocol.broadcast_fan_out_hub_queue_path_fans_out_same");
     ExpectWorkerOk(w);
 }
+
+// ============================================================================
+// Audit TR1 — wire-conformance ACK-shape regression tests (2026-05-17)
+// ============================================================================
+// Pre-2026-05-17 the test suite had no test that pinned a wire
+// payload key set directly against its authoritative HEP §.  Audit
+// B1 found that BRC + broker had agreed on the wrong band wire key
+// (`channel` instead of `band` per HEP-CORE-0030 §5.1) for over a
+// year — round-trip tests passed because both ends used the same
+// wrong name.  These tests lock down the observable shape of major
+// ACK families against their authoritative HEP, asserting both
+// REQUIRED keys AND ABSENCE of legacy keys.  The shared helpers
+// (`tests/test_framework/wire_conformance.h`) emit precise
+// diagnostics naming the missing/forbidden key + the HEP § the rule
+// comes from.
+
+TEST_F(BrokerProtocolTest, WireConformance_RegAck_Shape)
+{
+    auto w = SpawnWorker("broker_protocol.wire_conformance_reg_ack_shape");
+    ExpectWorkerOk(w);
+}
+
+TEST_F(BrokerProtocolTest, WireConformance_ConsumerRegAck_Shape)
+{
+    auto w = SpawnWorker(
+        "broker_protocol.wire_conformance_consumer_reg_ack_shape");
+    ExpectWorkerOk(w);
+}
+
+TEST_F(BrokerProtocolTest, WireConformance_RoleInfoAck_Shape)
+{
+    auto w = SpawnWorker(
+        "broker_protocol.wire_conformance_role_info_ack_shape");
+    ExpectWorkerOk(w);
+}
+
+TEST_F(BrokerProtocolTest, WireConformance_BandAck_Shapes)
+{
+    auto w = SpawnWorker("broker_protocol.wire_conformance_band_ack_shapes");
+    ExpectWorkerOk(w);
+}
+
+// Audit R3.6 (2026-05-17) — `WireConformance_ChannelNotifyReq_FederationRelay`
+// retired.  When I tried to add a regression test for the broker's
+// `handle_channel_notify_req` (which O1 left in place "for federation
+// peer relay"), I discovered federation actually uses HUB_RELAY_MSG —
+// not CHANNEL_NOTIFY_REQ.  The handler was 100% dead.  Resolution:
+// deleted the handler entirely (broker_service.cpp + dispatch entry
+// + known_msg_type list).  No regression test needed — old clients
+// sending CHANNEL_NOTIFY_REQ now receive UNKNOWN_MSG_TYPE (covered
+// by the existing unknown-msg-type test path).

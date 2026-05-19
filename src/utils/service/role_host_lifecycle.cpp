@@ -31,10 +31,11 @@ void do_role_teardown(
 
     // Step 9a: Explicitly deregister from broker (ctrl thread still running).
     // Skip when no API was ever wired (validate-only or aborted-startup paths).
-    // The deregister flow uses `RoleAPIBase::Impl::Shared::take_*_channel`
-    // (mutex-protected swap-with-empty) so the worker thread's pImpl
-    // access here cannot race ctrl-thread paths that touch the same
-    // registration state.
+    // Audit S1+O4 (2026-05-17): the deregister flow walks
+    // `handler_->presences()` and dispatches DEREG for each presence
+    // whose atomic `registration_state` is Registered or
+    // RegRequestPending.  Atomic per-presence reads/writes replace the
+    // pre-S1 mutex-protected `Impl::Shared::take_*_channel` swap.
     if (has_api)
         api.deregister_from_broker();
 

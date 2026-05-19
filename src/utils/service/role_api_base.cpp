@@ -109,40 +109,13 @@ struct RoleAPIBase::Impl
     // `take_*_channel()` to atomically swap-with-empty under the
     // lock and pass the captured value to the broker RPC outside
     // the lock.
-    struct Shared
-    {
-        mutable std::mutex mu;
-        std::string producer_channel;   ///< Non-empty if REG_REQ succeeded.
-        std::string consumer_channel;   ///< Non-empty if CONSUMER_REG_REQ succeeded.
-
-        void set_producer_channel(std::string name) noexcept
-        {
-            std::lock_guard<std::mutex> g(mu);
-            producer_channel = std::move(name);
-        }
-        void set_consumer_channel(std::string name) noexcept
-        {
-            std::lock_guard<std::mutex> g(mu);
-            consumer_channel = std::move(name);
-        }
-        /// Atomic read-and-clear.  Caller passes the returned string
-        /// to the broker RPC — by that point the field is already
-        /// empty so no other path can race a concurrent mutator.
-        std::string take_producer_channel()
-        {
-            std::lock_guard<std::mutex> g(mu);
-            std::string out;
-            out.swap(producer_channel);
-            return out;
-        }
-        std::string take_consumer_channel()
-        {
-            std::lock_guard<std::mutex> g(mu);
-            std::string out;
-            out.swap(consumer_channel);
-            return out;
-        }
-    } shared;
+    // Audit S1+O4 (2026-05-17): the former `Shared` struct held
+    // `producer_channel` / `consumer_channel` strings as implicit
+    // "have I registered?" state.  That state is now per-presence via
+    // `Presence::registration_state` (HEP-CORE-0023 §2 + Round-2
+    // R2.1 S1).  `deregister_from_broker` iterates
+    // `handler_->presences()` directly and dispatches DEREGs for any
+    // presence in Registered / RegRequestPending state.
 
     // Inbox client cache (keyed by target_uid).
     // Uses RoleHostCore::open_inbox() for atomic check-and-create.
@@ -180,8 +153,8 @@ struct RoleAPIBase::Impl
     // Optional hook for role-specific metrics injection.
     std::function<void(nlohmann::json &)> metrics_hook;
 
-    // Wave-B M4d/M4e/M4f: route a Class A/B/D operation to the right
-    // BrokerRequestComm via the handler's index.  Returns nullptr if
+    // Route a Class A/B/D operation to the right BrokerRequestComm
+    // via the handler's index (HEP-CORE-0033 §18.3).  Returns nullptr if
     // the handler isn't attached (validate-only / post-stop), if the
     // handler's lookup misses (e.g. DISC_REQ for a channel not in our
     // presence list, or band_* for a band we haven't joined), or if
@@ -193,8 +166,13 @@ struct RoleAPIBase::Impl
     //   - Class A (channel-bound): handler->brc_for_channel(channel)
     //     hashes via channel_index_ → presence → connection.
     //   - Class B (role-bound): handler->brc_for_role() returns the
-    //     first connection's BRC (any connection suffices for role-
-    //     scope queries).  Full multi-hub fall-through is M5+ scope.
+    //     first connection's BRC as a primitive.  Multi-hub
+    //     fall-through (audit A3) is composed at the CALL SITE — see
+    //     `wait_for_role` and `open_inbox_client` which iterate
+    //     `handler_->connections()` directly so a target registered
+    //     on hub[i>0] is discoverable.  Do NOT use `resolve_bc_for_role`
+    //     for Class B queries on multi-presence roles; iterate
+    //     `connections()` instead.
     //   - Class D (band-bound): handler->brc_for_band(band) hashes
     //     via band_index_ (populated by on_band_joined() on a
     //     successful band_join RPC).
@@ -614,34 +592,47 @@ RoleAPIBase::register_producer_channel(const nlohmann::json &opts, int timeout_m
         LOGGER_ERROR("[{}] register_producer_channel: broker comm not connected", pImpl->role_tag);
         return std::nullopt;
     }
+
+    // Audit S1+O4 (2026-05-17): mark the Presence as RegRequestPending
+    // BEFORE dispatching the broker RPC.  This makes the in-flight
+    // window observable (external readers see "we're trying" rather
+    // than the previous ambiguous "Shared::producer_channel is still
+    // empty").  Transitions to Registered on success or back to
+    // Unregistered on failure below.
+    Presence *presence = pImpl->handler_
+        ? pImpl->handler_->find_presence_for_channel(ch) : nullptr;
+    if (presence)
+        presence->registration_state.store(
+            RegistrationState::RegRequestPending,
+            std::memory_order_release);
+
     auto result = bc->register_channel(opts, timeout_ms);
     // Per HEP-CORE-0007 §12.3, a request-reply method's optional<json>
     // now carries the broker's response body (success OR error).  nullopt
     // means no response (timeout/disconnect).  Status field discriminates
     // the success vs error branch; error_code (HEP-0007 §12.4a taxonomy)
     // tells the caller what specifically failed.
+    const bool registered =
+        result.has_value() &&
+        result->value("status", std::string{}) == "success";
+
     if (!result.has_value())
         LOGGER_ERROR("[{}] REG_REQ no response for channel '{}' (timeout/disconnect)",
                      pImpl->role_tag, opts.value("channel_name", "?"));
-    else if (result->value("status", std::string{}) != "success")
+    else if (!registered)
         LOGGER_ERROR("[{}] REG_REQ failed for channel '{}': error_code='{}' message='{}'",
                      pImpl->role_tag, opts.value("channel_name", "?"),
                      result->value("error_code", std::string{}),
                      result->value("message", std::string{}));
     else
-    {
         LOGGER_INFO("[{}] Registered producer channel '{}' with broker",
                     pImpl->role_tag, opts.value("channel_name", "?"));
-        // Wave-B M5: record the registered channel so deregister_from_broker's
-        // atomic take-and-clear can dereg it on teardown.  Pre-M5 legacy
-        // start_ctrl_thread did this manually after a successful REG; auto-
-        // recording here makes the API safer — every caller (handler-mode
-        // M5+ role hosts AND the legacy start_ctrl_thread path) gets dereg
-        // bookkeeping wired without an extra step.  Idempotent: calling
-        // shared.set_producer_channel twice with the same name is a no-op
-        // beyond the second write.
-        pImpl->shared.set_producer_channel(opts.value("channel_name", std::string{}));
-    }
+
+    if (presence)
+        presence->registration_state.store(
+            registered ? RegistrationState::Registered
+                        : RegistrationState::Unregistered,
+            std::memory_order_release);
     return result;
 }
 
@@ -680,7 +671,7 @@ RoleAPIBase::discover_channel(const std::string &channel, int timeout_ms)
 std::optional<nlohmann::json>
 RoleAPIBase::register_consumer(const nlohmann::json &opts, int timeout_ms)
 {
-    // Wave-B M4d: Class A — route via handler when active.
+    // Class A — route via handler when active.
     const std::string ch = opts.value("channel_name", std::string{});
     auto *bc = pImpl->resolve_bc_for_channel(ch);
     if (!bc || !bc->is_connected())
@@ -688,45 +679,76 @@ RoleAPIBase::register_consumer(const nlohmann::json &opts, int timeout_ms)
         LOGGER_ERROR("[{}] register_consumer: broker comm not connected", pImpl->role_tag);
         return std::nullopt;
     }
+
+    // Audit S1+O4 (2026-05-17): per-presence FSM marker, same pattern
+    // as `register_producer_channel`.
+    Presence *presence = pImpl->handler_
+        ? pImpl->handler_->find_presence_for_channel(ch) : nullptr;
+    if (presence)
+        presence->registration_state.store(
+            RegistrationState::RegRequestPending,
+            std::memory_order_release);
+
     auto result = bc->register_consumer(opts, timeout_ms);
+    const bool registered =
+        result.has_value() &&
+        result->value("status", std::string{}) == "success";
+
     if (!result.has_value())
         LOGGER_ERROR("[{}] CONSUMER_REG_REQ no response for channel '{}' (timeout/disconnect)",
                      pImpl->role_tag, opts.value("channel_name", "?"));
-    else if (result->value("status", std::string{}) != "success")
+    else if (!registered)
         LOGGER_ERROR("[{}] CONSUMER_REG_REQ failed for channel '{}': error_code='{}' message='{}'",
                      pImpl->role_tag, opts.value("channel_name", "?"),
                      result->value("error_code", std::string{}),
                      result->value("message", std::string{}));
     else
-    {
         LOGGER_INFO("[{}] Registered consumer on channel '{}' with broker",
                     pImpl->role_tag, opts.value("channel_name", "?"));
-        // Wave-B M5: see register_producer_channel for the auto-record
-        // rationale — every caller (handler-mode or legacy) gets dereg
-        // bookkeeping without an extra step.
-        pImpl->shared.set_consumer_channel(opts.value("channel_name", std::string{}));
-    }
+
+    if (presence)
+        presence->registration_state.store(
+            registered ? RegistrationState::Registered
+                        : RegistrationState::Unregistered,
+            std::memory_order_release);
     return result;
 }
 
 std::optional<nlohmann::json>
 RoleAPIBase::deregister_producer_channel(const std::string &channel, int timeout_ms)
 {
-    // Wave-B M4d: Class A — route via handler when active.
+    // Class A — route via handler when active.
     auto *bc = pImpl->resolve_bc_for_channel(channel);
     if (!bc || !bc->is_connected())
         return std::nullopt;
-    return bc->deregister_channel(channel, timeout_ms);
+    auto result = bc->deregister_channel(channel, timeout_ms);
+
+    // Audit S1+O4 (2026-05-17): drop the presence's registration
+    // state.  Mark Deregistered regardless of broker outcome — the
+    // role's intent is "I no longer want to be registered"; even if
+    // the broker is offline (no response), our local state should
+    // reflect that we've ceased participation.
+    if (Presence *p = pImpl->handler_
+            ? pImpl->handler_->find_presence_for_channel(channel) : nullptr)
+        p->registration_state.store(RegistrationState::Deregistered,
+                                     std::memory_order_release);
+    return result;
 }
 
 std::optional<nlohmann::json>
 RoleAPIBase::deregister_consumer(const std::string &channel, int timeout_ms)
 {
-    // Wave-B M4d: Class A — route via handler when active.
+    // Class A — route via handler when active.
     auto *bc = pImpl->resolve_bc_for_channel(channel);
     if (!bc || !bc->is_connected())
         return std::nullopt;
-    return bc->deregister_consumer(channel, timeout_ms);
+    auto result = bc->deregister_consumer(channel, timeout_ms);
+    // Audit S1+O4: same FSM drop as the producer path.
+    if (Presence *p = pImpl->handler_
+            ? pImpl->handler_->find_presence_for_channel(channel) : nullptr)
+        p->registration_state.store(RegistrationState::Deregistered,
+                                     std::memory_order_release);
+    return result;
 }
 
 // ============================================================================
@@ -738,41 +760,67 @@ RoleAPIBase::deregister_consumer(const std::string &channel, int timeout_ms)
 
 void RoleAPIBase::deregister_from_broker()
 {
-    // No outer guard: the per-method dereg helpers below
-    // (`deregister_producer_channel`, `deregister_consumer`) each
-    // route via `resolve_bc_for_channel(channel)` and early-return
-    // on null/disconnected BRC.  State-clearing
-    // (`shared.take_*_channel()`) proceeds even when the broker
-    // connection is down — the role host is tearing down anyway,
-    // and we don't want stale registered-channel state to outlive
-    // a broker that went away first.
+    // Audit S1+O4 (2026-05-17): iterate `handler_->presences()` and
+    // dereg every presence whose registration state is Registered
+    // (or RegRequestPending — best-effort dereg of a partially-
+    // completed registration).  Pre-S1 this walked two strings on
+    // `Impl::Shared` (producer_channel / consumer_channel) protected
+    // by a mutex; the new shape sources truth from the per-presence
+    // atomic state instead.
+    //
+    // Ordering: producer presences first, consumer presences second
+    // — preserves the pre-S1 semantics ("drain output before input"
+    // so consumers don't observe data after they've left the
+    // channel).  Each per-method dereg helper routes via
+    // `resolve_bc_for_channel(channel)` and early-returns on
+    // null/disconnected BRC, so we don't need to gate on broker
+    // liveness here.
+    if (!pImpl->handler_) return;
 
-    // Atomic take-and-clear of any registered channel names; the
-    // broker RPC then runs OUTSIDE the lock on the captured locals.
-    // Holding the mutex across `do_request` would block the worker
-    // thread waiting on the ctrl thread to send + receive the reply,
-    // and any future ctrl-thread path that takes the same mutex
-    // would deadlock — see `Impl::Shared` docstring.
-    auto prod = pImpl->shared.take_producer_channel();
-    if (!prod.empty())
+    auto needs_dereg = [](const Presence &p) noexcept {
+        const auto s = p.registration_state.load(std::memory_order_acquire);
+        return s == RegistrationState::Registered ||
+               s == RegistrationState::RegRequestPending;
+    };
+
+    // Pass 1: producer presences.
+    for (const auto &p : pImpl->handler_->presences())
     {
+        if (p.role_kind != RoleKind::Producer) continue;
+        if (!needs_dereg(p)) continue;
         LOGGER_INFO("[{}] ctrl: deregistering producer channel '{}' from broker",
-                    pImpl->role_tag, prod);
-        (void)deregister_producer_channel(prod);
+                    pImpl->role_tag, p.channel);
+        (void)deregister_producer_channel(p.channel);
     }
 
-    auto cons = pImpl->shared.take_consumer_channel();
-    if (!cons.empty())
+    // Pass 2: consumer presences.
+    for (const auto &p : pImpl->handler_->presences())
     {
+        if (p.role_kind != RoleKind::Consumer) continue;
+        if (!needs_dereg(p)) continue;
         LOGGER_INFO("[{}] ctrl: deregistering consumer from channel '{}' from broker",
-                    pImpl->role_tag, cons);
-        (void)deregister_consumer(cons);
+                    pImpl->role_tag, p.channel);
+        (void)deregister_consumer(p.channel);
     }
 }
 
 void RoleAPIBase::on_heartbeat_tick_()
 {
     auto *eng = pImpl->engine;
+
+    // V1 safety gate (2026-05-18): heartbeat ticks run on the master
+    // ctrl thread via `BrokerRequestComm::set_periodic_task`.  A
+    // slow-waker scenario could fire this tick after Phase 3a has
+    // invalidated the context — bail before touching `pImpl->handler_`,
+    // which Phase 4 may have destroyed.  See RoleHostCore "Flag
+    // contract" header block for the discipline.
+    if (pImpl->core != nullptr && !pImpl->core->context_valid())
+    {
+        LOGGER_WARN("[{}] heartbeat tick fired after context "
+                    "invalidated — bailing (V1 safety gate)",
+                    pImpl->role_tag);
+        return;
+    }
 
     // Skip the entire tick (incl. user callback) if the handler isn't
     // attached.  The handler's connections() vector is non-empty by
@@ -781,45 +829,32 @@ void RoleAPIBase::on_heartbeat_tick_()
     if (!pImpl->handler_)
         return;
 
-    // Per HEP-CORE-0019 §2.3 Phase 6 + HEP-CORE-0033 §19: heartbeat is
-    // per-presence — one emission per `(channel, role_type)` row the role
-    // holds, AND each emission carries metrics shaped for THAT presence
-    // (not the role-wide aggregate).  A processor emits 2 heartbeats per
-    // cycle, each with its own per-presence metrics snapshot — the
-    // consumer-presence payload carries rx-queue + in_slots_received,
-    // the producer-presence payload carries tx-queue + out_slots_written
-    // + out_drop_count.  Closes audit H2 (2026-05-15).
+    // Per HEP-CORE-0019 §2.3 Phase 6 + HEP-CORE-0033 §19.3 step 3:
+    // heartbeat is per-presence — iterate `handler_->presences()` and
+    // emit one heartbeat per row.  Each emission carries metrics
+    // shaped for THAT presence's role kind (not the role-wide
+    // aggregate).  A dual-hub processor's two presences (Consumer on
+    // in_hub + Producer on out_hub) emit one heartbeat each to their
+    // own hubs.  Single-hub roles' presence lists have 1 entry and
+    // emit 1 heartbeat.  Closes audit H2 (2026-05-15) + audit C2
+    // (`REVIEW_Connection_Inbox_Band_2026-05-17.md` — replaces
+    // pre-existing `role_tag` string branching that bypassed the
+    // presence list).
     //
-    // Wave-B M4d: BC is resolved per-channel inside the lambda so that
-    // dual-hub processors (M8) route each presence's heartbeat to its
-    // own broker.  Single-hub roles resolve to the same BRC every time.
-    auto emit = [&](const std::string &ch, const char *role_type) {
-        if (ch.empty()) return;
-        auto *bc = pImpl->resolve_bc_for_channel(ch);
-        if (!bc) return;
-        const auto metrics = snapshot_metrics_for_presence(role_type);
-        LOGGER_TRACE("[{}] ctrl: sending heartbeat for '{}' (uid='{}' role_type='{}')",
-                     pImpl->role_tag, ch, pImpl->uid, role_type);
-        bc->send_heartbeat(ch, pImpl->uid, role_type, metrics);
-    };
-
-    if (pImpl->role_tag == "proc")
+    // BC is resolved per-channel via `resolve_bc_for_channel` so each
+    // presence's heartbeat lands on its own hub's BRC (HEP-CORE-0033
+    // §18.3 Class A dispatch).
+    for (const auto &p : pImpl->handler_->presences())
     {
-        emit(pImpl->channel,     "consumer");
-        emit(pImpl->out_channel, "producer");
-    }
-    else if (pImpl->role_tag == "cons")
-    {
-        emit(pImpl->channel, "consumer");
-    }
-    else
-    {
-        // "prod" and any unknown role_tag default to a single producer
-        // presence on `channel` (or `out_channel` if `channel` is unset —
-        // matches the pre-Phase-6 fallback for producers that only call
-        // `set_out_channel`).
-        emit(pImpl->channel.empty() ? pImpl->out_channel : pImpl->channel,
-             "producer");
+        if (p.channel.empty()) continue;
+        auto *bc = pImpl->resolve_bc_for_channel(p.channel);
+        if (!bc) continue;
+        const char *role_type = to_wire_string(p.role_kind);
+        const auto metrics    = snapshot_metrics_for_presence(role_type);
+        LOGGER_TRACE("[{}] ctrl: sending heartbeat for '{}' "
+                     "(uid='{}' role_type='{}')",
+                     pImpl->role_tag, p.channel, pImpl->uid, role_type);
+        bc->send_heartbeat(p.channel, pImpl->uid, role_type, metrics);
     }
 
     if (eng && eng->has_callback("on_heartbeat"))
@@ -900,57 +935,196 @@ bool RoleAPIBase::start_handler_threads(std::unique_ptr<RoleHandler> handler)
         auto *brc = pImpl->handler_->connections()[i].brc.get();
         if (brc == nullptr) continue;  // defensive; should be non-null
 
+        // Audit C3 (2026-05-17): capture this connection's broker
+        // endpoint by value so the lambda can stamp every inbound
+        // message with its origin.  `(broker_endpoint, broker_pubkey)`
+        // is the role-side dedup key per HEP-CORE-0033 §19.2, so
+        // endpoint alone is unique among a role's connections (a role
+        // never holds two HubConnection rows pointing at the same
+        // endpoint).  This populates `IncomingMessage::source_hub_uid`
+        // per HEP-CORE-0023 §7 + HEP-CORE-0033 §18.3 + §19.4 so a
+        // dual-hub processor's script can tell which hub a
+        // notification came from.
+        std::string conn_endpoint =
+            pImpl->handler_->connections()[i].broker_endpoint;
+
         // Notification routing: enqueue every notification to the
         // role's core message queue.  Per-presence tagging (using
         // M4b's find_presence_from_notification) is deferred to M5+ —
         // the script side already reads channel_name from the body.
+        //
+        // V1 (2026-05-18): gate on `core->context_valid()` so a
+        // slow-waker firing this lambda after `stop_handler_threads`
+        // Phase 3a has flipped the flag bails with a WARN instead of
+        // touching `core->enqueue_message` on a tearing-down core.
+        // See RoleHostCore "Flag contract" for the full discipline.
         brc->on_notification(
-            [core, tag_local, i](const std::string &type,
-                                  const nlohmann::json &body)
+            [core, tag_local, i, conn_endpoint = std::move(conn_endpoint)](
+                const std::string &type,
+                const nlohmann::json &body)
             {
+                if (!core->context_valid())
+                {
+                    LOGGER_WARN("[{}/handler_ctrl_{}] notification '{}' "
+                                "fired after context invalidated — "
+                                "bailing (V1 safety gate)",
+                                tag_local, i, type);
+                    return;
+                }
                 LOGGER_TRACE("[{}/handler_ctrl_{}] notification: {}",
                              tag_local, i, type);
                 IncomingMessage msg;
-                msg.event     = type;
+                msg.event           = type;
                 msg.notification_id = pylabhub::scripting::parse_notification_id(type);
-                msg.details   = body;
+                msg.details         = body;
+                msg.source_hub_uid  = conn_endpoint;
                 core->enqueue_message(std::move(msg));
             });
 
-        // Hub-dead policy (A2, Wave-B M8 prep — HEP-CORE-0023 §2.5):
-        //   * Master (i == 0): mark dead in bitmask + set HubDead +
-        //     request_stop.  Role exits because the master ctrl
-        //     thread is the one driving the heartbeat timer; without
-        //     it the broker will reap the role anyway, and any peer
-        //     work depends on the role still running.
-        //   * Peer (i > 0): mark dead in bitmask + WARN only.  Role
-        //     keeps running on the master; the role host or script
-        //     can poll `api.is_connection_alive(i)` to decide
-        //     whether to exit, fail RPCs that need that hub, or
-        //     just continue with degraded service.
+        // Hub-dead policy (audit D1/D2, 2026-05-18 — supersedes the
+        // original A2 master/peer asymmetric direct-stop policy):
+        //
+        // The ctrl-thread lambda below now ENQUEUES a synthetic
+        // HUB_DEAD `IncomingMessage` (with `source_hub_uid` set and
+        // `details["is_master"]` flagged) and lets the worker-thread
+        // dispatcher (`kNotificationTable[HubDead]` →
+        // `invoke_user_hub_dead` or `default_hub_dead` in
+        // cycle_ops.hpp) apply the user override or framework
+        // default.  Default:
+        //   * Master (is_master=true)  → set HubDead + request_stop.
+        //     Required because the master ctrl thread drives the
+        //     heartbeat timer; without it the broker reaps the role.
+        //   * Peer (is_master=false)   → no-op (role keeps running
+        //     on master; preserves pre-D1 peer-non-fatal behavior).
+        //
+        // If the script defines `on_hub_dead`, that callback REPLACES
+        // the default action (uniform with `on_channel_closing` per
+        // user design call 2026-05-15T03:29).  Scripts wishing to
+        // exit on peer-death must define on_hub_dead and call
+        // `api.stop()` inside it; scripts wishing to survive a
+        // master-death must define on_hub_dead and avoid `api.stop()`.
+        //
+        // alive_mask bit-clearing happens here unconditionally
+        // (master + peer) so `api.is_connection_alive(i)` and
+        // `api.connections_alive_count()` reflect truth as soon as
+        // the lambda runs — script callbacks see correct state.
         // Bitmask write is relaxed (single producer per slot — the
         // ctrl thread for connection i is the only writer).
         auto *alive_mask = &pImpl->connection_alive_mask_;
+        // Audit R3.3 (2026-05-17): capture handler + dead-connection
+        // pointer so the lambda can transition presences pointing at
+        // this connection from `Registered` → `Deregistered`.  The
+        // broker on the dead end has already reaped (or will reap)
+        // these presences via heartbeat-timeout; making the role's
+        // FSM mirror that truth means:
+        //   (a) `deregister_from_broker` walking
+        //       `handler_->presences()` filtering by registration
+        //       state will skip the dead-connection presences
+        //       (saving the per-presence DEREG-request blocking
+        //       timeout during teardown).
+        //   (b) external readers asking `presence.registration_state`
+        //       see the truthful state instead of "Registered" on a
+        //       broker that is gone.
+        // `handler_` is owned by pImpl which outlives the lambda
+        // (the lambda lives inside the BRC owned by handler_, which
+        // pImpl owns).  Capturing the raw pointer is safe — there's
+        // no lifetime hole.
+        RoleHandler *handler_ptr = pImpl->handler_.get();
+        const HubConnection *dead_conn =
+            &pImpl->handler_->connections()[i];
+        // Capture the broker endpoint at lambda-creation time so the
+        // synthetic HUB_DEAD msg can carry `source_hub_uid` matching
+        // the connection's stable identifier (HEP-0033 §19.2).  Reading
+        // the endpoint from `pImpl->handler_->connections()[i]` inside
+        // the lambda would race with handler teardown; capturing it
+        // here keeps the value alive as long as the lambda exists.
+        const std::string dead_endpoint =
+            pImpl->handler_->connections()[i].broker_endpoint;
+        const bool is_master_conn = (i == 0);
         brc->on_hub_dead(
-            [core, alive_mask, tag_local, i]()
+            [core, alive_mask, tag_local, i, handler_ptr, dead_conn,
+             dead_endpoint, is_master_conn]()
             {
-                alive_mask->fetch_and(~(std::uint64_t{1} << i),
-                                       std::memory_order_relaxed);
-                if (i == 0)
+                // V1 safety gate (2026-05-18): slow-waker may fire
+                // this lambda after `stop_handler_threads` Phase 3a
+                // has invalidated the context and Phase 4 has
+                // destroyed `handler_` (or is about to).  Bail out
+                // BEFORE dereferencing `handler_ptr` / `dead_conn`
+                // (which would point into the destroyed handler).
+                // See RoleHostCore "Flag contract" for the
+                // discipline.  Note we still update the alive_mask
+                // bit unconditionally — it lives on the
+                // longer-lived Impl (which the wait_for_quiescence
+                // protects via the lambda capture lifetime; the
+                // mask is just a plain atomic int, no destructor
+                // hazard).
+                // acq_rel pairs with the release-ordered init store
+                // (Phase 4) and the acquire-ordered reads in
+                // is_connection_alive / connections_alive_count
+                // (audit M3, 2026-05-18).
+                // Audit S1 (2026-05-18) — fetch the PRIOR bit value so
+                // we can detect a repeat fire.  pylabhub policy:
+                // disconnect is TERMINAL (BRC sets reconnect_ivl=-1
+                // at socket init).  In a correctly-configured build
+                // this lambda runs ≤1 time per connection lifetime.
+                // The defensive gate below logs ERROR + bails if it
+                // fires a second time — surfaces any future config
+                // drift (DRAFT-API enable, code edit re-enabling
+                // reconnect, etc.) loudly instead of silently piling
+                // duplicate HUB_DEAD msgs into incoming_queue_ (which
+                // would push real notifications out at cap=64).
+                const std::uint64_t bit  = std::uint64_t{1} << i;
+                const std::uint64_t prev = alive_mask->fetch_and(
+                                       ~bit, std::memory_order_acq_rel);
+                if ((prev & bit) == 0)
                 {
-                    LOGGER_WARN("[{}/handler_ctrl_{}] hub-dead: MASTER "
-                                "broker connection lost — role will exit",
-                                tag_local, i);
-                    core->set_stop_reason(RoleHostCore::StopReason::HubDead);
-                    core->request_stop();
+                    LOGGER_ERROR("[{}/handler_ctrl_{}] on_hub_dead fired "
+                                 "AGAIN for an already-dead connection "
+                                 "— pylabhub policy VIOLATION "
+                                 "(disconnect is terminal, "
+                                 "reconnect_ivl must be -1; see "
+                                 "HEP-CORE-0023 §2.5).  Suppressing "
+                                 "repeat msg enqueue.",
+                                 tag_local, i);
+                    return;
                 }
-                else
+                if (!core->context_valid())
                 {
-                    LOGGER_WARN("[{}/handler_ctrl_{}] hub-dead: PEER "
-                                "broker connection lost — role continues "
-                                "on master (HEP-CORE-0023 §2.5)",
+                    LOGGER_WARN("[{}/handler_ctrl_{}] hub-dead fired "
+                                "after context invalidated — bailing "
+                                "(V1 safety gate)",
                                 tag_local, i);
+                    return;
                 }
+                // Transition presence FSM out of Registered for any
+                // presence rooted on this dead connection.  Counter
+                // value used only for logging.
+                const std::size_t n_reaped =
+                    handler_ptr->mark_connection_disconnected(dead_conn);
+                LOGGER_WARN("[{}/handler_ctrl_{}] hub-dead: {} broker "
+                            "connection lost ({} presence(s) marked "
+                            "Deregistered) — dispatching HUB_DEAD to "
+                            "worker (default: {})",
+                            tag_local, i,
+                            is_master_conn ? "MASTER" : "PEER",
+                            n_reaped,
+                            is_master_conn ? "stop role" :
+                                             "continue on master");
+                // Enqueue synthetic HUB_DEAD notification so the
+                // worker-thread dispatcher
+                // (`kNotificationTable[HubDead]` in cycle_ops.hpp)
+                // applies the framework default OR fires the
+                // script's `on_hub_dead` callback.  Audit D1/D2
+                // (2026-05-18) — uniform "callback replaces default"
+                // pattern matching `on_channel_closing`.
+                IncomingMessage msg;
+                msg.event           = "HUB_DEAD";
+                msg.notification_id = NotificationId::HubDead;
+                msg.details         = nlohmann::json::object();
+                msg.details["is_master"] = is_master_conn;
+                msg.details["reason"]    = "ctrl_thread_on_hub_dead";
+                msg.source_hub_uid  = dead_endpoint;
+                core->enqueue_message(std::move(msg));
             });
     }
     LOGGER_INFO("[{}] start_handler_threads: Phase 2 OK", pImpl->role_tag);
@@ -1036,7 +1210,16 @@ bool RoleAPIBase::start_handler_threads(std::unique_ptr<RoleHandler> handler)
     const std::uint64_t init_mask = (bits == 64)
         ? ~std::uint64_t{0}
         : ((std::uint64_t{1} << bits) - 1);
-    pImpl->connection_alive_mask_.store(init_mask, std::memory_order_relaxed);
+    // Release ordering: pairs with the acquire load in
+    // `is_connection_alive` / `connections_alive_count` so a reader
+    // is guaranteed to see the fully-initialized mask, not a torn or
+    // partially-written value.  Audit M3 (2026-05-18) tightened this
+    // from `relaxed`; the prior code happened to work in practice
+    // because no reader fires until after a ZMQ event has flowed
+    // through (which establishes happens-before through the kernel
+    // path), but that's an implementation detail of ZMQ + the
+    // scheduler, not a C++ memory-model guarantee.
+    pImpl->connection_alive_mask_.store(init_mask, std::memory_order_release);
 
     // Wave-B M4f (2026-05-16): the previous Phase 4 set
     // `pImpl->broker_channel = handler->connections()[0].brc.get()`
@@ -1098,6 +1281,27 @@ void RoleAPIBase::stop_handler_threads() noexcept
                      pImpl->role_tag, e.what());
     }
 
+    // ── Phase 3a: Invalidate the callback-safety beacon (V1, 2026-05-18) ─
+    //
+    // Between the quiescence wait (Phase 3) and the actual destruction
+    // (Phase 4 below), flip the role's `context_valid_` flag to false.
+    // Every ctrl-thread callback (on_notification, on_hub_dead, the
+    // heartbeat periodic-tick) opens with `if (!core->context_valid())
+    // bail` — so a slow-waker thread whose callback fires AFTER this
+    // point sees an invalidated context and exits cleanly with a WARN
+    // log instead of dereferencing the about-to-be-destroyed
+    // `handler_`.  See `RoleHostCore`'s "Flag contract" header block
+    // for the full discipline and the distinction from `is_running()`.
+    //
+    // Placed LATE on purpose: callbacks during normal teardown
+    // (between Phase 2's `brc.stop()` and Phase 3's wait completing)
+    // are still observed by the bracket+wait mechanism and still do
+    // their full work (mark presences Deregistered, fire DEREG_REQ,
+    // etc.).  Only the rare slow-waker case — where Phase 3 timed out
+    // — relies on this fallback gate.
+    if (pImpl->core != nullptr)
+        pImpl->core->set_context_invalid();
+
     // ── Phase 4: Disconnect + release each BRC, release the handler ──────
     if (pImpl->handler_ != nullptr)
     {
@@ -1123,14 +1327,20 @@ bool RoleAPIBase::is_connection_alive(std::size_t i) const noexcept
     if (i >= 64) return false;   // beyond the bitmask
     if (!pImpl->handler_) return false;
     if (i >= pImpl->handler_->connections().size()) return false;
-    const auto mask = pImpl->connection_alive_mask_.load(std::memory_order_relaxed);
+    // Acquire pairs with the release store in start_handler_threads
+    // Phase 4 init (audit M3, 2026-05-18) and with the release-ordered
+    // bit-clearing from `on_hub_dead` lambdas via fetch_and.
+    const auto mask = pImpl->connection_alive_mask_.load(std::memory_order_acquire);
     return (mask & (std::uint64_t{1} << i)) != 0;
 }
 
 std::size_t RoleAPIBase::connections_alive_count() const noexcept
 {
     if (!pImpl->handler_) return 0;
-    const auto mask = pImpl->connection_alive_mask_.load(std::memory_order_relaxed);
+    // Acquire pairs with the release store in start_handler_threads
+    // Phase 4 init (audit M3, 2026-05-18) and with the release-ordered
+    // bit-clearing from `on_hub_dead` lambdas via fetch_and.
+    const auto mask = pImpl->connection_alive_mask_.load(std::memory_order_acquire);
     // Mask out any bits beyond actual connections (defensive — should
     // be 0 already since init_mask only sets bits 0..n-1).
     const auto n = pImpl->handler_->connections().size();
@@ -1225,7 +1435,20 @@ void RoleAPIBase::log(const std::string &level, const std::string &msg)
 }
 
 void RoleAPIBase::stop()                        { pImpl->core->request_stop(); }
-void RoleAPIBase::set_critical_error()          { pImpl->core->set_critical_error(); }
+void RoleAPIBase::set_critical_error(std::string_view msg)
+{
+    // Audit S2 (2026-05-18) — uniform "[role_tag/uid] CRITICAL: <msg>"
+    // log line for non-empty messages, BEFORE flipping state so log
+    // scrapers see the message adjacent to the stop event.  All three
+    // engines (Python / Lua / Native C) route through here so the log
+    // format is identical regardless of language.
+    if (!msg.empty())
+    {
+        LOGGER_ERROR("[{}/{}] CRITICAL: {}",
+                     pImpl->role_tag, pImpl->uid, msg);
+    }
+    pImpl->core->set_critical_error();
+}
 bool RoleAPIBase::critical_error() const        { return pImpl->core->is_critical_error(); }
 std::string RoleAPIBase::stop_reason() const    { return pImpl->core->stop_reason_string(); }
 
@@ -1252,15 +1475,26 @@ std::optional<nlohmann::json> RoleAPIBase::band_join(const std::string &channel)
         return std::nullopt;
     auto result = bc->band_join(channel);
 
-    // On success, register this band in the handler's band_index_ so
-    // subsequent band_* calls route to the same BRC.  Pre-M5 single-
-    // presence roles always pick presences[0] as the band owner
-    // (only one choice).  M5+ multi-presence roles will need to
-    // decide which presence owns the band based on caller context
-    // (in_hub vs out_hub); the on_band_joined() call signature
-    // already accepts a Presence*, so the decision moves to the
-    // role-host layer without changing this code.
-    if (result.has_value() && pImpl->handler_)
+    // On SUCCESS only, register this band in the handler's band_index_
+    // so subsequent band_* calls route to the same BRC.  Audit R3.5
+    // (2026-05-17): pre-fix this checked only `result.has_value()`,
+    // which treats a broker-error response (`{status: error, ...}`)
+    // as success — polluting band_index_ with an entry that the
+    // broker doesn't actually have us joined on.  Per HEP-CORE-0007
+    // §12.3 a request-reply optional<json> carries the broker's
+    // response body for BOTH success and error cases; only the
+    // status="success" branch represents an admitted join.
+    //
+    // Pre-M5 single-presence roles always pick presences[0] as the
+    // band owner (only one choice).  M5+ multi-presence roles will
+    // need to decide which presence owns the band based on caller
+    // context (in_hub vs out_hub); the on_band_joined() call
+    // signature already accepts a Presence*, so the decision moves
+    // to the role-host layer without changing this code.
+    const bool joined =
+        result.has_value() &&
+        result->value("status", std::string{}) == "success";
+    if (joined && pImpl->handler_)
     {
         const auto &presences = pImpl->handler_->presences();
         if (!presences.empty())
@@ -1272,16 +1506,25 @@ std::optional<nlohmann::json> RoleAPIBase::band_join(const std::string &channel)
 std::optional<nlohmann::json>
 RoleAPIBase::band_leave(const std::string &channel)
 {
-    // Wave-B M4e: Class D — route via handler when active.
+    // Class D (band-bound) — route via handler's band_index_
+    // (HEP-CORE-0033 §18.3).
     auto *bc = pImpl->resolve_bc_for_band(channel);
     if (!bc)
         return std::nullopt;
     auto result = bc->band_leave(channel);
 
-    // On success, remove the band → presence mapping so later
-    // band_* calls don't dangle on a stale route.  Safe to call
-    // when the band isn't indexed (no-op).
-    if (result.has_value() && pImpl->handler_)
+    // On SUCCESS only, remove the band → presence mapping so later
+    // band_* calls don't dangle on a stale route.  Audit R3.5
+    // (2026-05-17): mirror of `band_join` — `has_value()` alone
+    // includes broker-error responses; a `{status: error}` from the
+    // broker means the band is STILL there from the broker's view,
+    // so dropping our routing would create a phantom "broadcast
+    // doesn't reach me" failure mode.  Safe to call when the band
+    // isn't indexed (no-op).
+    const bool left =
+        result.has_value() &&
+        result->value("status", std::string{}) == "success";
+    if (left && pImpl->handler_)
         pImpl->handler_->on_band_left(channel);
     return result;
 }
@@ -1289,14 +1532,31 @@ RoleAPIBase::band_leave(const std::string &channel)
 void RoleAPIBase::band_broadcast(const std::string &channel,
                                   const nlohmann::json &body)
 {
-    // Wave-B M4e: Class D — route via handler when active.
+    // Class D (band-bound) — route via handler's band_index_
+    // (HEP-CORE-0033 §18.3).  Audit V3 (2026-05-18): WARN log on the
+    // not-joined path — pre-fix this was a complete silent no-op (no
+    // log on either the role or broker side, since the request never
+    // reached the wire).  A caller broadcasting to an unjoined band
+    // got zero observable feedback that nothing happened.  Now the
+    // role-side at least logs the misrouting so operators see the
+    // problem in the log.  Fire-and-forget semantics still preserved
+    // — no return value to set.
     if (auto *bc = pImpl->resolve_bc_for_band(channel))
+    {
         bc->band_broadcast(channel, body);
+    }
+    else
+    {
+        LOGGER_WARN("[{}] band_broadcast('{}') dropped — band not in this "
+                    "role's index (must call band_join first)",
+                    pImpl->role_tag, channel);
+    }
 }
 
 std::optional<nlohmann::json> RoleAPIBase::band_members(const std::string &channel)
 {
-    // Wave-B M4e: Class D — route via handler when active.
+    // Class D (band-bound) — route via handler's band_index_
+    // (HEP-CORE-0033 §18.3).
     auto *bc = pImpl->resolve_bc_for_band(channel);
     if (!bc)
         return std::nullopt;

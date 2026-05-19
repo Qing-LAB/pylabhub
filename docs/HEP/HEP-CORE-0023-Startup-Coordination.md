@@ -500,8 +500,11 @@ block — only the three multiplier fields are.
 
 A role declares a list of **presences** at startup — one per
 `(hub, channel, role_kind)` tuple it registers as.  Each presence
-emits its own `HEARTBEAT_REQ` per cycle, carrying `(channel_name, uid,
-role_type)` in the wire payload (per HEP-CORE-0019 §4.1).  Cardinality:
+emits its own `HEARTBEAT_REQ` per cycle, carrying `(channel_name,
+role_uid, role_type)` in the wire payload (per HEP-CORE-0019 §4.1).
+Wire-key naming was unified to `role_uid` (was `uid`) in
+broker_proto 4→5 (audit R3.5b, 2026-05-19); see §2.5.4 below.
+Cardinality:
 
 | Role | Presences | Heartbeats / cycle |
 |---|---|---|
@@ -592,6 +595,123 @@ Naming notes:
 
 These counters give tests a race-free way to assert state
 transitions occurred, without relying on wall-clock sleeps.
+
+### 2.5.3 Disconnection is terminal (audit S1, 2026-05-18)
+
+**pylabhub policy.**  A broker disconnect on a `BrokerRequestComm`
+DEALER socket is **terminal** for that connection.  The framework
+does NOT auto-recover.  Auto-recovery would mean the same DEALER
+silently re-establishes TCP to (a) the same broker process after
+a restart, or (b) a different broker process listening on the
+same endpoint — neither of which knows our role's registration,
+channel subscriptions, heartbeat sequence numbers, or presence
+FSM state.  Re-using the socket would corrupt all of that.
+
+If the role wants to talk to a broker again after a disconnect,
+it MUST do so explicitly at the lifecycle layer: tear down the
+current `RoleHandler` / `BrokerRequestComm` / DEALER and build a
+fresh one with a fresh registration handshake.  This is a
+**role-restart** pattern, not an in-place reconnection.
+
+**Mechanism (`broker_request_comm.cpp` socket init):**
+
+| Concern | ZMQ socket option | pylabhub setting | Why |
+|---|---|---|---|
+| Keep-alive (detect dead peer) | `ZMQ_HEARTBEAT_IVL` | `5000` (5 s) | ZMTP sends PINGs on the established connection. |
+| Keep-alive timeout | `ZMQ_HEARTBEAT_TIMEOUT` | `30000` (30 s) | If no PONG within 30 s, ZMTP tears the connection (`ZMQ_EVENT_DISCONNECTED` fires once). |
+| Auto-reconnect base interval | `ZMQ_RECONNECT_IVL` | **`-1`** (disabled) | libzmq doc: "If the value is -1, no reconnect is performed."  Without this, libzmq's default is 100 ms reconnect interval — a single dead broker would re-fire DISCONNECTED on every flap cycle. |
+| Auto-reconnect backoff ceiling | `ZMQ_RECONNECT_IVL_MAX` | `0` | Belt: even if a future edit re-enables `reconnect_ivl`, exp-backoff ceiling stays unbounded so backoff is observable. |
+| (`ZMQ_RECONNECT_STOP`) | (DRAFT API in libzmq 4.3.3+) | — not enabled | Our libzmq build does NOT enable `ZMQ_BUILD_DRAFT_API` (see `third_party/cmake/libzmq.cmake`); `reconnect_ivl=-1` already prevents reconnect attempts, so DRAFT knobs add nothing. |
+
+Keep-alive and reconnect are **distinct mechanisms**.  Keep-alive
+detects "is the peer still responsive?" → on failure, declare
+dead.  Reconnect decides "should we try to come back?" → with
+default ON, ZMQ silently does it.  We keep keep-alive ON
+(without it a dead broker would only be noticed at next
+message-send) and reconnect OFF (so a single tear is terminal).
+
+**Defensive gate (role_api_base.cpp on_hub_dead lambda).**  The
+role-side lambda also gates on the prior `alive_mask` bit and
+logs ERROR if `on_hub_dead` fires more than once for the same
+connection.  With `reconnect_ivl=-1` this can never happen in a
+correctly-configured build; the gate exists as defense-in-depth
+to surface any future config drift loudly rather than silently
+piling duplicate HUB_DEAD messages into the role's bounded
+incoming queue (`kMaxIncomingQueue=64`).
+
+**Cross-references:**
+
+- HEP-CORE-0033 §19.6 (Hub-dead detection) — the worker-side
+  dispatch path consumes the synthetic HUB_DEAD message.
+- HEP-CORE-0011 §"Stop / critical-error usage" — the role-side
+  `on_hub_dead(source_hub_uid, api)` script callback fires
+  exactly once per (role lifetime, connection) pair.
+
+### 2.5.4 Wire-field naming + grammar enforcement (audit R3.5b, 2026-05-19)
+
+**Canonical wire field naming.**  Every role-context wire message
+in the broker protocol uses the canonical pair `role_uid` /
+`role_name`.  The role tag (`prod` / `cons` / `proc`) is embedded
+inside the uid value per HEP-CORE-0033 §G2.2.0b — flavor-specific
+field names (`consumer_uid`, `sender_uid` on band-broadcast, bare
+`uid` on heartbeat) are redundant and were retired in broker_proto
+4→5.  Federation peer-context `sender_uid` (HUB_TARGETED_MSG,
+hub-emitted CHANNEL_BROADCAST_REQ) carries a `peer.uid` (=
+`hub.<name>.<unique>`) and is a separate axis; that field name is
+preserved.  Inbox-message `sender_uid` (`PyInboxMsg.sender_uid`,
+`plh_inbox_msg_t.sender_uid`, Lua `msg.sender_uid`) identifies the
+authoring producer of an inbox payload — semantically distinct
+from the local role's `role_uid` — and is also preserved.
+
+| Wire message | uid field | name field | Notes |
+|---|---|---|---|
+| `REG_REQ` | `role_uid` | `role_name` | tag must be `prod` or `proc` |
+| `CONSUMER_REG_REQ` | `role_uid` | `role_name` | tag must be `cons` or `proc` (was `consumer_uid`/`consumer_name`) |
+| `DEREG_REQ` | `role_uid` | — | tag must be `prod` or `proc` |
+| `CONSUMER_DEREG_REQ` | `role_uid` | — | tag must be `cons` or `proc` |
+| `HEARTBEAT_REQ` | `role_uid` | — | tag must match `role_type` (was `uid`) |
+| `ROLE_PRESENCE_REQ` / `ROLE_INFO_REQ` | `role_uid` | — | tag in `{prod,cons,proc}` |
+| `BAND_JOIN_REQ` / `BAND_LEAVE_REQ` | `role_uid` | `role_name` | tag in `{prod,cons,proc}` |
+| `BAND_BROADCAST_REQ` | `role_uid` | — | tag in `{prod,cons,proc}` (was `sender_uid`) |
+| `CONSUMER_DIED_NOTIFY` (body) | `role_uid` | — | broker → producers fan-out (was `consumer_uid`) |
+
+**Grammar enforcement at every gate.**  Every wire-boundary
+handler runs `is_valid_identifier(...)` (`src/include/utils/
+naming.hpp`) on `channel_name`, `role_uid`, and (when non-empty)
+`role_name` BEFORE entering any HubState op.  HEP-CORE-0033
+§G2.2.0b is the authoritative grammar.  An empty or malformed
+identifier is rejected with `INVALID_REQUEST` + LOGGER_WARN; on
+fire-and-forget messages (HEARTBEAT_REQ, BAND_BROADCAST_REQ) the
+request is silently dropped with LOGGER_WARN (no reply path).
+
+**Side-aware tag policy.**  In addition to grammar, each gate
+constrains the tag (`prod`/`cons`/`proc`) the role_uid carries:
+
+| Gate | Allowed tags | Why |
+|---|---|---|
+| `REG_REQ`, `DEREG_REQ` | `{prod, proc}` | producer-side; processors register output-channel here |
+| `CONSUMER_REG_REQ`, `CONSUMER_DEREG_REQ` | `{cons, proc}` | consumer-side; processors register input-channel here |
+| `HEARTBEAT_REQ` | derived from `role_type` field — `producer` ⇒ `{prod, proc}`; `consumer` ⇒ `{cons, proc}` | per-presence keying |
+| `ROLE_PRESENCE_REQ`, `ROLE_INFO_REQ`, `BAND_*_REQ` | `{prod, cons, proc}` | side-agnostic queries / joins |
+
+Tag mismatches are rejected with `INVALID_ROLE_TAG`.  Processor
+roles carry a `proc.<name>.<unique>` uid and are accepted on both
+producer-side and consumer-side gates per HEP-CORE-0011's
+dual-presence model.
+
+**Rationale.**  Pre-R3.5b, `RoleIdentityPolicy::Open` (the
+default) silently admitted empty `consumer_uid`; the downstream
+`_on_consumer_joined` then no-op'd `upsert_role_locked` (gated on
+`!consumer_uid.empty()`), leaving the broker with a `ConsumerEntry`
+but no role-presence row — heartbeats and inbox discovery silently
+failed.  Grammar enforcement is now **unconditional**;
+`RoleIdentityPolicy` only controls verification against
+`known_roles` ON TOP of valid grammar.
+
+**Implementation:** `BrokerServiceImpl::validate_identity_fields`
++ `validate_role_uid_only` in `src/utils/ipc/broker_service.cpp`.
+The HUB-side validator is `is_valid_identifier(s, IdentifierKind::
+{Channel,RoleUid,RoleName})` from `naming.hpp`.
 
 ### 2.6 Data Structures
 

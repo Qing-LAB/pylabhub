@@ -138,6 +138,7 @@ class PythonEngine : public ScriptEngine
     void invoke_on_consumer_died(const std::string &channel,
                                   const std::string &consumer_uid,
                                   const std::string &reason) override;
+    void invoke_on_hub_dead(const std::string &source_hub_uid) override;
 
     InvokeResult invoke_produce(
         InvokeTx tx,
@@ -220,6 +221,7 @@ class PythonEngine : public ScriptEngine
     py::object py_on_stop_{py::none()};
     py::object py_on_channel_closing_{py::none()};
     py::object py_on_consumer_died_{py::none()};
+    py::object py_on_hub_dead_{py::none()};
     py::object py_on_produce_{py::none()};
     py::object py_on_consume_{py::none()};
     py::object py_on_process_{py::none()};

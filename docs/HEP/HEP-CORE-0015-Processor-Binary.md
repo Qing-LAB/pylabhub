@@ -471,9 +471,11 @@ api.clear_custom_metrics()
 # Spinlock — output flexzone (index idx in shared spinlock array)
 api.spinlock(idx)        # → context manager; only valid if out_flexzone configured
 
-# Shutdown
-api.stop()
-api.set_critical_error(msg)
+# Shutdown — see HEP-CORE-0011 §"Stop / critical-error usage" for the full taxonomy
+api.stop()                        # graceful stop; stop_reason="normal"
+api.set_critical_error("…")       # critical + framework auto-logs
+                                  #   [role_tag/uid] CRITICAL: …
+                                  # msg is REQUIRED; stop_reason="critical_error"
 ```
 
 ### 6.4 InboxHandle

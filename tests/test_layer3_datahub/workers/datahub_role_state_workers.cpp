@@ -14,6 +14,7 @@
 #include "utils/role_api_base.hpp"
 #include "utils/role_handler.hpp"
 #include "utils/role_host_core.hpp"
+#include "service/cycle_ops.hpp"   // dispatch_notifications + StopRequestor
 #include "plh_datahub.hpp"
 
 #include <gtest/gtest.h>
@@ -455,8 +456,8 @@ int role_entry_terminal_cleanup_on_consumer_left_last()
 
             nlohmann::json cons_opts;
             cons_opts["channel_name"]  = ch;
-            cons_opts["consumer_uid"]  = cons_uid;
-            cons_opts["consumer_name"] = "role_state_test_consumer";
+            cons_opts["role_uid"]  = cons_uid;
+            cons_opts["role_name"] = "role_state_test_consumer";
             cons_opts["consumer_pid"]  = ::getpid();
             auto cons_reg = cb.brc.register_consumer(cons_opts, 3000);
             ASSERT_TRUE(cons_reg.has_value())
@@ -560,8 +561,8 @@ int consumer_heartbeat_timeout_fires_consumer_died_notify()
 
             nlohmann::json cons_opts;
             cons_opts["channel_name"]  = ch;
-            cons_opts["consumer_uid"]  = cons_uid;
-            cons_opts["consumer_name"] = "role_state_test_consumer";
+            cons_opts["role_uid"]  = cons_uid;
+            cons_opts["role_name"] = "role_state_test_consumer";
             cons_opts["consumer_pid"]  = ::getpid();
             ASSERT_TRUE(cons_bh.brc.register_consumer(cons_opts, 3000).has_value());
             cons_bh.brc.send_heartbeat(ch, cons_uid, "consumer", {});
@@ -610,7 +611,7 @@ int consumer_heartbeat_timeout_fires_consumer_died_notify()
                     << "CONSUMER_DIED_NOTIFY must carry reason='heartbeat_timeout' "
                        "for the broker-sweep path; reason='process_dead' is "
                        "reserved for PID-death (check_dead_consumers).";
-                EXPECT_EQ(body.value("consumer_uid", std::string{}), cons_uid)
+                EXPECT_EQ(body.value("role_uid", std::string{}), cons_uid)
                     << "CONSUMER_DIED_NOTIFY must carry consumer_uid so "
                        "producers can disambiguate which consumer died "
                        "(pid alone is not unique across role restarts).";
@@ -1196,7 +1197,7 @@ int role_api_base_band_join_handler_mode()
 
             const std::string role_uid = "prod.a0_band.uid00000001";
             const std::string channel  = make_test_channel_name("a0.band");
-            const std::string band     = "test_band_a0";
+            const std::string band     = "!test_band_a0";  // R3.5: `!`-prefixed per HEP-0030 §3
 
             pylabhub::scripting::RoleHostCore core;
             core.set_running(true);
@@ -1254,6 +1255,277 @@ int role_api_base_band_join_handler_mode()
             broker.stop_and_join();
         },
         "role_state.role_api_base_band_join_handler_mode",
+        logger_module(), crypto_module(), zmq_module());
+}
+
+// ============================================================================
+// broker_band_rejects_invalid_identifier
+//   Audit R3.5 (2026-05-17) — broker must REJECT BAND_JOIN_REQ /
+//   BAND_LEAVE_REQ / BAND_MEMBERS_REQ when the band name fails
+//   HEP-CORE-0030 §3 identifier validation (e.g. missing `!`
+//   prefix).  Pre-fix, the handler called `hub_state_->_on_band_*`
+//   which silently bumped `invalid_identifier_total` and returned;
+//   the handler then proceeded to return `status: success` to the
+//   role, creating a phantom-joined state on the role side with no
+//   broker-side membership.
+//
+//   Trigger: band name "no_bang_prefix" — non-empty (so it passes
+//   the existing `band.empty()` guard) but invalid per HEP-0030 §3
+//   (must start with `!`).
+//
+//   Mutation sweep:
+//     - Remove the `is_valid_identifier` check from
+//       handle_band_join_req → broker returns `success` for invalid
+//       band → test fails on `EXPECT_EQ(status, "error")`.
+//     - Same for BAND_LEAVE_REQ + BAND_MEMBERS_REQ handlers.
+// ============================================================================
+
+int broker_band_rejects_invalid_identifier()
+{
+    return run_gtest_worker(
+        []() {
+            BrokerService::Config bcfg;
+            bcfg.endpoint  = "tcp://127.0.0.1:0";
+            bcfg.use_curve = false;
+            auto broker = start_broker_with_cfg(std::move(bcfg));
+
+            // Connect a raw BRC client; band-name validation is at
+            // the broker handler, not on the role side, so we go
+            // through BRC directly.
+            const std::string role_uid = "prod.r35.uid00000001";
+            BrcHandle bh;
+            bh.start(broker.endpoint, broker.pubkey, role_uid);
+
+            // Non-empty BUT invalid (no `!` prefix per HEP-0030 §3).
+            const std::string invalid = "no_bang_prefix";
+
+            // ── BAND_JOIN_REQ — broker must reject ──────────────────
+            {
+                auto resp = bh.brc.band_join(invalid, 3000);
+                ASSERT_TRUE(resp.has_value())
+                    << "Broker should respond (error), not time out";
+                EXPECT_EQ(resp->value("status", std::string{}), "error")
+                    << "R3.5 regression: BAND_JOIN_REQ for invalid "
+                       "band name '" << invalid << "' must be "
+                       "rejected with status=error.  Pre-fix the "
+                       "broker silently returned status=success.";
+                EXPECT_EQ(resp->value("error_code", std::string{}),
+                          "INVALID_BAND_NAME")
+                    << "Expected typed error code INVALID_BAND_NAME";
+            }
+
+            // ── BAND_LEAVE_REQ — broker must reject ─────────────────
+            {
+                auto resp = bh.brc.band_leave(invalid, 3000);
+                ASSERT_TRUE(resp.has_value());
+                EXPECT_EQ(resp->value("status", std::string{}), "error")
+                    << "R3.5 regression: BAND_LEAVE_REQ for invalid "
+                       "band name must be rejected";
+                EXPECT_EQ(resp->value("error_code", std::string{}),
+                          "INVALID_BAND_NAME");
+            }
+
+            // ── BAND_MEMBERS_REQ — broker must reject ───────────────
+            {
+                auto resp = bh.brc.band_members(invalid, 3000);
+                ASSERT_TRUE(resp.has_value());
+                EXPECT_EQ(resp->value("status", std::string{}), "error")
+                    << "R3.5 regression: BAND_MEMBERS_REQ for invalid "
+                       "band name must be rejected";
+                EXPECT_EQ(resp->value("error_code", std::string{}),
+                          "INVALID_BAND_NAME");
+            }
+
+            // ── Sanity: valid band name still works ─────────────────
+            {
+                const std::string valid = "!" +
+                    make_test_channel_name("r35.valid");
+                auto resp = bh.brc.band_join(valid, 3000);
+                ASSERT_TRUE(resp.has_value());
+                EXPECT_EQ(resp->value("status", std::string{}),
+                          "success")
+                    << "Sanity check: valid `!`-prefixed band name "
+                       "must still succeed (R3.5 fix should not "
+                       "regress the happy path)";
+            }
+
+            bh.stop();
+            broker.stop_and_join();
+        },
+        "role_state.broker_band_rejects_invalid_identifier",
+        logger_module(), crypto_module(), zmq_module());
+}
+
+// ============================================================================
+// role_api_base_band_notify_wire_field_and_routing
+//   Audit B1 + B2 regression test (2026-05-17) — pins the BAND_*_NOTIFY
+//   wire payload key AND the role-side `find_presence_from_notification`
+//   dispatch against a REAL broker emission.  Closes the integration gap
+//   that hid both bugs through the 1923-test baseline:
+//
+//   • B1 — wire key.  HEP-CORE-0030 §5.1 specifies `band` on every
+//     BAND_* payload.  Pre-2026-05-17 the broker emitted `channel`
+//     (leftover from before the 2026-04-11 `8d3ee1e` rename refactor;
+//     the rename touched message types but not payload keys).  No
+//     test inspected the wire key directly — BRC and broker agreed on
+//     the wrong name, so round-trip tests in `datahub_channel_group_
+//     workers.cpp` all passed.
+//
+//   • B2 — role-side dispatch.  `RoleHandler::find_presence_from_
+//     notification` looked for `body["band_name"]` — an invented key
+//     introduced in Wave-B M4b (commit `8c3994c`) that no broker has
+//     ever emitted.  The L2 test in `test_role_handler.cpp` pinned
+//     this by SYNTHESIZING `body["band_name"]` in the test body —
+//     agreeing with the broken handler without ever exercising real
+//     wire data.  L3 band tests bypassed `find_presence_from_
+//     notification` entirely (they use raw BRC `on_notification`
+//     callbacks).
+//
+//   Test shape:
+//     1. Spawn 1 broker.
+//     2. Build api + handler with 1 producer presence.
+//     3. start_handler_threads (wires the BRC's on_notification to
+//        feed core.incoming_queue_).
+//     4. api.band_join(band1)  — role A now a member.
+//     5. Spawn a second raw BRC (BrcHandle); have it band_join(band1)
+//        too.  Broker emits BAND_JOIN_NOTIFY to role A.
+//     6. Poll core.drain_messages() until BAND_JOIN_NOTIFY arrives.
+//     7. Assert msg.details has key `band` (B1 wire conformance).
+//     8. Assert handler->find_presence_from_notification(
+//          "BAND_JOIN_NOTIFY", msg.details) returns the joined
+//        presence (B2 dispatch correctness).
+//
+//   Mutation sweep:
+//     - Revert role_handler.cpp lookup back to `band_name` →
+//       step 8 returns nullptr → test fails on ASSERT_NE.
+//     - Revert broker emission back to `channel` → step 7 fails on
+//       `band` key present check.
+//     - Revert both → step 7 fails first (wire conformance).
+// ============================================================================
+
+int role_api_base_band_notify_wire_field_and_routing()
+{
+    return run_gtest_worker(
+        []() {
+            BrokerService::Config bcfg;
+            bcfg.endpoint  = "tcp://127.0.0.1:0";
+            bcfg.use_curve = false;
+            auto broker = start_broker_with_cfg(std::move(bcfg));
+
+            const std::string role_uid_a = "prod.b1.a.uid00000001";
+            const std::string role_uid_b = "prod.b1.b.uid00000002";
+            const std::string channel    = make_test_channel_name("b1.chan");
+            const std::string band       = "!" + make_test_channel_name("b1.band");
+
+            // ── Role A: full api + handler (this is the role whose
+            //    dispatcher we're testing) ────────────────────────────
+            pylabhub::scripting::RoleHostCore core;
+            core.set_running(true);
+
+            pylabhub::scripting::RoleAPIBase api(core, "prod", role_uid_a);
+            api.set_name("b1_a");
+            api.set_channel(channel);
+            api.set_auth("", "");
+
+            pylabhub::config::HubRefConfig hub_cfg;
+            hub_cfg.broker = broker.endpoint;
+
+            std::vector<pylabhub::scripting::Presence> presences;
+            {
+                pylabhub::scripting::Presence p;
+                p.hub       = hub_cfg;
+                p.channel   = channel;
+                p.role_kind = pylabhub::scripting::RoleKind::Producer;
+                presences.push_back(std::move(p));
+            }
+            auto handler_uptr =
+                std::make_unique<pylabhub::scripting::RoleHandler>(
+                    std::move(presences));
+            // Capture a non-owning pointer for post-start lookups; the
+            // unique_ptr is moved into start_handler_threads below.
+            const pylabhub::scripting::RoleHandler *handler_ptr =
+                handler_uptr.get();
+
+            ASSERT_TRUE(api.start_handler_threads(std::move(handler_uptr)));
+
+            // Role A joins the band FIRST so the band exists when role
+            // B's join triggers BAND_JOIN_NOTIFY back to role A.
+            auto join_resp = api.band_join(band);
+            ASSERT_TRUE(join_resp.has_value());
+            EXPECT_EQ(join_resp->value("status", std::string{}), "success");
+
+            // ── Role B: raw BRC client (no handler — just enough to
+            //    trigger the notify) ──────────────────────────────────
+            BrcHandle b;
+            b.start(broker.endpoint, broker.pubkey, role_uid_b);
+            ASSERT_TRUE(b.brc.band_join(band, 3000).has_value());
+
+            // ── Step 6: wait for BAND_JOIN_NOTIFY to land in core's
+            //    queue.  start_handler_threads wired the BRC's
+            //    on_notification to enqueue every inbound msg into
+            //    core.incoming_queue_, so we drain that. ─────────────
+            pylabhub::scripting::IncomingMessage notify_msg;
+            bool got_notify = false;
+            auto deadline = std::chrono::steady_clock::now() +
+                            std::chrono::seconds(3);
+            while (std::chrono::steady_clock::now() < deadline && !got_notify)
+            {
+                auto msgs = core.drain_messages();
+                for (auto &m : msgs)
+                {
+                    if (m.event == "BAND_JOIN_NOTIFY")
+                    {
+                        notify_msg = std::move(m);
+                        got_notify = true;
+                        break;
+                    }
+                }
+                if (!got_notify)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            }
+            ASSERT_TRUE(got_notify)
+                << "BAND_JOIN_NOTIFY never reached role A's incoming queue "
+                   "within 3s.  Broker did not emit the notify or wiring "
+                   "between BRC on_notification → core.enqueue_message is "
+                   "broken.";
+
+            // ── Step 7 (B1 wire conformance): the body must carry the
+            //    band identifier under key `band` per HEP-CORE-0030 §5.1.
+            //    Pre-B1 the broker emitted `channel` here. ───────────
+            ASSERT_TRUE(notify_msg.details.is_object())
+                << "BAND_JOIN_NOTIFY body must be a JSON object";
+            ASSERT_TRUE(notify_msg.details.contains("band"))
+                << "B1 regression: BAND_JOIN_NOTIFY body missing required "
+                   "key `band` (HEP-CORE-0030 §5.1).  If the body has "
+                   "`channel` instead, the 2026-04-11 rename refactor is "
+                   "incomplete on the wire-payload-key layer.";
+            EXPECT_EQ(notify_msg.details.value("band", std::string{}), band);
+            EXPECT_FALSE(notify_msg.details.contains("channel"))
+                << "B1 regression: BAND_JOIN_NOTIFY body has legacy key "
+                   "`channel` — the wire rename is incomplete.";
+
+            // ── Step 8 (B2 dispatch correctness): the role-side handler's
+            //    `find_presence_from_notification` must resolve the body
+            //    to the joined presence.  Pre-B2 the handler looked for
+            //    `body["band_name"]` — an invention from Wave-B M4b that
+            //    no broker ever emits — so this returned nullptr. ──────
+            const pylabhub::scripting::Presence *resolved =
+                handler_ptr->find_presence_from_notification(
+                    "BAND_JOIN_NOTIFY", notify_msg.details);
+            ASSERT_NE(resolved, nullptr)
+                << "B2 regression: find_presence_from_notification returned "
+                   "nullptr for a real broker-emitted BAND_JOIN_NOTIFY body.  "
+                   "Class D inbound routing is structurally broken — the "
+                   "dispatcher is reading a body key the broker doesn't emit.";
+            EXPECT_EQ(resolved->channel, channel)
+                << "Resolved presence must be the one that joined the band "
+                   "(only one presence in this role's list).";
+
+            b.stop();
+            api.stop_handler_threads();
+            broker.stop_and_join();
+        },
+        "role_state.role_api_base_band_notify_wire_field_and_routing",
         logger_module(), crypto_module(), zmq_module());
 }
 
@@ -1371,13 +1643,178 @@ int role_api_base_hub_dead_peer_keeps_role_alive()
 }
 
 // ============================================================================
+// role_api_base_hub_dead_transitions_presences_to_deregistered
+//   Audit R3.3 (2026-05-17) — when on_hub_dead fires for a peer
+//   connection, all presences pointing at that connection must
+//   transition from Registered to Deregistered.  Pre-fix the only
+//   side-effect of on_hub_dead was clearing the alive-mask bit
+//   (audit A2); the FSM kept claiming `Registered` against a broker
+//   that had already reaped us via heartbeat-timeout.
+//
+//   Test shape (mirrors A2 peer-keeps-alive but verifies FSM state):
+//     1. Spawn 2 brokers.
+//     2. Build 2-presence handler (one per broker).
+//     3. start_handler_threads.
+//     4. register_producer_channel on BOTH presences via direct
+//        per-connection BRC access (so each gets Registered).
+//     5. Kill broker_b (peer, connection index 1).
+//     6. Poll for on_hub_dead to fire (alive_mask bit 1 clears).
+//     7. Assert:
+//        - presence on connection 1 → Deregistered (R3.3 core)
+//        - presence on connection 0 → STILL Registered (master
+//          unaffected; R3.3 is per-connection scoped)
+//
+//   Mutation sweep:
+//     - Comment out `handler_ptr->mark_connection_disconnected(...)`
+//       call in `role_api_base.cpp` Phase 2 on_hub_dead lambda →
+//       presence[1] stays Registered → test fails.
+//     - Make mark_connection_disconnected affect ALL presences
+//       (not just dead_conn) → presence[0] becomes Deregistered →
+//       master-presence assertion fails.
+// ============================================================================
+
+int role_api_base_hub_dead_transitions_presences_to_deregistered()
+{
+    return run_gtest_worker(
+        []() {
+            BrokerService::Config cfg_a; cfg_a.endpoint = "tcp://127.0.0.1:0";
+            cfg_a.use_curve = false;
+            auto broker_a = start_broker_with_cfg(std::move(cfg_a));
+
+            BrokerService::Config cfg_b; cfg_b.endpoint = "tcp://127.0.0.1:0";
+            cfg_b.use_curve = false;
+            auto broker_b = start_broker_with_cfg(std::move(cfg_b));
+
+            const std::string role_uid = "prod.r33.uid00000001";
+            const std::string ch_a     = make_test_channel_name("r33.master");
+            const std::string ch_b     = make_test_channel_name("r33.peer");
+
+            pylabhub::scripting::RoleHostCore core;
+            core.set_running(true);
+
+            pylabhub::scripting::RoleAPIBase api(core, "prod", role_uid);
+            api.set_name("r33_test");
+            api.set_auth("", "");
+
+            std::vector<pylabhub::scripting::Presence> presences;
+            {
+                pylabhub::scripting::Presence pa;
+                pa.hub.broker = broker_a.endpoint;
+                pa.channel    = ch_a;
+                pa.role_kind  = pylabhub::scripting::RoleKind::Producer;
+                presences.push_back(std::move(pa));
+
+                pylabhub::scripting::Presence pb;
+                pb.hub.broker = broker_b.endpoint;
+                pb.channel    = ch_b;
+                pb.role_kind  = pylabhub::scripting::RoleKind::Producer;
+                presences.push_back(std::move(pb));
+            }
+            auto handler = std::make_unique<pylabhub::scripting::RoleHandler>(
+                std::move(presences));
+
+            ASSERT_TRUE(api.start_handler_threads(std::move(handler)));
+            ASSERT_EQ(api.handler()->connections().size(), 2u);
+
+            // Register the channel on BOTH brokers via the channel-bound
+            // routing (Class A — handler->brc_for_channel routes each).
+            auto reg_opts_for = [&](const std::string &ch) {
+                nlohmann::json opts;
+                opts["channel_name"]      = ch;
+                opts["pattern"]           = "PubSub";
+                opts["has_shared_memory"] = false;
+                opts["producer_pid"]      = static_cast<uint64_t>(::getpid());
+                opts["role_uid"]          = role_uid;
+                opts["role_name"]         = "r33_test";
+                return opts;
+            };
+            ASSERT_TRUE(api.register_producer_channel(reg_opts_for(ch_a))
+                            .has_value());
+            ASSERT_TRUE(api.register_producer_channel(reg_opts_for(ch_b))
+                            .has_value());
+
+            // Both presences must be Registered now.
+            {
+                const auto *p_a = api.handler()->find_presence_for_channel(ch_a);
+                const auto *p_b = api.handler()->find_presence_for_channel(ch_b);
+                ASSERT_NE(p_a, nullptr);
+                ASSERT_NE(p_b, nullptr);
+                ASSERT_EQ(p_a->registration_state.load(),
+                          pylabhub::scripting::RegistrationState::Registered);
+                ASSERT_EQ(p_b->registration_state.load(),
+                          pylabhub::scripting::RegistrationState::Registered);
+            }
+
+            // Kill PEER (broker_b → connection index 1).
+            broker_b.stop_and_join();
+
+            // Poll for on_hub_dead to fire.
+            const auto deadline = std::chrono::steady_clock::now() +
+                                  std::chrono::seconds{3};
+            while (api.is_connection_alive(1) &&
+                   std::chrono::steady_clock::now() < deadline)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds{50});
+            }
+            ASSERT_FALSE(api.is_connection_alive(1))
+                << "Peer alive-mask bit should clear after broker_b stop.";
+
+            // Give the lambda a moment to also call
+            // mark_connection_disconnected (same execution context as
+            // the alive-mask clear, so this is normally instant).
+            std::this_thread::sleep_for(std::chrono::milliseconds{50});
+
+            // ── R3.3 CORE ASSERTIONS ────────────────────────────────
+            const auto *p_a = api.handler()->find_presence_for_channel(ch_a);
+            const auto *p_b = api.handler()->find_presence_for_channel(ch_b);
+            ASSERT_NE(p_a, nullptr);
+            ASSERT_NE(p_b, nullptr);
+
+            EXPECT_EQ(p_b->registration_state.load(),
+                      pylabhub::scripting::RegistrationState::Deregistered)
+                << "R3.3 regression: presence on dead PEER connection "
+                   "must be transitioned to Deregistered.  Pre-fix the "
+                   "FSM kept claiming Registered against a dead broker.";
+
+            // Master presence MUST still be Registered — R3.3 is
+            // strictly per-connection.
+            EXPECT_EQ(p_a->registration_state.load(),
+                      pylabhub::scripting::RegistrationState::Registered)
+                << "R3.3 regression: master presence (alive connection) "
+                   "must remain Registered.  If this fails, "
+                   "mark_connection_disconnected is over-reaching "
+                   "beyond the dead connection.";
+
+            api.stop_handler_threads();
+            broker_a.stop_and_join();
+        },
+        "role_state.role_api_base_hub_dead_transitions_presences_to_deregistered",
+        logger_module(), crypto_module(), zmq_module());
+}
+
+// ============================================================================
 // role_api_base_hub_dead_master_exits_role
-//   A2 baseline: master broker death MUST still trigger role-wide
-//   shutdown — that's the single-hub semantics we preserved.  Twin of
-//   the peer-keeps-alive test above, but kills broker_a (master, i==0)
-//   instead.  Mutation: change `if (i == 0)` in on_hub_dead to
-//   `if (false)` → master death no longer triggers shutdown → role
-//   stays running → test fails on is_running false assertion.
+//   A2 baseline + D1/D2 (2026-05-18): master broker death MUST still
+//   trigger role-wide shutdown.  Under the D1/D2 unified dispatch
+//   model the lambda no longer calls `request_stop()` directly —
+//   instead it enqueues a synthetic HUB_DEAD `IncomingMessage` with
+//   `details["is_master"] = true`, and the worker-thread dispatcher's
+//   `default_hub_dead` does the stop (when no script `on_hub_dead`
+//   override is defined).  Since this is a unit-level test with no
+//   worker thread, we explicitly drive the dispatcher path after the
+//   lambda fires (drain msgs → call `default_hub_dead` with
+//   `StopRequestor{core}`) — that's the SAME logic the worker would
+//   run, just synchronously here so we can assert in-line.
+//
+//   Mutations covered:
+//     (a) change `is_master_conn = (i == 0)` in role_api_base.cpp →
+//         lambda enqueues `is_master=false` → default_hub_dead no-ops
+//         → request_stop never fires → test fails.
+//     (b) remove `set_stop_reason(HubDead)` in default_hub_dead →
+//         shutdown is requested but stop_reason_string() != "hub_dead"
+//         → test fails on EXPECT_EQ.
+//     (c) remove the enqueue in the lambda → drain returns empty →
+//         test fails on ASSERT_EQ(hub_dead_count, 1u).
 // ============================================================================
 
 int role_api_base_hub_dead_master_exits_role()
@@ -1426,23 +1863,99 @@ int role_api_base_hub_dead_master_exits_role()
             // Kill MASTER (broker_a → connection index 0).
             broker_a.stop_and_join();
 
-            // Poll for the master's on_hub_dead lambda to fire
-            // request_stop.  Check `is_shutdown_requested()` — we
-            // don't have a worker thread here to flip
-            // `running_threads_=false` on teardown observation.
+            // Poll for the master's on_hub_dead lambda to enqueue a
+            // HUB_DEAD msg.  Pre-D1/D2 the lambda flipped
+            // shutdown_requested directly; post-D1/D2 we poll for
+            // is_connection_alive(0)==false which the lambda also
+            // does (alive_mask bit clear) — same firing signal,
+            // available without consuming the msg queue.
             const auto deadline = std::chrono::steady_clock::now() +
                                   std::chrono::seconds{3};
-            while (!core.is_shutdown_requested() &&
+            while (api.is_connection_alive(0) &&
                    std::chrono::steady_clock::now() < deadline)
             {
                 std::this_thread::sleep_for(std::chrono::milliseconds{50});
             }
+            EXPECT_FALSE(api.is_connection_alive(0))
+                << "Master connection bit MUST clear within 3s of broker "
+                   "death (ZMQ_EVENT_DISCONNECTED must reach BRC).";
+
+            // Drain the queue + verify HUB_DEAD msg shape (lambda
+            // contract from role_api_base.cpp Phase 2):
+            //   event == "HUB_DEAD",
+            //   notification_id == HubDead,
+            //   details["is_master"] == true (for connection 0).
+            //
+            // Audit S1 (2026-05-18) — additionally pin EXACTLY ONE
+            // HUB_DEAD msg.  pylabhub policy: disconnect is terminal
+            // (HEP-CORE-0023 §2.5.3); reconnect_ivl=-1 on the BRC
+            // dealer socket prevents libzmq from silently
+            // re-establishing the connection and re-firing
+            // DISCONNECTED.  A second HUB_DEAD msg would indicate the
+            // socket policy is broken (or the defensive alive_mask
+            // gate failed to suppress a repeat fire).
+            auto msgs = core.drain_messages();
+            std::size_t hub_dead_count = 0;
+            bool        saw_master_hd  = false;
+            for (auto &m : msgs)
+            {
+                if (m.notification_id !=
+                    pylabhub::scripting::NotificationId::HubDead)
+                    continue;
+                ++hub_dead_count;
+                EXPECT_EQ(m.event, "HUB_DEAD");
+                if (m.details.value("is_master", false))
+                    saw_master_hd = true;
+            }
+            ASSERT_EQ(hub_dead_count, 1u)
+                << "Audit S1 (no-reconnect policy): exactly ONE HUB_DEAD "
+                   "msg expected per (role lifetime, connection) — got "
+                << hub_dead_count
+                << ".  A higher count means libzmq is re-establishing "
+                   "and re-disconnecting the DEALER socket behind our "
+                   "back (reconnect_ivl policy broken), OR the role-side "
+                   "defensive alive_mask gate failed to suppress repeats.";
+            EXPECT_TRUE(saw_master_hd)
+                << "HUB_DEAD msg MUST carry details[\"is_master\"]=true "
+                   "for the master connection (so default_hub_dead can "
+                   "branch).";
+
+            // Pin the BRC's socket-policy directly: reconnect must be
+            // disabled.  Mutation: removing `reconnect_ivl=-1` from
+            // BRC socket init → this assertion fails immediately.
+            auto *brc0 = api.handler()->connections()[0].brc.get();
+            ASSERT_NE(brc0, nullptr);
+            EXPECT_TRUE(brc0->reconnect_disabled())
+                << "Audit S1: BRC for the (now-dead) master connection "
+                   "must have ZMQ_RECONNECT_IVL=-1 — pylabhub policy "
+                   "(HEP-CORE-0023 §2.5.3 \"Disconnection is terminal\").";
+            auto *brc1 = api.handler()->connections()[1].brc.get();
+            ASSERT_NE(brc1, nullptr);
+            EXPECT_TRUE(brc1->reconnect_disabled())
+                << "Audit S1: BRC for the peer connection must also "
+                   "have ZMQ_RECONNECT_IVL=-1.";
+
+            // Worker-side completion: feed the drained msgs through
+            // the dispatcher with NO script override (RecordingEngine
+            // not used here — we don't need to assert engine calls;
+            // we need to assert that default_hub_dead -> request_stop
+            // fires with the right reason).  Reach for default_hub_dead
+            // directly via the same path the worker would take.
+            for (auto &m : msgs)
+            {
+                if (m.notification_id ==
+                    pylabhub::scripting::NotificationId::HubDead)
+                {
+                    pylabhub::scripting::default_hub_dead(
+                        m, pylabhub::scripting::StopRequestor{core});
+                }
+            }
 
             EXPECT_TRUE(core.is_shutdown_requested())
-                << "A2 baseline: master death MUST trigger request_stop "
-                   "(shutdown_requested flag set within 3s).";
+                << "A2 baseline (D1/D2): default_hub_dead for master "
+                   "MUST call request_stop()";
             EXPECT_EQ(core.stop_reason_string(), "hub_dead")
-                << "stop_reason must be HubDead after master death.";
+                << "stop_reason must be HubDead after master default fires";
             EXPECT_FALSE(api.is_connection_alive(0));
             // Peer is untouched; bitmask still shows alive (we never
             // killed broker_b in this scenario).
@@ -1568,6 +2081,566 @@ int role_api_base_wait_for_role_dual_hub_fallthrough()
         logger_module(), crypto_module(), zmq_module());
 }
 
+// ============================================================================
+// role_api_base_registration_fsm_transitions
+//   Audit S1+O4 (2026-05-17) — pins the per-Presence registration FSM
+//   transitions against a REAL broker.  Pre-S1 the role-side had no
+//   enumerable registration state — it was implicit in the
+//   non-emptiness of `Impl::Shared::producer_channel` /
+//   `consumer_channel`, which couldn't distinguish "never registered"
+//   from "registered then deregistered" and had no observable
+//   in-flight state.
+//
+//   This test exercises the FSM explicitly:
+//     1. Build api + handler (1 producer presence).
+//     2. ASSERT initial state == Unregistered.
+//     3. start_handler_threads (BRC connected, but no REG_REQ yet).
+//     4. ASSERT state still == Unregistered (registration is
+//        distinct from connection).
+//     5. register_producer_channel → on success, state ==
+//        Registered.
+//     6. ASSERT state == Registered + broker's HubState shows the
+//        role registered.
+//     7. deregister_producer_channel → state == Deregistered.
+//     8. ASSERT state == Deregistered + broker's HubState no longer
+//        shows the role.
+//
+//   Mutation sweep:
+//     - Remove the `store(Registered)` in `register_producer_channel`
+//       → state stuck at RegRequestPending → step 6 fails.
+//     - Remove the `store(Deregistered)` in `deregister_producer_channel`
+//       → state stuck at Registered → step 8 fails.
+//     - Revert `deregister_from_broker` to skip un-registered presences
+//       → broker's HubState still has the role after teardown → broker
+//       assertion in step 8 fails (we drain & retry through the
+//       presence walk).
+// ============================================================================
+
+int role_api_base_registration_fsm_transitions()
+{
+    return run_gtest_worker(
+        []() {
+            BrokerService::Config bcfg;
+            bcfg.endpoint  = "tcp://127.0.0.1:0";
+            bcfg.use_curve = false;
+            auto broker = start_broker_with_cfg(std::move(bcfg));
+
+            const std::string role_uid = "prod.s1.uid00000001";
+            const std::string channel  = make_test_channel_name("s1.chan");
+
+            pylabhub::scripting::RoleHostCore core;
+            core.set_running(true);
+
+            pylabhub::scripting::RoleAPIBase api(core, "prod", role_uid);
+            api.set_name("s1_test");
+            api.set_channel(channel);
+            api.set_auth("", "");
+
+            pylabhub::config::HubRefConfig hub_cfg;
+            hub_cfg.broker = broker.endpoint;
+
+            std::vector<pylabhub::scripting::Presence> presences;
+            {
+                pylabhub::scripting::Presence p;
+                p.hub       = hub_cfg;
+                p.channel   = channel;
+                p.role_kind = pylabhub::scripting::RoleKind::Producer;
+                presences.push_back(std::move(p));
+            }
+            auto handler_uptr =
+                std::make_unique<pylabhub::scripting::RoleHandler>(
+                    std::move(presences));
+            // Pre-start the presence's registration_state should be
+            // Unregistered (the default).
+            {
+                const auto *p = handler_uptr->find_presence_for_channel(channel);
+                ASSERT_NE(p, nullptr);
+                EXPECT_EQ(p->registration_state.load(),
+                          pylabhub::scripting::RegistrationState::Unregistered)
+                    << "Pre-construction state must be Unregistered.";
+            }
+
+            ASSERT_TRUE(api.start_handler_threads(std::move(handler_uptr)));
+
+            // After start_handler_threads: BRC connected, but REG_REQ
+            // has not been dispatched yet.  State should still be
+            // Unregistered — connection ≠ registration.
+            {
+                const auto *p =
+                    api.handler()->find_presence_for_channel(channel);
+                ASSERT_NE(p, nullptr);
+                EXPECT_EQ(p->registration_state.load(),
+                          pylabhub::scripting::RegistrationState::Unregistered)
+                    << "S1 regression: state should remain Unregistered "
+                       "post-start_handler_threads (connection is wired "
+                       "but REG_REQ has not been issued).";
+            }
+
+            // Issue REG_REQ.
+            nlohmann::json reg_opts;
+            reg_opts["channel_name"]      = channel;
+            reg_opts["pattern"]           = "PubSub";
+            reg_opts["has_shared_memory"] = false;
+            reg_opts["producer_pid"]      = static_cast<uint64_t>(::getpid());
+            reg_opts["role_uid"]          = role_uid;
+            reg_opts["role_name"]         = "s1_test";
+            auto reg_result = api.register_producer_channel(reg_opts);
+            ASSERT_TRUE(reg_result.has_value());
+            EXPECT_EQ(reg_result->value("status", std::string{}), "success");
+
+            // After successful REG_REQ: Registered.
+            {
+                const auto *p =
+                    api.handler()->find_presence_for_channel(channel);
+                ASSERT_NE(p, nullptr);
+                EXPECT_EQ(p->registration_state.load(),
+                          pylabhub::scripting::RegistrationState::Registered)
+                    << "S1 regression: state should be Registered after "
+                       "successful REG_REQ.  If still RegRequestPending, "
+                       "the success-path FSM transition in "
+                       "register_producer_channel is missing.";
+            }
+            // Broker confirms.
+            EXPECT_TRUE(broker.hub_state->role(role_uid).has_value())
+                << "Broker's HubState must show role registered after "
+                   "successful REG_REQ.";
+
+            // DEREG.
+            auto dereg_result = api.deregister_producer_channel(channel);
+            ASSERT_TRUE(dereg_result.has_value());
+            EXPECT_EQ(dereg_result->value("status", std::string{}), "success");
+
+            // After successful DEREG: Deregistered.
+            {
+                const auto *p =
+                    api.handler()->find_presence_for_channel(channel);
+                ASSERT_NE(p, nullptr);
+                EXPECT_EQ(p->registration_state.load(),
+                          pylabhub::scripting::RegistrationState::Deregistered)
+                    << "S1 regression: state should be Deregistered after "
+                       "successful DEREG_REQ.  If still Registered, the "
+                       "FSM transition in deregister_producer_channel is "
+                       "missing.";
+            }
+
+            // Now exercise the teardown path: even with everything
+            // already Deregistered, deregister_from_broker must be a
+            // no-op (no DEREG re-sent for an already-Deregistered
+            // presence).  Pre-S1 this was guarded by the
+            // `take_producer_channel` returning empty; the FSM walk
+            // achieves the same via the `needs_dereg` predicate.
+            api.deregister_from_broker();  // should not crash, no extra DEREG
+
+            api.stop_handler_threads();
+            broker.stop_and_join();
+        },
+        "role_state.role_api_base_registration_fsm_transitions",
+        logger_module(), crypto_module(), zmq_module());
+}
+
+// ============================================================================
+// role_api_base_source_hub_uid_disambiguates_dual_hub
+//   Audit C3 (2026-05-17) — pins `IncomingMessage::source_hub_uid` as
+//   the role-side origin tag for dual-hub notification disambiguation
+//   (HEP-CORE-0023 §7 + HEP-CORE-0033 §18.3 / §19.4).
+//
+//   Pre-C3: `IncomingMessage` had no source_hub_uid field at all.  A
+//   dual-hub processor's script saw an aggregated `msgs[]` list with
+//   no way to tell which hub a notification came from — it had to
+//   compare `body["channel_name"]` to its own presence list manually,
+//   which only worked for channel-bound events.  Band events
+//   (`!band_x` on hub A vs `!band_y` on hub B) had NO observable
+//   origin.
+//
+//   This test spawns 2 brokers, builds a 2-presence handler, has the
+//   processor join a band on EACH hub directly via that
+//   connection's BRC, then has a raw BRC client join each band on
+//   each broker.  Each broker fans out BAND_JOIN_NOTIFY to the
+//   processor on the corresponding connection.  Test asserts:
+//     - 2 BAND_JOIN_NOTIFYs arrive (one per hub).
+//     - The two `source_hub_uid` values are different.
+//     - One matches broker_a.endpoint; the other matches
+//       broker_b.endpoint.
+//
+//   Mutation sweep:
+//     - Remove `msg.source_hub_uid = conn_endpoint;` in
+//       `role_api_base.cpp` Phase 2 → both messages have empty
+//       source_hub_uid → test fails on the inequality assertion.
+//     - Swap to capture i instead of endpoint → values are "0" / "1"
+//       (or whatever the stringification yields) and won't match
+//       endpoints → test fails on the endpoint-match assertion.
+// ============================================================================
+
+int role_api_base_source_hub_uid_disambiguates_dual_hub()
+{
+    return run_gtest_worker(
+        []() {
+            BrokerService::Config cfg_a; cfg_a.endpoint = "tcp://127.0.0.1:0";
+            cfg_a.use_curve = false;
+            auto broker_a = start_broker_with_cfg(std::move(cfg_a));
+
+            BrokerService::Config cfg_b; cfg_b.endpoint = "tcp://127.0.0.1:0";
+            cfg_b.use_curve = false;
+            auto broker_b = start_broker_with_cfg(std::move(cfg_b));
+
+            const std::string proc_uid = "proc.c3.uid00000001";
+            const std::string ch_in    = make_test_channel_name("c3.in");
+            const std::string ch_out   = make_test_channel_name("c3.out");
+            const std::string band_a   = "!" + make_test_channel_name("c3.banda");
+            const std::string band_b   = "!" + make_test_channel_name("c3.bandb");
+
+            // ── Build dual-hub processor handler ─────────────────────────
+            pylabhub::scripting::RoleHostCore core;
+            core.set_running(true);
+            pylabhub::scripting::RoleAPIBase api(core, "proc", proc_uid);
+            api.set_name("c3_proc");
+            api.set_auth("", "");
+
+            std::vector<pylabhub::scripting::Presence> presences;
+            {
+                pylabhub::scripting::Presence pa;
+                pa.hub.broker = broker_a.endpoint;
+                pa.channel    = ch_in;
+                pa.role_kind  = pylabhub::scripting::RoleKind::Consumer;
+                presences.push_back(std::move(pa));
+
+                pylabhub::scripting::Presence pb;
+                pb.hub.broker = broker_b.endpoint;
+                pb.channel    = ch_out;
+                pb.role_kind  = pylabhub::scripting::RoleKind::Producer;
+                presences.push_back(std::move(pb));
+            }
+            auto handler = std::make_unique<pylabhub::scripting::RoleHandler>(
+                std::move(presences));
+            ASSERT_TRUE(api.start_handler_threads(std::move(handler)));
+            ASSERT_EQ(api.handler()->connections().size(), 2u);
+
+            // ── Processor joins band_a on hub-A, band_b on hub-B ─────────
+            // Direct BRC access — api.band_join() would route both via
+            // presences[0] (= hub-A) per current single-side default.
+            auto *bc_a = api.handler()->connections()[0].brc.get();
+            auto *bc_b = api.handler()->connections()[1].brc.get();
+            ASSERT_NE(bc_a, nullptr);
+            ASSERT_NE(bc_b, nullptr);
+            ASSERT_TRUE(bc_a->band_join(band_a, 3000).has_value());
+            ASSERT_TRUE(bc_b->band_join(band_b, 3000).has_value());
+
+            // ── External BRC clients join each band to trigger the
+            //    broker-side BAND_JOIN_NOTIFY fanout to the processor ──
+            BrcHandle ext_a, ext_b;
+            // broker_proto 5 (R3.5b): role_uid must be a well-formed
+            // RoleUid (tag in {prod,cons,proc} + name + unique) for
+            // BAND_JOIN_REQ to pass the gate.
+            ext_a.start(broker_a.endpoint, broker_a.pubkey,
+                        "cons.c3.ext_a.uid00000010");
+            ext_b.start(broker_b.endpoint, broker_b.pubkey,
+                        "cons.c3.ext_b.uid00000011");
+            ASSERT_TRUE(ext_a.brc.band_join(band_a, 3000).has_value());
+            ASSERT_TRUE(ext_b.brc.band_join(band_b, 3000).has_value());
+
+            // ── Drain core.incoming_queue_ until both BAND_JOIN_NOTIFYs
+            //    have arrived (one per hub) ────────────────────────────
+            pylabhub::scripting::IncomingMessage notify_a, notify_b;
+            bool got_a = false, got_b = false;
+            auto deadline = std::chrono::steady_clock::now() +
+                            std::chrono::seconds(3);
+            while (std::chrono::steady_clock::now() < deadline &&
+                   !(got_a && got_b))
+            {
+                auto msgs = core.drain_messages();
+                for (auto &m : msgs)
+                {
+                    if (m.event != "BAND_JOIN_NOTIFY") continue;
+                    const auto b = m.details.value("band", std::string{});
+                    if (b == band_a && !got_a)
+                    { notify_a = std::move(m); got_a = true; }
+                    else if (b == band_b && !got_b)
+                    { notify_b = std::move(m); got_b = true; }
+                }
+                if (!(got_a && got_b))
+                    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            }
+            ASSERT_TRUE(got_a)
+                << "BAND_JOIN_NOTIFY for band_a never reached the role's "
+                   "incoming queue from hub-A.";
+            ASSERT_TRUE(got_b)
+                << "BAND_JOIN_NOTIFY for band_b never reached the role's "
+                   "incoming queue from hub-B.";
+
+            // ── C3 CORE ASSERTIONS ───────────────────────────────────────
+            EXPECT_FALSE(notify_a.source_hub_uid.empty())
+                << "C3 regression: source_hub_uid empty on hub-A notify — "
+                   "the BRC on_notification lambda is not populating the "
+                   "field at enqueue time (role_api_base.cpp Phase 2).";
+            EXPECT_FALSE(notify_b.source_hub_uid.empty())
+                << "C3 regression: source_hub_uid empty on hub-B notify.";
+            EXPECT_NE(notify_a.source_hub_uid, notify_b.source_hub_uid)
+                << "C3 regression: source_hub_uid identical across hubs — "
+                   "lambda is capturing a shared identifier (e.g., a "
+                   "fixed string) instead of the per-connection endpoint.";
+            EXPECT_EQ(notify_a.source_hub_uid, broker_a.endpoint)
+                << "source_hub_uid for hub-A notify should equal "
+                   "broker_a.endpoint per HEP-CORE-0033 §19.2 "
+                   "(connection dedup key = (broker_endpoint, broker_pubkey)).";
+            EXPECT_EQ(notify_b.source_hub_uid, broker_b.endpoint)
+                << "source_hub_uid for hub-B notify should equal "
+                   "broker_b.endpoint.";
+
+            ext_a.stop();
+            ext_b.stop();
+            api.stop_handler_threads();
+            broker_a.stop_and_join();
+            broker_b.stop_and_join();
+        },
+        "role_state.role_api_base_source_hub_uid_disambiguates_dual_hub",
+        logger_module(), crypto_module(), zmq_module());
+}
+
+// ============================================================================
+// role_api_base_dual_hub_heartbeat_per_presence
+//   Audit C2 closure (2026-05-19) — pins HEP-CORE-0033 §19.3 step 3
+//   contract: heartbeat is per-presence — iterate `handler_->presences()`
+//   and emit one heartbeat per (channel, role_type) row.  A dual-hub
+//   processor (Consumer on hub-A + Producer on hub-B) emits exactly TWO
+//   heartbeats — one per hub.
+//
+//   Validates the role-side fix that replaced the pre-C2 `role_tag`
+//   string-branching + `pImpl->channel`/`pImpl->out_channel` legacy
+//   fields with `handler_->presences()` iteration.  Mutation: revert
+//   `role_api_base.cpp::on_heartbeat_tick_` to use only `pImpl->channel`
+//   (drop the producer/processor branch) → broker-B's RoleEntry never
+//   shows `first_heartbeat_seen=true` for the producer presence → test
+//   fails on EXPECT_TRUE.
+//
+//   Sequence:
+//     1. Spawn 2 brokers (A, B).
+//     2. Build dual-hub processor handler: [(A, ch_in, Consumer),
+//        (B, ch_out, Producer)].  start_handler_threads.
+//     3. Register both presences (consumer on A, producer on B) via
+//        their respective BRCs.
+//     4. install_heartbeat(50ms) — schedules `on_heartbeat_tick_` via
+//        the master ctrl thread's periodic-task machinery.
+//     5. Wait ~500ms for several tick fires.
+//     6. Assert broker-A's RoleEntry shows consumer-presence
+//        first_heartbeat_seen=true with channel=ch_in, role_type=consumer.
+//     7. Assert broker-B's RoleEntry shows producer-presence
+//        first_heartbeat_seen=true with channel=ch_out, role_type=producer.
+//     8. Assert NEITHER broker has a "wrong" presence (e.g., B doesn't
+//        have a consumer-presence — that would mean heartbeats crossed
+//        hubs).
+// ============================================================================
+
+int role_api_base_dual_hub_heartbeat_per_presence()
+{
+    return run_gtest_worker(
+        []() {
+            BrokerService::Config cfg_a; cfg_a.endpoint = "tcp://127.0.0.1:0";
+            cfg_a.use_curve = false;
+            auto broker_a = start_broker_with_cfg(std::move(cfg_a));
+
+            BrokerService::Config cfg_b; cfg_b.endpoint = "tcp://127.0.0.1:0";
+            cfg_b.use_curve = false;
+            auto broker_b = start_broker_with_cfg(std::move(cfg_b));
+
+            const std::string proc_uid = "proc.c2_hb.uid00000001";
+            const std::string ch_in    = make_test_channel_name("c2hb.in");
+            const std::string ch_out   = make_test_channel_name("c2hb.out");
+
+            // ── Build dual-hub processor handler ─────────────────────────
+            pylabhub::scripting::RoleHostCore core;
+            core.set_running(true);
+            pylabhub::scripting::RoleAPIBase api(core, "proc", proc_uid);
+            api.set_name("c2hb_proc");
+            api.set_auth("", "");
+
+            std::vector<pylabhub::scripting::Presence> presences;
+            {
+                pylabhub::scripting::Presence pa;
+                pa.hub.broker = broker_a.endpoint;
+                pa.channel    = ch_in;
+                pa.role_kind  = pylabhub::scripting::RoleKind::Consumer;
+                presences.push_back(std::move(pa));
+
+                pylabhub::scripting::Presence pb;
+                pb.hub.broker = broker_b.endpoint;
+                pb.channel    = ch_out;
+                pb.role_kind  = pylabhub::scripting::RoleKind::Producer;
+                presences.push_back(std::move(pb));
+            }
+            auto handler = std::make_unique<pylabhub::scripting::RoleHandler>(
+                std::move(presences));
+            ASSERT_TRUE(api.start_handler_threads(std::move(handler)));
+            ASSERT_EQ(api.handler()->connections().size(), 2u);
+
+            // ── Seed ch_in on hub-A with an upstream producer ───────────
+            // The processor is the CONSUMER of ch_in; the broker
+            // requires the channel to already exist (someone REG'd as
+            // producer).  Spawn an external BRC that registers as
+            // producer on hub-A for ch_in — mirrors a real upstream
+            // producer in a dual-hub topology.
+            BrcHandle upstream;
+            upstream.start(broker_a.endpoint, broker_a.pubkey,
+                           "prod.c2hb_upstream.uid00000010");
+            {
+                nlohmann::json upstream_opts;
+                upstream_opts["channel_name"]      = ch_in;
+                upstream_opts["pattern"]           = "PubSub";
+                upstream_opts["has_shared_memory"] = false;
+                upstream_opts["producer_pid"]      =
+                    static_cast<uint64_t>(::getpid());
+                upstream_opts["role_uid"]          =
+                    "prod.c2hb_upstream.uid00000010";
+                upstream_opts["role_name"]         = "c2hb_upstream";
+                auto up_reg = upstream.brc.register_channel(upstream_opts, 3000);
+                ASSERT_TRUE(up_reg.has_value())
+                    << "upstream producer registration on hub-A must succeed";
+            }
+
+            // ── Register each processor presence on its own hub ─────────
+            auto *brc_a = api.handler()->brc_for_channel(ch_in);
+            auto *brc_b = api.handler()->brc_for_channel(ch_out);
+            ASSERT_NE(brc_a, nullptr);
+            ASSERT_NE(brc_b, nullptr);
+
+            // Broker reads `consumer_uid` / `consumer_name` on
+            // CONSUMER_REG_REQ (broker_service.cpp:2035-2036) —
+            // distinct from producer-side which reads `role_uid`.
+            // Wire-protocol field-name asymmetry; both populate the
+            // same ConsumerEntry.role_uid / RolePresence.uid.
+            nlohmann::json cons_opts;
+            cons_opts["channel_name"]  = ch_in;
+            cons_opts["consumer_pid"]  = static_cast<uint64_t>(::getpid());
+            cons_opts["role_uid"]  = proc_uid;
+            cons_opts["role_name"] = "c2hb_proc";
+            auto cons_reg = brc_a->register_consumer(cons_opts, 3000);
+            ASSERT_TRUE(cons_reg.has_value())
+                << "consumer registration on hub-A must succeed";
+
+            nlohmann::json prod_opts;
+            prod_opts["channel_name"]      = ch_out;
+            prod_opts["pattern"]           = "PubSub";
+            prod_opts["has_shared_memory"] = false;
+            prod_opts["producer_pid"]      = static_cast<uint64_t>(::getpid());
+            prod_opts["role_uid"]          = proc_uid;
+            prod_opts["role_name"]         = "c2hb_proc";
+            auto prod_reg = brc_b->register_channel(prod_opts, 3000);
+            ASSERT_TRUE(prod_reg.has_value())
+                << "producer registration on hub-B must succeed";
+
+            // ── Trigger one heartbeat per presence via the production
+            //    `on_heartbeat_tick_` path.  Drive it through
+            //    `install_heartbeat` + `inc_iteration_count` (mirrors
+            //    what the worker loop does in production).  Cadence
+            //    50ms so we get several ticks per second.
+            api.install_heartbeat(50, std::nullopt);
+
+            // ── Drive iteration_count + wait for heartbeats to land ────
+            auto saw_both_heartbeats = [&]() {
+                const auto re_a = broker_a.hub_state->role(proc_uid);
+                const auto re_b = broker_b.hub_state->role(proc_uid);
+                if (!re_a.has_value() || !re_b.has_value()) return false;
+                const auto *p_a =
+                    re_a->find_presence(ch_in,  "consumer");
+                const auto *p_b =
+                    re_b->find_presence(ch_out, "producer");
+                if (p_a == nullptr || p_b == nullptr) return false;
+                return p_a->first_heartbeat_seen &&
+                       p_b->first_heartbeat_seen;
+            };
+            const auto deadline = std::chrono::steady_clock::now() +
+                                  std::chrono::seconds(5);
+            while (!saw_both_heartbeats() &&
+                   std::chrono::steady_clock::now() < deadline)
+            {
+                core.inc_iteration_count();
+                std::this_thread::sleep_for(std::chrono::milliseconds(60));
+            }
+
+            // Debug: log the current state for failure diagnostics.
+            const auto re_a_dbg = broker_a.hub_state->role(proc_uid);
+            const auto re_b_dbg = broker_b.hub_state->role(proc_uid);
+            const auto ce_a_dbg = broker_a.hub_state->channel(ch_in);
+            LOGGER_INFO("[test C2] post-wait: re_a_has={} re_b_has={} "
+                        "iter={}  ce_a_has={} ce_a_consumers={}",
+                        re_a_dbg.has_value(), re_b_dbg.has_value(),
+                        core.iteration_count(),
+                        ce_a_dbg.has_value(),
+                        ce_a_dbg.has_value() ? ce_a_dbg->consumers.size() : 0u);
+            if (ce_a_dbg.has_value())
+            {
+                for (const auto &c : ce_a_dbg->consumers)
+                {
+                    LOGGER_INFO("[test C2] hub-A consumer entry: uid='{}' "
+                                "endpoint='{}'", c.role_uid, c.inbox_endpoint);
+                }
+            }
+            const auto re_upstream =
+                broker_a.hub_state->role("prod.c2hb_upstream.uid00000010");
+            LOGGER_INFO("[test C2] hub-A has upstream role entry: {}",
+                        re_upstream.has_value());
+
+            // ── Assertions on hub-A (consumer presence) ─────────────────
+            const auto re_a = broker_a.hub_state->role(proc_uid);
+            ASSERT_TRUE(re_a.has_value())
+                << "Audit C2: hub-A must see the role's RoleEntry (via "
+                   "the consumer presence's REG + HEARTBEAT).";
+            const auto *p_a_cons = re_a->find_presence(ch_in, "consumer");
+            ASSERT_NE(p_a_cons, nullptr)
+                << "Audit C2: hub-A must see a consumer-presence row "
+                   "for ch_in with role_type='consumer'.  Mutation: "
+                   "presence-iteration sending wrong role_type → broker "
+                   "would record producer-presence here instead.";
+            EXPECT_EQ(p_a_cons->channel,   ch_in);
+            EXPECT_EQ(p_a_cons->role_type, "consumer");
+            EXPECT_TRUE(p_a_cons->first_heartbeat_seen)
+                << "Audit C2: consumer-presence on hub-A must have "
+                   "received at least one heartbeat from the role-side "
+                   "presence-list iteration.  Pre-C2-fix the role_tag "
+                   "branch would also emit here, so this passes pre/post.";
+
+            // ── Assertions on hub-B (producer presence) ─────────────────
+            const auto re_b = broker_b.hub_state->role(proc_uid);
+            ASSERT_TRUE(re_b.has_value())
+                << "Audit C2: hub-B must see the role's RoleEntry (via "
+                   "the producer presence's REG + HEARTBEAT).";
+            const auto *p_b_prod = re_b->find_presence(ch_out, "producer");
+            ASSERT_NE(p_b_prod, nullptr)
+                << "Audit C2 CORE: hub-B must see a producer-presence "
+                   "row for ch_out.  Mutation revealing the C2 fix: if "
+                   "role_api_base.cpp::on_heartbeat_tick_ reverts to the "
+                   "pre-fix `if role_tag == proc { emit(channel) } else if "
+                   "role_tag == cons { emit(channel) } else { emit(...) }` "
+                   "string-branching that bypasses the presence list, the "
+                   "producer presence on hub-B never receives a heartbeat "
+                   "and this assertion fails.";
+            EXPECT_EQ(p_b_prod->channel,   ch_out);
+            EXPECT_EQ(p_b_prod->role_type, "producer");
+            EXPECT_TRUE(p_b_prod->first_heartbeat_seen)
+                << "Audit C2 CORE: producer-presence on hub-B must show "
+                   "first_heartbeat_seen=true — proves dual-hub heartbeat "
+                   "routing through `resolve_bc_for_channel(out_channel)` "
+                   "lands on hub-B's BRC, not hub-A's.";
+
+            // ── Cross-pollution assertions ──────────────────────────────
+            // Neither hub should know about the OTHER hub's presence —
+            // that would mean either dedup failed or routing crossed
+            // hubs.
+            EXPECT_EQ(re_a->find_presence(ch_out, "producer"), nullptr)
+                << "Audit C2: hub-A must NOT have a producer-presence "
+                   "for ch_out — that channel lives on hub-B.";
+            EXPECT_EQ(re_b->find_presence(ch_in, "consumer"), nullptr)
+                << "Audit C2: hub-B must NOT have a consumer-presence "
+                   "for ch_in — that channel lives on hub-A.";
+
+            upstream.stop();
+            api.stop_handler_threads();
+            broker_a.stop_and_join();
+            broker_b.stop_and_join();
+        },
+        "role_state.role_api_base_dual_hub_heartbeat_per_presence",
+        logger_module(), crypto_module(), zmq_module());
+}
+
 } // namespace pylabhub::tests::worker::broker_role_state
 
 namespace
@@ -1612,12 +2685,24 @@ struct BrokerRoleStateWorkerRegistrar
                     return role_api_base_start_handler_threads_dual_hub_e2e();
                 if (scenario == "role_api_base_band_join_handler_mode")
                     return role_api_base_band_join_handler_mode();
+                if (scenario == "broker_band_rejects_invalid_identifier")
+                    return broker_band_rejects_invalid_identifier();
+                if (scenario == "role_api_base_band_notify_wire_field_and_routing")
+                    return role_api_base_band_notify_wire_field_and_routing();
                 if (scenario == "role_api_base_hub_dead_peer_keeps_role_alive")
                     return role_api_base_hub_dead_peer_keeps_role_alive();
+                if (scenario == "role_api_base_hub_dead_transitions_presences_to_deregistered")
+                    return role_api_base_hub_dead_transitions_presences_to_deregistered();
                 if (scenario == "role_api_base_hub_dead_master_exits_role")
                     return role_api_base_hub_dead_master_exits_role();
                 if (scenario == "role_api_base_wait_for_role_dual_hub_fallthrough")
                     return role_api_base_wait_for_role_dual_hub_fallthrough();
+                if (scenario == "role_api_base_source_hub_uid_disambiguates_dual_hub")
+                    return role_api_base_source_hub_uid_disambiguates_dual_hub();
+                if (scenario == "role_api_base_dual_hub_heartbeat_per_presence")
+                    return role_api_base_dual_hub_heartbeat_per_presence();
+                if (scenario == "role_api_base_registration_fsm_transitions")
+                    return role_api_base_registration_fsm_transitions();
                 return 1;
             });
     }

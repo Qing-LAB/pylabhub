@@ -232,7 +232,13 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_producer, m) // NOLINT
         .def("logs_dir",     &producer::ProducerAPI::logs_dir)
         .def("run_dir",      &producer::ProducerAPI::run_dir)
         .def("stop",         &producer::ProducerAPI::stop)
-        .def("set_critical_error",    &producer::ProducerAPI::set_critical_error)
+        .def("set_critical_error",    &producer::ProducerAPI::set_critical_error,
+             py::arg("msg"),
+             "Flag a critical (unrecoverable) error and request shutdown. "
+             "msg is REQUIRED — logged at ERROR level by the framework "
+             "before flipping state (uniform across Python/Lua/Native). "
+             "stop_reason becomes 'critical_error'. For ordinary stop "
+             "use api.stop() (reason='normal').")
         .def("critical_error",        &producer::ProducerAPI::critical_error)
         .def("flexzone",     &producer::ProducerAPI::flexzone,
              py::arg("side") = py::none(),

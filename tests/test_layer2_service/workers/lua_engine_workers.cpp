@@ -21,6 +21,7 @@
 #include "utils/role_api_base.hpp"
 #include "utils/role_host_core.hpp"
 #include "utils/schema_utils.hpp"
+#include "service/cycle_ops.hpp"  // dispatch_notifications + StopRequestor
 
 #include "plh_service.hpp"
 #include "shared_test_helpers.h"
@@ -2441,10 +2442,14 @@ int invoke_produce_stop_on_script_error_sets_shutdown(const std::string &dir)
                 << "stop_on_script_error is a controlled stop, NOT critical "
                    "— critical_error must remain false so the parent role "
                    "host doesn't treat this as a restart-worthy failure";
-            EXPECT_EQ(core.stop_reason_string(), "normal")
-                << "stop_reason stays 'normal' — the shutdown path here is "
-                   "explicit user policy, not the StopReason::CriticalError "
-                   "enum value";
+            // Audit S2 (2026-05-18) — stop_reason is now `script_error`
+            // (was `normal`) so observers can distinguish a
+            // script-bug-driven stop from `api.stop()` / orderly stop.
+            EXPECT_EQ(core.stop_reason_string(), "script_error")
+                << "stop_reason must be 'script_error' after a Lua "
+                   "callback raised AND stop_on_script_error=true "
+                   "(audit S2).  Distinct from 'critical_error' (which "
+                   "is from api.set_critical_error()).";
 
             engine.finalize();
         },
@@ -5654,6 +5659,139 @@ int full_startup_processor_multifield(const std::string &dir)
         Logger::GetLifecycleModule());
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// Real-engine dispatcher integration test (audit Q-strengthen, 2026-05-18)
+//
+// `test_dispatch_notifications.cpp` covers the dispatcher's branch matrix
+// with a `RecordingEngine` mock (see §"CONSTRAINED EXCEPTION" doc-block
+// in that file).  This test SUPPLEMENTS that coverage with one real-
+// engine path: a live `LuaEngine` with a script that defines
+// `on_channel_closing` and records its args into `core.shared_data`.
+//
+// What this test pins that the mock-based tests CANNOT:
+//   - The real engine's `has_callback("on_channel_closing")` cache
+//     (set at `load_script` time via `set_standard_callback_present`)
+//     correctly drives the dispatcher's `if (engine.has_callback(...))`
+//     branch.
+//   - The dispatcher passes the right args (channel + reason) from
+//     `IncomingMessage::details` through `invoke_user_channel_closing`
+//     to the Lua-side `on_channel_closing(channel, reason, api)`
+//     signature.  Argument-name drift or wrong field extraction would
+//     surface here.
+//   - The HUB_DEAD path's `source_hub_uid` propagation works
+//     end-to-end through Lua.
+//
+// What this test does NOT pin (covered elsewhere):
+//   - Default-action branches when override missing — see
+//     `test_dispatch_notifications.cpp::*NoCallback_*`.
+//   - Pattern-A vs Pattern-B (consume vs leave-in-msgs) semantics
+//     for each notification type — same file as above.
+//   - All 4 dispatch table entries × callback present/absent matrix
+//     — same file as above.
+//
+// Mutation localization: removing the
+// `set_standard_callback_present("on_channel_closing", ...)` line from
+// `lua_engine.cpp::load_script` → the cache reports false → the
+// dispatcher takes the default-action branch instead → this test's
+// `recorded_channel` shared-data key is missing → ASSERT_TRUE fires.
+// Similar mutations on `invoke_user_channel_closing` adapter
+// (cycle_ops.hpp) or on `LuaEngine::invoke_on_channel_closing`
+// implementation get caught the same way.
+// ─────────────────────────────────────────────────────────────────────────
+int dispatch_notifications_real_lua_engine_records_args(const std::string &dir)
+{
+    return script_worker(
+        dir, "lua_engine::dispatch_notifications_real_lua_engine_records_args",
+        RoleKind::Producer,
+        R"LUA(
+            -- Override script-side on_channel_closing.  Records the
+            -- args into core.shared_data so the C++ side can read
+            -- them back and verify the dispatcher passed the right
+            -- payload through the real engine's cache + invoke path.
+            function on_channel_closing(channel, reason, api)
+                api.set_shared_data("recorded_channel", channel)
+                api.set_shared_data("recorded_reason",  reason)
+            end
+            -- Required by the producer role's data-loop contract
+            -- (not exercised in this test — we drive dispatch
+            -- directly without invoke_produce).
+            function on_produce(tx, msgs, api)
+                return false
+            end
+        )LUA",
+        [](LuaEngine &engine, RoleHostCore &core) {
+            // Verify the real engine's cache reports the callback
+            // is defined.  Pre-conditions, in case the cache wiring
+            // was broken upstream this catches it before we even
+            // reach the dispatcher.
+            EXPECT_TRUE(engine.has_callback("on_channel_closing"))
+                << "Real LuaEngine's has_callback cache must report "
+                   "true after load_script registered "
+                   "on_channel_closing — set_standard_callback_present "
+                   "in lua_engine.cpp::load_script populates this.";
+            EXPECT_FALSE(engine.has_callback("on_consumer_died"))
+                << "Script did NOT define on_consumer_died — cache "
+                   "must report false (mutation: cache leaks every "
+                   "name as true → would fail here).";
+
+            // Construct a real CHANNEL_CLOSING_NOTIFY IncomingMessage
+            // exactly as the BRC on_notification lambda would
+            // (role_api_base.cpp:983-996).
+            pylabhub::scripting::IncomingMessage msg;
+            msg.event = "CHANNEL_CLOSING_NOTIFY";
+            msg.notification_id =
+                pylabhub::scripting::parse_notification_id(msg.event);
+            msg.details = nlohmann::json::object();
+            msg.details["channel_name"] = "ch.alpha.from.real.engine.test";
+            msg.details["reason"] = "producer_deregistered";
+
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            msgs.push_back(std::move(msg));
+
+            // Drive the REAL dispatcher with the REAL Lua engine.
+            // No mock anywhere in this path.
+            pylabhub::scripting::dispatch_notifications(
+                engine, msgs,
+                pylabhub::scripting::StopRequestor{core});
+
+            // Verify the dispatcher consumed the msg (Pattern A —
+            // always-consume on known notifications).
+            EXPECT_TRUE(msgs.empty())
+                << "Dispatcher must erase known notifications from "
+                   "msgs (single-delivery contract).";
+            // Verify the framework's default did NOT fire — the
+            // script's override replaced it.
+            EXPECT_FALSE(core.is_shutdown_requested())
+                << "Script override fired — framework MUST NOT also "
+                   "request stop (override REPLACES default).";
+
+            // Read back what the Lua script recorded.  This pins
+            // end-to-end: dispatcher → invoke_user_channel_closing
+            // adapter → real LuaEngine::invoke_on_channel_closing
+            // → script callback → set_shared_data → core.
+            auto rc = core.get_shared_data("recorded_channel");
+            ASSERT_TRUE(rc.has_value())
+                << "Lua override must have recorded `channel` arg via "
+                   "api.set_shared_data — missing means the dispatcher "
+                   "did not actually invoke the real Lua callback "
+                   "(despite has_callback returning true).";
+            ASSERT_TRUE(std::holds_alternative<std::string>(*rc));
+            EXPECT_EQ(std::get<std::string>(*rc),
+                      std::string("ch.alpha.from.real.engine.test"))
+                << "Recorded channel must match the value placed in "
+                   "msg.details[\"channel_name\"] — mismatch means "
+                   "invoke_user_channel_closing read the wrong details "
+                   "key or LuaEngine passed the args wrong.";
+
+            auto rr = core.get_shared_data("recorded_reason");
+            ASSERT_TRUE(rr.has_value());
+            ASSERT_TRUE(std::holds_alternative<std::string>(*rr));
+            EXPECT_EQ(std::get<std::string>(*rr),
+                      std::string("producer_deregistered"))
+                << "Recorded reason must match msg.details[\"reason\"].";
+        });
+}
+
 } // namespace lua_engine
 } // namespace pylabhub::tests::worker
 
@@ -5952,6 +6090,8 @@ struct LuaEngineWorkerRegistrar
                     return full_startup_consumer_multifield(dir);
                 if (sc == "full_startup_processor_multifield")
                     return full_startup_processor_multifield(dir);
+                if (sc == "dispatch_notifications_real_lua_engine_records_args")
+                    return dispatch_notifications_real_lua_engine_records_args(dir);
 
                 fmt::print(stderr,
                            "[lua_engine] ERROR: unknown scenario '{}'\n", sc);

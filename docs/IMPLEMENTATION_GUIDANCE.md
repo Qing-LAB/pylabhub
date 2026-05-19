@@ -615,6 +615,84 @@ from recurring at any future teardown call site.
 
 ---
 
+### Role-side ZMQ socket policy (added 2026-05-18)
+
+> **Status**: mandatory for every pylabhub ZMQ socket that crosses
+> process or host boundaries.  Subsystem-agnostic; the same rules
+> apply to BRC (control plane), ZmqQueue (data plane), InboxQueue
+> (peer messaging), and any future ZMQ-using component.
+
+**Policy summary — disconnect is terminal.**  pylabhub runs on
+reliable local networks for scientific data acquisition, not the
+public internet.  We treat a peer disconnect as a TERMINAL event
+for the affected socket.  libzmq's default auto-reconnect is
+INCOMPATIBLE with this contract — a "reconnected" socket may be
+talking to a different process that doesn't know our protocol
+state.  Re-establishment of communication is a lifecycle-layer
+decision (role-restart, tear-down + new connection), NOT something
+the socket layer should do silently.
+
+**Enforcement mechanism.**  All ZMQ socket setup MUST call
+`apply_socket_policy(socket, role)` from
+`utils/zmq_socket_policy.hpp` immediately after
+`socket_t.emplace(...)`, before `bind()` / `connect()`.
+
+```cpp
+#include "utils/zmq_socket_policy.hpp"
+
+pImpl->dealer.emplace(ctx, zmq::socket_type::dealer);
+::pylabhub::utils::apply_socket_policy(
+    *pImpl->dealer,
+    ::pylabhub::utils::ZmqSocketRole::TcpConnect);
+// ... subsystem-specific options (CURVE, ROUTING_ID, HWM) ...
+pImpl->dealer->connect(...);
+```
+
+**4-layer time-bound model** (defense in depth, each layer answers
+a different question):
+
+| # | Layer | Mechanism | Time bound | Catches |
+|---|---|---|---|---|
+| 1 | Connection-state gate | `if (!connected) skip send + log WARN` | 0 ms | DISCONNECTED already observed by monitor — known dead. |
+| 2 | ZMQ send timeout | `ZMQ_SNDTIMEO = 500 ms` (set by `apply_socket_policy`) | 500 ms | Libzmq send stuck (HWM full, internal contention, monitor hasn't fired yet). Caller's try/catch logs `EAGAIN` as WARN. |
+| 3 | Application-level reply timeout | `cv.wait_for(timeout_ms)` per request | 3 000 ms typical | Send succeeded but reply never came. Layer-3 timeout is where slow-network vs dead-peer is finally distinguished. |
+| 4 | ZMTP heartbeat | `HEARTBEAT_IVL=5s` / `HEARTBEAT_TIMEOUT=30s` (set by `apply_socket_policy`) | 30 s | "Live" socket that stopped responding without a clean disconnect. Fires DISCONNECTED → on_dead callback → layer-1 gate engages. |
+
+Layers 1 + 3 are subsystem-specific (each subsystem owns its own
+`connected` flag + per-method timeouts).  Layers 2 + 4 are
+socket-options, set uniformly by `apply_socket_policy`.
+
+**Anti-pattern to avoid: defensive dedup of repeat DISCONNECTED
+events.**  With `reconnect_ivl=-1` a single disconnect fires
+DISCONNECTED once and the socket stays dead.  Code that "just in
+case" guards against repeat fires is suspicious — investigate the
+socket-options block instead.  (BRC has a defense-in-depth gate
+that logs ERROR if this is ever violated; see `role_api_base.cpp`
+on_hub_dead lambda.)
+
+**Cross-references:**
+
+- HEP-CORE-0023 §2.5.3 "Disconnection is terminal" — the canonical
+  contract; describes BRC's specific application of the policy.
+- HEP-CORE-0033 §19.6 — role-side `on_hub_dead` semantics.
+- HEP-CORE-0011 §"Stop / critical-error usage" — script-visible
+  consequence (`on_hub_dead` callback fires at most once per role
+  lifetime per connection).
+
+**Subsystem adoption status (as of 2026-05-18):**
+
+| Subsystem | Helper adopted? | Connected gate? | Notes |
+|---|:-:|:-:|---|
+| BrokerRequestComm (BRC) | ✓ S1 | ✓ S1 | Reference implementation. |
+| ZmqQueue (`hub_zmq_queue.cpp`) | **TODO Phase B** | **TODO Phase B** | Tracked in `docs/todo/API_TODO.md`. |
+| InboxQueue sender (`hub_inbox_queue.cpp`) | **TODO Phase B** | **TODO Phase B** | Tracked in `docs/todo/API_TODO.md`. |
+
+Phase B migrates the remaining subsystems to the helper + adds the
+monitor + connected-state pattern.  Until then, those subsystems
+silently rely on libzmq defaults — known gap.
+
+---
+
 ## DataBlock API, Concurrency, and Protocol
 
 This section documents the current API layers, class relationships, thread-safety model, and protocol behavior (including heartbeat and liveness). It reflects the removal of Layer 1.75 (SlotRWAccess) and the addition of internal mutex protection on Producer/Consumer.

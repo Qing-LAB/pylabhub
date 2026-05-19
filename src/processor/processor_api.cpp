@@ -214,7 +214,11 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_processor, m) // NOLINT
         .def("logs_dir",      &ProcessorAPI::logs_dir)
         .def("run_dir",       &ProcessorAPI::run_dir)
         .def("stop",          &ProcessorAPI::stop)
-        .def("set_critical_error",   &ProcessorAPI::set_critical_error)
+        .def("set_critical_error",   &ProcessorAPI::set_critical_error,
+             py::arg("msg"),
+             "Flag a critical (unrecoverable) error and request shutdown. "
+             "msg is REQUIRED — logged at ERROR level by the framework. "
+             "stop_reason becomes 'critical_error'.")
         .def("critical_error",       &ProcessorAPI::critical_error)
         .def("flexzone",      &ProcessorAPI::flexzone,
              py::arg("side") = py::none(),

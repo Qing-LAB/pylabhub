@@ -10,6 +10,81 @@
 
 ## Current Focus
 
+### 🔥 Connection / Inbox / Band review follow-ups (2026-05-17)
+
+**Authoritative report:** `docs/code_review/REVIEW_Connection_Inbox_Band_2026-05-17.md` — 22 findings; full status table at §8 of that doc.
+
+**D1 — must reconcile (need user direction):**
+- ~~**C1**~~ ✅ FIXED 2026-05-18.  Unified notification-dispatch refactor (HEP-CORE-0011 §"Notification dispatch") collapsed the hub-dead asymmetry question into a uniform "user-override-or-native-default" model.  Framework `default_hub_dead` (in `cycle_ops.hpp`) retains the master/peer asymmetric DEFAULT (master→stop, peer→no-op) so existing single-hub semantics are preserved; script `on_hub_dead` callback (NEW) REPLACES the default — scripts wanting "either-hub-exits" (§19.6 original) can define `on_hub_dead` and call `api.stop()` inside it.  Lambda no longer calls request_stop directly; enqueues HUB_DEAD `IncomingMessage` with `details["is_master"]`.  HEP-0033 §19.6 rewritten.  M1.5 §0 correction documents the chain.  Tests: 5 new `DispatchHubDeadTest` + updated L3 `RoleAPIBase_HubDead_MasterExitsRole`.
+- ~~**B1** — Band wire field name.~~ ✅ FIXED 2026-05-17.  Finished 2026-04-11 rename (`8d3ee1e`) on wire-payload-key layer; proto bumped 3→4.
+- ~~**B2** — `find_presence_from_notification` looked for never-emitted `band_name`.~~ ✅ FIXED 2026-05-17.  Now reads `body["band"]`.
+- ~~**B3** — Triple-name divergence.~~ ✅ FIXED 2026-05-17.  Auto-resolved by B1+B2.
+
+**B1/B2/B3 regression test (closes the 1924-test gap):** `DatahubRoleStateMachineTest.RoleAPIBase_BandNotify_WireField_And_Routing` (`datahub_role_state_workers.cpp:role_api_base_band_notify_wire_field_and_routing`) — drives a real broker emission of BAND_JOIN_NOTIFY and runs the captured body through `RoleHandler::find_presence_from_notification`.  Mutation-tested both directions.
+
+**S1+O4 closed (2026-05-17):** Per-presence registration FSM with atomic `RegistrationState` (Unregistered/RegRequestPending/Registered/Deregistered) lives on `Presence`.  Replaces the implicit `Impl::Shared::producer_channel`/`consumer_channel` strings + 4 mutator methods (all deleted).  `deregister_from_broker` iterates `handler_->presences()` filtering by registration state.  New L3 regression `RoleAPIBase_RegistrationFSM_Transitions` mutation-tested both the success-store path and the dereg-store path.
+
+**TR1 closed (2026-05-17):** `tests/test_framework/wire_conformance.h` adds reusable helpers (`expect_object_has_keys` / `expect_object_lacks_keys` / `expect_string_field` / `expect_int_field`) that pin a wire payload's key set against an authoritative HEP §.  4 new L3 tests use them: REG_ACK + CONSUMER_REG_ACK (HEP-0023 §2.5.1), ROLE_INFO_ACK (HEP-0027 §4.2), BAND_JOIN/LEAVE/MEMBERS_ACK (HEP-0030 §5.1).  Tests pin both required-key presence AND stale-key absence — mutation-sweep verified both directions.
+
+**T1 closed (2026-05-17):** HEP-CORE-0023 §2.5.3 keeps the legacy `ready_to_pending_total`/`pending_to_ready_total` counter names for log-scraper backcompat.  The actual drift was mixed-vocab comments using new "Connected" near references to the legacy `*_to_ready_*` counter names.  Harmonized comment sites in `hub_state.hpp` (BrokerCounters block + 3 method docs) and `hub_state.cpp` (1 site) so every counter reference is accompanied by an explicit "Ready = Connected post-§2" equivalence — readers no longer see two names for the same state without the bridge.
+
+**R3.3 closed (2026-05-17):** `RoleHandler::mark_connection_disconnected(HubConnection*)` added; called from `on_hub_dead` lambda; all presences pointing at the dead connection transition Registered/RegRequestPending → Deregistered.  New L3 regression `RoleAPIBase_HubDead_TransitionsPresencesToDeregistered` mutation-tested.
+
+**R3.5 closed (2026-05-17):** Broker handlers (BAND_JOIN/LEAVE/BROADCAST/MEMBERS_REQ) now explicitly validate band identifiers via `is_valid_identifier(band, IdentifierKind::Band)` and return `INVALID_BAND_NAME` typed errors.  Pre-fix the broker silently accepted invalid names (HubState's validator bumped a counter + returned without the handler observing).  Caught one bad test fixture (A0 used non-`!`-prefixed band) and fixed.  New L3 regression `Broker_Band_RejectsInvalidIdentifier` mutation-tested.
+
+**R3.5b closed (2026-05-19):** Three-prong fix at the broker wire boundary, broker_proto 4→5 clean cut.  Triggered by user-flagged bug — CONSUMER_REG_REQ silently accepted empty `consumer_uid` because `check_role_identity` is a HEP-CORE-0035 placeholder that gates only when policy ≥ Required; under default Open the empty uid sailed through, then `_on_consumer_joined` silently skipped `upsert_role_locked` (no role-presence row → heartbeats no-op → inbox discovery silent).  Fixes: (1) wire-field unification — every role-context message uses `role_uid`/`role_name`: CONSUMER_REG_REQ.consumer_uid → role_uid; HEARTBEAT_REQ.uid → role_uid; BAND_BROADCAST_REQ.sender_uid → role_uid; CONSUMER_DIED_NOTIFY.consumer_uid → role_uid; (2) unconditional grammar check `is_valid_identifier(...)` for channel_name + role_uid + role_name at every REG/DEREG/HEARTBEAT/INFO/PRESENCE/BAND gate (HEP-CORE-0033 §G2.2.0b); (3) side-aware role-tag policy: REG/DEREG accept {prod,proc}; CONSUMER_REG/DEREG accept {cons,proc} (processor dual-role); HEARTBEAT cross-checks role_type against tag.  Federation peer-context `sender_uid` (HUB_TARGETED_MSG etc.) and inbox-message `sender_uid` (PyInboxMsg / plh_inbox_msg_t — authoring-producer field) preserved.  Helper: `validate_identity_fields` + `validate_role_uid_only` in `broker_service.cpp`.  6 new L3 mutation-tests (Gate_RegReq_* + Gate_ConsumerRegReq_*) pin each rejection branch.  Total: **1951/1951** tests pass (1945 baseline + 6 new).
+
+**R3.6 closed (2026-05-17):** `handle_channel_notify_req` deleted entirely.  Investigation revealed the handler was 100% dead — federation actually uses `HUB_RELAY_MSG` (broker↔broker), not `CHANNEL_NOTIFY_REQ`.  Stronger fix than the original "add test coverage" recommendation.  Removed: dispatch entry + known_msg_type list entry + handler body + header declaration.  Old clients receive UNKNOWN_MSG_TYPE.
+
+**Tests: 1940/1940** (baseline 1932 + 8 new dispatcher tests for D1/D2: 2 ChannelClosing semantic-change tests + 1 ConsumerDied default-no-op test + 5 HubDead Pattern-A tests; updated L3 `RoleAPIBase_HubDead_MasterExitsRole` worker to drive the new lambda→dispatcher→default_hub_dead path).
+
+**D1+D2 ship (2026-05-18):** Unified notification-dispatch model — `kNotificationTable[]` in `cycle_ops.hpp` with (callback_name, invoke_user_X, default_X) rows.  Defaults take narrow `StopRequestor` capability (`role_host_core.hpp`).  Reverses M1.5 (`c177c99`, 2026-05-14) "no-default-action" for `on_channel_closing` per user design call 2026-05-15T03:29; adds `on_hub_dead` callback with master/peer asymmetric default; moves the role-side hub-dead policy out of `role_api_base.cpp`'s ctrl-thread lambda (the lambda now enqueues a synthetic HUB_DEAD `IncomingMessage`).  All 3 engines (Python/Lua/Native) parity-verified.  New `StopReason::ChannelClosed=4` + `stop_reason_string()` updated + C ABI doc updated.  Documents updated: HEP-0011 §"Notification dispatch", HEP-0033 §19.6, M1.5 design draft §0, REVIEW_Connection_Inbox_Band_2026-05-17 §C1.
+
+**S1 Phase B (deferred to a focused refactor cycle):**
+
+- **ZmqQueue** (`src/utils/hub/hub_zmq_queue.cpp`) — uses raw
+  `zmq::socket_t` PUSH/PULL with default libzmq policy (no
+  `reconnect_ivl=-1`, no ZMTP heartbeat, no SNDTIMEO, no monitor).
+  Same risk profile BRC had pre-S1.  Phase B: replace inline
+  socket-setup with `apply_socket_policy(*sock, role)` from
+  `utils/zmq_socket_policy.hpp` + add connection-state monitor +
+  connected-flag gate (mirroring BRC's pattern).
+- **InboxQueue sender** (`src/utils/hub/hub_inbox_queue.cpp`) — same
+  story.  DEALER socket sends to peer ROUTER without ZMTP
+  heartbeat, without reconnect-disable, without monitor.  Phase B
+  migrates to the same shape.
+- **Future federation transports** — `HUB_RELAY_MSG`, broker-side
+  ROUTER on the federation peer-channel, etc.  Same rule.
+
+Phase A (S1, 2026-05-18) shipped: BRC migrated; policy documented
+in `docs/IMPLEMENTATION_GUIDANCE.md` § "Role-side ZMQ socket
+policy"; HEP-CORE-0023 §2.5.3 records the canonical contract.
+
+**D2 — drift to land on a tracked plan:**
+- **C2** — Heartbeat tick still branches on `role_tag` string (`role_api_base.cpp:806-823`); HEP-0033 §19.3 says iterate `handler_->presences()`.
+- ~~**C3**~~ ✅ FIXED 2026-05-17 — `IncomingMessage::source_hub_uid` populated from `broker_endpoint`; mutation-tested via `RoleAPIBase_SourceHubUid_Disambiguates_DualHub`.
+- **C4** — Heartbeat tick on master BRC only (`role_api_base.cpp:563-567`); HEP-0033 §19.3 says per-conn.
+- **C5** — `Presence` struct missing `inbox_meta` (HEP-0033 §19.1).  Deferred to Wave-B M5+.
+- **I1** — ROLE_INFO_ACK wire field is `inbox_schema` (object); HEP-0023 §4 + HEP-0027 §4.2 say `inbox_schema_json` (string).  Code self-consistent; HEPs need amending.
+- **I3** — Broker sets `resp["found"] = !inbox_endpoint.empty()` (`broker_service.cpp:3288, 3334`) — semantic overload.  Rename `found` → `has_inbox` in wire.
+- **B4** — `band_index_` entry always uses `presences[0]` (`role_api_base.cpp:1267`).  HEP-0033 §18.3 says role picks; dual-hub processor needs `api.in_hub.band_join` / `api.out_hub.band_join` accessors (or document the deferral).
+- **B5** — `BAND_*_NOTIFY` not catalogued in `NotificationId` (`role_host_core.hpp:77-82`).  HEP-0011 callback-table model side-stepped.
+- **B6** — HEP-0030 §9 retires `CHANNEL_BROADCAST_REQ` aggressively; broker handler + BRC `send_broadcast` + 3 test workers still exercise it.  Channel-bound broadcast ≠ band-bound broadcast.  Either re-affirm both or migrate the tests.
+- **X5** — `Presence::connection` raw pointer + `connections_.reserve` form an implicit contract (`role_handler.cpp:48-57`); future hub-failover work silently breaks pointer stability.
+
+**D3 — polish (batch into one PR):**
+- **X1** — Delete `BrokerRequestComm::send_notify` (`broker_request_comm.cpp:691`) — zero callers.
+- **X2** — Delete `BrokerRequestComm::query_shm_info` (`broker_request_comm.cpp:867`) — zero callers.
+- **X3** — Decide on `Impl::resolve_bc_for_*` 1-line forwarders (`role_api_base.cpp:204-218`).
+- **X4** — Strip stale Wave-B M4d/e/f migration comments (~15 sites in `role_api_base.cpp`).
+- **X6** — Delete `ChecksumRepairPolicy::Repair` dead enum value.
+- **I2** — Fix `hub_inbox_queue.hpp:12` docstring `fixarray[4]` → `fixarray[5]` (cpp is correct at `hub_inbox_queue.cpp:6`).
+
+**Documented-by-design (no action; preserve against deletion attempts):**
+- **I4 / X7** — Inbox metadata stored per-presence; same `inbox_endpoint` string lives on `ChannelEntry.producers[*].inbox_*` AND `ConsumerEntry.inbox_*` for dual-hub processor.  Required by HEP-0027 §4.1 step 7 + HEP-0033 §19.5.
+
+---
+
 ### 🔥 Wave MD1 follow-up — ThreadManager contract adoption sweep (2026-05-12)
 
 **Context.** Wave MD1 (commits forthcoming on `feature/lua-role-support`)

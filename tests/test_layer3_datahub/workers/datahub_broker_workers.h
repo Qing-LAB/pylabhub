@@ -20,6 +20,31 @@ int broker_dereg_happy_path();
 /** Deregister with wrong pid → broker replies NOT_REGISTERED; channel still discoverable. */
 int broker_dereg_pid_mismatch();
 
+// ── R3.5b (2026-05-19) — wire-boundary identifier validation ────────────────
+
+/** REG_REQ with empty role_uid → INVALID_REQUEST (grammar). */
+int broker_gate_reg_req_rejects_empty_uid();
+
+/** REG_REQ with malformed role_uid ("not-a-uid", "prod.", "prod.x") →
+ *  INVALID_REQUEST (HEP-CORE-0033 §G2.2.0b). */
+int broker_gate_reg_req_rejects_malformed_uid();
+
+/** REG_REQ with cons-tagged role_uid → INVALID_ROLE_TAG.
+ *  Producer-side handlers accept {prod, proc} only. */
+int broker_gate_reg_req_rejects_consumer_tag();
+
+/** REG_REQ with proc-tagged role_uid → success.  Processor roles
+ *  register on the producer side for their output channels. */
+int broker_gate_reg_req_accepts_proc_tag();
+
+/** CONSUMER_REG_REQ with prod-tagged role_uid → INVALID_ROLE_TAG.
+ *  Consumer-side handlers accept {cons, proc} only. */
+int broker_gate_consumer_reg_req_rejects_producer_tag();
+
+/** CONSUMER_REG_REQ with proc-tagged role_uid → success.  Processor
+ *  roles register on the consumer side for their input channels. */
+int broker_gate_consumer_reg_req_accepts_proc_tag();
+
 // ── HEP-CORE-0034 Phase 3a — schema record + citation wire-protocol paths ───
 
 /** REG_REQ with schema_packing → broker creates schema record (path B);

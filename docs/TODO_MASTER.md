@@ -110,41 +110,101 @@ nominally open but not blocking.
 
 **Arc B net status**: Wave A + M0..M3 + M4a-e + M5 + M6 + M7 + M8-code-validated done.  Every production role binary (producer / consumer / processor) runs on handler-mode end-to-end.  **M4f (delete legacy `broker_channel`) is the next concrete task; M9 (`RoleHostFrame<HostT>` template consolidation) follows.**
 
-### Combined view — what blocks "dual-hub plh_hub" end-to-end
+### Active code review (2026-05-17)
 
-Both arcs feed the end-state.  Concretely:
+**`docs/code_review/REVIEW_Connection_Inbox_Band_2026-05-17.md`** — holistic audit of connection / inbox / band protocols against HEP-0023, -0027, -0030, -0033 §18/§19.  22 findings: 4 D1 (must reconcile), 9 D2 (drift), 6 D3 (polish).  Status table at end of doc tracks per-finding resolution.
 
-| Blocker | Where it sits | Why it blocks |
+**D1 items needing user direction:**
+- ~~**C1 / D1 / D2**~~ ✅ FIXED 2026-05-18 — **Unified notification dispatch** (`docs/HEP/HEP-CORE-0011-ScriptHost-Abstraction-Framework.md` §"Notification dispatch").  Replaced the two-pattern handler set (Pattern A: default-action-with-override; Pattern B: callback-or-generic-scan) with a single table-driven model where every known notification has BOTH a user-override hook (`invoke_user_X`) AND a native default (`default_X`) in `kNotificationTable[]` (`src/utils/service/cycle_ops.hpp`).  Defaults take a narrow `StopRequestor` capability handle (`src/include/utils/role_host_core.hpp`) exposing only `request(StopReason)`.  Outcomes:  `on_channel_closing` default = stop with `StopReason::ChannelClosed` (reverses the 2026-05-14 M1.5 ship `c177c99` which was OPPOSITE of the user's 2026-05-15T03:29 design call — see `docs/tech_draft/M1.5_channel_closing_redesign_2026-05-12.md` §0).  `on_consumer_died` default = no-op.  `on_hub_dead` default = master→stop with `StopReason::HubDead`, peer→no-op (replaces the old A2 asymmetric inline stop in `role_api_base.cpp`).  Native engine API extended with `plh_hub_dead_args_t` (`src/include/utils/native_invoke_types.h`) + `on_hub_dead` symbol.  All three engines (Python/Lua/Native) parity-verified for all 3 callbacks at every wiring point.  `StopReason::ChannelClosed=4` added + `stop_reason_string()` updated + C ABI doc updated.  7 new HubDead dispatcher tests + rewrote ChannelClosing/ConsumerDied NoCallback tests for the new semantics.  L3 `RoleAPIBase_HubDead_MasterExitsRole` updated to drive the new lambda→dispatcher→default_hub_dead path explicitly.
+- ~~**T3 (Round 2)**~~ ✅ FIXED 2026-05-17 — HEP-0030 §9 amended + new §9.1 documenting channel-bound vs band-bound broadcast coexistence.
+- ~~**B1/B2/B3**~~ ✅ FIXED 2026-05-17 — wire `channel` → `band` (finishing the 2026-04-11 rename); proto bumped 3→4; new L3 regression `RoleAPIBase_BandNotify_WireField_And_Routing` mutation-tested.
+
+**Round 2 review (2026-05-17) — explicit-state audit findings:**
+13 findings appended to `docs/code_review/REVIEW_Connection_Inbox_Band_2026-05-17.md`.  Foundation-building progress:
+- ~~**C3**~~ ✅ FIXED 2026-05-17 — `IncomingMessage::source_hub_uid` populated from BRC `on_notification` lambda capture of `broker_endpoint`; new L3 regression `RoleAPIBase_SourceHubUid_Disambiguates_DualHub` mutation-tested.
+- ~~**S1+O4**~~ ✅ FIXED 2026-05-17 — `RegistrationState` enum + atomic field on `Presence`; `Impl::Shared::producer_channel`/`consumer_channel` strings + 4 mutators deleted; `deregister_from_broker` walks `handler_->presences()` filtering by registration state; new L3 regression `RoleAPIBase_RegistrationFSM_Transitions` mutation-tested.
+- ~~**TR1**~~ ✅ FIXED 2026-05-17 — `tests/test_framework/wire_conformance.h` helpers + 4 new L3 tests pinning REG_ACK / CONSUMER_REG_ACK (HEP-0023 §2.5.1), ROLE_INFO_ACK (HEP-0027 §4.2), BAND_JOIN/LEAVE/MEMBERS_ACK (HEP-0030 §5.1) shapes.  Mutation-tested both `has_keys` and `lacks_keys` paths.
+- ~~**T1**~~ ✅ FIXED 2026-05-17 — Counter rename deferred per HEP-CORE-0023 §2.5.3 (log-scraper backcompat); instead harmonized mixed-vocab comments in `hub_state.hpp` BrokerCounters + 3 method docs + 1 site in `hub_state.cpp` so every `pending_to_ready_total`/`ready_to_pending_total` reference is accompanied by a "Ready = Connected post-§2" equivalence.
+
+**Tests: 1944/1944** (baseline 1932 + 8 D1/D2 dispatcher tests + 3 `apply_socket_policy` tests + 1 `Dispatcher_RealLuaEngine_RecordsArgs` real-engine supplement).
+
+**S1 closed (2026-05-18) — Phase A:** Cross-cutting ZMQ socket policy "disconnect is terminal" (HEP-CORE-0023 §2.5.3 + IMPLEMENTATION_GUIDANCE.md §"Role-side ZMQ socket policy").  Helper `apply_socket_policy(sock, role)` (`src/include/utils/zmq_socket_policy.hpp`) centralizes linger=0, sndtimeo=500ms, heartbeat 5s/30s, reconnect_ivl=-1, reconnect_ivl_max=0.  BRC uses it; ZmqQueue + InboxQueue migration deferred to Phase B (Task #66).  Layer-1 `connected` flag flip on DISCONNECTED + `send_message` gate.  Defensive alive_mask gate in `on_hub_dead` lambda (ERROR log if policy bypassed).  Previously-hanging `HubHost_Shutdown_BreaksClientConnection` test now passes in 3.16s (was 60s SIGKILL).
+
+**S2 closed (2026-05-18):** `StopReason::ScriptError=5` + `stop_reason_string()` case.  Reason set BEFORE `request_stop()` at every script-error site (cycle_ops:281/356/484, python:1510, lua:1473).  `api.set_critical_error(msg)` — message MANDATORY across all 3 engines (Python TypeError on missing, Lua luaL_error on missing/non-string, C ABI v3 tolerates NULL with explicit "(no message — C plugin passed NULL; bug)" placeholder).  C ABI version bumped 2→3 (breaking; verify_abi_ rejects v2 plugins).  HEP-CORE-0011 §"Stop / critical-error usage" subsection added with worked Python/Lua/Native examples.
+
+**D1+D2 closed (2026-05-18):** Unified `kNotificationTable[]` in `cycle_ops.hpp` with per-row (callback_name, invoke_user_X, default_X) — replaces the two-pattern handler taxonomy.  `on_channel_closing` default = stop with `StopReason::ChannelClosed` (reverses M1.5's no-default-action ship).  `on_hub_dead` callback added with master/peer asymmetric default.  `StopRequestor` narrow capability handle (`role_host_core.hpp`) exposes only `request(StopReason)` to defaults — no broader RoleHostCore access.
+
+**V1 closed (2026-05-18):** Added `RoleHostCore::context_valid_` — one-way atomic latch documenting "are the role's data structures safe for a ctrl-thread callback to dereference?".  Flipped in `stop_handler_threads` Phase 3a (after wait_for_quiescence, before destructive Phase 4).  Every ctrl-thread callback (`on_notification`, `on_hub_dead`, heartbeat tick) gates on `core->context_valid()` and bails with `LOGGER_WARN` if invalid — converting the slow-waker use-after-free failure mode to a logged warning.  Comprehensive flag-contract documentation block added to `role_host_core.hpp` class header explaining all four flags (`running_threads_`, `shutdown_requested_`, `critical_error_`, `context_valid_`) by intent + transition timing + audience.  HEP-CORE-0031 §4.1.0 added documenting the bracket+wait primary protection vs context_valid_ fallback.
+
+**Round 3 review (2026-05-17, fresh-eye, post all R1+R2+D3 fixes):**
+8 new findings appended (R3.1–R3.8).  Resolution:
+- ~~**R3.2**~~ ✅ FIXED — `band_join`/`band_leave` status check; misleading test removed (mutation-sweep didn't catch it).
+- ~~**R3.3**~~ ✅ FIXED — `RoleHandler::mark_connection_disconnected()`; called from `on_hub_dead`; mutation-tested.
+- ~~**R3.5**~~ ✅ FIXED — Broker explicitly rejects invalid band names with `INVALID_BAND_NAME` error code in 4 BAND_* handlers; A0 test was using an invalid band name and was caught by R3.5 fix.  Mutation-tested.
+- ~~**R3.6**~~ ✅ FIXED — Investigation revealed handler was DEAD (federation uses `HUB_RELAY_MSG` not `CHANNEL_NOTIFY_REQ`).  Handler DELETED (dispatch + body + header + known_msg_type list).  Stronger than the original "add test" recommendation.
+- **R3.4 / R3.7 / R3.8** — doc + low-priority notes, deferred.
+
+**Meta-lesson from R3.2:** mutation-sweep IS the test for the test.  R3.2's first regression test passed mutation (didn't catch the bug) because of an unrelated defense-in-depth guard; removed the misleading test rather than ship false coverage.
+
+### Combined view — what blocks "dual-hub plh_hub" end-to-end (REFRESHED 2026-05-18)
+
+Both arcs feed the end-state.  **Status update from code/commit reading
+(not memory):** Arc A is substantially complete (HEP-0033 Phases 1–9
+shipped); Arc B is much further along than the original
+"M3..M9 blocks" framing — **M0..M8 are all shipped**, with M8 currently
+**code-validated** (real-broker dual-hub E2E test passes) but **not
+yet binary-validated** (no demo / L4 plh_role-binary dual-hub test).
+Only M9 (template refactor — code-quality, not capability) remains
+truly pending in Arc B.
+
+| Item | State | Effect on dual-hub deliverable |
 |---|---|---|
-| **Wave-B M3..M9** | Arc B, role side | Without `RoleHandler` + N-presence support, role binaries cannot register on more than one hub.  Even though `plh_hub` itself is ready (Arc A complete), a dual-hub deployment has no role binary to talk to it that way. |
-| **HEP-CORE-0035 auth** | Hub character / security | Currently the `RoleIdentityPolicy` is a placeholder; CURVE is mandatory but key admission policy is not yet implemented.  Production-readiness gap, not a renovation blocker, but listed because it's a major remaining HUB-side item. |
-| **HUB_TARGETED_ACK wire frame** | HEP-0033 §12.3.6 / §13 | Peer-to-peer message ACK frame is deferred; `on_peer_message` C++ surface is in place (Phase 8c) but the wire bit isn't wired.  Independent of dual-hub; would only affect federation use cases. |
-| **HEP-0033 Phase 10 doc amendment** | Arc A docs | HEP-CORE-0019 §9 per-producer metrics tree shape and a cross-reference survey are listed as remaining.  Not blocking code; doc hygiene. |
+| ~~**Wave-B M3..M8**~~ | ✅ all shipped (M3 → `bff5c61`, M4 → `5d927e0`..`6da5837`, M5 → `7ac9aa2`, M6 → `72a4e49`, M7 → `4fe40d0`, M8 → `4fe40d0` payoff via L3 dual-hub E2E) | **Dual-hub code path WORKS** as verified by `RoleAPIBase_StartHandlerThreads_DualHub_E2E` + `ProcessorRoleHost::worker_main_` constructing 2-presence list.  |
+| **Wave-B M9** | ⏳ pending | `RoleHostFrame<HostT>` template (refactor for future role additions).  Does NOT add capability — current 3 roles work without it. |
+| **L4 dual-hub binary test** (Task #44) | ⏳ pending — the actual gap | Without this, M8 is "code-validated" not "demo-validated".  Spawns 2 `plh_hub` + producer/processor/consumer `plh_role` binaries; verifies data flows end-to-end across both hubs.  See `docs/todo/MESSAGEHUB_TODO.md` "L4 processor + consumer test infrastructure". |
+| **Wave-D demos** | ⏳ pending | Per `role_host_template_design.md §14`: demos rewrite LAST, after Wave-B + C close.  D2 is the "does dual-hub actually work?" final integration validation.  Cannot meaningfully ship until L4 test infrastructure (Task #44) exists. |
+| **HEP-CORE-0035 auth** | ⏳ pending (placeholder) | Production-readiness gap.  CURVE keys mandatory but `RoleIdentityPolicy` is a placeholder.  Independent of dual-hub mechanics; would block production deployment. |
+| **HUB_TARGETED_ACK wire frame** | ⏳ pending | Federation-only.  C++ surface in place; only the wire bit deferred.  Not on dual-hub critical path. |
+| **HEP-0033 Phase 10 doc amendment** | ⏳ pending | HEP-CORE-0019 §9 per-producer metrics tree + cross-reference survey.  Doc hygiene; not blocking code. |
 
-### Next concrete task — Wave-B M4f (delete `broker_channel`)
+### Current critical path (REFRESHED 2026-05-18)
 
-**Scope**:
-- Delete `pImpl->broker_channel` field + `set_broker_comm()` +
-  `start_ctrl_thread()` (legacy single-hub ctrl thread path).
-- Strip the helper fallback (`return broker_channel;` line in each
-  of `resolve_bc_for_channel/role/band` — the helpers become pure
-  `handler->brc_for_*()` lookups; null result becomes `nullptr`
-  return, callers' existing `!bc` guards handle it).
-- Remove the M4c fallback-view set/clear pair in
-  `start_handler_threads`/`stop_handler_threads` (lines ~1135 +
-  ~1207).
-- Remove `deregister_from_broker`'s "is any broker around?" outer
-  guard — handler null check + per-method guards inside the dereg
-  helpers are sufficient.
-- Audit + delete any remaining role-binary callers that still own
-  a `broker_comm_` BRC + call `set_broker_comm` (producer /
-  consumer / processor role hosts).  All role binaries must be on
-  `start_handler_threads` by M4f land time.
+**The dual-hub fix is substantively DONE.**  What's actually limiting
+"can we ship a verified dual-hub plh_hub?" is **end-to-end
+binary-level validation** of the M8 payoff.  Critical-path ordering:
 
-**Blocked by**: M5..M7 — role hosts must migrate from legacy
-`start_ctrl_thread` + owned-BRC pattern to `start_handler_threads`
-+ handler-owned BRC before `broker_channel` can disappear.  M4f
-is the final consolidation step after that migration.
+1. **[HIGH] L4 processor + consumer test infrastructure** (Task #44 — already pending).
+   Builds the test harness that spawns real `plh_hub` + role binaries and verifies pipelines end-to-end.
+   Direct unblock for the L4 dual-hub-processor test + Wave-D D2 demo.
+   Pre-existing gap, not specific to Wave-B; this is the single biggest "what's blocking the dual-hub deliverable" item.
+
+2. **[HIGH] Wave-D D2 — dual-processor-bridge demo rewrite.**
+   Final integration validation against the now-known-good Arc-A+Arc-B substrate.
+   `role_host_template_design.md §14` flagged demos LAST for exactly this reason.
+   Depends on (1).
+
+3. **[MED] Wave-B M9 — `RoleHostFrame<HostT>` template.**
+   Pure refactor — current 3 roles work without it; template makes future role additions cheap.
+   Doesn't block (1) or (2).  Could ship before, after, or in parallel.
+
+4. **[MED] HEP-CORE-0035 auth implementation.**
+   Production-readiness gap, separate from dual-hub mechanics.
+   Currently CURVE keys mandatory but admission policy is placeholder.
+   Blocks production deployment but NOT shipping a working dual-hub demo.
+
+5. **[LOW] Audit follow-ups from the May 2026 hygiene cycle:**
+   - **Q3** — master+peer simultaneous death callback semantics (edge case, dual-hub-adjacent).
+   - **Q4** — drop-on-teardown notifications in the data-loop-exit window (generic correctness).
+   - **S1 Phase B** (Task #66) — migrate `ZmqQueue` + `InboxQueue` to `apply_socket_policy` + connection-state monitor + the 4-layer time-bound model.  Same risk profile BRC had pre-S1.
+   - **HUB_TARGETED_ACK** wire frame.
+   - **HEP-0033 Phase 10** doc amendment.
+   - ~~**R3.5b**~~ ✅ SHIPPED 2026-05-19 — wire-field unification (broker_proto 4→5) + grammar + side-aware role-tag validation at every REG/DEREG/HEARTBEAT/INFO/PRESENCE/BAND gate.  Fixes user-flagged silent-acceptance bug on empty `consumer_uid`.  Renames `consumer_uid`/`uid`/`sender_uid` (role-context only) → `role_uid`.  6 new L3 mutation-tests; full suite 1951/1951.  Permanent docs: HEP-CORE-0023 §2.5.4, HEP-CORE-0033 §G2.2.0b.8, HEP-CORE-0030 §5.1+§5.3.  Closure: `docs/todo/API_TODO.md` § "R3.5b closed".  Migration plan archived to `docs/archive/transient-2026-05-19/`.
+
+   All deferrable; none on the dual-hub critical path.
+
+**Recommendation:** focus on (1) → (2) to finish the dual-hub
+deliverable end-to-end.  (3)–(5) are quality / production-readiness
+items separable from the renovation goal.
 
 ### Wave-B M2 closure note (2026-05-15)
 

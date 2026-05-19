@@ -229,6 +229,7 @@ bool LuaEngine::load_script(const std::filesystem::path &script_dir,
     ref_on_stop_ = extract_callback_ref_("on_stop");
     ref_on_channel_closing_ = extract_callback_ref_("on_channel_closing");
     ref_on_consumer_died_   = extract_callback_ref_("on_consumer_died");
+    ref_on_hub_dead_        = extract_callback_ref_("on_hub_dead");
     ref_on_produce_ = extract_callback_ref_("on_produce");
     ref_on_consume_ = extract_callback_ref_("on_consume");
     ref_on_process_ = extract_callback_ref_("on_process");
@@ -249,6 +250,8 @@ bool LuaEngine::load_script(const std::filesystem::path &script_dir,
                                   state_.is_ref_callable(ref_on_channel_closing_));
     set_standard_callback_present("on_consumer_died",
                                   state_.is_ref_callable(ref_on_consumer_died_));
+    set_standard_callback_present("on_hub_dead",
+                                  state_.is_ref_callable(ref_on_hub_dead_));
     set_standard_callback_present("on_produce", state_.is_ref_callable(ref_on_produce_));
     set_standard_callback_present("on_consume", state_.is_ref_callable(ref_on_consume_));
     set_standard_callback_present("on_process", state_.is_ref_callable(ref_on_process_));
@@ -1121,6 +1124,26 @@ void LuaEngine::invoke_on_consumer_died(const std::string &channel,
 }
 
 // ============================================================================
+// invoke_on_hub_dead — on_hub_dead(source_hub_uid, api)
+// ============================================================================
+
+void LuaEngine::invoke_on_hub_dead(const std::string &source_hub_uid)
+{
+    if (!state_.is_ref_callable(ref_on_hub_dead_))
+        return;
+
+    lua_State *L = state_.raw();
+    lua_rawgeti(L, LUA_REGISTRYINDEX, ref_on_hub_dead_);
+    lua_pushlstring(L, source_hub_uid.data(), source_hub_uid.size());
+    lua_rawgeti(L, LUA_REGISTRYINDEX, ref_api_);
+
+    if (!state_.pcall(2, 0, "on_hub_dead"))
+    {
+        on_pcall_error_("on_hub_dead");
+    }
+}
+
+// ============================================================================
 // invoke_produce — on_produce(tx, msgs, api) -> bool
 // ============================================================================
 
@@ -1447,7 +1470,11 @@ InvokeResult LuaEngine::on_pcall_error_(const std::string &callback_name)
         LOGGER_ERROR("[{}] stop_on_script_error: requesting shutdown after {} error",
                      log_tag_, callback_name);
         if (core)
+        {
+            // Audit S2 (2026-05-18) — see PythonEngine for rationale.
+            core->set_stop_reason(RoleHostCore::StopReason::ScriptError);
             core->request_stop();
+        }
     }
     return InvokeResult::Error;
 }
@@ -1462,6 +1489,8 @@ void LuaEngine::clear_refs_()
     ref_on_channel_closing_ = LUA_NOREF;
     state_.unref(ref_on_consumer_died_);
     ref_on_consumer_died_ = LUA_NOREF;
+    state_.unref(ref_on_hub_dead_);
+    ref_on_hub_dead_ = LUA_NOREF;
     state_.unref(ref_on_produce_);
     ref_on_produce_ = LUA_NOREF;
     state_.unref(ref_on_consume_);
@@ -1986,9 +2015,17 @@ int LuaEngine::lua_api_stop(lua_State *L)
 int LuaEngine::lua_api_set_critical_error(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    // Audit S2 (2026-05-18) — msg is REQUIRED across all three engines
+    // (Python / Lua / Native C).  Raise a Lua error if missing /
+    // wrong-type so the script author sees the mistake immediately
+    // (matches Python's pybind11 TypeError for a missing required arg).
+    if (lua_gettop(L) < 1 || lua_isnil(L, 1) || !lua_isstring(L, 1))
+        return luaL_error(L,
+            "api.set_critical_error(msg) requires a string message argument");
     const char *msg = lua_tostring(L, 1);
-    LOGGER_ERROR("[{}-lua] CRITICAL: {}", self->log_tag_, msg ? msg : "(no message)");
-    self->api_->core()->set_critical_error();
+    // Forward to RoleAPIBase so the log line format is uniform across
+    // Python / Lua / Native engines: "[role_tag/uid] CRITICAL: <msg>".
+    self->api_->set_critical_error(std::string_view{msg});
     return 0;
 }
 

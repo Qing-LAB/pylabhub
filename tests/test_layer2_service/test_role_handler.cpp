@@ -514,12 +514,17 @@ TEST(RoleHandlerRouting, OnBandJoined_PopulatesIndex_FindByNotification)
     // Record join.
     h.on_band_joined("my.band", p);
 
-    // Notification with band_name routes to this presence.
+    // BAND_*_NOTIFY body carries the band identifier under the
+    // `band` key per HEP-CORE-0030 §5.1.  Pre-audit-B2 (2026-05-17)
+    // this test synthesized `body["band_name"]` — an invented field
+    // name that no broker ever emits — so it passed against the
+    // matching invention in `find_presence_from_notification`
+    // without exercising the real wire shape.
     nlohmann::json body;
-    body["band_name"] = "my.band";
+    body["band"] = "my.band";
     EXPECT_EQ(h.find_presence_from_notification("BAND_BROADCAST_NOTIFY", body), p)
         << "After on_band_joined, find_presence_from_notification "
-           "resolves band_name to the joined presence.";
+           "resolves body['band'] to the joined presence.";
 }
 
 TEST(RoleHandlerRouting, OnBandJoined_Idempotent_SamePair)
@@ -536,7 +541,7 @@ TEST(RoleHandlerRouting, OnBandJoined_Idempotent_SamePair)
     h.on_band_joined("my.band", p);  // idempotent
 
     nlohmann::json body;
-    body["band_name"] = "my.band";
+    body["band"] = "my.band";
     EXPECT_EQ(h.find_presence_from_notification("X", body), p);
 }
 
@@ -561,7 +566,7 @@ TEST(RoleHandlerRouting, OnBandJoined_OverwriteDifferentPresence_LastWins)
     h.on_band_joined("shared.band", p1);
 
     nlohmann::json body;
-    body["band_name"] = "shared.band";
+    body["band"] = "shared.band";
     EXPECT_EQ(h.find_presence_from_notification("X", body), p1)
         << "Last-wins: second on_band_joined overrides the band-to-"
            "presence mapping.";
@@ -581,7 +586,7 @@ TEST(RoleHandlerRouting, OnBandLeft_RemovesIndex)
     h.on_band_left("my.band");
 
     nlohmann::json body;
-    body["band_name"] = "my.band";
+    body["band"] = "my.band";
     EXPECT_EQ(h.find_presence_from_notification("X", body), nullptr)
         << "Post-on_band_left, the band is no longer in the index.";
 
@@ -626,13 +631,13 @@ TEST(RoleHandlerRouting, FindPresenceFromNotification_NoChannelNoBand_Nullptr)
     RoleHandler h(std::move(presences));
 
     // Role-scope notification example: ROLE_DEREGISTERED_NOTIFY
-    // typically has role_uid + reason, NOT channel_name or band_name.
+    // typically has role_uid + reason, NOT channel_name or band.
     nlohmann::json body;
     body["role_uid"] = "prod.someone.uid";
     body["reason"]   = "voluntary_close";
     EXPECT_EQ(h.find_presence_from_notification("ROLE_DEREGISTERED_NOTIFY", body),
               nullptr)
-        << "No channel_name or band_name → caller routes via other "
+        << "No channel_name or band → caller routes via other "
            "logic (role-scope notifications don't bind to a "
            "specific presence).";
 }
@@ -655,11 +660,11 @@ TEST(RoleHandlerRouting, FindPresenceFromNotification_NotObject_Nullptr)
 
 TEST(RoleHandlerRouting, FindPresenceFromNotification_ChannelTakesPrecedenceOverBand)
 {
-    // When a notification body carries BOTH channel_name AND
-    // band_name (rare but possible if a relay forwards a band event
-    // through a channel context), channel routing wins.  Docstring
-    // says: "Inspects body['channel_name'] FIRST (Class A), then
-    // body['band_name'] (Class D)."
+    // When a notification body carries BOTH channel_name AND band
+    // (rare but possible if a relay forwards a band event through a
+    // channel context), channel routing wins.  Docstring says:
+    // "Inspects body['channel_name'] FIRST (Class A — HEP-0007),
+    // then body['band'] (Class D — HEP-0030 §5.1)."
     std::vector<Presence> presences;
     presences.push_back(make_presence(
         "ch.priority", RoleKind::Producer, make_hub("tcp://127.0.0.1:5570")));
@@ -675,7 +680,7 @@ TEST(RoleHandlerRouting, FindPresenceFromNotification_ChannelTakesPrecedenceOver
 
     nlohmann::json body;
     body["channel_name"] = "ch.priority";
-    body["band_name"]    = "the.band";
+    body["band"]    = "the.band";
 
     EXPECT_EQ(h.find_presence_from_notification("X", body), p_ch)
         << "Both fields present → channel wins per docstring "
@@ -690,7 +695,7 @@ TEST(RoleHandlerRouting, OnBandJoined_NullPresence_NoOp)
     h.on_band_joined("my.band", nullptr);
 
     nlohmann::json body;
-    body["band_name"] = "my.band";
+    body["band"] = "my.band";
     EXPECT_EQ(h.find_presence_from_notification("X", body), nullptr);
 }
 
@@ -708,6 +713,6 @@ TEST(RoleHandlerRouting, OnBandJoined_EmptyBandName_NoOp)
     h.on_band_joined("", p);
 
     nlohmann::json body;
-    body["band_name"] = "";
+    body["band"] = "";
     EXPECT_EQ(h.find_presence_from_notification("X", body), nullptr);
 }

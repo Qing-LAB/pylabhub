@@ -338,17 +338,21 @@ int broker_schema_mismatch()
             cfg.use_curve = false;
             auto broker = start_broker_in_thread(std::move(cfg));
 
-            const std::string channel = "broker.mismatch.ch";
-            const uint64_t pid = pylabhub::platform::get_pid();
+            const std::string channel  = "broker.mismatch.ch";
+            const std::string role_uid = "prod.broker.mismatch.uid00000001";
+            const uint64_t    pid      = pylabhub::platform::get_pid();
 
-            // First registration — succeeds
+            // First registration — succeeds.  broker_proto 5 (R3.5b)
+            // requires a valid role_uid at the gate even under default
+            // Open policy.
             nlohmann::json req1;
-            req1["channel_name"] = channel;
-            req1["shm_name"] = "shm_mismatch";
-            req1["schema_hash"] = zero_hex();
-            req1["schema_version"] = 1;
-            req1["producer_pid"] = pid;
+            req1["channel_name"]     = channel;
+            req1["shm_name"]         = "shm_mismatch";
+            req1["schema_hash"]      = zero_hex();
+            req1["schema_version"]   = 1;
+            req1["producer_pid"]     = pid;
             req1["producer_hostname"] = "localhost";
+            req1["role_uid"]         = role_uid;
 
             nlohmann::json resp1 = raw_req(broker.endpoint, "REG_REQ", req1);
             ASSERT_FALSE(resp1.is_null()) << "raw_req timed out on first REG_REQ";
@@ -516,16 +520,17 @@ int broker_dereg_pid_mismatch()
             ASSERT_FALSE(reg_resp.is_null()) << "REG_REQ timed out";
             EXPECT_EQ(reg_resp.value("status", std::string("")), "success");
 
-            // Send HEARTBEAT_REQ — must carry `uid` + `role_type` per
-            // HEP-CORE-0019 §4.1 (Phase 6) so the broker flips the
-            // producer-presence's `first_heartbeat_seen=true`, allowing
+            // Send HEARTBEAT_REQ — must carry `role_uid` + `role_type`
+            // per HEP-CORE-0019 §4.1 (Phase 6) + broker_proto 5
+            // (R3.5b unification) so the broker flips the producer-
+            // presence's `first_heartbeat_seen=true`, allowing
             // DISC_REQ later to resolve to DISC_ACK (presence Live).
             // Fire-and-forget: broker sends no reply; raw_req times out
             // quickly and we discard the empty json.
             nlohmann::json hb_req;
             hb_req["channel_name"] = channel;
             hb_req["producer_pid"] = correct_pid;
-            hb_req["uid"]          = role_uid;
+            hb_req["role_uid"]     = role_uid;
             hb_req["role_type"]    = "producer";
             raw_req(broker.endpoint, "HEARTBEAT_REQ", hb_req, 100);
             // Allow the heartbeat to be processed before DISC_REQ.
@@ -622,7 +627,7 @@ int broker_dereg_missing_role_uid_rejected()
             cons_reg["channel_name"]      = channel;
             cons_reg["consumer_pid"]      = pid;
             cons_reg["consumer_hostname"] = "localhost";
-            cons_reg["consumer_uid"]      = cons_uid;
+            cons_reg["role_uid"]      = cons_uid;
             ASSERT_EQ(raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons_reg)
                           .value("status", std::string{}),
                       "success");
@@ -643,6 +648,201 @@ int broker_dereg_missing_role_uid_rejected()
             broker.stop_and_join();
         },
         "broker.broker_dereg_missing_role_uid_rejected",
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), hub_module(), zmq_module());
+}
+
+// ============================================================================
+// R3.5b (2026-05-19) — wire-boundary identifier validation at every gate.
+// HEP-CORE-0033 §G2.2.0b grammar + side-aware role-tag policy.
+// One worker per gate × failure mode to keep diagnostics focused.
+// ============================================================================
+
+namespace
+{
+
+/// Common broker fixture for R3.5b gate tests.  Returns a thread-owned
+/// broker handle; the worker is responsible for `stop_and_join()`.
+auto start_r35b_broker()
+{
+    BrokerService::Config cfg;
+    cfg.endpoint  = "tcp://127.0.0.1:0";
+    cfg.use_curve = false;
+    return start_broker_in_thread(std::move(cfg));
+}
+
+/// Boilerplate REG_REQ that's ALWAYS valid except for the fields a
+/// test overrides explicitly.
+nlohmann::json reg_req_template(const std::string &channel,
+                                const std::string &role_uid)
+{
+    nlohmann::json r;
+    r["channel_name"]     = channel;
+    r["shm_name"]         = "shm_r35b";
+    r["schema_hash"]      = zero_hex();
+    r["schema_version"]   = 1;
+    r["producer_pid"]     = pylabhub::platform::get_pid();
+    r["producer_hostname"] = "localhost";
+    r["role_uid"]         = role_uid;
+    return r;
+}
+
+} // namespace
+
+int broker_gate_reg_req_rejects_empty_uid()
+{
+    return run_gtest_worker(
+        []() {
+            auto broker = start_r35b_broker();
+            // REG_REQ with empty role_uid → INVALID_REQUEST (grammar).
+            auto req = reg_req_template("r35b.empty_uid.ch", "");
+            auto resp = raw_req(broker.endpoint, "REG_REQ", req);
+            ASSERT_FALSE(resp.is_null());
+            EXPECT_EQ(resp.value("status", std::string{}), "error");
+            EXPECT_EQ(resp.value("error_code", std::string{}),
+                      "INVALID_REQUEST");
+            EXPECT_NE(resp.value("message", std::string{}).find("role_uid"),
+                      std::string::npos)
+                << "Error message should mention the offending field; got: "
+                << resp.dump();
+            broker.stop_and_join();
+        },
+        "broker.gate_reg_req_rejects_empty_uid",
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), hub_module(), zmq_module());
+}
+
+int broker_gate_reg_req_rejects_malformed_uid()
+{
+    return run_gtest_worker(
+        []() {
+            auto broker = start_r35b_broker();
+            // "not-a-uid" → single component, no '.' → fails grammar.
+            auto req = reg_req_template("r35b.malformed_uid.ch",
+                                        "not-a-uid");
+            auto resp = raw_req(broker.endpoint, "REG_REQ", req);
+            ASSERT_FALSE(resp.is_null());
+            EXPECT_EQ(resp.value("error_code", std::string{}),
+                      "INVALID_REQUEST");
+
+            // "prod." — has prefix tag but no name/unique components.
+            req = reg_req_template("r35b.malformed_uid.ch2", "prod.");
+            resp = raw_req(broker.endpoint, "REG_REQ", req);
+            ASSERT_FALSE(resp.is_null());
+            EXPECT_EQ(resp.value("error_code", std::string{}),
+                      "INVALID_REQUEST");
+
+            // "prod.x" — only 2 components; RoleUid requires ≥3.
+            req = reg_req_template("r35b.malformed_uid.ch3", "prod.x");
+            resp = raw_req(broker.endpoint, "REG_REQ", req);
+            ASSERT_FALSE(resp.is_null());
+            EXPECT_EQ(resp.value("error_code", std::string{}),
+                      "INVALID_REQUEST");
+            broker.stop_and_join();
+        },
+        "broker.gate_reg_req_rejects_malformed_uid",
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), hub_module(), zmq_module());
+}
+
+int broker_gate_reg_req_rejects_consumer_tag()
+{
+    return run_gtest_worker(
+        []() {
+            auto broker = start_r35b_broker();
+            // role_uid="cons.x.y" on REG_REQ → INVALID_ROLE_TAG.
+            // REG_REQ accepts {prod, proc}; consumer tag is wrong side.
+            auto req = reg_req_template("r35b.wrong_tag.ch",
+                                        "cons.r35b.uid00000001");
+            auto resp = raw_req(broker.endpoint, "REG_REQ", req);
+            ASSERT_FALSE(resp.is_null());
+            EXPECT_EQ(resp.value("error_code", std::string{}),
+                      "INVALID_ROLE_TAG");
+            broker.stop_and_join();
+        },
+        "broker.gate_reg_req_rejects_consumer_tag",
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), hub_module(), zmq_module());
+}
+
+int broker_gate_reg_req_accepts_proc_tag()
+{
+    return run_gtest_worker(
+        []() {
+            auto broker = start_r35b_broker();
+            // role_uid="proc.x.y" on REG_REQ → success.  Processor
+            // roles register on the producer side for their output
+            // channels per HEP-CORE-0011 Phase 6 dual-side model.
+            auto req = reg_req_template("r35b.proc_as_prod.ch",
+                                        "proc.r35b.uid00000001");
+            auto resp = raw_req(broker.endpoint, "REG_REQ", req);
+            ASSERT_FALSE(resp.is_null());
+            EXPECT_EQ(resp.value("status", std::string{}), "success")
+                << "proc.* uid should be accepted on REG_REQ; got: "
+                << resp.dump();
+            broker.stop_and_join();
+        },
+        "broker.gate_reg_req_accepts_proc_tag",
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), hub_module(), zmq_module());
+}
+
+int broker_gate_consumer_reg_req_rejects_producer_tag()
+{
+    return run_gtest_worker(
+        []() {
+            auto broker = start_r35b_broker();
+            // Need a channel to register a consumer to.
+            const std::string channel  = "r35b.creg_wrong_tag.ch";
+            const std::string prod_uid = "prod.r35b.cregwt.uid00000001";
+            auto reg = reg_req_template(channel, prod_uid);
+            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg)
+                          .value("status", std::string{}),
+                      "success");
+
+            // CONSUMER_REG_REQ with role_uid="prod.x.y" → INVALID_ROLE_TAG.
+            nlohmann::json creg;
+            creg["channel_name"] = channel;
+            creg["consumer_pid"] = pylabhub::platform::get_pid();
+            creg["role_uid"]     = "prod.r35b.intruder.uid00000002";
+            creg["role_name"]    = "intruder";
+            auto resp = raw_req(broker.endpoint, "CONSUMER_REG_REQ", creg);
+            ASSERT_FALSE(resp.is_null());
+            EXPECT_EQ(resp.value("error_code", std::string{}),
+                      "INVALID_ROLE_TAG");
+            broker.stop_and_join();
+        },
+        "broker.gate_consumer_reg_req_rejects_producer_tag",
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), hub_module(), zmq_module());
+}
+
+int broker_gate_consumer_reg_req_accepts_proc_tag()
+{
+    return run_gtest_worker(
+        []() {
+            auto broker = start_r35b_broker();
+            const std::string channel  = "r35b.cregproc.ch";
+            const std::string prod_uid = "prod.r35b.cregproc.uid00000001";
+            auto reg = reg_req_template(channel, prod_uid);
+            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg)
+                          .value("status", std::string{}),
+                      "success");
+
+            // CONSUMER_REG_REQ with role_uid="proc.x.y" → success.
+            nlohmann::json creg;
+            creg["channel_name"] = channel;
+            creg["consumer_pid"] = pylabhub::platform::get_pid();
+            creg["role_uid"]     = "proc.r35b.cregproc.uid00000002";
+            creg["role_name"]    = "proc_as_cons";
+            auto resp = raw_req(broker.endpoint, "CONSUMER_REG_REQ", creg);
+            ASSERT_FALSE(resp.is_null());
+            EXPECT_EQ(resp.value("status", std::string{}), "success")
+                << "proc.* uid should be accepted on CONSUMER_REG_REQ; got: "
+                << resp.dump();
+            broker.stop_and_join();
+        },
+        "broker.gate_consumer_reg_req_accepts_proc_tag",
         logger_module(), file_lock_module(), json_module(),
         crypto_module(), hub_module(), zmq_module());
 }
@@ -832,8 +1032,8 @@ int broker_sch_consumer_citation_match()
             // + hash.  Hash must equal channel's stored hash.
             nlohmann::json cons_req;
             cons_req["channel_name"]         = channel;
-            cons_req["consumer_uid"]         = c_uid;
-            cons_req["consumer_name"]        = "test_consumer";
+            cons_req["role_uid"]         = c_uid;
+            cons_req["role_name"]        = "test_consumer";
             cons_req["consumer_pid"]         = pylabhub::platform::get_pid();
             cons_req["expected_schema_id"]   = sid;
             cons_req["expected_schema_hash"] = hash;
@@ -885,8 +1085,8 @@ int broker_sch_consumer_citation_mismatch()
             // expectation differs from what the producer registered).
             nlohmann::json cons_req;
             cons_req["channel_name"]         = channel;
-            cons_req["consumer_uid"]         = c_uid;
-            cons_req["consumer_name"]        = "test_consumer";
+            cons_req["role_uid"]         = c_uid;
+            cons_req["role_name"]        = "test_consumer";
             cons_req["consumer_pid"]         = pylabhub::platform::get_pid();
             cons_req["expected_schema_id"]   = sid;
             cons_req["expected_schema_hash"] = hash_c;  // wrong
@@ -1400,8 +1600,8 @@ int broker_sch_cons_named_missing_hash()
             // Consumer cites by id but omits the hash → MISSING_HASH_FOR_NAMED_CITATION.
             nlohmann::json cons;
             cons["channel_name"]       = ch;
-            cons["consumer_uid"]       = c;
-            cons["consumer_name"]      = "test_consumer";
+            cons["role_uid"]       = c;
+            cons["role_name"]      = "test_consumer";
             cons["consumer_pid"]       = pylabhub::platform::get_pid();
             cons["expected_schema_id"] = sid;
             // intentionally no expected_schema_hash
@@ -1448,8 +1648,8 @@ int broker_sch_cons_anonymous_happy_path()
             // Hash optional — broker recomputes and compares to channel.
             nlohmann::json cons;
             cons["channel_name"]     = ch;
-            cons["consumer_uid"]     = c;
-            cons["consumer_name"]    = "test_consumer";
+            cons["role_uid"]     = c;
+            cons["role_name"]    = "test_consumer";
             cons["consumer_pid"]     = pylabhub::platform::get_pid();
             cons["expected_schema_blds"]    = blds;
             cons["expected_schema_packing"] = packing;
@@ -1486,8 +1686,8 @@ int broker_sch_cons_anonymous_missing_packing()
             // Anonymous mode with blds but no packing → NACK.
             nlohmann::json cons;
             cons["channel_name"]  = ch;
-            cons["consumer_uid"]  = c;
-            cons["consumer_name"] = "test_consumer";
+            cons["role_uid"]  = c;
+            cons["role_name"] = "test_consumer";
             cons["consumer_pid"]  = pylabhub::platform::get_pid();
             cons["expected_schema_blds"] = "ts:f64:1:0";
             // intentionally no expected_packing
@@ -1535,8 +1735,8 @@ int broker_sch_cons_named_with_structure_mismatch()
             // defense-in-depth check kicks in → FINGERPRINT_INCONSISTENT.
             nlohmann::json cons;
             cons["channel_name"]         = ch;
-            cons["consumer_uid"]         = c;
-            cons["consumer_name"]        = "test_consumer";
+            cons["role_uid"]         = c;
+            cons["role_name"]        = "test_consumer";
             cons["consumer_pid"]         = pylabhub::platform::get_pid();
             cons["expected_schema_id"]   = sid;
             cons["expected_schema_hash"] = canonical_hash_hex(blds_p, packing);
@@ -1967,8 +2167,8 @@ int broker_sch_wire_helpers_register_and_cite()
             cons["channel_name"]      = channel;
             cons["consumer_pid"]      = pylabhub::platform::get_pid();
             cons["consumer_hostname"] = "localhost";
-            cons["consumer_uid"]      = cons_uid;
-            cons["consumer_name"]     = "test_consumer";
+            cons["role_uid"]      = cons_uid;
+            cons["role_name"]     = "test_consumer";
             pylabhub::hub::apply_consumer_schema_fields(cons, wc);
 
             // Helper must emit the §10.2 expected_schema_* prefix consistently.
@@ -2082,8 +2282,8 @@ int broker_sch_wire_helpers_anonymous_citation()
             cons["channel_name"]      = channel;
             cons["consumer_pid"]      = pylabhub::platform::get_pid();
             cons["consumer_hostname"] = "localhost";
-            cons["consumer_uid"]      = cons_uid;
-            cons["consumer_name"]     = "test_consumer_anon";
+            cons["role_uid"]      = cons_uid;
+            cons["role_name"]     = "test_consumer_anon";
             pylabhub::hub::apply_consumer_schema_fields(cons, wc);
 
             // Anonymous-mode shape: id NOT emitted, structure fields emitted.
@@ -2206,8 +2406,8 @@ int broker_sch_wire_helpers_flexzone_round_trip()
             cons["channel_name"]      = channel;
             cons["consumer_pid"]      = pylabhub::platform::get_pid();
             cons["consumer_hostname"] = "localhost";
-            cons["consumer_uid"]      = cons_uid;
-            cons["consumer_name"]     = "test_consumer_fz";
+            cons["role_uid"]      = cons_uid;
+            cons["role_name"]     = "test_consumer_fz";
             pylabhub::hub::apply_consumer_schema_fields(cons, wc);
 
             ASSERT_TRUE(cons.contains("expected_flexzone_blds"))
@@ -2264,6 +2464,18 @@ struct BrokerWorkerRegistrar
                     return broker_dereg_pid_mismatch();
                 if (scenario == "broker_dereg_missing_role_uid_rejected")
                     return broker_dereg_missing_role_uid_rejected();
+                if (scenario == "gate_reg_req_rejects_empty_uid")
+                    return broker_gate_reg_req_rejects_empty_uid();
+                if (scenario == "gate_reg_req_rejects_malformed_uid")
+                    return broker_gate_reg_req_rejects_malformed_uid();
+                if (scenario == "gate_reg_req_rejects_consumer_tag")
+                    return broker_gate_reg_req_rejects_consumer_tag();
+                if (scenario == "gate_reg_req_accepts_proc_tag")
+                    return broker_gate_reg_req_accepts_proc_tag();
+                if (scenario == "gate_consumer_reg_req_rejects_producer_tag")
+                    return broker_gate_consumer_reg_req_rejects_producer_tag();
+                if (scenario == "gate_consumer_reg_req_accepts_proc_tag")
+                    return broker_gate_consumer_reg_req_accepts_proc_tag();
                 if (scenario == "broker_sch_record_path_b_created")
                     return broker_sch_record_path_b_created();
                 if (scenario == "broker_sch_record_hash_mismatch_self")

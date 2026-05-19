@@ -319,9 +319,11 @@ void ProducerRoleHost::worker_main_()
 
         // 6d — REG_REQ + heartbeat install (the post-spawn block legacy
         // start_ctrl_thread ran internally; explicit at this layer in
-        // handler-mode).  register_producer_channel auto-records the
-        // channel into shared.producer_channel for dereg bookkeeping
-        // (Wave-B M5 auto-record).
+        // handler-mode).  register_producer_channel transitions the
+        // matching Presence's `registration_state` through
+        // RegRequestPending → Registered on success (audit S1+O4,
+        // 2026-05-17 — replaces the pre-S1 `shared.producer_channel`
+        // string).
         auto reg_result = api_ref.register_producer_channel(reg_opts);
         if (!reg_result.has_value() ||
             reg_result->value("status", std::string{}) != "success")

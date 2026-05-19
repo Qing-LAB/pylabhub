@@ -292,7 +292,10 @@ void ConsumerRoleHost::worker_main_()
         api_ref.append_inbox_to_reg(reg_opts, inbox_cfg_);
 
         // 6d — CONSUMER_REG_REQ + heartbeat install.  register_consumer
-        // auto-records the channel into shared.consumer_channel (M5a).
+        // transitions the matching Presence's `registration_state`
+        // through RegRequestPending → Registered on success (audit
+        // S1+O4, 2026-05-17 — replaces the pre-S1
+        // `shared.consumer_channel` string).
         auto reg_result = api_ref.register_consumer(reg_opts);
         if (!reg_result.has_value() ||
             reg_result->value("status", std::string{}) != "success")

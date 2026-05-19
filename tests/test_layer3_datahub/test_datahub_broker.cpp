@@ -68,6 +68,50 @@ TEST_F(DatahubBrokerTest, DeregMissingRoleUid_Rejected)
     ExpectWorkerOk(proc);
 }
 
+// ── R3.5b (2026-05-19) — wire-boundary identifier validation ────────────────
+//
+// Mutation guards: each test pins one branch of `validate_identity_fields`
+// / `validate_role_uid_only` in broker_service.cpp.  Delete the check it
+// pins → the test fails.
+
+TEST_F(DatahubBrokerTest, Gate_RegReq_RejectsEmptyUid)
+{
+    auto proc = SpawnWorker("broker.gate_reg_req_rejects_empty_uid", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubBrokerTest, Gate_RegReq_RejectsMalformedUid)
+{
+    auto proc = SpawnWorker("broker.gate_reg_req_rejects_malformed_uid", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubBrokerTest, Gate_RegReq_RejectsConsumerTag)
+{
+    auto proc = SpawnWorker("broker.gate_reg_req_rejects_consumer_tag", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubBrokerTest, Gate_RegReq_AcceptsProcTag)
+{
+    auto proc = SpawnWorker("broker.gate_reg_req_accepts_proc_tag", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubBrokerTest, Gate_ConsumerRegReq_RejectsProducerTag)
+{
+    auto proc = SpawnWorker(
+        "broker.gate_consumer_reg_req_rejects_producer_tag", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubBrokerTest, Gate_ConsumerRegReq_AcceptsProcTag)
+{
+    auto proc = SpawnWorker(
+        "broker.gate_consumer_reg_req_accepts_proc_tag", {});
+    ExpectWorkerOk(proc);
+}
+
 // ── HEP-CORE-0034 Phase 3a — schema record + citation wire paths ───────────
 
 TEST_F(DatahubBrokerTest, Sch_RegPathBCreated)

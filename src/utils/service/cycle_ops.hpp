@@ -28,90 +28,182 @@ namespace pylabhub::scripting
 {
 
 // ============================================================================
-// Broker-notification callback dispatch (HEP-CORE-0011 callback table)
+// Broker-notification dispatch — uniform "user override OR native default"
 // ============================================================================
 //
 // Each cycle drains broker-emitted notifications (CHANNEL_CLOSING_NOTIFY,
-// CONSUMER_DIED_NOTIFY, etc.) into the role's incoming-message list.
-// The BRC-side enqueue tags each message with its `NotificationId` (see
-// `role_host_core.hpp` — parsed once at the wire boundary so dispatch
+// CONSUMER_DIED_NOTIFY, HUB_DEAD, …) into the role's incoming-message
+// list.  The BRC-side enqueue tags each message with its `NotificationId`
+// (see `role_host_core.hpp` — parsed once at the wire boundary so dispatch
 // here is O(1) per message via integer index, not N string compares).
 //
-// Per-notification handlers below are pure functions of (engine, msg):
-//   - Return true  → callback fired; msg is "consumed" (erased from
-//                    msgs so `on_produce`/`on_consume` doesn't see it).
-//   - Return false → script didn't define the callback; msg stays in
-//                    msgs for the script's generic scan path.
+// Design (audit D1/D2, 2026-05-18 — user design call):
+// Every known notification has TWO functions in its row of the dispatch
+// table: an `invoke_user` adapter that fires the script's named
+// callback, and a `default_native` C++ function that runs when the
+// script has not defined the override.  The dispatch loop is uniform:
 //
-// Single delivery contract: dedicated callback OR generic scan, never
-// both.  See HEP-CORE-0011 §"Channel-close handling" for the original
-// articulation; the same rule applies to every notify entry here.
+//   for each msg in msgs:
+//     entry = kNotificationTable[msg.notification_id]
+//     if entry.invoke_user is nullptr:           // Unknown — never seen
+//         leave in msgs (script's generic-scan path for future
+//         notification types not yet in the enum)
+//     elif engine.has_callback(entry.callback_name):
+//         entry.invoke_user(engine, msg)         // user override
+//     else:
+//         entry.default_native(msg, stop_req)    // framework default
+//     erase from msgs                            // always consumed
+//
+// "this is really just a callback that replaces the default
+// straightforward stop()" — 2026-05-15T03:29:14.
+//
+// The `StopRequestor` arg (defined in role_host_core.hpp) is a narrow
+// capability handle exposing ONLY `request(StopReason)` — defaults
+// can stop the role with a typed reason but cannot call arbitrary
+// RoleHostCore methods.  Defaults that never need to stop
+// (`default_consumer_died`) simply ignore the argument; passing it
+// to every default keeps the function-pointer signature uniform.
 //
 // Adding a notification:
 //   1. Add the enum value in `role_host_core.hpp` (NotificationId).
 //   2. Map the wire string in `parse_notification_id`.
-//   3. Write the handler below + add it to `kNotificationHandlers[]`.
-//   4. Add the matching `invoke_on_X` pure virtual on `ScriptEngine`.
+//   3. Add the matching `invoke_on_X` pure virtual on `ScriptEngine`
+//      and implement it across Python/Lua/Native engines.
+//   4. Write `invoke_user_<X>` and `default_<X>` in this file.
+//   5. Add the row to `kNotificationTable[]`.
+//   6. If the default stops the role with a distinct reason, add a
+//      `StopReason` enum value in `role_host_core.hpp` and a case in
+//      `stop_reason_string()`.
 
-inline bool handle_channel_closing(ScriptEngine &engine,
-                                   const IncomingMessage &msg)
+// ── User-override adapters ────────────────────────────────────────────
+// Pull args out of the message JSON and call the engine's typed
+// callback.  No policy here — purely an argument-unpack adapter.
+
+inline void invoke_user_channel_closing(ScriptEngine &engine,
+                                        const IncomingMessage &msg)
 {
-    if (!engine.has_callback("on_channel_closing")) return false;
     engine.invoke_on_channel_closing(
         msg.details.value("channel_name", std::string{}),
         msg.details.value("reason",       std::string{}));
-    return true;
 }
 
-inline bool handle_consumer_died(ScriptEngine &engine,
-                                 const IncomingMessage &msg)
+inline void invoke_user_consumer_died(ScriptEngine &engine,
+                                      const IncomingMessage &msg)
 {
-    if (!engine.has_callback("on_consumer_died")) return false;
+    // broker_proto 4→5 (audit R3.5b, 2026-05-19): payload field is
+    // `role_uid` (was `consumer_uid`).  The script-facing callback
+    // parameter keeps its `consumer_uid` name because the callback
+    // itself is named `on_consumer_died` — the parameter type is
+    // already unambiguously a consumer's uid.
     engine.invoke_on_consumer_died(
         msg.details.value("channel_name", std::string{}),
-        msg.details.value("consumer_uid", std::string{}),
+        msg.details.value("role_uid",     std::string{}),
         msg.details.value("reason",       std::string{}));
-    return true;
 }
 
-/// Handler signature: returns true if the msg was consumed (erase from
-/// msgs), false if the script didn't define the callback (keep in msgs).
-using NotificationHandlerFn = bool(*)(ScriptEngine&, const IncomingMessage&);
+inline void invoke_user_hub_dead(ScriptEngine &engine,
+                                 const IncomingMessage &msg)
+{
+    engine.invoke_on_hub_dead(msg.source_hub_uid);
+}
 
-/// Dispatch table indexed by NotificationId.  Slot for `Unknown` is nullptr
-/// (unrecognised types fall through to msgs untouched).  Sized by
-/// NotificationId::Count so the array stays in lockstep with the enum.
-inline constexpr NotificationHandlerFn
-kNotificationHandlers[static_cast<std::size_t>(NotificationId::Count)] = {
-    /* NotificationId::Unknown        */ nullptr,
-    /* NotificationId::ChannelClosing */ &handle_channel_closing,
-    /* NotificationId::ConsumerDied   */ &handle_consumer_died,
+// ── Native defaults ───────────────────────────────────────────────────
+// One per notification type.  Each is the framework's answer to
+// "what should we do when the script hasn't defined the override?"
+
+/// Channel closed and the script has no `on_channel_closing` —
+/// graceful stop with `StopReason::ChannelClosed` so downstream
+/// readers can distinguish channel-close from generic api.stop().
+/// Mirrors the master-hub-dead reason-first-then-stop sequencing.
+inline void default_channel_closing(const IncomingMessage & /*msg*/,
+                                    const StopRequestor &stop)
+{
+    stop.request(RoleHostCore::StopReason::ChannelClosed);
+}
+
+/// Consumer died and the producer's script has no `on_consumer_died`
+/// — no-op.  A dead consumer is not by itself reason to stop the
+/// producer; the channel stays alive, only per-consumer bookkeeping
+/// would need cleanup (which the broker has already done on its
+/// side).  Producers that care must define the callback.
+inline void default_consumer_died(const IncomingMessage & /*msg*/,
+                                  const StopRequestor & /*stop*/)
+{
+    // Intentionally empty.
+}
+
+/// One of the role's broker connections died and the script has no
+/// `on_hub_dead`.  Asymmetric default by master/peer (HEP-CORE-0023
+/// §2.5):
+///   * Master (is_master=true)  → graceful stop with HubDead reason.
+///     The master ctrl thread drives the heartbeat timer; without
+///     it the broker reaps the role anyway.
+///   * Peer   (is_master=false) → no-op.  Role keeps running on
+///     master with degraded reach.  Scripts wishing to exit on
+///     peer death must define `on_hub_dead` and call `api.stop()`
+///     inside it.
+inline void default_hub_dead(const IncomingMessage &msg,
+                             const StopRequestor &stop)
+{
+    if (msg.details.value("is_master", false))
+        stop.request(RoleHostCore::StopReason::HubDead);
+}
+
+// ── Dispatch table ────────────────────────────────────────────────────
+
+using InvokeUserFn     = void (*)(ScriptEngine&,        const IncomingMessage&);
+using DefaultNativeFn  = void (*)(const IncomingMessage&, const StopRequestor&);
+
+/// One row per `NotificationId`.  `callback_name` MUST match the
+/// `set_standard_callback_present(name, ...)` calls in each engine's
+/// `load_script`; otherwise `engine.has_callback(name)` will always
+/// return false and the user override will never fire.
+struct NotificationEntry
+{
+    const char *      callback_name;  ///< nullptr ⇒ no row (Unknown)
+    InvokeUserFn      invoke_user;    ///< nullptr ⇒ leave in msgs
+    DefaultNativeFn   default_native; ///< called when override missing
 };
 
-/// Single-pass dispatcher over the drained per-cycle msgs list.
-/// Replaces the previous N-helpers-each-scans-msgs design with one
-/// integer-indexed loop.  Order of dispatch matches wire arrival
-/// order; cascading events (e.g. CHANNEL_CLOSING followed by
-/// CONSUMER_DIED in the same cycle) are seen by the script in the
-/// order the broker emitted them.
+inline constexpr NotificationEntry
+kNotificationTable[static_cast<std::size_t>(NotificationId::Count)] = {
+    /* Unknown        */ { nullptr,               nullptr,                       nullptr                  },
+    /* ChannelClosing */ { "on_channel_closing",  &invoke_user_channel_closing,  &default_channel_closing },
+    /* ConsumerDied   */ { "on_consumer_died",    &invoke_user_consumer_died,    &default_consumer_died   },
+    /* HubDead        */ { "on_hub_dead",         &invoke_user_hub_dead,         &default_hub_dead        },
+};
+
+/// Single-pass dispatcher.  For each known msg: fire the user
+/// override if defined, else the native default; ALWAYS consume the
+/// msg (erase from msgs).  Unknown / future notification types fall
+/// through and stay in `msgs` (no row in the table).
+///
+/// Order of dispatch = wire arrival order; cascading events
+/// (e.g. CHANNEL_CLOSING_NOTIFY followed by CONSUMER_DIED_NOTIFY in
+/// the same cycle) are seen by the script in the order the broker
+/// emitted them.
 inline void dispatch_notifications(ScriptEngine &engine,
-                              std::vector<IncomingMessage> &msgs)
+                                   std::vector<IncomingMessage> &msgs,
+                                   const StopRequestor &stop)
 {
     auto it = msgs.begin();
     while (it != msgs.end())
     {
         const auto idx = static_cast<std::size_t>(it->notification_id);
-        NotificationHandlerFn fn = (idx < static_cast<std::size_t>(NotificationId::Count))
-                             ? kNotificationHandlers[idx]
-                             : nullptr;
-        if (fn && fn(engine, *it))
+        if (idx >= static_cast<std::size_t>(NotificationId::Count))
         {
-            it = msgs.erase(it);    // consumed by callback
+            ++it; continue;             // out-of-range — leave in msgs
         }
+        const NotificationEntry &entry = kNotificationTable[idx];
+        if (entry.invoke_user == nullptr)
+        {
+            ++it; continue;             // Unknown — leave in msgs
+        }
+        if (engine.has_callback(entry.callback_name))
+            entry.invoke_user(engine, *it);
         else
-        {
-            ++it;                    // leave in msgs for generic scan
-        }
+            entry.default_native(*it, stop);
+        it = msgs.erase(it);            // always consumed
     }
 }
 
@@ -160,7 +252,7 @@ class ProducerCycleOps final
         // from msgs (single-delivery contract).  Unrecognised notifies
         // and notifies whose callback isn't defined stay in msgs for
         // the script's generic scan inside `on_produce`/`on_consume`.
-        dispatch_notifications(engine_, msgs);
+        dispatch_notifications(engine_, msgs, StopRequestor{core_});
 
         if (buf_) std::memset(buf_, 0, buf_sz_);
 
@@ -188,6 +280,11 @@ class ProducerCycleOps final
 
         if (result == InvokeResult::Error && stop_on_error_)
         {
+            // Audit S2 (2026-05-18) — set typed reason BEFORE request_stop
+            // so downstream observers reading `stop_reason_string()`
+            // see "script_error" rather than the default "normal".
+            // Distinct from `CriticalError` (set by api.set_critical_error()).
+            core_.set_stop_reason(RoleHostCore::StopReason::ScriptError);
             core_.request_stop();
             return false;
         }
@@ -245,7 +342,7 @@ class ConsumerCycleOps final
         // from msgs (single-delivery contract).  Unrecognised notifies
         // and notifies whose callback isn't defined stay in msgs for
         // the script's generic scan inside `on_produce`/`on_consume`.
-        dispatch_notifications(engine_, msgs);
+        dispatch_notifications(engine_, msgs, StopRequestor{core_});
 
         if (data_)
             core_.inc_in_slots_received();
@@ -259,6 +356,8 @@ class ConsumerCycleOps final
 
         if (stop_on_error_ && engine_.script_error_count() > errors_before)
         {
+            // Audit S2 (2026-05-18) — see ProducerCycleOps for rationale.
+            core_.set_stop_reason(RoleHostCore::StopReason::ScriptError);
             core_.request_stop();
             return false;
         }
@@ -347,7 +446,7 @@ class ProcessorCycleOps final
         // from msgs (single-delivery contract).  Unrecognised notifies
         // and notifies whose callback isn't defined stay in msgs for
         // the script's generic scan inside `on_produce`/`on_consume`.
-        dispatch_notifications(engine_, msgs);
+        dispatch_notifications(engine_, msgs, StopRequestor{core_});
 
         if (out_buf_) std::memset(out_buf_, 0, out_sz_);
 
@@ -383,7 +482,12 @@ class ProcessorCycleOps final
         out_buf_ = nullptr;
 
         if (result == InvokeResult::Error && stop_on_error_)
-        { core_.request_stop(); return false; }
+        {
+            // Audit S2 (2026-05-18) — see ProducerCycleOps for rationale.
+            core_.set_stop_reason(RoleHostCore::StopReason::ScriptError);
+            core_.request_stop();
+            return false;
+        }
         return true;
     }
 

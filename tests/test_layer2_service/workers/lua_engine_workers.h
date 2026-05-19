@@ -302,6 +302,19 @@ int full_startup_producer_multifield(const std::string &dir);
 int full_startup_consumer_multifield(const std::string &dir);
 int full_startup_processor_multifield(const std::string &dir);
 
+/// Real-engine dispatcher test (audit Q-strengthen, 2026-05-18):
+/// validates `dispatch_notifications` driving an actual `LuaEngine`
+/// with a script that defines `on_channel_closing` recording its
+/// args via `api.set_shared_data`.  Supplements the
+/// `RecordingEngine`-based branch-coverage tests in
+/// `test_dispatch_notifications.cpp` with end-to-end real-engine
+/// confirmation that the real `has_callback` cache + real
+/// `invoke_on_channel_closing` arg passing work through the
+/// dispatcher.  Tests SHOULD NOT use `RecordingEngine` outside of
+/// `test_dispatch_notifications.cpp` — see that file's
+/// "CONSTRAINED EXCEPTION" doc-block.
+int dispatch_notifications_real_lua_engine_records_args(const std::string &dir);
+
 // ── invoke_process (chunk 4) ────────────────────────────────────────────────
 //
 // Processor design note: a processor ALWAYS has an input channel (if a

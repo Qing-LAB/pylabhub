@@ -244,6 +244,68 @@ every caller becomes a hostage to the thread's implicit "extra"
 pImpl access.  With rule 4 plus the synchronization primitives in
 §4.1.2, the caller can deterministically honor the contract.
 
+### 4.1.0 Fallback callback-safety beacon (V1 audit, 2026-05-18)
+
+The bracket + bounded `wait_for_quiescence` contract above is the
+**primary** protection against use-after-free during teardown.  In
+practice it covers every well-behaved thread: the thread enters its
+bracket, the teardown caller signals shutdown, the thread leaves
+its bracket promptly, the wait returns, destruction proceeds.  No
+race.
+
+The contract has **one operational failure mode**: the bounded
+timeout on `wait_for_quiescence`.  If a managed thread is stuck
+(network jam, kernel scheduling stall, debugger paused, etc.) and
+fails to exit its bracket within the timeout, the teardown caller
+proceeds to destruction anyway — a deliberate choice because we
+never want teardown to block indefinitely on a truly-dead thread.
+If that stuck thread later wakes up and fires a callback that
+touches the destroyed `pImpl` resources, we get a use-after-free.
+
+For the **role-side specifically**, V1 (2026-05-18) adds an
+explicit fallback beacon — a one-way atomic latch named
+`context_valid_` on `RoleHostCore` that callbacks check before
+touching role-side state.  The full discipline lives in the class
+header docstring of `src/include/utils/role_host_core.hpp` ("Flag
+contract" block); the role-side teardown sequence (in
+`role_api_base.cpp::stop_handler_threads`) flips the beacon to
+`false` at Phase 3a — AFTER `wait_for_quiescence` returned and
+BEFORE Phase 4's destructive work.  Every ctrl-thread callback
+(`on_notification`, `on_hub_dead`, the heartbeat periodic-tick)
+opens with `if (!core->context_valid()) bail` and exits with a
+`LOGGER_WARN` instead of dereferencing.
+
+This is a **fallback**, not a replacement.  In the normal case
+(wait returns successfully), the bracket already guaranteed no
+callback is in flight — the beacon check is irrelevant.  In the
+slow-waker case (wait timed out), the beacon converts the failure
+mode from a use-after-free crash to a logged warning.
+
+The beacon does **not** close every race: a callback that has
+already passed the gate and is mid-body when the beacon is flipped
+will still proceed into the destroyed memory.  The window is
+microseconds; the slow-waker scenario is seconds.  Closing the
+window entirely would require reference-counted ownership of the
+context — a structural change deferred unless the residual risk
+ever bites.
+
+The two mechanisms are **layered, not redundant**:
+
+| Mechanism | Protects against | Scope | Failure mode |
+|---|---|---|---|
+| **Bracket + `wait_for_quiescence`** (primary) | A callback in-flight during teardown destruction | Generic — every ThreadManager-managed thread | Timeout can fire if a thread is truly stuck → no protection past the timeout |
+| **`context_valid_` beacon** (fallback) | A late-fired callback after the wait timed out | Role-side only (callbacks gating on the beacon) | Microsecond gap between check and first dereference; rare-window crash possible |
+
+A thread that respects the contract (rule 4 — no pImpl access
+after quiescence is declared) is protected by the bracket alone.
+The beacon exists for the rare ctrl-thread path that fires a
+callback **outside** its bracket — specifically, the ZMTP socket
+monitor's hub-dead callback, which fires asynchronously from
+inside the BRC's poll loop.  The callback IS inside the bracket
+during normal operation; the beacon's job is to handle the
+abnormal case where the bracket was forcibly torn down past the
+timeout.
+
 ### 4.1.1 Per-thread contracts
 
 Every long-running thread declares (in code or by structural

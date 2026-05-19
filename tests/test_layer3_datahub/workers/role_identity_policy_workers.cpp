@@ -240,14 +240,31 @@ BrokerService::Config base_cfg()
 
 int open_policy_accepts_anonymous()
 {
+    // broker_proto 5 (R3.5b, 2026-05-19): grammar check at the gate
+    // is unconditional — empty role_uid is rejected with
+    // INVALID_REQUEST regardless of identity policy.  Previously this
+    // test verified that Open policy accepted a registration with NO
+    // role_uid at all ("anonymous"); that semantic is retired.
+    // RoleIdentityPolicy::Open now means "any well-formed role_uid is
+    // accepted without verification against known_roles" — empty /
+    // malformed uid is rejected upstream by `validate_identity_fields`
+    // before policy is consulted.  The test now pins the new
+    // semantic: under Open, a valid uid succeeds; empty uid does not.
     auto cfg = base_cfg();
     cfg.role_identity_policy = RoleIdentityPolicy::Open;
     return run_with_broker(
         "role_identity_policy::open_policy_accepts_anonymous",
         std::move(cfg),
         [](const std::string &ep, const std::string &pk) {
-            EXPECT_TRUE(try_register(ep, pk, pid_chan("lab.open.anon")));
-        });
+            // Valid uid → admitted even with no role_name (Open still
+            // permits empty name).
+            EXPECT_TRUE(try_register(ep, pk, pid_chan("lab.open.anon"),
+                                     /*role_name=*/"",
+                                     "prod.open.uid00000001"));
+            // Empty uid → rejected at the grammar gate.
+            EXPECT_FALSE(try_register(ep, pk, pid_chan("lab.open.empty")));
+        },
+        {"REG_REQ rejected"});
 }
 
 int open_policy_accepts_with_identity()
@@ -266,6 +283,12 @@ int open_policy_accepts_with_identity()
 
 int required_policy_rejects_anonymous()
 {
+    // broker_proto 5 (R3.5b, 2026-05-19): rejection of empty role_uid
+    // now happens UPSTREAM at the grammar gate (`validate_identity_
+    // fields`), before `check_role_identity` is reached.  Pre-fix the
+    // policy check emitted "policy=required rejected producer";
+    // post-fix the grammar gate emits "REG_REQ rejected on channel
+    // ... invalid role_uid".  Either way `try_register` returns false.
     auto cfg = base_cfg();
     cfg.role_identity_policy = RoleIdentityPolicy::Required;
     return run_with_broker(
@@ -274,7 +297,7 @@ int required_policy_rejects_anonymous()
         [](const std::string &ep, const std::string &pk) {
             EXPECT_FALSE(try_register(ep, pk, pid_chan("lab.req.anon")));
         },
-        {"policy=required rejected producer"});
+        {"REG_REQ rejected"});
 }
 
 int required_policy_accepts_with_identity()
@@ -326,6 +349,11 @@ int verified_policy_accepts_known_role()
 
 int per_channel_glob_override_restricts_channel()
 {
+    // broker_proto 5 (R3.5b, 2026-05-19): grammar check requires a
+    // valid role_uid even under Tracked policy, so the "anonymous"
+    // half is updated to send a well-formed uid that's simply not in
+    // any known_roles list.  Tracked still doesn't verify against
+    // known_roles, so the registration succeeds.
     auto cfg = base_cfg();
     cfg.role_identity_policy = RoleIdentityPolicy::Tracked;
     cfg.channel_policy_overrides.push_back(
@@ -334,13 +362,19 @@ int per_channel_glob_override_restricts_channel()
         "role_identity_policy::per_channel_glob_override_restricts_channel",
         std::move(cfg),
         [](const std::string &ep, const std::string &pk) {
-            // Non-matching channel: base Tracked policy allows anonymous.
-            EXPECT_TRUE(try_register(ep, pk, pid_chan("lab.regular")));
+            // Non-matching channel: base Tracked policy admits any
+            // well-formed uid without known_roles verification.
+            EXPECT_TRUE(try_register(ep, pk, pid_chan("lab.regular"),
+                                     "lab.regular_sensor",
+                                     "prod.regular.uid00000001"));
             // Matching channel: overridden to Verified; "lab.sensor1" is
             // NOT in cfg.known_roles (we didn't populate it for this
-            // test), so rejection is expected.
+            // test), so rejection is expected.  broker_proto 5 (R3.5b)
+            // requires every channel-name component to start with a
+            // letter (HEP-CORE-0033 §G2.2.0b NameComponent grammar) —
+            // `pid_chan` already produces `lab.secure.pid<digits>`.
             EXPECT_FALSE(try_register(
-                ep, pk, "lab.secure." + std::to_string(::getpid()),
+                ep, pk, pid_chan("lab.secure"),
                 "lab.sensor1", "prod.sensor.uidaabbccdd"));
         },
         {"Verified policy rejected producer"});

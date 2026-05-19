@@ -6,6 +6,45 @@
 
 ## Archive batches
 
+### 2026-05-19 (R3.5b wire-field unification migration plan)
+
+`docs/tech_draft/R3.5b_wire_field_unification_2026-05-19.md` recorded
+the broker_proto 4→5 migration plan + checklist: wire-field
+unification (`consumer_uid`/`uid`/`sender_uid` → `role_uid` in
+role-context messages), unconditional grammar check at every gate,
+side-aware role-tag policy.  The work shipped 2026-05-19 with
+1951/1951 tests green.
+
+Section-by-section absorption:
+
+  - **§"Why" + §"Wire format — proto 5"** → **HEP-CORE-0023 §2.5.4**
+    "Wire-field naming + grammar enforcement (audit R3.5b)".  The
+    wire-format table and rationale (default Open policy admitting
+    empty uid; downstream silent no-op in `_on_consumer_joined`)
+    are now there.
+  - **§"Validator helper signature" + §"Migration steps"** →
+    **HEP-CORE-0033 §G2.2.0b.8** "Enforcement points" extended with
+    the gate-by-gate tag-set table + reference to
+    `validate_identity_fields` / `validate_role_uid_only` in
+    `broker_service.cpp`.  Grammar enforcement at the gate is
+    now documented as unconditional (policy verification stacks
+    on top).
+  - **`BAND_BROADCAST_REQ.sender_uid` → `role_uid`** rename →
+    **HEP-CORE-0030 §5.1 + §5.3** (`BAND_BROADCAST_REQ` and
+    `BAND_BROADCAST_NOTIFY` payload fields updated, script-side
+    code sample updated).
+  - **§"Test plan"** → realised as 6 new L3 mutation-tests in
+    `tests/test_layer3_datahub/test_datahub_broker.cpp`
+    (`Gate_RegReq_*` + `Gate_ConsumerRegReq_*`).  No HEP absorption.
+  - **§"Migration steps (sequence)"** → operational checklist for
+    the one-shot patch; not a durable contract.  Archived in
+    `transient-2026-05-19/`.
+
+The closure record (what shipped + test count) lives in
+`docs/todo/API_TODO.md` § "R3.5b closed (2026-05-19)".
+
+Archived to `docs/archive/transient-2026-05-19/R3.5b_wire_field_unification_2026-05-19.md`.
+
 ### 2026-05-05 (Phase 8c script-response draft superseded by HEP-0033 §12.2/§12.4.1/§12.5)
 
 `docs/tech_draft/HEP_0033_PHASE_8C_SCRIPT_RESPONSE.md` (dated 2026-05-04,

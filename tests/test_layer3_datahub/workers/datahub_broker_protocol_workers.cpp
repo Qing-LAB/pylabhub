@@ -29,6 +29,7 @@
 #include "shared_test_helpers.h"
 #include "test_entrypoint.h"
 #include "test_sync_utils.h"
+#include "wire_conformance.h"  // Audit TR1 — HEP-spec wire-key helpers
 #include "utils/broker_request_comm.hpp"
 #include "utils/broker_service.hpp"
 #include "utils/config/hub_config.hpp"
@@ -40,6 +41,9 @@
 #include "utils/logger.hpp"
 #include "utils/scope_guard.hpp"
 #include "utils/timeout_constants.hpp"
+
+#include <cppzmq/zmq.hpp>
+#include <cppzmq/zmq_addon.hpp>   // zmq::send_multipart (R3.6)
 
 #include <atomic>
 #include <chrono>
@@ -219,8 +223,8 @@ json make_cons_opts(const std::string &channel, const std::string &consumer_uid)
 {
     json opts;
     opts["channel_name"]  = channel;
-    opts["consumer_uid"]  = consumer_uid;
-    opts["consumer_name"] = "test_consumer";
+    opts["role_uid"]  = consumer_uid;
+    opts["role_name"] = "test_consumer";
     opts["consumer_pid"]  = ::getpid();
     return opts;
 }
@@ -602,9 +606,12 @@ int heartbeat_wire_payload_includes_uid_and_role_type()
 
             bh.brc.send_heartbeat(channel, uid, role_type, {});
 
+            // broker_proto 4→5 (R3.5b): HEARTBEAT_REQ wire key renamed
+            // `uid` → `role_uid`.  The broker's HEARTBEAT_REQ log line
+            // mirrors the wire field name.
             const std::string expected =
                 "Broker: HEARTBEAT_REQ channel='" + channel +
-                "' uid='" + uid +
+                "' role_uid='" + uid +
                 "' role_type='" + role_type + "'";
 
             auto read_log = [&]() {
@@ -1348,6 +1355,269 @@ int broadcast_fan_out_hub_queue_path_fans_out_same()
         });
 }
 
+// ============================================================================
+// Audit TR1 — wire-conformance regression tests (2026-05-17)
+// ============================================================================
+//
+// Pre-2026-05-17, no test in the suite pinned a wire payload key set
+// directly against a HEP §.  The B1 audit found that the BRC + broker
+// agreed on the wrong band wire key (`channel` instead of `band` per
+// HEP-CORE-0030 §5.1) for over a year because round-trip tests
+// passed.  These tests use the `pylabhub::tests::wire` helpers
+// (`tests/test_framework/wire_conformance.h`) to lock down the
+// observable shape of major ACK families against their authoritative
+// HEP §:
+//
+//   REG_ACK / CONSUMER_REG_ACK         — HEP-CORE-0023 §2.5.1
+//   DISC_REQ_ACK (CHANNEL_NOT_FOUND +
+//                 DISC_ACK variants)   — HEP-CORE-0023 §2.2
+//   ROLE_INFO_ACK                       — HEP-CORE-0027 §4.2
+//   BAND_JOIN_ACK / BAND_LEAVE_ACK /
+//   BAND_MEMBERS_ACK                    — HEP-CORE-0030 §5.1
+//
+// Each test asserts both required keys (HAS) and forbidden legacy
+// keys (LACKS), so a stale rename leaves the test failing with a
+// pinpoint diagnostic.
+
+int wire_conformance_reg_ack_shape()
+{
+    return run_with_host(
+        "broker_protocol::wire_conformance_reg_ack_shape",
+        [](std::optional<HubHostHandle> &broker, LogCaptureFixture &) {
+            using namespace pylabhub::tests::wire;
+            const std::string channel = pid_chan("tr1.regack");
+            const std::string uid     = "prod." + channel;
+
+            BrcHandle bh;
+            bh.start(broker->endpoint, broker->pubkey, uid);
+            auto reg = bh.brc.register_channel(
+                make_reg_opts(channel, uid), 3000);
+            ASSERT_TRUE(reg.has_value()) << "REG_REQ timed out";
+
+            // HEP-CORE-0023 §2.5.1 + §2.5 — REG_ACK carries `status`,
+            // `channel_id` (the broker-side identifier), and the
+            // `heartbeat` block.  We don't pin every optional field
+            // here; we pin the spec-named ones and reject legacy /
+            // typo-style names.
+            expect_object_has_keys(*reg,
+                {"status", "heartbeat"},
+                "REG_ACK", "HEP-CORE-0023 §2.5.1");
+            expect_string_field(*reg, "status", "success",
+                                 "REG_ACK", "HEP-CORE-0023 §2.5.1");
+
+            // Stale / wrong keys that would indicate a rename leak:
+            // - `channel` (used by BAND_* — wrong family here)
+            // - `band` (band-family — wrong family here)
+            // - `name` (over-generic, suggests refactor in flight)
+            expect_object_lacks_keys(*reg,
+                {"band"},
+                "REG_ACK", "HEP-CORE-0023 §2.5.1 (band family is "
+                "separate per HEP-CORE-0030 §5.1)");
+
+            // Heartbeat sub-block keys per §2.5.1.
+            const auto &hb = (*reg)["heartbeat"];
+            expect_object_has_keys(hb,
+                {"heartbeat_interval_ms",
+                 "ready_miss_heartbeats",
+                 "pending_miss_heartbeats"},
+                "REG_ACK.heartbeat", "HEP-CORE-0023 §2.5.1");
+            expect_int_field(hb, "heartbeat_interval_ms",
+                              "REG_ACK.heartbeat",
+                              "HEP-CORE-0023 §2.5.1");
+            expect_int_field(hb, "ready_miss_heartbeats",
+                              "REG_ACK.heartbeat",
+                              "HEP-CORE-0023 §2.5.1");
+            expect_int_field(hb, "pending_miss_heartbeats",
+                              "REG_ACK.heartbeat",
+                              "HEP-CORE-0023 §2.5.1");
+
+            bh.stop();
+        });
+}
+
+int wire_conformance_consumer_reg_ack_shape()
+{
+    return run_with_host(
+        "broker_protocol::wire_conformance_consumer_reg_ack_shape",
+        [](std::optional<HubHostHandle> &broker, LogCaptureFixture &) {
+            using namespace pylabhub::tests::wire;
+            const std::string channel = pid_chan("tr1.creg");
+            const std::string prod_uid = "prod." + channel;
+            const std::string cons_uid = "cons." + channel;
+
+            // Producer first so the channel exists for the consumer.
+            BrcHandle prod_bh;
+            prod_bh.start(broker->endpoint, broker->pubkey, prod_uid);
+            ASSERT_TRUE(prod_bh.brc.register_channel(
+                make_reg_opts(channel, prod_uid), 3000).has_value());
+
+            BrcHandle cons_bh;
+            cons_bh.start(broker->endpoint, broker->pubkey, cons_uid);
+            auto reg = cons_bh.brc.register_consumer(
+                make_cons_opts(channel, cons_uid), 3000);
+            ASSERT_TRUE(reg.has_value()) << "CONSUMER_REG_REQ timed out";
+
+            expect_object_has_keys(*reg,
+                {"status", "heartbeat"},
+                "CONSUMER_REG_ACK", "HEP-CORE-0023 §2.5.1");
+            expect_string_field(*reg, "status", "success",
+                                 "CONSUMER_REG_ACK",
+                                 "HEP-CORE-0023 §2.5.1");
+            expect_object_lacks_keys(*reg,
+                {"band"},
+                "CONSUMER_REG_ACK", "HEP-CORE-0023 §2.5.1");
+
+            const auto &hb = (*reg)["heartbeat"];
+            expect_object_has_keys(hb,
+                {"heartbeat_interval_ms",
+                 "ready_miss_heartbeats",
+                 "pending_miss_heartbeats"},
+                "CONSUMER_REG_ACK.heartbeat",
+                "HEP-CORE-0023 §2.5.1");
+
+            cons_bh.stop();
+            prod_bh.stop();
+        });
+}
+
+int wire_conformance_role_info_ack_shape()
+{
+    return run_with_host(
+        "broker_protocol::wire_conformance_role_info_ack_shape",
+        [](std::optional<HubHostHandle> &broker, LogCaptureFixture &) {
+            using namespace pylabhub::tests::wire;
+
+            // ── Case 1: target uid found (no inbox configured) ─────
+            const std::string channel = pid_chan("tr1.roleinfo");
+            const std::string uid     = "prod." + channel;
+            BrcHandle bh;
+            bh.start(broker->endpoint, broker->pubkey, uid);
+            ASSERT_TRUE(bh.brc.register_channel(
+                make_reg_opts(channel, uid), 3000).has_value());
+
+            // Side BRC to query.
+            BrcHandle querier;
+            querier.start(broker->endpoint, broker->pubkey,
+                          "tr1.querier.uid0000001");
+            auto info = querier.brc.query_role_info(uid, 3000);
+            ASSERT_TRUE(info.has_value())
+                << "ROLE_INFO_REQ timed out for a registered uid";
+
+            // HEP-CORE-0027 §4.2 + HEP-CORE-0023 §4: ROLE_INFO_ACK
+            // body for a found role carries `found`, `channel`, and
+            // inbox metadata (empty when no inbox advertised).
+            expect_object_has_keys(*info,
+                {"found", "channel", "inbox_endpoint",
+                 "inbox_packing", "inbox_checksum", "inbox_schema"},
+                "ROLE_INFO_ACK", "HEP-CORE-0027 §4.2");
+
+            // Audit I1 (Round-2): code returns parsed `inbox_schema`
+            // object, NOT the stringified `inbox_schema_json` that
+            // some HEPs still mention.  Pin the code's contract.
+            expect_object_lacks_keys(*info,
+                {"inbox_schema_json"},
+                "ROLE_INFO_ACK",
+                "HEP-CORE-0027 §4.2 (code returns parsed object; "
+                "any HEP reference to `inbox_schema_json` is stale)");
+
+            // ── Case 2: unknown uid → found=false ────────────────────
+            // broker_proto 5 (R3.5b): the uid must be well-formed
+            // (HEP-CORE-0033 §G2.2.0b: tag + name + unique) — using
+            // a `prod.`-prefixed unique placeholder so the grammar
+            // gate passes; absence is verified by the broker's
+            // not-found scan.
+            auto not_found = querier.brc.query_role_info(
+                "prod.no.such.role.uid00000000", 3000);
+            ASSERT_TRUE(not_found.has_value())
+                << "ROLE_INFO_REQ for unknown uid should still get an "
+                   "ACK (with found=false), not time out";
+            expect_object_has_keys(*not_found,
+                {"found"},
+                "ROLE_INFO_ACK (unknown uid)",
+                "HEP-CORE-0027 §4.2");
+            ASSERT_TRUE(not_found->at("found").is_boolean());
+            EXPECT_FALSE(not_found->at("found").get<bool>())
+                << "ROLE_INFO_ACK.found must be false for an unknown uid";
+
+            querier.stop();
+            bh.stop();
+        });
+}
+// Audit R3.6 (2026-05-17): `wire_conformance_channel_notify_req_federation_relay`
+// retired.  The broker-side `handle_channel_notify_req` handler was
+// deleted because federation peer-relay actually uses `HUB_RELAY_MSG`
+// (broker↔broker) rather than `CHANNEL_NOTIFY_REQ`.  See
+// `docs/code_review/REVIEW_Connection_Inbox_Band_2026-05-17.md` (R3.6)
+// for the investigation.  Old clients sending CHANNEL_NOTIFY_REQ now
+// receive UNKNOWN_MSG_TYPE via the standard dispatch fall-through.
+
+
+int wire_conformance_band_ack_shapes()
+{
+    return run_with_host(
+        "broker_protocol::wire_conformance_band_ack_shapes",
+        [](std::optional<HubHostHandle> &broker, LogCaptureFixture &) {
+            using namespace pylabhub::tests::wire;
+
+            // Need a registered channel so BRC has a role_uid + the
+            // role can join a band.  Band names are `!`-prefixed per
+            // HEP-CORE-0030 §3.
+            const std::string channel = pid_chan("tr1.bandshape");
+            const std::string uid     = "prod." + channel;
+            const std::string band    = "!" + pid_chan("tr1.band");
+
+            BrcHandle bh;
+            bh.start(broker->endpoint, broker->pubkey, uid);
+            ASSERT_TRUE(bh.brc.register_channel(
+                make_reg_opts(channel, uid), 3000).has_value());
+
+            // ── BAND_JOIN_ACK ──────────────────────────────────────
+            auto join_ack = bh.brc.band_join(band, 3000);
+            ASSERT_TRUE(join_ack.has_value()) << "BAND_JOIN_REQ timed out";
+            expect_object_has_keys(*join_ack,
+                {"status", "band", "members"},
+                "BAND_JOIN_ACK", "HEP-CORE-0030 §5.1");
+            expect_string_field(*join_ack, "status", "success",
+                                 "BAND_JOIN_ACK",
+                                 "HEP-CORE-0030 §5.1");
+            // Stale key from before the audit-B1 rename
+            // (2026-05-17): the wire field used to be `channel`.
+            // If the rename leaks back in, this test catches it.
+            expect_object_lacks_keys(*join_ack,
+                {"channel"},
+                "BAND_JOIN_ACK",
+                "HEP-CORE-0030 §5.1 (audit B1 — wire key is `band`)");
+            ASSERT_TRUE(join_ack->at("band").is_string());
+            EXPECT_EQ(join_ack->at("band").get<std::string>(), band);
+            ASSERT_TRUE(join_ack->at("members").is_array());
+
+            // ── BAND_MEMBERS_ACK ───────────────────────────────────
+            auto members_ack = bh.brc.band_members(band, 3000);
+            ASSERT_TRUE(members_ack.has_value())
+                << "BAND_MEMBERS_REQ timed out";
+            expect_object_has_keys(*members_ack,
+                {"band", "members"},
+                "BAND_MEMBERS_ACK", "HEP-CORE-0030 §5.1");
+            expect_object_lacks_keys(*members_ack,
+                {"channel"},
+                "BAND_MEMBERS_ACK",
+                "HEP-CORE-0030 §5.1 (audit B1 — wire key is `band`)");
+
+            // ── BAND_LEAVE_ACK ─────────────────────────────────────
+            auto leave_ack = bh.brc.band_leave(band, 3000);
+            ASSERT_TRUE(leave_ack.has_value())
+                << "BAND_LEAVE_REQ timed out";
+            expect_object_has_keys(*leave_ack,
+                {"status"},
+                "BAND_LEAVE_ACK", "HEP-CORE-0030 §5.1");
+            expect_string_field(*leave_ack, "status", "success",
+                                 "BAND_LEAVE_ACK",
+                                 "HEP-CORE-0030 §5.1");
+
+            bh.stop();
+        });
+}
+
 } // namespace broker_protocol
 } // namespace pylabhub::tests::worker
 
@@ -1418,6 +1688,16 @@ struct BrokerProtocolRegistrar
                     return broadcast_unknown_channel_no_notify_delivered();
                 if (sc == "broadcast_fan_out_hub_queue_path_fans_out_same")
                     return broadcast_fan_out_hub_queue_path_fans_out_same();
+                // Audit TR1 — wire-conformance regressions
+                if (sc == "wire_conformance_reg_ack_shape")
+                    return wire_conformance_reg_ack_shape();
+                if (sc == "wire_conformance_consumer_reg_ack_shape")
+                    return wire_conformance_consumer_reg_ack_shape();
+                if (sc == "wire_conformance_role_info_ack_shape")
+                    return wire_conformance_role_info_ack_shape();
+                if (sc == "wire_conformance_band_ack_shapes")
+                    return wire_conformance_band_ack_shapes();
+                // R3.6 retired — handler deleted, no test path
                 return -1;
             });
     }

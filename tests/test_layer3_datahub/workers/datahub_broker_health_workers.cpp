@@ -203,8 +203,8 @@ nlohmann::json make_cons_opts(const std::string &channel, const std::string &con
 {
     nlohmann::json opts;
     opts["channel_name"]  = channel;
-    opts["consumer_uid"]  = consumer_uid;
-    opts["consumer_name"] = "test_consumer";
+    opts["role_uid"]  = consumer_uid;
+    opts["role_name"] = "test_consumer";
     opts["consumer_pid"]  = ::getpid();
     return opts;
 }

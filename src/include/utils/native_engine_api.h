@@ -117,13 +117,27 @@ typedef struct
     /** Request graceful stop (signals main loop to exit after current iteration). */
     void (*request_stop)(const struct PlhNativeContext *ctx);
 
-    /** Signal a critical error (sets critical flag + requests stop). */
-    void (*set_critical_error)(const struct PlhNativeContext *ctx);
+    /** Signal a critical error (sets critical flag + requests stop).
+     *  @param msg  REQUIRED — null-terminated string describing the
+     *              unrecoverable condition.  Logged at ERROR level by
+     *              the host as `[role_tag/uid] CRITICAL: <msg>` BEFORE
+     *              flipping state so log scrapers see the message
+     *              adjacent to the stop event.  Passing NULL is a
+     *              plugin bug; the host tolerates it (logs
+     *              "(no message)" placeholder) but plugin authors
+     *              should always pass a real string.  Uniform with
+     *              the Python `api.set_critical_error(msg)` and Lua
+     *              `api.set_critical_error(msg)` surfaces (audit S2,
+     *              2026-05-18).  API v3 — incompatible with v2
+     *              plugins (which called this with one arg). */
+    void (*set_critical_error)(const struct PlhNativeContext *ctx,
+                               const char *msg);
 
     /** Check if critical error has been flagged. Returns 1 or 0. */
     int (*is_critical_error)(const struct PlhNativeContext *ctx);
 
-    /** Get stop reason string: "normal", "peer_dead", "hub_dead", "critical_error". */
+    /** Get stop reason string: "normal", "peer_dead", "hub_dead",
+     *  "critical_error", "channel_closed". */
     const char *(*stop_reason)(const struct PlhNativeContext *ctx);
 
     /** Query counters (consistent names across all engines). */
@@ -213,9 +227,20 @@ typedef struct PlhAbiInfo
 
 /** Current native engine API version. Increment on breaking changes
  *  to the call surface (new/removed required symbols, changed function
- *  signatures).  Additive PlhAbiInfo fields are NOT breaking — they're
+ *  signatures).
+ *
+ *  Version log:
+ *    v2 → v3 (audit S2, 2026-05-18): `set_critical_error` function
+ *           pointer gained a `const char *msg` parameter (uniform with
+ *           the Python `api.set_critical_error([msg])` and Lua
+ *           `api.set_critical_error(msg)` surfaces).  Plugins built
+ *           against v2 will be rejected by the host's `verify_abi_()`
+ *           with a clear ABI-mismatch error — rebuild against this
+ *           header.
+ *
+ *  Additive PlhAbiInfo fields are NOT breaking — they're
  *  guarded by struct_size. */
-#define PLH_NATIVE_API_VERSION 2
+#define PLH_NATIVE_API_VERSION 3
 
 /* =========================================================================
  * C-visible pylabhub ComponentVersions constants
@@ -231,8 +256,32 @@ typedef struct PlhAbiInfo
  * broker_proto 2 → 3 (audit C3, 2026-05-15): `role_uid` REQUIRED on
  *   DEREG_REQ + CONSUMER_DEREG_REQ wire payloads (HEP-CORE-0023 §2.1.1);
  *   CONSUMER_DIED_NOTIFY gains `consumer_uid` field (additive).
+ * broker_proto 3 → 4 (audit B1, 2026-05-17): BAND_JOIN/LEAVE/BROADCAST/
+ *   MEMBERS_REQ/ACK + BAND_*_NOTIFY wire payload key renamed
+ *   `channel` → `band` per HEP-CORE-0030 §5.1.  Completes the
+ *   2026-04-11 rename refactor (`8d3ee1e`) which renamed the C++
+ *   surface and wire-message types but missed the payload key
+ *   strings.  Old clients sending `channel` on a BAND_* request
+ *   receive INVALID_REQUEST.
+ * broker_proto 4 → 5 (audit R3.5b, 2026-05-19): wire-field
+ *   unification — every role-context wire message now uses
+ *   `role_uid`/`role_name`.  Renames: CONSUMER_REG_REQ.consumer_uid/
+ *   consumer_name → role_uid/role_name; HEARTBEAT_REQ.uid →
+ *   role_uid; BAND_BROADCAST_REQ.sender_uid → role_uid;
+ *   CONSUMER_DIED_NOTIFY body.consumer_uid → role_uid.  Broker also
+ *   enforces grammar (HEP-CORE-0033 §G2.2.0b) + side-aware role-tag
+ *   policy at every gate (REG_REQ/DEREG_REQ accept tags {prod,proc};
+ *   CONSUMER_REG_REQ/CONSUMER_DEREG_REQ accept {cons,proc};
+ *   HEARTBEAT_REQ cross-checks role_type against tag).  Old clients
+ *   using legacy keys get INVALID_REQUEST / INVALID_ROLE_TAG.
+ *   Federation peer-context `sender_uid` (HUB_TARGETED_MSG /
+ *   CHANNEL_BROADCAST_REQ from hubs) preserved (peer.uid, not
+ *   role.uid).  Inbox-message `sender_uid` (PyInboxMsg /
+ *   plh_inbox_msg_t / msg.sender_uid in Lua) preserved (authoring
+ *   producer of an inbox payload — semantically distinct from local
+ *   role.uid).
  * Keep in sync with `src/include/plh_version_registry.hpp` constants. */
-#define PLH_COMPONENT_BROKER_PROTO_MAJOR   3
+#define PLH_COMPONENT_BROKER_PROTO_MAJOR   5
 #define PLH_COMPONENT_BROKER_PROTO_MINOR   0
 #define PLH_COMPONENT_ZMQ_FRAME_MAJOR      1
 #define PLH_COMPONENT_ZMQ_FRAME_MINOR      0
@@ -292,6 +341,7 @@ typedef struct PlhAbiInfo
 /* void on_heartbeat(void); */
 /* void on_channel_closing(const plh_channel_closing_args_t *args); */
 /* void on_consumer_died (const plh_consumer_died_args_t  *args); */
+/* void on_hub_dead      (const plh_hub_dead_args_t       *args); */
 /* bool on_produce (const plh_tx_t *tx); */
 /* bool on_consume (const plh_rx_t *rx); */
 /* bool on_process (const plh_rx_t *rx, const plh_tx_t *tx); */
@@ -427,9 +477,15 @@ class Context
     {
         if (c_->request_stop) c_->request_stop(c_);
     }
-    void set_critical_error() const
+    /// Flag a critical error and request shutdown.  msg is REQUIRED:
+    /// a null-terminated string describing the unrecoverable
+    /// condition.  Logged by the host at ERROR level as
+    /// `[role_tag/uid] CRITICAL: <msg>` BEFORE flipping state.
+    /// API v3 — uniform with Python `api.set_critical_error(msg)`
+    /// and Lua `api.set_critical_error(msg)`.
+    void set_critical_error(const char *msg) const
     {
-        if (c_->set_critical_error) c_->set_critical_error(c_);
+        if (c_->set_critical_error) c_->set_critical_error(c_, msg);
     }
     bool is_critical_error() const
     {

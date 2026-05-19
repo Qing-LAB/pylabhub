@@ -255,8 +255,8 @@ int e2e_consumer(int argc, char** argv)
             // Register this process as a consumer with the broker
             nlohmann::json cons_opts;
             cons_opts["channel_name"]  = channel;
-            cons_opts["consumer_uid"]  = cons_uid;
-            cons_opts["consumer_name"] = "e2e_consumer";
+            cons_opts["role_uid"]  = cons_uid;
+            cons_opts["role_name"] = "e2e_consumer";
             cons_opts["consumer_pid"]  = ::getpid();
             auto cons_reg = brc.register_consumer(cons_opts, 3000);
             ASSERT_TRUE(cons_reg.has_value()) << "e2e_consumer: register_consumer failed";

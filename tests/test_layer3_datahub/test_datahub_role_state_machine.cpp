@@ -179,6 +179,21 @@ TEST_F(DatahubRoleStateMachineTest, RoleAPIBase_StartHandlerThreads_DualHub_E2E)
     ExpectWorkerOk(proc);
 }
 
+TEST_F(DatahubRoleStateMachineTest, RoleAPIBase_HubDead_TransitionsPresencesToDeregistered)
+{
+    // Audit R3.3 (2026-05-17) — on_hub_dead must transition every
+    // presence pointing at the dead connection from Registered →
+    // Deregistered.  Pre-fix the FSM kept claiming Registered against
+    // a broker that had already reaped the role via heartbeat-timeout.
+    // Companion to A2 (which establishes that the role keeps running
+    // on master after peer death); R3.3 establishes that the FSM
+    // truthfully reflects the broker-side reality.
+    auto proc = SpawnWorker(
+        "broker_role_state.role_api_base_hub_dead_transitions_presences_to_deregistered",
+        {});
+    ExpectWorkerOk(proc);
+}
+
 TEST_F(DatahubRoleStateMachineTest, RoleAPIBase_HubDead_PeerKeepsRoleAlive)
 {
     // A2 (Wave-B M8 prep) — dual-hub fault tolerance: PEER broker
@@ -220,6 +235,112 @@ TEST_F(DatahubRoleStateMachineTest, RoleAPIBase_WaitForRole_DualHub_Fallthrough)
     auto proc = SpawnWorker(
         "broker_role_state.role_api_base_wait_for_role_dual_hub_fallthrough",
         {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubRoleStateMachineTest, RoleAPIBase_BandNotify_WireField_And_Routing)
+{
+    // Audit B1 + B2 regression test (2026-05-17) — pins TWO things
+    // against a REAL broker emission of BAND_JOIN_NOTIFY:
+    //
+    //  (B1) HEP-CORE-0030 §5.1 wire conformance — body carries the
+    //       band identifier under key `band`, not the legacy
+    //       `channel` (leftover from before the 2026-04-11 rename
+    //       refactor `8d3ee1e` that missed wire payload keys).
+    //  (B2) RoleHandler::find_presence_from_notification resolves
+    //       the real body to the joined presence — pre-fix it
+    //       looked for the never-emitted `band_name` key invented
+    //       in Wave-B M4b (`8c3994c`) and always returned nullptr.
+    //
+    // Why 2000+ tests missed both bugs:
+    //  - L2 `test_role_handler.cpp` synthesized `body["band_name"]`
+    //    in the test fixture, matching the broken dispatcher rather
+    //    than real wire data.
+    //  - L3 `datahub_channel_group_workers.cpp` band tests use raw
+    //    BRC `on_notification` callbacks that bypass
+    //    `find_presence_from_notification` entirely.
+    //  - No test inspected the wire payload key against the HEP.
+    //
+    // This test closes both gaps in one round-trip.
+    auto proc = SpawnWorker(
+        "broker_role_state.role_api_base_band_notify_wire_field_and_routing",
+        {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubRoleStateMachineTest, RoleAPIBase_RegistrationFSM_Transitions)
+{
+    // Audit S1+O4 (2026-05-17) — pins the per-Presence registration
+    // FSM (Unregistered → RegRequestPending → Registered →
+    // Deregistered).  Pre-S1 the role-side had no enumerable
+    // registration state; this test exercises each transition
+    // against a real broker.
+    //
+    // Why 1925 tests missed the gap: there was no FSM to test.  The
+    // pre-S1 state was carried by string non-emptiness on
+    // `Impl::Shared::producer_channel`, which is internal to
+    // role_api_base.cpp and not externally observable.
+    auto proc = SpawnWorker(
+        "broker_role_state.role_api_base_registration_fsm_transitions",
+        {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubRoleStateMachineTest, RoleAPIBase_DualHub_Heartbeat_PerPresence)
+{
+    // Audit C2 closure (2026-05-19) — pins HEP-CORE-0033 §19.3 step 3:
+    // heartbeat is per-presence; a dual-hub processor (Consumer on hub-A
+    // + Producer on hub-B) emits ONE heartbeat per presence to its OWN
+    // hub.  Validates the role-side refactor that replaced `role_tag`
+    // string-branching + legacy `pImpl->channel`/`pImpl->out_channel`
+    // fields with `handler_->presences()` iteration in
+    // `RoleAPIBase::on_heartbeat_tick_` (`src/utils/service/
+    // role_api_base.cpp` line 832ish).
+    //
+    // Mutation: revert the iteration to a hardcoded
+    // `emit(pImpl->channel, "consumer")` for proc-role → hub-B never
+    // receives a producer-presence heartbeat → broker_b's RoleEntry's
+    // producer-presence row never flips `first_heartbeat_seen=true`
+    // → test fails on EXPECT_TRUE.
+    auto proc = SpawnWorker(
+        "broker_role_state.role_api_base_dual_hub_heartbeat_per_presence",
+        {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubRoleStateMachineTest, RoleAPIBase_SourceHubUid_Disambiguates_DualHub)
+{
+    // Audit C3 (2026-05-17) — pins `IncomingMessage::source_hub_uid`
+    // as the dual-hub message origin tag (HEP-CORE-0023 §7 +
+    // HEP-CORE-0033 §18.3 / §19.4).  Pre-C3 the field didn't exist:
+    // a dual-hub processor's script had no way to tell which hub a
+    // notification came from without comparing channel/band names
+    // back to its own presence list.
+    //
+    // Test shape: 2 brokers, dual-hub handler, processor joins one
+    // band on each hub; external BRC clients also join, triggering
+    // BAND_JOIN_NOTIFY fanout from each broker.  Test asserts both
+    // notifies arrive with distinct `source_hub_uid` values that
+    // match the respective broker endpoints.
+    auto proc = SpawnWorker(
+        "broker_role_state.role_api_base_source_hub_uid_disambiguates_dual_hub",
+        {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubRoleStateMachineTest, Broker_Band_RejectsInvalidIdentifier)
+{
+    // Audit R3.5 (2026-05-17) — broker must explicitly reject
+    // BAND_*_REQ payloads with invalid band names (HEP-CORE-0030 §3
+    // grammar — must start with `!`).  Pre-fix the broker silently
+    // bumped a counter via `_on_band_joined`'s validator but the
+    // handler ignored the validation outcome, returning
+    // `status: success` — phantom-join.  Test verifies that all 3
+    // request-reply BAND messages now return
+    // `{status: error, error_code: INVALID_BAND_NAME}` for invalid
+    // names, while valid names still succeed.
+    auto proc = SpawnWorker(
+        "broker_role_state.broker_band_rejects_invalid_identifier", {});
     ExpectWorkerOk(proc);
 }
 

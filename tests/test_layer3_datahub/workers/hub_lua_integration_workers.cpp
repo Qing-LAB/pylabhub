@@ -798,8 +798,8 @@ end
             json cons_opts;
             cons_opts["channel_name"]  = "lab.cons.channel";
             cons_opts["consumer_pid"]  = ::getpid();
-            cons_opts["consumer_uid"]  = "cons.l3.uid12345678";
-            cons_opts["consumer_name"] = "L3TestConsumer";
+            cons_opts["role_uid"]  = "cons.l3.uid12345678";
+            cons_opts["role_name"] = "L3TestConsumer";
             auto cons_reg = cons_brc.register_consumer(cons_opts, 3000);
             ASSERT_TRUE(cons_reg.has_value())
                 << "consumer CONSUMER_REG_REQ failed";

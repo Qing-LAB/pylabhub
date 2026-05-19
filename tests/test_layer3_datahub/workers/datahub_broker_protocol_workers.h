@@ -50,5 +50,12 @@ int broadcast_fan_out_data_payload_round_trip();
 int broadcast_unknown_channel_no_notify_delivered();
 int broadcast_fan_out_hub_queue_path_fans_out_same();
 
+// Audit TR1 — wire-conformance ACK-shape regressions (2026-05-17)
+int wire_conformance_reg_ack_shape();
+int wire_conformance_consumer_reg_ack_shape();
+int wire_conformance_role_info_ack_shape();
+int wire_conformance_band_ack_shapes();
+// R3.6 retired — CHANNEL_NOTIFY_REQ wire path deleted (no caller anywhere).
+
 } // namespace broker_protocol
 } // namespace pylabhub::tests::worker
