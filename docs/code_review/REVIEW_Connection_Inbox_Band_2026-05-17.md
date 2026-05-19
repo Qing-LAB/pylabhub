@@ -387,10 +387,10 @@ I'd suggest splitting into three discrete sessions:
 
 | ID | Tier | Title | Status | Resolution / commit |
 |---|---|---|---|---|
-| C1 | D1 | Hub-dead policy §19.6 ↔ A2 | ❌ OPEN | — |
-| C2 | D2 | Heartbeat tick uses role_tag string branching | ❌ OPEN | — |
+| C1 | D1 | Hub-dead policy §19.6 ↔ A2 | ✅ FIXED 2026-05-18 (`81804d7`) | D1+D2 unified notification dispatch shipped: `kNotificationTable[]` in `src/utils/service/cycle_ops.hpp` with per-row `(callback_name, invoke_user_X, default_X)`.  `on_hub_dead` default is master→stop with `StopReason::HubDead`, peer→no-op (replaces the old A2 asymmetric inline stop in `role_api_base.cpp`).  Defaults take narrow `StopRequestor` capability handle.  All three engines (Python/Lua/Native) parity-verified.  See HEP-CORE-0011 §"Notification dispatch" + HEP-CORE-0033 §19.6. |
+| C2 | D2 | Heartbeat tick uses role_tag string branching | ✅ FIXED 2026-05-19 (`81804d7`) | `RoleAPIBase::on_heartbeat_tick_` at `src/utils/service/role_api_base.cpp:847` iterates `handler_->presences()` and emits one heartbeat per row via `resolve_bc_for_channel(p.channel)`.  Pre-existing `role_tag` string branching deleted.  Each presence (single-hub: 1; processor: 2; dual-hub processor: 2 on different hubs) emits its own heartbeat. |
 | C3 | D2 | IncomingMessage lacks source_hub_uid | ✅ FIXED 2026-05-17 | Added `source_hub_uid` field; BRC `on_notification` lambda captures `connections()[i].broker_endpoint` (HEP-CORE-0033 §19.2 dedup key) and stamps it on every `IncomingMessage`.  New L3 regression `RoleAPIBase_SourceHubUid_Disambiguates_DualHub` mutation-tested. |
-| C4 | D2 | Heartbeat tick on master only | ❌ OPEN | — |
+| C4 | D2 | Heartbeat tick on master only | ✅ FIXED 2026-05-19 (`81804d7`) | Resolved by the C2 fix: heartbeat TICK still installs on `connections()[0].brc` (correct, single timer thread per HEP-CORE-0031 §4.2.1), but per-presence EMISSION routes via `resolve_bc_for_channel` so each presence's heartbeat lands on its own hub's BRC (dual-hub processor verified). |
 | C5 | D3 | Presence struct missing inbox_meta | ❌ OPEN (deferred Wave-B M5+) | — |
 | I1 | D2 | ROLE_INFO_ACK field name drift | ❌ OPEN | — |
 | I2 | D3 | Header docstring fixarray[4] vs [5] | ❌ OPEN | — |
@@ -401,8 +401,8 @@ I'd suggest splitting into three discrete sessions:
 | B3 | D1 | Triple-name divergence | ✅ FIXED 2026-05-17 | Auto-resolved by B1+B2: HEP, wire, and dispatcher now all agree on `band`. |
 | B4 | D2 | band_index_ always uses presences[0] | ❌ OPEN | — |
 | B5 | D2 | BAND_*_NOTIFY not catalogued | ❌ OPEN | — |
-| B6 | D2 | HEP-0030 retires CHANNEL_BROADCAST too aggressively | ❌ OPEN | — |
-| X1 | D3 | Dead BRC `send_notify` | ❌ OPEN | — |
+| B6 | D2 | HEP-0030 retires CHANNEL_BROADCAST too aggressively | ✅ FIXED 2026-05-17 (T3 Round 2) | HEP-CORE-0030 §9 amended + new §9.1 added documenting the channel-bound (`CHANNEL_BROADCAST_REQ`) vs band-bound (`BAND_BROADCAST_REQ`) broadcast coexistence rationale.  CHANNEL_BROADCAST is no longer described as "retired"; both families coexist. |
+| X1 | D3 | Dead BRC `send_notify` | ✅ FIXED 2026-05-17 (Audit O1) | `BrokerRequestComm::send_notify` removed (header + cpp).  Zero callers in `src/`, `tests/`, `examples/` as of 2026-05-17.  Removal-comment retained in both files for context.  Broker-side `handle_channel_notify_req` kept because HEP-CORE-0022 federation peers may still emit `CHANNEL_NOTIFY_REQ`. |
 | X2 | D3 | Dead BRC `query_shm_info` | ❌ OPEN | — |
 | X3 | D3 | resolve_bc_for_* forwarders | ❌ OPEN | — |
 | X4 | D3 | Stale Wave-B M4d/e/f comments | ❌ OPEN | — |
@@ -737,6 +737,7 @@ I added a non-const overload `find_presence_for_channel(channel)` returning `Pre
 | R3.3 | D2 | Hub-dead doesn't transition presence FSM | ✅ FIXED 2026-05-17 — `RoleHandler::mark_connection_disconnected()` added; called from `on_hub_dead` lambda; presences on dead connection transition Registered → Deregistered.  Mutation-tested via `RoleAPIBase_HubDead_TransitionsPresencesToDeregistered`. |
 | R3.4 | D3 | inbox_schema wire asymmetry undocumented | ⏳ OPEN — DOC-ONLY | HEP-CORE-0027 §4 needs a wire-form note |
 | R3.5 | D1 | Broker silently accepts invalid band names | ✅ FIXED 2026-05-17 — Added explicit `is_valid_identifier` check in 4 BAND_* handlers; returns typed `INVALID_BAND_NAME` error.  Also caught + fixed a test (A0) that was using a non-`!`-prefixed band name.  Mutation-tested via `Broker_Band_RejectsInvalidIdentifier`. |
+| R3.5b | D1 | Broker silently accepts empty/malformed role_uid; wire-field naming divergent across gates (`consumer_uid`/`uid`/`sender_uid`) | ✅ FIXED 2026-05-19 (`81804d7`) — Three-prong fix at the broker wire boundary, broker_proto 4→5 clean cut.  (1) Wire-field unification: every role-context message uses `role_uid`/`role_name` (CONSUMER_REG_REQ, HEARTBEAT_REQ, BAND_BROADCAST_REQ, CONSUMER_DIED_NOTIFY body).  (2) Unconditional grammar check via `is_valid_identifier(IdentifierKind::{Channel,RoleUid,RoleName})` at every REG/DEREG/HEARTBEAT/INFO/PRESENCE/BAND gate.  (3) Side-aware role-tag policy: REG/DEREG accept `{prod,proc}`; CONSUMER_REG/DEREG accept `{cons,proc}` (processor dual-role); HEARTBEAT cross-checks `role_type` against tag.  Validator helpers `validate_identity_fields` + `validate_role_uid_only` in `broker_service.cpp`.  Fixes user-flagged silent-acceptance bug.  Docs: HEP-CORE-0023 §2.5.4, HEP-CORE-0033 §G2.2.0b.8, HEP-CORE-0030 §5.1/§5.3.  6 new L3 mutation-tests (`Gate_RegReq_*` + `Gate_ConsumerRegReq_*`). |
 | R3.6 | D2 | CHANNEL_NOTIFY_REQ broker handler has no test coverage | ✅ FIXED 2026-05-17 — Investigation revealed the handler was 100% DEAD, not "kept for federation".  Federation actually uses `HUB_RELAY_MSG` (broker↔broker, `handle_hub_relay_msg`), NOT CHANNEL_NOTIFY_REQ.  Resolution: DELETED `handle_channel_notify_req` entirely (dispatch entry + known_msg_type list + handler body + header declaration).  Old clients sending CHANNEL_NOTIFY_REQ now receive UNKNOWN_MSG_TYPE.  Stronger fix than the original "add test coverage" recommendation. |
 | R3.7 | D3 | `RegRequestPending` state not explicitly observed by test | ⏳ NOTED | Too complex for value |
 | R3.8 | D3 | Non-const `find_presence_for_channel` overload not L2-tested | ⏳ NOTED | Low priority |
