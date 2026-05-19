@@ -926,6 +926,48 @@ bool RoleAPIBase::start_handler_threads(std::unique_ptr<RoleHandler> handler)
     auto *core = pImpl->core;
     const std::string &tag_local = pImpl->role_tag;
 
+    // ── Phase 1.5: Initialize connection-alive bitmask BEFORE Phase 2 ────
+    //
+    // Audit S3 (2026-05-19, REVIEW_Connection_Inbox_Band §S3): the
+    // bitmask must be initialized to `(1<<N)-1` (all-alive) BEFORE
+    // the Phase 2 lambdas capture `&pImpl->connection_alive_mask_`
+    // and BEFORE Phase 3 spawns ctrl threads.  Pre-fix, the init
+    // happened at the END of `start_handler_threads`, so any
+    // on_hub_dead lambda firing during the init window (e.g.,
+    // broker crashes mid-startup) read `mask = 0` and the policy
+    // violation gate at the lambda body's `(prev & bit) == 0`
+    // check would suppress the HUB_DEAD enqueue — a real
+    // connection death gets misclassified as a duplicate fire.
+    // Moving init here closes the window; the mask is initialised
+    // exactly once per (uid, role lifetime) pair, before any code
+    // that captures it.
+    //
+    // Bit width sanity: `handler.connections().size()` must fit in
+    // uint64; LOG + cap to 64 if exceeded (silently truncating
+    // would make is_connection_alive(i) lie for i >= 64).
+    if (n_conn > 64)
+    {
+        LOGGER_ERROR("[{}] start_handler_threads: connection count {} > 64; "
+                     "A2 per-connection liveness bitmask only supports up to "
+                     "64.  Tracking the first 64; the remainder will report "
+                     "is_connection_alive=false from start.",
+                     pImpl->role_tag, n_conn);
+    }
+    {
+        const std::size_t bits = (n_conn > 64) ? 64 : n_conn;
+        const std::uint64_t init_mask = (bits == 64)
+            ? ~std::uint64_t{0}
+            : ((std::uint64_t{1} << bits) - 1);
+        // Release ordering: pairs with the acquire load in
+        // `is_connection_alive` / `connections_alive_count` and the
+        // acq_rel fetch_and inside the on_hub_dead lambda body
+        // (audit M3, 2026-05-18).  Stored BEFORE the lambdas
+        // capture &pImpl->connection_alive_mask_ — happens-before
+        // is established by the same `pImpl` pointer being live
+        // across both stores (one-thread init phase).
+        pImpl->connection_alive_mask_.store(init_mask, std::memory_order_release);
+    }
+
     // ── Phase 2: Per-BRC notification + hub-dead callbacks ───────────────
     LOGGER_INFO("[{}] start_handler_threads: Phase 2 — wiring notification "
                 "and hub-dead callbacks on {} BRC(s)",
@@ -1192,34 +1234,9 @@ bool RoleAPIBase::start_handler_threads(std::unique_ptr<RoleHandler> handler)
     LOGGER_INFO("[{}] start_handler_threads: Phase 3 OK — {} ctrl thread(s) spawned",
                 pImpl->role_tag, n_conn);
 
-    // A2 (Wave-B M8 prep): mark every spawned connection alive in the
-    // bitmask.  Done AFTER spawn (so on_hub_dead lambdas observe a
-    // sane initial state if a connection dies racing the spawn loop).
-    // Bit width sanity-check: handler::connections().size() must fit
-    // in uint64; LOG + cap to 64 if exceeded (silently truncating
-    // would make is_connection_alive(i) lie for i >= 64).
-    if (n_conn > 64)
-    {
-        LOGGER_ERROR("[{}] start_handler_threads: connection count {} > 64; "
-                     "A2 per-connection liveness bitmask only supports up to "
-                     "64.  Tracking the first 64; the remainder will report "
-                     "is_connection_alive=false from start.",
-                     pImpl->role_tag, n_conn);
-    }
-    const std::size_t bits = (n_conn > 64) ? 64 : n_conn;
-    const std::uint64_t init_mask = (bits == 64)
-        ? ~std::uint64_t{0}
-        : ((std::uint64_t{1} << bits) - 1);
-    // Release ordering: pairs with the acquire load in
-    // `is_connection_alive` / `connections_alive_count` so a reader
-    // is guaranteed to see the fully-initialized mask, not a torn or
-    // partially-written value.  Audit M3 (2026-05-18) tightened this
-    // from `relaxed`; the prior code happened to work in practice
-    // because no reader fires until after a ZMQ event has flowed
-    // through (which establishes happens-before through the kernel
-    // path), but that's an implementation detail of ZMQ + the
-    // scheduler, not a C++ memory-model guarantee.
-    pImpl->connection_alive_mask_.store(init_mask, std::memory_order_release);
+    // Audit S3 (2026-05-19): connection_alive_mask_ is now initialised
+    // in Phase 1.5 (BEFORE Phase 2 wires the lambdas that capture it
+    // + BEFORE Phase 3 spawns ctrl threads).  No init needed here.
 
     // Wave-B M4f (2026-05-16): the previous Phase 4 set
     // `pImpl->broker_channel = handler->connections()[0].brc.get()`
