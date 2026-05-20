@@ -151,24 +151,6 @@ class ScriptEngine
 
     [[nodiscard]] EngineState engine_state() const noexcept { return state_; }
 
-    // ── Lifecycle module support ────────────────────────────────────────
-
-    /// Magic number for lifecycle validation.
-    static constexpr uint64_t kLifecycleMagic = 0x534345'4E47494E45ULL; // "SCENGINE"
-
-    /// Lifecycle generation key — set by whoever registers this engine
-    /// as a lifecycle module. Used by validate function to detect stale pointers.
-    uint64_t lifecycle_key_{0};
-    uint64_t lifecycle_magic_{kLifecycleMagic};
-
-    /// Validation function for lifecycle userdata.
-    static bool lifecycle_validate(void *userdata, uint64_t key)
-    {
-        auto *eng = static_cast<ScriptEngine *>(userdata);
-        return eng && eng->lifecycle_magic_ == kLifecycleMagic
-                   && eng->lifecycle_key_ == key;
-    }
-
     // ── Lifecycle (called from working thread) ───────────────────────────
 
     /**
