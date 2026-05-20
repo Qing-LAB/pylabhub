@@ -326,6 +326,62 @@ IncomingMessage make_hub_dead(const std::string &source_hub_uid,
     return m;
 }
 
+// S4 expansion 2026-05-19 — band-notification factory helpers.
+
+IncomingMessage make_band_join_notify(const std::string &band,
+                                      const std::string &role_uid,
+                                      const std::string &role_name)
+{
+    IncomingMessage m;
+    m.event              = "BAND_JOIN_NOTIFY";
+    m.notification_id    = parse_notification_id(m.event);
+    m.details            = nlohmann::json::object();
+    m.details["band"]      = band;
+    m.details["role_uid"]  = role_uid;
+    m.details["role_name"] = role_name;
+    return m;
+}
+
+IncomingMessage make_band_leave_notify(const std::string &band,
+                                       const std::string &role_uid,
+                                       const std::string &reason)
+{
+    IncomingMessage m;
+    m.event              = "BAND_LEAVE_NOTIFY";
+    m.notification_id    = parse_notification_id(m.event);
+    m.details            = nlohmann::json::object();
+    m.details["band"]      = band;
+    m.details["role_uid"]  = role_uid;
+    m.details["reason"]    = reason;
+    return m;
+}
+
+IncomingMessage make_band_broadcast_notify(const std::string &band,
+                                           const std::string &sender,
+                                           const nlohmann::json &body)
+{
+    IncomingMessage m;
+    m.event              = "BAND_BROADCAST_NOTIFY";
+    m.notification_id    = parse_notification_id(m.event);
+    m.details            = nlohmann::json::object();
+    m.details["band"]      = band;
+    m.details["role_uid"]  = sender;
+    m.details["body"]      = body;
+    return m;
+}
+
+IncomingMessage make_band_lost(const std::string &band,
+                               const std::string &reason)
+{
+    IncomingMessage m;
+    m.event              = "BAND_LOST";
+    m.notification_id    = parse_notification_id(m.event);
+    m.details            = nlohmann::json::object();
+    m.details["band"]    = band;
+    m.details["reason"]  = reason;
+    return m;
+}
+
 } // anonymous namespace
 
 class DispatchChannelClosingTest : public ::testing::Test
@@ -901,4 +957,184 @@ TEST_F(DispatchHubDeadTest, NoCallback_MasterAndPeerSameCycle)
     EXPECT_TRUE(core.is_shutdown_requested())
         << "master hub-death in the batch MUST request stop";
     EXPECT_EQ(core.stop_reason_string(), "hub_dead");
+}
+
+// ============================================================================
+// Band callbacks (S4 expansion 2026-05-19, HEP-CORE-0030 §5.3).
+//
+// All 4 band callbacks default to no-op (bands are script-domain
+// coordination; framework only delivers events).  Tests pin:
+//   - No callback defined → dispatcher consumes the notify but
+//     does NOT touch the engine, does NOT request stop, does NOT
+//     leave the entry in `msgs`.
+//   - Callback defined → engine.invoke_on_X is called with the
+//     correct args; entry consumed; framework still doesn't stop.
+//
+// Mutation guards: if a future refactor accidentally drops a band
+// notify into the default-stop path, the no-callback test fails
+// (core.is_shutdown_requested()).  If args are misordered or wire-
+// field names drift, the with-callback test fails (recording
+// vector content mismatch).
+// ============================================================================
+
+class DispatchBandTest : public ::testing::Test
+{
+};
+
+TEST_F(DispatchBandTest, MemberJoined_NoCallback_DefaultNoOpButConsumes)
+{
+    RecordingEngine eng;
+    RoleHostCore core;
+    eng.has_on_band_member_joined = false;
+
+    std::vector<IncomingMessage> msgs;
+    msgs.push_back(make_band_join_notify("!ctrl", "prod.lab.uid01", "lab_a"));
+
+    pylabhub::scripting::dispatch_notifications(eng, msgs,
+        pylabhub::scripting::StopRequestor{core});
+
+    EXPECT_TRUE(eng.band_member_joined_calls.empty());
+    EXPECT_TRUE(msgs.empty()) << "BAND_JOIN_NOTIFY must be consumed";
+    EXPECT_FALSE(core.is_shutdown_requested())
+        << "default band-callback action MUST be no-op (not stop)";
+}
+
+TEST_F(DispatchBandTest, MemberJoined_Callback_DispatchesAndRemovesNotify)
+{
+    RecordingEngine eng;
+    RoleHostCore core;
+    eng.has_on_band_member_joined = true;
+
+    std::vector<IncomingMessage> msgs;
+    msgs.push_back(make_band_join_notify("!ctrl",
+                                          "prod.lab.uid01",
+                                          "lab_a"));
+
+    pylabhub::scripting::dispatch_notifications(eng, msgs,
+        pylabhub::scripting::StopRequestor{core});
+
+    ASSERT_EQ(eng.band_member_joined_calls.size(), 1u);
+    EXPECT_EQ(std::get<0>(eng.band_member_joined_calls[0]), "!ctrl");
+    EXPECT_EQ(std::get<1>(eng.band_member_joined_calls[0]), "prod.lab.uid01");
+    EXPECT_EQ(std::get<2>(eng.band_member_joined_calls[0]), "lab_a");
+    EXPECT_TRUE(msgs.empty());
+}
+
+TEST_F(DispatchBandTest, MemberLeft_NoCallback_DefaultNoOpButConsumes)
+{
+    RecordingEngine eng;
+    RoleHostCore core;
+    eng.has_on_band_member_left = false;
+
+    std::vector<IncomingMessage> msgs;
+    msgs.push_back(make_band_leave_notify("!ctrl", "prod.lab.uid01",
+                                           "heartbeat_timeout"));
+
+    pylabhub::scripting::dispatch_notifications(eng, msgs,
+        pylabhub::scripting::StopRequestor{core});
+
+    EXPECT_TRUE(eng.band_member_left_calls.empty());
+    EXPECT_TRUE(msgs.empty());
+    EXPECT_FALSE(core.is_shutdown_requested());
+}
+
+TEST_F(DispatchBandTest, MemberLeft_Callback_DispatchesWithReason)
+{
+    RecordingEngine eng;
+    RoleHostCore core;
+    eng.has_on_band_member_left = true;
+
+    std::vector<IncomingMessage> msgs;
+    msgs.push_back(make_band_leave_notify("!ctrl", "cons.lab.uid02",
+                                           "voluntary"));
+    msgs.push_back(make_band_leave_notify("!ctrl", "prod.lab.uid03",
+                                           "process_dead"));
+
+    pylabhub::scripting::dispatch_notifications(eng, msgs,
+        pylabhub::scripting::StopRequestor{core});
+
+    ASSERT_EQ(eng.band_member_left_calls.size(), 2u);
+    EXPECT_EQ(std::get<2>(eng.band_member_left_calls[0]), "voluntary");
+    EXPECT_EQ(std::get<2>(eng.band_member_left_calls[1]), "process_dead");
+    EXPECT_TRUE(msgs.empty());
+}
+
+TEST_F(DispatchBandTest, Message_NoCallback_DefaultNoOpButConsumes)
+{
+    RecordingEngine eng;
+    RoleHostCore core;
+    eng.has_on_band_message = false;
+
+    std::vector<IncomingMessage> msgs;
+    msgs.push_back(make_band_broadcast_notify(
+        "!ctrl", "prod.lab.uid01",
+        nlohmann::json{{"event", "calibration_done"}}));
+
+    pylabhub::scripting::dispatch_notifications(eng, msgs,
+        pylabhub::scripting::StopRequestor{core});
+
+    EXPECT_TRUE(eng.band_message_calls.empty());
+    EXPECT_TRUE(msgs.empty());
+    EXPECT_FALSE(core.is_shutdown_requested());
+}
+
+TEST_F(DispatchBandTest, Message_Callback_DispatchesWithBody)
+{
+    RecordingEngine eng;
+    RoleHostCore core;
+    eng.has_on_band_message = true;
+
+    std::vector<IncomingMessage> msgs;
+    auto body = nlohmann::json{{"event", "start_run"},
+                               {"params", {{"duration_s", 60}}}};
+    msgs.push_back(make_band_broadcast_notify(
+        "!sensor_sync", "prod.lab.sensor_a", body));
+
+    pylabhub::scripting::dispatch_notifications(eng, msgs,
+        pylabhub::scripting::StopRequestor{core});
+
+    ASSERT_EQ(eng.band_message_calls.size(), 1u);
+    EXPECT_EQ(std::get<0>(eng.band_message_calls[0]), "!sensor_sync");
+    EXPECT_EQ(std::get<1>(eng.band_message_calls[0]), "prod.lab.sensor_a");
+    EXPECT_EQ(std::get<2>(eng.band_message_calls[0]), body);
+    EXPECT_TRUE(msgs.empty());
+}
+
+TEST_F(DispatchBandTest, Lost_NoCallback_DefaultNoOpButConsumes)
+{
+    RecordingEngine eng;
+    RoleHostCore core;
+    eng.has_on_band_lost = false;
+
+    std::vector<IncomingMessage> msgs;
+    msgs.push_back(make_band_lost("!ctrl", "hub_dead"));
+
+    pylabhub::scripting::dispatch_notifications(eng, msgs,
+        pylabhub::scripting::StopRequestor{core});
+
+    EXPECT_TRUE(eng.band_lost_calls.empty());
+    EXPECT_TRUE(msgs.empty());
+    EXPECT_FALSE(core.is_shutdown_requested())
+        << "default on_band_lost action MUST be no-op — peer-hub "
+           "loss doesn't stop the role; scripts override to react";
+}
+
+TEST_F(DispatchBandTest, Lost_Callback_DispatchesWithBandAndReason)
+{
+    RecordingEngine eng;
+    RoleHostCore core;
+    eng.has_on_band_lost = true;
+
+    std::vector<IncomingMessage> msgs;
+    msgs.push_back(make_band_lost("!ctrl_a", "hub_dead"));
+    msgs.push_back(make_band_lost("!ctrl_b", "hub_dead"));
+
+    pylabhub::scripting::dispatch_notifications(eng, msgs,
+        pylabhub::scripting::StopRequestor{core});
+
+    ASSERT_EQ(eng.band_lost_calls.size(), 2u);
+    EXPECT_EQ(eng.band_lost_calls[0].first,  "!ctrl_a");
+    EXPECT_EQ(eng.band_lost_calls[0].second, "hub_dead");
+    EXPECT_EQ(eng.band_lost_calls[1].first,  "!ctrl_b");
+    EXPECT_TRUE(msgs.empty());
 }
