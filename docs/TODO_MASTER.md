@@ -242,6 +242,7 @@ None of them belongs to Arc A or Arc B.
 | Wave-M2.5 step 8 / HEP-0033 Phase 10 | Land alongside HEP-0019's next edit | HEP-0019 §9 per-producer metrics tree shape + cross-reference survey |
 | HEP-CORE-0035 auth implementation | Independent — production-readiness gap | 7-phase plan in HEP-0035 §8.  CURVE + ZAP pubkey allowlist + federation cross-trust delegation |
 | `HUB_TARGETED_ACK` wire frame | Federation use case needs it | HEP-0033 §12.3.6 / §13.  C++ augment_peer_message surface in place; wire frame deferred |
+| **Hub State Query Layer (NEW 2026-05-20)** | Group 2 #3 walkthrough revealed every `HubAPI::list_X` snapshots independently; multi-aspect scripts get incoherent views | Layered capture-then-query design: extend `HubStateSnapshot` with metadata (`captured_mono`, `hub_uid`, `snapshot_seq`); new `hub_state_queries.hpp` Layer 2 free functions; new script-bindable `HubSnapshot` wrapper exposed via `HubAPI::snapshot()`; refactor existing `list_X` to delegate to Layer 2; absorbs Group 2 #2 (SHM info) + #3 (count_by_observable).  Full design: `docs/tech_draft/hub_state_query_layer_design.md`.  ~3-4 days focused.  **Group 2 #2 and #3 wiring paused** — both subsumed by this design. |
 
 ---
 
