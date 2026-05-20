@@ -22,6 +22,7 @@
 #include "utils/role_api_base.hpp"
 #include "utils/script_engine.hpp"   // engine().release_global_lock_during_wait()
 #include "utils/thread_manager.hpp"  // api_->thread_manager() inside startup_
+#include "utils/timeout_constants.hpp" // kMidTimeoutMs (do_role_teardown)
 
 #include <atomic>
 #include <chrono>     // detach safety gate grace period
@@ -338,6 +339,84 @@ void EngineHost<ApiT>::shutdown_() noexcept
 //   3. Add `template class EngineHost<NewApiT>;` below.
 //   4. (Optional) Add a typedef `using NewHostBase = EngineHost<NewApiT>;`.
 template class EngineHost<RoleAPIBase>;
+
+// ── do_role_teardown — worker-loop epilogue helper ──────────────────────────
+//
+// Moved here from `role_host_lifecycle.{hpp,cpp}` on 2026-05-20.  The
+// old filename collided with the framework `Lifecycle` module
+// (`src/include/utils/lifecycle.hpp`, the module-init/teardown
+// registry) — two unrelated subsystems sharing one word.  This
+// helper IS the worker-loop epilogue for EngineHost-derived classes;
+// it's not related to the Lifecycle module at all.
+//
+// Body unchanged from Phase 5c (commit e9a79bc) except for the
+// docstring scrub: removed obsolete "legacy mode / set_broker_comm /
+// broker_channel fallback" references that became dead with Wave-B
+// M4f (commit 6da5837).
+void do_role_teardown(
+    ScriptEngine          &engine,
+    RoleAPIBase           &api,
+    RoleHostCore          &core,
+    bool                   has_api,
+    std::function<void()>  teardown_infrastructure)
+{
+    // Step 9: stop accepting invoke from non-owner threads.
+    engine.stop_accepting();
+
+    // Step 9a: Explicitly deregister from broker (ctrl thread still running).
+    // Skip when no API was ever wired (validate-only or aborted-startup paths).
+    // The deregister walks `handler_->presences()` and dispatches DEREG
+    // for each presence whose atomic `registration_state` is Registered
+    // or RegRequestPending (S1+O4, 2026-05-17).
+    if (has_api)
+        api.deregister_from_broker();
+
+    // Step 10: last script callback — ctrl thread still alive so the
+    // script can perform final I/O (flush metrics, send summary, etc.).
+    engine.invoke_on_stop();
+
+    // Step 11: finalize engine (free script resources).
+    engine.finalize();
+
+    // Step 12: signal every connection's BRC poll loop to exit
+    // (non-destructive — sets stop flag + wakes poll, does NOT close
+    // sockets).  Handler-mode only post-Wave-B M4f (commit 6da5837);
+    // no legacy single-broker_channel fallback remains.
+    api.stop_ctrl_for_teardown();
+    core.set_running(false);
+    core.notify_incoming();
+
+    // Step 12.5: honor the Thread Shutdown Contract (HEP-CORE-0031 §4.1).
+    // Flip every peer's per-slot shutdown_requested (master is skipped
+    // by `request_shutdown_all`), then block until every managed thread
+    // is outside its `with_active_loop` bracket.  This synchronization
+    // point prevents the BRC ctrl thread's pImpl access from racing
+    // the Step 13 destruction of handler-mode BRCs (the UAF root cause
+    // MD1 fixes).
+    api.thread_manager().request_shutdown_all();
+    (void)api.thread_manager().wait_for_quiescence(
+        std::chrono::milliseconds{pylabhub::kMidTimeoutMs});
+
+    // Step 13: teardown infrastructure (role-specific — disconnect broker,
+    // close inbox/queues).  Safe to destroy handler-mode BRCs here
+    // because Step 12.5 confirmed no managed thread is inside its
+    // active-loop bracket.  Handler-mode hosts call
+    // `api.stop_handler_threads()` here to disconnect + release the
+    // handler's BRCs.
+    if (teardown_infrastructure)
+        teardown_infrastructure();
+
+    // Step 14: return.  The worker thread is itself a managed slot,
+    // so it MUST NOT call `thread_manager().drain()` here — that
+    // would walk every slot including this one's, find its own `done`
+    // false (set only after this body returns), time out, detach
+    // itself, and bump `process_detached_count`.  The single
+    // coordinated drain happens on the MAIN thread in
+    // `EngineHost::shutdown_()` after this worker returns and
+    // `run_role_main_loop` observes `core.is_running() == false`.
+    // Peers are already signaled (Step 12.5); the master (ctrl) is
+    // signaled by main's drain Phase 3.  See HEP-CORE-0031 §4.2.
+}
 
 } // namespace pylabhub::scripting
 

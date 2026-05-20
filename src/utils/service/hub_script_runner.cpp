@@ -110,7 +110,10 @@ void HubScriptRunner::worker_main_()
 
     // ─────────────────────────────────────────────────────────────────────
     // Mirrors the role-side `worker_main_()` phase ordering (see
-    // producer/consumer/processor_role_host.cpp + role_host_lifecycle.hpp).
+    // producer/consumer/processor_role_host.cpp + the `do_role_teardown`
+    // helper in `engine_host.{hpp,cpp}` — formerly role_host_lifecycle.{hpp,cpp},
+    // renamed 2026-05-20 because the old name collided with the framework
+    // Lifecycle module).
     // Hub omits the schema / per-role-infra / broker-register phases:
     //
     //   Role:                                 Hub:
