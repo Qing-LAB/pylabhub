@@ -447,6 +447,17 @@ public:
                                   const std::string &,
                                   const std::string &) override {}
     void invoke_on_hub_dead(const std::string &) override {}
+    void invoke_on_band_member_joined(const std::string &,
+                                      const std::string &,
+                                      const std::string &) override {}
+    void invoke_on_band_member_left(const std::string &,
+                                    const std::string &,
+                                    const std::string &) override {}
+    void invoke_on_band_message(const std::string &,
+                                const std::string &,
+                                const nlohmann::json &) override {}
+    void invoke_on_band_lost(const std::string &,
+                             const std::string &) override {}
     pylabhub::scripting::InvokeResult invoke_produce(
         pylabhub::scripting::InvokeTx,
         std::vector<pylabhub::scripting::IncomingMessage> &) override

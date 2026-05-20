@@ -130,6 +130,11 @@ class RecordingEngine : public ScriptEngine
     bool has_on_consumer_died{false};
     /// When true, has_callback("on_hub_dead") returns true.
     bool has_on_hub_dead{false};
+    // S4 expansion 2026-05-19 — typed band callbacks.
+    bool has_on_band_member_joined{false};
+    bool has_on_band_member_left{false};
+    bool has_on_band_message{false};
+    bool has_on_band_lost{false};
 
     /// Recorded on_channel_closing (channel, reason) pairs.
     std::vector<std::pair<std::string, std::string>> calls;
@@ -141,11 +146,24 @@ class RecordingEngine : public ScriptEngine
     /// Recorded on_hub_dead (source_hub_uid) invocations.
     std::vector<std::string> hub_dead_calls;
 
+    /// Recorded band-callback invocations.
+    std::vector<std::tuple<std::string, std::string, std::string>>
+        band_member_joined_calls;
+    std::vector<std::tuple<std::string, std::string, std::string>>
+        band_member_left_calls;
+    std::vector<std::tuple<std::string, std::string, nlohmann::json>>
+        band_message_calls;
+    std::vector<std::pair<std::string, std::string>> band_lost_calls;
+
     [[nodiscard]] bool has_callback(const std::string &name) const noexcept override
     {
-        if (name == "on_channel_closing") return has_on_channel_closing;
-        if (name == "on_consumer_died")   return has_on_consumer_died;
-        if (name == "on_hub_dead")        return has_on_hub_dead;
+        if (name == "on_channel_closing")      return has_on_channel_closing;
+        if (name == "on_consumer_died")        return has_on_consumer_died;
+        if (name == "on_hub_dead")             return has_on_hub_dead;
+        if (name == "on_band_member_joined")   return has_on_band_member_joined;
+        if (name == "on_band_member_left")     return has_on_band_member_left;
+        if (name == "on_band_message")         return has_on_band_message;
+        if (name == "on_band_lost")            return has_on_band_lost;
         return false;
     }
 
@@ -165,6 +183,30 @@ class RecordingEngine : public ScriptEngine
     void invoke_on_hub_dead(const std::string &source_hub_uid) override
     {
         hub_dead_calls.emplace_back(source_hub_uid);
+    }
+
+    void invoke_on_band_member_joined(const std::string &band,
+                                      const std::string &role_uid,
+                                      const std::string &role_name) override
+    {
+        band_member_joined_calls.emplace_back(band, role_uid, role_name);
+    }
+    void invoke_on_band_member_left(const std::string &band,
+                                    const std::string &role_uid,
+                                    const std::string &reason) override
+    {
+        band_member_left_calls.emplace_back(band, role_uid, reason);
+    }
+    void invoke_on_band_message(const std::string &band,
+                                const std::string &sender_role_uid,
+                                const nlohmann::json &body) override
+    {
+        band_message_calls.emplace_back(band, sender_role_uid, body);
+    }
+    void invoke_on_band_lost(const std::string &band,
+                             const std::string &reason) override
+    {
+        band_lost_calls.emplace_back(band, reason);
     }
 
     // ── No-op stubs for the rest of the ScriptEngine surface ────────

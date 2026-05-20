@@ -139,6 +139,17 @@ class PythonEngine : public ScriptEngine
                                   const std::string &consumer_uid,
                                   const std::string &reason) override;
     void invoke_on_hub_dead(const std::string &source_hub_uid) override;
+    void invoke_on_band_member_joined(const std::string &band,
+                                      const std::string &role_uid,
+                                      const std::string &role_name) override;
+    void invoke_on_band_member_left(const std::string &band,
+                                    const std::string &role_uid,
+                                    const std::string &reason) override;
+    void invoke_on_band_message(const std::string &band,
+                                const std::string &sender_role_uid,
+                                const nlohmann::json &body) override;
+    void invoke_on_band_lost(const std::string &band,
+                             const std::string &reason) override;
 
     InvokeResult invoke_produce(
         InvokeTx tx,
@@ -222,6 +233,11 @@ class PythonEngine : public ScriptEngine
     py::object py_on_channel_closing_{py::none()};
     py::object py_on_consumer_died_{py::none()};
     py::object py_on_hub_dead_{py::none()};
+    // S4 expansion 2026-05-19 — typed band callbacks (HEP-CORE-0030 §5.3).
+    py::object py_on_band_member_joined_{py::none()};
+    py::object py_on_band_member_left_{py::none()};
+    py::object py_on_band_message_{py::none()};
+    py::object py_on_band_lost_{py::none()};
     py::object py_on_produce_{py::none()};
     py::object py_on_consume_{py::none()};
     py::object py_on_process_{py::none()};

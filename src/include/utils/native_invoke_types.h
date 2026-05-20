@@ -97,4 +97,46 @@ typedef struct
                                      this connection per HEP-0033 §19.2). */
 } plh_hub_dead_args_t;
 
+/** on_band_member_joined args (HEP-CORE-0030 §5.3, S4 expansion 2026-05-19).
+ *  Fired on every BAND_JOIN_NOTIFY received — another role joined a
+ *  band this role is a member of. */
+typedef struct
+{
+    const char *band;           /**< Band name (`!`-prefixed). */
+    const char *role_uid;       /**< Joining role's UID. */
+    const char *role_name;      /**< Joining role's display name (may be empty). */
+} plh_band_member_joined_args_t;
+
+/** on_band_member_left args (HEP-CORE-0030 §5.3).
+ *  Fired on every BAND_LEAVE_NOTIFY received. */
+typedef struct
+{
+    const char *band;           /**< Band name. */
+    const char *role_uid;       /**< Leaving role's UID. */
+    const char *reason;         /**< "voluntary", "heartbeat_timeout", or "process_dead". */
+} plh_band_member_left_args_t;
+
+/** on_band_message args (HEP-CORE-0030 §5.3).
+ *  Fired on every BAND_BROADCAST_NOTIFY received.  Body is passed as
+ *  JSON-string-serialized text (plugin must parse).  Lifetime: valid
+ *  for the duration of the callback only. */
+typedef struct
+{
+    const char *band;           /**< Band name. */
+    const char *sender_role_uid;/**< Sender's role UID. */
+    const char *body_json;      /**< JSON-encoded body payload. */
+} plh_band_message_args_t;
+
+/** on_band_lost args (S4 expansion 2026-05-19).
+ *  Synthetic event — the framework enqueues this when the role's
+ *  band routing is invalidated (currently: hub-dead drops every
+ *  band_index_ entry whose Presence is on the dead connection).
+ *  NOT a wire frame; reason captures why routing was lost. */
+typedef struct
+{
+    const char *band;           /**< Band name whose routing was lost. */
+    const char *reason;         /**< "hub_dead" (reserved for future
+                                     additions like "evicted"). */
+} plh_band_lost_args_t;
+
 #endif /* PYLABHUB_NATIVE_INVOKE_TYPES_H */
