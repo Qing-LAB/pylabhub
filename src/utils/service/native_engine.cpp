@@ -491,6 +491,15 @@ bool NativeEngine::load_script(const std::filesystem::path &script_dir,
         reinterpret_cast<FnOnConsumerDied>(resolve_sym_("on_consumer_died"));
     fn_on_hub_dead_ =
         reinterpret_cast<FnOnHubDead>(resolve_sym_("on_hub_dead"));
+    // S4 expansion 2026-05-19 — typed band callbacks.
+    fn_on_band_member_joined_ =
+        reinterpret_cast<FnOnBandMemberJoined>(resolve_sym_("on_band_member_joined"));
+    fn_on_band_member_left_ =
+        reinterpret_cast<FnOnBandMemberLeft>(resolve_sym_("on_band_member_left"));
+    fn_on_band_message_ =
+        reinterpret_cast<FnOnBandMessage>(resolve_sym_("on_band_message"));
+    fn_on_band_lost_ =
+        reinterpret_cast<FnOnBandLost>(resolve_sym_("on_band_lost"));
     fn_on_produce_    = reinterpret_cast<FnOnProduce>(resolve_sym_("on_produce"));
     fn_on_consume_    = reinterpret_cast<FnOnConsume>(resolve_sym_("on_consume"));
     fn_on_process_    = reinterpret_cast<FnOnProcess>(resolve_sym_("on_process"));
@@ -591,6 +600,10 @@ void NativeEngine::finalize_engine_()
     fn_on_channel_closing_ = nullptr;
     fn_on_consumer_died_ = nullptr;
     fn_on_hub_dead_ = nullptr;
+    fn_on_band_member_joined_ = nullptr;
+    fn_on_band_member_left_ = nullptr;
+    fn_on_band_message_ = nullptr;
+    fn_on_band_lost_ = nullptr;
     fn_on_produce_ = nullptr;
     fn_on_consume_ = nullptr;
     fn_on_process_ = nullptr;
@@ -616,7 +629,11 @@ bool NativeEngine::has_callback(const std::string &name) const noexcept
     if (name == "on_stop")             return fn_on_stop_             != nullptr;
     if (name == "on_channel_closing")  return fn_on_channel_closing_  != nullptr;
     if (name == "on_consumer_died")    return fn_on_consumer_died_    != nullptr;
-    if (name == "on_hub_dead")         return fn_on_hub_dead_         != nullptr;
+    if (name == "on_hub_dead")             return fn_on_hub_dead_             != nullptr;
+    if (name == "on_band_member_joined")   return fn_on_band_member_joined_   != nullptr;
+    if (name == "on_band_member_left")     return fn_on_band_member_left_     != nullptr;
+    if (name == "on_band_message")         return fn_on_band_message_         != nullptr;
+    if (name == "on_band_lost")            return fn_on_band_lost_            != nullptr;
     if (name == "on_produce")    return fn_on_produce_ != nullptr;
     if (name == "on_consume")    return fn_on_consume_ != nullptr;
     if (name == "on_process")    return fn_on_process_ != nullptr;
@@ -775,6 +792,58 @@ void NativeEngine::invoke_on_hub_dead(const std::string &source_hub_uid)
     // only for this call; plugin MUST NOT retain pointers.
     const plh_hub_dead_args_t args{source_hub_uid.c_str()};
     fn_on_hub_dead_(&args);
+}
+
+// ============================================================================
+// S4 expansion 2026-05-19 — typed band callbacks (HEP-CORE-0030 §5.3).
+// Same lifetime contract: args struct + char* fields valid only for
+// the duration of the call.  Body for `on_band_message` is passed
+// as a JSON string (plugin parses).
+// ============================================================================
+
+void NativeEngine::invoke_on_band_member_joined(const std::string &band,
+                                                const std::string &role_uid,
+                                                const std::string &role_name)
+{
+    if (!fn_on_band_member_joined_) return;
+    const plh_band_member_joined_args_t args{band.c_str(),
+                                             role_uid.c_str(),
+                                             role_name.c_str()};
+    fn_on_band_member_joined_(&args);
+}
+
+void NativeEngine::invoke_on_band_member_left(const std::string &band,
+                                              const std::string &role_uid,
+                                              const std::string &reason)
+{
+    if (!fn_on_band_member_left_) return;
+    const plh_band_member_left_args_t args{band.c_str(),
+                                           role_uid.c_str(),
+                                           reason.c_str()};
+    fn_on_band_member_left_(&args);
+}
+
+void NativeEngine::invoke_on_band_message(const std::string  &band,
+                                          const std::string  &sender_role_uid,
+                                          const nlohmann::json &body)
+{
+    if (!fn_on_band_message_) return;
+    // Serialize body to JSON string for the C ABI.  Plugin parses
+    // (the framework deliberately doesn't ship a JSON parser into
+    // the C ABI; plugins use whatever they like).
+    const std::string body_str = body.dump();
+    const plh_band_message_args_t args{band.c_str(),
+                                       sender_role_uid.c_str(),
+                                       body_str.c_str()};
+    fn_on_band_message_(&args);
+}
+
+void NativeEngine::invoke_on_band_lost(const std::string &band,
+                                       const std::string &reason)
+{
+    if (!fn_on_band_lost_) return;
+    const plh_band_lost_args_t args{band.c_str(), reason.c_str()};
+    fn_on_band_lost_(&args);
 }
 
 InvokeResult NativeEngine::invoke_produce(

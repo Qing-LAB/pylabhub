@@ -69,6 +69,17 @@ class PYLABHUB_UTILS_EXPORT NativeEngine : public ScriptEngine
                                   const std::string &consumer_uid,
                                   const std::string &reason) override;
     void invoke_on_hub_dead(const std::string &source_hub_uid) override;
+    void invoke_on_band_member_joined(const std::string &band,
+                                      const std::string &role_uid,
+                                      const std::string &role_name) override;
+    void invoke_on_band_member_left(const std::string &band,
+                                    const std::string &role_uid,
+                                    const std::string &reason) override;
+    void invoke_on_band_message(const std::string &band,
+                                const std::string &sender_role_uid,
+                                const nlohmann::json &body) override;
+    void invoke_on_band_lost(const std::string &band,
+                             const std::string &reason) override;
 
     InvokeResult invoke_produce(
         InvokeTx tx,
@@ -137,9 +148,13 @@ class PYLABHUB_UTILS_EXPORT NativeEngine : public ScriptEngine
     using FnNativeFinalize   = void (*)();
     using FnVoidNoArgs       = void (*)();
     using FnVoid             = void (*)(const char *args_json);
-    using FnOnChannelClosing = void (*)(const plh_channel_closing_args_t *);
-    using FnOnConsumerDied   = void (*)(const plh_consumer_died_args_t *);
-    using FnOnHubDead        = void (*)(const plh_hub_dead_args_t *);
+    using FnOnChannelClosing   = void (*)(const plh_channel_closing_args_t *);
+    using FnOnConsumerDied     = void (*)(const plh_consumer_died_args_t *);
+    using FnOnHubDead          = void (*)(const plh_hub_dead_args_t *);
+    using FnOnBandMemberJoined = void (*)(const plh_band_member_joined_args_t *);
+    using FnOnBandMemberLeft   = void (*)(const plh_band_member_left_args_t *);
+    using FnOnBandMessage      = void (*)(const plh_band_message_args_t *);
+    using FnOnBandLost         = void (*)(const plh_band_lost_args_t *);
     using FnOnProduce        = bool (*)(const plh_tx_t *);
     using FnOnConsume        = bool (*)(const plh_rx_t *);
     using FnOnProcess        = bool (*)(const plh_rx_t *, const plh_tx_t *);
@@ -153,9 +168,14 @@ class PYLABHUB_UTILS_EXPORT NativeEngine : public ScriptEngine
     FnNativeFinalize   fn_finalize_{nullptr};
     FnVoidNoArgs       fn_on_init_{nullptr};
     FnVoidNoArgs       fn_on_stop_{nullptr};
-    FnOnChannelClosing fn_on_channel_closing_{nullptr};
-    FnOnConsumerDied   fn_on_consumer_died_{nullptr};
-    FnOnHubDead        fn_on_hub_dead_{nullptr};
+    FnOnChannelClosing   fn_on_channel_closing_{nullptr};
+    FnOnConsumerDied     fn_on_consumer_died_{nullptr};
+    FnOnHubDead          fn_on_hub_dead_{nullptr};
+    // S4 expansion 2026-05-19 — typed band callbacks.
+    FnOnBandMemberJoined fn_on_band_member_joined_{nullptr};
+    FnOnBandMemberLeft   fn_on_band_member_left_{nullptr};
+    FnOnBandMessage      fn_on_band_message_{nullptr};
+    FnOnBandLost         fn_on_band_lost_{nullptr};
     FnOnProduce        fn_on_produce_{nullptr};
     FnOnConsume        fn_on_consume_{nullptr};
     FnOnProcess        fn_on_process_{nullptr};

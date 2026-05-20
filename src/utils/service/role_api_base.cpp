@@ -1156,11 +1156,24 @@ bool RoleAPIBase::start_handler_threads(std::unique_ptr<RoleHandler> handler)
                             reap.bands_lost.size(),
                             is_master_conn ? "stop role" :
                                              "continue on master");
-                // S4-6 (Part E placeholder): enqueue an
-                // on_band_lost(band, "hub_dead") IncomingMessage per
-                // entry in reap.bands_lost.  Wired once
-                // NotificationId::BandLost lands in cycle_ops.hpp
-                // kNotificationTable (Part C).
+                // S4-6 (HEP-CORE-0030 amendment 2026-05-19, Part E):
+                // enqueue one synthetic BAND_LOST IncomingMessage per
+                // band whose routing was on the dead connection.  The
+                // worker thread's dispatcher (kNotificationTable
+                // `BandLost` row) fires the script's on_band_lost
+                // override OR the no-op default — scripts that care
+                // about per-band hub-dead notifications subscribe.
+                for (const auto &band : reap.bands_lost)
+                {
+                    IncomingMessage bl;
+                    bl.event           = "BAND_LOST";
+                    bl.notification_id = NotificationId::BandLost;
+                    bl.details         = nlohmann::json::object();
+                    bl.details["band"]   = band;
+                    bl.details["reason"] = "hub_dead";
+                    bl.source_hub_uid  = dead_endpoint;
+                    core->enqueue_message(std::move(bl));
+                }
                 // Enqueue synthetic HUB_DEAD notification so the
                 // worker-thread dispatcher
                 // (`kNotificationTable[HubDead]` in cycle_ops.hpp)

@@ -230,6 +230,11 @@ bool LuaEngine::load_script(const std::filesystem::path &script_dir,
     ref_on_channel_closing_ = extract_callback_ref_("on_channel_closing");
     ref_on_consumer_died_   = extract_callback_ref_("on_consumer_died");
     ref_on_hub_dead_        = extract_callback_ref_("on_hub_dead");
+    // S4 expansion 2026-05-19 — typed band callbacks.
+    ref_on_band_member_joined_ = extract_callback_ref_("on_band_member_joined");
+    ref_on_band_member_left_   = extract_callback_ref_("on_band_member_left");
+    ref_on_band_message_       = extract_callback_ref_("on_band_message");
+    ref_on_band_lost_          = extract_callback_ref_("on_band_lost");
     ref_on_produce_ = extract_callback_ref_("on_produce");
     ref_on_consume_ = extract_callback_ref_("on_consume");
     ref_on_process_ = extract_callback_ref_("on_process");
@@ -252,6 +257,14 @@ bool LuaEngine::load_script(const std::filesystem::path &script_dir,
                                   state_.is_ref_callable(ref_on_consumer_died_));
     set_standard_callback_present("on_hub_dead",
                                   state_.is_ref_callable(ref_on_hub_dead_));
+    set_standard_callback_present("on_band_member_joined",
+                                  state_.is_ref_callable(ref_on_band_member_joined_));
+    set_standard_callback_present("on_band_member_left",
+                                  state_.is_ref_callable(ref_on_band_member_left_));
+    set_standard_callback_present("on_band_message",
+                                  state_.is_ref_callable(ref_on_band_message_));
+    set_standard_callback_present("on_band_lost",
+                                  state_.is_ref_callable(ref_on_band_lost_));
     set_standard_callback_present("on_produce", state_.is_ref_callable(ref_on_produce_));
     set_standard_callback_present("on_consume", state_.is_ref_callable(ref_on_consume_));
     set_standard_callback_present("on_process", state_.is_ref_callable(ref_on_process_));
@@ -1144,6 +1157,69 @@ void LuaEngine::invoke_on_hub_dead(const std::string &source_hub_uid)
 }
 
 // ============================================================================
+// S4 expansion 2026-05-19 — typed band callbacks (HEP-CORE-0030 §5.3).
+// Same shape as channel/consumer/hub: pushref, push args, pcall.
+// ============================================================================
+
+void LuaEngine::invoke_on_band_member_joined(const std::string &band,
+                                             const std::string &role_uid,
+                                             const std::string &role_name)
+{
+    if (!state_.is_ref_callable(ref_on_band_member_joined_)) return;
+    lua_State *L = state_.raw();
+    lua_rawgeti(L, LUA_REGISTRYINDEX, ref_on_band_member_joined_);
+    lua_pushlstring(L, band.data(),      band.size());
+    lua_pushlstring(L, role_uid.data(),  role_uid.size());
+    lua_pushlstring(L, role_name.data(), role_name.size());
+    lua_rawgeti(L, LUA_REGISTRYINDEX, ref_api_);
+    if (!state_.pcall(4, 0, "on_band_member_joined"))
+        on_pcall_error_("on_band_member_joined");
+}
+
+void LuaEngine::invoke_on_band_member_left(const std::string &band,
+                                           const std::string &role_uid,
+                                           const std::string &reason)
+{
+    if (!state_.is_ref_callable(ref_on_band_member_left_)) return;
+    lua_State *L = state_.raw();
+    lua_rawgeti(L, LUA_REGISTRYINDEX, ref_on_band_member_left_);
+    lua_pushlstring(L, band.data(),     band.size());
+    lua_pushlstring(L, role_uid.data(), role_uid.size());
+    lua_pushlstring(L, reason.data(),   reason.size());
+    lua_rawgeti(L, LUA_REGISTRYINDEX, ref_api_);
+    if (!state_.pcall(4, 0, "on_band_member_left"))
+        on_pcall_error_("on_band_member_left");
+}
+
+void LuaEngine::invoke_on_band_message(const std::string  &band,
+                                       const std::string  &sender_role_uid,
+                                       const nlohmann::json &body)
+{
+    if (!state_.is_ref_callable(ref_on_band_message_)) return;
+    lua_State *L = state_.raw();
+    lua_rawgeti(L, LUA_REGISTRYINDEX, ref_on_band_message_);
+    lua_pushlstring(L, band.data(),            band.size());
+    lua_pushlstring(L, sender_role_uid.data(), sender_role_uid.size());
+    json_to_lua(L, body);
+    lua_rawgeti(L, LUA_REGISTRYINDEX, ref_api_);
+    if (!state_.pcall(4, 0, "on_band_message"))
+        on_pcall_error_("on_band_message");
+}
+
+void LuaEngine::invoke_on_band_lost(const std::string &band,
+                                    const std::string &reason)
+{
+    if (!state_.is_ref_callable(ref_on_band_lost_)) return;
+    lua_State *L = state_.raw();
+    lua_rawgeti(L, LUA_REGISTRYINDEX, ref_on_band_lost_);
+    lua_pushlstring(L, band.data(),   band.size());
+    lua_pushlstring(L, reason.data(), reason.size());
+    lua_rawgeti(L, LUA_REGISTRYINDEX, ref_api_);
+    if (!state_.pcall(3, 0, "on_band_lost"))
+        on_pcall_error_("on_band_lost");
+}
+
+// ============================================================================
 // invoke_produce — on_produce(tx, msgs, api) -> bool
 // ============================================================================
 
@@ -1491,6 +1567,14 @@ void LuaEngine::clear_refs_()
     ref_on_consumer_died_ = LUA_NOREF;
     state_.unref(ref_on_hub_dead_);
     ref_on_hub_dead_ = LUA_NOREF;
+    state_.unref(ref_on_band_member_joined_);
+    ref_on_band_member_joined_ = LUA_NOREF;
+    state_.unref(ref_on_band_member_left_);
+    ref_on_band_member_left_ = LUA_NOREF;
+    state_.unref(ref_on_band_message_);
+    ref_on_band_message_ = LUA_NOREF;
+    state_.unref(ref_on_band_lost_);
+    ref_on_band_lost_ = LUA_NOREF;
     state_.unref(ref_on_produce_);
     ref_on_produce_ = LUA_NOREF;
     state_.unref(ref_on_consume_);

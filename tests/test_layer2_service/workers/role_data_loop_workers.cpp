@@ -137,6 +137,17 @@ struct StubEngine : public ScriptEngine
                                   const std::string &,
                                   const std::string &) override {}
     void invoke_on_hub_dead(const std::string &) override {}
+    void invoke_on_band_member_joined(const std::string &,
+                                      const std::string &,
+                                      const std::string &) override {}
+    void invoke_on_band_member_left(const std::string &,
+                                    const std::string &,
+                                    const std::string &) override {}
+    void invoke_on_band_message(const std::string &,
+                                const std::string &,
+                                const nlohmann::json &) override {}
+    void invoke_on_band_lost(const std::string &,
+                             const std::string &) override {}
     InvokeResult invoke_produce(InvokeTx, std::vector<IncomingMessage> &) override
     { return InvokeResult::Commit; }
     InvokeResult invoke_consume(InvokeRx, std::vector<IncomingMessage> &) override

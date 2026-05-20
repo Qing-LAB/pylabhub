@@ -75,18 +75,31 @@ namespace pylabhub::scripting
 //   4. Add the matching pure virtual on `ScriptEngine`.
 enum class NotificationId : std::uint8_t
 {
-    Unknown        = 0,
-    ChannelClosing = 1,   ///< CHANNEL_CLOSING_NOTIFY  (HEP-CORE-0011 §callback table)
-    ConsumerDied   = 2,   ///< CONSUMER_DIED_NOTIFY    (HEP-CORE-0023 §2.1.1)
-    HubDead        = 3,   ///< Synthetic, enqueued by ctrl-thread `on_hub_dead`
-                          ///< lambda when ZMTP declares the broker dead.
-                          ///< NOT a wire frame (no broker emits this) — the
-                          ///< role-side itself synthesizes it as the
-                          ///< delivery vehicle for the connection-loss
-                          ///< event into the worker thread's dispatcher
-                          ///< (D1 audit, 2026-05-18 — uniform with
-                          ///< on_channel_closing default-stop pattern).
-    Count                 ///< sentinel — must be last
+    Unknown          = 0,
+    ChannelClosing   = 1,   ///< CHANNEL_CLOSING_NOTIFY  (HEP-CORE-0011 §callback table)
+    ConsumerDied     = 2,   ///< CONSUMER_DIED_NOTIFY    (HEP-CORE-0023 §2.1.1)
+    HubDead          = 3,   ///< Synthetic, enqueued by ctrl-thread `on_hub_dead`
+                            ///< lambda when ZMTP declares the broker dead.
+                            ///< NOT a wire frame (no broker emits this) — the
+                            ///< role-side itself synthesizes it as the
+                            ///< delivery vehicle for the connection-loss
+                            ///< event into the worker thread's dispatcher
+                            ///< (D1 audit, 2026-05-18 — uniform with
+                            ///< on_channel_closing default-stop pattern).
+    BandMemberJoined = 4,   ///< BAND_JOIN_NOTIFY        (HEP-CORE-0030 §5.3)
+                            ///< Another role joined a band this role is in.
+                            ///< (S4 expansion 2026-05-19.)
+    BandMemberLeft   = 5,   ///< BAND_LEAVE_NOTIFY       (HEP-CORE-0030 §5.3)
+                            ///< Another role left.  Carries `reason ∈ {voluntary,
+                            ///< heartbeat_timeout, process_dead}`.
+    BandMessage      = 6,   ///< BAND_BROADCAST_NOTIFY   (HEP-CORE-0030 §5.3)
+                            ///< Broadcast from another band member.
+    BandLost         = 7,   ///< Synthetic, enqueued from `on_hub_dead` lambda
+                            ///< per band whose routing was on the dead
+                            ///< connection.  NOT a wire frame.  Lets scripts
+                            ///< react to losing band membership without
+                            ///< exiting the role (peer-hub failure case).
+    Count                   ///< sentinel — must be last
 };
 
 /// Parse a wire-string notification `type` into its `NotificationId`.
@@ -99,9 +112,13 @@ enum class NotificationId : std::uint8_t
 [[nodiscard]] constexpr NotificationId
 parse_notification_id(std::string_view type) noexcept
 {
-    if (type == "CHANNEL_CLOSING_NOTIFY") return NotificationId::ChannelClosing;
-    if (type == "CONSUMER_DIED_NOTIFY")   return NotificationId::ConsumerDied;
-    if (type == "HUB_DEAD")               return NotificationId::HubDead;
+    if (type == "CHANNEL_CLOSING_NOTIFY")   return NotificationId::ChannelClosing;
+    if (type == "CONSUMER_DIED_NOTIFY")     return NotificationId::ConsumerDied;
+    if (type == "HUB_DEAD")                 return NotificationId::HubDead;
+    if (type == "BAND_JOIN_NOTIFY")         return NotificationId::BandMemberJoined;
+    if (type == "BAND_LEAVE_NOTIFY")        return NotificationId::BandMemberLeft;
+    if (type == "BAND_BROADCAST_NOTIFY")    return NotificationId::BandMessage;
+    if (type == "BAND_LOST")                return NotificationId::BandLost;
     return NotificationId::Unknown;
 }
 

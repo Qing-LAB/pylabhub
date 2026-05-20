@@ -638,6 +638,75 @@ class ScriptEngine
         const std::string &source_hub_uid) = 0;
 
     /**
+     * @brief Invoke on_band_member_joined(band, role_uid, role_name, api)
+     *        for `BAND_JOIN_NOTIFY` (HEP-CORE-0030 §5.3).
+     *
+     * A peer role joined a band this role is a member of.  Fire-and-
+     * observe — scripts may collect/log the event but the framework
+     * does no automatic state change beyond ensuring the message is
+     * removed from `msgs` once dispatched.
+     *
+     * Same threading contract as `invoke_on_channel_closing`.
+     *
+     * @param band       Wire `band` field (e.g. "!control").
+     * @param role_uid   Joining role's `(prod|cons|proc).<name>.<unique>`.
+     * @param role_name  Joining role's display name (may be empty).
+     */
+    virtual void invoke_on_band_member_joined(
+        const std::string &band,
+        const std::string &role_uid,
+        const std::string &role_name) = 0;
+
+    /**
+     * @brief Invoke on_band_member_left(band, role_uid, reason, api)
+     *        for `BAND_LEAVE_NOTIFY` (HEP-CORE-0030 §5.3).
+     *
+     * @param band       Wire `band` field.
+     * @param role_uid   Leaving role's uid.
+     * @param reason     `"voluntary"`, `"heartbeat_timeout"`, or
+     *                   `"process_dead"` (HEP-CORE-0023 §2.1.1
+     *                   reasons; the wire carries the broker's
+     *                   verdict).
+     */
+    virtual void invoke_on_band_member_left(
+        const std::string &band,
+        const std::string &role_uid,
+        const std::string &reason) = 0;
+
+    /**
+     * @brief Invoke on_band_message(band, sender_role_uid, body, api)
+     *        for `BAND_BROADCAST_NOTIFY` (HEP-CORE-0030 §5.3).
+     *
+     * @param band             Wire `band` field.
+     * @param sender_role_uid  Wire `role_uid` field (the broadcasting
+     *                         role's uid; broker enforces sender-must-
+     *                         be-member, so the role IS in the band
+     *                         from the broker's view at emission).
+     * @param body             Application JSON (passthrough).
+     */
+    virtual void invoke_on_band_message(
+        const std::string  &band,
+        const std::string  &sender_role_uid,
+        const nlohmann::json &body) = 0;
+
+    /**
+     * @brief Invoke on_band_lost(band, reason, api).
+     *
+     * Synthetic event — the framework enqueues this when the role's
+     * band routing is invalidated (currently: hub-dead drops every
+     * `band_index_` entry whose Presence is on the dead connection).
+     * NOT a wire frame.
+     *
+     * @param band    Band name whose routing was lost.
+     * @param reason  `"hub_dead"` today.  Reserved for future
+     *                additions (e.g. `"evicted"` if the broker emits
+     *                an unsolicited eviction NOTIFY).
+     */
+    virtual void invoke_on_band_lost(
+        const std::string &band,
+        const std::string &reason) = 0;
+
+    /**
      * @brief Invoke on_produce(tx, msgs, api).
      * @param tx   Output direction (writable slot + flexzone).
      * @param msgs Incoming messages (drained from RoleHostCore).

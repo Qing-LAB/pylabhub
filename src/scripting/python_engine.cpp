@@ -282,6 +282,15 @@ bool PythonEngine::load_script(const std::filesystem::path &script_dir,
             py::getattr(module_, "on_consumer_died", py::none());
         py_on_hub_dead_ =
             py::getattr(module_, "on_hub_dead",       py::none());
+        // S4 expansion 2026-05-19 — typed band callbacks.
+        py_on_band_member_joined_ =
+            py::getattr(module_, "on_band_member_joined", py::none());
+        py_on_band_member_left_ =
+            py::getattr(module_, "on_band_member_left",   py::none());
+        py_on_band_message_ =
+            py::getattr(module_, "on_band_message",       py::none());
+        py_on_band_lost_ =
+            py::getattr(module_, "on_band_lost",          py::none());
         py_on_produce_ = py::getattr(module_, "on_produce", py::none());
         py_on_consume_ = py::getattr(module_, "on_consume", py::none());
         py_on_process_ = py::getattr(module_, "on_process", py::none());
@@ -303,6 +312,14 @@ bool PythonEngine::load_script(const std::filesystem::path &script_dir,
                                        is_callable(py_on_consumer_died_));
         set_standard_callback_present("on_hub_dead",
                                        is_callable(py_on_hub_dead_));
+        set_standard_callback_present("on_band_member_joined",
+                                       is_callable(py_on_band_member_joined_));
+        set_standard_callback_present("on_band_member_left",
+                                       is_callable(py_on_band_member_left_));
+        set_standard_callback_present("on_band_message",
+                                       is_callable(py_on_band_message_));
+        set_standard_callback_present("on_band_lost",
+                                       is_callable(py_on_band_lost_));
         set_standard_callback_present("on_produce", is_callable(py_on_produce_));
         set_standard_callback_present("on_consume", is_callable(py_on_consume_));
         set_standard_callback_present("on_process", is_callable(py_on_process_));
@@ -1186,6 +1203,79 @@ void PythonEngine::invoke_on_hub_dead(const std::string &source_hub_uid)
 }
 
 // ============================================================================
+// S4 expansion 2026-05-19 — typed band callbacks (HEP-CORE-0030 §5.3).
+// Same shape as the channel/consumer/hub set: GIL acquire, call,
+// error wrapper.  Dispatcher only invokes when has_callback() is
+// true, so the is_callable guard is defensive-only.
+// ============================================================================
+
+void PythonEngine::invoke_on_band_member_joined(const std::string &band,
+                                                const std::string &role_uid,
+                                                const std::string &role_name)
+{
+    if (!is_callable(py_on_band_member_joined_)) return;
+    py::gil_scoped_acquire g;
+    try
+    {
+        py_on_band_member_joined_(band, role_uid, role_name, api_obj_);
+    }
+    catch (py::error_already_set &e)
+    {
+        on_python_error_("on_band_member_joined", e);
+    }
+}
+
+void PythonEngine::invoke_on_band_member_left(const std::string &band,
+                                              const std::string &role_uid,
+                                              const std::string &reason)
+{
+    if (!is_callable(py_on_band_member_left_)) return;
+    py::gil_scoped_acquire g;
+    try
+    {
+        py_on_band_member_left_(band, role_uid, reason, api_obj_);
+    }
+    catch (py::error_already_set &e)
+    {
+        on_python_error_("on_band_member_left", e);
+    }
+}
+
+void PythonEngine::invoke_on_band_message(const std::string  &band,
+                                          const std::string  &sender_role_uid,
+                                          const nlohmann::json &body)
+{
+    if (!is_callable(py_on_band_message_)) return;
+    py::gil_scoped_acquire g;
+    try
+    {
+        // Convert JSON body to py::object via json.loads(dump()) —
+        // same convention as `band_join` / `band_members` returns.
+        py::object py_body = py::module_::import("json").attr("loads")(body.dump());
+        py_on_band_message_(band, sender_role_uid, py_body, api_obj_);
+    }
+    catch (py::error_already_set &e)
+    {
+        on_python_error_("on_band_message", e);
+    }
+}
+
+void PythonEngine::invoke_on_band_lost(const std::string &band,
+                                       const std::string &reason)
+{
+    if (!is_callable(py_on_band_lost_)) return;
+    py::gil_scoped_acquire g;
+    try
+    {
+        py_on_band_lost_(band, reason, api_obj_);
+    }
+    catch (py::error_already_set &e)
+    {
+        on_python_error_("on_band_lost", e);
+    }
+}
+
+// ============================================================================
 // invoke_produce — on_produce(tx, msgs, api) -> bool
 // ============================================================================
 
@@ -1561,6 +1651,11 @@ void PythonEngine::clear_pyobjects_()
     release_to_none(py_on_channel_closing_);
     release_to_none(py_on_consumer_died_);
     release_to_none(py_on_hub_dead_);
+    // S4 expansion 2026-05-19 — typed band callbacks.
+    release_to_none(py_on_band_member_joined_);
+    release_to_none(py_on_band_member_left_);
+    release_to_none(py_on_band_message_);
+    release_to_none(py_on_band_lost_);
     release_to_none(py_on_produce_);
     release_to_none(py_on_consume_);
     release_to_none(py_on_process_);

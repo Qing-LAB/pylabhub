@@ -107,6 +107,45 @@ inline void invoke_user_hub_dead(ScriptEngine &engine,
     engine.invoke_on_hub_dead(msg.source_hub_uid);
 }
 
+// HEP-CORE-0030 amendment 2026-05-19 (S4 expanded) — typed band
+// callbacks.  See the wire-format catalog in §5.3 for the source
+// fields the broker emits on each NOTIFY.
+
+inline void invoke_user_band_member_joined(ScriptEngine &engine,
+                                           const IncomingMessage &msg)
+{
+    engine.invoke_on_band_member_joined(
+        msg.details.value("band",      std::string{}),
+        msg.details.value("role_uid",  std::string{}),
+        msg.details.value("role_name", std::string{}));
+}
+
+inline void invoke_user_band_member_left(ScriptEngine &engine,
+                                         const IncomingMessage &msg)
+{
+    engine.invoke_on_band_member_left(
+        msg.details.value("band",     std::string{}),
+        msg.details.value("role_uid", std::string{}),
+        msg.details.value("reason",   std::string{}));
+}
+
+inline void invoke_user_band_message(ScriptEngine &engine,
+                                     const IncomingMessage &msg)
+{
+    engine.invoke_on_band_message(
+        msg.details.value("band",     std::string{}),
+        msg.details.value("role_uid", std::string{}),
+        msg.details.value("body", nlohmann::json::object()));
+}
+
+inline void invoke_user_band_lost(ScriptEngine &engine,
+                                  const IncomingMessage &msg)
+{
+    engine.invoke_on_band_lost(
+        msg.details.value("band",   std::string{}),
+        msg.details.value("reason", std::string{}));
+}
+
 // ── Native defaults ───────────────────────────────────────────────────
 // One per notification type.  Each is the framework's answer to
 // "what should we do when the script hasn't defined the override?"
@@ -149,6 +188,25 @@ inline void default_hub_dead(const IncomingMessage &msg,
         stop.request(RoleHostCore::StopReason::HubDead);
 }
 
+// Band callbacks all default to no-op.  Bands are pure script-
+// domain coordination — the framework's only contract is "deliver
+// the event accurately"; what to DO with it is the script's choice
+// (log? recover? leave? page?).  No automatic state change at the
+// role-host level.  HEP-CORE-0030 amendment 2026-05-19 codifies
+// this no-op default.
+
+inline void default_band_member_joined(const IncomingMessage & /*msg*/,
+                                       const StopRequestor & /*stop*/) {}
+
+inline void default_band_member_left(const IncomingMessage & /*msg*/,
+                                     const StopRequestor & /*stop*/) {}
+
+inline void default_band_message(const IncomingMessage & /*msg*/,
+                                 const StopRequestor & /*stop*/) {}
+
+inline void default_band_lost(const IncomingMessage & /*msg*/,
+                              const StopRequestor & /*stop*/) {}
+
 // ── Dispatch table ────────────────────────────────────────────────────
 
 using InvokeUserFn     = void (*)(ScriptEngine&,        const IncomingMessage&);
@@ -167,10 +225,14 @@ struct NotificationEntry
 
 inline constexpr NotificationEntry
 kNotificationTable[static_cast<std::size_t>(NotificationId::Count)] = {
-    /* Unknown        */ { nullptr,               nullptr,                       nullptr                  },
-    /* ChannelClosing */ { "on_channel_closing",  &invoke_user_channel_closing,  &default_channel_closing },
-    /* ConsumerDied   */ { "on_consumer_died",    &invoke_user_consumer_died,    &default_consumer_died   },
-    /* HubDead        */ { "on_hub_dead",         &invoke_user_hub_dead,         &default_hub_dead        },
+    /* Unknown          */ { nullptr,                  nullptr,                          nullptr                       },
+    /* ChannelClosing   */ { "on_channel_closing",     &invoke_user_channel_closing,     &default_channel_closing      },
+    /* ConsumerDied     */ { "on_consumer_died",       &invoke_user_consumer_died,       &default_consumer_died        },
+    /* HubDead          */ { "on_hub_dead",            &invoke_user_hub_dead,            &default_hub_dead             },
+    /* BandMemberJoined */ { "on_band_member_joined",  &invoke_user_band_member_joined,  &default_band_member_joined   },
+    /* BandMemberLeft   */ { "on_band_member_left",    &invoke_user_band_member_left,    &default_band_member_left     },
+    /* BandMessage      */ { "on_band_message",        &invoke_user_band_message,        &default_band_message         },
+    /* BandLost         */ { "on_band_lost",           &invoke_user_band_lost,           &default_band_lost            },
 };
 
 /// Single-pass dispatcher.  For each known msg: fire the user
