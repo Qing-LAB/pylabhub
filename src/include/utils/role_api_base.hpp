@@ -333,7 +333,6 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     [[nodiscard]] std::optional<InboxOpenResult>
     open_inbox_client(const std::string &target_uid);
     [[nodiscard]] bool wait_for_role(const std::string &uid, int timeout_ms = 5000);
-    void close_all_inbox_clients();
 
     // ── Output side (safe defaults when no output wired) ──────────────────────
     //

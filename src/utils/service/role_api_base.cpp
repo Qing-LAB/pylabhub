@@ -1794,11 +1794,6 @@ bool RoleAPIBase::wait_for_role(const std::string &uid, int timeout_ms)
     return false;
 }
 
-void RoleAPIBase::close_all_inbox_clients()
-{
-    pImpl->core->clear_inbox_cache();
-}
-
 // ============================================================================
 // Output side — flat data-plane verbs
 // ============================================================================
