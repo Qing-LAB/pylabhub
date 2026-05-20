@@ -302,10 +302,12 @@ The doc tree already says what this is for. Adding more would duplicate. The res
 | # | Item | Decision | Execution status |
 |---|---|---|---|
 | 1 | `close_all_inbox_clients` | DELETE | ✅ shipped (commit `4e9ed48`) |
-| 2 | `query_shm_info` + `collect_shm_info_json` | KEEP + wire role/hub script APIs | ⏳ pending execution |
-| 3 | `ChannelSnapshot::count_by_observable` | KEEP + wire hub script API | ⏳ pending execution |
-| 4 | `set_metrics_hook` | KEEP, mark reserved | ⏳ HEP §5.5 done (uncommitted); inline docstring + TODO entry pending |
-| 5 | `send_hub_targeted_msg` | KEEP, mark reserved (federation-deferred) | ⏳ inline docstring + TODO entry pending |
+| 2 | `query_shm_info` + `collect_shm_info_json` | KEEP + wire role/hub script APIs | ⏸ **SUBSUMED by Hub State Query Layer design** (`docs/tech_draft/hub_state_query_layer_design.md`).  SHM info becomes Layer 2 functions `list_shm_blocks(snap)` + `get_shm_block(snap, ch)`. |
+| 3 | `ChannelSnapshot::count_by_observable` | KEEP + wire hub script API | ⏸ **SUBSUMED by Hub State Query Layer design**.  Becomes Layer 2 function `count_channels_in_state(snap, state)`.  Original method on `ChannelSnapshot` stays as C++ utility (its existence motivated the design). |
+| 4 | `set_metrics_hook` | KEEP, mark reserved | ✅ shipped (commit `59be4ae`) — HEP-0019 §5.5 + inline docstring + API_TODO entry |
+| 5 | `send_hub_targeted_msg` | KEEP, mark reserved (federation-deferred) | ✅ shipped (commit `59be4ae`) — inline docstring + API_TODO entry |
+
+**Reframe note (2026-05-20):** Group 2 #2 and #3 walkthroughs led to a bigger architectural question — every `HubAPI::list_X` method snapshots hub state redundantly today, and scripts that want multi-aspect coherent views can't get them.  Rather than wire #2 and #3 as independent script-API additions, the right answer is a layered capture-then-query design that lets scripts call `hub.snapshot()` once and query everything from that coherent moment.  Design captured in `docs/tech_draft/hub_state_query_layer_design.md`; new TODO_MASTER entry under "Deferred polish".
 
 Decisions doc is COMPLETE.  Execution phase begins now.
 
