@@ -31,7 +31,6 @@
 #include "utils/engine_module_params.hpp"
 #include "utils/role_host_helpers.hpp"
 #include "utils/zmq_poll_loop.hpp"
-#include "utils/role_host_lifecycle.hpp"
 #include "utils/role_reg_payload.hpp"
 #include "utils/role_handler.hpp"     // Wave-B M7: handler-mode startup
 #include "utils/role_presence.hpp"    // Wave-B M7: Presence + RoleKind

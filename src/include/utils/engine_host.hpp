@@ -84,6 +84,7 @@
 #include "utils/script_engine.hpp"
 
 #include <atomic>
+#include <functional>
 #include <future>
 #include <memory>
 #include <string>
@@ -399,5 +400,60 @@ class PYLABHUB_UTILS_EXPORT EngineHost
 // the OUTER `HubHost` container remains a plain concrete class (not
 // derived from EngineHost).
 using RoleHostBase = EngineHost<RoleAPIBase>;
+
+// ── Worker-loop teardown helper (was role_host_lifecycle.hpp) ───────────────
+//
+// The three role-host derived classes (ProducerRoleHost,
+// ConsumerRoleHost, ProcessorRoleHost) each implement
+// `worker_main_()`; the prologue is role-specific (queue init,
+// schema resolution, etc.) but the epilogue is identical across all
+// three.  This helper captures the epilogue so the role hosts call
+// it instead of inlining the same 30-line sequence three times.
+//
+// Lives here (not in a separate header) because it's strictly a
+// worker-loop helper for `EngineHost`-derived classes.  The
+// previous home, `role_host_lifecycle.hpp`, mis-named the file
+// after the framework `Lifecycle` module (`src/include/utils/
+// lifecycle.hpp`) which orchestrates module init/teardown — two
+// unrelated concepts sharing one word.  Moved here 2026-05-20.
+
+/**
+ * @brief Run the worker-main epilogue (Steps 9-14).
+ *
+ * Sequence (preserved verbatim from each role host's pre-Phase-5c
+ * implementation):
+ *   9.   `engine.stop_accepting()`
+ *   9a.  if @p has_api: `api.deregister_from_broker()` — walks
+ *        `handler_->presences()` and emits DEREG for each presence
+ *        whose atomic `registration_state` is `Registered` or
+ *        `RegRequestPending` (S1+O4, 2026-05-17).
+ *   10.  `engine.invoke_on_stop()` — last script-side I/O while the
+ *        ctrl threads are still alive.
+ *   11.  `engine.finalize()` — free script resources.
+ *   12.  `api.stop_ctrl_for_teardown()` — signal every connection's
+ *        BRC poll loop to exit (handler-mode; M4f-and-later — there
+ *        is no legacy single-`broker_channel` path anymore).
+ *        Then `core.set_running(false)` + `core.notify_incoming()`.
+ *   12.5 `api.thread_manager().request_shutdown_all()` +
+ *        `wait_for_quiescence()` — honor the Thread Shutdown
+ *        Contract (HEP-CORE-0031 §4.1).  Flips every peer's
+ *        per-slot shutdown flag and blocks until every managed
+ *        thread is outside its `with_active_loop` bracket.
+ *   13.  @p teardown_infrastructure — caller-supplied callback
+ *        because each host closes different objects (queues,
+ *        inbox, etc.).  Handler-mode hosts call
+ *        `api.stop_handler_threads()` here to disconnect + release
+ *        the handler's BRCs.
+ *   14.  return.  The drain happens on the MAIN thread inside
+ *        `EngineHost::shutdown_()` — the worker is itself a managed
+ *        slot, so calling `drain()` here would self-detach
+ *        (HEP-CORE-0031 §4.2).
+ */
+void do_role_teardown(
+    ScriptEngine          &engine,
+    RoleAPIBase           &api,
+    RoleHostCore          &core,
+    bool                   has_api,
+    std::function<void()>  teardown_infrastructure);
 
 } // namespace pylabhub::scripting
