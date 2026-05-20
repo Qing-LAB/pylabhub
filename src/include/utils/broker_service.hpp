@@ -483,6 +483,25 @@ public:
     /**
      * @brief Send a hub-targeted message to a direct federation peer (HEP-CORE-0022).
      *
+     * **Reserved — federation work (as of 2026-05-20).**  Zero callers in
+     * `src/` production; one test caller in
+     * `tests/test_layer3_datahub/workers/hub_federation_workers.cpp:282`
+     * that validates the end-to-end federation flow.  Do not delete on
+     * dead-code sweeps — the wire frame `HUB_TARGETED_MSG` is alive
+     * (broker drains the queue in `run()` and dispatches via
+     * `send_to_identity`), the receive side has a working hub-script
+     * callback (`HubAPI::augment_peer_message`), and HEP-CORE-0033 §13
+     * + HEP-CORE-0022 document this as a federation primitive.
+     *
+     * **Why deferred:** the script-side wrapper
+     * (`HubAPI::send_to_peer(peer_uid, channel, payload)` — not yet
+     * written) is intentionally pending until the hub + role-host
+     * substrate is stable.  Premature wiring against an unstable
+     * substrate would cause churn.  Federation script-API completion
+     * is bundled with HEP-CORE-0033 §12.3.6 `HUB_TARGETED_ACK` reply
+     * frame work (Task #75) — both are part of the same federation
+     * feature set.
+     *
      * Thread-safe. The request is queued and sent during the next broker run() poll
      * iteration.  If the target hub UID is not a known connected peer, the message
      * is silently dropped with a warning log.
