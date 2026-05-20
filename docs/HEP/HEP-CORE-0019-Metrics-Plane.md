@@ -602,6 +602,155 @@ All serialization targets pick it up at compile time.
 
 See HEP-CORE-0008 §6.1 for the full field list and per-role dict layout.
 
+### 5.5 Host-side telemetry injection (`set_metrics_hook`)
+
+**Status (2026-05-20):** Reserved C++ extension point.  No callers in
+`src/` or `tests/`.  Documented here to preserve the design and prevent
+re-invention by future host authors.
+
+The script-facing path (`api.report_metric` + `api.report_metrics`,
+§5.1-5.2) emits flat scalar metrics into the `"custom"` block.  The
+C++ host-side path complements that with structured (nested-object)
+injection via an opt-in callback installed by the role host
+(producer / consumer / processor) during its startup.
+
+#### 5.5.1 API surface
+
+```cpp
+// src/include/utils/role_api_base.hpp
+class RoleAPIBase
+{
+public:
+    void set_metrics_hook(std::function<void(nlohmann::json &)> hook);
+};
+```
+
+Install once during the role host's `startup_()` phase, BEFORE
+`start_handler_threads`.  Setting the hook after `start_handler_threads`
+has run is undefined — concurrent read on the ctrl-thread heartbeat hot
+path is not synchronised.  Passing a null `std::function` clears the
+hook.
+
+#### 5.5.2 Where it fires in the call chain
+
+The hook fires at exactly two sites inside `RoleAPIBase`, both AFTER
+the canonical `queue` / `loop` / `role` / `inbox` / `custom` blocks
+(§5.4) have been populated and BEFORE the result is returned:
+
+1. **Hot path — `snapshot_metrics_for_presence(role_type)`**
+   (`src/utils/service/role_api_base.cpp:2053`).
+   - Called from `on_heartbeat_tick_()`
+     (`src/utils/service/role_api_base.cpp:847-858`) once per
+     `handler_->presences()` entry, every heartbeat period
+     (cadence per §4.1).
+   - For a single-presence role (Producer or Consumer), fires once
+     per heartbeat.
+   - For a dual-presence Processor (consumer-side on `in_hub` +
+     producer-side on `out_hub`, per §3.1 multi-presence model),
+     fires TWICE per heartbeat — once with `role_type == "consumer"`
+     and once with `role_type == "producer"`.
+   - The hook receives the JSON that will be attached to the
+     `HEARTBEAT_REQ` (§4.1) sent to that presence's hub via
+     `BrokerRequestComm::send_heartbeat`.
+
+2. **Script-on-demand — `snapshot_metrics_json()`**
+   (`src/utils/service/role_api_base.cpp:2128`).
+   - Called when a script invokes `api.snapshot_metrics_json()` via
+     `ConsumerAPI`, `ProducerAPI`, or `ProcessorAPI` (HEP-CORE-0011
+     ScriptHost API surface).
+   - Single-result variant (not per-presence); fires once per script
+     call.
+   - Rare in practice — scripts typically don't poll their own
+     metrics on a hot loop.
+
+#### 5.5.3 Sequence diagram (heartbeat path)
+
+```
+ctrl thread                          handler_        broker (per presence)
+─────────────                        ──────────      ─────────────────────
+on_heartbeat_tick_()
+  │
+  ├─ for p in handler_->presences():
+  │      role_type = to_wire_string(p.role_kind)
+  │      ┌─────────────────────────────────────────────┐
+  │      │ snapshot_metrics_for_presence(role_type)    │
+  │      │   ├─ populate "queue"  block (§5.4)         │
+  │      │   ├─ populate "loop"   block (§5.4)         │
+  │      │   ├─ populate "role"   block (per role kind)│
+  │      │   ├─ populate "inbox"  block (if any, §5.4) │
+  │      │   ├─ populate "custom" block (scalars, §5.1)│
+  │      │   ├─ if metrics_hook: metrics_hook(json)  ← hook fires
+  │      │   └─ return json                            │
+  │      └─────────────────────────────────────────────┘
+  │      send_heartbeat(p.channel, uid, role_type, metrics)  ──► HEARTBEAT_REQ (§4.1)
+  └─ (next presence)
+```
+
+#### 5.5.4 Per-presence disambiguation
+
+When a host installs a hook on a Processor, the hook fires once for
+each presence in the same heartbeat tick.  Hooks that want to inject
+side-specific fields can inspect the existing `"queue"` and `"role"`
+keys to disambiguate which presence is being built — e.g., the
+consumer-side `"queue"` block carries `rx_drops` while the producer-side
+block does not:
+
+```cpp
+host.api()->set_metrics_hook([this](nlohmann::json &m) {
+    // Dual-presence processor: branch on which side is being emitted.
+    const bool is_consumer_side =
+        m.contains("queue") &&
+        m["queue"].contains("rx_drops");
+    if (is_consumer_side) {
+        m["processor"]["inbox_stall_us"] = inbox_stall_us_;
+    } else {
+        m["processor"]["downstream_fan_out_count"] =
+            downstream_fan_out_count_;
+    }
+});
+```
+
+For single-presence roles (Producer-only or Consumer-only), no
+disambiguation is needed — the hook fires once per heartbeat for the
+single role kind.
+
+#### 5.5.5 Thread-safety contract
+
+- The hook is READ on the **ctrl thread** during heartbeat ticks AND
+  on the **script thread** when `snapshot_metrics_json()` is invoked
+  via the API.  Hooks must be thread-safe with respect to any state
+  they touch — the framework provides no serialisation between the
+  two read sites.
+- The hook MUST NOT block.  It runs on the heartbeat hot path; any
+  delay propagates into heartbeat latency and downstream broker
+  observability (§3.1 message flow).  Avoid disk I/O, lock acquisition
+  that may contend with the data plane, and network calls.
+- The hook MUST be set before `start_handler_threads`.  Concurrent
+  set-while-emit is undefined behaviour.
+- Setting `hook = nullptr` (or default-constructed `std::function`)
+  clears the hook; subsequent emissions skip the call entirely.
+
+#### 5.5.6 When to use this vs `api.report_metric`
+
+| Use case | Recommended API |
+|---|---|
+| Script wants to emit a scalar custom metric | `api.report_metric(key, value)` (§5.1) |
+| C++ host wants to emit a scalar custom metric | `api.report_metric(key, value)` (host can call too) |
+| C++ host wants to emit a **structured (nested object)** custom metric | `set_metrics_hook(...)` — the only path that preserves nesting |
+| C++ host wants to inject **side-specific fields** on a dual-presence Processor | `set_metrics_hook(...)` — fires twice per heartbeat with per-presence semantics |
+
+#### 5.5.7 Status and cross-reference
+
+- **Not currently used.**  No role host in
+  `src/{producer,consumer,processor}/*_role_host.cpp` installs a hook
+  as of 2026-05-20.
+- **Reserved** so that hosts needing structured telemetry don't
+  reinvent the wiring.  Future authors who add a caller should remove
+  the "Reserved" tag in the same commit that adds the caller.
+- The inline docstring at `src/include/utils/role_api_base.hpp` (the
+  `set_metrics_hook` declaration) carries a "Reserved" annotation that
+  cross-references back to this section.
+
 ---
 
 ## 6. Broker-side Storage

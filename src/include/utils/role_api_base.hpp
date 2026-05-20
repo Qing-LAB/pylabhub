@@ -215,6 +215,14 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     void set_checksum_policy(hub::ChecksumPolicy p);
     void set_stop_on_script_error(bool v);
 
+    /// **Reserved C++ extension point (as of 2026-05-20 — no callers in
+    /// src/ or tests/).**  Full design in HEP-CORE-0019 §5.5; do not
+    /// delete on dead-code sweeps — the consumer branches at
+    /// `role_api_base.cpp:2122` and `:2189` are intentional and the
+    /// hot-path wiring would be hard to reconstruct.  Future authors
+    /// who install a caller should remove this "Reserved" tag in the
+    /// same commit.
+    ///
     /// Optional hook called at the end of `snapshot_metrics_json()` AND
     /// `snapshot_metrics_for_presence(role_type)` to let role hosts inject
     /// role-specific metrics fields into the JSON.  The hook is called
@@ -223,6 +231,13 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     /// producer-presence payload.  Hooks that inject side-specific data
     /// can inspect the existing `queue` / `role` keys to disambiguate.
     /// Default: no-op (null function).
+    ///
+    /// Intended caller: C++ role host (`producer_role_host.cpp` /
+    /// `consumer_role_host.cpp` / `processor_role_host.cpp`) during
+    /// `startup_()` BEFORE `start_handler_threads`.  Not script-callable
+    /// (signature takes `std::function`).  For scalar metrics use
+    /// `api.report_metric(key, value)` (HEP-CORE-0019 §5.1) — this hook
+    /// is the structured-injection companion.
     void set_metrics_hook(std::function<void(nlohmann::json &)> hook);
 
     // ── Role-side CURVE identity (Wave-B M4a) ────────────────────────────────

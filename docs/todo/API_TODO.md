@@ -74,7 +74,7 @@ policy"; HEP-CORE-0023 §2.5.3 records the canonical contract.
 
 **D3 — polish (batch into one PR):**
 - **X1** — Delete `BrokerRequestComm::send_notify` (`broker_request_comm.cpp:691`) — zero callers.
-- **X2** — Delete `BrokerRequestComm::query_shm_info` (`broker_request_comm.cpp:867`) — zero callers.
+- **X2** — ~~Delete `BrokerRequestComm::query_shm_info`~~ **REFRAMED 2026-05-20 (Group 2 #2):** keep + wire up.  `BrokerRequestComm::query_shm_info` (role-side, `broker_request_comm.cpp:925`) and `BrokerService::collect_shm_info_json` (hub-side, `broker_service.cpp:3932`) are unfinished script-API scaffolding, not dead code — they're the right shape for `api.shm_info(channel)` (role) + `hub.shm_info(channel)` (hub) but never bound to Python/Lua.  Wiring queued; see `docs/tech_draft/GROUP2_DECISIONS_2026-05-20.md` candidate #2 for implementation plan.
 - **X3** — Decide on `Impl::resolve_bc_for_*` 1-line forwarders (`role_api_base.cpp:204-218`).
 - **X4** — Strip stale Wave-B M4d/e/f migration comments (~15 sites in `role_api_base.cpp`).
 - **X6** — Delete `ChecksumRepairPolicy::Repair` dead enum value.
@@ -82,6 +82,9 @@ policy"; HEP-CORE-0023 §2.5.3 records the canonical contract.
 
 **Documented-by-design (no action; preserve against deletion attempts):**
 - **I4 / X7** — Inbox metadata stored per-presence; same `inbox_endpoint` string lives on `ChannelEntry.producers[*].inbox_*` AND `ConsumerEntry.inbox_*` for dual-hub processor.  Required by HEP-0027 §4.1 step 7 + HEP-0033 §19.5.
+- **G2-#3 / count_by_observable** (2026-05-20) — `ChannelSnapshot::count_by_observable` (`broker_service.hpp:77`) has zero callers but is a 7-line public utility on a public POD struct that is the right shape for hub-script API binding.  Group 2 decision: KEEP + wire to `HubAPI` (`hub.count_channels_in_state(observable)`).  Implementation plan in `docs/tech_draft/GROUP2_DECISIONS_2026-05-20.md` candidate #3.  Thread-safety analysed end-to-end: snapshot is a deep-copy value tree under shared lock, all entry types are pure values (no atomics / mutexes / shared_ptrs).
+- **G2-#4 / set_metrics_hook (RESERVED extension point)** (2026-05-20) — `RoleAPIBase::set_metrics_hook` (`role_api_base.hpp:226`) has zero callers but is wired into the heartbeat hot path via two consumer branches at `role_api_base.cpp:2122` + `:2189`.  Full design captured in HEP-CORE-0019 §5.5 (added 2026-05-20).  Group 2 decision: KEEP, marked Reserved in inline docstring.  Intent: C++ host-side structured-metrics injection (companion to scalar `api.report_metric`).  Future authors installing a caller MUST remove the "Reserved" tags in `role_api_base.hpp:218-225` and in HEP-0019 §5.5.0 in the same commit.
+- **G2-#5 / send_hub_targeted_msg (RESERVED federation work)** (2026-05-20) — `BrokerService::send_hub_targeted_msg` (`broker_service.hpp:494`) has zero production callers but is exercised by `tests/test_layer3_datahub/workers/hub_federation_workers.cpp:282` and drained by the broker `run()` loop into a live `HUB_TARGETED_MSG` wire frame.  Group 2 decision: KEEP, marked Reserved as federation-deferred work in inline docstring.  Intent: hub-to-hub federation coordination primitive (HEP-CORE-0022 + HEP-CORE-0033 §13).  Script-side wrapper (`HubAPI::send_to_peer`) intentionally deferred until hub + role-host substrate is stable.  Bundled-deferral-set with Task #75 (`HUB_TARGETED_ACK` reply frame).
 
 ---
 
