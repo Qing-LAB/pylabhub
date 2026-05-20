@@ -4451,13 +4451,14 @@ nlohmann::json BrokerServiceImpl::handle_band_join_req(
     // variable holds the band identifier (`!`-prefixed per §3); name
     // it `band` to match the wire and the HEP — completes the
     // 2026-04-11 rename refactor (`8d3ee1e`) for the wire layer.
+    const std::string corr_id   = req.value("correlation_id", "");
     const std::string band      = req.value("band", "");
     const std::string role_uid  = req.value("role_uid", "");
     const std::string role_name = req.value("role_name", "");
 
     if (band.empty() || role_uid.empty())
     {
-        return make_error("", "INVALID_REQUEST", "Missing band or role_uid");
+        return make_error(corr_id, "INVALID_REQUEST", "Missing band or role_uid");
     }
 
     // Audit R3.5 (2026-05-17): validate the band identifier
@@ -4474,7 +4475,7 @@ nlohmann::json BrokerServiceImpl::handle_band_join_req(
         LOGGER_WARN("Broker: BAND_JOIN_REQ rejected — invalid band "
                     "identifier '{}' (HEP-CORE-0030 §3 — must be "
                     "`!`-prefixed dotted identifier)", band);
-        return make_error("", "INVALID_BAND_NAME",
+        return make_error(corr_id, "INVALID_BAND_NAME",
                           "Band identifier failed validation "
                           "(HEP-CORE-0030 §3 grammar)");
     }
@@ -4483,9 +4484,13 @@ nlohmann::json BrokerServiceImpl::handle_band_join_req(
     // malformed value (e.g. empty) would survive into `BandMember.
     // role_uid` and fail downstream BAND_LEAVE matches + BAND_LEAVE_
     // NOTIFY fan-out.
+    // Audit B1 (2026-05-20): corr_id is now threaded into the
+    // validator error so the role-side response matcher routes the
+    // rejection to the right pending `do_request` (other gates were
+    // already doing this; this one was missed).
     if (auto err = validate_role_uid_only(role_uid,
                                           {"prod", "cons", "proc"},
-                                          /*corr_id=*/"",
+                                          corr_id,
                                           "BAND_JOIN_REQ"))
     {
         return *err;
@@ -4498,7 +4503,7 @@ nlohmann::json BrokerServiceImpl::handle_band_join_req(
                      "uid='{}' — invalid role_name '{}' "
                      "(HEP-CORE-0033 §G2.2.0b)",
                      band, role_uid, role_name);
-        return make_error("", "INVALID_REQUEST",
+        return make_error(corr_id, "INVALID_REQUEST",
                           "role_name '" + role_name +
                               "' failed grammar validation "
                               "(HEP-CORE-0033 §G2.2.0b)");
@@ -4547,6 +4552,8 @@ nlohmann::json BrokerServiceImpl::handle_band_join_req(
     resp["status"]  = "success";
     resp["band"]    = band;
     resp["members"] = std::move(members_json);
+    if (!corr_id.empty())
+        resp["correlation_id"] = corr_id;
     return resp;
 }
 
@@ -4555,12 +4562,13 @@ nlohmann::json BrokerServiceImpl::handle_band_leave_req(
     zmq::socket_t& /*socket*/)
 {
     // Wire payload key is `band` per HEP-CORE-0030 §5.1.
+    const std::string corr_id  = req.value("correlation_id", "");
     const std::string band     = req.value("band", "");
     const std::string role_uid = req.value("role_uid", "");
 
     if (band.empty() || role_uid.empty())
     {
-        return make_error("", "INVALID_REQUEST", "Missing band or role_uid");
+        return make_error(corr_id, "INVALID_REQUEST", "Missing band or role_uid");
     }
 
     // Audit R3.5 (2026-05-17): explicit band-name validation —
@@ -4571,7 +4579,7 @@ nlohmann::json BrokerServiceImpl::handle_band_leave_req(
     {
         LOGGER_WARN("Broker: BAND_LEAVE_REQ rejected — invalid band "
                     "identifier '{}'", band);
-        return make_error("", "INVALID_BAND_NAME",
+        return make_error(corr_id, "INVALID_BAND_NAME",
                           "Band identifier failed validation "
                           "(HEP-CORE-0030 §3 grammar)");
     }
@@ -4579,9 +4587,11 @@ nlohmann::json BrokerServiceImpl::handle_band_leave_req(
     // CORE-0033 §G2.2.0b).  Any role may leave a band — same tag set
     // as BAND_JOIN_REQ.  Pre-fix, malformed uid would scan-miss in
     // the membership loop and skip the LEAVE log.
+    // Audit B1 (2026-05-20): corr_id is now threaded through (was
+    // empty, response matcher couldn't route).
     if (auto err = validate_role_uid_only(role_uid,
                                           {"prod", "cons", "proc"},
-                                          /*corr_id=*/"",
+                                          corr_id,
                                           "BAND_LEAVE_REQ"))
     {
         return *err;
@@ -4616,7 +4626,7 @@ nlohmann::json BrokerServiceImpl::handle_band_leave_req(
                     "member of band '{}' (HEP-CORE-0030 §5.1 "
                     "membership rule)",
                     role_uid, band);
-        return make_error("", "NOT_A_MEMBER",
+        return make_error(corr_id, "NOT_A_MEMBER",
                           "Sender '" + role_uid + "' is not a member "
                           "of band '" + band + "'");
     }
@@ -4625,6 +4635,8 @@ nlohmann::json BrokerServiceImpl::handle_band_leave_req(
 
     nlohmann::json resp;
     resp["status"] = "success";
+    if (!corr_id.empty())
+        resp["correlation_id"] = corr_id;
     return resp;
 }
 

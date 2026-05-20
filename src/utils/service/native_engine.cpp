@@ -277,7 +277,19 @@ char *ctx_band_join(const PlhNativeContext *ctx, const char *channel)
 int ctx_band_leave(const PlhNativeContext *ctx, const char *channel)
 {
     if (!ctx || !ctx->_api || !channel) return 0;
-    return static_cast<RoleAPIBase *>(ctx->_api)->band_leave(channel) ? 1 : 0;
+    // Audit A1 (2026-05-20): pre-fix this returned `has_value() ? 1 : 0`,
+    // which treats ANY broker reply as success — including the typed
+    // `{status:error, NOT_A_MEMBER}` rejection that broker_proto 5
+    // emits for a leave-while-not-a-member (S4 amendment).  Native
+    // plugins would see a rejected leave as success.  Gate on
+    // status == "success" so the int-bool return matches the
+    // Python/Lua surfaces (which forward the full JSON; plugins on
+    // those engines can see the error_code directly).  Note that
+    // matching the JSON-string-returning ctx_band_join wouldn't help
+    // here — the C ABI commits this function to `int` return.
+    auto result = static_cast<RoleAPIBase *>(ctx->_api)->band_leave(channel);
+    return (result.has_value() &&
+            result->value("status", std::string{}) == "success") ? 1 : 0;
 }
 
 void ctx_band_broadcast(const PlhNativeContext *ctx, const char *channel, const char *body_json)
