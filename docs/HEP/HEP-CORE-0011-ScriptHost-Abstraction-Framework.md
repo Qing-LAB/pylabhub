@@ -328,13 +328,26 @@ for each msg in msgs:
     erase from msgs                            // always consumed for known types
 ```
 
-Current rows (post-D1/D2):
+Current rows (post-D1/D2 + S4 expansion 2026-05-19):
 
 | Row | callback_name | default action |
 |---|---|---|
-| `ChannelClosing` | `on_channel_closing` | `default_channel_closing` → graceful stop with `StopReason::ChannelClosed` |
-| `ConsumerDied`   | `on_consumer_died`   | `default_consumer_died`   → no-op (producer survives consumer death) |
-| `HubDead`        | `on_hub_dead`        | `default_hub_dead`        → master: graceful stop with `StopReason::HubDead`; peer: no-op (role continues on master per HEP-CORE-0023 §2.5) |
+| `ChannelClosing`   | `on_channel_closing`   | `default_channel_closing` → graceful stop with `StopReason::ChannelClosed` |
+| `ConsumerDied`     | `on_consumer_died`     | `default_consumer_died` → no-op (producer survives consumer death) |
+| `HubDead`          | `on_hub_dead`          | `default_hub_dead` → master: graceful stop with `StopReason::HubDead`; peer: no-op (role continues on master per HEP-CORE-0023 §2.5) |
+| `BandMemberJoined` | `on_band_member_joined` | `default_band_member_joined` → no-op (bands are script-domain coordination; framework only delivers the event, script decides what to do) |
+| `BandMemberLeft`   | `on_band_member_left`   | `default_band_member_left` → no-op |
+| `BandMessage`      | `on_band_message`       | `default_band_message` → no-op |
+| `BandLost`         | `on_band_lost`          | `default_band_lost` → no-op (synthetic event from hub-dead; the role can lose band routing without exiting — by-default scripts proceed on whichever connections remain alive.  Scripts wanting to exit on band loss override and call `api.stop()`.) |
+
+Band-callback signatures (defined in `ScriptEngine`):
+
+- `on_band_member_joined(band: str, role_uid: str, role_name: str, api)` — peer joined a band this role is in (mirrors `BAND_JOIN_NOTIFY` per HEP-CORE-0030 §5.3).
+- `on_band_member_left(band: str, role_uid: str, reason: str, api)` — peer left.  `reason` ∈ `{voluntary, heartbeat_timeout, process_dead}` per HEP-CORE-0023 §2.1.1 reason vocabulary.
+- `on_band_message(band: str, sender_role_uid: str, body: dict/table, api)` — broadcast received from another band member.  Broker enforces sender-must-be-member (HEP-CORE-0030 §5.2), so `sender_role_uid` is guaranteed to be a band member at emission time.
+- `on_band_lost(band: str, reason: str, api)` — synthetic, fired when role-side band routing is invalidated.  Currently `reason="hub_dead"` only (the role's broker connection died, so the BRC for this band is no longer reachable).  NOT a wire frame.
+
+Native C ABI mirror: each callback has a matching `plh_band_*_args_t` struct in `native_invoke_types.h` carrying the same fields (plus `body_json` for `on_band_message` — the C ABI doesn't ship a JSON parser so plugins receive the body as a JSON string).
 
 Adding a notification:
 

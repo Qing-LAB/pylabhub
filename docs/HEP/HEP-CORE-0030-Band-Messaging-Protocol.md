@@ -131,13 +131,28 @@ Request payload:
   role_uid              string   Leaving role's UID
 
 Reply payload (BAND_LEAVE_ACK):
-  status                string   "success"
+  status                string   "success" | "error"
+  error_code            string   only present on error:
+                                 "NOT_A_MEMBER" — sender wasn't actually
+                                                  in the band
+                                 "INVALID_BAND_NAME" — grammar (R3.5)
+                                 "INVALID_REQUEST" / "INVALID_ROLE_TAG" —
+                                                  identifier grammar /
+                                                  tag (R3.5b)
 
-Broker behavior:
-  1. Remove member from list
-  2. Send BAND_LEAVE_NOTIFY to remaining members
-  3. If band is empty → delete it
-  4. Reply BAND_LEAVE_ACK
+Broker behavior (S4 amendment 2026-05-19):
+  1. Validate band + role_uid grammar.
+  2. Sender-must-be-member check.  If sender isn't in
+     `band->members`: return {status: error,
+                              error_code: "NOT_A_MEMBER"}.
+     Pre-S4 the broker silently returned success here; the
+     role-side bookkeeping then carried a stale `band_index_`
+     entry it couldn't reconcile.
+  3. Remove member from list.
+  4. Send BAND_LEAVE_NOTIFY to remaining members
+     (handler-driven via `subscribe_band_left`, Wave-M3 step 5f).
+  5. If band is empty → delete it.
+  6. Reply BAND_LEAVE_ACK with status=success.
 ```
 
 #### BAND_MEMBERS_REQ / BAND_MEMBERS_ACK
@@ -177,12 +192,51 @@ Broker behavior:
   1. Validate `band` (HEP-0030 §3 grammar) + `role_uid` (HEP-0033
      §G2.2.0b RoleUid grammar) at gate entry.  Either failing →
      drop + LOGGER_WARN (fire-and-forget — no reply path).
-  2. Look up band via `hub_state_.band(name)` snapshot
+  2. **Sender-must-be-member gate (S4 amendment 2026-05-19).**
+     Look up band via `hub_state_.band(name)` snapshot.  If band
+     doesn't exist → drop + LOGGER_WARN.  If sender's `role_uid`
+     is not in `band->members` → drop + LOGGER_WARN.  Both rules
+     are part of the broker-authority principle (§5.2.1 below).
   3. For each member (excluding sender):
        send_to_identity(socket, member.zmq_identity,
            "BAND_BROADCAST_NOTIFY", {band, role_uid, body})
-  4. If band doesn't exist → silently drop (no error)
 ```
+
+#### §5.2.1 Broker-authority principle for band operations (S4 amendment 2026-05-19)
+
+Bands are coordination groups; broker is authoritative on
+membership.  Every band wire op enforces two rules:
+
+1. **Broker validates the request before honouring it.**
+   - Grammar (HEP-CORE-0033 §G2.2.0b) on every identifier.
+   - Sender membership where the op is member-only:
+     - `BAND_LEAVE_REQ` from a non-member → typed `NOT_A_MEMBER` error.
+     - `BAND_BROADCAST_REQ` from a non-member → drop + LOGGER_WARN
+       (fire-and-forget, no reply path).
+   - `BAND_JOIN_REQ` is idempotent: re-joining a band you're
+     already in returns `status:success` (matches restart-recovery
+     patterns).
+
+2. **Role mirrors broker truth on every response.**
+   - `status:success` → role-side updates `band_index_` accordingly
+     (add on join, remove on leave).
+   - `status:error` → role-side mirrors the broker's verdict —
+     erase the stale `band_index_` entry.  Specifically: a
+     `NOT_A_MEMBER` on leave is authoritative; the role's cached
+     entry is removed.  This reverses the prior R3.2 (2026-05-17)
+     "keep on error" heuristic, which was safe under ambiguous
+     broker errors but wrong now that the canonical error has
+     concrete membership semantics.
+   - `nullopt` (transport timeout) → role-side bookkeeping is left
+     unchanged.  Automatic recovery on timeout is outside the
+     framework's contract; the script must decide.  If timeout-
+     induced state divergence becomes observable in logs, that's
+     addressed at the network-stability / policy layer, not by
+     adding retry machinery here.
+
+The reasoning is: state machinery is reactive, not proactive.  Logs
++ events drive future design; we don't engineer for failure modes
+we haven't observed.
 
 ### 5.3 Broker-Initiated Notifications
 
@@ -258,7 +312,9 @@ std::optional<nlohmann::json> band_members(const std::string &band,
 
 ```python
 # Join/leave
-members = api.band_join("!sensor_sync")
+result = api.band_join("!sensor_sync")
+# result is the broker's response dict, or None on transport timeout.
+# Examine result["status"] to disambiguate success / error.
 api.band_leave("!sensor_sync")
 
 # Messaging
@@ -266,24 +322,48 @@ api.band_broadcast("!sensor_sync", {"event": "calibration_done", "ts": 123.4})
 
 # Query
 members = api.band_members("!sensor_sync")
-# Returns: [{"role_uid": "PROD-Sensor-A1B2", "role_name": "sensor_prod"}, ...]
+# Returns: {"band": ..., "members": [{"role_uid": ..., "role_name": ...}, ...]}
+
+# Local introspection (S4 amendment 2026-05-19) — role's CACHED view
+# of its own membership.  Reads `band_index_` directly; no broker
+# round-trip.  For authoritative state use `band_members(name)`.
+if api.is_in_band("!sensor_sync"):
+    api.band_broadcast("!sensor_sync", {...})
 ```
 
-### 7.3 Notification Delivery to Scripts
+### 7.3 Typed Callback Delivery to Scripts (S4 amendment 2026-05-19)
 
-Band notifications arrive in the `msgs` parameter of script callbacks:
+The framework delivers band events via **typed callbacks** dispatched
+through `kNotificationTable` (HEP-CORE-0011 §"Notification dispatch").
+Scripts subscribe by defining the named callback function; if the
+script doesn't override, the framework's no-op default fires.  Band
+events are not auto-stripped from `msgs` for the generic scan — they
+ARE the typed callback's input.
 
 ```python
-def on_produce(slot, fz, msgs):
-    for msg in msgs:
-        if msg.event == "BAND_JOIN_NOTIFY":
-            print(f"Member joined: {msg.details['role_uid']}")
-        elif msg.event == "BAND_BROADCAST_NOTIFY":
-            # broker_proto 4→5 (R3.5b): NOTIFY body uses `role_uid`
-            # (was `sender_uid`) for cross-message uniformity.
-            body = msg.details["body"]
-            print(f"Band msg from {msg.details['role_uid']}: {body}")
+# Peer joined a band I'm in
+def on_band_member_joined(band, role_uid, role_name, api):
+    print(f"[{band}] {role_name} ({role_uid}) joined")
+
+# Peer left (voluntary, heartbeat_timeout, or process_dead)
+def on_band_member_left(band, role_uid, reason, api):
+    print(f"[{band}] {role_uid} left ({reason})")
+
+# Broadcast received
+def on_band_message(band, sender_role_uid, body, api):
+    print(f"[{band}] msg from {sender_role_uid}: {body}")
+
+# Synthetic — my own band routing was invalidated (currently:
+# the hub hosting my band membership died).  NOT a wire frame.
+def on_band_lost(band, reason, api):
+    print(f"[{band}] routing lost: {reason}")
+    # Scripts decide policy: rejoin via api.band_join, log + continue,
+    # api.stop(), or something else.  Framework default is no-op.
 ```
+
+Lua signatures are identical; Native plugins export functions named
+`on_band_member_joined` etc. taking `const plh_band_*_args_t *`
+(see `src/include/utils/native_invoke_types.h`).
 
 ---
 
