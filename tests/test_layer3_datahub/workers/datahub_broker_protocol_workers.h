@@ -55,6 +55,11 @@ int wire_conformance_reg_ack_shape();
 int wire_conformance_consumer_reg_ack_shape();
 int wire_conformance_role_info_ack_shape();
 int wire_conformance_band_ack_shapes();
+// Audit M1 (2026-05-20) — BAND_JOIN/LEAVE ACK + ERROR replies must echo
+// the request's `correlation_id` (broker_proto 5 contract; broker-side
+// fix in commit `d759424`).  Raw-ZMQ test because BRC doesn't inject
+// corr_id today.
+int wire_conformance_band_corr_id_echo();
 // R3.6 retired — CHANNEL_NOTIFY_REQ wire path deleted (no caller anywhere).
 
 } // namespace broker_protocol
