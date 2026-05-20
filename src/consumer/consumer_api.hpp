@@ -55,6 +55,7 @@ class ConsumerAPI
     }
     void band_broadcast(const std::string &channel, py::dict body);
     py::object band_members(const std::string &channel);
+    bool is_in_band(const std::string &channel) const;
 
     // Inbox
     py::object open_inbox(const std::string &target_uid);

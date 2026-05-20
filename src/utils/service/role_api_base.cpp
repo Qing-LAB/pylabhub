@@ -1139,19 +1139,28 @@ bool RoleAPIBase::start_handler_threads(std::unique_ptr<RoleHandler> handler)
                     return;
                 }
                 // Transition presence FSM out of Registered for any
-                // presence rooted on this dead connection.  Counter
-                // value used only for logging.
-                const std::size_t n_reaped =
+                // presence rooted on this dead connection AND erase
+                // band_index_ entries pointing at it.  The DisconnectReap
+                // struct carries both counts so we can log the full
+                // impact + (S4-6, Part C/E) enqueue per-band
+                // on_band_lost events once the typed callback is wired.
+                const auto reap =
                     handler_ptr->mark_connection_disconnected(dead_conn);
                 LOGGER_WARN("[{}/handler_ctrl_{}] hub-dead: {} broker "
                             "connection lost ({} presence(s) marked "
-                            "Deregistered) — dispatching HUB_DEAD to "
-                            "worker (default: {})",
+                            "Deregistered, {} band(s) routing lost) — "
+                            "dispatching HUB_DEAD to worker (default: {})",
                             tag_local, i,
                             is_master_conn ? "MASTER" : "PEER",
-                            n_reaped,
+                            reap.presences_transitioned,
+                            reap.bands_lost.size(),
                             is_master_conn ? "stop role" :
                                              "continue on master");
+                // S4-6 (Part E placeholder): enqueue an
+                // on_band_lost(band, "hub_dead") IncomingMessage per
+                // entry in reap.bands_lost.  Wired once
+                // NotificationId::BandLost lands in cycle_ops.hpp
+                // kNotificationTable (Part C).
                 // Enqueue synthetic HUB_DEAD notification so the
                 // worker-thread dispatcher
                 // (`kNotificationTable[HubDead]` in cycle_ops.hpp)
@@ -1517,6 +1526,25 @@ std::optional<nlohmann::json> RoleAPIBase::band_join(const std::string &channel)
         if (!presences.empty())
             pImpl->handler_->on_band_joined(channel, &presences.front());
     }
+    // S4-3 (2026-05-19, HEP-CORE-0030 amendment): role-side bookkeeping
+    // mirrors broker truth on `{status: error}`.  A broker error means
+    // either the join attempt was rejected OR the role is somehow not
+    // a member from the broker's view — either way, any stale
+    // `band_index_` entry for this band is wrong and must be removed.
+    // (`on_band_left` is a no-op when the entry doesn't exist, so this
+    // is safe for the fresh-join-error case.)  `nullopt` (transport
+    // timeout) leaves bookkeeping unchanged per the principle that
+    // automatic recovery is the script's domain, not the framework's.
+    const bool broker_rejected =
+        result.has_value() &&
+        result->value("status", std::string{}) == "error";
+    if (broker_rejected && pImpl->handler_)
+    {
+        LOGGER_DEBUG("[{}] band_join('{}') broker_rejected — "
+                     "clearing any stale band_index_ entry",
+                     pImpl->role_tag, channel);
+        pImpl->handler_->on_band_left(channel);
+    }
     return result;
 }
 
@@ -1530,19 +1558,39 @@ RoleAPIBase::band_leave(const std::string &channel)
         return std::nullopt;
     auto result = bc->band_leave(channel);
 
-    // On SUCCESS only, remove the band → presence mapping so later
-    // band_* calls don't dangle on a stale route.  Audit R3.5
-    // (2026-05-17): mirror of `band_join` — `has_value()` alone
-    // includes broker-error responses; a `{status: error}` from the
-    // broker means the band is STILL there from the broker's view,
-    // so dropping our routing would create a phantom "broadcast
-    // doesn't reach me" failure mode.  Safe to call when the band
-    // isn't indexed (no-op).
-    const bool left =
-        result.has_value() &&
-        result->value("status", std::string{}) == "success";
-    if (left && pImpl->handler_)
-        pImpl->handler_->on_band_left(channel);
+    // S4-4 (2026-05-19, HEP-CORE-0030 amendment): role-side bookkeeping
+    // mirrors broker truth on BOTH `status: success` AND `status:
+    // error`.  Pre-fix this only erased on `success` per audit R3.2
+    // (2026-05-17) which preserved routing on broker-error under the
+    // reasoning "broker still has us in" — that reasoning was wrong
+    // for the canonical error code (broker_proto 5 returns typed
+    // `NOT_A_MEMBER` when the sender isn't a member, which means the
+    // role's `band_index_` entry is stale and should be erased).
+    // The broker-authority principle: role state mirrors the
+    // broker's verdict, whatever it is.  `on_band_left` is a no-op
+    // when no entry exists, so the cleanup is idempotent for cases
+    // where the role thought it was joined but wasn't.  `nullopt`
+    // (transport timeout) leaves bookkeeping unchanged — script's
+    // domain to recover.
+    const bool broker_responded =
+        result.has_value();
+    if (broker_responded && pImpl->handler_)
+    {
+        const std::string &status = result->value("status", std::string{});
+        if (status == "success")
+        {
+            pImpl->handler_->on_band_left(channel);
+        }
+        else if (status == "error")
+        {
+            const std::string &code = result->value("error_code", std::string{});
+            LOGGER_DEBUG("[{}] band_leave('{}') broker_rejected "
+                         "(error_code='{}') — clearing band_index_ "
+                         "entry per broker-authority principle",
+                         pImpl->role_tag, channel, code);
+            pImpl->handler_->on_band_left(channel);
+        }
+    }
     return result;
 }
 
@@ -1578,6 +1626,16 @@ std::optional<nlohmann::json> RoleAPIBase::band_members(const std::string &chann
     if (!bc)
         return std::nullopt;
     return bc->band_members(channel);
+}
+
+bool RoleAPIBase::is_in_band(const std::string &channel) const noexcept
+{
+    // S4-7 (HEP-CORE-0030 amendment 2026-05-19): role's cached view
+    // of its own band membership.  Reads `band_index_` directly; no
+    // broker round-trip.  See header docstring for the cache vs
+    // authority distinction.
+    if (pImpl->handler_ == nullptr) return false;
+    return pImpl->handler_->is_in_band(channel);
 }
 
 // ============================================================================

@@ -1629,6 +1629,7 @@ void LuaEngine::push_common_api_closures_(lua_State *L)
     push_closure("band_leave", lua_api_band_leave);
     push_closure("band_broadcast", lua_api_band_broadcast);
     push_closure("band_members", lua_api_band_members);
+    push_closure("is_in_band", lua_api_is_in_band);
 
     // String fields as direct table entries.
     lua_pushstring(L, api_->log_level().c_str());
@@ -2362,6 +2363,16 @@ int LuaEngine::lua_api_band_join(lua_State *L)
         return 1;
     }
     json_to_lua(L, *result);
+    return 1;
+}
+
+int LuaEngine::lua_api_is_in_band(lua_State *L)
+{
+    // HEP-CORE-0030 amendment 2026-05-19 (S4): role's cached view of
+    // own band membership.  See RoleAPIBase::is_in_band.
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    const char *channel = luaL_checkstring(L, 1);
+    lua_pushboolean(L, self->api_->is_in_band(channel) ? 1 : 0);
     return 1;
 }
 

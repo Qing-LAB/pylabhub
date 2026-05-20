@@ -4587,17 +4587,21 @@ nlohmann::json BrokerServiceImpl::handle_band_leave_req(
         return *err;
     }
 
-    // Wave M3 step 5f (2026-05-11): BAND_LEAVE_NOTIFY fanout is now
+    // Wave M3 step 5f (2026-05-11): BAND_LEAVE_NOTIFY fanout is
     // handler-driven via `subscribe_band_left` wired in run().  The
     // subscriber's `send_band_leave_notify` fires only on real removal
     // (because `_on_band_left` fires its handler only when a member
-    // was actually removed).  Earlier-pre-fix this handler also did
-    // the fanout explicitly, which double-emitted under the new
-    // subscription model.
+    // was actually removed).
     //
-    // Membership pre-check is still done here so the wire-arrival log
-    // line is gated on real action (matches pre-fix log semantics —
-    // log only when the request actually mutates state).
+    // S4-1 (2026-05-19, HEP-CORE-0030 amendment): sender-must-be-member
+    // gate.  Pre-fix the handler always returned `status: success`
+    // even when the sender wasn't actually in the band — the
+    // `was_member` flag was used only for the INFO log gate, not the
+    // response shape.  That violates the broker-authority principle:
+    // the role-side bookkeeping cannot mirror a truth the broker
+    // hides.  Now a `LEAVE` from a non-member returns typed
+    // `NOT_A_MEMBER` so the role-side `band_leave` on `{status:
+    // error}` can erase its stale `band_index_` entry.
     bool was_member = false;
     if (auto pre = hub_state_->band(band); pre.has_value())
     {
@@ -4606,11 +4610,18 @@ nlohmann::json BrokerServiceImpl::handle_band_leave_req(
             if (m.role_uid == role_uid) { was_member = true; break; }
         }
     }
-    hub_state_->_on_band_left(band, role_uid);
-    if (was_member)
+    if (!was_member)
     {
-        LOGGER_INFO("Broker: BAND_LEAVE '{}' role='{}'", band, role_uid);
+        LOGGER_WARN("Broker: BAND_LEAVE_REQ from '{}' rejected — not a "
+                    "member of band '{}' (HEP-CORE-0030 §5.1 "
+                    "membership rule)",
+                    role_uid, band);
+        return make_error("", "NOT_A_MEMBER",
+                          "Sender '" + role_uid + "' is not a member "
+                          "of band '" + band + "'");
     }
+    hub_state_->_on_band_left(band, role_uid);
+    LOGGER_INFO("Broker: BAND_LEAVE '{}' role='{}'", band, role_uid);
 
     nlohmann::json resp;
     resp["status"] = "success";
@@ -4655,21 +4666,48 @@ void BrokerServiceImpl::handle_band_broadcast_req(
         return;
     }
 
+    // S4-2 (2026-05-19, HEP-CORE-0030 amendment): sender-must-be-member
+    // gate on broadcast.  Pre-fix, the handler fanned out the
+    // broadcast to all members regardless of whether the sender was
+    // actually a member of the band — accepting broadcasts from
+    // non-members.  That undermines the broker-authority principle:
+    // membership rules don't apply uniformly across band ops.  Now
+    // a non-member's BAND_BROADCAST_REQ is dropped + WARN'd.
+    // Fire-and-forget so no reply is emitted; operators see the WARN.
+    auto band = hub_state_->band(band_name);
+    if (!band.has_value())
+    {
+        LOGGER_WARN("Broker: BAND_BROADCAST_REQ dropped — band '{}' "
+                    "does not exist (sender uid='{}')",
+                    band_name, role_uid);
+        return;
+    }
+    bool sender_is_member = false;
+    for (const auto& m : band->members)
+    {
+        if (m.role_uid == role_uid) { sender_is_member = true; break; }
+    }
+    if (!sender_is_member)
+    {
+        LOGGER_WARN("Broker: BAND_BROADCAST_REQ dropped — sender '{}' "
+                    "is not a member of band '{}' (HEP-CORE-0030 §5.2 "
+                    "sender-must-be-member rule)",
+                    role_uid, band_name);
+        return;
+    }
+
     nlohmann::json notify;
     notify["band"]      = band_name;
     notify["role_uid"]  = role_uid;
     notify["body"]      = req.value("body", nlohmann::json::object());
 
     std::size_t recipients = 0;
-    if (auto band = hub_state_->band(band_name); band.has_value())
+    for (const auto& m : band->members)
     {
-        for (const auto& m : band->members)
-        {
-            if (m.role_uid == role_uid) continue;
-            if (m.zmq_identity.empty()) continue;
-            send_to_identity(socket, m.zmq_identity, "BAND_BROADCAST_NOTIFY", notify);
-            ++recipients;
-        }
+        if (m.role_uid == role_uid) continue;
+        if (m.zmq_identity.empty()) continue;
+        send_to_identity(socket, m.zmq_identity, "BAND_BROADCAST_NOTIFY", notify);
+        ++recipients;
     }
 
     LOGGER_DEBUG("Broker: BAND_BROADCAST '{}' from '{}' ->{} recipients",

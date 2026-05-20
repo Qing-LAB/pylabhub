@@ -62,6 +62,11 @@ py::object ProducerAPI::band_members(const std::string &channel)
     return py::module_::import("json").attr("loads")(result->dump());
 }
 
+bool ProducerAPI::is_in_band(const std::string &channel) const
+{
+    return base_->is_in_band(channel);
+}
+
 py::dict ProducerAPI::metrics() const
 {
     // S5: was `json.loads(j.dump())` round-trip — replaced with the
@@ -249,6 +254,7 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_producer, m) // NOLINT
         .def("band_broadcast",    &producer::ProducerAPI::band_broadcast,
              py::arg("channel"), py::arg("body"))
         .def("band_members",      &producer::ProducerAPI::band_members, py::arg("channel"))
+        .def("is_in_band",        &producer::ProducerAPI::is_in_band, py::arg("channel"))
         .def("script_error_count", &producer::ProducerAPI::script_error_count)
         .def("out_slots_written",  &producer::ProducerAPI::out_slots_written)
         .def("out_drop_count",     &producer::ProducerAPI::out_drop_count)
