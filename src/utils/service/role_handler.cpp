@@ -277,11 +277,16 @@ void RoleHandler::on_band_left(const std::string &band_name) noexcept
     band_index_.erase(band_name);
 }
 
-std::size_t RoleHandler::mark_connection_disconnected(
+bool RoleHandler::is_in_band(const std::string &band_name) const noexcept
+{
+    return band_index_.find(band_name) != band_index_.end();
+}
+
+RoleHandler::DisconnectReap RoleHandler::mark_connection_disconnected(
     const HubConnection *dead_conn) noexcept
 {
-    if (dead_conn == nullptr) return 0;
-    std::size_t n_transitioned = 0;
+    DisconnectReap reap;
+    if (dead_conn == nullptr) return reap;
     for (auto &p : presences_)
     {
         if (p.connection != dead_conn) continue;
@@ -321,9 +326,28 @@ std::size_t RoleHandler::mark_connection_disconnected(
         // both simpler and semantically correct.
         p.registration_state.store(RegistrationState::Deregistered,
                                     std::memory_order_release);
-        ++n_transitioned;
+        ++reap.presences_transitioned;
     }
-    return n_transitioned;
+    // S4-5 (2026-05-19, HEP-CORE-0030 amendment): band routing also
+    // mirrors connection liveness.  Any band_index_ entry whose
+    // Presence sits on the dead connection is stale — erase it and
+    // hand the band name back to the caller so an
+    // `on_band_lost(band, "hub_dead")` notification can fire (caller
+    // dispatches; this method just collects).
+    for (auto it = band_index_.begin(); it != band_index_.end(); )
+    {
+        Presence *p = it->second;
+        if (p != nullptr && p->connection == dead_conn)
+        {
+            reap.bands_lost.push_back(it->first);
+            it = band_index_.erase(it);
+        }
+        else
+        {
+            ++it;
+        }
+    }
+    return reap;
 }
 
 const Presence *

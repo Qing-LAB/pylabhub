@@ -328,6 +328,7 @@ class LuaEngine : public ScriptEngine
     static int lua_api_band_leave(lua_State *L);
     static int lua_api_band_broadcast(lua_State *L);
     static int lua_api_band_members(lua_State *L);
+    static int lua_api_is_in_band(lua_State *L);
 
     // ── Group F: schema sizes + spinlocks (SHM-only) ──────────────────
     static int lua_api_slot_logical_size(lua_State *L);

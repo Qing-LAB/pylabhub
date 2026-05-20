@@ -81,6 +81,10 @@ class ProducerAPI
     void band_broadcast(const std::string &channel, py::dict body);
     py::object band_members(const std::string &channel);
 
+    /// HEP-CORE-0030 amendment 2026-05-19 (S4): role's cached view of
+    /// own band membership.  See RoleAPIBase::is_in_band.
+    bool is_in_band(const std::string &channel) const;
+
     py::object open_inbox(const std::string &target_uid);
     bool wait_for_role(const std::string &uid, int timeout_ms = 5000);
     void clear_inbox_cache();

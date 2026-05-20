@@ -292,6 +292,12 @@ class PYLABHUB_UTILS_EXPORT RoleHandler
     /// band is not indexed (no-op).
     void on_band_left(const std::string &band_name) noexcept;
 
+    /// Local introspection: does `band_index_` currently have an
+    /// entry for @p band_name?  HEP-CORE-0030 amendment 2026-05-19
+    /// (S4): role's cached view of its own membership.  See
+    /// `RoleAPIBase::is_in_band` for the script-facing wrapper.
+    [[nodiscard]] bool is_in_band(const std::string &band_name) const noexcept;
+
     /// Audit R3.3 (2026-05-17) — transition every Presence whose
     /// `connection` field matches @p dead_conn from
     /// `Registered`/`RegRequestPending` to `Deregistered`.  Called
@@ -302,10 +308,24 @@ class PYLABHUB_UTILS_EXPORT RoleHandler
     /// local FSM should mirror that truth instead of claiming
     /// `Registered` against a dead broker.
     ///
-    /// Returns the number of presences transitioned (for log /
-    /// telemetry purposes).  Safe to call multiple times — already-
-    /// Deregistered or Unregistered presences are skipped.
-    std::size_t mark_connection_disconnected(
+    /// Returns the disconnect summary:
+    ///   - `presences_transitioned`: count of Presence rows whose
+    ///     `registration_state` went to `Deregistered` (Registered →
+    ///     Deregistered, RegRequestPending → Deregistered).
+    ///   - `bands_lost`: names of bands whose routing pointed at a
+    ///     presence on the dead connection — their `band_index_`
+    ///     entries are erased (S4-5 / HEP-CORE-0030 amendment
+    ///     2026-05-19: role-side band routing mirrors connection
+    ///     liveness).  Caller dispatches an `on_band_lost(band,
+    ///     "hub_dead")` notification per name so scripts can react.
+    /// Safe to call multiple times — already-Deregistered presences
+    /// are skipped; already-erased band entries are no-ops.
+    struct DisconnectReap
+    {
+        std::size_t              presences_transitioned{0};
+        std::vector<std::string> bands_lost;
+    };
+    DisconnectReap mark_connection_disconnected(
         const HubConnection *dead_conn) noexcept;
 
     /// Extract the originating Presence from an inbound notification

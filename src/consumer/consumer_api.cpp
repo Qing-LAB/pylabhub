@@ -59,6 +59,11 @@ py::object ConsumerAPI::band_members(const std::string &channel)
     return py::module_::import("json").attr("loads")(result->dump());
 }
 
+bool ConsumerAPI::is_in_band(const std::string &channel) const
+{
+    return base_->is_in_band(channel);
+}
+
 py::dict ConsumerAPI::metrics() const
 {
     // S5: was `json.loads(j.dump())` round-trip — replaced with the
@@ -223,6 +228,7 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_consumer, m) // NOLINT
         .def("band_broadcast",    &ConsumerAPI::band_broadcast,
              py::arg("channel"), py::arg("body"))
         .def("band_members",      &ConsumerAPI::band_members, py::arg("channel"))
+        .def("is_in_band",        &ConsumerAPI::is_in_band, py::arg("channel"))
         .def("script_error_count", &ConsumerAPI::script_error_count)
         .def("in_slots_received",  &ConsumerAPI::in_slots_received)
         .def("loop_overrun_count", &ConsumerAPI::loop_overrun_count)

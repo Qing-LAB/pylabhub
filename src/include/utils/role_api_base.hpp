@@ -309,6 +309,17 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     [[nodiscard]] std::optional<nlohmann::json>
     band_members(const std::string &channel);
 
+    /// Local introspection: returns true iff the role-side
+    /// `band_index_` currently has a routing entry for @p channel.
+    /// This is the role's CACHED view of its own membership — it
+    /// reflects the last successful `band_join` / `band_leave`
+    /// outcome (and any `on_band_lost` clearing on hub-dead).
+    /// HEP-CORE-0030 amendment 2026-05-19 (S4): scripts use this to
+    /// branch on "should I attempt to join?" / "do I think I'm in?"
+    /// without a broker round-trip.  For authoritative
+    /// broker-side membership use `band_members(channel)`.
+    [[nodiscard]] bool is_in_band(const std::string &channel) const noexcept;
+
     // ── Inbox client management ───────────────────────────────────────────────
 
     struct InboxOpenResult
