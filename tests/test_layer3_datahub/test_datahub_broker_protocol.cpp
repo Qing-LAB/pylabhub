@@ -251,6 +251,17 @@ TEST_F(BrokerProtocolTest, WireConformance_BandAck_Shapes)
     ExpectWorkerOk(w);
 }
 
+// Audit M1 (2026-05-20) — BAND_JOIN/LEAVE ACK + ERROR must echo
+// `correlation_id` (broker_proto 5 contract; broker-side fix in
+// commit `d759424`).  Raw-ZMQ test because BRC matches by message
+// type today, not by corr_id.
+TEST_F(BrokerProtocolTest, WireConformance_Band_CorrIdEcho)
+{
+    auto w = SpawnWorker(
+        "broker_protocol.wire_conformance_band_corr_id_echo");
+    ExpectWorkerOk(w);
+}
+
 // Audit R3.6 (2026-05-17) — `WireConformance_ChannelNotifyReq_FederationRelay`
 // retired.  When I tried to add a regression test for the broker's
 // `handle_channel_notify_req` (which O1 left in place "for federation

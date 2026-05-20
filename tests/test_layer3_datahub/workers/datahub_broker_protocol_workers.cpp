@@ -63,6 +63,25 @@
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
+// Forward declaration — `raw_req` is defined in
+// `datahub_broker_workers.cpp` (same `test_layer3_datahub` binary).
+// Used by `wire_conformance_band_corr_id_echo` to send BAND_*_REQ
+// messages with explicit `correlation_id` payloads.  BRC's
+// `do_request` matches replies by message-type today (NOT by
+// correlation_id), so a BRC-based test cannot exercise the
+// echo path — we need raw-ZMQ to inject corr_id and observe the
+// broker's echo.  Closes M1 finding from the 2026-05-20 review
+// of commit `d759424` ("Review A1+B1: ... broker corr_id
+// thread-through").
+namespace pylabhub::tests::worker::broker
+{
+nlohmann::json raw_req(const std::string& endpoint,
+                       const std::string& msg_type,
+                       const nlohmann::json& payload,
+                       int timeout_ms = 2000,
+                       const std::string& server_pubkey = "");
+}
+
 using namespace pylabhub::utils;
 using namespace pylabhub::hub;
 using namespace pylabhub::broker;
@@ -1618,6 +1637,140 @@ int wire_conformance_band_ack_shapes()
         });
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Audit M1 (2026-05-20): BAND_JOIN_ACK / BAND_LEAVE_ACK + ERROR replies on
+// the BAND paths must echo the request's `correlation_id` (broker_proto 5
+// contract; broker-side fix in commit `d759424`).  BRC's `do_request`
+// doesn't currently inject `correlation_id` into outgoing requests
+// (matches by message-type), so this test bypasses BRC and uses raw
+// ZMQ to drive the explicit-corr_id path that other clients (admin
+// tools, federation peers, future BRC versions) rely on.
+//
+// Pins three echo cases:
+//   1. BAND_JOIN_ACK success — corr_id in body matches request.
+//   2. BAND_LEAVE_ACK success — corr_id in body matches request.
+//   3. BAND_LEAVE error (NOT_A_MEMBER) — corr_id in body matches request.
+//
+// Plus a backward-compat case: when the request omits corr_id, the
+// reply must NOT carry an empty corr_id field (matches `make_error`'s
+// `!correlation_id.empty()` gate at `broker_service.cpp:3662`).
+// ──────────────────────────────────────────────────────────────────────────────
+int wire_conformance_band_corr_id_echo()
+{
+    return run_with_host(
+        "broker_protocol::wire_conformance_band_corr_id_echo",
+        [](std::optional<HubHostHandle> &broker, LogCaptureFixture &lcf) {
+            using namespace pylabhub::tests::wire;
+            // Case 3 below deliberately drives the broker's
+            // `NOT_A_MEMBER` rejection path, which emits a WARN.
+            // Whitelist it via the LogCaptureFixture allowlist so the
+            // intentional log doesn't fail the test.
+            lcf.ExpectLogWarn("not a member of band");
+
+            const std::string channel = pid_chan("tr1.bandcorr");
+            const std::string uid     = "prod." + channel;
+            const std::string role_nm = channel;
+            const std::string band    = "!" + pid_chan("tr1.bcorr");
+
+            // Register via BRC so the role_uid + role_name are valid
+            // wire-grammar tokens and the broker has admitted the
+            // producer.  BAND_JOIN handler only validates grammar /
+            // side-aware tag, not registration, but registering keeps
+            // the test path symmetric with realistic usage.
+            BrcHandle bh;
+            bh.start(broker->endpoint, broker->pubkey, uid);
+            ASSERT_TRUE(bh.brc.register_channel(
+                make_reg_opts(channel, uid), 3000).has_value())
+                << "REG_REQ setup failed";
+
+            // ── Case 1: BAND_JOIN success echoes corr_id ─────────────
+            const std::string join_corr = "test.band.join.corr.001";
+            nlohmann::json join_req;
+            join_req["band"]           = band;
+            join_req["role_uid"]       = uid;
+            join_req["role_name"]      = role_nm;
+            join_req["correlation_id"] = join_corr;
+            auto join_resp = ::pylabhub::tests::worker::broker::raw_req(
+                broker->endpoint, "BAND_JOIN_REQ", join_req, 3000,
+                broker->pubkey);
+            ASSERT_FALSE(join_resp.is_null())
+                << "BAND_JOIN_REQ timed out";
+            ASSERT_EQ(join_resp.value("status", std::string{}), "success")
+                << "BAND_JOIN_REQ failed; body=" << join_resp.dump();
+            ASSERT_TRUE(join_resp.contains("correlation_id"))
+                << "BAND_JOIN_ACK missing correlation_id field "
+                   "(broker_proto 5 contract; broker_service.cpp B1 fix); "
+                   "body=" << join_resp.dump();
+            EXPECT_EQ(join_resp.at("correlation_id").get<std::string>(),
+                      join_corr)
+                << "BAND_JOIN_ACK echoed wrong correlation_id";
+
+            // ── Case 2: BAND_LEAVE success echoes corr_id ────────────
+            const std::string leave_corr = "test.band.leave.corr.002";
+            nlohmann::json leave_req;
+            leave_req["band"]           = band;
+            leave_req["role_uid"]       = uid;
+            leave_req["correlation_id"] = leave_corr;
+            auto leave_resp = ::pylabhub::tests::worker::broker::raw_req(
+                broker->endpoint, "BAND_LEAVE_REQ", leave_req, 3000,
+                broker->pubkey);
+            ASSERT_FALSE(leave_resp.is_null())
+                << "BAND_LEAVE_REQ timed out";
+            ASSERT_EQ(leave_resp.value("status", std::string{}), "success")
+                << "BAND_LEAVE_REQ failed; body=" << leave_resp.dump();
+            ASSERT_TRUE(leave_resp.contains("correlation_id"))
+                << "BAND_LEAVE_ACK missing correlation_id; body="
+                << leave_resp.dump();
+            EXPECT_EQ(leave_resp.at("correlation_id").get<std::string>(),
+                      leave_corr)
+                << "BAND_LEAVE_ACK echoed wrong correlation_id";
+
+            // ── Case 3: BAND_LEAVE NOT_A_MEMBER error echoes corr_id ─
+            // The role left successfully in Case 2; another LEAVE
+            // must produce typed `NOT_A_MEMBER` (HEP-CORE-0030 S4
+            // amendment).  The error path must also carry corr_id.
+            const std::string err_corr = "test.band.leave.err.corr.003";
+            nlohmann::json leave_req_err;
+            leave_req_err["band"]           = band;
+            leave_req_err["role_uid"]       = uid;
+            leave_req_err["correlation_id"] = err_corr;
+            auto err_resp = ::pylabhub::tests::worker::broker::raw_req(
+                broker->endpoint, "BAND_LEAVE_REQ", leave_req_err, 3000,
+                broker->pubkey);
+            ASSERT_FALSE(err_resp.is_null())
+                << "BAND_LEAVE_REQ (error path) timed out";
+            ASSERT_EQ(err_resp.value("status", std::string{}), "error");
+            EXPECT_EQ(err_resp.value("error_code", std::string{}),
+                      "NOT_A_MEMBER");
+            ASSERT_TRUE(err_resp.contains("correlation_id"))
+                << "BAND_LEAVE error reply missing correlation_id; body="
+                << err_resp.dump();
+            EXPECT_EQ(err_resp.at("correlation_id").get<std::string>(),
+                      err_corr)
+                << "BAND_LEAVE error reply echoed wrong correlation_id";
+
+            // ── Case 4: backward compat — no corr_id in req → none in ACK ──
+            // Re-join (no corr_id), verify ACK lacks the field rather
+            // than carrying an empty one.  `make_error` + the success
+            // echo are both gated on `!corr_id.empty()`.
+            nlohmann::json rejoin_req;
+            rejoin_req["band"]      = band;
+            rejoin_req["role_uid"]  = uid;
+            rejoin_req["role_name"] = role_nm;
+            auto rejoin = ::pylabhub::tests::worker::broker::raw_req(
+                broker->endpoint, "BAND_JOIN_REQ", rejoin_req, 3000,
+                broker->pubkey);
+            ASSERT_FALSE(rejoin.is_null())
+                << "BAND_JOIN_REQ (no-corr-id) timed out";
+            ASSERT_EQ(rejoin.value("status", std::string{}), "success");
+            EXPECT_FALSE(rejoin.contains("correlation_id"))
+                << "BAND_JOIN_ACK must not carry correlation_id when "
+                   "the request omitted it; body=" << rejoin.dump();
+
+            bh.stop();
+        });
+}
+
 } // namespace broker_protocol
 } // namespace pylabhub::tests::worker
 
@@ -1697,6 +1850,8 @@ struct BrokerProtocolRegistrar
                     return wire_conformance_role_info_ack_shape();
                 if (sc == "wire_conformance_band_ack_shapes")
                     return wire_conformance_band_ack_shapes();
+                if (sc == "wire_conformance_band_corr_id_echo")
+                    return wire_conformance_band_corr_id_echo();
                 // R3.6 retired — handler deleted, no test path
                 return -1;
             });

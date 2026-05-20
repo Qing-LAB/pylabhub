@@ -182,12 +182,19 @@ BrokerHandle start_broker_in_thread(BrokerService::Config cfg)
     return h;
 }
 
+} // anonymous namespace
+
 // -----------------------------------------------------------------------------
 // raw_req: Sends a two-frame [msg_type, payload_json] to a DEALER socket and
 // returns the parsed response body JSON.  Optionally enables CurveZMQ when
 // server_pubkey is a 40-char Z85 string.
 //
 // Returns {} (null JSON) on timeout or receive error.
+//
+// Lifted out of the anonymous namespace 2026-05-20 (audit M1 follow-up)
+// so `datahub_broker_protocol_workers.cpp` can use it via forward
+// declaration without copying the body.  Reachable as
+// `pylabhub::tests::worker::broker::raw_req`.
 // -----------------------------------------------------------------------------
 nlohmann::json raw_req(const std::string& endpoint,
                        const std::string& msg_type,
@@ -253,6 +260,9 @@ nlohmann::json raw_req(const std::string& endpoint,
         return {};
     }
 }
+
+namespace
+{
 
 // Hex string of N zero bytes (for use as a schema_hash in JSON payloads).
 std::string zero_hex(size_t bytes = 32)
