@@ -339,7 +339,27 @@ int endpoint_update_reflected_in_discovery()
             ASSERT_TRUE(reg.has_value());
 
             bh.brc.send_heartbeat(channel, uid, "producer", {});
-            bh.brc.send_endpoint_update(channel, "zmq_node", updated_ep);
+
+            // ENDPOINT_UPDATE_REQ is Sync Request/Response per
+            // HEP-CORE-0007 §12.2.1 + HEP-CORE-0021 §16.3.  The
+            // broker mutates ProducerEntry.zmq_node_endpoint before
+            // emitting ENDPOINT_UPDATE_ACK — the ACK is a durability
+            // barrier.  After this call returns success, any
+            // subsequent DISC_REQ from any client is guaranteed to
+            // observe the updated endpoint.
+            //
+            // Pre-2026-05-21 this was a fire-and-forget cmd_queue
+            // push.  The flaky failure traced to a race where the
+            // consumer's discover_channel below could land on the
+            // broker before the broker had applied the producer's
+            // update; that race is eliminated by the sync wait.
+            auto upd = bh.brc.send_endpoint_update(channel, "zmq_node",
+                                                   updated_ep, 2000);
+            ASSERT_TRUE(upd.has_value())
+                << "ENDPOINT_UPDATE_REQ timed out / no reply from broker";
+            ASSERT_EQ(upd->value("status", ""), "success")
+                << "ENDPOINT_UPDATE_REQ returned non-success: "
+                << upd->dump();
 
             BrcHandle cons_bh;
             cons_bh.start(host.broker_endpoint(), host.broker_pubkey(),

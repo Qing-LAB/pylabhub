@@ -773,15 +773,26 @@ void BrokerRequestComm::send_checksum_error(const nlohmann::json &report)
     pImpl->cmd_queue.push(SendCmd{"CHECKSUM_ERROR_REPORT", report});
 }
 
-void BrokerRequestComm::send_endpoint_update(const std::string &channel,
-                                                  const std::string &key,
-                                                  const std::string &endpoint)
+std::optional<nlohmann::json>
+BrokerRequestComm::send_endpoint_update(const std::string &channel,
+                                         const std::string &endpoint_type,
+                                         const std::string &endpoint,
+                                         int timeout_ms)
 {
+    // Sync REQ/REP per HEP-CORE-0007 §12.2.1 + HEP-CORE-0021 §16.3.
+    // Broker handler (broker_service.cpp:handle_endpoint_update_req)
+    // mutates `ProducerEntry.zmq_node_endpoint` before emitting
+    // ENDPOINT_UPDATE_ACK — the ACK is therefore a durability barrier.
+    // Pre-2026-05-21 this was `cmd_queue.push(...) → void`, dropping
+    // the ACK and exposing a race where a consumer's DISC_REQ could
+    // arrive at the broker before the producer's update had been
+    // applied.  See header doc for the caller contract.
     nlohmann::json payload;
-    payload["channel_name"] = channel;
-    payload["endpoint_type"] = key;
-    payload["endpoint"] = endpoint;
-    pImpl->cmd_queue.push(SendCmd{"ENDPOINT_UPDATE_REQ", std::move(payload)});
+    payload["channel_name"]  = channel;
+    payload["endpoint_type"] = endpoint_type;
+    payload["endpoint"]      = endpoint;
+    return pImpl->do_request("ENDPOINT_UPDATE_REQ", "ENDPOINT_UPDATE_ACK",
+                              std::move(payload), timeout_ms);
 }
 
 // ============================================================================
