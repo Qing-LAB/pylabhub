@@ -94,9 +94,13 @@ extern "C" PLH_EXPORT bool on_produce(const plh_tx_t *tx)
         g_stopped = true;
         if (g_ctx && g_ctx->log)
             g_ctx->log(g_ctx, PLH_LOG_INFO,
-                       "NativeProd reached target — calling set_critical_error to stop");
-        if (g_ctx && g_ctx->set_critical_error)
-            g_ctx->set_critical_error(g_ctx, "NativeProd reached SLOT_TARGET");
+                       "NativeProd reached target — calling request_stop() for clean exit");
+        // request_stop() = "done with work, stop cleanly".
+        // set_critical_error(msg) is reserved for actual unrecoverable
+        // failures (emits [ERROR] log line by design).  Doc gap finding
+        // 2026-05-21 — to be documented in README_NativePlugins.md.
+        if (g_ctx && g_ctx->request_stop)
+            g_ctx->request_stop(g_ctx);
     }
     return true;
 }

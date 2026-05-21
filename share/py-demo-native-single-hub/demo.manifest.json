@@ -42,9 +42,7 @@
   ],
 
   "expected_warnings": [],
-  "expected_errors":   [
-    "CRITICAL: NativeProd reached SLOT_TARGET"
-  ],
+  "expected_errors":   [],
 
   "evaluators": [
     {"type": "all_processes_started"},
