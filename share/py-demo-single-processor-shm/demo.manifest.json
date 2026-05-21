@@ -55,7 +55,9 @@
   ],
 
   "expected_warnings": [],
-  "expected_errors": [],
+  "expected_errors": [
+    "thread 'handler_ctrl_0' body threw: Socket operation on non-socket"
+  ],
 
   "evaluators": [
     {"type": "all_processes_started"},

@@ -56,7 +56,18 @@ def on_stop(api) -> None:
     elapsed = max(time.time() - _t0, 1e-9)
     rate = _received / elapsed
     mib  = _received * SLOT_BYTES_IN / (1024 * 1024) / elapsed
+    m = api.metrics()
+    loop = m.get("loop", {}) or {}
+    q    = m.get("queue", {}) or {}
+    role = m.get("role", {}) or {}
+    iters = loop.get("iteration_count", 0)
     api.log("info",
             f"DemoConsumer STOPPED total_received={_received} "
             f"avg_rate={rate:.0f} slots/s "
-            f"avg_throughput={mib:.1f} MiB/s")
+            f"avg_throughput={mib:.1f} MiB/s "
+            f"| iters={iters} ({iters/elapsed:.0f}/s) "
+            f"work_us_last={loop.get('last_cycle_work_us','n/a')} "
+            f"acquire_retries={loop.get('acquire_retry_count','n/a')} "
+            f"slot_wait_us_last={q.get('last_slot_wait_us','n/a')} "
+            f"in_received={role.get('in_slots_received','n/a')} "
+            f"last_seq={api.last_seq()}")
