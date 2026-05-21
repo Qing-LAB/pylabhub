@@ -16,15 +16,16 @@ def on_init(api) -> None:
     api.log("info", f"DemoConsumer started uid={api.uid()} channel={api.channel()}")
 
 
-def on_consume(rx, messages, api) -> None:
+def on_consume(rx, messages, api) -> bool:
     global _received
     if rx.slot is None:
-        return
+        return True
     _received += 1
     if _received % 10 == 0:
         api.log("info",
                 f"DemoConsumer received count={rx.slot.count} "
                 f"value={rx.slot.value:.4f} doubled={rx.slot.doubled:.4f}")
+    return True
 
 
 def on_stop(api) -> None:

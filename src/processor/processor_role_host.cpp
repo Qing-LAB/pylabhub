@@ -449,6 +449,11 @@ bool ProcessorRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
     // channel_name / consumer_uid / consumer_name removed from opts —
     // build_rx_queue reads those from RoleAPIBase state.
     hub::RxQueueOptions in_opts;
+    // Audit B5/G21 (2026-05-20, demo-harness discovery): see corresponding
+    // comment in consumer_role_host.cpp.  shm_name = in_channel; the
+    // producer's `ShmQueue::create_writer` takes the channel name as its
+    // first arg, so the SHM block we attach to here lives at that name.
+    in_opts.shm_name             = config_.in_channel();
     in_opts.shm_shared_secret    = config_.in_shm().enabled ? config_.in_shm().secret : 0u;
     in_opts.slot_spec            = in_slot_spec_;       // fields + packing
     in_opts.fz_spec              = core_.in_fz_spec();  // schema-hash match
