@@ -1,0 +1,46 @@
+{
+  "hub": {
+    "name": "DemoHubB",
+    "uid":  "hub.demohubb.uid00000001",
+    "log_level": "info",
+    "auth": { "keyfile": "vault/hub.vault" }
+  },
+  "network": {
+    "broker_endpoint": "tcp://127.0.0.1:5571",
+    "broker_bind":     true,
+    "zmq_io_threads":  1
+  },
+  "admin": {
+    "enabled":        false,
+    "endpoint":       "tcp://127.0.0.1:5601",
+    "token_required": false
+  },
+  "broker": {
+    "heartbeat_interval_ms":   500,
+    "ready_miss_heartbeats":    10,
+    "pending_miss_heartbeats":  10
+  },
+  "federation": {
+    "enabled":            false,
+    "forward_timeout_ms": 2000,
+    "peers":              []
+  },
+  "logging": {
+    "backups":      5,
+    "file_path":    "",
+    "max_size_mb":  10,
+    "timestamped":  true
+  },
+  "state": {
+    "disconnected_grace_ms":     60000,
+    "max_disconnected_entries":   1000
+  },
+  "script": {
+    "type": "python",
+    "path": ""
+  },
+  "loop_timing":          "fixed_rate",
+  "target_period_ms":     1000,
+  "stop_on_script_error": false,
+  "python_venv":          ""
+}

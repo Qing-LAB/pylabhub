@@ -1,0 +1,14 @@
+# Runtime artifacts — same exclusions as single-hub demo
+hub-a/vault/
+hub-a/hub.pubkey
+hub-a/hub.json.lock
+hub-a/logs/
+hub-b/vault/
+hub-b/hub.pubkey
+hub-b/hub.json.lock
+hub-b/logs/
+producer/logs/
+processor/logs/
+consumer/logs/
+logs/
+.runs/
