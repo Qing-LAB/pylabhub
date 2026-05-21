@@ -83,8 +83,12 @@ TEST(BackoffStrategyTest, ThreePhase_Phase1_Yield)
     {
         uint64_t time_us = measure_backoff_time_us(backoff, i);
         // Phase 1 should be very fast (just yield, no intentional sleep).
-        // Allow up to 20ms: OS scheduler can delay even a yield() significantly.
-        EXPECT_LT(time_us, 20000u) << "Iteration " << i << " too long for Phase 1 (yield)";
+        // Allow up to 20ms baseline; CI runners can spike under load —
+        // ci_upper() applies the 10x relaxation when PYLABHUB_CI_BUILD
+        // is set (auto-detected from CI=1 / GITHUB_ACTIONS=1 in
+        // tests/CMakeLists.txt).
+        EXPECT_LT(time_us, ci_upper(20000u))
+            << "Iteration " << i << " too long for Phase 1 (yield)";
     }
 }
 
@@ -95,7 +99,11 @@ TEST(BackoffStrategyTest, ThreePhase_Phase2_Microsleep)
     {
         uint64_t time_us = measure_backoff_time_us(backoff, i);
         // Phase 2 should sleep ~1us; OS timer resolution may vary.
-        EXPECT_LT(time_us, 5000u) << "Iteration " << i << " too long for Phase 2 (1us sleep)";
+        // ci_upper() relaxes the upper bound 10x under CI to absorb
+        // scheduler stalls (a 5ms baseline becomes 50ms on CI).
+        // Flaky-failure report 2026-05-21 motivated this.
+        EXPECT_LT(time_us, ci_upper(5000u))
+            << "Iteration " << i << " too long for Phase 2 (1us sleep)";
     }
 }
 
