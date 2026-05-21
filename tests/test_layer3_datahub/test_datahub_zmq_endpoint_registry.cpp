@@ -48,3 +48,25 @@ TEST_F(ZmqEndpointRegistryTest, EndpointUpdate_ReflectedInDiscovery)
         "zmq_endpoint_registry.endpoint_update_reflected_in_discovery");
     ExpectWorkerOk(w);
 }
+
+// ── ENDPOINT_UPDATE error-path coverage (HEP-CORE-0021 §16.3 contract) ──
+// The happy-path test above (EndpointUpdate_ReflectedInDiscovery) pins
+// the sync REQ/REP success branch.  The two below pin the typed-error
+// branches: BRC's send_endpoint_update returns a value-with-error (not
+// nullopt) when the broker rejects, and the error_code is the typed
+// one the HEP claims.  Mutation-sweep verified (flipping the broker
+// to apply the rejected update would make these tests fail).
+
+TEST_F(ZmqEndpointRegistryTest, EndpointUpdate_NonProducer_ReturnsError)
+{
+    auto w = SpawnWorker(
+        "zmq_endpoint_registry.endpoint_update_non_producer_returns_error");
+    ExpectWorkerOk(w);
+}
+
+TEST_F(ZmqEndpointRegistryTest, EndpointUpdate_PortZero_ReturnsError)
+{
+    auto w = SpawnWorker(
+        "zmq_endpoint_registry.endpoint_update_port_zero_returns_error");
+    ExpectWorkerOk(w);
+}
