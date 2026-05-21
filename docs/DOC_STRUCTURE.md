@@ -199,6 +199,35 @@ Some documents may temporarily exist in the root `docs/` directory during active
    - Pointer to the archive folder and its README
    - Optionally, copy or summarize the merge map
 
+### 2.1.1 Periodic TODO quality check (MANDATORY)
+
+Every subtopic TODO under `docs/todo/` (and `docs/TODO_MASTER.md`)
+must be reviewed and trimmed at a regular cadence — at minimum at
+the end of every sprint / major commit batch.  The check:
+
+1. Identify completed items.  Verify by reading **actual code + log**,
+   not by trusting commit messages or "✅ FIXED" markers in the doc.
+2. Archive the completed-item content to
+   `docs/archive/transient-YYYY-MM-DD/` (per §2.1) or, when the work
+   is fully captured in git history alone, simply delete the section
+   — git preserves it, the TODO file should not.
+3. Update `docs/DOC_ARCHIVE_LOG.md` with a short merge map: what
+   moved where, what was trimmed in place.
+4. **Result: each subtopic TODO contains ONLY open items + necessary
+   context to act on them.**  No "Recent Completions" walls.  No
+   dated "Closed" subsections piling up.
+
+**Why.**  Finished items dragged in TODOs for too long blur what
+remains to focus on.  The TODO directory is *for what to do, not
+what has been done*.  Git is the authoritative historical record;
+the live TODO file is the working surface — short, current,
+actionable.
+
+**Trigger heuristics.**  A TODO file that exceeds ~300 lines and
+contains any section dated > 1 month ago is almost certainly
+overdue for a quality check.  When you see one, file the cleanup
+as a task (or do it inline) rather than continuing to add to it.
+
 ### 2.2 Special Cases
 
 **Code review reports:** When a module-targeted review is completed and all follow-ups are addressed, move the review document from `docs/code_review/` to archive and record in DOC_ARCHIVE_LOG. Core findings should be merged into IMPLEMENTATION_GUIDANCE or other guidance documents.
