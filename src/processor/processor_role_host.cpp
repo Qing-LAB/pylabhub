@@ -21,7 +21,6 @@
 #include "utils/thread_manager.hpp"
 #include "service/cycle_ops.hpp"
 #include "service/data_loop.hpp"
-#include "utils/broker_request_comm.hpp"
 #include "processor_fields.hpp"
 
 #include "plh_datahub.hpp"

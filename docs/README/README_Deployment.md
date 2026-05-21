@@ -1040,6 +1040,18 @@ api.set_verify_checksum(enable)   # only meaningful with checksum="manual"
 api.spinlock(idx)            # → context manager; GIL released during wait
 api.spinlock_count()         # → int (0 for ZMQ)
 
+# Schema introspection
+api.slot_logical_size(side=None)     # → int bytes (logical C struct size)
+api.flexzone_logical_size(side=None) # → int bytes (0 if no flexzone)
+                                     # `side` arg required for processor
+                                     # (api.Tx or api.Rx); omit for
+                                     # single-direction roles
+api.stop_reason()                    # → str: 'running', 'channel_closed',
+                                     # 'hub_dead', 'script_requested',
+                                     # 'critical_error', 'sigterm', etc.
+api.clear_inbox_cache()              # drop cached InboxClient handles
+                                     # (forces re-open on next open_inbox)
+
 # Flexzone (HEP-CORE-0019 §8.4 of this doc + HEP-0011 §"Flexzone")
 api.flexzone(side=None)      # → ctypes struct or None.
                              #   Single-direction roles (producer /
@@ -1095,25 +1107,62 @@ def on_produce(tx, msgs, api):
 
 Consumers see the flexzone as `rx.fz` (zero-copy read-only view).
 
-### 8.5 ZMQ messaging between roles
+### 8.5 Role-to-role messaging (HEP-CORE-0027 inbox + HEP-CORE-0030 band)
 
-Producers and processors can send arbitrary bytes to connected consumers via the
-broker's P2C ZMQ ctrl socket (control plane relay):
+> 🆕 **2026-05-21 — this section rewritten.**  Pre-update revisions
+> described `api.broadcast(data)` / `api.send(identity, data)` /
+> `api.consumers()` for "ZMQ peer messaging via the broker's P2C
+> ctrl socket".  Wave-B M4f (2026-05-16) deleted that ctrl socket;
+> the replacement is now two distinct mechanisms:
+>
+> 1. **Inbox messaging (HEP-CORE-0027)** — typed point-to-point.
+>    Sender knows the receiver's role_uid.  Each role can declare
+>    an inbox with a schema; peers `open_inbox(uid)` and send slot-
+>    shaped messages.  Documented in §8.6 below.
+>
+> 2. **Band messaging (HEP-CORE-0030)** — broadcast within a
+>    membership group.  Roles `band_join(name)` (name must start
+>    with `!`); broker is authoritative on membership; broadcasts
+>    fan out to every band member except the sender.  Use this
+>    for coordination signals (e.g. "drain" in the single-hub demo).
+>
+> Pick inbox when sender knows receiver's identity; pick band
+> when the sender just wants "everyone subscribed should hear
+> this."
+
+#### Band quick example
 
 ```python
+SHUTDOWN_BAND = "!demo.shutdown"
+_joined = False
+
+def on_init(api):
+    # CANNOT call api.band_join here — handler not yet up.
+    # See HEP-CORE-0011 §"API availability per callback".
+    pass
+
 def on_produce(tx, msgs, api):
-    # Broadcast to all connected consumers
-    api.broadcast(b"heartbeat")
-
-    # Send to one specific consumer
-    for cid in api.consumers():
-        api.send(cid, b"hello")
-
-    # Receive messages sent by consumers
-    for sender, data in msgs:
-        print(f"from {sender}: {data}")
+    global _joined
+    if not _joined:
+        res = api.band_join(SHUTDOWN_BAND)
+        _joined = (res is not None and res.get("status") == "success")
+    # ... normal slot work ...
     return True
+
+def on_band_message(band, sender, body, api):
+    if band == SHUTDOWN_BAND and body.get("cmd") == "drain":
+        api.log("info", f"drain from {sender} — stopping")
+        api.stop()
 ```
+
+A different role broadcasts:
+
+```python
+api.band_broadcast("!demo.shutdown", {"cmd": "drain"})
+```
+
+`band_broadcast` takes a Python `dict` (serialised as JSON on the
+wire); `on_band_message`'s `body` arrives as a Python dict.
 
 ### 8.6 Inbox — typed peer-to-peer messages
 

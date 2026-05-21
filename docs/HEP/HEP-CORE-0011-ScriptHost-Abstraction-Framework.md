@@ -1228,6 +1228,67 @@ def on_stop(api):
     pass
 ```
 
+### API availability per callback (audit B10, 2026-05-21)
+
+Not every `api.X(...)` method is usable from every callback.  The
+limiting factor is the per-callback init phase (see §"Initialization
+Protocol" Steps 0..14): some APIs depend on machinery that's not
+yet wired when the callback fires.
+
+| API | `on_init` | `on_produce`/`consume`/`process` | `on_stop` | `on_band_*` |
+|---|---|---|---|---|
+| `api.log()`, `api.uid()`, `api.name()`, `api.channel()` | ✓ | ✓ | ✓ | ✓ |
+| `api.script_dir()`, `api.role_dir()`, `api.logs_dir()`, `api.run_dir()` | ✓ | ✓ | ✓ | ✓ |
+| `api.flexzone()` / `api.flexzone(side)` | ✓ | ✓ | ✓ | ✓ |
+| `api.update_flexzone_checksum()` | ✓ | ✓ | ✓ | ✓ |
+| `api.as_numpy(field)` | — (no slot) | ✓ | — (no slot) | — |
+| `api.metrics()` / `api.last_cycle_work_us()` / counters | ✓ (empty pre-loop) | ✓ | ✓ | ✓ |
+| `api.report_metric()` / `api.clear_custom_metrics()` | ✓ | ✓ | ✓ | ✓ |
+| `api.stop()` / `api.set_critical_error()` / `api.critical_error()` | ✓ | ✓ | ✓ | ✓ |
+| `api.spinlock(idx)` (SHM only) | ✓ | ✓ | ✓ | ✓ |
+| **`api.band_join(band)`** | **✗ FAILS SILENTLY** (returns `None` — handler not yet up at Step 5; needs Step 6 `start_handler_threads`) | ✓ | ✓ | ✓ |
+| `api.band_leave(band)` | ✗ same as band_join | ✓ | ✓ | ✓ |
+| `api.band_broadcast(band, dict)` | ✗ same | ✓ | ✓ | ✓ |
+| `api.band_members(band)` / `api.is_in_band(band)` | ✗ same | ✓ | ✓ | ✓ |
+| `api.discover_channel(channel)` | ✗ requires handler | ✓ | ✓ | ✓ |
+| `api.open_inbox(uid)` / `api.wait_for_role(uid, ...)` | ✗ requires handler | ✓ | ✓ | ✓ |
+| `api.notify_channel`, `api.broadcast_channel`, `api.broadcast`, `api.send`, `api.consumers()` | RETIRED (R3.6 / M4f deleted backing infra; see README_Deployment §8.3 banner) |
+
+**Why `on_init` can't use handler-dependent APIs:** the role-host's
+`worker_main_` calls `invoke_on_init` at Step 5, but
+`start_handler_threads` (which connects the BRC pool) runs at
+Step 6.  All "talk to the broker" APIs need a BRC; in `on_init`
+they walk `resolve_bc_for_role()` → `handler_->connections()[0].brc`
+where `handler_` is still `nullptr`, and the call returns
+`std::nullopt`.  The Python binding surfaces that as `None`; the
+script sees no exception — the call simply did nothing.
+
+**Pattern for "join a band as soon as possible":** lazy-init in the
+data callback (gate with a module-level flag):
+
+```python
+_band_joined = False
+
+def on_produce(tx, msgs, api):
+    global _band_joined
+    if not _band_joined:
+        res = api.band_join("!demo.coordination")
+        if res is not None and res.get("status") == "success":
+            _band_joined = True
+        else:
+            api.log("warn", f"band_join failed: {res}")
+            _band_joined = True  # don't retry forever
+    # ... normal slot work ...
+```
+
+See `share/py-demo-single-processor-shm/` for the working example.
+
+**Future code-fix candidates (Audit B10):** either (a) defer
+`band_join` etc. in `RoleAPIBase` so calls made before the handler
+is up enqueue and replay later, or (b) surface a clear error
+(`std::runtime_error("api.band_join: handler not yet up")`) so the
+silent-None failure is impossible.  (b) is the smaller change.
+
 ### Lua
 
 ```lua
