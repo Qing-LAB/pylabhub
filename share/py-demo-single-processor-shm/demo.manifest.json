@@ -1,7 +1,7 @@
 {
   "name": "single-processor-shm",
-  "description": "Single-hub max-rate throughput demo — producer writes 4096-float32 blocks; processor numpy-reduces per slot + updates flexzone running stats + writes processed-out block; consumer reads slot + flexzone.  CURVE via scripted --keygen.",
-  "duration_s": 10,
+  "description": "Single-hub max-rate throughput demo with band-coordinated shutdown.  Producer writes 4096-float32 blocks; processor numpy-reduces per slot + updates flexzone running stats; consumer reads N=20000 slots then broadcasts 'drain' on `!demo.shutdown`.  All three roles api.stop() on the band message (no SIGTERM cascade).",
+  "duration_s": 20,
   "shutdown_signal": "SIGTERM",
   "shutdown_grace_s": 10,
 
@@ -55,9 +55,7 @@
   ],
 
   "expected_warnings": [],
-  "expected_errors": [
-    "thread 'handler_ctrl_0' body threw: Socket operation on non-socket"
-  ],
+  "expected_errors": [],
 
   "evaluators": [
     {"type": "all_processes_started"},
@@ -69,6 +67,12 @@
      "marker": "DemoConsumer STOPPED total_received="},
     {"type": "log_marker_min_count", "process": "consumer",
      "marker": "flexzone running:", "min": 1},
+    {"type": "log_marker_present", "process": "consumer",
+     "marker": "broadcasting 'drain' on '!demo.shutdown'"},
+    {"type": "log_marker_present", "process": "producer",
+     "marker": "DemoProducer received 'drain' on '!demo.shutdown'"},
+    {"type": "log_marker_present", "process": "processor",
+     "marker": "DemoProcessor received 'drain' on '!demo.shutdown'"},
     {"type": "no_unexpected_errors"},
     {"type": "clean_shutdown"}
   ]
