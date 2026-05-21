@@ -22,6 +22,7 @@
 #include "plh_version_registry.hpp"   // ComponentVersions + check_abi (HEP-0032)
 #include "utils/schema_field_layout.hpp"
 #include "utils/role_host_core.hpp"
+#include "utils/hub_api.hpp"          // build_api_(HubAPI&) — B13 fix 2026-05-21
 
 #include <fstream>
 #include <sstream>
@@ -95,6 +96,16 @@ void ctx_request_stop(const PlhNativeContext *ctx)
 {
     if (!ctx || !ctx->_core) return;
     static_cast<RoleHostCore *>(ctx->_core)->request_stop();
+}
+
+// Hub-side variant (audit B13, 2026-05-21).  _core is null for hub
+// scripts; _api holds a HubAPI* and dispatches via the host's
+// shutdown surface.  ctx_request_stop() above can't be reused
+// because it casts _core which is null in hub builds.
+void ctx_request_stop_hub(const PlhNativeContext *ctx)
+{
+    if (!ctx || !ctx->_api) return;
+    static_cast<hub_host::HubAPI *>(ctx->_api)->request_shutdown();
 }
 
 void ctx_set_critical_error(const PlhNativeContext *ctx, const char *msg)
@@ -349,6 +360,35 @@ struct NativeEngine::NativeContextStorage
     void  *rx_fz{nullptr};
     size_t rx_fz_sz{0};
 
+    /// Wire the hub-side context (audit B13, 2026-05-21).  Minimal
+    /// surface: log + identity + request_stop.  Role-side function
+    /// pointers stay nullptr — plugins must defensively null-check
+    /// before invoking anything else (band/slot/metric accessors
+    /// have no meaning on the hub side).
+    void wire_hub(hub_host::HubAPI *api)
+    {
+        assert(api != nullptr && "HubAPI must not be null");
+
+        ctx.role_tag    = "hub";
+        ctx.uid         = uid.c_str();
+        ctx.name        = name.c_str();
+        ctx.channel     = nullptr;
+        ctx.out_channel = nullptr;
+        ctx.log_level   = log_level.c_str();
+        ctx.role_dir    = role_dir.c_str();
+
+        ctx._magic     = PLH_CONTEXT_MAGIC;
+        ctx._magic_end = PLH_CONTEXT_MAGIC;
+        ctx._core      = nullptr;          // no RoleHostCore on hub side
+        ctx._api       = api;              // HubAPI*
+        ctx._log_label = log_label.c_str();
+
+        // Only the engine-agnostic + hub-applicable functions wired.
+        ctx.log          = ctx_log;          // already engine-agnostic
+        ctx.request_stop = ctx_request_stop_hub;
+        // Everything else stays nullptr — plugin null-checks.
+    }
+
     void wire(RoleHostCore *core, RoleAPIBase *api)
     {
         assert(core != nullptr && "RoleHostCore must not be null");
@@ -580,6 +620,60 @@ bool NativeEngine::build_api_(RoleAPIBase &api)
             pylabhub::utils::LoadModule(lifecycle_module_name_.c_str());
             lifecycle_registered_ = true;
             LOGGER_DEBUG("[{}] lifecycle module registered: {}", log_tag_, lifecycle_module_name_);
+        }
+    }
+
+    return true;
+}
+
+// ============================================================================
+// build_api_(HubAPI&) — hub-side surface (audit B13, 2026-05-21)
+// ============================================================================
+//
+// Minimum-viable hub-side native engine support.  Allocates a
+// PlhNativeContext with the hub-flavoured wiring (log + identity +
+// request_stop; role-side function pointers stay nullptr), then
+// invokes the plugin's native_init.  No HubAPI metrics or
+// list/get/query accessors exposed yet — those can be added later
+// as `ctx_*_hub` adapters with the same null-check-and-skip pattern
+// already used for role-side counters.
+//
+// Lifecycle: same as role-side — `native_init` here, `native_finalize`
+// in `finalize_engine_()`, lifecycle module registered once for the
+// timeout-guarded shutdown.
+
+bool NativeEngine::build_api_(hub_host::HubAPI &api)
+{
+    native_ctx_ = std::make_unique<NativeContextStorage>();
+    native_ctx_->uid        = api.uid();
+    native_ctx_->name       = api.name();
+    native_ctx_->log_level  = "info";   // hub doesn't expose per-script level today
+    native_ctx_->log_label  = "[native hub " + lib_path_.filename().string() + "]";
+    native_ctx_->role_dir   = "";       // hub has no per-role dir
+    native_ctx_->wire_hub(&api);
+
+    if (!fn_init_(&native_ctx_->ctx))
+    {
+        LOGGER_ERROR("[{}] native_init returned false (hub-side build_api)",
+                     log_tag_);
+        return false;
+    }
+
+    // Register lifecycle module — same shape as role-side.
+    lifecycle_module_name_ = "NativeEngine:" + lib_path_.filename().string();
+    {
+        pylabhub::utils::ModuleDef mod(lifecycle_module_name_.c_str());
+        mod.add_dependency("pylabhub::utils::Logger");
+        mod.set_startup([](const char *, void *) {}, "");
+        mod.set_shutdown(
+            [](const char *, void *) {},
+            std::chrono::milliseconds{5000});
+        if (pylabhub::utils::RegisterDynamicModule(std::move(mod)))
+        {
+            pylabhub::utils::LoadModule(lifecycle_module_name_.c_str());
+            lifecycle_registered_ = true;
+            LOGGER_DEBUG("[{}] lifecycle module registered (hub): {}",
+                         log_tag_, lifecycle_module_name_);
         }
     }
 
