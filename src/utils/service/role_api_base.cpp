@@ -252,10 +252,21 @@ bool RoleAPIBase::build_tx_queue(const hub::TxQueueOptions &opts)
     std::unique_ptr<hub::QueueWriter> writer;
     if (opts.has_shm && opts.slot_spec.has_schema)
     {
+        // Audit (2026-05-20, demo-harness discovery): the flexzone spec
+        // is OPTIONAL — when no `out_flexzone_schema` is configured
+        // (null in JSON, or omitted entirely), `opts.fz_spec.fields`
+        // is empty.  Pre-fix this passed an empty spec into
+        // `schema_spec_to_zmq_fields`, which throws "fields must not
+        // be empty" and kills the worker thread on startup.  Gate the
+        // conversion: empty fields → empty descriptor vector (the
+        // ShmQueue layer accepts it as "no flexzone allocated").
+        auto fz_fields = opts.fz_spec.fields.empty()
+            ? std::vector<hub::SchemaFieldDesc>{}
+            : hub::schema_spec_to_zmq_fields(opts.fz_spec);
         auto shm = hub::ShmQueue::create_writer(
             tx_channel,
             hub::schema_spec_to_zmq_fields(opts.slot_spec), opts.slot_spec.packing,
-            hub::schema_spec_to_zmq_fields(opts.fz_spec),   opts.fz_spec.packing,
+            std::move(fz_fields),                            opts.fz_spec.packing,
             opts.shm_config.ring_buffer_capacity,
             opts.shm_config.physical_page_size,
             opts.shm_config.shared_secret,

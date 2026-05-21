@@ -186,9 +186,33 @@ void ProcessorRoleHost::worker_main_()
         core_.set_in_fz_spec(hub::SchemaSpec{in_fz_local}, in_fz_size);
     }
 
-    // ── Step 2: Setup infrastructure (no engine dependency) ──────────────────
-    // Skipped in validate-only mode (no broker/queue needed).
+    // ── Step 2a: Wire api_ identity + config (no infrastructure deps) ────────
+    //
+    // api_ was constructed in RoleHostBase::startup_() before the worker
+    // was spawned so its ThreadManager could own this worker thread
+    // (bounded join on teardown). Populate post-ctor state here.
+    //
+    // ORDERING (audit 2026-05-20, demo-harness discovery): the api_ state
+    // wiring MUST happen BEFORE `setup_infrastructure_` because both the
+    // input SHM reader and output SHM writer setup read `pImpl->channel`
+    // / `pImpl->out_channel` to derive their SHM block names.  Pre-fix
+    // this ran the other way around — empty channel strings →
+    // shm_create("", ...) → EINVAL → worker thread throws.  See
+    // HEP-CORE-0011 §"worker_main_ phase ordering" for the canonical
+    // sequence.  `set_inbox_queue` stays AFTER setup_infrastructure_
+    // because the inbox queue object is created there.
+    api_ref.set_name(config_.identity().name);
+    api_ref.set_channel(config_.in_channel());
+    api_ref.set_out_channel(config_.out_channel());
+    api_ref.set_log_level(config_.identity().log_level);
+    api_ref.set_script_dir(script_dir.string());
+    api_ref.set_role_dir(config_.base_dir().string());
+    api_ref.set_checksum_policy(config_.checksum().policy);
+    api_ref.set_stop_on_script_error(sc.stop_on_script_error);
+    api_ref.set_engine(&engine_ref);
 
+    // ── Step 2b: Setup infrastructure (depends on api state set above) ───────
+    // Skipped in validate-only mode (no broker/queue needed).
     if (!core_.is_validate_only())
     {
         if (!setup_infrastructure_(inbox_spec_local))
@@ -197,32 +221,13 @@ void ProcessorRoleHost::worker_main_()
             promise_ref.set_value(false);
             return;
         }
-    }
-
-    // ── Step 3: Populate mutable wiring on the already-created api_ ──────────
-    //
-    // api_ was constructed in RoleHostBase::startup_() before the worker
-    // was spawned so its ThreadManager could own this worker thread
-    // (bounded join on teardown). Populate post-ctor state here.
-
-    api_ref.set_name(config_.identity().name);
-    api_ref.set_channel(config_.in_channel());
-    api_ref.set_out_channel(config_.out_channel());
-    api_ref.set_log_level(config_.identity().log_level);
-    api_ref.set_script_dir(script_dir.string());
-    api_ref.set_role_dir(config_.base_dir().string());
-    if (!core_.is_validate_only())
-    {
-        api_ref.set_inbox_queue(inbox_queue_.get());
         // Wave-B M7: BrokerRequestComm allocation moved into RoleHandler,
         // built lazily in Step 6 below.  See M5 (producer) for the same
         // pattern.  Processor declares a 2-presence list — RoleHandler
         // dedups to 1 connection for single-hub processor (the common
         // case), 2 connections for dual-hub (M8).
+        api_ref.set_inbox_queue(inbox_queue_.get());
     }
-    api_ref.set_checksum_policy(config_.checksum().policy);
-    api_ref.set_stop_on_script_error(sc.stop_on_script_error);
-    api_ref.set_engine(&engine_ref);
 
     // ── Step 4: Load engine via lifecycle startup ────────────────────────────
 

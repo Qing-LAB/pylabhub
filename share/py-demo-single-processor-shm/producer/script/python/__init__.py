@@ -1,64 +1,37 @@
-"""Throughput producer: emits count + ts + 1024 float32 samples at max rate.
-Runs until stopped externally (e.g. by the consumer reaching its limit)."""
+"""Single-hub demo producer.
 
+Writes lab.demo.counter at 10 Hz: count (monotonic), ts (Unix time),
+value (sine wave).  Used by the demo framework's manifest to drive
+binary-level validation of the producer-processor-consumer pipeline.
+"""
+
+import math
 import time
 
-import pylabhub_producer as prod
-
-try:
-    import numpy as np
-except Exception:
-    np = None
-
-BLOCK_SIZE = 1024
-
 _count: int = 0
-_start: float = 0.0
-_base = None
+_t0: float = 0.0
 
 
-def on_init(api: prod.ProducerAPI) -> None:
-    global _start, _base
-    _start = time.time()
-    if np is not None:
-        _base = np.arange(BLOCK_SIZE, dtype=np.float32)
-    api.log(
-        "info",
-        f"DemoProducer: started uid={api.uid()} "
-        f"block={BLOCK_SIZE} float32  max_rate",
-    )
+def on_init(api) -> None:
+    global _t0
+    _t0 = time.time()
+    api.log("info", f"DemoProducer started uid={api.uid()} channel={api.channel()}")
 
 
-def on_produce(tx, messages, api: prod.ProducerAPI) -> bool:
+def on_produce(tx, messages, api) -> bool:
     global _count
-
-    # Handle inbox messages (tuples only; ignore event dicts).
-    for msg in messages:
-        if isinstance(msg, tuple):
-            sender, data = msg
-            api.log("debug", f"DemoProducer: ctrl from {sender!r}: {data!r}")
-
     if tx.slot is None:
         return False
-
     _count += 1
     tx.slot.count = _count
-    tx.slot.ts = time.time()
-
-    if np is not None:
-        arr = np.ctypeslib.as_array(tx.slot.samples)
-        arr[:] = _base + np.float32(_count)
-    else:
-        for i in range(BLOCK_SIZE):
-            tx.slot.samples[i] = float(_count + i)
-
+    tx.slot.ts    = time.time()
+    tx.slot.value = float(math.sin(_count * 0.1))
+    if _count % 10 == 0:
+        api.log("info", f"DemoProducer wrote slot count={_count}")
     return True
 
 
-def on_stop(api: prod.ProducerAPI) -> None:
-    elapsed = max(time.time() - _start, 1e-9)
-    api.log(
-        "info",
-        f"DemoProducer: stopped total={_count} avg_rate={_count/elapsed:.1f} Hz "
-        f"loop_overruns={api.loop_overrun_count()}",
-    )
+def on_stop(api) -> None:
+    elapsed = max(time.time() - _t0, 1e-9)
+    api.log("info",
+            f"DemoProducer stopped total={_count} avg_rate={_count/elapsed:.1f} Hz")

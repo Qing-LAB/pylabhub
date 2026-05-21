@@ -1,35 +1,28 @@
 {
-  "_comment": [
-    "Demo producer — publishes 1024 float32 samples per slot on 'lab.demo.counter'.",
-    "Run with: pylabhub-producer <path-to-this-dir>",
-    "Script at: ./script/python/__init__.py  (on_init / on_produce / on_stop)"
-  ],
-  "hub_dir": "../hub",
   "producer": {
-    "uid":       "PROD-COUNTER-00000001",
     "name":      "DemoProducer",
+    "uid":       "prod.demoproducer.uid00000001",
     "log_level": "info",
-    "auth": { "keyfile": "" }
+    "auth":      { "keyfile": "" }
   },
-  "channel":     "lab.demo.counter",
-  "broker":      "tcp://127.0.0.1:5570",
-  "target_period_ms":    0,
-  "loop_timing":         "max_rate",
-
-  "shm": {
-    "enabled":    true,
-    "secret":     1111111111,
-    "slot_count": 1000,
-    "reader_sync_policy": "sequential"
+  "out_hub_dir":  "../hub",
+  "out_channel":  "lab.demo.counter",
+  "out_transport": "shm",
+  "out_shm_enabled":    true,
+  "out_shm_slot_count": 8,
+  "out_slot_schema": {
+    "packing": "aligned",
+    "fields": [
+      {"name": "count", "type": "int64"},
+      {"name": "ts",    "type": "float64"},
+      {"name": "value", "type": "float32"}
+    ]
   },
-
-  "slot_schema": "$lab.demo.counter.v1",
-  "flexzone_schema": null,
-
-  "script": { "type": "python", "path": "." },
-
-  "validation": {
-    "update_checksum":      true,
-    "stop_on_script_error": false
-  }
+  "out_flexzone_schema": null,
+  "loop_timing":       "fixed_rate",
+  "target_period_ms":  100,
+  "checksum":          "enforced",
+  "flexzone_checksum": true,
+  "script":               { "type": "python", "path": "." },
+  "stop_on_script_error": false
 }

@@ -1,33 +1,25 @@
 {
-  "_comment": [
-    "Demo consumer — reads processed 1k-sample slots and reports throughput.",
-    "Run with: pylabhub-consumer <path-to-this-dir>",
-    "Script at: ./script/python/__init__.py  (on_init / on_consume / on_stop)"
-  ],
-  "hub_dir": "../hub",
   "consumer": {
-    "uid":       "CONS-LOGGER-00000004",
     "name":      "DemoConsumer",
+    "uid":       "cons.democonsumer.uid00000001",
     "log_level": "info",
-    "auth": { "keyfile": "" }
+    "auth":      { "keyfile": "" }
   },
-  "channel":    "lab.demo.processed",
-  "broker":     "tcp://127.0.0.1:5570",
-  "slot_acquire_timeout_ms": -1,
-
-  "shm": {
-    "enabled": true,
-    "secret":  2222222222
+  "in_hub_dir":   "../hub",
+  "in_channel":   "lab.demo.processed",
+  "in_transport": "shm",
+  "in_shm_enabled": true,
+  "in_slot_schema": {
+    "packing": "aligned",
+    "fields": [
+      {"name": "count",   "type": "int64"},
+      {"name": "ts",      "type": "float64"},
+      {"name": "value",   "type": "float32"},
+      {"name": "doubled", "type": "float64"}
+    ]
   },
-
-  "slot_schema": "$lab.demo.processed.v1",
-  "flexzone_schema": null,
-
-  "script": { "type": "python", "path": "." },
-
-  "max_slots": 1000000,
-
-  "validation": {
-    "stop_on_script_error": false
-  }
+  "loop_timing":          "max_rate",
+  "checksum":             "enforced",
+  "script":               { "type": "python", "path": "." },
+  "stop_on_script_error": false
 }
