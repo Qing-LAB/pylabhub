@@ -1,0 +1,29 @@
+{
+  "producer": {
+    "name":      "DemoProducer",
+    "uid":       "prod.demoproducer.uid00000001",
+    "log_level": "info",
+    "auth":      { "keyfile": "" }
+  },
+  "out_hub_dir":  "../hub",
+  "out_channel":  "lab.demo.counter",
+  "out_transport":           "zmq",
+  "out_zmq_endpoint":        "tcp://127.0.0.1:5580",
+  "out_zmq_bind":            true,
+  "out_zmq_buffer_depth":    256,
+  "out_zmq_overflow_policy": "drop",
+  "out_slot_schema": {
+    "packing": "aligned",
+    "fields": [
+      {"name": "count",   "type": "int64"},
+      {"name": "ts",      "type": "float64"},
+      {"name": "samples", "type": "float32", "count": 4096}
+    ]
+  },
+  "out_flexzone_schema": null,
+  "loop_timing":       "max_rate",
+  "checksum":          "enforced",
+  "flexzone_checksum": true,
+  "script":               { "type": "python", "path": "." },
+  "stop_on_script_error": false
+}

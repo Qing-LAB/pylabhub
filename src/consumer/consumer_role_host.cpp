@@ -401,7 +401,20 @@ bool ConsumerRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
 
     if (is_zmq)
     {
-        opts.zmq_buffer_depth = tr.zmq_buffer_depth;
+        // Audit B11 (2026-05-21, demo-harness discovery): pre-fix only
+        // `zmq_buffer_depth` was copied — `data_transport`,
+        // `zmq_node_endpoint`, and `shm_name` (clear) were left at
+        // defaults, so build_rx_queue saw data_transport="shm" and
+        // shm_name=<channel> and tried the SHM path, which failed with
+        // "Failed to connect consumer to in_channel '<name>'".  Same
+        // systemic pattern as B5 (shm_name not populated): the
+        // config-to-opts translation layer was never exercised by L3
+        // tests (which manually construct RxQueueOptions).
+        opts.data_transport    = "zmq";
+        opts.zmq_node_endpoint = tr.zmq_endpoint;
+        opts.zmq_buffer_depth  = tr.zmq_buffer_depth;
+        opts.shm_name.clear();          // not used by ZMQ path
+        opts.shm_shared_secret = 0u;    // not used by ZMQ path
     }
 
     // --- Inbox setup (optional) ---

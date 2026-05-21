@@ -1,0 +1,13 @@
+{
+  "id": "lab.demo.counter",
+  "version": 1,
+  "description": "Throughput demo input stream: counter + timestamp + 1k float32 payload",
+  "slot": {
+    "packing": "aligned",
+    "fields": [
+      {"name": "count", "type": "int64"},
+      {"name": "ts", "type": "float64"},
+      {"name": "samples", "type": "float32", "count": 1024}
+    ]
+  }
+}

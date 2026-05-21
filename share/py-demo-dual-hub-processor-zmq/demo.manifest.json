@@ -1,0 +1,86 @@
+{
+  "name": "dual-hub-processor-zmq",
+  "description": "Dual-hub demo using ZMQ transport (config-only swap from py-demo-dual-hub-processor).  Producer PUSH-binds tcp:5582 (hub-a), processor PULL-connects + PUSH-binds tcp:5583 (hub-a in / hub-b out), consumer PULL-connects (hub-b).  Flexzone disabled (SHM-only feature).  Shutdown via producer's count target → cross-hub channel-close cascade (D1/D2 fix).",
+  "duration_s": 30,
+  "shutdown_signal": "SIGTERM",
+  "shutdown_grace_s": 10,
+
+  "setup": {
+    "env": { "PYLABHUB_HUB_PASSWORD": "demo-password" },
+    "commands": [
+      {
+        "args":         ["plh_hub", "--config", "hub-a/hub.json", "--keygen"],
+        "timeout_s":    20,
+        "must_succeed": true
+      },
+      {
+        "args":         ["plh_hub", "--config", "hub-b/hub.json", "--keygen"],
+        "timeout_s":    20,
+        "must_succeed": true
+      }
+    ]
+  },
+
+  "processes": [
+    {
+      "name":            "hub-a",
+      "binary":          "plh_hub",
+      "args":            ["hub-a"],
+      "wait_for_marker": "Broker: listening on tcp://127.0.0.1:5570",
+      "startup_timeout_s": 10,
+      "role_log_glob":   "hub-a/logs/*.log"
+    },
+    {
+      "name":            "hub-b",
+      "binary":          "plh_hub",
+      "args":            ["hub-b"],
+      "wait_for_marker": "Broker: listening on tcp://127.0.0.1:5571",
+      "startup_timeout_s": 10,
+      "role_log_glob":   "hub-b/logs/*.log"
+    },
+    {
+      "name":            "producer",
+      "binary":          "plh_role",
+      "args":            ["--role", "producer", "producer"],
+      "wait_for_marker": "DualProd started",
+      "startup_timeout_s": 10,
+      "depends_on":      ["hub-a"],
+      "role_log_glob":   "producer/logs/*.log"
+    },
+    {
+      "name":            "processor",
+      "binary":          "plh_role",
+      "args":            ["--role", "processor", "processor"],
+      "wait_for_marker": "DualProc started",
+      "startup_timeout_s": 10,
+      "depends_on":      ["producer", "hub-b"],
+      "role_log_glob":   "processor/logs/*.log"
+    },
+    {
+      "name":            "consumer",
+      "binary":          "plh_role",
+      "args":            ["--role", "consumer", "consumer"],
+      "wait_for_marker": "DualCons started",
+      "startup_timeout_s": 10,
+      "depends_on":      ["processor"],
+      "role_log_glob":   "consumer/logs/*.log"
+    }
+  ],
+
+  "expected_warnings": [],
+  "expected_errors":   [],
+
+  "evaluators": [
+    {"type": "all_processes_started"},
+    {"type": "log_marker_present", "process": "producer",
+     "marker": "DualProd STOPPED total="},
+    {"type": "log_marker_present", "process": "processor",
+     "marker": "DualProc STOPPED processed="},
+    {"type": "log_marker_present", "process": "consumer",
+     "marker": "DualCons STOPPED total_received="},
+    {"type": "log_marker_present", "process": "producer",
+     "marker": "DualProd reached target=1000"},
+    {"type": "no_unexpected_errors"},
+    {"type": "clean_shutdown"}
+  ]
+}

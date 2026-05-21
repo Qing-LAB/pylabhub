@@ -1,0 +1,48 @@
+{
+  "processor": {
+    "name":      "DemoProcessor",
+    "uid":       "proc.demoprocessor.uid00000001",
+    "log_level": "info",
+    "auth":      { "keyfile": "" }
+  },
+  "in_hub_dir":  "../hub",
+  "out_hub_dir": "../hub",
+  "in_channel":  "lab.demo.counter",
+  "out_channel": "lab.demo.processed",
+  "in_transport":            "zmq",
+  "in_zmq_endpoint":         "tcp://127.0.0.1:5580",
+  "in_zmq_bind":             false,
+  "in_zmq_buffer_depth":     256,
+  "in_zmq_overflow_policy":  "drop",
+  "out_transport":           "zmq",
+  "out_zmq_endpoint":        "tcp://127.0.0.1:5581",
+  "out_zmq_bind":            true,
+  "out_zmq_buffer_depth":    256,
+  "out_zmq_overflow_policy": "drop",
+  "in_slot_schema": {
+    "packing": "aligned",
+    "fields": [
+      {"name": "count",   "type": "int64"},
+      {"name": "ts",      "type": "float64"},
+      {"name": "samples", "type": "float32", "count": 4096}
+    ]
+  },
+  "out_slot_schema": {
+    "packing": "aligned",
+    "fields": [
+      {"name": "count",     "type": "int64"},
+      {"name": "ts",        "type": "float64"},
+      {"name": "processed", "type": "float32", "count": 4096},
+      {"name": "slot_mean", "type": "float64"},
+      {"name": "slot_std",  "type": "float64"},
+      {"name": "slot_min",  "type": "float64"},
+      {"name": "slot_max",  "type": "float64"}
+    ]
+  },
+  "out_flexzone_schema": null,
+  "loop_timing":          "max_rate",
+  "checksum":             "enforced",
+  "flexzone_checksum":    true,
+  "script":               { "type": "python", "path": "." },
+  "stop_on_script_error": false
+}
