@@ -6,6 +6,51 @@
 
 ## Archive batches
 
+### 2026-05-21 (demo-harness session — audit + unified plan merge)
+
+Two transient docs from the multi-day demo-harness session merged
+into canonical docs and moved to
+`docs/archive/transient-2026-05-21/`:
+
+* **`docs/tech_draft/DEMO_DOC_AUDIT_2026-05-20.md`** — 17 deployment-
+  doc gaps (G1-G17 + G21) and 13 demo-surfaced bugs (B1-B13).  All
+  G-items absorbed into doc updates this session (HEP-CORE-0011 §
+  "Init Protocol" + §"API availability per callback";
+  HEP-CORE-0019 §5.4.1-5.4.3 metrics tables; `README_Deployment.md`
+  §4.2 / §4.3 / §5.1 / §6.1 / §7.1 / §8.3 / §8.5).  B-items: B1, B2,
+  B5, B9, B11, B12, B13 ✅ FIXED in code (commit `2be5156` through
+  `f6079ec8`); B3, B4, B6, B7, B8, B10 filed in `docs/todo/`
+  subtopic TODOs for follow-up (see below).
+
+* **`docs/tech_draft/UNIFIED_PLAN_2026-05-21.md`** (rev 2) —
+  consolidated planning artifact.  Pre-existing TODO_MASTER items
+  are unchanged; this session's new findings (N1-N11) filed in
+  subtopic TODOs; the executive summary + critical-path narrative
+  + rev-2 demos+benches inventory merged into `TODO_MASTER.md` §
+  "Current Sprint Focus" closing paragraphs.
+
+Subtopic-TODO updates this session:
+
+  - **`docs/todo/API_TODO.md`** — new section "Session 2026-05-21 —
+    demo harness audit closure" with B4 (init template SHM secret),
+    B6+B7 (rx.fz binding + flexzone side doc), B10 (band_join in
+    on_init), N2 (NativeEngine HubAPI surface extension), N3+N4
+    (native plugin sig + lifecycle module cleanup), N5 (operator
+    guide), N7+N10 (three-engine doc parity).
+  - **`docs/todo/TESTING_TODO.md`** — new section "Session 2026-05-21
+    — demo harness audit closure" with N1 (L3 setup_infrastructure_
+    translation tests — HIGH priority), N8+N9 (bench variants), N11
+    (cross-engine on_band_message signature regression), B8
+    (`plh_pyenv install --requirements` in demo setup).
+  - **`docs/todo/MESSAGEHUB_TODO.md`** — B3 (hard-error
+    `hub.auth.keyfile=""`).
+  - **`docs/todo/PLATFORM_TODO.md`** — N6
+    (`cmake/pylabhubNativePlugin.cmake` user-oriented helper).
+
+Demo framework delivery — `share/demo_framework/runner.py` + 9
+demo manifests under `share/py-demo-*/` — closes harness Task #44
+(L4 processor + consumer test infrastructure).
+
 ### 2026-05-19 (R3.5b wire-field unification migration plan)
 
 `docs/tech_draft/R3.5b_wire_field_unification_2026-05-19.md` recorded
