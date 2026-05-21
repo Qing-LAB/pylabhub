@@ -24,6 +24,36 @@ arcs all closed.  M1.2 / M1.4 / M1.5 / MD1 / MD1.5 all closed.
 
 ## Open broker-specific items
 
+### #92 (HIGH-leverage) — Audit all `_REQ` frames against HEP-0007 §12.2.1
+
+The REQ shape contract (Sync vs Fire-and-forget) was codified in
+HEP-CORE-0007 §12.2.1 + HEP-CORE-0021 §16.3 on 2026-05-21 after
+finding ENDPOINT_UPDATE_REQ was in the prohibited half-mix shape
+(broker emitted `_ACK`, client dropped it).  The fix shipped as
+commits `5ccae1b2` (HEP) + `8228f1ac` (code) + `66e71894` (error-
+path tests).
+
+Now scan every other `_REQ` frame in `BrokerRequestComm` (header) +
+`BrokerService` (broker side) and classify each.  Known suspects
+where the client method is fire-and-forget `void` and we should
+check whether the broker also sends an ACK that's being dropped:
+
+- `send_broadcast` (`broker_request_comm.cpp`)
+- `send_checksum_error`
+- `send_heartbeat`
+- `send_notify` (if still alive; D3.X1 lists it as zero-callers)
+
+For each half-mix found:
+1. Decide intended shape per HEP-0007 §12.2.1 (does caller's next
+   decision depend on broker acceptance?).
+2. Align BRC + broker: either make BRC sync (`do_request`) OR
+   remove broker's `_ACK`.
+3. Update the relevant HEP to declare the shape (don't leave it
+   implicit).
+
+Trigger: any half-mix is a latent flake source like the
+ENDPOINT_UPDATE one we just fixed.  Estimated effort M.
+
 ### B3 (#78) — hard-error `hub.auth.keyfile=""` at config load
 
 Demo-harness audit finding (2026-05-21): broker uses ephemeral

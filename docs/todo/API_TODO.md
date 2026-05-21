@@ -9,6 +9,35 @@ items only; completed work lives in git history + DOC_ARCHIVE_LOG.
 
 ## Current Focus
 
+### #94 — Implement HEP-CORE-0021 §16.5 ephemeral-binding production path
+
+HEP-0021 §16.5 step 8 describes `messenger.update_endpoint()` inside
+`establish_channel` for the port-0 ephemeral-binding case: ZmqQueue
+binds with `tcp://*:0`, OS assigns a real port, then
+`establish_channel` calls the now-sync `send_endpoint_update` to
+inform the broker.  That production caller does NOT exist in the
+tree today (verified 2026-05-21 — only the L3 test calls
+`send_endpoint_update`).  Role configs always specify explicit
+ports, so the ephemeral path was never built.
+
+The HEP-vs-code drift was surfaced by the ENDPOINT_UPDATE sync
+REQ/REP work this session (commit `8228f1ac`).  Now that the API
+is sync, the missing production path can be safely wired.
+
+Scope sketch:
+- Find the existing producer create / `establish_channel` site.
+- Add ephemeral-binding option (likely already supported by
+  `ZmqQueue`).
+- After `ZmqQueue::start()`, call
+  `messenger.update_endpoint(channel, actual_endpoint())` and
+  branch per HEP-0021 §16.3 (success → proceed; error/nullopt →
+  return nullopt from `establish_channel` per §16.6).
+- Add an L4 demo (`share/py-demo-zmq-ephemeral/` or extend an
+  existing ZMQ demo) using `tcp://*:0` — exercises the production
+  flow.
+
+Effort: M.
+
 ### Demo-harness audit follow-ups (2026-05-21)
 
 Open items left over from the multi-engine demo session that found 13
