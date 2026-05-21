@@ -18,7 +18,6 @@
 #include "utils/script_engine_factory.hpp"  // scripting::create_engine — worker_main_ Step 0
 #include "utils/thread_manager.hpp"
 #include "producer_fields.hpp"
-#include "utils/broker_request_comm.hpp"
 #include "service/cycle_ops.hpp"
 #include "service/data_loop.hpp"
 
