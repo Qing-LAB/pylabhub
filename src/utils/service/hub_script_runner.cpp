@@ -167,8 +167,15 @@ void HubScriptRunner::worker_main_()
             sc.path.empty() ? std::filesystem::current_path()
                             : std::filesystem::weakly_canonical(sc.path);
         const std::filesystem::path script_dir = base_path / "script" / sc.type;
+        // Audit B12 follow-up (2026-05-21, native-engine code review):
+        // The original B12 fix landed in the 3 role hosts but missed
+        // hub_script_runner.cpp — hub-side native scripts would still
+        // try to load `__init__.py` (Python entry) and fail.  Same
+        // 3-way ternary as the role hosts.
         const std::string entry_point =
-            (sc.type == "lua") ? "init.lua" : "__init__.py";
+            (sc.type == "lua")    ? "init.lua"
+          : (sc.type == "native") ? "plugin.so"
+                                  : "__init__.py";
 
         if (!engine().initialize(log_tag, &core()))
         {
