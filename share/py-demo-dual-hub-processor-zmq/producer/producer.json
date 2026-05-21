@@ -1,0 +1,30 @@
+{
+  "producer": {
+    "name":      "DualProd",
+    "uid":       "prod.dualprod.uid00000001",
+    "log_level": "info",
+    "auth":      { "keyfile": "" }
+  },
+  "out_hub_dir":  "../hub-a",
+  "out_channel":  "lab.demo.counter",
+  "out_transport":           "zmq",
+  "out_zmq_endpoint":        "tcp://127.0.0.1:5582",
+  "out_zmq_bind":            true,
+  "out_zmq_buffer_depth":    256,
+  "out_zmq_overflow_policy": "drop",
+  "out_slot_schema": {
+    "packing": "aligned",
+    "fields": [
+      {"name": "count",   "type": "int64"},
+      {"name": "ts",      "type": "float64"},
+      {"name": "samples", "type": "float32", "count": 1024}
+    ]
+  },
+  "out_flexzone_schema": null,
+  "loop_timing":       "fixed_rate",
+  "target_period_ms":  10,
+  "checksum":          "enforced",
+  "flexzone_checksum": true,
+  "script":               { "type": "python", "path": "." },
+  "stop_on_script_error": false
+}

@@ -460,6 +460,20 @@ bool ProcessorRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
     // Per-role checksum policy — same value on both input and output (see config_single_truth.md).
     in_opts.checksum_policy      = config_.checksum().policy;
     in_opts.flexzone_checksum    = config_.checksum().flexzone && core_.has_rx_fz();
+    // Audit B11 (2026-05-21, demo-harness discovery): mirror the
+    // consumer_role_host.cpp fix.  When in_transport=zmq, propagate
+    // data_transport + zmq_node_endpoint and clear shm_name so
+    // build_rx_queue dispatches the ZMQ path.  Pre-fix, only
+    // zmq_buffer_depth was copied and build_rx_queue saw
+    // data_transport="shm" + shm_name=<channel>, attempted SHM, and
+    // emitted "Failed to connect consumer to in_channel '<name>'".
+    if (config_.in_transport().transport == config::Transport::Zmq)
+    {
+        in_opts.data_transport    = "zmq";
+        in_opts.zmq_node_endpoint = config_.in_transport().zmq_endpoint;
+        in_opts.shm_name.clear();
+        in_opts.shm_shared_secret = 0u;
+    }
     if (!api_ref.build_rx_queue(in_opts))
     {
         LOGGER_ERROR("[proc] Failed to connect consumer to in_channel '{}'",
