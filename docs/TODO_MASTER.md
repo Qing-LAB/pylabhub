@@ -105,17 +105,54 @@ the demo inventory + manifest schema.
 
 ## Pending harness tasks (snapshot — TaskList is authoritative)
 
-P1 cleanups (S each): #78 B3, #79 B4, #80 B6+B7, #82 B10, #85 N3+N4.
-P2 high-leverage: #83 N1 L3 setup_infrastructure_ test.
-P3 small infra: #81 B8 demo numpy, #88 N8+N9 bench variants, #89 N11 sig audit.
-P4 substantial: #66 S1 Phase B, #72 M9 CRTP, #73 HEP-0033 Phase 10,
-#74 HEP-0035 auth, #75 HUB_TARGETED_ACK, #76 script reload, #77 Tier 2
-callbacks, #84 N2 NativeEngine HubAPI extension, #86 N5+N6
-native plugin docs + CMake, #87 N7+N10 three-engine doc parity.
+**P0 — do next** (ready, highest leverage):
+- **#92** Audit all `_REQ` frames against HEP-0007 §12.2.1 (REQ shape
+  contract).  Directly extends the ENDPOINT_UPDATE sync REQ/REP fix
+  that shipped 2026-05-21 (`5ccae1b2` + `8228f1ac` + `66e71894`).
+  Likely finds 2-3 more half-mix flake sources of the same kind.  M.
+- **#83** N1 — L3 test for `setup_infrastructure_` config→opts
+  translation.  Closes the systemic gap that B5 + B11 came from.  M.
+- **#93** Instrument the producer validate-path with per-step log
+  lines.  Cheap, unblocks future CI-flake diagnosis.  S.
 
-Recommended next-session ordering — N1 first (highest leverage,
-closes the bug class), then the small Priority-1 cleanups, then
-N5+N6 (native plugin docs while head-cache is fresh).
+**P1 — small cleanups, batch together** (S each):
+- **#78** B3 hard-error empty `hub.auth.keyfile`.
+- **#79** B4 `plh_role --init` non-zero SHM secret default.
+- **#80** B6+B7 `rx.fz` binding + processor flexzone side doc.
+- **#82** B10 `band_join` from `on_init` surface failure.
+- **#85** N3+N4 native plugin `on_init`/`on_stop` signature + lifecycle
+  module cleanup.
+
+**P2 — high leverage, M effort**:
+- **#86** N5+N6 `README_NativePlugins.md` + user-oriented
+  `cmake/pylabhubNativePlugin.cmake` helper.
+
+**P3 — substantial / multi-day**:
+- **#94** HEP-CORE-0021 §16.5 ephemeral-binding production path —
+  unlocks the design that the ENDPOINT_UPDATE sync API is for.
+- **#84** N2 NativeEngine `build_api_(HubAPI&)` surface extension.
+- **#87** N7+N10 three-engine doc parity
+  (`README_Scripting_{Python,Lua,Native}.md`).
+- **#74** HEP-CORE-0035 auth implementation (only true production
+  blocker).
+- **#72** Wave-B M9 `RoleHostFrame<HostT>` CRTP template.
+- **#73** HEP-CORE-0033 Phase 10 doc closure.
+
+**P4 — long tail (interleave when context permits)**:
+- **#66** S1 Phase B `ZmqQueue + InboxQueue` migrate to
+  `apply_socket_policy`.
+- **#75** `HUB_TARGETED_ACK` wire frame.
+- **#76** Script reload — promote tech_draft to HEP + implement.
+- **#77** Tier 2 dynamic callbacks.
+- **#81** B8 `plh_pyenv install --requirements` in demo setup.
+- **#88** N8+N9 bench variants (scalar dispatch + multi-size sweep).
+- **#89** N11 cross-engine `on_band_message` signature parity audit.
+
+**Recommended next-session ordering**: #92 first (high leverage,
+the new HEP rule is fresh — find and fix the other half-mix REQ
+frames while the contract is in head-cache).  Then #83 N1 (closes
+the systemic gap that produced both B5 and B11).  Then batch the P1
+small cleanups.
 
 ---
 

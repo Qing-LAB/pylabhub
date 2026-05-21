@@ -103,6 +103,37 @@ to confirm they're documented unambiguously and pinned by tests.
 Add explicit doc note + L2/L3 regression that fails if the engine-
 side dispatch signature changes.
 
+### #93 — PlhRoleInitTest.InitOutputValidates/producer 60s hang
+
+Flake-rate 1/N on CI: validate subprocess runs 60s without exiting,
+parent kills with SIGTERM (143).  Last visible stderr line is
+"Switching log sink to: RotatingFile..." — subsequent logs go to
+the per-role file which the test harness can't read post-failure.
+
+Hang is in worker thread's `worker_main_` (parent blocks on
+`EngineHost::startup_()`'s `ready_future.get()`, `engine_host.cpp:148`).
+Producer's validate-path skips `setup_infrastructure_` (no broker
+connection) so this is NOT related to the 2026-05-21 ENDPOINT_UPDATE
+sync REQ/REP change.
+
+Candidate hang sites:
+1. `scripting::engine_lifecycle_startup` — Python script load.  Slow
+   imports?  GIL handoff bug between main (Py_InitializeFromConfig)
+   and worker (PythonGilLease)?
+2. `engine.finalize()` in validate-only exit path.
+3. `cli::get_password` blocking on stdin (no TTY) — unlikely; init
+   template generates `auth.keyfile = ""` and the unlock path is
+   gated on non-empty.
+
+**Cheap first-step diagnostic** — instrument the validate path: add
+a log line at each major step entry/exit in
+`producer_role_host.cpp::worker_main_` (Step 0 engine ctor / Step 1
+schema / Step 2a api wiring / Step 4 engine_lifecycle_startup
+entry+exit / engine.finalize() entry+exit).  The next CI flake will
+pinpoint which step hangs.  ~10 LOC; risk-free.
+
+Effort: M (diagnosis + likely fix).
+
 ### Code-review-deferred items from earlier sweeps
 
 - **2026-05-03 `PlhRoleCliTest.LogBackupsBelowSentinelRejectedByValidate`
