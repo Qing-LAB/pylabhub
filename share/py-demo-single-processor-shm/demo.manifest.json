@@ -1,0 +1,65 @@
+{
+  "name": "single-processor-shm",
+  "description": "Single-hub demo — producer (10 Hz) → processor (×2 doubled) → consumer over SHM, no auth (auth.keyfile='').",
+  "duration_s": 6,
+  "shutdown_signal": "SIGTERM",
+  "shutdown_grace_s": 5,
+
+  "processes": [
+    {
+      "name":            "hub",
+      "binary":          "plh_hub",
+      "args":            ["hub"],
+      "wait_for_marker": "Broker: listening on tcp",
+      "startup_timeout_s": 10,
+      "role_log_glob":   "hub/logs/*.log"
+    },
+    {
+      "name":            "producer",
+      "binary":          "plh_role",
+      "args":            ["--role", "producer", "producer"],
+      "wait_for_marker": "DemoProducer started",
+      "startup_timeout_s": 10,
+      "depends_on":      ["hub"],
+      "role_log_glob":   "producer/logs/*.log"
+    },
+    {
+      "name":            "processor",
+      "binary":          "plh_role",
+      "args":            ["--role", "processor", "processor"],
+      "wait_for_marker": "DemoProcessor started",
+      "startup_timeout_s": 10,
+      "depends_on":      ["hub"],
+      "role_log_glob":   "processor/logs/*.log"
+    },
+    {
+      "name":            "consumer",
+      "binary":          "plh_role",
+      "args":            ["--role", "consumer", "consumer"],
+      "wait_for_marker": "DemoConsumer started",
+      "startup_timeout_s": 10,
+      "depends_on":      ["processor"],
+      "role_log_glob":   "consumer/logs/*.log"
+    }
+  ],
+
+  "expected_warnings": [],
+  "expected_errors": [],
+
+  "evaluators": [
+    {"type": "all_processes_started"},
+    {"type": "log_marker_min_count", "process": "producer",
+     "marker": "DemoProducer wrote slot count=", "min": 3},
+    {"type": "log_marker_min_count", "process": "processor",
+     "marker": "DemoProcessor processed count=", "min": 3},
+    {"type": "log_marker_min_count", "process": "consumer",
+     "marker": "DemoConsumer received count=", "min": 3},
+    {"type": "count_sequence_e2e",
+     "producer": "producer",
+     "consumer": "consumer",
+     "producer_pattern": "DemoProducer wrote slot count=(\\d+)",
+     "consumer_pattern": "DemoConsumer received count=(\\d+)"},
+    {"type": "no_unexpected_errors"},
+    {"type": "clean_shutdown"}
+  ]
+}

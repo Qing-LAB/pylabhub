@@ -80,12 +80,49 @@ or (b) code changes when the doc is correct but the code drifted.
 - **Resolution candidate:** none — this is correctly documented; closes when HEP-CORE-0035 lands (Task #74).
 - **Affects:** demo can set `connection_policy: "open"` safely (or omit it).
 
-### G9 — `plh_hub --dev` flag is GONE
+### G9 — `plh_hub --dev` flag is GONE (RESOLVED + new bug found)
 - **Source:** `README_Deployment.md` §4.3 line 260: `pylabhub-hubshell <hub-dir>/ --dev`.
 - **Observed:** Doc documents `--dev` as the "no vault, ephemeral key" mode.
 - **Reality:** Verified empirically — `plh_hub --dev <dir>` returns `Unknown argument: --dev`.  The flag is not in `--help` and is not accepted by the parser.
-- **Resolution candidate:** tbd.  Either (a) the flag was removed deliberately and a replacement workflow exists (e.g., `--keygen` + automatic vault-decrypt-with-empty-password), or (b) this is a regression.  Demo authoring needs a no-friction launch path.
-- **Affects:** demo running — without dev mode, vault setup is required, which means every demo `run_demo.sh` would need to script vault password injection.  Discovery via `plh_hub --keygen` ergonomics required.
+- **Replacement workflow (verified via `test_plh_hub_role_roundtrip.cpp`):** set `PYLABHUB_HUB_PASSWORD` env var, run `plh_hub --config <hub.json> --keygen`.  This generates `vault/hub.vault` AND writes `hub.pubkey` (per F1 fix in `HubConfig::create_keypair`).  THEN run normally.
+- **NEW BUG DISCOVERED — `auth.keyfile=""` is silently broken (B3):** I tried setting `hub.auth.keyfile = ""` thinking it was the no-auth opt-out per `hub_config.cpp:178-179` comment "operator opt-out: no auth configured".  Result:
+  - `HubConfig::load_keypair` returns false (no vault loaded; `auth.client_pubkey` / `auth.client_seckey` stay empty).
+  - `BrokerService` falls through to the ephemeral-keypair path at `broker_service.cpp:3691` (`zmq_curve_keypair`) — the comment there says "// Generate ephemeral keypair (--dev mode; no vault)."
+  - **Broker therefore speaks CURVE with an ephemeral pubkey, but `hub.pubkey` is NEVER published.**
+  - Roles read `<hub_dir>/hub.pubkey`; finding none, they connect plaintext.
+  - **Plaintext role ⇄ CURVE broker = handshake fails silently** → REG_REQ times out, then `Socket operation on non-socket` when the broken socket is reused.
+- **Resolution candidate:** code-fix. The empty-keyfile path should either:
+  - (a) actually disable CURVE on the broker (so role+broker agree on plaintext); OR
+  - (b) publish the ephemeral pubkey to `hub.pubkey` at startup so the role can pin it.  Option (a) matches the documented "no auth" semantics; option (b) makes the demo self-contained even with auth.
+- **Affects:** demo running (forced to do `--keygen` + `PYLABHUB_HUB_PASSWORD`); operator UX (the "opt-out" comment is misleading).
+
+### G17 — `--init` template defaults `_comment` to no comments, but binary REJECTS unknown keys (resolved as note)
+- **Source:** Discovery while writing hub.json from `--init`.
+- **Observed:** hub.json/role.json validators reject `_comment` field with `Config error: hub: unknown config key '_comment'`.
+- **Reality:** Strict-mode rejection is the policy.  No JSON-comment dialect support.  Operators who add `_comment` keys (a common convention) will get config-load failures.
+- **Resolution candidate:** doc-fix — README_Deployment.md should mention this strict-key policy explicitly.  Existing demo .json files (now stale) used `_comment` and would fail today.
+- **Affects:** any operator copy-pasting from the existing demo files.
+
+### G18 — `_unused` placeholder for empty flexzone was the wrong workaround (FIXED IN CODE)
+- **Source:** Initial demo design.
+- **Observed:** Producer crashes immediately on startup with `thread 'worker' body threw: fields must not be empty`.
+- **Reality:** `RoleAPIBase::build_tx_queue` (role_api_base.cpp:258 pre-fix) unconditionally called `schema_spec_to_zmq_fields(opts.fz_spec)` on the SHM writer path.  When `out_flexzone_schema` was null (the `--init` template default), `fz_spec.fields` was empty, and the call threw.
+- **Resolution:** code-fix applied this session.  Gate the conversion: empty fields → pass empty `SchemaFieldDesc` vector to `ShmQueue::create_writer`.  Working in producer + processor SHM writer paths.
+
+### G19 — worker_main_ phase ordering bug — `set_channel` called AFTER `setup_infrastructure_` (FIXED IN CODE)
+- **Source:** Surfaced after G18 fix unblocked the producer.
+- **Observed:** Producer now crashes with `shm_create failed for ''. Error: 22` (EINVAL on empty SHM name).
+- **Reality:** All three role hosts (producer / consumer / processor) had `setup_infrastructure_` (Step 2) running BEFORE `api_ref.set_channel(...)` (Step 3).  `setup_infrastructure_` calls `build_tx_queue` → `ShmQueue::create_writer(tx_channel, ...)` → `DataBlock(tx_channel, ...)` → `shm_create(tx_channel, ...)`.  `tx_channel = pImpl->out_channel.empty() ? pImpl->channel : pImpl->out_channel` reads pImpl state that hadn't been set yet.
+- **Resolution:** code-fix applied this session in all three role hosts.  Step 2 split into Step 2a (api state wiring, unconditional) + Step 2b (setup_infrastructure_, gated on !validate_only, contains set_inbox_queue which DEPENDS on infrastructure being up).
+- **Architectural note:** the duplication of `worker_main_` across three role hosts is exactly what Task #72 (Wave-B M9 `RoleHostFrame<HostT>` CRTP template) is meant to fix.  When M9 lands, the lifted template should inherit this corrected phase ordering.
+- **Test gap discovered:** the L3 `RoleAPIBase_StartHandlerThreads_DualHub_E2E` test exercises `build_tx_queue` directly via the API and bypasses `worker_main_` — so it didn't catch this.  L4 binary tests only cover `--init` / `--keygen` / `--validate`, not the data pipeline.  A binary-level pipeline test (Task #44) would catch this entire class of bug.
+
+### G20 — `--init` SHM secret defaults to 0, causing processor input to silently fall through to ZMQ
+- **Source:** Surfaced after G19 fix.
+- **Observed:** Processor's worker fails with `[proc] Failed to connect consumer to in_channel 'lab.demo.counter'` (`build_rx_queue` returns false).
+- **Reality:** `plh_role --init --role processor` template emits `in_shm_enabled: true` but no `in_shm_secret`.  Default value is 0.  `processor_role_host.cpp:452` reads `in_opts.shm_shared_secret = config_.in_shm().enabled ? config_.in_shm().secret : 0u;`.  `RoleAPIBase::build_rx_queue` then gates on `if (!opts.shm_name.empty() && opts.shm_shared_secret != 0 && opts.slot_spec.has_schema)` — with secret=0, the SHM path is SKIPPED and the consumer attempts ZMQ.  But the producer is publishing SHM-only, so the ZMQ attempt also fails → `Failed to connect consumer to in_channel`.
+- **Resolution candidate:** demo config-fix (set matching `out_shm_secret` / `in_shm_secret`).  OR code-fix: the `--init` template should generate a sensible default secret (e.g. a random non-zero uint64).
+- **Affects:** Any demo / deployment that uses `--init` templates without manually adding secrets to the SHM blocks.
 
 ### G10 — Hub.json schema fundamentally reorganised vs doc §4.2
 - **Source:** `README_Deployment.md` §4.2 (lines 197-244).
