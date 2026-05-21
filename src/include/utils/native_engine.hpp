@@ -19,6 +19,8 @@
 #include <string>
 #include <unordered_map>
 
+namespace pylabhub::hub_host { class HubAPI; }  // fwd decl
+
 namespace pylabhub::scripting
 {
 
@@ -38,6 +40,12 @@ class PYLABHUB_UTILS_EXPORT NativeEngine : public ScriptEngine
                      const std::string &entry_point,
                      const std::string &required_callback) override;
     bool build_api_(RoleAPIBase &api) override;
+    /// Hub-side native engine support (audit B13, 2026-05-21).  Wires
+    /// a minimal hub-flavoured PlhNativeContext (log + identity +
+    /// request_stop; role-side function pointers are nullptr) and
+    /// calls `native_init` on the plugin.  Allows `script.type:
+    /// "native"` in hub.json to load + run.
+    bool build_api_(hub_host::HubAPI &api) override;
     void finalize_engine_() override;
 
     // ── Queries ──────────────────────────────────────────────────────────

@@ -1,0 +1,26 @@
+{
+  "name": "hub-native",
+  "description": "Hub-side native engine demo — validates hub_script_runner.cpp B12 fix.  Hub runs a C++ native plugin (.so) and emits on_init + periodic on_tick + on_stop logs.  No roles — this is a hub-only smoke test of the hub native-engine load path.",
+  "duration_s": 10,
+  "shutdown_signal": "SIGTERM",
+  "shutdown_grace_s": 10,
+  "setup": {
+    "env": { "PYLABHUB_HUB_PASSWORD": "demo-password" },
+    "commands": [
+      {"args": ["bash", "build_plugins.sh", "$BIN_DIR"], "timeout_s": 30, "must_succeed": true},
+      {"args": ["plh_hub", "--config", "hub/hub.json", "--keygen"], "timeout_s": 20, "must_succeed": true}
+    ]
+  },
+  "processes": [
+    {"name": "hub", "binary": "plh_hub", "args": ["hub"], "wait_for_marker": "HubNative started", "startup_timeout_s": 10, "role_log_glob": "hub/logs/*.log"}
+  ],
+  "expected_warnings": [], "expected_errors": [],
+  "evaluators": [
+    {"type": "all_processes_started"},
+    {"type": "log_marker_present", "process": "hub", "marker": "HubNative started"},
+    {"type": "log_marker_min_count", "process": "hub", "marker": "HubNative tick=", "min": 5},
+    {"type": "log_marker_present", "process": "hub", "marker": "HubNative STOPPED"},
+    {"type": "no_unexpected_errors"},
+    {"type": "clean_shutdown"}
+  ]
+}
