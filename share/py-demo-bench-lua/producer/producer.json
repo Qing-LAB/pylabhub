@@ -1,0 +1,26 @@
+{
+  "producer": {
+    "name": "BenchProd", "uid": "prod.benchprod.uid00000001",
+    "log_level": "info", "auth": { "keyfile": "" }
+  },
+  "out_hub_dir": "../hub",
+  "out_channel": "bench.chan.lua",
+  "out_transport": "shm",
+  "out_shm_enabled": true,
+  "out_shm_slot_count": 4096,
+  "out_shm_secret": 6222222222,
+  "out_slot_schema": {
+    "packing": "aligned",
+    "fields": [
+      {"name": "count",   "type": "int64"},
+      {"name": "value",   "type": "float64"},
+      {"name": "payload", "type": "float32", "count": 1020}
+    ]
+  },
+  "out_flexzone_schema": null,
+  "loop_timing": "max_rate",
+  "checksum": "enforced",
+  "flexzone_checksum": true,
+  "script": { "type": "lua", "path": "." },
+  "stop_on_script_error": false
+}

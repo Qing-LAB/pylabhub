@@ -1,0 +1,10 @@
+hub/vault/
+hub/hub.pubkey
+hub/hub.json.lock
+hub/logs/
+producer/logs/
+consumer/logs/
+producer/script/native/plugin.so
+consumer/script/native/plugin.so
+logs/
+.runs/
