@@ -1,0 +1,28 @@
+{
+  "producer": {
+    "name":      "LuaProd",
+    "uid":       "prod.luaprod.uid00000001",
+    "log_level": "info",
+    "auth":      { "keyfile": "" }
+  },
+  "out_hub_dir":  "../hub",
+  "out_channel":  "lab.demo.lua",
+  "out_transport":      "shm",
+  "out_shm_enabled":    true,
+  "out_shm_slot_count": 64,
+  "out_shm_secret":     3333333333,
+  "out_slot_schema": {
+    "packing": "aligned",
+    "fields": [
+      {"name": "count", "type": "int64"},
+      {"name": "value", "type": "float64"}
+    ]
+  },
+  "out_flexzone_schema": null,
+  "loop_timing":       "fixed_rate",
+  "target_period_ms":  20,
+  "checksum":          "enforced",
+  "flexzone_checksum": true,
+  "script":               { "type": "lua", "path": "." },
+  "stop_on_script_error": false
+}

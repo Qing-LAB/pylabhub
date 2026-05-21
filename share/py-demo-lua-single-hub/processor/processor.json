@@ -1,0 +1,40 @@
+{
+  "processor": {
+    "name":      "LuaProc",
+    "uid":       "proc.luaproc.uid00000001",
+    "log_level": "info",
+    "auth":      { "keyfile": "" }
+  },
+  "in_hub_dir":  "../hub",
+  "out_hub_dir": "../hub",
+  "in_channel":  "lab.demo.lua",
+  "out_channel": "lab.demo.lua.processed",
+  "in_transport":   "shm",
+  "out_transport":  "shm",
+  "in_shm_enabled":     true,
+  "in_shm_secret":      3333333333,
+  "out_shm_enabled":    true,
+  "out_shm_slot_count": 64,
+  "out_shm_secret":     4444444444,
+  "in_slot_schema": {
+    "packing": "aligned",
+    "fields": [
+      {"name": "count", "type": "int64"},
+      {"name": "value", "type": "float64"}
+    ]
+  },
+  "out_slot_schema": {
+    "packing": "aligned",
+    "fields": [
+      {"name": "count",    "type": "int64"},
+      {"name": "value",    "type": "float64"},
+      {"name": "doubled",  "type": "float64"}
+    ]
+  },
+  "out_flexzone_schema": null,
+  "loop_timing":          "max_rate",
+  "checksum":             "enforced",
+  "flexzone_checksum":    true,
+  "script":               { "type": "lua", "path": "." },
+  "stop_on_script_error": false
+}
