@@ -1,0 +1,27 @@
+{
+  "name": "bench-engine-python",
+  "description": "Engine-throughput baseline (Python).  Producer + consumer at max_rate, scalar 16B slot, no numpy.  Producer runs for MEASUREMENT_S=40s, then band-broadcasts drain so consumer stops cleanly.  Reports avg + steady (warmup-excluded) rates.",
+  "duration_s": 60,
+  "shutdown_signal": "SIGTERM",
+  "shutdown_grace_s": 10,
+  "setup": {
+    "env": { "PYLABHUB_HUB_PASSWORD": "demo-password" },
+    "commands": [
+      {"args": ["plh_hub", "--config", "hub/hub.json", "--keygen"], "timeout_s": 20, "must_succeed": true}
+    ]
+  },
+  "processes": [
+    {"name": "hub", "binary": "plh_hub", "args": ["hub"], "wait_for_marker": "Broker: listening on tcp", "startup_timeout_s": 10, "role_log_glob": "hub/logs/*.log"},
+    {"name": "producer", "binary": "plh_role", "args": ["--role", "producer", "producer"], "wait_for_marker": "BenchProd-Python started", "startup_timeout_s": 10, "depends_on": ["hub"], "role_log_glob": "producer/logs/*.log"},
+    {"name": "consumer", "binary": "plh_role", "args": ["--role", "consumer", "consumer"], "wait_for_marker": "BenchCons-Python started", "startup_timeout_s": 10, "depends_on": ["producer"], "role_log_glob": "consumer/logs/*.log"}
+  ],
+  "expected_warnings": [], "expected_errors": [],
+  "evaluators": [
+    {"type": "all_processes_started"},
+    {"type": "log_marker_present", "process": "producer", "marker": "BENCH-PROD engine=python"},
+    {"type": "log_marker_present", "process": "consumer", "marker": "BENCH-CONS engine=python"},
+    {"type": "log_marker_present", "process": "consumer", "marker": "BenchCons received drain"},
+    {"type": "no_unexpected_errors"},
+    {"type": "clean_shutdown"}
+  ]
+}

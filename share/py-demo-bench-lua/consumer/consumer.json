@@ -1,0 +1,25 @@
+{
+  "consumer": {
+    "name": "BenchCons", "uid": "cons.benchcons.uid00000001",
+    "log_level": "info", "auth": { "keyfile": "" }
+  },
+  "in_hub_dir": "../hub",
+  "in_channel": "bench.chan.lua",
+  "in_transport": "shm",
+  "in_shm_enabled": true,
+  "in_shm_secret": 6222222222,
+  "in_slot_schema": {
+    "packing": "aligned",
+    "fields": [
+      {"name": "count",   "type": "int64"},
+      {"name": "value",   "type": "float64"},
+      {"name": "payload", "type": "float32", "count": 1020}
+    ]
+  },
+  "in_flexzone_schema": null,
+  "loop_timing": "max_rate",
+  "checksum": "enforced",
+  "flexzone_checksum": false,
+  "script": { "type": "lua", "path": "." },
+  "stop_on_script_error": false
+}
