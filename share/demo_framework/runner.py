@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import signal
 import subprocess
@@ -68,6 +69,18 @@ class EvaluatorSpec:
 
 
 @dataclass
+class SetupCommandSpec:
+    """One one-shot setup command run before the demo's long-lived
+    processes are spawned.  Used for first-run actions like
+    `plh_hub --keygen` to provision the hub's CurveZMQ vault."""
+    args: List[str]
+    cwd: Optional[str] = None
+    env: Dict[str, str] = field(default_factory=dict)
+    timeout_s: float = 30.0
+    must_succeed: bool = True
+
+
+@dataclass
 class DemoManifest:
     """Parsed demo.manifest.json."""
     name: str
@@ -79,6 +92,8 @@ class DemoManifest:
     evaluators: List[EvaluatorSpec] = field(default_factory=list)
     expected_warnings: List[str] = field(default_factory=list)
     expected_errors: List[str] = field(default_factory=list)
+    setup_commands: List[SetupCommandSpec] = field(default_factory=list)
+    setup_env: Dict[str, str] = field(default_factory=dict)
 
 
 def load_manifest(manifest_path: Path) -> DemoManifest:
@@ -101,6 +116,18 @@ def load_manifest(manifest_path: Path) -> DemoManifest:
         EvaluatorSpec(type=e["type"], params={k: v for k, v in e.items() if k != "type"})
         for e in raw.get("evaluators", [])
     ]
+    setup_block = raw.get("setup", {})
+    setup_env = dict(setup_block.get("env", {}))
+    setup_cmds = [
+        SetupCommandSpec(
+            args=c["args"],
+            cwd=c.get("cwd"),
+            env={**setup_env, **c.get("env", {})},
+            timeout_s=c.get("timeout_s", 30.0),
+            must_succeed=c.get("must_succeed", True),
+        )
+        for c in setup_block.get("commands", [])
+    ]
     return DemoManifest(
         name=raw["name"],
         description=raw.get("description", ""),
@@ -111,6 +138,8 @@ def load_manifest(manifest_path: Path) -> DemoManifest:
         evaluators=evs,
         expected_warnings=raw.get("expected_warnings", []),
         expected_errors=raw.get("expected_errors", []),
+        setup_commands=setup_cmds,
+        setup_env=setup_env,
     )
 
 
@@ -146,6 +175,51 @@ class DemoRun:
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.processes: Dict[str, RunningProcess] = {}
         self._open_files: List = []  # keep handles alive for the run
+
+    # ── Setup phase ────────────────────────────────────────────────────────
+
+    def run_setup(self) -> None:
+        """Run one-shot setup commands declared in the manifest (e.g.
+        `plh_hub --keygen` to provision the hub's CurveZMQ vault).  Each
+        command runs with the demo_dir as cwd by default and inherits the
+        manifest's setup_env merged with the parent process env.  A
+        non-zero exit raises SetupFailure unless `must_succeed=false`."""
+        if not self.manifest.setup_commands:
+            return
+        print(f"[runner] running {len(self.manifest.setup_commands)} setup "
+              f"command(s)")
+        for i, cmd in enumerate(self.manifest.setup_commands):
+            resolved_args = [self._resolve_arg(a) for a in cmd.args]
+            # If the first arg matches a known binary, resolve against bin_dir.
+            if resolved_args and not Path(resolved_args[0]).is_absolute():
+                candidate = self.bin_dir / resolved_args[0]
+                if candidate.exists():
+                    resolved_args[0] = str(candidate)
+            cwd = self.demo_dir if cmd.cwd is None else (self.demo_dir / cmd.cwd).resolve()
+            env = {**os.environ, **cmd.env}
+            print(f"[runner]   setup[{i}]: {' '.join(resolved_args)} (cwd={cwd})")
+            try:
+                result = subprocess.run(
+                    resolved_args, cwd=str(cwd), env=env,
+                    capture_output=True, text=True, timeout=cmd.timeout_s)
+            except subprocess.TimeoutExpired:
+                if cmd.must_succeed:
+                    raise SetupFailure(
+                        f"setup command {i} ({resolved_args}) timed out "
+                        f"after {cmd.timeout_s}s")
+                print(f"[runner]   setup[{i}]: TIMEOUT (must_succeed=false; continuing)")
+                continue
+            if result.returncode != 0:
+                stderr_tail = (result.stderr or "").splitlines()[-5:]
+                if cmd.must_succeed:
+                    raise SetupFailure(
+                        f"setup command {i} ({resolved_args}) failed with rc="
+                        f"{result.returncode}\nstderr tail:\n  " +
+                        "\n  ".join(stderr_tail))
+                print(f"[runner]   setup[{i}]: rc={result.returncode} "
+                      f"(must_succeed=false; continuing)")
+            else:
+                print(f"[runner]   setup[{i}]: ok")
 
     # ── Spawning ───────────────────────────────────────────────────────────
 
@@ -204,12 +278,18 @@ class DemoRun:
         stderr_f = open(stderr_path, "w")
         self._open_files += [stdout_f, stderr_f]
 
+        # Inherit the parent env, overlaid with the manifest's setup_env
+        # so long-lived processes also see things like PYLABHUB_HUB_PASSWORD
+        # (the hub process needs it at run time to unlock the vault).
+        env = {**os.environ, **self.manifest.setup_env}
+
         print(f"[runner] spawning '{spec.name}': {' '.join(cmd)} (cwd={cwd})")
         popen = subprocess.Popen(
             cmd,
             cwd=str(cwd),
             stdout=stdout_f,
             stderr=stderr_f,
+            env=env,
             # Forward signals to children; default is fine for SIGTERM at shutdown.
         )
         self.processes[spec.name] = RunningProcess(
@@ -311,6 +391,10 @@ class DemoRun:
 
 
 class SteadyStateFailure(RuntimeError):
+    pass
+
+
+class SetupFailure(RuntimeError):
     pass
 
 
@@ -610,6 +694,14 @@ def run_one(demo_dir: Path, args: argparse.Namespace) -> int:
         return 3
 
     run = DemoRun(demo_dir, manifest, bin_dir, run_dir)
+    try:
+        run.run_setup()
+    except SetupFailure as exc:
+        print(f"[runner] setup failure: {exc}", file=sys.stderr)
+        return 2
+    except FileNotFoundError as exc:
+        print(f"[runner] {exc}", file=sys.stderr)
+        return 3
     try:
         run.launch()
     except SteadyStateFailure as exc:
