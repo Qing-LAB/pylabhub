@@ -379,6 +379,16 @@ bool ConsumerRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
     // build_rx_queue reads those directly from RoleAPIBase state
     // (set via set_channel / set_name, already called above).
     hub::RxQueueOptions opts;
+    // Audit B5/G21 (2026-05-20, demo-harness discovery): the SHM block
+    // name is the channel name — the producer's `ShmQueue::create_writer`
+    // takes `tx_channel` as its first arg, and the consumer's
+    // `ShmQueue::create_reader` takes `shm_name` as its first arg.  Set
+    // them to the same string here.  Pre-fix `opts.shm_name` was empty,
+    // so `RoleAPIBase::build_rx_queue` skipped the SHM branch entirely
+    // and fell through to ZMQ (which also failed for SHM-transport
+    // pipelines).  See `tests/test_layer3_datahub/workers/role_api_flexzone_workers.cpp`
+    // `make_consumer_opts` for the canonical L3 pattern.
+    opts.shm_name             = ch;
     opts.shm_shared_secret    = shm.enabled ? shm.secret : 0u;
     opts.slot_spec            = in_slot_spec_;        // fields + packing
     opts.fz_spec              = core_.in_fz_spec();   // for schema-hash match
