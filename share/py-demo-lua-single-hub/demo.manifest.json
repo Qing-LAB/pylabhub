@@ -1,0 +1,73 @@
+{
+  "name": "lua-single-hub",
+  "description": "Lua engine demo — single-hub SHM pipeline (producer→processor→consumer) running LuaJIT scripts via `script.type: \"lua\"`.  Scalar payload (count, value, doubled).  Producer hits SLOT_TARGET=200 → api:stop() → cross-process channel-close cascade.",
+  "duration_s": 20,
+  "shutdown_signal": "SIGTERM",
+  "shutdown_grace_s": 10,
+
+  "setup": {
+    "env": { "PYLABHUB_HUB_PASSWORD": "demo-password" },
+    "commands": [
+      {
+        "args":         ["plh_hub", "--config", "hub/hub.json", "--keygen"],
+        "timeout_s":    20,
+        "must_succeed": true
+      }
+    ]
+  },
+
+  "processes": [
+    {
+      "name":            "hub",
+      "binary":          "plh_hub",
+      "args":            ["hub"],
+      "wait_for_marker": "Broker: listening on tcp",
+      "startup_timeout_s": 10,
+      "role_log_glob":   "hub/logs/*.log"
+    },
+    {
+      "name":            "producer",
+      "binary":          "plh_role",
+      "args":            ["--role", "producer", "producer"],
+      "wait_for_marker": "LuaProd started",
+      "startup_timeout_s": 10,
+      "depends_on":      ["hub"],
+      "role_log_glob":   "producer/logs/*.log"
+    },
+    {
+      "name":            "processor",
+      "binary":          "plh_role",
+      "args":            ["--role", "processor", "processor"],
+      "wait_for_marker": "LuaProc started",
+      "startup_timeout_s": 10,
+      "depends_on":      ["producer"],
+      "role_log_glob":   "processor/logs/*.log"
+    },
+    {
+      "name":            "consumer",
+      "binary":          "plh_role",
+      "args":            ["--role", "consumer", "consumer"],
+      "wait_for_marker": "LuaCons started",
+      "startup_timeout_s": 10,
+      "depends_on":      ["processor"],
+      "role_log_glob":   "consumer/logs/*.log"
+    }
+  ],
+
+  "expected_warnings": [],
+  "expected_errors":   [],
+
+  "evaluators": [
+    {"type": "all_processes_started"},
+    {"type": "log_marker_present", "process": "producer",
+     "marker": "LuaProd STOPPED total="},
+    {"type": "log_marker_present", "process": "processor",
+     "marker": "LuaProc STOPPED processed="},
+    {"type": "log_marker_present", "process": "consumer",
+     "marker": "LuaCons STOPPED total_received="},
+    {"type": "log_marker_present", "process": "producer",
+     "marker": "LuaProd reached target=200"},
+    {"type": "no_unexpected_errors"},
+    {"type": "clean_shutdown"}
+  ]
+}
