@@ -1,0 +1,60 @@
+{
+  "name": "native-single-hub",
+  "description": "Native engine demo — single-hub SHM producer using a C++ shared-library plugin (NativeEngine).  Plugin built by setup_commands (g++ → plugin.so) using the staged native_engine_api.h header.  Producer-only (proves the native engine path; processor/consumer can reuse the same pattern).",
+  "duration_s": 15,
+  "shutdown_signal": "SIGTERM",
+  "shutdown_grace_s": 10,
+
+  "setup": {
+    "env": { "PYLABHUB_HUB_PASSWORD": "demo-password" },
+    "commands": [
+      {
+        "args":         ["bash", "build_plugins.sh", "$BIN_DIR"],
+        "timeout_s":    30,
+        "must_succeed": true
+      },
+      {
+        "args":         ["plh_hub", "--config", "hub/hub.json", "--keygen"],
+        "timeout_s":    20,
+        "must_succeed": true
+      }
+    ]
+  },
+
+  "processes": [
+    {
+      "name":            "hub",
+      "binary":          "plh_hub",
+      "args":            ["hub"],
+      "wait_for_marker": "Broker: listening on tcp",
+      "startup_timeout_s": 10,
+      "role_log_glob":   "hub/logs/*.log"
+    },
+    {
+      "name":            "producer",
+      "binary":          "plh_role",
+      "args":            ["--role", "producer", "producer"],
+      "wait_for_marker": "NativeProd started",
+      "startup_timeout_s": 10,
+      "depends_on":      ["hub"],
+      "role_log_glob":   "producer/logs/*.log"
+    }
+  ],
+
+  "expected_warnings": [],
+  "expected_errors":   [
+    "CRITICAL: NativeProd reached SLOT_TARGET"
+  ],
+
+  "evaluators": [
+    {"type": "all_processes_started"},
+    {"type": "log_marker_present", "process": "producer",
+     "marker": "NativeProd loaded"},
+    {"type": "log_marker_present", "process": "producer",
+     "marker": "NativeProd reached target"},
+    {"type": "log_marker_present", "process": "producer",
+     "marker": "NativeProd STOPPED total="},
+    {"type": "no_unexpected_errors"},
+    {"type": "clean_shutdown"}
+  ]
+}

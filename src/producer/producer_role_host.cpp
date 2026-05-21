@@ -225,7 +225,14 @@ void ProducerRoleHost::worker_main_()
     params.api                = &api_ref;
     params.tag                = "prod";
     params.script_dir         = script_dir;
-    params.entry_point        = (sc.type == "lua") ? "init.lua" : "__init__.py";
+    // Audit B12 (2026-05-21, demo-harness discovery): native engines
+    // need a .so filename, not "__init__.py".  Pre-fix the ternary
+    // covered only lua/python; type=="native" fell through to
+    // "__init__.py" and the native engine's load_script tried
+    // <dir>/__init__.py + <dir> (as a .so), both failed.
+    params.entry_point        = (sc.type == "lua")    ? "init.lua"
+                              : (sc.type == "native") ? "plugin.so"
+                                                      : "__init__.py";
     params.required_callback  = "on_produce";
     params.out_slot_spec      = out_slot_spec_;
     params.out_fz_spec        = out_fz_local;

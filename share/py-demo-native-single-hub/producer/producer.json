@@ -1,0 +1,28 @@
+{
+  "producer": {
+    "name":      "NativeProd",
+    "uid":       "prod.nativeprod.uid00000001",
+    "log_level": "info",
+    "auth":      { "keyfile": "" }
+  },
+  "out_hub_dir":  "../hub",
+  "out_channel":  "lab.demo.native",
+  "out_transport":      "shm",
+  "out_shm_enabled":    true,
+  "out_shm_slot_count": 64,
+  "out_shm_secret":     5555555555,
+  "out_slot_schema": {
+    "packing": "aligned",
+    "fields": [
+      {"name": "count", "type": "int64"},
+      {"name": "value", "type": "float64"}
+    ]
+  },
+  "out_flexzone_schema": null,
+  "loop_timing":       "fixed_rate",
+  "target_period_ms":  20,
+  "checksum":          "enforced",
+  "flexzone_checksum": true,
+  "script":               { "type": "native", "path": "." },
+  "stop_on_script_error": false
+}
