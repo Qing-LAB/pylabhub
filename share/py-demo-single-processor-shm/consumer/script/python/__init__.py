@@ -1,36 +1,54 @@
-"""Throughput consumer.
+"""Throughput consumer with band-coordinated shutdown.
 
-For each input slot, accumulate count + bytes for rate reporting.  Every
-5000th slot, log per-slot stats AND the flexzone's running cumulative
-stats (visible as rx.fz, zero-copy read-only view per HEP-CORE-0019
-§8.4).
+Reads processor's processed slot + flexzone running stats; once
+SLOT_TARGET messages have been received, broadcasts `b"drain"` to
+the `!demo.shutdown` band so the producer and processor can exit
+cleanly on their own, then calls api.stop() to exit itself.
+
+This avoids the harness's SIGTERM cascade and the resulting
+`Socket operation on non-socket` teardown race (Audit B9).  All
+roles exit via api.stop() under their own steam; the hub stays
+alive until they've deregistered.
 """
 
 import time
 
 BLOCK_SIZE = 4096
-SLOT_BYTES_IN = 8 + 8 + 4 * BLOCK_SIZE + 8 * 4   # count+ts+processed[]+4*float64
-                                                  # = 16432 bytes per slot
+SLOT_BYTES_IN = 8 + 8 + 4 * BLOCK_SIZE + 8 * 4   # 16432 per slot
+SHUTDOWN_BAND  = "!demo.shutdown"
+SLOT_TARGET    = 20000  # ~5 s at ~4 kHz; sufficient for stable rate
 
 _received = 0
 _t0 = 0.0
-_fz = None  # rx flexzone view; doc §8.4 says rx.fz, but the
-            # ConsumerAPI/RxChannel binding doesn't expose .fz — use
-            # api.flexzone() instead.  Audit B6 (2026-05-21).
+_fz = None
+_drain_sent = False
+
+
+_band_joined = False
 
 
 def on_init(api) -> None:
     global _t0, _fz
     _t0 = time.time()
-    _fz = api.flexzone()  # read-only view of the producer's (here:
-                           # processor's) flexzone
+    _fz = api.flexzone()
+    # band_join deferred to on_consume (handler not yet up here —
+    # see HEP-CORE-0011 §"Initialization Protocol").
     api.log("info",
             f"DemoConsumer started uid={api.uid()} channel={api.channel()} "
-            f"slot_bytes={SLOT_BYTES_IN}")
+            f"slot_bytes={SLOT_BYTES_IN} target={SLOT_TARGET} "
+            f"band={SHUTDOWN_BAND}")
 
 
 def on_consume(rx, messages, api) -> bool:
-    global _received
+    global _received, _drain_sent, _band_joined
+    if not _band_joined:
+        res = api.band_join(SHUTDOWN_BAND)
+        if res is not None and res.get("status") == "success":
+            _band_joined = True
+            api.log("info", f"DemoConsumer joined band '{SHUTDOWN_BAND}'")
+        else:
+            api.log("warn", f"DemoConsumer band_join('{SHUTDOWN_BAND}') failed: {res}")
+            _band_joined = True
     if rx.slot is None:
         return True
     _received += 1
@@ -49,7 +67,24 @@ def on_consume(rx, messages, api) -> bool:
                 f"slot_mean={rx.slot.slot_mean:.4f} "
                 f"rate={rate:.0f} slots/s throughput={mib:.1f} MiB/s"
                 f"{fz_line}")
+    # Trigger coordinated shutdown once we've collected enough.
+    if not _drain_sent and _received >= SLOT_TARGET:
+        _drain_sent = True
+        api.log("info",
+                f"DemoConsumer reached target={SLOT_TARGET} — "
+                f"broadcasting 'drain' on '{SHUTDOWN_BAND}' and stopping")
+        api.band_broadcast(SHUTDOWN_BAND, {"cmd": "drain"})
+        api.stop()
     return True
+
+
+def on_band_message(band, sender, body, api) -> None:
+    # Consumer subscribes to its own band so this fires; we
+    # already initiated stop above, so this is a no-op log only.
+    if band == SHUTDOWN_BAND and isinstance(body, dict) and body.get("cmd") == "drain":
+        api.log("info",
+                f"DemoConsumer saw own drain echo on '{band}' "
+                f"from '{sender}' (no-op)")
 
 
 def on_stop(api) -> None:
