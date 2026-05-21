@@ -140,9 +140,36 @@ class PYLABHUB_UTILS_EXPORT BrokerRequestComm
                         const std::string &msg,
                         const std::string &data);
     void send_checksum_error(const nlohmann::json &report);
-    void send_endpoint_update(const std::string &channel,
-                              const std::string &key,
-                              const std::string &endpoint);
+
+    /// Update a producer's endpoint registration on the broker.
+    ///
+    /// Sync Request/Response per HEP-CORE-0007 §12.2.1 + HEP-CORE-0021
+    /// §16.3.  Blocks up to `timeout_ms` waiting for
+    /// `ENDPOINT_UPDATE_ACK` (success) or `ERROR` (rejection).  Returns
+    /// the broker reply body on either outcome, or `nullopt` on
+    /// timeout / transport failure.
+    ///
+    /// **Caller contract**:
+    ///   - reply `status == "success"` → broker has durably updated
+    ///     `ProducerEntry.zmq_node_endpoint`; subsequent DISC_REQs
+    ///     from any client are guaranteed to observe the new endpoint.
+    ///     Safe to proceed (start data flow, become discoverable).
+    ///   - reply `status == "error"` → broker rejected (typed `error`
+    ///     code, e.g. `NOT_CHANNEL_OWNER`).  Producer must abort
+    ///     startup; do NOT proceed to data flow.
+    ///   - `nullopt` → broker unreachable, BRC disconnected, or no
+    ///     reply within `timeout_ms`.  Treat as transient failure;
+    ///     producer must NOT assume the mutation took effect.
+    ///
+    /// History: was `void` (fire-and-forget) through 2026-05-21.  The
+    /// wire ACK existed (`broker_service.cpp:1025`) but the BRC dropped
+    /// it — a half-mix that HEP-0007 §12.2.1 now explicitly prohibits.
+    /// Switched to sync REQ/REP per the design clarification.
+    std::optional<nlohmann::json>
+    send_endpoint_update(const std::string &channel,
+                         const std::string &endpoint_type,
+                         const std::string &endpoint,
+                         int timeout_ms = 5000);
 
     // ── Request-reply (thread-safe, blocks until reply or timeout) ───────
     //
