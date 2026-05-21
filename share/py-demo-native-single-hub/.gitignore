@@ -1,0 +1,8 @@
+hub/vault/
+hub/hub.pubkey
+hub/hub.json.lock
+hub/logs/
+producer/logs/
+producer/script/native/plugin.so
+logs/
+.runs/

@@ -214,7 +214,10 @@ void ConsumerRoleHost::worker_main_()
     params.api                = &api_ref;
     params.tag                = "cons";
     params.script_dir         = script_dir;
-    params.entry_point        = (sc.type == "lua") ? "init.lua" : "__init__.py";
+    // Audit B12 (2026-05-21): see producer_role_host.cpp comment.
+    params.entry_point        = (sc.type == "lua")    ? "init.lua"
+                              : (sc.type == "native") ? "plugin.so"
+                                                      : "__init__.py";
     params.required_callback  = "on_consume";
     params.in_slot_spec       = in_slot_spec_;
     params.in_fz_spec         = in_fz_local;
