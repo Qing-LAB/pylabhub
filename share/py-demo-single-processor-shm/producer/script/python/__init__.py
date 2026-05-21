@@ -46,7 +46,19 @@ def on_produce(tx, messages, api) -> bool:
 
 def on_stop(api) -> None:
     elapsed = max(time.time() - _t0, 1e-9)
+    m = api.metrics()
+    loop = m.get("loop", {}) or {}
+    q    = m.get("queue", {}) or {}
+    role = m.get("role", {}) or {}
+    iters = loop.get("iteration_count", 0)
     api.log("info",
             f"DemoProducer STOPPED total={_count} "
             f"avg_rate={_count/elapsed:.0f} slots/s "
-            f"avg_throughput={_count*BLOCK_SIZE*4/(1024*1024)/elapsed:.1f} MiB/s")
+            f"avg_throughput={_count*BLOCK_SIZE*4/(1024*1024)/elapsed:.1f} MiB/s "
+            f"| iters={iters} ({iters/elapsed:.0f}/s) "
+            f"work_us_last={loop.get('last_cycle_work_us','n/a')} "
+            f"overruns={loop.get('loop_overrun_count','n/a')} "
+            f"acquire_retries={loop.get('acquire_retry_count','n/a')} "
+            f"slot_wait_us_last={q.get('last_slot_wait_us','n/a')} "
+            f"written={role.get('out_slots_written','n/a')} "
+            f"drops={role.get('out_drop_count','n/a')}")

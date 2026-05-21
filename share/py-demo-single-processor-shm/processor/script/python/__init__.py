@@ -87,7 +87,22 @@ def on_process(rx, tx, messages, api) -> bool:
 
 def on_stop(api) -> None:
     elapsed = max(time.time() - _t0, 1e-9)
+    m = api.metrics()
+    loop = m.get("loop", {}) or {}
+    iq   = m.get("in_queue", {}) or {}
+    oq   = m.get("out_queue", {}) or {}
+    role = m.get("role", {}) or {}
+    iters = loop.get("iteration_count", 0)
     api.log("info",
             f"DemoProcessor STOPPED processed={_processed} "
             f"avg_rate={_processed/elapsed:.0f} slots/s "
-            f"in_throughput={_processed*BLOCK_SIZE*4/(1024*1024)/elapsed:.1f} MiB/s")
+            f"in_throughput={_processed*BLOCK_SIZE*4/(1024*1024)/elapsed:.1f} MiB/s "
+            f"| iters={iters} ({iters/elapsed:.0f}/s) "
+            f"work_us_last={loop.get('last_cycle_work_us','n/a')} "
+            f"overruns={loop.get('loop_overrun_count','n/a')} "
+            f"acquire_retries={loop.get('acquire_retry_count','n/a')} "
+            f"in_wait_us_last={iq.get('last_slot_wait_us','n/a')} "
+            f"out_wait_us_last={oq.get('last_slot_wait_us','n/a')} "
+            f"in_received={role.get('in_slots_received','n/a')} "
+            f"out_written={role.get('out_slots_written','n/a')} "
+            f"drops={role.get('out_drop_count','n/a')}")
