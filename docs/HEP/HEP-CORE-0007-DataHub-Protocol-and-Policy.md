@@ -754,8 +754,13 @@ a result, then sends `_ACK` (success) or `ERROR` (rejection).
   durability guarantee — the broker mutates state BEFORE emitting
   the ACK, so any subsequent observation by any other client is
   guaranteed to see the mutation.
-- **Examples**: REG_REQ, DEREG_REQ, DISC_REQ, BAND_JOIN_REQ,
-  BAND_LEAVE_REQ, ENDPOINT_UPDATE_REQ, METRICS_REQ, etc.
+- **Complete list (audit 2026-05-21):** REG_REQ, DISC_REQ,
+  DEREG_REQ, CONSUMER_REG_REQ, CONSUMER_DEREG_REQ,
+  ENDPOINT_UPDATE_REQ, CHANNEL_LIST_REQ, SHM_BLOCK_QUERY_REQ,
+  ROLE_PRESENCE_REQ, ROLE_INFO_REQ, BAND_JOIN_REQ,
+  BAND_LEAVE_REQ, BAND_MEMBERS_REQ.  Also: SCHEMA_REQ and
+  METRICS_REQ exist as broker handlers but have no production
+  caller — see task #95 for KEEP-RESERVED / DELETE decision.
 
 **Fire-and-Forget (§12.4)** — broker processes silently; no reply
 on the wire.
@@ -766,7 +771,8 @@ on the wire.
 - **When to use**: heartbeats, telemetry, periodic state
   re-assertions — anything where the caller can correctly proceed
   regardless of acceptance.
-- **Examples**: HEARTBEAT_REQ, CHECKSUM_ERROR_REPORT.
+- **Complete list (audit 2026-05-21):** HEARTBEAT_REQ,
+  CHECKSUM_ERROR_REPORT, CHANNEL_BROADCAST_REQ, BAND_BROADCAST_REQ.
 
 **Don't mix.**  A `_REQ` that has a wire `_ACK` MUST have a sync
 client API that observes it.  A `_REQ` whose client API returns
