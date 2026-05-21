@@ -735,13 +735,18 @@ establish_channel():
 At step 2, the broker stores `:0`. At step 7, the actual port is known but never
 communicated back to the broker.
 
-### 16.3 Design: ENDPOINT_UPDATE
+### 16.3 Design: ENDPOINT_UPDATE_REQ — synchronous, response-required
+
+**Shape (per HEP-CORE-0007 §12.2.1):** Sync Request/Response.  Producer
+sends `ENDPOINT_UPDATE_REQ` and **waits** for the broker's reply
+(`ENDPOINT_UPDATE_ACK` on success, `ERROR` on rejection, or timeout)
+before continuing.  Not fire-and-forget.
 
 After the ZmqQueue binds and starts (step 7), `establish_channel` sends an
 `ENDPOINT_UPDATE_REQ` to the broker with the resolved endpoint from
-`ZmqQueue::actual_endpoint()`.
+`ZmqQueue::actual_endpoint()` and blocks on the reply.
 
-**New protocol message:**
+**Wire payload:**
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -749,7 +754,37 @@ After the ZmqQueue binds and starts (step 7), `establish_channel` sends an
 | `endpoint_type` | string | `"zmq_node"` (only this type is mutable post-registration). |
 | `endpoint` | string | Resolved endpoint for THIS producer (e.g., `tcp://127.0.0.1:45782`) |
 
-**Broker response:** `ENDPOINT_UPDATE_ACK` with status `"ok"` or `"error"`.
+**Broker response:** `ENDPOINT_UPDATE_ACK` with `status="ok"`, or
+`ERROR` with a typed error code (`NOT_CHANNEL_OWNER`,
+`ZMQ_ENDPOINT_PORT_ZERO`, `CHANNEL_NOT_FOUND`, ...).
+
+**Caller contract.** The producer side must inspect the reply and branch:
+  - `status="ok"` — mutation durable on the broker; safe to proceed
+    (start data flow, become discoverable).
+  - typed `ERROR` — mutation rejected; producer aborts startup and
+    surfaces the diagnostic.  Does **not** proceed to data flow on
+    an endpoint the broker doesn't know about.
+  - timeout (no reply within configured budget) — broker unreachable
+    or hung; producer aborts startup and surfaces the timeout.
+
+**Durability guarantee.** The broker MUST mutate
+`ProducerEntry.zmq_node_endpoint` **before** emitting
+`ENDPOINT_UPDATE_ACK`.  This makes the ACK a durability barrier: any
+`DISC_REQ` arriving at the broker after the producer has observed
+the ACK is guaranteed to see the updated endpoint.  This is the
+property the test
+`ZmqEndpointRegistryTest.EndpointUpdate_ReflectedInDiscovery`
+relies on; before this clarification the client API was
+fire-and-forget and the test was flaky on CI under load.
+
+**Why not fire-and-forget.**  ENDPOINT_UPDATE_REQ is a state
+mutation that gates downstream discoverability.  A producer that
+proceeded without confirmation would be in a state where it
+believes it's publishing on an endpoint the broker doesn't know
+about — consumers can't find it, and the producer has no signal
+that anything is wrong.  The caller's next decision (start data
+flow / report ready) depends on broker acceptance, so per
+HEP-CORE-0007 §12.2.1 it MUST be sync.
 
 > **Producer resolution is identity-based (Wave M2.5, 2026-05-11).**
 > The broker identifies which producer is calling by matching the
@@ -799,11 +834,25 @@ establish_channel():
   5. Wire Messenger callbacks
   6. ZmqQueue::push_to(":0") → bind → OS assigns :45782
   7. ZmqQueue::start()
-  8. messenger.update_endpoint(channel, actual_endpoint())    ← NEW
-     → broker stores ":45782", marks READY
+  8. messenger.update_endpoint(channel, actual_endpoint())    ← sync per §16.3
+     → broker mutates state, emits ENDPOINT_UPDATE_ACK
+     → caller blocks until ACK / ERROR / timeout
+     → on ACK: broker now reports ":45782" + READY
+     → on ERROR / timeout: establish_channel returns nullopt
   9. Create ShmQueue wrapper
   10. Return Producer
 ```
+
+> **Implementation status (2026-05-21).**  HEP-0021 §16.3 has always
+> intended the sync contract above (§16.6 says "If ENDPOINT_UPDATE_REQ
+> fails, establish_channel returns nullopt" — which implies the caller
+> observes failure).  However the current
+> `BrokerRequestComm::send_endpoint_update` implementation pushes to
+> `cmd_queue` and returns `void`, dropping the ACK.  This is the
+> half-mix shape that HEP-CORE-0007 §12.2.1 prohibits.  Remediation
+> tracked as harness task #90.  Until the BRC fix lands, the L3
+> test `ZmqEndpointRegistryTest.EndpointUpdate_ReflectedInDiscovery`
+> exposes the gap as an intermittent CI failure.
 
 ### 16.6 Design Notes
 

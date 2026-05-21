@@ -731,10 +731,58 @@ Messages are grouped into four categories based on their flow pattern:
 
 | Category | Pattern | Examples |
 |----------|---------|---------|
-| **Request/Response** | Client → Broker → Client | REG_REQ/ACK, DISC_REQ/ACK, CHANNEL_LIST_REQ/ACK, METRICS_REQ/ACK, ROLE_PRESENCE_REQ/ACK, ROLE_INFO_REQ/ACK |
+| **Request/Response** | Client → Broker → Client | REG_REQ/ACK, DISC_REQ/ACK, CHANNEL_LIST_REQ/ACK, METRICS_REQ/ACK, ROLE_PRESENCE_REQ/ACK, ROLE_INFO_REQ/ACK, ENDPOINT_UPDATE_REQ/ACK |
 | **Fire-and-Forget** | Client → Broker (no reply) | HEARTBEAT_REQ, CHECKSUM_ERROR_REPORT, BAND_BROADCAST_REQ |
 | **Unsolicited Push** | Broker → Client (async) | CHANNEL_CLOSING_NOTIFY, CONSUMER_DIED_NOTIFY, BAND_JOIN_NOTIFY, BAND_LEAVE_NOTIFY, BAND_BROADCAST_NOTIFY, ROLE_REGISTERED_NOTIFY, ROLE_DEREGISTERED_NOTIFY |
 | **Band Pub/Sub** | Role → Broker → Members (HEP-CORE-0030) | BAND_JOIN_REQ/ACK, BAND_LEAVE_REQ/ACK, BAND_BROADCAST_REQ, BAND_MEMBERS_REQ/ACK |
+
+### 12.2.1 REQ shape contract — Sync vs Fire-and-Forget (added 2026-05-21)
+
+Every wire frame ending in `_REQ` belongs to exactly one of two
+shapes.  The HEP defining a `_REQ` MUST state which shape it is in
+the corresponding subsection of §12.3 or §12.4.
+
+**Sync Request/Response (§12.3)** — broker mutates state or computes
+a result, then sends `_ACK` (success) or `ERROR` (rejection).
+- **Client API**: `std::optional<json> X(..., int timeout_ms)`.
+  Blocks up to `timeout_ms` and returns the broker's reply (or
+  `nullopt` on timeout / transport failure).
+- **Caller contract**: must inspect the return.  Branch on
+  success / typed error / timeout.
+- **When to use**: whenever the caller's next decision depends on
+  whether the broker accepted the operation.  The ACK is a
+  durability guarantee — the broker mutates state BEFORE emitting
+  the ACK, so any subsequent observation by any other client is
+  guaranteed to see the mutation.
+- **Examples**: REG_REQ, DEREG_REQ, DISC_REQ, BAND_JOIN_REQ,
+  BAND_LEAVE_REQ, ENDPOINT_UPDATE_REQ, METRICS_REQ, etc.
+
+**Fire-and-Forget (§12.4)** — broker processes silently; no reply
+on the wire.
+- **Client API**: returns `void`.
+- **Caller contract**: must NOT depend on broker acceptance.  Loss
+  is recoverable at a higher level (e.g. the next periodic
+  re-assertion).
+- **When to use**: heartbeats, telemetry, periodic state
+  re-assertions — anything where the caller can correctly proceed
+  regardless of acceptance.
+- **Examples**: HEARTBEAT_REQ, CHECKSUM_ERROR_REPORT.
+
+**Don't mix.**  A `_REQ` that has a wire `_ACK` MUST have a sync
+client API that observes it.  A `_REQ` whose client API returns
+`void` MUST NOT have a wire `_ACK` — sending a reply nobody reads
+wastes bandwidth and creates the false impression of acknowledgement.
+
+**Mixed-shape implementations are protocol bugs.**  Detected by:
+- Broker emits `_ACK` but `BrokerRequestComm` method returns `void`
+  (the ACK is dropped at the client).
+- Client API blocks waiting for an `_ACK` the broker never sends
+  (deadlock waiting for a reply that doesn't exist).
+
+Both cases require either the broker side or the client side to be
+brought in line; the rule above tells you which.  Existing in-tree
+audit + remediation tracked as a P3 follow-up (see harness task
+#92).
 
 ### 12.3 Request/Response Messages
 
