@@ -602,6 +602,99 @@ All serialization targets pick it up at compile time.
 
 See HEP-CORE-0008 §6.1 for the full field list and per-role dict layout.
 
+#### 5.4.1 Canonical fields by group (reference table)
+
+The following table enumerates every field that appears in
+`api.metrics()` so script authors can use it as a quick reference
+when wiring diagnostic logs / health checks / alerts.  Field
+sources are the X-macros listed above.
+
+**`queue.*`** (single-direction roles) / **`in_queue.*`** + **`out_queue.*`** (processor):
+
+| Field | Meaning |
+|---|---|
+| `last_slot_wait_us` | µs spent inside the most recent `acquire` blocked on the ring (rx: waiting for a fresh slot; tx: waiting for a free slot).  Sustained > 0 on tx = downstream slower than producer; sustained > 0 on rx = consumer faster than producer. |
+| `last_iteration_us` | µs from acquire-start to commit/discard for the most recent slot. |
+| `max_iteration_us` | Worst-case iteration time observed since start. |
+| `context_elapsed_us` | µs elapsed inside the user's `on_produce` / `on_consume` / `on_process` callback during the most recent iteration. |
+| `last_slot_exec_us` | µs spent in the queue's per-slot bookkeeping (commit / checksum / etc.) for the most recent slot. |
+| `data_drop_count` | Slots discarded due to ring full (producer side) or consumer-side timeout. |
+| `recv_overflow_count` | ZMQ-rx: messages dropped because the recv-ring filled. |
+| `recv_frame_error_count` | ZMQ-rx: frames rejected due to wire-shape mismatch / decoding error. |
+| `recv_gap_count` | ZMQ-rx: monotonic sequence gaps detected (one increment per detected gap, not per missing slot). |
+| `send_drop_count` | ZMQ-tx: messages dropped because the send-ring filled (overflow_policy=drop). |
+| `send_retry_count` | ZMQ-tx: retries inside the send-ring policy loop. |
+| `checksum_error_count` | Slots where BLAKE2b verification failed (consumer side). |
+
+**`loop.*`** (LoopMetricsSnapshot — host's data-loop driver):
+
+| Field | Meaning |
+|---|---|
+| `iteration_count` | Total loop iterations since startup.  Includes ones that exited early (e.g., slot unavailable) — divide by elapsed for raw loop hit-rate. |
+| `loop_overrun_count` | Number of iterations where `fixed_rate` / `fixed_rate_with_compensation` missed its deadline.  Always 0 for `max_rate`. |
+| `last_cycle_work_us` | µs of "active work" (callback + slot bookkeeping) in the most recent iteration.  Compare to `configured_period_us` to see headroom. |
+| `configured_period_us` | Target period for `fixed_rate`; 0 for `max_rate`. |
+| `acquire_retry_count` | Retries during the SHM slot-acquire spin (signals contention). |
+
+**`role.*`** (role-type-specific; no X-macro — see source for the exact set):
+
+| Field | Producer | Consumer | Processor | Meaning |
+|---|---|---|---|---|
+| `in_slots_received`  |  | ✓ | ✓ | Total slots that reached the user callback as `rx.slot != None`. |
+| `out_slots_written`  | ✓ |  | ✓ | Total slots committed for downstream. |
+| `out_drop_count`     | ✓ |  | ✓ | Slots discarded by user callback (returned `False`) or by ring policy. |
+| `script_error_count` | ✓ | ✓ | ✓ | Python/Lua exceptions thrown from a callback (engine recovers, increments counter). |
+
+**`inbox.*`** (HEP-CORE-0027 inbox subsystem; only present when `inbox_schema` is configured):
+
+| Field | Meaning |
+|---|---|
+| `recv_frame_error_count` | Frames rejected on inbox-recv side (decoding / shape mismatch). |
+| `ack_send_error_count` | Per-message ACK send-side errors. |
+| `recv_gap_count` | Per-sender sequence gaps detected. |
+| `checksum_error_count` | Inbox-payload BLAKE2b mismatches. |
+
+**`custom.*`** (string → double map; populated by `api.report_metric(key, value)` and `api.report_metrics(dict)`).
+
+#### 5.4.2 Direct accessor methods (do not require `api.metrics()`)
+
+Scripts may also reach these without parsing the metrics dict.  Each
+returns the value at call time (no caching).  Useful inside tight
+loops where `api.metrics()` (which builds a dict per call) is too
+expensive.
+
+| Method | Returns | Comes from |
+|---|---|---|
+| `api.last_cycle_work_us()` | int µs | `loop.last_cycle_work_us` |
+| `api.loop_overrun_count()` | int | `loop.loop_overrun_count` |
+| `api.script_error_count()` | int | `role.script_error_count` |
+| `api.in_slots_received()` (consumer / processor) | int | `role.in_slots_received` |
+| `api.out_slots_written()` (producer / processor) | int | `role.out_slots_written` |
+| `api.out_drop_count()` (producer / processor) | int | `role.out_drop_count` |
+| `api.last_seq()` (consumer / processor) | int | last-received slot sequence on rx side |
+| `api.in_capacity()` / `api.out_capacity()` | int | ring buffer slot count (SHM) or buffer depth (ZMQ) |
+| `api.in_policy()` / `api.out_policy()` | str | configured overflow policy description |
+| `api.spinlock_count()` | int | configured slot-spinlock count (SHM only; 0 for ZMQ) |
+
+#### 5.4.3 Cross-reference for the demo-harness throughput test
+
+The single-hub throughput demo
+(`share/py-demo-single-processor-shm/`) reports these fields in
+each role's `on_stop` log.  Bottleneck identification per role:
+
+| Symptom | Likely bottleneck |
+|---|---|
+| Producer `out_drop_count` rising AND `last_slot_wait_us ≈ 0` | Downstream stage cannot consume fast enough; ring fills, producer drops |
+| Producer `last_slot_wait_us > 0` and `acquire_retry_count > 0` | Producer can't even acquire a slot quickly — usually SHM consumer racing on the same ring |
+| Processor `in_queue.last_slot_wait_us > 0` consistently | Processor faster than producer — upstream bottleneck |
+| Processor `out_queue.last_slot_wait_us > 0` consistently | Downstream (consumer) bottleneck |
+| Consumer `last_slot_wait_us > 0` consistently | Consumer faster than processor — upstream bottleneck |
+| Any role's `last_cycle_work_us` dominates the per-iter budget | That role's user callback is the bottleneck |
+| `loop_overrun_count` rising on a `fixed_rate` role | Configured period too aggressive for this data shape |
+| `acquire_retry_count` rising | Slot-acquire spin contention on shared SHM ring |
+| `checksum_error_count` rising on consumer/processor rx side | Slot wire-shape mismatch or rapid concurrent producer write during read window |
+| `script_error_count` rising | User callback raising exceptions (engine recovers but slot may be lost) |
+
 ### 5.5 Host-side telemetry injection (`set_metrics_hook`)
 
 **Status (2026-05-20):** Reserved C++ extension point.  No callers in

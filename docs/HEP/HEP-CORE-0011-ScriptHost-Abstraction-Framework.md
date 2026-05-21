@@ -931,24 +931,49 @@ Step 1: Resolve schemas from config
     core.set_out_slot_spec(spec, compute_schema_size(spec, packing))
     core.set_out_fz_spec(spec, align_to_physical_page(compute_schema_size(spec, packing)))
 
-Step 2: Setup infrastructure (no engine dependency)
+Step 2a: Wire api_ identity + config (no infrastructure dependency)
+  - (api_ was constructed earlier by EngineHost::startup_() so the
+     worker thread could spawn under api_'s ThreadManager — bounded join.)
+  - api_->set_name(), set_channel(in or out), set_log_level(),
+     set_script_dir(), set_role_dir(), set_checksum_policy(),
+     set_stop_on_script_error(), set_engine(&engine_).
+  - For processor: also set_out_channel() (processor has BOTH directions).
+
+> **ORDERING (audit B2, 2026-05-20 — demo-harness discovery).**
+> The api_ state wiring MUST happen BEFORE `setup_infrastructure_`,
+> because `build_tx_queue` and `build_rx_queue` read `pImpl->channel`
+> (and `pImpl->out_channel`) to derive the SHM block name —
+> `tx_channel = pImpl->out_channel.empty() ? pImpl->channel : pImpl->out_channel`
+> (`role_api_base.cpp`).  Pre-fix the order was reversed in all three
+> role hosts: setup_infrastructure_ ran first, found an empty channel
+> string, and `shm_create("", ...)` failed with EINVAL — the worker
+> thread threw and the role died at startup.  Discovered via the
+> demo harness; the L3 test that exercises `build_tx_queue` directly
+> through the API (`RoleAPIBase_StartHandlerThreads_DualHub_E2E`) sets
+> channel via `api_->set_channel(...)` before calling build_*_queue,
+> so it never hit the worker_main_ bug.  The fix split Step 2 into
+> Step 2a (api state, unconditional, comes first) + Step 2b
+> (`setup_infrastructure_`, gated on !validate_only) — and the
+> `set_inbox_queue` call moved into Step 2b because it depends on
+> `inbox_queue_` being initialised by `setup_infrastructure_`.
+>
+> The CRTP refactor in Wave-B M9 (`RoleHostFrame<HostT>`) is meant to
+> lift this phase ordering into a single template body so the
+> duplication across producer/consumer/processor role hosts can't
+> drift again.  When M9 lands, the lifted template MUST inherit this
+> Step-2a-before-Step-2b ordering.
+
+Step 2b: Setup infrastructure (depends on Step 2a)
   - Build Tx queue (producer-side) and/or Rx queue (consumer-side) via
     api_->build_tx_queue(...) / api_->build_rx_queue(...).  The factory
     selects ShmQueue or ZmqQueue based on the transport in opts; the
-    queue is owned internally by RoleAPIBase.
-  - Setup inbox via setup_inbox_facility() (shared helper)
-
-Step 3: Wire ctrl-plane pointers + identity onto api_
-  - (api_ was constructed earlier by EngineHost::startup_() so the
-     worker thread can spawn under api_'s ThreadManager — bounded join.)
-  - api_->set_name(), set_channel(in or out), set_log_level(),
-     set_script_dir(), set_role_dir(), set_checksum_policy(),
-     set_stop_on_script_error(), set_engine(&engine_)
-  - api_->set_inbox_queue(inbox_queue_.get())   // if inbox configured
-  - api_->set_broker_comm(broker_comm_.get())   // BRC pointer
-  - (The Tx/Rx queues built in Step 2 are already owned internally by
-     RoleAPIBase; Step 3 only wires ctrl-plane pointers + identity.)
-  - (Broker REG_REQ + heartbeat are handled inside start_ctrl_thread; see Step 6.)
+    queue is owned internally by RoleAPIBase.  For SHM rx, the
+    queue option `shm_name` is the channel name (matches the producer's
+    `ShmQueue::create_writer(channel, ...)` first arg — audit B5).
+  - Setup inbox via setup_inbox_facility() (shared helper).
+  - api_->set_inbox_queue(inbox_queue_.get())   // depends on inbox setup above
+  - (Broker REG_REQ + heartbeat are handled later by start_handler_threads
+    + register_*_channel; see Step 6.)
 
 Step 4: Load engine via engine_lifecycle_startup()
   - Assembles EngineModuleParams (schemas, packing, script_dir, entry_point)
