@@ -477,6 +477,107 @@ int endpoint_update_port_zero_returns_error()
         });
 }
 
+// ── HEP-CORE-0007 §12.2.1 REQ-shape-conformance observability ───────────
+//
+// Runtime check that no fire-and-forget REQ produces a reply at the BRC.
+// The BRC's receive loop counts `unmatched_replies_count` whenever a
+// reply-shape message (`*_ACK` or `ERROR`) arrives with no pending
+// request waiter — that's the runtime fingerprint of a shape-contract
+// violation:
+//   - broker accidentally added `send_reply(...)` for a fire-and-forget
+//     REQ (server side), OR
+//   - BRC method declared `void` (cmd_queue.push) for a REQ whose
+//     broker handler does send_reply (client side — the
+//     ENDPOINT_UPDATE half-mix shipped 2026-05-21).
+// Either way, the silently-dropped reply is observable now.
+
+int req_shape_no_unmatched_replies_for_fire_and_forget()
+{
+    return run_with_host(
+        "zmq_endpoint_registry::req_shape_no_unmatched_replies_for_fire_and_forget",
+        [](HubHost &host) {
+            const std::string channel = pid_chan("zmqvc.shape");
+            const std::string uid     = "prod.ep." + channel;
+
+            BrcHandle bh;
+            bh.start(host.broker_endpoint(), host.broker_pubkey(), uid);
+
+            // Register channel — needed so heartbeat / broadcast / band
+            // calls have a legitimate target.
+            auto opts = make_reg_opts(channel, uid);
+            opts["data_transport"]    = "zmq";
+            opts["zmq_node_endpoint"] = "tcp://127.0.0.1:44777";
+            auto reg = bh.brc.register_channel(opts, 3000);
+            ASSERT_TRUE(reg.has_value());
+
+            // Snapshot baseline.  Should be 0 after a clean
+            // register_channel — sync REQ matches its ACK on the wire.
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            const size_t baseline = bh.brc.unmatched_replies();
+            ASSERT_EQ(baseline, 0u)
+                << "BRC saw " << baseline << " unmatched replies during "
+                << "register_channel — sync REG_REQ/REG_ACK should be "
+                << "fully waited-for.";
+
+            // Exercise every fire-and-forget REQ declared in
+            // HEP-CORE-0007 §12.2.1.  Each is `void`-returning on the
+            // BRC client side; if the broker side accidentally emits
+            // a reply, the BRC's unmatched_replies counter increments.
+            //
+            // HEARTBEAT_REQ — per-presence liveness.
+            bh.brc.send_heartbeat(channel, uid, "producer",
+                                   nlohmann::json::object());
+
+            // CHECKSUM_ERROR_REPORT — Cat-2 broker telemetry.
+            nlohmann::json csum_report;
+            csum_report["channel_name"]   = channel;
+            csum_report["role_uid"]       = uid;
+            csum_report["slot_index"]     = 0;
+            csum_report["expected_hash"]  = "deadbeef";
+            csum_report["observed_hash"]  = "cafebabe";
+            bh.brc.send_checksum_error(csum_report);
+
+            // CHANNEL_BROADCAST_REQ — fan-out to channel members.
+            bh.brc.send_broadcast(channel, uid, "test-broadcast",
+                                   "test-data");
+
+            // BAND_BROADCAST_REQ — fan-out to band members.
+            // Join a band first so the broadcast has a valid target.
+            const std::string band = "!shape.test";
+            auto bj = bh.brc.band_join(band);
+            ASSERT_TRUE(bj.has_value());
+            nlohmann::json body;
+            body["msg"] = "test-band-broadcast";
+            bh.brc.send_broadcast(band, uid, "BAND_BROADCAST_REQ",
+                                   body.dump());
+
+            // Give the broker time to (incorrectly) emit any replies.
+            // Without this, the receive loop might not yet have observed
+            // a reply that arrives milliseconds after our calls return.
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+            // The contract: NONE of the four fire-and-forget REQs above
+            // should have produced a wire reply.  If the broker added an
+            // ACK for any of them (HEP-0007 §12.2.1 violation), this
+            // counter will be non-zero.
+            const size_t final_count = bh.brc.unmatched_replies();
+            EXPECT_EQ(final_count, baseline)
+                << "After exercising " << 4 << " fire-and-forget REQs "
+                << "(HEARTBEAT, CHECKSUM_ERROR_REPORT, CHANNEL_BROADCAST, "
+                << "BAND_BROADCAST), the BRC observed "
+                << (final_count - baseline) << " unmatched reply-shape "
+                << "message(s).  This is the runtime fingerprint of a "
+                << "HEP-CORE-0007 §12.2.1 violation: the broker is "
+                << "emitting an `_ACK` or `ERROR` for a REQ that the "
+                << "shape catalog declares fire-and-forget.  Either fix "
+                << "the broker to stop sending the reply, or move the "
+                << "REQ to the sync list with a sync BRC client method.";
+
+            bh.brc.band_leave(band);
+            bh.stop();
+        });
+}
+
 } // namespace zmq_endpoint_registry
 } // namespace pylabhub::tests::worker
 
@@ -515,6 +616,8 @@ struct ZmqEndpointRegistryRegistrar
                     return endpoint_update_non_producer_returns_error();
                 if (sc == "endpoint_update_port_zero_returns_error")
                     return endpoint_update_port_zero_returns_error();
+                if (sc == "req_shape_no_unmatched_replies_for_fire_and_forget")
+                    return req_shape_no_unmatched_replies_for_fire_and_forget();
                 return -1;
             });
     }

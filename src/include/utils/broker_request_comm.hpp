@@ -105,6 +105,23 @@ class PYLABHUB_UTILS_EXPORT BrokerRequestComm
     /// Signal the poll loop to exit. Safe to call from any thread.
     void stop() noexcept;
 
+    /// HEP-CORE-0007 §12.2.1 shape-conformance observability.
+    ///
+    /// Returns the number of reply-shape messages (`*_ACK` or `ERROR`)
+    /// the BRC received with no matching pending request — i.e. the
+    /// broker emitted a reply nobody was waiting for.  A non-zero
+    /// reading indicates a shape-contract violation: typically the
+    /// broker is sending an `_ACK` for a `_REQ` that the §12.2.1
+    /// catalog declares fire-and-forget (or the BRC client sent a
+    /// request via `cmd_queue.push` that should have been a sync
+    /// `do_request`).  See the receive loop in `broker_request_comm.cpp`.
+    ///
+    /// Thread-safe (atomic load).  Useful for tests
+    /// (`ReqShapeConformance_FireAndForgetReqsHaveNoReply`) and for
+    /// production monitoring — a rising counter on a running hub is
+    /// a useful diagnostic signal.
+    [[nodiscard]] size_t unmatched_replies() const noexcept;
+
     // ── Fire-and-forget messages (thread-safe, enqueued) ─────────────────
 
     /// Send HEARTBEAT_REQ for a specific (channel, uid, role_type)
