@@ -185,84 +185,152 @@ hub-dir/
 `hub.json` is **world-readable (0644)**. It must never contain secrets. The admin token and
 CurveZMQ private key live exclusively in `hub.vault` (0600, encrypted).
 
-> 🚧 **Auth/access fields shown below are placeholders — not currently parsed.**
-> `hub.connection_policy`, `hub.channel_policies`, and `hub.known_roles` are
-> retained in the schema as forward references but are **not** read by
-> `HubBrokerConfig` today (`src/include/utils/config/hub_broker_config.hpp:13-15`
-> deliberately omits them).  Setting them in `hub.json` has no runtime effect;
-> the broker runs with `RoleIdentityPolicy::Open` regardless.  HEP-CORE-0035 §5
-> defines the operational replacement schema (`broker.federation_trust_mode`
-> + `broker.known_roles[].pubkey` required) that will land with that HEP.
+> 🚧 **Auth/access placeholders.**  `hub.connection_policy`,
+> `hub.channel_policies`, and `hub.known_roles` are retained in the
+> *schema* but not parsed by today's binaries — the broker runs with
+> `RoleIdentityPolicy::Open` regardless.  HEP-CORE-0035 §5 defines the
+> operational replacement (`broker.federation_trust_mode` +
+> `broker.known_roles[].pubkey` required) and will activate them when
+> that HEP lands.
+
+> 🆕 **2026-05-21 — canonical schema synced with `plh_hub --init`
+> template.**  Pre-update versions of this section documented the old
+> hub.json shape (top-level `peers`, `hub.broker_endpoint`,
+> `hub.admin_endpoint`, `hub.connection_policy`, `script.tick_interval_ms`,
+> `script.health_log_interval_ms`).  Those fields no longer exist;
+> top-level keys moved into `admin` / `network` / `federation` /
+> `logging` / `state` blocks and `hub` retained only identity + auth.
+> The example below reproduces the `--init` template output verbatim.
 
 ```json
 {
-  "hub": {
-    "name":            "main",
-    "uid":             "HUB-MAIN-3A7F2B1C",
-    "description":     "pyLabHub instance",
-    "broker_endpoint": "tcp://0.0.0.0:5570",
-    "admin_endpoint":  "tcp://127.0.0.1:5600",
-    "connection_policy": "open"
+  "admin": {
+    "enabled":        true,
+    "endpoint":       "tcp://127.0.0.1:5600",
+    "token_required": true
   },
-
   "broker": {
-    "heartbeat_interval_ms":     500,
-    "ready_miss_heartbeats":      10,
-    "pending_miss_heartbeats":    10,
-    "consumer_liveness_check_s":   5
+    "heartbeat_interval_ms":   500,
+    "pending_miss_heartbeats":  10,
+    "ready_miss_heartbeats":    10
   },
-
+  "federation": {
+    "enabled":            false,
+    "forward_timeout_ms": 2000,
+    "peers":              []
+  },
+  "hub": {
+    "auth":      { "keyfile": "vault/hub.vault" },
+    "log_level": "info",
+    "name":      "main",
+    "uid":       "hub.main.uid00000001"
+  },
+  "logging": {
+    "backups":     5,
+    "file_path":   "",
+    "max_size_mb": 10,
+    "timestamped": true
+  },
+  "loop_timing":          "fixed_rate",
+  "network": {
+    "broker_bind":     true,
+    "broker_endpoint": "tcp://127.0.0.1:5570",
+    "zmq_io_threads":  1
+  },
+  "python_venv": "",
   "script": {
-    "type":                   "python",
-    "path":                   "./script",
-    "tick_interval_ms":       1000,
-    "health_log_interval_ms": 60000
+    "path": ".",
+    "type": "python"
   },
-
-  "peers": []
+  "state": {
+    "disconnected_grace_ms":    60000,
+    "max_disconnected_entries":  1000
+  },
+  "stop_on_script_error": false,
+  "target_period_ms":     1000
 }
 ```
 
+**UID format.**  Hub + role UIDs follow HEP-CORE-0033 §G2.2.0b
+grammar: `<tag>.<name>.<unique-suffix>` where `<tag>` is `hub`,
+`prod`, `cons`, or `proc`, and `<unique-suffix>` is `uid` + 8 hex
+chars.  All lowercase, dotted.  Examples: `hub.main.uid3a7f2b1c`,
+`prod.sensor.uid12345678`.  This replaces the earlier
+`HUB-MAIN-3A7F2B1C` upper-dash form documented in pre-2026-05
+revisions.
+
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
+| `admin.enabled` | no | `true` | Bind the admin ROUTER socket.  `false` disables admin entirely |
+| `admin.endpoint` | no | `"tcp://127.0.0.1:5600"` | ZMQ ROUTER bind address for the admin shell |
+| `admin.token_required` | no | `true` | Require admin token (from vault) on every admin request |
+| `broker.heartbeat_interval_ms` | no | `500` | Max tolerated silence between heartbeats (HEP-CORE-0023 §2.5.1) |
+| `broker.pending_miss_heartbeats` | no | `10` | Pending → Disconnected demotion threshold (HEP-CORE-0023 §2.1) |
+| `broker.ready_miss_heartbeats` | no | `10` | Connected → Pending demotion threshold (HEP-CORE-0023 §2.1) |
+| `federation.enabled` | no | `false` | Run as a federation peer (HEP-CORE-0022) |
+| `federation.forward_timeout_ms` | no | `2000` | Timeout for federation forwarding |
+| `federation.peers[]` | no | `[]` | Federation peer list |
+| `hub.auth.keyfile` | no | `"vault/hub.vault"` | Path (relative to hub_dir) to the encrypted vault.  Empty string is a known half-state (Audit B3) — use `--keygen` to generate a vault |
+| `hub.log_level` | no | `"info"` | `debug` / `info` / `warn` / `error` |
 | `hub.name` | no | `"local.hub.default"` | Human name; also used to auto-generate `hub.uid` |
-| `hub.uid` | no | auto | Stable UID in `HUB-NAME-HEXSUFFIX` format; auto-generated from `hub.name` if absent |
-| `hub.description` | no | `"pyLabHub instance"` | Human-readable description |
-| `hub.broker_endpoint` | no | `"tcp://0.0.0.0:5570"` | ZMQ ROUTER bind address for the data broker |
-| `hub.admin_endpoint` | no | `"tcp://127.0.0.1:5600"` | ZMQ ROUTER bind address for the admin shell |
-| `hub.connection_policy` | no | `"open"` | Channel registration policy: `open`/`tracked`/`required`/`verified` |
-| `broker.heartbeat_interval_ms` | no | `500` | Hub's max tolerated silence between heartbeats from any presence (broker-wide).  Roles may run faster (HEP-CORE-0023 §2.5.1) |
-| `broker.ready_miss_heartbeats` | no | `10` | Connected → Pending demotion after this many consecutive missed heartbeats from a presence (HEP-CORE-0023 §2.1) |
-| `broker.pending_miss_heartbeats` | no | `10` | Pending → Disconnected after this many additional missed heartbeats; on producer-presence Disconnected, channel is torn down atomically (HEP-CORE-0023 §2.1) |
-| `broker.ready_timeout_ms` | no | `null` | Optional explicit override for ready timeout.  `null` derives from `heartbeat_interval_ms × ready_miss_heartbeats` |
-| `broker.pending_timeout_ms` | no | `null` | Optional explicit override for pending timeout.  `null` derives from `heartbeat_interval_ms × pending_miss_heartbeats` |
-| `broker.consumer_liveness_check_s` | no | `5` | Consumer-process liveness check interval (PID check, separate from the heartbeat path; 0 = disabled) |
-| `script.type` | no | — | Script language; `"python"` is the only supported value |
-| `script.path` | no | — | Base directory; hub script is at `<path>/<type>/__init__.py` |
-| `script.tick_interval_ms` | no | `1000` | Callback interval for `on_tick()` |
-| `script.health_log_interval_ms` | no | `60000` | Interval for periodic channel health log |
-| `peers[]` | no | `[]` | Federation peer list (HEP-CORE-0022); see §4.5 |
+| `hub.uid` | no | auto | Stable UID in `hub.<name>.uid<hex>` format; auto-generated if absent |
+| `logging.backups` | no | `5` | Rotating log retention count |
+| `logging.file_path` | no | `""` | Empty = derive from hub_dir/logs |
+| `logging.max_size_mb` | no | `10` | Rotate when active log reaches this size |
+| `logging.timestamped` | no | `true` | Append timestamp to rotated files |
+| `loop_timing` | no | `"fixed_rate"` | Hub-script tick policy (`"fixed_rate"` / `"max_rate"`); irrelevant if hub has no script |
+| `network.broker_bind` | yes | `true` | Broker socket binds (`true`) or connects (`false`) |
+| `network.broker_endpoint` | no | `"tcp://127.0.0.1:5570"` | ZMQ ROUTER bind address |
+| `network.zmq_io_threads` | no | `1` | ZMQ context I/O thread count |
+| `python_venv` | no | `""` | Virtual environment for hub script; empty = base env |
+| `script.path` | no | `"."` | Base directory; hub script at `<path>/script/<type>/__init__.py`; empty string = no hub script |
+| `script.type` | no | `"python"` | Script engine: `"python"` or `"lua"` |
+| `state.disconnected_grace_ms` | no | `60000` | Retention before pruning disconnected entries |
+| `state.max_disconnected_entries` | no | `1000` | Cap on retained disconnected entries |
+| `stop_on_script_error` | no | `false` | Halt hub on uncaught script exception |
+| `target_period_ms` | no | `1000` | Hub-script tick interval when `loop_timing="fixed_rate"` |
 
-**Security note**: `hub.json` must not contain `admin.token`. The admin token is stored in
-`hub.vault` and injected at runtime by `pylabhub-hubshell` after vault unlock. Any
-`admin.token` field found in `hub.json` is ignored with an error log.
+**Security note**: `hub.json` is world-readable (0644).  Never put
+the admin token or any secret in it.  The admin token is sealed
+inside `hub.vault` (0600, Argon2id+XSalsa20-Poly1305 encrypted) and
+unlocked at runtime by reading `PYLABHUB_HUB_PASSWORD` from the
+environment.
 
 ### 4.3 Running the hub
 
+> 🆕 **Binary rename + setup flow change (2026-05-21).**  The binary
+> is now `plh_hub` (was `pylabhub-hubshell` in earlier revisions of
+> this doc).  The `--dev` flag is GONE; the canonical "no-friction"
+> setup uses `--keygen` with a scripted password instead.  See Audit
+> B3 — the `auth.keyfile=""` half-state should not be used.
+
 ```bash
-# First-time setup — creates hub.json, hub.vault, script/python/__init__.py
-pylabhub-hubshell --init <hub-dir>/ --name "my-lab-hub"
+# First-time setup (once per hub) — creates hub.json + skeleton dirs
+plh_hub --init <hub-dir>/ --name "my-lab-hub"
 
-# Production mode — prompts for vault password, reads CurveZMQ key + admin token from vault
-pylabhub-hubshell <hub-dir>/
+# Provision the vault + publish hub.pubkey (once per hub)
+export PYLABHUB_HUB_PASSWORD="<choose a strong password>"
+plh_hub --config <hub-dir>/hub.json --keygen
+#   ⇒ writes <hub-dir>/vault/hub.vault (0600, Argon2id-encrypted)
+#   ⇒ writes <hub-dir>/hub.pubkey       (0644, broker's Z85 public key)
 
-# Development mode — ephemeral key pair, no password prompt, no vault needed
-pylabhub-hubshell <hub-dir>/ --dev
+# Run mode — unlocks vault using PYLABHUB_HUB_PASSWORD from env
+export PYLABHUB_HUB_PASSWORD="<same password>"
+plh_hub <hub-dir>/
+
+# Validation only (parse config + script syntax; no broker bind)
+plh_hub --validate <hub-dir>/
 ```
 
-The hub listens at `hub.broker_endpoint`. Producers, consumers, and processors connect to
-this address. In dev mode, a fresh ephemeral CurveZMQ key pair is generated each run; roles
-must either omit `broker_pubkey` or re-read `hub.pubkey` after each start.
+After `--keygen`, every restart of the hub uses the same vault — no
+re-handshake on the role side, no rekey churn.  CURVE is mandatory:
+operators MUST run `--keygen` before the first run.  Empty
+`hub.auth.keyfile` is a half-state and should be treated as a config
+error.
+
+The hub listens at `network.broker_endpoint`.  Producers, consumers,
+and processors connect to this address; they read
+`<hub-dir>/hub.pubkey` to pin the broker's CURVE key.
 
 ### 4.4 Hub script (optional) — Python or Lua
 
@@ -491,40 +559,58 @@ producer-dir/
       __init__.py
 ```
 
-Example `producer.json`:
+> 🆕 **2026-05-21 — field names renamed `<field>` → `out_<field>`.**
+> The canonical schema is now produced by `plh_role --init --role
+> producer <producer-dir>` (the binary's own template is the source
+> of truth).  Pre-update examples that used `hub_dir`/`channel`/
+> `transport`/`shm.{...}` will fail to parse — all fields gained an
+> `out_*` prefix (since producer writes one direction); the nested
+> `shm` object was flattened to `out_shm_<field>`.  Run `plh_role
+> --init` to generate a working template you can edit.
+
+Example `producer.json` (matches current `--init` output):
 
 ```json
 {
   "producer": {
     "name":      "MySensor",
-    "log_level": "info"
+    "uid":       "prod.mysensor.uid00000001",
+    "log_level": "info",
+    "auth":      { "keyfile": "" }
   },
 
-  "hub_dir":  "../hub",
-  "channel":  "lab.sensors.temperature",
+  "out_hub_dir":   "../hub",
+  "out_channel":   "lab.sensors.temperature",
+  "out_transport": "shm",
+  "out_shm_enabled":    true,
+  "out_shm_slot_count": 8,
+  "out_shm_secret":     1111111111,
 
-  "loop_timing":      "fixed_rate",
-  "target_period_ms": 100,
-  "checksum":         "enforced",
-  "transport":        "shm",
-
-  "slot_schema": {
+  "out_slot_schema": {
     "packing": "aligned",
     "fields": [
       {"name": "ts",    "type": "float64"},
       {"name": "value", "type": "float32"}
     ]
   },
+  "out_flexzone_schema": null,
 
-  "shm": {
-    "enabled":    true,
-    "slot_count": 8,
-    "secret":     0
-  },
+  "loop_timing":      "fixed_rate",
+  "target_period_ms": 100,
+  "checksum":         "enforced",
+  "flexzone_checksum": true,
 
-  "script": {"type": "python", "path": "."}
+  "script":               { "type": "python", "path": "." },
+  "stop_on_script_error": false
 }
 ```
+
+**SHM secret note (Audit B4):**  `--init` writes `out_shm_secret`
+unset (defaults to 0).  Secret = 0 is a sentinel "SHM not configured"
+— `build_tx_queue` will skip the SHM path.  Operators MUST set a
+non-zero `out_shm_secret` for an SHM-transport producer.  The
+consumer / processor must set a matching `in_shm_secret` on the
+other end.
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
@@ -594,23 +680,31 @@ def on_stop(api):
 
 ### 6.1 consumer.json — field reference
 
-Example `consumer.json`:
+> 🆕 **2026-05-21 — field names renamed `<field>` → `in_<field>`.**
+> Same kind of rename as producer (§5.1).  Consumer fields gained an
+> `in_*` prefix; the `queue_type` field no longer exists (now
+> `in_transport`); nested `shm` flattened to `in_shm_<field>`.  Use
+> `plh_role --init --role consumer <consumer-dir>` for the canonical
+> template.
+
+Example `consumer.json` (matches current `--init` output):
 
 ```json
 {
   "consumer": {
     "name":      "Logger",
-    "log_level": "info"
+    "uid":       "cons.logger.uid00000001",
+    "log_level": "info",
+    "auth":      { "keyfile": "" }
   },
 
-  "hub_dir":     "../hub",
-  "channel":     "lab.sensors.temperature",
+  "in_hub_dir":   "../hub",
+  "in_channel":   "lab.sensors.temperature",
+  "in_transport": "shm",
+  "in_shm_enabled": true,
+  "in_shm_secret":  1111111111,
 
-  "loop_timing": "max_rate",
-  "checksum":    "enforced",
-  "queue_type":  "shm",
-
-  "slot_schema": {
+  "in_slot_schema": {
     "packing": "aligned",
     "fields": [
       {"name": "ts",    "type": "float64"},
@@ -618,12 +712,11 @@ Example `consumer.json`:
     ]
   },
 
-  "shm": {
-    "enabled": true,
-    "secret":  0
-  },
+  "loop_timing": "max_rate",
+  "checksum":    "enforced",
 
-  "script": {"type": "python", "path": "."}
+  "script":               { "type": "python", "path": "." },
+  "stop_on_script_error": false
 }
 ```
 
@@ -692,44 +785,61 @@ def on_stop(api):
 A processor reads from one channel and writes to another. It can span two independent
 hubs (`in_hub_dir` / `out_hub_dir`) for cross-hub bridging.
 
-Example `processor.json`:
+> 🆕 **2026-05-21 — nested `shm.in` / `shm.out` flattened to
+> top-level `in_shm_<field>` / `out_shm_<field>`.**  Use `plh_role
+> --init --role processor <processor-dir>` for the canonical
+> template.  Same SHM-secret note as producer / consumer — secret = 0
+> is a sentinel "no SHM"; operators MUST set matching non-zero
+> secrets on each side of the pipeline (producer's `out_shm_secret`
+> ↔ processor's `in_shm_secret`; processor's `out_shm_secret` ↔
+> consumer's `in_shm_secret`).
+
+Example `processor.json` (matches current `--init` output):
 
 ```json
 {
   "processor": {
     "name":      "Normaliser",
-    "log_level": "info"
+    "uid":       "proc.normaliser.uid00000001",
+    "log_level": "info",
+    "auth":      { "keyfile": "" }
   },
 
-  "hub_dir":     "../hub",
+  "in_hub_dir":  "../hub",
+  "out_hub_dir": "../hub",
   "in_channel":  "lab.sensors.temperature",
   "out_channel": "lab.processed.temperature",
 
-  "loop_timing":   "max_rate",
-  "checksum":      "enforced",
-
   "in_transport":  "shm",
   "out_transport": "shm",
+  "in_shm_enabled":     true,
+  "in_shm_secret":      1111111111,
+  "out_shm_enabled":    true,
+  "out_shm_slot_count": 8,
+  "out_shm_secret":     2222222222,
 
   "in_slot_schema": {
+    "packing": "aligned",
     "fields": [
       {"name": "ts",    "type": "float64"},
       {"name": "value", "type": "float32"}
     ]
   },
   "out_slot_schema": {
+    "packing": "aligned",
     "fields": [
       {"name": "ts",         "type": "float64"},
       {"name": "value_norm", "type": "float64"}
     ]
   },
+  "out_flexzone_schema": null,
 
-  "shm": {
-    "in":  {"enabled": true,  "secret": 0},
-    "out": {"enabled": true,  "slot_count": 8, "secret": 0}
-  },
+  "loop_timing":       "max_rate",
+  "checksum":          "enforced",
+  "flexzone_checksum": true,
 
-  "script": {"type": "python", "path": "."}
+  "script":               { "type": "python", "path": "." },
+  "stop_on_script_error": false
 }
 ```
 
@@ -860,78 +970,99 @@ with dtype inferred automatically. Available on all role APIs.
 
 ### 8.3 API methods — all roles
 
+> 🆕 **2026-05-21 — surface aligned with current bindings.**  Pre-update
+> revisions of this section claimed `api.notify_channel` /
+> `api.broadcast_channel` (R3.6 removed; broker no longer handles
+> `CHANNEL_NOTIFY_REQ`), `api.list_channels` / `api.shm_blocks` (not
+> bound to role-side scripts today — Hub State Query Layer design
+> in `docs/tech_draft/hub_state_query_layer_design.md` will land
+> these as `hub.snapshot()`), `api.broadcast(data)` / `api.send` /
+> `api.consumers()` (peer-messaging via the old P2C ctrl socket;
+> M4f removed that socket — replacement is the HEP-CORE-0027 inbox
+> messaging shown below), and `rx.fz` for consumers (the binding
+> only exposes `rx.slot` — consumers should use `api.flexzone()`
+> instead; Audit B6).  This revision removes those.
+
 ```python
 # Identity
-api.uid()            # → str: e.g. "PROD-MYSENSOR-A1B2C3D4"
+api.uid()            # → str: e.g. "prod.mysensor.uid12345678"
 api.name()           # → str: human name from config
+api.channel()        # → str: output channel (producer/processor-out)
+                     #         OR input channel (consumer/processor-in)
 api.log_level()      # → str: "debug"/"info"/"warn"/"error"
 api.script_dir()     # → str: absolute path to the script directory
-api.role_dir()       # → str: absolute path to the role directory (empty if launched via --config)
-api.logs_dir()       # → str: role_dir + "/logs" (empty if role_dir is empty)
-api.run_dir()        # → str: role_dir + "/run"  (empty if role_dir is empty)
-api.log(level, msg)  # write to hub logger
+api.role_dir()       # → str: absolute path to the role directory
+api.logs_dir()       # → str: role_dir + "/logs"
+api.run_dir()        # → str: role_dir + "/run"
+api.log(level, msg)  # write to the role's logger
 
 # Shutdown control
-api.stop()                   # request clean shutdown from inside callback
-api.set_critical_error()     # mark as failed and trigger shutdown (no argument)
-api.critical_error()         # → bool: True if set_critical_error() was called
+api.stop()                   # request clean shutdown from inside a callback
+api.set_critical_error()     # mark as failed and trigger shutdown
+api.critical_error()         # → bool
 
-# Broker messaging
-api.notify_channel(target_channel, event, data="")  # send event to channel producer
-api.broadcast_channel(target_channel, message, data="")  # broadcast to all channel members
-api.list_channels()          # → list of dicts [{name, status, schema_id, ...}]
-api.shm_blocks(channel="")   # → dict with SHM block topology from broker
+# Band messaging (HEP-CORE-0030 — supersedes the retired
+# `notify_channel` / `broadcast_channel` / `broadcast` peer surface)
+api.band_join(band)          # join a band (broker is authoritative)
+api.band_leave(band)         # leave a band
+api.band_broadcast(band, payload, data=b"")
+                             #   send a message to every band member
+api.band_members(band)       # → list of role_uids currently in the band
+api.is_in_band(band)         # → bool
 
-# Counters (all roles)
-api.script_error_count()     # → int: number of Python exceptions in callbacks
-api.loop_overrun_count()     # → int: producer: cycles past deadline; consumer/processor: always 0
-api.last_cycle_work_us()     # → int: µs of active work in last callback invocation
-api.metrics()                # → dict: full metrics snapshot (DataBlock + D4 counters + custom)
+# Custom metrics + diagnostics (HEP-CORE-0019)
+api.report_metric(key, value)     # accumulate one scalar
+api.report_metrics(dict)          # accumulate many at once
+api.clear_custom_metrics()        # clear the accumulator
+api.metrics()                     # → dict: full hierarchical snapshot.
+                                  #   See HEP-CORE-0019 §5.4.1 for the
+                                  #   canonical field list and §5.4.2
+                                  #   for direct accessors that skip
+                                  #   the dict-build cost.
+api.last_cycle_work_us()          # → int µs (current cycle's Python work)
+api.loop_overrun_count()          # → int (producer fixed-rate misses)
+api.script_error_count()          # → int
 
-# Custom metrics (HEP-CORE-0019)
-api.report_metric(key, value)     # report single {key: number}
-api.report_metrics(dict)          # batch report {key: number} pairs
-api.clear_custom_metrics()        # clear all custom metrics
+# Queue counters — producer / processor-out side
+api.out_slots_written()
+api.out_drop_count()
+api.out_capacity()
+api.out_policy()
 
-# Queue metadata — producer
-api.out_slots_written()      # → int
-api.out_drop_count()         # → int
-api.out_capacity()           # → int: ring buffer slot count (SHM) or send buffer depth (ZMQ)
-api.out_policy()             # → str: overflow policy description
-
-# Queue metadata — consumer
-api.in_slots_received()      # → int
-api.last_seq()               # → int: SHM=ring-buffer slot index (wraps); ZMQ=monotone wire seq
-api.in_capacity()            # → int: ring buffer slot count (SHM) or recv buffer depth (ZMQ)
-api.in_policy()              # → str: overflow policy info
-api.set_verify_checksum(enable)  # manual checksum toggle (only meaningful when checksum="manual")
-
-# Queue metadata — processor (both input and output sides)
-api.in_slots_received()      # → int
-api.out_slots_written()      # → int
-api.out_drop_count()         # → int
-api.last_seq()               # → int: SHM=ring-buffer slot index (wraps); ZMQ=monotone wire seq
-api.in_capacity()  / api.in_policy()
-api.out_capacity() / api.out_policy()
-api.set_verify_checksum(enable)  # manual checksum toggle (only meaningful when checksum="manual")
+# Queue counters — consumer / processor-in side
+api.in_slots_received()
+api.last_seq()
+api.in_capacity()
+api.in_policy()
+api.set_verify_checksum(enable)   # only meaningful with checksum="manual"
 
 # Spinlocks (SHM transport only)
-api.spinlock(idx)            # → context manager; GIL released during lock wait
-api.spinlock_count()         # → int: 0 for ZMQ transport
+api.spinlock(idx)            # → context manager; GIL released during wait
+api.spinlock_count()         # → int (0 for ZMQ)
 
-# Inbox — receive typed messages from another role
-api.open_inbox(target_uid)   # → InboxHandle or None if target not online (cached)
-api.wait_for_role(uid, timeout_ms=5000)  # → bool; polls broker with GIL released
+# Flexzone (HEP-CORE-0019 §8.4 of this doc + HEP-0011 §"Flexzone")
+api.flexzone(side=None)      # → ctypes struct or None.
+                             #   Single-direction roles (producer /
+                             #   consumer) omit the `side` arg.
+                             #   PROCESSOR REQUIRES `side` (api.Tx or
+                             #   api.Rx) — it has both directions.
+                             #   Audit B7.
+api.update_flexzone_checksum(side=None)
+                             # call after writing flexzone fields
+                             # (producer / processor-Tx side only)
 
-# Flexzone (producer and processor only)
-api.flexzone()               # → ctypes struct or None
-api.update_flexzone_checksum()  # update BLAKE2b checksum after writing flexzone fields
+# Numpy zero-copy view of an array slot field
+api.as_numpy(field)          # → numpy.ndarray view; dtype inferred
 
-# ZMQ peer messaging (producer and processor only)
-api.broadcast(data)          # send bytes to all connected consumers
-api.send(identity, data)     # send bytes to specific consumer ZMQ identity
-api.consumers()              # → list of connected consumer identities
+# Inbox — typed peer-to-peer messages (HEP-CORE-0027)
+api.open_inbox(target_uid)   # → InboxHandle or None
+api.wait_for_role(uid, timeout_ms=5000)  # poll broker; GIL released
 ```
+
+**Cross-reference: bottleneck metrics for diagnostics.**  When
+tuning throughput, the relevant subset is documented in HEP-CORE-0019
+§5.4.3 as a symptom → bottleneck table — start there before
+sprinkling `api.report_metric` calls.
 
 ### 8.4 Flexzone — persistent shared data
 
