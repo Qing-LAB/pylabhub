@@ -85,16 +85,28 @@ or (b) code changes when the doc is correct but the code drifted.
 - **Observed:** Doc documents `--dev` as the "no vault, ephemeral key" mode.
 - **Reality:** Verified empirically — `plh_hub --dev <dir>` returns `Unknown argument: --dev`.  The flag is not in `--help` and is not accepted by the parser.
 - **Replacement workflow (verified via `test_plh_hub_role_roundtrip.cpp`):** set `PYLABHUB_HUB_PASSWORD` env var, run `plh_hub --config <hub.json> --keygen`.  This generates `vault/hub.vault` AND writes `hub.pubkey` (per F1 fix in `HubConfig::create_keypair`).  THEN run normally.
-- **NEW BUG DISCOVERED — `auth.keyfile=""` is silently broken (B3):** I tried setting `hub.auth.keyfile = ""` thinking it was the no-auth opt-out per `hub_config.cpp:178-179` comment "operator opt-out: no auth configured".  Result:
-  - `HubConfig::load_keypair` returns false (no vault loaded; `auth.client_pubkey` / `auth.client_seckey` stay empty).
-  - `BrokerService` falls through to the ephemeral-keypair path at `broker_service.cpp:3691` (`zmq_curve_keypair`) — the comment there says "// Generate ephemeral keypair (--dev mode; no vault)."
-  - **Broker therefore speaks CURVE with an ephemeral pubkey, but `hub.pubkey` is NEVER published.**
-  - Roles read `<hub_dir>/hub.pubkey`; finding none, they connect plaintext.
-  - **Plaintext role ⇄ CURVE broker = handshake fails silently** → REG_REQ times out, then `Socket operation on non-socket` when the broken socket is reused.
-- **Resolution candidate:** code-fix. The empty-keyfile path should either:
-  - (a) actually disable CURVE on the broker (so role+broker agree on plaintext); OR
-  - (b) publish the ephemeral pubkey to `hub.pubkey` at startup so the role can pin it.  Option (a) matches the documented "no auth" semantics; option (b) makes the demo self-contained even with auth.
-- **Affects:** demo running (forced to do `--keygen` + `PYLABHUB_HUB_PASSWORD`); operator UX (the "opt-out" comment is misleading).
+- **Reframed (B3) — `auth.keyfile=""` is a half-state that violates the deployment design.**  Initial framing called this a bug to patch.  Stepping back to the system-level deployment design — informed by user direction "CURVE is always required" — the right fix is to REMOVE this path, not patch it.
+
+  **Design principles for the deployment:**
+  1. CURVE is mandatory on every hub↔role link.  No plaintext mode.
+  2. Each hub has a stable identity (vault-encrypted CurveZMQ keypair); hub.pubkey is the broker's public key, copied to each role's `hub_dir`.
+  3. Role identities are optional (HEP-CORE-0035 future) — by default roles generate an ephemeral CurveZMQ keypair at connect time (`broker_request_comm.cpp:456`).
+  4. Setup is one-shot per hub: `plh_hub --init <dir>` then `PYLABHUB_HUB_PASSWORD=… plh_hub --keygen <dir>` writes both vault AND hub.pubkey (F1 fix verified working).
+  5. Every restart of hub+role uses the same vault → no re-handshake / no rekey churn.
+
+  **Current code state:**
+  - The `--keygen` path is correct and consistent (F1 fix wired `HubVault::publish_public_key` into `HubConfig::create_keypair`).  L4 binary roundtrip (`test_plh_hub_role_roundtrip.cpp`) validates this end-to-end.
+  - The `auth.keyfile=""` path is the half-state:
+    - `HubConfig::load_keypair` returns false ("operator opt-out").
+    - `BrokerService` falls through to the ephemeral-keypair branch (`broker_service.cpp:3691`, comment "Generate ephemeral keypair (--dev mode; no vault)") — broker now uses CURVE.
+    - But `hub.pubkey` is NEVER published in this branch (publication is only triggered from `--keygen` / `HubConfig::create_keypair`).
+    - Role-side reads `<hub_dir>/hub.pubkey` for CURVE pin; finding nothing, connects plaintext.
+    - **Plaintext role ⇄ CURVE broker = silent handshake failure** → REG_REQ times out, then `Socket operation on non-socket` when the broken socket is reused.
+  - Half-state code path probably survived from when `--dev` was a real CLI flag (now deleted) and the empty-keyfile branch was the dev-mode plaintext path.  Someone changed the broker side to ephemeral-CURVE without updating role-side pubkey discovery.
+
+  **Resolution per design-first framing:** code-fix — make `auth.keyfile=""` a hard config-load error: "Hub requires a vault for CURVE keypair — run `plh_hub --keygen` first."  Removes the half-state.  Single canonical setup path.  Demo / dev / CI use scripted `--keygen` as part of setup, no different from any other first-run.  The demo framework's `setup_commands` manifest block provides the automation hook.
+
+  **Affects:** the empty-keyfile branch in `hub_config.cpp:178-179` + `broker_service.cpp:3680-3697` + the stale "Generate ephemeral keypair (--dev mode; no vault)" comment.  Demo manifest gets a `setup` block that runs `plh_hub --keygen` with `PYLABHUB_HUB_PASSWORD` before launching processes.
 
 ### G17 — `--init` template defaults `_comment` to no comments, but binary REJECTS unknown keys (resolved as note)
 - **Source:** Discovery while writing hub.json from `--init`.

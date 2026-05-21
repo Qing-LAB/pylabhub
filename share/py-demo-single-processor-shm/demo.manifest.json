@@ -1,9 +1,20 @@
 {
   "name": "single-processor-shm",
-  "description": "Single-hub demo — producer (10 Hz) → processor (×2 doubled) → consumer over SHM, no auth (auth.keyfile='').",
+  "description": "Single-hub demo — producer (10 Hz) → processor (×2 doubled) → consumer over SHM, CURVE via scripted --keygen.",
   "duration_s": 6,
   "shutdown_signal": "SIGTERM",
   "shutdown_grace_s": 5,
+
+  "setup": {
+    "env": { "PYLABHUB_HUB_PASSWORD": "demo-password" },
+    "commands": [
+      {
+        "args":         ["plh_hub", "--config", "hub/hub.json", "--keygen"],
+        "timeout_s":    20,
+        "must_succeed": true
+      }
+    ]
+  },
 
   "processes": [
     {

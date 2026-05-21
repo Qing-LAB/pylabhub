@@ -12,8 +12,10 @@
   "in_transport":  "shm",
   "out_transport": "shm",
   "in_shm_enabled":     true,
+  "in_shm_secret":      1111111111,
   "out_shm_enabled":    true,
   "out_shm_slot_count": 8,
+  "out_shm_secret":     2222222222,
   "in_slot_schema": {
     "packing": "aligned",
     "fields": [
