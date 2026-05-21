@@ -70,3 +70,19 @@ TEST_F(ZmqEndpointRegistryTest, EndpointUpdate_PortZero_ReturnsError)
         "zmq_endpoint_registry.endpoint_update_port_zero_returns_error");
     ExpectWorkerOk(w);
 }
+
+// ── HEP-CORE-0007 §12.2.1 REQ-shape-conformance observability test ──────
+// Drives every fire-and-forget REQ (HEARTBEAT, CHECKSUM_ERROR_REPORT,
+// CHANNEL_BROADCAST, BAND_BROADCAST) and asserts the BRC's
+// `unmatched_replies()` counter stays at zero — i.e. the broker did not
+// silently emit any `_ACK` / `ERROR` that the BRC then dropped because
+// no pending request was waiting.  This is the runtime fingerprint of
+// the half-mix shape-contract violation HEP-0007 §12.2.1 prohibits.
+// See `BrokerRequestComm::unmatched_replies()` for the counter.
+
+TEST_F(ZmqEndpointRegistryTest, ReqShape_NoUnmatchedRepliesForFireAndForget)
+{
+    auto w = SpawnWorker(
+        "zmq_endpoint_registry.req_shape_no_unmatched_replies_for_fire_and_forget");
+    ExpectWorkerOk(w);
+}

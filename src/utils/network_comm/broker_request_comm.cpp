@@ -115,6 +115,19 @@ struct BrokerRequestComm::Impl
     // Supports concurrent requests with different expected reply types.
     std::unordered_map<std::string, std::shared_ptr<RequestCmd>> pending_requests;
 
+    /// HEP-CORE-0007 §12.2.1 shape-conformance observability counter.
+    /// Incremented when the receive loop observes a reply-shape message
+    /// (msg_type ends in `_ACK` or is exactly `ERROR`) for which no
+    /// pending request is registered.  This is a *runtime* fingerprint
+    /// of a shape-contract violation: either the broker emitted an ACK
+    /// for a fire-and-forget REQ (server side bug), or the BRC client
+    /// sent a request via cmd_queue.push that should have been
+    /// do_request (client side bug — the ENDPOINT_UPDATE half-mix
+    /// shipped 2026-05-21).  The reply gets silently dropped (logged
+    /// as WARN); this counter makes the drop observable so tests and
+    /// monitoring can catch the regression.
+    std::atomic<size_t> unmatched_replies_count{0};
+
     // Callbacks.
     NotificationCallback on_notification_cb;
     std::function<void()> on_hub_dead_cb;
@@ -241,6 +254,31 @@ struct BrokerRequestComm::Impl
                     req->done = true;
                 }
                 req->cv.notify_one();
+                continue;
+            }
+
+            // Shape-conformance check (HEP-CORE-0007 §12.2.1): a
+            // reply-shape message (`*_ACK` or `ERROR`) at this point
+            // has no pending waiter — it would otherwise have matched
+            // one of the two branches above.  Silently delivering it
+            // to `on_notification_cb` would mask a real protocol bug.
+            // Count + WARN so the drop is observable to runtime
+            // monitoring and to the dedicated shape-conformance L3
+            // test (ReqShapeConformance_FireAndForgetReqsHaveNoReply).
+            const bool is_reply_shape =
+                (msg_type.size() >= 4 &&
+                 msg_type.compare(msg_type.size() - 4, 4, "_ACK") == 0) ||
+                msg_type == "ERROR";
+            if (is_reply_shape)
+            {
+                unmatched_replies_count.fetch_add(
+                    1, std::memory_order_relaxed);
+                LOGGER_WARN("BrokerRequestComm: received unexpected "
+                            "reply-shape message with no pending "
+                            "request: type='{}' (HEP-0007 §12.2.1 "
+                            "shape contract violation — broker may be "
+                            "emitting an ACK for a fire-and-forget REQ)",
+                            msg_type);
                 continue;
             }
 
@@ -687,6 +725,11 @@ void BrokerRequestComm::run_poll_loop(std::function<bool()> should_run)
     // decrements `active_loop_depth` when this function returns, which
     // is the signal the teardown caller waits on via
     // `wait_for_quiescence`.
+}
+
+size_t BrokerRequestComm::unmatched_replies() const noexcept
+{
+    return pImpl->unmatched_replies_count.load(std::memory_order_relaxed);
 }
 
 void BrokerRequestComm::stop() noexcept
