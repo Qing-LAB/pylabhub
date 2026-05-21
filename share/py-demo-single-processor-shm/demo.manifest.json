@@ -1,9 +1,9 @@
 {
   "name": "single-processor-shm",
-  "description": "Single-hub demo — producer (10 Hz) → processor (×2 doubled) → consumer over SHM, CURVE via scripted --keygen.",
-  "duration_s": 6,
+  "description": "Single-hub max-rate throughput demo — producer writes 4096-float32 blocks; processor numpy-reduces per slot + updates flexzone running stats + writes processed-out block; consumer reads slot + flexzone.  CURVE via scripted --keygen.",
+  "duration_s": 10,
   "shutdown_signal": "SIGTERM",
-  "shutdown_grace_s": 5,
+  "shutdown_grace_s": 10,
 
   "setup": {
     "env": { "PYLABHUB_HUB_PASSWORD": "demo-password" },
@@ -59,17 +59,14 @@
 
   "evaluators": [
     {"type": "all_processes_started"},
-    {"type": "log_marker_min_count", "process": "producer",
-     "marker": "DemoProducer wrote slot count=", "min": 3},
-    {"type": "log_marker_min_count", "process": "processor",
-     "marker": "DemoProcessor processed count=", "min": 3},
+    {"type": "log_marker_present", "process": "producer",
+     "marker": "DemoProducer STOPPED total="},
+    {"type": "log_marker_present", "process": "processor",
+     "marker": "DemoProcessor STOPPED processed="},
+    {"type": "log_marker_present", "process": "consumer",
+     "marker": "DemoConsumer STOPPED total_received="},
     {"type": "log_marker_min_count", "process": "consumer",
-     "marker": "DemoConsumer received count=", "min": 3},
-    {"type": "count_sequence_e2e",
-     "producer": "producer",
-     "consumer": "consumer",
-     "producer_pattern": "DemoProducer wrote slot count=(\\d+)",
-     "consumer_pattern": "DemoConsumer received count=(\\d+)"},
+     "marker": "flexzone running:", "min": 1},
     {"type": "no_unexpected_errors"},
     {"type": "clean_shutdown"}
   ]

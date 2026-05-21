@@ -9,19 +9,18 @@
   "out_channel":  "lab.demo.counter",
   "out_transport": "shm",
   "out_shm_enabled":    true,
-  "out_shm_slot_count": 8,
+  "out_shm_slot_count": 256,
   "out_shm_secret":     1111111111,
   "out_slot_schema": {
     "packing": "aligned",
     "fields": [
-      {"name": "count", "type": "int64"},
-      {"name": "ts",    "type": "float64"},
-      {"name": "value", "type": "float32"}
+      {"name": "count",   "type": "int64"},
+      {"name": "ts",      "type": "float64"},
+      {"name": "samples", "type": "float32", "count": 4096}
     ]
   },
   "out_flexzone_schema": null,
-  "loop_timing":       "fixed_rate",
-  "target_period_ms":  100,
+  "loop_timing":       "max_rate",
   "checksum":          "enforced",
   "flexzone_checksum": true,
   "script":               { "type": "python", "path": "." },

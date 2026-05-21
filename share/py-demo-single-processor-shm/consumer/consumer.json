@@ -13,14 +13,27 @@
   "in_slot_schema": {
     "packing": "aligned",
     "fields": [
-      {"name": "count",   "type": "int64"},
-      {"name": "ts",      "type": "float64"},
-      {"name": "value",   "type": "float32"},
-      {"name": "doubled", "type": "float64"}
+      {"name": "count",     "type": "int64"},
+      {"name": "ts",        "type": "float64"},
+      {"name": "processed", "type": "float32", "count": 4096},
+      {"name": "slot_mean", "type": "float64"},
+      {"name": "slot_std",  "type": "float64"},
+      {"name": "slot_min",  "type": "float64"},
+      {"name": "slot_max",  "type": "float64"}
+    ]
+  },
+  "in_flexzone_schema": {
+    "packing": "aligned",
+    "fields": [
+      {"name": "total_slots",  "type": "int64"},
+      {"name": "running_mean", "type": "float64"},
+      {"name": "running_min",  "type": "float64"},
+      {"name": "running_max",  "type": "float64"}
     ]
   },
   "loop_timing":          "max_rate",
   "checksum":             "enforced",
+  "flexzone_checksum":    false,
   "script":               { "type": "python", "path": "." },
   "stop_on_script_error": false
 }
