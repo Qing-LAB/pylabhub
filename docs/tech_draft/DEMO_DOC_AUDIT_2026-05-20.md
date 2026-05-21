@@ -205,6 +205,40 @@ or (b) code changes when the doc is correct but the code drifted.
 - **Resolution candidate:** doc-fix.
 - **Affects:** any consumer config copied from doc will fail to parse.
 
+### G21 — Processor's `build_rx_queue` lacks DISC_REQ-driven SHM discovery — `shm_name` never populated
+- **Source:** Surfaced after G19 + G20 fixes (after fixing the worker_main_ ordering bug + adding matching SHM secrets).  Producer now fully starts and registers; processor still fails.
+- **Observed:** Producer registers OK (REG_REQ ACKed at `.915`, "DemoProducer started" at `.911`, SHM block created in `setup_infrastructure_` step).  Processor spawns 30ms later (depends_on=producer marker), attempts `build_rx_queue` immediately, fails synchronously: `Failed to connect consumer to in_channel 'lab.demo.counter'`.
+- **Reality:** `processor_role_host.cpp:451-464` fills `RxQueueOptions` with `shm_shared_secret`, `slot_spec`, `fz_spec`, `zmq_buffer_depth`, `checksum_policy`, `flexzone_checksum` — but **NEVER sets `shm_name`**.  `role_api_base.cpp:347` gates SHM attach on `if (!opts.shm_name.empty() && opts.shm_shared_secret != 0 && opts.slot_spec.has_schema)`.  With `shm_name == ""`, SHM path is skipped, code falls through to ZMQ, but `out_transport` is `shm` → ZMQ also fails → returns false.
+- **Architectural question:** the consumer side of a processor (and a standalone consumer too) needs to DISC_REQ the broker to learn the producer's SHM block name before attaching.  HEP-CORE-0023 §2.1 / §2.2 describes the discovery flow.  But the current binary path appears to attempt synchronous SHM attach in `setup_infrastructure_` WITHOUT going through DISC_REQ.  `start_handler_threads` (called later) has the RoleHandler / DISC machinery, but `build_rx_queue` runs BEFORE that.
+- **Possible explanations:**
+  - **(a) Real bug:** `setup_infrastructure_` should be restructured — defer rx-queue construction until after `start_handler_threads` + DISC_REQ ACK.  May require splitting the consumer/processor rx setup into two phases.
+  - **(b) Missing config field:** the config schema may have an `in_shm_name` I missed.  But `role_config.cpp:113` lists only `in_shm_secret` / `out_shm_secret`, not name.
+  - **(c) Different code path used by tests:** L3 / L4 working SHM tests must use a different setup path.  E.g., `test_layer4_plh_hub_role_roundtrip.cpp` is producer-only — no processor-as-consumer in that test.  Worth tracing how `RoleAPIBase_StartHandlerThreads_DualHub_E2E` does it.
+- **Resolution candidate:** investigation needed — separate focused session.  This is a deeper architectural question than G18/G19; a one-line patch won't suffice.
+- **Affects:** any SHM-transport pipeline that involves a processor (consumer side) or a standalone consumer.  Probably also why no existing L4 binary test runs a data pipeline (the relevant binaries' consumer side might be incomplete for SHM).
+
+---
+
+## Session 2026-05-20 close-out summary
+
+The demo-as-validation-vehicle strategy succeeded.  In one session the harness caught 5 distinct issues spanning code bugs, design half-states, UX failures, and architectural gaps — all in code paths that L2/L3 tests don't exercise because they go through different APIs than the binaries.
+
+| # | Item | Status |
+|---|---|---|
+| B1 | `role_api_base.cpp:258` empty-flexzone crash (code bug) | ✅ FIXED (commit `2be5156`) |
+| B2 | All 3 role-hosts: api state set AFTER infrastructure (code bug, 3 sites) | ✅ FIXED (commit `2be5156`) |
+| B3 | `auth.keyfile=""` is a half-state violating "CURVE always required" design | OPEN — design reframed; recommend hard-error path |
+| B4 | `--init` SHM secret defaults to 0 → silent ZMQ fall-through (UX/template) | OPEN — workaround in demo configs |
+| B5 (G21) | Processor `build_rx_queue` lacks DISC_REQ-driven SHM discovery (architectural) | OPEN — needs focused investigation |
+
+Phase 2 outputs:
+- Demo framework `share/demo_framework/runner.py` with declarative manifest + 6 built-in evaluators + setup_commands phase + per-process env propagation.
+- Single-hub demo configs (`share/py-demo-single-processor-shm/`) freshly written from `--init` templates (deployment doc is too stale to design from).
+- Audit log capturing 17 documentation gaps + 5 bugs (`docs/tech_draft/DEMO_DOC_AUDIT_2026-05-20.md`).
+- `feedback_build_target_stage_all.md` memory rule (always `--target stage_all`).
+
+Demo is not yet end-to-end green; the remaining barrier (B5/G21) is the consumer-side SHM discovery flow.  Worth doing as a dedicated next session: walk the discovery flow from HEP-0023, compare to what `setup_infrastructure_` currently does, restructure rx-queue construction to happen after DISC_REQ.
+
 ---
 
 ## Summary as of doc audit checkpoint (2026-05-20)
