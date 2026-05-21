@@ -373,6 +373,110 @@ int endpoint_update_reflected_in_discovery()
         });
 }
 
+// ── ENDPOINT_UPDATE error-path coverage ─────────────────────────────────
+// These pin the typed-error branches of the HEP-CORE-0021 §16.3 contract:
+// the BRC's sync send_endpoint_update returns a value-with-error when the
+// broker rejects, distinct from nullopt (timeout / transport failure).
+// Both tests assert the path AND the typed `error_code` field, mutation-
+// sweep verified (flipping the broker handler's rejection to "success"
+// would make either test fail).
+//
+// Companion to endpoint_update_reflected_in_discovery (the happy-path).
+
+int endpoint_update_non_producer_returns_error()
+{
+    return run_with_host(
+        "zmq_endpoint_registry::endpoint_update_non_producer_returns_error",
+        [](HubHost &host) {
+            const std::string channel  = pid_chan("zmqvc.ep.nonprod");
+            const std::string prod_uid = "prod.ep." + channel;
+            const std::string other_uid = "cons.notprod." + channel;
+            const std::string updated_ep = "tcp://127.0.0.1:44455";
+
+            // Producer registers the channel.
+            BrcHandle prod_bh;
+            prod_bh.start(host.broker_endpoint(), host.broker_pubkey(),
+                          prod_uid);
+            auto opts                 = make_reg_opts(channel, prod_uid);
+            opts["data_transport"]    = "zmq";
+            opts["zmq_node_endpoint"] = "tcp://127.0.0.1:0";
+            auto reg = prod_bh.brc.register_channel(opts, 3000);
+            ASSERT_TRUE(reg.has_value());
+
+            // A DIFFERENT identity tries to update the producer's endpoint.
+            // Per HEP-CORE-0021 §16.3 + broker_service.cpp:handle_endpoint_
+            // update_req identity-resolution: sender_zmq_identity must match
+            // a registered producer's zmq_identity, else NOT_CHANNEL_OWNER.
+            BrcHandle other_bh;
+            other_bh.start(host.broker_endpoint(), host.broker_pubkey(),
+                           other_uid);
+            auto upd = other_bh.brc.send_endpoint_update(
+                channel, "zmq_node", updated_ep, 2000);
+
+            // Contract: the broker DID reply (sync path completed), but
+            // the reply status is "error" with a typed error_code.
+            ASSERT_TRUE(upd.has_value())
+                << "ENDPOINT_UPDATE_REQ timed out — broker did not reply";
+            EXPECT_EQ(upd->value("status", ""), "error")
+                << "Non-producer sender should be rejected; got: "
+                << upd->dump();
+            EXPECT_EQ(upd->value("error_code", ""), "NOT_CHANNEL_OWNER")
+                << "Expected NOT_CHANNEL_OWNER; got: "
+                << upd->dump();
+
+            // The producer's record on the broker MUST be unchanged —
+            // a sibling discovery should still see the original port-0
+            // placeholder, not the rejected `updated_ep`.
+            auto disc = prod_bh.brc.discover_channel(channel, {}, 2000);
+            // Discovery may return CHANNEL_NOT_READY because the producer
+            // is still on port-0 — that's OK; we only need to confirm the
+            // broker did NOT silently apply the rejected update.
+            if (disc.has_value())
+            {
+                EXPECT_NE(disc->value("zmq_node_endpoint", ""), updated_ep)
+                    << "Broker silently applied a rejected update";
+            }
+
+            other_bh.stop();
+            prod_bh.stop();
+        });
+}
+
+int endpoint_update_port_zero_returns_error()
+{
+    return run_with_host(
+        "zmq_endpoint_registry::endpoint_update_port_zero_returns_error",
+        [](HubHost &host) {
+            const std::string channel = pid_chan("zmqvc.ep.zeroport");
+            const std::string uid     = "prod.ep." + channel;
+
+            BrcHandle bh;
+            bh.start(host.broker_endpoint(), host.broker_pubkey(), uid);
+
+            auto opts                 = make_reg_opts(channel, uid);
+            opts["data_transport"]    = "zmq";
+            opts["zmq_node_endpoint"] = "tcp://127.0.0.1:0";
+            auto reg = bh.brc.register_channel(opts, 3000);
+            ASSERT_TRUE(reg.has_value());
+
+            // Attempt to update with an endpoint that has port 0.
+            // Broker validate_tcp_endpoint rejects port 0 with
+            // INVALID_ENDPOINT per broker_service.cpp:handle_endpoint_
+            // update_req.
+            auto upd = bh.brc.send_endpoint_update(
+                channel, "zmq_node", "tcp://127.0.0.1:0", 2000);
+
+            ASSERT_TRUE(upd.has_value())
+                << "ENDPOINT_UPDATE_REQ timed out — broker did not reply";
+            EXPECT_EQ(upd->value("status", ""), "error")
+                << "Port-0 endpoint must be rejected; got: " << upd->dump();
+            EXPECT_EQ(upd->value("error_code", ""), "INVALID_ENDPOINT")
+                << "Expected INVALID_ENDPOINT; got: " << upd->dump();
+
+            bh.stop();
+        });
+}
+
 } // namespace zmq_endpoint_registry
 } // namespace pylabhub::tests::worker
 
@@ -407,6 +511,10 @@ struct ZmqEndpointRegistryRegistrar
                     return shm_and_zmq_coexist();
                 if (sc == "endpoint_update_reflected_in_discovery")
                     return endpoint_update_reflected_in_discovery();
+                if (sc == "endpoint_update_non_producer_returns_error")
+                    return endpoint_update_non_producer_returns_error();
+                if (sc == "endpoint_update_port_zero_returns_error")
+                    return endpoint_update_port_zero_returns_error();
                 return -1;
             });
     }
