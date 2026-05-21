@@ -40,7 +40,7 @@
       "args":            ["--role", "processor", "processor"],
       "wait_for_marker": "DemoProcessor started",
       "startup_timeout_s": 10,
-      "depends_on":      ["hub"],
+      "depends_on":      ["producer"],
       "role_log_glob":   "processor/logs/*.log"
     },
     {
