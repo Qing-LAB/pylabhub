@@ -79,15 +79,17 @@ extern "C" PLH_EXPORT bool on_consume(const plh_rx_t *rx)
     return true;
 }
 
-extern "C" PLH_EXPORT void on_band_message(const char *band, const char *sender,
-                                            const char *body_json)
+// Correct signature per native_invoke_types.h:
+//   void on_band_message(const plh_band_message_args_t *args)
+// Pre-fix this took (band, sender, body_json) as 3 separate args —
+// C ABI mismatch with the framework's `fn(&args)` call meant the
+// callback received register garbage and silently returned.
+extern "C" PLH_EXPORT void on_band_message(const plh_band_message_args_t *args)
 {
-    (void)sender;
-    if (!band || !body_json) return;
-    if (std::strcmp(band, SHUTDOWN_BAND) != 0) return;
+    if (!args || !args->band || !args->body_json) return;
+    if (std::strcmp(args->band, SHUTDOWN_BAND) != 0) return;
     // Simple substring check — body is JSON like {"cmd":"drain"}.
-    if (std::strstr(body_json, "\"drain\"") != nullptr ||
-        std::strstr(body_json, "drain")     != nullptr)
+    if (std::strstr(args->body_json, "drain") != nullptr)
     {
         if (g_ctx && g_ctx->log)
             g_ctx->log(g_ctx, PLH_LOG_INFO, "BenchCons received drain — stopping");
