@@ -50,6 +50,15 @@ class PYLABHUB_UTILS_EXPORT ConsumerRoleHost final : public scripting::RoleHostB
 
     // Copy/move deleted by RoleHostBase.
 
+    /// Pure config→opts translation used by `setup_infrastructure_`.
+    /// See ProducerRoleHost::make_tx_opts for rationale.  Same audit
+    /// B5/B11 history (translation layer that prior L3 tests bypassed).
+    [[nodiscard]] static hub::RxQueueOptions
+    make_rx_opts(const config::RoleConfig &config,
+                 const hub::SchemaSpec    &in_slot_spec,
+                 const hub::SchemaSpec    &in_fz_spec,
+                 bool                      has_rx_fz);
+
   private:
     // ── Worker thread entry point (RoleHostBase hook) ────────────────────────
     void worker_main_() override;

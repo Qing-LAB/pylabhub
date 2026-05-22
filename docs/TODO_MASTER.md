@@ -88,8 +88,10 @@ the demo inventory + manifest schema.
 
 ### Tests / coverage (`docs/todo/TESTING_TODO.md`)
 
-- **N1 HIGH** L3 test for `setup_infrastructure_` config→opts
-  translation layer (closes the systemic gap B5 + B11 came from).
+- ~~**N1 HIGH** L3 test for `setup_infrastructure_` config→opts
+  translation layer~~ — ✅ shipped 2026-05-22 as L2
+  `test_layer2_setup_infrastructure_translation` (6 tests × roles ×
+  transports, mutation-sweep verified against the B5 + B11 bugs).
 - B8 demo numpy pin via `plh_pyenv install --requirements`.
 - N8+N9 bench variants (scalar dispatch + multi-size sweep).
 - N11 cross-engine `on_band_message` signature parity audit.
@@ -106,14 +108,9 @@ the demo inventory + manifest schema.
 ## Pending harness tasks (snapshot — TaskList is authoritative)
 
 **P0 — do next** (ready, highest leverage):
-- **#92** Audit all `_REQ` frames against HEP-0007 §12.2.1 (REQ shape
-  contract).  Directly extends the ENDPOINT_UPDATE sync REQ/REP fix
-  that shipped 2026-05-21 (`5ccae1b2` + `8228f1ac` + `66e71894`).
-  Likely finds 2-3 more half-mix flake sources of the same kind.  M.
-- **#83** N1 — L3 test for `setup_infrastructure_` config→opts
-  translation.  Closes the systemic gap that B5 + B11 came from.  M.
 - **#93** Instrument the producer validate-path with per-step log
   lines.  Cheap, unblocks future CI-flake diagnosis.  S.
+- **#95** SCHEMA_REQ + METRICS_REQ — KEEP-RESERVED vs DELETE decision.  S.
 
 **P1 — small cleanups, batch together** (S each):
 - **#78** B3 hard-error empty `hub.auth.keyfile`.

@@ -55,6 +55,24 @@ class PYLABHUB_UTILS_EXPORT ProducerRoleHost final : public scripting::RoleHostB
 
     // Copy/move deleted by RoleHostBase.
 
+    /// Pure config→opts translation used by `setup_infrastructure_`.
+    /// Extracted so an L2/L3 test can exercise the production deployment
+    /// path (file → `RoleConfig::load_from_directory` → this) without
+    /// requiring a live broker or queue.  Closes the systemic test
+    /// gap that produced bugs B5 (shm_name not copied, 2026-05-20) and
+    /// B11 (zmq fields not copied, 2026-05-21) — both lived in the
+    /// translation layer that prior L3 tests bypassed by hand-
+    /// constructing the opts struct directly.
+    ///
+    /// Inputs are everything the translation actually consumes; output
+    /// is a fully-populated `TxQueueOptions`.  Pure — no side effects,
+    /// no broker, no queue construction.  Safe to call from tests.
+    [[nodiscard]] static hub::TxQueueOptions
+    make_tx_opts(const config::RoleConfig &config,
+                 const hub::SchemaSpec    &out_slot_spec,
+                 const hub::SchemaSpec    &out_fz_spec,
+                 bool                      has_tx_fz);
+
   private:
     // ── Worker thread entry point (RoleHostBase hook) ────────────────────────
     void worker_main_() override;

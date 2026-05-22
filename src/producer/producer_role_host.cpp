@@ -396,61 +396,51 @@ void ProducerRoleHost::worker_main_()
 }
 
 // ============================================================================
-// setup_infrastructure_ — connect to broker, create producer, wire events
+// make_tx_opts — pure config→TxQueueOptions translation (testable)
 // ============================================================================
+//
+// Extracted from setup_infrastructure_ so an L2 test can exercise the
+// production deployment path (file → load_from_directory → here)
+// without spinning up a broker / queue.  Pure: no side effects, reads
+// only from `config`, `out_slot_spec`, `out_fz_spec`, `has_tx_fz`.
+//
+// Audit B5 + B11 history (2026-05-20/21): both bugs lived in this
+// translation body.  Pre-extraction it was inline inside
+// setup_infrastructure_ where the L3 test
+// (role_api_flexzone_workers.cpp) couldn't reach it without also
+// triggering broker connection.  L3 tests therefore hand-constructed
+// the opts struct and bypassed the bug path.  Extracting the
+// translation here unblocks direct unit testing of every field copy.
 
-bool ProducerRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
+hub::TxQueueOptions
+ProducerRoleHost::make_tx_opts(const config::RoleConfig &config,
+                                const hub::SchemaSpec    &out_slot_spec,
+                                const hub::SchemaSpec    &out_fz_spec,
+                                bool                      has_tx_fz)
 {
-    auto       &core_   = core();
-    const auto &config_ = config();
-    auto       &api_ref = api();
+    const auto &tr  = config.out_transport();
+    const auto &shm = config.out_shm();
 
-    const auto &id    = config_.identity();
-    const auto &tr    = config_.out_transport();
-    const auto &shm   = config_.out_shm();
-    const auto &tc    = config_.timing();
-    inbox_cfg_ = config_.inbox(); // mutable copy for resolved fields
-    const auto &ch    = config_.out_channel();
-
-    // --- Producer options ---
-    // channel_name / role_name / role_uid removed from opts — build_tx_queue
-    // reads those directly from RoleAPIBase state (set via set_channel /
-    // set_name, already called above).
     hub::TxQueueOptions opts;
-    opts.has_shm      = shm.enabled;
-    // Single source of truth for schema+packing; hash auto-computed
-    // inside build_tx_queue from these.
-    opts.slot_spec    = out_slot_spec_;
-    opts.fz_spec      = core_.out_fz_spec();
+    opts.has_shm   = shm.enabled;
+    opts.slot_spec = out_slot_spec;
+    opts.fz_spec   = out_fz_spec;
 
+    opts.checksum_policy   = config.checksum().policy;
+    opts.flexzone_checksum = config.checksum().flexzone && has_tx_fz;
 
-    // --- Inbox setup (optional) ---
-    if (inbox_cfg_.has_inbox())
-    {
-        auto inbox_result = scripting::setup_inbox_facility(
-            inbox_spec, inbox_cfg_, config_.checksum().policy, "prod");
-        if (!inbox_result)
-            return false;
-        inbox_queue_ = std::move(inbox_result->queue);
-    }
-
-    // --- Queue abstraction: checksum policy ---
-    opts.checksum_policy    = config_.checksum().policy;
-    opts.flexzone_checksum  = config_.checksum().flexzone && core_.has_tx_fz();
-    // Timing is a role-level concern — core_.set_configured_period() handles it.
-
-    // --- SHM config ---
+    // SHM config block — only meaningful when shm.enabled.
     if (shm.enabled)
     {
         opts.shm_config.shared_secret        = shm.secret;
         opts.shm_config.ring_buffer_capacity = shm.slot_count;
         opts.shm_config.policy               = hub::DataBlockPolicy::RingBuffer;
         opts.shm_config.consumer_sync_policy = shm.sync_policy;
-        opts.shm_config.checksum_policy      = config_.checksum().policy;
-        opts.shm_config.physical_page_size = hub::system_page_size();
+        opts.shm_config.checksum_policy      = config.checksum().policy;
+        opts.shm_config.physical_page_size   = hub::system_page_size();
     }
 
-    // --- ZMQ transport (HEP-CORE-0021) ---
+    // ZMQ transport (HEP-CORE-0021).  Overrides has_shm to false.
     if (tr.transport == config::Transport::Zmq)
     {
         opts.has_shm           = false;
@@ -462,6 +452,38 @@ bool ProducerRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
             (tr.zmq_overflow_policy == "block") ? hub::OverflowPolicy::Block
                                                 : hub::OverflowPolicy::Drop;
     }
+
+    return opts;
+}
+
+// ============================================================================
+// setup_infrastructure_ — connect to broker, create producer, wire events
+// ============================================================================
+
+bool ProducerRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
+{
+    auto       &core_   = core();
+    const auto &config_ = config();
+    auto       &api_ref = api();
+
+    const auto &id    = config_.identity();
+    const auto &tc    = config_.timing();
+    inbox_cfg_ = config_.inbox(); // mutable copy for resolved fields
+    const auto &ch    = config_.out_channel();
+
+    // --- Inbox setup (optional) ---
+    if (inbox_cfg_.has_inbox())
+    {
+        auto inbox_result = scripting::setup_inbox_facility(
+            inbox_spec, inbox_cfg_, config_.checksum().policy, "prod");
+        if (!inbox_result)
+            return false;
+        inbox_queue_ = std::move(inbox_result->queue);
+    }
+
+    // Pure translation (testable in isolation via make_tx_opts).
+    hub::TxQueueOptions opts = make_tx_opts(
+        config_, out_slot_spec_, core_.out_fz_spec(), core_.has_tx_fz());
 
     // --- Create producer (RoleAPIBase owns the Tx queue) ---
     if (!api_ref.build_tx_queue(opts))

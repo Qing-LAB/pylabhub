@@ -438,6 +438,91 @@ void ProcessorRoleHost::worker_main_()
 }
 
 // ============================================================================
+// make_rx_opts / make_tx_opts — pure config→opts translation (testable)
+// ============================================================================
+//
+// Extracted from setup_infrastructure_.  See ProducerRoleHost::make_tx_opts
+// for rationale + audit history.  Processor has both directions; same
+// B5/B11 story applies symmetrically on each.
+
+hub::RxQueueOptions
+ProcessorRoleHost::make_rx_opts(const config::RoleConfig &config,
+                                 const hub::SchemaSpec    &in_slot_spec,
+                                 const hub::SchemaSpec    &in_fz_spec,
+                                 bool                      has_rx_fz)
+{
+    const auto &tr  = config.in_transport();
+    const auto &shm = config.in_shm();
+    const auto &ch  = config.in_channel();
+
+    hub::RxQueueOptions opts;
+    // Audit B5: shm_name = in_channel for the SHM path.
+    opts.shm_name          = ch;
+    opts.shm_shared_secret = shm.enabled ? shm.secret : 0u;
+    opts.slot_spec         = in_slot_spec;
+    opts.fz_spec           = in_fz_spec;
+    opts.zmq_buffer_depth  = tr.zmq_buffer_depth;
+    opts.checksum_policy   = config.checksum().policy;
+    opts.flexzone_checksum = config.checksum().flexzone && has_rx_fz;
+
+    // Audit B11: ZMQ path overrides shm_name (clear) and sets
+    // data_transport + zmq_node_endpoint.
+    if (tr.transport == config::Transport::Zmq)
+    {
+        opts.data_transport    = "zmq";
+        opts.zmq_node_endpoint = tr.zmq_endpoint;
+        opts.shm_name.clear();
+        opts.shm_shared_secret = 0u;
+    }
+
+    return opts;
+}
+
+hub::TxQueueOptions
+ProcessorRoleHost::make_tx_opts(const config::RoleConfig &config,
+                                 const hub::SchemaSpec    &out_slot_spec,
+                                 const hub::SchemaSpec    &out_fz_spec,
+                                 bool                      has_tx_fz)
+{
+    const auto &tr  = config.out_transport();
+    const auto &shm = config.out_shm();
+
+    hub::TxQueueOptions opts;
+    opts.has_shm   = shm.enabled;
+    opts.slot_spec = out_slot_spec;
+    opts.fz_spec   = out_fz_spec;
+
+    opts.checksum_policy   = config.checksum().policy;
+    opts.flexzone_checksum = config.checksum().flexzone && has_tx_fz;
+
+    // SHM config block.
+    if (shm.enabled)
+    {
+        opts.shm_config.shared_secret        = shm.secret;
+        opts.shm_config.ring_buffer_capacity = shm.slot_count;
+        opts.shm_config.policy               = hub::DataBlockPolicy::RingBuffer;
+        opts.shm_config.consumer_sync_policy = shm.sync_policy;
+        opts.shm_config.checksum_policy      = config.checksum().policy;
+        opts.shm_config.physical_page_size   = hub::system_page_size();
+    }
+
+    // ZMQ transport (HEP-CORE-0021).
+    if (tr.transport == config::Transport::Zmq)
+    {
+        opts.has_shm           = false;
+        opts.data_transport    = "zmq";
+        opts.zmq_node_endpoint = tr.zmq_endpoint;
+        opts.zmq_bind          = tr.zmq_bind;
+        opts.zmq_buffer_depth  = tr.zmq_buffer_depth;
+        opts.zmq_overflow_policy =
+            (tr.zmq_overflow_policy == "block") ? hub::OverflowPolicy::Block
+                                                : hub::OverflowPolicy::Drop;
+    }
+
+    return opts;
+}
+
+// ============================================================================
 // setup_infrastructure_ — dual broker connect, consumer + producer, wire events
 // ============================================================================
 
@@ -447,36 +532,11 @@ bool ProcessorRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
     const auto &config_ = config();
     auto       &api_ref = api();
 
-    // ── Consumer side (in_channel) ──────────────────────────────────────────
-    // channel_name / consumer_uid / consumer_name removed from opts —
-    // build_rx_queue reads those from RoleAPIBase state.
-    hub::RxQueueOptions in_opts;
-    // Audit B5/G21 (2026-05-20, demo-harness discovery): see corresponding
-    // comment in consumer_role_host.cpp.  shm_name = in_channel; the
-    // producer's `ShmQueue::create_writer` takes the channel name as its
-    // first arg, so the SHM block we attach to here lives at that name.
-    in_opts.shm_name             = config_.in_channel();
-    in_opts.shm_shared_secret    = config_.in_shm().enabled ? config_.in_shm().secret : 0u;
-    in_opts.slot_spec            = in_slot_spec_;       // fields + packing
-    in_opts.fz_spec              = core_.in_fz_spec();  // schema-hash match
-    in_opts.zmq_buffer_depth     = config_.in_transport().zmq_buffer_depth;
-    // Per-role checksum policy — same value on both input and output (see config_single_truth.md).
-    in_opts.checksum_policy      = config_.checksum().policy;
-    in_opts.flexzone_checksum    = config_.checksum().flexzone && core_.has_rx_fz();
-    // Audit B11 (2026-05-21, demo-harness discovery): mirror the
-    // consumer_role_host.cpp fix.  When in_transport=zmq, propagate
-    // data_transport + zmq_node_endpoint and clear shm_name so
-    // build_rx_queue dispatches the ZMQ path.  Pre-fix, only
-    // zmq_buffer_depth was copied and build_rx_queue saw
-    // data_transport="shm" + shm_name=<channel>, attempted SHM, and
-    // emitted "Failed to connect consumer to in_channel '<name>'".
-    if (config_.in_transport().transport == config::Transport::Zmq)
-    {
-        in_opts.data_transport    = "zmq";
-        in_opts.zmq_node_endpoint = config_.in_transport().zmq_endpoint;
-        in_opts.shm_name.clear();
-        in_opts.shm_shared_secret = 0u;
-    }
+    // Pure translations (extracted — testable via
+    // ProcessorRoleHost::make_rx_opts / make_tx_opts).  See those
+    // functions for the field-by-field logic + audit history.
+    hub::RxQueueOptions in_opts = make_rx_opts(
+        config_, in_slot_spec_, core_.in_fz_spec(), core_.has_rx_fz());
     if (!api_ref.build_rx_queue(in_opts))
     {
         LOGGER_ERROR("[proc] Failed to connect consumer to in_channel '{}'",
@@ -484,40 +544,8 @@ bool ProcessorRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
         return false;
     }
 
-    // ── Producer side (out_channel) ─────────────────────────────────────────
-    // channel_name / role_name / role_uid removed from opts — build_tx_queue
-    // reads those from RoleAPIBase state.
-    hub::TxQueueOptions out_opts;
-    out_opts.has_shm       = config_.out_shm().enabled;
-    out_opts.slot_spec     = out_slot_spec_;
-    out_opts.fz_spec       = core_.out_fz_spec();
-    // Per-role checksum policy — same value on both input and output (see config_single_truth.md).
-    out_opts.checksum_policy    = config_.checksum().policy;
-    out_opts.flexzone_checksum  = config_.checksum().flexzone && core_.has_tx_fz();
-    // SHM config (output side).
-    if (config_.out_shm().enabled)
-    {
-        out_opts.shm_config.shared_secret        = config_.out_shm().secret;
-        out_opts.shm_config.ring_buffer_capacity = config_.out_shm().slot_count;
-        out_opts.shm_config.policy               = hub::DataBlockPolicy::RingBuffer;
-        out_opts.shm_config.consumer_sync_policy = config_.out_shm().sync_policy;
-        out_opts.shm_config.checksum_policy      = config_.checksum().policy;
-        out_opts.shm_config.physical_page_size = hub::system_page_size();
-    }
-
-    // HEP-CORE-0021: for ZMQ output, register the peer endpoint with the broker.
-    if (config_.out_transport().transport == config::Transport::Zmq)
-    {
-        out_opts.has_shm           = false;
-        out_opts.data_transport    = "zmq";
-        out_opts.zmq_node_endpoint = config_.out_transport().zmq_endpoint;
-        out_opts.zmq_bind          = config_.out_transport().zmq_bind;
-        out_opts.zmq_buffer_depth  = config_.out_transport().zmq_buffer_depth;
-        out_opts.zmq_overflow_policy =
-            (config_.out_transport().zmq_overflow_policy == "block")
-                ? hub::OverflowPolicy::Block
-                : hub::OverflowPolicy::Drop;
-    }
+    hub::TxQueueOptions out_opts = make_tx_opts(
+        config_, out_slot_spec_, core_.out_fz_spec(), core_.has_tx_fz());
 
     // ── Inbox facility (optional) ───────────────────────────────────────────
     inbox_cfg_ = config_.inbox();

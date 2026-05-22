@@ -55,26 +55,22 @@ must use Pattern 1+ (`BinaryLifecycleEnvironment`) or Pattern 3
 
 ## Current Focus — Open coverage gaps
 
-### N1 (#83) HIGH — L3 test for `setup_infrastructure_` config→opts translation
+### Recent Completions
 
-**Systemic gap.**  The translation layer in producer / consumer /
-processor `setup_infrastructure_` that turns `RoleConfig` into
-`RxQueueOptions` / `TxQueueOptions` has **zero L3 test coverage**.
-Both B5 (shm_name not copied) and B11 (zmq fields not copied)
-lived here this session; the existing L3
-`role_api_flexzone_workers.cpp` builds opts MANUALLY so it bypasses
-the bug path entirely.
-
-**Plan.**
-1. Extract translation into a separately-testable function
-   (free function or static method on role host).
-2. Write `SetupInfrastructure_ConfigTranslation_*` L3 tests that
-   pin every field that should propagate, per transport (SHM,
-   ZMQ) per role (producer / consumer / processor in / out).
-3. Mutation-sweep each field — flip the source assignment in the
-   role host, confirm the test fails.
-
-**Why HIGH:** more bugs likely lurking in this untested layer.
+- **N1 (#83) — config→opts translation L2 round-trip test** —
+  2026-05-22, commits TBD.  Closed the systemic gap that B5 + B11
+  came from.  Translation extracted into testable static methods
+  `ProducerRoleHost::make_tx_opts` / `ConsumerRoleHost::make_rx_opts` /
+  `ProcessorRoleHost::make_{rx,tx}_opts`.  New L2 test
+  `tests/test_layer2_service/test_setup_infrastructure_translation.cpp`
+  exercises the full production round-trip:
+  `RoleDirectory::init_directory` → on-disk JSON → user edit → 
+  `RoleConfig::load_from_directory` → `make_*_opts` → assert all
+  fields.  Mutation-sweep verified (deliberately breaking the
+  shared_secret copy / shm_name copy / data_transport="zmq" copy
+  each triggers the test with the correct B5/B11 regression
+  message).  6 tests (3 roles × 2 transports), all pass; demos
+  regress clean.
 
 ### B8 (#81) — Demo-setup numpy pin
 

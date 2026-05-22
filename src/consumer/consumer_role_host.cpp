@@ -360,6 +360,52 @@ void ConsumerRoleHost::worker_main_()
 }
 
 // ============================================================================
+// make_rx_opts — pure config→RxQueueOptions translation (testable)
+// ============================================================================
+//
+// Extracted from setup_infrastructure_.  See
+// ProducerRoleHost::make_tx_opts for rationale + audit history.
+// Same B5 (shm_name) + B11 (zmq fields) story, this side mirrors
+// the producer.
+
+hub::RxQueueOptions
+ConsumerRoleHost::make_rx_opts(const config::RoleConfig &config,
+                                const hub::SchemaSpec    &in_slot_spec,
+                                const hub::SchemaSpec    &in_fz_spec,
+                                bool                      has_rx_fz)
+{
+    const auto &tr  = config.in_transport();
+    const auto &shm = config.in_shm();
+    const auto &ch  = config.in_channel();
+
+    hub::RxQueueOptions opts;
+    // Audit B5/G21: shm_name is the channel name (matches producer's
+    // ShmQueue::create_writer first arg).  Set unconditionally for
+    // SHM; cleared below if transport is ZMQ.
+    opts.shm_name          = ch;
+    opts.shm_shared_secret = shm.enabled ? shm.secret : 0u;
+    opts.slot_spec         = in_slot_spec;
+    opts.fz_spec           = in_fz_spec;
+
+    opts.checksum_policy   = config.checksum().policy;
+    opts.flexzone_checksum = config.checksum().flexzone && has_rx_fz;
+
+    // ZMQ transport (HEP-CORE-0021).  Audit B11: data_transport +
+    // zmq_node_endpoint MUST be set, and shm_name/secret MUST be
+    // cleared, when in_transport is ZMQ.
+    if (tr.transport == config::Transport::Zmq)
+    {
+        opts.data_transport    = "zmq";
+        opts.zmq_node_endpoint = tr.zmq_endpoint;
+        opts.zmq_buffer_depth  = tr.zmq_buffer_depth;
+        opts.shm_name.clear();
+        opts.shm_shared_secret = 0u;
+    }
+
+    return opts;
+}
+
+// ============================================================================
 // setup_infrastructure_ — connect to broker, create consumer, wire events
 // ============================================================================
 
@@ -369,56 +415,16 @@ bool ConsumerRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
     const auto &config_ = config();
     auto       &api_ref = api();
 
-    const auto &id    = config_.identity();
-    const auto &tr    = config_.in_transport();
-    const auto &shm   = config_.in_shm();
-    const auto &tc    = config_.timing();
-    inbox_cfg_ = config_.inbox();
-    const auto &ch    = config_.in_channel();
+    inbox_cfg_      = config_.inbox();
+    const auto &tc  = config_.timing();
+    const auto &ch  = config_.in_channel();
 
-    // --- Consumer options ---
-    // channel_name / consumer_uid / consumer_name removed from opts —
-    // build_rx_queue reads those directly from RoleAPIBase state
-    // (set via set_channel / set_name, already called above).
-    hub::RxQueueOptions opts;
-    // Audit B5/G21 (2026-05-20, demo-harness discovery): the SHM block
-    // name is the channel name — the producer's `ShmQueue::create_writer`
-    // takes `tx_channel` as its first arg, and the consumer's
-    // `ShmQueue::create_reader` takes `shm_name` as its first arg.  Set
-    // them to the same string here.  Pre-fix `opts.shm_name` was empty,
-    // so `RoleAPIBase::build_rx_queue` skipped the SHM branch entirely
-    // and fell through to ZMQ (which also failed for SHM-transport
-    // pipelines).  See `tests/test_layer3_datahub/workers/role_api_flexzone_workers.cpp`
-    // `make_consumer_opts` for the canonical L3 pattern.
-    opts.shm_name             = ch;
-    opts.shm_shared_secret    = shm.enabled ? shm.secret : 0u;
-    opts.slot_spec            = in_slot_spec_;        // fields + packing
-    opts.fz_spec              = core_.in_fz_spec();   // for schema-hash match
-
-    // Queue abstraction: checksum policy.
-    opts.checksum_policy    = config_.checksum().policy;
-    opts.flexzone_checksum  = config_.checksum().flexzone && core_.has_rx_fz();
-
-    // Transport declaration.
-    const bool is_zmq = (tr.transport == config::Transport::Zmq);
-
-    if (is_zmq)
-    {
-        // Audit B11 (2026-05-21, demo-harness discovery): pre-fix only
-        // `zmq_buffer_depth` was copied — `data_transport`,
-        // `zmq_node_endpoint`, and `shm_name` (clear) were left at
-        // defaults, so build_rx_queue saw data_transport="shm" and
-        // shm_name=<channel> and tried the SHM path, which failed with
-        // "Failed to connect consumer to in_channel '<name>'".  Same
-        // systemic pattern as B5 (shm_name not populated): the
-        // config-to-opts translation layer was never exercised by L3
-        // tests (which manually construct RxQueueOptions).
-        opts.data_transport    = "zmq";
-        opts.zmq_node_endpoint = tr.zmq_endpoint;
-        opts.zmq_buffer_depth  = tr.zmq_buffer_depth;
-        opts.shm_name.clear();          // not used by ZMQ path
-        opts.shm_shared_secret = 0u;    // not used by ZMQ path
-    }
+    // Pure translation (extracted from setup_infrastructure_ — see
+    // `make_rx_opts` for the field-by-field logic and the B5/B11
+    // audit history).  Testable in isolation via
+    // `ConsumerRoleHost::make_rx_opts(...)`.
+    hub::RxQueueOptions opts = make_rx_opts(
+        config_, in_slot_spec_, core_.in_fz_spec(), core_.has_rx_fz());
 
     // --- Inbox setup (optional) ---
     if (inbox_cfg_.has_inbox())
