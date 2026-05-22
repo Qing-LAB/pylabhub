@@ -906,6 +906,35 @@ gtest_discover_tests(test_layer2_role_init_directory
     PROPERTIES LABELS "layer2;service;role_init_directory" TIMEOUT 60)
 
 # ============================================================================
+# Test: config→opts translation round-trip (closes TODO #83 / N1)
+#
+# Production round-trip: init_directory → JSON-on-disk → modify (mimic user
+# edit) → load_from_directory → ProducerRoleHost::make_tx_opts (et al) →
+# assert every field.  Closes the systemic test gap that produced bugs B5
+# (shm_name not copied, 2026-05-20) and B11 (zmq fields not copied,
+# 2026-05-21) — both lived in the translation layer that prior L3 tests
+# bypassed by hand-constructing the opts struct.
+# ============================================================================
+
+add_executable(test_layer2_setup_infrastructure_translation
+    test_setup_infrastructure_translation.cpp)
+target_include_directories(test_layer2_setup_infrastructure_translation PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/producer
+    ${CMAKE_SOURCE_DIR}/src/consumer
+    ${CMAKE_SOURCE_DIR}/src/processor)
+target_link_libraries(test_layer2_setup_infrastructure_translation PRIVATE
+    pylabhub::utils pylabhub::test_framework GTest::gtest GTest::gtest_main)
+pylabhub_ensure_sanitizer_for_executable(
+    test_layer2_setup_infrastructure_translation)
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_setup_infrastructure_translation
+    SUITE_NAME "Layer2_SetupInfrastructureTranslation")
+layer2_require_staged_utils(test_layer2_setup_infrastructure_translation)
+gtest_discover_tests(test_layer2_setup_infrastructure_translation
+    PROPERTIES LABELS "layer2;service;setup_infrastructure_translation"
+               TIMEOUT 60)
+
+# ============================================================================
 # Test: CLI log flags → JSON → LoggingConfig round-trip (all 3 roles)
 #
 # Pattern 3 (IsolatedProcessTest): parent spawns workers; each worker owns
