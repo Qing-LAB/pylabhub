@@ -491,6 +491,172 @@ int endpoint_update_port_zero_returns_error()
 //     ENDPOINT_UPDATE half-mix shipped 2026-05-21).
 // Either way, the silently-dropped reply is observable now.
 
+// ── HEP-CORE-0007 §12.2.1 TIMEOUT-path conformance (Option A minimal) ──
+//
+// "Silent stub" — a bare ZMQ ROUTER socket that accepts BRC's plain-TCP
+// DEALER connection, receives REQs, and emits NO reply.  Drives BRC's
+// `do_request` into its timeout branch deterministically (no need to
+// kill the broker mid-call or use a flaky tiny-timeout heuristic
+// against the real broker).
+//
+// Per `feedback_no_mocks_via_observability.md`: this is a wire-level
+// test fixture (records what BRC sends; replies per a policy), NOT a
+// mock of broker logic.  No production behaviour is duplicated.
+//
+// HEP contract under test:
+//   - Sync REQ methods (per HEP-CORE-0007 §12.2.1 catalog) MUST return
+//     `nullopt` when no reply arrives within `timeout_ms`.
+//   - The wait MUST be approximately `timeout_ms` (not zero — would
+//     mean the method skipped the wait; not >>budget — would mean the
+//     method blocked past its declared deadline).
+
+class SilentRouterStub
+{
+  public:
+    SilentRouterStub()
+        : sock_(pylabhub::hub::get_zmq_context(), zmq::socket_type::router)
+    {
+        sock_.set(zmq::sockopt::linger, 0);
+        sock_.bind("tcp://127.0.0.1:*");
+        endpoint_ = sock_.get(zmq::sockopt::last_endpoint);
+        thread_ = std::thread([this] { run_(); });
+    }
+
+    ~SilentRouterStub()
+    {
+        stop_.store(true, std::memory_order_release);
+        if (thread_.joinable())
+            thread_.join();
+    }
+
+    const std::string &endpoint() const noexcept { return endpoint_; }
+    size_t  received_count() const noexcept
+    {
+        return received_count_.load(std::memory_order_relaxed);
+    }
+
+  private:
+    void run_()
+    {
+        // Drain incoming messages; discard them.  No reply on any.
+        while (!stop_.load(std::memory_order_acquire))
+        {
+            zmq::pollitem_t items[] = {
+                {static_cast<void *>(sock_), 0, ZMQ_POLLIN, 0}};
+            (void)zmq::poll(items, 1, std::chrono::milliseconds(50));
+            if (items[0].revents & ZMQ_POLLIN)
+            {
+                // Drain the full frame (identity + possible empty +
+                // payload).  Don't reply.
+                while (true)
+                {
+                    zmq::message_t msg;
+                    auto r = sock_.recv(msg, zmq::recv_flags::dontwait);
+                    if (!r.has_value()) break;
+                    if (!msg.more()) break;
+                }
+                received_count_.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+    }
+
+    zmq::socket_t       sock_;
+    std::string         endpoint_;
+    std::thread         thread_;
+    std::atomic<bool>   stop_{false};
+    std::atomic<size_t> received_count_{0};
+};
+
+int req_shape_sync_req_times_out_on_no_reply()
+{
+    return run_gtest_worker(
+        [] {
+            // Bring up the silent stub on a random local port.
+            SilentRouterStub stub;
+
+            // BRC connects with empty pubkey → plain TCP (no CURVE).
+            BrcHandle bh;
+            bh.start(stub.endpoint(), /*pubkey=*/"",
+                     /*uid=*/"req-shape-timeout-test");
+
+            // Probe sync REQs from across the §12.2.1 catalog.  Each
+            // MUST return nullopt after waiting ~kTimeoutMs.  Sample
+            // covers a state-mutator (REG), a state-query (CHANNEL_LIST),
+            // and the bug-of-the-session (ENDPOINT_UPDATE) — gives us
+            // coverage across the do_request shapes.
+            constexpr int kTimeoutMs       = 200;
+            constexpr int kMinElapsedMs    = 150;  // didn't skip the wait
+            constexpr int kMaxElapsedMs    = 500;  // didn't block past it
+
+            using clk = std::chrono::steady_clock;
+            using ms  = std::chrono::milliseconds;
+
+            auto time_call = [](auto &&fn) {
+                auto t0 = clk::now();
+                auto r  = fn();
+                auto el = std::chrono::duration_cast<ms>(clk::now() - t0).count();
+                return std::make_pair(r, el);
+            };
+
+            // 1. REG_REQ — state mutation, do_request("REG_REQ", "REG_ACK").
+            {
+                auto opts = make_reg_opts(pid_chan("timeout.reg"),
+                                          "prod.timeout-test");
+                auto [reg, el] = time_call(
+                    [&] { return bh.brc.register_channel(opts, kTimeoutMs); });
+                EXPECT_FALSE(reg.has_value())
+                    << "REG_REQ must return nullopt on no-reply, got: "
+                    << (reg ? reg->dump() : "<nullopt>");
+                EXPECT_GE(el, kMinElapsedMs)
+                    << "REG_REQ returned too fast (" << el << "ms) — "
+                    << "did it skip the wait?";
+                EXPECT_LE(el, kMaxElapsedMs)
+                    << "REG_REQ blocked past timeout (" << el << "ms > "
+                    << kMaxElapsedMs << "ms budget)";
+            }
+
+            // 2. CHANNEL_LIST_REQ — pure query, do_request("CHANNEL_LIST_REQ",
+            //    "CHANNEL_LIST_ACK").
+            {
+                auto [list, el] = time_call(
+                    [&] { return bh.brc.list_channels(kTimeoutMs); });
+                EXPECT_FALSE(list.has_value())
+                    << "CHANNEL_LIST_REQ must return nullopt on no-reply";
+                EXPECT_GE(el, kMinElapsedMs);
+                EXPECT_LE(el, kMaxElapsedMs);
+            }
+
+            // 3. ENDPOINT_UPDATE_REQ — the bug-of-the-session.  Verifies
+            //    the just-shipped sync conversion (8228f1ac) waits + times
+            //    out correctly under the same fixture.
+            {
+                auto [upd, el] = time_call([&] {
+                    return bh.brc.send_endpoint_update(
+                        "timeout.ep", "zmq_node",
+                        "tcp://127.0.0.1:44321", kTimeoutMs);
+                });
+                EXPECT_FALSE(upd.has_value())
+                    << "ENDPOINT_UPDATE_REQ must return nullopt on no-reply";
+                EXPECT_GE(el, kMinElapsedMs);
+                EXPECT_LE(el, kMaxElapsedMs);
+            }
+
+            // Sanity: stub did receive at least one frame (BRC isn't
+            // failing at the socket layer — it's reaching the wire,
+            // just timing out as designed).
+            EXPECT_GT(stub.received_count(), 0u)
+                << "Stub received zero frames — BRC may not have connected";
+
+            bh.stop();
+        },
+        "zmq_endpoint_registry::req_shape_sync_req_times_out_on_no_reply",
+        Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(),
+        JsonConfig::GetLifecycleModule(),
+        pylabhub::crypto::GetLifecycleModule(),
+        pylabhub::hub::GetZMQContextModule());
+}
+
 int req_shape_no_unmatched_replies_for_fire_and_forget()
 {
     return run_with_host(
@@ -573,7 +739,7 @@ int req_shape_no_unmatched_replies_for_fire_and_forget()
                 << "the broker to stop sending the reply, or move the "
                 << "REQ to the sync list with a sync BRC client method.";
 
-            bh.brc.band_leave(band);
+            (void)bh.brc.band_leave(band);
             bh.stop();
         });
 }
@@ -618,6 +784,8 @@ struct ZmqEndpointRegistryRegistrar
                     return endpoint_update_port_zero_returns_error();
                 if (sc == "req_shape_no_unmatched_replies_for_fire_and_forget")
                     return req_shape_no_unmatched_replies_for_fire_and_forget();
+                if (sc == "req_shape_sync_req_times_out_on_no_reply")
+                    return req_shape_sync_req_times_out_on_no_reply();
                 return -1;
             });
     }

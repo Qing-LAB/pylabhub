@@ -86,3 +86,20 @@ TEST_F(ZmqEndpointRegistryTest, ReqShape_NoUnmatchedRepliesForFireAndForget)
         "zmq_endpoint_registry.req_shape_no_unmatched_replies_for_fire_and_forget");
     ExpectWorkerOk(w);
 }
+
+// ── HEP-CORE-0007 §12.2.1 timeout-path conformance (Option A minimal) ───
+// Drives a representative sample of sync REQ methods (REG, CHANNEL_LIST,
+// ENDPOINT_UPDATE) against a silent ROUTER stub that accepts BRC
+// connections but emits no replies.  Asserts each method returns
+// nullopt and the elapsed time matches the declared timeout_ms (didn't
+// skip the wait; didn't block past the budget).  Catches: BRC sync
+// method that silently degraded to fire-and-forget shape (would return
+// instantly), and BRC sync method that hangs past its declared timeout
+// (would return >>budget).
+
+TEST_F(ZmqEndpointRegistryTest, ReqShape_SyncReqTimesOutOnNoReply)
+{
+    auto w = SpawnWorker(
+        "zmq_endpoint_registry.req_shape_sync_req_times_out_on_no_reply");
+    ExpectWorkerOk(w);
+}
