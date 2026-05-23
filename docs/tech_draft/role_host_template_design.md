@@ -720,28 +720,239 @@ between roles are captured by:
   per-cycle role specificity — invoked from each role's `run_loop_`
   override.
 
-### 11.1 Frame configuration (per-role data, runtime not compile-time)
+### 11.1 Design choice — plain class, not template
 
-**Design choice (2026-05-22, revising earlier CRTP draft)**:
-`RoleHostFrame` is a **plain (non-templated) class**.  The original
-CRTP/traits design (parameterizing the frame by host type at compile
-time) was reconsidered after verifying that the data loop's
-role-specific dispatch already happens inside the existing
-`run_data_loop<CycleOps>(...)` function template
-(`src/utils/service/data_loop.hpp`).  Once control enters that
-template, all per-cycle work is statically dispatched within `CycleOps`
-code.  The role host's only remaining role-typed interaction is the
-**one** call to enter `run_data_loop` — once per role lifetime, in
-the cold setup path.
+**Decided 2026-05-22 after multiple rounds of evaluation.**
 
-Templating `RoleHostFrame` itself buys nothing at runtime (no virtual
-call avoided in the hot path) and costs readability / debugging
-ergonomics.  The plain-class design is simpler, easier to reason
-about, and equally extensible (new roles derive from `RoleHostFrame`
-the same way new types specialize a trait).
+`RoleHostFrame` is a **plain (non-templated) class**.  This section
+walks through the reasoning grounded in concrete code, because the
+choice was non-obvious and we flipped on it twice during design
+review.  Reading this section should make it clear why plain class is
+right *for this specific abstraction*, and why the established
+template pattern one level up (`EngineHost<ApiT>`) does NOT apply
+here.
 
-Role-specific data the frame needs is captured as **runtime
-configuration** passed to the frame's constructor:
+#### What we want from the design
+
+Three goals, in priority order:
+
+1. **Best possible runtime performance.**  Per-cycle work in the data
+   loop is the hot path; setup/teardown is cold.  We want zero
+   indirection in the hot path.
+2. **Modular and easy to read.**  Future maintainers (and future-us)
+   should be able to follow what a role does without holding 1000+
+   lines of template scaffolding in mind.
+3. **Flexible enough to add new role types later.**  A tap/monitor, a
+   multi-input router, a sink-only role — the design should
+   accommodate these without a structural rewrite.
+
+#### The question to settle: do we need a template?
+
+Two viable shapes:
+
+- **Template + traits** (CRTP-style): `RoleHostFrame<HostT>`, with a
+  `role_host_traits<HostT>` specialization per role carrying the
+  role's CycleOps type alias, string constants, and presence-list
+  extractor.  The frame's body writes `run_data_loop<Traits::CycleOps>(...)`
+  directly.
+
+- **Plain class with virtual hooks**: `RoleHostFrame` (no template
+  parameter).  Pure-virtual `build_presences_` and `run_loop_` —
+  each role's `run_loop_` override calls
+  `run_data_loop<TheirCycleOps>(...)` inline.  Role tag / label /
+  callback name are runtime-string members.
+
+Either shape compiles, runs at the same speed in the hot path, and
+gives compile-time errors when a role forgets to provide its
+behavior.  The question is which one *belongs* in this layer.
+
+#### The precedent that nearly misled us: `EngineHost<ApiT>`
+
+The base class `RoleHostBase` is itself a template instantiation:
+
+```cpp
+// src/include/utils/engine_host.hpp:451
+using RoleHostBase = EngineHost<RoleAPIBase>;
+```
+
+It looked, at first glance, like adopting the same template + traits
+pattern for `RoleHostFrame` would be "consistency with existing code"
+— `RoleHostFrame<HostT>` mirrors `EngineHost<ApiT>` one layer up.
+
+That argument turns out to be wrong once you look at *what*
+`EngineHost<ApiT>` actually does with its template parameter.
+
+#### What `EngineHost<ApiT>` actually does — concretely
+
+`EngineHost` is the base class that owns the host's configuration
+object.  Different hosts hold different configurations:
+
+- A **role binary** (plh_role) is a self-contained process that owns
+  its own config file.  `EngineHost<RoleAPIBase>` therefore needs to
+  *store the config object itself* — type `config::RoleConfig`, which
+  is a ~100-field struct holding the parsed JSON.
+
+- A **hub binary** (plh_hub) has its config owned by the outer
+  `HubHost` container; the inner script runtime
+  (`HubScriptRunner`, which inherits from `EngineHost<HubAPI>`) doesn't
+  own a config — it reads through a backref to `HubHost`.  So
+  `EngineHost<HubAPI>` needs to store *nothing* in the config slot.
+
+The codebase expresses these two cases with a per-API type alias
+called `ConfigT`:
+
+```cpp
+// src/include/utils/engine_host.hpp:131
+template <> struct script_host_traits<RoleAPIBase>
+{
+    using ConfigT = config::RoleConfig;   // ← real config struct
+    ...
+};
+
+// src/include/utils/hub_api.hpp:396
+template <> struct script_host_traits<HubAPI>
+{
+    using ConfigT = std::monostate;       // ← empty placeholder type
+    ...
+};
+```
+
+And `EngineHost<ApiT>` literally stores a member of that type:
+
+```cpp
+// src/include/utils/engine_host.hpp:149
+using ConfigT = typename script_host_traits<ApiT>::ConfigT;
+
+// src/include/utils/engine_host.hpp:345
+ConfigT  config_;        // ← member variable
+```
+
+**This is the key point.**  The member `config_`'s type — and
+therefore its size in memory — is **different in each EngineHost
+instantiation**.  In `EngineHost<RoleAPIBase>`, `config_` is a
+~100-field struct.  In `EngineHost<HubAPI>`, `config_` is a 1-byte
+placeholder.  The class's memory layout is not the same between
+instantiations.
+
+You cannot express "the class has different storage in different
+instantiations" with virtual functions.  Virtuals can vary
+*behavior*, not *member layout*.  That's why `EngineHost` MUST be a
+template — its storage shape depends on the host kind it's serving.
+
+#### What `RoleHostFrame` would need — concretely
+
+By contrast, `RoleHostFrame` would NOT store anything that varies by
+role.  The role-specific objects it would interact with are:
+
+- **The presence list** — `std::vector<PresenceInputs>`.  A vector of
+  POD `PresenceInputs` is the *same type* for every role; only its
+  length differs (1 for Producer/Consumer, 2 for Processor, N for a
+  future router).  No member-layout variance.
+
+- **The CycleOps object** — `ProducerCycleOps` / `ConsumerCycleOps` /
+  `ProcessorCycleOps`.  Looking at the current code, this object is
+  constructed as a **stack local inside `worker_main_`**, never
+  stored as a class member:
+
+  ```cpp
+  // src/producer/producer_role_host.cpp:382
+  ProducerCycleOps ops(api_ref, engine_ref, core_, sc.stop_on_script_error);
+
+  // src/consumer/consumer_role_host.cpp:346
+  ConsumerCycleOps ops(api_ref, engine_ref, core_, sc.stop_on_script_error);
+
+  // src/processor/processor_role_host.cpp:423
+  ProcessorCycleOps ops(api_ref, engine_ref, core_, ...);
+  ```
+
+  In all three roles, the `ops` variable lives only for the duration
+  of the data-loop call; it's destroyed when `worker_main_` returns.
+  Grepping the codebase confirms zero occurrences of a CycleOps
+  object being stored as a class member.  The role's CycleOps type
+  appears at **one call site only**, inside the role's `worker_main_`
+  body.
+
+- **String constants** (role_tag, role_label, callback name) — these
+  are just strings.  Storing them as `std::string` members works the
+  same for any role.
+
+So `RoleHostFrame` has nothing analogous to `EngineHost::config_`
+whose type would need to vary.  All variation between roles is
+either:
+
+- A runtime *count* in the presence list (1/2/N), or
+- A *value* of a string (`"prod"` / `"cons"` / `"proc"`), or
+- A *one-line call* to `run_data_loop<TheirCycleOps>(...)` at one
+  specific location in the worker body.
+
+#### Why this means plain class wins
+
+The first two — counts and string values — are runtime data.  Trivial
+to pass through the constructor and store as ordinary members.  No
+template needed.
+
+The third — the call to `run_data_loop<TheirCycleOps>` — is
+*behavior at one call site*.  Behavior at one call site is precisely
+what virtual functions are for.  Each role overrides a small
+`run_loop_()` method whose body is a one-liner that calls
+`run_data_loop<ItsCycleOps>(api, core, engine, stop_on_error)`.  The
+virtual call happens **once per role lifetime**, at the start of the
+data loop — in the cold setup path.  After it runs, control enters
+`run_data_loop`, which is itself a function template; everything
+inside `run_data_loop` is statically dispatched.
+
+So the hot-path performance is identical in both designs.  Both have
+zero virtual calls per cycle.
+
+What changes is what the next reader has to comprehend.  In the
+template design, the reader has to trace:
+
+- the role host's constructor →
+- the `RoleHostFrame<HostT>` template definition →
+- the `role_host_traits<HostT>` specialization →
+- to find out, for example, what `Traits::role_tag` resolves to.
+
+In the plain-class design, the reader sees:
+
+- the role host's constructor passes a `RoleHostFrameConfig{ "prod",
+  "producer", "on_produce" }` to the frame.
+
+The data is right there, at the construction site, as plain strings.
+
+#### The three goals, scored
+
+| Goal | Template + traits | Plain class |
+|---|---|---|
+| **Best runtime performance** | Zero hot-path virtual calls.  One cold-path virtual avoided at startup. | Zero hot-path virtual calls.  One cold-path virtual call at startup (to enter `run_loop_()`). |
+| **Modular + easy to read** | Reader follows: derived → frame template → trait specialization (three places). | Reader follows: derived → frame method (two places).  String constants visible at construction site. |
+| **Flexible for new role types** | New role: add derived class + add trait specialization. | New role: add derived class with overrides.  Same conceptual operations. |
+
+Performance is a tie in practice (one virtual call per role lifetime
+is unmeasurable).  Plain class wins on readability.  Both are equally
+flexible.
+
+#### What we learned about the EngineHost precedent
+
+The lesson from looking carefully at `EngineHost<ApiT>` is that it
+uses a template because it has to — its storage layout depends on
+which API kind it's serving.  `RoleHostFrame` doesn't store anything
+role-typed.  The two situations look alike from far away (both are
+"base class shared across multiple roles or APIs") but are
+structurally different up close:
+
+- **EngineHost** has *variant member storage* → template required.
+- **RoleHostFrame** has *variant behavior at one call site* → virtual
+  hook sufficient.
+
+Pattern-matching on surface similarity ("the base class is a
+template, so this new base class should be too") leads to the
+template choice; reasoning from the structural difference leads to
+the plain-class choice.  We pick the latter.
+
+#### The frame configuration object
+
+The frame's per-role data — three short strings — is collected into a
+small struct passed to the constructor:
 
 ```cpp
 namespace pylabhub::scripting
@@ -749,15 +960,15 @@ namespace pylabhub::scripting
 
 struct RoleHostFrameConfig
 {
-    /// Role tag — short string used in log prefixes and broker uid
-    /// prefix ("prod" / "cons" / "proc").
+    /// Short role tag used in log prefixes and the broker uid prefix
+    /// ("prod" / "cons" / "proc").
     std::string role_tag;
 
     /// Human-readable role label for diagnostics ("producer" / ...).
     std::string role_label;
 
     /// Required script callback name ("on_produce" / "on_consume" /
-    /// "on_process").  Engine asserts this exists during init.
+    /// "on_process").  The engine asserts this exists during init.
     std::string required_callback;
 };
 
@@ -765,9 +976,9 @@ struct RoleHostFrameConfig
 ```
 
 Each role host's constructor builds a `RoleHostFrameConfig` literal
-for its own role and passes it to the frame base.  The presence list
-(which depends on `RoleConfig`) is delivered through a virtual hook
-— see §11.2.
+for its own role and passes it to the frame base.  The role's
+presence list (which depends on the parsed `RoleConfig`) is delivered
+through a pure-virtual hook (`build_presences_`) — see §11.2.
 
 ### 11.2 Frame skeleton
 
@@ -960,7 +1171,7 @@ These are direct evidence that M9 needs to collapse `make_*_opts` +
 #### 11.6.1 Free-function translators (post-M9 shape)
 
 Two free functions in a new compilation unit
-`src/utils/service/role_config_translation.{hpp,cpp}` (alongside
+``src/include/utils/role_config_translation.hpp` + `src/utils/service/role_config_translation.cpp`` (alongside
 `role_host_helpers.hpp`):
 
 ```cpp
@@ -1438,7 +1649,7 @@ Tests are not afterthoughts.  A phase is not done until its tests prove the new 
 | **M6** | `ConsumerRoleHost` same shape. | **REVISED**: existing consumer L4 tests pass.  **NEW**: `ConsumerRoleHostTest::PresenceList_ContainsOneConsumer`.  **NEW**: `ConsumerRoleHostTest::Consumer_NoHeartbeatTickInstalled` (verify M2 fix held through M6's restructure). | none |
 | **M7** | `ProcessorRoleHost` 2-presence list.  Single-hub: dedup → 1 connection. | **REVISED**: existing processor L4 tests pass.  **NEW**: `ProcessorRoleHostTest::SingleHub_TwoPresences_DedupTo OneConnection` (L3).  **NEW**: `ProcessorMetrics_SingleHub_TwoDistinctRows` (L3 broker test) — single-hub processor, query metrics, returns rows for both `(in_channel, proc_uid, "consumer")` AND `(out_channel, proc_uid, "producer")`.  Mutation: send only one heartbeat → only one row appears, test fails. | B1 + partial B3-B5 |
 | **M8** | Dual-hub processor: 2 presences → 2 connections. | **NEW**: `DualHubProcessor_BothHubsSeeProcessor` (L4) — spawn 2 plh_hubs + producer (hub-A) + processor (in=A, out=B) + consumer (hub-B); verify hub-A's role table has processor as consumer of in_channel; hub-B's role table has processor as producer of out_channel; data flows end-to-end.  **NEW**: `DualHubProcessor_HubADead_RoleExits` (L4) — kill hub-A; verify processor exits with `StopReason::HubDead`.  **NEW**: `DualHubProcessor_InboxReachableFromBothHubs` (L4) — sender on hub-A and sender on hub-B both `open_inbox(processor_uid)` and successfully send a message (verify A5 reachability section's contract). | resolves B3-B5, validates A5 |
-| **M9** | Roles inherit `RoleHostFrame` (**plain class, non-templated** — see §11.1 for the rationale; the data loop's existing `run_data_loop<CycleOps>` function template already handles per-cycle role-specific dispatch, so templating the host frame buys nothing).  `worker_main_` becomes `final` in the base.  Three roles become thin derived classes overriding `build_presences_` + `run_loop_` (pure virtual).  `wire_api_for_presences_` virtual gets a default impl on the base, overridden only by future roles whose API wiring doesn't fit the standard 1- or 2-presence shape (§11.8.2).  **EXPANDED 2026-05-22** (see §11.6–§11.8): also collapse `setup_infrastructure_` body into the frame; introduce shared `make_tx_opts` / `make_rx_opts` free functions in `src/utils/service/role_config_translation.{hpp,cpp}` (replacing the per-role static methods shipped in `eb3eed36`); absorb `teardown_infrastructure_` into the frame body (100% identical bodies today, no hook needed); resolve fresh-eye-review quality concerns Q1 (`zmq_buffer_depth` placement inconsistency), Q2 (SchemaSpec propagation test gap), Q3 (`has_fz=false` test gap) via the unified L2 test that replaces `test_layer2_setup_infrastructure_translation.cpp`. | **REVISED**: every role host test fixture continues to spawn the host the same way.  **NEW**: full §12.3 mutation sweep on the new frame body.  **NEW**: `RoleHostFrameTest::WorkerMainSequence_StepsExecuteInDocumentedOrder` (L2) — instrument the engine to record the call sequence, assert it matches §12.1 step-for-step.  **NEW (Q1+Q2+Q3 resolution)**: `RoleConfigTranslationTest` L2 — one test per (role, transport) using non-empty `SchemaSpec` + at least one `has_fz=false` case per direction; mutation-sweep verifies field-by-field copy preservation across the unified translators. | 5c-large complete |
+| **M9** | Roles inherit `RoleHostFrame` (**plain class, non-templated** — see §11.1 for the rationale; the data loop's existing `run_data_loop<CycleOps>` function template already handles per-cycle role-specific dispatch, so templating the host frame buys nothing).  `worker_main_` becomes `final` in the base.  Three roles become thin derived classes overriding `build_presences_` + `run_loop_` (pure virtual).  `wire_api_for_presences_` virtual gets a default impl on the base, overridden only by future roles whose API wiring doesn't fit the standard 1- or 2-presence shape (§11.8.2).  **EXPANDED 2026-05-22** (see §11.6–§11.8): also collapse `setup_infrastructure_` body into the frame; introduce shared `make_tx_opts` / `make_rx_opts` free functions in ``src/include/utils/role_config_translation.hpp` + `src/utils/service/role_config_translation.cpp`` (replacing the per-role static methods shipped in `eb3eed36`); absorb `teardown_infrastructure_` into the frame body (100% identical bodies today, no hook needed); resolve fresh-eye-review quality concerns Q1 (`zmq_buffer_depth` placement inconsistency), Q2 (SchemaSpec propagation test gap), Q3 (`has_fz=false` test gap) via the unified L2 test that replaces `test_layer2_setup_infrastructure_translation.cpp`. | **REVISED**: every role host test fixture continues to spawn the host the same way.  **NEW**: full §12.3 mutation sweep on the new frame body.  **NEW**: `RoleHostFrameTest::WorkerMainSequence_StepsExecuteInDocumentedOrder` (L2) — instrument the engine to record the call sequence, assert it matches §12.1 step-for-step.  **NEW (Q1+Q2+Q3 resolution)**: `RoleConfigTranslationTest` L2 — one test per (role, transport) using non-empty `SchemaSpec` + at least one `has_fz=false` case per direction; mutation-sweep verifies field-by-field copy preservation across the unified translators. | 5c-large complete |
 
 **Wave B test rigor — explicit:**
 
