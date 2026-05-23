@@ -53,9 +53,11 @@ using Clock = std::chrono::steady_clock;
 
 ProducerRoleHost::ProducerRoleHost(config::RoleConfig config,
                                      std::atomic<bool> *shutdown_flag)
-    : scripting::RoleHostBase("prod",
-                              std::move(config),
-                              shutdown_flag)
+    : scripting::RoleHostFrame(std::move(config),
+                                shutdown_flag,
+                                { /*role_tag=*/         "prod",
+                                  /*role_label=*/       "producer",
+                                  /*required_callback=*/"on_produce" })
 {
     // Engine is constructed in worker_main_ Step 0 (HEP-CORE-0011
     // §"Engine Construction Lifecycle").  Not constructed here.
