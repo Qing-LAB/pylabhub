@@ -13,6 +13,7 @@
 #include "utils/role_host_frame.hpp"
 
 #include "utils/hub_inbox_queue.hpp"
+#include "utils/logger.hpp"
 #include "utils/role_api_base.hpp"
 #include "utils/role_host_core.hpp"
 
@@ -71,14 +72,31 @@ void RoleHostFrame::teardown_infrastructure_()
     // Both safe after `do_role_teardown`'s Step 12.5 wait_for_quiescence
     // (HEP-CORE-0031 §4.1, MD1 fix).  The actual std::thread::join for
     // master ctrl threads happens later in EngineHost::shutdown_()
-    // Phase 3.  M9 step 2b (2026-05-22) consolidated the two
-    // historical `if (has_api())` checks into one block — both calls
-    // run on the same api_ instance whose lifetime can't change
-    // between them.
+    // Phase 3.
+    //
+    // Lifecycle invariant: `api_` is constructed by `startup_()` BEFORE
+    // the worker thread is spawned, and destroyed only AFTER the worker
+    // is joined.  So `has_api()` should always be true while
+    // `worker_main_` (and therefore this method) is running.  If it
+    // ever isn't, that's a serious lifecycle bug upstream — record it
+    // via LOGGER_ERROR (not panic, since shutdown is the wrong time
+    // to abort) and skip the calls (calling them on a null api_ would
+    // crash).  M9 step 2b (2026-05-22) consolidated the two historical
+    // `if (has_api())` checks into one block + added the diagnostic
+    // path.
     if (has_api())
     {
         api().stop_handler_threads();
         api().close_queues();
+    }
+    else
+    {
+        LOGGER_ERROR("[{}] teardown_infrastructure_ called with no api — "
+                     "lifecycle invariant violated (api_ must be "
+                     "constructed by startup_() before the worker spawns "
+                     "and destroyed only after the worker is joined).  "
+                     "Skipping handler-thread stop + queue close.",
+                     frame_cfg_.role_tag);
     }
 }
 
