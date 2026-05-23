@@ -478,40 +478,7 @@ bool ProducerRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
     return true;
 }
 
-// ============================================================================
-// teardown_infrastructure_ — reverse of setup
-// ============================================================================
-
-void ProducerRoleHost::teardown_infrastructure_()
-{
-    // Broker and comm threads already joined via api_->thread_manager().drain().
-    // set_running(false) also already called. Defensive re-set is safe.
-
-    // Clean up shared resources (engine already finalized — no scripts running).
-    core().clear_inbox_cache();
-
-    // Stop inbox_queue_ (if exists).
-    if (inbox_queue_)
-    {
-        inbox_queue_->stop();
-        inbox_queue_.reset();
-    }
-
-    // Wave-B M5: handler-mode teardown.  The role host no longer owns a
-    // broker_comm_ unique_ptr — the RoleHandler inside RoleAPIBase owns
-    // every BRC.  api.stop_handler_threads() does the full sequence:
-    // clear the legacy fallback view, signal each BRC, drain peer
-    // ctrl threads via the §4.1 bracket contract, disconnect + release
-    // BRCs, then reset the handler unique_ptr.  Safe to call multiple
-    // times (idempotent) and after do_role_teardown's Step 12.5 already
-    // signalled quiescence.  The actual std::thread::join for master
-    // ctrl threads happens later in EngineHost::shutdown_() Phase 3.
-    if (has_api()) api().stop_handler_threads();
-
-    // Close producer (data-plane queue teardown happens inside RoleAPIBase).
-    if (has_api())
-        api().close_queues();
-}
-
+// teardown_infrastructure_ — inherited from RoleHostFrame (M9 step 2b).
+// See src/utils/service/role_host_frame.cpp.
 
 } // namespace pylabhub::producer

@@ -79,19 +79,14 @@ class PYLABHUB_UTILS_EXPORT ProcessorRoleHost final : public scripting::RoleHost
     // ── Worker thread entry point (RoleHostBase hook) ────────────────────────
     void worker_main_() override;
 
-    // ── Infrastructure setup/teardown (Layer 3) ──────────────────────────────
+    // ── Infrastructure setup (Layer 3) ───────────────────────────────────────
+    // teardown_infrastructure_ — inherited from RoleHostFrame (M9 step 2b).
     bool setup_infrastructure_(const hub::SchemaSpec &inbox_spec);
-    void teardown_infrastructure_();
 
     // ── Processor-specific members ───────────────────────────────────────────
-    // (Shared state — core_, config_, engine_, api_, ready_promise_ — lives
-    //  in RoleHostBase and is reached via protected accessors.)
-
-    // Infrastructure (created on worker thread in setup_infrastructure_).
-    // Wave-B M7: `broker_comm_` deleted — RoleHandler inside RoleAPIBase
-    // owns all BRCs (1 for single-hub, 2 for dual-hub via M3 dedup).
-    std::unique_ptr<hub::InboxQueue>        inbox_queue_;
-    config::InboxConfig                     inbox_cfg_;
+    // Shared state — core_, config_, engine_, api_, ready_promise_ — lives in
+    // RoleHostBase.  Inbox state (`inbox_queue_`, `inbox_cfg_`) lives in
+    // RoleHostFrame (M9 step 2b, 2026-05-22).
 
     // Schema info (resolved from config during setup).
     hub::SchemaSpec                         in_slot_spec_;

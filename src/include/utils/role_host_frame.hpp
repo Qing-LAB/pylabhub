@@ -33,9 +33,16 @@
  */
 
 #include "pylabhub_utils_export.h"
+#include "utils/config/inbox_config.hpp"
 #include "utils/engine_host.hpp"
 
+#include <memory>
 #include <string>
+
+namespace pylabhub::hub
+{
+class InboxQueue;
+} // namespace pylabhub::hub
 
 namespace pylabhub::scripting
 {
@@ -92,6 +99,34 @@ class PYLABHUB_UTILS_EXPORT RoleHostFrame : public RoleHostBase
     {
         return frame_cfg_;
     }
+
+    /// Shared teardown body, moved from the three per-role
+    /// implementations during M9 sub-step 2b.  Pre-M9 each role host
+    /// had its own `teardown_infrastructure_` method with byte-
+    /// equivalent bodies (modulo comments).  Now lives here once.
+    ///
+    /// Sequence:
+    ///   1. `core().clear_inbox_cache()`
+    ///   2. if `inbox_queue_` exists: stop + reset.
+    ///   3. if `has_api()`: `api().stop_handler_threads()`.
+    ///   4. if `has_api()`: `api().close_queues()`.
+    ///
+    /// Called from each role's `worker_main_` at the teardown phase
+    /// (and from the lambda passed to `do_role_teardown`).  Protected
+    /// (not private) so derived classes can call it from inside
+    /// `worker_main_`.
+    void teardown_infrastructure_();
+
+    /// Inbox queue + config — owned by the frame so the shared
+    /// setup/teardown bodies can populate/release them.  Pre-M9
+    /// these lived as private members on each role host.  Made
+    /// protected so derived classes' `worker_main_` continues to
+    /// access them by name (e.g. `api.set_inbox_queue(inbox_queue_.get())`).
+    std::unique_ptr<hub::InboxQueue> inbox_queue_;
+
+    /// Resolved (post-load) inbox config.  Copied from
+    /// `config().inbox()` during `setup_infrastructure_`.
+    config::InboxConfig              inbox_cfg_;
 
   private:
     RoleHostFrameConfig frame_cfg_;

@@ -66,20 +66,14 @@ class PYLABHUB_UTILS_EXPORT ConsumerRoleHost final : public scripting::RoleHostF
     // ── Worker thread entry point (RoleHostBase hook) ────────────────────────
     void worker_main_() override;
 
-    // ── Infrastructure setup/teardown (Layer 3) ──────────────────────────────
+    // ── Infrastructure setup (Layer 3) ───────────────────────────────────────
+    // teardown_infrastructure_ — inherited from RoleHostFrame (M9 step 2b).
     bool setup_infrastructure_(const hub::SchemaSpec &inbox_spec);
-    void teardown_infrastructure_();
 
     // ── Consumer-specific members ────────────────────────────────────────────
-    // (Shared state — core_, config_, engine_, api_, ready_promise_ — lives
-    //  in RoleHostBase and is reached via protected accessors.)
-
-    // Infrastructure (created on worker thread in setup_infrastructure_).
-    // Wave-B M6: `broker_comm_` deleted — broker connectivity is owned by
-    // the RoleHandler inside RoleAPIBase (consumed by start_handler_threads
-    // in worker_main_ Step 6).
-    std::unique_ptr<hub::InboxQueue>        inbox_queue_;
-    config::InboxConfig                     inbox_cfg_;
+    // Shared state — core_, config_, engine_, api_, ready_promise_ — lives in
+    // RoleHostBase.  Inbox state (`inbox_queue_`, `inbox_cfg_`) lives in
+    // RoleHostFrame (M9 step 2b, 2026-05-22).
 
     // Schema info (resolved from config during setup).
     hub::SchemaSpec                         in_slot_spec_;
