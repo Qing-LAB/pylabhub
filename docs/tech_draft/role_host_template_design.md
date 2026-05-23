@@ -597,7 +597,7 @@ flowchart TB
   classDef internal fill:#dfd,stroke:#080
   classDef derived fill:#ffd,stroke:#a60
 
-  CFG["RoleConfig + role_host_traits<br/>(per-role specialisation)"]:::public
+  CFG["RoleConfig + RoleHostFrameConfig<br/>(runtime per-role configuration)"]:::public
 
   RAB_PUB["RoleAPIBase (revised)<br/>script-visible API surface<br/>holds RoleHandler*<br/>in/out_hub view = thin proxy<br/>thread_manager (existing)"]:::public
 
@@ -605,7 +605,7 @@ flowchart TB
 
   RH["RoleHandler  (NEW, internal)<br/>presence list, connection list,<br/>channel_index, band_index,<br/>InboxQueue ownership,<br/>4 dispatch routines"]:::internal
 
-  RHF["RoleHostFrame&lt;CycleOpsT, Traits&gt;<br/>(NEW, internal — Phase 5c-large)<br/>Steps 1-8 worker frame, FINAL.<br/>uses RoleHandler underneath."]:::internal
+  RHF["RoleHostFrame (NEW)<br/>plain class, NOT templated<br/>Steps 1-8 worker frame, FINAL.<br/>presence list + run_loop_ + wire_api_for_presences_ hooks.<br/>uses RoleHandler underneath."]:::internal
 
   HC["HubConnection (NEW, internal)<br/>BRC + ctrl thread + ZMTP monitor"]:::internal
 
@@ -702,88 +702,174 @@ that care; scripts that don't ignore it.
 
 ---
 
-## 11. Template abstraction shape (5c-large + presence model)
+## 11. Frame abstraction shape (5c-large + presence model)
 
-The `RoleHostFrame<CycleOpsT, Traits>` template absorbs Steps 1-8 of
-the worker thread.  Variations between roles are captured by:
+`RoleHostFrame` (a plain, non-templated class — see §11.1 for the
+design rationale) absorbs Steps 1-8 of the worker thread.  Variations
+between roles are captured by:
 
-- `Traits` (compile-time constants + extractor function pointers)
-- `CycleOpsT` (template parameter for the data-loop's role-specific
-  cycle ops; already exists)
+- **Runtime configuration** passed to the frame's constructor —
+  role_tag, role_label, required_callback strings (§11.1).
+- **Virtual hooks** — `build_presences_` + `run_loop_` (pure
+  virtual, each role implements) and `wire_api_for_presences_`
+  (default-implemented, derived classes override only when standard
+  presence-list-driven wiring doesn't fit, e.g. a future N-input
+  router — §11.8.2).
+- The existing `run_data_loop<CycleOps>(...)` function template
+  (unchanged, in `src/utils/service/data_loop.hpp`) still carries
+  per-cycle role specificity — invoked from each role's `run_loop_`
+  override.
 
-### 11.1 Traits shape
+### 11.1 Frame configuration (per-role data, runtime not compile-time)
+
+**Design choice (2026-05-22, revising earlier CRTP draft)**:
+`RoleHostFrame` is a **plain (non-templated) class**.  The original
+CRTP/traits design (parameterizing the frame by host type at compile
+time) was reconsidered after verifying that the data loop's
+role-specific dispatch already happens inside the existing
+`run_data_loop<CycleOps>(...)` function template
+(`src/utils/service/data_loop.hpp`).  Once control enters that
+template, all per-cycle work is statically dispatched within `CycleOps`
+code.  The role host's only remaining role-typed interaction is the
+**one** call to enter `run_data_loop` — once per role lifetime, in
+the cold setup path.
+
+Templating `RoleHostFrame` itself buys nothing at runtime (no virtual
+call avoided in the hot path) and costs readability / debugging
+ergonomics.  The plain-class design is simpler, easier to reason
+about, and equally extensible (new roles derive from `RoleHostFrame`
+the same way new types specialize a trait).
+
+Role-specific data the frame needs is captured as **runtime
+configuration** passed to the frame's constructor:
 
 ```cpp
-template <typename HostT> struct role_host_traits;
-
-template <> struct role_host_traits<ProducerHost>
+namespace pylabhub::scripting
 {
-    static constexpr const char *role_tag      = "prod";
-    static constexpr const char *role_label    = "producer";
-    static constexpr const char *required_cb   = "on_produce";
-    using CycleOps                             = ProducerCycleOps;
-    static auto presences(const config::RoleConfig &c)
-        -> std::vector<PresenceInputs>
-    {
-        return { { c.out_hub(), c.out_channel(), RoleKind::Producer,
-                   c.role_data<ProducerFields>().out_slot_schema_json,
-                   c.role_data<ProducerFields>().out_flexzone_schema_json } };
-    }
+
+struct RoleHostFrameConfig
+{
+    /// Role tag — short string used in log prefixes and broker uid
+    /// prefix ("prod" / "cons" / "proc").
+    std::string role_tag;
+
+    /// Human-readable role label for diagnostics ("producer" / ...).
+    std::string role_label;
+
+    /// Required script callback name ("on_produce" / "on_consume" /
+    /// "on_process").  Engine asserts this exists during init.
+    std::string required_callback;
 };
 
-template <> struct role_host_traits<ConsumerHost>
-{
-    static constexpr const char *role_tag      = "cons";
-    static constexpr const char *role_label    = "consumer";
-    static constexpr const char *required_cb   = "on_consume";
-    using CycleOps                             = ConsumerCycleOps;
-    static auto presences(const config::RoleConfig &c)
-        -> std::vector<PresenceInputs>
-    { ...one consumer presence on in_hub... }
-};
-
-template <> struct role_host_traits<ProcessorHost>
-{
-    static constexpr const char *role_tag      = "proc";
-    static constexpr const char *role_label    = "processor";
-    static constexpr const char *required_cb   = "on_process";
-    using CycleOps                             = ProcessorCycleOps;
-    static auto presences(const config::RoleConfig &c)
-        -> std::vector<PresenceInputs>
-    {
-        return {
-          { c.in_hub(),  c.in_channel(),  RoleKind::Consumer, ... },
-          { c.out_hub(), c.out_channel(), RoleKind::Producer, ... },
-        };
-    }
-};
+} // namespace pylabhub::scripting
 ```
+
+Each role host's constructor builds a `RoleHostFrameConfig` literal
+for its own role and passes it to the frame base.  The presence list
+(which depends on `RoleConfig`) is delivered through a virtual hook
+— see §11.2.
 
 ### 11.2 Frame skeleton
 
 ```cpp
-template <typename HostT>
-class RoleHostFrame : public scripting::RoleHostBase
+namespace pylabhub::scripting
 {
-    using Traits   = role_host_traits<HostT>;
-    using CycleOps = typename Traits::CycleOps;
 
-public:
-    using RoleHostBase::RoleHostBase;
+class PYLABHUB_UTILS_EXPORT RoleHostFrame : public RoleHostBase
+{
+  public:
+    RoleHostFrame(config::RoleConfig    config,
+                  std::atomic<bool>    *shutdown_flag,
+                  RoleHostFrameConfig   frame_cfg);
+    ~RoleHostFrame() override;
 
-protected:
-    // Hooks derived classes override.  These are the per-role-specific
-    // queue construction details that don't belong in the frame.
-    virtual bool build_data_queues_(const PresenceVec &presences) = 0;
-    virtual void teardown_data_queues_() = 0;
-    virtual CycleOps build_cycle_ops_() = 0;
+  protected:
+    // ── Required hooks (pure virtual — every role implements) ──
 
-private:
-    void worker_main_() final;   // Steps 1-8 + epilogue, FINAL — no derived override
+    /// Build the presence list from config.  Producer returns 1 entry
+    /// (Producer-kind on out_channel); Consumer returns 1 entry
+    /// (Consumer-kind on in_channel); Processor returns 2 entries
+    /// (Consumer + Producer); a future router could return N.
+    virtual std::vector<PresenceInputs>
+    build_presences_(const config::RoleConfig &config) = 0;
 
-    RoleHandler handler_;        // owns presences, connections, inbox
+    /// Enter the data loop.  Each role calls
+    /// `pylabhub::scripting::run_data_loop<MyCycleOps>(api, core, ...)`
+    /// with its own CycleOps type.  This is the one place the role's
+    /// CycleOps type is named explicitly — it stays at the role host,
+    /// not in the frame.
+    virtual void run_loop_(RoleAPIBase &api, RoleHostCore &core,
+                           ScriptEngine &engine, bool stop_on_error) = 0;
+
+    // ── Default-implemented hook (override only when standard
+    //    presence-list-driven wiring doesn't fit the role) ──
+
+    /// Wire the role-API's channel(s) from the presence list.  Default
+    /// implementation handles the current 1- and 2-presence cases:
+    ///   - 1 Producer presence  → api.set_channel(out_channel)
+    ///   - 1 Consumer presence  → api.set_channel(in_channel)
+    ///   - 1 Consumer + 1 Producer (processor shape)
+    ///       → api.set_channel(in_channel) + api.set_out_channel(out_channel)
+    /// Future router roles (3+ presences, non-standard shapes) override
+    /// to provide custom wiring.  Pre-paved extension point per §11.8.2.
+    virtual void wire_api_for_presences_(
+        const std::vector<PresenceInputs> &presences);
+
+  private:
+    void worker_main_() final;                                    // §12.1 sequence
+    bool setup_infrastructure_(const hub::SchemaSpec &inbox_spec);
+    void teardown_infrastructure_();
+
+    RoleHostFrameConfig              frame_cfg_;
+    RoleHandler                      handler_;
+    std::unique_ptr<hub::InboxQueue> inbox_queue_;
+    config::InboxConfig              inbox_cfg_;
+    hub::SchemaSpec                  in_slot_spec_;
+    hub::SchemaSpec                  out_slot_spec_;
 };
+
+} // namespace pylabhub::scripting
 ```
+
+The three role hosts shrink to thin wrappers (illustrative — Producer):
+
+```cpp
+namespace pylabhub::producer
+{
+
+class PYLABHUB_UTILS_EXPORT ProducerRoleHost final
+    : public scripting::RoleHostFrame
+{
+  public:
+    explicit ProducerRoleHost(config::RoleConfig config,
+                              std::atomic<bool> *shutdown_flag = nullptr)
+        : RoleHostFrame(std::move(config), shutdown_flag,
+                        { "prod", "producer", "on_produce" })
+    {}
+
+  protected:
+    std::vector<PresenceInputs>
+    build_presences_(const config::RoleConfig &c) override
+    {
+        return { /* one Producer-kind presence on c.out_hub() / c.out_channel() */ };
+    }
+
+    void run_loop_(RoleAPIBase &api, RoleHostCore &core,
+                   ScriptEngine &engine, bool stop_on_error) override
+    {
+        scripting::run_data_loop<ProducerCycleOps>(
+            api, core, engine, stop_on_error);
+    }
+
+    // wire_api_for_presences_ — uses default impl (1 Producer presence).
+};
+
+} // namespace pylabhub::producer
+```
+
+Consumer is symmetric (one Consumer presence, calls
+`run_data_loop<ConsumerCycleOps>`).  Processor returns two presences
+and calls `run_data_loop<ProcessorCycleOps>`.
 
 ### 11.3 Why FINAL on `worker_main_`
 
@@ -792,24 +878,25 @@ on_init, on_init before broker register, broker register before ready
 promise, ready promise before data loop, data loop before teardown).
 Marking the function `final` makes the type system enforce that no
 derived class can reorder steps — the only way to vary behaviour is
-via the three protected hooks.
+via the documented hooks.
 
 ### 11.4 Runtime cost analysis
 
 | Operation | Cost | Notes |
 |---|---|---|
-| Startup: build presence list from traits | O(N) where N = presences (1, 2, or 3) | once at startup |
+| Startup: build presence list (`build_presences_` virtual) | O(N) where N = presences (1, 2, or 3) | once per role lifetime |
 | Startup: dedupe to connections | O(N²) | N ≤ 3; ~9 comparisons; negligible |
 | Startup: register each presence | O(N) round-trips to broker | unavoidable |
+| Startup: `wire_api_for_presences_` virtual call | O(N) | once per role lifetime; default impl iterates presences |
+| Startup: `run_loop_` virtual call | one virtual call | once per role lifetime — enters `run_data_loop<CycleOps>` template, after which all dispatch is static |
 | Per-cycle: heartbeat ticks | O(N) (one tick per presence) | small JSON+wire work, multiplied by N |
-| Per-cycle: data-loop drain → script | O(1) | unchanged from today |
+| Per-cycle: data-loop drain → script | O(1) | unchanged from today — inside `run_data_loop<CycleOps>` template, statically dispatched |
 | Class A dispatch (e.g. DISC_REQ from script) | O(1) hashmap lookup | `channel_index_` |
 | Class B dispatch (e.g. ROLE_INFO_REQ) | O(connections) fall-through | typically 1-2 connections |
 | Class C dispatch | O(1) once `hub_side` arg picks the connection | |
 | Class D dispatch | O(1) `band_index_` lookup | |
 | Notification inbound (BRC → IncomingMessage) | O(1) lookup of originating presence | by `body.channel_name` |
-| Template instantiation | compile-time | 3 instantiations today |
-| Virtual dispatch | only `build_data_queues_` / `teardown_data_queues_` / `build_cycle_ops_` (cold path) | hot data-loop path uses CycleOps duck typing |
+| Virtual dispatch in hot path | **zero** | all virtuals (`build_presences_`, `run_loop_`, `wire_api_for_presences_`) fire once per role lifetime in setup; data-loop path is `run_data_loop<CycleOps>` template — statically dispatched |
 
 **No additional virtual dispatch on hot paths.**  Heartbeat ticks are
 already a periodic task (existing `set_periodic_task` machinery);
@@ -823,23 +910,29 @@ tiny compared to data-frame traffic.
 
 ### 11.5 ABI stability
 
-`RoleHostFrame<HostT>` is a template; instantiations are per-binary
-(only `plh_role` consumes them).  No new symbols on `pylabhub-utils.so`'s
-public ABI.
+`RoleHostFrame` is a plain class with `PYLABHUB_UTILS_EXPORT`,
+exported from `pylabhub-utils.so` (sits between `RoleHostBase` and
+the three concrete role hosts in the inheritance chain).  Its public
+surface — constructor + the three documented hooks — is the only
+contract derived classes (`ProducerRoleHost` / `ConsumerRoleHost` /
+`ProcessorRoleHost`) depend on.
 
 `RoleAPIBase`'s pImpl change (replacing `broker_channel` with
-`RoleHandler*`) is internal — pImpl is opaque to consumers.  `RoleAPIBase`'s
-public method signatures don't change.  The C-API surface (the only
-public surface per project policy) is untouched.
+`RoleHandler*`) is internal — pImpl is opaque to consumers.
+`RoleAPIBase`'s public method signatures don't change.  The C-API
+surface (the only public surface per project policy) is untouched.
 
 Backward compatibility for derived classes that today inherit
-`RoleHostBase` directly: the alias becomes a less-direct base
-class, but inheritance still works.  Source-compatible.  Symbol
-mangling will change for the new template instantiations (they get
-new mangled names) — pre-refactor binaries linking against the new
-library hit unresolved-symbol.  The build_id strict check
-(`PYLABHUB_STRICT_ABI_CHECK`) catches stale-binary cases; bump the
-`script_engine` axis minor as the declared signal.
+`RoleHostBase` directly: the new base becomes a less-direct one, but
+inheritance still works.  Source-compatible for any user that doesn't
+override the now-final `worker_main_` /
+`setup_infrastructure_` / `teardown_infrastructure_` methods.
+Symbol mangling changes for the role host classes (new vtable shape;
+inherit from `RoleHostFrame` not `RoleHostBase`) — pre-refactor
+binaries linking against the new library hit unresolved-symbol.  The
+build_id strict check (`PYLABHUB_STRICT_ABI_CHECK`) catches stale-
+binary cases; bump the `script_engine` axis minor as the declared
+signal.
 
 ### 11.6 `setup_infrastructure_` + `make_*_opts` consolidation
 
@@ -867,7 +960,7 @@ These are direct evidence that M9 needs to collapse `make_*_opts` +
 #### 11.6.1 Free-function translators (post-M9 shape)
 
 Two free functions in a new compilation unit
-`src/utils/service/role_host_translation.{hpp,cpp}` (alongside
+`src/utils/service/role_config_translation.{hpp,cpp}` (alongside
 `role_host_helpers.hpp`):
 
 ```cpp
@@ -902,8 +995,7 @@ since the L2 test can be re-pointed to the free function).
 #### 11.6.2 Unified `setup_infrastructure_` body in the frame
 
 ```cpp
-template <typename HostT>
-bool RoleHostFrame<HostT>::setup_infrastructure_(
+bool RoleHostFrame::setup_infrastructure_(
     const hub::SchemaSpec &inbox_spec)
 {
     auto       &core_   = this->core();
@@ -928,7 +1020,7 @@ bool RoleHostFrame<HostT>::setup_infrastructure_(
     {
         auto inbox_result = scripting::setup_inbox_facility(
             inbox_spec, inbox_cfg_, config_.checksum().policy,
-            Traits::role_tag);
+            frame_cfg_.role_tag);
         if (!inbox_result)
             return false;
         inbox_queue_ = std::move(inbox_result->queue);
@@ -938,13 +1030,13 @@ bool RoleHostFrame<HostT>::setup_infrastructure_(
     if (rx_opts && !api_ref.build_rx_queue(*rx_opts))
     {
         LOGGER_ERROR("[{}] build_rx_queue failed for channel '{}'",
-                     Traits::role_tag, config_.in_channel());
+                     frame_cfg_.role_tag, config_.in_channel());
         return false;
     }
     if (tx_opts && !api_ref.build_tx_queue(*tx_opts))
     {
         LOGGER_ERROR("[{}] build_tx_queue failed for channel '{}'",
-                     Traits::role_tag, config_.out_channel());
+                     frame_cfg_.role_tag, config_.out_channel());
         return false;
     }
 
@@ -1006,7 +1098,7 @@ The fresh-eye review (2026-05-22) flagged three concerns from the
 
 Side-by-side comparison of the three roles' `teardown_infrastructure_`
 bodies (Producer:519–548, Consumer:468–493, Processor:600–625):
-**100% identical** modulo the `Traits::role_tag` string in log
+**100% identical** modulo the `frame_cfg_.role_tag` string in log
 messages.  Sequence:
 
 ```
@@ -1040,7 +1132,7 @@ purposes; does not register a Consumer presence with the broker.
   `register_producer_channel` when `register_with_broker == false`.
 - Frame step 6d (heartbeat): skip heartbeat-tick installation for
   non-registering presences.
-- `tap_role_host_traits::presences(config)` returns one Presence
+- `TapRoleHost::build_presences_(config)` returns one Presence
   with `register_with_broker = false`.
 
 **Verdict**: trivial.  One new optional field on `Presence`; two
@@ -1051,7 +1143,7 @@ existing frame steps gain a branch.  No new hooks required.
 **Shape**: receives from channels A, B, C; merges; emits to channel D.
 
 **Required design changes**:
-- `router_role_host_traits::presences(config)` returns 4 Presences
+- `RouterRoleHost::build_presences_(config)` returns 4 Presences
   (3 Consumer + 1 Producer).
 - Schema resolution (worker_main_ step 1): loop over presences;
   resolve each presence's slot+fz schemas independently.
@@ -1082,7 +1174,7 @@ Add proactively as part of M9.
 or Consumer presence; no data-loop drains.
 
 **Required design changes**:
-- `sink_role_host_traits::presences(config)` returns empty vector.
+- `SinkRoleHost::build_presences_(config)` returns empty vector.
 - Frame worker_main_ step 6a-d (presence handling): no-op when
   presence list is empty.  Already handled trivially by the
   presence-list iteration pattern.
@@ -1346,7 +1438,7 @@ Tests are not afterthoughts.  A phase is not done until its tests prove the new 
 | **M6** | `ConsumerRoleHost` same shape. | **REVISED**: existing consumer L4 tests pass.  **NEW**: `ConsumerRoleHostTest::PresenceList_ContainsOneConsumer`.  **NEW**: `ConsumerRoleHostTest::Consumer_NoHeartbeatTickInstalled` (verify M2 fix held through M6's restructure). | none |
 | **M7** | `ProcessorRoleHost` 2-presence list.  Single-hub: dedup → 1 connection. | **REVISED**: existing processor L4 tests pass.  **NEW**: `ProcessorRoleHostTest::SingleHub_TwoPresences_DedupTo OneConnection` (L3).  **NEW**: `ProcessorMetrics_SingleHub_TwoDistinctRows` (L3 broker test) — single-hub processor, query metrics, returns rows for both `(in_channel, proc_uid, "consumer")` AND `(out_channel, proc_uid, "producer")`.  Mutation: send only one heartbeat → only one row appears, test fails. | B1 + partial B3-B5 |
 | **M8** | Dual-hub processor: 2 presences → 2 connections. | **NEW**: `DualHubProcessor_BothHubsSeeProcessor` (L4) — spawn 2 plh_hubs + producer (hub-A) + processor (in=A, out=B) + consumer (hub-B); verify hub-A's role table has processor as consumer of in_channel; hub-B's role table has processor as producer of out_channel; data flows end-to-end.  **NEW**: `DualHubProcessor_HubADead_RoleExits` (L4) — kill hub-A; verify processor exits with `StopReason::HubDead`.  **NEW**: `DualHubProcessor_InboxReachableFromBothHubs` (L4) — sender on hub-A and sender on hub-B both `open_inbox(processor_uid)` and successfully send a message (verify A5 reachability section's contract). | resolves B3-B5, validates A5 |
-| **M9** | Roles inherit `RoleHostFrame<HostT>`. `worker_main_` becomes `final` in template.  Trait specialisations land. **EXPANDED 2026-05-22** (see §11.6–§11.8): also collapse `setup_infrastructure_` body into the frame; introduce shared `make_tx_opts` / `make_rx_opts` free functions in `src/utils/service/role_host_translation.{hpp,cpp}` (replacing the per-role static methods shipped in `eb3eed36`); absorb `teardown_infrastructure_` into the frame body (100% identical bodies today, no hook needed); add protected hook `wire_api_for_presences_(presences)` to pre-pave the multi-input-router extension (§11.8.2 Option B); resolve fresh-eye-review quality concerns Q1 (`zmq_buffer_depth` placement inconsistency), Q2 (SchemaSpec propagation test gap), Q3 (`has_fz=false` test gap) via the unified L2 test that replaces `test_layer2_setup_infrastructure_translation.cpp`. | **REVISED**: every role host test fixture continues to spawn the host the same way.  **NEW**: full §12.3 mutation sweep on the new template body.  **NEW**: `RoleHostFrameTest::WorkerMainSequence_StepsExecuteInDocumentedOrder` (L2) — instrument the engine to record the call sequence, assert it matches §12.1 step-for-step.  **NEW (Q1+Q2+Q3 resolution)**: `RoleHostTranslationTest` L2 — one test per (role, transport) using non-empty `SchemaSpec` + at least one `has_fz=false` case per direction; mutation-sweep verifies field-by-field copy preservation across the unified translators. | 5c-large complete |
+| **M9** | Roles inherit `RoleHostFrame` (**plain class, non-templated** — see §11.1 for the rationale; the data loop's existing `run_data_loop<CycleOps>` function template already handles per-cycle role-specific dispatch, so templating the host frame buys nothing).  `worker_main_` becomes `final` in the base.  Three roles become thin derived classes overriding `build_presences_` + `run_loop_` (pure virtual).  `wire_api_for_presences_` virtual gets a default impl on the base, overridden only by future roles whose API wiring doesn't fit the standard 1- or 2-presence shape (§11.8.2).  **EXPANDED 2026-05-22** (see §11.6–§11.8): also collapse `setup_infrastructure_` body into the frame; introduce shared `make_tx_opts` / `make_rx_opts` free functions in `src/utils/service/role_config_translation.{hpp,cpp}` (replacing the per-role static methods shipped in `eb3eed36`); absorb `teardown_infrastructure_` into the frame body (100% identical bodies today, no hook needed); resolve fresh-eye-review quality concerns Q1 (`zmq_buffer_depth` placement inconsistency), Q2 (SchemaSpec propagation test gap), Q3 (`has_fz=false` test gap) via the unified L2 test that replaces `test_layer2_setup_infrastructure_translation.cpp`. | **REVISED**: every role host test fixture continues to spawn the host the same way.  **NEW**: full §12.3 mutation sweep on the new frame body.  **NEW**: `RoleHostFrameTest::WorkerMainSequence_StepsExecuteInDocumentedOrder` (L2) — instrument the engine to record the call sequence, assert it matches §12.1 step-for-step.  **NEW (Q1+Q2+Q3 resolution)**: `RoleConfigTranslationTest` L2 — one test per (role, transport) using non-empty `SchemaSpec` + at least one `has_fz=false` case per direction; mutation-sweep verifies field-by-field copy preservation across the unified translators. | 5c-large complete |
 
 **Wave B test rigor — explicit:**
 
