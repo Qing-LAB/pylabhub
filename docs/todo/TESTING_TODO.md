@@ -72,6 +72,27 @@ must use Pattern 1+ (`BinaryLifecycleEnvironment`) or Pattern 3
   message).  6 tests (3 roles × 2 transports), all pass; demos
   regress clean.
 
+  **Known-gap follow-up — folded into M9 (task #72)**: per the fresh-
+  eye review 2026-05-22, three quality concerns surfaced from the
+  `eb3eed36` extraction and have been incorporated into M9's expanded
+  scope rather than addressed in isolation (because M9 will collapse
+  the per-role static methods into shared free functions, making the
+  concerns disappear mechanically or one-test-fixes-three).  Concerns:
+  - **Q1**: `zmq_buffer_depth` placement inconsistency between
+    Consumer's and Processor's `make_rx_opts` — Consumer sets it
+    only inside `if (zmq)`, Processor sets it unconditionally.
+    Resolved at M9 collapse by unified `make_rx_opts` free function.
+  - **Q2**: SchemaSpec propagation test currently passes empty
+    `SchemaSpec` and asserts size-of-empty-vs-empty (always passes
+    even if the translation drops the copy).  Replaced at M9 by a
+    test with non-empty `SchemaSpec`.
+  - **Q3**: All current tests pass `has_fz=true`; the
+    `flexzone_checksum = config.flexzone && has_fz` expression is
+    never exercised with `has_fz=false`.  Replaced at M9 by adding
+    at least one `has_fz=false` case per direction.
+
+  Design doc: `docs/tech_draft/role_host_template_design.md` §11.6.
+
 ### B8 (#81) — Demo-setup numpy pin
 
 Demos that use numpy currently rely on ad-hoc `pip install numpy`.

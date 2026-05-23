@@ -14,10 +14,10 @@ see `docs/DOC_STRUCTURE.md` §2.1.1.
 
 ### Ultimate goal — finish hub/broker renovation, ship dual-hub-capable plh_hub
 
-| Arc | Canonical doc | Status (verified 2026-05-21) |
+| Arc | Canonical doc | Status (verified 2026-05-22) |
 |---|---|---|
 | **Arc A — `plh_hub` renovation (HUB side)** | `docs/HEP/HEP-CORE-0033-Hub-Character.md` §15 Phase 1..10 | ✅ Phases 1-9 shipped; ⏳ Phase 10 doc closure (task #73, doc hygiene only) |
-| **Arc B — Role-host renovation (ROLE side)** | `docs/tech_draft/role_host_template_design.md` §14 Wave-B M0..M9 | ✅ M0..M8 shipped (M8 dual-hub processor binary-validated 2026-05-21 by demo framework); ⏳ M9 (`RoleHostFrame<HostT>` CRTP, task #72) |
+| **Arc B — Role-host renovation (ROLE side)** | `docs/tech_draft/role_host_template_design.md` §14 Wave-B M0..M9 | ✅ M0..M8 shipped (M8 dual-hub processor binary-validated 2026-05-21 by demo framework); ⏳ M9 (`RoleHostFrame<HostT>` CRTP, task #72 — scope expanded 2026-05-22 per design doc §11.6–§11.8: also collapses `setup_infrastructure_` + per-role `make_*_opts` + `teardown_infrastructure_`; adds `wire_api_for_presences_` hook for multi-input-router extension; resolves Q1+Q2+Q3 quality concerns from fresh-eye review) |
 
 **End-state:** dual-hub-capable system — fully functional `plh_hub`
 binary AND role binaries that register presences on multiple hubs,
