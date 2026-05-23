@@ -841,6 +841,277 @@ library hit unresolved-symbol.  The build_id strict check
 (`PYLABHUB_STRICT_ABI_CHECK`) catches stale-binary cases; bump the
 `script_engine` axis minor as the declared signal.
 
+### 11.6 `setup_infrastructure_` + `make_*_opts` consolidation
+
+**Added 2026-05-22** in response to the static-method extraction
+shipped in commit `eb3eed36` (TODO #83 / N1).  That commit pulled the
+config→opts translation out of each role's `setup_infrastructure_`
+into per-role static methods (`ProducerRoleHost::make_tx_opts`,
+`ConsumerRoleHost::make_rx_opts`, `ProcessorRoleHost::{make_rx_opts,
+make_tx_opts}`) so an L2 test could exercise the translation in
+isolation.  Two non-obvious facts surfaced from that work + a
+side-by-side review of the three role hosts:
+
+1. **`Producer::make_tx_opts` and `Processor::make_tx_opts` are
+   byte-identical** — the producer-side translation is the same
+   function in two places.
+2. **`Consumer::make_rx_opts` and `Processor::make_rx_opts` differ
+   only in WHEN `zmq_buffer_depth` is assigned** — Consumer sets it
+   inside the `if (transport == Zmq)` branch; Processor sets it
+   unconditionally before the branch.  Pre-existing inconsistency;
+   functionally inert today (defaults converge) but a latent foot-gun.
+
+These are direct evidence that M9 needs to collapse `make_*_opts` +
+`setup_infrastructure_` alongside `worker_main_`.
+
+#### 11.6.1 Free-function translators (post-M9 shape)
+
+Two free functions in a new compilation unit
+`src/utils/service/role_host_translation.{hpp,cpp}` (alongside
+`role_host_helpers.hpp`):
+
+```cpp
+namespace pylabhub::scripting
+{
+
+/// Pure config→TxQueueOptions translation, shared by Producer and
+/// Processor-output sides.  Replaces the per-role static methods.
+[[nodiscard]] hub::TxQueueOptions
+make_tx_opts(const config::RoleConfig &config,
+             const hub::SchemaSpec    &out_slot_spec,
+             const hub::SchemaSpec    &out_fz_spec,
+             bool                      has_tx_fz);
+
+/// Pure config→RxQueueOptions translation, shared by Consumer and
+/// Processor-input sides.  Resolves the pre-existing
+/// `zmq_buffer_depth` inconsistency by adopting the
+/// only-inside-`if Zmq` placement uniformly.
+[[nodiscard]] hub::RxQueueOptions
+make_rx_opts(const config::RoleConfig &config,
+             const hub::SchemaSpec    &in_slot_spec,
+             const hub::SchemaSpec    &in_fz_spec,
+             bool                      has_rx_fz);
+
+} // namespace pylabhub::scripting
+```
+
+Per-role static methods on the role host classes are deleted (or
+become thin shims calling the free function — preferable to delete,
+since the L2 test can be re-pointed to the free function).
+
+#### 11.6.2 Unified `setup_infrastructure_` body in the frame
+
+```cpp
+template <typename HostT>
+bool RoleHostFrame<HostT>::setup_infrastructure_(
+    const hub::SchemaSpec &inbox_spec)
+{
+    auto       &core_   = this->core();
+    const auto &config_ = this->config();
+    auto       &api_ref = this->api();
+    inbox_cfg_          = config_.inbox();
+
+    // ── 1. Translate all opts up front (pure, side-effect free) ──
+    std::optional<hub::TxQueueOptions> tx_opts;
+    std::optional<hub::RxQueueOptions> rx_opts;
+    if (api_ref.has_tx_side())
+        tx_opts.emplace(make_tx_opts(config_, out_slot_spec_,
+                                      core_.out_fz_spec(),
+                                      core_.has_tx_fz()));
+    if (api_ref.has_rx_side())
+        rx_opts.emplace(make_rx_opts(config_, in_slot_spec_,
+                                      core_.in_fz_spec(),
+                                      core_.has_rx_fz()));
+
+    // ── 2. Inbox facility (optional, independent of queue building) ──
+    if (inbox_cfg_.has_inbox())
+    {
+        auto inbox_result = scripting::setup_inbox_facility(
+            inbox_spec, inbox_cfg_, config_.checksum().policy,
+            Traits::role_tag);
+        if (!inbox_result)
+            return false;
+        inbox_queue_ = std::move(inbox_result->queue);
+    }
+
+    // ── 3. Build queues (Rx first, then Tx — arbitrary but normalized) ──
+    if (rx_opts && !api_ref.build_rx_queue(*rx_opts))
+    {
+        LOGGER_ERROR("[{}] build_rx_queue failed for channel '{}'",
+                     Traits::role_tag, config_.in_channel());
+        return false;
+    }
+    if (tx_opts && !api_ref.build_tx_queue(*tx_opts))
+    {
+        LOGGER_ERROR("[{}] build_tx_queue failed for channel '{}'",
+                     Traits::role_tag, config_.out_channel());
+        return false;
+    }
+
+    // ── 4. Start queues + reset metrics ──
+    if (rx_opts)
+    {
+        if (!api_ref.start_rx_queue()) { /* log + return false */ }
+        api_ref.reset_rx_queue_metrics();
+    }
+    if (tx_opts)
+    {
+        if (!api_ref.start_tx_queue()) { /* log + return false */ }
+        api_ref.reset_tx_queue_metrics();
+    }
+
+    // ── 5. Configured period (role-level, not per-side) ──
+    core_.set_configured_period(
+        static_cast<uint64_t>(config_.timing().period_us));
+
+    return true;
+}
+```
+
+#### 11.6.3 Queue-build order — investigation result
+
+Three orderings exist today:
+
+| Role | Order |
+|---|---|
+| Producer | inbox → tx-queue → start |
+| Consumer | make_rx_opts → inbox → rx-queue → start |
+| Processor | make_rx_opts → rx-queue → make_tx_opts → inbox → tx-queue → start_rx → start_tx |
+
+Investigation (reading the call sites of `setup_inbox_facility`,
+`build_rx_queue`, `build_tx_queue`): inbox setup is **independent**
+of queue construction.  Inbox uses its own SHM segment + checksum
+policy, parsed from `config.inbox()`; it does not depend on
+broker registration or on either data queue.  Queue construction
+depends on opts (computed from config) and on `core_.has_*_fz()`
+which is set in worker_main_ step 1.5.
+
+**Conclusion**: the three orderings are arbitrary historical artifacts,
+not load-bearing semantics.  The unified order shown in §11.6.2
+(translate → inbox → build-rx → build-tx → start-rx → start-tx →
+period) is safe to adopt across all roles.  No semantic risk.
+
+#### 11.6.4 Resolves quality concerns Q1, Q2, Q3
+
+The fresh-eye review (2026-05-22) flagged three concerns from the
+`eb3eed36` extraction:
+
+| Concern | How M9 resolution addresses it |
+|---|---|
+| **Q1**: `zmq_buffer_depth` placement inconsistency between Consumer and Processor `make_rx_opts` | One shared `make_rx_opts` free function — divergence becomes structurally impossible |
+| **Q2**: SchemaSpec propagation test asserts size-of-empty-vs-empty (always passes even if translation drops the copy) | New L2 test against the unified `make_*_opts` uses non-empty `SchemaSpec` with at least one field; asserts propagation |
+| **Q3**: All current tests pass `has_fz=true`; `flexzone_checksum = config.flexzone && has_fz` is never tested with `has_fz=false` | New L2 test includes one `has_fz=false` case per direction |
+
+### 11.7 `teardown_infrastructure_` absorbed into frame
+
+Side-by-side comparison of the three roles' `teardown_infrastructure_`
+bodies (Producer:519–548, Consumer:468–493, Processor:600–625):
+**100% identical** modulo the `Traits::role_tag` string in log
+messages.  Sequence:
+
+```
+clear_inbox_cache()
+if (inbox_queue_) { inbox_queue_.stop(); inbox_queue_.reset(); }
+if (has_api()) {
+    api.stop_handler_threads();
+    api.close_queues();
+}
+```
+
+No per-role variation.  Move the body into `RoleHostFrame::teardown_
+infrastructure_` directly; delete the three role-specific copies.
+Unlike `setup_infrastructure_`, no hook is needed.
+
+### 11.8 Extensibility analysis — new role types
+
+The presence-list + traits abstraction (§11.1) is designed to
+generalize beyond the three current roles.  Three hypothetical role
+types tested against the design:
+
+#### 11.8.1 Tap / Monitor (rx-only, no registration)
+
+**Shape**: reads an existing channel for diagnostic / observability
+purposes; does not register a Consumer presence with the broker.
+
+**Required design changes**:
+- Extend `Presence` with a runtime `register_with_broker` bool
+  (default `true`).
+- Frame step 6c (registration): skip `register_consumer` /
+  `register_producer_channel` when `register_with_broker == false`.
+- Frame step 6d (heartbeat): skip heartbeat-tick installation for
+  non-registering presences.
+- `tap_role_host_traits::presences(config)` returns one Presence
+  with `register_with_broker = false`.
+
+**Verdict**: trivial.  One new optional field on `Presence`; two
+existing frame steps gain a branch.  No new hooks required.
+
+#### 11.8.2 N-input router (3 rx + 1 tx, all on the same hub)
+
+**Shape**: receives from channels A, B, C; merges; emits to channel D.
+
+**Required design changes**:
+- `router_role_host_traits::presences(config)` returns 4 Presences
+  (3 Consumer + 1 Producer).
+- Schema resolution (worker_main_ step 1): loop over presences;
+  resolve each presence's slot+fz schemas independently.
+- API wiring (worker_main_ step 2a): the current
+  `api_ref.set_channel(name)` API is **singular** —
+  one "primary" channel per role.  Need a presence-aware
+  alternative.
+
+**Two options for API wiring**:
+
+| Option | Pros | Cons |
+|---|---|---|
+| **A**: Add `api_ref.set_channels(const vector<string>&)` alongside the existing `set_channel`; frame's default wiring loop uses the new method.  Single-channel roles pass a 1-element vector. | Backward compatible; existing single-channel API remains. | Two APIs exist; convention bears the load. |
+| **B**: Add a protected hook `wire_api_for_presences_(presences)` on `RoleHostFrame`.  Default impl handles the 1-channel and 2-channel cases (Producer/Consumer/Processor) by calling existing setters.  Router host overrides. | One API surface; cleaner extension point. | Adds a virtual call at startup (cold path; cost negligible). |
+
+**Recommendation**: **Option B** — add the hook proactively in M9.
+Cost is one virtual call at startup; benefit is the extension point
+is pre-paved rather than retrofitted.  Default implementation maps
+the current 1- and 2-channel cases via `set_channel` /
+`set_out_channel` based on presence list shape.
+
+**Verdict**: requires one new hook (`wire_api_for_presences_`).
+Add proactively as part of M9.
+
+#### 11.8.3 Sink (inbox-only, no data plane)
+
+**Shape**: collects out-of-band messages via inbox; has no Producer
+or Consumer presence; no data-loop drains.
+
+**Required design changes**:
+- `sink_role_host_traits::presences(config)` returns empty vector.
+- Frame worker_main_ step 6a-d (presence handling): no-op when
+  presence list is empty.  Already handled trivially by the
+  presence-list iteration pattern.
+- Frame worker_main_ step 8 (data loop): if no presences AND no
+  has_*_side(), enter an inbox-only loop instead of the normal
+  data loop.  This is a **new code path**, not a breaking change.
+
+**Implementation note**: the inbox-only loop already conceptually
+exists — the inbox facility runs its own poll on its own thread.
+A Sink role just needs its `worker_main_` to wait on stop signal
+rather than running `CycleOps::run_data_loop`.
+
+**Verdict**: requires one conditional branch in worker_main_ step 8
+(empty-presence-list path); no new hooks.  Defer until a real Sink
+role is requested.
+
+#### 11.8.4 Summary
+
+| Hypothetical role | New trait fields | New hooks | Frame changes | Verdict |
+|---|---|---|---|---|
+| Tap / Monitor | `register_with_broker` on `Presence` | — | 2 branches in steps 6c, 6d | Trivial; defer |
+| N-input router | (none beyond multiple presences) | `wire_api_for_presences_` | Schema-resolution loop already presence-aware in design | **Add hook proactively in M9** |
+| Sink (inbox-only) | (none) | — | 1 branch in step 8 | Trivial; defer |
+
+The presence-list + traits abstraction generalizes correctly.  The
+single change M9 should adopt proactively is the
+`wire_api_for_presences_` hook (§11.8.2 Option B) — it costs nothing
+today and pre-paves the most likely future extension.
+
 ---
 
 ## 12. Sequence-preservation contract
@@ -1075,7 +1346,7 @@ Tests are not afterthoughts.  A phase is not done until its tests prove the new 
 | **M6** | `ConsumerRoleHost` same shape. | **REVISED**: existing consumer L4 tests pass.  **NEW**: `ConsumerRoleHostTest::PresenceList_ContainsOneConsumer`.  **NEW**: `ConsumerRoleHostTest::Consumer_NoHeartbeatTickInstalled` (verify M2 fix held through M6's restructure). | none |
 | **M7** | `ProcessorRoleHost` 2-presence list.  Single-hub: dedup → 1 connection. | **REVISED**: existing processor L4 tests pass.  **NEW**: `ProcessorRoleHostTest::SingleHub_TwoPresences_DedupTo OneConnection` (L3).  **NEW**: `ProcessorMetrics_SingleHub_TwoDistinctRows` (L3 broker test) — single-hub processor, query metrics, returns rows for both `(in_channel, proc_uid, "consumer")` AND `(out_channel, proc_uid, "producer")`.  Mutation: send only one heartbeat → only one row appears, test fails. | B1 + partial B3-B5 |
 | **M8** | Dual-hub processor: 2 presences → 2 connections. | **NEW**: `DualHubProcessor_BothHubsSeeProcessor` (L4) — spawn 2 plh_hubs + producer (hub-A) + processor (in=A, out=B) + consumer (hub-B); verify hub-A's role table has processor as consumer of in_channel; hub-B's role table has processor as producer of out_channel; data flows end-to-end.  **NEW**: `DualHubProcessor_HubADead_RoleExits` (L4) — kill hub-A; verify processor exits with `StopReason::HubDead`.  **NEW**: `DualHubProcessor_InboxReachableFromBothHubs` (L4) — sender on hub-A and sender on hub-B both `open_inbox(processor_uid)` and successfully send a message (verify A5 reachability section's contract). | resolves B3-B5, validates A5 |
-| **M9** | Roles inherit `RoleHostFrame<HostT>`. `worker_main_` becomes `final` in template.  Trait specialisations land. | **REVISED**: every role host test fixture continues to spawn the host the same way.  **NEW**: full §12.3 mutation sweep on the new template body.  **NEW**: `RoleHostFrameTest::WorkerMainSequence_StepsExecuteInDocumentedOrder` (L2) — instrument the engine to record the call sequence, assert it matches §12.1 step-for-step. | 5c-large complete |
+| **M9** | Roles inherit `RoleHostFrame<HostT>`. `worker_main_` becomes `final` in template.  Trait specialisations land. **EXPANDED 2026-05-22** (see §11.6–§11.8): also collapse `setup_infrastructure_` body into the frame; introduce shared `make_tx_opts` / `make_rx_opts` free functions in `src/utils/service/role_host_translation.{hpp,cpp}` (replacing the per-role static methods shipped in `eb3eed36`); absorb `teardown_infrastructure_` into the frame body (100% identical bodies today, no hook needed); add protected hook `wire_api_for_presences_(presences)` to pre-pave the multi-input-router extension (§11.8.2 Option B); resolve fresh-eye-review quality concerns Q1 (`zmq_buffer_depth` placement inconsistency), Q2 (SchemaSpec propagation test gap), Q3 (`has_fz=false` test gap) via the unified L2 test that replaces `test_layer2_setup_infrastructure_translation.cpp`. | **REVISED**: every role host test fixture continues to spawn the host the same way.  **NEW**: full §12.3 mutation sweep on the new template body.  **NEW**: `RoleHostFrameTest::WorkerMainSequence_StepsExecuteInDocumentedOrder` (L2) — instrument the engine to record the call sequence, assert it matches §12.1 step-for-step.  **NEW (Q1+Q2+Q3 resolution)**: `RoleHostTranslationTest` L2 — one test per (role, transport) using non-empty `SchemaSpec` + at least one `has_fz=false` case per direction; mutation-sweep verifies field-by-field copy preservation across the unified translators. | 5c-large complete |
 
 **Wave B test rigor — explicit:**
 
