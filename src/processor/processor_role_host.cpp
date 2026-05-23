@@ -29,6 +29,7 @@
 
 #include "utils/engine_module_params.hpp"
 #include "utils/role_host_helpers.hpp"
+#include "utils/role_config_translation.hpp"
 #include "utils/zmq_poll_loop.hpp"
 #include "utils/role_reg_payload.hpp"
 #include "utils/role_handler.hpp"     // Wave-B M7: handler-mode startup
@@ -438,12 +439,17 @@ void ProcessorRoleHost::worker_main_()
 }
 
 // ============================================================================
-// make_rx_opts / make_tx_opts — pure config→opts translation (testable)
+// make_rx_opts / make_tx_opts — delegate to shared free functions (M9 §11.6)
 // ============================================================================
 //
-// Extracted from setup_infrastructure_.  See ProducerRoleHost::make_tx_opts
-// for rationale + audit history.  Processor has both directions; same
-// B5/B11 story applies symmetrically on each.
+// Q1 RESOLUTION (2026-05-22): the previous per-role static
+// `ProcessorRoleHost::make_rx_opts` set `opts.zmq_buffer_depth =
+// tr.zmq_buffer_depth` unconditionally (before the `if (zmq)` block);
+// Consumer's per-role version set it only inside the `if (zmq)`
+// block.  The shared `scripting::make_rx_opts` adopts Consumer's
+// convention (set only inside `if (zmq)`).  Functionally inert today
+// because `zmq_buffer_depth` is ignored on the SHM path; the change
+// eliminates a pre-existing inconsistency.
 
 hub::RxQueueOptions
 ProcessorRoleHost::make_rx_opts(const config::RoleConfig &config,
@@ -451,31 +457,8 @@ ProcessorRoleHost::make_rx_opts(const config::RoleConfig &config,
                                  const hub::SchemaSpec    &in_fz_spec,
                                  bool                      has_rx_fz)
 {
-    const auto &tr  = config.in_transport();
-    const auto &shm = config.in_shm();
-    const auto &ch  = config.in_channel();
-
-    hub::RxQueueOptions opts;
-    // Audit B5: shm_name = in_channel for the SHM path.
-    opts.shm_name          = ch;
-    opts.shm_shared_secret = shm.enabled ? shm.secret : 0u;
-    opts.slot_spec         = in_slot_spec;
-    opts.fz_spec           = in_fz_spec;
-    opts.zmq_buffer_depth  = tr.zmq_buffer_depth;
-    opts.checksum_policy   = config.checksum().policy;
-    opts.flexzone_checksum = config.checksum().flexzone && has_rx_fz;
-
-    // Audit B11: ZMQ path overrides shm_name (clear) and sets
-    // data_transport + zmq_node_endpoint.
-    if (tr.transport == config::Transport::Zmq)
-    {
-        opts.data_transport    = "zmq";
-        opts.zmq_node_endpoint = tr.zmq_endpoint;
-        opts.shm_name.clear();
-        opts.shm_shared_secret = 0u;
-    }
-
-    return opts;
+    return scripting::make_rx_opts(config, in_slot_spec, in_fz_spec,
+                                    has_rx_fz);
 }
 
 hub::TxQueueOptions
@@ -484,42 +467,8 @@ ProcessorRoleHost::make_tx_opts(const config::RoleConfig &config,
                                  const hub::SchemaSpec    &out_fz_spec,
                                  bool                      has_tx_fz)
 {
-    const auto &tr  = config.out_transport();
-    const auto &shm = config.out_shm();
-
-    hub::TxQueueOptions opts;
-    opts.has_shm   = shm.enabled;
-    opts.slot_spec = out_slot_spec;
-    opts.fz_spec   = out_fz_spec;
-
-    opts.checksum_policy   = config.checksum().policy;
-    opts.flexzone_checksum = config.checksum().flexzone && has_tx_fz;
-
-    // SHM config block.
-    if (shm.enabled)
-    {
-        opts.shm_config.shared_secret        = shm.secret;
-        opts.shm_config.ring_buffer_capacity = shm.slot_count;
-        opts.shm_config.policy               = hub::DataBlockPolicy::RingBuffer;
-        opts.shm_config.consumer_sync_policy = shm.sync_policy;
-        opts.shm_config.checksum_policy      = config.checksum().policy;
-        opts.shm_config.physical_page_size   = hub::system_page_size();
-    }
-
-    // ZMQ transport (HEP-CORE-0021).
-    if (tr.transport == config::Transport::Zmq)
-    {
-        opts.has_shm           = false;
-        opts.data_transport    = "zmq";
-        opts.zmq_node_endpoint = tr.zmq_endpoint;
-        opts.zmq_bind          = tr.zmq_bind;
-        opts.zmq_buffer_depth  = tr.zmq_buffer_depth;
-        opts.zmq_overflow_policy =
-            (tr.zmq_overflow_policy == "block") ? hub::OverflowPolicy::Block
-                                                : hub::OverflowPolicy::Drop;
-    }
-
-    return opts;
+    return scripting::make_tx_opts(config, out_slot_spec, out_fz_spec,
+                                    has_tx_fz);
 }
 
 // ============================================================================
