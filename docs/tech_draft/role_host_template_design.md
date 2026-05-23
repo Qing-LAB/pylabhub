@@ -702,6 +702,174 @@ that care; scripts that don't ignore it.
 
 ---
 
+### 10.6 Big-picture architecture — how the pieces fit together
+
+**Added 2026-05-22** to make the inheritance + collaboration map
+explicit.  This section pulls together the role side and the hub
+side into one view so a reader can see (a) which classes are
+templates vs plain, (b) how a role binary or a hub binary is
+constructed, and (c) what each component owns.
+
+#### 10.6.1 Inheritance map (role side + hub side, side-by-side)
+
+```mermaid
+flowchart TB
+  classDef tmpl fill:#fef3c7,stroke:#b45309,color:#000
+  classDef plain fill:#dcfce7,stroke:#15803d,color:#000
+  classDef api fill:#dbeafe,stroke:#1d4ed8,color:#000
+  classDef cfg fill:#f3e8ff,stroke:#6b21a8,color:#000
+  classDef cycleops fill:#fee2e2,stroke:#b91c1c,color:#000
+
+  subgraph SHARED["Shared infrastructure (one layer)"]
+    EH["EngineHost&lt;ApiT&gt;<br/>TEMPLATE<br/>(varies by API kind)<br/>owns: config_, phase FSM,<br/>worker thread spawn,<br/>ready promise"]:::tmpl
+    SHT["script_host_traits&lt;ApiT&gt;<br/>per-API specialization<br/>carries: ConfigT type alias<br/>(varies by host kind)"]:::cfg
+    SHT -. parameterizes .-> EH
+  end
+
+  subgraph ROLE["Role side (plh_role binary)"]
+    RAB["RoleAPIBase<br/>plain class<br/>(script-visible API)"]:::api
+    RHB["RoleHostBase<br/>= EngineHost&lt;RoleAPIBase&gt;<br/>(type alias)"]:::tmpl
+    RHF["RoleHostFrame<br/>PLAIN CLASS<br/>(NEW — M9)<br/>shared role-host body<br/>(setup/teardown/worker_main)<br/>virtual hooks for variance"]:::plain
+    PRD["ProducerRoleHost"]:::plain
+    CNS["ConsumerRoleHost"]:::plain
+    PRC["ProcessorRoleHost"]:::plain
+    POPS["ProducerCycleOps<br/>(stack local in run_loop_)"]:::cycleops
+    COPS["ConsumerCycleOps<br/>(stack local in run_loop_)"]:::cycleops
+    PROPS["ProcessorCycleOps<br/>(stack local in run_loop_)"]:::cycleops
+
+    EH --> RHB
+    RAB -. parameterizes .-> RHB
+    RHB --> RHF
+    RHF --> PRD
+    RHF --> CNS
+    RHF --> PRC
+    PRD -. constructs .-> POPS
+    CNS -. constructs .-> COPS
+    PRC -. constructs .-> PROPS
+  end
+
+  subgraph HUB["Hub side (plh_hub binary)"]
+    HUBAPI["HubAPI<br/>plain class<br/>(script-visible API)"]:::api
+    HSRB["HubScriptRunnerBase<br/>= EngineHost&lt;HubAPI&gt;<br/>(type alias)"]:::tmpl
+    HSR["HubScriptRunner<br/>plain class<br/>(hub-side script runtime)"]:::plain
+    HH["HubHost<br/>plain class<br/>(outer container —<br/>NOT derived from EngineHost)"]:::plain
+
+    EH --> HSRB
+    HUBAPI -. parameterizes .-> HSRB
+    HSRB --> HSR
+    HH -. owns .-> HSR
+  end
+```
+
+**What the colours mean:**
+
+- **Yellow** = template class (varies by template parameter).
+- **Green** = plain class (no template parameter).
+- **Blue** = API surface (script-visible).
+- **Purple** = trait specialization (compile-time config).
+- **Red** = CycleOps stack-local (constructed inside a method, never stored as a member).
+
+**Key things this diagram makes explicit:**
+
+- `EngineHost<ApiT>` is the ONE template in this inheritance chain.
+  It exists in exactly two instantiations: `EngineHost<RoleAPIBase>`
+  (aliased as `RoleHostBase`) and `EngineHost<HubAPI>` (aliased as
+  `HubScriptRunnerBase`).  The template parameter is needed because
+  `EngineHost`'s `config_` member's TYPE differs between
+  instantiations (see §11.1 for the structural reasoning).
+- `RoleHostFrame` (new in M9) is a PLAIN class slotted between
+  `RoleHostBase` and the three concrete role hosts.  It has no
+  template parameter because nothing role-typed is stored as a
+  member.
+- The three role hosts inherit from `RoleHostFrame`, getting the
+  shared body for free.  Each provides only its role-specific bits
+  (presence list + CycleOps type + a few strings).
+- The hub side has a parallel structure but stops at
+  `HubScriptRunner` — there's only one hub kind, so no additional
+  unification layer is needed there.  `HubHost` is an OUTER
+  container (owns the script runner as a subsystem), not part of
+  the EngineHost inheritance chain.
+
+#### 10.6.2 Construction sequence — what happens when a role binary starts
+
+```mermaid
+sequenceDiagram
+    participant main as plh_role main()
+    participant reg as RoleRegistry
+    participant cfg as RoleConfig
+    participant host as ProducerRoleHost
+    participant frame as RoleHostFrame (base)
+    participant rhb as RoleHostBase (= EngineHost&lt;RoleAPIBase&gt;)
+    participant worker as worker thread
+
+    Note over main,worker: 1. Registration (static initialisation time)
+    main->>reg: register_producer_init()
+    main->>reg: register_producer_runtime()
+
+    Note over main,worker: 2. Parse config from disk
+    main->>cfg: RoleConfig::load_from_directory(dir, "producer", parser)
+    cfg-->>main: RoleConfig instance
+
+    Note over main,worker: 3. Construct host (inheritance chain)
+    main->>host: ProducerRoleHost(config, shutdown_flag)
+    host->>frame: RoleHostFrame(config, shutdown_flag,<br/>{"prod","producer","on_produce"})
+    frame->>rhb: RoleHostBase("prod", config, shutdown_flag)
+    rhb-->>frame: stored config_, role_tag_, uid_
+    frame-->>host: stored frame_cfg_ (role_tag/label/required_cb)
+
+    Note over main,worker: 4. Spawn worker thread
+    main->>host: startup_()
+    host->>rhb: startup_() (inherited)
+    rhb->>worker: spawn via ApiT::thread_manager()
+    worker->>host: worker_main_()
+
+    Note over worker: 5. Worker runs the 8-step lifecycle<br/>(engine load → schemas → setup_infra →<br/>on_init → presences/broker → ready_promise →<br/>run_data_loop&lt;ProducerCycleOps&gt; → teardown)
+
+    worker-->>main: ready_promise.set_value(true)<br/>(host is running)
+
+    Note over main,worker: 6. Run until shutdown signal
+    main->>host: shutdown_()
+    host->>rhb: shutdown_() (inherited)
+    rhb->>worker: signal + join
+    worker-->>rhb: thread exited
+```
+
+The hub-binary construction sequence is structurally identical;
+substitute `HubScriptRunner` for `ProducerRoleHost`, `HubHost` for
+the outer container that owns it, and `run_data_loop<HubCycleOps>`
+for the data-loop call.
+
+#### 10.6.3 Separation of concerns — what each class owns
+
+| Layer | Class | Owns | Doesn't own |
+|---|---|---|---|
+| **Generic engine + worker lifecycle** | `EngineHost<ApiT>` | Phase FSM (Constructed/Running/ShutDown), worker thread spawn, ready promise, ApiT lifetime, config_ storage, role_tag_, uid_ | Anything role- or hub-specific |
+| **Role-host shared body** (M9) | `RoleHostFrame` | Frame config (role_tag/label/required_cb), inbox_queue_, in/out_slot_spec_, unified worker_main_ body, unified setup_infrastructure_ + teardown_infrastructure_ | The role's specific presence list, CycleOps type |
+| **Per-role specifics** | `ProducerRoleHost` / `ConsumerRoleHost` / `ProcessorRoleHost` | Override `build_presences_` (which presences to register), override `run_loop_` (which CycleOps to construct + run) | Anything in the shared base body |
+| **CycleOps (data-loop body)** | `ProducerCycleOps` / `ConsumerCycleOps` / `ProcessorCycleOps` | Per-cycle acquire/invoke/commit logic; queue interaction | Lifecycle, broker, presence — those are upstream |
+| **Hub script runtime** | `HubScriptRunner` | Hub's script-loop body, hub-specific cycle ops, hub admin handlers | Anything outside the script thread |
+| **Hub outer container** | `HubHost` | HubConfig storage, broker service, hub state, admin service, the runner above as a subsystem | The script-thread internals |
+
+**Reading guide for a new maintainer:**
+
+1. Want to know what runs when a role starts?  Read `EngineHost::startup_()` (the generic spawn) → `RoleHostFrame::worker_main_()` (the 8-step sequence) → the relevant `*CycleOps::run_data_loop` invocation.
+2. Want to know what makes one role different from another?  Read that role's `build_presences_()` and `run_loop_()` overrides.  That's it.
+3. Want to know how the hub script thread differs from a role?  Read `HubScriptRunner::worker_main_()`.  The frame layer doesn't apply — hub has only one kind.
+
+#### 10.6.4 Why the design lands here (recap)
+
+The design separates concerns along three axes:
+
+1. **What's truly shared across all script-hosting threads** (role hosts AND hub script runner) lives in `EngineHost<ApiT>`.  Templated because the API surface differs.
+2. **What's shared across role hosts only** lives in `RoleHostFrame`.  Plain class because no role-specific member-type variance.
+3. **What's truly role-specific** lives in the three derived classes.  Pure-virtual hooks (`build_presences_`, `run_loop_`) make the contract explicit.
+
+Future role kinds (tap, router, sink) plug in by deriving from
+`RoleHostFrame` and providing their own hook overrides — same
+mechanism, same boundary.  The hub side stays untouched.
+
+---
+
 ## 11. Frame abstraction shape (5c-large + presence model)
 
 `RoleHostFrame` (a plain, non-templated class — see §11.1 for the

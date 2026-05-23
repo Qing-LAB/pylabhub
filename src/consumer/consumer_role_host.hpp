@@ -24,6 +24,7 @@
 #include "pylabhub_utils_export.h"
 #include "utils/config/role_config.hpp"
 #include "utils/engine_host.hpp"
+#include "utils/role_host_frame.hpp"
 #include "plh_datahub.hpp"
 
 #include <atomic>
@@ -38,7 +39,7 @@ class InboxQueue;
 namespace pylabhub::consumer
 {
 
-class PYLABHUB_UTILS_EXPORT ConsumerRoleHost final : public scripting::RoleHostBase
+class PYLABHUB_UTILS_EXPORT ConsumerRoleHost final : public scripting::RoleHostFrame
 {
   public:
     /// Per HEP-CORE-0011 §"Engine Construction Lifecycle" (2026-05-07):

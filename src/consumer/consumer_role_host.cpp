@@ -52,9 +52,11 @@ using Clock = std::chrono::steady_clock;
 
 ConsumerRoleHost::ConsumerRoleHost(config::RoleConfig config,
                                      std::atomic<bool> *shutdown_flag)
-    : scripting::RoleHostBase("cons",
-                              std::move(config),
-                              shutdown_flag)
+    : scripting::RoleHostFrame(std::move(config),
+                                shutdown_flag,
+                                { /*role_tag=*/         "cons",
+                                  /*role_label=*/       "consumer",
+                                  /*required_callback=*/"on_consume" })
 {
     // Engine constructed in worker_main_ Step 0 — see HEP-CORE-0011
     // §"Engine Construction Lifecycle".

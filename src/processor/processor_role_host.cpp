@@ -55,9 +55,11 @@ using Clock = std::chrono::steady_clock;
 
 ProcessorRoleHost::ProcessorRoleHost(config::RoleConfig config,
                                        std::atomic<bool> *shutdown_flag)
-    : scripting::RoleHostBase("proc",
-                              std::move(config),
-                              shutdown_flag)
+    : scripting::RoleHostFrame(std::move(config),
+                                shutdown_flag,
+                                { /*role_tag=*/         "proc",
+                                  /*role_label=*/       "processor",
+                                  /*required_callback=*/"on_process" })
 {
     // Engine constructed in worker_main_ Step 0 — see HEP-CORE-0011
     // §"Engine Construction Lifecycle".

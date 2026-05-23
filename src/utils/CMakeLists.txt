@@ -37,6 +37,7 @@ set(UTILS_SOURCES
   service/role_vault.cpp
   service/role_host_core.cpp
   service/role_config_translation.cpp
+  service/role_host_frame.cpp
   service/engine_host.cpp
   service/role_registry.cpp
   service/role_api_base.cpp
