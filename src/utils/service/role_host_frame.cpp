@@ -12,6 +12,10 @@
 
 #include "utils/role_host_frame.hpp"
 
+#include "utils/hub_inbox_queue.hpp"
+#include "utils/role_api_base.hpp"
+#include "utils/role_host_core.hpp"
+
 #include <utility>
 
 namespace pylabhub::scripting
@@ -28,5 +32,54 @@ RoleHostFrame::RoleHostFrame(config::RoleConfig    config,
 }
 
 RoleHostFrame::~RoleHostFrame() = default;
+
+// ============================================================================
+// teardown_infrastructure_ — shared body (M9 sub-step 2b, 2026-05-22)
+// ============================================================================
+//
+// Absorbed from the three role hosts' byte-equivalent teardown bodies.
+// Pre-M9 each role host had its own copy; the bodies differed only in
+// comments.  Now lives here once.
+
+void RoleHostFrame::teardown_infrastructure_()
+{
+    // Broker and comm threads already joined via api_->thread_manager().drain().
+    // set_running(false) also already called.  Defensive re-set is safe.
+
+    // Clean up shared resources (engine already finalized — no scripts running).
+    core().clear_inbox_cache();
+
+    // Stop inbox_queue_ (if exists).
+    if (inbox_queue_)
+    {
+        inbox_queue_->stop();
+        inbox_queue_.reset();
+    }
+
+    // Wave-B M5..M7: handler-mode teardown + data-plane queue close.
+    // The role host no longer owns a `broker_comm_` unique_ptr — the
+    // RoleHandler inside RoleAPIBase owns every BRC (1 for single-hub
+    // roles, 2 for dual-hub processor).
+    //
+    //   `stop_handler_threads()` — full sequence: clear the legacy
+    //     fallback view, signal each BRC, drain peer ctrl threads via
+    //     the HEP-CORE-0031 §4.1 bracket contract, disconnect +
+    //     release BRCs, reset the handler unique_ptr.  Idempotent.
+    //   `close_queues()` — Tx / Rx data-plane teardown inside
+    //     RoleAPIBase; safe for any role-side combination.
+    //
+    // Both safe after `do_role_teardown`'s Step 12.5 wait_for_quiescence
+    // (HEP-CORE-0031 §4.1, MD1 fix).  The actual std::thread::join for
+    // master ctrl threads happens later in EngineHost::shutdown_()
+    // Phase 3.  M9 step 2b (2026-05-22) consolidated the two
+    // historical `if (has_api())` checks into one block — both calls
+    // run on the same api_ instance whose lifetime can't change
+    // between them.
+    if (has_api())
+    {
+        api().stop_handler_threads();
+        api().close_queues();
+    }
+}
 
 } // namespace pylabhub::scripting

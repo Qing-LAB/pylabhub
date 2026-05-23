@@ -432,36 +432,8 @@ bool ConsumerRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
     return true;
 }
 
-// ============================================================================
-// teardown_infrastructure_ — reverse of setup
-// ============================================================================
-
-void ConsumerRoleHost::teardown_infrastructure_()
-{
-    // Broker and comm threads already joined via api_->thread_manager().drain().
-
-    core().clear_inbox_cache();
-
-    if (inbox_queue_)
-    {
-        inbox_queue_->stop();
-        inbox_queue_.reset();
-    }
-
-    // Ctrl thread is QUIESCED at this point — not yet joined.  Step 12.5
-    // in `do_role_teardown` (`role_host_lifecycle.cpp`) ran
-    // Wave-B M6: handler-mode teardown.  RoleHandler inside RoleAPIBase
-    // owns every BRC; api.stop_handler_threads() does the full
-    // signal/drain/disconnect/release sequence.  See M5 (producer) for
-    // the same pattern.  Safe AFTER do_role_teardown's Step 12.5
-    // wait_for_quiescence (HEP-CORE-0031 §4.1, MD1 fix); the actual
-    // std::thread::join for master ctrl threads happens later in
-    // EngineHost::shutdown_() Phase 3.
-    if (has_api()) api().stop_handler_threads();
-
-    if (has_api())
-        api().close_queues();
-}
+// teardown_infrastructure_ — inherited from RoleHostFrame (M9 step 2b).
+// See src/utils/service/role_host_frame.cpp.
 
 
 } // namespace pylabhub::consumer
