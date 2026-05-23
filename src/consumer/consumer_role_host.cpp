@@ -27,6 +27,7 @@
 
 #include "utils/engine_module_params.hpp"
 #include "utils/role_host_helpers.hpp"
+#include "utils/role_config_translation.hpp"
 #include "utils/zmq_poll_loop.hpp"
 #include "utils/role_reg_payload.hpp"
 #include "utils/role_handler.hpp"     // Wave-B M6: handler-mode startup
@@ -360,13 +361,8 @@ void ConsumerRoleHost::worker_main_()
 }
 
 // ============================================================================
-// make_rx_opts — pure config→RxQueueOptions translation (testable)
+// make_rx_opts — delegates to the shared free function (M9 §11.6)
 // ============================================================================
-//
-// Extracted from setup_infrastructure_.  See
-// ProducerRoleHost::make_tx_opts for rationale + audit history.
-// Same B5 (shm_name) + B11 (zmq fields) story, this side mirrors
-// the producer.
 
 hub::RxQueueOptions
 ConsumerRoleHost::make_rx_opts(const config::RoleConfig &config,
@@ -374,35 +370,8 @@ ConsumerRoleHost::make_rx_opts(const config::RoleConfig &config,
                                 const hub::SchemaSpec    &in_fz_spec,
                                 bool                      has_rx_fz)
 {
-    const auto &tr  = config.in_transport();
-    const auto &shm = config.in_shm();
-    const auto &ch  = config.in_channel();
-
-    hub::RxQueueOptions opts;
-    // Audit B5/G21: shm_name is the channel name (matches producer's
-    // ShmQueue::create_writer first arg).  Set unconditionally for
-    // SHM; cleared below if transport is ZMQ.
-    opts.shm_name          = ch;
-    opts.shm_shared_secret = shm.enabled ? shm.secret : 0u;
-    opts.slot_spec         = in_slot_spec;
-    opts.fz_spec           = in_fz_spec;
-
-    opts.checksum_policy   = config.checksum().policy;
-    opts.flexzone_checksum = config.checksum().flexzone && has_rx_fz;
-
-    // ZMQ transport (HEP-CORE-0021).  Audit B11: data_transport +
-    // zmq_node_endpoint MUST be set, and shm_name/secret MUST be
-    // cleared, when in_transport is ZMQ.
-    if (tr.transport == config::Transport::Zmq)
-    {
-        opts.data_transport    = "zmq";
-        opts.zmq_node_endpoint = tr.zmq_endpoint;
-        opts.zmq_buffer_depth  = tr.zmq_buffer_depth;
-        opts.shm_name.clear();
-        opts.shm_shared_secret = 0u;
-    }
-
-    return opts;
+    return scripting::make_rx_opts(config, in_slot_spec, in_fz_spec,
+                                    has_rx_fz);
 }
 
 // ============================================================================

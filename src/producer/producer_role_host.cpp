@@ -27,6 +27,7 @@
 
 #include "utils/engine_module_params.hpp"
 #include "utils/role_host_helpers.hpp"
+#include "utils/role_config_translation.hpp"
 #include "utils/zmq_poll_loop.hpp"
 #include "utils/role_reg_payload.hpp"
 #include "utils/role_handler.hpp"     // Wave-B M5: handler-mode startup
@@ -396,21 +397,18 @@ void ProducerRoleHost::worker_main_()
 }
 
 // ============================================================================
-// make_tx_opts — pure config→TxQueueOptions translation (testable)
+// make_tx_opts — delegates to the shared free function (M9 §11.6)
 // ============================================================================
 //
-// Extracted from setup_infrastructure_ so an L2 test can exercise the
-// production deployment path (file → load_from_directory → here)
-// without spinning up a broker / queue.  Pure: no side effects, reads
-// only from `config`, `out_slot_spec`, `out_fz_spec`, `has_tx_fz`.
-//
-// Audit B5 + B11 history (2026-05-20/21): both bugs lived in this
-// translation body.  Pre-extraction it was inline inside
-// setup_infrastructure_ where the L3 test
-// (role_api_flexzone_workers.cpp) couldn't reach it without also
-// triggering broker connection.  L3 tests therefore hand-constructed
-// the opts struct and bypassed the bug path.  Extracting the
-// translation here unblocks direct unit testing of every field copy.
+// Originally extracted from setup_infrastructure_ in commit eb3eed36
+// as a per-role static method.  Now a thin shim around the shared
+// `pylabhub::scripting::make_tx_opts` free function in
+// src/utils/service/role_config_translation.cpp.  Kept as a class
+// member so existing L2 test callers continue to work unchanged; the
+// implementation lives in exactly one place.  Producer's and
+// Processor's pre-consolidation per-role static methods were
+// byte-identical — collapsing them into the shared free function is
+// pure de-duplication.
 
 hub::TxQueueOptions
 ProducerRoleHost::make_tx_opts(const config::RoleConfig &config,
@@ -418,42 +416,8 @@ ProducerRoleHost::make_tx_opts(const config::RoleConfig &config,
                                 const hub::SchemaSpec    &out_fz_spec,
                                 bool                      has_tx_fz)
 {
-    const auto &tr  = config.out_transport();
-    const auto &shm = config.out_shm();
-
-    hub::TxQueueOptions opts;
-    opts.has_shm   = shm.enabled;
-    opts.slot_spec = out_slot_spec;
-    opts.fz_spec   = out_fz_spec;
-
-    opts.checksum_policy   = config.checksum().policy;
-    opts.flexzone_checksum = config.checksum().flexzone && has_tx_fz;
-
-    // SHM config block — only meaningful when shm.enabled.
-    if (shm.enabled)
-    {
-        opts.shm_config.shared_secret        = shm.secret;
-        opts.shm_config.ring_buffer_capacity = shm.slot_count;
-        opts.shm_config.policy               = hub::DataBlockPolicy::RingBuffer;
-        opts.shm_config.consumer_sync_policy = shm.sync_policy;
-        opts.shm_config.checksum_policy      = config.checksum().policy;
-        opts.shm_config.physical_page_size   = hub::system_page_size();
-    }
-
-    // ZMQ transport (HEP-CORE-0021).  Overrides has_shm to false.
-    if (tr.transport == config::Transport::Zmq)
-    {
-        opts.has_shm           = false;
-        opts.data_transport    = "zmq";
-        opts.zmq_node_endpoint = tr.zmq_endpoint;
-        opts.zmq_bind          = tr.zmq_bind;
-        opts.zmq_buffer_depth  = tr.zmq_buffer_depth;
-        opts.zmq_overflow_policy =
-            (tr.zmq_overflow_policy == "block") ? hub::OverflowPolicy::Block
-                                                : hub::OverflowPolicy::Drop;
-    }
-
-    return opts;
+    return scripting::make_tx_opts(config, out_slot_spec, out_fz_spec,
+                                    has_tx_fz);
 }
 
 // ============================================================================
