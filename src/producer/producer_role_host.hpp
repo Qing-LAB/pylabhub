@@ -3,10 +3,17 @@
  * @file producer_role_host.hpp
  * @brief Unified producer role host — engine-agnostic.
  *
- * ProducerRoleHost inherits from RoleHostBase, which owns the shared
- * state (role_tag, config, engine, RoleHostCore, RoleAPIBase,
- * ready-promise) and the public lifecycle surface (startup_(), shutdown_(),
- * is_running(), wait_for_wakeup(), script_load_ok()).
+ * Post-M9 (2026-05-22): ProducerRoleHost inherits from
+ * `scripting::RoleHostFrame` (NEW plain-class layer slotted between
+ * `RoleHostBase` and the three role hosts).  `RoleHostFrame` carries the
+ * shared role-host body + the per-role configuration struct
+ * (role_tag/role_label/required_callback).  `RoleHostBase`
+ * (`= EngineHost<RoleAPIBase>`) still owns the shared state (config,
+ * engine, RoleHostCore, RoleAPIBase, ready-promise) and the public
+ * lifecycle surface (startup_(), shutdown_(), is_running(),
+ * wait_for_wakeup(), script_load_ok()).  See
+ * `docs/tech_draft/role_host_template_design.md` §10.6 for the full
+ * inheritance map + architecture diagrams.
  *
  * This class owns only producer-specific state:
  * - Layer 3: Infrastructure (InboxQueue, producer-side queue via

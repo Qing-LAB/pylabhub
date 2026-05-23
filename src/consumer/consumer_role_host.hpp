@@ -3,7 +3,9 @@
  * @file consumer_role_host.hpp
  * @brief Unified consumer role host — engine-agnostic.
  *
- * ConsumerRoleHost inherits from RoleHostBase, which owns the shared
+ * Post-M9: ConsumerRoleHost inherits from `scripting::RoleHostFrame`
+ * (NEW plain-class layer; see role_host_frame.hpp for the design).
+ * RoleHostFrame in turn inherits from RoleHostBase, which owns the shared
  * state (role_tag, config, engine, RoleHostCore, RoleAPIBase,
  * ready-promise) and the public lifecycle surface (startup_(), shutdown_(),
  * is_running(), wait_for_wakeup(), script_load_ok()).
