@@ -13,6 +13,33 @@
  * a ThreadManager that registers a dynamic lifecycle module) — so all
  * bodies must run under run_gtest_worker with Logger owned by the
  * subprocess.
+ *
+ * ── L2 BYPASS PATTERN ───────────────────────────────────────────────
+ *
+ * Worker functions in this file BYPASS the role host's
+ * `worker_main_` + `setup_infrastructure_` sequence: they construct
+ * `RoleHostCore` + `RoleAPIBase` + `LuaEngine` directly and manually
+ * populate state that `RoleHostFrame::setup_infrastructure_` would
+ * set in production.  Per `feedback_test_bypass_explicit.md`, this
+ * is OWNED, not hidden.
+ *
+ *   WHY:   L2 isolation — testing engine APIs in isolation from the
+ *          role-host startup sequence.  See
+ *          python_engine_workers.cpp file header for the full
+ *          rationale (identical pattern, identical migration
+ *          triggers).
+ *
+ *   NOT A MOCK — uses real LuaEngine + real RoleHostCore + real
+ *   RoleAPIBase per `feedback_no_mocks_via_observability.md`.
+ *
+ *   CANONICAL STORAGE THESE BYPASSES POPULATE (keep in sync with
+ *   production!):
+ *     - `RoleHostCore::set_*_slot_spec()`  /  `set_*_fz_spec()`
+ *       (Phase 1+2 shadow; Phase 2.6 removes fz_spec storage from core)
+ *     - `RoleAPIBase::set_flexzone_introspection_()` (Phase 2 NEW;
+ *       sole source post-2.6)
+ *
+ *   RE-EXAMINE WHEN: see python_engine_workers.cpp file header.
  */
 #include "lua_engine_workers.h"
 
@@ -3912,6 +3939,11 @@ struct LogicalSizeCase
     size_t       anchor_fz;           // hard-coded expected fz size (0 if none)
 };
 
+// L2 BYPASS — see file header `L2 BYPASS PATTERN`.
+// PURPOSE: verify Lua's `api.slot_logical_size()` / `flexzone_logical_size()`
+//          for the supplied (slot, fz) schema pair.
+// POPULATES: core.set_out_slot_spec, core.set_out_fz_spec, +
+//            api->set_flexzone_introspection_ (Phase 2 TODO).
 int run_logical_size_case(const std::string &dir,
                           const char        *scenario_name,
                           const LogicalSizeCase &c)
@@ -5271,6 +5303,11 @@ int full_startup_producer_slot_only(const std::string &dir)
         Logger::GetLifecycleModule());
 }
 
+// L2 BYPASS — see file header `L2 BYPASS PATTERN`.
+// PURPOSE: full producer-engine startup with both slot + flexzone schemas
+//          configured; verify type sizes and an end-to-end produce call.
+// POPULATES: core.set_out_slot_spec, core.set_out_fz_spec, +
+//            api->set_flexzone_introspection_ (Phase 2 TODO).
 int full_startup_producer_slot_and_flexzone(const std::string &dir)
 {
     return run_gtest_worker(

@@ -7,6 +7,41 @@
  * that registers a dynamic lifecycle module.  Without a `LifecycleGuard`
  * in scope, registration half-completes and teardown flakes.
  * `run_gtest_worker` owns the guard for the subprocess's lifetime.
+ *
+ * ── L3 BYPASS PATTERN ───────────────────────────────────────────────
+ *
+ * Worker functions in this file BYPASS the role host's
+ * `worker_main_` + `setup_infrastructure_` sequence: construct
+ * `RoleHostCore` (prod_core, cons_core) + `RoleAPIBase` directly and
+ * manually populate state that `RoleHostFrame::setup_infrastructure_`
+ * would set in production.  Per `feedback_test_bypass_explicit.md`,
+ * this is OWNED, not hidden.
+ *
+ *   WHY:   L3 isolation — testing the flexzone data-plane integration
+ *          (producer → SHM segment → consumer with flexzone schema)
+ *          without the broker / role-host startup.  Full role hosts
+ *          would require broker + worker threads on both sides; this
+ *          isolation focuses on producer/consumer flexzone interaction.
+ *
+ *   NOT A MOCK — uses real RoleAPIBase + real RoleHostCore + real
+ *   ShmQueue.  Follows `feedback_no_mocks_via_observability.md`.
+ *
+ *   CANONICAL STORAGE THESE BYPASSES POPULATE (keep in sync with
+ *   production!):
+ *     - `RoleHostCore::set_out_slot_spec()` (producer side)
+ *     - `RoleHostCore::set_out_fz_spec()`   (producer side; Phase 2.6
+ *                                            removes core's fz storage)
+ *     - `RoleHostCore::set_in_slot_spec()`  (consumer side)
+ *     - `RoleHostCore::set_in_fz_spec()`    (consumer side; Phase 2.6 ditto)
+ *     - `RoleAPIBase::set_flexzone_introspection_()` (Phase 2 NEW;
+ *       sole source post-2.6)
+ *
+ *   RE-EXAMINE WHEN:
+ *     - Canonical introspection storage moves again.
+ *     - M9 Phase 2.6 lands — remove orphan `core.set_*_fz_spec` calls;
+ *       verify only `api->set_flexzone_introspection_` populates the
+ *       introspection state.
+ *     - Annually as part of test-debt review.
  */
 #include "role_api_flexzone_workers.h"
 

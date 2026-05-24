@@ -12,6 +12,44 @@
  * file adopts the same helpers (setup_role_engine, script_worker,
  * produce/consume/process_worker_with_script) and the same
  * chunk-local review-and-augment methodology.
+ *
+ * ── L2 BYPASS PATTERN ───────────────────────────────────────────────
+ *
+ * Worker functions in this file deliberately BYPASS the role host's
+ * `worker_main_` + `setup_infrastructure_` sequence: they construct
+ * `RoleHostCore` + `RoleAPIBase` + `PythonEngine` directly and
+ * manually populate state that production would set via
+ * `RoleHostFrame::setup_infrastructure_`.
+ *
+ * Per `feedback_test_bypass_explicit.md`, this is OWNED, not hidden.
+ *
+ *   WHY:   L2 isolation — testing engine APIs in isolation from the
+ *          role-host startup sequence.  Going through the full role
+ *          host would be slower (L3+) and would couple engine bugs
+ *          to role-host bugs.
+ *
+ *   NOT A MOCK — uses real PythonEngine + real RoleHostCore + real
+ *   RoleAPIBase per `feedback_no_mocks_via_observability.md`.
+ *
+ *   CANONICAL STORAGE THESE BYPASSES POPULATE (keep in sync with
+ *   production!):
+ *     - `RoleHostCore::set_out_slot_spec()` / `set_in_slot_spec()`
+ *     - `RoleHostCore::set_out_fz_spec()`   / `set_in_fz_spec()`
+ *       (Phase 1+2 shadow; Phase 2.6 removes — switches sole source
+ *        to `RoleAPIBase::FlexzoneIntrospection` cache)
+ *     - `RoleAPIBase::set_flexzone_introspection_()`  (Phase 2 NEW)
+ *
+ *   RE-EXAMINE WHEN:
+ *     - Canonical introspection storage moves again.
+ *     - M9 Phase 2.6 lands — remove the now-orphan `core.set_*_fz_spec`
+ *       calls; verify only the new introspection-cache path remains.
+ *     - PythonEngine introspection API changes signature.
+ *     - Annually as part of test-debt review.
+ *
+ * Each worker function below carries a short marker noting its
+ * specific PURPOSE + the canonical storage IT populates (the marker
+ * is shorter than this file header; reader who wants the full
+ * pattern reads back to here).
  */
 #include "python_engine_workers.h"
 
@@ -5212,6 +5250,11 @@ int full_startup_producer_slot_only(const std::string &dir)
         Logger::GetLifecycleModule());
 }
 
+// L2 BYPASS — see file header `L2 BYPASS PATTERN` for details.
+// PURPOSE: full producer-engine startup with both slot + flexzone schemas
+//          configured; verify type sizes and an end-to-end produce call.
+// POPULATES: core.set_out_slot_spec, core.set_out_fz_spec, +
+//            api->set_flexzone_introspection_ (Phase 2 TODO).
 int full_startup_producer_slot_and_flexzone(const std::string &dir)
 {
     // Strengthened over V2 — adds engine-type-size vs compute_schema_size
@@ -5498,6 +5541,9 @@ int slot_logical_size_packed_no_padding(const std::string &dir)
         Logger::GetLifecycleModule());
 }
 
+// L2 BYPASS — see file header `L2 BYPASS PATTERN` for details.
+// PURPOSE: verify `api.slot_logical_size()` for a mixed-type aligned schema.
+// POPULATES: core.set_out_slot_spec (slot only — no flexzone in this case).
 int slot_logical_size_complex_mixed_aligned(const std::string &dir)
 {
     // complex_mixed_schema (aligned) = 56 bytes — exercises multi-
@@ -5524,6 +5570,11 @@ int slot_logical_size_complex_mixed_aligned(const std::string &dir)
         Logger::GetLifecycleModule());
 }
 
+// L2 BYPASS — see file header `L2 BYPASS PATTERN` for details.
+// PURPOSE: verify PythonEngine's `api.flexzone_logical_size()` exposes
+//          the logical byte size and that slot/flexzone sizes are distinct.
+// POPULATES: core.set_out_slot_spec, core.set_out_fz_spec, +
+//            api->set_flexzone_introspection_ (Phase 2).
 int flexzone_logical_size_array_fields(const std::string &dir)
 {
     // Slot (padding_schema, 16 bytes) + flex (fz_array_schema,
