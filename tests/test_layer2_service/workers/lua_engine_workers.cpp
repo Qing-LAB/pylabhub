@@ -3990,6 +3990,15 @@ int run_logical_size_case(const std::string &dir,
                                      pylabhub::hub::align_to_physical_page(
                                          c.expected_fz));
 
+            // M9 Phase 2: also populate the RoleAPIBase introspection
+            // cache (see file header L2 BYPASS PATTERN).
+            {
+                pylabhub::scripting::RoleAPIBase::FlexzoneIntrospection fz_info;
+                fz_info.has_tx_fz       = has_fz;
+                fz_info.tx_logical_size = has_fz ? c.expected_fz : 0u;
+                api->set_flexzone_introspection_(fz_info);
+            }
+
             // Pre-populate shared_data with expected sizes so the Lua
             // side uses authoritative numbers, not hard-coded literals.
             core.set_shared_data("exp_slot",
@@ -5340,6 +5349,16 @@ int full_startup_producer_slot_and_flexzone(const std::string &dir)
                 pylabhub::hub::align_to_physical_page(
                     pylabhub::hub::compute_schema_size(
                         params.out_fz_spec, params.out_packing)));
+
+            // M9 Phase 2: also populate the RoleAPIBase introspection
+            // cache (see file header L2 BYPASS PATTERN).
+            {
+                pylabhub::scripting::RoleAPIBase::FlexzoneIntrospection fz_info;
+                fz_info.has_tx_fz       = params.out_fz_spec.has_schema;
+                fz_info.tx_logical_size = pylabhub::hub::compute_schema_size(
+                    params.out_fz_spec, params.out_packing);
+                api->set_flexzone_introspection_(fz_info);
+            }
 
             ASSERT_NO_THROW(
                 pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
