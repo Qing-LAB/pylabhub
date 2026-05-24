@@ -153,15 +153,6 @@ class PYLABHUB_UTILS_EXPORT RoleHostFrame : public RoleHostBase
     [[nodiscard]] virtual std::vector<scripting::Presence>
     build_presences_(const config::RoleConfig &config) const = 0;
 
-    /// Does this role have an rx-side flexzone configured?  Counts
-    /// `presences_` entries with `role_kind == Consumer` and
-    /// `fz_spec.has_schema == true`.  Frame-level mirror of
-    /// `RoleHostCore::has_rx_fz()`; Phase 2 removes core's version.
-    [[nodiscard]] bool has_rx_fz() const noexcept;
-
-    /// Symmetric for tx side.
-    [[nodiscard]] bool has_tx_fz() const noexcept;
-
     /// Shared setup body (M9 step 2c Phase 1).  Reads from
     /// `presences_` (which must be populated before this call —
     /// `worker_main_` calls `build_presences_()` early).  Per design

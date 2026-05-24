@@ -100,7 +100,14 @@ class PYLABHUB_UTILS_EXPORT ProducerRoleHost final : public scripting::RoleHostF
     // RoleHostBase.  Inbox state (`inbox_queue_`, `inbox_cfg_`) lives in
     // RoleHostFrame (M9 step 2b, 2026-05-22).
 
-    // Schema info (resolved from config during setup).
+    // **PHASE 1 SHADOW** (M9 step 2c, 2026-05-23): legacy schema storage.
+    // The canonical home for per-channel schemas is `presences_[i].slot_spec`
+    // on RoleHostFrame; this member duplicates that for backward compat
+    // with downstream readers (~6 call sites in worker_main_ + the
+    // legacy step 1 schema-resolve that still populates it).  Phase 2
+    // removes this member + the legacy step 1 + the readers (they
+    // migrate to `presences_[i].slot_spec`).  See
+    // docs/todo/M9_REFACTOR_CHECKLIST.md §"Phase 2".
     hub::SchemaSpec                         out_slot_spec_;
 
     // Lifecycle module name (for UnloadModule on shutdown).

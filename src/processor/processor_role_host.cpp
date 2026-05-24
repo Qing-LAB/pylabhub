@@ -118,6 +118,15 @@ void ProcessorRoleHost::worker_main_()
     }
 
     // ── Step 1: Resolve schemas from config ──────────────────────────────────
+    // **PHASE 1 SHADOW** (M9 step 2c, 2026-05-23): legacy schema storage
+    // path (resolves both directions; populates `in_slot_spec_`,
+    // `out_slot_spec_`, and `core_.set_*_fz_spec()`).  Canonical home
+    // is `presences_[i]` populated by `build_presences_()` at step 1c.
+    // Phase 2 removes this entire block; the 4 downstream readers
+    // migrate to `presences_`.  See docs/todo/M9_REFACTOR_CHECKLIST.md
+    // §"Phase 2".  Note that the legacy block uses a COMBINED schema-dir
+    // search path (both hubs); `build_presences_` scopes per-presence
+    // (see SCHEMA-DIR SCOPING NOTE on the override below).
 
     const std::filesystem::path base_path =
         sc.path.empty() ? std::filesystem::current_path()
@@ -501,6 +510,26 @@ ProcessorRoleHost::make_tx_opts(const config::RoleConfig &config,
 // Returns TWO presences (in dedup-friendly order: Consumer first, then
 // Producer).  Both presences resolve their schemas inline using their
 // own hub's schema directory.
+//
+// SCHEMA-DIR SCOPING NOTE (review finding 2026-05-23): the legacy
+// worker_main_ step 1 (still active during Phase 1 shadow) computes a
+// COMBINED schema_dirs list — both `in_hub/schemas` AND `out_hub/schemas`
+// — and uses it to resolve ALL four schemas (in_slot, out_slot, in_fz,
+// out_fz).  This implicitly allows cross-hub schema references (e.g. an
+// in_slot schema referencing a type defined only in out_hub's schemas).
+//
+// This `build_presences_` deliberately scopes each presence to its OWN
+// hub's schema directory only.  Rationale:
+//   - Each channel's schema authoritatively lives on its own hub.
+//   - Cross-hub schema sharing is a quirky implicit feature, not a
+//     documented design.
+//   - Today's dual-hub demos pass — no cross-hub sharing exists in
+//     practice.
+//
+// If a future dual-hub config DOES need cross-hub schema reference, the
+// fix is per-Presence: extend the search path explicitly, not by going
+// back to a global merged list.  See HEP-CORE-0034 §6 for schema-search
+// scoping rules.
 
 std::vector<scripting::Presence>
 ProcessorRoleHost::build_presences_(const config::RoleConfig &c) const

@@ -38,27 +38,12 @@ RoleHostFrame::RoleHostFrame(config::RoleConfig    config,
 
 RoleHostFrame::~RoleHostFrame() = default;
 
-// ============================================================================
-// has_rx_fz / has_tx_fz — derived from presences_ (M9 step 2c)
-// ============================================================================
-
-bool RoleHostFrame::has_rx_fz() const noexcept
-{
-    return std::any_of(
-        presences_.begin(), presences_.end(),
-        [](const Presence &p) {
-            return p.role_kind == RoleKind::Consumer && p.fz_spec.has_schema;
-        });
-}
-
-bool RoleHostFrame::has_tx_fz() const noexcept
-{
-    return std::any_of(
-        presences_.begin(), presences_.end(),
-        [](const Presence &p) {
-            return p.role_kind == RoleKind::Producer && p.fz_spec.has_schema;
-        });
-}
+// Note: `has_rx_fz()` / `has_tx_fz()` are intentionally NOT on the frame.
+// Phase 1 had them here briefly (M9 step 2c), but the review (2026-05-23)
+// found zero callers — and per the Phase 2 design (M9_REFACTOR_CHECKLIST.md
+// §"Phase 2 API design"), they belong on `RoleAPIBase` (next to the
+// FlexzoneIntrospection cache the frame populates at setup time).  Phase 2
+// will add them there alongside the cache.
 
 // ============================================================================
 // setup_infrastructure_ — shared body, driven by presences_
