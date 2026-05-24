@@ -119,6 +119,10 @@ void ConsumerRoleHost::worker_main_()
     }
 
     // ── Step 1: Resolve schemas from config ──────────────────────────────────
+    // **PHASE 1 SHADOW** (M9 step 2c, 2026-05-23): legacy schema storage
+    // path; canonical home is `presences_[i]` populated by
+    // `build_presences_()` at step 1c.  Phase 2 removes this block.
+    // See docs/todo/M9_REFACTOR_CHECKLIST.md §"Phase 2".
 
     const std::filesystem::path base_path =
         sc.path.empty() ? std::filesystem::current_path()

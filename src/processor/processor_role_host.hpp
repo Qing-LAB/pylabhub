@@ -94,7 +94,10 @@ class PYLABHUB_UTILS_EXPORT ProcessorRoleHost final : public scripting::RoleHost
     // RoleHostBase.  Inbox state (`inbox_queue_`, `inbox_cfg_`) lives in
     // RoleHostFrame (M9 step 2b, 2026-05-22).
 
-    // Schema info (resolved from config during setup).
+    // **PHASE 1 SHADOW** (M9 step 2c, 2026-05-23): legacy schema storage.
+    // Canonical home is `presences_[i].slot_spec` on RoleHostFrame; these
+    // members duplicate that for backward compat.  Phase 2 removes them.
+    // See docs/todo/M9_REFACTOR_CHECKLIST.md §"Phase 2".
     hub::SchemaSpec                         in_slot_spec_;
     hub::SchemaSpec                         out_slot_spec_;
 

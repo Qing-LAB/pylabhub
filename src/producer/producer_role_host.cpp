@@ -125,6 +125,13 @@ void ProducerRoleHost::worker_main_()
     }
 
     // ── Step 1: Resolve schemas from config ──────────────────────────────────
+    // **PHASE 1 SHADOW** (M9 step 2c, 2026-05-23): this block still
+    // resolves schemas + populates the legacy storage
+    // (`out_slot_spec_`, `core_.set_out_fz_spec()`).  The canonical
+    // schemas now live in `presences_[i]` (populated by `build_presences_()`
+    // at step 1c below).  Phase 2 removes this entire block; the 6
+    // downstream readers in this file migrate to read from `presences_`.
+    // See docs/todo/M9_REFACTOR_CHECKLIST.md §"Phase 2".
 
     const std::filesystem::path base_path =
         sc.path.empty() ? std::filesystem::current_path()
