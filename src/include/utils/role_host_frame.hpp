@@ -35,9 +35,12 @@
 #include "pylabhub_utils_export.h"
 #include "utils/config/inbox_config.hpp"
 #include "utils/engine_host.hpp"
+#include "utils/role_presence.hpp"   // scripting::Presence + RoleKind
+#include "utils/schema_types.hpp"    // hub::SchemaSpec (inbox spec parameter)
 
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace pylabhub::hub
 {
@@ -127,6 +130,43 @@ class PYLABHUB_UTILS_EXPORT RoleHostFrame : public RoleHostBase
     /// Resolved (post-load) inbox config.  Copied from
     /// `config().inbox()` during `setup_infrastructure_`.
     config::InboxConfig              inbox_cfg_;
+
+    /// Canonical per-channel record list (M9 step 2c Phase 1).
+    /// Populated by `worker_main_` calling `build_presences_()` once
+    /// at startup.  Each Presence carries hub + channel + role_kind +
+    /// slot_spec + fz_spec — the **canonical** per-channel state.
+    ///
+    /// PHASE 1 NOTE: during the transitional shadow phase, RoleHostCore
+    /// also stores per-direction `*_slot_spec_` and `*_fz_spec_`
+    /// (populated by `worker_main_` from these presences).  Phase 2
+    /// will remove core's spec storage; downstream consumers
+    /// (RoleAPIBase introspection, engine_module_params, test fixtures)
+    /// will migrate to read from presences_ directly.
+    std::vector<scripting::Presence> presences_;
+
+    /// Per-role presence-list extractor.  Each role implements once.
+    /// MUST resolve slot + fz schemas inline using
+    /// `hub::resolve_schema()` (the presence's `hub.hub_dir / "schemas"`
+    /// is the search path).  Exceptions propagate to the caller —
+    /// `worker_main_` wraps the call in try/catch and sets the ready
+    /// promise to false on failure.
+    [[nodiscard]] virtual std::vector<scripting::Presence>
+    build_presences_(const config::RoleConfig &config) const = 0;
+
+    /// Does this role have an rx-side flexzone configured?  Counts
+    /// `presences_` entries with `role_kind == Consumer` and
+    /// `fz_spec.has_schema == true`.  Frame-level mirror of
+    /// `RoleHostCore::has_rx_fz()`; Phase 2 removes core's version.
+    [[nodiscard]] bool has_rx_fz() const noexcept;
+
+    /// Symmetric for tx side.
+    [[nodiscard]] bool has_tx_fz() const noexcept;
+
+    /// Shared setup body (M9 step 2c Phase 1).  Reads from
+    /// `presences_` (which must be populated before this call —
+    /// `worker_main_` calls `build_presences_()` early).  Per design
+    /// doc §11.6.2.
+    [[nodiscard]] bool setup_infrastructure_(const hub::SchemaSpec &inbox_spec);
 
   private:
     RoleHostFrameConfig frame_cfg_;

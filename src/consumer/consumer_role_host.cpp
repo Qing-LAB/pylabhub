@@ -191,7 +191,23 @@ void ConsumerRoleHost::worker_main_()
     api_ref.set_stop_on_script_error(sc.stop_on_script_error);
     api_ref.set_engine(&engine_ref);
 
-    // ── Step 2b: Setup infrastructure (depends on api state set above) ───────
+    // ── Step 1c: Build presences (M9 step 2c) ────────────────────────────────
+    // Populates the frame's `presences_` member.  build_presences_ resolves
+    // schemas inline.  PHASE 1 NOTE: schemas were ALSO resolved above into
+    // in_slot_spec_ (legacy storage); Phase 2 will collapse the two and
+    // remove the legacy member.
+    try
+    {
+        presences_ = build_presences_(config_);
+    }
+    catch (const std::exception &e)
+    {
+        LOGGER_ERROR("[cons] build_presences_ failed: {}", e.what());
+        promise_ref.set_value(false);
+        return;
+    }
+
+    // ── Step 2b: Setup infrastructure (inherited from RoleHostFrame) ─────────
     // Skipped in validate-only mode (no broker/queue needed).
 
     if (!core_.is_validate_only())
@@ -377,63 +393,37 @@ ConsumerRoleHost::make_rx_opts(const config::RoleConfig &config,
 }
 
 // ============================================================================
-// setup_infrastructure_ — connect to broker, create consumer, wire events
+// setup_infrastructure_ + teardown_infrastructure_ — inherited from
+// RoleHostFrame (M9 step 2b + 2c).  See src/utils/service/role_host_frame.cpp.
 // ============================================================================
 
-bool ConsumerRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
+// ============================================================================
+// build_presences_ — Consumer's per-role override (M9 step 2c, 2026-05-23)
+// ============================================================================
+
+std::vector<scripting::Presence>
+ConsumerRoleHost::build_presences_(const config::RoleConfig &c) const
 {
-    auto       &core_   = core();
-    const auto &config_ = config();
-    auto       &api_ref = api();
+    scripting::Presence p;
+    p.hub       = c.in_hub();
+    p.channel   = c.in_channel();
+    p.role_kind = scripting::RoleKind::Consumer;
 
-    inbox_cfg_      = config_.inbox();
-    const auto &tc  = config_.timing();
-    const auto &ch  = config_.in_channel();
+    std::vector<std::string> schema_dirs;
+    if (!p.hub.hub_dir.empty())
+        schema_dirs.push_back(
+            (std::filesystem::path(p.hub.hub_dir) / "schemas").string());
 
-    // Pure translation (extracted from setup_infrastructure_ — see
-    // `make_rx_opts` for the field-by-field logic and the B5/B11
-    // audit history).  Testable in isolation via
-    // `ConsumerRoleHost::make_rx_opts(...)`.
-    hub::RxQueueOptions opts = make_rx_opts(
-        config_, in_slot_spec_, core_.in_fz_spec(), core_.has_rx_fz());
+    const auto &fields = c.role_data<ConsumerFields>();
+    p.slot_spec = hub::resolve_schema(
+        fields.in_slot_schema_json, false, "cons", schema_dirs);
+    p.fz_spec = hub::resolve_schema(
+        fields.in_flexzone_schema_json, true, "cons", schema_dirs);
 
-    // --- Inbox setup (optional) ---
-    if (inbox_cfg_.has_inbox())
-    {
-        auto inbox_result = scripting::setup_inbox_facility(
-            inbox_spec, inbox_cfg_, config_.checksum().policy, "cons");
-        if (!inbox_result)
-            return false;
-        inbox_queue_ = std::move(inbox_result->queue);
-    }
-
-    // --- Create consumer (RoleAPIBase owns the Rx queue) ---
-    if (!api_ref.build_rx_queue(opts))
-    {
-        LOGGER_ERROR("[cons] Failed to connect consumer to channel '{}'", ch);
-        return false;
-    }
-
-    // Broker notifications (band, hub-dead) are handled by BrokerRequestComm.
-
-    // --- Start and configure data queue ---
-    if (!api_ref.start_rx_queue())
-    {
-        LOGGER_ERROR("[cons] start_queue() failed for channel '{}'", ch);
-        return false;
-    }
-    api_ref.reset_rx_queue_metrics();
-    core_.set_configured_period(static_cast<uint64_t>(tc.period_us));
-
-    LOGGER_INFO("[cons] Consumer started on channel '{}' (shm={})", ch,
-                api_ref.rx_has_shm());
-
-    // Startup coordination (HEP-0023) moved to after start_ctrl_thread().
-    return true;
+    std::vector<scripting::Presence> v;
+    v.push_back(std::move(p));
+    return v;
 }
-
-// teardown_infrastructure_ — inherited from RoleHostFrame (M9 step 2b).
-// See src/utils/service/role_host_frame.cpp.
 
 
 } // namespace pylabhub::consumer

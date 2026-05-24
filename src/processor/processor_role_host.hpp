@@ -79,9 +79,15 @@ class PYLABHUB_UTILS_EXPORT ProcessorRoleHost final : public scripting::RoleHost
     // ── Worker thread entry point (RoleHostBase hook) ────────────────────────
     void worker_main_() override;
 
-    // ── Infrastructure setup (Layer 3) ───────────────────────────────────────
-    // teardown_infrastructure_ — inherited from RoleHostFrame (M9 step 2b).
-    bool setup_infrastructure_(const hub::SchemaSpec &inbox_spec);
+    // ── Infrastructure setup (Layer 3) — inherited from RoleHostFrame ─────
+    // setup_infrastructure_  ← M9 step 2c (frame's body, uses presences_).
+    // teardown_infrastructure_ ← M9 step 2b (frame's body).
+
+    /// Build the role's presence list (M9 step 2c).  Processor returns
+    /// two presences: Consumer-kind on in_hub/in_channel + Producer-kind
+    /// on out_hub/out_channel.  Schemas resolved inline for each.
+    [[nodiscard]] std::vector<scripting::Presence>
+    build_presences_(const config::RoleConfig &config) const override;
 
     // ── Processor-specific members ───────────────────────────────────────────
     // Shared state — core_, config_, engine_, api_, ready_promise_ — lives in

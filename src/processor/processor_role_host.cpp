@@ -213,7 +213,23 @@ void ProcessorRoleHost::worker_main_()
     api_ref.set_stop_on_script_error(sc.stop_on_script_error);
     api_ref.set_engine(&engine_ref);
 
-    // ── Step 2b: Setup infrastructure (depends on api state set above) ───────
+    // ── Step 1c: Build presences (M9 step 2c) ────────────────────────────────
+    // Populates the frame's `presences_` member.  build_presences_ resolves
+    // schemas inline.  PHASE 1 NOTE: schemas were ALSO resolved above into
+    // in_slot_spec_/out_slot_spec_ (legacy storage); Phase 2 will collapse
+    // the two and remove the legacy members.
+    try
+    {
+        presences_ = build_presences_(config_);
+    }
+    catch (const std::exception &e)
+    {
+        LOGGER_ERROR("[proc] build_presences_ failed: {}", e.what());
+        promise_ref.set_value(false);
+        return;
+    }
+
+    // ── Step 2b: Setup infrastructure (inherited from RoleHostFrame) ─────────
     // Skipped in validate-only mode (no broker/queue needed).
     if (!core_.is_validate_only())
     {
@@ -474,78 +490,52 @@ ProcessorRoleHost::make_tx_opts(const config::RoleConfig &config,
 }
 
 // ============================================================================
-// setup_infrastructure_ — dual broker connect, consumer + producer, wire events
+// setup_infrastructure_ + teardown_infrastructure_ — inherited from
+// RoleHostFrame (M9 step 2b + 2c).  See src/utils/service/role_host_frame.cpp.
 // ============================================================================
 
-bool ProcessorRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
+// ============================================================================
+// build_presences_ — Processor's per-role override (M9 step 2c, 2026-05-23)
+// ============================================================================
+//
+// Returns TWO presences (in dedup-friendly order: Consumer first, then
+// Producer).  Both presences resolve their schemas inline using their
+// own hub's schema directory.
+
+std::vector<scripting::Presence>
+ProcessorRoleHost::build_presences_(const config::RoleConfig &c) const
 {
-    auto       &core_   = core();
-    const auto &config_ = config();
-    auto       &api_ref = api();
+    const auto &fields = c.role_data<ProcessorFields>();
 
-    // Pure translations (extracted — testable via
-    // ProcessorRoleHost::make_rx_opts / make_tx_opts).  See those
-    // functions for the field-by-field logic + audit history.
-    hub::RxQueueOptions in_opts = make_rx_opts(
-        config_, in_slot_spec_, core_.in_fz_spec(), core_.has_rx_fz());
-    if (!api_ref.build_rx_queue(in_opts))
-    {
-        LOGGER_ERROR("[proc] Failed to connect consumer to in_channel '{}'",
-                     config_.in_channel());
-        return false;
-    }
+    auto build_one = [](const config::HubRefConfig &hub_cfg,
+                        const std::string &channel,
+                        scripting::RoleKind kind,
+                        const nlohmann::json &slot_json,
+                        const nlohmann::json &fz_json) {
+        scripting::Presence p;
+        p.hub       = hub_cfg;
+        p.channel   = channel;
+        p.role_kind = kind;
+        std::vector<std::string> schema_dirs;
+        if (!p.hub.hub_dir.empty())
+            schema_dirs.push_back(
+                (std::filesystem::path(p.hub.hub_dir) / "schemas").string());
+        p.slot_spec = hub::resolve_schema(slot_json, false, "proc", schema_dirs);
+        p.fz_spec   = hub::resolve_schema(fz_json,   true,  "proc", schema_dirs);
+        return p;
+    };
 
-    hub::TxQueueOptions out_opts = make_tx_opts(
-        config_, out_slot_spec_, core_.out_fz_spec(), core_.has_tx_fz());
-
-    // ── Inbox facility (optional) ───────────────────────────────────────────
-    inbox_cfg_ = config_.inbox();
-    if (inbox_cfg_.has_inbox())
-    {
-        auto inbox_result = scripting::setup_inbox_facility(
-            inbox_spec, inbox_cfg_, config_.checksum().policy, "proc");
-        if (!inbox_result)
-            return false;
-        inbox_queue_ = std::move(inbox_result->queue);
-    }
-
-    // --- Create producer (RoleAPIBase owns the Tx queue) ---
-    if (!api_ref.build_tx_queue(out_opts))
-    {
-        LOGGER_ERROR("[proc] Failed to create producer for out_channel '{}'",
-                     config_.out_channel());
-        return false;
-    }
-
-    // Broker notifications (band, hub-dead) are handled by BrokerRequestComm.
-
-    // --- Start and configure data queues ---
-    if (!api_ref.start_rx_queue())
-    {
-        LOGGER_ERROR("[proc] Input start_queue() failed (in_channel='{}')",
-                     config_.in_channel());
-        return false;
-    }
-    if (!api_ref.start_tx_queue())
-    {
-        LOGGER_ERROR("[proc] Output start_queue() failed (out_channel='{}')",
-                     config_.out_channel());
-        return false;
-    }
-    // Reset metrics (checksum and period already configured via Options).
-    api_ref.reset_rx_queue_metrics();
-    api_ref.reset_tx_queue_metrics();
-    core_.set_configured_period(static_cast<uint64_t>(config_.timing().period_us));
-
-    LOGGER_INFO("[proc] Processor started: '{}' -> '{}'",
-                config_.in_channel(), config_.out_channel());
-
-    // Startup coordination (HEP-0023) moved to after start_ctrl_thread().
-    return true;
+    std::vector<scripting::Presence> v;
+    v.push_back(build_one(c.in_hub(), c.in_channel(),
+                          scripting::RoleKind::Consumer,
+                          fields.in_slot_schema_json,
+                          fields.in_flexzone_schema_json));
+    v.push_back(build_one(c.out_hub(), c.out_channel(),
+                          scripting::RoleKind::Producer,
+                          fields.out_slot_schema_json,
+                          fields.out_flexzone_schema_json));
+    return v;
 }
-
-// teardown_infrastructure_ — inherited from RoleHostFrame (M9 step 2b).
-// See src/utils/service/role_host_frame.cpp.
 
 
 } // namespace pylabhub::processor

@@ -199,7 +199,23 @@ void ProducerRoleHost::worker_main_()
     api_ref.set_stop_on_script_error(sc.stop_on_script_error);
     api_ref.set_engine(&engine_ref);
 
-    // ── Step 2b: Setup infrastructure (depends on api state set above) ───────
+    // ── Step 1c: Build presences (M9 step 2c) ────────────────────────────────
+    // Populates the frame's `presences_` member.  build_presences_ resolves
+    // schemas inline.  PHASE 1 NOTE: schemas were ALSO resolved above into
+    // out_slot_spec_ (legacy storage); Phase 2 will collapse the two and
+    // remove the legacy member.
+    try
+    {
+        presences_ = build_presences_(config_);
+    }
+    catch (const std::exception &e)
+    {
+        LOGGER_ERROR("[prod] build_presences_ failed: {}", e.what());
+        promise_ref.set_value(false);
+        return;
+    }
+
+    // ── Step 2b: Setup infrastructure (inherited from RoleHostFrame) ─────────
     // Skipped in validate-only mode (no broker/queue needed).
 
     if (!core_.is_validate_only())
@@ -423,62 +439,40 @@ ProducerRoleHost::make_tx_opts(const config::RoleConfig &config,
 }
 
 // ============================================================================
-// setup_infrastructure_ — connect to broker, create producer, wire events
+// setup_infrastructure_ + teardown_infrastructure_ — inherited from
+// RoleHostFrame (M9 step 2b + 2c).  See src/utils/service/role_host_frame.cpp.
 // ============================================================================
 
-bool ProducerRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
+// ============================================================================
+// build_presences_ — Producer's per-role override (M9 step 2c, 2026-05-23)
+// ============================================================================
+//
+// Returns a single Producer-kind presence on out_hub/out_channel.
+// Schemas (slot + fz) are resolved inline via hub::resolve_schema().
+// The presence's `hub.hub_dir / "schemas"` is the schema search path.
+
+std::vector<scripting::Presence>
+ProducerRoleHost::build_presences_(const config::RoleConfig &c) const
 {
-    auto       &core_   = core();
-    const auto &config_ = config();
-    auto       &api_ref = api();
+    scripting::Presence p;
+    p.hub       = c.out_hub();
+    p.channel   = c.out_channel();
+    p.role_kind = scripting::RoleKind::Producer;
 
-    const auto &id    = config_.identity();
-    const auto &tc    = config_.timing();
-    inbox_cfg_ = config_.inbox(); // mutable copy for resolved fields
-    const auto &ch    = config_.out_channel();
+    std::vector<std::string> schema_dirs;
+    if (!p.hub.hub_dir.empty())
+        schema_dirs.push_back(
+            (std::filesystem::path(p.hub.hub_dir) / "schemas").string());
 
-    // --- Inbox setup (optional) ---
-    if (inbox_cfg_.has_inbox())
-    {
-        auto inbox_result = scripting::setup_inbox_facility(
-            inbox_spec, inbox_cfg_, config_.checksum().policy, "prod");
-        if (!inbox_result)
-            return false;
-        inbox_queue_ = std::move(inbox_result->queue);
-    }
+    const auto &fields = c.role_data<ProducerFields>();
+    p.slot_spec = hub::resolve_schema(
+        fields.out_slot_schema_json, false, "prod", schema_dirs);
+    p.fz_spec = hub::resolve_schema(
+        fields.out_flexzone_schema_json, true, "prod", schema_dirs);
 
-    // Pure translation (testable in isolation via make_tx_opts).
-    hub::TxQueueOptions opts = make_tx_opts(
-        config_, out_slot_spec_, core_.out_fz_spec(), core_.has_tx_fz());
-
-    // --- Create producer (RoleAPIBase owns the Tx queue) ---
-    if (!api_ref.build_tx_queue(opts))
-    {
-        LOGGER_ERROR("[prod] Failed to create producer for channel '{}'", ch);
-        return false;
-    }
-
-    // Broker notifications (band, hub-dead) are handled by BrokerRequestComm.
-
-    // --- Start and configure data queue ---
-    if (!api_ref.start_tx_queue())
-    {
-        LOGGER_ERROR("[prod] start_queue() failed for channel '{}'", ch);
-        return false;
-    }
-    api_ref.reset_tx_queue_metrics();
-    core_.set_configured_period(static_cast<uint64_t>(tc.period_us));
-
-    LOGGER_INFO("[prod] Producer started on channel '{}' (shm={})", ch,
-                api_ref.tx_has_shm());
-
-    // Startup coordination (HEP-0023) moved to after start_ctrl_thread()
-    // where the BRC is connected and poll loop running.
-
-    return true;
+    std::vector<scripting::Presence> v;
+    v.push_back(std::move(p));
+    return v;
 }
-
-// teardown_infrastructure_ — inherited from RoleHostFrame (M9 step 2b).
-// See src/utils/service/role_host_frame.cpp.
 
 } // namespace pylabhub::producer
