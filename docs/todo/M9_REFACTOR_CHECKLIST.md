@@ -56,6 +56,77 @@
 
 ---
 
+## Phase 2 API design — `RoleAPIBase` introspection cache
+
+**Decided 2026-05-23** after user pushback on tangled dependencies +
+performance considerations.  Captures the design for Phase 2's cache.
+
+### The principle: linear forward-time API sequence
+
+- **Single writer, single moment**: `RoleHostFrame::setup_infrastructure_`
+  at step 2b, exactly once per role lifetime.
+- **Many readers, all after step 5 (`invoke_on_init`)**: script API
+  calls only run after the engine is initialised, which is after
+  setup completes.  No race; no "what if unset" condition.
+- **No backrefs**: RoleAPIBase does NOT hold a pointer to the frame.
+  Frame pushes data forward to RoleAPIBase at the right moment.
+- **Atomic state transition**: setter takes a struct so all four
+  scalars set together, never partially.
+- **Mid-lifecycle immutability**: once written at step 2b, never
+  mutated.
+
+### API additions to RoleAPIBase
+
+```cpp
+class RoleAPIBase
+{
+public:
+    // ── Script-callable: read introspection (PRE: setup completed) ──
+    [[nodiscard]] size_t flexzone_logical_size(
+        std::optional<ChannelSide> side = std::nullopt) const;
+    [[nodiscard]] bool   has_tx_fz() const noexcept;   // NEW (delegates to cache)
+    [[nodiscard]] bool   has_rx_fz() const noexcept;   // NEW
+
+    // ── Framework-internal setter (trailing underscore: not script-callable) ──
+    // Called exactly once by RoleHostFrame::setup_infrastructure_ at
+    // step 2b, AFTER build_*_queue succeeded.
+    struct FlexzoneIntrospection
+    {
+        size_t tx_logical_size{0};
+        bool   has_tx_fz{false};
+        size_t rx_logical_size{0};
+        bool   has_rx_fz{false};
+    };
+    void set_flexzone_introspection_(const FlexzoneIntrospection &fz_info) noexcept;
+
+private:
+    // pImpl: FlexzoneIntrospection fz_introspection_{};
+    // pImpl: bool                  fz_introspection_set_{false};  // debug-time assert
+};
+```
+
+### Why this is NOT SchemaSpec duplication
+
+The cache stores **derived scalars** (4 members, ~24 bytes total),
+not the full `SchemaSpec`.  Same category as caching a hash or a
+length.  The canonical `SchemaSpec` lives in exactly one place
+(`Presence::fz_spec`).
+
+### What this means for the rest of Phase 2
+
+- `RoleHostFrame::has_rx_fz()` / `has_tx_fz()` (added in Phase 1)
+  **move to RoleAPIBase** — every caller (engine_module_params,
+  role host worker_main_ checks) goes through `api_ref.has_*_fz()`.
+- `RoleHostCore::in_fz_spec_` / `out_fz_spec_` storage + 6 accessors
+  + 2 setters: **deleted**.
+- Each role's `worker_main_` removes `core_.set_*_fz_spec()` calls
+  (orphan once storage removed).
+- Each role's `worker_main_` schema-reader call sites (6 sites)
+  read `presences_[i].fz_spec` directly (it's local member of the
+  frame they inherit from).
+
+---
+
 ## Phase 2 — files (~10–12 files, pending)
 
 Goal: eliminate the schema-storage shadow.  Single source of truth is
