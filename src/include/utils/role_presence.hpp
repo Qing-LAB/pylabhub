@@ -37,6 +37,7 @@
  */
 
 #include "utils/config/hub_ref_config.hpp"
+#include "utils/schema_types.hpp"   // hub::SchemaSpec (per-presence slot/fz schemas)
 
 #include <atomic>
 #include <cstdint>
@@ -131,27 +132,63 @@ class HubConnection;
 /// the per-role-type presence-list shapes documented at the top of
 /// this file.  Fields are populated incrementally:
 ///
-///  - `hub`, `channel`, `role_kind`  set at construction (caller
-///                                   knows the topology).
+///  - `hub`, `channel`, `role_kind`, `slot_spec`, `fz_spec`
+///                                   set at construction time by the
+///                                   role's `build_presences_()`
+///                                   override (M9 step 2c, 2026-05-22).
+///                                   The override resolves schemas
+///                                   from on-disk files using the
+///                                   presence's own `hub.hub_dir`
+///                                   as the schema search path.
 ///  - `connection`                   set during dedup at
 ///                                   `RoleHandler::build_connections_()`;
 ///                                   NEVER reassigned after that.
 ///
-/// Schema / inbox metadata (slot_spec, fz_spec, inbox_meta in the
-/// design §5.6 sketch) are intentionally OMITTED until Wave-B M5+
-/// — they're set during the role host's schema-resolve step.
-/// Adding them in M4 would be anticipatory; M5 reintroduces them
-/// alongside the call sites that need them.
+/// **Per-presence schemas (added M9 step 2c, 2026-05-22)**:
+/// `slot_spec` and `fz_spec` are the parsed `SchemaSpec` for THIS
+/// presence's channel.  They were previously stored as per-direction
+/// members on the role host (`in_slot_spec_` / `out_slot_spec_`) and
+/// as `in_fz_spec_` / `out_fz_spec_` on `RoleHostCore`.  The
+/// fragmentation was an artifact of incremental design (this header's
+/// historical comment noted "M5+ reintroduces them alongside the call
+/// sites that need them").  M9's role-host unification IS that call
+/// site.  Now each `Presence` carries its own schemas — single home,
+/// per-channel.  Future multi-rx / multi-tx roles (router, etc.) will
+/// have N presences each with their own schemas; no further structural
+/// change needed.
 ///
 /// Equality + sort are defined by `(hub.broker, hub.broker_pubkey,
 /// channel, role_kind)` — the natural identity tuple per
 /// HEP-CORE-0033 §19.  Two presences with the same tuple on the same
-/// role are forbidden by construction.
+/// role are forbidden by construction.  Schemas are NOT part of the
+/// identity tuple (one channel = one schema in any valid
+/// configuration).
 struct Presence
 {
     config::HubRefConfig hub;        ///< Resolved (broker, broker_pubkey).
     std::string          channel;    ///< Channel name on `hub`.
     RoleKind             role_kind{RoleKind::Producer};
+
+    /// Parsed schema for the data slot on this presence's channel.
+    /// Resolved by the role's `build_presences_()` from the config's
+    /// slot-schema JSON (e.g. `out_slot_schema_json` for a Producer
+    /// presence, `in_slot_schema_json` for a Consumer presence) using
+    /// `hub::resolve_schema()`.  Consumed by:
+    ///   - `make_*_opts` (queue construction) via
+    ///     `pylabhub::scripting::make_tx_opts` /
+    ///     `pylabhub::scripting::make_rx_opts`.
+    ///   - `compute_*_message_info()` for engine-init params.
+    ///   - `RoleHostCore::set_*_slot_size()` (size cached for hot path).
+    hub::SchemaSpec      slot_spec;
+
+    /// Parsed schema for the optional flexzone on this presence's
+    /// channel.  May be empty (`!has_schema`) if the role declares
+    /// no flexzone.  Same consumers as `slot_spec`.
+    /// `fz_spec.has_schema` replaces the historical
+    /// `RoleHostCore::has_rx_fz()` / `has_tx_fz()` accessors — count
+    /// presences whose `role_kind` matches and whose `fz_spec.has_schema`
+    /// is true.
+    hub::SchemaSpec      fz_spec;
 
     /// Non-owning pointer into the owning `RoleHandler::connections_`
     /// vector.  Set during dedup; nullptr before then.  The pointer is
@@ -189,6 +226,8 @@ struct Presence
         : hub(std::move(other.hub))
         , channel(std::move(other.channel))
         , role_kind(other.role_kind)
+        , slot_spec(std::move(other.slot_spec))
+        , fz_spec(std::move(other.fz_spec))
         , connection(other.connection)
     {
         registration_state.store(
@@ -203,6 +242,8 @@ struct Presence
             hub        = std::move(other.hub);
             channel    = std::move(other.channel);
             role_kind  = other.role_kind;
+            slot_spec  = std::move(other.slot_spec);
+            fz_spec    = std::move(other.fz_spec);
             connection = other.connection;
             registration_state.store(
                 other.registration_state.load(std::memory_order_relaxed),
