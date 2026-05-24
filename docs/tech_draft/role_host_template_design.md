@@ -844,8 +844,10 @@ for the data-loop call.
 | Layer | Class | Owns | Doesn't own |
 |---|---|---|---|
 | **Generic engine + worker lifecycle** | `EngineHost<ApiT>` | Phase FSM (Constructed/Running/ShutDown), worker thread spawn, ready promise, ApiT lifetime, config_ storage, role_tag_, uid_ | Anything role- or hub-specific |
-| **Role-host shared body** (M9) | `RoleHostFrame` | Frame config (role_tag/label/required_cb), inbox_queue_, in/out_slot_spec_, unified worker_main_ body, unified setup_infrastructure_ + teardown_infrastructure_ | The role's specific presence list, CycleOps type |
-| **Per-role specifics** | `ProducerRoleHost` / `ConsumerRoleHost` / `ProcessorRoleHost` | Override `build_presences_` (which presences to register), override `run_loop_` (which CycleOps to construct + run) | Anything in the shared base body |
+| **Role-host shared body** (M9) | `RoleHostFrame` | Frame config (role_tag/label/required_cb), inbox_queue_, **presences_** (the canonical per-channel record list), unified worker_main_ body, unified setup_infrastructure_ + teardown_infrastructure_ | The role's specific `build_presences_()` extractor, CycleOps type |
+| **Per-channel record** | `scripting::Presence` (vector element of `RoleHostFrame::presences_`) | hub + channel + role_kind + slot_spec + fz_spec (the **single home** for everything per-channel) | Role-wide data (inbox, role identity) — those live on the frame |
+| **Hot-path runtime state** | `RoleHostCore` (owned by `RoleAPIBase`) | Scalar caches for the data loop (slot sizes, fz sizes, timing), incoming-message queue, validate-only flag.  Post-M9 step 2c: **no longer stores schema specs** — those live on `Presence`.  `has_*_fz()` accessors moved to `RoleHostFrame`. | Schemas, configuration data, broker connectivity |
+| **Per-role specifics** | `ProducerRoleHost` / `ConsumerRoleHost` / `ProcessorRoleHost` | Override `build_presences_` (which presences to register, with their schemas resolved inline), override `run_loop_` (which CycleOps to construct + run) | Anything in the shared base body |
 | **CycleOps (data-loop body)** | `ProducerCycleOps` / `ConsumerCycleOps` / `ProcessorCycleOps` | Per-cycle acquire/invoke/commit logic; queue interaction | Lifecycle, broker, presence — those are upstream |
 | **Hub script runtime** | `HubScriptRunner` | Hub's script-loop body, hub-specific cycle ops, hub admin handlers | Anything outside the script thread |
 | **Hub outer container** | `HubHost` | HubConfig storage, broker service, hub state, admin service, the runner above as a subsystem | The script-thread internals |
@@ -1165,12 +1167,20 @@ class PYLABHUB_UTILS_EXPORT RoleHostFrame : public RoleHostBase
   protected:
     // ── Required hooks (pure virtual — every role implements) ──
 
-    /// Build the presence list from config.  Producer returns 1 entry
-    /// (Producer-kind on out_channel); Consumer returns 1 entry
-    /// (Consumer-kind on in_channel); Processor returns 2 entries
-    /// (Consumer + Producer); a future router could return N.
-    virtual std::vector<PresenceInputs>
-    build_presences_(const config::RoleConfig &config) = 0;
+    /// Build the presence list from config.  Each presence carries
+    /// hub + channel + role_kind + slot_spec + fz_spec (the single
+    /// home for everything per-channel — see `role_presence.hpp`).
+    /// Schemas are resolved **inline in this method** via
+    /// `hub::resolve_schema()`, using the presence's `hub.hub_dir/schemas`
+    /// as the search path.  Exceptions propagate to `worker_main_`,
+    /// which sets the ready promise to false and exits.
+    ///
+    /// Producer returns 1 entry (Producer-kind on out_channel);
+    /// Consumer returns 1 entry (Consumer-kind on in_channel);
+    /// Processor returns 2 entries (Consumer + Producer); a future
+    /// router could return N.
+    virtual std::vector<scripting::Presence>
+    build_presences_(const config::RoleConfig &config) const = 0;
 
     /// Enter the data loop.  Each role calls
     /// `pylabhub::scripting::run_data_loop<MyCycleOps>(api, core, ...)`
@@ -1192,7 +1202,17 @@ class PYLABHUB_UTILS_EXPORT RoleHostFrame : public RoleHostBase
     /// Future router roles (3+ presences, non-standard shapes) override
     /// to provide custom wiring.  Pre-paved extension point per §11.8.2.
     virtual void wire_api_for_presences_(
-        const std::vector<PresenceInputs> &presences);
+        const std::vector<scripting::Presence> &presences);
+
+    /// Convenience: does this role have a tx-side flexzone configured?
+    /// Computed by counting `presences_` entries with
+    /// `role_kind == Producer` and `fz_spec.has_schema == true`.
+    /// Replaces the historical `RoleHostCore::has_tx_fz()`.  Cheap:
+    /// O(N) over presences_ (N ≤ 3 today).
+    [[nodiscard]] bool has_tx_fz() const noexcept;
+
+    /// Symmetric for rx side (`role_kind == Consumer`).
+    [[nodiscard]] bool has_rx_fz() const noexcept;
 
   private:
     void worker_main_() final;                                    // §12.1 sequence
@@ -1203,8 +1223,15 @@ class PYLABHUB_UTILS_EXPORT RoleHostFrame : public RoleHostBase
     RoleHandler                      handler_;
     std::unique_ptr<hub::InboxQueue> inbox_queue_;
     config::InboxConfig              inbox_cfg_;
-    hub::SchemaSpec                  in_slot_spec_;
-    hub::SchemaSpec                  out_slot_spec_;
+
+    /// The canonical per-channel record list.  Populated by
+    /// `worker_main_` calling `build_presences_()` once at startup.
+    /// Read by `setup_infrastructure_` (to count + build queues), by
+    /// `has_*_fz()` (to derive flexzone presence), by `worker_main_`
+    /// step 6 (broker registration), and by the engine init step
+    /// (slot/fz specs to engine).  After step 6's
+    /// `handler.start(std::move(presences_))`, this vector is empty.
+    std::vector<scripting::Presence> presences_;
 };
 
 } // namespace pylabhub::scripting
@@ -1227,10 +1254,28 @@ class PYLABHUB_UTILS_EXPORT ProducerRoleHost final
     {}
 
   protected:
-    std::vector<PresenceInputs>
-    build_presences_(const config::RoleConfig &c) override
+    std::vector<scripting::Presence>
+    build_presences_(const config::RoleConfig &c) const override
     {
-        return { /* one Producer-kind presence on c.out_hub() / c.out_channel() */ };
+        scripting::Presence p;
+        p.hub       = c.out_hub();
+        p.channel   = c.out_channel();
+        p.role_kind = scripting::RoleKind::Producer;
+
+        // Resolve schemas inline (single home: this Presence).
+        std::vector<std::string> schema_dirs;
+        if (!p.hub.hub_dir.empty())
+            schema_dirs.push_back(
+                (std::filesystem::path(p.hub.hub_dir) / "schemas").string());
+        const auto &fields = c.role_data<producer::ProducerFields>();
+        p.slot_spec = hub::resolve_schema(
+            fields.out_slot_schema_json, false, "prod", schema_dirs);
+        p.fz_spec = hub::resolve_schema(
+            fields.out_flexzone_schema_json, true, "prod", schema_dirs);
+
+        std::vector<scripting::Presence> v;
+        v.push_back(std::move(p));
+        return v;
     }
 
     void run_loop_(RoleAPIBase &api, RoleHostCore &core,
@@ -1373,6 +1418,11 @@ since the L2 test can be re-pointed to the free function).
 
 #### 11.6.2 Unified `setup_infrastructure_` body in the frame
 
+Driven by the `presences_` vector (populated earlier by
+`worker_main_` calling `build_presences_()`).  Each presence already
+carries its hub/channel/role_kind AND its resolved schemas
+(`slot_spec`, `fz_spec`) — the canonical per-channel state.
+
 ```cpp
 bool RoleHostFrame::setup_infrastructure_(
     const hub::SchemaSpec &inbox_spec)
@@ -1382,17 +1432,46 @@ bool RoleHostFrame::setup_infrastructure_(
     auto       &api_ref = this->api();
     inbox_cfg_          = config_.inbox();
 
-    // ── 1. Translate all opts up front (pure, side-effect free) ──
+    // ── 1. Find the rx and tx presences (today: at most one each) ──
+    const scripting::Presence *rx_presence = nullptr;
+    const scripting::Presence *tx_presence = nullptr;
+    for (const auto &p : presences_)
+    {
+        if (p.role_kind == scripting::RoleKind::Consumer)
+        {
+            if (rx_presence)
+            {
+                LOGGER_ERROR("[{}] multiple rx presences not yet supported "
+                             "(role has {} consumer presences; API surface "
+                             "currently supports at most 1)",
+                             frame_cfg_.role_tag, /*count*/2);
+                return false;
+            }
+            rx_presence = &p;
+        }
+        else if (p.role_kind == scripting::RoleKind::Producer)
+        {
+            if (tx_presence)
+            {
+                LOGGER_ERROR("[{}] multiple tx presences not yet supported",
+                             frame_cfg_.role_tag);
+                return false;
+            }
+            tx_presence = &p;
+        }
+    }
+
+    // ── 2. Translate opts using per-presence schemas ──
     std::optional<hub::TxQueueOptions> tx_opts;
     std::optional<hub::RxQueueOptions> rx_opts;
-    if (api_ref.has_tx_side())
-        tx_opts.emplace(make_tx_opts(config_, out_slot_spec_,
-                                      core_.out_fz_spec(),
-                                      core_.has_tx_fz()));
-    if (api_ref.has_rx_side())
-        rx_opts.emplace(make_rx_opts(config_, in_slot_spec_,
-                                      core_.in_fz_spec(),
-                                      core_.has_rx_fz()));
+    if (tx_presence)
+        tx_opts.emplace(make_tx_opts(config_, tx_presence->slot_spec,
+                                      tx_presence->fz_spec,
+                                      tx_presence->fz_spec.has_schema));
+    if (rx_presence)
+        rx_opts.emplace(make_rx_opts(config_, rx_presence->slot_spec,
+                                      rx_presence->fz_spec,
+                                      rx_presence->fz_spec.has_schema));
 
     // ── 2. Inbox facility (optional, independent of queue building) ──
     if (inbox_cfg_.has_inbox())
@@ -1472,6 +1551,35 @@ The fresh-eye review (2026-05-22) flagged three concerns from the
 | **Q1**: `zmq_buffer_depth` placement inconsistency between Consumer and Processor `make_rx_opts` | One shared `make_rx_opts` free function — divergence becomes structurally impossible |
 | **Q2**: SchemaSpec propagation test asserts size-of-empty-vs-empty (always passes even if translation drops the copy) | New L2 test against the unified `make_*_opts` uses non-empty `SchemaSpec` with at least one field; asserts propagation |
 | **Q3**: All current tests pass `has_fz=true`; `flexzone_checksum = config.flexzone && has_fz` is never tested with `has_fz=false` | New L2 test includes one `has_fz=false` case per direction |
+
+#### 11.6.5 Data-structure cleanup (added 2026-05-23, Option A)
+
+In addition to the items above, the user-directed data-structure
+cleanup eliminates **all duplicate schema storage** in the control
+plane:
+
+| Pre-M9 location | Post-M9 location |
+|---|---|
+| `RoleHostCore::in_fz_spec_` / `out_fz_spec_` (members) | **Deleted.** Schemas live in `Presence::fz_spec` per channel. |
+| `RoleHostCore::has_rx_fz()` / `has_tx_fz()` (accessors) | **Moved to `RoleHostFrame`** — derived by counting `presences_` entries with matching `role_kind` + `fz_spec.has_schema`. |
+| Role-host `in_slot_spec_` / `out_slot_spec_` members | **Deleted.** Schemas live in `Presence::slot_spec` per channel. |
+| Schema resolution scattered across each role's `worker_main_` step 1 | **Consolidated** into each role's `build_presences_()` override. |
+| Inline presence-vector construction in each role's `worker_main_` step 6 | **Consolidated** into the same `build_presences_()` override; step 6 reads `presences_`. |
+
+Result: a single `Presence` carries everything per-channel for one
+channel.  A `std::vector<Presence>` carries everything per-channel
+for an entire role.  See §11.9 for the data-flow diagram + the
+"adding a new role" checklist.
+
+Downstream consumers that previously read `core_.{in,out}_fz_spec()`
+or `core_.has_*_fz()`:
+  - `RoleAPIBase` introspection: reads from the queue's internal
+    schema state (already available; queue gets it via opts at
+    `build_*_queue` time).
+  - `engine_module_params`: reads from frame's new `has_*_fz()`.
+  - Test fixtures that called `core_.set_*_fz_spec()`: migrated to
+    construct `Presence` with `fz_spec` set, or to use the new
+    frame-level accessors.
 
 ### 11.7 `teardown_infrastructure_` absorbed into frame
 
@@ -1582,6 +1690,130 @@ The presence-list + traits abstraction generalizes correctly.  The
 single change M9 should adopt proactively is the
 `wire_api_for_presences_` hook (§11.8.2 Option B) — it costs nothing
 today and pre-paves the most likely future extension.
+
+### 11.9 Adding a new role — data flow and integration checklist
+
+**Added 2026-05-23** to give a concrete reference for "what does
+adding a new role kind actually require?" once M9 lands.
+
+#### 11.9.1 Data flow — config to runtime
+
+After M9, the chain from on-disk config to running queues is a
+linear sequence of single-purpose layers, each with a clear
+input/output:
+
+```mermaid
+flowchart TB
+    classDef src fill:#dbeafe,stroke:#1d4ed8
+    classDef control fill:#dcfce7,stroke:#15803d
+    classDef ephemeral fill:#fef3c7,stroke:#b45309
+    classDef longlived fill:#fce7f3,stroke:#9d174d
+    classDef code fill:#f3e8ff,stroke:#6b21a8
+
+    A["disk: producer.json /<br/>consumer.json /<br/>processor.json /<br/>YOUR_NEW_ROLE.json"]:::src
+    B["RoleConfig (parsed)<br/>via RoleConfig::load_from_directory<br/>+ role-specific ConfigParser"]:::src
+    C["YourRoleHost::build_presences_(config)<br/>(YOU IMPLEMENT THIS)"]:::code
+    D["std::vector&lt;Presence&gt; presences_<br/>(canonical per-channel state:<br/>hub + channel + role_kind +<br/>slot_spec + fz_spec per entry)"]:::control
+    E["RoleHostFrame::setup_infrastructure_<br/>(shared body; iterates presences_)"]:::code
+    F["RxQueueOptions / TxQueueOptions<br/>(ephemeral transport)"]:::ephemeral
+    G["api.build_*_queue(opts)"]:::code
+    H["Queue object<br/>(long-lived; data-plane state)"]:::longlived
+    I["RoleHandler<br/>(presences_ moved here at step 6;<br/>broker registration)"]:::longlived
+
+    A --> B
+    B --> C
+    C --> D
+    D --> E
+    E --> F
+    F --> G
+    G --> H
+    D --> I
+```
+
+**Each arrow is a single function.  No parallel paths.  Data flows
+in one direction.**
+
+`Presence` is the **canonical** per-channel data container.
+Everything per-channel — including schemas — lives there and only
+there in the control plane.  Downstream consumers (queue objects,
+script engine) hold derived working copies for their own runtime
+needs, but the source of truth is `presences_`.
+
+#### 11.9.2 What you write when adding a new role
+
+Suppose you want to add a `WidgetRoleHost` (e.g. a tap that reads
+two input channels and produces metrics to an output channel — 3
+presences total).  Here's what's actually required:
+
+**File-by-file checklist:**
+
+| File | What you add | Why |
+|---|---|---|
+| `src/widget/widget_role_host.hpp` | `WidgetRoleHost final : public scripting::RoleHostFrame` declaration | New role class |
+| `src/widget/widget_role_host.cpp` | Constructor passing `{ "wid", "widget", "on_widget" }` to frame; **`build_presences_()` override** that returns 3 Presences with their resolved schemas; **`run_loop_()` override** that calls `run_data_loop<WidgetCycleOps>(...)`. | The role's specific configuration + behavior |
+| `src/widget/widget_init.cpp` | `register_widget_init()` + `register_widget_runtime()` — same shape as the other three roles | Registers with RoleDirectory + RoleRegistry |
+| `src/widget/widget_fields.hpp` (optional) | `struct WidgetFields { ... }` if your role has config fields beyond the standard `in_channel`/`out_channel` | Custom config parsing |
+| `src/utils/service/cycle_ops.hpp` or new file | `class WidgetCycleOps final { ... }` — the per-cycle business logic for the new role | Data-loop body |
+| `src/widget/CMakeLists.txt` | New library declaration; link to `pylabhub::utils` | Build |
+| `src/plh_role/CMakeLists.txt` | Link the new library; call `register_widget_runtime()` from main | Binary participation |
+| `tests/test_layer2_widget/test_build_presences.cpp` | L2 tests for `WidgetRoleHost::build_presences_()` — verify hub/channel/role_kind/schemas correctly resolved for each presence | Test coverage for the new role's config→Presence translation |
+| `share/py-demo-widget/...` (optional) | Demo manifest + scripts | End-to-end demo |
+
+**Three files actually contain new logic** (everything else is registration plumbing):
+1. `WidgetRoleHost::build_presences_()` — defines what channels this role uses + resolves their schemas.
+2. `WidgetRoleHost::run_loop_()` — one-liner naming the CycleOps type.
+3. `WidgetCycleOps::do_one_cycle(...)` — the per-cycle business logic.
+
+#### 11.9.3 What you do NOT have to do
+
+The whole point of the M9 unification is that adding a role does
+NOT require touching shared plumbing.  Specifically:
+
+| Touch this? | What it is | Why not |
+|---|---|---|
+| **No** — `RoleHostFrame::setup_infrastructure_` | Frame's shared setup body | Iterates `presences_` generically; your new role's presences just flow through |
+| **No** — `RoleHostFrame::teardown_infrastructure_` | Frame's shared teardown | Same — generic over presence shape |
+| **No** — `make_tx_opts` / `make_rx_opts` free functions | Shared config→opts translators | Already pure; new role's Presence.slot_spec / fz_spec just flow through |
+| **No** — `Presence` struct | Per-channel record | Already carries everything per-channel (schemas + hub + channel + role_kind) |
+| **No** — `RoleHostCore` | Hot-path runtime state | No schemas live here post-M9; only scalar caches |
+| **No** — `RoleAPIBase` | Script-visible API | Generic over rx/tx presence; doesn't need per-role knowledge |
+| **No** — Broker code (BRC, broker_service) | Wire protocol | Generic over role_kind |
+
+**Only touch the new role's own files + binary registration.**
+Six implementation files, two CMake updates, one or two test files.
+No reach-in to shared subsystems.
+
+#### 11.9.4 The two extension points if your role is structurally novel
+
+Most plausible new roles fit the existing pattern.  Two extension
+points exist for genuinely novel shapes:
+
+**A. `wire_api_for_presences_()` override** (rare):  default impl
+handles the standard 1- and 2-presence cases by calling
+`api.set_channel()` / `api.set_out_channel()`.  If your role has
+3+ presences and the standard wiring doesn't fit (e.g. an N-input
+router), override this hook to do custom wiring.  See §11.8.2.
+
+**B. New script-callable methods on RoleAPIBase** (occasional): if
+your new role needs script-visible methods that don't exist today
+(e.g. `api.tap_channel("name")`), add them to `RoleAPIBase` (one
+file).  Each new method is independent of the role-host machinery.
+
+#### 11.9.5 Information-flow guarantee for new roles
+
+The data flow in §11.9.1 means: **anything you put into your new
+role's `Presence` instances automatically flows through the
+generic pipeline to the right consumers.**  No "now also wire it
+into setup," no "now also tell core about it."  Just populate
+`Presence` correctly in `build_presences_()`, and the rest of the
+system reads from it.
+
+If the new role needs to carry per-channel data that doesn't fit
+the existing `Presence` fields, the right move is to **extend
+`Presence`** (one struct, one place) — not to add parallel state on
+the role host.  Per the design principle pinned in §11.1, structural
+variance lives in `Presence` (per-channel data), not in scattered
+member variables.
 
 ---
 
