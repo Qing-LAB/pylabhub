@@ -15,8 +15,12 @@
 #include "utils/hub_inbox_queue.hpp"
 #include "utils/logger.hpp"
 #include "utils/role_api_base.hpp"
+#include "utils/role_config_translation.hpp"   // make_tx_opts / make_rx_opts
 #include "utils/role_host_core.hpp"
+#include "utils/role_host_helpers.hpp"          // setup_inbox_facility
 
+#include <algorithm>
+#include <optional>
 #include <utility>
 
 namespace pylabhub::scripting
@@ -33,6 +37,155 @@ RoleHostFrame::RoleHostFrame(config::RoleConfig    config,
 }
 
 RoleHostFrame::~RoleHostFrame() = default;
+
+// ============================================================================
+// has_rx_fz / has_tx_fz — derived from presences_ (M9 step 2c)
+// ============================================================================
+
+bool RoleHostFrame::has_rx_fz() const noexcept
+{
+    return std::any_of(
+        presences_.begin(), presences_.end(),
+        [](const Presence &p) {
+            return p.role_kind == RoleKind::Consumer && p.fz_spec.has_schema;
+        });
+}
+
+bool RoleHostFrame::has_tx_fz() const noexcept
+{
+    return std::any_of(
+        presences_.begin(), presences_.end(),
+        [](const Presence &p) {
+            return p.role_kind == RoleKind::Producer && p.fz_spec.has_schema;
+        });
+}
+
+// ============================================================================
+// setup_infrastructure_ — shared body, driven by presences_
+// ============================================================================
+//
+// Absorbed from the three per-role implementations in M9 step 2c.
+// `presences_` MUST be populated by the caller (each role's
+// `worker_main_` calls `build_presences_()` early).  Today asserts
+// at most 1 rx and 1 tx presence — when API surface grows multi-rx/tx
+// support, this assertion is removed and the queue-building loop
+// iterates over all matching presences.
+
+bool RoleHostFrame::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
+{
+    auto       &core_   = this->core();
+    const auto &config_ = this->config();
+    auto       &api_ref = this->api();
+
+    inbox_cfg_ = config_.inbox();
+
+    // ── 1. Find rx and tx presences (today: ≤ 1 of each) ──
+    const Presence *rx_presence = nullptr;
+    const Presence *tx_presence = nullptr;
+    for (const auto &p : presences_)
+    {
+        if (p.role_kind == RoleKind::Consumer)
+        {
+            if (rx_presence)
+            {
+                LOGGER_ERROR("[{}] multiple rx presences not yet supported "
+                             "(today's API surface limits to 1 rx queue)",
+                             frame_cfg_.role_tag);
+                return false;
+            }
+            rx_presence = &p;
+        }
+        else if (p.role_kind == RoleKind::Producer)
+        {
+            if (tx_presence)
+            {
+                LOGGER_ERROR("[{}] multiple tx presences not yet supported",
+                             frame_cfg_.role_tag);
+                return false;
+            }
+            tx_presence = &p;
+        }
+    }
+
+    // ── 2. Inbox setup (optional, independent of queue building) ──
+    if (inbox_cfg_.has_inbox())
+    {
+        auto inbox_result = setup_inbox_facility(
+            inbox_spec, inbox_cfg_, config_.checksum().policy,
+            frame_cfg_.role_tag.c_str());
+        if (!inbox_result)
+        {
+            LOGGER_ERROR("[{}] setup_inbox_facility failed",
+                         frame_cfg_.role_tag);
+            return false;
+        }
+        inbox_queue_ = std::move(inbox_result->queue);
+    }
+
+    // ── 3. Translate opts (per-presence schemas from presences_) ──
+    std::optional<hub::TxQueueOptions> tx_opts;
+    std::optional<hub::RxQueueOptions> rx_opts;
+    if (tx_presence)
+        tx_opts.emplace(make_tx_opts(
+            config_, tx_presence->slot_spec, tx_presence->fz_spec,
+            tx_presence->fz_spec.has_schema));
+    if (rx_presence)
+        rx_opts.emplace(make_rx_opts(
+            config_, rx_presence->slot_spec, rx_presence->fz_spec,
+            rx_presence->fz_spec.has_schema));
+
+    // ── 4. Build queues (Rx first, then Tx — normalized order) ──
+    if (rx_opts && !api_ref.build_rx_queue(*rx_opts))
+    {
+        LOGGER_ERROR("[{}] build_rx_queue failed for channel '{}'",
+                     frame_cfg_.role_tag, config_.in_channel());
+        return false;
+    }
+    if (tx_opts && !api_ref.build_tx_queue(*tx_opts))
+    {
+        LOGGER_ERROR("[{}] build_tx_queue failed for channel '{}'",
+                     frame_cfg_.role_tag, config_.out_channel());
+        return false;
+    }
+
+    // ── 5. Start queues + reset metrics ──
+    if (rx_opts)
+    {
+        if (!api_ref.start_rx_queue())
+        {
+            LOGGER_ERROR("[{}] start_rx_queue failed for channel '{}'",
+                         frame_cfg_.role_tag, config_.in_channel());
+            return false;
+        }
+        api_ref.reset_rx_queue_metrics();
+    }
+    if (tx_opts)
+    {
+        if (!api_ref.start_tx_queue())
+        {
+            LOGGER_ERROR("[{}] start_tx_queue failed for channel '{}'",
+                         frame_cfg_.role_tag, config_.out_channel());
+            return false;
+        }
+        api_ref.reset_tx_queue_metrics();
+    }
+
+    // ── 6. Configured period (role-level) ──
+    core_.set_configured_period(
+        static_cast<uint64_t>(config_.timing().period_us));
+
+    // ── 7. Startup log lines (per direction) ──
+    if (rx_presence)
+        LOGGER_INFO("[{}] rx on channel '{}' (shm={})",
+                    frame_cfg_.role_tag, config_.in_channel(),
+                    api_ref.rx_has_shm());
+    if (tx_presence)
+        LOGGER_INFO("[{}] tx on channel '{}' (shm={})",
+                    frame_cfg_.role_tag, config_.out_channel(),
+                    api_ref.tx_has_shm());
+
+    return true;
+}
 
 // ============================================================================
 // teardown_infrastructure_ — shared body (M9 sub-step 2b, 2026-05-22)

@@ -85,9 +85,15 @@ class PYLABHUB_UTILS_EXPORT ProducerRoleHost final : public scripting::RoleHostF
     // ── Worker thread entry point (RoleHostBase hook) ────────────────────────
     void worker_main_() override;
 
-    // ── Infrastructure setup (Layer 3) ───────────────────────────────────────
-    // teardown_infrastructure_ — inherited from RoleHostFrame (M9 step 2b).
-    bool setup_infrastructure_(const hub::SchemaSpec &inbox_spec);
+    // ── Infrastructure setup (Layer 3) — inherited from RoleHostFrame ─────
+    // setup_infrastructure_  ← M9 step 2c (frame's body, uses presences_).
+    // teardown_infrastructure_ ← M9 step 2b (frame's body).
+
+    /// Build the role's presence list (M9 step 2c).  Producer returns a
+    /// single Producer-kind presence on out_hub/out_channel with both
+    /// slot_spec and fz_spec resolved inline.
+    [[nodiscard]] std::vector<scripting::Presence>
+    build_presences_(const config::RoleConfig &config) const override;
 
     // ── Producer-specific members ────────────────────────────────────────────
     // Shared state — core_, config_, engine_, api_, ready_promise_ — lives in
