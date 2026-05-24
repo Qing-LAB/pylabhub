@@ -399,6 +399,40 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     [[nodiscard]] size_t slot_logical_size(std::optional<ChannelSide> side = std::nullopt) const;
     [[nodiscard]] size_t flexzone_logical_size(std::optional<ChannelSide> side = std::nullopt) const;
 
+    /// Flexzone presence check per side (added M9 Phase 2, 2026-05-23).
+    /// Reads from this object's introspection cache, which the frame
+    /// populates at setup time via `set_flexzone_introspection_()`.
+    /// PRE: setup_infrastructure_ has completed (caller is in script
+    /// context, which only runs after step 5 invoke_on_init).
+    [[nodiscard]] bool has_tx_fz() const noexcept;
+    [[nodiscard]] bool has_rx_fz() const noexcept;
+
+    // ── Flexzone introspection cache (framework-internal) ────────────────────
+    //
+    // Populated exactly once per role lifetime by
+    // `RoleHostFrame::setup_infrastructure_` at step 2b, AFTER
+    // build_*_queue succeeds.  The cache stores derived SCALARS
+    // (sizes + has flags) — NOT a copy of the full SchemaSpec, which
+    // lives only in `Presence::fz_spec` on the frame.
+    //
+    // Linear forward-time API sequence (per docs/tech_draft/
+    // role_host_template_design.md §11.6.2 + docs/todo/
+    // M9_REFACTOR_CHECKLIST.md §"Phase 2 API design"):
+    //   - setter: called once at step 2b by the frame.
+    //   - readers (`has_*_fz()`, `flexzone_logical_size()`): called by
+    //     scripts at step 5+.  All readers are after the single write.
+    struct FlexzoneIntrospection
+    {
+        size_t tx_logical_size{0};
+        bool   has_tx_fz{false};
+        size_t rx_logical_size{0};
+        bool   has_rx_fz{false};
+    };
+
+    /// Framework-internal setter (trailing underscore: not for script
+    /// callers).  Frame populates this exactly once after build_*_queue.
+    void set_flexzone_introspection_(const FlexzoneIntrospection &fz_info) noexcept;
+
     // ── Spinlocks (delegates to whichever side has SHM) ───────────────────────
 
     [[nodiscard]] hub::SharedSpinLock get_spinlock(size_t index,

@@ -85,6 +85,15 @@ struct RoleAPIBase::Impl
     std::string script_dir;
     std::string role_dir;
 
+    // M9 Phase 2 (2026-05-23): flexzone introspection cache.  Populated
+    // exactly once at setup time by RoleHostFrame; read by script-API
+    // calls (flexzone_logical_size, has_*_fz).  See FlexzoneIntrospection
+    // struct in role_api_base.hpp for the linear-forward-time contract.
+    // Phase 2 backward-compat: until RoleHostCore's fz_spec storage is
+    // removed, both paths coexist (frame populates this cache AND the
+    // legacy worker_main_ step 1 populates core).
+    FlexzoneIntrospection fz_introspection{};
+
     // Role-side CurveZMQ keypair (Wave-B M4a) — read by
     // `RoleHandler::start_connections` to populate BRC::Config.  Empty
     // = plaintext (no CURVE).  Set-once before start_connections.
@@ -1951,9 +1960,19 @@ size_t RoleAPIBase::slot_logical_size(std::optional<ChannelSide> side) const
 
 size_t RoleAPIBase::flexzone_logical_size(std::optional<ChannelSide> side) const
 {
-    // Returns the C struct size (logical) for the flexzone schema.
-    // Recomputed from the stored SchemaSpec — core stores the physical (page-aligned) size,
-    // not the logical size. The spec + packing are the source of truth.
+    // M9 Phase 2 (2026-05-23): this method still reads from
+    // RoleHostCore's fz_spec storage during the transitional shadow.
+    // The new introspection cache (`pImpl->fz_introspection`) is
+    // populated by RoleHostFrame::setup_infrastructure_ but is not yet
+    // the source for this method — a later Phase 2 sub-step will:
+    //   (a) migrate the ~5 test fixtures that populate `core_.set_*_fz_spec`
+    //       directly (without going through the frame) to use the new
+    //       cache,
+    //   (b) flip THIS method to read from the cache,
+    //   (c) remove core's fz_spec storage entirely.
+    // For now: read from core to preserve behavior of those test
+    // fixtures.  The new cache exists and is populated for production
+    // lifecycle but isn't consumed by this method yet.
     auto compute = [](const hub::SchemaSpec &spec) -> size_t {
         if (!spec.has_schema) return 0;
         auto [layout, sz] = hub::compute_field_layout(
@@ -1977,6 +1996,22 @@ size_t RoleAPIBase::flexzone_logical_size(std::optional<ChannelSide> side) const
     if (has_tx) return compute(pImpl->core->out_fz_spec());
     if (has_rx) return compute(pImpl->core->in_fz_spec());
     return 0;
+}
+
+bool RoleAPIBase::has_tx_fz() const noexcept
+{
+    return pImpl->fz_introspection.has_tx_fz;
+}
+
+bool RoleAPIBase::has_rx_fz() const noexcept
+{
+    return pImpl->fz_introspection.has_rx_fz;
+}
+
+void RoleAPIBase::set_flexzone_introspection_(
+    const FlexzoneIntrospection &fz_info) noexcept
+{
+    pImpl->fz_introspection = fz_info;
 }
 
 // ============================================================================
