@@ -9,6 +9,20 @@
  * The plugin .so search directory is provided by the parent as argv[2]
  * (the value of TEST_PLUGIN_DIR at parent build time), so the subprocess
  * can locate the same .so artefacts the build staged.
+ *
+ * ── L2 BYPASS PATTERN ───────────────────────────────────────────────
+ *
+ * Worker functions in this file BYPASS the role host's
+ * `worker_main_` + `setup_infrastructure_` sequence: construct
+ * `RoleHostCore` + `RoleAPIBase` + `NativeEngine` directly; manually
+ * populate state that `RoleHostFrame::setup_infrastructure_` would
+ * set in production.  Per `feedback_test_bypass_explicit.md`, this
+ * is OWNED, not hidden.  See python_engine_workers.cpp file header
+ * for the full rationale + keep-in-sync list + re-examine triggers
+ * (identical pattern across all three engines).
+ *
+ * NOT A MOCK — uses real NativeEngine + real RoleHostCore + real
+ * RoleAPIBase per `feedback_no_mocks_via_observability.md`.
  */
 #include "scriptengine_native_dylib_workers.h"
 
@@ -727,6 +741,12 @@ int full_startup_processor_multifield(const std::string &plugin_dir)
         "native_engine::full_startup_processor_multifield");
 }
 
+// L2 BYPASS — see file header `L2 BYPASS PATTERN`.
+// PURPOSE: full producer-engine startup with both slot + flexzone schemas
+//          configured (NativeEngine variant); verify type sizes + an
+//          end-to-end produce call.
+// POPULATES: core.set_out_slot_spec, core.set_out_fz_spec, +
+//            api->set_flexzone_introspection_ (Phase 2 TODO).
 int full_startup_producer_slot_and_flexzone(const std::string &plugin_dir)
 {
     return run_ne_worker(
