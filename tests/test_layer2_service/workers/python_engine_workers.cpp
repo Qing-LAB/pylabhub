@@ -5286,6 +5286,16 @@ int full_startup_producer_slot_and_flexzone(const std::string &dir)
                     pylabhub::hub::compute_schema_size(
                         params.out_fz_spec, params.out_packing)));
 
+            // M9 Phase 2: also populate the RoleAPIBase introspection
+            // cache (see file header L2 BYPASS PATTERN).
+            {
+                pylabhub::scripting::RoleAPIBase::FlexzoneIntrospection fz_info;
+                fz_info.has_tx_fz       = params.out_fz_spec.has_schema;
+                fz_info.tx_logical_size = pylabhub::hub::compute_schema_size(
+                    params.out_fz_spec, params.out_packing);
+                api->set_flexzone_introspection_(fz_info);
+            }
+
             engine.set_python_venv("");
             ASSERT_NO_THROW(
                 pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
@@ -5612,6 +5622,19 @@ int flexzone_logical_size_array_fields(const std::string &dir)
                 SchemaSpec{fz_spec},
                 pylabhub::hub::align_to_physical_page(
                     pylabhub::hub::compute_schema_size(fz_spec, "aligned")));
+
+            // M9 Phase 2 (2026-05-24): ALSO populate the new RoleAPIBase
+            // introspection cache.  Today flexzone_logical_size() still
+            // reads from core; Phase 2.3 flips it to read from the cache.
+            // Test populates both during the transition; Phase 2.6 deletes
+            // the core path (see file header L2 BYPASS PATTERN).
+            {
+                pylabhub::scripting::RoleAPIBase::FlexzoneIntrospection fz_info;
+                fz_info.has_tx_fz       = fz_spec.has_schema;
+                fz_info.tx_logical_size = pylabhub::hub::compute_schema_size(
+                    fz_spec, "aligned");
+                api->set_flexzone_introspection_(fz_info);
+            }
 
             pylabhub::scripting::EngineModuleParams params;
             fill_base_params(params, engine, api.get(),

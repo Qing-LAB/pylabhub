@@ -762,6 +762,16 @@ int full_startup_producer_slot_and_flexzone(const std::string &plugin_dir)
                                  pylabhub::hub::align_to_physical_page(
                                      pylabhub::hub::compute_schema_size(spec, "aligned")));
 
+            // M9 Phase 2: also populate the RoleAPIBase introspection
+            // cache (see file header L2 BYPASS PATTERN).
+            {
+                pylabhub::scripting::RoleAPIBase::FlexzoneIntrospection fz_info;
+                fz_info.has_tx_fz       = spec.has_schema;
+                fz_info.tx_logical_size =
+                    pylabhub::hub::compute_schema_size(spec, "aligned");
+                api->set_flexzone_introspection_(fz_info);
+            }
+
             pylabhub::scripting::EngineModuleParams params;
             params.engine            = &engine;
             params.api               = api.get();
