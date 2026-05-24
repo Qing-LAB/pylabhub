@@ -169,6 +169,9 @@ bool RoleHostFrame::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
         RoleAPIBase::FlexzoneIntrospection fz_info;
         auto compute_logical_size = [](const hub::SchemaSpec &spec) -> size_t {
             if (!spec.has_schema) return 0;
+            // compute_field_layout returns (layout_vector, total_struct_size).
+            // We want the total struct size (the logical, un-page-aligned
+            // size that scripts see via flexzone_logical_size()).
             auto [layout, sz] = hub::compute_field_layout(
                 hub::to_field_descs(spec.fields), spec.packing);
             return sz;

@@ -42,6 +42,16 @@
  *       verify only `api->set_flexzone_introspection_` populates the
  *       introspection state.
  *     - Annually as part of test-debt review.
+ *
+ *   FUNCTIONS THIS PATTERN COVERS (per the audit 2026-05-23, grep
+ *   `core.set_(in|out)_fz_spec`):
+ *     - `build_payload_pair`  (helper used by SHM data-plane tests)
+ *     - `shm_consumer_wrong_secret_rejected`
+ *     - `shm_slot_checksum_corrupt_detected`
+ *     - `shm_flexzone_checksum_corrupt_detected`
+ *   Per-function PURPOSE markers will be added in Phase 2.6 alongside
+ *   the migration from `core.set_*_fz_spec` to
+ *   `api->set_flexzone_introspection_`.
  */
 #include "role_api_flexzone_workers.h"
 
