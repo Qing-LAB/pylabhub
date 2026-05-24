@@ -192,6 +192,17 @@ void build_payload_pair(PayloadPair &out,
         out.prod_core, "prod", std::string("prod.fz.") + uid_tag);
     out.prod->set_channel(channel);
     out.prod->set_name("fz-prod");
+    // Populate the RoleAPIBase introspection cache so the script-visible
+    // `api.flexzone_logical_size()` accessor returns the correct value.
+    // Producer presence → has_tx_fz side.  See file-header BYPASS
+    // PATTERN block for the keep-in-sync inventory.
+    {
+        RoleAPIBase::FlexzoneIntrospection fz_info;
+        fz_info.has_tx_fz       = fz_spec.has_schema;
+        fz_info.tx_logical_size =
+            hub::compute_schema_size(fz_spec, "aligned");
+        out.prod->set_flexzone_introspection_(fz_info);
+    }
     ASSERT_TRUE(out.prod->build_tx_queue(tx_opts));
     ASSERT_TRUE(out.prod->start_tx_queue());
 
@@ -209,6 +220,17 @@ void build_payload_pair(PayloadPair &out,
         out.cons_core, "cons", std::string("cons.fz.") + uid_tag);
     out.cons->set_channel(channel);
     out.cons->set_name("fz-cons");
+    // Populate the RoleAPIBase introspection cache so the script-visible
+    // `api.flexzone_logical_size()` accessor returns the correct value.
+    // Consumer presence → has_rx_fz side.  See file-header BYPASS
+    // PATTERN block for the keep-in-sync inventory.
+    {
+        RoleAPIBase::FlexzoneIntrospection fz_info;
+        fz_info.has_rx_fz       = fz_spec.has_schema;
+        fz_info.rx_logical_size =
+            hub::compute_schema_size(fz_spec, "aligned");
+        out.cons->set_flexzone_introspection_(fz_info);
+    }
     ASSERT_TRUE(out.cons->build_rx_queue(rx_opts));
     ASSERT_TRUE(out.cons->start_rx_queue());
 }
