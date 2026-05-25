@@ -350,7 +350,7 @@ void ProducerRoleHost::worker_main_()
         // Schema fields (HEP-CORE-0034 §10.1).  Empty fields → broker
         // takes the legacy/anonymous path.
         const auto wire_schema = hub::make_wire_schema_fields(
-            pf.out_slot_schema_json, out_slot_spec_, core_.out_fz_spec());
+            pf.out_slot_schema_json, out_slot_spec_, out_fz_local);
         hub::apply_producer_schema_fields(reg_opts, wire_schema);
 
         // Inbox metadata (HEP-CORE-0034 §10.2; no-op if no inbox).
