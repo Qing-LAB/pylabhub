@@ -29,29 +29,23 @@
  *   CANONICAL STORAGE THESE BYPASSES POPULATE (keep in sync with
  *   production!):
  *     - `RoleHostCore::set_out_slot_spec()` (producer side)
- *     - `RoleHostCore::set_out_fz_spec()`   (producer side; Phase 2.6
- *                                            removes core's fz storage)
+ *     - `RoleHostCore::set_out_fz_spec()`   (producer side; during
+ *                                            the transitional shadow)
  *     - `RoleHostCore::set_in_slot_spec()`  (consumer side)
- *     - `RoleHostCore::set_in_fz_spec()`    (consumer side; Phase 2.6 ditto)
- *     - `RoleAPIBase::set_flexzone_introspection_()` (Phase 2 NEW;
- *       sole source post-2.6)
+ *     - `RoleHostCore::set_in_fz_spec()`    (consumer side; same)
+ *     - `RoleAPIBase::set_flexzone_introspection_()`
  *
  *   RE-EXAMINE WHEN:
- *     - Canonical introspection storage moves again.
- *     - M9 Phase 2.6 lands — remove orphan `core.set_*_fz_spec` calls;
- *       verify only `api->set_flexzone_introspection_` populates the
- *       introspection state.
+ *     - Canonical introspection storage moves again (verify the
+ *       core.set_*_fz_spec calls + the introspection-cache populate
+ *       still match the locations production writes to).
  *     - Annually as part of test-debt review.
  *
- *   FUNCTIONS THIS PATTERN COVERS (per the audit 2026-05-23, grep
- *   `core.set_(in|out)_fz_spec`):
+ *   FUNCTIONS THIS PATTERN COVERS (grep `core.set_(in|out)_fz_spec`):
  *     - `build_payload_pair`  (helper used by SHM data-plane tests)
  *     - `shm_consumer_wrong_secret_rejected`
  *     - `shm_slot_checksum_corrupt_detected`
  *     - `shm_flexzone_checksum_corrupt_detected`
- *   Per-function PURPOSE markers will be added in Phase 2.6 alongside
- *   the migration from `core.set_*_fz_spec` to
- *   `api->set_flexzone_introspection_`.
  */
 #include "role_api_flexzone_workers.h"
 

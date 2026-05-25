@@ -85,13 +85,12 @@ struct RoleAPIBase::Impl
     std::string script_dir;
     std::string role_dir;
 
-    // M9 Phase 2 (2026-05-23): flexzone introspection cache.  Populated
-    // exactly once at setup time by RoleHostFrame; read by script-API
-    // calls (flexzone_logical_size, has_*_fz).  See FlexzoneIntrospection
-    // struct in role_api_base.hpp for the linear-forward-time contract.
-    // Phase 2 backward-compat: until RoleHostCore's fz_spec storage is
-    // removed, both paths coexist (frame populates this cache AND the
-    // legacy worker_main_ step 1 populates core).
+    // Flexzone introspection cache.  Populated exactly once at setup
+    // time by RoleHostFrame; read by script-API calls (flexzone_logical_size,
+    // has_*_fz).  See FlexzoneIntrospection struct in role_api_base.hpp
+    // for the linear-forward-time contract.  While core's fz_spec
+    // storage is still the legacy authoritative source, the frame
+    // dual-writes both paths.
     FlexzoneIntrospection fz_introspection{};
 
     // Role-side CurveZMQ keypair (Wave-B M4a) — read by
@@ -1960,19 +1959,12 @@ size_t RoleAPIBase::slot_logical_size(std::optional<ChannelSide> side) const
 
 size_t RoleAPIBase::flexzone_logical_size(std::optional<ChannelSide> side) const
 {
-    // M9 Phase 2 (2026-05-23): this method still reads from
-    // RoleHostCore's fz_spec storage during the transitional shadow.
-    // The new introspection cache (`pImpl->fz_introspection`) is
-    // populated by RoleHostFrame::setup_infrastructure_ but is not yet
-    // the source for this method — a later Phase 2 sub-step will:
-    //   (a) migrate the ~5 test fixtures that populate `core_.set_*_fz_spec`
-    //       directly (without going through the frame) to use the new
-    //       cache,
-    //   (b) flip THIS method to read from the cache,
-    //   (c) remove core's fz_spec storage entirely.
-    // For now: read from core to preserve behavior of those test
-    // fixtures.  The new cache exists and is populated for production
-    // lifecycle but isn't consumed by this method yet.
+    // Reads schema from RoleHostCore's fz_spec storage (the legacy
+    // authoritative source).  The introspection cache on RoleAPIBase
+    // is dual-written by the frame today but not yet the source for
+    // this method — switching reader sites is gated on first
+    // migrating test fixtures that populate core_.set_*_fz_spec
+    // directly off that path.  Tracked as task #99.
     auto compute = [](const hub::SchemaSpec &spec) -> size_t {
         return hub::compute_schema_size(spec, spec.packing);
     };

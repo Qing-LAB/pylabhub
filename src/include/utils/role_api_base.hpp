@@ -399,9 +399,9 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     [[nodiscard]] size_t slot_logical_size(std::optional<ChannelSide> side = std::nullopt) const;
     [[nodiscard]] size_t flexzone_logical_size(std::optional<ChannelSide> side = std::nullopt) const;
 
-    /// Flexzone presence check per side (added M9 Phase 2, 2026-05-23).
-    /// Reads from this object's introspection cache, which the frame
-    /// populates at setup time via `set_flexzone_introspection_()`.
+    /// Flexzone presence check per side.  Reads from this object's
+    /// introspection cache, which the frame populates at setup time
+    /// via `set_flexzone_introspection_()`.
     /// PRE: setup_infrastructure_ has completed (caller is in script
     /// context, which only runs after step 5 invoke_on_init).
     [[nodiscard]] bool has_tx_fz() const noexcept;
@@ -416,8 +416,7 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     // lives only in `Presence::fz_spec` on the frame.
     //
     // Linear forward-time API sequence (per docs/tech_draft/
-    // role_host_template_design.md §11.6.2 + docs/todo/
-    // M9_REFACTOR_CHECKLIST.md §"Phase 2 API design"):
+    // role_host_template_design.md §11.6.2):
     //   - setter: called once at step 2b by the frame.
     //   - readers (`has_*_fz()`, `flexzone_logical_size()`): called by
     //     scripts at step 5+.  All readers are after the single write.

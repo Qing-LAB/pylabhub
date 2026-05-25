@@ -35,9 +35,9 @@
  *   CANONICAL STORAGE THESE BYPASSES POPULATE (keep in sync with
  *   production!):
  *     - `RoleHostCore::set_*_slot_spec()`  /  `set_*_fz_spec()`
- *       (Phase 1+2 shadow; Phase 2.6 removes fz_spec storage from core)
- *     - `RoleAPIBase::set_flexzone_introspection_()` (Phase 2 NEW;
- *       sole source post-2.6)
+ *       (during the transitional shadow — fz_spec storage on core
+ *        is scheduled to be retired)
+ *     - `RoleAPIBase::set_flexzone_introspection_()`
  *
  *   RE-EXAMINE WHEN: see python_engine_workers.cpp file header.
  */
@@ -3942,8 +3942,8 @@ struct LogicalSizeCase
 // L2 BYPASS — see file header `L2 BYPASS PATTERN`.
 // PURPOSE: verify Lua's `api.slot_logical_size()` / `flexzone_logical_size()`
 //          for the supplied (slot, fz) schema pair.
-// POPULATES: core.set_out_slot_spec, core.set_out_fz_spec, +
-//            api->set_flexzone_introspection_ (Phase 2 TODO).
+// POPULATES: core.set_out_slot_spec, core.set_out_fz_spec,
+//            api->set_flexzone_introspection_.
 int run_logical_size_case(const std::string &dir,
                           const char        *scenario_name,
                           const LogicalSizeCase &c)
@@ -5322,8 +5322,8 @@ int full_startup_producer_slot_only(const std::string &dir)
 // L2 BYPASS — see file header `L2 BYPASS PATTERN`.
 // PURPOSE: full producer-engine startup with both slot + flexzone schemas
 //          configured; verify type sizes and an end-to-end produce call.
-// POPULATES: core.set_out_slot_spec, core.set_out_fz_spec, +
-//            api->set_flexzone_introspection_ (Phase 2 TODO).
+// POPULATES: core.set_out_slot_spec, core.set_out_fz_spec,
+//            api->set_flexzone_introspection_.
 int full_startup_producer_slot_and_flexzone(const std::string &dir)
 {
     return run_gtest_worker(
@@ -5357,8 +5357,8 @@ int full_startup_producer_slot_and_flexzone(const std::string &dir)
                     pylabhub::hub::compute_schema_size(
                         params.out_fz_spec, params.out_packing)));
 
-            // M9 Phase 2: also populate the RoleAPIBase introspection
-            // cache (see file header L2 BYPASS PATTERN).
+            // Also populate the RoleAPIBase introspection cache (see
+            // file header BYPASS PATTERN).
             {
                 pylabhub::scripting::RoleAPIBase::FlexzoneIntrospection fz_info;
                 fz_info.has_tx_fz       = params.out_fz_spec.has_schema;
