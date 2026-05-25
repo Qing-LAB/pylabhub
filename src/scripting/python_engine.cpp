@@ -976,7 +976,7 @@ bool PythonEngine::register_slot_type(const hub::SchemaSpec &spec,
     stored_spec.packing = packing;
 
     // Compute expected size from schema (infrastructure-authoritative).
-    auto [layout, expected_size] = hub::compute_field_layout(to_field_descs(spec.fields), packing);
+    size_t expected_size = hub::compute_schema_size(spec, packing);
 
     try
     {

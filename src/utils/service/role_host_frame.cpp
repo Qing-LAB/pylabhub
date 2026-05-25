@@ -18,7 +18,7 @@
 #include "utils/role_config_translation.hpp"   // make_tx_opts / make_rx_opts
 #include "utils/role_host_core.hpp"
 #include "utils/role_host_helpers.hpp"          // setup_inbox_facility
-#include "utils/schema_field_layout.hpp"        // compute_field_layout, to_field_descs
+#include "utils/schema_utils.hpp"               // compute_schema_size
 
 #include <optional>
 #include <utility>
@@ -159,7 +159,7 @@ bool RoleHostFrame::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
     core_.set_configured_period(
         static_cast<uint64_t>(config_.timing().period_us));
 
-    // ── 6.5 Flexzone introspection cache on RoleAPIBase (M9 Phase 2) ──
+    // ── 6.5 Flexzone introspection cache on RoleAPIBase ──
     // Populate exactly once, after build_*_queue succeeds.  The cache
     // stores derived scalars (logical size + has flag per side), not
     // the full SchemaSpec.  Script-API calls (flexzone_logical_size,
@@ -167,24 +167,19 @@ bool RoleHostFrame::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
     // time contract on RoleAPIBase::FlexzoneIntrospection.
     {
         RoleAPIBase::FlexzoneIntrospection fz_info;
-        auto compute_logical_size = [](const hub::SchemaSpec &spec) -> size_t {
-            if (!spec.has_schema) return 0;
-            // compute_field_layout returns (layout_vector, total_struct_size).
-            // We want the total struct size (the logical, un-page-aligned
-            // size that scripts see via flexzone_logical_size()).
-            auto [layout, sz] = hub::compute_field_layout(
-                hub::to_field_descs(spec.fields), spec.packing);
-            return sz;
-        };
         if (tx_presence)
         {
             fz_info.has_tx_fz       = tx_presence->fz_spec.has_schema;
-            fz_info.tx_logical_size = compute_logical_size(tx_presence->fz_spec);
+            fz_info.tx_logical_size =
+                hub::compute_schema_size(tx_presence->fz_spec,
+                                         tx_presence->fz_spec.packing);
         }
         if (rx_presence)
         {
             fz_info.has_rx_fz       = rx_presence->fz_spec.has_schema;
-            fz_info.rx_logical_size = compute_logical_size(rx_presence->fz_spec);
+            fz_info.rx_logical_size =
+                hub::compute_schema_size(rx_presence->fz_spec,
+                                         rx_presence->fz_spec.packing);
         }
         api_ref.set_flexzone_introspection_(fz_info);
     }
