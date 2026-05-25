@@ -373,7 +373,7 @@ void ProcessorRoleHost::worker_main_()
         }
         const auto &pf_for_wire = config_.role_data<ProcessorFields>();
         const auto out_wire = hub::make_wire_schema_fields(
-            pf_for_wire.out_slot_schema_json, out_slot_spec_, core_.out_fz_spec());
+            pf_for_wire.out_slot_schema_json, out_slot_spec_, out_fz_local);
         hub::apply_producer_schema_fields(prod_reg, out_wire);
         api_ref.append_inbox_to_reg(prod_reg, inbox_cfg_);
 
@@ -382,7 +382,7 @@ void ProcessorRoleHost::worker_main_()
         auto cons_reg = hub::build_consumer_reg_payload(
             hub::ConsumerRegInputs{config_.in_channel(), id.uid, id.name});
         const auto in_wire = hub::make_wire_schema_fields(
-            pf_for_wire.in_slot_schema_json, in_slot_spec_, core_.in_fz_spec());
+            pf_for_wire.in_slot_schema_json, in_slot_spec_, in_fz_local);
         hub::apply_consumer_schema_fields(cons_reg, in_wire);
         api_ref.append_inbox_to_reg(cons_reg, inbox_cfg_);
 

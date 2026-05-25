@@ -314,7 +314,7 @@ void ConsumerRoleHost::worker_main_()
         // mode rules.
         const auto &cf_for_wire = config_.role_data<consumer::ConsumerFields>();
         const auto wire_schema = hub::make_wire_schema_fields(
-            cf_for_wire.in_slot_schema_json, in_slot_spec_, core_.in_fz_spec());
+            cf_for_wire.in_slot_schema_json, in_slot_spec_, in_fz_local);
         hub::apply_consumer_schema_fields(reg_opts, wire_schema);
 
         // Inbox metadata (HEP-CORE-0034 §10.2; no-op if no inbox).
