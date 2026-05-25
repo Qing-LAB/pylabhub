@@ -1959,31 +1959,22 @@ size_t RoleAPIBase::slot_logical_size(std::optional<ChannelSide> side) const
 
 size_t RoleAPIBase::flexzone_logical_size(std::optional<ChannelSide> side) const
 {
-    // Reads schema from RoleHostCore's fz_spec storage (the legacy
-    // authoritative source).  The introspection cache on RoleAPIBase
-    // is dual-written by the frame today but not yet the source for
-    // this method — switching reader sites is gated on first
-    // migrating test fixtures that populate core_.set_*_fz_spec
-    // directly off that path.  Tracked as task #99.
-    auto compute = [](const hub::SchemaSpec &spec) -> size_t {
-        return hub::compute_schema_size(spec, spec.packing);
-    };
-
-    const bool has_tx = pImpl->core->has_tx_fz();
-    const bool has_rx = pImpl->core->has_rx_fz();
+    // Reads from the introspection cache populated by RoleHostFrame at
+    // setup time.  See FlexzoneIntrospection in role_api_base.hpp for
+    // the linear-forward-time contract.
+    const auto &fz = pImpl->fz_introspection;
 
     if (side.has_value())
     {
-        return (*side == ChannelSide::Tx)
-            ? compute(pImpl->core->out_fz_spec())
-            : compute(pImpl->core->in_fz_spec());
+        return (*side == ChannelSide::Tx) ? fz.tx_logical_size
+                                          : fz.rx_logical_size;
     }
 
-    if (has_tx && has_rx)
+    if (fz.has_tx_fz && fz.has_rx_fz)
         throw std::runtime_error("flexzone_logical_size: side parameter required for processor");
 
-    if (has_tx) return compute(pImpl->core->out_fz_spec());
-    if (has_rx) return compute(pImpl->core->in_fz_spec());
+    if (fz.has_tx_fz) return fz.tx_logical_size;
+    if (fz.has_rx_fz) return fz.rx_logical_size;
     return 0;
 }
 
