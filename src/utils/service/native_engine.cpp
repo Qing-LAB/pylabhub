@@ -21,6 +21,7 @@
 #include "utils/native_engine_api.h"
 #include "plh_version_registry.hpp"   // ComponentVersions + check_abi (HEP-0032)
 #include "utils/schema_field_layout.hpp"
+#include "utils/schema_utils.hpp"        // compute_schema_size
 #include "utils/role_host_core.hpp"
 #include "utils/hub_api.hpp"          // build_api_(HubAPI&) — B13 fix 2026-05-21
 
@@ -796,7 +797,7 @@ bool NativeEngine::register_slot_type(const hub::SchemaSpec &spec,
     }
 
     // Compute expected size from schema (infrastructure-authoritative).
-    auto [layout, expected_size] = hub::compute_field_layout(to_field_descs(spec.fields), packing);
+    size_t expected_size = hub::compute_schema_size(spec, packing);
 
     // Compute expected canonical schema from config.
     std::string expected_schema = compute_canonical_schema_(spec);

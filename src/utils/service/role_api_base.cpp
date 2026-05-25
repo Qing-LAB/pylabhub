@@ -1974,10 +1974,7 @@ size_t RoleAPIBase::flexzone_logical_size(std::optional<ChannelSide> side) const
     // fixtures.  The new cache exists and is populated for production
     // lifecycle but isn't consumed by this method yet.
     auto compute = [](const hub::SchemaSpec &spec) -> size_t {
-        if (!spec.has_schema) return 0;
-        auto [layout, sz] = hub::compute_field_layout(
-            hub::to_field_descs(spec.fields), spec.packing);
-        return sz;
+        return hub::compute_schema_size(spec, spec.packing);
     };
 
     const bool has_tx = pImpl->core->has_tx_fz();
