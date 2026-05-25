@@ -5632,7 +5632,7 @@ int flexzone_logical_size_array_fields(const std::string &dir)
                 pylabhub::scripting::RoleAPIBase::FlexzoneIntrospection fz_info;
                 fz_info.has_tx_fz       = fz_spec.has_schema;
                 fz_info.tx_logical_size = pylabhub::hub::compute_schema_size(
-                    fz_spec, "aligned");
+                    fz_spec, fz_spec.packing);
                 api->set_flexzone_introspection_(fz_info);
             }
 

@@ -181,7 +181,7 @@ void build_payload_pair(PayloadPair &out,
                          const PayloadPairOpts &opts = {})
 {
     out.fz_size = hub::align_to_physical_page(
-        hub::compute_schema_size(fz_spec, "aligned"));
+        hub::compute_schema_size(fz_spec, fz_spec.packing));
 
     hub::TxQueueOptions tx_opts = make_producer_opts(slot_spec, fz_spec, secret);
     tx_opts.shm_config.checksum_policy = opts.checksum_policy;
@@ -200,7 +200,7 @@ void build_payload_pair(PayloadPair &out,
         RoleAPIBase::FlexzoneIntrospection fz_info;
         fz_info.has_tx_fz       = fz_spec.has_schema;
         fz_info.tx_logical_size =
-            hub::compute_schema_size(fz_spec, "aligned");
+            hub::compute_schema_size(fz_spec, fz_spec.packing);
         out.prod->set_flexzone_introspection_(fz_info);
     }
     ASSERT_TRUE(out.prod->build_tx_queue(tx_opts));
@@ -228,7 +228,7 @@ void build_payload_pair(PayloadPair &out,
         RoleAPIBase::FlexzoneIntrospection fz_info;
         fz_info.has_rx_fz       = fz_spec.has_schema;
         fz_info.rx_logical_size =
-            hub::compute_schema_size(fz_spec, "aligned");
+            hub::compute_schema_size(fz_spec, fz_spec.packing);
         out.cons->set_flexzone_introspection_(fz_info);
     }
     ASSERT_TRUE(out.cons->build_rx_queue(rx_opts));
@@ -688,7 +688,7 @@ int shm_consumer_wrong_secret_rejected()
             const uint64_t    secret  = 0xA5A5'5A5A'DEAD'BEEFULL;
 
             const size_t fz_size = hub::align_to_physical_page(
-                hub::compute_schema_size(fz_spec, "aligned"));
+                hub::compute_schema_size(fz_spec, fz_spec.packing));
 
             RoleHostCore prod_core;
             prod_core.set_out_fz_spec(hub::SchemaSpec{fz_spec}, fz_size);
@@ -814,7 +814,7 @@ int shm_slot_checksum_corrupt_detected()
             const uint64_t    secret  = 0xBADD'C0DE'DEAD'BEEFULL;
 
             const size_t fz_size = hub::align_to_physical_page(
-                hub::compute_schema_size(fz_spec, "aligned"));
+                hub::compute_schema_size(fz_spec, fz_spec.packing));
 
             // Producer: enforced slot checksum.
             RoleHostCore prod_core;
@@ -925,7 +925,7 @@ int shm_flexzone_checksum_corrupt_detected()
             const uint64_t    secret  = 0xBADD'F00D'FACE'D00DULL;
 
             const size_t fz_size = hub::align_to_physical_page(
-                hub::compute_schema_size(fz_spec, "aligned"));
+                hub::compute_schema_size(fz_spec, fz_spec.packing));
 
             RoleHostCore prod_core;
             prod_core.set_out_fz_spec(hub::SchemaSpec{fz_spec}, fz_size);
