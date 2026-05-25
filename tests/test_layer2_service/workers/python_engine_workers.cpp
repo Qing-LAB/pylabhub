@@ -35,14 +35,15 @@
  *   production!):
  *     - `RoleHostCore::set_out_slot_spec()` / `set_in_slot_spec()`
  *     - `RoleHostCore::set_out_fz_spec()`   / `set_in_fz_spec()`
- *       (Phase 1+2 shadow; Phase 2.6 removes — switches sole source
- *        to `RoleAPIBase::FlexzoneIntrospection` cache)
- *     - `RoleAPIBase::set_flexzone_introspection_()`  (Phase 2 NEW)
+ *       (during the transitional shadow — to be retired once
+ *        the script-side accessors read solely from the new
+ *        `RoleAPIBase::FlexzoneIntrospection` cache)
+ *     - `RoleAPIBase::set_flexzone_introspection_()`
  *
  *   RE-EXAMINE WHEN:
- *     - Canonical introspection storage moves again.
- *     - M9 Phase 2.6 lands — remove the now-orphan `core.set_*_fz_spec`
- *       calls; verify only the new introspection-cache path remains.
+ *     - Canonical introspection storage moves again (verify the
+ *       core.set_*_fz_spec calls + the introspection-cache populate
+ *       above still match the locations production writes to).
  *     - PythonEngine introspection API changes signature.
  *     - Annually as part of test-debt review.
  *
@@ -5253,12 +5254,12 @@ int full_startup_producer_slot_only(const std::string &dir)
 // L2 BYPASS — see file header `L2 BYPASS PATTERN` for details.
 // PURPOSE: full producer-engine startup with both slot + flexzone schemas
 //          configured; verify type sizes and an end-to-end produce call.
-// POPULATES: core.set_out_slot_spec, core.set_out_fz_spec, +
-//            api->set_flexzone_introspection_ (Phase 2 TODO).
+// POPULATES: core.set_out_slot_spec, core.set_out_fz_spec,
+//            api->set_flexzone_introspection_.
 int full_startup_producer_slot_and_flexzone(const std::string &dir)
 {
-    // Strengthened over V2 — adds engine-type-size vs compute_schema_size
-    // cross-check for FlexFrame alias (V2 only checked > 0).
+    // Cross-checks engine-type-size against compute_schema_size for the
+    // FlexFrame alias (the slot-only variant only checks > 0).
     return run_python_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
@@ -5286,8 +5287,8 @@ int full_startup_producer_slot_and_flexzone(const std::string &dir)
                     pylabhub::hub::compute_schema_size(
                         params.out_fz_spec, params.out_packing)));
 
-            // M9 Phase 2: also populate the RoleAPIBase introspection
-            // cache (see file header L2 BYPASS PATTERN).
+            // Also populate the RoleAPIBase introspection cache (see
+            // file header BYPASS PATTERN).
             {
                 pylabhub::scripting::RoleAPIBase::FlexzoneIntrospection fz_info;
                 fz_info.has_tx_fz       = params.out_fz_spec.has_schema;
@@ -5583,8 +5584,8 @@ int slot_logical_size_complex_mixed_aligned(const std::string &dir)
 // L2 BYPASS — see file header `L2 BYPASS PATTERN` for details.
 // PURPOSE: verify PythonEngine's `api.flexzone_logical_size()` exposes
 //          the logical byte size and that slot/flexzone sizes are distinct.
-// POPULATES: core.set_out_slot_spec, core.set_out_fz_spec, +
-//            api->set_flexzone_introspection_ (Phase 2).
+// POPULATES: core.set_out_slot_spec, core.set_out_fz_spec,
+//            api->set_flexzone_introspection_.
 int flexzone_logical_size_array_fields(const std::string &dir)
 {
     // Slot (padding_schema, 16 bytes) + flex (fz_array_schema,
@@ -5621,13 +5622,10 @@ int flexzone_logical_size_array_fields(const std::string &dir)
             core.set_out_fz_spec(
                 SchemaSpec{fz_spec},
                 pylabhub::hub::align_to_physical_page(
-                    pylabhub::hub::compute_schema_size(fz_spec, "aligned")));
+                    pylabhub::hub::compute_schema_size(fz_spec, fz_spec.packing)));
 
-            // M9 Phase 2 (2026-05-24): ALSO populate the new RoleAPIBase
-            // introspection cache.  Today flexzone_logical_size() still
-            // reads from core; Phase 2.3 flips it to read from the cache.
-            // Test populates both during the transition; Phase 2.6 deletes
-            // the core path (see file header L2 BYPASS PATTERN).
+            // Also populate the RoleAPIBase introspection cache (see
+            // file header BYPASS PATTERN).
             {
                 pylabhub::scripting::RoleAPIBase::FlexzoneIntrospection fz_info;
                 fz_info.has_tx_fz       = fz_spec.has_schema;

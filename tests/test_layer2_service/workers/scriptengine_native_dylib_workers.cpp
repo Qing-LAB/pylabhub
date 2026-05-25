@@ -745,8 +745,8 @@ int full_startup_processor_multifield(const std::string &plugin_dir)
 // PURPOSE: full producer-engine startup with both slot + flexzone schemas
 //          configured (NativeEngine variant); verify type sizes + an
 //          end-to-end produce call.
-// POPULATES: core.set_out_slot_spec, core.set_out_fz_spec, +
-//            api->set_flexzone_introspection_ (Phase 2 TODO).
+// POPULATES: core.set_out_slot_spec, core.set_out_fz_spec,
+//            api->set_flexzone_introspection_.
 int full_startup_producer_slot_and_flexzone(const std::string &plugin_dir)
 {
     return run_ne_worker(
@@ -762,8 +762,8 @@ int full_startup_producer_slot_and_flexzone(const std::string &plugin_dir)
                                  pylabhub::hub::align_to_physical_page(
                                      pylabhub::hub::compute_schema_size(spec, spec.packing)));
 
-            // M9 Phase 2: also populate the RoleAPIBase introspection
-            // cache (see file header L2 BYPASS PATTERN).
+            // Also populate the RoleAPIBase introspection cache (see
+            // file header BYPASS PATTERN).
             {
                 pylabhub::scripting::RoleAPIBase::FlexzoneIntrospection fz_info;
                 fz_info.has_tx_fz       = spec.has_schema;

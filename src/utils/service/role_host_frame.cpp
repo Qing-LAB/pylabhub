@@ -39,17 +39,14 @@ RoleHostFrame::RoleHostFrame(config::RoleConfig    config,
 RoleHostFrame::~RoleHostFrame() = default;
 
 // Note: `has_rx_fz()` / `has_tx_fz()` are intentionally NOT on the frame.
-// Phase 1 had them here briefly (M9 step 2c), but the review (2026-05-23)
-// found zero callers — and per the Phase 2 design (M9_REFACTOR_CHECKLIST.md
-// §"Phase 2 API design"), they belong on `RoleAPIBase` (next to the
-// FlexzoneIntrospection cache the frame populates at setup time).  Phase 2
-// will add them there alongside the cache.
+// They belong on `RoleAPIBase` next to the FlexzoneIntrospection cache
+// the frame populates at setup time — script-side callers reach them
+// through the API, not the frame.
 
 // ============================================================================
 // setup_infrastructure_ — shared body, driven by presences_
 // ============================================================================
 //
-// Absorbed from the three per-role implementations in M9 step 2c.
 // `presences_` MUST be populated by the caller (each role's
 // `worker_main_` calls `build_presences_()` early).  Today asserts
 // at most 1 rx and 1 tx presence — when API surface grows multi-rx/tx
@@ -244,9 +241,7 @@ void RoleHostFrame::teardown_infrastructure_()
     // ever isn't, that's a serious lifecycle bug upstream — record it
     // via LOGGER_ERROR (not panic, since shutdown is the wrong time
     // to abort) and skip the calls (calling them on a null api_ would
-    // crash).  M9 step 2b (2026-05-22) consolidated the two historical
-    // `if (has_api())` checks into one block + added the diagnostic
-    // path.
+    // crash).
     if (has_api())
     {
         api().stop_handler_threads();

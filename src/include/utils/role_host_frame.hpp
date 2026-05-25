@@ -13,23 +13,6 @@
  * such variant member (CycleOps lives as a stack local inside
  * worker_main_, never as a member), so virtual hooks suffice.
  *
- * Migration plan (M9 step 2):
- *   - 2a (this commit): create the skeleton; the three role hosts
- *     inherit from this instead of RoleHostBase directly.  No
- *     behavior consolidation yet — each role host continues to
- *     implement its own worker_main_ / setup_infrastructure_ /
- *     teardown_infrastructure_.
- *   - 2b: absorb teardown_infrastructure_ into the frame (100%
- *     identical across the three roles today).
- *   - 2c: absorb setup_infrastructure_ into the frame (uses the
- *     shared make_tx_opts / make_rx_opts free functions shipped in
- *     commit d05ec247).
- *   - 2d: absorb worker_main_ into the frame; add build_presences_ +
- *     run_loop_ pure-virtual hooks; role hosts shrink to thin
- *     wrappers providing only the role-specific bits.
- *
- * Each sub-step leaves the tree green; each is independently
- * commit-able and revert-able.
  */
 
 #include "pylabhub_utils_export.h"
@@ -131,17 +114,17 @@ class PYLABHUB_UTILS_EXPORT RoleHostFrame : public RoleHostBase
     /// `config().inbox()` during `setup_infrastructure_`.
     config::InboxConfig              inbox_cfg_;
 
-    /// Canonical per-channel record list (M9 step 2c Phase 1).
-    /// Populated by `worker_main_` calling `build_presences_()` once
-    /// at startup.  Each Presence carries hub + channel + role_kind +
-    /// slot_spec + fz_spec — the **canonical** per-channel state.
+    /// Canonical per-channel record list.  Populated by `worker_main_`
+    /// calling `build_presences_()` once at startup.  Each Presence
+    /// carries hub + channel + role_kind + slot_spec + fz_spec — the
+    /// **canonical** per-channel state.
     ///
-    /// PHASE 1 NOTE: during the transitional shadow phase, RoleHostCore
-    /// also stores per-direction `*_slot_spec_` and `*_fz_spec_`
-    /// (populated by `worker_main_` from these presences).  Phase 2
-    /// will remove core's spec storage; downstream consumers
+    /// During the transitional shadow, RoleHostCore also stores
+    /// per-direction `*_slot_spec_` and `*_fz_spec_` (populated by
+    /// `worker_main_` from these presences); downstream consumers
     /// (RoleAPIBase introspection, engine_module_params, test fixtures)
-    /// will migrate to read from presences_ directly.
+    /// are being migrated to read from presences_ directly.  Tracked
+    /// as task #99.
     std::vector<scripting::Presence> presences_;
 
     /// Per-role presence-list extractor.  Each role implements once.
@@ -153,10 +136,9 @@ class PYLABHUB_UTILS_EXPORT RoleHostFrame : public RoleHostBase
     [[nodiscard]] virtual std::vector<scripting::Presence>
     build_presences_(const config::RoleConfig &config) const = 0;
 
-    /// Shared setup body (M9 step 2c Phase 1).  Reads from
-    /// `presences_` (which must be populated before this call —
-    /// `worker_main_` calls `build_presences_()` early).  Per design
-    /// doc §11.6.2.
+    /// Shared setup body.  Reads from `presences_` (which must be
+    /// populated before this call — `worker_main_` calls
+    /// `build_presences_()` early).  Per design doc §11.6.2.
     [[nodiscard]] bool setup_infrastructure_(const hub::SchemaSpec &inbox_spec);
 
   private:
