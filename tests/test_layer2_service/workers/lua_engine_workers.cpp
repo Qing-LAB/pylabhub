@@ -3990,12 +3990,19 @@ int run_logical_size_case(const std::string &dir,
                                      pylabhub::hub::align_to_physical_page(
                                          c.expected_fz));
 
-            // M9 Phase 2: also populate the RoleAPIBase introspection
-            // cache (see file header L2 BYPASS PATTERN).
+            // Also populate the RoleAPIBase introspection cache (see
+            // file header BYPASS PATTERN).  Compute via the same
+            // production path (compute_schema_size with the spec's own
+            // packing), so the assertion below — Lua reads back and
+            // compares to c.expected_fz — becomes a real correctness
+            // check on the layout function, not a tautology.
             {
                 pylabhub::scripting::RoleAPIBase::FlexzoneIntrospection fz_info;
                 fz_info.has_tx_fz       = has_fz;
-                fz_info.tx_logical_size = has_fz ? c.expected_fz : 0u;
+                fz_info.tx_logical_size = has_fz
+                    ? pylabhub::hub::compute_schema_size(c.fz_spec,
+                                                        c.fz_spec.packing)
+                    : 0u;
                 api->set_flexzone_introspection_(fz_info);
             }
 
