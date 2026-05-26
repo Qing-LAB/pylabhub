@@ -86,11 +86,11 @@ class PYLABHUB_UTILS_EXPORT ProducerRoleHost final : public scripting::RoleHostF
     void worker_main_() override;
 
     // ── Infrastructure setup (Layer 3) — inherited from RoleHostFrame ─────
-    // setup_infrastructure_  ← M9 step 2c (frame's body, uses presences_).
-    // teardown_infrastructure_ ← M9 step 2b (frame's body).
+    // setup_infrastructure_ / teardown_infrastructure_ live on the frame
+    // (shared across all role hosts).
 
-    /// Build the role's presence list (M9 step 2c).  Producer returns a
-    /// single Producer-kind presence on out_hub/out_channel with both
+    /// Build the role's presence list.  Producer returns a single
+    /// Producer-kind presence on out_hub/out_channel with both
     /// slot_spec and fz_spec resolved inline.
     [[nodiscard]] std::vector<scripting::Presence>
     build_presences_(const config::RoleConfig &config) const override;
@@ -98,16 +98,13 @@ class PYLABHUB_UTILS_EXPORT ProducerRoleHost final : public scripting::RoleHostF
     // ── Producer-specific members ────────────────────────────────────────────
     // Shared state — core_, config_, engine_, api_, ready_promise_ — lives in
     // RoleHostBase.  Inbox state (`inbox_queue_`, `inbox_cfg_`) lives in
-    // RoleHostFrame (M9 step 2b, 2026-05-22).
+    // RoleHostFrame.
 
-    // **PHASE 1 SHADOW** (M9 step 2c, 2026-05-23): legacy schema storage.
-    // The canonical home for per-channel schemas is `presences_[i].slot_spec`
-    // on RoleHostFrame; this member duplicates that for backward compat
-    // with downstream readers (~6 call sites in worker_main_ + the
-    // legacy step 1 schema-resolve that still populates it).  Phase 2
-    // removes this member + the legacy step 1 + the readers (they
-    // migrate to `presences_[i].slot_spec`).  See
-    // docs/todo/M9_REFACTOR_CHECKLIST.md §"Phase 2".
+    // Local cache of the resolved slot SchemaSpec.  Read by wire-emission
+    // code (REG payload composition) later in `worker_main_`; also fed into
+    // `core_.set_out_slot_spec()` and `params.out_slot_spec`.  Canonical
+    // home is `presences_[0].slot_spec` (see RoleHostFrame); kept here as
+    // the member that `worker_main_` initializes.
     hub::SchemaSpec                         out_slot_spec_;
 
     // Lifecycle module name (for UnloadModule on shutdown).

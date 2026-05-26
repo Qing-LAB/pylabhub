@@ -79,12 +79,13 @@ class PYLABHUB_UTILS_EXPORT ConsumerRoleHost final : public scripting::RoleHostF
     // ── Consumer-specific members ────────────────────────────────────────────
     // Shared state — core_, config_, engine_, api_, ready_promise_ — lives in
     // RoleHostBase.  Inbox state (`inbox_queue_`, `inbox_cfg_`) lives in
-    // RoleHostFrame (M9 step 2b, 2026-05-22).
+    // RoleHostFrame.
 
-    // **PHASE 1 SHADOW** (M9 step 2c, 2026-05-23): legacy schema storage.
-    // Canonical home is `presences_[i].slot_spec` on RoleHostFrame; this
-    // member duplicates that for backward compat.  Phase 2 removes it.
-    // See docs/todo/M9_REFACTOR_CHECKLIST.md §"Phase 2".
+    // Local cache of the resolved slot SchemaSpec.  Read by wire-emission
+    // code (REG payload composition) later in `worker_main_`; also fed into
+    // `core_.set_in_slot_spec()` and `params.in_slot_spec`.  Canonical home
+    // is `presences_[0].slot_spec` (see RoleHostFrame); kept here as the
+    // member that `worker_main_` initializes.
     hub::SchemaSpec                         in_slot_spec_;
 
     // Lifecycle module name (for UnloadModule on shutdown).

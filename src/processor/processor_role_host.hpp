@@ -80,24 +80,26 @@ class PYLABHUB_UTILS_EXPORT ProcessorRoleHost final : public scripting::RoleHost
     void worker_main_() override;
 
     // ── Infrastructure setup (Layer 3) — inherited from RoleHostFrame ─────
-    // setup_infrastructure_  ← M9 step 2c (frame's body, uses presences_).
-    // teardown_infrastructure_ ← M9 step 2b (frame's body).
+    // setup_infrastructure_ / teardown_infrastructure_ live on the frame
+    // (shared across all role hosts).
 
-    /// Build the role's presence list (M9 step 2c).  Processor returns
-    /// two presences: Consumer-kind on in_hub/in_channel + Producer-kind
-    /// on out_hub/out_channel.  Schemas resolved inline for each.
+    /// Build the role's presence list.  Processor returns two presences:
+    /// Consumer-kind on in_hub/in_channel + Producer-kind on out_hub/
+    /// out_channel.  Schemas resolved inline for each.
     [[nodiscard]] std::vector<scripting::Presence>
     build_presences_(const config::RoleConfig &config) const override;
 
     // ── Processor-specific members ───────────────────────────────────────────
     // Shared state — core_, config_, engine_, api_, ready_promise_ — lives in
     // RoleHostBase.  Inbox state (`inbox_queue_`, `inbox_cfg_`) lives in
-    // RoleHostFrame (M9 step 2b, 2026-05-22).
+    // RoleHostFrame.
 
-    // **PHASE 1 SHADOW** (M9 step 2c, 2026-05-23): legacy schema storage.
-    // Canonical home is `presences_[i].slot_spec` on RoleHostFrame; these
-    // members duplicate that for backward compat.  Phase 2 removes them.
-    // See docs/todo/M9_REFACTOR_CHECKLIST.md §"Phase 2".
+    // Local cache of the resolved slot SchemaSpecs (in + out side).  Read
+    // by wire-emission code (REG payload composition) later in
+    // `worker_main_`; also fed into `core_.set_{in,out}_slot_spec()` and
+    // `params.{in,out}_slot_spec`.  Canonical home is `presences_[i].slot_spec`
+    // (see RoleHostFrame); kept here as the members that `worker_main_`
+    // initializes.
     hub::SchemaSpec                         in_slot_spec_;
     hub::SchemaSpec                         out_slot_spec_;
 

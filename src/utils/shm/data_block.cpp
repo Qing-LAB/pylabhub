@@ -324,8 +324,7 @@ struct DataBlockLayout
 };
 
 // ============================================================================
-// Phase 2 refactoring: FlexibleZoneInfo and build_flexible_zone_info removed
-// Single flex zone design (N×4K), no need for multi-zone mapping
+// Single flex zone design (N×4K) — no multi-zone mapping needed.
 // ============================================================================
 
 // ============================================================================
