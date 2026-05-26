@@ -118,40 +118,53 @@ void ConsumerRoleHost::worker_main_()
                     sc.type, sc.type);
     }
 
-    // ── Step 1: Resolve schemas from config ──────────────────────────────────
-    // Resolves the slot + fz schemas locally, then stores the slot's
-    // logical size on RoleHostCore.  The fz spec rides into
-    // `params.in_fz_spec` for the engine and into the FlexzoneInfoCache
-    // via the frame at step 6.5.  `in_fz_local` is also used by the
-    // wire-emission reader later in this function.
-
+    // ── Step 1a: Build presences (single resolve of channel schemas) ─────────
+    // `build_presences_()` is the single resolver of channel schemas
+    // (slot + fz).  presences_[i] is the canonical per-channel home;
+    // every downstream consumer (wire-emission readers, params.*,
+    // FlexzoneInfoCache populate) reads from it.
     const std::filesystem::path base_path =
         sc.path.empty() ? std::filesystem::current_path()
                         : std::filesystem::weakly_canonical(sc.path);
     const std::filesystem::path script_dir = base_path / "script" / sc.type;
 
-    hub::SchemaSpec in_fz_local;
+    try
+    {
+        presences_ = build_presences_(config_);
+    }
+    catch (const std::exception &e)
+    {
+        LOGGER_ERROR("[cons] Schema parse error: {}", e.what());
+        promise_ref.set_value(false);
+        return;
+    }
+    // Consumer's build_presences_ returns exactly one Consumer-kind
+    // presence on in_hub/in_channel.
+    const auto &rx_presence = presences_[0];
+
+    // Local refs into the canonical presence — used by wire-emission
+    // readers + params + slot-size storage on core below.
+    in_slot_spec_ = rx_presence.slot_spec;
+    const hub::SchemaSpec &in_fz_local = rx_presence.fz_spec;
+
+    // ── Step 1b: Inbox schema (role-level, not per-channel) ──────────────────
+    // Inbox is not on a Presence (presences_ carries per-channel state).
+    // Resolved separately if configured.
     hub::SchemaSpec inbox_spec_local;
+    if (config_.inbox().has_inbox())
     {
         std::vector<std::string> schema_dirs;
         if (!hub.hub_dir.empty())
             schema_dirs.push_back(
                 (std::filesystem::path(hub.hub_dir) / "schemas").string());
-
         try
         {
-            const auto &cf = config_.role_data<consumer::ConsumerFields>();
-            in_slot_spec_ = hub::resolve_schema(
-                cf.in_slot_schema_json, false, "cons", schema_dirs);
-            in_fz_local = hub::resolve_schema(
-                cf.in_flexzone_schema_json, true, "cons", schema_dirs);
-            if (config_.inbox().has_inbox())
-                inbox_spec_local = hub::resolve_schema(
-                    config_.inbox().schema_json, false, "cons", schema_dirs);
+            inbox_spec_local = hub::resolve_schema(
+                config_.inbox().schema_json, false, "cons", schema_dirs);
         }
         catch (const std::exception &e)
         {
-            LOGGER_ERROR("[cons] Schema parse error: {}", e.what());
+            LOGGER_ERROR("[cons] Inbox schema parse error: {}", e.what());
             promise_ref.set_value(false);
             return;
         }
@@ -192,23 +205,6 @@ void ConsumerRoleHost::worker_main_()
     api_ref.set_checksum_policy(config_.checksum().policy);
     api_ref.set_stop_on_script_error(sc.stop_on_script_error);
     api_ref.set_engine(&engine_ref);
-
-    // ── Step 1c: Build presences ────────────────────────────────
-    // Populates the frame's `presences_` member.  build_presences_
-    // resolves schemas inline (the local resolve at Step 1 above is
-    // still used because wire-emission readers + `params.*` consume
-    // those locals; presences carry the same schemas in the canonical
-    // per-channel home for the frame's setup_infrastructure_ step).
-    try
-    {
-        presences_ = build_presences_(config_);
-    }
-    catch (const std::exception &e)
-    {
-        LOGGER_ERROR("[cons] build_presences_ failed: {}", e.what());
-        promise_ref.set_value(false);
-        return;
-    }
 
     // ── Step 2b: Setup infrastructure (inherited from RoleHostFrame) ─────────
     // Skipped in validate-only mode (no broker/queue needed).

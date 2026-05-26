@@ -117,26 +117,61 @@ void ProcessorRoleHost::worker_main_()
                     sc.type, sc.type);
     }
 
-    // ── Step 1: Resolve schemas from config ──────────────────────────────────
-    // Resolves slot + fz schemas for BOTH directions locally, then
-    // stores the slot logical sizes on RoleHostCore.  The fz specs ride
-    // into `params.{in,out}_fz_spec` for the engine and into the
-    // FlexzoneInfoCache via the frame at step 6.5.
+    // ── Step 1a: Build presences (single resolve of channel schemas) ─────────
+    // `build_presences_()` is the single resolver of channel schemas
+    // (slot + fz, both directions).  presences_[i] is the canonical
+    // per-channel home; every downstream consumer (wire-emission
+    // readers, params.*, FlexzoneInfoCache populate) reads from it.
     //
-    // SCHEMA-DIR SCOPING NOTE: this local resolve uses a COMBINED
-    // schema-dir search path covering both hubs (in and out).
-    // `build_presences_` below scopes the search path per-presence
-    // (each presence resolves only against its own hub's schemas dir).
-    // See the override comment on `build_presences_`.
-
+    // SCHEMA-DIR SCOPING: build_presences_ scopes the search path
+    // per-presence (each presence resolves only against its own
+    // hub's schemas dir).  See the override comment on
+    // `build_presences_` for details.
     const std::filesystem::path base_path =
         sc.path.empty() ? std::filesystem::current_path()
                         : std::filesystem::weakly_canonical(sc.path);
     const std::filesystem::path script_dir = base_path / "script" / sc.type;
 
-    hub::SchemaSpec out_fz_local;
-    hub::SchemaSpec in_fz_local;
+    try
+    {
+        presences_ = build_presences_(config_);
+    }
+    catch (const std::exception &e)
+    {
+        LOGGER_ERROR("[proc] Schema parse error: {}", e.what());
+        promise_ref.set_value(false);
+        return;
+    }
+    // Processor's build_presences_ returns two presences: one
+    // Consumer-kind (in side) + one Producer-kind (out side).  Look
+    // them up by role_kind so this code is order-independent.
+    const scripting::Presence *in_presence  = nullptr;
+    const scripting::Presence *out_presence = nullptr;
+    for (const auto &p : presences_)
+    {
+        if (p.role_kind == scripting::RoleKind::Consumer) in_presence  = &p;
+        else if (p.role_kind == scripting::RoleKind::Producer) out_presence = &p;
+    }
+    if (!in_presence || !out_presence)
+    {
+        LOGGER_ERROR("[proc] build_presences_ must return one Consumer + one Producer presence");
+        promise_ref.set_value(false);
+        return;
+    }
+    // Local refs into the canonical presences — used by wire-emission
+    // readers + params + slot-size storage on core below.
+    in_slot_spec_  = in_presence->slot_spec;
+    out_slot_spec_ = out_presence->slot_spec;
+    const hub::SchemaSpec &in_fz_local  = in_presence->fz_spec;
+    const hub::SchemaSpec &out_fz_local = out_presence->fz_spec;
+
+    // ── Step 1b: Inbox schema (role-level, not per-channel) ──────────────────
+    // Inbox is not on a Presence (presences_ carries per-channel state).
+    // Resolved separately if configured.  Uses the COMBINED schema-dir
+    // search path (both hubs' schemas/ dirs) because the inbox is a
+    // role-level concern not tied to either side.
     hub::SchemaSpec inbox_spec_local;
+    if (config_.inbox().has_inbox())
     {
         std::vector<std::string> schema_dirs;
         auto add_schema_dir = [&schema_dirs](const std::string &hub_dir) {
@@ -148,25 +183,14 @@ void ProcessorRoleHost::worker_main_()
         };
         add_schema_dir(config_.in_hub().hub_dir);
         add_schema_dir(config_.out_hub().hub_dir);
-
-        const auto &pf = config_.role_data<ProcessorFields>();
         try
         {
-            in_slot_spec_  = hub::resolve_schema(
-                pf.in_slot_schema_json, false, "proc", schema_dirs);
-            out_slot_spec_ = hub::resolve_schema(
-                pf.out_slot_schema_json, false, "proc", schema_dirs);
-            in_fz_local    = hub::resolve_schema(
-                pf.in_flexzone_schema_json, true, "proc", schema_dirs);
-            out_fz_local   = hub::resolve_schema(
-                pf.out_flexzone_schema_json, true, "proc", schema_dirs);
-            if (config_.inbox().has_inbox())
-                inbox_spec_local = hub::resolve_schema(
-                    config_.inbox().schema_json, false, "proc", schema_dirs);
+            inbox_spec_local = hub::resolve_schema(
+                config_.inbox().schema_json, false, "proc", schema_dirs);
         }
         catch (const std::exception &e)
         {
-            LOGGER_ERROR("[proc] Schema parse error: {}", e.what());
+            LOGGER_ERROR("[proc] Inbox schema parse error: {}", e.what());
             promise_ref.set_value(false);
             return;
         }
@@ -214,23 +238,6 @@ void ProcessorRoleHost::worker_main_()
     api_ref.set_checksum_policy(config_.checksum().policy);
     api_ref.set_stop_on_script_error(sc.stop_on_script_error);
     api_ref.set_engine(&engine_ref);
-
-    // ── Step 1c: Build presences ────────────────────────────────
-    // Populates the frame's `presences_` member.  build_presences_
-    // resolves schemas inline (the local resolve at Step 1 above is
-    // still used because wire-emission readers + `params.*` consume
-    // those locals; presences carry the same schemas in the canonical
-    // per-channel home for the frame's setup_infrastructure_ step).
-    try
-    {
-        presences_ = build_presences_(config_);
-    }
-    catch (const std::exception &e)
-    {
-        LOGGER_ERROR("[proc] build_presences_ failed: {}", e.what());
-        promise_ref.set_value(false);
-        return;
-    }
 
     // ── Step 2b: Setup infrastructure (inherited from RoleHostFrame) ─────────
     // Skipped in validate-only mode (no broker/queue needed).
