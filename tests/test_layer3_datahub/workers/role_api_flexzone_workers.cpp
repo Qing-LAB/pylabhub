@@ -250,20 +250,49 @@ int shm_roundtrip()
                 make_test_channel_name("fz_roundtrip"),
                 0xDEAD'BEEF'CAFE'1234ULL, "TEST");
 
-            // Flexzone contract: non-null + size == computed aligned size
-            // + has_shm true — on both Tx and Rx.
+            // Flexzone contract — three independent paths must agree:
+            //   pair.fz_size                       — test-computed expectation
+            //   flexzone_size(side)                — live ShmQueue's region span (from DataBlock)
+            //   flexzone_physical_size(side)       — FlexzoneInfoCache (populated by the bypass)
+            // And the cache-internal invariant must hold:
+            //   physical_size == align_to_physical_page(logical_size)
+            // Asserting these together cross-checks: (a) the test's
+            // expected size matches DataBlock's internal layout
+            // computation; (b) the cache matches the runtime queue;
+            // (c) the cache's two stored values are consistent.
+
             void *tx_fz = pair.prod->flexzone(ChannelSide::Tx);
             ASSERT_NE(tx_fz, nullptr)
                 << "Producer Tx flexzone must be non-null for SHM queue";
-            EXPECT_EQ(pair.prod->flexzone_size(ChannelSide::Tx), pair.fz_size);
             EXPECT_TRUE(pair.prod->tx_has_shm());
+
+            const size_t tx_queue_fz_sz   = pair.prod->flexzone_size(ChannelSide::Tx);
+            const size_t tx_cache_logical = pair.prod->flexzone_logical_size(ChannelSide::Tx);
+            const size_t tx_cache_physical= pair.prod->flexzone_physical_size(ChannelSide::Tx);
+            EXPECT_EQ(tx_queue_fz_sz,    pair.fz_size)
+                << "queue region size must match test computation";
+            EXPECT_EQ(tx_cache_physical, tx_queue_fz_sz)
+                << "cache physical_size must match the live queue region";
+            EXPECT_EQ(tx_cache_physical, hub::align_to_physical_page(tx_cache_logical))
+                << "cache invariant: physical == align_to_physical_page(logical)";
+            EXPECT_GT(tx_cache_logical, 0u)
+                << "logical size must be > 0 when fz_spec has a schema";
 
             void *rx_fz = pair.cons->flexzone(ChannelSide::Rx);
             ASSERT_NE(rx_fz, nullptr)
                 << "Consumer Rx flexzone must be non-null for SHM queue";
-            EXPECT_EQ(pair.cons->flexzone_size(ChannelSide::Rx), pair.fz_size)
-                << "Rx flexzone size must match Tx";
             EXPECT_TRUE(pair.cons->rx_has_shm());
+
+            const size_t rx_queue_fz_sz   = pair.cons->flexzone_size(ChannelSide::Rx);
+            const size_t rx_cache_logical = pair.cons->flexzone_logical_size(ChannelSide::Rx);
+            const size_t rx_cache_physical= pair.cons->flexzone_physical_size(ChannelSide::Rx);
+            EXPECT_EQ(rx_queue_fz_sz,    pair.fz_size)
+                << "Rx queue region size must match Tx";
+            EXPECT_EQ(rx_cache_physical, rx_queue_fz_sz)
+                << "Rx cache physical_size must match the live queue region";
+            EXPECT_EQ(rx_cache_physical, hub::align_to_physical_page(rx_cache_logical))
+                << "Rx cache invariant: physical == align_to_physical_page(logical)";
+            EXPECT_GT(rx_cache_logical, 0u);
 
             // T2: producer's sentinel reaches the consumer's Rx flexzone.
             const float sentinel = 42.5f;
