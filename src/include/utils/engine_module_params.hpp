@@ -11,6 +11,7 @@
  */
 
 #include "pylabhub_utils_export.h"
+#include "utils/role_api_base.hpp"
 #include "utils/script_engine.hpp"
 
 #include <filesystem>
@@ -60,5 +61,18 @@ PYLABHUB_UTILS_EXPORT void engine_lifecycle_startup(const char *arg, void *userd
 /// Lifecycle shutdown callback — finalizes the engine (idempotent).
 /// Receives EngineModuleParams* as userdata.
 PYLABHUB_UTILS_EXPORT void engine_lifecycle_shutdown(const char *arg, void *userdata);
+
+/// Validate the FlexzoneInfoCache against params' fz_specs.  Called at
+/// engine startup entry; exposed for direct testing.  Throws
+/// `std::runtime_error` with a diagnostic message if:
+///   - cache↔params has_*_fz disagrees (e.g. role host populated params
+///     but skipped the frame's cache populate), OR
+///   - cache's `*_physical_size != align_to_physical_page(*_logical_size)`
+///     for a side where `has_*_fz` is true.
+/// No-op (returns normally) on a correctly-populated cache.
+PYLABHUB_UTILS_EXPORT void validate_fz_info_cache(
+    const RoleAPIBase::FlexzoneInfoCache &cache,
+    const hub::SchemaSpec &in_fz_spec,
+    const hub::SchemaSpec &out_fz_spec);
 
 } // namespace pylabhub::scripting
