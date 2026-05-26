@@ -5593,6 +5593,11 @@ int flexzone_logical_size_array_fields(const std::string &dir)
     // Python-specific strengthening over V2: ALSO verify the two
     // are NOT equal (pins that each accessor returns its own side's
     // size, not a shared snapshot).
+    //
+    // The cache populate at the bottom of the C++ setup computes
+    // physical = align_to_physical_page(logical), so the C++-side
+    // EXPECT_GE assertion below (physical >= 24) implicitly pins
+    // that the page-alignment invariant holds on the populated cache.
     return run_python_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
