@@ -6,6 +6,22 @@
 
 ## Archive batches
 
+### 2026-05-26 (M9 refactor closure)
+
+Wave-B M9 (`RoleHostFrame` role-host unification) shipped end-to-end
+(commits `bc3f9340` through `53cf11be`).  Tasks #72 + #100 closed.
+One transient checklist moved to `docs/archive/transient-2026-05-26/`:
+
+* **`docs/todo/M9_REFACTOR_CHECKLIST.md`** — Phase-by-phase tracker
+  used during the multi-session refactor.  Phase 1 (Presence-driven
+  setup with shadow), Phase 2 (retire legacy `RoleHostCore` fz
+  storage; `FlexzoneInfoCache` becomes single source), Phase 3 (L2
+  Q2 + Q3 test rework) all complete.  Lasting architectural facts
+  merged into:
+    - `docs/TODO_MASTER.md` Arc B status row updated to `✅ M0..M9 shipped`.
+    - `docs/tech_draft/role_host_template_design.md` remains the
+      canonical design reference.
+
 ### 2026-05-21 (demo-harness session — audit + unified plan merge)
 
 Two transient docs from the multi-day demo-harness session merged
