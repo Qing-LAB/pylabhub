@@ -57,41 +57,42 @@ must use Pattern 1+ (`BinaryLifecycleEnvironment`) or Pattern 3
 
 ### Recent Completions
 
+- **Wave-B M9 (#72 + #100) — RoleHostFrame role-host unification** —
+  closed 2026-05-26.  `RoleHostFrame` plain class with shared
+  `setup_infrastructure_` / `teardown_infrastructure_` /
+  `wire_api_for_presences_` / `build_presences_`.  Legacy
+  `RoleHostCore::*_fz_spec_` storage retired; `FlexzoneInfoCache`
+  on `RoleAPIBase` carries both logical + physical sizes per side.
+  `presences_[i]` is the single canonical home for per-channel
+  schemas (single resolve via `build_presences_()`).
+  Q1+Q2+Q3 quality concerns from the 2026-05-22 fresh-eye review
+  all resolved:
+  - **Q1** (zmq_buffer_depth placement): unified `make_rx_opts`
+    free function in `role_config_translation.cpp` sets the field
+    only inside the `if (zmq)` branch on both sides.
+  - **Q2** (non-empty SchemaSpec field propagation): 3 new tests in
+    `test_layer2_setup_infrastructure_translation.cpp` pass a
+    2-field SchemaSpec and verify field-by-field propagation.
+  - **Q3** (`flexzone_checksum = config.flexzone && has_fz` AND-
+    gate): same 3 new tests verify `has_*_fz=false` forces
+    `opts.flexzone_checksum=false` even when `config.flexzone=true`.
+  New test binary: `test_layer2_engine_module_params` (9 tests)
+  covers `validate_fz_info_cache()` cache↔params and cache-internal
+  invariants.
+  Design doc: `docs/tech_draft/role_host_template_design.md`.
+
 - **N1 (#83) — config→opts translation L2 round-trip test** —
-  2026-05-22, commits TBD.  Closed the systemic gap that B5 + B11
-  came from.  Translation extracted into testable static methods
-  `ProducerRoleHost::make_tx_opts` / `ConsumerRoleHost::make_rx_opts` /
-  `ProcessorRoleHost::make_{rx,tx}_opts`.  New L2 test
-  `tests/test_layer2_service/test_setup_infrastructure_translation.cpp`
+  2026-05-22.  Closed the systemic gap that B5 + B11 came from.
+  Translation originally extracted into testable static methods
+  (`ProducerRoleHost::make_tx_opts` etc.); M9 collapsed those into
+  shared free functions in `scripting::make_{tx,rx}_opts` while
+  preserving the per-role wrappers for test stability.
+  L2 test `tests/test_layer2_service/test_setup_infrastructure_translation.cpp`
   exercises the full production round-trip:
-  `RoleDirectory::init_directory` → on-disk JSON → user edit → 
+  `RoleDirectory::init_directory` → on-disk JSON → user edit →
   `RoleConfig::load_from_directory` → `make_*_opts` → assert all
-  fields.  Mutation-sweep verified (deliberately breaking the
-  shared_secret copy / shm_name copy / data_transport="zmq" copy
-  each triggers the test with the correct B5/B11 regression
-  message).  6 tests (3 roles × 2 transports), all pass; demos
-  regress clean.
-
-  **Known-gap follow-up — folded into M9 (task #72)**: per the fresh-
-  eye review 2026-05-22, three quality concerns surfaced from the
-  `eb3eed36` extraction and have been incorporated into M9's expanded
-  scope rather than addressed in isolation (because M9 will collapse
-  the per-role static methods into shared free functions, making the
-  concerns disappear mechanically or one-test-fixes-three).  Concerns:
-  - **Q1**: `zmq_buffer_depth` placement inconsistency between
-    Consumer's and Processor's `make_rx_opts` — Consumer sets it
-    only inside `if (zmq)`, Processor sets it unconditionally.
-    Resolved at M9 collapse by unified `make_rx_opts` free function.
-  - **Q2**: SchemaSpec propagation test currently passes empty
-    `SchemaSpec` and asserts size-of-empty-vs-empty (always passes
-    even if the translation drops the copy).  Replaced at M9 by a
-    test with non-empty `SchemaSpec`.
-  - **Q3**: All current tests pass `has_fz=true`; the
-    `flexzone_checksum = config.flexzone && has_fz` expression is
-    never exercised with `has_fz=false`.  Replaced at M9 by adding
-    at least one `has_fz=false` case per direction.
-
-  Design doc: `docs/tech_draft/role_host_template_design.md` §11.6.
+  fields.  Mutation-sweep verified.  6 tests originally; 9 after
+  M9's Q2+Q3 additions.
 
 ### B8 (#81) — Demo-setup numpy pin
 

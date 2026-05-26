@@ -14,17 +14,16 @@ see `docs/DOC_STRUCTURE.md` §2.1.1.
 
 ### Ultimate goal — finish hub/broker renovation, ship dual-hub-capable plh_hub
 
-| Arc | Canonical doc | Status (verified 2026-05-22) |
+| Arc | Canonical doc | Status (verified 2026-05-26) |
 |---|---|---|
 | **Arc A — `plh_hub` renovation (HUB side)** | `docs/HEP/HEP-CORE-0033-Hub-Character.md` §15 Phase 1..10 | ✅ Phases 1-9 shipped; ⏳ Phase 10 doc closure (task #73, doc hygiene only) |
-| **Arc B — Role-host renovation (ROLE side)** | `docs/tech_draft/role_host_template_design.md` §14 Wave-B M0..M9 | ✅ M0..M8 shipped (M8 dual-hub processor binary-validated 2026-05-21 by demo framework); ⏳ M9 (`RoleHostFrame<HostT>` CRTP, task #72 — scope expanded 2026-05-22 per design doc §11.6–§11.8: also collapses `setup_infrastructure_` + per-role `make_*_opts` + `teardown_infrastructure_`; adds `wire_api_for_presences_` hook for multi-input-router extension; resolves Q1+Q2+Q3 quality concerns from fresh-eye review) |
+| **Arc B — Role-host renovation (ROLE side)** | `docs/tech_draft/role_host_template_design.md` §14 Wave-B M0..M9 | ✅ **M0..M9 shipped** (M9 closed 2026-05-26, tasks #72 + #100).  `RoleHostFrame` plain class with shared `setup_infrastructure_` / `teardown_infrastructure_` / `wire_api_for_presences_` / `build_presences_`.  Single-resolve schemas via `presences_`.  `FlexzoneInfoCache` on `RoleAPIBase` (logical + physical sizes; replaces legacy `RoleHostCore::*_fz_spec_` storage).  Q1+Q2+Q3 L2 coverage shipped (commit `53cf11be`). |
 
-**End-state:** dual-hub-capable system — fully functional `plh_hub`
-binary AND role binaries that register presences on multiple hubs,
-so a processor can run with input on hub-A + output on hub-B end-
-to-end.  M8 ships that capability today; M9 lifts the duplicated
-`worker_main_` into one CRTP template (code-quality, not new
-capability).
+**End-state achieved.**  Dual-hub-capable plh_hub + role binaries
+that register presences on multiple hubs (processor in/out on
+different hubs).  M8 shipped the capability; M9 collapsed the
+per-role worker_main_ duplication + retired legacy schema storage.
+Remaining production gap: HEP-CORE-0035 auth (task #74).
 
 ### Production-readiness gap
 
@@ -132,7 +131,6 @@ the demo inventory + manifest schema.
   (`README_Scripting_{Python,Lua,Native}.md`).
 - **#74** HEP-CORE-0035 auth implementation (only true production
   blocker).
-- **#72** Wave-B M9 `RoleHostFrame<HostT>` CRTP template.
 - **#73** HEP-CORE-0033 Phase 10 doc closure.
 
 **P4 — long tail (interleave when context permits)**:
