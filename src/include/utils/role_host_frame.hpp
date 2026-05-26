@@ -136,6 +136,23 @@ class PYLABHUB_UTILS_EXPORT RoleHostFrame : public RoleHostBase
     [[nodiscard]] virtual std::vector<scripting::Presence>
     build_presences_(const config::RoleConfig &config) const = 0;
 
+    /// Wire the role-API's channel name(s) from the presence list.
+    /// Default implementation handles the three current shapes:
+    ///   - 1 Producer presence       → api.set_channel(presence.channel)
+    ///   - 1 Consumer presence       → api.set_channel(presence.channel)
+    ///   - 1 Consumer + 1 Producer   → api.set_channel(consumer.channel)
+    ///                                 + api.set_out_channel(producer.channel)
+    /// Override only when standard presence-list-driven wiring doesn't
+    /// fit (e.g. a future N-input router with 3+ presences of mixed
+    /// kinds).  Per design doc §11.8.2.
+    ///
+    /// Pre-condition: `presences_` populated (caller in worker_main_
+    /// invokes after `build_presences_()`).
+    /// Post-condition: `api_->channel()` / `api_->out_channel()` set
+    /// per the shape above; ready for `setup_infrastructure_`.
+    virtual void wire_api_for_presences_(
+        const std::vector<scripting::Presence> &presences);
+
     /// Shared setup body.  Reads from `presences_` (which must be
     /// populated before this call — `worker_main_` calls
     /// `build_presences_()` early).  Per design doc §11.6.2.

@@ -198,7 +198,7 @@ void ConsumerRoleHost::worker_main_()
     // sequence.  `set_inbox_queue` stays AFTER setup_infrastructure_
     // because the inbox queue object is created there.
     api_ref.set_name(id.name);
-    api_ref.set_channel(config_.in_channel());
+    wire_api_for_presences_(presences_);  // sets channel from presences_
     api_ref.set_log_level(id.log_level);
     api_ref.set_script_dir(script_dir.string());
     api_ref.set_role_dir(config_.base_dir().string());
