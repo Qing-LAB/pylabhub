@@ -230,8 +230,7 @@ void ProcessorRoleHost::worker_main_()
     // sequence.  `set_inbox_queue` stays AFTER setup_infrastructure_
     // because the inbox queue object is created there.
     api_ref.set_name(config_.identity().name);
-    api_ref.set_channel(config_.in_channel());
-    api_ref.set_out_channel(config_.out_channel());
+    wire_api_for_presences_(presences_);  // sets channel + out_channel from presences_
     api_ref.set_log_level(config_.identity().log_level);
     api_ref.set_script_dir(script_dir.string());
     api_ref.set_role_dir(config_.base_dir().string());

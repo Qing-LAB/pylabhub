@@ -44,6 +44,49 @@ RoleHostFrame::~RoleHostFrame() = default;
 // through the API, not the frame.
 
 // ============================================================================
+// wire_api_for_presences_ — shared default impl, driven by presence role_kind
+// ============================================================================
+//
+// Maps presence.channel onto the api's channel name accessors.  Handles
+// the three current shapes (1-Producer, 1-Consumer, 1-Consumer+1-Producer);
+// concrete role hosts override only when their presence shape doesn't fit
+// the default mapping (future N-input router, etc.).
+
+void RoleHostFrame::wire_api_for_presences_(
+    const std::vector<scripting::Presence> &presences)
+{
+    auto &api_ref = api();
+
+    const scripting::Presence *cons = nullptr;
+    const scripting::Presence *prod = nullptr;
+    for (const auto &p : presences)
+    {
+        if (p.role_kind == scripting::RoleKind::Consumer)      cons = &p;
+        else if (p.role_kind == scripting::RoleKind::Producer) prod = &p;
+    }
+
+    if (cons && prod)
+    {
+        // Processor shape: consumer-side channel + producer-side out_channel.
+        api_ref.set_channel(cons->channel);
+        api_ref.set_out_channel(prod->channel);
+    }
+    else if (prod)
+    {
+        // Producer-only shape: single channel = the producer's channel.
+        api_ref.set_channel(prod->channel);
+    }
+    else if (cons)
+    {
+        // Consumer-only shape: single channel = the consumer's channel.
+        api_ref.set_channel(cons->channel);
+    }
+    // Else: presences empty — leave api channel state untouched.  Caller
+    // will observe the missing wiring at setup_infrastructure_ (which
+    // refuses to build queues for empty presence lists).
+}
+
+// ============================================================================
 // setup_infrastructure_ — shared body, driven by presences_
 // ============================================================================
 //
