@@ -135,7 +135,7 @@ class HubConnection;
 ///  - `hub`, `channel`, `role_kind`, `slot_spec`, `fz_spec`
 ///                                   set at construction time by the
 ///                                   role's `build_presences_()`
-///                                   override (M9 step 2c, 2026-05-22).
+///                                   override.
 ///                                   The override resolves schemas
 ///                                   from on-disk files using the
 ///                                   presence's own `hub.hub_dir`
@@ -144,7 +144,7 @@ class HubConnection;
 ///                                   `RoleHandler::build_connections_()`;
 ///                                   NEVER reassigned after that.
 ///
-/// **Per-presence schemas (added M9 step 2c, 2026-05-22)**:
+/// **Per-presence schemas**:
 /// `slot_spec` and `fz_spec` are the parsed `SchemaSpec` for THIS
 /// presence's channel.  They were previously stored as per-direction
 /// members on the role host (`in_slot_spec_` / `out_slot_spec_`) and

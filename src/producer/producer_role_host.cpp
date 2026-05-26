@@ -125,13 +125,11 @@ void ProducerRoleHost::worker_main_()
     }
 
     // ── Step 1: Resolve schemas from config ──────────────────────────────────
-    // **PHASE 1 SHADOW** (M9 step 2c, 2026-05-23): this block still
-    // resolves schemas + populates the legacy storage
-    // (`out_slot_spec_`, `core_.set_out_fz_spec()`).  The canonical
-    // schemas now live in `presences_[i]` (populated by `build_presences_()`
-    // at step 1c below).  Phase 2 removes this entire block; the 6
-    // downstream readers in this file migrate to read from `presences_`.
-    // See docs/todo/M9_REFACTOR_CHECKLIST.md §"Phase 2".
+    // Resolves the slot + fz schemas locally, then stores the slot's
+    // logical size on RoleHostCore (the slot accessor surface).  The
+    // fz spec rides into `params.out_fz_spec` for the engine and into
+    // the FlexzoneInfoCache via the frame at step 6.5.  `out_fz_local`
+    // is also used by wire-emission readers later in this function.
 
     const std::filesystem::path base_path =
         sc.path.empty() ? std::filesystem::current_path()
@@ -171,15 +169,12 @@ void ProducerRoleHost::worker_main_()
     const std::string packing =
         out_slot_spec_.has_schema ? out_slot_spec_.packing : "aligned";
 
-    // Compute and store sizes (infrastructure-authoritative).
+    // Compute and store slot logical size on core (infrastructure-authoritative).
+    // Flexzone sizes live on RoleAPIBase::FlexzoneInfoCache, populated by
+    // RoleHostFrame::setup_infrastructure_ step 6.5 from the presence's fz_spec.
     if (out_slot_spec_.has_schema)
         core_.set_out_slot_spec(hub::SchemaSpec{out_slot_spec_},
                                 hub::compute_schema_size(out_slot_spec_, packing));
-    {
-        size_t fz_size = hub::align_to_physical_page(
-            hub::compute_schema_size(out_fz_local, packing));
-        core_.set_out_fz_spec(hub::SchemaSpec{out_fz_local}, fz_size);
-    }
 
     // ── Step 2a: Wire api_ identity + config (no infrastructure deps) ────────
     //
@@ -206,11 +201,12 @@ void ProducerRoleHost::worker_main_()
     api_ref.set_stop_on_script_error(sc.stop_on_script_error);
     api_ref.set_engine(&engine_ref);
 
-    // ── Step 1c: Build presences (M9 step 2c) ────────────────────────────────
-    // Populates the frame's `presences_` member.  build_presences_ resolves
-    // schemas inline.  PHASE 1 NOTE: schemas were ALSO resolved above into
-    // out_slot_spec_ (legacy storage); Phase 2 will collapse the two and
-    // remove the legacy member.
+    // ── Step 1c: Build presences ────────────────────────────────
+    // Populates the frame's `presences_` member.  build_presences_
+    // resolves schemas inline (the local resolve at Step 1 above is
+    // still used because wire-emission readers + `params.*` consume
+    // those locals; presences carry the same schemas in the canonical
+    // per-channel home for the frame's setup_infrastructure_ step).
     try
     {
         presences_ = build_presences_(config_);
@@ -294,7 +290,7 @@ void ProducerRoleHost::worker_main_()
     engine_ref.invoke_on_init();
 
     // Sync flexzone checksum after on_init (user may have written to flexzone).
-    if (api_ref.has_tx_side() && core_.has_tx_fz())
+    if (api_ref.has_tx_side() && api_ref.has_tx_fz())
         api_ref.sync_tx_flexzone_checksum();
 
     // ── Step 6: Connect to broker, start handler ctrl thread(s), register
@@ -447,11 +443,11 @@ ProducerRoleHost::make_tx_opts(const config::RoleConfig &config,
 
 // ============================================================================
 // setup_infrastructure_ + teardown_infrastructure_ — inherited from
-// RoleHostFrame (M9 step 2b + 2c).  See src/utils/service/role_host_frame.cpp.
+// RoleHostFrame.  See src/utils/service/role_host_frame.cpp.
 // ============================================================================
 
 // ============================================================================
-// build_presences_ — Producer's per-role override (M9 step 2c, 2026-05-23)
+// build_presences_ — Producer's per-role override
 // ============================================================================
 //
 // Returns a single Producer-kind presence on out_hub/out_channel.

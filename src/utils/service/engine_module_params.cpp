@@ -53,13 +53,24 @@ void engine_lifecycle_startup(const char * /*arg*/, void *userdata)
             throw std::runtime_error("register OutFlexFrame failed");
     }
 
-    // Flexzone specs must be set by role host before engine startup.
-    assert(!p->in_fz_spec.has_schema ||
-           (p->api->core() && p->api->core()->has_rx_fz() &&
-            p->api->core()->in_schema_fz_size() % PYLABHUB_PHYSICAL_PAGE_SIZE == 0));
-    assert(!p->out_fz_spec.has_schema ||
-           (p->api->core() && p->api->core()->has_tx_fz() &&
-            p->api->core()->out_schema_fz_size() % PYLABHUB_PHYSICAL_PAGE_SIZE == 0));
+    // Pre-startup invariants on the flexzone introspection cache.  The
+    // cache is populated by RoleHostFrame at step 6.5 from each presence's
+    // fz_spec.  Two parallel sources exist (params.fz_spec from worker_main_'s
+    // local resolve; cache from build_presences_); both should agree.
+    {
+        const auto &fz = p->api->fz_info_cache();
+        // (a) Cache vs params consistency — catches a role host that
+        // populates params but skips the frame's cache populate.
+        assert(fz.has_tx_fz == p->out_fz_spec.has_schema);
+        assert(fz.has_rx_fz == p->in_fz_spec.has_schema);
+        // (b) Single canonical invariant: physical == align(logical).
+        // Subsumes the page-alignment property and catches drift
+        // between the two cached values.
+        assert(!fz.has_tx_fz ||
+               fz.tx_physical_size == hub::align_to_physical_page(fz.tx_logical_size));
+        assert(!fz.has_rx_fz ||
+               fz.rx_physical_size == hub::align_to_physical_page(fz.rx_logical_size));
+    }
 
     if (p->inbox_spec.has_schema)
     {
@@ -86,12 +97,12 @@ void engine_lifecycle_startup(const char * /*arg*/, void *userdata)
             check("InSlotFrame", core->in_slot_logical_size());
         if (core->has_out_slot())
             check("OutSlotFrame", core->out_slot_logical_size());
-        if (core->has_rx_fz())
+        if (p->in_fz_spec.has_schema)
         {
             size_t fz_logical = hub::compute_schema_size(p->in_fz_spec, p->in_packing);
             check("InFlexFrame", fz_logical);
         }
-        if (core->has_tx_fz())
+        if (p->out_fz_spec.has_schema)
         {
             size_t fz_logical = hub::compute_schema_size(p->out_fz_spec, p->out_packing);
             check("OutFlexFrame", fz_logical);

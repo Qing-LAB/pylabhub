@@ -9,7 +9,7 @@
  *   - External shutdown flag (set_shutdown_flag, is_process_exit_requested)
  *   - Metric counters (inc_*, read, accumulation)
  *   - Message queue (enqueue, drain, overflow at kMaxIncomingQueue)
- *   - Init-time state (validate_only, script_load_ok, fz_spec)
+ *   - Init-time state (validate_only, script_load_ok)
  *   - Cross-thread metric visibility (write on one thread, read on another)
  */
 
@@ -169,10 +169,6 @@ TEST_F(RoleHostCoreTest, DefaultState_AllZero)
 
     EXPECT_FALSE(core_.is_validate_only());
     EXPECT_FALSE(core_.is_script_load_ok());
-    EXPECT_FALSE(core_.has_rx_fz());
-    EXPECT_FALSE(core_.has_tx_fz());
-    EXPECT_EQ(core_.in_schema_fz_size(), 0u);
-    EXPECT_EQ(core_.out_schema_fz_size(), 0u);
     EXPECT_FALSE(core_.is_process_exit_requested());
 }
 
@@ -425,56 +421,11 @@ TEST_F(RoleHostCoreTest, ScriptLoadOk_CrossThread)
     EXPECT_TRUE(core_.is_script_load_ok());
 }
 
-TEST_F(RoleHostCoreTest, OutFzSpec_SetAndRead)
-{
-    EXPECT_FALSE(core_.has_tx_fz());
-    EXPECT_EQ(core_.out_schema_fz_size(), 0u);
-
-    pylabhub::hub::SchemaSpec spec;
-    spec.has_schema = true;
-    spec.packing    = "aligned";
-
-    core_.set_out_fz_spec(std::move(spec), 8192);
-
-    EXPECT_TRUE(core_.has_tx_fz());
-    EXPECT_EQ(core_.out_schema_fz_size(), 8192u);
-    EXPECT_TRUE(core_.out_fz_spec().has_schema);
-    EXPECT_EQ(core_.out_fz_spec().packing, "aligned");
-}
-
-TEST_F(RoleHostCoreTest, InFzSpec_SetAndRead)
-{
-    EXPECT_FALSE(core_.has_rx_fz());
-    EXPECT_EQ(core_.in_schema_fz_size(), 0u);
-
-    pylabhub::hub::SchemaSpec spec;
-    spec.has_schema = true;
-    spec.packing    = "packed";
-
-    core_.set_in_fz_spec(std::move(spec), 4096);
-
-    EXPECT_TRUE(core_.has_rx_fz());
-    EXPECT_EQ(core_.in_schema_fz_size(), 4096u);
-    EXPECT_TRUE(core_.in_fz_spec().has_schema);
-    EXPECT_EQ(core_.in_fz_spec().packing, "packed");
-}
-
-TEST_F(RoleHostCoreTest, FzSpec_NoSchema_HasFzFalse)
-{
-    pylabhub::hub::SchemaSpec spec;
-    spec.has_schema = false;
-
-    core_.set_out_fz_spec(std::move(spec), 0);
-    EXPECT_FALSE(core_.has_tx_fz());
-    EXPECT_EQ(core_.out_schema_fz_size(), 0u);
-
-    pylabhub::hub::SchemaSpec spec2;
-    spec2.has_schema = false;
-
-    core_.set_in_fz_spec(std::move(spec2), 0);
-    EXPECT_FALSE(core_.has_rx_fz());
-    EXPECT_EQ(core_.in_schema_fz_size(), 0u);
-}
+// Flexzone spec storage was removed from RoleHostCore; the per-side
+// flexzone introspection lives on RoleAPIBase::FlexzoneInfoCache,
+// populated by RoleHostFrame::setup_infrastructure_ from the
+// presence's fz_spec.  Coverage moved to L3 flexzone tests + L2
+// FlexzoneInfoCache populates in engine workers.
 
 // ============================================================================
 // Shared data

@@ -28,20 +28,17 @@
  *
  *   CANONICAL STORAGE THESE BYPASSES POPULATE (keep in sync with
  *   production!):
- *     - `RoleHostCore::set_out_slot_spec()` (producer side)
- *     - `RoleHostCore::set_out_fz_spec()`   (producer side; during
- *                                            the transitional shadow)
- *     - `RoleHostCore::set_in_slot_spec()`  (consumer side)
- *     - `RoleHostCore::set_in_fz_spec()`    (consumer side; same)
- *     - `RoleAPIBase::set_flexzone_introspection_()`
+ *     - `RoleHostCore::set_out_slot_spec()` (producer side; slot only)
+ *     - `RoleHostCore::set_in_slot_spec()`  (consumer side; slot only)
+ *     - `RoleAPIBase::set_flexzone_info_cache_()` (both sides;
+ *                                                  logical + physical fz)
  *
  *   RE-EXAMINE WHEN:
- *     - Canonical introspection storage moves again (verify the
- *       core.set_*_fz_spec calls + the introspection-cache populate
+ *     - Canonical fz/slot storage moves again (verify the populates
  *       still match the locations production writes to).
  *     - Annually as part of test-debt review.
  *
- *   FUNCTIONS THIS PATTERN COVERS (grep `core.set_(in|out)_fz_spec`):
+ *   FUNCTIONS THIS PATTERN COVERS:
  *     - `build_payload_pair`  (helper used by SHM data-plane tests)
  *     - `shm_consumer_wrong_secret_rejected`
  *     - `shm_slot_checksum_corrupt_detected`
@@ -181,21 +178,22 @@ void build_payload_pair(PayloadPair &out,
     tx_opts.shm_config.checksum_policy = opts.checksum_policy;
     tx_opts.flexzone_checksum = opts.flexzone_checksum;
 
-    out.prod_core.set_out_fz_spec(hub::SchemaSpec{fz_spec}, out.fz_size);
     out.prod = std::make_unique<RoleAPIBase>(
         out.prod_core, "prod", std::string("prod.fz.") + uid_tag);
     out.prod->set_channel(channel);
     out.prod->set_name("fz-prod");
-    // Populate the RoleAPIBase introspection cache so the script-visible
-    // `api.flexzone_logical_size()` accessor returns the correct value.
-    // Producer presence → has_tx_fz side.  See file-header BYPASS
-    // PATTERN block for the keep-in-sync inventory.
+    // Populate the FlexzoneInfoCache (see file-header BYPASS PATTERN).
+    // Mirrors RoleHostFrame::setup_infrastructure_ step 6.5: logical =
+    // compute_schema_size; physical = align_to_physical_page(logical).
+    // Producer presence → tx side.
     {
-        RoleAPIBase::FlexzoneIntrospection fz_info;
-        fz_info.has_tx_fz       = fz_spec.has_schema;
-        fz_info.tx_logical_size =
+        RoleAPIBase::FlexzoneInfoCache fz_info;
+        fz_info.has_tx_fz        = fz_spec.has_schema;
+        fz_info.tx_logical_size  =
             hub::compute_schema_size(fz_spec, fz_spec.packing);
-        out.prod->set_flexzone_introspection_(fz_info);
+        fz_info.tx_physical_size =
+            hub::align_to_physical_page(fz_info.tx_logical_size);
+        out.prod->set_flexzone_info_cache_(fz_info);
     }
     ASSERT_TRUE(out.prod->build_tx_queue(tx_opts));
     ASSERT_TRUE(out.prod->start_tx_queue());
@@ -209,21 +207,20 @@ void build_payload_pair(PayloadPair &out,
     rx_opts.checksum_policy   = opts.checksum_policy;
     rx_opts.flexzone_checksum = opts.flexzone_checksum;
 
-    out.cons_core.set_in_fz_spec(hub::SchemaSpec{fz_spec}, out.fz_size);
     out.cons = std::make_unique<RoleAPIBase>(
         out.cons_core, "cons", std::string("cons.fz.") + uid_tag);
     out.cons->set_channel(channel);
     out.cons->set_name("fz-cons");
-    // Populate the RoleAPIBase introspection cache so the script-visible
-    // `api.flexzone_logical_size()` accessor returns the correct value.
-    // Consumer presence → has_rx_fz side.  See file-header BYPASS
-    // PATTERN block for the keep-in-sync inventory.
+    // Populate the FlexzoneInfoCache (see file-header BYPASS PATTERN).
+    // Consumer presence → rx side.
     {
-        RoleAPIBase::FlexzoneIntrospection fz_info;
-        fz_info.has_rx_fz       = fz_spec.has_schema;
-        fz_info.rx_logical_size =
+        RoleAPIBase::FlexzoneInfoCache fz_info;
+        fz_info.has_rx_fz        = fz_spec.has_schema;
+        fz_info.rx_logical_size  =
             hub::compute_schema_size(fz_spec, fz_spec.packing);
-        out.cons->set_flexzone_introspection_(fz_info);
+        fz_info.rx_physical_size =
+            hub::align_to_physical_page(fz_info.rx_logical_size);
+        out.cons->set_flexzone_info_cache_(fz_info);
     }
     ASSERT_TRUE(out.cons->build_rx_queue(rx_opts));
     ASSERT_TRUE(out.cons->start_rx_queue());
@@ -681,15 +678,22 @@ int shm_consumer_wrong_secret_rejected()
             const std::string channel = make_test_channel_name("fz_wrong_secret");
             const uint64_t    secret  = 0xA5A5'5A5A'DEAD'BEEFULL;
 
-            const size_t fz_size = hub::align_to_physical_page(
-                hub::compute_schema_size(fz_spec, fz_spec.packing));
+            // Pre-compute both fz sizes once; pass each side to its cache.
+            const size_t fz_logical  = hub::compute_schema_size(fz_spec, fz_spec.packing);
+            const size_t fz_physical = hub::align_to_physical_page(fz_logical);
 
             RoleHostCore prod_core;
-            prod_core.set_out_fz_spec(hub::SchemaSpec{fz_spec}, fz_size);
             auto prod = std::make_unique<RoleAPIBase>(
                 prod_core, "prod", "prod.fz.wrong");
             prod->set_channel(channel);
             prod->set_name("fz-wrong-prod");
+            {
+                RoleAPIBase::FlexzoneInfoCache fz_info;
+                fz_info.has_tx_fz        = fz_spec.has_schema;
+                fz_info.tx_logical_size  = fz_logical;
+                fz_info.tx_physical_size = fz_physical;
+                prod->set_flexzone_info_cache_(fz_info);
+            }
             ASSERT_TRUE(prod->build_tx_queue(
                 make_producer_opts(slot_spec, fz_spec, secret)));
             ASSERT_TRUE(prod->start_tx_queue());
@@ -701,11 +705,17 @@ int shm_consumer_wrong_secret_rejected()
 
             // Consumer attempts attach with WRONG secret.  Must fail.
             RoleHostCore cons_core;
-            cons_core.set_in_fz_spec(hub::SchemaSpec{fz_spec}, fz_size);
             auto cons = std::make_unique<RoleAPIBase>(
                 cons_core, "cons", "cons.fz.wrong");
             cons->set_channel(channel);
             cons->set_name("fz-wrong-cons");
+            {
+                RoleAPIBase::FlexzoneInfoCache fz_info;
+                fz_info.has_rx_fz        = fz_spec.has_schema;
+                fz_info.rx_logical_size  = fz_logical;
+                fz_info.rx_physical_size = fz_physical;
+                cons->set_flexzone_info_cache_(fz_info);
+            }
 
             auto bad_opts = make_consumer_opts(channel, slot_spec,
                                                 secret ^ 1ULL);
@@ -807,16 +817,22 @@ int shm_slot_checksum_corrupt_detected()
             const std::string channel = make_test_channel_name("fz_csum_corrupt");
             const uint64_t    secret  = 0xBADD'C0DE'DEAD'BEEFULL;
 
-            const size_t fz_size = hub::align_to_physical_page(
-                hub::compute_schema_size(fz_spec, fz_spec.packing));
+            const size_t fz_logical  = hub::compute_schema_size(fz_spec, fz_spec.packing);
+            const size_t fz_physical = hub::align_to_physical_page(fz_logical);
 
             // Producer: enforced slot checksum.
             RoleHostCore prod_core;
-            prod_core.set_out_fz_spec(hub::SchemaSpec{fz_spec}, fz_size);
             auto prod = std::make_unique<RoleAPIBase>(
                 prod_core, "prod", "prod.fz-csum.bad");
             prod->set_channel(channel);
             prod->set_name("fz-csum-bad-prod");
+            {
+                RoleAPIBase::FlexzoneInfoCache fz_info;
+                fz_info.has_tx_fz        = fz_spec.has_schema;
+                fz_info.tx_logical_size  = fz_logical;
+                fz_info.tx_physical_size = fz_physical;
+                prod->set_flexzone_info_cache_(fz_info);
+            }
 
             hub::TxQueueOptions opts = make_producer_opts(slot_spec, fz_spec,
                                                            secret);
@@ -844,11 +860,17 @@ int shm_slot_checksum_corrupt_detected()
 
             // Consumer attaches with enforced verify.
             RoleHostCore cons_core;
-            cons_core.set_in_fz_spec(hub::SchemaSpec{fz_spec}, fz_size);
             auto cons = std::make_unique<RoleAPIBase>(
                 cons_core, "cons", "cons.fz-csum.bad");
             cons->set_channel(channel);
             cons->set_name("fz-csum-bad-cons");
+            {
+                RoleAPIBase::FlexzoneInfoCache fz_info;
+                fz_info.has_rx_fz        = fz_spec.has_schema;
+                fz_info.rx_logical_size  = fz_logical;
+                fz_info.rx_physical_size = fz_physical;
+                cons->set_flexzone_info_cache_(fz_info);
+            }
 
             hub::RxQueueOptions rx_opts = make_consumer_opts(channel, slot_spec,
                                                               secret);
@@ -918,15 +940,21 @@ int shm_flexzone_checksum_corrupt_detected()
             const std::string channel = make_test_channel_name("fz_fz_csum_corrupt");
             const uint64_t    secret  = 0xBADD'F00D'FACE'D00DULL;
 
-            const size_t fz_size = hub::align_to_physical_page(
-                hub::compute_schema_size(fz_spec, fz_spec.packing));
+            const size_t fz_logical  = hub::compute_schema_size(fz_spec, fz_spec.packing);
+            const size_t fz_physical = hub::align_to_physical_page(fz_logical);
 
             RoleHostCore prod_core;
-            prod_core.set_out_fz_spec(hub::SchemaSpec{fz_spec}, fz_size);
             auto prod = std::make_unique<RoleAPIBase>(
                 prod_core, "prod", "prod.fz-fz-csum.bad");
             prod->set_channel(channel);
             prod->set_name("fz-fz-csum-bad-prod");
+            {
+                RoleAPIBase::FlexzoneInfoCache fz_info;
+                fz_info.has_tx_fz        = fz_spec.has_schema;
+                fz_info.tx_logical_size  = fz_logical;
+                fz_info.tx_physical_size = fz_physical;
+                prod->set_flexzone_info_cache_(fz_info);
+            }
 
             // Enforced slot checksum + flexzone checksum enabled.  Slot
             // checksum is incidental here — the flexzone counter is the
@@ -948,7 +976,7 @@ int shm_flexzone_checksum_corrupt_detected()
             // Write flexzone, then update its checksum (stored in header).
             auto *fz = static_cast<uint8_t*>(prod->flexzone(ChannelSide::Tx));
             ASSERT_NE(fz, nullptr);
-            std::memset(fz, 0xA5, fz_size);
+            std::memset(fz, 0xA5, fz_physical);
             ASSERT_TRUE(prod->update_flexzone_checksum())
                 << "update_flexzone_checksum must succeed";
 
@@ -961,11 +989,17 @@ int shm_flexzone_checksum_corrupt_detected()
 
             // Consumer: enforced slot verify + flexzone verify.
             RoleHostCore cons_core;
-            cons_core.set_in_fz_spec(hub::SchemaSpec{fz_spec}, fz_size);
             auto cons = std::make_unique<RoleAPIBase>(
                 cons_core, "cons", "cons.fz-fz-csum.bad");
             cons->set_channel(channel);
             cons->set_name("fz-fz-csum-bad-cons");
+            {
+                RoleAPIBase::FlexzoneInfoCache fz_info;
+                fz_info.has_rx_fz        = fz_spec.has_schema;
+                fz_info.rx_logical_size  = fz_logical;
+                fz_info.rx_physical_size = fz_physical;
+                cons->set_flexzone_info_cache_(fz_info);
+            }
 
             hub::RxQueueOptions rx_opts = make_consumer_opts(channel, slot_spec,
                                                               secret);

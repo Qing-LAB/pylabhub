@@ -39,7 +39,7 @@ RoleHostFrame::RoleHostFrame(config::RoleConfig    config,
 RoleHostFrame::~RoleHostFrame() = default;
 
 // Note: `has_rx_fz()` / `has_tx_fz()` are intentionally NOT on the frame.
-// They belong on `RoleAPIBase` next to the FlexzoneIntrospection cache
+// They belong on `RoleAPIBase` next to the FlexzoneInfoCache
 // the frame populates at setup time — script-side callers reach them
 // through the API, not the frame.
 
@@ -157,28 +157,33 @@ bool RoleHostFrame::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
         static_cast<uint64_t>(config_.timing().period_us));
 
     // ── 6.5 Flexzone introspection cache on RoleAPIBase ──
-    // Populate exactly once, after build_*_queue succeeds.  The cache
-    // stores derived scalars (logical size + has flag per side), not
-    // the full SchemaSpec.  Script-API calls (flexzone_logical_size,
-    // has_*_fz) at step 5+ read from this cache.  See linear-forward-
-    // time contract on RoleAPIBase::FlexzoneIntrospection.
+    // Populate exactly once, after build_*_queue succeeds.  Per side:
+    //   logical  = compute_schema_size(spec, packing)        (struct size)
+    //   physical = align_to_physical_page(logical)            (SHM region)
+    // Both derived from the same Presence::fz_spec.  Script-API readers
+    // (flexzone_{logical,physical}_size, has_*_fz, fz_info_cache)
+    // see them at step 5+.  Invariant checked at engine startup entry.
     {
-        RoleAPIBase::FlexzoneIntrospection fz_info;
+        RoleAPIBase::FlexzoneInfoCache fz_info;
         if (tx_presence)
         {
-            fz_info.has_tx_fz       = tx_presence->fz_spec.has_schema;
-            fz_info.tx_logical_size =
+            fz_info.has_tx_fz        = tx_presence->fz_spec.has_schema;
+            fz_info.tx_logical_size  =
                 hub::compute_schema_size(tx_presence->fz_spec,
                                          tx_presence->fz_spec.packing);
+            fz_info.tx_physical_size =
+                hub::align_to_physical_page(fz_info.tx_logical_size);
         }
         if (rx_presence)
         {
-            fz_info.has_rx_fz       = rx_presence->fz_spec.has_schema;
-            fz_info.rx_logical_size =
+            fz_info.has_rx_fz        = rx_presence->fz_spec.has_schema;
+            fz_info.rx_logical_size  =
                 hub::compute_schema_size(rx_presence->fz_spec,
                                          rx_presence->fz_spec.packing);
+            fz_info.rx_physical_size =
+                hub::align_to_physical_page(fz_info.rx_logical_size);
         }
-        api_ref.set_flexzone_introspection_(fz_info);
+        api_ref.set_flexzone_info_cache_(fz_info);
     }
 
     // ── 7. Startup log lines (per direction) ──
