@@ -418,9 +418,9 @@ struct SlotWriteHandleImpl;
 struct SlotConsumeHandleImpl;
 
 /**
- * @note Phase 2 refactoring (2026-02-15): FlexibleZoneInfo struct removed.
- *       Single flexible zone design no longer requires this structure.
- *       Use DataBlockProducer::flexible_zone_span() for single zone access.
+ * @note Single flexible zone design: there is no per-zone metadata struct
+ *       (no FlexibleZoneInfo).  Use DataBlockProducer::flexible_zone_span()
+ *       for the single-zone byte view.
  */
 
 /**

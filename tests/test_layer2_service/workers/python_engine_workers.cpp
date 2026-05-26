@@ -33,15 +33,20 @@
  *
  *   CANONICAL STORAGE THESE BYPASSES POPULATE (keep in sync with
  *   production!):
- *     - `RoleHostCore::set_out_slot_spec()` / `set_in_slot_spec()`
- *       (slot only; logical size)
- *     - `RoleAPIBase::set_flexzone_info_cache_()` (both sides;
- *                                                  logical + physical fz)
+ *     SLOT path:
+ *       - `RoleHostCore::set_{in,out}_slot_spec(spec, logical_size)` —
+ *         spec + logical struct size stored on core.
+ *     FLEXZONE path:
+ *       - `RoleAPIBase::set_flexzone_info_cache_(cache)` — both sides,
+ *         each carrying has_*_fz + logical_size + physical_size
+ *         (physical = align_to_physical_page(logical)).
  *
  *   RE-EXAMINE WHEN:
- *     - Canonical fz/slot storage moves again (verify the populates
- *       still match the locations production writes to).
+ *     - Canonical slot or flexzone storage location moves again
+ *       (verify the populates still match where production writes).
  *     - PythonEngine introspection API changes signature.
+ *     - `system_page_size()` or the page-alignment helper changes
+ *       (the physical_size populate is derived from align_to_physical_page).
  *     - Annually as part of test-debt review.
  *
  * Each worker function below carries a short marker noting its
