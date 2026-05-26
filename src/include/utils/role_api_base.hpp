@@ -394,14 +394,22 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     [[nodiscard]] uint64_t loop_overrun_count() const;
     [[nodiscard]] uint64_t last_cycle_work_us() const;
 
-    // ── Schema sizes (logical = C struct, no page alignment) ──────────────────
+    // ── Schema sizes ──────────────────────────────────────────────────────────
+    //
+    // Two distinct quantities per side, both derived from the same fz_spec:
+    //   - logical:  compute_schema_size(spec, packing) — the C struct size
+    //               scripts see.  Use for byte arithmetic on FlexFrame objects.
+    //   - physical: align_to_physical_page(logical) — the SHM region size
+    //               (page-aligned).  Use for SHM span / mmap reasoning.
+    // Both are populated together by the frame at setup; both readable here.
 
     [[nodiscard]] size_t slot_logical_size(std::optional<ChannelSide> side = std::nullopt) const;
     [[nodiscard]] size_t flexzone_logical_size(std::optional<ChannelSide> side = std::nullopt) const;
+    [[nodiscard]] size_t flexzone_physical_size(std::optional<ChannelSide> side = std::nullopt) const;
 
     /// Flexzone presence check per side.  Reads from this object's
-    /// introspection cache, which the frame populates at setup time
-    /// via `set_flexzone_introspection_()`.
+    /// FlexzoneInfoCache, which the frame populates at setup time
+    /// via `set_flexzone_info_cache_()`.
     /// PRE: setup_infrastructure_ has completed (caller is in script
     /// context, which only runs after step 5 invoke_on_init).
     [[nodiscard]] bool has_tx_fz() const noexcept;
@@ -415,22 +423,35 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     // (sizes + has flags) — NOT a copy of the full SchemaSpec, which
     // lives only in `Presence::fz_spec` on the frame.
     //
+    // Invariant: per side, physical_size == align_to_physical_page(logical_size)
+    // when has_*_fz is true; both are 0 otherwise.  Checked at engine setup
+    // entry (engine_module_params.cpp::engine_lifecycle_startup).
+    //
     // Linear forward-time API sequence (per docs/tech_draft/
     // role_host_template_design.md §11.6.2):
     //   - setter: called once at step 2b by the frame.
-    //   - readers (`has_*_fz()`, `flexzone_logical_size()`): called by
-    //     scripts at step 5+.  All readers are after the single write.
-    struct FlexzoneIntrospection
+    //   - readers (`has_*_fz()`, `flexzone_*_size()`, `fz_info_cache()`):
+    //     called by scripts + framework code at step 5+.  All readers are
+    //     after the single write.
+    struct FlexzoneInfoCache
     {
-        size_t tx_logical_size{0};
+        // TX side
         bool   has_tx_fz{false};
-        size_t rx_logical_size{0};
+        size_t tx_logical_size{0};   ///< compute_schema_size(spec, packing)
+        size_t tx_physical_size{0};  ///< align_to_physical_page(tx_logical_size)
+
+        // RX side
         bool   has_rx_fz{false};
+        size_t rx_logical_size{0};
+        size_t rx_physical_size{0};
     };
 
     /// Framework-internal setter (trailing underscore: not for script
     /// callers).  Frame populates this exactly once after build_*_queue.
-    void set_flexzone_introspection_(const FlexzoneIntrospection &fz_info) noexcept;
+    void set_flexzone_info_cache_(const FlexzoneInfoCache &cache) noexcept;
+
+    /// Read-accessor for the whole cache (framework + assertion use).
+    [[nodiscard]] const FlexzoneInfoCache &fz_info_cache() const noexcept;
 
     // ── Spinlocks (delegates to whichever side has SHM) ───────────────────────
 

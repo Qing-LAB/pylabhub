@@ -87,11 +87,11 @@ struct RoleAPIBase::Impl
 
     // Flexzone introspection cache.  Populated exactly once at setup
     // time by RoleHostFrame; read by script-API calls (flexzone_logical_size,
-    // has_*_fz).  See FlexzoneIntrospection struct in role_api_base.hpp
+    // has_*_fz).  See FlexzoneInfoCache struct in role_api_base.hpp
     // for the linear-forward-time contract.  While core's fz_spec
     // storage is still the legacy authoritative source, the frame
     // dual-writes both paths.
-    FlexzoneIntrospection fz_introspection{};
+    FlexzoneInfoCache fz_info_cache{};
 
     // Role-side CurveZMQ keypair (Wave-B M4a) — read by
     // `RoleHandler::start_connections` to populate BRC::Config.  Empty
@@ -1960,9 +1960,9 @@ size_t RoleAPIBase::slot_logical_size(std::optional<ChannelSide> side) const
 size_t RoleAPIBase::flexzone_logical_size(std::optional<ChannelSide> side) const
 {
     // Reads from the introspection cache populated by RoleHostFrame at
-    // setup time.  See FlexzoneIntrospection in role_api_base.hpp for
+    // setup time.  See FlexzoneInfoCache in role_api_base.hpp for
     // the linear-forward-time contract.
-    const auto &fz = pImpl->fz_introspection;
+    const auto &fz = pImpl->fz_info_cache;
 
     if (side.has_value())
     {
@@ -1980,18 +1980,42 @@ size_t RoleAPIBase::flexzone_logical_size(std::optional<ChannelSide> side) const
 
 bool RoleAPIBase::has_tx_fz() const noexcept
 {
-    return pImpl->fz_introspection.has_tx_fz;
+    return pImpl->fz_info_cache.has_tx_fz;
 }
 
 bool RoleAPIBase::has_rx_fz() const noexcept
 {
-    return pImpl->fz_introspection.has_rx_fz;
+    return pImpl->fz_info_cache.has_rx_fz;
 }
 
-void RoleAPIBase::set_flexzone_introspection_(
-    const FlexzoneIntrospection &fz_info) noexcept
+size_t RoleAPIBase::flexzone_physical_size(std::optional<ChannelSide> side) const
 {
-    pImpl->fz_introspection = fz_info;
+    const auto &fz = pImpl->fz_info_cache;
+
+    if (side.has_value())
+    {
+        return (*side == ChannelSide::Tx) ? fz.tx_physical_size
+                                          : fz.rx_physical_size;
+    }
+
+    if (fz.has_tx_fz && fz.has_rx_fz)
+        throw std::runtime_error("flexzone_physical_size: side parameter required for processor");
+
+    if (fz.has_tx_fz) return fz.tx_physical_size;
+    if (fz.has_rx_fz) return fz.rx_physical_size;
+    return 0;
+}
+
+void RoleAPIBase::set_flexzone_info_cache_(
+    const FlexzoneInfoCache &cache) noexcept
+{
+    pImpl->fz_info_cache = cache;
+}
+
+const RoleAPIBase::FlexzoneInfoCache &
+RoleAPIBase::fz_info_cache() const noexcept
+{
+    return pImpl->fz_info_cache;
 }
 
 // ============================================================================

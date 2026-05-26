@@ -34,10 +34,9 @@
  *
  *   CANONICAL STORAGE THESE BYPASSES POPULATE (keep in sync with
  *   production!):
- *     - `RoleHostCore::set_*_slot_spec()`  /  `set_*_fz_spec()`
- *       (during the transitional shadow — fz_spec storage on core
- *        is scheduled to be retired)
- *     - `RoleAPIBase::set_flexzone_introspection_()`
+ *     - `RoleHostCore::set_*_slot_spec()` (slot only; logical size)
+ *     - `RoleAPIBase::set_flexzone_info_cache_()` (both sides;
+ *                                                  logical + physical fz)
  *
  *   RE-EXAMINE WHEN: see python_engine_workers.cpp file header.
  */
@@ -3942,8 +3941,8 @@ struct LogicalSizeCase
 // L2 BYPASS — see file header `L2 BYPASS PATTERN`.
 // PURPOSE: verify Lua's `api.slot_logical_size()` / `flexzone_logical_size()`
 //          for the supplied (slot, fz) schema pair.
-// POPULATES: core.set_out_slot_spec, core.set_out_fz_spec,
-//            api->set_flexzone_introspection_.
+// POPULATES: core.set_out_slot_spec,
+//            api->set_flexzone_info_cache_.
 int run_logical_size_case(const std::string &dir,
                           const char        *scenario_name,
                           const LogicalSizeCase &c)
@@ -3982,28 +3981,27 @@ int run_logical_size_case(const std::string &dir,
             LuaEngine    engine;
             auto         api = make_api(core, "prod");
 
-            // Pre-set core specs (role-host-equivalent step).
+            // Pre-set core slot spec (role-host-equivalent step).
             core.set_out_slot_spec(SchemaSpec{c.slot_spec},
                                    c.expected_slot);
-            if (has_fz)
-                core.set_out_fz_spec(SchemaSpec{c.fz_spec},
-                                     pylabhub::hub::align_to_physical_page(
-                                         c.expected_fz));
 
-            // Also populate the RoleAPIBase introspection cache (see
-            // file header BYPASS PATTERN).  Compute via the same
-            // production path (compute_schema_size with the spec's own
-            // packing), so the assertion below — Lua reads back and
-            // compares to c.expected_fz — becomes a real correctness
-            // check on the layout function, not a tautology.
+            // Populate the FlexzoneInfoCache (see file header BYPASS
+            // PATTERN).  Compute via the same production path
+            // (compute_schema_size with the spec's own packing), so
+            // the assertion below — Lua reads back and compares to
+            // c.expected_fz — is a real correctness check on the
+            // layout function, not a tautology.
             {
-                pylabhub::scripting::RoleAPIBase::FlexzoneIntrospection fz_info;
-                fz_info.has_tx_fz       = has_fz;
-                fz_info.tx_logical_size = has_fz
+                pylabhub::scripting::RoleAPIBase::FlexzoneInfoCache fz_info;
+                fz_info.has_tx_fz        = has_fz;
+                fz_info.tx_logical_size  = has_fz
                     ? pylabhub::hub::compute_schema_size(c.fz_spec,
                                                         c.fz_spec.packing)
                     : 0u;
-                api->set_flexzone_introspection_(fz_info);
+                fz_info.tx_physical_size = has_fz
+                    ? pylabhub::hub::align_to_physical_page(fz_info.tx_logical_size)
+                    : 0u;
+                api->set_flexzone_info_cache_(fz_info);
             }
 
             // Pre-populate shared_data with expected sizes so the Lua
@@ -5322,8 +5320,8 @@ int full_startup_producer_slot_only(const std::string &dir)
 // L2 BYPASS — see file header `L2 BYPASS PATTERN`.
 // PURPOSE: full producer-engine startup with both slot + flexzone schemas
 //          configured; verify type sizes and an end-to-end produce call.
-// POPULATES: core.set_out_slot_spec, core.set_out_fz_spec,
-//            api->set_flexzone_introspection_.
+// POPULATES: core.set_out_slot_spec,
+//            api->set_flexzone_info_cache_.
 int full_startup_producer_slot_and_flexzone(const std::string &dir)
 {
     return run_gtest_worker(
@@ -5351,20 +5349,15 @@ int full_startup_producer_slot_and_flexzone(const std::string &dir)
             params.out_fz_spec       = simple_schema();
             params.out_packing       = "aligned";
 
-            core.set_out_fz_spec(
-                SchemaSpec{params.out_fz_spec},
-                pylabhub::hub::align_to_physical_page(
-                    pylabhub::hub::compute_schema_size(
-                        params.out_fz_spec, params.out_packing)));
-
-            // Also populate the RoleAPIBase introspection cache (see
-            // file header BYPASS PATTERN).
+            // Populate the FlexzoneInfoCache (see file header BYPASS PATTERN).
             {
-                pylabhub::scripting::RoleAPIBase::FlexzoneIntrospection fz_info;
-                fz_info.has_tx_fz       = params.out_fz_spec.has_schema;
-                fz_info.tx_logical_size = pylabhub::hub::compute_schema_size(
+                pylabhub::scripting::RoleAPIBase::FlexzoneInfoCache fz_info;
+                fz_info.has_tx_fz        = params.out_fz_spec.has_schema;
+                fz_info.tx_logical_size  = pylabhub::hub::compute_schema_size(
                     params.out_fz_spec, params.out_packing);
-                api->set_flexzone_introspection_(fz_info);
+                fz_info.tx_physical_size =
+                    pylabhub::hub::align_to_physical_page(fz_info.tx_logical_size);
+                api->set_flexzone_info_cache_(fz_info);
             }
 
             ASSERT_NO_THROW(
@@ -5382,8 +5375,10 @@ int full_startup_producer_slot_and_flexzone(const std::string &dir)
                 << "SlotFrame alias must match OutSlotFrame";
             EXPECT_EQ(engine.type_sizeof("FlexFrame"), fz_sz)
                 << "FlexFrame alias must match OutFlexFrame";
-            EXPECT_TRUE(core.has_tx_fz());
-            EXPECT_GT(core.out_schema_fz_size(), 0u);
+            EXPECT_TRUE(api->has_tx_fz());
+            EXPECT_GT(api->flexzone_physical_size(
+                          pylabhub::scripting::ChannelSide::Tx),
+                      0u);
 
             float slot_buf = 0.0f;
             std::vector<pylabhub::scripting::IncomingMessage> msgs;

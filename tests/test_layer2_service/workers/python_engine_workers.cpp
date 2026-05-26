@@ -34,16 +34,13 @@
  *   CANONICAL STORAGE THESE BYPASSES POPULATE (keep in sync with
  *   production!):
  *     - `RoleHostCore::set_out_slot_spec()` / `set_in_slot_spec()`
- *     - `RoleHostCore::set_out_fz_spec()`   / `set_in_fz_spec()`
- *       (during the transitional shadow — to be retired once
- *        the script-side accessors read solely from the new
- *        `RoleAPIBase::FlexzoneIntrospection` cache)
- *     - `RoleAPIBase::set_flexzone_introspection_()`
+ *       (slot only; logical size)
+ *     - `RoleAPIBase::set_flexzone_info_cache_()` (both sides;
+ *                                                  logical + physical fz)
  *
  *   RE-EXAMINE WHEN:
- *     - Canonical introspection storage moves again (verify the
- *       core.set_*_fz_spec calls + the introspection-cache populate
- *       above still match the locations production writes to).
+ *     - Canonical fz/slot storage moves again (verify the populates
+ *       still match the locations production writes to).
  *     - PythonEngine introspection API changes signature.
  *     - Annually as part of test-debt review.
  *
@@ -5254,8 +5251,8 @@ int full_startup_producer_slot_only(const std::string &dir)
 // L2 BYPASS — see file header `L2 BYPASS PATTERN` for details.
 // PURPOSE: full producer-engine startup with both slot + flexzone schemas
 //          configured; verify type sizes and an end-to-end produce call.
-// POPULATES: core.set_out_slot_spec, core.set_out_fz_spec,
-//            api->set_flexzone_introspection_.
+// POPULATES: core.set_out_slot_spec,
+//            api->set_flexzone_info_cache_.
 int full_startup_producer_slot_and_flexzone(const std::string &dir)
 {
     // Cross-checks engine-type-size against compute_schema_size for the
@@ -5279,22 +5276,18 @@ int full_startup_producer_slot_and_flexzone(const std::string &dir)
             params.out_fz_spec   = simple_schema();
             params.out_packing   = "aligned";
 
-            // Role hosts set flexzone spec on core before engine startup
-            // (size is page-aligned physical).
-            core.set_out_fz_spec(
-                params.out_fz_spec,
-                pylabhub::hub::align_to_physical_page(
-                    pylabhub::hub::compute_schema_size(
-                        params.out_fz_spec, params.out_packing)));
-
-            // Also populate the RoleAPIBase introspection cache (see
-            // file header BYPASS PATTERN).
+            // Populate the FlexzoneInfoCache (see file header BYPASS
+            // PATTERN).  Mirror what RoleHostFrame::setup_infrastructure_
+            // step 6.5 does: logical = compute_schema_size; physical =
+            // align_to_physical_page(logical).
             {
-                pylabhub::scripting::RoleAPIBase::FlexzoneIntrospection fz_info;
-                fz_info.has_tx_fz       = params.out_fz_spec.has_schema;
-                fz_info.tx_logical_size = pylabhub::hub::compute_schema_size(
+                pylabhub::scripting::RoleAPIBase::FlexzoneInfoCache fz_info;
+                fz_info.has_tx_fz        = params.out_fz_spec.has_schema;
+                fz_info.tx_logical_size  = pylabhub::hub::compute_schema_size(
                     params.out_fz_spec, params.out_packing);
-                api->set_flexzone_introspection_(fz_info);
+                fz_info.tx_physical_size =
+                    pylabhub::hub::align_to_physical_page(fz_info.tx_logical_size);
+                api->set_flexzone_info_cache_(fz_info);
             }
 
             engine.set_python_venv("");
@@ -5308,11 +5301,12 @@ int full_startup_producer_slot_and_flexzone(const std::string &dir)
             EXPECT_EQ(engine.type_sizeof("FlexFrame"), logical_fz)
                 << "FlexFrame alias must resolve to the same logical "
                    "size as OutFlexFrame on a producer";
-            EXPECT_TRUE(core.has_tx_fz());
-            EXPECT_GT(core.out_schema_fz_size(), 0u);
-            EXPECT_GE(core.out_schema_fz_size(), logical_fz)
-                << "core.out_schema_fz_size() is PAGE-ALIGNED physical; "
-                   "must be >= logical size";
+            EXPECT_TRUE(api->has_tx_fz());
+            const size_t physical_fz =
+                api->flexzone_physical_size(pylabhub::scripting::ChannelSide::Tx);
+            EXPECT_GT(physical_fz, 0u);
+            EXPECT_GE(physical_fz, logical_fz)
+                << "physical fz is PAGE-ALIGNED; must be >= logical size";
 
             float slot_buf = 0.0f;
             std::vector<IncomingMessage> msgs;
@@ -5584,8 +5578,8 @@ int slot_logical_size_complex_mixed_aligned(const std::string &dir)
 // L2 BYPASS — see file header `L2 BYPASS PATTERN` for details.
 // PURPOSE: verify PythonEngine's `api.flexzone_logical_size()` exposes
 //          the logical byte size and that slot/flexzone sizes are distinct.
-// POPULATES: core.set_out_slot_spec, core.set_out_fz_spec,
-//            api->set_flexzone_introspection_.
+// POPULATES: core.set_out_slot_spec,
+//            api->set_flexzone_info_cache_.
 int flexzone_logical_size_array_fields(const std::string &dir)
 {
     // Slot (padding_schema, 16 bytes) + flex (fz_array_schema,
@@ -5619,19 +5613,16 @@ int flexzone_logical_size_array_fields(const std::string &dir)
             core.set_out_slot_spec(
                 SchemaSpec{slot_spec},
                 pylabhub::hub::compute_schema_size(slot_spec, "aligned"));
-            core.set_out_fz_spec(
-                SchemaSpec{fz_spec},
-                pylabhub::hub::align_to_physical_page(
-                    pylabhub::hub::compute_schema_size(fz_spec, fz_spec.packing)));
 
-            // Also populate the RoleAPIBase introspection cache (see
-            // file header BYPASS PATTERN).
+            // Populate the FlexzoneInfoCache (see file header BYPASS PATTERN).
             {
-                pylabhub::scripting::RoleAPIBase::FlexzoneIntrospection fz_info;
-                fz_info.has_tx_fz       = fz_spec.has_schema;
-                fz_info.tx_logical_size = pylabhub::hub::compute_schema_size(
+                pylabhub::scripting::RoleAPIBase::FlexzoneInfoCache fz_info;
+                fz_info.has_tx_fz        = fz_spec.has_schema;
+                fz_info.tx_logical_size  = pylabhub::hub::compute_schema_size(
                     fz_spec, fz_spec.packing);
-                api->set_flexzone_introspection_(fz_info);
+                fz_info.tx_physical_size =
+                    pylabhub::hub::align_to_physical_page(fz_info.tx_logical_size);
+                api->set_flexzone_info_cache_(fz_info);
             }
 
             pylabhub::scripting::EngineModuleParams params;
@@ -5646,7 +5637,9 @@ int flexzone_logical_size_array_fields(const std::string &dir)
                 pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
 
             EXPECT_EQ(core.out_slot_logical_size(), 16u);
-            EXPECT_GE(core.out_schema_fz_size(), 24u)
+            EXPECT_GE(api->flexzone_physical_size(
+                          pylabhub::scripting::ChannelSide::Tx),
+                      24u)
                 << "page-aligned physical size must bound logical 24";
             EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), 16u);
             EXPECT_EQ(engine.type_sizeof("OutFlexFrame"), 24u);

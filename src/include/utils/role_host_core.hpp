@@ -192,25 +192,6 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
     [[nodiscard]] bool    has_in_slot()           const noexcept { return in_slot_spec_.has_schema; }
     [[nodiscard]] bool    has_out_slot()          const noexcept { return out_slot_spec_.has_schema; }
 
-    // ── Directional flexzone schema + physical size (set once during init) ──
-
-    void set_in_fz_spec(hub::SchemaSpec spec, size_t fz_size) noexcept
-    {
-        in_fz_spec_        = std::move(spec);
-        in_schema_fz_size_ = fz_size;
-    }
-    void set_out_fz_spec(hub::SchemaSpec spec, size_t fz_size) noexcept
-    {
-        out_fz_spec_        = std::move(spec);
-        out_schema_fz_size_ = fz_size;
-    }
-    [[nodiscard]] const hub::SchemaSpec &in_fz_spec()        const noexcept { return in_fz_spec_; }
-    [[nodiscard]] const hub::SchemaSpec &out_fz_spec()       const noexcept { return out_fz_spec_; }
-    [[nodiscard]] size_t  in_schema_fz_size()  const noexcept { return in_schema_fz_size_; }
-    [[nodiscard]] size_t  out_schema_fz_size() const noexcept { return out_schema_fz_size_; }
-    [[nodiscard]] bool    has_rx_fz()          const noexcept { return in_fz_spec_.has_schema; }
-    [[nodiscard]] bool    has_tx_fz()         const noexcept { return out_fz_spec_.has_schema; }
-
     // ── Inbox cache (role-level, shared across engine states) ────────────
 
     struct InboxCacheEntry
@@ -615,10 +596,8 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
     hub::SchemaSpec out_slot_spec_;
     size_t     in_slot_logical_size_{0};
     size_t     out_slot_logical_size_{0};
-    hub::SchemaSpec in_fz_spec_;
-    hub::SchemaSpec out_fz_spec_;
-    size_t     in_schema_fz_size_{0};
-    size_t     out_schema_fz_size_{0};
+    // Flexzone state lives on RoleAPIBase::FlexzoneInfoCache, populated
+    // by RoleHostFrame::setup_infrastructure_ from the presence's fz_spec.
 
     // ── Inbox cache ──────────────────────────────────────────────────────
     mutable std::unordered_map<std::string, InboxCacheEntry> inbox_cache_;

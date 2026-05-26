@@ -745,8 +745,8 @@ int full_startup_processor_multifield(const std::string &plugin_dir)
 // PURPOSE: full producer-engine startup with both slot + flexzone schemas
 //          configured (NativeEngine variant); verify type sizes + an
 //          end-to-end produce call.
-// POPULATES: core.set_out_slot_spec, core.set_out_fz_spec,
-//            api->set_flexzone_introspection_.
+// POPULATES: core.set_out_slot_spec,
+//            api->set_flexzone_info_cache_.
 int full_startup_producer_slot_and_flexzone(const std::string &plugin_dir)
 {
     return run_ne_worker(
@@ -758,18 +758,17 @@ int full_startup_producer_slot_and_flexzone(const std::string &plugin_dir)
             auto spec = pylabhub::tests::simple_schema();
             core.set_out_slot_spec(SchemaSpec{spec},
                                    pylabhub::hub::compute_schema_size(spec, spec.packing));
-            core.set_out_fz_spec(SchemaSpec{spec},
-                                 pylabhub::hub::align_to_physical_page(
-                                     pylabhub::hub::compute_schema_size(spec, spec.packing)));
 
             // Also populate the RoleAPIBase introspection cache (see
             // file header BYPASS PATTERN).
             {
-                pylabhub::scripting::RoleAPIBase::FlexzoneIntrospection fz_info;
-                fz_info.has_tx_fz       = spec.has_schema;
-                fz_info.tx_logical_size =
+                pylabhub::scripting::RoleAPIBase::FlexzoneInfoCache fz_info;
+                fz_info.has_tx_fz        = spec.has_schema;
+                fz_info.tx_logical_size  =
                     pylabhub::hub::compute_schema_size(spec, spec.packing);
-                api->set_flexzone_introspection_(fz_info);
+                fz_info.tx_physical_size =
+                    pylabhub::hub::align_to_physical_page(fz_info.tx_logical_size);
+                api->set_flexzone_info_cache_(fz_info);
             }
 
             pylabhub::scripting::EngineModuleParams params;
@@ -786,7 +785,7 @@ int full_startup_producer_slot_and_flexzone(const std::string &plugin_dir)
             ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
             EXPECT_GT(engine.type_sizeof("OutSlotFrame"), 0u);
             EXPECT_GT(engine.type_sizeof("OutFlexFrame"), 0u);
-            EXPECT_TRUE(core.has_tx_fz());
+            EXPECT_TRUE(api->has_tx_fz());
 
             float slot_buf = 0.0f;
             std::vector<IncomingMessage> msgs;
