@@ -8,7 +8,6 @@
 #include "utils/role_host_core.hpp"
 #include "utils/schema_utils.hpp" // PYLABHUB_PHYSICAL_PAGE_SIZE, compute_schema_size
 
-#include <cassert>
 #include <stdexcept>
 
 namespace pylabhub::scripting
@@ -57,20 +56,9 @@ void engine_lifecycle_startup(const char * /*arg*/, void *userdata)
     // cache is populated by RoleHostFrame at step 6.5 from each presence's
     // fz_spec.  Two parallel sources exist (params.fz_spec from worker_main_'s
     // local resolve; cache from build_presences_); both should agree.
-    {
-        const auto &fz = p->api->fz_info_cache();
-        // (a) Cache vs params consistency — catches a role host that
-        // populates params but skips the frame's cache populate.
-        assert(fz.has_tx_fz == p->out_fz_spec.has_schema);
-        assert(fz.has_rx_fz == p->in_fz_spec.has_schema);
-        // (b) Single canonical invariant: physical == align(logical).
-        // Subsumes the page-alignment property and catches drift
-        // between the two cached values.
-        assert(!fz.has_tx_fz ||
-               fz.tx_physical_size == hub::align_to_physical_page(fz.tx_logical_size));
-        assert(!fz.has_rx_fz ||
-               fz.rx_physical_size == hub::align_to_physical_page(fz.rx_logical_size));
-    }
+    // Throws std::runtime_error on drift — see test_layer2_engine_module_params
+    // for the four negative-path test cases.
+    validate_fz_info_cache(p->api->fz_info_cache(), p->in_fz_spec, p->out_fz_spec);
 
     if (p->inbox_spec.has_schema)
     {
@@ -120,6 +108,36 @@ void engine_lifecycle_shutdown(const char * /*arg*/, void *userdata)
 
     // finalize() is idempotent — no-op if already called by role host.
     p->engine->finalize();
+}
+
+void validate_fz_info_cache(const RoleAPIBase::FlexzoneInfoCache &cache,
+                            const hub::SchemaSpec &in_fz_spec,
+                            const hub::SchemaSpec &out_fz_spec)
+{
+    // (a) Cache vs params consistency — catches a role host that
+    // populates params but skips the frame's cache populate (or vice
+    // versa).
+    if (cache.has_tx_fz != out_fz_spec.has_schema)
+        throw std::runtime_error(
+            "FlexzoneInfoCache.has_tx_fz != out_fz_spec.has_schema "
+            "(cache↔params consistency)");
+    if (cache.has_rx_fz != in_fz_spec.has_schema)
+        throw std::runtime_error(
+            "FlexzoneInfoCache.has_rx_fz != in_fz_spec.has_schema "
+            "(cache↔params consistency)");
+
+    // (b) Cache-internal invariant: physical == align(logical) on each
+    // side where has_*_fz is true.  Subsumes the page-alignment property.
+    if (cache.has_tx_fz &&
+        cache.tx_physical_size != hub::align_to_physical_page(cache.tx_logical_size))
+        throw std::runtime_error(
+            "FlexzoneInfoCache: tx_physical_size != "
+            "align_to_physical_page(tx_logical_size)");
+    if (cache.has_rx_fz &&
+        cache.rx_physical_size != hub::align_to_physical_page(cache.rx_logical_size))
+        throw std::runtime_error(
+            "FlexzoneInfoCache: rx_physical_size != "
+            "align_to_physical_page(rx_logical_size)");
 }
 
 } // namespace pylabhub::scripting

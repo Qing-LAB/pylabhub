@@ -1448,6 +1448,35 @@ gtest_discover_tests(test_layer2_schema_validation
 )
 
 # ============================================================================
+# Test: EngineModuleParams — validate_fz_info_cache() negative-path coverage
+# ============================================================================
+
+add_executable(test_layer2_engine_module_params
+    test_engine_module_params.cpp
+)
+
+target_link_libraries(test_layer2_engine_module_params
+    PRIVATE
+        pylabhub::utils
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_engine_module_params)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_engine_module_params
+    SUITE_NAME "Layer2_EngineModuleParams"
+)
+layer2_require_staged_utils(test_layer2_engine_module_params)
+
+gtest_discover_tests(test_layer2_engine_module_params
+    PROPERTIES
+        LABELS "layer2;service;engine_module_params"
+        TIMEOUT 30
+)
+
+# ============================================================================
 # Test: MetricsAPI — hierarchical metrics serialization (JSON + py::dict)
 # ============================================================================
 
