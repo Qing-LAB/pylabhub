@@ -492,3 +492,194 @@ TEST_F(SetupInfrastructureTranslationTest, Processor_ZmqTransport_AllFieldsCopie
     EXPECT_EQ(tx.checksum_policy, cfg.checksum().policy);
     EXPECT_FALSE(tx.flexzone_checksum);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Q2 + Q3 coverage — SchemaSpec field propagation + has_fz=false gate
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Earlier tests pass empty SchemaSpec and `has_*_fz=true`, leaving two
+// gaps:
+//   Q2: SchemaSpec propagation — empty-spec assertions are tautological
+//       (`0 == 0` always passes even if make_*_opts drops the copy).
+//   Q3: `flexzone_checksum = config.flexzone && has_*_fz` is never
+//       exercised with `has_*_fz=false`; the AND-gate could be flipped
+//       to OR (or to a constant `true`) and existing tests would still
+//       pass.
+//
+// These tests fill both gaps per role.  Each verifies (a) a non-empty
+// slot + fz SchemaSpec round-trips with all fields intact, and (b) the
+// `has_*_fz=false` path forces `flexzone_checksum=false` even when the
+// config bit is true.
+
+namespace
+{
+
+/// Build a non-empty test SchemaSpec with two distinguishable fields.
+pylabhub::hub::SchemaSpec make_test_spec(const char *first_field_name)
+{
+    pylabhub::hub::SchemaSpec spec;
+    spec.has_schema = true;
+    spec.packing    = "aligned";
+    {
+        pylabhub::hub::FieldDef f;
+        f.name        = first_field_name;
+        f.type_str    = "f64";
+        f.count       = 1;
+        f.length      = 0;
+        spec.fields.push_back(f);
+    }
+    {
+        pylabhub::hub::FieldDef f;
+        f.name        = "tag";
+        f.type_str    = "u32";
+        f.count       = 1;
+        f.length      = 0;
+        spec.fields.push_back(f);
+    }
+    return spec;
+}
+
+}  // namespace
+
+TEST_F(SetupInfrastructureTranslationTest,
+       Producer_SchemaSpec_Propagates_And_HasFzFalse_ClearsFlexzoneChecksum)
+{
+    // Config: flexzone_checksum=true so the AND gate's second operand
+    // (has_tx_fz) is what determines the result.  Without an explicit
+    // has_fz=false case the test cannot tell whether make_tx_opts AND-
+    // gates or just copies config.flexzone.
+    const auto cfg = generate_and_load(
+        "producer", "producer.json", "TestProdQ23",
+        [](nlohmann::json &j) {
+            j["out_channel"]            = "test.prod.q23";
+            j["out_transport"]          = "shm";
+            j["out_shm_enabled"]        = true;
+            j["out_shm_slot_count"]     = 8;
+            j["out_shm_secret"]         = 1u;
+            j["checksum"]               = "enforced";
+            j["flexzone_checksum"]      = true;
+        });
+
+    const auto slot_spec = make_test_spec("ts");
+    const auto fz_spec   = make_test_spec("cal_offset");
+
+    // (a) has_tx_fz=true — flexzone_checksum should follow config (true).
+    {
+        const auto opts = pylabhub::producer::ProducerRoleHost::make_tx_opts(
+            cfg, slot_spec, fz_spec, /*has_tx_fz=*/true);
+        ASSERT_EQ(opts.slot_spec.fields.size(), 2u)
+            << "slot_spec.fields must propagate non-empty (Q2)";
+        EXPECT_EQ(opts.slot_spec.fields[0].name,     "ts");
+        EXPECT_EQ(opts.slot_spec.fields[0].type_str, "f64");
+        EXPECT_EQ(opts.slot_spec.fields[1].name,     "tag");
+        EXPECT_EQ(opts.slot_spec.fields[1].type_str, "u32");
+        ASSERT_EQ(opts.fz_spec.fields.size(), 2u)
+            << "fz_spec.fields must propagate non-empty (Q2)";
+        EXPECT_EQ(opts.fz_spec.fields[0].name,       "cal_offset");
+        EXPECT_TRUE(opts.flexzone_checksum)
+            << "with config.flexzone=true and has_tx_fz=true, expect true";
+    }
+
+    // (b) has_tx_fz=false — flexzone_checksum must be forced false
+    //     regardless of config.flexzone (Q3).
+    {
+        const auto opts = pylabhub::producer::ProducerRoleHost::make_tx_opts(
+            cfg, slot_spec, fz_spec, /*has_tx_fz=*/false);
+        EXPECT_FALSE(opts.flexzone_checksum)
+            << "has_tx_fz=false must force flexzone_checksum=false (Q3); "
+               "config.flexzone=true is irrelevant when there is no fz";
+    }
+}
+
+TEST_F(SetupInfrastructureTranslationTest,
+       Consumer_SchemaSpec_Propagates_And_HasRxFzFalse_ClearsFlexzoneChecksum)
+{
+    const auto cfg = generate_and_load(
+        "consumer", "consumer.json", "TestConsQ23",
+        [](nlohmann::json &j) {
+            j["in_channel"]             = "test.cons.q23";
+            j["in_transport"]           = "shm";
+            j["in_shm_enabled"]         = true;
+            j["in_shm_secret"]          = 1u;
+            j["checksum"]               = "enforced";
+            j["flexzone_checksum"]      = true;
+        });
+
+    const auto slot_spec = make_test_spec("ts");
+    const auto fz_spec   = make_test_spec("cal_offset");
+
+    {
+        const auto opts = pylabhub::consumer::ConsumerRoleHost::make_rx_opts(
+            cfg, slot_spec, fz_spec, /*has_rx_fz=*/true);
+        ASSERT_EQ(opts.slot_spec.fields.size(), 2u);
+        EXPECT_EQ(opts.slot_spec.fields[0].name, "ts");
+        EXPECT_EQ(opts.slot_spec.fields[1].name, "tag");
+        ASSERT_EQ(opts.fz_spec.fields.size(), 2u);
+        EXPECT_EQ(opts.fz_spec.fields[0].name, "cal_offset");
+        EXPECT_TRUE(opts.flexzone_checksum);
+    }
+
+    {
+        const auto opts = pylabhub::consumer::ConsumerRoleHost::make_rx_opts(
+            cfg, slot_spec, fz_spec, /*has_rx_fz=*/false);
+        EXPECT_FALSE(opts.flexzone_checksum)
+            << "has_rx_fz=false must force flexzone_checksum=false (Q3)";
+    }
+}
+
+TEST_F(SetupInfrastructureTranslationTest,
+       Processor_SchemaSpec_Propagates_And_HasFzFalse_BothSides)
+{
+    const auto cfg = generate_and_load(
+        "processor", "processor.json", "TestProcQ23",
+        [](nlohmann::json &j) {
+            j["in_channel"]              = "test.proc.in.q23";
+            j["out_channel"]             = "test.proc.out.q23";
+            j["in_transport"]            = "shm";
+            j["out_transport"]           = "shm";
+            j["in_shm_enabled"]          = true;
+            j["out_shm_enabled"]         = true;
+            j["in_shm_secret"]           = 1u;
+            j["out_shm_secret"]          = 2u;
+            j["checksum"]                = "enforced";
+            j["flexzone_checksum"]       = true;
+        });
+
+    const auto in_slot_spec  = make_test_spec("in_ts");
+    const auto out_slot_spec = make_test_spec("out_ts");
+    const auto in_fz_spec    = make_test_spec("in_cal");
+    const auto out_fz_spec   = make_test_spec("out_cal");
+
+    // (a) has_*_fz=true — flexzone_checksum follows config, schemas propagate.
+    {
+        const auto rx = pylabhub::processor::ProcessorRoleHost::make_rx_opts(
+            cfg, in_slot_spec, in_fz_spec, /*has_rx_fz=*/true);
+        ASSERT_EQ(rx.slot_spec.fields.size(), 2u);
+        EXPECT_EQ(rx.slot_spec.fields[0].name, "in_ts");
+        ASSERT_EQ(rx.fz_spec.fields.size(), 2u);
+        EXPECT_EQ(rx.fz_spec.fields[0].name, "in_cal");
+        EXPECT_TRUE(rx.flexzone_checksum);
+
+        const auto tx = pylabhub::processor::ProcessorRoleHost::make_tx_opts(
+            cfg, out_slot_spec, out_fz_spec, /*has_tx_fz=*/true);
+        ASSERT_EQ(tx.slot_spec.fields.size(), 2u);
+        EXPECT_EQ(tx.slot_spec.fields[0].name, "out_ts");
+        ASSERT_EQ(tx.fz_spec.fields.size(), 2u);
+        EXPECT_EQ(tx.fz_spec.fields[0].name, "out_cal");
+        EXPECT_TRUE(tx.flexzone_checksum);
+    }
+
+    // (b) has_*_fz=false on each side independently — verify the
+    //     AND-gate fires per side (Q3).
+    {
+        const auto rx = pylabhub::processor::ProcessorRoleHost::make_rx_opts(
+            cfg, in_slot_spec, in_fz_spec, /*has_rx_fz=*/false);
+        EXPECT_FALSE(rx.flexzone_checksum)
+            << "rx has_rx_fz=false must clear rx flexzone_checksum (Q3)";
+
+        const auto tx = pylabhub::processor::ProcessorRoleHost::make_tx_opts(
+            cfg, out_slot_spec, out_fz_spec, /*has_tx_fz=*/false);
+        EXPECT_FALSE(tx.flexzone_checksum)
+            << "tx has_tx_fz=false must clear tx flexzone_checksum (Q3)";
+    }
+}
