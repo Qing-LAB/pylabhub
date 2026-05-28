@@ -735,12 +735,13 @@ sequenceDiagram
 
 **No endpoint disclosure on rejection**: in EVERY rejection
 branch (`kAbsent`, `kRegistering`, `kStalled`, `kLive` +
-`UNAUTHORIZED_CONSUMER_PUBKEY`), the broker returns an error/
-CHANNEL_NOT_READY without the endpoint or producer pubkey
-fields.  The consumer never learns the endpoint or the
-producer's identity pubkey.  A consumer that tries random ports
-+ random pubkeys fails at the producer's ZAP gate (empty
-allowlist for that pubkey → DENY).
+`UNAUTHORIZED_CONSUMER_PUBKEY`), the broker returns an error /
+`CHANNEL_NOT_READY` with NO `producers[]` field — neither
+endpoints nor producer identity pubkeys are revealed for ANY
+of the channel's producers (single-producer or fan-in).  A
+consumer that guesses random ports + random pubkeys fails at
+the producer's ZAP gate (its identity pubkey isn't in the
+producer's allowlist → DENY).
 
 ### 5.3 Multi-consumer fan-out: second consumer joins a running channel
 
@@ -1140,8 +1141,8 @@ auth semantics:
 |---|---|---|
 | 1 producer, 1 consumer | Standard flow (§5.1 + §5.2). Single CURVE keypair, allowlist size 1. | Single shm_secret. Single consumer in admission allowlist. |
 | 1 producer, N consumers (fan-out) | Single keypair; allowlist grows incrementally per §5.3.  Each consumer's PULL socket independently CURVE-authenticated. | All N consumers receive the same shm_secret from broker; broker individually authorizes each via CONSUMER_REG check.  Revocation = broker stops releasing the secret on future REGs and removes the consumer from its presence table; already-attached consumers continue (per I5; trusted once authenticated). |
-| N producers, 1 consumer (fan-in) | Each producer uses its OWN identity keypair on PUSH (no broker key minting per I6).  Broker caches each producer's identity pubkey in the per-producer `ProducerEntry` (HEP-0021 §16.3 already established per-producer endpoint scope).  Allowlist gates which consumers can connect across the whole channel; producer enforcement happens per-PUSH-socket.  Consumer registers separately per producer (current REG protocol); receives N (producer-identity-pubkey, endpoint) pairs in CONSUMER_REG_ACK. | **Not supported on SHM** — already rejected with `MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM`. No HEP-0036 work needed. |
-| N producers, N consumers | ZMQ: cross-product handled — each consumer registers per producer; broker pushes allowlist updates to each producer's ZAP cache.  Each producer's PUSH uses its own identity keypair; consumers use their own identity keypair as PULL CURVE-client; M consumers × P producers = M+P registrations + M×P CURVE sessions, NO broker-minted keypairs. | N/A — SHM doesn't support multi-producer. |
+| N producers, 1 consumer (fan-in) | Each producer uses its OWN identity keypair on PUSH (no broker key minting per I6).  Broker stores each producer's identity pubkey on its own `ProducerEntry::zmq_pubkey` (HEP-0021 §16.3 already established per-producer endpoint scope on `ProducerEntry::zmq_node_endpoint`).  Channel-scope allowlist (`authorized_consumer_pubkeys`) gates which consumers can connect; each producer's ZAP independently enforces the same allowlist.  Consumer sends ONE CONSUMER_REG_REQ for the channel; broker returns the `producers[]` array (N elements) per §6.4; consumer opens N PULL sockets. | **Not supported on SHM** — already rejected with `MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM`. No HEP-0036 work needed. |
+| N producers, N consumers | ZMQ: each consumer sends ONE CONSUMER_REG_REQ per channel and receives the `producers[]` array (N elements) per §6.4; broker pushes the channel allowlist update to EVERY producer's ZAP cache (sync per §6.5).  Each producer's PUSH uses its own identity keypair; consumers use their own identity keypair as PULL CURVE-client.  Totals: M+P broker registrations (M consumer + P producer); M×P CURVE sessions on the data plane (each consumer opens one PULL per producer).  NO broker-minted keypairs. | N/A — SHM doesn't support multi-producer. |
 
 ### 9.1 Per-producer fan-in nuance
 
@@ -1357,10 +1358,12 @@ sequenceDiagram
 2. **No data infrastructure without broker-issued artifacts.**  PUSH
    binds with the role's IDENTITY keypair (per I6) but its ZAP cache
    starts empty — no consumer can handshake until broker pushes the
-   first `CHANNEL_AUTH_UPDATE add`.  PULL connects only with
-   broker-issued endpoint + producer's identity pubkey.  SHM attaches
-   only with broker-generated `shm_secret`.  Self-claimed identities
-   in message bodies are not accepted.
+   first `CHANNEL_AUTH_UPDATE add`.  PULL socket(s) connect only with
+   broker-issued endpoints + producer identity pubkeys delivered as
+   the `producers[]` array in CONSUMER_REG_ACK (length 1 for
+   single-producer, length N for fan-in; one PULL per array
+   element).  SHM attaches only with broker-generated `shm_secret`.
+   Self-claimed identities in message bodies are not accepted.
 3. **No surprising data loops on partial failure.**  Hub-dead tears
    down data sockets BEFORE the role attempts to re-REG; the ZAP
    cache is cleared so a fresh broker can re-populate it from scratch.
@@ -1466,7 +1469,7 @@ eviction work from earlier draft scope per I5 (revocation is passive).
 | 4 | Consumer side: read `producers[]` array from CONSUMER_REG_ACK; for each element, configure one PULL socket with `curve_serverkey` = `producers[i].pubkey` AND own identity keypair as `curve_publickey`/`curve_secretkey`; install ZMQ socket monitor for `HANDSHAKE_SUCCEEDED`/`HANDSHAKE_FAILED_AUTH` events per PULL (T2 R3); data-loop gate on `Authorized` state per §8.  Single-producer = 1 PULL; fan-in = N PULLs. | End-to-end ZMQ auth working for both topologies; auth failures surface immediately via monitor rather than via heartbeat timeout.  Coordinates with task #94 / HEP-0021 §16.5 (per-producer DISC_REQ_ACK array shape — same migration family). |
 | 5 | SHM parallel: broker generates `shm_secret` per channel (uint64 guard token; unrelated to CURVE per I6); `CONSUMER_REG_ACK` releases it only on auth.  Retire config-supplied `out_shm_secret`. | SHM secret stays broker-generated because the DataBlock attach mechanism (HEP-0002) is secret-based, not CURVE-based. |
 | 6 | Passive revocation paths: on CONSUMER_DEREG, on heartbeat timeout, on hub-dead cascade — broker emits `CHANNEL_AUTH_UPDATE remove` (best-effort) and removes from allowlist.  Role-side hub-dead handling (T2 R4 / R5): `Authorized → Unregistered` after `hub_dead_grace`; tear down data sockets + clear ZAP cache; await BRC reconnect.  No force-disconnect (per I5). | Closes lifetime-alignment loop; no new socket-level APIs. |
-| 7 | Multi-producer fan-in: each producer uses its OWN identity keypair (no broker key minting); `CONSUMER_REG_ACK` returns array of (producer-identity-pubkey, endpoint) pairs; consumer opens N PULL sockets. | Touches HEP-0021 §16.3's per-producer endpoint scope.  Simpler than the earlier broker-minted variant. |
+| 7 | **Multi-producer fan-in VERIFICATION** (no new code).  Phases 3-4 already produce the uniform `producers[]` array wire shape that handles 1..N producers identically.  Phase 7 is the L3 end-to-end test for the fan-in case: spawn 2 producers + 1 consumer on the same ZMQ channel; verify consumer receives data from both producers via M×P CURVE sessions.  Validates that the array shape, allowlist propagation to each producer's ZAP cache, and per-PULL handshake monitoring all work for N>1. | Sanity-check, not new functionality.  Coordinates with task #94 / HEP-0021 §16.5 DISC_REQ_ACK array migration (verification scope). |
 | 8 | Inbox + bands: inbox inherits the data channel's allowlist (no new wiring on top of §7); bands inherit the hub's `known_roles[]` allowlist (already enforced by HEP-0035 §4.1 Layer-1 ZAP on the broker ROUTER for any CURVE handshake — control plane and data plane alike per T1 / I6).  Verification only — no new code. | Sanity-check §9.3 + §9.4 hold at runtime. |
 | 9 | Dev-mode escape hatch + loopback-enforcement; manual key-distribution workflow doc per §11.3. | Operator-facing surface. |
 | 10 | Test coverage: L2 unit tests for ZAP handler cache, broker allowlist updates; L3 for end-to-end auth on dual-hub-processor scenarios; demo framework verification (the regression in the 2026-05-26 demo run becomes the regression test). | Sign-off gate. |
