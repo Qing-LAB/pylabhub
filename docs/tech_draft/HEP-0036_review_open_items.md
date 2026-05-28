@@ -73,17 +73,23 @@ restart (broker keys still alive on a now-dead producer).
 hub-dead path partly handles it (role-side teardown of stale data
 sockets) but the broker-side recovery semantics aren't documented.
 
-### T4 — Inbox CURVE wiring (§9.3 claim)
-**Status:** 🔄 OPEN — not yet discussed.
-**Question:** §9.3 currently claims inbox inherits the channel's
-ZAP cache + per-channel keypair.  Code reality: inbox uses
-control-plane CURVE keys (BRC's identity keypair), zero CURVE refs
-in `hub_inbox_queue.cpp`.  Three options:
-1. Inbox shares the data channel's per-channel keypair + cache.
-2. Inbox gets its own per-channel keypair.
-3. Inbox stays on control-plane (= role identity) CURVE.
-**Why it matters:** the §9.3 wording is currently a design claim,
-not a verified design.  Pick → write code-grounded §9.3.
+### T4 — Inbox CURVE wiring (§9.3)
+**Status:** 🔄 OPEN — but SIMPLIFIED by T1.
+**Original 3-option framing was:** (1) inbox shares data
+channel's per-channel keypair + cache, (2) inbox gets its own
+per-channel keypair, (3) inbox stays on control-plane (role
+identity) CURVE.
+**After T1:** options (1) and (2) DISSOLVE (no per-channel
+keypairs exist anywhere) and (3) IS what T1 mandates (identity
+keypair used on inbox sockets too).  §9.3 updated 2026-05-28
+commit pending: inbox uses identity keypair (per I6); shares
+the data channel's ZAP allowlist as MVP default.
+**Remaining question:** should inbox have a DISTINCT allowlist
+scope from the data channel?  Code reality: `hub_inbox_queue.cpp`
+has zero CURVE refs today; needs implementation regardless of
+scope choice.
+**Why it matters:** the §9.3 wording was a design claim, not
+verified design.  Pick allowlist scope → write code-grounded §9.3.
 
 ### T5 — Federation CHANNEL_AUTH_UPDATE propagation (§13.1 Q1)
 **Status:** 🔄 OPEN — listed as "open question 1" in HEP-0036

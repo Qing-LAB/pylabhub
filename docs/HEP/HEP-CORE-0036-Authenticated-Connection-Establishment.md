@@ -116,7 +116,8 @@ These invariants are non-negotiable for any implementation:
 ### I1 — Two conditions gate every connection
 
 **Both must hold at the broker before any data-plane artifact
-(CURVE keys, endpoint, SHM secret) is released to a role:**
+(endpoint, producer's identity pubkey for ZMQ, SHM secret for
+SHM, or allowlist-entry push to the producer) is released:**
 
 1. **Auth success** — the role's CURVE handshake to the broker's
    ROUTER socket completed successfully (cryptographic proof of
@@ -199,7 +200,8 @@ data-plane connection artifacts**, so cannot establish a data
 connection:
 
 - ZMQ consumer: doesn't know the producer's data endpoint or the
-  channel CURVE pubkey until `CONSUMER_REG_ACK` carries them.
+  producer's identity pubkey (which the consumer needs as
+  `curve_serverkey`) until `CONSUMER_REG_ACK` carries them.
   Without these, no connection attempt is meaningful.
 - SHM consumer: doesn't know the channel's `shm_secret` until
   `CONSUMER_REG_ACK` carries it.  Without it, SHM attach fails
@@ -437,7 +439,7 @@ that a producer is ready to take consumers.
 stateDiagram-v2
     [*]               --> Unregistered: role process start
     Unregistered      --> RegRequestPending: send REG_REQ<br/>(BRC CURVE handshake to broker<br/>already succeeded — HEP-0035 Layer 1)
-    RegRequestPending --> Registered: REG_ACK ok<br/>(carries per-channel CURVE keys<br/>or shm_secret)
+    RegRequestPending --> Registered: REG_ACK ok<br/>(producer: initial_allowlist=[];<br/>consumer: endpoint + producer's identity pubkey;<br/>SHM: shm_secret)
     RegRequestPending --> Failed: REG_ACK error / timeout<br/>(I1 cond 2 failed → role not in known_roles)
     Registered        --> Authorized: setup_infrastructure_ done<br/>(see entry conditions below)
     Registered        --> Failed: setup_infrastructure_ failure<br/>(bind / ZAP / ENDPOINT_UPDATE)
@@ -465,8 +467,9 @@ stateDiagram-v2
   `first_heartbeat_seen` mechanism).
 
 **Consumer presence — async trigger:**
-- PULL socket configured with consumer's identity keypair (Option A,
-  T1) AND producer's per-channel pubkey from `CONSUMER_REG_ACK`.
+- PULL socket configured with consumer's IDENTITY keypair (per I6)
+  AND producer's identity pubkey (carried in `CONSUMER_REG_ACK`'s
+  `data_server_pubkey` field).
 - `socket.connect(endpoint)` returns immediately; CURVE handshake
   runs in background.
 - ZMQ socket monitor observes `ZMQ_EVENT_HANDSHAKE_SUCCEEDED` →
@@ -483,8 +486,16 @@ presences out of Registered"), sustained loss of broker heartbeat
 ACKs past `hub_dead_grace` triggers presence teardown.  HEP-0036
 extends this:
 
-- Close PUSH/PULL data sockets (per-channel CURVE keys are stale —
-  see T3 / §X).
+- Close PUSH/PULL data sockets.  Under T1 / I6 the identity keys
+  themselves are NOT stale (loaded fresh from `.sec` on every
+  startup; survive broker restart), but the broker's view of the
+  channel — `ChannelAccessIndex` entry, allowlist, endpoint cache —
+  is lost on broker restart and must be re-established from
+  scratch via a fresh REG_REQ + CONSUMER_REG_REQ cycle.  Tearing
+  down the data sockets is the clean way to drop in-flight CURVE
+  sessions whose ZAP allowlist on the producer side is about to
+  be re-populated (and may differ from the pre-restart allowlist).
+  T3 covers the broker-restart recovery sequence end-to-end.
 - Clear the producer-side ZAP cache entry for the channel.
 - Stop heartbeat tick.
 - Transition `Authorized → Unregistered`.
@@ -1097,9 +1108,13 @@ The inbox messaging path (HEP-CORE-0027) opens between two roles
 that are already connected via a data channel — there is no inbox
 without an underlying data channel.  Therefore:
 
-- Inbox CURVE wiring inherits the data channel's per-channel
-  keypair + allowlist (same producer-side ZAP cache gates inbox
-  socket handshakes as the data socket).
+- Inbox CURVE wiring uses the role's identity keypair (same one
+  bound on the data socket, per T1 / I6 — there is no separate
+  per-channel or per-inbox keypair).  The inbox socket on the
+  producer side reuses the SAME process-wide ZAP handler that
+  guards the data PUSH; allowlist set defaults to the data
+  channel's allowlist (T4 covers whether inbox should have a
+  distinct allowlist scope; under MVP they're shared).
 - No separate broker-side admission decision for inbox.  If the
   consumer is in the channel's allowlist, the inbox handshake
   succeeds.
@@ -1219,7 +1234,7 @@ sequenceDiagram
     else Sustained heartbeat loss (hub_dead_grace exceeded)
         R->>R: hub-dead detected
         R->>DL: shutdown_requested = true → loop exits
-        R->>DS: close data sockets (per-channel keys are now stale)
+        R->>DS: close data sockets<br/>(identity keys still valid, but broker's<br/>ChannelAccessIndex + allowlist will be re-built<br/>from scratch on reconnect — clean slate)
         R->>R: state Authorized → Unregistered<br/>(awaiting BRC reconnect for re-REG)
     else Proactive DEREG (SIGTERM / explicit close)
         R->>DL: shutdown_requested = true → loop exits (per I3)
@@ -1284,9 +1299,11 @@ For local development and unit testing:
 
 ### 11.3 Deployment workflow (MVP — manual pubkey distribution)
 
-For the MVP, public keys for the control plane (hub identity, role
-identities) are distributed manually by the operator.  A typical
-deployment workflow:
+For the MVP, public keys (hub identity, role identities) are
+distributed manually by the operator.  Per T1 / I6, these same
+identity keypairs are used on BOTH the control plane (BRC) AND
+the data plane (PUSH / PULL); there is no separate data-plane
+key distribution.  A typical deployment workflow:
 
 1. **Hub keygen.**  Operator runs `plh_hub --keygen <hub_uid>`,
    producing `<hub_uid>.pub` (CURVE Z85, distributable) and
