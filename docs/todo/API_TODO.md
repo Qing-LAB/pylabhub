@@ -52,6 +52,16 @@ single-area change.
   first".  See `docs/todo/MESSAGEHUB_TODO.md` (config validation path
   is broker-side).
 
+- **#101** — **HEP-CORE-0035 §4.6 key-file ACL discipline** —
+  shared `src/utils/security/key_file_acl.{hpp,cpp}` utility +
+  `--keygen` / `--init` SETS modes (0600 for `*.sec`, 0700 for
+  keystore dirs, 0750 for `known_roles/`); binary startup VERIFIES
+  modes and refuses to start with OpenSSH-style actionable error
+  (path + observed mode + required mode + exact chmod command).
+  Mechanically independent of #74 ZAP plumbing; can ship before.
+  Layers on B3 (#78) + B4 (#79); recommended ordering:
+  #101 → #78 → #79 → #74.  Spec: HEP-CORE-0035 §4.6.  M.
+
 - **B4 (#79)** — `plh_role --init` template emits
   `out_shm_secret/in_shm_secret = 0` (sentinel "no SHM");
   `build_tx_queue` silently skips SHM and falls through to ZMQ.
