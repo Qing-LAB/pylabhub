@@ -566,31 +566,39 @@ sequenceDiagram
 
 **Ordering invariants captured by the diagram:**
 
-1. **ZAP install before bind** (steps 1-3).  A CURVE-server socket
-   bound without ZAP accepts all handshakes by default.  The empty
-   allowlist cache at install time means every handshake DENIES
-   until broker pushes the first `CHANNEL_AUTH_UPDATE add`.
-2. **Bind before REG_REQ** (steps 3-5).  The producer needs the
-   resolved port to put in REG_REQ's `zmq_endpoint`.  This matches
-   the existing code order and HEP-0021's wire shape.
-3. **Broker reads pubkey from socket, not message body** (note
-   between steps 5-6).  I1 cond 2 is enforced cryptographically
-   at the ZAP layer (HEP-0035 §4.1 Layer 1); broker uses
-   `zmq_msg_gets("User-Id")` to recover the authenticated
-   identity pubkey for the per-channel allowlist.
-4. **install_heartbeat after Authorized** (step 11).  First
-   heartbeat fires only after the data infrastructure is fully
-   wired; broker's `kRegistering → kLive` transition (step 14) is
-   the gating signal for consumer admission.
+1. **ZAP install before bind.**  A CURVE-server socket bound
+   without ZAP accepts all handshakes by default.  In the diagram:
+   `install ZAP` → `configure CURVE on PUSH` → `bind`, in that
+   order.  The empty allowlist cache at install time means every
+   handshake DENIES until broker pushes the first
+   `CHANNEL_AUTH_UPDATE add`.
+2. **Bind before REG_REQ.**  The producer needs the resolved
+   port to put in REG_REQ's `zmq_endpoint`.  This matches the
+   existing code order and HEP-0021's wire shape.
+3. **Broker reads pubkey from socket, not message body.**  See
+   the diagram's `Note over B` right after `REG_REQ` arrives.
+   I1 cond 2 is enforced cryptographically at the ZAP layer
+   (HEP-0035 §4.1 Layer 1); broker uses `zmq_msg_gets("User-Id")`
+   to recover the authenticated identity pubkey for the
+   per-channel allowlist.
+4. **install_heartbeat after Authorized.**  The diagram shows
+   `state Registered → Authorized` complete BEFORE the
+   `install_heartbeat` block opens.  First heartbeat fires only
+   after the data infrastructure is fully wired; the
+   `kRegistering → kLive` transition at the end of the
+   `install_heartbeat` block is the gating signal for consumer
+   admission.
 
 **Single-gate property** (T1 symmetric design): the broker mints
 no data-plane keypairs (per I6).  Its admission control on the
-data plane is purely allowlist management — adding the producer's
-own identity pubkey as the channel's `authorized_producer_pubkey`
-at REG time (step 6), and growing/shrinking
-`authorized_consumer_pubkeys` as CONSUMER_REG_REQs arrive (§5.2).
-The producer's PUSH socket binds with its identity key + empty
-allowlist; the ZAP cache fills incrementally via broker pushes.
+data plane is purely allowlist management — the producer's own
+identity pubkey is cached as the channel's
+`authorized_producer_pubkey` at REG time (the
+`B->>AI: create ChannelAccessEntry[...]` arrow in the diagram),
+and `authorized_consumer_pubkeys` grows/shrinks as
+CONSUMER_REG_REQs arrive (§5.2).  The producer's PUSH socket
+binds with its identity key + empty allowlist; the ZAP cache
+fills incrementally via broker pushes.
 
 ### 5.2 Consumer registration + data connect (ZMQ)
 
@@ -669,33 +677,40 @@ sequenceDiagram
 
 **Gating points (single-gate property)**:
 
-- **Step 3** (broker observable check): if the producer hasn't sent
-  its first heartbeat, the channel is `kRegistering` and consumer
-  is told to retry.  This is **R6** — the broker's
-  CONSUMER_REG_REQ handler at `broker_service.cpp:1959-1971`
-  currently checks endpoint-port-not-zero but does NOT check
-  `first_heartbeat_seen`.  HEP-0036 implementation extends the
-  check to also gate on `first_heartbeat_seen` (~5 lines), matching
-  DISC_REQ's behavior at `broker_service.cpp:1720`.
-- **Step 7** (sync CHANNEL_AUTH_UPDATE before CONSUMER_REG_ACK):
-  the broker MUST receive `CHANNEL_AUTH_UPDATE_ACK` from the
-  producer (step 8) BEFORE returning CONSUMER_REG_ACK (step 9).
-  This guarantees the producer's ZAP cache is updated before the
-  consumer attempts the CURVE handshake — no race window between
-  cache install and first handshake.
-- **Step 14** (HANDSHAKE_SUCCEEDED event): the consumer's
-  `Authorized` transition is event-driven.  The alternative
-  (HANDSHAKE_FAILED_AUTH event) surfaces broker-side
-  serialization bugs immediately rather than via slow read
-  timeouts.  This is **R3** — without socket-monitor wiring, a
-  consumer whose handshake silently fails would hang in
+- **Broker observable check** (the `B->>OBS: observe(channel)`
+  arrow): if the producer hasn't sent its first heartbeat, the
+  channel is `kRegistering` and consumer is told to retry.  This
+  is **R6** — the broker's CONSUMER_REG_REQ handler at
+  `broker_service.cpp:1959-1971` currently checks
+  endpoint-port-not-zero but does NOT check `first_heartbeat_seen`.
+  HEP-0036 implementation extends the check to also gate on
+  `first_heartbeat_seen` (~5 lines), matching DISC_REQ's behavior
+  at `broker_service.cpp:1720`.
+- **Sync `CHANNEL_AUTH_UPDATE` before `CONSUMER_REG_ACK`** (the
+  `B->>P: CHANNEL_AUTH_UPDATE` and `P->>B:
+  CHANNEL_AUTH_UPDATE_ACK` arrows, both BEFORE `B->>C:
+  CONSUMER_REG_ACK`): the broker MUST receive the ACK from the
+  producer BEFORE returning CONSUMER_REG_ACK to the consumer.
+  This guarantees the producer's ZAP cache is updated before
+  the consumer attempts the CURVE handshake — no race window
+  between cache install and first handshake.
+- **`HANDSHAKE_SUCCEEDED` event** (the `P-->>MON: HANDSHAKE_SUCCEEDED`
+  arrow in the `setup_infrastructure_` block): the consumer's
+  `Authorized` transition is event-driven by the ZMQ socket
+  monitor.  The alternative event `HANDSHAKE_FAILED_AUTH`
+  surfaces broker-side serialization bugs immediately rather than
+  via slow read timeouts.  This is **R3** — without socket-monitor
+  wiring, a consumer whose handshake silently fails would hang in
   `Registered` until heartbeat timeout reaped it.
 
-**No endpoint disclosure on rejection** (steps 5-6): if the broker
-returns `CHANNEL_NOT_READY` or `UNAUTHORIZED_CONSUMER_PUBKEY`, the
-consumer never learns the endpoint or the producer's data pubkey.
-A consumer that tries random ports + random pubkeys fails at the
-producer's ZAP gate (empty allowlist for that pubkey → DENY).
+**No endpoint disclosure on rejection**: in EVERY rejection
+branch (`kAbsent`, `kRegistering`, `kStalled`, `kLive` +
+`UNAUTHORIZED_CONSUMER_PUBKEY`), the broker returns an error/
+CHANNEL_NOT_READY without the endpoint or producer pubkey
+fields.  The consumer never learns the endpoint or the
+producer's identity pubkey.  A consumer that tries random ports
++ random pubkeys fails at the producer's ZAP gate (empty
+allowlist for that pubkey → DENY).
 
 ### 5.3 Multi-consumer fan-out: second consumer joins a running channel
 
@@ -783,7 +798,7 @@ sequenceDiagram
         P->>B: CHANNEL_AUTH_UPDATE_ACK
     end
 
-    Note over C,P: If C process eventually recovers, it must restart from<br/>step 1 of §5.2 (new CURVE handshake → REG_REQ → CONSUMER_REG_REQ).<br/>Mid-incident reconnect of an old session is not supported.
+    Note over C,P: If C process eventually recovers, it must restart from<br/>the beginning of §5.2 (new BRC CURVE handshake → CONSUMER_REG_REQ).<br/>Mid-incident reconnect of an old session is not supported.
 ```
 
 **Property**: this is the SAME architecture as §5.4 (cooperative
@@ -1138,8 +1153,12 @@ authenticated" gate (I1), not a per-channel gate.
   conditions) MAY band-join any band that hub hosts, subject to the
   band's own per-band policy (HEP-CORE-0030 §4 band ownership /
   band creation rules).
-- CURVE for band sockets: same per-hub control-plane keys (HEP-0035),
-  same allowlist (hub-wide); no per-band CURVE keypairs.
+- CURVE for band sockets: role uses its identity keypair (per T1 /
+  I6 — the same one bound on the BRC and the data PUSH/PULL); the
+  hub-wide allowlist that gates BRC handshakes (HEP-0035 §4.1
+  Layer 1 ZAP on the broker ROUTER) ALSO gates band-socket
+  handshakes by the same mechanism.  No per-band keypair, no
+  per-band allowlist.
 - Band lifetime is independent of any single data channel.  Band
   membership ends when the role deregisters from the hub (DEREG
   cascade clears band memberships per HEP-CORE-0030 §6).
@@ -1366,7 +1385,7 @@ eviction work from earlier draft scope per I5 (revocation is passive).
 | 5 | SHM parallel: broker generates `shm_secret` per channel (uint64 guard token; unrelated to CURVE per I6); `CONSUMER_REG_ACK` releases it only on auth.  Retire config-supplied `out_shm_secret`. | SHM secret stays broker-generated because the DataBlock attach mechanism (HEP-0002) is secret-based, not CURVE-based. |
 | 6 | Passive revocation paths: on CONSUMER_DEREG, on heartbeat timeout, on hub-dead cascade — broker emits `CHANNEL_AUTH_UPDATE remove` (best-effort) and removes from allowlist.  Role-side hub-dead handling (T2 R4 / R5): `Authorized → Unregistered` after `hub_dead_grace`; tear down data sockets + clear ZAP cache; await BRC reconnect.  No force-disconnect (per I5). | Closes lifetime-alignment loop; no new socket-level APIs. |
 | 7 | Multi-producer fan-in: each producer uses its OWN identity keypair (no broker key minting); `CONSUMER_REG_ACK` returns array of (producer-identity-pubkey, endpoint) pairs; consumer opens N PULL sockets. | Touches HEP-0021 §16.3's per-producer endpoint scope.  Simpler than the earlier broker-minted variant. |
-| 8 | Inbox + bands: inbox inherits the data channel's allowlist (no new wiring on top of §7); bands inherit hub control-plane allowlist (already in place via HEP-0035).  Verification only — no new code. | Sanity-check §9.3 + §9.4 hold at runtime. |
+| 8 | Inbox + bands: inbox inherits the data channel's allowlist (no new wiring on top of §7); bands inherit the hub's `known_roles[]` allowlist (already enforced by HEP-0035 §4.1 Layer-1 ZAP on the broker ROUTER for any CURVE handshake — control plane and data plane alike per T1 / I6).  Verification only — no new code. | Sanity-check §9.3 + §9.4 hold at runtime. |
 | 9 | Dev-mode escape hatch + loopback-enforcement; manual key-distribution workflow doc per §11.3. | Operator-facing surface. |
 | 10 | Test coverage: L2 unit tests for ZAP handler cache, broker allowlist updates; L3 for end-to-end auth on dual-hub-processor scenarios; demo framework verification (the regression in the 2026-05-26 demo run becomes the regression test). | Sign-off gate. |
 | 11 | HEP-0021 + HEP-0035 + HEP-0023 cross-reference updates; retire legacy `RoleIdentityPolicy` placeholder docs; HEP-0009 §2.7 retraction. | Doc closeout. |
@@ -1458,10 +1477,12 @@ updates are minimal — pointers / scope clarifications, not redesign.
 - **§4.1 Layered enforcement** — add Layer-3 "Data-plane peer
   authentication," covered by HEP-0036 (cross-reference).
 - **§4.2 Pubkey index** — clarify that HEP-0036's `ChannelAccessIndex`
-  is a separate per-channel structure consuming the same control-plane
-  pubkey index as its foundation.
+  is a separate per-channel structure that consumes the same
+  `PubkeyOrigin` index that gates ALL CURVE handshakes (control
+  plane via BRC + data plane via PUSH/PULL, per T1 / I6 — there is
+  no separate "control-plane index" and "data-plane index").
 - **§7 Open questions** — answer question 4 (audit log) coordinated
-  with HEP-0036 §13 question 7.
+  with HEP-0036 §13.1 Q2 (the audit log question).
 - **§8 Implementation phases** — HEP-0035 Phases 1-5 (broker ZAP +
   federation gate) remain prerequisite; HEP-0036 Phases land after
   HEP-0035 Phase 5.
