@@ -364,6 +364,112 @@ The following from the legacy placeholder are **dropped, not renamed**:
 
 ---
 
+## 4.6 Key-file storage discipline
+
+The cryptographic strength of the layered enforcement in §4.1 rests on
+**two operational trust anchors**:
+
+1. **Secret-key file confidentiality** — `<role|hub_uid>.sec` files MUST
+   not be readable by anyone other than the file owner.  A leaked
+   secret key lets the holder impersonate the role / hub.
+2. **Allowlist file integrity** — `known_roles/` (or whichever directory
+   holds the operator-authorized pubkeys) MUST not be writable by
+   anyone other than the file owner.  A tampered allowlist lets an
+   attacker add arbitrary pubkeys, bypassing the I1 "role known" gate
+   in HEP-0036 §3.
+
+This is the same discipline OpenSSH enforces on `~/.ssh/id_*` and
+`authorized_keys`.  HEP-0035 mandates equivalent enforcement at two
+points: (a) at file creation time, the `--keygen` / `--init` tooling
+SETS modes correctly without depending on the operator's `umask`;
+(b) at every binary startup, before any secret is read, the binary
+VERIFIES modes and refuses to start with a clear, actionable error.
+
+### 4.6.1 Required modes (set by `--keygen` / `--init`)
+
+| Created by | Path | Mode | Owner |
+|---|---|---|---|
+| `plh_hub --keygen` | `<hub_uid>.sec` | `0600` | current user |
+| `plh_hub --keygen` | `<hub_uid>.pub` | `0644` (public; distributable) | current user |
+| `plh_hub --init` | hub keystore directory (e.g. `hub_keys/`) | `0700` | current user |
+| `plh_hub --init` | `known_roles/` directory | `0750` (owner write; optional group read) | current user |
+| `plh_role --keygen` | `<role_uid>.sec` | `0600` | current user |
+| `plh_role --keygen` | `<role_uid>.pub` | `0644` | current user |
+| `plh_role --init` | role config directory | `0700` | current user |
+| `plh_role --init` | locally-copied `<hub_uid>.pub` | `0644` | current user |
+
+Implementation: use `open(O_CREAT | O_EXCL, 0600)` followed by an
+explicit `fchmod(fd, 0600)` at write time.  Do NOT rely on the
+process `umask`.
+
+### 4.6.2 Startup verification (every `plh_hub` / `plh_role` invocation)
+
+Before reading any secret material, every binary MUST run:
+
+```
+check <uid>.sec
+  - (st_mode & 0077) != 0       → ERROR  "secret key file <path> is
+                                  group/world-accessible (mode 0NNN).
+                                  Run: chmod 0600 <path>"
+  - st_uid != geteuid()         → ERROR  "secret key file <path> owned
+                                  by uid N; expected uid M.  Check file
+                                  ownership."
+  - parent directory (st_mode & 0077) != 0
+                                → WARN   (parent dir leak is recoverable;
+                                  some operators want group-readable
+                                  parents for shared host setups)
+
+check known_roles/ (hub only)
+  - (st_mode & 0002) != 0       → ERROR  "allowlist directory <path> is
+                                  world-writable.  Run: chmod 0750 <path>"
+  - st_uid != geteuid()         → ERROR
+
+check hub.json / role config
+  - (st_mode & 0002) != 0       → ERROR  (world-writable config = config
+                                  injection)
+  - (st_mode & 0040) != 0 AND file references a keyfile path
+                                → WARN
+
+# .pub files: NO permission check — public keys are intentionally
+# distributable and may legitimately be group-/world-readable.
+```
+
+Error messages MUST name the offending path, the observed mode, the
+required mode, and the exact `chmod` command to fix it.  This matches
+OpenSSH's failure-message style (which works well operationally).
+
+The verification function lives in a shared utility under
+`src/utils/security/` (e.g. `key_file_acl.{hpp,cpp}`) so that both
+binaries call into the same code.
+
+### 4.6.3 Interaction with B3 / B4 / `--init`
+
+This requirement layers on top of existing related work:
+
+- B3 (task #78) — hard-error empty `hub.auth.keyfile=""`.  This HEP
+  §4.6 adds the mode check on top: even if the path is non-empty,
+  the file's mode is verified.
+- B4 (task #79) — `plh_role --init` generates a non-zero SHM secret.
+  Same `--init` pass SHOULD also generate the role's CURVE keypair
+  (or invoke `--keygen` internally), with the modes from §4.6.1
+  applied at write time.  The operator should not have to remember
+  a separate keygen step.
+- §4.6 closure → file a sub-task of HEP-0035 implementation
+  (task #74) for the shared `key_file_acl` utility plus binary
+  wiring at startup.
+
+### 4.6.4 Out of scope
+
+- File-system-level ACLs (POSIX ACLs / SELinux contexts / Linux
+  capabilities) — not addressed.  Operators in hardened environments
+  may layer those on top.  HEP-0035 enforces the baseline UNIX mode
+  bits; richer ACL schemes are operator-discretion.
+- Encrypted-at-rest secret files (e.g., passphrase-encrypted `.sec`).
+  HEP-CORE-0024 §11 already has a passphrase-unlock flow; §4.6 only
+  governs the on-disk file ACLs, not the cipher state of the contents.
+
+---
+
 ## 5. hub.json fields when HEP-0035 lands
 
 ```json

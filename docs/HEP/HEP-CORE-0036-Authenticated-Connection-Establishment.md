@@ -130,16 +130,20 @@ config, SHM attach) is a CACHE of the broker's decision — it
 enforces by refusing to act on artifacts it never received, not by
 performing an independent authorization check.
 
-> **Note on existing code.** The mechanism for condition (2) already
-> exists at `broker_service.cpp:2674`
-> (`BrokerServiceImpl::check_role_identity`, with `RoleIdentityPolicy::
-> Verified` mode + `KnownRole` allowlist).  Today's HubHost
-> deliberately does NOT wire `known_roles` from hub.json into
-> `BrokerService::Config` (per `hub_broker_config.hpp:13-14` comment
-> referencing HEP-0035).  The check function always sees
-> `policy = Open` and returns "no rejection" for every REG_REQ.
-> HEP-0036 implementation wires the existing machinery to actual
-> config — it doesn't add new admission code.
+> **Note on existing code + HEP-0035 alignment.**  Today's codebase
+> has a string-based placeholder for condition (2) at
+> `broker_service.cpp:2674` (`BrokerServiceImpl::check_role_identity`
+> with `RoleIdentityPolicy::Verified` mode + `KnownRole` allowlist),
+> but HubHost deliberately does NOT wire `known_roles` from hub.json
+> into `BrokerService::Config` (per `hub_broker_config.hpp:13-14`
+> comment).  Per **HEP-CORE-0035 §4.5**, that string-name machinery
+> is being **dropped, not wired** — once HEP-0035 lands, condition (2)
+> is enforced at the SOCKET LAYER via the ZAP-pubkey allowlist
+> (HEP-0035 §4.1 Layer 1), not by `check_role_identity()`.  HEP-0036
+> therefore inherits condition (2) from HEP-0035's Layer-1
+> implementation; HEP-0036 itself does NOT add new role-admission
+> code — it adds the per-channel data-plane CURVE + allowlist
+> management that sits on top of the (then-implemented) broker ZAP.
 
 ### I2 — Single source of truth
 
@@ -1034,6 +1038,14 @@ deployment workflow:
 5. **Bootstrap.**  Start the hub; start the roles; CURVE handshakes
    succeed using the manually-distributed keys.
 
+**Key-file ACL discipline is mandatory** — all `*.sec`, `*.pub`,
+`known_roles/`, and config-directory permissions are set by
+`--keygen` / `--init` and verified at every binary startup per
+**HEP-CORE-0035 §4.6**.  The binary refuses to start on loose ACLs
+with an actionable `chmod` hint in the error message.  The
+two-conditions gate in §3 I1 is only as strong as the file-system
+trust anchors HEP-0035 §4.6 protects.
+
 Per-channel CURVE data keys and SHM secrets are NOT operator-
 distributed — they are broker-minted at REG time and live in
 broker memory + transient role memory.  Operators never see them.
@@ -1052,7 +1064,7 @@ eviction work from earlier draft scope per I5 (revocation is passive).
 
 | Phase | Scope | Notes |
 |---|---|---|
-| 0 | Wire existing `RoleIdentityPolicy` from hub.json → `BrokerService::Config`.  HubHost reads `hub.known_roles[]`; passes to `BrokerService::Config::known_roles` + `role_identity_policy = Verified`.  No NEW admission code; just connect the unwired machinery at `broker_service.cpp:2674` (`check_role_identity`). | Smallest possible change — closes condition (2) of I1.  Already-existing tests fail at this point if `known_roles` is missing; that's intentional. |
+| 0 | **Prerequisite — HEP-0035 §4.1 Layer-1 ZAP.**  Broker ROUTER installs a ZAP handler; `hub.known_roles[]` from hub.json populates the pubkey allowlist; ZAP rejects unknown pubkeys at handshake.  Legacy `check_role_identity()` + `RoleIdentityPolicy` enum REMOVED (HEP-0035 §4.5).  Tracked under task #74; HEP-0036 phases below depend on this being live. | Not HEP-0036 work proper, but listed here as the prerequisite that closes I1 condition (2).  HEP-0036's data-plane wiring is meaningless without it. |
 | 1 | `ChannelAccessIndex` skeleton in HubState.  Broker mints per-channel CURVE keypair on REG_REQ; REG_ACK carries it.  **No enforcement** yet — keys are issued but data sockets still plain TCP. | Smallest behavior change; verifies the wire format. |
 | 2 | Producer side: install ZAP handler with empty allowlist FIRST (per §5.1 ordering), then bind PUSH socket with CURVE config from REG_ACK.  ZAP DENY by default. | Producers reject all incoming until broker pushes allowlist; intentional. |
 | 3 | Broker side: on CONSUMER_REG_REQ, run two-condition gate (auth + known); on pass, add to allowlist; emit `CHANNEL_AUTH_UPDATE add` sync to producer (wait for ACK per §6.5); return CONSUMER_REG_ACK with `data_server_pubkey` + endpoint. | Closes the loop: consumer can now connect after auth.  Per-handshake race resolved by sync-before-ACK ordering. |
