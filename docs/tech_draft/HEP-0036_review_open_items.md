@@ -25,22 +25,33 @@ decisions into HEP-0036 and archive this file per
 ## Tier 1 — Architectural blockers (must close before any Phase 1 impl)
 
 ### T1 — Consumer's data-side pubkey provenance
-**Status:** ✅ RESOLVED (2026-05-28).
+**Status:** ✅ RESOLVED (2026-05-28; final structural pass
+2026-05-28 commit pending).
 **Decision:** SYMMETRIC design — both producer and consumer use
 their identity keypairs (from `--keygen`) on the data plane.
-Broker mints NO data-plane keypairs; it tracks allowlists and
-caches each channel's authorized producer identity pubkey.  The
+Broker mints NO data-plane keypairs; it tracks allowlists.  The
 `consumer_pubkey` wire field is DROPPED entirely — broker recovers
 the CURVE-proved consumer identity via `zmq_msg_gets("User-Id")`
 on the BRC socket (no self-claims; SSH `authorized_keys` model).
-SHM keeps its broker-generated `shm_secret` (unrelated to CURVE).
+The legacy single `data_server_pubkey` field is REPLACED with a
+`producers[]` array in CONSUMER_REG_ACK (one element per
+registered producer; single-producer = length 1; fan-in = length
+N — uniform wire shape, no special cases).  `ChannelAccessEntry`
+holds NO producer-pubkey field — producer pubkeys live on
+`ChannelEntry::producers[i].zmq_pubkey` (the existing Wave-M2.5
+per-producer field).  SHM keeps its broker-generated `shm_secret`
+(unrelated to CURVE).
 **Supporting work:**
 - HEP-0035 §4.6 file ACL discipline (commit d8591e73, task #101).
 - HEP-0035 §4.7 runtime key handling (commit a919938c, task #102).
-**HEP-0036 sections updated:** §3 I6, §3 I8, §4.1 ChannelAccessEntry,
-§4.2 diagram, §5.1 / §5.2 / §5.3 / §5.4 / §5.5 / §5.6 / §5.7,
-§6.1-6.4 + 6.6 (wire format + error codes), §10 lifetime, §12
-phases.
+- Task #94 / HEP-0021 §16.5 — DISC_REQ_ACK array migration must
+  land coordinated with HEP-0036's CONSUMER_REG_ACK array (same
+  wire family).
+**HEP-0036 sections updated:** §3 I6, §3 I8, §4.1
+ChannelAccessEntry, §4.2 diagram, §5.1 / §5.2 / §5.3 / §5.4 /
+§5.5 / §5.6 / §5.7, §6.1-6.4 + 6.6 (wire format + error codes),
+§8.3, §9.1 (per-producer fan-in), §10 lifetime, §12 phases,
+§14.1 (HEP-0021 cross-update).
 
 ### T2 — `Authorized` state + role/broker FSM coupling
 **Status:** 🟡 DISCUSSED-NOT-LOCKED.
