@@ -232,22 +232,48 @@ is to kill the compromised process out-of-band.  The architecture
 defends against UNAUTHENTICATED peers, not against trusted peers
 that turn malicious mid-session.
 
-### I6 — Per-channel data-plane CURVE keys
+### I6 — Identity keys reused on the data plane; broker mints nothing
 
-**Data-plane CURVE keypairs are per-channel, broker-minted, not
-operator-managed.**  Consequences:
+**The role's identity keypair (from `plh_role --keygen`, HEP-0035)
+is used on BOTH the control plane (BRC DEALER → broker ROUTER) AND
+the data plane** (PUSH on the producer side; PULL on the consumer
+side).  The broker does NOT generate or hold any data-plane
+keypairs.  Its job on the data plane is purely allowlist
+management — tracking which consumer pubkeys are authorized to
+connect to which channel.
 
-- A consumer revoked from channel A does not lose access to channel B
-  (separate keypairs).
-- A producer's data-plane keys are independent of its control-plane
-  identity keypair.
-- The keypair lifetime is bound to the channel's existence on the
-  broker (created on producer's REG_REQ; destroyed on DEREG).
+Consequences:
 
-The role's identity keypair (broker-control-plane CURVE, HEP-0035)
-remains long-lived and operator-managed via `plh_role --keygen`.
-Operator distributes this once at deployment; broker mints
-per-channel data keys on demand.
+- One keypair per role to manage at deployment.  Operator workflow
+  per HEP-0035 §11.3 is the only key-distribution path.
+- Producer's PUSH socket binds with the role's identity pubkey
+  (curve_server=1, secretkey + publickey both from `<role_uid>.sec`
+  / `<role_uid>.pub`).
+- Consumer's PULL socket connects with the role's identity keypair;
+  `curve_serverkey` is the producer's identity pubkey (cached in the
+  hub's `PubkeyOrigin` index from HEP-0035 §4.2; delivered to the
+  consumer via `CONSUMER_REG_ACK`).
+- Per-channel revocation works at the **allowlist** layer, not the
+  key layer: removing a consumer's pubkey from channel A's allowlist
+  prevents future handshakes to A; the consumer keeps its identity
+  for any other channel it's authorized on (per-channel scope is
+  enforced by what's IN the allowlist, not by separate keypairs).
+- Producer/broker restart is recoverable because the producer's
+  identity pubkey doesn't change across restarts (it's loaded from
+  disk).  Consumers' cached `curve_serverkey` stays valid.
+
+The earlier draft of HEP-0036 specified per-channel broker-minted
+keypairs.  Design review (2026-05-28) concluded that the
+"isolation" benefit was illusory under HEP-0036's threat model (I8):
+both keypairs would live in the same process memory and be exposed
+together, so the additional minting and key-distribution machinery
+added complexity without measurable security gain.  Identity
+reuse is the simpler, sound design.
+
+The ONE exception is SHM: the broker DOES generate a per-channel
+`shm_secret` (uint64 token, not a CURVE key) because SHM
+authentication uses the existing DataBlock guard-secret mechanism
+(HEP-CORE-0002), which is unrelated to CURVE.  See §5.6.
 
 ### I7 — Endpoint disclosure follows authorization
 
@@ -265,21 +291,30 @@ socket that rejects all handshakes (empty allowlist + ZAP active).
 
 ### I8 — Trust model assumption
 
-**HEP-0036 trusts the broker.**  The broker is the sole admission
-authority and the holder of all per-channel CURVE keys at minting
-time.  If the broker is compromised:
+**HEP-0036 trusts the broker as the sole admission authority.**  The
+broker holds no data-plane secret keys (per I6), so a broker
+compromise doesn't directly leak any data-plane CURVE seckey.  But a
+compromised broker can:
 
-- Attacker can authorize arbitrary pubkeys.
-- Attacker can read per-channel CURVE secret keys from broker memory.
-- Historical sessions captured by an observer become decryptable
-  (no forward secrecy in MVP).
+- Authorize arbitrary pubkeys (forge allowlist entries; falsely
+  attest a malicious role's identity pubkey is in `known_roles[]`).
+- Distribute a malicious "producer's identity pubkey" to consumers
+  via CONSUMER_REG_ACK, redirecting traffic to an attacker-controlled
+  endpoint.
+
+CURVE's per-session ephemeral keys (Curve25519 ECDH) provide
+forward secrecy at the transport layer: traffic captured by a
+passive observer cannot be decrypted later even if a long-term
+seckey is compromised.  This holds regardless of the broker's
+state.
 
 The threat model HEP-0036 defends against is **unauthenticated +
 unknown external peers**, not a compromised broker.  Operator
-responsibility: secure the broker host (OS hardening, restricted
-access, audit logging).  Beyond-MVP enhancements (HSM-backed keys,
-multi-broker quorum, forward secrecy) are tracked as follow-up work
-in §13 open questions.
+responsibility: secure the broker host (HEP-0035 §4.6 file ACLs +
+§4.7 runtime hardening + OS hardening + restricted access + audit
+logging).  Beyond-MVP enhancements (HSM-backed identity keys for
+the broker, multi-broker quorum) are tracked as follow-up work in
+§13 open questions.
 
 ---
 
@@ -287,25 +322,30 @@ in §13 open questions.
 
 ### 4.1 `ChannelAccessIndex` — the canonical decision record
 
-A new in-memory structure inside `HubState`, indexed by `channel_name`:
+A new in-memory structure inside `HubState`, indexed by `channel_name`.
+Under the I6 symmetric design, this structure holds NO data-plane
+secret keys — only the per-channel allowlist + a cached pointer to
+the producer's identity pubkey (which already lives in HEP-0035
+§4.2's `pubkey_to_origin` index) + the SHM-only guard secret:
 
 ```cpp
 struct ChannelAccessEntry
 {
-    // Per-channel CURVE keypair — broker-minted at producer REG_REQ time.
-    std::string  data_server_pubkey_z85;     // Producer's PUSH ZAP server pubkey.
-    std::string  data_server_seckey_z85;     // Broker holds; pushed to producer.
-
-    // Per-channel SHM secret — broker-generated; replaces config-supplied secret.
-    uint64_t     shm_secret;                 // Used only when transport=shm.
-
-    // Allowed consumer pubkeys — broker-maintained allowlist.
+    // Allowed consumer identity-pubkeys for this channel.
     // Producer's ZAP handler enforces; updated via CHANNEL_AUTH_UPDATE pushes.
     std::unordered_set<std::string>  authorized_consumer_pubkeys;
 
-    // Authorized producer pubkey (always exactly one in MVP; per-producer
-    // in multi-producer fan-in — see §9).
+    // Producer's identity pubkey for this channel (cached for distribution
+    // to consumers via CONSUMER_REG_ACK).  In MVP this is exactly one
+    // pubkey per channel; in multi-producer fan-in (§9.1) the broker
+    // tracks one entry per producer in the channel's ProducerEntry list
+    // (HEP-0021 §16.3 + hub_state.hpp ProducerEntry).
     std::string  authorized_producer_pubkey;
+
+    // SHM-only: broker-generated guard secret for the DataBlock
+    // (HEP-CORE-0002).  Unrelated to CURVE; SHM auth uses this secret
+    // token, not pubkey allowlists.  Zero when transport=zmq.
+    uint64_t     shm_secret{0};
 };
 
 // In HubState:
@@ -336,7 +376,7 @@ cached allowlist) the broker handed them.
 graph TB
     subgraph Hub
         Broker["BrokerService<br/>(broker_service.cpp)"]
-        AccessIndex["ChannelAccessIndex<br/>(HubState; broker's decision record)"]
+        AccessIndex["ChannelAccessIndex<br/>(HubState; allowlist + producer pubkey cache;<br/>NO data-plane seckeys per I6)"]
         Broker -- writes/reads --> AccessIndex
     end
 
@@ -352,20 +392,20 @@ graph TB
         ConsPull["Consumer PULL<br/>(CURVE client)"]
     end
 
-    Broker -. "REG_ACK + per-channel keys" .-> ProdBRC
+    Broker -. "REG_ACK (no keys — producer uses own identity)" .-> ProdBRC
     Broker -. "CHANNEL_AUTH_UPDATE<br/>(allowlist push)" .-> ProdBRC
-    ProdBRC -. "configure" .-> ProdZap
-    ProdBRC -. "configure" .-> ProdPush
+    ProdBRC -. "populate cache" .-> ProdZap
+    ProdBRC -. "identity keypair<br/>(loaded from .sec at startup)" .-> ProdPush
 
-    Broker -. "CONSUMER_REG_ACK + endpoint<br/>+ producer pubkey + (shm secret)" .-> ConsBRC
-    ConsBRC -. "configure" .-> ConsPull
+    Broker -. "CONSUMER_REG_ACK + endpoint<br/>+ producer's identity pubkey<br/>+ (shm secret if SHM)" .-> ConsBRC
+    ConsBRC -. "identity keypair + producer pubkey" .-> ConsPull
 
     ProdPush == "ZMQ CURVE data frames" ==> ConsPull
 ```
 
 Every arrow that crosses a process boundary is either:
 - **CURVE-authenticated control plane** (BRC ↔ Broker, already CURVE per HEP-0035 control-plane scope), or
-- **CURVE-authenticated data plane** (Producer PUSH ↔ Consumer PULL, NEW), or
+- **CURVE-authenticated data plane** (Producer PUSH ↔ Consumer PULL, NEW; both sides use their identity keys per I6), or
 - **SHM attach gated by broker-issued secret** (NEW for SHM transport).
 
 ### 4.3 Lifetime FSM — extends HEP-0023's RegistrationState
@@ -454,14 +494,18 @@ recovery is invisible to the data loop.
 
 ### 5.1 Producer registration (ZMQ, port-0 ephemeral binding)
 
-The producer's `worker_main_` ordering FLIPS under HEP-0036.
-Pre-HEP-0036 it was: `setup_infrastructure_` (bind plain PUSH) →
-`start_handler_threads` (BRC up) → `register_producer_channel`
-(REG_REQ).  Under HEP-0036 the order MUST be: BRC up → REG_REQ →
-`setup_infrastructure_` (NOW with broker-minted CURVE keys) →
-`install_heartbeat`.  The reason: the producer cannot bind a
-CURVE-server PUSH socket until it has the broker-minted per-channel
-keypair, and that arrives in `REG_ACK`.
+Under T1's symmetric design, the producer already holds its
+identity keypair (loaded from `<role_uid>.sec` at process startup,
+per HEP-0035 §4.6 + §4.7).  No broker round-trip is needed before
+the PUSH socket can be configured + bound.  The producer's
+`worker_main_` ordering can therefore stay close to the existing
+code: bind PUSH (with identity keypair + empty ZAP allowlist) →
+REG_REQ (carries the resolved endpoint) → install_heartbeat.
+
+The ONE new ordering constraint vs pre-HEP-0036 code: the ZAP
+handler must be installed BEFORE the CURVE-server PUSH socket
+binds, because a CURVE-server socket bound without a ZAP handler
+accepts every handshake by default (libzmq behavior).
 
 ```mermaid
 sequenceDiagram
@@ -471,28 +515,23 @@ sequenceDiagram
     participant AI as ChannelAccessIndex<br/>(HubState)
     participant OBS as Channel observable<br/>(HubState — derived)
 
-    Note over P,B: CURVE control plane already established<br/>(BRC DEALER ↔ Broker ROUTER, HEP-0035 Layer 1).<br/>I1 cond 1 (auth) + cond 2 (known_roles) already passed for this BRC.
-
-    rect rgba(200,220,255,0.4)
-        Note over P: == worker_main_ step: register_producer_channel ==
-        P->>B: REG_REQ {channel="lab.raw",<br/>transport="zmq",<br/>zmq_endpoint="tcp://*:0" (placeholder),<br/>role_uid, role_name,<br/>wants_data_keypair=true}
-        B->>AI: create ChannelAccessEntry["lab.raw"]
-        B->>B: mint per-channel CURVE keypair<br/>(pub_z85, sec_z85) via libsodium
-        B->>AI: store keypair + authorized_producer_pubkey=pub_z85<br/>(authorized_consumer_pubkeys empty)
-        B->>OBS: kAbsent → kRegistering<br/>(producer REG'd; first_heartbeat_seen=false)
-        B->>P: REG_ACK {status="ok",<br/>data_server_pubkey, data_server_seckey,<br/>initial_allowlist=[]}
-        Note over P: state Unregistered → RegRequestPending → Registered
-    end
+    Note over P,B: BRC control plane established<br/>(BRC DEALER ↔ Broker ROUTER, HEP-0035 Layer 1).<br/>I1 cond 1 (CURVE auth) + cond 2 (User-Id ∈ known_roles[])<br/>both already passed for this producer's BRC.<br/>Producer's identity keypair already loaded from .sec.
 
     rect rgba(220,240,210,0.4)
         Note over P: == worker_main_ step: setup_infrastructure_ ==
-        P->>P: install ZAP handler on ZMQ context<br/>(inproc://zeromq.zap.01;<br/>cache populated from initial_allowlist=[])
-        P->>P: configure PUSH socket<br/>curve_server=1<br/>curve_secretkey=data_server_seckey<br/>curve_publickey=data_server_pubkey
+        P->>P: install ZAP handler on ZMQ context<br/>(empty allowlist cache; will be populated<br/>by CHANNEL_AUTH_UPDATE pushes later)
+        P->>P: configure PUSH socket<br/>curve_server=1<br/>curve_secretkey=&lt;producer's identity seckey&gt;<br/>curve_publickey=&lt;producer's identity pubkey&gt;
         P->>P: socket.bind("tcp://*:0")<br/>→ resolved = "tcp://127.0.0.1:54891"
-        P->>B: ENDPOINT_UPDATE_REQ {channel="lab.raw",<br/>endpoint="tcp://127.0.0.1:54891"} (sync per HEP-0021 §16.3)
-        B->>AI: store resolved endpoint
-        B->>P: ENDPOINT_UPDATE_ACK {status="ok"}
-        Note over P: state Registered → Authorized<br/>(setup_infrastructure_ returns)
+    end
+
+    rect rgba(200,220,255,0.4)
+        Note over P: == worker_main_ step: register_producer_channel ==
+        P->>B: REG_REQ {channel="lab.raw",<br/>transport="zmq",<br/>zmq_endpoint="tcp://127.0.0.1:54891",<br/>role_uid, role_name}
+        Note over B: I1 cond 2 already enforced at ZAP (Layer 1).<br/>Broker reads producer's identity pubkey via<br/>zmq_msg_gets("User-Id") from this REG_REQ frame.
+        B->>AI: create ChannelAccessEntry["lab.raw"]<br/>authorized_producer_pubkey = &lt;User-Id pubkey&gt;<br/>authorized_consumer_pubkeys = {}<br/>(NO key minting — broker holds no data-plane secrets)
+        B->>OBS: kAbsent → kRegistering<br/>(producer REG'd; first_heartbeat_seen=false)
+        B->>P: REG_ACK {status="ok",<br/>initial_allowlist=[]}
+        Note over P: state Unregistered → RegRequestPending → Registered<br/>→ Authorized<br/>(socket bound + ZAP installed + REG_ACK ok)
     end
 
     rect rgba(255,235,210,0.4)
@@ -509,38 +548,49 @@ sequenceDiagram
 
 **Ordering invariants captured by the diagram:**
 
-1. **REG_REQ before bind** (steps 1-8).  The producer cannot bind
-   CURVE-server PUSH until it holds the broker-minted keypair.
-2. **ZAP install before bind** (R1, steps 9-11).  ZAP is per-ZMQ-
-   context inproc; a CURVE-server socket bound without ZAP accepts
-   all handshakes by default (libzmq behavior).
-3. **ENDPOINT_UPDATE sync before Authorized** (steps 12-14).  The
-   broker's `ChannelAccessEntry` must hold the resolved endpoint
-   before the producer transitions Authorized; otherwise a consumer
-   admitted via §5.2 would receive an unresolved `tcp://*:0`.
-4. **install_heartbeat after Authorized** (step 16).  First heartbeat
-   tick fires only after the data infrastructure is fully wired;
-   broker's `kRegistering → kLive` transition (step 19) is the
-   gating signal for consumer admission.
+1. **ZAP install before bind** (steps 1-3).  A CURVE-server socket
+   bound without ZAP accepts all handshakes by default.  The empty
+   allowlist cache at install time means every handshake DENIES
+   until broker pushes the first `CHANNEL_AUTH_UPDATE add`.
+2. **Bind before REG_REQ** (steps 3-5).  The producer needs the
+   resolved port to put in REG_REQ's `zmq_endpoint`.  This matches
+   the existing code order and HEP-0021's wire shape.
+3. **Broker reads pubkey from socket, not message body** (note
+   between steps 5-6).  I1 cond 2 is enforced cryptographically
+   at the ZAP layer (HEP-0035 §4.1 Layer 1); broker uses
+   `zmq_msg_gets("User-Id")` to recover the authenticated
+   identity pubkey for the per-channel allowlist.
+4. **install_heartbeat after Authorized** (step 11).  First
+   heartbeat fires only after the data infrastructure is fully
+   wired; broker's `kRegistering → kLive` transition (step 14) is
+   the gating signal for consumer admission.
 
-**Single-gate property**: at step 4 the broker is the sole entity
-that generates the per-channel keypair — producer cannot start its
-data socket with any other key.  At step 11 the producer's PUSH is
-CURVE-server-configured but the ZAP cache allowlist is empty — no
-consumer can connect yet.  Steps 9-14 are role-local (no other
-party can intervene).  The data loop's start is gated on the
-`Authorized` transition (step 15); consumer admission is gated on
-`kLive` (step 19).
+**Single-gate property** (T1 symmetric design): the broker mints
+no data-plane keypairs (per I6).  Its admission control on the
+data plane is purely allowlist management — adding the producer's
+own identity pubkey as the channel's `authorized_producer_pubkey`
+at REG time (step 6), and growing/shrinking
+`authorized_consumer_pubkeys` as CONSUMER_REG_REQs arrive (§5.2).
+The producer's PUSH socket binds with its identity key + empty
+allowlist; the ZAP cache fills incrementally via broker pushes.
 
 ### 5.2 Consumer registration + data connect (ZMQ)
 
 Picks up from §5.1's final state: producer is `Authorized` (role-
-local), broker's channel observable is `kLive`.  The consumer's
-identity pubkey (Option A from T1 — `consumer_pubkey` = the
-consumer's control-plane identity key) is read from the BRC's
-`zmq_msg_gets("User-Id")` after CURVE auth; the field in the wire
-message is carried for explicitness but the broker authoritatively
-uses User-Id.
+local), broker's channel observable is `kLive`.
+
+Per T1 lock-in: the consumer's data-plane keypair IS its identity
+keypair (same one used on its BRC).  The broker reads the
+consumer's CURVE-authenticated identity pubkey via
+`zmq_msg_gets("User-Id")` on the BRC socket — there is NO
+`consumer_pubkey` field in the wire message (we don't accept
+self-claimed identities, same model as SSH `authorized_keys`).
+
+The producer's data-plane pubkey distributed to the consumer is
+the producer's IDENTITY pubkey (already in the hub's
+`PubkeyOrigin` index from HEP-0035 §4.2; copied into
+`ChannelAccessEntry.authorized_producer_pubkey` at REG time per
+§5.1).
 
 ```mermaid
 sequenceDiagram
@@ -552,9 +602,10 @@ sequenceDiagram
     participant P as Producer (running)
     participant MON as Consumer's ZMQ<br/>socket monitor
 
-    Note over C,B: BRC control plane established<br/>(I1 cond 1 + 2 passed for consumer on its BRC).
+    Note over C,B: BRC control plane established<br/>(I1 cond 1 + 2 already passed for consumer on its BRC;<br/>consumer's identity pubkey is the User-Id on the BRC socket).
 
-    C->>B: CONSUMER_REG_REQ {channel="lab.raw",<br/>consumer_pubkey=cons_pub_z85}
+    C->>B: CONSUMER_REG_REQ {channel="lab.raw"}<br/>(NO pubkey field; broker uses BRC User-Id)
+    B->>B: cons_pub = zmq_msg_gets("User-Id")<br/>(CURVE-proved consumer identity pubkey)
     B->>OBS: observe(channel) — kAbsent / kRegistering / kStalled / kLive
 
     alt kAbsent (channel not registered)
@@ -564,22 +615,23 @@ sequenceDiagram
         Note over C: Consumer retries after backoff.<br/>Endpoint never disclosed.
     else kStalled (producer heartbeat stalled)
         B->>C: CHANNEL_NOT_READY {reason="heartbeat_stalled"}
-    else kLive AND I1 cond 2 fails (cons_pub not in known_roles)
+    else kLive AND cons_pub NOT in known_roles[] (federation policy fail)
         B->>C: ERROR {error_code="UNAUTHORIZED_CONSUMER_PUBKEY"}
-    else kLive AND I1 passes
-        B->>AI: add cons_pub_z85 to authorized_consumer_pubkeys
-        B->>P: CHANNEL_AUTH_UPDATE {channel="lab.raw",<br/>allowlist_add=[cons_pub_z85]} (sync per §6.5)
-        Note over P: BRC poll thread serially updates<br/>ZAP cache: { cons_pub_z85 }
+        Note over B: I1 cond 2 already enforced at BRC ZAP (Layer 1);<br/>this branch covers federation-trust cases where Layer 1<br/>let the BRC connect but Layer 2 rejects channel-scope.
+    else kLive AND cons_pub authorized
+        B->>AI: add cons_pub to authorized_consumer_pubkeys
+        B->>P: CHANNEL_AUTH_UPDATE {channel="lab.raw",<br/>allowlist_add=[cons_pub]} (sync per §6.5)
+        Note over P: BRC poll thread serially updates<br/>ZAP cache: { cons_pub }
         P->>B: CHANNEL_AUTH_UPDATE_ACK {status="ok"}
-        B->>C: CONSUMER_REG_ACK {status="ok",<br/>endpoint="tcp://127.0.0.1:54891",<br/>data_server_pubkey=pub_z85}
+        B->>C: CONSUMER_REG_ACK {status="ok",<br/>endpoint="tcp://127.0.0.1:54891",<br/>data_server_pubkey=&lt;producer's identity pubkey&gt;}
         Note over C: state Unregistered → RegRequestPending → Registered
 
         rect rgba(220,240,210,0.4)
             Note over C: == setup_infrastructure_ ==
             C->>MON: install socket monitor on PULL<br/>(events: HANDSHAKE_SUCCEEDED / FAILED_AUTH)
-            C->>C: configure PULL<br/>curve_serverkey=data_server_pubkey<br/>curve_publickey=cons_pub_z85<br/>curve_secretkey=cons_sec_z85
+            C->>C: configure PULL<br/>curve_serverkey=&lt;producer's identity pubkey&gt;<br/>curve_publickey=&lt;consumer's identity pubkey&gt;<br/>curve_secretkey=&lt;consumer's identity seckey&gt;
             C->>P: socket.connect(endpoint)<br/>(returns immediately;<br/>CURVE handshake runs in background)
-            P->>P: ZAP request: peer pubkey=cons_pub_z85<br/>→ cache hit → ALLOW
+            P->>P: ZAP request: peer pubkey = consumer's identity<br/>→ cache hit → ALLOW
             P-->>MON: HANDSHAKE_SUCCEEDED event
             MON->>C: notify Authorized transition
             Note over C: state Registered → Authorized
@@ -640,13 +692,14 @@ sequenceDiagram
 
     Note over P,C1: existing data flow continues uninterrupted
 
-    C2->>B: CONSUMER_REG_REQ {channel="lab.raw",<br/>consumer_pubkey=c2_pub_z85}
-    B->>AI: add c2_pub_z85 to authorized_consumer_pubkeys
-    B->>P: CHANNEL_AUTH_UPDATE {channel="lab.raw",<br/>allowlist_add=[c2_pub_z85]}
+    C2->>B: CONSUMER_REG_REQ {channel="lab.raw"}
+    B->>B: c2_pub = zmq_msg_gets("User-Id") on BRC
+    B->>AI: add c2_pub to authorized_consumer_pubkeys
+    B->>P: CHANNEL_AUTH_UPDATE {channel="lab.raw",<br/>allowlist_add=[c2_pub]}
     P->>P: ZAP cache updated:<br/>{c1_pub, c2_pub}
     P->>B: CHANNEL_AUTH_UPDATE_ACK
-    B->>C2: CONSUMER_REG_ACK {endpoint, data_server_pubkey}
-    C2->>P: connect + CURVE handshake (c2_pub) → ACCEPT
+    B->>C2: CONSUMER_REG_ACK {endpoint,<br/>data_server_pubkey=&lt;producer's identity pubkey&gt;}
+    C2->>P: connect + CURVE handshake (C2's identity) → ACCEPT
     P-->>C2: ZMQ data frames (independent of C1's flow)
 ```
 
@@ -668,8 +721,9 @@ sequenceDiagram
     Note over C1: Per I3, role stops data loop FIRST.
     C1->>C1: data loop exits;<br/>close PULL socket
     C1->>B: CONSUMER_DEREG_REQ {channel="lab.raw"}
-    B->>AI: remove c1_pub_z85 from authorized_consumer_pubkeys
-    B->>P: CHANNEL_AUTH_UPDATE {channel="lab.raw",<br/>allowlist_remove=[c1_pub_z85]}
+    B->>B: c1_pub = zmq_msg_gets("User-Id") on BRC
+    B->>AI: remove c1_pub from authorized_consumer_pubkeys
+    B->>P: CHANNEL_AUTH_UPDATE {channel="lab.raw",<br/>allowlist_remove=[c1_pub]}
     P->>P: ZAP cache updated: {c2_pub}<br/>(future C1 reconnect handshakes → REJECT)
     P->>B: CHANNEL_AUTH_UPDATE_ACK
     B->>C1: CONSUMER_DEREG_ACK
@@ -706,7 +760,7 @@ sequenceDiagram
     and On the broker side
         B->>B: heartbeat timeout fires for consumer C
         B->>AI: remove C's pubkey; clear C from presence table.
-        B->>P: CHANNEL_AUTH_UPDATE {channel,<br/>allowlist_remove=[c_pub_z85]}
+        B->>P: CHANNEL_AUTH_UPDATE {channel,<br/>allowlist_remove=[C's identity pubkey]}
         P->>P: ZAP cache updated.
         P->>B: CHANNEL_AUTH_UPDATE_ACK
     end
@@ -739,14 +793,16 @@ sequenceDiagram
     B->>P: REG_ACK {status="ok", shm_secret}
     P->>SHM: create DataBlock with shm_secret as the<br/>guard secret (HEP-CORE-0002)
 
-    C->>B: CONSUMER_REG_REQ {channel="lab.raw",<br/>consumer_pubkey=cons_pub_z85}
-    B->>AI: lookup; check consumer pubkey ∈ admission policy
+    C->>B: CONSUMER_REG_REQ {channel="lab.raw"}
+    B->>B: cons_pub = zmq_msg_gets("User-Id") on BRC
+    B->>AI: lookup; check cons_pub admission (kLive + known_roles)
     alt authorized
+        B->>AI: add cons_pub to authorized_consumer_pubkeys
         B->>C: CONSUMER_REG_ACK {transport="shm",<br/>shm_name, shm_secret}
         C->>SHM: attach with shm_secret → ACCEPT
         C-->>SHM: ring buffer reads
     else unauthorized
-        B->>C: ERROR {error_code="UNAUTHORIZED"}
+        B->>C: ERROR {error_code="UNAUTHORIZED_CONSUMER_PUBKEY"}
         Note over C: Consumer does not receive shm_secret.<br/>Attach attempts without secret → REJECT.
     end
 ```
@@ -770,7 +826,7 @@ sequenceDiagram
     participant C2 as Consumer #2
 
     P->>B: DEREG_REQ {channel="lab.raw"}
-    B->>AI: clear ChannelAccessEntry["lab.raw"]<br/>(keys, allowlist, endpoint all gone)
+    B->>AI: clear ChannelAccessEntry["lab.raw"]<br/>(allowlist + producer-pubkey-cache + endpoint all gone;<br/>no broker-held keys to clear per I6)
     B->>C1: CHANNEL_CLOSING_NOTIFY {channel="lab.raw"}
     B->>C2: CHANNEL_CLOSING_NOTIFY {channel="lab.raw"}
     B->>P: DEREG_ACK
@@ -796,36 +852,42 @@ should run with peers that lack the auth fields once this HEP ships.
 
 ### 6.1 `REG_REQ` (producer → broker) — additions
 
+Per T1 lock-in (I6 symmetric design), there is NO key-minting
+request — the producer uses its own identity keypair on the PUSH
+socket.  Only one new field is added:
+
 | Field | Type | Description |
 |---|---|---|
-| `wants_data_keypair` | bool | Producer requests broker to mint a per-channel CURVE keypair. Default: `true` post-HEP-0036. |
-| `wants_shm_secret` | bool | (transport=shm only) Producer requests broker to generate a per-channel SHM secret. Default: `true` post-HEP-0036. |
-| `endpoint_hint_range` | string | Optional: `tcp://*:49152-65535` or `tcp://0.0.0.0:0`. Specifies bind interface + port range; producer still uses port-0 binding within range. |
+| `wants_shm_secret` | bool | (transport=shm only) Producer requests broker to generate a per-channel SHM secret (uint64 guard token for the DataBlock).  Default: `true` post-HEP-0036.  Not applicable to ZMQ transport. |
 
-The legacy `shm_secret` field is deprecated and ignored when
-`wants_shm_secret=true`.
+The legacy `shm_secret` field (producer-supplied) is deprecated
+and ignored when `wants_shm_secret=true`.
 
 ### 6.2 `REG_ACK` (broker → producer) — additions
 
 | Field | Type | Description |
 |---|---|---|
-| `data_server_pubkey` | string (Z85, 40 chars) | Per-channel CURVE public key the producer must set as `curve_publickey` on its PUSH socket. |
-| `data_server_seckey` | string (Z85, 40 chars) | Per-channel CURVE secret key the producer must set as `curve_secretkey` on its PUSH socket. |
-| `shm_secret` | uint64 | (transport=shm only) Broker-generated secret for the DataBlock. |
-| `initial_allowlist` | array<string> | Pubkeys already authorized for this channel (if any consumers pre-registered). Usually empty on fresh channel. |
+| `shm_secret` | uint64 | (transport=shm only) Broker-generated guard secret for the DataBlock.  Unrelated to CURVE (HEP-CORE-0002 mechanism). |
+| `initial_allowlist` | array<string> | Consumer identity-pubkeys already authorized for this channel (federation pre-registration scenarios).  Usually empty on a fresh channel. |
+
+No data-plane CURVE keypair appears in `REG_ACK` — the producer
+uses its identity keypair, already loaded from `<role_uid>.sec`
+at process startup.
 
 ### 6.3 `CONSUMER_REG_REQ` (consumer → broker) — additions
 
-| Field | Type | Description |
-|---|---|---|
-| `consumer_pubkey` | string (Z85, 40 chars) | The consumer's CURVE public key that will be used on its PULL data socket. May equal the consumer's control-plane pubkey or be a per-channel-derived key. |
+**No new fields.**  The consumer's identity pubkey is recovered by
+the broker via `zmq_msg_gets("User-Id")` from the BRC socket
+(CURVE-proved identity from Layer-1 ZAP authentication, per
+HEP-0035 §4.1).  Self-claimed pubkeys in the message body are
+NOT accepted — same model as SSH's `authorized_keys`.
 
 ### 6.4 `CONSUMER_REG_ACK` (broker → consumer) — additions
 
 | Field | Type | Description |
 |---|---|---|
-| `data_server_pubkey` | string (Z85, 40 chars) | (transport=zmq only) The producer's per-channel public key for CURVE handshake. |
-| `shm_secret` | uint64 | (transport=shm only) The per-channel SHM secret. |
+| `data_server_pubkey` | string (Z85, 40 chars) | (transport=zmq only) The producer's IDENTITY pubkey, looked up from the hub's `PubkeyOrigin` index (HEP-0035 §4.2) at the time CONSUMER_REG_ACK is built.  The consumer uses this as `curve_serverkey` on its PULL socket. |
+| `shm_secret` | uint64 | (transport=shm only) The per-channel SHM guard secret. |
 
 The existing `zmq_endpoint` field (already in HEP-0021 §5.2) carries
 the producer's endpoint.
@@ -862,10 +924,12 @@ Added to HEP-CORE-0007 §12.4a Error Code Taxonomy:
 
 | Code | When |
 |---|---|
-| `UNAUTHORIZED_CONSUMER_PUBKEY` | CONSUMER_REG_REQ from a pubkey not in `cfg.known_roles[]` (HEP-0035 L2). |
-| `CHANNEL_NOT_READY` | CONSUMER_REG_REQ for a channel whose producer hasn't completed ENDPOINT_UPDATE (HEP-0021 §16.4). |
-| `ALLOWLIST_PUSH_FAILED` | Broker tried to push CHANNEL_AUTH_UPDATE to producer but didn't get ACK; consumer's CONSUMER_REG_REQ rolls back. |
-| `KEYPAIR_GENERATION_FAILED` | Broker libsodium / CURVE keygen failure on REG_REQ. Operator should check entropy / libsodium installation. |
+| `UNAUTHORIZED_CONSUMER_PUBKEY` | CONSUMER_REG_REQ from a consumer whose CURVE-proved User-Id pubkey is not in `cfg.known_roles[]` (HEP-0035 §4.1 Layer 2).  Should be unreachable when Layer-1 ZAP is enforcing, but kept as defence-in-depth. |
+| `CHANNEL_NOT_READY` | CONSUMER_REG_REQ for a channel whose producer either (a) hasn't completed ENDPOINT_UPDATE (HEP-0021 §16.4 — unresolved port 0), OR (b) hasn't sent its first heartbeat (channel observable is `kRegistering`, T2 R6).  `reason` field distinguishes: `awaiting_endpoint` vs `awaiting_first_heartbeat` vs `heartbeat_stalled`. |
+| `ALLOWLIST_PUSH_FAILED` | Broker tried to push CHANNEL_AUTH_UPDATE to producer but didn't get ACK; consumer's CONSUMER_REG_REQ rolls back (broker removes the consumer from the allowlist). |
+
+No `KEYPAIR_GENERATION_FAILED` error — broker mints no data-plane
+keys (per I6).
 
 ---
 
@@ -1063,10 +1127,10 @@ nothing in MVP requires it.
 
 ## 10. Lifetime alignment — full role lifecycle
 
-Combines HEP-0023's startup sequence + HEP-0035 Layer-1 ZAP + HEP-0036
-authorization.  Reflects the **post-T2 worker_main_ ordering**:
-BRC up → REG_REQ → setup_infrastructure_ (NOW with keys) →
-install_heartbeat → first heartbeat → broker observes kLive.
+Combines HEP-0023's startup sequence + HEP-0035 §4.1 Layer-1 ZAP +
+§4.6 file ACLs + §4.7 runtime hardening + HEP-0036 T1 symmetric
+authorization (both sides use identity keys; broker mints nothing
+on the data plane) + T2 first-heartbeat readiness model.
 
 ```mermaid
 sequenceDiagram
@@ -1078,41 +1142,50 @@ sequenceDiagram
     participant MON as Socket monitor<br/>(consumer / PULL side)
 
     Note over R: Process start (plh_role binary main)
-    R->>R: load config; verify key-file ACLs (HEP-0035 §4.6); setup ZMQ context
+    R->>R: HEP-0035 §4.7: disable_core_dumps()<br/>HEP-0035 §4.6: verify_key_file_acls()<br/>load identity keypair (into SecureKeyBuffer)<br/>setup ZMQ context
 
     rect rgba(220,210,250,0.4)
         Note over R,B: == BRC control plane (HEP-0035 Layer 1) ==
         R->>R: start_handler_threads → BRC DEALER opens
-        R->>B: CURVE handshake (I1 cond 1)
+        R->>B: CURVE handshake using IDENTITY keypair (I1 cond 1)
         B->>B: ZAP handler: User-Id ∈ known_roles[]? (I1 cond 2)
         Note over R,B: Both cond 1 + cond 2 pass → control link authenticated
     end
 
+    rect rgba(220,240,210,0.4)
+        Note over R: == setup_infrastructure_ (producer-side; same keypair on data plane) ==
+        alt ZMQ producer
+            R->>R: install ZAP handler on ZMQ context<br/>(empty allowlist cache)
+            R->>DS: PUSH curve_server=1<br/>secretkey + publickey = IDENTITY keypair (per I6)
+            R->>DS: bind(port=0) → resolved port
+        else ZMQ consumer
+            Note over R: PULL socket configured AFTER REG_REQ<br/>(needs producer's identity pubkey from CONSUMER_REG_ACK)
+        else SHM consumer
+            Note over R: DataBlock attach AFTER REG_REQ<br/>(needs shm_secret from CONSUMER_REG_ACK)
+        end
+    end
+
     rect rgba(200,220,255,0.4)
         Note over R: == REG_REQ phase ==
-        R->>B: REG_REQ (producer: wants_data_keypair; consumer: consumer_pubkey)
-        B->>R: REG_ACK + per-channel CURVE keys (producer)<br/>OR endpoint + producer_pubkey (consumer)<br/>OR shm_secret (SHM)
+        R->>B: REG_REQ (no self-claimed pubkeys; broker reads<br/>identity via zmq_msg_gets("User-Id"))
+        B->>R: REG_ACK<br/>(producer: initial_allowlist=[];<br/>consumer: endpoint + producer's identity pubkey;<br/>SHM: shm_secret)
         Note over R: state Unregistered → RegRequestPending → Registered
     end
 
     rect rgba(220,240,210,0.4)
-        Note over R: == setup_infrastructure_ ==
-        alt ZMQ producer
-            R->>R: install ZAP handler (empty cache)
-            R->>DS: PUSH curve_server=1 + broker keys
-            R->>DS: bind(port=0) → resolved
-            R->>B: ENDPOINT_UPDATE_REQ (sync) → ACK
-            Note over R: Authorized (sync trigger)
-        else ZMQ consumer
-            R->>MON: install socket monitor
-            R->>DS: PULL curve_serverkey=producer_pubkey + own keys
+        Note over R: == setup_infrastructure_ (consumer-side; uses values from REG_ACK) ==
+        alt ZMQ consumer
+            R->>MON: install socket monitor on PULL
+            R->>DS: PULL curve_serverkey = producer's identity pubkey<br/>publickey + secretkey = consumer's IDENTITY keypair (per I6)
             R->>DS: connect(endpoint) — handshake async
             DS-->>MON: HANDSHAKE_SUCCEEDED
             MON-->>R: notify
             Note over R: Authorized (async trigger via monitor)
         else SHM consumer
-            R->>DS: attach DataBlock with shm_secret
+            R->>DS: attach DataBlock with shm_secret → ACCEPT
             Note over R: Authorized (sync trigger)
+        else ZMQ producer
+            Note over R: Authorized (sync trigger, after REG_ACK + earlier bind)
         end
     end
 
@@ -1156,16 +1229,19 @@ sequenceDiagram
    observes as `kLive`) happens AFTER `Authorized`.  Consumers can
    be admitted only AFTER `kLive` (broker R6 gate at CONSUMER_REG_REQ).
 2. **No data infrastructure without broker-issued artifacts.**  PUSH
-   binds only with broker-minted per-channel keys; PULL connects only
-   with broker-issued endpoint + producer pubkey; SHM attaches only
-   with broker-generated secret.  Config-supplied artifacts are
-   ignored.
+   binds with the role's IDENTITY keypair (per I6) but its ZAP cache
+   starts empty — no consumer can handshake until broker pushes the
+   first `CHANNEL_AUTH_UPDATE add`.  PULL connects only with
+   broker-issued endpoint + producer's identity pubkey.  SHM attaches
+   only with broker-generated `shm_secret`.  Self-claimed identities
+   in message bodies are not accepted.
 3. **No surprising data loops on partial failure.**  Hub-dead tears
-   down data sockets BEFORE the role attempts to re-REG; stale keys
-   never linger.
-4. **The role's identity keypair is the only operator-managed
-   long-lived secret.**  Per-channel data keys live in broker + role
-   memory only; rotation is via channel teardown.
+   down data sockets BEFORE the role attempts to re-REG; the ZAP
+   cache is cleared so a fresh broker can re-populate it from scratch.
+4. **The role's identity keypair is the ONLY long-lived secret
+   touching the data plane.**  Broker holds no data-plane CURVE
+   secrets (per I6).  HEP-0035 §4.6 file ACLs + §4.7 runtime
+   hardening protect the identity keypair at rest and at runtime.
 
 ---
 
@@ -1245,20 +1321,19 @@ eviction work from earlier draft scope per I5 (revocation is passive).
 
 | Phase | Scope | Notes |
 |---|---|---|
-| 0 | **Prerequisite — HEP-0035 §4.1 Layer-1 ZAP.**  Broker ROUTER installs a ZAP handler; `hub.known_roles[]` from hub.json populates the pubkey allowlist; ZAP rejects unknown pubkeys at handshake.  Legacy `check_role_identity()` + `RoleIdentityPolicy` enum REMOVED (HEP-0035 §4.5).  Tracked under task #74; HEP-0036 phases below depend on this being live. | Not HEP-0036 work proper, but listed here as the prerequisite that closes I1 condition (2).  HEP-0036's data-plane wiring is meaningless without it. |
-| 0.5 | **Reorder producer `worker_main_`** (T2 R1).  Move `setup_infrastructure_` to AFTER `register_producer_channel` so broker-minted per-channel keys are available at PUSH bind time.  Move `install_heartbeat` to AFTER `setup_infrastructure_` so first heartbeat fires only after Authorized.  No behavior change yet (data sockets still plain TCP because Phase 1 hasn't introduced keys) — but the structural reorder is the foundation. | Pure code-structural change.  Reorder is reviewable in isolation, behavior-identical pre-HEP-0036. |
+| 0 | **Prerequisites — HEP-0035 §4.1 Layer-1 ZAP + §4.6 file ACLs + §4.7 runtime hardening.**  Broker ROUTER installs a ZAP handler; `hub.known_roles[]` from hub.json populates the pubkey allowlist; ZAP rejects unknown pubkeys at handshake.  Legacy `check_role_identity()` + `RoleIdentityPolicy` enum REMOVED (HEP-0035 §4.5).  Both binaries verify key-file ACLs (§4.6, task #101) and apply runtime hardening (§4.7, task #102).  Tracked under tasks #74 + #101 + #102; HEP-0036 phases below depend on these being live. | Not HEP-0036 work proper, but listed here as the prerequisite that closes I1 condition (2).  HEP-0036's data-plane wiring is meaningless without it. |
 | 0.7 | **Add `RegistrationState::Authorized`** (T2).  5th enum value between `Registered` and `Deregistered`.  Producer presence transitions Registered → Authorized at the end of `setup_infrastructure_` (sync); consumer presence transitions via ZMQ socket-monitor on `HANDSHAKE_SUCCEEDED` (T2 R3).  Data loop's outer guard adds `any_presence_authorized()` (HEP-0036 §8.2). | Per-presence FSM is independent across multi-presence roles (processor). |
 | 0.8 | **Broker CONSUMER_REG_REQ gates on `first_heartbeat_seen`** (T2 R6, ~5 LOC).  Match DISC_REQ's existing check at `broker_service.cpp:1720`.  Return `CHANNEL_NOT_READY{reason="awaiting_first_heartbeat"}` if producer presence hasn't been observed as `kLive`. | Pre-existing inconsistency between DISC_REQ and CONSUMER_REG_REQ becomes symmetric.  Standalone fix; doesn't depend on later phases. |
-| 1 | `ChannelAccessIndex` skeleton in HubState.  Broker mints per-channel CURVE keypair on REG_REQ; REG_ACK carries it.  **No enforcement** yet — keys are issued but data sockets still plain TCP. | Smallest behavior change; verifies the wire format. |
-| 2 | Producer side: install ZAP handler with empty allowlist FIRST (per §5.1 ordering), then bind PUSH socket with CURVE config from REG_ACK.  ZAP DENY by default. | Producers reject all incoming until broker pushes allowlist; intentional. |
-| 3 | Broker side: on CONSUMER_REG_REQ, run two-condition gate (auth + known); on pass, add to allowlist; emit `CHANNEL_AUTH_UPDATE add` sync to producer (wait for ACK per §6.5); return CONSUMER_REG_ACK with `data_server_pubkey` + endpoint. | Closes the loop: consumer can now connect after auth.  Per-handshake race resolved by sync-before-ACK ordering. |
-| 4 | Consumer side: read `data_server_pubkey` + endpoint from CONSUMER_REG_ACK; configure PULL with CURVE; install ZMQ socket monitor for `HANDSHAKE_SUCCEEDED`/`HANDSHAKE_FAILED_AUTH` events (T2 R3); data-loop gate on `Authorized` state per §8. | End-to-end ZMQ auth working; auth failures surface immediately via monitor rather than via heartbeat timeout. |
-| 5 | SHM parallel: broker generates `shm_secret` per channel; `CONSUMER_REG_ACK` releases it only on auth.  Retire config-supplied `out_shm_secret`. | SHM secret moves from config to broker.  Consumer's Authorized trigger is synchronous after attach (no monitor needed). |
-| 6 | Passive revocation paths: on CONSUMER_DEREG, on heartbeat timeout, on hub-dead cascade — broker emits `CHANNEL_AUTH_UPDATE remove` (best-effort) and removes from allowlist.  Role-side hub-dead handling (T2 R4 / R5): `Authorized → Unregistered` after `hub_dead_grace`; tear down data sockets + ZAP cache entry; await BRC reconnect.  No force-disconnect (per I5). | Closes lifetime-alignment loop; no new socket-level APIs. |
-| 7 | Multi-producer fan-in: per-producer keypair generation; `CONSUMER_REG_ACK` returns array of (pubkey, endpoint) pairs; consumer opens N PULL sockets. | Touches HEP-0021 §16.3's per-producer endpoint scope. |
-| 8 | Inbox + bands: inbox inherits channel ZAP cache (no new wiring); bands inherit hub control-plane CURVE (already in place via HEP-0035).  Verification only — no new code. | Sanity-check §9.3 + §9.4 hold at runtime. |
+| 1 | `ChannelAccessIndex` skeleton in HubState.  Broker creates entries on REG_REQ; stores allowlist + producer's identity pubkey (looked up from `PubkeyOrigin` index via `zmq_msg_gets("User-Id")`).  **No data-plane keypair minting** — per T1 / I6, broker holds no data-plane secrets. | Replaces the earlier draft's "broker mints keypair on REG_REQ" with allowlist-only management. |
+| 2 | Producer side: install ZAP handler on ZMQ context BEFORE binding PUSH (per §5.1 ordering); PUSH configured `curve_server=1` with ROLE'S IDENTITY KEYPAIR (loaded from `<role>.sec` per HEP-0035 §4.6 + §4.7).  ZAP cache starts empty; all incoming handshakes DENY until broker pushes allowlist. | No new key distribution needed — producer already has its identity keypair from startup. |
+| 3 | Broker side: on CONSUMER_REG_REQ, derive consumer pubkey via `zmq_msg_gets("User-Id")` (NOT from message body — no self-claims); check I1 cond 2; on pass, add to allowlist; emit `CHANNEL_AUTH_UPDATE add` sync to producer (wait for ACK per §6.5); return CONSUMER_REG_ACK with `data_server_pubkey` = producer's identity pubkey + endpoint. | Closes the loop: consumer can now connect after auth.  Per-handshake race resolved by sync-before-ACK ordering. |
+| 4 | Consumer side: read producer's identity `data_server_pubkey` + endpoint from CONSUMER_REG_ACK; configure PULL with `curve_serverkey` = producer's identity pubkey AND own identity keypair as `curve_publickey`/`curve_secretkey`; install ZMQ socket monitor for `HANDSHAKE_SUCCEEDED`/`HANDSHAKE_FAILED_AUTH` events (T2 R3); data-loop gate on `Authorized` state per §8. | End-to-end ZMQ auth working; auth failures surface immediately via monitor rather than via heartbeat timeout. |
+| 5 | SHM parallel: broker generates `shm_secret` per channel (uint64 guard token; unrelated to CURVE per I6); `CONSUMER_REG_ACK` releases it only on auth.  Retire config-supplied `out_shm_secret`. | SHM secret stays broker-generated because the DataBlock attach mechanism (HEP-0002) is secret-based, not CURVE-based. |
+| 6 | Passive revocation paths: on CONSUMER_DEREG, on heartbeat timeout, on hub-dead cascade — broker emits `CHANNEL_AUTH_UPDATE remove` (best-effort) and removes from allowlist.  Role-side hub-dead handling (T2 R4 / R5): `Authorized → Unregistered` after `hub_dead_grace`; tear down data sockets + clear ZAP cache; await BRC reconnect.  No force-disconnect (per I5). | Closes lifetime-alignment loop; no new socket-level APIs. |
+| 7 | Multi-producer fan-in: each producer uses its OWN identity keypair (no broker key minting); `CONSUMER_REG_ACK` returns array of (producer-identity-pubkey, endpoint) pairs; consumer opens N PULL sockets. | Touches HEP-0021 §16.3's per-producer endpoint scope.  Simpler than the earlier broker-minted variant. |
+| 8 | Inbox + bands: inbox inherits the data channel's allowlist (no new wiring on top of §7); bands inherit hub control-plane allowlist (already in place via HEP-0035).  Verification only — no new code. | Sanity-check §9.3 + §9.4 hold at runtime. |
 | 9 | Dev-mode escape hatch + loopback-enforcement; manual key-distribution workflow doc per §11.3. | Operator-facing surface. |
-| 10 | Test coverage: L2 unit tests for ZAP handler cache, broker access index, allowlist update; L3 for end-to-end auth on dual-hub-processor scenarios; demo framework verification (the regression in the 2026-05-26 demo run becomes the regression test). | Sign-off gate. |
+| 10 | Test coverage: L2 unit tests for ZAP handler cache, broker allowlist updates; L3 for end-to-end auth on dual-hub-processor scenarios; demo framework verification (the regression in the 2026-05-26 demo run becomes the regression test). | Sign-off gate. |
 | 11 | HEP-0021 + HEP-0035 + HEP-0023 cross-reference updates; retire legacy `RoleIdentityPolicy` placeholder docs; HEP-0009 §2.7 retraction. | Doc closeout. |
 
 ---
