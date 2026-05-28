@@ -6,7 +6,7 @@
 | **Title**       | Authenticated Connection Establishment — Single-Gate Access Control for Control + Data Planes               |
 | **Status**     | 🚧 **DRAFT — DESIGN UNDER REVIEW.** Cross-references HEP-CORE-0021, HEP-CORE-0035, HEP-CORE-0023.            |
 | **Created**     | 2026-05-26                                                                                                  |
-| **Last revised** | 2026-05-27 — two-conditions gate explicit; revocation reframed as passive (no force-close); inbox/bands inheritance; channels-are-dynamic non-goal; manual pubkey distribution MVP. |
+| **Last revised** | 2026-05-28 — T1 RESOLVED: symmetric identity-keypair design (broker mints nothing on data plane; both sides reuse their identity keys; SHM keeps broker-generated `shm_secret`).  Prior revision 2026-05-27 — two-conditions gate explicit; revocation reframed as passive (no force-close); inbox/bands inheritance; channels-are-dynamic non-goal; manual pubkey distribution MVP. |
 | **Area**        | Framework Architecture (broker access control, role-side CURVE wiring, data-plane peer authentication)      |
 | **Depends on**  | HEP-CORE-0021 (ZMQ Endpoint Registry — endpoint discovery via broker), HEP-CORE-0035 (Hub-Role Authentication — broker-side ZAP + pubkey index), HEP-CORE-0023 (Startup Coordination — presence FSM) |
 | **Blocks**      | Production deployment (data plane currently unauthenticated; see §3 gap analysis)                            |
@@ -98,9 +98,13 @@ The following are deliberately OUT of HEP-0036 scope:
   `*.pub` files to the appropriate config dirs).  Automated
   distribution (e.g. via a federation control channel) is deferred
   until federation development is further along.
-- **Forward secrecy / mid-session key rotation.**  Per-channel keys
-  live for the channel's broker lifetime.  Operators who need
-  rotation tear down + recreate the channel.
+- **Mid-session identity-key rotation.**  Roles' long-term identity
+  keys live for the role's deployment lifetime.  Rotation is an
+  operator workflow: re-run `plh_role --keygen`, redistribute the
+  new `.pub` to every hub's `known_roles/`, restart the role.
+  CURVE's per-session ephemeral keys (Curve25519 ECDH) provide
+  forward secrecy automatically — past sessions stay
+  un-decryptable even if a long-term key is later compromised.
 - **Defense against a compromised broker.**  See I8 trust model.
 
 ---
@@ -358,9 +362,11 @@ gate decision (I1).  The handlers that read + write it:
 - **REG handler** (broker): writes — creates entry on producer REG
   after I1 passes; deletes on DEREG.
 - **CONSUMER_REG handler** (broker): reads + writes — gates admission
-  via I1, writes the consumer pubkey to the allowlist on accept,
-  reads the per-channel keypair + endpoint to return in
-  CONSUMER_REG_ACK.
+  via I1 (using `zmq_msg_gets("User-Id")` to recover the consumer's
+  CURVE-proved identity pubkey from the BRC socket — no self-claims),
+  writes that pubkey to the allowlist on accept, reads the
+  producer's identity pubkey + endpoint from the `ChannelAccessEntry`
+  to return in CONSUMER_REG_ACK.
 - **`CHANNEL_AUTH_UPDATE` emitter** (broker): reads — computes
   diff vs. producer's cache, sends sync `add` / best-effort `remove`.
 - **Heartbeat / hub-dead handler** (broker): writes — removes a
@@ -447,8 +453,9 @@ stateDiagram-v2
 **Producer presence — synchronous trigger:**
 - ZAP handler installed on the role's ZMQ context (per-context, not
   per-channel; once before the first CURVE-server bind).
-- PUSH socket configured `curve_server=1` with broker-issued
-  per-channel keypair from `REG_ACK`.
+- PUSH socket configured `curve_server=1` with role's IDENTITY
+  keypair (loaded from `<role_uid>.sec` at process startup, per
+  HEP-0035 §4.6 + §4.7).
 - PUSH socket bound (`tcp://*:0` → ephemeral port resolved).
 - `ENDPOINT_UPDATE_REQ` sent and ACK'd (sync per HEP-0021 §16.3 +
   audit C2, 2026-05-21).
@@ -1042,20 +1049,23 @@ auth semantics:
 |---|---|---|
 | 1 producer, 1 consumer | Standard flow (§5.1 + §5.2). Single CURVE keypair, allowlist size 1. | Single shm_secret. Single consumer in admission allowlist. |
 | 1 producer, N consumers (fan-out) | Single keypair; allowlist grows incrementally per §5.3.  Each consumer's PULL socket independently CURVE-authenticated. | All N consumers receive the same shm_secret from broker; broker individually authorizes each via CONSUMER_REG check.  Revocation = broker stops releasing the secret on future REGs and removes the consumer from its presence table; already-attached consumers continue (per I5; trusted once authenticated). |
-| N producers, 1 consumer (fan-in) | Per-producer keypair + per-producer allowlist (HEP-0021 §16.3 already established per-producer endpoint scope). Consumer registers separately per producer (current REG protocol); receives N (pubkey, endpoint) pairs in CONSUMER_REG_ACK. | **Not supported on SHM** — already rejected with `MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM`. No HEP-0036 work needed. |
-| N producers, N consumers | ZMQ: cross-product handled — each consumer registers per producer; broker pushes per-producer allowlist updates. M consumers × P producers = M+P registrations + M×P CURVE sessions. | N/A — SHM doesn't support multi-producer. |
+| N producers, 1 consumer (fan-in) | Each producer uses its OWN identity keypair on PUSH (no broker key minting per I6).  Broker caches each producer's identity pubkey in the per-producer `ProducerEntry` (HEP-0021 §16.3 already established per-producer endpoint scope).  Allowlist gates which consumers can connect across the whole channel; producer enforcement happens per-PUSH-socket.  Consumer registers separately per producer (current REG protocol); receives N (producer-identity-pubkey, endpoint) pairs in CONSUMER_REG_ACK. | **Not supported on SHM** — already rejected with `MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM`. No HEP-0036 work needed. |
+| N producers, N consumers | ZMQ: cross-product handled — each consumer registers per producer; broker pushes allowlist updates to each producer's ZAP cache.  Each producer's PUSH uses its own identity keypair; consumers use their own identity keypair as PULL CURVE-client; M consumers × P producers = M+P registrations + M×P CURVE sessions, NO broker-minted keypairs. | N/A — SHM doesn't support multi-producer. |
 
 ### 9.1 Per-producer fan-in nuance
 
 In a Fan-In channel today (HEP-0021 §16.3), each producer registers
-its own endpoint via `ENDPOINT_UPDATE_REQ`. Each producer's
-`ProducerEntry` carries its own endpoint. Under HEP-0036, each
-producer also carries its own per-channel keypair (broker generates
-one keypair per `ProducerEntry`, not one per `ChannelEntry`).
+its own endpoint via `ENDPOINT_UPDATE_REQ`.  Each producer's
+`ProducerEntry` carries its own endpoint.  Under HEP-0036, each
+producer ALSO carries its own identity pubkey on `ProducerEntry`
+(cached at REG time from `zmq_msg_gets("User-Id")` on the BRC
+socket — per T1 / I6 the broker mints nothing; the producer uses
+its own identity keypair from `<role_uid>.sec`).
 
-`CONSUMER_REG_ACK` returns an ARRAY of `(producer_pubkey, endpoint)`
-pairs — one per registered producer. The consumer iterates and opens
-one PULL socket per producer.
+`CONSUMER_REG_ACK` returns an ARRAY of `(producer's identity pubkey,
+endpoint)` pairs — one per registered producer.  The consumer
+iterates and opens one PULL socket per producer, configuring
+`curve_serverkey` per peer.
 
 ### 9.2 SHM per-consumer authorization
 
@@ -1303,9 +1313,17 @@ with an actionable `chmod` hint in the error message.  The
 two-conditions gate in §3 I1 is only as strong as the file-system
 trust anchors HEP-0035 §4.6 protects.
 
-Per-channel CURVE data keys and SHM secrets are NOT operator-
-distributed — they are broker-minted at REG time and live in
-broker memory + transient role memory.  Operators never see them.
+Per-channel CURVE data keys do not exist under T1 (I6) — both
+sides reuse their identity keypairs on the data plane.  The role's
+identity pubkey is operator-distributed (the `.pub` file copied
+into each hub's `known_roles/`); the seckey stays local to the
+role host.
+
+The ONE broker-generated artifact on the data path is the per-
+channel SHM `shm_secret` (uint64 guard token; SHM transport only;
+HEP-CORE-0002 mechanism, unrelated to CURVE).  Operators never see
+it; it lives in broker memory and is delivered to authorized
+consumers in CONSUMER_REG_ACK.
 
 **Future (post-federation):** automated public-key distribution
 via federation control channels.  Out of MVP scope; tracked as
@@ -1360,19 +1378,23 @@ review; this section keeps only what's still genuinely open.
    (data-plane CURVE accept/reject from ZAP).  Same logging policy
    should apply; coordinate with HEP-0035 implementation.
 
-3. **Per-presence vs per-role keypair on consumer side.**  A
-   processor with 2 presences (in + out) could use one consumer
-   keypair for both REG paths or distinct keypairs per side.
-   Default: per-presence (clean teardown — processor's in-side
-   revocation doesn't affect out-side).  Open: does the operator
-   ever need to override this?
-
 ### 13.2 Resolved (kept for traceability)
 
-- **Key generation source.**  Broker mints via libsodium
-  `crypto_box_keypair()`.  Accepted for MVP; HSM is post-MVP work.
-- **Per-channel key rotation.**  Out of scope (§2.1 non-goals).
-  Operator workflow: tear down + recreate channel.
+- **T1: Per-presence vs per-role keypair.**  Resolved per T1 / I6:
+  a role has ONE identity keypair (from `--keygen`) shared by all
+  its presences and all its sockets (BRC + data plane).  Per-
+  presence revocation is enforced at the allowlist level (per-
+  channel `authorized_consumer_pubkeys`), not by minting separate
+  keypairs.
+- **T1: Broker-side key generation for the data plane.**
+  Resolved per T1 / I6: the broker mints NO data-plane CURVE keys.
+  Roles use their identity keypairs on PUSH / PULL.  The broker
+  generates ONLY the per-channel `shm_secret` (uint64 SHM guard
+  token; HEP-0002 mechanism; not a CURVE key).
+- **Identity-key rotation.**  Out of scope for HEP-0036 protocol
+  (§2.1 non-goal).  Operator workflow: re-`--keygen`, redistribute
+  the new `.pub`, restart the role.  CURVE per-session ephemeral
+  keys provide automatic forward secrecy at the transport layer.
 - **`CHANNEL_AUTH_UPDATE` ordering.**  Resolved in §6.5: sync ACK
   required on `allowlist_add` before broker returns
   `CONSUMER_REG_ACK`; `allowlist_remove` is best-effort.
@@ -1398,12 +1420,16 @@ updates are minimal — pointers / scope clarifications, not redesign.
 
 ### 14.1 HEP-CORE-0021 (ZMQ Endpoint Registry)
 
-- **§5.1 REG_REQ schema** — add `wants_data_keypair`,
-  `wants_shm_secret`, `endpoint_hint_range` (cross-reference HEP-0036
-  §6.1).
+- **§5.1 REG_REQ schema** — add `wants_shm_secret` (transport=shm
+  only) per HEP-0036 §6.1.  No data-plane CURVE keypair fields are
+  added — per HEP-0036 T1 / I6 the producer uses its identity
+  keypair, broker mints no data-plane keys.
 - **§5.2 CONSUMER_REG_ACK schema** — add `data_server_pubkey`
-  (cross-reference HEP-0036 §6.4); note existing `shm_secret` is now
-  broker-issued, not echoed from config.
+  (cross-reference HEP-0036 §6.4); note that this value is the
+  producer's IDENTITY pubkey (already in the hub's `PubkeyOrigin`
+  index from HEP-0035 §4.2), not a broker-minted per-channel key.
+  Note existing `shm_secret` is now broker-generated (HEP-0036
+  §6.4), not echoed from config.
 - **§16.5 production path** — note that the auth wiring (HEP-0036
   Phase 1-4) lands together with §16.5 ephemeral-binding completion;
   these were always intended to be the same wire-format change.
