@@ -1173,8 +1173,12 @@ nothing in MVP requires it.
 
 Combines HEP-0023's startup sequence + HEP-0035 §4.1 Layer-1 ZAP +
 §4.6 file ACLs + §4.7 runtime hardening + HEP-0036 T1 symmetric
-authorization (both sides use identity keys; broker mints nothing
-on the data plane) + T2 first-heartbeat readiness model.
+authorization (LOCKED 2026-05-28: both sides use identity keys;
+broker mints nothing on the data plane).  The T2 readiness model
+(first-heartbeat-driven `kRegistering → kLive`; socket-monitor-
+driven consumer `Authorized` transition; `hub_dead_grace`-driven
+recovery) is BAKED INTO the diagram below but PENDING explicit
+T2 lock-in per `docs/tech_draft/HEP-0036_review_open_items.md`.
 
 ```mermaid
 sequenceDiagram
@@ -1403,11 +1407,17 @@ review; this section keeps only what's still genuinely open.
    registers on a channel hosted by Hub-B, the allowlist push must
    reach Hub-B's producer.  Today HEP-0022 uses `HUB_RELAY_MSG`
    broker↔broker for unsolicited relay; HEP-0036 needs to ensure
-   `CHANNEL_AUTH_UPDATE` rides this path.  Cross-hub trust mode
-   (HEP-0035 §4.3 `federation_trust_mode`) gates the allowlist
-   propagation.  Open question: when federation trust mode is
-   "weak," should Hub-A vouch for the consumer to Hub-B or must
-   the consumer present its pubkey to Hub-B directly?
+   `CHANNEL_AUTH_UPDATE` rides this path.  HEP-0035 §4.3
+   `federation_trust_mode` (values: `local_only` /
+   `peer_delegated` / `peer_announced`) gates whether Hub-B
+   accepts a cross-hub registration in the first place.  Open
+   sub-question: under `peer_delegated`, HEP-0035 already
+   requires the peer hub's `hub.json` to have listed the role via
+   `HUB_PEER_HELLO` augmentation (§4.4) — does HEP-0036 need any
+   additional in-band carriage on the `CHANNEL_AUTH_UPDATE` itself
+   (e.g., to carry the consumer's identity pubkey to Hub-B's
+   producer's ZAP cache)?  This is the wire-shape decision to
+   make before implementing the cross-hub allowlist path.
 
 2. **Audit log shape.**  HEP-0035 §7 question 4 (audit logging
    policy) covers Layer-1 + Layer-2 decisions; HEP-0036 adds Layer-3
