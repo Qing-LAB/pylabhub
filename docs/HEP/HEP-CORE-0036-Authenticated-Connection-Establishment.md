@@ -370,43 +370,83 @@ Every arrow that crosses a process boundary is either:
 
 ### 4.3 Lifetime FSM — extends HEP-0023's RegistrationState
 
-HEP-0023 defines a per-presence `RegistrationState` FSM:
-`Unregistered → RegRequestPending → Registered → Deregistered`. This
-HEP adds the **`Authorized`** state to represent the post-REG window
-during which the broker has issued the per-channel artifacts and the
-data loop may run:
+HEP-0023 defines a per-presence `RegistrationState` enum (today 4
+values: `Unregistered`, `RegRequestPending`, `Registered`,
+`Deregistered`).  HEP-0036 adds **`Authorized`** between
+`Registered` and the heartbeat-tick start.  The data loop may run
+only when at least one presence is `Authorized` (§8.2).
+
+The key insight reconciled in design review (2026-05-28): the broker
+ALREADY has a "producer is operational" signal via
+`first_heartbeat_seen` (HEP-CORE-0023 §2.6 + `hub_state.hpp:107`;
+`kRegistering → kLive` observable).  HEP-0036's role-side `Authorized`
+transition is the local gate that controls when the role calls
+`install_heartbeat`; the first heartbeat tick then drives the broker
+into `kLive`.  No new wire message is needed for the broker to learn
+that a producer is ready to take consumers.
+
+#### 4.3.1 Per-presence `RegistrationState` (role-side)
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Unauthenticated: role process starts
-    Unauthenticated --> Authenticated: CURVE handshake (HEP-0035 ZAP)
-    Authenticated --> RegRequestPending: REG_REQ sent
-    RegRequestPending --> Registered: REG_ACK received (broker accepted)
-    RegRequestPending --> Failed: ERROR / timeout
-    Registered --> Authorized: per-channel artifacts received and applied
-    Authorized --> Deregistered: DEREG_REQ OR heartbeat timeout OR hub-dead
-    Deregistered --> [*]
-    Failed --> [*]
-
-    note right of Authorized
-        Data loop may run only in this state.
-        Producer: ZAP allowlist installed + PUSH bound with channel keys.
-        Consumer: PULL connected with broker-issued endpoint + keys.
-    end note
+    [*]               --> Unregistered: role process start
+    Unregistered      --> RegRequestPending: send REG_REQ<br/>(BRC CURVE handshake to broker<br/>already succeeded — HEP-0035 Layer 1)
+    RegRequestPending --> Registered: REG_ACK ok<br/>(carries per-channel CURVE keys<br/>or shm_secret)
+    RegRequestPending --> Failed: REG_ACK error / timeout<br/>(I1 cond 2 failed → role not in known_roles)
+    Registered        --> Authorized: setup_infrastructure_ done<br/>(see entry conditions below)
+    Registered        --> Failed: setup_infrastructure_ failure<br/>(bind / ZAP / ENDPOINT_UPDATE)
+    Authorized        --> Authorized: brief BRC blip<br/>(within hub_dead_grace — stay)
+    Authorized        --> Unregistered: hub-dead detected<br/>(sustained heartbeat loss<br/>→ tear down data infra<br/>→ await BRC reconnect)
+    Authorized        --> Deregistered: DEREG_REQ sent + DEREG_ACK<br/>(data loop already exited per I3)
+    Deregistered      --> [*]
+    Failed            --> [*]
 ```
 
-**Producer transitions:**
-- `Registered → Authorized` when the producer has bound its PUSH socket
-  with the broker-issued per-channel keypair AND installed its ZAP
-  handler with the initial (possibly empty) allowlist.
-- `Authorized → Deregistered` on DEREG. ZAP allowlist cleared; PUSH
-  socket closed.
+#### 4.3.2 Entry condition for `Authorized` differs by side
 
-**Consumer transitions:**
-- `Registered → Authorized` when the consumer has connected its PULL
-  socket with the broker-issued endpoint + keys AND completed the
-  CURVE handshake (allowlist match confirmed).
-- `Authorized → Deregistered` on DEREG or producer-deregistered cascade.
+**Producer presence — synchronous trigger:**
+- ZAP handler installed on the role's ZMQ context (per-context, not
+  per-channel; once before the first CURVE-server bind).
+- PUSH socket configured `curve_server=1` with broker-issued
+  per-channel keypair from `REG_ACK`.
+- PUSH socket bound (`tcp://*:0` → ephemeral port resolved).
+- `ENDPOINT_UPDATE_REQ` sent and ACK'd (sync per HEP-0021 §16.3 +
+  audit C2, 2026-05-21).
+- After all four: `Registered → Authorized`; then call
+  `install_heartbeat`; first heartbeat tick fires; broker
+  transitions `kRegistering → kLive` (existing
+  `first_heartbeat_seen` mechanism).
+
+**Consumer presence — async trigger:**
+- PULL socket configured with consumer's identity keypair (Option A,
+  T1) AND producer's per-channel pubkey from `CONSUMER_REG_ACK`.
+- `socket.connect(endpoint)` returns immediately; CURVE handshake
+  runs in background.
+- ZMQ socket monitor observes `ZMQ_EVENT_HANDSHAKE_SUCCEEDED` →
+  `Registered → Authorized`.
+- `ZMQ_EVENT_HANDSHAKE_FAILED_AUTH` → critical error (consumer is
+  not in producer's allowlist; should be impossible after broker's
+  CHANNEL_AUTH_UPDATE_ACK serialization, but surfaces broker-side
+  bugs immediately rather than via timeout).
+
+#### 4.3.3 Recovery path — hub-dead → Unregistered
+
+Per HEP-CORE-0023 §2.6 + task #59 ("Hub-dead must transition
+presences out of Registered"), sustained loss of broker heartbeat
+ACKs past `hub_dead_grace` triggers presence teardown.  HEP-0036
+extends this:
+
+- Close PUSH/PULL data sockets (per-channel CURVE keys are stale —
+  see T3 / §X).
+- Clear the producer-side ZAP cache entry for the channel.
+- Stop heartbeat tick.
+- Transition `Authorized → Unregistered`.
+- On BRC reconnect (TCP recovery + CURVE handshake retry), the
+  role re-enters the flow from `Unregistered → RegRequestPending`.
+
+Brief network blips WITHIN `hub_dead_grace` keep the presence in
+`Authorized`: data sockets stay open, CURVE sessions are intact,
+recovery is invisible to the data loop.
 
 ---
 
@@ -414,87 +454,178 @@ stateDiagram-v2
 
 ### 5.1 Producer registration (ZMQ, port-0 ephemeral binding)
 
+The producer's `worker_main_` ordering FLIPS under HEP-0036.
+Pre-HEP-0036 it was: `setup_infrastructure_` (bind plain PUSH) →
+`start_handler_threads` (BRC up) → `register_producer_channel`
+(REG_REQ).  Under HEP-0036 the order MUST be: BRC up → REG_REQ →
+`setup_infrastructure_` (NOW with broker-minted CURVE keys) →
+`install_heartbeat`.  The reason: the producer cannot bind a
+CURVE-server PUSH socket until it has the broker-minted per-channel
+keypair, and that arrives in `REG_ACK`.
+
 ```mermaid
 sequenceDiagram
     autonumber
-    participant P as Producer role
-    participant B as Broker
+    participant P as Producer role<br/>(worker_main_)
+    participant B as Broker (handler thread)
     participant AI as ChannelAccessIndex<br/>(HubState)
+    participant OBS as Channel observable<br/>(HubState — derived)
 
-    Note over P,B: CURVE control plane already established (HEP-0035)
+    Note over P,B: CURVE control plane already established<br/>(BRC DEALER ↔ Broker ROUTER, HEP-0035 Layer 1).<br/>I1 cond 1 (auth) + cond 2 (known_roles) already passed for this BRC.
 
-    P->>B: REG_REQ {channel="lab.raw",<br/>transport="zmq",<br/>zmq_endpoint="tcp://*:0",<br/>role_uid, role_name}
-    B->>AI: lookup/create ChannelAccessEntry["lab.raw"]
-    B->>B: generate per-channel CURVE keypair<br/>(pub_z85, sec_z85)
-    B->>AI: store keypair + authorized_producer_pubkey = pub_z85<br/>(empty authorized_consumer_pubkeys)
-    B->>P: REG_ACK {status="ok",<br/>data_server_pubkey, data_server_seckey,<br/>not_ready_until="ENDPOINT_UPDATE_ACK"}
+    rect rgba(200,220,255,0.4)
+        Note over P: == worker_main_ step: register_producer_channel ==
+        P->>B: REG_REQ {channel="lab.raw",<br/>transport="zmq",<br/>zmq_endpoint="tcp://*:0" (placeholder),<br/>role_uid, role_name,<br/>wants_data_keypair=true}
+        B->>AI: create ChannelAccessEntry["lab.raw"]
+        B->>B: mint per-channel CURVE keypair<br/>(pub_z85, sec_z85) via libsodium
+        B->>AI: store keypair + authorized_producer_pubkey=pub_z85<br/>(authorized_consumer_pubkeys empty)
+        B->>OBS: kAbsent → kRegistering<br/>(producer REG'd; first_heartbeat_seen=false)
+        B->>P: REG_ACK {status="ok",<br/>data_server_pubkey, data_server_seckey,<br/>initial_allowlist=[]}
+        Note over P: state Unregistered → RegRequestPending → Registered
+    end
 
-    Note over P: Producer binds PUSH socket
-    P->>P: socket.set(curve_server=1)<br/>socket.set(curve_secretkey=data_server_seckey)<br/>socket.set(curve_publickey=data_server_pubkey)
-    P->>P: install ZAP handler with empty allowlist<br/>(reads from local cache)
-    P->>P: socket.bind("tcp://*:0")<br/>→ actual_endpoint = "tcp://127.0.0.1:54891"
-    P->>B: ENDPOINT_UPDATE_REQ {channel="lab.raw",<br/>endpoint="tcp://127.0.0.1:54891"}
-    B->>AI: store endpoint in ChannelAccessEntry["lab.raw"]<br/>(mark channel READY for discovery)
-    B->>P: ENDPOINT_UPDATE_ACK {status="ok"}
+    rect rgba(220,240,210,0.4)
+        Note over P: == worker_main_ step: setup_infrastructure_ ==
+        P->>P: install ZAP handler on ZMQ context<br/>(inproc://zeromq.zap.01;<br/>cache populated from initial_allowlist=[])
+        P->>P: configure PUSH socket<br/>curve_server=1<br/>curve_secretkey=data_server_seckey<br/>curve_publickey=data_server_pubkey
+        P->>P: socket.bind("tcp://*:0")<br/>→ resolved = "tcp://127.0.0.1:54891"
+        P->>B: ENDPOINT_UPDATE_REQ {channel="lab.raw",<br/>endpoint="tcp://127.0.0.1:54891"} (sync per HEP-0021 §16.3)
+        B->>AI: store resolved endpoint
+        B->>P: ENDPOINT_UPDATE_ACK {status="ok"}
+        Note over P: state Registered → Authorized<br/>(setup_infrastructure_ returns)
+    end
 
-    Note over P: Producer transitions Registered → Authorized.<br/>Data loop may run.
+    rect rgba(255,235,210,0.4)
+        Note over P: == worker_main_ step: install_heartbeat ==
+        P->>P: BRC.set_periodic_task(on_heartbeat_tick_, interval)
+        Note over P: ... time passes (first tick) ...
+        P->>B: HEARTBEAT_REQ {channel="lab.raw",<br/>role_uid, role_type="producer", metrics}
+        B->>B: presence.first_heartbeat_seen = true
+        B->>OBS: kRegistering → kLive<br/>(channel now admits consumers)
+    end
+
+    Note over P,OBS: From this point forward, the broker will admit<br/>CONSUMER_REG_REQ for "lab.raw" (§5.2 picks up here).
 ```
 
-**Ordering note (R1)**: ZAP handler must be installed on the role's
-ZMQ context BEFORE the CURVE-server PUSH socket binds.  ZAP is a
-per-context inproc socket (`inproc://zeromq.zap.01`); a CURVE socket
-that binds without an installed ZAP handler accepts handshakes by
-default (libzmq behavior).  The diagram orders steps 4-6 to enforce
-this: CURVE-key config → ZAP install (with empty allowlist) →
-bind.  Any incoming handshake between bind and the first allowlist
-add is denied by the empty-allowlist ZAP cache.
+**Ordering invariants captured by the diagram:**
 
-**Single-gate property**: at step 4 the broker is the sole entity that
-generates the per-channel keypair. Producer cannot start its data
-socket with any other key. At step 8 the producer's PUSH socket is
-CURVE-server configured but allowlist is empty — no consumer can
-connect yet. The Authorized transition gates the data loop's start.
+1. **REG_REQ before bind** (steps 1-8).  The producer cannot bind
+   CURVE-server PUSH until it holds the broker-minted keypair.
+2. **ZAP install before bind** (R1, steps 9-11).  ZAP is per-ZMQ-
+   context inproc; a CURVE-server socket bound without ZAP accepts
+   all handshakes by default (libzmq behavior).
+3. **ENDPOINT_UPDATE sync before Authorized** (steps 12-14).  The
+   broker's `ChannelAccessEntry` must hold the resolved endpoint
+   before the producer transitions Authorized; otherwise a consumer
+   admitted via §5.2 would receive an unresolved `tcp://*:0`.
+4. **install_heartbeat after Authorized** (step 16).  First heartbeat
+   tick fires only after the data infrastructure is fully wired;
+   broker's `kRegistering → kLive` transition (step 19) is the
+   gating signal for consumer admission.
+
+**Single-gate property**: at step 4 the broker is the sole entity
+that generates the per-channel keypair — producer cannot start its
+data socket with any other key.  At step 11 the producer's PUSH is
+CURVE-server-configured but the ZAP cache allowlist is empty — no
+consumer can connect yet.  Steps 9-14 are role-local (no other
+party can intervene).  The data loop's start is gated on the
+`Authorized` transition (step 15); consumer admission is gated on
+`kLive` (step 19).
 
 ### 5.2 Consumer registration + data connect (ZMQ)
+
+Picks up from §5.1's final state: producer is `Authorized` (role-
+local), broker's channel observable is `kLive`.  The consumer's
+identity pubkey (Option A from T1 — `consumer_pubkey` = the
+consumer's control-plane identity key) is read from the BRC's
+`zmq_msg_gets("User-Id")` after CURVE auth; the field in the wire
+message is carried for explicitness but the broker authoritatively
+uses User-Id.
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant C as Consumer role
-    participant B as Broker
+    participant B as Broker (handler thread)
     participant AI as ChannelAccessIndex
-    participant P as Producer
+    participant OBS as Channel observable
+    participant P as Producer (running)
+    participant MON as Consumer's ZMQ<br/>socket monitor
 
-    Note over C,B: CURVE control plane already established (HEP-0035)
+    Note over C,B: BRC control plane established<br/>(I1 cond 1 + 2 passed for consumer on its BRC).
 
     C->>B: CONSUMER_REG_REQ {channel="lab.raw",<br/>consumer_pubkey=cons_pub_z85}
-    B->>AI: lookup ChannelAccessEntry["lab.raw"]
-    alt channel ready AND consumer pubkey passes admission policy
+    B->>OBS: observe(channel) — kAbsent / kRegistering / kStalled / kLive
+
+    alt kAbsent (channel not registered)
+        B->>C: ERROR {error_code="CHANNEL_NOT_FOUND"}
+    else kRegistering (producer REG'd, no first heartbeat yet — R6 gate)
+        B->>C: CHANNEL_NOT_READY {reason="awaiting_first_heartbeat"}
+        Note over C: Consumer retries after backoff.<br/>Endpoint never disclosed.
+    else kStalled (producer heartbeat stalled)
+        B->>C: CHANNEL_NOT_READY {reason="heartbeat_stalled"}
+    else kLive AND I1 cond 2 fails (cons_pub not in known_roles)
+        B->>C: ERROR {error_code="UNAUTHORIZED_CONSUMER_PUBKEY"}
+    else kLive AND I1 passes
         B->>AI: add cons_pub_z85 to authorized_consumer_pubkeys
-        B->>P: CHANNEL_AUTH_UPDATE {channel="lab.raw",<br/>allowlist_add=[cons_pub_z85]}
-        Note over P: BRC poll-thread updates ZAP handler cache.
+        B->>P: CHANNEL_AUTH_UPDATE {channel="lab.raw",<br/>allowlist_add=[cons_pub_z85]} (sync per §6.5)
+        Note over P: BRC poll thread serially updates<br/>ZAP cache: { cons_pub_z85 }
         P->>B: CHANNEL_AUTH_UPDATE_ACK {status="ok"}
         B->>C: CONSUMER_REG_ACK {status="ok",<br/>endpoint="tcp://127.0.0.1:54891",<br/>data_server_pubkey=pub_z85}
-        Note over C: Consumer configures PULL socket
-        C->>C: socket.set(curve_serverkey=data_server_pubkey)<br/>socket.set(curve_publickey=cons_pub_z85)<br/>socket.set(curve_secretkey=cons_sec_z85)
-        C->>P: socket.connect(endpoint)<br/>+ CURVE handshake
-        P->>P: ZAP handler checks cons_pub_z85 ∈ allowlist → ACCEPT
-        Note over C: Consumer transitions Registered → Authorized.<br/>Data loop may run.
+        Note over C: state Unregistered → RegRequestPending → Registered
+
+        rect rgba(220,240,210,0.4)
+            Note over C: == setup_infrastructure_ ==
+            C->>MON: install socket monitor on PULL<br/>(events: HANDSHAKE_SUCCEEDED / FAILED_AUTH)
+            C->>C: configure PULL<br/>curve_serverkey=data_server_pubkey<br/>curve_publickey=cons_pub_z85<br/>curve_secretkey=cons_sec_z85
+            C->>P: socket.connect(endpoint)<br/>(returns immediately;<br/>CURVE handshake runs in background)
+            P->>P: ZAP request: peer pubkey=cons_pub_z85<br/>→ cache hit → ALLOW
+            P-->>MON: HANDSHAKE_SUCCEEDED event
+            MON->>C: notify Authorized transition
+            Note over C: state Registered → Authorized
+        end
+
+        rect rgba(255,235,210,0.4)
+            Note over C: == install_heartbeat (after Authorized) ==
+            C->>C: BRC.set_periodic_task(on_heartbeat_tick_)
+            Note over C: first tick fires
+            C->>B: HEARTBEAT_REQ {channel, role_uid, role_type="consumer"}
+            B->>B: consumer presence.first_heartbeat_seen = true
+        end
+
         P-->>C: ZMQ data frames (CURVE-encrypted)
-    else channel not ready OR consumer pubkey rejected
-        B->>C: ERROR {error_code="UNAUTHORIZED" or "CHANNEL_NOT_READY"}
-        Note over C: Consumer never learns the endpoint or pubkey.<br/>Data loop never starts.
     end
 ```
 
-**Single-gate property**: the broker is the sole entity that decides
-(step 3) whether to admit the consumer AND the sole entity that pushes
-the allowlist update to the producer (step 5). If the broker rejects,
-the consumer never receives the endpoint or pubkey (step 14) — there
-is no way for the consumer to attempt a connection. If the broker
-accepts but the push to the producer fails, the broker MUST not
-return the endpoint to the consumer until the push succeeds (or it
-must roll back the allowlist add).
+**Gating points (single-gate property)**:
+
+- **Step 3** (broker observable check): if the producer hasn't sent
+  its first heartbeat, the channel is `kRegistering` and consumer
+  is told to retry.  This is **R6** — the broker's
+  CONSUMER_REG_REQ handler at `broker_service.cpp:1959-1971`
+  currently checks endpoint-port-not-zero but does NOT check
+  `first_heartbeat_seen`.  HEP-0036 implementation extends the
+  check to also gate on `first_heartbeat_seen` (~5 lines), matching
+  DISC_REQ's behavior at `broker_service.cpp:1720`.
+- **Step 7** (sync CHANNEL_AUTH_UPDATE before CONSUMER_REG_ACK):
+  the broker MUST receive `CHANNEL_AUTH_UPDATE_ACK` from the
+  producer (step 8) BEFORE returning CONSUMER_REG_ACK (step 9).
+  This guarantees the producer's ZAP cache is updated before the
+  consumer attempts the CURVE handshake — no race window between
+  cache install and first handshake.
+- **Step 14** (HANDSHAKE_SUCCEEDED event): the consumer's
+  `Authorized` transition is event-driven.  The alternative
+  (HANDSHAKE_FAILED_AUTH event) surfaces broker-side
+  serialization bugs immediately rather than via slow read
+  timeouts.  This is **R3** — without socket-monitor wiring, a
+  consumer whose handshake silently fails would hang in
+  `Registered` until heartbeat timeout reaped it.
+
+**No endpoint disclosure on rejection** (steps 5-6): if the broker
+returns `CHANNEL_NOT_READY` or `UNAUTHORIZED_CONSUMER_PUBKEY`, the
+consumer never learns the endpoint or the producer's data pubkey.
+A consumer that tries random ports + random pubkeys fails at the
+producer's ZAP gate (empty allowlist for that pubkey → DENY).
 
 ### 5.3 Multi-consumer fan-out: second consumer joins a running channel
 
@@ -932,8 +1063,10 @@ nothing in MVP requires it.
 
 ## 10. Lifetime alignment — full role lifecycle
 
-Combining HEP-0023's existing startup sequence with HEP-0036's
-authorization layer:
+Combines HEP-0023's startup sequence + HEP-0035 Layer-1 ZAP + HEP-0036
+authorization.  Reflects the **post-T2 worker_main_ ordering**:
+BRC up → REG_REQ → setup_infrastructure_ (NOW with keys) →
+install_heartbeat → first heartbeat → broker observes kLive.
 
 ```mermaid
 sequenceDiagram
@@ -942,49 +1075,97 @@ sequenceDiagram
     participant B as Broker
     participant DL as Data loop
     participant DS as Data socket
+    participant MON as Socket monitor<br/>(consumer / PULL side)
 
     Note over R: Process start (plh_role binary main)
-    R->>R: load config + setup ZMQ context
-    R->>B: CURVE handshake (HEP-0035 L1 ZAP)
-    Note over R,B: state: Authenticated
+    R->>R: load config; verify key-file ACLs (HEP-0035 §4.6); setup ZMQ context
 
-    R->>B: REG_REQ
-    B->>R: REG_ACK + per-channel keys/secret
-    Note over R: state: Registered
-
-    R->>DS: configure socket with broker-issued artifacts
-    alt ZMQ producer
-        R->>DS: bind PUSH(port=0); ENDPOINT_UPDATE_REQ; install ZAP
-    else ZMQ consumer
-        R->>DS: configure PULL with received endpoint + key
-        R->>DS: connect + CURVE handshake (gated by producer's ZAP)
-    else SHM consumer
-        R->>DS: attach DataBlock with received shm_secret
+    rect rgba(220,210,250,0.4)
+        Note over R,B: == BRC control plane (HEP-0035 Layer 1) ==
+        R->>R: start_handler_threads → BRC DEALER opens
+        R->>B: CURVE handshake (I1 cond 1)
+        B->>B: ZAP handler: User-Id ∈ known_roles[]? (I1 cond 2)
+        Note over R,B: Both cond 1 + cond 2 pass → control link authenticated
     end
-    Note over R: state: Authorized<br/>(condvar signaled to data loop)
 
-    R->>DL: signal: enter data loop
-    DL->>DL: while (any_presence_authorized()) { ... }
+    rect rgba(200,220,255,0.4)
+        Note over R: == REG_REQ phase ==
+        R->>B: REG_REQ (producer: wants_data_keypair; consumer: consumer_pubkey)
+        B->>R: REG_ACK + per-channel CURVE keys (producer)<br/>OR endpoint + producer_pubkey (consumer)<br/>OR shm_secret (SHM)
+        Note over R: state Unregistered → RegRequestPending → Registered
+    end
+
+    rect rgba(220,240,210,0.4)
+        Note over R: == setup_infrastructure_ ==
+        alt ZMQ producer
+            R->>R: install ZAP handler (empty cache)
+            R->>DS: PUSH curve_server=1 + broker keys
+            R->>DS: bind(port=0) → resolved
+            R->>B: ENDPOINT_UPDATE_REQ (sync) → ACK
+            Note over R: Authorized (sync trigger)
+        else ZMQ consumer
+            R->>MON: install socket monitor
+            R->>DS: PULL curve_serverkey=producer_pubkey + own keys
+            R->>DS: connect(endpoint) — handshake async
+            DS-->>MON: HANDSHAKE_SUCCEEDED
+            MON-->>R: notify
+            Note over R: Authorized (async trigger via monitor)
+        else SHM consumer
+            R->>DS: attach DataBlock with shm_secret
+            Note over R: Authorized (sync trigger)
+        end
+    end
+
+    rect rgba(255,235,210,0.4)
+        Note over R: == install_heartbeat (only after Authorized) ==
+        R->>R: BRC.set_periodic_task(heartbeat_tick)
+        Note over R: ... first tick ...
+        R->>B: HEARTBEAT_REQ
+        B->>B: presence.first_heartbeat_seen = true
+        Note over B: For producer: kRegistering → kLive<br/>(broker can now admit consumers via §5.2)
+    end
+
+    R->>DL: condvar signal: any_presence_authorized() == true
+    DL->>DL: while (running && !shutdown && !critical_error<br/>        && any_presence_authorized()) { ... }
     Note over DL: data flow active
 
     Note over R: ... role runs for its lifetime ...
 
-    Note over R: Shutdown initiated (SIGTERM, explicit close, or hub-dead cascade)
-    R->>B: DEREG_REQ
-    B->>R: DEREG_ACK
-    B->>B: push CHANNEL_AUTH_UPDATE allowlist_remove to peers
-    Note over R: state: Deregistered
-    DL->>DL: any_presence_authorized() == false → exit loop
-    R->>DS: close socket
-    R->>R: process exit
+    alt Brief BRC blip (within hub_dead_grace)
+        Note over R,B: TCP-level reconnect; CURVE session preserved.<br/>Authorized state retained; data loop continues.
+    else Sustained heartbeat loss (hub_dead_grace exceeded)
+        R->>R: hub-dead detected
+        R->>DL: shutdown_requested = true → loop exits
+        R->>DS: close data sockets (per-channel keys are now stale)
+        R->>R: state Authorized → Unregistered<br/>(awaiting BRC reconnect for re-REG)
+    else Proactive DEREG (SIGTERM / explicit close)
+        R->>DL: shutdown_requested = true → loop exits (per I3)
+        R->>DS: close data sockets
+        R->>B: DEREG_REQ
+        B->>R: DEREG_ACK
+        B->>B: push CHANNEL_AUTH_UPDATE allowlist_remove to peers
+        Note over R: state Authorized → Deregistered
+        R->>R: process exit
+    end
 ```
 
-**Property**: there is no "data flow without broker awareness" window
-in either direction. The data loop starts only after Authorized;
-exits when no presence remains Authorized. The data socket is
-configured only with broker-issued artifacts (never config-supplied).
-The role's identity (control-plane CURVE keypair) is the only
-operator-managed long-lived secret.
+**Properties guaranteed by this lifecycle**:
+
+1. **No data flow without broker awareness.**  The data loop starts
+   only after `Authorized`; the first heartbeat (which broker
+   observes as `kLive`) happens AFTER `Authorized`.  Consumers can
+   be admitted only AFTER `kLive` (broker R6 gate at CONSUMER_REG_REQ).
+2. **No data infrastructure without broker-issued artifacts.**  PUSH
+   binds only with broker-minted per-channel keys; PULL connects only
+   with broker-issued endpoint + producer pubkey; SHM attaches only
+   with broker-generated secret.  Config-supplied artifacts are
+   ignored.
+3. **No surprising data loops on partial failure.**  Hub-dead tears
+   down data sockets BEFORE the role attempts to re-REG; stale keys
+   never linger.
+4. **The role's identity keypair is the only operator-managed
+   long-lived secret.**  Per-channel data keys live in broker + role
+   memory only; rotation is via channel teardown.
 
 ---
 
@@ -1065,12 +1246,15 @@ eviction work from earlier draft scope per I5 (revocation is passive).
 | Phase | Scope | Notes |
 |---|---|---|
 | 0 | **Prerequisite — HEP-0035 §4.1 Layer-1 ZAP.**  Broker ROUTER installs a ZAP handler; `hub.known_roles[]` from hub.json populates the pubkey allowlist; ZAP rejects unknown pubkeys at handshake.  Legacy `check_role_identity()` + `RoleIdentityPolicy` enum REMOVED (HEP-0035 §4.5).  Tracked under task #74; HEP-0036 phases below depend on this being live. | Not HEP-0036 work proper, but listed here as the prerequisite that closes I1 condition (2).  HEP-0036's data-plane wiring is meaningless without it. |
+| 0.5 | **Reorder producer `worker_main_`** (T2 R1).  Move `setup_infrastructure_` to AFTER `register_producer_channel` so broker-minted per-channel keys are available at PUSH bind time.  Move `install_heartbeat` to AFTER `setup_infrastructure_` so first heartbeat fires only after Authorized.  No behavior change yet (data sockets still plain TCP because Phase 1 hasn't introduced keys) — but the structural reorder is the foundation. | Pure code-structural change.  Reorder is reviewable in isolation, behavior-identical pre-HEP-0036. |
+| 0.7 | **Add `RegistrationState::Authorized`** (T2).  5th enum value between `Registered` and `Deregistered`.  Producer presence transitions Registered → Authorized at the end of `setup_infrastructure_` (sync); consumer presence transitions via ZMQ socket-monitor on `HANDSHAKE_SUCCEEDED` (T2 R3).  Data loop's outer guard adds `any_presence_authorized()` (HEP-0036 §8.2). | Per-presence FSM is independent across multi-presence roles (processor). |
+| 0.8 | **Broker CONSUMER_REG_REQ gates on `first_heartbeat_seen`** (T2 R6, ~5 LOC).  Match DISC_REQ's existing check at `broker_service.cpp:1720`.  Return `CHANNEL_NOT_READY{reason="awaiting_first_heartbeat"}` if producer presence hasn't been observed as `kLive`. | Pre-existing inconsistency between DISC_REQ and CONSUMER_REG_REQ becomes symmetric.  Standalone fix; doesn't depend on later phases. |
 | 1 | `ChannelAccessIndex` skeleton in HubState.  Broker mints per-channel CURVE keypair on REG_REQ; REG_ACK carries it.  **No enforcement** yet — keys are issued but data sockets still plain TCP. | Smallest behavior change; verifies the wire format. |
 | 2 | Producer side: install ZAP handler with empty allowlist FIRST (per §5.1 ordering), then bind PUSH socket with CURVE config from REG_ACK.  ZAP DENY by default. | Producers reject all incoming until broker pushes allowlist; intentional. |
 | 3 | Broker side: on CONSUMER_REG_REQ, run two-condition gate (auth + known); on pass, add to allowlist; emit `CHANNEL_AUTH_UPDATE add` sync to producer (wait for ACK per §6.5); return CONSUMER_REG_ACK with `data_server_pubkey` + endpoint. | Closes the loop: consumer can now connect after auth.  Per-handshake race resolved by sync-before-ACK ordering. |
-| 4 | Consumer side: read `data_server_pubkey` + endpoint from CONSUMER_REG_ACK; configure PULL with CURVE; data-loop gate on Authorized state per §8. | End-to-end ZMQ auth working. |
-| 5 | SHM parallel: broker generates `shm_secret` per channel; `CONSUMER_REG_ACK` releases it only on auth.  Retire config-supplied `out_shm_secret`. | SHM secret moves from config to broker. |
-| 6 | Passive revocation paths: on CONSUMER_DEREG, on heartbeat timeout, on hub-dead cascade — broker emits `CHANNEL_AUTH_UPDATE remove` (best-effort) and removes from allowlist.  No force-disconnect (per I5). | Closes lifetime-alignment loop; no new socket-level APIs. |
+| 4 | Consumer side: read `data_server_pubkey` + endpoint from CONSUMER_REG_ACK; configure PULL with CURVE; install ZMQ socket monitor for `HANDSHAKE_SUCCEEDED`/`HANDSHAKE_FAILED_AUTH` events (T2 R3); data-loop gate on `Authorized` state per §8. | End-to-end ZMQ auth working; auth failures surface immediately via monitor rather than via heartbeat timeout. |
+| 5 | SHM parallel: broker generates `shm_secret` per channel; `CONSUMER_REG_ACK` releases it only on auth.  Retire config-supplied `out_shm_secret`. | SHM secret moves from config to broker.  Consumer's Authorized trigger is synchronous after attach (no monitor needed). |
+| 6 | Passive revocation paths: on CONSUMER_DEREG, on heartbeat timeout, on hub-dead cascade — broker emits `CHANNEL_AUTH_UPDATE remove` (best-effort) and removes from allowlist.  Role-side hub-dead handling (T2 R4 / R5): `Authorized → Unregistered` after `hub_dead_grace`; tear down data sockets + ZAP cache entry; await BRC reconnect.  No force-disconnect (per I5). | Closes lifetime-alignment loop; no new socket-level APIs. |
 | 7 | Multi-producer fan-in: per-producer keypair generation; `CONSUMER_REG_ACK` returns array of (pubkey, endpoint) pairs; consumer opens N PULL sockets. | Touches HEP-0021 §16.3's per-producer endpoint scope. |
 | 8 | Inbox + bands: inbox inherits channel ZAP cache (no new wiring); bands inherit hub control-plane CURVE (already in place via HEP-0035).  Verification only — no new code. | Sanity-check §9.3 + §9.4 hold at runtime. |
 | 9 | Dev-mode escape hatch + loopback-enforcement; manual key-distribution workflow doc per §11.3. | Operator-facing surface. |
