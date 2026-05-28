@@ -25,16 +25,22 @@ decisions into HEP-0036 and archive this file per
 ## Tier 1 — Architectural blockers (must close before any Phase 1 impl)
 
 ### T1 — Consumer's data-side pubkey provenance
-**Status:** 🟡 DISCUSSED-NOT-LOCKED.
-**Question:** is `consumer_pubkey` (a) the consumer's control-plane
-identity pubkey (reused) or (b) a fresh per-channel-derived key?
-**Where it appears in HEP-0036:** §6.3 wire format; §5.2 sequence;
-§3 I1 (broker's "role known" check).
-**Current state:** Option A (identity reuse) leaning + file-ACL
-discipline mandate (HEP-0035 §4.6) shipped in commit d8591e73.  §5.2
-diagram in commit d9f7d218 ALREADY writes "Option A from T1" — that
-was me deciding for the user; not formally locked.
-**To close:** explicit yes/no on Option A.
+**Status:** ✅ RESOLVED (2026-05-28).
+**Decision:** SYMMETRIC design — both producer and consumer use
+their identity keypairs (from `--keygen`) on the data plane.
+Broker mints NO data-plane keypairs; it tracks allowlists and
+caches each channel's authorized producer identity pubkey.  The
+`consumer_pubkey` wire field is DROPPED entirely — broker recovers
+the CURVE-proved consumer identity via `zmq_msg_gets("User-Id")`
+on the BRC socket (no self-claims; SSH `authorized_keys` model).
+SHM keeps its broker-generated `shm_secret` (unrelated to CURVE).
+**Supporting work:**
+- HEP-0035 §4.6 file ACL discipline (commit d8591e73, task #101).
+- HEP-0035 §4.7 runtime key handling (commit a919938c, task #102).
+**HEP-0036 sections updated:** §3 I6, §3 I8, §4.1 ChannelAccessEntry,
+§4.2 diagram, §5.1 / §5.2 / §5.3 / §5.4 / §5.5 / §5.6 / §5.7,
+§6.1-6.4 + 6.6 (wire format + error codes), §10 lifetime, §12
+phases.
 
 ### T2 — `Authorized` state + role/broker FSM coupling
 **Status:** 🟡 DISCUSSED-NOT-LOCKED.
