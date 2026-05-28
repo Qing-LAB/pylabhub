@@ -164,6 +164,13 @@ protection; cross-session requires seckey (insider threat).
 **Status:** ✅ RESOLVED — Phase 0 = "prerequisite from HEP-0035
 Layer-1 ZAP" (commit d8591e73).
 
+### S3 — Runtime key handling (HEP-0035 §4.7)
+**Status:** ✅ RESOLVED — mlock + no-core-dump + zeroing,
+cross-platform via libsodium (Linux, macOS, Windows).  Doc:
+HEP-0035 §4.7.  Task #102 filed.  Rejected "random session key
+in-memory encryption" as obfuscation that doesn't increase
+attacker work.
+
 ---
 
 ## Order of discussion (proposed, user can override)

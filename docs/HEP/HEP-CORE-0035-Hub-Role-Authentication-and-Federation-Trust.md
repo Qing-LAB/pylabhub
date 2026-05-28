@@ -470,6 +470,170 @@ This requirement layers on top of existing related work:
 
 ---
 
+## 4.7 Runtime key handling — swap, core dumps, plaintext zeroing
+
+§4.6 covers secret material **at rest** on disk.  §4.7 covers the
+same material **at runtime** while it's loaded into the process.
+
+### 4.7.1 Threats addressed
+
+| # | Leak channel | What an attacker gets without §4.7 |
+|---|---|---|
+| 1 | OS pages memory to swap | seckey bytes carved from the swap partition |
+| 2 | Process crashes → core dump | seckey bytes in the dump file |
+| 3 | Lingering plaintext in heap buffers after key has been handed to libsodium / libzmq | seckey bytes recoverable via heap forensics on a still-running or recently-stopped process |
+
+§4.7 does NOT defend against an attacker who can read the process's
+LIVE memory (debugger, malicious in-process script, ptrace).  Per
+HEP-0036 I8 (trust model), that's an out-of-scope insider threat
+requiring HSM/TEE — not a software-only solution.
+
+### 4.7.2 Three measures (all three are mandatory)
+
+1. **Lock secret pages into RAM** — prevent the OS from swapping
+   them.  Apply to: in-memory copies of `<role|hub>.sec`, broker's
+   in-memory copy of any cached secret bytes.
+2. **Disable core dumps** on `plh_role` and `plh_hub` binaries —
+   prevent crash-driven memory dumps from landing on disk.
+3. **Zero plaintext buffers as soon as the key is consumed** —
+   minimize the window between loading the key from disk and
+   handing it to libsodium / libzmq.  Use a memory-zero primitive
+   the compiler cannot optimize away.
+
+### 4.7.3 Cross-platform mechanism table
+
+The implementation lives in `src/utils/security/runtime_key_handling.{hpp,cpp}`
+and is compiled into both `plh_role` and `plh_hub`.
+
+| Measure | Linux | macOS / BSD (POSIX) | Windows |
+|---|---|---|---|
+| Lock memory pages | `mlock()` (POSIX) | `mlock()` (POSIX) | `VirtualLock()` |
+| Lock memory (preferred wrapper) | `sodium_mlock()` | `sodium_mlock()` | `sodium_mlock()` |
+| Hardened allocator (mlock + guard pages + canary + auto-wipe) | `sodium_malloc()` / `sodium_free()` | `sodium_malloc()` / `sodium_free()` | `sodium_malloc()` / `sodium_free()` |
+| Disable core dumps (resource-limit form, portable POSIX) | `setrlimit(RLIMIT_CORE, {0,0})` | `setrlimit(RLIMIT_CORE, {0,0})` | n/a |
+| Disable core dumps (defence-in-depth, Linux-only) | `prctl(PR_SET_DUMPABLE, 0)` (also blocks `ptrace`) | n/a | n/a |
+| Exclude key pages from core dump (page-granular) | `madvise(addr, len, MADV_DONTDUMP)` | n/a (mlock + rlimit alone) | n/a (locked pages don't appear in minidumps) |
+| Suppress Windows Error Reporting crash dialog + minidump | n/a | n/a | `SetErrorMode(SEM_NOGPFAULTERRORBOX \| SEM_FAILCRITICALERRORS)` + `WerAddExcludedApplication(L"plh_role.exe")` |
+| Compiler-safe memory zero | `sodium_memzero()` | `sodium_memzero()` | `sodium_memzero()` |
+| Compiler-safe memory zero (system-provided fallback) | `explicit_bzero()` (glibc 2.25+) | `explicit_bzero()` (BSD) | `SecureZeroMemory()` (Win32) |
+
+**libsodium wraps all three measures cross-platform.**  Pylabhub
+already depends on libsodium (HEP-0035 §13 q1 + HEP-0036
+broker keygen), so `sodium_mlock` / `sodium_memzero` / `sodium_malloc`
+are the canonical wrappers and §4.7.4's utility uses them
+unconditionally.  System fallbacks are listed for reference
+(when reviewing platform behavior) but the impl does not
+conditionally fall back to them.
+
+### 4.7.4 Shared utility (`src/utils/security/runtime_key_handling.{hpp,cpp}`)
+
+The utility exposes a small surface that both binaries call:
+
+```cpp
+namespace pylabhub::security {
+
+/// Call ONCE during `main()`, before any secret material is loaded.
+/// On POSIX: setrlimit(RLIMIT_CORE, 0); on Linux also prctl PR_SET_DUMPABLE=0;
+/// on Windows: SetErrorMode + WerAddExcludedApplication.
+/// Returns false (and writes a diagnostic to `err`) only on systems
+/// where the call unexpectedly fails (very rare).  Callers MUST treat
+/// failure as a fatal startup error — refuse to proceed.
+bool disable_core_dumps(std::string *err);
+
+/// RAII wrapper around a key-sized buffer (typically 32 or 64 bytes).
+/// Construction: allocates via sodium_malloc (mlock + guard pages + canary).
+/// Destruction: sodium_memzero + sodium_free.
+/// Copy/move: disabled.  Pass by reference.
+class SecureKeyBuffer {
+public:
+    explicit SecureKeyBuffer(std::size_t len);
+    ~SecureKeyBuffer() noexcept;
+    SecureKeyBuffer(const SecureKeyBuffer&)            = delete;
+    SecureKeyBuffer& operator=(const SecureKeyBuffer&) = delete;
+    SecureKeyBuffer(SecureKeyBuffer&&)                 = delete;
+    SecureKeyBuffer& operator=(SecureKeyBuffer&&)      = delete;
+
+    [[nodiscard]] std::byte *data() noexcept;
+    [[nodiscard]] const std::byte *data() const noexcept;
+    [[nodiscard]] std::size_t size() const noexcept;
+
+private:
+    std::byte   *buf_;
+    std::size_t  len_;
+};
+
+/// One-shot zero of an externally-owned buffer.  Compiler-safe via
+/// sodium_memzero.  Use for buffers the caller allocated themselves
+/// (e.g. a `std::vector<std::byte>` populated by file I/O before
+/// the bytes are copied into a `SecureKeyBuffer`).
+void zero_buffer(void *addr, std::size_t len) noexcept;
+
+}  // namespace pylabhub::security
+```
+
+### 4.7.5 Integration points
+
+| Site | What changes |
+|---|---|
+| `plh_hub` `main()` (very early) | Call `disable_core_dumps()`.  Fatal if it fails. |
+| `plh_role` `main()` (very early) | Same. |
+| Key-loading code (load `.sec` from disk) | Read into a stack buffer; copy into `SecureKeyBuffer`; `zero_buffer()` the stack buffer immediately.  Pass `SecureKeyBuffer::data()` to libsodium / libzmq. |
+| ZMQ socket CURVE config | Already passes the bytes by value into libzmq, which keeps its own copy.  Our `SecureKeyBuffer` lifetime can shrink to "until libzmq has accepted the key"; `~SecureKeyBuffer()` then zeros our copy. |
+| Broker per-channel allowlist (HEP-0036 §4.1) | Allowlist holds PUBLIC keys only; no secret material to lock.  No §4.7 work needed. |
+
+### 4.7.6 Order with respect to §4.6
+
+`disable_core_dumps()` MUST be called BEFORE the §4.6 file-ACL
+verification, because if the file-ACL check fails and the binary
+calls `std::abort()`/`exit(1)` while a core-dump policy is still
+permissive, a partial dump could leak whatever the binary loaded
+before the check.  Canonical order in both binaries' `main()`:
+
+```
+1. security::disable_core_dumps()        // §4.7
+2. security::verify_key_file_acls(...)   // §4.6
+3. security::load_keypair(...)           // returns SecureKeyBuffer
+4. ... start sockets, etc. ...
+```
+
+### 4.7.7 Limitations (explicit, so operators are not misled)
+
+- **Live-memory attackers are not defended against.**  A debugger
+  attached to the running process can still read the seckey from
+  RAM.  Linux `prctl(PR_SET_DUMPABLE, 0)` blocks `ptrace` from
+  non-root users; root can still attach.  Windows offers similar
+  but not identical protections via `SetProcessMitigationPolicy`.
+  This is the same scope statement as HEP-0036 §3 I8.
+- **ZeroMQ holds its own copy.**  Once we pass a key to a
+  CURVE-configured socket, libzmq stores it internally for the
+  socket's lifetime.  Our `SecureKeyBuffer` can be destroyed after
+  the socket is configured, but libzmq's copy lives until the
+  socket closes.  We do NOT have access to libzmq's internal
+  storage for mlock/zeroing purposes; we accept this as a known
+  limitation.
+- **System swap policy still matters.**  Even with `sodium_mlock`,
+  if the operator has configured an aggressive `vm.overcommit`
+  policy or running under memory pressure, the OS may reject
+  `mlock` (returns `ENOMEM`).  The utility logs a WARN and
+  continues; this is operator-visible.  Hardened deployments
+  should size RAM such that `mlock` never fails.
+- **macOS sandbox / iOS-style restrictions.**  Not target
+  platforms; if pylabhub ever ships there, additional entitlements
+  may be required for `mlock`.
+
+### 4.7.8 Test coverage
+
+- L1 unit tests for `SecureKeyBuffer` lifecycle (allocate → write
+  → destroy → verify post-destruction memory pattern is zeroed)
+  on Linux, macOS, Windows CI runners.
+- L2 platform-conditional test that verifies `disable_core_dumps`
+  takes effect: trigger a deliberate `SIGSEGV` in a subprocess
+  after disabling core dumps; assert no core file is produced
+  (POSIX) or no minidump appears in `%LOCALAPPDATA%\CrashDumps`
+  (Windows).
+
+---
+
 ## 5. hub.json fields when HEP-0035 lands
 
 ```json
