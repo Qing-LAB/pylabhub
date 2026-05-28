@@ -1055,14 +1055,28 @@ there.
 
 ### 8.3 Per-presence gating for multi-side roles (processor)
 
-A processor with one Consumer + one Producer presence may be in a
-state where the Consumer side is `Authorized` but the Producer side
-is `Registered` (because the broker hasn't yet pushed the producer's
-allowlist update). The data loop's per-iteration `ops.acquire(ctx)`
-should consult the SPECIFIC presence being read/written, not the
-aggregate. Per-presence gating is implemented in the `ops` impl
-(`ProcessorCycleOps`), which already has per-presence visibility via
-the api's `has_tx_side()` / `has_rx_side()` accessors.
+A processor has one Consumer presence (its rx side, attached to
+channel A) AND one Producer presence (its tx side, attached to
+channel B).  The two presences hit `Authorized` via INDEPENDENT
+triggers (per §4.3.2):
+- The Producer presence (tx): synchronous — PUSH bound + ZAP
+  installed + `ENDPOINT_UPDATE_REQ` ACK'd, all within
+  `setup_infrastructure_`.
+- The Consumer presence (rx): asynchronous — fires when the
+  ZMQ socket monitor reports `HANDSHAKE_SUCCEEDED` on the PULL
+  socket against channel A's producer.
+
+These two triggers fire at different times, so during startup
+(and after a recovery cascade) the processor can briefly be in
+a state where one presence is `Authorized` and the other is still
+`Registered`.  The outer-loop guard `any_presence_authorized()`
+admits the loop body as soon as the FIRST presence is `Authorized`;
+the data loop's per-iteration `ops.acquire(ctx)` consults the
+SPECIFIC presence being read/written, not the aggregate, so
+operations on a not-yet-`Authorized` side short-circuit instead
+of failing.  Per-presence gating is implemented in the `ops` impl
+(`ProcessorCycleOps`), which already has per-presence visibility
+via the api's `has_tx_side()` / `has_rx_side()` accessors.
 
 ---
 
