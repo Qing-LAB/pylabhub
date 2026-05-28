@@ -223,6 +223,98 @@ See HEP-CORE-0002 §7.1 for the complete wire format specification.
 
 See HEP-CORE-0002 §17.3 for detailed rationale.
 
+#### ZmqQueue — Dynamic peer membership (HEP-CORE-0036)
+
+A `ZmqQueue` PULL side is intrinsically multi-producer-capable
+(ZMQ PULL fair-queues data from any number of connected PUSH peers;
+see §4.6 Fan-In Pipeline).  Under HEP-CORE-0036, the channel's
+producer set can change at runtime — producers join and leave via
+REG_REQ / DEREG_REQ — and the framework drives those changes into
+the queue via a small dynamic-peer API.  Roles never see ZMQ socket
+operations; the queue handles bind/connect direction, per-peer
+connection lifecycle, ZAP cache, and fair-queue accounting
+internally.
+
+**Extended `RxQueueOptions`** (`role_api_base.hpp`):
+
+The single `zmq_node_endpoint` is replaced by a vector of producer
+peer descriptors, one per producer in `CONSUMER_REG_ACK.producers[]`
+(HEP-CORE-0036 §6.4).  Single-producer channels are the N=1 case
+with no special-cased options struct.
+
+```cpp
+struct ProducerPeer
+{
+    std::string role_uid;       ///< Producer's role uid (HEP-CORE-0033 §G2.2.0b).
+    std::string endpoint;       ///< tcp://host:port (HEP-CORE-0021 §16).
+    std::string pubkey_z85;     ///< Producer's identity pubkey
+                                ///<  (HEP-CORE-0036 I6 — used by consumer-side
+                                ///<   ZAP wiring if any; the broker-side ZAP
+                                ///<   on the producer's PUSH is what gates
+                                ///<   consumer admission).
+};
+
+struct RxQueueOptions
+{
+    // ... existing fields (slot_spec, fz_spec, packing, etc.) ...
+
+    // Transport (HEP-CORE-0021 + HEP-CORE-0036).
+    // For ZMQ transport: one entry per producer of the channel.
+    // For SHM transport: at most 1 entry (SHM is physically single-producer).
+    std::vector<ProducerPeer> producer_peers;
+    // ...
+};
+```
+
+**Dynamic add/remove methods** on the queue interface:
+
+```cpp
+class ZmqQueue : public QueueReader, public QueueWriter
+{
+public:
+    // Add a producer peer to the PULL side.  ZmqQueue internally
+    // performs the corresponding socket operation (current
+    // implementation: socket.connect(peer.endpoint); see §4.6 for the
+    // bind/connect direction discussion — choice is internal).
+    void add_producer_peer(const ProducerPeer& peer);
+
+    // Remove a producer peer.  Does NOT close any data already
+    // received; only affects future connections (consistent with
+    // HEP-CORE-0036 I5: revocation is forward-looking).
+    void remove_producer_peer(const std::string& role_uid);
+};
+```
+
+**Framework integration**:
+
+- At queue construction (`build_rx_queue(opts)`), `opts.producer_peers`
+  is the initial set from `CONSUMER_REG_ACK.producers[]` (HEP-0036
+  §6.4).  The queue calls its own internal setup for each.
+- On a "producer joined channel X" broadcast (HEP-CORE-0033 §12
+  channel event), the role-host framework looks up the queue for X
+  and calls `queue.add_producer_peer(new_producer)`.
+- On a "producer left channel X" broadcast, the framework calls
+  `queue.remove_producer_peer(role_uid)`.
+- Scripts never see this API.  They see only
+  `queue.read_acquire()` / `queue.read_release()` — slots arrive
+  from any producer in the current peer set, fair-queued by the
+  underlying ZMQ socket.
+
+**Pattern-neutrality**: HEP-CORE-0017 does NOT specify whether
+ZmqQueue uses Pattern A (PULL binds, peers' PUSH connect to it) or
+Pattern B (PULL connects to each peer's bound PUSH endpoint).  Both
+are valid implementations of the multi-producer surface; the
+choice is internal to ZmqQueue.  The current code uses Pattern B
+(consumer's PULL connects per producer endpoint); future
+implementations may switch to Pattern A for simpler dynamic-membership
+semantics without changing this interface.
+
+**ShmQueue parallel**: for SHM transport `producer_peers.size() ≤ 1`
+(SHM is physically single-producer per HEP-CORE-0007 §12.4a
+`MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM`).  `add_producer_peer` /
+`remove_producer_peer` on a ShmQueue are no-ops post-attach;
+ShmQueue lifecycle is bound to the single DataBlock attach.
+
 ### 3.4 Processor role transform loop
 
 | Property | Value |
@@ -446,6 +538,42 @@ second REG_REQ on an SHM channel with
 > queue-pattern property of the chosen transport, not a control-
 > plane assumption — the broker-side bookkeeping (this section's
 > Fan-In) matches the queue's natural admit-count.
+
+#### 4.6.1 Dynamic membership under HEP-CORE-0036
+
+Under HEP-CORE-0036 the producer set is dynamic — producers join
+and leave during the channel's lifetime.  The flow that keeps the
+consumer's queue in sync with the channel's current producer set:
+
+1. **Broker** is the authoritative source of `ChannelEntry::producers[]`.
+   On every producer REG_REQ / DEREG_REQ / heartbeat-timeout, the
+   broker emits a channel-event broadcast (HEP-CORE-0033 §12
+   channel-event family — no new wire messages added by HEP-0036).
+2. **Role-host framework** receives the broadcast on its BRC poll
+   thread.  For each affected local rx queue, it calls
+   `queue.add_producer_peer(...)` (on join) or
+   `queue.remove_producer_peer(role_uid)` (on leave).
+3. **ZmqQueue** (or ShmQueue for the single-producer SHM case)
+   handles the underlying transport operations — `connect()` /
+   `disconnect()` on a ZMQ PULL socket, ZAP cache update, fair-queue
+   accounting.  None of this is exposed above the queue boundary.
+4. **Script** sees no change.  `api.rx.acquire()` keeps returning
+   the next slot from any producer currently in the queue's peer
+   set.  No script API touches transport mechanism, peer identity,
+   or socket calls.
+
+This three-tier separation is required and load-bearing:
+
+| Tier | Responsibility | What it knows |
+|---|---|---|
+| Broker (`HubState`) | Authoritative state + broadcasts | The truth |
+| Framework (role-host) | Event routing + queue updates | Channel + peer descriptors |
+| Queue (Zmq/ShmQueue) | Transport plumbing | Sockets, bind/connect, ZAP, fair-queue |
+| Script | Application logic | Queue read/write API + message callbacks |
+
+Cross-references: HEP-CORE-0036 §3 (I9 invariant — three-tier
+separation); HEP-CORE-0036 §6.4 (`producers[]` array in
+CONSUMER_REG_ACK is the framework's input to `RxQueueOptions::producer_peers`).
 
 ---
 

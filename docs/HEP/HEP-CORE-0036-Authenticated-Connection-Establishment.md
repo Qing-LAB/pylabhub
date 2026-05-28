@@ -322,6 +322,32 @@ logging).  Beyond-MVP enhancements (HSM-backed identity keys for
 the broker, multi-broker quorum) are tracked as follow-up work in
 §13 open questions.
 
+### I9 — Three-tier separation: broker → framework → queue → script
+
+**The wire protocol does NOT expose transport-level operations to
+roles.**  Producer / consumer connection management, ZAP cache
+maintenance, fair-queue accounting, and bind/connect direction
+are all handled INSIDE the queue abstraction (HEP-CORE-0017 §3.3 +
+§4.6.1).  Roles never call ZMQ socket APIs.
+
+The architecture has four tiers, each with bounded responsibility:
+
+| Tier | Owns | Visible API |
+|---|---|---|
+| **Broker** (`HubState`) | Authoritative `ChannelEntry::producers[]` / `consumers[]`.  Emits channel-event broadcasts (HEP-CORE-0033 §12 family) on every state change. | REG / DEREG / channel-event wire messages |
+| **Role-host framework** | Receives broadcasts via BRC.  Calls queue's `add_producer_peer` / `remove_producer_peer` (HEP-CORE-0017 §3.3) in response. | Internal C++; not script-visible |
+| **Queue** (`ZmqQueue` / `ShmQueue`) | All transport plumbing — sockets, bind/connect direction, ZAP cache, fair-queue.  Conceals N-producer fan-in (HEP-CORE-0017 §4.6). | `QueueReader::read_acquire/release` + `add_producer_peer` / `remove_producer_peer` |
+| **Script** | Application logic. | `api.rx.acquire()` / commit, band callbacks, inbox via `api.list_producers(channel)` |
+
+**Communication patterns** outside the data-plane queue:
+
+- **Band** — broadcast pattern; routing handles delivery to currently-available roles automatically.  Script does not enumerate target roles.
+- **Inbox** — point-to-point pattern; script queries hub for target-role existence via HubAPI (e.g., `api.list_producers(channel)`), then sends to the looked-up role.
+
+Dynamic-topology reactions are script-level decisions for inbox/band.  For the bulk-data queue, the framework auto-reacts to channel-event broadcasts and updates the queue — script sees no churn.
+
+This invariant is load-bearing: HEP-0036 adds NO new wire messages for "consumer's PULL session to producer P died" or "new producer joined."  The channel-event family already broadcasts membership changes; the queue handles the transport reactions.  Wire protocol stays minimal; transport-level dynamism stays inside the queue.
+
 ---
 
 ## 4. Architecture
@@ -968,6 +994,17 @@ The existing `zmq_endpoint` field on REG_REQ (HEP-0021 §5.2) is
 the per-producer bind endpoint; HEP-0036 reuses HEP-0021's
 per-producer endpoint plumbing without changes.
 
+**How the array is consumed (per I9 three-tier separation).**  The
+role-host framework reads `producers[]` from CONSUMER_REG_ACK and
+passes it to `RxQueueOptions::producer_peers` (HEP-CORE-0017 §3.3)
+at queue construction.  ZmqQueue handles all transport plumbing —
+bind/connect direction, per-peer socket operations, ZAP cache,
+fair-queue accounting — internally.  Subsequent producer
+join/leave events on the channel (HEP-CORE-0033 §12 channel-event
+broadcasts) drive `queue.add_producer_peer(...)` /
+`queue.remove_producer_peer(role_uid)` calls from the framework.
+Scripts never see this array.
+
 **Coordination with task #94 / HEP-CORE-0021 §16.5.**  The DISC_REQ
 response in `broker_service.cpp:1745-1794` today returns the FIRST
 producer's endpoint + pubkey only (transitional single-producer
@@ -1141,8 +1178,8 @@ auth semantics:
 |---|---|---|
 | 1 producer, 1 consumer | Standard flow (§5.1 + §5.2). Single CURVE keypair, allowlist size 1. | Single shm_secret. Single consumer in admission allowlist. |
 | 1 producer, N consumers (fan-out) | Single keypair; allowlist grows incrementally per §5.3.  Each consumer's PULL socket independently CURVE-authenticated. | All N consumers receive the same shm_secret from broker; broker individually authorizes each via CONSUMER_REG check.  Revocation = broker stops releasing the secret on future REGs and removes the consumer from its presence table; already-attached consumers continue (per I5; trusted once authenticated). |
-| N producers, 1 consumer (fan-in) | Each producer uses its OWN identity keypair on PUSH (no broker key minting per I6).  Broker stores each producer's identity pubkey on its own `ProducerEntry::zmq_pubkey` (HEP-0021 §16.3 already established per-producer endpoint scope on `ProducerEntry::zmq_node_endpoint`).  Channel-scope allowlist (`authorized_consumer_pubkeys`) gates which consumers can connect; each producer's ZAP independently enforces the same allowlist.  Consumer sends ONE CONSUMER_REG_REQ for the channel; broker returns the `producers[]` array (N elements) per §6.4; consumer opens N PULL sockets. | **Not supported on SHM** — already rejected with `MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM`. No HEP-0036 work needed. |
-| N producers, N consumers | ZMQ: each consumer sends ONE CONSUMER_REG_REQ per channel and receives the `producers[]` array (N elements) per §6.4; broker pushes the channel allowlist update to EVERY producer's ZAP cache (sync per §6.5).  Each producer's PUSH uses its own identity keypair; consumers use their own identity keypair as PULL CURVE-client.  Totals: M+P broker registrations (M consumer + P producer); M×P CURVE sessions on the data plane (each consumer opens one PULL per producer).  NO broker-minted keypairs. | N/A — SHM doesn't support multi-producer. |
+| N producers, 1 consumer (fan-in) | Each producer uses its OWN identity keypair on PUSH (no broker key minting per I6).  Broker stores each producer's identity pubkey on its own `ProducerEntry::zmq_pubkey` (HEP-0021 §16.3 already established per-producer endpoint scope on `ProducerEntry::zmq_node_endpoint`).  Channel-scope allowlist (`authorized_consumer_pubkeys`) gates which consumers can connect; each producer's ZAP independently enforces the same allowlist.  Consumer sends ONE CONSUMER_REG_REQ for the channel; broker returns the `producers[]` array (N elements) per §6.4; **the consumer's framework feeds the array into a SINGLE PULL `ZmqQueue` which handles the N-producer plumbing internally per HEP-CORE-0017 §3.3 / §4.6** (ZMQ PULL is M:1-capable natively; whether ZmqQueue connects-per-peer or binds-once is an internal choice — per I9 not exposed). | **Not supported on SHM** — already rejected with `MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM`. No HEP-0036 work needed. |
+| N producers, N consumers | ZMQ: each consumer sends ONE CONSUMER_REG_REQ per channel and receives the `producers[]` array (N elements) per §6.4.  Each consumer's framework feeds the array into its single rx `ZmqQueue` (per HEP-0017 §3.3 — queue handles N producers internally).  Broker pushes the channel allowlist update to EVERY producer's ZAP cache (sync per §6.5).  Each producer's PUSH uses its own identity keypair; consumers use their own identity keypair as PULL CURVE-client.  Totals: M+P broker registrations (M consumer + P producer); on the data plane, ONE queue per consumer presents the aggregated stream from all P producers — internal CURVE sessions are M×P but never exposed above the queue boundary per I9. | N/A — SHM doesn't support multi-producer. |
 
 ### 9.1 Per-producer fan-in nuance
 
@@ -1158,10 +1195,18 @@ under HEP-0036 even if a legacy producer still sends it).
 
 **`CONSUMER_REG_ACK` returns a `producers[]` array** per §6.4 —
 one element per registered producer, each carrying `{role_uid,
-pubkey, endpoint}`.  The consumer iterates and opens one PULL
-socket per producer, configuring `curve_serverkey` per peer.
+pubkey, endpoint}`.  The consumer's framework feeds the array into
+`RxQueueOptions::producer_peers` (HEP-CORE-0017 §3.3) and ZmqQueue
+handles the rest — multi-peer ZMQ plumbing, ZAP cache, fair-queue.
 Single-producer channels are the N=1 case with no special-cased
 wire shape — single uniform code path.
+
+Per I9 (three-tier separation), the script never sees individual
+PULL sockets or per-producer endpoints — only `api.rx.acquire()`
+returning slots fair-queued across all producers in the queue's
+current peer set.  Dynamic membership: framework calls
+`queue.add_producer_peer(p)` / `queue.remove_producer_peer(uid)`
+in response to channel-event broadcasts (HEP-CORE-0033 §12).
 
 **Existing code status**: `ChannelEntry::add_producer`
 (hub_state.hpp:459) already accepts 1..N producers for ZMQ; only
