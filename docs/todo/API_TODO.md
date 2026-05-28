@@ -60,7 +60,19 @@ single-area change.
   (path + observed mode + required mode + exact chmod command).
   Mechanically independent of #74 ZAP plumbing; can ship before.
   Layers on B3 (#78) + B4 (#79); recommended ordering:
-  #101 → #78 → #79 → #74.  Spec: HEP-CORE-0035 §4.6.  M.
+  #101 → #102 → #78 → #79 → #74.  Spec: HEP-CORE-0035 §4.6.  M.
+
+- **#102** — **HEP-CORE-0035 §4.7 runtime key handling** —
+  shared `src/utils/security/runtime_key_handling.{hpp,cpp}` with
+  `disable_core_dumps()` (POSIX `setrlimit(RLIMIT_CORE,0)` + Linux
+  `prctl(PR_SET_DUMPABLE,0)` + Windows `SetErrorMode` /
+  `WerAddExcludedApplication`) and `SecureKeyBuffer` RAII wrapper
+  around `sodium_malloc` / `sodium_memzero`.  Called from
+  `plh_hub` and `plh_role` `main()` BEFORE the §4.6 ACL check,
+  and used by all key-loading code paths.  Cross-platform via
+  libsodium primitives; only the core-dump-disable helper is
+  platform-conditional.  Mechanically independent of #101 and
+  #74; can ship at any time.  Spec: HEP-CORE-0035 §4.7.  M.
 
 - **B4 (#79)** — `plh_role --init` template emits
   `out_shm_secret/in_shm_secret = 0` (sentinel "no SHM");
