@@ -9,6 +9,7 @@
 | **Revised**   | 2026-04-14: Phase 2 replaced "Deferred DISC_ACK" (broker-queued replies) with a role state-machine + three-response DISC_REQ model.  2026-05-06: §2.5.2 per-presence heartbeat contract added; §5.5 updated for presence-list dual-hub model.  2026-05-07: §2 re-architected — FSM moved from `ChannelEntry` to per-presence rows on `RoleEntry`; `ChannelEntry.status`/`last_heartbeat` removed (channel observability is now derived); `Closing` state and `grace_heartbeats` deleted (channel teardown is atomic on producer-presence Disconnected). |
 | **Area**      | Broker Protocol / Script Hosts / Config                            |
 | **Depends on**| HEP-CORE-0007 (Protocol), HEP-CORE-0019 §2.3 (Per-presence heartbeats — Phase 6), HEP-CORE-0033 §8 (HubState entry types), HEP-CORE-0033 §18 (broker routing classes), HEP-CORE-0033 §19 (multi-presence roles) |
+| **Related**   | HEP-CORE-0036 §4.3 (role-side `RegistrationState` FSM — a SEPARATE FSM from §2.1's broker-side liveness FSM; adds `Authorized` state between `Registered` and `Deregistered`) |
 
 ---
 
@@ -85,6 +86,16 @@ A role-presence has three states: **Connected** (heartbeats fresh),
 **Pending** (heartbeats stalled but recoverable), **Disconnected**
 (terminal; presence reaped).  Two timeouts gate the transitions
 (§2.5).
+
+> **Note**: this is the BROKER's view of presence liveness, separate
+> from the ROLE's view of its own registration state.  The role-side
+> FSM lives in `role_presence.hpp` as `RegistrationState`
+> (`Unregistered → RegRequestPending → Registered → Authorized →
+> Deregistered`) and is documented in HEP-CORE-0036 §4.3.  The two
+> FSMs are loosely coupled via REG/DEREG/HEARTBEAT messages but
+> represent different aspects: the role-side tracks "have I bound my
+> data sockets yet?" and the broker-side tracks "are heartbeats still
+> arriving?".
 
 ```mermaid
 stateDiagram-v2

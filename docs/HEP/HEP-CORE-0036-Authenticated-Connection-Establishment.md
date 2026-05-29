@@ -4,7 +4,7 @@
 |-----------------|-------------------------------------------------------------------------------------------------------------|
 | **HEP**         | `HEP-CORE-0036`                                                                                             |
 | **Title**       | Authenticated Connection Establishment — Single-Gate Access Control for Control + Data Planes               |
-| **Status**     | 🚧 **DRAFT — DESIGN UNDER REVIEW.** Cross-references HEP-CORE-0021, HEP-CORE-0035, HEP-CORE-0023.            |
+| **Status**     | ✅ **DESIGN FINAL** — T1 / T2 / I9 / Q1 LOCKED 2026-05-28.  Awaiting implementation (tasks #74 / #94 / #101 / #102 / #103 + Phase 0-11 in §12).  Open items in §13.1 (federation Q1, audit log Q2) are post-MVP. |
 | **Created**     | 2026-05-26                                                                                                  |
 | **Last revised** | 2026-05-28 — T1 RESOLVED: symmetric identity-keypair design (broker mints nothing on data plane; both sides reuse their identity keys; SHM keeps broker-generated `shm_secret`).  Prior revision 2026-05-27 — two-conditions gate explicit; revocation reframed as passive (no force-close); inbox/bands inheritance; channels-are-dynamic non-goal; manual pubkey distribution MVP. |
 | **Area**        | Framework Architecture (broker access control, role-side CURVE wiring, data-plane peer authentication)      |
@@ -1724,10 +1724,17 @@ updates are minimal — pointers / scope clarifications, not redesign.
 
 ### 14.3 HEP-CORE-0023 (Startup Coordination)
 
-- **§2 Per-presence FSM** — add `Authorized` state per HEP-0036 §4.3;
-  update state diagram; update transition table.
+- **Header — Related** — add reference to HEP-CORE-0036 §4.3 (role-
+  side `RegistrationState` FSM with new `Authorized` state).  Note
+  that HEP-0023 §2.1's broker-side liveness FSM
+  (Connected/Pending/Disconnected) is SEPARATE from the role-side
+  FSM — they represent different views of presence.  Do NOT add
+  `Authorized` to HEP-0023 §2.1; that's the wrong FSM.
+- **§2.1 narrative** — add a short note clarifying the two FSMs
+  serve different purposes (already added 2026-05-28).
 - **§6 Complete Startup Sequence** — integrate HEP-0036 §10 sequence
-  diagram into the role's overall startup picture.
+  diagram into the role's overall startup picture by cross-reference
+  (no duplication).
 
 ### 14.4 HEP-CORE-0017 (Pipeline Architecture)
 
@@ -1746,7 +1753,31 @@ Updated in lock-step with HEP-0036 (commit `0ade2394`, 2026-05-28):
   no new wire messages); framework calls
   `queue.add_producer_peer` / `remove_producer_peer`; ZmqQueue
   handles transport ops; script sees only the queue read API.
+- **§3.2 ZMQ-specific note (consumer)** — clarified endpoint
+  discovery is via `CONSUMER_REG_ACK.producers[]` (HEP-0036 §6.4),
+  NOT `DISC_ACK` (which is for separate channel-observability
+  queries).
 - Implementation work tracked under task #103.
+
+### 14.5 HEP-CORE-0027 (Inbox Messaging)
+
+- **Header — Depends on** — added HEP-CORE-0036 §9.3 reference.
+- **§3.5 CURVE Wiring (NEW subsection)** — specifies that inbox
+  ROUTER + DEALER sockets use the role's identity keypair (per
+  HEP-0036 I6); allowlist inherits from the data channel's
+  ZAP allowlist (MVP default); inbox lifetime ⊆ data channel
+  lifetime.  Notes that current `hub_inbox_queue.cpp` has zero
+  CURVE references — implementation gap closed by HEP-0036
+  Phase 4+ (task #103 covers rx queue API; same plumbing applies
+  to inbox).
+
+### 14.6 HEP-CORE-0030 (Band Messaging Protocol)
+
+- **Header — Depends on** — added HEP-CORE-0036 §9.4 reference.
+  Bands inherit the hub-wide `known_roles[]` allowlist (HEP-0035
+  Layer 1 ZAP at the broker ROUTER gates band socket handshakes by
+  the same mechanism that gates BRC).  Bands use the role's
+  identity keypair; no per-band CURVE keypair.
 
 ---
 
