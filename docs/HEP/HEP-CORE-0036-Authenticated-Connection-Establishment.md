@@ -488,7 +488,7 @@ that a producer is ready to take consumers.
 stateDiagram-v2
     [*]               --> Unregistered: role process start
     Unregistered      --> RegRequestPending: send REG_REQ<br/>(BRC CURVE handshake to broker<br/>already succeeded — HEP-0035 Layer 1)
-    RegRequestPending --> Registered: REG_ACK ok<br/>(producer: initial_allowlist=[];<br/>consumer: endpoint + producer's identity pubkey;<br/>SHM: shm_secret)
+    RegRequestPending --> Registered: REG_ACK ok<br/>(producer: initial_allowlist=[];<br/>consumer: producers[] array per §6.4;<br/>SHM consumer: shm_secret)
     RegRequestPending --> Failed: REG_ACK error / timeout<br/>(I1 cond 2 failed → role not in known_roles)
     Registered        --> Authorized: setup_infrastructure_ done<br/>(see entry conditions below)
     Registered        --> Failed: setup_infrastructure_ failure<br/>(bind / ZAP / ENDPOINT_UPDATE)
@@ -499,7 +499,7 @@ stateDiagram-v2
     Failed            --> [*]
 ```
 
-#### 4.3.2 Entry condition for `Authorized` differs by side
+#### 4.3.2 Entry conditions for `Authorized` — both sides synchronous
 
 **Producer presence — synchronous trigger:**
 - ZAP handler installed on the role's ZMQ context (per-context, not
@@ -1122,7 +1122,7 @@ Added to HEP-CORE-0007 §12.4a Error Code Taxonomy:
 | Code | When |
 |---|---|
 | `UNAUTHORIZED_CONSUMER_PUBKEY` | CONSUMER_REG_REQ from a consumer whose CURVE-proved User-Id pubkey is not in `cfg.known_roles[]` (HEP-0035 §4.1 Layer 2).  Should be unreachable when Layer-1 ZAP is enforcing, but kept as defence-in-depth. |
-| `CHANNEL_NOT_READY` | CONSUMER_REG_REQ for a channel that isn't admissible right now.  `reason` field distinguishes the cause: `awaiting_endpoint` (HEP-0021 §16.4 — first producer's port still 0), `awaiting_first_heartbeat` (no producer has reached `kLive`, T2 R6), `heartbeat_stalled` (producer presence in `kStalled` per HEP-CORE-0023 §2.6), or `no_live_producer` (Q1 skip-disconnected push exhausted — every targeted producer failed to ACK the allowlist update within `push_ack_timeout_ms`). |
+| `CHANNEL_NOT_READY` | CONSUMER_REG_REQ for a channel that isn't admissible right now.  `reason` field distinguishes the cause: `awaiting_endpoint` (HEP-0021 §16.4 — first producer's port still 0), `awaiting_first_heartbeat` (no producer has reached `kLive`), `heartbeat_stalled` (producer presence in `kStalled` per HEP-CORE-0023 §2.6), or `no_live_producer` (Q1 skip-disconnected push exhausted — every targeted producer failed to ACK the allowlist update within `push_ack_timeout_ms`). |
 
 No `KEYPAIR_GENERATION_FAILED` error — broker mints no data-plane
 keys (per I6).  No `ALLOWLIST_PUSH_FAILED` error — Q1 skip-
@@ -1382,12 +1382,11 @@ nothing in MVP requires it.
 Combines HEP-0023's startup sequence + HEP-0035 §4.1 Layer-1 ZAP +
 §4.6 file ACLs + §4.7 runtime hardening + HEP-0036 T1 symmetric
 authorization (LOCKED 2026-05-28: both sides use identity keys;
-broker mints nothing on the data plane).  The T2 readiness model
-(first-heartbeat-driven `kRegistering → kLive`; synchronous
-consumer `Authorized` at queue construction since auth was done
-at REG; `hub_dead_grace`-driven recovery) is BAKED INTO the
-diagram below but PENDING explicit T2 lock-in per
-`docs/tech_draft/HEP-0036_review_open_items.md`.
+broker mints nothing on the data plane) + T2 readiness model
+(LOCKED 2026-05-28: first-heartbeat-driven `kRegistering →
+kLive`; synchronous `Authorized` at end of `setup_infrastructure_`
+for both sides since auth was completed at REG;
+`hub_dead_grace`-driven recovery).
 
 ```mermaid
 sequenceDiagram
@@ -1588,13 +1587,13 @@ eviction work from earlier draft scope per I5 (revocation is passive).
 |---|---|---|
 | 0 | **Prerequisites — HEP-0035 §4.1 Layer-1 ZAP + §4.6 file ACLs + §4.7 runtime hardening.**  Broker ROUTER installs a ZAP handler; `hub.known_roles[]` from hub.json populates the pubkey allowlist; ZAP rejects unknown pubkeys at handshake.  Legacy `check_role_identity()` + `RoleIdentityPolicy` enum REMOVED (HEP-0035 §4.5).  Both binaries verify key-file ACLs (§4.6, task #101) and apply runtime hardening (§4.7, task #102).  Tracked under tasks #74 + #101 + #102; HEP-0036 phases below depend on these being live. | Not HEP-0036 work proper, but listed here as the prerequisite that closes I1 condition (2).  HEP-0036's data-plane wiring is meaningless without it. |
 | 0.7 | **Add `RegistrationState::Authorized`** (T2).  5th enum value between `Registered` and `Deregistered`.  BOTH producer and consumer presences transition Registered → Authorized SYNCHRONOUSLY at the end of their respective `setup_infrastructure_` — producer's after PUSH bind + ZAP + ENDPOINT_UPDATE_REQ ACK; consumer's after CONSUMER_REG_ACK + rx queue construction (auth was completed at REG, endpoints in the ACK ARE the proof per §5.2).  No socket monitor needed — data-plane CURVE handshakes are transport-internal per I9.  Data loop's outer guard adds `any_presence_authorized()` (HEP-0036 §8.2). | Per-presence FSM is independent across multi-presence roles (processor). |
-| 0.8 | **Broker CONSUMER_REG_REQ gates on `first_heartbeat_seen`** (T2 R6, ~5 LOC).  Match DISC_REQ's existing check at `broker_service.cpp:1720`.  Return `CHANNEL_NOT_READY{reason="awaiting_first_heartbeat"}` if producer presence hasn't been observed as `kLive`. | Pre-existing inconsistency between DISC_REQ and CONSUMER_REG_REQ becomes symmetric.  Standalone fix; doesn't depend on later phases. |
+| 0.8 | **Broker CONSUMER_REG_REQ gates on `first_heartbeat_seen`** (~5 LOC).  Match DISC_REQ's existing check at `broker_service.cpp:1720`.  Return `CHANNEL_NOT_READY{reason="awaiting_first_heartbeat"}` if producer presence hasn't been observed as `kLive`. | Pre-existing inconsistency between DISC_REQ and CONSUMER_REG_REQ becomes symmetric.  Standalone fix; doesn't depend on later phases. |
 | 1 | `ChannelAccessIndex` skeleton in HubState.  Broker creates entries on REG_REQ; stores allowlist + producer's identity pubkey (looked up from `PubkeyOrigin` index via `zmq_msg_gets("User-Id")`).  **No data-plane keypair minting** — per T1 / I6, broker holds no data-plane secrets. | Replaces the earlier draft's "broker mints keypair on REG_REQ" with allowlist-only management. |
 | 2 | Producer side: install ZAP handler on ZMQ context BEFORE binding PUSH (per §5.1 ordering); PUSH configured `curve_server=1` with ROLE'S IDENTITY KEYPAIR (loaded from `<role>.sec` per HEP-0035 §4.6 + §4.7).  ZAP cache starts empty; all incoming handshakes DENY until broker pushes allowlist. | No new key distribution needed — producer already has its identity keypair from startup. |
 | 3 | Broker side: on CONSUMER_REG_REQ, derive consumer pubkey via `zmq_msg_gets("User-Id")` (NOT from message body — no self-claims); check I1 cond 2; on pass, add to allowlist; emit `CHANNEL_AUTH_UPDATE add` sync to EVERY producer of the channel (wait for ACKs per §6.5); return CONSUMER_REG_ACK with `producers[]` array per §6.4 — iterate `ChannelEntry::producers[]` to populate `(role_uid, pubkey, endpoint)` per element. | Closes the loop: consumer can now connect after auth.  Per-handshake race resolved by sync-before-ACK ordering.  Same wire shape works for single-producer (length 1) and fan-in (length N). |
 | 4 | Consumer side: read `producers[]` array from CONSUMER_REG_ACK; framework feeds the array into `RxQueueOptions::producer_peers` (per HEP-CORE-0017 §3.3); ZmqQueue handles per-peer transport plumbing internally (curve config per peer, ZAP enforcement, fair-queue) per I9.  Authorized fires synchronously at queue construction time — auth was completed at REG (control plane), endpoints in CONSUMER_REG_ACK ARE the auth proof.  Data loop gates on `Authorized` per §8.  Uniform shape for single-producer and fan-in — script sees one rx queue regardless. | End-to-end ZMQ auth working for both topologies.  Coordinates with task #94 / HEP-0021 §16.5 (per-producer DISC_REQ_ACK array shape — same migration family) and task #103 (ZmqQueue dynamic peer API). |
 | 5 | SHM parallel: broker generates `shm_secret` per channel (uint64 guard token; unrelated to CURVE per I6); `CONSUMER_REG_ACK` releases it only on auth.  Retire config-supplied `out_shm_secret`. | SHM secret stays broker-generated because the DataBlock attach mechanism (HEP-0002) is secret-based, not CURVE-based. |
-| 6 | Passive revocation paths: on CONSUMER_DEREG, on heartbeat timeout, on hub-dead cascade — broker emits `CHANNEL_AUTH_UPDATE remove` (best-effort) and removes from allowlist.  Role-side hub-dead handling (T2 R4 / R5): `Authorized → Unregistered` after `hub_dead_grace`; tear down data sockets + clear ZAP cache; await BRC reconnect.  No force-disconnect (per I5). | Closes lifetime-alignment loop; no new socket-level APIs. |
+| 6 | Passive revocation paths: on CONSUMER_DEREG, on heartbeat timeout, on hub-dead cascade — broker emits `CHANNEL_AUTH_UPDATE remove` (best-effort) and removes from allowlist.  Role-side hub-dead handling: `Authorized → Unregistered` after `hub_dead_grace`; tear down data sockets + clear ZAP cache; await BRC reconnect.  No force-disconnect (per I5). | Closes lifetime-alignment loop; no new socket-level APIs. |
 | 7 | **Multi-producer fan-in VERIFICATION** (no new code).  Phases 3-4 already produce the uniform `producers[]` array wire shape that handles 1..N producers identically.  Phase 7 is the L3 end-to-end test for the fan-in case: spawn 2 producers + 1 consumer on the same ZMQ channel; verify consumer receives data from both producers via M×P CURVE sessions.  Validates that the array shape, allowlist propagation to each producer's ZAP cache, and per-PULL handshake monitoring all work for N>1. | Sanity-check, not new functionality.  Coordinates with task #94 / HEP-0021 §16.5 DISC_REQ_ACK array migration (verification scope). |
 | 8 | Inbox + bands: inbox inherits the data channel's allowlist (no new wiring on top of §7); bands inherit the hub's `known_roles[]` allowlist (already enforced by HEP-0035 §4.1 Layer-1 ZAP on the broker ROUTER for any CURVE handshake — control plane and data plane alike per T1 / I6).  Verification only — no new code. | Sanity-check §9.3 + §9.4 hold at runtime. |
 | 9 | Dev-mode escape hatch + loopback-enforcement; manual key-distribution workflow doc per §11.3. | Operator-facing surface. |
