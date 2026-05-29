@@ -51,6 +51,9 @@ set(UTILS_SOURCES
   service/hub_script_runner.cpp  # pylabhub::scripting::HubScriptRunner (HEP-CORE-0033 Phase 7)
   service/engine_factory_registry.cpp  # ScriptEngine plugin registry (HEP-CORE-0011)
 
+  # --- security: file ACL + runtime key handling (HEP-CORE-0035 §4.6 / §4.7) ---
+  security/key_file_acl.cpp        # pylabhub::utils::security (HEP-CORE-0035 §4.6)
+
   # --- role hosts: lifecycle + data loop for each role ---
   ${CMAKE_SOURCE_DIR}/src/producer/producer_role_host.cpp
   ${CMAKE_SOURCE_DIR}/src/producer/producer_init.cpp
