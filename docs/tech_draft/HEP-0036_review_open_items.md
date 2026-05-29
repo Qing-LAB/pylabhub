@@ -291,7 +291,7 @@ HEP-0036 §4.1 `ChannelAccessEntry` already carries the inline
 comment: "Per-channel, NOT per-producer — a consumer authorized
 for a channel can connect to ANY producer of that channel."  No
 §2.1 non-goal needed (the §2.1 bullet added in `198f9422` was
-reverted in `<next-commit>`); the property is implicit from the
+reverted in `1f2b41d3`); the property is implicit from the
 queue model + data structure.
 
 ### DP-Q4 — Per-producer DEREG cascade vs last-producer teardown
