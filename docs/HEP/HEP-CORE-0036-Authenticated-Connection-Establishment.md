@@ -1615,10 +1615,16 @@ review; this section keeps only what's still genuinely open.
 
 ### 13.1 Still open
 
-1. **Audit log shape.**  HEP-0035 §7 question 4 (audit logging
-   policy) covers Layer-1 + Layer-2 decisions; HEP-0036 adds Layer-3
-   (data-plane CURVE accept/reject from ZAP).  Same logging policy
-   should apply; coordinate with HEP-0035 implementation.
+No HEP-0036 design questions remain open as of 2026-05-28.  The
+following coordination dependency is recorded for traceability; it
+is not a HEP-0036 decision:
+
+- **Layer-3 audit logging inherits HEP-0035 §7's eventual policy.**
+  HEP-0035 §7 question 4 (audit logging policy) covers Layer-1
+  (ZAP) and Layer-2 (federation-trust) decisions.  HEP-0036 adds
+  Layer-3 (data-plane CURVE accept/reject by the producer's ZAP
+  handler).  When HEP-0035's audit policy is specified, HEP-0036
+  inherits it for Layer-3 events without further design.
 
 > **Note on federation (deferred to a separate design effort):**
 > The MVP path for cross-hub allowlist propagation reuses the

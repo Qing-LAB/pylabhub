@@ -332,6 +332,15 @@ HEP-0035 §4.7.  Task #102 filed.  Rejected "random session key
 in-memory encryption" as obfuscation that doesn't increase
 attacker work.
 
+### S5 — Sibling-HEP cross-reference audit
+**Status:** ✅ RESOLVED — coordinated cross-reference + body-text
+sweep across HEP-CORE-0007 §12 (CONSUMER_REG_ACK producers[]
+array), HEP-CORE-0017 §3.2 + §3.3 + §4.6.1, HEP-CORE-0021 §5.1
++ §5.2 + §16.4, HEP-CORE-0023 header + §2.1, HEP-CORE-0027
+header + §3.5, HEP-CORE-0030 header, HEP-CORE-0033 §8,
+HEP-CORE-0035 §4.1 + §4.2 + §6.  Task #104 tracks the code-
+level implementation work that follows the doc updates.
+
 ---
 
 ## Order of discussion (remaining)
@@ -350,9 +359,8 @@ allowlist scope deferred; not blocking.)
 - `d8591e73` — HEP-0035 §4.6 file ACL + HEP-0036 Phase 0 reconciliation
 - `a919938c` — HEP-0035 §4.7 runtime key handling (cross-platform)
 - `a75f0fbb` — task #101 filed in API_TODO
-- `d9f7d218` — HEP-0036 T2 FSM + sequence diagram updates (NOT YET
-  LOCKED — Q1 + Q2 baked in without explicit user agreement; may
-  need partial revert depending on T2 close-out)
+- `d9f7d218` — HEP-0036 T2 FSM + sequence diagram updates
+  (subsequently confirmed by user; T2 LOCKED via `06798daa`)
 - `5dc1c65c` — T1 symmetric design + producers[] array migration
 - `0ade2394` — HEP-0017 §3.3 / §4.6.1 + HEP-0036 I9 three-tier
   separation
@@ -378,12 +386,19 @@ allowlist scope deferred; not blocking.)
 - `0f82dc70` — post-sync sloppiness sweep: §14 "four → six sibling
   HEPs"; §14.4 commit hash split; HEP-0021 §16.4 + HEP-0035
   §4.1+§4.2 cross-ref clarifications
-
-### S5 — Sibling-HEP cross-reference audit
-**Status:** ✅ RESOLVED — coordinated cross-reference + body-text
-sweep across HEP-CORE-0007 §12 (CONSUMER_REG_ACK producers[]
-array), HEP-CORE-0017 §3.2 + §3.3 + §4.6.1, HEP-CORE-0021 §5.1
-+ §5.2 + §16.4, HEP-CORE-0023 header + §2.1, HEP-CORE-0027
-header + §3.5, HEP-CORE-0030 header, HEP-CORE-0033 §8,
-HEP-CORE-0035 §4.1 + §4.2 + §6.  Task #104 tracks the code-
-level implementation work that follows the doc updates.
+- `187c71d9` — third-round HEP sync: HEP-0007/0033/0035 +
+  tracker S5
+- `330aac78` — HEP-0036 §14 sibling count "six → eight" +
+  §14.7 (HEP-0007) + §14.8 (HEP-0033)
+- `f7de23a1` — T3 RESOLVED close-out (no doc change; existing
+  terminal-disconnect policy from HEP-CORE-0023 §2.5 + audit D1/D2
+  already covers it)
+- `be8497e0` — T5 RESOLVED + §13.1 federation deferral note;
+  task #105 filed
+- `198f9422` — DP-Q3 §2.1 bullet (later reverted in `1f2b41d3`
+  after audit found the question incoherent under queue model)
+- `1f2b41d3` — DP-Q3 §2.1 revert (per-producer ACL incoherent
+  under HEP-CORE-0017 §3.3 queue model; not a real non-goal)
+- `090ea196` — tracker DP-Q3 backfill commit hash
+- `7f8150a8` — M-tier sweep: M3 added as §11.3 multi-hub
+  clarification; M4/M5/M6 closed as imagined/misframed
