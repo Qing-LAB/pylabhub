@@ -1543,7 +1543,13 @@ key distribution.  A typical deployment workflow:
 3. **Distribute role pubkeys to hub config.**  Copy each
    `<role_uid>.pub` into the hub's `known_roles[]` directory
    (e.g. `hub_keys/known_roles/`).  This wires condition (2) of I1
-   (role known by hub).
+   (role known by hub).  **Multi-hub role:** a role that connects
+   to N hubs has ONE identity keypair from `--keygen`; the same
+   `<role_uid>.pub` must be copied into EACH of those N hubs'
+   `known_roles[]` directories independently (no automatic
+   propagation between hubs in MVP).  Federation-delegated
+   propagation is HEP-CORE-0035 §4.4 territory and is deferred to
+   the federation effort (task #105).
 4. **Distribute hub pubkey to roles.**  Copy `<hub_uid>.pub` into
    each role's config dir; the role uses it as
    `curve_serverkey` on its BRC socket so it can authenticate the

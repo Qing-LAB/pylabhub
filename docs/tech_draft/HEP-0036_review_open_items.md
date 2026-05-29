@@ -166,28 +166,45 @@ inherits hub-wide admission.  Revisit only if a concrete use case
 emerges.
 
 ### M3 — Multi-hub same-role coordination (operator surface)
-**Status:** 🔄 OPEN.  Role has ONE keypair from `--keygen`; must
-appear in EVERY hub's `known_roles[]` it connects to.  HEP-0036
-§11.3 mentions this obliquely; should be a clear operational note.
+**Status:** ✅ RESOLVED (audited 2026-05-28).
+**Decision:** Real but trivial doc-clarity item.  Added a sub-bullet
+to HEP-0036 §11.3 step 3 making explicit that a role connecting to
+N hubs requires its `<role_uid>.pub` to be copied into EACH of
+those N hubs' `known_roles[]` directories (no automatic propagation
+in MVP; federation-delegated propagation is HEP-0035 §4.4 territory,
+deferred to task #105).
 
 ### M4 — ZAP handler health detection
-**Status:** 🔄 OPEN.  What if the ZAP handler thread dies but the
-BRC poll thread is alive?  CHANNEL_AUTH_UPDATE_ACK succeeds (BRC
-handles it) but the cache update never lands (ZAP thread is dead).
-All future handshakes silently DENY by libzmq timeout.  Need:
-heartbeat between threads; on missed heartbeat, BRC reports critical
-error.
+**Status:** ✅ CLOSED-NOT-A-QUESTION (audited 2026-05-28).
+**Audit finding:** Imagined failure mode based on a wrong threading
+assumption.  HEP-0036 §7.1 EXPLICITLY states "Handler runs on the
+BRC poll thread" — ZAP is not a separate thread, it is a callback
+on the BRC poll thread.  The failure mode the original entry
+described (BRC poll thread alive, ZAP thread dead) cannot occur.
+The real failure mode (BRC poll thread death) is already documented
+in §7.3 with detection via peer-side socket monitor + transition
+to critical-error.  No new design needed.
 
 ### M5 — `endpoint_hint_range` validation (§6.1)
-**Status:** 🔄 OPEN.  Field accepted on the wire but no code
-validates "bound port falls within range."  Either spec the
-validator or drop the field.
+**Status:** ✅ CLOSED-NOT-A-QUESTION (audited 2026-05-28).
+**Audit finding:** The field `endpoint_hint_range` does NOT exist
+anywhere in HEP-0036 §6.1, HEP-0021, or `src/include/`.  The
+original entry invented the field.  Nothing to validate, nothing
+to drop.
 
 ### M6 — `initial_allowlist` for pre-REG consumers (§6.2)
-**Status:** 🔄 OPEN.  Field mentioned in §6.2 wire format but no
-broker-side buffering exists; will always be empty.  Either spec
-the buffering (consumer-before-producer scenario) or drop the
-field.
+**Status:** ✅ CLOSED-NOT-A-QUESTION (audited 2026-05-28).
+**Audit finding:** Misframed — design is locked, only the
+implementation is pending.  The field IS defined (§6.2 line 1013);
+the use case is documented in §4.3 (FSM REG transition), §7.2
+(ZAP cache "Initial population: from `REG_ACK.initial_allowlist`"),
+and §6.5 (skip-disconnected re-sync of producers after their next
+REG_REQ).  The data source is `ChannelAccessIndex.authorized_consumer_pubkeys`
+— no separate "buffering" needed.  The use case is NOT "pre-REG
+consumers" (consumers buffered before producer exists); it is
+"producer (re-)REGs an existing channel; broker populates the
+producer's initial cache from current allowlist members."
+Implementation tracked under tasks #74, #103.
 
 ---
 
@@ -319,10 +336,12 @@ attacker work.
 
 ## Order of discussion (remaining)
 
-1. **Sweep** M3 + M4 + M5 + M6.
+(All items closed.  T4 remains 🟡 partial — distinct inbox
+allowlist scope deferred; not blocking.)
 
 (T1 ✅, T2 ✅, T3 ✅, T4 🟡 partial, T5 ✅, I9 ✅,
- DP-Q1 ✅, DP-Q2 ✅, DP-Q3 ✅, DP-Q4 ✅.)
+ DP-Q1 ✅, DP-Q2 ✅, DP-Q3 ✅, DP-Q4 ✅,
+ M1 ✅, M2 ✅, M3 ✅, M4 ✅, M5 ✅, M6 ✅.)
 
 ## Commits referenced in this doc
 
