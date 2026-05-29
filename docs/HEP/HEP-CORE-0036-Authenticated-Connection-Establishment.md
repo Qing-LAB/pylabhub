@@ -515,21 +515,25 @@ stateDiagram-v2
   transitions `kRegistering → kLive` (existing
   `first_heartbeat_seen` mechanism).
 
-**Consumer presence — async trigger:**
-- Framework constructs the rx queue (`ZmqQueue` for ZMQ transport)
-  with consumer's IDENTITY keypair (per I6) and feeds the
-  `producers[]` array from `CONSUMER_REG_ACK` (per §6.4) into
-  `RxQueueOptions::producer_peers` (HEP-CORE-0017 §3.3).  ZmqQueue
-  handles the per-peer transport plumbing internally (per I9 —
-  framework + script never see individual PULL sockets).
-- `socket.connect(endpoint)` returns immediately; CURVE handshake
-  runs in background.
-- ZMQ socket monitor observes `ZMQ_EVENT_HANDSHAKE_SUCCEEDED` →
-  `Registered → Authorized`.
-- `ZMQ_EVENT_HANDSHAKE_FAILED_AUTH` → critical error (consumer is
-  not in producer's allowlist; should be impossible after broker's
-  CHANNEL_AUTH_UPDATE_ACK serialization, but surfaces broker-side
-  bugs immediately rather than via timeout).
+**Consumer presence — synchronous trigger:**
+- Authorization happens entirely at REG time on the CONTROL plane:
+  BRC CURVE handshake (HEP-0035 Layer-1 ZAP) + I1 cond 2
+  (User-Id ∈ `known_roles[]`) + broker pushes consumer's pubkey
+  to each producer's ZAP allowlist (per §6.5 Q1 lock-in).
+- Endpoints are NOT disclosed before authorization (§5.2 "No
+  endpoint disclosure on rejection"): the consumer holding the
+  `producers[]` array IS proof that authorization succeeded.
+- Therefore `Authorized` fires SYNCHRONOUSLY when:
+  1. `CONSUMER_REG_ACK` received with `producers[]` array, AND
+  2. Framework constructs the rx queue (`ZmqQueue` for ZMQ
+     transport) with consumer's IDENTITY keypair (per I6) and
+     feeds `producers[]` into `RxQueueOptions::producer_peers`
+     (HEP-CORE-0017 §3.3).  ZmqQueue handles all transport plumbing
+     internally (per I9).
+- The data-plane CURVE handshake that follows is enforcement at
+  the transport layer by the producer's ZAP cache (primed by
+  §6.5 sync push), not a separate auth decision.  The handshake
+  is transport-internal per I9 — invisible to the FSM.
 
 #### 4.3.3 Recovery path — hub-dead → Unregistered
 
@@ -687,7 +691,6 @@ sequenceDiagram
     participant AI as ChannelAccessIndex
     participant OBS as Channel observable
     participant P as Producer (running)
-    participant MON as Consumer's ZMQ<br/>socket monitor
 
     Note over C,B: BRC control plane established<br/>(I1 cond 1 + 2 already passed for consumer on its BRC;<br/>consumer's identity pubkey is the User-Id on the BRC socket).
 
@@ -714,14 +717,9 @@ sequenceDiagram
         Note over C: state Unregistered → RegRequestPending → Registered
 
         rect rgba(220,240,210,0.4)
-            Note over C: == setup_infrastructure_ ==<br/>(framework constructs rx queue with consumer's identity<br/>keypair + producers[] peer set — HEP-0017 §3.3.<br/>ZmqQueue handles per-peer plumbing internally per I9.)
-            C->>MON: install socket monitor on rx queue's PULL context<br/>(events: HANDSHAKE_SUCCEEDED / FAILED_AUTH per peer)
-            C->>C: ZmqQueue configures its internal PULL<br/>(curve config from RxQueueOptions; bind/connect direction<br/>is queue-internal — current code: connect per peer)
-            C->>P: ZmqQueue connects to producers[0].endpoint<br/>(CURVE handshake runs in background)
-            P->>P: ZAP request: peer pubkey = consumer's identity<br/>→ cache hit → ALLOW
-            P-->>MON: HANDSHAKE_SUCCEEDED event
-            MON->>C: notify Authorized transition
-            Note over C: state Registered → Authorized
+            Note over C: == setup_infrastructure_ ==<br/>Framework constructs rx queue with consumer's identity keypair<br/>+ producers[] peer set (HEP-0017 §3.3).<br/>ZmqQueue handles all transport plumbing internally per I9.
+            C->>C: rx queue constructed (RxQueueOptions::producer_peers<br/>= CONSUMER_REG_ACK.producers[])
+            Note over C: state Registered → Authorized<br/>(synchronous — authorization was completed at REG;<br/>endpoints in CONSUMER_REG_ACK ARE the auth proof)
         end
 
         rect rgba(255,235,210,0.4)
@@ -755,14 +753,13 @@ sequenceDiagram
   This guarantees the producer's ZAP cache is updated before
   the consumer attempts the CURVE handshake — no race window
   between cache install and first handshake.
-- **`HANDSHAKE_SUCCEEDED` event** (the `P-->>MON: HANDSHAKE_SUCCEEDED`
-  arrow in the `setup_infrastructure_` block): the consumer's
-  `Authorized` transition is event-driven by the ZMQ socket
-  monitor.  The alternative event `HANDSHAKE_FAILED_AUTH`
-  surfaces broker-side serialization bugs immediately rather than
-  via slow read timeouts.  This is **R3** — without socket-monitor
-  wiring, a consumer whose handshake silently fails would hang in
-  `Registered` until heartbeat timeout reaped it.
+- **Consumer's `Authorized` is synchronous**: once
+  `CONSUMER_REG_ACK.producers[]` is in hand, authorization is
+  complete (broker only returns it after I1 passes and the
+  allowlist push is ACK'd).  Framework constructs the rx queue
+  and transitions to `Authorized` — no socket-monitor event,
+  no async wait.  Data-plane CURVE handshakes that follow are
+  transport-internal per I9.
 
 **No endpoint disclosure on rejection**: in EVERY rejection
 branch (`kAbsent`, `kRegistering`, `kStalled`, `kLive` +
@@ -1235,14 +1232,17 @@ triggers (per §4.3.2):
 - The Producer presence (tx): synchronous — PUSH bound + ZAP
   installed + `ENDPOINT_UPDATE_REQ` ACK'd, all within
   `setup_infrastructure_`.
-- The Consumer presence (rx): asynchronous — fires when the
-  ZMQ socket monitor reports `HANDSHAKE_SUCCEEDED` on the PULL
-  socket against channel A's producer.
+- The Consumer presence (rx): synchronous — fires when
+  CONSUMER_REG_ACK is received with `producers[]` and the
+  framework constructs the rx queue (auth was done at REG; the
+  endpoints in the ACK ARE the auth proof).
 
-These two triggers fire at different times, so during startup
-(and after a recovery cascade) the processor can briefly be in
-a state where one presence is `Authorized` and the other is still
-`Registered`.  The outer-loop guard `any_presence_authorized()`
+These two triggers fire at different times in the role-host
+startup sequence (the rx queue can only be constructed AFTER
+CONSUMER_REG_ACK arrives, which happens after the producer side
+is already kLive), so during startup (and after a recovery
+cascade) the processor can briefly be in a state where one
+presence is `Authorized` and the other is still `Registered`.  The outer-loop guard `any_presence_authorized()`
 admits the loop body as soon as the FIRST presence is `Authorized`;
 the data loop's per-iteration `ops.acquire(ctx)` consults the
 SPECIFIC presence being read/written, not the aggregate, so
@@ -1383,10 +1383,11 @@ Combines HEP-0023's startup sequence + HEP-0035 §4.1 Layer-1 ZAP +
 §4.6 file ACLs + §4.7 runtime hardening + HEP-0036 T1 symmetric
 authorization (LOCKED 2026-05-28: both sides use identity keys;
 broker mints nothing on the data plane).  The T2 readiness model
-(first-heartbeat-driven `kRegistering → kLive`; socket-monitor-
-driven consumer `Authorized` transition; `hub_dead_grace`-driven
-recovery) is BAKED INTO the diagram below but PENDING explicit
-T2 lock-in per `docs/tech_draft/HEP-0036_review_open_items.md`.
+(first-heartbeat-driven `kRegistering → kLive`; synchronous
+consumer `Authorized` at queue construction since auth was done
+at REG; `hub_dead_grace`-driven recovery) is BAKED INTO the
+diagram below but PENDING explicit T2 lock-in per
+`docs/tech_draft/HEP-0036_review_open_items.md`.
 
 ```mermaid
 sequenceDiagram
@@ -1395,7 +1396,6 @@ sequenceDiagram
     participant B as Broker
     participant DL as Data loop
     participant DS as Data socket
-    participant MON as Socket monitor<br/>(consumer / PULL side)
 
     Note over R: Process start (plh_role binary main)
     R->>R: HEP-0035 §4.7: disable_core_dumps()<br/>HEP-0035 §4.6: verify_key_file_acls()<br/>load identity keypair (into SecureKeyBuffer)<br/>setup ZMQ context
@@ -1432,10 +1432,7 @@ sequenceDiagram
         Note over R: == setup_infrastructure_ (consumer-side; uses values from REG_ACK) ==
         alt ZMQ consumer
             R->>R: framework builds rx queue with<br/>RxQueueOptions::producer_peers = CONSUMER_REG_ACK.producers[]<br/>(HEP-CORE-0017 §3.3; ZmqQueue handles plumbing per I9)
-            R->>MON: install socket monitor at queue's PULL context
-            DS-->>MON: HANDSHAKE_SUCCEEDED (per peer)
-            MON-->>R: notify
-            Note over R: Authorized (async trigger via monitor)
+            Note over R: Authorized (synchronous —<br/>auth was completed at REG; endpoints ARE the proof)
         else SHM consumer
             R->>DS: rx queue attaches DataBlock with shm_secret → ACCEPT
             Note over R: Authorized (sync trigger)
@@ -1590,12 +1587,12 @@ eviction work from earlier draft scope per I5 (revocation is passive).
 | Phase | Scope | Notes |
 |---|---|---|
 | 0 | **Prerequisites — HEP-0035 §4.1 Layer-1 ZAP + §4.6 file ACLs + §4.7 runtime hardening.**  Broker ROUTER installs a ZAP handler; `hub.known_roles[]` from hub.json populates the pubkey allowlist; ZAP rejects unknown pubkeys at handshake.  Legacy `check_role_identity()` + `RoleIdentityPolicy` enum REMOVED (HEP-0035 §4.5).  Both binaries verify key-file ACLs (§4.6, task #101) and apply runtime hardening (§4.7, task #102).  Tracked under tasks #74 + #101 + #102; HEP-0036 phases below depend on these being live. | Not HEP-0036 work proper, but listed here as the prerequisite that closes I1 condition (2).  HEP-0036's data-plane wiring is meaningless without it. |
-| 0.7 | **Add `RegistrationState::Authorized`** (T2).  5th enum value between `Registered` and `Deregistered`.  Producer presence transitions Registered → Authorized at the end of `setup_infrastructure_` (sync); consumer presence transitions via ZMQ socket-monitor on `HANDSHAKE_SUCCEEDED` (T2 R3).  Data loop's outer guard adds `any_presence_authorized()` (HEP-0036 §8.2). | Per-presence FSM is independent across multi-presence roles (processor). |
+| 0.7 | **Add `RegistrationState::Authorized`** (T2).  5th enum value between `Registered` and `Deregistered`.  BOTH producer and consumer presences transition Registered → Authorized SYNCHRONOUSLY at the end of their respective `setup_infrastructure_` — producer's after PUSH bind + ZAP + ENDPOINT_UPDATE_REQ ACK; consumer's after CONSUMER_REG_ACK + rx queue construction (auth was completed at REG, endpoints in the ACK ARE the proof per §5.2).  No socket monitor needed — data-plane CURVE handshakes are transport-internal per I9.  Data loop's outer guard adds `any_presence_authorized()` (HEP-0036 §8.2). | Per-presence FSM is independent across multi-presence roles (processor). |
 | 0.8 | **Broker CONSUMER_REG_REQ gates on `first_heartbeat_seen`** (T2 R6, ~5 LOC).  Match DISC_REQ's existing check at `broker_service.cpp:1720`.  Return `CHANNEL_NOT_READY{reason="awaiting_first_heartbeat"}` if producer presence hasn't been observed as `kLive`. | Pre-existing inconsistency between DISC_REQ and CONSUMER_REG_REQ becomes symmetric.  Standalone fix; doesn't depend on later phases. |
 | 1 | `ChannelAccessIndex` skeleton in HubState.  Broker creates entries on REG_REQ; stores allowlist + producer's identity pubkey (looked up from `PubkeyOrigin` index via `zmq_msg_gets("User-Id")`).  **No data-plane keypair minting** — per T1 / I6, broker holds no data-plane secrets. | Replaces the earlier draft's "broker mints keypair on REG_REQ" with allowlist-only management. |
 | 2 | Producer side: install ZAP handler on ZMQ context BEFORE binding PUSH (per §5.1 ordering); PUSH configured `curve_server=1` with ROLE'S IDENTITY KEYPAIR (loaded from `<role>.sec` per HEP-0035 §4.6 + §4.7).  ZAP cache starts empty; all incoming handshakes DENY until broker pushes allowlist. | No new key distribution needed — producer already has its identity keypair from startup. |
 | 3 | Broker side: on CONSUMER_REG_REQ, derive consumer pubkey via `zmq_msg_gets("User-Id")` (NOT from message body — no self-claims); check I1 cond 2; on pass, add to allowlist; emit `CHANNEL_AUTH_UPDATE add` sync to EVERY producer of the channel (wait for ACKs per §6.5); return CONSUMER_REG_ACK with `producers[]` array per §6.4 — iterate `ChannelEntry::producers[]` to populate `(role_uid, pubkey, endpoint)` per element. | Closes the loop: consumer can now connect after auth.  Per-handshake race resolved by sync-before-ACK ordering.  Same wire shape works for single-producer (length 1) and fan-in (length N). |
-| 4 | Consumer side: read `producers[]` array from CONSUMER_REG_ACK; framework feeds the array into `RxQueueOptions::producer_peers` (per HEP-CORE-0017 §3.3); ZmqQueue handles per-peer transport plumbing internally (curve config per peer, ZAP, fair-queue) per I9.  Install ZMQ socket monitor at the queue's PULL context for `HANDSHAKE_SUCCEEDED`/`HANDSHAKE_FAILED_AUTH` events per peer (T2 R3); data-loop gate on `Authorized` state per §8.  Uniform shape for single-producer and fan-in — script sees one rx queue regardless. | End-to-end ZMQ auth working for both topologies; auth failures surface immediately via monitor rather than via heartbeat timeout.  Coordinates with task #94 / HEP-0021 §16.5 (per-producer DISC_REQ_ACK array shape — same migration family) and task #103 (ZmqQueue dynamic peer API). |
+| 4 | Consumer side: read `producers[]` array from CONSUMER_REG_ACK; framework feeds the array into `RxQueueOptions::producer_peers` (per HEP-CORE-0017 §3.3); ZmqQueue handles per-peer transport plumbing internally (curve config per peer, ZAP enforcement, fair-queue) per I9.  Authorized fires synchronously at queue construction time — auth was completed at REG (control plane), endpoints in CONSUMER_REG_ACK ARE the auth proof.  Data loop gates on `Authorized` per §8.  Uniform shape for single-producer and fan-in — script sees one rx queue regardless. | End-to-end ZMQ auth working for both topologies.  Coordinates with task #94 / HEP-0021 §16.5 (per-producer DISC_REQ_ACK array shape — same migration family) and task #103 (ZmqQueue dynamic peer API). |
 | 5 | SHM parallel: broker generates `shm_secret` per channel (uint64 guard token; unrelated to CURVE per I6); `CONSUMER_REG_ACK` releases it only on auth.  Retire config-supplied `out_shm_secret`. | SHM secret stays broker-generated because the DataBlock attach mechanism (HEP-0002) is secret-based, not CURVE-based. |
 | 6 | Passive revocation paths: on CONSUMER_DEREG, on heartbeat timeout, on hub-dead cascade — broker emits `CHANNEL_AUTH_UPDATE remove` (best-effort) and removes from allowlist.  Role-side hub-dead handling (T2 R4 / R5): `Authorized → Unregistered` after `hub_dead_grace`; tear down data sockets + clear ZAP cache; await BRC reconnect.  No force-disconnect (per I5). | Closes lifetime-alignment loop; no new socket-level APIs. |
 | 7 | **Multi-producer fan-in VERIFICATION** (no new code).  Phases 3-4 already produce the uniform `producers[]` array wire shape that handles 1..N producers identically.  Phase 7 is the L3 end-to-end test for the fan-in case: spawn 2 producers + 1 consumer on the same ZMQ channel; verify consumer receives data from both producers via M×P CURVE sessions.  Validates that the array shape, allowlist propagation to each producer's ZAP cache, and per-PULL handshake monitoring all work for N>1. | Sanity-check, not new functionality.  Coordinates with task #94 / HEP-0021 §16.5 DISC_REQ_ACK array migration (verification scope). |
