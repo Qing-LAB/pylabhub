@@ -95,14 +95,20 @@ and Deregistered), §4.3 FSM, §5.1 + §5.2 + §10 sequences, §8.2
 gating, §8.3 per-presence, §12 phases 0.7 + 0.8 + 4 + 6.
 
 ### T3 — Broker restart / per-channel key staleness
-**Status:** 🔄 OPEN — not yet discussed.
-**Question:** when the broker crashes + restarts, the role's PUSH
-socket is still bound with broker-minted per-channel keys that the
-new broker doesn't know about.  Same problem applies to producer
-restart (broker keys still alive on a now-dead producer).
-**Why it matters:** HEP-0036 §10 lifecycle is silent on this; T2's
-hub-dead path partly handles it (role-side teardown of stale data
-sockets) but the broker-side recovery semantics aren't documented.
+**Status:** ✅ RESOLVED (locked 2026-05-28; no HEP-0036 change needed).
+**Decision:** Original framing was obsoleted by T1 (no broker-minted
+per-channel keys exist) AND by the existing terminal-disconnect
+policy.  Verified in code:
+- `cycle_ops.hpp:184-189` — `default_hub_dead` for master connection
+  calls `stop.request(StopReason::HubDead)`; role stops.
+- `role_api_base.cpp:1142-1149` — BRC sets `reconnect_ivl=-1`;
+  "disconnect is TERMINAL... lambda runs ≤1 time per connection
+  lifetime."  No role-side reconnect to a restarted broker.
+The deployment unit (broker + roles) restarts as a whole from the
+same on-disk facts (`.sec` identity keys, `hub.pub`, config files).
+A restarted broker never sees pre-restart role state; consistency
+is impossible to violate.  No fast-restart edge case, no
+`hub_session_id`, no broker persistence requirement.
 
 ### T4 — Inbox CURVE wiring (§9.3)
 **Status:** 🟡 PARTIAL — SIMPLIFIED by T1; §9.3 wording committed
@@ -301,11 +307,10 @@ attacker work.
 
 1. **DP-Q3** — channel-scope vs per-producer ACL non-goal (one-line
    addition to §2.1).  Trivial.
-2. **T3** — broker restart key staleness policy.
-3. **T5** — federation allowlist propagation (cross-hub).
-4. **Sweep** M3 + M4 + M5 + M6.
+2. **T5** — federation allowlist propagation (cross-hub).
+3. **Sweep** M3 + M4 + M5 + M6.
 
-(T1 ✅, T2 ✅, T4 🟡 partial, I9 ✅, DP-Q1 ✅, DP-Q2 ✅, DP-Q4 ✅.)
+(T1 ✅, T2 ✅, T3 ✅, T4 🟡 partial, I9 ✅, DP-Q1 ✅, DP-Q2 ✅, DP-Q4 ✅.)
 
 ## Commits referenced in this doc
 
