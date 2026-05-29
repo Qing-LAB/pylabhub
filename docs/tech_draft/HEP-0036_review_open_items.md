@@ -281,14 +281,10 @@ HEP-0036 I9.  `REG_ACK.initial_allowlist` covers the
 joining-producer's ZAP cache.
 
 ### DP-Q3 — Channel-scope vs per-producer ACL
-**Status:** 🔄 OPEN — needs explicit non-goal in HEP-0036 §2.1.
-**Question:** Should the doc explicitly declare per-producer ACL
-out of MVP scope?  Today's design is channel-scope only:
-authorization for channel X allows the consumer to connect to ANY
-producer of X.  Per-producer ACL (consumer C may subscribe to P1
-but not P2 within X) is NOT supported — operators with per-producer
-gating needs should split into separate channels.
-**To close:** one-line addition to §2.1 non-goals.
+**Status:** ✅ RESOLVED (locked 2026-05-28).
+**Decision:** Per-producer ACL within a channel is OUT of scope;
+channel-scope authorization is the MVP model.  Added as explicit
+non-goal in HEP-0036 §2.1 (last bullet).
 
 ### DP-Q4 — Per-producer DEREG cascade vs last-producer teardown
 **Status:** ✅ RESOLVED (committed `87784a8f`).
@@ -315,11 +311,10 @@ attacker work.
 
 ## Order of discussion (remaining)
 
-1. **DP-Q3** — channel-scope vs per-producer ACL non-goal (one-line
-   addition to §2.1).  Trivial.
-2. **Sweep** M3 + M4 + M5 + M6.
+1. **Sweep** M3 + M4 + M5 + M6.
 
-(T1 ✅, T2 ✅, T3 ✅, T4 🟡 partial, T5 ✅, I9 ✅, DP-Q1 ✅, DP-Q2 ✅, DP-Q4 ✅.)
+(T1 ✅, T2 ✅, T3 ✅, T4 🟡 partial, T5 ✅, I9 ✅,
+ DP-Q1 ✅, DP-Q2 ✅, DP-Q3 ✅, DP-Q4 ✅.)
 
 ## Commits referenced in this doc
 
