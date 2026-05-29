@@ -85,6 +85,40 @@ gtest_discover_tests(test_layer2_net_address
 )
 
 # ============================================================================
+# Test: Key-file ACL utility (HEP-CORE-0035 §4.6)
+# Pattern 1 — pure POSIX stat/chmod utility; no LOGGER_*, no lifecycle.
+# Owns the verdict matrix for all KeyFileRole + mode combinations.
+# Vault / directory tests (test_hub_vault, test_role_vault, test_hub_directory)
+# delegate inline mode checks to this utility in #101 sub-phase 1C.
+# ============================================================================
+
+add_executable(test_layer2_key_file_acl
+    test_key_file_acl.cpp
+)
+
+target_link_libraries(test_layer2_key_file_acl
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_key_file_acl)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_key_file_acl
+    SUITE_NAME "Layer2_KeyFileAcl"
+)
+layer2_require_staged_utils(test_layer2_key_file_acl)
+
+gtest_discover_tests(test_layer2_key_file_acl
+    PROPERTIES
+        LABELS "layer2;service;security;key_file_acl"
+        TIMEOUT 30
+)
+
+# ============================================================================
 # Test: Naming validator (HEP-CORE-0033 §G2.2.0b)
 # Pure validator test — no workers, no staging dependency.
 # ============================================================================

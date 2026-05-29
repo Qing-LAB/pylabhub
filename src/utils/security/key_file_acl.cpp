@@ -265,6 +265,19 @@ AclVerdict verify_public_key_file(const fs::path &path)
 AclVerdict verify_keyfile_acl(const fs::path &path, KeyFileRole role) noexcept
 {
 #ifdef _WIN32
+    // FUTURE EXTENSION (HEP-CORE-0035 §4.6 follow-up): Windows DACL
+    // check.  Today this is a no-op success — the vault file's
+    // encryption-at-rest layer (libsodium Argon2id + XSalsa20-Poly1305
+    // via vault_crypto.cpp) is cross-platform and remains the primary
+    // protection on Windows; the POSIX mode-bit floor is a defence-
+    // in-depth layer that simply does not apply.  An NTFS-aware
+    // hardening pass would call GetSecurityInfo() to verify the
+    // file's DACL grants access only to the current owner SID.  Not
+    // wired today because (a) HEP-0035 §4.6 declares UNIX mode bits
+    // as the enforcement scope, (b) Windows operators are typically
+    // expected to run the binary under a dedicated service account
+    // whose ACLs are managed operator-side.  Worth revisiting if
+    // Windows operators report local-read attack surface.
     (void) path;
     (void) role;
     AclVerdict v;
@@ -276,7 +289,8 @@ AclVerdict verify_keyfile_acl(const fs::path &path, KeyFileRole role) noexcept
     v.diagnostic =
         "Windows: POSIX mode checks are not applicable; ACL "
         "discipline is platform-dependent.  HEP-CORE-0035 §4.6 "
-        "enforces UNIX mode bits only.";
+        "enforces UNIX mode bits only.  Vault contents remain "
+        "encrypted-at-rest via libsodium (cross-platform).";
     return v;
 #else
     try
