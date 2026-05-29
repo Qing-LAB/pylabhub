@@ -1798,7 +1798,7 @@ Updated in lock-step with HEP-0036 across two commits:
   the same mechanism that gates BRC).  Bands use the role's
   identity keypair; no per-band CURVE keypair.
 
-### 14.7 HEP-CORE-0007 (Protocol Reference)
+### 14.7 HEP-CORE-0007 (DataHub Protocol and Policy)
 
 Updated 2026-05-28 commit `187c71d9`:
 
