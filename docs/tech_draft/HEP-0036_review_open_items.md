@@ -59,25 +59,40 @@ below), §6.1-6.4 + §6.5 + §6.6 (wire format + error codes),
 post-I9), §15 references.
 
 ### T2 — `Authorized` state + role/broker FSM coupling
-**Status:** 🟡 DISCUSSED-NOT-LOCKED.
-**Question:** how does the role transition into a state that gates
-data flow, and how does the broker know the producer is ready to
-admit consumers?
-**Resolution path discussed:** first heartbeat (existing
-`first_heartbeat_seen` mechanism, `hub_state.hpp:107`) is the
-broker-visible "producer ready" signal; role-side `Authorized` is
-the local gate that controls when `install_heartbeat` is called.
-**Where it appears in HEP-0036:** §4.3 FSM, §5.1 + §5.2 + §10
-sequences, §12 phases 0.5 / 0.7 / 0.8 — all written into commit
-d9f7d218.
-**Open sub-questions (asked but not formally answered):**
-- **T2-Q1:** consumer's `Authorized` trigger via ZMQ socket monitor
-  (`HANDSHAKE_SUCCEEDED` / `HANDSHAKE_FAILED_AUTH`) — yes/no?
-  Diagram assumes yes.
-- **T2-Q2:** `Authorized → Unregistered` trigger threshold = the
-  existing `hub_dead_grace`, or shorter? Diagram assumes
-  `hub_dead_grace`.
-**To close:** explicit yes/no on Q1 + Q2.
+**Status:** ✅ RESOLVED (locked 2026-05-28; committed across
+`d9f7d218`, `06798daa`).
+**Decision:** Role-side `RegistrationState` gains a new
+`Authorized` state between `Registered` and `Deregistered`.
+- **Producer's Authorized** fires SYNCHRONOUSLY at end of
+  `setup_infrastructure_` (PUSH bound + ZAP installed +
+  `ENDPOINT_UPDATE_REQ` ACK'd).  `install_heartbeat` is called
+  next; the first heartbeat tick fires; broker's existing
+  `first_heartbeat_seen` mechanism (`hub_state.hpp:107`) flips
+  channel from `kRegistering → kLive`.  Consumer admission is
+  gated on `kLive` (R6 — small broker-side fix at
+  `broker_service.cpp:1959` extending the existing check to match
+  DISC_REQ's behavior).
+- **Consumer's Authorized** fires SYNCHRONOUSLY when
+  `CONSUMER_REG_ACK.producers[]` is received and the framework
+  constructs the rx queue.  Authorization was completed at REG
+  (control plane: I1 cond 1 + cond 2 + Q1 allowlist push to each
+  producer); the endpoints in the ACK ARE the proof of
+  authorization (no endpoint disclosure on rejection — §5.2).
+  No socket monitor; data-plane CURVE handshake is
+  transport-internal per I9.
+- **`Authorized → Unregistered`** (recovery on sustained broker
+  loss): existing `hub_dead_grace` threshold, no new knob.
+- Data loop's outer guard adds `any_presence_authorized()` —
+  HEP-0036 §8.2.
+**Sub-questions:**
+- **T2-Q1** ✅: Consumer Authorized is SYNCHRONOUS at queue
+  construction (corrected from earlier socket-monitor framing;
+  commit `06798daa`).
+- **T2-Q2** ✅: Reuse existing `hub_dead_grace`; no benefit to
+  a new knob.
+**Where in HEP-0036:** §3 (new `Authorized` between Registered
+and Deregistered), §4.3 FSM, §5.1 + §5.2 + §10 sequences, §8.2
+gating, §8.3 per-presence, §12 phases 0.7 + 0.8 + 4 + 6.
 
 ### T3 — Broker restart / per-channel key staleness
 **Status:** 🔄 OPEN — not yet discussed.
@@ -284,16 +299,13 @@ attacker work.
 
 ## Order of discussion (remaining)
 
-1. **T2** — formally close T2-Q1 (socket monitor) + T2-Q2
-   (`hub_dead_grace`).  Currently baked into diagrams but not
-   explicitly agreed.
-2. **DP-Q3** — channel-scope vs per-producer ACL non-goal (one-line
+1. **DP-Q3** — channel-scope vs per-producer ACL non-goal (one-line
    addition to §2.1).  Trivial.
-3. **T3** — broker restart key staleness policy.
-4. **T5** — federation allowlist propagation (cross-hub).
-5. **Sweep** M3 + M4 + M5 + M6.
+2. **T3** — broker restart key staleness policy.
+3. **T5** — federation allowlist propagation (cross-hub).
+4. **Sweep** M3 + M4 + M5 + M6.
 
-(T1 ✅, T4 🟡 partial, I9 ✅, DP-Q1 ✅, DP-Q2 ✅, DP-Q4 ✅.)
+(T1 ✅, T2 ✅, T4 🟡 partial, I9 ✅, DP-Q1 ✅, DP-Q2 ✅, DP-Q4 ✅.)
 
 ## Commits referenced in this doc
 
