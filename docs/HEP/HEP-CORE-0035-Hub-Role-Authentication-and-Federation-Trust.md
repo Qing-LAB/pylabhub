@@ -8,6 +8,7 @@
 | **Created**     | 2026-04-29                                                                                         |
 | **Area**        | Framework Architecture (`BrokerService` socket layer, `HubConfig`, `BrokerService::Config`, federation) |
 | **Depends on**  | HEP-CORE-0022 (Federation), HEP-CORE-0024 (Role Directory), HEP-CORE-0033 (Hub Character)          |
+| **Related**     | HEP-CORE-0036 (Authenticated Connection Establishment) — adds Layer-3 data-plane peer authentication on top of HEP-0035's Layer-1+2 (see §4.1).  HEP-0036 also adds §4.6 (file-ACL discipline) and §4.7 (runtime key handling) to this HEP. |
 | **Supersedes**  | HEP-CORE-0009 §2.7 (`RoleIdentityPolicy` reference) — see §6                                         |
 | **Blocks**      | HEP-CORE-0033 §15 Phase 1 re-introduction of `broker.{known_roles, role_identity_policy, channel_policy_overrides}` in `HubBrokerConfig` |
 
@@ -298,6 +299,27 @@ mandatory in production:
 │    Layer 1 is enforcing, but defense in depth).                 │
 │                                                                 │
 │  Layer 2 is where federation-delegated trust is decided.        │
+└─────────────────────────────────────────────────────────────────┘
+                                ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  Layer 3 — Data-plane peer authentication (HEP-CORE-0036)       │
+│                                                                 │
+│  Each producer attaches a per-context ZAP handler to its data    │
+│  PUSH socket.  The handler reads from a per-channel allowlist    │
+│  (`ChannelAccessIndex::authorized_consumer_pubkeys` in HubState  │
+│  per HEP-CORE-0036 §4.1) populated by the broker via             │
+│  CHANNEL_AUTH_UPDATE pushes.                                     │
+│                                                                 │
+│  • Consumer handshake with a pubkey on the producer's            │
+│    channel allowlist → accept.                                   │
+│  • Consumer handshake with any other pubkey → reject at ZAP.     │
+│                                                                 │
+│  Effect: layer 3 enforces "this consumer is authorized to        │
+│  connect to this specific channel" at the producer's data        │
+│  socket — the per-channel scope that layers 1+2 don't cover.     │
+│  Per HEP-CORE-0036 I6 (T1 lock-in), neither side uses            │
+│  broker-minted CURVE keys — both use their identity keypairs;    │
+│  the allowlist is the gating mechanism.                          │
 └─────────────────────────────────────────────────────────────────┘
 ```
 

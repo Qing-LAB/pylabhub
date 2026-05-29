@@ -1,9 +1,9 @@
 # HEP-CORE-0027: Inbox Messaging
 
-**Status**: Implemented (documenting existing system).  Reachability + multi-hub advertisement section (§4.5) added 2026-05-06 to align with HEP-CORE-0033 §19 (multi-presence roles, planned — Wave A item A7) and HEP-CORE-0019 §2.3 (Phase 6 per-presence heartbeats).
+**Status**: Implemented (documenting existing system); CURVE wiring deferred to HEP-CORE-0036 Phase 4+ (see §3.5 below).  Reachability + multi-hub advertisement section (§4.5) added 2026-05-06 to align with HEP-CORE-0033 §19 (multi-presence roles, planned — Wave A item A7) and HEP-CORE-0019 §2.3 (Phase 6 per-presence heartbeats).
 **Created**: 2026-03-27
 **Scope**: InboxQueue, InboxClient, peer-to-peer messaging side channel
-**Depends on**: HEP-CORE-0007 §12.4 (ROLE_INFO_REQ/ACK), HEP-CORE-0034 §11.4 (inbox-as-schema-record), HEP-CORE-0033 §8 (HubState entry types — `ChannelEntry` / `ConsumerEntry` hold per-presence inbox metadata), HEP-CORE-0033 §18 (broker routing classes — ROLE_INFO_REQ is Class B), HEP-CORE-0033 §19 (multi-presence roles — drives per-presence inbox advertisement)
+**Depends on**: HEP-CORE-0007 §12.4 (ROLE_INFO_REQ/ACK), HEP-CORE-0034 §11.4 (inbox-as-schema-record), HEP-CORE-0033 §8 (HubState entry types — `ChannelEntry` / `ConsumerEntry` hold per-presence inbox metadata), HEP-CORE-0033 §18 (broker routing classes — ROLE_INFO_REQ is Class B), HEP-CORE-0033 §19 (multi-presence roles — drives per-presence inbox advertisement), HEP-CORE-0036 §9.3 (CURVE wiring on inbox sockets — role identity keypair + per-channel allowlist inheritance)
 
 ---
 
@@ -122,6 +122,31 @@ The DEALER/ROUTER envelope uses ZMQ's built-in identity routing:
 - DEALER sets `ZMQ_IDENTITY` to the sender's pylabhub UID before connecting
 - ROUTER receives `[identity, empty_delimiter, payload]`
 - ROUTER sends ACK as `[identity, empty_delimiter, ack_byte]`
+
+### 3.5 CURVE Wiring (HEP-CORE-0036)
+
+The msgpack frame in §3 is the inbox PAYLOAD; transport-layer
+authentication of the inbox sockets is specified in HEP-CORE-0036
+§9.3.  Under HEP-0036 (locked 2026-05-28):
+
+- **Inbox ROUTER and DEALER sockets use the role's IDENTITY keypair**
+  on both sides (per HEP-0036 I6 — same keypair the role binds on
+  its data PUSH/PULL; broker mints NO data-plane CURVE keys).
+- **Allowlist inheritance**: the inbox sockets reuse the data
+  channel's ZAP allowlist on the producer side (same channel-scope
+  set of authorized consumer pubkeys; no separate inbox allowlist
+  scope under MVP).  Any consumer authorized to read the data
+  channel is authorized to send to that producer's inbox.
+- **No per-inbox keypair** — see HEP-0036 §9.3 for the rationale
+  (avoids the redundancy that drove T1's symmetric-design lock-in).
+- **Lifetime** — inbox lifetime ⊆ data channel lifetime.  Inbox
+  closes with last-producer DEREG (HEP-0036 §5.7.2 cascade) or BRC
+  death (HEP-0036 I3).
+
+`hub_inbox_queue.cpp` has zero CURVE references today; this is the
+implementation gap that HEP-0036 Phase 4+ closes (task #103
+implements the rx queue producer_peers + add/remove API; the same
+plumbing applies to inbox sockets).
 
 ---
 

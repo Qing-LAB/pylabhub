@@ -7,7 +7,7 @@
 | **Status**    | Draft                                                |
 | **Created**   | 2026-04-10                                           |
 | **Area**      | Control Plane Protocol                               |
-| **Depends on**| HEP-CORE-0007 (Protocol Reference)                   |
+| **Depends on**| HEP-CORE-0007 (Protocol Reference), HEP-CORE-0036 §9.4 (band CURVE wiring inherits hub-wide `known_roles[]` allowlist; bands use the role's identity keypair on band sockets; no per-band CURVE keypair) |
 | **Supersedes**| HEP-CORE-0007 §12 Peer-to-Peer category (HELLO/BYE, ChannelHandle/Pattern P2C sockets).  Note: the `CHANNEL_BROADCAST_REQ` / `CHANNEL_EVENT_NOTIFY` / `CHANNEL_BROADCAST_NOTIFY` channel-bound family is NOT superseded — see §9.1 for the channel-bound vs band-bound coexistence model (corrected 2026-05-17, audit T3). |
 
 ---

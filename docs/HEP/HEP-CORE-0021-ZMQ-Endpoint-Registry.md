@@ -269,7 +269,16 @@ REG_REQ (producer → broker)
   transport             string   "shm" (default) | "zmq"
   --- SHM fields (transport=shm) ---
   shm_name              string   Shared memory segment name
-  shm_secret            uint64   Shared secret for DataBlock attachment
+  wants_shm_secret      bool     (HEP-CORE-0036 §6.1; default true post-HEP-0036)
+                                 If true, broker generates the DataBlock
+                                 guard secret and returns it in REG_ACK.
+                                 The legacy `shm_secret` field below is
+                                 deprecated; broker ignores producer-supplied
+                                 value when wants_shm_secret=true.
+  shm_secret            uint64   DEPRECATED (HEP-CORE-0036 §6.1) — ignored
+                                 when wants_shm_secret=true.  Kept for
+                                 backward compatibility with pre-HEP-0036
+                                 producers.
   slot_count            uint32   Ring buffer capacity
   schema_id             string   (optional) Named schema identifier
   schema_hash           string   (optional) BLAKE2b-256 of BLDS
@@ -281,9 +290,25 @@ REG_REQ (producer → broker)
   producer_name         string
 ```
 
+**HEP-0036 note**: under T1 (locked 2026-05-28), the producer does NOT
+send any CURVE keypair-request flags.  The producer's data-plane PUSH
+binds with the role's identity keypair (per HEP-CORE-0036 I6 — broker
+mints nothing on the data plane).  The producer's identity pubkey is
+recovered by the broker from `zmq_msg_gets("User-Id")` on the BRC socket
+at REG time (no self-claims; HEP-CORE-0036 §3 I1 note); it is NOT
+sent in the REG_REQ body.
+
 ### 5.2 CONSUMER_REG_ACK Extension
 
-The broker echoes back the transport descriptor from the channel entry.
+The broker returns the transport descriptor plus per-producer data so the
+consumer's framework can fan-in across all registered producers of the
+channel.  Per **HEP-CORE-0036 §6.4** (T1 locked 2026-05-28): for ZMQ
+transport the response carries a `producers[]` array (length 1 for
+single-producer channels, length N for fan-in), each element being
+`{role_uid, pubkey, endpoint}`.  The producer pubkey is the producer's
+IDENTITY pubkey (HEP-CORE-0036 I6 — broker mints NO data-plane keys);
+the endpoint is the producer's bound TCP endpoint (per §16
+ephemeral-binding resolution).
 
 ```
 CONSUMER_REG_ACK (broker → consumer)
@@ -291,16 +316,38 @@ CONSUMER_REG_ACK (broker → consumer)
   transport             string   "shm" | "zmq"
   --- SHM fields (transport=shm) ---
   shm_name              string
-  shm_secret            uint64
-  producer_zmq_pubkey   string   (for ZMQ ctrl socket auth, unchanged)
+  shm_secret            uint64   Broker-generated guard secret
+                                 (HEP-CORE-0036 §6.4; was producer-supplied
+                                 in legacy)
   --- ZMQ fields (transport=zmq) ---
-  zmq_endpoint          string   Connect address for the consumer
+  producers             array of objects, one per registered producer:
+                            role_uid    string  Producer's role uid
+                            pubkey      string  Producer identity pubkey
+                                                (Z85, 40 chars; sourced from
+                                                ChannelEntry::producers[i]
+                                                .zmq_pubkey per HEP-0036 §4.1)
+                            endpoint    string  Producer's bound TCP endpoint
+                                                (per §16.3 per-producer scope)
   --- Common fields ---
-  producer_uid          string
-  producer_name         string
   schema_id             string   (optional)
   schema_hash           string   (optional)
 ```
+
+**Cardinality**: `producers[]` has length 1 for single-producer channels
+and length N for fan-in.  Same wire shape both ways — consumer code
+iterates the array unconditionally.  SHM transport rejects N > 1 at
+admission (`MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM` per HEP-CORE-0007
+§12.4a) and so always has the single-producer-attach shape.
+
+**Coordinated migration**: this array shape is the sibling of the
+DISC_REQ_ACK migration tracked under task #94 / §16.5 (the
+"per-producer arrays" lift referenced in `broker_service.cpp:1745-1794`
+comment).  Both responses should land in one wire-format change.
+
+**Retired wire fields**: the legacy singular `zmq_endpoint` +
+`producer_zmq_pubkey` are REPLACED by the `producers[]` array.  The
+`producer_uid` / `producer_name` legacy fields are absorbed into
+`producers[i].role_uid` (uid implies the registered name).
 
 ### 5.3 Broker Internal State
 

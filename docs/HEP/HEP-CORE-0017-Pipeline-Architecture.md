@@ -129,7 +129,7 @@ facilities (spinlocks, flexzone) are now exposed directly through
 | Data transport | SHM **or** ZMQ (selected via `in_transport` in `consumer.json`) |
 | Channel ownership | Attaches to existing SHM or connects to ZMQ endpoint; registers as consumer via `CONSUMER_REG_REQ` |
 | SHM-specific facilities (when `in_transport=shm`) | Spinlocks, zero-copy slot view, flexzone R/W, acquire-timing metrics |
-| ZMQ-specific note | Endpoint discovered from broker `DISC_ACK` (HEP-0021); consumer never binds |
+| ZMQ-specific note | Endpoint discovery: `CONSUMER_REG_ACK.producers[]` array (HEP-CORE-0036 §6.4) for the channel's current producer set; `DISC_ACK` is for separate channel-observability queries (kLive vs kStalled).  Consumer never binds. |
 | Broker protocol | `CONSUMER_REG_REQ` → `CONSUMER_REG_ACK`; sends HELLO to producer; `CONSUMER_DEREG_REQ` on exit |
 | Lives on | SHM: same host as the SHM segment. ZMQ: any host with TCP connectivity. |
 
