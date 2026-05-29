@@ -868,6 +868,17 @@ The broker maintains a **readiness flag** per producer on each ZMQ channel:
 For channels whose producers register with specific ports (not `:0`),
 no update is required — each such producer is immediately **ready**.
 
+**Coordination with HEP-CORE-0036**: under HEP-0036 (T2 lock-in,
+2026-05-28), consumer admission is further gated by the
+`CHANNEL_AUTH_UPDATE` allowlist push having ACK'd from every kLive
+producer per Q1 skip-disconnected semantics (HEP-0036 §6.5).  If the
+push exhausts with zero ACKs the broker returns
+`CHANNEL_NOT_READY{reason="no_live_producer"}` instead of the
+endpoint-port-zero error in this section.  The `CHANNEL_NOT_READY`
+error from §16.4 (port-zero / not-ready) and HEP-0036 §6.6 (no live
+producer / first-heartbeat not seen) share the wire code but disambiguate
+via the `reason` field.
+
 ### 16.5 Updated Factory Flow
 
 ```

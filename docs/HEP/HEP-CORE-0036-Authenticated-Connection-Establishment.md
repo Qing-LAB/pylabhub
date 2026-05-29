@@ -1673,7 +1673,7 @@ review; this section keeps only what's still genuinely open.
 
 ## 14. Updates to other HEPs
 
-This HEP requires synchronized updates to four sibling HEPs. The
+This HEP requires synchronized updates to six sibling HEPs. The
 updates are minimal — pointers / scope clarifications, not redesign.
 
 ### 14.1 HEP-CORE-0021 (ZMQ Endpoint Registry)
@@ -1738,25 +1738,26 @@ updates are minimal — pointers / scope clarifications, not redesign.
 
 ### 14.4 HEP-CORE-0017 (Pipeline Architecture)
 
-Updated in lock-step with HEP-0036 (commit `0ade2394`, 2026-05-28):
+Updated in lock-step with HEP-0036 across two commits:
 
-- **§3.3 ZmqQueue — Dynamic peer membership** — new subsection
-  defining `ProducerPeer` struct, `RxQueueOptions::producer_peers`
-  vector (replaces single `zmq_node_endpoint` for ZMQ transport),
-  and `ZmqQueue::add_producer_peer` / `remove_producer_peer` public
+- **§3.3 ZmqQueue — Dynamic peer membership** (commit `0ade2394`,
+  2026-05-28) — new subsection defining `ProducerPeer` struct,
+  `RxQueueOptions::producer_peers` vector (replaces single
+  `zmq_node_endpoint` for ZMQ transport), and
+  `ZmqQueue::add_producer_peer` / `remove_producer_peer` public
   methods.  Pattern-neutral on bind/connect direction (queue-
   internal choice).  Cross-references HEP-0036 §6.4 (`producers[]`
   array) and §3 I9 (three-tier separation).
-- **§4.6.1 Dynamic membership under HEP-CORE-0036** — new
-  subsection documenting the broker → framework → queue → script
-  flow.  Broker emits channel-event broadcast (HEP-CORE-0033 §12,
-  no new wire messages); framework calls
+- **§4.6.1 Dynamic membership under HEP-CORE-0036** (commit
+  `0ade2394`) — new subsection documenting the broker → framework
+  → queue → script flow.  Broker emits channel-event broadcast
+  (HEP-CORE-0033 §12, no new wire messages); framework calls
   `queue.add_producer_peer` / `remove_producer_peer`; ZmqQueue
   handles transport ops; script sees only the queue read API.
-- **§3.2 ZMQ-specific note (consumer)** — clarified endpoint
-  discovery is via `CONSUMER_REG_ACK.producers[]` (HEP-0036 §6.4),
-  NOT `DISC_ACK` (which is for separate channel-observability
-  queries).
+- **§3.2 ZMQ-specific note (consumer)** (commit `2b20e7fb`,
+  2026-05-28 — sibling-sync) — clarified endpoint discovery is via
+  `CONSUMER_REG_ACK.producers[]` (HEP-0036 §6.4), NOT `DISC_ACK`
+  (which is for separate channel-observability queries).
 - Implementation work tracked under task #103.
 
 ### 14.5 HEP-CORE-0027 (Inbox Messaging)
