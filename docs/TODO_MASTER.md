@@ -30,6 +30,7 @@ Remaining production gap: HEP-CORE-0035 auth (task #74).
 | Item | Status | Tracker |
 |---|---|---|
 | HEP-CORE-0035 auth implementation (7-phase plan in HEP-0035 §8) | 🚧 NOT IMPLEMENTED — `RoleIdentityPolicy` is a placeholder; CURVE is mandatory but admission policy not yet implemented | task #74 |
+| HEP-CORE-0036 authenticated connection establishment | ✅ DESIGN FINAL (2026-05-28; T1+T2+T3+T5+I9+all D-tier+M-tier locked).  🚧 IMPLEMENTATION NOT STARTED.  Depends on HEP-0035 (#74) + key-file ACL (#101) + runtime key hardening (#102).  Then #103 (ZmqQueue dynamic peers) + #104 (sibling-HEP code updates) finish the auth wiring; #105 is the deferred federation effort. | tasks #74, #101, #102, #103, #104, #105 |
 
 ### Label hygiene — read before reading any "M*" label below
 
@@ -129,9 +130,21 @@ the demo inventory + manifest schema.
 - **#84** N2 NativeEngine `build_api_(HubAPI&)` surface extension.
 - **#87** N7+N10 three-engine doc parity
   (`README_Scripting_{Python,Lua,Native}.md`).
-- **#74** HEP-CORE-0035 auth implementation (only true production
-  blocker).
 - **#73** HEP-CORE-0033 Phase 10 doc closure.
+
+**P3 — HEP-0036 auth implementation chain (production-readiness blocker)**:
+- **#101** HEP-CORE-0035 §4.6 key-file ACL discipline (M; independent
+  of #74; can ship first).
+- **#102** HEP-CORE-0035 §4.7 runtime key handling (M; independent
+  of #101 + #74).
+- **#74** HEP-CORE-0035 auth implementation (L; the gate — HEP-0036
+  Phase 0 prerequisite).
+- **#103** HEP-CORE-0017 §3.3 + HEP-0036 implementation: ZmqQueue
+  dynamic peer API + `RxQueueOptions::producer_peers` (M-L; lands
+  coordinated with #94 per HEP-0036 §14.1).
+- **#104** Sibling-HEP code updates per HEP-0036 §14 (L; multi-area).
+- **#105** Federation protocol design (L+; separate effort; NOT
+  blocking single-hub auth shipment).
 
 **P4 — long tail (interleave when context permits)**:
 - **#66** S1 Phase B `ZmqQueue + InboxQueue` migrate to
@@ -143,11 +156,10 @@ the demo inventory + manifest schema.
 - **#88** N8+N9 bench variants (scalar dispatch + multi-size sweep).
 - **#89** N11 cross-engine `on_band_message` signature parity audit.
 
-**Recommended next-session ordering**: #92 first (high leverage,
-the new HEP rule is fresh — find and fix the other half-mix REQ
-frames while the contract is in head-cache).  Then #83 N1 (closes
-the systemic gap that produced both B5 and B11).  Then batch the P1
-small cleanups.
+**Recommended next-session ordering** (refreshed 2026-05-28 after
+HEP-0036 lock-in): start the HEP-0036 auth chain with #101 + #102
+(mechanically independent of #74; can ship first), then #74 (the
+production gate).  Batch P1 small cleanups + #93 / #95 in parallel.
 
 ---
 

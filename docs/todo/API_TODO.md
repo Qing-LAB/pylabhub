@@ -74,6 +74,58 @@ single-area change.
   platform-conditional.  Mechanically independent of #101 and
   #74; can ship at any time.  Spec: HEP-CORE-0035 §4.7.  M.
 
+- **#103** — **HEP-CORE-0017 §3.3 + HEP-CORE-0036 implementation:
+  `RxQueueOptions::producer_peers` + `ZmqQueue` dynamic peer API.**
+  Per HEP-0017 §3.3 (Dynamic peer membership) + HEP-0036 §4.1 / I9:
+  replace `RxQueueOptions::zmq_node_endpoint` (singular) with
+  `std::vector<ProducerPeer> producer_peers`; add
+  `ZmqQueue::add_producer_peer(peer)` / `remove_producer_peer(uid)`.
+  Framework drives these in response to HEP-0033 §12 channel-event
+  broadcasts (producer joined/left).  Bind/connect direction is
+  internal to ZmqQueue.  This unlocks fan-in pipelines (N producers
+  → 1 consumer) and lets HEP-0036's `CONSUMER_REG_ACK.producers[]`
+  array land coherently with §94 (DISC_REQ_ACK array migration —
+  the two wire-format changes must land together per HEP-0036
+  §14.1).  Spec: HEP-CORE-0017 §3.3 + HEP-CORE-0036 §6.4 + §4.1.
+  M-L.  Depends-on: #94 wire-shape coordination.
+
+- **#104** — **Sibling-HEP code updates per HEP-CORE-0036 §14.**
+  HEP-0036 design lock-in (2026-05-28) requires synchronized code
+  changes across eight sibling HEPs' implementation surfaces:
+  - **§14.1 HEP-0021**: `wants_shm_secret` REG_REQ field;
+    `producers[]` array on CONSUMER_REG_ACK + DISC_REQ_ACK (the
+    second is task #94).
+  - **§14.2 HEP-0035**: Layer-3 ZAP enforcement + PubkeyOrigin
+    index consumption.  Mostly tracked under #74; this task
+    captures the §4.1 / §4.2 Layer-3 wiring specifically.
+  - **§14.3 HEP-0023**: `Authorized` state on role-side
+    `RegistrationState` FSM (`role_presence.hpp`).
+  - **§14.4 HEP-0017**: tracked under #103 above.
+  - **§14.5 HEP-0027**: inbox CURVE wiring using identity keypair
+    (no per-channel key); inherits data-channel allowlist.
+  - **§14.6 HEP-0030**: band CURVE wiring using identity keypair;
+    inherits hub-wide `known_roles[]`.
+  - **§14.7 HEP-0007**: documentation only (no code; ACK schema
+    already implemented via §6.4 producers[]).
+  - **§14.8 HEP-0033**: `ChannelAccessEntry` row in HubState entry
+    types; no new code beyond §4.1 implementation.
+  Effort: L (multi-area).  Depends-on: #74 + #103 + #94.
+
+- **#105** — **Federation protocol design + cross-hub reg/comm
+  verification.**  HEP-0036 §13.1 explicitly defers full federation
+  protocol to a separate design effort.  MVP inherits HEP-0022
+  `HUB_RELAY_MSG` + HEP-0035 §4.3 `federation_trust_mode` + §4.4
+  `HUB_PEER_HELLO.roles[]`, but the full cross-hub registration
+  path (channel-name → owning-hub resolution, reverse
+  `allowlist_remove` on consumer death, `CONSUMER_DIED_NOTIFY`
+  relay, multi-peer consistency model, retry/backoff) is NOT
+  end-to-end verified.  Existing L4 dual-hub processor test
+  (#44) covers broadcast relay + local-channel dual attachment
+  only.  Output: new HEP (HEP-CORE-0037 "Federation Protocol" or
+  amendment to HEP-CORE-0022) + L4 E2E test for cross-hub
+  CONSUMER_REG_REQ → remote producer.  L+ (separate effort; not
+  blocking single-hub auth shipment).
+
 - **B4 (#79)** — `plh_role --init` template emits
   `out_shm_secret/in_shm_secret = 0` (sentinel "no SHM");
   `build_tx_queue` silently skips SHM and falls through to ZMQ.
