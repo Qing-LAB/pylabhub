@@ -1342,8 +1342,8 @@ without an underlying data channel.  Therefore:
   consumer is in the channel's allowlist, the inbox handshake
   succeeds.
 - Inbox lifetime ⊆ data channel lifetime.  When the data channel
-  closes (cascade per §5.7 or BRC death per I3), the inbox closes
-  with it.
+  closes (last-producer-DEREG cascade per §5.7.2 or BRC death per
+  I3), the inbox closes with it.
 
 This collapses inbox into the same single-gate model as data:
 broker decides (at REG time, for the data channel); inbox enforces
@@ -1651,9 +1651,15 @@ review; this section keeps only what's still genuinely open.
   (§2.1 non-goal).  Operator workflow: re-`--keygen`, redistribute
   the new `.pub`, restart the role.  CURVE per-session ephemeral
   keys provide automatic forward secrecy at the transport layer.
-- **`CHANNEL_AUTH_UPDATE` ordering.**  Resolved in §6.5: sync ACK
-  required on `allowlist_add` before broker returns
-  `CONSUMER_REG_ACK`; `allowlist_remove` is best-effort.
+- **`CHANNEL_AUTH_UPDATE` ordering + fan-in failure semantics
+  ("Q1").**  Resolved in §6.5 (skip-disconnected lock-in,
+  2026-05-28): on `allowlist_add` broker pushes to currently
+  `kLive` producers, waits up to `push_ack_timeout_ms` per ACK,
+  skips non-responders (they re-sync via REG_ACK.initial_allowlist
+  on reconnect); if zero ACK → `CHANNEL_NOT_READY{reason="no_live_producer"}`.
+  On `allowlist_remove` best-effort to all `kLive`.
+  `ALLOWLIST_PUSH_FAILED` error code RETIRED — partial-failure
+  is the normal case under the skip-disconnected model.
 - **SHM revocation of already-attached consumer.**  Resolved per I5:
   trusted for session lifetime; revocation is forward-looking
   (no new attaches from removed pubkey).  Matches ZMQ semantics.
@@ -1671,7 +1677,7 @@ review; this section keeps only what's still genuinely open.
 
 ## 14. Updates to other HEPs
 
-This HEP requires synchronized updates to three sibling HEPs. The
+This HEP requires synchronized updates to four sibling HEPs. The
 updates are minimal — pointers / scope clarifications, not redesign.
 
 ### 14.1 HEP-CORE-0021 (ZMQ Endpoint Registry)
@@ -1727,13 +1733,36 @@ updates are minimal — pointers / scope clarifications, not redesign.
 - **§6 Complete Startup Sequence** — integrate HEP-0036 §10 sequence
   diagram into the role's overall startup picture.
 
+### 14.4 HEP-CORE-0017 (Pipeline Architecture)
+
+Updated in lock-step with HEP-0036 (commit `0ade2394`, 2026-05-28):
+
+- **§3.3 ZmqQueue — Dynamic peer membership** — new subsection
+  defining `ProducerPeer` struct, `RxQueueOptions::producer_peers`
+  vector (replaces single `zmq_node_endpoint` for ZMQ transport),
+  and `ZmqQueue::add_producer_peer` / `remove_producer_peer` public
+  methods.  Pattern-neutral on bind/connect direction (queue-
+  internal choice).  Cross-references HEP-0036 §6.4 (`producers[]`
+  array) and §3 I9 (three-tier separation).
+- **§4.6.1 Dynamic membership under HEP-CORE-0036** — new
+  subsection documenting the broker → framework → queue → script
+  flow.  Broker emits channel-event broadcast (HEP-CORE-0033 §12,
+  no new wire messages); framework calls
+  `queue.add_producer_peer` / `remove_producer_peer`; ZmqQueue
+  handles transport ops; script sees only the queue read API.
+- Implementation work tracked under task #103.
+
 ---
 
 ## 15. References
 
+- HEP-CORE-0017 — Pipeline Architecture (`QueueReader` / `QueueWriter`
+  / `ZmqQueue` / `ShmQueue` abstractions; §3.3 dynamic peer
+  membership; §4.6 Fan-In Pipeline; §4.6.1 HEP-0036 integration).
 - HEP-CORE-0021 — ZMQ Endpoint Registry (endpoint discovery; per-producer scope).
 - HEP-CORE-0035 — Hub-Role Authentication and Federation Trust (broker ZAP + pubkey index).
-- HEP-CORE-0023 — Startup Coordination (presence FSM).
+- HEP-CORE-0023 — Startup Coordination (presence FSM; channel-event broadcasts).
+- HEP-CORE-0033 — Hub Character (§12 event family).
 - HEP-CORE-0007 §12 — Wire format / message categories / error code taxonomy.
 - HEP-CORE-0002 — DataBlock SHM (existing shared_secret attach mechanism).
 - HEP-CORE-0022 — Hub Federation Broadcast (cross-hub relay for allowlist updates).
