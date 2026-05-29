@@ -764,6 +764,7 @@ struct HubState
 | `ShmBlockRef` | channel registration with SHM transport | channel name, block path; metrics collected via `collect_shm_info(channel)` at query time |
 | `SchemaRecord` | hub-startup (globals) / REG_REQ (private) / `_on_role_deregistered` (cascade evict) | owner_uid, schema_id, hash, packing, blds, registered_at — see HEP-CORE-0034 §4 |
 | `BrokerCounters` | broker internal | `RoleStateMetrics` (HEP-0023 §2.5), ctrl queue depth, byte counts, per-msg-type counts, **schema counters (HEP-0034 §11.3)** |
+| `ChannelAccessEntry` (per channel) | REG_REQ / CONSUMER_REG_REQ / CONSUMER_DEREG / heartbeat-timeout / CHANNEL_AUTH_UPDATE emitter | **NEW (HEP-CORE-0036 §4.1, locked 2026-05-28)**: `authorized_consumer_pubkeys` set (Z85) + `shm_secret` (SHM only).  Producer pubkey is NOT duplicated here — it lives on `ChannelEntry::producers[i].zmq_pubkey` (the existing Wave M2.5 per-producer field).  Held in `HubState::channel_access_index_` map keyed by channel name.  Owned by the broker handler thread (single-threaded dispatch); no external synchronization needed. |
 
 **Retention**: a `RoleEntry` whose presences are all `Disconnected`
 lingers `state.disconnected_grace_ms` (default 60s) before eviction
