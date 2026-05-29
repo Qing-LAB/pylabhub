@@ -1055,6 +1055,19 @@ Payload (CONSUMER_REG_ACK):
   heartbeat             object   Per-presence heartbeat configuration block — same
                                  shape as REG_ACK.heartbeat (HEP-CORE-0023 §2.5).
   correlation_id        string   (opt) Echo of request correlation_id if provided.
+  producers             array    (HEP-CORE-0036 §6.4, T1 locked 2026-05-28;
+                                 HEP-CORE-0021 §5.2 sibling-sync 2026-05-28)
+                                 Per-producer descriptors for the channel.  Length 1
+                                 for single-producer channels; length N for fan-in
+                                 (HEP-CORE-0023 §2.1.1 — ZMQ-only; SHM rejects N>1).
+                                 Each element: {role_uid, pubkey, endpoint}.
+                                 `pubkey` is the producer's IDENTITY pubkey (HEP-0036
+                                 I6 — broker mints NO data-plane CURVE keys); `endpoint`
+                                 is the producer's bound TCP endpoint (per HEP-0021 §16).
+                                 REPLACES the pre-HEP-0036 singular `zmq_endpoint` +
+                                 `producer_zmq_pubkey` shape (now retired wire fields).
+                                 For SHM transport: `producers[]` is absent; `shm_name`
+                                 + `shm_secret` carry the SHM attach info (HEP-0036 §6.4).
 
 role_type field (added 2026-03-10):
   role_type             string   (opt) "producer" | "consumer" | "processor"

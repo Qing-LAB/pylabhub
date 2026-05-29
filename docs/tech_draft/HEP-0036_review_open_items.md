@@ -326,3 +326,28 @@ attacker work.
   Set B PULL → queue propagation
 - `a4af9f98` — HEP-0036 §13/§14/§15 propagation: §14.4 (HEP-0017)
   added; §13.2 Q1 lock-in summary; §15 references updated
+- `06798daa` — T2-Q1 LOCKED: consumer Authorized is SYNCHRONOUS at
+  queue construction (auth was completed at REG / control plane);
+  removed socket-monitor framing from §4.3.2 / §5.2 / §8.3 / §10 /
+  §12 phases 0.7+4
+- `46e27acd` — tracker T2 RESOLVED + reorganized "order of
+  discussion remaining" list
+- `a4f8e623` — post-T2-lock sloppiness sweep: §4.3.1 FSM REG_ACK
+  annotation (producers[] array); §4.3.2 heading "both sides
+  synchronous"; dropped T2 R# internal labels in §6.6 + §12;
+  §10 lifetime intro updated to T2 LOCKED
+- `2b20e7fb` — sibling-HEP sync: propagated HEP-0036 T1/T2/I9/Q1
+  locks across HEP-0017, 0021, 0023, 0027, 0030, 0035 (added §14.5
+  HEP-0027 + §14.6 HEP-0030 to HEP-0036)
+- `0f82dc70` — post-sync sloppiness sweep: §14 "four → six sibling
+  HEPs"; §14.4 commit hash split; HEP-0021 §16.4 + HEP-0035
+  §4.1+§4.2 cross-ref clarifications
+
+### S5 — Sibling-HEP cross-reference audit
+**Status:** ✅ RESOLVED — coordinated cross-reference + body-text
+sweep across HEP-CORE-0007 §12 (CONSUMER_REG_ACK producers[]
+array), HEP-CORE-0017 §3.2 + §3.3 + §4.6.1, HEP-CORE-0021 §5.1
++ §5.2 + §16.4, HEP-CORE-0023 header + §2.1, HEP-CORE-0027
+header + §3.5, HEP-CORE-0030 header, HEP-CORE-0033 §8,
+HEP-CORE-0035 §4.1 + §4.2 + §6.  Task #104 tracks the code-
+level implementation work that follows the doc updates.

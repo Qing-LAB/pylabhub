@@ -708,6 +708,15 @@ When HEP-0035 ships:
   `policy/known_roles` mentions; the hub.json example in §6.2 drops
   `default_channel_policy` and shows `known_roles[].pubkey` as required;
   §15 Phase 1 marks the auth fields as deferred to HEP-0035.
+- **HEP-CORE-0036** (Authenticated Connection Establishment, locked
+  2026-05-28) builds Layer-3 on top of this HEP's Layers 1+2.
+  HEP-0036 is the AUTHORITATIVE source for data-plane peer
+  authentication (per-producer ZAP cache + `ChannelAccessIndex` +
+  `CHANNEL_AUTH_UPDATE` flow), inbox CURVE wiring (§9.3), band
+  CURVE inheritance (§9.4), and the role-side `RegistrationState`
+  FSM `Authorized` state (§4.3).  HEP-0035 stays scoped to Layer-1
+  (broker ROUTER ZAP) + Layer-2 (federation trust modes) +
+  §4.6 file-ACL discipline + §4.7 runtime key handling.
 
 ---
 
