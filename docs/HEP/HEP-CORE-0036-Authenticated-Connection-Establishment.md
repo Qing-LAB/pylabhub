@@ -255,10 +255,12 @@ Consequences:
 - Producer's PUSH socket binds with the role's identity pubkey
   (curve_server=1, secretkey + publickey both from `<role_uid>.sec`
   / `<role_uid>.pub`).
-- Consumer's PULL socket connects with the role's identity keypair;
-  `curve_serverkey` is the producer's identity pubkey (cached in the
-  hub's `PubkeyOrigin` index from HEP-0035 §4.2; delivered to the
-  consumer via `CONSUMER_REG_ACK`).
+- Consumer's rx queue (ZmqQueue PULL side; HEP-CORE-0017 §3.3)
+  uses the role's identity keypair for CURVE-client config;
+  `curve_serverkey` per peer is the producer's identity pubkey
+  (cached in the hub's `PubkeyOrigin` index from HEP-0035 §4.2;
+  delivered to the consumer via `CONSUMER_REG_ACK.producers[]` per
+  §6.4).
 - Per-channel revocation works at the **allowlist** layer, not the
   key layer: removing a consumer's pubkey from channel A's allowlist
   prevents future handshakes to A; the consumer keeps its identity
@@ -514,11 +516,12 @@ stateDiagram-v2
   `first_heartbeat_seen` mechanism).
 
 **Consumer presence — async trigger:**
-- PULL socket(s) configured with consumer's IDENTITY keypair (per
-  I6) AND each producer's identity pubkey (carried as
-  `producers[i].pubkey` in `CONSUMER_REG_ACK` per §6.4 — array of
-  1..N entries for single-producer / fan-in respectively).  One
-  PULL socket per producer.
+- Framework constructs the rx queue (`ZmqQueue` for ZMQ transport)
+  with consumer's IDENTITY keypair (per I6) and feeds the
+  `producers[]` array from `CONSUMER_REG_ACK` (per §6.4) into
+  `RxQueueOptions::producer_peers` (HEP-CORE-0017 §3.3).  ZmqQueue
+  handles the per-peer transport plumbing internally (per I9 —
+  framework + script never see individual PULL sockets).
 - `socket.connect(endpoint)` returns immediately; CURVE handshake
   runs in background.
 - ZMQ socket monitor observes `ZMQ_EVENT_HANDSHAKE_SUCCEEDED` →
@@ -671,8 +674,10 @@ index from HEP-0035 §4.2; mirrored onto
 `ChannelEntry::producers[i].zmq_pubkey` at each producer's REG
 time per §5.1).  CONSUMER_REG_ACK returns these as a
 `producers[]` array per §6.4 — length 1 for single-producer
-channels, length N for fan-in.  The consumer opens one PULL
-socket per array entry.
+channels, length N for fan-in.  The framework feeds the array
+into the consumer's rx queue (`RxQueueOptions::producer_peers`
+per HEP-CORE-0017 §3.3); ZmqQueue handles per-peer plumbing
+internally per I9.
 
 ```mermaid
 sequenceDiagram
@@ -709,10 +714,10 @@ sequenceDiagram
         Note over C: state Unregistered → RegRequestPending → Registered
 
         rect rgba(220,240,210,0.4)
-            Note over C: == setup_infrastructure_ ==<br/>(for each producer in CONSUMER_REG_ACK.producers[]:<br/>open one PULL socket — diagram shows single-producer case)
-            C->>MON: install socket monitor on PULL<br/>(events: HANDSHAKE_SUCCEEDED / FAILED_AUTH)
-            C->>C: configure PULL<br/>curve_serverkey = producers[0].pubkey<br/>curve_publickey = consumer's identity pubkey<br/>curve_secretkey = consumer's identity seckey
-            C->>P: socket.connect(producers[0].endpoint)<br/>(returns immediately;<br/>CURVE handshake runs in background)
+            Note over C: == setup_infrastructure_ ==<br/>(framework constructs rx queue with consumer's identity<br/>keypair + producers[] peer set — HEP-0017 §3.3.<br/>ZmqQueue handles per-peer plumbing internally per I9.)
+            C->>MON: install socket monitor on rx queue's PULL context<br/>(events: HANDSHAKE_SUCCEEDED / FAILED_AUTH per peer)
+            C->>C: ZmqQueue configures its internal PULL<br/>(curve config from RxQueueOptions; bind/connect direction<br/>is queue-internal — current code: connect per peer)
+            C->>P: ZmqQueue connects to producers[0].endpoint<br/>(CURVE handshake runs in background)
             P->>P: ZAP request: peer pubkey = consumer's identity<br/>→ cache hit → ALLOW
             P-->>MON: HANDSHAKE_SUCCEEDED event
             MON->>C: notify Authorized transition
@@ -809,7 +814,7 @@ sequenceDiagram
     participant C2 as Consumer #2 (continuing)
 
     Note over C1: Per I3, role stops data loop FIRST.
-    C1->>C1: data loop exits;<br/>close PULL socket
+    C1->>C1: data loop exits;<br/>framework tears down rx queue<br/>(ZmqQueue closes its PULL internally per I9)
     C1->>B: CONSUMER_DEREG_REQ {channel="lab.raw"}
     B->>B: c1_pub = zmq_msg_gets("User-Id") on BRC
     B->>AI: remove c1_pub from authorized_consumer_pubkeys
@@ -846,7 +851,7 @@ sequenceDiagram
     par On the consumer side (if process still alive)
         Note over C: BRC connection lost (heartbeat fail / TCP RST).
         C->>C: data loop guard observes<br/>brc_is_connected() == false → exit (per I3).
-        C->>C: close PULL socket (data session torn down by client side).
+        C->>C: framework tears down rx queue<br/>(ZmqQueue closes its PULL internally per I9; data session torn down).
     and On the broker side
         B->>B: heartbeat timeout fires for consumer C
         B->>AI: remove C's pubkey; clear C from presence table.
@@ -904,32 +909,82 @@ remains the underlying mechanism. The change is: the secret is
 config field `out_shm_secret` is retired; if present in old configs,
 it is logged as a warning and ignored.
 
-### 5.7 Producer deregistration — cascading consumer notification
+### 5.7 Producer deregistration — two cases under fan-in
+
+Per HEP-CORE-0023 §2.1.1 atomic-teardown semantics, the channel
+exists as long as ≥1 producer is registered.  A producer's DEREG
+therefore has two distinct cases depending on whether it is the
+LAST producer on the channel.
+
+#### 5.7.1 Per-producer DEREG (channel survives)
+
+When the departing producer is NOT the last, the channel stays
+alive.  The broker just removes that producer's `ProducerEntry`
+and emits the existing channel-event broadcast (HEP-CORE-0033 §12)
+so consumer-side frameworks can update their queues.  No
+`CHANNEL_CLOSING_NOTIFY` fires.
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant P as Producer
+    participant P1 as Producer #1 (leaving)
+    participant B as Broker
+    participant AI as ChannelAccessIndex
+    participant P2 as Producer #2 (continuing)
+    participant C1 as Consumer #1
+    participant C2 as Consumer #2
+
+    Note over P1: Per I3, P1 stops data loop FIRST + closes its PUSH.
+    P1->>B: DEREG_REQ {channel="lab.raw"}
+    B->>AI: remove P1 from ChannelEntry.producers[]<br/>(channel STAYS alive — P2 remains;<br/>ChannelAccessEntry allowlist unchanged)
+    B->>P2: channel-event broadcast: producer P1 left (HEP-0033 §12)
+    B->>C1: channel-event broadcast: producer P1 left (HEP-0033 §12)
+    B->>C2: channel-event broadcast: producer P1 left
+    B->>P1: DEREG_ACK
+    C1->>C1: framework calls rx_queue.remove_producer_peer(P1.uid)<br/>(per I9; HEP-0017 §3.3)
+    C2->>C2: same
+    Note over P2,C1: Data flow from P2 → C1,C2 continues uninterrupted
+```
+
+**Property** (per-producer DEREG): no consumer-side cascade.
+Existing CURVE sessions from departing producer naturally tear
+down via TCP RST; consumer-side frameworks call
+`queue.remove_producer_peer(P1.uid)` in response to the channel-
+event broadcast (HEP-0033 §12).  Script sees no churn — its data
+loop continues reading from the rx queue, which now pulls only
+from P2 internally.
+
+#### 5.7.2 Last-producer DEREG (channel teardown)
+
+When the departing producer IS the last (channel becomes empty),
+broker atomically tears the channel down per HEP-CORE-0023 §2.1.1
+and emits `CHANNEL_CLOSING_NOTIFY` to all consumers (existing
+mechanism, not new in HEP-0036).
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant P as Producer (last)
     participant B as Broker
     participant AI as ChannelAccessIndex
     participant C1 as Consumer #1
     participant C2 as Consumer #2
 
+    Note over P: Per I3, P stops data loop FIRST + closes its PUSH.
     P->>B: DEREG_REQ {channel="lab.raw"}
-    B->>AI: clear ChannelAccessEntry["lab.raw"]<br/>(allowlist + producer-pubkey-cache + endpoint all gone;<br/>no broker-held keys to clear per I6)
+    B->>AI: clear ChannelAccessEntry["lab.raw"]<br/>(allowlist + shm_secret gone;<br/>ChannelEntry teardown is atomic per HEP-0023 §2.1.1)
     B->>C1: CHANNEL_CLOSING_NOTIFY {channel="lab.raw"}
     B->>C2: CHANNEL_CLOSING_NOTIFY {channel="lab.raw"}
     B->>P: DEREG_ACK
-    P->>P: close PUSH socket
-    C1->>C1: transition Authorized → Deregistered;<br/>close PULL; data loop exits
+    C1->>C1: transition Authorized → Deregistered;<br/>framework tears down rx queue; data loop exits
     C2->>C2: same
 ```
 
-**Property**: cascade is broker-driven; no peer-to-peer signaling
-required. Consumers receive a single notification message via the
-existing CHANNEL_CLOSING_NOTIFY infrastructure (already implemented
-per HEP-CORE-0023). Their data-loop FSM transitions are local
-responses to that notification.
+**Property** (last-producer DEREG): cascade is broker-driven via
+the existing `CHANNEL_CLOSING_NOTIFY` infrastructure (HEP-CORE-0023).
+HEP-0036 does NOT add new wire messages for this case.  Consumer-
+side teardown is at the rx queue level (per I9); the script sees
+its data loop exit normally.
 
 ---
 
@@ -976,7 +1031,8 @@ NOT accepted — same model as SSH's `authorized_keys`.
 
 Per HEP-CORE-0023 §2.1.1, a ZMQ channel admits 1..N producers
 (fan-in).  CONSUMER_REG_ACK MUST return data for ALL admitted
-producers so the consumer can open one PULL socket per producer.
+producers so the consumer's framework can feed them into its rx
+queue (`RxQueueOptions::producer_peers` per HEP-CORE-0017 §3.3).
 Single-producer channels are the N=1 case with no special-cased
 wire shape.
 
@@ -1014,31 +1070,53 @@ CONSUMER_REG_ACK is the sibling change for the registration path;
 both should land coordinated as one wire-format migration.  See
 §14.1 for the HEP-0021 update list.
 
-### 6.5 `CHANNEL_AUTH_UPDATE` (broker → producer) — NEW message
+### 6.5 `CHANNEL_AUTH_UPDATE` (broker → each producer of the channel) — NEW message
 
-**Purpose**: keep the producer's local ZAP cache in sync with the
-broker's `ChannelAccessIndex.authorized_consumer_pubkeys`.  This
-message gates ONLY future CURVE handshakes from the affected pubkeys
-(I5).  It does NOT instruct the producer to disconnect any existing
-session; existing CURVE sessions are unaffected by allowlist updates.
+**Purpose**: keep EACH producer's local ZAP cache in sync with the
+broker's `ChannelAccessIndex.authorized_consumer_pubkeys`.  Under
+fan-in channels (HEP-CORE-0023 §2.1.1, HEP-CORE-0017 §4.6), the
+broker fans the same message out to every producer of the channel;
+each producer's ZAP independently enforces the shared
+channel-scope allowlist.  The message gates ONLY future CURVE
+handshakes from the affected pubkeys (I5).  It does NOT instruct
+producers to disconnect any existing session; existing CURVE
+sessions are unaffected by allowlist updates.
 
-Sync request-reply per HEP-CORE-0007 §12.2.1 — on `allowlist_add`
-the broker MUST receive `CHANNEL_AUTH_UPDATE_ACK` from the producer
-BEFORE returning `CONSUMER_REG_ACK` to the consumer, so that the
-consumer's first handshake attempt cannot race the cache install
-and be denied due to a stale cache.
+**Q1 lock-in (2026-05-28): skip-disconnected push semantics** —
+sync request-reply per HEP-CORE-0007 §12.2.1, with per-producer
+liveness gating:
 
-On `allowlist_remove` the broker may proceed without waiting for
-the ACK (the security guarantee is "no NEW handshake from the
-removed pubkey"; existing session continues regardless).
+- **On `allowlist_add`**: broker enumerates `ChannelEntry.producers[]`
+  filtered to `kLive` producers (HEP-CORE-0023 §2.6 channel
+  observable).  Pushes the update to each filtered producer and
+  waits up to `push_ack_timeout_ms` for each ACK (default 2000 ms;
+  configurable via `hub.broker.push_ack_timeout_ms` in hub.json).
+  Producers that don't ACK within the timeout are SKIPPED — broker
+  proceeds without them.  Skipped producers re-sync via
+  `REG_ACK.initial_allowlist` when they next REG_REQ after
+  reconnect.
+- **If zero filtered producers ACK** (catastrophic — every push
+  failed or no live producer existed): broker returns
+  `CHANNEL_NOT_READY{reason="no_live_producer"}` to the consumer
+  (see §6.6).  Consumer retries.
+- **Otherwise**: broker returns CONSUMER_REG_ACK with `producers[]`
+  populated to the ACK'd subset.  Consumer registration succeeds
+  with the producers that confirmed the cache update; producers
+  that joined later or recovered late are picked up via channel-
+  event broadcasts (HEP-CORE-0033 §12) per I9.
+
+- **On `allowlist_remove`**: broker pushes to all currently-`kLive`
+  producers best-effort (no ACK wait); the security guarantee is
+  "no NEW handshake from the removed pubkey," and skipped producers
+  re-sync on next REG_REQ.
 
 | Field | Type | Description |
 |---|---|---|
 | `channel_name` | string | Channel whose allowlist is updated. |
-| `allowlist_add` | array<string> | Consumer pubkeys to add to the producer's ZAP cache.  Producer must install these BEFORE ACKing. |
-| `allowlist_remove` | array<string> | Consumer pubkeys to remove from the producer's ZAP cache.  Best-effort; no effect on existing sessions. |
+| `allowlist_add` | array<string> | Consumer pubkeys to add to the receiving producer's ZAP cache.  Each producer must install these BEFORE ACKing. |
+| `allowlist_remove` | array<string> | Consumer pubkeys to remove from the receiving producer's ZAP cache.  Best-effort; no effect on existing sessions. |
 
-Producer responds with `CHANNEL_AUTH_UPDATE_ACK { status }`.
+Each receiving producer responds with `CHANNEL_AUTH_UPDATE_ACK { status }`.
 
 ### 6.6 Error codes
 
@@ -1047,18 +1125,24 @@ Added to HEP-CORE-0007 §12.4a Error Code Taxonomy:
 | Code | When |
 |---|---|
 | `UNAUTHORIZED_CONSUMER_PUBKEY` | CONSUMER_REG_REQ from a consumer whose CURVE-proved User-Id pubkey is not in `cfg.known_roles[]` (HEP-0035 §4.1 Layer 2).  Should be unreachable when Layer-1 ZAP is enforcing, but kept as defence-in-depth. |
-| `CHANNEL_NOT_READY` | CONSUMER_REG_REQ for a channel whose producer either (a) hasn't completed ENDPOINT_UPDATE (HEP-0021 §16.4 — unresolved port 0), OR (b) hasn't sent its first heartbeat (channel observable is `kRegistering`, T2 R6).  `reason` field distinguishes: `awaiting_endpoint` vs `awaiting_first_heartbeat` vs `heartbeat_stalled`. |
-| `ALLOWLIST_PUSH_FAILED` | Broker tried to push CHANNEL_AUTH_UPDATE to producer but didn't get ACK; consumer's CONSUMER_REG_REQ rolls back (broker removes the consumer from the allowlist). |
+| `CHANNEL_NOT_READY` | CONSUMER_REG_REQ for a channel that isn't admissible right now.  `reason` field distinguishes the cause: `awaiting_endpoint` (HEP-0021 §16.4 — first producer's port still 0), `awaiting_first_heartbeat` (no producer has reached `kLive`, T2 R6), `heartbeat_stalled` (producer presence in `kStalled` per HEP-CORE-0023 §2.6), or `no_live_producer` (Q1 skip-disconnected push exhausted — every targeted producer failed to ACK the allowlist update within `push_ack_timeout_ms`). |
 
 No `KEYPAIR_GENERATION_FAILED` error — broker mints no data-plane
-keys (per I6).
+keys (per I6).  No `ALLOWLIST_PUSH_FAILED` error — Q1 skip-
+disconnected semantics roll partial-success into the
+`CHANNEL_NOT_READY{reason="no_live_producer"}` catastrophic branch
+without a separate error code.
 
 ---
 
 ## 7. Producer-side ZAP handler
 
 The ZAP handler is the producer-side enforcement of allowlist
-membership.  It is a CACHE of the broker's decision (per I2),
+membership.  Each producer of a channel runs its own ZAP handler
+on its own ZMQ context; under fan-in (HEP-CORE-0017 §4.6) the N
+producers each independently enforce the SAME channel-scope
+allowlist that the broker pushes via `CHANNEL_AUTH_UPDATE` (§6.5).
+The ZAP handler is a CACHE of the broker's decision (per I2),
 not an independent admission authority.  Its only job: take a
 ZAP request, look up the consumer pubkey in the local cache,
 return ALLOW or DENY.
@@ -1177,7 +1261,7 @@ auth semantics:
 | Scenario | ZMQ behavior under HEP-0036 | SHM behavior under HEP-0036 |
 |---|---|---|
 | 1 producer, 1 consumer | Standard flow (§5.1 + §5.2). Single CURVE keypair, allowlist size 1. | Single shm_secret. Single consumer in admission allowlist. |
-| 1 producer, N consumers (fan-out) | Single keypair; allowlist grows incrementally per §5.3.  Each consumer's PULL socket independently CURVE-authenticated. | All N consumers receive the same shm_secret from broker; broker individually authorizes each via CONSUMER_REG check.  Revocation = broker stops releasing the secret on future REGs and removes the consumer from its presence table; already-attached consumers continue (per I5; trusted once authenticated). |
+| 1 producer, N consumers (fan-out) | Single keypair; allowlist grows incrementally per §5.3.  Each consumer's rx queue independently CURVE-authenticated against the producer's identity pubkey (queue handles per-peer plumbing per HEP-CORE-0017 §3.3 / I9). | All N consumers receive the same shm_secret from broker; broker individually authorizes each via CONSUMER_REG check.  Revocation = broker stops releasing the secret on future REGs and removes the consumer from its presence table; already-attached consumers continue (per I5; trusted once authenticated). |
 | N producers, 1 consumer (fan-in) | Each producer uses its OWN identity keypair on PUSH (no broker key minting per I6).  Broker stores each producer's identity pubkey on its own `ProducerEntry::zmq_pubkey` (HEP-0021 §16.3 already established per-producer endpoint scope on `ProducerEntry::zmq_node_endpoint`).  Channel-scope allowlist (`authorized_consumer_pubkeys`) gates which consumers can connect; each producer's ZAP independently enforces the same allowlist.  Consumer sends ONE CONSUMER_REG_REQ for the channel; broker returns the `producers[]` array (N elements) per §6.4; **the consumer's framework feeds the array into a SINGLE PULL `ZmqQueue` which handles the N-producer plumbing internally per HEP-CORE-0017 §3.3 / §4.6** (ZMQ PULL is M:1-capable natively; whether ZmqQueue connects-per-peer or binds-once is an internal choice — per I9 not exposed). | **Not supported on SHM** — already rejected with `MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM`. No HEP-0036 work needed. |
 | N producers, N consumers | ZMQ: each consumer sends ONE CONSUMER_REG_REQ per channel and receives the `producers[]` array (N elements) per §6.4.  Each consumer's framework feeds the array into its single rx `ZmqQueue` (per HEP-0017 §3.3 — queue handles N producers internally).  Broker pushes the channel allowlist update to EVERY producer's ZAP cache (sync per §6.5).  Each producer's PUSH uses its own identity keypair; consumers use their own identity keypair as PULL CURVE-client.  Totals: M+P broker registrations (M consumer + P producer); on the data plane, ONE queue per consumer presents the aggregated stream from all P producers — internal CURVE sessions are M×P but never exposed above the queue boundary per I9. | N/A — SHM doesn't support multi-producer. |
 
@@ -1331,30 +1415,29 @@ sequenceDiagram
             R->>DS: PUSH curve_server=1<br/>secretkey + publickey = IDENTITY keypair (per I6)
             R->>DS: bind(port=0) → resolved port
         else ZMQ consumer
-            Note over R: PULL socket configured AFTER REG_REQ<br/>(needs producer's identity pubkey from CONSUMER_REG_ACK)
+            Note over R: rx queue constructed AFTER REG_REQ<br/>(needs producers[] from CONSUMER_REG_ACK)
         else SHM consumer
-            Note over R: DataBlock attach AFTER REG_REQ<br/>(needs shm_secret from CONSUMER_REG_ACK)
+            Note over R: rx queue / DataBlock attach AFTER REG_REQ<br/>(needs shm_secret from CONSUMER_REG_ACK)
         end
     end
 
     rect rgba(200,220,255,0.4)
         Note over R: == REG_REQ phase ==
         R->>B: REG_REQ (no self-claimed pubkeys; broker reads<br/>identity via zmq_msg_gets("User-Id"))
-        B->>R: REG_ACK<br/>(producer: initial_allowlist=[];<br/>consumer: endpoint + producer's identity pubkey;<br/>SHM: shm_secret)
+        B->>R: REG_ACK<br/>(producer: initial_allowlist=[];<br/>consumer: producers[] array per §6.4;<br/>SHM consumer: shm_secret)
         Note over R: state Unregistered → RegRequestPending → Registered
     end
 
     rect rgba(220,240,210,0.4)
         Note over R: == setup_infrastructure_ (consumer-side; uses values from REG_ACK) ==
         alt ZMQ consumer
-            R->>MON: install socket monitor on PULL
-            R->>DS: PULL curve_serverkey = producer's identity pubkey<br/>publickey + secretkey = consumer's IDENTITY keypair (per I6)
-            R->>DS: connect(endpoint) — handshake async
-            DS-->>MON: HANDSHAKE_SUCCEEDED
+            R->>R: framework builds rx queue with<br/>RxQueueOptions::producer_peers = CONSUMER_REG_ACK.producers[]<br/>(HEP-CORE-0017 §3.3; ZmqQueue handles plumbing per I9)
+            R->>MON: install socket monitor at queue's PULL context
+            DS-->>MON: HANDSHAKE_SUCCEEDED (per peer)
             MON-->>R: notify
             Note over R: Authorized (async trigger via monitor)
         else SHM consumer
-            R->>DS: attach DataBlock with shm_secret → ACCEPT
+            R->>DS: rx queue attaches DataBlock with shm_secret → ACCEPT
             Note over R: Authorized (sync trigger)
         else ZMQ producer
             Note over R: Authorized (sync trigger, after REG_ACK + earlier bind)
@@ -1403,11 +1486,12 @@ sequenceDiagram
 2. **No data infrastructure without broker-issued artifacts.**  PUSH
    binds with the role's IDENTITY keypair (per I6) but its ZAP cache
    starts empty — no consumer can handshake until broker pushes the
-   first `CHANNEL_AUTH_UPDATE add`.  PULL socket(s) connect only with
-   broker-issued endpoints + producer identity pubkeys delivered as
-   the `producers[]` array in CONSUMER_REG_ACK (length 1 for
-   single-producer, length N for fan-in; one PULL per array
-   element).  SHM attaches only with broker-generated `shm_secret`.
+   first `CHANNEL_AUTH_UPDATE add` to that producer.  Consumer-side
+   rx queue is constructed only with broker-issued endpoints +
+   producer identity pubkeys delivered as the `producers[]` array
+   in CONSUMER_REG_ACK (length 1 for single-producer, length N for
+   fan-in; ZmqQueue handles per-peer plumbing internally per I9).
+   SHM rx queue attaches only with broker-generated `shm_secret`.
    Self-claimed identities in message bodies are not accepted.
 3. **No surprising data loops on partial failure.**  Hub-dead tears
    down data sockets BEFORE the role attempts to re-REG; the ZAP
@@ -1511,7 +1595,7 @@ eviction work from earlier draft scope per I5 (revocation is passive).
 | 1 | `ChannelAccessIndex` skeleton in HubState.  Broker creates entries on REG_REQ; stores allowlist + producer's identity pubkey (looked up from `PubkeyOrigin` index via `zmq_msg_gets("User-Id")`).  **No data-plane keypair minting** — per T1 / I6, broker holds no data-plane secrets. | Replaces the earlier draft's "broker mints keypair on REG_REQ" with allowlist-only management. |
 | 2 | Producer side: install ZAP handler on ZMQ context BEFORE binding PUSH (per §5.1 ordering); PUSH configured `curve_server=1` with ROLE'S IDENTITY KEYPAIR (loaded from `<role>.sec` per HEP-0035 §4.6 + §4.7).  ZAP cache starts empty; all incoming handshakes DENY until broker pushes allowlist. | No new key distribution needed — producer already has its identity keypair from startup. |
 | 3 | Broker side: on CONSUMER_REG_REQ, derive consumer pubkey via `zmq_msg_gets("User-Id")` (NOT from message body — no self-claims); check I1 cond 2; on pass, add to allowlist; emit `CHANNEL_AUTH_UPDATE add` sync to EVERY producer of the channel (wait for ACKs per §6.5); return CONSUMER_REG_ACK with `producers[]` array per §6.4 — iterate `ChannelEntry::producers[]` to populate `(role_uid, pubkey, endpoint)` per element. | Closes the loop: consumer can now connect after auth.  Per-handshake race resolved by sync-before-ACK ordering.  Same wire shape works for single-producer (length 1) and fan-in (length N). |
-| 4 | Consumer side: read `producers[]` array from CONSUMER_REG_ACK; for each element, configure one PULL socket with `curve_serverkey` = `producers[i].pubkey` AND own identity keypair as `curve_publickey`/`curve_secretkey`; install ZMQ socket monitor for `HANDSHAKE_SUCCEEDED`/`HANDSHAKE_FAILED_AUTH` events per PULL (T2 R3); data-loop gate on `Authorized` state per §8.  Single-producer = 1 PULL; fan-in = N PULLs. | End-to-end ZMQ auth working for both topologies; auth failures surface immediately via monitor rather than via heartbeat timeout.  Coordinates with task #94 / HEP-0021 §16.5 (per-producer DISC_REQ_ACK array shape — same migration family). |
+| 4 | Consumer side: read `producers[]` array from CONSUMER_REG_ACK; framework feeds the array into `RxQueueOptions::producer_peers` (per HEP-CORE-0017 §3.3); ZmqQueue handles per-peer transport plumbing internally (curve config per peer, ZAP, fair-queue) per I9.  Install ZMQ socket monitor at the queue's PULL context for `HANDSHAKE_SUCCEEDED`/`HANDSHAKE_FAILED_AUTH` events per peer (T2 R3); data-loop gate on `Authorized` state per §8.  Uniform shape for single-producer and fan-in — script sees one rx queue regardless. | End-to-end ZMQ auth working for both topologies; auth failures surface immediately via monitor rather than via heartbeat timeout.  Coordinates with task #94 / HEP-0021 §16.5 (per-producer DISC_REQ_ACK array shape — same migration family) and task #103 (ZmqQueue dynamic peer API). |
 | 5 | SHM parallel: broker generates `shm_secret` per channel (uint64 guard token; unrelated to CURVE per I6); `CONSUMER_REG_ACK` releases it only on auth.  Retire config-supplied `out_shm_secret`. | SHM secret stays broker-generated because the DataBlock attach mechanism (HEP-0002) is secret-based, not CURVE-based. |
 | 6 | Passive revocation paths: on CONSUMER_DEREG, on heartbeat timeout, on hub-dead cascade — broker emits `CHANNEL_AUTH_UPDATE remove` (best-effort) and removes from allowlist.  Role-side hub-dead handling (T2 R4 / R5): `Authorized → Unregistered` after `hub_dead_grace`; tear down data sockets + clear ZAP cache; await BRC reconnect.  No force-disconnect (per I5). | Closes lifetime-alignment loop; no new socket-level APIs. |
 | 7 | **Multi-producer fan-in VERIFICATION** (no new code).  Phases 3-4 already produce the uniform `producers[]` array wire shape that handles 1..N producers identically.  Phase 7 is the L3 end-to-end test for the fan-in case: spawn 2 producers + 1 consumer on the same ZMQ channel; verify consumer receives data from both producers via M×P CURVE sessions.  Validates that the array shape, allowlist propagation to each producer's ZAP cache, and per-PULL handshake monitoring all work for N>1. | Sanity-check, not new functionality.  Coordinates with task #94 / HEP-0021 §16.5 DISC_REQ_ACK array migration (verification scope). |
