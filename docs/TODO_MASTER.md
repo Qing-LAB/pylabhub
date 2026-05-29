@@ -30,7 +30,7 @@ Remaining production gap: HEP-CORE-0035 auth (task #74).
 | Item | Status | Tracker |
 |---|---|---|
 | HEP-CORE-0035 auth implementation (7-phase plan in HEP-0035 §8) | 🚧 NOT IMPLEMENTED — `RoleIdentityPolicy` is a placeholder; CURVE is mandatory but admission policy not yet implemented | task #74 |
-| HEP-CORE-0036 authenticated connection establishment | ✅ DESIGN FINAL (2026-05-28; T1+T2+T3+T5+I9+all D-tier+M-tier locked).  🚧 IMPLEMENTATION NOT STARTED.  Depends on HEP-0035 (#74) + key-file ACL (#101) + runtime key hardening (#102).  Then #103 (ZmqQueue dynamic peers) + #104 (sibling-HEP code updates) finish the auth wiring; #105 is the deferred federation effort. | tasks #74, #101, #102, #103, #104, #105 |
+| HEP-CORE-0036 authenticated connection establishment | ✅ DESIGN FINAL (2026-05-28; T1+T2+T3+T5+I9+all D-tier+M-tier locked).  🚧 IMPLEMENTATION NOT STARTED.  Chain: #101 + #102 (foundations) → #74 (now subsumes HEP-CORE-0035 §4.8 known-roles-in-vault + `--add-known-role`/`--revoke-known-role`/`--list-known-roles` CLI) → #94 + #103 → #104 → #106 (HEP-CORE-0038 script-vault) → done.  #105 federation parallel + non-blocking.  **Implementation guideline:** `docs/tech_draft/DRAFT_HEP-0036-implementation-guideline_2026-05.md`. | tasks #74, #101, #102, #103, #104, #105, #106 |
 
 ### Label hygiene — read before reading any "M*" label below
 
@@ -132,19 +132,19 @@ the demo inventory + manifest schema.
   (`README_Scripting_{Python,Lua,Native}.md`).
 - **#73** HEP-CORE-0033 Phase 10 doc closure.
 
-**P3 — HEP-0036 auth implementation chain (production-readiness blocker)**:
-- **#101** HEP-CORE-0035 §4.6 key-file ACL discipline (M; independent
-  of #74; can ship first).
-- **#102** HEP-CORE-0035 §4.7 runtime key handling (M; independent
-  of #101 + #74).
-- **#74** HEP-CORE-0035 auth implementation (L; the gate — HEP-0036
-  Phase 0 prerequisite).
-- **#103** HEP-CORE-0017 §3.3 + HEP-0036 implementation: ZmqQueue
-  dynamic peer API + `RxQueueOptions::producer_peers` (M-L; lands
-  coordinated with #94 per HEP-0036 §14.1).
-- **#104** Sibling-HEP code updates per HEP-0036 §14 (L; multi-area).
-- **#105** Federation protocol design (L+; separate effort; NOT
-  blocking single-hub auth shipment).
+**P3 — HEP-0036 auth implementation chain** (production-readiness
+blocker; detailed plan in
+`docs/tech_draft/DRAFT_HEP-0036-implementation-guideline_2026-05.md`):
+- **#101** key-file ACL discipline (M; indep of #74; ship first).
+- **#102** runtime key handling (M; indep of #101 + #74).
+- **#74** HEP-0035 auth impl (L; the gate).  Subsumes HEP-0035 §4.8
+  known-roles-in-vault + `--add-known-role`/`--revoke-known-role`/
+  `--list-known-roles` CLI.
+- **#103 + #94** ZmqQueue dyn peer API + HEP-0021 §16.5 ephemeral
+  binding (M-L; land together per HEP-0036 §14.1).
+- **#104** Sibling-HEP code updates per HEP-0036 §14 (L).
+- **#106** HEP-CORE-0038 script-vault keystore (L; after #104).
+- **#105** Federation / HEP-CORE-0037 (L+; not blocking).
 
 **P4 — long tail (interleave when context permits)**:
 - **#66** S1 Phase B `ZmqQueue + InboxQueue` migrate to

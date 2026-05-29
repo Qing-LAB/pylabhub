@@ -423,16 +423,32 @@ VERIFIES modes and refuses to start with a clear, actionable error.
 
 ### 4.6.1 Required modes (set by `--keygen` / `--init`)
 
+The pylabhub vault is the canonical home for encrypted-at-rest
+secrets — it adds password-derived encryption on top of the file-mode
+discipline below.  The vault format and `vault/` directory are
+designed for extension (see §4.8 for known-roles allowlist storage
+inside the vault; HEP-CORE-0038 for script-managed per-role secrets).
+The `0700` mode on `vault/` therefore applies to the whole vault
+scope, not just current contents.
+
 | Created by | Path | Mode | Owner |
 |---|---|---|---|
-| `plh_hub --keygen` | `<hub_uid>.sec` | `0600` | current user |
-| `plh_hub --keygen` | `<hub_uid>.pub` | `0644` (public; distributable) | current user |
-| `plh_hub --init` | hub keystore directory (e.g. `hub_keys/`) | `0700` | current user |
-| `plh_hub --init` | `known_roles/` directory | `0750` (owner write; optional group read) | current user |
-| `plh_role --keygen` | `<role_uid>.sec` | `0600` | current user |
-| `plh_role --keygen` | `<role_uid>.pub` | `0644` | current user |
-| `plh_role --init` | role config directory | `0700` | current user |
-| `plh_role --init` | locally-copied `<hub_uid>.pub` | `0644` | current user |
+| `plh_hub --keygen` | `<hub_dir>/vault/hub.vault` (encrypted: broker CURVE keypair + admin token + `known_roles` per §4.8; password-derived key) | `0600` | current user |
+| `plh_hub --keygen` | `<hub_dir>/hub.pubkey` (plaintext broker CURVE pubkey; operator-distributable) | `0644` | current user |
+| `plh_hub --init` | `<hub_dir>/vault/` (encrypted-secrets directory) | `0700` | current user |
+| `plh_hub --init` | `<hub_dir>/` (hub config directory) | `0700` | current user |
+| `plh_role --keygen` | `<role_dir>/vault/<role_uid>.vault` (encrypted: role CURVE keypair + per HEP-CORE-0038 a `scripts` map for script-managed secrets; password-derived key) | `0600` | current user |
+| `plh_role --init` | `<role_dir>/vault/` | `0700` | current user |
+| `plh_role --init` | `<role_dir>/` (role config directory) | `0700` | current user |
+| `plh_role --init` | `<role_dir>/hub.pubkey` (locally-cached hub pubkey copy; plaintext) | `0644` | current user |
+
+**No `known_roles/` directory.** Earlier drafts of this HEP listed a
+plaintext `<hub_dir>/known_roles/` directory holding one `.pub` file
+per authorized role.  That design was rejected because file-mode
+discipline alone cannot protect the allowlist against an attacker
+who obtains file-write on the hub directory.  Allowlist storage
+moves INSIDE the vault per §4.8.  The vault's password+mode
+protection composes; neither alone is sufficient.
 
 Implementation: use `open(O_CREAT | O_EXCL, 0600)` followed by an
 explicit `fchmod(fd, 0600)` at write time.  Do NOT rely on the
@@ -443,31 +459,36 @@ process `umask`.
 Before reading any secret material, every binary MUST run:
 
 ```
-check <uid>.sec
-  - (st_mode & 0077) != 0       → ERROR  "secret key file <path> is
+check vault file (hub.vault / <role_uid>.vault)
+  - (st_mode & 0077) != 0       → ERROR  "vault file <path> is
                                   group/world-accessible (mode 0NNN).
                                   Run: chmod 0600 <path>"
-  - st_uid != geteuid()         → ERROR  "secret key file <path> owned
+  - st_uid != geteuid()         → ERROR  "vault file <path> owned
                                   by uid N; expected uid M.  Check file
                                   ownership."
-  - parent directory (st_mode & 0077) != 0
+  - parent dir (vault/) (st_mode & 0077) != 0
                                 → WARN   (parent dir leak is recoverable;
                                   some operators want group-readable
                                   parents for shared host setups)
 
-check known_roles/ (hub only)
-  - (st_mode & 0002) != 0       → ERROR  "allowlist directory <path> is
-                                  world-writable.  Run: chmod 0750 <path>"
+check vault/ directory
+  - (st_mode & 0077) != 0       → ERROR  "vault directory <path> is
+                                  group/world-accessible.  Run:
+                                  chmod 0700 <path>"
   - st_uid != geteuid()         → ERROR
 
 check hub.json / role config
   - (st_mode & 0002) != 0       → ERROR  (world-writable config = config
                                   injection)
-  - (st_mode & 0040) != 0 AND file references a keyfile path
+  - (st_mode & 0040) != 0 AND file references a vault path
                                 → WARN
 
-# .pub files: NO permission check — public keys are intentionally
-# distributable and may legitimately be group-/world-readable.
+# Public key files (hub.pubkey, cached role pubkey copies): NO
+# permission check — public keys are intentionally distributable and
+# may legitimately be group-/world-readable.
+#
+# No plaintext known_roles/ directory exists; the allowlist lives
+# inside the vault (§4.8) and is gated by the master password.
 ```
 
 Error messages MUST name the offending path, the observed mode, the
@@ -500,9 +521,10 @@ This requirement layers on top of existing related work:
   capabilities) — not addressed.  Operators in hardened environments
   may layer those on top.  HEP-0035 enforces the baseline UNIX mode
   bits; richer ACL schemes are operator-discretion.
-- Encrypted-at-rest secret files (e.g., passphrase-encrypted `.sec`).
-  HEP-CORE-0024 §11 already has a passphrase-unlock flow; §4.6 only
-  governs the on-disk file ACLs, not the cipher state of the contents.
+- Cipher details for the encryption-at-rest layer are out of §4.6
+  scope (covered by `src/utils/service/vault_crypto.{hpp,cpp}` —
+  Argon2id KDF + XSalsa20-Poly1305 secretbox); §4.6 governs only
+  the on-disk file ACLs that protect the vault container.
 
 ---
 
@@ -667,6 +689,98 @@ before the check.  Canonical order in both binaries' `main()`:
   after disabling core dumps; assert no core file is produced
   (POSIX) or no minidump appears in `%LOCALAPPDATA%\CrashDumps`
   (Windows).
+
+---
+
+## 4.8 Known-roles allowlist storage (in vault)
+
+The hub's `known_roles[]` allowlist — the set of CURVE public keys
+authorized to register on this hub (Layer-1 ZAP gate per §4.1) — is
+stored INSIDE the hub vault, NOT as plaintext `.pub` files in a
+dedicated directory.
+
+### 4.8.1 Why in the vault
+
+File-permission discipline alone does not protect the allowlist
+against an attacker who obtains file-write on the hub directory: that
+attacker can drop arbitrary `.pub` files to grant themselves
+admission.  Storing the allowlist inside the vault adds
+encryption-at-rest — modifying the allowlist requires the master
+password, even with full filesystem access.  The two protections
+compose; neither alone is sufficient against a determined local
+attacker.
+
+### 4.8.2 Storage layout
+
+The hub vault payload (`HubVault` JSON; HEP-CORE-0035 §4.6 + the file
+header at `src/include/utils/hub_vault.hpp`) gains a new top-level
+key `known_roles`:
+
+```json
+{
+  "broker":      { "curve_secret_key": "...", "curve_public_key": "..." },
+  "admin":       { "token": "..." },
+  "known_roles": {
+    "prod.sensor1.uid3a7f2b1c": "<Z85 40-char pubkey>",
+    "cons.logger.uid8c4e1f9a":  "<Z85 40-char pubkey>"
+  }
+}
+```
+
+At broker startup, `BrokerService` reads `known_roles` from the
+decrypted vault payload and populates its in-memory Layer-1 ZAP
+allowlist (§4.1).
+
+### 4.8.3 Operator CLI
+
+Three new `plh_hub` CLI commands manage allowlist contents.  All
+three first run the §4.6.2 file-ACL discipline check, then prompt for
+the master password (or read `PYLABHUB_HUB_PASSWORD` env var), open
+the vault, mutate the payload, and re-encrypt.
+
+| Command | Action |
+|---|---|
+| `plh_hub --config <hub.json> --add-known-role <role.pub>` | Read CURVE pubkey from `<role.pub>` (40-char Z85).  role_uid is parsed from the `.pub` filename stem (e.g. `prod.sensor1.uid3a7f2b1c.pub` → `prod.sensor1.uid3a7f2b1c`), or supplied via `--role-uid <uid>`.  Vault gains an entry; if `role_uid` already exists, the command refuses unless `--force` is also passed (prevents accidental rotation). |
+| `plh_hub --config <hub.json> --revoke-known-role <role_uid>` | Remove the entry by `role_uid`.  Refuses if uid not present (warns rather than errors). |
+| `plh_hub --config <hub.json> --list-known-roles` | Print `(role_uid, pubkey_fingerprint)` table to stdout.  Fingerprint is `BLAKE2b-128(pubkey)` rendered as Z85 (24 chars), not the raw pubkey — keeps stdout from leaking sensitive material if redirected.  Exit code 0 = at least one entry; 1 = empty allowlist. |
+
+### 4.8.4 Bootstrap
+
+- `plh_hub --keygen` creates the vault with an empty `known_roles`
+  map (`{}`).  The hub starts up with no admitted roles; every
+  `REG_REQ` is rejected by Layer-1 ZAP until the operator adds at
+  least one.
+- Operator runs `--add-known-role` for each authorized role before
+  the role binary attempts to connect.
+- The role-side workflow is unchanged: each role still has its own
+  vault holding its CURVE keypair; the operator distributes the
+  role's `.pub` (extracted via `plh_role --keygen` output or the
+  `<role_dir>/vault/<role_uid>.pub` file the role writes alongside its
+  vault on first keygen) to the hub operator via the operator's
+  existing channel (manual, signed messaging, etc.).
+
+### 4.8.5 Hot reload (running hub)
+
+A running `plh_hub` holds the allowlist in memory.  CLI commands that
+mutate the vault MUST signal the running hub (admin RPC reload
+command, HEP-CORE-0033 §11.2) to re-read its allowlist from the
+freshly-rewritten vault.  Detection: the CLI command checks for the
+hub PID file (`<hub_dir>/run/plh_hub.pid` per HEP-CORE-0033 §7) and,
+if present, sends the reload RPC.  If absent, the next hub startup
+picks up the new contents.
+
+### 4.8.6 Out of scope
+
+- Federation-delegated role propagation (HEP-CORE-0035 §4.4
+  `HUB_PEER_HELLO.roles[]` augmentation) is unaffected.  The
+  operator-managed `known_roles[]` is per-hub local truth; federation
+  extends it at runtime with peer-attested entries that are NOT
+  written to the local vault (they're held in `PeerEntry.delegated_roles`
+  in memory per §4.4).
+- Bulk-import of an existing OpenSSH `authorized_keys` file is not
+  supported; pylabhub pubkeys are CURVE Z85, not OpenSSH format.
+- Audit logging of allowlist mutations is covered separately under
+  §7 audit-log scope (when that question resolves).
 
 ---
 

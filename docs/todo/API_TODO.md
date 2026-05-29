@@ -126,6 +126,44 @@ single-area change.
   CONSUMER_REG_REQ → remote producer.  L+ (separate effort; not
   blocking single-hub auth shipment).
 
+- **#106** — **HEP-CORE-0038 + impl: script-accessible vault
+  keystore (`api.vault_save` / `api.vault_load`).**  Per-role
+  isolated encrypted KV store for script-managed secrets (external
+  API tokens, OAuth refresh tokens, MQTT broker passwords, license
+  keys).  Filed 2026-05-29.  HEP-CORE-0038 stub at
+  `docs/HEP/HEP-CORE-0038-Script-Accessible-Vault-Keystore.md`
+  records design intent + open questions; detailed design happens
+  when picked up.
+
+  Scope: extend `RoleVault` payload with a `scripts` map encrypted
+  alongside the CURVE keypair; add two new script-callable methods
+  wired through Python + Lua + Native engines (HEP-CORE-0011
+  surface); per-role isolation (a role can only read/write its own
+  store).  Out of MVP scope: cross-role access, audit logging,
+  quotas.
+
+  Tests: L2 RoleVault extended payload + schema migration; L3
+  cross-engine API parity; L4 demo of a producer persisting a fake
+  external-API token across restarts.
+
+  Depends-on: #104 (HEP-0036 sibling-HEP code updates) shipping
+  first.  Independent of #105 (federation).  L.
+
+  Position in chain (per
+  `docs/tech_draft/DRAFT_HEP-0036-implementation-guideline_2026-05.md`
+  §4): #101+#102 → #74 → #94+#103 → #104 → #106 → done.
+
+> **Note on #74 (HEP-0035 auth implementation) expansion 2026-05-29.**
+> #74 now subsumes HEP-CORE-0035 §4.8 (known-roles allowlist stored
+> inside the hub vault) and the operator-facing CLI commands
+> `plh_hub --add-known-role <role.pub>` /
+> `--revoke-known-role <role_uid>` / `--list-known-roles`.  Rationale:
+> file-permission discipline alone does not protect the allowlist
+> against file-write attacks; storing the allowlist inside the
+> encrypted vault adds password-gated integrity.  CLI commands
+> compose with the existing master-password unlock flow and emit
+> OpenSSH-style errors on ACL violations.
+
 - **B4 (#79)** — `plh_role --init` template emits
   `out_shm_secret/in_shm_secret = 0` (sentinel "no SHM");
   `build_tx_queue` silently skips SHM and falls through to ZMQ.
