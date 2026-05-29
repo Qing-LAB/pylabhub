@@ -106,15 +106,6 @@ The following are deliberately OUT of HEP-0036 scope:
   forward secrecy automatically — past sessions stay
   un-decryptable even if a long-term key is later compromised.
 - **Defense against a compromised broker.**  See I8 trust model.
-- **Per-producer ACL within a channel.**  Authorization is
-  channel-scope only: a consumer admitted to channel X may
-  subscribe to ANY producer of X (today's design treats all
-  producers of a channel as equivalent peers).  Per-producer ACL
-  (consumer C may read from P1 but not P2 within channel X) is
-  NOT supported.  Operators with per-producer gating needs should
-  split the workload into separate channels.  No use case has
-  been identified that this baseline cannot address; revisit if a
-  concrete scenario emerges.
 
 ---
 
