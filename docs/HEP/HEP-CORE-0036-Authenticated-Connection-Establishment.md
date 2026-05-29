@@ -1673,7 +1673,7 @@ review; this section keeps only what's still genuinely open.
 
 ## 14. Updates to other HEPs
 
-This HEP requires synchronized updates to six sibling HEPs. The
+This HEP requires synchronized updates to eight sibling HEPs. The
 updates are minimal — pointers / scope clarifications, not redesign.
 
 ### 14.1 HEP-CORE-0021 (ZMQ Endpoint Registry)
@@ -1779,6 +1779,33 @@ Updated in lock-step with HEP-0036 across two commits:
   Layer 1 ZAP at the broker ROUTER gates band socket handshakes by
   the same mechanism that gates BRC).  Bands use the role's
   identity keypair; no per-band CURVE keypair.
+
+### 14.7 HEP-CORE-0007 (Protocol Reference)
+
+Updated 2026-05-28 commit `187c71d9`:
+
+- **§12 CONSUMER_REG_REQ/ACK schema** — added `producers[]` field
+  to the CONSUMER_REG_ACK payload definition per HEP-0036 §6.4
+  (T1 lock-in) + HEP-0021 §5.2 (sibling-sync).  Each element:
+  `{role_uid, pubkey, endpoint}` where `pubkey` is the producer's
+  IDENTITY pubkey (HEP-0036 I6 — broker mints NO data-plane CURVE
+  keys) and `endpoint` is the producer's bound TCP endpoint (per
+  HEP-0021 §16).  Notes that this REPLACES the pre-HEP-0036
+  singular `zmq_endpoint` + `producer_zmq_pubkey` shape and that
+  SHM transport keeps `shm_name` + `shm_secret` (no `producers[]`).
+
+### 14.8 HEP-CORE-0033 (Hub Character)
+
+Updated 2026-05-28 commit `187c71d9`:
+
+- **§8 HubState entry types** — added `ChannelAccessEntry` row to
+  the table.  Notes the struct is NEW per HEP-0036 §4.1; fields are
+  `authorized_consumer_pubkeys` (Z85 set) + `shm_secret` (SHM only).
+  Explicitly states the producer pubkey is NOT duplicated here —
+  lives on `ChannelEntry::producers[i].zmq_pubkey` (existing Wave
+  M2.5 per-producer field).  Held in `HubState::channel_access_index_`
+  map; owned by the broker handler thread (single-threaded dispatch,
+  no external synchronization needed).
 
 ---
 
