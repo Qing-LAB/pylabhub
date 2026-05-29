@@ -1609,26 +1609,32 @@ review; this section keeps only what's still genuinely open.
 
 ### 13.1 Still open
 
-1. **Federation (HEP-0022 cross-hub).** When Hub-A's consumer
-   registers on a channel hosted by Hub-B, the allowlist push must
-   reach Hub-B's producer.  Today HEP-0022 uses `HUB_RELAY_MSG`
-   broker↔broker for unsolicited relay; HEP-0036 needs to ensure
-   `CHANNEL_AUTH_UPDATE` rides this path.  HEP-0035 §4.3
-   `federation_trust_mode` (values: `local_only` /
-   `peer_delegated` / `peer_announced`) gates whether Hub-B
-   accepts a cross-hub registration in the first place.  Open
-   sub-question: under `peer_delegated`, HEP-0035 already
-   requires the peer hub's `hub.json` to have listed the role via
-   `HUB_PEER_HELLO` augmentation (§4.4) — does HEP-0036 need any
-   additional in-band carriage on the `CHANNEL_AUTH_UPDATE` itself
-   (e.g., to carry the consumer's identity pubkey to Hub-B's
-   producer's ZAP cache)?  This is the wire-shape decision to
-   make before implementing the cross-hub allowlist path.
-
-2. **Audit log shape.**  HEP-0035 §7 question 4 (audit logging
+1. **Audit log shape.**  HEP-0035 §7 question 4 (audit logging
    policy) covers Layer-1 + Layer-2 decisions; HEP-0036 adds Layer-3
    (data-plane CURVE accept/reject from ZAP).  Same logging policy
    should apply; coordinate with HEP-0035 implementation.
+
+> **Note on federation (deferred to a separate design effort):**
+> The MVP path for cross-hub allowlist propagation reuses the
+> existing HEP-0022 `HUB_RELAY_MSG` broker↔broker channel + the
+> HEP-0035 §4.3 `federation_trust_mode` gate + HEP-0035 §4.4
+> `HUB_PEER_HELLO.roles[]` peer-role augmentation.  Under that
+> baseline, Hub-B already knows Hub-A's consumer pubkey at peer-
+> handshake time, so the `CHANNEL_AUTH_UPDATE` Hub-B's broker pushes
+> to its own producer is locally-formed with no extra in-band wire
+> field.
+>
+> However, full cross-hub registration + communication is NOT
+> end-to-end verified in the codebase today; the dual-hub processor
+> test (L4 task #44) exercises broadcast relay + local-channel
+> dual attachment but not consumer-side cross-hub `REG_REQ` →
+> remote producer.  Federation needs its own detailed protocol
+> design + verification effort (channel-name → owning-hub
+> resolution, reverse `allowlist_remove` on consumer death,
+> `CONSUMER_DIED_NOTIFY` relay, multi-peer consistency model,
+> retry/backoff under partial peer reachability).  HEP-0036
+> deliberately scopes this out and inherits the MVP behavior the
+> existing machinery already provides.
 
 ### 13.2 Resolved (kept for traceability)
 

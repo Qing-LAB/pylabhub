@@ -131,14 +131,24 @@ scope" as the MVP default but reviews could revisit if a use
 case emerges.
 
 ### T5 — Federation CHANNEL_AUTH_UPDATE propagation (§13.1 Q1)
-**Status:** 🔄 OPEN — listed as "open question 1" in HEP-0036
-§13.1; not yet substantively discussed in review.
-**Question:** when Hub-A's consumer joins a channel hosted on Hub-B,
-how does Hub-B's producer's ZAP cache learn the consumer's pubkey?
-Hub-A relays via `HUB_RELAY_MSG`, or each hub maintains its own
-allowlist (consumer's pubkey must be in BOTH hubs' `known_roles[]`)?
-**Why it matters:** dual-hub processor (already in production) is
-the blocking use case.
+**Status:** ✅ RESOLVED (locked 2026-05-28; deferred to separate
+federation design effort).
+**Decision:** MVP inherits existing machinery — HEP-0022
+`HUB_RELAY_MSG` for broker↔broker carriage + HEP-0035 §4.3
+`federation_trust_mode` gate + HEP-0035 §4.4
+`HUB_PEER_HELLO.roles[]` peer-role augmentation.  Under
+`peer_delegated`/`peer_announced` Hub-B already knows Hub-A's
+consumer pubkey at peer-handshake time; `CHANNEL_AUTH_UPDATE` Hub-B
+pushes to its own producer is locally-formed with NO new in-band
+wire field.  HEP-0036 §13.1 contains a deferral note pointing at
+the future federation design effort.
+**Caveat:** end-to-end cross-hub `REG_REQ` → remote producer is
+NOT verified in the codebase today (L4 dual-hub processor test
+covers broadcast relay + local-channel dual attachment, not
+cross-hub registration).  Federation needs its own detailed
+protocol design + verification — tracked as a new pending task.
+**Where in HEP-0036:** §13.1 (replaced Q1 with deferral note +
+audit-log Q2 renumbered to Q1).
 
 ---
 
@@ -307,10 +317,9 @@ attacker work.
 
 1. **DP-Q3** — channel-scope vs per-producer ACL non-goal (one-line
    addition to §2.1).  Trivial.
-2. **T5** — federation allowlist propagation (cross-hub).
-3. **Sweep** M3 + M4 + M5 + M6.
+2. **Sweep** M3 + M4 + M5 + M6.
 
-(T1 ✅, T2 ✅, T3 ✅, T4 🟡 partial, I9 ✅, DP-Q1 ✅, DP-Q2 ✅, DP-Q4 ✅.)
+(T1 ✅, T2 ✅, T3 ✅, T4 🟡 partial, T5 ✅, I9 ✅, DP-Q1 ✅, DP-Q2 ✅, DP-Q4 ✅.)
 
 ## Commits referenced in this doc
 
