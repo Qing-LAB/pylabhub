@@ -281,10 +281,18 @@ HEP-0036 I9.  `REG_ACK.initial_allowlist` covers the
 joining-producer's ZAP cache.
 
 ### DP-Q3 — Channel-scope vs per-producer ACL
-**Status:** ✅ RESOLVED (locked 2026-05-28).
-**Decision:** Per-producer ACL within a channel is OUT of scope;
-channel-scope authorization is the MVP model.  Added as explicit
-non-goal in HEP-0036 §2.1 (last bullet).
+**Status:** ✅ CLOSED-NOT-A-QUESTION (audited 2026-05-28).
+**Audit finding:** The question was imagined, not real.  The queue
+abstraction (HEP-CORE-0017 §3.3) presents the consumer with
+`api.rx.acquire()` returning fair-queued slots; the consumer has
+NO API to select among producers within a channel.  Per-producer
+ACL is incoherent at the model level, not a policy choice.
+HEP-0036 §4.1 `ChannelAccessEntry` already carries the inline
+comment: "Per-channel, NOT per-producer — a consumer authorized
+for a channel can connect to ANY producer of that channel."  No
+§2.1 non-goal needed (the §2.1 bullet added in `198f9422` was
+reverted in `<next-commit>`); the property is implicit from the
+queue model + data structure.
 
 ### DP-Q4 — Per-producer DEREG cascade vs last-producer teardown
 **Status:** ✅ RESOLVED (committed `87784a8f`).
