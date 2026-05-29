@@ -304,8 +304,10 @@ mandatory in production:
 ┌─────────────────────────────────────────────────────────────────┐
 │  Layer 3 — Data-plane peer authentication (HEP-CORE-0036)       │
 │                                                                 │
-│  Each producer attaches a per-context ZAP handler to its data    │
-│  PUSH socket.  The handler reads from a per-channel allowlist    │
+│  Each producer attaches a per-context ZAP handler to its ZMQ     │
+│  data PUSH socket (SHM transport uses the existing DataBlock     │
+│  `shm_secret` mechanism per HEP-CORE-0002 — no ZAP for SHM).     │
+│  The handler reads from a per-channel allowlist                  │
 │  (`ChannelAccessIndex::authorized_consumer_pubkeys` in HubState  │
 │  per HEP-CORE-0036 §4.1) populated by the broker via             │
 │  CHANNEL_AUTH_UPDATE pushes.                                     │
@@ -344,6 +346,18 @@ std::unordered_map<std::string, PubkeyOrigin>  pubkey_to_origin;
 Both the ZAP handler (Layer 1) and the federation-trust gate (Layer 2)
 read from this single index. There is exactly one structure that
 answers "what does this pubkey mean to this hub."
+
+**Relation to HEP-CORE-0036 `ChannelAccessIndex`**: HEP-0036's
+Layer-3 enforcement (data-plane peer ZAP on the producer side) uses
+a SEPARATE per-channel structure (`HubState::channel_access_index_`,
+keyed by channel name; HEP-0036 §4.1) that holds the per-channel
+authorized-consumer-pubkey allowlist + the SHM secret.  That
+structure CONSUMES this `PubkeyOrigin` index (the producer's identity
+pubkey looked up at REG time is mirrored into the broker's per-channel
+`ChannelEntry::producers[].zmq_pubkey`).  The two indices have
+different scopes and are not interchangeable: `PubkeyOrigin` answers
+"is this a known role at all?"; `ChannelAccessIndex` answers "is this
+consumer authorized for THIS channel?"
 
 ### 4.3 Federation-trust policy modes
 
