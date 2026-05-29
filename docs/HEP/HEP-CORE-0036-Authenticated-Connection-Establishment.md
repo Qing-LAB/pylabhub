@@ -183,11 +183,16 @@ The data loop's outer guard reads:
 ```cpp
 while (core.is_running() &&
        !core.is_shutdown_requested() &&
-       brc_is_connected() &&            // control → data dependency
-       any_presence_authorized()) {
+       any_presence_authorized()) {     // FSM bridges control → data
   ...
 }
 ```
+
+`any_presence_authorized()` IS the control→data dependency: when the
+BRC loses connection, the BRC poll thread transitions every affected
+presence out of `Authorized`, which makes the guard false on the
+next iteration.  No separate `brc_is_connected()` check is needed
+(see §8.2 for the full formulation including `is_critical_error()`).
 
 This is the role's own contract.  A compromised role that ignores
 its contract (keeps reading data after losing control) is outside
