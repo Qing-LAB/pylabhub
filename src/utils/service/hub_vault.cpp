@@ -81,7 +81,7 @@ HubVault &HubVault::operator=(HubVault &&) noexcept = default;
 // HubVault::create
 // ============================================================================
 
-HubVault HubVault::create(const fs::path    &hub_dir,
+HubVault HubVault::create(const fs::path    &vault_path,
                            const std::string &hub_uid,
                            const std::string &password)
 {
@@ -102,17 +102,18 @@ HubVault HubVault::create(const fs::path    &hub_dir,
     // Generate admin token.
     const std::string admin_tok = generate_admin_token();
 
-    // Serialize payload and encrypt.  Vault file lives under
-    // `<hub_dir>/vault/` (HEP-CORE-0033 §7 + HubDirectory layout).
-    // Ensure the vault directory exists; --init creates it but
-    // direct callers (tests, programmatic use) may not have.
+    // Serialize payload and encrypt at the operator-supplied path
+    // (HEP-CORE-0033 §7.1 — caller resolved via resolve_keyfile_path).
+    // Ensure the parent directory exists; --init creates the
+    // canonical `vault/` dir but direct callers (tests, custom
+    // deployment locations) may not have.
     const json payload = {
         {"broker", {{"curve_secret_key", broker_secret}, {"curve_public_key", broker_public}}},
         {"admin",  {{"token", admin_tok}}}
     };
-    fs::create_directories(hub_dir / "vault");
-    detail::vault_write(hub_dir / "vault" / "hub.vault",
-                        payload.dump(), password, hub_uid);
+    if (!vault_path.parent_path().empty())
+        fs::create_directories(vault_path.parent_path());
+    detail::vault_write(vault_path, payload.dump(), password, hub_uid);
 
     HubVault v;
     v.pImpl->broker_secret_key = broker_secret;
@@ -125,15 +126,14 @@ HubVault HubVault::create(const fs::path    &hub_dir,
 // HubVault::open
 // ============================================================================
 
-HubVault HubVault::open(const fs::path    &hub_dir,
+HubVault HubVault::open(const fs::path    &vault_path,
                          const std::string &hub_uid,
                          const std::string &password)
 {
     detail::vault_require_sodium();
 
-    // Vault file path: <hub_dir>/vault/hub.vault (HEP §7).
-    const std::string plaintext = detail::vault_read(
-        hub_dir / "vault" / "hub.vault", password, hub_uid);
+    const std::string plaintext =
+        detail::vault_read(vault_path, password, hub_uid);
 
     HubVault v;
     try

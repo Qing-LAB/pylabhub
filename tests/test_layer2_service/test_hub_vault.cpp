@@ -100,6 +100,9 @@ class HubVaultTest : public ::testing::Test
 {
 protected:
     fs::path hub_dir_;
+    fs::path vault_path_;  // Canonical default: hub_dir_/vault/hub.vault.
+                           // Mirrors what hub_config.cpp computes via
+                           // resolve_keyfile_path() at runtime.
     std::string hub_uid_;
 
     void SetUp() override
@@ -107,6 +110,7 @@ protected:
         hub_uid_ = generate_uuid4();
         hub_dir_ = fs::temp_directory_path() /
                    ("pylabhub_vault_test_" + hub_uid_.substr(0, 8));
+        vault_path_ = hub_dir_ / "vault" / "hub.vault";
         fs::create_directories(hub_dir_);
     }
 
@@ -129,7 +133,7 @@ protected:
 
 TEST_F(HubVaultTest, CreateWritesVaultFile)
 {
-    HubVault::create(hub_dir_, hub_uid_, kPassword);
+    HubVault::create(vault_path_, hub_uid_, kPassword);
 
     const fs::path vault_path = hub_dir_ / "vault" / "hub.vault";
     ASSERT_TRUE(fs::exists(vault_path)) << "hub.vault not created";
@@ -138,7 +142,7 @@ TEST_F(HubVaultTest, CreateWritesVaultFile)
 
 TEST_F(HubVaultTest, CreateVaultFileHasRestrictedPermissions)
 {
-    HubVault::create(hub_dir_, hub_uid_, kPassword);
+    HubVault::create(vault_path_, hub_uid_, kPassword);
 
     const fs::path vault_path = hub_dir_ / "vault" / "hub.vault";
 #if defined(PYLABHUB_PLATFORM_WIN64)
@@ -162,7 +166,7 @@ TEST_F(HubVaultTest, CreateVaultFileHasRestrictedPermissions)
 
 TEST_F(HubVaultTest, CreateReturnsValidZ85Keypair)
 {
-    HubVault v = HubVault::create(hub_dir_, hub_uid_, kPassword);
+    HubVault v = HubVault::create(vault_path_, hub_uid_, kPassword);
 
     EXPECT_TRUE(is_valid_z85_key(v.broker_curve_public_key()))
         << "broker_curve_public_key is not a valid 40-char Z85 key: '"
@@ -173,7 +177,7 @@ TEST_F(HubVaultTest, CreateReturnsValidZ85Keypair)
 
 TEST_F(HubVaultTest, CreateReturnsValid64CharHexAdminToken)
 {
-    HubVault v = HubVault::create(hub_dir_, hub_uid_, kPassword);
+    HubVault v = HubVault::create(vault_path_, hub_uid_, kPassword);
 
     EXPECT_TRUE(is_valid_hex_token(v.admin_token()))
         << "admin_token is not a 64-char hex string: '" << v.admin_token() << "'";
@@ -182,7 +186,7 @@ TEST_F(HubVaultTest, CreateReturnsValid64CharHexAdminToken)
 TEST_F(HubVaultTest, EmptyPasswordCreatesVaultSuccessfully)
 {
     // Dev-mode: empty password is allowed (weak but functional).
-    EXPECT_NO_THROW(HubVault::create(hub_dir_, hub_uid_, ""));
+    EXPECT_NO_THROW(HubVault::create(vault_path_, hub_uid_, ""));
     EXPECT_TRUE(fs::exists(hub_dir_ / "vault" / "hub.vault"));
 }
 
@@ -196,8 +200,8 @@ TEST_F(HubVaultTest, TwoCreatesProduceDifferentKeypairs)
     fs::create_directories(dir_a);
     fs::create_directories(dir_b);
 
-    HubVault va = HubVault::create(dir_a, uid_a, kPassword);
-    HubVault vb = HubVault::create(dir_b, uid_b, kPassword);
+    HubVault va = HubVault::create(dir_a / "vault" / "hub.vault", uid_a, kPassword);
+    HubVault vb = HubVault::create(dir_b / "vault" / "hub.vault", uid_b, kPassword);
 
     EXPECT_NE(va.broker_curve_public_key(), vb.broker_curve_public_key())
         << "Two vaults produced the same public key — RNG failure?";
@@ -211,8 +215,8 @@ TEST_F(HubVaultTest, TwoCreatesProduceDifferentKeypairs)
 
 TEST_F(HubVaultTest, OpenWithCorrectPasswordReturnsMatchingSecrets)
 {
-    HubVault created = HubVault::create(hub_dir_, hub_uid_, kPassword);
-    HubVault opened  = HubVault::open(hub_dir_, hub_uid_, kPassword);
+    HubVault created = HubVault::create(vault_path_, hub_uid_, kPassword);
+    HubVault opened  = HubVault::open(vault_path_, hub_uid_, kPassword);
 
     EXPECT_EQ(created.broker_curve_public_key(), opened.broker_curve_public_key());
     EXPECT_EQ(created.broker_curve_secret_key(), opened.broker_curve_secret_key());
@@ -221,14 +225,14 @@ TEST_F(HubVaultTest, OpenWithCorrectPasswordReturnsMatchingSecrets)
 
 TEST_F(HubVaultTest, OpenWithWrongPasswordThrows)
 {
-    HubVault::create(hub_dir_, hub_uid_, kPassword);
+    HubVault::create(vault_path_, hub_uid_, kPassword);
 
-    EXPECT_THROW(HubVault::open(hub_dir_, hub_uid_, kWrongPassword), std::runtime_error);
+    EXPECT_THROW(HubVault::open(vault_path_, hub_uid_, kWrongPassword), std::runtime_error);
 }
 
 TEST_F(HubVaultTest, OpenCorruptedVaultThrows)
 {
-    HubVault::create(hub_dir_, hub_uid_, kPassword);
+    HubVault::create(vault_path_, hub_uid_, kPassword);
 
     // Flip bytes in the middle of the ciphertext (after the 24-byte nonce).
     const fs::path vault_path = hub_dir_ / "vault" / "hub.vault";
@@ -245,13 +249,13 @@ TEST_F(HubVaultTest, OpenCorruptedVaultThrows)
                   vault_path, pylabhub::utils::security::KeyFileRole::VaultFile),
               pylabhub::utils::security::SetModeResult::Applied);
 
-    EXPECT_THROW(HubVault::open(hub_dir_, hub_uid_, kPassword), std::runtime_error);
+    EXPECT_THROW(HubVault::open(vault_path_, hub_uid_, kPassword), std::runtime_error);
 }
 
 TEST_F(HubVaultTest, OpenMissingVaultThrows)
 {
     // No create() call — vault file does not exist.
-    EXPECT_THROW(HubVault::open(hub_dir_, hub_uid_, kPassword), std::runtime_error);
+    EXPECT_THROW(HubVault::open(vault_path_, hub_uid_, kPassword), std::runtime_error);
 }
 
 TEST_F(HubVaultTest, OpenTruncatedVaultThrows)
@@ -262,7 +266,7 @@ TEST_F(HubVaultTest, OpenTruncatedVaultThrows)
     // garbage.  libsodium's secretbox_open fails MAC verification on any
     // truncation, but we pin the behaviour here to catch a regression
     // that added a "partial-read is fine" path.
-    HubVault::create(hub_dir_, hub_uid_, kPassword);
+    HubVault::create(vault_path_, hub_uid_, kPassword);
 
     const fs::path vault_path = hub_dir_ / "vault" / "hub.vault";
     const auto original_size = fs::file_size(vault_path);
@@ -278,7 +282,7 @@ TEST_F(HubVaultTest, OpenTruncatedVaultThrows)
               pylabhub::utils::security::SetModeResult::Applied);
     ASSERT_EQ(fs::file_size(vault_path), 16u);
 
-    EXPECT_THROW(HubVault::open(hub_dir_, hub_uid_, kPassword), std::runtime_error);
+    EXPECT_THROW(HubVault::open(vault_path_, hub_uid_, kPassword), std::runtime_error);
 }
 
 // ============================================================================
@@ -289,7 +293,7 @@ TEST_F(HubVaultTest, VaultFileDoesNotContainPlaintextSecrets)
 {
     // The vault must actually encrypt its payload — raw bytes in the file should
     // not contain the Z85 keys or the admin token as printable substrings.
-    HubVault v = HubVault::create(hub_dir_, hub_uid_, kPassword);
+    HubVault v = HubVault::create(vault_path_, hub_uid_, kPassword);
 
     std::ifstream ifs(hub_dir_ / "vault" / "hub.vault", std::ios::binary);
     const std::string raw_bytes((std::istreambuf_iterator<char>(ifs)),
@@ -308,14 +312,14 @@ TEST_F(HubVaultTest, EncryptDecryptRoundTrip)
     // Full roundtrip: the secrets written by create() must come back unchanged
     // after open(). This verifies the encrypt → file → decrypt pipeline
     // end-to-end with known values.
-    HubVault created = HubVault::create(hub_dir_, hub_uid_, kPassword);
+    HubVault created = HubVault::create(vault_path_, hub_uid_, kPassword);
 
     const std::string expected_pubkey = created.broker_curve_public_key();
     const std::string expected_seckey = created.broker_curve_secret_key();
     const std::string expected_token  = created.admin_token();
 
     // Simulate a new process opening the vault (discard the in-memory object).
-    HubVault reopened = HubVault::open(hub_dir_, hub_uid_, kPassword);
+    HubVault reopened = HubVault::open(vault_path_, hub_uid_, kPassword);
 
     EXPECT_EQ(reopened.broker_curve_public_key(), expected_pubkey)
         << "Public key changed after encrypt/decrypt roundtrip";
@@ -337,15 +341,15 @@ TEST_F(HubVaultTest, DifferentHubUidProducesDifferentCiphertext)
     fs::create_directories(dir_a);
     fs::create_directories(dir_b);
 
-    HubVault::create(dir_a, uid_a, kPassword);
-    HubVault::create(dir_b, uid_b, kPassword);
+    HubVault::create(dir_a / "vault" / "hub.vault", uid_a, kPassword);
+    HubVault::create(dir_b / "vault" / "hub.vault", uid_b, kPassword);
 
     // Opening vault A with uid_b (wrong salt) must fail.
-    EXPECT_THROW(HubVault::open(dir_a, uid_b, kPassword), std::runtime_error)
+    EXPECT_THROW(HubVault::open(dir_a / "vault" / "hub.vault", uid_b, kPassword), std::runtime_error)
         << "Cross-uid open should fail (wrong KDF salt)";
 
     // Opening vault B with uid_a must also fail.
-    EXPECT_THROW(HubVault::open(dir_b, uid_a, kPassword), std::runtime_error)
+    EXPECT_THROW(HubVault::open(dir_b / "vault" / "hub.vault", uid_a, kPassword), std::runtime_error)
         << "Cross-uid open should fail (wrong KDF salt)";
 }
 
@@ -355,11 +359,11 @@ TEST_F(HubVaultTest, DifferentHubUidProducesDifferentCiphertext)
 
 TEST_F(HubVaultTest, Create_OverExistingVault_Overwrites)
 {
-    HubVault v1 = HubVault::create(hub_dir_, hub_uid_, kPassword);
+    HubVault v1 = HubVault::create(vault_path_, hub_uid_, kPassword);
     const std::string pk1 = v1.broker_curve_public_key();
 
     // Create again on same path — should overwrite with new keys.
-    HubVault v2 = HubVault::create(hub_dir_, hub_uid_, kPassword);
+    HubVault v2 = HubVault::create(vault_path_, hub_uid_, kPassword);
     const std::string pk2 = v2.broker_curve_public_key();
 
     EXPECT_NE(pk1, pk2)
@@ -368,7 +372,7 @@ TEST_F(HubVaultTest, Create_OverExistingVault_Overwrites)
 
 TEST_F(HubVaultTest, MoveConstructor_TransfersOwnership)
 {
-    HubVault v1 = HubVault::create(hub_dir_, hub_uid_, kPassword);
+    HubVault v1 = HubVault::create(vault_path_, hub_uid_, kPassword);
     const std::string pk = v1.broker_curve_public_key();
     const std::string sk = v1.broker_curve_secret_key();
 
@@ -383,7 +387,7 @@ TEST_F(HubVaultTest, MoveConstructor_TransfersOwnership)
 
 TEST_F(HubVaultTest, PublishPublicKeyWritesCorrectContent)
 {
-    HubVault v = HubVault::create(hub_dir_, hub_uid_, kPassword);
+    HubVault v = HubVault::create(vault_path_, hub_uid_, kPassword);
     v.publish_public_key(hub_dir_);
 
     const fs::path pubkey_path = hub_dir_ / "hub.pubkey";
@@ -398,7 +402,7 @@ TEST_F(HubVaultTest, PublishPublicKeyWritesCorrectContent)
 
 TEST_F(HubVaultTest, PublishPublicKeyHasWorldReadablePermissions)
 {
-    HubVault v = HubVault::create(hub_dir_, hub_uid_, kPassword);
+    HubVault v = HubVault::create(vault_path_, hub_uid_, kPassword);
     v.publish_public_key(hub_dir_);
 
     const fs::path pubkey_path = hub_dir_ / "hub.pubkey";

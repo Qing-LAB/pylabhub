@@ -14,6 +14,7 @@
 #include "utils/config/hub_config.hpp"
 #include "utils/hub_vault.hpp"
 #include "utils/json_config.hpp"
+#include "utils/security/key_file_acl.hpp"
 
 #include <cassert>
 #include <cstdio>
@@ -167,36 +168,55 @@ const HubStateConfig      &HubConfig::state()      const { assert(impl_); return
 // Vault operations
 // ============================================================================
 
-// HubVault stores keys at the fixed path `<hub_dir>/hub.vault`; the
-// `auth.keyfile` field from HEP-0033 §6.2 is informational (its
-// documented value is `"vault/hub.vault"`) and selects "use the vault"
-// vs "no CURVE auth" via empty/non-empty.
+// `hub.auth.keyfile` is the source of truth for the vault file
+// location at runtime per HEP-CORE-0033 §7.1 (clarified 2026-05-30):
+//   - Non-empty (relative) → resolved against hub_dir.
+//   - Non-empty (absolute) → used as-is.
+//   - Non-empty + file absent at resolved path → throw (no silent
+//     fallback to ephemeral mode; matches the explicit-opt-in
+//     semantic for the empty case).
+//   - Empty → explicit ephemeral-CURVE opt-in.  Stderr WARN emitted
+//     so deployments do not silently lose encryption-at-rest.
+//
+// Path resolution uses pylabhub::utils::security::resolve_keyfile_path()
+// — single source of truth shared with role_config.cpp.
 bool HubConfig::load_keypair(const std::string &password)
 {
     assert(impl_);
     auto &auth = impl_->auth;
     if (auth.keyfile.empty())
-        return false;  // operator opt-out: no auth configured
+    {
+        std::fprintf(stderr,
+            "[plh_hub] WARN: hub.auth.keyfile is empty — running in "
+            "ephemeral CURVE mode (HEP-CORE-0035 §4.6).  No "
+            "encryption-at-rest; CURVE keys are generated in memory "
+            "only and lost at shutdown.  For production deployments "
+            "run `plh_hub --keygen` to create a persistent vault.\n");
+        return false;
+    }
 
     const auto &hub_dir = impl_->base_dir;
     const auto &uid     = impl_->identity.uid;
 
     namespace fs = std::filesystem;
-    // Vault file path matches HEP-CORE-0033 §7: <hub_dir>/vault/hub.vault.
-    const auto vault_path = hub_dir / "vault" / "hub.vault";
+    const fs::path vault_path =
+        pylabhub::utils::security::resolve_keyfile_path(
+            auth.keyfile, hub_dir);
     if (!fs::exists(vault_path))
     {
-        std::fprintf(stderr,
-                     "[hub] %s not found — using ephemeral CURVE identity\n",
-                     vault_path.string().c_str());
-        return false;
+        throw std::runtime_error(
+            "[plh_hub] Error: hub.auth.keyfile = '" + auth.keyfile +
+            "' resolves to '" + vault_path.string() +
+            "' which does not exist.  Run `plh_hub --keygen` to "
+            "create the vault, or set hub.auth.keyfile = \"\" for "
+            "ephemeral mode (HEP-CORE-0035 §4.6 / HEP-CORE-0033 §7.1).");
     }
 
-    const auto vault = utils::HubVault::open(hub_dir, uid, password);
+    const auto vault = utils::HubVault::open(vault_path, uid, password);
     auth.client_pubkey = vault.broker_curve_public_key();
     auth.client_seckey = vault.broker_curve_secret_key();
     impl_->admin.admin_token = vault.admin_token();
-    std::fprintf(stderr, "[hub] Loaded vault from '%s' (pubkey: %.8s...)\n",
+    std::fprintf(stderr, "[plh_hub] Loaded vault from '%s' (pubkey: %.8s...)\n",
                  vault_path.string().c_str(),
                  vault.broker_curve_public_key().c_str());
     return true;
@@ -207,17 +227,25 @@ std::string HubConfig::create_keypair(const std::string &password)
     assert(impl_);
     const auto &auth = impl_->auth;
     if (auth.keyfile.empty())
-        throw std::runtime_error("HubConfig: auth.keyfile not configured");
+        throw std::runtime_error(
+            "[plh_hub] Error: --keygen requires non-empty "
+            "hub.auth.keyfile in config — ephemeral mode is "
+            "in-process only and has no on-disk vault to create "
+            "(HEP-CORE-0033 §7.1).");
 
     const auto &hub_dir = impl_->base_dir;
     const auto &uid     = impl_->identity.uid;
-    const auto vault = utils::HubVault::create(hub_dir, uid, password);
-    // Publish the broker's CURVE public key alongside the vault file
-    // so that role-side `HubRefConfig::parse_hub_ref_config` finds it
-    // at `<hub_dir>/hub.pubkey` and pins the broker correctly during
-    // CURVE handshake.  Without this the role's `broker_pubkey` stays
-    // empty and the producer→hub→consumer pipeline either bypasses
-    // CURVE auth (if both sides allow it) or fails at REG_REQ time
+    const std::filesystem::path vault_path =
+        pylabhub::utils::security::resolve_keyfile_path(
+            auth.keyfile, hub_dir);
+    const auto vault = utils::HubVault::create(vault_path, uid, password);
+    // Publish the broker's CURVE public key at <hub_dir>/hub.pubkey
+    // (still hub_dir-relative — the public-key file location is part
+    // of the hub-directory layout per HEP-CORE-0033 §7, independent
+    // of where the operator placed the vault).  Without this the
+    // role's `broker_pubkey` stays empty and the producer→hub→
+    // consumer pipeline either bypasses CURVE auth (if both sides
+    // allow it) or fails at REG_REQ time
     // (audit REVIEW_HEP_0033_PostP9_2026-05-05.md F1).
     vault.publish_public_key(hub_dir);
     return vault.broker_curve_public_key();
