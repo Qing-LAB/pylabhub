@@ -494,7 +494,11 @@ runtime verification has two tiers:
   runs (closes task #78).
 
 Before any secret material is read OR any config-derived behavior
-is committed, every binary MUST run:
+is committed, every binary MUST run the verification below.  **Tier
+1 runs before Tier 2** — the config file determines `auth.keyfile`
+and therefore Tier 2's resolved path; a tampered config could
+redirect Tier 2 to an attacker-controlled file if the integrity of
+the config itself were not verified first.
 
 ```
 # ── Tier 1: unconditional checks ──────────────────────────────────
@@ -586,6 +590,16 @@ This requirement layers on top of existing related work:
   scope (covered by `src/utils/service/vault_crypto.{hpp,cpp}` —
   Argon2id KDF + XSalsa20-Poly1305 secretbox); §4.6 governs only
   the on-disk file ACLs that protect the vault container.
+- Symlink and non-regular-file (FIFO / device) handling is NOT
+  separately gated.  The §4.6.2 verification uses `stat()`
+  (symlink-following) — vault files in the canonical `vault/`
+  directory at 0700 + euid-owner cannot be symlink-injected by a
+  non-owner.  Operators pointing `auth.keyfile` at a path under
+  a directory they do not own (e.g., `/tmp`) accept symlink-
+  injection risk by configuration.  The encryption-at-rest layer
+  (vault password) is the primary integrity defense; file-mode
+  discipline is the file-system floor and does not promise
+  symlink-aware enforcement.
 
 ---
 
