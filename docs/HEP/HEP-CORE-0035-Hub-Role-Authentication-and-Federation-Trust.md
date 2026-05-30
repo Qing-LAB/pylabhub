@@ -468,44 +468,68 @@ process `umask`.
 
 **The vault file path is resolved from `auth.keyfile`** per HEP-
 CORE-0033 §7.1 (hub side) and HEP-CORE-0024 §3.4 (role side).  The
-runtime verification described below applies to the resolved path:
+runtime verification has two tiers:
+
+1. **Unconditional checks** — run on every invocation, regardless
+   of vault mode (including ephemeral).  Cover the config file
+   (config-injection prevention is needed even when no vault is
+   present — a tampered config can flip endpoints or admin flags).
+2. **Vault-mode checks** — run only when `auth.keyfile` is
+   non-empty (a vault is configured for this invocation).  Cover
+   the vault file + its parent directory at the resolved path.
+
+`auth.keyfile` value semantics:
 
 - Non-empty relative `auth.keyfile` → resolved against `base_dir`
   (hub_dir or role_dir).
 - Non-empty absolute `auth.keyfile` → used as-is.
-- Empty `auth.keyfile` `""` → explicit ephemeral-mode opt-in; **no
-  vault open, no ACL verification**.  Binary emits a stderr WARN
-  noting that ephemeral CURVE keys are in use and proceeds.
+- Non-empty + file absent at the resolved path → hard error
+  (consistent with the explicit-opt-in semantic; no silent
+  fallback to ephemeral when the operator intended a vault).
+- Empty `auth.keyfile` `""` → explicit operator opt-in to
+  ephemeral CURVE keys.  Vault-mode checks are skipped; the
+  unconditional config check still runs.  Binary emits a stderr
+  WARN noting that ephemeral CURVE keys are in use and proceeds.
 - Field missing entirely → config-load error before this section
   runs (closes task #78).
 
-When `auth.keyfile` is non-empty, before reading any secret
-material, every binary MUST run:
+Before any secret material is read OR any config-derived behavior
+is committed, every binary MUST run:
 
 ```
-check vault file (hub.vault / <role_uid>.vault)
+# ── Tier 1: unconditional checks ──────────────────────────────────
+# Run on every invocation, including ephemeral mode.
+
+check hub.json / role config (the file pointed to by --config or
+auto-discovered from --hub-dir / --role-dir).
+  - (st_mode & 0002) != 0       → ERROR  (world-writable config = config
+                                  injection — applies even in ephemeral
+                                  mode; a tampered config can redirect
+                                  the binary to malicious endpoints or
+                                  flip admin flags regardless of vault).
+  - (st_mode & 0040) != 0 AND file references a vault path
+                                → WARN
+
+# ── Tier 2: vault-mode checks (auth.keyfile non-empty only) ───────
+# Skipped in ephemeral mode (auth.keyfile = "").
+
+check vault file at <resolved_keyfile_path>
   - (st_mode & 0077) != 0       → ERROR  "vault file <path> is
                                   group/world-accessible (mode 0NNN).
                                   Run: chmod 0600 <path>"
   - st_uid != geteuid()         → ERROR  "vault file <path> owned
                                   by uid N; expected uid M.  Check file
                                   ownership."
-  - parent dir (vault/) (st_mode & 0077) != 0
+  - parent dir (st_mode & 0077) != 0
                                 → WARN   (parent dir leak is recoverable;
                                   some operators want group-readable
                                   parents for shared host setups)
 
-check vault/ directory
+check vault directory at <resolved_keyfile_path>.parent_path()
   - (st_mode & 0077) != 0       → ERROR  "vault directory <path> is
                                   group/world-accessible.  Run:
                                   chmod 0700 <path>"
   - st_uid != geteuid()         → ERROR
-
-check hub.json / role config
-  - (st_mode & 0002) != 0       → ERROR  (world-writable config = config
-                                  injection)
-  - (st_mode & 0040) != 0 AND file references a vault path
-                                → WARN
 
 # Public key files (hub.pubkey, cached role pubkey copies): NO
 # permission check — public keys are intentionally distributable and
@@ -535,6 +559,14 @@ This requirement layers on top of existing related work:
   `""` is now explicit ephemeral opt-in (NOT an error); the
   hard-error case is the missing-field case (field absent from
   the JSON entirely).
+- **`--keygen` symmetric rule (both binaries).**  Both
+  `plh_hub --keygen` and `plh_role --keygen` reject empty
+  `auth.keyfile` with a hard error — ephemeral mode is
+  in-process only and has no on-disk vault to create.  The
+  current operator-facing message
+  (`Error: --keygen requires 'auth.keyfile' in config`) matches
+  this contract on the hub side; the role side will produce a
+  symmetric message when sub-phase 1D ships.
 - B4 (task #79) — `plh_role --init` generates a non-zero SHM secret.
   Same `--init` pass SHOULD also generate the role's CURVE keypair
   (or invoke `--keygen` internally), with the modes from §4.6.1

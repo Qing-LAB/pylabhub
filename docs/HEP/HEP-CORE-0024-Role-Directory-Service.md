@@ -136,8 +136,9 @@ ephemeral CURVE mode.  Full table:
 | `auth.keyfile` value | Runtime behavior |
 |---|---|
 | Non-empty, relative (e.g. `"vault/<role_uid>.vault"`) | Resolved against `<role_dir>`: `<role_dir>/vault/<role_uid>.vault`.  Vault opened at this path.  HEP-CORE-0035 §4.6.2 ACL check applies. |
-| Non-empty, absolute (e.g. `"/srv/secrets/role.vault"` or `"~/.pylabhub/vault/role.vault"` after shell-expansion) | Used as-is.  ACL check applies. |
-| Empty `""` | EXPLICIT opt-in to ephemeral CURVE keys, no encryption at rest.  Dev / loopback only.  Stderr warning emitted at startup.  No vault open, no ACL check. |
+| Non-empty, absolute (e.g. `"/srv/secrets/role.vault"`) | Used as-is.  ACL check applies.  Note: JSON values are read literally — `~` is NOT shell-expanded.  Operators wanting the home directory must write the absolute `/home/<user>/...` form. |
+| Non-empty + file absent at resolved path | Hard error.  When the operator configures a vault, the binary refuses to silently fall back to ephemeral mode (consistent with the explicit-opt-in semantic for the empty case).  Replaces the previous silent stderr-printf fallback in `role_config.cpp`. |
+| Empty `""` | EXPLICIT opt-in to ephemeral CURVE keys, no encryption at rest.  Dev / loopback only.  Stderr warning emitted at startup.  Vault-mode ACL checks are skipped; the unconditional config-file check (HEP-CORE-0035 §4.6.2 Tier 1) still runs. |
 | Field missing entirely | Config-load error (hard-fail at parse time; closes task #78 alongside the hub side). |
 
 The canonical default path for a role is still:
@@ -152,8 +153,19 @@ removes the prior "silent fallback to default when empty" rule;
 operators see the vault path explicitly in their config.
 
 `RoleDirectory::default_keyfile(uid)` is preserved as the helper
-that `--init` uses to compute the canonical default to write into
-the template.  It is NOT called from the runtime path.
+that `--init` SHOULD use to compute the canonical default to write
+into the template.
+
+**Implementation status (2026-05-30):** today the role-side
+`--init` template-write produces an empty `auth.keyfile`; the
+helper exists but is not called from `--init` yet.  This is the
+asymmetry the hub side does not have (hub's `--init` already
+writes `"vault/hub.vault"` via `hub_directory.cpp`).  Role-side
+`--init` symmetric writeback lands with #101 sub-phase 1D —
+until then, role operators must edit `auth.keyfile` manually
+before running `--keygen`.
+
+The helper is NOT called from the runtime path in either binary.
 
 `plh_role --keygen` requires non-empty `auth.keyfile` — ephemeral
 mode is in-process only and has no on-disk vault to create.
@@ -177,10 +189,11 @@ vault directory regardless of where it lives.  Mode + ownership
 discipline are independent of placement.
 
 `RoleDirectory::warn_if_keyfile_in_role_dir(base_dir, keyfile)`
-exists (called from `role_config.cpp:203`) to warn operators who
-accidentally place the keyfile inside `<role_dir>` itself — which
-defeats the system-managed-config + user-owned-vault separation
-this HEP intends to enable.
+exists (called from `RoleConfig::load()` immediately after loading
+`auth.keyfile`) to warn operators who accidentally place the
+keyfile inside `<role_dir>` itself — which defeats the system-
+managed-config + user-owned-vault separation this HEP intends to
+enable.
 
 ### 3.5 Schemas Subdirectory (HEP-CORE-0034)
 
@@ -267,9 +280,11 @@ public:
 
     // ── Vault helpers ─────────────────────────────────────────────────────────
 
-    /// Default vault file: <vault()>/<uid>.vault
-    /// Used when auth.keyfile is empty in config — ensures vault always lives
-    /// inside the protected vault/ subdirectory.
+    /// Canonical default vault file: <vault()>/<uid>.vault.
+    /// Used by --init to compute the value written into the template
+    /// config (see §3.4 amended 2026-05-30 — the runtime path no
+    /// longer silently falls back to this when auth.keyfile is empty;
+    /// empty is now an explicit operator opt-in to ephemeral mode).
     std::filesystem::path default_keyfile(std::string_view uid) const;
 
     // ── Hub reference resolution ──────────────────────────────────────────────
@@ -613,7 +628,10 @@ int main(int argc, char *argv[])
 
 This example: sets up the standard directory layout, generates a standard UID, handles
 `--init`/`--keygen`/`--validate`/`--config` uniformly with the official binaries, and
-places the vault file in `vault/<uid>.key` — the security-correct location — automatically.
+places the vault file in `vault/<uid>.vault` (the canonical default) as long as
+the operator leaves `auth.keyfile` set to the value `--init` writes into the
+template.  If the operator edits `auth.keyfile` to a different absolute or
+relative path, the runtime resolves that instead (§3.4).
 
 ---
 
@@ -622,7 +640,7 @@ places the vault file in `vault/<uid>.key` — the security-correct location —
 | Property | Mechanism |
 |----------|-----------|
 | Vault directory always 0700 | `RoleDirectory::create()` sets permissions before returning |
-| Vault files always inside `vault/` | `default_keyfile(uid)` returns `<vault()>/<uid>.key`; API makes the secure path the easy path |
+| Vault file location is operator-controlled via `auth.keyfile` | §3.4 amended 2026-05-30 — `--init` writes canonical `<vault()>/<uid>.vault` into the template; operator may edit to point elsewhere (e.g., a user-writable directory on a system where `<role_dir>` is root-owned).  HEP-CORE-0035 §4.6.1 enforces 0700 + euid-owner on the vault dir wherever it lives. |
 | Password never echoed | `read_password_interactive()` uses `getpass()` / `SetConsoleMode` |
 | Password never in command-line args | API has no password parameter — only env var or TTY |
 | New vault requires confirmation | `get_new_role_password()` always prompts twice (unless env var) |

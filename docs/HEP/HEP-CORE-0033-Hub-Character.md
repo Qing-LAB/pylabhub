@@ -719,9 +719,10 @@ it resolves the configured path:
 | `auth.keyfile` value | Runtime behavior |
 |---|---|
 | Non-empty, relative (e.g. `"vault/hub.vault"`) | Resolved against `hub_dir`: `<hub_dir>/vault/hub.vault`.  Vault opened at this path.  HEP-CORE-0035 §4.6.2 ACL check applies to the file + its parent directory. |
-| Non-empty, absolute (e.g. `"/srv/secrets/hub.vault"` or `"~/my-vault/hub.vault"` after shell-expansion by the operator) | Used as-is.  ACL check applies. |
-| Empty `""` | EXPLICIT opt-in to ephemeral CURVE keys, no encryption at rest.  Dev / loopback only.  Stderr warning emitted at startup.  No vault open, no ACL check. |
-| Field missing entirely | Config-load error (hard-fail at parse time; see HEP-CORE-0035 §4.6.4 task #78 closure). |
+| Non-empty, absolute (e.g. `"/srv/secrets/hub.vault"`) | Used as-is.  ACL check applies.  Note: JSON values are read literally — `~` is NOT shell-expanded.  Operators wanting the home directory must write the absolute `/home/<user>/...` form. |
+| Non-empty + file absent at resolved path | Hard error.  When the operator configures a vault, the binary refuses to silently fall back to ephemeral mode (consistent with the explicit-opt-in semantic for the empty case). |
+| Empty `""` | EXPLICIT opt-in to ephemeral CURVE keys, no encryption at rest.  Dev / loopback only.  Stderr warning emitted at startup.  Vault-mode ACL checks are skipped; the unconditional config-file check (HEP-CORE-0035 §4.6.2 Tier 1) still runs. |
+| Field missing entirely | Config-load error (hard-fail at parse time; see HEP-CORE-0035 §4.6.3 task #78 closure). |
 
 This semantic matches HEP-CORE-0024 §3.4 for the role side — there
 is **no asymmetry** between hub and role auth.keyfile handling.
@@ -734,8 +735,17 @@ edit `auth.keyfile` to the desired path.
 
 `plh_hub --keygen` requires non-empty `auth.keyfile` (writes the
 vault at the resolved path; ephemeral mode has no on-disk vault to
-create).  Empty value → hard error: "ephemeral mode is in-process
-only; --keygen requires a vault path."
+create).  Empty value → hard error (current message wording:
+`Error: --keygen requires 'auth.keyfile' in config`).
+
+**Implementation status (2026-05-30):** the hub-side `--init`
+template-write already produces `"auth": { "keyfile": "vault/hub.vault" }`
+per `src/utils/config/hub_directory.cpp`.  The role-side `--init`
+template-write currently produces an empty string and will be
+updated to write the canonical default symmetrically (planned
+under #101 sub-phase 1D).  Until that ships, role-side operators
+must edit `auth.keyfile` manually post-`--init` before running
+`--keygen` — same operational workflow, just less convenient.
 
 ### 7.2 Vault directory placement (security note)
 
