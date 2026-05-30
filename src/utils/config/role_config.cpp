@@ -6,6 +6,7 @@
 #include "utils/json_config.hpp"
 #include "utils/role_directory.hpp"
 #include "utils/role_vault.hpp"
+#include "utils/security/key_file_acl.hpp"
 
 #include <any>
 #include <cassert>
@@ -250,29 +251,55 @@ const std::string                 &RoleConfig::out_channel()   const { assert(im
 // Vault operations
 // ============================================================================
 
+// `role.auth.keyfile` is the source of truth for the vault file
+// location at runtime per HEP-CORE-0024 §3.4 (clarified 2026-05-30):
+//   - Non-empty (relative) → resolved against role base_dir.
+//   - Non-empty (absolute) → used as-is.
+//   - Non-empty + file absent at resolved path → throw (no silent
+//     fallback to ephemeral mode; matches the explicit-opt-in
+//     semantic for the empty case).  Replaces the prior silent
+//     stderr-printf fallback.
+//   - Empty → explicit ephemeral-CURVE opt-in.  Stderr WARN.
 bool RoleConfig::load_keypair(const std::string &password)
 {
     assert(impl_);
     auto &auth = impl_->auth;
-    if (auth.keyfile.empty())
-        return false;
-
-    const auto &uid = impl_->identity.uid;
     const char *tag = impl_->role_tag.c_str();
 
-    if (!std::filesystem::exists(auth.keyfile))
+    if (auth.keyfile.empty())
     {
         std::fprintf(stderr,
-                     "[%s] auth.keyfile '%s': not found — using ephemeral CURVE identity\n",
-                     tag, auth.keyfile.c_str());
+            "[%s] WARN: auth.keyfile is empty — running in ephemeral "
+            "CURVE mode (HEP-CORE-0035 §4.6).  No encryption-at-rest; "
+            "CURVE keys are generated in memory only and lost at "
+            "shutdown.  For production deployments run "
+            "`plh_role --role %s --keygen` to create a persistent "
+            "vault.\n",
+            tag, tag);
         return false;
     }
 
-    const auto vault = utils::RoleVault::open(auth.keyfile, uid, password);
+    const auto &uid = impl_->identity.uid;
+    const std::filesystem::path vault_path =
+        pylabhub::utils::security::resolve_keyfile_path(
+            auth.keyfile, impl_->base_dir);
+
+    if (!std::filesystem::exists(vault_path))
+    {
+        throw std::runtime_error(std::string("[") + tag +
+            "] Error: auth.keyfile = '" + auth.keyfile +
+            "' resolves to '" + vault_path.string() +
+            "' which does not exist.  Run `plh_role --role " + tag +
+            " --keygen` to create the vault, or set auth.keyfile = "
+            "\"\" for ephemeral mode (HEP-CORE-0035 §4.6 / "
+            "HEP-CORE-0024 §3.4).");
+    }
+
+    const auto vault = utils::RoleVault::open(vault_path, uid, password);
     auth.client_pubkey = vault.public_key();
     auth.client_seckey = vault.secret_key();
     std::fprintf(stderr, "[%s] Loaded vault from '%s' (pubkey: %.8s...)\n",
-                 tag, auth.keyfile.c_str(), vault.public_key().c_str());
+                 tag, vault_path.string().c_str(), vault.public_key().c_str());
     return true;
 }
 
@@ -280,11 +307,18 @@ std::string RoleConfig::create_keypair(const std::string &password)
 {
     assert(impl_);
     const auto &auth = impl_->auth;
+    const char *tag = impl_->role_tag.c_str();
     if (auth.keyfile.empty())
-        throw std::runtime_error("RoleConfig: auth.keyfile not configured");
+        throw std::runtime_error(std::string("[") + tag +
+            "] Error: --keygen requires non-empty auth.keyfile in "
+            "config — ephemeral mode is in-process only and has no "
+            "on-disk vault to create (HEP-CORE-0024 §3.4).");
 
     const auto &uid = impl_->identity.uid;
-    const auto vault = utils::RoleVault::create(auth.keyfile, uid, password);
+    const std::filesystem::path vault_path =
+        pylabhub::utils::security::resolve_keyfile_path(
+            auth.keyfile, impl_->base_dir);
+    const auto vault = utils::RoleVault::create(vault_path, uid, password);
     return vault.public_key();
 }
 

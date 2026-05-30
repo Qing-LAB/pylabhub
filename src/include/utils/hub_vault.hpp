@@ -47,25 +47,36 @@ class PYLABHUB_UTILS_EXPORT HubVault
 {
 public:
     /**
-     * @brief Create a new vault file at <hub_dir>/hub.vault.
+     * @brief Create a new vault file at the operator-supplied path.
+     *
+     * Per HEP-CORE-0033 §7.1 (clarified 2026-05-30), the vault file
+     * location is determined by `hub.auth.keyfile`; callers resolve
+     * the path via `pylabhub::utils::security::resolve_keyfile_path()`
+     * and pass it here.  The canonical default is `<hub_dir>/vault/
+     * hub.vault` (what `--init` writes into the template) but
+     * operators may point the vault elsewhere for the
+     * system-managed-config + user-owned-vault deployment model.
      *
      * - Generates a broker CurveZMQ keypair with zmq_curve_keypair().
      * - Generates a 64-char hex admin token from 32 random bytes.
      * - Derives a 256-bit key via Argon2id (salt = BLAKE2b-128(hub_uid)).
      * - Encrypts the JSON payload with XSalsa20-Poly1305.
+     * - Creates the parent directory if it does not exist.
      * - Writes the vault file with mode 0600.
      *
-     * @param hub_dir   Directory in which hub.vault is created.
-     * @param hub_uid   Hub UUID4 string — determines the KDF salt.
-     * @param password  Master password. Empty string is allowed (dev mode).
+     * @param vault_path  Filesystem path where the vault file is created.
+     * @param hub_uid     Hub UUID4 string — determines the KDF salt.
+     * @param password    Master password. Empty string is allowed (dev mode).
      * @throws std::runtime_error on crypto or I/O failure.
      */
-    static HubVault create(const std::filesystem::path &hub_dir,
+    static HubVault create(const std::filesystem::path &vault_path,
                            const std::string &hub_uid,
                            const std::string &password);
 
     /**
-     * @brief Open an existing vault file at <hub_dir>/hub.vault.
+     * @brief Open an existing vault file at the operator-supplied path.
+     *
+     * Path-resolution rules: see `create()`.
      *
      * Derives the key from hub_uid + password and decrypts.
      * The Poly1305 MAC authenticates the ciphertext — a wrong password or
@@ -73,7 +84,7 @@ public:
      *
      * @throws std::runtime_error on MAC failure, I/O error, or malformed JSON.
      */
-    static HubVault open(const std::filesystem::path &hub_dir,
+    static HubVault open(const std::filesystem::path &vault_path,
                          const std::string &hub_uid,
                          const std::string &password);
 
