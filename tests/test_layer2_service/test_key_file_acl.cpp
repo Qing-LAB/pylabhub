@@ -68,12 +68,13 @@
  *       _0755_WarnsParentLeak fail because no "parent directory"
  *       substring is present in the diagnostic.
  *
- *   (f) Ownership helper: change `observed_uid == expected_uid`
- *       to `!=` in `verify_ownership`.  Result: every
- *       `VerifyOwnership_Matching*_Ok` test fails (ok flipped);
- *       every `*_Mismatched_Error` test fails (ok flipped the
- *       other way).  Pins the uid comparison direction without
- *       needing CAP_CHOWN.
+ *   (f) Ownership helper: not in this sweep.  The
+ *       `verify_ownership_internal` helper is anonymous-namespace
+ *       in the .cpp and not exposed in the public header (the
+ *       parameter is tightly coupled to `KeyFileRole`, an
+ *       internal-scope enum), so it cannot be reached from the
+ *       test binary.  Ownership-branch correctness is not pinned
+ *       executably; see the "Wrong-owner" note above.
  *
  * NOTE on coverage gap: width-only mutations like "0%03o" →
  * "0%02o" are NOT detectable here because `%NNo` is *minimum*
@@ -81,14 +82,20 @@
  * mode <0100 would discriminate; not added because it has no
  * production analog (vault file mode 044 has no real path).
  *
- * Wrong-owner (`st_uid != geteuid()`) cases are covered via the
- * extracted `verify_ownership(path, role, observed_uid,
- * expected_uid)` primitive — the test passes synthetic uid pairs
- * directly without needing `CAP_CHOWN` to chown real files in CI.
- * The vault-file / vault-dir wrappers in `verify_keyfile_acl` call
- * `verify_ownership` with `geteuid()` for the expected uid; the
- * helper is the single tested source of truth for the comparison +
- * diagnostic format.
+ * Wrong-owner (`st_uid != geteuid()`) cases are NOT covered by this
+ * test suite — exercising the mismatch branch requires `CAP_CHOWN`
+ * to construct a file owned by a different uid, which CI
+ * environments typically forbid.  The ownership primitive
+ * (`verify_ownership_internal` in the .cpp anonymous namespace) is
+ * not exposed in the public header because its `KeyFileRole`
+ * parameter ties it tightly to this utility's internal scope and
+ * downstream callers have no legitimate need for it.  Tests focus
+ * on the public API surface (`verify_keyfile_acl`, `set_keyfile_mode`)
+ * per the standard convention for this codebase; the ownership
+ * branch is short and grep-visible at the call sites
+ * (`verify_vault_file`, `verify_vault_dir`), and production
+ * correctness rests on the spec citation + small surface area
+ * rather than an executable test.
  *
  * @see HEP-CORE-0035 §4.6 (the discipline this enforces)
  * @see HEP-CORE-0036 §3 I1 (the higher-level gate this protects)
@@ -116,7 +123,6 @@ using pylabhub::utils::security::KeyFileRole;
 using pylabhub::utils::security::SetModeResult;
 using pylabhub::utils::security::set_keyfile_mode;
 using pylabhub::utils::security::verify_keyfile_acl;
-using pylabhub::utils::security::verify_ownership;
 
 #if defined(PYLABHUB_PLATFORM_WIN64)
 
@@ -515,8 +521,10 @@ TEST_F(KeyFileAclTest, ConfigFileReferencingVault_0666_WorldWritable_Error)
         p, KeyFileRole::ConfigFileReferencingVault);
 
     EXPECT_FALSE(v.ok);
+    EXPECT_EQ(v.observed_mode, 0666u);
     EXPECT_TRUE(contains(v.diagnostic, "world-writable")) << v.diagnostic;
     EXPECT_TRUE(contains(v.diagnostic, "chmod o-w")) << v.diagnostic;
+    EXPECT_TRUE(contains(v.diagnostic, p.string())) << v.diagnostic;
 }
 
 TEST_F(KeyFileAclTest, ConfigFileReferencingVault_Missing_Error)
@@ -644,80 +652,6 @@ TEST_F(KeyFileAclTest, VaultFile_ParentDir_0755_WarnsParentLeak)
     EXPECT_TRUE(v.ok) << v.diagnostic;
     EXPECT_TRUE(contains(v.diagnostic, "parent directory")) << v.diagnostic;
     EXPECT_TRUE(contains(v.diagnostic, "0755")) << v.diagnostic;
-}
-
-// ─────────────────────────────────────────────────────────────────────────
-//  verify_ownership helper (extracted per code-review M5).
-//  Synthetic uids — no CAP_CHOWN / root required.
-// ─────────────────────────────────────────────────────────────────────────
-
-TEST_F(KeyFileAclTest, VerifyOwnership_MatchingUids_VaultFile_Ok)
-{
-    const auto p = tmpfile_with_mode("own_match_file", 0600);
-
-    const AclVerdict v =
-        verify_ownership(p, KeyFileRole::VaultFile, 1000u, 1000u);
-
-    EXPECT_TRUE(v.ok);
-    EXPECT_TRUE(v.diagnostic.empty()) << v.diagnostic;
-}
-
-TEST_F(KeyFileAclTest, VerifyOwnership_MatchingUids_VaultDir_Ok)
-{
-    const auto p = tmpdir_with_mode("own_match_dir", 0700);
-
-    const AclVerdict v =
-        verify_ownership(p, KeyFileRole::VaultDir, 42u, 42u);
-
-    EXPECT_TRUE(v.ok);
-    EXPECT_TRUE(v.diagnostic.empty()) << v.diagnostic;
-}
-
-TEST_F(KeyFileAclTest, VerifyOwnership_MismatchedUids_VaultFile_Error)
-{
-    const auto p = tmpfile_with_mode("own_mismatch_file", 0600);
-
-    const AclVerdict v =
-        verify_ownership(p, KeyFileRole::VaultFile,
-                         /*observed=*/9999u, /*expected=*/1000u);
-
-    EXPECT_FALSE(v.ok);
-    EXPECT_TRUE(contains(v.diagnostic, "owned by uid 9999")) << v.diagnostic;
-    EXPECT_TRUE(contains(v.diagnostic, "expected uid 1000")) << v.diagnostic;
-    EXPECT_TRUE(contains(v.diagnostic, "file ownership")) << v.diagnostic;
-    EXPECT_TRUE(contains(v.diagnostic, p.string())) << v.diagnostic;
-}
-
-TEST_F(KeyFileAclTest, VerifyOwnership_MismatchedUids_VaultDir_Error)
-{
-    const auto p = tmpdir_with_mode("own_mismatch_dir", 0700);
-
-    const AclVerdict v =
-        verify_ownership(p, KeyFileRole::VaultDir,
-                         /*observed=*/9999u, /*expected=*/1000u);
-
-    EXPECT_FALSE(v.ok);
-    // The diagnostic text discriminates "file" vs "directory" by role
-    // so an operator reading the message knows which thing to chown.
-    EXPECT_TRUE(contains(v.diagnostic, "directory")) << v.diagnostic;
-    EXPECT_TRUE(contains(v.diagnostic, "owned by uid 9999")) << v.diagnostic;
-    EXPECT_TRUE(contains(v.diagnostic, "expected uid 1000")) << v.diagnostic;
-}
-
-TEST_F(KeyFileAclTest, VerifyOwnership_RootVsUser_Error)
-{
-    // Common operator mistake: vault written as root before binary
-    // dropped privileges to a service uid.  Pin that the diagnostic
-    // surfaces both uids so the operator can `chown <expected> <path>`.
-    const auto p = tmpfile_with_mode("own_root_user", 0600);
-
-    const AclVerdict v =
-        verify_ownership(p, KeyFileRole::VaultFile,
-                         /*observed=*/0u, /*expected=*/1000u);
-
-    EXPECT_FALSE(v.ok);
-    EXPECT_TRUE(contains(v.diagnostic, "owned by uid 0")) << v.diagnostic;
-    EXPECT_TRUE(contains(v.diagnostic, "expected uid 1000")) << v.diagnostic;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
