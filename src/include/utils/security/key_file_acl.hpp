@@ -160,24 +160,6 @@ struct AclVerdict
 verify_keyfile_acl(const std::filesystem::path &path,
                    KeyFileRole                   role) noexcept;
 
-/// Compare `observed_uid` to `expected_uid` for `path` under `role`
-/// and return a verdict.  This is the ownership-check primitive that
-/// `verify_keyfile_acl` calls internally with `geteuid()` for the
-/// expected uid; exposed here so unit tests can exercise the
-/// uid-mismatch branch with synthetic uids without needing `CAP_CHOWN`
-/// (root) to construct a file owned by a different user in CI.
-///
-/// Returns `ok = true` with empty diagnostic when the uids match.
-/// Returns `ok = false` with an operator-facing diagnostic (path,
-/// observed uid, expected uid, ownership-check guidance) when they
-/// differ.  `observed_mode` / `required_mode` are 0 on both paths —
-/// this helper does NOT check modes, only ownership.
-[[nodiscard]] PYLABHUB_UTILS_EXPORT AclVerdict
-verify_ownership(const std::filesystem::path &path,
-                 KeyFileRole                   role,
-                 uint32_t                      observed_uid,
-                 uint32_t                      expected_uid) noexcept;
-
 /// Set the mode of `path` to the canonical value for `role` per
 /// HEP-CORE-0035 §4.6.1.
 ///
