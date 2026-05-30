@@ -560,7 +560,8 @@ else {
 ```cpp
 const auto password = pylabhub::role_cli::get_new_role_password(
     "producer",
-    "Producer vault password (empty = no encryption): ",
+    "Producer vault password (empty = no encryption-at-rest; "
+    "see §3.4 for the separate `auth.keyfile=\"\"` ephemeral-CURVE mode): ",
     "Confirm password: ");
 if (!password) return 1;
 ```
