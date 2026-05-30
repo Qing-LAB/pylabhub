@@ -205,7 +205,7 @@ silently bypass it.
 |---|---|---|
 | Non-empty (relative) | Path relative to `<base_dir>` (hub_dir / role_dir) | Open vault at resolved path; ACL-check file + parent dir; fail loud on mode/ownership violation |
 | Non-empty (absolute) | Path as-is | Same as above; ACL-check at the exact path |
-| Empty `""` | EXPLICIT opt-out — ephemeral CURVE keys, no encryption at rest (dev / loopback only) | No vault open; no ACL check; warn to stderr that ephemeral mode is in use |
+| Empty `""` | EXPLICIT operator opt-in to ephemeral CURVE keys (= opt-out of encryption-at-rest); dev / loopback only | No vault open; no vault-mode ACL check (Tier 1 config check still runs); warn to stderr that ephemeral mode is in use |
 | Field missing entirely | Config-load error | Hard-fail at parse time (task #78) |
 
 **No quiet fallback.**  Empty means explicit opt-out (ephemeral
