@@ -27,36 +27,68 @@
  * This prevents a regression that emits the wrong error message
  * from passing an outcome-only check.
  *
- * Mutation sweep performed 2026-05-29 before commit (each mutation
- * applied to the production code, build + run, observed failures,
- * then reverted):
- *   - Vault-file gate: `(observed & 0077) != 0` → `== 0`.
- *     Result: 6/7 VaultFile tests failed (VaultFile_0600_Ok plus
- *     all five group/world-accessible cases).  Confirms the matrix
- *     pins the gate's logical direction.
- *   - Config-file gate: `(observed & 0002) != 0` →
- *     `(observed & 0020) != 0` (group-write instead of world-
- *     write).  Result: ConfigFile_0606_WorldWritable_Error failed
- *     (0606 has o-write but not g-write); 0666 still caught
- *     because it has BOTH bits.  Confirms the matrix discriminates
- *     between mode bits, not just "some write bit set."
- *   - octal4 rendering: `"0%03o"` → `"%03o"` (dropped the literal
- *     "0" prefix).  Result: VaultFile_0640_GroupReadable_Error and
- *     VaultFile_0644_GroupAndWorldReadable_Error failed because
- *     diagnostic now contains "640"/"644" not "0640"/"0644".
- *     Confirms operator-facing rendering is pinned to the chmod-
- *     compatible literal.
+ * Mutation sweep performed before commit (each mutation applied to
+ * the production code, build + run, observed failures, then
+ * reverted):
  *
- * NOTE on coverage gap: width-only mutations like "0%03o" → "0%02o"
- * are NOT detectable here because `%NNo` is *minimum* width, not
- * exact — and all modes in our matrix are >= 0100.  A mode <0100
- * (e.g. 044) would discriminate; not added because it has no
+ *   (a) Vault-file gate: `(observed & 0077) != 0` → `== 0`.
+ *       Result: 6/7 VaultFile mode tests fail (the Ok-path AND
+ *       all five Error-path cases).  Pins the gate's logical
+ *       direction.
+ *
+ *   (b) Config-file gate: `(observed & 0002) != 0` →
+ *       `(observed & 0020) != 0` (group-write instead of world-
+ *       write).  Result: ConfigFile_0606_WorldWritable_Error
+ *       fails (0606 has o-write but not g-write); 0666 still
+ *       caught because it has BOTH bits.  Pins per-bit
+ *       discrimination, not just "some write bit set."
+ *
+ *   (c) octal4 rendering: `"0%03o"` → `"%03o"` (drop the literal
+ *       "0" prefix).  Result: VaultFile_0640/0644 Error tests fail
+ *       because diagnostic now contains "640"/"644" not
+ *       "0640"/"0644".  Pins operator-facing chmod-compatible
+ *       rendering.
+ *
+ *   (d) Diagnostic content: drop the offending `<< path` clause
+ *       from the vault-file world-accessible diagnostic emit.
+ *       Result: `VaultFile_0640_GroupReadable_Error` fails because
+ *       it pins `contains(v.diagnostic, p.string())`.  Coverage
+ *       could be widened by adding path-substring assertions to
+ *       every Error-path test; today the path-presence pin is
+ *       sample-rate (present on `VaultFile_0640`, `ConfigFile_0666`,
+ *       `ConfigFile_0606`, `ConfigFileReferencingVault_0644`,
+ *       parent-dir warns, and ownership tests), which catches the
+ *       documented mutation but not every theoretical path-drop
+ *       edit.  Trade-off: assertion noise vs. mutation surface.
+ *
+ *   (e) Parent-dir warning: drop the parent-dir-stat block in
+ *       `verify_vault_file` (per HEP-CORE-0035 §4.6.2 WARN
+ *       requirement, H1 fix).  Result:
+ *       VaultFile_ParentDir_0750_WarnsParentLeak and
+ *       _0755_WarnsParentLeak fail because no "parent directory"
+ *       substring is present in the diagnostic.
+ *
+ *   (f) Ownership helper: change `observed_uid == expected_uid`
+ *       to `!=` in `verify_ownership`.  Result: every
+ *       `VerifyOwnership_Matching*_Ok` test fails (ok flipped);
+ *       every `*_Mismatched_Error` test fails (ok flipped the
+ *       other way).  Pins the uid comparison direction without
+ *       needing CAP_CHOWN.
+ *
+ * NOTE on coverage gap: width-only mutations like "0%03o" →
+ * "0%02o" are NOT detectable here because `%NNo` is *minimum*
+ * width, not exact — and all modes in our matrix are >= 0100.  A
+ * mode <0100 would discriminate; not added because it has no
  * production analog (vault file mode 044 has no real path).
  *
- * Wrong-owner (`st_uid != geteuid()`) cases are NOT covered here;
- * exercising them requires creating a file owned by a different
- * uid, which needs `CAP_CHOWN` (root) and is unreliable on CI.  The
- * code path is grep-visible and short; coverage gap is documented.
+ * Wrong-owner (`st_uid != geteuid()`) cases are covered via the
+ * extracted `verify_ownership(path, role, observed_uid,
+ * expected_uid)` primitive — the test passes synthetic uid pairs
+ * directly without needing `CAP_CHOWN` to chown real files in CI.
+ * The vault-file / vault-dir wrappers in `verify_keyfile_acl` call
+ * `verify_ownership` with `geteuid()` for the expected uid; the
+ * helper is the single tested source of truth for the comparison +
+ * diagnostic format.
  *
  * @see HEP-CORE-0035 §4.6 (the discipline this enforces)
  * @see HEP-CORE-0036 §3 I1 (the higher-level gate this protects)
@@ -81,8 +113,10 @@
 namespace fs = std::filesystem;
 using pylabhub::utils::security::AclVerdict;
 using pylabhub::utils::security::KeyFileRole;
+using pylabhub::utils::security::SetModeResult;
 using pylabhub::utils::security::set_keyfile_mode;
 using pylabhub::utils::security::verify_keyfile_acl;
+using pylabhub::utils::security::verify_ownership;
 
 #if defined(PYLABHUB_PLATFORM_WIN64)
 
@@ -352,10 +386,11 @@ TEST_F(KeyFileAclTest, VaultDir_Missing_Error)
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-//  ConfigFile — not world-writable; group-readable is warn-not-fail
+//  ConfigFile (does NOT reference a vault path) — world-writable is
+//  Error; group-readable is SILENT (no warn) per HEP-CORE-0035 §4.6.2.
 // ─────────────────────────────────────────────────────────────────────────
 
-TEST_F(KeyFileAclTest, ConfigFile_0600_Ok)
+TEST_F(KeyFileAclTest, ConfigFile_0600_Ok_NoWarn)
 {
     const auto p = tmpfile_with_mode("config_0600", 0600);
 
@@ -374,21 +409,21 @@ TEST_F(KeyFileAclTest, ConfigFile_0644_Ok_NoWarn)
 
     EXPECT_TRUE(v.ok) << v.diagnostic;
     EXPECT_EQ(v.observed_mode, 0644u);
-    // 0644 has o-readable set but the group bit `(observed & 0040)`
-    // IS set too — so the warn branch fires.  Pin the warn text but
-    // assert ok is still true.
-    EXPECT_TRUE(contains(v.diagnostic, "group-readable")) << v.diagnostic;
+    EXPECT_TRUE(v.diagnostic.empty())
+        << "plain ConfigFile must NOT warn on group-readable; only "
+           "ConfigFileReferencingVault warns.  Got: " << v.diagnostic;
 }
 
-TEST_F(KeyFileAclTest, ConfigFile_0640_Ok_WarnsGroupReadable)
+TEST_F(KeyFileAclTest, ConfigFile_0640_Ok_NoWarn)
 {
     const auto p = tmpfile_with_mode("config_0640", 0640);
 
     const AclVerdict v = verify_keyfile_acl(p, KeyFileRole::ConfigFile);
 
     EXPECT_TRUE(v.ok) << v.diagnostic;
-    EXPECT_TRUE(contains(v.diagnostic, "group-readable")) << v.diagnostic;
-    EXPECT_TRUE(contains(v.diagnostic, "chmod g-r")) << v.diagnostic;
+    EXPECT_TRUE(v.diagnostic.empty())
+        << "plain ConfigFile must NOT warn on group-readable.  "
+           "Got: " << v.diagnostic;
 }
 
 TEST_F(KeyFileAclTest, ConfigFile_0666_WorldWritable_Error)
@@ -402,6 +437,7 @@ TEST_F(KeyFileAclTest, ConfigFile_0666_WorldWritable_Error)
     EXPECT_TRUE(contains(v.diagnostic, "world-writable")) << v.diagnostic;
     EXPECT_TRUE(contains(v.diagnostic, "config-injection")) << v.diagnostic;
     EXPECT_TRUE(contains(v.diagnostic, "chmod o-w")) << v.diagnostic;
+    EXPECT_TRUE(contains(v.diagnostic, p.string())) << v.diagnostic;
 }
 
 TEST_F(KeyFileAclTest, ConfigFile_0606_WorldWritable_Error)
@@ -413,6 +449,8 @@ TEST_F(KeyFileAclTest, ConfigFile_0606_WorldWritable_Error)
     EXPECT_FALSE(v.ok);
     EXPECT_EQ(v.observed_mode, 0606u);
     EXPECT_TRUE(contains(v.diagnostic, "world-writable")) << v.diagnostic;
+    EXPECT_TRUE(contains(v.diagnostic, "chmod o-w")) << v.diagnostic;
+    EXPECT_TRUE(contains(v.diagnostic, p.string())) << v.diagnostic;
 }
 
 TEST_F(KeyFileAclTest, ConfigFile_Missing_Error)
@@ -420,6 +458,73 @@ TEST_F(KeyFileAclTest, ConfigFile_Missing_Error)
     const auto p = tmp_dir_ / "no_config.json";
 
     const AclVerdict v = verify_keyfile_acl(p, KeyFileRole::ConfigFile);
+
+    EXPECT_FALSE(v.ok);
+    EXPECT_TRUE(contains(v.diagnostic, "config file")) << v.diagnostic;
+    EXPECT_TRUE(contains(v.diagnostic, "cannot be stat()'d")) << v.diagnostic;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+//  ConfigFileReferencingVault — same world-writable Error gate, plus
+//  the group-readable WARN that HEP-CORE-0035 §4.6.2 qualifies with
+//  "AND file references a keyfile path".  Diagnostic appended without
+//  flipping ok.
+// ─────────────────────────────────────────────────────────────────────────
+
+TEST_F(KeyFileAclTest, ConfigFileReferencingVault_0600_Ok_NoWarn)
+{
+    const auto p = tmpfile_with_mode("config_rv_0600", 0600);
+
+    const AclVerdict v = verify_keyfile_acl(
+        p, KeyFileRole::ConfigFileReferencingVault);
+
+    EXPECT_TRUE(v.ok) << v.diagnostic;
+    EXPECT_TRUE(v.diagnostic.empty());
+}
+
+TEST_F(KeyFileAclTest, ConfigFileReferencingVault_0644_Ok_WarnsGroupReadable)
+{
+    const auto p = tmpfile_with_mode("config_rv_0644", 0644);
+
+    const AclVerdict v = verify_keyfile_acl(
+        p, KeyFileRole::ConfigFileReferencingVault);
+
+    EXPECT_TRUE(v.ok) << v.diagnostic;
+    EXPECT_TRUE(contains(v.diagnostic, "group-readable")) << v.diagnostic;
+    EXPECT_TRUE(contains(v.diagnostic, "chmod g-r")) << v.diagnostic;
+    EXPECT_TRUE(contains(v.diagnostic, p.string())) << v.diagnostic;
+}
+
+TEST_F(KeyFileAclTest, ConfigFileReferencingVault_0640_Ok_WarnsGroupReadable)
+{
+    const auto p = tmpfile_with_mode("config_rv_0640", 0640);
+
+    const AclVerdict v = verify_keyfile_acl(
+        p, KeyFileRole::ConfigFileReferencingVault);
+
+    EXPECT_TRUE(v.ok) << v.diagnostic;
+    EXPECT_TRUE(contains(v.diagnostic, "group-readable")) << v.diagnostic;
+    EXPECT_TRUE(contains(v.diagnostic, "chmod g-r")) << v.diagnostic;
+}
+
+TEST_F(KeyFileAclTest, ConfigFileReferencingVault_0666_WorldWritable_Error)
+{
+    const auto p = tmpfile_with_mode("config_rv_0666", 0666);
+
+    const AclVerdict v = verify_keyfile_acl(
+        p, KeyFileRole::ConfigFileReferencingVault);
+
+    EXPECT_FALSE(v.ok);
+    EXPECT_TRUE(contains(v.diagnostic, "world-writable")) << v.diagnostic;
+    EXPECT_TRUE(contains(v.diagnostic, "chmod o-w")) << v.diagnostic;
+}
+
+TEST_F(KeyFileAclTest, ConfigFileReferencingVault_Missing_Error)
+{
+    const auto p = tmp_dir_ / "no_config_rv.json";
+
+    const AclVerdict v = verify_keyfile_acl(
+        p, KeyFileRole::ConfigFileReferencingVault);
 
     EXPECT_FALSE(v.ok);
     EXPECT_TRUE(contains(v.diagnostic, "config file")) << v.diagnostic;
@@ -473,14 +578,159 @@ TEST_F(KeyFileAclTest, PublicKeyFile_Missing_Error)
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-//  set_keyfile_mode — round-trip (write @ wrong mode; set; re-verify)
+//  Parent-directory WARN (HEP-CORE-0035 §4.6.2): stat the vault file's
+//  parent.  Group/world-accessible parent emits a soft warning
+//  appended to `diagnostic`, NOT a flip of `ok`.
+// ─────────────────────────────────────────────────────────────────────────
+
+TEST_F(KeyFileAclTest, VaultFile_ParentDir_0700_NoWarn)
+{
+    const auto parent = tmpdir_with_mode("strict_parent", 0700);
+    const auto file_p = parent / "vault_in_strict";
+    {
+        std::ofstream out(file_p);
+        out << "x\n";
+    }
+    ::chmod(file_p.c_str(), 0600);
+
+    const AclVerdict v = verify_keyfile_acl(file_p, KeyFileRole::VaultFile);
+
+    EXPECT_TRUE(v.ok) << v.diagnostic;
+    EXPECT_TRUE(v.diagnostic.empty())
+        << "strict 0700 parent must produce empty diagnostic.  Got: "
+        << v.diagnostic;
+}
+
+TEST_F(KeyFileAclTest, VaultFile_ParentDir_0750_WarnsParentLeak)
+{
+    const auto parent = tmpdir_with_mode("group_parent", 0750);
+    const auto file_p = parent / "vault_in_group_parent";
+    {
+        std::ofstream out(file_p);
+        out << "x\n";
+    }
+    ::chmod(file_p.c_str(), 0600);
+
+    const AclVerdict v = verify_keyfile_acl(file_p, KeyFileRole::VaultFile);
+
+    EXPECT_TRUE(v.ok)
+        << "parent-dir leak is a WARN (recoverable), not an ERROR.  "
+           "ok must stay true.  Got diagnostic: " << v.diagnostic;
+    EXPECT_TRUE(contains(v.diagnostic, "parent directory"))
+        << "diagnostic must name the parent dir explicitly: "
+        << v.diagnostic;
+    EXPECT_TRUE(contains(v.diagnostic, "group/world-accessible"))
+        << v.diagnostic;
+    EXPECT_TRUE(contains(v.diagnostic, "0750")) << v.diagnostic;
+    EXPECT_TRUE(contains(v.diagnostic, parent.string()))
+        << "diagnostic must include the parent path: " << v.diagnostic;
+    EXPECT_TRUE(contains(v.diagnostic, "chmod 0700"))
+        << "diagnostic must give the parent-dir fix command: "
+        << v.diagnostic;
+}
+
+TEST_F(KeyFileAclTest, VaultFile_ParentDir_0755_WarnsParentLeak)
+{
+    const auto parent = tmpdir_with_mode("loose_parent", 0755);
+    const auto file_p = parent / "vault_in_loose_parent";
+    {
+        std::ofstream out(file_p);
+        out << "x\n";
+    }
+    ::chmod(file_p.c_str(), 0600);
+
+    const AclVerdict v = verify_keyfile_acl(file_p, KeyFileRole::VaultFile);
+
+    EXPECT_TRUE(v.ok) << v.diagnostic;
+    EXPECT_TRUE(contains(v.diagnostic, "parent directory")) << v.diagnostic;
+    EXPECT_TRUE(contains(v.diagnostic, "0755")) << v.diagnostic;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+//  verify_ownership helper (extracted per code-review M5).
+//  Synthetic uids — no CAP_CHOWN / root required.
+// ─────────────────────────────────────────────────────────────────────────
+
+TEST_F(KeyFileAclTest, VerifyOwnership_MatchingUids_VaultFile_Ok)
+{
+    const auto p = tmpfile_with_mode("own_match_file", 0600);
+
+    const AclVerdict v =
+        verify_ownership(p, KeyFileRole::VaultFile, 1000u, 1000u);
+
+    EXPECT_TRUE(v.ok);
+    EXPECT_TRUE(v.diagnostic.empty()) << v.diagnostic;
+}
+
+TEST_F(KeyFileAclTest, VerifyOwnership_MatchingUids_VaultDir_Ok)
+{
+    const auto p = tmpdir_with_mode("own_match_dir", 0700);
+
+    const AclVerdict v =
+        verify_ownership(p, KeyFileRole::VaultDir, 42u, 42u);
+
+    EXPECT_TRUE(v.ok);
+    EXPECT_TRUE(v.diagnostic.empty()) << v.diagnostic;
+}
+
+TEST_F(KeyFileAclTest, VerifyOwnership_MismatchedUids_VaultFile_Error)
+{
+    const auto p = tmpfile_with_mode("own_mismatch_file", 0600);
+
+    const AclVerdict v =
+        verify_ownership(p, KeyFileRole::VaultFile,
+                         /*observed=*/9999u, /*expected=*/1000u);
+
+    EXPECT_FALSE(v.ok);
+    EXPECT_TRUE(contains(v.diagnostic, "owned by uid 9999")) << v.diagnostic;
+    EXPECT_TRUE(contains(v.diagnostic, "expected uid 1000")) << v.diagnostic;
+    EXPECT_TRUE(contains(v.diagnostic, "file ownership")) << v.diagnostic;
+    EXPECT_TRUE(contains(v.diagnostic, p.string())) << v.diagnostic;
+}
+
+TEST_F(KeyFileAclTest, VerifyOwnership_MismatchedUids_VaultDir_Error)
+{
+    const auto p = tmpdir_with_mode("own_mismatch_dir", 0700);
+
+    const AclVerdict v =
+        verify_ownership(p, KeyFileRole::VaultDir,
+                         /*observed=*/9999u, /*expected=*/1000u);
+
+    EXPECT_FALSE(v.ok);
+    // The diagnostic text discriminates "file" vs "directory" by role
+    // so an operator reading the message knows which thing to chown.
+    EXPECT_TRUE(contains(v.diagnostic, "directory")) << v.diagnostic;
+    EXPECT_TRUE(contains(v.diagnostic, "owned by uid 9999")) << v.diagnostic;
+    EXPECT_TRUE(contains(v.diagnostic, "expected uid 1000")) << v.diagnostic;
+}
+
+TEST_F(KeyFileAclTest, VerifyOwnership_RootVsUser_Error)
+{
+    // Common operator mistake: vault written as root before binary
+    // dropped privileges to a service uid.  Pin that the diagnostic
+    // surfaces both uids so the operator can `chown <expected> <path>`.
+    const auto p = tmpfile_with_mode("own_root_user", 0600);
+
+    const AclVerdict v =
+        verify_ownership(p, KeyFileRole::VaultFile,
+                         /*observed=*/0u, /*expected=*/1000u);
+
+    EXPECT_FALSE(v.ok);
+    EXPECT_TRUE(contains(v.diagnostic, "owned by uid 0")) << v.diagnostic;
+    EXPECT_TRUE(contains(v.diagnostic, "expected uid 1000")) << v.diagnostic;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+//  set_keyfile_mode — round-trip + tri-state return value
+//  (HEP-CORE-0035 §4.6.1 + code-review H3).
 // ─────────────────────────────────────────────────────────────────────────
 
 TEST_F(KeyFileAclTest, SetMode_VaultFile_RoundTripFrom0666To0600)
 {
     const auto p = tmpfile_with_mode("rt_vault", 0666);
 
-    ASSERT_TRUE(set_keyfile_mode(p, KeyFileRole::VaultFile));
+    EXPECT_EQ(set_keyfile_mode(p, KeyFileRole::VaultFile),
+              SetModeResult::Applied);
 
     struct ::stat st{};
     ASSERT_EQ(::stat(p.c_str(), &st), 0);
@@ -494,7 +744,8 @@ TEST_F(KeyFileAclTest, SetMode_VaultDir_RoundTripFrom0777To0700)
 {
     const auto p = tmpdir_with_mode("rt_vault_dir", 0777);
 
-    ASSERT_TRUE(set_keyfile_mode(p, KeyFileRole::VaultDir));
+    EXPECT_EQ(set_keyfile_mode(p, KeyFileRole::VaultDir),
+              SetModeResult::Applied);
 
     struct ::stat st{};
     ASSERT_EQ(::stat(p.c_str(), &st), 0);
@@ -508,21 +759,24 @@ TEST_F(KeyFileAclTest, SetMode_PublicKeyFile_RoundTripFrom0600To0644)
 {
     const auto p = tmpfile_with_mode("rt_pub", 0600);
 
-    ASSERT_TRUE(set_keyfile_mode(p, KeyFileRole::PublicKeyFile));
+    EXPECT_EQ(set_keyfile_mode(p, KeyFileRole::PublicKeyFile),
+              SetModeResult::Applied);
 
     struct ::stat st{};
     ASSERT_EQ(::stat(p.c_str(), &st), 0);
     EXPECT_EQ(st.st_mode & 07777, 0644u);
 }
 
-TEST_F(KeyFileAclTest, SetMode_ConfigFile_ReturnsFalseOperatorOwnsIt)
+TEST_F(KeyFileAclTest, SetMode_ConfigFile_NoCanonicalMode)
 {
-    // ConfigFile has no canonical mode; the utility must refuse to
-    // touch it and report failure so callers know to use a
-    // different code path.  Pre-set mode must NOT change.
+    // ConfigFile has no canonical mode (operator-managed).  The
+    // tri-state return value distinguishes this from a genuine chmod
+    // failure — callers must NOT treat NoCanonicalMode as an error.
+    // The pre-set mode must NOT change.
     const auto p = tmpfile_with_mode("rt_config", 0644);
 
-    EXPECT_FALSE(set_keyfile_mode(p, KeyFileRole::ConfigFile));
+    EXPECT_EQ(set_keyfile_mode(p, KeyFileRole::ConfigFile),
+              SetModeResult::NoCanonicalMode);
 
     struct ::stat st{};
     ASSERT_EQ(::stat(p.c_str(), &st), 0);
@@ -530,11 +784,20 @@ TEST_F(KeyFileAclTest, SetMode_ConfigFile_ReturnsFalseOperatorOwnsIt)
         << "set_keyfile_mode(ConfigFile) must not chmod the file";
 }
 
-TEST_F(KeyFileAclTest, SetMode_MissingPath_ReturnsFalse)
+TEST_F(KeyFileAclTest, SetMode_ConfigFileReferencingVault_NoCanonicalMode)
+{
+    const auto p = tmpfile_with_mode("rt_config_rv", 0644);
+
+    EXPECT_EQ(set_keyfile_mode(p, KeyFileRole::ConfigFileReferencingVault),
+              SetModeResult::NoCanonicalMode);
+}
+
+TEST_F(KeyFileAclTest, SetMode_MissingPath_ChmodFailed)
 {
     const auto p = tmp_dir_ / "does_not_exist";
 
-    EXPECT_FALSE(set_keyfile_mode(p, KeyFileRole::VaultFile));
+    EXPECT_EQ(set_keyfile_mode(p, KeyFileRole::VaultFile),
+              SetModeResult::ChmodFailed);
 }
 
 #endif  // !PYLABHUB_PLATFORM_WIN64

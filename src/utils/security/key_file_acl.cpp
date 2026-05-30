@@ -12,6 +12,22 @@
  * caller surfaces the diagnostic — this TU never logs (so the
  * utility stays callable before LifecycleGuard construction at
  * binary startup).
+ *
+ * Vault-file verification (HEP-CORE-0035 §4.6.2):
+ *   - mode `(st & 0077) != 0` is an ERROR (group/world-accessible).
+ *   - uid mismatch is an ERROR.
+ *   - parent dir `(parent.st & 0077) != 0` is a WARN appended to
+ *     `diagnostic` with a `; ` separator, NOT a flip of `ok` — some
+ *     operators want group-readable parents for shared-host setups.
+ *
+ * Config-file verification splits into two roles per §4.6.2's
+ * "AND file references a keyfile path" qualifier:
+ *   - `ConfigFile`: world-writable is ERROR; group-readable is
+ *     SILENT (no warn) because the file has no operator-secret
+ *     content from the utility's perspective.
+ *   - `ConfigFileReferencingVault`: world-writable is ERROR;
+ *     group-readable is WARN (appended to diagnostic, ok stays true)
+ *     because the path string itself becomes group-visible.
  */
 #include "utils/security/key_file_acl.hpp"
 
@@ -55,10 +71,11 @@ uint32_t required_mode_for(KeyFileRole role)
 {
     switch (role)
     {
-        case KeyFileRole::VaultFile:     return kVaultFileMode;
-        case KeyFileRole::VaultDir:      return kVaultDirMode;
-        case KeyFileRole::PublicKeyFile: return kPublicKeyFileMode;
-        case KeyFileRole::ConfigFile:    return 0;
+        case KeyFileRole::VaultFile:                  return kVaultFileMode;
+        case KeyFileRole::VaultDir:                   return kVaultDirMode;
+        case KeyFileRole::PublicKeyFile:              return kPublicKeyFileMode;
+        case KeyFileRole::ConfigFile:                 return 0;
+        case KeyFileRole::ConfigFileReferencingVault: return 0;
     }
     return 0;
 }
@@ -67,10 +84,11 @@ const char *role_label(KeyFileRole role)
 {
     switch (role)
     {
-        case KeyFileRole::VaultFile:     return "vault file";
-        case KeyFileRole::VaultDir:      return "vault directory";
-        case KeyFileRole::ConfigFile:    return "config file";
-        case KeyFileRole::PublicKeyFile: return "public-key file";
+        case KeyFileRole::VaultFile:                  return "vault file";
+        case KeyFileRole::VaultDir:                   return "vault directory";
+        case KeyFileRole::ConfigFile:                 return "config file";
+        case KeyFileRole::ConfigFileReferencingVault: return "config file";
+        case KeyFileRole::PublicKeyFile:              return "public-key file";
     }
     return "file";
 }
@@ -94,6 +112,48 @@ AclVerdict stat_failure_verdict(const fs::path &path,
            "every parent directory.";
     v.diagnostic = oss.str();
     return v;
+}
+
+/// HEP-CORE-0035 §4.6.2 parent-directory WARN: when checking a
+/// vault FILE, also stat its parent and append a soft warning to
+/// `diagnostic` (without flipping `ok` to false) if the parent has
+/// group/world bits set.  Per the spec note, "parent dir leak is
+/// recoverable; some operators want group-readable parents for
+/// shared host setups" — so this is an advisory, not a contract
+/// failure.  Concatenates onto existing diagnostic text via "; ".
+void append_parent_dir_warning(const fs::path &file_path, AclVerdict &v)
+{
+    const fs::path parent = file_path.parent_path();
+    if (parent.empty())
+    {
+        return;
+    }
+    struct ::stat pst{};
+    if (::stat(parent.c_str(), &pst) != 0)
+    {
+        // Parent stat failed; we already passed the file check, so
+        // this is a soft signal at most.  Stay silent — surfacing
+        // parent-stat errors here would create false positives for
+        // legitimate setups where the file is owned-and-readable
+        // but the parent dir is search-only (e.g., 0710 parent).
+        return;
+    }
+    const uint32_t pmode = static_cast<uint32_t>(pst.st_mode) & 07777;
+    if ((pmode & 0077) == 0)
+    {
+        return;
+    }
+    std::ostringstream oss;
+    if (!v.diagnostic.empty())
+    {
+        oss << v.diagnostic << "; ";
+    }
+    oss << "parent directory " << parent
+        << " is group/world-accessible (mode " << octal4(pmode)
+        << ") — recoverable per HEP-CORE-0035 §4.6.2 "
+           "(some operators want group-readable parents for shared "
+           "host setups), but consider: chmod 0700 " << parent;
+    v.diagnostic = oss.str();
 }
 
 AclVerdict verify_vault_file(const fs::path &path)
@@ -121,20 +181,22 @@ AclVerdict verify_vault_file(const fs::path &path)
         return v;
     }
 
-    const uid_t euid = ::geteuid();
-    if (st.st_uid != euid)
+    // Ownership check via the extracted helper; uses `geteuid()` for
+    // the expected uid.  Setuid binaries: `chmod` and `open` use the
+    // effective uid, so this is the correct comparison.
+    const auto own_v = verify_ownership(
+        path, KeyFileRole::VaultFile,
+        static_cast<uint32_t>(st.st_uid),
+        static_cast<uint32_t>(::geteuid()));
+    if (!own_v.ok)
     {
-        std::ostringstream oss;
-        oss << "vault file " << path
-            << " owned by uid " << st.st_uid
-            << "; expected uid " << euid
-            << ".  Check file ownership.";
         v.ok         = false;
-        v.diagnostic = oss.str();
+        v.diagnostic = own_v.diagnostic;
         return v;
     }
 
     v.ok = true;
+    append_parent_dir_warning(path, v);
     return v;
 }
 
@@ -174,16 +236,14 @@ AclVerdict verify_vault_dir(const fs::path &path)
         return v;
     }
 
-    const uid_t euid = ::geteuid();
-    if (st.st_uid != euid)
+    const auto own_v = verify_ownership(
+        path, KeyFileRole::VaultDir,
+        static_cast<uint32_t>(st.st_uid),
+        static_cast<uint32_t>(::geteuid()));
+    if (!own_v.ok)
     {
-        std::ostringstream oss;
-        oss << "vault directory " << path
-            << " owned by uid " << st.st_uid
-            << "; expected uid " << euid
-            << ".  Check directory ownership.";
         v.ok         = false;
-        v.diagnostic = oss.str();
+        v.diagnostic = own_v.diagnostic;
         return v;
     }
 
@@ -191,17 +251,21 @@ AclVerdict verify_vault_dir(const fs::path &path)
     return v;
 }
 
-AclVerdict verify_config_file(const fs::path &path)
+AclVerdict verify_config_file(const fs::path &path, bool references_vault)
 {
+    const KeyFileRole role = references_vault
+        ? KeyFileRole::ConfigFileReferencingVault
+        : KeyFileRole::ConfigFile;
+
     struct ::stat st{};
     if (::stat(path.c_str(), &st) != 0)
     {
-        return stat_failure_verdict(path, KeyFileRole::ConfigFile, errno);
+        return stat_failure_verdict(path, role, errno);
     }
 
     AclVerdict v;
     v.path          = path;
-    v.role          = KeyFileRole::ConfigFile;
+    v.role          = role;
     v.observed_mode = static_cast<uint32_t>(st.st_mode) & 07777;
     v.required_mode = 0;
 
@@ -217,18 +281,17 @@ AclVerdict verify_config_file(const fs::path &path)
         return v;
     }
 
-    // Group-readable when referencing a vault is a warning, not a
-    // hard failure (HEP-CORE-0035 §4.6.2: parent-dir-leak warnings
-    // are recoverable; same principle applies here).  Reflect it in
-    // the diagnostic but keep `ok = true`.
-    if ((v.observed_mode & 0040) != 0)
+    // Group-readable warning fires only when the config file is known
+    // to reference a vault path.  HEP-CORE-0035 §4.6.2 qualifies the
+    // WARN with "AND file references a keyfile path"; the utility
+    // cannot inspect config content, so the caller picks the role.
+    if (references_vault && (v.observed_mode & 0040) != 0)
     {
         std::ostringstream oss;
         oss << "config file " << path
             << " is group-readable (mode " << octal4(v.observed_mode)
-            << ") — recoverable, but if this file references a vault "
-               "path the group can see the path string.  Consider: "
-               "chmod g-r " << path;
+            << ") — the group can see the referenced vault path.  "
+               "Consider: chmod g-r " << path;
         v.diagnostic = oss.str();
     }
 
@@ -261,6 +324,47 @@ AclVerdict verify_public_key_file(const fs::path &path)
 #endif // !_WIN32
 
 } // namespace
+
+AclVerdict verify_ownership(const fs::path &path,
+                            KeyFileRole     role,
+                            uint32_t        observed_uid,
+                            uint32_t        expected_uid) noexcept
+{
+    AclVerdict v;
+    v.path          = path;
+    v.role          = role;
+    v.observed_mode = 0;
+    v.required_mode = 0;
+    if (observed_uid == expected_uid)
+    {
+        v.ok = true;
+        return v;
+    }
+    v.ok = false;
+    try
+    {
+#ifdef _WIN32
+        const char *what = "file";
+#else
+        const char *what = (role == KeyFileRole::VaultDir) ? "directory" : "file";
+#endif
+        std::ostringstream oss;
+        oss << "vault " << what << ' ' << path
+            << " owned by uid " << observed_uid
+            << "; expected uid " << expected_uid
+            << ".  Check "
+            << ((role == KeyFileRole::VaultDir) ? "directory" : "file")
+            << " ownership.";
+        v.diagnostic = oss.str();
+    }
+    catch (...)
+    {
+        v.diagnostic =
+            "ownership mismatch (uid comparison failed; "
+            "operator-facing diagnostic could not be formatted).";
+    }
+    return v;
+}
 
 AclVerdict verify_keyfile_acl(const fs::path &path, KeyFileRole role) noexcept
 {
@@ -297,51 +401,71 @@ AclVerdict verify_keyfile_acl(const fs::path &path, KeyFileRole role) noexcept
     {
         switch (role)
         {
-            case KeyFileRole::VaultFile:     return verify_vault_file(path);
-            case KeyFileRole::VaultDir:      return verify_vault_dir(path);
-            case KeyFileRole::ConfigFile:    return verify_config_file(path);
-            case KeyFileRole::PublicKeyFile: return verify_public_key_file(path);
+            case KeyFileRole::VaultFile:
+                return verify_vault_file(path);
+            case KeyFileRole::VaultDir:
+                return verify_vault_dir(path);
+            case KeyFileRole::ConfigFile:
+                return verify_config_file(path, /*references_vault=*/false);
+            case KeyFileRole::ConfigFileReferencingVault:
+                return verify_config_file(path, /*references_vault=*/true);
+            case KeyFileRole::PublicKeyFile:
+                return verify_public_key_file(path);
         }
+        AclVerdict v;
+        v.ok            = false;
+        v.path          = path;
+        v.role          = role;
+        v.observed_mode = 0;
+        v.required_mode = 0;
+        v.diagnostic = "internal error: unhandled KeyFileRole enumerator.";
+        return v;
     }
     catch (...)
     {
-        // path construction can throw; keep verdict shape sane.
+        // Defensive fallback: stream/path operations theoretically can
+        // throw under OOM or path-format errors.  Do not claim the
+        // role is unrecognized — be specific about what happened so
+        // operator diagnosis isn't misled.
+        AclVerdict v;
+        v.ok            = false;
+        v.path          = path;
+        v.role          = role;
+        v.observed_mode = 0;
+        v.required_mode = 0;
+        v.diagnostic =
+            "internal error during ACL verification (likely OOM or "
+            "unexpected exception while formatting the diagnostic).";
+        return v;
     }
-    AclVerdict v;
-    v.ok            = false;
-    v.path          = path;
-    v.role          = role;
-    v.observed_mode = 0;
-    v.required_mode = 0;
-    v.diagnostic    = "internal error: unrecognized KeyFileRole.";
-    return v;
 #endif
 }
 
-bool set_keyfile_mode(const fs::path &path, KeyFileRole role) noexcept
+SetModeResult set_keyfile_mode(const fs::path &path, KeyFileRole role) noexcept
 {
 #ifdef _WIN32
     (void) path;
     (void) role;
-    return true;
+    return SetModeResult::Applied;
 #else
     try
     {
         const uint32_t mode = required_mode_for(role);
         if (mode == 0)
         {
-            // ConfigFile has no canonical mode; the operator owns it.
-            return false;
+            // ConfigFile and ConfigFileReferencingVault have no
+            // canonical mode; operator owns them.
+            return SetModeResult::NoCanonicalMode;
         }
         if (::chmod(path.c_str(), static_cast<mode_t>(mode)) != 0)
         {
-            return false;
+            return SetModeResult::ChmodFailed;
         }
-        return true;
+        return SetModeResult::Applied;
     }
     catch (...)
     {
-        return false;
+        return SetModeResult::ChmodFailed;
     }
 #endif
 }

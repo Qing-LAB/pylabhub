@@ -61,27 +61,56 @@ namespace pylabhub::utils::security
 enum class KeyFileRole : int
 {
     /// Encrypted vault file (`hub.vault`, `<role_uid>.vault`).
-    /// Required: mode 0600, owner == current euid (POSIX).
+    /// Required: mode 0600, owner == current euid (POSIX).  The
+    /// verify also stats the file's parent directory and emits a
+    /// soft WARN into `diagnostic` (without flipping `ok` to false)
+    /// if `(parent.st_mode & 0077) != 0`, per HEP-CORE-0035 §4.6.2.
+    /// The WARN concatenates onto any other diagnostic text using
+    /// `; ` as separator.
     VaultFile,
 
     /// Vault parent directory (`<hub_dir>/vault`, `<role_dir>/vault`).
     /// Required: mode 0700, owner == current euid (POSIX).
     VaultDir,
 
-    /// Hub/role configuration file (`hub.json` and role config).
-    /// Required: not world-writable.  HEP-CORE-0035 §4.6.2 also
-    /// warns on group-readable when the file references a vault
-    /// path; the warning is reflected in `diagnostic` but does not
-    /// flip `ok` to false.
+    /// Hub/role configuration file (`hub.json` and role config) that
+    /// does NOT reference a vault keyfile path.  Required: not
+    /// world-writable.  Group-readable is permitted silently — the
+    /// file has no operator-secret content.
     ConfigFile,
+
+    /// Hub/role configuration file (`hub.json` and role config) that
+    /// references a vault keyfile path (e.g. `auth.keyfile` is set).
+    /// Required: not world-writable.  Per HEP-CORE-0035 §4.6.2, a
+    /// soft WARN is appended to `diagnostic` (without flipping `ok`)
+    /// when `(st_mode & 0040) != 0` — group can see the path string.
+    /// Callers parse the config first to choose between this role
+    /// and the plain `ConfigFile` role.
+    ConfigFileReferencingVault,
 
     /// Distributable public-key file (`hub.pubkey`, locally-cached
     /// role pubkeys).  Required at write: 0644.  Per HEP-CORE-0035
-    /// §4.6.2, no startup verification — pubkeys are intentionally
-    /// distributable and may legitimately be group- or world-
-    /// readable.  Listed here so the API is symmetric and so the
-    /// write-time setter has a canonical mode.
+    /// §4.6.2, no startup mode-verification — pubkeys are
+    /// intentionally distributable and may legitimately be group-
+    /// or world-readable.  Listed here so the API is symmetric and
+    /// so the write-time setter has a canonical mode.
     PublicKeyFile,
+};
+
+/// Outcome of `set_keyfile_mode`.  Discriminates three cases that
+/// previously collapsed into a single `bool false`: the canonical
+/// mode was applied successfully (`Applied`), the role has no
+/// canonical mode and nothing was done (`NoCanonicalMode` — currently
+/// the `ConfigFile*` roles, whose modes are operator-managed), and
+/// the POSIX `chmod` syscall failed (`ChmodFailed` — usually because
+/// the path does not exist or the current process lacks permission).
+/// Callers should treat `NoCanonicalMode` as expected (skip), not as
+/// an error.
+enum class SetModeResult : int
+{
+    Applied,
+    NoCanonicalMode,
+    ChmodFailed,
 };
 
 /// Result of `verify_keyfile_acl`.
@@ -108,27 +137,62 @@ struct AclVerdict
 /// errors (missing path, EACCES) land in `verdict.diagnostic` with
 /// `ok = false`.
 ///
-/// On Windows: returns `ok = true` with `diagnostic` noting the
-/// platform skip.
+/// On Windows: returns `ok = true` with `diagnostic` describing the
+/// platform skip (the diagnostic is non-empty even on success).
+/// Callers logging diagnostics MUST consult `verdict.ok` first and
+/// emit the message only on `ok = false`, OR they will produce a
+/// noisy log line on every Windows verify.
+///
+/// Ownership semantics: the uid comparison uses `geteuid()` (the
+/// effective uid).  Under a setuid binary this differs from the real
+/// uid by design — `open` and `chmod` use the effective uid, so the
+/// verify must match.
+///
+/// Known limitation (TOCTOU): the verdict is computed from a `stat()`
+/// whose result the caller uses to decide whether to read the file
+/// later.  A racing process could change the mode between
+/// `verify_keyfile_acl` and the read.  Per HEP-CORE-0035 §4.6 the
+/// file-mode floor is defence in depth on top of the vault's
+/// encryption-at-rest layer (libsodium AEAD via `vault_crypto.cpp`);
+/// the encryption is the primary protection and is not subject to
+/// the TOCTOU window.
 [[nodiscard]] PYLABHUB_UTILS_EXPORT AclVerdict
 verify_keyfile_acl(const std::filesystem::path &path,
                    KeyFileRole                   role) noexcept;
+
+/// Compare `observed_uid` to `expected_uid` for `path` under `role`
+/// and return a verdict.  This is the ownership-check primitive that
+/// `verify_keyfile_acl` calls internally with `geteuid()` for the
+/// expected uid; exposed here so unit tests can exercise the
+/// uid-mismatch branch with synthetic uids without needing `CAP_CHOWN`
+/// (root) to construct a file owned by a different user in CI.
+///
+/// Returns `ok = true` with empty diagnostic when the uids match.
+/// Returns `ok = false` with an operator-facing diagnostic (path,
+/// observed uid, expected uid, ownership-check guidance) when they
+/// differ.  `observed_mode` / `required_mode` are 0 on both paths —
+/// this helper does NOT check modes, only ownership.
+[[nodiscard]] PYLABHUB_UTILS_EXPORT AclVerdict
+verify_ownership(const std::filesystem::path &path,
+                 KeyFileRole                   role,
+                 uint32_t                      observed_uid,
+                 uint32_t                      expected_uid) noexcept;
 
 /// Set the mode of `path` to the canonical value for `role` per
 /// HEP-CORE-0035 §4.6.1.
 ///
 /// POSIX mapping:
-///   - VaultFile     → 0600
-///   - VaultDir      → 0700
-///   - PublicKeyFile → 0644
-///   - ConfigFile    → no canonical mode (operator-managed); returns
-///                     false without touching the file.
+///   - VaultFile                  → 0600  (Applied)
+///   - VaultDir                   → 0700  (Applied)
+///   - PublicKeyFile              → 0644  (Applied)
+///   - ConfigFile                 → no canonical mode  (NoCanonicalMode)
+///   - ConfigFileReferencingVault → no canonical mode  (NoCanonicalMode)
 ///
-/// On Windows: no-op returning `true`.
+/// On Windows: no-op returning `Applied`.
 ///
-/// Returns false on POSIX `chmod` failure or when called with
-/// `ConfigFile`.  Does not log; the caller decides how to surface.
-[[nodiscard]] PYLABHUB_UTILS_EXPORT bool
+/// Does not log; the caller decides how to surface.  Treat
+/// `NoCanonicalMode` as expected, not as an error.
+[[nodiscard]] PYLABHUB_UTILS_EXPORT SetModeResult
 set_keyfile_mode(const std::filesystem::path &path,
                  KeyFileRole                   role) noexcept;
 
