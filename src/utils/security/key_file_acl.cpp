@@ -381,6 +381,34 @@ AclVerdict verify_ownership(const fs::path &path,
     return v;
 }
 
+fs::path resolve_keyfile_path(const std::string &keyfile,
+                              const fs::path    &base_dir) noexcept
+{
+    try
+    {
+        if (keyfile.empty())
+        {
+            return {};
+        }
+        fs::path p(keyfile);
+        if (p.is_absolute())
+        {
+            return p;
+        }
+        return base_dir / p;
+    }
+    catch (...)
+    {
+        // path construction can throw bad_alloc on extremely long
+        // strings; return empty as a defensive fallback.  Callers
+        // already treat empty as ephemeral; in the OOM case the
+        // binary is going to die anyway, so the empty result will
+        // not cause a security regression (it will surface the
+        // failure as ephemeral-mode rather than vault-mode).
+        return {};
+    }
+}
+
 AclVerdict verify_keyfile_acl(const fs::path &path, KeyFileRole role) noexcept
 {
 #ifdef _WIN32

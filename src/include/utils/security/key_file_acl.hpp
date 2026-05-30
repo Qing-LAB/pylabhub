@@ -130,6 +130,35 @@ struct AclVerdict
     std::string           diagnostic{};
 };
 
+/// Resolve a config-supplied `auth.keyfile` string to a filesystem
+/// path, per the unified semantic in HEP-CORE-0033 §7.1 + HEP-CORE-
+/// 0024 §3.4 (clarified 2026-05-30):
+///
+///   - Empty input → empty result.  Callers interpret an empty
+///     result as the explicit ephemeral-CURVE opt-in: no vault file
+///     to open, no §4.6.2 Tier 2 ACL check to run.
+///   - Absolute input → returned as-is (no normalization).  JSON
+///     values are read literally — `~` is NOT shell-expanded here.
+///     Operators wanting the home directory must write the
+///     fully-resolved `/home/<user>/...` form in their config.
+///   - Relative input → joined with `base_dir` (hub_dir or role_dir
+///     depending on caller).  No `..` normalization is performed;
+///     the result may resolve outside `base_dir` if the operator
+///     writes a `..`-bearing path.  The §4.6.2 ACL check applies to
+///     whatever the resolved path is, so privilege escalation via
+///     `..` still requires the attacker to also control file
+///     ownership at the target.
+///
+/// Never throws.  Pure path arithmetic — no `stat()` call, no
+/// existence check.  Callers verify existence separately (the
+/// distinction between "operator configured a vault" and "vault
+/// file is currently present at that path" is part of the §4.6.2
+/// runtime contract — non-empty + file absent is a hard error,
+/// not a silent fallback).
+[[nodiscard]] PYLABHUB_UTILS_EXPORT std::filesystem::path
+resolve_keyfile_path(const std::string           &keyfile,
+                     const std::filesystem::path &base_dir) noexcept;
+
 /// Verify that `path` satisfies the ACL contract for `role`.
 ///
 /// On POSIX: stats the file; compares the low 12 bits of `st_mode`
