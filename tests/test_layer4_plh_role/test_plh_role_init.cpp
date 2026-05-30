@@ -149,13 +149,18 @@ TEST_P(PlhRoleInitTest, DefaultValues)
     ASSERT_TRUE(id.contains("log_level")) << "identity missing 'log_level'";
     EXPECT_EQ(id["log_level"].get<std::string>(), "info");
 
-    // (d) auth.keyfile default is "" — users opt in to vault via
-    // --keygen.  Empty means no vault; validate and run mode both
-    // skip the vault-unlock step.
+    // (d) auth.keyfile default is "vault/<uid>.vault" — the canonical
+    // relative path per HEP-CORE-0024 §3.4 (clarified 2026-05-30;
+    // previously the default was "" with silent ephemeral fallback).
+    // Operators who want ephemeral CURVE mode edit the value to ""
+    // explicitly; operators who want the vault elsewhere edit to
+    // their chosen path.
     ASSERT_TRUE(id.contains("auth")) << "auth block missing from identity";
     ASSERT_TRUE(id["auth"].contains("keyfile")) << "auth missing 'keyfile'";
-    EXPECT_EQ(id["auth"]["keyfile"].get<std::string>(), "")
-        << "auth.keyfile default must be empty; user opts in via --keygen";
+    const std::string expected_keyfile = "vault/" + uid + ".vault";
+    EXPECT_EQ(id["auth"]["keyfile"].get<std::string>(), expected_keyfile)
+        << "auth.keyfile default must be the canonical relative path; "
+           "empty value is an explicit ephemeral-mode opt-in (not the default).";
 
     // (e) Script defaults.
     ASSERT_TRUE(j.contains("script") && j["script"].is_object())
@@ -191,12 +196,13 @@ TEST_P(PlhRoleInitTest, DefaultValues)
         << "init template regressed — obsolete 'interval_ms' field present";
 }
 
-/// --init produces a config whose auth block is present with an EMPTY
-/// keyfile — users opt in to vault via --keygen later.  Pins the
-/// default-empty contract and the location of the auth block (under
-/// the role identity block, NOT at top level).  A regression that
-/// silently pre-populated keyfile OR moved the auth block would fail.
-TEST_P(PlhRoleInitTest, DefaultAuthKeyfileEmpty)
+/// --init produces a config whose auth block is present with the
+/// canonical default `vault/<uid>.vault` (HEP-CORE-0024 §3.4
+/// clarified 2026-05-30).  Pins both the new default and the
+/// location of the auth block (under the role identity block, NOT
+/// at top level).  A regression that silently emptied the default
+/// back to "" OR moved the auth block would fail.
+TEST_P(PlhRoleInitTest, DefaultAuthKeyfileIsCanonicalDefault)
 {
     const auto &s = GetParam();
     const auto dir = tmp("init_auth");
@@ -217,8 +223,18 @@ TEST_P(PlhRoleInitTest, DefaultAuthKeyfileEmpty)
     ASSERT_TRUE(j.contains(std::string(s.role_json_key)));
     ASSERT_TRUE(j[std::string(s.role_json_key)].contains("auth"))
         << "identity block missing auth";
-    EXPECT_EQ(j[std::string(s.role_json_key)]["auth"]["keyfile"].get<std::string>(), "")
-        << "default keyfile must be empty string (user opts in via --keygen)";
+
+    // Need the actual UID the binary generated to compute the expected
+    // canonical default.
+    const std::string uid =
+        j[std::string(s.role_json_key)]["uid"].get<std::string>();
+    const std::string expected_keyfile = "vault/" + uid + ".vault";
+    EXPECT_EQ(j[std::string(s.role_json_key)]["auth"]["keyfile"].get<std::string>(),
+              expected_keyfile)
+        << "default keyfile must be the canonical relative path "
+           "`vault/<uid>.vault` per HEP-CORE-0024 §3.4.  "
+           "Empty value is reserved for the explicit ephemeral-mode "
+           "opt-in (operator edits post-`--init`).";
 }
 
 /// --init --log-maxsize N --log-backups M threads CLI overrides into

@@ -264,10 +264,16 @@ int main(int argc, char *argv[])
     if (args.keygen_only)
         return do_keygen(cfg);
 
-    // 9. Unlock vault if configured.  HubHost reads the unlocked
+    // 9. Unlock vault if configured (skipped in --validate mode per
+    //    the same reasoning as plh_role_main: vault unlock is a
+    //    runtime concern, not a config-validity concern.  Under the
+    //    strict-keyfile contract HEP-CORE-0033 §7.1 clarified
+    //    2026-05-30, --validate on a not-yet-keygen'd config would
+    //    otherwise hard-error and break the --init → --validate →
+    //    --keygen workflow).  HubHost reads the unlocked
     //    auth().client_pubkey/seckey at startup() to decide whether to
     //    enable CURVE on the broker (HEP-0033 §4.1 step 2).
-    if (!cfg.auth().keyfile.empty())
+    if (!args.validate_only && !cfg.auth().keyfile.empty())
     {
         const auto vault_password = cli::get_password(
             "hub",

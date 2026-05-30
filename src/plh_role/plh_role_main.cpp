@@ -300,8 +300,15 @@ int main(int argc, char *argv[])
         return 0;
     }
 
-    // ── Auth: unlock vault if configured ──────────────────────────────
-    if (!c.auth().keyfile.empty())
+    // ── Auth: unlock vault if configured (skipped in --validate mode) ─
+    // `--validate` checks config schema/types/refs; vault unlock is a
+    // runtime concern.  Under the strict-keyfile contract (HEP-CORE-
+    // 0024 §3.4 clarified 2026-05-30), `--validate` on a config that
+    // points at a not-yet-keygen'd vault path would otherwise hard-
+    // error, which breaks the `--init` → `--validate` → `--keygen`
+    // workflow many operators use to pre-flight configs before
+    // creating secrets.
+    if (!args.validate_only && !c.auth().keyfile.empty())
     {
         const auto vault_password = cli::get_password(
             info->role_tag.c_str(),
