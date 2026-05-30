@@ -121,6 +121,7 @@
 namespace fs = std::filesystem;
 using pylabhub::utils::security::AclVerdict;
 using pylabhub::utils::security::KeyFileRole;
+using pylabhub::utils::security::resolve_keyfile_path;
 using pylabhub::utils::security::SetModeResult;
 using pylabhub::utils::security::set_keyfile_mode;
 using pylabhub::utils::security::verify_keyfile_acl;
@@ -223,6 +224,117 @@ protected:
 
     fs::path tmp_dir_;
 };
+
+// ─────────────────────────────────────────────────────────────────────────
+//  resolve_keyfile_path — pure path arithmetic.
+//  Per HEP-CORE-0033 §7.1 + HEP-CORE-0024 §3.4 unified semantic
+//  (clarified 2026-05-30): empty → empty; absolute → as-is; relative
+//  → joined with base_dir.  No `~` expansion, no `..` normalization,
+//  no `stat()` call — existence is the caller's concern.
+// ─────────────────────────────────────────────────────────────────────────
+
+TEST(KeyFileAclResolveTest, Empty_ReturnsEmpty)
+{
+    const auto r = resolve_keyfile_path("", "/etc/pylabhub/hub");
+    EXPECT_TRUE(r.empty())
+        << "Empty input must return empty path so callers can use it "
+           "as the ephemeral-CURVE sentinel.  Got: " << r;
+}
+
+TEST(KeyFileAclResolveTest, Empty_EmptyBase_ReturnsEmpty)
+{
+    const auto r = resolve_keyfile_path("", "");
+    EXPECT_TRUE(r.empty());
+}
+
+TEST(KeyFileAclResolveTest, AbsolutePath_ReturnedUnchanged)
+{
+    const auto r = resolve_keyfile_path("/srv/secrets/hub.vault",
+                                        "/etc/pylabhub/hub");
+    EXPECT_EQ(r, fs::path("/srv/secrets/hub.vault"));
+}
+
+TEST(KeyFileAclResolveTest, AbsolutePath_BaseIgnored)
+{
+    // Pins that the base_dir parameter is NOT prepended when the
+    // input is absolute (a regression here would silently rewrite
+    // operator-configured absolute paths).
+    const auto r = resolve_keyfile_path("/srv/secrets/hub.vault",
+                                        "/completely/unrelated/base");
+    EXPECT_EQ(r, fs::path("/srv/secrets/hub.vault"));
+    EXPECT_TRUE(r.is_absolute());
+}
+
+TEST(KeyFileAclResolveTest, RelativePath_JoinedWithBase)
+{
+    const auto r = resolve_keyfile_path("vault/hub.vault",
+                                        "/etc/pylabhub/hub");
+    EXPECT_EQ(r, fs::path("/etc/pylabhub/hub/vault/hub.vault"));
+}
+
+TEST(KeyFileAclResolveTest, RelativePath_TrailingSlashOnBase)
+{
+    // std::filesystem::path / operator handles trailing slashes
+    // transparently; pin that behavior so a hub_dir like
+    // "/etc/pylabhub/hub/" (operator typo or convention) still
+    // produces the right result.
+    const auto r = resolve_keyfile_path("vault/hub.vault",
+                                        "/etc/pylabhub/hub/");
+    EXPECT_EQ(r, fs::path("/etc/pylabhub/hub/vault/hub.vault"));
+}
+
+TEST(KeyFileAclResolveTest, RelativePath_DotPrefix)
+{
+    // Some operators may write "./vault/hub.vault" — should resolve
+    // identically to "vault/hub.vault" under the same base.
+    const auto r = resolve_keyfile_path("./vault/hub.vault",
+                                        "/etc/pylabhub/hub");
+    EXPECT_EQ(r.lexically_normal(),
+              fs::path("/etc/pylabhub/hub/vault/hub.vault"));
+}
+
+TEST(KeyFileAclResolveTest, RelativePath_DotDotTraversal_NotNormalized)
+{
+    // Pins that `..` is NOT normalized by the helper — the §4.6.2
+    // ACL check runs on the resulting path, so privilege escalation
+    // via `..` still requires owning the target.  But the helper
+    // itself does not silently rewrite the operator's intent.
+    const auto r = resolve_keyfile_path("../shared/hub.vault",
+                                        "/etc/pylabhub/hub");
+    // The result is the literal join; lexically_normal would collapse
+    // /etc/pylabhub/hub/../shared/hub.vault → /etc/pylabhub/shared/hub.vault.
+    // We do NOT normalize, so the literal path retains `..`.
+    EXPECT_NE(r.string().find(".."), std::string::npos)
+        << "helper must preserve `..` for the ACL check to see "
+           "what the operator actually wrote: " << r;
+}
+
+TEST(KeyFileAclResolveTest, TildeNotExpanded)
+{
+    // L1 reviewer finding: JSON values are read literally; `~` is
+    // not shell-expanded.  Pin that the helper treats `~/...` as a
+    // relative path (since `~` is not a path-is_absolute starter
+    // under POSIX std::filesystem::path::is_absolute).
+    const auto r = resolve_keyfile_path("~/.pylabhub/vault/x.vault",
+                                        "/etc/pylabhub/role");
+    // Joined as relative → `/etc/pylabhub/role/~/.pylabhub/vault/x.vault`
+    // (which the ACL check will then fail at `stat()`, producing an
+    // operator-facing error — exactly the desired behavior).
+    EXPECT_TRUE(r.string().find("~") != std::string::npos);
+    EXPECT_TRUE(r.string().find("/etc/pylabhub/role") == 0)
+        << "tilde-bearing relative paths are joined with base, NOT "
+           "expanded to $HOME.  Got: " << r;
+}
+
+TEST(KeyFileAclResolveTest, ResultLength_DoesNotCorrupt)
+{
+    // Defensive sanity: a moderately long but legal input must round-trip
+    // through path construction without truncation.
+    std::string deep_path = "a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/p/q/r/s/t/u/v/w/x/y/z/vault.bin";
+    const auto r = resolve_keyfile_path(deep_path, "/etc/p");
+    EXPECT_TRUE(r.string().size() > deep_path.size());
+    EXPECT_NE(r.string().find("vault.bin"), std::string::npos);
+}
 
 // ─────────────────────────────────────────────────────────────────────────
 //  VaultFile — 0600 strict
