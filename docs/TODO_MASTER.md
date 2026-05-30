@@ -113,7 +113,8 @@ the demo inventory + manifest schema.
 - **#95** SCHEMA_REQ + METRICS_REQ — KEEP-RESERVED vs DELETE decision.  S.
 
 **P1 — small cleanups, batch together** (S each):
-- **#78** B3 hard-error empty `hub.auth.keyfile`.
+- ~~**#78** B3 empty `auth.keyfile`~~ → bundled into #101 sub-phase 1D
+  (2026-05-30; see planning doc §5.1.1).
 - **#79** B4 `plh_role --init` non-zero SHM secret default.
 - **#80** B6+B7 `rx.fz` binding + processor flexzone side doc.
 - **#82** B10 `band_join` from `on_init` surface failure.

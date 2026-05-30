@@ -168,10 +168,92 @@ encryption-at-rest stays.
 - Known-roles-in-vault storage + `--add-known-role` CLI commands —
   folded into #74 (see §5.3).  #101 just makes sure the vault file
   itself has correct modes; #74 changes what the vault *contains*.
-- B3 hard-error empty keyfile (task #78 — separate).
 - B4 non-zero SHM secret (task #79 — separate).
 - Script-accessible vault (HEP-CORE-0038, task #106 — separate, lands
   after #104).
+
+**Folded INTO #101 sub-phase 1D (decision 2026-05-30 — scope
+expansion):** Task #78 (B3: hard-error empty `auth.keyfile`) +
+hub-side `auth.keyfile` honoring.  Rationale below.
+
+### 5.1.1 Sub-phase 1D — expanded scope (2026-05-30)
+
+**Problem surfaced during 1D investigation:** `auth.keyfile` is
+the source of truth for the vault path per HEP-CORE-0033 §7 and
+HEP-CORE-0024 §3.4, but the implementations diverged:
+
+- **Hub** (`src/utils/config/hub_config.cpp:170-186`): hardcodes
+  `<hub_dir>/vault/hub.vault`; `auth.keyfile` content is IGNORED
+  (acts as a non-empty/empty "vault auth on/off" toggle only).
+  Comment admits "the path is hard-coded" without justifying it.
+- **Role** (`src/utils/config/role_config.cpp:263-271`): uses
+  `auth.keyfile` as-is, no fallback to a canonical default.
+  When the file doesn't exist, falls through silently to ephemeral
+  CURVE identity with only a stderr printf.
+
+Neither implementation matches the HEPs' design intent (both said
+`auth.keyfile` is the source of truth; both should resolve
+relative paths against `base_dir` and fall back to a canonical
+default).  Wiring ACL checks on top of this inconsistency would
+codify the hole: the hub would ACL-check `<hub_dir>/vault/hub.vault`
+but an operator who edits the config to point elsewhere would
+silently bypass it.
+
+**Unified design (locked 2026-05-30):**
+
+| `auth.keyfile` value | Meaning | Runtime behavior |
+|---|---|---|
+| Non-empty (relative) | Path relative to `<base_dir>` (hub_dir / role_dir) | Open vault at resolved path; ACL-check file + parent dir; fail loud on mode/ownership violation |
+| Non-empty (absolute) | Path as-is | Same as above; ACL-check at the exact path |
+| Empty `""` | EXPLICIT opt-out — ephemeral CURVE keys, no encryption at rest (dev / loopback only) | No vault open; no ACL check; warn to stderr that ephemeral mode is in use |
+| Field missing entirely | Config-load error | Hard-fail at parse time (task #78) |
+
+**No quiet fallback.**  Empty means explicit opt-out (ephemeral
+mode).  An operator reading someone else's deployment sees the
+vault location in the config; a missing entry is a config error.
+
+`--init` writes the canonical default into the template:
+- Hub: `"auth": { "keyfile": "vault/hub.vault" }`
+- Role: `"auth": { "keyfile": "vault/<role_uid>.vault" }`
+
+`--keygen` requires non-empty `auth.keyfile` (hard-error otherwise
+— ephemeral mode is in-process only).
+
+**Files to change in sub-phase 1D:**
+
+| File | Change |
+|---|---|
+| `src/utils/config/hub_config.cpp:170-209` | Replace hardcoded path with `resolve_keyfile_path(auth.keyfile, hub_dir)`.  Hard-error on missing field; empty = ephemeral (HubVault not loaded). |
+| `src/utils/config/role_config.cpp:263-275` | Already uses `auth.keyfile`.  Remove the silent ephemeral fallback when file doesn't exist (turn into hard error if `keyfile` non-empty + missing file); empty `keyfile` = ephemeral with warning, no file check. |
+| `src/utils/config/hub_directory.cpp:124` | Already writes `"vault/hub.vault"`; verify role_directory.cpp `--init` writes `"vault/<role_uid>.vault"` symmetrically. |
+| `src/include/utils/security/key_file_acl.hpp` or new helper | `fs::path resolve_keyfile_path(string keyfile, fs::path base_dir)` — relative → joined with base_dir, absolute → as-is.  Single source of truth for both binaries. |
+| `src/plh_hub/plh_hub_main.cpp` | ACL check on the resolved keyfile path + its parent dir.  Skip when keyfile empty (ephemeral mode). |
+| `src/plh_role/plh_role_main.cpp` | Same, symmetric. |
+
+**HEP doc changes that come WITH this code (land first, see §6
+"Workflow" below):**
+
+1. **HEP-CORE-0033 §7 (Hub directory layout)** — clarify
+   `auth.keyfile` IS source of truth; canonical path is what
+   `--init` writes; runtime resolves relative paths against
+   `hub_dir`; empty = ephemeral.
+2. **HEP-CORE-0024 §3.4 (Role vault file convention)** — drop the
+   "`RoleDirectory::default_keyfile()` when empty" runtime
+   fallback language.  Helper stays for `--init` use (computing
+   the canonical default to write into the template).  Empty
+   `auth.keyfile` at runtime = ephemeral, not default fallback.
+3. **HEP-CORE-0035 §4.6.1 (Required modes table)** — add note that
+   the `vault/` directory may be located outside `base_dir` per
+   operator's `auth.keyfile` setting (user-controlled placement
+   intent — see §5.1.1 design table above).
+4. **HEP-CORE-0035 §4.6.2 (Startup verification)** — clarify the
+   ACL check runs on the resolved `auth.keyfile` path; runs in
+   both binaries; ephemeral mode skips the check.
+
+**Task tracking:** This sub-phase BUNDLES #101's 1D wiring with
+task #78 (hard-error empty keyfile) + hub `auth.keyfile`-honoring
+fix.  After sub-phase 1D ships, task #78 closes; #101 advances to
+sub-phase 1E (L4 binary fixture extensions).
 
 §4.6.3 explicitly says #101 layers on top of #78/#79.
 
