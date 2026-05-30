@@ -12,6 +12,7 @@
  */
 #include "plh_platform.hpp"
 #include "utils/hub_vault.hpp"
+#include "utils/security/key_file_acl.hpp"
 #include "utils/uuid_utils.hpp"
 
 #include <gtest/gtest.h>
@@ -149,12 +150,13 @@ TEST_F(HubVaultTest, CreateVaultFileHasRestrictedPermissions)
     EXPECT_FALSE(win32_sid_has_access(vault_path, WinWorldSid, FILE_GENERIC_WRITE))
         << "Everyone should NOT have write access to hub.vault";
 #else
-    const fs::perms p = fs::status(vault_path).permissions();
-    // Must be owner read/write only (0600) — no group/other bits.
-    EXPECT_EQ(p & fs::perms::group_read,    fs::perms::none) << "group_read should be off";
-    EXPECT_EQ(p & fs::perms::group_write,   fs::perms::none) << "group_write should be off";
-    EXPECT_EQ(p & fs::perms::others_read,   fs::perms::none) << "others_read should be off";
-    EXPECT_EQ(p & fs::perms::others_write,  fs::perms::none) << "others_write should be off";
+    // Mode discipline owned by HEP-CORE-0035 §4.6 utility (single
+    // source of truth for the verdict matrix; see
+    // tests/test_layer2_service/test_key_file_acl.cpp).
+    using pylabhub::utils::security::KeyFileRole;
+    using pylabhub::utils::security::verify_keyfile_acl;
+    const auto v = verify_keyfile_acl(vault_path, KeyFileRole::VaultFile);
+    EXPECT_TRUE(v.ok) << v.diagnostic;
 #endif
 }
 
@@ -237,10 +239,11 @@ TEST_F(HubVaultTest, OpenCorruptedVaultThrows)
         const char garbage[] = {'\xDE', '\xAD', '\xBE', '\xEF'};
         f.write(garbage, sizeof(garbage));
     }
-    // Restore 0600 permissions (fstream may not preserve them)
-    fs::permissions(vault_path,
-                    fs::perms::owner_read | fs::perms::owner_write,
-                    fs::perm_options::replace);
+    // Restore canonical 0600 vault-file mode via HEP-CORE-0035 §4.6
+    // utility (fstream may not preserve them).
+    EXPECT_EQ(pylabhub::utils::security::set_keyfile_mode(
+                  vault_path, pylabhub::utils::security::KeyFileRole::VaultFile),
+              pylabhub::utils::security::SetModeResult::Applied);
 
     EXPECT_THROW(HubVault::open(hub_dir_, hub_uid_, kPassword), std::runtime_error);
 }
@@ -268,9 +271,11 @@ TEST_F(HubVaultTest, OpenTruncatedVaultThrows)
     // Chop the file to 16 bytes (shorter than even the 24-byte nonce
     // header — open() must fail before touching the decrypt path).
     fs::resize_file(vault_path, 16);
-    fs::permissions(vault_path,
-                    fs::perms::owner_read | fs::perms::owner_write,
-                    fs::perm_options::replace);
+    // Restore canonical 0600 vault-file mode via HEP-CORE-0035 §4.6
+    // utility (resize_file may not preserve them).
+    EXPECT_EQ(pylabhub::utils::security::set_keyfile_mode(
+                  vault_path, pylabhub::utils::security::KeyFileRole::VaultFile),
+              pylabhub::utils::security::SetModeResult::Applied);
     ASSERT_EQ(fs::file_size(vault_path), 16u);
 
     EXPECT_THROW(HubVault::open(hub_dir_, hub_uid_, kPassword), std::runtime_error);
