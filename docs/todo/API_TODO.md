@@ -45,12 +45,15 @@ bugs (B1-B13).  B1, B2, B5, B9, B11, B12, B13 ✅ FIXED in code.  The
 ones below are filed but not yet fixed; each is a tightly-scoped
 single-area change.
 
-- **B3 (#78)** — `hub.auth.keyfile=""` half-state: broker uses
-  ephemeral CURVE but doesn't publish `hub.pubkey`, so roles silently
-  fail handshake.  Fix: hard-error empty keyfile at config load with
-  "Hub requires a vault for CURVE keypair — run `plh_hub --keygen`
-  first".  See `docs/todo/MESSAGEHUB_TODO.md` (config validation path
-  is broker-side).
+- **B3 (#78)** — **MERGED INTO #101 sub-phase 1D** (decision 2026-05-30).
+  Original scope: hard-error `hub.auth.keyfile=""` at config load.
+  Expanded scope under #101: unified `auth.keyfile` semantics across
+  hub AND role (empty `""` = explicit ephemeral opt-in; non-empty =
+  vault auth at resolved path; field-missing = config-load error;
+  relative paths resolved against `base_dir`).  Also fixes hub's
+  ignored-`auth.keyfile` bug (`hub_config.cpp:170-186` hardcodes
+  path).  Full plan: `docs/tech_draft/DRAFT_HEP-0036-implementation-
+  guideline_2026-05.md` §5.1.1.  When #101 1D ships, #78 closes.
 
 - **#101** — **HEP-CORE-0035 §4.6 key-file ACL discipline** —
   shared `src/utils/security/key_file_acl.{hpp,cpp}` utility +
