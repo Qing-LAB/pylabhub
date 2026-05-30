@@ -710,6 +710,48 @@ Mirrors HEP-CORE-0024 role layout. `HubDirectory` helper (new) mirrors
 `RoleDirectory` accessors (`base_dir/vault/logs/script/run/schemas`,
 `create_standard_layout()`, `has_standard_layout()`).
 
+### 7.1 Vault path resolution (`auth.keyfile`) — clarified 2026-05-30
+
+`hub.auth.keyfile` is the **source of truth** for the vault file
+location.  The runtime does NOT hardcode `<hub_dir>/vault/hub.vault`;
+it resolves the configured path:
+
+| `auth.keyfile` value | Runtime behavior |
+|---|---|
+| Non-empty, relative (e.g. `"vault/hub.vault"`) | Resolved against `hub_dir`: `<hub_dir>/vault/hub.vault`.  Vault opened at this path.  HEP-CORE-0035 §4.6.2 ACL check applies to the file + its parent directory. |
+| Non-empty, absolute (e.g. `"/srv/secrets/hub.vault"` or `"~/my-vault/hub.vault"` after shell-expansion by the operator) | Used as-is.  ACL check applies. |
+| Empty `""` | EXPLICIT opt-in to ephemeral CURVE keys, no encryption at rest.  Dev / loopback only.  Stderr warning emitted at startup.  No vault open, no ACL check. |
+| Field missing entirely | Config-load error (hard-fail at parse time; see HEP-CORE-0035 §4.6.4 task #78 closure). |
+
+This semantic matches HEP-CORE-0024 §3.4 for the role side — there
+is **no asymmetry** between hub and role auth.keyfile handling.
+
+`plh_hub --init` writes the canonical default `"vault/hub.vault"`
+into the template, so operators see the vault location explicitly
+in `hub.json`.  Operators who want the vault elsewhere (e.g., a
+user-writable directory on a system where `hub_dir` is root-owned)
+edit `auth.keyfile` to the desired path.
+
+`plh_hub --keygen` requires non-empty `auth.keyfile` (writes the
+vault at the resolved path; ephemeral mode has no on-disk vault to
+create).  Empty value → hard error: "ephemeral mode is in-process
+only; --keygen requires a vault path."
+
+### 7.2 Vault directory placement (security note)
+
+The `vault/` directory holds the encrypted secret material and any
+future encrypted-at-rest secrets (HEP-CORE-0038 script-vault, etc.).
+Its location is determined entirely by the operator's `auth.keyfile`
+choice — it does NOT have to be a subdirectory of `hub_dir`.  This
+enables the **system-managed config + user-owned vault** deployment
+model: `hub.json` and `hub_dir` may live under a root-owned global
+install (e.g., `/etc/pylabhub/`) while the vault lives in a user-
+writable directory (e.g., `~/.pylabhub/vault/`).
+
+HEP-CORE-0035 §4.6.1 enforces 0700 mode + euid-owner match on the
+vault directory regardless of where it lives.  Mode + ownership
+discipline are independent of placement.
+
 `schemas/` holds **hub-global** schema records (owner = `hub`) per
 HEP-CORE-0034. Hub startup walks the tree and loads each `*.json` file into
 `HubState.schemas`; failure to parse any file aborts startup with a precise

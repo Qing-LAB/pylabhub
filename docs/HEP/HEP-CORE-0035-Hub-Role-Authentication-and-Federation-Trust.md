@@ -450,13 +450,37 @@ who obtains file-write on the hub directory.  Allowlist storage
 moves INSIDE the vault per §4.8.  The vault's password+mode
 protection composes; neither alone is sufficient.
 
+**Vault directory placement is operator-controlled, NOT pinned to
+`<hub_dir>` / `<role_dir>`.**  The `vault/` directory path is
+derived from `auth.keyfile` at runtime — see HEP-CORE-0033 §7.1 +
+HEP-CORE-0024 §3.4.  This enables the system-managed-config +
+user-owned-vault deployment model: `<hub_dir>` / `<role_dir>` may
+live under a root-owned global install while the vault lives in a
+user-writable directory.  Mode 0700 + euid-owner match apply to
+the vault directory wherever it lives.  Mode discipline is
+independent of placement.
+
 Implementation: use `open(O_CREAT | O_EXCL, 0600)` followed by an
 explicit `fchmod(fd, 0600)` at write time.  Do NOT rely on the
 process `umask`.
 
 ### 4.6.2 Startup verification (every `plh_hub` / `plh_role` invocation)
 
-Before reading any secret material, every binary MUST run:
+**The vault file path is resolved from `auth.keyfile`** per HEP-
+CORE-0033 §7.1 (hub side) and HEP-CORE-0024 §3.4 (role side).  The
+runtime verification described below applies to the resolved path:
+
+- Non-empty relative `auth.keyfile` → resolved against `base_dir`
+  (hub_dir or role_dir).
+- Non-empty absolute `auth.keyfile` → used as-is.
+- Empty `auth.keyfile` `""` → explicit ephemeral-mode opt-in; **no
+  vault open, no ACL verification**.  Binary emits a stderr WARN
+  noting that ephemeral CURVE keys are in use and proceeds.
+- Field missing entirely → config-load error before this section
+  runs (closes task #78).
+
+When `auth.keyfile` is non-empty, before reading any secret
+material, every binary MUST run:
 
 ```
 check vault file (hub.vault / <role_uid>.vault)
@@ -503,9 +527,14 @@ binaries call into the same code.
 
 This requirement layers on top of existing related work:
 
-- B3 (task #78) — hard-error empty `hub.auth.keyfile=""`.  This HEP
-  §4.6 adds the mode check on top: even if the path is non-empty,
-  the file's mode is verified.
+- B3 (task #78) — **MERGED INTO #101 sub-phase 1D** (decision
+  2026-05-30).  Original scope: hard-error empty `hub.auth.keyfile`.
+  Expanded: hub-side `auth.keyfile` honoring (replacing
+  `hub_config.cpp` hardcoded path) + unified semantics across hub
+  and role per HEP-CORE-0033 §7.1 / HEP-CORE-0024 §3.4.  Empty
+  `""` is now explicit ephemeral opt-in (NOT an error); the
+  hard-error case is the missing-field case (field absent from
+  the JSON entirely).
 - B4 (task #79) — `plh_role --init` generates a non-zero SHM secret.
   Same `--init` pass SHOULD also generate the role's CURVE keypair
   (or invoke `--keygen` internally), with the modes from §4.6.1

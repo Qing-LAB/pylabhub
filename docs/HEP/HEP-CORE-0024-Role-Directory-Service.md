@@ -126,17 +126,61 @@ Hub resources are then found at canonical locations within the resolved hub dire
   hub.pubkey    ← CurveZMQ public key     (read by hub_pubkey_path())
 ```
 
-### 3.4 Vault File Convention
+### 3.4 Vault File Convention — clarified 2026-05-30
 
-The default vault file path for a role is:
+**`auth.keyfile` is the source of truth for the vault file location
+at runtime.**  The runtime does not silently fall back to a default
+when the field is empty; empty is an explicit operator opt-in to
+ephemeral CURVE mode.  Full table:
+
+| `auth.keyfile` value | Runtime behavior |
+|---|---|
+| Non-empty, relative (e.g. `"vault/<role_uid>.vault"`) | Resolved against `<role_dir>`: `<role_dir>/vault/<role_uid>.vault`.  Vault opened at this path.  HEP-CORE-0035 §4.6.2 ACL check applies. |
+| Non-empty, absolute (e.g. `"/srv/secrets/role.vault"` or `"~/.pylabhub/vault/role.vault"` after shell-expansion) | Used as-is.  ACL check applies. |
+| Empty `""` | EXPLICIT opt-in to ephemeral CURVE keys, no encryption at rest.  Dev / loopback only.  Stderr warning emitted at startup.  No vault open, no ACL check. |
+| Field missing entirely | Config-load error (hard-fail at parse time; closes task #78 alongside the hub side). |
+
+The canonical default path for a role is still:
 
 ```
 <role_dir>/vault/<role_uid>.vault
 ```
 
-When `auth.keyfile` is empty in the config, `RoleDirectory::default_keyfile(uid)` returns
-this path. Vault files are always placed inside `vault/` (0700) to prevent world-readable
-access to encrypted secret keys.
+— but this default is applied at `--init` time (writing the
+canonical value into the template config), NOT at runtime.  This
+removes the prior "silent fallback to default when empty" rule;
+operators see the vault path explicitly in their config.
+
+`RoleDirectory::default_keyfile(uid)` is preserved as the helper
+that `--init` uses to compute the canonical default to write into
+the template.  It is NOT called from the runtime path.
+
+`plh_role --keygen` requires non-empty `auth.keyfile` — ephemeral
+mode is in-process only and has no on-disk vault to create.
+
+### 3.4.1 Vault directory placement (security note)
+
+The `vault/` directory holds encrypted secret material.  Its
+location is determined entirely by the operator's `auth.keyfile`
+choice — it does NOT have to be a subdirectory of `<role_dir>`.
+This enables the **system-managed config + user-owned vault**
+deployment model: `role.json` and `<role_dir>` may live under a
+root-owned global install (e.g., `/etc/pylabhub/<role>/`) while the
+vault lives in a user-writable directory (e.g., `~/.pylabhub/vault/`).
+This is the deployment pattern this HEP was originally designed to
+support (see `role_directory.cpp` operator-help text showing both
+`/etc/pylabhub/vault/<uid>.vault` system-managed and
+`~/.pylabhub/vault/<uid>.vault` single-user variants).
+
+HEP-CORE-0035 §4.6.1 enforces 0700 mode + euid-owner match on the
+vault directory regardless of where it lives.  Mode + ownership
+discipline are independent of placement.
+
+`RoleDirectory::warn_if_keyfile_in_role_dir(base_dir, keyfile)`
+exists (called from `role_config.cpp:203`) to warn operators who
+accidentally place the keyfile inside `<role_dir>` itself — which
+defeats the system-managed-config + user-owned-vault separation
+this HEP intends to enable.
 
 ### 3.5 Schemas Subdirectory (HEP-CORE-0034)
 
