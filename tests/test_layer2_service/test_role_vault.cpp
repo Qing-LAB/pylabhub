@@ -9,6 +9,7 @@
  * directory. Argon2id KDF takes ~0.5s per call; timeout set to 120s.
  */
 #include "utils/role_vault.hpp"
+#include "utils/security/key_file_acl.hpp"
 #include "utils/uuid_utils.hpp"
 
 #include <gtest/gtest.h>
@@ -94,11 +95,13 @@ TEST_F(RoleVaultTest, Create_RestrictedPerms)
     // Windows has no POSIX file modes; skip permission check.
     RoleVault::create(vault_path_, role_uid_, kPassword);
 
-    const fs::perms p = fs::status(vault_path_).permissions();
-    EXPECT_EQ(p & fs::perms::group_read, fs::perms::none)  << "group_read should be off";
-    EXPECT_EQ(p & fs::perms::group_write, fs::perms::none) << "group_write should be off";
-    EXPECT_EQ(p & fs::perms::others_read, fs::perms::none) << "others_read should be off";
-    EXPECT_EQ(p & fs::perms::others_write, fs::perms::none) << "others_write should be off";
+    // Mode discipline owned by HEP-CORE-0035 §4.6 utility (single
+    // source of truth for the verdict matrix; see
+    // tests/test_layer2_service/test_key_file_acl.cpp).
+    using pylabhub::utils::security::KeyFileRole;
+    using pylabhub::utils::security::verify_keyfile_acl;
+    const auto v = verify_keyfile_acl(vault_path_, KeyFileRole::VaultFile);
+    EXPECT_TRUE(v.ok) << v.diagnostic;
 #else
     GTEST_SKIP() << "File permission test not applicable on Windows";
 #endif
@@ -153,8 +156,11 @@ TEST_F(RoleVaultTest, Open_CorruptedFile_Throws)
         f.write(garbage, sizeof(garbage));
     }
 #if !defined(PYLABHUB_PLATFORM_WIN64)
-    fs::permissions(vault_path_, fs::perms::owner_read | fs::perms::owner_write,
-                    fs::perm_options::replace);
+    // Restore canonical 0600 vault-file mode via HEP-CORE-0035 §4.6
+    // utility (fstream may not preserve them).
+    EXPECT_EQ(pylabhub::utils::security::set_keyfile_mode(
+                  vault_path_, pylabhub::utils::security::KeyFileRole::VaultFile),
+              pylabhub::utils::security::SetModeResult::Applied);
 #endif
 
     EXPECT_THROW(RoleVault::open(vault_path_, role_uid_, kPassword), std::runtime_error);

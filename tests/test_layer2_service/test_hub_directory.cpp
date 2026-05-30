@@ -7,6 +7,7 @@
 
 #include "utils/hub_directory.hpp"
 #include "utils/naming.hpp"  // is_valid_identifier (PeerUid validation)
+#include "utils/security/key_file_acl.hpp"
 
 #include <gtest/gtest.h>
 
@@ -86,10 +87,13 @@ TEST(HubDirectoryTest, Create_MakesStandardLayout)
     EXPECT_TRUE(fs::is_directory(tmp / "script" / "python"));
 
 #if defined(__unix__) || defined(__APPLE__)
-    // vault/ should be 0700.
-    struct stat st{};
-    ASSERT_EQ(0, ::stat((tmp / "vault").c_str(), &st));
-    EXPECT_EQ(st.st_mode & 0777, 0700);
+    // vault/ should be 0700; verdict matrix owned by HEP-CORE-0035
+    // §4.6 utility (single source of truth; see
+    // tests/test_layer2_service/test_key_file_acl.cpp).
+    using pylabhub::utils::security::KeyFileRole;
+    using pylabhub::utils::security::verify_keyfile_acl;
+    const auto v = verify_keyfile_acl(tmp / "vault", KeyFileRole::VaultDir);
+    EXPECT_TRUE(v.ok) << v.diagnostic;
 #endif
 
     fs::remove_all(tmp);
