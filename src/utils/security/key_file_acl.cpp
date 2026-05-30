@@ -114,14 +114,6 @@ AclVerdict stat_failure_verdict(const fs::path &path,
     return v;
 }
 
-// Forward declaration — defined later in this anonymous namespace.
-// Called from `verify_vault_file` and `verify_vault_dir` to share a
-// single source of truth for the ownership-mismatch diagnostic.
-AclVerdict verify_ownership_internal(const fs::path &path,
-                                     KeyFileRole     role,
-                                     uint32_t        observed_uid,
-                                     uint32_t        expected_uid) noexcept;
-
 /// HEP-CORE-0035 §4.6.2 parent-directory WARN: when checking a
 /// vault FILE, also stat its parent and append a soft warning to
 /// `diagnostic` (without flipping `ok` to false) if the parent has
@@ -192,7 +184,7 @@ AclVerdict verify_vault_file(const fs::path &path)
     // Ownership check via the extracted helper; uses `geteuid()` for
     // the expected uid.  Setuid binaries: `chmod` and `open` use the
     // effective uid, so this is the correct comparison.
-    const auto own_v = verify_ownership_internal(
+    const auto own_v = verify_ownership(
         path, KeyFileRole::VaultFile,
         static_cast<uint32_t>(st.st_uid),
         static_cast<uint32_t>(::geteuid()));
@@ -244,7 +236,7 @@ AclVerdict verify_vault_dir(const fs::path &path)
         return v;
     }
 
-    const auto own_v = verify_ownership_internal(
+    const auto own_v = verify_ownership(
         path, KeyFileRole::VaultDir,
         static_cast<uint32_t>(st.st_uid),
         static_cast<uint32_t>(::geteuid()));
@@ -307,56 +299,6 @@ AclVerdict verify_config_file(const fs::path &path, bool references_vault)
     return v;
 }
 
-/// Compare `observed_uid` to `expected_uid` for `path` under a vault
-/// `role` and return a verdict.  Internal-only — extracted from
-/// `verify_vault_file` / `verify_vault_dir` so the two callers share
-/// a single source of truth for the operator-facing diagnostic
-/// format; not exposed in the public header because the function is
-/// tightly coupled to the vault role enumerators and has no
-/// legitimate use outside this TU.
-///
-/// Ownership-mismatch testing in CI is left as a known coverage gap:
-/// exercising the mismatch branch from a unit test requires
-/// `CAP_CHOWN` to construct a file owned by a different user, which
-/// CI environments typically forbid.  The branch is short and
-/// grep-visible at this call site; production correctness is enforced
-/// by the spec citation + the small surface area.
-AclVerdict verify_ownership_internal(const fs::path &path,
-                                     KeyFileRole     role,
-                                     uint32_t        observed_uid,
-                                     uint32_t        expected_uid) noexcept
-{
-    AclVerdict v;
-    v.path          = path;
-    v.role          = role;
-    v.observed_mode = 0;
-    v.required_mode = 0;
-    if (observed_uid == expected_uid)
-    {
-        v.ok = true;
-        return v;
-    }
-    v.ok = false;
-    try
-    {
-        const char *what =
-            (role == KeyFileRole::VaultDir) ? "directory" : "file";
-        std::ostringstream oss;
-        oss << "vault " << what << ' ' << path
-            << " owned by uid " << observed_uid
-            << "; expected uid " << expected_uid
-            << ".  Check " << what << " ownership.";
-        v.diagnostic = oss.str();
-    }
-    catch (...)
-    {
-        v.diagnostic =
-            "ownership mismatch (uid comparison failed; "
-            "operator-facing diagnostic could not be formatted).";
-    }
-    return v;
-}
-
 AclVerdict verify_public_key_file(const fs::path &path)
 {
     // HEP-CORE-0035 §4.6.2: pubkeys are intentionally distributable;
@@ -382,6 +324,62 @@ AclVerdict verify_public_key_file(const fs::path &path)
 #endif // !_WIN32
 
 } // namespace
+
+/// Operator-facing noun for the role.  Inlined here (not the
+/// anonymous-namespace `role_label` helper) because this function
+/// lives outside the namespace.  Keep in sync with `role_label`.
+namespace
+{
+const char *public_role_noun(KeyFileRole role)
+{
+    switch (role)
+    {
+        case KeyFileRole::VaultFile:                  return "vault file";
+        case KeyFileRole::VaultDir:                   return "vault directory";
+        case KeyFileRole::ConfigFile:                 return "config file";
+        case KeyFileRole::ConfigFileReferencingVault: return "config file";
+        case KeyFileRole::PublicKeyFile:              return "public-key file";
+    }
+    return "file";
+}
+} // namespace
+
+AclVerdict verify_ownership(const fs::path &path,
+                            KeyFileRole     role,
+                            uint32_t        observed_uid,
+                            uint32_t        expected_uid) noexcept
+{
+    AclVerdict v;
+    v.path          = path;
+    v.role          = role;
+    v.observed_mode = 0;
+    v.required_mode = 0;
+    if (observed_uid == expected_uid)
+    {
+        v.ok = true;
+        return v;
+    }
+    v.ok = false;
+    try
+    {
+        const char *noun = public_role_noun(role);
+        const char *category =
+            (role == KeyFileRole::VaultDir) ? "directory" : "file";
+        std::ostringstream oss;
+        oss << noun << ' ' << path
+            << " owned by uid " << observed_uid
+            << "; expected uid " << expected_uid
+            << ".  Check " << category << " ownership.";
+        v.diagnostic = oss.str();
+    }
+    catch (...)
+    {
+        v.diagnostic =
+            "ownership mismatch (uid comparison failed; "
+            "operator-facing diagnostic could not be formatted).";
+    }
+    return v;
+}
 
 AclVerdict verify_keyfile_acl(const fs::path &path, KeyFileRole role) noexcept
 {
