@@ -140,7 +140,15 @@ int do_init(const hub_cli::HubArgs &args)
     log_overrides.max_size_mb = args.log_max_size_mb;
     log_overrides.backups     = args.log_backups;
 
-    return HubDirectory::init_directory(dir, *name_opt, log_overrides);
+    // HEP-CORE-0033 §7.2 makes `user` mode the default when the
+    // operator did not supply --vault-mode — vault lives OUTSIDE the
+    // hub directory by default (see HEP-CORE-0033 §7.2).  The
+    // UID-aware resolve happens inside init_directory so the keyfile
+    // path uses the same UID that gets written into the JSON.
+    const auto vault_mode = args.vault_mode.value_or(
+        pylabhub::utils::security::ParsedVaultMode{});  // defaults to User
+
+    return HubDirectory::init_directory(dir, *name_opt, log_overrides, vault_mode);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

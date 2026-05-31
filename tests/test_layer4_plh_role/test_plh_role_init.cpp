@@ -12,8 +12,11 @@
 
 #include "plh_role_fixture.h"
 
+#include <gmock/gmock.h>
+
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 
 using namespace pylabhub::tests::plh_role_l4;
 using pylabhub::tests::helper::WorkerProcess;
@@ -149,18 +152,20 @@ TEST_P(PlhRoleInitTest, DefaultValues)
     ASSERT_TRUE(id.contains("log_level")) << "identity missing 'log_level'";
     EXPECT_EQ(id["log_level"].get<std::string>(), "info");
 
-    // (d) auth.keyfile default is "vault/<uid>.vault" — the canonical
-    // relative path per HEP-CORE-0024 §3.4 (clarified 2026-05-30;
-    // previously the default was "" with silent ephemeral fallback).
-    // Operators who want ephemeral CURVE mode edit the value to ""
-    // explicitly; operators who want the vault elsewhere edit to
-    // their chosen path.
+    // (d) auth.keyfile default is the User-mode canonical path
+    // ($HOME/.pylabhub/vault/<uid>.vault on POSIX) per HEP-CORE-0024
+    // §3.4.1 (clarified 2026-05-30; the default lives OUTSIDE the
+    // role directory to reduce the script-write attack surface).
+    // Operators choosing a different placement pass --vault-mode at
+    // --init; ephemeral opt-in is `--vault-mode ephemeral` (empty
+    // keyfile string).  The DefaultAuthKeyfileIsCanonicalDefault
+    // test below pins the exact value with a controlled $HOME; here
+    // we only pin presence + non-empty (the field MUST be present).
     ASSERT_TRUE(id.contains("auth")) << "auth block missing from identity";
     ASSERT_TRUE(id["auth"].contains("keyfile")) << "auth missing 'keyfile'";
-    const std::string expected_keyfile = "vault/" + uid + ".vault";
-    EXPECT_EQ(id["auth"]["keyfile"].get<std::string>(), expected_keyfile)
-        << "auth.keyfile default must be the canonical relative path; "
-           "empty value is an explicit ephemeral-mode opt-in (not the default).";
+    EXPECT_FALSE(id["auth"]["keyfile"].get<std::string>().empty())
+        << "auth.keyfile default must be a non-empty path; "
+           "empty value is reserved for `--vault-mode ephemeral`.";
 
     // (e) Script defaults.
     ASSERT_TRUE(j.contains("script") && j["script"].is_object())
@@ -196,20 +201,38 @@ TEST_P(PlhRoleInitTest, DefaultValues)
         << "init template regressed — obsolete 'interval_ms' field present";
 }
 
-/// --init produces a config whose auth block is present with the
-/// canonical default `vault/<uid>.vault` (HEP-CORE-0024 §3.4
-/// clarified 2026-05-30).  Pins both the new default and the
-/// location of the auth block (under the role identity block, NOT
-/// at top level).  A regression that silently emptied the default
-/// back to "" OR moved the auth block would fail.
+/// --init (no --vault-mode flag) defaults to User mode and writes
+/// $HOME/.pylabhub/vault/<uid>.vault per HEP-CORE-0024 §3.4.1.
+/// Pins: (a) auth block location (under identity, not top level),
+/// (b) keyfile = exact User-mode path computed from $HOME and the
+/// generated UID.  $HOME is controlled per-test so the path is
+/// deterministic; the spawned binary inherits the env var.
 TEST_P(PlhRoleInitTest, DefaultAuthKeyfileIsCanonicalDefault)
 {
     const auto &s = GetParam();
     const auto dir = tmp("init_auth");
+    const fs::path home_for_test = tmp("init_auth_home");
+
+    // Pin $HOME so the binary's User-mode resolution is deterministic.
+    // POSIX-only: this test does not run on Windows (gtest skips L4
+    // binary tests when the binary path is unavailable; on Windows
+    // the equivalent path would use %LOCALAPPDATA%, exercised by a
+    // sibling test if we add Windows L4 coverage later).
+    const std::string saved_home = std::getenv("HOME") ? std::getenv("HOME") : "";
+    ::setenv("HOME", home_for_test.string().c_str(), 1);
 
     WorkerProcess p(plh_role_binary(), "--init",
         {"--role", std::string(s.role), dir.string(), "--name", "AuthTest"});
-    ASSERT_EQ(p.wait_for_exit(), 0) << "stderr:\n" << p.get_stderr();
+    const int rc = p.wait_for_exit();
+
+    // Restore $HOME before any further fork (and before ASSERT_EQ
+    // which can early-return out of the function).
+    if (!saved_home.empty())
+        ::setenv("HOME", saved_home.c_str(), 1);
+    else
+        ::unsetenv("HOME");
+
+    ASSERT_EQ(rc, 0) << "stderr:\n" << p.get_stderr();
     expect_no_unexpected_errors(p);
 
     const auto j = read_json(dir / (std::string(s.role) + ".json"));
@@ -224,17 +247,102 @@ TEST_P(PlhRoleInitTest, DefaultAuthKeyfileIsCanonicalDefault)
     ASSERT_TRUE(j[std::string(s.role_json_key)].contains("auth"))
         << "identity block missing auth";
 
-    // Need the actual UID the binary generated to compute the expected
-    // canonical default.
     const std::string uid =
         j[std::string(s.role_json_key)]["uid"].get<std::string>();
-    const std::string expected_keyfile = "vault/" + uid + ".vault";
+    const std::string expected_keyfile =
+        home_for_test.string() + "/.pylabhub/vault/" + uid + ".vault";
     EXPECT_EQ(j[std::string(s.role_json_key)]["auth"]["keyfile"].get<std::string>(),
               expected_keyfile)
-        << "default keyfile must be the canonical relative path "
-           "`vault/<uid>.vault` per HEP-CORE-0024 §3.4.  "
-           "Empty value is reserved for the explicit ephemeral-mode "
-           "opt-in (operator edits post-`--init`).";
+        << "default keyfile must be the User-mode canonical path "
+           "($HOME/.pylabhub/vault/<uid>.vault) per HEP-CORE-0024 §3.4.1. "
+           "Operators choosing a different placement pass --vault-mode "
+           "at --init; ephemeral opt-in is `--vault-mode ephemeral`.";
+}
+
+/// --vault-mode ephemeral writes the explicit empty-string opt-in
+/// for ephemeral CURVE mode (no on-disk vault).
+TEST_P(PlhRoleInitTest, VaultModeEphemeralWritesEmptyKeyfile)
+{
+    const auto &s = GetParam();
+    const auto dir = tmp("init_vault_ephemeral");
+
+    WorkerProcess p(plh_role_binary(), "--init",
+        {"--role", std::string(s.role), dir.string(),
+         "--name", "EphemeralTest", "--vault-mode", "ephemeral"});
+    ASSERT_EQ(p.wait_for_exit(), 0) << "stderr:\n" << p.get_stderr();
+    expect_no_unexpected_errors(p);
+
+    const auto j = read_json(dir / (std::string(s.role) + ".json"));
+    ASSERT_FALSE(j.is_null());
+    ASSERT_TRUE(j[std::string(s.role_json_key)].contains("auth"));
+    EXPECT_EQ(j[std::string(s.role_json_key)]["auth"]["keyfile"].get<std::string>(),
+              "")
+        << "--vault-mode ephemeral must write \"\" — the explicit "
+           "no-vault opt-in per HEP-CORE-0024 §3.4.";
+}
+
+/// --vault-mode inline writes the inside-role_dir relative path.
+/// Operator-acknowledged trade-off: scripts can write to the vault
+/// file (HEP-CORE-0024 §3.4).  Pylabhub keeps emitting the
+/// "*** PYLABHUB SECURITY WARNING ***" at run time as the
+/// load-bearing nudge; that warning is asserted by a separate test.
+TEST_P(PlhRoleInitTest, VaultModeInlineWritesRelativePath)
+{
+    const auto &s = GetParam();
+    const auto dir = tmp("init_vault_inline");
+
+    WorkerProcess p(plh_role_binary(), "--init",
+        {"--role", std::string(s.role), dir.string(),
+         "--name", "InlineTest", "--vault-mode", "inline"});
+    ASSERT_EQ(p.wait_for_exit(), 0) << "stderr:\n" << p.get_stderr();
+    expect_no_unexpected_errors(p);
+
+    const auto j = read_json(dir / (std::string(s.role) + ".json"));
+    ASSERT_FALSE(j.is_null());
+    const std::string uid =
+        j[std::string(s.role_json_key)]["uid"].get<std::string>();
+    EXPECT_EQ(j[std::string(s.role_json_key)]["auth"]["keyfile"].get<std::string>(),
+              "vault/" + uid + ".vault")
+        << "--vault-mode inline must write the role-dir-relative "
+           "`vault/<uid>.vault` per HEP-CORE-0024 §3.4.1.";
+}
+
+/// --vault-mode <absolute-path> uses the operator's path verbatim.
+TEST_P(PlhRoleInitTest, VaultModeCustomPathWrittenVerbatim)
+{
+    const auto &s = GetParam();
+    const auto dir = tmp("init_vault_custom");
+    const std::string custom = "/tmp/pylabhub-l4-vault-custom-" +
+                                std::string(s.role) + ".vault";
+
+    WorkerProcess p(plh_role_binary(), "--init",
+        {"--role", std::string(s.role), dir.string(),
+         "--name", "CustomTest", "--vault-mode", custom});
+    ASSERT_EQ(p.wait_for_exit(), 0) << "stderr:\n" << p.get_stderr();
+    expect_no_unexpected_errors(p);
+
+    const auto j = read_json(dir / (std::string(s.role) + ".json"));
+    ASSERT_FALSE(j.is_null());
+    EXPECT_EQ(j[std::string(s.role_json_key)]["auth"]["keyfile"].get<std::string>(),
+              custom)
+        << "--vault-mode <absolute-path> must use the operator's path "
+           "verbatim per HEP-CORE-0024 §3.4.1.";
+}
+
+/// --vault-mode with a non-absolute, non-known-mode arg is a CLI
+/// parse error (avoids silent fall-through to a misinterpreted value).
+TEST_P(PlhRoleInitTest, VaultModeRelativePathRejected)
+{
+    const auto &s = GetParam();
+    const auto dir = tmp("init_vault_bad");
+
+    WorkerProcess p(plh_role_binary(), "--init",
+        {"--role", std::string(s.role), dir.string(),
+         "--name", "BadTest", "--vault-mode", "some/relative/path.vault"});
+    EXPECT_NE(p.wait_for_exit(), 0)
+        << "expected non-zero exit; stderr:\n" << p.get_stderr();
+    EXPECT_THAT(p.get_stderr(),
+                ::testing::HasSubstr("--vault-mode value"));
 }
 
 /// --init --log-maxsize N --log-backups M threads CLI overrides into

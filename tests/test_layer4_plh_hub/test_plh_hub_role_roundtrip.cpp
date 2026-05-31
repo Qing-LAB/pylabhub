@@ -174,8 +174,16 @@ TEST_F(PlhHubCliTest, RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters)
     // ── Hub side ────────────────────────────────────────────────────────────
     const fs::path hub_dir = tmp("rtrip_hub");
     {
+        // Pass --vault-mode inline so --keygen writes the vault inside
+        // hub_dir/vault/hub.vault — the path this F1 test asserts.
+        // Without this flag, --init would default to User mode
+        // ($HOME/.pylabhub/vault/<uid>.vault per HEP-CORE-0033 §7.2)
+        // and the assertion below would chase the wrong location.
+        // `inline` is the operator-acknowledged trade-off mode and
+        // matches what this test already expected (in-hub_dir vault).
         WorkerProcess init(plh_hub_binary(), "--init",
-            {hub_dir.string(), "--name", "L4RoundtripHub"});
+            {hub_dir.string(), "--name", "L4RoundtripHub",
+             "--vault-mode", "inline"});
         ASSERT_EQ(init.wait_for_exit(), 0) << init.get_stderr();
     }
 
@@ -191,7 +199,7 @@ TEST_F(PlhHubCliTest, RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters)
         j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0";
         j["admin"]["enabled"]           = false;
         j["script"]["path"]             = "";
-        // Leave hub.auth.keyfile = "vault/hub.vault" from the template.
+        // hub.auth.keyfile = "vault/<uid>.vault" from inline-mode init.
         std::ofstream f(hub_dir / "hub.json");
         f << j.dump(2);
     }

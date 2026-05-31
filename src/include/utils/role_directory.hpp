@@ -24,6 +24,7 @@
 
 #include "pylabhub_utils_export.h"
 #include "utils/json_fwd.hpp"
+#include "utils/security/vault_path_resolve.hpp"
 
 #include <filesystem>
 #include <functional>
@@ -302,10 +303,23 @@ public:
         std::optional<int>    backups;
     };
 
+    /// Generate the role directory.  @p vault_mode, when present,
+    /// is resolved by `security::resolve_vault_keyfile()` against the
+    /// newly-generated UID and the result OVERWRITES the template's
+    /// `auth.keyfile` field — this is how `plh_role --init` threads
+    /// the operator's `--vault-mode` value into the template (see
+    /// HEP-CORE-0024 §3.4.1).  When `nullopt` (the default), the
+    /// template's own keyfile string is kept unchanged; programmatic
+    /// callers (L3 fixtures, in-process tests) rely on this for
+    /// stable relative-path defaults.
+    ///
+    /// `std::optional<std::string>` forward-declared via
+    /// `<optional>` already present in the header.
     static int init_directory(const std::filesystem::path &dir,
                               const std::string &role_tag,
                               const std::string &name,
-                              const LogInitOverrides &log = {});
+                              const LogInitOverrides &log = {},
+                              const std::optional<pylabhub::utils::security::ParsedVaultMode> &vault_mode = std::nullopt);
 
 private:
     explicit RoleDirectory(std::filesystem::path base) noexcept;
