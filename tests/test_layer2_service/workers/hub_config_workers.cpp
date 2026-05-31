@@ -58,11 +58,15 @@ fs::path write_hub_json(const std::string &dir, const nlohmann::json &content)
 /// `loop_timing` is required by `parse_timing_config` (HEP-CORE-0033
 /// Phase 7 Commit B); use `max_rate` here to avoid pulling in a
 /// `target_period_ms` value that the minimal-config tests don't care
-/// about.
+/// about.  `auth.keyfile = ""` is the explicit ephemeral-mode opt-in
+/// (HEP-CORE-0033 §7.1); these L2 fixtures exercise non-auth fields
+/// and stay in ephemeral mode to avoid pulling in vault setup.
 nlohmann::json minimal_hub_json(const std::string &uid = "hub.test.uid00000001")
 {
     return {
-        {"hub", {{"uid", uid}, {"name", "TestHub"}}},
+        {"hub", {{"uid", uid},
+                  {"name", "TestHub"},
+                  {"auth", {{"keyfile", ""}}}}},
         {"loop_timing", "max_rate"},
     };
 }
@@ -288,6 +292,73 @@ int section_not_object(const char *tmpdir)
         JsonConfig::GetLifecycleModule());
 }
 
+// ── auth_missing_auth_throws ────────────────────────────────────────────────
+// HEP-CORE-0033 §7.1: missing `hub.auth` object is a config-load error.
+int auth_missing_auth_throws(const char *tmpdir)
+{
+    return run_gtest_worker(
+        [&]() {
+            const std::string dir = tmpdir;
+            auto j = minimal_hub_json();
+            j["hub"].erase("auth");
+            write_hub_json(dir, j);
+
+            try {
+                HubConfig::load_from_directory(dir);
+                FAIL() << "Expected std::runtime_error for missing hub.auth";
+            } catch (const std::runtime_error &ex) {
+                EXPECT_THAT(ex.what(),
+                            testing::HasSubstr("missing required 'hub.auth' object"));
+                EXPECT_THAT(ex.what(), testing::HasSubstr("HEP-CORE-0033"));
+            }
+        },
+        "hub_config::auth_missing_auth_throws",
+        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
+        JsonConfig::GetLifecycleModule());
+}
+
+// ── auth_missing_keyfile_throws ─────────────────────────────────────────────
+// HEP-CORE-0033 §7.1: missing `hub.auth.keyfile` field is a config-load error.
+int auth_missing_keyfile_throws(const char *tmpdir)
+{
+    return run_gtest_worker(
+        [&]() {
+            const std::string dir = tmpdir;
+            auto j = minimal_hub_json();
+            j["hub"]["auth"] = nlohmann::json::object();  // present, empty
+            write_hub_json(dir, j);
+
+            try {
+                HubConfig::load_from_directory(dir);
+                FAIL() << "Expected std::runtime_error for missing hub.auth.keyfile";
+            } catch (const std::runtime_error &ex) {
+                EXPECT_THAT(ex.what(),
+                            testing::HasSubstr("missing required 'hub.auth.keyfile'"));
+                EXPECT_THAT(ex.what(), testing::HasSubstr("HEP-CORE-0033"));
+            }
+        },
+        "hub_config::auth_missing_keyfile_throws",
+        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
+        JsonConfig::GetLifecycleModule());
+}
+
+// ── auth_explicit_empty ─────────────────────────────────────────────────────
+// `hub.auth.keyfile = ""` is the explicit ephemeral-mode opt-in; load
+// succeeds with auth().keyfile.empty().
+int auth_explicit_empty(const char *tmpdir)
+{
+    return run_gtest_worker(
+        [&]() {
+            const std::string dir = tmpdir;
+            write_hub_json(dir, minimal_hub_json());  // already includes auth.keyfile = ""
+            auto cfg = HubConfig::load_from_directory(dir);
+            EXPECT_TRUE(cfg.auth().keyfile.empty());
+        },
+        "hub_config::auth_explicit_empty",
+        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
+        JsonConfig::GetLifecycleModule());
+}
+
 // ── uid_auto_generated ──────────────────────────────────────────────────────
 
 int uid_auto_generated(const char *tmpdir)
@@ -298,8 +369,12 @@ int uid_auto_generated(const char *tmpdir)
             // Omit hub.uid; provide just hub.name so generator has a base.
             // loop_timing is required by parse_timing_config — same shape
             // as minimal_hub_json above; max_rate keeps the fixture small.
+            // auth.keyfile = "" is the explicit ephemeral-mode opt-in
+            // (HEP-CORE-0033 §7.1) — required even when this test is
+            // exercising uid auto-generation, not auth.
             const nlohmann::json j = {
-                {"hub", {{"name", "MyHub"}}},
+                {"hub", {{"name", "MyHub"},
+                          {"auth", {{"keyfile", ""}}}}},
                 {"loop_timing", "max_rate"},
             };
             write_hub_json(dir, j);
@@ -467,6 +542,10 @@ struct HubConfigWorkerRegistrar
                 if (sc == "strict_unknown_top_level")  return strict_unknown_top_level(dir);
                 if (sc == "strict_unknown_in_section") return strict_unknown_in_section(dir);
                 if (sc == "section_not_object")        return section_not_object(dir);
+                if (sc == "auth_missing_auth_throws")  return auth_missing_auth_throws(dir);
+                if (sc == "auth_missing_keyfile_throws")
+                    return auth_missing_keyfile_throws(dir);
+                if (sc == "auth_explicit_empty")       return auth_explicit_empty(dir);
                 if (sc == "uid_auto_generated")        return uid_auto_generated(dir);
                 if (sc == "state_grace_sentinel")      return state_grace_sentinel(dir);
                 if (sc == "load_from_directory")       return load_from_directory(dir);

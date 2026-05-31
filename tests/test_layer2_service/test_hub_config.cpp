@@ -80,6 +80,33 @@ TEST_F(HubConfigTest, StrictKeys_UnknownInSection_Throws)
     ExpectWorkerOk(w);
 }
 
+// ── Auth (HEP-CORE-0033 §7.1) ────────────────────────────────────────────────
+// `hub.auth.keyfile` MUST be present.  Operator must opt explicitly into
+// vault mode (`"keyfile": "<path>"`) or ephemeral mode (`"keyfile": ""`).
+// Silent default is rejected so the security choice cannot be made by
+// accident.
+
+TEST_F(HubConfigTest, Auth_MissingAuth_Throws)
+{
+    auto w = SpawnWorker("hub_config.auth_missing_auth_throws",
+                         {unique_dir("auth_missing_auth_throws")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(HubConfigTest, Auth_MissingKeyfile_Throws)
+{
+    auto w = SpawnWorker("hub_config.auth_missing_keyfile_throws",
+                         {unique_dir("auth_missing_keyfile_throws")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(HubConfigTest, Auth_ExplicitEmpty)
+{
+    auto w = SpawnWorker("hub_config.auth_explicit_empty",
+                         {unique_dir("auth_explicit_empty")});
+    ExpectWorkerOk(w);
+}
+
 TEST_F(HubConfigTest, SectionNotObject_Throws)
 {
     auto w = SpawnWorker("hub_config.section_not_object",
