@@ -119,6 +119,39 @@ gtest_discover_tests(test_layer2_key_file_acl
 )
 
 # ============================================================================
+# Test: Vault-path resolver (HEP-CORE-0024 §3.4.1 + HEP-CORE-0033 §7.2)
+# Pattern 1 — pure string + env-var arithmetic; no LOGGER_*, no lifecycle.
+# Pairs with test_layer2_key_file_acl (same `security` namespace);
+# resolver feeds the keyfile string that the ACL utility later verifies.
+# ============================================================================
+
+add_executable(test_layer2_vault_path_resolve
+    test_vault_path_resolve.cpp
+)
+
+target_link_libraries(test_layer2_vault_path_resolve
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_vault_path_resolve)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_vault_path_resolve
+    SUITE_NAME "Layer2_VaultPathResolve"
+)
+layer2_require_staged_utils(test_layer2_vault_path_resolve)
+
+gtest_discover_tests(test_layer2_vault_path_resolve
+    PROPERTIES
+        LABELS "layer2;service;security;vault_path_resolve"
+        TIMEOUT 30
+)
+
+# ============================================================================
 # Test: Naming validator (HEP-CORE-0033 §G2.2.0b)
 # Pure validator test — no workers, no staging dependency.
 # ============================================================================
