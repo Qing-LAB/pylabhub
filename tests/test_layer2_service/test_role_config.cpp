@@ -190,11 +190,45 @@ TEST_F(RoleConfigTest, RoleData_WrongTypeCast_Throws)
 }
 
 // ── Auth ────────────────────────────────────────────────────────────────────
+// HEP-CORE-0024 §3.4 + HEP-CORE-0035 §4.6.2 contract:
+//   `<role>.auth.keyfile` MUST be present (no silent default).
+//   - `"keyfile": "<path>"` → vault mode.
+//   - `"keyfile": ""`        → explicit ephemeral mode.
+//   - missing `auth` object  → config-load error.
+//   - missing `keyfile` field → config-load error.
 
-TEST_F(RoleConfigTest, Auth_DefaultEmpty)
+TEST_F(RoleConfigTest, Auth_ExplicitEmpty)
 {
-    auto w = SpawnWorker("role_config.auth_default_empty",
-                         {unique_dir("auth_default_empty")});
+    auto w = SpawnWorker("role_config.auth_explicit_empty",
+                         {unique_dir("auth_explicit_empty")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(RoleConfigTest, Auth_MissingAuth_Throws)
+{
+    auto w = SpawnWorker("role_config.auth_missing_auth_throws",
+                         {unique_dir("auth_missing_auth_throws")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(RoleConfigTest, Auth_MissingKeyfile_Throws)
+{
+    auto w = SpawnWorker("role_config.auth_missing_keyfile_throws",
+                         {unique_dir("auth_missing_keyfile_throws")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(RoleConfigTest, Auth_KeyfileWrongType_Throws)
+{
+    auto w = SpawnWorker("role_config.auth_keyfile_wrong_type_throws",
+                         {unique_dir("auth_keyfile_wrong_type_throws")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(RoleConfigTest, Auth_NotObject_Throws)
+{
+    auto w = SpawnWorker("role_config.auth_not_object_throws",
+                         {unique_dir("auth_not_object_throws")});
     ExpectWorkerOk(w);
 }
 

@@ -57,10 +57,17 @@ fs::path write_json(const fs::path &dir, const std::string &filename,
     return path;
 }
 
+// `auth.keyfile = ""` is the explicit ephemeral-mode opt-in (HEP-CORE-0024
+// §3.4); these L2 fixtures exercise non-auth fields and stay in ephemeral
+// mode to avoid pulling in vault setup.  Tests that exercise auth
+// specifically (Auth_MissingAuth_Throws, Auth_MissingKeyfile_Throws)
+// construct their own JSON and do not go through these helpers.
 nlohmann::json minimal_producer_json()
 {
     return {
-        {"producer", {{"uid", "prod.test.uid00000001"}, {"name", "TestProd"}}},
+        {"producer", {{"uid", "prod.test.uid00000001"},
+                       {"name", "TestProd"},
+                       {"auth", {{"keyfile", ""}}}}},
         {"out_hub_dir", ""},
         {"out_channel", "test.channel"},
         {"out_transport", "shm"},
@@ -77,7 +84,9 @@ nlohmann::json minimal_producer_json()
 nlohmann::json minimal_consumer_json()
 {
     return {
-        {"consumer", {{"uid", "cons.test.uid00000002"}, {"name", "TestCons"}}},
+        {"consumer", {{"uid", "cons.test.uid00000002"},
+                       {"name", "TestCons"},
+                       {"auth", {{"keyfile", ""}}}}},
         {"in_hub_dir", ""},
         {"in_channel", "test.channel"},
         {"in_transport", "shm"},
@@ -90,7 +99,9 @@ nlohmann::json minimal_consumer_json()
 nlohmann::json minimal_processor_json()
 {
     return {
-        {"processor", {{"uid", "proc.test.uid00000003"}, {"name", "TestProc"}}},
+        {"processor", {{"uid", "proc.test.uid00000003"},
+                        {"name", "TestProc"},
+                        {"auth", {{"keyfile", ""}}}}},
         {"in_hub_dir", ""},
         {"out_hub_dir", ""},
         {"in_channel", "raw.data"},
@@ -370,7 +381,10 @@ int role_data_wrong_type_cast_throws(const std::string &dir)
 
 // ── Auth ────────────────────────────────────────────────────────────────────
 
-int auth_default_empty(const std::string &dir)
+// minimal_producer_json sets auth.keyfile = "" (explicit ephemeral
+// opt-in per HEP-CORE-0024 §3.4); RoleConfig::auth() therefore reports
+// empty keyfile and no in-memory keypair (load_keypair was not called).
+int auth_explicit_empty(const std::string &dir)
 {
     return run_gtest_worker(
         [&]() {
@@ -380,7 +394,96 @@ int auth_default_empty(const std::string &dir)
             EXPECT_TRUE(cfg.auth().client_pubkey.empty());
             EXPECT_TRUE(cfg.auth().client_seckey.empty());
         },
-        "role_config::auth_default_empty",
+        "role_config::auth_explicit_empty",
+        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
+        JsonConfig::GetLifecycleModule());
+}
+
+// HEP-CORE-0024 §3.4: missing `<role>.auth` object is a config-load
+// error.  The operator must opt explicitly into vault mode or
+// ephemeral mode.
+int auth_missing_auth_throws(const std::string &dir)
+{
+    return run_gtest_worker(
+        [&]() {
+            auto j = minimal_producer_json();
+            j["producer"].erase("auth");
+            auto path = write_json(dir, "producer.json", j);
+            try {
+                RoleConfig::load(path.string(), "producer");
+                FAIL() << "Expected std::runtime_error for missing producer.auth";
+            } catch (const std::runtime_error &ex) {
+                EXPECT_THAT(ex.what(),
+                            testing::HasSubstr("missing required 'producer.auth' object"));
+                EXPECT_THAT(ex.what(), testing::HasSubstr("HEP-CORE-0024"));
+            }
+        },
+        "role_config::auth_missing_auth_throws",
+        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
+        JsonConfig::GetLifecycleModule());
+}
+
+// HEP-CORE-0024 §3.4: missing `<role>.auth.keyfile` field is a
+// config-load error (auth object present but field absent).
+int auth_missing_keyfile_throws(const std::string &dir)
+{
+    return run_gtest_worker(
+        [&]() {
+            auto j = minimal_producer_json();
+            j["producer"]["auth"] = nlohmann::json::object();  // empty object
+            auto path = write_json(dir, "producer.json", j);
+            try {
+                RoleConfig::load(path.string(), "producer");
+                FAIL() << "Expected std::runtime_error for missing producer.auth.keyfile";
+            } catch (const std::runtime_error &ex) {
+                EXPECT_THAT(ex.what(),
+                            testing::HasSubstr("missing required 'producer.auth.keyfile'"));
+                EXPECT_THAT(ex.what(), testing::HasSubstr("HEP-CORE-0024"));
+            }
+        },
+        "role_config::auth_missing_keyfile_throws",
+        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
+        JsonConfig::GetLifecycleModule());
+}
+
+// HEP-CORE-0024 §3.4: `<role>.auth.keyfile` must be a string.
+int auth_keyfile_wrong_type_throws(const std::string &dir)
+{
+    return run_gtest_worker(
+        [&]() {
+            auto j = minimal_producer_json();
+            j["producer"]["auth"]["keyfile"] = 42;  // not a string
+            auto path = write_json(dir, "producer.json", j);
+            try {
+                RoleConfig::load(path.string(), "producer");
+                FAIL() << "Expected std::runtime_error for non-string keyfile";
+            } catch (const std::runtime_error &ex) {
+                EXPECT_THAT(ex.what(),
+                            testing::HasSubstr("'producer.auth.keyfile' must be a string"));
+            }
+        },
+        "role_config::auth_keyfile_wrong_type_throws",
+        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
+        JsonConfig::GetLifecycleModule());
+}
+
+// HEP-CORE-0024 §3.4: `<role>.auth` must be a JSON object, not array/scalar.
+int auth_not_object_throws(const std::string &dir)
+{
+    return run_gtest_worker(
+        [&]() {
+            auto j = minimal_producer_json();
+            j["producer"]["auth"] = "should-be-an-object";
+            auto path = write_json(dir, "producer.json", j);
+            try {
+                RoleConfig::load(path.string(), "producer");
+                FAIL() << "Expected std::runtime_error for non-object auth";
+            } catch (const std::runtime_error &ex) {
+                EXPECT_THAT(ex.what(),
+                            testing::HasSubstr("'producer.auth' must be a JSON object"));
+            }
+        },
+        "role_config::auth_not_object_throws",
         Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
         JsonConfig::GetLifecycleModule());
 }
@@ -1067,8 +1170,16 @@ struct RoleConfigWorkerRegistrar
                     return role_data_no_parser(dir);
                 if (sc == "role_data_wrong_type_cast_throws")
                     return role_data_wrong_type_cast_throws(dir);
-                if (sc == "auth_default_empty")
-                    return auth_default_empty(dir);
+                if (sc == "auth_explicit_empty")
+                    return auth_explicit_empty(dir);
+                if (sc == "auth_missing_auth_throws")
+                    return auth_missing_auth_throws(dir);
+                if (sc == "auth_missing_keyfile_throws")
+                    return auth_missing_keyfile_throws(dir);
+                if (sc == "auth_keyfile_wrong_type_throws")
+                    return auth_keyfile_wrong_type_throws(dir);
+                if (sc == "auth_not_object_throws")
+                    return auth_not_object_throws(dir);
                 if (sc == "load_keypair_no_keyfile_returns_false")
                     return load_keypair_no_keyfile_returns_false(dir);
                 if (sc == "raw_json")

@@ -25,6 +25,16 @@ int strict_unknown_in_section(const char *tmpdir);
 /// Section that is not a JSON object (e.g. "network": 7) → throws.
 int section_not_object(const char *tmpdir);
 
+/// HEP-CORE-0033 §7.1: missing `hub.auth` object → config-load error.
+int auth_missing_auth_throws(const char *tmpdir);
+
+/// HEP-CORE-0033 §7.1: missing `hub.auth.keyfile` field → config-load error.
+int auth_missing_keyfile_throws(const char *tmpdir);
+
+/// `hub.auth.keyfile = ""` is the explicit ephemeral-mode opt-in; load
+/// succeeds and `auth().keyfile` is empty.
+int auth_explicit_empty(const char *tmpdir);
+
 /// Missing hub.uid → auto-generated `hub.<name>.uid<8hex>` per HEP-0033 §G2.2.0a;
 /// resulting uid validates under IdentifierKind::PeerUid.
 int uid_auto_generated(const char *tmpdir);

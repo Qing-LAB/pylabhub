@@ -7,6 +7,22 @@ items only; completed work lives in git history + DOC_ARCHIVE_LOG.
 
 ---
 
+## Recent Completions
+
+- **2026-05-30 — Commit C′-1 (A1 of #78 / #101 sub-phase 1D)**:
+  `parse_auth_config` (`auth_config.hpp`) now throws on missing
+  `<section>.auth` object OR missing `auth.keyfile` field — silent
+  default to ephemeral is no longer possible.  Operator MUST opt
+  explicitly: `"keyfile": "<path>"` for vault mode or `"keyfile": ""`
+  for ephemeral mode.  Hub-side and role-side share the same parser
+  (`hub_identity_config.hpp` delegates auth to `parse_auth_config`).
+  Error messages cite HEP-CORE-0024 §3.4 + HEP-CORE-0033 §7.1.
+  L2 fixtures updated (3 role + 1 hub minimal JSON helpers).
+  Tests: 9 new (5 role + 3 hub + 1 uid-autogen fixture refresh);
+  all 1445 L1+L2 + 408 L3 + 92 L4 tests pass.  #78 closes after
+  Commit C′-2 ships the binary-template / `--vault-mode` flag and
+  HEP design-intent narrative; this commit lands the parser side.
+
 ## Current Focus
 
 ### #94 — Implement HEP-CORE-0021 §16.5 ephemeral-binding production path
