@@ -72,6 +72,22 @@ class WorkerProcess
     int wait_for_exit(int timeout_s = 60);
 
     /**
+     * @brief Non-blocking liveness peek.
+     *
+     * Returns true if the child has already exited; in that case the
+     * exit status is reaped and cached so exit_code() / get_stderr() /
+     * a later wait_for_exit() all reflect the final state.  Returns
+     * false if the child is still running.
+     *
+     * Use this in poll loops where the loop wants to abandon waiting
+     * early if the subprocess died before reaching the awaited
+     * condition (e.g., wait-for-log-marker should not burn the full
+     * timeout when the child crashed during startup).  Safe to call
+     * repeatedly.
+     */
+    bool has_exited();
+
+    /**
      * @brief Returns the captured standard output of the worker process.
      * @return A const reference to the stdout content.
      */
