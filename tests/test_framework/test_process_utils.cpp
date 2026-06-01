@@ -529,6 +529,45 @@ int WorkerProcess::wait_for_exit(int timeout_s)
     return exit_code_;
 }
 
+bool WorkerProcess::has_exited()
+{
+    if (waited_)
+        return true;
+    if (handle_ == NULL_PROC_HANDLE)
+        return true;
+
+#if defined(PLATFORM_WIN64)
+    DWORD r = WaitForSingleObject(handle_, 0);
+    if (r != WAIT_OBJECT_0)
+        return false;
+    DWORD code = 0;
+    GetExitCodeProcess(handle_, &code);
+    exit_code_ = static_cast<int>(code);
+    CloseHandle(handle_);
+#else
+    int status = 0;
+    pid_t r = waitpid(handle_, &status, WNOHANG);
+    if (r == 0)
+        return false;
+    if (r < 0)
+        return false; // EINTR or unknown error: treat as still running
+    if (WIFEXITED(status))
+        exit_code_ = WEXITSTATUS(status);
+    else if (WIFSIGNALED(status))
+        exit_code_ = 128 + WTERMSIG(status);
+    else
+        exit_code_ = -1;
+#endif
+    handle_ = NULL_PROC_HANDLE;
+    waited_ = true;
+    read_file_contents(stdout_path_.string(), stdout_content_);
+    if (!redirect_stderr_to_console_)
+    {
+        read_file_contents(stderr_path_.string(), stderr_content_);
+    }
+    return true;
+}
+
 const std::string &WorkerProcess::get_stdout() const
 {
     if (!waited_)

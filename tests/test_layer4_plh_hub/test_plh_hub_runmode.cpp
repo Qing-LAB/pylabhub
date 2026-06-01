@@ -68,22 +68,49 @@ std::string read_hub_log(const fs::path &hub_dir)
     return content;
 }
 
+/// Multiplier for watchdog/marker timeouts read once from
+/// `PLH_TEST_TIMEOUT_SCALE`.  Default 1.0; CI sets e.g. 3.0 to give
+/// the run-mode L4 path headroom for two Argon2id KDF operations
+/// (configure_for_runmode `--keygen` + hub startup unlock) under
+/// concurrent test load, without recompiling.  Invalid / non-positive
+/// values fall back to 1.0.
+double timeout_scale()
+{
+    static const double s = []() -> double {
+        const char *raw = ::getenv("PLH_TEST_TIMEOUT_SCALE");
+        if (raw == nullptr || *raw == '\0')
+            return 1.0;
+        char *end = nullptr;
+        const double v = std::strtod(raw, &end);
+        return (end != raw && v > 0.0) ? v : 1.0;
+    }();
+    return s;
+}
+
 /// Poll for @p marker in the hub's log file with a hard ceiling of
-/// @p timeout.  Returns true once seen; false on timeout.  Timing is
-/// the watchdog ceiling, NOT the success criterion — a successful
-/// startup sees the marker in <1s on dev hardware; the 5s ceiling
-/// is for CI/sanitizer headroom.
+/// @p timeout (scaled by PLH_TEST_TIMEOUT_SCALE).  Returns true once
+/// seen; false on timeout OR if @p proc was provided and the hub
+/// process exited before the marker appeared (startup-crash early
+/// exit — surfaces the crash in <1s instead of burning the full
+/// timeout).  Timing is the watchdog ceiling, NOT the success
+/// criterion — a successful startup sees the marker in <1s on dev
+/// hardware; the 5s ceiling is for CI/sanitizer headroom.
 bool wait_for_log_marker(const fs::path &hub_dir,
                           const std::string &marker,
+                          pylabhub::tests::helper::WorkerProcess *proc = nullptr,
                           std::chrono::milliseconds timeout =
                               std::chrono::milliseconds(5000))
 {
-    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    const auto scaled = std::chrono::milliseconds(
+        static_cast<long>(static_cast<double>(timeout.count()) * timeout_scale()));
+    const auto deadline = std::chrono::steady_clock::now() + scaled;
     while (std::chrono::steady_clock::now() < deadline)
     {
         const std::string log = read_hub_log(hub_dir);
         if (log.find(marker) != std::string::npos)
             return true;
+        if (proc != nullptr && proc->has_exited())
+            return false;
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
     return false;
@@ -165,9 +192,10 @@ TEST_F(PlhHubCliTest, RunMode_StartsBindsAcceptsSigtermExitsZero)
     // proof that startup reached the run-loop; if startup fails (port
     // collision, config error, vault mismatch) the marker never
     // appears and the watchdog times out cleanly.
-    ASSERT_TRUE(wait_for_log_marker(dir, "Broker: listening on"))
+    ASSERT_TRUE(wait_for_log_marker(dir, "Broker: listening on", &hub))
         << "plh_hub never reached broker-bind state.  Log:\n"
-        << read_hub_log(dir);
+        << read_hub_log(dir)
+        << "\nhub stderr:\n" << hub.get_stderr();
 
     // Send SIGTERM.  plh_hub's signal handler flips g_shutdown; bridge
     // thread translates to host.request_shutdown(); run_main_loop wakes;
@@ -224,8 +252,9 @@ TEST_F(PlhHubCliTest, RunMode_LogShowsCorrectStartupAndShutdownOrdering)
 
     WorkerProcess hub(plh_hub_binary(), dir.string(), {});
 
-    ASSERT_TRUE(wait_for_log_marker(dir, "Broker: listening on"))
-        << "broker never bound. Log:\n" << read_hub_log(dir);
+    ASSERT_TRUE(wait_for_log_marker(dir, "Broker: listening on", &hub))
+        << "broker never bound. Log:\n" << read_hub_log(dir)
+        << "\nhub stderr:\n" << hub.get_stderr();
 
     hub.send_signal(SIGTERM);
     EXPECT_EQ(hub.wait_for_exit(10), 0);
@@ -289,7 +318,9 @@ TEST_F(PlhHubCliTest, RunMode_DoubleSigtermIsIdempotent)
     configure_for_runmode(dir);
 
     WorkerProcess hub(plh_hub_binary(), dir.string(), {});
-    ASSERT_TRUE(wait_for_log_marker(dir, "Broker: listening on"));
+    ASSERT_TRUE(wait_for_log_marker(dir, "Broker: listening on", &hub))
+        << "broker never bound. Log:\n" << read_hub_log(dir)
+        << "\nhub stderr:\n" << hub.get_stderr();
 
     hub.send_signal(SIGTERM);
     // Small wait so the second SIGTERM lands during shutdown, not
