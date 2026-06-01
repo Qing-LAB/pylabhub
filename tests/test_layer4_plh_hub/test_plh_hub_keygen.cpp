@@ -43,16 +43,16 @@ TEST_F(PlhHubCliTest, GeneratesVaultFileAndEmitsPubkey)
     const auto dir = tmp("keygen_ok");
     const auto cfg_path = dir / "hub.json";
 
-    // Vault file path is fixed at `<hub_dir>/vault/hub.vault`
-    // (HEP-CORE-0033 §7).  HubVault::{create,open} ignore the
-    // `auth.keyfile` value at the moment — the field acts as a
-    // non-empty/empty toggle for "vault auth on/off" and the path
-    // is hard-coded.  Its documented value matches the actual
-    // location.
+    // Hub vault filename embeds the hub UID (HEP-CORE-0033 §6.5,
+    // revised 2026-05-31 — symmetric with role-side convention so
+    // multiple hubs sharing a vault directory do not collide).  The
+    // L4 fixture's minimal config uses hub.uid = "hub.l4test.uid00000001",
+    // so the expected vault path is `vault/<that uid>.vault`.
     nlohmann::json overrides;
-    overrides["hub"]["auth"]["keyfile"] = "vault/hub.vault";
+    overrides["hub"]["auth"]["keyfile"] = "vault/hub.l4test.uid00000001.vault";
     write_minimal_config(cfg_path, dir, overrides);
-    const fs::path vault_actual = dir / "vault" / "hub.vault";
+    const fs::path vault_actual =
+        dir / "vault" / "hub.l4test.uid00000001.vault";
 
     ScopedHubPassword pw("test-password");
     WorkerProcess p(plh_hub_binary(), "--config",
@@ -86,6 +86,84 @@ TEST_F(PlhHubCliTest, GeneratesVaultFileAndEmitsPubkey)
         << "stdout missing hub_uid:\n" << p.get_stdout();
     EXPECT_NE(p.get_stdout().find("public_key"), std::string::npos)
         << "stdout missing public_key:\n" << p.get_stdout();
+}
+
+// ── No-silent-overwrite contract (HEP-CORE-0033 §7.1) ───────────────────────
+
+/// --keygen refuses to overwrite an existing vault file.  This is the
+/// load-bearing check that the operator's existing CURVE keypair AND
+/// admin token are not silently destroyed by a re-run of --keygen.
+/// The test pre-creates a sentinel file at the resolved vault path
+/// with KNOWN content, then runs --keygen, then verifies:
+///   - rc != 0 (binary refused),
+///   - stderr cites HEP-CORE-0033 and the resolved path,
+///   - the sentinel file's CONTENT IS UNCHANGED (the load-bearing
+///     contract — rc!=0 alone could pass even if the binary wrote
+///     to a tmpfile then aborted; pinning the content catches a
+///     regression that allowed any write).
+TEST_F(PlhHubCliTest, KeygenRefusesToOverwriteExistingVault)
+{
+    const auto dir = tmp("keygen_no_overwrite");
+    const auto cfg_path = dir / "hub.json";
+
+    nlohmann::json overrides;
+    overrides["hub"]["auth"]["keyfile"] = "vault/hub.l4test.uid00000001.vault";
+    write_minimal_config(cfg_path, dir, overrides);
+    const fs::path vault_actual =
+        dir / "vault" / "hub.l4test.uid00000001.vault";
+
+    // Pre-create the vault parent dir + a sentinel "vault" file with
+    // known content + known mode.  The binary's --keygen must NOT
+    // touch this file.
+    fs::create_directories(vault_actual.parent_path());
+    const std::string sentinel =
+        "PRE-EXISTING VAULT — must not be overwritten by --keygen.\n"
+        "If you see this content surviving a --keygen run that exited "
+        "non-zero, the no-overwrite contract is intact.\n";
+    {
+        std::ofstream out(vault_actual, std::ios::binary);
+        out << sentinel;
+    }
+    ASSERT_EQ(fs::file_size(vault_actual), sentinel.size());
+
+    ScopedHubPassword pw("test-password");
+    WorkerProcess p(plh_hub_binary(), "--config",
+        {cfg_path.string(), "--keygen"});
+    const int rc = p.wait_for_exit();
+
+    // (a) Binary refused.
+    EXPECT_NE(rc, 0) << "expected non-zero exit; stdout:\n"
+                     << p.get_stdout() << "\nstderr:\n" << p.get_stderr();
+
+    // (b) Diagnostic identifies the violated rule + path + HEP cite.
+    EXPECT_NE(p.get_stderr().find("already exists"), std::string::npos)
+        << "stderr should say the vault already exists; got:\n"
+        << p.get_stderr();
+    EXPECT_NE(p.get_stderr().find(vault_actual.string()), std::string::npos)
+        << "stderr should name the offending path; got:\n" << p.get_stderr();
+    EXPECT_NE(p.get_stderr().find("HEP-CORE-0033"), std::string::npos)
+        << "stderr should cite HEP-CORE-0033; got:\n" << p.get_stderr();
+    EXPECT_NE(p.get_stderr().find("rm"), std::string::npos)
+        << "stderr should tell operator how to remove the file; got:\n"
+        << p.get_stderr();
+
+    // (c) THE LOAD-BEARING CHECK: file content IS UNCHANGED.  Reading
+    //     the file back and comparing byte-for-byte against the
+    //     sentinel — any mutation by the binary (truncation, partial
+    //     write, full overwrite) breaks this assertion.
+    std::string actual_content;
+    {
+        std::ifstream in(vault_actual, std::ios::binary);
+        std::ostringstream ss;
+        ss << in.rdbuf();
+        actual_content = ss.str();
+    }
+    EXPECT_EQ(actual_content, sentinel)
+        << "no-overwrite contract VIOLATED — vault file content was "
+           "modified by --keygen despite the refusal.  Expected:\n"
+        << sentinel << "\nGot:\n" << actual_content;
+    EXPECT_EQ(fs::file_size(vault_actual), sentinel.size())
+        << "no-overwrite contract VIOLATED — vault file size changed";
 }
 
 // ── Error paths ──────────────────────────────────────────────────────────────

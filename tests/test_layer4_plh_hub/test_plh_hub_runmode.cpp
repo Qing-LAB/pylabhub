@@ -105,11 +105,15 @@ void configure_for_runmode(const fs::path &dir)
     j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0";  // ephemeral
     j["admin"]["enabled"]           = false;
     j["script"]["path"]             = "";                   // no script
-    // Leave hub.auth.keyfile = "vault/hub.vault" from --init template.
+    // Leave hub.auth.keyfile = "vault/<hub_uid>.vault" from --init
+    // template (HEP-CORE-0033 §6.5 revised 2026-05-31 — UID-keyed).
     {
         std::ofstream f(dir / "hub.json");
         f << j.dump(2);
     }
+    // Capture the UID that --init wrote so we can verify the vault
+    // file at the matching path below.
+    const std::string hub_uid = j["hub"]["uid"].get<std::string>();
 
     // Materialize the vault — required for run-mode startup.
     ::setenv("PYLABHUB_HUB_PASSWORD", "l4-runmode-pw", /*overwrite=*/1);
@@ -129,7 +133,7 @@ void configure_for_runmode(const fs::path &dir)
     // nothing would silently break run-mode startup.  Parent-dir
     // MODE (0700) is NOT asserted here — separately-tracked gap in
     // `fs::create_directories` path; existence is enough for now.
-    const fs::path vault_actual = dir / "vault" / "hub.vault";
+    const fs::path vault_actual = dir / "vault" / (hub_uid + ".vault");
     ExpectVaultFileSecured(vault_actual);
     EXPECT_TRUE(fs::is_directory(vault_actual.parent_path()))
         << "vault dir missing: " << vault_actual.parent_path();

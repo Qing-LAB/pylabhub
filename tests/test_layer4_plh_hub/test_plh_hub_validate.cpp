@@ -89,6 +89,77 @@ TEST_F(PlhHubCliTest, NoScriptPasses)
     EXPECT_NE(p.get_stdout().find("Validation passed"), std::string::npos);
 }
 
+// ── Security warning (HEP-CORE-0033 §7.1 + §7.2) ────────────────────────────
+
+/// auth.keyfile resolves INSIDE hub_dir → hub binary emits the
+/// "*** PYLABHUB SECURITY WARNING ***" stderr block.  The warning is
+/// load-bearing under the script-write attack-surface model
+/// (HEP-CORE-0033 §7.2) and must fire on every config load.  This
+/// test verifies the emission contract — the binary identifies the
+/// risky placement AND tells the operator what to fix.
+TEST_F(PlhHubCliTest, WarnsWhenKeyfileInsideHubDir)
+{
+    const auto dir = tmp("val_warn_in_hub");
+    const auto cfg_path = dir / "hub.json";
+
+    nlohmann::json overrides;
+    // Inside hub_dir — placeholder is fine; --validate skips vault open.
+    overrides["hub"]["auth"]["keyfile"] = "vault/hub.l4test.uid00000001.vault";
+    write_minimal_script(dir);
+    write_minimal_config(cfg_path, dir, overrides);
+
+    WorkerProcess p(plh_hub_binary(), "--config",
+        {cfg_path.string(), "--validate"});
+    EXPECT_EQ(p.wait_for_exit(), 0) << "stderr:\n" << p.get_stderr();
+
+    // (a) Warning block is present.
+    const std::string &err = p.get_stderr();
+    EXPECT_NE(err.find("PYLABHUB SECURITY WARNING"), std::string::npos)
+        << "stderr missing the PYLABHUB SECURITY WARNING banner; got:\n"
+        << err;
+    // (b) Names the failing field with the exact path the operator wrote.
+    EXPECT_NE(err.find("hub.auth.keyfile"), std::string::npos)
+        << "warning should identify 'hub.auth.keyfile'; got:\n" << err;
+    EXPECT_NE(err.find("vault/hub.l4test.uid00000001.vault"), std::string::npos)
+        << "warning should quote the operator's keyfile value; got:\n" << err;
+    // (c) Tells the operator what to do — recommends moving outside hub_dir.
+    EXPECT_NE(err.find("RECOMMENDED"), std::string::npos)
+        << "warning should include a RECOMMENDED action; got:\n" << err;
+    EXPECT_NE(err.find("/etc/pylabhub/vault"), std::string::npos)
+        << "warning should suggest /etc/pylabhub/vault for system-managed; got:\n"
+        << err;
+    EXPECT_NE(err.find(".pylabhub/vault"), std::string::npos)
+        << "warning should suggest ~/.pylabhub/vault for single-user; got:\n"
+        << err;
+}
+
+/// auth.keyfile resolves OUTSIDE hub_dir → NO security warning.
+/// Symmetric negative-path check — the warning must NOT fire spuriously
+/// for the recommended deployment pattern (vault outside hub_dir).
+TEST_F(PlhHubCliTest, NoWarningWhenKeyfileOutsideHubDir)
+{
+    const auto dir = tmp("val_no_warn_out");
+    const auto vault_outside = tmp("val_no_warn_vault_outside");  // sibling dir
+    const auto cfg_path = dir / "hub.json";
+
+    nlohmann::json overrides;
+    // Absolute path OUTSIDE hub_dir.  Vault need not exist —
+    // --validate does not open it.
+    overrides["hub"]["auth"]["keyfile"] =
+        (vault_outside / "hub.l4test.uid00000001.vault").generic_string();
+    write_minimal_script(dir);
+    write_minimal_config(cfg_path, dir, overrides);
+
+    WorkerProcess p(plh_hub_binary(), "--config",
+        {cfg_path.string(), "--validate"});
+    EXPECT_EQ(p.wait_for_exit(), 0) << "stderr:\n" << p.get_stderr();
+
+    const std::string &err = p.get_stderr();
+    EXPECT_EQ(err.find("PYLABHUB SECURITY WARNING"), std::string::npos)
+        << "stderr should NOT contain the security warning when "
+           "keyfile is outside hub_dir; got:\n" << err;
+}
+
 // ── Error paths ──────────────────────────────────────────────────────────────
 
 /// Malformed JSON → non-zero exit + "Config error" in stderr.  Pins

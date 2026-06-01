@@ -123,6 +123,68 @@ TEST_P(PlhRoleKeygenTest, WritesVaultFile)
         << "stdout missing 'role_uid' label; got:\n" << p.get_stdout();
 }
 
+// ── No-silent-overwrite contract (HEP-CORE-0024 §3.4) ───────────────────────
+
+/// --keygen refuses to overwrite an existing role vault file.  Pins
+/// that the existing CURVE keypair is not silently destroyed by a
+/// re-run of --keygen.  Verifies content unchanged, not just rc!=0.
+TEST_P(PlhRoleKeygenTest, KeygenRefusesToOverwriteExistingVault)
+{
+    const auto &s = GetParam();
+    const auto dir = tmp("kg_no_overwrite");
+    const auto cfg = dir / (std::string(s.role) + ".json");
+    const auto vault_path = dir / "vault" / "test.vault";
+
+    nlohmann::json overrides;
+    overrides[std::string(s.role)]["auth"]["keyfile"] =
+        vault_path.generic_string();
+    write_minimal_config(cfg, std::string(s.role), dir, overrides);
+
+    // Pre-create the vault parent dir + a sentinel file with known
+    // content.  The binary's --keygen must NOT touch this file.
+    fs::create_directories(vault_path.parent_path());
+    const std::string sentinel =
+        "PRE-EXISTING ROLE VAULT — must not be overwritten by --keygen.\n";
+    {
+        std::ofstream out(vault_path, std::ios::binary);
+        out << sentinel;
+    }
+    ASSERT_EQ(fs::file_size(vault_path), sentinel.size());
+
+    WorkerProcess p(plh_role_binary(), "--role",
+        {std::string(s.role), "--config", cfg.string(), "--keygen"});
+    const int rc = p.wait_for_exit(PYLABHUB_TEST_CRYPTO_TIMEOUT_S);
+
+    // (a) Binary refused.
+    EXPECT_NE(rc, 0) << "expected non-zero exit; stderr:\n" << p.get_stderr();
+
+    // (b) Diagnostic identifies the violated rule + path + HEP cite.
+    EXPECT_NE(p.get_stderr().find("already exists"), std::string::npos)
+        << "stderr should say the vault already exists; got:\n"
+        << p.get_stderr();
+    EXPECT_NE(p.get_stderr().find(vault_path.string()), std::string::npos)
+        << "stderr should name the offending path; got:\n" << p.get_stderr();
+    EXPECT_NE(p.get_stderr().find("HEP-CORE-0024"), std::string::npos)
+        << "stderr should cite HEP-CORE-0024; got:\n" << p.get_stderr();
+    EXPECT_NE(p.get_stderr().find("rm"), std::string::npos)
+        << "stderr should tell operator how to remove the file; got:\n"
+        << p.get_stderr();
+
+    // (c) THE LOAD-BEARING CHECK: file content IS UNCHANGED.
+    std::string actual_content;
+    {
+        std::ifstream in(vault_path, std::ios::binary);
+        std::ostringstream ss;
+        ss << in.rdbuf();
+        actual_content = ss.str();
+    }
+    EXPECT_EQ(actual_content, sentinel)
+        << "no-overwrite contract VIOLATED — vault file content was "
+           "modified by --keygen despite the refusal.";
+    EXPECT_EQ(fs::file_size(vault_path), sentinel.size())
+        << "no-overwrite contract VIOLATED — vault file size changed";
+}
+
 // ── Error paths ─────────────────────────────────────────────────────────────
 
 /// --keygen against a config with explicitly EMPTY auth.keyfile →
