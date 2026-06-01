@@ -126,62 +126,180 @@ Hub resources are then found at canonical locations within the resolved hub dire
   hub.pubkey    ← CurveZMQ public key     (read by hub_pubkey_path())
 ```
 
-### 3.4 Vault File Convention — clarified 2026-05-30
+### 3.4 Vault File Convention — finalized 2026-05-31
 
-**`auth.keyfile` is the source of truth for the vault file location
-at runtime.**  The runtime does not silently fall back to a default
-when the field is empty; empty is an explicit operator opt-in to
-ephemeral CURVE mode.  Full table:
+**Design intent.**  pylabhub is a vault.  The deployment shape is
+"secret material on disk at an operator-specified place, with a
+load-bearing warning when that place is inside the role directory."
+There is one deployment mode (vault on disk); operator chooses
+where; the warning fires when the placement creates a script-write
+attack surface (see §3.4.1).  No in-memory CURVE mode, no "modes"
+taxonomy — the operator picks a path string and the binary obeys.
 
-| `auth.keyfile` value | Runtime behavior |
-|---|---|
-| Non-empty, relative (e.g. `"vault/<role_uid>.vault"`) | Resolved against `<role_dir>`: `<role_dir>/vault/<role_uid>.vault`.  Vault opened at this path.  HEP-CORE-0035 §4.6.2 ACL check applies. |
-| Non-empty, absolute (e.g. `"/srv/secrets/role.vault"`) | Used as-is.  ACL check applies.  Note: JSON values are read literally — `~` is NOT shell-expanded.  Operators wanting the home directory must write the absolute `/home/<user>/...` form. |
-| Non-empty + file absent at resolved path | Hard error.  When the operator configures a vault, the binary refuses to silently fall back to ephemeral mode (consistent with the explicit-opt-in semantic for the empty case).  Replaces the previous silent stderr-printf fallback in `role_config.cpp`. |
-| Empty `""` | EXPLICIT opt-in to ephemeral CURVE keys, no encryption at rest.  Dev / loopback only.  Stderr warning emitted at startup.  Vault-mode ACL checks are skipped; the unconditional config-file check (HEP-CORE-0035 §4.6.2 Tier 1) still runs. |
-| Field missing entirely | Config-load error (hard-fail at parse time; closes task #78 alongside the hub side). |
+This finalized contract subsumes the C′-1 (missing field is an
+error) and E′-2 (empty string is an error) strengthenings and the
+roll-back of C′-2's `--vault-mode` taxonomy.
 
-The canonical default path for a role is:
+#### `auth.keyfile` contract
 
+`auth.keyfile` is the source of truth for the vault file location.
+It is a path string with these semantics:
+
+| `auth.keyfile` value | Behavior at load time | Behavior at `--keygen` time | Behavior at runtime |
+|---|---|---|---|
+| Non-empty, relative (e.g. `"vault/<role_uid>.vault"`) | Resolved against `<role_dir>`. | `--keygen` creates the resolved path; if file already exists → HARD ERROR (no silent overwrite). | Vault opened at resolved path.  HEP-CORE-0035 §4.6.2 ACL check applies.  `RoleConfig::load()` emits the §3.4.1 SECURITY WARNING when the resolved path is inside `<role_dir>`. |
+| Non-empty, absolute (e.g. `"/srv/secrets/role.vault"`) | Used as-is. | `--keygen` creates the absolute path; if file already exists → HARD ERROR. | Vault opened at the absolute path.  ACL check applies.  No warning (vault is outside `<role_dir>`). |
+| Non-empty, resolved path absent at runtime | Resolved path stored. | (See above; --keygen is what creates the file.) | HARD ERROR.  When the operator configured a vault, the binary refuses to fall back silently to anything else. |
+| Empty `""` | HARD ERROR at config-load.  No in-memory CURVE mode exists. | (Never reached.) | (Never reached.) |
+| Field missing entirely | HARD ERROR at config-load. | (Never reached.) | (Never reached.) |
+| `auth` object missing | HARD ERROR at config-load. | (Never reached.) | (Never reached.) |
+| `auth.keyfile` non-string type | HARD ERROR at config-load. | (Never reached.) | (Never reached.) |
+
+#### Diagnostic surface
+
+All config-load failures cite HEP-CORE-0024 §3.4 (role side) or
+HEP-CORE-0033 §7.1 (hub side) in their error text.  The
+`--keygen` overwrite-refusal diagnostic names the offending path,
+explains what would be destroyed (the existing CURVE keypair, and
+for the hub side the admin token too), and provides the exact
+`rm '<path>'` command the operator must run to override the
+refusal explicitly.
+
+#### Path resolution semantics
+
+- JSON values are read literally — `~` is NOT shell-expanded.
+  Operators who want the home directory write the absolute
+  `/home/<user>/...` form (or use environment substitution at
+  shell level before launching the binary).
+- Relative paths resolve against `<role_dir>` (the directory
+  containing the role config file).  No `..` normalization is
+  performed; the result may resolve outside `<role_dir>` if the
+  operator writes a `..`-bearing path, which is the operator's
+  choice.
+- `RoleDirectory::default_keyfile(uid)` returns
+  `<role_dir>/vault/<role_uid>.vault` — the canonical relative
+  path the `--init` template writes.  `--init` writes it into
+  every freshly-created role config so the operator sees the
+  vault path explicitly.
+
+#### Canonical `--init` template
+
+`plh_role --init` writes:
+
+```jsonc
+"auth": {
+    "keyfile": "vault/<role_uid>.vault"
+}
 ```
-<role_dir>/vault/<role_uid>.vault
-```
 
-— applied at `--init` time (writing the canonical value into the
-template config), NOT at runtime.  This removes the prior "silent
-fallback to default when empty" rule; operators see the vault path
-explicitly in their config.
+into the generated role config.  This is the convenient default for
+dev / CI / quick smoke tests — the vault appears inside `<role_dir>`
+and works out of the box.  For production deployments the operator
+edits `auth.keyfile` to a path outside `<role_dir>` before running
+`--keygen` (see §3.4.1 for the rationale and recommended
+locations).
 
-`RoleDirectory::default_keyfile(uid)` is the helper that `--init`
-uses to compute this canonical default.
+The runtime SECURITY WARNING (see §3.4.1) fires at every config
+load when the resolved path is inside `<role_dir>`, making the
+operator's choice visible at every startup.
 
-`plh_role --keygen` requires non-empty `auth.keyfile` — ephemeral
-mode is in-process only and has no on-disk vault to create.
+### 3.4.1 Vault placement security model
 
-### 3.4.1 Vault directory placement (security note)
+The vault file's location is determined entirely by the operator's
+`auth.keyfile` choice.  pylabhub recommends placing the vault
+**outside** `<role_dir>` and enforces this recommendation with a
+load-bearing runtime warning.  This section explains the rationale
+and the operator-facing surface.
 
-The `vault/` directory holds encrypted secret material.  Its
-location is determined entirely by the operator's `auth.keyfile`
-choice — it does NOT have to be a subdirectory of `<role_dir>`.
-This enables the **system-managed config + user-owned vault**
-deployment model: `role.json` and `<role_dir>` may live under a
-root-owned global install (e.g., `/etc/pylabhub/<role>/`) while the
-vault lives in a user-writable directory (e.g., `~/.pylabhub/vault/`).
-This is the deployment pattern this HEP was originally designed to
-support (see `role_directory.cpp` operator-help text showing both
-`/etc/pylabhub/vault/<uid>.vault` system-managed and
-`~/.pylabhub/vault/<uid>.vault` single-user variants).
+#### Why outside `<role_dir>` matters — the script-write attack vector
 
-HEP-CORE-0035 §4.6.1 enforces 0700 mode + euid-owner match on the
-vault directory regardless of where it lives.  Mode + ownership
-discipline are independent of placement.
+A role process runs user-supplied scripts (the Python / Lua /
+native scripting layer per HEP-CORE-0011).  Those scripts execute
+with the role binary's euid.  Two attack surfaces follow:
+
+1. **Script-write attack.**  Encryption-at-rest (libsodium AEAD,
+   Argon2id-derived key) protects the vault's *content* from
+   script reads — the script gets ciphertext.  But the script can
+   still WRITE arbitrary bytes to any path the binary can write,
+   including the vault file's path.  A hostile or buggy script
+   that knows the vault's location can truncate it, replace it
+   with garbage, or write a sealed-but-attacker-controlled
+   substitute.  This is denial-of-service at minimum and a
+   downgrade path to weaker auth at worst.  Placing the vault
+   *outside* `<role_dir>` — at a path the script does not
+   naturally know — reduces the surface for this class of attack.
+2. **Backup hygiene.**  Operators routinely back up role
+   directories for ops / version-control.  Vault inside
+   `<role_dir>` means every role-dir backup is also a secret
+   backup; vault outside keeps backups secret-free by default.
+
+There is also a packaging / immutable-infrastructure benefit:
+roles distributed as Debian packages or container images ship
+`<role_dir>` as read-only data; per-deployment secrets belong on
+a writable secrets volume mounted elsewhere.
+
+#### The load-bearing SECURITY WARNING
 
 `RoleDirectory::warn_if_keyfile_in_role_dir(base_dir, keyfile)`
-exists (called from `RoleConfig::load()` immediately after loading
-`auth.keyfile`) to warn operators who accidentally place the
-keyfile inside `<role_dir>` itself — which defeats the system-
-managed-config + user-owned-vault separation this HEP intends to
-enable.
+is called from `RoleConfig::load()` immediately after parsing
+`auth.keyfile`.  When the resolved path lies inside `<role_dir>`,
+the binary writes a `*** PYLABHUB SECURITY WARNING ***` banner to
+stderr.  The warning identifies the offending field
+(`auth.keyfile`), quotes the operator's literal path string,
+explains the attack vector (scripts can read this file), and
+recommends two outside-`<role_dir>` placements:
+
+```
+/etc/pylabhub/vault/<role_uid>.vault   (system-managed service)
+~/.pylabhub/vault/<role_uid>.vault     (single-user deployment)
+```
+
+The warning fires at every config load — every binary startup,
+every `--validate` invocation.  Operators who genuinely intend
+the inside-`<role_dir>` placement (e.g., tarball-portable demos,
+self-contained workspaces) accept the warning as the standing
+acknowledgement of the trade-off.
+
+#### Recommended deployment shapes
+
+The operator picks a path string in `auth.keyfile`; pylabhub
+obeys.  Conventional shapes:
+
+- **Dev / CI / smoke test** — leave the `--init` template default
+  (`vault/<role_uid>.vault`); accept the warning; convenient
+  out-of-the-box.
+- **Single-user laptop / personal-machine deployment** — edit
+  `auth.keyfile` to `~/.pylabhub/vault/<role_uid>.vault` written
+  as the absolute `/home/<user>/.pylabhub/vault/<role_uid>.vault`
+  form (JSON does not shell-expand `~`).
+- **System-managed service** — `auth.keyfile` =
+  `/etc/pylabhub/vault/<role_uid>.vault`.  Daemon runs under a
+  service user; vault owned by that user; `<role_dir>` owned by
+  root.  `--keygen` runs once at deploy time as the service user
+  (typically via `sudo -u`).
+- **Custom storage** (encrypted-volume mount, shared NAS,
+  secrets manager exposing a mounted file path) — `auth.keyfile`
+  = the operator-supplied absolute path.  Same contract: the
+  binary opens that exact file.
+
+#### Mode + ownership discipline (separate concern)
+
+HEP-CORE-0035 §4.6.1 enforces 0700 on the vault directory and
+0600 on the vault file regardless of where the operator places
+them.  Mode + ownership discipline are orthogonal to placement;
+the placement warning here is about REACHABILITY by hostile
+scripts, the §4.6 discipline is about ACCESSIBILITY to other
+local accounts.
+
+#### `--init` does not write absolute paths
+
+The `--init` template writes the relative form
+`vault/<role_uid>.vault` regardless of how the operator intends
+to deploy.  Operators who want an absolute path edit the config
+post-`--init`.  This keeps the binary's `--init` output
+deterministic across machines (no embedded `$HOME` or other
+machine-specific paths in the generated file) and makes the
+operator's intent visible as an explicit JSON edit.
 
 ### 3.5 Schemas Subdirectory (HEP-CORE-0034)
 
