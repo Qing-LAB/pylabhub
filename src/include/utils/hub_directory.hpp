@@ -146,16 +146,49 @@ public:
     // ── Security helpers ───────────────────────────────────────────────────────
 
     /**
-     * @brief Canonical hub vault path: `<base>/vault/hub.vault`.
+     * @brief Canonical hub vault path: `<base>/vault/<hub_uid>.vault`.
      *
-     * Per HEP-CORE-0033 §6.5, the hub vault has a fixed filename
-     * (unlike role vaults, which key on uid).  HubVault::open()
-     * reads from this exact path.
+     * Per HEP-CORE-0033 §6.5 (revised 2026-05-31), the hub vault
+     * filename embeds the hub UID — symmetric with the role-side
+     * convention (HEP-CORE-0024 §3.4).  This prevents collisions
+     * when multiple hubs share a per-user vault directory (e.g.,
+     * ~/.pylabhub/vault/) and avoids the silent-overwrite footgun
+     * the prior fixed `hub.vault` filename would have created when
+     * paired with the per-user vault location convention.
+     *
+     * @param hub_uid The hub UID as parsed from hub.json.  Must be
+     *                non-empty and conform to HEP-CORE-0033 §G2.2.0a
+     *                (`hub.<name>.uid<8hex>`); the caller is
+     *                responsible for validation.
      */
-    std::filesystem::path hub_vault_file() const
+    std::filesystem::path hub_vault_file(std::string_view hub_uid) const
     {
-        return vault() / "hub.vault";
+        return vault() / (std::string(hub_uid) + ".vault");
     }
+
+    /**
+     * @brief Emit a security warning when @p keyfile resolves to a
+     *        path inside @p hub_base.
+     *
+     * Symmetric to `RoleDirectory::warn_if_keyfile_in_role_dir` —
+     * called from `HubConfig::load()` immediately after parsing
+     * `hub.auth.keyfile`.  The hub also runs operator scripts
+     * (HEP-CORE-0033 §12 hub-side API); those scripts share the
+     * binary's euid and can corrupt or replace files inside the hub
+     * directory.  Encryption-at-rest protects the vault's content
+     * from reads, but NOT against deliberate truncation / overwrite.
+     * Vault outside `hub_base` reduces the attack surface for that
+     * class of failure.
+     *
+     * @param hub_base  Hub base directory (used to resolve relative
+     *                  keyfile values + compare).
+     * @param keyfile   The `auth.keyfile` JSON value as read from
+     *                  config.  Empty input is a no-op (the parser
+     *                  already rejects empty per HEP-CORE-0033 §7.1
+     *                  but the helper stays defensive).
+     */
+    static void warn_if_keyfile_in_hub_dir(const std::filesystem::path &hub_base,
+                                            const std::string           &keyfile);
 
     // ── Layout inspection ──────────────────────────────────────────────────────
 

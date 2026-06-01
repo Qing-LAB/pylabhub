@@ -318,6 +318,22 @@ std::string RoleConfig::create_keypair(const std::string &password)
     const std::filesystem::path vault_path =
         pylabhub::utils::security::resolve_keyfile_path(
             auth.keyfile, impl_->base_dir);
+
+    // No-silent-overwrite (HEP-CORE-0024 §3.4, added 2026-05-31): refuse
+    // to clobber an existing vault file.  --keygen produces a fresh
+    // CURVE keypair; overwriting destroys the existing one, invalidating
+    // any hub-side allowlist entry pinned to the old pubkey.  Operator
+    // must remove the file explicitly to re-keygen.
+    if (std::filesystem::exists(vault_path))
+        throw std::runtime_error(std::string("[") + tag +
+            "] Error: vault already exists at '" +
+            vault_path.string() +
+            "'. Refusing to overwrite — that would destroy the existing "
+            "CURVE keypair (the hub-side allowlist still pins the OLD "
+            "pubkey).  If you really want a new keypair, remove the "
+            "file first:\n    rm '" + vault_path.string() +
+            "'\nthen re-run --keygen (HEP-CORE-0024 §3.4).");
+
     const auto vault = utils::RoleVault::create(vault_path, uid, password);
     return vault.public_key();
 }

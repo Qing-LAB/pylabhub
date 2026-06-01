@@ -106,13 +106,59 @@ bool HubDirectory::has_standard_layout() const
     // script/ and schemas/ are OPTIONAL per HEP-0033 §7 — not checked.
 }
 
+// ── Security diagnostics ──────────────────────────────────────────────────────
+
+void HubDirectory::warn_if_keyfile_in_hub_dir(const std::filesystem::path &hub_base,
+                                                const std::string           &keyfile)
+{
+    if (keyfile.empty())
+        return;
+
+    namespace fs = std::filesystem;
+
+    // Resolve keyfile: relative paths are resolved relative to hub_base
+    // so the comparison is meaningful regardless of the process CWD.
+    const fs::path kf_raw(keyfile);
+    const fs::path kf = fs::weakly_canonical(
+        kf_raw.is_absolute() ? kf_raw : (hub_base / kf_raw));
+
+    const fs::path base = fs::weakly_canonical(hub_base);
+
+    // Check whether kf is a sub-path of base by comparing component-by-component.
+    auto [base_end, kf_it] = std::mismatch(base.begin(), base.end(), kf.begin(), kf.end());
+    if (base_end != base.end())
+        return; // keyfile is NOT inside hub_base — no warning.
+
+    std::fprintf(stderr,
+                 "\n"
+                 "  *** PYLABHUB SECURITY WARNING ***\n"
+                 "  hub.auth.keyfile '%s'\n"
+                 "  is located inside the hub directory '%s'.\n"
+                 "\n"
+                 "  Scripts running in this hub process (HEP-CORE-0033 §12\n"
+                 "  hub-side API) share the binary's euid and can corrupt\n"
+                 "  or replace files inside the hub directory.  Encryption-\n"
+                 "  at-rest protects the vault's content from reads, but\n"
+                 "  NOT against deliberate truncation / overwrite.  Vault\n"
+                 "  outside hub_dir reduces this attack surface.\n"
+                 "\n"
+                 "  RECOMMENDED: move the vault file outside the hub directory\n"
+                 "  and update 'hub.auth.keyfile' to its absolute path, e.g.:\n"
+                 "    /etc/pylabhub/vault/<hub_uid>.vault   (system-managed)\n"
+                 "    ~/.pylabhub/vault/<hub_uid>.vault     (single-user)\n"
+                 "\n",
+                 keyfile.c_str(), hub_base.string().c_str());
+}
+
 // ── init_directory ───────────────────────────────────────────────────────────
 
 namespace
 {
 
 /// Build the default hub.json template (HEP-0033 §6.2 minus the
-/// auth/access fields deferred to HEP-0035).
+/// auth/access fields deferred to HEP-0035).  The vault filename
+/// embeds the hub UID (HEP-CORE-0033 §6.5 — revised 2026-05-31) so
+/// multiple hubs sharing a vault directory do not collide.
 nlohmann::json build_hub_json_template(const std::string &uid,
                                         const std::string &name)
 {
@@ -121,7 +167,7 @@ nlohmann::json build_hub_json_template(const std::string &uid,
             {"uid",       uid},
             {"name",      name},
             {"log_level", "info"},
-            {"auth",      {{"keyfile", "vault/hub.vault"}}},
+            {"auth",      {{"keyfile", "vault/" + uid + ".vault"}}},
         }},
         {"script",               {{"type", "python"}, {"path", "."}}},
         {"python_venv",          ""},

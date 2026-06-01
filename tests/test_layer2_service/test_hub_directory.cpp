@@ -56,7 +56,12 @@ TEST(HubDirectoryTest, Open_StoresBaseAndAccessors)
     EXPECT_EQ(hd.run(),            hd.base() / "run");
     EXPECT_EQ(hd.vault(),          hd.base() / "vault");
     EXPECT_EQ(hd.schemas(),        hd.base() / "schemas");
-    EXPECT_EQ(hd.hub_vault_file(), hd.base() / "vault" / "hub.vault");
+    // HEP-CORE-0033 §6.5 (revised 2026-05-31): hub vault filename
+    // embeds the hub UID (symmetric with role-side convention) to
+    // prevent collisions when multiple hubs share a per-user vault
+    // directory.
+    EXPECT_EQ(hd.hub_vault_file("hub.test.uid01234567"),
+              hd.base() / "vault" / "hub.test.uid01234567.vault");
 
     fs::remove_all(tmp);
 }

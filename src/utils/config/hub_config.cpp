@@ -12,6 +12,7 @@
  * binary.
  */
 #include "utils/config/hub_config.hpp"
+#include "utils/hub_directory.hpp"
 #include "utils/hub_vault.hpp"
 #include "utils/json_config.hpp"
 #include "utils/security/key_file_acl.hpp"
@@ -139,6 +140,15 @@ HubConfig HubConfig::load(const std::string &path)
     }
 
     s.load_all(s.raw_json);
+
+    // Security diagnostic — symmetric with role-side
+    // RoleConfig::load (HEP-CORE-0033 §7.1 + HEP-CORE-0024 §3.4.1).
+    // Warn if the operator's auth.keyfile path resolves inside the
+    // hub directory; this is the load-bearing reminder of the
+    // script-write attack surface trade-off.
+    utils::HubDirectory::warn_if_keyfile_in_hub_dir(
+        s.base_dir, s.auth.keyfile);
+
     return cfg;
 }
 
@@ -238,6 +248,23 @@ std::string HubConfig::create_keypair(const std::string &password)
     const std::filesystem::path vault_path =
         pylabhub::utils::security::resolve_keyfile_path(
             auth.keyfile, hub_dir);
+
+    // No-silent-overwrite (HEP-CORE-0033 §7.1, added 2026-05-31): refuse
+    // to clobber an existing vault file.  --keygen produces fresh CURVE
+    // material AND a fresh admin token; overwriting destroys both,
+    // invalidating any federation peer that pinned the old pubkey and
+    // every admin-channel session bound to the old token.  Operator
+    // must remove the file explicitly to re-keygen.
+    if (std::filesystem::exists(vault_path))
+        throw std::runtime_error(
+            "[plh_hub] Error: vault already exists at '" +
+            vault_path.string() +
+            "'. Refusing to overwrite — that would destroy the existing "
+            "keypair (and any ChaCha20-Poly1305 admin token / CURVE "
+            "secret bound to it).  If you really want a new keypair, "
+            "remove the file first:\n    rm '" + vault_path.string() +
+            "'\nthen re-run --keygen (HEP-CORE-0033 §7.1).");
+
     const auto vault = utils::HubVault::create(vault_path, uid, password);
     // Publish the broker's CURVE public key at <hub_dir>/hub.pubkey
     // (still hub_dir-relative — the public-key file location is part

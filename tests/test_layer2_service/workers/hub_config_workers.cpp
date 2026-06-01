@@ -79,7 +79,7 @@ nlohmann::json full_hub_json()
             {"uid", "hub.full.uid00000002"},
             {"name", "FullHub"},
             {"log_level", "warn"},
-            {"auth", {{"keyfile", "vault/hub.vault"}}},
+            {"auth", {{"keyfile", "vault/hub.full.uid00000002.vault"}}},
         }},
         {"script", {{"type", "python"}, {"path", "."}}},
         {"stop_on_script_error", true},
@@ -131,7 +131,7 @@ int load_full(const char *tmpdir)
             EXPECT_EQ(cfg.identity().uid,        "hub.full.uid00000002");
             EXPECT_EQ(cfg.identity().name,       "FullHub");
             EXPECT_EQ(cfg.identity().log_level,  "warn");
-            EXPECT_EQ(cfg.auth().keyfile,        "vault/hub.vault");
+            EXPECT_EQ(cfg.auth().keyfile,        "vault/hub.full.uid00000002.vault");
 
             EXPECT_EQ(cfg.network().broker_endpoint, "tcp://0.0.0.0:5571");
             EXPECT_TRUE(cfg.network().broker_bind);

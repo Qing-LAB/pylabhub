@@ -195,9 +195,20 @@ TEST_F(PlhHubCliTest, RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters)
         j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0";
         j["admin"]["enabled"]           = false;
         j["script"]["path"]             = "";
-        // Leave hub.auth.keyfile = "vault/hub.vault" from the template.
+        // Leave hub.auth.keyfile = "vault/<hub_uid>.vault" from the
+        // template (HEP-CORE-0033 §6.5 revised 2026-05-31).
         std::ofstream f(hub_dir / "hub.json");
         f << j.dump(2);
+    }
+    // Capture the hub UID --init generated so we can verify the
+    // vault file path after --keygen.
+    std::string hub_uid;
+    {
+        nlohmann::json j;
+        std::ifstream f(hub_dir / "hub.json");
+        f >> j;
+        hub_uid = j["hub"]["uid"].get<std::string>();
+        ASSERT_FALSE(hub_uid.empty()) << "init did not write hub.uid";
     }
 
     // Run --keygen.  Pre-F1 this wrote only the vault file; post-F1
@@ -215,7 +226,7 @@ TEST_F(PlhHubCliTest, RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters)
     // to pin.  ExpectVaultFileSecured catches regressions that exit
     // 0 but leave the file 0-sized or with wrong perms.  Parent-dir
     // MODE is a separately-tracked gap; existence only here.
-    ExpectVaultFileSecured(hub_dir / "vault" / "hub.vault");
+    ExpectVaultFileSecured(hub_dir / "vault" / (hub_uid + ".vault"));
     EXPECT_TRUE(fs::is_directory(hub_dir / "vault"))
         << "hub vault dir missing: " << (hub_dir / "vault");
     ASSERT_TRUE(fs::exists(hub_dir / "hub.pubkey"))
