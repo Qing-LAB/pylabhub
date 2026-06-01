@@ -31,9 +31,8 @@ int auth_missing_auth_throws(const char *tmpdir);
 /// HEP-CORE-0033 §7.1: missing `hub.auth.keyfile` field → config-load error.
 int auth_missing_keyfile_throws(const char *tmpdir);
 
-/// `hub.auth.keyfile = ""` is the explicit ephemeral-mode opt-in; load
-/// succeeds and `auth().keyfile` is empty.
-int auth_explicit_empty(const char *tmpdir);
+/// HEP-CORE-0033 §7.1: empty `hub.auth.keyfile` → config-load error.
+int auth_empty_keyfile_throws(const char *tmpdir);
 
 /// Missing hub.uid → auto-generated `hub.<name>.uid<8hex>` per HEP-0033 §G2.2.0a;
 /// resulting uid validates under IdentifierKind::PeerUid.

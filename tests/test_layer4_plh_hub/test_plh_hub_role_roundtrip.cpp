@@ -43,6 +43,8 @@
 
 using namespace pylabhub::tests::plh_hub_l4;
 using pylabhub::tests::helper::WorkerProcess;
+using pylabhub::tests::helper::ExpectVaultFileSecured;
+using pylabhub::tests::helper::ExpectVaultDirSecured;
 
 namespace
 {
@@ -102,7 +104,9 @@ void write_producer_config(const fs::path &cfg_path,
     j["producer"]["uid"]       = "prod.l4round.uid12345678";
     j["producer"]["name"]      = "L4RoundProducer";
     j["producer"]["log_level"] = "info";
-    j["producer"]["auth"]["keyfile"] = "";  // role-side CURVE off
+    // Canonical relative path; --keygen materializes the vault file
+    // at <prod_dir>/vault/<uid>.vault before the producer is launched.
+    j["producer"]["auth"]["keyfile"] = "vault/prod.l4round.uid12345678.vault";
 
     j["out_hub_dir"]      = hub_dir.string();
     j["out_channel"]      = channel;
@@ -206,13 +210,20 @@ TEST_F(PlhHubCliTest, RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters)
             {(hub_dir / "hub.json").string(), "--keygen"});
         ASSERT_EQ(kg.wait_for_exit(), 0) << kg.get_stderr();
     }
-    // Affirmative F1 check — both files present at HEP §7 paths.
-    ASSERT_TRUE(fs::exists(hub_dir / "vault" / "hub.vault"))
-        << "F1 regression: vault file not at HEP §7 path";
+    // Affirmative F1 check — vault file at HEP §7 path with secure
+    // mode + non-zero content, and hub.pubkey published for the role
+    // to pin.  ExpectVaultFileSecured catches regressions that exit
+    // 0 but leave the file 0-sized or with wrong perms.  Parent-dir
+    // MODE is a separately-tracked gap; existence only here.
+    ExpectVaultFileSecured(hub_dir / "vault" / "hub.vault");
+    EXPECT_TRUE(fs::is_directory(hub_dir / "vault"))
+        << "hub vault dir missing: " << (hub_dir / "vault");
     ASSERT_TRUE(fs::exists(hub_dir / "hub.pubkey"))
         << "F1 regression: hub.pubkey not published by --keygen — role "
            "would have an empty CURVE pin and reject (or silently "
            "downgrade) the broker connection";
+    EXPECT_GT(fs::file_size(hub_dir / "hub.pubkey"), 0u)
+        << "hub.pubkey written but empty";
 
     // Spawn the hub run-mode process.
     WorkerProcess hub(plh_hub_binary(), hub_dir.string(), {});
@@ -238,9 +249,31 @@ TEST_F(PlhHubCliTest, RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters)
 
     // ── Role side ───────────────────────────────────────────────────────────
     const fs::path prod_dir = tmp("rtrip_prod");
+    fs::create_directories(prod_dir / "vault");  // 0700 set by RoleVault::create
     write_producer_config(prod_dir / "producer.json", hub_dir,
                           "lab.l4.roundtrip");
     write_producer_script(prod_dir / "script" / "python");
+
+    // --keygen the role vault.  Producer-side CURVE keypair is required
+    // for the broker registration handshake (HEP-CORE-0033 §7.1 — no
+    // CURVE-off mode); without this step the role binary would refuse
+    // to start due to the missing vault file.
+    ::setenv("PYLABHUB_ROLE_PASSWORD", "rtrip-role-pw", /*overwrite=*/1);
+    {
+        WorkerProcess role_kg(plh_role_binary(), "--role",
+            {"producer", "--config",
+             (prod_dir / "producer.json").string(), "--keygen"});
+        ASSERT_EQ(role_kg.wait_for_exit(), 0)
+            << "role --keygen failed:\n" << role_kg.get_stderr();
+        // Verify the role vault file actually appeared with 0600 mode.
+        // rc=0 alone could pass if --keygen prints "ok" but doesn't
+        // write; the artifact check catches that.  Parent-dir MODE
+        // is a separately-tracked gap; existence only here.
+        ExpectVaultFileSecured(prod_dir / "vault" /
+                                "prod.l4round.uid12345678.vault");
+        EXPECT_TRUE(fs::is_directory(prod_dir / "vault"))
+            << "role vault dir missing: " << (prod_dir / "vault");
+    }
 
     WorkerProcess role(plh_role_binary(), "--role",
         {"producer", prod_dir.string()});
@@ -284,4 +317,5 @@ TEST_F(PlhHubCliTest, RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters)
         << role.get_stderr();
 
     ::unsetenv("PYLABHUB_HUB_PASSWORD");
+    ::unsetenv("PYLABHUB_ROLE_PASSWORD");
 }

@@ -56,17 +56,17 @@ fs::path write_hub_json(const std::string &dir, const nlohmann::json &content)
 
 /// Minimal config with just enough for HubConfig::load to succeed.
 /// `loop_timing` is required by `parse_timing_config` (HEP-CORE-0033
-/// Phase 7 Commit B); use `max_rate` here to avoid pulling in a
-/// `target_period_ms` value that the minimal-config tests don't care
-/// about.  `auth.keyfile = ""` is the explicit ephemeral-mode opt-in
-/// (HEP-CORE-0033 §7.1); these L2 fixtures exercise non-auth fields
-/// and stay in ephemeral mode to avoid pulling in vault setup.
+/// §7); use `max_rate` here to avoid pulling in a `target_period_ms`
+/// value that the minimal-config tests don't care about.
+/// `auth.keyfile` MUST be a non-empty string per HEP-CORE-0033 §7.1;
+/// these L2 fixtures use a placeholder path that the tests never
+/// open — config-load itself does not touch the referenced file.
 nlohmann::json minimal_hub_json(const std::string &uid = "hub.test.uid00000001")
 {
     return {
         {"hub", {{"uid", uid},
                   {"name", "TestHub"},
-                  {"auth", {{"keyfile", ""}}}}},
+                  {"auth", {{"keyfile", "vault/placeholder.vault"}}}}},
         {"loop_timing", "max_rate"},
     };
 }
@@ -342,19 +342,28 @@ int auth_missing_keyfile_throws(const char *tmpdir)
         JsonConfig::GetLifecycleModule());
 }
 
-// ── auth_explicit_empty ─────────────────────────────────────────────────────
-// `hub.auth.keyfile = ""` is the explicit ephemeral-mode opt-in; load
-// succeeds with auth().keyfile.empty().
-int auth_explicit_empty(const char *tmpdir)
+// ── auth_empty_keyfile_throws ───────────────────────────────────────────────
+// HEP-CORE-0033 §7.1: empty `hub.auth.keyfile` is a config-load error.
+// pylabhub is a vault; no silent generate-in-memory fallback.
+int auth_empty_keyfile_throws(const char *tmpdir)
 {
     return run_gtest_worker(
         [&]() {
             const std::string dir = tmpdir;
-            write_hub_json(dir, minimal_hub_json());  // already includes auth.keyfile = ""
-            auto cfg = HubConfig::load_from_directory(dir);
-            EXPECT_TRUE(cfg.auth().keyfile.empty());
+            auto j = minimal_hub_json();
+            j["hub"]["auth"]["keyfile"] = "";
+            write_hub_json(dir, j);
+
+            try {
+                HubConfig::load_from_directory(dir);
+                FAIL() << "Expected std::runtime_error for empty hub.auth.keyfile";
+            } catch (const std::runtime_error &ex) {
+                EXPECT_THAT(ex.what(),
+                            testing::HasSubstr("must be a non-empty path string"));
+                EXPECT_THAT(ex.what(), testing::HasSubstr("HEP-CORE-0024"));
+            }
         },
-        "hub_config::auth_explicit_empty",
+        "hub_config::auth_empty_keyfile_throws",
         Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
         JsonConfig::GetLifecycleModule());
 }
@@ -369,12 +378,12 @@ int uid_auto_generated(const char *tmpdir)
             // Omit hub.uid; provide just hub.name so generator has a base.
             // loop_timing is required by parse_timing_config — same shape
             // as minimal_hub_json above; max_rate keeps the fixture small.
-            // auth.keyfile = "" is the explicit ephemeral-mode opt-in
-            // (HEP-CORE-0033 §7.1) — required even when this test is
-            // exercising uid auto-generation, not auth.
+            // auth.keyfile is REQUIRED and must be non-empty per
+            // HEP-CORE-0033 §7.1; placeholder path keeps this fixture
+            // small while still exercising the uid-autogen path.
             const nlohmann::json j = {
                 {"hub", {{"name", "MyHub"},
-                          {"auth", {{"keyfile", ""}}}}},
+                          {"auth", {{"keyfile", "vault/placeholder.vault"}}}}},
                 {"loop_timing", "max_rate"},
             };
             write_hub_json(dir, j);
@@ -545,7 +554,7 @@ struct HubConfigWorkerRegistrar
                 if (sc == "auth_missing_auth_throws")  return auth_missing_auth_throws(dir);
                 if (sc == "auth_missing_keyfile_throws")
                     return auth_missing_keyfile_throws(dir);
-                if (sc == "auth_explicit_empty")       return auth_explicit_empty(dir);
+                if (sc == "auth_empty_keyfile_throws") return auth_empty_keyfile_throws(dir);
                 if (sc == "uid_auto_generated")        return uid_auto_generated(dir);
                 if (sc == "state_grace_sentinel")      return state_grace_sentinel(dir);
                 if (sc == "load_from_directory")       return load_from_directory(dir);

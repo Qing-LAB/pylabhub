@@ -81,10 +81,8 @@ TEST_F(HubConfigTest, StrictKeys_UnknownInSection_Throws)
 }
 
 // ── Auth (HEP-CORE-0033 §7.1) ────────────────────────────────────────────────
-// `hub.auth.keyfile` MUST be present.  Operator must opt explicitly into
-// vault mode (`"keyfile": "<path>"`) or ephemeral mode (`"keyfile": ""`).
-// Silent default is rejected so the security choice cannot be made by
-// accident.
+// `hub.auth.keyfile` MUST be present AND non-empty.  pylabhub is a
+// vault; there is no in-memory operating mode.
 
 TEST_F(HubConfigTest, Auth_MissingAuth_Throws)
 {
@@ -100,10 +98,10 @@ TEST_F(HubConfigTest, Auth_MissingKeyfile_Throws)
     ExpectWorkerOk(w);
 }
 
-TEST_F(HubConfigTest, Auth_ExplicitEmpty)
+TEST_F(HubConfigTest, Auth_EmptyKeyfile_Throws)
 {
-    auto w = SpawnWorker("hub_config.auth_explicit_empty",
-                         {unique_dir("auth_explicit_empty")});
+    auto w = SpawnWorker("hub_config.auth_empty_keyfile_throws",
+                         {unique_dir("auth_empty_keyfile_throws")});
     ExpectWorkerOk(w);
 }
 

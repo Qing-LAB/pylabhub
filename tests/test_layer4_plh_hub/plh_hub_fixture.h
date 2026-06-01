@@ -17,6 +17,7 @@
 #include "test_patterns.h"
 #include "test_process_utils.h"
 #include "test_entrypoint.h"
+#include "shared_test_helpers.h"
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -111,18 +112,21 @@ inline void write_minimal_script(const fs::path &hub_dir)
 /// Build a minimal-valid hub.json at @p cfg_path.
 ///
 /// What "minimal valid" covers:
-///   - hub.identity: uid + name + auth.keyfile=""
+///   - hub.identity: uid + name + auth.keyfile (placeholder path)
 ///   - admin: enabled, ephemeral loopback endpoint, token_required=false
 ///   - broker: heartbeat-multiplier defaults
 ///   - federation/state: reasonable defaults
 ///   - script: type=python, path=base_dir
 ///   - logging + loop_timing
 ///
-/// `auth.keyfile=""` keeps --validate non-interactive (no vault
-/// prompt).  Admin endpoint uses `tcp://127.0.0.1:0` so each test gets
-/// an ephemeral port; broker endpoint similarly.  Operators get
-/// fully-fledged values via `plh_hub --init` — this helper is the
-/// minimum the hub.json schema accepts.
+/// auth.keyfile is REQUIRED (HEP-CORE-0033 §7.1) and must be
+/// non-empty; this helper writes a placeholder path that the binary
+/// never opens (config-load itself does not touch the vault file —
+/// only `--keygen` and the run-time `HubConfig::load_keypair()` do,
+/// and `--validate` deliberately skips vault unlock).  Tests that
+/// need a real vault must do `--keygen` explicitly.  Admin endpoint
+/// uses `tcp://127.0.0.1:0` so each test gets an ephemeral port;
+/// broker endpoint similarly.
 inline void write_minimal_config(const fs::path &cfg_path,
                                   const fs::path &base_dir,
                                   const nlohmann::json &overrides =
@@ -133,7 +137,7 @@ inline void write_minimal_config(const fs::path &cfg_path,
     j["hub"]["uid"]        = "hub.l4test.uid00000001";
     j["hub"]["name"]       = "L4Test";
     j["hub"]["log_level"]  = "info";
-    j["hub"]["auth"]["keyfile"] = "";
+    j["hub"]["auth"]["keyfile"] = "vault/placeholder.vault";
 
     // admin.admin_token is RUNTIME-ONLY (populated from the vault by
     // HubConfig::load_keypair); never written to hub.json.  Only the

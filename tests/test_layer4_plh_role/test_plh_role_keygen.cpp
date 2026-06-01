@@ -18,6 +18,9 @@
 
 using namespace pylabhub::tests::plh_role_l4;
 using pylabhub::tests::helper::WorkerProcess;
+using pylabhub::tests::helper::ExpectVaultFileSecured;
+using pylabhub::tests::helper::ExpectVaultDirSecured;
+using pylabhub::tests::helper::ExpectNoVaultArtifactsUnder;
 
 namespace
 {
@@ -67,7 +70,11 @@ INSTANTIATE_TEST_SUITE_P(
 
 /// --keygen writes the vault file at the path specified in auth.keyfile
 /// and prints the public key on stdout.  Pins the "on success, file
-/// appears + pubkey emitted" contract.
+/// appears at the right path + with the right mode + pubkey emitted"
+/// contract.  Exit code is necessary but not sufficient — the
+/// post-keygen artifact verification catches regressions that the
+/// binary "succeeds" but leaves the file unwritten, zero-sized, or
+/// at wrong permissions.
 TEST_P(PlhRoleKeygenTest, WritesVaultFile)
 {
     const auto &s = GetParam();
@@ -93,11 +100,23 @@ TEST_P(PlhRoleKeygenTest, WritesVaultFile)
         << "stderr:\n" << p.get_stderr();
     expect_no_unexpected_errors(p);
 
-    EXPECT_TRUE(fs::exists(vault_path))
-        << "vault file not created at " << vault_path;
+    // (a) Vault file at the exact configured path, mode 0600, non-zero.
+    //     A regression that writes to the wrong path, leaves the file
+    //     0-sized, or doesn't chmod is caught here.
+    ExpectVaultFileSecured(vault_path);
 
-    // Public key is printed as "public_key : <hex>" in stdout (see
-    // plh_role_main.cpp: "role_uid" and "public_key" labels).
+    // (b) Vault parent dir EXISTS.  Parent dir MODE check (0700 per
+    //     HEP-CORE-0035 §4.6.1) is deliberately NOT asserted here —
+    //     the binary's `fs::create_directories` path does not yet
+    //     apply 0700 explicitly (security audit finding, separately
+    //     tracked).  When that gap is fixed, swap this to
+    //     `ExpectVaultDirSecured(vault_path.parent_path())`.
+    EXPECT_TRUE(fs::is_directory(vault_path.parent_path()))
+        << "vault dir missing: " << vault_path.parent_path();
+
+    // (c) Public key is printed as "public_key : <hex>" in stdout (see
+    // plh_role_main.cpp: "role_uid" and "public_key" labels).  Pins
+    // the operator-facing summary.
     EXPECT_NE(p.get_stdout().find("public_key"), std::string::npos)
         << "stdout missing 'public_key' label; got:\n" << p.get_stdout();
     EXPECT_NE(p.get_stdout().find("role_uid"), std::string::npos)
@@ -106,23 +125,78 @@ TEST_P(PlhRoleKeygenTest, WritesVaultFile)
 
 // ── Error paths ─────────────────────────────────────────────────────────────
 
-/// --keygen against a config WITHOUT auth.keyfile set → exit non-zero
-/// with a diagnostic.  Pins that the "no keyfile configured" guard
-/// fires before any crypto work.
-TEST_P(PlhRoleKeygenTest, NoKeyfileConfiguredFails)
+/// --keygen against a config with explicitly EMPTY auth.keyfile →
+/// exits non-zero at config-parse (HEP-CORE-0024 §3.4: pylabhub is
+/// a vault; empty keyfile is rejected).  Pins that the parse-time
+/// guard fires BEFORE any --keygen filesystem work AND that no
+/// half-written artifact survives.
+TEST_P(PlhRoleKeygenTest, EmptyKeyfileFails)
 {
     const auto &s = GetParam();
-    const auto dir = tmp("kg_nokf");
+    const auto dir = tmp("kg_empty");
     const auto cfg = dir / (std::string(s.role) + ".json");
 
-    // Minimal config WITHOUT auth block → auth.keyfile is empty.
-    write_minimal_config(cfg, std::string(s.role), dir);
+    // Explicitly write empty keyfile.  write_minimal_config inserts a
+    // placeholder path by default (HEP-CORE-0024 §3.4 — auth.keyfile
+    // is required); the override below makes it empty so we can pin
+    // the empty-string rejection contract.
+    nlohmann::json overrides;
+    overrides[std::string(s.role)]["auth"]["keyfile"] = "";
+    write_minimal_config(cfg, std::string(s.role), dir, overrides);
 
     WorkerProcess p(plh_role_binary(), "--role",
         {std::string(s.role), "--config", cfg.string(), "--keygen"});
-    EXPECT_NE(p.wait_for_exit(), 0) << "keygen without keyfile must fail";
-    EXPECT_NE(p.get_stderr().find("keyfile"), std::string::npos)
-        << "stderr should mention 'keyfile'; got:\n" << p.get_stderr();
+    EXPECT_NE(p.wait_for_exit(), 0)
+        << "keygen with empty keyfile must fail; stderr:\n"
+        << p.get_stderr();
+
+    // (a) Diagnostic identifies the failing field AND the contract.
+    EXPECT_NE(p.get_stderr().find("auth.keyfile"), std::string::npos)
+        << "stderr should mention 'auth.keyfile'; got:\n" << p.get_stderr();
+    EXPECT_NE(p.get_stderr().find("non-empty"), std::string::npos)
+        << "stderr should describe the empty-string violation; got:\n"
+        << p.get_stderr();
+    EXPECT_NE(p.get_stderr().find("HEP-CORE-0024"), std::string::npos)
+        << "stderr should cite the source-of-truth HEP; got:\n"
+        << p.get_stderr();
+
+    // (b) No vault artifact was created — the parse-time guard fires
+    //     before --keygen reaches the write path.
+    ExpectNoVaultArtifactsUnder(dir);
+}
+
+/// --keygen against a config with NO auth block at all → same outcome
+/// as empty keyfile, but via the missing-section parse path (C′-1).
+/// Symmetric test to EmptyKeyfileFails — both paths feed the same
+/// "binary rejects at config-load" contract, but exercise different
+/// branches of parse_auth_config.
+TEST_P(PlhRoleKeygenTest, MissingAuthBlockFails)
+{
+    const auto &s = GetParam();
+    const auto dir = tmp("kg_noauth");
+    const auto cfg = dir / (std::string(s.role) + ".json");
+
+    // Build minimal config, then erase the auth block via override
+    // semantics (overrides merge-patch into the base; `null` deletes
+    // a key per JSON Merge Patch RFC 7396).
+    nlohmann::json overrides;
+    overrides[std::string(s.role)]["auth"] = nullptr;  // RFC 7396 delete
+    write_minimal_config(cfg, std::string(s.role), dir, overrides);
+
+    WorkerProcess p(plh_role_binary(), "--role",
+        {std::string(s.role), "--config", cfg.string(), "--keygen"});
+    EXPECT_NE(p.wait_for_exit(), 0)
+        << "keygen with missing auth block must fail; stderr:\n"
+        << p.get_stderr();
+
+    EXPECT_NE(p.get_stderr().find(std::string(s.role) + ".auth"),
+              std::string::npos)
+        << "stderr should mention '<role>.auth'; got:\n" << p.get_stderr();
+    EXPECT_NE(p.get_stderr().find("HEP-CORE-0024"), std::string::npos)
+        << "stderr should cite the source-of-truth HEP; got:\n"
+        << p.get_stderr();
+
+    ExpectNoVaultArtifactsUnder(dir);
 }
 
 /// --keygen without --role → fails with the dispatch-level "--role is

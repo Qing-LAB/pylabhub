@@ -14,6 +14,7 @@
 
 #include "test_patterns.h"
 #include "test_process_utils.h"
+#include "shared_test_helpers.h"
 #include "test_entrypoint.h"
 
 #include <gtest/gtest.h>
@@ -99,8 +100,12 @@ inline void write_minimal_config(const fs::path       &cfg_path,
 
     // NOTE: The identity fields (uid, name, auth, log_level) live
     // INSIDE the role-tagged block (producer/consumer/processor),
-    // not at top level.  Callers wanting to set auth.keyfile can
-    // either pass it via @p overrides or leave it empty.
+    // not at top level.  auth.keyfile is REQUIRED (HEP-CORE-0024
+    // §3.4) and must be non-empty; this helper writes a placeholder
+    // path that the binary never opens (config-load itself does not
+    // touch the vault file — only `--keygen` and the run-time
+    // `RoleConfig::load_keypair()` do).  Tests that need a real
+    // vault must do `--keygen` explicitly.
     //
     // Build the JSON via explicit assignment (not nested initializer
     // lists) — nlohmann::json interprets `{"key", {...}}` in a nested
@@ -125,7 +130,7 @@ inline void write_minimal_config(const fs::path       &cfg_path,
     {
         j["producer"]["uid"]  = "prod.l4test.uid00000001";
         j["producer"]["name"] = "L4Test";
-        j["producer"]["auth"]["keyfile"] = "";
+        j["producer"]["auth"]["keyfile"] = "vault/placeholder.vault";
         j["out_channel"]     = "lab.l4.test";
         j["out_slot_schema"] = slot_schema;
     }
@@ -133,7 +138,7 @@ inline void write_minimal_config(const fs::path       &cfg_path,
     {
         j["consumer"]["uid"]  = "cons.l4test.uid00000001";
         j["consumer"]["name"] = "L4Test";
-        j["consumer"]["auth"]["keyfile"] = "";
+        j["consumer"]["auth"]["keyfile"] = "vault/placeholder.vault";
         j["in_channel"]     = "lab.l4.test";
         j["in_slot_schema"] = slot_schema;
     }
@@ -141,7 +146,7 @@ inline void write_minimal_config(const fs::path       &cfg_path,
     {
         j["processor"]["uid"]  = "proc.l4test.uid00000001";
         j["processor"]["name"] = "L4Test";
-        j["processor"]["auth"]["keyfile"] = "";
+        j["processor"]["auth"]["keyfile"] = "vault/placeholder.vault";
         j["in_channel"]      = "lab.l4.in";
         j["out_channel"]     = "lab.l4.out";
         j["in_slot_schema"]  = slot_schema;
