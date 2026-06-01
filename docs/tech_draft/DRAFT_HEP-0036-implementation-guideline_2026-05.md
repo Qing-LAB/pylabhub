@@ -176,7 +176,36 @@ encryption-at-rest stays.
 expansion):** Task #78 (B3: hard-error empty `auth.keyfile`) +
 hub-side `auth.keyfile` honoring.  Rationale below.
 
-### 5.1.1 Sub-phase 1D — expanded scope (2026-05-30)
+### 5.1.1 Sub-phase 1D — expanded scope (2026-05-30) — **CLOSED 2026-05-31**
+
+**STATUS: Closed 2026-05-31 via commits 42e0a873 (C′-1), ffbe6a9c
+(E′-1), 51f76d55 (E′-2a), 2e730fa6 (E′-2b).**  Task #78 closed.
+Final shipped contract differs from the intermediate C′-2 design
+this section originally described — see HEP-CORE-0024 §3.4 (role)
+and HEP-CORE-0033 §7.1 (hub) for the authoritative finalized
+contract.  Short summary of the final shape (overrides the
+table-and-paragraph descriptions below):
+
+- `auth.keyfile` must be a non-empty path string (no in-memory
+  CURVE mode).  Missing field, missing `auth` object, empty
+  string, and non-string types all → config-load error.
+- `--init` template writes the relative `vault/<uid>.vault` form
+  (UID-keyed on both hub and role sides; HEP-CORE-0033 §6.5
+  revised 2026-05-31 to embed hub UID — was fixed `hub.vault`).
+- `--keygen` refuses to overwrite an existing vault file (both
+  binaries; diagnostic provides `rm '<path>'` and cites HEP).
+- Symmetric `HubDirectory::warn_if_keyfile_in_hub_dir` helper
+  closes the prior hub-vs-role asymmetry (Finding #6 from the
+  2026-05-31 holistic review).
+- No `--vault-mode` flag, no `vault_path_resolve` module, no
+  "modes" taxonomy — the C′-2 design's "5 named modes" was
+  rolled back by E′-1 as invented terminology not grounded in
+  any operator-facing decision the project needed.
+
+The section below remains as historical context for the
+intermediate-state discussion and is no longer the contract.
+
+---
 
 **Problem surfaced during 1D investigation:** `auth.keyfile` is
 the source of truth for the vault path per HEP-CORE-0033 §7 and

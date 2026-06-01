@@ -220,7 +220,7 @@ CurveZMQ private key live exclusively in `hub.vault` (0600, encrypted).
     "peers":              []
   },
   "hub": {
-    "auth":      { "keyfile": "vault/hub.vault" },
+    "auth":      { "keyfile": "vault/hub.main.uid00000001.vault" },
     "log_level": "info",
     "name":      "main",
     "uid":       "hub.main.uid00000001"
@@ -270,7 +270,7 @@ revisions.
 | `federation.enabled` | no | `false` | Run as a federation peer (HEP-CORE-0022) |
 | `federation.forward_timeout_ms` | no | `2000` | Timeout for federation forwarding |
 | `federation.peers[]` | no | `[]` | Federation peer list |
-| `hub.auth.keyfile` | no | `"vault/hub.vault"` | Path (relative to hub_dir) to the encrypted vault.  Empty string is a known half-state (Audit B3) — use `--keygen` to generate a vault |
+| `hub.auth.keyfile` | **YES** | `"vault/<hub_uid>.vault"` (`--init` template default; UID-keyed per HEP-CORE-0033 §6.5 revised 2026-05-31) | Required non-empty path string to the encrypted vault.  Relative paths resolve against `hub_dir`.  Empty string / missing field / missing `auth` object → config-load error (HEP-CORE-0033 §7.1).  pylabhub is a vault: no in-memory CURVE mode.  See §4.3 for the security-warning rule when the path resolves inside `hub_dir`. |
 | `hub.log_level` | no | `"info"` | `debug` / `info` / `warn` / `error` |
 | `hub.name` | no | `"local.hub.default"` | Human name; also used to auto-generate `hub.uid` |
 | `hub.uid` | no | auto | Stable UID in `hub.<name>.uid<hex>` format; auto-generated if absent |
@@ -292,44 +292,80 @@ revisions.
 
 **Security note**: `hub.json` is world-readable (0644).  Never put
 the admin token or any secret in it.  The admin token is sealed
-inside `hub.vault` (0600, Argon2id+XSalsa20-Poly1305 encrypted) and
-unlocked at runtime by reading `PYLABHUB_HUB_PASSWORD` from the
-environment.
+inside the hub vault file (0600, Argon2id+XSalsa20-Poly1305
+encrypted) and unlocked at runtime by reading
+`PYLABHUB_HUB_PASSWORD` from the environment.
 
 ### 4.3 Running the hub
 
-> 🆕 **Binary rename + setup flow change (2026-05-21).**  The binary
-> is now `plh_hub` (was `pylabhub-hubshell` in earlier revisions of
-> this doc).  The `--dev` flag is GONE; the canonical "no-friction"
-> setup uses `--keygen` with a scripted password instead.  See Audit
-> B3 — the `auth.keyfile=""` half-state should not be used.
+> **Binary rename + setup flow finalized (2026-05-31).**  The binary
+> is `plh_hub`.  The `--dev` flag does not exist.  pylabhub is a
+> vault — there is no in-memory CURVE mode.  Operators MUST run
+> `--keygen` once per hub to materialize the vault before run mode.
 
 ```bash
-# First-time setup (once per hub) — creates hub.json + skeleton dirs
+# First-time setup (once per hub) — creates hub.json + skeleton dirs.
+# The generated hub.json sets hub.auth.keyfile = "vault/<hub_uid>.vault"
+# (UID-keyed; HEP-CORE-0033 §6.5 revised 2026-05-31).
 plh_hub --init <hub-dir>/ --name "my-lab-hub"
 
-# Provision the vault + publish hub.pubkey (once per hub)
+# Provision the vault + publish hub.pubkey (once per hub).
 export PYLABHUB_HUB_PASSWORD="<choose a strong password>"
 plh_hub --config <hub-dir>/hub.json --keygen
-#   ⇒ writes <hub-dir>/vault/hub.vault (0600, Argon2id-encrypted)
-#   ⇒ writes <hub-dir>/hub.pubkey       (0644, broker's Z85 public key)
+#   ⇒ writes <hub-dir>/vault/<hub_uid>.vault   (0600, Argon2id-encrypted)
+#   ⇒ writes <hub-dir>/hub.pubkey               (0644, broker's Z85 public key)
+#
+#   If the vault file ALREADY exists at the resolved path, --keygen
+#   refuses to overwrite and exits non-zero with an actionable
+#   diagnostic ("Refusing to overwrite — rm '<path>' first").  This is
+#   the no-silent-overwrite contract (HEP-CORE-0033 §7.1, added
+#   2026-05-31): re-keygen would destroy the existing CURVE keypair +
+#   admin token, breaking every federation peer pinning the old
+#   pubkey + every admin session bound to the old token.  Operator
+#   must remove the file explicitly to override.
 
 # Run mode — unlocks vault using PYLABHUB_HUB_PASSWORD from env
 export PYLABHUB_HUB_PASSWORD="<same password>"
 plh_hub <hub-dir>/
 
-# Validation only (parse config + script syntax; no broker bind)
+# Validation only (parse config + script syntax; no broker bind; no
+# vault unlock — placeholder keyfile paths are fine for --validate
+# because the file is never opened).
 plh_hub --validate <hub-dir>/
 ```
 
-After `--keygen`, every restart of the hub uses the same vault — no
-re-handshake on the role side, no rekey churn.  CURVE is mandatory:
-operators MUST run `--keygen` before the first run.  Empty
-`hub.auth.keyfile` is a half-state and should be treated as a config
-error.
+After `--keygen`, every restart of the hub uses the same vault —
+no re-handshake on the role side, no rekey churn.
 
-The hub listens at `network.broker_endpoint`.  Producers, consumers,
-and processors connect to this address; they read
+**Vault placement security warning (HEP-CORE-0033 §7.2).**  The
+`--init` template writes the relative form
+`vault/<hub_uid>.vault`, which resolves *inside* `<hub-dir>`.
+This is convenient for dev / CI / smoke tests but is not the
+recommended production placement: hub-side scripts share the
+binary's euid and can corrupt or replace files inside `hub_dir`.
+At every config load (every binary startup, every `--validate`
+invocation), `plh_hub` checks whether the resolved
+`hub.auth.keyfile` path lies inside `hub_dir`; if it does, the
+binary prints the load-bearing `*** PYLABHUB SECURITY WARNING ***`
+banner to stderr.  The warning quotes the operator's exact
+`hub.auth.keyfile` value and recommends two outside-`hub_dir`
+placements:
+
+```
+/etc/pylabhub/vault/<hub_uid>.vault   (system-managed service)
+~/.pylabhub/vault/<hub_uid>.vault      (single-user deployment)
+```
+
+For production deployments, edit `hub.auth.keyfile` to an
+absolute path outside `<hub-dir>` *before* running `--keygen` —
+e.g. `/etc/pylabhub/vault/hub.main.uid3a7f2b1c.vault` for a
+system-managed service, or
+`/home/youruser/.pylabhub/vault/hub.main.uid3a7f2b1c.vault` for
+a single-user deployment.  The warning then no longer fires.
+(JSON does not shell-expand `~`; write the absolute form.)
+
+The hub listens at `network.broker_endpoint`.  Producers,
+consumers, and processors connect to this address; they read
 `<hub-dir>/hub.pubkey` to pin the broker's CURVE key.
 
 ### 4.4 Hub script (optional) — Python or Lua
@@ -576,7 +612,7 @@ Example `producer.json` (matches current `--init` output):
     "name":      "MySensor",
     "uid":       "prod.mysensor.uid00000001",
     "log_level": "info",
-    "auth":      { "keyfile": "" }
+    "auth":      { "keyfile": "vault/prod.mysensor.uid00000001.vault" }
   },
 
   "out_hub_dir":   "../hub",
@@ -617,7 +653,7 @@ other end.
 | `producer.name` | yes | — | Human name; used in UID (`PROD-{NAME}-{HEX}`) |
 | `producer.uid` | no | generated | Override auto-generated UID |
 | `producer.log_level` | no | `"info"` | `debug`/`info`/`warn`/`error` |
-| `producer.auth.keyfile` | no | `""` | Vault file; empty = ephemeral CURVE identity |
+| `producer.auth.keyfile` | **YES** | `"vault/<role_uid>.vault"` (`--init` template default) | Required non-empty path string to the encrypted role vault.  Relative paths resolve against `<producer-dir>`.  Empty string / missing field / missing `auth` object → config-load error (HEP-CORE-0024 §3.4).  pylabhub is a vault: no in-memory CURVE mode.  See §4.3 for the symmetric hub-side warning when the resolved path is inside the role directory. |
 | `hub_dir` | no† | — | Hub directory; reads `hub.json` + `hub.pubkey` |
 | `broker` | no† | `"tcp://127.0.0.1:5570"` | Broker endpoint (alternative to `hub_dir`) |
 | `broker_pubkey` | no | `""` | CurveZMQ broker public key (Z85, 40 chars) |
@@ -695,7 +731,7 @@ Example `consumer.json` (matches current `--init` output):
     "name":      "Logger",
     "uid":       "cons.logger.uid00000001",
     "log_level": "info",
-    "auth":      { "keyfile": "" }
+    "auth":      { "keyfile": "vault/cons.logger.uid00000001.vault" }
   },
 
   "in_hub_dir":   "../hub",
@@ -725,7 +761,7 @@ Example `consumer.json` (matches current `--init` output):
 | `consumer.name` | yes | — | Human name; used in UID (`CONS-{NAME}-{HEX}`) |
 | `consumer.uid` | no | generated | Override auto-generated UID |
 | `consumer.log_level` | no | `"info"` | `debug`/`info`/`warn`/`error` |
-| `consumer.auth.keyfile` | no | `""` | Vault file; empty = ephemeral CURVE identity |
+| `consumer.auth.keyfile` | **YES** | `"vault/<role_uid>.vault"` (`--init` template default) | Required non-empty path string to the encrypted role vault.  Relative paths resolve against `<consumer-dir>`.  Empty string / missing field / missing `auth` object → config-load error (HEP-CORE-0024 §3.4). |
 | `hub_dir` | no† | — | Hub directory; reads `hub.json` + `hub.pubkey` |
 | `broker` | no† | `"tcp://127.0.0.1:5570"` | Broker endpoint |
 | `broker_pubkey` | no | `""` | CurveZMQ broker public key (Z85, 40 chars) |
@@ -802,7 +838,7 @@ Example `processor.json` (matches current `--init` output):
     "name":      "Normaliser",
     "uid":       "proc.normaliser.uid00000001",
     "log_level": "info",
-    "auth":      { "keyfile": "" }
+    "auth":      { "keyfile": "vault/proc.normaliser.uid00000001.vault" }
   },
 
   "in_hub_dir":  "../hub",

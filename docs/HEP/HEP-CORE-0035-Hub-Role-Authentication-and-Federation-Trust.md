@@ -484,14 +484,15 @@ runtime verification has two tiers:
   (hub_dir or role_dir).
 - Non-empty absolute `auth.keyfile` → used as-is.
 - Non-empty + file absent at the resolved path → hard error
-  (consistent with the explicit-opt-in semantic; no silent
-  fallback to ephemeral when the operator intended a vault).
-- Empty `auth.keyfile` `""` → explicit operator opt-in to
-  ephemeral CURVE keys.  Vault-mode checks are skipped; the
-  unconditional config check still runs.  Binary emits a stderr
-  WARN noting that ephemeral CURVE keys are in use and proceeds.
-- Field missing entirely → config-load error before this section
-  runs (closes task #78).
+  (the operator configured a vault; no silent fallback).
+- Empty `auth.keyfile` `""` → **HARD ERROR at config-load**
+  (HEP-CORE-0024 §3.4 / HEP-CORE-0033 §7.1, finalized
+  2026-05-31).  pylabhub is a vault; there is no in-memory
+  CURVE mode.  No silent fallback that does not actually help
+  with security would be misleading.
+- Field missing entirely OR `auth` object missing OR
+  `auth.keyfile` non-string → config-load error before this
+  section runs (closes task #78 via E′-2a).
 
 Before any secret material is read OR any config-derived behavior
 is committed, every binary MUST run the verification below.  **Tier
@@ -514,8 +515,10 @@ auto-discovered from --hub-dir / --role-dir).
   - (st_mode & 0040) != 0 AND file references a vault path
                                 → WARN
 
-# ── Tier 2: vault-mode checks (auth.keyfile non-empty only) ───────
-# Skipped in ephemeral mode (auth.keyfile = "").
+# ── Tier 2: vault file checks ─────────────────────────────────────
+# Always runs — empty auth.keyfile is rejected at config-load
+# (HEP-CORE-0024 §3.4 / HEP-CORE-0033 §7.1), so by the time we
+# reach Tier 2 there is always a vault path to check.
 
 check vault file at <resolved_keyfile_path>
   - (st_mode & 0077) != 0       → ERROR  "vault file <path> is
@@ -551,34 +554,49 @@ The verification function lives in a shared utility under
 `src/utils/security/` (e.g. `key_file_acl.{hpp,cpp}`) so that both
 binaries call into the same code.
 
-### 4.6.3 Interaction with B3 / B4 / `--init`
+### 4.6.3 Interaction with `--init` / `--keygen` (closed 2026-05-31)
 
-This requirement layers on top of existing related work:
+This requirement layers on top of work that has now landed:
 
-- B3 (task #78) — **MERGED INTO #101 sub-phase 1D** (decision
-  2026-05-30).  Original scope: hard-error empty `hub.auth.keyfile`.
-  Expanded: hub-side `auth.keyfile` honoring (replacing
-  `hub_config.cpp` hardcoded path) + unified semantics across hub
-  and role per HEP-CORE-0033 §7.1 / HEP-CORE-0024 §3.4.  Empty
-  `""` is now explicit ephemeral opt-in (NOT an error); the
-  hard-error case is the missing-field case (field absent from
-  the JSON entirely).
-- **`--keygen` symmetric rule (both binaries).**  Both
-  `plh_hub --keygen` and `plh_role --keygen` reject empty
-  `auth.keyfile` with a hard error — ephemeral mode is
-  in-process only and has no on-disk vault to create.  The
-  current operator-facing message
-  (`Error: --keygen requires 'auth.keyfile' in config`) matches
-  this contract on the hub side; the role side will produce a
-  symmetric message when sub-phase 1D ships.
-- B4 (task #79) — `plh_role --init` generates a non-zero SHM secret.
-  Same `--init` pass SHOULD also generate the role's CURVE keypair
-  (or invoke `--keygen` internally), with the modes from §4.6.1
-  applied at write time.  The operator should not have to remember
-  a separate keygen step.
-- §4.6 closure → file a sub-task of HEP-0035 implementation
-  (task #74) for the shared `key_file_acl` utility plus binary
-  wiring at startup.
+- **B3 (task #78) — CLOSED 2026-05-31 via commits 42e0a873
+  (C′-1), 51f76d55 (E′-2a), 2e730fa6 (E′-2b).**  Original scope:
+  hard-error empty `hub.auth.keyfile`.  Final shipped scope:
+  unified `auth.keyfile` semantics across hub and role per
+  HEP-CORE-0024 §3.4 / HEP-CORE-0033 §7.1.  Empty `""` is a
+  config-load error (no in-memory CURVE mode); missing field is
+  a config-load error; missing `auth` object is a config-load
+  error; non-string keyfile is a config-load error.  Diagnostics
+  cite HEP-CORE-0024.
+- **`--keygen` symmetric contract (closed 2026-05-31).**  Both
+  `plh_hub --keygen` and `plh_role --keygen` refuse to overwrite
+  an existing vault file (`HubConfig::create_keypair` /
+  `RoleConfig::create_keypair` check `fs::exists(vault_path)`).
+  Diagnostic names the path, explains what would be destroyed
+  (CURVE keypair + admin token on hub; CURVE keypair on role),
+  provides the exact `rm '<path>'` command, and cites the HEP.
+  No `--force` flag.
+- **Symmetric `warn_if_keyfile_in_hub_dir` (closed 2026-05-31).**
+  `HubDirectory::warn_if_keyfile_in_hub_dir(base, keyfile)` is
+  the hub-side mirror of
+  `RoleDirectory::warn_if_keyfile_in_role_dir`.  Called from
+  `HubConfig::load()`; emits the standard
+  `*** PYLABHUB SECURITY WARNING ***` block when the resolved
+  path is inside `hub_dir`.  Closes the hub-vs-role asymmetry
+  flagged in the 2026-05-31 holistic review (Finding #6).
+- **Hub vault filename UID-keyed (closed 2026-05-31).**  Hub
+  vault filename is now `<hub_uid>.vault` (HEP-CORE-0033 §6.5
+  revised), eliminating the prior fixed-`hub.vault` collision
+  hazard when multiple hubs share a vault directory.
+- B4 (task #79) — `plh_role --init` non-zero SHM secret remains
+  open.  Same `--init` pass SHOULD also generate the role's
+  CURVE keypair (or invoke `--keygen` internally), with the
+  modes from §4.6.1 applied at write time.  The operator should
+  not have to remember a separate keygen step.
+- §4.6 closure → sub-task of HEP-0035 implementation (task
+  #101) for the shared `key_file_acl` utility plus binary
+  wiring at startup.  The utility already exists in
+  `src/utils/security/key_file_acl.cpp`; binary wiring at
+  startup is the remaining gap.
 
 ### 4.6.4 Out of scope
 

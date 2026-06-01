@@ -9,6 +9,41 @@ items only; completed work lives in git history + DOC_ARCHIVE_LOG.
 
 ## Recent Completions
 
+- **2026-05-31 — Task #78 final closure via E′-1 + E′-2a + E′-2b
+  + E′-2c (commits ffbe6a9c → this commit).**  Multi-step landing:
+  - E′-1 (commit `ffbe6a9c`) rolled back C′-2's `--vault-mode`
+    flag + `vault_path_resolve` module + 5-mode taxonomy as
+    invented terminology not grounded in an operator-facing
+    decision the project needed.  Restored pre-C′-2 baseline +
+    C′-1.
+  - E′-2a (commit `51f76d55`) strengthened `parse_auth_config`
+    to reject empty `auth.keyfile` (extending C′-1's
+    missing-field rejection).  pylabhub is a vault — no
+    in-memory CURVE mode.  L4 fixtures refactored to use
+    placeholder paths instead of `""`; L4 tests hardened to
+    verify actual file artifacts (mode 0600, exact path,
+    no-vault-on-failed-keygen) instead of relying on exit code.
+  - E′-2b (commit `2e730fa6`) shipped the hub UID-keyed vault
+    filename (`<hub_uid>.vault` — HEP-CORE-0033 §6.5 revised;
+    closes the silent-collision footgun), the `--keygen`
+    no-silent-overwrite check on both binaries (with byte-for-
+    byte content-unchanged L4 verification), and the symmetric
+    `HubDirectory::warn_if_keyfile_in_hub_dir` helper (closes
+    the hub-vs-role asymmetry from the holistic review's
+    Finding #6).
+  - E′-2c (this commit) finalized the HEP docs:
+    HEP-CORE-0024 §3.4 + §3.4.1 rewritten with the design
+    intent (script-write attack vector, load-bearing warning),
+    HEP-CORE-0033 §6.5 + §7.1 + §7.2 mirror the role side,
+    HEP-CORE-0035 §4.6.3 past-tense the #78 closure,
+    HEP-CORE-0038 §2.2 corrected, DRAFT_HEP-0036 §5.1.1
+    annotated CLOSED.  README_Deployment.md rewritten:
+    `hub.auth.keyfile` and role-side `*.auth.keyfile` are
+    marked REQUIRED (was "no"); description cites the relevant
+    HEP and the security-warning rule; the §4.3 "running the
+    hub" walkthrough is updated for the no-overwrite contract
+    and the UID-keyed filename.
+
 - **2026-05-30 — Commit C′-1 (A1 of #78 / #101 sub-phase 1D)**:
   `parse_auth_config` (`auth_config.hpp`) now throws on missing
   `<section>.auth` object OR missing `auth.keyfile` field — silent
@@ -61,15 +96,15 @@ bugs (B1-B13).  B1, B2, B5, B9, B11, B12, B13 ✅ FIXED in code.  The
 ones below are filed but not yet fixed; each is a tightly-scoped
 single-area change.
 
-- **B3 (#78)** — **MERGED INTO #101 sub-phase 1D** (decision 2026-05-30).
-  Original scope: hard-error `hub.auth.keyfile=""` at config load.
-  Expanded scope under #101: unified `auth.keyfile` semantics across
-  hub AND role (empty `""` = explicit ephemeral opt-in; non-empty =
-  vault auth at resolved path; field-missing = config-load error;
-  relative paths resolved against `base_dir`).  Also fixes hub's
-  ignored-`auth.keyfile` bug (`hub_config.cpp:170-186` hardcodes
-  path).  Full plan: `docs/tech_draft/DRAFT_HEP-0036-implementation-
-  guideline_2026-05.md` §5.1.1.  When #101 1D ships, #78 closes.
+- **B3 (#78) — ✅ CLOSED 2026-05-31 via commits ffbe6a9c +
+  51f76d55 + 2e730fa6 + this commit.**  See Recent Completions
+  above for the multi-step landing.  Final shipped contract:
+  `auth.keyfile` is REQUIRED and must be non-empty (no in-memory
+  CURVE mode); hub vault filename is UID-keyed
+  (`<hub_uid>.vault`); `--keygen` refuses to overwrite an
+  existing vault file; symmetric `warn_if_keyfile_in_hub_dir`
+  closes hub-vs-role asymmetry.  Tracker entry retained for
+  git-log discoverability.
 
 - **#101** — **HEP-CORE-0035 §4.6 key-file ACL discipline** —
   shared `src/utils/security/key_file_acl.{hpp,cpp}` utility +

@@ -49,24 +49,23 @@ state; the framework owns the key-management mechanics.
 
 - A role can ONLY read/write its own store.  Cross-role access is
   not provided by the API surface; no `vault_load(other_role_uid, key)`.
-- Storage layout: the existing `<role_dir>/vault/<role_uid>.vault`
-  (RoleVault, HEP-CORE-0035 §4.6.1) gains a new top-level key
-  `scripts` whose value is a map of script-set keys to encrypted
-  values:
-  ```json
-  {
-    "role_uid":   "prod.sensor1.uid3a7f2b1c",
-    "public_key": "...",
-    "secret_key": "...",
-    "scripts":    { "api_token": "...", "oauth_refresh": "...", ... }
-  }
-  ```
-- The framework opens the vault with the master password at role
-  startup (provided via `PYLABHUB_ROLE_PASSWORD` env var or
+- Storage layout (deferred — see "Open design questions" below):
+  the script keystore lives at the role's vault location per
+  HEP-CORE-0024 §3.4 (operator-controlled path string in
+  `auth.keyfile`).  Whether script secrets share the framework
+  identity vault file (`<resolved>.vault`) or a sibling
+  (`<resolved>.scripts.vault` or `<resolved>.vault/` as a
+  directory) is open: the file-blob model and the
+  directory-of-files model have different cost / atomicity /
+  granularity trade-offs that will be settled when this HEP
+  picks up implementation (task #106).  The API contract below
+  is shape-agnostic on purpose.
+- The framework opens the keystore with the master password at
+  role startup (provided via `PYLABHUB_ROLE_PASSWORD` env var or
   interactive prompt per HEP-CORE-0035 §4.6.2).  Subsequent
-  `vault_save` / `vault_load` calls operate on the in-memory
-  decrypted payload + write back to the vault file.  The script
-  never sees the password.
+  `vault_save` / `vault_load` calls operate on the decrypted
+  payload + write back through the AEAD seal.  The script never
+  sees the password.
 - A processor role has two presences (rx + tx) but ONE role identity
   and ONE vault.  Both sides see the same `scripts` map.
 
