@@ -400,11 +400,12 @@ fs::path resolve_keyfile_path(const std::string &keyfile,
     catch (...)
     {
         // path construction can throw bad_alloc on extremely long
-        // strings; return empty as a defensive fallback.  Callers
-        // already treat empty as ephemeral; in the OOM case the
-        // binary is going to die anyway, so the empty result will
-        // not cause a security regression (it will surface the
-        // failure as ephemeral-mode rather than vault-mode).
+        // strings; return empty as a defensive fallback.  Empty
+        // results never reach the runtime under the normal contract
+        // (`auth.keyfile` is REQUIRED non-empty per HEP-CORE-0024
+        // §3.4 / HEP-CORE-0033 §7.1, rejected at config-load), so
+        // this branch is reached only in an OOM scenario; the
+        // binary is going to die anyway.
         return {};
     }
 }

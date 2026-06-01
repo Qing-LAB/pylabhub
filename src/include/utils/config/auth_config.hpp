@@ -20,7 +20,7 @@ namespace pylabhub::config
 
 struct AuthConfig
 {
-    std::string keyfile;       ///< Vault path (vault mode) or "" (explicit ephemeral).
+    std::string keyfile;       ///< Vault path (REQUIRED non-empty per HEP-CORE-0024 §3.4).
     std::string client_pubkey; ///< Z85 CURVE25519 public key (40 chars); populated by RoleConfig::load_keypair().
     std::string client_seckey; ///< Z85 CURVE25519 secret key; populated by RoleConfig::load_keypair().
 };

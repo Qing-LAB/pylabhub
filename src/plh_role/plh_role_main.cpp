@@ -316,7 +316,21 @@ int main(int argc, char *argv[])
             "Role vault password: ");
         if (!vault_password)
             return 1;
-        c.load_keypair(*vault_password);
+        try
+        {
+            c.load_keypair(*vault_password);
+        }
+        catch (const std::exception &e)
+        {
+            // Symmetric with the hub-side path at plh_hub_main.cpp.
+            // load_keypair throws on wrong password / corrupt vault /
+            // missing file (HEP-CORE-0024 §3.4 "non-empty + file
+            // absent" row); catching here gives the operator a
+            // formatted diagnostic instead of std::terminate /
+            // SIGABRT from the unhandled exception.
+            std::cerr << "Vault unlock failed: " << e.what() << "\n";
+            return 1;
+        }
     }
 
     // ── PythonInterpreter conditional load (Option E final design) ────

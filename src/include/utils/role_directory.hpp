@@ -146,22 +146,18 @@ public:
     std::filesystem::path script_entry(std::string_view script_path,
                                        std::string_view type) const;
 
-    // ── Security helpers ───────────────────────────────────────────────────────
-
-    /**
-     * @brief Default keyfile path inside vault/ for the given UID.
-     *
-     * Returns `<base>/vault/<uid>.vault`.  The `vault/` directory is created
-     * with 0700 permissions by @ref create().
-     *
-     * @param uid  Role UID, e.g. "prod.tempsens.uid12345678".
-     */
-    std::filesystem::path default_keyfile(std::string_view uid) const
-    {
-        return vault() / (std::string(uid) + ".vault");
-    }
-
     // ── Hub reference resolution ───────────────────────────────────────────────
+    //
+    // `default_keyfile(uid)` was retired 2026-06-01 (E′-2e / task #112).
+    // It returned `<base>/vault/<uid>.vault` and was intended to be
+    // shared by `--init` template-writers and tests.  In practice the
+    // three `_init.cpp` files (producer / consumer / processor)
+    // construct the string inline, and the helper had no production
+    // caller — only its own L2 test referenced it.  The inline form
+    // in the templates is honest about what gets written.  See HEP-
+    // CORE-0024 §3.4 for the canonical relative-path shape; callers
+    // who need the path should resolve `auth.keyfile` against
+    // `base_dir` via `security::resolve_keyfile_path`.
 
     /**
      * @brief Resolve a `hub_dir` value from the role config.

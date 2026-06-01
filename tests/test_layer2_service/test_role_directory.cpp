@@ -175,18 +175,13 @@ TEST(RoleDirectoryTest, ScriptEntry_LuaExtension)
     EXPECT_EQ(rd.script_entry(".", "lua").filename().string(), "init.lua");
 }
 
-// ── default_keyfile ────────────────────────────────────────────────────────────
-
-TEST(RoleDirectoryTest, DefaultKeyfile_InsideVault)
-{
-    const auto tmp = unique_temp_dir("kf");
-    fs::create_directories(tmp);
-
-    const auto rd = RoleDirectory::open(tmp);
-    const auto kf = rd.default_keyfile("prod.test.uid00000001");
-
-    EXPECT_EQ(kf, rd.vault() / "prod.test.uid00000001.vault");
-}
+// `RoleDirectory::default_keyfile(uid)` was retired in E′-2e
+// (2026-06-01, task #112).  The production scenario it claimed to
+// support is covered by L4 PlhRoleInitTest.DefaultAuthKeyfileIsCanonicalDefault
+// which asserts the binary's actual --init output
+// (`auth.keyfile = "vault/<role_uid>.vault"`).  See HEP-CORE-0024
+// §3.4 for the contract; see role_directory.hpp for the retirement
+// note.
 
 // ── resolve_hub_dir ────────────────────────────────────────────────────────────
 
