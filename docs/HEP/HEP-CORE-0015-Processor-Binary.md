@@ -204,7 +204,7 @@ Created by `pylabhub-processor --init <proc_dir>`:
 | `processor.name` | yes | — | Human name; used in UID and log prefix |
 | `processor.uid` | no | generated | Override auto-generated PROC-* UID |
 | `processor.log_level` | no | `"info"` | debug / info / warn / error |
-| `processor.auth.keyfile` | no | `""` | Path to vault file; empty = ephemeral CURVE identity |
+| `processor.auth.keyfile` | **YES** | `"vault/<processor_uid>.vault"` (`--init` template default; finalized 2026-05-31) | Required non-empty path string to the encrypted role vault.  Relative paths resolve against `<processor-dir>`.  Empty string / missing field / missing `auth` object → config-load error (HEP-CORE-0024 §3.4).  pylabhub is a vault; no in-memory CURVE mode. |
 
 #### Hub / Broker
 

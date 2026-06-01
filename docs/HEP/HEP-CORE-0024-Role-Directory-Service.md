@@ -384,14 +384,19 @@ public:
     std::filesystem::path script_entry(std::string_view script_path,
                                        std::string_view type) const;
 
-    // ── Vault helpers ─────────────────────────────────────────────────────────
-
-    /// Canonical default vault file: <vault()>/<uid>.vault.
-    /// Used by --init to compute the value written into the template
-    /// config (see §3.4 amended 2026-05-30 — the runtime path no
-    /// longer silently falls back to this when auth.keyfile is empty;
-    /// empty is now an explicit operator opt-in to ephemeral mode).
-    std::filesystem::path default_keyfile(std::string_view uid) const;
+    // ── Vault helpers (retired 2026-06-01 — see E′-2e task #112) ──────────
+    //
+    // `default_keyfile(uid)` was the helper that pre-2026-05-31 designs
+    // intended `--init` to use for computing the template's
+    // `auth.keyfile` value.  In the finalized contract (§3.4), the
+    // three `_init.cpp` template writers (producer / consumer /
+    // processor) construct the relative path string `"vault/<uid>.vault"`
+    // inline at the template-build site, and this helper has no
+    // production caller.  It is retired in E′-2e.  Reproducing the
+    // shape here for HEP archaeology only:
+    //
+    //     std::filesystem::path default_keyfile(std::string_view uid) const
+    //     // = vault() / (std::string(uid) + ".vault")
 
     // ── Hub reference resolution ──────────────────────────────────────────────
 
@@ -666,8 +671,9 @@ else {
 ```cpp
 const auto password = pylabhub::role_cli::get_new_role_password(
     "producer",
-    "Producer vault password (empty = no encryption-at-rest; "
-    "see §3.4 for the separate `auth.keyfile=\"\"` ephemeral-CURVE mode): ",
+    "Producer vault password (empty = no encryption-at-rest for the "
+    "vault file itself; the vault still exists per §3.4 — pylabhub "
+    "is a vault and has no in-memory CURVE mode): ",
     "Confirm password: ");
 if (!password) return 1;
 ```

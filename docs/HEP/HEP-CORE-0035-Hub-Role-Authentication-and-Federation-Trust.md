@@ -433,7 +433,7 @@ scope, not just current contents.
 
 | Created by | Path | Mode | Owner |
 |---|---|---|---|
-| `plh_hub --keygen` | `<hub_dir>/vault/hub.vault` (encrypted: broker CURVE keypair + admin token + `known_roles` per §4.8; password-derived key) | `0600` | current user |
+| `plh_hub --keygen` | `<hub_dir>/vault/<hub_uid>.vault` (encrypted: broker CURVE keypair + admin token + `known_roles` per §4.8; password-derived key.  Filename embeds the hub UID per HEP-CORE-0033 §6.5 revised 2026-05-31.) | `0600` | current user |
 | `plh_hub --keygen` | `<hub_dir>/hub.pubkey` (plaintext broker CURVE pubkey; operator-distributable) | `0644` | current user |
 | `plh_hub --init` | `<hub_dir>/vault/` (encrypted-secrets directory) | `0700` | current user |
 | `plh_hub --init` | `<hub_dir>/` (hub config directory) | `0700` | current user |
@@ -470,13 +470,15 @@ process `umask`.
 CORE-0033 §7.1 (hub side) and HEP-CORE-0024 §3.4 (role side).  The
 runtime verification has two tiers:
 
-1. **Unconditional checks** — run on every invocation, regardless
-   of vault mode (including ephemeral).  Cover the config file
-   (config-injection prevention is needed even when no vault is
-   present — a tampered config can flip endpoints or admin flags).
-2. **Vault-mode checks** — run only when `auth.keyfile` is
-   non-empty (a vault is configured for this invocation).  Cover
-   the vault file + its parent directory at the resolved path.
+1. **Unconditional checks** — run on every invocation.  Cover the
+   config file (config-injection prevention is needed independent of
+   vault setup — a tampered config can flip endpoints or admin flags
+   before the vault is ever opened).
+2. **Vault-file checks** — run on every invocation as well, because
+   `auth.keyfile` is required and non-empty per §4.6.3 / HEP-CORE-0024
+   §3.4 / HEP-CORE-0033 §7.1 (finalized 2026-05-31; no in-memory CURVE
+   mode exists).  Cover the vault file + its parent directory at the
+   resolved path.
 
 `auth.keyfile` value semantics:
 
@@ -503,15 +505,15 @@ the config itself were not verified first.
 
 ```
 # ── Tier 1: unconditional checks ──────────────────────────────────
-# Run on every invocation, including ephemeral mode.
+# Run on every invocation.
 
 check hub.json / role config (the file pointed to by --config or
 auto-discovered from --hub-dir / --role-dir).
   - (st_mode & 0002) != 0       → ERROR  (world-writable config = config
-                                  injection — applies even in ephemeral
-                                  mode; a tampered config can redirect
-                                  the binary to malicious endpoints or
-                                  flip admin flags regardless of vault).
+                                  injection — a tampered config can
+                                  redirect the binary to malicious
+                                  endpoints or flip admin flags before
+                                  the vault is ever read).
   - (st_mode & 0040) != 0 AND file references a vault path
                                 → WARN
 

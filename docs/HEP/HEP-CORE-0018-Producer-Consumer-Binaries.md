@@ -244,7 +244,7 @@ Created by `pylabhub-consumer --init <dir>`:
 | `producer.name` | yes | — | Human name; used in UID and log prefix |
 | `producer.uid` | no | generated | Override auto-generated `PROD-*` UID |
 | `producer.log_level` | no | `"info"` | `debug`/`info`/`warn`/`error` |
-| `producer.auth.keyfile` | no | `""` | Vault file path; empty = ephemeral CURVE identity |
+| `producer.auth.keyfile` | **YES** | `"vault/<producer_uid>.vault"` (`--init` template default; finalized 2026-05-31) | Required non-empty path string to the encrypted role vault.  Relative paths resolve against `<producer-dir>`.  Empty string / missing field / missing `auth` object → config-load error (HEP-CORE-0024 §3.4).  pylabhub is a vault; no in-memory CURVE mode. |
 | `broker` | yes | — | Broker endpoint (`tcp://host:port`) |
 | `broker_pubkey` | no | `""` | CurveZMQ broker public key Z85 |
 | `hub_dir` | no | — | Hub directory; reads `hub.json` to derive `broker`/`broker_pubkey` |
@@ -277,7 +277,7 @@ Created by `pylabhub-consumer --init <dir>`:
 | `consumer.name` | yes | — | Human name; used in UID and log prefix |
 | `consumer.uid` | no | generated | Override auto-generated `CONS-*` UID |
 | `consumer.log_level` | no | `"info"` | `debug`/`info`/`warn`/`error` |
-| `consumer.auth.keyfile` | no | `""` | Vault file path; empty = ephemeral CURVE identity |
+| `consumer.auth.keyfile` | **YES** | `"vault/<consumer_uid>.vault"` (`--init` template default; finalized 2026-05-31) | Required non-empty path string to the encrypted role vault.  Relative paths resolve against `<consumer-dir>`.  Empty string / missing field / missing `auth` object → config-load error (HEP-CORE-0024 §3.4).  pylabhub is a vault; no in-memory CURVE mode. |
 | `broker` | yes | — | Broker endpoint |
 | `broker_pubkey` | no | `""` | CurveZMQ broker public key Z85 |
 | `hub_dir` | no | — | Hub directory; derives `broker`/`broker_pubkey` from `hub.json` |
@@ -755,7 +755,7 @@ struct ProducerConfig {
     std::string  uid;
     std::string  name;
     std::string  log_level{"info"};
-    std::string  keyfile;           // vault path; empty = ephemeral
+    std::string  keyfile;           // vault path; REQUIRED non-empty (HEP-CORE-0024 §3.4)
 
     std::string  broker{"tcp://127.0.0.1:5570"};
     std::string  broker_pubkey;
