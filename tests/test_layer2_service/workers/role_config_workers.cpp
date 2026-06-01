@@ -57,17 +57,19 @@ fs::path write_json(const fs::path &dir, const std::string &filename,
     return path;
 }
 
-// `auth.keyfile = ""` is the explicit ephemeral-mode opt-in (HEP-CORE-0024
-// §3.4); these L2 fixtures exercise non-auth fields and stay in ephemeral
-// mode to avoid pulling in vault setup.  Tests that exercise auth
-// specifically (Auth_MissingAuth_Throws, Auth_MissingKeyfile_Throws)
-// construct their own JSON and do not go through these helpers.
+// `auth.keyfile` MUST be a non-empty string (HEP-CORE-0024 §3.4).
+// These L2 fixtures exercise non-auth fields and use a placeholder path
+// that the tests never open — config-load itself does not touch the
+// referenced file; only RoleConfig::{load,create}_keypair() would.
+// Tests that exercise auth contract specifically (Auth_MissingAuth_Throws,
+// Auth_MissingKeyfile_Throws, Auth_EmptyKeyfile_Throws) construct their
+// own JSON and do not go through these helpers.
 nlohmann::json minimal_producer_json()
 {
     return {
         {"producer", {{"uid", "prod.test.uid00000001"},
                        {"name", "TestProd"},
-                       {"auth", {{"keyfile", ""}}}}},
+                       {"auth", {{"keyfile", "vault/placeholder.vault"}}}}},
         {"out_hub_dir", ""},
         {"out_channel", "test.channel"},
         {"out_transport", "shm"},
@@ -86,7 +88,7 @@ nlohmann::json minimal_consumer_json()
     return {
         {"consumer", {{"uid", "cons.test.uid00000002"},
                        {"name", "TestCons"},
-                       {"auth", {{"keyfile", ""}}}}},
+                       {"auth", {{"keyfile", "vault/placeholder.vault"}}}}},
         {"in_hub_dir", ""},
         {"in_channel", "test.channel"},
         {"in_transport", "shm"},
@@ -101,7 +103,7 @@ nlohmann::json minimal_processor_json()
     return {
         {"processor", {{"uid", "proc.test.uid00000003"},
                         {"name", "TestProc"},
-                        {"auth", {{"keyfile", ""}}}}},
+                        {"auth", {{"keyfile", "vault/placeholder.vault"}}}}},
         {"in_hub_dir", ""},
         {"out_hub_dir", ""},
         {"in_channel", "raw.data"},
@@ -381,27 +383,32 @@ int role_data_wrong_type_cast_throws(const std::string &dir)
 
 // ── Auth ────────────────────────────────────────────────────────────────────
 
-// minimal_producer_json sets auth.keyfile = "" (explicit ephemeral
-// opt-in per HEP-CORE-0024 §3.4); RoleConfig::auth() therefore reports
-// empty keyfile and no in-memory keypair (load_keypair was not called).
-int auth_explicit_empty(const std::string &dir)
+// HEP-CORE-0024 §3.4: empty `<role>.auth.keyfile` is a config-load
+// error — pylabhub is a vault and requires a path to the on-disk
+// vault file.  No silent "empty means generate-in-memory" fallback.
+int auth_empty_keyfile_throws(const std::string &dir)
 {
     return run_gtest_worker(
         [&]() {
-            auto path = write_json(dir, "producer.json", minimal_producer_json());
-            auto cfg = RoleConfig::load(path.string(), "producer");
-            EXPECT_TRUE(cfg.auth().keyfile.empty());
-            EXPECT_TRUE(cfg.auth().client_pubkey.empty());
-            EXPECT_TRUE(cfg.auth().client_seckey.empty());
+            auto j = minimal_producer_json();
+            j["producer"]["auth"]["keyfile"] = "";
+            auto path = write_json(dir, "producer.json", j);
+            try {
+                RoleConfig::load(path.string(), "producer");
+                FAIL() << "Expected std::runtime_error for empty keyfile";
+            } catch (const std::runtime_error &ex) {
+                EXPECT_THAT(ex.what(),
+                            testing::HasSubstr("must be a non-empty path string"));
+                EXPECT_THAT(ex.what(), testing::HasSubstr("HEP-CORE-0024"));
+            }
         },
-        "role_config::auth_explicit_empty",
+        "role_config::auth_empty_keyfile_throws",
         Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
         JsonConfig::GetLifecycleModule());
 }
 
 // HEP-CORE-0024 §3.4: missing `<role>.auth` object is a config-load
-// error.  The operator must opt explicitly into vault mode or
-// ephemeral mode.
+// error.
 int auth_missing_auth_throws(const std::string &dir)
 {
     return run_gtest_worker(
@@ -484,19 +491,6 @@ int auth_not_object_throws(const std::string &dir)
             }
         },
         "role_config::auth_not_object_throws",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
-}
-
-int load_keypair_no_keyfile_returns_false(const std::string &dir)
-{
-    return run_gtest_worker(
-        [&]() {
-            auto path = write_json(dir, "producer.json", minimal_producer_json());
-            auto cfg = RoleConfig::load(path.string(), "producer");
-            EXPECT_FALSE(cfg.load_keypair("dummy-password"));
-        },
-        "role_config::load_keypair_no_keyfile_returns_false",
         Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
         JsonConfig::GetLifecycleModule());
 }
@@ -1170,8 +1164,8 @@ struct RoleConfigWorkerRegistrar
                     return role_data_no_parser(dir);
                 if (sc == "role_data_wrong_type_cast_throws")
                     return role_data_wrong_type_cast_throws(dir);
-                if (sc == "auth_explicit_empty")
-                    return auth_explicit_empty(dir);
+                if (sc == "auth_empty_keyfile_throws")
+                    return auth_empty_keyfile_throws(dir);
                 if (sc == "auth_missing_auth_throws")
                     return auth_missing_auth_throws(dir);
                 if (sc == "auth_missing_keyfile_throws")
@@ -1180,8 +1174,6 @@ struct RoleConfigWorkerRegistrar
                     return auth_keyfile_wrong_type_throws(dir);
                 if (sc == "auth_not_object_throws")
                     return auth_not_object_throws(dir);
-                if (sc == "load_keypair_no_keyfile_returns_false")
-                    return load_keypair_no_keyfile_returns_false(dir);
                 if (sc == "raw_json")
                     return raw_json(dir);
                 if (sc == "role_tag")

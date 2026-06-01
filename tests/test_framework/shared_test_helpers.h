@@ -581,4 +581,99 @@ class DataBlockTestGuard
     std::string channel_name_;
 };
 
+// ════════════════════════════════════════════════════════════════════════════
+// Vault artifact verification helpers (HEP-CORE-0035 §4.6)
+// ════════════════════════════════════════════════════════════════════════════
+//
+// Used by L4 keygen / runmode / roundtrip tests to verify that vault
+// files and their parent directories appear at the expected paths AND
+// have the secure mode bits the HEP requires.  Pinning rc + stderr
+// alone is not enough — see "Tests pin path + timing" in repo memory.
+//
+// On Windows the POSIX mode model does not apply; the helpers verify
+// existence + size and skip the mode bits.
+
+/// Verify that a vault file exists at @p path with secure mode (0600
+/// on POSIX) and non-zero content.  Use after `--keygen` to confirm
+/// the binary actually produced a sealed vault, not just exit 0.
+inline void ExpectVaultFileSecured(const std::filesystem::path &path)
+{
+    namespace fs = std::filesystem;
+    ASSERT_TRUE(fs::exists(path)) << "vault file missing: " << path;
+    ASSERT_TRUE(fs::is_regular_file(path))
+        << "vault path exists but is not a regular file: " << path;
+    EXPECT_GT(fs::file_size(path), 0u)
+        << "vault file is zero-sized: " << path;
+#if PYLABHUB_IS_POSIX
+    const auto perms = fs::status(path).permissions();
+    // Owner: rw exactly (no x).
+    EXPECT_EQ(perms & fs::perms::owner_read, fs::perms::owner_read)
+        << "vault file " << path << " missing owner-read";
+    EXPECT_EQ(perms & fs::perms::owner_write, fs::perms::owner_write)
+        << "vault file " << path << " missing owner-write";
+    EXPECT_EQ(perms & fs::perms::owner_exec, fs::perms::none)
+        << "vault file " << path << " is owner-executable (should not be)";
+    // Group + others: none.
+    EXPECT_EQ(perms & fs::perms::group_all, fs::perms::none)
+        << "vault file " << path << " is group-accessible — must be 0600";
+    EXPECT_EQ(perms & fs::perms::others_all, fs::perms::none)
+        << "vault file " << path << " is world-accessible — must be 0600";
+#endif
+}
+
+/// Verify that a vault parent directory exists at @p dir with secure
+/// mode (0700 on POSIX).  Use after `--keygen` or `--init` to confirm
+/// the binary's directory-creation path applied the documented ACL.
+inline void ExpectVaultDirSecured(const std::filesystem::path &dir)
+{
+    namespace fs = std::filesystem;
+    ASSERT_TRUE(fs::exists(dir)) << "vault dir missing: " << dir;
+    ASSERT_TRUE(fs::is_directory(dir))
+        << "vault path exists but is not a directory: " << dir;
+#if PYLABHUB_IS_POSIX
+    const auto perms = fs::status(dir).permissions();
+    // Owner: rwx (all three bits required for a usable dir).
+    EXPECT_EQ(perms & fs::perms::owner_all, fs::perms::owner_all)
+        << "vault dir " << dir << " missing one of owner rwx";
+    // Group + others: none.
+    EXPECT_EQ(perms & fs::perms::group_all, fs::perms::none)
+        << "vault dir " << dir << " is group-accessible — must be 0700";
+    EXPECT_EQ(perms & fs::perms::others_all, fs::perms::none)
+        << "vault dir " << dir << " is world-accessible — must be 0700";
+#endif
+}
+
+/// Verify that NO file matching @p suffix (e.g., ".vault") exists
+/// anywhere under @p root.  Use after a `--keygen` invocation that
+/// is expected to FAIL fast at config-load — if a half-written
+/// vault appeared anyway, this catches it.
+inline void ExpectNoVaultArtifactsUnder(const std::filesystem::path &root,
+                                          const std::string &suffix = ".vault")
+{
+    namespace fs = std::filesystem;
+    if (!fs::exists(root))
+        return;
+    std::vector<std::string> found;
+    std::error_code ec;
+    for (auto it = fs::recursive_directory_iterator(root, ec);
+         !ec && it != fs::recursive_directory_iterator(); ++it)
+    {
+        if (it->is_regular_file() && it->path().string().size() >= suffix.size() &&
+            it->path().string().compare(it->path().string().size() - suffix.size(),
+                                         suffix.size(), suffix) == 0)
+        {
+            found.push_back(it->path().string());
+        }
+    }
+    EXPECT_TRUE(found.empty())
+        << "Expected NO '" << suffix << "' files under " << root
+        << " (config-load should have rejected before any artifact was "
+           "written); found: "
+        << [&]() {
+               std::string s;
+               for (const auto &p : found) { s += "\n  "; s += p; }
+               return s;
+           }();
+}
+
 } // namespace pylabhub::tests::helper

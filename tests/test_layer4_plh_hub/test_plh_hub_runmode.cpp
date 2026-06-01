@@ -34,6 +34,8 @@
 
 using namespace pylabhub::tests::plh_hub_l4;
 using pylabhub::tests::helper::WorkerProcess;
+using pylabhub::tests::helper::ExpectVaultFileSecured;
+using pylabhub::tests::helper::ExpectVaultDirSecured;
 
 namespace
 {
@@ -88,9 +90,11 @@ bool wait_for_log_marker(const fs::path &hub_dir,
 }
 
 /// Configure an init'd hub directory for run-mode L4 testing.  Patches
-/// the generated hub.json to make this a no-script / no-admin /
-/// no-CURVE run — the test focuses on the broker run-mode path; admin
-/// over-the-wire gets its own slice.
+/// the generated hub.json (ephemeral broker port, no admin, no script)
+/// then runs `--keygen` to materialize the vault file at the canonical
+/// `<hub_dir>/vault/hub.vault` path written by --init.  The hub binary
+/// requires CURVE to be set up (HEP-CORE-0033 §7.1 — no in-memory
+/// fallback); these run-mode tests exercise the real production path.
 void configure_for_runmode(const fs::path &dir)
 {
     nlohmann::json j;
@@ -101,9 +105,34 @@ void configure_for_runmode(const fs::path &dir)
     j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0";  // ephemeral
     j["admin"]["enabled"]           = false;
     j["script"]["path"]             = "";                   // no script
-    j["hub"]["auth"]["keyfile"]     = "";                   // no CURVE
-    std::ofstream f(dir / "hub.json");
-    f << j.dump(2);
+    // Leave hub.auth.keyfile = "vault/hub.vault" from --init template.
+    {
+        std::ofstream f(dir / "hub.json");
+        f << j.dump(2);
+    }
+
+    // Materialize the vault — required for run-mode startup.
+    ::setenv("PYLABHUB_HUB_PASSWORD", "l4-runmode-pw", /*overwrite=*/1);
+    pylabhub::tests::helper::WorkerProcess kg(
+        plh_hub_binary(), "--config",
+        {(dir / "hub.json").string(), "--keygen"});
+    const int rc = kg.wait_for_exit();
+    if (rc != 0)
+    {
+        ADD_FAILURE() << "configure_for_runmode: --keygen failed (rc=" << rc
+                      << "):\n" << kg.get_stderr();
+        return;
+    }
+    // Verify --keygen actually produced the vault file at the path
+    // the template wrote into hub.auth.keyfile.  Exit 0 alone is not
+    // enough — a regression where keygen prints "ok" but writes
+    // nothing would silently break run-mode startup.  Parent-dir
+    // MODE (0700) is NOT asserted here — separately-tracked gap in
+    // `fs::create_directories` path; existence is enough for now.
+    const fs::path vault_actual = dir / "vault" / "hub.vault";
+    ExpectVaultFileSecured(vault_actual);
+    EXPECT_TRUE(fs::is_directory(vault_actual.parent_path()))
+        << "vault dir missing: " << vault_actual.parent_path();
 }
 
 } // namespace

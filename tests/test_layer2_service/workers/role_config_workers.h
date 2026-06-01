@@ -43,12 +43,11 @@ int role_data_no_parser(const std::string &dir);
 int role_data_wrong_type_cast_throws(const std::string &dir);
 
 // ── Auth ────────────────────────────────────────────────────────────────────
-int auth_explicit_empty(const std::string &dir);
+int auth_empty_keyfile_throws(const std::string &dir);
 int auth_missing_auth_throws(const std::string &dir);
 int auth_missing_keyfile_throws(const std::string &dir);
 int auth_keyfile_wrong_type_throws(const std::string &dir);
 int auth_not_object_throws(const std::string &dir);
-int load_keypair_no_keyfile_returns_false(const std::string &dir);
 
 // ── Raw JSON / metadata ─────────────────────────────────────────────────────
 int raw_json(const std::string &dir);

@@ -18,6 +18,9 @@
 
 using namespace pylabhub::tests::plh_hub_l4;
 using pylabhub::tests::helper::WorkerProcess;
+using pylabhub::tests::helper::ExpectVaultFileSecured;
+using pylabhub::tests::helper::ExpectVaultDirSecured;
+using pylabhub::tests::helper::ExpectNoVaultArtifactsUnder;
 
 namespace
 {
@@ -57,14 +60,28 @@ TEST_F(PlhHubCliTest, GeneratesVaultFileAndEmitsPubkey)
     EXPECT_EQ(p.wait_for_exit(), 0) << "stderr:\n" << p.get_stderr();
     expect_no_unexpected_errors(p);
 
-    // (a) Vault file written.
-    EXPECT_TRUE(fs::exists(vault_actual))
-        << "hub.vault not created at " << vault_actual;
-    EXPECT_GT(fs::file_size(vault_actual), 0u)
-        << "vault file is empty";
+    // (a) Vault file written with secure file mode (0600 on POSIX)
+    //     and non-zero content.  Exit code alone is not reliable —
+    //     a regression where the binary returns 0 but the chmod
+    //     step is removed would pass the rc check; the mode check
+    //     here catches it.  Equally a regression where the file is
+    //     touched-empty (size 0) is caught by ExpectVaultFileSecured.
+    ExpectVaultFileSecured(vault_actual);
 
-    // (b) stdout contains hub_uid + public_key (the operator-facing
+    // (b) Vault parent dir EXISTS.  Parent dir MODE check (0700 per
+    //     HEP-CORE-0035 §4.6.1) is deliberately NOT asserted here —
+    //     the binary's `fs::create_directories` path does not yet
+    //     apply 0700 explicitly (security audit finding, separately
+    //     tracked).  When that gap is fixed, swap this to
+    //     `ExpectVaultDirSecured(vault_actual.parent_path())`.
+    EXPECT_TRUE(fs::is_directory(vault_actual.parent_path()))
+        << "vault dir missing: " << vault_actual.parent_path();
+
+    // (c) stdout contains hub_uid + public_key (the operator-facing
     //     summary the hub binary prints after a successful keygen).
+    //     This pins that the binary's stdout matches the documented
+    //     operator-facing surface; rc=0 alone would not catch a
+    //     regression that silenced the summary.
     EXPECT_NE(p.get_stdout().find("hub_uid"), std::string::npos)
         << "stdout missing hub_uid:\n" << p.get_stdout();
     EXPECT_NE(p.get_stdout().find("public_key"), std::string::npos)
@@ -73,11 +90,14 @@ TEST_F(PlhHubCliTest, GeneratesVaultFileAndEmitsPubkey)
 
 // ── Error paths ──────────────────────────────────────────────────────────────
 
-/// --keygen with an unset auth.keyfile is a config error.  Pins the
-/// "we don't pick a default vault path" contract.
-TEST_F(PlhHubCliTest, FailsWhenKeyfileUnset)
+/// Empty `hub.auth.keyfile` is rejected at config-parse time
+/// (HEP-CORE-0033 §7.1) — pylabhub is a vault and requires a path.
+/// Tests that the parse-time rejection fires before any --keygen
+/// work begins.  Replaces the prior contract that allowed empty
+/// keyfile and rejected it at --keygen specifically.
+TEST_F(PlhHubCliTest, FailsWhenKeyfileEmpty)
 {
-    const auto dir = tmp("keygen_no_keyfile");
+    const auto dir = tmp("keygen_empty_keyfile");
     const auto cfg_path = dir / "hub.json";
 
     nlohmann::json overrides;
@@ -90,8 +110,22 @@ TEST_F(PlhHubCliTest, FailsWhenKeyfileUnset)
     const int rc = p.wait_for_exit();
     EXPECT_NE(rc, 0) << "expected non-zero exit; stdout:\n"
                      << p.get_stdout() << "\nstderr:\n" << p.get_stderr();
+
+    // (a) Diagnostic identifies the failing field AND the contract violated.
     EXPECT_NE(p.get_stderr().find("auth.keyfile"), std::string::npos)
         << "stderr should mention auth.keyfile; got:\n" << p.get_stderr();
+    EXPECT_NE(p.get_stderr().find("non-empty"), std::string::npos)
+        << "stderr should describe the empty-string violation; got:\n"
+        << p.get_stderr();
+    EXPECT_NE(p.get_stderr().find("HEP-CORE-0024"), std::string::npos)
+        << "stderr should cite the source-of-truth HEP; got:\n"
+        << p.get_stderr();
+
+    // (b) No vault file (or any *.vault artifact) was created — the
+    //     config-load guard fires BEFORE any --keygen filesystem work.
+    //     A regression where the parse-time error is set but write
+    //     still proceeds would leave a vault on disk; this catches it.
+    ExpectNoVaultArtifactsUnder(dir);
 }
 
 } // namespace

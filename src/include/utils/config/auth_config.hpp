@@ -29,16 +29,24 @@ struct AuthConfig
 ///
 /// **Required by HEP-CORE-0024 §3.4 + HEP-CORE-0033 §7.1 + HEP-CORE-0035
 /// §4.6.2:** the `<section>.auth` object MUST be present and MUST contain
-/// a `keyfile` field.  The operator chooses one of two explicit modes:
-///   - `keyfile = "<path>"`  — vault mode (file referenced is the
-///                             encrypted CURVE key vault).
-///   - `keyfile = ""`        — explicit ephemeral mode (no on-disk
-///                             vault; CURVE keys generated in memory).
+/// a `keyfile` field that is a non-empty string.  The path identifies
+/// the on-disk encrypted vault file holding the role/hub CURVE keypair
+/// (and, on the hub, the admin token).
 ///
-/// Missing `auth` object OR missing `keyfile` field is a config-load
-/// error — pylabhub refuses to silently fall through to either mode
-/// because the two have different security trade-offs and the choice
-/// must be a deliberate operator decision.
+/// All three errors below are config-load failures with operator-actionable
+/// diagnostics:
+///   - missing `auth` object
+///   - missing `auth.keyfile` field
+///   - empty `auth.keyfile` string
+///
+/// The empty-string case is rejected because pylabhub is a vault: the
+/// security contract is "secret material on disk at a specified place."
+/// A silent "empty means generate-in-memory" fallback would be
+/// indistinguishable from a misconfigured deployment and would degrade
+/// the security posture without operator awareness.  Operators who want
+/// secret material elsewhere choose a different path; operators with a
+/// genuine no-vault use case (an L4 test against a tmpdir) write a path
+/// pointing into that tmpdir.
 ///
 /// @param j         Root JSON object.
 /// @param role_tag  Section name: "producer" / "consumer" / "processor"
@@ -54,9 +62,8 @@ inline AuthConfig parse_auth_config(const nlohmann::json &j, std::string_view ro
     if (!sect.contains("auth"))
         throw std::runtime_error(
             sect_name + ": missing required '" + sect_name + ".auth' object. "
-            "Add `\"auth\": { \"keyfile\": \"<path-to-vault>\" }` for vault mode, "
-            "or `\"auth\": { \"keyfile\": \"\" }` for explicit ephemeral mode "
-            "(see HEP-CORE-0024 §3.4 / HEP-CORE-0033 §7.1).");
+            "Add `\"auth\": { \"keyfile\": \"<path-to-vault>\" }` — the vault "
+            "is required (see HEP-CORE-0024 §3.4 / HEP-CORE-0033 §7.1).");
     if (!sect["auth"].is_object())
         throw std::runtime_error(
             sect_name + ": '" + sect_name + ".auth' must be a JSON object.");
@@ -72,13 +79,18 @@ inline AuthConfig parse_auth_config(const nlohmann::json &j, std::string_view ro
     if (!a.contains("keyfile"))
         throw std::runtime_error(
             sect_name + ": missing required '" + sect_name + ".auth.keyfile' "
-            "field. Set it to a vault path for vault mode, or to \"\" "
-            "(empty string) to opt explicitly into ephemeral mode "
+            "field. Set it to the path of the on-disk vault file "
             "(see HEP-CORE-0024 §3.4 / HEP-CORE-0033 §7.1).");
     if (!a["keyfile"].is_string())
         throw std::runtime_error(
             sect_name + ": '" + sect_name + ".auth.keyfile' must be a string.");
     ac.keyfile = a["keyfile"].get<std::string>();
+    if (ac.keyfile.empty())
+        throw std::runtime_error(
+            sect_name + ": '" + sect_name + ".auth.keyfile' must be a "
+            "non-empty path string. pylabhub does not support a no-vault "
+            "operation mode — secret material is required (see HEP-CORE-0024 "
+            "§3.4 / HEP-CORE-0033 §7.1).");
     return ac;
 }
 

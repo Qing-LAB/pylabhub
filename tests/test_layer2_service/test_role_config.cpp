@@ -190,17 +190,20 @@ TEST_F(RoleConfigTest, RoleData_WrongTypeCast_Throws)
 }
 
 // ── Auth ────────────────────────────────────────────────────────────────────
-// HEP-CORE-0024 §3.4 + HEP-CORE-0035 §4.6.2 contract:
-//   `<role>.auth.keyfile` MUST be present (no silent default).
-//   - `"keyfile": "<path>"` → vault mode.
-//   - `"keyfile": ""`        → explicit ephemeral mode.
-//   - missing `auth` object  → config-load error.
-//   - missing `keyfile` field → config-load error.
+// HEP-CORE-0024 §3.4 contract:
+//   `<role>.auth.keyfile` MUST be present AND non-empty.  No
+//   "no-vault mode" — pylabhub is a vault.
+//   - `"keyfile": "<non-empty path>"` → vault opened at that path.
+//   - missing `auth` object             → config-load error.
+//   - missing `auth.keyfile` field      → config-load error.
+//   - `"keyfile": ""`                   → config-load error.
+//   - non-string `auth.keyfile`         → config-load error.
+//   - `auth` not an object              → config-load error.
 
-TEST_F(RoleConfigTest, Auth_ExplicitEmpty)
+TEST_F(RoleConfigTest, Auth_EmptyKeyfile_Throws)
 {
-    auto w = SpawnWorker("role_config.auth_explicit_empty",
-                         {unique_dir("auth_explicit_empty")});
+    auto w = SpawnWorker("role_config.auth_empty_keyfile_throws",
+                         {unique_dir("auth_empty_keyfile_throws")});
     ExpectWorkerOk(w);
 }
 
@@ -229,13 +232,6 @@ TEST_F(RoleConfigTest, Auth_NotObject_Throws)
 {
     auto w = SpawnWorker("role_config.auth_not_object_throws",
                          {unique_dir("auth_not_object_throws")});
-    ExpectWorkerOk(w);
-}
-
-TEST_F(RoleConfigTest, LoadKeypair_NoKeyfile_ReturnsFalse)
-{
-    auto w = SpawnWorker("role_config.load_keypair_no_keyfile_returns_false",
-                         {unique_dir("load_keypair_no_keyfile")});
     ExpectWorkerOk(w);
 }
 
