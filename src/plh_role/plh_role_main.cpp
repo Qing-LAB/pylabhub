@@ -162,20 +162,10 @@ int do_init(const role_cli::RoleArgs &args)
     log_overrides.max_size_mb = args.log_max_size_mb;
     log_overrides.backups     = args.log_backups;
 
-    // HEP-CORE-0024 §3.4.1 makes `user` mode the default when the
-    // operator did not supply --vault-mode — that path goes OUTSIDE
-    // the role directory to shrink the script-write attack surface
-    // (see HEP-CORE-0024 §3.4).  Pass the parsed mode (or the
-    // User-mode default) into init_directory; the UID-aware resolve
-    // happens there so the keyfile path uses the same UID that gets
-    // written into the JSON.
-    const auto vault_mode = args.vault_mode.value_or(
-        pylabhub::utils::security::ParsedVaultMode{});  // defaults to User
-
     // args.role here is the long form and matches the RoleDirectory key
     // registered by register_<role>_init().
     return RoleDirectory::init_directory(
-        dir, args.role, *name_opt, log_overrides, vault_mode);
+        dir, args.role, *name_opt, log_overrides);
 }
 
 } // namespace

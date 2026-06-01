@@ -29,8 +29,6 @@
  * See: docs/HEP/HEP-CORE-0033-Hub-Character.md §5 (CLI) + §15 (phases).
  */
 
-#include "utils/security/vault_path_resolve.hpp"
-
 #include <iostream>
 #include <optional>
 #include <ostream>
@@ -65,12 +63,6 @@ struct HubArgs
     /// --log-backups <N>. **Init-only.** Writes `logging.backups` into
     /// the generated JSON. `-1` = keep all files. Empty → default (5).
     std::optional<int> log_backups;
-
-    /// --vault-mode <option>. **Init-only.** Selects the canonical vault
-    /// file location written into `hub.auth.keyfile`.  Empty option
-    /// (flag not given) defaults to `VaultMode::User` per HEP-CORE-0033
-    /// §7.2.  See `security::parse_vault_mode` for accepted shapes.
-    std::optional<pylabhub::utils::security::ParsedVaultMode> vault_mode;
 
     bool validate_only{false};  ///< --validate
     bool keygen_only{false};    ///< --keygen
@@ -116,16 +108,9 @@ inline void print_hub_usage(const char *prog, std::ostream &os = std::cout)
         << "  --config <path>    Path to hub JSON config file\n"
         << "  --name <name>      Hub name for --init (skips interactive prompt)\n"
         << "\n"
-        << "Init-only options (write into generated config):\n"
-        << "  --log-maxsize <MB>  Rotate when a log file reaches this size (default 10)\n"
-        << "  --log-backups <N>   Keep N rotated files (default 5; -1 = keep all)\n"
-        << "  --vault-mode <opt>  Where to place the vault file in hub.auth.keyfile.\n"
-        << "                      opt = user      ($HOME/.pylabhub/vault/...) — default\n"
-        << "                          | system    (/etc/pylabhub/vault/...)\n"
-        << "                          | inline    (vault/... inside hub_dir)\n"
-        << "                          | ephemeral (\"\", no on-disk vault)\n"
-        << "                          | <absolute-path>  (operator-specified)\n"
-        << "                      See HEP-CORE-0033 §7.2 for the design rationale.\n"
+        << "Init-only options (write into generated logging config):\n"
+        << "  --log-maxsize <MB> Rotate when a log file reaches this size (default 10)\n"
+        << "  --log-backups <N>  Keep N rotated files (default 5; -1 = keep all)\n"
         << "\n"
         << "  --help             Show this message\n"
         << "\n"
@@ -210,21 +195,6 @@ inline ParseResult parse_hub_args(int argc, char *argv[],
                 return result;
             }
         }
-        else if (arg == "--vault-mode" && i + 1 < argc)
-        {
-            std::string_view opt(argv[++i]);
-            auto parsed = pylabhub::utils::security::parse_vault_mode(opt);
-            if (!parsed)
-            {
-                err_stream << "Error: --vault-mode value '" << opt
-                           << "' not recognized.  Expected: "
-                           << pylabhub::utils::security::vault_mode_usage_summary()
-                           << "\n";
-                result.exit_code = 1;
-                return result;
-            }
-            args.vault_mode = *parsed;
-        }
         else if (arg == "--validate")
         {
             args.validate_only = true;
@@ -261,10 +231,10 @@ inline ParseResult parse_hub_args(int argc, char *argv[],
     // ── Init-only flags must not appear outside --init ─────────────────
     if (!args.init_only &&
         (args.log_max_size_mb.has_value() || args.log_backups.has_value() ||
-         args.vault_mode.has_value() || !args.init_name.empty()))
+         !args.init_name.empty()))
         return fail_with_usage(
-            "Error: --name, --log-maxsize, --log-backups, and --vault-mode "
-            "are only valid with --init.\n\n");
+            "Error: --name, --log-maxsize, and --log-backups are "
+            "only valid with --init.\n\n");
 
     // ── Required positional for non-init modes ─────────────────────────
     if (!args.init_only && args.config_path.empty() && args.hub_dir.empty())

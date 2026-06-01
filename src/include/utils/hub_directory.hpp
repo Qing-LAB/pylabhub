@@ -25,7 +25,6 @@
  */
 
 #include "pylabhub_utils_export.h"
-#include "utils/security/vault_path_resolve.hpp"
 
 #include <filesystem>
 #include <optional>
@@ -200,19 +199,9 @@ public:
      *             dump; unset fields leave the template default in place.
      * @return 0 on success, non-zero on error.
      */
-    /// Generate the hub directory.  @p vault_mode, when present, is
-    /// resolved by `security::resolve_vault_keyfile()` against the
-    /// newly-generated UID and the result OVERWRITES the template's
-    /// `hub.auth.keyfile` field — this is how `plh_hub --init`
-    /// threads the operator's `--vault-mode` value into the template
-    /// (see HEP-CORE-0033 §7.2).  When `nullopt` (the default), the
-    /// template's own keyfile string is kept unchanged; programmatic
-    /// callers (L3 fixtures, in-process tests) rely on this for
-    /// stable relative-path defaults.
     static int init_directory(const std::filesystem::path &dir,
                               const std::string &name,
-                              const LogInitOverrides &log = {},
-                              const std::optional<pylabhub::utils::security::ParsedVaultMode> &vault_mode = std::nullopt);
+                              const LogInitOverrides &log = {});
 
 private:
     explicit HubDirectory(std::filesystem::path base) noexcept;
