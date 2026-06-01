@@ -318,8 +318,7 @@ RoleDirectory::register_role(const std::string &role_tag)
 int RoleDirectory::init_directory(const std::filesystem::path &dir,
                                    const std::string &role_tag,
                                    const std::string &name,
-                                   const LogInitOverrides &log,
-                                   const std::optional<security::ParsedVaultMode> &vault_mode)
+                                   const LogInitOverrides &log)
 {
     namespace fs = std::filesystem;
 
@@ -387,26 +386,6 @@ int RoleDirectory::init_directory(const std::filesystem::path &dir,
         if (log.backups.has_value())
             j["logging"]["backups"] = *log.backups;
 
-        // CLI vault-mode override (HEP-CORE-0024 §3.4.1).  When the
-        // operator passed --vault-mode, resolve the canonical keyfile
-        // path here (UID-aware, computed against the freshly-generated
-        // UID) and overwrite the template's auth.keyfile string.  An
-        // empty resolved string is the explicit ephemeral opt-in and
-        // is written as `""` per HEP-CORE-0024 §3.4.
-        if (vault_mode.has_value())
-        {
-            try {
-                // Role vault filename = `<role_uid>.vault`
-                // (HEP-CORE-0024 §3.4 — UID-based so a shared vault
-                // dir can hold multiple roles' vaults distinctly).
-                j[role_tag]["auth"]["keyfile"] =
-                    security::resolve_vault_keyfile(
-                        *vault_mode, uid + ".vault");
-            } catch (const std::exception &e) {
-                fmt::print(stderr, "init_directory: error: {}\n", e.what());
-                return 1;
-            }
-        }
 
         std::ofstream out(json_path);
         if (!out)

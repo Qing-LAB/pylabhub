@@ -9,33 +9,6 @@ items only; completed work lives in git history + DOC_ARCHIVE_LOG.
 
 ## Recent Completions
 
-- **2026-05-30 — Commit C′-2 (#78 close — `--vault-mode` flag +
-  outside-role/hub-dir canonical default + HEP design intent)**:
-  New `src/utils/security/vault_path_resolve.{hpp,cpp}` module
-  provides `VaultMode` enum (User / System / Inline / Ephemeral /
-  Custom), `parse_vault_mode()` (CLI string → mode), and
-  `resolve_vault_keyfile(mode, filename)` (mode + filename → string
-  written to `auth.keyfile`).  `--vault-mode <option>` added to
-  both `plh_role` and `plh_hub` `--init` CLIs; init-only flag.
-  `init_directory` for both binaries takes an
-  `optional<ParsedVaultMode>` and overwrites the template's
-  `auth.keyfile` with the resolved value (UID-aware filename for
-  role, fixed `hub.vault` for hub per HEP-CORE-0033 §6.5).  With no
-  flag the default is `user` mode, which writes
-  `$HOME/.pylabhub/vault/<filename>` (POSIX) or
-  `%LOCALAPPDATA%\pylabhub\vault\<filename>` (Windows) — vault lives
-  OUTSIDE role/hub dir to reduce script-write attack surface
-  (HEP-CORE-0024 §3.4 + HEP-CORE-0033 §7.1).  HEPs amended with
-  design-intent narrative (script-write attack, backup hygiene,
-  packaging, HEP-CORE-0038 controlled-API alternative).  Tests: 21
-  new L2 (`test_vault_path_resolve.cpp`) + 4 new L4 parametrized
-  per role × `--vault-mode` option; `DefaultAuthKeyfileIsCanonicalDefault`
-  + `DefaultValues` updated to assert the new User-mode default;
-  `test_plh_hub_role_roundtrip.cpp` switched to `--vault-mode inline`
-  (preserves its intent — vault inside hub_dir for the F1 round-trip).
-  All 1979 L1+L2+L3+L4 tests pass.  Closes #78; #101 sub-phase 1D
-  next ships Tier 1/2 ACL wiring in main() (Commit D).
-
 - **2026-05-30 — Commit C′-1 (A1 of #78 / #101 sub-phase 1D)**:
   `parse_auth_config` (`auth_config.hpp`) now throws on missing
   `<section>.auth` object OR missing `auth.keyfile` field — silent
@@ -88,19 +61,15 @@ bugs (B1-B13).  B1, B2, B5, B9, B11, B12, B13 ✅ FIXED in code.  The
 ones below are filed but not yet fixed; each is a tightly-scoped
 single-area change.
 
-- **B3 (#78)** — **✅ CLOSED 2026-05-30 (Commits C′-1 + C′-2).**
+- **B3 (#78)** — **MERGED INTO #101 sub-phase 1D** (decision 2026-05-30).
   Original scope: hard-error `hub.auth.keyfile=""` at config load.
-  Final shipped scope:
-  - C′-1 (commit `42e0a873`) — parser-level hard error on missing
-    `auth` object / missing `keyfile` field (`parse_auth_config`);
-    operator MUST opt explicitly into vault mode (`"keyfile": "<path>"`)
-    or ephemeral mode (`"keyfile": ""`).  Symmetric for hub + role.
-  - C′-2 — `--vault-mode <option>` CLI flag on `--init` for both
-    binaries; canonical default switched to outside-role/hub-dir
-    (User mode = `$HOME/.pylabhub/vault/...`); HEP-CORE-0024 §3.4 +
-    HEP-CORE-0033 §7.1 amended with design-intent narrative.
-  Tracker entry retained for git-log discoverability; remove on next
-  pass through this TODO if not referenced by other open items.
+  Expanded scope under #101: unified `auth.keyfile` semantics across
+  hub AND role (empty `""` = explicit ephemeral opt-in; non-empty =
+  vault auth at resolved path; field-missing = config-load error;
+  relative paths resolved against `base_dir`).  Also fixes hub's
+  ignored-`auth.keyfile` bug (`hub_config.cpp:170-186` hardcodes
+  path).  Full plan: `docs/tech_draft/DRAFT_HEP-0036-implementation-
+  guideline_2026-05.md` §5.1.1.  When #101 1D ships, #78 closes.
 
 - **#101** — **HEP-CORE-0035 §4.6 key-file ACL discipline** —
   shared `src/utils/security/key_file_acl.{hpp,cpp}` utility +
