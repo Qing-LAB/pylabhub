@@ -146,6 +146,13 @@ TEST_F(PlhHubCliTest, KeygenRefusesToOverwriteExistingVault)
     EXPECT_NE(p.get_stderr().find("rm"), std::string::npos)
         << "stderr should tell operator how to remove the file; got:\n"
         << p.get_stderr();
+    // Hub-side specificity: the diagnostic names the two SECRETS the
+    // overwrite would destroy — admin token + CURVE keypair.  Catches a
+    // regression where the message gets genericized and stops telling
+    // the operator *why* re-keygen is destructive on the hub side.
+    EXPECT_NE(p.get_stderr().find("admin token"), std::string::npos)
+        << "hub stderr should mention 'admin token' (hub-specific impact); "
+           "got:\n" << p.get_stderr();
 
     // (c) THE LOAD-BEARING CHECK: file content IS UNCHANGED.  Reading
     //     the file back and comparing byte-for-byte against the

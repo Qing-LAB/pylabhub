@@ -360,10 +360,65 @@ int auth_empty_keyfile_throws(const char *tmpdir)
             } catch (const std::runtime_error &ex) {
                 EXPECT_THAT(ex.what(),
                             testing::HasSubstr("must be a non-empty path string"));
+                // The shared parser cites BOTH source HEPs (HEP-CORE-0024
+                // §3.4 for roles + HEP-CORE-0033 §7.1 for hub).  Pin both
+                // — the hub-side message MUST include the hub-side cite,
+                // not only the role HEP that happens to share the parser.
                 EXPECT_THAT(ex.what(), testing::HasSubstr("HEP-CORE-0024"));
+                EXPECT_THAT(ex.what(), testing::HasSubstr("HEP-CORE-0033"));
             }
         },
         "hub_config::auth_empty_keyfile_throws",
+        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
+        JsonConfig::GetLifecycleModule());
+}
+
+// ── auth_keyfile_wrong_type_throws ──────────────────────────────────────────
+// HEP-CORE-0033 §7.1: `hub.auth.keyfile` must be a string.  Mirror of
+// role_config::auth_keyfile_wrong_type_throws.
+int auth_keyfile_wrong_type_throws(const char *tmpdir)
+{
+    return run_gtest_worker(
+        [&]() {
+            const std::string dir = tmpdir;
+            auto j = minimal_hub_json();
+            j["hub"]["auth"]["keyfile"] = 42;  // not a string
+            write_hub_json(dir, j);
+
+            try {
+                HubConfig::load_from_directory(dir);
+                FAIL() << "Expected std::runtime_error for non-string keyfile";
+            } catch (const std::runtime_error &ex) {
+                EXPECT_THAT(ex.what(),
+                            testing::HasSubstr("'hub.auth.keyfile' must be a string"));
+            }
+        },
+        "hub_config::auth_keyfile_wrong_type_throws",
+        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
+        JsonConfig::GetLifecycleModule());
+}
+
+// ── auth_not_object_throws ──────────────────────────────────────────────────
+// HEP-CORE-0033 §7.1: `hub.auth` must be a JSON object, not array/scalar.
+// Mirror of role_config::auth_not_object_throws.
+int auth_not_object_throws(const char *tmpdir)
+{
+    return run_gtest_worker(
+        [&]() {
+            const std::string dir = tmpdir;
+            auto j = minimal_hub_json();
+            j["hub"]["auth"] = "should-be-an-object";
+            write_hub_json(dir, j);
+
+            try {
+                HubConfig::load_from_directory(dir);
+                FAIL() << "Expected std::runtime_error for non-object hub.auth";
+            } catch (const std::runtime_error &ex) {
+                EXPECT_THAT(ex.what(),
+                            testing::HasSubstr("'hub.auth' must be a JSON object"));
+            }
+        },
+        "hub_config::auth_not_object_throws",
         Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
         JsonConfig::GetLifecycleModule());
 }
@@ -555,6 +610,9 @@ struct HubConfigWorkerRegistrar
                 if (sc == "auth_missing_keyfile_throws")
                     return auth_missing_keyfile_throws(dir);
                 if (sc == "auth_empty_keyfile_throws") return auth_empty_keyfile_throws(dir);
+                if (sc == "auth_keyfile_wrong_type_throws")
+                    return auth_keyfile_wrong_type_throws(dir);
+                if (sc == "auth_not_object_throws")    return auth_not_object_throws(dir);
                 if (sc == "uid_auto_generated")        return uid_auto_generated(dir);
                 if (sc == "state_grace_sentinel")      return state_grace_sentinel(dir);
                 if (sc == "load_from_directory")       return load_from_directory(dir);

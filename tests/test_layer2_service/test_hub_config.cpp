@@ -105,6 +105,20 @@ TEST_F(HubConfigTest, Auth_EmptyKeyfile_Throws)
     ExpectWorkerOk(w);
 }
 
+TEST_F(HubConfigTest, Auth_KeyfileWrongType_Throws)
+{
+    auto w = SpawnWorker("hub_config.auth_keyfile_wrong_type_throws",
+                         {unique_dir("auth_keyfile_wrong_type_throws")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(HubConfigTest, Auth_NotObject_Throws)
+{
+    auto w = SpawnWorker("hub_config.auth_not_object_throws",
+                         {unique_dir("auth_not_object_throws")});
+    ExpectWorkerOk(w);
+}
+
 TEST_F(HubConfigTest, SectionNotObject_Throws)
 {
     auto w = SpawnWorker("hub_config.section_not_object",
