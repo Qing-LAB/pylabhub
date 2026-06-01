@@ -30,9 +30,9 @@ nlohmann::json processor_config_template(const std::string &uid,
     j["processor"]["uid"]       = uid;
     j["processor"]["name"]      = name;
     j["processor"]["log_level"] = "info";
-    // Canonical default vault path per HEP-CORE-0024 §3.4
-    // (clarified 2026-05-30).  See producer_init.cpp for full
-    // rationale.
+    // Canonical default vault path per HEP-CORE-0024 §3.4 (finalized
+    // 2026-05-31).  See producer_init.cpp for full rationale; the
+    // §3.4.1 SECURITY WARNING applies symmetrically here.
     j["processor"]["auth"]["keyfile"] =
         "vault/" + std::string(uid) + ".vault";
 

@@ -30,9 +30,9 @@ nlohmann::json consumer_config_template(const std::string &uid,
     j["consumer"]["uid"]       = uid;
     j["consumer"]["name"]      = name;
     j["consumer"]["log_level"] = "info";
-    // Canonical default vault path per HEP-CORE-0024 §3.4
-    // (clarified 2026-05-30).  See producer_init.cpp for full
-    // rationale.
+    // Canonical default vault path per HEP-CORE-0024 §3.4 (finalized
+    // 2026-05-31).  See producer_init.cpp for full rationale; the
+    // §3.4.1 SECURITY WARNING applies symmetrically here.
     j["consumer"]["auth"]["keyfile"] =
         "vault/" + std::string(uid) + ".vault";
 

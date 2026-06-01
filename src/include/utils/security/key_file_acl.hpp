@@ -132,11 +132,8 @@ struct AclVerdict
 
 /// Resolve a config-supplied `auth.keyfile` string to a filesystem
 /// path, per the unified semantic in HEP-CORE-0033 §7.1 + HEP-CORE-
-/// 0024 §3.4 (clarified 2026-05-30):
+/// 0024 §3.4 (finalized 2026-05-31):
 ///
-///   - Empty input → empty result.  Callers interpret an empty
-///     result as the explicit ephemeral-CURVE opt-in: no vault file
-///     to open, no §4.6.2 Tier 2 ACL check to run.
 ///   - Absolute input → returned as-is (no normalization).  JSON
 ///     values are read literally — `~` is NOT shell-expanded here.
 ///     Operators wanting the home directory must write the
@@ -148,6 +145,12 @@ struct AclVerdict
 ///     whatever the resolved path is, so privilege escalation via
 ///     `..` still requires the attacker to also control file
 ///     ownership at the target.
+///   - Empty input → empty result (defensive only — `auth.keyfile`
+///     is REQUIRED non-empty per HEP-CORE-0024 §3.4 / HEP-CORE-0033
+///     §7.1 and is rejected at parse_auth_config; this branch is
+///     unreachable from normal callers but kept so the helper is
+///     well-defined for any future caller that supplies untrusted
+///     input).
 ///
 /// Never throws.  Pure path arithmetic — no `stat()` call, no
 /// existence check.  Callers verify existence separately (the

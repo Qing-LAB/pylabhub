@@ -176,10 +176,16 @@ refusal explicitly.
   performed; the result may resolve outside `<role_dir>` if the
   operator writes a `..`-bearing path, which is the operator's
   choice.
-- `RoleDirectory::default_keyfile(uid)` returns
-  `<role_dir>/vault/<role_uid>.vault` — the canonical relative
-  path the `--init` template writes.  `--init` writes it into
-  every freshly-created role config so the operator sees the
+- The canonical relative path the `--init` template writes is
+  `vault/<role_uid>.vault`.  The three per-binary `_init.cpp`
+  template-writers (producer / consumer / processor) construct
+  this string inline at the template-build site.  (The earlier
+  `RoleDirectory::default_keyfile(uid)` helper that returned
+  this path was retired 2026-06-01 / E′-2e — no production
+  caller existed; the inline form in the templates is honest
+  about what gets written.)  `--init` writes the resulting
+  string into every freshly-created role config so the operator
+  sees the
   vault path explicitly.
 
 #### Canonical `--init` template
@@ -725,8 +731,14 @@ int main(int argc, char *argv[])
         const auto pw = rc::get_new_role_password("sensor",
             "Sensor vault password: ", "Confirm: ");
         if (!pw) return 1;
+        // `auth.keyfile` is the operator-configured path string;
+        // resolve it against the role base_dir per §3.4.  This is
+        // the same path resolution every binary does at runtime.
+        const auto keyfile_path =
+            pylabhub::utils::security::resolve_keyfile_path(
+                config.auth().keyfile, role_dir.base());
         const auto vault = pylabhub::utils::RoleVault::create(
-            role_dir.default_keyfile(sensor_uid).string(), sensor_uid, *pw);
+            keyfile_path.string(), sensor_uid, *pw);
         std::cout << "Vault written to: " << vault.path() << "\n"
                   << "  public_key: " << vault.public_key() << "\n";
         return 0;

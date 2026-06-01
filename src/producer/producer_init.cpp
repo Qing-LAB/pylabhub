@@ -30,12 +30,13 @@ nlohmann::json producer_config_template(const std::string &uid,
     j["producer"]["uid"]       = uid;
     j["producer"]["name"]      = name;
     j["producer"]["log_level"] = "info";
-    // Canonical default vault path per HEP-CORE-0024 §3.4
-    // (clarified 2026-05-30).  Operator may edit to point elsewhere
-    // (e.g., a user-writable directory on a system where the role
-    // dir is root-owned).  Empty string would opt into ephemeral
-    // CURVE mode — operators who want that delete or edit the
-    // value post-`--init`.
+    // Canonical default vault path per HEP-CORE-0024 §3.4 (finalized
+    // 2026-05-31).  Relative path resolves against <producer-dir>.
+    // For production deployments operator edits this to an absolute
+    // path OUTSIDE <producer-dir> to dodge the §3.4.1 SECURITY
+    // WARNING — see HEP-CORE-0024 §3.4.1 recommended placements.
+    // auth.keyfile is REQUIRED non-empty; empty / missing / wrong
+    // type all reject at config-load.
     j["producer"]["auth"]["keyfile"] =
         "vault/" + std::string(uid) + ".vault";
 

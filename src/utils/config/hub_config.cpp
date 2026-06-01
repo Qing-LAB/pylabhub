@@ -179,14 +179,17 @@ const HubStateConfig      &HubConfig::state()      const { assert(impl_); return
 // ============================================================================
 
 // `hub.auth.keyfile` is the source of truth for the vault file
-// location at runtime per HEP-CORE-0033 §7.1 (clarified 2026-05-30):
+// location at runtime per HEP-CORE-0033 §7.1 (finalized 2026-05-31):
 //   - Non-empty (relative) → resolved against hub_dir.
 //   - Non-empty (absolute) → used as-is.
-//   - Non-empty + file absent at resolved path → throw (no silent
-//     fallback to ephemeral mode; matches the explicit-opt-in
-//     semantic for the empty case).
-//   - Empty → explicit ephemeral-CURVE opt-in.  Stderr WARN emitted
-//     so deployments do not silently lose encryption-at-rest.
+//   - Non-empty + file absent at resolved path → throw (operator
+//     configured a vault but the file is not there; no silent
+//     fallback).
+//
+// The empty case is unreachable here — `parse_auth_config` in
+// auth_config.hpp rejects empty `auth.keyfile` at config-load
+// (HEP-CORE-0024 §3.4 / HEP-CORE-0033 §7.1, finalized 2026-05-31:
+// pylabhub is a vault; no in-memory CURVE mode exists).
 //
 // Path resolution uses pylabhub::utils::security::resolve_keyfile_path()
 // — single source of truth shared with role_config.cpp.
@@ -194,16 +197,8 @@ bool HubConfig::load_keypair(const std::string &password)
 {
     assert(impl_);
     auto &auth = impl_->auth;
-    if (auth.keyfile.empty())
-    {
-        std::fprintf(stderr,
-            "[plh_hub] WARN: hub.auth.keyfile is empty — running in "
-            "ephemeral CURVE mode (HEP-CORE-0035 §4.6).  No "
-            "encryption-at-rest; CURVE keys are generated in memory "
-            "only and lost at shutdown.  For production deployments "
-            "run `plh_hub --keygen` to create a persistent vault.\n");
-        return false;
-    }
+    // auth.keyfile guaranteed non-empty by parse_auth_config; an empty
+    // value would have thrown at config-load.
 
     const auto &hub_dir = impl_->base_dir;
     const auto &uid     = impl_->identity.uid;
@@ -218,8 +213,7 @@ bool HubConfig::load_keypair(const std::string &password)
             "[plh_hub] Error: hub.auth.keyfile = '" + auth.keyfile +
             "' resolves to '" + vault_path.string() +
             "' which does not exist.  Run `plh_hub --keygen` to "
-            "create the vault, or set hub.auth.keyfile = \"\" for "
-            "ephemeral mode (HEP-CORE-0035 §4.6 / HEP-CORE-0033 §7.1).");
+            "create the vault (HEP-CORE-0033 §7.1).");
     }
 
     const auto vault = utils::HubVault::open(vault_path, uid, password);
@@ -236,12 +230,9 @@ std::string HubConfig::create_keypair(const std::string &password)
 {
     assert(impl_);
     const auto &auth = impl_->auth;
-    if (auth.keyfile.empty())
-        throw std::runtime_error(
-            "[plh_hub] Error: --keygen requires non-empty "
-            "hub.auth.keyfile in config — ephemeral mode is "
-            "in-process only and has no on-disk vault to create "
-            "(HEP-CORE-0033 §7.1).");
+    // auth.keyfile guaranteed non-empty by parse_auth_config
+    // (HEP-CORE-0033 §7.1, finalized 2026-05-31); empty is rejected
+    // at config-load before --keygen dispatch.
 
     const auto &hub_dir = impl_->base_dir;
     const auto &uid     = impl_->identity.uid;
