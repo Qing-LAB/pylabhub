@@ -542,10 +542,10 @@ asymmetric sides.
 ```jsonc
 {
   "hub": {
-    "uid":       "HUB-MAIN-12345678",
+    "uid":       "hub.main.uid12345678",
     "name":      "MainHub",
     "log_level": "info",
-    "auth":      { "keyfile": "vault/hub.vault" }
+    "auth":      { "keyfile": "vault/hub.main.uid12345678.vault" }
   },
 
   "script":              { "type": "python", "path": "." },
@@ -739,7 +739,10 @@ reasons in §17.1 "No remote code injection" and the
 ├── schemas/                    # OPTIONAL — hub-global schema definitions
 │   └── lab/sensors/temperature.raw.v1.json   # (HEP-CORE-0034 §12)
 ├── vault/
-│   └── hub.vault               # CURVE keypair + (optional) admin token
+│   └── <hub_uid>.vault         # CURVE keypair + (optional) admin token
+│                                 # Filename embeds the hub UID per §6.5
+│                                 # (revised 2026-05-31) so multiple hubs
+│                                 # sharing a vault dir do not collide.
 ├── logs/
 │   └── <hub_uid>-<ts>.log
 └── run/
@@ -762,7 +765,7 @@ and role.
 | `hub.auth.keyfile` value | Behavior at load time | Behavior at `--keygen` time | Behavior at runtime |
 |---|---|---|---|
 | Non-empty, relative (e.g. `"vault/<hub_uid>.vault"`) | Resolved against `hub_dir`. | `--keygen` creates the resolved path; if file already exists → HARD ERROR (no silent overwrite). | Vault opened at resolved path.  HEP-CORE-0035 §4.6.2 ACL check applies to the file + parent directory.  `HubConfig::load()` emits the §7.2 SECURITY WARNING when the resolved path is inside `hub_dir`. |
-| Non-empty, absolute (e.g. `"/srv/secrets/hub.vault"`) | Used as-is. | `--keygen` creates the absolute path; if file already exists → HARD ERROR. | Vault opened at the absolute path.  ACL check applies.  No warning (outside `hub_dir`). |
+| Non-empty, absolute (e.g. `"/srv/secrets/<hub_uid>.vault"`) | Used as-is. | `--keygen` creates the absolute path; if file already exists → HARD ERROR. | Vault opened at the absolute path.  ACL check applies.  No warning (outside `hub_dir`). |
 | Non-empty, resolved path absent at runtime | Resolved path stored. | (See above.) | HARD ERROR.  Binary refuses to fall back silently. |
 | Empty `""` | HARD ERROR at config-load.  No in-memory CURVE mode exists. | (Never reached.) | (Never reached.) |
 | Field missing entirely | HARD ERROR at config-load. | (Never reached.) | (Never reached.) |
@@ -2572,14 +2575,20 @@ can land in parallel once P1 lands.
     `invalid_request`, `invalid_params`, `not_found`, `conflict`,
     `policy_rejected`, `script_error`, `not_implemented`, `internal`.
     Stable wire constants, append-only.
-11. ✅ **CLOSED 2026-05-05** — Vault directory layout discrepancy.
-    `HubVault::{create,open}` now use `<hub_dir>/vault/hub.vault`
-    (matches HEP §7, `HubDirectory::hub_vault_file()`, and the
-    `--init` template's `auth.keyfile = "vault/hub.vault"`).  6 test
-    expectations updated; full suite 1757/1757.  Bundled with the
-    F4 follow-up (HubNetworkConfig struct default also changed to
+11. ✅ **CLOSED 2026-05-05; SUPERSEDED by §6.5 revision 2026-05-31.**
+    Vault directory layout discrepancy.  As of 2026-05-05,
+    `HubVault::{create,open}` used `<hub_dir>/vault/hub.vault` —
+    matching the then-current HEP §7 and the `--init` template's
+    `auth.keyfile = "vault/hub.vault"`.  Bundled with the F4
+    follow-up (HubNetworkConfig struct default also changed to
     `tcp://127.0.0.1:5570` to converge with the init-template
     default fixed earlier in the audit cycle).
+    **Superseded:** §6.5 was revised on 2026-05-31 (E′-2b) to
+    embed the hub UID in the vault filename
+    (`<hub_dir>/vault/<hub_uid>.vault`).  See §6.5 / §7.1 for the
+    current contract.  The fixed-filename invariant this close-out
+    references no longer holds; the file-layout convergence work
+    described here remains valid, only the filename shape changed.
 
 ## 17. Out of scope
 
