@@ -169,6 +169,14 @@ TEST_P(PlhRoleKeygenTest, KeygenRefusesToOverwriteExistingVault)
     EXPECT_NE(p.get_stderr().find("rm"), std::string::npos)
         << "stderr should tell operator how to remove the file; got:\n"
         << p.get_stderr();
+    // Role-side specificity: the diagnostic explains that the OLD pubkey
+    // is still pinned on the HUB ALLOWLIST, so silently re-keying would
+    // strand this role.  Catches a regression that genericizes the
+    // message and stops telling the operator why re-keygen is destructive
+    // on the role side.
+    EXPECT_NE(p.get_stderr().find("allowlist"), std::string::npos)
+        << "role stderr should mention 'allowlist' (role-specific impact); "
+           "got:\n" << p.get_stderr();
 
     // (c) THE LOAD-BEARING CHECK: file content IS UNCHANGED.
     std::string actual_content;
@@ -183,6 +191,64 @@ TEST_P(PlhRoleKeygenTest, KeygenRefusesToOverwriteExistingVault)
            "modified by --keygen despite the refusal.";
     EXPECT_EQ(fs::file_size(vault_path), sentinel.size())
         << "no-overwrite contract VIOLATED — vault file size changed";
+}
+
+/// After the operator removes the existing vault file, --keygen
+/// MUST succeed AND produce DIFFERENT key material than the previous
+/// run.  Mutation-sweep of the refusal contract: the refusal must be
+/// rooted in file existence, not in some sticky in-binary state; and
+/// the rekey must derive a NEW CURVE keypair (deterministic
+/// regeneration would silently re-pin the same allowlist entry).
+TEST_P(PlhRoleKeygenTest, ReKeygenAfterRemovalSucceeds)
+{
+    const auto &s = GetParam();
+    const auto dir = tmp("kg_rekey");
+    const auto cfg = dir / (std::string(s.role) + ".json");
+    const auto vault_path = dir / "vault" / "test.vault";
+
+    nlohmann::json overrides;
+    overrides[std::string(s.role)]["auth"]["keyfile"] =
+        vault_path.generic_string();
+    write_minimal_config(cfg, std::string(s.role), dir, overrides);
+
+    auto run_keygen = [&]() {
+        WorkerProcess p(plh_role_binary(), "--role",
+            {std::string(s.role), "--config", cfg.string(), "--keygen"});
+        EXPECT_EQ(p.wait_for_exit(PYLABHUB_TEST_CRYPTO_TIMEOUT_S), 0)
+            << "stderr:\n" << p.get_stderr();
+        expect_no_unexpected_errors(p);
+    };
+    auto read_vault = [&]() {
+        std::ifstream in(vault_path, std::ios::binary);
+        std::ostringstream ss;
+        ss << in.rdbuf();
+        return ss.str();
+    };
+
+    // First keygen.
+    run_keygen();
+    ExpectVaultFileSecured(vault_path);
+    const std::string first = read_vault();
+    ASSERT_FALSE(first.empty());
+
+    // Remove the vault file and re-keygen.
+    std::error_code ec;
+    fs::remove(vault_path, ec);
+    ASSERT_FALSE(ec) << "rm vault failed: " << ec.message();
+    ASSERT_FALSE(fs::exists(vault_path));
+
+    run_keygen();
+    ExpectVaultFileSecured(vault_path);
+    const std::string second = read_vault();
+    ASSERT_FALSE(second.empty());
+
+    // The second run MUST produce different bytes — a fresh CURVE
+    // keypair has a fresh secret + fresh public key.  Equal bytes
+    // would indicate a deterministic regeneration regression.
+    EXPECT_NE(first, second)
+        << "re-keygen produced byte-identical vault — fresh CURVE "
+           "material was expected (first=" << first.size()
+        << " bytes, second=" << second.size() << " bytes)";
 }
 
 // ── Error paths ─────────────────────────────────────────────────────────────
@@ -259,6 +325,49 @@ TEST_P(PlhRoleKeygenTest, MissingAuthBlockFails)
         << p.get_stderr();
 
     ExpectNoVaultArtifactsUnder(dir);
+}
+
+// ── Runmode vault-presence contract (HEP-CORE-0024 §3.4) ───────────────────
+
+/// Runmode startup requires the configured `auth.keyfile` to exist —
+/// no silent fall-through to ephemeral CURVE.  Pins the load_keypair
+/// failure path in plh_role_main.cpp: a non-empty keyfile that does
+/// NOT exist on disk produces a "Vault unlock failed:" diagnostic
+/// and a non-zero exit.  The HEP-CORE-0024 §3.4 "non-empty + file
+/// absent" row is otherwise only exercised indirectly.
+TEST_P(PlhRoleKeygenTest, RunmodeFailsWhenVaultMissing)
+{
+    const auto &s = GetParam();
+    const auto dir = tmp("rm_no_vault");
+    const auto cfg = dir / (std::string(s.role) + ".json");
+    const auto vault_path = dir / "vault" / "missing.vault";
+
+    nlohmann::json overrides;
+    overrides[std::string(s.role)]["auth"]["keyfile"] =
+        vault_path.generic_string();
+    write_minimal_config(cfg, std::string(s.role), dir, overrides);
+
+    // Confirm we are testing the missing-file path, not a stale leftover.
+    ASSERT_FALSE(fs::exists(vault_path));
+
+    // Runmode invocation — no --keygen, no --validate.  The binary
+    // reaches load_keypair, which throws because the vault file is
+    // absent.  plh_role_main.cpp catches and prints "Vault unlock
+    // failed:" before exiting 1.
+    WorkerProcess p(plh_role_binary(), "--role",
+        {std::string(s.role), "--config", cfg.string()});
+    const int rc = p.wait_for_exit(PYLABHUB_TEST_CRYPTO_TIMEOUT_S);
+    EXPECT_NE(rc, 0)
+        << "runmode with missing vault must fail; stderr:\n"
+        << p.get_stderr();
+
+    EXPECT_NE(p.get_stderr().find("Vault unlock failed"), std::string::npos)
+        << "stderr should carry the load_keypair failure tag; got:\n"
+        << p.get_stderr();
+
+    // No vault material was created by the failure path.
+    EXPECT_FALSE(fs::exists(vault_path))
+        << "runmode failure must not synthesize a vault file";
 }
 
 /// --keygen without --role → fails with the dispatch-level "--role is

@@ -34,6 +34,12 @@ int auth_missing_keyfile_throws(const char *tmpdir);
 /// HEP-CORE-0033 §7.1: empty `hub.auth.keyfile` → config-load error.
 int auth_empty_keyfile_throws(const char *tmpdir);
 
+/// HEP-CORE-0033 §7.1: non-string `hub.auth.keyfile` → config-load error.
+int auth_keyfile_wrong_type_throws(const char *tmpdir);
+
+/// HEP-CORE-0033 §7.1: non-object `hub.auth` → config-load error.
+int auth_not_object_throws(const char *tmpdir);
+
 /// Missing hub.uid → auto-generated `hub.<name>.uid<8hex>` per HEP-0033 §G2.2.0a;
 /// resulting uid validates under IdentifierKind::PeerUid.
 int uid_auto_generated(const char *tmpdir);
