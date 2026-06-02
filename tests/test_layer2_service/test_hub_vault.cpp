@@ -358,7 +358,7 @@ TEST_F(HubVaultTest, DifferentHubUidProducesDifferentCiphertext)
 }
 
 // ============================================================================
-// publish_public_key tests
+// Atomic vault-create discipline (HEP-CORE-0035 §4.6.1)
 // ============================================================================
 
 TEST_F(HubVaultTest, Create_OverExistingVault_Throws_AtomicNoOverwrite)

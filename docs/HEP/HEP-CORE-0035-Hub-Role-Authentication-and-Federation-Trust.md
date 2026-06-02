@@ -594,11 +594,20 @@ This requirement layers on top of work that has now landed:
   CURVE keypair (or invoke `--keygen` internally), with the
   modes from §4.6.1 applied at write time.  The operator should
   not have to remember a separate keygen step.
-- §4.6 closure → sub-task of HEP-0035 implementation (task
-  #101) for the shared `key_file_acl` utility plus binary
-  wiring at startup.  The utility already exists in
-  `src/utils/security/key_file_acl.cpp`; binary wiring at
-  startup is the remaining gap.
+- §4.6 closure → **CLOSED 2026-06-01** in commit `4f3fb077`
+  (key-file ACL discipline implementation, task #101 — absorbed
+  the deferred S1/S2/S3 items).  Shared `key_file_acl` utility
+  in `src/utils/security/key_file_acl.cpp` is wired at:
+  vault create (`HubVault::create` + `RoleVault::create` enforce
+  0700 on the parent dir via `set_keyfile_mode`); atomic vault
+  write (`vault_crypto::write_secure_file` uses POSIX
+  `O_CREAT|O_EXCL|O_WRONLY|O_NOFOLLOW|O_CLOEXEC` + `fchmod 0600`,
+  closing TOCTOU + symlink-redirect attacks at the kernel layer);
+  and binary startup (`HubConfig::load_keypair` +
+  `RoleConfig::load_keypair` call `verify_keyfile_acl` for both
+  `VaultFile` and `VaultDir` BEFORE reading the secret, refusing
+  to load with an OpenSSH-style actionable diagnostic on
+  violation).
 
 ### 4.6.4 Out of scope
 
@@ -610,16 +619,26 @@ This requirement layers on top of work that has now landed:
   scope (covered by `src/utils/service/vault_crypto.{hpp,cpp}` —
   Argon2id KDF + XSalsa20-Poly1305 secretbox); §4.6 governs only
   the on-disk file ACLs that protect the vault container.
-- Symlink and non-regular-file (FIFO / device) handling is NOT
-  separately gated.  The §4.6.2 verification uses `stat()`
-  (symlink-following) — vault files in the canonical `vault/`
-  directory at 0700 + euid-owner cannot be symlink-injected by a
-  non-owner.  Operators pointing `auth.keyfile` at a path under
-  a directory they do not own (e.g., `/tmp`) accept symlink-
-  injection risk by configuration.  The encryption-at-rest layer
-  (vault password) is the primary integrity defense; file-mode
-  discipline is the file-system floor and does not promise
-  symlink-aware enforcement.
+- Symlink handling — refined scope (2026-06-01):
+  - **Write path (vault create) IS symlink-gated.**
+    `vault_crypto::write_secure_file` (POSIX branch) uses
+    `O_NOFOLLOW` so a symlink at the final `auth.keyfile`
+    component causes `open(2)` to fail with `ELOOP` and refuse
+    to write — the secret never leaves the process.  This
+    closes the symlink-redirect attack at vault create time.
+  - **Read path (verify + open) uses `stat(2)` (symlink-
+    following).**  By the time read happens the file is already
+    owner-owned + mode 0600 (write path enforced).  A symlink
+    planted between verify and read would point to a file the
+    attacker must also own + 0600 to satisfy verify — i.e.,
+    a self-redirect to attacker's own secret, which is
+    no different from configuring the keyfile path there.
+  - Non-regular files (FIFO / device) — not separately gated.
+    Operators pointing `auth.keyfile` at a path under a
+    directory they do not own (e.g., `/tmp`) still accept
+    symlink-injection risk for read; the encryption-at-rest
+    layer (vault password) remains the primary integrity
+    defense in that operator-chosen-risk configuration.
 
 ---
 
