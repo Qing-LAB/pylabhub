@@ -16,6 +16,10 @@
 
 #include <cstdlib>   // setenv / _putenv_s
 
+#if !defined(_WIN32) && !defined(_WIN64)
+#include <sys/stat.h>
+#endif
+
 using namespace pylabhub::tests::plh_role_l4;
 using pylabhub::tests::helper::WorkerProcess;
 using pylabhub::tests::helper::ExpectVaultFileSecured;
@@ -369,6 +373,89 @@ TEST_P(PlhRoleKeygenTest, RunmodeFailsWhenVaultMissing)
     EXPECT_FALSE(fs::exists(vault_path))
         << "runmode failure must not synthesize a vault file";
 }
+
+// ── Runtime ACL discipline (HEP-CORE-0035 §4.6.2) ───────────────────────────
+
+#if !defined(_WIN32) && !defined(_WIN64)
+/// Runmode startup verifies vault file mode == 0600 before reading
+/// the secret.  If the file is world-readable (0644), the binary
+/// must refuse with an OpenSSH-style actionable diagnostic naming
+/// the path + required mode + chmod command.
+TEST_P(PlhRoleKeygenTest, RunmodeFailsWhenVaultFileModeIsLoose)
+{
+    const auto &s = GetParam();
+    const auto dir = tmp("rm_loose_mode");
+    const auto cfg = dir / (std::string(s.role) + ".json");
+    const auto vault_path = dir / "vault" / "test.vault";
+
+    nlohmann::json overrides;
+    overrides[std::string(s.role)]["auth"]["keyfile"] =
+        vault_path.generic_string();
+    write_minimal_config(cfg, std::string(s.role), dir, overrides);
+
+    // Create the vault (mode 0600 + parent 0700 by the new contract).
+    {
+        WorkerProcess kg(plh_role_binary(), "--role",
+            {std::string(s.role), "--config", cfg.string(), "--keygen"});
+        ASSERT_EQ(kg.wait_for_exit(PYLABHUB_TEST_CRYPTO_TIMEOUT_S), 0)
+            << "setup keygen failed: " << kg.get_stderr();
+    }
+
+    // Loosen mode to world-readable.  Runmode must now refuse.
+    ::chmod(vault_path.c_str(), 0644);
+
+    WorkerProcess p(plh_role_binary(), "--role",
+        {std::string(s.role), "--config", cfg.string()});
+    const int rc = p.wait_for_exit(PYLABHUB_TEST_CRYPTO_TIMEOUT_S);
+    EXPECT_NE(rc, 0)
+        << "runmode against vault at mode 0644 must refuse; stderr:\n"
+        << p.get_stderr();
+
+    EXPECT_NE(p.get_stderr().find("HEP-CORE-0035"), std::string::npos)
+        << "stderr should cite HEP-CORE-0035 §4.6.2; got:\n" << p.get_stderr();
+    EXPECT_NE(p.get_stderr().find("chmod"), std::string::npos)
+        << "stderr should tell operator how to fix (chmod 0600); got:\n"
+        << p.get_stderr();
+}
+
+/// Symmetric: parent dir at 0755 (group/world readable) → runmode
+/// refuses.  Pins HEP-CORE-0035 §4.6.2 directory enforcement.
+TEST_P(PlhRoleKeygenTest, RunmodeFailsWhenVaultParentDirModeIsLoose)
+{
+    const auto &s = GetParam();
+    const auto dir = tmp("rm_loose_dir");
+    const auto cfg = dir / (std::string(s.role) + ".json");
+    const auto vault_path = dir / "vault" / "test.vault";
+
+    nlohmann::json overrides;
+    overrides[std::string(s.role)]["auth"]["keyfile"] =
+        vault_path.generic_string();
+    write_minimal_config(cfg, std::string(s.role), dir, overrides);
+
+    {
+        WorkerProcess kg(plh_role_binary(), "--role",
+            {std::string(s.role), "--config", cfg.string(), "--keygen"});
+        ASSERT_EQ(kg.wait_for_exit(PYLABHUB_TEST_CRYPTO_TIMEOUT_S), 0)
+            << "setup keygen failed: " << kg.get_stderr();
+    }
+
+    // Loosen parent dir mode to world-readable.  Runmode must refuse.
+    ::chmod(vault_path.parent_path().c_str(), 0755);
+
+    WorkerProcess p(plh_role_binary(), "--role",
+        {std::string(s.role), "--config", cfg.string()});
+    const int rc = p.wait_for_exit(PYLABHUB_TEST_CRYPTO_TIMEOUT_S);
+    EXPECT_NE(rc, 0)
+        << "runmode against vault dir at mode 0755 must refuse; stderr:\n"
+        << p.get_stderr();
+
+    EXPECT_NE(p.get_stderr().find("HEP-CORE-0035"), std::string::npos)
+        << "stderr should cite HEP-CORE-0035 §4.6.2; got:\n" << p.get_stderr();
+    EXPECT_NE(p.get_stderr().find("chmod"), std::string::npos)
+        << "stderr should tell operator how to fix; got:\n"
+        << p.get_stderr();
+}
+#endif
 
 /// --keygen without --role → fails with the dispatch-level "--role is
 /// required" diagnostic from plh_role_main.cpp::register_and_lookup.

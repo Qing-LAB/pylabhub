@@ -6,6 +6,7 @@
  * This file handles only role-specific payload (CurveZMQ keypair).
  */
 #include "utils/role_vault.hpp"
+#include "utils/security/key_file_acl.hpp"
 
 #include "vault_crypto.hpp"
 
@@ -85,6 +86,17 @@ RoleVault RoleVault::create(const fs::path    &vault_path,
         if (ec)
             throw std::runtime_error("RoleVault: cannot create parent directory for '" +
                                      vault_path.string() + "': " + ec.message());
+        // HEP-CORE-0035 §4.6.1: keystore directory MUST be 0700.
+        // fs::create_directories applies process umask; enforce
+        // explicit 0700 here so the directory is not briefly
+        // world-readable before vault_write lays down 0600 inside.
+        namespace sec = pylabhub::utils::security;
+        const auto rc = sec::set_keyfile_mode(
+            vault_path.parent_path(), sec::KeyFileRole::VaultDir);
+        if (rc == sec::SetModeResult::ChmodFailed)
+            throw std::runtime_error(
+                "RoleVault: chmod 0700 failed on vault parent dir '" +
+                vault_path.parent_path().string() + "'");
     }
 
     // Serialize and encrypt payload.

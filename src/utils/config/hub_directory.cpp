@@ -133,9 +133,11 @@ void HubDirectory::warn_if_keyfile_in_hub_dir(const std::filesystem::path &hub_b
                  "  outside hub_dir reduces this attack surface.\n"
                  "\n"
                  "  RECOMMENDED: move the vault file outside the hub directory\n"
-                 "  and update 'hub.auth.keyfile' to its absolute path, e.g.:\n"
-                 "    /etc/pylabhub/vault/<hub_uid>.vault   (system-managed)\n"
-                 "    ~/.pylabhub/vault/<hub_uid>.vault     (single-user)\n"
+                 "  and update 'hub.auth.keyfile' to its absolute path.  Example\n"
+                 "  layouts (write the FULL absolute path — `~` is NOT\n"
+                 "  shell-expanded by the JSON parser):\n"
+                 "    /etc/pylabhub/vault/<hub_uid>.vault              (system-managed)\n"
+                 "    /home/<user>/.pylabhub/vault/<hub_uid>.vault     (single-user)\n"
                  "\n",
                  keyfile.c_str(), hub_base.string().c_str());
 }

@@ -23,6 +23,10 @@
 #include <stdexcept>
 #include <string>
 
+#if !defined(_WIN32) && !defined(_WIN64)
+#include <sys/stat.h>
+#endif
+
 #if defined(PYLABHUB_PLATFORM_WIN64)
 #include <aclapi.h>
 #pragma comment(lib, "advapi32.lib")
@@ -357,18 +361,87 @@ TEST_F(HubVaultTest, DifferentHubUidProducesDifferentCiphertext)
 // publish_public_key tests
 // ============================================================================
 
-TEST_F(HubVaultTest, Create_OverExistingVault_Overwrites)
+TEST_F(HubVaultTest, Create_OverExistingVault_Throws_AtomicNoOverwrite)
 {
+    // HEP-CORE-0035 §4.6.1: vault write is atomic O_CREAT|O_EXCL.
+    // A second create against an existing path MUST throw — silent
+    // overwrite would destroy the operator's existing keypair AND
+    // admin token, invalidating any federation peer that pinned the
+    // old pubkey.  Mutation-sweep against the prior (pre-2026-06-01)
+    // contract which allowed silent overwrite.
     HubVault v1 = HubVault::create(vault_path_, hub_uid_, kPassword);
     const std::string pk1 = v1.broker_curve_public_key();
+    const std::string sentinel_pk = pk1;
 
-    // Create again on same path — should overwrite with new keys.
-    HubVault v2 = HubVault::create(vault_path_, hub_uid_, kPassword);
-    const std::string pk2 = v2.broker_curve_public_key();
+    EXPECT_THROW(HubVault::create(vault_path_, hub_uid_, kPassword),
+                 std::runtime_error)
+        << "Second create against existing vault must refuse atomically";
 
-    EXPECT_NE(pk1, pk2)
-        << "Second create should generate fresh keys (different from first)";
+    // Original vault content survives — the failed create did not
+    // even open the file (O_EXCL refused before any write).  Pubkey
+    // remains accessible by opening with the original password.
+    HubVault still = HubVault::open(vault_path_, hub_uid_, kPassword);
+    EXPECT_EQ(still.broker_curve_public_key(), sentinel_pk)
+        << "Failed atomic-no-overwrite create must NOT mutate the existing "
+           "vault — original pubkey should still decrypt";
 }
+
+#if !defined(_WIN32) && !defined(_WIN64)
+TEST_F(HubVaultTest, Create_OverSymlinkAtVaultPath_Throws_AtomicNoFollow)
+{
+    // HEP-CORE-0035 §4.6.1: vault write is atomic O_NOFOLLOW.
+    // If the operator's vault path is replaced by a symlink (attacker
+    // controls the parent dir momentarily), --keygen MUST refuse —
+    // following the symlink would write secret material to an
+    // attacker-controlled target.  Pin the kernel-enforced refusal.
+    namespace fs = std::filesystem;
+    fs::create_directories(vault_path_.parent_path());
+    const fs::path target = vault_path_.parent_path() / "attacker_target";
+    {
+        std::ofstream sink(target);
+        sink << "would receive redirected secret";
+    }
+    fs::create_symlink(target, vault_path_);
+    ASSERT_TRUE(fs::is_symlink(vault_path_));
+
+    EXPECT_THROW(HubVault::create(vault_path_, hub_uid_, kPassword),
+                 std::runtime_error)
+        << "Create against a symlink at vault_path must refuse atomically";
+
+    // Symlink and target both untouched — the refusal happened at
+    // open(2) with EEXIST/ELOOP before any write attempt.
+    EXPECT_TRUE(fs::is_symlink(vault_path_));
+    std::ifstream check(target);
+    std::string content((std::istreambuf_iterator<char>(check)),
+                         std::istreambuf_iterator<char>{});
+    EXPECT_EQ(content, "would receive redirected secret")
+        << "symlink target must remain untouched by refused create";
+}
+
+TEST_F(HubVaultTest, Create_VaultFileIsMode0600_AndParentDirIs0700)
+{
+    // HEP-CORE-0035 §4.6.1: vault file 0600 atomic at create; parent
+    // dir 0700 enforced after fs::create_directories.  Pin both
+    // ALONG WITH a sentinel `umask(0)` to prove the modes are NOT
+    // dependent on the process umask.
+    const ::mode_t prev_umask = ::umask(0);
+    HubVault v = HubVault::create(vault_path_, hub_uid_, kPassword);
+    ::umask(prev_umask);
+
+    namespace fs = std::filesystem;
+    const auto file_status = fs::status(vault_path_);
+    EXPECT_EQ(static_cast<unsigned>(file_status.permissions()) & 0777,
+              0600u)
+        << "vault file mode must be 0600 even with umask 0 — atomic-at-create"
+           " + fchmod normalize";
+
+    const auto dir_status = fs::status(vault_path_.parent_path());
+    EXPECT_EQ(static_cast<unsigned>(dir_status.permissions()) & 0777,
+              0700u)
+        << "vault parent dir mode must be 0700 even with umask 0 — "
+           "set_keyfile_mode(VaultDir) enforces it post-create";
+}
+#endif
 
 TEST_F(HubVaultTest, MoveConstructor_TransfersOwnership)
 {

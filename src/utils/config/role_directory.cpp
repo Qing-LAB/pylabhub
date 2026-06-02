@@ -175,9 +175,11 @@ void RoleDirectory::warn_if_keyfile_in_role_dir(const std::filesystem::path &rol
                  "  file enables offline brute-force of the Argon2id password.\n"
                  "\n"
                  "  RECOMMENDED: move the vault file outside the role directory\n"
-                 "  and update 'auth.keyfile' to its absolute path, e.g.:\n"
-                 "    /etc/pylabhub/vault/<uid>.vault   (system-managed service)\n"
-                 "    ~/.pylabhub/vault/<uid>.vault      (single-user deployment)\n"
+                 "  and update 'auth.keyfile' to its absolute path.  Example\n"
+                 "  layouts (write the FULL absolute path — `~` is NOT\n"
+                 "  shell-expanded by the JSON parser):\n"
+                 "    /etc/pylabhub/vault/<uid>.vault              (system-managed service)\n"
+                 "    /home/<user>/.pylabhub/vault/<uid>.vault     (single-user deployment)\n"
                  "\n",
                  keyfile.c_str(), role_base.string().c_str());
 }

@@ -16,6 +16,10 @@
 
 #include <cstdlib>
 
+#if !defined(_WIN32) && !defined(_WIN64)
+#include <sys/stat.h>
+#endif
+
 using namespace pylabhub::tests::plh_hub_l4;
 using pylabhub::tests::helper::WorkerProcess;
 using pylabhub::tests::helper::ExpectVaultFileSecured;
@@ -172,6 +176,90 @@ TEST_F(PlhHubCliTest, KeygenRefusesToOverwriteExistingVault)
     EXPECT_EQ(fs::file_size(vault_actual), sentinel.size())
         << "no-overwrite contract VIOLATED — vault file size changed";
 }
+
+// ── Runtime ACL discipline (HEP-CORE-0035 §4.6.2) ───────────────────────────
+
+#if !defined(_WIN32) && !defined(_WIN64)
+/// Runmode startup verifies vault file mode == 0600 before reading
+/// the secret.  Loosened mode → refusal with HEP-CORE-0035 cite +
+/// chmod hint.
+TEST_F(PlhHubCliTest, RunmodeFailsWhenVaultFileModeIsLoose)
+{
+    const auto dir = tmp("rm_loose_mode");
+    const auto cfg_path = dir / "hub.json";
+
+    nlohmann::json overrides;
+    overrides["hub"]["auth"]["keyfile"] = "vault/hub.l4loose.uid00000001.vault";
+    write_minimal_config(cfg_path, dir, overrides);
+    const fs::path vault_path =
+        dir / "vault" / "hub.l4loose.uid00000001.vault";
+
+    {
+        ScopedHubPassword pw("loose-pw");
+        WorkerProcess kg(plh_hub_binary(), "--config",
+            {cfg_path.string(), "--keygen"});
+        ASSERT_EQ(kg.wait_for_exit(), 0)
+            << "setup keygen failed: " << kg.get_stderr();
+    }
+
+    // Loosen mode to world-readable.  Spawn the binary in runmode
+    // (no flag) — it must refuse before reading the secret.
+    ::chmod(vault_path.c_str(), 0644);
+
+    {
+        ScopedHubPassword pw("loose-pw");
+        WorkerProcess p(plh_hub_binary(), "--config", {cfg_path.string()});
+        const int rc = p.wait_for_exit(10);
+        EXPECT_NE(rc, 0)
+            << "runmode against vault at 0644 must refuse; stderr:\n"
+            << p.get_stderr();
+        EXPECT_NE(p.get_stderr().find("HEP-CORE-0035"), std::string::npos)
+            << "stderr should cite HEP-CORE-0035 §4.6.2; got:\n"
+            << p.get_stderr();
+        EXPECT_NE(p.get_stderr().find("chmod"), std::string::npos)
+            << "stderr should tell operator how to fix; got:\n"
+            << p.get_stderr();
+    }
+}
+
+/// Symmetric: parent dir at 0755 → runmode refuses.
+TEST_F(PlhHubCliTest, RunmodeFailsWhenVaultParentDirModeIsLoose)
+{
+    const auto dir = tmp("rm_loose_dir");
+    const auto cfg_path = dir / "hub.json";
+
+    nlohmann::json overrides;
+    overrides["hub"]["auth"]["keyfile"] = "vault/hub.l4loose.uid00000002.vault";
+    write_minimal_config(cfg_path, dir, overrides);
+    const fs::path vault_path =
+        dir / "vault" / "hub.l4loose.uid00000002.vault";
+
+    {
+        ScopedHubPassword pw("loose-pw");
+        WorkerProcess kg(plh_hub_binary(), "--config",
+            {cfg_path.string(), "--keygen"});
+        ASSERT_EQ(kg.wait_for_exit(), 0)
+            << "setup keygen failed: " << kg.get_stderr();
+    }
+
+    ::chmod(vault_path.parent_path().c_str(), 0755);
+
+    {
+        ScopedHubPassword pw("loose-pw");
+        WorkerProcess p(plh_hub_binary(), "--config", {cfg_path.string()});
+        const int rc = p.wait_for_exit(10);
+        EXPECT_NE(rc, 0)
+            << "runmode against vault dir at 0755 must refuse; stderr:\n"
+            << p.get_stderr();
+        EXPECT_NE(p.get_stderr().find("HEP-CORE-0035"), std::string::npos)
+            << "stderr should cite HEP-CORE-0035 §4.6.2; got:\n"
+            << p.get_stderr();
+        EXPECT_NE(p.get_stderr().find("chmod"), std::string::npos)
+            << "stderr should tell operator how to fix; got:\n"
+            << p.get_stderr();
+    }
+}
+#endif
 
 // ── Error paths ──────────────────────────────────────────────────────────────
 

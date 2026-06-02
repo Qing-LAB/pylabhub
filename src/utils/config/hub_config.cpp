@@ -203,10 +203,10 @@ bool HubConfig::load_keypair(const std::string &password)
     const auto &hub_dir = impl_->base_dir;
     const auto &uid     = impl_->identity.uid;
 
-    namespace fs = std::filesystem;
+    namespace fs       = std::filesystem;
+    namespace security = pylabhub::utils::security;
     const fs::path vault_path =
-        pylabhub::utils::security::resolve_keyfile_path(
-            auth.keyfile, hub_dir);
+        security::resolve_keyfile_path(auth.keyfile, hub_dir);
     if (!fs::exists(vault_path))
     {
         throw std::runtime_error(
@@ -215,6 +215,24 @@ bool HubConfig::load_keypair(const std::string &password)
             "' which does not exist.  Run `plh_hub --keygen` to "
             "create the vault (HEP-CORE-0033 §7.1).");
     }
+
+    // HEP-CORE-0035 §4.6.2: verify ACL contract BEFORE reading the
+    // secret.  File must be 0600 + owner-uid; parent dir must be 0700
+    // + owner-uid.  Failure produces an OpenSSH-style actionable
+    // diagnostic naming the path, observed mode, required mode, and
+    // the exact `chmod` command to fix.
+    if (auto v = security::verify_keyfile_acl(
+            vault_path, security::KeyFileRole::VaultFile);
+        !v.ok)
+        throw std::runtime_error(
+            "[plh_hub] Refusing to load vault — ACL check failed (HEP-"
+            "CORE-0035 §4.6.2):\n" + v.diagnostic);
+    if (auto v = security::verify_keyfile_acl(
+            vault_path.parent_path(), security::KeyFileRole::VaultDir);
+        !v.ok)
+        throw std::runtime_error(
+            "[plh_hub] Refusing to load vault — parent dir ACL check "
+            "failed (HEP-CORE-0035 §4.6.2):\n" + v.diagnostic);
 
     const auto vault = utils::HubVault::open(vault_path, uid, password);
     auth.client_pubkey = vault.broker_curve_public_key();

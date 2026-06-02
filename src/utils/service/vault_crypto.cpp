@@ -5,7 +5,9 @@
 #include "vault_crypto.hpp"
 #include "plh_platform.hpp"
 
+#include <cerrno>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <sodium.h>
@@ -16,6 +18,10 @@
 #include <aclapi.h>
 #include <sddl.h>
 #pragma comment(lib, "advapi32.lib")
+#else
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #endif
 
 namespace fs = std::filesystem;
@@ -78,6 +84,11 @@ void set_owner_only_permissions(const fs::path &path)
 
 void write_secure_file(const fs::path &path, const std::vector<uint8_t> &data)
 {
+#if defined(PYLABHUB_PLATFORM_WIN64)
+    // Windows: retain the existing pattern (ofstream + DACL set via
+    // SetNamedSecurityInfoW).  O_NOFOLLOW + atomic mode-at-create are
+    // POSIX-specific contracts; on Windows the threat model defers to
+    // OS-level ACLs managed by an operator-installed service account.
     {
         std::ofstream ofs(path, std::ios::binary | std::ios::trunc);
         if (!ofs)
@@ -93,6 +104,87 @@ void write_secure_file(const fs::path &path, const std::vector<uint8_t> &data)
         }
     } // flush + close before chmod
     set_owner_only_permissions(path);
+#else
+    // POSIX atomic-secure write (HEP-CORE-0035 §4.6.1).  Single open(2)
+    // call carries the three security contracts as kernel-enforced
+    // atomic guards:
+    //   O_CREAT  — create iff absent.
+    //   O_EXCL   — fail with EEXIST if a file is already at path (the
+    //              no-overwrite contract; closes the TOCTOU window the
+    //              prior fs::exists() check left open).
+    //   O_NOFOLLOW — refuse to traverse a symlink at the final path
+    //              component (closes the symlink-redirect attack
+    //              where the parent dir is briefly writable and the
+    //              attacker plants a symlink to a target they read).
+    //   O_CLOEXEC — don't leak the fd across exec(2).
+    //   mode=0600 — owner-only at create time (subject to umask;
+    //              followed by an explicit fchmod below to neutralize
+    //              any pathological umask that would mask owner bits).
+    const int fd = ::open(path.c_str(),
+                          O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW | O_CLOEXEC,
+                          S_IRUSR | S_IWUSR);
+    if (fd < 0)
+    {
+        const int err = errno;
+        if (err == EEXIST)
+            throw std::runtime_error(
+                "vault: file already exists at '" + path.string() +
+                "' — refusing to overwrite (atomic O_EXCL guard, "
+                "HEP-CORE-0035 §4.6.1)");
+        if (err == ELOOP)
+            throw std::runtime_error(
+                "vault: '" + path.string() + "' is a symbolic link — "
+                "refusing to follow (atomic O_NOFOLLOW guard, "
+                "HEP-CORE-0035 §4.6.1)");
+        throw std::runtime_error(
+            "vault: cannot create '" + path.string() + "': " +
+            std::strerror(err));
+    }
+    // Belt-and-braces: enforce mode 0600 regardless of umask.  Under
+    // a normal umask (0022, 0077) the open above already produces
+    // 0600; a pathological umask (e.g. 0177) would mask out OWNER_WRITE
+    // and the subsequent write(2) would EBADF.  fchmod normalizes.
+    if (::fchmod(fd, S_IRUSR | S_IWUSR) != 0)
+    {
+        const int err = errno;
+        ::close(fd);
+        ::unlink(path.c_str());
+        throw std::runtime_error(
+            "vault: fchmod 0600 failed for '" + path.string() + "': " +
+            std::strerror(err));
+    }
+    // Single write(2) — short-write loop is unnecessary for our
+    // payload sizes (<4KB typical, <64KB max) but we still guard.
+    const auto    *buf       = data.data();
+    std::size_t    remaining = data.size();
+    while (remaining > 0)
+    {
+        const ssize_t n = ::write(fd, buf, remaining);
+        if (n < 0)
+        {
+            if (errno == EINTR)
+                continue;
+            const int err = errno;
+            ::close(fd);
+            ::unlink(path.c_str());
+            throw std::runtime_error(
+                "vault: write failed for '" + path.string() + "': " +
+                std::strerror(err));
+        }
+        buf       += n;
+        remaining -= static_cast<std::size_t>(n);
+    }
+    if (::close(fd) != 0)
+    {
+        const int err = errno;
+        // File is on disk with the data we wrote; do NOT unlink on
+        // close failure — that could destroy a successful write whose
+        // failure was a benign EINTR-during-close (rare but legal).
+        throw std::runtime_error(
+            "vault: close failed for '" + path.string() + "': " +
+            std::strerror(err));
+    }
+#endif
 }
 
 std::vector<uint8_t> read_file(const fs::path &path)

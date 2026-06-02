@@ -7,6 +7,7 @@
  */
 #include "utils/hub_vault.hpp"
 #include "plh_platform.hpp"
+#include "utils/security/key_file_acl.hpp"
 
 #include "vault_crypto.hpp"
 
@@ -112,7 +113,21 @@ HubVault HubVault::create(const fs::path    &vault_path,
         {"admin",  {{"token", admin_tok}}}
     };
     if (!vault_path.parent_path().empty())
+    {
         fs::create_directories(vault_path.parent_path());
+        // HEP-CORE-0035 §4.6.1: keystore directory MUST be 0700.
+        // fs::create_directories applies process umask (typically
+        // 0755 result); enforce explicit 0700 here so the directory
+        // is not briefly world-readable before vault_write lays
+        // down the 0600 secret inside.
+        namespace sec = pylabhub::utils::security;
+        const auto rc = sec::set_keyfile_mode(
+            vault_path.parent_path(), sec::KeyFileRole::VaultDir);
+        if (rc == sec::SetModeResult::ChmodFailed)
+            throw std::runtime_error(
+                "HubVault: chmod 0700 failed on vault parent dir '" +
+                vault_path.parent_path().string() + "'");
+    }
     detail::vault_write(vault_path, payload.dump(), password, hub_uid);
 
     HubVault v;
