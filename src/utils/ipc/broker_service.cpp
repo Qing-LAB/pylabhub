@@ -3106,15 +3106,16 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
             notify["consumer_pid"]      = pre_drop_consumer.consumer_pid;
             notify["consumer_hostname"] = pre_drop_consumer.consumer_hostname;
             notify["reason"]            = "heartbeat_timeout";
-            for (const auto &prod : pre_drop_channel.producers)
-            {
-                if (prod.zmq_identity.empty()) continue;
-                send_to_identity(socket, prod.zmq_identity,
-                                 "CONSUMER_DIED_NOTIFY", notify);
-                LOGGER_INFO("Broker: CONSUMER_DIED_NOTIFY to producer of '{}': "
-                            "role_uid={} reason=heartbeat_timeout target_role={}",
-                            d.channel, d.role_uid, prod.role_uid);
-            }
+            pylabhub::hub::for_each_party_identity(
+                pre_drop_channel, pylabhub::hub::PartyKind::Producer,
+                [&](std::string_view zmq_identity,
+                    std::string_view producer_uid) {
+                    send_to_identity(socket, std::string(zmq_identity),
+                                     "CONSUMER_DIED_NOTIFY", notify);
+                    LOGGER_INFO("Broker: CONSUMER_DIED_NOTIFY to producer of '{}': "
+                                "role_uid={} reason=heartbeat_timeout target_role={}",
+                                d.channel, d.role_uid, producer_uid);
+                });
             // Federation / observer fan-out (mirrors the PID-death path).
             on_consumer_closed(socket, d.channel, pre_drop_consumer,
                                "heartbeat_timeout");
