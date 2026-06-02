@@ -1,12 +1,14 @@
 # PeerAdmission Architecture — Data-Channel Auth-Gating Design
 
-**Status:** DRAFT, pending designer review
+**Status:** ADOPTED — Phases A/B/C shipped; Phases D–H pending designer
+decision on two structural items (see §9 status table + §8 P-Wire,
+P-Schema).
 **Authors:** Quan Qing (designer), Claude (drafter)
 **Date:** 2026-06-02
 **Supersedes:** HEP-CORE-0036 §3.3 + §4.1 + §6 layering (existing wire protocol intent
 preserved; class layout corrected)
 **Related:** HEP-CORE-0035 (file ACL + identity vault), HEP-CORE-0017 (queue
-abstractions), HEP-CORE-0037 (federation, TBD)
+abstractions), HEP-CORE-0037 (federation, TBD; placeholder per task #105)
 
 ---
 
@@ -295,31 +297,32 @@ if (!auth_opts.my_pubkey_z85.empty())
 // else: legacy transitional path — no CURVE, admission_is_enforced=false.
 ```
 
-**ZmqQueue overrides:**
+**ZmqQueue overrides** (uses `PortableAtomicSharedPtr` from
+`include/portable_atomic_shared_ptr.hpp` per §12.5 S3 — `std::atomic`
+on `shared_ptr` was deprecated in C++20 and removed from libstdc++):
 
 ```cpp
 bool set_peer_allowlist(PeerAllowlist allowlist) override
 {
-    if (mode_ != Mode::Write)
-        return false; // only PUSH side enforces
-    auto next = std::make_shared<const PeerAllowlist>(std::move(allowlist));
-    std::atomic_store_explicit(&current_allowlist_, next,
-                                std::memory_order_release);
+    if (mode_ != Mode::Write || !bind_socket)
+        return false; // only PUSH/bind side enforces
+    pImpl->allowlist_.store(
+        std::make_shared<const PeerAllowlist>(std::move(allowlist)),
+        std::memory_order_release);
     return true;
 }
 
 std::optional<PeerAllowlist> peer_allowlist_snapshot() const override
 {
-    auto snap = std::atomic_load_explicit(&current_allowlist_,
-                                            std::memory_order_acquire);
+    if (mode_ != Mode::Write || !bind_socket) return std::nullopt;
+    auto snap = pImpl->allowlist_.load(std::memory_order_acquire);
     return snap ? std::optional<PeerAllowlist>{*snap} : std::nullopt;
 }
 
 bool is_peer_allowed(const PeerIdentity &p) const override
 {
-    if (p.kind != "curve") return false;
-    auto snap = std::atomic_load_explicit(&current_allowlist_,
-                                            std::memory_order_acquire);
+    if (mode_ != Mode::Write || !bind_socket) return false;
+    auto snap = pImpl->allowlist_.load(std::memory_order_acquire);
     if (!snap) return false;
     if (snap->unrestricted) return true;
     return snap->peers.find(p) != snap->peers.end();
@@ -616,8 +619,13 @@ public:
 
 ### 6.2 `KnownRoleAllowlist` (broker-side, CTRL admission)
 
-Populated at hub startup from the vault payload (or a file under
-`<hub_dir>/vault/known_roles.json`). Schema:
+Populated at hub startup from `<hub_dir>/vault/known_roles.json` —
+a separate file (NOT embedded in the vault payload).  This was the
+resolution of §12.5 S5 (option b): keep the encrypted vault
+payload focused on this hub's own keys; operator-managed peer
+allowlist is a sibling file with its own ACL (mode 0600, owner =
+hub euid, parent dir 0700 — verified at load via
+`verify_keyfile_acl(VaultFile)`).  Schema:
 
 ```json
 {
@@ -682,13 +690,17 @@ acceptable per §I5).
 Existing acks gain optional fields:
 
 `REG_ACK` (producer):
-- `producer_endpoint` — the broker-validated PUSH endpoint of this producer
-- (no change to producer-side keys; producer already has its own from vault)
+- (No new fields — `producer_endpoint` was retracted per §12.5 S7.
+  The producer already knows its bound endpoint locally; the broker
+  echoing it back was redundant and would have invited a stale-echo
+  divergence on producer side.)
 
 `CONSUMER_REG_ACK` (consumer):
 - `producers[]` — array of `{endpoint, pubkey_z85}` for each producer of
   the channel. Consumer uses these to populate ZmqQueue PULL's
-  `curve_serverkey`.
+  `curve_serverkey`. Per HEP-CORE-0036 §4.1 these fields already live
+  on `ChannelEntry::producers[i]` per-producer (supports fan-in); see
+  also §6.1 / §12.5 M-D1 note.
 - `shm_secret` (shm transport only) — broker-issued ephemeral secret.
 
 ## 7. Lifecycle + threading
@@ -793,8 +805,26 @@ Prevention is contractual:
 
 ## 8. Decision points for designer (you)
 
-The following are LEFT OPEN and need your call before implementation
-starts.
+Two tiers below: **resolved** (decision made and shipped in Phases
+A/B/C) and **pending** (block Phase D).
+
+### 8.1 Resolved decisions
+
+| # | Decision | Chosen | Shipped in |
+|---|---|---|---|
+| **P-API** (was S2) | ZmqQueue auth shape | **(a)** Additive `*_with_auth` overloads — no breaking change to legacy `pull_from` / `push_to` callers.  Factory-level validation rejects misconfig before construction. | Phase C commit `7b7944e8` + close-out `cf4b934e` |
+| **P-Vault** (was S5) | Where do known roles live? | **(b)** Separate file `<hub_dir>/vault/known_roles.json` with mode 0600, owner = hub euid, parent 0700 — verified via `verify_keyfile_acl(VaultFile)` on every load. | Phase B commit `a6b44ff8` |
+| **P-Threading** (was S13) | ZapRouter threading model | Caller-pumped, no internal thread; pumps from BRC poll thread per HEP-CORE-0036 §7.1.  No `ThreadManager`, no LifecycleManager re-entrancy. | Phase C commits `28a06046` (doc) + `827474f0` (code) |
+| **P-S3** | `current_allowlist_` atomic primitive | **PortableAtomicSharedPtr** (project utility) instead of `std::atomic_load_explicit(&shared_ptr)` (deprecated in C++20). | Phase C commit `7b7944e8` |
+
+### 8.2 Pending decisions (Phase D blockers)
+
+| # | Decision | Options | Status |
+|---|---|---|---|
+| **P-Wire** | `CHANNEL_AUTH_UPDATE` semantics | (a) Full allowlist **snapshots** every push (simpler; design §12.5 S11 recommends).  (b) **Deltas** with `allowlist_add[]` / `allowlist_remove[]` per HEP-CORE-0036 §6.5 (LOCKED 2026-05-28; all sequence diagrams drawn this way). | **OPEN** — fresh-eye review C-D1: HEP-0036 §6.5 was locked with deltas; §12.5 S11 argues for snapshots.  Designer to pick + amend the loser. |
+| **P-Schema** | `ChannelAccessEntry` field shape | (a) Four fields (authorized_consumer_pubkeys, shm_secret, producer_pubkey_z85, producer_endpoint) per current design §6.1.  (b) Two fields per HEP-CORE-0036 §4.1 (locked) — producer pubkey + endpoint already live on `ChannelEntry::producers[i]` per-producer, supporting fan-in.  Option (a) duplicates state. | **OPEN** — fresh-eye review M-D1: option (b) preserves fan-in semantics.  Designer to confirm + drop the duplicates from §6.1. |
+
+### 8.3 Original open points (others still applicable)
 
 | # | Decision | Options | Recommendation |
 |---|---|---|---|
@@ -811,6 +841,19 @@ starts.
 
 Each phase is one or more commits. Tests added with each phase. **No phase
 ships without its tests.**
+
+### Status table (last refreshed 2026-06-02)
+
+| Phase | Status | Commits | Pending |
+|---|---|---|---|
+| A — Abstraction | ✅ shipped | `d5a90f29` | — |
+| B — KnownRole + CLI | ✅ shipped | `a6b44ff8` | — |
+| C — ZapRouter + ZmqQueue CURVE | ✅ shipped (close-out done) | `28a06046` (doc), `827474f0` (ZapRouter), `7b7944e8` (ZmqQueue), close-out `62bda863..47aa0374` (5 fix-bundle commits) | — |
+| D — Broker glue (gate closes) | ⏳ **blocked on designer decisions** | — | C-D1 (snapshot vs delta wire frame) + M-D1 (`ChannelAccessEntry` shape vs HEP-0036 §4.1) |
+| E — Admin loopback enforcement | ⏸ planned | — | unblocked once D ships |
+| F — Federation parity | ⏸ planned | — | depends on E + task #105 federation design |
+| G — SHM auth migration | ⏸ planned | — | independent of D/E/F; can interleave |
+| H — Demo migration | ⏸ planned | — | last; needs D shipped end-to-end |
 
 ### Phase A — Abstraction (no behavior change yet)
 
@@ -830,15 +873,36 @@ B2. CLI: `--add-known-role`, `--revoke-known-role`, `--list-known-roles`
    on plh_hub.
 B3. L2 tests: vault round-trip with KnownRole.pubkey_z85; CLI round-trip.
 
-### Phase C — ZapRouter + ZmqQueue CURVE
+### Phase C — ZapRouter + ZmqQueue CURVE  ✅ SHIPPED
 
-C1. `ZapRouter` singleton in `src/utils/security/`.
-C2. `ZmqQueue::Auth_Options` + extended `pull_from` / `push_to` overloads.
-C3. ZmqQueue::start() wires CURVE + registers with ZapRouter when
-   `my_pubkey_z85` non-empty.
-C4. ZmqQueue overrides `PeerAdmission` virtuals.
-C5. L2 tests: ZAP handler accept + deny; allowlist swap during live socket;
-   PULL with wrong serverkey → connection refused.
+C1. ✅ `ZapRouter` as a persistent dynamic LifecycleManager module
+   in `src/utils/security/zap_router.{hpp,cpp}` — caller-pumped
+   (no internal thread; pumps from BRC poll thread per
+   HEP-CORE-0036 §7.1).  Exposes `allowed_count()` /
+   `denied_count()` observability counters added in close-out
+   commit 1/5 (`62bda863`) for path-level test pinning.
+C2. ✅ `ZmqAuthOptions` struct (`hub_zmq_queue.hpp:126-156`) +
+   `pull_from_with_auth` / `push_to_with_auth` factory overloads
+   returning `unique_ptr<ZmqQueue>` so callers can drive the
+   `PeerAdmission` interface (Phase D broker glue path).  Factory-
+   level validation (`validate_auth_options`, close-out 2/5)
+   rejects misconfigured keys at the call site instead of inside
+   `start()` against a stale `errno`.  Decision §8 P-API recorded:
+   option (a) — additive overloads, not breaking change.
+C3. ✅ `ZmqQueue::start()` wires CURVE sockopts and registers with
+   `ZapRouter` BEFORE `bind()` so the first peer's handshake
+   always lands on a registered domain.
+C4. ✅ `ZmqQueue` overrides `PeerAdmission` virtuals.
+   `admission_is_enforced()` returns true iff CURVE keys AND
+   `running_` — per the interface contract (close-out 2/5
+   `cf4b934e`).
+C5. ✅ L2 tests: ZAP handshake accept/deny, mid-flight allowlist
+   swap (both directions: new peer admitted AND old peer denied),
+   raw `pump_one` frame-level tests for malformed/bad-version/non-
+   CURVE mechanism, RAII handle move-semantics.  Path-level
+   pinning via `denied_count` / `allowed_count` instead of
+   timeout-as-proxy.  All security-grade assertions added in
+   close-out commits 1/5 + 2/5.
 
 ### Phase D — Broker glue (the gate closes)
 
@@ -882,7 +946,7 @@ mlock + zeroing for in-memory keys. Independent of A–H; lands any time.
 
 | Level | What gets tested | Example |
 |---|---|---|
-| **L2** | PeerAdmission semantics + each transport's enforcement in isolation | `ZmqQueue` with mocked ZapRouter receiving a fake handshake |
+| **L2** | PeerAdmission semantics + each transport's enforcement in isolation | `ZmqQueue` with real CURVE handshake driven through real `ZapRouter` (no mocks — see project rule, MEMORY `feedback_no_mocks_via_observability.md`); ZAP allow/deny path pinned via `ZapRouter::allowed_count()` / `denied_count()` |
 | **L3** | Broker → role allowlist push via real BrokerService + BrokerRequestComm | Drive REG_REQ + CONSUMER_REG_REQ; observe set_peer_allowlist called on tx_queue |
 | **L4** | Full binary spin-up with auth on; bad pubkey rejected | Two plh_role binaries on different keypairs; one in allowlist, one not; verify only the allowed one receives data |
 | **Mutation sweep** | For every assertion in L4 — invert one bit of the allowlist or the keypair — confirm the test fails | Ensures L4 isn't passing by accident |
