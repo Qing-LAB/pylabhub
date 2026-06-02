@@ -20,6 +20,10 @@
 #include <stdexcept>
 #include <string>
 
+#if !defined(_WIN32) && !defined(_WIN64)
+#include <sys/stat.h>
+#endif
+
 #include "plh_platform.hpp"
 
 namespace fs = std::filesystem;
@@ -217,17 +221,70 @@ TEST_F(RoleVaultTest, RoleUid_Roundtrip)
     EXPECT_EQ(opened.role_uid(), role_uid_);
 }
 
-TEST_F(RoleVaultTest, Create_OverExistingVault_Overwrites)
+TEST_F(RoleVaultTest, Create_OverExistingVault_Throws_AtomicNoOverwrite)
 {
+    // HEP-CORE-0035 §4.6.1: vault write is atomic O_CREAT|O_EXCL.
+    // A second create against an existing path MUST throw — silent
+    // overwrite would invalidate any hub-side allowlist entry pinned
+    // to the old pubkey, stranding the role.  Mutation-sweep against
+    // the prior (pre-2026-06-01) contract.
     RoleVault v1 = RoleVault::create(vault_path_, role_uid_, kPassword);
-    const std::string pk1 = v1.public_key();
+    const std::string sentinel_pk = v1.public_key();
 
-    // Create again on same path — should overwrite with fresh keys.
-    RoleVault v2 = RoleVault::create(vault_path_, role_uid_, kPassword);
-    const std::string pk2 = v2.public_key();
+    EXPECT_THROW(RoleVault::create(vault_path_, role_uid_, kPassword),
+                 std::runtime_error)
+        << "Second create against existing role vault must refuse atomically";
 
-    EXPECT_NE(pk1, pk2) << "Second create should generate fresh keys";
+    // Original vault content survives — verify by re-opening.
+    RoleVault still = RoleVault::open(vault_path_, role_uid_, kPassword);
+    EXPECT_EQ(still.public_key(), sentinel_pk)
+        << "Failed atomic-no-overwrite create must NOT mutate the existing "
+           "role vault — original pubkey should still decrypt";
 }
+
+#if !defined(_WIN32) && !defined(_WIN64)
+TEST_F(RoleVaultTest, Create_OverSymlinkAtVaultPath_Throws_AtomicNoFollow)
+{
+    namespace fs = std::filesystem;
+    fs::create_directories(vault_path_.parent_path());
+    const fs::path target = vault_path_.parent_path() / "attacker_target";
+    {
+        std::ofstream sink(target);
+        sink << "would receive redirected role secret";
+    }
+    fs::create_symlink(target, vault_path_);
+    ASSERT_TRUE(fs::is_symlink(vault_path_));
+
+    EXPECT_THROW(RoleVault::create(vault_path_, role_uid_, kPassword),
+                 std::runtime_error)
+        << "Create against a symlink at vault_path must refuse atomically";
+
+    EXPECT_TRUE(fs::is_symlink(vault_path_));
+    std::ifstream check(target);
+    std::string content((std::istreambuf_iterator<char>(check)),
+                         std::istreambuf_iterator<char>{});
+    EXPECT_EQ(content, "would receive redirected role secret")
+        << "symlink target must remain untouched by refused create";
+}
+
+TEST_F(RoleVaultTest, Create_VaultFileIsMode0600_AndParentDirIs0700)
+{
+    const ::mode_t prev_umask = ::umask(0);
+    RoleVault v = RoleVault::create(vault_path_, role_uid_, kPassword);
+    ::umask(prev_umask);
+
+    namespace fs = std::filesystem;
+    const auto file_status = fs::status(vault_path_);
+    EXPECT_EQ(static_cast<unsigned>(file_status.permissions()) & 0777,
+              0600u)
+        << "role vault file mode must be 0600 even with umask 0";
+
+    const auto dir_status = fs::status(vault_path_.parent_path());
+    EXPECT_EQ(static_cast<unsigned>(dir_status.permissions()) & 0777,
+              0700u)
+        << "role vault parent dir mode must be 0700 even with umask 0";
+}
+#endif
 
 TEST_F(RoleVaultTest, MoveConstructor_TransfersOwnership)
 {
