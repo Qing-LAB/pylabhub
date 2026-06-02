@@ -203,6 +203,19 @@ RoleConfig RoleConfig::load(const std::string &path,
     // Security check.
     utils::RoleDirectory::warn_if_keyfile_in_role_dir(s.base_dir, s.auth.keyfile);
 
+    // HEP-CORE-0035 §4.6 Tier-1: <role>.json is non-secret but
+    // references a vault.  Non-fatal WARN on suspicious mode.
+    if (auto v = utils::security::verify_keyfile_acl(
+            std::filesystem::path(path),
+            utils::security::KeyFileRole::ConfigFileReferencingVault);
+        !v.ok)
+    {
+        std::fprintf(stderr,
+                     "[%s] WARN: role config ACL advisory "
+                     "(HEP-CORE-0035 §4.6.1):\n%s\n",
+                     s.role_tag.c_str(), v.diagnostic.c_str());
+    }
+
     // Role-specific extension.
     if (role_parser)
         s.role_data = role_parser(s.raw_json, cfg);
@@ -295,12 +308,17 @@ bool RoleConfig::load_keypair(const std::string &password)
         throw std::runtime_error(std::string("[") + tag +
             "] Refusing to load vault — ACL check failed (HEP-CORE-"
             "0035 §4.6.2):\n" + v.diagnostic);
-    if (auto v = security::verify_keyfile_acl(
-            vault_path.parent_path(), security::KeyFileRole::VaultDir);
-        !v.ok)
-        throw std::runtime_error(std::string("[") + tag +
-            "] Refusing to load vault — parent dir ACL check failed "
-            "(HEP-CORE-0035 §4.6.2):\n" + v.diagnostic);
+    // Defensive skip if parent_path is empty (operator passed a
+    // bare-filename absolute keyfile + empty base_dir).
+    if (vault_path.has_parent_path())
+    {
+        if (auto v = security::verify_keyfile_acl(
+                vault_path.parent_path(), security::KeyFileRole::VaultDir);
+            !v.ok)
+            throw std::runtime_error(std::string("[") + tag +
+                "] Refusing to load vault — parent dir ACL check failed "
+                "(HEP-CORE-0035 §4.6.2):\n" + v.diagnostic);
+    }
 
     const auto vault = utils::RoleVault::open(vault_path, uid, password);
     auth.client_pubkey = vault.public_key();

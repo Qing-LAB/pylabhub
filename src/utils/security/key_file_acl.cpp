@@ -411,8 +411,11 @@ fs::path resolve_keyfile_path(const std::string &keyfile,
 }
 
 bool keyfile_inside_base_dir(const std::string &keyfile,
-                              const fs::path    &base_dir) noexcept
+                              const fs::path    &base_dir,
+                              std::string       *out_canonicalize_error) noexcept
 {
+    if (out_canonicalize_error != nullptr)
+        out_canonicalize_error->clear();
     if (keyfile.empty())
         return false;
 
@@ -421,10 +424,20 @@ bool keyfile_inside_base_dir(const std::string &keyfile,
     const fs::path kf = fs::weakly_canonical(
         kf_raw.is_absolute() ? kf_raw : (base_dir / kf_raw), ec);
     if (ec)
+    {
+        if (out_canonicalize_error != nullptr)
+            *out_canonicalize_error =
+                "weakly_canonical(keyfile) failed: " + ec.message();
         return false;
+    }
     const fs::path base = fs::weakly_canonical(base_dir, ec);
     if (ec)
+    {
+        if (out_canonicalize_error != nullptr)
+            *out_canonicalize_error =
+                "weakly_canonical(base_dir) failed: " + ec.message();
         return false;
+    }
 
     // Component-by-component prefix check.  An empty `base` would make
     // the algorithm vacuously match anything; refuse to claim
@@ -511,8 +524,12 @@ AclVerdict verify_keyfile_acl(const fs::path &path, KeyFileRole role) noexcept
 #endif
 }
 
-SetModeResult set_keyfile_mode(const fs::path &path, KeyFileRole role) noexcept
+SetModeResult set_keyfile_mode(const fs::path &path,
+                                KeyFileRole     role,
+                                int            *out_errno) noexcept
 {
+    if (out_errno != nullptr)
+        *out_errno = 0;
 #ifdef _WIN32
     (void) path;
     (void) role;
@@ -529,6 +546,8 @@ SetModeResult set_keyfile_mode(const fs::path &path, KeyFileRole role) noexcept
         }
         if (::chmod(path.c_str(), static_cast<mode_t>(mode)) != 0)
         {
+            if (out_errno != nullptr)
+                *out_errno = errno;
             return SetModeResult::ChmodFailed;
         }
         return SetModeResult::Applied;

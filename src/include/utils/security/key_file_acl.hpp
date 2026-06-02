@@ -184,9 +184,17 @@ resolve_keyfile_path(const std::string           &keyfile,
 /// crashing during startup diagnostics.  Pure path arithmetic
 /// otherwise; no `stat()` call beyond what `weakly_canonical`
 /// performs.
+///
+/// @param out_canonicalize_error If non-null, populated with the
+///   `std::error_code` message on canonicalization failure (which
+///   collapses to a `false` return).  Lets the caller emit a soft
+///   stderr warn so a permissions-tree problem upstream of the
+///   keyfile doesn't silently suppress the §4.6.4 co-location
+///   warning.  Empty string on success.
 [[nodiscard]] PYLABHUB_UTILS_EXPORT bool
 keyfile_inside_base_dir(const std::string           &keyfile,
-                        const std::filesystem::path &base_dir) noexcept;
+                        const std::filesystem::path &base_dir,
+                        std::string                 *out_canonicalize_error = nullptr) noexcept;
 
 /// Verify that `path` satisfies the ACL contract for `role`.
 ///
@@ -257,6 +265,7 @@ verify_ownership(const std::filesystem::path &path,
 /// `NoCanonicalMode` as expected, not as an error.
 [[nodiscard]] PYLABHUB_UTILS_EXPORT SetModeResult
 set_keyfile_mode(const std::filesystem::path &path,
-                 KeyFileRole                   role) noexcept;
+                 KeyFileRole                   role,
+                 int                          *out_errno = nullptr) noexcept;
 
 } // namespace pylabhub::utils::security

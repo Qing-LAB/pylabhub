@@ -231,9 +231,19 @@ TEST_F(RoleVaultTest, Create_OverExistingVault_Throws_AtomicNoOverwrite)
     RoleVault v1 = RoleVault::create(vault_path_, role_uid_, kPassword);
     const std::string sentinel_pk = v1.public_key();
 
-    EXPECT_THROW(RoleVault::create(vault_path_, role_uid_, kPassword),
-                 std::runtime_error)
-        << "Second create against existing role vault must refuse atomically";
+    // Pin the atomic-layer message — distinct from the operator-
+    // friendly config-layer fs::exists() refusal that fires earlier
+    // in --keygen.  Both must continue to refuse + cite the contract.
+    try {
+        (void) RoleVault::create(vault_path_, role_uid_, kPassword);
+        FAIL() << "Second create against existing role vault must refuse atomically";
+    } catch (const std::runtime_error &ex) {
+        const std::string msg = ex.what();
+        EXPECT_NE(msg.find("HEP-CORE-0035"), std::string::npos)
+            << "atomic-layer message must cite HEP-CORE-0035; got: " << msg;
+        EXPECT_NE(msg.find("already exists"), std::string::npos)
+            << "atomic-layer message must say 'already exists'; got: " << msg;
+    }
 
     // Original vault content survives — verify by re-opening.
     RoleVault still = RoleVault::open(vault_path_, role_uid_, kPassword);

@@ -161,8 +161,23 @@ void RoleDirectory::warn_if_keyfile_in_role_dir(const std::filesystem::path &rol
     // compare) lives in the shared security utility next to
     // `resolve_keyfile_path`; the threat-model narrative below is
     // role-specific and stays here.
-    if (!pylabhub::utils::security::keyfile_inside_base_dir(keyfile, role_base))
+    std::string canonicalize_err;
+    if (!pylabhub::utils::security::keyfile_inside_base_dir(
+            keyfile, role_base, &canonicalize_err))
+    {
+        // If the predicate failed to canonicalize (typically because
+        // a parent component is unreadable), the co-location warning
+        // is suppressed by the noexcept contract.  Surface the
+        // diagnostic so the operator at least knows the §4.6.4 check
+        // could not run instead of silently accepting potentially
+        // co-located vault material.
+        if (!canonicalize_err.empty())
+            std::fprintf(stderr,
+                         "[plh_role] note: keyfile co-location check "
+                         "(HEP-CORE-0024 §3.4.1) skipped — %s\n",
+                         canonicalize_err.c_str());
         return;
+    }
 
     std::fprintf(stderr,
                  "\n"

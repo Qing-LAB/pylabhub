@@ -373,9 +373,21 @@ TEST_F(HubVaultTest, Create_OverExistingVault_Throws_AtomicNoOverwrite)
     const std::string pk1 = v1.broker_curve_public_key();
     const std::string sentinel_pk = pk1;
 
-    EXPECT_THROW(HubVault::create(vault_path_, hub_uid_, kPassword),
-                 std::runtime_error)
-        << "Second create against existing vault must refuse atomically";
+    // Pin the atomic-layer message — this is the kernel-enforced
+    // refusal at write_secure_file's `open(O_EXCL)`, distinct from
+    // the operator-friendly fs::exists() pre-check that fires in
+    // the config-layer keygen flow.  Both layers must continue to
+    // refuse; both messages must continue to reference the contract.
+    try {
+        (void) HubVault::create(vault_path_, hub_uid_, kPassword);
+        FAIL() << "Second create against existing vault must refuse atomically";
+    } catch (const std::runtime_error &ex) {
+        const std::string msg = ex.what();
+        EXPECT_NE(msg.find("HEP-CORE-0035"), std::string::npos)
+            << "atomic-layer message must cite HEP-CORE-0035; got: " << msg;
+        EXPECT_NE(msg.find("already exists"), std::string::npos)
+            << "atomic-layer message must say 'already exists'; got: " << msg;
+    }
 
     // Original vault content survives — the failed create did not
     // even open the file (O_EXCL refused before any write).  Pubkey
