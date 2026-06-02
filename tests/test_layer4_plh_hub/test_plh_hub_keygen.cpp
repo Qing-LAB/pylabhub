@@ -72,14 +72,12 @@ TEST_F(PlhHubCliTest, GeneratesVaultFileAndEmitsPubkey)
     //     touched-empty (size 0) is caught by ExpectVaultFileSecured.
     ExpectVaultFileSecured(vault_actual);
 
-    // (b) Vault parent dir EXISTS.  Parent dir MODE check (0700 per
-    //     HEP-CORE-0035 §4.6.1) is deliberately NOT asserted here —
-    //     the binary's `fs::create_directories` path does not yet
-    //     apply 0700 explicitly (security audit finding, separately
-    //     tracked).  When that gap is fixed, swap this to
-    //     `ExpectVaultDirSecured(vault_actual.parent_path())`.
-    EXPECT_TRUE(fs::is_directory(vault_actual.parent_path()))
-        << "vault dir missing: " << vault_actual.parent_path();
+    // (b) Vault parent dir MUST be 0700 (HEP-CORE-0035 §4.6.1).
+    //     Enforced at write time by HubVault::create calling
+    //     set_keyfile_mode(parent, VaultDir).  A regression that
+    //     drops the explicit chmod and falls back to umask-derived
+    //     mode (typically 0755) is caught here.
+    ExpectVaultDirSecured(vault_actual.parent_path());
 
     // (c) stdout contains hub_uid + public_key (the operator-facing
     //     summary the hub binary prints after a successful keygen).
@@ -209,7 +207,7 @@ TEST_F(PlhHubCliTest, RunmodeFailsWhenVaultFileModeIsLoose)
     {
         ScopedHubPassword pw("loose-pw");
         WorkerProcess p(plh_hub_binary(), "--config", {cfg_path.string()});
-        const int rc = p.wait_for_exit(10);
+        const int rc = p.wait_for_exit(PYLABHUB_TEST_CRYPTO_TIMEOUT_S);
         EXPECT_NE(rc, 0)
             << "runmode against vault at 0644 must refuse; stderr:\n"
             << p.get_stderr();
@@ -247,7 +245,7 @@ TEST_F(PlhHubCliTest, RunmodeFailsWhenVaultParentDirModeIsLoose)
     {
         ScopedHubPassword pw("loose-pw");
         WorkerProcess p(plh_hub_binary(), "--config", {cfg_path.string()});
-        const int rc = p.wait_for_exit(10);
+        const int rc = p.wait_for_exit(PYLABHUB_TEST_CRYPTO_TIMEOUT_S);
         EXPECT_NE(rc, 0)
             << "runmode against vault dir at 0755 must refuse; stderr:\n"
             << p.get_stderr();

@@ -18,7 +18,12 @@
 #include "role_config_workers.h"
 
 #include "utils/config/role_config.hpp"
+#include "utils/role_vault.hpp"
 #include "plh_datahub.hpp"
+
+#if !defined(_WIN32) && !defined(_WIN64)
+#include <sys/stat.h>
+#endif
 
 #include "shared_test_helpers.h"
 #include "test_entrypoint.h"
@@ -494,6 +499,68 @@ int auth_not_object_throws(const std::string &dir)
         Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
         JsonConfig::GetLifecycleModule());
 }
+
+#if !defined(_WIN32) && !defined(_WIN64)
+// HEP-CORE-0035 §4.6.2: RoleConfig::load_keypair verifies the vault
+// file ACL BEFORE decrypting.  Loose mode → runtime_error citing
+// HEP-CORE-0035 — pins the verify call site at the config layer.
+int load_keypair_refuses_loose_file_mode(const std::string &dir)
+{
+    return run_gtest_worker(
+        [&]() {
+            const fs::path vault_path = fs::path(dir) / "vault" / "prod.test.uid00000001.vault";
+            (void) pylabhub::utils::RoleVault::create(
+                vault_path, "prod.test.uid00000001", "l2-pw");
+
+            auto j = minimal_producer_json();
+            j["producer"]["auth"]["keyfile"] = vault_path.string();
+            auto path = write_json(fs::path(dir), "producer.json", j);
+
+            ::chmod(vault_path.c_str(), 0644);
+
+            auto cfg = RoleConfig::load(path.string(), "producer");
+            try {
+                (void) cfg.load_keypair("l2-pw");
+                FAIL() << "Expected load_keypair to refuse 0644 vault file";
+            } catch (const std::runtime_error &ex) {
+                EXPECT_THAT(ex.what(), testing::HasSubstr("HEP-CORE-0035"));
+                EXPECT_THAT(ex.what(), testing::HasSubstr("chmod"));
+            }
+        },
+        "role_config::load_keypair_refuses_loose_file_mode",
+        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
+        JsonConfig::GetLifecycleModule());
+}
+
+int load_keypair_refuses_loose_parent_dir_mode(const std::string &dir)
+{
+    return run_gtest_worker(
+        [&]() {
+            const fs::path vault_path = fs::path(dir) / "vault" / "prod.test.uid00000002.vault";
+            (void) pylabhub::utils::RoleVault::create(
+                vault_path, "prod.test.uid00000002", "l2-pw");
+
+            auto j = minimal_producer_json();
+            j["producer"]["uid"] = "prod.test.uid00000002";
+            j["producer"]["auth"]["keyfile"] = vault_path.string();
+            auto path = write_json(fs::path(dir), "producer.json", j);
+
+            ::chmod(vault_path.parent_path().c_str(), 0755);
+
+            auto cfg = RoleConfig::load(path.string(), "producer");
+            try {
+                (void) cfg.load_keypair("l2-pw");
+                FAIL() << "Expected load_keypair to refuse 0755 parent dir";
+            } catch (const std::runtime_error &ex) {
+                EXPECT_THAT(ex.what(), testing::HasSubstr("HEP-CORE-0035"));
+                EXPECT_THAT(ex.what(), testing::HasSubstr("chmod"));
+            }
+        },
+        "role_config::load_keypair_refuses_loose_parent_dir_mode",
+        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
+        JsonConfig::GetLifecycleModule());
+}
+#endif
 
 // ── Raw JSON / metadata ─────────────────────────────────────────────────────
 
@@ -1174,6 +1241,12 @@ struct RoleConfigWorkerRegistrar
                     return auth_keyfile_wrong_type_throws(dir);
                 if (sc == "auth_not_object_throws")
                     return auth_not_object_throws(dir);
+#if !defined(_WIN32) && !defined(_WIN64)
+                if (sc == "load_keypair_refuses_loose_file_mode")
+                    return load_keypair_refuses_loose_file_mode(dir);
+                if (sc == "load_keypair_refuses_loose_parent_dir_mode")
+                    return load_keypair_refuses_loose_parent_dir_mode(dir);
+#endif
                 if (sc == "raw_json")
                     return raw_json(dir);
                 if (sc == "role_tag")

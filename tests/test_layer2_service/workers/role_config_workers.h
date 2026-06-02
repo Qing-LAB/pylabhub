@@ -49,6 +49,12 @@ int auth_missing_keyfile_throws(const std::string &dir);
 int auth_keyfile_wrong_type_throws(const std::string &dir);
 int auth_not_object_throws(const std::string &dir);
 
+/// HEP-CORE-0035 §4.6.2: load_keypair refuses 0644 vault file mode.
+int load_keypair_refuses_loose_file_mode(const std::string &dir);
+
+/// HEP-CORE-0035 §4.6.2: load_keypair refuses 0755 vault parent dir.
+int load_keypair_refuses_loose_parent_dir_mode(const std::string &dir);
+
 // ── Raw JSON / metadata ─────────────────────────────────────────────────────
 int raw_json(const std::string &dir);
 int role_tag(const std::string &dir);

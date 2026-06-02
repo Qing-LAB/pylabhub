@@ -13,9 +13,14 @@
 #include "utils/config/hub_state_config.hpp"  // for kInfiniteGrace sentinel
 #include "utils/file_lock.hpp"
 #include "utils/hub_directory.hpp"
+#include "utils/hub_vault.hpp"
 #include "utils/json_config.hpp"
 #include "utils/logger.hpp"
 #include "utils/timeout_constants.hpp"
+
+#if !defined(_WIN32) && !defined(_WIN64)
+#include <sys/stat.h>
+#endif
 
 #include "shared_test_helpers.h"
 #include "test_entrypoint.h"
@@ -423,6 +428,76 @@ int auth_not_object_throws(const char *tmpdir)
         JsonConfig::GetLifecycleModule());
 }
 
+#if !defined(_WIN32) && !defined(_WIN64)
+// ── load_keypair_refuses_loose_file_mode ────────────────────────────────────
+// HEP-CORE-0035 §4.6.2: HubConfig::load_keypair verifies the vault
+// file ACL BEFORE decrypting.  A loose mode (0644) must produce a
+// runtime_error citing HEP-CORE-0035 — pinning the verify call site
+// at the config layer, not just at the binary boundary.
+int load_keypair_refuses_loose_file_mode(const char *tmpdir)
+{
+    return run_gtest_worker(
+        [&]() {
+            const std::string dir = tmpdir;
+            // Real vault at the configured path (mode 0600 + parent 0700).
+            const fs::path vault_path = fs::path(dir) / "vault" / "hub.test.uid00000001.vault";
+            (void) pylabhub::utils::HubVault::create(
+                vault_path, "hub.test.uid00000001", "l2-pw");
+
+            auto j = minimal_hub_json();
+            j["hub"]["auth"]["keyfile"] = vault_path.string();
+            write_hub_json(dir, j);
+
+            // Loosen the file mode AFTER create.  Verify must catch.
+            ::chmod(vault_path.c_str(), 0644);
+
+            auto cfg = HubConfig::load_from_directory(dir);
+            try {
+                (void) cfg.load_keypair("l2-pw");
+                FAIL() << "Expected load_keypair to refuse 0644 vault file";
+            } catch (const std::runtime_error &ex) {
+                EXPECT_THAT(ex.what(), testing::HasSubstr("HEP-CORE-0035"));
+                EXPECT_THAT(ex.what(), testing::HasSubstr("chmod"));
+            }
+        },
+        "hub_config::load_keypair_refuses_loose_file_mode",
+        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
+        JsonConfig::GetLifecycleModule());
+}
+
+// ── load_keypair_refuses_loose_parent_dir_mode ──────────────────────────────
+// Symmetric: 0755 parent dir → load_keypair throws with HEP-CORE-0035
+// cite.  Pins that the VaultDir verify runs BEFORE the file open.
+int load_keypair_refuses_loose_parent_dir_mode(const char *tmpdir)
+{
+    return run_gtest_worker(
+        [&]() {
+            const std::string dir = tmpdir;
+            const fs::path vault_path = fs::path(dir) / "vault" / "hub.test.uid00000002.vault";
+            (void) pylabhub::utils::HubVault::create(
+                vault_path, "hub.test.uid00000002", "l2-pw");
+
+            auto j = minimal_hub_json("hub.test.uid00000002");
+            j["hub"]["auth"]["keyfile"] = vault_path.string();
+            write_hub_json(dir, j);
+
+            ::chmod(vault_path.parent_path().c_str(), 0755);
+
+            auto cfg = HubConfig::load_from_directory(dir);
+            try {
+                (void) cfg.load_keypair("l2-pw");
+                FAIL() << "Expected load_keypair to refuse 0755 parent dir";
+            } catch (const std::runtime_error &ex) {
+                EXPECT_THAT(ex.what(), testing::HasSubstr("HEP-CORE-0035"));
+                EXPECT_THAT(ex.what(), testing::HasSubstr("chmod"));
+            }
+        },
+        "hub_config::load_keypair_refuses_loose_parent_dir_mode",
+        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
+        JsonConfig::GetLifecycleModule());
+}
+#endif
+
 // ── uid_auto_generated ──────────────────────────────────────────────────────
 
 int uid_auto_generated(const char *tmpdir)
@@ -613,6 +688,12 @@ struct HubConfigWorkerRegistrar
                 if (sc == "auth_keyfile_wrong_type_throws")
                     return auth_keyfile_wrong_type_throws(dir);
                 if (sc == "auth_not_object_throws")    return auth_not_object_throws(dir);
+#if !defined(_WIN32) && !defined(_WIN64)
+                if (sc == "load_keypair_refuses_loose_file_mode")
+                    return load_keypair_refuses_loose_file_mode(dir);
+                if (sc == "load_keypair_refuses_loose_parent_dir_mode")
+                    return load_keypair_refuses_loose_parent_dir_mode(dir);
+#endif
                 if (sc == "uid_auto_generated")        return uid_auto_generated(dir);
                 if (sc == "state_grace_sentinel")      return state_grace_sentinel(dir);
                 if (sc == "load_from_directory")       return load_from_directory(dir);

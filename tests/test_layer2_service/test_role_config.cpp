@@ -235,6 +235,22 @@ TEST_F(RoleConfigTest, Auth_NotObject_Throws)
     ExpectWorkerOk(w);
 }
 
+#if !defined(_WIN32) && !defined(_WIN64)
+TEST_F(RoleConfigTest, LoadKeypair_RefusesLooseVaultFileMode)
+{
+    auto w = SpawnWorker("role_config.load_keypair_refuses_loose_file_mode",
+                         {unique_dir("load_keypair_loose_file_mode")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(RoleConfigTest, LoadKeypair_RefusesLooseVaultParentDirMode)
+{
+    auto w = SpawnWorker("role_config.load_keypair_refuses_loose_parent_dir_mode",
+                         {unique_dir("load_keypair_loose_parent_dir_mode")});
+    ExpectWorkerOk(w);
+}
+#endif
+
 // ── Raw JSON / metadata ─────────────────────────────────────────────────────
 
 TEST_F(RoleConfigTest, RawJson)
