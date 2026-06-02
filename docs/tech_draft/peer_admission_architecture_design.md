@@ -655,14 +655,14 @@ CLI: `plh_hub --add-known-role <name> <uid> <role> <pubkey_z85>`,
 
 New broker → role message (broker initiates; role does not request).
 
-**Payload:**
+**Payload (snapshot semantics — decision P-Wire RESOLVED 2026-06-02,
+see §8.1):**
 
 ```json
 {
   "type": "CHANNEL_AUTH_UPDATE",
   "channel_name": "lab.daq.temp.raw",
   "side": "producer",
-  "op": "set",                           // "set" | "add" | "remove"
   "allowlist": [
     {"pubkey_z85": "<40-char Z85>"},
     ...
@@ -671,19 +671,30 @@ New broker → role message (broker initiates; role does not request).
 }
 ```
 
+The `allowlist` array is the **full current authorized consumer
+set** for the channel after the mutation event that triggered this
+push.  Empty array (`[]`) is the legal "deny everyone" state.  The
+producer REPLACES its local ZAP cache for this channel with the
+arriving set — no per-pubkey diff, no merge.  See HEP-CORE-0036
+§6.5 (amended 2026-06-02) for the on-wire details and the
+skip-disconnected push semantics that surround it.
+
 **Transport:** broker → role uses the existing CTRL channel
 (DEALER/ROUTER) in *reverse direction*. The DEALER on the role side
 already polls inbound messages; today the broker only replies to requests,
-but the DEALER/ROUTER pair is bidirectional. Decision §8 P-Push:
-the existing CTRL channel reuse vs. a separate PUB/SUB notification socket.
+but the DEALER/ROUTER pair is bidirectional.
 
 **Producer-side handling:**
 `BrokerRequestComm` recognizes `CHANNEL_AUTH_UPDATE` → `RoleAPIBase` looks
-up the matching `tx_queue` → `tx_queue->set_peer_allowlist({new})`. The
-queue's atomic-swap completes within microseconds. New CURVE handshakes
+up the matching `tx_queue` → `tx_queue->set_peer_allowlist(snapshot)`.
+The queue's atomic-swap completes within microseconds. New CURVE handshakes
 see the updated allowlist via the ZapRouter; in-flight ZAP requests
 already executing see whatever was current at their lookup time (race
-acceptable per §I5).
+acceptable per §I5).  This maps 1:1 onto the existing
+`PeerAdmission::set_peer_allowlist(PeerAllowlist)` interface (Phase A) —
+which is a REPLACE interface (`PortableAtomicSharedPtr::store`), so the
+snapshot semantics on the wire match the snapshot semantics in code with
+no transformation.
 
 ### 6.4 Wire protocol: `REG_ACK` + `CONSUMER_REG_ACK` payload extensions
 
@@ -725,15 +736,15 @@ plh_role startup
        — until first consumer joins
 
 (later, consumer joins:)
-broker → producer: CHANNEL_AUTH_UPDATE(op=add, pubkey=K)
+broker → producer: CHANNEL_AUTH_UPDATE(allowlist=<full new set including K>)
   → BrokerRequestComm receives on DEALER
   → dispatched to RoleAPIBase
-  → tx_queue->set_peer_allowlist({union of previous + K})
+  → tx_queue->set_peer_allowlist(snapshot)
   → atomic swap; next ZAP query sees K
 
 (consumer disconnects:)
-broker → producer: CHANNEL_AUTH_UPDATE(op=remove, pubkey=K)
-  → tx_queue->set_peer_allowlist({previous \ K})
+broker → producer: CHANNEL_AUTH_UPDATE(allowlist=<full new set without K>)
+  → tx_queue->set_peer_allowlist(snapshot)
   → in-flight session unaffected (§I5); new K can't reconnect
 ```
 
@@ -775,8 +786,9 @@ are the ONLY places that call `pump_one`; documentation pins this.
 
 - Producer's allowlist starts empty (default-deny — `is_peer_allowed`
   returns false until the broker pushes a `CHANNEL_AUTH_UPDATE`).
-- First `CHANNEL_AUTH_UPDATE(set)` populates it.
-- Subsequent `set` operations are full snapshots (S11 decision).
+- First `CHANNEL_AUTH_UPDATE` snapshot populates it.
+- Every subsequent push is a full snapshot (P-Wire RESOLVED 2026-06-02;
+  see §8.1 + HEP-CORE-0036 §6.5 amendment).
 - Producer's `tx_queue` stop → `ZapDomainHandle` destructor →
   `unregister_domain_` + `UnloadModule("ZapRouter")` (decrements
   LifecycleManager ref-count; persistent flag keeps the inproc socket
@@ -813,6 +825,7 @@ A/B/C) and **pending** (block Phase D).
 | # | Decision | Chosen | Shipped in |
 |---|---|---|---|
 | **P-API** (was S2) | ZmqQueue auth shape | **(a)** Additive `*_with_auth` overloads — no breaking change to legacy `pull_from` / `push_to` callers.  Factory-level validation rejects misconfig before construction. | Phase C commit `7b7944e8` + close-out `cf4b934e` |
+| **P-Wire** (was C-D1) | `CHANNEL_AUTH_UPDATE` semantics | **Snapshot.**  Every push is the full current authorized set for the channel; receiver REPLACES its cache (no merge, no per-pubkey diff).  Rationale: hub is the source of truth, producer is a follower; eliminates the silent-drift failure mode of a lost delta-remove on a security gate; matches the existing `PeerAdmission::set_peer_allowlist(...)` REPLACE interface in code with no transformation. | HEP-CORE-0036 §6.5 amended 2026-06-02; design draft §6.3 + §7.1 updated same day; code uses the snapshot interface natively (no change needed) |
 | **P-Vault** (was S5) | Where do known roles live? | **(b)** Separate file `<hub_dir>/vault/known_roles.json` with mode 0600, owner = hub euid, parent 0700 — verified via `verify_keyfile_acl(VaultFile)` on every load. | Phase B commit `a6b44ff8` |
 | **P-Threading** (was S13) | ZapRouter threading model | Caller-pumped, no internal thread; pumps from BRC poll thread per HEP-CORE-0036 §7.1.  No `ThreadManager`, no LifecycleManager re-entrancy. | Phase C commits `28a06046` (doc) + `827474f0` (code) |
 | **P-S3** | `current_allowlist_` atomic primitive | **PortableAtomicSharedPtr** (project utility) instead of `std::atomic_load_explicit(&shared_ptr)` (deprecated in C++20). | Phase C commit `7b7944e8` |
@@ -821,7 +834,7 @@ A/B/C) and **pending** (block Phase D).
 
 | # | Decision | Options | Status |
 |---|---|---|---|
-| **P-Wire** | `CHANNEL_AUTH_UPDATE` semantics | (a) Full allowlist **snapshots** every push (simpler; design §12.5 S11 recommends).  (b) **Deltas** with `allowlist_add[]` / `allowlist_remove[]` per HEP-CORE-0036 §6.5 (LOCKED 2026-05-28; all sequence diagrams drawn this way). | **OPEN** — fresh-eye review C-D1: HEP-0036 §6.5 was locked with deltas; §12.5 S11 argues for snapshots.  Designer to pick + amend the loser. |
+| ~~P-Wire~~ | ~~Held earlier — RESOLVED 2026-06-02, see §8.1.~~  Decision: **snapshot**.  HEP-CORE-0036 §6.5 amended to match. | | |
 | **P-Schema** | `ChannelAccessEntry` field shape | (a) Four fields (authorized_consumer_pubkeys, shm_secret, producer_pubkey_z85, producer_endpoint) per current design §6.1.  (b) Two fields per HEP-CORE-0036 §4.1 (locked) — producer pubkey + endpoint already live on `ChannelEntry::producers[i]` per-producer, supporting fan-in.  Option (a) duplicates state. | **OPEN** — fresh-eye review M-D1: option (b) preserves fan-in semantics.  Designer to confirm + drop the duplicates from §6.1. |
 
 ### 8.3 Original open points (others still applicable)
@@ -1136,24 +1149,22 @@ look up tx_queue by channel name. Verify this lookup exists.
 queues (it must, for multi-channel hosts). Not verified yet — will check
 in Phase A scout before coding.
 
-### S11 — Atomic snapshot semantics under add/remove
+### S11 — Atomic snapshot semantics under add/remove  ✅ ADOPTED 2026-06-02
 
-**Problem.** §6.3 lists `op = "set" | "add" | "remove"`. But the
+**Problem.** §6.3 originally listed `op = "set" | "add" | "remove"`. But the
 queue's `set_peer_allowlist` takes a full snapshot (`PeerAllowlist`),
 not deltas. So either:
 - Broker sends full snapshots (simpler; idempotent; bigger over-the-wire
   for huge allowlists).
 - Broker sends deltas, role reconstructs full allowlist before passing
-  to queue (extra state on the role side; thumbnails get out of sync if
+  to queue (extra state on the role side; gets out of sync if
   any delta is missed).
 
-**Recommendation.** Send **full snapshots** every time. Allowlists for
-data channels are small (one consumer at a time typically; tens at most).
-The wire-frame protocol becomes simpler (`op` field removed) and
-recovery from missed updates is trivial (the next snapshot corrects
-state).
+**Decision (adopted).** Full snapshots every time.  See §8.1 P-Wire and
+HEP-CORE-0036 §6.5 amendment 2026-06-02 for the formal record.
+Producer-side caches are followers; the hub owns the truth.
 
-**Wire frame revised:**
+**Wire frame (now canonical in §6.3 of this doc + HEP-0036 §6.5):**
 
 ```json
 {

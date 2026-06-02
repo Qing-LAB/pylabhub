@@ -273,20 +273,40 @@ operations to roles.  Architecture is four-tier:
 
 ### DP-Q1 — Fan-in CHANNEL_AUTH_UPDATE failure semantics
 **Status:** ✅ RESOLVED (locked 2026-05-28; committed `87784a8f`).
-**Decision:** Option B "skip-disconnected" — broker pushes
-`CHANNEL_AUTH_UPDATE add` only to currently-kLive producers;
-waits up to `push_ack_timeout_ms` per ACK (default 2000 ms;
-configurable via `hub.broker.push_ack_timeout_ms` in hub.json).
-Producers that don't ACK within the timeout are SKIPPED; they
-re-sync via `REG_ACK.initial_allowlist` when they next REG_REQ
-after reconnect.  If zero producers ACK (catastrophic-no-producer
-branch): broker returns
+Wire-frame later amended 2026-06-02 from delta to snapshot (see
+amendment note below); skip-disconnected concept unchanged.
+**Decision:** Option B "skip-disconnected" — on any allowlist
+mutation event broker pushes `CHANNEL_AUTH_UPDATE` only to
+currently-kLive producers; waits up to `push_ack_timeout_ms` per
+ACK (default 2000 ms; configurable via
+`hub.broker.push_ack_timeout_ms` in hub.json).  Producers that
+don't ACK within the timeout are SKIPPED; they re-sync via
+`REG_ACK.initial_allowlist` when they next REG_REQ after reconnect.
+On a registration path: if zero producers ACK
+(catastrophic-no-producer branch): broker returns
 `CHANNEL_NOT_READY{reason="no_live_producer"}`.  Otherwise:
 CONSUMER_REG_ACK with `producers[]` = ACK'd subset.
+On a revocation path (dereg, heartbeat timeout, federation peer
+death): broker proceeds even if zero producers ACK — no
+consumer-facing handshake to gate.
 `ALLOWLIST_PUSH_FAILED` error code RETIRED — partial success is
 the normal case under skip-disconnected.
-**Where in HEP-0036:** §6.5 (CHANNEL_AUTH_UPDATE spec), §6.6
-(error codes), §13.2 (resolved summary).
+
+**Amendment 2026-06-02 — wire frame snapshot (was delta).** The
+2026-05-28 lock-in described the push payload as `allowlist_add`
+(sync) and `allowlist_remove` (best-effort).  HEP-CORE-0036 §6.5
+was later amended (2026-06-02) to a single-field snapshot —
+`allowlist[]` carries the full current authorized set after the
+mutation, the receiving producer REPLACES its cache, and the
+former sync-add / best-effort-remove distinction is retracted
+(all snapshots are sync-ACK'd on registration paths; revocation
+paths proceed regardless of ACK).  This DP-Q1 record's
+skip-disconnected concept survives unchanged; only the wire-field
+words change.
+
+**Where in HEP-0036:** §6.5 (CHANNEL_AUTH_UPDATE spec — see the
+"Amendment 2026-06-02 — snapshot semantics" block), §6.6
+(error codes), §13.2 (resolved summary, amended).
 
 ### DP-Q2 — New producer joins existing channel
 **Status:** ✅ RESOLVED (dissolved by I9).
