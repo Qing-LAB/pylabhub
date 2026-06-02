@@ -392,9 +392,13 @@ Remaining MP4 broker-handler items:
   rejected Commit E).  Resume in Phase 8+ alongside the rich
   HubAPI surface.
 - **`src/` + `src/include/` restructure** — full plan in
-  `docs/tech_draft/SRC_STRUCTURE_PLAN.md`.  Phasing: A (file moves
-  + `core` → `basic` rename), B (include reorg), C (umbrella +
-  public/internal audit).  Execute when builds are otherwise quiet.
+  `docs/archive/transient-2026-06-02/SRC_STRUCTURE_PLAN.md`
+  (archived 2026-06-02 to keep `tech_draft/` focused on active
+  work; design preserved verbatim).  Phasing: A (file moves +
+  `core` → `basic` rename), B (include reorg), C (umbrella +
+  public/internal audit).  Execute when builds are otherwise
+  quiet; re-promote the archive copy or start fresh from it as
+  appropriate.
 
 ### ABI Compatibility (HEP-CORE-0032)
 

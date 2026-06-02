@@ -17,7 +17,7 @@ see `docs/DOC_STRUCTURE.md` §2.1.1.
 | Arc | Canonical doc | Status (verified 2026-05-26) |
 |---|---|---|
 | **Arc A — `plh_hub` renovation (HUB side)** | `docs/HEP/HEP-CORE-0033-Hub-Character.md` §15 Phase 1..10 | ✅ Phases 1-9 shipped; ⏳ Phase 10 doc closure (task #73, doc hygiene only) |
-| **Arc B — Role-host renovation (ROLE side)** | `docs/tech_draft/role_host_template_design.md` §14 Wave-B M0..M9 | ✅ **M0..M9 shipped** (M9 closed 2026-05-26, tasks #72 + #100).  `RoleHostFrame` plain class with shared `setup_infrastructure_` / `teardown_infrastructure_` / `wire_api_for_presences_` / `build_presences_`.  Single-resolve schemas via `presences_`.  `FlexzoneInfoCache` on `RoleAPIBase` (logical + physical sizes; replaces legacy `RoleHostCore::*_fz_spec_` storage).  Q1+Q2+Q3 L2 coverage shipped (commit `53cf11be`). |
+| **Arc B — Role-host renovation (ROLE side)** | HEP-CORE-0011 + HEP-CORE-0023 + HEP-CORE-0033 (RoleHostFrame + presence model + dual-hub control plane).  Wave-B M0..M9 design history archived at `docs/archive/transient-2026-06-02/role_host_template_design.md`. | ✅ **M0..M9 shipped** (M9 closed 2026-05-26, tasks #72 + #100).  `RoleHostFrame` plain class with shared `setup_infrastructure_` / `teardown_infrastructure_` / `wire_api_for_presences_` / `build_presences_`.  Single-resolve schemas via `presences_`.  `FlexzoneInfoCache` on `RoleAPIBase` (logical + physical sizes; replaces legacy `RoleHostCore::*_fz_spec_` storage).  Q1+Q2+Q3 L2 coverage shipped (commit `53cf11be`). |
 
 **End-state achieved.**  Dual-hub-capable plh_hub + role binaries
 that register presences on multiple hubs (processor in/out on
