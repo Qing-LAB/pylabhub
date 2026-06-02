@@ -78,3 +78,74 @@ TEST_F(ZmqQueueAuthTest, LegacyUnauthFactories_Unchanged)
                          {unique_dir("legacy_unauth_factories_unchanged")});
     ExpectWorkerOk(w);
 }
+
+// ── Close-out commit 2 — security-grade tests (path-pinning) ───────────────
+// See the worker file's narrative for the rationale.
+
+TEST_F(ZmqQueueAuthTest, Deny_ThenAllowViaSwap_PinsPath)
+{
+    auto w = SpawnWorker(
+        "zmq_queue_auth.auth_deny_then_allow_via_swap_pins_path",
+        {unique_dir("auth_deny_then_allow_via_swap_pins_path")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(ZmqQueueAuthTest, Swap_BlocksOldPeer_PinsData)
+{
+    auto w = SpawnWorker(
+        "zmq_queue_auth.auth_swap_blocks_old_peer_pins_data",
+        {unique_dir("auth_swap_blocks_old_peer_pins_data")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(ZmqQueueAuthTest, SetPeerAllowlist_OnPullSide_ReturnsFalse)
+{
+    auto w = SpawnWorker(
+        "zmq_queue_auth.auth_set_peer_allowlist_on_pull_side_returns_false",
+        {unique_dir("auth_set_peer_allowlist_on_pull_side_returns_false")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(ZmqQueueAuthTest, EmptyAllowlist_DeniesAll)
+{
+    auto w = SpawnWorker(
+        "zmq_queue_auth.auth_empty_allowlist_denies_all",
+        {unique_dir("auth_empty_allowlist_denies_all")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(ZmqQueueAuthTest, Misconfig_ConnectMissingServerkey_FactoryReturnsNullptr)
+{
+    auto w = SpawnWorker(
+        "zmq_queue_auth.auth_misconfig_connect_missing_serverkey_factory_returns_nullptr",
+        {unique_dir("auth_misconfig_connect_missing_serverkey_factory_returns_nullptr")});
+    // The factory's LOGGER_ERROR is the expected diagnostic path —
+    // declare a unique substring of the single emitted ERROR line.
+    ExpectWorkerOk(w, {}, {
+        "connect-side ZmqAuthOptions requires serverkey_z85",
+    });
+}
+
+TEST_F(ZmqQueueAuthTest, Misconfig_PubkeyWrongLength_FactoryReturnsNullptr)
+{
+    auto w = SpawnWorker(
+        "zmq_queue_auth.auth_misconfig_pubkey_wrong_length_factory_returns_nullptr",
+        {unique_dir("auth_misconfig_pubkey_wrong_length_factory_returns_nullptr")});
+    // Four distinct misconfig cases, each emits one ERROR line.  Pin
+    // each by a unique substring so the framework accounts for every
+    // expected ERROR and would flag any new unexpected one.
+    ExpectWorkerOk(w, {}, {
+        "my_pubkey_z85 must be exactly 40 chars",
+        "my_seckey_z85 must be exactly 40 chars",
+        "my_pubkey_z85 and my_seckey_z85 must be set together",
+        "serverkey_z85 must be exactly 40 chars",
+    });
+}
+
+TEST_F(ZmqQueueAuthTest, AdmissionIsEnforced_Lifecycle)
+{
+    auto w = SpawnWorker(
+        "zmq_queue_auth.auth_admission_is_enforced_lifecycle",
+        {unique_dir("auth_admission_is_enforced_lifecycle")});
+    ExpectWorkerOk(w);
+}

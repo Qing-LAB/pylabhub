@@ -44,6 +44,7 @@ using pylabhub::utils::Logger;
 using pylabhub::utils::security::PeerAllowlist;
 using pylabhub::utils::security::PeerIdentity;
 using pylabhub::utils::security::ZapPumpThread;
+using pylabhub::utils::security::ZapRouter;
 
 using pylabhub::hub::QueueReader;
 using pylabhub::hub::QueueWriter;
@@ -337,6 +338,512 @@ int legacy_unauth_factories_unchanged(const char * /*tmpdir*/)
         pylabhub::hub::GetZMQContextModule());
 }
 
+// ── Phase C close-out (commit 2/5) — security-grade scenarios ────────────
+//
+// These tests REPLACE timeout-as-proxy assertions with path-level
+// signals (ZapRouter::denied_count() / allowed_count()) and pin the
+// directional properties that the original L2 suite missed:
+//   - the OLD peer is denied after an allowlist swap (not just that
+//     the NEW peer succeeds)
+//   - the same peer that was just denied IS admitted after a swap
+//     adds it (proves the deny was real, not a hang)
+//   - pull-side PeerAdmission methods correctly return false / nullopt
+//   - empty allowlist denies everyone (secure default — Phase D
+//     broker bootstrap depends on this)
+//   - factory rejects misconfigured ZmqAuthOptions BEFORE start()
+//     instead of failing late with a stale-errno diagnostic
+//   - admission_is_enforced() flips false → true → false across
+//     construct → start() → stop() (interface-contract conformance)
+
+/// **H-T1 fix.**  Same peer denied first, then admitted via swap —
+/// both phases pin byte-exact data + ZapRouter counters.  This
+/// converts the original "timeout-as-proxy" deny assertion into a
+/// path-level pin: if the deny PATH didn't execute, the counter
+/// doesn't move and the test fails immediately (not after a 500ms
+/// indistinguishable-from-stall wait).
+int auth_deny_then_allow_via_swap_pins_path(const char *)
+{
+    return run_gtest_worker(
+        [&]() {
+            const auto [producer_pub, producer_sec] = make_keypair();
+            const auto [client_pub, client_sec] = make_keypair();
+
+            // Producer: CURVE wired, allowlist EMPTY (deny-all).
+            ZmqAuthOptions producer_auth;
+            producer_auth.my_pubkey_z85 = producer_pub;
+            producer_auth.my_seckey_z85 = producer_sec;
+            producer_auth.zap_domain    = "test.zmq.auth.deny_then_allow";
+            // initial_allowlist intentionally left empty.
+
+            auto producer = ZmqQueue::push_to_with_auth(
+                "tcp://127.0.0.1:0", make_uint32_schema(), "aligned",
+                std::move(producer_auth), /*bind=*/true);
+            ASSERT_NE(producer, nullptr);
+            ASSERT_TRUE(producer->start());
+            EXPECT_TRUE(producer->admission_is_enforced());
+
+            ZapPumpThread pump;
+
+            // ── Phase 1: DENY.  Same client attempts connection — must
+            //   be denied by ZAP (allowlist is empty).  The CURVE
+            //   handshake fires on consumer->start(), independent of
+            //   any data send — we observe the deny PATH directly via
+            //   ZapRouter::denied_count().  No data is sent in this
+            //   phase because any queued send would linger in the
+            //   producer's internal ring and contaminate Phase 2.
+            const auto deny_baseline = ZapRouter::instance().denied_count();
+            {
+                ZmqAuthOptions client_auth;
+                client_auth.my_pubkey_z85 = client_pub;
+                client_auth.my_seckey_z85 = client_sec;
+                client_auth.serverkey_z85 = producer_pub;
+                auto consumer = ZmqQueue::pull_from_with_auth(
+                    producer->actual_endpoint(), make_uint32_schema(),
+                    "aligned", std::move(client_auth), /*bind=*/false);
+                ASSERT_NE(consumer, nullptr);
+                ASSERT_TRUE(consumer->start());
+
+                // Wait for the deny path to surface.  The CURVE
+                // handshake driven by start() submits the ZAP REQ.
+                const auto deadline = std::chrono::steady_clock::now() +
+                                      std::chrono::milliseconds(1500);
+                while (ZapRouter::instance().denied_count() ==
+                           deny_baseline &&
+                       std::chrono::steady_clock::now() < deadline)
+                    std::this_thread::sleep_for(
+                        std::chrono::milliseconds(20));
+
+                EXPECT_GT(ZapRouter::instance().denied_count(),
+                          deny_baseline)
+                    << "Phase 1: expected DENY PATH to execute "
+                       "(denied_count++).  A timeout-as-proxy assertion "
+                       "would pass on a hang; this counter assertion "
+                       "won't.";
+                consumer->stop();
+            }
+
+            // ── Phase 2: ALLOW VIA SWAP.  Add the same client to the
+            //   allowlist; a fresh consumer with the SAME keys should
+            //   now succeed.  Path-pin via allowed_count + byte-exact
+            //   data.
+            PeerAllowlist al_with_client;
+            al_with_client.peers.insert(
+                PeerIdentity{"curve", client_pub});
+            ASSERT_TRUE(producer->set_peer_allowlist(al_with_client));
+
+            const auto allow_baseline =
+                ZapRouter::instance().allowed_count();
+            {
+                ZmqAuthOptions client_auth;
+                client_auth.my_pubkey_z85 = client_pub;
+                client_auth.my_seckey_z85 = client_sec;
+                client_auth.serverkey_z85 = producer_pub;
+                auto consumer = ZmqQueue::pull_from_with_auth(
+                    producer->actual_endpoint(), make_uint32_schema(),
+                    "aligned", std::move(client_auth), /*bind=*/false);
+                ASSERT_NE(consumer, nullptr);
+                ASSERT_TRUE(consumer->start());
+
+                ASSERT_TRUE(try_send_uint32(producer.get(), 0xCAFEBABEu));
+                EXPECT_TRUE(wait_for_one_uint32(
+                    consumer.get(), 0xCAFEBABEu,
+                    std::chrono::milliseconds(2000)))
+                    << "Phase 2: post-swap delivery to the same peer "
+                       "must succeed byte-exact.";
+                EXPECT_GT(ZapRouter::instance().allowed_count(),
+                          allow_baseline)
+                    << "Phase 2: expected ALLOW PATH to execute "
+                       "(allowed_count++).";
+                consumer->stop();
+            }
+
+            producer->stop();
+        },
+        "zmq_queue_auth::auth_deny_then_allow_via_swap_pins_path",
+        Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(),
+        JsonConfig::GetLifecycleModule(),
+        pylabhub::hub::GetZMQContextModule());
+}
+
+/// **H-T2 fix.**  Allowlist swap MUST deny the previously-admitted
+/// peer.  Pins both directions: old peer succeeds before swap → old
+/// peer fails after swap → new peer succeeds.  All three phases use
+/// distinct byte sentinels.
+int auth_swap_blocks_old_peer_pins_data(const char *)
+{
+    return run_gtest_worker(
+        [&]() {
+            const auto [producer_pub, producer_sec] = make_keypair();
+            const auto [alice_pub, alice_sec] = make_keypair();
+            const auto [bob_pub,   bob_sec]   = make_keypair();
+
+            ZmqAuthOptions producer_auth;
+            producer_auth.my_pubkey_z85 = producer_pub;
+            producer_auth.my_seckey_z85 = producer_sec;
+            producer_auth.zap_domain    = "test.zmq.auth.swap.blocks.old";
+            producer_auth.initial_allowlist.peers.insert(
+                PeerIdentity{"curve", alice_pub});
+
+            auto producer = ZmqQueue::push_to_with_auth(
+                "tcp://127.0.0.1:0", make_uint32_schema(), "aligned",
+                std::move(producer_auth), /*bind=*/true);
+            ASSERT_NE(producer, nullptr);
+            ASSERT_TRUE(producer->start());
+            ZapPumpThread pump;
+
+            // ── Phase A: alice admitted, receives 0xAAAA0001u.
+            {
+                ZmqAuthOptions alice_auth;
+                alice_auth.my_pubkey_z85 = alice_pub;
+                alice_auth.my_seckey_z85 = alice_sec;
+                alice_auth.serverkey_z85 = producer_pub;
+                auto alice = ZmqQueue::pull_from_with_auth(
+                    producer->actual_endpoint(), make_uint32_schema(),
+                    "aligned", std::move(alice_auth), /*bind=*/false);
+                ASSERT_NE(alice, nullptr);
+                ASSERT_TRUE(alice->start());
+                ASSERT_TRUE(try_send_uint32(producer.get(), 0xAAAA0001u));
+                EXPECT_TRUE(wait_for_one_uint32(
+                    alice.get(), 0xAAAA0001u,
+                    std::chrono::milliseconds(2000)))
+                    << "Pre-swap baseline: alice must receive her "
+                       "byte-exact sentinel.";
+                alice->stop();
+            }
+
+            // ── Phase B: swap to bob-only.
+            PeerAllowlist al_bob;
+            al_bob.peers.insert(PeerIdentity{"curve", bob_pub});
+            ASSERT_TRUE(producer->set_peer_allowlist(al_bob));
+
+            auto snap = producer->peer_allowlist_snapshot();
+            ASSERT_TRUE(snap.has_value());
+            EXPECT_FALSE(snap->contains(PeerIdentity{"curve", alice_pub}));
+            EXPECT_TRUE(snap->contains(PeerIdentity{"curve", bob_pub}));
+
+            // ── Phase C: alice RECONNECTS — must be denied.  Pin via
+            //   denied_count to prove the path executed.  No data
+            //   send in this phase: any queued send would linger in
+            //   the producer's send ring and arrive at bob in Phase D,
+            //   confounding the assertion.
+            const auto deny_baseline = ZapRouter::instance().denied_count();
+            {
+                ZmqAuthOptions alice_auth;
+                alice_auth.my_pubkey_z85 = alice_pub;
+                alice_auth.my_seckey_z85 = alice_sec;
+                alice_auth.serverkey_z85 = producer_pub;
+                auto alice_again = ZmqQueue::pull_from_with_auth(
+                    producer->actual_endpoint(), make_uint32_schema(),
+                    "aligned", std::move(alice_auth), /*bind=*/false);
+                ASSERT_NE(alice_again, nullptr);
+                ASSERT_TRUE(alice_again->start());
+
+                const auto deadline = std::chrono::steady_clock::now() +
+                                      std::chrono::milliseconds(1500);
+                while (ZapRouter::instance().denied_count() ==
+                           deny_baseline &&
+                       std::chrono::steady_clock::now() < deadline)
+                    std::this_thread::sleep_for(
+                        std::chrono::milliseconds(20));
+
+                EXPECT_GT(ZapRouter::instance().denied_count(),
+                          deny_baseline)
+                    << "After swap, alice's reconnect must trigger the "
+                       "DENY path.  If denied_count did not move, the "
+                       "swap is a no-op (security regression: a stale "
+                       "allowlist entry would still admit alice).";
+                alice_again->stop();
+            }
+
+            // ── Phase D: bob connects, receives 0xBBBB0001u.
+            {
+                ZmqAuthOptions bob_auth;
+                bob_auth.my_pubkey_z85 = bob_pub;
+                bob_auth.my_seckey_z85 = bob_sec;
+                bob_auth.serverkey_z85 = producer_pub;
+                auto bob = ZmqQueue::pull_from_with_auth(
+                    producer->actual_endpoint(), make_uint32_schema(),
+                    "aligned", std::move(bob_auth), /*bind=*/false);
+                ASSERT_NE(bob, nullptr);
+                ASSERT_TRUE(bob->start());
+                ASSERT_TRUE(try_send_uint32(producer.get(), 0xBBBB0001u));
+                EXPECT_TRUE(wait_for_one_uint32(
+                    bob.get(), 0xBBBB0001u,
+                    std::chrono::milliseconds(2000)));
+                bob->stop();
+            }
+
+            producer->stop();
+        },
+        "zmq_queue_auth::auth_swap_blocks_old_peer_pins_data",
+        Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(),
+        JsonConfig::GetLifecycleModule(),
+        pylabhub::hub::GetZMQContextModule());
+}
+
+/// Pins the PULL-side PeerAdmission contract.  Per the design + the
+/// header docstring at hub_zmq_queue.hpp:294-307, set_peer_allowlist
+/// returns false on the connect side (no allowlist concept), and
+/// peer_allowlist_snapshot returns nullopt, and is_peer_allowed
+/// returns false unconditionally.
+int auth_set_peer_allowlist_on_pull_side_returns_false(const char *)
+{
+    return run_gtest_worker(
+        [&]() {
+            const auto [producer_pub, producer_sec] = make_keypair();
+            const auto [client_pub, client_sec] = make_keypair();
+
+            // Only a consumer here — no producer needed for this
+            // interface-contract pin.  pull_from_with_auth still needs
+            // a serverkey to pass factory validation.
+            ZmqAuthOptions client_auth;
+            client_auth.my_pubkey_z85 = client_pub;
+            client_auth.my_seckey_z85 = client_sec;
+            client_auth.serverkey_z85 = producer_pub;
+
+            auto consumer = ZmqQueue::pull_from_with_auth(
+                "tcp://127.0.0.1:5555",   // never started, no peer
+                make_uint32_schema(), "aligned",
+                std::move(client_auth), /*bind=*/false);
+            ASSERT_NE(consumer, nullptr);
+            // Note: not started.  PULL-side contract is a property of
+            //   the abstraction, not the live socket.
+
+            PeerAllowlist any;
+            any.peers.insert(PeerIdentity{"curve", client_pub});
+
+            EXPECT_FALSE(consumer->set_peer_allowlist(any))
+                << "PULL-side set_peer_allowlist must return false — "
+                   "the consumer trusts the server via "
+                   "curve_serverkey, not via its own allowlist.";
+            EXPECT_FALSE(consumer->peer_allowlist_snapshot().has_value())
+                << "PULL-side snapshot must be nullopt.";
+            EXPECT_FALSE(consumer->is_peer_allowed(
+                PeerIdentity{"curve", client_pub}))
+                << "PULL-side is_peer_allowed must return false "
+                   "unconditionally (no inbound handshakes to gate).";
+        },
+        "zmq_queue_auth::auth_set_peer_allowlist_on_pull_side_returns_false",
+        Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(),
+        JsonConfig::GetLifecycleModule(),
+        pylabhub::hub::GetZMQContextModule());
+}
+
+/// **Empty allowlist = deny-all.**  Phase D broker bootstrap may
+/// briefly install an empty allowlist before pushing the real one
+/// from the KnownRolesStore; this test pins that the default is
+/// secure (deny everyone) rather than permissive.
+int auth_empty_allowlist_denies_all(const char *)
+{
+    return run_gtest_worker(
+        [&]() {
+            const auto [producer_pub, producer_sec] = make_keypair();
+            const auto [client_pub, client_sec] = make_keypair();
+
+            ZmqAuthOptions producer_auth;
+            producer_auth.my_pubkey_z85 = producer_pub;
+            producer_auth.my_seckey_z85 = producer_sec;
+            producer_auth.zap_domain    = "test.zmq.auth.empty.deny";
+            // initial_allowlist intentionally empty.
+
+            auto producer = ZmqQueue::push_to_with_auth(
+                "tcp://127.0.0.1:0", make_uint32_schema(), "aligned",
+                std::move(producer_auth), /*bind=*/true);
+            ASSERT_NE(producer, nullptr);
+            ASSERT_TRUE(producer->start());
+
+            // Pin the in-memory contract: snapshot is present (the
+            // empty allowlist WAS installed), and is_peer_allowed
+            // returns false for any peer.
+            auto snap = producer->peer_allowlist_snapshot();
+            ASSERT_TRUE(snap.has_value());
+            EXPECT_TRUE(snap->peers.empty());
+            EXPECT_FALSE(producer->is_peer_allowed(
+                PeerIdentity{"curve", client_pub}));
+
+            ZapPumpThread pump;
+            const auto deny_baseline = ZapRouter::instance().denied_count();
+
+            ZmqAuthOptions client_auth;
+            client_auth.my_pubkey_z85 = client_pub;
+            client_auth.my_seckey_z85 = client_sec;
+            client_auth.serverkey_z85 = producer_pub;
+            auto consumer = ZmqQueue::pull_from_with_auth(
+                producer->actual_endpoint(), make_uint32_schema(),
+                "aligned", std::move(client_auth), /*bind=*/false);
+            ASSERT_NE(consumer, nullptr);
+            ASSERT_TRUE(consumer->start());
+
+            // The CURVE handshake fires on consumer->start() above —
+            // the ZAP REQ submits independent of any data send.
+            const auto deadline = std::chrono::steady_clock::now() +
+                                  std::chrono::milliseconds(1500);
+            while (ZapRouter::instance().denied_count() ==
+                       deny_baseline &&
+                   std::chrono::steady_clock::now() < deadline)
+                std::this_thread::sleep_for(
+                    std::chrono::milliseconds(20));
+
+            EXPECT_GT(ZapRouter::instance().denied_count(),
+                      deny_baseline)
+                << "Empty allowlist must deny EVERY peer (Phase D "
+                   "bootstrap depends on this fail-closed default).";
+
+            consumer->stop();
+            producer->stop();
+        },
+        "zmq_queue_auth::auth_empty_allowlist_denies_all",
+        Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(),
+        JsonConfig::GetLifecycleModule(),
+        pylabhub::hub::GetZMQContextModule());
+}
+
+/// **H-Q3 fix.**  Factory must reject connect-side ZmqAuthOptions
+/// that has CURVE keys but no serverkey — BEFORE constructing the
+/// queue.  Pins the explicit-diagnostic path (vs. throwing
+/// zmq::error_t() against stale errno from inside start()).
+int auth_misconfig_connect_missing_serverkey_factory_returns_nullptr(const char *)
+{
+    return run_gtest_worker(
+        [&]() {
+            const auto [client_pub, client_sec] = make_keypair();
+            ZmqAuthOptions bad;
+            bad.my_pubkey_z85 = client_pub;
+            bad.my_seckey_z85 = client_sec;
+            // serverkey intentionally empty.
+
+            auto consumer = ZmqQueue::pull_from_with_auth(
+                "tcp://127.0.0.1:5555",
+                make_uint32_schema(), "aligned",
+                std::move(bad), /*bind=*/false);
+            EXPECT_EQ(consumer, nullptr)
+                << "Factory must reject connect-side auth without "
+                   "serverkey.  Returning a queue that throws inside "
+                   "start() with a stale-errno 'Success' message is "
+                   "the H-Q3 anti-pattern.";
+        },
+        "zmq_queue_auth::auth_misconfig_connect_missing_serverkey_factory_returns_nullptr",
+        Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(),
+        JsonConfig::GetLifecycleModule(),
+        pylabhub::hub::GetZMQContextModule());
+}
+
+/// Factory rejects wrong-length keys.  Z85 keys are exactly 40 chars;
+/// shorter/longer is operator error and must be caught immediately,
+/// not as a cryptic libzmq error inside start().
+int auth_misconfig_pubkey_wrong_length_factory_returns_nullptr(const char *)
+{
+    return run_gtest_worker(
+        [&]() {
+            // Table-driven: each row is (label, pub, sec, server,
+            // bind_side, expected_factory_returns_null).
+            struct Case
+            {
+                const char *label;
+                std::string my_pub;
+                std::string my_sec;
+                std::string server;
+                bool bind;
+                bool expect_null;
+            };
+
+            const auto [valid_pub, valid_sec] = make_keypair();
+            const std::string too_short(20, 'a');
+            const std::string too_long(50, 'b');
+
+            const std::vector<Case> cases{
+                {"pub too short (bind)", too_short, valid_sec, "",
+                 true, true},
+                {"sec too long (bind)", valid_pub, too_long, "",
+                 true, true},
+                {"pub set, sec empty (bind)", valid_pub, "", "",
+                 true, true},
+                {"connect side serverkey too short",
+                 valid_pub, valid_sec, too_short, false, true},
+                {"connect side fully valid (control)",
+                 valid_pub, valid_sec, valid_pub, false, false},
+                {"all empty (legacy plaintext, bind)",
+                 "", "", "", true, false},
+            };
+
+            for (const auto &c : cases)
+            {
+                ZmqAuthOptions opts;
+                opts.my_pubkey_z85 = c.my_pub;
+                opts.my_seckey_z85 = c.my_sec;
+                opts.serverkey_z85 = c.server;
+
+                std::unique_ptr<ZmqQueue> q;
+                if (c.bind)
+                    q = ZmqQueue::push_to_with_auth(
+                        "tcp://127.0.0.1:0",
+                        make_uint32_schema(), "aligned",
+                        std::move(opts), /*bind=*/true);
+                else
+                    q = ZmqQueue::pull_from_with_auth(
+                        "tcp://127.0.0.1:5555",
+                        make_uint32_schema(), "aligned",
+                        std::move(opts), /*bind=*/false);
+
+                if (c.expect_null)
+                    EXPECT_EQ(q, nullptr) << "case: " << c.label;
+                else
+                    EXPECT_NE(q, nullptr) << "case: " << c.label;
+            }
+        },
+        "zmq_queue_auth::auth_misconfig_pubkey_wrong_length_factory_returns_nullptr",
+        Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(),
+        JsonConfig::GetLifecycleModule(),
+        pylabhub::hub::GetZMQContextModule());
+}
+
+/// **M-Q1 fix.**  admission_is_enforced() must reflect actual wire-
+/// level enforcement: false before start(), true after a successful
+/// start(), false after stop().  The pre-fix implementation returned
+/// true as soon as the keys were populated — lying when start() had
+/// not yet run.
+int auth_admission_is_enforced_lifecycle(const char *)
+{
+    return run_gtest_worker(
+        [&]() {
+            const auto [pub, sec] = make_keypair();
+            ZmqAuthOptions opts;
+            opts.my_pubkey_z85 = pub;
+            opts.my_seckey_z85 = sec;
+            opts.zap_domain    = "test.zmq.auth.enforced.lifecycle";
+
+            auto q = ZmqQueue::push_to_with_auth(
+                "tcp://127.0.0.1:0", make_uint32_schema(), "aligned",
+                std::move(opts), /*bind=*/true);
+            ASSERT_NE(q, nullptr);
+
+            EXPECT_FALSE(q->admission_is_enforced())
+                << "Before start(): no socket exists yet, so the wire "
+                   "is NOT enforced.  Returning true here would lie "
+                   "to broker glue that's about to push allowlists.";
+
+            ASSERT_TRUE(q->start());
+            EXPECT_TRUE(q->admission_is_enforced())
+                << "After start(): CURVE is wired on the bound socket.";
+
+            q->stop();
+            EXPECT_FALSE(q->admission_is_enforced())
+                << "After stop(): socket closed, wire is no longer "
+                   "enforced.";
+        },
+        "zmq_queue_auth::auth_admission_is_enforced_lifecycle",
+        Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(),
+        JsonConfig::GetLifecycleModule(),
+        pylabhub::hub::GetZMQContextModule());
+}
+
 // ── Dispatcher + registrar ─────────────────────────────────────────────────
 
 int dispatch_zmq_queue_auth(int argc, char **argv)
@@ -365,6 +872,20 @@ int dispatch_zmq_queue_auth(int argc, char **argv)
         return auth_allowlist_swap_takes_effect_for_next_connection(tmpdir);
     if (scenario == "legacy_unauth_factories_unchanged")
         return legacy_unauth_factories_unchanged(tmpdir);
+    if (scenario == "auth_deny_then_allow_via_swap_pins_path")
+        return auth_deny_then_allow_via_swap_pins_path(tmpdir);
+    if (scenario == "auth_swap_blocks_old_peer_pins_data")
+        return auth_swap_blocks_old_peer_pins_data(tmpdir);
+    if (scenario == "auth_set_peer_allowlist_on_pull_side_returns_false")
+        return auth_set_peer_allowlist_on_pull_side_returns_false(tmpdir);
+    if (scenario == "auth_empty_allowlist_denies_all")
+        return auth_empty_allowlist_denies_all(tmpdir);
+    if (scenario == "auth_misconfig_connect_missing_serverkey_factory_returns_nullptr")
+        return auth_misconfig_connect_missing_serverkey_factory_returns_nullptr(tmpdir);
+    if (scenario == "auth_misconfig_pubkey_wrong_length_factory_returns_nullptr")
+        return auth_misconfig_pubkey_wrong_length_factory_returns_nullptr(tmpdir);
+    if (scenario == "auth_admission_is_enforced_lifecycle")
+        return auth_admission_is_enforced_lifecycle(tmpdir);
     std::fprintf(stderr, "zmq_queue_auth: unknown scenario '%s'\n",
                  scenario.c_str());
     return 1;
