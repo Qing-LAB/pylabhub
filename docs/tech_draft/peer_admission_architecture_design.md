@@ -158,32 +158,64 @@ public:
 } // namespace pylabhub::utils::security
 ```
 
-### 4.2 `QueueReader` + `QueueWriter` inherit `PeerAdmission`
+### 4.2 `PeerAdmission` is a separate interface — Queue family unchanged
 
-`hub_queue.hpp:171` updated:
+**Architectural correction (2026-06-02).** An earlier draft had
+`QueueReader`/`QueueWriter` inherit `PeerAdmission`. That's wrong on two
+counts:
+
+1. **Diamond inheritance.** `ZmqQueue` and `ShmQueue` both inherit from
+   `QueueReader` AND `QueueWriter` (`hub_queue.hpp:171, 335` →
+   `hub_zmq_queue.hpp:117`, `hub_shm_queue.hpp:50`). If both bases also
+   inherit `PeerAdmission`, every `ZmqQueue` instance has TWO
+   `PeerAdmission` subobjects. Virtual inheritance fixes the duplication
+   but adds vptr indirection and surprises downstream maintainers.
+2. **Conceptual conflation.** The Queue family is about *what data
+   flows through this transport* (read/write semantics, schema,
+   checksum, lifecycle). `PeerAdmission` is about *who is allowed*. The
+   two are orthogonal. Coupling them forces every future Queue subclass
+   to think about admission even when its transport has no admission
+   concept (e.g., a future inproc-only queue), and forces every
+   future admission-bearing surface to be a Queue (which excludes the
+   broker ROUTER and admin REP — non-queue surfaces that legitimately
+   need the gate).
+
+**Correct architecture.** `PeerAdmission` is a **pure abstract interface**
+in its own header. Concrete classes that need a gate inherit it directly
+alongside (not through) the Queue family:
 
 ```cpp
-class PYLABHUB_UTILS_EXPORT QueueReader
-    : public pylabhub::utils::security::PeerAdmission
-{
-    // ... existing virtuals ...
+class ZmqQueue : public QueueReader,
+                 public QueueWriter,
+                 public pylabhub::utils::security::PeerAdmission
+{ ... };
 
-    // New default impls (override per concrete queue):
-    bool set_peer_allowlist(PeerAllowlist) override { return false; }
-    std::optional<PeerAllowlist>
-    peer_allowlist_snapshot() const override { return std::nullopt; }
-    bool is_peer_allowed(const PeerIdentity &) const override { return false; }
-    bool admission_is_enforced() const noexcept override { return false; }
-};
+class ShmQueue : public QueueReader,
+                 public QueueWriter,
+                 public pylabhub::utils::security::PeerAdmission
+{ ... };
+
+class InboxQueue : public pylabhub::utils::security::PeerAdmission
+{ ... };  // not in Queue family at all
+
+class BrokerServiceImpl : public pylabhub::utils::security::PeerAdmission
+{ ... };  // not a queue
 ```
 
-Same change at `hub_queue.hpp:335` for `QueueWriter`.
+This:
+- Avoids the diamond. Each concrete admission-bearing class has exactly
+  one `PeerAdmission` subobject.
+- Decouples gate concept from queue concept. Future queues that need no
+  gate don't pay the cost; future non-queue gates exist naturally.
+- Makes the Queue family's existing virtual tables unchanged. No
+  behavior or ABI ripple to existing tests.
 
-**Why default-deny in the base:** every existing test exercises a concrete
-queue (`ZmqQueue`, `ShmQueue`), and concrete queues override these. The base
-defaults are reached only by a hypothetical future queue subclass that has
-not yet declared its admission stance — defaulting that to deny is the
-secure choice.
+**No defaults in the interface.** `PeerAdmission` is pure abstract: every
+method is `= 0`. Implementers MUST provide all four. There is no
+deny-default in the base because there is no concrete base. This is the
+right shape for a policy interface: forcing every concrete class to
+declare its admission stance explicitly is safer than letting a missing
+override silently default to deny (or allow).
 
 ### 4.3 Non-queue admission-bearing surfaces
 
