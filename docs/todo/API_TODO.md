@@ -170,10 +170,12 @@ single-area change.
   protocol to a separate design effort.  MVP inherits HEP-0022
   `HUB_RELAY_MSG` + HEP-0035 §4.3 `federation_trust_mode` + §4.4
   `HUB_PEER_HELLO.roles[]`, but the full cross-hub registration
-  path (channel-name → owning-hub resolution, reverse
-  `allowlist_remove` on consumer death, `CONSUMER_DIED_NOTIFY`
-  relay, multi-peer consistency model, retry/backoff) is NOT
-  end-to-end verified.  Existing L4 dual-hub processor test
+  path (channel-name → owning-hub resolution, reverse snapshot
+  push on consumer death — broker mutates the channel's
+  authorized set and emits a new `CHANNEL_AUTH_UPDATE` snapshot
+  per HEP-0036 §6.5 amended 2026-06-02 —
+  `CONSUMER_DIED_NOTIFY` relay, multi-peer consistency model,
+  retry/backoff) is NOT end-to-end verified.  Existing L4 dual-hub processor test
   (#44) covers broadcast relay + local-channel dual attachment
   only.  Output: new HEP (HEP-CORE-0037 "Federation Protocol" or
   amendment to HEP-CORE-0022) + L4 E2E test for cross-hub
