@@ -331,51 +331,165 @@ bool admission_is_enforced() const noexcept override
 }
 ```
 
-### 5.2 `ZapRouter` singleton
+### 5.2 `ZapRouter` — caller-pumped (no internal thread)
+
+**Alignment with the locked HEP.**  HEP-CORE-0036 §7.1 already
+prescribes this model: *"Handler runs on the BRC poll thread.
+Rationale: (a) cache reads and CHANNEL_AUTH_UPDATE writes happen on
+the same thread, no synchronization needed; (b) BRC poll thread
+already exists."*  The locked HEP says no dedicated ZAP thread.  My
+first cut at this section violated that — both empirically (S13
+deadlock) and against the HEP.  This section is rewritten to align.
+
+**Architectural correction (2026-06-02).**  An earlier draft of this
+section proposed a dedicated polling thread inside `ZapRouter`,
+managed by `ThreadManager`, started lazily on first `register_domain`.
+That design has two real problems:
+
+1. **Lifecycle re-entrancy deadlock.**  Spawning a `ThreadManager`
+   instance triggers `LifecycleManager::register_dynamic_module`
+   internally.  If `ZapRouter` is itself a lifecycle module, that
+   registration happens from inside `ZapRouter`'s startup callback —
+   re-entrant `LifecycleManager` use is forbidden by HEP-CORE-0001
+   (the `RecursionGuard` exists for exactly this reason).  Empirically
+   verified: my first cut hung at "trying to lock mutex for
+   `ThreadManager:ZapRouter:singleton`" inside the startup chain.
+2. **A thread for a thing that's idle 99.9% of the time.**  ZAP
+   requests arrive only during CURVE handshakes — i.e., at peer
+   connect time.  Dedicating a thread that mostly sleeps on
+   `recv_multipart(timeout=100ms)` is overhead per process even
+   when CURVE never wires.
+
+The corrected design is **caller-pumped**: `ZapRouter` is a passive
+state container with an explicit `pump_one(timeout)` method.  The
+process's existing event loops drive it; the library owns no thread.
 
 ```cpp
 namespace pylabhub::utils::security
 {
 
-/// Single ZAP handler per ZMQ context.  Started lazily on first
-/// register_domain().  Owns one inproc://zeromq.zap.01 REP socket and a
-/// dedicated thread (ThreadManager-managed) that polls ZAP requests and
-/// dispatches them to the registered PeerAdmission* by domain.
+/// Process-wide ZAP handler.  Owns ONE inproc REP socket at
+/// `inproc://zeromq.zap.01` (the libzmq ZAP convention; exactly one
+/// such endpoint per zmq::context).  Owns a routing map from
+/// `zap_domain` to `PeerAdmission*`.  Does NOT own a thread —
+/// callers pump.
+///
+/// Lifecycle: persistent dynamic LifecycleManager module per
+/// HEP-CORE-0001.  Module STARTUP binds the inproc REP socket on the
+/// calling thread (zero work).  Module SHUTDOWN closes it.  Stays
+/// loaded between ref_count==0 transitions (persistent flag).
 class ZapRouter
 {
 public:
     static ZapRouter &instance();
 
-    /// Register a PeerAdmission* for a given zap_domain.  The router
-    /// stores a weak_ptr-like handle; PeerAdmission* lifetime is owned
-    /// by the queue.  Queue's stop()/dtor MUST unregister.
-    void register_domain(const std::string &zap_domain,
-                         PeerAdmission *admission);
-    void unregister_domain(const std::string &zap_domain);
+    /// Register a PeerAdmission* for a `zap_domain`.  Returns an RAII
+    /// handle whose destructor calls `unregister_domain_` + decrements
+    /// the LifecycleManager ref-count.  Thread-safe; protected by an
+    /// internal mutex.
+    [[nodiscard]] ZapDomainHandle
+    register_domain(std::string domain, PeerAdmission *admission);
 
-    /// Lifecycle (called once at process startup; idempotent).
-    void start();
-    void stop();
-
-private:
-    // Inproc REP socket bound at "inproc://zeromq.zap.01".
-    // Polls request frames:
-    //   [version, request_id, domain, address, identity, mechanism, ...]
-    // For mechanism="CURVE", the last frame is the client's pubkey.
-    // Looks up registered_[domain] -> PeerAdmission*; calls
-    // is_peer_allowed(PeerIdentity{"curve", client_pubkey_z85}).
-    // Replies:
-    //   [version, request_id, status_code, status_text, user_id, metadata]
-    // status_code "200" = allow, "400" = client error, "500" = deny.
+    /// **Pump one ZAP request from the inproc REP socket.**  Returns
+    /// true iff a request was processed; false on timeout.  The
+    /// caller MUST drive this from a thread it owns; ZapRouter does
+    /// NOT spawn one.  Called from exactly ONE thread per process at
+    /// a time (the inproc REP socket is single-thread-only per ZMQ
+    /// rules).
+    ///
+    /// Per-request behavior:
+    ///   - Acquires shared lock on registered_; looks up admission*
+    ///     by domain.
+    ///   - Calls `admission->is_peer_allowed(PeerIdentity{"curve",
+    ///     z85(pubkey)})`.
+    ///   - Replies 200 (allow) or 400 (deny) with z85(pubkey) as
+    ///     user_id.
+    ///
+    /// Safe to call between `register_domain` calls from other
+    /// threads (separate locks for socket vs registered_ — see §7.2).
+    bool pump_one(std::chrono::milliseconds timeout);
 };
 
 } // namespace
 ```
 
-**Threading:** The router's thread runs in `ThreadManager` (re-using the
-infrastructure at `thread_manager.hpp:80-149`). The router's `registered_`
-map is protected by `std::shared_mutex` (readers = ZAP poll thread; writer
-= queue start/stop).
+**Who pumps in each binary:**
+
+| Binary | Pumping thread | Where in the code (filled in at Phase D) |
+|---|---|---|
+| `plh_hub` | Broker main thread | `BrokerServiceImpl::run`'s existing `zmq::poll` adds the ZAP socket to its pollset; calls `pump_one(0)` when it signals readable |
+| `plh_role` (producer side) | The role's startup/CTRL thread | `BrokerRequestComm::recv_and_dispatch` loop adds the ZAP socket; calls `pump_one(0)` when it signals readable |
+| Tests + demos without an event loop | A `ZapPumpThread` RAII helper provided by `pylabhub::utils::security` | Helper holds an `std::thread` that loops `pump_one(100ms)` until destructor sets a stop flag and joins |
+
+**Failure-mode contract.**  If a binary registers a domain but never
+calls `pump_one`, every CURVE handshake to a socket using that domain
+hangs.  No watchdog — documented at the API level.  This is the price
+of the no-internal-thread architecture; the only enforcement is code
+review at integration sites (Phase D for `plh_hub` / `plh_role`;
+Phase H for demos).
+
+**Lifecycle module shape:**
+
+```cpp
+ModuleDef GetZapRouterModule()
+{
+    ModuleDef def("ZapRouter");
+    def.add_dependency("pylabhub::utils::Logger");
+    def.add_dependency("ZMQContext");
+    def.set_startup([](const char*, void*){
+        ZapRouter::instance().bind_inproc_socket_();
+    });
+    def.set_shutdown([](const char*, void*){
+        ZapRouter::instance().close_inproc_socket_();
+    }, /*timeout=*/std::chrono::milliseconds(500));
+    def.set_as_persistent(true);
+    return def;
+}
+```
+
+No `ThreadManager`, no `std::thread`, no re-entrancy.  The startup
+callback does the minimum: bind a socket.  Shutdown closes it.
+
+**RAII handle (S1 finding still holds):**
+
+```cpp
+class ZapDomainHandle
+{
+public:
+    ZapDomainHandle() = default;
+    ZapDomainHandle(ZapDomainHandle&&) noexcept;
+    ZapDomainHandle& operator=(ZapDomainHandle&&) noexcept;
+    ~ZapDomainHandle();  // calls router_->unregister_domain_(domain_)
+
+    ZapDomainHandle(const ZapDomainHandle&)            = delete;
+    ZapDomainHandle& operator=(const ZapDomainHandle&) = delete;
+
+    bool is_active() const noexcept;
+    const std::string& domain() const noexcept;
+};
+```
+
+**Test fixture helper (provided alongside `ZapRouter`):**
+
+```cpp
+class ZapPumpThread
+{
+public:
+    /// Spawns a thread that loops `ZapRouter::instance().pump_one(tick_ms)`
+    /// until the destructor sets stop_ and joins.  Suitable for tests
+    /// and demos that don't already have a long-running event loop.
+    explicit ZapPumpThread(
+        std::chrono::milliseconds tick = std::chrono::milliseconds(100));
+    ~ZapPumpThread();
+
+    ZapPumpThread(const ZapPumpThread&)            = delete;
+    ZapPumpThread& operator=(const ZapPumpThread&) = delete;
+};
+```
+
+In production (`plh_hub`, `plh_role`), this helper is NOT used —
+those binaries integrate `pump_one` into their existing main loops
+(Phase D).
 
 ### 5.3 `ShmQueue` (broker-issued secret + (optional) UID guard)
 
@@ -615,26 +729,67 @@ broker → producer: CHANNEL_AUTH_UPDATE(op=remove, pubkey=K)
 
 | Thread | Touches | Notes |
 |---|---|---|
-| Role main | BrokerRequestComm CTRL ops, build_tx_queue / build_rx_queue, set_peer_allowlist | Calls into queue's set_peer_allowlist via atomic shared_ptr swap |
-| Queue send/recv | Queue socket only | Per ZMQ thread-per-socket rule (`hub_zmq_queue.cpp:166-200`). Never touches admin/admission state directly |
-| ZapRouter ZAP poll | ZAP inproc socket + `registered_` map (read) + each registered queue's `current_allowlist_` (read via atomic_load) | Single thread, polls every ~100ms or until ZAP request arrives |
-| Broker main | ChannelAccessIndex (read+write), KnownRoleAllowlist (read+write on CLI ops) | Mutex-protected; CLI ops serialized through broker's main loop |
-| Broker ROUTER recv | Same as broker main (single-threaded broker per existing design) | |
+| Role main / Broker main | BrokerRequestComm CTRL ops, build_tx_queue / build_rx_queue, set_peer_allowlist, ChannelAccessIndex, KnownRoleAllowlist | The same thread that runs the binary's event loop ALSO calls `ZapRouter::pump_one(0)` when its `zmq::poll` reports the ZAP inproc socket readable.  No dedicated ZAP thread |
+| Queue send/recv | Queue socket only | Per ZMQ thread-per-socket rule (`hub_zmq_queue.cpp:166-200`).  Never touches admin/admission state directly |
+| Test `ZapPumpThread` (test/demo only) | ZAP inproc socket (via `pump_one`) | Spawned by the test fixture's RAII helper; joined on test teardown.  Production binaries use their main loop, NOT this thread |
+| CLI ops (`--add-known-role` etc.) | KnownRolesStore file + in-memory state | Run before `LoadModule("ZapRouter")` — no concurrency with the inproc socket |
+
+**The "single pumping thread" invariant.**  Per ZMQ, the inproc REP
+socket at `inproc://zeromq.zap.01` is single-thread-only.  At any
+instant exactly one thread is allowed to call `pump_one()`:
+
+- **`plh_hub` runtime:** broker's main poll thread (`BrokerServiceImpl::run`).
+- **`plh_role` runtime (producer side):** the BRC dispatch thread
+  (`BrokerRequestComm::recv_and_dispatch`).
+- **Tests + bootstrap demos:** the `ZapPumpThread` RAII helper.
+
+Wiring a SECOND pumping caller into the same process is a regression;
+the second `pump_one` will fail with `EAGAIN`/`ETERM` once the first
+has the socket (libzmq enforces).  Phase D + Phase H integration sites
+are the ONLY places that call `pump_one`; documentation pins this.
 
 **Locking summary:**
-- `ZapRouter::registered_` — `std::shared_mutex` (many readers, rare writers)
-- `ZmqQueue::current_allowlist_` — `std::atomic<std::shared_ptr<const PeerAllowlist>>`
-  (lock-free reads; writers swap)
-- `ChannelAccessIndex` — broker single-threaded ⇒ no internal lock needed
-- `KnownRoleAllowlist` — single broker thread ⇒ no lock; CLI writes serialized
+- `ZapRouter::registered_` — `std::shared_mutex` (writers = register/unregister;
+  reader = pumping thread once per request)
+- `ZapRouter::sock_` — touched ONLY by the pumping thread; no lock needed
+  given the single-thread invariant above
+- `ZmqQueue::current_allowlist_` — `PortableAtomicSharedPtr<const PeerAllowlist>`
+  (lock-free reads from `is_peer_allowed`; writers swap whole snapshot)
+- `ChannelAccessIndex` — broker single-threaded ⇒ no internal lock
+- `KnownRoleAllowlist` — broker single-threaded; CLI writes happen
+  pre-startup
 
 ### 7.3 Lifecycle of dynamic membership
 
-- Producer's allowlist starts empty (default-deny).
-- First `CHANNEL_AUTH_UPDATE(add)` populates it.
-- Subsequent adds union; removes set-subtract.
-- Producer's `tx_queue->stop()` → `ZapRouter::unregister_domain(zap_domain)`.
-- Process-wide ZapRouter::stop() at hub shutdown (LifecycleGuard order).
+- Producer's allowlist starts empty (default-deny — `is_peer_allowed`
+  returns false until the broker pushes a `CHANNEL_AUTH_UPDATE`).
+- First `CHANNEL_AUTH_UPDATE(set)` populates it.
+- Subsequent `set` operations are full snapshots (S11 decision).
+- Producer's `tx_queue` stop → `ZapDomainHandle` destructor →
+  `unregister_domain_` + `UnloadModule("ZapRouter")` (decrements
+  LifecycleManager ref-count; persistent flag keeps the inproc socket
+  bound until LifecycleGuard finalize).
+- LifecycleGuard finalize → reverse-topo unload → `ZapRouter` shutdown
+  callback closes the inproc socket → `ZMQContext` shutdown.
+
+### 7.4 Failure mode — "registered but unpumped"
+
+If a binary calls `register_domain` but no one calls `pump_one`, every
+CURVE handshake on any socket using that `zap_domain` will hang at the
+libzmq handshake stage (the producer-side data socket's bind returns
+fine, but the consumer's connect never completes a handshake).  There
+is NO watchdog timer that detects this.  Diagnosis is by
+`netstat`/`ss` showing half-open ZMQ connections + LOGGER_INFO from
+ZapRouter showing the inproc bind but no per-request log lines.
+
+Prevention is contractual:
+- Phase D integration tests (`plh_hub` + `plh_role`) confirm pumping
+  is wired before data flows.
+- Phase H demos that use `ZapPumpThread` get this for free via the
+  RAII pattern.
+- L2 tests use `ZapPumpThread`; the absence of it is the same as the
+  production "forgot to wire" bug, surfaced immediately as a test
+  failure rather than a production hang.
 
 ## 8. Decision points for designer (you)
 
@@ -971,20 +1126,63 @@ consumer the new broker hasn't authorized.
 Brief window where data flow halts to consumers is acceptable; risk of
 admitting an unauthorized consumer during the gap is not.
 
+### S13 — `ZapRouter` thread + `ThreadManager` deadlock (2026-06-02, empirical)
+
+**Problem.** First implementation cut had `ZapRouter` spin up a
+`ThreadManager` instance from inside its lifecycle module startup
+callback.  Confirmed at runtime: the test hung at
+`registerDynamicModule: trying to lock mutex for
+'ThreadManager:ZapRouter:singleton'` inside the LifecycleManager's
+load-module path that was running the startup callback.
+
+**Root cause.** `ThreadManager`'s constructor calls
+`LifecycleManager::register_dynamic_module` (`thread_manager.cpp:331`)
+to register its own dynamic lifecycle entry.  But the call site is
+already inside another `LifecycleManager` lock acquired by the
+`LoadModule("ZapRouter")` that triggered our startup callback.
+HEP-CORE-0001 explicitly forbids this re-entrancy pattern (the
+`RecursionGuard` documented in §"Design philosophy / Constraints").
+
+**Architectural fix (NOT just "avoid `ThreadManager`").**  The
+deeper question: does ZAP need a thread at all?  Re-examining the
+ZAP semantics — it's a request-reply RPC handler that's idle 99.9%
+of the time.  A dedicated thread is heavyweight for that load.
+Caller-pumped design (every process already has a main event loop;
+add the ZAP socket to its pollset) is structurally simpler AND
+removes the re-entrancy problem by construction (no internal
+`ThreadManager` to register).
+
+Doc text in §5.2 was rewritten end-to-end to reflect the
+caller-pumped model.  §7.2 threading table redrawn.  §7.4 documents
+the "registered but unpumped" failure mode that the caller-pumped
+design introduces (no internal watchdog).
+
+**Lessons captured for future phases.**
+1. Any new lifecycle module's startup callback must not call into
+   `LifecycleManager` (directly or transitively via constructors
+   that register).  Phase G's ShmQueue broker-issued-secret path
+   needs to respect the same rule.
+2. "It uses `ThreadManager` everywhere else in the codebase" is not
+   a sufficient reason to use it here.  `ThreadManager`'s value is
+   bounded-drain semantics for threads doing user-defined work.
+   For passive RPC handlers, plain integration into an existing
+   poll loop is simpler.
+
 ---
 
-**Summary of self-critique.** 12 issues found in my own draft via
+**Summary of self-critique.** 13 issues found in this draft via
 re-investigation. Categorization:
-- S1, S3, S8 — concrete bugs in proposed code; fix in §5/§7.
+- S1, S3, S8, **S13** — concrete bugs in proposed code; fix in §5/§7.
 - S2, S5, S6, S11, S12 — design decisions deferred to designer (added
   to §8 as P-API, P-KnownRolesLocation, P-Bootstrap, P-WireFormat,
   P-Reconnect).
 - S4, S9, S10 — clarifications added inline.
-- S7 — editorial fix; doc text updated above.
+- S7 — editorial fix.
 
-All 12 surfaced BEFORE writing a line of code. This is the kind of
-review the implementation phase needs to repeat — every claim in this
-document gets re-tested against the code before commit.
+12 of 13 surfaced BEFORE writing a line of code.  S13 surfaced
+during implementation — the empirical-evidence reminder that the
+"plan from documentation" stage is not a substitute for actually
+running the code.
 
 ## 13. Glossary
 
