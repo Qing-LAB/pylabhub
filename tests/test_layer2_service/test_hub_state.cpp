@@ -3502,3 +3502,174 @@ TEST(HubStateConsumerPendingTimeout, LastPresence_TriggersRoleDisconnected)
     // Channel still alive (producer remains).
     EXPECT_TRUE(s.channel("ch.cons.lp").has_value());
 }
+
+// ─── HEP-CORE-0036 §4.1 channel-access index — D1 ────────────────────────────
+
+TEST(HubStateChannelAccess, OpenedThenClosed_Roundtrip)
+{
+    HubState s;
+
+    // Before open: no record.
+    EXPECT_FALSE(s.channel_access("ch.auth").has_value());
+
+    HubStateTestAccess::on_channel_access_opened(s, "ch.auth", /*shm_secret=*/0);
+    auto a = s.channel_access("ch.auth");
+    ASSERT_TRUE(a.has_value());
+    EXPECT_TRUE(a->authorized_consumer_pubkeys.empty());
+    EXPECT_EQ(a->shm_secret, 0u);
+
+    HubStateTestAccess::on_channel_access_closed(s, "ch.auth");
+    EXPECT_FALSE(s.channel_access("ch.auth").has_value());
+}
+
+TEST(HubStateChannelAccess, Opened_ShmSecret_Preserved)
+{
+    HubState s;
+    constexpr std::uint64_t kSecret = 0xCAFEBABE'DEADBEEFULL;
+    HubStateTestAccess::on_channel_access_opened(s, "ch.shm", kSecret);
+    auto a = s.channel_access("ch.shm");
+    ASSERT_TRUE(a.has_value());
+    EXPECT_EQ(a->shm_secret, kSecret);
+}
+
+TEST(HubStateChannelAccess, Opened_Idempotent_DoesNotOverwriteShmSecret)
+{
+    // Re-opening MUST NOT rotate the SHM secret out from under
+    // attached consumers (HEP-0036 §I5 — secrets are stable for the
+    // channel's lifetime).
+    HubState s;
+    constexpr std::uint64_t kFirst  = 0x11111111'22222222ULL;
+    constexpr std::uint64_t kSecond = 0x33333333'44444444ULL;
+    HubStateTestAccess::on_channel_access_opened(s, "ch.shm", kFirst);
+    HubStateTestAccess::on_channel_access_opened(s, "ch.shm", kSecond);
+    auto a = s.channel_access("ch.shm");
+    ASSERT_TRUE(a.has_value());
+    EXPECT_EQ(a->shm_secret, kFirst);
+}
+
+TEST(HubStateChannelAccess, ConsumerAuthorized_AddsToAllowlist)
+{
+    HubState s;
+    HubStateTestAccess::on_channel_access_opened(s, "ch.auth", 0);
+    HubStateTestAccess::on_consumer_authorized(s, "ch.auth", "PUB-CONS-A");
+    HubStateTestAccess::on_consumer_authorized(s, "ch.auth", "PUB-CONS-B");
+    auto a = s.channel_access("ch.auth");
+    ASSERT_TRUE(a.has_value());
+    EXPECT_EQ(a->authorized_consumer_pubkeys.size(), 2u);
+    EXPECT_EQ(a->authorized_consumer_pubkeys.count("PUB-CONS-A"), 1u);
+    EXPECT_EQ(a->authorized_consumer_pubkeys.count("PUB-CONS-B"), 1u);
+}
+
+TEST(HubStateChannelAccess, ConsumerAuthorized_Idempotent)
+{
+    HubState s;
+    HubStateTestAccess::on_channel_access_opened(s, "ch.auth", 0);
+    HubStateTestAccess::on_consumer_authorized(s, "ch.auth", "PUB-A");
+    HubStateTestAccess::on_consumer_authorized(s, "ch.auth", "PUB-A");
+    auto a = s.channel_access("ch.auth");
+    ASSERT_TRUE(a.has_value());
+    EXPECT_EQ(a->authorized_consumer_pubkeys.size(), 1u);
+}
+
+TEST(HubStateChannelAccess, ConsumerRevoked_RemovesFromAllowlist)
+{
+    HubState s;
+    HubStateTestAccess::on_channel_access_opened(s, "ch.auth", 0);
+    HubStateTestAccess::on_consumer_authorized(s, "ch.auth", "PUB-A");
+    HubStateTestAccess::on_consumer_authorized(s, "ch.auth", "PUB-B");
+    HubStateTestAccess::on_consumer_revoked(s, "ch.auth", "PUB-A");
+    auto a = s.channel_access("ch.auth");
+    ASSERT_TRUE(a.has_value());
+    EXPECT_EQ(a->authorized_consumer_pubkeys.size(), 1u);
+    EXPECT_EQ(a->authorized_consumer_pubkeys.count("PUB-A"), 0u);
+    EXPECT_EQ(a->authorized_consumer_pubkeys.count("PUB-B"), 1u);
+}
+
+TEST(HubStateChannelAccess, ConsumerRevoked_Idempotent_NoSuchPubkey)
+{
+    HubState s;
+    HubStateTestAccess::on_channel_access_opened(s, "ch.auth", 0);
+    HubStateTestAccess::on_consumer_authorized(s, "ch.auth", "PUB-A");
+    // Revoke a pubkey that was never authorized — no-op.
+    HubStateTestAccess::on_consumer_revoked(s, "ch.auth", "PUB-NEVER");
+    auto a = s.channel_access("ch.auth");
+    ASSERT_TRUE(a.has_value());
+    EXPECT_EQ(a->authorized_consumer_pubkeys.size(), 1u);
+    EXPECT_EQ(a->authorized_consumer_pubkeys.count("PUB-A"), 1u);
+}
+
+TEST(HubStateChannelAccess, ConsumerAuthorized_NoOpWithoutChannelAccess)
+{
+    // Per contract: if no access record exists, authorize/revoke are
+    // silently dropped (safe-default per HEP-0036 §I5).
+    HubState s;
+    HubStateTestAccess::on_consumer_authorized(s, "ch.no.such", "PUB-X");
+    EXPECT_FALSE(s.channel_access("ch.no.such").has_value());
+}
+
+TEST(HubStateChannelAccess, Close_Idempotent_NoSuchChannel)
+{
+    HubState s;
+    HubStateTestAccess::on_channel_access_closed(s, "ch.no.such"); // no-op, no crash
+    EXPECT_FALSE(s.channel_access("ch.no.such").has_value());
+}
+
+TEST(HubStateChannelAccess, MultiChannel_Isolated)
+{
+    HubState s;
+    HubStateTestAccess::on_channel_access_opened(s, "ch.A", 100);
+    HubStateTestAccess::on_channel_access_opened(s, "ch.B", 200);
+    HubStateTestAccess::on_consumer_authorized(s, "ch.A", "PUB-A1");
+    HubStateTestAccess::on_consumer_authorized(s, "ch.B", "PUB-B1");
+    HubStateTestAccess::on_consumer_authorized(s, "ch.B", "PUB-B2");
+
+    auto a = s.channel_access("ch.A");
+    auto b = s.channel_access("ch.B");
+    ASSERT_TRUE(a.has_value());
+    ASSERT_TRUE(b.has_value());
+    EXPECT_EQ(a->shm_secret, 100u);
+    EXPECT_EQ(b->shm_secret, 200u);
+    EXPECT_EQ(a->authorized_consumer_pubkeys.size(), 1u);
+    EXPECT_EQ(b->authorized_consumer_pubkeys.size(), 2u);
+
+    // Closing one doesn't affect the other.
+    HubStateTestAccess::on_channel_access_closed(s, "ch.A");
+    EXPECT_FALSE(s.channel_access("ch.A").has_value());
+    EXPECT_TRUE(s.channel_access("ch.B").has_value());
+}
+
+TEST(HubStateChannelAccess, InvalidChannelName_BumpsCounterAndNoOp)
+{
+    HubState s;
+    const auto &cnts_before = s.counters().msg_type_counts;
+    const auto before =
+        cnts_before.count("sys.invalid_identifier_rejected")
+            ? cnts_before.at("sys.invalid_identifier_rejected") : 0u;
+    HubStateTestAccess::on_channel_access_opened(s, "not a valid channel id", 0);
+    const auto &cnts_after = s.counters().msg_type_counts;
+    const auto after =
+        cnts_after.at("sys.invalid_identifier_rejected");
+    EXPECT_EQ(after, before + 1)
+        << "Invalid channel identifier must bump counter and no-op.";
+    EXPECT_FALSE(s.channel_access("not a valid channel id").has_value());
+}
+
+TEST(HubStateChannelAccess, EmptyPubkey_BumpsCounterAndNoOp)
+{
+    HubState s;
+    HubStateTestAccess::on_channel_access_opened(s, "ch.auth", 0);
+    const auto &cnts_before = s.counters().msg_type_counts;
+    const auto before =
+        cnts_before.count("sys.invalid_identifier_rejected")
+            ? cnts_before.at("sys.invalid_identifier_rejected") : 0u;
+    HubStateTestAccess::on_consumer_authorized(s, "ch.auth", "");
+    const auto &cnts_after = s.counters().msg_type_counts;
+    const auto after =
+        cnts_after.at("sys.invalid_identifier_rejected");
+    EXPECT_EQ(after, before + 1)
+        << "Empty pubkey must bump counter and no-op.";
+    auto a = s.channel_access("ch.auth");
+    ASSERT_TRUE(a.has_value());
+    EXPECT_TRUE(a->authorized_consumer_pubkeys.empty());
+}
+

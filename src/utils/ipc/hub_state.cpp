@@ -97,6 +97,13 @@ struct HubState::Impl
     std::unordered_map<std::string, ShmBlockRef>  shm_blocks;
     /// HEP-CORE-0034 §11.1 — owner-keyed schema records.
     std::map<SchemaKey, schema::SchemaRecord>     schemas;
+    /// HEP-CORE-0036 §4.1 — per-channel access scaffolding (allowlist
+    /// + SHM secret).  Broker-internal; NOT exposed through
+    /// `HubStateSnapshot` because callers that need it (broker handlers
+    /// for REG / CONSUMER_REG / CHANNEL_AUTH_UPDATE emission) all run
+    /// in the broker process and use the targeted `channel_access`
+    /// read accessor.
+    std::unordered_map<std::string, ChannelAccessEntry> channel_access_index;
     BrokerCounters                                counters;
 
     // Handler registries. Separate mutex so subscribe/unsubscribe and
@@ -212,6 +219,15 @@ BrokerCounters HubState::counters() const
 {
     std::shared_lock lk(pImpl->mu);
     return pImpl->counters;
+}
+
+std::optional<ChannelAccessEntry>
+HubState::channel_access(const std::string &channel_name) const
+{
+    std::shared_lock lk(pImpl->mu);
+    auto it = pImpl->channel_access_index.find(channel_name);
+    if (it == pImpl->channel_access_index.end()) return std::nullopt;
+    return it->second;
 }
 
 std::optional<schema::SchemaRecord>
@@ -1610,6 +1626,70 @@ void HubState::_on_peer_disconnected(const std::string &hub_uid)
         return;
     }
     _set_peer_disconnected(hub_uid);
+}
+
+// ─── Channel-access capability ops (HEP-CORE-0036 §4.1) ─────────────────────
+
+void HubState::_on_channel_access_opened(const std::string &channel_name,
+                                          std::uint64_t      shm_secret)
+{
+    if (!is_valid_identifier(channel_name, IdentifierKind::Channel))
+    {
+        bump_invalid_identifier(*pImpl);
+        return;
+    }
+    std::unique_lock lk(pImpl->mu);
+    // Idempotent open: if the channel already has an access record,
+    // do not overwrite — the existing allowlist + shm_secret are the
+    // canonical record (a re-open would silently rotate the SHM
+    // secret out from under attached consumers).
+    auto [it, inserted] = pImpl->channel_access_index.try_emplace(
+        channel_name, ChannelAccessEntry{});
+    if (inserted)
+    {
+        it->second.shm_secret = shm_secret;
+    }
+}
+
+void HubState::_on_channel_access_closed(const std::string &channel_name)
+{
+    if (!is_valid_identifier(channel_name, IdentifierKind::Channel))
+    {
+        bump_invalid_identifier(*pImpl);
+        return;
+    }
+    std::unique_lock lk(pImpl->mu);
+    pImpl->channel_access_index.erase(channel_name);
+}
+
+void HubState::_on_consumer_authorized(const std::string &channel_name,
+                                        const std::string &pubkey_z85)
+{
+    if (!is_valid_identifier(channel_name, IdentifierKind::Channel) ||
+        pubkey_z85.empty())
+    {
+        bump_invalid_identifier(*pImpl);
+        return;
+    }
+    std::unique_lock lk(pImpl->mu);
+    auto it = pImpl->channel_access_index.find(channel_name);
+    if (it == pImpl->channel_access_index.end()) return; // no-op per contract
+    it->second.authorized_consumer_pubkeys.insert(pubkey_z85);
+}
+
+void HubState::_on_consumer_revoked(const std::string &channel_name,
+                                     const std::string &pubkey_z85)
+{
+    if (!is_valid_identifier(channel_name, IdentifierKind::Channel) ||
+        pubkey_z85.empty())
+    {
+        bump_invalid_identifier(*pImpl);
+        return;
+    }
+    std::unique_lock lk(pImpl->mu);
+    auto it = pImpl->channel_access_index.find(channel_name);
+    if (it == pImpl->channel_access_index.end()) return; // no-op per contract
+    it->second.authorized_consumer_pubkeys.erase(pubkey_z85);
 }
 
 void HubState::_on_message_processed(const std::string &msg_type,

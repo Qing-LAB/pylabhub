@@ -36,12 +36,19 @@ work is the active sprint).
 CTRL ROUTER, and pushes `CHANNEL_AUTH_UPDATE` snapshots when consumer
 membership changes.  Steps:
 
-1. **D1 — `ChannelAccessIndex` in `BrokerServiceImpl`.**  Per HEP-0036
-   §4.1: two fields per entry (`authorized_consumer_pubkeys` +
-   `shm_secret`).  Producer pubkey + endpoint live on
-   `ChannelEntry::producers[i]` (existing fields `zmq_pubkey` +
-   `zmq_node_endpoint`, hub_state.hpp:184/194) — no duplication.
-   Updated on REG_REQ / CONSUMER_REG_REQ / DEREG_REQ accept paths.
+1. **D1 — `ChannelAccessIndex` in `HubState`** (per HEP-CORE-0036 §4.1
+   line 388: `channel_access_index_` lives in HubState, NOT in
+   BrokerServiceImpl).  Two fields per entry
+   (`authorized_consumer_pubkeys` + `shm_secret`).  Producer pubkey
+   + endpoint live on `ChannelEntry::producers[i]` (existing fields
+   `zmq_pubkey` + `zmq_node_endpoint`, hub_state.hpp:184/194) — no
+   duplication.  Mutator API on HubState: `_on_producer_registered`
+   creates entry + generates `shm_secret` if transport=shm;
+   `_on_consumer_authorized` writes pubkey to allowlist;
+   `_on_consumer_revoked` removes pubkey; entry deleted by the
+   existing last-producer atomic-teardown path
+   (`_on_channel_closed`).  Read accessor: `find_channel_access`.
+   L2 tests for the mutators (HubStateOps pattern).
 2. **D2 — Broker CTRL ROUTER ZAP handler.**  Installed against the
    broker-side `KnownRoleAllowlist` (already loaded by Phase B from
    `<hub_dir>/vault/known_roles.json`).  Refuses every CTRL hello

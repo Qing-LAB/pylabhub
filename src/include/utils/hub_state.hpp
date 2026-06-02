@@ -49,6 +49,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>  // std::pair
 #include <vector>
 
@@ -240,6 +241,27 @@ struct ChannelTransportInvariants
     std::string    shm_name;
     ChannelPattern pattern{ChannelPattern::PubSub};
     std::string    data_transport{"shm"};
+};
+
+/// HEP-CORE-0036 §4.1 — per-channel access scaffolding.  Two fields:
+///   - `authorized_consumer_pubkeys`: Z85 (40-char) consumer pubkeys
+///     allowed to pull from this channel.  Producer's ZAP handler
+///     enforces; updated via CHANNEL_AUTH_UPDATE pushes (HEP-0036 §6.5).
+///     Per-channel, NOT per-producer — a consumer authorized for a
+///     channel can connect to ANY producer of that channel (fan-in
+///     per HEP-CORE-0023 §2.1.1).
+///   - `shm_secret`: SHM-only broker-generated guard secret for the
+///     DataBlock (HEP-CORE-0002).  Zero when transport != "shm".
+///     Unrelated to CURVE; SHM auth uses this secret token, not
+///     pubkey allowlists.
+///
+/// Per-producer identity (pubkey + endpoint) is NOT duplicated here —
+/// it lives on `ProducerEntry::zmq_pubkey` + `zmq_node_endpoint`.
+/// Channel-scope duplication would collapse fan-in.
+struct ChannelAccessEntry
+{
+    std::unordered_set<std::string> authorized_consumer_pubkeys;
+    std::uint64_t                   shm_secret{0};
 };
 
 enum class AddProducerResult
@@ -1220,6 +1242,15 @@ class PYLABHUB_UTILS_EXPORT HubState
     [[nodiscard]] std::optional<ShmBlockRef>  shm_block(const std::string &channel_name) const;
     [[nodiscard]] BrokerCounters              counters() const;
 
+    /// HEP-CORE-0036 §4.1 — per-channel access scaffolding.  Returns
+    /// the channel's `ChannelAccessEntry` if the broker has opened an
+    /// access record for it (via `_on_channel_access_open`), or
+    /// `std::nullopt` if no record exists.  Broker uses this to build
+    /// CONSUMER_REG_ACK + CHANNEL_AUTH_UPDATE snapshots.  Read under
+    /// shared lock; value copy.
+    [[nodiscard]] std::optional<ChannelAccessEntry>
+    channel_access(const std::string &channel_name) const;
+
     /// Wave M1.4 (2026-05-11) — per-channel metrics aggregator.
     ///
     /// Reads `RolePresence::latest_metrics` from every producer and
@@ -1510,6 +1541,52 @@ class PYLABHUB_UTILS_EXPORT HubState
     void _on_message_processed(const std::string &msg_type,
                                std::size_t        bytes_in,
                                std::size_t        bytes_out);
+
+    // ── Channel-access capability ops (HEP-CORE-0036 §4.1) ──────────────
+    //
+    // The broker maintains a per-channel `ChannelAccessEntry` keyed by
+    // channel name: the authorized-consumer-pubkey set + the SHM secret
+    // (for SHM channels).  These four ops are the broker's write
+    // path; `channel_access(name)` above is the read path.
+    //
+    // All four are idempotent: re-opening, re-closing, re-authorizing
+    // the same pubkey, or revoking a pubkey not present is a silent
+    // no-op (per HEP-0036 §I5 — security gates degrade to safe states).
+
+    /// Open a channel-access record on producer REG_REQ accept (after
+    /// `_on_producer_added` succeeded for a fresh channel).  Idempotent:
+    /// no-op if a record already exists for `channel_name`.
+    ///
+    /// @param shm_secret Broker-generated random uint64.  Zero when
+    ///                   the channel's `data_transport` != "shm".
+    ///                   Non-zero for SHM channels — consumers receive
+    ///                   it via `CONSUMER_REG_ACK.shm_secret` (HEP-0036
+    ///                   §6.4) and pass it as the DataBlock guard token
+    ///                   (HEP-CORE-0002).
+    void _on_channel_access_opened(const std::string &channel_name,
+                                    std::uint64_t      shm_secret);
+
+    /// Delete a channel-access record on last-producer atomic teardown
+    /// (called from the broker after `_on_channel_closed` /
+    /// `_on_producer_dropped` returned `channel_now_empty == true`).
+    /// Idempotent: no-op if no record exists.
+    void _on_channel_access_closed(const std::string &channel_name);
+
+    /// Add a consumer pubkey to the channel's allowlist on
+    /// CONSUMER_REG_REQ accept.  Idempotent: no-op if `pubkey_z85` is
+    /// already in the allowlist.  No-op if no channel-access record
+    /// exists (callers should `_on_channel_access_opened` first, but
+    /// out-of-order calls are silently dropped per the safe-default
+    /// invariant).
+    void _on_consumer_authorized(const std::string &channel_name,
+                                  const std::string &pubkey_z85);
+
+    /// Remove a consumer pubkey from the channel's allowlist on
+    /// CONSUMER_DEREG_REQ / consumer-presence pending-timeout /
+    /// consumer-PID-death.  Idempotent: no-op if `pubkey_z85` is not
+    /// in the allowlist, or no channel-access record exists.
+    void _on_consumer_revoked(const std::string &channel_name,
+                               const std::string &pubkey_z85);
 
     // ── Schema-registry capability ops (HEP-CORE-0034 §11) ──────────────
     //
