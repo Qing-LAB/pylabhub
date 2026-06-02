@@ -34,6 +34,7 @@
 #include <ostream>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace pylabhub::hub_cli
 {
@@ -67,6 +68,22 @@ struct HubArgs
     bool validate_only{false};  ///< --validate
     bool keygen_only{false};    ///< --keygen
     bool init_only{false};      ///< --init
+
+    // ── PeerAdmission Phase B — operator allowlist CLI ─────────────────
+    /// --add-known-role <name> <uid> <role> <pubkey_z85>
+    bool add_known_role_only{false};
+    /// --revoke-known-role <uid>
+    bool revoke_known_role_only{false};
+    /// --list-known-roles
+    bool list_known_roles_only{false};
+
+    /// Populated positional args for the three known-role ops above.
+    /// Order is invariant per op:
+    ///   add-known-role:    {name, uid, role, pubkey_z85}
+    ///   revoke-known-role: {uid}
+    ///   list-known-roles:  {}
+    /// Parser enforces arity; dispatcher consumes by position.
+    std::vector<std::string> known_role_args;
 };
 
 /**
@@ -102,6 +119,17 @@ inline void print_hub_usage(const char *prog, std::ostream &os = std::cout)
         << "  --init [dir]       Create hub directory with config template; exit 0\n"
         << "  --validate         Validate config + script; exit 0 on success\n"
         << "  --keygen           Generate hub vault (broker keypair + admin token); exit 0\n"
+        << "\n"
+        << "Known-roles allowlist (PeerAdmission Phase B; HEP-CORE-0035 §4.5):\n"
+        << "  --add-known-role <name> <uid> <role> <pubkey_z85>\n"
+        << "                     Add a role to <hub_dir>/vault/known_roles.json; exit 0.\n"
+        << "                     <role> ∈ {producer, consumer, processor, any}.\n"
+        << "                     <pubkey_z85> is the 40-char Z85-encoded CURVE pubkey\n"
+        << "                     (obtain via `plh_role --print-pubkey`).\n"
+        << "                     Re-add with same <uid> rotates the pubkey (no error).\n"
+        << "  --revoke-known-role <uid>\n"
+        << "                     Remove the entry matching <uid>; exit 0 even if absent.\n"
+        << "  --list-known-roles Print the allowlist in tabular form; exit 0.\n"
         << "\n"
         << "Common options:\n"
         << "  <hub_dir>          Hub directory containing hub.json\n"
@@ -203,6 +231,35 @@ inline ParseResult parse_hub_args(int argc, char *argv[],
         {
             args.keygen_only = true;
         }
+        else if (arg == "--add-known-role")
+        {
+            // Expect exactly 4 positionals after: name, uid, role, pubkey.
+            if (i + 4 >= argc)
+                return fail_with_usage(
+                    "Error: --add-known-role requires 4 args: "
+                    "<name> <uid> <role> <pubkey_z85>\n\n");
+            args.add_known_role_only = true;
+            args.known_role_args.assign({
+                std::string(argv[i + 1]),
+                std::string(argv[i + 2]),
+                std::string(argv[i + 3]),
+                std::string(argv[i + 4]),
+            });
+            i += 4;
+        }
+        else if (arg == "--revoke-known-role")
+        {
+            if (i + 1 >= argc)
+                return fail_with_usage(
+                    "Error: --revoke-known-role requires 1 arg: <uid>\n\n");
+            args.revoke_known_role_only = true;
+            args.known_role_args.assign({std::string(argv[i + 1])});
+            i += 1;
+        }
+        else if (arg == "--list-known-roles")
+        {
+            args.list_known_roles_only = true;
+        }
         else if (arg[0] != '-')
         {
             if (!args.hub_dir.empty())
@@ -219,14 +276,18 @@ inline ParseResult parse_hub_args(int argc, char *argv[],
         }
     }
 
-    // ── Mode exclusion: at most one of --init / --validate / --keygen ──
+    // ── Mode exclusion: at most one mode flag ──────────────────────────
     const int mode_count = static_cast<int>(args.init_only) +
                            static_cast<int>(args.validate_only) +
-                           static_cast<int>(args.keygen_only);
+                           static_cast<int>(args.keygen_only) +
+                           static_cast<int>(args.add_known_role_only) +
+                           static_cast<int>(args.revoke_known_role_only) +
+                           static_cast<int>(args.list_known_roles_only);
     if (mode_count > 1)
         return fail_with_usage(
-            "Error: --init, --validate, and --keygen are mutually "
-            "exclusive (at most one mode).\n\n");
+            "Error: mode flags (--init, --validate, --keygen, "
+            "--add-known-role, --revoke-known-role, --list-known-roles) "
+            "are mutually exclusive (at most one mode).\n\n");
 
     // ── Init-only flags must not appear outside --init ─────────────────
     if (!args.init_only &&
@@ -237,6 +298,9 @@ inline ParseResult parse_hub_args(int argc, char *argv[],
             "only valid with --init.\n\n");
 
     // ── Required positional for non-init modes ─────────────────────────
+    // The known-role ops need hub_dir (to locate
+    // <hub_dir>/vault/known_roles.json); all other run modes need it
+    // too.  Only --init can synthesize a new hub_dir.
     if (!args.init_only && args.config_path.empty() && args.hub_dir.empty())
         return fail_with_usage(
             "Error: specify a hub directory, --init, or --config <path>\n\n");
