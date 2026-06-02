@@ -135,6 +135,14 @@ struct ZapRouter::Impl
     /// Serializes module-registration + sock create/destruct against
     /// concurrent `register_domain` calls.
     std::mutex lifecycle_mu;
+
+    /// Lifetime-cumulative ZAP-reply counters.  See zap_router.hpp
+    /// docstrings.  Incremented in `pump_one` exactly once per reply
+    /// sent.  Reset to 0 at module shutdown so re-init within one
+    /// process (test harnesses with finalize+reinit cycles) starts
+    /// from a known state.
+    std::atomic<std::uint64_t> allowed_count{0};
+    std::atomic<std::uint64_t> denied_count{0};
 };
 
 ZapRouter::ZapRouter() : impl_(std::make_unique<Impl>()) {}
@@ -197,6 +205,10 @@ void ZapRouter::on_module_shutdown_()
         impl_->sock.reset();
         LOGGER_INFO("ZapRouter: REP socket closed");
     }
+    // Reset observability counters so a finalize+reinit cycle within
+    // one process (test harnesses) starts from zero.
+    impl_->allowed_count.store(0, std::memory_order_relaxed);
+    impl_->denied_count.store(0, std::memory_order_relaxed);
     // Allow re-registration in a future LifecycleGuard cycle (test
     // harnesses that finalize + re-initialize within one process).
     impl_->module_registered.store(false, std::memory_order_release);
@@ -289,6 +301,16 @@ std::size_t ZapRouter::registered_domain_count_for_test() const
     return impl_->registered.size();
 }
 
+std::uint64_t ZapRouter::allowed_count() const noexcept
+{
+    return impl_->allowed_count.load(std::memory_order_relaxed);
+}
+
+std::uint64_t ZapRouter::denied_count() const noexcept
+{
+    return impl_->denied_count.load(std::memory_order_relaxed);
+}
+
 // ── pump_one ────────────────────────────────────────────────────────────────
 
 bool ZapRouter::pump_one(std::chrono::milliseconds timeout)
@@ -323,15 +345,58 @@ bool ZapRouter::pump_one(std::chrono::milliseconds timeout)
     if (!rr.has_value())
         return false;  // RCVTIMEO
 
-    if (req.size() < kZapMinReqFrames)
+    // Empty multipart cannot happen on a healthy REP socket (recv would
+    // have failed), but defensively: if it did, we can't construct a
+    // reply (no request_id to echo) and the socket is wedged.  Log and
+    // bail; the next pump cycle will surface EFSM on recv.
+    if (req.empty())
     {
-        LOGGER_WARN("ZapRouter::pump_one: malformed ZAP request "
-                    "(frame_count={})", req.size());
+        LOGGER_ERROR("ZapRouter::pump_one: recv_multipart returned 0 "
+                     "frames — REP socket FSM is wedged.  ZAP will not "
+                     "serve further requests until the module reloads");
+        impl_->denied_count.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
+
+    // **C-Z1 fix.**  A truncated request (1..6 frames) must still
+    // receive a reply, otherwise the REP socket is left in the SEND
+    // state and the next recv throws EFSM — wedging ZAP for the
+    // entire process.  Echo whichever frames we have; pin a "400
+    // Malformed request" status so the client (libzmq or otherwise)
+    // surfaces a coherent error.
+    if (req.size() < kZapMinReqFrames)
+    {
+        const std::string request_id =
+            (req.size() > kZapFrameRequestId)
+                ? req[kZapFrameRequestId].to_string()
+                : std::string{};
+        LOGGER_WARN("ZapRouter::pump_one: malformed ZAP request "
+                    "(frame_count={}) — replying 400 to keep REP "
+                    "socket in valid FSM state", req.size());
+        send_zap_reply(sock, request_id, "400",
+                       "Malformed request", "");
+        impl_->denied_count.fetch_add(1, std::memory_order_relaxed);
+        return true;
+    }
+
+    // **H-Z1 fix.**  RFC 27 reserves frame [0] for the protocol
+    // version.  Anything other than "1.0" is by definition outside
+    // the protocol we implement; surface a deterministic 400 rather
+    // than reading downstream frames under unknown semantics.
+    const std::string version    = req[0].to_string();
     const std::string request_id = req[kZapFrameRequestId].to_string();
-    const std::string domain     = req[kZapFrameDomain].to_string();
-    const std::string mechanism  = req[kZapFrameMechanism].to_string();
+    if (version != kZapVersion)
+    {
+        LOGGER_WARN("ZapRouter::pump_one: unsupported ZAP version "
+                    "'{}' (expected '{}') — rejecting", version,
+                    kZapVersion);
+        send_zap_reply(sock, request_id, "400", "Bad version", "");
+        impl_->denied_count.fetch_add(1, std::memory_order_relaxed);
+        return true;
+    }
+
+    const std::string domain    = req[kZapFrameDomain].to_string();
+    const std::string mechanism = req[kZapFrameMechanism].to_string();
 
     if (mechanism != "CURVE")
     {
@@ -339,6 +404,7 @@ bool ZapRouter::pump_one(std::chrono::milliseconds timeout)
                     "mechanism '{}' for domain '{}'", mechanism, domain);
         send_zap_reply(sock, request_id, "400",
                        "Unsupported mechanism", "");
+        impl_->denied_count.fetch_add(1, std::memory_order_relaxed);
         return true;
     }
 
@@ -352,6 +418,7 @@ bool ZapRouter::pump_one(std::chrono::milliseconds timeout)
                     "pubkey)", domain, cred.size(), kCurvePubkeyRawBytes);
         send_zap_reply(sock, request_id, "400",
                        "Bad credentials", "");
+        impl_->denied_count.fetch_add(1, std::memory_order_relaxed);
         return true;
     }
 
@@ -369,16 +436,23 @@ bool ZapRouter::pump_one(std::chrono::milliseconds timeout)
                     "zap_domain or unsolicited probe)", domain);
         send_zap_reply(sock, request_id, "400",
                        "Domain not registered", "");
+        impl_->denied_count.fetch_add(1, std::memory_order_relaxed);
         return true;
     }
 
     const bool ok = admission->is_peer_allowed(
         PeerIdentity{"curve", z85});
     if (ok)
+    {
         send_zap_reply(sock, request_id, "200", "OK", z85);
+        impl_->allowed_count.fetch_add(1, std::memory_order_relaxed);
+    }
     else
+    {
         send_zap_reply(sock, request_id, "400",
                        "Not in allowlist", "");
+        impl_->denied_count.fetch_add(1, std::memory_order_relaxed);
+    }
     return true;
 }
 

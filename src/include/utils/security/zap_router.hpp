@@ -55,6 +55,7 @@
 #include "utils/security/peer_admission.hpp"
 
 #include <chrono>
+#include <cstdint>
 #include <memory>
 #include <string>
 
@@ -127,6 +128,22 @@ public:
     /// when the module is unloaded (i.e., not yet first-registered
     /// in this process).
     [[nodiscard]] std::size_t registered_domain_count_for_test() const;
+
+    /// Observability — count of ZAP requests this `ZapRouter` has
+    /// served with an ALLOW reply (status "200") since the module was
+    /// loaded.  Lifetime-cumulative; resets only on module shutdown.
+    /// Used by tests to pin that the allow PATH actually executed
+    /// (vs. a delivery succeeding by coincidence); operators may also
+    /// monitor it to verify CURVE handshakes are flowing.
+    [[nodiscard]] std::uint64_t allowed_count() const noexcept;
+
+    /// Observability — count of ZAP requests this `ZapRouter` has
+    /// served with a DENY reply (status "400" — any of: malformed
+    /// request, bad version, unsupported mechanism, bad credentials,
+    /// unknown domain, peer not in allowlist).  Used by tests to pin
+    /// that a deny PATH executed (vs. a timeout where nothing
+    /// happened).  Lifetime-cumulative; resets only on module shutdown.
+    [[nodiscard]] std::uint64_t denied_count() const noexcept;
 
     ZapRouter(const ZapRouter &)            = delete;
     ZapRouter &operator=(const ZapRouter &) = delete;

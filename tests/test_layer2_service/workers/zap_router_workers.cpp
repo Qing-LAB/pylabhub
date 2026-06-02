@@ -23,6 +23,7 @@
 #include "utils/zmq_context.hpp"
 
 #include "cppzmq/zmq.hpp"
+#include "cppzmq/zmq_addon.hpp"  // recv_multipart
 #include <zmq.h>
 
 #include "shared_test_helpers.h"
@@ -34,10 +35,13 @@
 #include <array>
 #include <chrono>
 #include <cstring>
+#include <iterator>
 #include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <thread>
+#include <vector>
 
 using pylabhub::tests::helper::run_gtest_worker;
 using pylabhub::utils::FileLock;
@@ -337,6 +341,493 @@ int pump_one_when_unloaded_returns_false(const char * /*tmpdir*/)
         pylabhub::hub::GetZMQContextModule());
 }
 
+// ── Direct REQ-side helpers for raw frame tests ────────────────────────────
+//
+// These tests bypass the libzmq CURVE handshake entirely and drive the
+// ZAP REP socket directly via a sibling REQ socket on the same ZMQ
+// context.  This is the only way to pin our handling of frames that
+// libzmq itself would never produce (truncated requests, unsupported
+// versions).  In production no caller does this — but a libzmq bug, an
+// internal corruption, or a future ZMQ wire-format upgrade would, and
+// the server must remain coherent.
+
+constexpr const char *kZapInproc = "inproc://zeromq.zap.01";
+
+zmq::socket_t make_req_to_zap()
+{
+    zmq::socket_t req(pylabhub::hub::get_zmq_context(),
+                      zmq::socket_type::req);
+    req.set(zmq::sockopt::linger, 0);
+    req.set(zmq::sockopt::rcvtimeo, 1500);  // generous; tests rely on
+                                              // the REP side replying
+    req.connect(kZapInproc);
+    return req;
+}
+
+void send_multipart(zmq::socket_t &sock,
+                    const std::vector<std::string> &frames)
+{
+    for (std::size_t i = 0; i < frames.size(); ++i)
+    {
+        const auto flags = (i + 1 < frames.size())
+                               ? zmq::send_flags::sndmore
+                               : zmq::send_flags::none;
+        zmq::message_t m(frames[i].size());
+        if (!frames[i].empty())
+            std::memcpy(m.data(), frames[i].data(), frames[i].size());
+        (void) sock.send(m, flags);
+    }
+}
+
+/// Receive a ZAP reply from @p sock.  Returns the 6 reply frames or
+/// empty vector on timeout/error.  Pins the wire contract — caller
+/// checks every frame.
+std::vector<std::string> recv_zap_reply(zmq::socket_t &sock)
+{
+    std::vector<zmq::message_t> raw;
+    try
+    {
+        auto rr = zmq::recv_multipart(sock, std::back_inserter(raw),
+                                       zmq::recv_flags::none);
+        if (!rr.has_value()) return {};
+    }
+    catch (const zmq::error_t &)
+    {
+        return {};
+    }
+    std::vector<std::string> out;
+    out.reserve(raw.size());
+    for (auto &m : raw) out.push_back(m.to_string());
+    return out;
+}
+
+/// Hand-craft a valid 7-frame ZAP REQ for the given domain, mechanism,
+/// and 32-byte raw credentials.  RFC 27 frame order.
+std::vector<std::string>
+make_zap_req(const std::string &version,
+             const std::string &request_id,
+             const std::string &domain,
+             const std::string &mechanism,
+             const std::string &raw_credentials)
+{
+    return {
+        version,
+        request_id,
+        domain,
+        std::string{},     // address (peer IP) — ignored
+        std::string{},     // identity — ignored
+        mechanism,
+        raw_credentials,
+    };
+}
+
+std::string make_raw_pubkey_from_z85(const std::string &z85)
+{
+    std::array<std::uint8_t, 32> raw{};
+    if (zmq_z85_decode(raw.data(), z85.c_str()) == nullptr)
+        throw std::runtime_error("zmq_z85_decode failed");
+    return std::string(reinterpret_cast<const char *>(raw.data()),
+                       raw.size());
+}
+
+// ── New scenarios ─────────────────────────────────────────────────────────
+
+/// **C-Z1 regression test.**  A REQ that sends fewer than 7 frames must
+/// receive a 6-frame "400 Malformed request" reply, NOT silently wedge
+/// the REP socket FSM.  Then a follow-up valid REQ must still get a
+/// proper reply — proves the socket recovered.
+int pump_one_malformed_short_request_replies_and_recovers(const char *)
+{
+    return run_gtest_worker(
+        [&]() {
+            const auto [server_pub, server_sec] = make_keypair();
+            const auto [client_pub, client_sec] = make_keypair();
+            const std::string domain = "test.zap.malformed.recovery";
+
+            InMemoryAdmission admission;
+            PeerAllowlist al;
+            al.peers.insert(PeerIdentity{"curve", client_pub});
+            ASSERT_TRUE(admission.set_peer_allowlist(al));
+
+            auto handle = ZapRouter::instance().register_domain(
+                domain, &admission);
+            ASSERT_TRUE(handle.is_active());
+
+            ZapPumpThread pump;
+
+            const auto baseline_denied =
+                ZapRouter::instance().denied_count();
+            const auto baseline_allowed =
+                ZapRouter::instance().allowed_count();
+
+            // ── 1. Send a truncated 3-frame request (version + req_id
+            //       + domain only).  RFC 27 demands 7.
+            {
+                zmq::socket_t req = make_req_to_zap();
+                send_multipart(req, {"1.0", "req-truncated-1", domain});
+                auto reply = recv_zap_reply(req);
+
+                // Pin: the REP side MUST have replied with the
+                // 6-frame "400 Malformed request" envelope.
+                ASSERT_EQ(reply.size(), 6u)
+                    << "REP socket wedged — no reply received for "
+                       "malformed REQ.  This is the C-Z1 bug.";
+                EXPECT_EQ(reply[0], "1.0");
+                EXPECT_EQ(reply[1], "req-truncated-1");
+                EXPECT_EQ(reply[2], "400");
+                EXPECT_EQ(reply[3], "Malformed request");
+                EXPECT_EQ(reply[4], "");  // user_id empty on deny
+                EXPECT_EQ(reply[5], "");  // metadata empty
+            }
+
+            // ── 2. Pump must have counted the deny.
+            //       (Brief wait for the relaxed-order store to land.)
+            const auto deadline = std::chrono::steady_clock::now() +
+                                  std::chrono::milliseconds(500);
+            while (ZapRouter::instance().denied_count() ==
+                       baseline_denied &&
+                   std::chrono::steady_clock::now() < deadline)
+                std::this_thread::sleep_for(
+                    std::chrono::milliseconds(10));
+            EXPECT_EQ(ZapRouter::instance().denied_count(),
+                      baseline_denied + 1u)
+                << "Malformed-request DENY path must increment the "
+                   "denied counter.";
+
+            // ── 3. Socket recovery probe: send a VALID 7-frame REQ
+            //       with the allowed peer's pubkey.  Must receive
+            //       a "200 OK" reply.
+            {
+                zmq::socket_t req = make_req_to_zap();
+                send_multipart(req, make_zap_req(
+                    "1.0", "req-recovery-1", domain, "CURVE",
+                    make_raw_pubkey_from_z85(client_pub)));
+                auto reply = recv_zap_reply(req);
+
+                ASSERT_EQ(reply.size(), 6u)
+                    << "Follow-up valid REQ received no reply — REP "
+                       "socket is wedged.  C-Z1 fix did not recover.";
+                EXPECT_EQ(reply[0], "1.0");
+                EXPECT_EQ(reply[1], "req-recovery-1");
+                EXPECT_EQ(reply[2], "200");
+                EXPECT_EQ(reply[3], "OK");
+                EXPECT_EQ(reply[4], client_pub);  // user_id = pubkey
+            }
+
+            // ── 4. Allow counter must reflect the recovery probe.
+            const auto deadline2 = std::chrono::steady_clock::now() +
+                                   std::chrono::milliseconds(500);
+            while (ZapRouter::instance().allowed_count() ==
+                       baseline_allowed &&
+                   std::chrono::steady_clock::now() < deadline2)
+                std::this_thread::sleep_for(
+                    std::chrono::milliseconds(10));
+            EXPECT_EQ(ZapRouter::instance().allowed_count(),
+                      baseline_allowed + 1u)
+                << "Recovery valid-REQ ALLOW path must increment the "
+                   "allowed counter.";
+        },
+        "zap_router::pump_one_malformed_short_request_replies_and_recovers",
+        Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(),
+        JsonConfig::GetLifecycleModule(),
+        pylabhub::hub::GetZMQContextModule());
+}
+
+/// **H-Z1 regression test.**  A REQ with version != "1.0" must be
+/// rejected with "400 Bad version", not silently processed as 1.0.
+int pump_one_bad_version_replies_400(const char *)
+{
+    return run_gtest_worker(
+        [&]() {
+            const auto [client_pub, client_sec] = make_keypair();
+            const std::string domain = "test.zap.bad.version";
+
+            InMemoryAdmission admission;
+            PeerAllowlist al;
+            al.peers.insert(PeerIdentity{"curve", client_pub});
+            ASSERT_TRUE(admission.set_peer_allowlist(al));
+
+            auto handle = ZapRouter::instance().register_domain(
+                domain, &admission);
+            ZapPumpThread pump;
+
+            const auto baseline_denied =
+                ZapRouter::instance().denied_count();
+
+            zmq::socket_t req = make_req_to_zap();
+            // Same shape as a real CURVE REQ but version "2.0" —
+            // libzmq will never produce this today but a future
+            // protocol bump might.
+            send_multipart(req, make_zap_req(
+                "2.0", "req-badver-1", domain, "CURVE",
+                make_raw_pubkey_from_z85(client_pub)));
+            auto reply = recv_zap_reply(req);
+
+            ASSERT_EQ(reply.size(), 6u);
+            EXPECT_EQ(reply[0], "1.0");          // server replies in 1.0
+            EXPECT_EQ(reply[1], "req-badver-1");
+            EXPECT_EQ(reply[2], "400");
+            EXPECT_EQ(reply[3], "Bad version");
+            EXPECT_EQ(reply[4], "");
+
+            const auto deadline = std::chrono::steady_clock::now() +
+                                  std::chrono::milliseconds(500);
+            while (ZapRouter::instance().denied_count() ==
+                       baseline_denied &&
+                   std::chrono::steady_clock::now() < deadline)
+                std::this_thread::sleep_for(
+                    std::chrono::milliseconds(10));
+            EXPECT_EQ(ZapRouter::instance().denied_count(),
+                      baseline_denied + 1u);
+
+            // Follow-up valid REQ proves the socket is still alive.
+            zmq::socket_t req2 = make_req_to_zap();
+            send_multipart(req2, make_zap_req(
+                "1.0", "req-after-badver", domain, "CURVE",
+                make_raw_pubkey_from_z85(client_pub)));
+            auto reply2 = recv_zap_reply(req2);
+            ASSERT_EQ(reply2.size(), 6u);
+            EXPECT_EQ(reply2[2], "200");
+        },
+        "zap_router::pump_one_bad_version_replies_400",
+        Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(),
+        JsonConfig::GetLifecycleModule(),
+        pylabhub::hub::GetZMQContextModule());
+}
+
+/// Pins the existing non-CURVE-mechanism deny path + counter.
+int pump_one_non_curve_mechanism_replies_400(const char *)
+{
+    return run_gtest_worker(
+        [&]() {
+            const std::string domain = "test.zap.plain.mech";
+            InMemoryAdmission admission;
+            auto handle = ZapRouter::instance().register_domain(
+                domain, &admission);
+            ZapPumpThread pump;
+
+            const auto baseline_denied =
+                ZapRouter::instance().denied_count();
+
+            zmq::socket_t req = make_req_to_zap();
+            // PLAIN mechanism: credentials are username + password
+            // strings, but the size of the credentials field doesn't
+            // matter — mechanism alone triggers the reject.
+            send_multipart(req, make_zap_req(
+                "1.0", "req-plain-1", domain, "PLAIN",
+                std::string("user\0pass", 9)));
+            auto reply = recv_zap_reply(req);
+
+            ASSERT_EQ(reply.size(), 6u);
+            EXPECT_EQ(reply[1], "req-plain-1");
+            EXPECT_EQ(reply[2], "400");
+            EXPECT_EQ(reply[3], "Unsupported mechanism");
+
+            const auto deadline = std::chrono::steady_clock::now() +
+                                  std::chrono::milliseconds(500);
+            while (ZapRouter::instance().denied_count() ==
+                       baseline_denied &&
+                   std::chrono::steady_clock::now() < deadline)
+                std::this_thread::sleep_for(
+                    std::chrono::milliseconds(10));
+            EXPECT_EQ(ZapRouter::instance().denied_count(),
+                      baseline_denied + 1u);
+        },
+        "zap_router::pump_one_non_curve_mechanism_replies_400",
+        Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(),
+        JsonConfig::GetLifecycleModule(),
+        pylabhub::hub::GetZMQContextModule());
+}
+
+/// Real CURVE handshake.  Denied peer → denied_count must increment.
+/// This converts the "blocked-by-timeout" assertion of the original
+/// L2 ZmqQueue test into a direct path-pinning assertion at the
+/// ZapRouter layer: we observe the deny PATH executed, not just the
+/// absence of a delivery.
+int handshake_deny_increments_denied_counter(const char *)
+{
+    return run_gtest_worker(
+        [&]() {
+            const auto [server_pub, server_sec] = make_keypair();
+            const auto [denied_pub,  denied_sec] = make_keypair();
+            const std::string domain = "test.zap.deny.counter";
+
+            InMemoryAdmission admission;  // empty allowlist → deny-all
+            auto handle = ZapRouter::instance().register_domain(
+                domain, &admission);
+            auto pull = bind_pull_server(server_pub, server_sec, domain);
+            ZapPumpThread pump;
+
+            const auto baseline_denied =
+                ZapRouter::instance().denied_count();
+
+            // Drive a CURVE handshake that ZAP will deny.
+            const bool delivered = handshake_and_deliver(
+                pull, server_pub, denied_pub, denied_sec,
+                std::chrono::milliseconds(500));
+            EXPECT_FALSE(delivered);
+
+            // The handshake denial may take a moment to surface as a
+            // ZAP request.  Wait for the counter to bump.
+            const auto deadline = std::chrono::steady_clock::now() +
+                                  std::chrono::milliseconds(1500);
+            while (ZapRouter::instance().denied_count() ==
+                       baseline_denied &&
+                   std::chrono::steady_clock::now() < deadline)
+                std::this_thread::sleep_for(
+                    std::chrono::milliseconds(20));
+
+            EXPECT_GT(ZapRouter::instance().denied_count(),
+                      baseline_denied)
+                << "Denied CURVE handshake did NOT bump denied_count "
+                   "— the deny PATH did not execute.  A 'no message "
+                   "arrived' assertion alone cannot distinguish this "
+                   "from a network stall.";
+            EXPECT_EQ(ZapRouter::instance().allowed_count(), 0u);
+        },
+        "zap_router::handshake_deny_increments_denied_counter",
+        Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(),
+        JsonConfig::GetLifecycleModule(),
+        pylabhub::hub::GetZMQContextModule());
+}
+
+int handshake_allow_increments_allowed_counter(const char *)
+{
+    return run_gtest_worker(
+        [&]() {
+            const auto [server_pub, server_sec]  = make_keypair();
+            const auto [allowed_pub, allowed_sec] = make_keypair();
+            const std::string domain = "test.zap.allow.counter";
+
+            InMemoryAdmission admission;
+            PeerAllowlist al;
+            al.peers.insert(PeerIdentity{"curve", allowed_pub});
+            ASSERT_TRUE(admission.set_peer_allowlist(al));
+
+            auto handle = ZapRouter::instance().register_domain(
+                domain, &admission);
+            auto pull = bind_pull_server(server_pub, server_sec, domain);
+            ZapPumpThread pump;
+
+            const auto baseline_allowed =
+                ZapRouter::instance().allowed_count();
+
+            const bool delivered = handshake_and_deliver(
+                pull, server_pub, allowed_pub, allowed_sec,
+                std::chrono::milliseconds(1500));
+            EXPECT_TRUE(delivered);
+
+            const auto deadline = std::chrono::steady_clock::now() +
+                                  std::chrono::milliseconds(1500);
+            while (ZapRouter::instance().allowed_count() ==
+                       baseline_allowed &&
+                   std::chrono::steady_clock::now() < deadline)
+                std::this_thread::sleep_for(
+                    std::chrono::milliseconds(20));
+
+            EXPECT_GT(ZapRouter::instance().allowed_count(),
+                      baseline_allowed)
+                << "Successful CURVE handshake did NOT bump "
+                   "allowed_count — delivery happened by some other "
+                   "path (or libzmq never invoked ZAP).";
+        },
+        "zap_router::handshake_allow_increments_allowed_counter",
+        Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(),
+        JsonConfig::GetLifecycleModule(),
+        pylabhub::hub::GetZMQContextModule());
+}
+
+/// Handle move-construct: ownership transfers; source becomes inactive
+/// and its destructor is a no-op (no double-unregister).
+int handle_move_construct_transfers_ownership(const char *)
+{
+    return run_gtest_worker(
+        [&]() {
+            InMemoryAdmission a;
+            const std::string domain = "test.zap.move.ctor";
+
+            auto h1 = ZapRouter::instance().register_domain(domain, &a);
+            ASSERT_TRUE(h1.is_active());
+            ASSERT_EQ(h1.domain(), domain);
+            ASSERT_EQ(ZapRouter::instance()
+                          .registered_domain_count_for_test(), 1u);
+
+            ZapDomainHandle h2(std::move(h1));
+            EXPECT_FALSE(h1.is_active())
+                << "Moved-from handle must report inactive.";
+            EXPECT_TRUE(h2.is_active());
+            EXPECT_EQ(h2.domain(), domain);
+            // Routing-map count unchanged — same registration, new owner.
+            EXPECT_EQ(ZapRouter::instance()
+                          .registered_domain_count_for_test(), 1u);
+
+            // Destroy h2 → unregister; h1's destructor is then a no-op.
+            { ZapDomainHandle take_ownership = std::move(h2); }
+            EXPECT_EQ(ZapRouter::instance()
+                          .registered_domain_count_for_test(), 0u);
+        },
+        "zap_router::handle_move_construct_transfers_ownership",
+        Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(),
+        JsonConfig::GetLifecycleModule(),
+        pylabhub::hub::GetZMQContextModule());
+}
+
+/// Move-assign: the destination's prior registration MUST be released
+/// before adopting the source's.  Otherwise the prior domain leaks in
+/// the routing map (security: an old gate-handle that operator code
+/// thought was destroyed would still admit peers).
+int handle_move_assign_releases_previous_registration(const char *)
+{
+    return run_gtest_worker(
+        [&]() {
+            InMemoryAdmission a;
+            InMemoryAdmission b;
+
+            auto hA = ZapRouter::instance().register_domain(
+                "test.zap.move.assign.A", &a);
+            auto hB = ZapRouter::instance().register_domain(
+                "test.zap.move.assign.B", &b);
+            ASSERT_EQ(ZapRouter::instance()
+                          .registered_domain_count_for_test(), 2u);
+
+            // hA = std::move(hB): hA's prior "A" registration must be
+            // released; hA now owns "B".
+            hA = std::move(hB);
+            EXPECT_TRUE(hA.is_active());
+            EXPECT_EQ(hA.domain(), "test.zap.move.assign.B");
+            EXPECT_FALSE(hB.is_active());
+
+            // Exactly one registration remains — "B".  If the prior
+            // "A" wasn't released, count would still be 2.
+            EXPECT_EQ(ZapRouter::instance()
+                          .registered_domain_count_for_test(), 1u);
+
+            // Spot-check the surviving entry is B by attempting a
+            // re-register on "A" (which should now succeed — proves
+            // "A" is gone) and on "B" (which should throw).
+            EXPECT_NO_THROW({
+                auto reA = ZapRouter::instance().register_domain(
+                    "test.zap.move.assign.A", &a);
+                EXPECT_TRUE(reA.is_active());
+            });
+            EXPECT_THROW(
+                ZapRouter::instance().register_domain(
+                    "test.zap.move.assign.B", &b),
+                std::runtime_error);
+        },
+        "zap_router::handle_move_assign_releases_previous_registration",
+        Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(),
+        JsonConfig::GetLifecycleModule(),
+        pylabhub::hub::GetZMQContextModule());
+}
+
 // ── Dispatcher + registrar ─────────────────────────────────────────────────
 
 int dispatch_zap_router(int argc, char **argv)
@@ -371,6 +862,20 @@ int dispatch_zap_router(int argc, char **argv)
         return null_admission_throws(tmpdir);
     if (scenario == "pump_one_when_unloaded_returns_false")
         return pump_one_when_unloaded_returns_false(tmpdir);
+    if (scenario == "pump_one_malformed_short_request_replies_and_recovers")
+        return pump_one_malformed_short_request_replies_and_recovers(tmpdir);
+    if (scenario == "pump_one_bad_version_replies_400")
+        return pump_one_bad_version_replies_400(tmpdir);
+    if (scenario == "pump_one_non_curve_mechanism_replies_400")
+        return pump_one_non_curve_mechanism_replies_400(tmpdir);
+    if (scenario == "handshake_deny_increments_denied_counter")
+        return handshake_deny_increments_denied_counter(tmpdir);
+    if (scenario == "handshake_allow_increments_allowed_counter")
+        return handshake_allow_increments_allowed_counter(tmpdir);
+    if (scenario == "handle_move_construct_transfers_ownership")
+        return handle_move_construct_transfers_ownership(tmpdir);
+    if (scenario == "handle_move_assign_releases_previous_registration")
+        return handle_move_assign_releases_previous_registration(tmpdir);
     std::fprintf(stderr, "zap_router: unknown scenario '%s'\n",
                  scenario.c_str());
     return 1;
