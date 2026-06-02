@@ -1094,6 +1094,14 @@ struct BrokerCounters
 using SchemaKey = std::pair<std::string, std::string>;
 
 /// Point-in-time aggregate returned by HubState::snapshot().
+///
+/// Capture provenance metadata per HEP-CORE-0039 §3.1: `captured_at`
+/// is the wall-clock timestamp, `captured_mono` is the steady-clock
+/// timestamp (for `age_seconds()` math immune to NTP jumps),
+/// `hub_uid` disambiguates dual-hub-processor snapshots in logs,
+/// `snapshot_seq` is a per-hub monotonic counter (first live
+/// snapshot has `seq == 1`; `seq == 0` is reserved for default-
+/// constructed snapshots and is never returned by `HubState::snapshot()`).
 struct HubStateSnapshot
 {
     std::unordered_map<std::string, ChannelEntry> channels;
@@ -1109,6 +1117,11 @@ struct HubStateSnapshot
     BrokerCounters                                counters;
     std::chrono::system_clock::time_point         captured_at{
         std::chrono::system_clock::now()};
+    /// HEP-CORE-0039 §3.1 capture metadata.
+    std::chrono::steady_clock::time_point         captured_mono{
+        std::chrono::steady_clock::now()};
+    std::string                                   hub_uid;
+    std::uint64_t                                 snapshot_seq{0};
 };
 
 /// Resolve a channel's current observable from a hub snapshot.  Scans
@@ -1189,6 +1202,14 @@ class PYLABHUB_UTILS_EXPORT HubState
     HubState &operator=(const HubState &) = delete;
     HubState(HubState &&)                 = delete;
     HubState &operator=(HubState &&)      = delete;
+
+    /// Set the hub identifier used to stamp snapshots
+    /// (`HubStateSnapshot::hub_uid`).  Called once during HubHost
+    /// initialization; later snapshots carry this string verbatim.
+    /// Per HEP-CORE-0039 §3.1 — disambiguates dual-hub-processor
+    /// snapshots in logs.  Empty `hub_uid` is the legal "not yet
+    /// initialized" state.
+    void set_hub_uid(std::string hub_uid);
 
     // ── Read-only accessors (shared lock; copy out) ─────────────────────
     [[nodiscard]] HubStateSnapshot            snapshot() const;
