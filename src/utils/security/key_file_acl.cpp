@@ -410,6 +410,32 @@ fs::path resolve_keyfile_path(const std::string &keyfile,
     }
 }
 
+bool keyfile_inside_base_dir(const std::string &keyfile,
+                              const fs::path    &base_dir) noexcept
+{
+    if (keyfile.empty())
+        return false;
+
+    std::error_code ec;
+    const fs::path kf_raw(keyfile);
+    const fs::path kf = fs::weakly_canonical(
+        kf_raw.is_absolute() ? kf_raw : (base_dir / kf_raw), ec);
+    if (ec)
+        return false;
+    const fs::path base = fs::weakly_canonical(base_dir, ec);
+    if (ec)
+        return false;
+
+    // Component-by-component prefix check.  An empty `base` would make
+    // the algorithm vacuously match anything; refuse to claim
+    // containment in that degenerate case.
+    if (base.empty())
+        return false;
+    auto [base_end, kf_it] =
+        std::mismatch(base.begin(), base.end(), kf.begin(), kf.end());
+    return base_end == base.end();
+}
+
 AclVerdict verify_keyfile_acl(const fs::path &path, KeyFileRole role) noexcept
 {
 #ifdef _WIN32
