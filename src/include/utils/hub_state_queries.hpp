@@ -307,8 +307,8 @@ find_role_attachments(const HubStateSnapshot &snap,
 /// collect, (6) drain via Pass-2 mutators.  A single helper call
 /// with a "Pass-1-or-Pass-2" predicate over ONE snapshot is wrong:
 /// it would consider just-demoted presences for termination in the
-/// same tick.  See `docs/todo/QUERY_LAYER_TODO.md` Pattern P8 for
-/// the heartbeat-timeout migration shape.
+/// same tick.  See HEP-CORE-0039 §6 "Two-passes-with-cross-pass-
+/// dependency note" for the canonical statement.
 template <typename RolesMap, typename Pred, typename Fn>
 inline void
 for_each_presence_matching(const ChannelEntry &ch,

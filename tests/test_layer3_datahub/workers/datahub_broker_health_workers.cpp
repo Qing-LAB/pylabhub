@@ -882,6 +882,111 @@ int two_snapshot_invariant(int /*argc*/, char ** /*argv*/)
         crypto_module(), zmq_module());
 }
 
+// `channel_torn_down` short-circuit (HEP-0039 P8 Step B prerequisite).
+// Producer + Consumer both registered on ONE channel; both go silent at
+// the same time.  Both presences enter Pending in the same sweep tick;
+// in the NEXT sweep tick (after pending_timeout) the producer Pass-2
+// fires the last-producer atomic teardown — channel evicted +
+// CHANNEL_CLOSING_NOTIFY fanned out.  The `channel_torn_down`
+// short-circuit at `broker_service.cpp:3012` then SKIPS the consumer
+// Pass-2 iteration for this channel — no stray CONSUMER_DIED_NOTIFY
+// fires (the channel and the consumer are both gone via the
+// `_on_channel_closed` cascade).
+//
+// A migration that loses the short-circuit would call Pass-2 consumer
+// against a vanished channel.  The mutator's idempotency would
+// (probably) gracefully no-op, but the broker-side `CONSUMER_DIED_NOTIFY`
+// fan-out (which iterates `pre_drop_channel.producers` from the
+// snapshot, NOT live state) would silently emit the NOTIFY to the
+// producer's BRC ROUTER identity — which the producer's BRC observes
+// as an extra unexpected message after CHANNEL_CLOSING_NOTIFY.  This
+// test pins "no CONSUMER_DIED_NOTIFY ever arrives" — bug catch.
+int channel_torn_down_consumer_pass2_skipped(int /*argc*/, char ** /*argv*/)
+{
+    return run_gtest_worker(
+        []() {
+            BrokerService::Config cfg;
+            cfg.endpoint                         = "tcp://127.0.0.1:0";
+            cfg.use_curve                        = true;
+            cfg.ready_timeout_override           = std::chrono::milliseconds(500);
+            cfg.pending_timeout_override         = std::chrono::milliseconds(500);
+            cfg.consumer_liveness_check_interval = std::chrono::seconds(0);
+            auto broker = start_broker_with_cfg(std::move(cfg));
+
+            const std::string ch_name =
+                make_test_channel_name("health.channel_torn_down");
+            const std::string prod_uid = "prod." + ch_name;
+            const std::string cons_uid = "cons." + ch_name;
+
+            std::atomic<int> closing_count{0};
+            std::atomic<int> consumer_died_count{0};
+
+            // Producer's BRC subscribes to both notification types.
+            // CHANNEL_CLOSING_NOTIFY should fire (channel evicted by
+            // producer's own last-producer teardown).
+            // CONSUMER_DIED_NOTIFY should NEVER fire (consumer Pass-2
+            // skipped by channel_torn_down).
+            BrcHandle prod;
+            prod.brc.on_notification(
+                [&](const std::string &type, const nlohmann::json &) {
+                    if (type == "CHANNEL_CLOSING_NOTIFY")
+                        closing_count.fetch_add(1);
+                    if (type == "CONSUMER_DIED_NOTIFY")
+                        consumer_died_count.fetch_add(1);
+                });
+            prod.start(broker.endpoint, broker.pubkey, prod_uid);
+            auto reg = prod.brc.register_channel(
+                make_reg_opts(ch_name, prod_uid), 3000);
+            ASSERT_TRUE(reg.has_value());
+
+            // Register consumer too.
+            BrcHandle cons;
+            cons.start(broker.endpoint, broker.pubkey, cons_uid);
+            auto creg = cons.brc.register_consumer(
+                make_cons_opts(ch_name, cons_uid), 3000);
+            ASSERT_TRUE(creg.has_value());
+
+            // Both heartbeat once, then go silent.  Same start moment
+            // so both enter Pending in the same sweep tick and both
+            // time out in the same Pass-2 tick.
+            prod.brc.send_heartbeat(ch_name, prod_uid, "producer", {});
+            cons.brc.send_heartbeat(ch_name, cons_uid, "consumer", {});
+
+            // Wait for the eviction + NOTIFY cascade.
+            const auto deadline = std::chrono::steady_clock::now() +
+                                  std::chrono::seconds(5);
+            while (closing_count.load() == 0 &&
+                   std::chrono::steady_clock::now() < deadline) {
+                std::this_thread::sleep_for(
+                    std::chrono::milliseconds(50));
+            }
+
+            ASSERT_GE(closing_count.load(), 1)
+                << "CHANNEL_CLOSING_NOTIFY did not fire after the "
+                   "last-producer atomic teardown";
+
+            // Hold steady for an additional pending_timeout window
+            // to give a buggy migration the chance to fire a stray
+            // CONSUMER_DIED_NOTIFY in a later sweep iteration.
+            std::this_thread::sleep_for(std::chrono::milliseconds(700));
+
+            EXPECT_EQ(consumer_died_count.load(), 0)
+                << "CONSUMER_DIED_NOTIFY must NOT fire — the consumer "
+                   "Pass-2 iteration was supposed to be skipped via "
+                   "the `channel_torn_down` short-circuit because the "
+                   "producer Pass-2 already evicted the channel in the "
+                   "same sweep tick.  A migration that drops this "
+                   "short-circuit would fail this assertion.";
+
+            cons.stop();
+            prod.stop();
+            broker.stop_and_join();
+        },
+        "broker_health.channel_torn_down_consumer_pass2_skipped",
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), zmq_module());
+}
+
 } // namespace pylabhub::tests::worker::broker_health
 
 // ============================================================================
@@ -926,6 +1031,8 @@ struct BrokerHealthWorkerRegistrar
                     return consumer_heartbeat_timeout_notify(argc, argv);
                 if (scenario == "two_snapshot_invariant")
                     return two_snapshot_invariant(argc, argv);
+                if (scenario == "channel_torn_down_consumer_pass2_skipped")
+                    return channel_torn_down_consumer_pass2_skipped(argc, argv);
                 fmt::print(stderr, "ERROR: Unknown broker_health scenario '{}'\n", scenario);
                 return 1;
             });

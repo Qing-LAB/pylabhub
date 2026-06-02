@@ -147,6 +147,20 @@ from same-sweep termination — load-bearing behavior).  The
 migration MUST preserve this:
 
 ```cpp
+// Broker-side decision types — local to the sweep.
+struct Pass1Decision {
+    std::string channel;
+    std::string role_uid;
+    std::string role_type;   // "producer" | "consumer"
+};
+struct Pass2Decision {
+    PartyKind                       party;
+    std::string                     channel;
+    std::string                     role_uid;
+    ChannelEntry                    pre_drop_channel;   // value copy
+    std::optional<ConsumerEntry>    pre_drop_consumer;  // populated on consumer path
+};
+
 // ── Pass-1 (Connected → Pending) ────────────────────────────────
 auto snap1 = hub_state_->snapshot();
 std::vector<Pass1Decision> p1;
@@ -220,19 +234,27 @@ for (const auto &d : p2) {
         auto drop = hub_state_->_on_pending_timeout(
             d.channel, d.role_uid, "consumer");
         if (drop.removed) {
-            // CONSUMER_DIED_NOTIFY to every producer with non-empty
-            // identity on the pre_drop channel.
+            // CONSUMER_DIED_NOTIFY body shape inlined to match
+            // production at `broker_service.cpp:3048-3053` exactly
+            // (broker_proto 4→5 — fields: channel_name, role_uid,
+            // consumer_pid, consumer_hostname, reason).  A future
+            // refactor MAY extract this into a helper as part of
+            // the migration; the inline form here is the canonical
+            // contract.
+            nlohmann::json notify;
+            notify["channel_name"]      = d.channel;
+            notify["role_uid"]          = d.pre_drop_consumer->role_uid;
+            notify["consumer_pid"]      = d.pre_drop_consumer->consumer_pid;
+            notify["consumer_hostname"] = d.pre_drop_consumer->consumer_hostname;
+            notify["reason"]            = "heartbeat_timeout";
             for_each_party_identity(
                 d.pre_drop_channel, PartyKind::Producer,
                 [&](std::string_view id, std::string_view /*uid*/) {
                     send_to_identity(socket, std::string(id),
-                                     "CONSUMER_DIED_NOTIFY",
-                                     make_consumer_died_notify(
-                                         d.channel, d.pre_drop_consumer,
-                                         "heartbeat_timeout"));
+                                     "CONSUMER_DIED_NOTIFY", notify);
                 });
             on_consumer_closed(socket, d.channel,
-                               d.pre_drop_consumer, "heartbeat_timeout");
+                               *d.pre_drop_consumer, "heartbeat_timeout");
         }
     }
 }
@@ -257,15 +279,20 @@ cross-pass-dependency note" for the rationale.**
 
 1. ✅ Framework doc-comment corrected (`hub_state_queries.hpp`
    `for_each_presence_matching` lock-discipline paragraph)
-2. ✅ `PresenceSweepTarget::channel_entry` field added
+2. ✅ `PresenceSweepTarget::channel_entry` field added (consumer
+   branch covered by L2 test `ConsumerBranch_TargetFullyPopulated`)
 3. ✅ HEP §6 cross-pass-dependency note added
-4. ⏳ L3 `test_datahub_broker_health.cpp` strengthened with:
+4. ✅ L3 `test_datahub_broker_health.cpp` strengthened with:
    - Multi-producer partial pending-timeout (drop one, channel
      survives, counter exact)
    - Consumer-pending-timeout `CONSUMER_DIED_NOTIFY` body shape
-     including `reason="heartbeat_timeout"`
+     including `reason="heartbeat_timeout"` and exact PID pinning
    - Pass-1 demotion in tick T is NOT followed by Pass-2 termination
      in same tick T (the two-snapshot invariant)
+   - `channel_torn_down` short-circuit: producer + consumer both
+     Pending same tick → producer Pass-2 evicts channel → no stray
+     `CONSUMER_DIED_NOTIFY` (test:
+     `ChannelTornDown_ConsumerPass2Skipped`)
 5. ⏳ Migration itself, in two commits:
    - Step A: Pass-1 only (no fan-out, no pre_drop, no cascade)
    - Step B: Pass-2 with the `Pass2Decision` struct + ordering logic
