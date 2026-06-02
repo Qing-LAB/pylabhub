@@ -204,11 +204,13 @@ RoleConfig RoleConfig::load(const std::string &path,
     utils::RoleDirectory::warn_if_keyfile_in_role_dir(s.base_dir, s.auth.keyfile);
 
     // HEP-CORE-0035 §4.6 Tier-1: <role>.json is non-secret but
-    // references a vault.  Non-fatal WARN on suspicious mode.
+    // references a vault.  Non-fatal WARN on suspicious mode —
+    // gate on diagnostic-non-empty so the group-readable advisory
+    // surface (v.ok=true, v.diagnostic set) doesn't go dead.
     if (auto v = utils::security::verify_keyfile_acl(
             std::filesystem::path(path),
             utils::security::KeyFileRole::ConfigFileReferencingVault);
-        !v.ok)
+        !v.diagnostic.empty())
     {
         std::fprintf(stderr,
                      "[%s] WARN: role config ACL advisory "

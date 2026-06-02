@@ -411,8 +411,14 @@ TEST_P(PlhRoleKeygenTest, RunmodeFailsWhenVaultFileModeIsLoose)
 
     EXPECT_NE(p.get_stderr().find("HEP-CORE-0035"), std::string::npos)
         << "stderr should cite HEP-CORE-0035 §4.6.2; got:\n" << p.get_stderr();
-    EXPECT_NE(p.get_stderr().find("chmod"), std::string::npos)
-        << "stderr should tell operator how to fix (chmod 0600); got:\n"
+    // Pin "vault file" (NOT dir) + exact target mode 0600 so the
+    // test catches a regression that swaps file/dir diagnostics
+    // or emits the wrong target mode.
+    EXPECT_NE(p.get_stderr().find("vault file"), std::string::npos)
+        << "diagnostic should identify the FILE check fired; got:\n"
+        << p.get_stderr();
+    EXPECT_NE(p.get_stderr().find("chmod 0600"), std::string::npos)
+        << "stderr should tell operator to chmod 0600 (exact); got:\n"
         << p.get_stderr();
 }
 
@@ -449,8 +455,12 @@ TEST_P(PlhRoleKeygenTest, RunmodeFailsWhenVaultParentDirModeIsLoose)
 
     EXPECT_NE(p.get_stderr().find("HEP-CORE-0035"), std::string::npos)
         << "stderr should cite HEP-CORE-0035 §4.6.2; got:\n" << p.get_stderr();
-    EXPECT_NE(p.get_stderr().find("chmod"), std::string::npos)
-        << "stderr should tell operator how to fix; got:\n"
+    // Pin "vault directory" (NOT file) + exact target mode 0700.
+    EXPECT_NE(p.get_stderr().find("vault directory"), std::string::npos)
+        << "diagnostic should identify the DIR check fired; got:\n"
+        << p.get_stderr();
+    EXPECT_NE(p.get_stderr().find("chmod 0700"), std::string::npos)
+        << "stderr should tell operator to chmod 0700 (exact); got:\n"
         << p.get_stderr();
 }
 #endif

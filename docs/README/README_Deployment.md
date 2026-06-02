@@ -1309,11 +1309,18 @@ vault fails with:
 
 ```
 [plh_hub] Refusing to load vault — ACL check failed (HEP-CORE-0035 §4.6.2):
-  vault file '<path>' has mode 0<observed>, required 0600
-  fix:  chmod 0600 <path>
+vault file <path> is group/world-accessible (mode 0644).  Run: chmod 0600 <path>
 ```
 
-(symmetric for the parent directory at 0700, and for `plh_role`).
+When the parent directory is the problem the diagnostic line is:
+
+```
+[plh_hub] Refusing to load vault — parent dir ACL check failed (HEP-CORE-0035 §4.6.2):
+vault directory <path> is group/world-accessible (mode 0755).  Run: chmod 0700 <path>
+```
+
+(role binaries emit the same text under a `[<role_tag>]` prefix —
+e.g. `[producer]`, `[consumer]`, `[processor]`.)
 To migrate an existing deployment:
 
 ```bash

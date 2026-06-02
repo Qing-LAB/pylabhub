@@ -457,7 +457,9 @@ int load_keypair_refuses_loose_file_mode(const char *tmpdir)
                 FAIL() << "Expected load_keypair to refuse 0644 vault file";
             } catch (const std::runtime_error &ex) {
                 EXPECT_THAT(ex.what(), testing::HasSubstr("HEP-CORE-0035"));
-                EXPECT_THAT(ex.what(), testing::HasSubstr("chmod"));
+                // Pin file (NOT dir) + exact target mode.
+                EXPECT_THAT(ex.what(), testing::HasSubstr("vault file"));
+                EXPECT_THAT(ex.what(), testing::HasSubstr("chmod 0600"));
             }
         },
         "hub_config::load_keypair_refuses_loose_file_mode",
@@ -489,7 +491,9 @@ int load_keypair_refuses_loose_parent_dir_mode(const char *tmpdir)
                 FAIL() << "Expected load_keypair to refuse 0755 parent dir";
             } catch (const std::runtime_error &ex) {
                 EXPECT_THAT(ex.what(), testing::HasSubstr("HEP-CORE-0035"));
-                EXPECT_THAT(ex.what(), testing::HasSubstr("chmod"));
+                // Pin dir (NOT file) + exact target mode.
+                EXPECT_THAT(ex.what(), testing::HasSubstr("vault directory"));
+                EXPECT_THAT(ex.what(), testing::HasSubstr("chmod 0700"));
             }
         },
         "hub_config::load_keypair_refuses_loose_parent_dir_mode",

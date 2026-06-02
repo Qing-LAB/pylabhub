@@ -633,6 +633,18 @@ This requirement layers on top of work that has now landed:
     attacker must also own + 0600 to satisfy verify — i.e.,
     a self-redirect to attacker's own secret, which is
     no different from configuring the keyfile path there.
+    **Precondition (load-bearing).**  This argument is sound ONLY
+    while §4.6.2 also enforces the *parent dir* contract
+    (`VaultDir` = 0700 + euid-owned).  Parent-dir 0700 + owner-
+    only is what prevents an attacker from rewriting the
+    `auth.keyfile` directory entry to swap the symlink in between
+    verify and read.  Any future caller that uses
+    `verify_keyfile_acl(VaultFile)` without the matching
+    `verify_keyfile_acl(VaultDir)` on `path.parent_path()`
+    inherits a strictly weaker guarantee.  The §4.6.2
+    `HubConfig::load_keypair` + `RoleConfig::load_keypair` call
+    sites pair the two; HEP-0036 surfaces that add new auth
+    surfaces MUST do the same.
   - Non-regular files (FIFO / device) — not separately gated.
     Operators pointing `auth.keyfile` at a path under a
     directory they do not own (e.g., `/tmp`) still accept

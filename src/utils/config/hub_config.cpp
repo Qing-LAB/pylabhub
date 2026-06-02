@@ -150,15 +150,21 @@ HubConfig HubConfig::load(const std::string &path)
         s.base_dir, s.auth.keyfile);
 
     // HEP-CORE-0035 §4.6 Tier-1: config file is non-secret but
-    // references a vault.  verify_keyfile_acl emits an OpenSSH-style
-    // diagnostic via verdict.diagnostic when the mode is suspicious
-    // (world-writable on POSIX).  Non-fatal — we only WARN: hub.json
-    // is operator-managed and overly strict enforcement here would
+    // references a vault.  verify_keyfile_acl can populate a
+    // diagnostic in TWO non-fatal cases for ConfigFileReferencingVault:
+    //   1. World-writable (v.ok=false, v.diagnostic set) — config-
+    //      injection vector; operator MUST fix.
+    //   2. Group-readable (v.ok=true, v.diagnostic set) — side-
+    //      channel leak of the vault path to a wider audience.
+    // Both deserve a stderr WARN, so we gate on `!v.diagnostic.empty()`
+    // rather than `!v.ok` — otherwise the group-readable advisory
+    // surface is dead.  Non-fatal in both cases: hub.json is
+    // operator-managed and overly strict enforcement here would
     // break existing tooling.  Distinct from §4.6.2 which IS fatal
     // for the vault file itself.
     if (auto v = utils::security::verify_keyfile_acl(
             fs::path(path), utils::security::KeyFileRole::ConfigFileReferencingVault);
-        !v.ok)
+        !v.diagnostic.empty())
     {
         std::fprintf(stderr,
                      "[plh_hub] WARN: hub.json ACL advisory "
