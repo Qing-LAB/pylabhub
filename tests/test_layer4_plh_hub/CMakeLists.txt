@@ -22,6 +22,7 @@ add_executable(test_layer4_plh_hub
     test_plh_hub_errors.cpp
     test_plh_hub_runmode.cpp
     test_plh_hub_role_roundtrip.cpp
+    test_plh_hub_known_roles.cpp
 )
 
 if(TARGET plh_role)

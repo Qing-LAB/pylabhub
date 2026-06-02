@@ -365,3 +365,97 @@ TEST(HubCliTest, FlagOrderDoesNotMatter)
     EXPECT_EQ(r2.args.init_name,  "X");
     EXPECT_EQ(r3.args.init_name,  "X");
 }
+
+// ─── --add-known-role role enum validation (H-K4) ────────────────────────────
+//
+// Pre-fix code accepted any string in the <role> slot.  An operator
+// typo (e.g., "prodcer") would persist into known_roles.json AND the
+// broker's case-sensitive role check would silently never match the
+// real role's self-asserted role kind, leading to a denied handshake
+// the operator can't diagnose.  These tests pin that the parser
+// surfaces invalid <role> at parse time and accepts the documented
+// set.
+
+TEST(HubCliTest, AddKnownRole_ValidRoleProducer_Accepted)
+{
+    std::ostringstream out, err;
+    auto r = run({"plh_hub", "/tmp/h", "--add-known-role",
+                  "alice", "uid.alice", "producer",
+                  "0123456789012345678901234567890123456789"},
+                  out, err);
+    ASSERT_EQ(r.exit_code, -1) << "err:\n" << err.str();
+    EXPECT_TRUE(r.args.add_known_role_only);
+    ASSERT_EQ(r.args.known_role_args.size(), 4u);
+    EXPECT_EQ(r.args.known_role_args[2], "producer");
+}
+
+TEST(HubCliTest, AddKnownRole_ValidRoleConsumer_Accepted)
+{
+    auto r = run({"plh_hub", "/tmp/h", "--add-known-role",
+                  "n", "u", "consumer",
+                  "0123456789012345678901234567890123456789"});
+    ASSERT_EQ(r.exit_code, -1);
+}
+
+TEST(HubCliTest, AddKnownRole_ValidRoleProcessor_Accepted)
+{
+    auto r = run({"plh_hub", "/tmp/h", "--add-known-role",
+                  "n", "u", "processor",
+                  "0123456789012345678901234567890123456789"});
+    ASSERT_EQ(r.exit_code, -1);
+}
+
+TEST(HubCliTest, AddKnownRole_ValidRoleAny_Accepted)
+{
+    auto r = run({"plh_hub", "/tmp/h", "--add-known-role",
+                  "n", "u", "any",
+                  "0123456789012345678901234567890123456789"});
+    ASSERT_EQ(r.exit_code, -1);
+}
+
+TEST(HubCliTest, AddKnownRole_EmptyRoleAcceptedAsAnySynonym)
+{
+    auto r = run({"plh_hub", "/tmp/h", "--add-known-role",
+                  "n", "u", "",
+                  "0123456789012345678901234567890123456789"});
+    ASSERT_EQ(r.exit_code, -1)
+        << "Empty string is the documented synonym for 'any'";
+}
+
+TEST(HubCliTest, AddKnownRole_TypoRole_Rejected)
+{
+    std::ostringstream out, err;
+    auto r = run({"plh_hub", "/tmp/h", "--add-known-role",
+                  "alice", "uid.alice", "prodcer",   // typo
+                  "0123456789012345678901234567890123456789"},
+                  out, err);
+    EXPECT_EQ(r.exit_code, 1);
+    // The diagnostic must NAME the bad value and the allowed set so
+    // the operator can fix the typo without consulting docs.
+    EXPECT_NE(err.str().find("'prodcer'"), std::string::npos)
+        << "diagnostic must quote the bad role value; got:\n" << err.str();
+    EXPECT_NE(err.str().find("producer"), std::string::npos)
+        << "diagnostic must enumerate the allowed roles; got:\n" << err.str();
+}
+
+TEST(HubCliTest, AddKnownRole_CaseSensitive_RejectsCapitalized)
+{
+    std::ostringstream out, err;
+    auto r = run({"plh_hub", "/tmp/h", "--add-known-role",
+                  "n", "u", "Producer",    // capital P
+                  "0123456789012345678901234567890123456789"},
+                  out, err);
+    EXPECT_EQ(r.exit_code, 1)
+        << "broker check_role_identity is case-sensitive (per "
+           "role_identity_policy.hpp); parser must match — otherwise "
+           "a capitalized typo persists and silently never matches.";
+    EXPECT_NE(err.str().find("'Producer'"), std::string::npos);
+}
+
+TEST(HubCliTest, AddKnownRole_ArbitraryString_Rejected)
+{
+    auto r = run({"plh_hub", "/tmp/h", "--add-known-role",
+                  "n", "u", "telemetry-sink",
+                  "0123456789012345678901234567890123456789"});
+    EXPECT_EQ(r.exit_code, 1);
+}

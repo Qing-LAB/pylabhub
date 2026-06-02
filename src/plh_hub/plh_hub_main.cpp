@@ -240,17 +240,38 @@ int do_known_role_ops(const hub_cli::HubArgs &args)
         }
         const std::string &uid = args.known_role_args[0];
         const bool removed = store.remove(uid);
-        try
+
+        // **H-K3 fix.**  Only persist when state actually changed.
+        // Pre-fix code wrote unconditionally, which had two bad
+        // effects:
+        //   (a) When the file did NOT exist before AND uid is not
+        //       present (e.g., operator typo on a fresh hub_dir),
+        //       the unconditional save MATERIALIZED an empty
+        //       known_roles.json — silently flipping intent from
+        //       "no allowlist" to "deny-all" at next hub start.
+        //   (b) When the file existed but uid is not present, the
+        //       unconditional save advanced the file mtime without
+        //       any content change — corrupting forensic timelines
+        //       and creating noise in audit diffs.
+        // Skipping the save when removed==false fixes both.
+        if (removed)
         {
-            store.save_to_file(known_roles_path);
+            try
+            {
+                store.save_to_file(known_roles_path);
+            }
+            catch (const std::exception &e)
+            {
+                std::cerr << "Error: " << e.what() << "\n";
+                return 1;
+            }
+            std::cout << "revoked known-role uid='" << uid << "'\n";
         }
-        catch (const std::exception &e)
+        else
         {
-            std::cerr << "Error: " << e.what() << "\n";
-            return 1;
+            std::cout << "not present known-role uid='" << uid
+                      << "' (file untouched)\n";
         }
-        std::cout << (removed ? "revoked" : "not present")
-                  << " known-role uid='" << uid << "'\n";
         return 0;
     }
 

@@ -109,6 +109,22 @@ struct ParseResult
 namespace detail
 {
 
+/// Allowed values for `<role>` in `--add-known-role`.  The role kind
+/// is operator-facing metadata that flows through KnownRolesStore →
+/// broker check_role_identity; an arbitrary string (typo) would
+/// persist into the allowlist and silently never match.  Validating
+/// at parse time surfaces operator typos immediately rather than at
+/// first failed handshake.
+///
+/// Empty string is accepted as a synonym for "any" — matches the
+/// KnownRole struct's `role` field doc: `empty = "any"`.
+inline bool is_valid_known_role_kind(std::string_view r)
+{
+    return r.empty() ||
+           r == "producer" || r == "consumer" ||
+           r == "processor" || r == "any";
+}
+
 inline void print_hub_usage(const char *prog, std::ostream &os = std::cout)
 {
     os  << "Usage:\n"
@@ -238,6 +254,23 @@ inline ParseResult parse_hub_args(int argc, char *argv[],
                 return fail_with_usage(
                     "Error: --add-known-role requires 4 args: "
                     "<name> <uid> <role> <pubkey_z85>\n\n");
+            // H-K4: enum-validate <role> at the input boundary.  An
+            // arbitrary string here (e.g. typo'd "prodcer") would
+            // persist into the allowlist and silently never match the
+            // broker's case-sensitive role string comparison; surface
+            // the error immediately instead.
+            const std::string_view role_arg(argv[i + 3]);
+            if (!detail::is_valid_known_role_kind(role_arg))
+            {
+                err_stream
+                    << "Error: --add-known-role <role> must be one of "
+                       "{producer, consumer, processor, any} (empty also "
+                       "accepted, meaning 'any'); got '"
+                    << role_arg << "'\n\n";
+                detail::print_hub_usage(argv[0], err_stream);
+                result.exit_code = 1;
+                return result;
+            }
             args.add_known_role_only = true;
             args.known_role_args.assign({
                 std::string(argv[i + 1]),
