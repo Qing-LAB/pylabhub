@@ -3,6 +3,7 @@
  * @brief HubDirectory — canonical hub directory layout (HEP-CORE-0033 §7).
  */
 #include "utils/hub_directory.hpp"
+#include "utils/security/key_file_acl.hpp"
 #include "utils/timeout_constants.hpp"
 #include "utils/uid_utils.hpp"
 
@@ -111,23 +112,12 @@ bool HubDirectory::has_standard_layout() const
 void HubDirectory::warn_if_keyfile_in_hub_dir(const std::filesystem::path &hub_base,
                                                 const std::string           &keyfile)
 {
-    if (keyfile.empty())
+    // Containment check (canonicalize both, component-wise prefix
+    // compare) lives in the shared security utility next to
+    // `resolve_keyfile_path`; the threat-model narrative below is
+    // hub-specific and stays here.
+    if (!pylabhub::utils::security::keyfile_inside_base_dir(keyfile, hub_base))
         return;
-
-    namespace fs = std::filesystem;
-
-    // Resolve keyfile: relative paths are resolved relative to hub_base
-    // so the comparison is meaningful regardless of the process CWD.
-    const fs::path kf_raw(keyfile);
-    const fs::path kf = fs::weakly_canonical(
-        kf_raw.is_absolute() ? kf_raw : (hub_base / kf_raw));
-
-    const fs::path base = fs::weakly_canonical(hub_base);
-
-    // Check whether kf is a sub-path of base by comparing component-by-component.
-    auto [base_end, kf_it] = std::mismatch(base.begin(), base.end(), kf.begin(), kf.end());
-    if (base_end != base.end())
-        return; // keyfile is NOT inside hub_base — no warning.
 
     std::fprintf(stderr,
                  "\n"

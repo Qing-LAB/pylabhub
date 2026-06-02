@@ -3,6 +3,7 @@
  * @brief RoleDirectory — canonical role directory layout (HEP-CORE-0024).
  */
 #include "utils/role_directory.hpp"
+#include "utils/security/key_file_acl.hpp"
 #include "utils/uid_utils.hpp"
 
 #include "plh_platform.hpp" // PYLABHUB_IS_POSIX
@@ -156,23 +157,12 @@ std::string RoleDirectory::hub_broker_pubkey(const std::filesystem::path &hub_di
 void RoleDirectory::warn_if_keyfile_in_role_dir(const std::filesystem::path &role_base,
                                                   const std::string           &keyfile)
 {
-    if (keyfile.empty())
+    // Containment check (canonicalize both, component-wise prefix
+    // compare) lives in the shared security utility next to
+    // `resolve_keyfile_path`; the threat-model narrative below is
+    // role-specific and stays here.
+    if (!pylabhub::utils::security::keyfile_inside_base_dir(keyfile, role_base))
         return;
-
-    namespace fs = std::filesystem;
-
-    // Resolve keyfile: relative paths are resolved relative to role_base so that
-    // the comparison is meaningful regardless of the process CWD.
-    const fs::path kf_raw(keyfile);
-    const fs::path kf = fs::weakly_canonical(
-        kf_raw.is_absolute() ? kf_raw : (role_base / kf_raw));
-
-    const fs::path base = fs::weakly_canonical(role_base);
-
-    // Check whether kf is a sub-path of base by comparing path component-by-component.
-    auto [base_end, kf_it] = std::mismatch(base.begin(), base.end(), kf.begin(), kf.end());
-    if (base_end != base.end())
-        return; // keyfile is NOT inside role_base — no warning
 
     std::fprintf(stderr,
                  "\n"

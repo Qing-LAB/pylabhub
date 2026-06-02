@@ -337,6 +337,105 @@ TEST(KeyFileAclResolveTest, ResultLength_DoesNotCorrupt)
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+//  keyfile_inside_base_dir — canonicalizing containment predicate.
+//  Used by warn_if_keyfile_in_{role,hub}_dir to emit the "vault
+//  co-located with scripts" SECURITY WARNING.  Both paths go through
+//  `std::filesystem::weakly_canonical` before comparison so `..`
+//  traversal in the keyfile resolves correctly.  Filesystem errors
+//  during canonicalization yield false ("can't prove containment ⇒
+//  don't warn") rather than throwing during startup diagnostics.
+// ─────────────────────────────────────────────────────────────────────────
+
+using pylabhub::utils::security::keyfile_inside_base_dir;
+
+TEST(KeyFileAclInsideTest, Empty_ReturnsFalse)
+{
+    EXPECT_FALSE(keyfile_inside_base_dir("", "/etc/pylabhub/hub"));
+}
+
+TEST(KeyFileAclInsideTest, Empty_EmptyBase_ReturnsFalse)
+{
+    // Empty keyfile is the dominant guard; even with an empty base it
+    // must not claim containment (degenerate-base coverage in the
+    // base-non-empty case lives in the test below).
+    EXPECT_FALSE(keyfile_inside_base_dir("", ""));
+}
+
+TEST(KeyFileAclInsideTest, AbsolutePath_Inside_ReturnsTrue)
+{
+    // weakly_canonical operates on lexical paths when no filesystem
+    // resolution is needed — these strings exercise the prefix-match
+    // logic without requiring the directories to exist.
+    EXPECT_TRUE(keyfile_inside_base_dir("/etc/pylabhub/hub/vault/x.vault",
+                                         "/etc/pylabhub/hub"));
+}
+
+TEST(KeyFileAclInsideTest, AbsolutePath_Outside_ReturnsFalse)
+{
+    EXPECT_FALSE(keyfile_inside_base_dir("/srv/secrets/x.vault",
+                                          "/etc/pylabhub/hub"));
+}
+
+TEST(KeyFileAclInsideTest, RelativePath_JoinedAndInside_ReturnsTrue)
+{
+    // Real tmp dir + real subpath: weakly_canonical resolves both
+    // sides against the filesystem.  Confirms the "join with base
+    // before comparing" leg of the algorithm.
+    namespace fs = std::filesystem;
+    fs::path base = fs::temp_directory_path() / "plh_inside_rel_in";
+    fs::remove_all(base);
+    fs::create_directories(base / "vault");
+    EXPECT_TRUE(keyfile_inside_base_dir("vault/x.vault", base));
+    fs::remove_all(base);
+}
+
+TEST(KeyFileAclInsideTest, RelativePath_DotDotEscapesBase_ReturnsFalse)
+{
+    // Mutation-sweep against the warn helpers: a relative `..`
+    // traversal that takes the keyfile OUT of base must NOT trigger
+    // the warning.  The previous per-side implementations performed
+    // the same component-wise compare after weakly_canonical, so
+    // this pins parity.
+    namespace fs = std::filesystem;
+    fs::path base = fs::temp_directory_path() / "plh_inside_dotdot_out";
+    fs::remove_all(base);
+    fs::create_directories(base / "vault");
+    EXPECT_FALSE(keyfile_inside_base_dir("../external/x.vault", base));
+    fs::remove_all(base);
+}
+
+TEST(KeyFileAclInsideTest, RelativePath_DotDotStillInsideBase_ReturnsTrue)
+{
+    // `vault/../vault/x.vault` canonicalizes to `vault/x.vault` —
+    // still inside base.  Proves the predicate handles redundant
+    // `..` correctly via canonicalization.
+    namespace fs = std::filesystem;
+    fs::path base = fs::temp_directory_path() / "plh_inside_dotdot_in";
+    fs::remove_all(base);
+    fs::create_directories(base / "vault");
+    EXPECT_TRUE(keyfile_inside_base_dir("vault/../vault/x.vault", base));
+    fs::remove_all(base);
+}
+
+TEST(KeyFileAclInsideTest, AbsolutePath_EqualToBase_ReturnsTrue)
+{
+    // Edge: keyfile path equals base path.  Component-by-component
+    // prefix match still satisfies "base is a prefix of kf", so the
+    // predicate returns true.  Documents this corner explicitly.
+    EXPECT_TRUE(keyfile_inside_base_dir("/etc/pylabhub/hub",
+                                         "/etc/pylabhub/hub"));
+}
+
+TEST(KeyFileAclInsideTest, AbsolutePath_PrefixSubstringNotComponentMatch)
+{
+    // The predicate compares COMPONENT-BY-COMPONENT, not via string
+    // prefix.  Pin that "/etc/pylabhub/hub2" is NOT considered inside
+    // "/etc/pylabhub/hub" — a naive substring check would mis-fire.
+    EXPECT_FALSE(keyfile_inside_base_dir("/etc/pylabhub/hub2/vault.x",
+                                          "/etc/pylabhub/hub"));
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 //  VaultFile — 0600 strict
 // ─────────────────────────────────────────────────────────────────────────
 

@@ -162,6 +162,32 @@ struct AclVerdict
 resolve_keyfile_path(const std::string           &keyfile,
                      const std::filesystem::path &base_dir) noexcept;
 
+/// Returns true if `keyfile`, resolved relative to `base_dir`,
+/// canonicalizes to a path inside `base_dir`.  Used by the hub +
+/// role subsystems to emit a "vault co-located with scripts"
+/// SECURITY WARNING at startup (HEP-CORE-0033 §7.2 hub-side /
+/// HEP-CORE-0024 §3.4.1 role-side).
+///
+/// Resolution rules match the warn helper's existing semantics
+/// (separately from `resolve_keyfile_path`, which intentionally
+/// does NOT canonicalize because the ACL check is supposed to
+/// apply to the literal path the operator wrote):
+///   - Empty `keyfile` → false (no path → no containment claim).
+///   - Absolute `keyfile` → canonicalized as-is.
+///   - Relative `keyfile` → joined with `base_dir`, then
+///     canonicalized.  `..` traversal in `keyfile` is handled
+///     correctly because both sides are passed through
+///     `std::filesystem::weakly_canonical`.
+///
+/// On a filesystem error during canonicalization, returns false —
+/// "cannot prove it's inside" yields no warning rather than
+/// crashing during startup diagnostics.  Pure path arithmetic
+/// otherwise; no `stat()` call beyond what `weakly_canonical`
+/// performs.
+[[nodiscard]] PYLABHUB_UTILS_EXPORT bool
+keyfile_inside_base_dir(const std::string           &keyfile,
+                        const std::filesystem::path &base_dir) noexcept;
+
 /// Verify that `path` satisfies the ACL contract for `role`.
 ///
 /// On POSIX: stats the file; compares the low 12 bits of `st_mode`
