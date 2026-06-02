@@ -135,3 +135,16 @@ TEST_F(DatahubBrokerHealthTest, TwoSnapshotInvariant_DemotionAndTerminationSepar
     auto proc = SpawnWorker("broker_health.two_snapshot_invariant", {});
     ExpectWorkerOk(proc);
 }
+
+TEST_F(DatahubBrokerHealthTest, ChannelTornDown_ConsumerPass2Skipped)
+{
+    // `channel_torn_down` short-circuit (HEP-0039 P8 Step B prerequisite).
+    // Producer + consumer both Pending in same sweep tick; producer
+    // Pass-2 evicts channel; consumer Pass-2 MUST be skipped (no stray
+    // CONSUMER_DIED_NOTIFY to a vanished channel).  A migration that
+    // drops the short-circuit would silently emit a CONSUMER_DIED_NOTIFY
+    // after CHANNEL_CLOSING_NOTIFY — this test asserts the count stays 0.
+    auto proc = SpawnWorker(
+        "broker_health.channel_torn_down_consumer_pass2_skipped", {});
+    ExpectWorkerOk(proc);
+}

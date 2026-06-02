@@ -494,6 +494,41 @@ TEST(QueryForEachPresenceMatching, TargetCarriesCopiedPresence)
     EXPECT_TRUE(visited);
 }
 
+TEST(QueryForEachPresenceMatching, ConsumerBranch_TargetFullyPopulated)
+{
+    // Symmetric to TargetCarriesCopiedPresence but for the consumer
+    // branch.  A regression that drops the `t.channel_entry = &ch`
+    // (or any other field) assignment from the consumer branch of
+    // `for_each_presence_matching` would not be caught by the
+    // producer-side test — Step B's Pass-2 consumer apply phase
+    // dereferences `channel_entry` for the `pre_drop` capture and
+    // would null-deref crash without this pin.
+    ChannelEntry ch = make_channel("ch2");
+    ch.consumers.push_back(make_consumer("c.a"));
+    RolesMap roles;
+    roles["c.a"] = make_role(
+        "c.a",
+        {make_presence("ch2", "consumer", RoleState::Pending, true)});
+
+    bool visited = false;
+    for_each_presence_matching(
+        ch, roles, [](const RolePresence &) { return true; },
+        [&](const PresenceSweepTarget &t) {
+            visited = true;
+            EXPECT_EQ(t.presence.state, RoleState::Pending);
+            EXPECT_EQ(t.presence.channel, "ch2");
+            EXPECT_EQ(t.presence.role_type, "consumer");
+            EXPECT_EQ(t.channel, "ch2");
+            EXPECT_EQ(t.party, PartyKind::Consumer);
+            EXPECT_EQ(t.producer, nullptr);
+            EXPECT_NE(t.consumer, nullptr);
+            ASSERT_NE(t.channel_entry, nullptr);
+            EXPECT_EQ(t.channel_entry, &ch);
+            EXPECT_EQ(t.channel_entry->name, "ch2");
+        });
+    EXPECT_TRUE(visited);
+}
+
 // ── producer_uids / consumer_uids ──────────────────────────────────────────
 
 TEST(QueryUidExtractors, EmptyChannel_EmptyVectors)
