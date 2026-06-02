@@ -602,19 +602,32 @@ This requirement layers on top of work that has now landed:
   modes from §4.6.1 applied at write time.  The operator should
   not have to remember a separate keygen step.
 - §4.6 closure → **CLOSED 2026-06-01** in commit `4f3fb077`
-  (key-file ACL discipline implementation, task #101 — absorbed
-  the deferred S1/S2/S3 items).  Shared `key_file_acl` utility
-  in `src/utils/security/key_file_acl.cpp` is wired at:
-  vault create (`HubVault::create` + `RoleVault::create` enforce
-  0700 on the parent dir via `set_keyfile_mode`); atomic vault
-  write (`vault_crypto::write_secure_file` uses POSIX
+  + #101 review chain through commit `eb6d0bbe` (task #101,
+  absorbed deferred S1/S2/S3).  Implementation arrived in 4f3fb077;
+  4 follow-up fresh-eye review rounds closed compounding doc/code
+  drift (`40f6320c` docs+comments, `b8a51e96` test fixes,
+  `50b93f23` production hardening incl. M1 atomic `publish_public_key`
+  + L6 `ConfigFileReferencingVault` advisory wire, `165afdf8`
+  round-2 cleanup, `eb6d0bbe` round-3 cleanup incl. H1 `AclVerdict`
+  docstring contract + B2 keygen note observability).  Shared
+  `key_file_acl` utility in `src/utils/security/key_file_acl.cpp`
+  is wired at: vault create (`HubVault::create` + `RoleVault::create`
+  enforce 0700 on the parent dir via `set_keyfile_mode`); atomic
+  vault write (`vault_crypto::write_secure_file` uses POSIX
   `O_CREAT|O_EXCL|O_WRONLY|O_NOFOLLOW|O_CLOEXEC` + `fchmod 0600`,
   closing TOCTOU + symlink-redirect attacks at the kernel layer);
-  and binary startup (`HubConfig::load_keypair` +
+  atomic pubkey publish (`HubVault::publish_public_key` uses the
+  same flag set + `O_TRUNC` semantics via unlink-then-create, with
+  stderr `note:` on pre-existing-file removal for tamper
+  observability); and binary startup (`HubConfig::load_keypair` +
   `RoleConfig::load_keypair` call `verify_keyfile_acl` for both
   `VaultFile` and `VaultDir` BEFORE reading the secret, refusing
   to load with an OpenSSH-style actionable diagnostic on
-  violation).
+  violation; advisory ConfigFileReferencingVault warnings on
+  group-readable hub.json / role config surfaced at config-load
+  via the `!v.diagnostic.empty()` gate).  Task #120 tracks the
+  Windows pathway hardening follow-up (out of scope for the Linux
+  cryptographic floor).
 
 ### 4.6.4 Out of scope
 
