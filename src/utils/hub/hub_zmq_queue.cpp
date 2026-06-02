@@ -11,6 +11,8 @@
 #include "utils/context_metrics.hpp"
 #include "utils/crypto_utils.hpp"
 #include "utils/logger.hpp"
+#include "portable_atomic_shared_ptr.hpp"
+#include "utils/security/zap_router.hpp"
 #include "utils/thread_manager.hpp"
 #include "utils/zmq_context.hpp"
 #include "zmq_wire_helpers.hpp"
@@ -127,6 +129,27 @@ struct ZmqQueueImpl
     std::atomic<uint64_t> send_drop_count_{0};
     std::atomic<uint64_t> send_retry_count_{0};
     std::atomic<uint64_t> data_drop_count_{0};
+
+    // ── PeerAdmission Phase C — auth state ─────────────────────────────────────
+    // Empty `my_pubkey_z85` = no CURVE wired (legacy unauth path).
+    ZmqAuthOptions auth_opts_;
+
+    // Resolved zap_domain (Phase C): auth_opts_.zap_domain if non-empty,
+    // else derived from instance_id at start().  Captured here so
+    // stop() can release the ZapRouter registration symmetrically.
+    std::string resolved_zap_domain_;
+
+    // PUSH/bind side allowlist.  Lock-free reads from ZapRouter's
+    // pump thread via PortableAtomicSharedPtr.  Mutations through
+    // ZmqQueue::set_peer_allowlist are atomic snapshots (Phase A
+    // contract).  Unused on PULL/connect side.
+    pylabhub::utils::detail::PortableAtomicSharedPtr<
+        const pylabhub::utils::security::PeerAllowlist>
+        allowlist_;
+
+    // PUSH/bind side ZAP registration handle.  Active iff CURVE was
+    // wired AND this is the server side; released in stop().
+    std::optional<pylabhub::utils::security::ZapDomainHandle> zap_handle_;
 
     // ── Domain 2+3 timing (HEP-CORE-0008 §10) ──────────────────────────────
     // Measured in read_acquire/read_release (read mode) or
@@ -524,6 +547,109 @@ ZmqQueue::push_to(const std::string& endpoint, std::vector<ZmqSchemaField> schem
 }
 
 // ============================================================================
+// Auth-enabled factories (PeerAdmission Phase C)
+// ============================================================================
+
+std::unique_ptr<ZmqQueue>
+ZmqQueue::pull_from_with_auth(const std::string& endpoint,
+                               std::vector<ZmqSchemaField> schema,
+                               std::string packing,
+                               ZmqAuthOptions auth_opts,
+                               bool bind,
+                               size_t max_buffer_depth,
+                               std::optional<std::array<uint8_t, 8>> schema_tag,
+                               std::string instance_id)
+{
+    // Defer all schema validation to the legacy factory so the
+    // contract stays in one place.  Then re-cast away the abstract
+    // return + populate auth fields on the underlying ZmqQueueImpl.
+    auto reader = pull_from(endpoint, std::move(schema), std::move(packing),
+                             bind, max_buffer_depth, schema_tag,
+                             std::move(instance_id));
+    if (!reader) return nullptr;
+    std::unique_ptr<ZmqQueue> z(static_cast<ZmqQueue *>(reader.release()));
+    z->pImpl->auth_opts_ = std::move(auth_opts);
+    return z;
+}
+
+std::unique_ptr<ZmqQueue>
+ZmqQueue::push_to_with_auth(const std::string& endpoint,
+                             std::vector<ZmqSchemaField> schema,
+                             std::string packing,
+                             ZmqAuthOptions auth_opts,
+                             bool bind,
+                             std::optional<std::array<uint8_t, 8>> schema_tag,
+                             int sndhwm,
+                             size_t send_buffer_depth,
+                             OverflowPolicy overflow_policy,
+                             int send_retry_interval_ms,
+                             std::string instance_id)
+{
+    auto writer = push_to(endpoint, std::move(schema), std::move(packing),
+                           bind, schema_tag, sndhwm, send_buffer_depth,
+                           overflow_policy, send_retry_interval_ms,
+                           std::move(instance_id));
+    if (!writer) return nullptr;
+    std::unique_ptr<ZmqQueue> z(static_cast<ZmqQueue *>(writer.release()));
+    z->pImpl->auth_opts_ = std::move(auth_opts);
+    return z;
+}
+
+// ============================================================================
+// PeerAdmission overrides (Phase A interface)
+// ============================================================================
+
+bool ZmqQueue::set_peer_allowlist(
+    pylabhub::utils::security::PeerAllowlist allowlist)
+{
+    if (!pImpl) return false;
+    // Only the PUSH/bind side has an allowlist concept.  Refusing on
+    // the PULL side surfaces a caller misuse (broker should not push
+    // allowlists to the consumer queue — the consumer trusts the
+    // server via curve_serverkey).
+    if (pImpl->mode != ZmqQueueImpl::Mode::Write || !pImpl->bind_socket)
+        return false;
+    pImpl->allowlist_.store(
+        std::make_shared<const pylabhub::utils::security::PeerAllowlist>(
+            std::move(allowlist)),
+        std::memory_order_release);
+    return true;
+}
+
+std::optional<pylabhub::utils::security::PeerAllowlist>
+ZmqQueue::peer_allowlist_snapshot() const
+{
+    if (!pImpl) return std::nullopt;
+    if (pImpl->mode != ZmqQueueImpl::Mode::Write || !pImpl->bind_socket)
+        return std::nullopt;
+    auto snap = pImpl->allowlist_.load(std::memory_order_acquire);
+    if (!snap) return std::nullopt;
+    return *snap;
+}
+
+bool ZmqQueue::is_peer_allowed(
+    const pylabhub::utils::security::PeerIdentity& peer) const
+{
+    if (!pImpl) return false;
+    if (pImpl->mode != ZmqQueueImpl::Mode::Write || !pImpl->bind_socket)
+        return false;
+    auto snap = pImpl->allowlist_.load(std::memory_order_acquire);
+    if (!snap) return false;
+    return snap->contains(peer);
+}
+
+bool ZmqQueue::admission_is_enforced() const noexcept
+{
+    // True iff CURVE keys were supplied AND the socket has been
+    // started (the socket bind/connect is what actually attaches the
+    // CURVE machinery in libzmq).  pImpl->running_ flips true inside
+    // start() before any CURVE sockopt is set, so the live state is
+    // "auth fields populated".
+    if (!pImpl) return false;
+    return !pImpl->auth_opts_.my_pubkey_z85.empty();
+}
+
+// ============================================================================
 // Constructor / destructor / move
 // ============================================================================
 
@@ -577,6 +703,70 @@ bool ZmqQueue::start()
         // [ZQ8] Apply SNDHWM on PUSH sockets when caller requested a specific value.
         if (pImpl->mode == ZmqQueueImpl::Mode::Write && pImpl->sndhwm > 0)
             pImpl->socket.set(zmq::sockopt::sndhwm, pImpl->sndhwm);
+
+        // ── PeerAdmission Phase C — CURVE + ZAP wiring (HEP-CORE-0036 §6) ────
+        // Empty pubkey == legacy unauth path.  See ZmqAuthOptions docs
+        // for the per-side semantics.
+        if (!pImpl->auth_opts_.my_pubkey_z85.empty())
+        {
+            namespace sec = pylabhub::utils::security;
+
+            pImpl->socket.set(zmq::sockopt::curve_publickey,
+                              pImpl->auth_opts_.my_pubkey_z85);
+            pImpl->socket.set(zmq::sockopt::curve_secretkey,
+                              pImpl->auth_opts_.my_seckey_z85);
+
+            if (pImpl->bind_socket)
+            {
+                // Server side: CURVE_SERVER + zap_domain + register with ZapRouter.
+                pImpl->socket.set(zmq::sockopt::curve_server, 1);
+
+                // Resolve zap_domain.  Use explicit value if provided;
+                // otherwise derive from instance_id or queue_name+addr
+                // (same key the ThreadManager owner_id uses below).
+                pImpl->resolved_zap_domain_ =
+                    pImpl->auth_opts_.zap_domain;
+                if (pImpl->resolved_zap_domain_.empty())
+                {
+                    if (!pImpl->instance_id.empty())
+                        pImpl->resolved_zap_domain_ = pImpl->instance_id;
+                    else
+                    {
+                        char addr_buf[64];
+                        std::snprintf(addr_buf, sizeof(addr_buf),
+                                      "%s@%p", pImpl->queue_name.c_str(),
+                                      static_cast<void *>(pImpl.get()));
+                        pImpl->resolved_zap_domain_ = addr_buf;
+                    }
+                }
+                pImpl->socket.set(zmq::sockopt::zap_domain,
+                                  pImpl->resolved_zap_domain_);
+
+                // Seed the allowlist with the operator-supplied initial set.
+                pImpl->allowlist_.store(
+                    std::make_shared<const sec::PeerAllowlist>(
+                        pImpl->auth_opts_.initial_allowlist),
+                    std::memory_order_release);
+
+                // Register with the router BEFORE bind.  Without this
+                // ordering, an early peer connect could submit a ZAP
+                // request that lands on an unregistered domain and
+                // gets denied even though admission is configured.
+                pImpl->zap_handle_.emplace(
+                    sec::ZapRouter::instance().register_domain(
+                        pImpl->resolved_zap_domain_, this));
+            }
+            else
+            {
+                // Client side: present serverkey, no ZAP needed.
+                if (pImpl->auth_opts_.serverkey_z85.empty())
+                {
+                    throw zmq::error_t();  // surfaces in the catch below
+                }
+                pImpl->socket.set(zmq::sockopt::curve_serverkey,
+                                  pImpl->auth_opts_.serverkey_z85);
+            }
+        }
 
         if (pImpl->bind_socket)
             pImpl->socket.bind(pImpl->endpoint);
@@ -721,6 +911,16 @@ void ZmqQueue::stop()
             }
         }
         pImpl->thread_mgr_.reset();
+    }
+
+    // Release the ZAP registration BEFORE closing the socket: the
+    // RAII handle decrements ZapRouter's ref-count and removes the
+    // domain from the routing map.  After this, no more handshakes
+    // route to `this`.
+    if (pImpl->zap_handle_.has_value())
+    {
+        pImpl->zap_handle_.reset();
+        pImpl->resolved_zap_domain_.clear();
     }
 
     // Close the socket AFTER threads have exited (threads were the only user).
