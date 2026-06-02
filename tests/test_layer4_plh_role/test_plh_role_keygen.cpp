@@ -109,14 +109,12 @@ TEST_P(PlhRoleKeygenTest, WritesVaultFile)
     //     0-sized, or doesn't chmod is caught here.
     ExpectVaultFileSecured(vault_path);
 
-    // (b) Vault parent dir EXISTS.  Parent dir MODE check (0700 per
-    //     HEP-CORE-0035 §4.6.1) is deliberately NOT asserted here —
-    //     the binary's `fs::create_directories` path does not yet
-    //     apply 0700 explicitly (security audit finding, separately
-    //     tracked).  When that gap is fixed, swap this to
-    //     `ExpectVaultDirSecured(vault_path.parent_path())`.
-    EXPECT_TRUE(fs::is_directory(vault_path.parent_path()))
-        << "vault dir missing: " << vault_path.parent_path();
+    // (b) Vault parent dir MUST be 0700 (HEP-CORE-0035 §4.6.1).
+    //     Enforced at write time by RoleVault::create calling
+    //     set_keyfile_mode(parent, VaultDir).  A regression that
+    //     drops the explicit chmod and falls back to umask-derived
+    //     mode (typically 0755) is caught here.
+    ExpectVaultDirSecured(vault_path.parent_path());
 
     // (c) Public key is printed as "public_key : <hex>" in stdout (see
     // plh_role_main.cpp: "role_uid" and "public_key" labels).  Pins

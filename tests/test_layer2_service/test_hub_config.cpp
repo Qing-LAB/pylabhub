@@ -119,6 +119,22 @@ TEST_F(HubConfigTest, Auth_NotObject_Throws)
     ExpectWorkerOk(w);
 }
 
+#if !defined(_WIN32) && !defined(_WIN64)
+TEST_F(HubConfigTest, LoadKeypair_RefusesLooseVaultFileMode)
+{
+    auto w = SpawnWorker("hub_config.load_keypair_refuses_loose_file_mode",
+                         {unique_dir("load_keypair_loose_file_mode")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(HubConfigTest, LoadKeypair_RefusesLooseVaultParentDirMode)
+{
+    auto w = SpawnWorker("hub_config.load_keypair_refuses_loose_parent_dir_mode",
+                         {unique_dir("load_keypair_loose_parent_dir_mode")});
+    ExpectWorkerOk(w);
+}
+#endif
+
 TEST_F(HubConfigTest, SectionNotObject_Throws)
 {
     auto w = SpawnWorker("hub_config.section_not_object",

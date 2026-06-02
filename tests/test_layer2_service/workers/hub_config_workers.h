@@ -40,6 +40,12 @@ int auth_keyfile_wrong_type_throws(const char *tmpdir);
 /// HEP-CORE-0033 §7.1: non-object `hub.auth` → config-load error.
 int auth_not_object_throws(const char *tmpdir);
 
+/// HEP-CORE-0035 §4.6.2: load_keypair refuses 0644 vault file mode.
+int load_keypair_refuses_loose_file_mode(const char *tmpdir);
+
+/// HEP-CORE-0035 §4.6.2: load_keypair refuses 0755 vault parent dir.
+int load_keypair_refuses_loose_parent_dir_mode(const char *tmpdir);
+
 /// Missing hub.uid → auto-generated `hub.<name>.uid<8hex>` per HEP-0033 §G2.2.0a;
 /// resulting uid validates under IdentifierKind::PeerUid.
 int uid_auto_generated(const char *tmpdir);
