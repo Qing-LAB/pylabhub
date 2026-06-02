@@ -63,10 +63,15 @@ struct RoleAttachment
 /// Payload passed to the `for_each_presence_matching` visitor.
 /// **Read-only contract per HEP-0039 §3.2a two-phase pattern**:
 /// the visitor MUST NOT mutate hub state directly.  Decisions
-/// should be recorded in a caller-owned container and applied in a
-/// separate pass under the writer lock.  `presence` is a value
-/// copy of the matching `RolePresence`; `producer` / `consumer`
-/// point into the channel's vector (one is null per `party`).
+/// should be recorded in a caller-owned container and applied via
+/// per-mutator capability ops (see lock-discipline note below).
+///
+/// `presence` is a value copy of the matching `RolePresence`;
+/// `producer` / `consumer` point into the channel's vector (one is
+/// null per `party`); `channel_entry` points to the parent
+/// `ChannelEntry` (always non-null inside the visitor; useful when
+/// the apply phase needs to capture a `pre_drop` snapshot of the
+/// channel before the mutator erases it from live state).
 struct PresenceSweepTarget
 {
     PartyKind             party;
@@ -74,6 +79,7 @@ struct PresenceSweepTarget
     const ConsumerEntry  *consumer{nullptr};
     RolePresence          presence;             ///< copied
     std::string           channel;
+    const ChannelEntry   *channel_entry{nullptr};
 };
 
 // ─── Helper: resolve a producer's presence row ──────────────────────────────
@@ -265,12 +271,44 @@ find_role_attachments(const HubStateSnapshot &snap,
 /// consumers.  Predicate signature: `bool(const RolePresence &)`.
 /// Visitor signature: `void(const PresenceSweepTarget &)`.
 ///
-/// **Two-phase contract (HEP-0039 §3.2a)**: the visitor MUST NOT
+/// **Two-phase contract (HEP-0039 §3.2a).**  The visitor MUST NOT
 /// mutate hub state.  Use this helper to collect decisions into a
-/// caller-owned container; apply transitions in a second pass
-/// under the writer lock.  Replaces the four near-identical nested
-/// loops in `BrokerServiceImpl::check_heartbeat_timeouts`
-/// (Pattern P8 in `docs/todo/QUERY_LAYER_TODO.md`).
+/// caller-owned container; apply them in a separate pass.
+///
+/// **Lock discipline (per HEP-0039 §2 + §3.2a).**  Two valid modes:
+///
+///   (a) Snapshot mode (the canonical mode for this helper).  The
+///       caller holds a `HubStateSnapshot` (value copy taken under
+///       `shared_lock` then released).  The visit phase walks the
+///       snapshot with NO lock held; pointers in
+///       `PresenceSweepTarget` are stable for the snapshot's
+///       lifetime.  The apply phase calls per-mutator capability
+///       ops on the live `HubState` — each op takes its own writer
+///       lock; the caller does NOT hold a writer lock across the
+///       apply phase.  This is what
+///       `BrokerServiceImpl::check_heartbeat_timeouts` does today.
+///
+///   (b) Writer-lock mode.  The caller holds the writer lock for
+///       both visit and apply, calling mutators that DON'T take the
+///       lock themselves.  Rare; not the heartbeat-timeout shape.
+///
+/// **Cross-pass dependencies require two snapshots + two passes.**
+/// The heartbeat-timeout sweep is the canonical example: Pass-1
+/// transitions Connected→Pending and stamps a fresh `state_since`;
+/// Pass-2 transitions Pending→Disconnected only when
+/// `now - state_since >= pending_timeout`.  Because Pass-2 must
+/// observe Pass-1's fresh `state_since` stamps (to EXCLUDE
+/// just-demoted presences from same-sweep termination), the caller
+/// must (1) take Snapshot-1, (2) run `for_each_presence_matching`
+/// with the Pass-1 predicate + collect decisions, (3) drain the
+/// decisions via the Pass-1 mutators, (4) take Snapshot-2 — fresh,
+/// reflecting Pass-1's mutations, (5) run
+/// `for_each_presence_matching` again with the Pass-2 predicate +
+/// collect, (6) drain via Pass-2 mutators.  A single helper call
+/// with a "Pass-1-or-Pass-2" predicate over ONE snapshot is wrong:
+/// it would consider just-demoted presences for termination in the
+/// same tick.  See `docs/todo/QUERY_LAYER_TODO.md` Pattern P8 for
+/// the heartbeat-timeout migration shape.
 template <typename RolesMap, typename Pred, typename Fn>
 inline void
 for_each_presence_matching(const ChannelEntry &ch,
@@ -284,11 +322,12 @@ for_each_presence_matching(const ChannelEntry &ch,
             detail::resolve_producer_presence(ch.name, prod.role_uid, roles);
         if (p == nullptr || !pred(*p)) continue;
         PresenceSweepTarget t;
-        t.party    = PartyKind::Producer;
-        t.producer = &prod;
-        t.consumer = nullptr;
-        t.presence = *p;
-        t.channel  = ch.name;
+        t.party         = PartyKind::Producer;
+        t.producer      = &prod;
+        t.consumer      = nullptr;
+        t.presence      = *p;
+        t.channel       = ch.name;
+        t.channel_entry = &ch;
         fn(t);
     }
     for (const auto &cons : ch.consumers)
@@ -297,11 +336,12 @@ for_each_presence_matching(const ChannelEntry &ch,
             detail::resolve_consumer_presence(ch.name, cons.role_uid, roles);
         if (p == nullptr || !pred(*p)) continue;
         PresenceSweepTarget t;
-        t.party    = PartyKind::Consumer;
-        t.producer = nullptr;
-        t.consumer = &cons;
-        t.presence = *p;
-        t.channel  = ch.name;
+        t.party         = PartyKind::Consumer;
+        t.producer      = nullptr;
+        t.consumer      = &cons;
+        t.presence      = *p;
+        t.channel       = ch.name;
+        t.channel_entry = &ch;
         fn(t);
     }
 }

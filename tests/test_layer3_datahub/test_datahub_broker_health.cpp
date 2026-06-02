@@ -95,3 +95,43 @@ TEST_F(DatahubBrokerHealthTest, SchemaMismatchNotify)
     //  - messenger B: "REG_ACK failed: Schema hash differs" (rejected producer gets error back)
     ExpectWorkerOk(proc, {}, {"Cat1 schema mismatch", "CHANNEL_ERROR_NOTIFY"});
 }
+
+// ── HEP-CORE-0039 P8 migration prerequisites ────────────────────────────────
+// Three behaviors that MUST hold before `check_heartbeat_timeouts` can be
+// migrated to `for_each_presence_matching`.  See
+// `docs/todo/QUERY_LAYER_TODO.md` Pattern P8.
+
+TEST_F(DatahubBrokerHealthTest, MultiProducer_PartialPendingTimeout_ChannelSurvives)
+{
+    // Two producers on one channel; B stops heartbeating, A keeps going.
+    // B's presence is removed but the channel SURVIVES.  A migration that
+    // accidentally tears the channel down on any producer drop would fail
+    // here (surviving producer A would receive CHANNEL_CLOSING_NOTIFY).
+    auto proc = SpawnWorker(
+        "broker_health.multi_producer_partial_pending_timeout", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubBrokerHealthTest, ConsumerHeartbeatTimeout_NotifyBodyShape)
+{
+    // Consumer heartbeat-timeout fires CONSUMER_DIED_NOTIFY with
+    // reason="heartbeat_timeout" (distinguished from "process_dead").
+    // Pins the body shape: channel_name, role_uid, consumer_pid,
+    // consumer_hostname, reason — broker_proto 4→5 audit fields.
+    auto proc = SpawnWorker(
+        "broker_health.consumer_heartbeat_timeout_notify", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubBrokerHealthTest, TwoSnapshotInvariant_DemotionAndTerminationSeparateTicks)
+{
+    // A presence demoted Connected→Pending in tick T MUST NOT also be
+    // terminated Pending→Disconnected in tick T.  Pin via timing:
+    // CHANNEL_CLOSING_NOTIFY must not fire before
+    // (ready_timeout + pending_timeout - sweep slop) ≈ 800ms.  A
+    // single-snapshot migration of `check_heartbeat_timeouts` would
+    // collapse the two passes and NOTIFY would fire ~500ms — this test
+    // would fail.
+    auto proc = SpawnWorker("broker_health.two_snapshot_invariant", {});
+    ExpectWorkerOk(proc);
+}

@@ -579,6 +579,309 @@ int schema_mismatch_notify(int /*argc*/, char ** /*argv*/)
         crypto_module(), zmq_module());
 }
 
+// ============================================================================
+// HEP-CORE-0039 P8 migration prerequisites — heartbeat-timeout sweep behavior
+// pins that must hold before `check_heartbeat_timeouts` is migrated to
+// `for_each_presence_matching`.  See `docs/todo/QUERY_LAYER_TODO.md` P8.
+// ============================================================================
+
+// Multi-producer partial pending-timeout: one producer stops heartbeating,
+// the OTHER keeps heartbeating; that producer's presence times out and is
+// removed but the channel SURVIVES (last-producer atomic teardown does NOT
+// fire because there's still a healthy producer).  A migration that
+// accidentally fires `_on_channel_closed` on any producer drop would tear
+// the channel down here and the surviving producer would get a stray
+// CHANNEL_CLOSING_NOTIFY.
+int multi_producer_partial_pending_timeout(int /*argc*/, char ** /*argv*/)
+{
+    return run_gtest_worker(
+        []() {
+            BrokerService::Config cfg;
+            cfg.endpoint                         = "tcp://127.0.0.1:0";
+            cfg.use_curve                        = true;
+            cfg.ready_timeout_override           = std::chrono::milliseconds(500);
+            cfg.pending_timeout_override         = std::chrono::milliseconds(500);
+            cfg.consumer_liveness_check_interval = std::chrono::seconds(0);
+            auto broker = start_broker_with_cfg(std::move(cfg));
+
+            const std::string ch_name =
+                make_test_channel_name("health.multi_prod_partial_timeout");
+            const std::string prod_a_uid = "prod.a." + ch_name;
+            const std::string prod_b_uid = "prod.b." + ch_name;
+
+            // Producer A — the survivor.  Keeps heartbeating.
+            std::atomic<bool> a_got_closing{false};
+            BrcHandle prod_a;
+            prod_a.brc.on_notification(
+                [&](const std::string &type, const nlohmann::json &) {
+                    if (type == "CHANNEL_CLOSING_NOTIFY")
+                        a_got_closing.store(true);
+                });
+            prod_a.start(broker.endpoint, broker.pubkey, prod_a_uid);
+            auto reg_a = prod_a.brc.register_channel(
+                make_reg_opts(ch_name, prod_a_uid), 3000);
+            ASSERT_TRUE(reg_a.has_value()) << "register A failed";
+
+            // Producer B — the one that times out.  Sends one heartbeat
+            // then stops.
+            BrcHandle prod_b;
+            prod_b.start(broker.endpoint, broker.pubkey, prod_b_uid);
+            auto reg_b = prod_b.brc.register_channel(
+                make_reg_opts(ch_name, prod_b_uid), 3000);
+            ASSERT_TRUE(reg_b.has_value()) << "register B failed";
+
+            prod_a.brc.send_heartbeat(ch_name, prod_a_uid, "producer", {});
+            prod_b.brc.send_heartbeat(ch_name, prod_b_uid, "producer", {});
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+            // Survivor heartbeats every 100ms; B never again.
+            std::atomic<bool> a_stop{false};
+            std::thread a_thread([&] {
+                while (!a_stop.load()) {
+                    prod_a.brc.send_heartbeat(ch_name, prod_a_uid,
+                                               "producer", {});
+                    std::this_thread::sleep_for(
+                        std::chrono::milliseconds(100));
+                }
+            });
+
+            // Wait for B to time out: ready_timeout + pending_timeout
+            // ≈ 1000ms + sweep slop.
+            const auto producer_count_for =
+                [&](const std::string &name) -> int {
+                ChannelSnapshot snap =
+                    broker.service_ref().query_channel_snapshot();
+                for (const auto &ch : snap.channels)
+                    if (ch.name == name)
+                        return static_cast<int>(ch.producer_uids.size());
+                return -1;
+            };
+
+            const auto deadline = std::chrono::steady_clock::now() +
+                                  std::chrono::seconds(5);
+            while (producer_count_for(ch_name) != 1 &&
+                   std::chrono::steady_clock::now() < deadline) {
+                std::this_thread::sleep_for(
+                    std::chrono::milliseconds(50));
+            }
+
+            EXPECT_EQ(producer_count_for(ch_name), 1)
+                << "B's presence must be removed; survivor A remains";
+            EXPECT_FALSE(a_got_closing.load())
+                << "Channel must SURVIVE — surviving producer A must NOT "
+                   "receive CHANNEL_CLOSING_NOTIFY when B times out";
+
+            a_stop.store(true);
+            a_thread.join();
+            prod_a.stop();
+            prod_b.stop();
+            broker.stop_and_join();
+        },
+        "broker_health.multi_producer_partial_pending_timeout",
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), zmq_module());
+}
+
+// Consumer heartbeat-timeout fires CONSUMER_DIED_NOTIFY with
+// reason="heartbeat_timeout" (NOT "process_dead").  Distinguishes from the
+// PID-death path in `dead_consumer_orchestrator` above.  Pins the exact
+// body shape required by HEP-CORE-0023 §2.1.1 + the broker_proto 4→5
+// audit (role_uid, consumer_pid, consumer_hostname, reason).  A migration
+// that calls the wrong fan-out reason or omits a field would fail here.
+int consumer_heartbeat_timeout_notify(int /*argc*/, char ** /*argv*/)
+{
+    return run_gtest_worker(
+        []() {
+            BrokerService::Config cfg;
+            cfg.endpoint                         = "tcp://127.0.0.1:0";
+            cfg.use_curve                        = true;
+            cfg.ready_timeout_override           = std::chrono::milliseconds(500);
+            cfg.pending_timeout_override         = std::chrono::milliseconds(500);
+            // Disable PID liveness so the only path to CONSUMER_DIED_NOTIFY
+            // is the heartbeat-timeout path under test.
+            cfg.consumer_liveness_check_interval = std::chrono::seconds(0);
+            auto broker = start_broker_with_cfg(std::move(cfg));
+
+            const std::string ch_name =
+                make_test_channel_name("health.cons_hb_timeout");
+            const std::string prod_uid = "prod." + ch_name;
+            const std::string cons_uid = "cons." + ch_name;
+
+            std::atomic<bool>     died_fired{false};
+            std::mutex            notify_mu;
+            nlohmann::json        died_body;
+
+            // Producer keeps heartbeating; receives CONSUMER_DIED_NOTIFY
+            // when the consumer's heartbeat-timeout fires.
+            BrcHandle prod;
+            prod.brc.on_notification(
+                [&](const std::string &type, const nlohmann::json &body) {
+                    if (type == "CONSUMER_DIED_NOTIFY") {
+                        std::lock_guard<std::mutex> lk(notify_mu);
+                        died_body = body;
+                        died_fired.store(true);
+                    }
+                });
+            prod.start(broker.endpoint, broker.pubkey, prod_uid);
+            auto reg = prod.brc.register_channel(
+                make_reg_opts(ch_name, prod_uid), 3000);
+            ASSERT_TRUE(reg.has_value());
+            prod.brc.send_heartbeat(ch_name, prod_uid, "producer", {});
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+            // Consumer: register, heartbeat once, then go silent.
+            BrcHandle cons;
+            cons.start(broker.endpoint, broker.pubkey, cons_uid);
+            auto creg = cons.brc.register_consumer(
+                make_cons_opts(ch_name, cons_uid), 3000);
+            ASSERT_TRUE(creg.has_value());
+            cons.brc.send_heartbeat(ch_name, cons_uid, "consumer", {});
+
+            // Producer keeps heartbeating in a side thread.
+            std::atomic<bool> prod_stop{false};
+            std::thread prod_thread([&] {
+                while (!prod_stop.load()) {
+                    prod.brc.send_heartbeat(ch_name, prod_uid,
+                                             "producer", {});
+                    std::this_thread::sleep_for(
+                        std::chrono::milliseconds(100));
+                }
+            });
+
+            // Wait for NOTIFY (ready + pending ≈ 1000ms + sweep slop).
+            const auto deadline = std::chrono::steady_clock::now() +
+                                  std::chrono::seconds(5);
+            while (!died_fired.load() &&
+                   std::chrono::steady_clock::now() < deadline) {
+                std::this_thread::sleep_for(
+                    std::chrono::milliseconds(50));
+            }
+
+            ASSERT_TRUE(died_fired.load())
+                << "CONSUMER_DIED_NOTIFY (heartbeat_timeout) not received "
+                   "within 5s";
+
+            // Pin body shape — exact fields, exact reason value.
+            std::lock_guard<std::mutex> lk(notify_mu);
+            EXPECT_EQ(died_body.value("channel_name", std::string{}),
+                      ch_name);
+            EXPECT_EQ(died_body.value("role_uid", std::string{}), cons_uid);
+            EXPECT_EQ(died_body.value("reason", std::string{}),
+                      "heartbeat_timeout")
+                << "reason MUST be \"heartbeat_timeout\" — distinguishes "
+                   "from the PID-death path (\"process_dead\")";
+            EXPECT_TRUE(died_body.contains("consumer_pid"))
+                << "consumer_pid field present per broker_proto 5";
+            EXPECT_TRUE(died_body.contains("consumer_hostname"))
+                << "consumer_hostname field present";
+
+            prod_stop.store(true);
+            prod_thread.join();
+            cons.stop();
+            prod.stop();
+            broker.stop_and_join();
+        },
+        "broker_health.consumer_heartbeat_timeout_notify",
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), zmq_module());
+}
+
+// Two-snapshot invariant: a presence that demotes Connected→Pending in
+// tick T MUST NOT also be terminated (Pending→Disconnected) in the same
+// tick T.  Pin the timing: with ready_timeout==pending_timeout==500ms
+// and sweep ~100ms, CHANNEL_CLOSING_NOTIFY must NOT fire before
+// (ready_timeout + safety margin) — only after (ready_timeout +
+// pending_timeout) does it fire.  A migration that collapses Pass-1 and
+// Pass-2 into one snapshot would terminate the just-demoted presence in
+// the same tick and NOTIFY would fire ~500ms too early.
+int two_snapshot_invariant(int /*argc*/, char ** /*argv*/)
+{
+    return run_gtest_worker(
+        []() {
+            BrokerService::Config cfg;
+            cfg.endpoint                         = "tcp://127.0.0.1:0";
+            cfg.use_curve                        = true;
+            cfg.ready_timeout_override           = std::chrono::milliseconds(500);
+            cfg.pending_timeout_override         = std::chrono::milliseconds(500);
+            cfg.consumer_liveness_check_interval = std::chrono::seconds(0);
+            auto broker = start_broker_with_cfg(std::move(cfg));
+
+            const std::string ch_name =
+                make_test_channel_name("health.two_snapshot");
+            const std::string prod_uid = "prod." + ch_name;
+
+            std::atomic<bool>     closing_fired{false};
+            std::chrono::steady_clock::time_point closing_at{};
+            std::mutex            t_mu;
+
+            BrcHandle prod;
+            prod.brc.on_notification(
+                [&](const std::string &type, const nlohmann::json &) {
+                    if (type == "CHANNEL_CLOSING_NOTIFY") {
+                        std::lock_guard<std::mutex> lk(t_mu);
+                        closing_at = std::chrono::steady_clock::now();
+                        closing_fired.store(true);
+                    }
+                });
+            prod.start(broker.endpoint, broker.pubkey, prod_uid);
+            auto reg = prod.brc.register_channel(
+                make_reg_opts(ch_name, prod_uid), 3000);
+            ASSERT_TRUE(reg.has_value());
+
+            // One heartbeat, then go silent.  Record T0 = the moment
+            // AFTER the heartbeat completes — that's the broker's
+            // last_heartbeat for this presence.
+            prod.brc.send_heartbeat(ch_name, prod_uid, "producer", {});
+            const auto t0 = std::chrono::steady_clock::now();
+
+            // Lower bound: NOTIFY must NOT fire before
+            // (ready_timeout + pending_timeout) ≈ 1000ms.
+            // We check at t0 + 700ms (well inside the legitimate
+            // Pending phase) — closing MUST still be false.
+            std::this_thread::sleep_for(std::chrono::milliseconds(700));
+            EXPECT_FALSE(closing_fired.load())
+                << "CHANNEL_CLOSING_NOTIFY fired too early — Pass-2 "
+                   "termination must NOT happen in the same sweep tick "
+                   "as the Pass-1 Connected→Pending demotion.  This is "
+                   "the two-snapshot invariant; a single-snapshot "
+                   "migration would fail here.";
+
+            // Upper bound: NOTIFY must fire by t0 + 2000ms.
+            const auto deadline = t0 + std::chrono::seconds(3);
+            while (!closing_fired.load() &&
+                   std::chrono::steady_clock::now() < deadline) {
+                std::this_thread::sleep_for(
+                    std::chrono::milliseconds(50));
+            }
+            ASSERT_TRUE(closing_fired.load())
+                << "CHANNEL_CLOSING_NOTIFY did not fire within 3s";
+
+            // Pin the exact lower bound on the firing time: at least
+            // (ready_timeout + pending_timeout) - small_slack must
+            // have elapsed from t0.  We use 800ms (less than 1000ms
+            // to tolerate sweep-grain timing, but well above the
+            // 500ms a collapsed-pass migration would produce).
+            std::chrono::milliseconds elapsed_at_close{};
+            {
+                std::lock_guard<std::mutex> lk(t_mu);
+                elapsed_at_close =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        closing_at - t0);
+            }
+            EXPECT_GE(elapsed_at_close, std::chrono::milliseconds(800))
+                << "NOTIFY fired at " << elapsed_at_close.count()
+                << "ms after last heartbeat — expected ≥800ms "
+                   "(ready_timeout + pending_timeout - sweep slop). "
+                   "A single-snapshot migration would produce ≈500-600ms.";
+
+            prod.stop();
+            broker.stop_and_join();
+        },
+        "broker_health.two_snapshot_invariant",
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), zmq_module());
+}
+
 } // namespace pylabhub::tests::worker::broker_health
 
 // ============================================================================
@@ -617,6 +920,12 @@ struct BrokerHealthWorkerRegistrar
                     return dead_consumer_exiter(argc, argv);
                 if (scenario == "schema_mismatch_notify")
                     return schema_mismatch_notify(argc, argv);
+                if (scenario == "multi_producer_partial_pending_timeout")
+                    return multi_producer_partial_pending_timeout(argc, argv);
+                if (scenario == "consumer_heartbeat_timeout_notify")
+                    return consumer_heartbeat_timeout_notify(argc, argv);
+                if (scenario == "two_snapshot_invariant")
+                    return two_snapshot_invariant(argc, argv);
                 fmt::print(stderr, "ERROR: Unknown broker_health scenario '{}'\n", scenario);
                 return 1;
             });

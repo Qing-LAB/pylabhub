@@ -587,8 +587,32 @@ replaces them. Each pattern lists the operation, not the call sites
 | Walk parties with non-empty `zmq_identity` → send NOTIFY | `for_each_party_identity(ch, kind, fn)` (new) |
 | Collect `role_uid`s from `producers[] / consumers[]` into vector | `producer_uids(ch) / consumer_uids(ch)` (new) |
 | "Is producer P kLive on channel X?" inline state check | `is_producer_live(ch, role_uid, roles)` (new) |
-| Heartbeat-timeout nested sweep `(channel × party × presence)` filtered by state + age | `for_each_presence_matching(ch, roles, pred, fn)` (new) |
+| Heartbeat-timeout nested sweep `(channel × party × presence)` filtered by state + age — **two passes** required (see note below) | `for_each_presence_matching(ch, roles, pred, fn)` (new) |
 | Mutator-side joins (e.g. `roles.find(uid)` + `on_dereg` + `drop_channel_if_orphaned`; `ChannelStatusChangedHandler` refire preamble) | OUT OF SCOPE (mutators; governed by HEP-0033 and the Core Structure Change Protocol). Catalogued in the migration TODO Pattern P9 for cross-reference only. |
+
+**Two-passes-with-cross-pass-dependency note.**  When a sweep's
+Pass-2 predicate depends on state mutated by Pass-1 (the canonical
+example is the heartbeat-timeout sweep: Pass-1 stamps a fresh
+`state_since` on Connected→Pending; Pass-2 must observe that fresh
+stamp to EXCLUDE just-demoted presences from same-sweep
+termination), the migration MUST use two snapshots + two invocations
+of `for_each_presence_matching`:
+
+1. Take Snapshot-1; invoke `for_each_presence_matching` with the
+   Pass-1 predicate; collect Pass-1 decisions.
+2. Drain Pass-1 decisions via the Pass-1 mutator.
+3. Take Snapshot-2 — fresh, reflecting Pass-1's mutations.
+4. Invoke `for_each_presence_matching` with the Pass-2 predicate
+   over Snapshot-2; collect Pass-2 decisions.
+5. Drain Pass-2 decisions via the Pass-2 mutator + any
+   broker-side fan-out (NOTIFY emission, etc.) keyed off a
+   `pre_drop` snapshot captured BEFORE the mutator runs.
+
+A single helper call with a combined Pass-1-or-Pass-2 predicate
+over one snapshot is **wrong**: it would consider just-demoted
+presences for termination in the same tick.  See
+`docs/todo/QUERY_LAYER_TODO.md` Pattern P8 for the
+heartbeat-timeout migration shape.
 
 ## 7. Phase D coupling
 
