@@ -917,6 +917,20 @@ presence Disconnected (HEP-CORE-0023 §2.1).
 **Consistency**: single internal mutex; accessors return snapshot structs. No
 cross-field consistency guarantee; each metric entry carries `_collected_at`.
 
+**Snapshot type (per HEP-CORE-0039).**  `HubState::snapshot()` returns
+a value-typed `HubStateSnapshot` that mirrors the maps above and
+adds four metadata fields for capture provenance:
+
+| Field | Meaning |
+|---|---|
+| `captured_at` | Wall-clock capture timestamp (system_clock) |
+| `captured_mono` | Monotonic capture timestamp (steady_clock) for `age_seconds()` math that survives NTP jumps |
+| `hub_uid` | Origin hub identifier; disambiguates dual-hub-processor snapshots |
+| `snapshot_seq` | Per-hub monotonic counter; first live snapshot has `seq == 1`; `seq == 0` is reserved for default-constructed values |
+
+See HEP-CORE-0039 §3.1 for the canonical struct definition + lifetime
+contract + query helpers that consume it.
+
 ## 9. Message-Processing Contract
 
 The broker's `process_message()` and the per-handler dispatch operate
@@ -1505,8 +1519,25 @@ counted under `script_errors_`.
 
 ### 12.3 `HubAPI` surface (bound into Python + Lua)
 
-Read: `list_channels`, `get_channel`, `list_roles`, `get_role`, `list_bands`,
-`list_peers`, `query_metrics`, `config`, `uid`, `name`.
+**Primary read primitive (per HEP-CORE-0039):** `snapshot()` —
+returns a `std::shared_ptr<HubSnapshot>` (a point-in-time wrapper
+over `HubStateSnapshot`).  The wrapper exposes per-aspect queries
+(`list_channels`, `get_channel`, `list_roles`, `get_role`,
+`list_bands`, `get_band`, `list_peers`, `get_peer`, `list_shm_blocks`,
+`get_shm_block`), aggregates (`health_summary`,
+`channel_state_distribution`), counts (`count_channels_in_state`),
+and metrics (`query_metrics(filter)`).  Scripts that need a
+coherent multi-aspect view obtain one snapshot and query it
+multiple times — guaranteed self-consistent.  See HEP-CORE-0039 §3
+for the full Layer-3 method set.
+
+Single-aspect convenience read methods: `list_channels`,
+`get_channel`, `list_roles`, `get_role`, `list_bands`, `get_band`,
+`list_peers`, `get_peer`, `query_metrics`.  Each takes its own
+internal snapshot and is suitable when the caller only wants one
+aspect; for multi-aspect coherence, prefer `snapshot()`.
+
+Non-snapshot read: `config`, `uid`, `name`.
 
 Control: `close_channel`, `broadcast_channel`, `revoke_role`, `add_known_role`,
 `remove_known_role`, `request_shutdown`.

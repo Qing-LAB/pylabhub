@@ -215,6 +215,18 @@ Consumer-presence heartbeats refresh `RoleEntry(uid).last_heartbeat`
 (informational) and write the consumer's metrics row, but do NOT
 touch `channel(name).last_heartbeat` — that's producer authority.
 
+**Cross-reference to HEP-CORE-0039 (Hub State Query Layer).**  The
+broker-side `MetricsStore` and `METRICS_REQ` / `METRICS_ACK` path
+described above is the admin RPC entry into the metrics plane.
+HEP-CORE-0039 defines a parallel script-side entry: scripts call
+`HubAPI::snapshot()` to obtain a coherent point-in-time view that
+includes counters from `HubStateSnapshot::counters`, then invoke
+`snap.query_metrics(filter)` to apply the same filter logic over
+the snapshot.  Both paths share the same underlying data; they
+differ only in the synchronization boundary (admin path takes the
+broker's shared_lock per request; script path takes it once at
+snapshot capture and queries lock-free thereafter).
+
 ### 3.1 Message flows (Phase 6)
 
 **Heartbeat** (per-presence, role → broker, periodic):

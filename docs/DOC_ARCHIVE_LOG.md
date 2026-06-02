@@ -6,6 +6,41 @@
 
 ## Archive batches
 
+### 2026-06-02 (HEP-CORE-0039 promotion + tech_draft archive)
+
+HEP-CORE-0039 "Hub State Query Layer" promoted from tech_draft to
+permanent HEP after two fresh-eye reviews + one fix-pass re-review.
+Promoted with substantial expansion: internal-broker query helpers
+(Layer 2a typed surface alongside the original Layer 2b JSON
+surface), inline-join hotspot inventory across `broker_service.cpp`
+and `hub_state.cpp` (~25 sites grouped by pattern), naming /
+return-type / `string_view` convention codification, Phase D
+(PeerAdmission broker glue) coupling map.
+
+Coordinated amendments landed in same commit batch:
+* **HEP-CORE-0033 §8** — `HubStateSnapshot` metadata fields
+  documented (`captured_at`, `captured_mono`, `hub_uid`,
+  `snapshot_seq`)
+* **HEP-CORE-0033 §12.3** — `HubAPI::snapshot()` recorded as the
+  primary read primitive; single-aspect convenience reads
+  recharacterized as "use when only one aspect needed; for
+  multi-aspect coherence, prefer snapshot()"
+* **HEP-CORE-0019 §3** — cross-reference paragraph noting the
+  script-side snapshot path as a parallel entry alongside the
+  broker-side `MetricsStore`/`METRICS_REQ` admin RPC path
+
+Sibling subtopic TODO **`docs/todo/QUERY_LAYER_TODO.md`** created
+with concrete file:line citations for the ~25 inline-join sites
+organized by 8 patterns + 1 out-of-scope mutator pattern.
+
+One transient moved to `docs/archive/transient-2026-06-02/`:
+
+* **`docs/tech_draft/hub_state_query_layer_design.md`** — original
+  2026-05-20 design sketch.  Lasting content fully merged into
+  HEP-CORE-0039; archived per `DOC_STRUCTURE.md` §1.8 ("when content
+  is agreed upon and finalized: merge → move to archive → record
+  here").
+
 ### 2026-05-26 (M9 refactor closure)
 
 Wave-B M9 (`RoleHostFrame` role-host unification) shipped end-to-end
