@@ -1,0 +1,984 @@
+# PeerAdmission Architecture — Data-Channel Auth-Gating Design
+
+**Status:** DRAFT, pending designer review
+**Authors:** Quan Qing (designer), Claude (drafter)
+**Date:** 2026-06-02
+**Supersedes:** HEP-CORE-0036 §3.3 + §4.1 + §6 layering (existing wire protocol intent
+preserved; class layout corrected)
+**Related:** HEP-CORE-0035 (file ACL + identity vault), HEP-CORE-0017 (queue
+abstractions), HEP-CORE-0037 (federation, TBD)
+
+---
+
+## 1. Why this doc exists
+
+The existing HEP-CORE-0036 design places per-peer allowlists at `ZmqQueue::Options`
+and adds methods like `ZmqQueue::add_producer_peer()` directly on the concrete
+ZeroMQ implementation (HEP-0017 §3.3 lines 226-316; HEP-0036 §3.3 + §6). That
+layering is wrong:
+
+- **Gate is policy.** "Allow K, deny K" is an invariant of the queue concept, not
+  of how the queue is wired. Burying it in `ZmqQueue` means SHM, inbox, and
+  federation transports all need parallel re-implementations of admission. The
+  word "gate" splinters across N implementations.
+- **Mechanism is implementation detail.** CURVE+ZAP is one *enforcement
+  mechanism* of admission. POSIX uid+gid is another. Token-based attachment is
+  a third. None of them IS the gate.
+- **The existing pylabhub abstraction already exists.** `QueueReader` and
+  `QueueWriter` (`src/include/utils/hub_queue.hpp:171, 335`) are the abstract
+  base. They have **zero** admission virtuals today. That's the layer where the
+  gate belongs.
+
+This document specifies the corrected architecture: gate at the abstraction;
+enforcement per transport. It also identifies open design decisions the
+designer must make before implementation starts.
+
+## 2. Threat model (what we're protecting against)
+
+| Threat | Status today | What this design must close |
+|---|---|---|
+| Any host on the network reads a producer's data stream | OPEN — `ZmqQueue::push_to(endpoint, ...)` binds with no CURVE; anyone running `pull_from(endpoint, ...)` receives data | Producer's data socket admits ONLY consumers whose CURVE pubkey is on the broker-issued allowlist |
+| Any host on the network injects data into a consumer | OPEN — `ZmqQueue::pull_from(endpoint, ...)` connects to producer with no `curve_serverkey`; impersonator can stand up a fake producer at the same endpoint | Consumer uses producer's pubkey (broker-delivered) as `curve_serverkey`; mismatched server rejected |
+| Role with valid CURVE handshake claims arbitrary identity | OPEN — `RoleIdentityPolicy::Verified` matches `role_name`/`role_uid` strings the client wrote into its own REG_REQ JSON body (`src/include/utils/role_identity_policy.hpp:11-12`) | CURVE pubkey is the identity; `KnownRole` schema gains `pubkey_z85`; ZAP handler on broker ROUTER validates pubkey-vs-allowlist before application-layer dispatch |
+| Federation peer impersonation | OPEN — `broker_service.cpp:580-584` sets `curve_serverkey` from `peer_cfg.pubkey_z85` but no ZAP on inbound peer ROUTER | Federation peer ROUTER gets ZAP with federation-peer allowlist |
+| Admin token sniffed in cleartext | OPEN — `admin_service.cpp:170-176` REP socket is plain TCP; token sent in cleartext payload | Either CURVE-wrap or hard-enforce loopback-only at bind time |
+| SHM segment opened by unauthorized local process | PARTIAL — `shm_shared_secret` (uint64) in role configs is a static pre-shared token; anyone reading the config file gets it | Broker-issued ephemeral shm_secret distributed via REG_ACK only to authorized consumer pubkeys; (optional) file ACL on SHM segment to UID |
+| Compromised broker | **OUT OF SCOPE** (HEP-CORE-0036 §I8) | Broker is the sole authority; defenses against a compromised broker are not addressed |
+
+## 3. Current state — file:line evidence
+
+Confirming the gaps before specifying the fix:
+
+| Surface | File:line | What's there |
+|---|---|---|
+| Abstract queue admission | `hub_queue.hpp:171, 335` | `QueueReader`, `QueueWriter` define schema/checksum/metrics/lifecycle virtuals. **Zero** peer/admission virtuals. Verified by `grep "set_peer\|allowlist\|admission\|peer_pubkey\|allowed_peer\|PeerIdentity\|reject_peer"` → empty |
+| ZmqQueue factory keys | `hub_zmq_queue.hpp:148, 186` | `pull_from(endpoint, schema, packing, bind, depth, schema_tag, instance_id)` + `push_to(...)` — no key parameters |
+| ZmqQueue socket creation | `hub_zmq_queue.cpp:570-594` | Socket gets `linger` + `sndhwm` only. No `curve_*`, no ZAP setup |
+| TxQueueOptions / RxQueueOptions | `role_api_base.hpp:72-121` | No `pubkey_z85` / `secretkey_z85` / `serverkey_z85` / `allowlist` fields |
+| RoleIdentityPolicy | `role_identity_policy.hpp:7-44` (self-deprecating doc) + line 120 (`KnownRole` has no pubkey field) | String-name match on self-asserted JSON body |
+| Broker REG_REQ handlers | `broker_service.cpp:1145, 1920` | Return success/error JSON with `correlation_id`; **never** include peer allowlist data |
+| ZAP handler | grep `zap\|ZAP\|inproc://zeromq.zap.01` | Zero implementation; only design comments in `role_identity_policy.hpp:4` |
+| Vault key handoff to ZmqQueue | `role_api_base.cpp:318, 382` | `ZmqQueue::push_to(opts.zmq_node_endpoint, ...)` — no keys passed |
+| broker_proto version | `broker_service.cpp:119-160` | Currently 5; CHANNEL_AUTH_UPDATE wire frame not present |
+| InboxQueue inheritance | `hub_inbox_queue.hpp:101, 218` | Does **NOT** inherit from `QueueReader`/`QueueWriter`. Standalone ROUTER/DEALER |
+
+## 4. Design — Layer 1: the abstraction
+
+### 4.1 New header: `peer_admission.hpp`
+
+Free-standing header (under `src/include/utils/security/`) defining the cross-
+transport admission contract.
+
+```cpp
+namespace pylabhub::utils::security
+{
+
+/// Identifier of a peer presenting itself to a queue / channel / endpoint.
+/// Cross-transport: each transport extracts the kind it cares about.
+///
+/// kind = "curve" → data is the peer's CURVE public key (40-char Z85).
+/// kind = "posix" → data is "<uid>:<gid>" (decimal, colon-separated).
+/// kind = "shm"   → data is a hex-encoded broker-issued ephemeral shm_secret.
+/// Future kinds: "federation", "script", ...
+///
+/// Comparison is byte-exact on (kind, data).  PeerIdentity is meant for set
+/// membership, not for rich identity-attribute matching.
+struct PeerIdentity
+{
+    std::string kind;
+    std::string data;
+
+    bool operator==(const PeerIdentity &o) const noexcept
+    { return kind == o.kind && data == o.data; }
+    bool operator<(const PeerIdentity &o) const noexcept
+    { return std::tie(kind, data) < std::tie(o.kind, o.data); }
+};
+
+/// Snapshot semantics for the allowlist.  Set the full intended state;
+/// implementations do NOT merge with prior state.  The caller (broker glue)
+/// is responsible for computing the union when adding peers without
+/// dropping existing ones.
+struct PeerAllowlist
+{
+    std::set<PeerIdentity> peers;
+
+    /// When true, ANY caller is admitted regardless of peers content.
+    /// Reserved for explicit test fixtures + an opt-in transitional mode.
+    /// NEVER set this in production code paths.
+    bool unrestricted{false};
+};
+
+/// Abstract gate.  Both QueueReader + QueueWriter inherit from this so each
+/// concrete queue implementation overrides the same surface.  Non-queue
+/// admission-bearing surfaces (InboxQueue, BrokerService ROUTER, AdminService
+/// REP, federation peer ROUTER) also implement this interface directly.
+///
+/// Thread-safety:
+///   - set_peer_allowlist() may be called from ANY thread (typically the
+///     broker-control thread inside a role process, or the broker's own
+///     handler thread inside plh_hub).
+///   - is_peer_allowed() is called from the transport's enforcement context
+///     (e.g., the ZAP handler thread).  Implementations MUST be safe under
+///     concurrent set + is_allowed.
+///   - Recommended impl: copy-on-write std::shared_ptr<const PeerAllowlist>
+///     swapped via atomic shared_ptr semantics or shared_mutex.
+class PeerAdmission
+{
+public:
+    virtual ~PeerAdmission() = default;
+
+    /// Replace the allowlist.  Snapshot semantics (does NOT merge).
+    /// Return true on accept; false if the transport rejected the update
+    /// (e.g., admission not supported in this build).
+    virtual bool set_peer_allowlist(PeerAllowlist allowlist) = 0;
+
+    /// Inspect.  Returns nullopt if admission not supported by this
+    /// instance (e.g., a local-only inproc queue with no policy concept).
+    [[nodiscard]] virtual std::optional<PeerAllowlist>
+    peer_allowlist_snapshot() const = 0;
+
+    /// Test admission for a candidate PeerIdentity.  Called by the
+    /// transport-specific enforcement layer (ZAP handler, SHM open path,
+    /// etc.).  Returns true iff the peer is currently admitted.
+    ///
+    /// NOT meant to be called from application code; transport
+    /// implementations call this when a connection / attachment attempt
+    /// occurs.
+    [[nodiscard]] virtual bool
+    is_peer_allowed(const PeerIdentity &p) const = 0;
+
+    /// True iff this instance's transport currently enforces admission
+    /// at the kernel/wire level (CURVE+ZAP wired, SHM secret enforced,
+    /// etc.).  False if the instance is a transitional "open" mode.
+    /// Used by tests and broker to distinguish "policy declared" from
+    /// "policy enforced".
+    [[nodiscard]] virtual bool admission_is_enforced() const noexcept = 0;
+};
+
+} // namespace pylabhub::utils::security
+```
+
+### 4.2 `QueueReader` + `QueueWriter` inherit `PeerAdmission`
+
+`hub_queue.hpp:171` updated:
+
+```cpp
+class PYLABHUB_UTILS_EXPORT QueueReader
+    : public pylabhub::utils::security::PeerAdmission
+{
+    // ... existing virtuals ...
+
+    // New default impls (override per concrete queue):
+    bool set_peer_allowlist(PeerAllowlist) override { return false; }
+    std::optional<PeerAllowlist>
+    peer_allowlist_snapshot() const override { return std::nullopt; }
+    bool is_peer_allowed(const PeerIdentity &) const override { return false; }
+    bool admission_is_enforced() const noexcept override { return false; }
+};
+```
+
+Same change at `hub_queue.hpp:335` for `QueueWriter`.
+
+**Why default-deny in the base:** every existing test exercises a concrete
+queue (`ZmqQueue`, `ShmQueue`), and concrete queues override these. The base
+defaults are reached only by a hypothetical future queue subclass that has
+not yet declared its admission stance — defaulting that to deny is the
+secure choice.
+
+### 4.3 Non-queue admission-bearing surfaces
+
+These do NOT live in `hub_queue.hpp` hierarchy but still implement
+`PeerAdmission`:
+
+- `InboxQueue` (`hub_inbox_queue.hpp:101`) — network-exposed ROUTER.
+  Implements `PeerAdmission` directly (not via QueueReader/QueueWriter).
+- `BrokerService` ROUTER — exposes `PeerAdmission` on its broker-side
+  socket so the broker's own admission policy (known_roles) is enforced by
+  the same mechanism.
+- `AdminService` REP — same.
+- Federation peer ROUTER — same.
+
+All four live behind a `PeerAdmission*` pointer that the broker (or role)
+configures with the right allowlist.
+
+## 5. Design — Layer 2: per-transport implementations
+
+### 5.1 `ZmqQueue` (CURVE + ZAP)
+
+**Construction surface change.** New `Options` struct adopted by both
+`push_to` and `pull_from`:
+
+```cpp
+struct ZmqQueueAuthOptions
+{
+    /// This queue's own CURVE keypair (loaded from role vault).
+    /// REQUIRED whenever data_transport=zmq and admission is enforced.
+    /// Empty → admission_is_enforced() returns false (transitional mode).
+    std::string my_pubkey_z85;
+    std::string my_seckey_z85;
+
+    /// For PULL (consumer) only: producer's pubkey, used as
+    /// curve_serverkey on connect.  Empty → reject construction.
+    std::string serverkey_z85;
+
+    /// Unique routing key for the ZAP handler.  The ZAP handler uses
+    /// (zap_domain, client_key) to look up which queue's allowlist
+    /// to consult.  Auto-derived as <role_uid>:<channel>:<side> if empty.
+    std::string zap_domain;
+
+    /// Initial allowlist (PUSH side only — consumers admitted at start).
+    /// Updated dynamically via set_peer_allowlist().
+    PeerAllowlist initial_allowlist;
+};
+```
+
+**ZmqQueue::Impl extension:** holds a `std::shared_ptr<PeerAllowlist>`
+(atomic-swap on update).
+
+**start() additions** (after `socket = zmq::socket_t(...)`, before bind/connect):
+
+```cpp
+if (!auth_opts.my_pubkey_z85.empty())
+{
+    socket.set(zmq::sockopt::curve_publickey, auth_opts.my_pubkey_z85);
+    socket.set(zmq::sockopt::curve_secretkey, auth_opts.my_seckey_z85);
+
+    if (mode == Mode::Write) // PUSH (bind side)
+    {
+        socket.set(zmq::sockopt::curve_server, 1);
+        socket.set(zmq::sockopt::zap_domain, auth_opts.zap_domain);
+        // ZAP handler thread (singleton, see §5.2) will be queried on
+        // every CURVE handshake using this zap_domain.  The handler
+        // looks up the allowlist registered against the domain and
+        // ACCEPTs / REJECTs accordingly.
+        ZapRouter::instance().register_domain(
+            auth_opts.zap_domain, this); // 'this' is a PeerAdmission*
+    }
+    else // PULL (connect side)
+    {
+        socket.set(zmq::sockopt::curve_serverkey, auth_opts.serverkey_z85);
+        // Client side: no ZAP needed; client trusts server via serverkey.
+    }
+}
+// else: legacy transitional path — no CURVE, admission_is_enforced=false.
+```
+
+**ZmqQueue overrides:**
+
+```cpp
+bool set_peer_allowlist(PeerAllowlist allowlist) override
+{
+    if (mode_ != Mode::Write)
+        return false; // only PUSH side enforces
+    auto next = std::make_shared<const PeerAllowlist>(std::move(allowlist));
+    std::atomic_store_explicit(&current_allowlist_, next,
+                                std::memory_order_release);
+    return true;
+}
+
+std::optional<PeerAllowlist> peer_allowlist_snapshot() const override
+{
+    auto snap = std::atomic_load_explicit(&current_allowlist_,
+                                            std::memory_order_acquire);
+    return snap ? std::optional<PeerAllowlist>{*snap} : std::nullopt;
+}
+
+bool is_peer_allowed(const PeerIdentity &p) const override
+{
+    if (p.kind != "curve") return false;
+    auto snap = std::atomic_load_explicit(&current_allowlist_,
+                                            std::memory_order_acquire);
+    if (!snap) return false;
+    if (snap->unrestricted) return true;
+    return snap->peers.find(p) != snap->peers.end();
+}
+
+bool admission_is_enforced() const noexcept override
+{
+    return !auth_opts_.my_pubkey_z85.empty();
+}
+```
+
+### 5.2 `ZapRouter` singleton
+
+```cpp
+namespace pylabhub::utils::security
+{
+
+/// Single ZAP handler per ZMQ context.  Started lazily on first
+/// register_domain().  Owns one inproc://zeromq.zap.01 REP socket and a
+/// dedicated thread (ThreadManager-managed) that polls ZAP requests and
+/// dispatches them to the registered PeerAdmission* by domain.
+class ZapRouter
+{
+public:
+    static ZapRouter &instance();
+
+    /// Register a PeerAdmission* for a given zap_domain.  The router
+    /// stores a weak_ptr-like handle; PeerAdmission* lifetime is owned
+    /// by the queue.  Queue's stop()/dtor MUST unregister.
+    void register_domain(const std::string &zap_domain,
+                         PeerAdmission *admission);
+    void unregister_domain(const std::string &zap_domain);
+
+    /// Lifecycle (called once at process startup; idempotent).
+    void start();
+    void stop();
+
+private:
+    // Inproc REP socket bound at "inproc://zeromq.zap.01".
+    // Polls request frames:
+    //   [version, request_id, domain, address, identity, mechanism, ...]
+    // For mechanism="CURVE", the last frame is the client's pubkey.
+    // Looks up registered_[domain] -> PeerAdmission*; calls
+    // is_peer_allowed(PeerIdentity{"curve", client_pubkey_z85}).
+    // Replies:
+    //   [version, request_id, status_code, status_text, user_id, metadata]
+    // status_code "200" = allow, "400" = client error, "500" = deny.
+};
+
+} // namespace
+```
+
+**Threading:** The router's thread runs in `ThreadManager` (re-using the
+infrastructure at `thread_manager.hpp:80-149`). The router's `registered_`
+map is protected by `std::shared_mutex` (readers = ZAP poll thread; writer
+= queue start/stop).
+
+### 5.3 `ShmQueue` (broker-issued secret + (optional) UID guard)
+
+SHM queues are local-only. Two layered admission mechanisms:
+
+1. **Broker-issued ephemeral shm_secret** (replaces today's pre-shared
+   config-file secret). Broker generates a 64-bit secret per channel,
+   stores it in `ChannelAccessIndex[channel]`, includes it in
+   `CONSUMER_REG_ACK` ONLY when the consumer's pubkey passed CTRL-channel
+   admission. Consumer constructs ShmQueue with the broker-supplied secret;
+   producer rejects attaches that present the wrong secret.
+
+2. **POSIX UID guard (optional, secondary defense).** If
+   `auth_opts.allowed_uids` is non-empty, ShmQueue sets the segment's
+   parent dir mode to 0700 + (optional) ownership match. Decision §8 P5.
+
+**ShmQueue::Options additions:**
+
+```cpp
+struct ShmQueueAuthOptions
+{
+    /// Broker-issued secret token for this channel.  REQUIRED when
+    /// shipping data; legacy 0 = transitional.
+    uint64_t broker_issued_secret{0};
+
+    /// (Decision §8 P5) optional UID guard.
+    std::set<uint32_t> allowed_uids;
+};
+```
+
+**ShmQueue PeerIdentity kind:** `"shm"` with data = hex-encoded secret.
+`is_peer_allowed` returns true iff `PeerIdentity{kind="shm", data=hex(p)}`
+matches the queue's `broker_issued_secret`. set_peer_allowlist replaces
+the secret. (Yes, the allowlist is conceptually a one-element set for SHM
+— the abstraction holds.)
+
+### 5.4 `InboxQueue` (CURVE + ZAP)
+
+Same mechanism as `ZmqQueue` (it's a ZMQ ROUTER/DEALER pair). Implements
+`PeerAdmission` directly. Uses `ZapRouter` with its own `zap_domain`.
+
+### 5.5 `BrokerService` ROUTER (CTRL channel admission)
+
+Implements `PeerAdmission`. Broker maintains a `KnownRoleAllowlist` keyed
+on `PeerIdentity{"curve", role_pubkey}`. ZAP handler queries it on every
+incoming role CURVE handshake. Replaces the string-based
+`RoleIdentityPolicy::Verified` check at REG_REQ time — that check becomes
+a redundant secondary check (or is deleted).
+
+### 5.6 `AdminService` REP — DECISION POINT (§8 P-Admin)
+
+Two options; designer picks:
+
+- **Option A:** CURVE-wrap the REP socket with the broker keypair; admin
+  client uses broker's pubkey as serverkey + a separate admin client
+  keypair stored in a separate vault. ZAP allowlist gates admins.
+- **Option B:** Hard-enforce loopback-only at bind time (refuse to bind
+  any non-127.0.0.1/::1 endpoint). Token stays in cleartext but the wire
+  never leaves the loopback interface.
+
+### 5.7 Federation peer ROUTER + DEALER
+
+ROUTER (inbound): ZAP with `KnownPeerAllowlist` keyed on peer pubkey.
+DEALER (outbound): already configures `curve_serverkey` from
+`peer_cfg.pubkey_z85` (`broker_service.cpp:580-584`); no ZAP needed on
+client side.
+
+## 6. Design — Layer 3: broker glue + wire protocol
+
+### 6.1 `ChannelAccessIndex` (broker-side, central state)
+
+```cpp
+namespace pylabhub::broker
+{
+
+/// Single source of truth for "which peer is allowed on which channel".
+/// Lives in BrokerServiceImpl; updated atomically on REG_REQ /
+/// CONSUMER_REG_REQ / DEREG_REQ.
+struct ChannelAccessEntry
+{
+    /// Producer side: which consumer pubkeys may pull.
+    std::set<std::string> authorized_consumer_pubkeys;
+
+    /// Broker-issued SHM secret (for shm transport channels only).
+    /// Zero for zmq channels.
+    uint64_t shm_secret{0};
+
+    /// Producer pubkey (delivered to consumers in CONSUMER_REG_ACK).
+    std::string producer_pubkey_z85;
+
+    /// Producer endpoint (zmq channels only).
+    std::string producer_endpoint;
+};
+
+class ChannelAccessIndex
+{
+public:
+    /// On REG_REQ accept (producer): create entry, generate shm_secret if
+    /// transport=shm.  Push initial allowlist (empty) to producer via
+    /// CHANNEL_AUTH_UPDATE.
+    void on_producer_registered(const std::string &channel,
+                                  const PeerIdentity &producer_id,
+                                  TransportKind transport);
+
+    /// On CONSUMER_REG_REQ accept: add consumer pubkey to channel entry's
+    /// allowlist; push CHANNEL_AUTH_UPDATE(add) to producer.
+    /// Returns the entry the broker should include in CONSUMER_REG_ACK
+    /// (producer pubkey + endpoint + shm_secret).
+    ChannelAccessEntry on_consumer_registered(
+        const std::string &channel,
+        const PeerIdentity &consumer_id);
+
+    /// On DEREG: push CHANNEL_AUTH_UPDATE(remove).  Existing connections
+    /// keep flowing (per HEP-0036 §I5 — revocation gates NEW handshakes).
+    void on_consumer_deregistered(const std::string &channel,
+                                    const PeerIdentity &consumer_id);
+
+    /// Lookup (broker-internal queries).
+    std::optional<ChannelAccessEntry> get(const std::string &channel) const;
+};
+
+} // namespace
+```
+
+### 6.2 `KnownRoleAllowlist` (broker-side, CTRL admission)
+
+Populated at hub startup from the vault payload (or a file under
+`<hub_dir>/vault/known_roles.json`). Schema:
+
+```json
+{
+  "version": 1,
+  "roles": [
+    {
+      "name": "lab.daq.sensor1",
+      "uid": "prod.sensor.uid12345678",
+      "role": "producer",
+      "pubkey_z85": "<40-char Z85>"
+    }
+  ]
+}
+```
+
+`KnownRole` struct (`role_identity_policy.hpp:120`) gains
+`std::string pubkey_z85`. Allowlist used by:
+
+- Broker ROUTER ZAP (admission to CTRL channel)
+- `ChannelAccessIndex::on_consumer_registered` (to authorize the consumer
+  for the specific channel)
+
+CLI: `plh_hub --add-known-role <name> <uid> <role> <pubkey_z85>`,
+`--revoke-known-role <uid>`, `--list-known-roles`.
+
+### 6.3 Wire protocol: `CHANNEL_AUTH_UPDATE` (broker_proto 5 → 6)
+
+New broker → role message (broker initiates; role does not request).
+
+**Payload:**
+
+```json
+{
+  "type": "CHANNEL_AUTH_UPDATE",
+  "channel_name": "lab.daq.temp.raw",
+  "side": "producer",
+  "op": "set",                           // "set" | "add" | "remove"
+  "allowlist": [
+    {"pubkey_z85": "<40-char Z85>"},
+    ...
+  ],
+  "broker_proto": 6
+}
+```
+
+**Transport:** broker → role uses the existing CTRL channel
+(DEALER/ROUTER) in *reverse direction*. The DEALER on the role side
+already polls inbound messages; today the broker only replies to requests,
+but the DEALER/ROUTER pair is bidirectional. Decision §8 P-Push:
+the existing CTRL channel reuse vs. a separate PUB/SUB notification socket.
+
+**Producer-side handling:**
+`BrokerRequestComm` recognizes `CHANNEL_AUTH_UPDATE` → `RoleAPIBase` looks
+up the matching `tx_queue` → `tx_queue->set_peer_allowlist({new})`. The
+queue's atomic-swap completes within microseconds. New CURVE handshakes
+see the updated allowlist via the ZapRouter; in-flight ZAP requests
+already executing see whatever was current at their lookup time (race
+acceptable per §I5).
+
+### 6.4 Wire protocol: `REG_ACK` + `CONSUMER_REG_ACK` payload extensions
+
+Existing acks gain optional fields:
+
+`REG_ACK` (producer):
+- `producer_endpoint` — the broker-validated PUSH endpoint of this producer
+- (no change to producer-side keys; producer already has its own from vault)
+
+`CONSUMER_REG_ACK` (consumer):
+- `producers[]` — array of `{endpoint, pubkey_z85}` for each producer of
+  the channel. Consumer uses these to populate ZmqQueue PULL's
+  `curve_serverkey`.
+- `shm_secret` (shm transport only) — broker-issued ephemeral secret.
+
+## 7. Lifecycle + threading
+
+### 7.1 Producer-side allowlist lifecycle
+
+```
+plh_role startup
+  → RoleVault::open → keys loaded
+  → BrokerRequestComm::connect (CTRL channel, CURVE)
+  → REG_REQ → broker validates pubkey via KnownRoleAllowlist (ZAP)
+  → broker creates ChannelAccessEntry, REG_ACK returns endpoint
+  → RoleAPIBase::build_tx_queue(opts) — opts now carries my_pubkey/seckey
+  → ZmqQueue::push_to(endpoint, ..., auth_opts={my_pubkey, my_seckey, zap_domain})
+  → ZmqQueue::start()
+       → socket created
+       → curve_server=1, curve_*key set
+       → ZapRouter::register_domain(zap_domain, this)
+       → socket.bind(endpoint)
+       → recv_thread / send_thread spawned (existing flow)
+  → role is now serving data; current_allowlist_ is empty (deny-all)
+       — until first consumer joins
+
+(later, consumer joins:)
+broker → producer: CHANNEL_AUTH_UPDATE(op=add, pubkey=K)
+  → BrokerRequestComm receives on DEALER
+  → dispatched to RoleAPIBase
+  → tx_queue->set_peer_allowlist({union of previous + K})
+  → atomic swap; next ZAP query sees K
+
+(consumer disconnects:)
+broker → producer: CHANNEL_AUTH_UPDATE(op=remove, pubkey=K)
+  → tx_queue->set_peer_allowlist({previous \ K})
+  → in-flight session unaffected (§I5); new K can't reconnect
+```
+
+### 7.2 Threading
+
+| Thread | Touches | Notes |
+|---|---|---|
+| Role main | BrokerRequestComm CTRL ops, build_tx_queue / build_rx_queue, set_peer_allowlist | Calls into queue's set_peer_allowlist via atomic shared_ptr swap |
+| Queue send/recv | Queue socket only | Per ZMQ thread-per-socket rule (`hub_zmq_queue.cpp:166-200`). Never touches admin/admission state directly |
+| ZapRouter ZAP poll | ZAP inproc socket + `registered_` map (read) + each registered queue's `current_allowlist_` (read via atomic_load) | Single thread, polls every ~100ms or until ZAP request arrives |
+| Broker main | ChannelAccessIndex (read+write), KnownRoleAllowlist (read+write on CLI ops) | Mutex-protected; CLI ops serialized through broker's main loop |
+| Broker ROUTER recv | Same as broker main (single-threaded broker per existing design) | |
+
+**Locking summary:**
+- `ZapRouter::registered_` — `std::shared_mutex` (many readers, rare writers)
+- `ZmqQueue::current_allowlist_` — `std::atomic<std::shared_ptr<const PeerAllowlist>>`
+  (lock-free reads; writers swap)
+- `ChannelAccessIndex` — broker single-threaded ⇒ no internal lock needed
+- `KnownRoleAllowlist` — single broker thread ⇒ no lock; CLI writes serialized
+
+### 7.3 Lifecycle of dynamic membership
+
+- Producer's allowlist starts empty (default-deny).
+- First `CHANNEL_AUTH_UPDATE(add)` populates it.
+- Subsequent adds union; removes set-subtract.
+- Producer's `tx_queue->stop()` → `ZapRouter::unregister_domain(zap_domain)`.
+- Process-wide ZapRouter::stop() at hub shutdown (LifecycleGuard order).
+
+## 8. Decision points for designer (you)
+
+The following are LEFT OPEN and need your call before implementation
+starts.
+
+| # | Decision | Options | Recommendation |
+|---|---|---|---|
+| **P-InboxQueue** | Where does InboxQueue's admission policy live? | (a) Make InboxQueue inherit from QueueReader/QueueWriter (semantic mismatch). (b) InboxQueue implements PeerAdmission directly, no queue inheritance. (c) New `NetworkEndpoint` interface that both implement. | **(b)** — preserves InboxQueue's REQ/REP nature; gate concept still uniform via `PeerAdmission` |
+| **P-Default** | Default behavior when no allowlist is set | (a) Deny all (secure-by-default). (b) Allow all transitional during migration. (c) Configurable per-queue. | **(a)** in production; **(b)** behind a `--allow-anonymous-data` flag for transitional demos, gated to refuse-bind on non-loopback endpoints |
+| **P-SHM-Identity** | What is a PeerIdentity for SHM? | (a) Broker-issued shm_secret (token-based). (b) POSIX uid+gid (kernel-based). (c) Both layered. | **(a)** primary, **(c)** with optional uid guard if operator sets it; broker controls the gate via secret issuance |
+| **P-Push** | How does broker push CHANNEL_AUTH_UPDATE to role? | (a) Reuse CTRL channel DEALER/ROUTER (bidirectional). (b) New PUB socket on broker + SUB on role. (c) New REQ/REP per push (broker initiates). | **(a)** — DEALER/ROUTER is already bidirectional; adding a "from broker" tag to the wire frame is cheap. (b) doubles the wire complexity. |
+| **P-Admin** | AdminService — CURVE-wrap or loopback-enforce? | (a) CURVE-wrap with admin client vault. (b) Hard loopback-only enforce + reject non-loopback bind. | **(b)** for v1 — simpler, no separate admin vault needed; CURVE-wrap is HEP-CORE-0035 §5 future work |
+| **P-HEP** | What to do about existing HEP-0036 / HEP-0017 §3.3 with wrong layering? | (a) Amend HEP-0036 / HEP-0017 in place. (b) New HEP supersedes affected sections. (c) Keep this tech_draft as authoritative; HEPs synced at end of impl. | **(c)** — finalize impl, then sync HEPs from observed reality. Avoids HEP churn during implementation. |
+| **P-Demos** | How do existing demos migrate? | (a) Hard cutover (every demo updated atomically with the impl). (b) Transitional `--allow-anonymous-data` flag (P-Default option b). (c) Per-demo opt-in `auth_enforced: false`. | **(b)** + demos updated incrementally; flag refuses non-loopback bind to prevent accidental production leak |
+| **P-Migration** | Operators with pre-auth vaults | They already have CURVE keypairs in vaults. KnownRole needs pubkey_z85 added. | Auto-derive pubkey from existing vault on first start; warn if known_roles.json absent (admit-none until populated by CLI) |
+
+## 9. Implementation roadmap (phases)
+
+Each phase is one or more commits. Tests added with each phase. **No phase
+ships without its tests.**
+
+### Phase A — Abstraction (no behavior change yet)
+
+A1. New header `src/include/utils/security/peer_admission.hpp` —
+   `PeerIdentity`, `PeerAllowlist`, `PeerAdmission` interface.
+A2. `QueueReader` + `QueueWriter` inherit `PeerAdmission` with default-deny
+   stubs.
+A3. L2 unit tests: identity equality, allowlist set semantics, default
+   deny-all on base.
+
+### Phase B — Identity (KnownRole adds pubkey)
+
+B1. `KnownRole` gains `pubkey_z85`. Vault payload schema bump
+   (vault_crypto: payload version field; backward-compat read for
+   version=1 → assume empty pubkey, warn).
+B2. CLI: `--add-known-role`, `--revoke-known-role`, `--list-known-roles`
+   on plh_hub.
+B3. L2 tests: vault round-trip with KnownRole.pubkey_z85; CLI round-trip.
+
+### Phase C — ZapRouter + ZmqQueue CURVE
+
+C1. `ZapRouter` singleton in `src/utils/security/`.
+C2. `ZmqQueue::Auth_Options` + extended `pull_from` / `push_to` overloads.
+C3. ZmqQueue::start() wires CURVE + registers with ZapRouter when
+   `my_pubkey_z85` non-empty.
+C4. ZmqQueue overrides `PeerAdmission` virtuals.
+C5. L2 tests: ZAP handler accept + deny; allowlist swap during live socket;
+   PULL with wrong serverkey → connection refused.
+
+### Phase D — Broker glue (the gate closes)
+
+D1. `ChannelAccessIndex` in BrokerServiceImpl.
+D2. Broker ROUTER ZAP handler installation using KnownRoleAllowlist.
+D3. `CHANNEL_AUTH_UPDATE` wire frame; broker_proto bump 5 → 6.
+D4. BrokerRequestComm + RoleAPIBase dispatch the broker-initiated
+   message to the right tx_queue.
+D5. CONSUMER_REG_ACK extends with `producers[]` (endpoint + pubkey).
+D6. L3 tests: broker push of allowlist; producer applies; consumer with
+   wrong pubkey rejected.
+D7. L4 test: full dual-hub data flow with auth gates closed.
+
+### Phase E — Admin loopback enforcement
+
+E1. AdminService refuses non-loopback bind.
+E2. Documentation update for ops.
+
+### Phase F — Federation parity
+
+F1. Federation peer ROUTER ZAP handler with known-peers allowlist.
+F2. L4 federation auth test.
+
+### Phase G — SHM auth migration
+
+G1. ShmQueue gains broker-issued secret (replaces config-pre-shared).
+G2. Consumer-side: broker_issued_secret from CONSUMER_REG_ACK.
+G3. L3 + L4 SHM auth tests.
+
+### Phase H — Demo migration
+
+H1. Demos updated to either use the auth path or the `--allow-anonymous-data`
+   transitional flag.
+H2. Migration doc.
+
+### Parallel: Phase X — Runtime key hardening (existing #102)
+
+mlock + zeroing for in-memory keys. Independent of A–H; lands any time.
+
+## 10. Test strategy
+
+| Level | What gets tested | Example |
+|---|---|---|
+| **L2** | PeerAdmission semantics + each transport's enforcement in isolation | `ZmqQueue` with mocked ZapRouter receiving a fake handshake |
+| **L3** | Broker → role allowlist push via real BrokerService + BrokerRequestComm | Drive REG_REQ + CONSUMER_REG_REQ; observe set_peer_allowlist called on tx_queue |
+| **L4** | Full binary spin-up with auth on; bad pubkey rejected | Two plh_role binaries on different keypairs; one in allowlist, one not; verify only the allowed one receives data |
+| **Mutation sweep** | For every assertion in L4 — invert one bit of the allowlist or the keypair — confirm the test fails | Ensures L4 isn't passing by accident |
+| **Threading** | Concurrent set_peer_allowlist + is_peer_allowed from a stress harness | Race detection on the atomic swap |
+
+## 11. Migration story for operators
+
+1. Upgrade plh_hub + plh_role binaries (no auth enforced yet — default
+   compat is `--allow-anonymous-data` until operator opts in).
+2. Run `plh_hub --add-known-role` for each role's pubkey (extracted via
+   `plh_role --print-pubkey` — new flag, prints from vault).
+3. Restart hub + roles without `--allow-anonymous-data`. Auth is now
+   enforced. Any uninvited connection → refused at handshake.
+
+## 12. Open questions / known limitations
+
+- **Compromised broker** — out of scope (HEP-0036 §I8).
+- **Forward secrecy of admin token** under loopback-only (P-Admin b) — token
+  is still secret material on disk + in process memory; mlock from #102
+  covers in-memory exposure.
+- **Federation key rotation** — not addressed; out of scope.
+- **Script-issued ad-hoc allowlist updates** — not in this phase; needs
+  HEP-CORE-0038 vault keystore.
+- **Cross-language clients (Python, Lua)** — they go through the same
+  RoleAPIBase admission path, so the gate applies uniformly.
+
+## 12.5 Self-critique — problems found during re-investigation (2026-06-02)
+
+After drafting §§1–12 and re-reading against the actual code (not just
+HEPs), I found the following design problems / unclarities. **None
+require throwing out the architecture**, but each needs a decision before
+implementation starts.
+
+### S1 — `ZapRouter` lifetime vs queue lifetime (memory-safety bug)
+
+**Problem.** §5.1 has `ZapRouter::register_domain(zap_domain, this)` where
+`this` is a `PeerAdmission*` (the queue). The queue is owned by
+`RoleAPIBase` via `unique_ptr`. If the queue is destroyed without
+`unregister_domain` being called first, the router has a dangling
+pointer that gets dereferenced by the next ZAP request.
+
+**Fix.** Replace raw `PeerAdmission*` with a **RAII registration handle**:
+
+```cpp
+class ZapDomainHandle
+{
+public:
+    ZapDomainHandle(ZapRouter &router, std::string domain,
+                    PeerAdmission *admission);
+    ~ZapDomainHandle(); // calls router.unregister_domain(domain_)
+    // non-copyable, non-moveable for safety; queue owns it as a member.
+};
+```
+
+The queue holds `std::optional<ZapDomainHandle>` (so it can be
+constructed-on-start, destroyed-on-stop). Router's internal map stores
+`PeerAdmission*` plus a destruction-callback so the handle's destructor
+clears the map entry under the router's lock.
+
+### S2 — ZmqQueue public API break (breaks every existing call site)
+
+**Problem.** §5.1 changes `ZmqQueue::push_to` / `pull_from` to take
+an `Auth_Options` struct. That's a signature change to a public API
+called by `RoleAPIBase`, every demo, every L3 test.
+
+**Options.**
+- **(a) Add new overloads** `push_to(endpoint, schema, ..., ZmqQueueAuthOptions)`
+  alongside the existing signatures. Old code path still works (admission
+  unenforced). New code path goes through the overload.
+- **(b) Replace signatures, update every call site atomically.**
+- **(c) Builder pattern** `ZmqQueueBuilder{...}.with_auth(...).build_push_to()`.
+
+**Recommendation:** (a) for v1. Old signatures explicitly marked
+`[[deprecated]]` once the new path is wired through `RoleAPIBase`.
+Deprecation warning steers future code without breaking the build.
+
+### S3 — `std::atomic_load_explicit` for shared_ptr is deprecated in C++20
+
+**Problem.** §7.2 + §5.1 code snippets use `std::atomic_load_explicit(&shared_ptr_var, ...)` — that overload was deprecated in C++20 and removed in C++26 path. The codebase compiles at C++17+ but the **portable replacement exists already**: `src/utils/portable_atomic_shared_ptr.hpp:PortableAtomicSharedPtr<T>` (used by `lifecycle_impl.hpp:308`).
+
+**Fix.** §5.1 uses `pylabhub::utils::detail::PortableAtomicSharedPtr<const PeerAllowlist>` for the queue's allowlist member. The helper delegates to `std::atomic<std::shared_ptr<T>>` when available, falls back to mutex otherwise. Zero new code; reuse the existing pattern.
+
+### S4 — ShmQueue admission is vestigial in the abstraction
+
+**Problem.** §5.3 says ShmQueue's `is_peer_allowed` returns true iff the
+candidate identity matches the broker-issued secret. But nothing in
+ShmQueue *calls* `is_peer_allowed` — the secret is checked inside
+`DataBlockConsumer::attach()`, not at the queue layer. The abstraction
+contract is partly fictional for SHM: it's a vehicle for `set_peer_allowlist`
+delivery, not for runtime admission.
+
+**Fix.** Either:
+- **(a) Wire SHM admission through the abstraction**: `ShmQueue::attach`
+  consults `is_peer_allowed(PeerIdentity{"shm", hex(presented_secret)})`
+  before opening the segment. Uniform but adds a per-attach atomic load.
+- **(b) Document the asymmetry**: SHM's gate is at issuance (broker side),
+  not at attach. The abstraction holds for ZAP-mediated transports only.
+  `ShmQueue::is_peer_allowed` always returns true (the policy was already
+  enforced upstream).
+
+**Recommendation:** (a) — uniformity is worth the atomic load. Locks in the
+"gate at the abstraction" invariant; SHM gains a defense-in-depth layer.
+
+### S5 — KnownRole vault location is underspecified
+
+**Problem.** §6.2 says: "Populated at hub startup from the vault payload
+(or a file under `<hub_dir>/vault/known_roles.json`)." Both. Pick one.
+
+**Options.**
+- **(a) Inside hub vault payload** — same encryption + ACL as the broker
+  keypair. Single password unlocks everything. CLI ops require unlocking
+  to add/remove a role.
+- **(b) Separate file** `<hub_dir>/vault/known_roles.json` (or
+  `.known_roles.cbor`), ACL 0600 + parent 0700 (enforced by #101
+  utility). No password required for add/remove. Plaintext pubkeys.
+
+**Recommendation:** (b). Pubkeys aren't secret; mode 0600 protects against
+casual tampering; mode 0700 parent + #101 startup verify makes the file's
+integrity floor identical to the vault file's. Operator UX wins: no
+password prompt for `--add-known-role`. Compromised-host scenario doesn't
+change either way (encryption-at-rest of pubkeys provides little since
+they're broadcast over the wire anyway).
+
+### S6 — Bootstrap scenario (empty known_roles + new deployment)
+
+**Problem.** With deny-by-default, a freshly initialized hub admits zero
+roles until the operator runs `--add-known-role` for each. Bootstrapping
+the first role requires extracting its pubkey first (`plh_role --print-pubkey`,
+new flag). What if the operator wants the demos to "just work"?
+
+**Options.**
+- **(a) Hub refuses to start if `known_roles.json` is missing.** Operator
+  must explicitly create + populate. Secure-default but harsh.
+- **(b) Hub warns + starts with empty allowlist if file missing.** First
+  REG_REQ fails informatively pointing to `--add-known-role`. Demo
+  experience: same as (a) but with friendlier first error.
+- **(c) `--allow-anonymous-roles` opt-in flag** (analogous to
+  `--allow-anonymous-data` from P-Default). Demo / dev path uses this;
+  refuses non-loopback bind.
+
+**Recommendation:** (b) + (c). Default behavior is informative-fail-fast;
+explicit opt-in enables demos without disabling auth for production.
+
+### S7 — `producer_endpoint` in REG_ACK is redundant (editorial)
+
+**Problem.** §6.4 lists `producer_endpoint` as a new REG_ACK field. But
+the producer just bound the socket; it already knows its own endpoint.
+What the broker needs to relay is the *resolved* endpoint (port-0 case),
+which the producer learns post-bind via `socket.get(last_endpoint)` —
+not via broker.
+
+**Fix.** Drop `producer_endpoint` from REG_ACK. Keep `producers[]` in
+CONSUMER_REG_ACK (consumer DOES need to know producer's resolved endpoint).
+That field already exists per HEP-0036 §6.4 intent; just confirming.
+
+### S8 — LifecycleGuard order for `ZapRouter`
+
+**Problem.** `ZapRouter` owns an `inproc://zeromq.zap.01` socket on the
+shared ZMQ context. If the context is torn down before the router stops,
+its socket destructor explodes.
+
+**Fix.** Register `ZapRouter::module()` as a LifecycleGuard module with
+explicit dependency on `GetZMQContextModule()` ordering — router stops
+**before** context teardown. Pattern matches existing modules (e.g.,
+`Logger`, `FileLock`, `JsonConfig`).
+
+### S9 — InboxQueue doesn't inherit from QueueReader/QueueWriter, yet still needs the gate
+
+**Problem.** Confirmed by code: `hub_inbox_queue.hpp:101, 218` —
+`InboxQueue` and `InboxClient` are standalone. Adding `PeerAdmission` as
+a separate base class on each is fine, but it means future consumers of
+the gate (HEP-0036 implementer, federation) must remember "queues OR
+queue-likes". Risk of forgetting one.
+
+**Fix.** No code fix needed — just document explicitly that `PeerAdmission`
+is a transport-side contract, not a queue-class contract. §4.3 already
+lists every implementer; keep that list canonical and refresh on every
+new transport.
+
+### S10 — How does the role know which `tx_queue` a `CHANNEL_AUTH_UPDATE` is for?
+
+**Problem.** A role process can host multiple producers (multi-channel).
+When `CHANNEL_AUTH_UPDATE(channel=X)` arrives, `RoleAPIBase` needs to
+look up tx_queue by channel name. Verify this lookup exists.
+
+**Investigation note.** `RoleAPIBase::Impl` holds a map of channels to
+queues (it must, for multi-channel hosts). Not verified yet — will check
+in Phase A scout before coding.
+
+### S11 — Atomic snapshot semantics under add/remove
+
+**Problem.** §6.3 lists `op = "set" | "add" | "remove"`. But the
+queue's `set_peer_allowlist` takes a full snapshot (`PeerAllowlist`),
+not deltas. So either:
+- Broker sends full snapshots (simpler; idempotent; bigger over-the-wire
+  for huge allowlists).
+- Broker sends deltas, role reconstructs full allowlist before passing
+  to queue (extra state on the role side; thumbnails get out of sync if
+  any delta is missed).
+
+**Recommendation.** Send **full snapshots** every time. Allowlists for
+data channels are small (one consumer at a time typically; tens at most).
+The wire-frame protocol becomes simpler (`op` field removed) and
+recovery from missed updates is trivial (the next snapshot corrects
+state).
+
+**Wire frame revised:**
+
+```json
+{
+  "type": "CHANNEL_AUTH_UPDATE",
+  "channel_name": "lab.daq.temp.raw",
+  "side": "producer",
+  "allowlist": [
+    {"pubkey_z85": "<40-char Z85>"},
+    ...
+  ],
+  "broker_proto": 6
+}
+```
+
+Empty `allowlist` array = revoke all (deny-all state).
+
+### S12 — Re-entry safety on broker restart
+
+**Problem.** Hub restarts. Roles' DEALER connections to broker survive
+(ZMQ auto-reconnect), but the broker's `ChannelAccessIndex` is empty
+again. Role's tx_queue has a stale allowlist from before the restart.
+After re-REG, broker sends fresh `CHANNEL_AUTH_UPDATE` populating the
+correct state — but there's a window where the stale allowlist admits a
+consumer the new broker hasn't authorized.
+
+**Mitigation options.**
+- **(a) On reconnect, role clears its allowlist** (deny-all) until
+  receiving a fresh CHANNEL_AUTH_UPDATE.
+- **(b) Persistent ChannelAccessIndex in broker** so restart restores
+  prior state.
+- **(c) Accept the gap** as a known limitation; document.
+
+**Recommendation:** (a). Tie to BrokerRequestComm's reconnect callback.
+Brief window where data flow halts to consumers is acceptable; risk of
+admitting an unauthorized consumer during the gap is not.
+
+---
+
+**Summary of self-critique.** 12 issues found in my own draft via
+re-investigation. Categorization:
+- S1, S3, S8 — concrete bugs in proposed code; fix in §5/§7.
+- S2, S5, S6, S11, S12 — design decisions deferred to designer (added
+  to §8 as P-API, P-KnownRolesLocation, P-Bootstrap, P-WireFormat,
+  P-Reconnect).
+- S4, S9, S10 — clarifications added inline.
+- S7 — editorial fix; doc text updated above.
+
+All 12 surfaced BEFORE writing a line of code. This is the kind of
+review the implementation phase needs to repeat — every claim in this
+document gets re-tested against the code before commit.
+
+## 13. Glossary
+
+- **PeerIdentity** — opaque (kind, data) tuple; per-transport meaning.
+- **PeerAllowlist** — set of admitted identities + an `unrestricted` escape.
+- **PeerAdmission** — interface; every gated transport implements it.
+- **ZapRouter** — singleton ZAP handler on the shared ZMQ context.
+- **ChannelAccessIndex** — broker-side single source of truth for
+  per-channel allowlists.
+- **KnownRoleAllowlist** — broker-side allowlist for CTRL-channel
+  admission, keyed on role pubkey.
+- **zap_domain** — per-socket routing key the ZAP handler uses to find
+  the right PeerAdmission.
+
+---
+
+**Designer review checklist:**
+
+- [ ] Read §2 threat model. Does it cover what you want defended?
+- [ ] Read §3 evidence. Any gap I missed?
+- [ ] Read §4 abstraction. Does the layering match your mental model?
+- [ ] Read §5 per-transport. Any transport's mechanism wrong?
+- [ ] Read §6 broker glue. Wire protocol shape OK?
+- [ ] Read §8 decision points. Each one needs your call before impl.
+- [ ] Read §9 roadmap. Phase ordering correct?
+- [ ] Read §11 migration. Realistic for your operators?
+
+When ready, give me decisions for each P-* in §8 and I'll update the doc
++ retask + start Phase A.
