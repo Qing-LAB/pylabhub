@@ -554,9 +554,11 @@ SetModeResult set_keyfile_mode(const fs::path &path,
     }
     catch (...)
     {
-        // Reachable only on std::bad_alloc (path construction) — every
-        // syscall path above already returned its own ChmodFailed +
-        // errno.  Populate ENOMEM so callers don't see strerror(0) →
+        // Defensive only — the try block constructs no paths; the only
+        // allocations are libc-internal under chmod or compiler-inserted
+        // RAII, neither expected to throw in practice.  Every syscall
+        // path above already returned its own ChmodFailed + errno.
+        // Populate ENOMEM here so callers don't see strerror(0) →
         // "Success" in the operator message.
         if (out_errno != nullptr)
             *out_errno = ENOMEM;
