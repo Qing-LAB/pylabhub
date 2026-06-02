@@ -130,11 +130,14 @@ HubVault HubVault::create(const fs::path    &vault_path,
         int chmod_err = 0;
         const auto rc = sec::set_keyfile_mode(
             vault_path.parent_path(), sec::KeyFileRole::VaultDir, &chmod_err);
+        // set_keyfile_mode always populates out_errno on ChmodFailed;
+        // strerror(0) → "Success" which would mislead, but the branch
+        // is unreachable so no fallback needed.
         if (rc == sec::SetModeResult::ChmodFailed)
             throw std::runtime_error(
                 "HubVault: chmod 0700 failed on vault parent dir '" +
                 vault_path.parent_path().string() + "': " +
-                (chmod_err != 0 ? std::strerror(chmod_err) : "unknown"));
+                std::strerror(chmod_err));
     }
     detail::vault_write(vault_path, payload.dump(), password, hub_uid);
 
@@ -221,25 +224,57 @@ void HubVault::publish_public_key(const fs::path &hub_dir) const
     // (0644) — confidentiality is not the goal — but INTEGRITY is.
     // An attacker who can briefly write inside hub_dir could plant a
     // symlink at `hub.pubkey` redirecting writes to an attacker-chosen
-    // target (federation-trust hijack: cp <hub-dir>/hub.pubkey
-    // <role-dir>/ would then propagate the wrong material).  O_NOFOLLOW
-    // on the create refuses to traverse a symlink at the final
-    // component.  O_TRUNC lets re-keygen replace an existing regular
-    // file (no O_EXCL — re-keygen MUST be able to publish the new
-    // pubkey on top of the old one).  Mode 0644 atomic at create
-    // (matches HEP-CORE-0035 §4.6.1 PublicKeyFile contract).
+    // target (federation-trust hijack: `cp <hub-dir>/hub.pubkey
+    // <role-dir>/` would then propagate the wrong material).
+    //
+    // Atomicity guarantee, exact flags as written below:
+    //   - O_CREAT + O_EXCL   : open(2) fails with EEXIST if any path
+    //                          component exists at pubkey_path.  This
+    //                          is the lock that prevents writing onto
+    //                          a path an attacker has under their
+    //                          control between our pre-clean unlink
+    //                          and our create.
+    //   - O_NOFOLLOW         : refuses to traverse a symlink at the
+    //                          FINAL component.  Closes the redirect
+    //                          attack even if O_EXCL would not (we
+    //                          unlink first, but O_NOFOLLOW is the
+    //                          defense-in-depth catch).
+    //   - O_WRONLY + O_CLOEXEC : write-only fd, not inherited by exec.
+    //   - mode 0644 : atomic at create + normalized by fchmod below
+    //                 (matches HEP-CORE-0035 §4.6.1 PublicKeyFile).
+    //
+    // O_TRUNC is INTENTIONALLY ABSENT.  We do NOT overwrite in place.
+    // Re-keygen replace works via the explicit unlink-then-O_EXCL
+    // pattern below, NOT via O_TRUNC.  A future "harmonization" that
+    // adds O_TRUNC and drops O_EXCL would silently undo the redirect
+    // defense — the lock is O_EXCL, not the unlink.
     {
-        // Defence: unlink any existing pubkey file FIRST so re-keygen's
-        // intended overwrite semantics don't collide with O_NOFOLLOW's
-        // refusal-to-traverse — if hub.pubkey was a symlink left over
-        // from a prior attacker-tampering attempt, unlink-then-create
-        // ensures we end up writing the genuine file.  ENOENT is fine
+        // Pre-clean: unlink any existing path at pubkey_path so the
+        // atomic O_EXCL create below succeeds on a fresh inode.
+        // remove() without follow_symlink semantics deletes the
+        // symlink itself if one is present (filesystem::remove is
+        // specified as `::unlink(2)` on POSIX).  ENOENT is fine
         // (first publish).
+        //
+        // SECURITY OBSERVABILITY (HEP-CORE-0035 §4.6.4): if a path
+        // actually existed at pubkey_path before --keygen, that's a
+        // signal — either a prior keygen left it (expected) or an
+        // attacker planted it (unexpected).  Emit a one-line stderr
+        // note so the operator at least has audit-trail evidence
+        // that a removal happened.
         std::error_code ec;
-        std::filesystem::remove(pubkey_path, ec);
-        // We don't check ec here — if the unlink failed, the open
-        // below will surface a precise errno (EEXIST for a leftover
-        // regular file; ELOOP for an unreadable symlink chain).
+        const bool removed = std::filesystem::remove(pubkey_path, ec);
+        if (removed)
+            std::fprintf(stderr,
+                         "[plh_hub] note: pre-existing hub.pubkey at '%s' "
+                         "was removed before publish (expected on "
+                         "re-keygen; investigate if unexpected — "
+                         "HEP-CORE-0035 §4.6.4)\n",
+                         pubkey_path.string().c_str());
+        // We don't check ec here — if the unlink failed for any reason
+        // other than ENOENT, the open(O_EXCL) below will surface a
+        // precise errno (EEXIST for a leftover file, ELOOP for an
+        // unreadable symlink chain).
     }
     const int fd = ::open(pubkey_path.c_str(),
                           O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW | O_CLOEXEC,
@@ -343,8 +378,10 @@ void HubVault::publish_public_key(const fs::path &hub_dir) const
         }
     }
 #endif
-    // POSIX branch already applied 0644 atomically via fchmod above;
-    // no fs::permissions call needed.
+    // Both branches now leave the file at the correct mode without
+    // an additional fs::permissions call: POSIX applied 0644 via
+    // fchmod atomic at create; Windows applied the equivalent DACL
+    // via SetNamedSecurityInfoW above.
 }
 
 } // namespace pylabhub::utils

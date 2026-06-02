@@ -185,12 +185,16 @@ resolve_keyfile_path(const std::string           &keyfile,
 /// otherwise; no `stat()` call beyond what `weakly_canonical`
 /// performs.
 ///
-/// @param out_canonicalize_error If non-null, populated with the
-///   `std::error_code` message on canonicalization failure (which
-///   collapses to a `false` return).  Lets the caller emit a soft
-///   stderr warn so a permissions-tree problem upstream of the
-///   keyfile doesn't silently suppress the §4.6.4 co-location
-///   warning.  Empty string on success.
+/// @param out_canonicalize_error If non-null, populated ONLY when
+///   `std::filesystem::weakly_canonical` fails (the `false` return
+///   includes the `error_code` message).  NOT populated when the
+///   `false` return comes from a legitimate non-failure path:
+///   empty `keyfile`, empty `base_dir`, or
+///   `kf`-is-not-a-prefix-of-`base`.  In other words, a non-empty
+///   `out_canonicalize_error` means "the predicate could not run";
+///   an empty one combined with `false` means "the predicate ran
+///   and answered no."  Lets the caller distinguish the two and
+///   emit a soft stderr warn only in the diagnostic case.
 [[nodiscard]] PYLABHUB_UTILS_EXPORT bool
 keyfile_inside_base_dir(const std::string           &keyfile,
                         const std::filesystem::path &base_dir,
