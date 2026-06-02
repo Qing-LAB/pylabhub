@@ -2973,44 +2973,88 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
     // on_channel_closed federation relay) only fires when
     // channel_now_empty == true; the `pre_drop` snapshot preserves
     // the full party list for the fan-out target.
+    // Migrated 2026-06-02 to `for_each_presence_matching` per HEP-0039
+    // §6 P8 Step B.  Per-channel two-phase: visit collects all
+    // Pass-2 decisions for the channel (producers + consumers in
+    // declaration order) over `snap2`; apply phase drains producer
+    // decisions first (with the `channel_torn_down` short-circuit
+    // setting on last-producer atomic teardown), then if the channel
+    // survives, consumer decisions.  The per-channel structure
+    // preserves the original code's `break`-on-teardown + skip-
+    // consumers ordering exactly.
+    //
+    // `pre_drop_channel` is captured into the decision struct at
+    // visit time (a value copy of the snapshot's `ChannelEntry` via
+    // `t.channel_entry`), so the fan-out target list survives the
+    // mutator that erases the live channel.  Same for
+    // `pre_drop_consumer` on the consumer path.
     const auto snap2 = hub_state_->snapshot();
-    for (const auto& [channel_name, entry] : snap2.channels)
+    struct Pass2Decision
     {
-        bool channel_torn_down = false;
-        for (const auto &prod : entry.producers)
-        {
-            if (prod.role_uid.empty()) continue;
-            auto role_it = snap2.roles.find(prod.role_uid);
-            if (role_it == snap2.roles.end()) continue;
-            const auto *p = role_it->second.find_presence(channel_name, "producer");
-            if (p == nullptr) continue;
-            if (p->state != pylabhub::hub::RoleState::Pending) continue;
-            if (now - p->state_since < pending_timeout) continue;
+        pylabhub::hub::PartyKind                       party;
+        std::string                                    channel;
+        std::string                                    role_uid;
+        pylabhub::hub::ChannelEntry                    pre_drop_channel;
+        std::optional<pylabhub::hub::ConsumerEntry>    pre_drop_consumer;
+    };
+    for (const auto &[channel_name, entry] : snap2.channels)
+    {
+        std::vector<Pass2Decision> p2;
+        pylabhub::hub::for_each_presence_matching(
+            entry, snap2.roles,
+            [&](const pylabhub::hub::RolePresence &p) {
+                return p.state == pylabhub::hub::RoleState::Pending
+                    && (now - p.state_since) >= pending_timeout;
+            },
+            [&](const pylabhub::hub::PresenceSweepTarget &t) {
+                Pass2Decision d;
+                d.party             = t.party;
+                d.channel           = t.channel;
+                d.pre_drop_channel  = *t.channel_entry;
+                if (t.party == pylabhub::hub::PartyKind::Producer)
+                {
+                    d.role_uid = t.producer->role_uid;
+                }
+                else
+                {
+                    d.role_uid          = t.consumer->role_uid;
+                    d.pre_drop_consumer = *t.consumer;
+                }
+                p2.push_back(std::move(d));
+            });
 
-            // Capture pre-drop state for the fan-out target list (the
-            // channel record will be erased by the op iff this drop
-            // is the last producer).
-            const pylabhub::hub::ChannelEntry pre_drop = entry;
+        // Apply producer decisions for this channel first.  On
+        // last-producer teardown, set `channel_torn_down` and stop —
+        // remaining producer decisions for this channel were against
+        // a now-gone channel and their `_on_pending_timeout` calls
+        // would no-op anyway; their snapshot data is stale and the
+        // notify fan-outs would be wrong.  Per HEP-0039 §6 P8 the
+        // `break` is the per-channel atomicity boundary.
+        bool channel_torn_down = false;
+        for (const auto &d : p2)
+        {
+            if (d.party != pylabhub::hub::PartyKind::Producer) continue;
 
             LOGGER_WARN(
                 "Broker: producer '{}' on '{}' reclaimed from Pending "
                 "(no heartbeat within {} ms)",
-                prod.role_uid, channel_name, pending_timeout.count());
+                d.role_uid, d.channel, pending_timeout.count());
 
-            auto drop = hub_state_->_on_pending_timeout(channel_name, prod.role_uid,
-                                                        "producer");
+            auto drop = hub_state_->_on_pending_timeout(
+                d.channel, d.role_uid, "producer");
             if (drop.removed && drop.channel_now_empty)
             {
                 // Last-producer drop → atomic channel teardown.
                 // Notify consumers + federation peers using the
                 // pre_drop snapshot (the channel record is now gone).
-                send_closing_notify(socket, channel_name, pre_drop, "pending_timeout");
-                on_channel_closed(socket, channel_name, pre_drop, "pending_timeout");
-                // M1.4 (2026-05-11): no metrics_store_.erase — see comment
-                // at handle_dereg_req last-producer path.
-                LOGGER_INFO("Broker: channel '{}' torn down (last producer "
-                            "presence-timeout)", channel_name);
-                // Stop iterating producers — the channel record is gone.
+                send_closing_notify(socket, d.channel, d.pre_drop_channel,
+                                    "pending_timeout");
+                on_channel_closed(socket, d.channel, d.pre_drop_channel,
+                                  "pending_timeout");
+                // M1.4 (2026-05-11): no metrics_store_.erase — see
+                // comment at handle_dereg_req last-producer path.
+                LOGGER_INFO("Broker: channel '{}' torn down (last "
+                            "producer presence-timeout)", d.channel);
                 channel_torn_down = true;
                 break;
             }
@@ -3019,8 +3063,9 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
                 LOGGER_INFO("Broker: producer '{}' dropped on '{}' "
                             "(presence-timeout; {} producer(s) remain — "
                             "channel survives)",
-                            prod.role_uid, channel_name,
-                            static_cast<uint32_t>(pre_drop.producer_count() - 1));
+                            d.role_uid, d.channel,
+                            static_cast<uint32_t>(
+                                d.pre_drop_channel.producer_count() - 1));
             }
         }
 
@@ -3030,28 +3075,17 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
         // Disconnected and the surviving consumer list is empty.
         if (channel_torn_down) continue;
 
-        for (const auto &cons : entry.consumers)
+        for (const auto &d : p2)
         {
-            if (cons.role_uid.empty()) continue;
-            auto role_it = snap2.roles.find(cons.role_uid);
-            if (role_it == snap2.roles.end()) continue;
-            const auto *p = role_it->second.find_presence(channel_name, "consumer");
-            if (p == nullptr) continue;
-            if (p->state != pylabhub::hub::RoleState::Pending) continue;
-            if (now - p->state_since < pending_timeout) continue;
-
-            // Capture pre-drop state for the producer fan-out target
-            // list (the consumer slot will be erased by the op).
-            const pylabhub::hub::ConsumerEntry pre_drop_consumer = cons;
-            const pylabhub::hub::ChannelEntry  pre_drop_channel  = entry;
+            if (d.party != pylabhub::hub::PartyKind::Consumer) continue;
 
             LOGGER_WARN(
                 "Broker: consumer '{}' on '{}' reclaimed from Pending "
                 "(no heartbeat within {} ms)",
-                cons.role_uid, channel_name, pending_timeout.count());
+                d.role_uid, d.channel, pending_timeout.count());
 
-            auto drop = hub_state_->_on_pending_timeout(channel_name, cons.role_uid,
-                                                        "consumer");
+            auto drop = hub_state_->_on_pending_timeout(
+                d.channel, d.role_uid, "consumer");
             if (!drop.removed) continue;
 
             // Fan out CONSUMER_DIED_NOTIFY with reason="heartbeat_timeout"
@@ -3064,8 +3098,10 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
             // uses `role_uid` (the consumer's role.uid; tag `cons.` or
             // `proc.` is embedded in the value) — replaces the legacy
             // `consumer_uid` field for cross-message uniformity.
+            const auto &pre_drop_consumer = *d.pre_drop_consumer;
+            const auto &pre_drop_channel  = d.pre_drop_channel;
             nlohmann::json notify;
-            notify["channel_name"]      = channel_name;
+            notify["channel_name"]      = d.channel;
             notify["role_uid"]          = pre_drop_consumer.role_uid;
             notify["consumer_pid"]      = pre_drop_consumer.consumer_pid;
             notify["consumer_hostname"] = pre_drop_consumer.consumer_hostname;
@@ -3073,15 +3109,15 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
             for (const auto &prod : pre_drop_channel.producers)
             {
                 if (prod.zmq_identity.empty()) continue;
-                send_to_identity(socket, prod.zmq_identity, "CONSUMER_DIED_NOTIFY",
-                                 notify);
+                send_to_identity(socket, prod.zmq_identity,
+                                 "CONSUMER_DIED_NOTIFY", notify);
                 LOGGER_INFO("Broker: CONSUMER_DIED_NOTIFY to producer of '{}': "
                             "role_uid={} reason=heartbeat_timeout target_role={}",
-                            channel_name, cons.role_uid, prod.role_uid);
+                            d.channel, d.role_uid, prod.role_uid);
             }
             // Federation / observer fan-out (mirrors the PID-death path).
-            on_consumer_closed(socket, channel_name, pre_drop_consumer,
-                                "heartbeat_timeout");
+            on_consumer_closed(socket, d.channel, pre_drop_consumer,
+                               "heartbeat_timeout");
         }
     }
 }

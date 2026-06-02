@@ -293,9 +293,10 @@ cross-pass-dependency note" for the rationale.**
      Pending same tick → producer Pass-2 evicts channel → no stray
      `CONSUMER_DIED_NOTIFY` (test:
      `ChannelTornDown_ConsumerPass2Skipped`)
-5. ⏳ Migration itself, in two commits:
-   - Step A: Pass-1 only (no fan-out, no pre_drop, no cascade)
-   - Step B: Pass-2 with the `Pass2Decision` struct + ordering logic
+5. ✅ Migration itself, in two commits:
+   - ✅ Step A: Pass-1 only (commit 9c351c34, 2026-06-02)
+   - ✅ Step B: Pass-2 with the `Pass2Decision` struct + per-channel
+     visit/apply + `channel_torn_down` short-circuit (2026-06-02)
 
 ## Pattern P9 — Mutator-side joins (OUT OF SCOPE for HEP-0039)
 
@@ -342,7 +343,19 @@ is HEP-0039 Phase E (open-ended cleanup).
 
 ## Recent Completions
 
-(none yet — this TODO created 2026-06-02 with the HEP)
+- **2026-06-02** — P8 Step B: migrated Pass-2 (Pending→Disconnected) of
+  `BrokerServiceImpl::check_heartbeat_timeouts` to
+  `for_each_presence_matching`.  Per-channel two-phase: visit collects
+  `Pass2Decision` over `snap2` (producers then consumers in declaration
+  order, with `pre_drop_channel` / `pre_drop_consumer` value-copied from
+  the snapshot); apply drains producer decisions first (with
+  `channel_torn_down` short-circuit on last-producer atomic teardown),
+  then consumer decisions.  Preserves all original log lines,
+  `CONSUMER_DIED_NOTIFY` body shape, and the two-snapshot invariant.
+  Fresh-eye review returned 1 MED (transient line-number citation in
+  comment, fixed in same commit) + 2 LOWs, no behavioral divergence.
+- **2026-06-02** — P8 Step A: migrated Pass-1 (Connected→Pending) to
+  `for_each_presence_matching` (commit 9c351c34).
 
 ---
 
