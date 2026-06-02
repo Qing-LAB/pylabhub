@@ -116,8 +116,20 @@ void HubDirectory::warn_if_keyfile_in_hub_dir(const std::filesystem::path &hub_b
     // compare) lives in the shared security utility next to
     // `resolve_keyfile_path`; the threat-model narrative below is
     // hub-specific and stays here.
-    if (!pylabhub::utils::security::keyfile_inside_base_dir(keyfile, hub_base))
+    std::string canonicalize_err;
+    if (!pylabhub::utils::security::keyfile_inside_base_dir(
+            keyfile, hub_base, &canonicalize_err))
+    {
+        // Surface a soft warn if canonicalization failed so the
+        // operator isn't left in the dark about a check that quietly
+        // skipped (§4.6.4 expansion 2026-06-01).
+        if (!canonicalize_err.empty())
+            std::fprintf(stderr,
+                         "[plh_hub] note: keyfile co-location check "
+                         "(HEP-CORE-0033 §7.2) skipped — %s\n",
+                         canonicalize_err.c_str());
         return;
+    }
 
     std::fprintf(stderr,
                  "\n"

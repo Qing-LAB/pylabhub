@@ -14,6 +14,8 @@
 #include <zmq.h>
 
 #include <array>
+#include <cerrno>
+#include <cstring>
 #include <filesystem>
 #include <stdexcept>
 #include <string>
@@ -91,12 +93,14 @@ RoleVault RoleVault::create(const fs::path    &vault_path,
         // explicit 0700 here so the directory is not briefly
         // world-readable before vault_write lays down 0600 inside.
         namespace sec = pylabhub::utils::security;
+        int chmod_err = 0;
         const auto rc = sec::set_keyfile_mode(
-            vault_path.parent_path(), sec::KeyFileRole::VaultDir);
+            vault_path.parent_path(), sec::KeyFileRole::VaultDir, &chmod_err);
         if (rc == sec::SetModeResult::ChmodFailed)
             throw std::runtime_error(
                 "RoleVault: chmod 0700 failed on vault parent dir '" +
-                vault_path.parent_path().string() + "'");
+                vault_path.parent_path().string() + "': " +
+                (chmod_err != 0 ? std::strerror(chmod_err) : "unknown"));
     }
 
     // Serialize and encrypt payload.

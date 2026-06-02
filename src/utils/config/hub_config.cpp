@@ -149,6 +149,23 @@ HubConfig HubConfig::load(const std::string &path)
     utils::HubDirectory::warn_if_keyfile_in_hub_dir(
         s.base_dir, s.auth.keyfile);
 
+    // HEP-CORE-0035 §4.6 Tier-1: config file is non-secret but
+    // references a vault.  verify_keyfile_acl emits an OpenSSH-style
+    // diagnostic via verdict.diagnostic when the mode is suspicious
+    // (world-writable on POSIX).  Non-fatal — we only WARN: hub.json
+    // is operator-managed and overly strict enforcement here would
+    // break existing tooling.  Distinct from §4.6.2 which IS fatal
+    // for the vault file itself.
+    if (auto v = utils::security::verify_keyfile_acl(
+            fs::path(path), utils::security::KeyFileRole::ConfigFileReferencingVault);
+        !v.ok)
+    {
+        std::fprintf(stderr,
+                     "[plh_hub] WARN: hub.json ACL advisory "
+                     "(HEP-CORE-0035 §4.6.1):\n%s\n",
+                     v.diagnostic.c_str());
+    }
+
     return cfg;
 }
 
@@ -227,12 +244,19 @@ bool HubConfig::load_keypair(const std::string &password)
         throw std::runtime_error(
             "[plh_hub] Refusing to load vault — ACL check failed (HEP-"
             "CORE-0035 §4.6.2):\n" + v.diagnostic);
-    if (auto v = security::verify_keyfile_acl(
-            vault_path.parent_path(), security::KeyFileRole::VaultDir);
-        !v.ok)
-        throw std::runtime_error(
-            "[plh_hub] Refusing to load vault — parent dir ACL check "
-            "failed (HEP-CORE-0035 §4.6.2):\n" + v.diagnostic);
+    // Edge: an absolute keyfile with no parent (bare-filename like
+    // "/x.vault") has parent_path() = "/" which is a valid dir to
+    // check.  Operator-relative paths joined with base_dir always
+    // produce a non-empty parent.  Defensive skip if somehow empty.
+    if (vault_path.has_parent_path())
+    {
+        if (auto v = security::verify_keyfile_acl(
+                vault_path.parent_path(), security::KeyFileRole::VaultDir);
+            !v.ok)
+            throw std::runtime_error(
+                "[plh_hub] Refusing to load vault — parent dir ACL check "
+                "failed (HEP-CORE-0035 §4.6.2):\n" + v.diagnostic);
+    }
 
     const auto vault = utils::HubVault::open(vault_path, uid, password);
     auth.client_pubkey = vault.broker_curve_public_key();
