@@ -597,16 +597,20 @@ public:
                                   const PeerIdentity &producer_id,
                                   TransportKind transport);
 
-    /// On CONSUMER_REG_REQ accept: add consumer pubkey to channel entry's
-    /// allowlist; push CHANNEL_AUTH_UPDATE(add) to producer.
-    /// Returns the entry the broker should include in CONSUMER_REG_ACK
-    /// (producer pubkey + endpoint + shm_secret).
+    /// On CONSUMER_REG_REQ accept: add consumer pubkey to channel
+    /// entry's allowlist; push a new CHANNEL_AUTH_UPDATE snapshot
+    /// (full current allowlist) to every kLive producer of the
+    /// channel.  Returns the entry the broker should include in
+    /// CONSUMER_REG_ACK (producer pubkey + endpoint + shm_secret).
     ChannelAccessEntry on_consumer_registered(
         const std::string &channel,
         const PeerIdentity &consumer_id);
 
-    /// On DEREG: push CHANNEL_AUTH_UPDATE(remove).  Existing connections
-    /// keep flowing (per HEP-0036 §I5 — revocation gates NEW handshakes).
+    /// On DEREG: remove consumer pubkey from the channel entry's
+    /// allowlist; push a new CHANNEL_AUTH_UPDATE snapshot (full
+    /// current allowlist, now without this consumer) to every
+    /// kLive producer.  Existing connections keep flowing (per
+    /// HEP-0036 §I5 — revocation gates NEW handshakes).
     void on_consumer_deregistered(const std::string &channel,
                                     const PeerIdentity &consumer_id);
 
@@ -656,27 +660,30 @@ CLI: `plh_hub --add-known-role <name> <uid> <role> <pubkey_z85>`,
 New broker → role message (broker initiates; role does not request).
 
 **Payload (snapshot semantics — decision P-Wire RESOLVED 2026-06-02,
-see §8.1):**
+see §8.1; the wire frame is owned by HEP-CORE-0036 §6.5):**
 
 ```json
 {
   "type": "CHANNEL_AUTH_UPDATE",
+  "broker_proto": 6,
   "channel_name": "lab.daq.temp.raw",
-  "side": "producer",
-  "allowlist": [
-    {"pubkey_z85": "<40-char Z85>"},
-    ...
-  ],
-  "broker_proto": 6
+  "allowlist": ["<40-char Z85 pubkey>", "<40-char Z85 pubkey>", ...]
 }
 ```
 
 The `allowlist` array is the **full current authorized consumer
 set** for the channel after the mutation event that triggered this
-push.  Empty array (`[]`) is the legal "deny everyone" state.  The
-producer REPLACES its local ZAP cache for this channel with the
-arriving set — no per-pubkey diff, no merge.  See HEP-CORE-0036
-§6.5 (amended 2026-06-02) for the on-wire details and the
+push, as an array of plain 40-char Z85 strings (no per-element
+object wrapper).  Empty array (`[]`) is the legal "deny everyone"
+state.  The producer REPLACES its local ZAP cache for this channel
+with the arriving set — no per-pubkey diff, no merge.  The wire
+frame carries no `kind` field (wire is CURVE-only — receivers wrap
+in `PeerIdentity{kind="curve", data=<pubkey_z85>}` defensively),
+no `unrestricted` field (receivers force
+`PeerAllowlist::unrestricted = false`), and no sequence number
+(TCP ordering; latest snapshot wins; cross-reconnect re-sync via
+`REG_ACK.initial_allowlist`).  See HEP-CORE-0036 §6.5 (amended
+2026-06-02) for the authoritative wire-field table + the
 skip-disconnected push semantics that surround it.
 
 **Transport:** broker → role uses the existing CTRL channel
@@ -844,7 +851,7 @@ A/B/C) and **pending** (block Phase D).
 | **P-InboxQueue** | Where does InboxQueue's admission policy live? | (a) Make InboxQueue inherit from QueueReader/QueueWriter (semantic mismatch). (b) InboxQueue implements PeerAdmission directly, no queue inheritance. (c) New `NetworkEndpoint` interface that both implement. | **(b)** — preserves InboxQueue's REQ/REP nature; gate concept still uniform via `PeerAdmission` |
 | **P-Default** | Default behavior when no allowlist is set | (a) Deny all (secure-by-default). (b) Allow all transitional during migration. (c) Configurable per-queue. | **(a)** in production; **(b)** behind a `--allow-anonymous-data` flag for transitional demos, gated to refuse-bind on non-loopback endpoints |
 | **P-SHM-Identity** | What is a PeerIdentity for SHM? | (a) Broker-issued shm_secret (token-based). (b) POSIX uid+gid (kernel-based). (c) Both layered. | **(a)** primary, **(c)** with optional uid guard if operator sets it; broker controls the gate via secret issuance |
-| **P-Push** | How does broker push CHANNEL_AUTH_UPDATE to role? | (a) Reuse CTRL channel DEALER/ROUTER (bidirectional). (b) New PUB socket on broker + SUB on role. (c) New REQ/REP per push (broker initiates). | **(a)** — DEALER/ROUTER is already bidirectional; adding a "from broker" tag to the wire frame is cheap. (b) doubles the wire complexity. |
+| **P-Push** | How does broker push CHANNEL_AUTH_UPDATE to role? | (a) Reuse CTRL channel DEALER/ROUTER (bidirectional). (b) New PUB socket on broker + SUB on role. (c) New REQ/REP per push (broker initiates). | **(a)** — DEALER/ROUTER is already bidirectional and the message type itself (`type: "CHANNEL_AUTH_UPDATE"`) identifies the direction; no separate "from broker" tag needed.  (b) doubles the wire complexity. |
 | **P-Admin** | AdminService — CURVE-wrap or loopback-enforce? | (a) CURVE-wrap with admin client vault. (b) Hard loopback-only enforce + reject non-loopback bind. | **(b)** for v1 — simpler, no separate admin vault needed; CURVE-wrap is HEP-CORE-0035 §5 future work |
 | **P-HEP** | What to do about existing HEP-0036 / HEP-0017 §3.3 with wrong layering? | (a) Amend HEP-0036 / HEP-0017 in place. (b) New HEP supersedes affected sections. (c) Keep this tech_draft as authoritative; HEPs synced at end of impl. | **(c)** — finalize impl, then sync HEPs from observed reality. Avoids HEP churn during implementation. |
 | **P-Demos** | How do existing demos migrate? | (a) Hard cutover (every demo updated atomically with the impl). (b) Transitional `--allow-anonymous-data` flag (P-Default option b). (c) Per-demo opt-in `auth_enforced: false`. | **(b)** + demos updated incrementally; flag refuses non-loopback bind to prevent accidental production leak |
@@ -1164,22 +1171,17 @@ not deltas. So either:
 HEP-CORE-0036 §6.5 amendment 2026-06-02 for the formal record.
 Producer-side caches are followers; the hub owns the truth.
 
-**Wire frame (now canonical in §6.3 of this doc + HEP-0036 §6.5):**
-
-```json
-{
-  "type": "CHANNEL_AUTH_UPDATE",
-  "channel_name": "lab.daq.temp.raw",
-  "side": "producer",
-  "allowlist": [
-    {"pubkey_z85": "<40-char Z85>"},
-    ...
-  ],
-  "broker_proto": 6
-}
-```
-
-Empty `allowlist` array = revoke all (deny-all state).
+**Wire frame.**  Canonical shape is HEP-CORE-0036 §6.5 wire-fields
+table (and the mirror at §6.3 of this doc).  Plain `array<string>`
+of 40-char Z85 pubkeys — no object wrappers, no `side` field, no
+`kind` field, no `unrestricted` field, no sequence number.  Receivers
+construct `PeerAllowlist { peers = <parsed>, unrestricted = false }`
+unconditionally, wrapping each string as
+`PeerIdentity { kind = "curve", data = <pubkey_z85> }`.  Empty
+`allowlist` array is the legal deny-everyone state.  The earlier
+draft of this section illustrated a richer per-element object shape;
+that shape is superseded — see §6.3 / HEP-0036 §6.5 for the
+canonical wire payload.
 
 ### S12 — Re-entry safety on broker restart
 
