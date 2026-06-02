@@ -484,6 +484,12 @@ TEST(QueryForEachPresenceMatching, TargetCarriesCopiedPresence)
             EXPECT_EQ(t.party, PartyKind::Producer);
             EXPECT_NE(t.producer, nullptr);
             EXPECT_EQ(t.consumer, nullptr);
+            // channel_entry points to the parent ChannelEntry — needed
+            // by callers that capture pre_drop before applying a
+            // channel-erasing mutator.
+            ASSERT_NE(t.channel_entry, nullptr);
+            EXPECT_EQ(t.channel_entry, &ch);
+            EXPECT_EQ(t.channel_entry->name, "ch1");
         });
     EXPECT_TRUE(visited);
 }
