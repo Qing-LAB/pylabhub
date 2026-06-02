@@ -122,6 +122,15 @@ struct HubState::Impl
     std::vector<Slot<BandLeftHandler>>             band_left;
     std::vector<Slot<PeerConnectedHandler>>        peer_conn;
     std::vector<Slot<PeerDisconnectedHandler>>     peer_disc;
+
+    // ── HEP-CORE-0039 §3.1 capture metadata ────────────────────────────
+    // `hub_uid` is set once via `HubState::set_hub_uid` during
+    // HubHost initialization and read on every snapshot under
+    // `mu`.  `snapshot_seq_counter_` is incremented atomically on
+    // every snapshot — the first live snapshot has seq == 1 (see
+    // HEP-0039 §8.3 + §3.1 metadata table).
+    std::string                                    hub_uid;
+    std::atomic<std::uint64_t>                     snapshot_seq_counter_{0};
 };
 
 HubState::HubState() : pImpl(std::make_unique<Impl>()) {}
@@ -129,18 +138,33 @@ HubState::~HubState() = default;
 
 // ─── Read-only accessors ────────────────────────────────────────────────────
 
+void HubState::set_hub_uid(std::string hub_uid)
+{
+    std::unique_lock lk(pImpl->mu);
+    pImpl->hub_uid = std::move(hub_uid);
+}
+
 HubStateSnapshot HubState::snapshot() const
 {
     std::shared_lock lk(pImpl->mu);
     HubStateSnapshot s;
-    s.channels    = pImpl->channels;
-    s.roles       = pImpl->roles;
-    s.bands       = pImpl->bands;
-    s.peers       = pImpl->peers;
-    s.shm_blocks  = pImpl->shm_blocks;
-    s.schemas     = pImpl->schemas;
-    s.counters    = pImpl->counters;
-    s.captured_at = std::chrono::system_clock::now();
+    s.channels      = pImpl->channels;
+    s.roles         = pImpl->roles;
+    s.bands         = pImpl->bands;
+    s.peers         = pImpl->peers;
+    s.shm_blocks    = pImpl->shm_blocks;
+    s.schemas       = pImpl->schemas;
+    s.counters      = pImpl->counters;
+    s.captured_at   = std::chrono::system_clock::now();
+    s.captured_mono = std::chrono::steady_clock::now();
+    s.hub_uid       = pImpl->hub_uid;
+    // fetch_add returns the value BEFORE the add, so +1 gives 1 on
+    // first call — matches HEP-0039 §3.1 "first live snapshot has
+    // seq == 1; seq == 0 is reserved for default-constructed".
+    s.snapshot_seq  =
+        pImpl->snapshot_seq_counter_.fetch_add(
+            1, std::memory_order_relaxed) +
+        1;
     return s;
 }
 

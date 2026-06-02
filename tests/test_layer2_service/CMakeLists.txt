@@ -337,6 +337,41 @@ gtest_discover_tests(test_layer2_hub_state
 )
 
 # ============================================================================
+# Test: HubState query helpers (HEP-CORE-0039 Phase A)
+# Pure value-type tests for the Layer 2a helpers in hub_state_queries.hpp.
+# No HubState instance needed; helpers operate over const refs to ChannelEntry
+# / RoleEntry / HubStateSnapshot, constructed directly by the fixtures.
+# Pins HEP-0039 §3.2a contracts: enumerate_live_producers, for_each_*,
+# find_role_attachments, is_producer_live, for_each_presence_matching,
+# producer_uids/consumer_uids, plus HubStateSnapshot metadata wiring.
+# ============================================================================
+
+add_executable(test_layer2_hub_state_queries
+    test_hub_state_queries.cpp
+)
+
+target_link_libraries(test_layer2_hub_state_queries
+    PRIVATE
+        pylabhub::utils
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_hub_state_queries)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_hub_state_queries
+    SUITE_NAME "Layer2_HubStateQueries"
+)
+layer2_require_staged_utils(test_layer2_hub_state_queries)
+
+gtest_discover_tests(test_layer2_hub_state_queries
+    PROPERTIES
+        LABELS "layer2;service;hubstate;query_layer"
+        TIMEOUT 30
+)
+
+# ============================================================================
 # Test: RoleHandler — Wave-B M3 skeleton (Presence dedup + index lookup)
 # Pattern 1+ (BinaryLifecycleEnvironment) — RoleHandler emits LOGGER_ERROR
 # on a duplicate-channel input, so Logger needs the binary-wide guard.
