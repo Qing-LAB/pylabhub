@@ -9,6 +9,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cstdio>     // std::fprintf for advisory diagnostic
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
@@ -48,13 +49,41 @@ nlohmann::json entry_to_json(const broker::KnownRole &e)
     return j;
 }
 
+/// Strict typed extraction.  `nlohmann::json::value(k, default)`
+/// returns the default both when @p field is absent AND when it is
+/// present with the wrong type — defeating the strict-parser intent
+/// of `KnownRolesStore`.  Concrete bug surfaced by the fresh-eye
+/// review: `"pubkey_z85": null` and `"name": 1234` were silently
+/// coerced to `""`, breaking save→load round-trip identity and
+/// hiding operator-edit mistakes.
+///
+/// Contract here:
+///   - missing or JSON-null → empty string (legacy entries that
+///     omit optional fields like `name`/`role` still load — the
+///     final validate_entry catches the empty-uid/empty-pubkey case)
+///   - present but wrong type → throws std::runtime_error naming the
+///     field and the observed JSON type
+std::string require_string_or_empty(const nlohmann::json &j,
+                                     const char *field)
+{
+    auto it = j.find(field);
+    if (it == j.end() || it->is_null())
+        return {};
+    if (!it->is_string())
+        throw std::runtime_error(
+            "KnownRolesStore: field '" + std::string(field) +
+            "' must be a string; got JSON type '" +
+            std::string(it->type_name()) + "'");
+    return it->get<std::string>();
+}
+
 broker::KnownRole entry_from_json(const nlohmann::json &j)
 {
     broker::KnownRole e;
-    e.name       = j.value("name", "");
-    e.uid        = j.value("uid", "");
-    e.role       = j.value("role", "");
-    e.pubkey_z85 = j.value("pubkey_z85", "");
+    e.name       = require_string_or_empty(j, "name");
+    e.uid        = require_string_or_empty(j, "uid");
+    e.role       = require_string_or_empty(j, "role");
+    e.pubkey_z85 = require_string_or_empty(j, "pubkey_z85");
     return e;
 }
 
@@ -75,11 +104,33 @@ KnownRolesStore::load_from_file(const std::filesystem::path &path)
     // a tampered or world-readable known_roles.json must NOT be
     // honored.  Mirrors the HubConfig::load_keypair / RoleConfig::
     // load_keypair pattern from #101.
-    if (auto v = verify_keyfile_acl(path, KeyFileRole::VaultFile); !v.ok)
-        throw std::runtime_error(
-            "KnownRolesStore: refusing to load '" + path.string() +
-            "' — ACL check failed (HEP-CORE-0035 §4.6.2):\n" +
-            v.diagnostic);
+    //
+    // **H-K2 fix.**  The verify_keyfile_acl contract (key_file_acl.hpp
+    // §"AclVerdict" docs) requires callers to gate emission on
+    // `!diagnostic.empty()`, NOT just `!ok`.  When the parent
+    // directory is group/world-accessible, `verify_vault_file`
+    // appends an advisory diagnostic to `v.diagnostic` but keeps
+    // `v.ok = true` (per HEP-CORE-0035 §4.6.2 — shared-host setups
+    // sometimes legitimately want group-readable parents).  The old
+    // code only acted on `!v.ok`, silently swallowing that warning.
+    // Now we surface the advisory via stderr (matching the existing
+    // RoleConfig::load advisory pattern) so the operator sees the
+    // leak signal during audit.
+    {
+        auto v = verify_keyfile_acl(path, KeyFileRole::VaultFile);
+        if (!v.ok)
+            throw std::runtime_error(
+                "KnownRolesStore: refusing to load '" +
+                path.string() +
+                "' — ACL check failed (HEP-CORE-0035 §4.6.2):\n" +
+                v.diagnostic);
+        if (!v.diagnostic.empty())
+            std::fprintf(stderr,
+                         "[KnownRolesStore] WARN: ACL advisory for "
+                         "'%s' (HEP-CORE-0035 §4.6.2):\n%s\n",
+                         path.string().c_str(),
+                         v.diagnostic.c_str());
+    }
 
     std::ifstream f(path);
     if (!f)

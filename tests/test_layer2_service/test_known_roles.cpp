@@ -344,6 +344,207 @@ TEST(KnownRolesStoreTest, LoadFromFile_BadJson_Throws)
     fs::remove(p);
 }
 
+// ── H-K1: strict-type extraction (close-out commit 3) ──────────────────────
+//
+// nlohmann::json::value(k, default) returns `default` BOTH when k is
+// missing AND when k has the wrong JSON type.  The pre-fix
+// entry_from_json silently coerced typed mistakes — e.g.,
+// `"pubkey_z85": null` and `"name": 1234` — to empty strings, breaking
+// save→load identity AND hiding operator-edit mistakes from the
+// validator.  These tests pin that the strict-typed extraction rejects
+// wrong-type fields with a precise diagnostic.
+
+TEST(KnownRolesStoreTest, LoadFromFile_PubkeyWrongType_Number_Throws)
+{
+    auto p = make_tmp_path("pubkey_wrongtype_number");
+    std::ostringstream js;
+    js << R"({"version": )" << kKnownRolesSchemaVersion << R"(, "roles": [)"
+       << R"({"uid":"uid.alice","name":"A","role":"producer",)"
+          R"("pubkey_z85": 42}])"
+       << R"(})";
+    atomic_write_owner_only_file(p, js.str());
+
+    try {
+        (void) KnownRolesStore::load_from_file(p);
+        FAIL() << "expected throw on wrong-type pubkey_z85 (got number)";
+    } catch (const std::runtime_error &e) {
+        // Pin the diagnostic specifically — it must name the field
+        // AND the observed type.  A generic "load failed" would not
+        // help the operator find the bad line in known_roles.json.
+        const std::string what(e.what());
+        EXPECT_NE(what.find("pubkey_z85"), std::string::npos) << what;
+        EXPECT_NE(what.find("string"), std::string::npos) << what;
+    }
+    fs::remove(p);
+}
+
+TEST(KnownRolesStoreTest, LoadFromFile_NameWrongType_Array_Throws)
+{
+    auto p = make_tmp_path("name_wrongtype_array");
+    std::ostringstream js;
+    js << R"({"version": )" << kKnownRolesSchemaVersion << R"(, "roles": [)"
+       << R"({"uid":"uid.alice","name":["x","y"],"role":"producer",)"
+          R"("pubkey_z85":")" << fake_pubkey('A') << R"("}])"
+       << R"(})";
+    atomic_write_owner_only_file(p, js.str());
+
+    try {
+        (void) KnownRolesStore::load_from_file(p);
+        FAIL() << "expected throw on wrong-type name (got array)";
+    } catch (const std::runtime_error &e) {
+        const std::string what(e.what());
+        EXPECT_NE(what.find("name"), std::string::npos) << what;
+        EXPECT_NE(what.find("string"), std::string::npos) << what;
+    }
+    fs::remove(p);
+}
+
+TEST(KnownRolesStoreTest, LoadFromFile_UidWrongType_Number_Throws)
+{
+    auto p = make_tmp_path("uid_wrongtype_number");
+    std::ostringstream js;
+    js << R"({"version": )" << kKnownRolesSchemaVersion << R"(, "roles": [)"
+       << R"({"uid": 1234,"name":"alice","role":"producer",)"
+          R"("pubkey_z85":")" << fake_pubkey('A') << R"("}])"
+       << R"(})";
+    atomic_write_owner_only_file(p, js.str());
+
+    try {
+        (void) KnownRolesStore::load_from_file(p);
+        FAIL() << "expected throw on wrong-type uid (got number)";
+    } catch (const std::runtime_error &e) {
+        const std::string what(e.what());
+        EXPECT_NE(what.find("uid"), std::string::npos) << what;
+        EXPECT_NE(what.find("string"), std::string::npos) << what;
+    }
+    fs::remove(p);
+}
+
+TEST(KnownRolesStoreTest, LoadFromFile_RoleWrongType_Bool_Throws)
+{
+    auto p = make_tmp_path("role_wrongtype_bool");
+    std::ostringstream js;
+    js << R"({"version": )" << kKnownRolesSchemaVersion << R"(, "roles": [)"
+       << R"({"uid":"uid.alice","name":"alice","role": true,)"
+          R"("pubkey_z85":")" << fake_pubkey('A') << R"("}])"
+       << R"(})";
+    atomic_write_owner_only_file(p, js.str());
+
+    try {
+        (void) KnownRolesStore::load_from_file(p);
+        FAIL() << "expected throw on wrong-type role (got bool)";
+    } catch (const std::runtime_error &e) {
+        const std::string what(e.what());
+        EXPECT_NE(what.find("role"), std::string::npos) << what;
+        EXPECT_NE(what.find("string"), std::string::npos) << what;
+    }
+    fs::remove(p);
+}
+
+TEST(KnownRolesStoreTest, LoadFromFile_PubkeyNull_FailsValidation)
+{
+    // JSON null is treated as "missing" by require_string_or_empty
+    // (the field collapses to ""), then validate_entry catches the
+    // empty pubkey via std::invalid_argument.  This pins the cleanup
+    // chain: null is not the same as wrong-type; it's a permitted
+    // omission that the semantic validator still rejects.
+    auto p = make_tmp_path("pubkey_null");
+    std::ostringstream js;
+    js << R"({"version": )" << kKnownRolesSchemaVersion << R"(, "roles": [)"
+       << R"({"uid":"uid.alice","name":"alice","role":"producer",)"
+          R"("pubkey_z85": null}])"
+       << R"(})";
+    atomic_write_owner_only_file(p, js.str());
+
+    try {
+        (void) KnownRolesStore::load_from_file(p);
+        FAIL() << "expected throw — empty pubkey rejected at validator";
+    } catch (const std::invalid_argument &e) {
+        // validate_entry uses std::invalid_argument for empty pubkey.
+        const std::string what(e.what());
+        EXPECT_NE(what.find("pubkey"), std::string::npos) << what;
+    } catch (const std::exception &e) {
+        FAIL() << "expected std::invalid_argument from validate_entry "
+                  "(empty pubkey path); got: " << e.what();
+    }
+    fs::remove(p);
+}
+
+TEST(KnownRolesStoreTest, LoadFromFile_MissingOptionalNameAndRole_LoadsWithEmpty)
+{
+    // Backward-compat: legacy files that omit name/role still load.
+    // require_string_or_empty treats missing field as "" (not a type
+    // error), and validate_entry only requires uid + pubkey.
+    auto p = make_tmp_path("missing_optional");
+    std::ostringstream js;
+    js << R"({"version": )" << kKnownRolesSchemaVersion << R"(, "roles": [)"
+       << R"({"uid":"uid.alice","pubkey_z85":")" << fake_pubkey('A') << R"("}])"
+       << R"(})";
+    atomic_write_owner_only_file(p, js.str());
+
+    auto loaded = KnownRolesStore::load_from_file(p);
+    ASSERT_TRUE(loaded.has_value());
+    ASSERT_EQ(loaded->size(), 1u);
+    EXPECT_EQ(loaded->list()[0].uid, "uid.alice");
+    EXPECT_EQ(loaded->list()[0].name, "");
+    EXPECT_EQ(loaded->list()[0].role, "");
+    EXPECT_EQ(loaded->list()[0].pubkey_z85, fake_pubkey('A'));
+    fs::remove(p);
+}
+
+#if !defined(_WIN32) && !defined(_WIN64)
+// ── H-K2: parent-directory ACL advisory surfacing ──────────────────────────
+//
+// verify_keyfile_acl(VaultFile) returns `ok=true` with a non-empty
+// `diagnostic` when the file passes its own ACL check (0600, owned)
+// but the parent directory has group/world bits set.  The pre-fix
+// load_from_file silently swallowed that diagnostic.  Operators
+// auditing the file would have no signal that their <hub_dir>/vault/
+// is leaking the existence of known_roles.json.
+//
+// This test sets the parent dir to mode 0750, writes a valid 0600
+// file, and pins that load_from_file (a) succeeds AND (b) prints the
+// advisory to stderr containing the parent-directory diagnostic.
+TEST(KnownRolesStoreTest, LoadFromFile_GroupReadableParentDir_SurfacesAdvisory)
+{
+    // Custom temp dir we can chmod (the system temp dir is typically
+    // 1777, which would also trigger but isn't OUR mode to assert).
+    static std::atomic<int> ctr{0};
+    fs::path parent = fs::temp_directory_path() /
+                      ("plh_l2_known_roles_advisory_" +
+                       std::to_string(::getpid()) + "_" +
+                       std::to_string(ctr.fetch_add(1)));
+    fs::create_directories(parent);
+    // Force parent to mode 0750 — group-readable, world-search-only.
+    ::chmod(parent.c_str(), 0750);
+
+    fs::path p = parent / "known_roles.json";
+    KnownRolesStore s;
+    s.add(make_role("uid.alice", fake_pubkey('A')));
+    s.save_to_file(p);  // writes 0600
+
+    testing::internal::CaptureStderr();
+    auto loaded = KnownRolesStore::load_from_file(p);
+    const std::string err = testing::internal::GetCapturedStderr();
+
+    ASSERT_TRUE(loaded.has_value())
+        << "Load must succeed — the advisory is non-fatal per "
+           "HEP-CORE-0035 §4.6.2";
+    ASSERT_EQ(loaded->size(), 1u);
+    EXPECT_NE(err.find("KnownRolesStore"), std::string::npos)
+        << "Advisory must be tagged so the operator can grep for it; "
+           "stderr was:\n" << err;
+    EXPECT_NE(err.find("parent directory"), std::string::npos)
+        << "Advisory must mention the parent-dir leak signal; "
+           "stderr was:\n" << err;
+
+    // Restore parent mode so cleanup works on hosts with strict umask.
+    ::chmod(parent.c_str(), 0700);
+    fs::remove(p);
+    fs::remove(parent);
+}
+#endif
+
 // ── atomic_write_owner_only_file — covered indirectly above + smoke here ────
 
 #if !defined(_WIN32) && !defined(_WIN64)
