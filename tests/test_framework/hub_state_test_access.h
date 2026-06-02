@@ -238,6 +238,31 @@ struct HubStateTestAccess
         s._on_message_processed(msg_type, in, out);
     }
 
+    // ── Channel-access forwarders (HEP-CORE-0036 §4.1) ────────────────
+    static void on_channel_access_opened(HubState          &s,
+                                          const std::string &channel_name,
+                                          std::uint64_t      shm_secret)
+    {
+        s._on_channel_access_opened(channel_name, shm_secret);
+    }
+    static void on_channel_access_closed(HubState          &s,
+                                          const std::string &channel_name)
+    {
+        s._on_channel_access_closed(channel_name);
+    }
+    static void on_consumer_authorized(HubState          &s,
+                                        const std::string &channel_name,
+                                        const std::string &pubkey_z85)
+    {
+        s._on_consumer_authorized(channel_name, pubkey_z85);
+    }
+    static void on_consumer_revoked(HubState          &s,
+                                     const std::string &channel_name,
+                                     const std::string &pubkey_z85)
+    {
+        s._on_consumer_revoked(channel_name, pubkey_z85);
+    }
+
     // ── Schema-registry forwarders (HEP-CORE-0034 §11) ────────────────
     static ::pylabhub::schema::SchemaRegOutcome
     on_schema_registered(HubState &s, ::pylabhub::schema::SchemaRecord rec)
