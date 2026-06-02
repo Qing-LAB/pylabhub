@@ -134,6 +134,50 @@ If a sentence says "M3" without a prefix, it almost certainly means
 
 ---
 
+## Open items from 2026-05-20 post-band-authority discovery (migrated 2026-06-02)
+
+Carried over from the archived
+`docs/archive/transient-2026-06-02/DISCOVERY_2026-05-20.md`.  Each
+should be verified-fixed-or-still-open before next sprint.
+
+### D1 must-fix
+
+- **A1 — `ctx_band_leave` semantic bug.**  `native_engine.cpp:280`
+  returns `1` on broker rejection (e.g. `{status:error,NOT_A_MEMBER}`).
+  Fix: gate on `result->value("status","") == "success"`.  Single-line.
+
+### D2 drift
+
+- **B1 — empty `correlation_id` in BAND_JOIN/LEAVE validator errors.**
+  `broker_service.cpp:4488,4584`.  Handlers pass `corr_id=""` to the
+  validator even though the request payload carries `correlation_id`.
+  Fix: `req.value("correlation_id","")` at handler entry.
+- **Stale-comment scrub (~15 sites).**  References to deleted
+  `set_broker_comm` / `start_ctrl_thread` / `pImpl->broker_channel`
+  in `role_api_base.{hpp,cpp}`, `hub_script_runner.cpp`, the 3 role
+  hosts, `engine_host.hpp`, `role_host_helpers.hpp`, `role_host_core.hpp`.
+- **Obsolete includes:** `#include "utils/broker_request_comm.hpp"`
+  in three role hosts (~line 22) — BRC reaches them via
+  `role_handler.hpp` now.  Mechanical.
+
+### Pending discussion (dead-code candidates)
+
+- `RoleAPIBase::close_all_inbox_clients()` — zero callers; verify
+  no script reflection path before removing.
+- `BrokerRequestComm::query_shm_info()` + `BrokerService::collect_shm_info_json()`
+  + `SHM_INFO_REQ` wire frame — paired client+server; remove together
+  if wire frame is also dead.
+- `ChannelSnapshot::count_by_observable()` — verify exposure to
+  admin queries before removing.
+
+### Doc bookkeeping debt
+
+- 4 `docs/code_review/REVIEW_*WaveM3*.md` files from 2026-05-11 are
+  archive candidates (open items verified resolved during the
+  2026-05-19 review-triage pass).
+
+---
+
 ## Notes
 
 ### Error taxonomy (Cat 1 / Cat 2)

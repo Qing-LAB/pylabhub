@@ -41,6 +41,38 @@ One transient moved to `docs/archive/transient-2026-06-02/`:
   is agreed upon and finalized: merge → move to archive → record
   here").
 
+### 2026-06-02 (tech_draft sweep — 13 docs archived after PeerAdmission close-out)
+
+Following the PeerAdmission tech_draft archive (above), audit of the
+remaining 20 entries in `docs/tech_draft/` against the locked HEP
+corpus + MEMORY-recorded shipped work identified 12 additional
+archive candidates.  All moved to `docs/archive/transient-2026-06-02/`.
+Open items lifted into subtopic TODOs to preserve context.
+
+**Unambiguous archives** (banner says SHIPPED / SUPERSEDED, work
+recorded in MEMORY + git log):
+
+| Document | Where the lasting content lives |
+|---|---|
+| `broker_test_migration_plan.md` | M1.2/M1.3 ship (commit `a41ce71`) + `docs/README/README_testing.md` patterns |
+| `controlled_access_api_design.md` | Wave M2.5 ship + `docs/code_review/REVIEW_WaveM2.5_*` |
+| `GROUP2_DECISIONS_2026-05-20.md` | HEP-CORE-0039 + completed tasks #140-#150 |
+| `M1.5_channel_closing_redesign_2026-05-12.md` | Commit `c177c99` + D1 audit `81804d7b` |
+| `M1_FSM_consolidation_handoff_2026-05-09.md` | M1.2 (`a41ce71`) + M1.4 (`4e902e1`) + M1.5 (`c177c99`) |
+| `M3_role_entry_controlled_access.md` | Wave M3 ship + `docs/code_review/REVIEW_WaveM3_*_2026-05-11.md` |
+| `MD1_role_teardown_ordering_2026-05-12.md` | HEP-CORE-0031 §4.1 + commits `42092cb..4a5347c` |
+| `test_compliance_audit.md` | `docs/README/README_testing.md` + Pattern-3 wave commits `6dfb86d..1ed9cc8` |
+
+**Follow-up archives** (lasting content in HEPs; open items lifted
+into subtopic TODOs):
+
+| Document | Where the lasting content lives | Open items moved to |
+|---|---|---|
+| `role_host_template_design.md` | Wave-B M0–M9 shipped (task #72 + #97-#100).  RoleHostFrame / presences / FlexzoneInfoCache referenced in HEP-CORE-0011 + HEP-CORE-0023 + HEP-CORE-0033.  The full 128k design history is preserved verbatim in the archive copy. | — (no open items; reference design only) |
+| `DISCOVERY_2026-05-20.md` | §1 + §2.1-§2.3 + §4 + §5 closed (per banner + git log).  §3 review findings + §2.4 dead-code candidates + §7 doc bookkeeping debt = open. | `docs/todo/MESSAGEHUB_TODO.md` § "Open items from 2026-05-20 post-band-authority discovery" |
+| `HUB_TEST_COVERAGE_PLAN.md` | 2026-05-05 snapshot of L2/L3/L4 coverage; L4 plans subsumed by demo framework + 9 manifests (task #44 done 2026-05-26). | `docs/todo/TESTING_TODO.md` § "Open coverage items from 2026-05-20 discovery + 2026-05-05 HubAPI coverage plan" |
+| `SRC_STRUCTURE_PLAN.md` | Deferred-execution design; no urgency to promote. | Pointer added to `docs/todo/API_TODO.md` § Deferred future work; design preserved verbatim in archive |
+
 ### 2026-06-02 (PeerAdmission tech_draft archive)
 
 PeerAdmission Phase D is unblocked by all P-* decisions resolving

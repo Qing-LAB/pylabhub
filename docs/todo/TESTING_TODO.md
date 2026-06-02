@@ -152,6 +152,71 @@ pinpoint which step hangs.  ~10 LOC; risk-free.
 
 Effort: M (diagnosis + likely fix).
 
+### Open coverage items from 2026-05-20 discovery + 2026-05-05 HubAPI coverage plan (migrated 2026-06-02)
+
+Carried over from archived `DISCOVERY_2026-05-20.md` §3.3 and
+`HUB_TEST_COVERAGE_PLAN.md` (both under
+`docs/archive/transient-2026-06-02/`).  Verify each before adding;
+some may have been closed by Wave-A.5 / band-authority / HEP-0039
+test work already.
+
+**Broker / band protocol gate-mutation tests** (typo in
+`expected_tags` initializers compiles silently today; one focused
+commit can cover these):
+- DEREG_REQ — expects `{prod, proc}`.
+- CONSUMER_DEREG_REQ — expects `{cons, proc}`.
+- HEARTBEAT_REQ — tag derived from `role_type`; mismatch path not pinned.
+- ROLE_INFO_REQ + ROLE_PRESENCE_REQ — `{prod, cons, proc}`.
+- BAND_JOIN_REQ + BAND_LEAVE_REQ + BAND_BROADCAST_REQ — `{prod, cons, proc}`.
+
+**S4 broker-side band tests** (3 missing):
+- `BAND_BROADCAST_REQ` sender-not-member drop (`broker_service.cpp:4685-4697`).
+- `BAND_LEAVE_REQ` `NOT_A_MEMBER` typed-error path (`broker_service.cpp:4605-4622`).
+- `BAND_BROADCAST` band-doesn't-exist drop (`broker_service.cpp:4677-4684`).
+
+**S4 role-side bookkeeping tests** (3 missing):
+- `band_join` on `{status:error}` → erase index entry (`role_api_base.cpp:1551-1560`).
+- `band_leave` on `{status:error}` → erase index entry (`role_api_base.cpp:1597-1605`).
+- `mark_connection_disconnected` band_index_ sweep returning `bands_lost` (`role_handler.cpp:337-349`).
+
+**L3 / engine-parity gaps:**
+- L3 hub-dead → `on_band_lost` cascade end-to-end (`role_api_base.cpp:1166-1176`).
+- Real-engine parity tests for the 4 band callbacks (Python / Lua / Native) and `on_hub_dead`.
+- `api.is_in_band()` — untested at any layer.
+
+**HubAPI Phase 8c L2 surface — completely untested** (from 2026-05-05
+coverage plan; pre-host-wiring fallbacks + happy-path delegation):
+- `post_event(name, data)` — name validation + enqueue + fire-and-forget.
+- `augment_query_metrics` / `augment_list_roles` / `augment_get_channel` /
+  `augment_peer_message` — `has_callback` probe + `invoke_returning`
+  routing + return-value capture + null/error fallback.
+- `augment_timeout_ms()` / `set_augment_timeout(ms)` — atomic load/store
+  + project-convention values (-1 / 0 / >0).
+- Phases 8a/8b read accessors + control delegates — currently only
+  exercised through L3 integration tests; should pin at L2.
+
+**Hub Lua/Python integration gaps** (extend
+`test_hub_lua_integration.cpp` + `test_hub_python_integration.cpp`):
+- Augmentation hook flow (`on_query_metrics` mutates response).
+- `post_event` / `on_app_<name>` dispatch (W-thread drain).
+- Augmentation timeout path (slow callback + `set_augment_timeout(50)`).
+- Event observers — none of the 11 §12.2.1 observers have an
+  end-to-end fire-from-real-broker test.
+- Control delegates from `on_tick` (e.g. `api.close_channel`).
+
+**L3 federation + admin-RPC-over-wire:**
+- `HUB_TARGETED_MSG` peer wire frame end-to-end (unblocks deferred
+  `on_peer_message` augment hook).
+- L3 admin-RPC-over-wire (token gate, response shape, error
+  marshaling, timeout) — currently L2 (in-process REP) only.
+
+**L4 lifecycle gaps:** several of the 2026-05-05 plan's L4 items
+(`plh_role`/`plh_hub` run-mode lifecycle, broker round-trip, channel
+broadcast, processor pipeline, hub-dead detection, admin-RPC-over-wire)
+are subsumed by the demo framework + 9 demo manifests under
+`share/demo_framework/` (task #44 — closed 2026-05-26).  Audit
+which scenarios are NOT exercised by demo manifests; pin those.
+
 ### Code-review-deferred items from earlier sweeps
 
 - **2026-05-03 `PlhRoleCliTest.LogBackupsBelowSentinelRejectedByValidate`
