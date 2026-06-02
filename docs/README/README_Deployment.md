@@ -1319,8 +1319,10 @@ When the parent directory is the problem the diagnostic line is:
 vault directory <path> is group/world-accessible (mode 0755).  Run: chmod 0700 <path>
 ```
 
-(role binaries emit the same text under a `[<role_tag>]` prefix —
-e.g. `[producer]`, `[consumer]`, `[processor]`.)
+(role binaries emit the same text under a `[<role_tag>]` prefix,
+where `<role_tag>` is the role's `role.tag` value from
+`<role>.json` — e.g. `[producer]` when the operator picked the
+"producer" role registration.)
 To migrate an existing deployment:
 
 ```bash

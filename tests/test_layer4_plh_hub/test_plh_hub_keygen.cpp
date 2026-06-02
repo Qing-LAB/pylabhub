@@ -90,6 +90,68 @@ TEST_F(PlhHubCliTest, GeneratesVaultFileAndEmitsPubkey)
         << "stdout missing public_key:\n" << p.get_stdout();
 }
 
+// ── HEP-CORE-0035 §4.6.4 publish-time observability ─────────────────────────
+
+#if !defined(_WIN32) && !defined(_WIN64)
+/// `HubVault::publish_public_key` (POSIX) unlinks any pre-existing
+/// `hub.pubkey` before atomically O_CREAT|O_EXCL'ing the new one.
+/// Round-2 B2 added a stderr `note:` whenever the unlink actually
+/// removed something — operator-facing audit-trail evidence so a
+/// silently-replaced symlink / regular file leaves a record.
+/// This test pins the emission: a pre-planted hub.pubkey + --keygen
+/// must surface the note.  A regression that silently drops the
+/// emission (e.g., gated behind a verbose flag) would be invisible
+/// otherwise.
+TEST_F(PlhHubCliTest, KeygenEmitsNote_WhenPreExistingPubkeyRemoved)
+{
+    const auto dir = tmp("keygen_pre_pubkey");
+    const auto cfg_path = dir / "hub.json";
+
+    nlohmann::json overrides;
+    overrides["hub"]["auth"]["keyfile"] = "vault/hub.l4test.uid00000002.vault";
+    write_minimal_config(cfg_path, dir, overrides);
+
+    // Pre-plant a sentinel hub.pubkey BEFORE --keygen runs.  The
+    // binary's publish_public_key path will encounter an existing
+    // path and unlink it, triggering the stderr note.
+    const fs::path pubkey_path = dir / "hub.pubkey";
+    {
+        std::ofstream sentinel(pubkey_path);
+        sentinel << "PRE-EXISTING SENTINEL — observability test marker";
+    }
+    ASSERT_TRUE(fs::exists(pubkey_path));
+
+    ScopedHubPassword pw("note-test-pw");
+    WorkerProcess p(plh_hub_binary(), "--config",
+        {cfg_path.string(), "--keygen"});
+    EXPECT_EQ(p.wait_for_exit(), 0) << "stderr:\n" << p.get_stderr();
+
+    // The note text from hub_vault.cpp publish_public_key.  Pin
+    // both the literal "pre-existing hub.pubkey" + the
+    // "was removed before publish" phrase so a partial-rewording
+    // refactor is caught.
+    EXPECT_NE(p.get_stderr().find("pre-existing hub.pubkey"),
+              std::string::npos)
+        << "stderr should contain the B2 observability note; got:\n"
+        << p.get_stderr();
+    EXPECT_NE(p.get_stderr().find("publish attempt follows"),
+              std::string::npos)
+        << "stderr should explain what happened next; got:\n" << p.get_stderr();
+    EXPECT_NE(p.get_stderr().find("HEP-CORE-0035 §4.6.4"),
+              std::string::npos)
+        << "note should cite the spec section; got:\n" << p.get_stderr();
+
+    // Sentinel content was overwritten — verify by reading and
+    // confirming the marker is gone (the new pubkey is a Z85 hex
+    // string, not our sentinel).
+    std::ifstream check(pubkey_path);
+    std::string content((std::istreambuf_iterator<char>(check)),
+                        std::istreambuf_iterator<char>{});
+    EXPECT_EQ(content.find("PRE-EXISTING SENTINEL"), std::string::npos)
+        << "sentinel content survived publish — overwrite path broken";
+}
+#endif
+
 // ── No-silent-overwrite contract (HEP-CORE-0033 §7.1) ───────────────────────
 
 /// --keygen refuses to overwrite an existing vault file.  This is the
