@@ -85,6 +85,42 @@ gtest_discover_tests(test_layer2_net_address
 )
 
 # ============================================================================
+# Test: PeerAdmission abstraction (HEP-CORE-0035 §4.5 / HEP-CORE-0036 §I1)
+# Pattern 1 — pure value-type tests; no LOGGER_*, no lifecycle.
+# Phase A of the PeerAdmission architecture: pins the interface contract
+# (PeerIdentity equality/ordering, PeerAllowlist set + unrestricted
+# semantics, PeerAdmission snapshot/replace contract, concurrent
+# set+is_allowed safety).  Concrete transports (ZmqQueue ZAP, etc.) are
+# exercised at their respective layer-2/-3 test files in Phase C+.
+# ============================================================================
+
+add_executable(test_layer2_peer_admission
+    test_peer_admission.cpp
+)
+
+target_link_libraries(test_layer2_peer_admission
+    PRIVATE
+        pylabhub::utils
+        GTest::gtest
+        GTest::gtest_main
+        GTest::gmock
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_peer_admission)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_peer_admission
+    SUITE_NAME "Layer2_PeerAdmission"
+)
+layer2_require_staged_utils(test_layer2_peer_admission)
+
+gtest_discover_tests(test_layer2_peer_admission
+    PROPERTIES
+        LABELS "layer2;service;security;peer_admission"
+        TIMEOUT 30
+)
+
+# ============================================================================
 # Test: Key-file ACL utility (HEP-CORE-0035 §4.6)
 # Pattern 1 — pure POSIX stat/chmod utility; no LOGGER_*, no lifecycle.
 # Owns the verdict matrix for all KeyFileRole + mode combinations.
