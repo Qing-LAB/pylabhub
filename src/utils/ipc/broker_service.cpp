@@ -1,6 +1,7 @@
 #include "utils/broker_service.hpp"
 #include "utils/format_tools.hpp"
 #include "utils/hub_state.hpp"
+#include "utils/hub_state_queries.hpp"  // HEP-CORE-0039 for_each_presence_matching
 #include "utils/hub_state_json.hpp"
 #include "utils/naming.hpp"   // is_valid_identifier (audit R3.5)
 #include "utils/net_address.hpp"
@@ -2890,54 +2891,72 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
     const auto now  = std::chrono::steady_clock::now();
 
     // ── Pass 1: Connected (live) -> Pending demotion (HEP-CORE-0023 §2.1) ─
-    // Iterate channels × producers and read each producer-presence state
-    // directly.  Multi-producer aware (HEP-CORE-0023 §2.1.1): each
-    // producer-presence demotes independently when its own heartbeat
-    // ages out; co-producers stay alive.
-    for (const auto& [channel_name, entry] : snap.channels)
+    // Migrated 2026-06-02 to `for_each_presence_matching` per HEP-0039
+    // §6 P8 Step A.  Two-phase: visit collects decisions over `snap`
+    // (no lock held), apply drains via the canonical mutator
+    // `_on_heartbeat_timeout` (each call takes its own writer lock).
+    // Pass-2 below captures `snap2` AFTER this apply phase so that the
+    // fresh `state_since` Pass-1 stamps via `_on_heartbeat_timeout`
+    // appears in Pass-2's view — see HEP-0039 §6
+    // "Two-passes-with-cross-pass-dependency note" for why this
+    // ordering is load-bearing.
+    //
+    // Multi-producer aware (HEP-CORE-0023 §2.1.1): each producer-
+    // presence demotes independently when its own heartbeat ages out;
+    // co-producers stay alive.  Consumer FSM is independent of producer
+    // FSM (HEP-CORE-0023 §2.1, Wave-B M2 3/3) — same timeout, different
+    // presence row, same mutator (the mutator dispatches by role_type).
+    // The channel does NOT close on consumer demotion — that's a
+    // producer-only signal (§2.1.1) handled inside the mutator.
+    //
+    // `last_heartbeat` is the timeout anchor regardless of
+    // `first_heartbeat_seen`.  At REG_REQ time the presence is
+    // created with `last_heartbeat = now`, so a producer/consumer
+    // that registers and never heartbeats DOES demote here once
+    // ready_timeout elapses (then Pending → Disconnected via Pass-2).
+    struct Pass1Decision
     {
-        for (const auto &prod : entry.producers)
+        std::string channel;
+        std::string role_uid;
+        std::string role_type;  ///< "producer" | "consumer"
+    };
+    std::vector<Pass1Decision> p1;
+    for (const auto &[channel_name, entry] : snap.channels)
+    {
+        pylabhub::hub::for_each_presence_matching(
+            entry, snap.roles,
+            [&](const pylabhub::hub::RolePresence &p) {
+                return p.state == pylabhub::hub::RoleState::Connected
+                    && (now - p.last_heartbeat) >= ready_timeout;
+            },
+            [&](const pylabhub::hub::PresenceSweepTarget &t) {
+                Pass1Decision d;
+                d.channel  = t.channel;
+                d.role_uid =
+                    (t.party == pylabhub::hub::PartyKind::Producer
+                         ? t.producer->role_uid
+                         : t.consumer->role_uid);
+                d.role_type =
+                    (t.party == pylabhub::hub::PartyKind::Producer
+                         ? "producer" : "consumer");
+                p1.push_back(std::move(d));
+            });
+    }
+    for (const auto &d : p1)
+    {
+        if (d.role_type == "producer")
         {
-            if (prod.role_uid.empty()) continue;
-            auto role_it = snap.roles.find(prod.role_uid);
-            if (role_it == snap.roles.end()) continue;
-            const auto *p = role_it->second.find_presence(channel_name, "producer");
-            if (p == nullptr) continue;
-            if (p->state != pylabhub::hub::RoleState::Connected) continue;
-            // Per HEP-CORE-0023 §2.1: `last_heartbeat` is the timeout
-            // anchor regardless of `first_heartbeat_seen`.  At REG_REQ
-            // time the presence is created with `last_heartbeat = now`,
-            // so a producer that registers and never heartbeats DOES
-            // demote here once ready_timeout elapses (then
-            // Pending → Disconnected via the pass-2 sweep).
-            if (now - p->last_heartbeat < ready_timeout) continue;
             LOGGER_WARN("Broker: role '{}' on channel '{}' demoted Ready -> Pending "
                         "(no heartbeat within {} ms)",
-                        prod.role_uid, channel_name, ready_timeout.count());
-            hub_state_->_on_heartbeat_timeout(channel_name, prod.role_uid,
-                                              "producer");
+                        d.role_uid, d.channel, ready_timeout.count());
         }
-
-        // Wave-B M2 (3/3): consumer-presence Connected → Pending
-        // (HEP-CORE-0023 §2.1).  Consumer FSM is independent of
-        // producer FSM; same timeout, different presence row.  The
-        // channel does NOT close on consumer demotion — that's a
-        // producer-only signal (§2.1.1).
-        for (const auto &cons : entry.consumers)
+        else
         {
-            if (cons.role_uid.empty()) continue;
-            auto role_it = snap.roles.find(cons.role_uid);
-            if (role_it == snap.roles.end()) continue;
-            const auto *p = role_it->second.find_presence(channel_name, "consumer");
-            if (p == nullptr) continue;
-            if (p->state != pylabhub::hub::RoleState::Connected) continue;
-            if (now - p->last_heartbeat < ready_timeout) continue;
             LOGGER_WARN("Broker: consumer '{}' on channel '{}' demoted Ready -> "
                         "Pending (no heartbeat within {} ms)",
-                        cons.role_uid, channel_name, ready_timeout.count());
-            hub_state_->_on_heartbeat_timeout(channel_name, cons.role_uid,
-                                              "consumer");
+                        d.role_uid, d.channel, ready_timeout.count());
         }
+        hub_state_->_on_heartbeat_timeout(d.channel, d.role_uid, d.role_type);
     }
 
     // ── Pass 2: Pending -> Disconnected (HEP-CORE-0023 §2.1.1) ──
