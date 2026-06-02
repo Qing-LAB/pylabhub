@@ -127,6 +127,42 @@ gtest_discover_tests(test_layer2_zap_router
 )
 
 # ============================================================================
+# Test: ZmqQueue CURVE+ZAP auth (PeerAdmission Phase C, ZmqQueue side)
+# Pattern 3 — subprocess per scenario.  Pins:
+#   - allowed peer → CURVE handshake succeeds + message round-trip
+#   - unallowed peer → CURVE handshake fails (no message delivery)
+#   - mid-flight allowlist swap visible to next connection
+#   - legacy unauth pull_from / push_to factories unchanged
+# ============================================================================
+
+add_executable(test_layer2_zmq_queue_auth
+    test_zmq_queue_auth.cpp
+    workers/zmq_queue_auth_workers.cpp
+)
+
+target_link_libraries(test_layer2_zmq_queue_auth
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+        GTest::gmock
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_zmq_queue_auth)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_zmq_queue_auth
+    SUITE_NAME "Layer2_ZmqQueueAuth"
+)
+layer2_require_staged_utils(test_layer2_zmq_queue_auth)
+
+gtest_discover_tests(test_layer2_zmq_queue_auth
+    PROPERTIES
+        LABELS "layer2;service;security;zmq_queue;peer_admission"
+        TIMEOUT 60
+)
+
+# ============================================================================
 # Test: KnownRolesStore (PeerAdmission Phase B)
 # Pattern 1 — value-type + filesystem round-trip via the
 # atomic_write_owner_only_file helper from key_file_acl.cpp.

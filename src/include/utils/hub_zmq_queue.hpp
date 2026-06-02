@@ -79,6 +79,7 @@
  */
 #include "utils/hub_queue.hpp"
 #include "utils/schema_field_layout.hpp"
+#include "utils/security/peer_admission.hpp"  // PeerAdmission base + PeerAllowlist
 
 #include <array>
 #include <cstdint>
@@ -107,14 +108,75 @@ inline constexpr size_t kZmqDefaultBufferDepth = 64;
 using ZmqSchemaField = SchemaFieldDesc;
 
 /**
+ * @struct ZmqAuthOptions
+ * @brief CURVE-encryption + ZAP-admission options for a `ZmqQueue` instance.
+ *
+ * Pass to `pull_from_with_auth()` / `push_to_with_auth()` to wire CURVE
+ * on the underlying socket and (on PUSH/server side) install a
+ * per-queue `zap_domain` for the process-wide `ZapRouter`.
+ *
+ * **Empty defaults mean plaintext** — every field empty produces a
+ * socket configured exactly like the legacy `pull_from`/`push_to`
+ * factories.  Passing this to `*_with_auth` with all-empty fields is
+ * equivalent to (but more verbose than) the legacy path.
+ *
+ * @see HEP-CORE-0036 §6 (CURVE on data plane)
+ * @see docs/tech_draft/peer_admission_architecture_design.md §5.1
+ */
+struct PYLABHUB_UTILS_EXPORT ZmqAuthOptions
+{
+    /// This queue's CURVE keypair (loaded from the role's vault).  On
+    /// the PUSH/bind side this is the SERVER keypair libzmq presents
+    /// during the handshake.  On the PULL/connect side this is the
+    /// CLIENT keypair libzmq presents.  Both fields must be set
+    /// together; either both empty (no CURVE) or both 40 chars.
+    std::string my_pubkey_z85;
+    std::string my_seckey_z85;
+
+    /// PULL/connect side only — the producer's pubkey, used as
+    /// `curve_serverkey`.  Required on the connect side when CURVE
+    /// is wired (otherwise libzmq refuses the connect).  Ignored on
+    /// the bind side.
+    std::string serverkey_z85;
+
+    /// PUSH/bind side only — the `zap_domain` sockopt set on this
+    /// socket and the key under which the queue's `PeerAdmission`
+    /// registers with `ZapRouter`.  Must be globally unique across
+    /// the process; conventionally `<role_uid>:<channel>:<side>`.
+    /// Empty → derived from `instance_id` at start time.  Ignored on
+    /// the connect side (PULL).
+    std::string zap_domain;
+
+    /// PUSH/bind side only — the initial allowlist installed when the
+    /// queue's PeerAdmission is registered with the router.  Empty
+    /// allowlist == deny everyone (secure default).  Phase D's
+    /// `CHANNEL_AUTH_UPDATE` push from the broker replaces this with
+    /// the current snapshot of authorized consumer pubkeys.
+    pylabhub::utils::security::PeerAllowlist initial_allowlist;
+};
+
+/**
  * @class ZmqQueue
  * @brief ZMQ PULL (read) or PUSH (write) QueueReader/QueueWriter implementation.
  *
- * Factories return the appropriate abstract base pointer:
- *   pull_from() → unique_ptr<QueueReader>
- *   push_to()   → unique_ptr<QueueWriter>
+ * Inherits `PeerAdmission` so the PUSH side can be the broker-glue
+ * target for `set_peer_allowlist` calls.  On the PULL side the
+ * inherited methods are inert (no allowlist concept — the consumer
+ * trusts the server via `curve_serverkey`).
+ *
+ * Factories:
+ *   pull_from() / push_to()       → unique_ptr<QueueReader|Writer> (legacy)
+ *   pull_from_with_auth() / push_to_with_auth() → unique_ptr<ZmqQueue>
+ *
+ * The auth-enabled factories return the concrete type so callers can
+ * access the `PeerAdmission` interface to push allowlist updates.
+ * Phase D's broker glue uses this to drive `set_peer_allowlist` on
+ * the producer-side queue from the broker thread.
  */
-class PYLABHUB_UTILS_EXPORT ZmqQueue final : public QueueReader, public QueueWriter
+class PYLABHUB_UTILS_EXPORT ZmqQueue final
+    : public QueueReader,
+      public QueueWriter,
+      public pylabhub::utils::security::PeerAdmission
 {
 public:
     // ── Factories ─────────────────────────────────────────────────────────────
@@ -192,6 +254,64 @@ public:
             OverflowPolicy overflow_policy = OverflowPolicy::Drop,
             int send_retry_interval_ms = 10,
             std::string instance_id = {});
+
+    // ── Auth-enabled factories (PeerAdmission Phase C) ─────────────────────────
+    //
+    // Identical to pull_from() / push_to() but additionally wire CURVE
+    // on the underlying socket per @p auth_opts.  Return the concrete
+    // ZmqQueue so callers can drive the PeerAdmission interface
+    // directly (e.g., Phase D broker glue calls set_peer_allowlist on
+    // the PUSH-side queue when CHANNEL_AUTH_UPDATE arrives).
+    //
+    // If every field of @p auth_opts is empty, behaviour is identical
+    // to the legacy factory — no CURVE, no ZAP registration, the
+    // PeerAdmission interface's `admission_is_enforced()` returns
+    // false.
+
+    [[nodiscard]] static std::unique_ptr<ZmqQueue>
+    pull_from_with_auth(const std::string& endpoint,
+            std::vector<ZmqSchemaField> schema,
+            std::string packing,
+            ZmqAuthOptions auth_opts,
+            bool bind = false,
+            size_t max_buffer_depth = kZmqDefaultBufferDepth,
+            std::optional<std::array<uint8_t, 8>> schema_tag = std::nullopt,
+            std::string instance_id = {});
+
+    [[nodiscard]] static std::unique_ptr<ZmqQueue>
+    push_to_with_auth(const std::string& endpoint,
+            std::vector<ZmqSchemaField> schema,
+            std::string packing,
+            ZmqAuthOptions auth_opts,
+            bool bind = true,
+            std::optional<std::array<uint8_t, 8>> schema_tag = std::nullopt,
+            int sndhwm = 0,
+            size_t send_buffer_depth = kZmqDefaultBufferDepth,
+            OverflowPolicy overflow_policy = OverflowPolicy::Drop,
+            int send_retry_interval_ms = 10,
+            std::string instance_id = {});
+
+    // ── PeerAdmission overrides (Phase A interface) ────────────────────────────
+    //
+    // On the PUSH/bind side: storage backed by PortableAtomicSharedPtr
+    // for lock-free reads from the ZapRouter pump thread.
+    //
+    // On the PULL/connect side: inert.  set_peer_allowlist returns
+    // false (no allowlist on a client socket — admission is the
+    // server's concern, gated via curve_serverkey).
+    // peer_allowlist_snapshot returns nullopt.  is_peer_allowed
+    // returns false unconditionally (no inbound handshakes to gate).
+    // admission_is_enforced returns true iff CURVE keys were
+    // supplied (the consumer side is "enforced" in the sense that
+    // it presents identity to the server's ZAP).
+
+    bool set_peer_allowlist(
+        pylabhub::utils::security::PeerAllowlist allowlist) override;
+    [[nodiscard]] std::optional<pylabhub::utils::security::PeerAllowlist>
+    peer_allowlist_snapshot() const override;
+    [[nodiscard]] bool is_peer_allowed(
+        const pylabhub::utils::security::PeerIdentity& peer) const override;
+    [[nodiscard]] bool admission_is_enforced() const noexcept override;
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
