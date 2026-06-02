@@ -43,6 +43,8 @@
 #include "../scripting/python_interpreter_module.hpp"  // ensure_python_interpreter_loaded
 #include "utils/hub_directory.hpp"
 #include "utils/hub_host.hpp"
+#include "utils/security/key_file_acl.hpp"
+#include "utils/security/known_roles.hpp"
 #include "utils/interactive_signal_handler.hpp"
 #include "utils/role_main_helpers.hpp"      // role_lifecycle_modules,
                                               // register_signal_handler_lifecycle,
@@ -144,6 +146,134 @@ int do_init(const hub_cli::HubArgs &args)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Known-roles allowlist flows (PeerAdmission Phase B).
+// HEP-CORE-0035 §4.5 / docs/tech_draft/peer_admission_architecture_design.md §6.2
+//
+// Lives at <hub_dir>/vault/known_roles.json (file mode 0600 via the atomic
+// helper from #101).  No vault password required — pubkeys aren't secret;
+// integrity is enforced at the filesystem ACL floor.
+// ─────────────────────────────────────────────────────────────────────────────
+int do_known_role_ops(const hub_cli::HubArgs &args)
+{
+    namespace fs       = std::filesystem;
+    namespace security = pylabhub::utils::security;
+
+    // Resolve hub_dir from either positional or --config <path>.
+    const fs::path hub_dir =
+        !args.hub_dir.empty()
+            ? fs::path(args.hub_dir)
+            : fs::path(args.config_path).parent_path();
+    if (hub_dir.empty())
+    {
+        std::cerr << "Error: cannot resolve hub directory from args\n";
+        return 1;
+    }
+
+    const fs::path known_roles_path = hub_dir / "vault" / "known_roles.json";
+
+    // Load existing store, or start from empty if absent.
+    security::KnownRolesStore store;
+    try
+    {
+        auto loaded = security::KnownRolesStore::load_from_file(known_roles_path);
+        if (loaded.has_value())
+            store = std::move(*loaded);
+    }
+    catch (const std::exception &e)
+    {
+        std::cerr << "Error loading '" << known_roles_path.string()
+                  << "': " << e.what() << "\n";
+        return 1;
+    }
+
+    if (args.add_known_role_only)
+    {
+        // Args order pinned by parser: name, uid, role, pubkey_z85.
+        if (args.known_role_args.size() != 4)
+        {
+            std::cerr << "Internal error: --add-known-role expects 4 args\n";
+            return 1;
+        }
+        pylabhub::broker::KnownRole entry;
+        entry.name       = args.known_role_args[0];
+        entry.uid        = args.known_role_args[1];
+        entry.role       = args.known_role_args[2];
+        entry.pubkey_z85 = args.known_role_args[3];
+        try
+        {
+            // Ensure parent dir exists with mode 0700 before save —
+            // matches the vault create contract from #101.
+            std::error_code ec;
+            fs::create_directories(known_roles_path.parent_path(), ec);
+            if (ec)
+            {
+                std::cerr << "Error: cannot create vault dir '"
+                          << known_roles_path.parent_path().string()
+                          << "': " << ec.message() << "\n";
+                return 1;
+            }
+            int chmod_err = 0;
+            (void) security::set_keyfile_mode(
+                known_roles_path.parent_path(),
+                security::KeyFileRole::VaultDir, &chmod_err);
+
+            const bool inserted = store.add(std::move(entry));
+            store.save_to_file(known_roles_path);
+            std::cout << (inserted ? "added" : "updated")
+                      << " known-role uid='" << args.known_role_args[1]
+                      << "' pubkey=" << args.known_role_args[3] << "\n";
+            return 0;
+        }
+        catch (const std::exception &e)
+        {
+            std::cerr << "Error: " << e.what() << "\n";
+            return 1;
+        }
+    }
+
+    if (args.revoke_known_role_only)
+    {
+        if (args.known_role_args.size() != 1)
+        {
+            std::cerr << "Internal error: --revoke-known-role expects 1 arg\n";
+            return 1;
+        }
+        const std::string &uid = args.known_role_args[0];
+        const bool removed = store.remove(uid);
+        try
+        {
+            store.save_to_file(known_roles_path);
+        }
+        catch (const std::exception &e)
+        {
+            std::cerr << "Error: " << e.what() << "\n";
+            return 1;
+        }
+        std::cout << (removed ? "revoked" : "not present")
+                  << " known-role uid='" << uid << "'\n";
+        return 0;
+    }
+
+    if (args.list_known_roles_only)
+    {
+        const auto &entries = store.list();
+        std::cout << "known_roles.json: " << known_roles_path.string() << "\n";
+        std::cout << "entries: " << entries.size() << "\n";
+        for (const auto &e : entries)
+        {
+            std::cout << "  uid='" << e.uid << "'"
+                      << " name='" << e.name << "'"
+                      << " role='" << e.role << "'"
+                      << " pubkey=" << e.pubkey_z85 << "\n";
+        }
+        return 0;
+    }
+
+    std::cerr << "Internal error: do_known_role_ops dispatched with no mode\n";
+    return 1;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // --keygen flow
 // ─────────────────────────────────────────────────────────────────────────────
 int do_keygen(pylabhub::config::HubConfig &cfg)
@@ -236,6 +366,14 @@ int main(int argc, char *argv[])
     // 5. --init mode (no config load — we're creating the directory).
     if (args.init_only)
         return do_init(args);
+
+    // 5b. Known-roles allowlist CLI (PeerAdmission Phase B).  Pure file
+    //     ops; no config load + no vault unlock required because
+    //     pubkeys aren't secret material (file ACL is the integrity
+    //     floor — same 0600 + parent 0700 contract as the vault file).
+    if (args.add_known_role_only || args.revoke_known_role_only ||
+        args.list_known_roles_only)
+        return do_known_role_ops(args);
 
     // 6. Load config.  HubConfig::load throws on any parse / validation error;
     //    load_from_directory wraps load(<dir>/hub.json).

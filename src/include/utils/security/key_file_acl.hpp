@@ -217,6 +217,37 @@ keyfile_inside_base_dir(const std::string           &keyfile,
                         const std::filesystem::path &base_dir,
                         std::string                 *out_canonicalize_error = nullptr) noexcept;
 
+/// Atomically write @p contents to @p path, ending with a regular
+/// file at mode 0600 owned by the calling euid.
+///
+/// Pattern (POSIX):
+///   1. Build `tmp_path = <path>.tmp` and unlink any pre-existing
+///      tmp file (best-effort; ENOENT is fine).
+///   2. open(tmp_path, O_CREAT|O_EXCL|O_WRONLY|O_NOFOLLOW|O_CLOEXEC,
+///      0600).  ELOOP / EEXIST surface as a thrown runtime_error.
+///   3. fchmod 0600 (umask-normalize).
+///   4. write all bytes; handle EINTR.
+///   5. close + fsync (best-effort).
+///   6. rename(tmp_path, path) — atomic replace on POSIX even when
+///      `path` already exists.
+///
+/// Use for any non-secret-but-integrity-sensitive owner-only file
+/// (e.g., `known_roles.json` in PeerAdmission Phase B).  Vault payloads
+/// use a stricter variant (`vault_crypto::write_secure_file`) that
+/// REFUSES to overwrite at all.
+///
+/// On Windows: writes via std::ofstream + SetNamedSecurityInfoW DACL
+/// (matches the publish_public_key pattern in hub_vault.cpp).  Atomicity
+/// is best-effort on NTFS via MoveFileEx with MOVEFILE_REPLACE_EXISTING.
+///
+/// Throws std::runtime_error on any I/O failure, with operator-actionable
+/// diagnostic text (path + errno detail).  Never returns a half-written
+/// file: on any failure, the rename has not happened and `path` retains
+/// its pre-call content.
+PYLABHUB_UTILS_EXPORT void
+atomic_write_owner_only_file(const std::filesystem::path &path,
+                              std::string_view             contents);
+
 /// Verify that `path` satisfies the ACL contract for `role`.
 ///
 /// On POSIX: stats the file; compares the low 12 bits of `st_mode`

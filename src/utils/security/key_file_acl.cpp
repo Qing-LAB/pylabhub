@@ -31,14 +31,21 @@
  */
 #include "utils/security/key_file_acl.hpp"
 
+#include <cerrno>
 #include <cstdio>
+#include <cstring>
+#include <fstream>
 #include <sstream>
 #include <string>
 #include <system_error>
 
 #ifdef _WIN32
 #  include <io.h>
+#  include <aclapi.h>
+#  include <sddl.h>
+#  pragma comment(lib, "advapi32.lib")
 #else
+#  include <fcntl.h>
 #  include <sys/stat.h>
 #  include <unistd.h>
 #endif
@@ -563,6 +570,149 @@ SetModeResult set_keyfile_mode(const fs::path &path,
         if (out_errno != nullptr)
             *out_errno = ENOMEM;
         return SetModeResult::ChmodFailed;
+    }
+#endif
+}
+
+// ── atomic_write_owner_only_file ────────────────────────────────────────────
+
+void atomic_write_owner_only_file(const fs::path  &path,
+                                   std::string_view contents)
+{
+#ifdef _WIN32
+    // Windows: best-effort atomic via temp file + MoveFileExW
+    // (MOVEFILE_REPLACE_EXISTING).  DACL set via SetNamedSecurityInfoW
+    // to grant owner full access only.  Matches the
+    // publish_public_key fallback shape in hub_vault.cpp.
+    const fs::path tmp_path = path.string() + ".tmp";
+    {
+        std::ofstream ofs(tmp_path, std::ios::binary | std::ios::trunc);
+        if (!ofs)
+            throw std::runtime_error(
+                "atomic_write_owner_only_file: cannot open tmp '" +
+                tmp_path.string() + "'");
+        ofs.write(contents.data(),
+                  static_cast<std::streamsize>(contents.size()));
+        if (!ofs)
+            throw std::runtime_error(
+                "atomic_write_owner_only_file: write failed for tmp '" +
+                tmp_path.string() + "'");
+    }
+    // Set DACL: owner-only.  (Same pattern as set_owner_only_permissions
+    // in vault_crypto.cpp; deduplicated when #120 hardens Windows path.)
+    HANDLE token = nullptr;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
+    {
+        DWORD len = 0;
+        GetTokenInformation(token, TokenUser, nullptr, 0, &len);
+        std::vector<uint8_t> buf(len);
+        if (GetTokenInformation(token, TokenUser, buf.data(), len, &len))
+        {
+            auto *user = reinterpret_cast<TOKEN_USER *>(buf.data());
+            EXPLICIT_ACCESS_W ea{};
+            ea.grfAccessPermissions = GENERIC_ALL;
+            ea.grfAccessMode        = SET_ACCESS;
+            ea.grfInheritance       = NO_INHERITANCE;
+            ea.Trustee.TrusteeForm  = TRUSTEE_IS_SID;
+            ea.Trustee.ptstrName    =
+                reinterpret_cast<LPWSTR>(user->User.Sid);
+            PACL acl = nullptr;
+            if (SetEntriesInAclW(1, &ea, nullptr, &acl) == ERROR_SUCCESS)
+            {
+                SetNamedSecurityInfoW(
+                    const_cast<wchar_t *>(tmp_path.wstring().c_str()),
+                    SE_FILE_OBJECT,
+                    DACL_SECURITY_INFORMATION |
+                        PROTECTED_DACL_SECURITY_INFORMATION,
+                    nullptr, nullptr, acl, nullptr);
+                LocalFree(acl);
+            }
+        }
+        CloseHandle(token);
+    }
+    if (!MoveFileExW(tmp_path.wstring().c_str(), path.wstring().c_str(),
+                     MOVEFILE_REPLACE_EXISTING))
+        throw std::runtime_error(
+            "atomic_write_owner_only_file: MoveFileExW failed for '" +
+            path.string() + "'");
+#else
+    // POSIX atomic-replace pattern (HEP-CORE-0035 §4.6.1 spirit):
+    // tmp file with O_CREAT|O_EXCL|O_NOFOLLOW + 0600, then rename(2)
+    // for atomic replacement.  Unlike write_secure_file (which has
+    // strict no-overwrite semantics for vault payloads), this helper
+    // is for files that legitimately get overwritten by CLI ops
+    // (known_roles.json, future configuration shards).
+    const fs::path tmp_path = path.string() + ".tmp";
+    // Best-effort unlink of any stale tmp.  ENOENT is fine; ELOOP /
+    // EACCES will surface at the open(O_EXCL) below with a precise
+    // errno.
+    ::unlink(tmp_path.c_str());
+
+    const int fd = ::open(tmp_path.c_str(),
+                          O_CREAT | O_EXCL | O_WRONLY |
+                              O_NOFOLLOW | O_CLOEXEC | O_TRUNC,
+                          S_IRUSR | S_IWUSR);
+    if (fd < 0)
+    {
+        const int err = errno;
+        if (err == ELOOP)
+            throw std::runtime_error(
+                "atomic_write_owner_only_file: tmp '" +
+                tmp_path.string() +
+                "' is a symbolic link — refusing to follow "
+                "(O_NOFOLLOW)");
+        throw std::runtime_error(
+            "atomic_write_owner_only_file: cannot create tmp '" +
+            tmp_path.string() + "': " + std::strerror(err));
+    }
+    if (::fchmod(fd, S_IRUSR | S_IWUSR) != 0)
+    {
+        const int err = errno;
+        ::close(fd);
+        ::unlink(tmp_path.c_str());
+        throw std::runtime_error(
+            "atomic_write_owner_only_file: fchmod 0600 failed for '" +
+            tmp_path.string() + "': " + std::strerror(err));
+    }
+    const char *buf       = contents.data();
+    std::size_t remaining = contents.size();
+    while (remaining > 0)
+    {
+        const ssize_t n = ::write(fd, buf, remaining);
+        if (n < 0)
+        {
+            if (errno == EINTR)
+                continue;
+            const int err = errno;
+            ::close(fd);
+            ::unlink(tmp_path.c_str());
+            throw std::runtime_error(
+                "atomic_write_owner_only_file: write failed for '" +
+                tmp_path.string() + "': " + std::strerror(err));
+        }
+        buf       += n;
+        remaining -= static_cast<std::size_t>(n);
+    }
+    // fsync ensures the data is durable before the rename — without
+    // it, the rename could complete and survive a power-loss while
+    // the file's data pages are still in the page cache.  Best
+    // effort: EIO from fsync still proceeds to rename, but logs it.
+    (void) ::fsync(fd);
+    if (::close(fd) != 0)
+    {
+        const int err = errno;
+        ::unlink(tmp_path.c_str());
+        throw std::runtime_error(
+            "atomic_write_owner_only_file: close failed for '" +
+            tmp_path.string() + "': " + std::strerror(err));
+    }
+    if (::rename(tmp_path.c_str(), path.c_str()) != 0)
+    {
+        const int err = errno;
+        ::unlink(tmp_path.c_str());
+        throw std::runtime_error(
+            "atomic_write_owner_only_file: rename to '" +
+            path.string() + "' failed: " + std::strerror(err));
     }
 #endif
 }

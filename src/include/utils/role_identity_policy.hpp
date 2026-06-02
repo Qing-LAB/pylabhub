@@ -116,12 +116,33 @@ inline RoleIdentityPolicy role_identity_policy_from_str(const std::string& s) no
     return RoleIdentityPolicy::Open;
 }
 
-/// One entry in the hub's known-roles allowlist (hub.json::known_roles).
+/// One entry in the hub's known-roles allowlist.
+///
+/// **Pre-2026-06-02 contract:** name + uid + role were string identity
+/// claims matched against the role's self-asserted JSON body at
+/// REG_REQ / CONSUMER_REG_REQ time (legacy `RoleIdentityPolicy::Verified`).
+///
+/// **2026-06-02 PeerAdmission Phase B contract:** `pubkey_z85` is added
+/// as the **cryptographic identity anchor** — the value the broker's
+/// ZAP handler will match the connecting CURVE handshake against
+/// (HEP-CORE-0035 §4.5 / PeerAdmission design §6.2).  The string
+/// fields name/uid/role are retained for human-readable bookkeeping
+/// (used by `--list-known-roles` output and operator logs) but the
+/// ZAP gate keys on `pubkey_z85` alone.
+///
+/// The legacy `RoleIdentityPolicy::Verified` string match (in
+/// `BrokerServiceImpl::check_role_identity`) is unaffected by this
+/// addition; it simply ignores `pubkey_z85`.  Phase 6 of the HEP-0035
+/// retirement plan removes the legacy check entirely.
 struct PYLABHUB_UTILS_EXPORT KnownRole
 {
-    std::string name; ///< Role human name (e.g. "lab.daq.sensor1")
-    std::string uid;  ///< Role UID string (e.g. "prod.sensor.uid12345678", "cons.logger.uid9e1d4c2a")
-    std::string role; ///< "producer", "consumer", or "any" (empty = "any")
+    std::string name;        ///< Role human name (e.g. "lab.daq.sensor1")
+    std::string uid;         ///< Role UID string (e.g. "prod.sensor.uid12345678")
+    std::string role;        ///< "producer", "consumer", or "any" (empty = "any")
+    std::string pubkey_z85;  ///< CURVE public key (Z85, 40 chars).  Empty
+                             ///< only during pre-Phase-B migration; new
+                             ///< entries written via `--add-known-role`
+                             ///< always populate this.
 };
 
 /// Per-channel override of the hub-wide `RoleIdentityPolicy` (first

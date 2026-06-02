@@ -85,6 +85,48 @@ gtest_discover_tests(test_layer2_net_address
 )
 
 # ============================================================================
+# Test: KnownRolesStore (PeerAdmission Phase B)
+# Pattern 1 — value-type + filesystem round-trip via the
+# atomic_write_owner_only_file helper from key_file_acl.cpp.
+# No LOGGER_*, no lifecycle.  Pins:
+#   - add/remove/find/find_by_pubkey value semantics
+#   - upsert-by-uid contract (replace on duplicate uid)
+#   - validate_entry rejects empty uid / empty pubkey / wrong-length
+#   - file round-trip: save → load reproduces state
+#   - missing file → nullopt (P-Bootstrap option b)
+#   - rejects unknown version / missing version / duplicate uid / bad JSON
+#   - enforces ACL (mode 0600) per HEP-CORE-0035 §4.6.2
+#   - as_peer_allowlist excludes empty-pubkey legacy + never unrestricted
+#   - atomic_write_owner_only_file: overwrite, symlink-refusal on tmp
+# ============================================================================
+
+add_executable(test_layer2_known_roles
+    test_known_roles.cpp
+)
+
+target_link_libraries(test_layer2_known_roles
+    PRIVATE
+        pylabhub::utils
+        GTest::gtest
+        GTest::gtest_main
+        GTest::gmock
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_known_roles)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_known_roles
+    SUITE_NAME "Layer2_KnownRoles"
+)
+layer2_require_staged_utils(test_layer2_known_roles)
+
+gtest_discover_tests(test_layer2_known_roles
+    PROPERTIES
+        LABELS "layer2;service;security;known_roles"
+        TIMEOUT 30
+)
+
+# ============================================================================
 # Test: PeerAdmission abstraction (HEP-CORE-0035 §4.5 / HEP-CORE-0036 §I1)
 # Pattern 1 — pure value-type tests; no LOGGER_*, no lifecycle.
 # Phase A of the PeerAdmission architecture: pins the interface contract
