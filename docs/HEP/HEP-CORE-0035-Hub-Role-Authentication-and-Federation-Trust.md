@@ -478,7 +478,14 @@ runtime verification has two tiers:
    `auth.keyfile` is required and non-empty per §4.6.3 / HEP-CORE-0024
    §3.4 / HEP-CORE-0033 §7.1 (finalized 2026-05-31; no in-memory CURVE
    mode exists).  Cover the vault file + its parent directory at the
-   resolved path.
+   resolved path.  **The parent-dir check is load-bearing for the
+   §4.6.4 symlink threat model** — without it the verify-then-read
+   window for the vault file could be redirected by a directory-
+   entry rewrite.  Any future auth surface that calls
+   `verify_keyfile_acl(VaultFile)` MUST pair it with
+   `verify_keyfile_acl(VaultDir)` on `path.parent_path()`; see
+   §4.6.4 "Read path (verify + open) uses `stat(2)` …
+   Precondition (load-bearing)" for the threat-model derivation.
 
 `auth.keyfile` value semantics:
 

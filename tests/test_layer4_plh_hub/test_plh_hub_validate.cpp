@@ -25,6 +25,10 @@
 
 #include <chrono>
 
+#if !defined(_WIN32) && !defined(_WIN64)
+#include <sys/stat.h>
+#endif
+
 using namespace pylabhub::tests::plh_hub_l4;
 using pylabhub::tests::helper::WorkerProcess;
 
@@ -88,6 +92,48 @@ TEST_F(PlhHubCliTest, NoScriptPasses)
     expect_no_unexpected_errors(p);
     EXPECT_NE(p.get_stdout().find("Validation passed"), std::string::npos);
 }
+
+// ── L6 wire — config-ACL advisory (HEP-CORE-0035 §4.6.1) ────────────────────
+
+#if !defined(_WIN32) && !defined(_WIN64)
+/// `HubConfig::load` runs `verify_keyfile_acl(<config_path>,
+/// ConfigFileReferencingVault)` and emits a stderr WARN — gated on
+/// `!v.diagnostic.empty()` per the AclVerdict contract — when the
+/// config file's mode is group-readable.  Round-2 fix B5 changed
+/// the gate from `!v.ok` to `!v.diagnostic.empty()` specifically to
+/// surface this advisory case (v.ok=true, diagnostic populated).
+/// This test PINS the wire — a regression that inverts the gate
+/// back to `!v.ok` would silently drop the advisory and pass every
+/// other test.
+TEST_F(PlhHubCliTest, ConfigAclAdvisory_GroupReadable_EmitsWarn)
+{
+    const auto dir = tmp("val_acl_advisory");
+    const auto cfg_path = dir / "hub.json";
+
+    write_minimal_script(dir);
+    write_minimal_config(cfg_path, dir);
+
+    // Group-readable mode (0640) — group can see the vault path that
+    // hub.auth.keyfile embeds.  Non-fatal but worth flagging.
+    ::chmod(cfg_path.c_str(), 0640);
+
+    WorkerProcess p(plh_hub_binary(), "--config",
+        {cfg_path.string(), "--validate"});
+    // Non-fatal: validate must still exit 0 — the advisory is a WARN.
+    EXPECT_EQ(p.wait_for_exit(), 0)
+        << "validate must remain non-fatal on group-readable config; "
+           "stderr:\n" << p.get_stderr();
+    EXPECT_NE(p.get_stderr().find("hub.json ACL advisory"), std::string::npos)
+        << "stderr should carry the L6-wire advisory; got:\n"
+        << p.get_stderr();
+    EXPECT_NE(p.get_stderr().find("group-readable"), std::string::npos)
+        << "advisory should name the suspicious-mode reason; got:\n"
+        << p.get_stderr();
+    EXPECT_NE(p.get_stderr().find("HEP-CORE-0035"), std::string::npos)
+        << "advisory should cite HEP-CORE-0035 §4.6.1; got:\n"
+        << p.get_stderr();
+}
+#endif
 
 // ── Security warning (HEP-CORE-0033 §7.1 + §7.2) ────────────────────────────
 

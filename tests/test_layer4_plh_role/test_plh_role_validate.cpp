@@ -13,6 +13,10 @@
 
 #include "plh_role_fixture.h"
 
+#if !defined(_WIN32) && !defined(_WIN64)
+#include <sys/stat.h>
+#endif
+
 using namespace pylabhub::tests::plh_role_l4;
 using pylabhub::tests::helper::WorkerProcess;
 
@@ -38,6 +42,43 @@ INSTANTIATE_TEST_SUITE_P(
     ::testing::Values(
         RoleSpec{"producer"}, RoleSpec{"consumer"}, RoleSpec{"processor"}),
     [](const auto &info) { return std::string(info.param.role); });
+
+// ── L6 wire — config-ACL advisory (HEP-CORE-0035 §4.6.1) ────────────────────
+
+#if !defined(_WIN32) && !defined(_WIN64)
+/// `RoleConfig::load` emits a stderr WARN via the L6 wire when the
+/// role config file is group-readable.  Round-2 B5 fixed the gate
+/// from `!v.ok` to `!v.diagnostic.empty()`; this test pins it so a
+/// regression that inverts the gate is caught.  Symmetric with the
+/// hub-side `ConfigAclAdvisory_GroupReadable_EmitsWarn`.
+TEST_P(PlhRoleValidateTest, ConfigAclAdvisory_GroupReadable_EmitsWarn)
+{
+    const auto &s = GetParam();
+    const auto dir = tmp("val_acl_advisory");
+    const auto cfg = dir / (std::string(s.role) + ".json");
+    const auto script_dir = dir / "script" / "python";
+
+    write_minimal_script(script_dir);
+    write_minimal_config(cfg, std::string(s.role), dir);
+
+    ::chmod(cfg.c_str(), 0640);
+
+    WorkerProcess p(plh_role_binary(), "--role",
+        {std::string(s.role), "--config", cfg.string(), "--validate"});
+    EXPECT_EQ(p.wait_for_exit(), 0)
+        << "validate must remain non-fatal on group-readable config; "
+           "stderr:\n" << p.get_stderr();
+    EXPECT_NE(p.get_stderr().find("role config ACL advisory"),
+              std::string::npos)
+        << "stderr should carry the L6-wire advisory; got:\n"
+        << p.get_stderr();
+    EXPECT_NE(p.get_stderr().find("group-readable"), std::string::npos)
+        << "advisory should name the reason; got:\n" << p.get_stderr();
+    EXPECT_NE(p.get_stderr().find("HEP-CORE-0035"), std::string::npos)
+        << "advisory should cite HEP-CORE-0035 §4.6.1; got:\n"
+        << p.get_stderr();
+}
+#endif
 
 // ── Success paths ───────────────────────────────────────────────────────────
 

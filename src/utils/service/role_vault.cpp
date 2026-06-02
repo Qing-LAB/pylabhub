@@ -96,7 +96,8 @@ RoleVault RoleVault::create(const fs::path    &vault_path,
         int chmod_err = 0;
         const auto rc = sec::set_keyfile_mode(
             vault_path.parent_path(), sec::KeyFileRole::VaultDir, &chmod_err);
-        // set_keyfile_mode always populates out_errno on ChmodFailed.
+        // set_keyfile_mode always populates out_errno on ChmodFailed
+        // (chmod failure → errno; bad_alloc fallback → ENOMEM).
         if (rc == sec::SetModeResult::ChmodFailed)
             throw std::runtime_error(
                 "RoleVault: chmod 0700 failed on vault parent dir '" +

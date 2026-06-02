@@ -115,9 +115,26 @@ enum class SetModeResult : int
 
 /// Result of `verify_keyfile_acl`.
 ///
-/// `diagnostic` is empty when `ok` is true.  When `ok` is false, it
-/// holds an OpenSSH-style operator-facing message: it names the
-/// offending path, the observed mode, the required mode, and the
+/// Two cases set `diagnostic` to a non-empty operator-facing message:
+///   1. **Fatal:** `ok = false` AND `diagnostic` populated — the verified
+///      contract was violated (e.g., world-writable vault file).  The
+///      caller MUST refuse to proceed.
+///   2. **Advisory:** `ok = true` AND `diagnostic` populated — the
+///      contract is satisfied but a secondary concern is worth
+///      flagging (e.g., group-readable `ConfigFileReferencingVault`
+///      that leaks the vault path to a wider audience; permissive
+///      parent-dir mode noted by `append_parent_dir_warning`).  The
+///      caller SHOULD log the diagnostic but proceed.
+///
+/// Gate operator-facing emission on `!diagnostic.empty()`, NOT on
+/// `!ok` — `!ok` alone hides the advisory surface.  The `hub_config.cpp` /
+/// `role_config.cpp` config-load wires use the `!diagnostic.empty()`
+/// pattern; new callers (HEP-CORE-0036 surfaces, future auth checks)
+/// MUST use the same pattern or the advisory diagnostics become a
+/// dead surface again.
+///
+/// The diagnostic itself is OpenSSH-style: names the offending path,
+/// the observed mode, the required mode (when applicable), and the
 /// exact `chmod` command that would fix the violation (HEP-CORE-0035
 /// §4.6.2).
 struct AclVerdict

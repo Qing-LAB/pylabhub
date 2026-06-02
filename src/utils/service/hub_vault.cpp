@@ -130,9 +130,8 @@ HubVault HubVault::create(const fs::path    &vault_path,
         int chmod_err = 0;
         const auto rc = sec::set_keyfile_mode(
             vault_path.parent_path(), sec::KeyFileRole::VaultDir, &chmod_err);
-        // set_keyfile_mode always populates out_errno on ChmodFailed;
-        // strerror(0) → "Success" which would mislead, but the branch
-        // is unreachable so no fallback needed.
+        // set_keyfile_mode always populates out_errno on ChmodFailed
+        // (chmod failure → errno; bad_alloc fallback → ENOMEM).
         if (rc == sec::SetModeResult::ChmodFailed)
             throw std::runtime_error(
                 "HubVault: chmod 0700 failed on vault parent dir '" +
@@ -233,7 +232,17 @@ void HubVault::publish_public_key(const fs::path &hub_dir) const
     //                          is the lock that prevents writing onto
     //                          a path an attacker has under their
     //                          control between our pre-clean unlink
-    //                          and our create.
+    //                          and our create.  NB: the lock is only
+    //                          as strong as the parent dir's mode —
+    //                          an attacker without write-on-parent
+    //                          cannot plant anything to race against.
+    //                          The hub-dir parent is operator-managed,
+    //                          not 0700-enforced like VaultDir; if
+    //                          you're adding a new auth surface that
+    //                          uses this pattern under stricter
+    //                          attacker assumptions, pair it with
+    //                          `verify_keyfile_acl(parent, VaultDir)`
+    //                          per HEP-CORE-0035 §4.6.4 precondition.
     //   - O_NOFOLLOW         : refuses to traverse a symlink at the
     //                          FINAL component.  Closes the redirect
     //                          attack even if O_EXCL would not (we
@@ -265,10 +274,17 @@ void HubVault::publish_public_key(const fs::path &hub_dir) const
         std::error_code ec;
         const bool removed = std::filesystem::remove(pubkey_path, ec);
         if (removed)
+            // Wording: "removed (publish attempt follows)" — NOT
+            // "was removed before publish".  If the subsequent
+            // open(O_EXCL) fails (e.g., racing writer plants a new
+            // file → EEXIST), the operator would otherwise see a
+            // contradiction: this note claims publish happened, but
+            // the subsequent error claims it didn't.  "Attempt
+            // follows" keeps the note honest about ordering.
             std::fprintf(stderr,
                          "[plh_hub] note: pre-existing hub.pubkey at '%s' "
-                         "was removed before publish (expected on "
-                         "re-keygen; investigate if unexpected — "
+                         "was removed (publish attempt follows; expected "
+                         "on re-keygen; investigate if unexpected — "
                          "HEP-CORE-0035 §4.6.4)\n",
                          pubkey_path.string().c_str());
         // We don't check ec here — if the unlink failed for any reason
@@ -378,10 +394,12 @@ void HubVault::publish_public_key(const fs::path &hub_dir) const
         }
     }
 #endif
-    // Both branches now leave the file at the correct mode without
-    // an additional fs::permissions call: POSIX applied 0644 via
-    // fchmod atomic at create; Windows applied the equivalent DACL
-    // via SetNamedSecurityInfoW above.
+    // POSIX: 0644 is applied atomically by fchmod inside the open
+    // block — guaranteed once we reach this point.  Windows: the
+    // DACL block above is best-effort (each Win32 call returns void
+    // success on failure; we proceed without retry).  Tightening the
+    // Windows path is tracked under task #120.  No additional
+    // fs::permissions call is issued on either branch.
 }
 
 } // namespace pylabhub::utils
