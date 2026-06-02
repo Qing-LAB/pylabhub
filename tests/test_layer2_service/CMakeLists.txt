@@ -85,6 +85,48 @@ gtest_discover_tests(test_layer2_net_address
 )
 
 # ============================================================================
+# Test: ZapRouter (PeerAdmission Phase C, caller-pumped)
+# Pattern 3 — worker subprocesses own LifecycleGuard for Logger +
+# FileLock + JsonConfig + ZMQContext (the ZapRouter persistent-dynamic
+# module's deps).  Tests use ZapPumpThread RAII helper.
+# Pins:
+#   - real CURVE handshake accept/deny via ZAP
+#   - mid-flight allowlist swap
+#   - unknown zap_domain → deny
+#   - RAII handle unregister + ref-count decrement
+#   - double-register refuses
+#   - empty domain / null admission throw
+#   - pump_one when module-not-loaded returns false (no crash)
+# ============================================================================
+
+add_executable(test_layer2_zap_router
+    test_zap_router.cpp
+    workers/zap_router_workers.cpp
+)
+
+target_link_libraries(test_layer2_zap_router
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+        GTest::gmock
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_zap_router)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_zap_router
+    SUITE_NAME "Layer2_ZapRouter"
+)
+layer2_require_staged_utils(test_layer2_zap_router)
+
+gtest_discover_tests(test_layer2_zap_router
+    PROPERTIES
+        LABELS "layer2;service;security;zap_router"
+        TIMEOUT 60
+)
+
+# ============================================================================
 # Test: KnownRolesStore (PeerAdmission Phase B)
 # Pattern 1 — value-type + filesystem round-trip via the
 # atomic_write_owner_only_file helper from key_file_acl.cpp.
