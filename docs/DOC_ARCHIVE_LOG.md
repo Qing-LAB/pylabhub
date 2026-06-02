@@ -41,6 +41,34 @@ One transient moved to `docs/archive/transient-2026-06-02/`:
   is agreed upon and finalized: merge → move to archive → record
   here").
 
+### 2026-06-02 (PeerAdmission tech_draft archive)
+
+PeerAdmission Phase D is unblocked by all P-* decisions resolving
+through the locked HEPs.  Tech_draft fully superseded — every
+load-bearing design point is now in HEP-CORE-0035 / HEP-CORE-0036 /
+HEP-CORE-0017 §3.3 (Phases A/B/C shipped; the §8 decision table is
+captured in the new TODO).  Audit confirmed 0 HEP merges needed.
+
+One transient moved to `docs/archive/transient-2026-06-02/`:
+
+* **`docs/tech_draft/peer_admission_architecture_design.md`** —
+  PeerAdmission working design + threat-model + §8 decisions log.
+  All load-bearing content already in:
+    - HEP-CORE-0036 §4 (`ChannelAccessIndex` shape, three-tier
+      architecture), §5 (REG / CONSUMER_REG / SHM sequences with
+      `shm_secret` + `producers[]`), §6.5 (CHANNEL_AUTH_UPDATE
+      snapshot wire), §7.1 (caller-pumped threading), §9.x
+      (federation + inbox + admin parity)
+    - HEP-CORE-0035 §4.6 (key-file ACL discipline), §4.7 (runtime
+      key handling, deferred to task #102), §4.8 (vault + CLI +
+      bootstrap including empty-known_roles semantics)
+    - HEP-CORE-0017 §3.3 (queue auth contract)
+
+Sibling subtopic TODO **`docs/todo/AUTH_TODO.md`** created to track
+Phase D implementation steps + Phase E–H deferred items + parallel
+tracks (#102, #103, #104, #105, #106, #120) — so open items survive
+context resets without an active tech_draft.
+
 ### 2026-05-26 (M9 refactor closure)
 
 Wave-B M9 (`RoleHostFrame` role-host unification) shipped end-to-end
