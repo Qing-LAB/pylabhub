@@ -3673,3 +3673,122 @@ TEST(HubStateChannelAccess, EmptyPubkey_BumpsCounterAndNoOp)
     EXPECT_TRUE(a->authorized_consumer_pubkeys.empty());
 }
 
+// ── Audit H4 follow-ons (2026-06-03 close-out 2) ────────────────────────────
+
+TEST(HubStateChannelAccess, ConsumerRevoked_AfterClose_NoOp)
+{
+    // Safety-net: after `_on_channel_closed`, a `_on_consumer_revoked`
+    // arrives (e.g. consumer-PID-death raced with the channel
+    // teardown).  Must NOT crash; must NOT bump the invalid-id
+    // counter (revoke-without-record is silent safe-default per the
+    // mutator contract — `hub_state.cpp:_on_consumer_revoked`).
+    HubState s;
+    HubStateTestAccess::on_channel_access_opened(s, "ch.gone", 0);
+    HubStateTestAccess::on_consumer_authorized(s, "ch.gone", "PUB-A");
+    HubStateTestAccess::on_channel_access_closed(s, "ch.gone");
+
+    const auto &cnts_before = s.counters().msg_type_counts;
+    const auto before =
+        cnts_before.count("sys.invalid_identifier_rejected")
+            ? cnts_before.at("sys.invalid_identifier_rejected") : 0u;
+    HubStateTestAccess::on_consumer_revoked(s, "ch.gone", "PUB-A");
+    const auto &cnts_after = s.counters().msg_type_counts;
+    const auto after =
+        cnts_after.count("sys.invalid_identifier_rejected")
+            ? cnts_after.at("sys.invalid_identifier_rejected") : 0u;
+    EXPECT_EQ(after, before)
+        << "revoke-after-close must be silent (no counter bump)";
+    EXPECT_FALSE(s.channel_access("ch.gone").has_value());
+}
+
+TEST(HubStateChannelAccess, ConsumerAuthorized_AfterClose_DoesNotResurrect)
+{
+    // A regression where `_on_consumer_authorized` started
+    // `try_emplace`-ing the record (instead of `find` then
+    // early-return) would silently resurrect a torn-down channel's
+    // allowlist.  Pin the documented contract: authorize without
+    // record is a no-op.
+    HubState s;
+    HubStateTestAccess::on_channel_access_opened(s, "ch.gone", 0);
+    HubStateTestAccess::on_consumer_authorized(s, "ch.gone", "PUB-A");
+    HubStateTestAccess::on_channel_access_closed(s, "ch.gone");
+    HubStateTestAccess::on_consumer_authorized(s, "ch.gone", "PUB-B");
+    EXPECT_FALSE(s.channel_access("ch.gone").has_value())
+        << "authorize-after-close MUST NOT resurrect the channel record";
+}
+
+TEST(HubStateChannelAccess, EmptyPubkey_Revoke_BumpsCounter)
+{
+    // Symmetric to `EmptyPubkey_BumpsCounterAndNoOp`: the revoke
+    // path also rejects empty pubkey with a counter bump.  A
+    // regression that silently dropped empty pubkey from
+    // `_on_consumer_revoked` (no bump) would slip through without
+    // this test.
+    HubState s;
+    HubStateTestAccess::on_channel_access_opened(s, "ch.auth", 0);
+    HubStateTestAccess::on_consumer_authorized(s, "ch.auth", "PUB-A");
+    const auto &cnts_before = s.counters().msg_type_counts;
+    const auto before =
+        cnts_before.count("sys.invalid_identifier_rejected")
+            ? cnts_before.at("sys.invalid_identifier_rejected") : 0u;
+    HubStateTestAccess::on_consumer_revoked(s, "ch.auth", "");
+    const auto &cnts_after = s.counters().msg_type_counts;
+    const auto after =
+        cnts_after.at("sys.invalid_identifier_rejected");
+    EXPECT_EQ(after, before + 1);
+    // Allowlist unchanged.
+    auto a = s.channel_access("ch.auth");
+    ASSERT_TRUE(a.has_value());
+    EXPECT_EQ(a->authorized_consumer_pubkeys.count("PUB-A"), 1u);
+}
+
+TEST(HubStateChannelAccess, InvalidChannel_AllFourMutators_BumpCounter)
+{
+    // Mutation-sweep: all four mutators must validate the channel
+    // identifier at the op-entry boundary (§G2.2.0b).  The original
+    // `InvalidChannelName_BumpsCounterAndNoOp` test only exercised
+    // `_on_channel_access_opened`; a regression that dropped
+    // validation from any of the other three mutators would slip
+    // through.
+    HubState s;
+    const std::string bad = "not a valid channel id";
+    const auto base = [&]() {
+        const auto &c = s.counters().msg_type_counts;
+        return c.count("sys.invalid_identifier_rejected")
+                   ? c.at("sys.invalid_identifier_rejected") : 0u;
+    };
+    const auto b0 = base();
+    HubStateTestAccess::on_channel_access_opened(s, bad, 0);
+    EXPECT_EQ(base(), b0 + 1);
+    HubStateTestAccess::on_channel_access_closed(s, bad);
+    EXPECT_EQ(base(), b0 + 2);
+    HubStateTestAccess::on_consumer_authorized(s, bad, "PUB-A");
+    EXPECT_EQ(base(), b0 + 3);
+    HubStateTestAccess::on_consumer_revoked(s, bad, "PUB-A");
+    EXPECT_EQ(base(), b0 + 4);
+    EXPECT_FALSE(s.channel_access(bad).has_value());
+}
+
+TEST(HubStateChannelAccess, MultiChannel_SamePubkey_RevokeIsScoped)
+{
+    // A regression where the allowlist were accidentally a
+    // process-global set (instead of per-channel) would not be
+    // caught by `MultiChannel_Isolated` (which uses distinct pubkeys
+    // per channel).  This test uses the SAME pubkey on two channels
+    // and verifies revoke on one doesn't leak to the other.
+    HubState s;
+    HubStateTestAccess::on_channel_access_opened(s, "ch.A", 0);
+    HubStateTestAccess::on_channel_access_opened(s, "ch.B", 0);
+    HubStateTestAccess::on_consumer_authorized(s, "ch.A", "PUB-SAME");
+    HubStateTestAccess::on_consumer_authorized(s, "ch.B", "PUB-SAME");
+    HubStateTestAccess::on_consumer_revoked(s, "ch.A", "PUB-SAME");
+
+    auto a = s.channel_access("ch.A");
+    auto b = s.channel_access("ch.B");
+    ASSERT_TRUE(a.has_value());
+    ASSERT_TRUE(b.has_value());
+    EXPECT_EQ(a->authorized_consumer_pubkeys.count("PUB-SAME"), 0u);
+    EXPECT_EQ(b->authorized_consumer_pubkeys.count("PUB-SAME"), 1u)
+        << "revoke on ch.A leaked into ch.B — allowlist is not per-channel";
+}
+

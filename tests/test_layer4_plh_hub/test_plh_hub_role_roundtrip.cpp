@@ -289,8 +289,25 @@ TEST_F(PlhHubCliTest, RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters)
              "l4round", role_uid, "producer", role_pubkey_z85});
         ASSERT_EQ(add_known.wait_for_exit(), 0)
             << "plh_hub --add-known-role failed:\n" << add_known.get_stderr();
-        ASSERT_TRUE(fs::exists(hub_dir / "vault" / "known_roles.json"))
+        // CONTENT PIN (H2): a `--add-known-role` that wrote empty or
+        // garbled JSON would still pass the existence check, but the
+        // running broker would silently see an empty allowlist and
+        // deny our role.  Parse and assert the pubkey field.
+        const fs::path known_roles_path =
+            hub_dir / "vault" / "known_roles.json";
+        ASSERT_TRUE(fs::exists(known_roles_path))
             << "--add-known-role did not create known_roles.json";
+        nlohmann::json kr_json;
+        {
+            std::ifstream f(known_roles_path);
+            f >> kr_json;
+        }
+        ASSERT_TRUE(kr_json.contains("roles") && kr_json["roles"].is_array());
+        ASSERT_EQ(kr_json["roles"].size(), 1u);
+        EXPECT_EQ(kr_json["roles"][0].value("uid", ""), role_uid);
+        EXPECT_EQ(kr_json["roles"][0].value("pubkey_z85", ""), role_pubkey_z85)
+            << "known_roles.json pubkey does not match the one we read from "
+               "RoleVault — the operator workflow is broken end-to-end.";
     }
 
     // Spawn the hub run-mode process — broker loads known_roles.json
@@ -298,6 +315,16 @@ TEST_F(PlhHubCliTest, RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters)
     WorkerProcess hub(plh_hub_binary(), hub_dir.string(), {});
     ASSERT_TRUE(wait_for_log_marker(hub_dir, "Broker: listening on"))
         << "hub never reached run-mode.  Log:\n" << read_hub_log(hub_dir);
+
+    // PATH PIN (H1): assert the CTRL ZAP gate is actually ENFORCED.
+    // Without this, a regression where `enforce_ctrl_admission`
+    // silently defaulted to false would still let the test pass
+    // (CURVE encryption works either way; the gate is the difference).
+    ASSERT_TRUE(wait_for_log_marker(hub_dir,
+                                     "Broker: CTRL ZAP installed enforced"))
+        << "Broker did not log enforced CTRL ZAP install — the deny-by-"
+           "default gate is silently disabled.  Hub log:\n"
+        << read_hub_log(hub_dir);
 
     // Read the actual bound endpoint (kernel assigned port from
     // tcp://...:0) and PATCH hub.json so the role sees the real port.

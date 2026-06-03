@@ -120,6 +120,43 @@ D landing window.
 |---|---|---|
 | `--allow-anonymous-roles` flag (S6 option c) | tech_draft §12.5 S6 | Empty `known_roles.json` already maps to deny-all per HEP-0035 §4.8.4; the friendly-bootstrap need is satisfied by the `--add-known-role` CLI + clear deny-all diagnostic.  Revisit only if Phase H demo migration finds it necessary |
 
+## Phase D close-out follow-ons (test + spec gaps surfaced 2026-06-03)
+
+These are tracked here so they survive context resets per CLAUDE.md
+§"Session hygiene" — open items must live in a subtopic TODO, not
+only in chat history.
+
+- **Allow-path L3 pin for D2.**  `DatahubBrokerHealthTest.CtrlZapDenyPath`
+  pins the deny path.  Symmetric allow-path L3 needs a BRC client
+  whose `client_pubkey` is added to the broker's `known_roles[]`
+  before connect; that requires the test infrastructure to thread
+  explicit CURVE keys into the worker's broker config (the existing
+  L3 worker pattern uses ephemeral BRC keys, which the worker
+  process cannot know ahead of time to pre-register).  Smallest
+  fix: extend the `BrokerService::Config` test-side construction to
+  include a pre-generated `known_roles[]` entry built from the test
+  client's keypair.  Effort: S.
+- **`plh_role --keygen` does not publish `<vault>.pub`.**
+  HEP-CORE-0035 §4.8.3 specifies `plh_hub --add-known-role <role.pub>`
+  as the canonical operator workflow; that requires the role binary
+  to publish a sibling `.pub` file alongside the vault (the way
+  `plh_hub --keygen` publishes `hub.pubkey`).  Currently the L4
+  RoundTrip test opens the role vault programmatically to extract
+  the pubkey — a test backdoor.  Mirror `HubVault::publish_public_key`
+  for `RoleVault` (atomic O_EXCL + O_NOFOLLOW + mode 0644 +
+  symlink defense per HEP-CORE-0035 §4.6.4).  Effort: M.
+- **Hot-reload of `known_roles.json` on a running hub** (HEP-CORE-0035
+  §4.8.5).  `BrokerCtrlAdmission::set_peer_allowlist` exists with
+  no caller; the admin RPC (`/admin/reload-known-roles` or
+  similar) is the missing wiring.  Operators that run
+  `--add-known-role` against a running hub today must restart it
+  to pick up the change.  Effort: M.
+- **Multi-peer ZAP backlog draining.**  `ZapRouter::pump_one(0ms)`
+  is called once per broker poll cycle.  Under N-peer simultaneous
+  reconnect (e.g. hub restart) handshake latency is
+  ~`kPollTimeout * N`.  Convert to `while (pump_one(0ms)) {}` to
+  drain backlog.  Effort: trivial.
+
 ---
 
 ## Parallel / adjacent tracks

@@ -47,6 +47,27 @@ struct BrokerHandle
     void stop_and_join() { service->stop(); if (thread.joinable()) thread.join(); }
 };
 
+// PURPOSE: ChannelGroup tests exercise the BAND_* protocol family
+//   (broker handler shape + role-side BRC dispatch), NOT the
+//   PeerAdmission CURVE gate (HEP-CORE-0035 §4.1).
+// BYPASS: Constructs `BrokerService::Config` directly (not via
+//   HubHost) with `enforce_ctrl_admission = false` so the CTRL
+//   ZAP gate is permissively-installed.  Without the opt-out the
+//   default deny-all gate would reject every BRC handshake (the
+//   test fixture has no `known_roles[]` populated).
+// WHY: A real `known_roles[]` would require generating CURVE
+//   keypairs for every BRC client and pre-registering each pubkey;
+//   that's the production operator workflow (covered by L4
+//   roundtrip), not what the band-protocol tests are scoped to.
+//   The deny-PATH security pin lives in
+//   `DatahubBrokerHealthTest.CtrlZapDenyPath`.
+// CANONICAL STORAGE: The ZAP gate's allowlist lives on
+//   `BrokerCtrlAdmission::current_` (`broker_service.cpp`); when
+//   `enforce=false` the admission returns true for every peer
+//   (`BrokerCtrlAdmission::is_peer_allowed`).
+// RE-EXAMINE WHEN: The band-protocol family gets a role-identity
+//   semantic that requires CURVE-pubkey-based dispatch (would
+//   surface as a HEP-0036 §4.1 amendment).
 BrokerHandle start_broker()
 {
     using ReadyInfo = std::pair<std::string, std::string>;
@@ -55,7 +76,7 @@ BrokerHandle start_broker()
     BrokerService::Config bcfg;
     bcfg.endpoint = "tcp://127.0.0.1:0";
     bcfg.use_curve = true;
-    bcfg.enforce_ctrl_admission = false;  // HEP-CORE-0035 §4.8 opt-out: this fixture uses CURVE for wire encryption only — no admission gate (no known_roles populated; test does not exercise ZAP)
+    bcfg.enforce_ctrl_admission = false;  // see fixture block above
     bcfg.on_ready = [rp](const std::string &ep, const std::string &pk)
     { rp->set_value({ep, pk}); };
     auto state = std::make_unique<pylabhub::hub::HubState>();

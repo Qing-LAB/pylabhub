@@ -210,6 +210,14 @@ public:
     is_peer_allowed(
         const pylabhub::utils::security::PeerIdentity &peer) const override
     {
+        // Permissive mode (used by test fixtures that enable CURVE
+        // for wire encryption only).  We still register the domain so
+        // the broker is robust against `ZapRouter` singleton-state
+        // contamination from other test paths in the same process —
+        // without registration, libzmq would still issue a ZAP
+        // request with empty domain and the singleton's "unknown
+        // domain" path would DENY it.
+        if (!enforced_) return true;
         auto p = current_.load();
         if (!p) return false;
         return p->contains(peer);
@@ -610,45 +618,55 @@ void BrokerServiceImpl::run()
         router.set(zmq::sockopt::curve_secretkey, server_secret_z85);
         router.set(zmq::sockopt::curve_publickey, server_public_z85);
 
+        // Build the initial CTRL allowlist.  Per HEP-CORE-0035 §4.2
+        // the allowlist is the UNION of two operator-managed inputs:
+        //   - `known_roles[]` (roles allowed to register; loaded from
+        //     `<hub_dir>/vault/known_roles.json` by HubHost,
+        //     HEP-CORE-0035 §4.8)
+        //   - `peers[].pubkey_z85` (federation peer hubs allowed to
+        //     connect their DEALER → this broker's ROUTER,
+        //     HEP-CORE-0022 + HEP-CORE-0035 §4.2)
+        // Entries with empty `pubkey_z85` are skipped (pre-Phase-B
+        // vault residue + federation peers configured without a
+        // pubkey).  Empty allowlist is the legal deny-all state per
+        // HEP-CORE-0035 §4.8.4.
+        pylabhub::utils::security::PeerAllowlist initial;
+        for (const auto &kr : cfg.known_roles)
+        {
+            if (kr.pubkey_z85.empty()) continue;
+            initial.peers.insert(
+                pylabhub::utils::security::PeerIdentity{"curve",
+                                                        kr.pubkey_z85});
+        }
+        for (const auto &peer : cfg.peers)
+        {
+            if (peer.pubkey_z85.empty()) continue;
+            initial.peers.insert(
+                pylabhub::utils::security::PeerIdentity{"curve",
+                                                        peer.pubkey_z85});
+        }
+        const auto allowlist_size = initial.peers.size();
+
+        // ALWAYS install the ZAP handler when CURVE is on, even in
+        // permissive mode.  Skipping the install would make the
+        // broker vulnerable to `ZapRouter` singleton-state
+        // contamination from other tests in the same process — if
+        // any prior code path registered a domain, the inproc ZAP
+        // REP socket is bound and libzmq still issues ZAP requests
+        // for our peers (with empty `zap_domain`).  `ZapRouter`
+        // would deny those as "unknown domain", silently breaking
+        // handshakes.  Registering a domain — even a permissive one
+        // — keeps behavior predictable across aggregate-binary tests.
+        ctrl_admission = std::make_unique<BrokerCtrlAdmission>(
+            std::move(initial), cfg.enforce_ctrl_admission);
+        router.set(zmq::sockopt::zap_domain, "broker.ctrl");
+        ctrl_zap_handle.emplace(
+            pylabhub::utils::security::ZapRouter::instance()
+                .register_domain("broker.ctrl", ctrl_admission.get()));
+
         if (cfg.enforce_ctrl_admission)
         {
-            // Install ZAP admission on the CTRL ROUTER before bind so
-            // the first peer's CURVE handshake resolves against a
-            // registered ZAP domain.  Per HEP-CORE-0035 §4.2 the CTRL
-            // allowlist is the UNION of two operator-managed inputs:
-            //   - `known_roles[]` (roles allowed to register; loaded
-            //     from `<hub_dir>/vault/known_roles.json` by HubHost,
-            //     HEP-CORE-0035 §4.8)
-            //   - `peers[].pubkey_z85` (federation peer hubs allowed
-            //     to connect their DEALER → this broker's ROUTER,
-            //     HEP-CORE-0022 + HEP-CORE-0035 §4.2)
-            // Entries with empty `pubkey_z85` are skipped (pre-Phase-B
-            // vault residue + federation peers configured without a
-            // pubkey).  Empty allowlist is the legal deny-all state
-            // per HEP-CORE-0035 §4.8.4.
-            pylabhub::utils::security::PeerAllowlist initial;
-            for (const auto &kr : cfg.known_roles)
-            {
-                if (kr.pubkey_z85.empty()) continue;
-                initial.peers.insert(
-                    pylabhub::utils::security::PeerIdentity{"curve",
-                                                            kr.pubkey_z85});
-            }
-            for (const auto &peer : cfg.peers)
-            {
-                if (peer.pubkey_z85.empty()) continue;
-                initial.peers.insert(
-                    pylabhub::utils::security::PeerIdentity{"curve",
-                                                            peer.pubkey_z85});
-            }
-            const auto allowlist_size = initial.peers.size();
-            ctrl_admission = std::make_unique<BrokerCtrlAdmission>(
-                std::move(initial), /*enforced=*/true);
-            router.set(zmq::sockopt::zap_domain, "broker.ctrl");
-            ctrl_zap_handle.emplace(
-                pylabhub::utils::security::ZapRouter::instance()
-                    .register_domain("broker.ctrl", ctrl_admission.get()));
-            LOGGER_INFO("Broker: CTRL ZAP installed "
+            LOGGER_INFO("Broker: CTRL ZAP installed enforced "
                         "({} known_roles + {} federation peers = {} allowed)",
                         cfg.known_roles.size(),
                         cfg.peers.size(),
@@ -656,11 +674,11 @@ void BrokerServiceImpl::run()
         }
         else
         {
-            // CURVE on but admission not enforced — wire encryption
-            // only; for tests that don't exercise the admission path.
-            // Production (HubHost startup) NEVER takes this path.
-            LOGGER_WARN("Broker: CTRL ZAP admission NOT enforced "
-                        "(test/dev override).  Any CURVE peer accepted.");
+            // Wire encryption only — for tests that don't exercise
+            // the admission path.  Production (HubHost startup)
+            // NEVER takes this path.
+            LOGGER_WARN("Broker: CTRL ZAP installed permissive "
+                        "(test/dev override; any CURVE peer accepted)");
         }
     }
 

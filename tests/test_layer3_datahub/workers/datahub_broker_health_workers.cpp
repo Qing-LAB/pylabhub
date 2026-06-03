@@ -14,7 +14,10 @@
 #include "utils/hub_host.hpp"
 #include "utils/hub_state.hpp"
 #include "utils/json_config.hpp"
+#include "utils/security/zap_router.hpp"  // HEP-CORE-0035 §4.2 deny-path observability
 #include "plh_datahub.hpp"
+
+#include <zmq.h>  // zmq_curve_keypair for the deny-path test
 
 #include <gtest/gtest.h>
 #include <fmt/core.h>
@@ -146,12 +149,30 @@ BrokerHandle start_broker_with_cfg(BrokerService::Config legacy_cfg)
     return h;
 }
 
+// PURPOSE: broker_health tests exercise broker-internal lifecycle
+//   (CHANNEL_CLOSING_NOTIFY, CONSUMER_DIED_NOTIFY, heartbeat-timeout
+//   FSM sweeps), NOT the PeerAdmission CURVE gate.
+// BYPASS: `start_broker_with_cfg` goes through HubHost, which
+//   derives `use_curve` from the vault's auth.keyfile (empty in
+//   this fixture → use_curve resolves to false in production code
+//   path).  Per-call `cfg.use_curve = true` + `enforce = false` are
+//   defensive belt-and-suspenders for the direct-Config paths
+//   below that bypass HubHost.
+// WHY: Spinning up a real vault (--keygen) for every health test
+//   is excessive overhead for behaviors that have nothing to do
+//   with CURVE.  The deny-PATH security pin lives in
+//   `DatahubBrokerHealthTest.CtrlZapDenyPath`.
+// CANONICAL STORAGE: `BrokerCtrlAdmission::current_`
+//   (`broker_service.cpp`); permissive when `enforce=false`.
+// RE-EXAMINE WHEN: a health behavior gains semantics that depend
+//   on the role's CURVE pubkey (would surface as a CHANNEL_*_NOTIFY
+//   wire-field amendment in HEP-CORE-0023).
 BrokerHandle start_broker()
 {
     BrokerService::Config cfg;
     cfg.endpoint  = "tcp://127.0.0.1:0";
     cfg.use_curve = true;  // legacy flag — ignored under real HubHost
-    cfg.enforce_ctrl_admission = false;  // HEP-CORE-0035 §4.8 opt-out: this fixture uses CURVE for wire encryption only — no admission gate (no known_roles populated; test does not exercise ZAP)
+    cfg.enforce_ctrl_admission = false;  // see fixture block above
     return start_broker_with_cfg(std::move(cfg));
 }
 
@@ -995,6 +1016,126 @@ int channel_torn_down_consumer_pass2_skipped(int /*argc*/, char ** /*argv*/)
         crypto_module(), zmq_module());
 }
 
+// ============================================================================
+// ctrl_zap_deny_path — D2 default-deny security gate
+// ============================================================================
+//
+// PURPOSE: Pin that the broker's CTRL ROUTER ZAP gate (HEP-CORE-0035
+//   §4.2 + §4.8 + PeerAdmission Phase D step D2) actually fires DENY
+//   when a CURVE peer's pubkey is NOT in the operator-defined
+//   allowlist.  Without this, the deny-by-default contract has zero
+//   path-level coverage (audit finding B2).
+//
+// BYPASS: Constructs `BrokerService` directly with
+//   `enforce_ctrl_admission = true` + empty `known_roles` + empty
+//   `peers[]`.  Bypasses HubHost (which would derive use_curve from
+//   the auth keyfile path), letting the test exercise the production
+//   gate without standing up a vault on disk.
+//
+// WHY: HubHost requires a valid vault path + password to enable
+//   CURVE, which is overkill for an L3 ZAP-fired pin and would
+//   couple this test to the vault subsystem's lifecycle.  Direct
+//   `BrokerService::Config` construction is the documented L3
+//   admission-testing pattern (see `tests/test_layer2_service/
+//   workers/zap_router_workers.cpp` for the Phase C analogue).
+//
+// CANONICAL STORAGE: The gate's allowlist storage is
+//   `BrokerCtrlAdmission::current_` (`broker_service.cpp:226`).
+//   Observability is via `sec::ZapRouter::instance().denied_count()`
+//   — a singleton counter incremented by `ZapRouter::pump_one` on
+//   every DENY reply.
+//
+// RE-EXAMINE WHEN: AUTH_TODO D3 / D4 land + the allow-path L3 test
+//   exists alongside this one (this test currently has no allow-path
+//   sibling because BRC's CURVE keypair plumbing is the same gap
+//   tracked in AUTH_TODO under "Phase D close-out follow-on" —
+//   the deny path doesn't need BRC's keys to fail).
+
+int ctrl_zap_deny_path(int /*argc*/, char ** /*argv*/)
+{
+    return run_gtest_worker(
+        []() {
+            namespace sec = pylabhub::utils::security;
+
+            // Capture pre-test denied counter (process-singleton).
+            // SpawnWorker runs each test in its own subprocess so the
+            // counter starts at 0 for this scenario, but reading
+            // before-state is the more robust pattern.
+            const auto before_denied = sec::ZapRouter::instance().denied_count();
+
+            // Generate an explicit CURVE keypair for the test client.
+            // The test owns the client keypair so it can verify the
+            // CORRECT pubkey was denied — and that pubkey is
+            // deliberately NOT inserted into `known_roles[]`.
+            std::array<char, 41> client_pub{};
+            std::array<char, 41> client_sec{};
+            ASSERT_EQ(zmq_curve_keypair(client_pub.data(), client_sec.data()), 0);
+            const std::string client_pub_z85(client_pub.data(), 40);
+            const std::string client_sec_z85(client_sec.data(), 40);
+
+            // Spin up broker with the gate ENFORCED + empty allowlist.
+            using ReadyInfo = std::pair<std::string, std::string>;
+            auto rp = std::make_shared<std::promise<ReadyInfo>>();
+            auto rf = rp->get_future();
+            BrokerService::Config bcfg;
+            bcfg.endpoint              = "tcp://127.0.0.1:0";
+            bcfg.use_curve             = true;
+            bcfg.enforce_ctrl_admission = true;   // production deny-all
+            // known_roles + peers are both empty by default → empty
+            // PeerAllowlist → every CURVE handshake is DENY.
+            bcfg.on_ready = [rp](const std::string &ep, const std::string &pk)
+            { rp->set_value({ep, pk}); };
+            auto state = std::make_unique<pylabhub::hub::HubState>();
+            auto svc   = std::make_unique<BrokerService>(std::move(bcfg), *state);
+            auto *raw  = svc.get();
+            std::thread t([raw] { raw->run(); });
+            auto info = rf.get();
+
+            // BRC connect with our keypair → CURVE handshake on first
+            // send → broker ZAP gate sees our pubkey (NOT in
+            // allowlist) → DENY → handshake never completes → REG_REQ
+            // times out.  This is the production deny path.
+            BrokerRequestComm brc;
+            BrokerRequestComm::Config ccfg;
+            ccfg.broker_endpoint = info.first;
+            ccfg.broker_pubkey   = info.second;
+            ccfg.client_pubkey   = client_pub_z85;
+            ccfg.client_seckey   = client_sec_z85;
+            ccfg.role_uid        = "prod.deny.test.uid00000001";
+            ccfg.role_name       = "deny_role";
+            EXPECT_TRUE(brc.connect(ccfg))
+                << "BRC TCP connect should succeed even when ZAP denies; "
+                   "the CURVE handshake fails on first send, not on connect.";
+
+            // Attempt REG_REQ — handshake fires here and ZAP denies.
+            // Short timeout (1500ms): tight enough to keep CI fast,
+            // wide enough over libzmq's default ZAP_REPLY_TIMEOUT to
+            // avoid flake.
+            const auto reg_result = brc.register_channel(
+                make_reg_opts("ch.deny.path", "prod.deny.test.uid00000001"),
+                /*timeout_ms=*/1500);
+            EXPECT_FALSE(reg_result.has_value())
+                << "register_channel succeeded under deny-all allowlist — "
+                   "the ZAP gate did NOT fire.";
+
+            // PATH PIN: the denial fired through ZapRouter.  This is
+            // what distinguishes a real ZAP deny from a happens-to-
+            // time-out failure on some other path.
+            const auto after_denied = sec::ZapRouter::instance().denied_count();
+            EXPECT_GT(after_denied, before_denied)
+                << "ZapRouter::denied_count() did not increase: "
+                << before_denied << " -> " << after_denied
+                << " — the deny did not come from the ZAP gate.";
+
+            brc.disconnect();
+            raw->stop();
+            if (t.joinable()) t.join();
+        },
+        "broker_health.ctrl_zap_deny_path",
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), zmq_module());
+}
+
 } // namespace pylabhub::tests::worker::broker_health
 
 // ============================================================================
@@ -1041,6 +1182,8 @@ struct BrokerHealthWorkerRegistrar
                     return two_snapshot_invariant(argc, argv);
                 if (scenario == "channel_torn_down_consumer_pass2_skipped")
                     return channel_torn_down_consumer_pass2_skipped(argc, argv);
+                if (scenario == "ctrl_zap_deny_path")
+                    return ctrl_zap_deny_path(argc, argv);
                 fmt::print(stderr, "ERROR: Unknown broker_health scenario '{}'\n", scenario);
                 return 1;
             });
