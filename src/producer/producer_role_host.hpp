@@ -12,7 +12,7 @@
  * engine, RoleHostCore, RoleAPIBase, ready-promise) and the public
  * lifecycle surface (startup_(), shutdown_(), is_running(),
  * wait_for_wakeup(), script_load_ok()).  See
- * `docs/tech_draft/role_host_template_design.md` §10.6 for the full
+ * `docs/archive/transient-2026-06-02/role_host_template_design.md` §10.6 for the full
  * inheritance map + architecture diagrams.
  *
  * This class owns only producer-specific state:

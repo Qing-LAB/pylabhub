@@ -1244,7 +1244,7 @@ class PYLABHUB_UTILS_EXPORT HubState
 
     /// HEP-CORE-0036 §4.1 — per-channel access scaffolding.  Returns
     /// the channel's `ChannelAccessEntry` if the broker has opened an
-    /// access record for it (via `_on_channel_access_open`), or
+    /// access record for it (via `_on_channel_access_opened`), or
     /// `std::nullopt` if no record exists.  Broker uses this to build
     /// CONSUMER_REG_ACK + CHANNEL_AUTH_UPDATE snapshots.  Read under
     /// shared lock; value copy.

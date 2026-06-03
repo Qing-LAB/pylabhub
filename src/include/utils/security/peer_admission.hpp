@@ -4,7 +4,7 @@
  * @brief Cross-transport admission contract — the gate.
  *
  * The pylabhub framework gates DATA-channel access by the validation of
- * CTRL-channel identity (see docs/tech_draft/peer_admission_architecture_design.md
+ * CTRL-channel identity (see docs/archive/transient-2026-06-02/peer_admission_architecture_design.md
  * §2 threat model).  This header defines the policy surface — what an
  * allowlist looks like and how a transport answers "is this peer
  * admitted?" — without committing to any particular wire mechanism.
@@ -29,7 +29,7 @@
  *   - Recommended pattern: `pylabhub::utils::detail::PortableAtomicSharedPtr`
  *     for the queue's allowlist member; copy-on-write snapshot semantics.
  *
- * @see docs/tech_draft/peer_admission_architecture_design.md (full design)
+ * @see docs/archive/transient-2026-06-02/peer_admission_architecture_design.md (full design)
  * @see HEP-CORE-0035 (identity vault — provides the keys this gate uses)
  * @see HEP-CORE-0036 (data-plane auth — describes wire protocol; layering
  *                     in §3.3/§4.1/§6 is superseded by the design doc above)

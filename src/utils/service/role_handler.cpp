@@ -2,7 +2,7 @@
  * @file role_handler.cpp
  * @brief RoleHandler dedup + index build (M3) + network state ops (M4a).
  *
- * Per HEP-CORE-0019 + role_host_template_design.md §5, RoleHandler is
+ * Per HEP-CORE-0019 + docs/archive/transient-2026-06-02/role_host_template_design.md §5, RoleHandler is
  * a state holder + routing helper:
  *   - M3: topology (presences) + dedup (connections) + indexes.
  *   - M4a: per-connection BRC allocation + connect/disconnect.

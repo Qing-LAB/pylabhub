@@ -140,7 +140,7 @@ int metrics_reclaim_cycle()
             BrokerService::Config cfg;
             cfg.endpoint                         = "tcp://127.0.0.1:0";
             cfg.use_curve                        = true;
-            cfg.enforce_ctrl_admission = false;  // Phase D D2 — wire-encryption-only mode
+            cfg.enforce_ctrl_admission = false;  // HEP-CORE-0035 §4.8 opt-out: this fixture uses CURVE for wire encryption only — no admission gate (no known_roles populated; test does not exercise ZAP)
             cfg.ready_timeout_override           = std::chrono::milliseconds(150);
             cfg.pending_timeout_override         = std::chrono::milliseconds(150);
             cfg.consumer_liveness_check_interval = std::chrono::seconds(0);
@@ -196,7 +196,7 @@ int pending_recovers_to_ready()
             BrokerService::Config cfg;
             cfg.endpoint                         = "tcp://127.0.0.1:0";
             cfg.use_curve                        = true;
-            cfg.enforce_ctrl_admission = false;  // Phase D D2 — wire-encryption-only mode
+            cfg.enforce_ctrl_admission = false;  // HEP-CORE-0035 §4.8 opt-out: this fixture uses CURVE for wire encryption only — no admission gate (no known_roles populated; test does not exercise ZAP)
             cfg.ready_timeout_override           = std::chrono::milliseconds(150);
             cfg.pending_timeout_override         = std::chrono::seconds(10); // long -> won't dereg
             cfg.consumer_liveness_check_interval = std::chrono::seconds(0);
@@ -252,7 +252,7 @@ int stuck_in_pending_reclaimed()
             BrokerService::Config cfg;
             cfg.endpoint                         = "tcp://127.0.0.1:0";
             cfg.use_curve                        = true;
-            cfg.enforce_ctrl_admission = false;  // Phase D D2 — wire-encryption-only mode
+            cfg.enforce_ctrl_admission = false;  // HEP-CORE-0035 §4.8 opt-out: this fixture uses CURVE for wire encryption only — no admission gate (no known_roles populated; test does not exercise ZAP)
             // Per HEP-CORE-0023 §2.1 the registered-but-never-heartbeat
             // case is `Connected` with `first_heartbeat_seen=false`
             // (sub-state "registering").  Reclamation goes through both
@@ -309,7 +309,7 @@ int band_membership_cleaned_on_role_close()
             BrokerService::Config cfg;
             cfg.endpoint                         = "tcp://127.0.0.1:0";
             cfg.use_curve                        = true;
-            cfg.enforce_ctrl_admission = false;  // Phase D D2 — wire-encryption-only mode
+            cfg.enforce_ctrl_admission = false;  // HEP-CORE-0035 §4.8 opt-out: this fixture uses CURVE for wire encryption only — no admission gate (no known_roles populated; test does not exercise ZAP)
             cfg.consumer_liveness_check_interval = std::chrono::seconds(0);
             auto broker = start_broker_with_cfg(std::move(cfg));
 
@@ -385,7 +385,7 @@ int role_entry_terminal_cleanup_on_last_presence_dereg()
             BrokerService::Config cfg;
             cfg.endpoint                         = "tcp://127.0.0.1:0";
             cfg.use_curve                        = true;
-            cfg.enforce_ctrl_admission = false;  // Phase D D2 — wire-encryption-only mode
+            cfg.enforce_ctrl_admission = false;  // HEP-CORE-0035 §4.8 opt-out: this fixture uses CURVE for wire encryption only — no admission gate (no known_roles populated; test does not exercise ZAP)
             cfg.consumer_liveness_check_interval = std::chrono::seconds(0);
             auto broker = start_broker_with_cfg(std::move(cfg));
 
@@ -441,7 +441,7 @@ int role_entry_terminal_cleanup_on_consumer_left_last()
             BrokerService::Config cfg;
             cfg.endpoint                         = "tcp://127.0.0.1:0";
             cfg.use_curve                        = true;
-            cfg.enforce_ctrl_admission = false;  // Phase D D2 — wire-encryption-only mode
+            cfg.enforce_ctrl_admission = false;  // HEP-CORE-0035 §4.8 opt-out: this fixture uses CURVE for wire encryption only — no admission gate (no known_roles populated; test does not exercise ZAP)
             cfg.consumer_liveness_check_interval = std::chrono::seconds(0);
             auto broker = start_broker_with_cfg(std::move(cfg));
 
@@ -516,7 +516,7 @@ int consumer_heartbeat_timeout_fires_consumer_died_notify()
             BrokerService::Config cfg;
             cfg.endpoint                         = "tcp://127.0.0.1:0";
             cfg.use_curve                        = true;
-            cfg.enforce_ctrl_admission = false;  // Phase D D2 — wire-encryption-only mode
+            cfg.enforce_ctrl_admission = false;  // HEP-CORE-0035 §4.8 opt-out: this fixture uses CURVE for wire encryption only — no admission gate (no known_roles populated; test does not exercise ZAP)
             // Match the other state-machine tests: 150 ms each side
             // gives ~300 ms minimum + ~100 ms broker sweep cadence.
             // Poll window below is 3 s — generous against CI jitter.

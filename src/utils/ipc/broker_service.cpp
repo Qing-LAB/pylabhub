@@ -302,13 +302,12 @@ public:
     zmq::socket_t          *active_router_{nullptr};
     pylabhub::hub::HandlerId band_left_handler_id_{pylabhub::hub::kInvalidHandlerId};
 
-    // ── HEP-CORE-0035 Phase D step D2 — CTRL ZAP admission ──────────────
-    // `ctrl_admission_` holds the operator-defined known-roles
-    // allowlist as a `PeerAdmission`.  `ctrl_zap_handle_` is the
-    // RAII registration with `ZapRouter::instance()` — destruction
-    // unregisters the domain (run() exit unwinds cleanly).
-    std::unique_ptr<BrokerCtrlAdmission>                       ctrl_admission_;
-    std::optional<pylabhub::utils::security::ZapDomainHandle>  ctrl_zap_handle_;
+    // The CTRL ZAP admission (HEP-CORE-0035 §4.8 + HEP-CORE-0036 §4.2)
+    // is wired inside `run()` as locals so its `ZapDomainHandle`
+    // unregisters at run-exit (same scope as the ROUTER socket).
+    // Storing it as a member would let the registration outlive a
+    // hypothetical run() restart and throw on second `register_domain`
+    // (per `zap_router.hpp:99`).
 
     /// Guards broadcast_request_queue_ for thread-safe request_broadcast_channel().
     mutable std::mutex    m_broadcast_req_mu;
@@ -598,6 +597,13 @@ void BrokerServiceImpl::run()
     zmq::socket_t router(ctx, zmq::socket_type::router);
     router.set(zmq::sockopt::linger, 0); // policy: always LINGER=0; see §ZMQ socket policy
 
+    // Locals live for the entire run() call — same scope as the
+    // ROUTER socket.  Storing the ZAP handle as a member would let
+    // the registration outlive run() and throw on a hypothetical
+    // restart (`zap_router.hpp:99` — per-domain uniqueness).
+    std::unique_ptr<BrokerCtrlAdmission>                       ctrl_admission;
+    std::optional<pylabhub::utils::security::ZapDomainHandle>  ctrl_zap_handle;
+
     if (cfg.use_curve)
     {
         router.set(zmq::sockopt::curve_server, 1);
@@ -606,16 +612,20 @@ void BrokerServiceImpl::run()
 
         if (cfg.enforce_ctrl_admission)
         {
-            // HEP-CORE-0035 Phase D step D2 — install ZAP admission on
-            // the CTRL ROUTER before bind so the first peer's CURVE
-            // handshake resolves against a registered ZAP domain.
-            // Build the PeerAllowlist from operator-defined
-            // `known_roles` (loaded from
-            // `<hub_dir>/vault/known_roles.json` by HubHost); entries
-            // with empty `pubkey_z85` are filtered out (pre-Phase-B
-            // vault residue per `known_roles.cpp:as_peer_allowlist`).
-            // Empty allowlist is the legal deny-all state per HEP-0035
-            // §4.8.4.
+            // Install ZAP admission on the CTRL ROUTER before bind so
+            // the first peer's CURVE handshake resolves against a
+            // registered ZAP domain.  Per HEP-CORE-0035 §4.2 the CTRL
+            // allowlist is the UNION of two operator-managed inputs:
+            //   - `known_roles[]` (roles allowed to register; loaded
+            //     from `<hub_dir>/vault/known_roles.json` by HubHost,
+            //     HEP-CORE-0035 §4.8)
+            //   - `peers[].pubkey_z85` (federation peer hubs allowed
+            //     to connect their DEALER → this broker's ROUTER,
+            //     HEP-CORE-0022 + HEP-CORE-0035 §4.2)
+            // Entries with empty `pubkey_z85` are skipped (pre-Phase-B
+            // vault residue + federation peers configured without a
+            // pubkey).  Empty allowlist is the legal deny-all state
+            // per HEP-CORE-0035 §4.8.4.
             pylabhub::utils::security::PeerAllowlist initial;
             for (const auto &kr : cfg.known_roles)
             {
@@ -624,15 +634,25 @@ void BrokerServiceImpl::run()
                     pylabhub::utils::security::PeerIdentity{"curve",
                                                             kr.pubkey_z85});
             }
-            ctrl_admission_ = std::make_unique<BrokerCtrlAdmission>(
+            for (const auto &peer : cfg.peers)
+            {
+                if (peer.pubkey_z85.empty()) continue;
+                initial.peers.insert(
+                    pylabhub::utils::security::PeerIdentity{"curve",
+                                                            peer.pubkey_z85});
+            }
+            const auto allowlist_size = initial.peers.size();
+            ctrl_admission = std::make_unique<BrokerCtrlAdmission>(
                 std::move(initial), /*enforced=*/true);
             router.set(zmq::sockopt::zap_domain, "broker.ctrl");
-            ctrl_zap_handle_.emplace(
+            ctrl_zap_handle.emplace(
                 pylabhub::utils::security::ZapRouter::instance()
-                    .register_domain("broker.ctrl", ctrl_admission_.get()));
-            LOGGER_INFO("Broker: ZAP admission installed on CTRL "
-                        "(known_roles allowlist: {} entries)",
-                        cfg.known_roles.size());
+                    .register_domain("broker.ctrl", ctrl_admission.get()));
+            LOGGER_INFO("Broker: CTRL ZAP installed "
+                        "({} known_roles + {} federation peers = {} allowed)",
+                        cfg.known_roles.size(),
+                        cfg.peers.size(),
+                        allowlist_size);
         }
         else
         {

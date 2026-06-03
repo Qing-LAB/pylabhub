@@ -468,7 +468,7 @@ runtime topology via the dedup rule.
 rule, registration sequence, hub-dead semantics).
 
 **Implementation:** see Wave B of
-`docs/tech_draft/role_host_template_design.md` (M0-M9) for the
+`docs/archive/transient-2026-06-02/role_host_template_design.md` (M0-M9) for the
 migration plan.
 
 ### Broker message routing classes — quick-reference

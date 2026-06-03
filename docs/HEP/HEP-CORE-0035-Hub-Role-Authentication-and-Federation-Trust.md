@@ -4,7 +4,7 @@
 |-----------------|----------------------------------------------------------------------------------------------------|
 | **HEP**         | `HEP-CORE-0035`                                                                                    |
 | **Title**       | Hub-Role Authentication and Federation Trust                                                       |
-| **Status**      | 🚧 **NOT IMPLEMENTED — TODO NEXT.** Authoritative design; supersedes the legacy `RoleIdentityPolicy` placeholder documented in HEP-CORE-0009 §2.7. |
+| **Status**      | 🚧 **PARTIAL — implementation in flight.** Authoritative design; supersedes the legacy `RoleIdentityPolicy` placeholder documented in HEP-CORE-0009 §2.7.  Subsection state (updated 2026-06-03): §4.6 (file-ACL discipline) ✅; §4.7 (runtime key handling) ⏳ task #102; §4.8 (vault + CLI + bootstrap) ✅; §4.1 Layer-1 ZAP on CTRL ROUTER ✅ (PeerAdmission Phase D step D2; broker-side gate against `known_roles[]` ∪ `peers[].pubkey_z85`); §4.2 Layer-2 federation-trust gate ⏳; legacy placeholder retirement ⏳ (still live on `check_role_identity` path).  Step-by-step in `docs/todo/AUTH_TODO.md`. |
 | **Created**     | 2026-04-29                                                                                         |
 | **Area**        | Framework Architecture (`BrokerService` socket layer, `HubConfig`, `BrokerService::Config`, federation) |
 | **Depends on**  | HEP-CORE-0022 (Federation), HEP-CORE-0024 (Role Directory), HEP-CORE-0033 (Hub Character)          |
@@ -16,19 +16,30 @@
 
 ## 1. Status banner
 
-**This HEP is the design contract — no part of it is implemented.** The
-existing code (`role_identity_policy.hpp::RoleIdentityPolicy`,
-`BrokerServiceImpl::check_role_identity`,
-`BrokerService::Config::{role_identity_policy, known_roles, channel_policy_overrides}`)
-is a **placeholder** that pre-dates the CURVE-required model and the
-HEP-CORE-0022 federation model. It currently does string-matching on JSON
-identity fields without consulting any pubkey, has no ZAP handler attached
-to the broker ROUTER, and has no federation-trust path. None of that is
-load-bearing for the security story this HEP describes.
+**This HEP is the design contract — implementation is in flight.**  As
+of 2026-06-03 the file-ACL discipline (§4.6, task #101), the vault +
+CLI + bootstrap (§4.8, PeerAdmission Phase B), and the Layer-1 ZAP
+handler on the broker CTRL ROUTER (§4.1, PeerAdmission Phase D step
+D2) are shipped.  See the status banner in the metadata table above
+for the per-subsection ✅/⏳ map and `docs/todo/AUTH_TODO.md` for
+step-by-step.
 
-When HEP-0035 lands, the legacy machinery is retired in one sweep:
+The legacy placeholder code
+(`role_identity_policy.hpp::RoleIdentityPolicy`,
+`BrokerServiceImpl::check_role_identity`,
+`BrokerService::Config::{role_identity_policy, known_roles,
+channel_policy_overrides}`) pre-dates the CURVE-required model and
+the HEP-CORE-0022 federation model.  It currently does string-matching
+on JSON identity fields without consulting any pubkey, and is NOT
+load-bearing for the security story this HEP describes.  The
+`known_roles` member of `BrokerService::Config` is reused as the
+input for the §4.1 Layer-1 ZAP allowlist (D2) — the data structure
+is shared even though the placeholder gate is still live and the
+new gate is what enforces production admission.
+
+When HEP-0035 fully lands, the legacy machinery is retired:
 the placeholder enum, the placeholder gate, and the legacy hub.json
-fields all go. Until then, the legacy machinery remains live (L3 test
+fields all go.  Until then, the legacy machinery remains live (L3 test
 `test_datahub_role_identity_policy.cpp` still exercises it) but is not
 the authentication story.
 

@@ -18,7 +18,7 @@
  *                                  { hubB, chB, consumer },
  *                                  { hubC, chC, producer }]
  *
- * Per HEP-CORE-0033 §19 + role_host_template_design.md §5.  The
+ * Per HEP-CORE-0033 §19 + docs/archive/transient-2026-06-02/role_host_template_design.md §5.  The
  * presence-list ABSTRACTION removes the hardcoded single-channel +
  * single-broker-connection assumptions in today's RoleAPIBase and is
  * the structural pre-requisite for Wave-B M8 (dual-hub processor).

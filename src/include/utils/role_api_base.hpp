@@ -428,7 +428,7 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     // entry (engine_module_params.cpp::engine_lifecycle_startup).
     //
     // Linear forward-time API sequence (per docs/tech_draft/
-    // role_host_template_design.md §11.6.2):
+    // docs/archive/transient-2026-06-02/role_host_template_design.md §11.6.2):
     //   - setter: called once at step 2b by the frame.
     //   - readers (`has_*_fz()`, `flexzone_*_size()`, `fz_info_cache()`):
     //     called by scripts + framework code at step 5+.  All readers are

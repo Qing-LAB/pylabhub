@@ -2,7 +2,7 @@
  * @file test_peer_admission.cpp
  * @brief L2 unit tests for the PeerAdmission policy abstraction
  *        (HEP-CORE-0035 §4.5 / HEP-CORE-0036 §I1; corrected layering
- *        per docs/tech_draft/peer_admission_architecture_design.md §4).
+ *        per docs/archive/transient-2026-06-02/peer_admission_architecture_design.md §4).
  *
  * Phase A scope: value semantics of `PeerIdentity` and `PeerAllowlist`
  * plus the abstract contract of `PeerAdmission`.  No transport is

@@ -46,7 +46,7 @@
  * @see HEP-CORE-0001 (lifecycle hybrid model, persistent dynamic
  *      pattern; same shape as `SignalHandler`)
  * @see HEP-CORE-0036 §7.1 (handler runs on BRC poll thread)
- * @see docs/tech_draft/peer_admission_architecture_design.md §5.2 + §7.2 + §7.4
+ * @see docs/archive/transient-2026-06-02/peer_admission_architecture_design.md §5.2 + §7.2 + §7.4
  * @see RFC 27 (ZAP) — https://rfc.zeromq.org/spec/27/
  */
 
