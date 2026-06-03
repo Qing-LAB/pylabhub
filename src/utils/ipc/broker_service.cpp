@@ -17,6 +17,9 @@
 #include "utils/crypto_utils.hpp"
 #include "utils/lifecycle.hpp"
 #include "utils/logger.hpp"
+#include "utils/security/peer_admission.hpp"   // HEP-CORE-0035 Phase D
+#include "utils/security/zap_router.hpp"       // HEP-CORE-0035 Phase D
+#include "portable_atomic_shared_ptr.hpp"      // sibling header in src/utils/
 #include "utils/timeout_constants.hpp"
 #include "utils/zmq_context.hpp"
 
@@ -159,6 +162,71 @@ constexpr std::array<std::string_view, 8> kFireAndForgetTypes = {
     return is_request_reply(t) || is_fire_and_forget(t);
 }
 
+// HEP-CORE-0035 Phase D step D2 — CTRL ROUTER ZAP admission.
+//
+// `BrokerCtrlAdmission` adapts the broker's `known_roles` operator-
+// allowlist to the `PeerAdmission` interface that `ZapRouter` calls
+// from the ZAP handler thread.  Allowlist storage is a
+// `PortableAtomicSharedPtr<PeerAllowlist>` so:
+//   - `is_peer_allowed` reads the current snapshot lock-free
+//     (called from the ZAP thread per pump_one)
+//   - `set_peer_allowlist` swaps the snapshot atomically
+//     (future hot-reload entry point — HEP-CORE-0035 §4.8.5)
+//
+// Scope is intentionally minimal: this is a single-purpose adapter
+// owned by `BrokerServiceImpl`, not a public surface.  The full
+// PeerAdmission contract is implemented but the only "advertise"
+// path (`admission_is_enforced`) returns the runtime CURVE-server
+// flag — when CURVE is off (test fixtures, transitional modes),
+// admission reports as unenforced.
+class BrokerCtrlAdmission final : public pylabhub::utils::security::PeerAdmission
+{
+public:
+    explicit BrokerCtrlAdmission(pylabhub::utils::security::PeerAllowlist initial,
+                                  bool enforced)
+        : enforced_(enforced)
+    {
+        current_.store(std::make_shared<
+            pylabhub::utils::security::PeerAllowlist>(std::move(initial)));
+    }
+
+    bool set_peer_allowlist(
+        pylabhub::utils::security::PeerAllowlist allowlist) override
+    {
+        current_.store(std::make_shared<
+            pylabhub::utils::security::PeerAllowlist>(std::move(allowlist)));
+        return true;
+    }
+
+    [[nodiscard]] std::optional<pylabhub::utils::security::PeerAllowlist>
+    peer_allowlist_snapshot() const override
+    {
+        auto p = current_.load();
+        if (!p) return std::nullopt;
+        return *p;
+    }
+
+    [[nodiscard]] bool
+    is_peer_allowed(
+        const pylabhub::utils::security::PeerIdentity &peer) const override
+    {
+        auto p = current_.load();
+        if (!p) return false;
+        return p->contains(peer);
+    }
+
+    [[nodiscard]] bool admission_is_enforced() const noexcept override
+    {
+        return enforced_;
+    }
+
+private:
+    pylabhub::utils::detail::PortableAtomicSharedPtr<
+        pylabhub::utils::security::PeerAllowlist>
+        current_;
+    const bool enforced_;
+};
+
 } // namespace
 
 // ============================================================================
@@ -233,6 +301,14 @@ public:
     /// no broker running) see nullptr and no-op.
     zmq::socket_t          *active_router_{nullptr};
     pylabhub::hub::HandlerId band_left_handler_id_{pylabhub::hub::kInvalidHandlerId};
+
+    // ── HEP-CORE-0035 Phase D step D2 — CTRL ZAP admission ──────────────
+    // `ctrl_admission_` holds the operator-defined known-roles
+    // allowlist as a `PeerAdmission`.  `ctrl_zap_handle_` is the
+    // RAII registration with `ZapRouter::instance()` — destruction
+    // unregisters the domain (run() exit unwinds cleanly).
+    std::unique_ptr<BrokerCtrlAdmission>                       ctrl_admission_;
+    std::optional<pylabhub::utils::security::ZapDomainHandle>  ctrl_zap_handle_;
 
     /// Guards broadcast_request_queue_ for thread-safe request_broadcast_channel().
     mutable std::mutex    m_broadcast_req_mu;
@@ -527,6 +603,45 @@ void BrokerServiceImpl::run()
         router.set(zmq::sockopt::curve_server, 1);
         router.set(zmq::sockopt::curve_secretkey, server_secret_z85);
         router.set(zmq::sockopt::curve_publickey, server_public_z85);
+
+        if (cfg.enforce_ctrl_admission)
+        {
+            // HEP-CORE-0035 Phase D step D2 — install ZAP admission on
+            // the CTRL ROUTER before bind so the first peer's CURVE
+            // handshake resolves against a registered ZAP domain.
+            // Build the PeerAllowlist from operator-defined
+            // `known_roles` (loaded from
+            // `<hub_dir>/vault/known_roles.json` by HubHost); entries
+            // with empty `pubkey_z85` are filtered out (pre-Phase-B
+            // vault residue per `known_roles.cpp:as_peer_allowlist`).
+            // Empty allowlist is the legal deny-all state per HEP-0035
+            // §4.8.4.
+            pylabhub::utils::security::PeerAllowlist initial;
+            for (const auto &kr : cfg.known_roles)
+            {
+                if (kr.pubkey_z85.empty()) continue;
+                initial.peers.insert(
+                    pylabhub::utils::security::PeerIdentity{"curve",
+                                                            kr.pubkey_z85});
+            }
+            ctrl_admission_ = std::make_unique<BrokerCtrlAdmission>(
+                std::move(initial), /*enforced=*/true);
+            router.set(zmq::sockopt::zap_domain, "broker.ctrl");
+            ctrl_zap_handle_.emplace(
+                pylabhub::utils::security::ZapRouter::instance()
+                    .register_domain("broker.ctrl", ctrl_admission_.get()));
+            LOGGER_INFO("Broker: ZAP admission installed on CTRL "
+                        "(known_roles allowlist: {} entries)",
+                        cfg.known_roles.size());
+        }
+        else
+        {
+            // CURVE on but admission not enforced — wire encryption
+            // only; for tests that don't exercise the admission path.
+            // Production (HubHost startup) NEVER takes this path.
+            LOGGER_WARN("Broker: CTRL ZAP admission NOT enforced "
+                        "(test/dev override).  Any CURVE peer accepted.");
+        }
     }
 
     router.bind(cfg.endpoint);
@@ -626,6 +741,19 @@ void BrokerServiceImpl::run()
             items.push_back({ps->socket.handle(), 0, ZMQ_POLLIN, 0});
 
         zmq::poll(items, kPollTimeout);
+
+        // HEP-CORE-0035 Phase D step D2 — drain any pending ZAP
+        // requests on the inproc REP socket.  Non-blocking; returns
+        // false when no request is pending or the ZapRouter module
+        // is not loaded (test fixtures without CURVE).  When CURVE
+        // is on, every connecting peer's CURVE handshake generates
+        // exactly one ZAP request that MUST be answered for the
+        // handshake to complete — pumping per poll cycle keeps the
+        // CTRL acceptance latency at ~kPollTimeout (acceptable for
+        // registration; data path latency is unaffected because data
+        // sockets pump from their own poll loops).
+        (void) pylabhub::utils::security::ZapRouter::instance().pump_one(
+            std::chrono::milliseconds{0});
 
         // --- Post-poll phase (mutex held: all registry reads/writes are protected) ---
         {

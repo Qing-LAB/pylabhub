@@ -104,6 +104,7 @@ int orchestrator(int /*argc*/, char** /*argv*/)
             BrokerService::Config cfg;
             cfg.endpoint = "tcp://127.0.0.1:0";
             cfg.use_curve = true;
+            cfg.enforce_ctrl_admission = false;  // Phase D D2 — wire-encryption-only mode
             auto broker = start_broker_in_thread(std::move(cfg));
 
             // Unique channel name so concurrent test runs don't conflict

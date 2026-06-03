@@ -226,6 +226,20 @@ public:
         /// Also consulted for logging in Tracked/Required modes.
         std::vector<KnownRole>         known_roles;
 
+        /// HEP-CORE-0035 Phase D step D2 — install ZAP admission on the
+        /// CTRL ROUTER socket when `use_curve == true`.  Production
+        /// (`HubHost::startup`) keeps the default `true`: every CTRL
+        /// hello is gated against `known_roles`, and an empty allowlist
+        /// means deny-all per HEP-CORE-0035 §4.8.4.
+        ///
+        /// Direct-Config tests that enable CURVE only for wire
+        /// encryption (not for admission testing) set this to `false`
+        /// so the broker still wires `curve_server` on the ROUTER but
+        /// skips the ZAP registration — handshakes succeed for any
+        /// peer with a valid CURVE keypair.  See AUTH_TODO Phase D for
+        /// the rationale.
+        bool                           enforce_ctrl_admission{true};
+
         /// Per-channel policy overrides (first matching glob wins).
         std::vector<ChannelPolicyOverride>  channel_policy_overrides;
 

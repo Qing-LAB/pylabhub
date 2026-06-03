@@ -55,6 +55,7 @@ BrokerHandle start_broker()
     BrokerService::Config bcfg;
     bcfg.endpoint = "tcp://127.0.0.1:0";
     bcfg.use_curve = true;
+    bcfg.enforce_ctrl_admission = false;  // Phase D D2 — wire-encryption-only mode
     bcfg.on_ready = [rp](const std::string &ep, const std::string &pk)
     { rp->set_value({ep, pk}); };
     auto state = std::make_unique<pylabhub::hub::HubState>();
