@@ -12,6 +12,7 @@
 #include "utils/hub_state.hpp"
 #include "utils/logger.hpp"
 #include "utils/script_engine.hpp"        // ScriptEngine + InvokeResponse
+#include "utils/security/known_roles.hpp" // HEP-CORE-0035 §4.8 + Phase B
 #include "utils/thread_manager.hpp"
 #include "utils/timeout_constants.hpp"    // kAdminPollIntervalMs
 #include "utils/zmq_context.hpp"
@@ -180,6 +181,26 @@ void HubHost::startup()
         std::filesystem::path schemas_dir =
             impl_->cfg.base_dir() / "schemas";
         bcfg.schema_search_dirs.push_back(schemas_dir.string());
+    }
+
+    // HEP-CORE-0035 §4.8 + PeerAdmission Phase B — load the operator-
+    // managed known_roles allowlist from `<hub_dir>/vault/known_roles.json`
+    // (mode 0600, parent dir 0700, ACL-verified by the loader).  Absent
+    // file → empty allowlist (deny-all per §4.8.4: every REG_REQ is
+    // rejected by Layer-1 ZAP until the operator runs `--add-known-role`).
+    // Throws on parse / ACL errors so a tampered allowlist surfaces at
+    // startup instead of silently degrading.
+    {
+        const std::filesystem::path known_roles_path =
+            impl_->cfg.base_dir() / "vault" / "known_roles.json";
+        auto store_opt =
+            pylabhub::utils::security::KnownRolesStore::load_from_file(
+                known_roles_path);
+        if (store_opt.has_value())
+        {
+            for (const auto &kr : store_opt->list())
+                bcfg.known_roles.push_back(kr);
+        }
     }
 
     // Heartbeat-multiplier timeouts (HEP-CORE-0023 §2.5; HEP-0033 §6.4).

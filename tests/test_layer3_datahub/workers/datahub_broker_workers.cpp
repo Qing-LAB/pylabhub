@@ -290,6 +290,7 @@ int broker_reg_disc_happy_path()
             BrokerService::Config cfg;
             cfg.endpoint = "tcp://127.0.0.1:0";
             cfg.use_curve = true;
+            cfg.enforce_ctrl_admission = false;  // Phase D D2 — wire-encryption-only mode
             auto broker = start_broker_in_thread(std::move(cfg));
 
             const std::string channel = "broker.ch1";
@@ -398,6 +399,7 @@ int broker_channel_not_found()
             BrokerService::Config cfg;
             cfg.endpoint = "tcp://127.0.0.1:0";
             cfg.use_curve = true;
+            cfg.enforce_ctrl_admission = false;  // Phase D D2 — wire-encryption-only mode
             auto broker = start_broker_in_thread(std::move(cfg));
 
             BrokerRequestComm brc;
@@ -436,6 +438,7 @@ int broker_dereg_happy_path()
             BrokerService::Config cfg;
             cfg.endpoint = "tcp://127.0.0.1:0";
             cfg.use_curve = true;
+            cfg.enforce_ctrl_admission = false;  // Phase D D2 — wire-encryption-only mode
             auto broker = start_broker_in_thread(std::move(cfg));
 
             const std::string channel = "broker.dereg.ch";

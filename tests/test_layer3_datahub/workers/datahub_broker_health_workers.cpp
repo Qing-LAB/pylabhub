@@ -151,6 +151,7 @@ BrokerHandle start_broker()
     BrokerService::Config cfg;
     cfg.endpoint  = "tcp://127.0.0.1:0";
     cfg.use_curve = true;  // legacy flag — ignored under real HubHost
+    cfg.enforce_ctrl_admission = false;  // Phase D D2 — wire-encryption-only mode
     return start_broker_with_cfg(std::move(cfg));
 }
 
@@ -222,6 +223,7 @@ int producer_gets_closing_notify(int /*argc*/, char ** /*argv*/)
             BrokerService::Config cfg;
             cfg.endpoint        = "tcp://127.0.0.1:0";
             cfg.use_curve       = true;
+            cfg.enforce_ctrl_admission = false;  // Phase D D2 — wire-encryption-only mode
             // Fast reclaim for test: total ~1s window.
             cfg.ready_timeout_override   = std::chrono::milliseconds(500);
             cfg.pending_timeout_override = std::chrono::milliseconds(500);
@@ -348,6 +350,7 @@ int producer_auto_deregisters(int /*argc*/, char ** /*argv*/)
             BrokerService::Config cfg;
             cfg.endpoint        = "tcp://127.0.0.1:0";
             cfg.use_curve       = true;
+            cfg.enforce_ctrl_admission = false;  // Phase D D2 — wire-encryption-only mode
             cfg.ready_timeout_override   = std::chrono::milliseconds(15000);
             cfg.pending_timeout_override = std::chrono::milliseconds(15000);
             cfg.consumer_liveness_check_interval = std::chrono::seconds(0);
@@ -408,6 +411,7 @@ int dead_consumer_orchestrator(int argc, char **argv)
             BrokerService::Config cfg;
             cfg.endpoint                         = "tcp://127.0.0.1:0";
             cfg.use_curve                        = true;
+            cfg.enforce_ctrl_admission = false;  // Phase D D2 — wire-encryption-only mode
             cfg.ready_timeout_override           = std::chrono::milliseconds(15000);
             cfg.pending_timeout_override         = std::chrono::milliseconds(15000);
             cfg.consumer_liveness_check_interval = std::chrono::seconds(1);
@@ -599,6 +603,7 @@ int multi_producer_partial_pending_timeout(int /*argc*/, char ** /*argv*/)
             BrokerService::Config cfg;
             cfg.endpoint                         = "tcp://127.0.0.1:0";
             cfg.use_curve                        = true;
+            cfg.enforce_ctrl_admission = false;  // Phase D D2 — wire-encryption-only mode
             cfg.ready_timeout_override           = std::chrono::milliseconds(500);
             cfg.pending_timeout_override         = std::chrono::milliseconds(500);
             cfg.consumer_liveness_check_interval = std::chrono::seconds(0);
@@ -695,6 +700,7 @@ int consumer_heartbeat_timeout_notify(int /*argc*/, char ** /*argv*/)
             BrokerService::Config cfg;
             cfg.endpoint                         = "tcp://127.0.0.1:0";
             cfg.use_curve                        = true;
+            cfg.enforce_ctrl_admission = false;  // Phase D D2 — wire-encryption-only mode
             cfg.ready_timeout_override           = std::chrono::milliseconds(500);
             cfg.pending_timeout_override         = std::chrono::milliseconds(500);
             // Disable PID liveness so the only path to CONSUMER_DIED_NOTIFY
@@ -801,6 +807,7 @@ int two_snapshot_invariant(int /*argc*/, char ** /*argv*/)
             BrokerService::Config cfg;
             cfg.endpoint                         = "tcp://127.0.0.1:0";
             cfg.use_curve                        = true;
+            cfg.enforce_ctrl_admission = false;  // Phase D D2 — wire-encryption-only mode
             cfg.ready_timeout_override           = std::chrono::milliseconds(500);
             cfg.pending_timeout_override         = std::chrono::milliseconds(500);
             cfg.consumer_liveness_check_interval = std::chrono::seconds(0);
@@ -908,6 +915,7 @@ int channel_torn_down_consumer_pass2_skipped(int /*argc*/, char ** /*argv*/)
             BrokerService::Config cfg;
             cfg.endpoint                         = "tcp://127.0.0.1:0";
             cfg.use_curve                        = true;
+            cfg.enforce_ctrl_admission = false;  // Phase D D2 — wire-encryption-only mode
             cfg.ready_timeout_override           = std::chrono::milliseconds(500);
             cfg.pending_timeout_override         = std::chrono::milliseconds(500);
             cfg.consumer_liveness_check_interval = std::chrono::seconds(0);
