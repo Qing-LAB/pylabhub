@@ -148,3 +148,26 @@ TEST_F(DatahubBrokerHealthTest, ChannelTornDown_ConsumerPass2Skipped)
         "broker_health.channel_torn_down_consumer_pass2_skipped", {});
     ExpectWorkerOk(proc);
 }
+
+TEST_F(DatahubBrokerHealthTest, CtrlZapDenyPath)
+{
+    // HEP-CORE-0035 §4.2 + PeerAdmission Phase D step D2 — the broker's
+    // CTRL ROUTER ZAP gate is the production deny-by-default security
+    // boundary.  Without this test, every other CURVE-using L3 worker
+    // either bypasses the gate (`enforce_ctrl_admission = false`) or
+    // exercises only the allow path (L4 roundtrip via --add-known-role).
+    // Audit B2: shipping a deny-by-default gate with zero negative-path
+    // coverage is a security-gate test rigor failure.
+    //
+    // Worker constructs a broker with `enforce=true` + empty allowlist
+    // + empty federation peers, then connects a BRC client with an
+    // explicit (test-owned) CURVE keypair that is NOT in any
+    // allowlist.  Expected outcome:
+    //   - BRC TCP connect succeeds (transport-level)
+    //   - REG_REQ times out (CURVE handshake denied by ZAP)
+    //   - `ZapRouter::denied_count()` increases (PATH-DISCRIMINATING:
+    //     the timeout came from the ZAP gate, not from any other
+    //     misconfig)
+    auto proc = SpawnWorker("broker_health.ctrl_zap_deny_path", {});
+    ExpectWorkerOk(proc);
+}

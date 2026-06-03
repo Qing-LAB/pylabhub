@@ -39,4 +39,13 @@ int dead_consumer_exiter(int argc, char **argv);
  */
 int schema_mismatch_notify(int argc, char **argv);
 
+/**
+ * HEP-CORE-0035 §4.2 Layer-1 ZAP deny-path pin (PeerAdmission D2).
+ * Broker with `enforce_ctrl_admission=true` + empty allowlist denies
+ * a CURVE peer; `ZapRouter::denied_count()` increases; REG_REQ times
+ * out.  This is the security-gate path-discriminator the D2 commit
+ * acknowledged as a follow-on (audit B2).
+ */
+int ctrl_zap_deny_path(int argc, char **argv);
+
 } // namespace pylabhub::tests::worker::broker_health
