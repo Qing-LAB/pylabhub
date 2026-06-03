@@ -147,7 +147,7 @@ int do_init(const hub_cli::HubArgs &args)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Known-roles allowlist flows (PeerAdmission Phase B).
-// HEP-CORE-0035 §4.5 / docs/tech_draft/peer_admission_architecture_design.md §6.2
+// HEP-CORE-0035 §4.5 / docs/archive/transient-2026-06-02/peer_admission_architecture_design.md §6.2
 //
 // Lives at <hub_dir>/vault/known_roles.json (file mode 0600 via the atomic
 // helper from #101).  No vault password required — pubkeys aren't secret;

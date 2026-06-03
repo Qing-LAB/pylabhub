@@ -121,7 +121,7 @@ using ZmqSchemaField = SchemaFieldDesc;
  * equivalent to (but more verbose than) the legacy path.
  *
  * @see HEP-CORE-0036 §6 (CURVE on data plane)
- * @see docs/tech_draft/peer_admission_architecture_design.md §5.1
+ * @see docs/archive/transient-2026-06-02/peer_admission_architecture_design.md §5.1
  */
 struct PYLABHUB_UTILS_EXPORT ZmqAuthOptions
 {

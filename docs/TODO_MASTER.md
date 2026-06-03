@@ -29,8 +29,8 @@ Remaining production gap: HEP-CORE-0035 auth (task #74).
 
 | Item | Status | Tracker |
 |---|---|---|
-| HEP-CORE-0035 auth implementation (7-phase plan in HEP-0035 §8) | 🚧 NOT IMPLEMENTED — `RoleIdentityPolicy` is a placeholder; CURVE is mandatory but admission policy not yet implemented | task #74 |
-| HEP-CORE-0036 authenticated connection establishment | ✅ DESIGN FINAL (2026-05-28; T1+T2+T3+T5+I9+all D-tier+M-tier locked).  🚧 IMPLEMENTATION NOT STARTED.  Chain: #101 + #102 (foundations) → #74 (now subsumes HEP-CORE-0035 §4.8 known-roles-in-vault + `--add-known-role`/`--revoke-known-role`/`--list-known-roles` CLI) → #94 + #103 → #104 → #106 (HEP-CORE-0038 script-vault) → done.  #105 federation parallel + non-blocking.  **Implementation guideline:** `docs/tech_draft/DRAFT_HEP-0036-implementation-guideline_2026-05.md`. | tasks #74, #101, #102, #103, #104, #105, #106 |
+| HEP-CORE-0035 auth implementation (7-phase plan in HEP-0035 §8) | 🚧 PARTIAL — Phase B `a6b44ff8` + #101 (§4.6 ACL) + D1 `cacea477` (ChannelAccessIndex in HubState) + D2 `d18d2e91` (broker CTRL ZAP) shipped.  Legacy `RoleIdentityPolicy` placeholder still live.  Layer-2 federation trust gate + §4.7 runtime key hardening + D3-D7 (CHANNEL_AUTH_UPDATE wire + role-side dispatch + CONSUMER_REG_ACK extension) pending. | task #74; sub-steps in `docs/todo/AUTH_TODO.md` |
+| HEP-CORE-0036 authenticated connection establishment | ✅ DESIGN FINAL (2026-05-28; T1+T2+T3+T5+I9+all D-tier+M-tier locked).  🚧 IMPLEMENTATION IN FLIGHT — D1+D2 shipped; D3 (`CHANNEL_AUTH_UPDATE` wire frame, broker_proto 5→6) is next.  Chain: #101 ✅ + #102 (foundations) → #74 (D1+D2 ✅; D3-D7 ⏳, subsumes HEP-CORE-0035 §4.8 known-roles-in-vault + `--add-known-role`/`--revoke-known-role`/`--list-known-roles` CLI) → #94 + #103 → #104 → #106 (HEP-CORE-0038 script-vault) → done.  #105 federation parallel + non-blocking.  **Implementation guideline:** `docs/tech_draft/DRAFT_HEP-0036-implementation-guideline_2026-05.md`. | tasks #74, #101, #102, #103, #104, #105, #106 |
 
 ### Label hygiene — read before reading any "M*" label below
 

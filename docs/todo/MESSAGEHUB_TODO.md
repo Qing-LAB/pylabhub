@@ -124,7 +124,7 @@ P3 — independent multi-day effort.
 
 | Looks like | Actually means | Status |
 |---|---|---|
-| Wave-B MN | Arc B Wave (`role_host_template_design.md` §14) | M0..M8 ✅; M9 ⏳ |
+| Wave-B MN | Arc B Wave (`docs/archive/transient-2026-06-02/role_host_template_design.md` §14) | M0..M8 ✅; M9 ⏳ |
 | HEP-0033 §15 Phase N | Arc A Wave | 1-9 ✅; 10 ⏳ partial |
 | Wave-M2 / Wave-M2.5 / Wave-M3 | Side-arc waves (multi-producer / controlled-access) | ✅ all closed |
 | M1.2 / M1.4 / M1.5 / MD1 / MD1.5 | Side-arc FSM-consolidation + race-fix cleanups | ✅ all closed |

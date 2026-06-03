@@ -7,7 +7,7 @@
  * connection vector + the two O(1) dispatch indexes.  It is the
  * single object that future Wave-B M4 will inject into RoleAPIBase
  * to replace today's hardcoded `broker_channel` pointer + role_tag
- * branching.  Design contract: `role_host_template_design.md §5.6`.
+ * branching.  Design contract: `docs/archive/transient-2026-06-02/role_host_template_design.md §5.6`.
  *
  * Wave-B M3 ships a structural skeleton — enough surface to write
  * unit tests for dedup logic and index lookup, but NO methods that

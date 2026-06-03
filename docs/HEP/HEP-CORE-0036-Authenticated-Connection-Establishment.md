@@ -4,7 +4,7 @@
 |-----------------|-------------------------------------------------------------------------------------------------------------|
 | **HEP**         | `HEP-CORE-0036`                                                                                             |
 | **Title**       | Authenticated Connection Establishment — Single-Gate Access Control for Control + Data Planes               |
-| **Status**     | ✅ **DESIGN FINAL** — T1 / T2 / I9 / Q1 LOCKED 2026-05-28.  Awaiting implementation (tasks #74 / #94 / #101 / #102 / #103 + Phase 0-11 in §12).  Open items in §13.1 (federation Q1, audit log Q2) are post-MVP. |
+| **Status**     | 🚧 **DESIGN FINAL; IMPLEMENTATION IN FLIGHT** — T1 / T2 / I9 / Q1 LOCKED 2026-05-28; D1 (`ChannelAccessIndex` in HubState, commit `cacea477`) + D2 (broker CTRL ROUTER ZAP + federation peer pubkey union, commit `d18d2e91` + close-out) shipped 2026-06-03.  D3-D7 (`CHANNEL_AUTH_UPDATE` wire frame + role-side dispatch + `CONSUMER_REG_ACK.producers[]` extension + L3/L4 tests) ⏳; sibling tasks #74 / #94 / #101 ✅ / #102 / #103 + Phase 0-11 in §12.  Open items in §13.1 (federation Q1, audit log Q2) are post-MVP. |
 | **Created**     | 2026-05-26                                                                                                  |
 | **Last revised** | 2026-06-02 — §6.5 wire-frame **AMENDED: delta → snapshot.**  `CHANNEL_AUTH_UPDATE` now carries a single `allowlist` field containing the full authorized set for the channel; the prior `allowlist_add[]` / `allowlist_remove[]` delta shape is retracted (see §6.5 "Amendment 2026-06-02" block for the rationale; design driver: hub owns the truth, producer is a follower, eliminates delta-loss drift between hub and producer caches).  Sync-ACK semantics + skip-disconnected push semantics are preserved.  Prior revision 2026-05-28 — T1 RESOLVED: symmetric identity-keypair design (broker mints nothing on data plane; both sides reuse their identity keys; SHM keeps broker-generated `shm_secret`).  Prior revision 2026-05-27 — two-conditions gate explicit; revocation reframed as passive (no force-close); inbox/bands inheritance; channels-are-dynamic non-goal; manual pubkey distribution MVP. |
 | **Area**        | Framework Architecture (broker access control, role-side CURVE wiring, data-plane peer authentication)      |
@@ -15,7 +15,16 @@
 
 ## 1. Status banner
 
-**This HEP is design-only — no part is implemented.**  It exists because
+**This HEP is the design contract — implementation is in flight as of
+2026-06-03.**  D1 (`ChannelAccessIndex` in HubState — §4.1; commit
+`cacea477`) and D2 (broker CTRL ROUTER ZAP with the union of
+`known_roles[]` + `peers[].pubkey_z85` — §4.2 Layer-1; commit
+`d18d2e91` + close-out) are shipped.  D3-D7 (`CHANNEL_AUTH_UPDATE`
+wire frame + role-side dispatch + `CONSUMER_REG_ACK.producers[]`
+extension + tests) are tracked in `docs/todo/AUTH_TODO.md` step-by-step
+under task #74.
+
+The original 2026-05-26 motivation follows:
 the 2026-05-26 holistic audit revealed that the data plane (PUSH/PULL
 between producer ↔ consumer ↔ processor on ZMQ; SHM attach between
 producer ↔ consumer on SHM) has no peer-level authentication: any
@@ -1280,12 +1289,28 @@ return ALLOW or DENY.
 ### 7.1 Placement and lifetime
 
 - One ZAP socket per ZMQ context (libzmq invariant —
-  `inproc://zeromq.zap.01`).  The producer role host installs the
-  handler on its existing context **before** any CURVE-server
-  socket binds (per the §5.1 ordering note).
-- Handler runs on the BRC poll thread.  Rationale: (a) cache reads
-  and `CHANNEL_AUTH_UPDATE` writes happen on the same thread, no
-  synchronization needed; (b) BRC poll thread already exists.
+  `inproc://zeromq.zap.01`).  Both the broker CTRL ROUTER (HEP-0035
+  §4.1 Layer-1) and the producer-side data ROUTERs (this §) install
+  their respective `PeerAdmission` handlers on the **same** inproc
+  REP socket via the shared `ZapRouter` singleton; each registers
+  a distinct ZAP domain (`broker.ctrl` for CTRL, channel-name for
+  data) and `pump_one(0ms)` drains one request per call regardless
+  of which domain it targets.
+- The producer role host installs the handler on its context
+  **before** any CURVE-server socket binds (per the §5.1 ordering
+  note).  The broker installs its CTRL admission **before**
+  `router.bind()` for the same reason.
+- Two pumping sites, by design:
+  - **Broker CTRL ROUTER ZAP** — `ZapRouter::pump_one(0ms)` runs on
+    the broker poll thread, called once per `zmq::poll` cycle (D2;
+    `broker_service.cpp`).
+  - **Producer-side data ROUTER ZAP** — runs on the BRC poll thread
+    in the role process (D4+; pending).
+  Rationale: (a) cache reads and `CHANNEL_AUTH_UPDATE` writes happen
+  on the same thread per pumping site, no synchronization needed;
+  (b) those poll threads already exist; (c) the inproc REP socket
+  is single-process so one pumper per process is sufficient
+  regardless of how many domains are registered.
 
 ### 7.2 Cache contract
 

@@ -79,7 +79,7 @@ must use Pattern 1+ (`BinaryLifecycleEnvironment`) or Pattern 3
   New test binary: `test_layer2_engine_module_params` (9 tests)
   covers `validate_fz_info_cache()` cache↔params and cache-internal
   invariants.
-  Design doc: `docs/tech_draft/role_host_template_design.md`.
+  Design doc: `docs/archive/transient-2026-06-02/role_host_template_design.md`.
 
 - **N1 (#83) — config→opts translation L2 round-trip test** —
   2026-05-22.  Closed the systemic gap that B5 + B11 came from.

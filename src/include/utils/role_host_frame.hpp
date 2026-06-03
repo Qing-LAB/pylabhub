@@ -4,7 +4,7 @@
  * @brief RoleHostFrame — plain base class sitting between RoleHostBase
  *        and the three concrete role hosts (Producer/Consumer/Processor).
  *
- * Per design doc `docs/tech_draft/role_host_template_design.md` §11.1,
+ * Per design doc `docs/archive/transient-2026-06-02/role_host_template_design.md` §11.1,
  * this is a **plain (non-templated) class**.  See that section for the
  * structural reasoning grounded in concrete code facts — short version:
  * `EngineHost<ApiT>` one layer up must be a template because its

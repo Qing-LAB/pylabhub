@@ -28,7 +28,7 @@
  * eb3eed36, 2026-05-22) created PER-ROLE static methods.  This
  * file consolidates those into TWO free functions shared across all
  * three roles, per the M9 design (docs/tech_draft/
- * role_host_template_design.md §11.6).
+ * docs/archive/transient-2026-06-02/role_host_template_design.md §11.6).
  *
  * ── HEP-CORE-0021 + Q1 resolution ────────────────────────────────────
  *

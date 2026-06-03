@@ -34,6 +34,8 @@
 
 #include "plh_hub_fixture.h"
 
+#include "utils/role_vault.hpp"   // open() to extract role pubkey for --add-known-role
+
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
@@ -236,7 +238,63 @@ TEST_F(PlhHubCliTest, RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters)
     EXPECT_GT(fs::file_size(hub_dir / "hub.pubkey"), 0u)
         << "hub.pubkey written but empty";
 
-    // Spawn the hub run-mode process.
+    // ── Role pre-keygen + operator allowlist registration ──────────────────
+    // HEP-CORE-0035 §4.8 + PeerAdmission Phase D — the broker's CTRL
+    // ZAP gate denies-by-default; the operator must add the role's
+    // CURVE pubkey to `<hub_dir>/vault/known_roles.json` BEFORE the
+    // hub run-mode process starts (the broker reads the file once at
+    // startup; hot-reload is HEP §4.8.5 future work).
+    //
+    // Steps run BEFORE hub spawn:
+    //   (a) prod_dir layout + role config files
+    //   (b) plh_role --keygen → creates role vault containing the
+    //       CURVE keypair
+    //   (c) RoleVault::open programmatically reads the role's pubkey
+    //       (the L4 test has the password from the env var it set)
+    //   (d) plh_hub --add-known-role <name> <uid> <role> <pubkey_z85>
+    //       writes the canonical entry into known_roles.json
+    const fs::path prod_dir = tmp("rtrip_prod");
+    fs::create_directories(prod_dir / "vault");  // 0700 set by RoleVault::create
+    write_producer_config(prod_dir / "producer.json", hub_dir,
+                          "lab.l4.roundtrip");
+    write_producer_script(prod_dir / "script" / "python");
+
+    ::setenv("PYLABHUB_ROLE_PASSWORD", "rtrip-role-pw", /*overwrite=*/1);
+    const std::string role_uid       = "prod.l4round.uid12345678";
+    const fs::path    role_vault_path =
+        prod_dir / "vault" / (role_uid + ".vault");
+    {
+        WorkerProcess role_kg(plh_role_binary(), "--role",
+            {"producer", "--config",
+             (prod_dir / "producer.json").string(), "--keygen"});
+        ASSERT_EQ(role_kg.wait_for_exit(), 0)
+            << "role --keygen failed:\n" << role_kg.get_stderr();
+        ExpectVaultFileSecured(role_vault_path);
+        EXPECT_TRUE(fs::is_directory(prod_dir / "vault"))
+            << "role vault dir missing: " << (prod_dir / "vault");
+    }
+
+    std::string role_pubkey_z85;
+    {
+        auto role_vault = pylabhub::utils::RoleVault::open(
+            role_vault_path, role_uid, "rtrip-role-pw");
+        role_pubkey_z85 = role_vault.public_key();
+        ASSERT_EQ(role_pubkey_z85.size(), 40u)
+            << "RoleVault::open returned an unexpected pubkey length";
+    }
+    {
+        WorkerProcess add_known(plh_hub_binary(), "--config",
+            {(hub_dir / "hub.json").string(),
+             "--add-known-role",
+             "l4round", role_uid, "producer", role_pubkey_z85});
+        ASSERT_EQ(add_known.wait_for_exit(), 0)
+            << "plh_hub --add-known-role failed:\n" << add_known.get_stderr();
+        ASSERT_TRUE(fs::exists(hub_dir / "vault" / "known_roles.json"))
+            << "--add-known-role did not create known_roles.json";
+    }
+
+    // Spawn the hub run-mode process — broker loads known_roles.json
+    // here, picking up the role entry we just added.
     WorkerProcess hub(plh_hub_binary(), hub_dir.string(), {});
     ASSERT_TRUE(wait_for_log_marker(hub_dir, "Broker: listening on"))
         << "hub never reached run-mode.  Log:\n" << read_hub_log(hub_dir);
@@ -258,34 +316,11 @@ TEST_F(PlhHubCliTest, RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters)
         f << j.dump(2);
     }
 
-    // ── Role side ───────────────────────────────────────────────────────────
-    const fs::path prod_dir = tmp("rtrip_prod");
-    fs::create_directories(prod_dir / "vault");  // 0700 set by RoleVault::create
-    write_producer_config(prod_dir / "producer.json", hub_dir,
-                          "lab.l4.roundtrip");
-    write_producer_script(prod_dir / "script" / "python");
-
-    // --keygen the role vault.  Producer-side CURVE keypair is required
-    // for the broker registration handshake (HEP-CORE-0033 §7.1 — no
-    // CURVE-off mode); without this step the role binary would refuse
-    // to start due to the missing vault file.
-    ::setenv("PYLABHUB_ROLE_PASSWORD", "rtrip-role-pw", /*overwrite=*/1);
-    {
-        WorkerProcess role_kg(plh_role_binary(), "--role",
-            {"producer", "--config",
-             (prod_dir / "producer.json").string(), "--keygen"});
-        ASSERT_EQ(role_kg.wait_for_exit(), 0)
-            << "role --keygen failed:\n" << role_kg.get_stderr();
-        // Verify the role vault file actually appeared with 0600 mode.
-        // rc=0 alone could pass if --keygen prints "ok" but doesn't
-        // write; the artifact check catches that.  Parent-dir MODE
-        // is a separately-tracked gap; existence only here.
-        ExpectVaultFileSecured(prod_dir / "vault" /
-                                "prod.l4round.uid12345678.vault");
-        EXPECT_TRUE(fs::is_directory(prod_dir / "vault"))
-            << "role vault dir missing: " << (prod_dir / "vault");
-    }
-
+    // ── Role run-mode spawn ─────────────────────────────────────────────────
+    // Producer config + vault + allowlist registration done above.
+    // The role binary reads `prod_dir/producer.json` → `hub_dir` →
+    // `hub.pubkey` + the bound endpoint we just patched into hub.json,
+    // then connects to the broker.
     WorkerProcess role(plh_role_binary(), "--role",
         {"producer", prod_dir.string()});
 

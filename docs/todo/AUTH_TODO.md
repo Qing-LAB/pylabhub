@@ -21,7 +21,7 @@ work is the active sprint).
 | A — Abstraction (PeerAdmission interface) | ✅ shipped | commit `d5a90f29` |
 | B — KnownRole + CLI | ✅ shipped | commit `a6b44ff8`; HEP-0035 §4.8.3/§4.8.4 |
 | C — ZapRouter + ZmqQueue CURVE | ✅ shipped + closed | Phase C close-out commits `62bda863..47aa0374` |
-| D — Broker glue (gate closes) | ⏳ ready to implement | All blockers resolved (see "Resolved decisions" below) |
+| D — Broker glue (gate closes) | 🚧 in flight — D1 + D2 ✅; D3–D7 ⏳ | D1 commit `cacea477` (ChannelAccessIndex in HubState); D2 commit `d18d2e91` + close-out (CTRL ZAP install + federation peers in allowlist + L4 roundtrip fix) |
 | E — Admin loopback enforcement | ⏸ planned | Unblocked once D ships |
 | F — Federation peer ZAP parity | ⏸ planned | Depends on E + Federation HEP (#105) |
 | G — SHM auth migration | ⏸ planned | Independent of D/E/F; can interleave |
@@ -30,29 +30,47 @@ work is the active sprint).
 
 ---
 
-## Phase D — Broker glue (next up)
+## Phase D — Broker glue
 
-`BrokerServiceImpl` holds the `ChannelAccessIndex`, runs ZAP for the
-CTRL ROUTER, and pushes `CHANNEL_AUTH_UPDATE` snapshots when consumer
-membership changes.  Steps:
+`HubState` holds the `ChannelAccessIndex` (HEP-CORE-0036 §4.1 line 388);
+`BrokerServiceImpl` installs the CTRL ROUTER ZAP handler against the
+operator-defined allowlist and (in D3+) pushes `CHANNEL_AUTH_UPDATE`
+snapshots when consumer membership changes.
 
-1. **D1 — `ChannelAccessIndex` in `HubState`** (per HEP-CORE-0036 §4.1
-   line 388: `channel_access_index_` lives in HubState, NOT in
-   BrokerServiceImpl).  Two fields per entry
-   (`authorized_consumer_pubkeys` + `shm_secret`).  Producer pubkey
-   + endpoint live on `ChannelEntry::producers[i]` (existing fields
-   `zmq_pubkey` + `zmq_node_endpoint`, hub_state.hpp:184/194) — no
-   duplication.  Mutator API on HubState: `_on_producer_registered`
-   creates entry + generates `shm_secret` if transport=shm;
-   `_on_consumer_authorized` writes pubkey to allowlist;
-   `_on_consumer_revoked` removes pubkey; entry deleted by the
-   existing last-producer atomic-teardown path
-   (`_on_channel_closed`).  Read accessor: `find_channel_access`.
-   L2 tests for the mutators (HubStateOps pattern).
-2. **D2 — Broker CTRL ROUTER ZAP handler.**  Installed against the
-   broker-side `KnownRoleAllowlist` (already loaded by Phase B from
-   `<hub_dir>/vault/known_roles.json`).  Refuses every CTRL hello
-   whose User-Id is not in the allowlist.
+Steps:
+
+1. **D1 — `ChannelAccessIndex` in `HubState`** ✅ shipped (`cacea477`).
+   `ChannelAccessEntry` is two fields (`authorized_consumer_pubkeys`
+   + `shm_secret`) per HEP-CORE-0036 §4.1; producer pubkey + endpoint
+   stay per-producer on `ChannelEntry::producers[i].zmq_pubkey` +
+   `zmq_node_endpoint` (hub_state.hpp:184/194) — no duplication so
+   fan-in (HEP-CORE-0023 §2.1.1) is preserved.  Mutators shipped:
+   `_on_channel_access_opened(channel, shm_secret)`,
+   `_on_channel_access_closed(channel)`,
+   `_on_consumer_authorized(channel, pubkey_z85)`,
+   `_on_consumer_revoked(channel, pubkey_z85)`.  All four idempotent.
+   Read accessor: `channel_access(name)` returning
+   `std::optional<ChannelAccessEntry>` under shared lock.  L2 coverage:
+   12 tests in `HubStateChannelAccess.*` exercising mutators + accessor
+   + idempotence + multi-channel isolation + invalid-identifier counter
+   bump.  TestAccess forwarders added for friend access from tests.
+2. **D2 — Broker CTRL ROUTER ZAP handler** ✅ shipped (`d18d2e91` +
+   close-out).  HubHost startup loads
+   `<hub_dir>/vault/known_roles.json` via `KnownRolesStore` and copies
+   the entries into `BrokerService::Config::known_roles`.
+   `BrokerServiceImpl::run()` builds the initial CTRL `PeerAllowlist`
+   from the UNION of `cfg.known_roles[].pubkey_z85` AND
+   `cfg.peers[].pubkey_z85` (federation peer DEALERs per
+   HEP-CORE-0035 §4.2), wires it into a `BrokerCtrlAdmission`
+   (PeerAdmission impl backed by `PortableAtomicSharedPtr`), installs
+   via `ZapRouter::instance().register_domain("broker.ctrl", ...)`,
+   and pumps `ZapRouter::pump_one(0ms)` after each `zmq::poll`.
+   `Config::enforce_ctrl_admission` defaults to `true` (production
+   deny-all); test L3 fixtures that use CURVE for wire encryption
+   only set it to `false`.  L4 `RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters`
+   exercises the production path end-to-end:
+   `plh_role --keygen` → `RoleVault::open` → `plh_hub --add-known-role`
+   → `plh_hub <hub_dir>` → role connects + REG_REQ succeeds.
 3. **D3 — `CHANNEL_AUTH_UPDATE` wire frame.**  broker_proto 5 → 6.
    Snapshot semantics per HEP-0036 §6.5 (locked 2026-06-02): single
    `allowlist[]` array of plain Z85 strings; receiver REPLACES cache.
@@ -78,7 +96,8 @@ D landing window.
 | P-API | ZmqQueue auth shape — additive `*_with_auth` overloads | Phase C `7b7944e8` |
 | P-Wire | CHANNEL_AUTH_UPDATE semantics — snapshot, not delta | HEP-0036 §6.5 (locked 2026-06-02) |
 | P-Vault | Where known roles live — separate `<hub_dir>/vault/known_roles.json` file mode 0600 | Phase B `a6b44ff8`; HEP-0035 §4.8 |
-| P-Threading | ZapRouter — caller-pumped from BRC poll thread, no internal thread | HEP-0036 §7.1; Phase C `28a06046` + `827474f0` |
+| P-Threading (CTRL) | Broker-side CTRL ROUTER ZAP — caller-pumped from broker poll thread, no internal thread | HEP-0036 §7.1 + D2 `d18d2e91` |
+| P-Threading (data) | Producer-side data ROUTER ZAP — caller-pumped from BRC poll thread, no internal thread | HEP-0036 §7.1; Phase C `28a06046` + `827474f0`; producer-side install pending (task #103) |
 | P-S3 | `current_allowlist_` atomic primitive — `PortableAtomicSharedPtr` | Phase C `7b7944e8` |
 | P-Schema | `ChannelAccessEntry` shape — two fields, per-producer info per-producer | HEP-0036 §4.1 (locked) |
 | P-Push | How broker pushes update — reuse CTRL DEALER/ROUTER in reverse direction | HEP-0036 §6.5 |
