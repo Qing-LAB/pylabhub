@@ -300,15 +300,16 @@ int main(int argc, char *argv[])
         return 0;
     }
 
-    // ── Auth: unlock vault if configured (skipped in --validate mode) ─
-    // `--validate` checks config schema/types/refs; vault unlock is a
-    // runtime concern.  Under the strict-keyfile contract (HEP-CORE-
-    // 0024 §3.4 clarified 2026-05-30), `--validate` on a config that
-    // points at a not-yet-keygen'd vault path would otherwise hard-
-    // error, which breaks the `--init` → `--validate` → `--keygen`
-    // workflow many operators use to pre-flight configs before
-    // creating secrets.
-    if (!args.validate_only && !c.auth().keyfile.empty())
+    // ── Auth: unlock vault (run AND --validate) ────────────────────────
+    // HEP-CORE-0035 §2 (gatekeeper / clearance model) +
+    // HEP-CORE-0024 §3.4.2 (revised 2026-06-04, mirrors HEP-CORE-0033
+    // §6.5): --validate is the clearance check on a provisioned role
+    // home; both run and --validate go through the same load_keypair
+    // path.  RoleHost::set_validate_only(true) below gates broker
+    // connection (a separate, non-CURVE concern), but vault unlock
+    // happens here unconditionally — a role without a vault is not a
+    // runnable role.
+    if (!c.auth().keyfile.empty())
     {
         const auto vault_password = cli::get_password(
             info->role_tag.c_str(),
