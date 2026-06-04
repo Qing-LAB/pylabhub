@@ -869,20 +869,30 @@ be freely edited after the vault is minted:
 | `hub.auth.keyfile` | Vault file path; edit after keygen ⇒ vault not found at new path |
 | (derived) `hub.pubkey` | Federation peers pin it; re-keygen destroys all peer pin bindings |
 
-`--skeleton` is the manual path: it writes a deliberately-invalid
-template (`hub.uid: ""`) so the operator MUST commit a uid before
-any subsequent `--keygen` call.  This is the right path when the
-operator needs to edit fields beyond the required-at-init set
-(federation peers, custom vault location, non-default broker
-endpoint, etc.) before secrets are minted.
+`--skeleton` is the manual-deployment verb name (HEP-CORE-0033
+§6.5 design).  For now (as of commit `c684776a`), it dispatches to
+the same template-writer as `--init` — both produce a hub.json with
+an auto-generated uid + placeholder vault keyfile, then the
+operator runs `--keygen` separately.  The "writes a deliberately-
+invalid template (uid='')" behavior is the §6.5 design target but
+ships in a follow-up alongside the one-shot `--init` bundling so
+the two semantics land coherently.
 
-`--init` is the one-shot path: it accepts the required fields via
-the source-priority chain (flag / env / TTY prompt), writes them
-straight in, then runs `--keygen` in the same command.  It's the
-right path for headless CI and guided dev/CI deployments where
-the defaults for non-required fields are acceptable.
+`--init` is currently the same as `--skeleton`: template-write only
+(auto-gen uid; operator runs `--keygen` next).  The §6.5-designed
+one-shot bundling (accept `--uid` / `--name` via source-priority
+chain, write them straight in, run `--keygen` in the same command)
+is staged: the CLI surface (`--uid`, `--name`, `--no-prompt`,
+`--vault-path` flags) and the `get_required_uid` helper land in
+this commit, but the `do_init` body is unchanged.  Wiring the
+helper into `do_init` is the remaining slice — deferred so the 24
+L4 test sites that currently call bare `plh_hub --init <dir>` can
+be migrated coherently rather than piecemeal.
 
-Both paths produce identical end-states; pick by deployment style.
+When fully landed the two paths will produce identical end-states;
+the manual path will force explicit edit of identity-shaping
+fields, and the one-shot path will accept those fields via flag /
+env / TTY prompt.
 
 ##### Why each ordering step exists
 
