@@ -161,11 +161,25 @@ void HubHost::startup()
     }
 
     // Build BrokerService::Config from HubConfig.
+    // HEP-CORE-0033 §4.2 step 2 + HEP-CORE-0035 §2: CURVE is
+    // unconditional, so a populated keypair is a startup precondition.
+    // Production reaches this point via `HubConfig::load_keypair`
+    // (decrypts the HubVault); tests call it through the same vault
+    // path.  Empty here means the caller skipped both — a programmer
+    // error per HEP-0035 §4.6.5 (no-bypass discipline).
+    if (impl_->cfg.auth().client_pubkey.empty() ||
+        impl_->cfg.auth().client_seckey.empty())
+    {
+        impl_->phase.store(Impl::Phase::Constructed,
+                           std::memory_order_release);
+        throw std::logic_error(
+            "HubHost::startup: hub.auth.client_pubkey / client_seckey "
+            "are empty — load the vault keypair via "
+            "`HubConfig::load_keypair(password)` before calling "
+            "startup() (HEP-CORE-0035 §2).");
+    }
     broker::BrokerService::Config bcfg;
     bcfg.endpoint = impl_->cfg.network().broker_endpoint;
-    // CURVE: enabled if a keypair was loaded into the auth config
-    // (caller did `cfg.load_keypair(password)` before constructing HubHost).
-    bcfg.use_curve         = !impl_->cfg.auth().client_pubkey.empty();
     bcfg.server_secret_key = impl_->cfg.auth().client_seckey;
     bcfg.server_public_key = impl_->cfg.auth().client_pubkey;
 

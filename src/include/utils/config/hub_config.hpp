@@ -76,21 +76,6 @@ class PYLABHUB_UTILS_EXPORT HubConfig
     /// @throws std::runtime_error if vault creation fails.
     std::string create_keypair(const std::string &password);
 
-    /// Test-only: inject a CURVE keypair directly into `auth()` without
-    /// going through the on-disk vault.  Per HEP-CORE-0035 §4.6.5
-    /// (no-bypass discipline), the vault is a *persistence* concern;
-    /// runtime CURVE keys are two Z85 strings.  Tests skip the vault
-    /// (avoiding the Argon2id KDF) but use real CURVE keys on the wire
-    /// — the wire path through CURVE + admission stays exactly as
-    /// production.
-    ///
-    /// This is the only test-side bypass HEP-0035 §4.6.5 sanctions; it
-    /// MUST NOT be reachable from production binaries.  Callers
-    /// (`tests/test_framework/broker_test_harness.cpp`) include the
-    /// declared bypass block.
-    void inject_keypair_for_test(std::string public_z85,
-                                 std::string secret_z85);
-
     // ── Raw JSON / JsonConfig operations ────────────────────────────
 
     const nlohmann::json         &raw() const;

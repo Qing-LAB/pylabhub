@@ -423,16 +423,17 @@ int main(int argc, char *argv[])
     if (args.keygen_only)
         return do_keygen(cfg);
 
-    // 9. Unlock vault if configured (skipped in --validate mode per
-    //    the same reasoning as plh_role_main: vault unlock is a
-    //    runtime concern, not a config-validity concern.  Under the
-    //    strict-keyfile contract HEP-CORE-0033 §7.1 clarified
-    //    2026-05-30, --validate on a not-yet-keygen'd config would
-    //    otherwise hard-error and break the --init → --validate →
-    //    --keygen workflow).  HubHost reads the unlocked
-    //    auth().client_pubkey/seckey at startup() to decide whether to
-    //    enable CURVE on the broker (HEP-0033 §4.1 step 2).
-    if (!args.validate_only && !cfg.auth().keyfile.empty())
+    // 9. Unlock vault.  Reached by both `run` and `--validate`.
+    //    HEP-CORE-0035 §2 (gatekeeper / clearance model) +
+    //    HEP-CORE-0033 §6.5 finalize that `--validate` is a clearance
+    //    check on a provisioned hub home, not a config-syntax check —
+    //    it exercises the same `HubConfig::load_keypair` + `HubHost::
+    //    startup` path as `run` and exits after shutdown.  A hub
+    //    without a vault is not a runnable hub, so validating an
+    //    inert directory is meaningless under the unconditional-
+    //    CURVE invariant (HEP-CORE-0035 §2): both paths require the
+    //    vault, both prompt for the password, both unlock.
+    if (!cfg.auth().keyfile.empty())
     {
         const auto vault_password = cli::get_password(
             "hub",

@@ -479,34 +479,29 @@ bool BrokerRequestComm::connect(const Config &cfg)
             *pImpl->dealer,
             ::pylabhub::utils::ZmqSocketRole::TcpConnect);
 
-        // CurveZMQ.
-        if (!cfg.broker_pubkey.empty())
+        // CurveZMQ — unconditional per HEP-CORE-0035 §2.  All three
+        // fields are required; the broker's CTRL ROUTER will reject
+        // an unauthenticated DEALER (CURVE-server + ZAP gate at the
+        // remote).  Empty here is a programmer error (no-bypass
+        // discipline, §4.6.5): the role loaded its vault but failed
+        // to populate the BRC config — surface the misconfiguration
+        // at connect() rather than producing a stuck handshake.
+        if (cfg.broker_pubkey.empty() ||
+            cfg.client_pubkey.empty() ||
+            cfg.client_seckey.empty())
         {
-            if (!cfg.client_pubkey.empty() && !cfg.client_seckey.empty())
-            {
-                pImpl->dealer->set(zmq::sockopt::curve_serverkey, cfg.broker_pubkey);
-                pImpl->dealer->set(zmq::sockopt::curve_publickey, cfg.client_pubkey);
-                pImpl->dealer->set(zmq::sockopt::curve_secretkey, cfg.client_seckey);
-            }
-            else
-            {
-                // Generate ephemeral client keypair.
-                pylabhub::utils::security::CurveKeypair kp;
-                try
-                {
-                    kp = pylabhub::utils::security::generate_curve_keypair();
-                }
-                catch (const std::runtime_error &e)
-                {
-                    LOGGER_ERROR("BrokerRequestComm: {}", e.what());
-                    pImpl->dealer.reset();
-                    return false;
-                }
-                pImpl->dealer->set(zmq::sockopt::curve_serverkey, cfg.broker_pubkey);
-                pImpl->dealer->set(zmq::sockopt::curve_publickey, kp.public_z85);
-                pImpl->dealer->set(zmq::sockopt::curve_secretkey, kp.secret_z85);
-            }
+            LOGGER_ERROR(
+                "BrokerRequestComm: broker_pubkey / client_pubkey / "
+                "client_seckey are REQUIRED non-empty Z85 strings "
+                "(HEP-CORE-0035 §2).  Refusing to connect to {} without "
+                "CURVE.",
+                cfg.broker_endpoint);
+            pImpl->dealer.reset();
+            return false;
         }
+        pImpl->dealer->set(zmq::sockopt::curve_serverkey, cfg.broker_pubkey);
+        pImpl->dealer->set(zmq::sockopt::curve_publickey, cfg.client_pubkey);
+        pImpl->dealer->set(zmq::sockopt::curve_secretkey, cfg.client_seckey);
 
         // (Heartbeat 5s/30s + reconnect-disable + sndtimeo=500ms +
         // linger=0 are all applied above by `apply_socket_policy`,
@@ -562,9 +557,8 @@ bool BrokerRequestComm::connect(const Config &cfg)
         pImpl->connected.store(true, std::memory_order_release);
         pImpl->stop_requested.store(false, std::memory_order_release);
 
-        LOGGER_INFO("BrokerRequestComm: connected to {} ({})",
-                    cfg.broker_endpoint,
-                    cfg.broker_pubkey.empty() ? "plain TCP" : "CurveZMQ");
+        LOGGER_INFO("BrokerRequestComm: connected to {} (CurveZMQ)",
+                    cfg.broker_endpoint);
         return true;
     }
     catch (const zmq::error_t &e)

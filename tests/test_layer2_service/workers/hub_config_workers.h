@@ -46,9 +46,11 @@ int load_keypair_refuses_loose_file_mode(const char *tmpdir);
 /// HEP-CORE-0035 §4.6.2: load_keypair refuses 0755 vault parent dir.
 int load_keypair_refuses_loose_parent_dir_mode(const char *tmpdir);
 
-/// Missing hub.uid → auto-generated `hub.<name>.uid<8hex>` per HEP-0033 §G2.2.0a;
-/// resulting uid validates under IdentifierKind::PeerUid.
-int uid_auto_generated(const char *tmpdir);
+/// Empty or absent hub.uid → hard config-load error per HEP-CORE-0033 §6.3
+/// (revised 2026-06-04).  Silent auto-gen was retired; auto-generation
+/// survives only as a UX feature in the `--init` interactive prompt
+/// helper (HEP-0033 §6.5 "Validator wiring").
+int uid_empty_rejected(const char *tmpdir);
 
 /// `state.disconnected_grace_ms = -1` → resolves to kInfiniteGrace.
 int state_grace_sentinel(const char *tmpdir);

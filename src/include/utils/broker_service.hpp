@@ -140,7 +140,6 @@ public:
     struct Config
     {
         std::string endpoint{"tcp://0.0.0.0:5570"};
-        bool use_curve{true};
 
         // ── Role liveness (HEP-CORE-0023 §2.5) ───────────────────────────
         // Single source of truth: effective timeouts are derived from the
@@ -192,12 +191,14 @@ public:
         /// Cat 2 policy: what to do when producer/consumer reports a slot checksum error.
         ChecksumRepairPolicy checksum_repair_policy{ChecksumRepairPolicy::None};
 
-        /// Optional: stable broker CurveZMQ keypair from HubVault.
-        /// When both fields are non-empty, the broker uses these keys instead of
-        /// generating an ephemeral keypair on every startup. Supply via
-        /// HubVault::broker_curve_secret_key() / broker_curve_public_key().
-        std::string server_secret_key; ///< Z85 secret key (40 chars). Empty = generate ephemeral.
-        std::string server_public_key; ///< Z85 public key (40 chars). Empty = generate ephemeral.
+        /// Stable broker CurveZMQ keypair (HEP-CORE-0035 §2 — CURVE is
+        /// unconditional).  Both fields MUST be non-empty Z85 strings
+        /// (40 chars).  Production sources them from `HubVault`
+        /// (`broker_curve_public_key()` / `broker_curve_secret_key()`);
+        /// tests construct them via `pylabhub::tests::gen_curve_keypair`.
+        /// `BrokerService` ctor throws `std::logic_error` on empty.
+        std::string server_secret_key; ///< Z85 secret key (40 chars). REQUIRED.
+        std::string server_public_key; ///< Z85 public key (40 chars). REQUIRED.
 
         /// Optional: called from run() after bind() with (bound_endpoint, server_public_key).
         /// Useful for tests using dynamic port assignment (endpoint="tcp://127.0.0.1:0").
@@ -222,31 +223,11 @@ public:
         /// Defaults to Open.
         RoleIdentityPolicy             role_identity_policy{RoleIdentityPolicy::Open};
 
-        /// Roles allowed to register when policy is Verified.
-        /// Also consulted for logging in Tracked/Required modes.
+        /// Roles allowed to register.  Per HEP-CORE-0035 §4.8 the
+        /// CTRL ROUTER's ZAP gate is unconditional and admits the
+        /// UNION of `known_roles[].pubkey_z85` and `peers[].pubkey_z85`;
+        /// an empty union is the legal deny-all state per §4.8.4.
         std::vector<KnownRole>         known_roles;
-
-        /// HEP-CORE-0035 §4.8 — install ZAP admission on the CTRL
-        /// ROUTER socket when `use_curve == true`.  Production
-        /// (`HubHost::startup`) keeps the default `true`: every CTRL
-        /// hello is gated against the UNION of `known_roles[]` and
-        /// `peers[].pubkey_z85` (HEP-CORE-0035 §4.2); an empty
-        /// allowlist means deny-all per HEP-CORE-0035 §4.8.4.
-        ///
-        /// Direct-Config tests that enable CURVE only for wire
-        /// encryption (not for admission testing) set this to `false`.
-        /// The broker still REGISTERS a ZAP domain (defense against
-        /// `ZapRouter` singleton-state contamination in aggregate
-        /// binaries) but `BrokerCtrlAdmission::is_peer_allowed` always
-        /// returns true in this mode — every CURVE peer is admitted.
-        ///
-        /// Mismatch case (`enforce=true` + `use_curve=false`): no
-        /// CURVE handshake fires so the gate is inert; the broker
-        /// silently accepts every plaintext peer.  `BrokerServiceImpl::run()`
-        /// emits a `LOGGER_WARN` on this path.  HubHost startup
-        /// hard-errors on missing keyfile (task #78) so production
-        /// cannot reach the mismatch case.
-        bool                           enforce_ctrl_admission{true};
 
         /// Per-channel policy overrides (first matching glob wins).
         std::vector<ChannelPolicyOverride>  channel_policy_overrides;

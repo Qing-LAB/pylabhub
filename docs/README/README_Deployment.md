@@ -281,8 +281,8 @@ revisions.
 | `federation.peers[]` | no | `[]` | Federation peer list |
 | `hub.auth.keyfile` | **YES** | `"vault/<hub_uid>.vault"` (`--init` template default; UID-keyed per HEP-CORE-0033 §6.5 revised 2026-05-31) | Required non-empty path string to the encrypted vault.  Relative paths resolve against `hub_dir`.  Empty string / missing field / missing `auth` object → config-load error (HEP-CORE-0033 §7.1).  pylabhub is a vault: no in-memory CURVE mode.  See §4.3 for the security-warning rule when the path resolves inside `hub_dir`. |
 | `hub.log_level` | no | `"info"` | `debug` / `info` / `warn` / `error` |
-| `hub.name` | no | `"local.hub.default"` | Human name; also used to auto-generate `hub.uid` |
-| `hub.uid` | no | auto | Stable UID in `hub.<name>.uid<hex>` format; auto-generated if absent |
+| `hub.name` | no | `""` | Human display name.  Used by `--init` (HEP-CORE-0033 §6.5) as the basis of the inline auto-gen suggestion for `hub.uid` when prompting interactively; otherwise informational. |
+| `hub.uid` | **YES** | — | Stable UID in `hub.<name>.uid<hex>` format.  Required per HEP-CORE-0033 §6.3 (revised 2026-06-04); empty/absent is a config-load error.  Auto-generation survives only as a TTY-prompt UX default during `--init` (HEP-CORE-0033 §6.5). |
 | `logging.backups` | no | `5` | Rotating log retention count |
 | `logging.file_path` | no | `""` | Empty = derive from hub_dir/logs |
 | `logging.max_size_mb` | no | `10` | Rotate when active log reaches this size |
@@ -333,15 +333,89 @@ plh_hub --config <hub-dir>/hub.json --keygen
 #   pubkey + every admin session bound to the old token.  Operator
 #   must remove the file explicitly to override.
 
+# --validate — dry-run smoke test (gatekeeper + clearance model,
+# HEP-CORE-0033 §6.5).  Unlocks the vault, runs the full
+# HubHost::startup() → shutdown() round-trip, exits 0 on
+# "Validation passed".  Same code path as run mode; the only
+# difference is run keeps running.  Requires --keygen has already
+# created the vault (the gatekeeper); otherwise exits non-zero
+# with "vault file '<path>' does not exist — run --keygen (or
+# --init) first".
+export PYLABHUB_HUB_PASSWORD="<same password>"
+plh_hub --validate <hub-dir>/
+
 # Run mode — unlocks vault using PYLABHUB_HUB_PASSWORD from env
 export PYLABHUB_HUB_PASSWORD="<same password>"
 plh_hub <hub-dir>/
-
-# Validation only (parse config + script syntax; no broker bind; no
-# vault unlock — placeholder keyfile paths are fine for --validate
-# because the file is never opened).
-plh_hub --validate <hub-dir>/
 ```
+
+**Two deployment styles (HEP-CORE-0033 §6.5):**
+
+**A. Manual / production-review style** — for deployments that
+need to edit federation peers, move the vault outside `hub_dir`
+(§7.2 recommendation), or otherwise customize before secrets are
+minted:
+
+```bash
+plh_hub --skeleton <hub-dir>        # layout only; hub.json INVALID
+                                    # until edited (uid is empty)
+$EDITOR <hub-dir>/hub.json          # set uid + name + any other fields
+export PYLABHUB_HUB_PASSWORD="..."
+plh_hub --config <hub-dir>/hub.json --keygen     # GATEKEEPER: mint vault
+plh_hub --validate <hub-dir>/                    # CLEARANCE: smoke test
+plh_hub <hub-dir>/                               # RUN
+```
+
+**B. One-shot style** — for headless CI / scripted / guided dev
+deployment where the non-required defaults are acceptable:
+
+```bash
+# Headless (no prompts; everything via flag or env):
+PYLABHUB_HUB_PASSWORD="..." \
+plh_hub --init --uid hub.main.uid01 --name MainHub <hub-dir>
+
+# Or guided (TTY prompts for any required field not on CLI/env):
+plh_hub --init <hub-dir>
+#   ⇒ Hub name: MainHub
+#   ⇒ Hub uid [default: hub.MainHub.uid3a7f2b1c]: <ENTER to accept or type override>
+#   ⇒ Hub vault password: ****
+#
+# Auto-gen runs ONLY on the TTY prompt path as an inline default
+# the operator can accept or override.  The parser itself rejects
+# empty hub.uid as a hard config-load error — no silent fallback.
+```
+
+`--init` bundles `--skeleton` + identity-field commit + `--keygen`
+into one command.  Source priority for each required field:
+`--flag` → env var → TTY prompt → error.  `--no-prompt` forces
+fail-fast even on a TTY (useful for systemd / Docker entrypoints
+that have a tty attached but shouldn't accept interactive input).
+
+**Why both styles?** Identity-shaping fields (`hub.uid`,
+`hub.auth.keyfile`) are coupled to the vault and cannot be freely
+edited after keygen.  Style A makes the operator review them via
+`$EDITOR` before secrets exist.  Style B accepts them up-front
+via CLI/env and skips the edit step.  Both produce identical
+end-states; pick by deployment context.
+
+**Required env vars (per HEP-CORE-0033 §6.5):**
+
+| Variable                   | Used by             | Required when                                         |
+|----------------------------|---------------------|-------------------------------------------------------|
+| `PYLABHUB_HUB_UID`         | `--init` (style B)  | Headless / non-TTY + `--uid` not on CLI               |
+| `PYLABHUB_HUB_NAME`        | `--init` (style B)  | Headless / non-TTY + `--name` not on CLI              |
+| `PYLABHUB_HUB_PASSWORD`    | `--init`, `--keygen`, `--validate`, run | Headless / non-TTY + no interactive prompt |
+| `PYLABHUB_ROLE`            | `plh_role --init`   | Headless / non-TTY + `--role` not on CLI              |
+| `PYLABHUB_ROLE_UID`        | `plh_role --init`   | Headless / non-TTY + `--uid` not on CLI               |
+| `PYLABHUB_ROLE_NAME`       | `plh_role --init`   | Headless / non-TTY + `--name` not on CLI              |
+| `PYLABHUB_ROLE_PASSWORD`   | `plh_role --init`, `--keygen`, `--validate`, run | Headless / non-TTY |
+
+**Workflow contract:** `--keygen` is the only verb that mints the
+vault, whether invoked directly (style A) or implicitly via
+`--init` (style B).  `--validate` and `run` both require the
+vault and both prompt for the vault password to unlock the CURVE
+keypair; the unconditional-CURVE invariant (HEP-CORE-0035 §2)
+leaves no validate-without-vault carve-out.
 
 After `--keygen`, every restart of the hub uses the same vault —
 no re-handshake on the role side, no rekey churn.
@@ -660,7 +734,7 @@ other end.
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
 | `producer.name` | yes | — | Human name; used in UID (`PROD-{NAME}-{HEX}`) |
-| `producer.uid` | no | generated | Override auto-generated UID |
+| `producer.uid` | **YES** | — | Required per HEP-CORE-0024 §3.4.2 (revised 2026-06-04); empty/absent is a config-load error.  Auto-generation survives only as a TTY-prompt UX default during `--init`. |
 | `producer.log_level` | no | `"info"` | `debug`/`info`/`warn`/`error` |
 | `producer.auth.keyfile` | **YES** | `"vault/<role_uid>.vault"` (`--init` template default) | Required non-empty path string to the encrypted role vault.  Relative paths resolve against `<producer-dir>`.  Empty string / missing field / missing `auth` object → config-load error (HEP-CORE-0024 §3.4).  pylabhub is a vault: no in-memory CURVE mode.  See §4.3 for the symmetric hub-side warning when the resolved path is inside the role directory. |
 | `hub_dir` | no† | — | Hub directory; reads `hub.json` + `hub.pubkey` |
@@ -768,7 +842,7 @@ Example `consumer.json` (matches current `--init` output):
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
 | `consumer.name` | yes | — | Human name; used in UID (`CONS-{NAME}-{HEX}`) |
-| `consumer.uid` | no | generated | Override auto-generated UID |
+| `consumer.uid` | **YES** | — | Required per HEP-CORE-0024 §3.4.2 (revised 2026-06-04); empty/absent is a config-load error.  Auto-generation survives only as a TTY-prompt UX default during `--init`. |
 | `consumer.log_level` | no | `"info"` | `debug`/`info`/`warn`/`error` |
 | `consumer.auth.keyfile` | **YES** | `"vault/<role_uid>.vault"` (`--init` template default) | Required non-empty path string to the encrypted role vault.  Relative paths resolve against `<consumer-dir>`.  Empty string / missing field / missing `auth` object → config-load error (HEP-CORE-0024 §3.4). |
 | `hub_dir` | no† | — | Hub directory; reads `hub.json` + `hub.pubkey` |
@@ -891,7 +965,7 @@ Example `processor.json` (matches current `--init` output):
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
 | `processor.name` | yes | — | Human name; used in UID (`PROC-{NAME}-{HEX}`) |
-| `processor.uid` | no | generated | Override auto-generated UID |
+| `processor.uid` | **YES** | — | Required per HEP-CORE-0024 §3.4.2 (revised 2026-06-04); empty/absent is a config-load error.  Auto-generation survives only as a TTY-prompt UX default during `--init`. |
 | `processor.log_level` | no | `"info"` | `debug`/`info`/`warn`/`error` |
 | `hub_dir` | no† | — | Hub directory for both input and output directions |
 | `in_hub_dir` | no† | — | Per-direction override for input broker |

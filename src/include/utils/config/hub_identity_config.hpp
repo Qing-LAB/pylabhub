@@ -64,22 +64,31 @@ inline HubIdentityConfig parse_hub_identity_config(const nlohmann::json &j)
     hc.log_level = sect.value("log_level", std::string{"info"});
     hc.uid       = sect.value("uid", std::string{});
 
+    // HEP-CORE-0033 §6.3 (revised 2026-06-04): empty or absent
+    // `hub.uid` is a hard config-load error.  The silent-auto-gen
+    // fallback was retired alongside the §6.5 gatekeeper model —
+    // a hub whose identity was minted by a silent fallback is the
+    // exact failure mode `--skeleton` / `--init` are designed to
+    // prevent.  Auto-generation survives only as a UX feature in
+    // the `--init` interactive prompt helper (visible inline as
+    // `[default: ...]`).
     if (hc.uid.empty())
     {
-        hc.uid = pylabhub::uid::generate_hub_uid(hc.name);
-        std::fprintf(stderr,
-                     "[hub] No 'hub.uid' in config — generated: %s\n"
-                     "  Add this to hub.json to make the UID stable.\n",
-                     hc.uid.c_str());
+        throw std::runtime_error(
+            "hub: 'hub.uid' is empty or missing.  Run `plh_hub --init "
+            "--uid <uid>` (one-shot) or `plh_hub --skeleton` + edit "
+            "hub.json + `plh_hub --keygen` (manual) — see "
+            "HEP-CORE-0033 §6.5.  Required format: HEP-CORE-0033 "
+            "§G2.2.0b PeerUid grammar 'hub.<name>.uid<8hex>', "
+            "e.g. 'hub.main.uid3a7f2b1c'.");
     }
-    else if (!pylabhub::hub::is_valid_identifier(
-                 hc.uid, pylabhub::hub::IdentifierKind::PeerUid))
+    if (!pylabhub::hub::is_valid_identifier(
+            hc.uid, pylabhub::hub::IdentifierKind::PeerUid))
     {
         throw std::runtime_error(
             "hub: invalid 'hub.uid' = '" + hc.uid +
-            "'. Must follow HEP-0033 §G2.2.0a format hub.<name>.uid<8hex>, "
-            "e.g. 'hub.main.uid3a7f2b1c'. Clear this field to let auto-gen "
-            "produce a valid one.");
+            "'.  Must follow HEP-CORE-0033 §G2.2.0b PeerUid grammar "
+            "'hub.<name>.uid<8hex>', e.g. 'hub.main.uid3a7f2b1c'.");
     }
 
     return hc;

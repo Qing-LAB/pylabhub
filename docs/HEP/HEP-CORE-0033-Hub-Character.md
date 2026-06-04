@@ -490,15 +490,29 @@ Mirrors `plh_role` CLI shape and parser contract.
 
 ```
 Usage:
-  plh_hub --init [<hub_dir>]            # Create hub directory + template config
-  plh_hub <hub_dir>                     # Run from directory
-  plh_hub --config <path.json> [--validate | --keygen]
+  plh_hub --skeleton <hub_dir>               # Layout only; hub.json INVALID until edited
+                                              # (no identity yet; not a runnable hub).
+  plh_hub --init [opts] <hub_dir>            # One-shot: skeleton + identity + keygen.
+                                              # Prompts for required fields on a TTY;
+                                              # fails fast on a non-TTY without them.
+  plh_hub --config <path.json> --keygen      # Mint vault (manual path; refuses overwrite).
+  plh_hub --config <path.json> --validate    # Clearance: unlock + startup + shutdown.
+  plh_hub <hub_dir>                          # Run from a provisioned directory.
   plh_hub --help | -h
 
-Init-only options:
-  --name <name>      Hub name for --init
-  --log-maxsize <MB> Rotate at (default 10)
-  --log-backups <N>  Keep N (default 5; -1 = keep all)
+--init options (required-at-init resolved via flag / env / TTY prompt):
+  --uid  <uid>       Hub UID, validated against §G2.2.0b PeerUid grammar
+                     (env fallback: PYLABHUB_HUB_UID).  REQUIRED.
+  --name <name>      Hub display name, validated against RoleName grammar
+                     (env fallback: PYLABHUB_HUB_NAME).  REQUIRED.
+  --vault-path <p>   Vault file path; default vault/<uid>.vault inside hub_dir.
+                     If inside hub_dir, §7.2 security warning fires.
+  --broker <ep>      network.broker_endpoint; default tcp://0.0.0.0:5570.
+  --no-prompt        Force fail-fast on missing required fields even on a TTY.
+
+--init/--skeleton-only options:
+  --log-maxsize <MB> Rotate at (default 10).
+  --log-backups <N>  Keep N (default 5; -1 = keep all).
 ```
 
 **Parser contract** (identical to `role_cli::parse_role_args`):
@@ -631,9 +645,20 @@ asymmetric sides.
   (`numeric_limits<size_t>::max()`). `"disconnected_grace_ms": -1` → infinite.
 - **Absent sections take defaults.** No `"federation"` → `enabled=false`; no
   `"script"` → hub runs without one.
-- **UID auto-generation with diagnostic.** Absent `hub.uid` → generate
-  `HUB-<NAME>-<hex8>`, print warning with the generated UID so the operator can
-  paste it back for stability (same pattern as role identity).
+- **UID is required at config load (finalized 2026-06-04).** Empty or
+  absent `hub.uid` is a hard config-load error citing the §G2.2.0b
+  PeerUid grammar.  Auto-generation is NOT a parser fallback — the
+  silent-auto-gen behavior was retired alongside the §6.5 gatekeeper
+  model because a hub whose identity was minted by a silent fallback
+  (rather than explicitly committed by the operator) is the exact
+  failure mode `--skeleton`/`--init` were designed to prevent.
+  Auto-generation survives as a UX feature in the `--init` interactive
+  prompt helper (§6.5 "Validator wiring"): when stdin is a TTY and the
+  operator hits ENTER on the uid prompt, the helper offers a generated
+  default *visible inline* (`Hub uid [default: hub.<name>.uid<8hex>]:`).
+  The operator either accepts (ENTER) or types an override.  No silent
+  generation on any non-TTY path.  Same model on the role side
+  (HEP-CORE-0024 §3.4).
 
 ### 6.4 New categorical sub-config headers (`src/include/utils/config/`)
 
@@ -734,7 +759,213 @@ rejected during the 2026-05-31 contract finalization for the
 reasons in §17.1 "No remote code injection" and the
 "pylabhub is a vault" framing this HEP carries throughout.
 
-## 7. Hub directory layout (`--init` output)
+#### Lifecycle: gatekeeper + clearance model (finalized 2026-06-04)
+
+##### State diagram
+
+The CLI is grounded in three directory states.  Vault creation is
+the gatekeeper boundary between *inert* and *provisioned*; two
+CLI verbs reach it (`--keygen` for the manual path, `--init` for
+the one-shot path).  Once provisioned, `--validate` is the
+clearance check and `run` is production.
+
+```
+   (nothing)
+       │
+       │ --skeleton <hub_dir>            ← layout only;
+       │                                   hub.json INVALID on load
+       │                                   (uid="") until edited
+       │   ────── or ──────
+       │
+       │ --init [--uid X --name Y ...] <hub_dir>
+       │                                ← one-shot: bundles
+       │                                   --skeleton + identity-field
+       │                                   commit + --keygen;
+       │                                   prompts for required fields
+       │                                   on a TTY; fails fast on a
+       │                                   non-TTY without all
+       │                                   required values
+       ▼
+   ┌──────────────────────────────┐
+   │ [ inert ]   layout only;     │  ← reached by --skeleton or
+   │             not yet a hub    │    transiently by --init
+   └──────────────────────────────┘
+       │
+       │ (manual path only)
+       │ operator edits hub.json
+       │   (sets uid; optionally moves
+       │    vault path outside hub_dir
+       │    per §7.2; sets federation
+       │    peers etc.)
+       │
+       │ --keygen <hub_dir>              ← GATEKEEPER:
+       ▼                                   mints vault; refuses to
+   ┌──────────────────────────────┐        overwrite; publishes
+   │ [ provisioned ]              │        hub.pubkey
+   │   vault file exists;         │
+   │   hub_dir is a valid hub home│
+   └──────────────────────────────┘
+       │
+       ├── --validate <hub_dir>          ← CLEARANCE:
+       │                                   prompts for vault password
+       │                                   (env-fallback);
+       │                                   load_keypair + startup() +
+       │                                   shutdown();
+       │                                   exits "Validation passed";
+       │                                   idempotent.
+       │
+       └── plh_hub <hub_dir>             ← PRODUCTION:
+                                           same load_keypair + startup
+                                           path; keeps running.
+```
+
+##### Required-field source priority (`--init`)
+
+`--init` resolves each required field through the same priority
+chain as `cli::get_password`; the same chain extends to every new
+required field via shared helpers in `utils/cli/`:
+
+```
+1. CLI flag (e.g. --uid X)                    ← always wins
+2. Environment variable (PYLABHUB_HUB_UID)    ← scripted CI
+3. Interactive prompt (only when isatty)      ← guided deployment
+4. else: hard error                           ← never hang on stdin
+```
+
+Every required field — across hub and role binaries — uses this
+priority chain.  Optionals (vault path, broker endpoint, etc.)
+take their defaults silently and are editable later via direct
+hub.json edit; only fields that cannot reach a sensible default
+are required.
+
+| Binary                | Required at `--init`    | Source priority                  | Validator                       |
+|-----------------------|-------------------------|----------------------------------|---------------------------------|
+| `plh_hub --init`      | `hub.uid`               | `--uid` / `PYLABHUB_HUB_UID`     | `IdentifierKind::PeerUid`       |
+| `plh_hub --init`      | `hub.name`              | `--name` / `PYLABHUB_HUB_NAME`   | `IdentifierKind::RoleName`      |
+| `plh_hub --init`      | vault password          | `PYLABHUB_HUB_PASSWORD`          | length minimum                  |
+| `plh_role --init`     | `role` (prod/cons/proc) | `--role` / `PYLABHUB_ROLE`       | enum                            |
+| `plh_role --init`     | `role.uid`              | `--uid` / `PYLABHUB_ROLE_UID`    | `IdentifierKind::RoleUid`       |
+| `plh_role --init`     | `role.name`             | `--name` / `PYLABHUB_ROLE_NAME`  | `IdentifierKind::RoleName`      |
+| `plh_role --init`     | vault password          | `PYLABHUB_ROLE_PASSWORD`         | length minimum                  |
+
+Headless deploy: set all env vars; `--init` runs without prompts.
+Guided deploy: attach a TTY; `--init` walks the operator through
+each missing required field, re-prompting on validation failure.
+Mixed: pass some via flag, env-supply others, leave the rest to
+prompt — the chain handles each field independently.
+
+Optional `--no-prompt` flag forces fail-fast even when stdin is
+a TTY (useful when piping the binary inside automation that
+shouldn't accept interactive input).
+
+##### Why `--skeleton` and `--init` both exist
+
+Three fields in `hub.json` are coupled to the vault and cannot
+be freely edited after the vault is minted:
+
+| Field              | Coupling                                                       |
+|--------------------|----------------------------------------------------------------|
+| `hub.uid`          | Argon2id KDF domain separator; edit after keygen ⇒ vault won't decrypt |
+| `hub.auth.keyfile` | Vault file path; edit after keygen ⇒ vault not found at new path |
+| (derived) `hub.pubkey` | Federation peers pin it; re-keygen destroys all peer pin bindings |
+
+`--skeleton` is the manual path: it writes a deliberately-invalid
+template (`hub.uid: ""`) so the operator MUST commit a uid before
+any subsequent `--keygen` call.  This is the right path when the
+operator needs to edit fields beyond the required-at-init set
+(federation peers, custom vault location, non-default broker
+endpoint, etc.) before secrets are minted.
+
+`--init` is the one-shot path: it accepts the required fields via
+the source-priority chain (flag / env / TTY prompt), writes them
+straight in, then runs `--keygen` in the same command.  It's the
+right path for headless CI and guided dev/CI deployments where
+the defaults for non-required fields are acceptable.
+
+Both paths produce identical end-states; pick by deployment style.
+
+##### Why each ordering step exists
+
+1. `--keygen` reads `hub.json` to learn the vault path and uses
+   `hub.uid` as the Argon2id KDF domain separator.  `--skeleton`
+   (or `--init`) produces the file with those fields settled.
+2. `--validate` and `run` both call `HubConfig::load_keypair`
+   which unlocks the vault.  Without a vault file at the resolved
+   path, `load_keypair` throws `"vault file '<path>' does not
+   exist — run --keygen (or --init) first"`.  This is the §4.6.2
+   vault-presence gate firing naturally; no CLI-mode-specific
+   logic is needed.
+3. The HEP-CORE-0035 §2 invariant **"HubHost startup requires a
+   loaded keypair"** forbids any path that calls `startup()`
+   without a loaded keypair, including a hypothetical
+   "validate-without-vault" carve-out.  Such a carve-out would
+   require either (a) constructing `HubHost` with empty CURVE
+   keys (rejected at §2), or (b) calling something less than
+   `startup()` from the validate path (defeats validate's
+   purpose, which is to dry-run the production code path).
+
+##### Validator wiring (CLI ↔ canonical)
+
+Every CLI path that accepts a UID-shaped field calls the same
+canonical validator from `utils/naming.hpp`:
+
+```cpp
+// utils/cli/get_required_uid.hpp  (new, shared hub + role)
+[[nodiscard]] std::optional<std::string>
+get_required_uid(std::string_view side,        // "hub" / "prod" / "cons" / "proc"
+                 std::string_view env_var,     // e.g. "PYLABHUB_HUB_UID"
+                 std::string_view prompt,      // e.g. "Hub uid:"
+                 IdentifierKind   kind,        // PeerUid / RoleUid
+                 std::string_view cli_flag,    // value passed via --uid (may be empty)
+                 bool             no_prompt);  // honor --no-prompt
+```
+
+The helper:
+- Returns the CLI flag value if non-empty.
+- Otherwise reads the env var; if non-empty, validates via
+  `is_valid_identifier(value, kind)` and returns or errors.
+- Otherwise, if `isatty(STDIN_FILENO) && !no_prompt`, prompts;
+  re-prompts on validation failure.
+- Otherwise: error with the canonical format ("invalid uid '...':
+  must match HEP-CORE-0033 §G2.2.0b PeerUid grammar
+  'tag.name.unique', e.g. 'hub.main.uid3a7f2b1c'").
+
+Same validator function (`is_valid_identifier`) runs regardless
+of source — no parallel format-checking code lives in the CLI
+layer.  Adding a new required field is one line: call
+`get_required_uid(...)`.
+
+Defense-in-depth structure:
+- **Parse-time:** CLI helper rejects malformed uid before any
+  disk write.
+- **Config-load-time:** `parse_hub_identity_config` /
+  `parse_role_identity_config` re-validate via the same function.
+- **Vault-write time:** consumes already-validated uid; no
+  redundant check.
+
+##### Idempotency contract summary
+
+| Command            | Idempotent? | On re-run on the same state                          |
+|--------------------|-------------|------------------------------------------------------|
+| `--skeleton`       | no          | refuses to overwrite existing hub.json                |
+| `--init`           | no          | refuses to overwrite existing hub.json                |
+| `--keygen`         | no          | refuses to overwrite existing vault (HEP §4.6.3)     |
+| `--validate`       | yes         | runs startup → shutdown again; no state change       |
+| run                | n/a         | production                                            |
+
+##### Equivalent role-side workflow
+
+`plh_role` follows the same gatekeeper/clearance model with the
+same shared helper.  `plh_role --skeleton` scaffolds the role
+home; `plh_role --keygen` mints the role's CURVE keypair into
+the role vault; `plh_role --init --role X --uid Y --name Z` is
+the one-shot equivalent.  `plh_role --validate` unlocks the vault
+and runs the engine-load smoke test (broker connection skipped
+via `RoleHost::set_validate_only` — a separate concern that gates
+infrastructure, not a CURVE opt-out).  See HEP-CORE-0024 §3.4
+for the role-side deployment authority.
+
+## 7. Hub directory layout (`--skeleton` / `--init` output)
 
 ```
 <hub_dir>/

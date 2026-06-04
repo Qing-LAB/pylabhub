@@ -204,6 +204,45 @@ protected:
     std::vector<fs::path> paths_to_clean_;
 };
 
+/// RAII helper for PYLABHUB_HUB_PASSWORD (mirrors the local copy in
+/// test_plh_hub_keygen.cpp).  Tests that exercise the vault unlock
+/// path declare one of these at the top of the test body.
+struct ScopedHubPassword
+{
+    explicit ScopedHubPassword(const std::string &pw)
+    {
+        ::setenv("PYLABHUB_HUB_PASSWORD", pw.c_str(), /*overwrite=*/1);
+    }
+    ~ScopedHubPassword() { ::unsetenv("PYLABHUB_HUB_PASSWORD"); }
+};
+
+/// HEP-CORE-0035 §2 + HEP-CORE-0033 §6.5 gatekeeper helper.
+/// Under the unconditional-CURVE contract (finalized 2026-06-04),
+/// `--validate` and `run` are clearance / production verbs that
+/// both require the vault file to already exist (the "gatekeeper"
+/// boundary at `--keygen`).  Tests that exercise validate or run
+/// must mint the vault first.  This helper runs `plh_hub --config
+/// <cfg_path> --keygen` and asserts success.
+///
+/// Caller MUST hold a live `ScopedHubPassword` (or otherwise have
+/// `PYLABHUB_HUB_PASSWORD` exported) before invoking — the spawned
+/// `plh_hub --keygen` reads it from the environment.
+///
+/// Cost: one Argon2id INTERACTIVE derivation (~100ms locally).
+inline void keygen_minimal_hub(const std::filesystem::path &cfg_path)
+{
+    pylabhub::tests::helper::WorkerProcess kg(
+        plh_hub_binary(), "--config",
+        {cfg_path.string(), "--keygen"});
+    const int rc = kg.wait_for_exit();
+    if (rc != 0)
+    {
+        ADD_FAILURE() << "keygen_minimal_hub: plh_hub --keygen failed (rc=" << rc
+                      << ") for cfg '" << cfg_path << "'; stderr:\n"
+                      << kg.get_stderr();
+    }
+}
+
 /// Class D gate — happy-path tests must FAIL on stray ERROR-level log
 /// lines in the binary's stderr.  Mirrors the role-side check.  Error-
 /// path tests do NOT call this — their contract is the diagnostic

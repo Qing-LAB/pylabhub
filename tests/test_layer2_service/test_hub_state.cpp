@@ -14,6 +14,7 @@
 #include "utils/broker_service.hpp"
 #include "utils/hub_state.hpp"
 #include "hub_state_test_access.h"
+#include "curve_test_setup.h"
 
 #include <gtest/gtest.h>
 
@@ -879,9 +880,16 @@ TEST(BrokerServicePlumbing, HubStateAccessorReturnsExternalAggregate)
 {
     pylabhub::hub::HubState state;
 
+    // CURVE is unconditional (HEP-CORE-0035 §2); BrokerService ctor
+    // requires real Z85 server keys.  Mint an ephemeral pair just to
+    // satisfy the precondition — this test never calls run(), so no
+    // socket is bound.
+    auto kp = pylabhub::tests::gen_curve_keypair();
+
     pylabhub::broker::BrokerService::Config cfg;
-    cfg.endpoint  = "tcp://127.0.0.1:0";
-    cfg.use_curve = false;
+    cfg.endpoint           = "tcp://127.0.0.1:0";
+    cfg.server_public_key  = kp.public_z85;
+    cfg.server_secret_key  = kp.secret_z85;
     pylabhub::broker::BrokerService broker(cfg, state);
 
     const auto &state_ref = broker.hub_state();
