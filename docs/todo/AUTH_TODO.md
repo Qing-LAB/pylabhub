@@ -178,24 +178,42 @@ flake, task #93; passes in isolation).
   ZMQ_EVENT_DISCONNECTED on clean peer-socket close.  This is a
   libzmq behaviour, not a pylabhub coding error.
 
-  **Open question (needs validation before fix):** is the bug
-  in-process-shared-context-only (test artifact — both endpoints use
-  `pylabhub::hub::get_zmq_context()`) or cross-process too (real
-  production)?  Production has plh_hub and plh_role as separate
-  binaries with independent libzmq instances; the in-process test
-  scenario is the unusual case.  Validation experiment:
-  construct a BRC + broker pair where each uses a *fresh*
-  `zmq::context_t` and re-run.  If DISCONNECTED fires under fresh
-  contexts, the bug is test-only and the fix is "tests use separate
-  contexts."  If it still doesn't fire, the bug is real-production
-  and we need an application-level fallback (e.g., periodic broker
-  liveness probe with explicit timeout).
+  **Validation result (2026-06-04):** the bug is in-process-
+  shared-context-only.  A standalone diagnostic
+  (`/tmp/test_curve_disconnect.cpp`, not retained) instantiates a
+  CURVE-server ROUTER and a CURVE-client DEALER in **separate**
+  `zmq::context_t` instances (mimicking the cross-process
+  production scenario where plh_hub and plh_role have independent
+  libzmq instances), runs the same close sequence, and observes:
 
-  This breaks HEP-CORE-0023 §2.5.3 "disconnect is terminal"
-  production semantic only IF the bug is cross-process.  The test
-  is currently `GTEST_SKIP`'d with the empirical citation; un-skip
-  when fixed.  Severity: **HIGH if cross-process, MEDIUM if
-  test-only** — depends on the validation above.
+  ```
+  [mon] CONNECT_DELAYED
+  [mon] CONNECTED
+  [mon] HANDSHAKE_SUCCEEDED
+  --- closing broker ROUTER socket ---
+  [mon] DISCONNECTED   ← fires within seconds
+  ```
+
+  Under separate contexts, DISCONNECTED fires normally.  Under
+  shared context (test scenario), it doesn't.  Conclusion:
+
+  - **Production is not affected.**  HEP-CORE-0023 §2.5.3 holds
+    in real plh_hub ↔ plh_role deployments.
+  - The failing migrated test
+    (`HubHost_Shutdown_BreaksClientConnection`) is misleading: it
+    runs both broker and BRC in one process under the shared
+    `pylabhub::hub::get_zmq_context()`, hitting the libzmq
+    shared-context quirk.
+  - **No production code change needed.**
+
+  Severity: **LOW** (test artifact, not production bug).  Action:
+  when this test gets re-migrated in step 3-revised-F, give the
+  BRC its own `zmq::context_t` (or split broker + BRC into two
+  processes via the L4 harness).  Until then, the test stays
+  `GTEST_SKIP`'d.
+
+  Step 3-revised-A is therefore **CLOSED — no production action
+  required.**  Proceed to step 3-revised-B (HubHost throws).
 
 **Landing-phase progress (commits on `feature/lua-role-support`):**
 
