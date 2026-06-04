@@ -307,7 +307,15 @@ TEST_P(PlhRoleInitTest, InitOutputValidates)
         << "init failed; stderr:\n" << init_p.get_stderr();
     expect_no_unexpected_errors(init_p);
 
-    // Step 2: --validate against the directory (positional form) —
+    // Step 2: --keygen mints the vault.  Under HEP-CORE-0035 §2 +
+    // HEP-CORE-0024 §3.4.2, validate is the clearance check on a
+    // provisioned role home; init alone does not produce a vault, so
+    // validate needs --keygen first to unlock the gatekeeper.
+    ScopedRolePassword pw("test-password");
+    const auto cfg = dir / (std::string(s.role) + ".json");
+    keygen_minimal_role(s.role, cfg);
+
+    // Step 3: --validate against the directory (positional form) —
     // exercises the run-directory-style entry path that production
     // deployments use.
     WorkerProcess val_p(plh_role_binary(), "--role",

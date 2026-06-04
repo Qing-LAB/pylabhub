@@ -219,6 +219,39 @@ class PlhRoleCliTest : public pylabhub::tests::IsolatedProcessTest
     std::vector<fs::path> paths_to_clean_;
 };
 
+/// RAII helper for PYLABHUB_ROLE_PASSWORD (mirrors plh_hub side).
+/// Tests that exercise vault unlock declare one of these.
+struct ScopedRolePassword
+{
+    explicit ScopedRolePassword(const std::string &pw)
+    {
+        ::setenv("PYLABHUB_ROLE_PASSWORD", pw.c_str(), /*overwrite=*/1);
+    }
+    ~ScopedRolePassword() { ::unsetenv("PYLABHUB_ROLE_PASSWORD"); }
+};
+
+/// HEP-CORE-0035 §2 + HEP-CORE-0024 §3.4.2 gatekeeper helper.
+/// `plh_role --validate` and run both require a provisioned role
+/// home (vault file exists at auth.keyfile).  This helper mints the
+/// vault via `plh_role <role> --config <cfg_path> --keygen`.
+///
+/// Caller MUST hold a live `ScopedRolePassword` before invoking.
+inline void keygen_minimal_role(std::string_view role,
+                                  const std::filesystem::path &cfg_path)
+{
+    pylabhub::tests::helper::WorkerProcess kg(
+        plh_role_binary(),
+        "--role",
+        {std::string(role), "--config", cfg_path.string(), "--keygen"});
+    const int rc = kg.wait_for_exit();
+    if (rc != 0)
+    {
+        ADD_FAILURE() << "keygen_minimal_role: plh_role " << role
+                      << " --keygen failed (rc=" << rc << ") for cfg '"
+                      << cfg_path << "'; stderr:\n" << kg.get_stderr();
+    }
+}
+
 /// Class D gate for plh_role binary tests.  Pattern-3 workers get
 /// `[ERROR ]`-line scanning for free via `expect_worker_ok`; the
 /// plh_role L4 tests bypass that helper because they spawn a real

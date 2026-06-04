@@ -61,6 +61,11 @@ TEST_P(PlhRoleValidateTest, ConfigAclAdvisory_GroupReadable_EmitsWarn)
     write_minimal_script(script_dir);
     write_minimal_config(cfg, std::string(s.role), dir);
 
+    // HEP-CORE-0035 §2 + HEP-CORE-0024 §3.4.2: validate is clearance
+    // on a provisioned role home; pre-keygen before chmod restricts.
+    ScopedRolePassword pw("test-password");
+    keygen_minimal_role(s.role, cfg);
+
     ::chmod(cfg.c_str(), 0640);
 
     WorkerProcess p(plh_role_binary(), "--role",
@@ -94,6 +99,9 @@ TEST_P(PlhRoleValidateTest, MinimalConfigPasses)
     write_minimal_script(script_dir);
     write_minimal_config(cfg, std::string(s.role), dir);
 
+    ScopedRolePassword pw("test-password");
+    keygen_minimal_role(s.role, cfg);
+
     WorkerProcess p(plh_role_binary(), "--role",
         {std::string(s.role), "--config", cfg.string(), "--validate"});
     EXPECT_EQ(p.wait_for_exit(), 0) << "stderr:\n" << p.get_stderr();
@@ -115,6 +123,9 @@ TEST_P(PlhRoleValidateTest, DirectoryFlavorPasses)
 
     write_minimal_script(script_dir);
     write_minimal_config(cfg, std::string(s.role), dir);
+
+    ScopedRolePassword pw("test-password");
+    keygen_minimal_role(s.role, cfg);
 
     // Positional <dir> instead of --config <file>.
     WorkerProcess p(plh_role_binary(), "--role",
