@@ -20,23 +20,20 @@
 
 #include "zmq_endpoint_registry_workers.h"
 
+#include "broker_test_harness.h"
 #include "plh_datahub.hpp"
 #include "plh_service.hpp"
 #include "shared_test_helpers.h"
 #include "test_entrypoint.h"
 #include "utils/broker_request_comm.hpp"
 #include "utils/broker_service.hpp"
-#include "utils/config/hub_config.hpp"
 #include "utils/file_lock.hpp"
-#include "utils/hub_directory.hpp"
 #include "utils/hub_host.hpp"
-#include "utils/hub_state.hpp"
 #include "utils/json_config.hpp"
 #include "utils/logger.hpp"
+#include "utils/zmq_context.hpp"
 
 #include <atomic>
-#include <filesystem>
-#include <fstream>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -44,17 +41,15 @@
 #include <utility>
 #include <unistd.h>
 
+#include <cppzmq/zmq.hpp>
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
 using namespace pylabhub::utils;
 using namespace pylabhub::hub;
 using namespace pylabhub::broker;
-using pylabhub::config::HubConfig;
-using pylabhub::hub_host::HubHost;
 using pylabhub::tests::helper::run_gtest_worker;
 using json = nlohmann::json;
-namespace fs = std::filesystem;
 
 namespace pylabhub::tests::worker
 {
@@ -64,34 +59,38 @@ namespace zmq_endpoint_registry
 namespace
 {
 
-fs::path make_test_hub_dir()
+json hubhost_overrides()
 {
-    static std::atomic<int> ctr{0};
-    fs::path dir = fs::temp_directory_path() /
-                   ("plh_l3_zmqep_" + std::to_string(::getpid()) + "_" +
-                    std::to_string(ctr.fetch_add(1)));
-    fs::remove_all(dir);
-    fs::create_directories(dir);
-    pylabhub::utils::HubDirectory::init_directory(dir, "ZmqEpTestHub");
-
-    const fs::path hub_json = dir / "hub.json";
-    json j;
-    {
-        std::ifstream f(hub_json);
-        if (f.is_open())
-            j = json::parse(f);
-    }
-    j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0";
-    j["admin"]["enabled"]           = false;
-    j["script"]["path"]             = "";
-    {
-        std::ofstream f(hub_json);
-        f << j.dump(2);
-    }
-    return dir;
+    return json{
+        {"network", {{"broker_endpoint", "tcp://127.0.0.1:0"}}},
+        {"admin",   {{"enabled", false}}},
+        {"script",  {{"path", ""}}},
+    };
 }
 
-struct BrcHandle
+// ─── Stub-only BRC handle (wire-level fixture, NOT broker) ──────────────────
+// PURPOSE: BRC timeout-conformance tests against `SilentRouterStub`,
+//   a bare ZMQ ROUTER socket on plain TCP that records what BRC
+//   sends but emits no replies.  Used ONLY by
+//   `req_shape_sync_req_times_out_on_no_reply` to drive BRC's
+//   `do_request` into its deterministic timeout branch.
+// BYPASS: Plain-TCP connection (no CURVE) — `cfg.broker_pubkey = ""`
+//   and no client keypair.  Per HEP-CORE-0035 §4.6.5 §"no-bypass"
+//   discipline, every test that drives a BROKER uses real CURVE +
+//   admission via `pylabhub::tests::BrcHandle`.  The stub here is
+//   NOT a broker — it's a wire-level fixture that doesn't speak
+//   CURVE because the test is about REQ-timeout behaviour, which
+//   doesn't depend on CURVE.  Per `feedback_no_mocks_via_
+//   observability`, a wire-level stub that records what BRC sends
+//   is a fixture, not a mock of broker logic.
+// CANONICAL STORAGE: BRC connection state lives in
+//   `BrokerRequestComm::pImpl`; the matching the harness type is
+//   `pylabhub::tests::BrcHandle` (CURVE).
+// RE-EXAMINE WHEN: BRC's connection grammar changes such that
+//   plain-TCP connect is no longer accepted at all (no test path
+//   could exist).  Or if §4.6.5 is amended to forbid wire-level
+//   stubs entirely.
+struct StubBrcHandle
 {
     BrokerRequestComm brc;
     std::atomic<bool> running{true};
@@ -119,7 +118,7 @@ struct BrcHandle
         brc.disconnect();
     }
 
-    ~BrcHandle()
+    ~StubBrcHandle()
     {
         if (thread.joinable())
             stop();
@@ -143,33 +142,25 @@ json make_reg_opts(const std::string &channel, const std::string &role_uid)
     return opts;
 }
 
-/// Run a worker body with a freshly spun-up real HubHost.
-///
-/// Real-production-wiring: HubConfig::load_from_directory → HubHost
-/// (which composes the real BrokerService + HubState + AdminService
-/// + ThreadManager-backed broker run-loop).  The body sees a fully
-/// assembled production hub via `host.broker_endpoint() / pubkey() /
-/// broker()` — same surface broker_schema / broker_admin /
-/// broker_consumer use.  No LogCaptureFixture: the original suite did
-/// not install one and the wave's coverage discipline is "preserve
-/// depth, don't strengthen mid-migration"; a follow-up sweep can add
-/// must-fire log expectations where production paths are deterministic.
+/// Run a worker body with a freshly spun-up HubHostBrokerHandle under
+/// real CURVE + admission (HEP-CORE-0035 §2 + §4.6.5).  Body receives
+/// (broker, curve).
 template <typename Body>
-int run_with_host(std::string_view worker_name, Body &&body)
+int run_with_host(std::string_view worker_name,
+                  std::vector<std::string> role_uids,
+                  Body &&body)
 {
     return run_gtest_worker(
-        [body = std::forward<Body>(body)]() mutable {
-            const fs::path dir = make_test_hub_dir();
-            auto host = std::make_unique<HubHost>(
-                HubConfig::load_from_directory(dir.string()));
-            host->startup();
-            ASSERT_TRUE(host->is_running());
+        [role_uids = std::move(role_uids),
+         body = std::forward<Body>(body)]() mutable {
+            auto curve = pylabhub::tests::make_curve_setup(role_uids);
+            auto broker = pylabhub::tests::start_hubhost_broker(
+                hubhost_overrides(), curve);
+            ASSERT_TRUE(broker.host && broker.host->is_running());
 
-            body(*host);
+            body(broker, curve);
 
-            host.reset();
-            std::error_code ec;
-            fs::remove_all(dir, ec);
+            broker.stop_and_join();
         },
         std::string(worker_name).c_str(),
         Logger::GetLifecycleModule(),
@@ -183,23 +174,26 @@ int run_with_host(std::string_view worker_name, Body &&body)
 
 int default_transport_is_shm()
 {
+    const std::string channel  = pid_chan("zmqvc.default.shm");
+    const std::string uid      = "prod.ep." + channel;
+    const std::string cons_uid = "cons.ep." + channel;
     return run_with_host(
         "zmq_endpoint_registry::default_transport_is_shm",
-        [](HubHost &host) {
-            const std::string channel = pid_chan("zmqvc.default.shm");
-            const std::string uid     = "prod.ep." + channel;
-
-            BrcHandle bh;
-            bh.start(host.broker_endpoint(), host.broker_pubkey(), uid);
+        {uid, cons_uid},
+        [channel, uid, cons_uid](
+            pylabhub::tests::HubHostBrokerHandle &broker,
+            pylabhub::tests::CurveSetup &curve) {
+            pylabhub::tests::BrcHandle bh;
+            bh.start(broker.endpoint, broker.pubkey, uid, curve.role(uid));
             auto reg = bh.brc.register_channel(make_reg_opts(channel, uid),
                                                  3000);
             ASSERT_TRUE(reg.has_value());
 
             bh.brc.send_heartbeat(channel, uid, "producer", {});
 
-            BrcHandle cons_bh;
-            cons_bh.start(host.broker_endpoint(), host.broker_pubkey(),
-                          "cons.ep." + channel);
+            pylabhub::tests::BrcHandle cons_bh;
+            cons_bh.start(broker.endpoint, broker.pubkey, cons_uid,
+                          curve.role(cons_uid));
             auto disc = cons_bh.brc.discover_channel(channel, {}, 3000);
             ASSERT_TRUE(disc.has_value());
             EXPECT_EQ(disc->value("data_transport", ""), "shm");
@@ -211,15 +205,19 @@ int default_transport_is_shm()
 
 int zmq_transport_round_trip()
 {
+    const std::string channel  = pid_chan("zmqvc.zmq.roundtrip");
+    const std::string uid      = "prod.ep." + channel;
+    const std::string cons_uid = "cons.ep." + channel;
     return run_with_host(
         "zmq_endpoint_registry::zmq_transport_round_trip",
-        [](HubHost &host) {
-            const std::string channel = pid_chan("zmqvc.zmq.roundtrip");
-            const std::string uid     = "prod.ep." + channel;
-            const std::string zmq_ep  = "tcp://127.0.0.1:55555";
+        {uid, cons_uid},
+        [channel, uid, cons_uid](
+            pylabhub::tests::HubHostBrokerHandle &broker,
+            pylabhub::tests::CurveSetup &curve) {
+            const std::string zmq_ep = "tcp://127.0.0.1:55555";
 
-            BrcHandle bh;
-            bh.start(host.broker_endpoint(), host.broker_pubkey(), uid);
+            pylabhub::tests::BrcHandle bh;
+            bh.start(broker.endpoint, broker.pubkey, uid, curve.role(uid));
 
             auto opts                 = make_reg_opts(channel, uid);
             opts["data_transport"]    = "zmq";
@@ -229,9 +227,9 @@ int zmq_transport_round_trip()
 
             bh.brc.send_heartbeat(channel, uid, "producer", {});
 
-            BrcHandle cons_bh;
-            cons_bh.start(host.broker_endpoint(), host.broker_pubkey(),
-                          "cons.ep." + channel);
+            pylabhub::tests::BrcHandle cons_bh;
+            cons_bh.start(broker.endpoint, broker.pubkey, cons_uid,
+                          curve.role(cons_uid));
             auto disc = cons_bh.brc.discover_channel(channel, {}, 3000);
             ASSERT_TRUE(disc.has_value());
             EXPECT_EQ(disc->value("data_transport", ""), "zmq");
@@ -244,15 +242,20 @@ int zmq_transport_round_trip()
 
 int multiple_consumers_discover_same_endpoint()
 {
+    const std::string channel = pid_chan("zmqvc.multi.disc");
+    const std::string uid     = "prod.ep." + channel;
+    const std::string c1_uid  = "CONS1-" + channel;
+    const std::string c2_uid  = "CONS2-" + channel;
     return run_with_host(
         "zmq_endpoint_registry::multiple_consumers_discover_same_endpoint",
-        [](HubHost &host) {
-            const std::string channel = pid_chan("zmqvc.multi.disc");
-            const std::string uid     = "prod.ep." + channel;
-            const std::string zmq_ep  = "tcp://127.0.0.1:55556";
+        {uid, c1_uid, c2_uid},
+        [channel, uid, c1_uid, c2_uid](
+            pylabhub::tests::HubHostBrokerHandle &broker,
+            pylabhub::tests::CurveSetup &curve) {
+            const std::string zmq_ep = "tcp://127.0.0.1:55556";
 
-            BrcHandle bh;
-            bh.start(host.broker_endpoint(), host.broker_pubkey(), uid);
+            pylabhub::tests::BrcHandle bh;
+            bh.start(broker.endpoint, broker.pubkey, uid, curve.role(uid));
 
             auto opts                 = make_reg_opts(channel, uid);
             opts["data_transport"]    = "zmq";
@@ -262,11 +265,11 @@ int multiple_consumers_discover_same_endpoint()
 
             bh.brc.send_heartbeat(channel, uid, "producer", {});
 
-            BrcHandle c1, c2;
-            c1.start(host.broker_endpoint(), host.broker_pubkey(),
-                     "CONS1-" + channel);
-            c2.start(host.broker_endpoint(), host.broker_pubkey(),
-                     "CONS2-" + channel);
+            pylabhub::tests::BrcHandle c1, c2;
+            c1.start(broker.endpoint, broker.pubkey, c1_uid,
+                     curve.role(c1_uid));
+            c2.start(broker.endpoint, broker.pubkey, c2_uid,
+                     curve.role(c2_uid));
 
             auto d1 = c1.brc.discover_channel(channel, {}, 3000);
             auto d2 = c2.brc.discover_channel(channel, {}, 3000);
@@ -283,29 +286,33 @@ int multiple_consumers_discover_same_endpoint()
 
 int shm_and_zmq_coexist()
 {
+    const std::string shm_ch  = pid_chan("zmqvc.coexist.shm");
+    const std::string zmq_ch  = pid_chan("zmqvc.coexist.zmq");
+    const std::string shm_uid = "prod.shm." + shm_ch;
+    const std::string zmq_uid = "prod." + zmq_ch;
     return run_with_host(
         "zmq_endpoint_registry::shm_and_zmq_coexist",
-        [](HubHost &host) {
-            const std::string shm_ch = pid_chan("zmqvc.coexist.shm");
-            const std::string zmq_ch = pid_chan("zmqvc.coexist.zmq");
-
-            BrcHandle shm_bh;
-            shm_bh.start(host.broker_endpoint(), host.broker_pubkey(),
-                         "prod.shm." + shm_ch);
+        {shm_uid, zmq_uid},
+        [shm_ch, zmq_ch, shm_uid, zmq_uid](
+            pylabhub::tests::HubHostBrokerHandle &broker,
+            pylabhub::tests::CurveSetup &curve) {
+            pylabhub::tests::BrcHandle shm_bh;
+            shm_bh.start(broker.endpoint, broker.pubkey, shm_uid,
+                         curve.role(shm_uid));
             auto shm_reg = shm_bh.brc.register_channel(
-                make_reg_opts(shm_ch, "prod.shm." + shm_ch), 3000);
+                make_reg_opts(shm_ch, shm_uid), 3000);
             ASSERT_TRUE(shm_reg.has_value());
 
-            BrcHandle zmq_bh;
-            zmq_bh.start(host.broker_endpoint(), host.broker_pubkey(),
-                         "prod." + zmq_ch);
-            auto zmq_opts                 = make_reg_opts(zmq_ch, "prod." + zmq_ch);
+            pylabhub::tests::BrcHandle zmq_bh;
+            zmq_bh.start(broker.endpoint, broker.pubkey, zmq_uid,
+                         curve.role(zmq_uid));
+            auto zmq_opts                 = make_reg_opts(zmq_ch, zmq_uid);
             zmq_opts["data_transport"]    = "zmq";
             zmq_opts["zmq_node_endpoint"] = "tcp://127.0.0.1:55557";
             auto zmq_reg = zmq_bh.brc.register_channel(zmq_opts, 3000);
             ASSERT_TRUE(zmq_reg.has_value());
 
-            ChannelSnapshot snap = host.broker().query_channel_snapshot();
+            ChannelSnapshot snap = broker.service().query_channel_snapshot();
             bool found_shm = false, found_zmq = false;
             for (const auto &ch : snap.channels)
             {
@@ -322,15 +329,19 @@ int shm_and_zmq_coexist()
 
 int endpoint_update_reflected_in_discovery()
 {
+    const std::string channel  = pid_chan("zmqvc.ep.update");
+    const std::string uid      = "prod.ep." + channel;
+    const std::string cons_uid = "cons.ep." + channel;
     return run_with_host(
         "zmq_endpoint_registry::endpoint_update_reflected_in_discovery",
-        [](HubHost &host) {
-            const std::string channel    = pid_chan("zmqvc.ep.update");
-            const std::string uid        = "prod.ep." + channel;
+        {uid, cons_uid},
+        [channel, uid, cons_uid](
+            pylabhub::tests::HubHostBrokerHandle &broker,
+            pylabhub::tests::CurveSetup &curve) {
             const std::string updated_ep = "tcp://127.0.0.1:44444";
 
-            BrcHandle bh;
-            bh.start(host.broker_endpoint(), host.broker_pubkey(), uid);
+            pylabhub::tests::BrcHandle bh;
+            bh.start(broker.endpoint, broker.pubkey, uid, curve.role(uid));
 
             auto opts                 = make_reg_opts(channel, uid);
             opts["data_transport"]    = "zmq";
@@ -361,9 +372,9 @@ int endpoint_update_reflected_in_discovery()
                 << "ENDPOINT_UPDATE_REQ returned non-success: "
                 << upd->dump();
 
-            BrcHandle cons_bh;
-            cons_bh.start(host.broker_endpoint(), host.broker_pubkey(),
-                          "cons.ep." + channel);
+            pylabhub::tests::BrcHandle cons_bh;
+            cons_bh.start(broker.endpoint, broker.pubkey, cons_uid,
+                          curve.role(cons_uid));
             auto disc = cons_bh.brc.discover_channel(channel, {}, 5000);
             ASSERT_TRUE(disc.has_value()) << "DISC_REQ timed out";
             EXPECT_EQ(disc->value("zmq_node_endpoint", ""), updated_ep);
@@ -385,18 +396,21 @@ int endpoint_update_reflected_in_discovery()
 
 int endpoint_update_non_producer_returns_error()
 {
+    const std::string channel   = pid_chan("zmqvc.ep.nonprod");
+    const std::string prod_uid  = "prod.ep." + channel;
+    const std::string other_uid = "cons.notprod." + channel;
     return run_with_host(
         "zmq_endpoint_registry::endpoint_update_non_producer_returns_error",
-        [](HubHost &host) {
-            const std::string channel  = pid_chan("zmqvc.ep.nonprod");
-            const std::string prod_uid = "prod.ep." + channel;
-            const std::string other_uid = "cons.notprod." + channel;
+        {prod_uid, other_uid},
+        [channel, prod_uid, other_uid](
+            pylabhub::tests::HubHostBrokerHandle &broker,
+            pylabhub::tests::CurveSetup &curve) {
             const std::string updated_ep = "tcp://127.0.0.1:44455";
 
             // Producer registers the channel.
-            BrcHandle prod_bh;
-            prod_bh.start(host.broker_endpoint(), host.broker_pubkey(),
-                          prod_uid);
+            pylabhub::tests::BrcHandle prod_bh;
+            prod_bh.start(broker.endpoint, broker.pubkey, prod_uid,
+                          curve.role(prod_uid));
             auto opts                 = make_reg_opts(channel, prod_uid);
             opts["data_transport"]    = "zmq";
             opts["zmq_node_endpoint"] = "tcp://127.0.0.1:0";
@@ -407,9 +421,9 @@ int endpoint_update_non_producer_returns_error()
             // Per HEP-CORE-0021 §16.3 + broker_service.cpp:handle_endpoint_
             // update_req identity-resolution: sender_zmq_identity must match
             // a registered producer's zmq_identity, else NOT_CHANNEL_OWNER.
-            BrcHandle other_bh;
-            other_bh.start(host.broker_endpoint(), host.broker_pubkey(),
-                           other_uid);
+            pylabhub::tests::BrcHandle other_bh;
+            other_bh.start(broker.endpoint, broker.pubkey, other_uid,
+                           curve.role(other_uid));
             auto upd = other_bh.brc.send_endpoint_update(
                 channel, "zmq_node", updated_ep, 2000);
 
@@ -444,14 +458,15 @@ int endpoint_update_non_producer_returns_error()
 
 int endpoint_update_port_zero_returns_error()
 {
+    const std::string channel = pid_chan("zmqvc.ep.zeroport");
+    const std::string uid     = "prod.ep." + channel;
     return run_with_host(
         "zmq_endpoint_registry::endpoint_update_port_zero_returns_error",
-        [](HubHost &host) {
-            const std::string channel = pid_chan("zmqvc.ep.zeroport");
-            const std::string uid     = "prod.ep." + channel;
-
-            BrcHandle bh;
-            bh.start(host.broker_endpoint(), host.broker_pubkey(), uid);
+        {uid},
+        [channel, uid](pylabhub::tests::HubHostBrokerHandle &broker,
+                       pylabhub::tests::CurveSetup &curve) {
+            pylabhub::tests::BrcHandle bh;
+            bh.start(broker.endpoint, broker.pubkey, uid, curve.role(uid));
 
             auto opts                 = make_reg_opts(channel, uid);
             opts["data_transport"]    = "zmq";
@@ -575,7 +590,9 @@ int req_shape_sync_req_times_out_on_no_reply()
             SilentRouterStub stub;
 
             // BRC connects with empty pubkey → plain TCP (no CURVE).
-            BrcHandle bh;
+            // Uses StubBrcHandle — the declared bypass for wire-level
+            // fixtures (see fixture block at top of file).
+            StubBrcHandle bh;
             bh.start(stub.endpoint(), /*pubkey=*/"",
                      /*uid=*/"req-shape-timeout-test");
 
@@ -659,14 +676,15 @@ int req_shape_sync_req_times_out_on_no_reply()
 
 int req_shape_no_unmatched_replies_for_fire_and_forget()
 {
+    const std::string channel = pid_chan("zmqvc.shape");
+    const std::string uid     = "prod.ep." + channel;
     return run_with_host(
         "zmq_endpoint_registry::req_shape_no_unmatched_replies_for_fire_and_forget",
-        [](HubHost &host) {
-            const std::string channel = pid_chan("zmqvc.shape");
-            const std::string uid     = "prod.ep." + channel;
-
-            BrcHandle bh;
-            bh.start(host.broker_endpoint(), host.broker_pubkey(), uid);
+        {uid},
+        [channel, uid](pylabhub::tests::HubHostBrokerHandle &broker,
+                       pylabhub::tests::CurveSetup &curve) {
+            pylabhub::tests::BrcHandle bh;
+            bh.start(broker.endpoint, broker.pubkey, uid, curve.role(uid));
 
             // Register channel — needed so heartbeat / broadcast / band
             // calls have a legitimate target.
