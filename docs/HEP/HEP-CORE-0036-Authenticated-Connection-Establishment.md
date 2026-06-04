@@ -1286,6 +1286,18 @@ not an independent admission authority.  Its only job: take a
 ZAP request, look up the consumer pubkey in the local cache,
 return ALLOW or DENY.
 
+> **Admission is unconditional whenever CURVE is on, and CURVE is
+> unconditional everywhere — production and tests alike.** Per
+> HEP-CORE-0035 §2 invariant + §4.6.5, there is no "CURVE on,
+> admission off" runtime mode, and there is no test-only no-CURVE
+> path.  Whenever this § installs a producer-side CURVE-server
+> socket, the corresponding `PeerAdmission` handler MUST be
+> installed on the same context's ZAP REP before `bind()`.  Tests
+> that need a producer-side data ROUTER use real CURVE keys via the
+> shared test helper `tests/test_framework/curve_test_setup.h`
+> (~100 μs keypair generation; the vault layer is bypassed but the
+> wire path is the same as production).
+
 ### 7.1 Placement and lifetime
 
 - One ZAP socket per ZMQ context (libzmq invariant —

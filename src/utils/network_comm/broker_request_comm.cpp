@@ -7,6 +7,7 @@
  */
 
 #include "utils/broker_request_comm.hpp"
+#include "utils/security/curve_keypair.hpp"
 
 #include "plh_platform.hpp"   // platform::get_pid()
 #include "utils/logger.hpp"
@@ -490,18 +491,20 @@ bool BrokerRequestComm::connect(const Config &cfg)
             else
             {
                 // Generate ephemeral client keypair.
-                char pub_z85[41]{}, sec_z85[41]{};
-                if (zmq_curve_keypair(pub_z85, sec_z85) != 0)
+                pylabhub::utils::security::CurveKeypair kp;
+                try
                 {
-                    LOGGER_ERROR("BrokerRequestComm: zmq_curve_keypair failed");
+                    kp = pylabhub::utils::security::generate_curve_keypair();
+                }
+                catch (const std::runtime_error &e)
+                {
+                    LOGGER_ERROR("BrokerRequestComm: {}", e.what());
                     pImpl->dealer.reset();
                     return false;
                 }
                 pImpl->dealer->set(zmq::sockopt::curve_serverkey, cfg.broker_pubkey);
-                pImpl->dealer->set(zmq::sockopt::curve_publickey,
-                                   std::string(pub_z85, 40));
-                pImpl->dealer->set(zmq::sockopt::curve_secretkey,
-                                   std::string(sec_z85, 40));
+                pImpl->dealer->set(zmq::sockopt::curve_publickey, kp.public_z85);
+                pImpl->dealer->set(zmq::sockopt::curve_secretkey, kp.secret_z85);
             }
         }
 

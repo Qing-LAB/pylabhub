@@ -120,6 +120,52 @@ D landing window.
 |---|---|---|
 | `--allow-anonymous-roles` flag (S6 option c) | tech_draft §12.5 S6 | Empty `known_roles.json` already maps to deny-all per HEP-0035 §4.8.4; the friendly-bootstrap need is satisfied by the `--add-known-role` CLI + clear deny-all diagnostic.  Revisit only if Phase H demo migration finds it necessary |
 
+## Phase D landing — HEP-0035 §4.6.5 "no-bypass" cleanup (2026-06-04)
+
+Full-ctest sweep on 2026-06-04 surfaced 97 failures rooted in the
+close-out-3 mismatch WARN + test fixtures that paired
+`use_curve=false` with `enforce_ctrl_admission=true` (the new
+default).  Audit concluded that HEP-CORE-0035 §2 mandates CURVE +
+admission unconditionally — both production AND tests — and the
+two flags are HEP violations.
+
+**Steps 1+2 landed in the working tree (NOT yet committed):**
+
+- HEP-CORE-0035 §2 — three new invariants: CURVE unconditional,
+  admission unconditional whenever CURVE on, `HubHost::startup()`
+  rejects empty `auth().client_pubkey`.
+- HEP-CORE-0035 §4.6.5 (new) — no-bypass discipline.  Tests use
+  real CURVE via `tests/test_framework/curve_test_setup.h`
+  (~4 LOC / fixture, ~100 μs keypair-gen).  No test-only factory.
+- HEP-CORE-0035 §7 closed question 5 — struck.
+- HEP-CORE-0035 §1 banner — updated.
+- HEP-CORE-0036 §7 — boxed note: admission + CURVE unconditional
+  in tests too.
+- HEP-CORE-0033 §4.2 step 2 — cross-references HubHost startup
+  precondition.
+- `broker_service.cpp:708-722` — close-out-3 mismatch WARN
+  deleted; replaced with a placeholder note flagging both flags
+  for removal in the landing phase.
+- `role_identity_policy_workers.cpp:232` `base_cfg()` — both
+  flags set false explicitly with a declared bypass block
+  citing §8 Phase 6 (whole fixture slated for deletion).
+
+ctest result after Steps 1+2: 97 → 1 failure
+(the remaining one is the pre-existing `PlhRoleInitTest` 60s
+flake, task #93; passes in isolation).
+
+**Step 3 plan — pending execution:**
+
+| Sub-step | Scope | Status |
+|---|---|---|
+| 3A | Build `tests/test_framework/curve_test_setup.h` (gen_keypair + populate_known_role helpers) | pending |
+| 3B | Migrate the 10 broker-using test fixtures (~90 test bodies) onto the helper.  One commit per fixture class. | pending |
+| 3C | Delete `BrokerService::Config::enforce_ctrl_admission` field + all `cfg.enforce_ctrl_admission = X` lines.  Build + full ctest. | pending |
+| 3D | `HubHost::startup()` throws `std::logic_error` on empty `auth().client_pubkey`. | pending |
+| 3E | Move 5 algorithm-only tests from `MetricsPlaneTest` (L3) to a new L2 fixture under `test_layer2_service/test_metrics_query_engine.cpp` (or extend `test_metrics_api.cpp`). | pending |
+| 3F | Delete `RoleIdentityPolicyBrokerTest` L3 fixture + production code: `RoleIdentityPolicy` enum, `check_role_identity()`, `KnownRole`-with-strings, `ChannelPolicyOverride`.  Per HEP-CORE-0035 §8 Phase 6.  Full dead-code audit (grep) before delete. | pending |
+| 3G | Delete `BrokerService::Config::use_curve` field.  Last to land; broker always CURVE+ZAP. | pending |
+
 ## Phase D close-out follow-ons (test + spec gaps surfaced 2026-06-03)
 
 These are tracked here so they survive context resets per CLAUDE.md

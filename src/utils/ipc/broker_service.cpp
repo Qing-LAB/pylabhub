@@ -17,6 +17,7 @@
 #include "utils/crypto_utils.hpp"
 #include "utils/lifecycle.hpp"
 #include "utils/logger.hpp"
+#include "utils/security/curve_keypair.hpp"    // HEP-CORE-0035 §2 — shared keygen
 #include "utils/security/peer_admission.hpp"   // HEP-CORE-0035 Phase D
 #include "utils/security/zap_router.hpp"       // HEP-CORE-0035 Phase D
 #include "portable_atomic_shared_ptr.hpp"      // sibling header in src/utils/
@@ -705,21 +706,13 @@ void BrokerServiceImpl::run()
                         zap_domain);
         }
     }
-    else if (cfg.enforce_ctrl_admission)
-    {
-        // Configuration mismatch: operator/test asked for the
-        // production deny-all gate but didn't enable CURVE.  Without
-        // CURVE there's no peer pubkey to gate on; the broker
-        // silently accepts every plaintext peer.  Warn loudly so the
-        // misconfig surfaces in operator logs.  HubHost startup
-        // hard-errors on missing keyfile (task #78), so this branch
-        // is only reachable from direct-Config callers that bypass
-        // HubHost — but flagging it here keeps the contract crisp.
-        LOGGER_WARN("Broker: enforce_ctrl_admission=true but use_curve=false "
-                    "— CTRL gate is INERT (no CURVE handshakes to gate).  "
-                    "Production HubHost startup would have rejected this "
-                    "config via HEP-CORE-0035 §4.6.2 keyfile checks.");
-    }
+    // Note: cfg.use_curve=false bypasses CURVE entirely; no ZAP is
+    // installed because there are no CURVE handshakes to gate.  Per
+    // HEP-CORE-0035 §2 + §4.6.5 (no-bypass discipline), this branch
+    // exists only because the legacy `use_curve` field is still on
+    // BrokerService::Config; both flags are slated for removal in
+    // the HEP-0035 landing phase.  Once removed, every BrokerService
+    // construction installs CURVE + ZAP unconditionally.
 
     router.bind(cfg.endpoint);
     const std::string bound = router.get(zmq::sockopt::last_endpoint);
@@ -3947,14 +3940,9 @@ BrokerService::BrokerService(Config cfg, pylabhub::hub::HubState& state)
         else
         {
             // Generate ephemeral keypair (--dev mode; no vault).
-            std::array<char, kZ85KeyBufSize> pub{};
-            std::array<char, kZ85KeyBufSize> sec{};
-            if (zmq_curve_keypair(pub.data(), sec.data()) != 0)
-            {
-                throw std::runtime_error("BrokerService: zmq_curve_keypair failed");
-            }
-            pImpl->server_public_z85.assign(pub.data(), kZ85KeyLen);
-            pImpl->server_secret_z85.assign(sec.data(), kZ85KeyLen);
+            auto kp = pylabhub::utils::security::generate_curve_keypair();
+            pImpl->server_public_z85 = std::move(kp.public_z85);
+            pImpl->server_secret_z85 = std::move(kp.secret_z85);
         }
     }
 }

@@ -7,6 +7,7 @@
  */
 #include "utils/hub_vault.hpp"
 #include "plh_platform.hpp"
+#include "utils/security/curve_keypair.hpp"
 #include "utils/security/key_file_acl.hpp"
 
 #include "vault_crypto.hpp"
@@ -95,16 +96,9 @@ HubVault HubVault::create(const fs::path    &vault_path,
     detail::vault_require_sodium();
 
     // Generate broker CurveZMQ keypair (Z85).
-    std::array<char, kZ85BufSize> pub{};
-    std::array<char, kZ85BufSize> sec{};
-    if (zmq_curve_keypair(pub.data(), sec.data()) != 0)
-    {
-        throw std::runtime_error("HubVault: zmq_curve_keypair failed");
-    }
-    const std::string broker_public(pub.data(), kZ85KeyLen);
-    const std::string broker_secret(sec.data(), kZ85KeyLen);
-    sodium_memzero(sec.data(), sec.size()); // zero secret key buffer after copying to string
-    sodium_memzero(pub.data(), pub.size()); // zero public key buffer after copying to string
+    auto kp = pylabhub::utils::security::generate_curve_keypair();
+    const std::string broker_public = std::move(kp.public_z85);
+    const std::string broker_secret = std::move(kp.secret_z85);
 
     // Generate admin token.
     const std::string admin_tok = generate_admin_token();

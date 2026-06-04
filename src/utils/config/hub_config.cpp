@@ -350,4 +350,17 @@ const std::filesystem::path &HubConfig::base_dir() const
     return impl_->base_dir;
 }
 
+void HubConfig::inject_keypair_for_test(std::string public_z85,
+                                         std::string secret_z85)
+{
+    // Test-only — see header comment.  HEP-CORE-0035 §4.6.5 sanctions
+    // bypassing the on-disk vault layer (a persistence concern) while
+    // keeping CURVE + admission unconditionally enforced (the wire
+    // contract).  This setter is the single entry point tests use to
+    // skip Argon2id without skipping CURVE.
+    assert(impl_);
+    impl_->auth.client_pubkey = std::move(public_z85);
+    impl_->auth.client_seckey = std::move(secret_z85);
+}
+
 } // namespace pylabhub::config
