@@ -154,6 +154,24 @@ ctest result after Steps 1+2: 97 → 1 failure
 (the remaining one is the pre-existing `PlhRoleInitTest` 60s
 flake, task #93; passes in isolation).
 
+**Phase 1 known bugs (surfaced during landing, deferred to Phase 2):**
+
+- **BRC socket monitor does not detect ZMQ_EVENT_DISCONNECTED under CURVE.**
+  Surfaced 2026-06-04 by migrating
+  `HubHostIntegrationTest.HubHost_Shutdown_BreaksClientConnection`
+  onto the harness.  Under NULL-mech, BRC's `on_hub_dead` callback
+  fires within ~3s of broker socket close.  Under CURVE, it never
+  fires (waited 10s; `is_connected()` stays `true`).  This breaks
+  HEP-CORE-0023 §2.5.3 "disconnect is terminal" production semantic
+  — a role connected via CURVE would not learn its broker has gone
+  down.  The test is currently `GTEST_SKIP`'d with a citation;
+  un-skip when fixed.  Likely site: `src/utils/network_comm/broker_request_comm.cpp`
+  socket-monitor setup / poll path; check whether the monitor is
+  installed on the DEALER socket before vs. after CURVE handshake
+  setup, and whether libzmq emits DISCONNECTED for CURVE sockets the
+  same way it does for NULL.  Severity: **HIGH** — Phase 2 review
+  must address before HEP-0035 §4.6.5 landing closes.
+
 **Step 3 plan — pending execution:**
 
 | Sub-step | Scope | Status |

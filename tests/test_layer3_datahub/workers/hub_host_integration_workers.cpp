@@ -17,10 +17,10 @@
 #include "utils/broker_request_comm.hpp"
 #include "utils/broker_service.hpp"
 #include "utils/config/hub_config.hpp"
-#include "utils/hub_directory.hpp"
 #include "utils/hub_host.hpp"
 #include "utils/hub_state.hpp"
 
+#include "broker_test_harness.h"
 #include "log_capture_fixture.h"
 #include "shared_test_helpers.h"
 #include "test_entrypoint.h"
@@ -30,22 +30,17 @@
 
 #include <atomic>
 #include <chrono>
-#include <filesystem>
-#include <fstream>
+#include <future>
 #include <memory>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <unistd.h>
-#include <vector>
 
-namespace fs = std::filesystem;
 using namespace std::chrono_literals;
 using namespace pylabhub::utils;
 using namespace pylabhub::broker;
-using pylabhub::config::HubConfig;
 using pylabhub::hub::BrokerRequestComm;
-using pylabhub::hub_host::HubHost;
 using pylabhub::tests::LogCaptureFixture;
 using pylabhub::tests::helper::run_gtest_worker;
 using json = nlohmann::json;
@@ -57,37 +52,6 @@ namespace hub_host_integration
 
 namespace
 {
-
-fs::path unique_temp_dir(const char *tag)
-{
-    static std::atomic<int> ctr{0};
-    fs::path d = fs::temp_directory_path() /
-                 ("plh_l3_hubhost_" + std::string(tag) + "_" +
-                  std::to_string(::getpid()) + "_" +
-                  std::to_string(ctr.fetch_add(1)));
-    fs::remove_all(d);
-    return d;
-}
-
-fs::path init_test_hub_dir(const char *tag)
-{
-    const fs::path dir = unique_temp_dir(tag);
-    HubDirectory::init_directory(dir, "L3HubHost");
-
-    json j;
-    {
-        std::ifstream f(dir / "hub.json");
-        j = json::parse(f);
-    }
-    j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0";
-    j["admin"]["enabled"]           = false;
-    j["script"]["path"]             = "";
-    {
-        std::ofstream f(dir / "hub.json");
-        f << j.dump(2);
-    }
-    return dir;
-}
 
 json make_reg_opts(const std::string &channel, const std::string &uid)
 {
@@ -106,60 +70,15 @@ std::string pid_chan(const std::string &base)
     return base + ".pid" + std::to_string(::getpid());
 }
 
-struct BrcHandle
+// Shared hub.json overrides for HubHost integration fixtures
+// (ephemeral broker port, admin off, no script).
+json hubhost_overrides()
 {
-    BrokerRequestComm  brc;
-    std::atomic<bool>  running{true};
-    std::thread        thread;
-
-    void start(const std::string &ep, const std::string &pk,
-               const std::string &uid)
-    {
-        BrokerRequestComm::Config cfg;
-        cfg.broker_endpoint = ep;
-        cfg.broker_pubkey   = pk;
-        cfg.role_uid        = uid;
-        ASSERT_TRUE(brc.connect(cfg));
-        thread = std::thread([this] {
-            brc.run_poll_loop([this] { return running.load(); });
-        });
-    }
-
-    void stop()
-    {
-        running.store(false);
-        brc.stop();
-        if (thread.joinable())
-            thread.join();
-        brc.disconnect();
-    }
-
-    ~BrcHandle()
-    {
-        if (thread.joinable())
-            stop();
-    }
-};
-
-std::unique_ptr<HubHost> spawn_host(const char *tag,
-                                     std::vector<fs::path> &cleanup)
-{
-    const fs::path dir = init_test_hub_dir(tag);
-    cleanup.push_back(dir);
-    auto cfg  = HubConfig::load_from_directory(dir.string());
-    auto host = std::make_unique<HubHost>(std::move(cfg));
-    host->startup();
-    return host;
-}
-
-void cleanup_paths(std::vector<fs::path> &cleanup)
-{
-    for (const auto &p : cleanup)
-    {
-        std::error_code ec;
-        fs::remove_all(p, ec);
-    }
-    cleanup.clear();
+    return json{
+        {"network", {{"broker_endpoint", "tcp://127.0.0.1:0"}}},
+        {"admin",   {{"enabled", false}}},
+        {"script",  {{"path", ""}}},
+    };
 }
 
 } // namespace
@@ -170,21 +89,22 @@ int hubhost_brokerreachable_afterstartup()
         [] {
             LogCaptureFixture log_cap;
             log_cap.Install();
-            std::vector<fs::path> cleanup;
 
-            auto host = spawn_host("reachable", cleanup);
-            ASSERT_FALSE(host->broker_endpoint().empty())
+            const std::string uid = "prod.test.uid_reachable";
+            auto curve = pylabhub::tests::make_curve_setup({uid});
+            auto broker = pylabhub::tests::start_hubhost_broker(
+                hubhost_overrides(), curve);
+            ASSERT_FALSE(broker.endpoint.empty())
                 << "HubHost::broker_endpoint() empty after startup — "
                    "bind didn't happen";
 
-            BrcHandle client;
-            client.start(host->broker_endpoint(), host->broker_pubkey(),
-                         "prod.test.uid_reachable");
+            pylabhub::tests::BrcHandle client;
+            client.start(broker.endpoint, broker.pubkey, uid,
+                         curve.role(uid));
 
             client.stop();
-            host->shutdown();
+            broker.stop_and_join();
 
-            cleanup_paths(cleanup);
             log_cap.AssertNoUnexpectedLogWarnError();
             log_cap.Uninstall();
         },
@@ -202,14 +122,16 @@ int hubhost_regreq_roundtripsviaspawnedbroker()
         [] {
             LogCaptureFixture log_cap;
             log_cap.Install();
-            std::vector<fs::path> cleanup;
 
-            auto host = spawn_host("regreq", cleanup);
-
-            BrcHandle client;
             const std::string uid     = "prod.cam.uid_regreq";
             const std::string channel = pid_chan("hubhost.regreq");
-            client.start(host->broker_endpoint(), host->broker_pubkey(), uid);
+            auto curve = pylabhub::tests::make_curve_setup({uid});
+            auto broker = pylabhub::tests::start_hubhost_broker(
+                hubhost_overrides(), curve);
+
+            pylabhub::tests::BrcHandle client;
+            client.start(broker.endpoint, broker.pubkey, uid,
+                         curve.role(uid));
 
             auto reg = client.brc.register_channel(
                 make_reg_opts(channel, uid), 3000);
@@ -218,17 +140,16 @@ int hubhost_regreq_roundtripsviaspawnedbroker()
 
             ASSERT_TRUE(reg->contains("heartbeat"));
             EXPECT_EQ((*reg)["heartbeat"].value("heartbeat_interval_ms", -1),
-                      host->config().broker().heartbeat_interval_ms);
+                      broker.host->config().broker().heartbeat_interval_ms);
 
-            const auto snap = host->state().snapshot();
+            const auto snap = broker.host->state().snapshot();
             EXPECT_TRUE(snap.channels.count(channel) > 0)
                 << "channel '" << channel
                 << "' missing from HubHost::state() snapshot after REG_ACK";
 
             client.stop();
-            host->shutdown();
+            broker.stop_and_join();
 
-            cleanup_paths(cleanup);
             log_cap.AssertNoUnexpectedLogWarnError();
             log_cap.Uninstall();
         },
@@ -246,7 +167,6 @@ int hubhost_shutdown_breaksclientconnection()
         [] {
             LogCaptureFixture log_cap;
             log_cap.Install();
-            std::vector<fs::path> cleanup;
 
             log_cap.ExpectLogWarn("REG_REQ timed out");
             // Audit S1 (2026-05-18) — after DISCONNECTED, the BRC's
@@ -267,40 +187,52 @@ int hubhost_shutdown_breaksclientconnection()
             // which is present in both the old and new formats.
             log_cap.ExpectLogWarn("ZMQ_EVENT_DISCONNECTED");
 
-            auto host = spawn_host("shutdown", cleanup);
+            const std::string uid = "prod.test.uid_shutdown";
+            auto curve = pylabhub::tests::make_curve_setup({uid});
+            auto broker = pylabhub::tests::start_hubhost_broker(
+                hubhost_overrides(), curve);
 
-            BrcHandle client;
-            client.start(host->broker_endpoint(), host->broker_pubkey(),
-                         "prod.test.uid_shutdown");
+            // Use the production-shaped signal: BRC's `on_hub_dead`
+            // callback fires when the socket monitor observes
+            // ZMQ_EVENT_DISCONNECTED (HEP-CORE-0023 §2.5.3 terminal
+            // disconnect).  Registering it BEFORE the BRC connects
+            // ensures the handler is in place by the time the
+            // monitor first reports an event.  The promise gives us
+            // an event-driven sync — no polling loop required.
+            std::promise<void> hub_dead_promise;
+            auto hub_dead_future = hub_dead_promise.get_future();
+            std::atomic<bool> hub_dead_fired{false};
+            pylabhub::tests::BrcHandle client;
+            client.brc.on_hub_dead([&] {
+                if (!hub_dead_fired.exchange(true))
+                    hub_dead_promise.set_value();
+            });
+            client.start(broker.endpoint, broker.pubkey, uid,
+                         curve.role(uid));
 
             auto reg = client.brc.register_channel(
-                make_reg_opts(pid_chan("hubhost.shutdown.precheck"),
-                               "prod.test.uid_shutdown"),
+                make_reg_opts(pid_chan("hubhost.shutdown.precheck"), uid),
                 3000);
             ASSERT_TRUE(reg.has_value());
 
-            host->shutdown();
-            EXPECT_FALSE(host->is_running());
+            broker.host->shutdown();
+            EXPECT_FALSE(broker.host->is_running());
 
-            // Audit S1 (2026-05-18) — wait for the BRC's monitor
-            // poll to observe ZMQ_EVENT_DISCONNECTED and flip
-            // is_connected() to false (layer 1 of the 4-layer model).
-            // pylabhub policy says this is TERMINAL — the flag never
-            // flips back true.
-            const auto deadline =
-                std::chrono::steady_clock::now() + std::chrono::seconds{3};
-            while (client.brc.is_connected() &&
-                   std::chrono::steady_clock::now() < deadline)
-            {
-                std::this_thread::sleep_for(std::chrono::milliseconds{20});
-            }
+            // Audit S1 (2026-05-18) — wait via signal for the BRC's
+            // monitor to observe ZMQ_EVENT_DISCONNECTED.  Timeout is
+            // a safety net, not the measurement.
+            ASSERT_EQ(hub_dead_future.wait_for(std::chrono::seconds{5}),
+                      std::future_status::ready)
+                << "BRC on_hub_dead did not fire within 5s of broker "
+                   "shutdown — monitor poll is not detecting the TCP "
+                   "close (HEP-CORE-0023 §2.5.3 violation).";
+            // Once on_hub_dead fired, is_connected MUST be false (the
+            // same monitor handler that fires on_hub_dead also flips
+            // the connected_ flag).
             EXPECT_FALSE(client.brc.is_connected())
-                << "Audit S1: BRC's is_connected() MUST reflect the "
-                   "ZMQ monitor's DISCONNECTED event — flipping false "
-                   "within ~3s after host->shutdown().  This is the "
-                   "input to the layer-1 send gate; if it doesn't flip "
-                   "the subsequent send below would queue forever "
-                   "(pre-S1 behavior).";
+                << "Audit S1: BRC's is_connected() MUST be false "
+                   "immediately after on_hub_dead fires (same handler "
+                   "writes both).";
             EXPECT_TRUE(client.brc.reconnect_disabled())
                 << "Audit S1: BRC's DEALER socket MUST have "
                    "ZMQ_RECONNECT_IVL=-1 — pylabhub policy 'disconnect "
@@ -336,8 +268,9 @@ int hubhost_shutdown_breaksclientconnection()
                    "thread got stuck somewhere — pre-S1 mode.";
 
             client.stop();
+            // broker.stop_and_join() is a no-op here — host already
+            // shut down above; harness dtor cleans hub_dir on scope exit.
 
-            cleanup_paths(cleanup);
             log_cap.AssertNoUnexpectedLogWarnError();
             log_cap.Uninstall();
         },
