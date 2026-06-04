@@ -172,17 +172,68 @@ flake, task #93; passes in isolation).
   same way it does for NULL.  Severity: **HIGH** — Phase 2 review
   must address before HEP-0035 §4.6.5 landing closes.
 
-**Step 3 plan — pending execution:**
+**Landing-phase progress (commits on `feature/lua-role-support`):**
+
+| Slice | Commit | Scope | ctest |
+|---|---|---|---|
+| 1 | `97b1ff25` | HEP doctrine (§4.6.5 + §2 invariants in HEP-0035/0036/0033) + Bucket 1 production `CurveKeypair` utility consolidating 4 inline keygen sites + harness foundation (`broker_test_harness.{h,cpp}`, `curve_test_setup.h`, `HubConfig::inject_keypair_for_test`) | — |
+| 2 | `b8a24b65` | Pattern-A proof — `datahub_channel_group_workers.cpp` | 7/7 |
+| 3 | `246a4647` | Pattern-B proof — `datahub_broker_request_comm_workers.cpp` (+ harness `known_roles.json` schema fix) | 4/4 |
+| 4 | `2b94247d` | `hub_host_integration_workers.cpp` + `HubHostBrokerHandle::service()` accessor.  Surfaced **BRC monitor CURVE bug** (skipped one test with citation) | 2/3 pass + 1 skip |
+| 5 | `f19d5dcd` | `broker_consumer_workers.cpp` | 5/5 |
+| 6 | `1b979895` | `broker_schema_workers.cpp` | 5/5 |
+| 7 | `04dfb199` | `broker_admin_workers.cpp` | 8/8 |
+| 8 | `b2f4351b` | `zmq_endpoint_registry_workers.cpp` (with `StubBrcHandle` declared-bypass for the wire-level timeout fixture) | 9/9 |
+
+**Stop-here decision (2026-06-04):**
+
+After 8 slices the harness is proven on both Pattern A and B, but
+the remaining migration (7 files, ~150 fixtures) is uniformly bigger
+than what's done.  Continuing to migrate tests onto an API that will
+itself change (when 3C / 3D / 3F / 3G land) is wasted effort — tests
+get touched twice.
+
+**Revised order (decided 2026-06-04 — designer call: "stabilize
+API/design first"):**
+
+| Step | Scope | Notes |
+|---|---|---|
+| 3-revised-A | **Fix the BRC monitor CURVE bug** (`broker_request_comm.cpp` socket-monitor poll path). | Unblocks the skipped fixture in slice 4 + restores HEP-CORE-0023 §2.5.3 production semantic.  Independent of other steps. |
+| 3-revised-B | `HubHost::startup()` throws `std::logic_error` on empty `auth().client_pubkey`. | Unblocks deleting the dead `bcfg.use_curve = !empty()` conditional. |
+| 3-revised-C | Delete `BrokerService::Config::enforce_ctrl_admission` field + every `cfg.enforce_ctrl_admission = X` line in tests and CMake.  Unmigrated test files will fail to compile; that's expected. | Doesn't break the 7 migrated files (the harness sets the field but stops once it's gone). |
+| 3-revised-D | Delete legacy `RoleIdentityPolicy` enum, `check_role_identity()`, `KnownRole`-with-strings, `ChannelPolicyOverride`, `RoleIdentityPolicyBrokerTest` (L3 fixture).  Per HEP-CORE-0035 §8 Phase 6.  Includes dead-code audit (grep). | Removes the deprecated machinery so tests can't depend on it. |
+| 3-revised-E | Delete `BrokerService::Config::use_curve` field.  Broker always CURVE+ZAP. | Final field-deletion. |
+| 3-revised-F | Now the production API is stable.  Migrate the remaining 7 worker files onto the (stable) harness.  Each file: triage fixtures (keep at L3 / move to L2 / delete redundant) before mechanical migration. | One commit per file.  Some files will need L2 reorganization (5 metrics algorithm tests → L2; possibly more after triage). |
+| 3-revised-G | Full ctest green from clean baseline.  Confirm no regressions. | This is the close-out gate. |
+| Phase 2 | Full-codebase (a) review against HEPs. | Per design conversation: only meaningful on a stable baseline. |
+
+The bug recorded in **"Phase 1 known bugs"** above (BRC monitor CURVE
+blindspot) is now elevated to **the first step (3-revised-A)** of the
+new ordering since:
+1. It's a real production correctness bug independent of test work.
+2. Fixing it unblocks `HubHostIntegrationTest.HubHost_Shutdown_BreaksClientConnection`.
+3. Migration of any remaining test that exercises hub-dead detection
+   would be dishonest until this is fixed (the test would falsely
+   pass-through the broken path).
+
+**Rationale for the reorder (recorded 2026-06-04 per designer
+guidance):** if tests need to be migrated again when API changes,
+that's pointless effort.  Stabilize production API/design first;
+migrate tests once against the stable shape.
+
+---
+
+**Previous Step 3 plan (superseded above; kept for context):**
 
 | Sub-step | Scope | Status |
 |---|---|---|
-| 3A | Build `tests/test_framework/curve_test_setup.h` (gen_keypair + populate_known_role helpers) | pending |
-| 3B | Migrate the 10 broker-using test fixtures (~90 test bodies) onto the helper.  One commit per fixture class. | pending |
-| 3C | Delete `BrokerService::Config::enforce_ctrl_admission` field + all `cfg.enforce_ctrl_admission = X` lines.  Build + full ctest. | pending |
-| 3D | `HubHost::startup()` throws `std::logic_error` on empty `auth().client_pubkey`. | pending |
-| 3E | Move 5 algorithm-only tests from `MetricsPlaneTest` (L3) to a new L2 fixture under `test_layer2_service/test_metrics_query_engine.cpp` (or extend `test_metrics_api.cpp`). | pending |
-| 3F | Delete `RoleIdentityPolicyBrokerTest` L3 fixture + production code: `RoleIdentityPolicy` enum, `check_role_identity()`, `KnownRole`-with-strings, `ChannelPolicyOverride`.  Per HEP-CORE-0035 §8 Phase 6.  Full dead-code audit (grep) before delete. | pending |
-| 3G | Delete `BrokerService::Config::use_curve` field.  Last to land; broker always CURVE+ZAP. | pending |
+| 3A | Build `tests/test_framework/curve_test_setup.h` (gen_keypair + populate_known_role helpers) | ✅ slice 1 |
+| 3B | Migrate the 10 broker-using test fixtures (~90 test bodies) onto the helper.  One commit per fixture class. | 🚧 7 of 10 files done (slices 2–8); paused per stabilize-first decision |
+| 3C | Delete `BrokerService::Config::enforce_ctrl_admission` field + all `cfg.enforce_ctrl_admission = X` lines.  Build + full ctest. | moved to 3-revised-C |
+| 3D | `HubHost::startup()` throws `std::logic_error` on empty `auth().client_pubkey`. | moved to 3-revised-B |
+| 3E | Move 5 algorithm-only tests from `MetricsPlaneTest` (L3) to a new L2 fixture under `test_layer2_service/test_metrics_query_engine.cpp` (or extend `test_metrics_api.cpp`). | folded into 3-revised-F (per-file triage) |
+| 3F | Delete `RoleIdentityPolicyBrokerTest` L3 fixture + production code: `RoleIdentityPolicy` enum, `check_role_identity()`, `KnownRole`-with-strings, `ChannelPolicyOverride`.  Per HEP-CORE-0035 §8 Phase 6.  Full dead-code audit (grep) before delete. | moved to 3-revised-D |
+| 3G | Delete `BrokerService::Config::use_curve` field.  Last to land; broker always CURVE+ZAP. | moved to 3-revised-E |
 
 ## Phase D close-out follow-ons (test + spec gaps surfaced 2026-06-03)
 
