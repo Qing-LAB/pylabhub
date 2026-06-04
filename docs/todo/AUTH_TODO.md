@@ -161,16 +161,41 @@ flake, task #93; passes in isolation).
   `HubHostIntegrationTest.HubHost_Shutdown_BreaksClientConnection`
   onto the harness.  Under NULL-mech, BRC's `on_hub_dead` callback
   fires within ~3s of broker socket close.  Under CURVE, it never
-  fires (waited 10s; `is_connected()` stays `true`).  This breaks
-  HEP-CORE-0023 §2.5.3 "disconnect is terminal" production semantic
-  — a role connected via CURVE would not learn its broker has gone
-  down.  The test is currently `GTEST_SKIP`'d with a citation;
-  un-skip when fixed.  Likely site: `src/utils/network_comm/broker_request_comm.cpp`
-  socket-monitor setup / poll path; check whether the monitor is
-  installed on the DEALER socket before vs. after CURVE handshake
-  setup, and whether libzmq emits DISCONNECTED for CURVE sockets the
-  same way it does for NULL.  Severity: **HIGH** — Phase 2 review
-  must address before HEP-0035 §4.6.5 landing closes.
+  fires (waited 40s with `apply_socket_policy` defaults —
+  heartbeat_ivl 5s + heartbeat_timeout 30s).
+
+  **Empirical findings (2026-06-04 stderr instrumentation):**
+  - During BRC connect, monitor receives 3 events: `CONNECT_DELAYED`
+    (0x0002) → `CONNECTED` (0x0001) → `HANDSHAKE_SUCCEEDED` (0x1000).
+  - Broker thread DOES execute `router.close()` (confirmed via stderr
+    trace `[DIAG-BROKER] router.close() pre/post` straddling the
+    libzmq call at `broker_service.cpp:1054`).
+  - BRC monitor receives **ZERO events** for 40+ seconds after
+    `router.close()` returns — not `DISCONNECTED`, not `CLOSED`,
+    not `HANDSHAKE_FAILED_*`, not any event at all.
+
+  **Conclusion**: libzmq's CURVE engine does not emit
+  ZMQ_EVENT_DISCONNECTED on clean peer-socket close.  This is a
+  libzmq behaviour, not a pylabhub coding error.
+
+  **Open question (needs validation before fix):** is the bug
+  in-process-shared-context-only (test artifact — both endpoints use
+  `pylabhub::hub::get_zmq_context()`) or cross-process too (real
+  production)?  Production has plh_hub and plh_role as separate
+  binaries with independent libzmq instances; the in-process test
+  scenario is the unusual case.  Validation experiment:
+  construct a BRC + broker pair where each uses a *fresh*
+  `zmq::context_t` and re-run.  If DISCONNECTED fires under fresh
+  contexts, the bug is test-only and the fix is "tests use separate
+  contexts."  If it still doesn't fire, the bug is real-production
+  and we need an application-level fallback (e.g., periodic broker
+  liveness probe with explicit timeout).
+
+  This breaks HEP-CORE-0023 §2.5.3 "disconnect is terminal"
+  production semantic only IF the bug is cross-process.  The test
+  is currently `GTEST_SKIP`'d with the empirical citation; un-skip
+  when fixed.  Severity: **HIGH if cross-process, MEDIUM if
+  test-only** — depends on the validation above.
 
 **Landing-phase progress (commits on `feature/lua-role-support`):**
 
