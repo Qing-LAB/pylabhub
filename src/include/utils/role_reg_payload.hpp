@@ -54,6 +54,16 @@ struct ConsumerRegInputs
     std::string channel;
     std::string role_uid;
     std::string role_name;
+
+    /// Consumer's CURVE pubkey (Z85, 40 chars).  Sent on the wire as
+    /// `zmq_pubkey` per broker_proto 5→6 (HEP-CORE-0036 §6.5 amended
+    /// 2026-06-04) so the broker can add it to the channel's
+    /// authorized-consumer allowlist via
+    /// `HubState::_on_consumer_authorized`.  Empty is accepted (allowlist
+    /// stays empty for that consumer — legal deny-all per HEP-CORE-0035
+    /// §4.8.4); callers in the role-host should pass the live
+    /// `BrokerRequestComm::Config::client_pubkey` value.
+    std::string zmq_pubkey;
 };
 
 /// Build the producer-side REG_REQ payload (channel/identity/transport
@@ -95,11 +105,17 @@ inline nlohmann::json build_consumer_reg_payload(const ConsumerRegInputs &in)
     // CONSUMER_REG_REQ now sends `role_uid`/`role_name` instead of
     // `consumer_uid`/`consumer_name`.  Role tag is embedded in the
     // uid value (HEP-CORE-0033 §G2.2.0b).
+    //
+    // broker_proto 5→6 (HEP-CORE-0036 §6.5 amended 2026-06-04 +
+    // PeerAdmission D3): wires `zmq_pubkey` — consumer's CURVE pubkey
+    // for the channel-scope allowlist.  Mirrors the producer-side
+    // `zmq_pubkey` field already on REG_REQ.
     nlohmann::json reg;
     reg["channel_name"] = in.channel;
     reg["role_uid"]     = in.role_uid;
     reg["role_name"]    = in.role_name;
     reg["consumer_pid"] = pylabhub::platform::get_pid();
+    reg["zmq_pubkey"]   = in.zmq_pubkey;
     return reg;
 }
 

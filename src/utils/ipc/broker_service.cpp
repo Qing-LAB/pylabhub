@@ -121,7 +121,7 @@ bool channel_name_matches_glob(const std::string& name, const std::string& glob)
 // When adding a new msg_type to process_message(), it MUST also be listed
 // in the appropriate array below.
 
-constexpr std::array<std::string_view, 16> kRequestReplyTypes = {
+constexpr std::array<std::string_view, 17> kRequestReplyTypes = {
     "REG_REQ", "DISC_REQ", "DEREG_REQ",
     "CONSUMER_REG_REQ", "CONSUMER_DEREG_REQ",
     "ENDPOINT_UPDATE_REQ", "SCHEMA_REQ",
@@ -129,6 +129,12 @@ constexpr std::array<std::string_view, 16> kRequestReplyTypes = {
     "ROLE_PRESENCE_REQ", "ROLE_INFO_REQ",
     "BAND_JOIN_REQ", "BAND_LEAVE_REQ", "BAND_MEMBERS_REQ",
     "HUB_PEER_HELLO",
+    // broker_proto 5 → 6 (HEP-CORE-0036 §6.5 amended 2026-06-04 +
+    // PeerAdmission Phase D3): producer queries the current channel-
+    // scope allowlist on receipt of CHANNEL_AUTH_CHANGED_NOTIFY (or
+    // proactively at setup).  Standard request-reply via existing
+    // do_request infrastructure.
+    "GET_CHANNEL_AUTH_REQ",
 };
 
 constexpr std::array<std::string_view, 8> kFireAndForgetTypes = {
@@ -381,10 +387,33 @@ public:
     nlohmann::json handle_disc_req(const nlohmann::json& req);
     nlohmann::json handle_dereg_req(const nlohmann::json& req, zmq::socket_t& socket);
     nlohmann::json handle_consumer_reg_req(const nlohmann::json& req,
-                                           const zmq::message_t& identity);
+                                           const zmq::message_t& identity,
+                                           zmq::socket_t&        socket);
     nlohmann::json handle_consumer_dereg_req(zmq::socket_t& socket,
                                               const nlohmann::json& req);
     void           handle_heartbeat_req(const nlohmann::json& req);
+
+    /// HEP-CORE-0036 §6.5 amended 2026-06-04 + PeerAdmission Phase D3 —
+    /// `GET_CHANNEL_AUTH_REQ` handler.  Returns the channel's current
+    /// `authorized_consumer_pubkeys` allowlist to a producer that asks.
+    /// Errors: `CHANNEL_NOT_FOUND` (channel does not exist),
+    /// `PRODUCER_NOT_AUTHORIZED` (caller's role_uid is not a registered
+    /// producer of the named channel).  Defence-in-depth: never return
+    /// another channel's allowlist to a non-producer caller.
+    nlohmann::json handle_get_channel_auth_req(const nlohmann::json& req);
+
+    /// HEP-CORE-0036 §6.5 amended 2026-06-04 + PeerAdmission Phase D3 —
+    /// fire-and-forget `CHANNEL_AUTH_CHANGED_NOTIFY` to every producer
+    /// of the named channel.  Same fan-out shape as
+    /// `CHANNEL_CLOSING_NOTIFY` / `CONSUMER_DIED_NOTIFY`.  No ACK
+    /// awaited; the producer's response is to fire its own
+    /// `GET_CHANNEL_AUTH_REQ` pull.  Producers without a captured ZMQ
+    /// identity are skipped (no transport to reach them).  Caller has
+    /// already mutated the channel's allowlist via the matching
+    /// `_on_consumer_authorized` / `_on_consumer_revoked` HubState op.
+    void fire_channel_auth_changed_notify(zmq::socket_t&     socket,
+                                           const std::string& channel_name,
+                                           const std::string& reason);
 
     /// HEP-CORE-0023 §2.5 — heartbeat negotiation block carried in
     /// REG_ACK / CONSUMER_REG_ACK.  Communicates the hub's tolerated
@@ -1086,9 +1115,18 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
     }
     else if (msg_type == "CONSUMER_REG_REQ")
     {
-        nlohmann::json resp = handle_consumer_reg_req(payload, identity);
+        nlohmann::json resp = handle_consumer_reg_req(payload, identity, socket);
         const std::string ack =
             (resp.value("status", "") == "success") ? "CONSUMER_REG_ACK" : "ERROR";
+        send_reply(socket, identity, ack, resp);
+    }
+    else if (msg_type == "GET_CHANNEL_AUTH_REQ")
+    {
+        // HEP-CORE-0036 §6.5 amended 2026-06-04 + PeerAdmission D3:
+        // producer pulls the current channel-scope allowlist.
+        nlohmann::json resp = handle_get_channel_auth_req(payload);
+        const std::string ack =
+            (resp.value("status", "") == "success") ? "GET_CHANNEL_AUTH_ACK" : "ERROR";
         send_reply(socket, identity, ack, resp);
     }
     else if (msg_type == "CONSUMER_DEREG_REQ")
@@ -1796,6 +1834,17 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
                           "one producer; use ZMQ transport for Fan-In");
     }
 
+    // HEP-CORE-0036 §6.5 + PeerAdmission D3: a freshly-opened channel
+    // needs a `ChannelAccessEntry` so subsequent CONSUMER_REG_REQ
+    // accepts can populate the allowlist via `_on_consumer_authorized`
+    // (no-op without an existing access record per its safe-default
+    // invariant).  SHM secret stays zero — SHM auth wiring is Phase G
+    // (HEP-CORE-0036 §12 Phase 5), not D3.
+    if (admission.channel_opened)
+    {
+        hub_state_->_on_channel_access_opened(channel_name, /*shm_secret=*/0);
+    }
+
     // Created.
     LOGGER_INFO("Broker: registered channel '{}' (pending first heartbeat){}",
                 channel_name,
@@ -2047,6 +2096,11 @@ nlohmann::json BrokerServiceImpl::handle_dereg_req(const nlohmann::json& req,
         // map already has the channel erased by _on_producer_dropped).
         send_closing_notify(socket, channel_name, pre_drop, "producer_deregistered");
         on_channel_closed(socket, channel_name, pre_drop, "producer_deregistered");
+        // HEP-CORE-0036 §6.5 + PeerAdmission D3: drop the channel-
+        // access record now that the channel is gone.  Idempotent —
+        // safe even if `_on_channel_access_opened` was never called
+        // (legacy flow before D3 wired the producer-REG hook).
+        hub_state_->_on_channel_access_closed(channel_name);
         // M1.4 (2026-05-11): no metrics_store_.erase needed — metrics
         // live on per-presence rows which are erased atomically by
         // `_on_channel_closed`'s cascade.
@@ -2076,7 +2130,8 @@ nlohmann::json BrokerServiceImpl::handle_dereg_req(const nlohmann::json& req,
 }
 
 nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& req,
-                                                           const zmq::message_t& identity)
+                                                           const zmq::message_t& identity,
+                                                           zmq::socket_t&        socket)
 {
     const std::string corr_id      = req.value("correlation_id", "");
     const std::string channel_name = req.value("channel_name", "");
@@ -2280,10 +2335,31 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     entry.inbox_schema_json = req.value("inbox_schema_json", "");
     entry.inbox_packing     = req.value("inbox_packing", "");
     entry.inbox_checksum    = req.value("inbox_checksum", "");
+    // broker_proto 5→6 (HEP-CORE-0036 §6.5 amended 2026-06-04 +
+    // PeerAdmission D3): capture the consumer's CURVE pubkey so the
+    // broker can populate the channel-scope authorized-consumer
+    // allowlist via `_on_consumer_authorized` and revoke it on DEREG /
+    // heartbeat timeout.  Empty for legacy consumers — allowlist stays
+    // empty for them (legal deny-all per HEP-CORE-0035 §4.8.4).
+    const std::string consumer_pubkey = req.value("zmq_pubkey", "");
+    entry.zmq_pubkey = consumer_pubkey;
     // Capture ZMQ identity for future CHANNEL_CLOSING_NOTIFY.
     entry.zmq_identity.assign(static_cast<const char*>(identity.data()), identity.size());
 
     hub_state_->_on_consumer_joined(channel_name, std::move(entry));
+
+    // HEP-CORE-0036 §6.5 + PeerAdmission D3: ensure a channel-access
+    // record exists (no-op if `_on_channel_access_opened` already fired
+    // at producer REG_REQ accept), then add this consumer's pubkey to
+    // the allowlist and fire the change notify to all producers.  Skip
+    // the auth-allowlist mutation when the consumer omitted its
+    // pubkey — the §4.8.4 empty-allowlist deny-all state is the
+    // intended degradation.
+    if (!consumer_pubkey.empty())
+    {
+        hub_state_->_on_consumer_authorized(channel_name, consumer_pubkey);
+        fire_channel_auth_changed_notify(socket, channel_name, "consumer_joined");
+    }
 
     LOGGER_INFO("Broker: consumer registered for channel '{}'", channel_name);
     nlohmann::json resp;
@@ -2362,6 +2438,19 @@ nlohmann::json BrokerServiceImpl::handle_consumer_dereg_req(zmq::socket_t& socke
     hub_state_->_on_consumer_left(channel_name, closing_entry.role_uid);
     on_consumer_closed(socket, channel_name, closing_entry, "voluntary_close");
 
+    // HEP-CORE-0036 §6.5 + PeerAdmission D3: revoke this consumer's
+    // pubkey from the channel-scope allowlist + notify producers.
+    // Legacy consumers with empty `zmq_pubkey` are silent no-ops on
+    // the allowlist side (`_on_consumer_revoked` is idempotent) but
+    // still get the notify so producers can pull a fresh snapshot
+    // (will simply confirm no change for legacy peers).
+    if (!closing_entry.zmq_pubkey.empty())
+    {
+        hub_state_->_on_consumer_revoked(channel_name,
+                                          closing_entry.zmq_pubkey);
+    }
+    fire_channel_auth_changed_notify(socket, channel_name, "consumer_left");
+
     LOGGER_INFO("Broker: consumer deregistered from channel '{}'", channel_name);
     nlohmann::json resp;
     resp["status"]  = "success";
@@ -2371,6 +2460,101 @@ nlohmann::json BrokerServiceImpl::handle_consumer_dereg_req(zmq::socket_t& socke
         resp["correlation_id"] = corr_id;
     }
     return resp;
+}
+
+// ─── PeerAdmission Phase D3 — channel-auth pull + notify helpers ────────────
+
+nlohmann::json
+BrokerServiceImpl::handle_get_channel_auth_req(const nlohmann::json &req)
+{
+    // HEP-CORE-0036 §6.5 amended 2026-06-04 + PeerAdmission D3 —
+    // producer pulls the channel-scope authorized-consumer allowlist.
+    // Request shape: { channel_name, role_uid, [correlation_id] }.
+    // Reply (success): { status="success", allowlist=[z85, ...], corr_id }.
+    // Reply (error):   { status="error", error_code, message, corr_id }.
+    const std::string corr_id      = req.value("correlation_id", "");
+    const std::string channel_name = req.value("channel_name", "");
+    const std::string caller_uid   = req.value("role_uid", "");
+
+    if (channel_name.empty() || caller_uid.empty())
+    {
+        return make_error(corr_id, "INVALID_REQUEST",
+                          "GET_CHANNEL_AUTH_REQ requires non-empty "
+                          "channel_name and role_uid");
+    }
+
+    // Authorization: the caller MUST be a registered producer of the
+    // requested channel.  Defence-in-depth — even though Layer-1 ZAP
+    // already gated who can speak to the broker, we never reveal one
+    // channel's allowlist to a non-producer caller (HEP-CORE-0036 §6.6).
+    auto ch = hub_state_->channel(channel_name);
+    if (!ch.has_value())
+    {
+        return make_error(corr_id, "CHANNEL_NOT_FOUND",
+                          "Channel '" + channel_name + "' does not exist");
+    }
+    bool caller_is_producer = false;
+    for (const auto &prod : ch->producers)
+    {
+        if (prod.role_uid == caller_uid)
+        {
+            caller_is_producer = true;
+            break;
+        }
+    }
+    if (!caller_is_producer)
+    {
+        return make_error(corr_id, "PRODUCER_NOT_AUTHORIZED",
+                          "Caller role_uid='" + caller_uid +
+                              "' is not a registered producer of channel '" +
+                              channel_name + "'");
+    }
+
+    // Read the current authoritative allowlist.  No record →
+    // empty allowlist (legal deny-all per HEP-CORE-0035 §4.8.4).
+    nlohmann::json resp;
+    resp["status"]       = "success";
+    resp["channel_name"] = channel_name;
+    if (!corr_id.empty())
+        resp["correlation_id"] = corr_id;
+    nlohmann::json allowlist_arr = nlohmann::json::array();
+    if (auto access = hub_state_->channel_access(channel_name); access.has_value())
+    {
+        for (const auto &pk : access->authorized_consumer_pubkeys)
+            allowlist_arr.push_back(pk);
+    }
+    resp["allowlist"] = std::move(allowlist_arr);
+    return resp;
+}
+
+void BrokerServiceImpl::fire_channel_auth_changed_notify(
+    zmq::socket_t&     socket,
+    const std::string& channel_name,
+    const std::string& reason)
+{
+    // HEP-CORE-0036 §6.5 amended 2026-06-04 — fan a fire-and-forget
+    // CHANNEL_AUTH_CHANGED_NOTIFY out to every producer of the named
+    // channel.  Same shape + threading as CHANNEL_CLOSING_NOTIFY /
+    // CONSUMER_DIED_NOTIFY (see line 3328 area).  Producers without a
+    // captured ZMQ identity (legacy or partial-state entries) are
+    // skipped: no transport reaches them; recovery is via REG_ACK
+    // on reconnect.
+    auto ch = hub_state_->channel(channel_name);
+    if (!ch.has_value())
+        return;
+    nlohmann::json notify;
+    notify["channel_name"] = channel_name;
+    notify["reason"]       = reason;
+    for (const auto &prod : ch->producers)
+    {
+        if (prod.zmq_identity.empty())
+            continue;
+        send_to_identity(socket, prod.zmq_identity,
+                          "CHANNEL_AUTH_CHANGED_NOTIFY", notify);
+    }
+    LOGGER_DEBUG("Broker: CHANNEL_AUTH_CHANGED_NOTIFY fan-out for "
+                 "channel '{}' reason='{}' to {} producer(s)",
+                 channel_name, reason, ch->producers.size());
 }
 
 void BrokerServiceImpl::handle_heartbeat_req(const nlohmann::json& req)
@@ -3330,6 +3514,15 @@ void BrokerServiceImpl::check_dead_consumers(zmq::socket_t& socket)
             }
             hub_state_->_on_consumer_left(channel_name, dead_consumer.role_uid);
             on_consumer_closed(socket, channel_name, dead_consumer, "process_dead");
+            // HEP-CORE-0036 §6.5 + PeerAdmission D3: revoke + notify on
+            // heartbeat-timeout revocation path.  Same shape as DEREG.
+            if (!dead_consumer.zmq_pubkey.empty())
+            {
+                hub_state_->_on_consumer_revoked(channel_name,
+                                                  dead_consumer.zmq_pubkey);
+            }
+            fire_channel_auth_changed_notify(socket, channel_name,
+                                              "consumer_timeout");
         }
     }
 }

@@ -379,8 +379,12 @@ void ProcessorRoleHost::worker_main_()
 
         // Input consumer CONSUMER_REG_REQ — routes via brc_for_channel(in_channel)
         // which maps to the in_hub's BRC (or out_hub's BRC if dedup'd).
+        // broker_proto 5→6 PeerAdmission D3: wire the role's own CURVE
+        // pubkey on the consumer side so the broker can populate the
+        // channel-scope auth allowlist.
         auto cons_reg = hub::build_consumer_reg_payload(
-            hub::ConsumerRegInputs{config_.in_channel(), id.uid, id.name});
+            hub::ConsumerRegInputs{config_.in_channel(), id.uid, id.name,
+                                    config_.auth().client_pubkey});
         const auto in_wire = hub::make_wire_schema_fields(
             pf_for_wire.in_slot_schema_json, in_slot_spec_, in_fz_local);
         hub::apply_consumer_schema_fields(cons_reg, in_wire);

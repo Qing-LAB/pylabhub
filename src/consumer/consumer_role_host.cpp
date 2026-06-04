@@ -299,10 +299,14 @@ void ConsumerRoleHost::worker_main_()
             return;
         }
 
-        // 6c — Build CONSUMER_REG_REQ payload (HEP-CORE-0034 Phase 5b).
+        // 6c — Build CONSUMER_REG_REQ payload (HEP-CORE-0034 Phase 5b;
+        // broker_proto 5→6 PeerAdmission D3 adds `zmq_pubkey` to the
+        // wire so the broker can populate the channel-scope auth
+        // allowlist via `_on_consumer_authorized`).
         const auto &ch = config_.in_channel();
         auto reg_opts = hub::build_consumer_reg_payload(
-            hub::ConsumerRegInputs{ch, id.uid, id.name});
+            hub::ConsumerRegInputs{ch, id.uid, id.name,
+                                    config_.auth().client_pubkey});
 
         // Citation fields (HEP-CORE-0034 §10.3) — named-mode vs anonymous
         // vs absent decided by the schema JSON shape; broker enforces the

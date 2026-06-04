@@ -173,7 +173,37 @@ inline constexpr uint8_t kShmMinor             = 0;
 // IncomingMessage / plh_inbox_msg_t) is also PRESERVED — it's the
 // authoring producer of an inbox payload, conceptually distinct from
 // the local role's `role_uid`.
-inline constexpr uint8_t kBrokerProtoMajor     = 5;
+//
+// broker_proto 5 → 6 (HEP-CORE-0036 §6.5 amended 2026-06-04 +
+// PeerAdmission Phase D3 — channel-auth notify-then-pull):
+//   - NEW (broker → producer, fire-and-forget):
+//       `CHANNEL_AUTH_CHANGED_NOTIFY { channel_name, reason }`.
+//     Fired by the broker whenever the channel's
+//     `authorized_consumer_pubkeys` set is mutated (CONSUMER_REG_REQ
+//     accept, CONSUMER_DEREG_REQ accept, consumer heartbeat timeout).
+//     Same wire shape as existing `CHANNEL_CLOSING_NOTIFY` /
+//     `CONSUMER_DIED_NOTIFY` (Class A by channel_name).  No ACK
+//     awaited.
+//   - NEW (producer → broker → producer, request-reply):
+//       `GET_CHANNEL_AUTH_REQ { channel_name, role_uid, corr_id }`
+//       → `GET_CHANNEL_AUTH_ACK { status, allowlist, error_code? }`.
+//     Producer pulls the current channel-scope allowlist on receipt
+//     of `CHANNEL_AUTH_CHANGED_NOTIFY` or as part of setup; ACK
+//     carries the full Z85 pubkey set after the broker's most-recent
+//     mutation.  Standard request-reply via the existing
+//     `BrokerRequestComm::do_request` infrastructure.
+//   - CONSUMER_REG_REQ body wires `zmq_pubkey` (mirrors the
+//     producer-side `zmq_pubkey` field already on REG_REQ) so the
+//     broker can record the consumer's CURVE pubkey into the
+//     channel's `authorized_consumer_pubkeys` allowlist via
+//     `HubState::_on_consumer_authorized`.  Old consumers that omit
+//     the field still register, but the channel allowlist stays
+//     empty for them — degrades to deny-all on producer pull, which
+//     matches the §4.8.4 empty-allowlist contract.
+// Supersedes the 2026-06-02 `CHANNEL_AUTH_UPDATE` snapshot-push-with-
+// ACK design (retracted with the DP-Q1 skip-disconnected lock-in;
+// see HEP-0036 §6.5 Amendment 2026-06-04 for the full rationale).
+inline constexpr uint8_t kBrokerProtoMajor     = 6;
 inline constexpr uint8_t kBrokerProtoMinor     = 0;
 inline constexpr uint8_t kZmqFrameMajor        = 1;
 inline constexpr uint8_t kZmqFrameMinor        = 0;
