@@ -197,7 +197,7 @@ constructing a new `HubHost`.
 
 1. **Read config.**  `HubConfig::load_from_directory(dir)` (caller-side,
    before HubHost ctor).
-2. **Vault unlock** *(if `cfg.auth().keyfile` non-empty)*.
+2. **Vault unlock** (mandatory, no exceptions).
    `cfg.load_keypair(password)` populates `cfg.auth().client_pubkey/seckey`.
    Caller-side, BEFORE constructing HubHost — this is the **deliberate
    deviation from the §4 mermaid which shows HubVault as a peer
@@ -206,7 +206,13 @@ constructing a new `HubHost`.
    keypair is part of HubConfig once unlocked.  Subsystem-level
    HubVault wiring is required only for admin token validation and
    key rotation (HEP-CORE-0035); until those land, HubHost reads
-   the unlocked keypair from `cfg.auth()`.
+   the unlocked keypair from `cfg.auth()`.  Per HEP-CORE-0035 §2 +
+   §4.6.5, `HubHost::startup()` MUST reject an empty
+   `auth().client_pubkey` — there is no in-memory CURVE mode and no
+   production path that constructs `BrokerService` without CURVE +
+   admission.  Tests that want a non-CURVE broker go through
+   HEP-CORE-0035 §4.6.5 (separate factory on `BrokerService`), not
+   through HubHost.
 3. **Construct HubHost.**  `HubHost host(std::move(cfg))` — no
    threads, no sockets yet.  Allocates `Impl` with the value-owned
    `HubState`.

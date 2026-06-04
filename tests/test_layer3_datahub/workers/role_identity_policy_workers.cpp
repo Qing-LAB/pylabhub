@@ -233,6 +233,19 @@ BrokerService::Config base_cfg()
 {
     BrokerService::Config cfg;
     cfg.endpoint = "tcp://127.0.0.1:0";
+    // BYPASS: This fixture tests the legacy `RoleIdentityPolicy` machinery
+    //   which HEP-CORE-0035 §1 + §8 Phase 6 retires.  Both flags are
+    //   explicitly false because (a) the legacy code under test is
+    //   plaintext-CTRL-only — adding CURVE here would not test what these
+    //   tests pin; (b) the whole fixture is slated for deletion alongside
+    //   the production code per §8 Phase 6.  HEP-0035 §4.6.5 no-bypass
+    //   discipline does NOT apply here because the SUBJECT is dead-on-
+    //   arrival code, not a real CURVE-protected wire path.
+    // CANONICAL: not populated; legacy machinery has no CURVE story.
+    // RE-EXAMINE-WHEN: §8 Phase 6 cleanup lands → this whole file is
+    //   deleted; this comment block disappears with it.
+    cfg.use_curve              = false;
+    cfg.enforce_ctrl_admission = false;
     return cfg;
 }
 

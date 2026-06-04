@@ -6,6 +6,7 @@
  * This file handles only role-specific payload (CurveZMQ keypair).
  */
 #include "utils/role_vault.hpp"
+#include "utils/security/curve_keypair.hpp"
 #include "utils/security/key_file_acl.hpp"
 
 #include "vault_crypto.hpp"
@@ -69,16 +70,9 @@ RoleVault RoleVault::create(const fs::path    &vault_path,
     detail::vault_require_sodium();
 
     // Generate CurveZMQ keypair (Z85).
-    std::array<char, kZ85BufSize> pub{};
-    std::array<char, kZ85BufSize> sec{};
-    if (zmq_curve_keypair(pub.data(), sec.data()) != 0)
-    {
-        throw std::runtime_error("RoleVault: zmq_curve_keypair failed");
-    }
-    const std::string pub_str(pub.data(), kZ85KeyLen);
-    const std::string sec_str(sec.data(), kZ85KeyLen);
-    sodium_memzero(sec.data(), sec.size()); // zero secret key stack buffer after copying to sec_str
-    sodium_memzero(pub.data(), pub.size()); // zero public key stack buffer after copying to pub_str
+    auto kp = pylabhub::utils::security::generate_curve_keypair();
+    const std::string pub_str = std::move(kp.public_z85);
+    const std::string sec_str = std::move(kp.secret_z85);
 
     // Ensure parent directory exists.
     if (vault_path.has_parent_path())

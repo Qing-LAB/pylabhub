@@ -4,7 +4,7 @@
 |-----------------|----------------------------------------------------------------------------------------------------|
 | **HEP**         | `HEP-CORE-0035`                                                                                    |
 | **Title**       | Hub-Role Authentication and Federation Trust                                                       |
-| **Status**      | 🚧 **PARTIAL — implementation in flight.** Authoritative design; supersedes the legacy `RoleIdentityPolicy` placeholder documented in HEP-CORE-0009 §2.7.  Subsection state (updated 2026-06-03): §4.6 (file-ACL discipline) ✅; §4.7 (runtime key handling) ⏳ task #102; §4.8 (vault + CLI + bootstrap) ✅; §4.1 Layer-1 ZAP on CTRL ROUTER ✅ (PeerAdmission Phase D step D2; broker-side gate against `known_roles[]` ∪ `peers[].pubkey_z85`); §4.2 Layer-2 federation-trust gate ⏳; legacy placeholder retirement ⏳ (still live on `check_role_identity` path).  Step-by-step in `docs/todo/AUTH_TODO.md`. |
+| **Status**      | 🚧 **PARTIAL — implementation in flight.** Authoritative design; supersedes the legacy `RoleIdentityPolicy` placeholder documented in HEP-CORE-0009 §2.7.  Subsection state (updated 2026-06-04): §4.6 (file-ACL discipline) ✅; §4.6.5 (test-only bypass discipline — production has no CURVE/admission knob) ⏳ landing phase; §4.7 (runtime key handling) ⏳ task #102; §4.8 (vault + CLI + bootstrap) ✅; §4.1 Layer-1 ZAP on CTRL ROUTER ✅ (PeerAdmission Phase D step D2; broker-side gate against `known_roles[]` ∪ `peers[].pubkey_z85`); §4.2 Layer-2 federation-trust gate ⏳; legacy placeholder retirement ⏳ (still live on `check_role_identity` path).  Step-by-step in `docs/todo/AUTH_TODO.md`. |
 | **Created**     | 2026-04-29                                                                                         |
 | **Area**        | Framework Architecture (`BrokerService` socket layer, `HubConfig`, `BrokerService::Config`, federation) |
 | **Depends on**  | HEP-CORE-0022 (Federation), HEP-CORE-0024 (Role Directory), HEP-CORE-0033 (Hub Character)          |
@@ -190,7 +190,25 @@ during Phase 1 review of `HubBrokerConfig`):
 
 - **CURVE is required.** Every role↔hub interaction is encrypted +
   authenticated by ZMQ CURVE. NULL-mech connections to the broker
-  ROUTER are not supported in any deployment except dev-mode-with-loopback.
+  ROUTER are not supported in production. There is no operator or
+  config knob that disables CURVE — see §4.6.5 for the test-only
+  bypass and its strict scope.
+- **Admission gating is unconditional whenever CURVE is on.** The
+  Layer-1 ZAP allowlist (§4.1) is not a separable policy layer that
+  operators or callers can toggle. Whenever a CURVE-server socket is
+  bound (broker CTRL ROUTER per §4.1; producer-side data ROUTER per
+  HEP-CORE-0036 §7), a `PeerAdmission` handler MUST be installed on
+  the shared ZAP inproc REP and MUST enforce against the relevant
+  allowlist. Empty allowlist = deny-all (§4.8.4 bootstrap); there is
+  no permissive-mode runtime flag.
+- **HubHost startup requires a loaded keypair.** `HubHost::startup()`
+  MUST reject any `HubConfig` whose `auth().client_pubkey` is empty
+  (no in-memory CURVE mode exists; see §4.6.2 and HEP-CORE-0033 §7.1).
+  This guarantees that every production-path `BrokerService` instance
+  is constructed with CURVE on, and therefore (per the previous
+  invariant) with admission on. Tests that need a HubHost without
+  CURVE do not exist — the test bypass lives one layer down at
+  `BrokerService` (§4.6.5), not at HubHost.
 - **Mutual pubkey knowledge is an invariant.** Every role knows its
   hub's pubkey (via `<role_dir>/<direction>_hub_dir/hub.json` →
   `network.broker_endpoint` + the hub's pubkey distributed alongside).
@@ -683,6 +701,71 @@ This requirement layers on top of work that has now landed:
     layer (vault password) remains the primary integrity
     defense in that operator-chosen-risk configuration.
 
+### 4.6.5 No-bypass discipline — tests use real CURVE too
+
+§2 invariant "CURVE is required" + §2 invariant "Admission gating is
+unconditional whenever CURVE is on" together mean that **no code
+path — production OR test — constructs a `BrokerService` without
+CURVE + admission**.  There is no test-only bypass factory.  There
+is no runtime knob.  Test code uses the same authenticated wire
+path production uses.
+
+The rationale:
+
+- The cost of "real CURVE" in a test is trivial.  Generating a CURVE
+  keypair (libsodium underneath `zmq::curve_keypair()`) costs
+  ~100 μs.  The vault layer's Argon2id KDF is what's expensive, but
+  **the vault is a persistence concern, not a runtime concern**.
+  In-memory CURVE keys are two Z85 strings; tests skip the vault
+  entirely and populate `auth().client_pubkey/seckey` (and the
+  corresponding allowlist entries) directly via a shared test
+  helper.
+- Any test that goes through a no-CURVE code path is testing a
+  scenario that **cannot happen in production** by §2 + the §4.6.2
+  startup-verification contract.  Coverage of the no-CURVE path is
+  therefore coverage of dead code, not coverage of behavior.
+- Concretely: a test that wants to verify broker REG_REQ handling,
+  fan-out, metrics, admin RPC, schema gate, script-engine
+  integration, or HubHost lifecycle stands up real CURVE keys
+  (~4 LOC via the helper) and a populated `known_roles` allowlist
+  containing the test's role pubkey.  The test exercises the
+  production wire path; CURVE is never optional.
+
+Concrete consequences for the implementation:
+
+- `BrokerService::Config` MUST NOT carry any field that disables
+  CURVE, disables admission, or relaxes either.  No `use_curve`,
+  no `enforce_ctrl_admission`, no equivalent.  The legacy
+  `BrokerService::Config::use_curve` and the close-out-2
+  `enforce_ctrl_admission` field are HEP-0035 violations and are
+  removed in the landing phase.
+- `HubHost::startup()` rejects an empty `auth().client_pubkey`
+  before `BrokerService` is constructed.  This makes "HubHost
+  without CURVE" structurally impossible.
+- The broker installs ZAP admission whenever it binds a
+  CURVE-server socket, unconditionally.  No permissive-mode runtime
+  flag exists on the `PeerAdmission` handler.
+- Tests requiring a broker provide their CURVE setup via
+  `tests/test_framework/curve_test_setup.h` (shared helper:
+  generate hub keypair, generate one role keypair per test client,
+  populate `known_roles` allowlist).  Tests do not go through the
+  vault.  Tests do not bypass admission.
+
+Tests that exercise *legacy* code paths — the `RoleIdentityPolicy`
+enum, `check_role_identity()`, `KnownRole`-with-strings (without
+pubkey), `ChannelPolicyOverride`, the L3 fixture
+`test_datahub_role_identity_policy.cpp` — are deleted alongside the
+production code per §8 Phase 6.  Those tests pin behavior that is
+explicitly being retired; their failure under HEP-0035 invariants
+is the expected outcome of retirement, not a regression to chase.
+
+Algorithm-level coverage that does not require a broker stays at
+L2 against the relevant subsystem (metrics aggregator + handcrafted
+`HubState`, schema validator, etc.) per the test layering doctrine
+in `docs/README/README_testing.md` § "Choosing a test pattern".
+"At L3 because we already had a broker handy" is not a layering
+justification.
+
 ---
 
 ## 4.7 Runtime key handling — swap, core dumps, plaintext zeroing
@@ -1007,10 +1090,16 @@ When HEP-0035 ships:
 4. **Audit log requirements.** Which Layer-1/Layer-2 decisions get
    logged at what level? Per-handshake INFO is too noisy in dev; rejection
    needs WARN with enough context to diagnose.
-5. **Dev-mode escape hatch.** Today `cfg.use_curve = false` disables CURVE
+5. **Dev-mode escape hatch.** ~~Today `cfg.use_curve = false` disables CURVE
    entirely. With HEP-0035, dev-mode should remain "no auth at all" but
    *only* on loopback endpoints — should this be enforced at config-parse
-   time (reject `tcp://0.0.0.0:*` if `use_curve=false`)?
+   time (reject `tcp://0.0.0.0:*` if `use_curve=false`)?~~ **Closed
+   2026-06-04 by §2 + §4.6.5.** No dev-mode escape hatch exists — neither
+   in production nor in tests.  `BrokerService::Config::use_curve` and the
+   close-out-2 `enforce_ctrl_admission` field are HEP-0035 violations
+   and are removed in the landing phase.  Tests requiring a broker use
+   real CURVE keys via `tests/test_framework/curve_test_setup.h`
+   (~4 LOC per fixture, ~100 μs keypair-gen cost).
 
 ---
 

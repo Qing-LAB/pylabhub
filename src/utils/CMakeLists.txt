@@ -52,6 +52,7 @@ set(UTILS_SOURCES
   service/engine_factory_registry.cpp  # ScriptEngine plugin registry (HEP-CORE-0011)
 
   # --- security: file ACL + runtime key handling (HEP-CORE-0035 §4.6 / §4.7) ---
+  security/curve_keypair.cpp       # pylabhub::utils::security (HEP-CORE-0035 §2 — consolidates 4 inline keygen sites)
   security/key_file_acl.cpp        # pylabhub::utils::security (HEP-CORE-0035 §4.6)
   security/known_roles.cpp         # pylabhub::utils::security (PeerAdmission Phase B)
   security/zap_router.cpp          # pylabhub::utils::security (PeerAdmission Phase C — caller-pumped)
