@@ -679,6 +679,7 @@ int role_handler_connections_start_stop_smoke()
             BrokerService::Config bcfg;
             bcfg.endpoint  = "tcp://127.0.0.1:0";
             bcfg.use_curve = false;
+            bcfg.enforce_ctrl_admission = false;
             auto broker = start_broker_with_cfg(std::move(bcfg));
 
             // RoleAPIBase carries the role-side identity (uid, name,
@@ -745,11 +746,13 @@ int role_handler_connections_dual_hub()
             BrokerService::Config bcfg_a;
             bcfg_a.endpoint  = "tcp://127.0.0.1:0";
             bcfg_a.use_curve = false;
+            bcfg_a.enforce_ctrl_admission = false;
             auto broker_a = start_broker_with_cfg(std::move(bcfg_a));
 
             BrokerService::Config bcfg_b;
             bcfg_b.endpoint  = "tcp://127.0.0.1:0";
             bcfg_b.use_curve = false;
+            bcfg_b.enforce_ctrl_admission = false;
             auto broker_b = start_broker_with_cfg(std::move(bcfg_b));
 
             pylabhub::scripting::RoleHostCore core;
@@ -810,6 +813,7 @@ int role_handler_connections_double_start_rejected()
             BrokerService::Config bcfg;
             bcfg.endpoint  = "tcp://127.0.0.1:0";
             bcfg.use_curve = false;
+            bcfg.enforce_ctrl_admission = false;
             auto broker = start_broker_with_cfg(std::move(bcfg));
 
             pylabhub::scripting::RoleHostCore core;
@@ -862,6 +866,7 @@ int role_handler_brc_for_x_post_start()
             BrokerService::Config bcfg;
             bcfg.endpoint  = "tcp://127.0.0.1:0";
             bcfg.use_curve = false;
+            bcfg.enforce_ctrl_admission = false;
             auto broker = start_broker_with_cfg(std::move(bcfg));
 
             pylabhub::scripting::RoleHostCore core;
@@ -934,6 +939,7 @@ int role_api_base_start_handler_threads_e2e()
             BrokerService::Config bcfg;
             bcfg.endpoint  = "tcp://127.0.0.1:0";
             bcfg.use_curve = false;
+            bcfg.enforce_ctrl_admission = false;
             auto broker = start_broker_with_cfg(std::move(bcfg));
 
             const std::string role_uid = "prod.m4c_e2e.uid00000001";
@@ -1059,11 +1065,13 @@ int role_api_base_start_handler_threads_dual_hub_e2e()
             BrokerService::Config bcfg_a;
             bcfg_a.endpoint  = "tcp://127.0.0.1:0";
             bcfg_a.use_curve = false;
+            bcfg_a.enforce_ctrl_admission = false;
             auto broker_a = start_broker_with_cfg(std::move(bcfg_a));
 
             BrokerService::Config bcfg_b;
             bcfg_b.endpoint  = "tcp://127.0.0.1:0";
             bcfg_b.use_curve = false;
+            bcfg_b.enforce_ctrl_admission = false;
             auto broker_b = start_broker_with_cfg(std::move(bcfg_b));
 
             const std::string role_uid = "proc.m4c_dual_e2e.uid00000001";
@@ -1200,6 +1208,7 @@ int role_api_base_band_join_handler_mode()
             BrokerService::Config bcfg;
             bcfg.endpoint  = "tcp://127.0.0.1:0";
             bcfg.use_curve = false;
+            bcfg.enforce_ctrl_admission = false;
             auto broker = start_broker_with_cfg(std::move(bcfg));
 
             const std::string role_uid = "prod.a0_band.uid00000001";
@@ -1294,6 +1303,7 @@ int broker_band_rejects_invalid_identifier()
             BrokerService::Config bcfg;
             bcfg.endpoint  = "tcp://127.0.0.1:0";
             bcfg.use_curve = false;
+            bcfg.enforce_ctrl_admission = false;
             auto broker = start_broker_with_cfg(std::move(bcfg));
 
             // Connect a raw BRC client; band-name validation is at
@@ -1417,6 +1427,7 @@ int role_api_base_band_notify_wire_field_and_routing()
             BrokerService::Config bcfg;
             bcfg.endpoint  = "tcp://127.0.0.1:0";
             bcfg.use_curve = false;
+            bcfg.enforce_ctrl_admission = false;
             auto broker = start_broker_with_cfg(std::move(bcfg));
 
             const std::string role_uid_a = "prod.b1.a.uid00000001";
@@ -1558,10 +1569,12 @@ int role_api_base_hub_dead_peer_keeps_role_alive()
         []() {
             BrokerService::Config cfg_a; cfg_a.endpoint = "tcp://127.0.0.1:0";
             cfg_a.use_curve = false;
+            cfg_a.enforce_ctrl_admission = false;
             auto broker_a = start_broker_with_cfg(std::move(cfg_a));
 
             BrokerService::Config cfg_b; cfg_b.endpoint = "tcp://127.0.0.1:0";
             cfg_b.use_curve = false;
+            cfg_b.enforce_ctrl_admission = false;
             auto broker_b = start_broker_with_cfg(std::move(cfg_b));
 
             const std::string role_uid = "prod.a2_peer.uid00000001";
@@ -1686,10 +1699,12 @@ int role_api_base_hub_dead_transitions_presences_to_deregistered()
         []() {
             BrokerService::Config cfg_a; cfg_a.endpoint = "tcp://127.0.0.1:0";
             cfg_a.use_curve = false;
+            cfg_a.enforce_ctrl_admission = false;
             auto broker_a = start_broker_with_cfg(std::move(cfg_a));
 
             BrokerService::Config cfg_b; cfg_b.endpoint = "tcp://127.0.0.1:0";
             cfg_b.use_curve = false;
+            cfg_b.enforce_ctrl_admission = false;
             auto broker_b = start_broker_with_cfg(std::move(cfg_b));
 
             const std::string role_uid = "prod.r33.uid00000001";
@@ -1830,10 +1845,12 @@ int role_api_base_hub_dead_master_exits_role()
         []() {
             BrokerService::Config cfg_a; cfg_a.endpoint = "tcp://127.0.0.1:0";
             cfg_a.use_curve = false;
+            cfg_a.enforce_ctrl_admission = false;
             auto broker_a = start_broker_with_cfg(std::move(cfg_a));
 
             BrokerService::Config cfg_b; cfg_b.endpoint = "tcp://127.0.0.1:0";
             cfg_b.use_curve = false;
+            cfg_b.enforce_ctrl_admission = false;
             auto broker_b = start_broker_with_cfg(std::move(cfg_b));
 
             const std::string role_uid = "prod.a2_master.uid00000001";
@@ -2003,10 +2020,12 @@ int role_api_base_wait_for_role_dual_hub_fallthrough()
         []() {
             BrokerService::Config cfg_a; cfg_a.endpoint = "tcp://127.0.0.1:0";
             cfg_a.use_curve = false;
+            cfg_a.enforce_ctrl_admission = false;
             auto broker_a = start_broker_with_cfg(std::move(cfg_a));
 
             BrokerService::Config cfg_b; cfg_b.endpoint = "tcp://127.0.0.1:0";
             cfg_b.use_curve = false;
+            cfg_b.enforce_ctrl_admission = false;
             auto broker_b = start_broker_with_cfg(std::move(cfg_b));
 
             // ── Register a "target" producer on hub-B only ────────────────
@@ -2130,6 +2149,7 @@ int role_api_base_registration_fsm_transitions()
             BrokerService::Config bcfg;
             bcfg.endpoint  = "tcp://127.0.0.1:0";
             bcfg.use_curve = false;
+            bcfg.enforce_ctrl_admission = false;
             auto broker = start_broker_with_cfg(std::move(bcfg));
 
             const std::string role_uid = "prod.s1.uid00000001";
@@ -2284,10 +2304,12 @@ int role_api_base_source_hub_uid_disambiguates_dual_hub()
         []() {
             BrokerService::Config cfg_a; cfg_a.endpoint = "tcp://127.0.0.1:0";
             cfg_a.use_curve = false;
+            cfg_a.enforce_ctrl_admission = false;
             auto broker_a = start_broker_with_cfg(std::move(cfg_a));
 
             BrokerService::Config cfg_b; cfg_b.endpoint = "tcp://127.0.0.1:0";
             cfg_b.use_curve = false;
+            cfg_b.enforce_ctrl_admission = false;
             auto broker_b = start_broker_with_cfg(std::move(cfg_b));
 
             const std::string proc_uid = "proc.c3.uid00000001";
@@ -2443,10 +2465,12 @@ int role_api_base_dual_hub_heartbeat_per_presence()
         []() {
             BrokerService::Config cfg_a; cfg_a.endpoint = "tcp://127.0.0.1:0";
             cfg_a.use_curve = false;
+            cfg_a.enforce_ctrl_admission = false;
             auto broker_a = start_broker_with_cfg(std::move(cfg_a));
 
             BrokerService::Config cfg_b; cfg_b.endpoint = "tcp://127.0.0.1:0";
             cfg_b.use_curve = false;
+            cfg_b.enforce_ctrl_admission = false;
             auto broker_b = start_broker_with_cfg(std::move(cfg_b));
 
             const std::string proc_uid = "proc.c2_hb.uid00000001";

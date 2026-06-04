@@ -226,18 +226,26 @@ public:
         /// Also consulted for logging in Tracked/Required modes.
         std::vector<KnownRole>         known_roles;
 
-        /// HEP-CORE-0035 Phase D step D2 — install ZAP admission on the
-        /// CTRL ROUTER socket when `use_curve == true`.  Production
+        /// HEP-CORE-0035 §4.8 — install ZAP admission on the CTRL
+        /// ROUTER socket when `use_curve == true`.  Production
         /// (`HubHost::startup`) keeps the default `true`: every CTRL
-        /// hello is gated against `known_roles`, and an empty allowlist
-        /// means deny-all per HEP-CORE-0035 §4.8.4.
+        /// hello is gated against the UNION of `known_roles[]` and
+        /// `peers[].pubkey_z85` (HEP-CORE-0035 §4.2); an empty
+        /// allowlist means deny-all per HEP-CORE-0035 §4.8.4.
         ///
         /// Direct-Config tests that enable CURVE only for wire
-        /// encryption (not for admission testing) set this to `false`
-        /// so the broker still wires `curve_server` on the ROUTER but
-        /// skips the ZAP registration — handshakes succeed for any
-        /// peer with a valid CURVE keypair.  See AUTH_TODO Phase D for
-        /// the rationale.
+        /// encryption (not for admission testing) set this to `false`.
+        /// The broker still REGISTERS a ZAP domain (defense against
+        /// `ZapRouter` singleton-state contamination in aggregate
+        /// binaries) but `BrokerCtrlAdmission::is_peer_allowed` always
+        /// returns true in this mode — every CURVE peer is admitted.
+        ///
+        /// Mismatch case (`enforce=true` + `use_curve=false`): no
+        /// CURVE handshake fires so the gate is inert; the broker
+        /// silently accepts every plaintext peer.  `BrokerServiceImpl::run()`
+        /// emits a `LOGGER_WARN` on this path.  HubHost startup
+        /// hard-errors on missing keyfile (task #78) so production
+        /// cannot reach the mismatch case.
         bool                           enforce_ctrl_admission{true};
 
         /// Per-channel policy overrides (first matching glob wins).
