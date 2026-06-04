@@ -120,13 +120,16 @@ inline void write_minimal_script(const fs::path &hub_dir)
 ///   - logging + loop_timing
 ///
 /// auth.keyfile is REQUIRED (HEP-CORE-0033 §7.1) and must be
-/// non-empty; this helper writes a placeholder path that the binary
-/// never opens (config-load itself does not touch the vault file —
-/// only `--keygen` and the run-time `HubConfig::load_keypair()` do,
-/// and `--validate` deliberately skips vault unlock).  Tests that
-/// need a real vault must do `--keygen` explicitly.  Admin endpoint
-/// uses `tcp://127.0.0.1:0` so each test gets an ephemeral port;
-/// broker endpoint similarly.
+/// non-empty; this helper writes a placeholder path that
+/// config-load itself does not touch (parsing reads the string;
+/// only `--keygen` writes to the path and only run-time
+/// `HubConfig::load_keypair()` reads the contents).  Under the
+/// gatekeeper/clearance model (HEP-CORE-0033 §6.5, finalized
+/// 2026-06-04), `--validate` and run BOTH unlock the vault — tests
+/// that exercise either must pre-keygen explicitly via
+/// `keygen_minimal_hub` below.  Admin endpoint uses
+/// `tcp://127.0.0.1:0` so each test gets an ephemeral port; broker
+/// endpoint similarly.
 inline void write_minimal_config(const fs::path &cfg_path,
                                   const fs::path &base_dir,
                                   const nlohmann::json &overrides =

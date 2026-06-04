@@ -102,10 +102,13 @@ inline void write_minimal_config(const fs::path       &cfg_path,
     // INSIDE the role-tagged block (producer/consumer/processor),
     // not at top level.  auth.keyfile is REQUIRED (HEP-CORE-0024
     // §3.4) and must be non-empty; this helper writes a placeholder
-    // path that the binary never opens (config-load itself does not
-    // touch the vault file — only `--keygen` and the run-time
-    // `RoleConfig::load_keypair()` do).  Tests that need a real
-    // vault must do `--keygen` explicitly.
+    // path that config-load itself does not touch (parsing reads the
+    // string; only `--keygen` writes to the path and only run-time
+    // `RoleConfig::load_keypair()` reads the contents).  Under the
+    // gatekeeper/clearance model (HEP-CORE-0024 §3.4.2 + HEP-CORE-0033
+    // §6.5, finalized 2026-06-04), `--validate` and run BOTH unlock
+    // the vault — tests that exercise either must pre-keygen
+    // explicitly via `keygen_minimal_role` below.
     //
     // Build the JSON via explicit assignment (not nested initializer
     // lists) — nlohmann::json interprets `{"key", {...}}` in a nested
