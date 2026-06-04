@@ -6,7 +6,7 @@ data-channel CURVE auth gate.
 
 **Authoritative design lives in:**
 - `docs/HEP/HEP-CORE-0035-Hub-Role-Authentication-and-Federation-Trust.md` — Layer-1 ZAP + Layer-2 federation trust gate + key-file ACL discipline (§4.6) + runtime key handling (§4.7).
-- `docs/HEP/HEP-CORE-0036-Authenticated-Connection-Establishment.md` — Three-tier auth (transport / identity / authorization), `ChannelAccessIndex` (§4.1), `CHANNEL_AUTH_UPDATE` snapshot wire (§6.5), per-producer pubkey + endpoint (§6.4).
+- `docs/HEP/HEP-CORE-0036-Authenticated-Connection-Establishment.md` — Three-tier auth (transport / identity / authorization), `ChannelAccessIndex` (§4.1), channel-auth notify+pull wire (§6.5 — `CHANNEL_AUTH_CHANGED_NOTIFY` + `GET_CHANNEL_AUTH_REQ`/`_ACK`, amended 2026-06-04), per-producer pubkey + endpoint (§6.4).
 - `docs/HEP/HEP-CORE-0017-Queue-Abstraction.md` §3.3 — `RxQueueOptions::producer_peers` queue auth contract.
 
 **Status source of truth:** `docs/TODO_MASTER.md` (when PeerAdmission
@@ -34,8 +34,10 @@ work is the active sprint).
 
 `HubState` holds the `ChannelAccessIndex` (HEP-CORE-0036 §4.1 line 388);
 `BrokerServiceImpl` installs the CTRL ROUTER ZAP handler against the
-operator-defined allowlist and (in D3+) pushes `CHANNEL_AUTH_UPDATE`
-snapshots when consumer membership changes.
+operator-defined allowlist and (in D3+) fires
+`CHANNEL_AUTH_CHANGED_NOTIFY` whenever consumer membership changes,
+prompting producer-initiated `GET_CHANNEL_AUTH_REQ` pulls (§6.5
+amended 2026-06-04).
 
 Steps:
 
@@ -71,12 +73,29 @@ Steps:
    exercises the production path end-to-end:
    `plh_role --keygen` → `RoleVault::open` → `plh_hub --add-known-role`
    → `plh_hub <hub_dir>` → role connects + REG_REQ succeeds.
-3. **D3 — `CHANNEL_AUTH_UPDATE` wire frame.**  broker_proto 5 → 6.
-   Snapshot semantics per HEP-0036 §6.5 (locked 2026-06-02): single
-   `allowlist[]` array of plain Z85 strings; receiver REPLACES cache.
-4. **D4 — Role-side dispatch.**  `BrokerRequestComm` recognizes the
-   inbound message type; `RoleAPIBase` looks up the matching tx_queue
-   by channel name and calls `set_peer_allowlist(snapshot)`.
+3. **D3 — Channel-auth wire frames** (broker_proto 5 → 6).
+   Notify-then-pull semantics per HEP-0036 §6.5 amended 2026-06-04
+   (supersedes the 2026-06-02 snapshot-push-with-ACK design).  Two
+   new message types:
+   - `CHANNEL_AUTH_CHANGED_NOTIFY` (broker → producer, fire-and-
+     forget): `{channel_name, reason}`.  Same wire shape as
+     existing `CHANNEL_CLOSING_NOTIFY` / `BAND_LEAVE_NOTIFY`.
+   - `GET_CHANNEL_AUTH_REQ` / `GET_CHANNEL_AUTH_ACK` (producer →
+     broker → producer, sync request-reply): request carries
+     `{channel_name, role_uid, corr_id}`; ACK carries
+     `{status, allowlist?, error_code?}` with `allowlist` as a
+     plain Z85 array on success.  Uses the existing
+     `BrokerRequestComm::do_request` machinery (no new dispatcher).
+   Broker stays a pure responder; no skip-disconnected logic; no
+   `push_ack_timeout_ms` config.  Producer-offline recovers via
+   the existing `REG_ACK.initial_allowlist` reconnect re-sync.
+4. **D4 — Role-side dispatch.**  `BrokerRequestComm` recognizes
+   inbound `CHANNEL_AUTH_CHANGED_NOTIFY` and routes it to a
+   role-side handler that fires `GET_CHANNEL_AUTH_REQ`, applies
+   the reply via `ZmqQueue::set_peer_allowlist(snapshot)`.
+   Coalesce policy: if a query is already in flight for the same
+   channel, drop the redundant notify (next reply will reflect the
+   latest state).
 5. **D5 — `CONSUMER_REG_ACK.producers[]` array.**  One entry per
    producer of the channel — supports fan-in (HEP-CORE-0023 §2.1.1).
    Each entry: `{role_uid, pubkey, endpoint}`; SHM transport also
@@ -94,7 +113,7 @@ D landing window.
 | # | Decision | Where it landed |
 |---|---|---|
 | P-API | ZmqQueue auth shape — additive `*_with_auth` overloads | Phase C `7b7944e8` |
-| P-Wire | CHANNEL_AUTH_UPDATE semantics — snapshot, not delta | HEP-0036 §6.5 (locked 2026-06-02) |
+| P-Wire | Channel-auth sync semantics — notify-then-pull (broker fires `CHANNEL_AUTH_CHANGED_NOTIFY`; producer pulls via `GET_CHANNEL_AUTH_REQ`) | HEP-0036 §6.5 (amended 2026-06-04; supersedes 2026-06-02 snapshot-push-with-ACK + 2026-05-28 delta) |
 | P-Vault | Where known roles live — separate `<hub_dir>/vault/known_roles.json` file mode 0600 | Phase B `a6b44ff8`; HEP-0035 §4.8 |
 | P-Threading (CTRL) | Broker-side CTRL ROUTER ZAP — caller-pumped from broker poll thread, no internal thread | HEP-0036 §7.1 + D2 `d18d2e91` |
 | P-Threading (data) | Producer-side data ROUTER ZAP — caller-pumped from BRC poll thread, no internal thread | HEP-0036 §7.1; Phase C `28a06046` + `827474f0`; producer-side install pending (task #103) |
