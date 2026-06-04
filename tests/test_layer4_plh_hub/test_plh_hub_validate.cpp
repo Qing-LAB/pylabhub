@@ -45,6 +45,11 @@ TEST_F(PlhHubCliTest, MinimalConfigPasses)
     write_minimal_script(dir);
     write_minimal_config(cfg_path, dir);
 
+    // HEP-CORE-0035 §2 + HEP-CORE-0033 §6.5: --validate is a
+    // clearance check on a provisioned hub (vault must exist).
+    ScopedHubPassword pw("test-password");
+    keygen_minimal_hub(cfg_path);
+
     const auto t0 = std::chrono::steady_clock::now();
     WorkerProcess p(plh_hub_binary(), "--config",
         {cfg_path.string(), "--validate"});
@@ -69,6 +74,9 @@ TEST_F(PlhHubCliTest, DirectoryFlavorPasses)
     write_minimal_script(dir);
     write_minimal_config(dir / "hub.json", dir);
 
+    ScopedHubPassword pw("test-password");
+    keygen_minimal_hub(dir / "hub.json");
+
     WorkerProcess p(plh_hub_binary(), dir.string(), {"--validate"});
     EXPECT_EQ(p.wait_for_exit(), 0) << "stderr:\n" << p.get_stderr();
     expect_no_unexpected_errors(p);
@@ -85,6 +93,9 @@ TEST_F(PlhHubCliTest, NoScriptPasses)
     nlohmann::json overrides;
     overrides["script"]["path"] = "";   // explicitly disabled
     write_minimal_config(cfg_path, dir, overrides);
+
+    ScopedHubPassword pw("test-password");
+    keygen_minimal_hub(cfg_path);
 
     WorkerProcess p(plh_hub_binary(), "--config",
         {cfg_path.string(), "--validate"});
@@ -112,6 +123,12 @@ TEST_F(PlhHubCliTest, ConfigAclAdvisory_GroupReadable_EmitsWarn)
 
     write_minimal_script(dir);
     write_minimal_config(cfg_path, dir);
+
+    // Pre-keygen the vault with normal mode; the chmod below makes
+    // hub.json group-readable AFTER keygen so --validate sees the
+    // advisory at load time.
+    ScopedHubPassword pw("test-password");
+    keygen_minimal_hub(cfg_path);
 
     // Group-readable mode (0640) — group can see the vault path that
     // hub.auth.keyfile embeds.  Non-fatal but worth flagging.
@@ -149,10 +166,14 @@ TEST_F(PlhHubCliTest, WarnsWhenKeyfileInsideHubDir)
     const auto cfg_path = dir / "hub.json";
 
     nlohmann::json overrides;
-    // Inside hub_dir — placeholder is fine; --validate skips vault open.
+    // Inside hub_dir — keygen creates the vault inside hub_dir so the
+    // §7.2 security warning fires on the subsequent --validate load.
     overrides["hub"]["auth"]["keyfile"] = "vault/hub.l4test.uid00000001.vault";
     write_minimal_script(dir);
     write_minimal_config(cfg_path, dir, overrides);
+
+    ScopedHubPassword pw("test-password");
+    keygen_minimal_hub(cfg_path);
 
     WorkerProcess p(plh_hub_binary(), "--config",
         {cfg_path.string(), "--validate"});
@@ -189,12 +210,17 @@ TEST_F(PlhHubCliTest, NoWarningWhenKeyfileOutsideHubDir)
     const auto cfg_path = dir / "hub.json";
 
     nlohmann::json overrides;
-    // Absolute path OUTSIDE hub_dir.  Vault need not exist —
-    // --validate does not open it.
+    // Absolute path OUTSIDE hub_dir.  Keygen creates the vault at
+    // this absolute path; --validate unlocks it; no security
+    // warning should fire because the placement is the recommended
+    // outside-hub_dir form.
     overrides["hub"]["auth"]["keyfile"] =
         (vault_outside / "hub.l4test.uid00000001.vault").generic_string();
     write_minimal_script(dir);
     write_minimal_config(cfg_path, dir, overrides);
+
+    ScopedHubPassword pw("test-password");
+    keygen_minimal_hub(cfg_path);
 
     WorkerProcess p(plh_hub_binary(), "--config",
         {cfg_path.string(), "--validate"});
@@ -251,6 +277,13 @@ TEST_F(PlhHubCliTest, BrokenScriptFails)
     overrides["script"]["type"] = "python";
     overrides["script"]["path"] = dir.generic_string();
     write_minimal_config(cfg_path, dir, overrides);
+
+    // Pre-keygen the vault so --validate reaches the engine load
+    // step.  Without this, validate fails earlier at vault unlock
+    // ("vault not found") which is a different diagnostic than the
+    // "Validation failed" path this test pins.
+    ScopedHubPassword pw("test-password");
+    keygen_minimal_hub(cfg_path);
 
     WorkerProcess p(plh_hub_binary(), "--config",
         {cfg_path.string(), "--validate"});

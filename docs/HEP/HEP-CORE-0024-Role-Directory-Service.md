@@ -307,6 +307,66 @@ deterministic across machines (no embedded `$HOME` or other
 machine-specific paths in the generated file) and makes the
 operator's intent visible as an explicit JSON edit.
 
+### 3.4.2 Lifecycle: gatekeeper + clearance (mirrors HEP-CORE-0033 §6.5)
+
+Role-side workflow mirrors the hub-side gatekeeper/clearance model
+finalized 2026-06-04.  The full design — state diagram, source
+priority chain, validator wiring, idempotency contract — lives in
+HEP-CORE-0033 §6.5 and applies to `plh_role` unchanged except for
+naming.
+
+```
+   (nothing)
+       │
+       │ plh_role --skeleton <role_dir>    ← layout only;
+       │                                     uid="" until edited
+       │   ────── or ──────
+       │
+       │ plh_role --init --role X --uid Y --name Z <role_dir>
+       │                                  ← one-shot: skeleton +
+       │                                     identity + keygen;
+       │                                     prompts for missing
+       │                                     required fields on TTY
+       ▼
+   [ inert ]   layout only; not yet a role
+       │
+       │ (manual path) operator edits role.json
+       │ plh_role --keygen <role_dir>      ← GATEKEEPER
+       ▼
+   [ provisioned ]   vault file exists; valid role home
+       │
+       ├── plh_role --validate <role_dir>  ← CLEARANCE
+       │
+       └── plh_role <role_dir>             ← PRODUCTION
+```
+
+**Required-at-init fields (role side):**
+
+| Field             | Source priority                                       | Validator                      |
+|-------------------|-------------------------------------------------------|--------------------------------|
+| `role` enum       | `--role` / `PYLABHUB_ROLE` (`prod`/`cons`/`proc`)     | enum                           |
+| `role.uid`        | `--uid` / `PYLABHUB_ROLE_UID`                         | `IdentifierKind::RoleUid`      |
+| `role.name`       | `--name` / `PYLABHUB_ROLE_NAME`                       | `IdentifierKind::RoleName`     |
+| vault password    | `PYLABHUB_ROLE_PASSWORD`                              | length minimum                 |
+
+`parse_role_identity_config` enforces the same parser-strict
+contract as `parse_hub_identity_config` (HEP-0033 §6.3 revised
+2026-06-04): empty or absent `role.uid` is a hard config-load error.
+Auto-generation survives only as a UX feature in the `--init`
+interactive prompt helper — visible inline as `[default: ...]`,
+accepted with ENTER or overridden by typing.  No silent generation
+on any non-TTY path.
+
+**`plh_role --validate` semantics under the unconditional-CURVE
+contract:** prompts for the vault password (env-fallback), unlocks
+the keypair, constructs the role host with `set_validate_only(true)`
+so engine load runs but broker connection is skipped, then exits
+"Validation passed".  `RoleHost::set_validate_only` is a separate
+concern from CURVE — it gates *infrastructure construction*, not
+the CURVE wire path.  The vault unlock is unconditional just like
+the hub side; "validate without vault" is not a supported mode
+(HEP-CORE-0035 §2 invariants).
+
 ### 3.5 Schemas Subdirectory (HEP-CORE-0034)
 
 `<role_dir>/schemas/` is **optional** and **non-authoritative**. It is a local cache of

@@ -209,6 +209,30 @@ during Phase 1 review of `HubBrokerConfig`):
   invariant) with admission on. Tests that need a HubHost without
   CURVE do not exist — the test bypass lives one layer down at
   `BrokerService` (§4.6.5), not at HubHost.
+- **Vault is the gatekeeper; validate is the clearance.** The vault
+  file at `auth().keyfile` is what transitions a directory from
+  *inert* (scaffolded but unrunnable) to *valid hub/role home*
+  (cryptographic identity exists).  Vault creation is the
+  gatekeeper boundary.  Two CLI paths cross it; both are equivalent
+  end-to-end:
+
+  - **Manual:** `--skeleton` (layout only) → operator edits hub.json
+    (commits uid, optionally moves vault outside hub_dir per §7.2)
+    → `--keygen` (mints vault).
+  - **One-shot:** `--init` (bundles skeleton + identity-shaping
+    fields + keygen in one command).  Required fields not supplied
+    via CLI/env are prompted interactively when stdin is a TTY;
+    non-TTY without all required fields is a hard error.
+
+  Both `--validate` and `run` operate only on a valid home: each
+  prompts for the vault password, unlocks the keypair, and calls
+  `HubHost::startup()` / `RoleHost::startup_()`.  `--validate` exits
+  after startup completes (clearance check); `run` keeps running
+  (production).  There is no validate-without-vault carve-out;
+  running either command on an inert directory hits the §4.6.2
+  vault-presence check and exits non-zero with "vault not found —
+  run `--keygen` (or `--init`) first".  See HEP-CORE-0033 §6.5 for
+  the full lifecycle diagram + helper API.
 - **Mutual pubkey knowledge is an invariant.** Every role knows its
   hub's pubkey (via `<role_dir>/<direction>_hub_dir/hub.json` →
   `network.broker_endpoint` + the hub's pubkey distributed alongside).

@@ -206,11 +206,34 @@ flake, task #93; passes in isolation).
     shared-context quirk.
   - **No production code change needed.**
 
-  Severity: **LOW** (test artifact, not production bug).  Action:
-  when this test gets re-migrated in step 3-revised-F, give the
-  BRC its own `zmq::context_t` (or split broker + BRC into two
-  processes via the L4 harness).  Until then, the test stays
-  `GTEST_SKIP`'d.
+  Severity: **LOW** (test artifact, not production bug).
+
+  **Layer reclassification (designer call 2026-06-04):**
+  `HubHost_Shutdown_BreaksClientConnection` is verifying
+  cross-process behaviour ("broker shutdown breaks the client
+  connection") — a property that only holds when the broker and
+  the BRC are in different processes (and therefore different
+  libzmq instances).  The in-process L3 scenario with shared
+  `pylabhub::hub::get_zmq_context()` cannot test this correctly —
+  the libzmq shared-context quirk produces a false negative
+  regardless of how the test is written.
+
+  **This is an L4 test, not L3.**  Action:
+
+  - **In L3** (`test_datahub_hub_host_integration.cpp`): **DELETE**
+    the `HubHost_Shutdown_BreaksClientConnection` TEST_F entry
+    when its sibling tests get re-migrated in step 3-revised-F.
+    The current `GTEST_SKIP` is a placeholder for that delete.
+    The L3 worker body in
+    `hub_host_integration_workers.cpp::hubhost_shutdown_breaksclientconnection`
+    goes away with the TEST_F.
+  - **In L4** (new): add an equivalent test under
+    `tests/test_layer4_plh_hub/` that spawns plh_hub and plh_role
+    as separate processes, terminates plh_hub, asserts plh_role's
+    BRC observes the disconnect within the heartbeat-timeout
+    window.  Owner: a follow-up L4 task (NOT folded into the
+    HEP-0035 §4.6.5 landing — it's independent test-coverage
+    debt).
 
   Step 3-revised-A is therefore **CLOSED — no production action
   required.**  Proceed to step 3-revised-B (HubHost throws).

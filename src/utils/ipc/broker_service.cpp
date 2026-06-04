@@ -163,7 +163,7 @@ constexpr std::array<std::string_view, 8> kFireAndForgetTypes = {
     return is_request_reply(t) || is_fire_and_forget(t);
 }
 
-// HEP-CORE-0035 Phase D step D2 — CTRL ROUTER ZAP admission.
+// HEP-CORE-0035 §4.8 — CTRL ROUTER ZAP admission.
 //
 // `BrokerCtrlAdmission` adapts the broker's `known_roles` operator-
 // allowlist to the `PeerAdmission` interface that `ZapRouter` calls
@@ -174,18 +174,14 @@ constexpr std::array<std::string_view, 8> kFireAndForgetTypes = {
 //   - `set_peer_allowlist` swaps the snapshot atomically
 //     (future hot-reload entry point — HEP-CORE-0035 §4.8.5)
 //
-// Scope is intentionally minimal: this is a single-purpose adapter
-// owned by `BrokerServiceImpl`, not a public surface.  The full
-// PeerAdmission contract is implemented but the only "advertise"
-// path (`admission_is_enforced`) returns the runtime CURVE-server
-// flag — when CURVE is off (test fixtures, transitional modes),
-// admission reports as unenforced.
+// Admission is unconditional per HEP-CORE-0035 §2 + §4.6.5 (no-bypass
+// discipline): every CURVE-authenticated peer is matched against the
+// current snapshot; absent allowlist or empty union is deny-all per
+// §4.8.4.
 class BrokerCtrlAdmission final : public pylabhub::utils::security::PeerAdmission
 {
 public:
-    explicit BrokerCtrlAdmission(pylabhub::utils::security::PeerAllowlist initial,
-                                  bool enforced)
-        : enforced_(enforced)
+    explicit BrokerCtrlAdmission(pylabhub::utils::security::PeerAllowlist initial)
     {
         current_.store(std::make_shared<
             pylabhub::utils::security::PeerAllowlist>(std::move(initial)));
@@ -211,14 +207,6 @@ public:
     is_peer_allowed(
         const pylabhub::utils::security::PeerIdentity &peer) const override
     {
-        // Permissive mode (used by test fixtures that enable CURVE
-        // for wire encryption only).  We still register the domain so
-        // the broker is robust against `ZapRouter` singleton-state
-        // contamination from other test paths in the same process —
-        // without registration, libzmq would still issue a ZAP
-        // request with empty domain and the singleton's "unknown
-        // domain" path would DENY it.
-        if (!enforced_) return true;
         auto p = current_.load();
         if (!p) return false;
         return p->contains(peer);
@@ -226,14 +214,13 @@ public:
 
     [[nodiscard]] bool admission_is_enforced() const noexcept override
     {
-        return enforced_;
+        return true;
     }
 
 private:
     pylabhub::utils::detail::PortableAtomicSharedPtr<
         pylabhub::utils::security::PeerAllowlist>
         current_;
-    const bool enforced_;
 };
 
 } // namespace
@@ -613,106 +600,73 @@ void BrokerServiceImpl::run()
     std::unique_ptr<BrokerCtrlAdmission>                       ctrl_admission;
     std::optional<pylabhub::utils::security::ZapDomainHandle>  ctrl_zap_handle;
 
-    if (cfg.use_curve)
+    // HEP-CORE-0035 §2 + §4.6.5 — CURVE-server and ZAP admission are
+    // unconditional.  Empty server keys are rejected at construction
+    // (BrokerService ctor throws std::logic_error), so by the time we
+    // reach run() both Z85 strings are guaranteed non-empty.
+    router.set(zmq::sockopt::curve_server, 1);
+    router.set(zmq::sockopt::curve_secretkey, server_secret_z85);
+    router.set(zmq::sockopt::curve_publickey, server_public_z85);
+
+    // Build the initial CTRL allowlist.  Per HEP-CORE-0035 §4.2 the
+    // allowlist is the UNION of two operator-managed inputs:
+    //   - `known_roles[]` (roles allowed to register; loaded from
+    //     `<hub_dir>/vault/known_roles.json` by HubHost,
+    //     HEP-CORE-0035 §4.8)
+    //   - `peers[].pubkey_z85` (federation peer hubs allowed to
+    //     connect their DEALER → this broker's ROUTER,
+    //     HEP-CORE-0022 + HEP-CORE-0035 §4.2)
+    // Entries with empty `pubkey_z85` are skipped.  Empty allowlist
+    // is the legal deny-all state per HEP-CORE-0035 §4.8.4.
+    pylabhub::utils::security::PeerAllowlist initial;
+    for (const auto &kr : cfg.known_roles)
     {
-        router.set(zmq::sockopt::curve_server, 1);
-        router.set(zmq::sockopt::curve_secretkey, server_secret_z85);
-        router.set(zmq::sockopt::curve_publickey, server_public_z85);
-
-        // Build the initial CTRL allowlist.  Per HEP-CORE-0035 §4.2
-        // the allowlist is the UNION of two operator-managed inputs:
-        //   - `known_roles[]` (roles allowed to register; loaded from
-        //     `<hub_dir>/vault/known_roles.json` by HubHost,
-        //     HEP-CORE-0035 §4.8)
-        //   - `peers[].pubkey_z85` (federation peer hubs allowed to
-        //     connect their DEALER → this broker's ROUTER,
-        //     HEP-CORE-0022 + HEP-CORE-0035 §4.2)
-        // Entries with empty `pubkey_z85` are skipped (pre-Phase-B
-        // vault residue + federation peers configured without a
-        // pubkey).  Empty allowlist is the legal deny-all state per
-        // HEP-CORE-0035 §4.8.4.
-        pylabhub::utils::security::PeerAllowlist initial;
-        for (const auto &kr : cfg.known_roles)
-        {
-            if (kr.pubkey_z85.empty()) continue;
-            initial.peers.insert(
-                pylabhub::utils::security::PeerIdentity{"curve",
-                                                        kr.pubkey_z85});
-        }
-        for (const auto &peer : cfg.peers)
-        {
-            if (peer.pubkey_z85.empty()) continue;
-            initial.peers.insert(
-                pylabhub::utils::security::PeerIdentity{"curve",
-                                                        peer.pubkey_z85});
-        }
-        const auto allowlist_size = initial.peers.size();
-
-        // ALWAYS install the ZAP handler when CURVE is on, even in
-        // permissive mode.  Skipping the install would make the
-        // broker vulnerable to `ZapRouter` singleton-state
-        // contamination from other tests in the same process — if
-        // any prior code path registered a domain, the inproc ZAP
-        // REP socket is bound and libzmq still issues ZAP requests
-        // for our peers (with empty `zap_domain`).  `ZapRouter`
-        // would deny those as "unknown domain", silently breaking
-        // handshakes.  Registering a domain — even a permissive one
-        // — keeps behavior predictable across aggregate-binary tests.
-        //
-        // The ZAP domain MUST be unique per BrokerService instance.
-        // Two brokers in the same process (federation L3 tests,
-        // dual-hub processor tests, in-process bring-up smoke tests)
-        // both registering the same domain would throw on the
-        // second `register_domain` (per-domain uniqueness in
-        // `zap_router.hpp:99`) → `std::terminate` inside the broker
-        // thread.  Use `cfg.self_hub_uid` as a discriminator when
-        // present; fall back to a process-counter otherwise so the
-        // unnamed-hub case still scales to N>=2.
-        std::string zap_domain;
-        if (!cfg.self_hub_uid.empty())
-        {
-            zap_domain = "broker.ctrl." + cfg.self_hub_uid;
-        }
-        else
-        {
-            static std::atomic<std::uint64_t> ctrl_zap_seq{0};
-            const auto seq =
-                ctrl_zap_seq.fetch_add(1, std::memory_order_relaxed);
-            zap_domain = "broker.ctrl." + std::to_string(seq);
-        }
-        ctrl_admission = std::make_unique<BrokerCtrlAdmission>(
-            std::move(initial), cfg.enforce_ctrl_admission);
-        router.set(zmq::sockopt::zap_domain, zap_domain);
-        ctrl_zap_handle.emplace(
-            pylabhub::utils::security::ZapRouter::instance()
-                .register_domain(zap_domain, ctrl_admission.get()));
-
-        if (cfg.enforce_ctrl_admission)
-        {
-            LOGGER_INFO("Broker: CTRL ZAP installed enforced on domain '{}' "
-                        "({} known_roles + {} federation peers = {} allowed)",
-                        zap_domain,
-                        cfg.known_roles.size(),
-                        cfg.peers.size(),
-                        allowlist_size);
-        }
-        else
-        {
-            // Wire encryption only — for tests that don't exercise
-            // the admission path.  Production (HubHost startup)
-            // NEVER takes this path.
-            LOGGER_WARN("Broker: CTRL ZAP installed permissive on domain '{}' "
-                        "(test/dev override; any CURVE peer accepted)",
-                        zap_domain);
-        }
+        if (kr.pubkey_z85.empty()) continue;
+        initial.peers.insert(
+            pylabhub::utils::security::PeerIdentity{"curve",
+                                                    kr.pubkey_z85});
     }
-    // Note: cfg.use_curve=false bypasses CURVE entirely; no ZAP is
-    // installed because there are no CURVE handshakes to gate.  Per
-    // HEP-CORE-0035 §2 + §4.6.5 (no-bypass discipline), this branch
-    // exists only because the legacy `use_curve` field is still on
-    // BrokerService::Config; both flags are slated for removal in
-    // the HEP-0035 landing phase.  Once removed, every BrokerService
-    // construction installs CURVE + ZAP unconditionally.
+    for (const auto &peer : cfg.peers)
+    {
+        if (peer.pubkey_z85.empty()) continue;
+        initial.peers.insert(
+            pylabhub::utils::security::PeerIdentity{"curve",
+                                                    peer.pubkey_z85});
+    }
+    const auto allowlist_size = initial.peers.size();
+
+    // The ZAP domain MUST be unique per BrokerService instance.  Two
+    // brokers in the same process (federation L3 tests, dual-hub
+    // processor tests, in-process bring-up smoke tests) registering
+    // the same domain would throw on the second `register_domain`
+    // (per-domain uniqueness in `zap_router.hpp:99`) → `std::terminate`
+    // inside the broker thread.  Use `cfg.self_hub_uid` as a
+    // discriminator when present; fall back to a process-counter
+    // otherwise so the unnamed-hub case still scales to N>=2.
+    std::string zap_domain;
+    if (!cfg.self_hub_uid.empty())
+    {
+        zap_domain = "broker.ctrl." + cfg.self_hub_uid;
+    }
+    else
+    {
+        static std::atomic<std::uint64_t> ctrl_zap_seq{0};
+        const auto seq =
+            ctrl_zap_seq.fetch_add(1, std::memory_order_relaxed);
+        zap_domain = "broker.ctrl." + std::to_string(seq);
+    }
+    ctrl_admission = std::make_unique<BrokerCtrlAdmission>(std::move(initial));
+    router.set(zmq::sockopt::zap_domain, zap_domain);
+    ctrl_zap_handle.emplace(
+        pylabhub::utils::security::ZapRouter::instance()
+            .register_domain(zap_domain, ctrl_admission.get()));
+
+    LOGGER_INFO("Broker: CTRL ZAP installed enforced on domain '{}' "
+                "({} known_roles + {} federation peers = {} allowed)",
+                zap_domain,
+                cfg.known_roles.size(),
+                cfg.peers.size(),
+                allowlist_size);
 
     router.bind(cfg.endpoint);
     const std::string bound = router.get(zmq::sockopt::last_endpoint);
@@ -721,10 +675,7 @@ void BrokerServiceImpl::run()
         cfg.on_ready(bound, server_public_z85);
     }
     LOGGER_INFO("Broker: listening on {}", bound);
-    if (cfg.use_curve)
-    {
-        LOGGER_INFO("Broker: server_public_key = {}", server_public_z85);
-    }
+    LOGGER_INFO("Broker: server_public_key = {}", server_public_z85);
 
     // ── Wave M3 step 5f (2026-05-11): subscribe to band_left ──
     // HubState's terminal cleanup cascades band membership removal
@@ -763,7 +714,15 @@ void BrokerServiceImpl::run()
             ps->socket = zmq::socket_t(ctx, zmq::socket_type::dealer);
             ps->socket.set(zmq::sockopt::linger, 0); // policy: always LINGER=0; see §ZMQ socket policy
 
-            if (cfg.use_curve && !peer_cfg.pubkey_z85.empty())
+            // HEP-CORE-0035 §2 — CURVE is unconditional on every wire.
+            // A federation peer configured without a pubkey cannot
+            // be reached (the remote broker's ROUTER will reject the
+            // unauthenticated handshake); the DEALER is wired plain
+            // and connect() proceeds so the diagnostic path
+            // (`HANDSHAKE_FAILED_*` on the monitor) surfaces the
+            // misconfiguration.  Federation peer pubkey enforcement
+            // is finalized in #105 (HEP-CORE-0037).
+            if (!peer_cfg.pubkey_z85.empty())
             {
                 ps->socket.set(zmq::sockopt::curve_serverkey, peer_cfg.pubkey_z85);
                 ps->socket.set(zmq::sockopt::curve_publickey, server_public_z85);
@@ -3927,24 +3886,21 @@ nlohmann::json BrokerServiceImpl::make_error(const std::string& correlation_id,
 BrokerService::BrokerService(Config cfg, pylabhub::hub::HubState& state)
     : pImpl(std::make_unique<BrokerServiceImpl>())
 {
+    // HEP-CORE-0035 §2 — CURVE is unconditional.  Both server keys
+    // are required at construction; production sources them from
+    // `HubVault::broker_curve_*` via `HubHost::startup`, tests via
+    // `pylabhub::tests::gen_curve_keypair`.  An empty input here is
+    // a programmer error (no-bypass discipline, §4.6.5).
+    if (cfg.server_secret_key.empty() || cfg.server_public_key.empty())
+        throw std::logic_error(
+            "BrokerService: server_secret_key / server_public_key are "
+            "REQUIRED non-empty Z85 strings (HEP-CORE-0035 §2).  "
+            "Production: route through HubHost::startup (loads from "
+            "HubVault).  Tests: call `pylabhub::tests::gen_curve_keypair`.");
     pImpl->cfg = std::move(cfg);
     pImpl->hub_state_ = &state;  // non-owning; HubHost (or test fixture) owns it
-    if (pImpl->cfg.use_curve)
-    {
-        if (!pImpl->cfg.server_secret_key.empty() && !pImpl->cfg.server_public_key.empty())
-        {
-            // Stable keypair supplied from HubVault — use as-is.
-            pImpl->server_secret_z85 = pImpl->cfg.server_secret_key;
-            pImpl->server_public_z85 = pImpl->cfg.server_public_key;
-        }
-        else
-        {
-            // Generate ephemeral keypair (--dev mode; no vault).
-            auto kp = pylabhub::utils::security::generate_curve_keypair();
-            pImpl->server_public_z85 = std::move(kp.public_z85);
-            pImpl->server_secret_z85 = std::move(kp.secret_z85);
-        }
-    }
+    pImpl->server_secret_z85 = pImpl->cfg.server_secret_key;
+    pImpl->server_public_z85 = pImpl->cfg.server_public_key;
 }
 
 BrokerService::~BrokerService() = default;

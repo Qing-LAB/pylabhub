@@ -53,9 +53,8 @@ start_direct_broker(pylabhub::broker::BrokerService::Config cfg,
                     const CurveSetup &setup)
 {
     // Wire CURVE + admission from `setup` on top of the caller's
-    // policy fields.  Per HEP-CORE-0035 §2, neither is optional.
-    cfg.use_curve              = true;
-    cfg.enforce_ctrl_admission = true;
+    // policy fields.  Per HEP-CORE-0035 §2 both are unconditional;
+    // BrokerService ctor enforces non-empty server keys.
     cfg.server_public_key      = setup.hub.public_z85;
     cfg.server_secret_key      = setup.hub.secret_z85;
     for (const auto &[uid, kp] : setup.role_keys)
@@ -131,67 +130,30 @@ start_hubhost_broker(const nlohmann::json &j_overrides,
                      const CurveSetup &setup,
                      std::string_view hub_name)
 {
-    HubHostBrokerHandle h;
-    h.hub_dir = make_unique_hub_dir(hub_name);
-
-    // 1. Initialize the hub directory + default hub.json template.
-    pylabhub::utils::HubDirectory::init_directory(
-        h.hub_dir, std::string(hub_name));
-
-    // 2. Merge overrides into hub.json.  Tests commonly want
-    //    network.broker_endpoint = "tcp://127.0.0.1:0" (ephemeral
-    //    port), admin.enabled = false, script.path = "".
-    const fs::path hub_json_path = h.hub_dir / "hub.json";
-    nlohmann::json j;
-    {
-        std::ifstream f(hub_json_path);
-        if (f.is_open())
-            j = nlohmann::json::parse(f);
-    }
-    j.merge_patch(j_overrides);
-    {
-        std::ofstream f(hub_json_path);
-        f << j.dump(2);
-    }
-
-    // 3. Write the known_roles vault entry so the broker's Layer-1
-    //    ZAP gate admits each role in `setup`.  HEP-CORE-0035 §4.8.2
-    //    stores the allowlist inside the encrypted vault; here we
-    //    bypass the vault (per §4.6.5) and write a plaintext
-    //    known_roles.json via the production `KnownRolesStore`
-    //    serializer (so the schema version + roles[] envelope match
-    //    exactly what `KnownRolesStore::load_from_file` expects;
-    //    rolling our own JSON layout in the test path would drift).
-    //    This is the SAME bypass as `inject_keypair_for_test`: skip
-    //    persistence, keep the wire path identical to production.
-    if (!setup.role_keys.empty())
-    {
-        const fs::path vault_subdir = h.hub_dir / "vault";
-        fs::create_directories(vault_subdir);
-        // Vault parent dir must be 0700 (HEP-CORE-0035 §4.6.1) before
-        // KnownRolesStore::save_to_file runs.
-        std::error_code ec;
-        fs::permissions(vault_subdir,
-                        fs::perms::owner_all,
-                        fs::perm_options::replace, ec);
-        pylabhub::utils::security::KnownRolesStore store;
-        for (const auto &[uid, kp] : setup.role_keys)
-            store.add(make_known_role(uid, kp.public_z85));
-        store.save_to_file(vault_subdir / "known_roles.json");
-    }
-
-    // 4. Load HubConfig, inject the CURVE keypair (HEP-CORE-0035 §4.6.5
-    //    test bypass — vault skipped, real CURVE on the wire),
-    //    construct HubHost, startup.
-    auto hcfg = pylabhub::config::HubConfig::load_from_directory(
-        h.hub_dir.string());
-    hcfg.inject_keypair_for_test(setup.hub.public_z85, setup.hub.secret_z85);
-
-    h.host = std::make_unique<pylabhub::hub_host::HubHost>(std::move(hcfg));
-    h.host->startup();
-    h.endpoint = h.host->broker_endpoint();
-    h.pubkey   = h.host->broker_pubkey();
-    return h;
+    // MASKED — pending HEP-0035 §4.6.5 step 3-revised-F migration (#154).
+    //
+    // The previous body used `HubConfig::inject_keypair_for_test` to
+    // skip the on-disk vault while keeping real CURVE on the wire.
+    // That product surface was deleted in #151 (test-shaped API in
+    // product code violates HEP-CORE-0035 §4.6.5 no-bypass discipline).
+    //
+    // The replacement path is to write a real vault via
+    // `HubConfig::create_keypair(password)` + decrypt via
+    // `HubConfig::load_keypair(password)` — slow (Argon2id) but
+    // identical to production.  That migration is part of #154,
+    // which re-creates every L3 broker fixture against the
+    // refactored lib code.  Until then this helper stays a stub so
+    // the framework library compiles; its callers (the L3 worker
+    // bodies in `tests/test_layer3_datahub/workers/*.cpp`) are
+    // excluded from the build via the #153 CMakeLists masks.
+    (void)j_overrides;
+    (void)setup;
+    (void)hub_name;
+    throw std::logic_error(
+        "broker_test_harness::start_hubhost_broker — MASKED pending "
+        "#154 (HEP-CORE-0035 §4.6.5 step 3-revised-F migration).  The "
+        "vault-on-disk replacement for inject_keypair_for_test lands "
+        "with the L3 broker test re-creation.");
 }
 
 // ─── BrcHandle ───────────────────────────────────────────────────────────────

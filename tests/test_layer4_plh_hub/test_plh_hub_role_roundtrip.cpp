@@ -317,9 +317,10 @@ TEST_F(PlhHubCliTest, RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters)
         << "hub never reached run-mode.  Log:\n" << read_hub_log(hub_dir);
 
     // PATH PIN (H1): assert the CTRL ZAP gate is actually ENFORCED.
-    // Without this, a regression where `enforce_ctrl_admission`
-    // silently defaulted to false would still let the test pass
-    // (CURVE encryption works either way; the gate is the difference).
+    // The gate install is unconditional (HEP-CORE-0035 §2 + §4.6.5);
+    // this marker pins the "enforced" log line so a regression that
+    // swapped install order or skipped registration surfaces here
+    // rather than passing silently on CURVE encryption alone.
     ASSERT_TRUE(wait_for_log_marker(hub_dir,
                                      "Broker: CTRL ZAP installed enforced"))
         << "Broker did not log enforced CTRL ZAP install — the deny-by-"

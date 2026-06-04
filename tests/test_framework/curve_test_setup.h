@@ -22,8 +22,6 @@
  * auto role_kp = pylabhub::tests::gen_curve_keypair();
  *
  * BrokerService::Config cfg;
- * cfg.use_curve              = true;
- * cfg.enforce_ctrl_admission = true;
  * cfg.server_public_key      = hub_kp.public_z85;
  * cfg.server_secret_key      = hub_kp.secret_z85;
  * cfg.known_roles.push_back(pylabhub::tests::make_known_role(
@@ -35,12 +33,10 @@
  * brc_cfg.client_seckey = role_kp.secret_z85;
  * @endcode
  *
- * The `cfg.use_curve = true; cfg.enforce_ctrl_admission = true;`
- * lines are transitional — both fields are slated for deletion in
- * the HEP-0035 landing phase (after which `BrokerService` installs
- * CURVE + ZAP unconditionally and these two assignments disappear
- * from every fixture).  Until then, set them explicitly to make the
- * fixture's no-bypass posture grep-visible.
+ * CURVE + ZAP install in `BrokerService::run()` is unconditional
+ * (HEP-CORE-0035 §2 + §4.6.5).  `BrokerService` ctor rejects empty
+ * `server_secret_key` / `server_public_key`, so every fixture must
+ * supply both — no opt-out flag exists to skip the install.
  */
 
 #include "utils/broker_service.hpp"
@@ -150,10 +146,8 @@ inline CurveSetup make_curve_setup(const std::vector<std::string> &role_uids)
 inline void apply_curve_to(pylabhub::broker::BrokerService::Config &cfg,
                            const CurveSetup &setup)
 {
-    cfg.use_curve              = true;
-    cfg.enforce_ctrl_admission = true;
-    cfg.server_public_key      = setup.hub.public_z85;
-    cfg.server_secret_key      = setup.hub.secret_z85;
+    cfg.server_public_key = setup.hub.public_z85;
+    cfg.server_secret_key = setup.hub.secret_z85;
     for (const auto &[uid, kp] : setup.role_keys)
     {
         cfg.known_roles.push_back(make_known_role(uid, kp.public_z85));

@@ -46,9 +46,15 @@ class PYLABHUB_UTILS_EXPORT BrokerRequestComm
     struct Config
     {
         std::string broker_endpoint;
-        std::string broker_pubkey;    ///< Z85, empty = plain TCP
-        std::string client_pubkey;    ///< Z85, empty = ephemeral keypair
-        std::string client_seckey;    ///< Z85
+        /// Hub's CURVE server pubkey (Z85).  REQUIRED per HEP-CORE-0035 §2
+        /// (CURVE is unconditional); `connect()` returns false on empty.
+        std::string broker_pubkey;
+        /// Role's CURVE client pubkey (Z85).  REQUIRED per HEP-CORE-0035 §2;
+        /// `connect()` returns false on empty.  Sourced from the role vault
+        /// via `RoleConfig::load_keypair`.
+        std::string client_pubkey;
+        /// Role's CURVE client secret key (Z85).  REQUIRED; same source.
+        std::string client_seckey;
         std::string role_uid;         ///< Role UID for channel join/leave
         std::string role_name;        ///< Role display name
     };

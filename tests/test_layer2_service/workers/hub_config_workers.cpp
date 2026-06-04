@@ -503,18 +503,22 @@ int load_keypair_refuses_loose_parent_dir_mode(const char *tmpdir)
 #endif
 
 // ── uid_auto_generated ──────────────────────────────────────────────────────
+//
+// HEP-CORE-0033 §6.3 (revised 2026-06-04): parser-strict.  Empty or
+// absent `hub.uid` is a hard config-load error — silent auto-gen was
+// retired alongside the §6.5 gatekeeper model.  Auto-generation
+// survives only as a UX feature in the `--init` interactive prompt
+// helper (visible inline as `[default: ...]`).  This test pins the
+// new strict-parser contract.
 
-int uid_auto_generated(const char *tmpdir)
+int uid_empty_rejected(const char *tmpdir)
 {
     return run_gtest_worker(
         [&]() {
             const std::string dir = tmpdir;
-            // Omit hub.uid; provide just hub.name so generator has a base.
-            // loop_timing is required by parse_timing_config — same shape
-            // as minimal_hub_json above; max_rate keeps the fixture small.
-            // auth.keyfile is REQUIRED and must be non-empty per
-            // HEP-CORE-0033 §7.1; placeholder path keeps this fixture
-            // small while still exercising the uid-autogen path.
+            // Omit hub.uid; provide just hub.name.  Previously the
+            // parser auto-generated a uid here; the new contract
+            // (HEP-0033 §6.3 revised) hard-errors instead.
             const nlohmann::json j = {
                 {"hub", {{"name", "MyHub"},
                           {"auth", {{"keyfile", "vault/placeholder.vault"}}}}},
@@ -522,19 +526,23 @@ int uid_auto_generated(const char *tmpdir)
             };
             write_hub_json(dir, j);
 
-            auto cfg = HubConfig::load_from_directory(dir);
-
-            // Auto-generated uid must follow HEP-0033 §G2.2.0a form
-            // `hub.<sanitized-name>.uid<8hex>`.
-            const auto &uid = cfg.identity().uid;
-            EXPECT_THAT(uid, testing::StartsWith("hub."));
-            EXPECT_THAT(uid, testing::HasSubstr(".uid"));
-            // tag.name.uid<8hex> — at least 3 components separated by dots.
-            EXPECT_GE(std::count(uid.begin(), uid.end(), '.'), 2);
-            // Hex suffix length is 8 → total tail is "uid" + 8 = 11 chars.
-            EXPECT_GE(uid.size(), std::string("hub.x.uid01234567").size());
+            try
+            {
+                auto cfg = HubConfig::load_from_directory(dir);
+                ADD_FAILURE() << "HubConfig::load expected to throw on empty "
+                                 "hub.uid, but returned a config with uid='"
+                              << cfg.identity().uid << "'.";
+            }
+            catch (const std::runtime_error &e)
+            {
+                const std::string msg = e.what();
+                EXPECT_THAT(msg, testing::HasSubstr("hub.uid"))
+                    << "diagnostic should identify 'hub.uid'; got: " << msg;
+                EXPECT_THAT(msg, testing::HasSubstr("HEP-CORE-0033"))
+                    << "diagnostic should cite HEP-CORE-0033; got: " << msg;
+            }
         },
-        "hub_config::uid_auto_generated",
+        "hub_config::uid_empty_rejected",
         Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
         JsonConfig::GetLifecycleModule());
 }
@@ -698,7 +706,7 @@ struct HubConfigWorkerRegistrar
                 if (sc == "load_keypair_refuses_loose_parent_dir_mode")
                     return load_keypair_refuses_loose_parent_dir_mode(dir);
 #endif
-                if (sc == "uid_auto_generated")        return uid_auto_generated(dir);
+                if (sc == "uid_empty_rejected")        return uid_empty_rejected(dir);
                 if (sc == "state_grace_sentinel")      return state_grace_sentinel(dir);
                 if (sc == "load_from_directory")       return load_from_directory(dir);
                 if (sc == "reload_if_changed")         return reload_if_changed(dir);

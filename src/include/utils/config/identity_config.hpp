@@ -59,52 +59,45 @@ inline IdentityConfig parse_identity_config(const nlohmann::json &j,
                           : (role_tag == "consumer") ? "cons"
                           : "proc";
 
+    // HEP-CORE-0024 §3.4.2 (revised 2026-06-04, mirrors
+    // HEP-CORE-0033 §6.3 hub-side change): empty or absent role uid
+    // is a hard config-load error.  Silent auto-gen was retired
+    // alongside the §6.5 gatekeeper model.  Auto-generation survives
+    // only as a UX feature in the `--init` interactive prompt
+    // helper (visible inline as `[default: ...]`).
     if (ic.uid.empty())
     {
-        if (role_tag == "producer")
-            ic.uid = pylabhub::uid::generate_producer_uid(ic.name);
-        else if (role_tag == "consumer")
-            ic.uid = pylabhub::uid::generate_consumer_uid(ic.name);
-        else
-            ic.uid = pylabhub::uid::generate_processor_uid(ic.name);
-
-        std::fprintf(stderr,
-                     "[%s] No '%.*s.uid' in config — generated: %s\n"
-                     "  Add this to %.*s.json to make the UID stable.\n",
-                     short_tag,
-                     static_cast<int>(role_tag.size()), role_tag.data(),
-                     ic.uid.c_str(),
-                     static_cast<int>(role_tag.size()), role_tag.data());
+        throw std::runtime_error(
+            std::string(role_tag) + ": '" + std::string(role_tag) +
+            ".uid' is empty or missing.  Run `plh_role --init --role " +
+            std::string(short_tag) + " --uid <uid>` (one-shot) or "
+            "`plh_role --skeleton` + edit + `plh_role --keygen` "
+            "(manual) — see HEP-CORE-0024 §3.4.2.  Required format: "
+            "HEP-CORE-0033 §G2.2.0b RoleUid grammar '" +
+            std::string(short_tag) + ".<name>.uid<8hex>', e.g. '" +
+            std::string(short_tag) + ".main.uid3a7f2b1c'.");
     }
-    else
+    if (!pylabhub::hub::is_valid_identifier(
+            ic.uid, pylabhub::hub::IdentifierKind::RoleUid))
     {
-        // Hard-reject invalid uids (HEP-0033 §G2.2.0b). Config is the
-        // single source of truth — an old-format uid in a config file
-        // will fail `plh_role --validate` so the operator notices
-        // and migrates (or clears the field to let auto-gen run).
-        if (!pylabhub::hub::is_valid_identifier(
-                ic.uid, pylabhub::hub::IdentifierKind::RoleUid))
-        {
-            throw std::runtime_error(
-                std::string(role_tag) + ": invalid '" + std::string(role_tag) +
-                ".uid' = '" + ic.uid + "'. Must follow HEP-0033 §G2.2.0b "
-                "format <tag>.<name>.uid<8hex>, e.g. '" + std::string(short_tag) +
-                ".main.uid3a7f2b1c'. Clear this field to let auto-gen produce "
-                "a valid one.");
-        }
+        throw std::runtime_error(
+            std::string(role_tag) + ": invalid '" + std::string(role_tag) +
+            ".uid' = '" + ic.uid + "'.  Must follow HEP-CORE-0033 "
+            "§G2.2.0b RoleUid grammar '<tag>.<name>.uid<8hex>', e.g. '" +
+            std::string(short_tag) + ".main.uid3a7f2b1c'.");
+    }
 
-        // The uid is structurally valid — now verify its tag matches
-        // the role_tag this config section is for. A `cons.*.*` uid
-        // in the `producer` block is nonsense even if grammatically OK.
-        const auto parts = pylabhub::hub::parse_role_uid(ic.uid);
-        if (!parts || parts->tag != short_tag)
-        {
-            throw std::runtime_error(
-                std::string(role_tag) + ": uid '" + ic.uid +
-                "' has tag '" + (parts ? std::string(parts->tag) : std::string{}) +
-                "' but is declared in the '" + std::string(role_tag) +
-                "' block (expected tag '" + std::string(short_tag) + "').");
-        }
+    // The uid is structurally valid — now verify its tag matches
+    // the role_tag this config section is for. A `cons.*.*` uid
+    // in the `producer` block is nonsense even if grammatically OK.
+    const auto parts = pylabhub::hub::parse_role_uid(ic.uid);
+    if (!parts || parts->tag != short_tag)
+    {
+        throw std::runtime_error(
+            std::string(role_tag) + ": uid '" + ic.uid +
+            "' has tag '" + (parts ? std::string(parts->tag) : std::string{}) +
+            "' but is declared in the '" + std::string(role_tag) +
+            "' block (expected tag '" + std::string(short_tag) + "').");
     }
 
     return ic;
