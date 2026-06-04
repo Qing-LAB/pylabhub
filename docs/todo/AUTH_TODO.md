@@ -221,6 +221,81 @@ guidance):** if tests need to be migrated again when API changes,
 that's pointless effort.  Stabilize production API/design first;
 migrate tests once against the stable shape.
 
+### Exclusion procedure during lib-stabilization window (3-revised-B → 3-revised-E)
+
+Once we start deleting production fields and legacy code (steps
+3-revised-B through 3-revised-E), the unmigrated L3 worker files
+will be **build-breaks**, not just runtime failures:
+
+- Removing `BrokerService::Config::enforce_ctrl_admission` (step C)
+  breaks every `cfg.enforce_ctrl_admission = ...` line in unmigrated
+  workers.
+- Removing `BrokerService::Config::use_curve` (step E) breaks every
+  `cfg.use_curve = ...` line.
+- Removing `RoleIdentityPolicy` / `check_role_identity` /
+  `ChannelPolicyOverride` (step D) breaks
+  `role_identity_policy_workers.cpp` and its TEST_F driver.
+- Making `HubHost::startup()` throw on empty pubkey (step B) breaks
+  any worker that constructs HubHost without injecting a keypair.
+
+**To keep `ctest` green throughout the stabilization window**, the
+unmigrated worker files MUST be excluded from the build before any
+of those deletions land.  Exclusion is two-part — both halves are
+mandatory:
+
+1. **Worker .cpp**: comment out the entry in
+   `tests/test_layer3_datahub/CMakeLists.txt` source list, with an
+   inline marker:
+
+   ```cmake
+   # workers/datahub_metrics_workers.cpp        # SKIP — pending HEP-0035 §4.6.5 step 3-revised-F
+   ```
+
+2. **Test driver `TEST_F` entries**: comment out (or `GTEST_SKIP` —
+   prefer comment-out so they don't appear in the test list) every
+   `TEST_F` in the corresponding `test_datahub_*.cpp` driver, with a
+   single citation comment block at the top of the file:
+
+   ```cpp
+   // === PENDING HEP-0035 §4.6.5 step 3-revised-F migration ===
+   // Worker file is excluded from build (see CMakeLists.txt).
+   // Restore each TEST_F when the worker file is re-included.
+   ```
+
+   Without this half, the driver still references worker dispatchers
+   that no longer exist and either fails to link or returns -1 at
+   `SpawnWorker(...)` time.
+
+| Unmigrated worker | Unmigrated driver | Status under stabilization |
+|---|---|---|
+| `workers/datahub_metrics_workers.cpp` | `test_datahub_metrics.cpp` (17 TEST_F) | exclude before step C |
+| `workers/datahub_broker_health_workers.cpp` | `test_datahub_broker_health.cpp` (11 TEST_F) | exclude before step C |
+| `workers/datahub_broker_protocol_workers.cpp` | `test_datahub_broker_protocol.cpp` (29 TEST_F) | exclude before step C |
+| `workers/datahub_broker_workers.cpp` | `test_datahub_broker.cpp` (40 TEST_F) | exclude before step C |
+| `workers/datahub_role_state_workers.cpp` | `test_datahub_role_state_machine.cpp` (21 TEST_F) | exclude before step C |
+| `workers/hub_federation_workers.cpp` | `test_datahub_hub_federation.cpp` | exclude before step C |
+| `workers/datahub_e2e_workers.cpp` | `test_datahub_e2e.cpp` | exclude before step C; subprocess key-passing redesign in step F |
+| `workers/role_identity_policy_workers.cpp` | `test_datahub_role_identity_policy.cpp` | **DELETE in step D** (not migration; legacy retirement per HEP-0035 §8 Phase 6) |
+
+The 7 already-migrated worker files stay enabled throughout:
+`datahub_channel_group_workers`, `datahub_broker_request_comm_workers`,
+`hub_host_integration_workers`, `broker_consumer_workers`,
+`broker_schema_workers`, `broker_admin_workers`,
+`zmq_endpoint_registry_workers`.
+
+**Per-file restoration during step 3-revised-F**: each file's
+migration commit (a) un-comments the CMakeLists.txt source entry,
+(b) restores the TEST_F entries in the driver (with any
+add/move/delete decisions from the triage), and (c) confirms green
+ctest scoped to that test class.  One file = one commit.
+
+Branch state during the stabilization window:
+- Build green (unmigrated files don't compile, but they're not in
+  the build).
+- ctest green (unmigrated TEST_F don't run, but they're not
+  registered).
+- Coverage temporarily reduced — that's the price of stabilization.
+
 ---
 
 **Previous Step 3 plan (superseded above; kept for context):**
