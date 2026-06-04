@@ -385,7 +385,14 @@ int main(int argc, char *argv[])
     scripting::log_version_info(kLogTag);
 
     // 5. --init mode (no config load — we're creating the directory).
-    if (args.init_only)
+    // HEP-CORE-0033 §6.5: `--skeleton` is the layout-only verb under
+    // the gatekeeper/clearance model; the manual-path equivalent of
+    // `--init` (current implementation is template-write only, which
+    // matches the skeleton semantic).  Both flags dispatch to the
+    // same writer for now; the one-shot `--init` bundling (skeleton
+    // + identity-field commit + auto-keygen) is documented in §6.5
+    // but lands in a follow-up commit.
+    if (args.init_only || args.skeleton_only)
         return do_init(args);
 
     // 5b. Known-roles allowlist CLI (PeerAdmission Phase B).  Pure file

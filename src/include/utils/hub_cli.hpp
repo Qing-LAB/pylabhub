@@ -68,6 +68,23 @@ struct HubArgs
     bool validate_only{false};  ///< --validate
     bool keygen_only{false};    ///< --keygen
     bool init_only{false};      ///< --init
+    bool skeleton_only{false};  ///< --skeleton (HEP-CORE-0033 §6.5 layout-only path)
+
+    /// --uid <value>. Hub UID supplied at the CLI boundary.  Resolved
+    /// by `cli::get_required_uid` against env / TTY prompt per
+    /// HEP-CORE-0033 §6.5 source-priority chain.  Empty = unsupplied.
+    std::string hub_uid;
+
+    /// --vault-path <path>. Optional override for `hub.auth.keyfile`
+    /// at init time.  Empty = use the template default
+    /// (`vault/<uid>.vault` inside hub_dir).
+    std::string vault_path;
+
+    /// --no-prompt. When true, suppress interactive TTY prompts even
+    /// when stdin is a TTY (HEP-CORE-0033 §6.5).  Useful for
+    /// systemd / Docker entrypoints with an attached TTY that
+    /// shouldn't accept operator input.
+    bool no_prompt{false};
 
     // ── PeerAdmission Phase B — operator allowlist CLI ─────────────────
     /// --add-known-role <name> <uid> <role> <pubkey_z85>
@@ -214,9 +231,28 @@ inline ParseResult parse_hub_args(int argc, char *argv[],
             if (i + 1 < argc && argv[i + 1][0] != '-')
                 args.hub_dir = argv[++i];
         }
+        else if (arg == "--skeleton")
+        {
+            args.skeleton_only = true;
+            // Optional positional after --skeleton (must not start with '-').
+            if (i + 1 < argc && argv[i + 1][0] != '-')
+                args.hub_dir = argv[++i];
+        }
         else if (arg == "--name" && i + 1 < argc)
         {
             args.init_name = argv[++i];
+        }
+        else if (arg == "--uid" && i + 1 < argc)
+        {
+            args.hub_uid = argv[++i];
+        }
+        else if (arg == "--vault-path" && i + 1 < argc)
+        {
+            args.vault_path = argv[++i];
+        }
+        else if (arg == "--no-prompt")
+        {
+            args.no_prompt = true;
         }
         else if (arg == "--log-maxsize" && i + 1 < argc)
         {
@@ -311,6 +347,7 @@ inline ParseResult parse_hub_args(int argc, char *argv[],
 
     // ── Mode exclusion: at most one mode flag ──────────────────────────
     const int mode_count = static_cast<int>(args.init_only) +
+                           static_cast<int>(args.skeleton_only) +
                            static_cast<int>(args.validate_only) +
                            static_cast<int>(args.keygen_only) +
                            static_cast<int>(args.add_known_role_only) +
@@ -318,25 +355,28 @@ inline ParseResult parse_hub_args(int argc, char *argv[],
                            static_cast<int>(args.list_known_roles_only);
     if (mode_count > 1)
         return fail_with_usage(
-            "Error: mode flags (--init, --validate, --keygen, "
+            "Error: mode flags (--init, --skeleton, --validate, --keygen, "
             "--add-known-role, --revoke-known-role, --list-known-roles) "
             "are mutually exclusive (at most one mode).\n\n");
 
-    // ── Init-only flags must not appear outside --init ─────────────────
-    if (!args.init_only &&
+    // ── Init/skeleton-only flags must not appear outside those modes ───
+    const bool init_or_skeleton = args.init_only || args.skeleton_only;
+    if (!init_or_skeleton &&
         (args.log_max_size_mb.has_value() || args.log_backups.has_value() ||
-         !args.init_name.empty()))
+         !args.init_name.empty() || !args.hub_uid.empty() ||
+         !args.vault_path.empty()))
         return fail_with_usage(
-            "Error: --name, --log-maxsize, and --log-backups are "
-            "only valid with --init.\n\n");
+            "Error: --name, --uid, --vault-path, --log-maxsize, and "
+            "--log-backups are only valid with --init or --skeleton.\n\n");
 
-    // ── Required positional for non-init modes ─────────────────────────
+    // ── Required positional for non-init/skeleton modes ────────────────
     // The known-role ops need hub_dir (to locate
     // <hub_dir>/vault/known_roles.json); all other run modes need it
-    // too.  Only --init can synthesize a new hub_dir.
-    if (!args.init_only && args.config_path.empty() && args.hub_dir.empty())
+    // too.  Only --init / --skeleton can synthesize a new hub_dir.
+    if (!init_or_skeleton && args.config_path.empty() && args.hub_dir.empty())
         return fail_with_usage(
-            "Error: specify a hub directory, --init, or --config <path>\n\n");
+            "Error: specify a hub directory, --init, --skeleton, "
+            "or --config <path>\n\n");
 
     return result;  // exit_code stays -1 → caller proceeds
 }

@@ -238,7 +238,13 @@ int main(int argc, char *argv[])
     scripting::log_version_info("[plh_role]");
 
     // ── Init mode ─────────────────────────────────────────────────────
-    if (args.init_only)
+    // HEP-CORE-0024 §3.4.2: mirrors HEP-CORE-0033 §6.5 — `--skeleton`
+    // is the layout-only verb; the manual path equivalent of `--init`
+    // (current implementation is template-write only, which matches
+    // the skeleton semantic).  Both flags dispatch to the same writer;
+    // the one-shot `--init` bundling is documented but lands in a
+    // follow-up commit.
+    if (args.init_only || args.skeleton_only)
         return do_init(args);
 
     // ── Load config ───────────────────────────────────────────────────
