@@ -657,17 +657,40 @@ void BrokerServiceImpl::run()
         // would deny those as "unknown domain", silently breaking
         // handshakes.  Registering a domain — even a permissive one
         // — keeps behavior predictable across aggregate-binary tests.
+        //
+        // The ZAP domain MUST be unique per BrokerService instance.
+        // Two brokers in the same process (federation L3 tests,
+        // dual-hub processor tests, in-process bring-up smoke tests)
+        // both registering the same domain would throw on the
+        // second `register_domain` (per-domain uniqueness in
+        // `zap_router.hpp:99`) → `std::terminate` inside the broker
+        // thread.  Use `cfg.self_hub_uid` as a discriminator when
+        // present; fall back to a process-counter otherwise so the
+        // unnamed-hub case still scales to N>=2.
+        std::string zap_domain;
+        if (!cfg.self_hub_uid.empty())
+        {
+            zap_domain = "broker.ctrl." + cfg.self_hub_uid;
+        }
+        else
+        {
+            static std::atomic<std::uint64_t> ctrl_zap_seq{0};
+            const auto seq =
+                ctrl_zap_seq.fetch_add(1, std::memory_order_relaxed);
+            zap_domain = "broker.ctrl." + std::to_string(seq);
+        }
         ctrl_admission = std::make_unique<BrokerCtrlAdmission>(
             std::move(initial), cfg.enforce_ctrl_admission);
-        router.set(zmq::sockopt::zap_domain, "broker.ctrl");
+        router.set(zmq::sockopt::zap_domain, zap_domain);
         ctrl_zap_handle.emplace(
             pylabhub::utils::security::ZapRouter::instance()
-                .register_domain("broker.ctrl", ctrl_admission.get()));
+                .register_domain(zap_domain, ctrl_admission.get()));
 
         if (cfg.enforce_ctrl_admission)
         {
-            LOGGER_INFO("Broker: CTRL ZAP installed enforced "
+            LOGGER_INFO("Broker: CTRL ZAP installed enforced on domain '{}' "
                         "({} known_roles + {} federation peers = {} allowed)",
+                        zap_domain,
                         cfg.known_roles.size(),
                         cfg.peers.size(),
                         allowlist_size);
@@ -677,9 +700,25 @@ void BrokerServiceImpl::run()
             // Wire encryption only — for tests that don't exercise
             // the admission path.  Production (HubHost startup)
             // NEVER takes this path.
-            LOGGER_WARN("Broker: CTRL ZAP installed permissive "
-                        "(test/dev override; any CURVE peer accepted)");
+            LOGGER_WARN("Broker: CTRL ZAP installed permissive on domain '{}' "
+                        "(test/dev override; any CURVE peer accepted)",
+                        zap_domain);
         }
+    }
+    else if (cfg.enforce_ctrl_admission)
+    {
+        // Configuration mismatch: operator/test asked for the
+        // production deny-all gate but didn't enable CURVE.  Without
+        // CURVE there's no peer pubkey to gate on; the broker
+        // silently accepts every plaintext peer.  Warn loudly so the
+        // misconfig surfaces in operator logs.  HubHost startup
+        // hard-errors on missing keyfile (task #78), so this branch
+        // is only reachable from direct-Config callers that bypass
+        // HubHost — but flagging it here keeps the contract crisp.
+        LOGGER_WARN("Broker: enforce_ctrl_admission=true but use_curve=false "
+                    "— CTRL gate is INERT (no CURVE handshakes to gate).  "
+                    "Production HubHost startup would have rejected this "
+                    "config via HEP-CORE-0035 §4.6.2 keyfile checks.");
     }
 
     router.bind(cfg.endpoint);

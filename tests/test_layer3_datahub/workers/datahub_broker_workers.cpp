@@ -347,6 +347,7 @@ int broker_schema_mismatch()
             BrokerService::Config cfg;
             cfg.endpoint = "tcp://127.0.0.1:0";
             cfg.use_curve = false;
+            cfg.enforce_ctrl_admission = false;
             auto broker = start_broker_in_thread(std::move(cfg));
 
             const std::string channel  = "broker.mismatch.ch";
@@ -509,6 +510,7 @@ int broker_dereg_pid_mismatch()
             BrokerService::Config cfg;
             cfg.endpoint = "tcp://127.0.0.1:0";
             cfg.use_curve = false;
+            cfg.enforce_ctrl_admission = false;
             auto broker = start_broker_in_thread(std::move(cfg));
 
             const std::string channel  = "broker.pid_mismatch.ch";
@@ -598,6 +600,7 @@ int broker_dereg_missing_role_uid_rejected()
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
             cfg.use_curve = false;
+            cfg.enforce_ctrl_admission = false;
             auto broker = start_broker_in_thread(std::move(cfg));
 
             const std::string channel  = "broker.missing_uid.ch";
@@ -681,6 +684,7 @@ auto start_r35b_broker()
     BrokerService::Config cfg;
     cfg.endpoint  = "tcp://127.0.0.1:0";
     cfg.use_curve = false;
+    cfg.enforce_ctrl_admission = false;
     return start_broker_in_thread(std::move(cfg));
 }
 
@@ -912,6 +916,7 @@ int broker_sch_record_path_b_created()
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
             cfg.use_curve = false;
+            cfg.enforce_ctrl_admission = false;
             auto broker   = start_broker_in_thread(std::move(cfg));
 
             const std::string channel = "broker.sch.path_b";
@@ -966,6 +971,7 @@ int broker_sch_record_hash_mismatch_self()
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
             cfg.use_curve = false;
+            cfg.enforce_ctrl_admission = false;
             auto broker   = start_broker_in_thread(std::move(cfg));
 
             const std::string ch1 = "broker.sch.mismatch_self.a";
@@ -1022,6 +1028,7 @@ int broker_sch_consumer_citation_match()
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
             cfg.use_curve = false;
+            cfg.enforce_ctrl_admission = false;
             auto broker   = start_broker_in_thread(std::move(cfg));
 
             const std::string channel = "broker.sch.cons_ok";
@@ -1072,6 +1079,7 @@ int broker_sch_consumer_citation_mismatch()
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
             cfg.use_curve = false;
+            cfg.enforce_ctrl_admission = false;
             auto broker   = start_broker_in_thread(std::move(cfg));
 
             const std::string channel = "broker.sch.cons_bad";
@@ -1128,6 +1136,7 @@ int broker_sch_no_packing_backward_compat()
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
             cfg.use_curve = false;
+            cfg.enforce_ctrl_admission = false;
             auto broker   = start_broker_in_thread(std::move(cfg));
 
             const std::string channel = "broker.sch.bc";
@@ -1171,6 +1180,7 @@ int broker_sch_schema_req_owner_id()
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
             cfg.use_curve = false;
+            cfg.enforce_ctrl_admission = false;
             auto broker   = start_broker_in_thread(std::move(cfg));
 
             const std::string channel = "broker.sch.schreq";
@@ -1238,6 +1248,7 @@ int broker_sch_inbox_path_a()
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
             cfg.use_curve = false;
+            cfg.enforce_ctrl_admission = false;
             auto broker   = start_broker_in_thread(std::move(cfg));
 
             const std::string channel  = "broker.sch.inbox";
@@ -1288,6 +1299,7 @@ int broker_sch_inbox_hash_mismatch_self()
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
             cfg.use_curve = false;
+            cfg.enforce_ctrl_admission = false;
             auto broker   = start_broker_in_thread(std::move(cfg));
 
             const std::string ch1 = "broker.sch.inbox_mm.a";
@@ -1331,6 +1343,7 @@ int broker_sch_inbox_idempotent()
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
             cfg.use_curve = false;
+            cfg.enforce_ctrl_admission = false;
             auto broker   = start_broker_in_thread(std::move(cfg));
 
             const std::string ch1 = "broker.sch.inbox_idem.a";
@@ -1373,6 +1386,7 @@ int broker_sch_inbox_invalid_json()
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
             cfg.use_curve = false;
+            cfg.enforce_ctrl_admission = false;
             auto broker   = start_broker_in_thread(std::move(cfg));
 
             const std::string channel = "broker.sch.inbox_bad_json";
@@ -1413,6 +1427,7 @@ int broker_sch_inbox_two_owners()
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
             cfg.use_curve = false;
+            cfg.enforce_ctrl_admission = false;
             auto broker   = start_broker_in_thread(std::move(cfg));
 
             const std::string ch_a = "broker.sch.inbox_2a";
@@ -1468,6 +1483,7 @@ int broker_sch_schema_req_invalid()
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
             cfg.use_curve = false;
+            cfg.enforce_ctrl_admission = false;
             auto broker   = start_broker_in_thread(std::move(cfg));
 
             // No owner, no schema_id, no channel_name — wire payload is
@@ -1503,6 +1519,7 @@ int broker_sch_inbox_invalid_packing()
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
             cfg.use_curve = false;
+            cfg.enforce_ctrl_admission = false;
             auto broker   = start_broker_in_thread(std::move(cfg));
 
             const std::string channel = "broker.sch.inbox_bad_pack";
@@ -1535,6 +1552,7 @@ int broker_sch_reg_missing_packing()
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
             cfg.use_curve = false;
+            cfg.enforce_ctrl_admission = false;
             auto broker   = start_broker_in_thread(std::move(cfg));
 
             // schema_id non-empty but schema_packing missing → NACK MISSING_PACKING.
@@ -1563,6 +1581,7 @@ int broker_sch_reg_fingerprint_inconsistent()
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
             cfg.use_curve = false;
+            cfg.enforce_ctrl_admission = false;
             auto broker   = start_broker_in_thread(std::move(cfg));
 
             // Producer claims a hash that does NOT match BLDS+packing.
@@ -1592,6 +1611,7 @@ int broker_sch_cons_named_missing_hash()
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
             cfg.use_curve = false;
+            cfg.enforce_ctrl_admission = false;
             auto broker   = start_broker_in_thread(std::move(cfg));
 
             const std::string ch  = "broker.sch.cons_no_hash";
@@ -1638,6 +1658,7 @@ int broker_sch_cons_anonymous_happy_path()
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
             cfg.use_curve = false;
+            cfg.enforce_ctrl_admission = false;
             auto broker   = start_broker_in_thread(std::move(cfg));
 
             const std::string ch  = "broker.sch.cons_anon_ok";
@@ -1685,6 +1706,7 @@ int broker_sch_cons_anonymous_missing_packing()
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
             cfg.use_curve = false;
+            cfg.enforce_ctrl_admission = false;
             auto broker   = start_broker_in_thread(std::move(cfg));
 
             const std::string ch = "broker.sch.cons_anon_nopack";
@@ -1724,6 +1746,7 @@ int broker_sch_cons_named_with_structure_mismatch()
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
             cfg.use_curve = false;
+            cfg.enforce_ctrl_admission = false;
             auto broker   = start_broker_in_thread(std::move(cfg));
 
             const std::string ch  = "broker.sch.cons_named_struct_bad";
@@ -1774,6 +1797,7 @@ int broker_sch_inbox_evicts_on_disconnect()
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
             cfg.use_curve = false;
+            cfg.enforce_ctrl_admission = false;
             auto broker = start_broker_in_thread(std::move(cfg));
 
             const std::string ch  = "broker.sch.inbox_evict";
@@ -2003,6 +2027,7 @@ int broker_sch_path_c_unknown_global()
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
             cfg.use_curve = false;
+            cfg.enforce_ctrl_admission = false;
             // Use an explicit (empty) override so the default dirs aren't
             // searched (would be flaky if /usr/share/pylabhub has files).
             cfg.schema_search_dirs = {std::filesystem::temp_directory_path() /
@@ -2043,6 +2068,7 @@ int broker_sch_path_x_forbidden_owner()
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
             cfg.use_curve = false;
+            cfg.enforce_ctrl_admission = false;
             auto broker = start_broker_in_thread(std::move(cfg));
 
             const std::string blds    = "v:f32:1:0";
@@ -2103,6 +2129,7 @@ int broker_sch_wire_helpers_register_and_cite()
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
             cfg.use_curve = false;
+            cfg.enforce_ctrl_admission = false;
             auto broker   = start_broker_in_thread(std::move(cfg));
 
             const std::string channel  = "broker.sch.helpers.named";
@@ -2250,6 +2277,7 @@ int broker_sch_wire_helpers_anonymous_citation()
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
             cfg.use_curve = false;
+            cfg.enforce_ctrl_admission = false;
             auto broker   = start_broker_in_thread(std::move(cfg));
 
             const std::string channel  = "broker.sch.helpers.anon";
@@ -2346,6 +2374,7 @@ int broker_sch_wire_helpers_flexzone_round_trip()
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
             cfg.use_curve = false;
+            cfg.enforce_ctrl_admission = false;
             auto broker   = start_broker_in_thread(std::move(cfg));
 
             const std::string channel  = "broker.sch.helpers.fz";

@@ -187,6 +187,9 @@ int hello_handshake_fires_on_hub_connected()
 
             BrokerService::Config cfg_a;
             cfg_a.endpoint         = "tcp://127.0.0.1:0";
+            cfg_a.use_curve              = false;
+            cfg_a.enforce_ctrl_admission = false;
+            // HEP-CORE-0035 §4.8: federation HELLO/BYE tests do not exercise CURVE; both knobs off to keep the broker config self-consistent (the broker WARNs on enforce=true + use_curve=false because the gate is inert without CURVE handshakes to gate).
             cfg_a.self_hub_uid     = "hub.test.a";
             cfg_a.on_hub_connected = [&](const std::string &uid)
             { hub_a_events.push_connected(uid); };
@@ -199,6 +202,9 @@ int hello_handshake_fires_on_hub_connected()
 
             BrokerService::Config cfg_b;
             cfg_b.endpoint     = "tcp://127.0.0.1:0";
+            cfg_b.use_curve              = false;
+            cfg_b.enforce_ctrl_admission = false;
+            // HEP-CORE-0035 §4.8: federation HELLO/BYE tests do not exercise CURVE; both knobs off to keep the broker config self-consistent (the broker WARNs on enforce=true + use_curve=false because the gate is inert without CURVE handshakes to gate).
             cfg_b.self_hub_uid = "hub.test.b";
 
             FederationPeer peer_a;
@@ -246,6 +252,9 @@ int targeted_message_fires_on_hub_message()
 
             BrokerService::Config cfg_a;
             cfg_a.endpoint         = "tcp://127.0.0.1:0";
+            cfg_a.use_curve              = false;
+            cfg_a.enforce_ctrl_admission = false;
+            // HEP-CORE-0035 §4.8: federation HELLO/BYE tests do not exercise CURVE; both knobs off to keep the broker config self-consistent (the broker WARNs on enforce=true + use_curve=false because the gate is inert without CURVE handshakes to gate).
             cfg_a.self_hub_uid     = "hub.target.a";
             cfg_a.on_hub_connected = [&](const std::string &uid)
             { hub_a_events.push_connected(uid); };
@@ -259,6 +268,9 @@ int targeted_message_fires_on_hub_message()
 
             BrokerService::Config cfg_b;
             cfg_b.endpoint       = "tcp://127.0.0.1:0";
+            cfg_b.use_curve              = false;
+            cfg_b.enforce_ctrl_admission = false;
+            // HEP-CORE-0035 §4.8: federation HELLO/BYE tests do not exercise CURVE; both knobs off to keep the broker config self-consistent (the broker WARNs on enforce=true + use_curve=false because the gate is inert without CURVE handshakes to gate).
             cfg_b.self_hub_uid   = "hub.target.b";
             cfg_b.on_hub_message = [&](const std::string &ch,
                                        const std::string &payload,
@@ -312,6 +324,9 @@ int peer_bye_triggers_on_hub_disconnected()
 
             BrokerService::Config cfg_a;
             cfg_a.endpoint            = "tcp://127.0.0.1:0";
+            cfg_a.use_curve              = false;
+            cfg_a.enforce_ctrl_admission = false;
+            // HEP-CORE-0035 §4.8: federation HELLO/BYE tests do not exercise CURVE; both knobs off to keep the broker config self-consistent (the broker WARNs on enforce=true + use_curve=false because the gate is inert without CURVE handshakes to gate).
             cfg_a.self_hub_uid        = "hub.bye.a";
             cfg_a.on_hub_connected    = [&](const std::string &uid)
             { hub_a_events.push_connected(uid); };
@@ -326,6 +341,9 @@ int peer_bye_triggers_on_hub_disconnected()
 
             BrokerService::Config cfg_b;
             cfg_b.endpoint     = "tcp://127.0.0.1:0";
+            cfg_b.use_curve              = false;
+            cfg_b.enforce_ctrl_admission = false;
+            // HEP-CORE-0035 §4.8: federation HELLO/BYE tests do not exercise CURVE; both knobs off to keep the broker config self-consistent (the broker WARNs on enforce=true + use_curve=false because the gate is inert without CURVE handshakes to gate).
             cfg_b.self_hub_uid = "hub.bye.b";
 
             FederationPeer peer_a;
