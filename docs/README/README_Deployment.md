@@ -349,47 +349,51 @@ export PYLABHUB_HUB_PASSWORD="<same password>"
 plh_hub <hub-dir>/
 ```
 
-**Two deployment styles (HEP-CORE-0033 §6.5):**
+**Deployment workflow (HEP-CORE-0033 §6.5):**
 
-**A. Manual / production-review style** — for deployments that
-need to edit federation peers, move the vault outside `hub_dir`
-(§7.2 recommendation), or otherwise customize before secrets are
-minted:
+Both `--init` and `--skeleton` produce the same hub directory
+layout — template `hub.json` with an auto-generated uid + a
+placeholder `auth.keyfile` — and exit.  The operator then runs
+`--keygen` separately to mint the vault, and `--validate` or run
+for clearance / production.  The CLI flags `--uid` / `--name` /
+`--no-prompt` / `--vault-path` and the `cli::get_required_uid`
+helper are in place (commit `c684776a`) for the §6.5-designed
+one-shot bundling, but the `do_init` body is unchanged in this
+release — call them and the values are accepted but not yet
+threaded through `do_init`.  The one-shot landing is staged as a
+follow-up that migrates the 24 L4 test sites coherently.
 
 ```bash
-plh_hub --skeleton <hub-dir>        # layout only; hub.json INVALID
-                                    # until edited (uid is empty)
-$EDITOR <hub-dir>/hub.json          # set uid + name + any other fields
+plh_hub --skeleton <hub-dir>     # OR --init <hub-dir>
+                                  # both write layout + template hub.json
+$EDITOR <hub-dir>/hub.json       # optional: review/edit before minting secrets
 export PYLABHUB_HUB_PASSWORD="..."
 plh_hub --config <hub-dir>/hub.json --keygen     # GATEKEEPER: mint vault
 plh_hub --validate <hub-dir>/                    # CLEARANCE: smoke test
 plh_hub <hub-dir>/                               # RUN
 ```
 
-**B. One-shot style** — for headless CI / scripted / guided dev
-deployment where the non-required defaults are acceptable:
+**Once the one-shot landing ships** (next CLI slice), `--init`
+will additionally accept `--uid` / `--name` / `--vault-path` and
+chain `--keygen` automatically using `PYLABHUB_HUB_PASSWORD`,
+producing the same end-state in one command — typed as either:
 
 ```bash
 # Headless (no prompts; everything via flag or env):
 PYLABHUB_HUB_PASSWORD="..." \
 plh_hub --init --uid hub.main.uid01 --name MainHub <hub-dir>
 
-# Or guided (TTY prompts for any required field not on CLI/env):
+# Guided (TTY prompts for required fields not on CLI/env):
 plh_hub --init <hub-dir>
 #   ⇒ Hub name: MainHub
 #   ⇒ Hub uid [default: hub.MainHub.uid3a7f2b1c]: <ENTER to accept or type override>
 #   ⇒ Hub vault password: ****
-#
-# Auto-gen runs ONLY on the TTY prompt path as an inline default
-# the operator can accept or override.  The parser itself rejects
-# empty hub.uid as a hard config-load error — no silent fallback.
 ```
 
-`--init` bundles `--skeleton` + identity-field commit + `--keygen`
-into one command.  Source priority for each required field:
-`--flag` → env var → TTY prompt → error.  `--no-prompt` forces
-fail-fast even on a TTY (useful for systemd / Docker entrypoints
-that have a tty attached but shouldn't accept interactive input).
+Source priority for each required field will be `--flag` → env
+var → TTY prompt → error.  `--no-prompt` forces fail-fast even on
+a TTY (useful for systemd / Docker entrypoints that have a tty
+attached but shouldn't accept interactive input).
 
 **Why both styles?** Identity-shaping fields (`hub.uid`,
 `hub.auth.keyfile`) are coupled to the vault and cannot be freely
