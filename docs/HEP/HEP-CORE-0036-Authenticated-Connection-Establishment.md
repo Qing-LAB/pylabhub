@@ -4,9 +4,9 @@
 |-----------------|-------------------------------------------------------------------------------------------------------------|
 | **HEP**         | `HEP-CORE-0036`                                                                                             |
 | **Title**       | Authenticated Connection Establishment — Single-Gate Access Control for Control + Data Planes               |
-| **Status**     | 🚧 **DESIGN FINAL; IMPLEMENTATION IN FLIGHT** — T1 / T2 / I9 / Q1 LOCKED 2026-05-28; D1 (`ChannelAccessIndex` in HubState, commit `cacea477`) + D2 (broker CTRL ROUTER ZAP + federation peer pubkey union, commit `d18d2e91` + close-out) shipped 2026-06-03.  D3-D7 (`CHANNEL_AUTH_UPDATE` wire frame + role-side dispatch + `CONSUMER_REG_ACK.producers[]` extension + L3/L4 tests) ⏳; sibling tasks #74 / #94 / #101 ✅ / #102 / #103 + Phase 0-11 in §12.  Open items in §13.1 (federation Q1, audit log Q2) are post-MVP. |
+| **Status**     | 🚧 **DESIGN FINAL; IMPLEMENTATION IN FLIGHT** — T1 / T2 / I9 LOCKED 2026-05-28; DP-Q1 (skip-disconnected push) RETRACTED 2026-06-04 along with the snapshot-push-with-ACK design it gated; D1 (`ChannelAccessIndex` in HubState, commit `cacea477`) + D2 (broker CTRL ROUTER ZAP + federation peer pubkey union, commit `d18d2e91` + close-out) shipped 2026-06-03.  §6.5 channel-auth synchronization wire AMENDED 2026-06-04 from snapshot-push-with-ACK to notify-then-pull (`CHANNEL_AUTH_CHANGED_NOTIFY` + `GET_CHANNEL_AUTH_REQ`/`_ACK`); see §6.5 Amendment block.  D3-D7 (channel-auth wire frames + role-side dispatch + `CONSUMER_REG_ACK.producers[]` extension + L3/L4 tests) ⏳; sibling tasks #74 / #94 / #101 ✅ / #102 / #103 + Phase 0-11 in §12.  Open items in §13.1 (federation Q1, audit log Q2) are post-MVP. |
 | **Created**     | 2026-05-26                                                                                                  |
-| **Last revised** | 2026-06-02 — §6.5 wire-frame **AMENDED: delta → snapshot.**  `CHANNEL_AUTH_UPDATE` now carries a single `allowlist` field containing the full authorized set for the channel; the prior `allowlist_add[]` / `allowlist_remove[]` delta shape is retracted (see §6.5 "Amendment 2026-06-02" block for the rationale; design driver: hub owns the truth, producer is a follower, eliminates delta-loss drift between hub and producer caches).  Sync-ACK semantics + skip-disconnected push semantics are preserved.  Prior revision 2026-05-28 — T1 RESOLVED: symmetric identity-keypair design (broker mints nothing on data plane; both sides reuse their identity keys; SHM keeps broker-generated `shm_secret`).  Prior revision 2026-05-27 — two-conditions gate explicit; revocation reframed as passive (no force-close); inbox/bands inheritance; channels-are-dynamic non-goal; manual pubkey distribution MVP. |
+| **Last revised** | 2026-06-04 — §6.5 wire-frame **AMENDED: snapshot-push-with-ACK → notify-then-pull.**  The retired design (2026-06-02) had the broker push a full-allowlist snapshot and synchronously wait for `CHANNEL_AUTH_UPDATE_ACK` per producer, making the broker for the first time a sync-request initiator on the same ROUTER socket it serves as responder.  The new design splits into a fire-and-forget `CHANNEL_AUTH_CHANGED_NOTIFY` (broker→producer; same shape as existing `CHANNEL_CLOSING_NOTIFY` etc.) plus a standard `GET_CHANNEL_AUTH_REQ`/`GET_CHANNEL_AUTH_ACK` request-reply (producer pulls when it cares).  No new protocol patterns; broker stays a pure responder; producer-offline becomes the same code path as the existing `REG_ACK.initial_allowlist` reconnect re-sync.  Drift window honestly equivalent.  See §6.5 "Amendment 2026-06-04" block for the full rationale.  Prior revision 2026-06-02 (delta→snapshot; now superseded) preserved in git history.  Prior revision 2026-05-28 — T1 RESOLVED: symmetric identity-keypair design (broker mints nothing on data plane; both sides reuse their identity keys; SHM keeps broker-generated `shm_secret`).  Prior revision 2026-05-27 — two-conditions gate explicit; revocation reframed as passive (no force-close); inbox/bands inheritance; channels-are-dynamic non-goal; manual pubkey distribution MVP. |
 | **Area**        | Framework Architecture (broker access control, role-side CURVE wiring, data-plane peer authentication)      |
 | **Depends on**  | HEP-CORE-0021 (ZMQ Endpoint Registry — endpoint discovery via broker), HEP-CORE-0035 (Hub-Role Authentication — broker-side ZAP + pubkey index), HEP-CORE-0023 (Startup Coordination — presence FSM) |
 | **Blocks**      | Production deployment (data plane currently unauthenticated; see §3 gap analysis)                            |
@@ -19,10 +19,12 @@
 2026-06-03.**  D1 (`ChannelAccessIndex` in HubState — §4.1; commit
 `cacea477`) and D2 (broker CTRL ROUTER ZAP with the union of
 `known_roles[]` + `peers[].pubkey_z85` — §4.2 Layer-1; commit
-`d18d2e91` + close-out) are shipped.  D3-D7 (`CHANNEL_AUTH_UPDATE`
-wire frame + role-side dispatch + `CONSUMER_REG_ACK.producers[]`
-extension + tests) are tracked in `docs/todo/AUTH_TODO.md` step-by-step
-under task #74.
+`d18d2e91` + close-out) are shipped.  D3-D7 (channel-auth wire
+frames per §6.5 — `CHANNEL_AUTH_CHANGED_NOTIFY` +
+`GET_CHANNEL_AUTH_REQ`/`_ACK` per the 2026-06-04 notify-then-pull
+amendment — role-side dispatch + `CONSUMER_REG_ACK.producers[]`
+extension + tests) are tracked in `docs/todo/AUTH_TODO.md`
+step-by-step under task #74.
 
 The original 2026-05-26 motivation follows:
 the 2026-05-26 holistic audit revealed that the data plane (PUSH/PULL
@@ -100,8 +102,9 @@ The following are deliberately OUT of HEP-0036 scope:
 - **Per-consumer ACL enforced inside the data path.** A consumer
   that holds a valid CURVE session OR a valid SHM secret is trusted
   for that session's lifetime.  ACL is enforced at the artifact
-  release boundary (broker's CONSUMER_REG_ACK / CHANNEL_AUTH_UPDATE),
-  not at every data frame / SHM read.
+  release boundary (broker's CONSUMER_REG_ACK + producer-pulled
+  `GET_CHANNEL_AUTH_ACK` per §6.5), not at every data frame / SHM
+  read.
 - **Automated public-key distribution.**  For MVP, hub and role
   public keys are distributed manually by the operator (copy
   `*.pub` files to the appropriate config dirs).  Automated
@@ -165,8 +168,10 @@ performing an independent authorization check.
 record.**  When a consumer's CONSUMER_REG passes both conditions,
 broker mutates this index (records artifact issuance + tracks
 allowlist for producer's cache).  Producer-side caches are
-synchronized via broker push (`CHANNEL_AUTH_UPDATE`) but never make
-independent admission decisions.
+synchronized via a broker-fired `CHANNEL_AUTH_CHANGED_NOTIFY`
+followed by a producer-initiated `GET_CHANNEL_AUTH_REQ` pull (§6.5,
+notify-then-pull amended 2026-06-04) but never make independent
+admission decisions.
 
 The producer's ZAP handler reads the cache to **gate new handshakes**
 — rejecting incoming CURVE handshakes whose pubkey isn't in the
@@ -383,9 +388,10 @@ else.  Concretely two fields:
 struct ChannelAccessEntry
 {
     // Allowed consumer identity-pubkeys for this channel.
-    // Producer's ZAP handler enforces; updated via CHANNEL_AUTH_UPDATE pushes.
-    // Per-channel, NOT per-producer — a consumer authorized for a channel
-    // can connect to ANY producer of that channel.
+    // Producer's ZAP handler enforces; refreshed via GET_CHANNEL_AUTH_REQ
+    // pulls triggered by CHANNEL_AUTH_CHANGED_NOTIFY (§6.5 notify-then-pull,
+    // amended 2026-06-04).  Per-channel, NOT per-producer — a consumer
+    // authorized for a channel can connect to ANY producer of that channel.
     std::unordered_set<std::string>  authorized_consumer_pubkeys;
 
     // SHM-only: broker-generated guard secret for the DataBlock
@@ -427,18 +433,22 @@ gate decision (I1).  The handlers that read + write it:
   writes that pubkey to the allowlist on accept; iterates
   `channels[name].producers[]` to read per-producer (pubkey,
   endpoint) pairs for the CONSUMER_REG_ACK array (§6.4).
-- **`CHANNEL_AUTH_UPDATE` emitter** (broker): reads
-  `authorized_consumer_pubkeys` — emits a new snapshot (full current
-  set after the mutation; §6.5 wire frame amended 2026-06-02 from
-  delta to snapshot semantics) to every `kLive` producer of the
-  channel; each producer's ZAP independently REPLACES its cache
-  for the channel.  Sync-ACK'd on registration paths (broker waits
-  per `push_ack_timeout_ms`, skip-disconnected per Q1); revocation
-  paths proceed regardless of ACK.
+- **Channel-auth notify emitter** (broker): on any mutation of
+  `authorized_consumer_pubkeys`, fires fire-and-forget
+  `CHANNEL_AUTH_CHANGED_NOTIFY { channel_name, reason }` to every
+  `kLive` producer of the channel (§6.5 amended 2026-06-04 from
+  snapshot-push-with-ACK to notify-then-pull).  No ACK awaited; the
+  producer pulls the current allowlist via `GET_CHANNEL_AUTH_REQ`
+  when it wants to converge its ZAP cache.  Registration paths
+  return CONSUMER_REG_ACK immediately after the mutation + notify
+  fires; consumer never waits on producer ZAP-cache convergence.
+- **`GET_CHANNEL_AUTH_REQ` handler** (broker): reads
+  `authorized_consumer_pubkeys` for the requested channel; returns
+  the full current set in `GET_CHANNEL_AUTH_ACK.allowlist`.
+  Standard request-reply (no special threading).
 - **Heartbeat / hub-dead handler** (broker): writes — removes a
-  failed peer from the allowlist; emits a new
-  `CHANNEL_AUTH_UPDATE` snapshot (full current allowlist sans the
-  removed peer) to all `kLive` producers.
+  failed peer from the allowlist via `_on_consumer_revoked`; fires
+  `CHANNEL_AUTH_CHANGED_NOTIFY` to all `kLive` producers.
 
 No producer-side or consumer-side code computes admission decisions
 independently; they execute artifacts (allowlist entries, endpoint,
@@ -467,7 +477,7 @@ graph TB
     end
 
     Broker -. "REG_ACK (no keys — producer uses own identity)" .-> ProdBRC
-    Broker -. "CHANNEL_AUTH_UPDATE<br/>(allowlist push)" .-> ProdBRC
+    Broker -. "CHANNEL_AUTH_CHANGED_NOTIFY<br/>(fire-and-forget;<br/>producer pulls via GET_CHANNEL_AUTH_REQ)" .-> ProdBRC
     ProdBRC -. "populate cache" .-> ProdZap
     ProdBRC -. "identity keypair<br/>(loaded from .sec at startup)" .-> ProdPush
 
@@ -535,8 +545,10 @@ stateDiagram-v2
 **Consumer presence — synchronous trigger:**
 - Authorization happens entirely at REG time on the CONTROL plane:
   BRC CURVE handshake (HEP-0035 Layer-1 ZAP) + I1 cond 2
-  (User-Id ∈ `known_roles[]`) + broker pushes consumer's pubkey
-  to each producer's ZAP allowlist (per §6.5 Q1 lock-in).
+  (User-Id ∈ `known_roles[]`) + broker fires
+  `CHANNEL_AUTH_CHANGED_NOTIFY` to each producer of the channel,
+  each producer pulls the new allowlist asynchronously via
+  `GET_CHANNEL_AUTH_REQ` (§6.5 amended 2026-06-04).
 - Endpoints are NOT disclosed before authorization (§5.2 "No
   endpoint disclosure on rejection"): the consumer holding the
   `producers[]` array IS proof that authorization succeeded.
@@ -548,9 +560,13 @@ stateDiagram-v2
      (HEP-CORE-0017 §3.3).  ZmqQueue handles all transport plumbing
      internally (per I9).
 - The data-plane CURVE handshake that follows is enforcement at
-  the transport layer by the producer's ZAP cache (primed by
-  §6.5 sync push), not a separate auth decision.  The handshake
-  is transport-internal per I9 — invisible to the FSM.
+  the transport layer by the producer's ZAP cache (populated by
+  the producer's `GET_CHANNEL_AUTH_REQ` pull per §6.5 notify-then-
+  pull), not a separate auth decision.  The handshake is
+  transport-internal per I9 — invisible to the FSM.  A brief
+  re-handshake window exists between CONSUMER_REG_ACK arrival and
+  producer's pull completion; ZeroMQ's reconnect-on-failure
+  bridges it transparently (see §5.2 property note).
 
 #### 4.3.3 Recovery path — hub-dead → Unregistered
 
@@ -610,7 +626,7 @@ sequenceDiagram
 
     rect rgba(220,240,210,0.4)
         Note over P: == worker_main_ step: setup_infrastructure_ ==
-        P->>P: install ZAP handler on ZMQ context<br/>(empty allowlist cache; will be populated<br/>by CHANNEL_AUTH_UPDATE pushes later)
+        P->>P: install ZAP handler on ZMQ context<br/>(empty allowlist cache; populated by<br/>GET_CHANNEL_AUTH_REQ pulls triggered by<br/>CHANNEL_AUTH_CHANGED_NOTIFY — §6.5)
         P->>P: configure PUSH socket<br/>curve_server=1<br/>curve_secretkey=&lt;producer's identity seckey&gt;<br/>curve_publickey=&lt;producer's identity pubkey&gt;
         P->>P: socket.bind("tcp://*:0")<br/>→ resolved = "tcp://127.0.0.1:54891"
     end
@@ -644,10 +660,11 @@ sequenceDiagram
    without ZAP accepts all handshakes by default.  In the diagram:
    `install ZAP` → `configure CURVE on PUSH` → `bind`, in that
    order.  The empty allowlist cache at install time means every
-   handshake DENIES until broker pushes the first
-   `CHANNEL_AUTH_UPDATE` snapshot (whose `allowlist` field carries
-   the current authorized set; first push is typically the snapshot
-   containing the first registering consumer's pubkey).
+   handshake DENIES until the producer's first
+   `GET_CHANNEL_AUTH_REQ` reply lands (triggered by the broker's
+   first `CHANNEL_AUTH_CHANGED_NOTIFY` after a consumer registers,
+   or by the producer's own setup-time pull — see §6.5 notify-then-
+   pull amended 2026-06-04).
 2. **Bind before REG_REQ.**  The producer needs the resolved
    port to put in REG_REQ's `zmq_endpoint`.  This matches the
    existing code order and HEP-0021's wire shape.
@@ -675,10 +692,12 @@ in the diagram, plus the adjacent note about
 on the per-channel `ChannelAccessEntry` grows/shrinks as
 CONSUMER_REG_REQs arrive (§5.2).  The producer's PUSH socket binds
 with its identity key + empty allowlist; the ZAP cache is replaced
-on each broker `CHANNEL_AUTH_UPDATE` snapshot (per §6.5; full
-current set per push, not deltas).  In fan-in channels each
-producer's PUSH binds with its OWN identity key + receives the
-SAME channel-scoped snapshots.
+on each `GET_CHANNEL_AUTH_ACK` reply (per §6.5; full current set
+per pull, not deltas — the pull is triggered by the broker's
+fire-and-forget `CHANNEL_AUTH_CHANGED_NOTIFY` or by the producer's
+own setup / on-demand refresh).  In fan-in channels each producer's
+PUSH binds with its OWN identity key + each producer independently
+pulls the SAME channel-scoped current set.
 
 ### 5.2 Consumer registration + data connect (ZMQ)
 
@@ -730,11 +749,12 @@ sequenceDiagram
         Note over B: I1 cond 2 already enforced at BRC ZAP (Layer 1);<br/>this branch covers federation-trust cases where Layer 1<br/>let the BRC connect but Layer 2 rejects channel-scope.
     else kLive AND cons_pub authorized
         B->>AI: add cons_pub to authorized_consumer_pubkeys<br/>(new full set: { cons_pub })
-        B->>P: CHANNEL_AUTH_UPDATE {channel="lab.raw",<br/>allowlist=[cons_pub] (full current set, sync per §6.5)}
-        Note over P: BRC poll thread REPLACES<br/>ZAP cache with snapshot: { cons_pub }
-        P->>B: CHANNEL_AUTH_UPDATE_ACK {status="ok"}
+        B->>P: CHANNEL_AUTH_CHANGED_NOTIFY {channel="lab.raw",<br/>reason="consumer_joined"}  ← fire-and-forget, no ACK
         B->>C: CONSUMER_REG_ACK {status="ok",<br/>producers=[{role_uid, pubkey, endpoint}, ...]<br/>(per §6.4 — length 1 here for single-producer;<br/>length N for fan-in)}
         Note over C: state Unregistered → RegRequestPending → Registered
+        Note over P: P's BRC handler receives the notify;<br/>fires GET_CHANNEL_AUTH_REQ → broker replies with<br/>allowlist=[cons_pub]; P's ZAP cache REPLACED with<br/>snapshot { cons_pub } (§6.5 notify-then-pull).
+        P->>B: GET_CHANNEL_AUTH_REQ {channel="lab.raw"}
+        B->>P: GET_CHANNEL_AUTH_ACK {status="success",<br/>allowlist=[cons_pub]}
 
         rect rgba(220,240,210,0.4)
             Note over C: == setup_infrastructure_ ==<br/>Framework constructs rx queue with consumer's identity keypair<br/>+ producers[] peer set (HEP-0017 §3.3).<br/>ZmqQueue handles all transport plumbing internally per I9.
@@ -765,21 +785,29 @@ sequenceDiagram
   HEP-0036 implementation extends the check to also gate on
   `first_heartbeat_seen` (~5 lines), matching DISC_REQ's behavior
   at `broker_service.cpp:1720`.
-- **Sync `CHANNEL_AUTH_UPDATE` before `CONSUMER_REG_ACK`** (the
-  `B->>P: CHANNEL_AUTH_UPDATE` and `P->>B:
-  CHANNEL_AUTH_UPDATE_ACK` arrows, both BEFORE `B->>C:
-  CONSUMER_REG_ACK`): the broker MUST receive the ACK from the
-  producer BEFORE returning CONSUMER_REG_ACK to the consumer.
-  This guarantees the producer's ZAP cache is updated before
-  the consumer attempts the CURVE handshake — no race window
-  between cache install and first handshake.
-- **Consumer's `Authorized` is synchronous**: once
-  `CONSUMER_REG_ACK.producers[]` is in hand, authorization is
-  complete (broker only returns it after I1 passes and the
-  allowlist push is ACK'd).  Framework constructs the rx queue
-  and transitions to `Authorized` — no socket-monitor event,
-  no async wait.  Data-plane CURVE handshakes that follow are
-  transport-internal per I9.
+- **Broker fires notify, returns CONSUMER_REG_ACK immediately**
+  (amended 2026-06-04, §6.5).  The broker does NOT wait for the
+  producer's ZAP cache to converge before answering the consumer
+  — it fires `CHANNEL_AUTH_CHANGED_NOTIFY` (best-effort) and
+  returns `CONSUMER_REG_ACK` in the same handler call.  The
+  producer's pull (`GET_CHANNEL_AUTH_REQ`) is asynchronous on
+  the producer's side; the producer's ZAP cache converges within
+  one BRC round-trip after the notify arrives.
+- **Consumer's `Authorized` may briefly race the producer's
+  cache.**  Between `CONSUMER_REG_ACK` arrival at the consumer
+  and the producer's `GET_CHANNEL_AUTH_ACK` reply, the consumer
+  may attempt a CURVE handshake to the producer's PUSH socket.
+  If the producer's ZAP cache hasn't pulled yet, the handshake
+  DENIES; ZeroMQ's reconnect-on-handshake-failure brings it back
+  shortly thereafter, by which time the cache is converged.  This
+  is a small re-handshake window (one BRC round-trip), not a
+  consistent-state hazard — the producer eventually admits the
+  consumer once the pull completes, and existing CURVE sessions
+  on other authorized pubkeys are unaffected throughout.  Roles
+  that want zero re-handshake jitter can have the consumer add
+  a brief delay after CONSUMER_REG_ACK before initiating the
+  CURVE handshake; this is a role-side optimization, not a
+  protocol requirement.
 
 **No endpoint disclosure on rejection**: in EVERY rejection
 branch (`kAbsent`, `kRegistering`, `kStalled`, `kLive` +
@@ -807,10 +835,11 @@ sequenceDiagram
     C2->>B: CONSUMER_REG_REQ {channel="lab.raw"}
     B->>B: c2_pub = zmq_msg_gets("User-Id") on BRC
     B->>AI: add c2_pub to authorized_consumer_pubkeys<br/>(new full set: {c1_pub, c2_pub})
-    B->>P: CHANNEL_AUTH_UPDATE {channel="lab.raw",<br/>allowlist=[c1_pub, c2_pub] (full current set)}
-    P->>P: ZAP cache REPLACED with snapshot:<br/>{c1_pub, c2_pub}
-    P->>B: CHANNEL_AUTH_UPDATE_ACK
+    B->>P: CHANNEL_AUTH_CHANGED_NOTIFY {channel="lab.raw",<br/>reason="consumer_joined"}  ← fire-and-forget
     B->>C2: CONSUMER_REG_ACK {producers=<br/>[{role_uid, pubkey, endpoint}, ...]<br/>per §6.4}
+    P->>B: GET_CHANNEL_AUTH_REQ {channel="lab.raw"}
+    B->>P: GET_CHANNEL_AUTH_ACK {allowlist=[c1_pub, c2_pub]}
+    P->>P: ZAP cache REPLACED with snapshot:<br/>{c1_pub, c2_pub}
     C2->>P: connect + CURVE handshake (C2's identity) → ACCEPT
     P-->>C2: ZMQ data frames (independent of C1's flow)
 ```
@@ -838,11 +867,12 @@ sequenceDiagram
     C1->>B: CONSUMER_DEREG_REQ {channel="lab.raw"}
     B->>B: c1_pub = zmq_msg_gets("User-Id") on BRC
     B->>AI: remove c1_pub from authorized_consumer_pubkeys<br/>(new full set: {c2_pub})
-    B->>P: CHANNEL_AUTH_UPDATE {channel="lab.raw",<br/>allowlist=[c2_pub] (full current set)}
-    P->>P: ZAP cache REPLACED with snapshot: {c2_pub}<br/>(future C1 reconnect handshakes → REJECT)
-    P->>B: CHANNEL_AUTH_UPDATE_ACK
+    B->>P: CHANNEL_AUTH_CHANGED_NOTIFY {channel="lab.raw",<br/>reason="consumer_left"}  ← fire-and-forget
     B->>C1: CONSUMER_DEREG_ACK
     C1->>C1: transition Authorized → Deregistered
+    P->>B: GET_CHANNEL_AUTH_REQ {channel="lab.raw"}
+    B->>P: GET_CHANNEL_AUTH_ACK {allowlist=[c2_pub]}
+    P->>P: ZAP cache REPLACED with snapshot: {c2_pub}<br/>(future C1 reconnect handshakes → REJECT)
 
     Note over P,C2: C2's data flow continues uninterrupted
 ```
@@ -875,9 +905,10 @@ sequenceDiagram
     and On the broker side
         B->>B: heartbeat timeout fires for consumer C
         B->>AI: remove C's pubkey; clear C from presence table.<br/>(new full set: previous \ {C})
-        B->>P: CHANNEL_AUTH_UPDATE {channel,<br/>allowlist=[full current set without C]}
+        B->>P: CHANNEL_AUTH_CHANGED_NOTIFY {channel,<br/>reason="consumer_timeout"}  ← fire-and-forget
+        P->>B: GET_CHANNEL_AUTH_REQ {channel}
+        B->>P: GET_CHANNEL_AUTH_ACK {allowlist=full current set without C}
         P->>P: ZAP cache REPLACED with snapshot.
-        P->>B: CHANNEL_AUTH_UPDATE_ACK
     end
 
     Note over C,P: If C process eventually recovers, it must restart from<br/>the beginning of §5.2 (new BRC CURVE handshake → CONSUMER_REG_REQ).<br/>Mid-incident reconnect of an old session is not supported.
@@ -1090,172 +1121,244 @@ CONSUMER_REG_ACK is the sibling change for the registration path;
 both should land coordinated as one wire-format migration.  See
 §14.1 for the HEP-0021 update list.
 
-### 6.5 `CHANNEL_AUTH_UPDATE` (broker → each producer of the channel) — NEW message
+### 6.5 Channel-auth synchronization (notify-then-pull)
 
 **Purpose**: keep EACH producer's local ZAP cache in sync with the
 broker's `ChannelAccessIndex.authorized_consumer_pubkeys`.  Under
 fan-in channels (HEP-CORE-0023 §2.1.1, HEP-CORE-0017 §4.6), the
-broker fans the same message out to every producer of the channel;
-each producer's ZAP independently enforces the shared
-channel-scope allowlist.  The message gates ONLY future CURVE
-handshakes from the affected pubkeys (I5).  It does NOT instruct
-producers to disconnect any existing session; existing CURVE
-sessions are unaffected by allowlist updates.
+broker fires the same notify out to every producer of the channel;
+each producer's ZAP independently enforces the shared channel-scope
+allowlist.  Updates gate ONLY future CURVE handshakes from the
+affected pubkeys (I5).  They do NOT instruct producers to disconnect
+any existing session; existing CURVE sessions are unaffected by
+allowlist updates.
 
-#### Amendment 2026-06-02 — snapshot semantics (was: delta)
+#### Amendment 2026-06-04 — notify-then-pull (supersedes 2026-06-02 snapshot-push)
 
-**Before:** `CHANNEL_AUTH_UPDATE` carried `allowlist_add[]` and
-`allowlist_remove[]` deltas; the producer mutated its local cache by
-applying the diff; add was sync-ACK'd, remove was best-effort.
+**Retired (2026-06-02 snapshot-push-with-ACK).**  The prior design
+had the broker push a full-allowlist snapshot to each `kLive`
+producer and synchronously wait for `CHANNEL_AUTH_UPDATE_ACK` up to
+`push_ack_timeout_ms`, skipping disconnected producers.  This made
+the broker — for the first time in the protocol — a *sync-request
+initiator* on the same ROUTER socket it uses as a responder,
+introducing a "what do we do with other inbound traffic during the
+wait" complication that no other broker message has.
 
-**After (this amendment):** `CHANNEL_AUTH_UPDATE` carries a single
-`allowlist[]` field containing the **full current authorized set**
-for the channel.  The producer's local cache becomes whatever
-arrived — a plain replace, no diff math.  Every snapshot is
-sync-ACK'd by the receiving producer.
+**Now (this amendment).**  The broker stays a *pure responder*.  The
+mechanism splits into two messages that both reuse existing protocol
+patterns:
 
-**Why:**
-1. **Hub is the source of truth.**  The producer is a follower; it
-   should not be responsible for state it does not own.  Snapshot
-   semantics encode that asymmetry — the producer applies, it does
-   not maintain.
-2. **Self-correction on the next event.**  Under deltas, a lost
-   `remove` left the producer caching a pubkey the hub thought was
-   revoked — and there was no way for a subsequent `add` to fix
-   it (the cache merge would still keep the stale entry).  Under
-   snapshots, the very next snapshot — generated by ANY subsequent
-   event for that channel — overwrites the stale cache completely.
-   The drift window collapses to "until the next event for the
-   same channel."  See **Residual drift window** below for the
-   honest scope of what this does and does not close.
-3. **Simpler producer code.**  No merge, no per-op branching, no
-   ordering invariant beyond "latest snapshot wins."  TCP /
-   DEALER-ROUTER already gives in-order delivery on a single
-   connection; cross-reconnect re-sync via `REG_ACK.initial_allowlist`
-   (see Q1 lock-in below) handles the connection-loss case.
-4. **Channels typically carry small allowlists.**  In the field a
-   channel has O(few) authorized consumers, so the on-wire size
-   delta between snapshot and incremental is negligible.
+- **`CHANNEL_AUTH_CHANGED_NOTIFY` (broker → producer)** — a
+  fire-and-forget notify, identical in shape to existing
+  `CHANNEL_CLOSING_NOTIFY` / `CONSUMER_DIED_NOTIFY` /
+  `BAND_LEAVE_NOTIFY`.  Carries `{channel_name, reason}` only.  No
+  ACK.  Tells the producer "something changed; pull when you care."
 
-**Residual drift window (honest scope).**  The snapshot amendment
-does NOT eliminate the case where the broker pushes snapshot
-S<sub>n</sub>, the producer fails to ACK within
-`push_ack_timeout_ms`, the broker proceeds (skip-disconnected), and
-no further event fires for that channel.  The producer then holds
-S<sub>n-1</sub> indefinitely — until either (a) the next event for
-that channel generates S<sub>n+1</sub> and re-pushes, or (b) the
-producer's BRC reconnects and `REG_ACK.initial_allowlist` re-syncs
-on the new REG_REQ.  On a healthy BRC link with no further channel
-events, this is a real drift window that snapshot semantics share
-with the prior delta semantics.  The security implication: a
-producer that missed a revocation snapshot continues admitting the
-revoked pubkey until the next event fires.  Phase D MVP accepts
-this window because channel events for an active channel are
-frequent in practice (heartbeats from authorized consumers
-themselves don't trigger pushes, but registrations/dereg/timeouts
-do).  Closing the residual window cleanly is deferred to a
-follow-on amendment — candidate mechanisms are (i) periodic
-re-push of the current snapshot to every `kLive` producer (simple,
-costs one round-trip per producer per refresh interval), or (ii)
-per-producer per-channel `last_acked_snapshot_seq` tracking with
-auto-retry on next event.  Recommended for Phase D operability:
-producer logs a one-line WARN on every applied snapshot with the
-new set size, so operators can grep for unexpected drift.
+- **`GET_CHANNEL_AUTH_REQ` / `GET_CHANNEL_AUTH_ACK` (producer →
+  broker → producer)** — a normal request-reply pair, identical in
+  shape to existing `REG_REQ`/`REG_ACK`, `CONSUMER_REG_REQ`/`_ACK`,
+  etc.  Producer asks "give me the current allowlist for channel
+  X"; broker replies with the full current set.  Producer applies
+  via `ZmqQueue::set_peer_allowlist`.
 
-**What stays the same:** the **skip-disconnected push semantics**
-locked at 2026-05-28 (DP-Q1) is preserved — the broker still pushes
-only to currently-`kLive` producers, waits per-producer for the ACK,
-SKIPS producers that miss the timeout, and falls through to
-`CHANNEL_NOT_READY{reason="no_live_producer"}` when zero producers
-ACK.  The skip-disconnected concept is orthogonal to delta vs
-snapshot; only the wire-frame fields and the (former) sync/
-best-effort partition between add and remove are retracted.
+**Why this is simpler and equivalent on every important axis.**
 
-#### Push semantics (snapshot, sync-ACK, skip-disconnected)
+1. **No new protocol pattern.**  Fire-and-forget notify + sync
+   request-reply are both established surfaces — the broker has
+   five existing notifies (§5.7) and dozens of `_REQ`/`_ACK` pairs.
+   The amendment slots one of each into existing dispatch
+   machinery.  By contrast, snapshot-push required a new
+   "broker-initiates-sync-request" pattern with no precedent in the
+   protocol.
+2. **Truth-ownership is unambiguous.**  Hub is the source of truth;
+   producer is a follower; under notify-then-pull the producer
+   *explicitly asks* the source of truth.  Snapshot-push half-asserted
+   ("here, take this"), half-asked ("confirm receipt") — muddier.
+3. **Producer offline is no longer a special case.**  Snapshot-push
+   needed an explicit "skip-disconnected, producer re-syncs via
+   `REG_ACK.initial_allowlist` later" subsystem.  Under notify-pull,
+   an offline producer simply does not receive the notify; when it
+   reconnects (HEP-CORE-0023 §2.5.3: disconnect is terminal, fresh
+   BRC, fresh REG_REQ), `REG_ACK.initial_allowlist` (§6.2) carries
+   the current snapshot exactly as before — the existing
+   reconnect-re-sync mechanism is the *general* recovery path, not a
+   special fallback.
+4. **Multiple events naturally coalesce.**  If three consumers join
+   in quick succession, the broker fires three notifies (cheap).
+   The producer pulls *once* on the latest notify and gets the final
+   state.  Snapshot-push would have required three full snapshots
+   each with a sync-ACK round-trip.
+5. **No new threading / dispatch concern.**  The broker keeps its
+   single-purpose poll loop: drain inbound, fire notifies as needed
+   (each notify is one non-blocking `socket.send`), serve incoming
+   requests.  No demultiplexing inbound during outbound waits.
 
-Sync request-reply per HEP-CORE-0007 §12.2.1, with per-producer
-liveness gating.  Every push is one snapshot; one snapshot per
-event (consumer added, consumer removed, consumer heartbeat-timed-
-out, etc.).
+**Drift window — honest scope.**  Same window as the retired design
+in the cases that matter:
 
-- **On any allowlist mutation event** (CONSUMER_REG_REQ accept,
-  CONSUMER_DEREG_REQ accept, consumer heartbeat timeout, federation-
-  peer death — see §13.1 federation Q1):
-  1. broker mutates
-     `ChannelAccessIndex.channels[name].authorized_consumer_pubkeys`
-     to its new full state;
-  2. broker enumerates `ChannelEntry.producers[]` filtered to
-     `kLive` producers (HEP-CORE-0023 §2.6 channel observable);
-  3. broker pushes `CHANNEL_AUTH_UPDATE { channel_name, allowlist =
-     <full set after mutation> }` to each filtered producer;
-  4. broker waits up to `push_ack_timeout_ms` for each ACK (default
-     2000 ms; configurable via `hub.broker.push_ack_timeout_ms` in
-     hub.json);
-  5. producers that don't ACK within the timeout are SKIPPED —
-     broker proceeds.  Skipped producers re-sync via
-     `REG_ACK.initial_allowlist` when they next REG_REQ after
-     reconnect.
-- **If zero filtered producers ACK** (catastrophic — every push
-  failed or no live producer existed) on a registration path:
-  broker returns `CHANNEL_NOT_READY{reason="no_live_producer"}`
-  to the consumer (see §6.6).  Consumer retries.
-- **Otherwise** on a registration path: broker returns
-  CONSUMER_REG_ACK with `producers[]` populated to the ACK'd
-  subset.  Producers that recover late are picked up via channel-
-  event broadcasts (HEP-CORE-0033 §12) per I9.
-- On a **revocation path** (deregistration, heartbeat timeout):
-  broker proceeds even if zero producers ACK — there is no
-  consumer-facing handshake to gate.  Producers that missed the
-  snapshot re-sync on next reconnect.  The security guarantee is
-  "no NEW handshake from a removed pubkey at any producer whose
-  cache has been updated"; producers in transient miss states have
-  stale caches until re-sync, which is the same exposure window as
-  the delta-era best-effort `remove`.
+- *Producer disconnected at notify time.*  Notify lost; producer
+  re-syncs via `REG_ACK.initial_allowlist` on its next REG_REQ
+  after BRC reconnect.  No change from prior design.
+- *Producer connected but ignores notify.*  Producer holds stale
+  cache until the next event fires (next notify nudges it again)
+  or until it queries explicitly.  Same shape as the prior design's
+  "missed ACK then no further event" window.
+- *Producer connected, processes notify, sends query, broker mutates
+  again before reply arrives.*  Reply carries the current truth at
+  reply-time — already ahead of the notify that prompted the query.
+  Producer's cache is converged to the *latest* state, not an
+  intermediate.
+
+**Closing the residual window cleanly** is deferred to a follow-on
+amendment with the same candidate mechanisms as before — periodic
+re-fire of the latest notify to every `kLive` producer, or per-
+producer last-acked tracking.  Not required for Phase D MVP.
+
+**Producer-side observability.**  Same recommendation as the prior
+amendment: the producer SHOULD log a one-line WARN whenever it
+applies a non-empty allowlist replacement, including the new set
+size and the `reason` from the triggering notify (or `"manual"` if
+the pull was operator-driven), so operators can grep for
+unexpected drift.
+
+#### Push semantics (fire-and-forget notify)
+
+On any allowlist mutation event — CONSUMER_REG_REQ accept,
+CONSUMER_DEREG_REQ accept, consumer heartbeat timeout, federation-
+peer death (see §13.1 Q1) — the broker:
+
+1. mutates `ChannelAccessIndex.channels[name].authorized_consumer_pubkeys`
+   to its new full state;
+2. enumerates `ChannelEntry.producers[]` filtered to `kLive`
+   producers (HEP-CORE-0023 §2.6 channel observable);
+3. fires `CHANNEL_AUTH_CHANGED_NOTIFY { channel_name, reason }` to
+   each filtered producer — one non-blocking send per producer,
+   identical in shape to existing `CHANNEL_CLOSING_NOTIFY` fan-out
+   (§5.7.2).
+
+There is no ACK to wait for, no skip-disconnected logic, no
+per-producer timeout.  The notify is best-effort — if the BRC
+buffer is full or the producer is mid-disconnect, the notify is
+lost on the wire; recovery is via the next event or via REG_ACK on
+reconnect.  Registration paths return CONSUMER_REG_ACK immediately
+after the mutation + notify-fire; consumer never waits on producer
+ZAP-cache convergence.
+
+#### Pull semantics (request-reply)
+
+The producer fires `GET_CHANNEL_AUTH_REQ` whenever it wants the
+current truth.  Typical triggers, all controlled by the role-side
+implementation (not protocol contract):
+
+- *Reactive*: on receipt of `CHANNEL_AUTH_CHANGED_NOTIFY`.  Producer
+  may coalesce multiple notifies that arrive close together (only
+  the latest query result matters).
+- *Reconnect re-sync*: as part of `setup_infrastructure_` after a
+  hub-dead recovery, in addition to the initial allowlist already
+  carried in `REG_ACK.initial_allowlist` (§6.2).  Strictly redundant
+  in the normal case but cheap insurance against the rare
+  REG_ACK-arrives-but-events-fire-immediately race.
+- *Operator-driven*: any role-side script trigger that wants to
+  observe the current allowlist (debugging, admin tooling).
+
+Standard request-reply per HEP-CORE-0007 §12.2.1 — uses the
+existing `BrokerRequestComm::do_request("GET_CHANNEL_AUTH_REQ",
+"GET_CHANNEL_AUTH_ACK", ...)` infrastructure (no new dispatcher);
+5000 ms default timeout matching `REG_REQ`.
 
 #### Wire fields
 
+##### `CHANNEL_AUTH_CHANGED_NOTIFY` (broker → producer; fire-and-forget)
+
 | Field | Type | Description |
 |---|---|---|
-| `type` | string | Literal `"CHANNEL_AUTH_UPDATE"`. |
+| `type` | string | Literal `"CHANNEL_AUTH_CHANGED_NOTIFY"`. |
 | `broker_proto` | integer | Wire version.  Bumped 5 → 6 by this message's introduction. |
-| `channel_name` | string | Channel whose allowlist this snapshot describes. |
-| `allowlist` | array<string> | **Full current authorized consumer-pubkey set** for the channel after the mutation that triggered this push.  Each element is a 40-char Z85 string.  Receiving producer REPLACES its local ZAP cache for the channel with this set — no merge, no per-pubkey diff.  Empty array `[]` is the legal "deny everyone" state (e.g., last authorized consumer just left). |
+| `channel_name` | string | Channel whose allowlist changed.  The producer must own this channel for the notify to be actionable (broker only fans to `kLive` producers of the named channel). |
+| `reason` | string | One of `"consumer_joined"`, `"consumer_left"`, `"consumer_timeout"`, `"federation_peer_death"`, `"manual"`.  Informational only (matches the `reason` field on existing notifies — see `CHANNEL_CLOSING_NOTIFY` reason values in §5.7.2).  Producer behavior MUST NOT depend on the value; the role-side handler treats every notify the same way (fetch current allowlist). |
 
-**No other fields.**  Explicitly:
+No `allowlist` field — the producer pulls explicitly.  Treat any
+extra fields as informational; do not parse them for cache state.
 
-- The wire frame carries **no `kind` field per pubkey** — the wire is
-  CURVE-only (the entire data-plane gate is CURVE; SHM uses
-  `shm_secret` on a different surface).  Receivers MUST construct
-  `PeerIdentity{ kind = "curve", data = <pubkey_z85> }` for each
-  array element.  A future "kind: posix" or similar smuggling would
-  bypass the CURVE-only assumption that the rest of HEP-0036 rests on.
-- The wire frame carries **no `unrestricted` / `wildcard` field**.
-  The in-process `PeerAllowlist` type has an `unrestricted` boolean
-  reserved for test fixtures and the `--allow-anonymous-data`
-  transitional flag; the WIRE never conveys it.  Receivers MUST
-  construct `PeerAllowlist{ peers = <parsed>, unrestricted = false }`
-  unconditionally, even if a future broker (compromised or buggy)
-  sends an extension field claiming wildcard admission.  This is the
-  symmetric receive-side enforcement of the
-  `KnownRolesStore::as_peer_allowlist` emit-side invariant (which
-  also never produces `unrestricted = true`).
-- The wire frame carries **no per-snapshot sequence number**.
-  TCP / DEALER-ROUTER preserves in-order delivery on a single
-  connection; the producer simply applies whichever arrived last
-  (see "Snapshot ordering note" below).  Cross-reconnect re-sync
-  uses `REG_ACK.initial_allowlist`, not on-wire sequence tracking.
+##### `GET_CHANNEL_AUTH_REQ` (producer → broker; request)
 
-Each receiving producer responds with `CHANNEL_AUTH_UPDATE_ACK { status }`.
+| Field | Type | Description |
+|---|---|---|
+| `type` | string | Literal `"GET_CHANNEL_AUTH_REQ"`. |
+| `broker_proto` | integer | Wire version (6). |
+| `channel_name` | string | Channel whose allowlist the producer wants. |
+| `role_uid` | string | Producer's UID (per the §G2.2.0b RoleUid grammar; mirrors REG_REQ). |
+| `corr_id` | string | Correlation id per HEP-CORE-0007 §12.2.1. |
 
-**Snapshot ordering note.**  The CTRL channel uses DEALER/ROUTER
-over TCP, which preserves in-order delivery on a single connection.
-Two snapshots S1 and S2 cannot arrive at the producer out of order
-within one BRC connection; the producer simply applies whichever
-arrived last.  Across a producer reconnect, the producer's first
-exchange is REG_REQ → REG_ACK; `REG_ACK.initial_allowlist` carries
-the current authoritative snapshot at re-registration time, so the
-producer re-converges on its first REG_ACK without any per-message
-sequence-number machinery.
+##### `GET_CHANNEL_AUTH_ACK` (broker → producer; reply)
+
+| Field | Type | Description |
+|---|---|---|
+| `type` | string | Literal `"GET_CHANNEL_AUTH_ACK"`. |
+| `broker_proto` | integer | Wire version (6). |
+| `corr_id` | string | Echoes the request. |
+| `status` | string | `"success"` on a valid query; `"error"` otherwise (per HEP-CORE-0007 §12.3 harmonized shape). |
+| `error_code` | string | On error: `"CHANNEL_NOT_FOUND"` (channel does not exist), `"PRODUCER_NOT_AUTHORIZED"` (caller is not a registered producer of the channel), `"INTERNAL_ERROR"`. |
+| `allowlist` | array<string> | On success: full current authorized consumer-pubkey set for the channel after any prior mutations.  Each element is a 40-char Z85 string.  Receiving producer REPLACES its local ZAP cache for the channel with this set — no merge.  Empty array `[]` is the legal "deny everyone" state. |
+
+**Same anti-smuggling constraints as the retired 2026-06-02 design
+applied to `allowlist`**: no `kind` field per pubkey (CURVE-only
+wire — receiver constructs `PeerIdentity{ kind = "curve", data = z85
+}`); no `unrestricted` / `wildcard` field (receiver constructs
+`PeerAllowlist{ peers = <parsed>, unrestricted = false }`
+unconditionally, regardless of any future extension field); no
+per-snapshot sequence number (TCP / DEALER-ROUTER preserves
+in-order delivery on a single connection; cross-reconnect re-sync
+uses `REG_ACK.initial_allowlist`).
+
+#### Race coverage
+
+- **Notify→pull→reply race with later mutation.**  Producer sees
+  notify N1 (caused by mutation M1), sends query Q1.  Before Q1's
+  reply arrives, broker mutates again (M2) and fires N2.  Reply R1
+  carries truth-at-M2 (the broker's state at reply-time, which is
+  ≥ M2).  Producer applies R1; R1 is already the latest state.
+  N2 then arrives at the producer — Q2 is redundant but harmless;
+  the next reply would be ≥ R1.  **Safe**: producer always converges
+  to truth-at-most-recent-reply.
+- **Multiple notifies coalesce.**  Producer's role-side handler is
+  free to debounce: if a query is already in flight, drop the
+  notify; otherwise fire one query.  Since every reply is a full
+  snapshot, coalescing is observationally identical to
+  serial-applying each.
+- **Producer in mid-disconnect when notify fires.**  Notify lost on
+  the wire (BRC socket buffer drops it).  Producer reconnects with
+  fresh BRC + fresh REG_REQ; REG_ACK.initial_allowlist (§6.2)
+  carries the current snapshot.  No additional handling needed.
+- **Producer connected but slow to query.**  Multiple events
+  fire; multiple notifies queue in the producer's BRC inbox.
+  Producer drains, sees them all, fires one query, applies the
+  reply — same end state as if each notify had triggered its own
+  query.
+
+#### Mutator wiring (broker side)
+
+The amendment uses HubState's existing mutator + subscriber
+pattern as the architectural seam.  When the broker accepts
+CONSUMER_REG_REQ / CONSUMER_DEREG_REQ, or detects a consumer
+heartbeat timeout, the handler calls the matching HubState mutator
+(`_on_consumer_authorized` / `_on_consumer_revoked`), and a
+single auth-notify emitter — registered as a subscriber to those
+mutations — fires `CHANNEL_AUTH_CHANGED_NOTIFY` to each `kLive`
+producer of the affected channel.  Inline call in the handler is
+also acceptable; the subscriber pattern keeps the auth-notify
+logic out of the REG/DEREG hot paths.
+
+#### Sequence diagrams
+
+§5.1 / §5.2 / §5.3 / §5.4 / §5.5 / §10 mermaid sequence diagrams
+were updated alongside this amendment to show the new wire flow:
+`B->>P: CHANNEL_AUTH_CHANGED_NOTIFY {channel, reason}` (fire-and-
+forget) followed by `P->>B: GET_CHANNEL_AUTH_REQ {channel}` /
+`B->>P: GET_CHANNEL_AUTH_ACK {allowlist}`.  The §5.2 "Sync push
+before CONSUMER_REG_ACK" property bullet is rewritten to describe
+the asynchronous pull pattern + the brief re-handshake window it
+introduces.
 
 ### 6.6 Error codes
 
@@ -1264,13 +1367,18 @@ Added to HEP-CORE-0007 §12.4a Error Code Taxonomy:
 | Code | When |
 |---|---|
 | `UNAUTHORIZED_CONSUMER_PUBKEY` | CONSUMER_REG_REQ from a consumer whose CURVE-proved User-Id pubkey is not in `cfg.known_roles[]` (HEP-0035 §4.1 Layer 2).  Should be unreachable when Layer-1 ZAP is enforcing, but kept as defence-in-depth. |
-| `CHANNEL_NOT_READY` | CONSUMER_REG_REQ for a channel that isn't admissible right now.  `reason` field distinguishes the cause: `awaiting_endpoint` (HEP-0021 §16.4 — first producer's port still 0), `awaiting_first_heartbeat` (no producer has reached `kLive`), `heartbeat_stalled` (producer presence in `kStalled` per HEP-CORE-0023 §2.6), or `no_live_producer` (Q1 skip-disconnected push exhausted — every targeted producer failed to ACK the allowlist update within `push_ack_timeout_ms`). |
+| `CHANNEL_NOT_READY` | CONSUMER_REG_REQ for a channel that isn't admissible right now.  `reason` field distinguishes the cause: `awaiting_endpoint` (HEP-0021 §16.4 — first producer's port still 0), `awaiting_first_heartbeat` (no producer has reached `kLive`), or `heartbeat_stalled` (producer presence in `kStalled` per HEP-CORE-0023 §2.6). |
+| `CHANNEL_NOT_FOUND` | `GET_CHANNEL_AUTH_REQ` for a channel that does not exist in `ChannelAccessIndex`. |
+| `PRODUCER_NOT_AUTHORIZED` | `GET_CHANNEL_AUTH_REQ` from a caller that is not a registered producer of the named channel.  Defence-in-depth: the broker should never return another channel's allowlist to a non-producer. |
 
 No `KEYPAIR_GENERATION_FAILED` error — broker mints no data-plane
-keys (per I6).  No `ALLOWLIST_PUSH_FAILED` error — Q1 skip-
-disconnected semantics roll partial-success into the
-`CHANNEL_NOT_READY{reason="no_live_producer"}` catastrophic branch
-without a separate error code.
+keys (per I6).  No `ALLOWLIST_PUSH_FAILED` /
+`CHANNEL_NOT_READY{reason="no_live_producer"}` errors — the
+2026-06-02 snapshot-push-with-ACK design retired 2026-06-04 (see
+§6.5 amendment); under notify-then-pull there is no
+push-failure mode at the wire layer (fire-and-forget is best-
+effort by definition), and consumer-facing REG never gates on
+producer ZAP cache convergence.
 
 ---
 
@@ -1280,7 +1388,9 @@ The ZAP handler is the producer-side enforcement of allowlist
 membership.  Each producer of a channel runs its own ZAP handler
 on its own ZMQ context; under fan-in (HEP-CORE-0017 §4.6) the N
 producers each independently enforce the SAME channel-scope
-allowlist that the broker pushes via `CHANNEL_AUTH_UPDATE` (§6.5).
+allowlist that the producer pulls via `GET_CHANNEL_AUTH_REQ`
+(triggered by `CHANNEL_AUTH_CHANGED_NOTIFY` from the broker — see
+§6.5 notify-then-pull amended 2026-06-04).
 The ZAP handler is a CACHE of the broker's decision (per I2),
 not an independent admission authority.  Its only job: take a
 ZAP request, look up the consumer pubkey in the local cache,
@@ -1318,8 +1428,9 @@ return ALLOW or DENY.
     `broker_service.cpp`).
   - **Producer-side data ROUTER ZAP** — runs on the BRC poll thread
     in the role process (D4+; pending).
-  Rationale: (a) cache reads and `CHANNEL_AUTH_UPDATE` writes happen
-  on the same thread per pumping site, no synchronization needed;
+  Rationale: (a) cache reads and `GET_CHANNEL_AUTH_ACK`-driven
+  writes happen on the same thread per pumping site, no
+  synchronization needed;
   (b) those poll threads already exist; (c) the inproc REP socket
   is single-process so one pumper per process is sufficient
   regardless of how many domains are registered.
@@ -1334,7 +1445,10 @@ std::unordered_map<std::string, PerChannelAllowlist>  zap_cache_;
 ```
 
 - Initial population: from `REG_ACK.initial_allowlist`.
-- Incremental updates: from `CHANNEL_AUTH_UPDATE` requests.
+- Refresh updates: full snapshot replace on each
+  `GET_CHANNEL_AUTH_ACK` (pull triggered by broker's
+  `CHANNEL_AUTH_CHANGED_NOTIFY` or by producer's on-demand
+  refresh — §6.5 notify-then-pull amended 2026-06-04).
 - Per-channel entry destroyed when the producer DEREGs that channel.
 
 ZAP request → look up by (destination-endpoint → channel-name reverse
@@ -1433,7 +1547,7 @@ auth semantics:
 | 1 producer, 1 consumer | Standard flow (§5.1 + §5.2). Single CURVE keypair, allowlist size 1. | Single shm_secret. Single consumer in admission allowlist. |
 | 1 producer, N consumers (fan-out) | Single keypair; allowlist grows incrementally per §5.3.  Each consumer's rx queue independently CURVE-authenticated against the producer's identity pubkey (queue handles per-peer plumbing per HEP-CORE-0017 §3.3 / I9). | All N consumers receive the same shm_secret from broker; broker individually authorizes each via CONSUMER_REG check.  Revocation = broker stops releasing the secret on future REGs and removes the consumer from its presence table; already-attached consumers continue (per I5; trusted once authenticated). |
 | N producers, 1 consumer (fan-in) | Each producer uses its OWN identity keypair on PUSH (no broker key minting per I6).  Broker stores each producer's identity pubkey on its own `ProducerEntry::zmq_pubkey` (HEP-0021 §16.3 already established per-producer endpoint scope on `ProducerEntry::zmq_node_endpoint`).  Channel-scope allowlist (`authorized_consumer_pubkeys`) gates which consumers can connect; each producer's ZAP independently enforces the same allowlist.  Consumer sends ONE CONSUMER_REG_REQ for the channel; broker returns the `producers[]` array (N elements) per §6.4; **the consumer's framework feeds the array into a SINGLE PULL `ZmqQueue` which handles the N-producer plumbing internally per HEP-CORE-0017 §3.3 / §4.6** (ZMQ PULL is M:1-capable natively; whether ZmqQueue connects-per-peer or binds-once is an internal choice — per I9 not exposed). | **Not supported on SHM** — already rejected with `MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM`. No HEP-0036 work needed. |
-| N producers, N consumers | ZMQ: each consumer sends ONE CONSUMER_REG_REQ per channel and receives the `producers[]` array (N elements) per §6.4.  Each consumer's framework feeds the array into its single rx `ZmqQueue` (per HEP-0017 §3.3 — queue handles N producers internally).  Broker pushes the channel allowlist update to EVERY producer's ZAP cache (sync per §6.5).  Each producer's PUSH uses its own identity keypair; consumers use their own identity keypair as PULL CURVE-client.  Totals: M+P broker registrations (M consumer + P producer); on the data plane, ONE queue per consumer presents the aggregated stream from all P producers — internal CURVE sessions are M×P but never exposed above the queue boundary per I9. | N/A — SHM doesn't support multi-producer. |
+| N producers, N consumers | ZMQ: each consumer sends ONE CONSUMER_REG_REQ per channel and receives the `producers[]` array (N elements) per §6.4.  Each consumer's framework feeds the array into its single rx `ZmqQueue` (per HEP-0017 §3.3 — queue handles N producers internally).  Broker fires `CHANNEL_AUTH_CHANGED_NOTIFY` to EVERY producer; each producer pulls the updated allowlist via `GET_CHANNEL_AUTH_REQ` (§6.5 notify-then-pull amended 2026-06-04).  Each producer's PUSH uses its own identity keypair; consumers use their own identity keypair as PULL CURVE-client.  Totals: M+P broker registrations (M consumer + P producer); on the data plane, ONE queue per consumer presents the aggregated stream from all P producers — internal CURVE sessions are M×P but never exposed above the queue boundary per I9. | N/A — SHM doesn't support multi-producer. |
 
 ### 9.1 Per-producer fan-in nuance
 
@@ -1637,7 +1751,7 @@ sequenceDiagram
         R->>DS: close data sockets
         R->>B: DEREG_REQ
         B->>R: DEREG_ACK
-        B->>B: push CHANNEL_AUTH_UPDATE snapshot<br/>(full new allowlist sans this consumer) to peers
+        B->>B: fire CHANNEL_AUTH_CHANGED_NOTIFY {reason="consumer_left"}<br/>to peers (§6.5; peers pull updated allowlist on receipt)
         Note over R: state Authorized → Deregistered
         R->>R: process exit
     end
@@ -1651,8 +1765,10 @@ sequenceDiagram
    be admitted only AFTER `kLive` (broker R6 gate at CONSUMER_REG_REQ).
 2. **No data infrastructure without broker-issued artifacts.**  PUSH
    binds with the role's IDENTITY keypair (per I6) but its ZAP cache
-   starts empty — no consumer can handshake until broker pushes the
-   first `CHANNEL_AUTH_UPDATE` snapshot to that producer.  Consumer-side
+   starts empty — no consumer can handshake until the producer's
+   first `GET_CHANNEL_AUTH_REQ` pull populates the cache (triggered
+   by the broker's first `CHANNEL_AUTH_CHANGED_NOTIFY` after a
+   consumer registers, per §6.5).  Consumer-side
    rx queue is constructed only with broker-issued endpoints +
    producer identity pubkeys delivered as the `producers[]` array
    in CONSUMER_REG_ACK (length 1 for single-producer, length N for
@@ -1765,11 +1881,11 @@ eviction work from earlier draft scope per I5 (revocation is passive).
 | 0.7 | **Add `RegistrationState::Authorized`** (T2).  5th enum value between `Registered` and `Deregistered`.  BOTH producer and consumer presences transition Registered → Authorized SYNCHRONOUSLY at the end of their respective `setup_infrastructure_` — producer's after PUSH bind + ZAP + ENDPOINT_UPDATE_REQ ACK; consumer's after CONSUMER_REG_ACK + rx queue construction (auth was completed at REG, endpoints in the ACK ARE the proof per §5.2).  No socket monitor needed — data-plane CURVE handshakes are transport-internal per I9.  Data loop's outer guard adds `any_presence_authorized()` (HEP-0036 §8.2). | Per-presence FSM is independent across multi-presence roles (processor). |
 | 0.8 | **Broker CONSUMER_REG_REQ gates on `first_heartbeat_seen`** (~5 LOC).  Match DISC_REQ's existing check at `broker_service.cpp:1720`.  Return `CHANNEL_NOT_READY{reason="awaiting_first_heartbeat"}` if producer presence hasn't been observed as `kLive`. | Pre-existing inconsistency between DISC_REQ and CONSUMER_REG_REQ becomes symmetric.  Standalone fix; doesn't depend on later phases. |
 | 1 | `ChannelAccessIndex` skeleton in HubState.  Broker creates entries on REG_REQ; stores allowlist + producer's identity pubkey (looked up from `PubkeyOrigin` index via `zmq_msg_gets("User-Id")`).  **No data-plane keypair minting** — per T1 / I6, broker holds no data-plane secrets. | Replaces the earlier draft's "broker mints keypair on REG_REQ" with allowlist-only management. |
-| 2 | Producer side: install ZAP handler on ZMQ context BEFORE binding PUSH (per §5.1 ordering); PUSH configured `curve_server=1` with ROLE'S IDENTITY KEYPAIR (loaded from `<role>.sec` per HEP-0035 §4.6 + §4.7).  ZAP cache starts empty; all incoming handshakes DENY until broker pushes allowlist. | No new key distribution needed — producer already has its identity keypair from startup. |
-| 3 | Broker side: on CONSUMER_REG_REQ, derive consumer pubkey via `zmq_msg_gets("User-Id")` (NOT from message body — no self-claims); check I1 cond 2; on pass, add to the channel's authorized set; emit a new `CHANNEL_AUTH_UPDATE` snapshot (full current allowlist per §6.5 amended 2026-06-02) sync to every `kLive` producer of the channel, skip-disconnected (wait for ACKs per §6.5); return CONSUMER_REG_ACK with `producers[]` array per §6.4 — iterate `ChannelEntry::producers[]` to populate `(role_uid, pubkey, endpoint)` per element for the ACK'd subset. | Closes the loop: consumer can now connect after auth.  Per-handshake race resolved by sync-before-ACK ordering.  Same wire shape works for single-producer (length 1) and fan-in (length N). |
-| 4 | Consumer side: read `producers[]` array from CONSUMER_REG_ACK; framework feeds the array into `RxQueueOptions::producer_peers` (per HEP-CORE-0017 §3.3); ZmqQueue handles per-peer transport plumbing internally (curve config per peer, ZAP enforcement, fair-queue) per I9.  Authorized fires synchronously at queue construction time — auth was completed at REG (control plane), endpoints in CONSUMER_REG_ACK ARE the auth proof.  Data loop gates on `Authorized` per §8.  Uniform shape for single-producer and fan-in — script sees one rx queue regardless. | End-to-end ZMQ auth working for both topologies.  Coordinates with task #94 / HEP-0021 §16.5 (per-producer DISC_REQ_ACK array shape — same migration family) and task #103 (ZmqQueue dynamic peer API). |
+| 2 | Producer side: install ZAP handler on ZMQ context BEFORE binding PUSH (per §5.1 ordering); PUSH configured `curve_server=1` with ROLE'S IDENTITY KEYPAIR (loaded from `<role>.sec` per HEP-0035 §4.6 + §4.7).  ZAP cache starts empty; all incoming handshakes DENY until the producer's first `GET_CHANNEL_AUTH_REQ` reply populates it (triggered by `CHANNEL_AUTH_CHANGED_NOTIFY` or the producer's setup-time pull). | No new key distribution needed — producer already has its identity keypair from startup. |
+| 3 | Broker side: on CONSUMER_REG_REQ, derive consumer pubkey via `zmq_msg_gets("User-Id")` (NOT from message body — no self-claims); check I1 cond 2; on pass, add to the channel's authorized set; fire `CHANNEL_AUTH_CHANGED_NOTIFY {channel, reason="consumer_joined"}` (fire-and-forget per §6.5 amended 2026-06-04) to every `kLive` producer of the channel; return CONSUMER_REG_ACK with `producers[]` array per §6.4 — iterate `ChannelEntry::producers[]` to populate `(role_uid, pubkey, endpoint)` per element. | Closes the loop: consumer can now connect after auth.  Producer's ZAP cache converges within one BRC round-trip after notify (pull-on-demand).  Same wire shape works for single-producer (length 1) and fan-in (length N). |
+| 4 | Consumer side: read `producers[]` array from CONSUMER_REG_ACK; framework feeds the array into `RxQueueOptions::producer_peers` (per HEP-CORE-0017 §3.3); ZmqQueue handles per-peer transport plumbing internally (curve config per peer, ZAP enforcement, fair-queue) per I9.  Authorized fires synchronously at queue construction time — auth was completed at REG (control plane), endpoints in CONSUMER_REG_ACK ARE the auth proof.  Data loop gates on `Authorized` per §8.  A brief re-handshake window may exist while the producer's `GET_CHANNEL_AUTH_REQ` pull catches up (§5.2 property note); ZeroMQ's reconnect-on-handshake-failure bridges it.  Uniform shape for single-producer and fan-in — script sees one rx queue regardless. | End-to-end ZMQ auth working for both topologies.  Coordinates with task #94 / HEP-0021 §16.5 (per-producer DISC_REQ_ACK array shape — same migration family) and task #103 (ZmqQueue dynamic peer API). |
 | 5 | SHM parallel: broker generates `shm_secret` per channel (uint64 guard token; unrelated to CURVE per I6); `CONSUMER_REG_ACK` releases it only on auth.  Retire config-supplied `out_shm_secret`. | SHM secret stays broker-generated because the DataBlock attach mechanism (HEP-0002) is secret-based, not CURVE-based. |
-| 6 | Passive revocation paths: on CONSUMER_DEREG, on heartbeat timeout, on hub-dead cascade — broker mutates the channel's authorized set to remove the failed/leaving consumer, then emits a new `CHANNEL_AUTH_UPDATE` snapshot to all `kLive` producers (per §6.5 amended 2026-06-02; full current set, sync-ACK'd; skip-disconnected; revocation paths proceed even if zero ACK).  Role-side hub-dead handling: `Authorized → Unregistered` after `hub_dead_grace`; tear down data sockets + clear ZAP cache; await BRC reconnect.  No force-disconnect (per I5). | Closes lifetime-alignment loop; no new socket-level APIs. |
+| 6 | Passive revocation paths: on CONSUMER_DEREG, on heartbeat timeout, on hub-dead cascade — broker mutates the channel's authorized set to remove the failed/leaving consumer, then fires `CHANNEL_AUTH_CHANGED_NOTIFY {reason="consumer_left"\|"consumer_timeout"\|"federation_peer_death"}` to all `kLive` producers (per §6.5 amended 2026-06-04; fire-and-forget; producers pull on receipt to update their caches).  Role-side hub-dead handling: `Authorized → Unregistered` after `hub_dead_grace`; tear down data sockets + clear ZAP cache; await BRC reconnect.  No force-disconnect (per I5). | Closes lifetime-alignment loop; no new socket-level APIs. |
 | 7 | **Multi-producer fan-in VERIFICATION** (no new code).  Phases 3-4 already produce the uniform `producers[]` array wire shape that handles 1..N producers identically.  Phase 7 is the L3 end-to-end test for the fan-in case: spawn 2 producers + 1 consumer on the same ZMQ channel; verify consumer receives data from both producers via M×P CURVE sessions.  Validates that the array shape, allowlist propagation to each producer's ZAP cache, and per-PULL handshake monitoring all work for N>1. | Sanity-check, not new functionality.  Coordinates with task #94 / HEP-0021 §16.5 DISC_REQ_ACK array migration (verification scope). |
 | 8 | Inbox + bands: inbox inherits the data channel's allowlist (no new wiring on top of §7); bands inherit the hub's `known_roles[]` allowlist (already enforced by HEP-0035 §4.1 Layer-1 ZAP on the broker ROUTER for any CURVE handshake — control plane and data plane alike per T1 / I6).  Verification only — no new code. | Sanity-check §9.3 + §9.4 hold at runtime. |
 | 9 | Dev-mode escape hatch + loopback-enforcement; manual key-distribution workflow doc per §11.3. | Operator-facing surface. |
@@ -1802,9 +1918,10 @@ is not a HEP-0036 decision:
 > HEP-0035 §4.3 `federation_trust_mode` gate + HEP-0035 §4.4
 > `HUB_PEER_HELLO.roles[]` peer-role augmentation.  Under that
 > baseline, Hub-B already knows Hub-A's consumer pubkey at peer-
-> handshake time, so the `CHANNEL_AUTH_UPDATE` Hub-B's broker pushes
-> to its own producer is locally-formed with no extra in-band wire
-> field.
+> handshake time, so the `CHANNEL_AUTH_CHANGED_NOTIFY` Hub-B's
+> broker fires to its own producer is locally-formed and the
+> producer's pull reply carries the locally-merged allowlist with
+> no extra in-band wire field.
 >
 > However, full cross-hub registration + communication is NOT
 > end-to-end verified in the codebase today; the dual-hub processor
@@ -1812,9 +1929,9 @@ is not a HEP-0036 decision:
 > dual attachment but not consumer-side cross-hub `REG_REQ` →
 > remote producer.  Federation needs its own detailed protocol
 > design + verification effort (channel-name → owning-hub
-> resolution, reverse snapshot push on consumer death — broker
-> mutates the channel's allowlist and emits a new
-> `CHANNEL_AUTH_UPDATE` snapshot per §6.5 amended 2026-06-02 —
+> resolution, reverse notify on consumer death — broker mutates the
+> channel's allowlist and fires `CHANNEL_AUTH_CHANGED_NOTIFY` per
+> §6.5 amended 2026-06-04; downstream producer pulls —
 > `CONSUMER_DIED_NOTIFY` relay, multi-peer consistency model,
 > retry/backoff under partial peer reachability).  HEP-0036
 > deliberately scopes this out and inherits the MVP behavior the
@@ -1837,26 +1954,33 @@ is not a HEP-0036 decision:
   (§2.1 non-goal).  Operator workflow: re-`--keygen`, redistribute
   the new `.pub`, restart the role.  CURVE per-session ephemeral
   keys provide automatic forward secrecy at the transport layer.
-- **`CHANNEL_AUTH_UPDATE` wire shape + fan-in failure semantics
-  ("Q1").**  Resolved in §6.5.  Current shape (amended 2026-06-02):
-  on any allowlist mutation event the broker pushes a new
-  `CHANNEL_AUTH_UPDATE { allowlist = <full current authorized set> }`
-  **snapshot** to currently `kLive` producers, sync-ACK'd per
-  `push_ack_timeout_ms`, skip-disconnected.  On a **registration**
-  path: if zero filtered producers ACK →
-  `CHANNEL_NOT_READY{reason="no_live_producer"}` to the consumer.
-  On a **revocation** path: broker proceeds even if zero ACK —
-  there is no consumer-facing handshake to gate.  Skipped producers
-  re-sync via `REG_ACK.initial_allowlist` on reconnect.
-  `ALLOWLIST_PUSH_FAILED` error code RETIRED — partial failure is
-  the normal case under skip-disconnected.
+- **Channel-auth wire shape + fan-in failure semantics ("Q1").**
+  Resolved in §6.5.  Current shape (amended 2026-06-04 to notify-
+  then-pull): on any allowlist mutation event the broker fires
+  `CHANNEL_AUTH_CHANGED_NOTIFY { channel_name, reason }` fire-and-
+  forget to every `kLive` producer of the channel; each producer
+  pulls the current snapshot via `GET_CHANNEL_AUTH_REQ` →
+  `GET_CHANNEL_AUTH_ACK { allowlist = <full current set> }`.
+  Broker returns CONSUMER_REG_ACK immediately after firing the
+  notify; no sync-ACK-then-reply ordering required.  Skipped /
+  missed notifies re-sync via `REG_ACK.initial_allowlist` on
+  reconnect or via the producer's next pull on the next event.
+  `ALLOWLIST_PUSH_FAILED` + `CHANNEL_NOT_READY{reason="no_live_producer"}`
+  error codes RETIRED — fire-and-forget has no failure mode at
+  the wire layer beyond "notify lost in transit"; consumer-facing
+  failure is no longer gated on producer ZAP cache convergence.
 
-  Historical note: the 2026-05-28 lock-in carried delta-era field
-  names (`allowlist_add` sync, `allowlist_remove` best-effort).
-  Both arrays + the sync/best-effort distinction were retracted on
-  2026-06-02 in favor of the single-snapshot shape; see §6.5
-  "Amendment 2026-06-02 — snapshot semantics" for the rationale.
-  The skip-disconnected concept itself survived unchanged.
+  Historical notes:
+  - 2026-05-28 lock-in carried delta-era field names
+    (`allowlist_add` sync, `allowlist_remove` best-effort).  Both
+    arrays + the sync/best-effort distinction were retracted on
+    2026-06-02 in favor of the single-snapshot shape.
+  - 2026-06-02 snapshot-push-with-ACK design (broker sync-initiated
+    request-reply on the ROUTER socket; `push_ack_timeout_ms` + skip-
+    disconnected) was retracted on 2026-06-04 in favor of notify-
+    then-pull.  Rationale: broker stays a pure responder; producer-
+    offline becomes the same code path as the existing reconnect
+    re-sync.  See §6.5 "Amendment 2026-06-04" for details.
 - **SHM revocation of already-attached consumer.**  Resolved per I5:
   trusted for session lifetime; revocation is forward-looking
   (no new attaches from removed pubkey).  Matches ZMQ semantics.
