@@ -7,6 +7,7 @@
 
 #include "broker_schema_workers.h"
 
+#include "broker_test_harness.h"
 #include "log_capture_fixture.h"
 #include "plh_datahub.hpp"
 #include "plh_service.hpp"
@@ -14,19 +15,14 @@
 #include "test_entrypoint.h"
 #include "utils/broker_request_comm.hpp"
 #include "utils/broker_service.hpp"
-#include "utils/config/hub_config.hpp"
 #include "utils/file_lock.hpp"
 #include "utils/format_tools.hpp"
-#include "utils/hub_directory.hpp"
 #include "utils/hub_host.hpp"
-#include "utils/hub_state.hpp"
 #include "utils/json_config.hpp"
 #include "utils/logger.hpp"
 #include "utils/schema_utils.hpp"
 
 #include <atomic>
-#include <filesystem>
-#include <fstream>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -41,12 +37,9 @@
 using namespace pylabhub::utils;
 using namespace pylabhub::hub;
 using namespace pylabhub::broker;
-using pylabhub::config::HubConfig;
-using pylabhub::hub_host::HubHost;
 using pylabhub::tests::LogCaptureFixture;
 using pylabhub::tests::helper::run_gtest_worker;
 using json = nlohmann::json;
-namespace fs = std::filesystem;
 
 namespace pylabhub::tests::worker
 {
@@ -56,77 +49,18 @@ namespace broker_schema
 namespace
 {
 
-fs::path unique_temp_dir(const char *tag)
-{
-    static std::atomic<int> ctr{0};
-    fs::path d = fs::temp_directory_path() /
-                 ("plh_l3_schema_" + std::string(tag) + "_" +
-                  std::to_string(::getpid()) + "_" +
-                  std::to_string(ctr.fetch_add(1)));
-    fs::remove_all(d);
-    return d;
-}
-
-void write_test_hub_json(const fs::path &dir, const std::string &name)
-{
-    fs::create_directories(dir);
-    HubDirectory::init_directory(dir, name);
-
-    const fs::path hub_json = dir / "hub.json";
-    json j;
-    {
-        std::ifstream f(hub_json);
-        ASSERT_TRUE(f.is_open()) << "test could not open " << hub_json;
-        j = json::parse(f);
-    }
-    j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0";
-    j["admin"]["enabled"]           = false;
-    j["script"]["path"]             = "";
-    {
-        std::ofstream f(hub_json);
-        f << j.dump(2);
-    }
-    fs::create_directories(dir / "schemas");
-}
-
-struct BrcHandle
-{
-    BrokerRequestComm brc;
-    std::atomic<bool> running{true};
-    std::thread       thread;
-
-    void start(const std::string &ep, const std::string &pk,
-               const std::string &uid)
-    {
-        BrokerRequestComm::Config cfg;
-        cfg.broker_endpoint = ep;
-        cfg.broker_pubkey   = pk;
-        cfg.role_uid        = uid;
-        ASSERT_TRUE(brc.connect(cfg));
-        thread = std::thread([this] {
-            brc.run_poll_loop([this] { return running.load(); });
-        });
-    }
-
-    void stop()
-    {
-        running.store(false);
-        brc.stop();
-        if (thread.joinable())
-            thread.join();
-        brc.disconnect();
-    }
-
-    ~BrcHandle()
-    {
-        if (thread.joinable())
-            stop();
-    }
-};
-
 std::string pid_chan(const std::string &base)
 {
     return base + ".pid" + std::to_string(::getpid());
+}
+
+json hubhost_overrides()
+{
+    return json{
+        {"network", {{"broker_endpoint", "tcp://127.0.0.1:0"}}},
+        {"admin",   {{"enabled", false}}},
+        {"script",  {{"path", ""}}},
+    };
 }
 
 json make_reg_opts(const std::string &channel, const std::string &role_uid)
@@ -167,34 +101,35 @@ struct DefaultSchema
     std::string hash    = canonical_hash_hex("ts:f64:1:0|value:f32:1:0", "aligned");
 };
 
-/// Run a worker body with a freshly spun-up HubHost + LogCaptureFixture.
+/// Run a worker body with a freshly spun-up HubHostBrokerHandle +
+/// LogCaptureFixture under real CURVE + admission (HEP-CORE-0035
+/// §2 + §4.6.5).  Body receives (broker, curve) — see other
+/// migrated workers for the pattern.
 template <typename Body>
-int run_with_host(const char *tag, std::string_view worker_name,
+int run_with_host(std::string_view worker_name,
+                  std::vector<std::string> role_uids,
                   Body &&body,
                   std::vector<std::string> expect_log_warns = {})
 {
     return run_gtest_worker(
-        [tag, body = std::forward<Body>(body),
+        [role_uids = std::move(role_uids),
+         body = std::forward<Body>(body),
          expect_log_warns = std::move(expect_log_warns)]() mutable {
             LogCaptureFixture log_cap;
             log_cap.Install();
             for (auto &w : expect_log_warns)
                 log_cap.ExpectLogWarn(w);
 
-            const fs::path dir = unique_temp_dir(tag);
-            write_test_hub_json(dir, "SchemaTestHub");
-            auto host = std::make_unique<HubHost>(
-                HubConfig::load_from_directory(dir.string()));
-            host->startup();
-            ASSERT_TRUE(host->is_running());
+            auto curve = pylabhub::tests::make_curve_setup(role_uids);
+            auto broker = pylabhub::tests::start_hubhost_broker(
+                hubhost_overrides(), curve);
+            ASSERT_TRUE(broker.host && broker.host->is_running());
 
-            body(*host);
+            body(broker, curve);
 
-            host.reset();
+            broker.stop_and_join();
             log_cap.AssertNoUnexpectedLogWarnError();
             log_cap.Uninstall();
-            std::error_code ec;
-            fs::remove_all(dir, ec);
         },
         std::string(worker_name).c_str(),
         Logger::GetLifecycleModule(),
@@ -208,23 +143,24 @@ int run_with_host(const char *tag, std::string_view worker_name,
 
 int schema_hash_stored_on_reg()
 {
+    const std::string channel = pid_chan("schema.hash.stored");
+    const std::string uid     = "prod." + channel;
     return run_with_host(
-        "SchemaHashStoredOnReg",
         "broker_schema::schema_hash_stored_on_reg",
-        [](HubHost &host) {
-            const std::string channel  = pid_chan("schema.hash.stored");
-            const std::string uid      = "prod." + channel;
+        {uid},
+        [channel, uid](pylabhub::tests::HubHostBrokerHandle &broker,
+                       pylabhub::tests::CurveSetup &curve) {
             const std::string hash_hex = std::string(64, 'a');
 
-            BrcHandle bh;
-            bh.start(host.broker_endpoint(), host.broker_pubkey(), uid);
+            pylabhub::tests::BrcHandle bh;
+            bh.start(broker.endpoint, broker.pubkey, uid, curve.role(uid));
 
             auto opts           = make_reg_opts(channel, uid);
             opts["schema_hash"] = hash_hex;
             auto reg = bh.brc.register_channel(opts, 3000);
             ASSERT_TRUE(reg.has_value());
 
-            ChannelSnapshot snap = host.broker().query_channel_snapshot();
+            ChannelSnapshot snap = broker.service().query_channel_snapshot();
             for (const auto &ch : snap.channels)
             {
                 if (ch.name == channel)
@@ -240,17 +176,18 @@ int schema_hash_stored_on_reg()
 
 int schema_id_stored_on_reg()
 {
+    const std::string channel = pid_chan("schema.id.stored");
+    const std::string uid     = "prod." + channel;
     return run_with_host(
-        "SchemaIdStoredOnReg",
         "broker_schema::schema_id_stored_on_reg",
-        [](HubHost &host) {
-            const std::string channel   = pid_chan("schema.id.stored");
-            const std::string uid       = "prod." + channel;
+        {uid},
+        [channel, uid](pylabhub::tests::HubHostBrokerHandle &broker,
+                       pylabhub::tests::CurveSetup &curve) {
             const std::string schema_id = "$lab.test.sensor.v1";
             const DefaultSchema sch;
 
-            BrcHandle bh;
-            bh.start(host.broker_endpoint(), host.broker_pubkey(), uid);
+            pylabhub::tests::BrcHandle bh;
+            bh.start(broker.endpoint, broker.pubkey, uid, curve.role(uid));
 
             auto opts              = make_reg_opts(channel, uid);
             opts["schema_id"]      = schema_id;
@@ -260,7 +197,7 @@ int schema_id_stored_on_reg()
             auto reg = bh.brc.register_channel(opts, 3000);
             ASSERT_TRUE(reg.has_value());
 
-            auto j = json::parse(host.broker().list_channels_json_str());
+            auto j = json::parse(broker.service().list_channels_json_str());
             ASSERT_TRUE(j.is_array());
             bool found = false;
             for (const auto &ch : j)
@@ -279,19 +216,21 @@ int schema_id_stored_on_reg()
 
 int consumer_schema_id_match_succeeds()
 {
+    const std::string channel  = pid_chan("schema.consumer.match");
+    const std::string prod_uid = "prod." + channel;
+    const std::string cons_uid = "cons." + channel;
     return run_with_host(
-        "ConsumerSchemaIdMatchSucceeds",
         "broker_schema::consumer_schema_id_match_succeeds",
-        [](HubHost &host) {
-            const std::string channel   = pid_chan("schema.consumer.match");
+        {prod_uid, cons_uid},
+        [channel, prod_uid, cons_uid](
+            pylabhub::tests::HubHostBrokerHandle &broker,
+            pylabhub::tests::CurveSetup &curve) {
             const std::string schema_id = "$lab.consumer.test.v2";
-            const std::string prod_uid  = "prod." + channel;
-            const std::string cons_uid  = "cons." + channel;
             const DefaultSchema sch;
 
-            BrcHandle prod_bh;
-            prod_bh.start(host.broker_endpoint(), host.broker_pubkey(),
-                          prod_uid);
+            pylabhub::tests::BrcHandle prod_bh;
+            prod_bh.start(broker.endpoint, broker.pubkey, prod_uid,
+                          curve.role(prod_uid));
 
             auto opts              = make_reg_opts(channel, prod_uid);
             opts["schema_id"]      = schema_id;
@@ -301,9 +240,9 @@ int consumer_schema_id_match_succeeds()
             auto reg = prod_bh.brc.register_channel(opts, 3000);
             ASSERT_TRUE(reg.has_value());
 
-            BrcHandle cons_bh;
-            cons_bh.start(host.broker_endpoint(), host.broker_pubkey(),
-                          cons_uid);
+            pylabhub::tests::BrcHandle cons_bh;
+            cons_bh.start(broker.endpoint, broker.pubkey, cons_uid,
+                          curve.role(cons_uid));
 
             auto cons_opts                    = make_cons_opts(channel, cons_uid);
             cons_opts["expected_schema_id"]   = schema_id;
@@ -319,20 +258,22 @@ int consumer_schema_id_match_succeeds()
 
 int consumer_schema_id_mismatch_fails()
 {
+    const std::string channel  = pid_chan("schema.consumer.mismatch");
+    const std::string prod_uid = "prod." + channel;
+    const std::string cons_uid = "cons." + channel;
     return run_with_host(
-        "ConsumerSchemaIdMismatchFails",
         "broker_schema::consumer_schema_id_mismatch_fails",
-        [](HubHost &host) {
-            const std::string channel  = pid_chan("schema.consumer.mismatch");
+        {prod_uid, cons_uid},
+        [channel, prod_uid, cons_uid](
+            pylabhub::tests::HubHostBrokerHandle &broker,
+            pylabhub::tests::CurveSetup &curve) {
             const std::string prod_sid = "$lab.producer.schema.v1";
             const std::string cons_sid = "$lab.other.schema.v1";
-            const std::string prod_uid = "prod." + channel;
-            const std::string cons_uid = "cons." + channel;
             const DefaultSchema sch;
 
-            BrcHandle prod_bh;
-            prod_bh.start(host.broker_endpoint(), host.broker_pubkey(),
-                          prod_uid);
+            pylabhub::tests::BrcHandle prod_bh;
+            prod_bh.start(broker.endpoint, broker.pubkey, prod_uid,
+                          curve.role(prod_uid));
 
             auto opts              = make_reg_opts(channel, prod_uid);
             opts["schema_id"]      = prod_sid;
@@ -342,9 +283,9 @@ int consumer_schema_id_mismatch_fails()
             auto reg = prod_bh.brc.register_channel(opts, 3000);
             ASSERT_TRUE(reg.has_value());
 
-            BrcHandle cons_bh;
-            cons_bh.start(host.broker_endpoint(), host.broker_pubkey(),
-                          cons_uid);
+            pylabhub::tests::BrcHandle cons_bh;
+            cons_bh.start(broker.endpoint, broker.pubkey, cons_uid,
+                          curve.role(cons_uid));
 
             auto cons_opts                    = make_cons_opts(channel, cons_uid);
             cons_opts["expected_schema_id"]   = cons_sid;
@@ -364,26 +305,28 @@ int consumer_schema_id_mismatch_fails()
 
 int consumer_schema_id_empty_producer_fails()
 {
+    const std::string channel  = pid_chan("schema.consumer.empty.prod");
+    const std::string prod_uid = "prod." + channel;
+    const std::string cons_uid = "cons." + channel;
     return run_with_host(
-        "ConsumerSchemaIdEmptyProducerFails",
         "broker_schema::consumer_schema_id_empty_producer_fails",
-        [](HubHost &host) {
-            const std::string channel  = pid_chan("schema.consumer.empty.prod");
+        {prod_uid, cons_uid},
+        [channel, prod_uid, cons_uid](
+            pylabhub::tests::HubHostBrokerHandle &broker,
+            pylabhub::tests::CurveSetup &curve) {
             const std::string cons_sid = "$lab.expected.schema.v3";
-            const std::string prod_uid = "prod." + channel;
-            const std::string cons_uid = "cons." + channel;
 
-            BrcHandle prod_bh;
-            prod_bh.start(host.broker_endpoint(), host.broker_pubkey(),
-                          prod_uid);
+            pylabhub::tests::BrcHandle prod_bh;
+            prod_bh.start(broker.endpoint, broker.pubkey, prod_uid,
+                          curve.role(prod_uid));
 
             auto reg = prod_bh.brc.register_channel(
                 make_reg_opts(channel, prod_uid), 3000);
             ASSERT_TRUE(reg.has_value());
 
-            BrcHandle cons_bh;
-            cons_bh.start(host.broker_endpoint(), host.broker_pubkey(),
-                          cons_uid);
+            pylabhub::tests::BrcHandle cons_bh;
+            cons_bh.start(broker.endpoint, broker.pubkey, cons_uid,
+                          curve.role(cons_uid));
 
             auto cons_opts                  = make_cons_opts(channel, cons_uid);
             cons_opts["expected_schema_id"] = cons_sid;
