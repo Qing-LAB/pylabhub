@@ -6,6 +6,7 @@
 #include "test_entrypoint.h"
 #include "shared_test_helpers.h"
 #include "test_sync_utils.h"
+#include "broker_test_harness.h"
 
 #include "utils/broker_request_comm.hpp"
 #include "utils/broker_service.hpp"
@@ -37,57 +38,6 @@ static auto zmq_module()    { return ::pylabhub::hub::GetZMQContextModule(); }
 namespace
 {
 
-struct BrokerHandle
-{
-    std::unique_ptr<pylabhub::hub::HubState> hub_state;
-    std::unique_ptr<BrokerService>           service;
-    std::thread                              thread;
-    std::string                              endpoint;
-    std::string                              pubkey;
-    void stop_and_join() { service->stop(); if (thread.joinable()) thread.join(); }
-};
-
-// PURPOSE: ChannelGroup tests exercise the BAND_* protocol family
-//   (broker handler shape + role-side BRC dispatch), NOT the
-//   PeerAdmission CURVE gate (HEP-CORE-0035 §4.1).
-// BYPASS: Constructs `BrokerService::Config` directly (not via
-//   HubHost) with `enforce_ctrl_admission = false` so the CTRL
-//   ZAP gate is permissively-installed.  Without the opt-out the
-//   default deny-all gate would reject every BRC handshake (the
-//   test fixture has no `known_roles[]` populated).
-// WHY: A real `known_roles[]` would require generating CURVE
-//   keypairs for every BRC client and pre-registering each pubkey;
-//   that's the production operator workflow (covered by L4
-//   roundtrip), not what the band-protocol tests are scoped to.
-//   The deny-PATH security pin lives in
-//   `DatahubBrokerHealthTest.CtrlZapDenyPath`.
-// CANONICAL STORAGE: The ZAP gate's allowlist lives on
-//   `BrokerCtrlAdmission::current_` (`broker_service.cpp`); when
-//   `enforce=false` the admission returns true for every peer
-//   (`BrokerCtrlAdmission::is_peer_allowed`).
-// RE-EXAMINE WHEN: The band-protocol family gets a role-identity
-//   semantic that requires CURVE-pubkey-based dispatch (would
-//   surface as a HEP-0036 §4.1 amendment).
-BrokerHandle start_broker()
-{
-    using ReadyInfo = std::pair<std::string, std::string>;
-    auto rp = std::make_shared<std::promise<ReadyInfo>>();
-    auto rf = rp->get_future();
-    BrokerService::Config bcfg;
-    bcfg.endpoint = "tcp://127.0.0.1:0";
-    bcfg.use_curve = true;
-    bcfg.enforce_ctrl_admission = false;  // see fixture block above
-    bcfg.on_ready = [rp](const std::string &ep, const std::string &pk)
-    { rp->set_value({ep, pk}); };
-    auto state = std::make_unique<pylabhub::hub::HubState>();
-    auto svc   = std::make_unique<BrokerService>(std::move(bcfg), *state);
-    auto *raw  = svc.get();
-    std::thread t([raw] { raw->run(); });
-    auto info = rf.get();
-    return {std::move(state), std::move(svc), std::move(t),
-            info.first, info.second};
-}
-
 struct ChannelClient
 {
     BrokerRequestComm ch;
@@ -95,11 +45,14 @@ struct ChannelClient
     std::thread poll_thread;
 
     void connect(const std::string &ep, const std::string &pk,
-                 const std::string &uid, const std::string &name)
+                 const std::string &uid, const std::string &name,
+                 const pylabhub::tests::CurveKeypair &role_kp)
     {
         BrokerRequestComm::Config cfg;
         cfg.broker_endpoint = ep;
         cfg.broker_pubkey = pk;
+        cfg.client_pubkey = role_kp.public_z85;
+        cfg.client_seckey = role_kp.secret_z85;
         cfg.role_uid = uid;
         cfg.role_name = name;
         ASSERT_TRUE(ch.connect(cfg));
@@ -127,11 +80,16 @@ int channel_join_leave()
     auto mods = utils::MakeModDefList(logger_module(), crypto_module(), hub_module(), zmq_module());
     utils::LifecycleGuard guard(std::move(mods));
 
-    auto broker = start_broker();
+    const std::string uid_a = "prod.role.a.uid00000001";
+    const std::string uid_b = "prod.role.b.uid00000002";
+    auto curve = pylabhub::tests::make_curve_setup({uid_a, uid_b});
+    BrokerService::Config bcfg;
+    bcfg.endpoint = "tcp://127.0.0.1:0";
+    auto broker = pylabhub::tests::start_direct_broker(std::move(bcfg), curve);
 
     ChannelClient c1, c2;
-    c1.connect(broker.endpoint, broker.pubkey, "prod.role.a.uid00000001", "role_a");
-    c2.connect(broker.endpoint, broker.pubkey, "prod.role.b.uid00000002", "role_b");
+    c1.connect(broker.endpoint, broker.pubkey, uid_a, "role_a", curve.role(uid_a));
+    c2.connect(broker.endpoint, broker.pubkey, uid_b, "role_b", curve.role(uid_b));
 
     // Role A joins channel.
     auto join1 = c1.ch.band_join("!test_ch", 5000);
@@ -191,7 +149,12 @@ int channel_msg_fanout()
     auto mods = utils::MakeModDefList(logger_module(), crypto_module(), hub_module(), zmq_module());
     utils::LifecycleGuard guard(std::move(mods));
 
-    auto broker = start_broker();
+    const std::string uid_a = "prod.sender.uid00000001";
+    const std::string uid_b = "cons.recvr.uid00000002";
+    auto curve = pylabhub::tests::make_curve_setup({uid_a, uid_b});
+    BrokerService::Config bcfg;
+    bcfg.endpoint = "tcp://127.0.0.1:0";
+    auto broker = pylabhub::tests::start_direct_broker(std::move(bcfg), curve);
 
     // Track notifications on client B.
     std::atomic<int> msg_count{0};
@@ -208,8 +171,8 @@ int channel_msg_fanout()
         }
     });
 
-    c1.connect(broker.endpoint, broker.pubkey, "prod.sender.uid00000001", "sender");
-    c2.connect(broker.endpoint, broker.pubkey, "cons.recvr.uid00000002", "receiver");
+    c1.connect(broker.endpoint, broker.pubkey, uid_a, "sender", curve.role(uid_a));
+    c2.connect(broker.endpoint, broker.pubkey, uid_b, "receiver", curve.role(uid_b));
 
     // Both join the channel.
     c1.ch.band_join("!msg_ch", 5000);
@@ -249,7 +212,12 @@ int channel_join_notify()
     auto mods = utils::MakeModDefList(logger_module(), crypto_module(), hub_module(), zmq_module());
     utils::LifecycleGuard guard(std::move(mods));
 
-    auto broker = start_broker();
+    const std::string uid_a = "prod.first.uid00000001";
+    const std::string uid_b = "prod.second.uid00000002";
+    auto curve = pylabhub::tests::make_curve_setup({uid_a, uid_b});
+    BrokerService::Config bcfg;
+    bcfg.endpoint = "tcp://127.0.0.1:0";
+    auto broker = pylabhub::tests::start_direct_broker(std::move(bcfg), curve);
 
     std::atomic<int> join_notify_count{0};
     std::string notified_uid;
@@ -265,13 +233,13 @@ int channel_join_notify()
         }
     });
 
-    c1.connect(broker.endpoint, broker.pubkey, "prod.first.uid00000001", "first");
+    c1.connect(broker.endpoint, broker.pubkey, uid_a, "first", curve.role(uid_a));
 
     // First joins channel.
     c1.ch.band_join("!notify_ch", 5000);
 
     // Second joins — first should get BAND_JOIN_NOTIFY.
-    c2.connect(broker.endpoint, broker.pubkey, "prod.second.uid00000002", "second");
+    c2.connect(broker.endpoint, broker.pubkey, uid_b, "second", curve.role(uid_b));
     c2.ch.band_join("!notify_ch", 5000);
 
     bool got = pylabhub::tests::helper::poll_until(
@@ -300,7 +268,12 @@ int roleapi_channel()
     auto mods = utils::MakeModDefList(logger_module(), crypto_module(), hub_module(), zmq_module());
     utils::LifecycleGuard guard(std::move(mods));
 
-    auto broker = start_broker();
+    const std::string uid_a = "prod.role.a.uid00000100";
+    const std::string uid_b = "prod.role.b.uid00000200";
+    auto curve = pylabhub::tests::make_curve_setup({uid_a, uid_b});
+    BrokerService::Config bcfg;
+    bcfg.endpoint = "tcp://127.0.0.1:0";
+    auto broker = pylabhub::tests::start_direct_broker(std::move(bcfg), curve);
 
     // Set up two RoleAPIBases, each with its own BrokerRequestComm.
     scripting::RoleHostCore core1, core2;
@@ -322,12 +295,16 @@ int roleapi_channel()
     bc_cfg.broker_endpoint = broker.endpoint;
     bc_cfg.broker_pubkey = broker.pubkey;
 
-    bc_cfg.role_uid = "prod.role.a.uid00000100";
+    bc_cfg.role_uid = uid_a;
     bc_cfg.role_name = "role_a";
+    bc_cfg.client_pubkey = curve.role(uid_a).public_z85;
+    bc_cfg.client_seckey = curve.role(uid_a).secret_z85;
     EXPECT_TRUE(bc1->connect(bc_cfg));
 
-    bc_cfg.role_uid = "prod.role.b.uid00000200";
+    bc_cfg.role_uid = uid_b;
     bc_cfg.role_name = "role_b";
+    bc_cfg.client_pubkey = curve.role(uid_b).public_z85;
+    bc_cfg.client_seckey = curve.role(uid_b).secret_z85;
     EXPECT_TRUE(bc2->connect(bc_cfg));
 
     // Start broker threads (uses start_broker_thread which wires notifications).
@@ -429,7 +406,12 @@ int channel_leave_notify()
     auto mods = utils::MakeModDefList(logger_module(), crypto_module(), hub_module(), zmq_module());
     utils::LifecycleGuard guard(std::move(mods));
 
-    auto broker = start_broker();
+    const std::string uid_a = "prod.stayer.uid00000001";
+    const std::string uid_b = "prod.leaver.uid00000002";
+    auto curve = pylabhub::tests::make_curve_setup({uid_a, uid_b});
+    BrokerService::Config bcfg;
+    bcfg.endpoint = "tcp://127.0.0.1:0";
+    auto broker = pylabhub::tests::start_direct_broker(std::move(bcfg), curve);
 
     std::atomic<int> leave_count{0};
     std::string left_uid;
@@ -447,8 +429,8 @@ int channel_leave_notify()
         }
     });
 
-    c1.connect(broker.endpoint, broker.pubkey, "prod.stayer.uid00000001", "stayer");
-    c2.connect(broker.endpoint, broker.pubkey, "prod.leaver.uid00000002", "leaver");
+    c1.connect(broker.endpoint, broker.pubkey, uid_a, "stayer", curve.role(uid_a));
+    c2.connect(broker.endpoint, broker.pubkey, uid_b, "leaver", curve.role(uid_b));
 
     c1.ch.band_join("!leave_ch", 5000);
     c2.ch.band_join("!leave_ch", 5000);
@@ -483,7 +465,12 @@ int channel_self_excluded()
     auto mods = utils::MakeModDefList(logger_module(), crypto_module(), hub_module(), zmq_module());
     utils::LifecycleGuard guard(std::move(mods));
 
-    auto broker = start_broker();
+    const std::string uid_a = "prod.sender.uid00000001";
+    const std::string uid_b = "cons.recvr.uid00000002";
+    auto curve = pylabhub::tests::make_curve_setup({uid_a, uid_b});
+    BrokerService::Config bcfg;
+    bcfg.endpoint = "tcp://127.0.0.1:0";
+    auto broker = pylabhub::tests::start_direct_broker(std::move(bcfg), curve);
 
     std::atomic<int> sender_msg_count{0};
     std::atomic<int> receiver_msg_count{0};
@@ -498,8 +485,8 @@ int channel_self_excluded()
             receiver_msg_count.fetch_add(1);
     });
 
-    c1.connect(broker.endpoint, broker.pubkey, "prod.sender.uid00000001", "sender");
-    c2.connect(broker.endpoint, broker.pubkey, "cons.recvr.uid00000002", "receiver");
+    c1.connect(broker.endpoint, broker.pubkey, uid_a, "sender", curve.role(uid_a));
+    c2.connect(broker.endpoint, broker.pubkey, uid_b, "receiver", curve.role(uid_b));
 
     c1.ch.band_join("!self_ch", 5000);
     c2.ch.band_join("!self_ch", 5000);
@@ -535,7 +522,12 @@ int channel_multi_channel()
     auto mods = utils::MakeModDefList(logger_module(), crypto_module(), hub_module(), zmq_module());
     utils::LifecycleGuard guard(std::move(mods));
 
-    auto broker = start_broker();
+    const std::string uid_a = "prod.multi.uid00000001";
+    const std::string uid_b = "prod.other.uid00000002";
+    auto curve = pylabhub::tests::make_curve_setup({uid_a, uid_b});
+    BrokerService::Config bcfg;
+    bcfg.endpoint = "tcp://127.0.0.1:0";
+    auto broker = pylabhub::tests::start_direct_broker(std::move(bcfg), curve);
 
     std::atomic<int> msg_on_ch1{0};
     std::atomic<int> msg_on_ch2{0};
@@ -555,8 +547,8 @@ int channel_multi_channel()
 
     ChannelClient c2;
 
-    c1.connect(broker.endpoint, broker.pubkey, "prod.multi.uid00000001", "multi_role");
-    c2.connect(broker.endpoint, broker.pubkey, "prod.other.uid00000002", "other_role");
+    c1.connect(broker.endpoint, broker.pubkey, uid_a, "multi_role", curve.role(uid_a));
+    c2.connect(broker.endpoint, broker.pubkey, uid_b, "other_role", curve.role(uid_b));
 
     // Role 1 joins both channels.
     c1.ch.band_join("!ch_alpha", 5000);
