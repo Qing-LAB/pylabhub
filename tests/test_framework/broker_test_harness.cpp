@@ -106,6 +106,11 @@ void HubHostBrokerHandle::stop_and_join()
     }
 }
 
+pylabhub::broker::BrokerService &HubHostBrokerHandle::service()
+{
+    return host->broker();
+}
+
 namespace
 {
 fs::path make_unique_hub_dir(std::string_view hub_name_for_log)
@@ -153,36 +158,26 @@ start_hubhost_broker(const nlohmann::json &j_overrides,
     //    ZAP gate admits each role in `setup`.  HEP-CORE-0035 §4.8.2
     //    stores the allowlist inside the encrypted vault; here we
     //    bypass the vault (per §4.6.5) and write a plaintext
-    //    known_roles.json — the format `KnownRolesStore::load_from_file`
-    //    reads.  This is the SAME bypass as `inject_keypair_for_test`:
-    //    skip persistence, keep the wire path identical to production.
+    //    known_roles.json via the production `KnownRolesStore`
+    //    serializer (so the schema version + roles[] envelope match
+    //    exactly what `KnownRolesStore::load_from_file` expects;
+    //    rolling our own JSON layout in the test path would drift).
+    //    This is the SAME bypass as `inject_keypair_for_test`: skip
+    //    persistence, keep the wire path identical to production.
     if (!setup.role_keys.empty())
     {
         const fs::path vault_subdir = h.hub_dir / "vault";
         fs::create_directories(vault_subdir);
-        const fs::path known_roles_path = vault_subdir / "known_roles.json";
-        nlohmann::json roles = nlohmann::json::array();
-        for (const auto &[uid, kp] : setup.role_keys)
-        {
-            roles.push_back({
-                {"name",       "test.role"},
-                {"uid",        uid},
-                {"role",       "producer"},
-                {"pubkey_z85", kp.public_z85},
-            });
-        }
-        nlohmann::json kr_doc;
-        kr_doc["known_roles"] = roles;
-        std::ofstream f(known_roles_path);
-        f << kr_doc.dump(2);
-        // ACL: KnownRolesStore::load_from_file expects 0600.
+        // Vault parent dir must be 0700 (HEP-CORE-0035 §4.6.1) before
+        // KnownRolesStore::save_to_file runs.
         std::error_code ec;
-        fs::permissions(known_roles_path,
-                        fs::perms::owner_read | fs::perms::owner_write,
-                        fs::perm_options::replace, ec);
         fs::permissions(vault_subdir,
                         fs::perms::owner_all,
                         fs::perm_options::replace, ec);
+        pylabhub::utils::security::KnownRolesStore store;
+        for (const auto &[uid, kp] : setup.role_keys)
+            store.add(make_known_role(uid, kp.public_z85));
+        store.save_to_file(vault_subdir / "known_roles.json");
     }
 
     // 4. Load HubConfig, inject the CURVE keypair (HEP-CORE-0035 §4.6.5
