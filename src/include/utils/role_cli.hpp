@@ -60,6 +60,21 @@ struct RoleArgs
     bool validate_only{false};  ///< --validate
     bool keygen_only{false};    ///< --keygen
     bool init_only{false};      ///< --init
+    bool skeleton_only{false};  ///< --skeleton (HEP-CORE-0024 §3.4.2 layout-only path)
+
+    /// --uid <value>. Role UID supplied at the CLI boundary.  Resolved
+    /// by `cli::get_required_uid` against env / TTY prompt per
+    /// HEP-CORE-0033 §6.5 source-priority chain.  Empty = unsupplied.
+    std::string role_uid;
+
+    /// --vault-path <path>. Optional override for `<role>.auth.keyfile`
+    /// at init time.  Empty = use the template default
+    /// (`vault/<role_uid>.vault` inside role_dir).
+    std::string vault_path;
+
+    /// --no-prompt. Suppress interactive TTY prompts even when stdin
+    /// is a TTY (HEP-CORE-0024 §3.4.2).
+    bool no_prompt{false};
 };
 
 namespace detail
@@ -166,9 +181,27 @@ inline ParseResult parse_role_args(int argc, char *argv[],
             if (i + 1 < argc && argv[i + 1][0] != '-')
                 args.role_dir = argv[++i];
         }
+        else if (arg == "--skeleton")
+        {
+            args.skeleton_only = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-')
+                args.role_dir = argv[++i];
+        }
         else if (arg == "--name" && i + 1 < argc)
         {
             args.init_name = argv[++i];
+        }
+        else if (arg == "--uid" && i + 1 < argc)
+        {
+            args.role_uid = argv[++i];
+        }
+        else if (arg == "--vault-path" && i + 1 < argc)
+        {
+            args.vault_path = argv[++i];
+        }
+        else if (arg == "--no-prompt")
+        {
+            args.no_prompt = true;
         }
         else if (arg == "--role" && i + 1 < argc)
         {
@@ -219,27 +252,31 @@ inline ParseResult parse_role_args(int argc, char *argv[],
         }
     }
 
-    // ── Mode exclusion: at most one of --init / --validate / --keygen ──
+    // ── Mode exclusion: at most one mode flag ──────────────────────────
     const int mode_count = static_cast<int>(args.init_only) +
+                           static_cast<int>(args.skeleton_only) +
                            static_cast<int>(args.validate_only) +
                            static_cast<int>(args.keygen_only);
     if (mode_count > 1)
         return fail_with_usage(
-            "Error: --init, --validate, and --keygen are mutually "
-            "exclusive (at most one mode).\n\n");
+            "Error: --init, --skeleton, --validate, and --keygen are "
+            "mutually exclusive (at most one mode).\n\n");
 
-    // ── Init-only flags must not appear outside --init ─────────────────
-    if (!args.init_only &&
+    // ── Init/skeleton-only flags must not appear outside those modes ───
+    const bool init_or_skeleton = args.init_only || args.skeleton_only;
+    if (!init_or_skeleton &&
         (args.log_max_size_mb.has_value() || args.log_backups.has_value() ||
-         !args.init_name.empty()))
+         !args.init_name.empty() || !args.role_uid.empty() ||
+         !args.vault_path.empty()))
         return fail_with_usage(
-            "Error: --name, --log-maxsize, and --log-backups are "
-            "only valid with --init.\n\n");
+            "Error: --name, --uid, --vault-path, --log-maxsize, and "
+            "--log-backups are only valid with --init or --skeleton.\n\n");
 
-    // ── Required positional for non-init modes ─────────────────────────
-    if (!args.init_only && args.config_path.empty() && args.role_dir.empty())
+    // ── Required positional for non-init/skeleton modes ────────────────
+    if (!init_or_skeleton && args.config_path.empty() && args.role_dir.empty())
         return fail_with_usage(
-            "Error: specify a role directory, --init, or --config <path>\n\n");
+            "Error: specify a role directory, --init, --skeleton, "
+            "or --config <path>\n\n");
 
     return result;  // exit_code stays -1 → caller proceeds
 }

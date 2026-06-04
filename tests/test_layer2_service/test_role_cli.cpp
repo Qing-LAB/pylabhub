@@ -373,7 +373,8 @@ TEST(RoleCliTest, Error_NoDirNoConfigNoInit)
     std::ostringstream out, err;
     auto r = run({"plh_role"}, out, err);
     EXPECT_EQ(r.exit_code, 1);
-    EXPECT_NE(err.str().find("role directory, --init, or --config"),
+    EXPECT_NE(err.str().find("role directory, --init, --skeleton, "
+                              "or --config"),
               std::string::npos);
 }
 
