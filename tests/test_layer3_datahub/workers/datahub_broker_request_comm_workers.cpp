@@ -9,15 +9,11 @@
 #include "test_entrypoint.h"
 #include "shared_test_helpers.h"
 #include "test_sync_utils.h"
+#include "broker_test_harness.h"
 
 #include "utils/broker_request_comm.hpp"
 #include "utils/logger.hpp"
-#include "utils/broker_service.hpp"
-#include "utils/config/hub_config.hpp"
 #include "utils/file_lock.hpp"
-#include "utils/hub_directory.hpp"
-#include "utils/hub_host.hpp"
-#include "utils/hub_state.hpp"
 #include "utils/json_config.hpp"
 #include "utils/lifecycle.hpp"
 #include "utils/zmq_context.hpp"
@@ -28,9 +24,6 @@
 
 #include <atomic>
 #include <chrono>
-#include <filesystem>
-#include <fstream>
-#include <future>
 #include <thread>
 
 using namespace pylabhub;
@@ -45,84 +38,31 @@ static auto hub_module()       { return ::pylabhub::hub::GetDataBlockModule(); }
 static auto zmq_module()       { return ::pylabhub::hub::GetZMQContextModule(); }
 
 // ============================================================================
-// Broker helper — real HubHost wrapper (replaces legacy mock per
-// docs/todo/TESTING_TODO.md §"Test Design Principles")
+// Test-fixture broker setup
 // ============================================================================
-
-namespace fs = std::filesystem;
+//
+// Broker comes up via the shared `start_hubhost_broker` harness —
+// real `HubHost` (HEP-CORE-0033 production path), real CURVE +
+// admission per HEP-CORE-0035 §2 + §4.6.5.  Each fixture below
+// declares its role uids up front; the harness writes a
+// `vault/known_roles.json` admitting each, and the BRC client
+// connects with its matching keypair.
 
 namespace
 {
 
-struct BrokerHandle
+// Shared hub.json overrides — every fixture in this file wants the
+// same shape (ephemeral port, admin off, no script).
+nlohmann::json brc_hub_overrides()
 {
-    fs::path                                       hub_dir;
-    std::unique_ptr<::pylabhub::hub_host::HubHost> host;
-    std::string                                    endpoint;
-    std::string                                    pubkey;
-
-    ~BrokerHandle() { stop_and_join(); }
-
-    BrokerHandle()                                = default;
-    BrokerHandle(const BrokerHandle &)            = delete;
-    BrokerHandle &operator=(const BrokerHandle &) = delete;
-    BrokerHandle(BrokerHandle &&)                 = default;
-    BrokerHandle &operator=(BrokerHandle &&)      = default;
-
-    void stop_and_join()
-    {
-        if (host)
-            host->shutdown();
-        host.reset();
-        if (!hub_dir.empty())
-        {
-            std::error_code ec;
-            fs::remove_all(hub_dir, ec);
-            hub_dir.clear();
-        }
-    }
-
-    BrokerService &service_ref() { return host->broker(); }
-};
-
-BrokerHandle start_broker()
-{
-    static std::atomic<int> ctr{0};
-    fs::path dir = fs::temp_directory_path() /
-                   ("plh_l3_brc_" + std::to_string(::getpid()) + "_" +
-                    std::to_string(ctr.fetch_add(1)));
-    fs::remove_all(dir);
-    fs::create_directories(dir);
-    ::pylabhub::utils::HubDirectory::init_directory(dir, "BrcTestHub");
-
-    const fs::path hub_json = dir / "hub.json";
-    nlohmann::json j;
-    {
-        std::ifstream f(hub_json);
-        if (f.is_open())
-            j = nlohmann::json::parse(f);
-    }
-    j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0";
-    j["admin"]["enabled"]           = false;
-    j["script"]["path"]             = "";
-    // HEP-CORE-0023 §2.1 atomic teardown: voluntary close emits
-    // CHANNEL_CLOSING_NOTIFY (best-effort) and removes the channel
-    // entry in the same handler — no grace window.
-    {
-        std::ofstream f(hub_json);
-        f << j.dump(2);
-    }
-    fs::create_directories(dir / "schemas");
-
-    BrokerHandle h;
-    h.hub_dir = std::move(dir);
-    h.host    = std::make_unique<::pylabhub::hub_host::HubHost>(
-        ::pylabhub::config::HubConfig::load_from_directory(h.hub_dir.string()));
-    h.host->startup();
-    h.endpoint = h.host->broker_endpoint();
-    h.pubkey   = h.host->broker_pubkey();
-    return h;
+    return nlohmann::json{
+        {"network", {{"broker_endpoint", "tcp://127.0.0.1:0"}}},
+        {"admin",   {{"enabled", false}}},
+        {"script",  {{"path", ""}}},
+    };
 }
+
+} // anon namespace
 
 // ============================================================================
 // Worker functions
@@ -135,12 +75,17 @@ int connect_and_heartbeat()
                                           hub_module(), zmq_module());
     utils::LifecycleGuard guard(std::move(mods));
 
-    auto broker = start_broker();
+    const std::string uid = "prod.brc.uid00000001";
+    auto curve = pylabhub::tests::make_curve_setup({uid});
+    auto broker = pylabhub::tests::start_hubhost_broker(brc_hub_overrides(), curve);
 
     BrokerRequestComm ch;
     BrokerRequestComm::Config cfg;
     cfg.broker_endpoint = broker.endpoint;
     cfg.broker_pubkey   = broker.pubkey;
+    cfg.client_pubkey   = curve.role(uid).public_z85;
+    cfg.client_seckey   = curve.role(uid).secret_z85;
+    cfg.role_uid        = uid;
     EXPECT_TRUE(ch.connect(cfg));
     EXPECT_TRUE(ch.is_connected());
 
@@ -172,12 +117,17 @@ int register_and_discover()
                                           hub_module(), zmq_module());
     utils::LifecycleGuard guard(std::move(mods));
 
-    auto broker = start_broker();
+    const std::string uid = "prod.test.uid00000001";
+    auto curve = pylabhub::tests::make_curve_setup({uid});
+    auto broker = pylabhub::tests::start_hubhost_broker(brc_hub_overrides(), curve);
 
     BrokerRequestComm ch;
     BrokerRequestComm::Config cfg;
     cfg.broker_endpoint = broker.endpoint;
     cfg.broker_pubkey   = broker.pubkey;
+    cfg.client_pubkey   = curve.role(uid).public_z85;
+    cfg.client_seckey   = curve.role(uid).secret_z85;
+    cfg.role_uid        = uid;
     EXPECT_TRUE(ch.connect(cfg));
 
     std::atomic<bool> running{true};
@@ -239,12 +189,17 @@ int role_presence()
                                           hub_module(), zmq_module());
     utils::LifecycleGuard guard(std::move(mods));
 
-    auto broker = start_broker();
+    const std::string uid = "prod.my.uid00000042";
+    auto curve = pylabhub::tests::make_curve_setup({uid});
+    auto broker = pylabhub::tests::start_hubhost_broker(brc_hub_overrides(), curve);
 
     BrokerRequestComm ch;
     BrokerRequestComm::Config cfg;
     cfg.broker_endpoint = broker.endpoint;
     cfg.broker_pubkey   = broker.pubkey;
+    cfg.client_pubkey   = curve.role(uid).public_z85;
+    cfg.client_seckey   = curve.role(uid).secret_z85;
+    cfg.role_uid        = uid;
     EXPECT_TRUE(ch.connect(cfg));
 
     std::atomic<bool> running{true};
@@ -295,12 +250,17 @@ int notification_dispatch()
                                           hub_module(), zmq_module());
     utils::LifecycleGuard guard(std::move(mods));
 
-    auto broker = start_broker();
+    const std::string uid = "prod.notify.uid00000001";
+    auto curve = pylabhub::tests::make_curve_setup({uid});
+    auto broker = pylabhub::tests::start_hubhost_broker(brc_hub_overrides(), curve);
 
     BrokerRequestComm ch;
     BrokerRequestComm::Config cfg;
     cfg.broker_endpoint = broker.endpoint;
     cfg.broker_pubkey   = broker.pubkey;
+    cfg.client_pubkey   = curve.role(uid).public_z85;
+    cfg.client_seckey   = curve.role(uid).secret_z85;
+    cfg.role_uid        = uid;
     EXPECT_TRUE(ch.connect(cfg));
 
     std::atomic<int> notify_count{0};
@@ -328,7 +288,7 @@ int notification_dispatch()
     EXPECT_TRUE(reg.has_value());
 
     // Request broker to close the channel → should trigger CHANNEL_CLOSING_NOTIFY.
-    broker.service_ref().request_close_channel("notify_ch");
+    broker.service().request_close_channel("notify_ch");
 
     bool got = pylabhub::tests::helper::poll_until(
         [&] { return notify_count.load() > 0; },
@@ -379,5 +339,3 @@ struct BrokerReqChannelWorkerRegistrar
 };
 
 static BrokerReqChannelWorkerRegistrar s_registrar;
-
-} // anonymous namespace

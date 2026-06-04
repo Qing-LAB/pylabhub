@@ -109,6 +109,12 @@ struct HubHostBrokerHandle
     ~HubHostBrokerHandle();
 
     void stop_and_join();
+
+    /// Convenience accessor for the HubHost's owned BrokerService.
+    /// Tests that need broker-internal state (channel snapshot, admin
+    /// queries, request-close-channel) reach it via this helper to
+    /// avoid threading `broker.host->broker()` through every callsite.
+    [[nodiscard]] pylabhub::broker::BrokerService &service();
 };
 
 /// Start a HubHost broker with a freshly-initialized hub directory.
