@@ -7,22 +7,19 @@
 
 #include "broker_consumer_workers.h"
 
+#include "broker_test_harness.h"
 #include "log_capture_fixture.h"
 #include "plh_datahub.hpp"
 #include "plh_service.hpp"
 #include "shared_test_helpers.h"
 #include "test_entrypoint.h"
 #include "utils/broker_request_comm.hpp"
-#include "utils/config/hub_config.hpp"
 #include "utils/file_lock.hpp"
-#include "utils/hub_directory.hpp"
 #include "utils/hub_host.hpp"
 #include "utils/json_config.hpp"
 #include "utils/logger.hpp"
 
 #include <atomic>
-#include <filesystem>
-#include <fstream>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -36,12 +33,9 @@
 
 using namespace pylabhub::utils;
 using namespace pylabhub::hub;
-using pylabhub::config::HubConfig;
-using pylabhub::hub_host::HubHost;
 using pylabhub::tests::LogCaptureFixture;
 using pylabhub::tests::helper::run_gtest_worker;
 using json = nlohmann::json;
-namespace fs = std::filesystem;
 
 namespace pylabhub::tests::worker
 {
@@ -50,73 +44,6 @@ namespace broker_consumer
 
 namespace
 {
-
-fs::path unique_temp_dir(const char *tag)
-{
-    static std::atomic<int> ctr{0};
-    fs::path d = fs::temp_directory_path() /
-                 ("plh_l3_broker_consumer_" + std::string(tag) + "_" +
-                  std::to_string(::getpid()) + "_" +
-                  std::to_string(ctr.fetch_add(1)));
-    fs::remove_all(d);
-    return d;
-}
-
-void write_test_hub_json(const fs::path &dir, const std::string &name)
-{
-    fs::create_directories(dir);
-    HubDirectory::init_directory(dir, name);
-
-    const fs::path hub_json = dir / "hub.json";
-    json j;
-    {
-        std::ifstream f(hub_json);
-        ASSERT_TRUE(f.is_open()) << "test could not open " << hub_json;
-        j = json::parse(f);
-    }
-    j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0";
-    j["admin"]["enabled"]           = false;
-    j["script"]["path"]             = "";
-    {
-        std::ofstream f(hub_json);
-        f << j.dump(2);
-    }
-}
-
-struct BrcHandle
-{
-    BrokerRequestComm brc;
-    std::atomic<bool> running{true};
-    std::thread       thread;
-
-    void start(const std::string &ep, const std::string &pk,
-               const std::string &uid)
-    {
-        BrokerRequestComm::Config cfg;
-        cfg.broker_endpoint = ep;
-        cfg.broker_pubkey   = pk;
-        cfg.role_uid        = uid;
-        ASSERT_TRUE(brc.connect(cfg));
-        thread = std::thread([this] {
-            brc.run_poll_loop([this] { return running.load(); });
-        });
-    }
-
-    void stop()
-    {
-        running.store(false);
-        brc.stop();
-        if (thread.joinable())
-            thread.join();
-        brc.disconnect();
-    }
-
-    ~BrcHandle()
-    {
-        if (thread.joinable())
-            stop();
-    }
-};
 
 json make_reg_opts(const std::string &channel, const std::string &role_uid,
                    uint64_t producer_pid)
@@ -147,40 +74,45 @@ std::string pid_chan(const std::string &base)
     return base + ".pid" + std::to_string(::getpid());
 }
 
-/// Run a worker body with a freshly spun-up HubHost + LogCaptureFixture.
-/// Encapsulates the per-test setup that the original `SetUp` ran inline.
+json hubhost_overrides()
+{
+    return json{
+        {"network", {{"broker_endpoint", "tcp://127.0.0.1:0"}}},
+        {"admin",   {{"enabled", false}}},
+        {"script",  {{"path", ""}}},
+    };
+}
+
+/// Run a worker body with a freshly spun-up HubHostBrokerHandle +
+/// LogCaptureFixture under real CURVE + admission (HEP-CORE-0035
+/// §2 + §4.6.5).  The body receives both the broker handle and
+/// the CurveSetup so it can mint BRC clients with their pre-
+/// admitted keypairs via `curve.role(uid)`.
 template <typename Body>
-int run_with_host(const char *tag, std::string_view worker_name,
+int run_with_host(std::string_view worker_name,
+                  std::vector<std::string> role_uids,
                   Body &&body,
                   std::vector<std::string> expect_log_warns = {})
 {
     return run_gtest_worker(
-        [tag, body = std::forward<Body>(body),
+        [role_uids = std::move(role_uids),
+         body = std::forward<Body>(body),
          expect_log_warns = std::move(expect_log_warns)]() mutable {
             LogCaptureFixture log_cap;
             log_cap.Install();
             for (auto &w : expect_log_warns)
                 log_cap.ExpectLogWarn(w);
 
-            std::vector<fs::path> cleanup;
-            const fs::path dir = unique_temp_dir(tag);
-            cleanup.push_back(dir);
-            write_test_hub_json(dir, "TestHub");
-            auto host = std::make_unique<HubHost>(
-                HubConfig::load_from_directory(dir.string()));
-            host->startup();
-            ASSERT_TRUE(host->is_running());
+            auto curve = pylabhub::tests::make_curve_setup(role_uids);
+            auto broker = pylabhub::tests::start_hubhost_broker(
+                hubhost_overrides(), curve);
+            ASSERT_TRUE(broker.host && broker.host->is_running());
 
-            body(*host);
+            body(broker, curve);
 
-            host.reset();
+            broker.stop_and_join();
             log_cap.AssertNoUnexpectedLogWarnError();
             log_cap.Uninstall();
-            for (const auto &p : cleanup)
-            {
-                std::error_code ec;
-                fs::remove_all(p, ec);
-            }
         },
         std::string(worker_name).c_str(),
         Logger::GetLifecycleModule(),
@@ -194,17 +126,18 @@ int run_with_host(const char *tag, std::string_view worker_name,
 
 int consumer_reg_channel_not_found()
 {
+    const std::string uid = "cons.unknown.uid001";
     return run_with_host(
-        "ConsumerRegChannelNotFound",
         "broker_consumer::consumer_reg_channel_not_found",
-        [](HubHost &host) {
-            BrcHandle bh;
-            bh.start(host.broker_endpoint(), host.broker_pubkey(),
-                     "cons.unknown.uid001");
+        {uid},
+        [uid](pylabhub::tests::HubHostBrokerHandle &broker,
+              pylabhub::tests::CurveSetup &curve) {
+            pylabhub::tests::BrcHandle bh;
+            bh.start(broker.endpoint, broker.pubkey, uid, curve.role(uid));
 
             auto resp = bh.brc.register_consumer(
                 make_cons_opts(pid_chan("consumer.no_such_channel"),
-                                "cons.unknown.uid001", 12345),
+                                uid, 12345),
                 3000);
             ASSERT_TRUE(resp.has_value());
             EXPECT_EQ(resp->value("status", std::string{}), "error");
@@ -216,16 +149,18 @@ int consumer_reg_channel_not_found()
 
 int consumer_reg_happy_path()
 {
+    const std::string channel  = pid_chan("consumer.reg_happy");
+    const std::string prod_uid = "prod." + channel;
+    const std::string cons_uid = "cons." + channel;
     return run_with_host(
-        "ConsumerRegHappyPath",
         "broker_consumer::consumer_reg_happy_path",
-        [](HubHost &host) {
-            const std::string channel  = pid_chan("consumer.reg_happy");
-            const std::string prod_uid = "prod." + channel;
-            const std::string cons_uid = "cons." + channel;
-
-            BrcHandle prod;
-            prod.start(host.broker_endpoint(), host.broker_pubkey(), prod_uid);
+        {prod_uid, cons_uid},
+        [channel, prod_uid, cons_uid](
+            pylabhub::tests::HubHostBrokerHandle &broker,
+            pylabhub::tests::CurveSetup &curve) {
+            pylabhub::tests::BrcHandle prod;
+            prod.start(broker.endpoint, broker.pubkey, prod_uid,
+                       curve.role(prod_uid));
             auto reg = prod.brc.register_channel(
                 make_reg_opts(channel, prod_uid, 55001), 3000);
             ASSERT_TRUE(reg.has_value()) << "register_channel failed";
@@ -234,8 +169,9 @@ int consumer_reg_happy_path()
             prod.brc.send_heartbeat(channel, prod_uid, "producer",
                                      json::object());
 
-            BrcHandle cons;
-            cons.start(host.broker_endpoint(), host.broker_pubkey(), cons_uid);
+            pylabhub::tests::BrcHandle cons;
+            cons.start(broker.endpoint, broker.pubkey, cons_uid,
+                       curve.role(cons_uid));
             auto creg = cons.brc.register_consumer(
                 make_cons_opts(channel, cons_uid, 55100), 3000);
             ASSERT_TRUE(creg.has_value());
@@ -251,25 +187,29 @@ int consumer_reg_happy_path()
 
 int consumer_dereg_happy_path()
 {
+    const std::string channel  = pid_chan("consumer.dereg_happy");
+    const std::string prod_uid = "prod." + channel;
+    const std::string cons_uid = "cons." + channel;
     return run_with_host(
-        "ConsumerDeregHappyPath",
         "broker_consumer::consumer_dereg_happy_path",
-        [](HubHost &host) {
-            const std::string channel  = pid_chan("consumer.dereg_happy");
-            const std::string prod_uid = "prod." + channel;
-            const std::string cons_uid = "cons." + channel;
+        {prod_uid, cons_uid},
+        [channel, prod_uid, cons_uid](
+            pylabhub::tests::HubHostBrokerHandle &broker,
+            pylabhub::tests::CurveSetup &curve) {
             const uint64_t my_pid = static_cast<uint64_t>(::getpid());
 
-            BrcHandle prod;
-            prod.start(host.broker_endpoint(), host.broker_pubkey(), prod_uid);
+            pylabhub::tests::BrcHandle prod;
+            prod.start(broker.endpoint, broker.pubkey, prod_uid,
+                       curve.role(prod_uid));
             ASSERT_TRUE(prod.brc.register_channel(
                             make_reg_opts(channel, prod_uid, my_pid), 3000)
                             .has_value());
             prod.brc.send_heartbeat(channel, prod_uid, "producer",
                                      json::object());
 
-            BrcHandle cons;
-            cons.start(host.broker_endpoint(), host.broker_pubkey(), cons_uid);
+            pylabhub::tests::BrcHandle cons;
+            cons.start(broker.endpoint, broker.pubkey, cons_uid,
+                       curve.role(cons_uid));
             ASSERT_TRUE(cons.brc.register_consumer(
                             make_cons_opts(channel, cons_uid, my_pid), 3000)
                             .has_value());
@@ -295,26 +235,29 @@ int consumer_dereg_happy_path()
 
 int consumer_dereg_pid_mismatch()
 {
+    const std::string channel = pid_chan("consumer.dereg_pid_mismatch");
+    const std::string prod_uid          = "prod." + channel;
+    const std::string cons_uid_correct  = "cons." + channel + ".correct";
+    const std::string cons_uid_wrong    = "cons." + channel + ".wrong";
     return run_with_host(
-        "ConsumerDeregPidMismatch",
         "broker_consumer::consumer_dereg_pid_mismatch",
-        [](HubHost &host) {
-            const std::string channel = pid_chan("consumer.dereg_pid_mismatch");
-            const std::string prod_uid          = "prod." + channel;
-            const std::string cons_uid_correct  = "cons." + channel + ".correct";
-            const std::string cons_uid_wrong    = "cons." + channel + ".wrong";
-
-            BrcHandle prod;
-            prod.start(host.broker_endpoint(), host.broker_pubkey(), prod_uid);
+        {prod_uid, cons_uid_correct, cons_uid_wrong},
+        [channel, prod_uid, cons_uid_correct, cons_uid_wrong](
+            pylabhub::tests::HubHostBrokerHandle &broker,
+            pylabhub::tests::CurveSetup &curve) {
+            pylabhub::tests::BrcHandle prod;
+            prod.start(broker.endpoint, broker.pubkey, prod_uid,
+                       curve.role(prod_uid));
             ASSERT_TRUE(prod.brc.register_channel(
                             make_reg_opts(channel, prod_uid, 56000), 3000)
                             .has_value());
             prod.brc.send_heartbeat(channel, prod_uid, "producer",
                                      json::object());
 
-            BrcHandle cons_correct;
-            cons_correct.start(host.broker_endpoint(), host.broker_pubkey(),
-                               cons_uid_correct);
+            pylabhub::tests::BrcHandle cons_correct;
+            cons_correct.start(broker.endpoint, broker.pubkey,
+                               cons_uid_correct,
+                               curve.role(cons_uid_correct));
             ASSERT_TRUE(cons_correct.brc
                             .register_consumer(make_cons_opts(channel,
                                                                 cons_uid_correct,
@@ -322,9 +265,9 @@ int consumer_dereg_pid_mismatch()
                                                 3000)
                             .has_value());
 
-            BrcHandle cons_wrong;
-            cons_wrong.start(host.broker_endpoint(), host.broker_pubkey(),
-                             cons_uid_wrong);
+            pylabhub::tests::BrcHandle cons_wrong;
+            cons_wrong.start(broker.endpoint, broker.pubkey, cons_uid_wrong,
+                             curve.role(cons_uid_wrong));
             auto dereg_resp = cons_wrong.brc.deregister_consumer(channel, 3000);
             ASSERT_TRUE(dereg_resp.has_value())
                 << "Broker should respond, not time out";
@@ -342,34 +285,39 @@ int consumer_dereg_pid_mismatch()
 
 int disc_shows_consumer_count()
 {
+    const std::string channel  = pid_chan("consumer.disc_count");
+    const std::string prod_uid = "prod." + channel;
+    const std::string cons_uid = "cons." + channel;
+    const std::string obs_uid  = "observer." + channel;
     return run_with_host(
-        "DiscShowsConsumerCount",
         "broker_consumer::disc_shows_consumer_count",
-        [](HubHost &host) {
-            const std::string channel  = pid_chan("consumer.disc_count");
-            const std::string prod_uid = "prod." + channel;
-            const std::string cons_uid = "cons." + channel;
+        {prod_uid, cons_uid, obs_uid},
+        [channel, prod_uid, cons_uid, obs_uid](
+            pylabhub::tests::HubHostBrokerHandle &broker,
+            pylabhub::tests::CurveSetup &curve) {
             const uint64_t my_pid = static_cast<uint64_t>(::getpid());
 
-            BrcHandle prod;
-            prod.start(host.broker_endpoint(), host.broker_pubkey(), prod_uid);
+            pylabhub::tests::BrcHandle prod;
+            prod.start(broker.endpoint, broker.pubkey, prod_uid,
+                       curve.role(prod_uid));
             ASSERT_TRUE(prod.brc.register_channel(
                             make_reg_opts(channel, prod_uid, my_pid), 3000)
                             .has_value());
             prod.brc.send_heartbeat(channel, prod_uid, "producer",
                                      json::object());
 
-            BrcHandle observer;
-            observer.start(host.broker_endpoint(), host.broker_pubkey(),
-                           "observer." + channel);
+            pylabhub::tests::BrcHandle observer;
+            observer.start(broker.endpoint, broker.pubkey, obs_uid,
+                           curve.role(obs_uid));
 
             auto disc0 = observer.brc.discover_channel(channel, json::object(),
                                                         3000);
             ASSERT_TRUE(disc0.has_value());
             EXPECT_EQ(disc0->value("consumer_count", uint32_t{99}), 0u);
 
-            BrcHandle cons;
-            cons.start(host.broker_endpoint(), host.broker_pubkey(), cons_uid);
+            pylabhub::tests::BrcHandle cons;
+            cons.start(broker.endpoint, broker.pubkey, cons_uid,
+                       curve.role(cons_uid));
             ASSERT_TRUE(cons.brc.register_consumer(
                             make_cons_opts(channel, cons_uid, my_pid), 3000)
                             .has_value());
