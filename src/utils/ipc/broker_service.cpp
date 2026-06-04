@@ -2440,16 +2440,16 @@ nlohmann::json BrokerServiceImpl::handle_consumer_dereg_req(zmq::socket_t& socke
 
     // HEP-CORE-0036 §6.5 + PeerAdmission D3: revoke this consumer's
     // pubkey from the channel-scope allowlist + notify producers.
-    // Legacy consumers with empty `zmq_pubkey` are silent no-ops on
-    // the allowlist side (`_on_consumer_revoked` is idempotent) but
-    // still get the notify so producers can pull a fresh snapshot
-    // (will simply confirm no change for legacy peers).
+    // Legacy consumers with empty `zmq_pubkey` never landed in the
+    // allowlist (REG-side guard); skip both the mutator and the
+    // notify to keep REG / DEREG / heartbeat-timeout symmetrical — a
+    // notify with no underlying allowlist change is wasted work.
     if (!closing_entry.zmq_pubkey.empty())
     {
         hub_state_->_on_consumer_revoked(channel_name,
                                           closing_entry.zmq_pubkey);
+        fire_channel_auth_changed_notify(socket, channel_name, "consumer_left");
     }
-    fire_channel_auth_changed_notify(socket, channel_name, "consumer_left");
 
     LOGGER_INFO("Broker: consumer deregistered from channel '{}'", channel_name);
     nlohmann::json resp;
@@ -3515,14 +3515,17 @@ void BrokerServiceImpl::check_dead_consumers(zmq::socket_t& socket)
             hub_state_->_on_consumer_left(channel_name, dead_consumer.role_uid);
             on_consumer_closed(socket, channel_name, dead_consumer, "process_dead");
             // HEP-CORE-0036 §6.5 + PeerAdmission D3: revoke + notify on
-            // heartbeat-timeout revocation path.  Same shape as DEREG.
+            // heartbeat-timeout revocation path.  Same guarded shape as
+            // CONSUMER_REG_REQ / CONSUMER_DEREG_REQ — legacy consumers
+            // without a pubkey never entered the allowlist, so skipping
+            // both keeps REG / DEREG / timeout symmetrical.
             if (!dead_consumer.zmq_pubkey.empty())
             {
                 hub_state_->_on_consumer_revoked(channel_name,
                                                   dead_consumer.zmq_pubkey);
+                fire_channel_auth_changed_notify(socket, channel_name,
+                                                  "consumer_timeout");
             }
-            fire_channel_auth_changed_notify(socket, channel_name,
-                                              "consumer_timeout");
         }
     }
 }
