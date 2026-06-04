@@ -7,6 +7,7 @@
 
 #include "broker_admin_workers.h"
 
+#include "broker_test_harness.h"
 #include "log_capture_fixture.h"
 #include "plh_datahub.hpp"
 #include "plh_service.hpp"
@@ -15,18 +16,13 @@
 #include "test_sync_utils.h"
 #include "utils/broker_request_comm.hpp"
 #include "utils/broker_service.hpp"
-#include "utils/config/hub_config.hpp"
 #include "utils/file_lock.hpp"
-#include "utils/hub_directory.hpp"
 #include "utils/hub_host.hpp"
-#include "utils/hub_state.hpp"
 #include "utils/json_config.hpp"
 #include "utils/logger.hpp"
 
 #include <atomic>
 #include <chrono>
-#include <filesystem>
-#include <fstream>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -41,13 +37,10 @@
 using namespace pylabhub::utils;
 using namespace pylabhub::hub;
 using namespace pylabhub::broker;
-using pylabhub::config::HubConfig;
-using pylabhub::hub_host::HubHost;
 using pylabhub::tests::LogCaptureFixture;
 using pylabhub::tests::helper::poll_until;
 using pylabhub::tests::helper::run_gtest_worker;
 using json = nlohmann::json;
-namespace fs = std::filesystem;
 
 namespace pylabhub::tests::worker
 {
@@ -57,67 +50,14 @@ namespace broker_admin
 namespace
 {
 
-fs::path make_test_hub_dir()
+json hubhost_overrides()
 {
-    static std::atomic<int> ctr{0};
-    fs::path dir = fs::temp_directory_path() /
-                   ("plh_l3_admin_" + std::to_string(::getpid()) + "_" +
-                    std::to_string(ctr.fetch_add(1)));
-    fs::remove_all(dir);
-    fs::create_directories(dir);
-    pylabhub::utils::HubDirectory::init_directory(dir, "AdminTestHub");
-
-    const fs::path hub_json = dir / "hub.json";
-    json j;
-    {
-        std::ifstream f(hub_json);
-        if (f.is_open())
-            j = json::parse(f);
-    }
-    j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0";
-    j["admin"]["enabled"]           = false;
-    j["script"]["path"]             = "";
-    {
-        std::ofstream f(hub_json);
-        f << j.dump(2);
-    }
-    return dir;
+    return json{
+        {"network", {{"broker_endpoint", "tcp://127.0.0.1:0"}}},
+        {"admin",   {{"enabled", false}}},
+        {"script",  {{"path", ""}}},
+    };
 }
-
-struct BrcHandle
-{
-    BrokerRequestComm brc;
-    std::atomic<bool> running{true};
-    std::thread       thread;
-
-    void start(const std::string &ep, const std::string &pk,
-               const std::string &uid)
-    {
-        BrokerRequestComm::Config cfg;
-        cfg.broker_endpoint = ep;
-        cfg.broker_pubkey   = pk;
-        cfg.role_uid        = uid;
-        ASSERT_TRUE(brc.connect(cfg));
-        thread = std::thread([this] {
-            brc.run_poll_loop([this] { return running.load(); });
-        });
-    }
-
-    void stop()
-    {
-        running.store(false);
-        brc.stop();
-        if (thread.joinable())
-            thread.join();
-        brc.disconnect();
-    }
-
-    ~BrcHandle()
-    {
-        if (thread.joinable())
-            stop();
-    }
-};
 
 std::string pid_chan(const std::string &base)
 {
@@ -146,32 +86,34 @@ json make_cons_opts(const std::string &channel, const std::string &consumer_uid)
     return opts;
 }
 
-/// Run a worker body with a freshly spun-up HubHost + LogCaptureFixture.
+/// Run a worker body with a freshly spun-up HubHostBrokerHandle +
+/// LogCaptureFixture under real CURVE + admission (HEP-CORE-0035
+/// §2 + §4.6.5).  Body receives (broker, curve).
 template <typename Body>
-int run_with_host(std::string_view worker_name, Body &&body,
+int run_with_host(std::string_view worker_name,
+                  std::vector<std::string> role_uids,
+                  Body &&body,
                   std::vector<std::string> expect_log_warns = {})
 {
     return run_gtest_worker(
-        [body = std::forward<Body>(body),
+        [role_uids = std::move(role_uids),
+         body = std::forward<Body>(body),
          expect_log_warns = std::move(expect_log_warns)]() mutable {
             LogCaptureFixture log_cap;
             log_cap.Install();
             for (auto &w : expect_log_warns)
                 log_cap.ExpectLogWarn(w);
 
-            const fs::path dir = make_test_hub_dir();
-            auto host = std::make_unique<HubHost>(
-                HubConfig::load_from_directory(dir.string()));
-            host->startup();
-            ASSERT_TRUE(host->is_running());
+            auto curve = pylabhub::tests::make_curve_setup(role_uids);
+            auto broker = pylabhub::tests::start_hubhost_broker(
+                hubhost_overrides(), curve);
+            ASSERT_TRUE(broker.host && broker.host->is_running());
 
-            body(*host);
+            body(broker, curve);
 
-            host.reset();
+            broker.stop_and_join();
             log_cap.AssertNoUnexpectedLogWarnError();
             log_cap.Uninstall();
-            std::error_code ec;
-            fs::remove_all(dir, ec);
         },
         std::string(worker_name).c_str(),
         Logger::GetLifecycleModule(),
@@ -187,9 +129,10 @@ int run_with_host(std::string_view worker_name, Body &&body,
 int list_channels_empty()
 {
     return run_with_host(
-        "broker_admin::list_channels_empty",
-        [](HubHost &host) {
-            std::string result = host.broker().list_channels_json_str();
+        "broker_admin::list_channels_empty", {},
+        [](pylabhub::tests::HubHostBrokerHandle &broker,
+           pylabhub::tests::CurveSetup &) {
+            std::string result = broker.service().list_channels_json_str();
             auto j = json::parse(result);
             ASSERT_TRUE(j.is_array());
             EXPECT_TRUE(j.empty())
@@ -199,19 +142,19 @@ int list_channels_empty()
 
 int list_channels_one_channel()
 {
+    const std::string channel = pid_chan("admin.list.one");
+    const std::string uid     = "prod." + channel;
     return run_with_host(
-        "broker_admin::list_channels_one_channel",
-        [](HubHost &host) {
-            const std::string channel = pid_chan("admin.list.one");
-
-            BrcHandle bh;
-            bh.start(host.broker_endpoint(), host.broker_pubkey(),
-                     "prod." + channel);
+        "broker_admin::list_channels_one_channel", {uid},
+        [channel, uid](pylabhub::tests::HubHostBrokerHandle &broker,
+                       pylabhub::tests::CurveSetup &curve) {
+            pylabhub::tests::BrcHandle bh;
+            bh.start(broker.endpoint, broker.pubkey, uid, curve.role(uid));
             auto reg = bh.brc.register_channel(
-                make_reg_opts(channel, "prod." + channel), 3000);
+                make_reg_opts(channel, uid), 3000);
             ASSERT_TRUE(reg.has_value()) << "register_channel failed";
 
-            std::string result = host.broker().list_channels_json_str();
+            std::string result = broker.service().list_channels_json_str();
             auto j = json::parse(result);
             ASSERT_TRUE(j.is_array());
             ASSERT_GE(j.size(), 1u);
@@ -234,19 +177,19 @@ int list_channels_one_channel()
 
 int list_channels_field_presence()
 {
+    const std::string channel = pid_chan("admin.list.fields");
+    const std::string uid     = "prod." + channel;
     return run_with_host(
-        "broker_admin::list_channels_field_presence",
-        [](HubHost &host) {
-            const std::string channel = pid_chan("admin.list.fields");
-
-            BrcHandle bh;
-            bh.start(host.broker_endpoint(), host.broker_pubkey(),
-                     "prod." + channel);
+        "broker_admin::list_channels_field_presence", {uid},
+        [channel, uid](pylabhub::tests::HubHostBrokerHandle &broker,
+                       pylabhub::tests::CurveSetup &curve) {
+            pylabhub::tests::BrcHandle bh;
+            bh.start(broker.endpoint, broker.pubkey, uid, curve.role(uid));
             auto reg = bh.brc.register_channel(
-                make_reg_opts(channel, "prod." + channel), 3000);
+                make_reg_opts(channel, uid), 3000);
             ASSERT_TRUE(reg.has_value()) << "register_channel failed";
 
-            std::string result = host.broker().list_channels_json_str();
+            std::string result = broker.service().list_channels_json_str();
             auto j = json::parse(result);
 
             const json *entry = nullptr;
@@ -272,28 +215,29 @@ int list_channels_field_presence()
 int snapshot_empty()
 {
     return run_with_host(
-        "broker_admin::snapshot_empty",
-        [](HubHost &host) {
-            ChannelSnapshot snap = host.broker().query_channel_snapshot();
+        "broker_admin::snapshot_empty", {},
+        [](pylabhub::tests::HubHostBrokerHandle &broker,
+           pylabhub::tests::CurveSetup &) {
+            ChannelSnapshot snap = broker.service().query_channel_snapshot();
             EXPECT_TRUE(snap.channels.empty());
         });
 }
 
 int snapshot_one_channel()
 {
+    const std::string channel = pid_chan("admin.snap.one");
+    const std::string uid     = "prod." + channel;
     return run_with_host(
-        "broker_admin::snapshot_one_channel",
-        [](HubHost &host) {
-            const std::string channel = pid_chan("admin.snap.one");
-
-            BrcHandle bh;
-            bh.start(host.broker_endpoint(), host.broker_pubkey(),
-                     "prod." + channel);
+        "broker_admin::snapshot_one_channel", {uid},
+        [channel, uid](pylabhub::tests::HubHostBrokerHandle &broker,
+                       pylabhub::tests::CurveSetup &curve) {
+            pylabhub::tests::BrcHandle bh;
+            bh.start(broker.endpoint, broker.pubkey, uid, curve.role(uid));
             auto reg = bh.brc.register_channel(
-                make_reg_opts(channel, "prod." + channel), 3000);
+                make_reg_opts(channel, uid), 3000);
             ASSERT_TRUE(reg.has_value()) << "register_channel failed";
 
-            ChannelSnapshot snap = host.broker().query_channel_snapshot();
+            ChannelSnapshot snap = broker.service().query_channel_snapshot();
             ASSERT_GE(snap.channels.size(), 1u);
 
             const ChannelSnapshotEntry *found = nullptr;
@@ -315,30 +259,32 @@ int snapshot_one_channel()
 
 int snapshot_after_consumer()
 {
+    const std::string channel  = pid_chan("admin.snap.consumer");
+    const std::string prod_uid = "prod." + channel;
+    const std::string cons_uid = "cons." + channel;
     return run_with_host(
-        "broker_admin::snapshot_after_consumer",
-        [](HubHost &host) {
-            const std::string channel = pid_chan("admin.snap.consumer");
-
-            BrcHandle prod_bh;
-            prod_bh.start(host.broker_endpoint(), host.broker_pubkey(),
-                          "prod." + channel);
+        "broker_admin::snapshot_after_consumer", {prod_uid, cons_uid},
+        [channel, prod_uid, cons_uid](
+            pylabhub::tests::HubHostBrokerHandle &broker,
+            pylabhub::tests::CurveSetup &curve) {
+            pylabhub::tests::BrcHandle prod_bh;
+            prod_bh.start(broker.endpoint, broker.pubkey, prod_uid,
+                          curve.role(prod_uid));
             auto reg = prod_bh.brc.register_channel(
-                make_reg_opts(channel, "prod." + channel), 3000);
+                make_reg_opts(channel, prod_uid), 3000);
             ASSERT_TRUE(reg.has_value()) << "register_channel failed";
 
-            prod_bh.brc.send_heartbeat(channel, "prod." + channel,
-                                        "producer", {});
+            prod_bh.brc.send_heartbeat(channel, prod_uid, "producer", {});
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
-            BrcHandle cons_bh;
-            cons_bh.start(host.broker_endpoint(), host.broker_pubkey(),
-                          "cons." + channel);
+            pylabhub::tests::BrcHandle cons_bh;
+            cons_bh.start(broker.endpoint, broker.pubkey, cons_uid,
+                          curve.role(cons_uid));
             auto cons_reg = cons_bh.brc.register_consumer(
-                make_cons_opts(channel, "cons." + channel), 3000);
+                make_cons_opts(channel, cons_uid), 3000);
             ASSERT_TRUE(cons_reg.has_value()) << "register_consumer failed";
 
-            ChannelSnapshot snap = host.broker().query_channel_snapshot();
+            ChannelSnapshot snap = broker.service().query_channel_snapshot();
             const ChannelSnapshotEntry *found = nullptr;
             for (const auto &ch : snap.channels)
             {
@@ -358,22 +304,22 @@ int snapshot_after_consumer()
 
 int close_channel_existing()
 {
+    const std::string channel = pid_chan("admin.close.existing");
+    const std::string uid     = "prod." + channel;
     return run_with_host(
-        "broker_admin::close_channel_existing",
-        [](HubHost &host) {
-            const std::string channel = pid_chan("admin.close.existing");
-
-            BrcHandle bh;
-            bh.start(host.broker_endpoint(), host.broker_pubkey(),
-                     "prod." + channel);
+        "broker_admin::close_channel_existing", {uid},
+        [channel, uid](pylabhub::tests::HubHostBrokerHandle &broker,
+                       pylabhub::tests::CurveSetup &curve) {
+            pylabhub::tests::BrcHandle bh;
+            bh.start(broker.endpoint, broker.pubkey, uid, curve.role(uid));
             auto reg = bh.brc.register_channel(
-                make_reg_opts(channel, "prod." + channel), 3000);
+                make_reg_opts(channel, uid), 3000);
             ASSERT_TRUE(reg.has_value()) << "register_channel failed";
 
-            host.broker().request_close_channel(channel);
+            broker.service().request_close_channel(channel);
 
             auto channel_gone = [&] {
-                auto s = host.broker().query_channel_snapshot();
+                auto s = broker.service().query_channel_snapshot();
                 for (const auto &ch : s.channels)
                     if (ch.name == channel) return false;
                 return true;
@@ -388,14 +334,16 @@ int close_channel_existing()
 int close_channel_non_existent()
 {
     return run_with_host(
-        "broker_admin::close_channel_non_existent",
-        [](HubHost &host) {
+        "broker_admin::close_channel_non_existent", {},
+        [](pylabhub::tests::HubHostBrokerHandle &broker,
+           pylabhub::tests::CurveSetup &) {
             EXPECT_NO_THROW(
-                host.broker().request_close_channel(pid_chan("admin.close.bogus")));
+                broker.service().request_close_channel(
+                    pid_chan("admin.close.bogus")));
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
             EXPECT_NO_THROW({
-                ChannelSnapshot snap = host.broker().query_channel_snapshot();
+                ChannelSnapshot snap = broker.service().query_channel_snapshot();
                 (void)snap.channels.size();
             });
         });
