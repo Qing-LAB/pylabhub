@@ -2497,20 +2497,25 @@ nlohmann::json BrokerServiceImpl::handle_consumer_dereg_req(zmq::socket_t& socke
     hub_state_->_on_consumer_left(channel_name, closing_entry.role_uid);
     on_consumer_closed(socket, channel_name, closing_entry, "voluntary_close");
 
-    // HEP-CORE-0036 §6.5 + PeerAdmission D3: revoke this consumer's
-    // pubkey from the channel-scope allowlist + notify producers.
-    // REG enforces non-empty `zmq_pubkey` (above), so any closing
-    // entry MUST have one.  An empty value here would mean HubState
-    // is corrupted — fail loud rather than degrade silently.
-    if (closing_entry.zmq_pubkey.empty())
+    // HEP-CORE-0036 §6.5: revoke this consumer's pubkey from the
+    // channel-scope allowlist + notify producers.  CONSUMER_REG_REQ
+    // hard-rejects empty / non-40-char `zmq_pubkey` at the wire
+    // (HEP-CORE-0035 §2 unconditional CURVE), so every stored
+    // ConsumerEntry MUST carry a 40-char Z85 key.  A value that
+    // fails that invariant indicates HubState corruption — log
+    // loudly and skip the revoke (passing a malformed pubkey to
+    // `_on_consumer_revoked` would be a no-op anyway).
+    if (closing_entry.zmq_pubkey.size() != 40)
     {
         LOGGER_ERROR(
-            "Broker: CONSUMER_DEREG_REQ for channel '{}' role_uid='{}' "
-            "found a ConsumerEntry with empty `zmq_pubkey` — HubState "
-            "invariant broken (CONSUMER_REG_REQ rejects empty pubkey at "
-            "the wire).  Proceeding with DEREG but allowlist is now "
-            "out of sync.",
-            channel_name, closing_entry.role_uid);
+            "Broker: ConsumerEntry on channel='{}' role_uid='{}' has "
+            "invalid zmq_pubkey (length {}, expected 40 Z85 chars).  "
+            "This SHOULD NOT happen — CONSUMER_REG_REQ hard-rejects "
+            "empty / wrong-length pubkey at the wire (HEP-CORE-0035 §2 "
+            "unconditional CURVE).  System may be compromised; restart "
+            "the hub ASAP.  Skipping channel-access revocation.",
+            channel_name, closing_entry.role_uid,
+            closing_entry.zmq_pubkey.size());
     }
     else
     {
@@ -3642,19 +3647,24 @@ void BrokerServiceImpl::check_dead_consumers(zmq::socket_t& socket)
             }
             hub_state_->_on_consumer_left(channel_name, dead_consumer.role_uid);
             on_consumer_closed(socket, channel_name, dead_consumer, "process_dead");
-            // HEP-CORE-0036 §6.5 + PeerAdmission D3: revoke + notify
-            // on heartbeat-timeout revocation path.  REG enforces a
-            // non-empty `zmq_pubkey` at the wire, so finding an empty
-            // one here is HubState corruption.
-            if (dead_consumer.zmq_pubkey.empty())
+            // HEP-CORE-0036 §6.5: revoke + notify on heartbeat-timeout
+            // path.  CONSUMER_REG_REQ hard-rejects empty / non-40-char
+            // `zmq_pubkey` at the wire (HEP-CORE-0035 §2 unconditional
+            // CURVE), so every stored ConsumerEntry MUST carry a
+            // 40-char Z85 key.  See the matching tripwire in
+            // handle_consumer_dereg_req for rationale.
+            if (dead_consumer.zmq_pubkey.size() != 40)
             {
                 LOGGER_ERROR(
-                    "Broker: heartbeat-timeout revocation for channel "
-                    "'{}' role_uid='{}' found a ConsumerEntry with "
-                    "empty `zmq_pubkey` — HubState invariant broken "
-                    "(REG path rejects empty pubkey).  Skipping allowlist "
-                    "revoke.",
-                    channel_name, dead_consumer.role_uid);
+                    "Broker: ConsumerEntry on channel='{}' role_uid='{}' "
+                    "has invalid zmq_pubkey (length {}, expected 40 Z85 "
+                    "chars).  This SHOULD NOT happen — CONSUMER_REG_REQ "
+                    "hard-rejects empty / wrong-length pubkey at the wire "
+                    "(HEP-CORE-0035 §2 unconditional CURVE).  System may "
+                    "be compromised; restart the hub ASAP.  Skipping "
+                    "channel-access revocation.",
+                    channel_name, dead_consumer.role_uid,
+                    dead_consumer.zmq_pubkey.size());
             }
             else
             {
