@@ -96,6 +96,32 @@ struct TxQueueOptions
     std::string instance_id{};
 };
 
+/// HEP-CORE-0017 §3.3 + HEP-CORE-0036 §4.1 / §6.4 — descriptor for a
+/// single producer the consumer's RX queue may receive data from.
+/// One entry per producer in `CONSUMER_REG_ACK.producers[]`.  For
+/// ZMQ transport `producer_peers` admits N entries (fan-in); for
+/// SHM transport `producer_peers.size() ≤ 1` (HEP-CORE-0007 §12.4a
+/// `MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM`).  Scripts never see this
+/// surface; ZmqQueue uses these internally for connect direction +
+/// per-peer ZAP cache.
+struct ProducerPeer
+{
+    /// Producer's role uid (HEP-CORE-0033 §G2.2.0b).
+    std::string role_uid;
+
+    /// `tcp://host:port` per HEP-CORE-0021 §16.
+    std::string endpoint;
+
+    /// Producer's identity pubkey, Z85-encoded 40 chars
+    /// (HEP-CORE-0036 §I6).  Used as the consumer-side
+    /// `curve_serverkey` for the data-plane CURVE handshake.  The
+    /// broker-side ZAP installed on the producer's PUSH socket
+    /// (HEP-CORE-0036 §7) is what gates whether this consumer's
+    /// pubkey is admitted; this field is the dual half the consumer
+    /// needs to authenticate the producer's identity in turn.
+    std::string pubkey_z85;
+};
+
 /// Configuration for RoleAPIBase::build_rx_queue().  Input side
 /// (consumer / processor-in).
 struct RxQueueOptions
@@ -111,6 +137,19 @@ struct RxQueueOptions
     std::string shm_name{};
     std::string zmq_node_endpoint{};
     size_t zmq_buffer_depth{kZmqDefaultBufferDepth};
+
+    /// HEP-CORE-0017 §3.3 + HEP-CORE-0036 §4.1 dynamic-membership
+    /// producer set populated from `CONSUMER_REG_ACK.producers[]`
+    /// (HEP-CORE-0036 §6.4).  At `build_rx_queue` time ZmqQueue
+    /// calls its internal setup once per entry; at runtime, the
+    /// role-host framework calls `ZmqQueue::add_producer_peer` /
+    /// `remove_producer_peer` in response to HEP-CORE-0033 §12
+    /// channel-event broadcasts.  Field shipped under the #103 A1
+    /// wire-shape slice; the dynamic-peer API + producer-side ZAP
+    /// install + consumer-side framework population land in A2 + A3.
+    /// `zmq_node_endpoint` above stays as the single-producer source
+    /// until A2 (no caller migration in A1).
+    std::vector<ProducerPeer> producer_peers;
 
     // Queue policy
     ChecksumPolicy checksum_policy{ChecksumPolicy::Enforced};
