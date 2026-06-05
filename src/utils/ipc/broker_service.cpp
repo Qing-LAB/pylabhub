@@ -2209,19 +2209,25 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
         return *err;
     }
 
-    const auto channel_entry = hub_state_->channel(channel_name);
-    if (!channel_entry.has_value())
+    // Single HubState snapshot covers channel-existence, endpoint
+    // freshness, R6 producer-readiness gate, and downstream schema
+    // checks — matches DISC_REQ's pattern at line ~1909 and avoids
+    // any drift between separate snapshot calls.
+    const auto snap = hub_state_->snapshot();
+    const auto cit  = snap.channels.find(channel_name);
+    if (cit == snap.channels.end())
     {
         LOGGER_WARN("Broker: CONSUMER_REG_REQ channel '{}' not found", channel_name);
         return make_error(corr_id, "CHANNEL_NOT_FOUND",
                           "Channel '" + channel_name + "' is not registered");
     }
+    const auto &channel_entry = cit->second;
 
     // HEP-0021 §16: reject if first producer's ZMQ endpoint has unresolved
     // port 0 (Wave M2.5 transitional — single-producer shape; step 5 expands
     // to "any ready producer" scan per HEP-CORE-0021 §16.4).
-    const auto *cons_first_prod = channel_entry->first_producer();
-    if (channel_entry->data_transport == "zmq" && cons_first_prod != nullptr &&
+    const auto *cons_first_prod = channel_entry.first_producer();
+    if (channel_entry.data_transport == "zmq" && cons_first_prod != nullptr &&
         !cons_first_prod->zmq_node_endpoint.empty())
     {
         auto ep_check = pylabhub::validate_tcp_endpoint(cons_first_prod->zmq_node_endpoint);
@@ -2242,51 +2248,74 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     // not yet running — the consumer's `Authorized` transition would
     // race the producer's first-heartbeat fire, producing handshake
     // failures during the gap.  Mirrors DISC_REQ's presence scan.
+    //
+    // Three outcomes are distinguished:
+    //   - at least one kLive producer       → admit
+    //   - some Connected (kRegistering) or  → CHANNEL_NOT_READY /
+    //     Pending presence exists             "awaiting_first_heartbeat"
+    //                                         (transient — client retries)
+    //   - only Disconnected / no presences  → CHANNEL_NOT_FOUND /
+    //                                         "no_live_producer"
+    //                                         (terminal — matches DISC_REQ
+    //                                         semantics; client must not
+    //                                         retry indefinitely)
     {
-        const auto snap = hub_state_->snapshot();
-        const auto cit  = snap.channels.find(channel_name);
-        bool any_live   = false;
-        if (cit != snap.channels.end())
+        bool any_live      = false;
+        bool any_pre_live  = false;  // Connected !first_heartbeat OR Pending
+        for (const auto &prod : channel_entry.producers)
         {
-            for (const auto &prod : cit->second.producers)
+            auto rit = snap.roles.find(prod.role_uid);
+            if (rit == snap.roles.end()) continue;
+            const auto *p =
+                rit->second.find_presence(channel_name, "producer");
+            if (p == nullptr) continue;
+            if (p->state == pylabhub::hub::RoleState::Connected &&
+                p->first_heartbeat_seen)
             {
-                auto rit = snap.roles.find(prod.role_uid);
-                if (rit == snap.roles.end()) continue;
-                const auto *p =
-                    rit->second.find_presence(channel_name, "producer");
-                if (p == nullptr) continue;
-                if (p->state == pylabhub::hub::RoleState::Connected &&
-                    p->first_heartbeat_seen)
-                {
-                    any_live = true;
-                    break;
-                }
+                any_live = true;
+                break;
+            }
+            if (p->state == pylabhub::hub::RoleState::Connected ||
+                p->state == pylabhub::hub::RoleState::Pending)
+            {
+                any_pre_live = true;
             }
         }
         if (!any_live)
         {
+            if (any_pre_live)
+            {
+                LOGGER_INFO(
+                    "Broker: CONSUMER_REG_REQ channel '{}' deferred — no "
+                    "kLive producer (awaiting_first_heartbeat)", channel_name);
+                return make_error(
+                    corr_id, "CHANNEL_NOT_READY",
+                    "Channel '" + channel_name +
+                        "' has no producer in kLive state "
+                        "(awaiting_first_heartbeat)");
+            }
             LOGGER_INFO(
-                "Broker: CONSUMER_REG_REQ channel '{}' deferred — no kLive "
-                "producer (awaiting_first_heartbeat)", channel_name);
+                "Broker: CONSUMER_REG_REQ channel '{}' rejected — all "
+                "producer-presences Disconnected (no_live_producer)",
+                channel_name);
             return make_error(
-                corr_id, "CHANNEL_NOT_READY",
+                corr_id, "CHANNEL_NOT_FOUND",
                 "Channel '" + channel_name +
-                    "' has no producer in kLive state "
-                    "(awaiting_first_heartbeat)");
+                    "' has no live producer-presence (no_live_producer)");
         }
     }
 
     // ── Transport arbitration (Phase 6) ─────────────────────────────────────
     const std::string consumer_queue_type = req.value("consumer_queue_type", "");
-    if (!consumer_queue_type.empty() && consumer_queue_type != channel_entry->data_transport)
+    if (!consumer_queue_type.empty() && consumer_queue_type != channel_entry.data_transport)
     {
         LOGGER_WARN("Broker: CONSUMER_REG_REQ transport mismatch on '{}': "
                     "consumer wants '{}' but channel uses '{}'",
-                    channel_name, consumer_queue_type, channel_entry->data_transport);
+                    channel_name, consumer_queue_type, channel_entry.data_transport);
         return make_error(corr_id, "TRANSPORT_MISMATCH",
                           "Consumer queue_type '" + consumer_queue_type +
                               "' does not match channel transport '" +
-                              channel_entry->data_transport + "'");
+                              channel_entry.data_transport + "'");
     }
 
     // ── HEP-CORE-0034 §9 — consumer schema validation ───────────────────────
@@ -2332,17 +2361,17 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
                               "CONSUMER_REG_REQ with expected_schema_id requires "
                               "expected_schema_hash (HEP-CORE-0034 §10.3)");
 
-        if (channel_entry->schema_id != expected_schema_id)
+        if (channel_entry.schema_id != expected_schema_id)
         {
             LOGGER_WARN("Broker: CONSUMER_REG_REQ schema_id mismatch on '{}': "
                         "expected='{}' channel_schema_id='{}'",
-                        channel_name, expected_schema_id, channel_entry->schema_id);
+                        channel_name, expected_schema_id, channel_entry.schema_id);
             return make_error(corr_id, "SCHEMA_ID_MISMATCH",
                               "Consumer expected schema_id '" + expected_schema_id +
                                   "' does not match channel '" + channel_name +
-                                  "' (channel id='" + channel_entry->schema_id + "')");
+                                  "' (channel id='" + channel_entry.schema_id + "')");
         }
-        if (expected_hash_hex != channel_entry->schema_hash)
+        if (expected_hash_hex != channel_entry.schema_hash)
             return make_error(corr_id, "SCHEMA_CITATION_REJECTED",
                               "Consumer's expected_schema_hash does not match "
                               "channel's stored hash (HEP-CORE-0034 §10.3)");
@@ -2366,7 +2395,7 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
             const auto h_c = pylabhub::hub::compute_canonical_hash_from_wire(
                 expected_blds, expected_packing,
                 expected_fz_blds, expected_fz_packing);
-            if (h_c != hex_to_hash_array(channel_entry->schema_hash))
+            if (h_c != hex_to_hash_array(channel_entry.schema_hash))
                 return make_error(corr_id, "FINGERPRINT_INCONSISTENT",
                                   "Consumer's expected_schema_blds + "
                                   "expected_schema_packing does not hash to the "
@@ -2403,7 +2432,7 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
         }
 
         // Compare against producer's hash on the channel.
-        if (h_c != hex_to_hash_array(channel_entry->schema_hash))
+        if (h_c != hex_to_hash_array(channel_entry.schema_hash))
             return make_error(corr_id, "SCHEMA_CITATION_REJECTED",
                               "Consumer's recomputed fingerprint does not match the "
                               "channel's schema_hash (HEP-CORE-0034 §10.3)");
