@@ -133,6 +133,75 @@ TEST_F(ZmqQueueTest, PushTo_Creates)
 }
 
 // ============================================================================
+// Dynamic producer-peer membership (HEP-CORE-0017 §3.3, #103 A2)
+// ============================================================================
+
+TEST_F(ZmqQueueTest, AddProducerPeer_PullSide_AppendsAndDeduplicatesByRoleUid)
+{
+    ZmqAuthOptions auth{}; // empty = no CURVE wired
+    auto q = ZmqQueue::pull_from_with_auth(
+        "tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned",
+        std::move(auth), /*bind=*/true, 100);
+    ASSERT_NE(q, nullptr);
+    EXPECT_EQ(q->producer_peer_count(), 0u);
+
+    ProducerPeer p1{"prod.foo.uid01", "tcp://127.0.0.1:5001", ""};
+    EXPECT_TRUE(q->add_producer_peer(p1));
+    EXPECT_EQ(q->producer_peer_count(), 1u);
+
+    // Same role_uid = in-place overwrite (HEP-0036 §I5 forward-looking
+    // semantics: the latest descriptor wins; previously buffered frames
+    // are not affected).
+    ProducerPeer p1_new_ep{"prod.foo.uid01", "tcp://127.0.0.1:5005", ""};
+    EXPECT_TRUE(q->add_producer_peer(p1_new_ep));
+    EXPECT_EQ(q->producer_peer_count(), 1u);
+
+    ProducerPeer p2{"prod.bar.uid02", "tcp://127.0.0.1:5002", ""};
+    EXPECT_TRUE(q->add_producer_peer(p2));
+    EXPECT_EQ(q->producer_peer_count(), 2u);
+}
+
+TEST_F(ZmqQueueTest, RemoveProducerPeer_PullSide_ReturnsFalseWhenAbsent)
+{
+    ZmqAuthOptions auth{};
+    auto q = ZmqQueue::pull_from_with_auth(
+        "tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned",
+        std::move(auth), /*bind=*/true, 100);
+    ASSERT_NE(q, nullptr);
+
+    ProducerPeer p{"prod.foo.uid01", "tcp://127.0.0.1:5001", ""};
+    EXPECT_TRUE(q->add_producer_peer(p));
+    EXPECT_EQ(q->producer_peer_count(), 1u);
+
+    EXPECT_TRUE(q->remove_producer_peer("prod.foo.uid01"));
+    EXPECT_EQ(q->producer_peer_count(), 0u);
+
+    // Removing again is a no-op + returns false (not found).
+    EXPECT_FALSE(q->remove_producer_peer("prod.foo.uid01"));
+    EXPECT_EQ(q->producer_peer_count(), 0u);
+
+    // Unknown uid is also a no-op + returns false.
+    EXPECT_FALSE(q->remove_producer_peer("prod.never.added"));
+}
+
+TEST_F(ZmqQueueTest, AddProducerPeer_PushSide_IsInert)
+{
+    // PUSH/bind side: producer doesn't track peers — admission is via
+    // the broker-pushed allowlist + the producer's ZAP handler.  The
+    // dynamic-peer API is inert; count stays 0.
+    ZmqAuthOptions auth{};
+    auto q = ZmqQueue::push_to_with_auth(
+        "tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned",
+        std::move(auth), /*bind=*/true);
+    ASSERT_NE(q, nullptr);
+
+    ProducerPeer p{"prod.foo", "tcp://127.0.0.1:5001", ""};
+    EXPECT_FALSE(q->add_producer_peer(p));
+    EXPECT_FALSE(q->remove_producer_peer("prod.foo"));
+    EXPECT_EQ(q->producer_peer_count(), 0u);
+}
+
+// ============================================================================
 // Lifecycle tests
 // ============================================================================
 
