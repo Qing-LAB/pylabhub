@@ -2241,27 +2241,31 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
         }
     }
 
-    // HEP-CORE-0036 §5.2 R6 gate: CONSUMER_REG_REQ is admitted only if
-    // at least one producer-presence has reached kLive (Connected +
-    // first_heartbeat_seen).  Without this gate a consumer would be
-    // authorized against a kRegistering producer whose data plane is
-    // not yet running — the consumer's `Authorized` transition would
-    // race the producer's first-heartbeat fire, producing handshake
-    // failures during the gap.  Mirrors DISC_REQ's presence scan.
+    // HEP-CORE-0036 §5.2 R6 gate + §6.6 rejection vocabulary:
+    // CONSUMER_REG_REQ is admitted only if at least one producer-
+    // presence has reached kLive (Connected + first_heartbeat_seen).
+    // Without this gate a consumer would be authorized against a
+    // kRegistering producer whose data plane is not yet running —
+    // the consumer's `Authorized` transition would race the
+    // producer's first-heartbeat fire, producing handshake failures
+    // during the gap.  Mirrors DISC_REQ's presence scan.
     //
-    // Three outcomes are distinguished:
-    //   - at least one kLive producer       → admit
-    //   - some Connected (kRegistering) or  → CHANNEL_NOT_READY /
-    //     Pending presence exists             "awaiting_first_heartbeat"
-    //                                         (transient — client retries)
-    //   - only Disconnected / no presences  → CHANNEL_NOT_FOUND /
-    //                                         "no_live_producer"
-    //                                         (terminal — matches DISC_REQ
-    //                                         semantics; client must not
-    //                                         retry indefinitely)
+    // Four outcomes, matching the §6.6 reason catalog:
+    //   - at least one kLive producer    → admit
+    //   - some kRegistering (Connected,  → CHANNEL_NOT_READY /
+    //     !first_heartbeat_seen)           "awaiting_first_heartbeat"
+    //                                      (transient — client retries)
+    //   - some kStalled (Pending; per    → CHANNEL_NOT_READY /
+    //     HEP-CORE-0023 §2.6)              "heartbeat_stalled"
+    //                                      (transient — client retries)
+    //   - only kAbsent (Disconnected /   → CHANNEL_NOT_FOUND
+    //     no presences)                    (terminal — matches
+    //                                      DISC_REQ; client must not
+    //                                      retry indefinitely)
     {
-        bool any_live      = false;
-        bool any_pre_live  = false;  // Connected !first_heartbeat OR Pending
+        bool any_live          = false;
+        bool any_kRegistering  = false;  // Connected, !first_heartbeat
+        bool any_kStalled      = false;  // Pending
         for (const auto &prod : channel_entry.producers)
         {
             auto rit = snap.roles.find(prod.role_uid);
@@ -2269,39 +2273,48 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
             const auto *p =
                 rit->second.find_presence(channel_name, "producer");
             if (p == nullptr) continue;
-            if (p->state == pylabhub::hub::RoleState::Connected &&
-                p->first_heartbeat_seen)
+            if (p->state == pylabhub::hub::RoleState::Connected)
             {
-                any_live = true;
-                break;
+                if (p->first_heartbeat_seen) { any_live = true; break; }
+                any_kRegistering = true;
             }
-            if (p->state == pylabhub::hub::RoleState::Connected ||
-                p->state == pylabhub::hub::RoleState::Pending)
+            else if (p->state == pylabhub::hub::RoleState::Pending)
             {
-                any_pre_live = true;
+                any_kStalled = true;
             }
         }
         if (!any_live)
         {
-            if (any_pre_live)
+            if (any_kRegistering)
             {
                 LOGGER_INFO(
-                    "Broker: CONSUMER_REG_REQ channel '{}' deferred — no "
-                    "kLive producer (awaiting_first_heartbeat)", channel_name);
+                    "Broker: CONSUMER_REG_REQ channel '{}' deferred — "
+                    "awaiting_first_heartbeat", channel_name);
                 return make_error(
                     corr_id, "CHANNEL_NOT_READY",
                     "Channel '" + channel_name +
-                        "' has no producer in kLive state "
-                        "(awaiting_first_heartbeat)");
+                        "' is not ready (awaiting_first_heartbeat — "
+                        "producer registered but has not yet sent its "
+                        "first heartbeat)");
             }
-            LOGGER_INFO(
+            if (any_kStalled)
+            {
+                LOGGER_WARN(
+                    "Broker: CONSUMER_REG_REQ channel '{}' deferred — "
+                    "heartbeat_stalled", channel_name);
+                return make_error(
+                    corr_id, "CHANNEL_NOT_READY",
+                    "Channel '" + channel_name +
+                        "' is not ready (heartbeat_stalled — producer "
+                        "missed its heartbeat window; HEP-CORE-0023 §2.6)");
+            }
+            LOGGER_WARN(
                 "Broker: CONSUMER_REG_REQ channel '{}' rejected — all "
-                "producer-presences Disconnected (no_live_producer)",
-                channel_name);
+                "producer-presences absent or Disconnected", channel_name);
             return make_error(
                 corr_id, "CHANNEL_NOT_FOUND",
                 "Channel '" + channel_name +
-                    "' has no live producer-presence (no_live_producer)");
+                    "' has no producer-presence alive");
         }
     }
 
