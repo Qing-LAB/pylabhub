@@ -337,6 +337,36 @@ I. **`hub_zmq_queue.cpp:617` "bind side: serverkey is meaningless. Don't fail if
 - A1 (commit `164b805c`) stays as the wire-shape schema even though
   the producer_peers field is unused until A3.
 
+### Implementation order (to keep ctest green throughout the chain)
+
+Doc-review 2026-06-05 caught a sequencing issue: C1 (strict
+`validate_auth_options`) alone would break ctest because the
+ordering bug (HB-1) means `build_tx_queue` passes empty keys at run
+time.  Practical order:
+
+1. **C0 — HB-1 ordering fix** (keypair to RoleAPIBase ctor;
+   `set_auth` setter retired in favour of a constructor-time
+   invariant; raw `std::string` fields for now to keep diff small).
+   After C0, `build_tx_queue` always sees non-empty keys → the
+   producer-side `push_to_with_auth` now actually engages CURVE.
+   This will reveal latent consumer-side breakage (PULL still uses
+   plaintext) — mask the affected ZMQ-data-plane L4 round-trips
+   with a cited TODO if any exist, in the same commit (`#153` pattern).
+2. **C1 — strict `validate_auth_options`**.  Safe now that HB-1 is
+   closed; the strict-mode rejection cannot fire on production
+   paths.  L2 tests for `validate_auth_options` flip from acceptance
+   to rejection cases.
+3. **C2 — strong-type keys** (`CurveKeypair` validating ctor +
+   `Z85PublicKey`).  Pure refactor.
+4. **C3b — finalize**: delete `set_auth`, `auth_client_pubkey()`,
+   `auth_client_seckey()` setters/getters (replaced by ctor + `const
+   CurveKeypair&` accessor if needed).
+5. **C4 — delete legacy factories** + rename + migrate 103 test sites.
+6. **C5 — asymmetric assertions** + unmask any tests masked in C0.
+
+Tasks #157-#161 already exist for C1-C5; C0 absorbed into #159
+(the original "C3" task) since it's the same structural change.
+
 ### Memory rule to add
 
 **"Audit stale silent-fallback patterns whenever a contract changes."**
