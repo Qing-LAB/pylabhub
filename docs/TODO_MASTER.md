@@ -133,20 +133,37 @@ the demo inventory + manifest schema.
 - **#73** HEP-CORE-0033 Phase 10 doc closure.
 
 **P3 — HEP-0036 auth implementation chain** (production-readiness
-blocker; detailed execution plan in `docs/todo/AUTH_TODO.md`
-§"Critical-path execution plan").  Verified 2026-06-05 against code:
+blocker; detailed execution plan in `docs/todo/AUTH_TODO.md`).
+
+**2026-06-05 REFRAME (post-audit):** Verified against code that A1
+(commit `164b805c`) + A2 (commit `badfaed1`) shipped but A2
+**silently achieves zero CURVE coverage** due to a `validate_auth_options`
+fallback + a `set_auth` ordering bug.  1998/1998 ctest passes because
+every code path takes the plaintext branch.  See AUTH_TODO.md
+§"CRITICAL — A1+A2 silently shipped zero CURVE coverage" for the
+verified HARD-BLOCKS (HB-1..HB-6).
 
 Sequence (each step blocks the next):
-- **#103 + #94** ZmqQueue dynamic peer API + HEP-0021 §16.5 ephemeral
-  binding — **the gate**.  Without `RxQueueOptions::producer_peers` +
-  `ZmqQueue::add_producer_peer`/`remove_producer_peer`, AUTH Phase
-  D4 (role-side dispatch) and D5 (`CONSUMER_REG_ACK.producers[]`)
-  are mechanically impossible to wire.  Three commits A1/A2/A3 per
-  `AUTH_TODO.md`.  M-L.  Co-lands wire-shape per HEP-0036 §14.1.
-- **#74 D4-D7** — closes inside the #103 A3 commit (D4+D5) + #154
-  (D6) + L4 test (D7).  D1+D2+D3 already shipped.
+- **C1-C5** strict-CURVE cleanup chain (tasks #157-#161) — **must
+  run BEFORE A3**.  Deletes the all-empty fallback in
+  `validate_auth_options`, strong-types the keypair, makes auth a
+  constructor invariant on `RoleAPIBase`, deletes the legacy
+  `pull_from`/`push_to` factories, adds CURVE-engagement test
+  assertions.  After C5 there is no path by which CURVE-off can
+  ship and pass tests.
+- **A3** (under #103) — D5 (`CONSUMER_REG_ACK.producers[]` emission)
+  + D4 (BRC notify dispatch + `set_peer_allowlist` call) +
+  consumer-side switch to authed factory + B1 + B2 folded in.
+- **#94** HEP-0021 §16.5 ephemeral binding — co-lands wire-shape
+  per HEP-0036 §14.1.
+- **HB-2** (#162) wire `ZapRouter::pump_one` on BRC poll thread.
+- **HB-4+5** (#163) `RegistrationState::Authorized` + data-loop
+  outer guard (also satisfies HEP-CORE-0036 §14.3 portion of #104).
+- **HB-6** (#164) broker generates random `shm_secret`.
+- **#74 D4-D7** — closes via the above + #154 (D6) + L4 test (D7).
+  D1+D2+D3 already shipped.
 - **#104** Sibling-HEP doc sync — 7 of 8 are pure doc edits;
-  HEP-0023 needs ~10 LOC `Authorized` FSM state.  L (multi-area).
+  HEP-0023 portion handled by HB-4+5 above.  L (multi-area).
 
 Parallel / independent (any order, no #103 dependency):
 - **#101** key-file ACL discipline — already shipped (commit
