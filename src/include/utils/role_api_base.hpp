@@ -96,31 +96,10 @@ struct TxQueueOptions
     std::string instance_id{};
 };
 
-/// HEP-CORE-0017 §3.3 + HEP-CORE-0036 §4.1 / §6.4 — descriptor for a
-/// single producer the consumer's RX queue may receive data from.
-/// One entry per producer in `CONSUMER_REG_ACK.producers[]`.  For
-/// ZMQ transport `producer_peers` admits N entries (fan-in); for
-/// SHM transport `producer_peers.size() ≤ 1` (HEP-CORE-0007 §12.4a
-/// `MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM`).  Scripts never see this
-/// surface; ZmqQueue uses these internally for connect direction +
-/// per-peer ZAP cache.
-struct ProducerPeer
-{
-    /// Producer's role uid (HEP-CORE-0033 §G2.2.0b).
-    std::string role_uid;
-
-    /// `tcp://host:port` per HEP-CORE-0021 §16.
-    std::string endpoint;
-
-    /// Producer's identity pubkey, Z85-encoded 40 chars
-    /// (HEP-CORE-0036 §I6).  Used as the consumer-side
-    /// `curve_serverkey` for the data-plane CURVE handshake.  The
-    /// broker-side ZAP installed on the producer's PUSH socket
-    /// (HEP-CORE-0036 §7) is what gates whether this consumer's
-    /// pubkey is admitted; this field is the dual half the consumer
-    /// needs to authenticate the producer's identity in turn.
-    std::string pubkey_z85;
-};
+// `ProducerPeer` lives in `hub_zmq_queue.hpp` (next to the
+// `add_producer_peer` / `remove_producer_peer` API that consumes it)
+// to avoid an include cycle.  Imported here via the existing
+// `#include "utils/hub_zmq_queue.hpp"` at the top of this file.
 
 /// Configuration for RoleAPIBase::build_rx_queue().  Input side
 /// (consumer / processor-in).

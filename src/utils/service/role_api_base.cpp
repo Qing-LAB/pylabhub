@@ -315,10 +315,26 @@ bool RoleAPIBase::build_tx_queue(const hub::TxQueueOptions &opts)
         // aren't carrying a redundant schema_hash field in opts.
         const auto schema_hash = hub::compute_schema_hash(opts.slot_spec,
                                                            opts.fz_spec);
-        writer = hub::ZmqQueue::push_to(
+        // HEP-CORE-0035 §2 + §4.6.5: CURVE is unconditional on every
+        // role↔hub data path.  Producer (PUSH/bind side) presents its
+        // identity keypair to libzmq + installs a PeerAdmission
+        // handler on the same ZMQ context's ZAP REP (HEP-CORE-0036
+        // §7).  The initial allowlist is empty (broker pushes the
+        // current snapshot via `set_peer_allowlist` once D4 routes
+        // CHANNEL_AUTH_CHANGED_NOTIFY pulls).  zap_domain is
+        // per-(role,channel,side) per the ZmqAuthOptions convention.
+        hub::ZmqAuthOptions auth_opts;
+        auth_opts.my_pubkey_z85 = pImpl->auth_client_pubkey;
+        auth_opts.my_seckey_z85 = pImpl->auth_client_seckey;
+        auth_opts.zap_domain    = pImpl->uid + ":" + tx_channel + ":tx";
+        // initial_allowlist: empty (deny-all); broker pushes the
+        // snapshot via set_peer_allowlist after the producer's REG
+        // completes and consumers are admitted.
+        writer = hub::ZmqQueue::push_to_with_auth(
             opts.zmq_node_endpoint,
             hub::schema_spec_to_zmq_fields(opts.slot_spec),
             opts.slot_spec.packing,
+            std::move(auth_opts),
             opts.zmq_bind, make_schema_tag(schema_hash),
             /*sndhwm=*/0, opts.zmq_buffer_depth, opts.zmq_overflow_policy,
             /*send_retry_interval_ms=*/10, std::move(inst_id));
@@ -366,10 +382,24 @@ bool RoleAPIBase::build_rx_queue(const hub::RxQueueOptions &opts)
     }
     else if (opts.data_transport == "zmq")
     {
-        if (opts.zmq_node_endpoint.empty())
+        // HEP-CORE-0017 §3.3 + HEP-CORE-0036 §6.4: `producer_peers` is
+        // the canonical source for the consumer's connect target,
+        // populated from `CONSUMER_REG_ACK.producers[]` (D5).  Until
+        // D5 emits the array, `producer_peers` may be empty and the
+        // legacy `zmq_node_endpoint` carries the single-producer
+        // endpoint.  Fan-in over N producers + per-peer CURVE handshake
+        // requires Pattern A vs Pattern B selection (HEP-CORE-0017
+        // §3.3) and is future work; the current single-socket connect
+        // accepts the first peer's endpoint.
+        const std::string &rx_endpoint = opts.producer_peers.empty()
+            ? opts.zmq_node_endpoint
+            : opts.producer_peers.front().endpoint;
+        if (rx_endpoint.empty())
         {
-            LOGGER_ERROR("[{}] data_transport='zmq' but zmq_node_endpoint is empty",
-                         pImpl->role_tag);
+            LOGGER_ERROR(
+                "[{}] data_transport='zmq' but no endpoint available "
+                "(producer_peers empty AND zmq_node_endpoint empty)",
+                pImpl->role_tag);
             return false;
         }
         std::string inst_id = opts.instance_id.empty()
@@ -380,7 +410,7 @@ bool RoleAPIBase::build_rx_queue(const hub::RxQueueOptions &opts)
         const auto expected_hash = hub::compute_schema_hash(opts.slot_spec,
                                                              opts.fz_spec);
         reader = hub::ZmqQueue::pull_from(
-            opts.zmq_node_endpoint,
+            rx_endpoint,
             hub::schema_spec_to_zmq_fields(opts.slot_spec),
             opts.slot_spec.packing,
             /*bind=*/false, opts.zmq_buffer_depth,
@@ -390,7 +420,7 @@ bool RoleAPIBase::build_rx_queue(const hub::RxQueueOptions &opts)
         if (!reader->start())
         {
             LOGGER_ERROR("[{}] ZMQ PULL start() failed for '{}'",
-                         pImpl->role_tag, opts.zmq_node_endpoint);
+                         pImpl->role_tag, rx_endpoint);
             return false;
         }
     }

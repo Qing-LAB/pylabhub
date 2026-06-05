@@ -107,6 +107,32 @@ inline constexpr size_t kZmqDefaultBufferDepth = 64;
  */
 using ZmqSchemaField = SchemaFieldDesc;
 
+/// HEP-CORE-0017 §3.3 + HEP-CORE-0036 §4.1 / §6.4 — descriptor for a
+/// single producer the consumer's RX queue may receive data from.
+/// One entry per producer in `CONSUMER_REG_ACK.producers[]`.  For
+/// ZMQ transport `producer_peers` admits N entries (fan-in); for
+/// SHM transport `producer_peers.size() ≤ 1` (HEP-CORE-0007 §12.4a
+/// `MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM`).  Scripts never see this
+/// surface; ZmqQueue uses these internally for connect direction +
+/// per-peer ZAP cache.
+struct ProducerPeer
+{
+    /// Producer's role uid (HEP-CORE-0033 §G2.2.0b).
+    std::string role_uid;
+
+    /// `tcp://host:port` per HEP-CORE-0021 §16.
+    std::string endpoint;
+
+    /// Producer's identity pubkey, Z85-encoded 40 chars
+    /// (HEP-CORE-0036 §I6).  Used as the consumer-side
+    /// `curve_serverkey` for the data-plane CURVE handshake.  The
+    /// broker-side ZAP installed on the producer's PUSH socket
+    /// (HEP-CORE-0036 §7) is what gates whether this consumer's
+    /// pubkey is admitted; this field is the dual half the consumer
+    /// needs to authenticate the producer's identity in turn.
+    std::string pubkey_z85;
+};
+
 /**
  * @struct ZmqAuthOptions
  * @brief CURVE-encryption + ZAP-admission options for a `ZmqQueue` instance.
@@ -312,6 +338,40 @@ public:
     [[nodiscard]] bool is_peer_allowed(
         const pylabhub::utils::security::PeerIdentity& peer) const override;
     [[nodiscard]] bool admission_is_enforced() const noexcept override;
+
+    // ── Dynamic producer-peer membership (HEP-CORE-0017 §3.3, #103 A2) ──────────
+    //
+    // PULL/connect side: tracks the set of producers the consumer is
+    // currently authorized to receive from.  Driven by the role-host
+    // framework in response to HEP-CORE-0033 §12 channel-event
+    // broadcasts (producer joined / left) and by the post-§6.5 notify-
+    // then-pull cycle.  Today the impl is metadata-only — Pattern A vs
+    // Pattern B socket-level fan-in is HEP-CORE-0017 §3.3 future work;
+    // the single-producer connect endpoint still flows through
+    // `pull_from()` / `pull_from_with_auth()`'s `endpoint` parameter.
+    // The methods exist now so the A3 dispatch layer has a stable
+    // surface to call.
+    //
+    // PUSH/bind side: inert.  The producer doesn't "add peers"; consumer
+    // admission is handled via the broker-pushed allowlist
+    // (`set_peer_allowlist`) + the producer's ZAP handler installed at
+    // bind time.  Calling these on a PUSH-side queue returns false +
+    // logs once at INFO.
+
+    /// Append a producer to this queue's peer set.  Idempotent on
+    /// `role_uid` collision (existing entry overwritten in place).
+    /// Returns true on success; false on PUSH side or null impl.
+    bool add_producer_peer(const ProducerPeer& peer);
+
+    /// Remove a producer from this queue's peer set by `role_uid`.
+    /// Returns true if a peer was removed; false otherwise (not found
+    /// or PUSH side).  Per HEP-CORE-0036 I5 "revocation is forward-
+    /// looking": frames already received are not discarded.
+    bool remove_producer_peer(const std::string& role_uid);
+
+    /// Number of producer peers currently tracked.  Returns 0 on PUSH
+    /// side or null impl.  Diagnostic + test observability.
+    [[nodiscard]] std::size_t producer_peer_count() const noexcept;
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 

@@ -26,6 +26,7 @@
 #include <condition_variable>
 #include <cstdio>
 #include <cstring>
+#include <algorithm>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -152,6 +153,17 @@ struct ZmqQueueImpl
     // PUSH/bind side ZAP registration handle.  Active iff CURVE was
     // wired AND this is the server side; released in stop().
     std::optional<pylabhub::utils::security::ZapDomainHandle> zap_handle_;
+
+    // PULL/connect side producer-peer membership (HEP-CORE-0017 §3.3,
+    // #103 A2).  Metadata-only today — Pattern A/B socket-level
+    // fan-in is future work; the single-producer connect endpoint
+    // flows through ZmqQueue factories' `endpoint` parameter.  The
+    // dispatch layer (A3) appends here on CHANNEL_AUTH_CHANGED_NOTIFY
+    // → GET_CHANNEL_AUTH_ACK so the queue has a stable record of
+    // who's authorized.  Mutex-guarded since both broker thread and
+    // role thread may touch in future fan-in impl.
+    std::mutex                   producer_peers_mu_;
+    std::vector<ProducerPeer>    producer_peers_;
 
     // ── Domain 2+3 timing (HEP-CORE-0008 §10) ──────────────────────────────
     // Measured in read_acquire/read_release (read mode) or
@@ -757,6 +769,49 @@ bool ZmqQueue::admission_is_enforced() const noexcept
     if (!pImpl) return false;
     if (pImpl->auth_opts_.my_pubkey_z85.empty()) return false;
     return pImpl->running_.load(std::memory_order_acquire);
+}
+
+// ── Dynamic producer-peer membership (HEP-CORE-0017 §3.3, #103 A2) ──────────
+
+bool ZmqQueue::add_producer_peer(const ProducerPeer& peer)
+{
+    if (!pImpl) return false;
+    if (pImpl->mode != ZmqQueueImpl::Mode::Read)
+        return false;
+    std::lock_guard<std::mutex> lock(pImpl->producer_peers_mu_);
+    for (auto& existing : pImpl->producer_peers_)
+    {
+        if (existing.role_uid == peer.role_uid)
+        {
+            existing = peer;
+            return true;
+        }
+    }
+    pImpl->producer_peers_.push_back(peer);
+    return true;
+}
+
+bool ZmqQueue::remove_producer_peer(const std::string& role_uid)
+{
+    if (!pImpl) return false;
+    if (pImpl->mode != ZmqQueueImpl::Mode::Read)
+        return false;
+    std::lock_guard<std::mutex> lock(pImpl->producer_peers_mu_);
+    auto it = std::find_if(
+        pImpl->producer_peers_.begin(), pImpl->producer_peers_.end(),
+        [&](const ProducerPeer& p) { return p.role_uid == role_uid; });
+    if (it == pImpl->producer_peers_.end())
+        return false;
+    pImpl->producer_peers_.erase(it);
+    return true;
+}
+
+std::size_t ZmqQueue::producer_peer_count() const noexcept
+{
+    if (!pImpl) return 0;
+    if (pImpl->mode != ZmqQueueImpl::Mode::Read) return 0;
+    std::lock_guard<std::mutex> lock(pImpl->producer_peers_mu_);
+    return pImpl->producer_peers_.size();
 }
 
 // ============================================================================
