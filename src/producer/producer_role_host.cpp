@@ -338,6 +338,12 @@ void ProducerRoleHost::worker_main_()
         reg_in.has_shm           = shm.enabled;
         reg_in.is_zmq_transport  = (tr.transport == config::Transport::Zmq);
         reg_in.zmq_node_endpoint = tr.zmq_endpoint;
+        // HEP-CORE-0036 §4.1 + §5.1 + §6.4 — producer's CURVE identity
+        // pubkey is REQUIRED on REG_REQ.  Broker stores it on
+        // ChannelEntry::producers[i].zmq_pubkey and emits it back to
+        // consumers via CONSUMER_REG_ACK.producers[] so the consumer can
+        // use it as the data-plane curve_serverkey.
+        reg_in.zmq_pubkey        = config_.auth().client_pubkey;
         auto reg_opts = hub::build_producer_reg_payload(reg_in);
 
         // Schema fields (HEP-CORE-0034 §10.1).  Empty fields → broker
