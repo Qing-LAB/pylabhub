@@ -127,15 +127,15 @@ struct ConsumerEntry
     std::string consumer_hostname;
     std::string zmq_identity; ///< ROUTER identity for direct notifications.
 
-    /// Consumer's CURVE pubkey (Z85, 40 chars).  Mirrors the producer-side
-    /// `ProducerEntry::zmq_pubkey` field — populated from CONSUMER_REG_REQ
-    /// wire body at REG accept (broker_proto 5→6 / PeerAdmission D3,
-    /// HEP-CORE-0036 §6.5 amended 2026-06-04).  Used by the broker to
-    /// populate `ChannelAccessEntry::authorized_consumer_pubkeys` via
+    /// Consumer's CURVE pubkey (Z85, exactly 40 chars).  Mirrors the
+    /// producer-side `ProducerEntry::zmq_pubkey` field — populated from
+    /// CONSUMER_REG_REQ wire body at REG accept (HEP-CORE-0036 §6.5).
+    /// Used by the broker to populate
+    /// `ChannelAccessEntry::authorized_consumer_pubkeys` via
     /// `_on_consumer_authorized` and to revoke via `_on_consumer_revoked`
-    /// at DEREG / heartbeat timeout.  Empty for legacy consumers that
-    /// don't carry the field; allowlist stays empty for them, which is
-    /// the legal deny-all state per HEP-CORE-0035 §4.8.4.
+    /// at DEREG / heartbeat timeout.  Wire admission HARD-REJECTS empty
+    /// or non-40-char values per HEP-CORE-0035 §2 (unconditional CURVE);
+    /// every stored ConsumerEntry must carry a 40-char Z85 key.
     /// "No-self-claims" hardening (User-Id extraction) is a separate
     /// Layer-2 audit — see HEP-CORE-0036 §4.1 line 425.
     std::string zmq_pubkey;

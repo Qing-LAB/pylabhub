@@ -129,10 +129,9 @@ constexpr std::array<std::string_view, 17> kRequestReplyTypes = {
     "ROLE_PRESENCE_REQ", "ROLE_INFO_REQ",
     "BAND_JOIN_REQ", "BAND_LEAVE_REQ", "BAND_MEMBERS_REQ",
     "HUB_PEER_HELLO",
-    // broker_proto 5 → 6 (HEP-CORE-0036 §6.5 amended 2026-06-04 +
-    // PeerAdmission Phase D3): producer queries the current channel-
-    // scope allowlist on receipt of CHANNEL_AUTH_CHANGED_NOTIFY (or
-    // proactively at setup).  Standard request-reply via existing
+    // Producer queries the current channel-scope allowlist on receipt
+    // of CHANNEL_AUTH_CHANGED_NOTIFY (or proactively at setup) per
+    // HEP-CORE-0036 §6.5.  Standard request-reply via existing
     // do_request infrastructure.
     "GET_CHANNEL_AUTH_REQ",
 };
@@ -393,19 +392,18 @@ public:
                                               const nlohmann::json& req);
     void           handle_heartbeat_req(const nlohmann::json& req);
 
-    /// HEP-CORE-0036 §6.5 amended 2026-06-04 + PeerAdmission Phase D3 —
-    /// `GET_CHANNEL_AUTH_REQ` handler.  Returns the channel's current
-    /// `authorized_consumer_pubkeys` allowlist to a producer that asks.
-    /// Errors: `CHANNEL_NOT_FOUND` (channel does not exist),
-    /// `PRODUCER_NOT_AUTHORIZED` (caller's role_uid is not a registered
-    /// producer of the named channel).  Defence-in-depth: never return
-    /// another channel's allowlist to a non-producer caller.
+    /// `GET_CHANNEL_AUTH_REQ` handler (HEP-CORE-0036 §6.5).  Returns
+    /// the channel's current `authorized_consumer_pubkeys` allowlist
+    /// to a producer that asks.  Errors: `CHANNEL_NOT_FOUND` (channel
+    /// does not exist), `PRODUCER_NOT_AUTHORIZED` (caller's role_uid
+    /// is not a registered producer of the named channel).
+    /// Defence-in-depth: never return another channel's allowlist to a
+    /// non-producer caller.
     nlohmann::json handle_get_channel_auth_req(const nlohmann::json& req);
 
-    /// HEP-CORE-0036 §6.5 amended 2026-06-04 + PeerAdmission Phase D3 —
-    /// fire-and-forget `CHANNEL_AUTH_CHANGED_NOTIFY` to every producer
-    /// of the named channel.  Same fan-out shape as
-    /// `CHANNEL_CLOSING_NOTIFY` / `CONSUMER_DIED_NOTIFY`.  No ACK
+    /// Fire-and-forget `CHANNEL_AUTH_CHANGED_NOTIFY` to every producer
+    /// of the named channel (HEP-CORE-0036 §6.5).  Same fan-out shape
+    /// as `CHANNEL_CLOSING_NOTIFY` / `CONSUMER_DIED_NOTIFY`.  No ACK
     /// awaited; the producer's response is to fire its own
     /// `GET_CHANNEL_AUTH_REQ` pull.  Producers without a captured ZMQ
     /// identity are skipped (no transport to reach them).  Caller has
@@ -1122,8 +1120,8 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
     }
     else if (msg_type == "GET_CHANNEL_AUTH_REQ")
     {
-        // HEP-CORE-0036 §6.5 amended 2026-06-04 + PeerAdmission D3:
-        // producer pulls the current channel-scope allowlist.
+        // HEP-CORE-0036 §6.5 — producer pulls the current channel-scope
+        // allowlist.
         nlohmann::json resp = handle_get_channel_auth_req(payload);
         const std::string ack =
             (resp.value("status", "") == "success") ? "GET_CHANNEL_AUTH_ACK" : "ERROR";
@@ -1870,12 +1868,12 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
                           "one producer; use ZMQ transport for Fan-In");
     }
 
-    // HEP-CORE-0036 §6.5 + PeerAdmission D3: a freshly-opened channel
-    // needs a `ChannelAccessEntry` so subsequent CONSUMER_REG_REQ
-    // accepts can populate the allowlist via `_on_consumer_authorized`
-    // (no-op without an existing access record per its safe-default
-    // invariant).  SHM secret stays zero — SHM auth wiring is Phase G
-    // (HEP-CORE-0036 §12 Phase 5), not D3.
+    // HEP-CORE-0036 §6.5: a freshly-opened channel needs a
+    // `ChannelAccessEntry` so subsequent CONSUMER_REG_REQ accepts can
+    // populate the allowlist via `_on_consumer_authorized` (no-op
+    // without an existing access record per its safe-default
+    // invariant).  SHM secret stays zero — SHM auth wiring is tracked
+    // separately (HEP-CORE-0036 §12 Phase 5 + task #106).
     if (admission.channel_opened)
     {
         hub_state_->_on_channel_access_opened(channel_name, /*shm_secret=*/0);
@@ -2151,10 +2149,9 @@ nlohmann::json BrokerServiceImpl::handle_dereg_req(const nlohmann::json& req,
         // map already has the channel erased by _on_producer_dropped).
         send_closing_notify(socket, channel_name, pre_drop, "producer_deregistered");
         on_channel_closed(socket, channel_name, pre_drop, "producer_deregistered");
-        // HEP-CORE-0036 §6.5 + PeerAdmission D3: drop the channel-
-        // access record now that the channel is gone.  Idempotent —
-        // safe even if `_on_channel_access_opened` was never called
-        // (legacy flow before D3 wired the producer-REG hook).
+        // HEP-CORE-0036 §6.5: drop the channel-access record now that
+        // the channel is gone.  Idempotent — safe even if
+        // `_on_channel_access_opened` was never called.
         hub_state_->_on_channel_access_closed(channel_name);
         // M1.4 (2026-05-11): no metrics_store_.erase needed — metrics
         // live on per-presence rows which are erased atomically by
@@ -2411,7 +2408,8 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
                               "Consumer's recomputed fingerprint does not match the "
                               "channel's schema_hash (HEP-CORE-0034 §10.3)");
     }
-    // else: all expected_* empty → no validation (legacy consumer; backward compat).
+    // else: all expected_* empty → consumer opts out of schema validation
+    // (HEP-CORE-0034 §10.3 "I don't care about schema" path).
 
     // ── Role identity policy check (placeholder — pending HEP-CORE-0035) ────
     // Grammar check already ran at handler entry (audit R3.5b); this
@@ -2431,16 +2429,13 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     entry.inbox_schema_json = req.value("inbox_schema_json", "");
     entry.inbox_packing     = req.value("inbox_packing", "");
     entry.inbox_checksum    = req.value("inbox_checksum", "");
-    // broker_proto 5→6 (HEP-CORE-0036 §6.5 amended 2026-06-04 +
-    // PeerAdmission D3): the consumer's CURVE pubkey is REQUIRED on
+    // HEP-CORE-0036 §6.5: the consumer's CURVE pubkey is REQUIRED on
     // the wire so the broker can populate the channel-scope
     // authorized-consumer allowlist via `_on_consumer_authorized` and
     // revoke it on DEREG / heartbeat timeout.  HEP-CORE-0035 §2 makes
-    // CURVE unconditional; there is no pre-D3 / "legacy" path.  Empty
-    // or wrong-length values are programmer errors and rejected at
-    // wire admission, matching the producer-side REG_REQ check
-    // (broker_proto>=6 enforces non-empty `zmq_pubkey` on both
-    // REG_REQ and CONSUMER_REG_REQ).
+    // CURVE unconditional.  Empty or wrong-length values are
+    // programmer errors and rejected at wire admission, matching the
+    // producer-side REG_REQ check.
     const std::string consumer_pubkey = req.value("zmq_pubkey", "");
     if (consumer_pubkey.empty())
     {
@@ -2474,9 +2469,9 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
 
     hub_state_->_on_consumer_joined(channel_name, std::move(entry));
 
-    // HEP-CORE-0036 §6.5 + PeerAdmission D3: pubkey was validated
-    // non-empty + 40-char Z85 above.  Add it to the channel-scope
-    // allowlist and fire the change notify to all producers.
+    // HEP-CORE-0036 §6.5: pubkey was validated non-empty + 40-char Z85
+    // above.  Add it to the channel-scope allowlist and fire the
+    // change notify to all producers.
     hub_state_->_on_consumer_authorized(channel_name, consumer_pubkey);
     fire_channel_auth_changed_notify(socket, channel_name, "consumer_joined");
 
@@ -2551,9 +2546,9 @@ nlohmann::json BrokerServiceImpl::handle_consumer_dereg_req(zmq::socket_t& socke
                               channel_name + "'");
     }
 
-    // Consumer voluntarily left.  `closing_entry.role_uid` may be empty
-    // (legacy consumers), in which case HubState's _on_consumer_left
-    // silent-drops the role-side cleanup and still erases from the channel.
+    // Consumer voluntarily left.  `role_uid` was validated non-empty
+    // at handler entry (validate_identity_fields), so the role-side
+    // cleanup branch in `_on_consumer_left` always runs.
     hub_state_->_on_consumer_left(channel_name, closing_entry.role_uid);
     on_consumer_closed(socket, channel_name, closing_entry, "voluntary_close");
 
@@ -2595,13 +2590,13 @@ nlohmann::json BrokerServiceImpl::handle_consumer_dereg_req(zmq::socket_t& socke
     return resp;
 }
 
-// ─── PeerAdmission Phase D3 — channel-auth pull + notify helpers ────────────
+// ─── Channel-auth pull + notify helpers (HEP-CORE-0036 §6.5) ───────────────
 
 nlohmann::json
 BrokerServiceImpl::handle_get_channel_auth_req(const nlohmann::json &req)
 {
-    // HEP-CORE-0036 §6.5 amended 2026-06-04 + PeerAdmission D3 —
-    // producer pulls the channel-scope authorized-consumer allowlist.
+    // HEP-CORE-0036 §6.5 — producer pulls the channel-scope
+    // authorized-consumer allowlist.
     // Request shape: { channel_name, role_uid, [correlation_id] }.
     // Reply (success): { status="success", allowlist=[z85, ...], corr_id }.
     // Reply (error):   { status="error", error_code, message, corr_id }.
