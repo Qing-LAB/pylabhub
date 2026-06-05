@@ -1890,6 +1890,25 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     resp["channel_id"] = channel_name;
     resp["message"]    = "Producer registered successfully";
     resp["heartbeat"]  = heartbeat_ack_block(); // HEP-CORE-0023 §2.5
+
+    // HEP-CORE-0036 §5.1 + §6.5: REG_ACK carries the channel's current
+    // authorized-consumer allowlist so a producer reconnecting to an
+    // already-populated channel observes the live set without waiting
+    // for the next `CHANNEL_AUTH_CHANGED_NOTIFY`.  Empty array for a
+    // freshly-opened channel.  This is the producer-offline recovery
+    // path called out in §6.5 (replaces the retired snapshot-push-with-
+    // ACK design).
+    nlohmann::json allowlist = nlohmann::json::array();
+    if (auto access = hub_state_->channel_access(channel_name);
+        access.has_value())
+    {
+        for (const auto &pk : access->authorized_consumer_pubkeys)
+        {
+            allowlist.push_back(pk);
+        }
+    }
+    resp["initial_allowlist"] = std::move(allowlist);
+
     if (!corr_id.empty())
     {
         resp["correlation_id"] = corr_id;
@@ -2216,6 +2235,47 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
             return make_error(corr_id, "CHANNEL_NOT_READY",
                               "ZMQ endpoint for channel '" + channel_name +
                                   "' has unresolved port 0");
+        }
+    }
+
+    // HEP-CORE-0036 §5.2 R6 gate: CONSUMER_REG_REQ is admitted only if
+    // at least one producer-presence has reached kLive (Connected +
+    // first_heartbeat_seen).  Without this gate a consumer would be
+    // authorized against a kRegistering producer whose data plane is
+    // not yet running — the consumer's `Authorized` transition would
+    // race the producer's first-heartbeat fire, producing handshake
+    // failures during the gap.  Mirrors DISC_REQ's presence scan.
+    {
+        const auto snap = hub_state_->snapshot();
+        const auto cit  = snap.channels.find(channel_name);
+        bool any_live   = false;
+        if (cit != snap.channels.end())
+        {
+            for (const auto &prod : cit->second.producers)
+            {
+                auto rit = snap.roles.find(prod.role_uid);
+                if (rit == snap.roles.end()) continue;
+                const auto *p =
+                    rit->second.find_presence(channel_name, "producer");
+                if (p == nullptr) continue;
+                if (p->state == pylabhub::hub::RoleState::Connected &&
+                    p->first_heartbeat_seen)
+                {
+                    any_live = true;
+                    break;
+                }
+            }
+        }
+        if (!any_live)
+        {
+            LOGGER_INFO(
+                "Broker: CONSUMER_REG_REQ channel '{}' deferred — no kLive "
+                "producer (awaiting_first_heartbeat)", channel_name);
+            return make_error(
+                corr_id, "CHANNEL_NOT_READY",
+                "Channel '" + channel_name +
+                    "' has no producer in kLive state "
+                    "(awaiting_first_heartbeat)");
         }
     }
 
