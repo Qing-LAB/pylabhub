@@ -12,16 +12,21 @@ data-channel CURVE auth gate.
 **Status source of truth:** `docs/TODO_MASTER.md` (when PeerAdmission
 work is the active sprint).
 
+**Completed-work archive:** `docs/archive/transient-2026-06-05/todo-completions/AUTH_TODO_completions.md`
+(Phase A/B/C; D1+D2+D3; landing-phase §4.6.5 no-bypass cleanup; BRC
+monitor investigation; lib-stabilization exclusion procedure;
+resolved decisions reference; considered-but-not-pursued).
+
 ---
 
-## Current PeerAdmission state (2026-06-02)
+## Current PeerAdmission state
 
 | Phase | Status | Notes |
 |---|---|---|
-| A — Abstraction (PeerAdmission interface) | ✅ shipped | commit `d5a90f29` |
-| B — KnownRole + CLI | ✅ shipped | commit `a6b44ff8`; HEP-0035 §4.8.3/§4.8.4 |
-| C — ZapRouter + ZmqQueue CURVE | ✅ shipped + closed | Phase C close-out commits `62bda863..47aa0374` |
-| D — Broker glue (gate closes) | 🚧 in flight — D1 + D2 + D3 ✅; D4–D7 ⏳ | D1 commit `cacea477` (ChannelAccessIndex in HubState); D2 commit `d18d2e91` + close-out (CTRL ZAP install + federation peers in allowlist + L4 roundtrip fix); D3 shipped 2026-06-04 (broker_proto 5→6; CHANNEL_AUTH_CHANGED_NOTIFY + GET_CHANNEL_AUTH_REQ/_ACK per HEP-0036 §6.5 amended 2026-06-04; broker wires `_on_channel_access_opened/closed` + `_on_consumer_authorized/revoked` + notify fan-out at REG/DEREG/heartbeat-timeout sites; both REG_REQ + CONSUMER_REG_REQ carry + hard-reject empty/non-40-char `zmq_pubkey` per HEP-CORE-0036 §4.1 + §6.5 + HEP-CORE-0035 §2 unconditional-CURVE).  L3 integration tests deferred to D6 per the original plan — masked L3 broker tests under #153 will be revived in #154 with auth-aware fixtures. |
+| A — Abstraction (PeerAdmission interface) | shipped | see archive |
+| B — KnownRole + CLI | shipped | see archive |
+| C — ZapRouter + ZmqQueue CURVE | shipped | see archive |
+| D — Broker glue (gate closes) | 🚧 D1+D2+D3 shipped; **D4–D7 open** | see Phase D section below |
 | E — Admin loopback enforcement | ⏸ planned | Unblocked once D ships |
 | F — Federation peer ZAP parity | ⏸ planned | Depends on E + Federation HEP (#105) |
 | G — SHM auth migration | ⏸ planned | Independent of D/E/F; can interleave |
@@ -30,376 +35,78 @@ work is the active sprint).
 
 ---
 
-## Phase D — Broker glue
+## Phase D — Broker glue: open steps (D4 → D7)
 
-`HubState` holds the `ChannelAccessIndex` (HEP-CORE-0036 §4.1 line 388);
+`HubState` holds the `ChannelAccessIndex` (HEP-CORE-0036 §4.1);
 `BrokerServiceImpl` installs the CTRL ROUTER ZAP handler against the
-operator-defined allowlist and (in D3+) fires
+operator-defined allowlist and (per D3) fires
 `CHANNEL_AUTH_CHANGED_NOTIFY` whenever consumer membership changes,
 prompting producer-initiated `GET_CHANNEL_AUTH_REQ` pulls (§6.5
-amended 2026-06-04).
+amended 2026-06-04).  Remaining steps:
 
-Steps:
-
-1. **D1 — `ChannelAccessIndex` in `HubState`** ✅ shipped (`cacea477`).
-   `ChannelAccessEntry` is two fields (`authorized_consumer_pubkeys`
-   + `shm_secret`) per HEP-CORE-0036 §4.1; producer pubkey + endpoint
-   stay per-producer on `ChannelEntry::producers[i].zmq_pubkey` +
-   `zmq_node_endpoint` (hub_state.hpp:184/194) — no duplication so
-   fan-in (HEP-CORE-0023 §2.1.1) is preserved.  Mutators shipped:
-   `_on_channel_access_opened(channel, shm_secret)`,
-   `_on_channel_access_closed(channel)`,
-   `_on_consumer_authorized(channel, pubkey_z85)`,
-   `_on_consumer_revoked(channel, pubkey_z85)`.  All four idempotent.
-   Read accessor: `channel_access(name)` returning
-   `std::optional<ChannelAccessEntry>` under shared lock.  L2 coverage:
-   12 tests in `HubStateChannelAccess.*` exercising mutators + accessor
-   + idempotence + multi-channel isolation + invalid-identifier counter
-   bump.  TestAccess forwarders added for friend access from tests.
-2. **D2 — Broker CTRL ROUTER ZAP handler** ✅ shipped (`d18d2e91` +
-   close-out).  HubHost startup loads
-   `<hub_dir>/vault/known_roles.json` via `KnownRolesStore` and copies
-   the entries into `BrokerService::Config::known_roles`.
-   `BrokerServiceImpl::run()` builds the initial CTRL `PeerAllowlist`
-   from the UNION of `cfg.known_roles[].pubkey_z85` AND
-   `cfg.peers[].pubkey_z85` (federation peer DEALERs per
-   HEP-CORE-0035 §4.2), wires it into a `BrokerCtrlAdmission`
-   (PeerAdmission impl backed by `PortableAtomicSharedPtr`), installs
-   via `ZapRouter::instance().register_domain("broker.ctrl", ...)`,
-   and pumps `ZapRouter::pump_one(0ms)` after each `zmq::poll`.
-   `Config::enforce_ctrl_admission` defaults to `true` (production
-   deny-all); test L3 fixtures that use CURVE for wire encryption
-   only set it to `false`.  L4 `RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters`
-   exercises the production path end-to-end:
-   `plh_role --keygen` → `RoleVault::open` → `plh_hub --add-known-role`
-   → `plh_hub <hub_dir>` → role connects + REG_REQ succeeds.
-3. **D3 — Channel-auth wire frames** (broker_proto 5 → 6).
-   Notify-then-pull semantics per HEP-0036 §6.5 amended 2026-06-04
-   (supersedes the 2026-06-02 snapshot-push-with-ACK design).  Two
-   new message types:
-   - `CHANNEL_AUTH_CHANGED_NOTIFY` (broker → producer, fire-and-
-     forget): `{channel_name, reason}`.  Same wire shape as
-     existing `CHANNEL_CLOSING_NOTIFY` / `BAND_LEAVE_NOTIFY`.
-   - `GET_CHANNEL_AUTH_REQ` / `GET_CHANNEL_AUTH_ACK` (producer →
-     broker → producer, sync request-reply): request carries
-     `{channel_name, role_uid, corr_id}`; ACK carries
-     `{status, allowlist?, error_code?}` with `allowlist` as a
-     plain Z85 array on success.  Uses the existing
-     `BrokerRequestComm::do_request` machinery (no new dispatcher).
-   Broker stays a pure responder; no skip-disconnected logic; no
-   `push_ack_timeout_ms` config.  Producer-offline recovers via
-   the existing `REG_ACK.initial_allowlist` reconnect re-sync.
 4. **D4 — Role-side dispatch.**  `BrokerRequestComm` recognizes
    inbound `CHANNEL_AUTH_CHANGED_NOTIFY` and routes it to a
    role-side handler that fires `GET_CHANNEL_AUTH_REQ`, applies
    the reply via `ZmqQueue::set_peer_allowlist(snapshot)`.
    Coalesce policy: if a query is already in flight for the same
    channel, drop the redundant notify (next reply will reflect the
-   latest state).
+   latest state).  Note: BRC's `on_notification_cb` hook exists
+   (`broker_request_comm.cpp`) but no production code wires it for
+   `CHANNEL_AUTH_CHANGED_NOTIFY`.  `ZmqQueue::set_peer_allowlist`
+   awaits task #103 (dynamic peer API).
 5. **D5 — `CONSUMER_REG_ACK.producers[]` array.**  One entry per
    producer of the channel — supports fan-in (HEP-CORE-0023 §2.1.1).
    Each entry: `{role_uid, pubkey, endpoint}`; SHM transport also
-   carries `shm_secret`.
+   carries `shm_secret`.  Currently the response body has none of
+   these fields, so consumers can't learn the producer pubkey or
+   endpoint needed for data-plane CURVE handshake.
 6. **D6 — L3 tests.**  Broker pushes allowlist on consumer reg /
    dereg; producer applies; consumer with wrong pubkey rejected;
-   revocation propagates within the contract bound.
+   revocation propagates within the contract bound.  Tracked
+   under task #154 (re-create L3 broker tests against refactored
+   lib code; the masking procedure that protected ctest during the
+   lib-stabilization window is recorded in the archive).
 7. **D7 — L4 test.**  Full dual-hub data flow with auth gates closed.
 
-Tracked as task #126.  Sub-tasks (D1–D7) are commits inside the Phase
-D landing window.
-
-## Resolved decisions (for reference)
-
-| # | Decision | Where it landed |
-|---|---|---|
-| P-API | ZmqQueue auth shape — additive `*_with_auth` overloads | Phase C `7b7944e8` |
-| P-Wire | Channel-auth sync semantics — notify-then-pull (broker fires `CHANNEL_AUTH_CHANGED_NOTIFY`; producer pulls via `GET_CHANNEL_AUTH_REQ`) | HEP-0036 §6.5 (amended 2026-06-04; supersedes 2026-06-02 snapshot-push-with-ACK + 2026-05-28 delta) |
-| P-Vault | Where known roles live — separate `<hub_dir>/vault/known_roles.json` file mode 0600 | Phase B `a6b44ff8`; HEP-0035 §4.8 |
-| P-Threading (CTRL) | Broker-side CTRL ROUTER ZAP — caller-pumped from broker poll thread, no internal thread | HEP-0036 §7.1 + D2 `d18d2e91` |
-| P-Threading (data) | Producer-side data ROUTER ZAP — caller-pumped from BRC poll thread, no internal thread | HEP-0036 §7.1; Phase C `28a06046` + `827474f0`; producer-side install pending (task #103) |
-| P-S3 | `current_allowlist_` atomic primitive — `PortableAtomicSharedPtr` | Phase C `7b7944e8` |
-| P-Schema | `ChannelAccessEntry` shape — two fields, per-producer info per-producer | HEP-0036 §4.1 (locked) |
-| P-Push | How broker pushes update — reuse CTRL DEALER/ROUTER in reverse direction | HEP-0036 §6.5 |
-| P-Default | Empty allowlist semantics — deny-all | HEP-0036 §6.5 |
-| P-Migration | Operators with pre-auth vaults — auto-derive pubkey; absent file = deny-all + admit-none until populated by CLI | HEP-0035 §4.8.4 |
-
-## Deferred decisions (each tied to its phase)
-
-| # | Decision | Affects | Tentative direction |
-|---|---|---|---|
-| P-InboxQueue | InboxQueue admission policy location | Phase E | InboxQueue implements `PeerAdmission` directly, no queue inheritance — preserves REQ/REP nature |
-| P-Admin | AdminService — CURVE-wrap or loopback-only? | Phase E (task #127) | Hard loopback-only enforce (refuse non-loopback bind) for v1; CURVE-wrap is HEP-CORE-0035 §5 future work |
-| P-SHM-Identity | What is a PeerIdentity for SHM? | Phase G (task #129) | Broker-issued `shm_secret` primary; optional uid guard if operator sets it; broker controls the gate via secret issuance |
-| P-Demos | How existing demos migrate | Phase H (task #130) | Transitional `--allow-anonymous-data` flag, gated to refuse-bind on non-loopback endpoints; demos updated incrementally |
-| P-HEP | When to sync HEPs vs hold tech_draft | Close-out (task #131) | Tech_draft was archived 2026-06-02; HEPs are now the authoritative source.  No further sync needed unless H surfaces gaps |
-
-## Considered-but-not-pursued
-
-| Idea | Source | Reason |
-|---|---|---|
-| `--allow-anonymous-roles` flag (S6 option c) | tech_draft §12.5 S6 | Empty `known_roles.json` already maps to deny-all per HEP-0035 §4.8.4; the friendly-bootstrap need is satisfied by the `--add-known-role` CLI + clear deny-all diagnostic.  Revisit only if Phase H demo migration finds it necessary |
-
-## Phase D landing — HEP-0035 §4.6.5 "no-bypass" cleanup (2026-06-04)
-
-Full-ctest sweep on 2026-06-04 surfaced 97 failures rooted in the
-close-out-3 mismatch WARN + test fixtures that paired
-`use_curve=false` with `enforce_ctrl_admission=true` (the new
-default).  Audit concluded that HEP-CORE-0035 §2 mandates CURVE +
-admission unconditionally — both production AND tests — and the
-two flags are HEP violations.
-
-**Steps 1+2 landed in the working tree (NOT yet committed):**
-
-- HEP-CORE-0035 §2 — three new invariants: CURVE unconditional,
-  admission unconditional whenever CURVE on, `HubHost::startup()`
-  rejects empty `auth().client_pubkey`.
-- HEP-CORE-0035 §4.6.5 (new) — no-bypass discipline.  Tests use
-  real CURVE via `tests/test_framework/curve_test_setup.h`
-  (~4 LOC / fixture, ~100 μs keypair-gen).  No test-only factory.
-- HEP-CORE-0035 §7 closed question 5 — struck.
-- HEP-CORE-0035 §1 banner — updated.
-- HEP-CORE-0036 §7 — boxed note: admission + CURVE unconditional
-  in tests too.
-- HEP-CORE-0033 §4.2 step 2 — cross-references HubHost startup
-  precondition.
-- `broker_service.cpp:708-722` — close-out-3 mismatch WARN
-  deleted; replaced with a placeholder note flagging both flags
-  for removal in the landing phase.
-- `role_identity_policy_workers.cpp:232` `base_cfg()` — both
-  flags set false explicitly with a declared bypass block
-  citing §8 Phase 6 (whole fixture slated for deletion).
-
-ctest result after Steps 1+2: 97 → 1 failure
-(the remaining one is the pre-existing `PlhRoleInitTest` 60s
-flake, task #93; passes in isolation).
-
-**Phase 1 known bugs (surfaced during landing, deferred to Phase 2):**
-
-- **BRC socket monitor does not detect ZMQ_EVENT_DISCONNECTED under CURVE.**
-  Surfaced 2026-06-04 by migrating
-  `HubHostIntegrationTest.HubHost_Shutdown_BreaksClientConnection`
-  onto the harness.  Under NULL-mech, BRC's `on_hub_dead` callback
-  fires within ~3s of broker socket close.  Under CURVE, it never
-  fires (waited 40s with `apply_socket_policy` defaults —
-  heartbeat_ivl 5s + heartbeat_timeout 30s).
-
-  **Empirical findings (2026-06-04 stderr instrumentation):**
-  - During BRC connect, monitor receives 3 events: `CONNECT_DELAYED`
-    (0x0002) → `CONNECTED` (0x0001) → `HANDSHAKE_SUCCEEDED` (0x1000).
-  - Broker thread DOES execute `router.close()` (confirmed via stderr
-    trace `[DIAG-BROKER] router.close() pre/post` straddling the
-    libzmq call at `broker_service.cpp:1054`).
-  - BRC monitor receives **ZERO events** for 40+ seconds after
-    `router.close()` returns — not `DISCONNECTED`, not `CLOSED`,
-    not `HANDSHAKE_FAILED_*`, not any event at all.
-
-  **Conclusion**: libzmq's CURVE engine does not emit
-  ZMQ_EVENT_DISCONNECTED on clean peer-socket close.  This is a
-  libzmq behaviour, not a pylabhub coding error.
-
-  **Validation result (2026-06-04):** the bug is in-process-
-  shared-context-only.  A standalone diagnostic
-  (`/tmp/test_curve_disconnect.cpp`, not retained) instantiates a
-  CURVE-server ROUTER and a CURVE-client DEALER in **separate**
-  `zmq::context_t` instances (mimicking the cross-process
-  production scenario where plh_hub and plh_role have independent
-  libzmq instances), runs the same close sequence, and observes:
-
-  ```
-  [mon] CONNECT_DELAYED
-  [mon] CONNECTED
-  [mon] HANDSHAKE_SUCCEEDED
-  --- closing broker ROUTER socket ---
-  [mon] DISCONNECTED   ← fires within seconds
-  ```
-
-  Under separate contexts, DISCONNECTED fires normally.  Under
-  shared context (test scenario), it doesn't.  Conclusion:
-
-  - **Production is not affected.**  HEP-CORE-0023 §2.5.3 holds
-    in real plh_hub ↔ plh_role deployments.
-  - The failing migrated test
-    (`HubHost_Shutdown_BreaksClientConnection`) is misleading: it
-    runs both broker and BRC in one process under the shared
-    `pylabhub::hub::get_zmq_context()`, hitting the libzmq
-    shared-context quirk.
-  - **No production code change needed.**
-
-  Severity: **LOW** (test artifact, not production bug).
-
-  **Layer reclassification (designer call 2026-06-04):**
-  `HubHost_Shutdown_BreaksClientConnection` is verifying
-  cross-process behaviour ("broker shutdown breaks the client
-  connection") — a property that only holds when the broker and
-  the BRC are in different processes (and therefore different
-  libzmq instances).  The in-process L3 scenario with shared
-  `pylabhub::hub::get_zmq_context()` cannot test this correctly —
-  the libzmq shared-context quirk produces a false negative
-  regardless of how the test is written.
-
-  **This is an L4 test, not L3.**  Action:
-
-  - **In L3** (`test_datahub_hub_host_integration.cpp`): **DELETE**
-    the `HubHost_Shutdown_BreaksClientConnection` TEST_F entry
-    when its sibling tests get re-migrated in step 3-revised-F.
-    The current `GTEST_SKIP` is a placeholder for that delete.
-    The L3 worker body in
-    `hub_host_integration_workers.cpp::hubhost_shutdown_breaksclientconnection`
-    goes away with the TEST_F.
-  - **In L4** (new): add an equivalent test under
-    `tests/test_layer4_plh_hub/` that spawns plh_hub and plh_role
-    as separate processes, terminates plh_hub, asserts plh_role's
-    BRC observes the disconnect within the heartbeat-timeout
-    window.  Owner: a follow-up L4 task (NOT folded into the
-    HEP-0035 §4.6.5 landing — it's independent test-coverage
-    debt).
-
-  Step 3-revised-A is therefore **CLOSED — no production action
-  required.**  Proceed to step 3-revised-B (HubHost throws).
-
-**Landing-phase progress (commits on `feature/lua-role-support`):**
-
-| Slice | Commit | Scope | ctest |
-|---|---|---|---|
-| 1 | `97b1ff25` | HEP doctrine (§4.6.5 + §2 invariants in HEP-0035/0036/0033) + Bucket 1 production `CurveKeypair` utility consolidating 4 inline keygen sites + harness foundation (`broker_test_harness.{h,cpp}`, `curve_test_setup.h`, `HubConfig::inject_keypair_for_test`) | — |
-| 2 | `b8a24b65` | Pattern-A proof — `datahub_channel_group_workers.cpp` | 7/7 |
-| 3 | `246a4647` | Pattern-B proof — `datahub_broker_request_comm_workers.cpp` (+ harness `known_roles.json` schema fix) | 4/4 |
-| 4 | `2b94247d` | `hub_host_integration_workers.cpp` + `HubHostBrokerHandle::service()` accessor.  Surfaced **BRC monitor CURVE bug** (skipped one test with citation) | 2/3 pass + 1 skip |
-| 5 | `f19d5dcd` | `broker_consumer_workers.cpp` | 5/5 |
-| 6 | `1b979895` | `broker_schema_workers.cpp` | 5/5 |
-| 7 | `04dfb199` | `broker_admin_workers.cpp` | 8/8 |
-| 8 | `b2f4351b` | `zmq_endpoint_registry_workers.cpp` (with `StubBrcHandle` declared-bypass for the wire-level timeout fixture) | 9/9 |
-
-**Stop-here decision (2026-06-04):**
-
-After 8 slices the harness is proven on both Pattern A and B, but
-the remaining migration (7 files, ~150 fixtures) is uniformly bigger
-than what's done.  Continuing to migrate tests onto an API that will
-itself change (when 3C / 3D / 3F / 3G land) is wasted effort — tests
-get touched twice.
-
-**Revised order (decided 2026-06-04 — designer call: "stabilize
-API/design first"):**
-
-| Step | Scope | Notes |
-|---|---|---|
-| 3-revised-A | **Fix the BRC monitor CURVE bug** (`broker_request_comm.cpp` socket-monitor poll path). | Unblocks the skipped fixture in slice 4 + restores HEP-CORE-0023 §2.5.3 production semantic.  Independent of other steps. |
-| 3-revised-B | `HubHost::startup()` throws `std::logic_error` on empty `auth().client_pubkey`. | Unblocks deleting the dead `bcfg.use_curve = !empty()` conditional. |
-| 3-revised-C | Delete `BrokerService::Config::enforce_ctrl_admission` field + every `cfg.enforce_ctrl_admission = X` line in tests and CMake.  Unmigrated test files will fail to compile; that's expected. | Doesn't break the 7 migrated files (the harness sets the field but stops once it's gone). |
-| 3-revised-D | Delete legacy `RoleIdentityPolicy` enum, `check_role_identity()`, `KnownRole`-with-strings, `ChannelPolicyOverride`, `RoleIdentityPolicyBrokerTest` (L3 fixture).  Per HEP-CORE-0035 §8 Phase 6.  Includes dead-code audit (grep). | Removes the deprecated machinery so tests can't depend on it. |
-| 3-revised-E | Delete `BrokerService::Config::use_curve` field.  Broker always CURVE+ZAP. | Final field-deletion. |
-| 3-revised-F | Now the production API is stable.  Migrate the remaining 7 worker files onto the (stable) harness.  Each file: triage fixtures (keep at L3 / move to L2 / delete redundant) before mechanical migration. | One commit per file.  Some files will need L2 reorganization (5 metrics algorithm tests → L2; possibly more after triage). |
-| 3-revised-G | Full ctest green from clean baseline.  Confirm no regressions. | This is the close-out gate. |
-| Phase 2 | Full-codebase (a) review against HEPs. | Per design conversation: only meaningful on a stable baseline. |
-
-The bug recorded in **"Phase 1 known bugs"** above (BRC monitor CURVE
-blindspot) is now elevated to **the first step (3-revised-A)** of the
-new ordering since:
-1. It's a real production correctness bug independent of test work.
-2. Fixing it unblocks `HubHostIntegrationTest.HubHost_Shutdown_BreaksClientConnection`.
-3. Migration of any remaining test that exercises hub-dead detection
-   would be dishonest until this is fixed (the test would falsely
-   pass-through the broken path).
-
-**Rationale for the reorder (recorded 2026-06-04 per designer
-guidance):** if tests need to be migrated again when API changes,
-that's pointless effort.  Stabilize production API/design first;
-migrate tests once against the stable shape.
-
-### Exclusion procedure during lib-stabilization window (3-revised-B → 3-revised-E)
-
-Once we start deleting production fields and legacy code (steps
-3-revised-B through 3-revised-E), the unmigrated L3 worker files
-will be **build-breaks**, not just runtime failures:
-
-- Removing `BrokerService::Config::enforce_ctrl_admission` (step C)
-  breaks every `cfg.enforce_ctrl_admission = ...` line in unmigrated
-  workers.
-- Removing `BrokerService::Config::use_curve` (step E) breaks every
-  `cfg.use_curve = ...` line.
-- Removing `RoleIdentityPolicy` / `check_role_identity` /
-  `ChannelPolicyOverride` (step D) breaks
-  `role_identity_policy_workers.cpp` and its TEST_F driver.
-- Making `HubHost::startup()` throw on empty pubkey (step B) breaks
-  any worker that constructs HubHost without injecting a keypair.
-
-**To keep `ctest` green throughout the stabilization window**, the
-unmigrated worker files MUST be excluded from the build before any
-of those deletions land.  Exclusion is two-part — both halves are
-mandatory:
-
-1. **Worker .cpp**: comment out the entry in
-   `tests/test_layer3_datahub/CMakeLists.txt` source list, with an
-   inline marker:
-
-   ```cmake
-   # workers/datahub_metrics_workers.cpp        # SKIP — pending HEP-0035 §4.6.5 step 3-revised-F
-   ```
-
-2. **Test driver `TEST_F` entries**: comment out (or `GTEST_SKIP` —
-   prefer comment-out so they don't appear in the test list) every
-   `TEST_F` in the corresponding `test_datahub_*.cpp` driver, with a
-   single citation comment block at the top of the file:
-
-   ```cpp
-   // === PENDING HEP-0035 §4.6.5 step 3-revised-F migration ===
-   // Worker file is excluded from build (see CMakeLists.txt).
-   // Restore each TEST_F when the worker file is re-included.
-   ```
-
-   Without this half, the driver still references worker dispatchers
-   that no longer exist and either fails to link or returns -1 at
-   `SpawnWorker(...)` time.
-
-| Unmigrated worker | Unmigrated driver | Status under stabilization |
-|---|---|---|
-| `workers/datahub_metrics_workers.cpp` | `test_datahub_metrics.cpp` (17 TEST_F) | exclude before step C |
-| `workers/datahub_broker_health_workers.cpp` | `test_datahub_broker_health.cpp` (11 TEST_F) | exclude before step C |
-| `workers/datahub_broker_protocol_workers.cpp` | `test_datahub_broker_protocol.cpp` (29 TEST_F) | exclude before step C |
-| `workers/datahub_broker_workers.cpp` | `test_datahub_broker.cpp` (40 TEST_F) | exclude before step C |
-| `workers/datahub_role_state_workers.cpp` | `test_datahub_role_state_machine.cpp` (21 TEST_F) | exclude before step C |
-| `workers/hub_federation_workers.cpp` | `test_datahub_hub_federation.cpp` | exclude before step C |
-| `workers/datahub_e2e_workers.cpp` | `test_datahub_e2e.cpp` | exclude before step C; subprocess key-passing redesign in step F |
-| `workers/role_identity_policy_workers.cpp` | `test_datahub_role_identity_policy.cpp` | **DELETE in step D** (not migration; legacy retirement per HEP-0035 §8 Phase 6) |
-
-The 7 already-migrated worker files stay enabled throughout:
-`datahub_channel_group_workers`, `datahub_broker_request_comm_workers`,
-`hub_host_integration_workers`, `broker_consumer_workers`,
-`broker_schema_workers`, `broker_admin_workers`,
-`zmq_endpoint_registry_workers`.
-
-**Per-file restoration during step 3-revised-F**: each file's
-migration commit (a) un-comments the CMakeLists.txt source entry,
-(b) restores the TEST_F entries in the driver (with any
-add/move/delete decisions from the triage), and (c) confirms green
-ctest scoped to that test class.  One file = one commit.
-
-Branch state during the stabilization window:
-- Build green (unmigrated files don't compile, but they're not in
-  the build).
-- ctest green (unmigrated TEST_F don't run, but they're not
-  registered).
-- Coverage temporarily reduced — that's the price of stabilization.
+D4 + D5 land together with task #103 (`RxQueueOptions::producer_peers`
++ `ZmqQueue::add/remove_producer_peer`) — without it the role host
+has nowhere to apply the pulled allowlist.
 
 ---
-
-**Previous Step 3 plan (superseded above; kept for context):**
-
-| Sub-step | Scope | Status |
-|---|---|---|
-| 3A | Build `tests/test_framework/curve_test_setup.h` (gen_keypair + populate_known_role helpers) | ✅ slice 1 |
-| 3B | Migrate the 10 broker-using test fixtures (~90 test bodies) onto the helper.  One commit per fixture class. | 🚧 7 of 10 files done (slices 2–8); paused per stabilize-first decision |
-| 3C | Delete `BrokerService::Config::enforce_ctrl_admission` field + all `cfg.enforce_ctrl_admission = X` lines.  Build + full ctest. | moved to 3-revised-C |
-| 3D | `HubHost::startup()` throws `std::logic_error` on empty `auth().client_pubkey`. | moved to 3-revised-B |
-| 3E | Move 5 algorithm-only tests from `MetricsPlaneTest` (L3) to a new L2 fixture under `test_layer2_service/test_metrics_query_engine.cpp` (or extend `test_metrics_api.cpp`). | folded into 3-revised-F (per-file triage) |
-| 3F | Delete `RoleIdentityPolicyBrokerTest` L3 fixture + production code: `RoleIdentityPolicy` enum, `check_role_identity()`, `KnownRole`-with-strings, `ChannelPolicyOverride`.  Per HEP-CORE-0035 §8 Phase 6.  Full dead-code audit (grep) before delete. | moved to 3-revised-D |
-| 3G | Delete `BrokerService::Config::use_curve` field.  Last to land; broker always CURVE+ZAP. | moved to 3-revised-E |
 
 ## Phase D close-out follow-ons (test + spec gaps surfaced 2026-06-03)
 
 These are tracked here so they survive context resets per CLAUDE.md
 §"Session hygiene" — open items must live in a subtopic TODO, not
 only in chat history.
+
+- **B1 — `awaiting_endpoint` reason missing in CONSUMER_REG R6 gate.**
+  HEP-CORE-0036 §6.6 line 1370 enumerates three valid
+  `CHANNEL_NOT_READY` reasons: `awaiting_endpoint`,
+  `awaiting_first_heartbeat`, `heartbeat_stalled`.  Current code at
+  `src/utils/ipc/broker_service.cpp:2226-2241` returns
+  `CHANNEL_NOT_READY` on port-0 with message "has unresolved port
+  0" — no `awaiting_endpoint` substring.  Client retry loop only
+  matches the other two substrings, so the port-0 case is correctly
+  terminal but the §6.6 catalog vocabulary is incomplete in code.
+  Fold into the #103 commit batch (small 5-line change).  Effort:
+  trivial.
+
+- **B2 — Producer / consumer `zmq_pubkey` read from wire body, not
+  ZAP socket identity (HEP-CORE-0036 §I6 violation).**
+  HEP-CORE-0036 §I6 + §6.3 (lines 262, 709-712) require the
+  identity pubkey to come from `zmq_msg_gets("User-Id")` (CURVE-
+  proved, no self-claims).  Current code at
+  `src/utils/ipc/broker_service.cpp:1383` (producer REG_REQ) +
+  `:2442` (CONSUMER_REG_REQ) reads `req.value("zmq_pubkey", "")`
+  from the message body.  Empty/non-40-char is hard-rejected but
+  the value itself is still self-claimed.  **Security issue**: a
+  compromised consumer can claim any pubkey to drift the channel
+  allowlist via `_on_consumer_authorized`.  Fix: replace wire-body
+  read with `zmq_msg_gets("User-Id")` recovery; reject with
+  INVALID_REQUEST if wire body contains a mismatching `zmq_pubkey`
+  (defence-in-depth).  Fold into #103 commit batch.  Effort: S
+  (~20 LOC each site).
 
 - **Allow-path L3 pin for D2.**  `DatahubBrokerHealthTest.CtrlZapDenyPath`
   pins the deny path.  Symmetric allow-path L3 needs a BRC client
@@ -434,13 +141,84 @@ only in chat history.
 
 ---
 
+## Critical-path execution plan — #103 closes data-plane CURVE
+
+Verified 2026-06-05 against code: `#103` is the single blocker for
+AUTH Phase D4 + D5.  No `producer_peers` references exist in `src/`;
+`ZmqQueue::add_producer_peer` / `remove_producer_peer` do not exist.
+Without that API, D4 has nothing to call and D5's emitted array has
+no consumer-side apply path.  Splits into three sequential commits:
+
+| # | Commit | Files | Scope | Size |
+|---|---|---|---|---|
+| A1 | `#103` schema | `src/include/utils/hub_rx_queue_options.hpp` | Add `struct ProducerPeer{role_uid, endpoint, pubkey}` + `std::vector<ProducerPeer> producer_peers` field per HEP-0017 §3.3.  Wire-shape only; no runtime logic. | ~40 LOC |
+| A2 | `#103` dynamic peer API + producer-side ZAP | `src/include/utils/hub_zmq_queue.hpp` + `src/utils/hub/hub_zmq_queue.cpp` | Implement `add_producer_peer(peer)` / `remove_producer_peer(uid)` + update PeerAdmission allowlist atomically.  Install producer-side ZAP handler on PUSH bind per HEP-0036 §7.  Switch `role_api_base.cpp` `pull_from()` / `push_to()` factories to the `_with_auth()` variants. | ~150-200 LOC |
+| A3 | D5 + D4 + folded drifts | `src/utils/ipc/broker_service.cpp` (`handle_consumer_reg_req` response builder ~2521-2530) + `src/utils/network_comm/broker_request_comm.cpp` (`on_notification_cb` dispatch) + role-host coalescing refresh worker | **D5**: emit `resp["producers"] = [...{role_uid, pubkey, endpoint}...]` from `channel_entry.producers`; SHM transport also emits `shm_secret` field (zero today; populated when Phase G ships).  **D4**: BRC routes `CHANNEL_AUTH_CHANGED_NOTIFY` → fires `GET_CHANNEL_AUTH_REQ` → applies via `ZmqQueue::set_peer_allowlist(snapshot)`; coalesce drops redundant notifies when a query is already in flight.  Folds in **B1** (awaiting_endpoint reason) + **B2** (`zmq_msg_gets("User-Id")` for pubkey recovery). | ~200-250 LOC |
+
+After A3 lands, the data-plane CURVE auth gate is closed in code.
+
+### Parallel work (no dependency on #103)
+
+- **#102** — HEP-CORE-0035 §4.7 runtime key handling (mlock +
+  `disable_core_dumps()` + `SecureKeyBuffer` libsodium wrapper).
+  Independent commit; ship anytime.
+
+### After A3 (sequential)
+
+1. **#104** sibling HEP doc sync — 7 of 8 sibling HEPs are pure doc
+   edits (HEP-0017 §3.3 documents the shipped API; HEP-0021 §16
+   pubkey REQUIRED text; HEP-0027/0030/0007 record the wire-version
+   transition; HEP-0033 §G cross-references `ChannelAccessEntry`).
+   HEP-0023 needs ~10 LOC code addition for the `Authorized` FSM
+   state on `role_presence.hpp`.
+2. **#154** L3 broker test revival — unmask the 7 worker files
+   masked under task #153; per-file commit with mutation-sweep on
+   each restored TEST_F.  Closes D6.
+3. **D7** L4 end-to-end — dual-hub auth-gated data flow under demo
+   framework.  Closes Phase D.
+
+### Items NOT on this critical path (do not sequence into auth)
+
+- **#75** HUB_TARGETED_ACK — scope ambiguous; no HEP section, no
+  tech_draft.  Needs design-first work.
+- **#76** Script reload — independent feature; tech_draft exists,
+  HEP not yet numbered.
+- **#77** Tier 2 dynamic callbacks — independent feature.
+- **#94** HEP-0021 §16.5 ephemeral binding — paired with #103 per
+  §14.1 wire-shape coupling but the production-caller wiring is
+  about multi-hub processor, not auth gating.  Can land in the A2
+  or A3 commit as a §14.1 deliverable but doesn't itself gate the
+  goal.
+- **#105** Federation HEP-0037 — explicitly post-MVP per HEP-0036
+  §13.1.
+- **#155** Phase 3 (`--init` one-shot bundling) — CLI UX, auth-
+  adjacent but not auth-gating.  Phases 1+2 shipped per commits
+  `3215e5aa` and `c684776a`.
+- **#120** Windows §4.6 hardening — compliance gap; independent.
+- **#152** Delete legacy `RoleIdentityPolicy` — hygiene; independent.
+
+---
+
+## Deferred decisions (each tied to its phase)
+
+| # | Decision | Affects | Tentative direction |
+|---|---|---|---|
+| P-InboxQueue | InboxQueue admission policy location | Phase E | InboxQueue implements `PeerAdmission` directly, no queue inheritance — preserves REQ/REP nature |
+| P-Admin | AdminService — CURVE-wrap or loopback-only? | Phase E (task #127) | Hard loopback-only enforce (refuse non-loopback bind) for v1; CURVE-wrap is HEP-CORE-0035 §5 future work |
+| P-SHM-Identity | What is a PeerIdentity for SHM? | Phase G (task #129) | Broker-issued `shm_secret` primary; optional uid guard if operator sets it; broker controls the gate via secret issuance |
+| P-Demos | How existing demos migrate | Phase H (task #130) | Transitional `--allow-anonymous-data` flag, gated to refuse-bind on non-loopback endpoints; demos updated incrementally |
+| P-HEP | When to sync HEPs vs hold tech_draft | Close-out (task #131) | Tech_draft was archived 2026-06-02; HEPs are now the authoritative source.  No further sync needed unless H surfaces gaps |
+
+---
+
 ## Parallel / adjacent tracks
 
 These have their own task IDs but touch the same surface:
 
 - **Task #102** — HEP-CORE-0035 §4.7 runtime key handling (mlock + no-core-dump + zeroing, cross-platform).
-- **Task #103** — HEP-CORE-0017 §3.3 + HEP-CORE-0036 implementation: `RxQueueOptions::producer_peers` + ZmqQueue dynamic peer API.
-- **Task #104** — Sibling HEP updates: schema / FSM / CURVE-wiring per HEP-CORE-0036 §14.
+- **Task #103** — HEP-CORE-0017 §3.3 + HEP-CORE-0036 implementation: `RxQueueOptions::producer_peers` + ZmqQueue dynamic peer API.  **Blocks D4 + D5.**
+- **Task #104** — Sibling HEP updates: schema / FSM / CURVE-wiring per HEP-CORE-0036 §14.  This IS the "auth contract in design documents" deliverable.
 - **Task #105** — Federation protocol design + cross-hub reg/comm verification.
 - **Task #106** — HEP-CORE-0038 + impl: script-accessible vault keystore (`api.vault_save/load`).
 - **Task #120** — Windows pathway hardening for HEP-CORE-0035 §4.6 floor.
+- **Task #154** — Re-create L3 broker tests against the refactored lib code.  **Closes D6.**

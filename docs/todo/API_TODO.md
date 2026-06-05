@@ -5,58 +5,12 @@
 (renovation arc states).  This file holds API-layer detail for open
 items only; completed work lives in git history + DOC_ARCHIVE_LOG.
 
+**Completed-work archive:** `docs/archive/transient-2026-06-05/todo-completions/API_TODO_completions.md`
+(Task #78 closure E′-1/E′-2a/E′-2b/E′-2c; Commit C′-1 missing-field
+hard error; Task #101 key-file ACL discipline; C2 + X1 code-ahead
+removals from D2 / D3 drift batches).
+
 ---
-
-## Recent Completions
-
-- **2026-05-31 — Task #78 final closure via E′-1 + E′-2a + E′-2b
-  + E′-2c (commits ffbe6a9c → this commit).**  Multi-step landing:
-  - E′-1 (commit `ffbe6a9c`) rolled back C′-2's `--vault-mode`
-    flag + `vault_path_resolve` module + 5-mode taxonomy as
-    invented terminology not grounded in an operator-facing
-    decision the project needed.  Restored pre-C′-2 baseline +
-    C′-1.
-  - E′-2a (commit `51f76d55`) strengthened `parse_auth_config`
-    to reject empty `auth.keyfile` (extending C′-1's
-    missing-field rejection).  pylabhub is a vault — no
-    in-memory CURVE mode.  L4 fixtures refactored to use
-    placeholder paths instead of `""`; L4 tests hardened to
-    verify actual file artifacts (mode 0600, exact path,
-    no-vault-on-failed-keygen) instead of relying on exit code.
-  - E′-2b (commit `2e730fa6`) shipped the hub UID-keyed vault
-    filename (`<hub_uid>.vault` — HEP-CORE-0033 §6.5 revised;
-    closes the silent-collision footgun), the `--keygen`
-    no-silent-overwrite check on both binaries (with byte-for-
-    byte content-unchanged L4 verification), and the symmetric
-    `HubDirectory::warn_if_keyfile_in_hub_dir` helper (closes
-    the hub-vs-role asymmetry from the holistic review's
-    Finding #6).
-  - E′-2c (this commit) finalized the HEP docs:
-    HEP-CORE-0024 §3.4 + §3.4.1 rewritten with the design
-    intent (script-write attack vector, load-bearing warning),
-    HEP-CORE-0033 §6.5 + §7.1 + §7.2 mirror the role side,
-    HEP-CORE-0035 §4.6.3 past-tense the #78 closure,
-    HEP-CORE-0038 §2.2 corrected, DRAFT_HEP-0036 §5.1.1
-    annotated CLOSED.  README_Deployment.md rewritten:
-    `hub.auth.keyfile` and role-side `*.auth.keyfile` are
-    marked REQUIRED (was "no"); description cites the relevant
-    HEP and the security-warning rule; the §4.3 "running the
-    hub" walkthrough is updated for the no-overwrite contract
-    and the UID-keyed filename.
-
-- **2026-05-30 — Commit C′-1 (A1 of #78 / #101 sub-phase 1D)**:
-  `parse_auth_config` (`auth_config.hpp`) now throws on missing
-  `<section>.auth` object OR missing `auth.keyfile` field — silent
-  default to ephemeral is no longer possible.  Operator MUST opt
-  explicitly: `"keyfile": "<path>"` for vault mode or `"keyfile": ""`
-  for ephemeral mode.  Hub-side and role-side share the same parser
-  (`hub_identity_config.hpp` delegates auth to `parse_auth_config`).
-  Error messages cite HEP-CORE-0024 §3.4 + HEP-CORE-0033 §7.1.
-  L2 fixtures updated (3 role + 1 hub minimal JSON helpers).
-  Tests: 9 new (5 role + 3 hub + 1 uid-autogen fixture refresh);
-  all 1445 L1+L2 + 408 L3 + 92 L4 tests pass.  #78 closes after
-  Commit C′-2 ships the binary-template / `--vault-mode` flag and
-  HEP design-intent narrative; this commit lands the parser side.
 
 ## Current Focus
 
@@ -91,30 +45,11 @@ Effort: M.
 
 ### Demo-harness audit follow-ups (2026-05-21)
 
-Open items left over from the multi-engine demo session that found 13
-bugs (B1-B13).  B1, B2, B5, B9, B11, B12, B13 ✅ FIXED in code.  The
-ones below are filed but not yet fixed; each is a tightly-scoped
-single-area change.
-
-- **B3 (#78) — ✅ CLOSED 2026-05-31 via commits ffbe6a9c +
-  51f76d55 + 2e730fa6 + this commit.**  See Recent Completions
-  above for the multi-step landing.  Final shipped contract:
-  `auth.keyfile` is REQUIRED and must be non-empty (no in-memory
-  CURVE mode); hub vault filename is UID-keyed
-  (`<hub_uid>.vault`); `--keygen` refuses to overwrite an
-  existing vault file; symmetric `warn_if_keyfile_in_hub_dir`
-  closes hub-vs-role asymmetry.  Tracker entry retained for
-  git-log discoverability.
-
-- **#101** — **HEP-CORE-0035 §4.6 key-file ACL discipline** —
-  shared `src/utils/security/key_file_acl.{hpp,cpp}` utility +
-  `--keygen` / `--init` SETS modes (0600 for `*.sec`, 0700 for
-  keystore dirs, 0750 for `known_roles/`); binary startup VERIFIES
-  modes and refuses to start with OpenSSH-style actionable error
-  (path + observed mode + required mode + exact chmod command).
-  Mechanically independent of #74 ZAP plumbing; can ship before.
-  Layers on B3 (#78) + B4 (#79); recommended ordering:
-  #101 → #102 → #78 → #79 → #74.  Spec: HEP-CORE-0035 §4.6.  M.
+Open items left over from the multi-engine demo session that found
+13 bugs (B1–B13).  B1, B2, B5, B9, B11, B12, B13 closed inline (git
+log).  B3 closed via Task #78 (see archive).  Remaining items below
+are filed but not yet fixed; each is a tightly-scoped single-area
+change.
 
 - **#102** — **HEP-CORE-0035 §4.7 runtime key handling** —
   shared `src/utils/security/runtime_key_handling.{hpp,cpp}` with
@@ -141,7 +76,8 @@ single-area change.
   array land coherently with §94 (DISC_REQ_ACK array migration —
   the two wire-format changes must land together per HEP-0036
   §14.1).  Spec: HEP-CORE-0017 §3.3 + HEP-CORE-0036 §6.4 + §4.1.
-  M-L.  Depends-on: #94 wire-shape coordination.
+  M-L.  Depends-on: #94 wire-shape coordination.  **Blocks
+  AUTH_TODO D4 + D5.**
 
 - **#104** — **Sibling-HEP code updates per HEP-CORE-0036 §14.**
   HEP-0036 design lock-in (2026-05-28) requires synchronized code
@@ -207,7 +143,7 @@ single-area change.
 
   Position in chain (per
   `docs/tech_draft/DRAFT_HEP-0036-implementation-guideline_2026-05.md`
-  §4): #101+#102 → #74 → #94+#103 → #104 → #106 → done.
+  §4): #101 + #102 → #74 → #94 + #103 → #104 → #106 → done.
 
 > **Note on #74 (HEP-0035 auth implementation) expansion 2026-05-29.**
 > #74 now subsumes HEP-CORE-0035 §4.8 (known-roles allowlist stored
@@ -288,8 +224,8 @@ single-area change.
   `BrokerService` ctrl/admin threads (still on monotonic-mark
   family), `AdminService` worker (review for `with_active_loop`),
   `HubHost` admin thread (review for `join_named` simplification).
-  RoleAPIBase + ZmqQueue ✅ adopted.  Trigger: any new spawn site
-  under ThreadManager.  Track per-module decisions inline.
+  Trigger: any new spawn site under ThreadManager.  Track per-module
+  decisions inline.
 
 - **S1 Phase B (open)** — Migrate `ZmqQueue`
   (`src/utils/hub/hub_zmq_queue.cpp`) and `InboxQueue sender`
@@ -300,9 +236,6 @@ single-area change.
 
 - **D2 drift — open items from Connection/Inbox/Band review
   (REVIEW_Connection_Inbox_Band_2026-05-17)**:
-  - **C2** — Heartbeat tick branches on `role_tag` string
-    (`role_api_base.cpp:806-823`); HEP-0033 §19.3 says iterate
-    `handler_->presences()`.
   - **C4** — Heartbeat tick on master BRC only
     (`role_api_base.cpp:563-567`); HEP-0033 §19.3 says per-conn.
   - **C5** — `Presence` struct missing `inbox_meta` (HEP-0033 §19.1).
@@ -321,19 +254,16 @@ single-area change.
   - **B5** (review item) — `BAND_*_NOTIFY` not catalogued in
     `NotificationId` (`role_host_core.hpp:77-82`); HEP-0011
     callback-table model side-stepped.
-  - **B6** (review item) — HEP-0030 §9 retires
-    `CHANNEL_BROADCAST_REQ` aggressively; broker handler + BRC
-    `send_broadcast` + 3 test workers still exercise it.
-    Channel-bound broadcast ≠ band-bound broadcast.  Decide: re-
-    affirm both or migrate the tests.
+  - **B6** (review item) — `CHANNEL_BROADCAST_REQ` retirement
+    decision tracked under `MESSAGEHUB_TODO.md` #92 audit.  Channel-
+    bound broadcast ≠ band-bound broadcast; pick one or migrate
+    tests.
   - **X5** — `Presence::connection` raw pointer +
     `connections_.reserve` form an implicit contract
     (`role_handler.cpp:48-57`); future hub-failover work silently
     breaks pointer stability.
 
 - **D3 polish (batch into one PR)**:
-  - **X1** — Delete `BrokerRequestComm::send_notify`
-    (`broker_request_comm.cpp:691`) — zero callers.
   - **X3** — Decide on `Impl::resolve_bc_for_*` 1-line forwarders
     (`role_api_base.cpp:204-218`).
   - **X4** — Strip stale Wave-B M4d/e/f migration comments (~15
@@ -350,7 +280,8 @@ single-area change.
   - **G2-#3 / `count_by_observable`** —
     `ChannelSnapshot::count_by_observable` is the right shape for
     hub-script API binding (`hub.count_channels_in_state(observable)`).
-    Plan in `docs/tech_draft/hub_state_query_layer_design.md`.
+    Design promoted into `docs/HEP/HEP-CORE-0039-Hub-State-Query-Layer.md`
+    (2026-06-02; tech_draft was archived in the same batch).
   - **G2-#4 / `set_metrics_hook`** (RESERVED) —
     `RoleAPIBase::set_metrics_hook` (`role_api_base.hpp:226`) is
     wired into heartbeat hot path; Reserved extension point for
@@ -365,7 +296,7 @@ single-area change.
 
 ### Wave M2 — Multi-Producer Channel Bookkeeping (open MP4 work)
 
-Canonical plan in `docs/TODO_MASTER.md`.  MP2 + MP2.5 ✅ shipped.
+Canonical plan in `docs/TODO_MASTER.md`.  MP2 + MP2.5 shipped.
 Remaining MP4 broker-handler items:
 
 - REG_REQ admission semantics — same channel + new `role_uid` ⇒
@@ -400,10 +331,45 @@ Remaining MP4 broker-handler items:
   quiet; re-promote the archive copy or start fresh from it as
   appropriate.
 
+### RAII Layer Redesign (Template RAII)
+
+Design: `docs/tech_draft/raii_layer_redesign.md`.  Phase 1 (timing
+unification) shipped; Phases 2–5 pending.  Companion HEPs:
+HEP-CORE-0002 §17.2 (queue abstraction), HEP-CORE-0008 (LoopPolicy
++ IterationMetrics), HEP-CORE-0009 §2.6 (policy reference),
+HEP-CORE-0024 (role unification).
+
+Open phases:
+- **Phase 2** — ZMQ transport support in existing `SlotIterator` /
+  `TransactionContext` path (today they take
+  `DataBlockProducer*` / `DataBlockConsumer*` directly and cannot
+  consume from a `ZmqQueue` reader).  Wire through the framework's
+  queue abstraction (`QueueWriter` / `QueueReader` per
+  HEP-CORE-0002 §17.2).
+- **Phase 3** — Timing parity with `run_data_loop`: `MaxRate`,
+  `FixedRate`, `FixedRateWithCompensation`, retry-acquire with
+  deadline budget, short-timeout backoff, overrun detection.
+  Today `SlotIterator::operator++()` implements only simple
+  FixedRate.
+- **Phase 4** — Typed wrappers for inbox + band: `TypedInboxClient<MsgT>`
+  / `TypedBand<EventT>` mirroring the typed slot pattern.  Removes
+  hand-marshalling burden for C++ users.
+- **Phase 5** — `SimpleRoleHost<MySlot>` template that takes a
+  per-cycle lambda + optional hooks and runs the standard 14-substep
+  `worker_main_()` skeleton.  Removes the ~360 LOC `RoleHostBase`
+  subclass boilerplate C++ users write today.
+
 ### ABI Compatibility (HEP-CORE-0032)
 
 Design document: `docs/HEP/HEP-CORE-0032-ABI-Compatibility.md`.
 Implementation not started; full plan + axes are in the HEP.
+
+ABI Check Facility companion design at
+`docs/tech_draft/abi_check_facility_design.md` — driven by the
+2026-04-21 vtable-mismatch SIGSEGV incident.  Records each binary's
+expected interface versions at compile time and verifies at startup
+against linked library versions.  `ComponentVersions` + SONAME
+wiring already in `plh_version_registry.hpp` + `version_registry.cpp`.
 
 Open follow-ups (lower priority):
 
@@ -450,8 +416,11 @@ in try/catch).  No partial-noexcept; either mark fully or don't.
 - Subtopic TODOs: `docs/todo/{MESSAGEHUB,TESTING,PLATFORM}_TODO.md`.
 - Strategic status: `docs/TODO_MASTER.md`.
 - ABI: `docs/HEP/HEP-CORE-0032-ABI-Compatibility.md`.
+- RAII redesign: `docs/tech_draft/raii_layer_redesign.md`.
+- ABI Check Facility: `docs/tech_draft/abi_check_facility_design.md`.
 - Hub State Query Layer:
-  `docs/tech_draft/hub_state_query_layer_design.md`.
+  `docs/HEP/HEP-CORE-0039-Hub-State-Query-Layer.md`.
 - Script reload: `docs/tech_draft/SCRIPT_RELOAD_DESIGN_2026-05-20.md`.
+- Engine callback tiers: `docs/tech_draft/engine_callback_tiers.md`.
 - Audit history (2026-05-21 + earlier sweeps): see git log + tagged
   commits.
