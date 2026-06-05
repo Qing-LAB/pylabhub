@@ -709,6 +709,39 @@ RoleAPIBase::register_consumer(const nlohmann::json &opts, int timeout_ms)
             std::memory_order_release);
 
     auto result = bc->register_consumer(opts, timeout_ms);
+
+    // HEP-CORE-0036 §5.2 R6: the broker rejects CONSUMER_REG_REQ with
+    // CHANNEL_NOT_READY/awaiting_first_heartbeat while no producer has
+    // reached kLive (Connected + first_heartbeat_seen).  Retry with a
+    // 100 ms cadence until the timeout_ms budget is exhausted — the
+    // typical wait is one heartbeat tick after the producer's presence
+    // row appears (wait_for_roles only gates on presence existence, not
+    // kLive).  The broker's rejection is a cheap synchronous reply, so
+    // the budget covers many retries.
+    const auto retry_deadline = std::chrono::steady_clock::now() +
+                                std::chrono::milliseconds{timeout_ms};
+    while (result.has_value() &&
+           result->value("status", std::string{}) == "error" &&
+           result->value("error_code", std::string{}) == "CHANNEL_NOT_READY" &&
+           result->value("message", std::string{})
+                   .find("awaiting_first_heartbeat") != std::string::npos)
+    {
+        if (std::chrono::steady_clock::now() >= retry_deadline)
+        {
+            LOGGER_WARN("[{}] CONSUMER_REG_REQ for '{}' deadline exceeded while "
+                        "waiting for producer to reach kLive "
+                        "(awaiting_first_heartbeat)",
+                        pImpl->role_tag, ch);
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{100});
+        const auto remaining_ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                retry_deadline - std::chrono::steady_clock::now()).count();
+        if (remaining_ms <= 0) break;
+        result = bc->register_consumer(opts, static_cast<int>(remaining_ms));
+    }
+
     const bool registered =
         result.has_value() &&
         result->value("status", std::string{}) == "success";
