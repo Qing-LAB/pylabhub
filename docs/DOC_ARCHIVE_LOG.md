@@ -6,6 +6,53 @@
 
 ## Archive batches
 
+### 2026-06-05 (TODO cleanup — verified-shipped completions)
+
+Periodic TODO quality check (per `DOC_STRUCTURE.md` §2.1.1) verified
+each completion claim against actual code rather than commit
+messages.  Items confirmed shipped in code moved to
+`docs/archive/transient-2026-06-05/todo-completions/`; active TODOs
+trimmed to focus on open items only.  No content summarized —
+verbatim prose preserved in the archive.
+
+Per-area archive files:
+
+* **`AUTH_TODO_completions.md`** — Phase A/B/C; D1+D2+D3; landing-
+  phase §4.6.5 no-bypass cleanup; BRC monitor CURVE blindspot
+  investigation (LOW, test artifact only — no production action
+  needed); lib-stabilization exclusion procedure (now superseded
+  by task #154); resolved decisions reference; considered-but-not-
+  pursued.
+* **`API_TODO_completions.md`** — Task #78 final closure
+  (E′-1/E′-2a/E′-2b/E′-2c); Commit C′-1 `parse_auth_config`
+  missing-field hard error; Task #101 HEP-0035 §4.6 key-file ACL
+  discipline (`key_file_acl.{hpp,cpp}` shipped); C2 + X1 code-ahead
+  items (heartbeat-tick iterates `presences()` per HEP-0033 §19.3;
+  `BrokerRequestComm::send_notify` already removed per audit O1).
+* **`TESTING_TODO_completions.md`** — Wave-B M9 (#72 + #100)
+  RoleHostFrame closure with Q1+Q2+Q3 quality concerns resolved;
+  N1 (#83) config→opts translation L2 round-trip test.
+* **`QUERY_LAYER_TODO_completions.md`** — Pattern P8 full migration
+  shape (Pass-1 + Pass-2 with `Pass2Decision` struct +
+  `channel_torn_down` short-circuit + two-snapshot invariant);
+  migration prerequisites; tasks #143-#150.
+* **`MESSAGEHUB_TODO_completions.md`** — A1 `ctx_band_leave`
+  semantic bug (was listed as "D1 must-fix" in active TODO; fix is
+  in code at `src/utils/service/native_engine.cpp:289-305` with
+  inline audit comment citing the 2026-05-20 discovery).
+
+Stale references corrected in active TODO files:
+* `MESSAGEHUB_TODO.md` Current Status table now reflects Wave-B M9
+  shipped + HEP-0035 control plane partially shipped (D1+D2+D3).
+* `TODO_MASTER.md` Production-readiness gap row now reflects D1+D2+D3
+  shipped; D4-D7 + data-plane CURVE + producer-side ZAP open.
+
+Method note: all completion claims were verified by either
+`git log` for the cited commit hash, file existence + grep for the
+cited symbol, or `git show --stat` to confirm the change matched
+the description.  Items that named no concrete artifact were left
+in the active TODO marked as scope items, not closures.
+
 ### 2026-06-02 (HEP-CORE-0039 promotion + tech_draft archive)
 
 HEP-CORE-0039 "Hub State Query Layer" promoted from tech_draft to

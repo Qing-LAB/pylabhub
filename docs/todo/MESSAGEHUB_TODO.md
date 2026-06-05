@@ -6,19 +6,23 @@ connection lifecycle.
 Focus".  This file holds broker-specific detail for open items only;
 completed work lives in git history + DOC_ARCHIVE_LOG.
 
+**Completed-work archive:** `docs/archive/transient-2026-06-05/todo-completions/MESSAGEHUB_TODO_completions.md`
+(A1 `ctx_band_leave` semantic bug — was listed as "D1 must-fix" but
+the fix is in production code at `native_engine.cpp:289-305`).
+
 ---
 
 ## Current Status (broker-specific summary)
 
 | Track | Where it stands | Active item here |
 |---|---|---|
-| **Arc A — `plh_hub` renovation** (HEP-0033 §15 Phase 1..10) | ✅ Phases 1-9 shipped; Phase 10 doc-amendment ⏳ partial. | HEP-0033 Phase 10 (task #73) |
-| **Arc B — role-host renovation** (Wave-B M0..M9) | ✅ M0..M8 shipped (incl. M8 dual-hub processor binary-validated 2026-05-21 via demos); ⏳ Wave-B M9 (RoleHostFrame CRTP) pending (task #72) | M9 (task #72) |
-| **HEP-CORE-0035 auth** | 🚧 NOT IMPLEMENTED — design ratified, 7-phase plan in HEP-0035 §8 | (task #74) — production-readiness gap |
+| **Arc A — `plh_hub` renovation** (HEP-0033 §15 Phase 1..10) | Phases 1-9 shipped; Phase 10 doc-amendment ⏳ partial. | HEP-0033 Phase 10 (task #73) |
+| **Arc B — role-host renovation** (Wave-B M0..M9) | M0..M9 shipped (M9 closed 2026-05-26). | — |
+| **HEP-CORE-0035 auth** | 🚧 partial — Phase B + #101 + D1 + D2 + D3 shipped (per `AUTH_TODO.md`).  D4–D7 open.  Critical-path for production readiness. | task #74; detail in `docs/todo/AUTH_TODO.md` |
 | **HUB_TARGETED_ACK wire frame** (HEP-0033 §12.3.6) | ⏸ Deferred — C++ `augment_peer_message` surface in place; wire bit not landed | (task #75) — federation-only |
 
-Wave-B M2 has long since shipped.  Wave-M2 / Wave-M2.5 / Wave-M3 side-
-arcs all closed.  M1.2 / M1.4 / M1.5 / MD1 / MD1.5 all closed.
+Wave-M2 / Wave-M2.5 / Wave-M3 side-arcs all closed.  M1.2 / M1.4 /
+M1.5 / MD1 / MD1.5 all closed.
 
 ---
 
@@ -41,7 +45,6 @@ check whether the broker also sends an ACK that's being dropped:
 - `send_broadcast` (`broker_request_comm.cpp`)
 - `send_checksum_error`
 - `send_heartbeat`
-- `send_notify` (if still alive; D3.X1 lists it as zero-callers)
 
 For each half-mix found:
 1. Decide intended shape per HEP-0007 §12.2.1 (does caller's next
@@ -53,15 +56,6 @@ For each half-mix found:
 
 Trigger: any half-mix is a latent flake source like the
 ENDPOINT_UPDATE one we just fixed.  Estimated effort M.
-
-### B3 (#78) — hard-error `hub.auth.keyfile=""` at config load
-
-Demo-harness audit finding (2026-05-21): broker uses ephemeral
-CURVE but doesn't publish `hub.pubkey`, so roles silently fail
-handshake.  Fix: hard-error empty `hub.auth.keyfile` at config-load
-time with message "Hub requires a vault for CURVE keypair — run
-`plh_hub --keygen` first".  Validation site: hub config loader
-(`src/utils/config/hub_*config*.cpp`).  Single-file change.
 
 ### H43 — Federation propagation of role-disconnect
 
@@ -110,13 +104,14 @@ the role-side `sender` is the broker peer; hub-side it should be
 the originating role's uid (per HEP-0033 §12).  Audit field-use
 sites + document the semantic split, OR introduce a sibling type.
 
-### Hub State Query Layer (new design — task absorbs G2 #2/#3)
+### Hub State Query Layer (HEP-CORE-0039)
 
-Full design: `docs/tech_draft/hub_state_query_layer_design.md`.
-Layer-1 metadata + Layer-2 free-function query API + `hub.snapshot()`
-script binding.  Absorbs `query_shm_info` / `count_by_observable`
-wiring (Group 2 #2/#3 from 2026-05-20 decision log).  Scheduling:
-P3 — independent multi-day effort.
+Full design: `docs/HEP/HEP-CORE-0039-Hub-State-Query-Layer.md`
+(promoted from tech_draft 2026-06-02; tasks #140-#150 shipped Phase A
++ P8 sweep migration).  Layer-1 metadata + Layer-2 free-function
+query API + `hub.snapshot()` script binding.  Absorbs `query_shm_info`
+/ `count_by_observable` wiring (Group 2 #2/#3 from 2026-05-20
+decision log).  Phases B+ remain open.
 
 ---
 
@@ -124,10 +119,10 @@ P3 — independent multi-day effort.
 
 | Looks like | Actually means | Status |
 |---|---|---|
-| Wave-B MN | Arc B Wave (`docs/archive/transient-2026-06-02/role_host_template_design.md` §14) | M0..M8 ✅; M9 ⏳ |
-| HEP-0033 §15 Phase N | Arc A Wave | 1-9 ✅; 10 ⏳ partial |
-| Wave-M2 / Wave-M2.5 / Wave-M3 | Side-arc waves (multi-producer / controlled-access) | ✅ all closed |
-| M1.2 / M1.4 / M1.5 / MD1 / MD1.5 | Side-arc FSM-consolidation + race-fix cleanups | ✅ all closed |
+| Wave-B MN | Arc B Wave (`docs/archive/transient-2026-06-02/role_host_template_design.md` §14) | M0..M9 shipped |
+| HEP-0033 §15 Phase N | Arc A Wave | Phases 1-9 shipped; Phase 10 partial |
+| Wave-M2 / Wave-M2.5 / Wave-M3 | Side-arc waves (multi-producer / controlled-access) | closed |
+| M1.2 / M1.4 / M1.5 / MD1 / MD1.5 | Side-arc FSM-consolidation + race-fix cleanups | closed |
 
 If a sentence says "M3" without a prefix, it almost certainly means
 **Wave-B M3** — but verify against context.
@@ -139,12 +134,6 @@ If a sentence says "M3" without a prefix, it almost certainly means
 Carried over from the archived
 `docs/archive/transient-2026-06-02/DISCOVERY_2026-05-20.md`.  Each
 should be verified-fixed-or-still-open before next sprint.
-
-### D1 must-fix
-
-- **A1 — `ctx_band_leave` semantic bug.**  `native_engine.cpp:280`
-  returns `1` on broker rejection (e.g. `{status:error,NOT_A_MEMBER}`).
-  Fix: gate on `result->value("status","") == "success"`.  Single-line.
 
 ### D2 drift
 
@@ -215,5 +204,5 @@ taxonomy in `docs/IMPLEMENTATION_GUIDANCE.md` § "Error Taxonomy".
 - `docs/HEP/HEP-CORE-0023-Startup-Coordination.md` — per-presence
   FSM canonical spec.
 - `docs/HEP/HEP-CORE-0035-Hub-Role-Authentication-and-Federation-Trust.md` — auth design.
-- `docs/tech_draft/hub_state_query_layer_design.md` — hub state
-  query layer design.
+- `docs/HEP/HEP-CORE-0039-Hub-State-Query-Layer.md` — hub state
+  query layer design (promoted from tech_draft 2026-06-02).
