@@ -64,9 +64,9 @@ struct ConsumerRegInputs
     std::string role_uid;
     std::string role_name;
 
-    /// Consumer's CURVE pubkey (Z85, 40 chars).  REQUIRED per
-    /// HEP-CORE-0036 §6.5 (broker_proto 5→6): the broker uses it to
-    /// populate the channel's authorized-consumer allowlist via
+    /// Consumer's CURVE pubkey (Z85, exactly 40 chars).  REQUIRED per
+    /// HEP-CORE-0036 §6.5: the broker uses it to populate the channel's
+    /// authorized-consumer allowlist via
     /// `HubState::_on_consumer_authorized`.  Callers in the role-host
     /// MUST pass the loaded `BrokerRequestComm::Config::client_pubkey`
     /// — broker rejects CONSUMER_REG_REQ with empty or wrong-length
@@ -111,15 +111,10 @@ inline nlohmann::json build_producer_reg_payload(const ProducerRegInputs &in)
 /// no schema).
 inline nlohmann::json build_consumer_reg_payload(const ConsumerRegInputs &in)
 {
-    // broker_proto 4→5 (audit R3.5b, 2026-05-19): wire keys unified —
-    // CONSUMER_REG_REQ now sends `role_uid`/`role_name` instead of
-    // `consumer_uid`/`consumer_name`.  Role tag is embedded in the
-    // uid value (HEP-CORE-0033 §G2.2.0b).
-    //
-    // broker_proto 5→6 (HEP-CORE-0036 §6.5 amended 2026-06-04 +
-    // PeerAdmission D3): wires `zmq_pubkey` — consumer's CURVE pubkey
-    // for the channel-scope allowlist.  Mirrors the producer-side
-    // `zmq_pubkey` field already on REG_REQ.
+    // Wire keys: `role_uid`/`role_name` (role tag embedded in the uid
+    // value per HEP-CORE-0033 §G2.2.0b).  `zmq_pubkey` is the
+    // consumer's CURVE pubkey for the channel-scope allowlist, mirroring
+    // the producer-side `zmq_pubkey` on REG_REQ (HEP-CORE-0036 §6.5).
     nlohmann::json reg;
     reg["channel_name"] = in.channel;
     reg["role_uid"]     = in.role_uid;
