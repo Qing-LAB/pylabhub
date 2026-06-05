@@ -42,6 +42,15 @@ struct ProducerRegInputs
     /// set, `zmq_node_endpoint` must also be populated.
     bool        is_zmq_transport{false};
     std::string zmq_node_endpoint;
+
+    /// Producer's CURVE identity pubkey (Z85, 40 chars).  REQUIRED per
+    /// HEP-CORE-0036 §4.1 + §5.1 + §6.4 (broker stores it on
+    /// `ChannelEntry::producers[i].zmq_pubkey`; consumers receive it
+    /// via `CONSUMER_REG_ACK.producers[]` and use it as the data-plane
+    /// `curve_serverkey`).  Callers in the role-host MUST pass the
+    /// loaded `BrokerRequestComm::Config::client_pubkey` — broker
+    /// rejects REG_REQ with empty or wrong-length `zmq_pubkey`.
+    std::string zmq_pubkey;
 };
 
 /// Inputs to `build_consumer_reg_payload`.  broker_proto 4→5 (audit
@@ -55,14 +64,13 @@ struct ConsumerRegInputs
     std::string role_uid;
     std::string role_name;
 
-    /// Consumer's CURVE pubkey (Z85, 40 chars).  Sent on the wire as
-    /// `zmq_pubkey` per broker_proto 5→6 (HEP-CORE-0036 §6.5 amended
-    /// 2026-06-04) so the broker can add it to the channel's
-    /// authorized-consumer allowlist via
-    /// `HubState::_on_consumer_authorized`.  Empty is accepted (allowlist
-    /// stays empty for that consumer — legal deny-all per HEP-CORE-0035
-    /// §4.8.4); callers in the role-host should pass the live
-    /// `BrokerRequestComm::Config::client_pubkey` value.
+    /// Consumer's CURVE pubkey (Z85, 40 chars).  REQUIRED per
+    /// HEP-CORE-0036 §6.5 (broker_proto 5→6): the broker uses it to
+    /// populate the channel's authorized-consumer allowlist via
+    /// `HubState::_on_consumer_authorized`.  Callers in the role-host
+    /// MUST pass the loaded `BrokerRequestComm::Config::client_pubkey`
+    /// — broker rejects CONSUMER_REG_REQ with empty or wrong-length
+    /// `zmq_pubkey`.
     std::string zmq_pubkey;
 };
 
@@ -81,13 +89,15 @@ inline nlohmann::json build_producer_reg_payload(const ProducerRegInputs &in)
     reg["role_uid"]          = in.role_uid;
     reg["role_name"]         = in.role_name;
     reg["role_type"]         = in.role_tag;
-    // zmq_ctrl_endpoint / zmq_data_endpoint placeholder fields retired
-    // in Wave M2.5 step 2c (2026-05-10).  zmq_pubkey kept on the wire
-    // (broker still parses it into ChannelEntry.zmq_pubkey →
-    // RoleEntry.pubkey_z85); producer-side wire layer sends empty
-    // string today because the role's CURVE keypair is not yet
-    // surfaced here.  See REVIEW_WaveM2.5_2026-05-10.md F7 + F16.
-    reg["zmq_pubkey"]        = "";
+    // zmq_pubkey: REQUIRED per HEP-CORE-0036 §4.1 + §5.1 + §6.4.
+    // Producer's CURVE identity pubkey, Z85-encoded (40 chars).
+    // Broker stores it on ChannelEntry::producers[i].zmq_pubkey, then
+    // emits it back via CONSUMER_REG_ACK.producers[] so each consumer
+    // knows the producer's curve_serverkey for the data-plane PULL
+    // handshake.  Broker rejects empty / non-40-char with
+    // INVALID_REQUEST.  HEP-CORE-0035 §2 makes CURVE unconditional —
+    // there is no fallback.
+    reg["zmq_pubkey"]        = in.zmq_pubkey;
 
     if (in.is_zmq_transport)
     {

@@ -1373,6 +1373,42 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
         return *err;
     }
 
+    // HEP-CORE-0036 §4.1 + §5.1 + §6.4 — producer's CURVE identity
+    // pubkey is REQUIRED on REG_REQ.  Broker stores it on
+    // `ChannelEntry::producers[i].zmq_pubkey` and emits it back via
+    // `CONSUMER_REG_ACK.producers[]` so each consumer has the
+    // producer's `curve_serverkey` for its data-plane PULL socket.
+    // HEP-CORE-0035 §2 makes CURVE unconditional — empty or
+    // wrong-length values are programmer errors and rejected at wire
+    // admission, mirroring the consumer-side CONSUMER_REG_REQ check.
+    const std::string producer_pubkey = req.value("zmq_pubkey", "");
+    if (producer_pubkey.empty())
+    {
+        LOGGER_WARN(
+            "Broker: REG_REQ rejected — channel '{}' role_uid='{}' "
+            "missing required `zmq_pubkey` (HEP-CORE-0036 §4.1 broker_proto>=6).",
+            channel_name, role_uid);
+        return make_error(corr_id, "INVALID_REQUEST",
+                          "REG_REQ requires non-empty `zmq_pubkey` "
+                          "(broker_proto>=6 / HEP-CORE-0036 §4.1)");
+    }
+    if (producer_pubkey.size() != 40)
+    {
+        // CURVE pubkeys are Z85-encoded 32-byte blobs = exactly 40
+        // ASCII chars.  Any other length cannot match a real CURVE
+        // handshake; reject at the wire to avoid polluting the
+        // producer entry with a value that consumers would then use
+        // as a broken `curve_serverkey`.
+        LOGGER_WARN(
+            "Broker: REG_REQ rejected — channel '{}' role_uid='{}' "
+            "`zmq_pubkey` length is {}, expected 40 (Z85-encoded CURVE25519).",
+            channel_name, role_uid, producer_pubkey.size());
+        return make_error(corr_id, "INVALID_REQUEST",
+                          "REG_REQ `zmq_pubkey` length is " +
+                              std::to_string(producer_pubkey.size()) +
+                              ", expected 40 (Z85-encoded CURVE25519 pubkey)");
+    }
+
     // Wave M2.5 step 3 — build the new producer entry from the wire
     // payload.  All per-producer attributes (inbox_*, zmq_node_endpoint,
     // zmq_pubkey, metadata) live on `ProducerEntry`; the deprecated
@@ -1389,7 +1425,7 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     primary_producer.inbox_packing     = req.value("inbox_packing", "");
     primary_producer.inbox_checksum    = req.value("inbox_checksum", "");
     primary_producer.zmq_node_endpoint = req.value("zmq_node_endpoint", "");
-    primary_producer.zmq_pubkey        = req.value("zmq_pubkey", "");
+    primary_producer.zmq_pubkey        = producer_pubkey;
     if (req.contains("metadata") && req["metadata"].is_object())
     {
         primary_producer.metadata = req["metadata"];
@@ -2336,30 +2372,53 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     entry.inbox_packing     = req.value("inbox_packing", "");
     entry.inbox_checksum    = req.value("inbox_checksum", "");
     // broker_proto 5→6 (HEP-CORE-0036 §6.5 amended 2026-06-04 +
-    // PeerAdmission D3): capture the consumer's CURVE pubkey so the
-    // broker can populate the channel-scope authorized-consumer
-    // allowlist via `_on_consumer_authorized` and revoke it on DEREG /
-    // heartbeat timeout.  Empty for legacy consumers — allowlist stays
-    // empty for them (legal deny-all per HEP-CORE-0035 §4.8.4).
+    // PeerAdmission D3): the consumer's CURVE pubkey is REQUIRED on
+    // the wire so the broker can populate the channel-scope
+    // authorized-consumer allowlist via `_on_consumer_authorized` and
+    // revoke it on DEREG / heartbeat timeout.  HEP-CORE-0035 §2 makes
+    // CURVE unconditional; there is no pre-D3 / "legacy" path.  Empty
+    // or wrong-length values are programmer errors and rejected at
+    // wire admission, matching the producer-side REG_REQ check
+    // (broker_proto>=6 enforces non-empty `zmq_pubkey` on both
+    // REG_REQ and CONSUMER_REG_REQ).
     const std::string consumer_pubkey = req.value("zmq_pubkey", "");
+    if (consumer_pubkey.empty())
+    {
+        LOGGER_WARN(
+            "Broker: CONSUMER_REG_REQ rejected — channel '{}' role_uid='{}' "
+            "missing required `zmq_pubkey` (HEP-CORE-0036 §6.5 broker_proto>=6).",
+            channel_name, role_uid);
+        return make_error(corr_id, "INVALID_REQUEST",
+                          "CONSUMER_REG_REQ requires non-empty `zmq_pubkey` "
+                          "(broker_proto>=6 / HEP-CORE-0036 §6.5)");
+    }
+    if (consumer_pubkey.size() != 40)
+    {
+        // CURVE pubkeys are Z85-encoded 32-byte blobs = exactly 40
+        // ASCII chars.  Any other length cannot match a real CURVE
+        // handshake; reject at the wire to avoid polluting the
+        // channel allowlist with values that would silently deny
+        // every connection attempt.
+        LOGGER_WARN(
+            "Broker: CONSUMER_REG_REQ rejected — channel '{}' role_uid='{}' "
+            "`zmq_pubkey` length is {}, expected 40 (Z85-encoded CURVE25519).",
+            channel_name, role_uid, consumer_pubkey.size());
+        return make_error(corr_id, "INVALID_REQUEST",
+                          "CONSUMER_REG_REQ `zmq_pubkey` length is " +
+                              std::to_string(consumer_pubkey.size()) +
+                              ", expected 40 (Z85-encoded CURVE25519 pubkey)");
+    }
     entry.zmq_pubkey = consumer_pubkey;
     // Capture ZMQ identity for future CHANNEL_CLOSING_NOTIFY.
     entry.zmq_identity.assign(static_cast<const char*>(identity.data()), identity.size());
 
     hub_state_->_on_consumer_joined(channel_name, std::move(entry));
 
-    // HEP-CORE-0036 §6.5 + PeerAdmission D3: ensure a channel-access
-    // record exists (no-op if `_on_channel_access_opened` already fired
-    // at producer REG_REQ accept), then add this consumer's pubkey to
-    // the allowlist and fire the change notify to all producers.  Skip
-    // the auth-allowlist mutation when the consumer omitted its
-    // pubkey — the §4.8.4 empty-allowlist deny-all state is the
-    // intended degradation.
-    if (!consumer_pubkey.empty())
-    {
-        hub_state_->_on_consumer_authorized(channel_name, consumer_pubkey);
-        fire_channel_auth_changed_notify(socket, channel_name, "consumer_joined");
-    }
+    // HEP-CORE-0036 §6.5 + PeerAdmission D3: pubkey was validated
+    // non-empty + 40-char Z85 above.  Add it to the channel-scope
+    // allowlist and fire the change notify to all producers.
+    hub_state_->_on_consumer_authorized(channel_name, consumer_pubkey);
+    fire_channel_auth_changed_notify(socket, channel_name, "consumer_joined");
 
     LOGGER_INFO("Broker: consumer registered for channel '{}'", channel_name);
     nlohmann::json resp;
@@ -2440,11 +2499,20 @@ nlohmann::json BrokerServiceImpl::handle_consumer_dereg_req(zmq::socket_t& socke
 
     // HEP-CORE-0036 §6.5 + PeerAdmission D3: revoke this consumer's
     // pubkey from the channel-scope allowlist + notify producers.
-    // Legacy consumers with empty `zmq_pubkey` never landed in the
-    // allowlist (REG-side guard); skip both the mutator and the
-    // notify to keep REG / DEREG / heartbeat-timeout symmetrical — a
-    // notify with no underlying allowlist change is wasted work.
-    if (!closing_entry.zmq_pubkey.empty())
+    // REG enforces non-empty `zmq_pubkey` (above), so any closing
+    // entry MUST have one.  An empty value here would mean HubState
+    // is corrupted — fail loud rather than degrade silently.
+    if (closing_entry.zmq_pubkey.empty())
+    {
+        LOGGER_ERROR(
+            "Broker: CONSUMER_DEREG_REQ for channel '{}' role_uid='{}' "
+            "found a ConsumerEntry with empty `zmq_pubkey` — HubState "
+            "invariant broken (CONSUMER_REG_REQ rejects empty pubkey at "
+            "the wire).  Proceeding with DEREG but allowlist is now "
+            "out of sync.",
+            channel_name, closing_entry.role_uid);
+    }
+    else
     {
         hub_state_->_on_consumer_revoked(channel_name,
                                           closing_entry.zmq_pubkey);
@@ -2504,25 +2572,53 @@ BrokerServiceImpl::handle_get_channel_auth_req(const nlohmann::json &req)
     }
     if (!caller_is_producer)
     {
+        // Defence-in-depth: a misbehaving (or compromised) role
+        // querying another channel's allowlist is observable here,
+        // separately from the wire-level CURVE+ZAP layer that gates
+        // who can speak to the broker at all.
+        LOGGER_WARN(
+            "Broker: GET_CHANNEL_AUTH_REQ rejected — role_uid='{}' is "
+            "not a registered producer of channel '{}' (HEP-CORE-0036 "
+            "§6.6 PRODUCER_NOT_AUTHORIZED)",
+            caller_uid, channel_name);
         return make_error(corr_id, "PRODUCER_NOT_AUTHORIZED",
                           "Caller role_uid='" + caller_uid +
                               "' is not a registered producer of channel '" +
                               channel_name + "'");
     }
 
-    // Read the current authoritative allowlist.  No record →
-    // empty allowlist (legal deny-all per HEP-CORE-0035 §4.8.4).
+    // Read the current authoritative allowlist.  REG_REQ wires
+    // `_on_channel_access_opened` on every channel admission, so the
+    // access record MUST exist for any channel that passed the
+    // producer-membership check above.  A missing record here means
+    // HubState is corrupted (e.g., a teardown path didn't call
+    // `_on_channel_access_closed` symmetrically) — return INTERNAL_ERROR
+    // rather than degrade to deny-all, because the caller would
+    // otherwise apply an empty allowlist and silently lock every
+    // consumer out.
+    auto access = hub_state_->channel_access(channel_name);
+    if (!access.has_value())
+    {
+        LOGGER_ERROR(
+            "Broker: GET_CHANNEL_AUTH_REQ for channel '{}' from role_uid='{}' "
+            "found a ChannelEntry but no ChannelAccessEntry — HubState "
+            "invariant broken (REG path wires _on_channel_access_opened "
+            "for every channel admission).  Returning INTERNAL_ERROR.",
+            channel_name, caller_uid);
+        return make_error(corr_id, "INTERNAL_ERROR",
+                          "ChannelAccessEntry missing for channel '" +
+                              channel_name +
+                              "' — broker invariant broken; restart the hub "
+                              "to recover");
+    }
     nlohmann::json resp;
     resp["status"]       = "success";
     resp["channel_name"] = channel_name;
     if (!corr_id.empty())
         resp["correlation_id"] = corr_id;
     nlohmann::json allowlist_arr = nlohmann::json::array();
-    if (auto access = hub_state_->channel_access(channel_name); access.has_value())
-    {
-        for (const auto &pk : access->authorized_consumer_pubkeys)
-            allowlist_arr.push_back(pk);
-    }
+    for (const auto &pk : access->authorized_consumer_pubkeys)
+        allowlist_arr.push_back(pk);
     resp["allowlist"] = std::move(allowlist_arr);
     return resp;
 }
@@ -2541,20 +2637,52 @@ void BrokerServiceImpl::fire_channel_auth_changed_notify(
     // on reconnect.
     auto ch = hub_state_->channel(channel_name);
     if (!ch.has_value())
+    {
+        // Caller (REG / DEREG / heartbeat-timeout handler) just
+        // mutated the channel's allowlist; the channel SHOULD exist.
+        // A missing channel here means the lookup races with a
+        // concurrent teardown — observable but harmless (producers
+        // who were live during the mutation will pick up the change
+        // via REG_ACK.initial_allowlist on the next reconnect).
+        LOGGER_WARN(
+            "Broker: CHANNEL_AUTH_CHANGED_NOTIFY fan-out skipped — "
+            "channel '{}' no longer exists in HubState (probable race "
+            "with concurrent channel teardown; reason='{}').",
+            channel_name, reason);
         return;
+    }
     nlohmann::json notify;
     notify["channel_name"] = channel_name;
     notify["reason"]       = reason;
+    std::size_t fanned = 0;
+    std::size_t skipped_no_identity = 0;
     for (const auto &prod : ch->producers)
     {
         if (prod.zmq_identity.empty())
+        {
+            ++skipped_no_identity;
             continue;
+        }
         send_to_identity(socket, prod.zmq_identity,
                           "CHANNEL_AUTH_CHANGED_NOTIFY", notify);
+        ++fanned;
+    }
+    if (skipped_no_identity > 0)
+    {
+        // Identity-less producers are a transient state (pre-REG_ACK
+        // capture, or post-teardown partial entries).  Reveal them so
+        // operators can investigate whether a producer is stuck not
+        // receiving notifies — which would degrade to "stale allowlist
+        // until producer's next reconnect" per the §6.5 drift window.
+        LOGGER_WARN(
+            "Broker: CHANNEL_AUTH_CHANGED_NOTIFY for channel '{}' "
+            "skipped {} producer(s) with empty zmq_identity (transient "
+            "or partial state); fanned to {} producer(s).",
+            channel_name, skipped_no_identity, fanned);
     }
     LOGGER_DEBUG("Broker: CHANNEL_AUTH_CHANGED_NOTIFY fan-out for "
-                 "channel '{}' reason='{}' to {} producer(s)",
-                 channel_name, reason, ch->producers.size());
+                 "channel '{}' reason='{}' to {} of {} producer(s)",
+                 channel_name, reason, fanned, ch->producers.size());
 }
 
 void BrokerServiceImpl::handle_heartbeat_req(const nlohmann::json& req)
@@ -3514,12 +3642,21 @@ void BrokerServiceImpl::check_dead_consumers(zmq::socket_t& socket)
             }
             hub_state_->_on_consumer_left(channel_name, dead_consumer.role_uid);
             on_consumer_closed(socket, channel_name, dead_consumer, "process_dead");
-            // HEP-CORE-0036 §6.5 + PeerAdmission D3: revoke + notify on
-            // heartbeat-timeout revocation path.  Same guarded shape as
-            // CONSUMER_REG_REQ / CONSUMER_DEREG_REQ — legacy consumers
-            // without a pubkey never entered the allowlist, so skipping
-            // both keeps REG / DEREG / timeout symmetrical.
-            if (!dead_consumer.zmq_pubkey.empty())
+            // HEP-CORE-0036 §6.5 + PeerAdmission D3: revoke + notify
+            // on heartbeat-timeout revocation path.  REG enforces a
+            // non-empty `zmq_pubkey` at the wire, so finding an empty
+            // one here is HubState corruption.
+            if (dead_consumer.zmq_pubkey.empty())
+            {
+                LOGGER_ERROR(
+                    "Broker: heartbeat-timeout revocation for channel "
+                    "'{}' role_uid='{}' found a ConsumerEntry with "
+                    "empty `zmq_pubkey` — HubState invariant broken "
+                    "(REG path rejects empty pubkey).  Skipping allowlist "
+                    "revoke.",
+                    channel_name, dead_consumer.role_uid);
+            }
+            else
             {
                 hub_state_->_on_consumer_revoked(channel_name,
                                                   dead_consumer.zmq_pubkey);

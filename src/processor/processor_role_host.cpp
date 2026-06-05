@@ -369,6 +369,10 @@ void ProcessorRoleHost::worker_main_()
             reg_in.has_shm           = shm.enabled;
             reg_in.is_zmq_transport  = (tr.transport == config::Transport::Zmq);
             reg_in.zmq_node_endpoint = tr.zmq_endpoint;
+            // HEP-CORE-0036 §4.1 — producer-side identity pubkey is
+            // REQUIRED on REG_REQ; processor uses its own role's
+            // CURVE client pubkey (same vault-loaded value as the BRC).
+            reg_in.zmq_pubkey        = config_.auth().client_pubkey;
             prod_reg = hub::build_producer_reg_payload(reg_in);
         }
         const auto &pf_for_wire = config_.role_data<ProcessorFields>();
