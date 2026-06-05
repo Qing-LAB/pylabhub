@@ -710,28 +710,37 @@ RoleAPIBase::register_consumer(const nlohmann::json &opts, int timeout_ms)
 
     auto result = bc->register_consumer(opts, timeout_ms);
 
-    // HEP-CORE-0036 §5.2 R6: the broker rejects CONSUMER_REG_REQ with
-    // CHANNEL_NOT_READY/awaiting_first_heartbeat while no producer has
-    // reached kLive (Connected + first_heartbeat_seen).  Retry with a
-    // 100 ms cadence until the timeout_ms budget is exhausted — the
-    // typical wait is one heartbeat tick after the producer's presence
-    // row appears (wait_for_roles only gates on presence existence, not
-    // kLive).  The broker's rejection is a cheap synchronous reply, so
-    // the budget covers many retries.
+    // HEP-CORE-0036 §5.2 R6 + §6.6 reason catalog: the broker rejects
+    // CONSUMER_REG_REQ with `CHANNEL_NOT_READY` while the channel is
+    // not yet admissible.  The §6.6 reason values that are transient
+    // and worth retrying are `awaiting_first_heartbeat` (kRegistering
+    // — producer registered, no first heartbeat yet) and
+    // `heartbeat_stalled` (kStalled — producer in heartbeat-timeout
+    // window per HEP-CORE-0023 §2.6).  Terminal failures (channel
+    // does not exist, or producer presences all Disconnected) come
+    // back as `CHANNEL_NOT_FOUND` and drop out of this loop on the
+    // error_code check.  A 100 ms cadence covers a typical 1 s
+    // heartbeat tick with ~10 retries; the broker's rejection is a
+    // cheap synchronous reply, so the budget covers many retries.
+    const auto is_retryable_reason = [](const nlohmann::json &r) -> bool {
+        const auto msg = r.value("message", std::string{});
+        return msg.find("awaiting_first_heartbeat") != std::string::npos ||
+               msg.find("heartbeat_stalled")        != std::string::npos;
+    };
     const auto retry_deadline = std::chrono::steady_clock::now() +
                                 std::chrono::milliseconds{timeout_ms};
     while (result.has_value() &&
            result->value("status", std::string{}) == "error" &&
            result->value("error_code", std::string{}) == "CHANNEL_NOT_READY" &&
-           result->value("message", std::string{})
-                   .find("awaiting_first_heartbeat") != std::string::npos)
+           is_retryable_reason(*result))
     {
         if (std::chrono::steady_clock::now() >= retry_deadline)
         {
             LOGGER_WARN("[{}] CONSUMER_REG_REQ for '{}' deadline exceeded while "
-                        "waiting for producer to reach kLive "
-                        "(awaiting_first_heartbeat)",
-                        pImpl->role_tag, ch);
+                        "waiting for channel to become ready (last broker "
+                        "reason: '{}')",
+                        pImpl->role_tag, ch,
+                        result->value("message", std::string{}));
             break;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds{100});
