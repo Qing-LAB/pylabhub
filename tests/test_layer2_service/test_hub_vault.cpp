@@ -73,7 +73,7 @@ constexpr const char *kPassword = "test-password-123";
 constexpr const char *kWrongPassword = "wrong-password-456";
 
 // Validate a Z85 key: exactly 40 printable ASCII chars.
-bool is_valid_z85_key(const std::string &s)
+bool is_valid_z85_key(std::string_view s)
 {
     if (s.size() != 40)
         return false;
@@ -84,7 +84,7 @@ bool is_valid_z85_key(const std::string &s)
 }
 
 // Validate a 64-char lowercase hex token.
-bool is_valid_hex_token(const std::string &s)
+bool is_valid_hex_token(std::string_view s)
 {
     if (s.size() != 64)
         return false;
@@ -318,9 +318,9 @@ TEST_F(HubVaultTest, EncryptDecryptRoundTrip)
     // end-to-end with known values.
     HubVault created = HubVault::create(vault_path_, hub_uid_, kPassword);
 
-    const std::string expected_pubkey = created.broker_curve_public_key();
-    const std::string expected_seckey = created.broker_curve_secret_key();
-    const std::string expected_token  = created.admin_token();
+    const std::string expected_pubkey{created.broker_curve_public_key()};
+    const std::string expected_seckey{created.broker_curve_secret_key()};
+    const std::string expected_token {created.admin_token()};
 
     // Simulate a new process opening the vault (discard the in-memory object).
     HubVault reopened = HubVault::open(vault_path_, hub_uid_, kPassword);
@@ -370,7 +370,7 @@ TEST_F(HubVaultTest, Create_OverExistingVault_Throws_AtomicNoOverwrite)
     // old pubkey.  Mutation-sweep against the prior (pre-2026-06-01)
     // contract which allowed silent overwrite.
     HubVault v1 = HubVault::create(vault_path_, hub_uid_, kPassword);
-    const std::string pk1 = v1.broker_curve_public_key();
+    const std::string pk1{v1.broker_curve_public_key()};
     const std::string sentinel_pk = pk1;
 
     // Pin the atomic-layer message — this is the kernel-enforced
@@ -458,8 +458,8 @@ TEST_F(HubVaultTest, Create_VaultFileIsMode0600_AndParentDirIs0700)
 TEST_F(HubVaultTest, MoveConstructor_TransfersOwnership)
 {
     HubVault v1 = HubVault::create(vault_path_, hub_uid_, kPassword);
-    const std::string pk = v1.broker_curve_public_key();
-    const std::string sk = v1.broker_curve_secret_key();
+    const std::string pk{v1.broker_curve_public_key()};
+    const std::string sk{v1.broker_curve_secret_key()};
 
     HubVault v2(std::move(v1));
     EXPECT_EQ(v2.broker_curve_public_key(), pk);

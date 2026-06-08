@@ -33,8 +33,10 @@
 #include <sodium.h>
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <span>
 #include <string>
 
 namespace pylabhub::utils::detail
@@ -85,11 +87,28 @@ void vault_write(const std::filesystem::path &path,
                  const std::string           &password,
                  const std::string           &uid);
 
-/// Read and decrypt vault at path. Returns the plaintext JSON string.
-/// Throws std::runtime_error on MAC failure (wrong password or corrupted file),
-/// I/O error, or minimum-size violation.
-std::string vault_read(const std::filesystem::path &path,
-                       const std::string           &password,
-                       const std::string           &uid);
+/// Decrypt the vault at `path` and write the plaintext JSON bytes
+/// directly into `out_buf`.  Returns the number of bytes written.
+///
+/// `out_buf` MUST be large enough to hold the plaintext; throws
+/// `std::runtime_error` if the plaintext does not fit (the caller's
+/// span is zeroed before the throw to avoid leaving a partial leak).
+/// Same throws as `vault_read` for MAC failure / I/O error / minimum-
+/// size violation.
+///
+/// Unlike `vault_read`, no `std::string` materializes — the plaintext
+/// never lives in a heap-allocated container whose destructor cannot
+/// be trusted to zero (HEP-CORE-0040 §175).  Callers typically pair
+/// this with `pylabhub::utils::security::SecureBuffer<N>` whose
+/// destructor `sodium_memzero`'s the bytes:
+///
+///     SecureBuffer<4096> json_buf;
+///     auto n = vault_read_secure(path, pw, uid, json_buf.span());
+///     // parse JSON from json_buf.span().first(n) ...
+///     // json_buf dtor zeros the plaintext when this scope exits.
+std::size_t vault_read_secure(const std::filesystem::path &path,
+                              const std::string           &password,
+                              const std::string           &uid,
+                              std::span<std::byte>         out_buf);
 
 } // namespace pylabhub::utils::detail

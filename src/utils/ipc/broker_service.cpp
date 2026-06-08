@@ -18,6 +18,7 @@
 #include "utils/lifecycle.hpp"
 #include "utils/logger.hpp"
 #include "utils/security/curve_keypair.hpp"    // HEP-CORE-0035 §2 — shared keygen
+#include "utils/security/key_store.hpp"        // HEP-CORE-0040 §172 — hub identity
 #include "utils/security/peer_admission.hpp"   // HEP-CORE-0035 Phase D
 #include "utils/security/zap_router.hpp"       // HEP-CORE-0035 Phase D
 #include "portable_atomic_shared_ptr.hpp"      // sibling header in src/utils/
@@ -237,7 +238,6 @@ private:
 class BrokerServiceImpl
 {
 public:
-    /// [IPC-H2] Zero secret key material before member destructors run.
     ~BrokerServiceImpl()
     {
         // Wave M3 step 5f defensive cleanup: if run() exited abnormally
@@ -254,15 +254,12 @@ public:
         }
         active_router_ = nullptr;
 
-        if (!server_secret_z85.empty())
-            sodium_memzero(server_secret_z85.data(), server_secret_z85.size());
-        if (!cfg.server_secret_key.empty())
-            sodium_memzero(cfg.server_secret_key.data(), cfg.server_secret_key.size());
+        // HEP-CORE-0040 §172: hub identity bytes live in the process
+        // KeyStore (locked memory).  No per-Impl seckey copy to wipe;
+        // KeyStore's dtor handles the zero-on-destruct.
     }
 
     BrokerService::Config cfg;
-    std::string           server_public_z85;
-    std::string           server_secret_z85;
 
     /// HEP-CORE-0033 §8 state aggregate.  Sole owner of channel / role /
     /// band / peer / shm / counter state; updated only via the broker's
@@ -628,12 +625,21 @@ void BrokerServiceImpl::run()
     std::optional<pylabhub::utils::security::ZapDomainHandle>  ctrl_zap_handle;
 
     // HEP-CORE-0035 §2 + §4.6.5 — CURVE-server and ZAP admission are
-    // unconditional.  Empty server keys are rejected at construction
-    // (BrokerService ctor throws std::logic_error), so by the time we
-    // reach run() both Z85 strings are guaranteed non-empty.
+    // unconditional.  KeyStore presence of "hub_identity" is enforced
+    // at BrokerService ctor (HEP-CORE-0040 §172), so by the time we
+    // reach run() the lookup is guaranteed to succeed.  The secret
+    // half flows from LockedKey → libzmq inside `with_seckey` scope;
+    // no std::string copy of the seckey lives at broker scope.
+    namespace sec = pylabhub::utils::security;
+    auto      &ks = sec::key_store();
     router.set(zmq::sockopt::curve_server, 1);
-    router.set(zmq::sockopt::curve_secretkey, server_secret_z85);
-    router.set(zmq::sockopt::curve_publickey, server_public_z85);
+    router.set(zmq::sockopt::curve_publickey,
+               ks.pubkey(sec::kHubIdentityName));
+    ks.with_seckey(sec::kHubIdentityName,
+        [&](std::string_view seckey)
+        {
+            router.set(zmq::sockopt::curve_secretkey, seckey);
+        });
 
     // Build the initial CTRL allowlist.  Per HEP-CORE-0035 §4.2 the
     // allowlist is the UNION of two operator-managed inputs:
@@ -697,12 +703,16 @@ void BrokerServiceImpl::run()
 
     router.bind(cfg.endpoint);
     const std::string bound = router.get(zmq::sockopt::last_endpoint);
+    // Pubkey is non-secret — materialize from KeyStore once for
+    // diagnostics + the on_ready callback that publishes it to test
+    // harnesses / federation peer config.
+    const std::string hub_pubkey_z85(ks.pubkey(sec::kHubIdentityName));
     if (cfg.on_ready)
     {
-        cfg.on_ready(bound, server_public_z85);
+        cfg.on_ready(bound, hub_pubkey_z85);
     }
     LOGGER_INFO("Broker: listening on {}", bound);
-    LOGGER_INFO("Broker: server_public_key = {}", server_public_z85);
+    LOGGER_INFO("Broker: hub identity pubkey = {}", hub_pubkey_z85);
 
     // ── Wave M3 step 5f (2026-05-11): subscribe to band_left ──
     // HubState's terminal cleanup cascades band membership removal
@@ -751,9 +761,19 @@ void BrokerServiceImpl::run()
             // is finalized in #105 (HEP-CORE-0037).
             if (!peer_cfg.pubkey_z85.empty())
             {
-                ps->socket.set(zmq::sockopt::curve_serverkey, peer_cfg.pubkey_z85);
-                ps->socket.set(zmq::sockopt::curve_publickey, server_public_z85);
-                ps->socket.set(zmq::sockopt::curve_secretkey, server_secret_z85);
+                // HEP-CORE-0040 §172: same use-not-export pattern as
+                // the bind ROUTER above.  Seckey bytes live only in
+                // LockedKey region; copied into libzmq's internal CURVE
+                // state inside `with_seckey` scope.
+                ps->socket.set(zmq::sockopt::curve_serverkey,
+                               peer_cfg.pubkey_z85);
+                ps->socket.set(zmq::sockopt::curve_publickey,
+                               ks.pubkey(sec::kHubIdentityName));
+                ks.with_seckey(sec::kHubIdentityName,
+                    [&](std::string_view seckey)
+                    {
+                        ps->socket.set(zmq::sockopt::curve_secretkey, seckey);
+                    });
             }
 
             // Give the DEALER a stable routing-id so the peer can identify us.
@@ -4326,29 +4346,27 @@ nlohmann::json BrokerServiceImpl::make_error(const std::string& correlation_id,
 BrokerService::BrokerService(Config cfg, pylabhub::hub::HubState& state)
     : pImpl(std::make_unique<BrokerServiceImpl>())
 {
-    // HEP-CORE-0035 §2 — CURVE is unconditional.  Both server keys
-    // are required at construction; production sources them from
-    // `HubVault::broker_curve_*` via `HubHost::startup`, tests via
-    // `pylabhub::tests::gen_curve_keypair`.  An empty input here is
-    // a programmer error (no-bypass discipline, §4.6.5).
-    if (cfg.server_secret_key.empty() || cfg.server_public_key.empty())
+    // HEP-CORE-0035 §2 — CURVE is unconditional.
+    // HEP-CORE-0040 §172 — hub identity bytes live in the process
+    // KeyStore under `"hub_identity"`; production seeds it via
+    // `HubConfig::load_keypair(password)` before `HubHost::startup`
+    // constructs the broker, tests via `CurveKeyStoreFixture`.  An
+    // absent KeyStore entry is a programmer error (no-bypass
+    // discipline, §4.6.5).
+    namespace sec = pylabhub::utils::security;
+    if (!sec::key_store_ready() || !sec::key_store().has(sec::kHubIdentityName))
         throw std::logic_error(
-            "BrokerService: server_secret_key / server_public_key are "
-            "REQUIRED non-empty Z85 strings (HEP-CORE-0035 §2).  "
-            "Production: route through HubHost::startup (loads from "
-            "HubVault).  Tests: call `pylabhub::tests::gen_curve_keypair`.");
+            "BrokerService: KeyStore entry 'hub_identity' is REQUIRED "
+            "(HEP-CORE-0035 §2; HEP-CORE-0040 §172).  Production: "
+            "route through HubHost::startup (HubConfig::load_keypair "
+            "seeds the KeyStore from HubVault).  Tests: construct a "
+            "`pylabhub::tests::CurveKeyStoreFixture` before building "
+            "the broker.");
     pImpl->cfg = std::move(cfg);
     pImpl->hub_state_ = &state;  // non-owning; HubHost (or test fixture) owns it
-    pImpl->server_secret_z85 = pImpl->cfg.server_secret_key;
-    pImpl->server_public_z85 = pImpl->cfg.server_public_key;
 }
 
 BrokerService::~BrokerService() = default;
-
-const std::string& BrokerService::server_public_key() const
-{
-    return pImpl->server_public_z85;
-}
 
 const pylabhub::hub::HubState& BrokerService::hub_state() const
 {

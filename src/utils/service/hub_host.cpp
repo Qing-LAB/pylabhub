@@ -5,6 +5,8 @@
  */
 #include "utils/hub_host.hpp"
 
+#include "utils/security/key_store.hpp"
+
 #include "hub_script_runner.hpp"          // private header — HubScriptRunner ctor
 #include "utils/admin_service.hpp"
 #include "utils/broker_service.hpp"
@@ -164,24 +166,26 @@ void HubHost::startup()
     // HEP-CORE-0033 §4.2 step 2 + HEP-CORE-0035 §2: CURVE is
     // unconditional, so a populated keypair is a startup precondition.
     // Production reaches this point via `HubConfig::load_keypair`
-    // (decrypts the HubVault); tests call it through the same vault
-    // path.  Empty here means the caller skipped both — a programmer
-    // error per HEP-0035 §4.6.5 (no-bypass discipline).
-    if (impl_->cfg.auth().client_pubkey.empty() ||
-        impl_->cfg.auth().client_seckey.empty())
+    // (decrypts the HubVault) which populates the HEP-CORE-0040
+    // KeyStore entry `"hub_identity"`.  Tests call it through the
+    // same vault path.  Absence here means the caller skipped both —
+    // a programmer error per HEP-0035 §4.6.5 (no-bypass discipline).
+    if (!pylabhub::utils::security::key_store_ready()
+     || !pylabhub::utils::security::key_store().has(
+            pylabhub::utils::security::kHubIdentityName))
     {
         impl_->phase.store(Impl::Phase::Constructed,
                            std::memory_order_release);
         throw std::logic_error(
-            "HubHost::startup: hub.auth.client_pubkey / client_seckey "
-            "are empty — load the vault keypair via "
-            "`HubConfig::load_keypair(password)` before calling "
-            "startup() (HEP-CORE-0035 §2).");
+            "HubHost::startup: KeyStore entry 'hub_identity' is absent — "
+            "load the vault keypair via `HubConfig::load_keypair(password)` "
+            "before calling startup() (HEP-CORE-0035 §2; HEP-CORE-0040 §171).");
     }
     broker::BrokerService::Config bcfg;
     bcfg.endpoint = impl_->cfg.network().broker_endpoint;
-    bcfg.server_secret_key = impl_->cfg.auth().client_seckey;
-    bcfg.server_public_key = impl_->cfg.auth().client_pubkey;
+    // HEP-CORE-0040 §172: BrokerService bind site now calls
+    // `key_store().with_seckey("hub_identity", ...)` + `pubkey(...)`
+    // directly — no keypair field in `bcfg`.
 
     // Hub-global schema records live at `<hub_dir>/schemas/` per
     // HEP-CORE-0034 §12 — "the only filesystem-authoritative source".

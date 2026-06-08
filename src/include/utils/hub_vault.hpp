@@ -30,6 +30,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <string_view>
 
 namespace pylabhub::utils
 {
@@ -88,16 +89,22 @@ public:
                          const std::string &hub_uid,
                          const std::string &password);
 
-    /// Broker CurveZMQ secret key (Z85, 40 chars). Never write this to disk
-    /// in plaintext.
-    const std::string &broker_curve_secret_key() const noexcept;
+    /// Broker CurveZMQ secret key (Z85, 40 chars).  View points into
+    /// the vault's internal zero-on-destruct storage (HEP-CORE-0040
+    /// §175); valid until this HubVault is destroyed.  Callers MUST
+    /// NOT retain the view past the vault's lifetime.  Pre-HEP-0040
+    /// callers that copied to `std::string` continue to work via
+    /// implicit construction.  Never write this to disk in plaintext.
+    std::string_view broker_curve_secret_key() const noexcept;
 
     /// Broker CurveZMQ public key (Z85, 40 chars). Safe to distribute —
-    /// see publish_public_key().
-    const std::string &broker_curve_public_key() const noexcept;
+    /// see publish_public_key().  Same view-lifetime contract as
+    /// `broker_curve_secret_key()`.
+    std::string_view broker_curve_public_key() const noexcept;
 
-    /// Admin authentication token (64-char hex string).
-    const std::string &admin_token() const noexcept;
+    /// Admin authentication token (64-char hex string).  Same
+    /// view-lifetime contract as `broker_curve_secret_key()`.
+    std::string_view admin_token() const noexcept;
 
     /**
      * @brief Write the broker public key to <hub_dir>/hub.pubkey.

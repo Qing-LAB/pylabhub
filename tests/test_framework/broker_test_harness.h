@@ -118,18 +118,44 @@ struct HubHostBrokerHandle
 };
 
 /// Start a HubHost broker with a freshly-initialized hub directory.
-/// `j_overrides` is merged on top of the default `hub.json` template
-/// emitted by `HubDirectory::init_directory` (for tests that want
-/// non-default timeouts, admin disabled, etc.); pass an empty json
-/// for defaults.  CURVE keypair is injected via
-/// `HubConfig::inject_keypair_for_test` (HEP-CORE-0035 §4.6.5).
 ///
-/// The hub_dir's `vault/known_roles.json` is written with the
-/// allowlist from `setup` so the broker's Layer-1 ZAP gate admits
-/// every role in `setup.role_keys`.
+/// CALLER CONTRACT (HEP-CORE-0040 §172): the caller MUST have a
+/// `pylabhub::tests::CurveKeyStoreFixture` in scope BEFORE calling.
+/// That fixture seeds the process KeyStore with `"hub_identity"`
+/// from `setup.hub` and one `"role.<uid>"` entry per role uid in
+/// `setup.role_keys`.  This helper only READS the KeyStore; it
+/// never mutates it.  Same contract as `start_direct_broker`.
 ///
-/// `hub_name` is passed to `HubDirectory::init_directory` (operator-
-/// visible hub label); the uid is auto-derived.
+/// BYPASS PATTERN (HEP-CORE-0035 §4.6.5 sanction):
+///   - SKIPPED: the on-disk vault round-trip — production goes
+///     `vault file → HubConfig::load_keypair (Argon2id decrypt) →
+///     key_store().add_identity_from_z85()`.  The fixture goes
+///     `setup.hub → key_store().add_identity_from_z85()` directly.
+///   - WHY: Argon2id adds ~200ms per scenario; multiplied by 50+
+///     L3 scenarios that's measurable wall-clock waste in a test
+///     suite where the vault layer is not the subject under test.
+///   - STILL EXERCISED: HubHost::startup → BrokerService ctor's
+///     `key_store().has("hub_identity")` check, the full broker
+///     bind ROUTER + CURVE + ZAP install, BRC connect path, every
+///     wire-relevant code path that depends on the KeyStore state.
+///     Tests pass through identical production code from this
+///     point onward.
+///   - VAULT LAYER COVERED ELSEWHERE: L2 `test_hub_config` /
+///     `test_role_config` exercise vault encrypt/decrypt + ACL
+///     discipline; L4 `plh_hub_test` / `plh_role_test` exercise
+///     the full `--keygen` + `run` flow end-to-end with a real
+///     password.
+///
+/// PARAMETERS:
+///   - `j_overrides` is merged on top of the default `hub.json`
+///     template emitted by `HubDirectory::init_directory` (for
+///     tests that want non-default timeouts, admin disabled, etc.).
+///     Pass an empty json for defaults.
+///   - `setup.role_keys` is written to `vault/known_roles.json` via
+///     the production `KnownRolesStore::save_to_file` so the
+///     broker's Layer-1 ZAP gate admits every role in the bundle.
+///   - `hub_name` is passed to `HubDirectory::init_directory`
+///     (operator-visible hub label); the uid is auto-derived.
 [[nodiscard]] HubHostBrokerHandle
 start_hubhost_broker(const nlohmann::json &j_overrides,
                      const CurveSetup &setup,
@@ -167,8 +193,18 @@ struct BrcHandle
     BrcHandle &operator=(BrcHandle &&)       = delete;
     ~BrcHandle();
 
+    /// Connect a BRC to a HubHost broker.  Caller is responsible for
+    /// having seeded the process KeyStore (typically via
+    /// `CurveKeyStoreFixture`) under the name `keystore_name` BEFORE
+    /// calling.  Default `keystore_name` matches what
+    /// `role_keystore_name(role_uid)` returns from
+    /// `curve_test_setup.h`.
+    ///
+    /// HEP-CORE-0040 §172: the role keypair lives only in locked
+    /// memory; this signature passes a NAME, not bytes.
     void start(const std::string &endpoint, const std::string &server_pubkey,
-               const std::string &role_uid, const CurveKeypair &role_kp);
+               const std::string &role_uid,
+               const std::string &keystore_name);
     void stop();
 };
 

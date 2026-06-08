@@ -16,6 +16,8 @@
 #include "utils/hub_vault.hpp"
 #include "utils/json_config.hpp"
 #include "utils/security/key_file_acl.hpp"
+#include "utils/security/key_store.hpp"
+#include "utils/security/secure_buffer.hpp"
 
 #include <cassert>
 #include <cstdio>
@@ -265,12 +267,30 @@ bool HubConfig::load_keypair(const std::string &password)
     }
 
     const auto vault = utils::HubVault::open(vault_path, uid, password);
-    auth.client_pubkey = vault.broker_curve_public_key();
-    auth.client_seckey = vault.broker_curve_secret_key();
-    impl_->admin.admin_token = vault.admin_token();
-    std::fprintf(stderr, "[plh_hub] Loaded vault from '%s' (pubkey: %.8s...)\n",
-                 vault_path.string().c_str(),
-                 vault.broker_curve_public_key().c_str());
+    {
+        const auto pub = vault.broker_curve_public_key();  // string_view
+        const auto sec = vault.broker_curve_secret_key();  // string_view
+        const auto adm = vault.admin_token();              // string_view
+
+        // HEP-CORE-0040 §171: identity keypair lives in
+        // `pylabhub::utils::security::key_store()` (LockedKey storage,
+        // mlock'd + zero-on-destruct).  `add_identity_from_z85` is the
+        // single site (production + tests) where the (pub_z85 ||
+        // sec_z85) layout is defined; it packs into a SecureBuffer<80>
+        // and hands off, then KeyStore + SecureBuffer dtor both zero
+        // the source.  No `std::string` copy survives.
+        pylabhub::utils::security::key_store().add_identity_from_z85(
+            pylabhub::utils::security::kHubIdentityName, pub, sec);
+
+        // Admin token is a separate secret; for now it continues as a
+        // std::string on AdminConfig (HEP-CORE-0040 §175 deferred —
+        // admin-token hardening tracked as a follow-on).
+        impl_->admin.admin_token = std::string(adm);
+
+        std::fprintf(stderr,
+                     "[plh_hub] Loaded vault from '%s' (pubkey: %.8s...)\n",
+                     vault_path.string().c_str(), pub.data());
+    }
     return true;
 }
 
@@ -314,7 +334,7 @@ std::string HubConfig::create_keypair(const std::string &password)
     // allow it) or fails at REG_REQ time
     // (audit REVIEW_HEP_0033_PostP9_2026-05-05.md F1).
     vault.publish_public_key(hub_dir);
-    return vault.broker_curve_public_key();
+    return std::string(vault.broker_curve_public_key());
 }
 
 // ============================================================================

@@ -99,9 +99,10 @@ add_executable(test_layer3_datahub
     # workers/role_identity_policy_workers.cpp
 
     # ── Consumer registration protocol tests ─────────────────────────────────────
-    # MASKED — pending HEP-0035 §4.6.5 step 3-revised-F migration.
-    # test_datahub_broker_consumer.cpp
-    # workers/broker_consumer_workers.cpp
+    # Unmasked 2026-06-07 under #154 — migrated to CurveKeyStoreFixture +
+    # production build_*_reg_payload helpers.
+    test_datahub_broker_consumer.cpp
+    workers/broker_consumer_workers.cpp
 
     # ── End-to-end multi-process integration test ────────────────────────────────
     # MASKED — pending HEP-0035 §4.6.5 step 3-revised-F migration.
@@ -156,9 +157,9 @@ add_executable(test_layer3_datahub
     workers/datahub_schema_loader_workers.cpp
 
     # ── Broker named schema protocol tests (HEP-CORE-0034 path B / inbox path A) ──
-    # MASKED — pending HEP-0035 §4.6.5 step 3-revised-F migration.
-    # test_datahub_broker_schema.cpp
-    # workers/broker_schema_workers.cpp
+    # Unmasked 2026-06-07 under #154 — migrated to CurveKeyStoreFixture pattern.
+    test_datahub_broker_schema.cpp
+    workers/broker_schema_workers.cpp
 
     # NOTE: test_datahub_schema_registry.cpp (HEP-0016 SchemaStore lifecycle)
     # was deleted in HEP-0034 Phase 4a — the SchemaStore singleton was
@@ -166,9 +167,9 @@ add_executable(test_layer3_datahub
     # (covered by test_hub_state.cpp + test_datahub_broker.cpp Sch_*).
 
     # ── BrokerService admin API tests ─────────────────────────────────────────
-    # MASKED — pending HEP-0035 §4.6.5 step 3-revised-F migration.
-    # test_datahub_broker_admin.cpp
-    # workers/broker_admin_workers.cpp
+    # Unmasked 2026-06-07 under #154 — migrated to CurveKeyStoreFixture pattern.
+    test_datahub_broker_admin.cpp
+    workers/broker_admin_workers.cpp
 
     # ── Broker control-plane protocol tests (broadcast, notify, list_channels) ──
     # MASKED — pending HEP-0035 §4.6.5 step 3-revised-F migration.
@@ -230,11 +231,12 @@ add_executable(test_layer3_datahub
     test_datahub_hub_monitored_queue.cpp
 
     # ── BrokerRequestComm integration tests ──
-    # MASKED — pending HEP-0035 §4.6.5 step 3-revised-F migration.
-    # test_datahub_broker_request_comm.cpp
-    # workers/datahub_broker_request_comm_workers.cpp
-    # test_datahub_channel_group.cpp
-    # workers/datahub_channel_group_workers.cpp
+    # Unmasked 2026-06-07 under #154 — migrated to KeyStore-based
+    # `start_hubhost_broker` (HEP-CORE-0040 §172 + HEP-CORE-0035 §4.6.5).
+    test_datahub_broker_request_comm.cpp
+    workers/datahub_broker_request_comm_workers.cpp
+    test_datahub_channel_group.cpp
+    workers/datahub_channel_group_workers.cpp
 )
 
 target_include_directories(test_layer3_datahub PRIVATE

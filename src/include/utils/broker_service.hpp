@@ -191,16 +191,24 @@ public:
         /// Cat 2 policy: what to do when producer/consumer reports a slot checksum error.
         ChecksumRepairPolicy checksum_repair_policy{ChecksumRepairPolicy::None};
 
-        /// Stable broker CurveZMQ keypair (HEP-CORE-0035 §2 — CURVE is
-        /// unconditional).  Both fields MUST be non-empty Z85 strings
-        /// (40 chars).  Production sources them from `HubVault`
-        /// (`broker_curve_public_key()` / `broker_curve_secret_key()`);
-        /// tests construct them via `pylabhub::tests::gen_curve_keypair`.
-        /// `BrokerService` ctor throws `std::logic_error` on empty.
-        std::string server_secret_key; ///< Z85 secret key (40 chars). REQUIRED.
-        std::string server_public_key; ///< Z85 public key (40 chars). REQUIRED.
+        /// HEP-CORE-0040 §172: the hub's CURVE keypair is NOT carried
+        /// here — `BrokerService` reads it on-site from the process
+        /// `KeyStore` under `"hub_identity"` at every CURVE sockopt
+        /// site (bind ROUTER, federation peer DEALERs).  Production
+        /// path: `HubConfig::load_keypair(password)` seeds the
+        /// KeyStore from the vault BEFORE `HubHost::startup` constructs
+        /// the broker.  Test path: `CurveKeyStoreFixture` (see
+        /// `tests/test_framework/curve_test_setup.h`) seeds it from a
+        /// `CurveSetup`.  `BrokerService` ctor throws
+        /// `std::logic_error` if the entry is absent.
+        ///
+        /// `KeyStore::add_identity` enforces 40-char pubkey + 40-char
+        /// seckey at insert time, so no per-field length check is
+        /// needed here (HEP-CORE-0035 §2 + HEP-CORE-0040 §5.4).
 
-        /// Optional: called from run() after bind() with (bound_endpoint, server_public_key).
+        /// Optional: called from run() after bind() with (bound_endpoint, pubkey).
+        /// pubkey is read from `key_store().pubkey("hub_identity")` at on_ready
+        /// time and passed as a fresh std::string.
         /// Useful for tests using dynamic port assignment (endpoint="tcp://127.0.0.1:0").
         ///
         /// **Lifetime**: run() holds a copy of Config for the duration of the broker loop.
@@ -333,12 +341,6 @@ public:
 
     BrokerService(const BrokerService&) = delete;
     BrokerService& operator=(const BrokerService&) = delete;
-
-    /**
-     * @brief Server public key (Z85-encoded, 40 chars).
-     * Logged at startup; clients pass this to BrokerRequestComm for CURVE auth.
-     */
-    [[nodiscard]] const std::string& server_public_key() const;
 
     /**
      * @brief Access the hub's `HubState` aggregate (HEP-CORE-0033 §8).

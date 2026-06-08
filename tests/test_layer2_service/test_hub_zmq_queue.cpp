@@ -28,9 +28,12 @@
  *   - schema_ep() uses a PID-based port range for factory-only tests (no bind/start)
  */
 #include "binary_lifecycle.h"
+#include "curve_test_setup.h"   // gen_curve_keypair
 #include "plh_service.hpp"
 #include "utils/hub_zmq_queue.hpp"
 #include "utils/hub_queue.hpp"
+#include "utils/security/key_store.hpp"
+#include "utils/security/secure_memory_subsystem.hpp"
 
 #include <array>
 #include <atomic>
@@ -138,7 +141,19 @@ TEST_F(ZmqQueueTest, PushTo_Creates)
 
 TEST_F(ZmqQueueTest, AddProducerPeer_PullSide_AppendsAndDeduplicatesByRoleUid)
 {
-    ZmqAuthOptions auth{}; // empty = no CURVE wired
+    // HEP-CORE-0040 §172 + C1 (#157): *_with_auth requires a
+    // KeyStore entry.  This test exercises dynamic-peer membership
+    // (HEP-0017 §3.3); CURVE itself isn't under test — seed an
+    // identity so the factory succeeds.
+    namespace sec = pylabhub::utils::security;
+    sec::SecureMemorySubsystem sms;
+    sec::KeyStore              ks("test", "test.zmq_queue.peers");
+    const auto kp = pylabhub::tests::gen_curve_keypair();
+    sec::key_store().add_identity_from_z85(
+        "test_identity", kp.public_z85, kp.secret_z85);
+
+    ZmqAuthOptions auth{};
+    auth.keystore_name = "test_identity";
     auto q = ZmqQueue::pull_from_with_auth(
         "tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned",
         std::move(auth), /*bind=*/true, 100);
@@ -163,7 +178,15 @@ TEST_F(ZmqQueueTest, AddProducerPeer_PullSide_AppendsAndDeduplicatesByRoleUid)
 
 TEST_F(ZmqQueueTest, RemoveProducerPeer_PullSide_ReturnsFalseWhenAbsent)
 {
+    namespace sec = pylabhub::utils::security;
+    sec::SecureMemorySubsystem sms;
+    sec::KeyStore              ks("test", "test.zmq_queue.peers");
+    const auto kp = pylabhub::tests::gen_curve_keypair();
+    sec::key_store().add_identity_from_z85(
+        "test_identity", kp.public_z85, kp.secret_z85);
+
     ZmqAuthOptions auth{};
+    auth.keystore_name = "test_identity";
     auto q = ZmqQueue::pull_from_with_auth(
         "tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned",
         std::move(auth), /*bind=*/true, 100);
@@ -189,7 +212,15 @@ TEST_F(ZmqQueueTest, AddProducerPeer_PushSide_IsInert)
     // PUSH/bind side: producer doesn't track peers — admission is via
     // the broker-pushed allowlist + the producer's ZAP handler.  The
     // dynamic-peer API is inert; count stays 0.
+    namespace sec = pylabhub::utils::security;
+    sec::SecureMemorySubsystem sms;
+    sec::KeyStore              ks("test", "test.zmq_queue.peers");
+    const auto kp = pylabhub::tests::gen_curve_keypair();
+    sec::key_store().add_identity_from_z85(
+        "test_identity", kp.public_z85, kp.secret_z85);
+
     ZmqAuthOptions auth{};
+    auth.keystore_name = "test_identity";
     auto q = ZmqQueue::push_to_with_auth(
         "tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned",
         std::move(auth), /*bind=*/true);

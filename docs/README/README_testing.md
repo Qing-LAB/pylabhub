@@ -115,6 +115,47 @@ cd build/stage-debug/tests
 ./test_layer1_spinlock --gtest_repeat=100 --gtest_filter=InProcessSpinStateTest.*
 ```
 
+### Closing a lib-contract change — full sweep required
+
+When a lib-side change alters a contract (function requirements, what
+the function throws, what it expects from its environment), filtered
+test runs are NOT sufficient to declare the migration done.  Filtered
+runs are for iteration; closure requires an unfiltered sweep by label:
+
+```bash
+# Required before claiming a lib-contract change is done.
+ctest --test-dir build -L "layer2|layer3" --output-on-failure -j 1
+```
+
+Filtered runs (`--gtest_filter=*Pattern*`) only verify the test
+surfaces the developer thought about.  Lib-contract changes can break
+unrelated test surfaces that depend on the changed contract through
+indirect call paths.  Examples seen in this repo:
+
+- A `validate_auth_options` semantic tightening rejected empty
+  `keystore_name` and broke 3 `ZmqQueueTest::*ProducerPeer*` tests
+  that used `*_with_auth` with empty options for non-CURVE reasons.
+- A `build_tx_queue` requirement change (now needs `"role_identity"`
+  in KeyStore) broke `RoleApiFlexzoneTest.ZmqTxNull` which constructs
+  a `RoleAPIBase` directly without the new setup.
+
+Neither test file was edited as part of the lib change; both depended
+on the lib contract.  The "I didn't touch that file" defense is
+invalid — the right reasoning is "what depends on what I changed?"
+
+Companion practice: when changing a lib contract, **grep its
+downstream callers** before claiming done:
+
+```bash
+# Example: when validate_auth_options semantics change, audit every
+# *_with_auth caller (production + tests).
+grep -rn "pull_from_with_auth\|push_to_with_auth" src/ tests/
+```
+
+For each downstream caller, audit the surrounding setup against the
+new contract.  If a caller relies on the old behavior, either update
+its setup or update the contract change itself.
+
 ### Practical Testing Workflows
 
 **Workflow 1: Test-Driven Development**

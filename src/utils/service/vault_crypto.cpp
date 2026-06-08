@@ -275,9 +275,10 @@ void vault_write(const fs::path &path,
     write_secure_file(path, vault_bytes);
 }
 
-std::string vault_read(const fs::path &path,
-                       const std::string &password,
-                       const std::string &uid)
+std::size_t vault_read_secure(const fs::path           &path,
+                              const std::string        &password,
+                              const std::string        &uid,
+                              std::span<std::byte>      out_buf)
 {
     vault_require_sodium();
 
@@ -289,9 +290,22 @@ std::string vault_read(const fs::path &path,
         throw std::runtime_error("vault: file too small or corrupted: " + path.string());
     }
 
-    const uint8_t *nonce      = vault_bytes.data();
-    const uint8_t *ciphertext = vault_bytes.data() + kVaultNonceBytes;
-    const std::size_t clen    = vault_bytes.size() - kVaultNonceBytes;
+    const uint8_t    *nonce      = vault_bytes.data();
+    const uint8_t    *ciphertext = vault_bytes.data() + kVaultNonceBytes;
+    const std::size_t clen       = vault_bytes.size() - kVaultNonceBytes;
+    const std::size_t plain_len  = clen - kVaultMacBytes;
+
+    if (plain_len > out_buf.size_bytes())
+    {
+        // Zero the caller's span on any throwing path that may have
+        // partially populated it (defence-in-depth; we haven't written
+        // yet here, but keeps the contract uniform).
+        sodium_memzero(out_buf.data(), out_buf.size_bytes());
+        throw std::runtime_error(
+            "vault_read_secure: out_buf too small (need "
+            + std::to_string(plain_len) + " bytes, got "
+            + std::to_string(out_buf.size_bytes()) + "): " + path.string());
+    }
 
     auto key = vault_derive_key(password, uid);
     struct KeyGuard
@@ -300,14 +314,21 @@ std::string vault_read(const fs::path &path,
         ~KeyGuard() { sodium_memzero(k.data(), k.size()); }
     } key_guard{key};
 
-    std::vector<uint8_t> plaintext(clen - kVaultMacBytes);
-    if (crypto_secretbox_open_easy(plaintext.data(), ciphertext, clen, nonce, key.data()) != 0)
+    // Decrypt directly into the caller's span.  No std::string / no
+    // intermediate std::vector<uint8_t> plaintext copy (HEP-CORE-0040
+    // §175).  reinterpret_cast is necessary because libsodium's API
+    // is uint8_t* but std::span<std::byte> is layout-compatible.
+    auto *out_ptr = reinterpret_cast<uint8_t *>(out_buf.data());
+    if (crypto_secretbox_open_easy(out_ptr, ciphertext, clen, nonce, key.data()) != 0)
     {
+        // Decrypt may have partially written before the MAC check
+        // failed; zero whatever's there.
+        sodium_memzero(out_buf.data(), out_buf.size_bytes());
         throw std::runtime_error(
             "vault: decryption failed — wrong password or corrupted file: " + path.string());
     }
 
-    return std::string{plaintext.begin(), plaintext.end()};
+    return plain_len;
 }
 
 } // namespace pylabhub::utils::detail

@@ -20,6 +20,7 @@
 #include "utils/hub_host.hpp"
 #include "utils/json_config.hpp"
 #include "utils/logger.hpp"
+#include "utils/role_reg_payload.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -64,26 +65,36 @@ std::string pid_chan(const std::string &base)
     return base + ".pid" + std::to_string(::getpid());
 }
 
-json make_reg_opts(const std::string &channel, const std::string &role_uid)
+// Thin wrappers around the canonical production payload builders
+// (`pylabhub::hub::build_*_reg_payload` in `utils/role_reg_payload.hpp`).
+// All wire-shape logic — required fields, defaults, ordering — lives
+// in the production builders.  Tests only supply the inputs.
+json make_reg_opts(const std::string &channel, const std::string &role_uid,
+                   const std::string &zmq_pubkey)
 {
-    json opts;
-    opts["channel_name"]      = channel;
-    opts["pattern"]           = "PubSub";
-    opts["has_shared_memory"] = false;
-    opts["producer_pid"]      = ::getpid();
-    opts["role_uid"]          = role_uid;
-    opts["role_name"]         = "test_producer";
-    return opts;
+    return pylabhub::hub::build_producer_reg_payload(
+        pylabhub::hub::ProducerRegInputs{
+            .channel    = channel,
+            .role_uid   = role_uid,
+            .role_name  = "test_producer",
+            .role_tag   = "producer",
+            .has_shm    = false,
+            .is_zmq_transport  = false,
+            .zmq_node_endpoint = {},
+            .zmq_pubkey = zmq_pubkey,
+        });
 }
 
-json make_cons_opts(const std::string &channel, const std::string &consumer_uid)
+json make_cons_opts(const std::string &channel, const std::string &consumer_uid,
+                    const std::string &zmq_pubkey)
 {
-    json opts;
-    opts["channel_name"]  = channel;
-    opts["role_uid"]  = consumer_uid;
-    opts["role_name"] = "test_consumer";
-    opts["consumer_pid"]  = ::getpid();
-    return opts;
+    return pylabhub::hub::build_consumer_reg_payload(
+        pylabhub::hub::ConsumerRegInputs{
+            .channel    = channel,
+            .role_uid   = consumer_uid,
+            .role_name  = "test_consumer",
+            .zmq_pubkey = zmq_pubkey,
+        });
 }
 
 /// Run a worker body with a freshly spun-up HubHostBrokerHandle +
@@ -105,6 +116,11 @@ int run_with_host(std::string_view worker_name,
                 log_cap.ExpectLogWarn(w);
 
             auto curve = pylabhub::tests::make_curve_setup(role_uids);
+            // HEP-CORE-0040 §172: fixture owns SMS + KeyStore + identity
+            // seeding (the production-shaped path); start_hubhost_broker
+            // only reads from key_store().
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture(
+                "test.l3", "test.broker_admin.harness", curve);
             auto broker = pylabhub::tests::start_hubhost_broker(
                 hubhost_overrides(), curve);
             ASSERT_TRUE(broker.host && broker.host->is_running());
@@ -149,9 +165,9 @@ int list_channels_one_channel()
         [channel, uid](pylabhub::tests::HubHostBrokerHandle &broker,
                        pylabhub::tests::CurveSetup &curve) {
             pylabhub::tests::BrcHandle bh;
-            bh.start(broker.endpoint, broker.pubkey, uid, curve.role(uid));
+            bh.start(broker.endpoint, broker.pubkey, uid, pylabhub::tests::role_keystore_name(uid));
             auto reg = bh.brc.register_channel(
-                make_reg_opts(channel, uid), 3000);
+                make_reg_opts(channel, uid, curve.role(uid).public_z85), 3000);
             ASSERT_TRUE(reg.has_value()) << "register_channel failed";
 
             std::string result = broker.service().list_channels_json_str();
@@ -184,9 +200,9 @@ int list_channels_field_presence()
         [channel, uid](pylabhub::tests::HubHostBrokerHandle &broker,
                        pylabhub::tests::CurveSetup &curve) {
             pylabhub::tests::BrcHandle bh;
-            bh.start(broker.endpoint, broker.pubkey, uid, curve.role(uid));
+            bh.start(broker.endpoint, broker.pubkey, uid, pylabhub::tests::role_keystore_name(uid));
             auto reg = bh.brc.register_channel(
-                make_reg_opts(channel, uid), 3000);
+                make_reg_opts(channel, uid, curve.role(uid).public_z85), 3000);
             ASSERT_TRUE(reg.has_value()) << "register_channel failed";
 
             std::string result = broker.service().list_channels_json_str();
@@ -232,9 +248,9 @@ int snapshot_one_channel()
         [channel, uid](pylabhub::tests::HubHostBrokerHandle &broker,
                        pylabhub::tests::CurveSetup &curve) {
             pylabhub::tests::BrcHandle bh;
-            bh.start(broker.endpoint, broker.pubkey, uid, curve.role(uid));
+            bh.start(broker.endpoint, broker.pubkey, uid, pylabhub::tests::role_keystore_name(uid));
             auto reg = bh.brc.register_channel(
-                make_reg_opts(channel, uid), 3000);
+                make_reg_opts(channel, uid, curve.role(uid).public_z85), 3000);
             ASSERT_TRUE(reg.has_value()) << "register_channel failed";
 
             ChannelSnapshot snap = broker.service().query_channel_snapshot();
@@ -269,9 +285,9 @@ int snapshot_after_consumer()
             pylabhub::tests::CurveSetup &curve) {
             pylabhub::tests::BrcHandle prod_bh;
             prod_bh.start(broker.endpoint, broker.pubkey, prod_uid,
-                          curve.role(prod_uid));
+                          pylabhub::tests::role_keystore_name(prod_uid));
             auto reg = prod_bh.brc.register_channel(
-                make_reg_opts(channel, prod_uid), 3000);
+                make_reg_opts(channel, prod_uid, curve.role(prod_uid).public_z85), 3000);
             ASSERT_TRUE(reg.has_value()) << "register_channel failed";
 
             prod_bh.brc.send_heartbeat(channel, prod_uid, "producer", {});
@@ -279,9 +295,9 @@ int snapshot_after_consumer()
 
             pylabhub::tests::BrcHandle cons_bh;
             cons_bh.start(broker.endpoint, broker.pubkey, cons_uid,
-                          curve.role(cons_uid));
+                          pylabhub::tests::role_keystore_name(cons_uid));
             auto cons_reg = cons_bh.brc.register_consumer(
-                make_cons_opts(channel, cons_uid), 3000);
+                make_cons_opts(channel, cons_uid, curve.role(cons_uid).public_z85), 3000);
             ASSERT_TRUE(cons_reg.has_value()) << "register_consumer failed";
 
             ChannelSnapshot snap = broker.service().query_channel_snapshot();
@@ -311,9 +327,9 @@ int close_channel_existing()
         [channel, uid](pylabhub::tests::HubHostBrokerHandle &broker,
                        pylabhub::tests::CurveSetup &curve) {
             pylabhub::tests::BrcHandle bh;
-            bh.start(broker.endpoint, broker.pubkey, uid, curve.role(uid));
+            bh.start(broker.endpoint, broker.pubkey, uid, pylabhub::tests::role_keystore_name(uid));
             auto reg = bh.brc.register_channel(
-                make_reg_opts(channel, uid), 3000);
+                make_reg_opts(channel, uid, curve.role(uid).public_z85), 3000);
             ASSERT_TRUE(reg.has_value()) << "register_channel failed";
 
             broker.service().request_close_channel(channel);

@@ -41,6 +41,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <string_view>
 
 namespace pylabhub::utils
 {
@@ -88,14 +89,19 @@ public:
                            const std::string           &role_uid,
                            const std::string           &password);
 
-    /// CurveZMQ public key (Z85, 40 chars). Safe to distribute.
-    const std::string &public_key() const noexcept;
+    /// CurveZMQ public key (Z85, 40 chars).  View points into the
+    /// vault's internal zero-on-destruct storage (HEP-CORE-0040 §175);
+    /// valid until this RoleVault is destroyed.  Safe to distribute.
+    std::string_view public_key() const noexcept;
 
-    /// CurveZMQ secret key (Z85, 40 chars). Never write this to disk in plaintext.
-    const std::string &secret_key() const noexcept;
+    /// CurveZMQ secret key (Z85, 40 chars).  Same view-lifetime
+    /// contract as `public_key()`.  Never write this to disk in
+    /// plaintext.
+    std::string_view secret_key() const noexcept;
 
-    /// Role UID stored in the vault payload (matches the role_uid used at create time).
-    const std::string &role_uid() const noexcept;
+    /// Role UID stored in the vault payload (matches the role_uid used
+    /// at create time).  Same view-lifetime contract.
+    std::string_view role_uid() const noexcept;
 
     ~RoleVault();
     RoleVault(RoleVault &&) noexcept;

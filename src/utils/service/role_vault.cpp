@@ -8,16 +8,20 @@
 #include "utils/role_vault.hpp"
 #include "utils/security/curve_keypair.hpp"
 #include "utils/security/key_file_acl.hpp"
+#include "utils/security/secure_buffer.hpp"
 
 #include "vault_crypto.hpp"
 
 #include "utils/json_fwd.hpp"
+#include <sodium.h>
 #include <zmq.h>
 
 #include <array>
 #include <cerrno>
+#include <cstddef>
 #include <cstring>
 #include <filesystem>
+#include <span>
 #include <stdexcept>
 #include <string>
 
@@ -33,22 +37,32 @@ namespace pylabhub::utils
 
 struct RoleVault::Impl
 {
-    std::string role_uid_;   ///< Role UID from payload
-    std::string public_key_;  ///< Z85, 40 chars
-    std::string secret_key_;  ///< Z85, 40 chars
+    /// HEP-CORE-0040 §175: secrets stored in fixed-size buffers + zeroed
+    /// in dtor via `sodium_memzero`.  Replaces the pre-#175
+    /// `std::string` members whose destructors are not guaranteed to
+    /// zero heap memory.
+    std::array<char, 40>  public_z85{};
+    std::array<char, 40>  secret_z85{};
+    std::string           role_uid_;  ///< Role UID is not secret; std::string OK.
+
+    static constexpr std::size_t kKeyLen = 40;
+
+    ~Impl() noexcept
+    {
+        sodium_memzero(public_z85.data(), public_z85.size());
+        sodium_memzero(secret_z85.data(), secret_z85.size());
+        // role_uid_ is not secret — no zero needed, std::string dtor
+        // releases the heap memory normally.
+    }
 };
 
 // ============================================================================
 // Helpers
 // ============================================================================
 
-namespace
-{
-
-constexpr std::size_t kZ85BufSize = 41; // 40 printable chars + null terminator
-constexpr std::size_t kZ85KeyLen  = 40;
-
-} // anonymous namespace
+// (no anon-namespace constants needed — all sizes live as
+// `RoleVault::Impl::kKeyLen` and the JSON field-name string literals
+// are used inline.)
 
 // ============================================================================
 // Constructors / destructor
@@ -108,9 +122,14 @@ RoleVault RoleVault::create(const fs::path    &vault_path,
     detail::vault_write(vault_path, payload.dump(), password, role_uid);
 
     RoleVault v;
-    v.pImpl->role_uid_  = role_uid;
-    v.pImpl->public_key_ = pub_str;
-    v.pImpl->secret_key_ = sec_str;
+    if (pub_str.size() != Impl::kKeyLen || sec_str.size() != Impl::kKeyLen)
+    {
+        throw std::runtime_error(
+            "RoleVault::create: generated keys have unexpected length");
+    }
+    v.pImpl->role_uid_     = role_uid;
+    std::memcpy(v.pImpl->public_z85.data(), pub_str.data(), Impl::kKeyLen);
+    std::memcpy(v.pImpl->secret_z85.data(), sec_str.data(), Impl::kKeyLen);
     return v;
 }
 
@@ -124,25 +143,41 @@ RoleVault RoleVault::open(const fs::path    &vault_path,
 {
     detail::vault_require_sodium();
 
-    // vault_read throws on wrong password or I/O failure.
-    const std::string plaintext = detail::vault_read(vault_path, password, role_uid);
+    // HEP-CORE-0040 §175: decrypt into a stack buffer whose destructor
+    // zeroes the plaintext when this scope exits.
+    pylabhub::utils::security::SecureBuffer<4096> json_buf;
+    const std::size_t n =
+        detail::vault_read_secure(vault_path, password, role_uid, json_buf.span());
 
     RoleVault v;
     try
     {
-        const json j = json::parse(plaintext);
-        v.pImpl->role_uid_  = j.at("role_uid").get<std::string>();
-        v.pImpl->public_key_ = j.at("public_key").get<std::string>();
-        v.pImpl->secret_key_ = j.at("secret_key").get<std::string>();
+        const auto bytes = json_buf.span().first(n);
+        const json j = json::parse(
+            reinterpret_cast<const char *>(bytes.data()),
+            reinterpret_cast<const char *>(bytes.data() + bytes.size()));
+
+        // role_uid is not secret — std::string copy is fine.
+        v.pImpl->role_uid_ = j.at("role_uid").get<std::string>();
+
+        // Keys go through a temporary std::string into the fixed-size
+        // zero-on-destruct buffers.  The temporaries' heap storage
+        // exists for microseconds while we copy; identity bytes live
+        // in the process KeyStore (locked memory) from
+        // `RoleConfig::load_keypair` onward per HEP-CORE-0040 §172.
+        const auto pub_str = j.at("public_key").get<std::string>();
+        const auto sec_str = j.at("secret_key").get<std::string>();
+        if (pub_str.size() != Impl::kKeyLen || sec_str.size() != Impl::kKeyLen)
+        {
+            throw std::runtime_error(
+                "RoleVault: vault contains invalid key lengths (expected 40-char Z85)");
+        }
+        std::memcpy(v.pImpl->public_z85.data(), pub_str.data(), Impl::kKeyLen);
+        std::memcpy(v.pImpl->secret_z85.data(), sec_str.data(), Impl::kKeyLen);
     }
     catch (const json::exception &e)
     {
         throw std::runtime_error(std::string("RoleVault: vault payload invalid: ") + e.what());
-    }
-
-    if (v.pImpl->public_key_.size() != kZ85KeyLen || v.pImpl->secret_key_.size() != kZ85KeyLen)
-    {
-        throw std::runtime_error("RoleVault: vault contains invalid key lengths (expected 40-char Z85)");
     }
 
     return v;
@@ -152,8 +187,17 @@ RoleVault RoleVault::open(const fs::path    &vault_path,
 // Accessors
 // ============================================================================
 
-const std::string &RoleVault::public_key() const noexcept { return pImpl->public_key_; }
-const std::string &RoleVault::secret_key() const noexcept { return pImpl->secret_key_; }
-const std::string &RoleVault::role_uid()  const noexcept { return pImpl->role_uid_;  }
+std::string_view RoleVault::public_key() const noexcept
+{
+    return std::string_view(pImpl->public_z85.data(), Impl::kKeyLen);
+}
+std::string_view RoleVault::secret_key() const noexcept
+{
+    return std::string_view(pImpl->secret_z85.data(), Impl::kKeyLen);
+}
+std::string_view RoleVault::role_uid()  const noexcept
+{
+    return pImpl->role_uid_;
+}
 
 } // namespace pylabhub::utils

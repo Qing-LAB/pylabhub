@@ -12,6 +12,7 @@
 #include "utils/crypto_utils.hpp"
 #include "utils/logger.hpp"
 #include "portable_atomic_shared_ptr.hpp"
+#include "utils/security/key_store.hpp"
 #include "utils/security/zap_router.hpp"
 #include "utils/thread_manager.hpp"
 #include "utils/zmq_context.hpp"
@@ -134,7 +135,10 @@ struct ZmqQueueImpl
     std::atomic<uint64_t> data_drop_count_{0};
 
     // ── PeerAdmission Phase C — auth state ─────────────────────────────────────
-    // Empty `my_pubkey_z85` = no CURVE wired (legacy unauth path).
+    // HEP-CORE-0040 §172: empty `keystore_name` = no CURVE wired
+    // (legacy unauth path).  When set, `ZmqQueue::start()` reads the
+    // identity from `key_store()` at socket-setup time — bytes never
+    // materialize in this struct.
     ZmqAuthOptions auth_opts_;
 
     // Resolved zap_domain (Phase C): auth_opts_.zap_domain if non-empty,
@@ -581,22 +585,47 @@ constexpr std::size_t kCurveKeyZ85Chars = 40;
 std::string validate_auth_options(const ZmqAuthOptions &opts,
                                    bool bind_side)
 {
-    const bool has_pub = !opts.my_pubkey_z85.empty();
-    const bool has_sec = !opts.my_seckey_z85.empty();
+    // C1 (#157, HEP-CORE-0035 §2): CURVE is unconditional on every
+    // role↔hub data path.  An empty `keystore_name` is a programmer
+    // error — refuse it explicitly here so the `*_with_auth`
+    // factories return nullptr at the call site (no silent fallback
+    // to plaintext).  Callers that genuinely want a plaintext socket
+    // must go through the legacy `pull_from` / `push_to` factories,
+    // which do NOT call this validator.
+    if (opts.keystore_name.empty())
+        return "keystore_name MUST be non-empty (HEP-CORE-0035 §2 — "
+               "CURVE is unconditional on every role↔hub data path; "
+               "HEP-CORE-0040 §172 — caller must seed the process "
+               "KeyStore with the identity name BEFORE building the "
+               "queue via `*_with_auth`).  Use the legacy "
+               "`pull_from` / `push_to` factories when plaintext is "
+               "intentional.";
 
-    // All empty: legacy plaintext path, accepted by either side.
-    if (!has_pub && !has_sec && opts.serverkey_z85.empty())
-        return {};
-
-    if (has_pub != has_sec)
-        return "my_pubkey_z85 and my_seckey_z85 must be set together "
-               "(either both empty for plaintext, or both 40-char Z85)";
-    if (opts.my_pubkey_z85.size() != kCurveKeyZ85Chars)
-        return "my_pubkey_z85 must be exactly 40 chars (Z85 of 32 raw "
-               "bytes); got " + std::to_string(opts.my_pubkey_z85.size());
-    if (opts.my_seckey_z85.size() != kCurveKeyZ85Chars)
-        return "my_seckey_z85 must be exactly 40 chars (Z85 of 32 raw "
-               "bytes); got " + std::to_string(opts.my_seckey_z85.size());
+    // HEP-CORE-0040 §172: validate that the named identity is
+    // resolvable + has the right byte budget BEFORE the queue is
+    // constructed, so misconfiguration surfaces at the factory
+    // call site (returns nullptr with a precise error) rather than
+    // as a cryptic libzmq failure inside start().
+    {
+        namespace sec = pylabhub::utils::security;
+        if (!sec::key_store_ready())
+            return "keystore_name='" + opts.keystore_name +
+                   "' but KeyStore is not initialized (process must "
+                   "construct SecureMemorySubsystem + KeyStore before "
+                   "any ZmqAuthOptions-bearing queue is built)";
+        auto &ks = sec::key_store();
+        if (!ks.has(opts.keystore_name))
+            return "keystore_name='" + opts.keystore_name +
+                   "' not present in KeyStore (caller must "
+                   "`add_identity(name, ...)` BEFORE building the "
+                   "queue)";
+        const auto pub = ks.pubkey(opts.keystore_name);
+        if (pub.size() != kCurveKeyZ85Chars)
+            return "KeyStore entry '" + opts.keystore_name +
+                   "' has pubkey of " + std::to_string(pub.size()) +
+                   " chars; expected " +
+                   std::to_string(kCurveKeyZ85Chars);
+    }
 
     if (!bind_side)
     {
@@ -607,7 +636,7 @@ std::string validate_auth_options(const ZmqAuthOptions &opts,
         if (opts.serverkey_z85.empty())
             return "connect-side ZmqAuthOptions requires "
                    "serverkey_z85 (the producer's CURVE pubkey) when "
-                   "my_pubkey_z85 is set";
+                   "keystore_name is set";
         if (opts.serverkey_z85.size() != kCurveKeyZ85Chars)
             return "serverkey_z85 must be exactly 40 chars (Z85 of 32 "
                    "raw bytes); got " +
@@ -767,7 +796,7 @@ bool ZmqQueue::admission_is_enforced() const noexcept
     //   - after stop() (socket is closed)
     //   - if no CURVE keys were configured (legacy plaintext path)
     if (!pImpl) return false;
-    if (pImpl->auth_opts_.my_pubkey_z85.empty()) return false;
+    if (pImpl->auth_opts_.keystore_name.empty()) return false;
     return pImpl->running_.load(std::memory_order_acquire);
 }
 
@@ -870,16 +899,25 @@ bool ZmqQueue::start()
             pImpl->socket.set(zmq::sockopt::sndhwm, pImpl->sndhwm);
 
         // ── PeerAdmission Phase C — CURVE + ZAP wiring (HEP-CORE-0036 §6) ────
-        // Empty pubkey == legacy unauth path.  See ZmqAuthOptions docs
-        // for the per-side semantics.
-        if (!pImpl->auth_opts_.my_pubkey_z85.empty())
+        // Empty keystore_name == legacy unauth path.  See ZmqAuthOptions
+        // docs for the per-side semantics.  HEP-CORE-0040 §172: keys
+        // are sourced from `key_store()` by name — secret bytes flow
+        // from LockedKey region directly into libzmq's internal CURVE
+        // state inside `with_seckey` callback scope; no std::string
+        // copy holds the seckey at queue scope.
+        if (!pImpl->auth_opts_.keystore_name.empty())
         {
             namespace sec = pylabhub::utils::security;
+            auto &ks = sec::key_store();
 
             pImpl->socket.set(zmq::sockopt::curve_publickey,
-                              pImpl->auth_opts_.my_pubkey_z85);
-            pImpl->socket.set(zmq::sockopt::curve_secretkey,
-                              pImpl->auth_opts_.my_seckey_z85);
+                              ks.pubkey(pImpl->auth_opts_.keystore_name));
+            ks.with_seckey(pImpl->auth_opts_.keystore_name,
+                [&](std::string_view seckey)
+                {
+                    pImpl->socket.set(zmq::sockopt::curve_secretkey,
+                                      seckey);
+                });
 
             if (pImpl->bind_socket)
             {

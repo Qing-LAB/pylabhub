@@ -13,14 +13,22 @@
 
 #include "utils/broker_service.hpp"
 #include "utils/hub_state.hpp"
+#include "utils/security/key_store.hpp"
+#include "utils/security/secure_memory_subsystem.hpp"
 #include "hub_state_test_access.h"
 #include "curve_test_setup.h"
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <atomic>
 #include <chrono>
+#include <cstddef>
+#include <cstring>
+#include <span>
+#include <string>
 #include <thread>
+#include <typeinfo>
 #include <vector>
 
 using pylabhub::hub::BandEntry;
@@ -880,16 +888,18 @@ TEST(BrokerServicePlumbing, HubStateAccessorReturnsExternalAggregate)
 {
     pylabhub::hub::HubState state;
 
-    // CURVE is unconditional (HEP-CORE-0035 §2); BrokerService ctor
-    // requires real Z85 server keys.  Mint an ephemeral pair just to
-    // satisfy the precondition — this test never calls run(), so no
-    // socket is bound.
-    auto kp = pylabhub::tests::gen_curve_keypair();
+    // CURVE is unconditional (HEP-CORE-0035 §2); HEP-CORE-0040 §172
+    // moved hub identity into the process KeyStore, so BrokerService
+    // ctor now requires the "hub_identity" entry to be present.
+    // Construct a CurveKeyStoreFixture for an ephemeral hub identity
+    // — this test never calls run() so no socket is bound, but the
+    // ctor's KeyStore check still fires.
+    auto setup = pylabhub::tests::make_curve_setup({});
+    pylabhub::tests::CurveKeyStoreFixture ks_fixture(
+        "test", "test.hub_state.plumbing", setup);
 
     pylabhub::broker::BrokerService::Config cfg;
-    cfg.endpoint           = "tcp://127.0.0.1:0";
-    cfg.server_public_key  = kp.public_z85;
-    cfg.server_secret_key  = kp.secret_z85;
+    cfg.endpoint = "tcp://127.0.0.1:0";
     pylabhub::broker::BrokerService broker(cfg, state);
 
     const auto &state_ref = broker.hub_state();
@@ -902,6 +912,66 @@ TEST(BrokerServicePlumbing, HubStateAccessorReturnsExternalAggregate)
 
     EXPECT_EQ(&state_ref, &state);
     EXPECT_EQ(&state_ref, &broker.hub_state());
+}
+
+// #161 Phase 1 mutation pin: HEP-CORE-0040 §172 specifies the
+// BrokerService ctor MUST resolve the hub identity from the KeyStore
+// under the literal name "hub_identity".  This negative test seeds
+// the KeyStore with a different name only and asserts that the ctor
+// throws std::logic_error with a message naming "hub_identity".
+//
+// Mutations this pins:
+//   - Changing the literal "hub_identity" to anything else (e.g.
+//     "hub_id", "hub.identity") in the ctor check.
+//   - Removing the throw (e.g. degrading to `return false` or
+//     silent fallthrough).
+//   - Changing the thrown exception type from std::logic_error to
+//     std::runtime_error or similar.
+//   - Inverting the condition (using `if (has(...))` to throw,
+//     which would break the positive plumbing test above).
+TEST(BrokerServiceCtor, MissingHubIdentityInKeyStoreThrowsLogicError)
+{
+    namespace sec = pylabhub::utils::security;
+
+    sec::SecureMemorySubsystem sms;
+    sec::KeyStore              ks("test", "test.broker_ctor.negative");
+
+    // Seed an UNRELATED name so the KeyStore is non-empty but the
+    // ctor's specific lookup for "hub_identity" misses.  Catching
+    // "empty KeyStore" as the failure mode would let a future
+    // refactor that uses some other name (e.g. "broker_identity")
+    // silently pass — this assertion forces the ctor to use the
+    // exact HEP-CORE-0040 §172 contract name.
+    const auto kp = pylabhub::tests::gen_curve_keypair();
+    sec::key_store().add_identity_from_z85(
+        "not_hub_identity", kp.public_z85, kp.secret_z85);
+
+    pylabhub::hub::HubState state;
+    pylabhub::broker::BrokerService::Config cfg;
+    cfg.endpoint = "tcp://127.0.0.1:0";
+
+    try
+    {
+        pylabhub::broker::BrokerService broker(cfg, state);
+        ADD_FAILURE() << "Expected BrokerService ctor to throw "
+                         "std::logic_error when 'hub_identity' is "
+                         "absent from KeyStore; ctor returned normally.";
+    }
+    catch (const std::logic_error &e)
+    {
+        const std::string what = e.what();
+        EXPECT_NE(what.find("hub_identity"), std::string::npos)
+            << "Ctor threw, but the message must name the missing "
+               "literal 'hub_identity' so an operator can correct the "
+               "vault / fixture wiring.  Got: " << what;
+    }
+    catch (const std::exception &e)
+    {
+        ADD_FAILURE() << "Ctor threw, but the type must be "
+                         "std::logic_error (programmer-error contract, "
+                         "HEP-CORE-0035 §4.6.5 no-bypass).  Got: "
+                      << typeid(e).name() << " — " << e.what();
+    }
 }
 
 // ═══ Heartbeat/observable contract ══════════════════════════════════════════

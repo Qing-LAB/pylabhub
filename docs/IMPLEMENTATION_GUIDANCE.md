@@ -1956,6 +1956,60 @@ For the **full review process** (first pass, higher-level requirements, test int
 - [ ] No hardcoded paths or magic numbers
 - [ ] Code follows CLAUDE.md conventions (Allman braces, 100-char lines, 4-space indent)
 
+### Lib Contract Change Protocol
+
+When a change modifies the contract of a lib function (new requirements
+on caller-side state, stricter validation, new exceptions, changed
+return semantics), the following steps are MANDATORY before declaring
+the change done.  Filtered test runs alone are NOT sufficient — they
+hide regressions in adjacent test surfaces that depend on the changed
+contract through indirect call paths.
+
+1. **Identify downstream callers** of the function whose contract
+   changed.  Grep both production and tests:
+
+   ```bash
+   grep -rn "<changed_function_name>" src/ tests/
+   ```
+
+   For each caller, audit the surrounding setup against the new
+   contract.  Examples of contract changes that ripple silently:
+
+   - A validator gains a new branch that rejects previously-accepted
+     inputs (e.g. C1 strict `validate_auth_options` rejecting empty
+     `keystore_name`).  Tests that exercised the old accept-empty
+     path through `*_with_auth` factories break.
+
+   - A function gains a new precondition (e.g. `build_tx_queue` now
+     requires `"role_identity"` in `KeyStore`).  Tests that
+     construct objects directly without the new setup break.
+
+2. **Run the unfiltered regression sweep**:
+
+   ```bash
+   ctest --test-dir build -L "layer2|layer3" --output-on-failure -j 1
+   ```
+
+   `--gtest_filter=*Pattern*` is for iteration; closure requires the
+   unfiltered sweep at the right LABEL set.  Acceptance: zero
+   failed tests across the LABEL, not "all my filter matches pass."
+
+3. **Reject the "I didn't touch file F" defense.**  The right
+   reasoning when a test fails is "what lib code does this test
+   depend on?", not "did I edit this file?"  A test that calls
+   function X (directly or transitively) needs review if X's
+   contract changed, regardless of whether the test file itself
+   was edited.
+
+4. **Multi-step migrations**: run the full sweep at the end of EACH
+   migration step, not just once at the very end.  Each individual
+   step may pass its targeted tests; the cumulative effect across
+   all changes can break unrelated test surfaces.
+
+See `docs/README/README_testing.md` § "Closing a lib-contract change"
+for the operator-side details, and the memory rule
+[lib-change-full-sweep] for the lesson source (2026-06-08).
+
 ### Design Review
 
 - [ ] Does this require lifecycle registration?

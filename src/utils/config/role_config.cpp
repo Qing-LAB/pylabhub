@@ -7,6 +7,8 @@
 #include "utils/role_directory.hpp"
 #include "utils/role_vault.hpp"
 #include "utils/security/key_file_acl.hpp"
+#include "utils/security/key_store.hpp"
+#include "utils/security/secure_buffer.hpp"
 
 #include <any>
 #include <cassert>
@@ -322,11 +324,21 @@ bool RoleConfig::load_keypair(const std::string &password)
                 "(HEP-CORE-0035 §4.6.2):\n" + v.diagnostic);
     }
 
-    const auto vault = utils::RoleVault::open(vault_path, uid, password);
-    auth.client_pubkey = vault.public_key();
-    auth.client_seckey = vault.secret_key();
-    std::fprintf(stderr, "[%s] Loaded vault from '%s' (pubkey: %.8s...)\n",
-                 tag, vault_path.string().c_str(), vault.public_key().c_str());
+    {
+        const auto vault = utils::RoleVault::open(vault_path, uid, password);
+        const auto pub = vault.public_key();   // string_view
+        const auto sec = vault.secret_key();   // string_view
+
+        // HEP-CORE-0040 §171: identity keypair lives in `key_store()`
+        // (LockedKey storage).  `add_identity_from_z85` is the single
+        // site (production + tests) where the (pub_z85 || sec_z85)
+        // layout is defined.
+        pylabhub::utils::security::key_store().add_identity_from_z85(
+            pylabhub::utils::security::kRoleIdentityName, pub, sec);
+
+        std::fprintf(stderr, "[%s] Loaded vault from '%s' (pubkey: %.8s...)\n",
+                     tag, vault_path.string().c_str(), pub.data());
+    }
     return true;
 }
 
@@ -359,7 +371,7 @@ std::string RoleConfig::create_keypair(const std::string &password)
             "'\nthen re-run --keygen (HEP-CORE-0024 §3.4).");
 
     const auto vault = utils::RoleVault::create(vault_path, uid, password);
-    return vault.public_key();
+    return std::string(vault.public_key());
 }
 
 // ============================================================================

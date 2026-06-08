@@ -147,17 +147,26 @@ struct ProducerPeer
  * equivalent to (but more verbose than) the legacy path.
  *
  * @see HEP-CORE-0036 §6 (CURVE on data plane)
+ * @see HEP-CORE-0040 §172 (use-not-export — keypairs sourced from KeyStore
+ *      by name; secret bytes never leave LockedKey region)
  * @see docs/archive/transient-2026-06-02/peer_admission_architecture_design.md §5.1
  */
 struct PYLABHUB_UTILS_EXPORT ZmqAuthOptions
 {
-    /// This queue's CURVE keypair (loaded from the role's vault).  On
-    /// the PUSH/bind side this is the SERVER keypair libzmq presents
-    /// during the handshake.  On the PULL/connect side this is the
-    /// CLIENT keypair libzmq presents.  Both fields must be set
-    /// together; either both empty (no CURVE) or both 40 chars.
-    std::string my_pubkey_z85;
-    std::string my_seckey_z85;
+    /// HEP-CORE-0040 §172: the queue's CURVE keypair is identified by
+    /// NAME in the process `KeyStore`, never carried as bytes through
+    /// this struct.  `ZmqQueue::start()` resolves the name at
+    /// socket-setup time via `key_store().pubkey(name)` +
+    /// `with_seckey(name, callback)` — the seckey bytes flow directly
+    /// from the LockedKey region into libzmq's internal CURVE state,
+    /// with no intermediate std::string copy.
+    ///
+    /// Empty → legacy plaintext path (no CURVE, no ZAP).  This is the
+    /// only knob that selects CURVE-vs-plaintext.  Production callers
+    /// set this to `"role_identity"` (role host) or `"hub_identity"`
+    /// (broker bind path).  Tests pick uid-specific names matching
+    /// what the test's KeyStore was seeded with.
+    std::string keystore_name;
 
     /// PULL/connect side only — the producer's pubkey, used as
     /// `curve_serverkey`.  Required on the connect side when CURVE

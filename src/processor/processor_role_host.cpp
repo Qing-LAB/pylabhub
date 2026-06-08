@@ -33,6 +33,7 @@
 #include "utils/zmq_poll_loop.hpp"
 #include "utils/role_reg_payload.hpp"
 #include "utils/role_handler.hpp"     // Wave-B M7: handler-mode startup
+#include "utils/security/key_store.hpp"  // HEP-CORE-0040 §173: identity pubkey
 #include "utils/role_presence.hpp"    // Wave-B M7: Presence + RoleKind
 #include "utils/schema_utils.hpp"
 
@@ -341,11 +342,9 @@ void ProcessorRoleHost::worker_main_()
             presences.push_back(std::move(prod));
         }
 
-        // 6b — Auth + start handler threads.  RoleHandler dedups
-        // connections; single-hub processor → 1 BRC, dual-hub → 2.
-        api_ref.set_auth(config_.auth().client_pubkey,
-                         config_.auth().client_seckey);
-
+        // HEP-CORE-0040 §173: CURVE keypair lives in `key_store()`.
+        // RoleHandler dedups connections; single-hub processor → 1 BRC,
+        // dual-hub → 2.
         auto handler = std::make_unique<scripting::RoleHandler>(
             std::move(presences));
 
@@ -372,7 +371,8 @@ void ProcessorRoleHost::worker_main_()
             // HEP-CORE-0036 §4.1 — producer-side identity pubkey is
             // REQUIRED on REG_REQ; processor uses its own role's
             // CURVE client pubkey (same vault-loaded value as the BRC).
-            reg_in.zmq_pubkey        = config_.auth().client_pubkey;
+            reg_in.zmq_pubkey        = std::string(
+                pylabhub::utils::security::key_store().pubkey(pylabhub::utils::security::kRoleIdentityName));
             prod_reg = hub::build_producer_reg_payload(reg_in);
         }
         const auto &pf_for_wire = config_.role_data<ProcessorFields>();
@@ -388,7 +388,8 @@ void ProcessorRoleHost::worker_main_()
         // channel-scope auth allowlist.
         auto cons_reg = hub::build_consumer_reg_payload(
             hub::ConsumerRegInputs{config_.in_channel(), id.uid, id.name,
-                                    config_.auth().client_pubkey});
+                                    std::string(pylabhub::utils::security::
+                                                key_store().pubkey(pylabhub::utils::security::kRoleIdentityName))});
         const auto in_wire = hub::make_wire_schema_fields(
             pf_for_wire.in_slot_schema_json, in_slot_spec_, in_fz_local);
         hub::apply_consumer_schema_fields(cons_reg, in_wire);

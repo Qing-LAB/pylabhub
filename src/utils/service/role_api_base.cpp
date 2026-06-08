@@ -93,12 +93,6 @@ struct RoleAPIBase::Impl
     // dual-writes both paths.
     FlexzoneInfoCache fz_info_cache{};
 
-    // Role-side CurveZMQ keypair (Wave-B M4a) — read by
-    // `RoleHandler::start_connections` to populate BRC::Config.  Empty
-    // = plaintext (no CURVE).  Set-once before start_connections.
-    std::string auth_client_pubkey;
-    std::string auth_client_seckey;
-
     // ── Shared state — touched outside the worker thread ───────────────
     //
     // Anything that may be read OR mutated from threads other than the
@@ -323,9 +317,13 @@ bool RoleAPIBase::build_tx_queue(const hub::TxQueueOptions &opts)
         // current snapshot via `set_peer_allowlist` once D4 routes
         // CHANNEL_AUTH_CHANGED_NOTIFY pulls).  zap_domain is
         // per-(role,channel,side) per the ZmqAuthOptions convention.
+        // HEP-CORE-0040 §172: identity keypair lives in the process
+        // KeyStore under `"role_identity"` (seeded by
+        // `RoleConfig::load_keypair`).  ZmqQueue::start() resolves the
+        // name inside its CURVE-setup block — secret bytes never
+        // materialize on this side of the call.
         hub::ZmqAuthOptions auth_opts;
-        auth_opts.my_pubkey_z85 = pImpl->auth_client_pubkey;
-        auth_opts.my_seckey_z85 = pImpl->auth_client_seckey;
+        auth_opts.keystore_name = pylabhub::utils::security::kRoleIdentityName;
         auth_opts.zap_domain    = pImpl->uid + ":" + tx_channel + ":tx";
         // initial_allowlist: empty (deny-all); broker pushes the
         // snapshot via set_peer_allowlist after the producer's REG
@@ -492,22 +490,6 @@ void RoleAPIBase::set_stop_on_script_error(bool v)    { pImpl->stop_on_script_er
 void RoleAPIBase::set_metrics_hook(std::function<void(nlohmann::json &)> hook)
 {
     pImpl->metrics_hook = std::move(hook);
-}
-
-void RoleAPIBase::set_auth(std::string client_pubkey, std::string client_seckey)
-{
-    pImpl->auth_client_pubkey = std::move(client_pubkey);
-    pImpl->auth_client_seckey = std::move(client_seckey);
-}
-
-const std::string &RoleAPIBase::auth_client_pubkey() const
-{
-    return pImpl->auth_client_pubkey;
-}
-
-const std::string &RoleAPIBase::auth_client_seckey() const
-{
-    return pImpl->auth_client_seckey;
 }
 
 // ============================================================================

@@ -10,12 +10,14 @@
 #include "shared_test_helpers.h"
 #include "test_sync_utils.h"
 #include "broker_test_harness.h"
+#include "curve_test_setup.h"   // role_keystore_name
 
 #include "utils/broker_request_comm.hpp"
 #include "utils/logger.hpp"
 #include "utils/file_lock.hpp"
 #include "utils/json_config.hpp"
 #include "utils/lifecycle.hpp"
+#include "utils/role_reg_payload.hpp"
 #include "utils/zmq_context.hpp"
 #include "plh_datahub.hpp"
 
@@ -77,14 +79,15 @@ int connect_and_heartbeat()
 
     const std::string uid = "prod.brc.uid00000001";
     auto curve = pylabhub::tests::make_curve_setup({uid});
+    pylabhub::tests::CurveKeyStoreFixture ks_fixture(
+        "test.l3", "test.brc.harness", curve);
     auto broker = pylabhub::tests::start_hubhost_broker(brc_hub_overrides(), curve);
 
     BrokerRequestComm ch;
     BrokerRequestComm::Config cfg;
     cfg.broker_endpoint = broker.endpoint;
     cfg.broker_pubkey   = broker.pubkey;
-    cfg.client_pubkey   = curve.role(uid).public_z85;
-    cfg.client_seckey   = curve.role(uid).secret_z85;
+    cfg.keystore_name   = pylabhub::tests::role_keystore_name(uid);
     cfg.role_uid        = uid;
     EXPECT_TRUE(ch.connect(cfg));
     EXPECT_TRUE(ch.is_connected());
@@ -119,14 +122,15 @@ int register_and_discover()
 
     const std::string uid = "prod.test.uid00000001";
     auto curve = pylabhub::tests::make_curve_setup({uid});
+    pylabhub::tests::CurveKeyStoreFixture ks_fixture(
+        "test.l3", "test.brc.harness", curve);
     auto broker = pylabhub::tests::start_hubhost_broker(brc_hub_overrides(), curve);
 
     BrokerRequestComm ch;
     BrokerRequestComm::Config cfg;
     cfg.broker_endpoint = broker.endpoint;
     cfg.broker_pubkey   = broker.pubkey;
-    cfg.client_pubkey   = curve.role(uid).public_z85;
-    cfg.client_seckey   = curve.role(uid).secret_z85;
+    cfg.keystore_name   = pylabhub::tests::role_keystore_name(uid);
     cfg.role_uid        = uid;
     EXPECT_TRUE(ch.connect(cfg));
 
@@ -136,13 +140,17 @@ int register_and_discover()
     });
 
     // Register a channel.
-    nlohmann::json reg_opts;
-    reg_opts["channel_name"]      = "test_ch";
-    reg_opts["pattern"]           = "PubSub";
-    reg_opts["has_shared_memory"] = false;
-    reg_opts["producer_pid"]      = 12345;
-    reg_opts["role_uid"]          = "prod.test.uid00000001";
-    reg_opts["role_name"]         = "test_producer";
+    auto reg_opts = pylabhub::hub::build_producer_reg_payload(
+        pylabhub::hub::ProducerRegInputs{
+            .channel    = "test_ch",
+            .role_uid   = "prod.test.uid00000001",
+            .role_name  = "test_producer",
+            .role_tag   = "producer",
+            .has_shm    = false,
+            .is_zmq_transport  = false,
+            .zmq_node_endpoint = {},
+            .zmq_pubkey = curve.role(uid).public_z85,
+        });
 
     auto reg_result = ch.register_channel(reg_opts, 5000);
     EXPECT_TRUE(reg_result.has_value()) << "REG_REQ timed out";
@@ -191,14 +199,15 @@ int role_presence()
 
     const std::string uid = "prod.my.uid00000042";
     auto curve = pylabhub::tests::make_curve_setup({uid});
+    pylabhub::tests::CurveKeyStoreFixture ks_fixture(
+        "test.l3", "test.brc.harness", curve);
     auto broker = pylabhub::tests::start_hubhost_broker(brc_hub_overrides(), curve);
 
     BrokerRequestComm ch;
     BrokerRequestComm::Config cfg;
     cfg.broker_endpoint = broker.endpoint;
     cfg.broker_pubkey   = broker.pubkey;
-    cfg.client_pubkey   = curve.role(uid).public_z85;
-    cfg.client_seckey   = curve.role(uid).secret_z85;
+    cfg.keystore_name   = pylabhub::tests::role_keystore_name(uid);
     cfg.role_uid        = uid;
     EXPECT_TRUE(ch.connect(cfg));
 
@@ -218,13 +227,17 @@ int role_presence()
         EXPECT_FALSE(presence_resp->value("present", false));
 
     // Register a channel so a role exists.
-    nlohmann::json reg_opts;
-    reg_opts["channel_name"]      = "presence_ch";
-    reg_opts["pattern"]           = "PubSub";
-    reg_opts["has_shared_memory"] = false;
-    reg_opts["producer_pid"]      = 12345;
-    reg_opts["role_uid"]          = "prod.my.uid00000042";
-    reg_opts["role_name"]         = "my_producer";
+    auto reg_opts = pylabhub::hub::build_producer_reg_payload(
+        pylabhub::hub::ProducerRegInputs{
+            .channel    = "presence_ch",
+            .role_uid   = "prod.my.uid00000042",
+            .role_name  = "my_producer",
+            .role_tag   = "producer",
+            .has_shm    = false,
+            .is_zmq_transport  = false,
+            .zmq_node_endpoint = {},
+            .zmq_pubkey = curve.role(uid).public_z85,
+        });
 
     auto reg = ch.register_channel(reg_opts, 5000);
     EXPECT_TRUE(reg.has_value());
@@ -252,14 +265,15 @@ int notification_dispatch()
 
     const std::string uid = "prod.notify.uid00000001";
     auto curve = pylabhub::tests::make_curve_setup({uid});
+    pylabhub::tests::CurveKeyStoreFixture ks_fixture(
+        "test.l3", "test.brc.harness", curve);
     auto broker = pylabhub::tests::start_hubhost_broker(brc_hub_overrides(), curve);
 
     BrokerRequestComm ch;
     BrokerRequestComm::Config cfg;
     cfg.broker_endpoint = broker.endpoint;
     cfg.broker_pubkey   = broker.pubkey;
-    cfg.client_pubkey   = curve.role(uid).public_z85;
-    cfg.client_seckey   = curve.role(uid).secret_z85;
+    cfg.keystore_name   = pylabhub::tests::role_keystore_name(uid);
     cfg.role_uid        = uid;
     EXPECT_TRUE(ch.connect(cfg));
 
@@ -276,13 +290,17 @@ int notification_dispatch()
     });
 
     // Register a channel.
-    nlohmann::json reg_opts;
-    reg_opts["channel_name"]      = "notify_ch";
-    reg_opts["pattern"]           = "PubSub";
-    reg_opts["has_shared_memory"] = false;
-    reg_opts["producer_pid"]      = 12345;
-    reg_opts["role_uid"]          = "prod.notify.uid00000001";
-    reg_opts["role_name"]         = "notify_producer";
+    auto reg_opts = pylabhub::hub::build_producer_reg_payload(
+        pylabhub::hub::ProducerRegInputs{
+            .channel    = "notify_ch",
+            .role_uid   = "prod.notify.uid00000001",
+            .role_name  = "notify_producer",
+            .role_tag   = "producer",
+            .has_shm    = false,
+            .is_zmq_transport  = false,
+            .zmq_node_endpoint = {},
+            .zmq_pubkey = curve.role(uid).public_z85,
+        });
 
     auto reg = ch.register_channel(reg_opts, 5000);
     EXPECT_TRUE(reg.has_value());

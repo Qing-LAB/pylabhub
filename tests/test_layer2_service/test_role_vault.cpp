@@ -37,7 +37,7 @@ constexpr const char *kPassword      = "test-role-password-123";
 constexpr const char *kWrongPassword = "wrong-password-456";
 
 /// Validate a Z85 key: exactly 40 printable ASCII chars (no space).
-bool is_valid_z85_key(const std::string &s)
+bool is_valid_z85_key(std::string_view s)
 {
     if (s.size() != 40)
         return false;
@@ -229,7 +229,7 @@ TEST_F(RoleVaultTest, Create_OverExistingVault_Throws_AtomicNoOverwrite)
     // to the old pubkey, stranding the role.  Mutation-sweep against
     // the prior (pre-2026-06-01) contract.
     RoleVault v1 = RoleVault::create(vault_path_, role_uid_, kPassword);
-    const std::string sentinel_pk = v1.public_key();
+    const std::string sentinel_pk{v1.public_key()};
 
     // Pin the atomic-layer message — distinct from the operator-
     // friendly config-layer fs::exists() refusal that fires earlier
@@ -299,9 +299,9 @@ TEST_F(RoleVaultTest, Create_VaultFileIsMode0600_AndParentDirIs0700)
 TEST_F(RoleVaultTest, MoveConstructor_TransfersOwnership)
 {
     RoleVault v1 = RoleVault::create(vault_path_, role_uid_, kPassword);
-    const std::string pk = v1.public_key();
-    const std::string sk = v1.secret_key();
-    const std::string uid = v1.role_uid();
+    const std::string pk{v1.public_key()};
+    const std::string sk{v1.secret_key()};
+    const std::string uid{v1.role_uid()};
 
     RoleVault v2(std::move(v1));
     EXPECT_EQ(v2.public_key(), pk);

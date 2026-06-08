@@ -127,6 +127,45 @@ gtest_discover_tests(test_layer2_zap_router
 )
 
 # ============================================================================
+# Test: KeyStore + LockedKey + SecureBuffer (HEP-CORE-0040 §170)
+# Pattern 3 — subprocess per scenario.  SecureMemorySubsystem and KeyStore
+# are process singletons (HEP-0040 §4.1 + §5.1); serial isolation needed.
+# Pins:
+#   - ordering: KeyStore ctor throws if SecureMemorySubsystem not ready
+#   - singleton: second KeyStore ctor throws
+#   - use-not-export: pubkey/with_seckey/lookup_raw error paths
+#   - thread safety: parallel reads, remove blocks behind with_seckey
+#   - LockedKey + SecureBuffer dtor zeroing semantics
+# ============================================================================
+
+add_executable(test_layer2_key_store
+    test_key_store.cpp
+    workers/key_store_workers.cpp
+)
+
+target_link_libraries(test_layer2_key_store
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+        GTest::gmock
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_key_store)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_key_store
+    SUITE_NAME "Layer2_KeyStore"
+)
+layer2_require_staged_utils(test_layer2_key_store)
+
+gtest_discover_tests(test_layer2_key_store
+    PROPERTIES
+        LABELS "layer2;service;security;key_store"
+        TIMEOUT 60
+)
+
+# ============================================================================
 # Test: ZmqQueue CURVE+ZAP auth (PeerAdmission Phase C, ZmqQueue side)
 # Pattern 3 — subprocess per scenario.  Pins:
 #   - allowed peer → CURVE handshake succeeds + message round-trip

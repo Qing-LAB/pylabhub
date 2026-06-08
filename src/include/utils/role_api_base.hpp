@@ -258,27 +258,6 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     /// is the structured-injection companion.
     void set_metrics_hook(std::function<void(nlohmann::json &)> hook);
 
-    // ── Role-side CURVE identity (Wave-B M4a) ────────────────────────────────
-    //
-    // Role's CurveZMQ keypair, used by `RoleHandler::start_connections()`
-    // as `client_pubkey` / `client_seckey` on every
-    // `BrokerRequestComm::Config` the handler builds.  Empty values =
-    // no CURVE (plaintext), per BRC's existing semantics.  Set-once
-    // before `RoleHandler::start_connections()` is called; mutating
-    // after start is undefined.  Today the role host
-    // (producer/consumer/processor) already plumbs these from its
-    // auth_config; M4 collects them on RoleAPIBase so RoleHandler can
-    // read them without depending on the host's auth_config type.
-    //
-    // SECURITY: `auth_client_seckey()` returns the SECRET half of the
-    // CURVE keypair.  It MUST NEVER appear in any log line, error
-    // message, or diagnostic dump.  Public key + role_uid + role_name
-    // are safe to log.
-    void set_auth(std::string client_pubkey, std::string client_seckey);
-
-    [[nodiscard]] const std::string &auth_client_pubkey() const;
-    [[nodiscard]] const std::string &auth_client_seckey() const;
-
     // ── Identity ──────────────────────────────────────────────────────────────
 
     [[nodiscard]] const std::string &role_tag() const;
@@ -563,8 +542,9 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     ///
     /// Diagnostics: emits per-step INFO logs so the spawn sequence
     /// across N threads is observable in test + production logs.
-    /// `set_auth(...)` MUST be called before this method if the
-    /// brokers require CURVE (handler reads identity from `*this`).
+    /// HEP-CORE-0040 §172: the role CURVE identity must already be
+    /// in `key_store()` under `"role_identity"` before this method
+    /// runs (handler's BRCs read it on-site via `key_store()`).
     [[nodiscard]] bool start_handler_threads(std::unique_ptr<RoleHandler> handler);
 
     /// Symmetric teardown: signal each BRC's poll loop, drain the

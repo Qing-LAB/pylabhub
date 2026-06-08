@@ -6,6 +6,8 @@
  * `workers/zmq_queue_auth_workers.cpp`.
  */
 #include "test_patterns.h"
+#include "utils/broker_request_comm.hpp"
+#include "utils/hub_zmq_queue.hpp"
 
 #include <gtest/gtest.h>
 
@@ -131,14 +133,29 @@ TEST_F(ZmqQueueAuthTest, Misconfig_PubkeyWrongLength_FactoryReturnsNullptr)
     auto w = SpawnWorker(
         "zmq_queue_auth.auth_misconfig_pubkey_wrong_length_factory_returns_nullptr",
         {unique_dir("auth_misconfig_pubkey_wrong_length_factory_returns_nullptr")});
-    // Four distinct misconfig cases, each emits one ERROR line.  Pin
-    // each by a unique substring so the framework accounts for every
-    // expected ERROR and would flag any new unexpected one.
+    // Misconfig branches the driver pins:
+    //   - name-not-in-KeyStore (HEP-CORE-0040 §172)
+    //   - serverkey missing on connect side (HEP-CORE-0035 §2)
+    //   - serverkey wrong length (Z85 contract)
+    //   - empty keystore_name (C1 / #157 strict enforcement)
+    //
+    // HEP-CORE-0040 §172 collapsed the keypair-byte fields into a
+    // single `keystore_name` lookup; wrong-length pubkey/seckey is
+    // now enforced inside `KeyStore::add_identity_from_z85` (covered
+    // by L2 KeyStore tests).  Each substring below is unique to one
+    // misconfig case so the framework would flag any new unexpected
+    // ERROR or any silenced one.
+    // The "keystore_name MUST be non-empty" entry appears twice
+    // because two cases in the worker table exercise it — once on
+    // the bind side and once on the connect side; each fires its
+    // own LOGGER_ERROR line, and ExpectWorkerOk consumes one
+    // substring per matched line.
     ExpectWorkerOk(w, {}, {
-        "my_pubkey_z85 must be exactly 40 chars",
-        "my_seckey_z85 must be exactly 40 chars",
-        "my_pubkey_z85 and my_seckey_z85 must be set together",
+        "not present in KeyStore",
+        "connect-side ZmqAuthOptions requires serverkey_z85",
         "serverkey_z85 must be exactly 40 chars",
+        "keystore_name MUST be non-empty",
+        "keystore_name MUST be non-empty",
     });
 }
 
@@ -148,4 +165,66 @@ TEST_F(ZmqQueueAuthTest, AdmissionIsEnforced_Lifecycle)
         "zmq_queue_auth.auth_admission_is_enforced_lifecycle",
         {unique_dir("auth_admission_is_enforced_lifecycle")});
     ExpectWorkerOk(w);
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// #161 Phase 1 — magic-string + default-value mutation pins
+// ───────────────────────────────────────────────────────────────────────
+//
+// These TEST() blocks run inline (no subprocess) because they pin
+// constant-field default values, not runtime behaviour.  They close
+// the mutation-test gaps where the wire path works against any
+// non-empty name, so a refactor that changed the literal string
+// would slip through every existing end-to-end test.
+
+// HEP-CORE-0040 §172 contract: BRC::Config defaults `keystore_name`
+// to the literal string "role_identity" — the same name
+// `RoleConfig::load_keypair` seeds the KeyStore under.  If a
+// refactor changes the default to "" or "role" or anything else,
+// production role↔broker connections would fail at connect() time
+// with "KeyStore entry '<new_default>' absent" because the seeded
+// entry would no longer match.
+//
+// Mutations this pins:
+//   - Changing the default to "" (would silently revert to the
+//     no-CURVE path BRC::connect rejects).
+//   - Changing the default to "role" / "role_id" / "identity"
+//     (would force every test fixture + production caller to set
+//     it explicitly, surfacing as a load-bearing refactor).
+TEST(BrcConfigDefault, KeystoreNameIsRoleIdentityLiteral)
+{
+    pylabhub::hub::BrokerRequestComm::Config cfg;
+    EXPECT_EQ(cfg.keystore_name, "role_identity")
+        << "BRC::Config::keystore_name MUST default to the literal "
+           "\"role_identity\" (HEP-CORE-0040 §172) — the name "
+           "RoleConfig::load_keypair seeds.  A change here breaks "
+           "every production role↔broker connection without any "
+           "wire test catching it.";
+}
+
+// ZmqAuthOptions defaults all fields to empty.  After C1 (#157),
+// passing an empty `keystore_name` to a `*_with_auth` factory is
+// rejected at validate time (CURVE unconditional per HEP-CORE-0035
+// §2) — callers MUST set it explicitly.  Plaintext sockets are only
+// reachable through the legacy `push_to` / `pull_from` factories
+// that don't take a `ZmqAuthOptions`.
+//
+// Mutations this pins:
+//   - Defaulting `keystore_name` to a literal like "role_identity"
+//     would silently force CURVE-with-that-identity on every queue
+//     whose caller forgot to set it explicitly — exactly the kind
+//     of accidental cross-binding the strict validator prevents.
+//   - Defaulting `serverkey_z85` or `zap_domain` to non-empty would
+//     cross-contaminate scenarios that intentionally leave them
+//     blank for negative-path tests.
+TEST(ZmqAuthOptionsDefault, KeystoreNameDefaultsToEmpty)
+{
+    pylabhub::hub::ZmqAuthOptions opts;
+    EXPECT_TRUE(opts.keystore_name.empty())
+        << "ZmqAuthOptions::keystore_name MUST default to empty "
+           "(HEP-CORE-0040 §172 — the legacy-plaintext branch is "
+           "selected by the empty default).  Got: "
+        << opts.keystore_name;
+    EXPECT_TRUE(opts.serverkey_z85.empty());
+    EXPECT_TRUE(opts.zap_domain.empty());
 }
