@@ -17,10 +17,61 @@
 namespace pylabhub::utils::security
 {
 
+// HEP-CORE-0036 §I10 — one-pubkey-per-role-uid invariant.  RELEASE
+// builds always enforce; DEBUG + PYLABHUB_WITH_TEST allows the
+// fixture bypass for L3 in-process multi-BRC tests.  The constant is
+// defined at file scope (not inside an anonymous namespace) so it is
+// visible to the L2 test that asserts enforcement matches the build
+// configuration — see `tests/test_layer2_service/test_known_roles.cpp`.
+#if defined(NDEBUG) || !defined(PYLABHUB_WITH_TEST)
+inline constexpr bool kEnforceUniquePubkey = true;
+#else
+inline constexpr bool kEnforceUniquePubkey = false;
+#endif
+
 namespace
 {
 
 constexpr std::size_t kZ85PubkeyChars = 40;
+
+/// HEP-CORE-0036 §I10 enforcement helper.  Throws `std::runtime_error`
+/// with @p context_label embedded in the message if @p incoming_pubkey
+/// already appears in @p existing_roles under a different uid.  A
+/// matching uid means the caller is REPLACING an entry, not creating
+/// a duplicate — that's allowed (pubkey rotation use case).
+///
+/// In DEBUG + PYLABHUB_WITH_TEST builds (`kEnforceUniquePubkey ==
+/// false`) the body is a no-op — production-time enforcement is
+/// physically absent from the compiled binary so it cannot be
+/// re-enabled at runtime.
+void enforce_unique_pubkey_invariant(
+    const std::vector<broker::KnownRole> &existing_roles,
+    const std::string                    &incoming_uid,
+    const std::string                    &incoming_pubkey,
+    const char                           *context_label)
+{
+    if constexpr (!kEnforceUniquePubkey)
+    {
+        return;
+    }
+    for (const auto &existing : existing_roles)
+    {
+        if (existing.uid == incoming_uid)
+            continue;  // same-uid replace = pubkey rotation; not a dup
+        if (existing.pubkey_z85 == incoming_pubkey)
+        {
+            std::string msg = "KnownRolesStore: ";
+            msg += context_label;
+            msg += ": pubkey already in use by uid '";
+            msg += existing.uid;
+            msg += "' (incoming uid '";
+            msg += incoming_uid;
+            msg += "').  One pubkey per role uid is required "
+                   "(HEP-CORE-0036 §I10 — separation of duties).";
+            throw std::runtime_error(msg);
+        }
+    }
+}
 
 void validate_entry(const broker::KnownRole &entry)
 {
@@ -181,6 +232,15 @@ KnownRolesStore::load_from_file(const std::filesystem::path &path)
                         "KnownRolesStore: '" + path.string() +
                         "' has duplicate uid '" + e.uid + "'");
             }
+            // HEP-CORE-0036 §I10: reject shared pubkey across distinct
+            // uids in the on-disk file.  Same error semantics as
+            // duplicate-uid above — strict, file-level rejection so
+            // operator intent is never silently downgraded.  In DEBUG
+            // + PYLABHUB_WITH_TEST builds the check is a no-op (fixture
+            // bypass).
+            enforce_unique_pubkey_invariant(
+                store.roles_, e.uid, e.pubkey_z85,
+                ("load_from_file('" + path.string() + "')").c_str());
             store.roles_.push_back(std::move(e));
         }
     }
@@ -205,6 +265,11 @@ void KnownRolesStore::save_to_file(const std::filesystem::path &path) const
 bool KnownRolesStore::add(broker::KnownRole entry)
 {
     validate_entry(entry);
+    // HEP-CORE-0036 §I10: reject duplicate pubkey under a DIFFERENT
+    // uid before any state mutation.  Replacement of the same uid
+    // (pubkey rotation) is allowed by `enforce_unique_pubkey_invariant`.
+    enforce_unique_pubkey_invariant(
+        roles_, entry.uid, entry.pubkey_z85, "add()");
     auto it = std::find_if(roles_.begin(), roles_.end(),
                            [&](const broker::KnownRole &e) {
                                return e.uid == entry.uid;
@@ -268,6 +333,11 @@ std::size_t KnownRolesStore::size() const noexcept
 bool KnownRolesStore::empty() const noexcept
 {
     return roles_.empty();
+}
+
+bool known_roles_enforces_unique_pubkey() noexcept
+{
+    return kEnforceUniquePubkey;
 }
 
 PeerAllowlist KnownRolesStore::as_peer_allowlist() const

@@ -71,6 +71,27 @@ namespace pylabhub::utils::security
 /// Current schema version written by save_to_file().
 inline constexpr int kKnownRolesSchemaVersion = 1;
 
+/// HEP-CORE-0036 §I10 — compile-time disposition of the
+/// "one pubkey per role uid" security invariant.
+///
+/// `true` in RELEASE builds and in DEBUG builds compiled WITHOUT
+/// `PYLABHUB_WITH_TEST` — `KnownRolesStore::add()` and
+/// `::load_from_file()` reject any configuration where two distinct
+/// uids share a pubkey.
+///
+/// `false` ONLY when compiled with `CMAKE_BUILD_TYPE=Debug` AND the
+/// CMake option `PYLABHUB_WITH_TEST=ON` — the bypass exists for L3
+/// in-process multi-BRC test fixtures (HEP-CORE-0036 §I10 WARNING
+/// box).  RELEASE builds physically lack the bypass code path; this
+/// constant is `true` in every shippable binary.
+///
+/// L2 tests assert behavior matches this constant (see
+/// `tests/test_layer2_service/test_known_roles_store.cpp` for the
+/// pin) so a misconfigured CI cannot silently drift between the two
+/// modes.
+[[nodiscard]] PYLABHUB_UTILS_EXPORT bool
+known_roles_enforces_unique_pubkey() noexcept;
+
 /// Operator-managed allowlist of authorized roles, keyed on CURVE
 /// pubkey.  See file-header docs for the on-disk schema + the bridge
 /// to `PeerAllowlist` consumed by the broker's PeerAdmission gate.

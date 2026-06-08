@@ -644,3 +644,124 @@ TEST(AtomicWriteOwnerOnlyFileTest, SymlinkAtTmpPath_TmpStaleSymlinkSafelyReplace
     fs::remove(sentinel);
 }
 #endif
+
+// ─── HEP-CORE-0036 §I10 — one pubkey per role uid (sep. of duties) ──────────
+//
+// The invariant is enforced in `add()` and `load_from_file()`; the
+// disposition at compile time is exposed via the free function
+// `known_roles_enforces_unique_pubkey()`.  These tests use that
+// function to assert behavior MATCHES the build configuration — so a
+// CI accidentally building with PYLABHUB_WITH_TEST=ON gets a loud
+// failure rather than silently relaxing security.  In RELEASE +
+// PYLABHUB_WITH_TEST=OFF (production binaries) the enforce branch
+// runs.
+
+TEST(KnownRolesStoreTest, I10_BuildFlag_MatchesNDebugDisposition)
+{
+    // PYLABHUB_WITH_TEST may be defined regardless of build type, but
+    // it has effect only in DEBUG (when NDEBUG is undefined).  Hence:
+    //   RELEASE (NDEBUG) → always enforces, irrespective of the flag.
+    //   DEBUG + WITH_TEST → bypass.
+    //   DEBUG + no WITH_TEST → enforces.
+#if defined(NDEBUG) || !defined(PYLABHUB_WITH_TEST)
+    EXPECT_TRUE(
+        pylabhub::utils::security::known_roles_enforces_unique_pubkey())
+        << "RELEASE or DEBUG-without-WITH_TEST builds MUST enforce "
+           "HEP-CORE-0036 §I10.  Compile-time symbol drift detected.";
+#else
+    EXPECT_FALSE(
+        pylabhub::utils::security::known_roles_enforces_unique_pubkey())
+        << "DEBUG + PYLABHUB_WITH_TEST builds MUST report the bypass "
+           "is active.  Compile-time symbol drift detected.";
+#endif
+}
+
+TEST(KnownRolesStoreTest, I10_Add_DuplicatePubkey_DifferentUid_RejectedOrAllowed)
+{
+    KnownRolesStore s;
+    ASSERT_TRUE(s.add(make_role("uid.alice", fake_pubkey('A'))));
+    if (pylabhub::utils::security::known_roles_enforces_unique_pubkey())
+    {
+        EXPECT_THROW(
+            s.add(make_role("uid.bob", fake_pubkey('A'))),
+            std::runtime_error)
+            << "HEP-CORE-0036 §I10: pubkey already used by another uid "
+               "must be rejected.";
+        EXPECT_EQ(s.size(), 1u);
+        EXPECT_FALSE(s.find("uid.bob").has_value());
+    }
+    else
+    {
+        EXPECT_NO_THROW(s.add(make_role("uid.bob", fake_pubkey('A'))))
+            << "PYLABHUB_WITH_TEST=ON + DEBUG: shared pubkey across "
+               "distinct uids must be allowed (L3 multi-BRC fixture).";
+        EXPECT_EQ(s.size(), 2u);
+    }
+}
+
+TEST(KnownRolesStoreTest, I10_Add_SameUidReplace_PubkeyRotation_AlwaysAllowed)
+{
+    // Replacement of an existing entry under the SAME uid is allowed
+    // unconditionally.  Pubkey rotation use case — the invariant only
+    // forbids the same pubkey under DIFFERENT uids.
+    KnownRolesStore s;
+    ASSERT_TRUE(s.add(make_role("uid.alice", fake_pubkey('A'))));
+    EXPECT_NO_THROW(s.add(make_role("uid.alice", fake_pubkey('B'))));
+    EXPECT_EQ(s.size(), 1u);
+    auto got = s.find("uid.alice");
+    ASSERT_TRUE(got.has_value());
+    EXPECT_EQ(got->pubkey_z85, fake_pubkey('B'));
+}
+
+TEST(KnownRolesStoreTest,
+     I10_Add_DistinctPubkeyAcrossUids_AlwaysAllowed)
+{
+    // The happy path — production-mirror shape with one keypair per
+    // role uid — must always succeed, regardless of build flag.
+    KnownRolesStore s;
+    EXPECT_NO_THROW(s.add(make_role("uid.alice", fake_pubkey('A'))));
+    EXPECT_NO_THROW(s.add(make_role("uid.bob",   fake_pubkey('B'))));
+    EXPECT_NO_THROW(s.add(make_role("uid.carol", fake_pubkey('C'))));
+    EXPECT_EQ(s.size(), 3u);
+}
+
+TEST(KnownRolesStoreTest,
+     I10_LoadFromFile_DuplicatePubkey_RejectedOrAllowed)
+{
+    // Construct a JSON file directly so the test exercises the
+    // post-load validation rather than relying on save_to_file
+    // (which goes through `add()` — also enforced, but the file path
+    // can carry duplicate pubkeys from an external operator that
+    // hand-edited the file).
+    auto p = make_tmp_path("i10_load_dup_pubkey");
+    const std::string body =
+        "{\n"
+        "  \"version\": 1,\n"
+        "  \"roles\": [\n"
+        "    { \"name\": \"r1\", \"uid\": \"uid.alice\", "
+                  "\"role\": \"producer\", \"pubkey_z85\": \""
+                  + fake_pubkey('A') + "\" },\n"
+        "    { \"name\": \"r2\", \"uid\": \"uid.bob\", "
+                  "\"role\": \"consumer\", \"pubkey_z85\": \""
+                  + fake_pubkey('A') + "\" }\n"
+        "  ]\n"
+        "}\n";
+    atomic_write_owner_only_file(p, body);
+
+    if (pylabhub::utils::security::known_roles_enforces_unique_pubkey())
+    {
+        EXPECT_THROW(KnownRolesStore::load_from_file(p),
+                     std::runtime_error)
+            << "HEP-CORE-0036 §I10: file with duplicate pubkey under "
+               "different uids must be rejected at load time.";
+    }
+    else
+    {
+        std::optional<KnownRolesStore> store;
+        EXPECT_NO_THROW(
+            store = KnownRolesStore::load_from_file(p));
+        ASSERT_TRUE(store.has_value());
+        EXPECT_EQ(store->size(), 2u);
+    }
+    fs::remove(p);
+}
