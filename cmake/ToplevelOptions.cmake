@@ -13,6 +13,48 @@ if(BUILD_TESTS)
     add_compile_definitions(PYLABHUB_BUILD_TESTS)
 endif()
 
+# Option to allow DEBUG-only test relaxations of normally-enforced
+# security invariants.  See HEP-CORE-0036 §I10 for the full warning
+# and current usage.
+#
+# Effect: when ON *and* the build type is Debug (i.e. NDEBUG is NOT
+# defined), the compile-time symbol `PYLABHUB_WITH_TEST` is added to
+# the project.  Library code that selects between "production enforces"
+# and "fixture bypasses" gates on:
+#
+#   #if defined(NDEBUG) || !defined(PYLABHUB_WITH_TEST)
+#       // enforce — RELEASE always lands here
+#   #else
+#       // bypass — only DEBUG + PYLABHUB_WITH_TEST
+#   #endif
+#
+# RELEASE builds (`cmake -DCMAKE_BUILD_TYPE=Release ...`) define NDEBUG
+# and the bypass code is physically absent from the compiled binary,
+# regardless of this option's value.  Operators MUST NOT ship binaries
+# built with PYLABHUB_WITH_TEST=ON; CI is responsible for verifying
+# production builds use Release configuration.
+option(PYLABHUB_WITH_TEST
+    "Enable DEBUG-only test relaxations of security invariants \
+(see HEP-CORE-0036 §I10).  Has no effect in Release builds."
+    OFF)
+if(PYLABHUB_WITH_TEST)
+    # Operator-footgun guard: surface a configure-time warning when
+    # PYLABHUB_WITH_TEST=ON is set in a Release configuration.  The
+    # C++ source still ignores the macro under NDEBUG, so this is
+    # purely advisory — but it catches the misconfiguration earlier
+    # than the inevitable "tests pass, prod doesn't" surprise.
+    if(CMAKE_BUILD_TYPE STREQUAL "Release" OR
+       CMAKE_BUILD_TYPE STREQUAL "MinSizeRel" OR
+       CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
+        message(WARNING
+            "PYLABHUB_WITH_TEST=ON is set but CMAKE_BUILD_TYPE='${CMAKE_BUILD_TYPE}' "
+            "defines NDEBUG.  The bypass code paths are physically absent from the "
+            "compiled library regardless.  Set CMAKE_BUILD_TYPE=Debug to actually "
+            "enable the test relaxations, or set PYLABHUB_WITH_TEST=OFF for clarity.")
+    endif()
+    add_compile_definitions(PYLABHUB_WITH_TEST)
+endif()
+
 # Option to build the IgorXOP module.
 option(BUILD_XOP "Build the Igor Pro XOP module" ON)
 
