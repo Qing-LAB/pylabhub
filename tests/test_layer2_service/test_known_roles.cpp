@@ -765,3 +765,118 @@ TEST(KnownRolesStoreTest,
     }
     fs::remove(p);
 }
+
+TEST(KnownRolesStoreTest,
+     I10_SaveLoad_RoundTrip_CompliantStoreSurvives)
+{
+    // HEP-CORE-0036 §I10 closure pin: an I10-compliant store written
+    // by save_to_file MUST be loadable by load_from_file with all
+    // entries preserved.  Without this assertion, a future refactor
+    // that quietly tightened the on-disk schema (e.g. added a
+    // pubkey-uniqueness check that rejected its own output) would
+    // produce stores that can't reopen their own files.
+    //
+    // The opposite direction — load rejecting a file save would
+    // accept — is covered by `I10_LoadFromFile_DuplicatePubkey_...`
+    // above (in enforce mode, the file with shared pubkey is
+    // rejected by load even though it could in principle be written
+    // by an external tool).
+    auto p = make_tmp_path("i10_save_load_roundtrip");
+
+    KnownRolesStore original;
+    ASSERT_TRUE(original.add(make_role("uid.alice", fake_pubkey('A'),
+                                       "Alice", "producer")));
+    ASSERT_TRUE(original.add(make_role("uid.bob",   fake_pubkey('B'),
+                                       "Bob",   "consumer")));
+    ASSERT_TRUE(original.add(make_role("uid.carol", fake_pubkey('C'),
+                                       "Carol", "processor")));
+    ASSERT_EQ(original.size(), 3u);
+
+    EXPECT_NO_THROW(original.save_to_file(p));
+
+    std::optional<KnownRolesStore> reloaded;
+    EXPECT_NO_THROW(reloaded = KnownRolesStore::load_from_file(p));
+    ASSERT_TRUE(reloaded.has_value())
+        << "An I10-compliant store must round-trip through "
+           "save_to_file → load_from_file in every build mode.";
+
+    EXPECT_EQ(reloaded->size(), 3u);
+    // Insertion-order preservation is checked elsewhere; here pin
+    // that every uid + pubkey survived, regardless of order.
+    for (const std::string &uid :
+         {"uid.alice", "uid.bob", "uid.carol"})
+    {
+        auto found = reloaded->find(uid);
+        ASSERT_TRUE(found.has_value()) << "uid '" << uid << "' lost";
+        auto orig = original.find(uid);
+        ASSERT_TRUE(orig.has_value());
+        EXPECT_EQ(found->pubkey_z85, orig->pubkey_z85);
+        EXPECT_EQ(found->name,       orig->name);
+        EXPECT_EQ(found->role,       orig->role);
+    }
+    fs::remove(p);
+}
+
+TEST(KnownRolesStoreTest,
+     I10_SaveLoad_HandEditedDuplicate_DetectedOnReload)
+{
+    // HEP-CORE-0036 §I10 operator-attack-surface pin: even a store
+    // populated by save_to_file (which never produces duplicates
+    // because every add() rejects them) becomes a duplicate-bearing
+    // file if an operator hand-edits the JSON.  The reload path
+    // MUST detect this — file persistence is the trust boundary for
+    // operator intent, and we never silently downgrade.
+    //
+    // Builds the file in two steps:
+    //   1. Save a legitimate single-entry store via save_to_file
+    //      (gives us a JSON shape produced by the real serializer).
+    //   2. Replace the file with one that duplicates the pubkey
+    //      under a second uid (simulates the hand-edit).
+    auto p = make_tmp_path("i10_handedit_duplicate");
+
+    KnownRolesStore seed;
+    ASSERT_TRUE(seed.add(make_role("uid.alice", fake_pubkey('A'),
+                                   "Alice", "producer")));
+    seed.save_to_file(p);
+
+    // Hand-edit: introduce a second entry that reuses Alice's
+    // pubkey under a different uid.  Use raw JSON so we don't
+    // depend on save_to_file's internal helper.
+    const std::string tampered_body =
+        "{\n"
+        "  \"version\": 1,\n"
+        "  \"roles\": [\n"
+        "    { \"name\": \"Alice\", \"uid\": \"uid.alice\", "
+                  "\"role\": \"producer\", \"pubkey_z85\": \""
+                  + fake_pubkey('A') + "\" },\n"
+        "    { \"name\": \"Mallory\", \"uid\": \"uid.mallory\", "
+                  "\"role\": \"producer\", \"pubkey_z85\": \""
+                  + fake_pubkey('A') + "\" }\n"
+        "  ]\n"
+        "}\n";
+    atomic_write_owner_only_file(p, tampered_body);
+
+    if (pylabhub::utils::security::known_roles_enforces_unique_pubkey())
+    {
+        EXPECT_THROW(KnownRolesStore::load_from_file(p),
+                     std::runtime_error)
+            << "HEP-CORE-0036 §I10: a hand-edited file that creates "
+               "(uid.alice, X) + (uid.mallory, X) must be rejected on "
+               "reload.  Without this rejection, the broker would "
+               "admit Mallory using Alice's keypair after a config "
+               "reload — exactly the privilege-confusion failure "
+               "mode I10 exists to block.";
+    }
+    else
+    {
+        // Bypass mode (DEBUG + WITH_TEST): test fixture path; the
+        // bypass exists for L3 multi-BRC scenarios.  We verify the
+        // load actually succeeds (otherwise the bypass is broken).
+        std::optional<KnownRolesStore> reloaded;
+        EXPECT_NO_THROW(
+            reloaded = KnownRolesStore::load_from_file(p));
+        ASSERT_TRUE(reloaded.has_value());
+        EXPECT_EQ(reloaded->size(), 2u);
+    }
+    fs::remove(p);
+}
