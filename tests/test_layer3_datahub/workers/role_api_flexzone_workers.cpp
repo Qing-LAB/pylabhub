@@ -61,9 +61,11 @@
 #include "utils/schema_utils.hpp"
 #include "utils/zmq_context.hpp"
 
+#include "curve_test_setup.h"   // CurveKeyStoreFixture
 #include "shared_test_helpers.h"
 #include "test_entrypoint.h"
 #include "test_schema_helpers.h"
+#include "utils/security/key_store.hpp"
 
 #include <fmt/core.h>
 #include <gtest/gtest.h>
@@ -327,6 +329,24 @@ int zmq_tx_null()
     return run_gtest_worker(
         [&]()
         {
+            // HEP-CORE-0040 §172: `build_tx_queue` constructs a
+            // CURVE-wired PUSH queue via `*_with_auth`, which requires
+            // the role's identity to be present in the process
+            // KeyStore under `kRoleIdentityName`.  Seed it before
+            // calling.  Without this seed the factory returns null
+            // and ASSERT_TRUE on build_tx_queue fails.
+            auto curve = pylabhub::tests::make_curve_setup({"prod.zmq-fz.tx"});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture(
+                "test.l3", "test.role_api_flexzone.harness", curve);
+            // The role-side data path uses the canonical production
+            // name `kRoleIdentityName` (build_tx_queue uses it).  Add
+            // that name pointing at the test's hub keypair (any
+            // valid CURVE keypair works; this test doesn't exercise
+            // wire authentication).
+            pylabhub::utils::security::key_store().add_identity_from_z85(
+                pylabhub::utils::security::kRoleIdentityName,
+                curve.hub.public_z85, curve.hub.secret_z85);
+
             RoleHostCore core;
             auto api = std::make_unique<RoleAPIBase>(
                 core, "prod", "prod.zmq-fz.tx");

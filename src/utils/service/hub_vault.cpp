@@ -9,6 +9,7 @@
 #include "plh_platform.hpp"
 #include "utils/security/curve_keypair.hpp"
 #include "utils/security/key_file_acl.hpp"
+#include "utils/security/secure_buffer.hpp"
 
 #include "vault_crypto.hpp"
 
@@ -18,9 +19,11 @@
 
 #include <array>
 #include <cerrno>
+#include <cstddef>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <span>
 #include <stdexcept>
 #include <string>
 
@@ -46,9 +49,27 @@ namespace pylabhub::utils
 
 struct HubVault::Impl
 {
-    std::string broker_secret_key; ///< Z85, 40 chars
-    std::string broker_public_key; ///< Z85, 40 chars
-    std::string admin_token;       ///< 64-char hex
+    /// HEP-CORE-0040 §175: secrets stored in fixed-size buffers + zeroed
+    /// in dtor via `sodium_memzero`.  Replaces the pre-#175
+    /// `std::string` members whose destructors are not guaranteed to
+    /// zero heap memory.
+    std::array<char, 40> broker_secret_z85{};
+    std::array<char, 40> broker_public_z85{};
+    std::array<char, 64> admin_token_hex{};
+
+    /// View sizes (`size()` of each accessor's returned `std::string_view`).
+    /// All three secrets are fixed-length in this vault, so the views are
+    /// always full-size after a successful `open()` or `create()`.
+    static constexpr std::size_t kSecretLen = 40;
+    static constexpr std::size_t kPublicLen = 40;
+    static constexpr std::size_t kAdminLen  = 64;
+
+    ~Impl() noexcept
+    {
+        sodium_memzero(broker_secret_z85.data(), broker_secret_z85.size());
+        sodium_memzero(broker_public_z85.data(), broker_public_z85.size());
+        sodium_memzero(admin_token_hex.data(),   admin_token_hex.size());
+    }
 };
 
 // ============================================================================
@@ -58,8 +79,6 @@ struct HubVault::Impl
 namespace
 {
 
-constexpr std::size_t kZ85BufSize    = 41; // 40 printable chars + null terminator
-constexpr std::size_t kZ85KeyLen     = 40;
 constexpr std::size_t kAdminRawBytes = 32; // → 64 hex chars
 
 std::string generate_admin_token()
@@ -135,9 +154,19 @@ HubVault HubVault::create(const fs::path    &vault_path,
     detail::vault_write(vault_path, payload.dump(), password, hub_uid);
 
     HubVault v;
-    v.pImpl->broker_secret_key = broker_secret;
-    v.pImpl->broker_public_key = broker_public;
-    v.pImpl->admin_token       = admin_tok;
+    if (broker_secret.size() != HubVault::Impl::kSecretLen
+     || broker_public.size() != HubVault::Impl::kPublicLen
+     || admin_tok.size()     != HubVault::Impl::kAdminLen)
+    {
+        throw std::runtime_error(
+            "HubVault::create: generated material has unexpected length");
+    }
+    std::memcpy(v.pImpl->broker_secret_z85.data(), broker_secret.data(),
+                HubVault::Impl::kSecretLen);
+    std::memcpy(v.pImpl->broker_public_z85.data(), broker_public.data(),
+                HubVault::Impl::kPublicLen);
+    std::memcpy(v.pImpl->admin_token_hex.data(),   admin_tok.data(),
+                HubVault::Impl::kAdminLen);
     return v;
 }
 
@@ -151,18 +180,50 @@ HubVault HubVault::open(const fs::path    &vault_path,
 {
     detail::vault_require_sodium();
 
-    const std::string plaintext =
-        detail::vault_read(vault_path, password, hub_uid);
+    // HEP-CORE-0040 §175: decrypt directly into a stack buffer whose
+    // destructor zeroes the plaintext when this scope exits.  Sized
+    // generously for the small JSON payload (broker keys + admin
+    // token + framing); fits comfortably under 4 KiB.
+    pylabhub::utils::security::SecureBuffer<4096> json_buf;
+    const std::size_t n =
+        detail::vault_read_secure(vault_path, password, hub_uid, json_buf.span());
 
     HubVault v;
     try
     {
-        const json j = json::parse(plaintext);
-        v.pImpl->broker_secret_key =
-            j.at("broker").at("curve_secret_key").get<std::string>();
-        v.pImpl->broker_public_key =
-            j.at("broker").at("curve_public_key").get<std::string>();
-        v.pImpl->admin_token = j.at("admin").at("token").get<std::string>();
+        const auto bytes = json_buf.span().first(n);
+        const json j = json::parse(
+            reinterpret_cast<const char *>(bytes.data()),
+            reinterpret_cast<const char *>(bytes.data() + bytes.size()));
+
+        auto copy_into = [](auto &dst, std::size_t expected_len,
+                            const std::string &src, const char *field) {
+            if (src.size() != expected_len)
+            {
+                throw std::runtime_error(
+                    std::string("HubVault: ") + field + " has unexpected length ("
+                    + std::to_string(src.size()) + ", expected "
+                    + std::to_string(expected_len) + ")");
+            }
+            std::memcpy(dst.data(), src.data(), expected_len);
+        };
+
+        // Extract via temporary std::strings (json's internal storage
+        // is std::string-backed).  The temporaries live only as long
+        // as these statements; the json object's own internal copies
+        // live until `j` destructs at end of scope (microsecond
+        // window of unlocked exposure — bounded because identity
+        // bytes live in the process KeyStore (locked memory) from
+        // `HubConfig::load_keypair` onward per HEP-CORE-0040 §172).
+        copy_into(v.pImpl->broker_secret_z85, HubVault::Impl::kSecretLen,
+                  j.at("broker").at("curve_secret_key").get<std::string>(),
+                  "broker.curve_secret_key");
+        copy_into(v.pImpl->broker_public_z85, HubVault::Impl::kPublicLen,
+                  j.at("broker").at("curve_public_key").get<std::string>(),
+                  "broker.curve_public_key");
+        copy_into(v.pImpl->admin_token_hex,   HubVault::Impl::kAdminLen,
+                  j.at("admin").at("token").get<std::string>(),
+                  "admin.token");
     }
     catch (const json::exception &e)
     {
@@ -175,19 +236,22 @@ HubVault HubVault::open(const fs::path    &vault_path,
 // Accessors
 // ============================================================================
 
-const std::string &HubVault::broker_curve_secret_key() const noexcept
+std::string_view HubVault::broker_curve_secret_key() const noexcept
 {
-    return pImpl->broker_secret_key;
+    return std::string_view(pImpl->broker_secret_z85.data(),
+                            Impl::kSecretLen);
 }
 
-const std::string &HubVault::broker_curve_public_key() const noexcept
+std::string_view HubVault::broker_curve_public_key() const noexcept
 {
-    return pImpl->broker_public_key;
+    return std::string_view(pImpl->broker_public_z85.data(),
+                            Impl::kPublicLen);
 }
 
-const std::string &HubVault::admin_token() const noexcept
+std::string_view HubVault::admin_token() const noexcept
 {
-    return pImpl->admin_token;
+    return std::string_view(pImpl->admin_token_hex.data(),
+                            Impl::kAdminLen);
 }
 
 // ============================================================================
@@ -205,7 +269,7 @@ void HubVault::publish_public_key(const fs::path &hub_dir) const
             throw std::runtime_error("HubVault: cannot write hub.pubkey: " +
                                      pubkey_path.string());
         }
-        ofs << pImpl->broker_public_key;
+        ofs << broker_curve_public_key();
         if (!ofs)
         {
             throw std::runtime_error("HubVault: write failed: " + pubkey_path.string());
@@ -317,7 +381,7 @@ void HubVault::publish_public_key(const fs::path &hub_dir) const
             "HubVault: fchmod 0644 failed for '" + pubkey_path.string() +
             "': " + std::strerror(err));
     }
-    const auto &key = pImpl->broker_public_key;
+    const auto key = broker_curve_public_key();
     const char *buf = key.data();
     std::size_t remaining = key.size();
     while (remaining > 0)

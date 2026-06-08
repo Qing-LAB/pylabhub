@@ -19,6 +19,7 @@
 
 #include "pylabhub_utils_export.h"
 #include "utils/json_fwd.hpp"
+#include "utils/security/key_store.hpp"
 
 #include <cstdint>
 #include <functional>
@@ -49,12 +50,19 @@ class PYLABHUB_UTILS_EXPORT BrokerRequestComm
         /// Hub's CURVE server pubkey (Z85).  REQUIRED per HEP-CORE-0035 §2
         /// (CURVE is unconditional); `connect()` returns false on empty.
         std::string broker_pubkey;
-        /// Role's CURVE client pubkey (Z85).  REQUIRED per HEP-CORE-0035 §2;
-        /// `connect()` returns false on empty.  Sourced from the role vault
-        /// via `RoleConfig::load_keypair`.
-        std::string client_pubkey;
-        /// Role's CURVE client secret key (Z85).  REQUIRED; same source.
-        std::string client_seckey;
+        /// HEP-CORE-0040 §172: the role's CURVE keypair is NOT carried
+        /// here — `connect()` reads it on-site from `key_store()` by
+        /// the name below.  `KeyStore::add_identity_from_z85(keystore_name, ...)`
+        /// must have been called (typically by `RoleConfig::load_keypair`
+        /// for production, or by the test fixture) before `connect()`
+        /// runs; absence → `connect()` returns false.
+        ///
+        /// Default `kRoleIdentityName` (canonical constant) matches what
+        /// `RoleConfig::load_keypair` seeds for production.  L3 tests
+        /// that spin up multiple BRC instances under different role
+        /// identities override this per-instance to e.g.
+        /// `"role.test.uid_a"`.
+        std::string keystore_name{pylabhub::utils::security::kRoleIdentityName};
         std::string role_uid;         ///< Role UID for channel join/leave
         std::string role_name;        ///< Role display name
     };

@@ -44,15 +44,16 @@ struct ChannelClient
     std::atomic<bool> running{true};
     std::thread poll_thread;
 
+    /// HEP-CORE-0040 §172: identity is referenced by name; the caller
+    /// has a `CurveKeyStoreFixture` in scope that seeded the keystore.
     void connect(const std::string &ep, const std::string &pk,
                  const std::string &uid, const std::string &name,
-                 const pylabhub::tests::CurveKeypair &role_kp)
+                 const std::string &keystore_name)
     {
         BrokerRequestComm::Config cfg;
         cfg.broker_endpoint = ep;
         cfg.broker_pubkey = pk;
-        cfg.client_pubkey = role_kp.public_z85;
-        cfg.client_seckey = role_kp.secret_z85;
+        cfg.keystore_name = keystore_name;
         cfg.role_uid = uid;
         cfg.role_name = name;
         ASSERT_TRUE(ch.connect(cfg));
@@ -83,13 +84,15 @@ int channel_join_leave()
     const std::string uid_a = "prod.role.a.uid00000001";
     const std::string uid_b = "prod.role.b.uid00000002";
     auto curve = pylabhub::tests::make_curve_setup({uid_a, uid_b});
+    pylabhub::tests::CurveKeyStoreFixture ks_fixture(
+        "test.l3", "test.channel_group.harness", curve);
     BrokerService::Config bcfg;
     bcfg.endpoint = "tcp://127.0.0.1:0";
     auto broker = pylabhub::tests::start_direct_broker(std::move(bcfg), curve);
 
     ChannelClient c1, c2;
-    c1.connect(broker.endpoint, broker.pubkey, uid_a, "role_a", curve.role(uid_a));
-    c2.connect(broker.endpoint, broker.pubkey, uid_b, "role_b", curve.role(uid_b));
+    c1.connect(broker.endpoint, broker.pubkey, uid_a, "role_a", pylabhub::tests::role_keystore_name(uid_a));
+    c2.connect(broker.endpoint, broker.pubkey, uid_b, "role_b", pylabhub::tests::role_keystore_name(uid_b));
 
     // Role A joins channel.
     auto join1 = c1.ch.band_join("!test_ch", 5000);
@@ -152,6 +155,8 @@ int channel_msg_fanout()
     const std::string uid_a = "prod.sender.uid00000001";
     const std::string uid_b = "cons.recvr.uid00000002";
     auto curve = pylabhub::tests::make_curve_setup({uid_a, uid_b});
+    pylabhub::tests::CurveKeyStoreFixture ks_fixture(
+        "test.l3", "test.channel_group.harness", curve);
     BrokerService::Config bcfg;
     bcfg.endpoint = "tcp://127.0.0.1:0";
     auto broker = pylabhub::tests::start_direct_broker(std::move(bcfg), curve);
@@ -171,8 +176,8 @@ int channel_msg_fanout()
         }
     });
 
-    c1.connect(broker.endpoint, broker.pubkey, uid_a, "sender", curve.role(uid_a));
-    c2.connect(broker.endpoint, broker.pubkey, uid_b, "receiver", curve.role(uid_b));
+    c1.connect(broker.endpoint, broker.pubkey, uid_a, "sender", pylabhub::tests::role_keystore_name(uid_a));
+    c2.connect(broker.endpoint, broker.pubkey, uid_b, "receiver", pylabhub::tests::role_keystore_name(uid_b));
 
     // Both join the channel.
     c1.ch.band_join("!msg_ch", 5000);
@@ -215,6 +220,8 @@ int channel_join_notify()
     const std::string uid_a = "prod.first.uid00000001";
     const std::string uid_b = "prod.second.uid00000002";
     auto curve = pylabhub::tests::make_curve_setup({uid_a, uid_b});
+    pylabhub::tests::CurveKeyStoreFixture ks_fixture(
+        "test.l3", "test.channel_group.harness", curve);
     BrokerService::Config bcfg;
     bcfg.endpoint = "tcp://127.0.0.1:0";
     auto broker = pylabhub::tests::start_direct_broker(std::move(bcfg), curve);
@@ -233,13 +240,13 @@ int channel_join_notify()
         }
     });
 
-    c1.connect(broker.endpoint, broker.pubkey, uid_a, "first", curve.role(uid_a));
+    c1.connect(broker.endpoint, broker.pubkey, uid_a, "first", pylabhub::tests::role_keystore_name(uid_a));
 
     // First joins channel.
     c1.ch.band_join("!notify_ch", 5000);
 
     // Second joins — first should get BAND_JOIN_NOTIFY.
-    c2.connect(broker.endpoint, broker.pubkey, uid_b, "second", curve.role(uid_b));
+    c2.connect(broker.endpoint, broker.pubkey, uid_b, "second", pylabhub::tests::role_keystore_name(uid_b));
     c2.ch.band_join("!notify_ch", 5000);
 
     bool got = pylabhub::tests::helper::poll_until(
@@ -271,6 +278,8 @@ int roleapi_channel()
     const std::string uid_a = "prod.role.a.uid00000100";
     const std::string uid_b = "prod.role.b.uid00000200";
     auto curve = pylabhub::tests::make_curve_setup({uid_a, uid_b});
+    pylabhub::tests::CurveKeyStoreFixture ks_fixture(
+        "test.l3", "test.channel_group.harness", curve);
     BrokerService::Config bcfg;
     bcfg.endpoint = "tcp://127.0.0.1:0";
     auto broker = pylabhub::tests::start_direct_broker(std::move(bcfg), curve);
@@ -297,14 +306,12 @@ int roleapi_channel()
 
     bc_cfg.role_uid = uid_a;
     bc_cfg.role_name = "role_a";
-    bc_cfg.client_pubkey = curve.role(uid_a).public_z85;
-    bc_cfg.client_seckey = curve.role(uid_a).secret_z85;
+    bc_cfg.keystore_name = pylabhub::tests::role_keystore_name(uid_a);
     EXPECT_TRUE(bc1->connect(bc_cfg));
 
     bc_cfg.role_uid = uid_b;
     bc_cfg.role_name = "role_b";
-    bc_cfg.client_pubkey = curve.role(uid_b).public_z85;
-    bc_cfg.client_seckey = curve.role(uid_b).secret_z85;
+    bc_cfg.keystore_name = pylabhub::tests::role_keystore_name(uid_b);
     EXPECT_TRUE(bc2->connect(bc_cfg));
 
     // Start broker threads (uses start_broker_thread which wires notifications).
@@ -409,6 +416,8 @@ int channel_leave_notify()
     const std::string uid_a = "prod.stayer.uid00000001";
     const std::string uid_b = "prod.leaver.uid00000002";
     auto curve = pylabhub::tests::make_curve_setup({uid_a, uid_b});
+    pylabhub::tests::CurveKeyStoreFixture ks_fixture(
+        "test.l3", "test.channel_group.harness", curve);
     BrokerService::Config bcfg;
     bcfg.endpoint = "tcp://127.0.0.1:0";
     auto broker = pylabhub::tests::start_direct_broker(std::move(bcfg), curve);
@@ -429,8 +438,8 @@ int channel_leave_notify()
         }
     });
 
-    c1.connect(broker.endpoint, broker.pubkey, uid_a, "stayer", curve.role(uid_a));
-    c2.connect(broker.endpoint, broker.pubkey, uid_b, "leaver", curve.role(uid_b));
+    c1.connect(broker.endpoint, broker.pubkey, uid_a, "stayer", pylabhub::tests::role_keystore_name(uid_a));
+    c2.connect(broker.endpoint, broker.pubkey, uid_b, "leaver", pylabhub::tests::role_keystore_name(uid_b));
 
     c1.ch.band_join("!leave_ch", 5000);
     c2.ch.band_join("!leave_ch", 5000);
@@ -468,6 +477,8 @@ int channel_self_excluded()
     const std::string uid_a = "prod.sender.uid00000001";
     const std::string uid_b = "cons.recvr.uid00000002";
     auto curve = pylabhub::tests::make_curve_setup({uid_a, uid_b});
+    pylabhub::tests::CurveKeyStoreFixture ks_fixture(
+        "test.l3", "test.channel_group.harness", curve);
     BrokerService::Config bcfg;
     bcfg.endpoint = "tcp://127.0.0.1:0";
     auto broker = pylabhub::tests::start_direct_broker(std::move(bcfg), curve);
@@ -485,8 +496,8 @@ int channel_self_excluded()
             receiver_msg_count.fetch_add(1);
     });
 
-    c1.connect(broker.endpoint, broker.pubkey, uid_a, "sender", curve.role(uid_a));
-    c2.connect(broker.endpoint, broker.pubkey, uid_b, "receiver", curve.role(uid_b));
+    c1.connect(broker.endpoint, broker.pubkey, uid_a, "sender", pylabhub::tests::role_keystore_name(uid_a));
+    c2.connect(broker.endpoint, broker.pubkey, uid_b, "receiver", pylabhub::tests::role_keystore_name(uid_b));
 
     c1.ch.band_join("!self_ch", 5000);
     c2.ch.band_join("!self_ch", 5000);
@@ -525,6 +536,8 @@ int channel_multi_channel()
     const std::string uid_a = "prod.multi.uid00000001";
     const std::string uid_b = "prod.other.uid00000002";
     auto curve = pylabhub::tests::make_curve_setup({uid_a, uid_b});
+    pylabhub::tests::CurveKeyStoreFixture ks_fixture(
+        "test.l3", "test.channel_group.harness", curve);
     BrokerService::Config bcfg;
     bcfg.endpoint = "tcp://127.0.0.1:0";
     auto broker = pylabhub::tests::start_direct_broker(std::move(bcfg), curve);
@@ -547,8 +560,8 @@ int channel_multi_channel()
 
     ChannelClient c2;
 
-    c1.connect(broker.endpoint, broker.pubkey, uid_a, "multi_role", curve.role(uid_a));
-    c2.connect(broker.endpoint, broker.pubkey, uid_b, "other_role", curve.role(uid_b));
+    c1.connect(broker.endpoint, broker.pubkey, uid_a, "multi_role", pylabhub::tests::role_keystore_name(uid_a));
+    c2.connect(broker.endpoint, broker.pubkey, uid_b, "other_role", pylabhub::tests::role_keystore_name(uid_b));
 
     // Role 1 joins both channels.
     c1.ch.band_join("!ch_alpha", 5000);

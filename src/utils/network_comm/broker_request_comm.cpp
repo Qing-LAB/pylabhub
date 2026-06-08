@@ -8,6 +8,7 @@
 
 #include "utils/broker_request_comm.hpp"
 #include "utils/security/curve_keypair.hpp"
+#include "utils/security/key_store.hpp"
 
 #include "plh_platform.hpp"   // platform::get_pid()
 #include "utils/logger.hpp"
@@ -486,22 +487,30 @@ bool BrokerRequestComm::connect(const Config &cfg)
         // discipline, §4.6.5): the role loaded its vault but failed
         // to populate the BRC config — surface the misconfiguration
         // at connect() rather than producing a stuck handshake.
-        if (cfg.broker_pubkey.empty() ||
-            cfg.client_pubkey.empty() ||
-            cfg.client_seckey.empty())
+        // HEP-CORE-0040 §172: read the role's CURVE identity on-site
+        // from key_store() by the caller-supplied keystore_name.
+        // Absence → refuse the connect (loud, not silent).
+        if (cfg.broker_pubkey.empty()
+         || cfg.keystore_name.empty()
+         || !pylabhub::utils::security::key_store_ready()
+         || !pylabhub::utils::security::key_store().has(cfg.keystore_name))
         {
             LOGGER_ERROR(
-                "BrokerRequestComm: broker_pubkey / client_pubkey / "
-                "client_seckey are REQUIRED non-empty Z85 strings "
-                "(HEP-CORE-0035 §2).  Refusing to connect to {} without "
-                "CURVE.",
-                cfg.broker_endpoint);
+                "BrokerRequestComm: broker_pubkey empty or KeyStore entry "
+                "'{}' absent (HEP-CORE-0035 §2; HEP-CORE-0040 §172).  "
+                "Refusing to connect to {} without CURVE.",
+                cfg.keystore_name, cfg.broker_endpoint);
             pImpl->dealer.reset();
             return false;
         }
+        auto &ks = pylabhub::utils::security::key_store();
         pImpl->dealer->set(zmq::sockopt::curve_serverkey, cfg.broker_pubkey);
-        pImpl->dealer->set(zmq::sockopt::curve_publickey, cfg.client_pubkey);
-        pImpl->dealer->set(zmq::sockopt::curve_secretkey, cfg.client_seckey);
+        pImpl->dealer->set(zmq::sockopt::curve_publickey,
+                           ks.pubkey(cfg.keystore_name));
+        ks.with_seckey(cfg.keystore_name,
+            [&](std::string_view sec) {
+                pImpl->dealer->set(zmq::sockopt::curve_secretkey, sec);
+            });
 
         // (Heartbeat 5s/30s + reconnect-disable + sndtimeo=500ms +
         // linger=0 are all applied above by `apply_socket_policy`,

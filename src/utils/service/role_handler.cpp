@@ -192,8 +192,9 @@ bool RoleHandler::start_connections(const RoleAPIBase &owner)
         hub::BrokerRequestComm::Config cfg;
         cfg.broker_endpoint = c.broker_endpoint;
         cfg.broker_pubkey   = c.broker_pubkey;
-        cfg.client_pubkey   = owner.auth_client_pubkey();
-        cfg.client_seckey   = owner.auth_client_seckey();
+        // HEP-CORE-0040 §172: BRC reads the role's CURVE identity at
+        // connect time via `key_store().with_seckey(kRoleIdentityName, ...)`
+        // + `pubkey(...)`.  No plumbing through Config.
         cfg.role_uid        = owner.uid();
         cfg.role_name       = owner.name();
 

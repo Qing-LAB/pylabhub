@@ -6,7 +6,7 @@ data-channel CURVE auth gate.
 
 **Authoritative design lives in:**
 - `docs/HEP/HEP-CORE-0035-Hub-Role-Authentication-and-Federation-Trust.md` — Layer-1 ZAP + Layer-2 federation trust gate + key-file ACL discipline (§4.6) + runtime key handling (§4.7).
-- `docs/HEP/HEP-CORE-0036-Authenticated-Connection-Establishment.md` — Three-tier auth (transport / identity / authorization), `ChannelAccessIndex` (§4.1), channel-auth notify+pull wire (§6.5 — `CHANNEL_AUTH_CHANGED_NOTIFY` + `GET_CHANNEL_AUTH_REQ`/`_ACK`, amended 2026-06-04), per-producer pubkey + endpoint (§6.4).
+- `docs/HEP/HEP-CORE-0036-Authenticated-Connection-Establishment.md` — Three-tier auth (transport / identity / authorization), `ChannelAccessIndex` (§4.1), channel-auth notify+pull wire (§6.5 — `CHANNEL_AUTH_CHANGED_NOTIFY` + `GET_CHANNEL_AUTH_REQ`/`_ACK`, amended 2026-06-04), per-producer pubkey + endpoint (§6.4), **one pubkey per role uid (separation of duties) §I10 — added 2026-06-08, enforced in `KnownRolesStore` with RELEASE-always-on + DEBUG-WITH_TEST bypass**.
 - `docs/HEP/HEP-CORE-0017-Queue-Abstraction.md` §3.3 — `RxQueueOptions::producer_peers` queue auth contract.
 
 **Status source of truth:** `docs/TODO_MASTER.md` (when PeerAdmission
@@ -258,11 +258,110 @@ producer's socket.  Every "auth" test asserts a symmetric property:
 
 The assertions that would have caught the no-op:
 - **L2 ZmqQueue**: after `push_to_with_auth(...)` succeeds, `zmq_getsockopt(socket, ZMQ_MECHANISM, ...)` returns `ZMQ_CURVE`, not `ZMQ_NULL`.
-- **L2 RoleAPIBase**: constructor REQUIRES a `CurveKeypair`; trying to construct without is a compile error.
+- **L2 RoleAPIBase**: constructor PRE-CHECKS `key_store().has(kRoleIdentityName)` (HEP-CORE-0040 round-5 use-not-export — keys live in KeyStore, not in the ctor signature); absence is a loud throw, not silent fallback.
 - **L3 broker**: spin up a CURVE-enforced producer; a NULL-mech client cannot connect (handshake-failed monitor event observed).
 - **L4 plh_role**: with deliberately empty / wrong `auth.keyfile` path, the role aborts at startup BEFORE binding any data socket.
 
 These four assertions are tracked as part of cleanup commit C5 below.
+
+---
+
+## 2026-06-05 PM REFRAME — HEP-CORE-0040 (Locked Key Memory) absorbs the storage half of C3 + #102
+
+Mid-session discussion on the C3 in-flight changes surfaced that the
+"keypair as ctor arg" shape (value-copy into `RoleAPIBase`) creates a
+**second copy of the seckey** in process memory.  Under §4.7 mlock /
+zero-on-destruct that means a second mlock region + second zero path
+to get right — and a hub-side analog (`BrokerService::Config` already
+value-copies from `HubConfig::auth()`) makes it a third copy.
+
+**Decision**: storage and API design are separate concerns.  Storage
+is **one owner per process, in locked memory**.  Round-5 refinement
+(2026-06-06): the security module exposes **OPERATIONS** on secret
+material, not byte exports.  Public-half keys returned as
+`std::string_view`; secret-half keys accessed only via
+`with_seckey(name, callback)` — bytes never leave the LockedKey
+region.  RoleAPIBase + HubAPI lose the `auth_client_seckey()`
+accessor entirely (no legitimate caller); BrokerService bind / BRC
+connect / ZmqQueue factories apply the seckey on-site via
+`key_store().with_seckey(name, cb)` at the libzmq use point.  No
+keypair threading through ctors, no keypair fields in Config, no
+keypair in BrokerService::Config.  HEP-CORE-0035 §4.7's flat-utility
+sketch (`SecureKeyBuffer` + `disable_core_dumps()`) is lifted into a
+new framework primitive HEP — **HEP-CORE-0040 (Locked Key Memory)** —
+which defines:
+
+- a **STATIC** `SecureMemorySubsystem` lifecycle module (process-init:
+  `setrlimit(RLIMIT_CORE,0)` / `prctl(PR_SET_DUMPABLE,0)` /
+  `SetErrorMode` / RLIMIT_MEMLOCK inspection / Windows
+  `SeLockMemoryPrivilege`).  Registered at `main()` BEFORE vault open.
+- a **DYNAMIC** `KeyStore` lifecycle module (one per process; mirrors
+  ThreadManager auto-register pattern) owning N `LockedKey` RAII
+  instances backed by `sodium_malloc` (mlock + guard pages + canary +
+  auto-wipe).  Use-not-export API: `pubkey(name) → std::string_view`
+  (non-secret view into LockedKey bytes) and `with_seckey(name, cb)`
+  (callback-scoped seckey access; bytes never leave LockedKey
+  region).  `lookup_raw(name) → span` for HEP-0038 scripted secrets.
+  All reads take shared lock (parallel); add/remove take exclusive
+  lock.  Canonical names: `"hub_identity"` (hub process),
+  `"role_identity"` (role process), `"vault:<script-name>"`
+  (HEP-0038 scripted secrets).
+
+Consumers:
+- HEP-CORE-0035 §4.7 (identity keypair storage) — §4.7 becomes a
+  one-line cross-ref; framework primitives move into HEP-0040.
+- HEP-CORE-0038 / task #106 (script vault keystore) — runtime-saved
+  scripted secrets land in the same dynamic KeyStore.
+
+Task tracking (created 2026-06-05):
+- **#165** draft HEP-0040 in tech_draft (✅ landed
+  `docs/tech_draft/HEP-CORE-0040-Locked-Key-Memory-DRAFT.md`)
+- **#166** fresh-eye review of draft
+- **#167** promote tech_draft → `docs/HEP/`
+- **#168** HEP-0035 §4.7 cross-reference update
+- **#169** impl: `SecureMemorySubsystem` static module
+- **#170** impl: `KeyStore` dynamic module + `LockedKey` RAII
+- **#171** impl: migrate HubConfig + RoleConfig to LockedKey storage
+- **#172** impl: BrokerService::Config to reference pattern (drops
+  the value-copy at `hub_host.cpp:183-184`)
+- **#173** impl: RoleAPIBase loses `auth_client_pubkey()` /
+  `auth_client_seckey()` entirely; ctor signature UNCHANGED;
+  `set_auth` + 3 role-host call sites deleted;
+  `Impl::auth_client_pubkey_/_seckey_` strings deleted; use sites
+  migrate to `key_store().with_seckey` / `pubkey` at the libzmq
+  socket-option point (per round-5 use-not-export design).
+  **Supersedes the in-flight #159 value-copy C3** (which was reverted
+  2026-06-05) AND the round-4 `lookup() → CurveKeypair&` plan.
+- **#174** impl: HubAPI does NOT gain accessors (round-5 deletes the
+  symmetric-accessor plan — no legitimate caller exists; tracing every
+  reader of seckey shows they're all libzmq socket-option setters that
+  call `with_seckey` directly).
+- **#102** (HEP-0035 §4.7 utility-only) — SUPERSEDED; blocked on
+  #167–#171; closes when the chain lands.
+- **#159** (original C3) — SUPERSEDED; blocked on #173; closes when
+  #173 lands.
+- **#106** (HEP-0038 script vault keystore) — gains blockedBy on
+  #167 + #170 so the storage layer exists before consumer impl.
+
+**In-flight state**: working tree has the WRONG-DIRECTION C3 changes
+(value copy of `CurveKeypair` into `RoleAPIBase::Impl`, `if constexpr`
+branch in `engine_host.cpp:143`, `set_auth` removals across the three
+role hosts).  Decision: do NOT revert.  Leave the tree as-is until
+#173 reshapes it to the reference pattern.  The HB-1 ordering fix
+concept survives; only the storage shape changes.
+
+**Sequencing impact on C-chain below**: C3 row in the implementation
+order table (and §"C1..C5 sequence" rows) now executes per HEP-0040
+design — RoleAPIBase + HubAPI accessors query `key_store().lookup` by
+canonical name; NO keypair fields in Config or BrokerService::Config;
+NO ctor signature changes anywhere.  Other rows (C1, C2, C4, C5) are
+unchanged.
+
+**Memory rule that fell out of this**: separate STORAGE design from
+API design.  When asked "where should X live", split into (a) where
+the bytes live (lowest reasonable level, single owner) and (b) what
+API exposes access (grouped logically per consumer).  Conflating the
+two pushed the discussion in circles for an hour.
 
 ---
 
@@ -294,12 +393,12 @@ C. **Two parallel factory pairs** (4 functions, should be 2):
    - `pull_from_with_auth()` → RENAME to `pull_from` (C4)
    - `push_to_with_auth()` → RENAME to `push_to` (C4)
 
-D. **`ZmqAuthOptions` overdesigned options bag**.  5 stringly-typed fields, each independently nullable.  Dies in C2 — replaced by `CurveKeypair` + optional `Z85PublicKey serverkey` + `zap_domain` as named factory args.
+D. **`ZmqAuthOptions` overdesigned options bag**.  5 stringly-typed fields, each independently nullable.  Dies in C2 — replaced per HEP-CORE-0040 §8.4 by `identity_key_name` (the KeyStore name STRING) + optional `Z85PublicKey serverkey` + `zap_domain` as named factory args.  No `CurveKeypair` parameter survives on the public factory API; keys live only in `key_store()` and are looked up on-site via `with_seckey(name, cb)` + `pubkey(name)`.
 
-E. **`RoleAPIBase` auth surface — three overdesigned shapes**:
-   - `set_auth(client_pubkey, client_seckey)` setter — exists ONLY because auth was optional → delete in C3
-   - `auth_client_pubkey()` / `auth_client_seckey()` getters — exist for "did we set auth?" checks → return `CurveKeypair const&` in C3 (or drop entirely)
-   - `pImpl->auth_client_pubkey/_seckey` storage as default-empty `std::string` → `CurveKeypair` member, no empty default state possible
+E. **`RoleAPIBase` auth surface — three overdesigned shapes** (all CLOSED by #173 round-5):
+   - `set_auth(client_pubkey, client_seckey)` setter — deleted #173.
+   - `auth_client_pubkey()` / `auth_client_seckey()` getters — deleted #173 (round-5 use-not-export; HubAPI doesn't gain symmetric accessors either).
+   - `pImpl->auth_client_pubkey/_seckey` storage — deleted #173; replaced by on-site `key_store().with_seckey(kRoleIdentityName, cb)` at libzmq use sites.
 
 F. **`admission_is_enforced()` interface method** is dead after C1 (always true).  Deleted from the `PeerAdmission` interface in C4.
 
@@ -314,9 +413,9 @@ I. **`hub_zmq_queue.cpp:617` "bind side: serverkey is meaningless. Don't fail if
 | # | Commit | Scope | Why this order |
 |---|---|---|---|
 | **C1** | `validate_auth_options` strict-mode | Delete the "all-empty = OK" early-return at `hub_zmq_queue.cpp:587-589`.  Require both keypair fields non-empty + 40-char Z85.  Delete the silent-ignore at line 617.  Delete the "if empty skip CURVE" conditional at line 875.  Delete the "if empty skip serverkey" conditional at line 930.  Update `validate_auth_options` L2 tests for the new contract (rejection cases, not acceptance). | Smallest defensive change.  After this, every existing call site that relied on the silent path FAILS LOUDLY at the factory boundary.  All subsequent commits surface their dependents through real compile/link/run errors instead of silent miscompiles. |
-| **C2** | Strong-type the keypair | Reuse / extend the existing `pylabhub::crypto::CurveKeypair` struct (`security/curve_keypair.hpp:55`).  Define `Z85PublicKey` strong type (40-char Z85 invariant).  Replace `std::string my_pubkey_z85 + std::string my_seckey_z85` with `CurveKeypair` everywhere it appears: `ZmqAuthOptions`, `AuthConfig`, `BrokerRequestComm::Config`, `RoleAPIBase::pImpl`, `HubHost::Config`.  Replace `std::string serverkey_z85`, `std::string ProducerPeer::pubkey_z85`, `std::string ProducerEntry::zmq_pubkey`, `std::string ConsumerEntry::zmq_pubkey` with `Z85PublicKey`.  Constructors validate at construction time; misuse becomes a compile error. | Forces every key-bearing struct through the same invariant.  Wrong-length / empty becomes a compile error at every site, not a runtime silent-pass. |
-| **C3** | `RoleAPIBase` keypair as constructor arg | Add `CurveKeypair` to the RoleAPIBase ctor signature.  Delete `set_auth()` method.  Replace `auth_client_pubkey()` / `auth_client_seckey()` getters with `keypair() const & → CurveKeypair const&` (or drop entirely if internal-only).  Update producer / consumer / processor role hosts to construct `RoleAPIBase` with the keypair already loaded (vault open must precede ctor).  The HB-1 ordering bug becomes IMPOSSIBLE by construction — a RoleAPIBase instance cannot exist without a valid keypair. | Removes the silent-empty failure mode at the role-host layer.  The "ordering bug" the audit found can no longer happen. |
-| **C4** | Delete legacy plaintext factories + rename + migrate tests | Delete `ZmqQueue::pull_from()` and `push_to()`.  Rename `pull_from_with_auth` → `pull_from`, `push_to_with_auth` → `push_to`.  Delete `ZmqAuthOptions` struct; pass `CurveKeypair`, optional `Z85PublicKey serverkey`, `zap_domain` as named factory args directly.  Delete `admission_is_enforced()` from the `PeerAdmission` interface.  Migrate the 103 test sites in `tests/`: most pick up the per-test `curve_test_setup.h` fixture; a handful are deleted as "only tested the legacy plaintext path".  Update `role_api_base.cpp:412` (consumer-side pull_from) to use the auth signature with `CurveKeypair` from RoleAPIBase + `Z85PublicKey serverkey` from `producer_peers.front().pubkey_z85`. | Closes the "two factories" fork.  Every test engages real CURVE.  Stale plaintext-as-default docstrings die alongside the code. |
+| **C2** | Strong-type non-keypair pubkeys + endpoint shape per HEP-0040 §8.4 | **Note**: original C2 ("replace `my_pubkey_z85` / `my_seckey_z85` with `CurveKeypair` in `ZmqAuthOptions`, `AuthConfig`, `BrokerRequestComm::Config`, `RoleAPIBase::pImpl`, `HubHost::Config`") is OBSOLETE — those fields were DELETED by #171-#173 (HEP-CORE-0040 round-5 use-not-export design).  The structs no longer carry a keypair at all; keys live only in `key_store()`.  C2 now means: (a) define `Z85PublicKey` strong type (40-char Z85 invariant) for the remaining pubkey-only fields (`ProducerPeer::pubkey_z85`, `ProducerEntry::zmq_pubkey`, `ConsumerEntry::zmq_pubkey`, `BrokerRequestComm::Config::broker_pubkey`, BRC's `serverkey`); (b) align ZmqQueue factories to HEP-CORE-0040 §8.4 endpoint shape — `push_to(endpoint, identity_key_name, zap_domain)` and `pull_from(endpoint, Z85PublicKey server_pubkey, identity_key_name)`; (c) kill the `ZmqAuthOptions` options bag (its fields become factory parameters).  No `CurveKeypair` parameter on the public API (keys live in KeyStore). | Forces remaining pubkey fields through one invariant; eliminates `ZmqAuthOptions` "all-empty = OK" residue at the type level; matches HEP-CORE-0040 §8.4 + §8.6 exactly. |
+| **C3** | RoleAPIBase + HubAPI lose the seckey accessor entirely; on-site `with_seckey` at libzmq use points (per HEP-CORE-0040 §8.2 round-5) | RoleAPIBase ctor signature UNCHANGED.  DELETE: `set_auth()` method + three role-host call sites; `Impl::auth_client_pubkey_` / `_seckey_` string members; `auth_client_pubkey()` accessor; `auth_client_seckey()` accessor; `CurveKeypair::empty()` method.  HubAPI does NOT gain symmetric accessors (round-5 deletes the symmetric-accessor plan — no legitimate caller).  Sites that previously read these (role_handler BRC connect, build_tx_queue, build_rx_queue) migrate to `key_store().with_seckey(name, cb)` at the actual libzmq socket-option site.  No `if constexpr` in EngineHost.  No keypair fields in HubConfig / RoleConfig / BrokerService::Config / BRC::Config.  HB-1 closes because `with_seckey` / `pubkey` throw std::out_of_range on missing key — loud, not silent.  | Zero unlocked seckey copies in pylabhub source.  Symmetric absence (neither RoleAPIBase nor HubAPI exposes the seckey as data).  No threading of keypair through ctor chains. |
+| **C4** | Delete legacy plaintext factories + adopt HEP-0040 §8.4 endpoint shape + migrate tests | Delete `ZmqQueue::pull_from()` and `push_to()` (plaintext variants).  Rename `pull_from_with_auth` → `pull_from`, `push_to_with_auth` → `push_to`.  Final signatures per HEP-CORE-0040 §8.4: `push_to(endpoint, identity_key_name = kRoleIdentityName, zap_domain = "")` and `pull_from(endpoint, Z85PublicKey server_pubkey, identity_key_name = kRoleIdentityName)` — name lookups via `key_store().with_seckey(name, cb)` + `key_store().pubkey(name)` inside the factory body; no keypair parameter on the public API.  Delete `ZmqAuthOptions` struct entirely (its fields become factory parameters).  Delete `admission_is_enforced()` from the `PeerAdmission` interface.  Migrate the 103 test sites in `tests/`: most pick up `CurveKeyStoreFixture` from `curve_test_setup.h` (which seeds KeyStore); a handful are deleted as "only tested the legacy plaintext path".  Update `role_api_base.cpp:412` (consumer-side pull_from) to pass `kRoleIdentityName` + `Z85PublicKey serverkey` from `producer_peers.front().pubkey_z85`. | Closes the "two factories" fork.  Every test engages real CURVE.  Single point where (name → bytes) lookup happens (`key_store()`).  Matches HEP-CORE-0040 §8.4 + §8.6 exactly. |
 | **C5** | CURVE-engagement test assertions | Add four classes of test that catch "CURVE accidentally off":<br>• **L2 ZmqQueue**: after `push_to` succeeds, query `zmq_getsockopt(ZMQ_MECHANISM)` and assert `== ZMQ_CURVE`.<br>• **L2 RoleAPIBase**: construct with valid keypair → pass; trying to construct without is a compile error (covered automatically by C3) — add a smoke test that verifies ctor signature requires the keypair (e.g. `static_assert(!std::is_constructible_v<RoleAPIBase, RoleHostCore&, std::string, std::string>)`).<br>• **L3 broker**: spin up a CURVE-enforced producer; have a NULL-mech `zmq::socket_t` try to connect to it; assert handshake-failed event observed via socket monitor.<br>• **L4 plh_role**: with a deliberately broken `auth.keyfile` (file missing, empty, or wrong-length contents), the role aborts at startup BEFORE binding any data socket. | Anti-recursion.  Once C1-C4 land, the next time someone forgets CURVE the C5 assertions trip immediately.  This is the test layer of §4.6.5 cleanup that the previous landing deferred. |
 
 ### After C5: what HB-1..HB-6 still need
@@ -344,24 +443,39 @@ Doc-review 2026-06-05 caught a sequencing issue: C1 (strict
 ordering bug (HB-1) means `build_tx_queue` passes empty keys at run
 time.  Practical order:
 
-1. **C0 — HB-1 ordering fix** (keypair to RoleAPIBase ctor;
-   `set_auth` setter retired in favour of a constructor-time
-   invariant; raw `std::string` fields for now to keep diff small).
-   After C0, `build_tx_queue` always sees non-empty keys → the
-   producer-side `push_to_with_auth` now actually engages CURVE.
-   This will reveal latent consumer-side breakage (PULL still uses
-   plaintext) — mask the affected ZMQ-data-plane L4 round-trips
-   with a cited TODO if any exist, in the same commit (`#153` pattern).
+1. **C0 — HB-1 ordering fix via HEP-CORE-0040 use-not-export KeyStore**
+   (round-5 2026-06-06: BrokerService bind / BRC connect / ZmqQueue
+   factory call `key_store().with_seckey(name, cb)` + `pubkey(name)` at
+   the libzmq socket-option site; RoleAPIBase + HubAPI lose `auth_client_seckey()`
+   entirely; `set_auth` setter deleted; NO keypair passed through any
+   ctor; NO keypair fields in Config or BrokerService::Config; NO `lookup() → CurveKeypair&` accessor on KeyStore).  Lands as part of
+   the HEP-0040 impl chain (tasks #167–#175).  Earlier "ctor takes
+   value", "ctor takes const ref", and "lookup() returns CurveKeypair&"
+   plans all REJECTED — the first two threaded keypair through ctors,
+   the third forced a second std::string copy via Entry::view cache.
+   After C0, any read of an identity key before `key_store().add_identity`
+   has been called throws std::out_of_range → loud, not silent.  No
+   latent consumer-side plaintext fallback survives the migration (it
+   cannot compile against the new use-not-export API).
 2. **C1 — strict `validate_auth_options`**.  Safe now that HB-1 is
    closed; the strict-mode rejection cannot fire on production
    paths.  L2 tests for `validate_auth_options` flip from acceptance
    to rejection cases.
-3. **C2 — strong-type keys** (`CurveKeypair` validating ctor +
-   `Z85PublicKey`).  Pure refactor.
-4. **C3b — finalize**: delete `set_auth`, `auth_client_pubkey()`,
-   `auth_client_seckey()` setters/getters (replaced by ctor + `const
-   CurveKeypair&` accessor if needed).
-5. **C4 — delete legacy factories** + rename + migrate 103 test sites.
+3. **C2 — strong-type pubkeys + endpoint shape** (`Z85PublicKey` for
+   `ProducerPeer::pubkey_z85` / `ProducerEntry::zmq_pubkey` /
+   `ConsumerEntry::zmq_pubkey` / `BRC::Config::broker_pubkey`; ZmqQueue
+   factories adopt HEP-CORE-0040 §8.4 endpoint shape — `push_to(endpoint,
+   identity_key_name, zap_domain)` and `pull_from(endpoint,
+   Z85PublicKey server_pubkey, identity_key_name)`; `ZmqAuthOptions`
+   dies in this step too).  Pure refactor — keys still live only in
+   KeyStore.  **NOT a CurveKeypair-into-struct rewrite** — that
+   pre-round-5 plan is OBSOLETE per HEP-CORE-0040 §8.6.
+4. **C3b — finalize**: SHIPPED via #173 (deleted `set_auth`,
+   `auth_client_pubkey()`, `auth_client_seckey()` + storage entirely;
+   round-5 use-not-export, no `CurveKeypair const&` accessor added).
+5. **C4 — delete legacy factories** + rename + migrate 103 test sites
+   (factories take `identity_key_name` STRING per HEP §8.4, not
+   keypair).
 6. **C5 — asymmetric assertions** + unmask any tests masked in C0.
 
 Tasks #157-#161 already exist for C1-C5; C0 absorbed into #159
@@ -396,9 +510,9 @@ cleanup (C1-C5) **must run before A3 can meaningfully ship**.
 | **A1** (`164b805c`) | Schema field `RxQueueOptions::producer_peers` + `ProducerPeer` struct | shipped — keeps as-is | — |
 | **A2** (`badfaed1`) | `add_producer_peer` / `remove_producer_peer` interface + producer-side `push_to_with_auth` call site + `producer_peers[0]` consumed by `build_rx_queue` | shipped **but no-op due to silent fallback** | (uncovered HB-1, HB-2, HB-3 — see above) |
 | **C1** | strict-mode `validate_auth_options` + delete the empty-skip conditionals in `ZmqQueue` impl | next | — |
-| **C2** | `CurveKeypair` + `Z85PublicKey` strong types | after C1 | — |
-| **C3** | `RoleAPIBase` keypair as ctor arg; delete `set_auth` | after C2 | closes **HB-1** by construction |
-| **C4** | Delete legacy `pull_from`/`push_to`; rename `_with_auth` → bare; delete `ZmqAuthOptions` + `admission_is_enforced`; migrate 103 test sites | after C3 | — |
+| **C2** | `Z85PublicKey` strong type (pubkey-only fields) + HEP-0040 §8.4 endpoint shape on ZmqQueue factories + delete `ZmqAuthOptions` | after C1 | — |
+| **C3** | SHIPPED via #173 (round-5 use-not-export — `set_auth` + accessors deleted entirely; keys via `key_store().with_seckey`) | — | closed **HB-1** by construction |
+| **C4** | Delete legacy `pull_from`/`push_to`; rename `_with_auth` → bare; final signatures take `identity_key_name` per HEP §8.4; delete `admission_is_enforced`; migrate 103 test sites | after C2 | — |
 | **C5** | CURVE-engagement test assertions (L2 / L3 / L4) | after C4 | — |
 | **A3** | **D5** `CONSUMER_REG_ACK.producers[]` emission + **D4** BRC notify dispatch + `set_peer_allowlist` wire from broker + consumer-side switch to authed factory + B1 (`awaiting_endpoint`) + B2 (`zmq_msg_gets("User-Id")`) | after C5 | closes **HB-3** (D4 IS this); contributes to **HB-2** (consumer-side pump) |
 | **HB-2 producer-side pump** | Wire `ZapRouter::pump_one` on the BRC poll thread for the producer's data ROUTER per HEP-0036 §7.1 | after A3 | closes **HB-2** |
@@ -410,9 +524,13 @@ closed in code AND verified by tests.  **HB-6** closes the SHM gate.
 
 ### Parallel work (no dependency on #103)
 
-- **#102** — HEP-CORE-0035 §4.7 runtime key handling (mlock +
-  `disable_core_dumps()` + `SecureKeyBuffer` libsodium wrapper).
-  Independent commit; ship anytime.
+- **#102** — HEP-CORE-0035 §4.7 runtime key handling.  **SUPERSEDED
+  2026-06-05 by the HEP-CORE-0040 chain (tasks #167–#174)**.  The
+  flat-utility plan (`SecureKeyBuffer` + `disable_core_dumps()`) is
+  lifted into a registered lifecycle subsystem; see the
+  "2026-06-05 PM REFRAME" section above and the HEP-0040 draft at
+  `docs/tech_draft/HEP-CORE-0040-Locked-Key-Memory-DRAFT.md`.  #102
+  stays open as the tracker until #167–#171 land, then closes.
 
 ### After A3 (sequential)
 

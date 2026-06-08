@@ -31,6 +31,7 @@
 #include "utils/zmq_poll_loop.hpp"
 #include "utils/role_reg_payload.hpp"
 #include "utils/role_handler.hpp"     // Wave-B M6: handler-mode startup
+#include "utils/security/key_store.hpp"  // HEP-CORE-0040 §173: identity pubkey
 #include "utils/role_presence.hpp"    // Wave-B M6: Presence + RoleKind
 #include "utils/schema_utils.hpp"
 
@@ -285,10 +286,9 @@ void ConsumerRoleHost::worker_main_()
             presences.push_back(std::move(p));
         }
 
-        // 6b — Auth + start handler threads.
-        api_ref.set_auth(config_.auth().client_pubkey,
-                         config_.auth().client_seckey);
-
+        // HEP-CORE-0040 §173: CURVE keypair lives in `key_store()`
+        // — read on-site via `with_seckey` / `pubkey`.  No plumbing
+        // through RoleAPIBase.
         auto handler = std::make_unique<scripting::RoleHandler>(
             std::move(presences));
 
@@ -306,7 +306,8 @@ void ConsumerRoleHost::worker_main_()
         const auto &ch = config_.in_channel();
         auto reg_opts = hub::build_consumer_reg_payload(
             hub::ConsumerRegInputs{ch, id.uid, id.name,
-                                    config_.auth().client_pubkey});
+                                    std::string(pylabhub::utils::security::
+                                                key_store().pubkey(pylabhub::utils::security::kRoleIdentityName))});
 
         // Citation fields (HEP-CORE-0034 §10.3) — named-mode vs anonymous
         // vs absent decided by the schema JSON shape; broker enforces the

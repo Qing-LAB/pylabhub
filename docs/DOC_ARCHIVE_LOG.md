@@ -6,6 +6,16 @@
 
 ## Archive batches
 
+### 2026-06-05 (HEP-CORE-0040 promotion)
+
+`HEP-CORE-0040-Locked-Key-Memory-DRAFT.md` promoted from
+`docs/tech_draft/` to `docs/HEP/HEP-CORE-0040-Locked-Key-Memory.md`
+after four fresh-eye review rounds (task #166). Status banner
+changed from DRAFT to "Design — impl in flight"; supersession of
+HEP-0035 §4.7 utility-only spec is now in force. HEP-0035 §4.7
+rewritten to a short consumer-requirement statement citing HEP-0040
+for implementation (task #168).
+
 ### 2026-06-05 (TODO cleanup — verified-shipped completions)
 
 Periodic TODO quality check (per `DOC_STRUCTURE.md` §2.1.1) verified

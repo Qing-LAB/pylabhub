@@ -31,6 +31,7 @@
 #include "utils/zmq_poll_loop.hpp"
 #include "utils/role_reg_payload.hpp"
 #include "utils/role_handler.hpp"     // Wave-B M5: handler-mode startup
+#include "utils/security/key_store.hpp"  // HEP-CORE-0040 §173: identity pubkey
 #include "utils/role_presence.hpp"    // Wave-B M5: Presence + RoleKind
 #include "utils/schema_utils.hpp"
 #include "utils/lifecycle.hpp"
@@ -308,10 +309,10 @@ void ProducerRoleHost::worker_main_()
             presences.push_back(std::move(p));
         }
 
-        // 6b — Auth: handler reads identity (uid/name) + CURVE keys
-        // (if any) from `api` during start_connections.
-        api_ref.set_auth(config_.auth().client_pubkey,
-                         config_.auth().client_seckey);
+        // HEP-CORE-0040 §173: CURVE keypair lives in `key_store()`
+        // (LockedKey-backed).  Handler / build_tx_queue / BRC connect
+        // path read it on-site via `key_store().with_seckey` /
+        // `pubkey` — no plumbing through RoleAPIBase.
 
         auto handler = std::make_unique<scripting::RoleHandler>(
             std::move(presences));
@@ -343,7 +344,8 @@ void ProducerRoleHost::worker_main_()
         // ChannelEntry::producers[i].zmq_pubkey and emits it back to
         // consumers via CONSUMER_REG_ACK.producers[] so the consumer can
         // use it as the data-plane curve_serverkey.
-        reg_in.zmq_pubkey        = config_.auth().client_pubkey;
+        reg_in.zmq_pubkey        = std::string(
+            pylabhub::utils::security::key_store().pubkey(pylabhub::utils::security::kRoleIdentityName));
         auto reg_opts = hub::build_producer_reg_payload(reg_in);
 
         // Schema fields (HEP-CORE-0034 §10.1).  Empty fields → broker

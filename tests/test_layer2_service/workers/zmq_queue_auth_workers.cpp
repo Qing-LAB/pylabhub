@@ -16,7 +16,9 @@
 #include "utils/lifecycle.hpp"
 #include "utils/logger.hpp"
 #include "utils/schema_field_layout.hpp"
+#include "utils/security/key_store.hpp"
 #include "utils/security/peer_admission.hpp"
+#include "utils/security/secure_memory_subsystem.hpp"
 #include "utils/security/zap_router.hpp"
 #include "utils/zmq_context.hpp"
 
@@ -67,6 +69,36 @@ std::pair<std::string, std::string> make_keypair()
             std::string(sec.data(), kPubkeyZ85Chars)};
 }
 
+/// Per-scenario RAII guard for the process-singleton SMS + KeyStore.
+/// HEP-CORE-0040 §172 puts every CURVE keypair behind the process
+/// KeyStore (locked memory); test scenarios construct one of these to
+/// host their identities, then set `ZmqAuthOptions::keystore_name` to
+/// a name they've added.  Pattern 3 (one subprocess per scenario)
+/// guarantees the SMS+KeyStore singletons are constructed fresh each
+/// time.
+///
+/// This class contains NO logic — it only owns the two production
+/// types in stack scope.  Identity seeding is delegated to the
+/// production `KeyStore::add_identity_from_z85` API directly at each
+/// call site so the (pub_z85 || sec_z85) → 80-byte layout has exactly
+/// one definition (in `key_store.cpp`).
+class ScopedKeyStore
+{
+public:
+    ScopedKeyStore()
+        : sms_(),
+          ks_("test", "test.zmq_queue_auth")
+    {}
+    ScopedKeyStore(const ScopedKeyStore &)            = delete;
+    ScopedKeyStore &operator=(const ScopedKeyStore &) = delete;
+    ScopedKeyStore(ScopedKeyStore &&)                 = delete;
+    ScopedKeyStore &operator=(ScopedKeyStore &&)      = delete;
+
+private:
+    pylabhub::utils::security::SecureMemorySubsystem sms_;
+    pylabhub::utils::security::KeyStore              ks_;
+};
+
 /// Simple uint32 schema used by all worker tests — sufficient to
 /// exercise the message round-trip; the schema layer is not the
 /// subject of this test.
@@ -111,13 +143,15 @@ int auth_round_trip_allowed_peer_delivers(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
         [&]() {
+            ScopedKeyStore ks;
             const auto [producer_pub, producer_sec] = make_keypair();
             const auto [consumer_pub, consumer_sec] = make_keypair();
+            pylabhub::utils::security::key_store().add_identity_from_z85("producer", producer_pub, producer_sec);
+            pylabhub::utils::security::key_store().add_identity_from_z85("consumer", consumer_pub, consumer_sec);
 
             // Producer side: bind, CURVE_SERVER, ZAP-gated.
             ZmqAuthOptions producer_auth;
-            producer_auth.my_pubkey_z85 = producer_pub;
-            producer_auth.my_seckey_z85 = producer_sec;
+            producer_auth.keystore_name = "producer";
             producer_auth.zap_domain    = "test.zmq.auth.roundtrip";
             producer_auth.initial_allowlist.peers.insert(
                 PeerIdentity{"curve", consumer_pub});
@@ -133,8 +167,7 @@ int auth_round_trip_allowed_peer_delivers(const char * /*tmpdir*/)
 
             // Consumer side: connect with CURVE_CLIENT.
             ZmqAuthOptions consumer_auth;
-            consumer_auth.my_pubkey_z85 = consumer_pub;
-            consumer_auth.my_seckey_z85 = consumer_sec;
+            consumer_auth.keystore_name = "consumer";
             consumer_auth.serverkey_z85 = producer_pub;
 
             auto consumer = ZmqQueue::pull_from_with_auth(
@@ -166,13 +199,20 @@ int auth_unallowed_peer_blocked(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
         [&]() {
+            ScopedKeyStore ks;
             const auto [producer_pub, producer_sec] = make_keypair();
             const auto [allowed_pub,  allowed_sec]  = make_keypair();
             const auto [denied_pub,   denied_sec]   = make_keypair();
+            pylabhub::utils::security::key_store().add_identity_from_z85("producer", producer_pub, producer_sec);
+            pylabhub::utils::security::key_store().add_identity_from_z85("denied", denied_pub, denied_sec);
+            // allowed_pub is intentionally not added to the KeyStore —
+            // no socket on the allowed side is constructed in this
+            // scenario; the allowlist holds the pubkey alone (no socket
+            // wiring needed for the deny path verification).
+            (void)allowed_sec;
 
             ZmqAuthOptions producer_auth;
-            producer_auth.my_pubkey_z85 = producer_pub;
-            producer_auth.my_seckey_z85 = producer_sec;
+            producer_auth.keystore_name = "producer";
             producer_auth.zap_domain    = "test.zmq.auth.denied";
             producer_auth.initial_allowlist.peers.insert(
                 PeerIdentity{"curve", allowed_pub});
@@ -187,8 +227,7 @@ int auth_unallowed_peer_blocked(const char * /*tmpdir*/)
             ZapPumpThread pump;
 
             ZmqAuthOptions denied_auth;
-            denied_auth.my_pubkey_z85 = denied_pub;
-            denied_auth.my_seckey_z85 = denied_sec;
+            denied_auth.keystore_name = "denied";
             denied_auth.serverkey_z85 = producer_pub;
 
             auto denied_consumer = ZmqQueue::pull_from_with_auth(
@@ -216,13 +255,17 @@ int auth_allowlist_swap_takes_effect_for_next_connection(const char * /*tmpdir*/
 {
     return run_gtest_worker(
         [&]() {
+            ScopedKeyStore ks;
             const auto [producer_pub, producer_sec] = make_keypair();
             const auto [alice_pub, alice_sec]       = make_keypair();
             const auto [bob_pub,   bob_sec]         = make_keypair();
+            pylabhub::utils::security::key_store().add_identity_from_z85("producer", producer_pub, producer_sec);
+            pylabhub::utils::security::key_store().add_identity_from_z85("bob", bob_pub, bob_sec);
+            (void)alice_sec;  // alice_pub seeds the allowlist but no
+                              // alice-side socket is constructed.
 
             ZmqAuthOptions producer_auth;
-            producer_auth.my_pubkey_z85 = producer_pub;
-            producer_auth.my_seckey_z85 = producer_sec;
+            producer_auth.keystore_name = "producer";
             producer_auth.zap_domain    = "test.zmq.auth.swap";
             // Initially allow alice only.
             producer_auth.initial_allowlist.peers.insert(
@@ -254,8 +297,7 @@ int auth_allowlist_swap_takes_effect_for_next_connection(const char * /*tmpdir*/
 
             // Bob can now connect.
             ZmqAuthOptions bob_auth;
-            bob_auth.my_pubkey_z85 = bob_pub;
-            bob_auth.my_seckey_z85 = bob_sec;
+            bob_auth.keystore_name = "bob";
             bob_auth.serverkey_z85 = producer_pub;
 
             auto bob_consumer = ZmqQueue::pull_from_with_auth(
@@ -365,13 +407,15 @@ int auth_deny_then_allow_via_swap_pins_path(const char *)
 {
     return run_gtest_worker(
         [&]() {
+            ScopedKeyStore ks;
             const auto [producer_pub, producer_sec] = make_keypair();
             const auto [client_pub, client_sec] = make_keypair();
+            pylabhub::utils::security::key_store().add_identity_from_z85("producer", producer_pub, producer_sec);
+            pylabhub::utils::security::key_store().add_identity_from_z85("client", client_pub, client_sec);
 
             // Producer: CURVE wired, allowlist EMPTY (deny-all).
             ZmqAuthOptions producer_auth;
-            producer_auth.my_pubkey_z85 = producer_pub;
-            producer_auth.my_seckey_z85 = producer_sec;
+            producer_auth.keystore_name = "producer";
             producer_auth.zap_domain    = "test.zmq.auth.deny_then_allow";
             // initial_allowlist intentionally left empty.
 
@@ -394,8 +438,7 @@ int auth_deny_then_allow_via_swap_pins_path(const char *)
             const auto deny_baseline = ZapRouter::instance().denied_count();
             {
                 ZmqAuthOptions client_auth;
-                client_auth.my_pubkey_z85 = client_pub;
-                client_auth.my_seckey_z85 = client_sec;
+                client_auth.keystore_name = "client";
                 client_auth.serverkey_z85 = producer_pub;
                 auto consumer = ZmqQueue::pull_from_with_auth(
                     producer->actual_endpoint(), make_uint32_schema(),
@@ -435,8 +478,7 @@ int auth_deny_then_allow_via_swap_pins_path(const char *)
                 ZapRouter::instance().allowed_count();
             {
                 ZmqAuthOptions client_auth;
-                client_auth.my_pubkey_z85 = client_pub;
-                client_auth.my_seckey_z85 = client_sec;
+                client_auth.keystore_name = "client";
                 client_auth.serverkey_z85 = producer_pub;
                 auto consumer = ZmqQueue::pull_from_with_auth(
                     producer->actual_endpoint(), make_uint32_schema(),
@@ -474,13 +516,16 @@ int auth_swap_blocks_old_peer_pins_data(const char *)
 {
     return run_gtest_worker(
         [&]() {
+            ScopedKeyStore ks;
             const auto [producer_pub, producer_sec] = make_keypair();
             const auto [alice_pub, alice_sec] = make_keypair();
             const auto [bob_pub,   bob_sec]   = make_keypair();
+            pylabhub::utils::security::key_store().add_identity_from_z85("producer", producer_pub, producer_sec);
+            pylabhub::utils::security::key_store().add_identity_from_z85("alice", alice_pub, alice_sec);
+            pylabhub::utils::security::key_store().add_identity_from_z85("bob", bob_pub, bob_sec);
 
             ZmqAuthOptions producer_auth;
-            producer_auth.my_pubkey_z85 = producer_pub;
-            producer_auth.my_seckey_z85 = producer_sec;
+            producer_auth.keystore_name = "producer";
             producer_auth.zap_domain    = "test.zmq.auth.swap.blocks.old";
             producer_auth.initial_allowlist.peers.insert(
                 PeerIdentity{"curve", alice_pub});
@@ -495,8 +540,7 @@ int auth_swap_blocks_old_peer_pins_data(const char *)
             // ── Phase A: alice admitted, receives 0xAAAA0001u.
             {
                 ZmqAuthOptions alice_auth;
-                alice_auth.my_pubkey_z85 = alice_pub;
-                alice_auth.my_seckey_z85 = alice_sec;
+                alice_auth.keystore_name = "alice";
                 alice_auth.serverkey_z85 = producer_pub;
                 auto alice = ZmqQueue::pull_from_with_auth(
                     producer->actual_endpoint(), make_uint32_schema(),
@@ -530,8 +574,7 @@ int auth_swap_blocks_old_peer_pins_data(const char *)
             const auto deny_baseline = ZapRouter::instance().denied_count();
             {
                 ZmqAuthOptions alice_auth;
-                alice_auth.my_pubkey_z85 = alice_pub;
-                alice_auth.my_seckey_z85 = alice_sec;
+                alice_auth.keystore_name = "alice";
                 alice_auth.serverkey_z85 = producer_pub;
                 auto alice_again = ZmqQueue::pull_from_with_auth(
                     producer->actual_endpoint(), make_uint32_schema(),
@@ -559,8 +602,7 @@ int auth_swap_blocks_old_peer_pins_data(const char *)
             // ── Phase D: bob connects, receives 0xBBBB0001u.
             {
                 ZmqAuthOptions bob_auth;
-                bob_auth.my_pubkey_z85 = bob_pub;
-                bob_auth.my_seckey_z85 = bob_sec;
+                bob_auth.keystore_name = "bob";
                 bob_auth.serverkey_z85 = producer_pub;
                 auto bob = ZmqQueue::pull_from_with_auth(
                     producer->actual_endpoint(), make_uint32_schema(),
@@ -592,15 +634,19 @@ int auth_set_peer_allowlist_on_pull_side_returns_false(const char *)
 {
     return run_gtest_worker(
         [&]() {
+            ScopedKeyStore ks;
             const auto [producer_pub, producer_sec] = make_keypair();
             const auto [client_pub, client_sec] = make_keypair();
+            pylabhub::utils::security::key_store().add_identity_from_z85("client", client_pub, client_sec);
+            (void)producer_sec;  // producer's pubkey is used as the
+                                 // serverkey for factory validation; no
+                                 // producer socket is constructed here.
 
             // Only a consumer here — no producer needed for this
             // interface-contract pin.  pull_from_with_auth still needs
             // a serverkey to pass factory validation.
             ZmqAuthOptions client_auth;
-            client_auth.my_pubkey_z85 = client_pub;
-            client_auth.my_seckey_z85 = client_sec;
+            client_auth.keystore_name = "client";
             client_auth.serverkey_z85 = producer_pub;
 
             auto consumer = ZmqQueue::pull_from_with_auth(
@@ -640,12 +686,14 @@ int auth_empty_allowlist_denies_all(const char *)
 {
     return run_gtest_worker(
         [&]() {
+            ScopedKeyStore ks;
             const auto [producer_pub, producer_sec] = make_keypair();
             const auto [client_pub, client_sec] = make_keypair();
+            pylabhub::utils::security::key_store().add_identity_from_z85("producer", producer_pub, producer_sec);
+            pylabhub::utils::security::key_store().add_identity_from_z85("client", client_pub, client_sec);
 
             ZmqAuthOptions producer_auth;
-            producer_auth.my_pubkey_z85 = producer_pub;
-            producer_auth.my_seckey_z85 = producer_sec;
+            producer_auth.keystore_name = "producer";
             producer_auth.zap_domain    = "test.zmq.auth.empty.deny";
             // initial_allowlist intentionally empty.
 
@@ -668,8 +716,7 @@ int auth_empty_allowlist_denies_all(const char *)
             const auto deny_baseline = ZapRouter::instance().denied_count();
 
             ZmqAuthOptions client_auth;
-            client_auth.my_pubkey_z85 = client_pub;
-            client_auth.my_seckey_z85 = client_sec;
+            client_auth.keystore_name = "client";
             client_auth.serverkey_z85 = producer_pub;
             auto consumer = ZmqQueue::pull_from_with_auth(
                 producer->actual_endpoint(), make_uint32_schema(),
@@ -710,10 +757,11 @@ int auth_misconfig_connect_missing_serverkey_factory_returns_nullptr(const char 
 {
     return run_gtest_worker(
         [&]() {
+            ScopedKeyStore ks;
             const auto [client_pub, client_sec] = make_keypair();
+            pylabhub::utils::security::key_store().add_identity_from_z85("client", client_pub, client_sec);
             ZmqAuthOptions bad;
-            bad.my_pubkey_z85 = client_pub;
-            bad.my_seckey_z85 = client_sec;
+            bad.keystore_name = "client";
             // serverkey intentionally empty.
 
             auto consumer = ZmqQueue::pull_from_with_auth(
@@ -733,49 +781,58 @@ int auth_misconfig_connect_missing_serverkey_factory_returns_nullptr(const char 
         pylabhub::hub::GetZMQContextModule());
 }
 
-/// Factory rejects wrong-length keys.  Z85 keys are exactly 40 chars;
-/// shorter/longer is operator error and must be caught immediately,
-/// not as a cryptic libzmq error inside start().
+/// Factory rejects ZmqAuthOptions whose KeyStore prerequisites are
+/// unmet, or whose connect-side `serverkey_z85` is missing/malformed.
+/// Each rejection path emits a precise LOGGER_ERROR — the test pin
+/// for the error wording lives in `test_zmq_queue_auth.cpp`'s
+/// `ExpectWorkerOk(..., expected_errors)` list.
+///
+/// HEP-CORE-0040 §172 moved keypair byte validation OUT of
+/// ZmqAuthOptions (now just a name); wrong-length pubkey/seckey is
+/// rejected inside `KeyStore::add_identity` (covered by L2 KeyStore
+/// tests).  Here we pin the validator-side branches only.
 int auth_misconfig_pubkey_wrong_length_factory_returns_nullptr(const char *)
 {
     return run_gtest_worker(
         [&]() {
-            // Table-driven: each row is (label, pub, sec, server,
-            // bind_side, expected_factory_returns_null).
+            ScopedKeyStore ks;
+            const auto [valid_pub, valid_sec] = make_keypair();
+            pylabhub::utils::security::key_store().add_identity_from_z85("valid", valid_pub, valid_sec);
+            const std::string too_short(20, 'a');
+
             struct Case
             {
                 const char *label;
-                std::string my_pub;
-                std::string my_sec;
+                std::string keystore_name;
                 std::string server;
                 bool bind;
                 bool expect_null;
             };
 
-            const auto [valid_pub, valid_sec] = make_keypair();
-            const std::string too_short(20, 'a');
-            const std::string too_long(50, 'b');
-
             const std::vector<Case> cases{
-                {"pub too short (bind)", too_short, valid_sec, "",
-                 true, true},
-                {"sec too long (bind)", valid_pub, too_long, "",
-                 true, true},
-                {"pub set, sec empty (bind)", valid_pub, "", "",
-                 true, true},
-                {"connect side serverkey too short",
-                 valid_pub, valid_sec, too_short, false, true},
+                {"name not in KeyStore (bind)",
+                 "missing.name", "", true, true},
+                {"connect side: KeyStore prerequisite OK, serverkey missing",
+                 "valid", "", false, true},
+                {"connect side: serverkey too short",
+                 "valid", too_short, false, true},
                 {"connect side fully valid (control)",
-                 valid_pub, valid_sec, valid_pub, false, false},
-                {"all empty (legacy plaintext, bind)",
-                 "", "", "", true, false},
+                 "valid", valid_pub, false, false},
+                // C1 (#157): empty keystore_name is now rejected on
+                // both sides (HEP-CORE-0035 §2, CURVE unconditional).
+                // The legacy plaintext path is reachable ONLY via
+                // `push_to` / `pull_from` (no `_with_auth`); the
+                // *_with_auth factories must always carry a name.
+                {"empty keystore_name rejected on bind side (C1)",
+                 "", "", true, true},
+                {"empty keystore_name rejected on connect side (C1)",
+                 "", valid_pub, false, true},
             };
 
             for (const auto &c : cases)
             {
                 ZmqAuthOptions opts;
-                opts.my_pubkey_z85 = c.my_pub;
-                opts.my_seckey_z85 = c.my_sec;
+                opts.keystore_name = c.keystore_name;
                 opts.serverkey_z85 = c.server;
 
                 std::unique_ptr<ZmqQueue> q;
@@ -812,10 +869,11 @@ int auth_admission_is_enforced_lifecycle(const char *)
 {
     return run_gtest_worker(
         [&]() {
+            ScopedKeyStore ks;
             const auto [pub, sec] = make_keypair();
+            pylabhub::utils::security::key_store().add_identity_from_z85("identity", pub, sec);
             ZmqAuthOptions opts;
-            opts.my_pubkey_z85 = pub;
-            opts.my_seckey_z85 = sec;
+            opts.keystore_name = "identity";
             opts.zap_domain    = "test.zmq.auth.enforced.lifecycle";
 
             auto q = ZmqQueue::push_to_with_auth(

@@ -44,7 +44,9 @@
 #include "utils/hub_directory.hpp"
 #include "utils/hub_host.hpp"
 #include "utils/security/key_file_acl.hpp"
+#include "utils/security/key_store.hpp"               // HEP-CORE-0040 §172
 #include "utils/security/known_roles.hpp"
+#include "utils/security/secure_memory_subsystem.hpp" // HEP-CORE-0040 §4
 #include "utils/interactive_signal_handler.hpp"
 #include "utils/role_main_helpers.hpp"      // role_lifecycle_modules,
                                               // register_signal_handler_lifecycle,
@@ -429,6 +431,22 @@ int main(int argc, char *argv[])
     //    HubHost lifecycle.
     if (args.keygen_only)
         return do_keygen(cfg);
+
+    // 8b. SecureMemorySubsystem + KeyStore (HEP-CORE-0040 §4 + §5).
+    //     Constructed BEFORE `cfg.load_keypair` so that load_keypair's
+    //     `key_store().add_identity(kHubIdentityName, ...)` call has a
+    //     destination.  Stack-scoped here so RAII destruction order
+    //     guarantees the KeyStore outlives `host` below — HubHost's
+    //     shutdown path may still consume `key_store()` while
+    //     `~BrokerService` drains, and SMS must outlive both.
+    //
+    //     SMS ctor runs the platform setup (core-dump disable +
+    //     mlock-capability check); KeyStore ctor registers the
+    //     "KeyStore" lifecycle module with deps on "SecureMemory" +
+    //     "Logger".  See HEP-CORE-0040 §3 for the canonical ordering.
+    namespace sec = pylabhub::utils::security;
+    sec::SecureMemorySubsystem sms;
+    sec::KeyStore              ks("hub", cfg.identity().uid);
 
     // 9. Unlock vault.  Reached by both `run` and `--validate`.
     //    HEP-CORE-0035 §2 (gatekeeper / clearance model) +

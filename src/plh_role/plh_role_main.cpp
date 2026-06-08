@@ -44,6 +44,8 @@
 #include "utils/role_main_helpers.hpp"
 #include "utils/role_registry.hpp"
 #include "utils/script_engine_factory.hpp"  // scripting::init_scripting / ensure_python
+#include "utils/security/key_store.hpp"               // HEP-CORE-0040 §172
+#include "utils/security/secure_memory_subsystem.hpp" // HEP-CORE-0040 §4
 #include "utils/thread_manager.hpp"  // process_detached_count for exit code
 #include "../scripting/python_interpreter_module.hpp"  // ensure_python_interpreter_loaded
 
@@ -305,6 +307,17 @@ int main(int argc, char *argv[])
         }
         return 0;
     }
+
+    // ── SecureMemorySubsystem + KeyStore (HEP-CORE-0040 §4 + §5) ───────
+    // Constructed BEFORE `c.load_keypair` so that load_keypair's
+    // `key_store().add_identity(kRoleIdentityName, ...)` call has a
+    // destination.  Stack-scoped here so RAII destruction order
+    // guarantees the KeyStore outlives the RoleHost below — host
+    // shutdown may still consume `key_store()` while BRC dealers
+    // close, and SMS must outlive both.
+    namespace sec = pylabhub::utils::security;
+    sec::SecureMemorySubsystem sms;
+    sec::KeyStore              ks("role", c.identity().uid);
 
     // ── Auth: unlock vault (run AND --validate) ────────────────────────
     // HEP-CORE-0035 §2 (gatekeeper / clearance model) +

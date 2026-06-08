@@ -28,12 +28,22 @@
  *
  * Scope — what this file does NOT do:
  *
- *   - Does NOT zeroize the secret on destruction.  That's HEP-CORE-0035
- *     §4.7 runtime-key-handling territory (task #102), which adds the
- *     `RuntimeSecret` wrapper for in-process key lifetime.  Callers
- *     that need zeroization wrap a `CurveKeypair` in `RuntimeSecret`
- *     (or the equivalent) at the boundary; the bare struct here is the
- *     simple value-type baseline.
+ *   - Does NOT zeroize the secret on destruction.  That's HEP-CORE-0040
+ *     (Locked Key Memory) territory: identity keypairs live in
+ *     `LockedKey`-backed memory owned by the process-global `KeyStore`
+ *     lifecycle module.  Production code does NOT construct or move
+ *     bare `CurveKeypair` values around — it accesses identity keys
+ *     via the use-not-export API (HEP-CORE-0040 §5.2 / §8.2):
+ *     `key_store().pubkey(name)` returns a `std::string_view` into
+ *     KeyStore-owned locked memory (non-secret half), and
+ *     `key_store().with_seckey(name, callback)` invokes the callback
+ *     with a `std::string_view` to the secret half — bytes never leave
+ *     the LockedKey region.  The bare struct here is the simple
+ *     value-type baseline used only by (a) the keygen utility below,
+ *     (b) vault-create code paths that hand the two Z85 halves to
+ *     `KeyStore::add_identity_from_z85` (which packs into a
+ *     `SecureBuffer<80>` and zeroes the source), and (c) tests.  No
+ *     call site should store a bare `CurveKeypair` for its lifetime.
  *   - Does NOT touch the vault layer.  Vault create/open is the
  *     persistence concern that wraps these keys with Argon2id KDF +
  *     XSalsa20-Poly1305 secretbox — see `hub_vault.hpp` /
@@ -49,9 +59,20 @@ namespace pylabhub::utils::security
 {
 
 /// A ZMQ CURVE keypair — both members Z85-encoded ASCII (40 chars
-/// each, no trailing null).  Trivially copyable; secret-side
-/// zeroization is the caller's responsibility (see HEP-CORE-0035
-/// §4.7 / task #102 for the zeroizing wrapper when that lands).
+/// each, no trailing null).  Trivially copyable; locked-memory
+/// storage + zero-on-destruct is provided by
+/// `KeyStore::add_identity_from_z85` (HEP-CORE-0040 §5).  Bare
+/// value-typed instances exist only at the keygen / vault-decrypt
+/// boundary; long-lived ownership belongs to KeyStore.
+///
+/// PLANNED REMOVAL — `empty()` member (per HEP-CORE-0040 §8.6,
+/// task #173): its only purpose was as a "did we set auth?" probe —
+/// the same silent-fallback anti-pattern HEP-0040 closes.  Under the
+/// new design a `CurveKeypair` reference returned by `KeyStore::lookup`
+/// cannot be empty (lookup throws std::out_of_range if absent).
+/// Currently retained because grep finds zero callers but the method's
+/// removal belongs in the #173 impl commit alongside the accessor
+/// rewrites, not as a doc-phase code change.
 struct CurveKeypair
 {
     std::string public_z85;

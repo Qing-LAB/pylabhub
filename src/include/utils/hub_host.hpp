@@ -110,10 +110,12 @@ public:
     /// The caller MUST unlock the vault before constructing HubHost
     /// in production (call `cfg.load_keypair(password)`); CURVE is
     /// always enforced on hub↔role transport per HEP-CORE-0026 /
-    /// HEP-CORE-0033 §10.  The startup-time check on
-    /// `cfg.auth().client_pubkey` only exists to allow L2 in-process
-    /// tests to bind a no-CURVE loopback broker — production hubs
-    /// always have a loaded keypair and always enable CURVE.
+    /// HEP-CORE-0033 §10.  Per HEP-CORE-0040 §172, `load_keypair`
+    /// seeds the process `KeyStore` under `"hub_identity"`; the
+    /// `HubHost::startup` check refuses to proceed if that entry is
+    /// absent (production hubs always have a loaded keypair, so the
+    /// check fires only on misconfiguration or test-fixture setup
+    /// errors).
     explicit HubHost(config::HubConfig cfg);
 
     ~HubHost();

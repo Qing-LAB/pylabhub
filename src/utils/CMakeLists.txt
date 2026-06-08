@@ -56,6 +56,8 @@ set(UTILS_SOURCES
   security/key_file_acl.cpp        # pylabhub::utils::security (HEP-CORE-0035 §4.6)
   security/known_roles.cpp         # pylabhub::utils::security (PeerAdmission Phase B)
   security/zap_router.cpp          # pylabhub::utils::security (PeerAdmission Phase C — caller-pumped)
+  security/secure_memory_subsystem.cpp # pylabhub::utils::security (HEP-CORE-0040 §4 — process-init lifecycle module)
+  security/key_store.cpp           # pylabhub::utils::security (HEP-CORE-0040 §5 — locked-memory secret store)
 
   # --- role hosts: lifecycle + data loop for each role ---
   ${CMAKE_SOURCE_DIR}/src/producer/producer_role_host.cpp

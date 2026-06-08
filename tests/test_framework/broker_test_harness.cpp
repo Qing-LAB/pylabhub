@@ -12,6 +12,7 @@
 #include "utils/hub_host.hpp"
 #include "utils/hub_state.hpp"
 #include "utils/config/hub_config.hpp"
+#include "utils/security/key_store.hpp"
 #include "utils/security/known_roles.hpp"
 
 #include <nlohmann/json.hpp>
@@ -21,6 +22,7 @@
 #include <fstream>
 #include <future>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 namespace fs = std::filesystem;
@@ -52,11 +54,12 @@ DirectBrokerHandle
 start_direct_broker(pylabhub::broker::BrokerService::Config cfg,
                     const CurveSetup &setup)
 {
-    // Wire CURVE + admission from `setup` on top of the caller's
-    // policy fields.  Per HEP-CORE-0035 §2 both are unconditional;
-    // BrokerService ctor enforces non-empty server keys.
-    cfg.server_public_key      = setup.hub.public_z85;
-    cfg.server_secret_key      = setup.hub.secret_z85;
+    // HEP-CORE-0040 §172: the hub identity is read from `key_store()`
+    // under `"hub_identity"`.  Caller MUST have a
+    // `CurveKeyStoreFixture` in scope BEFORE calling — its ctor
+    // seeded the KeyStore from `setup`.  Per HEP-CORE-0035 §2 the
+    // CURVE install is unconditional; BrokerService ctor throws if
+    // the entry is absent.
     for (const auto &[uid, kp] : setup.role_keys)
         cfg.known_roles.push_back(make_known_role(uid, kp.public_z85));
 
@@ -130,30 +133,94 @@ start_hubhost_broker(const nlohmann::json &j_overrides,
                      const CurveSetup &setup,
                      std::string_view hub_name)
 {
-    // MASKED — pending HEP-0035 §4.6.5 step 3-revised-F migration (#154).
+    // HEP-CORE-0040 §172.  Same contract as `start_direct_broker`:
+    // the caller has a `CurveKeyStoreFixture` in scope which has
+    // already seeded the process KeyStore with `"hub_identity"`
+    // (from `setup.hub`) and one `"role.<uid>"` entry per role uid
+    // in `setup.role_keys`.  This helper only READS — it never
+    // mutates the KeyStore.
     //
-    // The previous body used `HubConfig::inject_keypair_for_test` to
-    // skip the on-disk vault while keeping real CURVE on the wire.
-    // That product surface was deleted in #151 (test-shaped API in
-    // product code violates HEP-CORE-0035 §4.6.5 no-bypass discipline).
-    //
-    // The replacement path is to write a real vault via
-    // `HubConfig::create_keypair(password)` + decrypt via
-    // `HubConfig::load_keypair(password)` — slow (Argon2id) but
-    // identical to production.  That migration is part of #154,
-    // which re-creates every L3 broker fixture against the
-    // refactored lib code.  Until then this helper stays a stub so
-    // the framework library compiles; its callers (the L3 worker
-    // bodies in `tests/test_layer3_datahub/workers/*.cpp`) are
-    // excluded from the build via the #153 CMakeLists masks.
-    (void)j_overrides;
-    (void)setup;
-    (void)hub_name;
-    throw std::logic_error(
-        "broker_test_harness::start_hubhost_broker — MASKED pending "
-        "#154 (HEP-CORE-0035 §4.6.5 step 3-revised-F migration).  The "
-        "vault-on-disk replacement for inject_keypair_for_test lands "
-        "with the L3 broker test re-creation.");
+    // The pre-check is loud and specific so a missing fixture
+    // surfaces at the call site instead of inside HubHost::startup.
+    namespace sec = pylabhub::utils::security;
+    if (!sec::key_store_ready() ||
+        !sec::key_store().has(sec::kHubIdentityName))
+    {
+        throw std::logic_error(
+            "start_hubhost_broker: KeyStore entry 'hub_identity' is "
+            "absent.  Construct `pylabhub::tests::CurveKeyStoreFixture` "
+            "in scope BEFORE calling — it owns SMS + KeyStore + the "
+            "identity seeding (HEP-CORE-0040 §172).  Same contract "
+            "as start_direct_broker; both helpers only read.");
+    }
+
+    HubHostBrokerHandle h;
+    h.hub_dir = make_unique_hub_dir(hub_name);
+
+    // Step 1 — initialize hub directory.  Writes hub.json template +
+    // logging skeleton + vault/ + scripts/ + logs/.
+    if (pylabhub::utils::HubDirectory::init_directory(
+            h.hub_dir, std::string(hub_name)) != 0)
+    {
+        throw std::runtime_error(
+            "start_hubhost_broker: HubDirectory::init_directory failed "
+            "for '" + h.hub_dir.string() + "'");
+    }
+
+    // Step 2 — merge j_overrides into hub.json so per-fixture tweaks
+    // (ephemeral port, admin off, script disabled, ...) take effect.
+    {
+        const fs::path hub_json_path = h.hub_dir / "hub.json";
+        nlohmann::json j;
+        {
+            std::ifstream in(hub_json_path);
+            if (!in)
+                throw std::runtime_error(
+                    "start_hubhost_broker: cannot open " +
+                    hub_json_path.string() + " after init_directory");
+            in >> j;
+        }
+        if (!j_overrides.empty())
+            j.merge_patch(j_overrides);
+        {
+            std::ofstream out(hub_json_path,
+                              std::ios::out | std::ios::trunc);
+            out << j.dump(2);
+        }
+    }
+
+    // Step 3 — write known_roles.json (HEP-CORE-0035 §4.8) via the
+    // production `KnownRolesStore::save_to_file` so the file format
+    // (version + roles array + atomic-write + 0600 perms) is defined
+    // in exactly one place.  No parallel JSON-shape logic in tests.
+    {
+        pylabhub::utils::security::KnownRolesStore store;
+        for (const auto &[uid, kp] : setup.role_keys)
+        {
+            store.add(make_known_role(uid, kp.public_z85));
+        }
+        store.save_to_file(h.hub_dir / "vault" / "known_roles.json");
+    }
+
+    // Step 4 — load HubConfig from the prepared directory.  We do NOT
+    // call `cfg.load_keypair(password)` because the KeyStore already
+    // has the identity seeded above.  HubConfig parses `auth.keyfile`
+    // as a string but never reads the vault file unless load_keypair
+    // is invoked.
+    auto cfg =
+        pylabhub::config::HubConfig::load_from_directory(h.hub_dir);
+
+    // Step 5 — construct HubHost and start the broker.  `startup()`
+    // builds the BrokerService (which checks `key_store().has(
+    // "hub_identity")`), wires the admin/script subsystems, and
+    // spawns the broker thread.  After startup() returns the broker
+    // is listening on `broker_endpoint()`.
+    h.host =
+        std::make_unique<pylabhub::hub_host::HubHost>(std::move(cfg));
+    h.host->startup();
+    h.endpoint = h.host->broker_endpoint();
+    h.pubkey   = setup.hub.public_z85;
+    return h;
 }
 
 // ─── BrcHandle ───────────────────────────────────────────────────────────────
@@ -167,13 +234,12 @@ BrcHandle::~BrcHandle()
 void BrcHandle::start(const std::string &endpoint,
                       const std::string &server_pubkey,
                       const std::string &role_uid,
-                      const CurveKeypair &role_kp)
+                      const std::string &keystore_name)
 {
     pylabhub::hub::BrokerRequestComm::Config cfg;
     cfg.broker_endpoint = endpoint;
     cfg.broker_pubkey   = server_pubkey;
-    cfg.client_pubkey   = role_kp.public_z85;
-    cfg.client_seckey   = role_kp.secret_z85;
+    cfg.keystore_name   = keystore_name;
     cfg.role_uid        = role_uid;
     ASSERT_TRUE(brc.connect(cfg));
     thread = std::thread([this] {

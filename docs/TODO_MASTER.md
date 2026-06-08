@@ -144,10 +144,20 @@ every code path takes the plaintext branch.  See AUTH_TODO.md
 verified HARD-BLOCKS (HB-1..HB-6).
 
 Sequence (each step blocks the next):
+- **HEP-CORE-0040 chain** (tasks #165–#174; #165 draft ✅ landed
+  2026-06-05) — **prerequisite for C3 / C0**.  Lifts §4.7's
+  flat-utility design into a registered lifecycle subsystem (static
+  `SecureMemorySubsystem` + dynamic `KeyStore` + `LockedKey` RAII).
+  Single locked-memory copy of the seckey per process; symmetric
+  `RoleAPIBase` + `HubAPI` accessor APIs.  Supersedes both **#102**
+  (was flat-utility §4.7) and **#159** (was value-copy C3).  Draft
+  at `docs/tech_draft/HEP-CORE-0040-Locked-Key-Memory-DRAFT.md`;
+  full pivot rationale in `AUTH_TODO.md` §"2026-06-05 PM REFRAME".
 - **C1-C5** strict-CURVE cleanup chain (tasks #157-#161) — **must
   run BEFORE A3**.  Deletes the all-empty fallback in
   `validate_auth_options`, strong-types the keypair, makes auth a
-  constructor invariant on `RoleAPIBase`, deletes the legacy
+  constructor invariant on `RoleAPIBase` (now via HEP-0040 ref to
+  Config-owned LockedKey, not value copy), deletes the legacy
   `pull_from`/`push_to` factories, adds CURVE-engagement test
   assertions.  After C5 there is no path by which CURVE-off can
   ship and pass tests.
@@ -168,9 +178,11 @@ Sequence (each step blocks the next):
 Parallel / independent (any order, no #103 dependency):
 - **#101** key-file ACL discipline — already shipped (commit
   `4f3fb077` + reviews); see archive.
-- **#102** runtime key handling — fully independent; ship anytime.  M.
+- **#102** runtime key handling — **SUPERSEDED 2026-06-05** by the
+  HEP-CORE-0040 chain (#165–#174).  Now sits IN the critical
+  sequence (precedes C3), not parallel.
 - **#106** HEP-CORE-0038 script-vault keystore — depends on #104
-  shipping first.  L.
+  shipping first AND on HEP-0040 storage layer (#167 + #170).  L.
 - **#105** Federation / HEP-CORE-0037 — explicitly post-MVP per
   HEP-0036 §13.1.  L+.
 

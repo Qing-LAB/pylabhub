@@ -65,6 +65,7 @@ Topic-specific READMEs can summarize and link to IMPLEMENTATION_GUIDANCE and TOD
 | HEP-CORE-0018 | Producer and Consumer Binaries | Implemented — Phase 1 + Layer 4 tests |
 | HEP-CORE-0019 | Metrics Plane | Design — 2026-03-02 |
 | HEP-CORE-0020 | Interactive Signal Handler | Implemented — all 4 binaries integrated |
+| HEP-CORE-0040 | Locked Key Memory | Design — 2026-06-05; impl in flight (tasks #169–#174 + #175 vault hardening) |
 
 - Keep style and diagrams clear and logical.
 - Each HEP should have a short **implementation status** section that states what is implemented and what is not, with a pointer: *"For current plan and priorities, see `docs/TODO_MASTER.md`."*

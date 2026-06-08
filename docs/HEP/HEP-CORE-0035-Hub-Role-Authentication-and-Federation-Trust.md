@@ -202,12 +202,18 @@ during Phase 1 review of `HubBrokerConfig`):
   allowlist. Empty allowlist = deny-all (§4.8.4 bootstrap); there is
   no permissive-mode runtime flag.
 - **HubHost startup requires a loaded keypair.** `HubHost::startup()`
-  MUST reject any `HubConfig` whose `auth().client_pubkey` is empty
-  (no in-memory CURVE mode exists; see §4.6.2 and HEP-CORE-0033 §7.1).
-  This guarantees that every production-path `BrokerService` instance
-  is constructed with CURVE on, and therefore (per the previous
-  invariant) with admission on. Tests that need a HubHost without
-  CURVE do not exist — the test bypass lives one layer down at
+  MUST reject startup if the hub identity key is not loaded.
+  Today's check tests `auth().client_pubkey` is non-empty (no
+  in-memory CURVE mode; see §4.6.2 and HEP-CORE-0033 §7.1).  Under
+  the HEP-CORE-0040 migration (#171), `AuthConfig` drops the
+  `client_pubkey/_seckey` fields entirely; the same invariant is
+  satisfied by `key_store().has("hub_identity")` returning true
+  before broker bind, with `with_seckey` / `pubkey` throwing
+  `std::out_of_range` at the use site if the key is missing.  Either
+  shape: every production-path `BrokerService` instance is
+  constructed with CURVE on (and therefore admission on per the
+  previous invariant).  Tests that need a HubHost without CURVE do
+  not exist — the test bypass lives one layer down at
   `BrokerService` (§4.6.5), not at HubHost.
 - **Vault is the gatekeeper; validate is the clearance.** The vault
   file at `auth().keyfile` is what transitions a directory from
@@ -268,6 +274,10 @@ if (cfg.use_curve)
     router.set(zmq::sockopt::curve_publickey, server_public_z85);
 }
 ```
+
+> Note: under the HEP-CORE-0040 migration (#172), `BrokerService::Config`
+> drops `server_secret_key` / `server_public_key`; the bind site becomes
+> `key_store().with_seckey("hub_identity", [&](auto sec) { router.set(curve_secretkey, sec); }); router.set(curve_publickey, key_store().pubkey("hub_identity"));` — see HEP-CORE-0040 §8.2 / §8.3.
 
 There is **no ZAP handler** attached. ZMQ accepts any cryptographically
 valid CURVE handshake — i.e., any client that knows *any* secret key
@@ -740,10 +750,12 @@ The rationale:
   keypair (libsodium underneath `zmq::curve_keypair()`) costs
   ~100 μs.  The vault layer's Argon2id KDF is what's expensive, but
   **the vault is a persistence concern, not a runtime concern**.
-  In-memory CURVE keys are two Z85 strings; tests skip the vault
-  entirely and populate `auth().client_pubkey/seckey` (and the
+  In-memory CURVE keys live in HEP-CORE-0040 KeyStore-owned locked
+  memory (post-migration); tests skip the vault entirely and call
+  `key_store().add_identity("hub_identity", buf)` (and the
   corresponding allowlist entries) directly via a shared test
-  helper.
+  helper.  (Pre-migration legacy: populate `auth().client_pubkey/seckey`
+  — same shape, different storage location.)
 - Any test that goes through a no-CURVE code path is testing a
   scenario that **cannot happen in production** by §2 + the §4.6.2
   startup-verification contract.  Coverage of the no-CURVE path is
@@ -763,9 +775,11 @@ Concrete consequences for the implementation:
   `BrokerService::Config::use_curve` and the close-out-2
   `enforce_ctrl_admission` field are HEP-0035 violations and are
   removed in the landing phase.
-- `HubHost::startup()` rejects an empty `auth().client_pubkey`
-  before `BrokerService` is constructed.  This makes "HubHost
-  without CURVE" structurally impossible.
+- `HubHost::startup()` rejects startup if the hub identity key is
+  not loaded — today via empty-`auth().client_pubkey` check, under
+  HEP-CORE-0040 migration (#171) via `key_store().has("hub_identity")`
+  + `with_seckey`/`pubkey` throwing at the use site.  Either shape
+  makes "HubHost without CURVE" structurally impossible.
 - The broker installs ZAP admission whenever it binds a
   CURVE-server socket, unconditionally.  No permissive-mode runtime
   flag exists on the `PeerAdmission` handler.
@@ -796,6 +810,14 @@ justification.
 
 §4.6 covers secret material **at rest** on disk.  §4.7 covers the
 same material **at runtime** while it's loaded into the process.
+
+**Implementation lives in HEP-CORE-0040 (Locked Key Memory).** §4.7
+states the threat model + consumer requirement + ordering invariant;
+HEP-CORE-0040 defines the framework primitives that satisfy them.
+Implementers reading this section MUST consult HEP-CORE-0040 — do not
+implement against the historical utility-only sketch below; that
+content is preserved as the design rationale, not as the spec to
+implement.
 
 ### 4.7.1 Threats addressed
 
