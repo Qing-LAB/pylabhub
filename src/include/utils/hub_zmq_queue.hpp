@@ -144,14 +144,13 @@ struct ProducerPeer
  * inherited methods are inert (no allowlist concept — the consumer
  * trusts the server via `curve_serverkey`).
  *
- * Factories:
- *   pull_from() / push_to()             → unique_ptr<QueueReader|Writer> (legacy plaintext)
- *   pull_from_curve() / push_to_curve() → unique_ptr<ZmqQueue> (CURVE per HEP-0040 §8.4)
+ * Factories (HEP-CORE-0035 §2 — CURVE unconditional):
+ *   pull_from() / push_to() → unique_ptr<ZmqQueue>
  *
- * The CURVE factories return the concrete type so callers can
- * access the `PeerAdmission` interface to push allowlist updates.
- * Phase D's broker glue uses this to drive `set_peer_allowlist` on
- * the producer-side queue from the broker thread.
+ * Both factories return the concrete type so callers can access the
+ * `PeerAdmission` interface to push allowlist updates.  Phase D's
+ * broker glue uses this to drive `set_peer_allowlist` on the
+ * producer-side queue from the broker thread.
  */
 class PYLABHUB_UTILS_EXPORT ZmqQueue final
     : public QueueReader,
@@ -159,106 +158,36 @@ class PYLABHUB_UTILS_EXPORT ZmqQueue final
       public pylabhub::utils::security::PeerAdmission
 {
 public:
-    // ── Factories ─────────────────────────────────────────────────────────────
-
-    /**
-     * @brief Create a read-mode ZmqQueue (ZMQ PULL socket) with schema encoding.
-     *
-     * Returns a QueueReader*. item_size is computed from @p schema using C ctypes
-     * alignment rules (aligned or packed). Each received frame is decoded field-by-field:
-     * scalar fields are type-checked via the msgpack type tag; array/string/bytes
-     * fields are size-validated against count * sizeof(element) or length.
-     * Mismatches increment recv_frame_error_count() and discard the frame.
-     *
-     * @param endpoint          ZMQ endpoint (e.g. "tcp://127.0.0.1:5555").
-     * @param schema            Field list — must be non-empty; returns nullptr on error.
-     * @param packing           "aligned" (C struct alignment) or "packed" (no padding).
-     *                          Must match the sender's packing.
-     * @param bind              If true, bind; otherwise connect.
-     * @param max_buffer_depth  Drop oldest item when internal buffer exceeds this depth.
-     * @param schema_tag        Optional 8-byte identity guard (first 8 B of BLAKE2b-256
-     *                          over the HEP-CORE-0034 §6.3 canonical wire form,
-     *                          via `compute_schema_hash(slot_spec, fz_spec)`).
-     *                          Mismatched tags → recv_frame_error_count++.
-     * @param instance_id       Caller-provided stable identifier (e.g. role_tag+uid+":rx").
-     *                          Used as the ThreadManager owner_id for the recv thread;
-     *                          MUST be unique across every ZmqQueue live at the same
-     *                          time in this process. Empty → a per-pointer-address
-     *                          id is used as a safe fallback (unique but opaque).
-     */
-    [[nodiscard]] static std::unique_ptr<QueueReader>
-    pull_from(const std::string& endpoint, std::vector<ZmqSchemaField> schema,
-              std::string packing,
-              bool bind = false, size_t max_buffer_depth = kZmqDefaultBufferDepth,
-              std::optional<std::array<uint8_t, 8>> schema_tag = std::nullopt,
-              std::string instance_id = {});
-
-    /**
-     * @brief Create a write-mode ZmqQueue (ZMQ PUSH socket) with schema encoding.
-     *
-     * Returns a QueueWriter*. write_commit() enqueues the written item to an internal
-     * send buffer (depth @p send_buffer_depth). A dedicated send_thread_ drains the
-     * buffer, encodes each item as a msgpack frame, and sends it via zmq_send(ZMQ_DONTWAIT).
-     * On EAGAIN (ZMQ HWM exceeded), send_thread_ retries after @p send_retry_interval_ms.
-     * On stop(), pending items are sent if possible; remaining items are dropped.
-     *
-     * write_acquire() is non-blocking when the buffer has space.  When full:
-     *   OverflowPolicy::Drop  — returns nullptr immediately; data_drop_count()++.
-     *   OverflowPolicy::Block — blocks until space is available or @p timeout elapses.
-     *
-     * @param endpoint              ZMQ endpoint.
-     * @param schema                Field list — non-empty, all type_str valid; nullptr on error.
-     * @param packing               "aligned" or "packed".  Must match the receiver.
-     * @param bind                  If true, bind; otherwise connect (default: bind).
-     * @param schema_tag            Optional 8-byte identity guard embedded in every frame.
-     * @param sndhwm                ZMQ_SNDHWM for the PUSH socket.  0 = ZMQ default (1000).
-     *                              Set to 1–4 for latency-sensitive pipelines.
-     * @param send_buffer_depth     Internal send ring buffer depth (default 64).
-     *                              write_acquire() respects OverflowPolicy when full.
-     * @param overflow_policy       Drop (default) or Block when send buffer is full.
-     * @param send_retry_interval_ms Milliseconds between EAGAIN retries in send_thread_
-     *                              (default 10).  Set to match the role's target_period_ms.
-     * @param instance_id           Caller-provided stable identifier (e.g. role_tag+uid+":tx").
-     *                              Used as the ThreadManager owner_id for the send thread;
-     *                              MUST be unique across every ZmqQueue live at the same
-     *                              time in this process. Empty → a per-pointer-address id
-     *                              is used as a safe fallback.
-     */
-    [[nodiscard]] static std::unique_ptr<QueueWriter>
-    push_to(const std::string& endpoint, std::vector<ZmqSchemaField> schema,
-            std::string packing,
-            bool bind = true,
-            std::optional<std::array<uint8_t, 8>> schema_tag = std::nullopt,
-            int sndhwm = 0,
-            size_t send_buffer_depth = kZmqDefaultBufferDepth,
-            OverflowPolicy overflow_policy = OverflowPolicy::Drop,
-            int send_retry_interval_ms = 10,
-            std::string instance_id = {});
-
-    // ── CURVE-enabled factories (HEP-CORE-0040 §8.4 endpoint shape) ──────────
+    // ── Factories (HEP-CORE-0040 §8.4 — CURVE unconditional) ────────────────
     //
-    // Canonical CURVE-wired entry points per HEP-CORE-0040 §8.4 +
-    // AUTH_TODO §C2 (#158): discrete `identity_key_name` (KeyStore
-    // lookup) + `Z85PublicKey server_pubkey` (PULL only) +
+    // Canonical CURVE-wired entry points per HEP-CORE-0035 §2 + §4.6.5
+    // (CURVE on every role↔hub data path) + HEP-CORE-0040 §8.4 +
+    // AUTH_TODO §C2/§C4 (#158, #160): discrete `identity_key_name`
+    // (KeyStore lookup) + `Z85PublicKey server_pubkey` (PULL only) +
     // `zap_domain` (PUSH only).  No `ZmqAuthOptions` struct; no
     // `initial_allowlist` parameter — callers seed via
     // `set_peer_allowlist()` AFTER `start()`.  Production callers
     // rely on the broker's Phase D `CHANNEL_AUTH_UPDATE` push; the
     // deny-all default is the safe starting point.
     //
-    // Return the concrete ZmqQueue so callers can drive the
-    // PeerAdmission interface directly (e.g., Phase D broker glue
-    // calls set_peer_allowlist on the PUSH-side queue when
-    // CHANNEL_AUTH_UPDATE arrives).
+    // Return the concrete `ZmqQueue` so callers can drive the
+    // `PeerAdmission` interface directly (Phase D broker glue calls
+    // `set_peer_allowlist` on the PUSH-side queue when
+    // `CHANNEL_AUTH_UPDATE` arrives).
     //
-    // Transitional names — until #160 (C4) deletes the legacy
+    // Legacy plaintext public `pull_from()` / `push_to()` were
+    // deleted in #160 (C4); the bare names now refer exclusively to
+    // the CURVE-only factories.  The plaintext queue-building logic
+    // moved to the private `build_plaintext_reader_` /
+    // `build_plaintext_writer_` helpers below — they're not callable
+    // from outside this class.
     // plaintext `pull_from`/`push_to`, both namespaces are live.
     // After C4:
     //   pull_from_curve → pull_from
     //   push_to_curve   → push_to
 
     [[nodiscard]] static std::unique_ptr<ZmqQueue>
-    pull_from_curve(const std::string& endpoint,
+    pull_from(const std::string& endpoint,
             ::pylabhub::utils::security::Z85PublicKey server_pubkey,
             std::vector<ZmqSchemaField> schema,
             std::string packing,
@@ -270,7 +199,7 @@ public:
             std::string instance_id = {});
 
     [[nodiscard]] static std::unique_ptr<ZmqQueue>
-    push_to_curve(const std::string& endpoint,
+    push_to(const std::string& endpoint,
             std::vector<ZmqSchemaField> schema,
             std::string packing,
             std::string_view identity_key_name =
@@ -283,6 +212,37 @@ public:
             OverflowPolicy overflow_policy = OverflowPolicy::Drop,
             int send_retry_interval_ms = 10,
             std::string instance_id = {});
+
+private:
+    // ─── Internal plaintext queue builders ─────────────────────────────────
+    //
+    // The public `pull_from` / `push_to` factories above wire CURVE on
+    // top of a bare (plaintext) queue.  The bare-queue construction
+    // logic lives in these internal helpers — they're NOT a public
+    // API because exposing a plaintext path would re-introduce the
+    // bypass risk HEP-CORE-0035 §2 + HEP-CORE-0040 §8.4 (#160 C4)
+    // close.  Only callable from this class's own implementations.
+    [[nodiscard]] static std::unique_ptr<QueueReader>
+    build_plaintext_reader_(const std::string& endpoint,
+                            std::vector<ZmqSchemaField> schema,
+                            std::string packing,
+                            bool bind, size_t max_buffer_depth,
+                            std::optional<std::array<uint8_t, 8>> schema_tag,
+                            std::string instance_id);
+
+    [[nodiscard]] static std::unique_ptr<QueueWriter>
+    build_plaintext_writer_(const std::string& endpoint,
+                            std::vector<ZmqSchemaField> schema,
+                            std::string packing,
+                            bool bind,
+                            std::optional<std::array<uint8_t, 8>> schema_tag,
+                            int sndhwm,
+                            size_t send_buffer_depth,
+                            OverflowPolicy overflow_policy,
+                            int send_retry_interval_ms,
+                            std::string instance_id);
+
+public:
 
     // ── PeerAdmission overrides (Phase A interface) ────────────────────────────
     //
@@ -315,7 +275,7 @@ public:
     // then-pull cycle.  Today the impl is metadata-only — Pattern A vs
     // Pattern B socket-level fan-in is HEP-CORE-0017 §3.3 future work;
     // the single-producer connect endpoint still flows through
-    // `pull_from()` / `pull_from_curve()`'s `endpoint` parameter.
+    // `pull_from()`'s `endpoint` parameter.
     // The methods exist now so the A3 dispatch layer has a stable
     // surface to call.
     //

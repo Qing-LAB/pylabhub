@@ -319,10 +319,10 @@ bool RoleAPIBase::build_tx_queue(const hub::TxQueueOptions &opts)
         // per-(role,channel,side).
         // HEP-CORE-0040 §172: identity keypair lives in the process
         // KeyStore under `kRoleIdentityName` (seeded by
-        // `RoleConfig::load_keypair`).  `push_to_curve` resolves the
+        // `RoleConfig::load_keypair`).  `push_to` resolves the
         // name inside its CURVE-setup block — secret bytes never
         // materialize on this side of the call.
-        writer = hub::ZmqQueue::push_to_curve(
+        writer = hub::ZmqQueue::push_to(
             opts.zmq_node_endpoint,
             hub::schema_spec_to_zmq_fields(opts.slot_spec),
             opts.slot_spec.packing,
@@ -380,25 +380,37 @@ bool RoleAPIBase::build_rx_queue(const hub::RxQueueOptions &opts)
     else if (opts.data_transport == "zmq")
     {
         // HEP-CORE-0017 §3.3 + HEP-CORE-0036 §6.4: `producer_peers` is
-        // the canonical source for the consumer's connect target,
-        // populated from `CONSUMER_REG_ACK.producers[]` (D5).  Until
-        // D5 emits the array, `producer_peers` may be empty and the
-        // legacy `zmq_node_endpoint` carries the single-producer
-        // endpoint.  Fan-in over N producers + per-peer CURVE handshake
-        // requires Pattern A vs Pattern B selection (HEP-CORE-0017
-        // §3.3) and is future work; the current single-socket connect
-        // accepts the first peer's endpoint.
-        const std::string &rx_endpoint = opts.producer_peers.empty()
-            ? opts.zmq_node_endpoint
-            : opts.producer_peers.front().endpoint;
-        if (rx_endpoint.empty())
+        // the canonical source for the consumer's connect target +
+        // CURVE serverkey, populated from `CONSUMER_REG_ACK.producers[]`
+        // (A3-broker, task #103).  Fan-in over N producers + per-peer
+        // CURVE handshake requires Pattern A vs Pattern B selection
+        // (HEP-CORE-0017 §3.3) and is future work; the current
+        // single-socket connect accepts the first peer's endpoint +
+        // pubkey.
+        //
+        // HEP-CORE-0035 §2 (CURVE unconditional): a non-empty
+        // `producer_peers.front().pubkey_z85` is required.  Empty
+        // means the broker A3-emission hasn't run yet — refuse to
+        // construct the queue so the misconfiguration surfaces here
+        // instead of as a stuck CURVE handshake at runtime.
+        if (opts.producer_peers.empty()
+            || opts.producer_peers.front().endpoint.empty()
+            || opts.producer_peers.front().pubkey_z85.empty())
         {
             LOGGER_ERROR(
-                "[{}] data_transport='zmq' but no endpoint available "
-                "(producer_peers empty AND zmq_node_endpoint empty)",
-                pImpl->role_tag);
+                "[{}] data_transport='zmq' requires producer_peers[0] "
+                "with non-empty endpoint + pubkey_z85 (HEP-CORE-0035 §2 "
+                "CURVE unconditional + HEP-CORE-0036 §6.4 broker A3 "
+                "emission).  Got producer_peers.size={}, endpoint='{}', "
+                "pubkey_z85.size={}.",
+                pImpl->role_tag, opts.producer_peers.size(),
+                opts.producer_peers.empty()
+                    ? "" : opts.producer_peers.front().endpoint,
+                opts.producer_peers.empty()
+                    ? 0u : opts.producer_peers.front().pubkey_z85.size());
             return false;
         }
+        const std::string &rx_endpoint = opts.producer_peers.front().endpoint;
         std::string inst_id = opts.instance_id.empty()
                                   ? (pImpl->role_tag + ":" + pImpl->uid + ":rx")
                                   : opts.instance_id;
@@ -406,12 +418,19 @@ bool RoleAPIBase::build_rx_queue(const hub::RxQueueOptions &opts)
         // of truth — no redundant expected_schema_hash field in opts).
         const auto expected_hash = hub::compute_schema_hash(opts.slot_spec,
                                                              opts.fz_spec);
+        namespace sec = pylabhub::utils::security;
+        const sec::Z85PublicKey server_pubkey{
+            opts.producer_peers.front().pubkey_z85};
         reader = hub::ZmqQueue::pull_from(
             rx_endpoint,
+            server_pubkey,
             hub::schema_spec_to_zmq_fields(opts.slot_spec),
             opts.slot_spec.packing,
-            /*bind=*/false, opts.zmq_buffer_depth,
-            make_schema_tag(expected_hash), std::move(inst_id));
+            /*identity_key_name=*/sec::kRoleIdentityName,
+            /*bind=*/false,
+            /*max_buffer_depth=*/opts.zmq_buffer_depth,
+            /*schema_tag=*/make_schema_tag(expected_hash),
+            /*instance_id=*/std::move(inst_id));
         if (!reader)
             return false;
         if (!reader->start())
