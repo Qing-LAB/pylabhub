@@ -249,11 +249,15 @@ TEST_F(ZmqQueueTest, AddProducerPeer_PullSide_AppendsAndDeduplicatesByRoleUid)
     sec::key_store().add_identity_from_z85(
         "test_identity", kp.public_z85, kp.secret_z85);
 
-    ZmqAuthOptions auth{};
-    auth.keystore_name = "test_identity";
-    auto q = ZmqQueue::pull_from_with_auth(
-        "tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned",
-        std::move(auth), /*bind=*/true, 100);
+    // Bind side: no `server_pubkey` needed (default sentinel
+    // accepted on bind path; `validate_auth_options` only requires
+    // it on connect/PULL).
+    auto q = ZmqQueue::pull_from_curve(
+        "tcp://127.0.0.1:0",
+        sec::Z85PublicKey{},
+        blob_schema(kItemSize), "aligned",
+        /*identity_key_name=*/"test_identity",
+        /*bind=*/true, 100);
     ASSERT_NE(q, nullptr);
     EXPECT_EQ(q->producer_peer_count(), 0u);
 
@@ -282,11 +286,15 @@ TEST_F(ZmqQueueTest, RemoveProducerPeer_PullSide_ReturnsFalseWhenAbsent)
     sec::key_store().add_identity_from_z85(
         "test_identity", kp.public_z85, kp.secret_z85);
 
-    ZmqAuthOptions auth{};
-    auth.keystore_name = "test_identity";
-    auto q = ZmqQueue::pull_from_with_auth(
-        "tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned",
-        std::move(auth), /*bind=*/true, 100);
+    // Bind side: no `server_pubkey` needed (default sentinel
+    // accepted on bind path; `validate_auth_options` only requires
+    // it on connect/PULL).
+    auto q = ZmqQueue::pull_from_curve(
+        "tcp://127.0.0.1:0",
+        sec::Z85PublicKey{},
+        blob_schema(kItemSize), "aligned",
+        /*identity_key_name=*/"test_identity",
+        /*bind=*/true, 100);
     ASSERT_NE(q, nullptr);
 
     ProducerPeer p{"prod.foo.uid01", "tcp://127.0.0.1:5001", ""};
@@ -316,11 +324,12 @@ TEST_F(ZmqQueueTest, AddProducerPeer_PushSide_IsInert)
     sec::key_store().add_identity_from_z85(
         "test_identity", kp.public_z85, kp.secret_z85);
 
-    ZmqAuthOptions auth{};
-    auth.keystore_name = "test_identity";
-    auto q = ZmqQueue::push_to_with_auth(
-        "tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned",
-        std::move(auth), /*bind=*/true);
+    auto q = ZmqQueue::push_to_curve(
+        "tcp://127.0.0.1:0",
+        blob_schema(kItemSize), "aligned",
+        /*identity_key_name=*/"test_identity",
+        /*zap_domain=*/"",
+        /*bind=*/true);
     ASSERT_NE(q, nullptr);
 
     ProducerPeer p{"prod.foo", "tcp://127.0.0.1:5001", ""};

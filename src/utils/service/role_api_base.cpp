@@ -316,23 +316,18 @@ bool RoleAPIBase::build_tx_queue(const hub::TxQueueOptions &opts)
         // §7).  The initial allowlist is empty (broker pushes the
         // current snapshot via `set_peer_allowlist` once D4 routes
         // CHANNEL_AUTH_CHANGED_NOTIFY pulls).  zap_domain is
-        // per-(role,channel,side) per the ZmqAuthOptions convention.
+        // per-(role,channel,side).
         // HEP-CORE-0040 §172: identity keypair lives in the process
-        // KeyStore under `"role_identity"` (seeded by
-        // `RoleConfig::load_keypair`).  ZmqQueue::start() resolves the
+        // KeyStore under `kRoleIdentityName` (seeded by
+        // `RoleConfig::load_keypair`).  `push_to_curve` resolves the
         // name inside its CURVE-setup block — secret bytes never
         // materialize on this side of the call.
-        hub::ZmqAuthOptions auth_opts;
-        auth_opts.keystore_name = pylabhub::utils::security::kRoleIdentityName;
-        auth_opts.zap_domain    = pImpl->uid + ":" + tx_channel + ":tx";
-        // initial_allowlist: empty (deny-all); broker pushes the
-        // snapshot via set_peer_allowlist after the producer's REG
-        // completes and consumers are admitted.
-        writer = hub::ZmqQueue::push_to_with_auth(
+        writer = hub::ZmqQueue::push_to_curve(
             opts.zmq_node_endpoint,
             hub::schema_spec_to_zmq_fields(opts.slot_spec),
             opts.slot_spec.packing,
-            std::move(auth_opts),
+            /*identity_key_name=*/pylabhub::utils::security::kRoleIdentityName,
+            /*zap_domain=*/pImpl->uid + ":" + tx_channel + ":tx",
             opts.zmq_bind, make_schema_tag(schema_hash),
             /*sndhwm=*/0, opts.zmq_buffer_depth, opts.zmq_overflow_policy,
             /*send_retry_interval_ms=*/10, std::move(inst_id));
