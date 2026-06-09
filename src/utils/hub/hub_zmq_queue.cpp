@@ -442,7 +442,7 @@ static std::string find_invalid_type(const std::vector<ZmqSchemaField>& schema)
 // ============================================================================
 
 std::unique_ptr<QueueReader>
-ZmqQueue::pull_from(const std::string& endpoint, std::vector<ZmqSchemaField> schema,
+ZmqQueue::build_plaintext_reader_(const std::string& endpoint, std::vector<ZmqSchemaField> schema,
                     std::string packing,
                     bool bind, size_t max_buffer_depth,
                     std::optional<std::array<uint8_t, 8>> schema_tag,
@@ -507,7 +507,7 @@ ZmqQueue::pull_from(const std::string& endpoint, std::vector<ZmqSchemaField> sch
 }
 
 std::unique_ptr<QueueWriter>
-ZmqQueue::push_to(const std::string& endpoint, std::vector<ZmqSchemaField> schema,
+ZmqQueue::build_plaintext_writer_(const std::string& endpoint, std::vector<ZmqSchemaField> schema,
                   std::string packing,
                   bool bind,
                   std::optional<std::array<uint8_t, 8>> schema_tag,
@@ -693,7 +693,7 @@ validate_curve_factory_params(std::string_view identity_key_name,
 // auth-field writes would land on a running socket too late.
 
 std::unique_ptr<ZmqQueue>
-ZmqQueue::pull_from_curve(const std::string& endpoint,
+ZmqQueue::pull_from(const std::string& endpoint,
                           ::pylabhub::utils::security::Z85PublicKey server_pubkey,
                           std::vector<ZmqSchemaField> schema,
                           std::string packing,
@@ -717,7 +717,7 @@ ZmqQueue::pull_from_curve(const std::string& endpoint,
             identity_key_name, server_pubkey_str, /*bind_side=*/bind);
         !err.empty())
     {
-        LOGGER_ERROR("[hub::ZmqQueue::pull_from_curve] invalid auth "
+        LOGGER_ERROR("[hub::ZmqQueue::pull_from] invalid auth "
                      "params for '{}': {}", endpoint, err);
         return nullptr;
     }
@@ -726,7 +726,7 @@ ZmqQueue::pull_from_curve(const std::string& endpoint,
                   "ZmqQueue must be final for the *_curve factories' "
                   "static_cast to be sound — otherwise the cast may "
                   "silently truncate a most-derived subclass instance.");
-    auto reader = pull_from(endpoint, std::move(schema), std::move(packing),
+    auto reader = build_plaintext_reader_(endpoint, std::move(schema), std::move(packing),
                              bind, max_buffer_depth, schema_tag,
                              std::move(instance_id));
     if (!reader) return nullptr;
@@ -742,7 +742,7 @@ ZmqQueue::pull_from_curve(const std::string& endpoint,
 }
 
 std::unique_ptr<ZmqQueue>
-ZmqQueue::push_to_curve(const std::string& endpoint,
+ZmqQueue::push_to(const std::string& endpoint,
                         std::vector<ZmqSchemaField> schema,
                         std::string packing,
                         std::string_view identity_key_name,
@@ -760,7 +760,7 @@ ZmqQueue::push_to_curve(const std::string& endpoint,
             /*bind_side=*/bind);
         !err.empty())
     {
-        LOGGER_ERROR("[hub::ZmqQueue::push_to_curve] invalid auth "
+        LOGGER_ERROR("[hub::ZmqQueue::push_to] invalid auth "
                      "params for '{}': {}", endpoint, err);
         return nullptr;
     }
@@ -769,7 +769,7 @@ ZmqQueue::push_to_curve(const std::string& endpoint,
                   "ZmqQueue must be final for the *_curve factories' "
                   "static_cast to be sound — otherwise the cast may "
                   "silently truncate a most-derived subclass instance.");
-    auto writer = push_to(endpoint, std::move(schema), std::move(packing),
+    auto writer = build_plaintext_writer_(endpoint, std::move(schema), std::move(packing),
                            bind, schema_tag, sndhwm, send_buffer_depth,
                            overflow_policy, send_retry_interval_ms,
                            std::move(instance_id));

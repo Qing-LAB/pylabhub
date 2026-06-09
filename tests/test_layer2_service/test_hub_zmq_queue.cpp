@@ -34,6 +34,7 @@
 #include "utils/hub_queue.hpp"
 #include "utils/security/key_store.hpp"
 #include "utils/security/secure_memory_subsystem.hpp"
+#include "utils/security/zap_router.hpp"   // ZapPumpThread for CURVE roundtrip tests
 
 #include <array>
 #include <atomic>
@@ -105,16 +106,172 @@ PLH_BINARY_LIFECYCLE_MODULES(
     pylabhub::hub::GetZMQContextModule()
 )
 
+// ─── KeyStore identity seeding (C4 #160 + HEP-CORE-0040 §5.3) ────────────
+//
+// Post-C4 the lib has no plaintext factory path; every ZmqQueue is CURVE-
+// wired and reads its identity from `key_store().pubkey(kRoleIdentityName)`
+// + `with_seckey(...)`.  This file's tests are about queue mechanics
+// (schema/buffer-depth/checksum) — CURVE is incidental — but the type
+// system forces them to seed an identity anyway.
+//
+// We seed the canonical production name `kRoleIdentityName` so the test
+// + production code paths are byte-identical at the KeyStore boundary
+// (no test-only "test_identity" name).  Memory rule:
+// [feedback_lib_change_full_sweep] + the production-mirror principle.
+//
+// One identity per process per HEP-CORE-0040 §5.3 — fine here because
+// these tests run as a single L2 binary.
+//
+// The setup runs once via a Pattern-1+ `BinaryLifecycleEnvironment` and
+// is torn down by the binary's LifecycleGuard.
+class ZmqQueueTestEnvironment : public ::testing::Environment
+{
+public:
+    void SetUp() override
+    {
+        namespace sec = pylabhub::utils::security;
+        if (!sec::key_store_ready())
+        {
+            // Stash these as `static` so they outlive the SetUp call
+            // and survive for the binary's lifetime.
+            static sec::SecureMemorySubsystem sms;
+            static sec::KeyStore              ks{"l2", "test_layer2_zmq_queue"};
+        }
+        auto &ks = pylabhub::utils::security::key_store();
+        if (!ks.has(pylabhub::utils::security::kRoleIdentityName))
+        {
+            const auto kp = pylabhub::tests::gen_curve_keypair();
+            ks.add_identity_from_z85(
+                pylabhub::utils::security::kRoleIdentityName,
+                kp.public_z85, kp.secret_z85);
+        }
+    }
+};
+
+static auto *kZmqQueueTestEnv =
+    ::testing::AddGlobalTestEnvironment(new ZmqQueueTestEnvironment);
+
+namespace
+{
+
+/// Default-constructed `Z85PublicKey` sentinel — the wire-valid "no
+/// serverkey set" value accepted by `pull_from` on the bind side.  PULL
+/// sockets that bind don't need a serverkey (they ARE the server in
+/// libzmq parlance); connect-side helpers use the test identity's own
+/// pubkey via `test_server_key()` below.
+const pylabhub::utils::security::Z85PublicKey kEmptyServerKey;
+
+/// Returns a `Z85PublicKey` whose value is the test identity's pubkey
+/// (seeded by `ZmqQueueTestEnvironment` under `kRoleIdentityName`).
+/// Used on PULL/connect-side helpers — both ends in these L2 tests
+/// share the single test identity, so the consumer presents the
+/// producer's own pubkey for the CURVE handshake.  Cached lazily so
+/// `key_store()` is queried exactly once.
+inline const pylabhub::utils::security::Z85PublicKey &
+test_server_key()
+{
+    namespace sec = pylabhub::utils::security;
+    static const sec::Z85PublicKey cached{std::string{
+        sec::key_store().pubkey(sec::kRoleIdentityName)}};
+    return cached;
+}
+
+/// Test helper — wrap `ZmqQueue::pull_from` with the seeded
+/// `kRoleIdentityName`.  On bind side the sentinel server-key is used
+/// (PULL/bind doesn't validate serverkey).  On connect side the test
+/// identity's own pubkey is used (single shared identity in this
+/// binary).  Keeps every test's call shape identical to the pre-C4
+/// plaintext factory so the migration is a single function-name
+/// replacement.  CURVE wiring is incidental for these tests (they
+/// exercise schema/buffer/packing mechanics).
+inline std::unique_ptr<pylabhub::hub::ZmqQueue>
+make_pull_test(const std::string &endpoint,
+               std::vector<pylabhub::hub::ZmqSchemaField> schema,
+               std::string packing,
+               bool bind = false,
+               size_t max_buffer_depth =
+                   pylabhub::hub::kZmqDefaultBufferDepth,
+               std::optional<std::array<uint8_t, 8>> schema_tag =
+                   std::nullopt,
+               std::string instance_id = {})
+{
+    return pylabhub::hub::ZmqQueue::pull_from(
+        endpoint,
+        bind ? kEmptyServerKey : test_server_key(),
+        std::move(schema), std::move(packing),
+        pylabhub::utils::security::kRoleIdentityName, bind,
+        max_buffer_depth, schema_tag, std::move(instance_id));
+}
+
+/// Test helper — wrap `ZmqQueue::push_to` with the seeded
+/// `kRoleIdentityName` and empty `zap_domain` (factory derives from
+/// instance_id at start time).  See `make_pull_test` for rationale.
+inline std::unique_ptr<pylabhub::hub::ZmqQueue>
+make_push_test(const std::string &endpoint,
+               std::vector<pylabhub::hub::ZmqSchemaField> schema,
+               std::string packing,
+               bool bind = true,
+               std::optional<std::array<uint8_t, 8>> schema_tag =
+                   std::nullopt,
+               int sndhwm = 0,
+               size_t send_buffer_depth =
+                   pylabhub::hub::kZmqDefaultBufferDepth,
+               pylabhub::hub::OverflowPolicy overflow_policy =
+                   pylabhub::hub::OverflowPolicy::Drop,
+               int send_retry_interval_ms = 10,
+               std::string instance_id = {})
+{
+    return pylabhub::hub::ZmqQueue::push_to(
+        endpoint, std::move(schema), std::move(packing),
+        pylabhub::utils::security::kRoleIdentityName,
+        /*zap_domain=*/"",
+        bind, schema_tag, sndhwm, send_buffer_depth, overflow_policy,
+        send_retry_interval_ms, std::move(instance_id));
+}
+
+/// Seed the bind-side queue's allowlist with the test identity's own
+/// pubkey AFTER `start()` wired its ZapRouter slot.  Required for
+/// roundtrip tests where producer + consumer share the single test
+/// identity: the consumer presents the test pubkey on the CURVE
+/// handshake; without this seed, the producer's empty allowlist
+/// (deny-all default) rejects the consumer.  Caller MUST pass the
+/// bind-side queue — `set_peer_allowlist` returns false on the
+/// connect side (per the PeerAdmission contract).  Use the concrete
+/// `ZmqQueue&` form so it stays unambiguous against the abstract
+/// `QueueReader`/`QueueWriter` bases (ZmqQueue derives from both).
+inline bool seed_self_allowlist(pylabhub::hub::ZmqQueue &q)
+{
+    namespace sec = pylabhub::utils::security;
+    sec::PeerAllowlist allow;
+    allow.peers.insert(sec::PeerIdentity{
+        "curve", std::string{sec::key_store().pubkey(sec::kRoleIdentityName)}});
+    return q.set_peer_allowlist(std::move(allow));
+}
+
+} // anonymous namespace
+
 class ZmqQueueTest : public ::testing::Test,
                      public pylabhub::tests::LogCaptureFixture
 {
 protected:
-    void SetUp()    override { LogCaptureFixture::Install(); }
+    void SetUp() override
+    {
+        LogCaptureFixture::Install();
+        // CURVE roundtrip tests need a ZAP-pump thread to service the
+        // ZapRouter REP socket — without one the CURVE handshake
+        // stalls and any post-start data flow hangs.  Cheap to spin
+        // up per test; spans whatever the test does.
+        pump_.emplace();
+    }
     void TearDown() override
     {
+        pump_.reset();
         AssertNoUnexpectedLogWarnError();
         LogCaptureFixture::Uninstall();
     }
+
+private:
+    std::optional<pylabhub::utils::security::ZapPumpThread> pump_;
 };
 
 // ============================================================================
@@ -123,107 +280,57 @@ protected:
 
 TEST_F(ZmqQueueTest, PullFrom_Creates)
 {
-    auto q = ZmqQueue::pull_from("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true, 100);
+    auto q = make_pull_test("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true, 100);
     ASSERT_NE(q, nullptr);
     EXPECT_FALSE(q->is_running());
 }
 
 TEST_F(ZmqQueueTest, PushTo_Creates)
 {
-    auto q = ZmqQueue::push_to("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/false);
+    // PUSH+bind: the production default.  PUSH+connect requires a
+    // serverkey under CURVE (PULL/connect side semantics), so it
+    // can't be exercised via this smoke helper.
+    auto q = make_push_test("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
     ASSERT_NE(q, nullptr);
     EXPECT_FALSE(q->is_running());
 }
 
-// ─── HEP-CORE-0040 §8.4 endpoint shape (AUTH_TODO §C2, #158) ────────────────
+// ─── HEP-CORE-0040 §8.4 endpoint shape (AUTH_TODO §C4, #160) ────────────────
 //
-// `pull_from_curve` / `push_to_curve` are the new transitional
-// factory entry points that take discrete params instead of a
-// `ZmqAuthOptions` struct.  Currently delegate to `*_with_auth`; the
-// smoke tests below verify the delegation produces a working queue
-// AND that the validation propagates through the delegation chain.
-
-TEST_F(ZmqQueueTest, PullFromCurve_Creates_DelegatesToWithAuth)
-{
-    // Seed a KeyStore identity so the underlying `pull_from_with_auth`
-    // validation (HEP-CORE-0040 §172 + C1 #157) passes.  The new
-    // factory should construct a queue indistinguishable from one
-    // built via the explicit `ZmqAuthOptions` path.
-    namespace sec = pylabhub::utils::security;
-    sec::SecureMemorySubsystem sms;
-    sec::KeyStore              ks("test", "test.zmq_queue.pull_curve");
-    const auto own_kp    = pylabhub::tests::gen_curve_keypair();
-    const auto server_kp = pylabhub::tests::gen_curve_keypair();
-    sec::key_store().add_identity_from_z85(
-        "test_identity", own_kp.public_z85, own_kp.secret_z85);
-
-    auto q = ZmqQueue::pull_from_curve(
-        "tcp://127.0.0.1:0",
-        sec::Z85PublicKey{server_kp.public_z85},
-        blob_schema(kItemSize), "aligned",
-        /*identity_key_name=*/"test_identity",
-        /*bind=*/false, 100);
-    ASSERT_NE(q, nullptr);
-    EXPECT_FALSE(q->is_running());
-}
+// The bare `pull_from` / `push_to` factories are CURVE-only.  Smoke
+// tests for the CURVE-wired construction live above (`PullFrom_Creates`
+// + `PushTo_Creates`, which exercise the canonical helpers); the two
+// tests below pin the validator behaviour reachable through the bare
+// factory API.
 
 TEST_F(ZmqQueueTest,
-       PullFromCurve_EmptyServerPubkey_FailsValidation_Connect)
+       PullFrom_EmptyServerPubkey_FailsValidation_Connect)
 {
-    // PULL/connect side: empty Z85PublicKey (default sentinel) maps
-    // to empty `serverkey_z85` in the delegated ZmqAuthOptions, which
-    // `validate_auth_options` rejects (HEP-0035 §2: server pubkey
-    // REQUIRED on connect side; C1 #157 strict-mode enforcement).
-    // The factory must return nullptr — silent fallback to plaintext
-    // is the precise failure mode the C-chain was built to close.
+    // PULL/connect side: empty Z85PublicKey (default sentinel) fails
+    // factory validation (HEP-0035 §2: server pubkey REQUIRED on
+    // connect side; C1 #157 strict-mode enforcement).  The factory
+    // must return nullptr — silent fallback to plaintext is the
+    // precise failure mode the C-chain was built to close.
     namespace sec = pylabhub::utils::security;
-    sec::SecureMemorySubsystem sms;
-    sec::KeyStore              ks("test", "test.zmq_queue.curve_empty_pk");
-    const auto kp = pylabhub::tests::gen_curve_keypair();
-    sec::key_store().add_identity_from_z85(
-        "test_identity", kp.public_z85, kp.secret_z85);
-
     ExpectLogError("connect-side ZmqAuthOptions requires serverkey_z85");
-    auto q = ZmqQueue::pull_from_curve(
+    auto q = ZmqQueue::pull_from(
         "tcp://127.0.0.1:0",
         sec::Z85PublicKey{},   // default sentinel = "no pubkey set"
         blob_schema(kItemSize), "aligned",
-        /*identity_key_name=*/"test_identity",
+        /*identity_key_name=*/sec::kRoleIdentityName,
         /*bind=*/false, 100);
     EXPECT_EQ(q, nullptr);
 }
 
-TEST_F(ZmqQueueTest, PushToCurve_Creates_DelegatesToWithAuth)
-{
-    namespace sec = pylabhub::utils::security;
-    sec::SecureMemorySubsystem sms;
-    sec::KeyStore              ks("test", "test.zmq_queue.push_curve");
-    const auto kp = pylabhub::tests::gen_curve_keypair();
-    sec::key_store().add_identity_from_z85(
-        "test_identity", kp.public_z85, kp.secret_z85);
-
-    auto q = ZmqQueue::push_to_curve(
-        "tcp://127.0.0.1:0",
-        blob_schema(kItemSize), "aligned",
-        /*identity_key_name=*/"test_identity",
-        /*zap_domain=*/"test.curve.smoke",
-        /*bind=*/true);
-    ASSERT_NE(q, nullptr);
-    EXPECT_FALSE(q->is_running());
-}
-
 TEST_F(ZmqQueueTest,
-       PushToCurve_MissingKeyStoreEntry_FailsValidation)
+       PushTo_MissingKeyStoreEntry_FailsValidation)
 {
-    // KeyStore exists but the requested identity name is absent —
-    // factory must return nullptr.  Mirrors the PULL-side empty
-    // sentinel test for the symmetric defense.
-    namespace sec = pylabhub::utils::security;
-    sec::SecureMemorySubsystem sms;
-    sec::KeyStore              ks("test", "test.zmq_queue.push_missing");
-
+    // KeyStore is seeded with `kRoleIdentityName` by the binary
+    // env, but this test passes an identity_key_name that is NOT
+    // seeded — factory must return nullptr.  Mirrors the PULL-side
+    // empty sentinel test for the symmetric defense.
     ExpectLogError("keystore_name='never_seeded' not present in KeyStore");
-    auto q = ZmqQueue::push_to_curve(
+    auto q = ZmqQueue::push_to(
         "tcp://127.0.0.1:0",
         blob_schema(kItemSize), "aligned",
         /*identity_key_name=*/"never_seeded",
@@ -238,25 +345,12 @@ TEST_F(ZmqQueueTest,
 
 TEST_F(ZmqQueueTest, AddProducerPeer_PullSide_AppendsAndDeduplicatesByRoleUid)
 {
-    // HEP-CORE-0040 §172 + C1 (#157): *_with_auth requires a
-    // KeyStore entry.  This test exercises dynamic-peer membership
-    // (HEP-0017 §3.3); CURVE itself isn't under test — seed an
-    // identity so the factory succeeds.
-    namespace sec = pylabhub::utils::security;
-    sec::SecureMemorySubsystem sms;
-    sec::KeyStore              ks("test", "test.zmq_queue.peers");
-    const auto kp = pylabhub::tests::gen_curve_keypair();
-    sec::key_store().add_identity_from_z85(
-        "test_identity", kp.public_z85, kp.secret_z85);
-
-    // Bind side: no `server_pubkey` needed (default sentinel
-    // accepted on bind path; `validate_auth_options` only requires
-    // it on connect/PULL).
-    auto q = ZmqQueue::pull_from_curve(
-        "tcp://127.0.0.1:0",
-        sec::Z85PublicKey{},
-        blob_schema(kItemSize), "aligned",
-        /*identity_key_name=*/"test_identity",
+    // This test exercises dynamic-peer membership (HEP-0017 §3.3);
+    // CURVE itself isn't under test — the binary env seeds an
+    // identity so the factory succeeds.  Bind side: no `server_pubkey`
+    // needed (default sentinel accepted on bind path).
+    auto q = make_pull_test(
+        "tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned",
         /*bind=*/true, 100);
     ASSERT_NE(q, nullptr);
     EXPECT_EQ(q->producer_peer_count(), 0u);
@@ -279,21 +373,8 @@ TEST_F(ZmqQueueTest, AddProducerPeer_PullSide_AppendsAndDeduplicatesByRoleUid)
 
 TEST_F(ZmqQueueTest, RemoveProducerPeer_PullSide_ReturnsFalseWhenAbsent)
 {
-    namespace sec = pylabhub::utils::security;
-    sec::SecureMemorySubsystem sms;
-    sec::KeyStore              ks("test", "test.zmq_queue.peers");
-    const auto kp = pylabhub::tests::gen_curve_keypair();
-    sec::key_store().add_identity_from_z85(
-        "test_identity", kp.public_z85, kp.secret_z85);
-
-    // Bind side: no `server_pubkey` needed (default sentinel
-    // accepted on bind path; `validate_auth_options` only requires
-    // it on connect/PULL).
-    auto q = ZmqQueue::pull_from_curve(
-        "tcp://127.0.0.1:0",
-        sec::Z85PublicKey{},
-        blob_schema(kItemSize), "aligned",
-        /*identity_key_name=*/"test_identity",
+    auto q = make_pull_test(
+        "tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned",
         /*bind=*/true, 100);
     ASSERT_NE(q, nullptr);
 
@@ -317,18 +398,8 @@ TEST_F(ZmqQueueTest, AddProducerPeer_PushSide_IsInert)
     // PUSH/bind side: producer doesn't track peers — admission is via
     // the broker-pushed allowlist + the producer's ZAP handler.  The
     // dynamic-peer API is inert; count stays 0.
-    namespace sec = pylabhub::utils::security;
-    sec::SecureMemorySubsystem sms;
-    sec::KeyStore              ks("test", "test.zmq_queue.peers");
-    const auto kp = pylabhub::tests::gen_curve_keypair();
-    sec::key_store().add_identity_from_z85(
-        "test_identity", kp.public_z85, kp.secret_z85);
-
-    auto q = ZmqQueue::push_to_curve(
-        "tcp://127.0.0.1:0",
-        blob_schema(kItemSize), "aligned",
-        /*identity_key_name=*/"test_identity",
-        /*zap_domain=*/"",
+    auto q = make_push_test(
+        "tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned",
         /*bind=*/true);
     ASSERT_NE(q, nullptr);
 
@@ -344,7 +415,7 @@ TEST_F(ZmqQueueTest, AddProducerPeer_PushSide_IsInert)
 
 TEST_F(ZmqQueueTest, Start_SetsRunning)
 {
-    auto q = ZmqQueue::pull_from("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
+    auto q = make_pull_test("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
     ASSERT_TRUE(q->start());
     std::this_thread::sleep_for(50ms); // recv_thread_ startup
     EXPECT_TRUE(q->is_running());
@@ -353,7 +424,7 @@ TEST_F(ZmqQueueTest, Start_SetsRunning)
 
 TEST_F(ZmqQueueTest, Stop_ClearsRunning)
 {
-    auto q = ZmqQueue::pull_from("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
+    auto q = make_pull_test("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
     ASSERT_TRUE(q->start());
     q->stop();
     EXPECT_FALSE(q->is_running());
@@ -361,7 +432,7 @@ TEST_F(ZmqQueueTest, Stop_ClearsRunning)
 
 TEST_F(ZmqQueueTest, DoubleStop_NoThrow)
 {
-    auto q = ZmqQueue::pull_from("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
+    auto q = make_pull_test("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
     ASSERT_TRUE(q->start());
     q->stop();
     EXPECT_NO_THROW(q->stop());
@@ -373,11 +444,16 @@ TEST_F(ZmqQueueTest, DoubleStop_NoThrow)
 
 TEST_F(ZmqQueueTest, Roundtrip_SingleItem)
 {
-    auto pull = ZmqQueue::pull_from("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
-    ASSERT_TRUE(pull->start());
-    const std::string ep = static_cast<ZmqQueue*>(pull.get())->actual_endpoint();
-    auto push = ZmqQueue::push_to(ep, blob_schema(kItemSize), "aligned", /*bind=*/false);
+    // Production-mirror orientation (HEP-CORE-0035 §2 + C4 #160): PUSH
+    // binds (producer is the server end), PULL connects.  Reverse
+    // orientation would require PUSH+connect with a serverkey, which
+    // production never does and the CURVE-only factory rejects.
+    auto push = make_push_test("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
     ASSERT_TRUE(push->start());
+    ASSERT_TRUE(seed_self_allowlist(*push));
+    const std::string ep = static_cast<ZmqQueue*>(push.get())->actual_endpoint();
+    auto pull = make_pull_test(ep, blob_schema(kItemSize), "aligned", /*bind=*/false);
+    ASSERT_TRUE(pull->start());
     std::this_thread::sleep_for(50ms); // connection setup
 
     // Write a pattern
@@ -404,11 +480,13 @@ TEST_F(ZmqQueueTest, Roundtrip_SingleItem)
 
 TEST_F(ZmqQueueTest, Roundtrip_MultipleItems)
 {
-    auto pull = ZmqQueue::pull_from("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
-    ASSERT_TRUE(pull->start());
-    const std::string ep = static_cast<ZmqQueue*>(pull.get())->actual_endpoint();
-    auto push = ZmqQueue::push_to(ep, blob_schema(kItemSize), "aligned", /*bind=*/false);
+    // Production-mirror orientation — see Roundtrip_SingleItem.
+    auto push = make_push_test("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
     ASSERT_TRUE(push->start());
+    ASSERT_TRUE(seed_self_allowlist(*push));
+    const std::string ep = static_cast<ZmqQueue*>(push.get())->actual_endpoint();
+    auto pull = make_pull_test(ep, blob_schema(kItemSize), "aligned", /*bind=*/false);
+    ASSERT_TRUE(pull->start());
     std::this_thread::sleep_for(50ms); // connection setup
 
     constexpr int kCount = 5;
@@ -435,7 +513,7 @@ TEST_F(ZmqQueueTest, Roundtrip_MultipleItems)
 
 TEST_F(ZmqQueueTest, ReadTimeout_ReturnsNull)
 {
-    auto pull = ZmqQueue::pull_from("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
+    auto pull = make_pull_test("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
     ASSERT_TRUE(pull->start());
     std::this_thread::sleep_for(50ms);
 
@@ -452,11 +530,13 @@ TEST_F(ZmqQueueTest, ReadTimeout_ReturnsNull)
 
 TEST_F(ZmqQueueTest, WriteAbort_NotSent)
 {
-    auto pull = ZmqQueue::pull_from("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
-    ASSERT_TRUE(pull->start());
-    const std::string ep = static_cast<ZmqQueue*>(pull.get())->actual_endpoint();
-    auto push = ZmqQueue::push_to(ep, blob_schema(kItemSize), "aligned", /*bind=*/false);
+    // Production-mirror orientation — see Roundtrip_SingleItem.
+    auto push = make_push_test("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
     ASSERT_TRUE(push->start());
+    ASSERT_TRUE(seed_self_allowlist(*push));
+    const std::string ep = static_cast<ZmqQueue*>(push.get())->actual_endpoint();
+    auto pull = make_pull_test(ep, blob_schema(kItemSize), "aligned", /*bind=*/false);
+    ASSERT_TRUE(pull->start());
     std::this_thread::sleep_for(50ms); // connection setup
 
     // Acquire then discard — no message should be sent
@@ -475,7 +555,7 @@ TEST_F(ZmqQueueTest, WriteAbort_NotSent)
 
 TEST_F(ZmqQueueTest, ItemSize_Correct)
 {
-    auto q = ZmqQueue::pull_from("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
+    auto q = make_pull_test("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
     EXPECT_EQ(q->item_size(), kItemSize);
 }
 
@@ -486,7 +566,7 @@ TEST_F(ZmqQueueTest, ItemSize_Correct)
 TEST_F(ZmqQueueTest, Name_ReturnsEndpoint)
 {
     const std::string ep = "tcp://127.0.0.1:0";
-    auto q = ZmqQueue::pull_from(ep, blob_schema(kItemSize), "aligned", /*bind=*/true);
+    auto q = make_pull_test(ep, blob_schema(kItemSize), "aligned", /*bind=*/true);
     EXPECT_EQ(q->name(), ep);
 }
 
@@ -505,14 +585,16 @@ TEST_F(ZmqQueueTest, PullFrom_BufferFull_DropsOldest)
     constexpr size_t kBufDepth = 4;
     constexpr int    kSend     = 12;
 
-    auto pull = ZmqQueue::pull_from("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true, kBufDepth);
-    ASSERT_NE(pull, nullptr);
-    ASSERT_TRUE(pull->start());
-    const std::string ep = static_cast<ZmqQueue*>(pull.get())->actual_endpoint();
-    auto push = ZmqQueue::push_to(ep, blob_schema(kItemSize), "aligned", /*bind=*/false,
+    // Production-mirror orientation — see Roundtrip_SingleItem.
+    auto push = make_push_test("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true,
                                   /*tag=*/std::nullopt, /*sndhwm=*/0, /*depth=*/64);
     ASSERT_NE(push, nullptr);
     ASSERT_TRUE(push->start());
+    ASSERT_TRUE(seed_self_allowlist(*push));
+    const std::string ep = static_cast<ZmqQueue*>(push.get())->actual_endpoint();
+    auto pull = make_pull_test(ep, blob_schema(kItemSize), "aligned", /*bind=*/false, kBufDepth);
+    ASSERT_NE(pull, nullptr);
+    ASSERT_TRUE(pull->start());
     std::this_thread::sleep_for(50ms); // connection setup
 
     // Push kSend items — first byte of each slot = send index (1-based).
@@ -559,11 +641,13 @@ TEST_F(ZmqQueueTest, PullFrom_BufferFull_NoDeadlock)
     // Push rapidly with small buffer; verify no hang after 2s.
     constexpr size_t kBufDepth = 2;
 
-    auto pull = ZmqQueue::pull_from("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true, kBufDepth);
-    ASSERT_TRUE(pull->start());
-    const std::string ep = static_cast<ZmqQueue*>(pull.get())->actual_endpoint();
-    auto push = ZmqQueue::push_to(ep, blob_schema(kItemSize), "aligned", /*bind=*/false);
+    // Production-mirror orientation — see Roundtrip_SingleItem.
+    auto push = make_push_test("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
     ASSERT_TRUE(push->start());
+    ASSERT_TRUE(seed_self_allowlist(*push));
+    const std::string ep = static_cast<ZmqQueue*>(push.get())->actual_endpoint();
+    auto pull = make_pull_test(ep, blob_schema(kItemSize), "aligned", /*bind=*/false, kBufDepth);
+    ASSERT_TRUE(pull->start());
     std::this_thread::sleep_for(50ms); // connection setup
 
     // Rapid push without reading
@@ -594,9 +678,9 @@ TEST_F(ZmqQueueTest, ItemSize_BlobSchema_ExactBytes)
     // Covered for a wide range by DataIntegrity_VariousSizes; this is a fast
     // smoke-test that confirms the factory-side computation is exact for three
     // representative values (odd, non-power-of-2, and power-of-2).
-    auto q7  = ZmqQueue::pull_from("tcp://127.0.0.1:0", blob_schema(7),  "aligned", true);
-    auto q64 = ZmqQueue::pull_from("tcp://127.0.0.1:0", blob_schema(64), "aligned", true);
-    auto q9  = ZmqQueue::pull_from("tcp://127.0.0.1:0", blob_schema(9),  "aligned", true);
+    auto q7  = make_pull_test("tcp://127.0.0.1:0", blob_schema(7),  "aligned", true);
+    auto q64 = make_pull_test("tcp://127.0.0.1:0", blob_schema(64), "aligned", true);
+    auto q9  = make_pull_test("tcp://127.0.0.1:0", blob_schema(9),  "aligned", true);
     ASSERT_NE(q7,  nullptr); EXPECT_EQ(q7->item_size(),   7u);
     ASSERT_NE(q64, nullptr); EXPECT_EQ(q64->item_size(), 64u);
     ASSERT_NE(q9,  nullptr); EXPECT_EQ(q9->item_size(),   9u);
@@ -611,11 +695,13 @@ TEST_F(ZmqQueueTest, SchemaTag_Match_DeliversItem)
     // PUSH and PULL configured with the SAME schema tag → items are delivered.
     auto tag = make_tag(0xDEADBEEFCAFEBABEull);
 
-    auto pull = ZmqQueue::pull_from("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true, 64, tag);
-    ASSERT_TRUE(pull->start());
-    const std::string ep = static_cast<ZmqQueue*>(pull.get())->actual_endpoint();
-    auto push = ZmqQueue::push_to(ep, blob_schema(kItemSize), "aligned", /*bind=*/false, tag);
+    // Production-mirror orientation — see Roundtrip_SingleItem.
+    auto push = make_push_test("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true, tag);
     ASSERT_TRUE(push->start());
+    ASSERT_TRUE(seed_self_allowlist(*push));
+    const std::string ep = static_cast<ZmqQueue*>(push.get())->actual_endpoint();
+    auto pull = make_pull_test(ep, blob_schema(kItemSize), "aligned", /*bind=*/false, 64, tag);
+    ASSERT_TRUE(pull->start());
     std::this_thread::sleep_for(50ms); // connection setup
 
     void *wbuf = push->write_acquire(1000ms);
@@ -645,11 +731,13 @@ TEST_F(ZmqQueueTest, SchemaTag_Mismatch_DropsAndCountsErrors)
     auto tag_a = make_tag(0x1111111111111111ull);
     auto tag_b = make_tag(0x2222222222222222ull);
 
-    auto pull = ZmqQueue::pull_from("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true, 64, tag_b);
-    ASSERT_TRUE(pull->start());
-    const std::string ep = static_cast<ZmqQueue*>(pull.get())->actual_endpoint();
-    auto push = ZmqQueue::push_to(ep, blob_schema(kItemSize), "aligned", /*bind=*/false, tag_a);
+    // Production-mirror orientation — see Roundtrip_SingleItem.
+    auto push = make_push_test("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true, tag_a);
     ASSERT_TRUE(push->start());
+    ASSERT_TRUE(seed_self_allowlist(*push));
+    const std::string ep = static_cast<ZmqQueue*>(push.get())->actual_endpoint();
+    auto pull = make_pull_test(ep, blob_schema(kItemSize), "aligned", /*bind=*/false, 64, tag_b);
+    ASSERT_TRUE(pull->start());
     std::this_thread::sleep_for(50ms); // connection setup
 
     constexpr int kCount = 5;
@@ -683,11 +771,13 @@ TEST_F(ZmqQueueTest, SchemaTag_NoTag_AcceptsAnyFrame)
     // PUSH has a tag but PULL has NO tag (nullopt) → PULL accepts any frame.
     auto tag = make_tag(0xAAAABBBBCCCCDDDDull);
 
-    auto pull = ZmqQueue::pull_from("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true); // no tag
-    ASSERT_TRUE(pull->start());
-    const std::string ep = static_cast<ZmqQueue*>(pull.get())->actual_endpoint();
-    auto push = ZmqQueue::push_to(ep, blob_schema(kItemSize), "aligned", /*bind=*/false, tag);
+    // Production-mirror orientation — see Roundtrip_SingleItem.
+    auto push = make_push_test("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true, tag);
     ASSERT_TRUE(push->start());
+    ASSERT_TRUE(seed_self_allowlist(*push));
+    const std::string ep = static_cast<ZmqQueue*>(push.get())->actual_endpoint();
+    auto pull = make_pull_test(ep, blob_schema(kItemSize), "aligned", /*bind=*/false); // no tag
+    ASSERT_TRUE(pull->start());
     std::this_thread::sleep_for(50ms); // connection setup
 
     void *wbuf = push->write_acquire(1000ms);
@@ -721,11 +811,13 @@ TEST_F(ZmqQueueTest, OverflowCounter_Increments)
     constexpr size_t kBufDepth = 2;
     constexpr int    kSend     = 20;
 
-    auto pull = ZmqQueue::pull_from("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true, kBufDepth);
-    ASSERT_TRUE(pull->start());
-    const std::string ep = static_cast<ZmqQueue*>(pull.get())->actual_endpoint();
-    auto push = ZmqQueue::push_to(ep, blob_schema(kItemSize), "aligned", /*bind=*/false);
+    // Production-mirror orientation — see Roundtrip_SingleItem.
+    auto push = make_push_test("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
     ASSERT_TRUE(push->start());
+    ASSERT_TRUE(seed_self_allowlist(*push));
+    const std::string ep = static_cast<ZmqQueue*>(push.get())->actual_endpoint();
+    auto pull = make_pull_test(ep, blob_schema(kItemSize), "aligned", /*bind=*/false, kBufDepth);
+    ASSERT_TRUE(pull->start());
     std::this_thread::sleep_for(50ms); // connection setup
 
     // Send kSend items without reading.
@@ -772,11 +864,13 @@ TEST_F(ZmqQueueTest, OverflowCounter_Increments)
 TEST_F(ZmqQueueTest, MultipleItems_Ordered)
 {
     // Verify that items arrive in the same order they were sent.
-    auto pull = ZmqQueue::pull_from("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
-    ASSERT_TRUE(pull->start());
-    const std::string ep = static_cast<ZmqQueue*>(pull.get())->actual_endpoint();
-    auto push = ZmqQueue::push_to(ep, blob_schema(kItemSize), "aligned", /*bind=*/false);
+    // Production-mirror orientation — see Roundtrip_SingleItem.
+    auto push = make_push_test("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
     ASSERT_TRUE(push->start());
+    ASSERT_TRUE(seed_self_allowlist(*push));
+    const std::string ep = static_cast<ZmqQueue*>(push.get())->actual_endpoint();
+    auto pull = make_pull_test(ep, blob_schema(kItemSize), "aligned", /*bind=*/false);
+    ASSERT_TRUE(pull->start());
     std::this_thread::sleep_for(50ms); // connection setup
 
     constexpr int kCount = 8;
@@ -814,7 +908,7 @@ TEST_F(ZmqQueueTest, Schema_ItemSize_NaturalAlignment)
 {
     // {int32, float64} natural: int32@0(4), pad(4), float64@8(8) → total 16.
     std::vector<ZmqSchemaField> schema = {{"int32", 1, 0}, {"float64", 1, 0}};
-    auto q = ZmqQueue::pull_from(schema_ep(0), schema, "aligned", /*bind=*/true);
+    auto q = make_pull_test(schema_ep(0), schema, "aligned", /*bind=*/true);
     ASSERT_NE(q, nullptr);
     EXPECT_EQ(q->item_size(), 16u);
 }
@@ -823,7 +917,7 @@ TEST_F(ZmqQueueTest, Schema_ItemSize_Packed)
 {
     // {int32, float64} packed: int32@0(4), float64@4(8) → total 12.
     std::vector<ZmqSchemaField> schema = {{"int32", 1, 0}, {"float64", 1, 0}};
-    auto q = ZmqQueue::pull_from(schema_ep(0), schema, "packed", /*bind=*/true);
+    auto q = make_pull_test(schema_ep(0), schema, "packed", /*bind=*/true);
     ASSERT_NE(q, nullptr);
     EXPECT_EQ(q->item_size(), 12u);
 }
@@ -832,7 +926,7 @@ TEST_F(ZmqQueueTest, Schema_ItemSize_Array)
 {
     // {float64[4]} natural: float64[4]@0(32) → total 32.
     std::vector<ZmqSchemaField> schema = {{"float64", 4, 0}};
-    auto q = ZmqQueue::pull_from(schema_ep(0), schema, "aligned", /*bind=*/true);
+    auto q = make_pull_test(schema_ep(0), schema, "aligned", /*bind=*/true);
     ASSERT_NE(q, nullptr);
     EXPECT_EQ(q->item_size(), 32u);
 }
@@ -841,7 +935,7 @@ TEST_F(ZmqQueueTest, Schema_ItemSize_StringField)
 {
     // {string(length=8)}: char[8]@0 → total 8.
     std::vector<ZmqSchemaField> schema = {{"string", 1, 8}};
-    auto q = ZmqQueue::pull_from(schema_ep(0), schema, "aligned", /*bind=*/true);
+    auto q = make_pull_test(schema_ep(0), schema, "aligned", /*bind=*/true);
     ASSERT_NE(q, nullptr);
     EXPECT_EQ(q->item_size(), 8u);
 }
@@ -854,13 +948,14 @@ TEST_F(ZmqQueueTest, Schema_Scalars_Roundtrip)
     // Scalars encoded as native msgpack types — exact values preserved.
     std::vector<ZmqSchemaField> schema = {{"int32", 1, 0}, {"float64", 1, 0}};
 
-    auto push = ZmqQueue::push_to("tcp://127.0.0.1:0", schema, "aligned", /*bind=*/true);
+    auto push = make_push_test("tcp://127.0.0.1:0", schema, "aligned", /*bind=*/true);
     ASSERT_NE(push, nullptr);
     EXPECT_EQ(push->item_size(), 16u);
     ASSERT_TRUE(push->start());
+    ASSERT_TRUE(seed_self_allowlist(*push));
     const std::string ep = static_cast<ZmqQueue*>(push.get())->actual_endpoint();
 
-    auto pull = ZmqQueue::pull_from(ep, schema, "aligned", /*bind=*/false);
+    auto pull = make_pull_test(ep, schema, "aligned", /*bind=*/false);
     ASSERT_NE(pull, nullptr);
     ASSERT_TRUE(pull->start());
     std::this_thread::sleep_for(50ms);
@@ -895,12 +990,13 @@ TEST_F(ZmqQueueTest, Schema_Array_Roundtrip)
     // {float64[4]}: array → bin(32), size-validated on recv.
     std::vector<ZmqSchemaField> schema = {{"float64", 4, 0}};
 
-    auto push = ZmqQueue::push_to("tcp://127.0.0.1:0", schema, "aligned", /*bind=*/true);
+    auto push = make_push_test("tcp://127.0.0.1:0", schema, "aligned", /*bind=*/true);
     ASSERT_NE(push, nullptr);
     ASSERT_TRUE(push->start());
+    ASSERT_TRUE(seed_self_allowlist(*push));
     const std::string ep = static_cast<ZmqQueue*>(push.get())->actual_endpoint();
 
-    auto pull = ZmqQueue::pull_from(ep, schema, "aligned", /*bind=*/false);
+    auto pull = make_pull_test(ep, schema, "aligned", /*bind=*/false);
     ASSERT_NE(pull, nullptr);
     ASSERT_TRUE(pull->start());
     std::this_thread::sleep_for(50ms);
@@ -936,13 +1032,14 @@ TEST_F(ZmqQueueTest, Schema_Mixed_Natural_Roundtrip)
         {"uint8",   1, 0},
     };
 
-    auto push = ZmqQueue::push_to("tcp://127.0.0.1:0", schema, "aligned", /*bind=*/true);
+    auto push = make_push_test("tcp://127.0.0.1:0", schema, "aligned", /*bind=*/true);
     ASSERT_NE(push, nullptr);
     EXPECT_EQ(push->item_size(), 48u);
     ASSERT_TRUE(push->start());
+    ASSERT_TRUE(seed_self_allowlist(*push));
     const std::string ep = static_cast<ZmqQueue*>(push.get())->actual_endpoint();
 
-    auto pull = ZmqQueue::pull_from(ep, schema, "aligned", /*bind=*/false);
+    auto pull = make_pull_test(ep, schema, "aligned", /*bind=*/false);
     ASSERT_NE(pull, nullptr);
     ASSERT_TRUE(pull->start());
     std::this_thread::sleep_for(50ms);
@@ -981,10 +1078,10 @@ TEST_F(ZmqQueueTest, Schema_InvalidPacking_ReturnsNullptr)
 {
     ExpectLogError("invalid packing");
     // Any packing string other than "aligned" or "packed" must return nullptr (B1).
-    auto pull = ZmqQueue::pull_from(schema_ep(4), blob_schema(8), "NATURAL", /*bind=*/true);
+    auto pull = make_pull_test(schema_ep(4), blob_schema(8), "NATURAL", /*bind=*/true);
     EXPECT_EQ(pull, nullptr) << "pull_from: invalid packing must return nullptr";
 
-    auto push = ZmqQueue::push_to(schema_ep(4), blob_schema(8), "big-endian");
+    auto push = make_push_test(schema_ep(4), blob_schema(8), "big-endian");
     EXPECT_EQ(push, nullptr) << "push_to: invalid packing must return nullptr";
 }
 
@@ -995,10 +1092,10 @@ TEST_F(ZmqQueueTest, Schema_ZeroLengthBytesField_ReturnsNullptr)
     // Both factories must reject it.
     std::vector<ZmqSchemaField> schema = {{"bytes", 1, 0}};
 
-    auto pull = ZmqQueue::pull_from(schema_ep(4), schema, "aligned", /*bind=*/true);
+    auto pull = make_pull_test(schema_ep(4), schema, "aligned", /*bind=*/true);
     EXPECT_EQ(pull, nullptr) << "pull_from: bytes field length=0 must return nullptr";
 
-    auto push = ZmqQueue::push_to(schema_ep(4), schema, "aligned");
+    auto push = make_push_test(schema_ep(4), schema, "aligned");
     EXPECT_EQ(push, nullptr) << "push_to: bytes field length=0 must return nullptr";
 }
 
@@ -1008,10 +1105,10 @@ TEST_F(ZmqQueueTest, Schema_EmptySchema_ReturnsNullptr)
 {
     ExpectLogError("schema must not be empty");
     // Empty schema is an error — both factories must return nullptr.
-    auto pull = ZmqQueue::pull_from(schema_ep(4), {}, "aligned", /*bind=*/true);
+    auto pull = make_pull_test(schema_ep(4), {}, "aligned", /*bind=*/true);
     EXPECT_EQ(pull, nullptr) << "pull_from with empty schema must return nullptr";
 
-    auto push = ZmqQueue::push_to(schema_ep(4), {}, "aligned", /*bind=*/true);
+    auto push = make_push_test(schema_ep(4), {}, "aligned", /*bind=*/true);
     EXPECT_EQ(push, nullptr) << "push_to with empty schema must return nullptr";
 }
 
@@ -1021,12 +1118,13 @@ TEST_F(ZmqQueueTest, Schema_FieldCountMismatch_Rejected)
     std::vector<ZmqSchemaField> ss = {{"int32", 1, 0}, {"float64", 1, 0}};
     std::vector<ZmqSchemaField> sr = {{"int32", 1, 0}};
 
-    auto push = ZmqQueue::push_to("tcp://127.0.0.1:0", ss, "aligned", /*bind=*/true);
+    auto push = make_push_test("tcp://127.0.0.1:0", ss, "aligned", /*bind=*/true);
     ASSERT_NE(push, nullptr);
     ASSERT_TRUE(push->start());
+    ASSERT_TRUE(seed_self_allowlist(*push));
     const std::string ep = static_cast<ZmqQueue*>(push.get())->actual_endpoint();
 
-    auto pull = ZmqQueue::pull_from(ep, sr, "aligned", /*bind=*/false);
+    auto pull = make_pull_test(ep, sr, "aligned", /*bind=*/false);
     ASSERT_NE(pull, nullptr);
     ASSERT_TRUE(pull->start());
     std::this_thread::sleep_for(50ms);
@@ -1053,12 +1151,13 @@ TEST_F(ZmqQueueTest, Schema_ArraySizeMismatch_Rejected)
     std::vector<ZmqSchemaField> ss = {{"float64", 4, 0}};
     std::vector<ZmqSchemaField> sr = {{"float64", 3, 0}};
 
-    auto push = ZmqQueue::push_to("tcp://127.0.0.1:0", ss, "aligned", /*bind=*/true);
+    auto push = make_push_test("tcp://127.0.0.1:0", ss, "aligned", /*bind=*/true);
     ASSERT_NE(push, nullptr);
     ASSERT_TRUE(push->start());
+    ASSERT_TRUE(seed_self_allowlist(*push));
     const std::string ep = static_cast<ZmqQueue*>(push.get())->actual_endpoint();
 
-    auto pull = ZmqQueue::pull_from(ep, sr, "aligned", /*bind=*/false);
+    auto pull = make_pull_test(ep, sr, "aligned", /*bind=*/false);
     ASSERT_NE(pull, nullptr);
     ASSERT_TRUE(pull->start());
     std::this_thread::sleep_for(50ms);
@@ -1108,16 +1207,17 @@ TEST_F(ZmqQueueTest, DataIntegrity_VariousSizes)
         SCOPED_TRACE("size=" + std::to_string(sz));
 
         // Bind PUSH to port 0 — OS assigns an ephemeral port.
-        auto push = ZmqQueue::push_to("tcp://127.0.0.1:0", blob_schema(sz), "aligned", /*bind=*/true);
+        auto push = make_push_test("tcp://127.0.0.1:0", blob_schema(sz), "aligned", /*bind=*/true);
         ASSERT_NE(push, nullptr) << "push_to nullptr for size=" << sz;
         ASSERT_EQ(push->item_size(), sz);
 
         ASSERT_TRUE(push->start());
+        ASSERT_TRUE(seed_self_allowlist(*push));
         // Retrieve the actual OS-assigned endpoint for PULL to connect to.
         const std::string ep = static_cast<ZmqQueue*>(push.get())->actual_endpoint();
         ASSERT_FALSE(ep.empty()) << "actual_endpoint empty for size=" << sz;
 
-        auto pull = ZmqQueue::pull_from(ep, blob_schema(sz), "aligned", /*bind=*/false);
+        auto pull = make_pull_test(ep, blob_schema(sz), "aligned", /*bind=*/false);
         ASSERT_NE(pull, nullptr) << "pull_from nullptr for size=" << sz;
         ASSERT_EQ(pull->item_size(), sz);
 
@@ -1166,13 +1266,14 @@ TEST_F(ZmqQueueTest, Schema_AllScalarTypes_Roundtrip)
         {"int64",   1, 0}, {"uint64",  1, 0},
         {"float32", 1, 0}, {"float64", 1, 0},
     };
-    auto push = ZmqQueue::push_to("tcp://127.0.0.1:0", schema, "aligned", /*bind=*/true);
+    auto push = make_push_test("tcp://127.0.0.1:0", schema, "aligned", /*bind=*/true);
     ASSERT_NE(push, nullptr);
     EXPECT_EQ(push->item_size(), 48u);
     ASSERT_TRUE(push->start());
+    ASSERT_TRUE(seed_self_allowlist(*push));
     const std::string ep = static_cast<ZmqQueue*>(push.get())->actual_endpoint();
 
-    auto pull = ZmqQueue::pull_from(ep, schema, "aligned", /*bind=*/false);
+    auto pull = make_pull_test(ep, schema, "aligned", /*bind=*/false);
     ASSERT_NE(pull, nullptr);
     ASSERT_TRUE(pull->start());
     std::this_thread::sleep_for(50ms);
@@ -1255,13 +1356,14 @@ TEST_F(ZmqQueueTest, Schema_LargeArrayOverPageSize_Roundtrip)
     // bin encode/decode all handle multi-page payloads correctly.
     std::vector<ZmqSchemaField> schema = {{"float64", 600, 0}};
 
-    auto push = ZmqQueue::push_to("tcp://127.0.0.1:0", schema, "aligned", /*bind=*/true);
+    auto push = make_push_test("tcp://127.0.0.1:0", schema, "aligned", /*bind=*/true);
     ASSERT_NE(push, nullptr);
     EXPECT_EQ(push->item_size(), 600u * 8u);
     ASSERT_TRUE(push->start());
+    ASSERT_TRUE(seed_self_allowlist(*push));
     const std::string ep = static_cast<ZmqQueue*>(push.get())->actual_endpoint();
 
-    auto pull = ZmqQueue::pull_from(ep, schema, "aligned", /*bind=*/false);
+    auto pull = make_pull_test(ep, schema, "aligned", /*bind=*/false);
     ASSERT_NE(pull, nullptr);
     ASSERT_TRUE(pull->start());
     std::this_thread::sleep_for(50ms);
@@ -1295,13 +1397,14 @@ TEST_F(ZmqQueueTest, Schema_AlignmentPadding_FieldsPreserved)
     // either value in the msgpack encode/decode roundtrip.
     std::vector<ZmqSchemaField> schema = {{"uint8", 1, 0}, {"float64", 1, 0}};
 
-    auto push = ZmqQueue::push_to("tcp://127.0.0.1:0", schema, "aligned", /*bind=*/true);
+    auto push = make_push_test("tcp://127.0.0.1:0", schema, "aligned", /*bind=*/true);
     ASSERT_NE(push, nullptr);
     EXPECT_EQ(push->item_size(), 16u);
     ASSERT_TRUE(push->start());
+    ASSERT_TRUE(seed_self_allowlist(*push));
     const std::string ep = static_cast<ZmqQueue*>(push.get())->actual_endpoint();
 
-    auto pull = ZmqQueue::pull_from(ep, schema, "aligned", /*bind=*/false);
+    auto pull = make_pull_test(ep, schema, "aligned", /*bind=*/false);
     ASSERT_NE(pull, nullptr);
     ASSERT_TRUE(pull->start());
     std::this_thread::sleep_for(50ms);
@@ -1342,13 +1445,14 @@ TEST_F(ZmqQueueTest, Schema_MixedArrayFields_MultipleTypes_Roundtrip)
         {"float64",  20, 0},
     };
 
-    auto push = ZmqQueue::push_to("tcp://127.0.0.1:0", schema, "packed", /*bind=*/true);
+    auto push = make_push_test("tcp://127.0.0.1:0", schema, "packed", /*bind=*/true);
     ASSERT_NE(push, nullptr);
     EXPECT_EQ(push->item_size(), 460u);
     ASSERT_TRUE(push->start());
+    ASSERT_TRUE(seed_self_allowlist(*push));
     const std::string ep = static_cast<ZmqQueue*>(push.get())->actual_endpoint();
 
-    auto pull = ZmqQueue::pull_from(ep, schema, "packed", /*bind=*/false);
+    auto pull = make_pull_test(ep, schema, "packed", /*bind=*/false);
     ASSERT_NE(pull, nullptr);
     ASSERT_TRUE(pull->start());
     std::this_thread::sleep_for(50ms);
@@ -1406,7 +1510,7 @@ TEST_F(ZmqQueueTest, PushTo_ZeroDepth_ReturnsNull)
 {
     ExpectLogError("send_buffer_depth must be > 0");
     // send_buffer_depth == 0 is invalid; factory must return nullptr.
-    auto q = ZmqQueue::push_to(schema_ep(11), blob_schema(16), "aligned",
+    auto q = make_push_test(schema_ep(11), blob_schema(16), "aligned",
                                /*bind=*/true, /*tag=*/std::nullopt,
                                /*sndhwm=*/0, /*send_buffer_depth=*/0);
     EXPECT_EQ(q, nullptr);
@@ -1416,7 +1520,7 @@ TEST_F(ZmqQueueTest, PullFrom_ZeroDepth_ReturnsNull)
 {
     ExpectLogError("max_buffer_depth must be > 0");
     // max_buffer_depth == 0 causes % 0 UB in recv_thread_; factory must reject it (C1).
-    auto q = ZmqQueue::pull_from(schema_ep(11), blob_schema(16), "aligned",
+    auto q = make_pull_test(schema_ep(11), blob_schema(16), "aligned",
                                  /*bind=*/true, /*max_buffer_depth=*/0);
     EXPECT_EQ(q, nullptr);
 }
@@ -1427,9 +1531,9 @@ TEST_F(ZmqQueueTest, Schema_ZeroCountField_ReturnsNull)
     // count == 0 for a numeric field yields zero byte_size with aliased struct offsets
     // — silent data corruption.  Both factories must reject it (C2).
     std::vector<ZmqSchemaField> bad = {{"int32", 0, 0}}; // count=0 is the defect
-    auto pull = ZmqQueue::pull_from(schema_ep(11), bad, "aligned", /*bind=*/true);
+    auto pull = make_pull_test(schema_ep(11), bad, "aligned", /*bind=*/true);
     EXPECT_EQ(pull, nullptr) << "pull_from: count=0 numeric field must return nullptr";
-    auto push = ZmqQueue::push_to(schema_ep(11), bad, "aligned");
+    auto push = make_push_test(schema_ep(11), bad, "aligned");
     EXPECT_EQ(push, nullptr) << "push_to: count=0 numeric field must return nullptr";
 }
 
@@ -1438,7 +1542,7 @@ TEST_F(ZmqQueueTest, Schema_ZeroCountField_ReturnsNull)
 TEST_F(ZmqQueueTest, Metrics_ZeroOnCreation_PushQueue)
 {
     // All metrics fields must be zero immediately after factory (before start()).
-    auto q = ZmqQueue::push_to(schema_ep(11), blob_schema(16), "aligned");
+    auto q = make_push_test(schema_ep(11), blob_schema(16), "aligned");
     ASSERT_NE(q, nullptr);
 
     EXPECT_EQ(q->metrics().data_drop_count,    0u);
@@ -1457,7 +1561,7 @@ TEST_F(ZmqQueueTest, Metrics_ZeroOnCreation_PushQueue)
 TEST_F(ZmqQueueTest, Metrics_ZeroOnCreation_PullQueue)
 {
     // All metrics fields must be zero immediately after factory (before start()).
-    auto q = ZmqQueue::pull_from(schema_ep(11), blob_schema(16), "aligned", /*bind=*/true);
+    auto q = make_pull_test(schema_ep(11), blob_schema(16), "aligned", /*bind=*/true);
     ASSERT_NE(q, nullptr);
 
     EXPECT_EQ(q->metrics().recv_overflow_count,    0u);
@@ -1480,7 +1584,7 @@ TEST_F(ZmqQueueTest, OverflowDrop_FullBuffer_ReturnsNullAndIncrements)
     // Create a push queue with depth=2, no start() (send_thread_ not running).
     // After 2 successful write_acquire/commit pairs, buffer is full.
     // The 3rd write_acquire must return nullptr and increment data_drop_count.
-    auto push = ZmqQueue::push_to(schema_ep(12), blob_schema(8), "aligned",
+    auto push = make_push_test(schema_ep(12), blob_schema(8), "aligned",
                                   /*bind=*/true, /*tag=*/std::nullopt, /*sndhwm=*/0,
                                   /*depth=*/2, OverflowPolicy::Drop);
     ASSERT_NE(push, nullptr);
@@ -1512,7 +1616,7 @@ TEST_F(ZmqQueueTest, OverflowDrop_FullBuffer_ReturnsNullAndIncrements)
 TEST_F(ZmqQueueTest, OverflowDrop_Discard_DoesNotFillSlot)
 {
     // write_discard() must not advance the ring tail — buffer stays at 0.
-    auto push = ZmqQueue::push_to(schema_ep(12), blob_schema(8), "aligned",
+    auto push = make_push_test(schema_ep(12), blob_schema(8), "aligned",
                                   /*bind=*/true, /*tag=*/std::nullopt, /*sndhwm=*/0,
                                   /*depth=*/1, OverflowPolicy::Drop);
     ASSERT_NE(push, nullptr);
@@ -1535,7 +1639,7 @@ TEST_F(ZmqQueueTest, OverflowBlock_Timeout_ReturnsNullAndIncrements)
 {
     // Create a push queue with Block policy and depth=1; fill the slot.
     // A second write_acquire with a short timeout must block then return nullptr.
-    auto push = ZmqQueue::push_to(schema_ep(13), blob_schema(8), "aligned",
+    auto push = make_push_test(schema_ep(13), blob_schema(8), "aligned",
                                   /*bind=*/true, /*tag=*/std::nullopt, /*sndhwm=*/0,
                                   /*depth=*/1, OverflowPolicy::Block);
     ASSERT_NE(push, nullptr);
@@ -1560,7 +1664,7 @@ TEST_F(ZmqQueueTest, OverflowBlock_Timeout_ReturnsNullAndIncrements)
 TEST_F(ZmqQueueTest, Metrics_IndividualAccessorsMatchStruct)
 {
     // After triggering some overruns, verify individual accessors and metrics() agree.
-    auto push = ZmqQueue::push_to(schema_ep(14), blob_schema(8), "aligned",
+    auto push = make_push_test(schema_ep(14), blob_schema(8), "aligned",
                                   /*bind=*/true, /*tag=*/std::nullopt, /*sndhwm=*/0,
                                   /*depth=*/1, OverflowPolicy::Drop);
     ASSERT_NE(push, nullptr);
@@ -1588,15 +1692,16 @@ TEST_F(ZmqQueueTest, SendThread_DrainOnStop_CompletesWithoutHang)
     // Fill the send ring with N items, then stop().
     // Verifies stop() terminates cleanly (thread joins) even with pending items.
     // Uses port 0 so OS assigns a free port.
-    auto push = ZmqQueue::push_to("tcp://127.0.0.1:0", blob_schema(8), "aligned",
+    auto push = make_push_test("tcp://127.0.0.1:0", blob_schema(8), "aligned",
                                   /*bind=*/true, /*tag=*/std::nullopt, /*sndhwm=*/0,
                                   /*depth=*/8, OverflowPolicy::Drop);
     ASSERT_NE(push, nullptr);
     ASSERT_TRUE(push->start());
+    ASSERT_TRUE(seed_self_allowlist(*push));
 
     // Connect a PULL socket so ZMQ HWM is not a concern.
     const std::string ep = static_cast<ZmqQueue*>(push.get())->actual_endpoint();
-    auto pull = ZmqQueue::pull_from(ep, blob_schema(8), "aligned", /*bind=*/false);
+    auto pull = make_pull_test(ep, blob_schema(8), "aligned", /*bind=*/false);
     ASSERT_NE(pull, nullptr);
     ASSERT_TRUE(pull->start());
     std::this_thread::sleep_for(50ms); // allow TCP handshake
@@ -1624,13 +1729,14 @@ TEST_F(ZmqQueueTest, SendThread_Roundtrip_ThenStop)
 {
     // Write 3 items and verify they are received before stop().
     // Confirms send_thread_ encodes and delivers without loss under normal conditions.
-    auto push = ZmqQueue::push_to("tcp://127.0.0.1:0", blob_schema(4), "aligned",
+    auto push = make_push_test("tcp://127.0.0.1:0", blob_schema(4), "aligned",
                                   /*bind=*/true, /*tag=*/std::nullopt, /*sndhwm=*/0,
                                   /*depth=*/16, OverflowPolicy::Drop);
     ASSERT_NE(push, nullptr);
     ASSERT_TRUE(push->start());
+    ASSERT_TRUE(seed_self_allowlist(*push));
 
-    auto pull = ZmqQueue::pull_from(static_cast<ZmqQueue*>(push.get())->actual_endpoint(), blob_schema(4), "aligned",
+    auto pull = make_pull_test(static_cast<ZmqQueue*>(push.get())->actual_endpoint(), blob_schema(4), "aligned",
                                     /*bind=*/false);
     ASSERT_NE(pull, nullptr);
     ASSERT_TRUE(pull->start());
@@ -1671,15 +1777,18 @@ TEST_F(ZmqQueueTest, AbstractQueue_Roundtrip_ViaPushPullPtr)
 {
     // Verify that the Queue abstract interface (write_acquire/write_commit,
     // read_acquire/read_release) works correctly through Queue* base pointers.
-    std::unique_ptr<QueueWriter> push = ZmqQueue::push_to(
+    std::unique_ptr<QueueWriter> push = make_push_test(
         "tcp://127.0.0.1:0", blob_schema(8), "aligned",
         /*bind=*/true, /*tag=*/std::nullopt, /*sndhwm=*/0, /*depth=*/16);
     ASSERT_NE(push, nullptr);
     ASSERT_TRUE(push->start());
+    // Downcast for the seed; helper takes the concrete ZmqQueue& to
+    // stay unambiguous against the abstract bases.
+    ASSERT_TRUE(seed_self_allowlist(*static_cast<ZmqQueue *>(push.get())));
 
     // Downcast only to get actual_endpoint(); all other calls use Queue*.
     std::string ep = static_cast<ZmqQueue*>(push.get())->actual_endpoint();
-    std::unique_ptr<QueueReader> pull = ZmqQueue::pull_from(ep, blob_schema(8), "aligned",
+    std::unique_ptr<QueueReader> pull = make_pull_test(ep, blob_schema(8), "aligned",
                                                       /*bind=*/false);
     ASSERT_NE(pull, nullptr);
     ASSERT_TRUE(pull->start());
@@ -1712,7 +1821,7 @@ TEST_F(ZmqQueueTest, AbstractQueue_Roundtrip_ViaPushPullPtr)
 TEST_F(ZmqQueueTest, AbstractQueue_Metrics_ViaBasePointer)
 {
     // metrics() called through Queue* must return correct values.
-    std::unique_ptr<QueueWriter> push = ZmqQueue::push_to(
+    std::unique_ptr<QueueWriter> push = make_push_test(
         schema_ep(15), blob_schema(4), "aligned",
         /*bind=*/true, /*tag=*/std::nullopt, /*sndhwm=*/0, /*depth=*/1, OverflowPolicy::Drop);
     ASSERT_NE(push, nullptr);
@@ -1740,7 +1849,7 @@ TEST_F(ZmqQueueTest, ConcurrentMetrics_NoDataRaceUnderIO)
     // Spawn a reader thread that repeatedly calls metrics() while the main thread
     // fills the push queue and triggers overruns.
     // All metric counters are std::atomic so this must not data-race (TSAN clean).
-    auto push = ZmqQueue::push_to(schema_ep(17), blob_schema(8), "aligned",
+    auto push = make_push_test(schema_ep(17), blob_schema(8), "aligned",
                                   /*bind=*/true, /*tag=*/std::nullopt, /*sndhwm=*/0,
                                   /*depth=*/2, OverflowPolicy::Drop);
     ASSERT_NE(push, nullptr);
@@ -1787,7 +1896,7 @@ TEST_F(ZmqQueueTest, ConcurrentMetrics_NoDataRaceUnderIO)
 TEST_F(ZmqQueueTest, PullQueue_SendFieldsAreZero)
 {
     // A PULL (read-mode) queue never uses send paths — those metrics stay 0.
-    auto pull = ZmqQueue::pull_from(schema_ep(18), blob_schema(4), "aligned", /*bind=*/true);
+    auto pull = make_pull_test(schema_ep(18), blob_schema(4), "aligned", /*bind=*/true);
     ASSERT_NE(pull, nullptr);
 
     const QueueMetrics m = pull->metrics();
@@ -1802,7 +1911,7 @@ TEST_F(ZmqQueueTest, PullQueue_SendFieldsAreZero)
 TEST_F(ZmqQueueTest, PushQueue_RecvFieldsAreZero)
 {
     // A PUSH (write-mode) queue never uses recv paths — those metrics stay 0.
-    auto push = ZmqQueue::push_to(schema_ep(18), blob_schema(4), "aligned");
+    auto push = make_push_test(schema_ep(18), blob_schema(4), "aligned");
     ASSERT_NE(push, nullptr);
 
     const QueueMetrics m = push->metrics();
@@ -1823,10 +1932,10 @@ TEST_F(ZmqQueueTest, Schema_InvalidTypeStr_ReturnsNull)
     ExpectLogError("invalid type_str");
     // Factories must return nullptr if any ZmqSchemaField has an unrecognised type_str.
     // This covers the ZQ1 validation path (factory-time type check).
-    auto push = ZmqQueue::push_to(schema_ep(19), {{"invalid_type", 1, 0}}, "aligned");
+    auto push = make_push_test(schema_ep(19), {{"invalid_type", 1, 0}}, "aligned");
     EXPECT_EQ(push, nullptr) << "push_to: invalid type_str must return nullptr";
 
-    auto pull = ZmqQueue::pull_from(schema_ep(19), {{"invalid_type", 1, 0}}, "aligned", true);
+    auto pull = make_pull_test(schema_ep(19), {{"invalid_type", 1, 0}}, "aligned", true);
     EXPECT_EQ(pull, nullptr) << "pull_from: invalid type_str must return nullptr";
 }
 
@@ -1834,7 +1943,7 @@ TEST_F(ZmqQueueTest, DoubleStart_IsIdempotent)
 {
     // Calling start() on an already-running queue must return true (idempotent).
     // The queue must remain running and usable.
-    auto q = ZmqQueue::pull_from("tcp://127.0.0.1:0", blob_schema(8), "aligned", /*bind=*/true);
+    auto q = make_pull_test("tcp://127.0.0.1:0", blob_schema(8), "aligned", /*bind=*/true);
     ASSERT_NE(q, nullptr);
 
     ASSERT_TRUE(q->start());
@@ -1852,7 +1961,7 @@ TEST_F(ZmqQueueTest, WriteAcquire_OnReadModeQueue_ReturnsNull)
 {
     // A PULL (read-mode) queue has no write buffer — write_acquire() must return nullptr.
     // Verifies wrong-mode guard path in write_acquire().
-    auto pull = ZmqQueue::pull_from(schema_ep(20), blob_schema(8), "aligned", /*bind=*/true);
+    auto pull = make_pull_test(schema_ep(20), blob_schema(8), "aligned", /*bind=*/true);
     ASSERT_NE(pull, nullptr);
     auto* zpull = static_cast<ZmqQueue*>(pull.get());
 
@@ -1868,7 +1977,7 @@ TEST_F(ZmqQueueTest, ReadAcquire_OnWriteModeQueue_ReturnsNull)
 {
     // A PUSH (write-mode) queue has no recv ring — read_acquire() must return nullptr.
     // Verifies wrong-mode guard path in read_acquire().
-    auto push = ZmqQueue::push_to(schema_ep(20), blob_schema(8), "aligned");
+    auto push = make_push_test(schema_ep(20), blob_schema(8), "aligned");
     ASSERT_NE(push, nullptr);
     auto* zpush = static_cast<ZmqQueue*>(push.get());
 
@@ -1885,7 +1994,7 @@ TEST_F(ZmqQueueTest, ActualEndpoint_BeforeStart_ReturnsConfiguredEndpoint)
     // This covers the fallback path: pImpl->actual_endpoint.empty() → pImpl->endpoint.
     // After start() with port 0, it returns the OS-assigned port instead.
     const std::string ep = "tcp://127.0.0.1:0";
-    auto push = ZmqQueue::push_to(ep, blob_schema(8), "aligned", /*bind=*/true);
+    auto push = make_push_test(ep, blob_schema(8), "aligned", /*bind=*/true);
     ASSERT_NE(push, nullptr);
     EXPECT_FALSE(push->is_running());
 
@@ -1894,6 +2003,7 @@ TEST_F(ZmqQueueTest, ActualEndpoint_BeforeStart_ReturnsConfiguredEndpoint)
 
     // After start(), actual_endpoint() returns the OS-assigned port (differs from ":0").
     ASSERT_TRUE(push->start());
+    ASSERT_TRUE(seed_self_allowlist(*push));
     const std::string bound_ep = static_cast<ZmqQueue *>(push.get())->actual_endpoint();
     EXPECT_NE(bound_ep, ep) << "After start(), actual_endpoint() should return the OS-assigned port";
     EXPECT_TRUE(bound_ep.find("tcp://127.0.0.1:") == 0) << "Bound endpoint should be tcp://127.0.0.1:<port>";
@@ -1915,13 +2025,14 @@ TEST_F(ZmqQueueTest, SchemaMismatch_TagMismatch_IncrementsFrameError)
     const auto tag_a = make_tag(0x0102030405060708ULL);
     const auto tag_b = make_tag(0xAABBCCDDEEFF0011ULL);
 
-    auto push = ZmqQueue::push_to("tcp://127.0.0.1:0", blob_schema(8), "aligned",
+    auto push = make_push_test("tcp://127.0.0.1:0", blob_schema(8), "aligned",
                                   /*bind=*/true, /*tag=*/tag_a);
     ASSERT_NE(push, nullptr);
     ASSERT_TRUE(push->start());
+    ASSERT_TRUE(seed_self_allowlist(*push));
     const std::string ep = static_cast<ZmqQueue*>(push.get())->actual_endpoint();
 
-    auto pull = ZmqQueue::pull_from(ep, blob_schema(8), "aligned",
+    auto pull = make_pull_test(ep, blob_schema(8), "aligned",
                                     /*bind=*/false, /*max_buffer_depth=*/8,
                                     /*schema_tag=*/tag_b);
     ASSERT_NE(pull, nullptr);
@@ -1952,7 +2063,7 @@ TEST_F(ZmqQueueTest, Block_WriteAcquire_Timeout_IncrementsOverrun)
     // Create a PUSH queue with depth=2 and Block policy.
     // Without start(), send_thread_ never drains — ring stays full.
     // After filling 2 slots, Block write_acquire must wait the timeout then return nullptr.
-    auto push = ZmqQueue::push_to(schema_ep(23), blob_schema(8), "aligned",
+    auto push = make_push_test(schema_ep(23), blob_schema(8), "aligned",
                                   /*bind=*/true,
                                   /*tag=*/std::nullopt,
                                   /*sndhwm=*/0,
@@ -1989,7 +2100,7 @@ TEST_F(ZmqQueueTest, ActualEndpoint_BindPort0_ResolvesActualPort)
 {
     // Binding to port 0 requests an OS-assigned ephemeral port.
     // After start(), actual_endpoint() must return the resolved address, NOT ":0".
-    auto push = ZmqQueue::push_to("tcp://127.0.0.1:0", blob_schema(8), "aligned",
+    auto push = make_push_test("tcp://127.0.0.1:0", blob_schema(8), "aligned",
                                   /*bind=*/true);
     ASSERT_NE(push, nullptr);
 
@@ -1997,6 +2108,7 @@ TEST_F(ZmqQueueTest, ActualEndpoint_BindPort0_ResolvesActualPort)
     EXPECT_EQ(static_cast<ZmqQueue*>(push.get())->actual_endpoint(), "tcp://127.0.0.1:0");
 
     ASSERT_TRUE(push->start());
+    ASSERT_TRUE(seed_self_allowlist(*push));
     const std::string actual = static_cast<ZmqQueue*>(push.get())->actual_endpoint();
 
     // After start: must NOT be the wildcard address.
@@ -2025,8 +2137,8 @@ TEST_F(ZmqQueueTest, Packing_NaturalVsPacked_DifferentItemSize)
     const std::vector<ZmqSchemaField> schema = {{"bool", 1, 0}, {"int32", 1, 0}};
     const std::string ep = schema_ep(24); // endpoint unused; queues are not started
 
-    auto aligned = ZmqQueue::pull_from(ep, schema, "aligned", /*bind=*/true);
-    auto packed  = ZmqQueue::pull_from(ep, schema, "packed",  /*bind=*/true);
+    auto aligned = make_pull_test(ep, schema, "aligned", /*bind=*/true);
+    auto packed  = make_pull_test(ep, schema, "packed",  /*bind=*/true);
     ASSERT_NE(aligned, nullptr);
     ASSERT_NE(packed,  nullptr);
 
@@ -2063,17 +2175,18 @@ TEST_F(ZmqQueueTest, Packing_SameLogicalData_RoundtripsBitExactInBothModes)
     {
         SCOPED_TRACE(std::string("packing=") + packing);
 
-        auto push = ZmqQueue::push_to("tcp://127.0.0.1:0", schema, packing,
+        auto push = make_push_test("tcp://127.0.0.1:0", schema, packing,
                                         /*bind=*/true);
         ASSERT_NE(push, nullptr);
         EXPECT_EQ(push->item_size(), expected_item_size)
             << "item_size mismatch for " << packing
             << " — schema math drifted from the expected layout";
         ASSERT_TRUE(push->start());
+        ASSERT_TRUE(seed_self_allowlist(*push));
         const std::string ep =
             static_cast<ZmqQueue*>(push.get())->actual_endpoint();
 
-        auto pull = ZmqQueue::pull_from(ep, schema, packing, /*bind=*/false);
+        auto pull = make_pull_test(ep, schema, packing, /*bind=*/false);
         ASSERT_NE(pull, nullptr);
         EXPECT_EQ(pull->item_size(), expected_item_size);
         ASSERT_TRUE(pull->start());
@@ -2143,16 +2256,18 @@ TEST_F(ZmqQueueTest, Packing_SameLogicalData_RoundtripsBitExactInBothModes)
 TEST_F(ZmqQueueTest, ChecksumEnforced_Roundtrip)
 {
     // Enforced: sender auto-stamps BLAKE2b, receiver auto-verifies → passes.
-    auto pull = ZmqQueue::pull_from("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
-    ASSERT_NE(pull, nullptr);
-    pull->set_checksum_policy(ChecksumPolicy::Enforced);
-    ASSERT_TRUE(pull->start());
-    const std::string ep = static_cast<ZmqQueue*>(pull.get())->actual_endpoint();
-
-    auto push = ZmqQueue::push_to(ep, blob_schema(kItemSize), "aligned", /*bind=*/false);
+    // Production-mirror orientation — see Roundtrip_SingleItem.
+    auto push = make_push_test("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
     ASSERT_NE(push, nullptr);
     push->set_checksum_policy(ChecksumPolicy::Enforced);
     ASSERT_TRUE(push->start());
+    ASSERT_TRUE(seed_self_allowlist(*push));
+    const std::string ep = static_cast<ZmqQueue*>(push.get())->actual_endpoint();
+
+    auto pull = make_pull_test(ep, blob_schema(kItemSize), "aligned", /*bind=*/false);
+    ASSERT_NE(pull, nullptr);
+    pull->set_checksum_policy(ChecksumPolicy::Enforced);
+    ASSERT_TRUE(pull->start());
     std::this_thread::sleep_for(50ms);
 
     void *wbuf = push->write_acquire(1000ms);
@@ -2175,16 +2290,18 @@ TEST_F(ZmqQueueTest, ChecksumManual_NoStamp_ReceiverRejects)
 {
     ExpectLogError("checksum error after decode");
     // Manual: sender does NOT stamp (zeros), receiver verifies → frame dropped.
-    auto pull = ZmqQueue::pull_from("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
-    ASSERT_NE(pull, nullptr);
-    pull->set_checksum_policy(ChecksumPolicy::Enforced); // receiver verifies
-    ASSERT_TRUE(pull->start());
-    const std::string ep = static_cast<ZmqQueue*>(pull.get())->actual_endpoint();
-
-    auto push = ZmqQueue::push_to(ep, blob_schema(kItemSize), "aligned", /*bind=*/false);
+    // Production-mirror orientation — see Roundtrip_SingleItem.
+    auto push = make_push_test("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
     ASSERT_NE(push, nullptr);
     push->set_checksum_policy(ChecksumPolicy::Manual); // sender does NOT auto-stamp
     ASSERT_TRUE(push->start());
+    ASSERT_TRUE(seed_self_allowlist(*push));
+    const std::string ep = static_cast<ZmqQueue*>(push.get())->actual_endpoint();
+
+    auto pull = make_pull_test(ep, blob_schema(kItemSize), "aligned", /*bind=*/false);
+    ASSERT_NE(pull, nullptr);
+    pull->set_checksum_policy(ChecksumPolicy::Enforced); // receiver verifies
+    ASSERT_TRUE(pull->start());
     std::this_thread::sleep_for(50ms);
 
     void *wbuf = push->write_acquire(1000ms);
@@ -2207,16 +2324,18 @@ TEST_F(ZmqQueueTest, ChecksumManual_NoStamp_ReceiverRejects)
 TEST_F(ZmqQueueTest, ChecksumNone_Roundtrip)
 {
     // None: no checksum computed or verified → round-trip succeeds.
-    auto pull = ZmqQueue::pull_from("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
-    ASSERT_NE(pull, nullptr);
-    pull->set_checksum_policy(ChecksumPolicy::None);
-    ASSERT_TRUE(pull->start());
-    const std::string ep = static_cast<ZmqQueue*>(pull.get())->actual_endpoint();
-
-    auto push = ZmqQueue::push_to(ep, blob_schema(kItemSize), "aligned", /*bind=*/false);
+    // Production-mirror orientation — see Roundtrip_SingleItem.
+    auto push = make_push_test("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
     ASSERT_NE(push, nullptr);
     push->set_checksum_policy(ChecksumPolicy::None);
     ASSERT_TRUE(push->start());
+    ASSERT_TRUE(seed_self_allowlist(*push));
+    const std::string ep = static_cast<ZmqQueue*>(push.get())->actual_endpoint();
+
+    auto pull = make_pull_test(ep, blob_schema(kItemSize), "aligned", /*bind=*/false);
+    ASSERT_NE(pull, nullptr);
+    pull->set_checksum_policy(ChecksumPolicy::None);
+    ASSERT_TRUE(pull->start());
     std::this_thread::sleep_for(50ms);
 
     void *wbuf = push->write_acquire(1000ms);

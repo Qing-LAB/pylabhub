@@ -74,12 +74,11 @@ TEST_F(ZmqQueueAuthTest, AllowlistSwap_TakesEffectForNextConnection)
     ExpectWorkerOk(w);
 }
 
-TEST_F(ZmqQueueAuthTest, LegacyUnauthFactories_Unchanged)
-{
-    auto w = SpawnWorker("zmq_queue_auth.legacy_unauth_factories_unchanged",
-                         {unique_dir("legacy_unauth_factories_unchanged")});
-    ExpectWorkerOk(w);
-}
+// `LegacyUnauthFactories_Unchanged` test deleted in #160 (C4): the
+// legacy plaintext `pull_from`/`push_to` factories no longer exist;
+// every queue is CURVE-wired (HEP-CORE-0035 §2).  The new
+// `pull_from`/`push_to` are the CURVE-only canonical names (renamed
+// from `pull_from`/`push_to` in C4).
 
 // ── Close-out commit 2 — security-grade tests (path-pinning) ───────────────
 // See the worker file's narrative for the rationale.

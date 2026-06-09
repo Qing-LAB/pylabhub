@@ -509,10 +509,10 @@ cleanup (C1-C5) **must run before A3 can meaningfully ship**.
 |---|---|---|---|
 | **A1** (`164b805c`) | Schema field `RxQueueOptions::producer_peers` + `ProducerPeer` struct | shipped — keeps as-is | — |
 | **A2** (`badfaed1`) | `add_producer_peer` / `remove_producer_peer` interface + producer-side `push_to_with_auth` call site + `producer_peers[0]` consumed by `build_rx_queue` | shipped **but no-op due to silent fallback** | (uncovered HB-1, HB-2, HB-3 — see above) |
-| **C1** | strict-mode `validate_auth_options` + delete the empty-skip conditionals in `ZmqQueue` impl | next | — |
-| **C2** | `Z85PublicKey` strong type (pubkey-only fields) + HEP-0040 §8.4 endpoint shape on ZmqQueue factories + delete `ZmqAuthOptions` | after C1 | — |
+| **C1** | strict-mode `validate_auth_options` + delete the empty-skip conditionals in `ZmqQueue` impl | shipped (#157) | — |
+| **C2** | `Z85PublicKey` strong type (pubkey-only fields) + HEP-0040 §8.4 endpoint shape on ZmqQueue factories + delete `ZmqAuthOptions` | shipped (#158) | — |
 | **C3** | SHIPPED via #173 (round-5 use-not-export — `set_auth` + accessors deleted entirely; keys via `key_store().with_seckey`) | — | closed **HB-1** by construction |
-| **C4** | Delete legacy `pull_from`/`push_to`; rename `_with_auth` → bare; final signatures take `identity_key_name` per HEP §8.4; delete `admission_is_enforced`; migrate 103 test sites | after C2 | — |
+| **C4** | Delete legacy `pull_from`/`push_to`; rename `_with_auth` → bare; final signatures take `identity_key_name` per HEP §8.4; migrate 103 test sites + flip 13 roundtrip tests to production-mirror orientation (PUSH+bind / PULL+connect with serverkey).  `admission_is_enforced` was already deleted in close-out commit 1.  Test fixture: `ZmqQueueTestEnvironment` seeds `kRoleIdentityName` once; per-test `ZapPumpThread` services CURVE handshakes; `seed_self_allowlist(*push)` on the bind side after start. | shipped (#160) | — |
 | **C5** | CURVE-engagement test assertions (L2 / L3 / L4) | after C4 | — |
 | **A3** | **D5** `CONSUMER_REG_ACK.producers[]` emission + **D4** BRC notify dispatch + `set_peer_allowlist` wire from broker + consumer-side switch to authed factory + B1 (`awaiting_endpoint`) + B2 (`zmq_msg_gets("User-Id")`) | after C5 | closes **HB-3** (D4 IS this); contributes to **HB-2** (consumer-side pump) |
 | **HB-2 producer-side pump** | Wire `ZapRouter::pump_one` on the BRC poll thread for the producer's data ROUTER per HEP-0036 §7.1 | after A3 | closes **HB-2** |

@@ -382,9 +382,24 @@ int zmq_rx_null()
         [&]()
         {
             // Rx-side flexzone contract is a property of the Rx queue
-            // itself; no producer peer required.  Rx-build succeeds
-            // even against an unreachable endpoint because the ZMQ
-            // connect is non-blocking.
+            // itself.  Rx-build succeeds even against an unreachable
+            // endpoint because the ZMQ connect is non-blocking.
+            //
+            // HEP-CORE-0035 §2 + #160 (C4): CURVE is unconditional on
+            // every role↔hub data path, so `build_rx_queue` requires
+            // the canonical KeyStore identity to be seeded AND
+            // `producer_peers[0]` to carry the producer's CURVE pubkey.
+            // We provide a synthetic peer (unreachable endpoint + a
+            // freshly minted Z85 pubkey) so the test exercises the
+            // flexzone contract without actually completing a CURVE
+            // handshake.
+            auto curve = pylabhub::tests::make_curve_setup({"prod.zmq-fz.rx"});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture(
+                "test.l3", "test.role_api_flexzone.harness", curve);
+            pylabhub::utils::security::key_store().add_identity_from_z85(
+                pylabhub::utils::security::kRoleIdentityName,
+                curve.hub.public_z85, curve.hub.secret_z85);
+
             RoleHostCore core;
             auto api = std::make_unique<RoleAPIBase>(
                 core, "cons", "cons.zmq-fz.rx");
@@ -394,6 +409,10 @@ int zmq_rx_null()
             rx_opts.data_transport    = "zmq";
             rx_opts.zmq_node_endpoint = "tcp://127.0.0.1:45599";
             rx_opts.slot_spec         = pylabhub::tests::simple_schema();
+            rx_opts.producer_peers.push_back(pylabhub::hub::ProducerPeer{
+                /*role_uid=*/"prod.zmq-fz.rx",
+                /*endpoint=*/"tcp://127.0.0.1:45599",
+                /*pubkey_z85=*/curve.role("prod.zmq-fz.rx").public_z85});
 
             ASSERT_TRUE(api->build_rx_queue(rx_opts));
             ASSERT_TRUE(api->start_rx_queue());
