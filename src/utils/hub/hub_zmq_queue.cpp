@@ -152,7 +152,7 @@ struct ZmqQueueImpl
     // PULL/connect side only — server's CURVE pubkey passed to
     // `zmq::sockopt::curve_serverkey`.  Empty would mean "no
     // serverkey" which is invalid on the connect side; the
-    // `pull_from_curve` factory validates non-empty before populating.
+    // `pull_from` factory validates non-empty before populating.
     std::string server_pubkey_z85_;
 
     // ── CURVE engagement invariant (HEP-CORE-0035 §2 + #161 C5) ──────────
@@ -606,33 +606,23 @@ constexpr std::size_t kCurveKeyZ85Chars = 40;
 /// so misconfiguration is surfaced at the factory call site (returns
 /// nullptr with a precise diagnostic) rather than as a cryptic libzmq
 /// failure inside `start()` against a stale errno from an unrelated
-/// prior call (H-Q3).  Used by both `pull_from_curve` (PULL/connect)
-/// and `push_to_curve` (PUSH/bind).
-///
-/// Error message text is preserved verbatim from the pre-#158 helper
-/// so the L2 mutation-pin substrings in `test_zmq_queue_auth.cpp`
-/// remain valid across the C2 cleanup.  Mentions "ZmqAuthOptions"
-/// remain because the substrings are pinned in tests — when the
-/// pinning is updated to the post-#158 vocabulary, the text here can
-/// follow.
+/// prior call (H-Q3).  Used by both `pull_from` (PULL/connect)
+/// and `push_to` (PUSH/bind).
 std::string
 validate_curve_factory_params(std::string_view identity_key_name,
                               std::string_view server_pubkey_z85,
                               bool             bind_side)
 {
-    // C1 (#157, HEP-CORE-0035 §2): CURVE is unconditional on every
-    // role↔hub data path.  An empty identity_key_name is a programmer
-    // error.  Callers that genuinely want a plaintext socket must
-    // use the legacy `pull_from` / `push_to` factories, which do
-    // not call this validator.
+    // C1 (#157, HEP-CORE-0035 §2) + C4 (#160): CURVE is unconditional
+    // on every role↔hub data path; the post-C4 public factories have
+    // no plaintext entry point.  An empty identity_key_name is a
+    // programmer error that the factory must reject at the call site.
     if (identity_key_name.empty())
         return "keystore_name MUST be non-empty (HEP-CORE-0035 §2 — "
                "CURVE is unconditional on every role↔hub data path; "
                "HEP-CORE-0040 §172 — caller must seed the process "
                "KeyStore with the identity name BEFORE building the "
-               "queue via `*_with_auth`).  Use the legacy "
-               "`pull_from` / `push_to` factories when plaintext is "
-               "intentional.";
+               "queue).";
 
     // HEP-CORE-0040 §172: validate that the named identity is
     // resolvable + has the right byte budget BEFORE constructing the
@@ -646,7 +636,7 @@ validate_curve_factory_params(std::string_view identity_key_name,
             return "keystore_name='" + name_str +
                    "' but KeyStore is not initialized (process must "
                    "construct SecureMemorySubsystem + KeyStore before "
-                   "any ZmqAuthOptions-bearing queue is built)";
+                   "any CURVE-wired queue is built)";
         auto &ks = sec::key_store();
         if (!ks.has(name_str))
             return "keystore_name='" + name_str +
@@ -670,7 +660,7 @@ validate_curve_factory_params(std::string_view identity_key_name,
         // invariant at construction time (#158); we only need to
         // catch the sentinel "empty" case here.
         if (server_pubkey_z85.empty())
-            return "connect-side ZmqAuthOptions requires "
+            return "connect-side CURVE auth requires "
                    "serverkey_z85 (the producer's CURVE pubkey) when "
                    "keystore_name is set";
     }
@@ -684,7 +674,7 @@ validate_curve_factory_params(std::string_view identity_key_name,
 // HEP-CORE-0040 §8.4 endpoint shape (AUTH_TODO §C2, task #158)
 // ============================================================================
 //
-// `pull_from_curve` / `push_to_curve` are the canonical CURVE-wired
+// `pull_from` / `push_to` are the canonical CURVE-wired
 // factory entry points: discrete `identity_key_name` (KeyStore lookup)
 // + `Z85PublicKey server_pubkey` (PULL only) + `zap_domain` (PUSH
 // only).  No `ZmqAuthOptions` struct, no `initial_allowlist` (callers
@@ -733,7 +723,7 @@ ZmqQueue::pull_from(const std::string& endpoint,
     }
 
     static_assert(std::is_final_v<ZmqQueue>,
-                  "ZmqQueue must be final for the *_curve factories' "
+                  "ZmqQueue must be final for the post-C4 CURVE factories' "
                   "static_cast to be sound — otherwise the cast may "
                   "silently truncate a most-derived subclass instance.");
     auto reader = build_plaintext_reader_(endpoint, std::move(schema), std::move(packing),
@@ -742,7 +732,7 @@ ZmqQueue::pull_from(const std::string& endpoint,
     if (!reader) return nullptr;
     std::unique_ptr<ZmqQueue> z(static_cast<ZmqQueue *>(reader.release()));
     assert(!z->is_running() &&
-           "pull_from_curve: plaintext factory must not start() the "
+           "pull_from: plaintext factory must not start() the "
            "queue before auth fields are populated; ordering invariant "
            "broken — silent plaintext-fallback risk");
 
@@ -776,7 +766,7 @@ ZmqQueue::push_to(const std::string& endpoint,
     }
 
     static_assert(std::is_final_v<ZmqQueue>,
-                  "ZmqQueue must be final for the *_curve factories' "
+                  "ZmqQueue must be final for the post-C4 CURVE factories' "
                   "static_cast to be sound — otherwise the cast may "
                   "silently truncate a most-derived subclass instance.");
     auto writer = build_plaintext_writer_(endpoint, std::move(schema), std::move(packing),
@@ -786,7 +776,7 @@ ZmqQueue::push_to(const std::string& endpoint,
     if (!writer) return nullptr;
     std::unique_ptr<ZmqQueue> z(static_cast<ZmqQueue *>(writer.release()));
     assert(!z->is_running() &&
-           "push_to_curve: plaintext factory must not start() the "
+           "push_to: plaintext factory must not start() the "
            "queue before auth fields are populated; ordering invariant "
            "broken — silent plaintext-fallback risk");
 
@@ -1035,7 +1025,7 @@ bool ZmqQueue::start()
                         "[hub::ZmqQueue::start] CURVE wired on "
                         "connect side but server_pubkey_z85 is empty — "
                         "PULL/connect side requires the producer's "
-                        "CURVE pubkey passed to `pull_from_curve`");
+                        "CURVE pubkey passed to `pull_from`");
                 pImpl->socket.set(zmq::sockopt::curve_serverkey,
                                   pImpl->server_pubkey_z85_);
             }
@@ -1056,15 +1046,17 @@ bool ZmqQueue::start()
         // observable `mechanism_` field stays Uninitialized on
         // failure so callers see the bad state via `mechanism()`.
         const int mech = pImpl->socket.get(zmq::sockopt::mechanism);
-        if (mech == ZMQ_CURVE)
+        if (mech != ZMQ_CURVE)
         {
-            pImpl->mechanism_.store(Mechanism::Curve,
-                                    std::memory_order_release);
-        }
-        else
-        {
-            pImpl->mechanism_.store(Mechanism::Plaintext,
-                                    std::memory_order_release);
+            // Do NOT publish a transient `Plaintext` value before the
+            // throw — the catch handler will store `Uninitialized` and
+            // any value visible to a concurrent `mechanism()` reader
+            // between the two stores would contradict the enum
+            // contract that documents `Plaintext` as "unreachable
+            // post-C4".  Skipping the transient keeps the observable
+            // a clean two-state machine (Uninitialized → Curve), with
+            // the throw + catch transitioning back to Uninitialized
+            // on failure.
             throw std::invalid_argument(
                 "[hub::ZmqQueue::start] libzmq reported mechanism=" +
                 std::to_string(mech) + " (expected ZMQ_CURVE=" +
@@ -1072,6 +1064,8 @@ bool ZmqQueue::start()
                 "regression (HEP-CORE-0035 §2 invariant violated; "
                 "see ZmqQueue::mechanism() / Mechanism enum)");
         }
+        pImpl->mechanism_.store(Mechanism::Curve,
+                                std::memory_order_release);
     }
     catch (const std::invalid_argument &e)
     {

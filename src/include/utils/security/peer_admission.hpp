@@ -209,6 +209,20 @@ public:
     /// broker rejects the registration rather than expose an
     /// ungated endpoint.  Also used by L4 tests to confirm the gate
     /// is wire-enforced, not merely policy-declared.
+    ///
+    /// **Post-C4 (#160) note.**  For `ZmqQueue`, this method now
+    /// reduces to "is the queue running?" — the public CURVE-only
+    /// factories reject any construction path without a valid
+    /// `identity_key_name`, and the `ZmqQueue::start()` guard (#161
+    /// C5) refuses to succeed without `ZMQ_CURVE`.  So a started
+    /// `ZmqQueue` is unconditionally CURVE-enforced.  The method is
+    /// retained on the interface because the broker side
+    /// (`broker_service.cpp`) and federation peers may want to
+    /// represent a transitional state in the future; deleting it
+    /// would couple every `PeerAdmission` implementation to the
+    /// post-C4 ZmqQueue invariant.  AUTH_TODO §C4 listed deletion
+    /// as a plan; the cost-benefit favored "keep + document"
+    /// after the C-chain review (2026-06-09).
     [[nodiscard]] virtual bool
     admission_is_enforced() const noexcept = 0;
 };

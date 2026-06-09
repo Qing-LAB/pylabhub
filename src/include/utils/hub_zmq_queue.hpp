@@ -160,7 +160,13 @@ struct ProducerPeer
 enum class Mechanism
 {
     Uninitialized,  ///< `start()` not called, or `stop()` reset the field.
-    Plaintext,      ///< libzmq reported `ZMQ_NULL`/`ZMQ_PLAIN`.  CONTRACT VIOLATION post-C4.
+    Plaintext,      ///< Reserved.  No ZmqQueue ever publishes this value:
+                    ///  the `start()` guard throws BEFORE writing the
+                    ///  mechanism field on any non-CURVE observation,
+                    ///  and the catch handler restores `Uninitialized`.
+                    ///  Kept as a named enum value so callers comparing
+                    ///  arbitrary libzmq mechanisms have a stable name
+                    ///  for the non-CURVE case.
     Curve,          ///< libzmq reported `ZMQ_CURVE`.  The only acceptable post-start value.
 };
 
@@ -210,10 +216,6 @@ public:
     // moved to the private `build_plaintext_reader_` /
     // `build_plaintext_writer_` helpers below — they're not callable
     // from outside this class.
-    // plaintext `pull_from`/`push_to`, both namespaces are live.
-    // After C4:
-    //   pull_from_curve → pull_from
-    //   push_to_curve   → push_to
 
     [[nodiscard]] static std::unique_ptr<ZmqQueue>
     pull_from(const std::string& endpoint,

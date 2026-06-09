@@ -134,7 +134,11 @@ indirect call paths.  Examples seen in this repo:
 
 - A `validate_auth_options` semantic tightening rejected empty
   `keystore_name` and broke 3 `ZmqQueueTest::*ProducerPeer*` tests
-  that used `*_with_auth` with empty options for non-CURVE reasons.
+  that used the legacy `*_with_auth` factories (which existed pre-C2,
+  #158) with empty options for non-CURVE reasons.  Both `_with_auth`
+  factories and `ZmqAuthOptions` are now gone — the CURVE factories
+  spell `pull_from` / `push_to` (the canonical names HEP-CORE-0040
+  §8.4 always wanted).
 - A `build_tx_queue` requirement change (now needs `"role_identity"`
   in KeyStore) broke `RoleApiFlexzoneTest.ZmqTxNull` which constructs
   a `RoleAPIBase` directly without the new setup.
@@ -148,8 +152,10 @@ downstream callers** before claiming done:
 
 ```bash
 # Example: when the ZmqQueue CURVE factory contract changes, audit
-# every direct caller (production + tests).
-grep -rn "pull_from_curve\|push_to_curve" src/ tests/
+# every direct caller (production + tests).  Post-C4 (#160) the
+# canonical names are `pull_from` / `push_to`; pre-C4 transitional
+# names `pull_from_curve` / `push_to_curve` no longer exist.
+grep -rn "ZmqQueue::pull_from\b\|ZmqQueue::push_to\b" src/ tests/
 ```
 
 For each downstream caller, audit the surrounding setup against the

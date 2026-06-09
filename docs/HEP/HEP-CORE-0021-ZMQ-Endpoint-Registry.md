@@ -469,7 +469,9 @@ if (ack.transport == "shm")
 }
 else if (ack.transport == "zmq")
 {
-    // queue_ = ZmqQueue::pull_from(ack.zmq_endpoint, slot_size, bind=false, ...)
+    // queue_ = ZmqQueue::pull_from(ack.zmq_endpoint, producer_pubkey,
+    //                              schema, packing, identity_key_name,
+    //                              bind=false, ...)  // HEP-0040 §8.4
 }
 ```
 
@@ -618,9 +620,9 @@ Payload encoding: scalars as native msgpack types; arrays/string/bytes as `bin` 
 **Packing**: `"aligned"` = C `ctypes.LittleEndianStructure` natural alignment; `"packed"` = no padding.
 Both sides must use identical schema + packing. `"natural"` is not a valid value (renamed to `"aligned"` 2026-03-08).
 
-**Factories**:
-- `ZmqQueue::pull_from(endpoint, schema, item_size, bind, buffer_depth, packing)` → PULL (recv_thread_)
-- `ZmqQueue::push_to(endpoint, schema, item_size, bind, buffer_depth, packing)` → PUSH (send_thread_)
+**Factories** (post-#160 C4 — CURVE-only, HEP-CORE-0040 §8.4 endpoint shape; see HEP-CORE-0017 §"ZmqQueue — API contract" for the full signature):
+- `ZmqQueue::pull_from(endpoint, server_pubkey, schema, packing, identity_key_name, bind, buffer_depth, ...)` → PULL (recv_thread_)
+- `ZmqQueue::push_to(endpoint, schema, packing, identity_key_name, zap_domain, bind, ...)` → PUSH (send_thread_)
 
 **Metrics**: `recv_overflow_count`, `recv_frame_error_count`, `recv_gap_count`, `send_drop_count`, `send_retry_count`, `overrun_count` — all `std::atomic<uint64_t>` on `ZmqQueue::metrics()`.
 

@@ -619,6 +619,8 @@ The original framing ("symmetric `auth_client_pubkey()` / `auth_client_seckey()`
 - `role_handler.cpp` populates `BRC::Config.client_seckey` → BRC connect calls `socket.set(zmq::sockopt::curve_secretkey, ...)`.
 - `role_api_base.cpp::build_tx_queue` populates `ZmqAuthOptions.my_seckey_z85` → ZmqQueue factory calls `socket.set(curve_secretkey, ...)`.
 
+*Post-C2 (#158) update:* `ZmqAuthOptions` no longer exists.  Both call sites above now consume `key_store().with_seckey(name, cb)` at the use site (the BRC connect path and inside `ZmqQueue::start()` respectively); no `std::string` seckey hop survives.  The trace above is preserved because it captures the **why** of the use-not-export decision — the bytes never need to leave the security module.
+
 In both cases the seckey is plumbed through call chains as `std::string` only to feed a libzmq socket option setter at the end.  The plumbing has no other purpose; once `auth_client_seckey()` returns, the bytes get assigned into another std::string, then another, then handed to libzmq.  Every hop is a copy of unlocked plaintext.
 
 **The use-not-export form**: the security module owns the operation directly.  Consumers call `key_store().with_seckey(name, cb)` at the actual use site; `cb` runs with a `std::string_view` into the LockedKey-owned bytes and applies them to the socket option.  The bytes never leave the LockedKey region.

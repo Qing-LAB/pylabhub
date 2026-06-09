@@ -185,20 +185,33 @@ uses only a QueueReader.
 `std::vector<ZmqSchemaField>` and a packing rule are **required** at construction.
 
 ```cpp
-// Factories return unique_ptr<QueueWriter> (push_to) or unique_ptr<QueueReader> (pull_from):
-std::unique_ptr<QueueWriter> ZmqQueue::push_to(
+// Factories return unique_ptr<ZmqQueue>.  Both flavors are CURVE-only
+// (HEP-CORE-0035 §2 unconditional-CURVE invariant); the public surface
+// matches HEP-CORE-0040 §8.4 endpoint shape.  Identity bytes are NOT
+// passed by value — `identity_key_name` is the KeyStore lookup key
+// that the factory body resolves via `key_store().with_seckey(name, cb)`
+// + `key_store().pubkey(name)`.
+std::unique_ptr<ZmqQueue> ZmqQueue::push_to(
     const std::string& endpoint,
     std::vector<ZmqSchemaField> schema,  // REQUIRED: must not be empty
     std::string packing,                 // REQUIRED: "aligned" or "packed"
+    std::string_view identity_key_name = security::kRoleIdentityName,
+    std::string zap_domain = {},         // empty → derive from instance_id
     bool bind = true,
-    std::optional<std::array<uint8_t, 8>> schema_tag = std::nullopt);
+    std::optional<std::array<uint8_t, 8>> schema_tag = std::nullopt,
+    /* sndhwm, send_buffer_depth, overflow_policy, retry_ms, instance_id */ ...);
 
-std::unique_ptr<QueueReader> ZmqQueue::pull_from(
+std::unique_ptr<ZmqQueue> ZmqQueue::pull_from(
     const std::string& endpoint,
-    std::vector<ZmqSchemaField> schema,  // REQUIRED: must not be empty
-    std::string packing,                 // REQUIRED: "aligned" or "packed"
-    bool bind = false, size_t max_buffer_depth = 64,
-    std::optional<std::array<uint8_t, 8>> schema_tag = std::nullopt);
+    security::Z85PublicKey server_pubkey, // PULL/connect: producer pubkey;
+                                          // PULL/bind: empty sentinel ok
+    std::vector<ZmqSchemaField> schema,   // REQUIRED: must not be empty
+    std::string packing,                  // REQUIRED: "aligned" or "packed"
+    std::string_view identity_key_name = security::kRoleIdentityName,
+    bool bind = false,
+    size_t max_buffer_depth = 64,
+    std::optional<std::array<uint8_t, 8>> schema_tag = std::nullopt,
+    /* instance_id */ ...);
 ```
 
 **Violation of these requirements** causes the factory to log a `LOGGER_ERROR` and
