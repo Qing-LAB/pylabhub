@@ -157,6 +157,21 @@ struct ProducerPeer
 /// former is fine.  `Plaintext` collapses libzmq `ZMQ_NULL` /
 /// `ZMQ_PLAIN` because neither is a valid post-C4 state (HEP-0035
 /// §2 — CURVE is unconditional on every role↔hub data path).
+///
+/// **Concurrency contract — `is_running() ⇒ mechanism() == Curve`
+/// once start() returns true.**  The observable is written via
+/// release-ordered atomic stores; readers use acquire ordering.
+/// `stop()` clears `running_` *before* resetting `mechanism_`, so
+/// the implication holds at stop time.  During `start()` setup
+/// there is a brief window (between the `running_=true` reservation
+/// at the top of `start()` and the `mechanism_=Curve` store after
+/// the libzmq mechanism query) where a concurrent reader can see
+/// `is_running()==true && mechanism()==Uninitialized`.  This is
+/// the INTENDED polling pattern for off-thread observers: poll
+/// `mechanism()` and treat `Curve` as the signal that CURVE
+/// engagement is confirmed.  The L2 tests at `test_hub_zmq_queue.cpp`
+/// "Mechanism_AfterPushBind_IsCurve" assert the post-start value
+/// from the same thread that called start() — no race.
 enum class Mechanism
 {
     Uninitialized,  ///< `start()` not called, or `stop()` reset the field.

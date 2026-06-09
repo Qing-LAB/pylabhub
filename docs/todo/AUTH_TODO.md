@@ -367,6 +367,27 @@ two pushed the discussion in circles for an hour.
 
 ## Strict-CURVE cleanup chain — C1..C5 (replaces naive ordering patch)
 
+**STATUS — CLOSED 2026-06-09.**  All five steps shipped:
+C1 (#157), C2 (#158), C3 SHIPPED via #173, C4 (#160), C5 (#161
+Phase 1–4).  Closed under commits `9f9b3ede`/`47bf6fb6`/`7ff98d60`/`233933eb`/`<this commit>`.  Phase C
+fresh-eye review (2026-06-09) + script-binding + concurrency
+audits completed; documentation drift fixed across HEPs 0015/0017/0021/0040.
+
+Open follow-ups (not blocking; tracked as separate tasks):
+- **#186** — expose `ZmqQueue::mechanism()` to scripts (binding gap;
+  the accessor is C++/test-only today, but the design intent in C5
+  was script/telemetry observability).
+- **L3 NULL-mech handshake-fail test** — explicitly deferred in
+  C5 row below (would require new socket-monitor test
+  infrastructure; the L2 `Mechanism::Curve` invariant + start()
+  guard + keystore validator chain already structurally
+  guarantee no NULL-mech client connects to a CURVE-enforced
+  producer).
+- **Demo refresh wave** — pre-existing breakage (demos ship with
+  `"auth": { "keyfile": "" }` which B3 #78 already invalidated).
+  Not a C-chain regression; needs `plh_role --keygen` + `known_roles`
+  wired into demo manifests.  Track alongside #79 (B4) + #155.
+
 The audit above shows the right fix is not "move `set_auth` before
 `setup_infrastructure_`" — that's still a workaround on top of the
 silent-fallback design.  The correct fix removes the obsolete bridge
