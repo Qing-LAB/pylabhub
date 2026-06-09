@@ -2514,18 +2514,30 @@ int LuaEngine::lua_api_metrics(lua_State *L)
     const bool has_tx = self->api_->has_tx_side();
     const bool has_rx = self->api_->has_rx_side();
 
+    // C5 follow-up (#186) — surface the CURVE engagement state on the
+    // same per-queue subtable as the counter metrics.  String value
+    // for stability across binding shapes; `Curve` is the post-C4
+    // invariant for any started ZmqQueue (HEP-CORE-0035 §2).
+    auto push_mechanism = [&](scripting::ChannelSide s)
+    {
+        lua_pushstring(L, hub::mechanism_name(self->api_->queue_mechanism(s)));
+        lua_setfield(L, -2, "mechanism");
+    };
+
     if (self->api_->role_tag() == "proc")
     {
         if (has_rx)
         {
             lua_newtable(L);
             queue_metrics_to_lua(L, self->api_->queue_metrics(scripting::ChannelSide::Rx));
+            push_mechanism(scripting::ChannelSide::Rx);
             lua_setfield(L, -2, "in_queue");
         }
         if (has_tx)
         {
             lua_newtable(L);
             queue_metrics_to_lua(L, self->api_->queue_metrics(scripting::ChannelSide::Tx));
+            push_mechanism(scripting::ChannelSide::Tx);
             lua_setfield(L, -2, "out_queue");
         }
     }
@@ -2533,12 +2545,14 @@ int LuaEngine::lua_api_metrics(lua_State *L)
     {
         lua_newtable(L);
         queue_metrics_to_lua(L, self->api_->queue_metrics(scripting::ChannelSide::Tx));
+        push_mechanism(scripting::ChannelSide::Tx);
         lua_setfield(L, -2, "queue");
     }
     else if (self->api_->role_tag() == "cons" && has_rx)
     {
         lua_newtable(L);
         queue_metrics_to_lua(L, self->api_->queue_metrics(scripting::ChannelSide::Rx));
+        push_mechanism(scripting::ChannelSide::Rx);
         lua_setfield(L, -2, "queue");
     }
 

@@ -369,24 +369,45 @@ two pushed the discussion in circles for an hour.
 
 **STATUS — CLOSED 2026-06-09.**  All five steps shipped:
 C1 (#157), C2 (#158), C3 SHIPPED via #173, C4 (#160), C5 (#161
-Phase 1–4).  Closed under commits `9f9b3ede`/`47bf6fb6`/`7ff98d60`/`233933eb`/`<this commit>`.  Phase C
+Phase 1–5).  Closed under commits `9f9b3ede`/`47bf6fb6`/`7ff98d60`/`233933eb`/`96469812` + the deferred-followup commit (#186 binding + L3 NULL-mech test).  Phase C
 fresh-eye review (2026-06-09) + script-binding + concurrency
 audits completed; documentation drift fixed across HEPs 0015/0017/0021/0040.
 
-Open follow-ups (not blocking; tracked as separate tasks):
-- **#186** — expose `ZmqQueue::mechanism()` to scripts (binding gap;
-  the accessor is C++/test-only today, but the design intent in C5
-  was script/telemetry observability).
-- **L3 NULL-mech handshake-fail test** — explicitly deferred in
-  C5 row below (would require new socket-monitor test
-  infrastructure; the L2 `Mechanism::Curve` invariant + start()
-  guard + keystore validator chain already structurally
-  guarantee no NULL-mech client connects to a CURVE-enforced
-  producer).
-- **Demo refresh wave** — pre-existing breakage (demos ship with
-  `"auth": { "keyfile": "" }` which B3 #78 already invalidated).
-  Not a C-chain regression; needs `plh_role --keygen` + `known_roles`
-  wired into demo manifests.  Track alongside #79 (B4) + #155.
+**Deferred follow-ups addressed in Phase 5 close-out:**
+- ✅ **#186 binding gap** — shipped.  `RoleAPIBase::queue_mechanism(ChannelSide)`
+  accessor + `hub::mechanism_name()` string conversion + threaded into
+  `snapshot_metrics_json()` (Python `api.metrics()`) and Lua
+  `api.metrics()`.  L3 worker `ZmqTxNull` pins
+  `queue_mechanism(Tx) == Curve` after start + `Uninitialized` after
+  close_queues.
+- ✅ **L3 NULL-mech handshake-fail test** — shipped.
+  `ZmqQueueAuthTest::NullMechClient_HandshakeFails` uses
+  `zmq_socket_monitor` on a raw NULL-mech PULL socket connecting to
+  a CURVE-enforced producer; asserts a `ZMQ_EVENT_HANDSHAKE_FAILED_*`
+  event fires within 3s.  Pins the bidirectional contract that the
+  L2 `Mechanism::Curve` invariant + start() guard alone don't
+  cover — server CURVE-enforced + client NULL ⇒ no data session.
+
+**Deferred follow-up explicitly left out of Phase C — Demo refresh wave.**
+Demos under `share/py-demo-*` ship with `"auth": { "keyfile": "" }` in
+24 role configs across 11 demo dirs.  Per the 2026-06-09 audit:
+1. The breakage PRE-DATES Phase C — B3 (#78) made empty `auth.keyfile`
+   a config-load hard error in early May 2026.  No demo has been
+   refreshed since.
+2. No demo file constructs `ZmqQueue` directly; all transport
+   construction goes through `RoleAPIBase::build_tx_queue` /
+   `build_rx_queue`, which were correctly migrated to the post-C4
+   CURVE-only factories.  Phase C did NOT introduce any new demo
+   breakage.
+3. Fixing the demos requires structural changes orthogonal to the
+   C-chain: provisioning per-role vaults via `plh_role --keygen` in
+   each `demo.manifest.json` `setup.commands` array, populating
+   `known_roles` in each `hub.json` with the resulting pubkeys, and
+   end-to-end re-validation of each demo flow.  That's a coordinated
+   refresh wave that belongs alongside #79 (B4 plh_role --init SHM
+   secret) and #155 (CLI --init bundling), not as a Phase C close-out.
+Tracking: keep as a known-broken state until the next demo refresh
+wave; #79 + #155 are the right home.
 
 The audit above shows the right fix is not "move `set_auth` before
 `setup_infrastructure_`" — that's still a workaround on top of the

@@ -24,6 +24,8 @@
 
 #include <zmq.h>
 
+#include <fmt/core.h>
+
 #include "shared_test_helpers.h"
 #include "test_entrypoint.h"
 
@@ -864,6 +866,116 @@ int auth_admission_is_enforced_lifecycle(const char *)
         pylabhub::hub::GetZMQContextModule());
 }
 
+// AUTH_TODO §C5 (#161) — NULL-mech client cannot connect to CURVE
+// producer.  Anti-recursion test for the HEP-CORE-0035 §2 invariant:
+// when a producer is CURVE-enforced, a client that connects without
+// CURVE (NULL mechanism) MUST fail the ZMTP handshake.  We monitor
+// the client socket for `ZMQ_EVENT_HANDSHAKE_FAILED_*` events and
+// assert at least one fires within a generous timeout.
+//
+// Implementation note: monitoring the producer would require access
+// to the private ZmqQueueImpl socket; monitoring the client gives the
+// same guarantee — libzmq raises HANDSHAKE_FAILED on BOTH sides when
+// mechanism negotiation fails.
+int auth_null_mech_client_handshake_fails(const char * /*tmpdir*/)
+{
+    return run_gtest_worker(
+        [&]() {
+            ScopedKeyStore ks;
+            const auto [producer_pub, producer_sec] = make_keypair();
+            pylabhub::utils::security::key_store().add_identity_from_z85(
+                "producer", producer_pub, producer_sec);
+
+            // CURVE-enforced producer: PUSH+bind, ZAP-gated.  Empty
+            // allowlist is fine — a NULL-mech client never gets to
+            // the ZAP step; the mechanism mismatch fires earlier in
+            // the ZMTP handshake.
+            auto producer = ZmqQueue::push_to(
+                "tcp://127.0.0.1:0", make_uint32_schema(), "aligned",
+                /*identity_key_name=*/"producer",
+                /*zap_domain=*/"test.zmq.auth.nullmech",
+                /*bind=*/true);
+            ASSERT_NE(producer, nullptr);
+            ASSERT_TRUE(producer->start());
+
+            ZapPumpThread pump;
+            const std::string ep = producer->actual_endpoint();
+
+            // NULL-mech client: raw zmq PULL on the shared context,
+            // NO CURVE setsockopts.  libzmq defaults the mechanism to
+            // ZMQ_NULL when no mechanism opts are set.
+            auto &ctx = pylabhub::hub::get_zmq_context();
+            zmq::socket_t client(ctx, zmq::socket_type::pull);
+            client.set(zmq::sockopt::linger, 0);
+            client.set(zmq::sockopt::rcvtimeo, 100);
+
+            // Attach socket monitor BEFORE connect so the handshake
+            // event isn't missed.  Event mask covers all three
+            // libzmq HANDSHAKE_FAILED codes — the exact code depends
+            // on which side raises the protocol error first.
+            static std::atomic<int> s_monitor_id{0};
+            const std::string mon_ep = fmt::format(
+                "inproc://nullmech-monitor-{}",
+                s_monitor_id.fetch_add(1, std::memory_order_relaxed));
+            const int events =
+                ZMQ_EVENT_HANDSHAKE_FAILED_PROTOCOL |
+                ZMQ_EVENT_HANDSHAKE_FAILED_NO_DETAIL |
+                ZMQ_EVENT_HANDSHAKE_FAILED_AUTH;
+            ASSERT_EQ(zmq_socket_monitor(client.handle(),
+                                         mon_ep.c_str(), events), 0);
+
+            zmq::socket_t mon(ctx, zmq::socket_type::pair);
+            mon.set(zmq::sockopt::linger, 0);
+            mon.set(zmq::sockopt::rcvtimeo, 100);
+            mon.connect(mon_ep);
+
+            client.connect(ep);
+
+            // Poll the monitor for up to 3s — libzmq's handshake
+            // failure is asynchronous and the TCP-level connect can
+            // take a few hundred ms in the worst case.
+            const auto deadline = std::chrono::steady_clock::now() +
+                                  std::chrono::milliseconds(3000);
+            bool handshake_failed = false;
+            int  last_event_id    = 0;
+            while (std::chrono::steady_clock::now() < deadline)
+            {
+                zmq::message_t event_msg;
+                if (!mon.recv(event_msg, zmq::recv_flags::none))
+                    continue;
+                // libzmq event frame layout: <2-byte event_id> <4-byte
+                // value> per zmq_socket_monitor(3).
+                if (event_msg.size() < 6)
+                    continue;
+                const auto *bytes = static_cast<const uint8_t *>(event_msg.data());
+                const uint16_t event_id =
+                    static_cast<uint16_t>(bytes[0]) |
+                    (static_cast<uint16_t>(bytes[1]) << 8);
+                last_event_id = event_id;
+                if ((event_id & events) != 0)
+                {
+                    handshake_failed = true;
+                    break;
+                }
+            }
+
+            EXPECT_TRUE(handshake_failed)
+                << "Expected ZMQ_EVENT_HANDSHAKE_FAILED_* within 3s; "
+                   "last event id observed: " << last_event_id
+                << ".  This anti-recursion test enforces HEP-CORE-0035 §2: "
+                   "a NULL-mech client MUST NOT be able to negotiate "
+                   "a data session with a CURVE-enforced ZmqQueue producer.";
+
+            zmq_socket_monitor(client.handle(), nullptr, 0);
+            producer->stop();
+        },
+        "zmq_queue_auth::auth_null_mech_client_handshake_fails",
+        Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(),
+        JsonConfig::GetLifecycleModule(),
+        pylabhub::hub::GetZMQContextModule());
+}
+
 // ── Dispatcher + registrar ─────────────────────────────────────────────────
 
 int dispatch_zmq_queue_auth(int argc, char **argv)
@@ -904,6 +1016,8 @@ int dispatch_zmq_queue_auth(int argc, char **argv)
         return auth_misconfig_factory_returns_nullptr(tmpdir);
     if (scenario == "auth_admission_is_enforced_lifecycle")
         return auth_admission_is_enforced_lifecycle(tmpdir);
+    if (scenario == "auth_null_mech_client_handshake_fails")
+        return auth_null_mech_client_handshake_fails(tmpdir);
     std::fprintf(stderr, "zmq_queue_auth: unknown scenario '%s'\n",
                  scenario.c_str());
     return 1;

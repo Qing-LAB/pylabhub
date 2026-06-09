@@ -2188,12 +2188,14 @@ RoleAPIBase::snapshot_metrics_for_presence(const std::string &role_type) const
     {
         nlohmann::json q;
         hub::queue_metrics_to_json(q, pImpl->rx_queue->metrics());
+        q["mechanism"] = hub::mechanism_name(queue_mechanism(ChannelSide::Rx));
         result["queue"] = std::move(q);
     }
     else if (role_type == "producer" && pImpl->tx_queue)
     {
         nlohmann::json q;
         hub::queue_metrics_to_json(q, pImpl->tx_queue->metrics());
+        q["mechanism"] = hub::mechanism_name(queue_mechanism(ChannelSide::Tx));
         result["queue"] = std::move(q);
     }
 
@@ -2253,12 +2255,16 @@ nlohmann::json RoleAPIBase::snapshot_metrics_json() const
     const bool has_in  = (pImpl->rx_queue != nullptr);
     const bool has_out = (pImpl->tx_queue != nullptr);
 
-    // Queue metrics: key depends on which sides exist.
+    // Queue metrics: key depends on which sides exist.  Each subtree
+    // also carries a `mechanism` string (C5 follow-up #186) so scripts
+    // and telemetry can confirm CURVE engagement.
     if (has_in && has_out)
     {
         nlohmann::json iq, oq;
         hub::queue_metrics_to_json(iq, pImpl->rx_queue->metrics());
         hub::queue_metrics_to_json(oq, pImpl->tx_queue->metrics());
+        iq["mechanism"] = hub::mechanism_name(queue_mechanism(ChannelSide::Rx));
+        oq["mechanism"] = hub::mechanism_name(queue_mechanism(ChannelSide::Tx));
         result["in_queue"] = std::move(iq);
         result["out_queue"] = std::move(oq);
     }
@@ -2266,12 +2272,14 @@ nlohmann::json RoleAPIBase::snapshot_metrics_json() const
     {
         nlohmann::json q;
         hub::queue_metrics_to_json(q, pImpl->tx_queue->metrics());
+        q["mechanism"] = hub::mechanism_name(queue_mechanism(ChannelSide::Tx));
         result["queue"] = std::move(q);
     }
     else if (has_in)
     {
         nlohmann::json q;
         hub::queue_metrics_to_json(q, pImpl->rx_queue->metrics());
+        q["mechanism"] = hub::mechanism_name(queue_mechanism(ChannelSide::Rx));
         result["queue"] = std::move(q);
     }
 
@@ -2352,6 +2360,24 @@ hub::QueueMetrics RoleAPIBase::queue_metrics(ChannelSide side) const noexcept
     if (side == ChannelSide::Tx)
         return pImpl->tx_queue ? pImpl->tx_queue->metrics() : hub::QueueMetrics{};
     return pImpl->rx_queue ? pImpl->rx_queue->metrics() : hub::QueueMetrics{};
+}
+
+hub::Mechanism RoleAPIBase::queue_mechanism(ChannelSide side) const noexcept
+{
+    // The base classes `QueueReader` / `QueueWriter` are transport-agnostic
+    // and have no mechanism concept; only `ZmqQueue` does.  Downcast and
+    // return `Uninitialized` for everything else (no queue wired, SHM
+    // transport, etc.).  See `hub::Mechanism` in `hub_zmq_queue.hpp` for
+    // the post-C4 invariant — a started ZmqQueue MUST report `Curve`.
+    if (side == ChannelSide::Tx)
+    {
+        if (auto *zq = dynamic_cast<hub::ZmqQueue *>(pImpl->tx_queue.get()))
+            return zq->mechanism();
+        return hub::Mechanism::Uninitialized;
+    }
+    if (auto *zq = dynamic_cast<hub::ZmqQueue *>(pImpl->rx_queue.get()))
+        return zq->mechanism();
+    return hub::Mechanism::Uninitialized;
 }
 
 } // namespace pylabhub::scripting

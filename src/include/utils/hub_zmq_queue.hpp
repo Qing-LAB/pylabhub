@@ -185,6 +185,22 @@ enum class Mechanism
     Curve,          ///< libzmq reported `ZMQ_CURVE`.  The only acceptable post-start value.
 };
 
+/// String name for a `Mechanism` value — stable surface for script
+/// bindings and telemetry sinks (HEP-CORE-0035 §2 + AUTH_TODO §C5
+/// follow-up #186).  Used by `RoleAPIBase::queue_mechanism` consumers
+/// in Lua / Python / JSON paths so the script side never depends on
+/// the underlying integer encoding of the enum.
+[[nodiscard]] constexpr const char *mechanism_name(Mechanism m) noexcept
+{
+    switch (m)
+    {
+        case Mechanism::Uninitialized: return "Uninitialized";
+        case Mechanism::Plaintext:     return "Plaintext";
+        case Mechanism::Curve:         return "Curve";
+    }
+    return "Uninitialized";  // unreachable; silences -Wreturn-type
+}
+
 /**
  * @class ZmqQueue
  * @brief ZMQ PULL (read) or PUSH (write) QueueReader/QueueWriter implementation.
