@@ -249,6 +249,21 @@ TEST_F(RoleConfigTest, LoadKeypair_RefusesLooseVaultParentDirMode)
                          {unique_dir("load_keypair_loose_parent_dir_mode")});
     ExpectWorkerOk(w);
 }
+
+// AUTH_TODO §C5 (#161) loader contract: a vault file with correct ACL
+// but corrupted contents must surface as a load_keypair failure AND
+// leave the KeyStore unchanged.  Pins the gate the C-chain depends on:
+// no valid key → no entry in KeyStore → every downstream ZmqQueue
+// factory rejects → no socket is bound.  Three failure flavors
+// (open / read / decode) converge on the same gate; this one
+// scenario pins the property.
+TEST_F(RoleConfigTest, LoadKeypair_RejectsCorruptVaultContents)
+{
+    auto w = SpawnWorker(
+        "role_config.load_keypair_rejects_corrupt_vault_contents",
+        {unique_dir("load_keypair_corrupt_vault")});
+    ExpectWorkerOk(w);
+}
 #endif
 
 // ── Raw JSON / metadata ─────────────────────────────────────────────────────

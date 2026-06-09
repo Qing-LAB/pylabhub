@@ -63,6 +63,45 @@ PLH_BINARY_LIFECYCLE_MODULES(
     pylabhub::utils::Logger::GetLifecycleModule()
 )
 
+// ─── AUTH_TODO §C5 (#161) — RoleAPIBase ctor signature invariants ──────────
+//
+// HEP-CORE-0040 §173 + #173 (C3 use-not-export) established that
+// RoleAPIBase's identity wiring is COMPLETELY internal: the public
+// ctor takes only `(RoleHostCore&, role_tag, uid)`, and there is no
+// `set_auth` accessor that could re-introduce out-of-band key
+// injection.  The keypair is sourced from `key_store()` inside the
+// factory body, keyed by `kRoleIdentityName`.
+//
+// These compile-time pins land here because (1) this file already
+// includes the RoleAPIBase header transitively via cycle_ops.hpp
+// and uses the type in the test bodies below, so the symbol is in
+// scope; (2) `static_assert` at namespace scope costs zero runtime
+// and rides for free on every build.  A regression that re-adds
+// a `set_auth` method or changes the ctor signature fails the
+// build immediately — exactly the anti-recursion guarantee #161
+// is supposed to provide.
+static_assert(
+    std::is_constructible_v<RoleAPIBase, RoleHostCore &, std::string,
+                            std::string>,
+    "RoleAPIBase MUST be constructible with (RoleHostCore&, role_tag, "
+    "uid) — HEP-CORE-0023 §3 identity-at-construction invariant.  If "
+    "this fires, the ctor signature has drifted and every test that "
+    "instantiates RoleAPIBase will also break.");
+
+static_assert(
+    !std::is_default_constructible_v<RoleAPIBase>,
+    "RoleAPIBase MUST NOT be default-constructible.  Role identity "
+    "is required at construction time so the ThreadManager + "
+    "FlexzoneInfoCache can be built immediately — no two-stage init.");
+
+static_assert(
+    !std::is_constructible_v<RoleAPIBase, RoleHostCore &>,
+    "RoleAPIBase MUST NOT be constructible with just (RoleHostCore&) — "
+    "role_tag + uid are required for keystore identity resolution + "
+    "FlexzoneInfoCache derivation.  A regression that adds default "
+    "arguments would break the HEP-CORE-0040 §172 invariant that "
+    "every queue resolves its identity via a CALLER-supplied name.");
+
 namespace
 {
 
