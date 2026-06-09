@@ -328,9 +328,13 @@ bool RoleAPIBase::build_tx_queue(const hub::TxQueueOptions &opts)
             opts.slot_spec.packing,
             /*identity_key_name=*/pylabhub::utils::security::kRoleIdentityName,
             /*zap_domain=*/pImpl->uid + ":" + tx_channel + ":tx",
-            opts.zmq_bind, make_schema_tag(schema_hash),
-            /*sndhwm=*/0, opts.zmq_buffer_depth, opts.zmq_overflow_policy,
-            /*send_retry_interval_ms=*/10, std::move(inst_id));
+            /*bind=*/opts.zmq_bind,
+            /*schema_tag=*/make_schema_tag(schema_hash),
+            /*sndhwm=*/0,
+            /*send_buffer_depth=*/opts.zmq_buffer_depth,
+            /*overflow_policy=*/opts.zmq_overflow_policy,
+            /*send_retry_interval_ms=*/10,
+            /*instance_id=*/std::move(inst_id));
         if (!writer)
             return false;
         if (!writer->start())
