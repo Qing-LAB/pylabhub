@@ -201,29 +201,14 @@ TEST(BrcConfigDefault, KeystoreNameIsRoleIdentityLiteral)
            "wire test catching it.";
 }
 
-// ZmqAuthOptions defaults all fields to empty.  After C1 (#157),
-// passing an empty `keystore_name` to a `*_with_auth` factory is
-// rejected at validate time (CURVE unconditional per HEP-CORE-0035
-// §2) — callers MUST set it explicitly.  Plaintext sockets are only
-// reachable through the legacy `push_to` / `pull_from` factories
-// that don't take a `ZmqAuthOptions`.
-//
-// Mutations this pins:
-//   - Defaulting `keystore_name` to a literal like "role_identity"
-//     would silently force CURVE-with-that-identity on every queue
-//     whose caller forgot to set it explicitly — exactly the kind
-//     of accidental cross-binding the strict validator prevents.
-//   - Defaulting `serverkey_z85` or `zap_domain` to non-empty would
-//     cross-contaminate scenarios that intentionally leave them
-//     blank for negative-path tests.
-TEST(ZmqAuthOptionsDefault, KeystoreNameDefaultsToEmpty)
-{
-    pylabhub::hub::ZmqAuthOptions opts;
-    EXPECT_TRUE(opts.keystore_name.empty())
-        << "ZmqAuthOptions::keystore_name MUST default to empty "
-           "(HEP-CORE-0040 §172 — the legacy-plaintext branch is "
-           "selected by the empty default).  Got: "
-        << opts.keystore_name;
-    EXPECT_TRUE(opts.serverkey_z85.empty());
-    EXPECT_TRUE(opts.zap_domain.empty());
-}
+// HEP-CORE-0040 §8.4 (#158) replaced `ZmqAuthOptions` with discrete
+// factory parameters (`identity_key_name`, `Z85PublicKey
+// server_pubkey`, `zap_domain`).  The struct-default mutation pin
+// that used to live here is now redundant: the canonical default
+// values are pinned at the type level (see
+// `tests/test_layer2_service/test_curve_keypair.cpp` for
+// `Z85PublicKey` sentinel semantics and at the factory signature
+// (`hub_zmq_queue.hpp`) where defaults are `kRoleIdentityName` and
+// `""`).  Any mutation that changes those defaults breaks compilation
+// or surfaces in the curve-factory smoke tests in
+// `test_hub_zmq_queue.cpp`.
