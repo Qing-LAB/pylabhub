@@ -147,9 +147,9 @@ Companion practice: when changing a lib contract, **grep its
 downstream callers** before claiming done:
 
 ```bash
-# Example: when validate_auth_options semantics change, audit every
-# *_with_auth caller (production + tests).
-grep -rn "pull_from_with_auth\|push_to_with_auth" src/ tests/
+# Example: when the ZmqQueue CURVE factory contract changes, audit
+# every direct caller (production + tests).
+grep -rn "pull_from_curve\|push_to_curve" src/ tests/
 ```
 
 For each downstream caller, audit the surrounding setup against the
