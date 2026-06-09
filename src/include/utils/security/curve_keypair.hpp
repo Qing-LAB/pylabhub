@@ -152,24 +152,10 @@ private:
 /// `KeyStore::add_identity_from_z85` (HEP-CORE-0040 §5).  Bare
 /// value-typed instances exist only at the keygen / vault-decrypt
 /// boundary; long-lived ownership belongs to KeyStore.
-///
-/// PLANNED REMOVAL — `empty()` member (per HEP-CORE-0040 §8.6,
-/// task #173): its only purpose was as a "did we set auth?" probe —
-/// the same silent-fallback anti-pattern HEP-0040 closes.  Under the
-/// new design a `CurveKeypair` reference returned by `KeyStore::lookup`
-/// cannot be empty (lookup throws std::out_of_range if absent).
-/// Currently retained because grep finds zero callers but the method's
-/// removal belongs in the #173 impl commit alongside the accessor
-/// rewrites, not as a doc-phase code change.
 struct CurveKeypair
 {
     std::string public_z85;
     std::string secret_z85;
-
-    [[nodiscard]] bool empty() const noexcept
-    {
-        return public_z85.empty() && secret_z85.empty();
-    }
 };
 
 /// Generate a fresh ZMQ CURVE keypair via libzmq's wrapper around
