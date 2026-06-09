@@ -13,6 +13,8 @@
 
 #include "plh_role_fixture.h"
 
+#include <fstream>
+
 #if !defined(_WIN32) && !defined(_WIN64)
 #include <sys/stat.h>
 #endif
@@ -110,6 +112,70 @@ TEST_P(PlhRoleValidateTest, MinimalConfigPasses)
         << "stdout did not contain 'Validation passed'; got:\n"
         << p.get_stdout();
 }
+
+// ── AUTH_TODO §C5 (#161) — illegal CURVE key → no connection gate ──────────
+//
+// End-to-end pin for the "broken keyfile → role refuses to proceed"
+// gate.  Mirrors the L2 `LoadKeypair_RejectsCorruptVaultContents`
+// loader-contract test (which proves the gate fires AT the loader)
+// at the binary tier: with a vault file whose contents are
+// corrupt-but-correctly-ACL'd, `plh_role --validate` MUST exit
+// non-zero BEFORE the data-loop / socket-bind code is reached.
+//
+// Why this binds the invariant "no socket bound on bad key":
+//   • `--validate` runs through `HubHost::startup()` /
+//     `RoleHost::startup_()` exactly like `run` does — the same
+//     load_keypair → key_store seeding → build_tx_queue/build_rx_queue
+//     chain runs.  In `run`, that chain precedes any socket bind.
+//   • If load_keypair throws (the corrupt vault path), startup
+//     returns non-zero and the binary exits — no `ZmqQueue::start()`
+//     ever fires, no socket is bound.  The lib-level Mechanism
+//     guard (#161 Phase 2) is the second line of defense if
+//     somehow a partial key did materialize; this test pins that
+//     the FIRST line — the loader — fires correctly under realistic
+//     binary conditions.
+//
+// The three failure flavors (open / read / decode) all funnel into
+// the same downstream gate — this one corrupt-decode scenario
+// pins the contract; the missing-file and loose-ACL flavors are
+// already covered by `MalformedJsonFails` / config-ACL tests
+// elsewhere in the suite.
+#if !defined(_WIN32) && !defined(_WIN64)
+TEST_P(PlhRoleValidateTest, CurveGate_CorruptVault_AbortsBeforeBind)
+{
+    const auto &s = GetParam();
+    const auto dir = tmp("val_curve_gate_corrupt");
+    const auto cfg = dir / (std::string(s.role) + ".json");
+    const auto script_dir = dir / "script" / "python";
+
+    write_minimal_script(script_dir);
+    write_minimal_config(cfg, std::string(s.role), dir);
+
+    ScopedRolePassword pw("test-password");
+    keygen_minimal_role(s.role, cfg);
+
+    // Corrupt the vault contents AFTER keygen — ACLs stay correct
+    // (0600 / 0700) so the test exercises the inner decode path,
+    // not the ACL-rejection path.  See the loader-contract L2
+    // test for the symmetrical assertion at the lib tier.
+    const auto vault_path = dir / "vault" / "placeholder.vault";
+    {
+        std::ofstream truncate(vault_path,
+                               std::ios::binary | std::ios::trunc);
+        truncate.write("not-a-valid-vault-payload", 25);
+    }
+    ::chmod(vault_path.c_str(), 0600);
+
+    WorkerProcess p(plh_role_binary(), "--role",
+        {std::string(s.role), "--config", cfg.string(), "--validate"});
+    EXPECT_NE(p.wait_for_exit(), 0)
+        << "Corrupt vault MUST cause --validate to exit non-zero — the "
+           "C5 gate (HEP-CORE-0035 §2 + AUTH_TODO §C5) requires that "
+           "no valid CURVE identity → no role startup → no socket "
+           "bind.  If this test passed with rc=0, the loader gate has "
+           "regressed.  stderr:\n" << p.get_stderr();
+}
+#endif
 
 /// --validate works against a role directory (the <dir> positional form)
 /// in addition to the --config <path> form.  Pins the directory-flavor

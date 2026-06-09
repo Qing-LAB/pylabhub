@@ -562,6 +562,87 @@ int load_keypair_refuses_loose_parent_dir_mode(const std::string &dir)
         Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
         JsonConfig::GetLifecycleModule());
 }
+
+// AUTH_TODO §C5 (#161) loader contract: vault file present with the
+// correct 0600 ACL + 0700 parent, but its CONTENTS are garbage of the
+// wrong length.  `RoleConfig::load_keypair` MUST throw on the decode
+// path AND leave `key_store()` untouched — no partial state, no
+// half-loaded identity.  Pins the gate the C-chain relies on:
+// illegal CURVE key → no valid identity in KeyStore → every
+// downstream `ZmqQueue` factory rejects → no socket is bound.
+//
+// The three "broken file" flavors (open-fail / read-fail / decode-fail)
+// converge on the same downstream gate, so one decode-fail scenario
+// pins the property; the missing-file / loose-ACL flavors are
+// already covered by `auth_*_throws` + the two `LoadKeypair_Refuses*`
+// tests above.
+int load_keypair_rejects_corrupt_vault_contents(const std::string &dir)
+{
+    return run_gtest_worker(
+        [&]() {
+            const fs::path vault_path =
+                fs::path(dir) / "vault" / "prod.test.uid00000003.vault";
+            (void) pylabhub::utils::RoleVault::create(
+                vault_path, "prod.test.uid00000003", "l2-pw");
+
+            // ACLs stay correct so we exercise the inner decode path —
+            // the loose-mode tests above already pin the ACL-rejection
+            // branch.  Overwrite the vault contents with wrong-length
+            // garbage to force the libsodium / vault decode to fail.
+            {
+                std::ofstream truncate(vault_path,
+                                       std::ios::binary | std::ios::trunc);
+                truncate.write("not-a-valid-vault-payload", 25);
+            }
+            // Re-apply 0600 — `ofstream` truncate may have relaxed the
+            // mode depending on umask.
+            ::chmod(vault_path.c_str(), 0600);
+
+            auto j = minimal_producer_json();
+            j["producer"]["uid"] = "prod.test.uid00000003";
+            j["producer"]["auth"]["keyfile"] = vault_path.string();
+            auto path = write_json(fs::path(dir), "producer.json", j);
+
+            auto cfg = RoleConfig::load(path.string(), "producer");
+
+            namespace sec = pylabhub::utils::security;
+            const bool pre_seeded =
+                sec::key_store_ready() &&
+                sec::key_store().has(sec::kRoleIdentityName);
+
+            try {
+                (void) cfg.load_keypair("l2-pw");
+                FAIL() << "Expected load_keypair to reject a vault with "
+                          "corrupt contents — the gate must not return "
+                          "a valid key on any failure path.";
+            } catch (const std::runtime_error &) {
+                // Expected — any decode failure under the vault layer
+                // surfaces as runtime_error to the loader caller.
+            } catch (const std::exception &) {
+                // Other exception types are also acceptable: the
+                // contract is "loader does not return a valid key" —
+                // any throw satisfies it.
+            }
+
+            // No-partial-state pin: KeyStore for `kRoleIdentityName`
+            // MUST be in the same state it was before the call.  If
+            // it wasn't seeded before, it MUST NOT be seeded after.
+            // If a refactor allowed a half-loaded identity to leak,
+            // downstream `ZmqQueue` factory validators would accept
+            // it and a regression would ship.
+            if (sec::key_store_ready())
+            {
+                EXPECT_EQ(sec::key_store().has(sec::kRoleIdentityName),
+                          pre_seeded)
+                    << "load_keypair MUST NOT seed the KeyStore on a "
+                       "failed decode — the gate fires AFTER the "
+                       "KeyStore mutation point, not before.";
+            }
+        },
+        "role_config::load_keypair_rejects_corrupt_vault_contents",
+        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
+        JsonConfig::GetLifecycleModule());
+}
 #endif
 
 // ── Raw JSON / metadata ─────────────────────────────────────────────────────
@@ -1248,6 +1329,8 @@ struct RoleConfigWorkerRegistrar
                     return load_keypair_refuses_loose_file_mode(dir);
                 if (sc == "load_keypair_refuses_loose_parent_dir_mode")
                     return load_keypair_refuses_loose_parent_dir_mode(dir);
+                if (sc == "load_keypair_rejects_corrupt_vault_contents")
+                    return load_keypair_rejects_corrupt_vault_contents(dir);
 #endif
                 if (sc == "raw_json")
                     return raw_json(dir);

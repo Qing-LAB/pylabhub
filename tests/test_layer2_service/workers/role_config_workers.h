@@ -55,6 +55,11 @@ int load_keypair_refuses_loose_file_mode(const std::string &dir);
 /// HEP-CORE-0035 §4.6.2: load_keypair refuses 0755 vault parent dir.
 int load_keypair_refuses_loose_parent_dir_mode(const std::string &dir);
 
+/// AUTH_TODO §C5 (#161): load_keypair throws + leaves KeyStore
+/// untouched when the vault file contents are corrupt.  Pins the
+/// "no valid key returned on any failure path" loader contract.
+int load_keypair_rejects_corrupt_vault_contents(const std::string &dir);
+
 // ── Raw JSON / metadata ─────────────────────────────────────────────────────
 int raw_json(const std::string &dir);
 int role_tag(const std::string &dir);
