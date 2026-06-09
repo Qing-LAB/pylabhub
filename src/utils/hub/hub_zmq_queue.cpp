@@ -155,6 +155,16 @@ struct ZmqQueueImpl
     // `pull_from_curve` factory validates non-empty before populating.
     std::string server_pubkey_z85_;
 
+    // ── CURVE engagement invariant (HEP-CORE-0035 §2 + #161 C5) ──────────
+    // Negotiated mechanism observed from libzmq at `start()` time via
+    // `zmq_getsockopt(ZMQ_MECHANISM)`.  `start()` enforces the
+    // invariant: if the queried mechanism is not `ZMQ_CURVE` the
+    // start fails and this field stays `Uninitialized`.  Public
+    // `ZmqQueue::mechanism()` reads with acquire ordering.  Written
+    // ONLY by `start()` (after CURVE setsockopts) and `stop()`
+    // (reset to Uninitialized) — never by callers.
+    std::atomic<Mechanism> mechanism_{Mechanism::Uninitialized};
+
     // Resolved zap_domain (Phase C): `zap_domain_` if non-empty,
     // else derived from instance_id at start().  Captured here so
     // stop() can release the ZapRouter registration symmetrically.
@@ -1035,12 +1045,45 @@ bool ZmqQueue::start()
             pImpl->socket.bind(pImpl->endpoint);
         else
             pImpl->socket.connect(pImpl->endpoint);
+
+        // ── CURVE engagement guard (HEP-CORE-0035 §2 + #161 C5) ─────────
+        // After all CURVE setsockopts and bind/connect have completed,
+        // ask libzmq directly what mechanism this socket negotiated.
+        // The whole C-chain exists to make CURVE unconditional on
+        // every role↔hub data path; if libzmq reports anything other
+        // than CURVE we have a wiring regression — fail the start
+        // here so no data ever flows on a non-CURVE socket.  The
+        // observable `mechanism_` field stays Uninitialized on
+        // failure so callers see the bad state via `mechanism()`.
+        const int mech = pImpl->socket.get(zmq::sockopt::mechanism);
+        if (mech == ZMQ_CURVE)
+        {
+            pImpl->mechanism_.store(Mechanism::Curve,
+                                    std::memory_order_release);
+        }
+        else
+        {
+            pImpl->mechanism_.store(Mechanism::Plaintext,
+                                    std::memory_order_release);
+            throw std::invalid_argument(
+                "[hub::ZmqQueue::start] libzmq reported mechanism=" +
+                std::to_string(mech) + " (expected ZMQ_CURVE=" +
+                std::to_string(ZMQ_CURVE) + ") — CURVE wiring "
+                "regression (HEP-CORE-0035 §2 invariant violated; "
+                "see ZmqQueue::mechanism() / Mechanism enum)");
+        }
     }
     catch (const std::invalid_argument &e)
     {
         // H-Q3: specific, caller-actionable diagnostic for auth
-        // misconfiguration that slipped past factory validation.
+        // misconfiguration that slipped past factory validation OR
+        // (post-#161) the CURVE engagement guard at the bottom of
+        // the try block.  The queue did not start; reset the
+        // observable mechanism so `mechanism()` reflects the closed
+        // state.
         pImpl->socket.close();
+        pImpl->mechanism_.store(Mechanism::Uninitialized,
+                                std::memory_order_release);
         pImpl->running_.store(false, std::memory_order_release);
         LOGGER_ERROR("[hub::ZmqQueue] auth setup failed for '{}': {}",
                      pImpl->endpoint, e.what());
@@ -1049,6 +1092,8 @@ bool ZmqQueue::start()
     catch (const zmq::error_t &e)
     {
         pImpl->socket.close();
+        pImpl->mechanism_.store(Mechanism::Uninitialized,
+                                std::memory_order_release);
         pImpl->running_.store(false, std::memory_order_release);
         LOGGER_ERROR("[hub::ZmqQueue] socket setup ({}) failed for '{}': {}",
                      pImpl->bind_socket ? "bind" : "connect",
@@ -1200,11 +1245,23 @@ void ZmqQueue::stop()
     // The shared ZMQ context is owned by the ZMQContext lifecycle module —
     // ZmqQueue never terminates it.
     pImpl->socket.close();
+
+    // Reset the observable mechanism — socket is gone, no negotiated
+    // mechanism remains.  `mechanism()` will report `Uninitialized`
+    // until the next successful `start()`.
+    pImpl->mechanism_.store(Mechanism::Uninitialized,
+                            std::memory_order_release);
 }
 
 bool ZmqQueue::is_running() const noexcept
 {
     return pImpl && pImpl->running_.load(std::memory_order_relaxed);
+}
+
+Mechanism ZmqQueue::mechanism() const noexcept
+{
+    if (!pImpl) return Mechanism::Uninitialized;
+    return pImpl->mechanism_.load(std::memory_order_acquire);
 }
 
 // ============================================================================
