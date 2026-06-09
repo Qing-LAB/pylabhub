@@ -173,7 +173,8 @@ inline void apply_curve_to(pylabhub::broker::BrokerService::Config &cfg,
 /// code uses the singular `"role_identity"` (one keypair per role
 /// process); test fixtures with multiple BRCs in one process pick
 /// per-uid names under this `"role." + uid` convention.  Use it
-/// both for `BRC::Config::keystore_name` and `ZmqAuthOptions::keystore_name`.
+/// for `BRC::Config::keystore_name` and (post-#158) the
+/// `identity_key_name` parameter on the ZmqQueue `*_curve` factories.
 [[nodiscard]] inline std::string
 role_keystore_name(const std::string &uid)
 {

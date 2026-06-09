@@ -128,23 +128,23 @@ TEST_F(ZmqQueueAuthTest, Misconfig_ConnectMissingServerkey_FactoryReturnsNullptr
     });
 }
 
-TEST_F(ZmqQueueAuthTest, Misconfig_PubkeyWrongLength_FactoryReturnsNullptr)
+TEST_F(ZmqQueueAuthTest, Misconfig_FactoryReturnsNullptr)
 {
     auto w = SpawnWorker(
-        "zmq_queue_auth.auth_misconfig_pubkey_wrong_length_factory_returns_nullptr",
-        {unique_dir("auth_misconfig_pubkey_wrong_length_factory_returns_nullptr")});
+        "zmq_queue_auth.auth_misconfig_factory_returns_nullptr",
+        {unique_dir("auth_misconfig_factory_returns_nullptr")});
     // Misconfig branches the driver pins:
     //   - name-not-in-KeyStore (HEP-CORE-0040 §172)
     //   - serverkey missing on connect side (HEP-CORE-0035 §2)
-    //   - serverkey wrong length (Z85 contract)
     //   - empty keystore_name (C1 / #157 strict enforcement)
     //
-    // HEP-CORE-0040 §172 collapsed the keypair-byte fields into a
-    // single `keystore_name` lookup; wrong-length pubkey/seckey is
-    // now enforced inside `KeyStore::add_identity_from_z85` (covered
-    // by L2 KeyStore tests).  Each substring below is unique to one
-    // misconfig case so the framework would flag any new unexpected
-    // ERROR or any silenced one.
+    // HEP-CORE-0040 §8.4 (#158) moved wrong-length pubkey validation
+    // OUT of the factory — `Z85PublicKey` enforces the 40-char Z85
+    // invariant at construction time.  That branch is covered by
+    // `test_layer2_curve_keypair.cpp` and no longer reaches the
+    // factory diagnostic path here.  Each substring below is unique
+    // to one misconfig case so the framework would flag any new
+    // unexpected ERROR or any silenced one.
     // The "keystore_name MUST be non-empty" entry appears twice
     // because two cases in the worker table exercise it — once on
     // the bind side and once on the connect side; each fires its
@@ -153,7 +153,6 @@ TEST_F(ZmqQueueAuthTest, Misconfig_PubkeyWrongLength_FactoryReturnsNullptr)
     ExpectWorkerOk(w, {}, {
         "not present in KeyStore",
         "connect-side ZmqAuthOptions requires serverkey_z85",
-        "serverkey_z85 must be exactly 40 chars",
         "keystore_name MUST be non-empty",
         "keystore_name MUST be non-empty",
     });
