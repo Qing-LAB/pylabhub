@@ -728,6 +728,23 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     /// is not wired. Routes to QueueReader::metrics() / QueueWriter::metrics().
     [[nodiscard]] hub::QueueMetrics queue_metrics(ChannelSide side) const noexcept;
 
+    /// Negotiated transport-level CURVE mechanism of the given side's
+    /// queue (HEP-CORE-0035 §2 + AUTH_TODO §C5, #161).  Returns
+    /// `Mechanism::Uninitialized` when the side is not wired OR the
+    /// queue is not started OR the underlying transport is SHM (which
+    /// does not negotiate a libzmq mechanism).  Returns
+    /// `Mechanism::Curve` whenever the side has a started ZmqQueue
+    /// (post-C4 the public ZmqQueue factories are CURVE-only and the
+    /// `ZmqQueue::start()` guard enforces ZMQ_CURVE).
+    ///
+    /// **Intended uses.**  Scripts asserting CURVE engagement before
+    /// sending sensitive data (`assert api.queue_mechanism(...) ==
+    /// Mechanism.Curve`); telemetry tagging queue health; cross-binding
+    /// confirmation that the lib-level CURVE invariant is reachable
+    /// from the script layer (anti-recursion observability for #161
+    /// C5).
+    [[nodiscard]] hub::Mechanism queue_mechanism(ChannelSide side) const noexcept;
+
   private:
     struct Impl;
     std::unique_ptr<Impl> pImpl;

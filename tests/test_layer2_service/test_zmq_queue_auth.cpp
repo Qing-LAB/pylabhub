@@ -165,6 +165,26 @@ TEST_F(ZmqQueueAuthTest, AdmissionIsEnforced_Lifecycle)
     ExpectWorkerOk(w);
 }
 
+// AUTH_TODO §C5 (#161) — anti-recursion test for the HEP-CORE-0035 §2
+// invariant.  A raw NULL-mech client trying to connect to a
+// CURVE-enforced ZmqQueue producer MUST fail the ZMTP handshake.  The
+// worker monitors `ZMQ_EVENT_HANDSHAKE_FAILED_*` on the client socket
+// and asserts at least one fires within a generous timeout.
+//
+// Why this needs a real socket-monitor test even with the L2
+// `Mechanism::Curve` invariant + start() guard already pinned: the
+// guard proves the PRODUCER side is CURVE-armed, but doesn't prove
+// that a misconfigured client cannot still get through.  This pins
+// the bidirectional contract — server CURVE-enforced + client NULL ⇒
+// no data session.
+TEST_F(ZmqQueueAuthTest, NullMechClient_HandshakeFails)
+{
+    auto w = SpawnWorker(
+        "zmq_queue_auth.auth_null_mech_client_handshake_fails",
+        {unique_dir("auth_null_mech_client_handshake_fails")});
+    ExpectWorkerOk(w);
+}
+
 // ───────────────────────────────────────────────────────────────────────
 // #161 Phase 1 — magic-string + default-value mutation pins
 // ───────────────────────────────────────────────────────────────────────

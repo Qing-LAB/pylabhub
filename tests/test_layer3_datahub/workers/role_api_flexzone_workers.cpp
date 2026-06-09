@@ -366,7 +366,23 @@ int zmq_tx_null()
             EXPECT_EQ(api->flexzone_size(ChannelSide::Tx), 0u);
             EXPECT_FALSE(api->tx_has_shm());
 
+            // C5 follow-up (#186) — script-visible CURVE mechanism
+            // accessor pins the HEP-CORE-0035 §2 invariant at the
+            // RoleAPIBase tier: any started ZmqQueue reports Curve.
+            EXPECT_EQ(api->queue_mechanism(ChannelSide::Tx),
+                      pylabhub::hub::Mechanism::Curve);
+            // Rx side is not wired in this scenario — accessor must
+            // return Uninitialized (not throw, not return Plaintext).
+            EXPECT_EQ(api->queue_mechanism(ChannelSide::Rx),
+                      pylabhub::hub::Mechanism::Uninitialized);
+
             api->close_queues();
+
+            // After close_queues(), the Tx queue is destroyed; the
+            // accessor returns Uninitialized.  Pins the
+            // "stop ⇒ reset" half of the invariant.
+            EXPECT_EQ(api->queue_mechanism(ChannelSide::Tx),
+                      pylabhub::hub::Mechanism::Uninitialized);
         },
         "role_api_flexzone::zmq_tx_null",
         logger_module(), crypto_module(), zmq_module(), hub_module());
