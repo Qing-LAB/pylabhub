@@ -193,6 +193,24 @@ during Phase 1 review of `HubBrokerConfig`):
   ROUTER are not supported in production. There is no operator or
   config knob that disables CURVE — see §4.6.5 for the test-only
   bypass and its strict scope.
+
+  **Enforcement point — `ZmqQueue::start()` guard (AUTH_TODO §C5,
+  #161).**  After all CURVE setsockopts and bind/connect have
+  completed, `start()` queries libzmq directly via
+  `zmq_getsockopt(ZMQ_MECHANISM)` and refuses to succeed if the
+  answer is not `ZMQ_CURVE`.  The queue cannot return from `start()`
+  in a state where data flows on a non-CURVE socket; a regression
+  that loses the CURVE wiring surfaces immediately at the start()
+  call site.  The negotiated state is observable to any caller via
+  the public `ZmqQueue::mechanism()` accessor — a thread-safe
+  atomic read returning the `Mechanism` enum
+  (`Uninitialized` / `Plaintext` / `Curve`).  Scripts, telemetry,
+  and tests use this single observation point to assert the
+  invariant:
+
+  ```cpp
+  EXPECT_EQ(queue.mechanism(), pylabhub::hub::Mechanism::Curve);
+  ```
 - **Admission gating is unconditional whenever CURVE is on.** The
   Layer-1 ZAP allowlist (§4.1) is not a separable policy layer that
   operators or callers can toggle. Whenever a CURVE-server socket is

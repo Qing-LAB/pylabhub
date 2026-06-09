@@ -295,6 +295,50 @@ TEST_F(ZmqQueueTest, PushTo_Creates)
     EXPECT_FALSE(q->is_running());
 }
 
+// ─── HEP-CORE-0035 §2 + AUTH_TODO §C5 — Mechanism::Curve invariant (#161) ──
+//
+// Post-C4 a successfully-started ZmqQueue MUST report
+// `Mechanism::Curve` — `start()` queries libzmq via
+// `zmq_getsockopt(ZMQ_MECHANISM)` and refuses to succeed otherwise
+// (HEP-CORE-0035 §2 unconditional-CURVE invariant).  These two tests
+// pin both halves of the invariant:
+//   1. happy-path PUSH+bind start → `mechanism() == Curve`
+//   2. before `start()` returns, the observable is `Uninitialized`
+//      (the negative direction is structurally guaranteed by the
+//      enum — there is no public API to write the field; only
+//      `start()`/`stop()` touch it.)
+//
+// A regression that loses the CURVE setsockopt — or a future
+// refactor that drops the guard — fails (1) immediately.  Any
+// regression that flips the observable to `Curve` without the
+// socket being authenticated fails (2) by construction.
+
+TEST_F(ZmqQueueTest, Mechanism_BeforeStart_IsUninitialized)
+{
+    auto q = make_push_test("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
+    ASSERT_NE(q, nullptr);
+    EXPECT_EQ(q->mechanism(), pylabhub::hub::Mechanism::Uninitialized)
+        << "A queue that has not been started must report "
+           "Uninitialized — the observable is set ONLY by start().";
+}
+
+TEST_F(ZmqQueueTest, Mechanism_AfterPushBind_IsCurve)
+{
+    auto q = make_push_test("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
+    ASSERT_NE(q, nullptr);
+    ASSERT_TRUE(q->start());
+    EXPECT_EQ(q->mechanism(), pylabhub::hub::Mechanism::Curve)
+        << "HEP-CORE-0035 §2 invariant: every successfully-started "
+           "ZmqQueue MUST be CURVE-authenticated.  If this fires, "
+           "the CURVE wiring inside ZmqQueue::start() has regressed "
+           "and the guard at the bottom of the start() try-block "
+           "did not catch it — or the guard itself is bypassed.";
+    q->stop();
+    EXPECT_EQ(q->mechanism(), pylabhub::hub::Mechanism::Uninitialized)
+        << "stop() must reset the mechanism observable — the socket "
+           "is gone, no negotiated mechanism remains.";
+}
+
 // ─── HEP-CORE-0040 §8.4 endpoint shape (AUTH_TODO §C4, #160) ────────────────
 //
 // The bare `pull_from` / `push_to` factories are CURVE-only.  Smoke

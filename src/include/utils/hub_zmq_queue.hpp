@@ -135,6 +135,35 @@ struct ProducerPeer
     std::string pubkey_z85;
 };
 
+/// Negotiated transport-level authentication mechanism of a started
+/// `ZmqQueue` socket — observed directly from libzmq via
+/// `zmq_getsockopt(ZMQ_MECHANISM)` at `start()` time and cached in an
+/// atomic for thread-safe read by callers.
+///
+/// **Post-C4 invariant (HEP-CORE-0035 §2 + AUTH_TODO §C5, #161).** A
+/// successfully-started ZmqQueue MUST report `Curve`.  The `start()`
+/// guard enforces this — it fails if libzmq reports anything else,
+/// so a regression that loses CURVE wiring surfaces immediately
+/// instead of silently shipping plaintext data.  Callers may use
+/// `ZmqQueue::mechanism()` as the single observation point:
+///
+/// ```cpp
+/// EXPECT_EQ(queue.mechanism(), pylabhub::hub::Mechanism::Curve);
+/// ```
+///
+/// Three values rather than two: a not-yet-started queue is
+/// genuinely different from a queue that started with auth turned
+/// OFF — the latter is the regression we want to surface, the
+/// former is fine.  `Plaintext` collapses libzmq `ZMQ_NULL` /
+/// `ZMQ_PLAIN` because neither is a valid post-C4 state (HEP-0035
+/// §2 — CURVE is unconditional on every role↔hub data path).
+enum class Mechanism
+{
+    Uninitialized,  ///< `start()` not called, or `stop()` reset the field.
+    Plaintext,      ///< libzmq reported `ZMQ_NULL`/`ZMQ_PLAIN`.  CONTRACT VIOLATION post-C4.
+    Curve,          ///< libzmq reported `ZMQ_CURVE`.  The only acceptable post-start value.
+};
+
 /**
  * @class ZmqQueue
  * @brief ZMQ PULL (read) or PUSH (write) QueueReader/QueueWriter implementation.
@@ -412,6 +441,13 @@ public:
     void stop() override;
 
     bool is_running() const noexcept override;
+
+    /// Negotiated CURVE mechanism observed at `start()` time.  See
+    /// the `Mechanism` enum docstring above for the invariant —
+    /// post-C4 this MUST be `Curve` whenever the queue is running.
+    /// Thread-safe: read from any thread; written only by
+    /// `start()`/`stop()` internally via an atomic.
+    [[nodiscard]] Mechanism mechanism() const noexcept;
 
 private:
     explicit ZmqQueue(std::unique_ptr<ZmqQueueImpl> impl);
