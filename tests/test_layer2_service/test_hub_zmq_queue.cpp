@@ -356,7 +356,7 @@ TEST_F(ZmqQueueTest,
     // must return nullptr — silent fallback to plaintext is the
     // precise failure mode the C-chain was built to close.
     namespace sec = pylabhub::utils::security;
-    ExpectLogError("connect-side ZmqAuthOptions requires serverkey_z85");
+    ExpectLogError("connect-side CURVE auth requires serverkey_z85");
     auto q = ZmqQueue::pull_from(
         "tcp://127.0.0.1:0",
         sec::Z85PublicKey{},   // default sentinel = "no pubkey set"

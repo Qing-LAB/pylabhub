@@ -71,10 +71,10 @@ std::pair<std::string, std::string> make_keypair()
 /// Per-scenario RAII guard for the process-singleton SMS + KeyStore.
 /// HEP-CORE-0040 §172 puts every CURVE keypair behind the process
 /// KeyStore (locked memory); test scenarios construct one of these to
-/// host their identities, then set `ZmqAuthOptions::keystore_name` to
-/// a name they've added.  Pattern 3 (one subprocess per scenario)
-/// guarantees the SMS+KeyStore singletons are constructed fresh each
-/// time.
+/// host their identities, then pass the seeded name to the
+/// `identity_key_name` factory parameter.  Pattern 3 (one subprocess
+/// per scenario) guarantees the SMS+KeyStore singletons are
+/// constructed fresh each time.
 ///
 /// This class contains NO logic — it only owns the two production
 /// types in stack scope.  Identity seeding is delegated to the
@@ -351,7 +351,7 @@ int auth_allowlist_swap_takes_effect_for_next_connection(const char * /*tmpdir*/
 //   - pull-side PeerAdmission methods correctly return false / nullopt
 //   - empty allowlist denies everyone (secure default — Phase D
 //     broker bootstrap depends on this)
-//   - factory rejects misconfigured ZmqAuthOptions BEFORE start()
+//   - factory rejects misconfigured CURVE auth params BEFORE start()
 //     instead of failing late with a stale-errno diagnostic
 //   - admission_is_enforced() flips false → true → false across
 //     construct → start() → stop() (interface-contract conformance)
@@ -711,10 +711,11 @@ int auth_empty_allowlist_denies_all(const char *)
         pylabhub::hub::GetZMQContextModule());
 }
 
-/// **H-Q3 fix.**  Factory must reject connect-side ZmqAuthOptions
-/// that has CURVE keys but no serverkey — BEFORE constructing the
-/// queue.  Pins the explicit-diagnostic path (vs. throwing
-/// zmq::error_t() against stale errno from inside start()).
+/// **H-Q3 fix.**  Factory must reject a connect-side CURVE call
+/// that has an identity key name but no serverkey — BEFORE
+/// constructing the queue.  Pins the explicit-diagnostic path
+/// (vs. throwing zmq::error_t() against stale errno from inside
+/// start()).
 int auth_misconfig_connect_missing_serverkey_factory_returns_nullptr(const char *)
 {
     return run_gtest_worker(

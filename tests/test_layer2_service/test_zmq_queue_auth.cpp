@@ -123,7 +123,7 @@ TEST_F(ZmqQueueAuthTest, Misconfig_ConnectMissingServerkey_FactoryReturnsNullptr
     // The factory's LOGGER_ERROR is the expected diagnostic path —
     // declare a unique substring of the single emitted ERROR line.
     ExpectWorkerOk(w, {}, {
-        "connect-side ZmqAuthOptions requires serverkey_z85",
+        "connect-side CURVE auth requires serverkey_z85",
     });
 }
 
@@ -151,7 +151,7 @@ TEST_F(ZmqQueueAuthTest, Misconfig_FactoryReturnsNullptr)
     // substring per matched line.
     ExpectWorkerOk(w, {}, {
         "not present in KeyStore",
-        "connect-side ZmqAuthOptions requires serverkey_z85",
+        "connect-side CURVE auth requires serverkey_z85",
         "keystore_name MUST be non-empty",
         "keystore_name MUST be non-empty",
     });

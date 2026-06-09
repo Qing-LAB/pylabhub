@@ -181,10 +181,12 @@ bool RoleHandler::start_connections(const RoleAPIBase &owner)
     //
     // BrokerRequestComm::Config required fields (broker_request_comm.hpp
     // §"Configuration"):
-    //   broker_endpoint, broker_pubkey, client_pubkey, client_seckey,
-    //   role_uid, role_name.
+    //   broker_endpoint, broker_pubkey, keystore_name, role_uid, role_name.
     // Per-HubConnection (broker_endpoint/broker_pubkey) come from the
-    // dedup identity; role-wide fields come from `owner`.
+    // dedup identity; role-wide fields come from `owner`.  Post-HEP-CORE-0040
+    // (#172) the BRC reads the client keypair from `key_store()` at
+    // connect() time via `keystore_name` — no `client_pubkey/_seckey`
+    // fields are plumbed through the Config struct anymore.
     for (auto &c : connections_)
     {
         c.brc = std::make_unique<hub::BrokerRequestComm>();

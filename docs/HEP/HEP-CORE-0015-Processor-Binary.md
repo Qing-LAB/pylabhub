@@ -614,13 +614,20 @@ hub) in a single zmq_poll loop. Events from both hubs feed into a shared
 ### 8.3 start_role() Queue Creation
 
 ```cpp
-// Input queue
+// Input queue.  Post-#160 (C4) ZmqQueue factories are CURVE-only;
+// see HEP-CORE-0017 §"ZmqQueue — API contract" / HEP-CORE-0040 §8.4
+// for the full signature.  The connect-side pull needs the
+// producer's CURVE pubkey from `producer_peers[0]`.
 if (config_.in_transport == Transport::Shm) {
     // attach to in_consumer_->shm()
     in_queue_ = ShmQueue::from_consumer_ref(*in_shm, in_schema_slot_size_, fz_sz, config_.in_channel);
 } else {
-    in_queue_ = ZmqQueue::pull_from(config_.zmq_in_endpoint, in_schema_slot_size_,
-                                     config_.zmq_in_bind, config_.in_zmq_buffer_depth);
+    in_queue_ = ZmqQueue::pull_from(config_.zmq_in_endpoint,
+                                    /*server_pubkey=*/peer.pubkey_z85,
+                                    schema, packing,
+                                    security::kRoleIdentityName,
+                                    config_.zmq_in_bind,
+                                    config_.in_zmq_buffer_depth);
 }
 
 // Output queue
@@ -629,8 +636,11 @@ if (config_.out_transport == Transport::Shm) {
     if (config_.update_checksum) shm_q->set_checksum_options(true, core_.has_fz);
     out_queue_ = std::move(shm_q);
 } else {
-    out_queue_ = ZmqQueue::push_to(config_.zmq_out_endpoint, out_schema_slot_size_,
-                                    config_.zmq_out_bind);
+    out_queue_ = ZmqQueue::push_to(config_.zmq_out_endpoint,
+                                   schema, packing,
+                                   security::kRoleIdentityName,
+                                   /*zap_domain=*/"",
+                                   config_.zmq_out_bind);
 }
 in_queue_->start();
 out_queue_->start();
