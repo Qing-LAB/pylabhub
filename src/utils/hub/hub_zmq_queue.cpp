@@ -742,6 +742,79 @@ ZmqQueue::push_to_with_auth(const std::string& endpoint,
 }
 
 // ============================================================================
+// HEP-CORE-0040 §8.4 endpoint shape (AUTH_TODO §C2, task #158)
+// ============================================================================
+//
+// `pull_from_curve` / `push_to_curve` are the new entry points that
+// match the canonical post-C4 shape: discrete `identity_key_name`
+// (KeyStore lookup) + `Z85PublicKey server_pubkey` (PULL only) +
+// `zap_domain` (PUSH only).  No `ZmqAuthOptions` struct, no
+// `initial_allowlist` (callers seed via `set_peer_allowlist()`
+// post-construction).
+//
+// These currently DELEGATE to `*_with_auth` by constructing the
+// transitional `ZmqAuthOptions` inline — no behaviour change, just a
+// new entry point that callers can adopt incrementally.  The audit
+// (`docs/tech_draft/DRAFT_C2-ZmqAuthOptions-deletion-audit_2026-06-08.md`)
+// covers the per-site migration in the subsequent C2 commits.
+
+std::unique_ptr<ZmqQueue>
+ZmqQueue::pull_from_curve(const std::string& endpoint,
+                          ::pylabhub::utils::security::Z85PublicKey server_pubkey,
+                          std::vector<ZmqSchemaField> schema,
+                          std::string packing,
+                          std::string_view identity_key_name,
+                          bool bind,
+                          size_t max_buffer_depth,
+                          std::optional<std::array<uint8_t, 8>> schema_tag,
+                          std::string instance_id)
+{
+    ZmqAuthOptions auth_opts;
+    auth_opts.keystore_name = std::string{identity_key_name};
+    // server_pubkey: PULL side requires `curve_serverkey`.  An empty
+    // (default-ctor) Z85PublicKey produces 40 zero bytes; that's a
+    // sentinel meaning "no pubkey set" and must NOT reach libzmq.
+    // The downstream `validate_auth_options` already rejects empty
+    // serverkey_z85 on the PULL side (HEP-CORE-0035 §2 / C1 strict
+    // mode); pass through whatever the caller gave us so the
+    // validation message stays uniform across both entry points.
+    auth_opts.serverkey_z85 =
+        server_pubkey.empty() ? std::string{} : std::string{server_pubkey.str()};
+    return pull_from_with_auth(endpoint, std::move(schema), std::move(packing),
+                               std::move(auth_opts), bind, max_buffer_depth,
+                               schema_tag, std::move(instance_id));
+}
+
+std::unique_ptr<ZmqQueue>
+ZmqQueue::push_to_curve(const std::string& endpoint,
+                        std::vector<ZmqSchemaField> schema,
+                        std::string packing,
+                        std::string_view identity_key_name,
+                        std::string zap_domain,
+                        bool bind,
+                        std::optional<std::array<uint8_t, 8>> schema_tag,
+                        int sndhwm,
+                        size_t send_buffer_depth,
+                        OverflowPolicy overflow_policy,
+                        int send_retry_interval_ms,
+                        std::string instance_id)
+{
+    ZmqAuthOptions auth_opts;
+    auth_opts.keystore_name = std::string{identity_key_name};
+    auth_opts.zap_domain    = std::move(zap_domain);
+    // `initial_allowlist` deliberately left empty.  Post-construction
+    // the caller seeds via `set_peer_allowlist()` — that's the new
+    // contract HEP-0040 §8.4 + Phase D `CHANNEL_AUTH_UPDATE` push
+    // converge on.  An empty allowlist == deny-everyone (secure
+    // default); the caller is responsible for seeding before any
+    // peer is expected to connect successfully.
+    return push_to_with_auth(endpoint, std::move(schema), std::move(packing),
+                             std::move(auth_opts), bind, schema_tag, sndhwm,
+                             send_buffer_depth, overflow_policy,
+                             send_retry_interval_ms, std::move(instance_id));
+}
+
+// ============================================================================
 // PeerAdmission overrides (Phase A interface)
 // ============================================================================
 

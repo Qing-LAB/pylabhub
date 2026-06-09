@@ -26,6 +26,81 @@ constexpr std::size_t kZ85KeyLen = 40;
 constexpr std::size_t kZ85BufLen = 41;
 } // namespace
 
+namespace
+{
+
+/// Z85 alphabet per RFC 32 §4 — the 85 printable ASCII chars libzmq
+/// accepts on `zmq_z85_decode` for CURVE keys.  Compile-time lookup
+/// table built once; index by `static_cast<unsigned char>(c)`.
+constexpr bool make_z85_alphabet_table_(unsigned char c)
+{
+    // Decimal digits, lower-case, upper-case.
+    if (c >= '0' && c <= '9') return true;
+    if (c >= 'a' && c <= 'z') return true;
+    if (c >= 'A' && c <= 'Z') return true;
+    // The 23 punctuation chars in the Z85 alphabet:
+    //   .-:+=^!/*?&<>()[]{}@%$#
+    switch (c)
+    {
+    case '.': case '-': case ':': case '+': case '=':
+    case '^': case '!': case '/': case '*': case '?':
+    case '&': case '<': case '>': case '(': case ')':
+    case '[': case ']': case '{': case '}': case '@':
+    case '%': case '$': case '#':
+        return true;
+    }
+    return false;
+}
+
+} // namespace
+
+Z85PublicKey::Z85PublicKey() noexcept
+    : z85_(Z85PublicKey::kZ85Chars, '\0')
+{}
+
+Z85PublicKey::Z85PublicKey(std::string_view z85)
+    : z85_(z85.begin(), z85.end())
+{
+    if (z85.size() != Z85PublicKey::kZ85Chars)
+    {
+        throw std::invalid_argument(
+            "pylabhub::utils::security::Z85PublicKey: input length " +
+            std::to_string(z85.size()) +
+            " is not the required " +
+            std::to_string(Z85PublicKey::kZ85Chars) +
+            " chars (CURVE public key, Z85-encoded — RFC 32 §4)");
+    }
+    for (std::size_t i = 0; i < z85.size(); ++i)
+    {
+        const auto c = static_cast<unsigned char>(z85[i]);
+        if (!make_z85_alphabet_table_(c))
+        {
+            throw std::invalid_argument(
+                "pylabhub::utils::security::Z85PublicKey: input contains "
+                "non-Z85 character at position " + std::to_string(i) +
+                " (byte 0x" +
+                [](unsigned char b) {
+                    const char hex[] = "0123456789abcdef";
+                    std::string s{hex[b >> 4], hex[b & 0xF]};
+                    return s;
+                }(c) +
+                "); the Z85 alphabet is 0-9 a-z A-Z .-:+=^!/*?&<>()[]{}@%$# "
+                "per RFC 32 §4");
+        }
+    }
+}
+
+bool Z85PublicKey::empty() const noexcept
+{
+    // Sentinel value is 40 zero bytes; that's the ONLY shape the
+    // default ctor produces.  Any validated ctor input contains
+    // only Z85 chars (which excludes \0).
+    for (char c : z85_) {
+        if (c != '\0') return false;
+    }
+    return true;
+}
+
 CurveKeypair generate_curve_keypair()
 {
     std::array<char, kZ85BufLen> pub{};

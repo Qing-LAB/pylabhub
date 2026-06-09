@@ -244,6 +244,43 @@ gtest_discover_tests(test_layer2_known_roles
 )
 
 # ============================================================================
+# Test: Z85PublicKey strong type (HEP-CORE-0040 §8.4 + AUTH_TODO §C2, #158)
+# Pattern 1 — pure value-type tests; no LOGGER_*, no lifecycle.
+# Pins:
+#   - 40-char Z85 length contract
+#   - Z85 alphabet (RFC 32 §4) — 23 punctuation chars + alphanumerics
+#   - Default sentinel value (40 zero bytes) distinguishable from
+#     validated input (which cannot contain '\0')
+#   - Diagnostics name the offending position/length so misuse is
+#     fixable from the error message alone
+# ============================================================================
+
+add_executable(test_layer2_curve_keypair
+    test_curve_keypair.cpp
+)
+
+target_link_libraries(test_layer2_curve_keypair
+    PRIVATE
+        pylabhub::utils
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_curve_keypair)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_curve_keypair
+    SUITE_NAME "Layer2_CurveKeypair"
+)
+layer2_require_staged_utils(test_layer2_curve_keypair)
+
+gtest_discover_tests(test_layer2_curve_keypair
+    PROPERTIES
+        LABELS "layer2;service;security;curve_keypair"
+        TIMEOUT 10
+)
+
+# ============================================================================
 # Test: PeerAdmission abstraction (HEP-CORE-0035 §4.5 / HEP-CORE-0036 §I1)
 # Pattern 1 — pure value-type tests; no LOGGER_*, no lifecycle.
 # Phase A of the PeerAdmission architecture: pins the interface contract
