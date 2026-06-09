@@ -136,63 +136,6 @@ struct ProducerPeer
 };
 
 /**
- * @struct ZmqAuthOptions
- * @brief CURVE-encryption + ZAP-admission options for a `ZmqQueue` instance.
- *
- * Pass to `pull_from_with_auth()` / `push_to_with_auth()` to wire CURVE
- * on the underlying socket and (on PUSH/server side) install a
- * per-queue `zap_domain` for the process-wide `ZapRouter`.
- *
- * **Empty defaults mean plaintext** — every field empty produces a
- * socket configured exactly like the legacy `pull_from`/`push_to`
- * factories.  Passing this to `*_with_auth` with all-empty fields is
- * equivalent to (but more verbose than) the legacy path.
- *
- * @see HEP-CORE-0036 §6 (CURVE on data plane)
- * @see HEP-CORE-0040 §172 (use-not-export — keypairs sourced from KeyStore
- *      by name; secret bytes never leave LockedKey region)
- * @see docs/archive/transient-2026-06-02/peer_admission_architecture_design.md §5.1
- */
-struct PYLABHUB_UTILS_EXPORT ZmqAuthOptions
-{
-    /// HEP-CORE-0040 §172: the queue's CURVE keypair is identified by
-    /// NAME in the process `KeyStore`, never carried as bytes through
-    /// this struct.  `ZmqQueue::start()` resolves the name at
-    /// socket-setup time via `key_store().pubkey(name)` +
-    /// `with_seckey(name, callback)` — the seckey bytes flow directly
-    /// from the LockedKey region into libzmq's internal CURVE state,
-    /// with no intermediate std::string copy.
-    ///
-    /// Empty → legacy plaintext path (no CURVE, no ZAP).  This is the
-    /// only knob that selects CURVE-vs-plaintext.  Production callers
-    /// set this to `"role_identity"` (role host) or `"hub_identity"`
-    /// (broker bind path).  Tests pick uid-specific names matching
-    /// what the test's KeyStore was seeded with.
-    std::string keystore_name;
-
-    /// PULL/connect side only — the producer's pubkey, used as
-    /// `curve_serverkey`.  Required on the connect side when CURVE
-    /// is wired (otherwise libzmq refuses the connect).  Ignored on
-    /// the bind side.
-    std::string serverkey_z85;
-
-    /// PUSH/bind side only — the `zap_domain` sockopt set on this
-    /// socket and the key under which the queue's `PeerAdmission`
-    /// registers with `ZapRouter`.  Must be globally unique across
-    /// the process; conventionally `<role_uid>:<channel>:<side>`.
-    /// Empty → derived from `instance_id` at start time.  Ignored on
-    /// the connect side (PULL).
-    std::string zap_domain;
-
-    /// PUSH/bind side only — the initial allowlist installed when the
-    /// queue's PeerAdmission is registered with the router.  Empty
-    /// allowlist == deny everyone (secure default).  Phase D's
-    /// `CHANNEL_AUTH_UPDATE` push from the broker replaces this with
-    /// the current snapshot of authorized consumer pubkeys.
-    pylabhub::utils::security::PeerAllowlist initial_allowlist;
-};
-
-/**
  * @class ZmqQueue
  * @brief ZMQ PULL (read) or PUSH (write) QueueReader/QueueWriter implementation.
  *
@@ -202,10 +145,10 @@ struct PYLABHUB_UTILS_EXPORT ZmqAuthOptions
  * trusts the server via `curve_serverkey`).
  *
  * Factories:
- *   pull_from() / push_to()       → unique_ptr<QueueReader|Writer> (legacy)
- *   pull_from_with_auth() / push_to_with_auth() → unique_ptr<ZmqQueue>
+ *   pull_from() / push_to()             → unique_ptr<QueueReader|Writer> (legacy plaintext)
+ *   pull_from_curve() / push_to_curve() → unique_ptr<ZmqQueue> (CURVE per HEP-0040 §8.4)
  *
- * The auth-enabled factories return the concrete type so callers can
+ * The CURVE factories return the concrete type so callers can
  * access the `PeerAdmission` interface to push allowlist updates.
  * Phase D's broker glue uses this to drive `set_peer_allowlist` on
  * the producer-side queue from the broker thread.
@@ -292,58 +235,27 @@ public:
             int send_retry_interval_ms = 10,
             std::string instance_id = {});
 
-    // ── Auth-enabled factories (PeerAdmission Phase C) ─────────────────────────
+    // ── CURVE-enabled factories (HEP-CORE-0040 §8.4 endpoint shape) ──────────
     //
-    // Identical to pull_from() / push_to() but additionally wire CURVE
-    // on the underlying socket per @p auth_opts.  Return the concrete
-    // ZmqQueue so callers can drive the PeerAdmission interface
-    // directly (e.g., Phase D broker glue calls set_peer_allowlist on
-    // the PUSH-side queue when CHANNEL_AUTH_UPDATE arrives).
+    // Canonical CURVE-wired entry points per HEP-CORE-0040 §8.4 +
+    // AUTH_TODO §C2 (#158): discrete `identity_key_name` (KeyStore
+    // lookup) + `Z85PublicKey server_pubkey` (PULL only) +
+    // `zap_domain` (PUSH only).  No `ZmqAuthOptions` struct; no
+    // `initial_allowlist` parameter — callers seed via
+    // `set_peer_allowlist()` AFTER `start()`.  Production callers
+    // rely on the broker's Phase D `CHANNEL_AUTH_UPDATE` push; the
+    // deny-all default is the safe starting point.
     //
-    // If every field of @p auth_opts is empty, behaviour is identical
-    // to the legacy factory — no CURVE, no ZAP registration, the
-    // PeerAdmission interface's `admission_is_enforced()` returns
-    // false.
-
-    [[nodiscard]] static std::unique_ptr<ZmqQueue>
-    pull_from_with_auth(const std::string& endpoint,
-            std::vector<ZmqSchemaField> schema,
-            std::string packing,
-            ZmqAuthOptions auth_opts,
-            bool bind = false,
-            size_t max_buffer_depth = kZmqDefaultBufferDepth,
-            std::optional<std::array<uint8_t, 8>> schema_tag = std::nullopt,
-            std::string instance_id = {});
-
-    [[nodiscard]] static std::unique_ptr<ZmqQueue>
-    push_to_with_auth(const std::string& endpoint,
-            std::vector<ZmqSchemaField> schema,
-            std::string packing,
-            ZmqAuthOptions auth_opts,
-            bool bind = true,
-            std::optional<std::array<uint8_t, 8>> schema_tag = std::nullopt,
-            int sndhwm = 0,
-            size_t send_buffer_depth = kZmqDefaultBufferDepth,
-            OverflowPolicy overflow_policy = OverflowPolicy::Drop,
-            int send_retry_interval_ms = 10,
-            std::string instance_id = {});
-
-    // ── HEP-CORE-0040 §8.4 endpoint shape (AUTH_TODO §C2, #158) ────────────────
+    // Return the concrete ZmqQueue so callers can drive the
+    // PeerAdmission interface directly (e.g., Phase D broker glue
+    // calls set_peer_allowlist on the PUSH-side queue when
+    // CHANNEL_AUTH_UPDATE arrives).
     //
-    // New factory entry points that match the canonical post-C4 shape:
-    // discrete `identity_key_name` (KeyStore lookup) + `Z85PublicKey
-    // server_pubkey` (PULL only) + `zap_domain` (PUSH only), no
-    // `ZmqAuthOptions` struct, no `initial_allowlist` (callers seed via
-    // `set_peer_allowlist()` post-construction).
-    //
-    // Transitional names — until #160 (C4) deletes the legacy plaintext
-    // `pull_from`/`push_to`, both name spaces are live.  After C4:
+    // Transitional names — until #160 (C4) deletes the legacy
+    // plaintext `pull_from`/`push_to`, both namespaces are live.
+    // After C4:
     //   pull_from_curve → pull_from
     //   push_to_curve   → push_to
-    //
-    // These currently DELEGATE to `*_with_auth` (no behaviour change);
-    // future cleanup commits move the validation + CURVE wiring inline
-    // and let `ZmqAuthOptions` die.
 
     [[nodiscard]] static std::unique_ptr<ZmqQueue>
     pull_from_curve(const std::string& endpoint,
@@ -403,7 +315,7 @@ public:
     // then-pull cycle.  Today the impl is metadata-only — Pattern A vs
     // Pattern B socket-level fan-in is HEP-CORE-0017 §3.3 future work;
     // the single-producer connect endpoint still flows through
-    // `pull_from()` / `pull_from_with_auth()`'s `endpoint` parameter.
+    // `pull_from()` / `pull_from_curve()`'s `endpoint` parameter.
     // The methods exist now so the A3 dispatch layer has a stable
     // surface to call.
     //

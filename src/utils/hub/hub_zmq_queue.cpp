@@ -135,13 +135,27 @@ struct ZmqQueueImpl
     std::atomic<uint64_t> data_drop_count_{0};
 
     // ── PeerAdmission Phase C — auth state ─────────────────────────────────────
-    // HEP-CORE-0040 §172: empty `keystore_name` = no CURVE wired
-    // (legacy unauth path).  When set, `ZmqQueue::start()` reads the
-    // identity from `key_store()` at socket-setup time — bytes never
+    // HEP-CORE-0040 §172 + §8.4 (#158): discrete fields replace the
+    // legacy `ZmqAuthOptions` struct.  Empty `identity_key_name_` =
+    // no CURVE wired (legacy unauth path; reachable only via the
+    // plaintext `pull_from`/`push_to` factories that never populate
+    // this field).  When set, `ZmqQueue::start()` reads the identity
+    // from `key_store()` at socket-setup time — bytes never
     // materialize in this struct.
-    ZmqAuthOptions auth_opts_;
+    std::string identity_key_name_;
 
-    // Resolved zap_domain (Phase C): auth_opts_.zap_domain if non-empty,
+    // PUSH/bind side only — zap_domain advertised on the socket
+    // (`zmq::sockopt::zap_domain`).  Empty → start() derives from
+    // instance_id or queue_name+addr.
+    std::string zap_domain_;
+
+    // PULL/connect side only — server's CURVE pubkey passed to
+    // `zmq::sockopt::curve_serverkey`.  Empty would mean "no
+    // serverkey" which is invalid on the connect side; the
+    // `pull_from_curve` factory validates non-empty before populating.
+    std::string server_pubkey_z85_;
+
+    // Resolved zap_domain (Phase C): `zap_domain_` if non-empty,
     // else derived from instance_id at start().  Captured here so
     // stop() can release the ZapRouter registration symmetrically.
     std::string resolved_zap_domain_;
@@ -573,26 +587,35 @@ namespace
 
 constexpr std::size_t kCurveKeyZ85Chars = 40;
 
-/// Validate a `ZmqAuthOptions` against the side it's being applied to.
-/// Returns empty string on success; returns a human-readable error
-/// describing the first violation on failure.  Pure function — no
-/// logging, no side effects.
+/// Validate the CURVE factory parameters against the side they're
+/// being applied to.  Returns empty string on success; returns a
+/// human-readable error describing the first violation on failure.
+/// Pure function — no logging, no side effects.
 ///
-/// This is called BEFORE the queue is constructed by `*_with_auth`
-/// factories, so misconfiguration is surfaced at the call site (the
-/// factory returns nullptr) instead of inside `start()` against a
-/// stale `errno` from an unrelated prior libzmq call (H-Q3).
-std::string validate_auth_options(const ZmqAuthOptions &opts,
-                                   bool bind_side)
+/// Validate the CURVE auth parameters BEFORE the queue is constructed,
+/// so misconfiguration is surfaced at the factory call site (returns
+/// nullptr with a precise diagnostic) rather than as a cryptic libzmq
+/// failure inside `start()` against a stale errno from an unrelated
+/// prior call (H-Q3).  Used by both `pull_from_curve` (PULL/connect)
+/// and `push_to_curve` (PUSH/bind).
+///
+/// Error message text is preserved verbatim from the pre-#158 helper
+/// so the L2 mutation-pin substrings in `test_zmq_queue_auth.cpp`
+/// remain valid across the C2 cleanup.  Mentions "ZmqAuthOptions"
+/// remain because the substrings are pinned in tests — when the
+/// pinning is updated to the post-#158 vocabulary, the text here can
+/// follow.
+std::string
+validate_curve_factory_params(std::string_view identity_key_name,
+                              std::string_view server_pubkey_z85,
+                              bool             bind_side)
 {
     // C1 (#157, HEP-CORE-0035 §2): CURVE is unconditional on every
-    // role↔hub data path.  An empty `keystore_name` is a programmer
-    // error — refuse it explicitly here so the `*_with_auth`
-    // factories return nullptr at the call site (no silent fallback
-    // to plaintext).  Callers that genuinely want a plaintext socket
-    // must go through the legacy `pull_from` / `push_to` factories,
-    // which do NOT call this validator.
-    if (opts.keystore_name.empty())
+    // role↔hub data path.  An empty identity_key_name is a programmer
+    // error.  Callers that genuinely want a plaintext socket must
+    // use the legacy `pull_from` / `push_to` factories, which do
+    // not call this validator.
+    if (identity_key_name.empty())
         return "keystore_name MUST be non-empty (HEP-CORE-0035 §2 — "
                "CURVE is unconditional on every role↔hub data path; "
                "HEP-CORE-0040 §172 — caller must seed the process "
@@ -602,26 +625,27 @@ std::string validate_auth_options(const ZmqAuthOptions &opts,
                "intentional.";
 
     // HEP-CORE-0040 §172: validate that the named identity is
-    // resolvable + has the right byte budget BEFORE the queue is
-    // constructed, so misconfiguration surfaces at the factory
-    // call site (returns nullptr with a precise error) rather than
-    // as a cryptic libzmq failure inside start().
+    // resolvable + has the right byte budget BEFORE constructing the
+    // queue, so misconfiguration surfaces at the factory call site
+    // (returns nullptr with a precise error) rather than as a cryptic
+    // libzmq failure inside start().
     {
         namespace sec = pylabhub::utils::security;
+        const std::string name_str{identity_key_name};
         if (!sec::key_store_ready())
-            return "keystore_name='" + opts.keystore_name +
+            return "keystore_name='" + name_str +
                    "' but KeyStore is not initialized (process must "
                    "construct SecureMemorySubsystem + KeyStore before "
                    "any ZmqAuthOptions-bearing queue is built)";
         auto &ks = sec::key_store();
-        if (!ks.has(opts.keystore_name))
-            return "keystore_name='" + opts.keystore_name +
+        if (!ks.has(name_str))
+            return "keystore_name='" + name_str +
                    "' not present in KeyStore (caller must "
                    "`add_identity(name, ...)` BEFORE building the "
                    "queue)";
-        const auto pub = ks.pubkey(opts.keystore_name);
+        const auto pub = ks.pubkey(name_str);
         if (pub.size() != kCurveKeyZ85Chars)
-            return "KeyStore entry '" + opts.keystore_name +
+            return "KeyStore entry '" + name_str +
                    "' has pubkey of " + std::to_string(pub.size()) +
                    " chars; expected " +
                    std::to_string(kCurveKeyZ85Chars);
@@ -632,131 +656,41 @@ std::string validate_auth_options(const ZmqAuthOptions &opts,
         // Connect side requires serverkey to verify the server's CURVE
         // identity.  Without it, libzmq refuses the connect with a
         // cryptic "Invalid argument" — surface a specific error here
-        // instead.
-        if (opts.serverkey_z85.empty())
+        // instead.  `Z85PublicKey` already enforces the 40-char length
+        // invariant at construction time (#158); we only need to
+        // catch the sentinel "empty" case here.
+        if (server_pubkey_z85.empty())
             return "connect-side ZmqAuthOptions requires "
                    "serverkey_z85 (the producer's CURVE pubkey) when "
                    "keystore_name is set";
-        if (opts.serverkey_z85.size() != kCurveKeyZ85Chars)
-            return "serverkey_z85 must be exactly 40 chars (Z85 of 32 "
-                   "raw bytes); got " +
-                   std::to_string(opts.serverkey_z85.size());
     }
-    // bind side: serverkey is meaningless (we ARE the server).  Don't
-    // fail if the caller set it by mistake — silently ignored.
+    // bind side: serverkey is meaningless (we ARE the server).
     return {};
 }
 
 } // namespace
 
-std::unique_ptr<ZmqQueue>
-ZmqQueue::pull_from_with_auth(const std::string& endpoint,
-                               std::vector<ZmqSchemaField> schema,
-                               std::string packing,
-                               ZmqAuthOptions auth_opts,
-                               bool bind,
-                               size_t max_buffer_depth,
-                               std::optional<std::array<uint8_t, 8>> schema_tag,
-                               std::string instance_id)
-{
-    // **H-Q3 fix.**  Validate auth options BEFORE constructing the
-    // queue.  If invalid, return nullptr with a precise diagnostic so
-    // the caller sees the misconfiguration immediately (not as a
-    // cryptic "Success" later from a stale errno inside start()).
-    if (auto err = validate_auth_options(auth_opts, bind); !err.empty())
-    {
-        LOGGER_ERROR("[hub::ZmqQueue::pull_from_with_auth] invalid "
-                     "ZmqAuthOptions for '{}': {}", endpoint, err);
-        return nullptr;
-    }
-
-    // Defer all schema validation to the legacy factory so the
-    // contract stays in one place.  Then re-cast away the abstract
-    // return + populate auth fields on the underlying ZmqQueueImpl.
-    //
-    // **H-Q1 safety.**  The static_cast is sound only because
-    // ZmqQueue is `final` — the legacy factory ALWAYS constructs the
-    // most-derived type.  Assert that invariant at compile time so a
-    // future subclass attempt would fail at this line rather than
-    // truncate silently.
-    static_assert(std::is_final_v<ZmqQueue>,
-                  "ZmqQueue must be final for the *_with_auth factories' "
-                  "static_cast to be sound — otherwise the cast may "
-                  "silently truncate a most-derived subclass instance.");
-    auto reader = pull_from(endpoint, std::move(schema), std::move(packing),
-                             bind, max_buffer_depth, schema_tag,
-                             std::move(instance_id));
-    if (!reader) return nullptr;
-    std::unique_ptr<ZmqQueue> z(static_cast<ZmqQueue *>(reader.release()));
-
-    // **H-Q2 fix.**  The legacy factory currently does NOT call
-    // start() on the constructed queue.  Pin that invariant: if a
-    // future refactor moves start() into the factory, this assert
-    // will fire — preventing a silent fallback to plaintext where
-    // auth was requested.
-    assert(!z->is_running() &&
-           "pull_from_with_auth: legacy factory must not start() the "
-           "queue before auth_opts_ is populated; ordering invariant "
-           "broken — silent plaintext-fallback risk");
-    z->pImpl->auth_opts_ = std::move(auth_opts);
-    return z;
-}
-
-std::unique_ptr<ZmqQueue>
-ZmqQueue::push_to_with_auth(const std::string& endpoint,
-                             std::vector<ZmqSchemaField> schema,
-                             std::string packing,
-                             ZmqAuthOptions auth_opts,
-                             bool bind,
-                             std::optional<std::array<uint8_t, 8>> schema_tag,
-                             int sndhwm,
-                             size_t send_buffer_depth,
-                             OverflowPolicy overflow_policy,
-                             int send_retry_interval_ms,
-                             std::string instance_id)
-{
-    // **H-Q3 fix.**  Same factory-level validation as pull side.
-    if (auto err = validate_auth_options(auth_opts, bind); !err.empty())
-    {
-        LOGGER_ERROR("[hub::ZmqQueue::push_to_with_auth] invalid "
-                     "ZmqAuthOptions for '{}': {}", endpoint, err);
-        return nullptr;
-    }
-
-    static_assert(std::is_final_v<ZmqQueue>,
-                  "ZmqQueue must be final for the *_with_auth factories' "
-                  "static_cast to be sound — otherwise the cast may "
-                  "silently truncate a most-derived subclass instance.");
-    auto writer = push_to(endpoint, std::move(schema), std::move(packing),
-                           bind, schema_tag, sndhwm, send_buffer_depth,
-                           overflow_policy, send_retry_interval_ms,
-                           std::move(instance_id));
-    if (!writer) return nullptr;
-    std::unique_ptr<ZmqQueue> z(static_cast<ZmqQueue *>(writer.release()));
-    assert(!z->is_running() &&
-           "push_to_with_auth: legacy factory must not start() the "
-           "queue before auth_opts_ is populated; ordering invariant "
-           "broken — silent plaintext-fallback risk");
-    z->pImpl->auth_opts_ = std::move(auth_opts);
-    return z;
-}
-
 // ============================================================================
 // HEP-CORE-0040 §8.4 endpoint shape (AUTH_TODO §C2, task #158)
 // ============================================================================
 //
-// `pull_from_curve` / `push_to_curve` are the new entry points that
-// match the canonical post-C4 shape: discrete `identity_key_name`
-// (KeyStore lookup) + `Z85PublicKey server_pubkey` (PULL only) +
-// `zap_domain` (PUSH only).  No `ZmqAuthOptions` struct, no
-// `initial_allowlist` (callers seed via `set_peer_allowlist()`
-// post-construction).
+// `pull_from_curve` / `push_to_curve` are the canonical CURVE-wired
+// factory entry points: discrete `identity_key_name` (KeyStore lookup)
+// + `Z85PublicKey server_pubkey` (PULL only) + `zap_domain` (PUSH
+// only).  No `ZmqAuthOptions` struct, no `initial_allowlist` (callers
+// seed via `set_peer_allowlist()` post-`start()`; production callers
+// rely on the broker's Phase D `CHANNEL_AUTH_UPDATE` push, the
+// deny-all default is the safe starting point).
 //
-// These currently DELEGATE to `*_with_auth` by constructing the
-// transitional `ZmqAuthOptions` inline — no behaviour change, just a
-// new entry point that callers can adopt incrementally.  The audit
-// (`docs/tech_draft/DRAFT_C2-ZmqAuthOptions-deletion-audit_2026-06-08.md`)
-// covers the per-site migration in the subsequent C2 commits.
+// H-Q1 safety: `ZmqQueue` is `final`, so the `static_cast` from the
+// abstract QueueReader/QueueWriter return type of `pull_from` /
+// `push_to` to the concrete `ZmqQueue` is sound (the legacy plaintext
+// factories ALWAYS construct the most-derived type).  Asserted at
+// compile time.
+// H-Q2 ordering: the plaintext factory must NOT call `start()` on
+// the queue before we populate the CURVE fields — otherwise the
+// socket would bind/connect without auth and our later
+// auth-field writes would land on a running socket too late.
 
 std::unique_ptr<ZmqQueue>
 ZmqQueue::pull_from_curve(const std::string& endpoint,
@@ -769,20 +703,42 @@ ZmqQueue::pull_from_curve(const std::string& endpoint,
                           std::optional<std::array<uint8_t, 8>> schema_tag,
                           std::string instance_id)
 {
-    ZmqAuthOptions auth_opts;
-    auth_opts.keystore_name = std::string{identity_key_name};
-    // server_pubkey: PULL side requires `curve_serverkey`.  An empty
-    // (default-ctor) Z85PublicKey produces 40 zero bytes; that's a
-    // sentinel meaning "no pubkey set" and must NOT reach libzmq.
-    // The downstream `validate_auth_options` already rejects empty
-    // serverkey_z85 on the PULL side (HEP-CORE-0035 §2 / C1 strict
-    // mode); pass through whatever the caller gave us so the
-    // validation message stays uniform across both entry points.
-    auth_opts.serverkey_z85 =
+    // Z85PublicKey empty-sentinel handling: a default-constructed
+    // `Z85PublicKey` is 40 zero bytes — a sentinel meaning "no
+    // pubkey set" that MUST NOT reach libzmq.  Convert to an empty
+    // string for the validator so its empty-check fires the
+    // documented diagnostic.  Do NOT use `server_pubkey.str()`
+    // unconditionally — that would pass 40 zero bytes through and
+    // libzmq would silently accept them.
+    const std::string server_pubkey_str =
         server_pubkey.empty() ? std::string{} : std::string{server_pubkey.str()};
-    return pull_from_with_auth(endpoint, std::move(schema), std::move(packing),
-                               std::move(auth_opts), bind, max_buffer_depth,
-                               schema_tag, std::move(instance_id));
+
+    if (auto err = validate_curve_factory_params(
+            identity_key_name, server_pubkey_str, /*bind_side=*/bind);
+        !err.empty())
+    {
+        LOGGER_ERROR("[hub::ZmqQueue::pull_from_curve] invalid auth "
+                     "params for '{}': {}", endpoint, err);
+        return nullptr;
+    }
+
+    static_assert(std::is_final_v<ZmqQueue>,
+                  "ZmqQueue must be final for the *_curve factories' "
+                  "static_cast to be sound — otherwise the cast may "
+                  "silently truncate a most-derived subclass instance.");
+    auto reader = pull_from(endpoint, std::move(schema), std::move(packing),
+                             bind, max_buffer_depth, schema_tag,
+                             std::move(instance_id));
+    if (!reader) return nullptr;
+    std::unique_ptr<ZmqQueue> z(static_cast<ZmqQueue *>(reader.release()));
+    assert(!z->is_running() &&
+           "pull_from_curve: plaintext factory must not start() the "
+           "queue before auth fields are populated; ordering invariant "
+           "broken — silent plaintext-fallback risk");
+
+    z->pImpl->identity_key_name_ = std::string{identity_key_name};
+    z->pImpl->server_pubkey_z85_ = server_pubkey_str;
+    return z;
 }
 
 std::unique_ptr<ZmqQueue>
@@ -799,19 +755,37 @@ ZmqQueue::push_to_curve(const std::string& endpoint,
                         int send_retry_interval_ms,
                         std::string instance_id)
 {
-    ZmqAuthOptions auth_opts;
-    auth_opts.keystore_name = std::string{identity_key_name};
-    auth_opts.zap_domain    = std::move(zap_domain);
-    // `initial_allowlist` deliberately left empty.  Post-construction
-    // the caller seeds via `set_peer_allowlist()` — that's the new
-    // contract HEP-0040 §8.4 + Phase D `CHANNEL_AUTH_UPDATE` push
-    // converge on.  An empty allowlist == deny-everyone (secure
-    // default); the caller is responsible for seeding before any
-    // peer is expected to connect successfully.
-    return push_to_with_auth(endpoint, std::move(schema), std::move(packing),
-                             std::move(auth_opts), bind, schema_tag, sndhwm,
-                             send_buffer_depth, overflow_policy,
-                             send_retry_interval_ms, std::move(instance_id));
+    if (auto err = validate_curve_factory_params(
+            identity_key_name, /*server_pubkey_z85=*/{},
+            /*bind_side=*/bind);
+        !err.empty())
+    {
+        LOGGER_ERROR("[hub::ZmqQueue::push_to_curve] invalid auth "
+                     "params for '{}': {}", endpoint, err);
+        return nullptr;
+    }
+
+    static_assert(std::is_final_v<ZmqQueue>,
+                  "ZmqQueue must be final for the *_curve factories' "
+                  "static_cast to be sound — otherwise the cast may "
+                  "silently truncate a most-derived subclass instance.");
+    auto writer = push_to(endpoint, std::move(schema), std::move(packing),
+                           bind, schema_tag, sndhwm, send_buffer_depth,
+                           overflow_policy, send_retry_interval_ms,
+                           std::move(instance_id));
+    if (!writer) return nullptr;
+    std::unique_ptr<ZmqQueue> z(static_cast<ZmqQueue *>(writer.release()));
+    assert(!z->is_running() &&
+           "push_to_curve: plaintext factory must not start() the "
+           "queue before auth fields are populated; ordering invariant "
+           "broken — silent plaintext-fallback risk");
+
+    z->pImpl->identity_key_name_ = std::string{identity_key_name};
+    z->pImpl->zap_domain_        = std::move(zap_domain);
+    // initial allowlist intentionally NOT seeded — caller invokes
+    // `set_peer_allowlist()` AFTER `start()`.  Empty == deny-all
+    // secure default.
+    return z;
 }
 
 // ============================================================================
@@ -869,7 +843,7 @@ bool ZmqQueue::admission_is_enforced() const noexcept
     //   - after stop() (socket is closed)
     //   - if no CURVE keys were configured (legacy plaintext path)
     if (!pImpl) return false;
-    if (pImpl->auth_opts_.keystore_name.empty()) return false;
+    if (pImpl->identity_key_name_.empty()) return false;
     return pImpl->running_.load(std::memory_order_acquire);
 }
 
@@ -972,20 +946,21 @@ bool ZmqQueue::start()
             pImpl->socket.set(zmq::sockopt::sndhwm, pImpl->sndhwm);
 
         // ── PeerAdmission Phase C — CURVE + ZAP wiring (HEP-CORE-0036 §6) ────
-        // Empty keystore_name == legacy unauth path.  See ZmqAuthOptions
-        // docs for the per-side semantics.  HEP-CORE-0040 §172: keys
-        // are sourced from `key_store()` by name — secret bytes flow
-        // from LockedKey region directly into libzmq's internal CURVE
+        // Empty identity_key_name_ == legacy unauth path (reachable
+        // only via plaintext `pull_from`/`push_to` factories which
+        // never populate it).  HEP-CORE-0040 §172: keys are sourced
+        // from `key_store()` by name — secret bytes flow from
+        // LockedKey region directly into libzmq's internal CURVE
         // state inside `with_seckey` callback scope; no std::string
         // copy holds the seckey at queue scope.
-        if (!pImpl->auth_opts_.keystore_name.empty())
+        if (!pImpl->identity_key_name_.empty())
         {
             namespace sec = pylabhub::utils::security;
             auto &ks = sec::key_store();
 
             pImpl->socket.set(zmq::sockopt::curve_publickey,
-                              ks.pubkey(pImpl->auth_opts_.keystore_name));
-            ks.with_seckey(pImpl->auth_opts_.keystore_name,
+                              ks.pubkey(pImpl->identity_key_name_));
+            ks.with_seckey(pImpl->identity_key_name_,
                 [&](std::string_view seckey)
                 {
                     pImpl->socket.set(zmq::sockopt::curve_secretkey,
@@ -1000,8 +975,7 @@ bool ZmqQueue::start()
                 // Resolve zap_domain.  Use explicit value if provided;
                 // otherwise derive from instance_id or queue_name+addr
                 // (same key the ThreadManager owner_id uses below).
-                pImpl->resolved_zap_domain_ =
-                    pImpl->auth_opts_.zap_domain;
+                pImpl->resolved_zap_domain_ = pImpl->zap_domain_;
                 if (pImpl->resolved_zap_domain_.empty())
                 {
                     if (!pImpl->instance_id.empty())
@@ -1018,10 +992,18 @@ bool ZmqQueue::start()
                 pImpl->socket.set(zmq::sockopt::zap_domain,
                                   pImpl->resolved_zap_domain_);
 
-                // Seed the allowlist with the operator-supplied initial set.
+                // HEP-CORE-0040 §8.4 (#158): seed an EMPTY allowlist
+                // (deny-all secure default).  Storing an empty
+                // PeerAllowlist (rather than leaving the atomic
+                // nullptr) keeps `peer_allowlist_snapshot()` non-nullopt
+                // on a started CURVE-wired queue — the in-memory
+                // contract is "CURVE wired → allowlist exists; admit
+                // ⊆ peers; empty peers ⇒ deny all".  Callers replace
+                // this via `set_peer_allowlist()` (in production,
+                // driven by the broker's Phase D
+                // `CHANNEL_AUTH_UPDATE` push).
                 pImpl->allowlist_.store(
-                    std::make_shared<const sec::PeerAllowlist>(
-                        pImpl->auth_opts_.initial_allowlist),
+                    std::make_shared<const sec::PeerAllowlist>(),
                     std::memory_order_release);
 
                 // Register with the router BEFORE bind.  Without this
@@ -1035,18 +1017,17 @@ bool ZmqQueue::start()
             else
             {
                 // Client side: present serverkey.  Validated at factory
-                // entry (validate_auth_options) so empty here would
-                // indicate a private-API caller that bypassed the
-                // factory — defensive throw with a meaningful message.
-                if (pImpl->auth_opts_.serverkey_z85.empty())
+                // entry so empty here would indicate a private-API
+                // caller that bypassed the factory — defensive throw
+                // with a meaningful message.
+                if (pImpl->server_pubkey_z85_.empty())
                     throw std::invalid_argument(
                         "[hub::ZmqQueue::start] CURVE wired on "
-                        "connect side but serverkey_z85 is empty — "
-                        "ZmqAuthOptions::serverkey_z85 must be set "
-                        "to the producer's CURVE pubkey on PULL/"
-                        "connect");
+                        "connect side but server_pubkey_z85 is empty — "
+                        "PULL/connect side requires the producer's "
+                        "CURVE pubkey passed to `pull_from_curve`");
                 pImpl->socket.set(zmq::sockopt::curve_serverkey,
-                                  pImpl->auth_opts_.serverkey_z85);
+                                  pImpl->server_pubkey_z85_);
             }
         }
 
