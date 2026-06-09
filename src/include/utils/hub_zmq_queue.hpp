@@ -79,6 +79,8 @@
  */
 #include "utils/hub_queue.hpp"
 #include "utils/schema_field_layout.hpp"
+#include "utils/security/curve_keypair.hpp"   // Z85PublicKey strong type
+#include "utils/security/key_store.hpp"       // kRoleIdentityName canonical default
 #include "utils/security/peer_admission.hpp"  // PeerAdmission base + PeerAllowlist
 
 #include <array>
@@ -318,6 +320,50 @@ public:
             std::vector<ZmqSchemaField> schema,
             std::string packing,
             ZmqAuthOptions auth_opts,
+            bool bind = true,
+            std::optional<std::array<uint8_t, 8>> schema_tag = std::nullopt,
+            int sndhwm = 0,
+            size_t send_buffer_depth = kZmqDefaultBufferDepth,
+            OverflowPolicy overflow_policy = OverflowPolicy::Drop,
+            int send_retry_interval_ms = 10,
+            std::string instance_id = {});
+
+    // ── HEP-CORE-0040 §8.4 endpoint shape (AUTH_TODO §C2, #158) ────────────────
+    //
+    // New factory entry points that match the canonical post-C4 shape:
+    // discrete `identity_key_name` (KeyStore lookup) + `Z85PublicKey
+    // server_pubkey` (PULL only) + `zap_domain` (PUSH only), no
+    // `ZmqAuthOptions` struct, no `initial_allowlist` (callers seed via
+    // `set_peer_allowlist()` post-construction).
+    //
+    // Transitional names — until #160 (C4) deletes the legacy plaintext
+    // `pull_from`/`push_to`, both name spaces are live.  After C4:
+    //   pull_from_curve → pull_from
+    //   push_to_curve   → push_to
+    //
+    // These currently DELEGATE to `*_with_auth` (no behaviour change);
+    // future cleanup commits move the validation + CURVE wiring inline
+    // and let `ZmqAuthOptions` die.
+
+    [[nodiscard]] static std::unique_ptr<ZmqQueue>
+    pull_from_curve(const std::string& endpoint,
+            ::pylabhub::utils::security::Z85PublicKey server_pubkey,
+            std::vector<ZmqSchemaField> schema,
+            std::string packing,
+            std::string_view identity_key_name =
+                ::pylabhub::utils::security::kRoleIdentityName,
+            bool bind = false,
+            size_t max_buffer_depth = kZmqDefaultBufferDepth,
+            std::optional<std::array<uint8_t, 8>> schema_tag = std::nullopt,
+            std::string instance_id = {});
+
+    [[nodiscard]] static std::unique_ptr<ZmqQueue>
+    push_to_curve(const std::string& endpoint,
+            std::vector<ZmqSchemaField> schema,
+            std::string packing,
+            std::string_view identity_key_name =
+                ::pylabhub::utils::security::kRoleIdentityName,
+            std::string zap_domain = {},
             bool bind = true,
             std::optional<std::array<uint8_t, 8>> schema_tag = std::nullopt,
             int sndhwm = 0,

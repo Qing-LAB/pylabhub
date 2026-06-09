@@ -135,6 +135,103 @@ TEST_F(ZmqQueueTest, PushTo_Creates)
     EXPECT_FALSE(q->is_running());
 }
 
+// ─── HEP-CORE-0040 §8.4 endpoint shape (AUTH_TODO §C2, #158) ────────────────
+//
+// `pull_from_curve` / `push_to_curve` are the new transitional
+// factory entry points that take discrete params instead of a
+// `ZmqAuthOptions` struct.  Currently delegate to `*_with_auth`; the
+// smoke tests below verify the delegation produces a working queue
+// AND that the validation propagates through the delegation chain.
+
+TEST_F(ZmqQueueTest, PullFromCurve_Creates_DelegatesToWithAuth)
+{
+    // Seed a KeyStore identity so the underlying `pull_from_with_auth`
+    // validation (HEP-CORE-0040 §172 + C1 #157) passes.  The new
+    // factory should construct a queue indistinguishable from one
+    // built via the explicit `ZmqAuthOptions` path.
+    namespace sec = pylabhub::utils::security;
+    sec::SecureMemorySubsystem sms;
+    sec::KeyStore              ks("test", "test.zmq_queue.pull_curve");
+    const auto own_kp    = pylabhub::tests::gen_curve_keypair();
+    const auto server_kp = pylabhub::tests::gen_curve_keypair();
+    sec::key_store().add_identity_from_z85(
+        "test_identity", own_kp.public_z85, own_kp.secret_z85);
+
+    auto q = ZmqQueue::pull_from_curve(
+        "tcp://127.0.0.1:0",
+        sec::Z85PublicKey{server_kp.public_z85},
+        blob_schema(kItemSize), "aligned",
+        /*identity_key_name=*/"test_identity",
+        /*bind=*/false, 100);
+    ASSERT_NE(q, nullptr);
+    EXPECT_FALSE(q->is_running());
+}
+
+TEST_F(ZmqQueueTest,
+       PullFromCurve_EmptyServerPubkey_FailsValidation_Connect)
+{
+    // PULL/connect side: empty Z85PublicKey (default sentinel) maps
+    // to empty `serverkey_z85` in the delegated ZmqAuthOptions, which
+    // `validate_auth_options` rejects (HEP-0035 §2: server pubkey
+    // REQUIRED on connect side; C1 #157 strict-mode enforcement).
+    // The factory must return nullptr — silent fallback to plaintext
+    // is the precise failure mode the C-chain was built to close.
+    namespace sec = pylabhub::utils::security;
+    sec::SecureMemorySubsystem sms;
+    sec::KeyStore              ks("test", "test.zmq_queue.curve_empty_pk");
+    const auto kp = pylabhub::tests::gen_curve_keypair();
+    sec::key_store().add_identity_from_z85(
+        "test_identity", kp.public_z85, kp.secret_z85);
+
+    ExpectLogError("connect-side ZmqAuthOptions requires serverkey_z85");
+    auto q = ZmqQueue::pull_from_curve(
+        "tcp://127.0.0.1:0",
+        sec::Z85PublicKey{},   // default sentinel = "no pubkey set"
+        blob_schema(kItemSize), "aligned",
+        /*identity_key_name=*/"test_identity",
+        /*bind=*/false, 100);
+    EXPECT_EQ(q, nullptr);
+}
+
+TEST_F(ZmqQueueTest, PushToCurve_Creates_DelegatesToWithAuth)
+{
+    namespace sec = pylabhub::utils::security;
+    sec::SecureMemorySubsystem sms;
+    sec::KeyStore              ks("test", "test.zmq_queue.push_curve");
+    const auto kp = pylabhub::tests::gen_curve_keypair();
+    sec::key_store().add_identity_from_z85(
+        "test_identity", kp.public_z85, kp.secret_z85);
+
+    auto q = ZmqQueue::push_to_curve(
+        "tcp://127.0.0.1:0",
+        blob_schema(kItemSize), "aligned",
+        /*identity_key_name=*/"test_identity",
+        /*zap_domain=*/"test.curve.smoke",
+        /*bind=*/true);
+    ASSERT_NE(q, nullptr);
+    EXPECT_FALSE(q->is_running());
+}
+
+TEST_F(ZmqQueueTest,
+       PushToCurve_MissingKeyStoreEntry_FailsValidation)
+{
+    // KeyStore exists but the requested identity name is absent —
+    // factory must return nullptr.  Mirrors the PULL-side empty
+    // sentinel test for the symmetric defense.
+    namespace sec = pylabhub::utils::security;
+    sec::SecureMemorySubsystem sms;
+    sec::KeyStore              ks("test", "test.zmq_queue.push_missing");
+
+    ExpectLogError("keystore_name='never_seeded' not present in KeyStore");
+    auto q = ZmqQueue::push_to_curve(
+        "tcp://127.0.0.1:0",
+        blob_schema(kItemSize), "aligned",
+        /*identity_key_name=*/"never_seeded",
+        /*zap_domain=*/"test.curve.missing",
+        /*bind=*/true);
+    EXPECT_EQ(q, nullptr);
+}
+
 // ============================================================================
 // Dynamic producer-peer membership (HEP-CORE-0017 §3.3, #103 A2)
 // ============================================================================
