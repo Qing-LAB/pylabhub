@@ -204,7 +204,9 @@ during Phase 1 review of `HubBrokerConfig`):
   call site.  The negotiated state is observable to any caller via
   the public `ZmqQueue::mechanism()` accessor — a thread-safe
   atomic read returning the `Mechanism` enum
-  (`Uninitialized` / `Plaintext` / `Curve`).  Scripts, telemetry,
+  (`Uninitialized` / `Curve`; a "started without CURVE" state is not
+  representable — it surfaces as a failed start, not as a mechanism
+  value).  Scripts, telemetry,
   and tests use this single observation point to assert the
   invariant:
 

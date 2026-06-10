@@ -377,6 +377,7 @@ bool LuaEngine::build_api_(RoleAPIBase &api)
     push_closure("in_slots_received", lua_api_in_slots_received);
     push_closure("out_drop_count", lua_api_out_drop_count);
     push_closure("metrics", lua_api_metrics);
+    push_closure("queue_mechanism", lua_api_queue_mechanism);
 
     // ── Role-specific closures based on role_tag ────────────────────────
     if (api_->role_tag() == "prod")
@@ -2499,6 +2500,46 @@ int LuaEngine::lua_api_band_members(lua_State *L)
 }
 
 // ============================================================================
+// api.queue_mechanism([side]) — script-visible CURVE engagement state
+// ============================================================================
+//
+// Returns a string: "Curve" / "Uninitialized".  HEP-CORE-0035 §2 +
+// AUTH_TODO §C5 (#186): any started ZmqQueue MUST report Curve.
+// Side argument: "tx" / "rx" / "out" / "in" (case-insensitive).  For
+// single-side roles (producer / consumer), the no-arg form returns the
+// relevant side automatically.  For processor the arg is required.
+int LuaEngine::lua_api_queue_mechanism(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    const auto role = self->api_->role_tag();
+    scripting::ChannelSide side;
+
+    if (lua_gettop(L) == 0)
+    {
+        if (role == "prod")      side = scripting::ChannelSide::Tx;
+        else if (role == "cons") side = scripting::ChannelSide::Rx;
+        else
+            return luaL_error(L, "api.queue_mechanism: processor role "
+                                 "requires a side argument (\"tx\" or "
+                                 "\"rx\")");
+    }
+    else
+    {
+        const char *arg = luaL_checkstring(L, 1);
+        const std::string s = arg ? arg : "";
+        if (s == "tx" || s == "TX" || s == "out") side = scripting::ChannelSide::Tx;
+        else if (s == "rx" || s == "RX" || s == "in") side = scripting::ChannelSide::Rx;
+        else
+            return luaL_error(L, "api.queue_mechanism: side must be "
+                                 "\"tx\"/\"out\" or \"rx\"/\"in\", got "
+                                 "'%s'", arg ? arg : "(nil)");
+    }
+
+    lua_pushstring(L, hub::mechanism_name(self->api_->queue_mechanism(side)));
+    return 1;
+}
+
+// ============================================================================
 // api.metrics() — hierarchical metrics table
 // ============================================================================
 
@@ -2514,15 +2555,10 @@ int LuaEngine::lua_api_metrics(lua_State *L)
     const bool has_tx = self->api_->has_tx_side();
     const bool has_rx = self->api_->has_rx_side();
 
-    // C5 follow-up (#186) — surface the CURVE engagement state on the
-    // same per-queue subtable as the counter metrics.  String value
-    // for stability across binding shapes; `Curve` is the post-C4
-    // invariant for any started ZmqQueue (HEP-CORE-0035 §2).
-    auto push_mechanism = [&](scripting::ChannelSide s)
-    {
-        lua_pushstring(L, hub::mechanism_name(self->api_->queue_mechanism(s)));
-        lua_setfield(L, -2, "mechanism");
-    };
+    // C5 (#186) note — CURVE mechanism state is NOT in this metrics
+    // dict.  Scripts query it via the dedicated `api.queue_mechanism()`
+    // accessor instead.  Mechanism is a state observable, not a
+    // counter, and the metrics path is for counter fields only.
 
     if (self->api_->role_tag() == "proc")
     {
@@ -2530,14 +2566,12 @@ int LuaEngine::lua_api_metrics(lua_State *L)
         {
             lua_newtable(L);
             queue_metrics_to_lua(L, self->api_->queue_metrics(scripting::ChannelSide::Rx));
-            push_mechanism(scripting::ChannelSide::Rx);
             lua_setfield(L, -2, "in_queue");
         }
         if (has_tx)
         {
             lua_newtable(L);
             queue_metrics_to_lua(L, self->api_->queue_metrics(scripting::ChannelSide::Tx));
-            push_mechanism(scripting::ChannelSide::Tx);
             lua_setfield(L, -2, "out_queue");
         }
     }
@@ -2545,14 +2579,12 @@ int LuaEngine::lua_api_metrics(lua_State *L)
     {
         lua_newtable(L);
         queue_metrics_to_lua(L, self->api_->queue_metrics(scripting::ChannelSide::Tx));
-        push_mechanism(scripting::ChannelSide::Tx);
         lua_setfield(L, -2, "queue");
     }
     else if (self->api_->role_tag() == "cons" && has_rx)
     {
         lua_newtable(L);
         queue_metrics_to_lua(L, self->api_->queue_metrics(scripting::ChannelSide::Rx));
-        push_mechanism(scripting::ChannelSide::Rx);
         lua_setfield(L, -2, "queue");
     }
 

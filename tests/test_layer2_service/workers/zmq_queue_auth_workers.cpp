@@ -184,9 +184,6 @@ int auth_round_trip_allowed_peer_delivers(const char * /*tmpdir*/)
             ASSERT_NE(consumer, nullptr);
             ASSERT_TRUE(consumer->start());
 
-            EXPECT_TRUE(producer->admission_is_enforced());
-            EXPECT_TRUE(consumer->admission_is_enforced());
-
             ASSERT_TRUE(try_send_uint32(producer.get(), 0xDEADBEEFu));
             EXPECT_TRUE(wait_for_one_uint32(
                 consumer.get(), 0xDEADBEEFu,
@@ -355,8 +352,6 @@ int auth_allowlist_swap_takes_effect_for_next_connection(const char * /*tmpdir*/
 //     broker bootstrap depends on this)
 //   - factory rejects misconfigured CURVE auth params BEFORE start()
 //     instead of failing late with a stale-errno diagnostic
-//   - admission_is_enforced() flips false → true → false across
-//     construct → start() → stop() (interface-contract conformance)
 
 /// **H-T1 fix.**  Same peer denied first, then admitted via swap —
 /// both phases pin byte-exact data + ZapRouter counters.  This
@@ -385,7 +380,6 @@ int auth_deny_then_allow_via_swap_pins_path(const char *)
                 /*bind=*/true);
             ASSERT_NE(producer, nullptr);
             ASSERT_TRUE(producer->start());
-            EXPECT_TRUE(producer->admission_is_enforced());
 
             ZapPumpThread pump;
 
@@ -826,46 +820,6 @@ int auth_misconfig_factory_returns_nullptr(const char *)
         pylabhub::hub::GetZMQContextModule());
 }
 
-/// **M-Q1 fix.**  admission_is_enforced() must reflect actual wire-
-/// level enforcement: false before start(), true after a successful
-/// start(), false after stop().  The pre-fix implementation returned
-/// true as soon as the keys were populated — lying when start() had
-/// not yet run.
-int auth_admission_is_enforced_lifecycle(const char *)
-{
-    return run_gtest_worker(
-        [&]() {
-            ScopedKeyStore ks;
-            const auto [pub, sec] = make_keypair();
-            pylabhub::utils::security::key_store().add_identity_from_z85("identity", pub, sec);
-            auto q = ZmqQueue::push_to(
-                "tcp://127.0.0.1:0", make_uint32_schema(), "aligned",
-                /*identity_key_name=*/"identity",
-                /*zap_domain=*/"test.zmq.auth.enforced.lifecycle",
-                /*bind=*/true);
-            ASSERT_NE(q, nullptr);
-
-            EXPECT_FALSE(q->admission_is_enforced())
-                << "Before start(): no socket exists yet, so the wire "
-                   "is NOT enforced.  Returning true here would lie "
-                   "to broker glue that's about to push allowlists.";
-
-            ASSERT_TRUE(q->start());
-            EXPECT_TRUE(q->admission_is_enforced())
-                << "After start(): CURVE is wired on the bound socket.";
-
-            q->stop();
-            EXPECT_FALSE(q->admission_is_enforced())
-                << "After stop(): socket closed, wire is no longer "
-                   "enforced.";
-        },
-        "zmq_queue_auth::auth_admission_is_enforced_lifecycle",
-        Logger::GetLifecycleModule(),
-        FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule(),
-        pylabhub::hub::GetZMQContextModule());
-}
-
 // AUTH_TODO §C5 (#161) — NULL-mech client cannot connect to CURVE
 // producer.  Anti-recursion test for the HEP-CORE-0035 §2 invariant:
 // when a producer is CURVE-enforced, a client that connects without
@@ -1014,8 +968,6 @@ int dispatch_zmq_queue_auth(int argc, char **argv)
         return auth_misconfig_connect_missing_serverkey_factory_returns_nullptr(tmpdir);
     if (scenario == "auth_misconfig_factory_returns_nullptr")
         return auth_misconfig_factory_returns_nullptr(tmpdir);
-    if (scenario == "auth_admission_is_enforced_lifecycle")
-        return auth_admission_is_enforced_lifecycle(tmpdir);
     if (scenario == "auth_null_mech_client_handshake_fails")
         return auth_null_mech_client_handshake_fails(tmpdir);
     std::fprintf(stderr, "zmq_queue_auth: unknown scenario '%s'\n",

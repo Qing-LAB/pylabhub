@@ -831,22 +831,6 @@ bool ZmqQueue::is_peer_allowed(
     return snap->contains(peer);
 }
 
-bool ZmqQueue::admission_is_enforced() const noexcept
-{
-    // True iff CURVE keys were supplied AND the socket is currently
-    // running (the bind/connect is what actually attaches the CURVE
-    // machinery in libzmq).  Per the PeerAdmission interface contract
-    // ("the transport currently enforces admission at the kernel/wire
-    // level"), this must return false:
-    //   - before start() succeeds (no socket exists yet)
-    //   - if start() failed (running_ was reset to false in the catch)
-    //   - after stop() (socket is closed)
-    //   - if no CURVE keys were configured (legacy plaintext path)
-    if (!pImpl) return false;
-    if (pImpl->identity_key_name_.empty()) return false;
-    return pImpl->running_.load(std::memory_order_acquire);
-}
-
 // ── Dynamic producer-peer membership (HEP-CORE-0017 §3.3, #103 A2) ──────────
 
 bool ZmqQueue::add_producer_peer(const ProducerPeer& peer)
@@ -1016,16 +1000,11 @@ bool ZmqQueue::start()
             }
             else
             {
-                // Client side: present serverkey.  Validated at factory
-                // entry so empty here would indicate a private-API
-                // caller that bypassed the factory — defensive throw
-                // with a meaningful message.
-                if (pImpl->server_pubkey_z85_.empty())
-                    throw std::invalid_argument(
-                        "[hub::ZmqQueue::start] CURVE wired on "
-                        "connect side but server_pubkey_z85 is empty — "
-                        "PULL/connect side requires the producer's "
-                        "CURVE pubkey passed to `pull_from`");
+                // Client side: present serverkey.  Non-empty is
+                // guaranteed by `pull_from`'s validator — the
+                // factory is the only path to a constructed
+                // ZmqQueue (the ctor is private), so a private-API
+                // bypass cannot occur.
                 pImpl->socket.set(zmq::sockopt::curve_serverkey,
                                   pImpl->server_pubkey_z85_);
             }

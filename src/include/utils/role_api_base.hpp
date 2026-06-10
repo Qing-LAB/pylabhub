@@ -120,12 +120,14 @@ struct RxQueueOptions
     /// HEP-CORE-0017 §3.3 + HEP-CORE-0036 §4.1 dynamic-membership
     /// producer set populated from `CONSUMER_REG_ACK.producers[]`
     /// (HEP-CORE-0036 §6.4).  At `build_rx_queue` time ZmqQueue
-    /// calls its internal setup once per entry; at runtime, the
-    /// role-host framework calls `ZmqQueue::add_producer_peer` /
-    /// `remove_producer_peer` in response to HEP-CORE-0033 §12
-    /// channel-event broadcasts.  Field shipped under the #103 A1
-    /// wire-shape slice; the dynamic-peer API + producer-side ZAP
-    /// install + consumer-side framework population land in A2 + A3.
+    /// calls its internal setup once per entry.  At runtime, task
+    /// #103 (A2 + A3 slices, in flight) will wire the role-host
+    /// framework into `ZmqQueue::add_producer_peer` /
+    /// `remove_producer_peer` so HEP-CORE-0033 §12 channel-event
+    /// broadcasts drive dynamic membership.  Today the methods +
+    /// struct exist as the stable HEP-specified surface for #103
+    /// to call into — production callers other than the initial
+    /// `build_rx_queue` population are deferred to #103.
     /// `zmq_node_endpoint` above stays as the single-producer source
     /// until A2 (no caller migration in A1).
     std::vector<ProducerPeer> producer_peers;

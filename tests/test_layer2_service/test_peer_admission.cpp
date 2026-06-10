@@ -198,8 +198,6 @@ public:
         return allowlist_->contains(p);
     }
 
-    bool admission_is_enforced() const noexcept override { return true; }
-
 private:
     mutable std::mutex          mu_;
     std::optional<PeerAllowlist> allowlist_;
@@ -287,19 +285,11 @@ TEST(PeerAdmissionContractTest, SetAllowlist_EmptyRevokesAll)
     EXPECT_TRUE(snap->is_deny_all());
 }
 
-/// admission_is_enforced is the broker's signal that the gate is real.
-/// The test double here returns true; transitional implementations
-/// (the future --allow-anonymous-data path) would return false.  This
-/// test pins that the contract is queryable on a noexcept path
-/// (callable from destructors / shutdown paths).
-TEST(PeerAdmissionContractTest, AdmissionIsEnforced_NoexceptQueryable)
-{
-    InMemoryAdmission a;
-    static_assert(noexcept(a.admission_is_enforced()),
-                  "admission_is_enforced must be noexcept — broker may "
-                  "query during shutdown / destructor paths");
-    EXPECT_TRUE(a.admission_is_enforced());
-}
+// `admission_is_enforced` was deleted from the PeerAdmission interface
+// per AUTH_TODO §C4 (post-C4 the method reduced to `is_running()` for
+// ZmqQueue, the only production transport, and had no caller branching
+// on it).  The former `AdmissionIsEnforced_NoexceptQueryable` test was
+// removed alongside.
 
 // ── Concurrency contract — set and is_allowed run on different threads ──────
 

@@ -79,8 +79,6 @@ public:
         std::lock_guard<std::mutex> lk(mu_);
         return al_.has_value() && al_->contains(p);
     }
-    bool admission_is_enforced() const noexcept override { return true; }
-
 private:
     mutable std::mutex          mu_;
     std::optional<PeerAllowlist> al_;
