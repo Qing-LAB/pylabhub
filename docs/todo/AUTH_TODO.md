@@ -255,18 +255,29 @@ Sub-deliverables:
    out-of-scope — it's NOT a script binding.
 
    (g) **Tests.**
-     - L2: callback fires with correct `(channel, allowlist, reason)`
-       args after `handle_channel_auth_notifies` applies; callback
-       exceptions don't crash the role.
-     - L3: end-to-end consumer-join → producer-script's
-       `on_allowlist_changed` observes a single-entry list with the
-       joined consumer's `{role_uid, pubkey}`; consumer-deregister
-       fires again with the empty list + `reason="consumer_left"`.
-     - L3: `api.allowed_peers` polling returns the same snapshot
-       between callback firings.
-     - Engine parity (L4): same script logic running under Lua,
-       Python, Native sees the same callback args + same polling
-       results.
+     - L3 (broker side): broker emits new wire shape +
+       reg/dereg propagates through the BRC pull path.  Verified
+       2026-06-10 via the extended
+       `GetChannelAuthReturnsAllowlist` worker — pre-reg empty,
+       post-reg single-entry `{role_uid, pubkey}`, post-dereg
+       empty.  ✅ shipped.
+     - L3 script-driven callback firing test — needs a
+       producer-role-host worker with a Lua script defining
+       `on_allowlist_changed` and recording call sites.  The
+       existing `IsolatedProcessTest` pattern in
+       `broker_consumer_workers.cpp` uses BRC handles only — no
+       script engine.  Build cost is higher than other L3 tests.
+       **Disposition**: fold into AUTH-7 (L4 end-to-end gate
+       close) where the demo framework hosts script-driven
+       producer + consumer in real `plh_role` binaries.  Tracking
+       under AUTH-7 scope below.
+     - L2 unit test for `handle_channel_auth_notifies` with a
+       fake-BRC double — possible but the existing L3 path
+       already pins the broker side; adding L2 buys little.
+       **Disposition**: skip unless a regression motivates it.
+     - Engine parity (L4): same script logic running under Lua /
+       Python observes the same callback args + same polling
+       results.  Belongs in AUTH-7.
 5. **B1 — `awaiting_endpoint` vocabulary fix** ⏳ pending.
    HEP-CORE-0036 §6.6 line 1370 enumerates `awaiting_endpoint`,
    `awaiting_first_heartbeat`, `heartbeat_stalled` as the valid
