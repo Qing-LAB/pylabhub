@@ -694,6 +694,32 @@ Factory body calls `key_store().with_seckey(identity_key_name, cb)` to apply the
 
 Reading a key before `key_store().add_identity(...)` has been called OR before the name is registered throws `std::out_of_range`. There is no path by which `auth_client_pubkey()` returns `""`. There is no silent-fallback hook surviving in any layer. HB-1's "build_tx_queue sees empty keys" mode is structurally impossible.
 
+### 8.5.1 Vault load-path hardening (post-#175, #187)
+
+The §175 vault refactor (HubVault / RoleVault `vault_read_secure`) closed the long-lived `std::string` plaintext-retention issue on the vault objects themselves.  A 2026-06-09 audit during the Phase C close-out identified two **short-lived** non-mlocked seckey copies that survived §175:
+
+1. The nlohmann::json node's internal `std::string` for the `secret_key` field after JSON parse of the decrypted payload.
+2. The `std::string` temporary returned by `j.at("secret_key").get<std::string>()`.
+
+Both are freed by `std::string`'s destructor at scope exit without `sodium_memzero`.  The bytes remain in freed-but-not-overwritten heap until the allocator reuses the slot.  Exposure window: the duration of `RoleVault::open`, milliseconds at process startup.
+
+**Patch (task #187, applied 2026-06-09).**  In `RoleVault::open`:
+
+- Replace `.get<std::string>()` with `.get_ref<std::string &>()` to take a reference into the json's own storage instead of copying — eliminates copy (2).
+- Wrap the memcpy + size check in an RAII `WipeGuard` whose destructor `sodium_memzero`s the json-internal strings on EVERY exit path (normal return AND throw) — closes copy (1).
+- Apply the same shape to the `public_key` ref for hygiene/discipline (pubkey is non-secret; cheap symmetry).
+
+**Threat models this closes:**
+
+- Core dump during the `RoleVault::open` window catching the seckey in freed heap.
+- Heap inspection of the pylabhub binary picking up the seckey in freed-but-not-overwritten memory.
+
+**Not closed (accepted §175 compromise):**
+
+- `RoleVault::Impl::secret_z85` (`std::array<char, 40>`) is not mlocked during the RoleVault object's lifetime (function scope of `load_keypair`, ~ms).  IS zeroed in the `RoleVault` destructor via `sodium_memzero`.  Closing this would require either sodium_malloc-backed storage on `Impl` or extending the JSON allocator end-to-end — significantly more invasive for a window that's already bounded + zero-on-destruct.
+
+If the threat model later tightens to include swap-out during the RoleVault lifetime, the next step is a SecureString-backed Impl member or a custom JSON allocator.
+
 ### 8.6 What this design eliminates
 
 - `client_pubkey / client_seckey` fields in HubConfig::AuthConfig + RoleConfig::AuthConfig

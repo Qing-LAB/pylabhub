@@ -153,27 +153,60 @@ RoleVault RoleVault::open(const fs::path    &vault_path,
     try
     {
         const auto bytes = json_buf.span().first(n);
-        const json j = json::parse(
+        // Parse into a NON-const json so we can hand the internal key
+        // strings back to `sodium_memzero` via `get_ref<std::string&>`
+        // before this scope ends.  See HEP-CORE-0040 §175 post-#175
+        // hardening note below.
+        json j = json::parse(
             reinterpret_cast<const char *>(bytes.data()),
             reinterpret_cast<const char *>(bytes.data() + bytes.size()));
 
         // role_uid is not secret — std::string copy is fine.
         v.pImpl->role_uid_ = j.at("role_uid").get<std::string>();
 
-        // Keys go through a temporary std::string into the fixed-size
-        // zero-on-destruct buffers.  The temporaries' heap storage
-        // exists for microseconds while we copy; identity bytes live
-        // in the process KeyStore (locked memory) from
-        // `RoleConfig::load_keypair` onward per HEP-CORE-0040 §172.
-        const auto pub_str = j.at("public_key").get<std::string>();
-        const auto sec_str = j.at("secret_key").get<std::string>();
-        if (pub_str.size() != Impl::kKeyLen || sec_str.size() != Impl::kKeyLen)
+        // HEP-CORE-0040 §175 (post-#175 hardening — task #187).
+        //
+        // Use `get_ref` to take REFERENCES into the json's own internal
+        // string storage instead of `get<std::string>()` copies.  This
+        // eliminates one of the two non-mlocked seckey copies in the
+        // load path (the `.get<std::string>()` temporary) and lets us
+        // wipe the remaining json-internal copy before the json object
+        // is destroyed.  Without this, the seckey bytes live in a
+        // freed-but-not-zeroed heap allocation between json dtor and
+        // the next allocator reuse.
+        //
+        // Identity bytes continue to live in the process KeyStore
+        // (LockedKey, mlocked) from `RoleConfig::load_keypair` onward
+        // per HEP-CORE-0040 §172.  The `pImpl->{public,secret}_z85`
+        // fixed-size arrays are NOT mlocked (§175 accepted compromise)
+        // but ARE zeroed at `RoleVault` destruction (line 53).
+        auto &pub_ref = j.at("public_key").get_ref<std::string &>();
+        auto &sec_ref = j.at("secret_key").get_ref<std::string &>();
+
+        // RAII guard: wipe the json-internal copies on EVERY exit path
+        // (normal return AND throw from the size-check below).  Without
+        // the guard, an exception would skip the manual memzero and
+        // leave the bytes recoverable from freed heap until the
+        // allocator reuses the slot.  Public-key wipe is for
+        // hygiene/discipline — the pubkey itself is non-secret.
+        struct WipeGuard
+        {
+            std::string &p;
+            std::string &s;
+            ~WipeGuard() noexcept
+            {
+                sodium_memzero(p.data(), p.size());
+                sodium_memzero(s.data(), s.size());
+            }
+        } wipe_on_exit{pub_ref, sec_ref};
+
+        if (pub_ref.size() != Impl::kKeyLen || sec_ref.size() != Impl::kKeyLen)
         {
             throw std::runtime_error(
                 "RoleVault: vault contains invalid key lengths (expected 40-char Z85)");
         }
-        std::memcpy(v.pImpl->public_z85.data(), pub_str.data(), Impl::kKeyLen);
-        std::memcpy(v.pImpl->secret_z85.data(), sec_str.data(), Impl::kKeyLen);
+        std::memcpy(v.pImpl->public_z85.data(), pub_ref.data(), Impl::kKeyLen);
+        std::memcpy(v.pImpl->secret_z85.data(), sec_ref.data(), Impl::kKeyLen);
     }
     catch (const json::exception &e)
     {
