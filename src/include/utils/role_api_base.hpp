@@ -391,6 +391,18 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     // see nullptr except when the underlying queue genuinely has no slot
     // available within the timeout. See loop_design_unified.md for timing.
 
+    /// HEP-CORE-0036 §6.7 state-machine accessors (#189, Stage 1B).
+    /// `is_tx_active()` returns true iff the output queue is in the
+    /// Active state — `start()` succeeded and `stop()` has not run.
+    /// Cycle ops gate `write_acquire` + script `on_step`/`on_produce`
+    /// dispatch on this so a Standby/Configured queue does NOT fire
+    /// the user callback and does NOT increment drop counters (§6.7
+    /// "Standby skip is a lifecycle condition, not a runtime drop").
+    /// `is_rx_active()` is the symmetric input-side accessor.  Both
+    /// return false when the queue has not been built yet.
+    [[nodiscard]] bool is_tx_active() const noexcept;
+    [[nodiscard]] bool is_rx_active() const noexcept;
+
     [[nodiscard]] void *write_acquire(std::chrono::milliseconds timeout) noexcept;
     void               write_commit() noexcept;
     void               write_discard() noexcept;

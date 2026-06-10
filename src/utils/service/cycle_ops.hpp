@@ -292,6 +292,17 @@ class ProducerCycleOps final
     // Per-cycle state.
     void *buf_{nullptr};
 
+    // HEP-CORE-0036 §6.7 Standby → Active edge latch (#189).  The
+    // state machine is one-way during a cycle ops lifetime: Standby is
+    // the start state, Active is the goal, stop() is terminal (running_
+    // is one-way per Stage 1A).  We log ONLY the rising edge — the
+    // affirmative readiness signal — and never the reverse, because
+    // there is no Active → Standby transition in our model (hub-dead
+    // recovery destroys + builds a fresh queue rather than resetting
+    // state).  Initialized false so the first observation matches the
+    // factory-time state.
+    bool prev_tx_active_{false};
+
   public:
     ProducerCycleOps(RoleAPIBase &api, ScriptEngine &e,
                      RoleHostCore &c, bool stop_on_error)
@@ -302,6 +313,17 @@ class ProducerCycleOps final
 
     bool acquire(const AcquireContext &ctx)
     {
+        // HEP-CORE-0036 §6.7 Standby gate (#189).  Short-circuit the
+        // retry_acquire spin when the tx queue is not Active.
+        // Standby skips are a lifecycle condition and MUST NOT
+        // contaminate the runtime drop counters.
+        if (!api_.is_tx_active())
+        {
+            log_edge_if_changed_(false);
+            buf_ = nullptr;
+            return false;
+        }
+        log_edge_if_changed_(true);
         buf_ = retry_acquire(ctx, core_,
             [this](auto t) { return api_.write_acquire(t); });
         return buf_ != nullptr;
@@ -319,7 +341,9 @@ class ProducerCycleOps final
         // are framework infrastructure (§I11 — auth synchronization is
         // not a script-visible event); strip them out of msgs so the
         // script dispatcher never sees them.  No-op when msgs has no
-        // ChannelAuthChanged entries.
+        // ChannelAuthChanged entries.  Runs unconditionally — this is
+        // the channel HOW the queue transitions Standby → Configured
+        // when a CHANNEL_AUTH_CHANGED_NOTIFY arrives.
         api_.handle_channel_auth_notifies(msgs);
 
         // Per HEP-CORE-0011: route every broker-emitted notification
@@ -329,6 +353,21 @@ class ProducerCycleOps final
         // and notifies whose callback isn't defined stay in msgs for
         // the script's generic scan inside `on_produce`/`on_consume`.
         dispatch_notifications(engine_, msgs, StopRequestor{core_});
+
+        // HEP-CORE-0036 §6.7 Standby gate (#189).  Re-check Active
+        // state after handle_channel_auth_notifies — it may have
+        // populated set_producer_peers but the queue still requires a
+        // separate start() call (driven by the role host outside this
+        // path).  If still not Active, skip invoke_produce + skip the
+        // drop counter.  This preserves the §6.7 discipline:
+        //   - Standby skip = lifecycle condition, NOT counted as drop
+        //   - Drop counter retains its meaning as "runtime drops on a
+        //     running queue" (ring full / Drop policy)
+        // The cycle continues so subsequent broker messages
+        // (CHANNEL_AUTH_CHANGED_NOTIFY in particular) keep getting
+        // pumped through the worker thread.
+        if (!api_.is_tx_active())
+            return true;
 
         if (buf_) std::memset(buf_, 0, buf_sz_);
 
@@ -368,6 +407,22 @@ class ProducerCycleOps final
     }
 
     void cleanup_on_exit() {} // nothing held across cycles
+
+  private:
+    /// HEP-CORE-0036 §6.7 (#189) one-shot rising-edge logger.  Logs
+    /// once when the queue first transitions Standby → Active so
+    /// operators have a precise timestamp for "data flow now possible
+    /// on this channel."  No reverse edge — Active → Standby is not
+    /// a real transition in our state machine (stop() is terminal).
+    void log_edge_if_changed_(bool now_active)
+    {
+        if (now_active == prev_tx_active_) return;
+        if (now_active)
+            LOGGER_DEBUG("[cycle_ops::producer] tx queue Standby→Active; "
+                         "resuming write_acquire + invoke_produce dispatch "
+                         "(HEP-CORE-0036 §6.7)");
+        prev_tx_active_ = now_active;
+    }
 };
 
 // ============================================================================
@@ -384,6 +439,10 @@ class ConsumerCycleOps final
     size_t      item_sz_;
     const void *data_{nullptr};
 
+    // HEP-CORE-0036 §6.7 Standby → Active edge latch (#189).
+    // One-way rising-edge only — see ProducerCycleOps::prev_tx_active_.
+    bool prev_rx_active_{false};
+
   public:
     ConsumerCycleOps(RoleAPIBase &api, ScriptEngine &e,
                      RoleHostCore &core, bool stop_on_error)
@@ -394,6 +453,17 @@ class ConsumerCycleOps final
 
     bool acquire(const AcquireContext &ctx)
     {
+        // HEP-CORE-0036 §6.7 Standby gate (#189).  Skip retry_acquire
+        // when the rx queue is not Active — no transport active,
+        // nothing to pull.  Standby skips are NOT runtime drops;
+        // counters stay clean (§6.7).
+        if (!api_.is_rx_active())
+        {
+            log_edge_if_changed_(false);
+            data_ = nullptr;
+            return false;
+        }
+        log_edge_if_changed_(true);
         // const_cast required: retry_acquire returns void* but read_acquire
         // returns const void* (input slot is read-only). The cast is safe here
         // because the pointer is immediately stored in const void* data_ and
@@ -416,8 +486,9 @@ class ConsumerCycleOps final
         // ChannelAuthChanged notifies BEFORE script dispatch.  These
         // are framework infrastructure (§I11 — auth synchronization is
         // not a script-visible event); strip them out of msgs so the
-        // script dispatcher never sees them.  No-op when msgs has no
-        // ChannelAuthChanged entries.
+        // script dispatcher never sees them.  Runs unconditionally —
+        // this is HOW the rx queue transitions Standby → Configured
+        // when CONSUMER_REG_ACK's set_producer_peers is applied.
         api_.handle_channel_auth_notifies(msgs);
 
         // Per HEP-CORE-0011: route every broker-emitted notification
@@ -427,6 +498,15 @@ class ConsumerCycleOps final
         // and notifies whose callback isn't defined stay in msgs for
         // the script's generic scan inside `on_produce`/`on_consume`.
         dispatch_notifications(engine_, msgs, StopRequestor{core_});
+
+        // HEP-CORE-0036 §6.7 Standby gate (#189).  Skip
+        // invoke_consume when the rx queue is not Active — no
+        // user-visible script dispatch, no slots_received increment.
+        // (Cycle continues so the worker thread keeps pumping broker
+        // messages, in particular CHANNEL_AUTH_CHANGED_NOTIFY which
+        // is HOW the queue transitions to Active.)
+        if (!api_.is_rx_active())
+            return true;
 
         if (data_)
             core_.inc_in_slots_received();
@@ -449,6 +529,19 @@ class ConsumerCycleOps final
     }
 
     void cleanup_on_exit() {} // nothing held across cycles
+
+  private:
+    /// HEP-CORE-0036 §6.7 (#189) one-shot rising-edge logger — see
+    /// ProducerCycleOps::log_edge_if_changed_ for rationale.
+    void log_edge_if_changed_(bool now_active)
+    {
+        if (now_active == prev_rx_active_) return;
+        if (now_active)
+            LOGGER_DEBUG("[cycle_ops::consumer] rx queue Standby→Active; "
+                         "resuming read_acquire + invoke_consume dispatch "
+                         "(HEP-CORE-0036 §6.7)");
+        prev_rx_active_ = now_active;
+    }
 };
 
 // ============================================================================
@@ -469,6 +562,13 @@ class ProcessorCycleOps final
     const void *held_input_{nullptr};
     void       *out_buf_{nullptr};
 
+    // HEP-CORE-0036 §6.7 Standby → Active edge latches (#189) — one
+    // per side, rising-edge only.  Dual-side processor logs each side
+    // independently.  See ProducerCycleOps::prev_tx_active_ for the
+    // rationale on initializing to false + one-way logging.
+    bool prev_rx_active_{false};
+    bool prev_tx_active_{false};
+
   public:
     ProcessorCycleOps(RoleAPIBase &api, ScriptEngine &e, RoleHostCore &c,
                       bool stop_on_error, bool drop_mode)
@@ -480,19 +580,29 @@ class ProcessorCycleOps final
     /// Processor always returns true — maintains timing cadence on idle cycles.
     bool acquire(const AcquireContext &ctx)
     {
-        // Primary: input with retry (skip if held from previous cycle).
+        // HEP-CORE-0036 §6.7 Standby gate (#189) — input side.  Skip
+        // read_acquire when rx queue is not Active.  No
+        // in_slots_received increment (handled by invoke_and_commit).
+        const bool rx_active = api_.is_rx_active();
+        log_rx_edge_if_changed_(rx_active);
+
+        // Primary: input with retry (skip if held from previous cycle
+        // or queue is in Standby).
         // const_cast: same rationale as ConsumerCycleOps::acquire() — the
         // pointer is stored in const void* held_input_ and never written
         // through. See comment there for the full safety explanation.
-        if (!held_input_)
+        if (rx_active && !held_input_)
         {
             held_input_ = retry_acquire(ctx, core_,
                 [this](auto t) { return const_cast<void *>(api_.read_acquire(t)); });
         }
 
-        // Secondary: output (only if input available, policy-dependent timeout).
+        // Secondary: output (only if input available + tx Active,
+        // policy-dependent timeout).
+        const bool tx_active = api_.is_tx_active();
+        log_tx_edge_if_changed_(tx_active);
         out_buf_ = nullptr;
-        if (held_input_)
+        if (held_input_ && tx_active)
         {
             if (drop_mode_)
             {
@@ -528,8 +638,9 @@ class ProcessorCycleOps final
         // ChannelAuthChanged notifies BEFORE script dispatch.  These
         // are framework infrastructure (§I11 — auth synchronization is
         // not a script-visible event); strip them out of msgs so the
-        // script dispatcher never sees them.  No-op when msgs has no
-        // ChannelAuthChanged entries.
+        // script dispatcher never sees them.  Runs unconditionally —
+        // this is HOW either side's queue transitions Standby →
+        // Configured.
         api_.handle_channel_auth_notifies(msgs);
 
         // Per HEP-CORE-0011: route every broker-emitted notification
@@ -539,6 +650,22 @@ class ProcessorCycleOps final
         // and notifies whose callback isn't defined stay in msgs for
         // the script's generic scan inside `on_produce`/`on_consume`.
         dispatch_notifications(engine_, msgs, StopRequestor{core_});
+
+        // HEP-CORE-0036 §6.7 Standby gate (#189) — processor needs
+        // BOTH sides Active to run invoke_process.  When either side
+        // is Standby, skip the script dispatch + skip drop counters
+        // (§6.7 lifecycle vs runtime distinction).  Cycle continues
+        // so broker messages keep pumping through.
+        if (!api_.is_rx_active() || !api_.is_tx_active())
+        {
+            // Release held input only if rx is still Active (else
+            // releasing a slot acquired in a prior Active cycle is
+            // fine; held_input_ was nulled if rx went Standby — see
+            // acquire()).  In this branch held_input_ may be valid
+            // from a prior Active cycle when tx flipped to Standby
+            // mid-cycle; defer to next iteration's acquire().
+            return true;
+        }
 
         if (out_buf_) std::memset(out_buf_, 0, out_sz_);
 
@@ -586,6 +713,27 @@ class ProcessorCycleOps final
     void cleanup_on_exit()
     {
         if (held_input_) { api_.read_release(); held_input_ = nullptr; }
+    }
+
+  private:
+    /// HEP-CORE-0036 §6.7 (#189) rising-edge loggers — see
+    /// ProducerCycleOps for rationale.  Two latches because the
+    /// processor's two sides transition independently.
+    void log_rx_edge_if_changed_(bool now_active)
+    {
+        if (now_active == prev_rx_active_) return;
+        if (now_active)
+            LOGGER_DEBUG("[cycle_ops::processor] rx queue Standby→Active; "
+                         "resuming read_acquire (HEP-CORE-0036 §6.7)");
+        prev_rx_active_ = now_active;
+    }
+    void log_tx_edge_if_changed_(bool now_active)
+    {
+        if (now_active == prev_tx_active_) return;
+        if (now_active)
+            LOGGER_DEBUG("[cycle_ops::processor] tx queue Standby→Active; "
+                         "resuming write_acquire (HEP-CORE-0036 §6.7)");
+        prev_tx_active_ = now_active;
     }
 };
 

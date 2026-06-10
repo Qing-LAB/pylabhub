@@ -2002,8 +2002,13 @@ their data-loop calls on `is_running()` (queue Active state):
 - If `!is_running()` for the input queue: skip `read_acquire`;
   `held_input_` stays `nullptr`; user's `on_consume` callback does
   NOT fire.  NO `in_drop_count` increment.
-- DEBUG log fires ONCE per Standby↔Active edge transition (using a
-  previous-state latch in cycle ops) — not per cycle iteration.
+- DEBUG log fires ONCE on the Standby → Active rising edge (using
+  a previous-state latch in cycle ops) — not per cycle iteration.
+  NO reverse-edge log: Active → Standby is not a real transition
+  in this state machine (`stop()` is terminal, hub-dead recovery
+  destroys + builds a fresh queue rather than resetting state),
+  so the latch is initialised `false` and only the affirmative
+  readiness signal is emitted.
 
 This preserves the diagnostic meaning of drop counters: they count
 genuine *runtime* events on a running queue (peer is busy, ring is

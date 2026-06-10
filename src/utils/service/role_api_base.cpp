@@ -2085,6 +2085,17 @@ bool RoleAPIBase::wait_for_role(const std::string &uid, int timeout_ms)
 // Output side — flat data-plane verbs
 // ============================================================================
 
+bool RoleAPIBase::is_tx_active() const noexcept
+{
+    // HEP-CORE-0036 §6.7 (#189, Stage 1B).  Post-Stage-1A,
+    // `is_running()` on ZmqQueue is true iff the queue is in the
+    // Active state (running_ flag is set after start() passes the
+    // Configured gate).  Returns false when tx_queue is unset
+    // (pre-build) — the cycle ops will simply not dispatch the
+    // write side.
+    return pImpl->tx_queue && pImpl->tx_queue->is_running();
+}
+
 void *RoleAPIBase::write_acquire(std::chrono::milliseconds timeout) noexcept
 {
     return pImpl->tx_queue ? pImpl->tx_queue->write_acquire(timeout) : nullptr;
@@ -2150,6 +2161,12 @@ std::string RoleAPIBase::out_policy() const
 // ============================================================================
 // Input side — flat data-plane verbs
 // ============================================================================
+
+bool RoleAPIBase::is_rx_active() const noexcept
+{
+    // HEP-CORE-0036 §6.7 (#189, Stage 1B) — symmetric to is_tx_active.
+    return pImpl->rx_queue && pImpl->rx_queue->is_running();
+}
 
 const void *RoleAPIBase::read_acquire(std::chrono::milliseconds timeout) noexcept
 {
