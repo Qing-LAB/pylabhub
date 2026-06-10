@@ -484,11 +484,14 @@ class ConsumerCycleOps final
     {
         // HEP-CORE-0036 §6.5 producer-side handler flow: process
         // ChannelAuthChanged notifies BEFORE script dispatch.  These
-        // are framework infrastructure (§I11 — auth synchronization is
-        // not a script-visible event); strip them out of msgs so the
-        // script dispatcher never sees them.  Runs unconditionally —
-        // this is HOW the rx queue transitions Standby → Configured
-        // when CONSUMER_REG_ACK's set_producer_peers is applied.
+        // are framework infrastructure (§I11 — auth synchronization
+        // is not a script-visible event); strip them out of msgs so
+        // the script dispatcher never sees them.  Runs unconditionally
+        // here for symmetry with ProducerCycleOps, even though
+        // ChannelAuthChanged notifies are broker→producer-side only
+        // (consumer-side membership refresh will arrive via §6.5.1
+        // CHANNEL_PRODUCERS_CHANGED_NOTIFY in future Stage 2 work).
+        // No-op on consumer side today; harmless to leave in place.
         api_.handle_channel_auth_notifies(msgs);
 
         // Per HEP-CORE-0011: route every broker-emitted notification
@@ -501,10 +504,11 @@ class ConsumerCycleOps final
 
         // HEP-CORE-0036 §6.7 Standby gate (#189).  Skip
         // invoke_consume when the rx queue is not Active — no
-        // user-visible script dispatch, no slots_received increment.
-        // (Cycle continues so the worker thread keeps pumping broker
-        // messages, in particular CHANNEL_AUTH_CHANGED_NOTIFY which
-        // is HOW the queue transitions to Active.)
+        // user-visible script dispatch, no in_slots_received counter
+        // bump.  The Standby → Configured transition for the consumer
+        // rx queue happens at role-host setup (Stage 1D, task #193):
+        // build_rx_queue with empty producer_peers, register_consumer,
+        // then `rx_queue->set_producer_peers(ACK.producers)` + start().
         if (!api_.is_rx_active())
             return true;
 
@@ -636,11 +640,14 @@ class ProcessorCycleOps final
     {
         // HEP-CORE-0036 §6.5 producer-side handler flow: process
         // ChannelAuthChanged notifies BEFORE script dispatch.  These
-        // are framework infrastructure (§I11 — auth synchronization is
-        // not a script-visible event); strip them out of msgs so the
-        // script dispatcher never sees them.  Runs unconditionally —
-        // this is HOW either side's queue transitions Standby →
-        // Configured.
+        // are framework infrastructure (§I11 — auth synchronization
+        // is not a script-visible event); strip them out of msgs so
+        // the script dispatcher never sees them.  Active on the
+        // PRODUCER side of the processor (refresh tx-queue
+        // allowlist); harmless on rx side.  Consumer-side membership
+        // refresh will arrive via §6.5.1 CHANNEL_PRODUCERS_CHANGED_NOTIFY
+        // in future Stage 2 work — rx-side Standby → Configured for
+        // processor happens at role-host setup (Stage 1D, task #193).
         api_.handle_channel_auth_notifies(msgs);
 
         // Per HEP-CORE-0011: route every broker-emitted notification
@@ -655,17 +662,13 @@ class ProcessorCycleOps final
         // BOTH sides Active to run invoke_process.  When either side
         // is Standby, skip the script dispatch + skip drop counters
         // (§6.7 lifecycle vs runtime distinction).  Cycle continues
-        // so broker messages keep pumping through.
+        // so broker messages keep pumping through.  Per the §6.7
+        // one-way state machine (Active → Standby is not a real
+        // transition; stop() is terminal + hub-dead destroys+rebuilds),
+        // this branch is reachable only during the initial cycles
+        // before both sides reach Active for the first time.
         if (!api_.is_rx_active() || !api_.is_tx_active())
-        {
-            // Release held input only if rx is still Active (else
-            // releasing a slot acquired in a prior Active cycle is
-            // fine; held_input_ was nulled if rx went Standby — see
-            // acquire()).  In this branch held_input_ may be valid
-            // from a prior Active cycle when tx flipped to Standby
-            // mid-cycle; defer to next iteration's acquire().
             return true;
-        }
 
         if (out_buf_) std::memset(out_buf_, 0, out_sz_);
 
