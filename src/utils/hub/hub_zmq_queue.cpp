@@ -181,13 +181,23 @@ struct ZmqQueueImpl
     std::optional<pylabhub::utils::security::ZapDomainHandle> zap_handle_;
 
     // PULL/connect side producer-peer membership (HEP-CORE-0017 §3.3,
-    // #103 A2).  Metadata-only today — Pattern A/B socket-level
-    // fan-in is future work; the single-producer connect endpoint
-    // flows through ZmqQueue factories' `endpoint` parameter.  The
-    // dispatch layer (A3) appends here on CHANNEL_AUTH_CHANGED_NOTIFY
-    // → GET_CHANNEL_AUTH_ACK so the queue has a stable record of
-    // who's authorized.  Mutex-guarded since both broker thread and
-    // role thread may touch in future fan-in impl.
+    // #103 A2 + HEP-CORE-0036 §6.7 Standby state #188).  Two roles:
+    //   (a) Single-peer transport artifacts.  `set_producer_peers(list)`
+    //       takes `list[0].pubkey_z85` → `server_pubkey_z85_` and
+    //       `list[0].endpoint` → `endpoint` when the queue is in
+    //       Standby, transitioning to Configured.  Multi-producer
+    //       fan-in (Pattern A/B socket layout) is HEP-CORE-0017
+    //       §3.3 future work piggybacking on §6.5.1 pull path.
+    //   (b) Membership snapshot.  Dispatch layer (A3) on
+    //       CHANNEL_AUTH_CHANGED_NOTIFY → GET_CHANNEL_AUTH_ACK
+    //       refreshes the list via `set_producer_peers` so the queue
+    //       has a stable record of who's authorized.
+    // Mutex-guarded since both broker thread and role thread may
+    // touch.  Locked during `set_producer_peers` snapshot replace
+    // and per-peer add/remove; `start()` reads `server_pubkey_z85_`
+    // + `endpoint` without taking this mutex because the state
+    // machine guarantees `set_*` mutators don't race with `start()`
+    // (sequenced by the role host per §I12).
     std::mutex                   producer_peers_mu_;
     std::vector<ProducerPeer>    producer_peers_;
 
@@ -649,19 +659,14 @@ validate_curve_factory_params(std::string_view identity_key_name,
                    std::to_string(kCurveKeyZ85Chars);
     }
 
-    if (!bind_side)
-    {
-        // Connect side requires serverkey to verify the server's CURVE
-        // identity.  Without it, libzmq refuses the connect with a
-        // cryptic "Invalid argument" — surface a specific error here
-        // instead.  `Z85PublicKey` already enforces the 40-char length
-        // invariant at construction time (#158); we only need to
-        // catch the sentinel "empty" case here.
-        if (server_pubkey_z85.empty())
-            return "connect-side CURVE auth requires "
-                   "serverkey_z85 (the producer's CURVE pubkey) when "
-                   "keystore_name is set";
-    }
+    // PULL/connect-side serverkey is REQUIRED before `start()`, but it
+    // MAY be empty at factory time — HEP-CORE-0036 §6.7 Standby state
+    // (Stage 1A, #188).  An empty serverkey at construction means
+    // "queue held in Standby until role host calls
+    // `set_producer_peers(ACK.producers[])`".  The `start()` gate
+    // refuses non-Configured queues, so the empty serverkey can never
+    // reach a `socket.connect(...)` call.
+    //
     // bind side: serverkey is meaningless (we ARE the server).
     return {};
 }
@@ -832,6 +837,51 @@ bool ZmqQueue::is_peer_allowed(
 
 // ── Dynamic producer-peer membership (HEP-CORE-0017 §3.3, #103 A2) ──────────
 
+bool ZmqQueue::set_producer_peers(std::vector<ProducerPeer> list)
+{
+    if (!pImpl) return false;
+    if (pImpl->mode != ZmqQueueImpl::Mode::Read)
+    {
+        LOGGER_INFO("[hub::ZmqQueue::set_producer_peers] inert on "
+                    "PUSH side (queue='{}'); call set_peer_allowlist "
+                    "instead", pImpl->endpoint);
+        return false;
+    }
+
+    // HEP-CORE-0036 §6.7: snapshot-replace.  In Standby, this is the
+    // §I12 master-approval application — it MUST also populate the
+    // CURVE serverkey + connect endpoint from the (single, Stage 1A)
+    // peer entry so the queue transitions to Configured.  In Active,
+    // the running socket is NOT touched (peer-swap requires
+    // teardown+rebuild per §6.7 "stop() is terminal" + §I12 "no
+    // cached-authority replay").
+    std::lock_guard<std::mutex> lock(pImpl->producer_peers_mu_);
+    pImpl->producer_peers_ = std::move(list);
+
+    const bool already_running =
+        pImpl->running_.load(std::memory_order_acquire);
+
+    // Standby → Configured: populate transport artifacts from peer[0]
+    // (single-peer Stage 1A; multi-producer fan-in is HEP-CORE-0017
+    // §3.3 future work piggybacking on §6.5.1 pull path).  Skip if
+    // already running — the running socket already has its serverkey
+    // baked in and is not safely mutable from outside start().
+    if (!already_running && !pImpl->producer_peers_.empty())
+    {
+        const auto &p0 = pImpl->producer_peers_.front();
+        if (pImpl->server_pubkey_z85_.empty()
+            && !p0.pubkey_z85.empty())
+        {
+            pImpl->server_pubkey_z85_ = p0.pubkey_z85;
+        }
+        if (pImpl->endpoint.empty() && !p0.endpoint.empty())
+        {
+            pImpl->endpoint = p0.endpoint;
+        }
+    }
+    return true;
+}
+
 bool ZmqQueue::add_producer_peer(const ProducerPeer& peer)
 {
     if (!pImpl) return false;
@@ -871,6 +921,25 @@ std::size_t ZmqQueue::producer_peer_count() const noexcept
     if (pImpl->mode != ZmqQueueImpl::Mode::Read) return 0;
     std::lock_guard<std::mutex> lock(pImpl->producer_peers_mu_);
     return pImpl->producer_peers_.size();
+}
+
+bool ZmqQueue::is_configured() const noexcept
+{
+    if (!pImpl) return false;
+    // Server side (any bind): only needs endpoint — CURVE_SERVER
+    // artifacts (identity keypair + ZAP allowlist) are resolved at
+    // `start()` time from the KeyStore-seeded identity_key_name_ and
+    // the broker-pushed allowlist.  Applies to PUSH+bind (canonical
+    // producer) AND PULL+bind (test-only inverse pattern: see
+    // make_pull_test in test_hub_zmq_queue.cpp — production PULL
+    // always connects).
+    // Connect side: PULL+connect needs both endpoint AND serverkey
+    // (the connect-side artifact the master delivers via
+    // CONSUMER_REG_ACK / §6.5.1 pull).
+    if (pImpl->bind_socket)
+        return !pImpl->endpoint.empty();
+    return !pImpl->server_pubkey_z85_.empty()
+           && !pImpl->endpoint.empty();
 }
 
 // ============================================================================
@@ -913,6 +982,29 @@ bool ZmqQueue::start()
     if (!pImpl) return false;
     if (pImpl->running_.load(std::memory_order_acquire))
         return true; // already running — idempotent
+
+    // HEP-CORE-0036 §6.7 Standby gate: refuse to start a queue that
+    // is not Configured.  "Configured" means transport artifacts are
+    // populated: PULL needs serverkey + connect endpoint; PUSH needs
+    // bind endpoint.  Refusing here keeps `start()` honest as the
+    // §I12 "door opens" — partial / placeholder state cannot reach
+    // libzmq.  Refuse is silent w.r.t. running_ (do NOT exchange) so
+    // callers can re-call after `set_producer_peers(...)` populates
+    // the artifacts.
+    if (!is_configured())
+    {
+        LOGGER_DEBUG(
+            "[hub::ZmqQueue::start] refused — queue in Standby "
+            "(mode={}, endpoint='{}', server_pubkey_set={}); HEP-"
+            "CORE-0036 §6.7 requires Configured state.  Call "
+            "set_producer_peers() to populate transport artifacts "
+            "before start().",
+            pImpl->mode == ZmqQueueImpl::Mode::Read ? "PULL" : "PUSH",
+            pImpl->endpoint,
+            !pImpl->server_pubkey_z85_.empty());
+        return false;
+    }
+
     if (pImpl->running_.exchange(true, std::memory_order_acq_rel))
         return true; // lost race — another thread started it
 

@@ -171,29 +171,48 @@ Sub-deliverables:
    read-only).
 
    (a) **Wire consumer-side `pull_from` to the authed factory.**
-   *Larger than initially scoped (discovered 2026-06-10).*  The
-   factory call site at `role_api_base.cpp:421-433` ALREADY uses
+   *Larger than initially scoped (discovered 2026-06-10); decomposed
+   into Stages 1A / 1B / 1C after design discussion (2026-06-10).*
+   The factory call site at `role_api_base.cpp:421-433` ALREADY uses
    `kRoleIdentityName` + `Z85PublicKey serverkey` from
    `producer_peers.front().pubkey_z85` and ALREADY hard-errors when
    `producer_peers` is empty.  The REAL work is upstream:
    `RoleHostFrame::setup_infrastructure_` (`role_host_frame.cpp:163`)
    builds the rx queue BEFORE `register_consumer` runs, so
    `producer_peers` is unpopulated when `build_rx_queue` fires.
-   Fix shape options (TBD before code):
-     - **Option α**: re-order consumer/processor setup so
-       `register_consumer` runs BEFORE `setup_infrastructure_` for
-       ZMQ transport; CONSUMER_REG_ACK.producers[] feeds
-       RxQueueOptions::producer_peers.  Cleanest but changes step
-       sequence.
-     - **Option β**: build rx queue with empty `producer_peers`
-       initially (would need ZmqQueue::pull_from to tolerate
-       empty + a deferred bind step); call `add_producer_peer` once
-       CONSUMER_REG_ACK arrives.  Matches HEP-CORE-0017 §3.3
-       dynamic-peer API.  Larger ZmqQueue change.
-   Pick + ship as a separate AUTH-1 commit AFTER the script-API
-   surface (sub-tasks below) lands.  Belongs in AUTH-1 because the
-   producer pubkey threading IS the auth wire shape; just not in
-   the same commit as the script-side observability work.
+
+   **Approach (chosen 2026-06-10): option β + state machine** — build
+   rx queue with empty `producer_peers` initially, then apply
+   `set_producer_peers(ACK.producers[])` after CONSUMER_REG_ACK
+   arrives.  This generalizes to a queue-level state machine
+   (Standby → Configured → Active) formalized in HEP-CORE-0036 §6.7
+   that enforces §I12 "master approval before authority application."
+   Option α (re-order setup) was rejected because (1) it doesn't
+   compose with future dynamic-producer-join via §6.5.1 notify-then-
+   pull (the queue needs the Standby state for hub-dead recovery
+   anyway), and (2) it forces SHM and ZMQ down divergent code paths.
+
+   Decomposed into:
+     - **Stage 1A (#188)** — `ZmqQueue` Standby state machine:
+       relax `pull_from()` to accept empty `Z85PublicKey`; add
+       `set_producer_peers(list)` snapshot mutator; gate `start()`
+       on Configured (both server_pubkey + peers populated);
+       `is_running()` returns true iff Active.  Single-peer support
+       initially (existing tests have 1:1 producer:consumer);
+       multi-producer fan-in piggybacks on §6.5.1 pull path
+       (separate scope).  HEP §6.7 normative spec.
+     - **Stage 1B (#189)** — cycle_ops Standby guard: skip
+       `write_acquire`/`read_acquire` when `!api_.is_*_active()`;
+       no drop counter increment for Standby skip (preserves
+       counter meaning); DEBUG log on Standby↔Active edge.  User
+       callbacks (on_step / on_consume) don't fire when their
+       queue isn't Active — that IS the script-visible "queue
+       not ready" signal.
+     - **Stage 1C (#190)** — `api.is_channel_ready(channel) →
+       bool` script binding (Lua + Python + Native parity).
+       Read-only state query for scripts that need to know channel
+       state from callbacks OTHER than the channel's own data-loop
+       callback (e.g., `on_init`, `on_band_message`).
 
    (b) **Broker wire-shape change for `GET_CHANNEL_AUTH_ACK.allowlist`**
    per HEP §6.5 amendment (2026-06-10): array entries become
@@ -655,7 +674,7 @@ in chat history.
 
 | # | Decision | Affects | Tentative direction |
 |---|---|---|---|
-| P-InboxQueue | InboxQueue admission policy location | Phase E | InboxQueue implements `PeerAdmission` directly, no queue inheritance — preserves REQ/REP nature |
+| P-InboxQueue | InboxQueue admission policy location | Phase E | **REVISED 2026-06-10:** InboxQueue inherits the parent data channel's allowlist + reuses the role-wide ZAP handler per HEP-0036 §9.3.  No separate per-inbox `PeerAdmission`.  Inbox state follows the parent ZmqQueue's Standby/Configured/Active state machine (HEP §6.7).  Implementation deferred — tracked as task **#191**, picked up after AUTH-7.  HEP-0036 §12 Phase 8's "verification only" wording is inaccurate; CURVE wiring is genuinely missing in `InboxQueue::start()` today (audited 2026-06-10). |
 | P-Admin | AdminService — CURVE-wrap or loopback-only? | Phase E (task #127) | Hard loopback-only enforce (refuse non-loopback bind) for v1; CURVE-wrap is HEP-CORE-0035 §5 future work |
 | P-SHM-Identity | What is a PeerIdentity for SHM? | Phase G + AUTH-4 (task #129) | Broker-issued `shm_secret` primary; optional uid guard if operator sets it; broker controls the gate via secret issuance |
 | P-Demos | How existing demos migrate | Phase H (task #130) | Transitional `--allow-anonymous-data` flag, gated to refuse-bind on non-loopback endpoints; demos updated incrementally |

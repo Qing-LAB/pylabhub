@@ -541,6 +541,76 @@ These examples are illustrative of the I11 division of labour, not
 exhaustive — applications can compose any policy they can express
 in terms of "who's a member" plus the existing band / inbox channels.
 
+### I12 — Fresh master approval gates every authority application
+
+**Every action against the data plane requires the master's "yes" at
+action-time, not at some earlier remembered time.**  The framework's
+local artifacts (cached pubkeys, cached endpoints, cached
+`shm_secret`, cached allowlist) are never enough on their own to
+authorize an action — they are the framework's record of what the
+master most recently said, and they may be stale.
+
+> *You can't push the door to enter just because you think you have
+> a ticket.  The master must say "yes" before you are allowed to
+> enter.*
+
+This invariant is the operational discipline that makes I2 (single
+source of truth) load-bearing.  Without it, a framework that holds a
+stale artifact could "remember" an old approval and act on it after
+the broker has revoked.  With it, every action — every queue start,
+every peer-set update, every allowlist replacement — pairs with a
+fresh broker-reply that authorized it.
+
+**The pattern, made concrete.**  For every authority-coupled action
+the framework can take, there is exactly one master-reply that
+authorizes that specific action.  The framework's mutator call IS
+the act of applying that just-received approval; it is NOT the act
+of trusting a remembered prior approval.
+
+| Action | The master's "yes" (request → reply) | Framework applies via |
+|---|---|---|
+| Consumer enters ZMQ channel (first time) | `CONSUMER_REG_REQ` → `CONSUMER_REG_ACK.producers[]` | `set_producer_peers` + `start` |
+| Consumer enters SHM channel (first time) | `CONSUMER_REG_REQ` → `CONSUMER_REG_ACK.shm_secret` | `set_shm_secret` + `start` |
+| Producer opens ZMQ channel (first time) | `REG_REQ` → `REG_ACK.initial_allowlist` | `set_peer_allowlist` + `start` |
+| Producer reacts to consumer-join / -leave on running channel | `CHANNEL_AUTH_CHANGED_NOTIFY` (doorbell) → `GET_CHANNEL_AUTH_REQ` → `GET_CHANNEL_AUTH_ACK.allowlist` | `set_peer_allowlist` on live queue |
+| Consumer reacts to producer-join / -leave on running channel | `CHANNEL_PRODUCERS_CHANGED_NOTIFY` (doorbell) → `GET_CHANNEL_PRODUCERS_REQ` → `GET_CHANNEL_PRODUCERS_ACK.producers[]` | `set_producer_peers` on live queue |
+
+**What the doorbell does NOT do.**  The `*_CHANGED_NOTIFY` family
+fires on every membership mutation, but the notify itself is *just
+the doorbell* — it tells the framework "the master may say
+something different now."  The notify carries the minimum
+identifying payload (channel name + reason); it does NOT carry the
+authority artifact.  The framework cannot use the notify to act; it
+must pull.
+
+**What stale artifacts CANNOT do.**  After hub-dead → re-register
+recovery (HEP-CORE-0023 §2.6 + §I3), the framework's local cache may
+contain artifacts the broker no longer authorizes (revocations that
+arrived after disconnect).  The framework MUST NOT re-apply cached
+artifacts — it must re-pull from the freshly-issued ACK.  The
+re-registration ACK is itself a master "yes" replacing whatever the
+framework had cached.
+
+**Why this matters even when artifacts come from the broker either
+way.**  Both NOTIFY and ACK are broker-emitted.  Either could carry
+the authority payload at the wire level — but `pull = approval`
+gives the framework an explicit per-action confirmation timestamp,
+while `push = informational` would let the framework act on whatever
+it last received without re-checking.  Under push semantics, a
+spoofed or replayed NOTIFY could inject false artifacts.  Under pull
+semantics, the framework's authority comes from a fresh
+request-reply round-trip the framework initiated — replayed NOTIFYs
+just trigger more pulls, never grant authority on their own.
+
+**Consequence: queue-level state machine** (formalized in §6.7).
+Every queue moves through Standby → Configured → Active.  The
+Standby → Configured transition is the moment the framework receives
+the master's "yes" and applies the just-received artifact via the
+queue's `set_*` mutator.  The Configured → Active transition is the
+explicit `start()` that opens the door.  A queue MUST refuse `start()`
+from Standby (no artifacts yet — master hasn't said "yes").  This
+state machine is the queue-layer enforcement of I12.
+
 ---
 
 ## 4. Architecture
@@ -1341,7 +1411,23 @@ CONSUMER_REG_ACK is the sibling change for the registration path;
 both should land coordinated as one wire-format migration.  See
 §14.1 for the HEP-0021 update list.
 
-### 6.5 Channel-auth synchronization (notify-then-pull)
+### 6.5 Channel-state synchronization (notify-then-pull)
+
+This section formalizes the two symmetric notify-then-pull paths
+that keep both sides of a channel's auth state converged with the
+broker's authoritative record at runtime:
+
+- **Consumer membership changes** → producer-side pull of the
+  allowlist (`CHANNEL_AUTH_CHANGED_NOTIFY` + `GET_CHANNEL_AUTH_REQ`).
+- **Producer membership changes** → consumer-side pull of the
+  producer set (`CHANNEL_PRODUCERS_CHANGED_NOTIFY` +
+  `GET_CHANNEL_PRODUCERS_REQ`).
+
+Both follow the I12 discipline: NOTIFY is the doorbell, ACK is the
+master's "yes".  Producer- and consumer-side paths are identical in
+shape; only the artifact carried in the ACK differs.
+
+#### 6.5.0 Channel-auth synchronization (consumer-membership delta)
 
 **Purpose**: keep EACH producer's local ZAP cache in sync with the
 broker's `ChannelAccessIndex.authorized_consumer_pubkeys`.  Under
@@ -1687,6 +1773,440 @@ before CONSUMER_REG_ACK" property bullet is rewritten to describe
 the asynchronous pull pattern + the brief re-handshake window it
 introduces.
 
+#### 6.5.1 Channel-producers synchronization (producer-membership delta)
+
+**Purpose**: keep EACH consumer's local producer set in sync with the
+broker's authoritative `ChannelEntry::producers[]` record.  Under
+fan-in channels (HEP-CORE-0023 §2.1.1, HEP-CORE-0017 §4.6), the
+broker fires the same notify out to every consumer of the channel;
+each consumer independently pulls the current producer set and
+applies it via the queue's `set_producer_peers` mutator.  Updates
+gate ONLY future CURVE handshakes the consumer initiates against
+newly-added producers (or disconnects from removed producers); they
+do NOT instruct producers to drop existing CURVE sessions to the
+consumer.
+
+**Wire shape — symmetric to §6.5.0.**
+
+- **`CHANNEL_PRODUCERS_CHANGED_NOTIFY` (broker → consumer)** — a
+  fire-and-forget notify identical in shape to
+  `CHANNEL_AUTH_CHANGED_NOTIFY`.  Carries `{channel_name, reason}`
+  only.  No ACK.  `reason` is one of `producer_joined`,
+  `producer_left`, `heartbeat_timeout`, `process_dead`.
+
+- **`GET_CHANNEL_PRODUCERS_REQ` / `GET_CHANNEL_PRODUCERS_ACK`
+  (consumer → broker → consumer)** — normal request-reply pair
+  identical in shape to existing `*_REQ`/`*_ACK` frames.  Consumer
+  asks "give me the current producer set for channel X"; broker
+  validates caller is a registered consumer of the channel (defence-
+  in-depth, symmetric to `GET_CHANNEL_AUTH_REQ`'s producer-membership
+  check), replies with the full current producer set.  Consumer
+  applies the snapshot via `ZmqQueue::set_producer_peers`.
+
+  **`GET_CHANNEL_PRODUCERS_ACK.producers[]` shape (normative).**  Same
+  shape as `CONSUMER_REG_ACK.producers[]` (§6.4):
+
+  ```
+  {
+    "status":       "success",
+    "channel_name": "...",
+    "producers":    [{"role_uid": ..., "pubkey": ..., "endpoint": ...}, ...],
+    "correlation_id": "..."
+  }
+  ```
+
+  Each producer entry carries the `(role_uid, pubkey, endpoint)`
+  triple the consumer needs to open a CURVE connection.  Empty
+  array if the channel has no live producers (e.g. all producers
+  heartbeat-timed-out and broker is awaiting recovery).
+
+**Producer-side scope.**  Producers are NOT recipients of
+`CHANNEL_PRODUCERS_CHANGED_NOTIFY` — they don't track each other's
+membership in the auth model.  The notify is fired only to `kLive`
+consumers of the channel.  Mirror of §6.5.0's "broker fires to every
+live producer" but symmetric: every live consumer is the recipient
+set here.
+
+**Consumer-side observability** (parallels §6.5.0).  The consumer
+SHOULD log a one-line WARN whenever it applies a non-empty producer-
+set replacement, including the new set size and the `reason` from
+the triggering notify, so operators can grep for unexpected drift.
+
+**Failure mode catalog** (consumer-side handler symmetric to §6.5
+producer-side flow):
+
+| Pull error | Handler action |
+|---|---|
+| Timeout / BRC disconnected during pull | Log WARN, return.  Next notify retries; BRC reconnect re-syncs via CONSUMER_REG_ACK.producers[] (re-registration replays the master "yes"). |
+| `CHANNEL_NOT_FOUND` | Channel was closed between notify and pull.  Log WARN + apply empty producer set (which `set_producer_peers` interprets as "disconnect all").  No critical-error escalation. |
+| `CONSUMER_NOT_AUTHORIZED` (§6.6) | Race: consumer was deregistered between notify and pull.  Log WARN + skip apply.  Hub-dead path will tear down. |
+| Malformed reply | Try/catch in handler.  Log + return; allowlist unchanged. |
+
+**Symmetry with §6.5.0 — consolidated table.**
+
+| Property | §6.5.0 (consumer change) | §6.5.1 (producer change) |
+|---|---|---|
+| Doorbell wire | `CHANNEL_AUTH_CHANGED_NOTIFY` | `CHANNEL_PRODUCERS_CHANGED_NOTIFY` |
+| Doorbell payload | `{channel_name, reason}` | `{channel_name, reason}` |
+| Doorbell recipients | every `kLive` producer of channel | every `kLive` consumer of channel |
+| Pull request | `GET_CHANNEL_AUTH_REQ` | `GET_CHANNEL_PRODUCERS_REQ` |
+| Pull-time broker check | caller is registered producer | caller is registered consumer |
+| Reject code | `PRODUCER_NOT_AUTHORIZED` | `CONSUMER_NOT_AUTHORIZED` |
+| ACK artifact | `allowlist: [{role_uid, pubkey}, ...]` | `producers: [{role_uid, pubkey, endpoint}, ...]` |
+| Framework applies via | `ZmqQueue::set_peer_allowlist` (producer-side) | `ZmqQueue::set_producer_peers` (consumer-side) |
+| Script-side surface | `api.allowed_peers(channel)` + `on_allowlist_changed` callback | `api.producers(channel)` + `on_producers_changed` callback |
+
+### 6.7 Queue state machine — Standby → Configured → Active
+
+The framework's queue abstraction (HEP-CORE-0017) has, historically,
+treated construction-with-arguments + `start()` as a single
+authorization-ready transition: build with the auth artifacts, then
+start.  That shape forced the role host to learn the artifacts
+BEFORE constructing the queue, which (per the consumer-side ordering
+gap discovered during AUTH-1 (a)) is incompatible with the wire flow:
+the master's "yes" arrives in `CONSUMER_REG_ACK`, AFTER the natural
+build-queue point.
+
+This section formalizes a three-state machine on the queue that
+makes the build / authorize / start steps independent transitions,
+each owned by the framework and each gated by the I12 master-approval
+discipline.
+
+**The state machine** (normative for both `ZmqQueue` and
+`ShmQueue`):
+
+```
+                       Uninitialized
+                            │
+                            │  factory ctor (no artifacts required)
+                            ▼
+       ┌──────────────  Standby  ──────────────┐
+       │              (socket / segment           │
+       │               resources allocated,        │
+       │               no authority artifacts)     │
+       │                                           │
+       │  set_*  (apply master's "yes")            │
+       │                                           │
+       ▼                                           │
+  Configured                                       │
+       │   (authority artifacts in place,          │
+       │    not yet connected / attached)          │  destructor /
+       │                                           │  explicit stop()
+       │  start()  (open the door using artifacts) │  always safe
+       │                                           │  from ANY state
+       ▼                                           │
+    Active                                         │
+       │   (connected / attached, data loop        │
+       │    can run; HEP §I3 outer guard           │
+       │    can let producer/consumer cycle        │
+       │    enter the loop body)                   │
+       │                                           │
+       └───────────────────────────────────────────┘
+```
+
+**Mutators by state** (normative):
+
+| Mutator | Uninitialized | Standby | Configured | Active |
+|---|---|---|---|---|
+| `set_peer_allowlist(list)` (push side) | refuse | apply (Standby → Configured) | apply (snapshot replace; queue stays Configured) | apply atomically (live ZAP cache update; queue stays Active) |
+| `set_producer_peers(list)` (pull side, NEW) | refuse | apply (Standby → Configured) | apply (snapshot replace) | apply (atomic diff: connect new, disconnect removed) |
+| `set_shm_secret(uint64)` (SHM rx) | refuse | apply (Standby → Configured) | apply (replaces previous) | refuse (`shm_secret` is per-channel-lifetime; restart needed) |
+| `add_producer_peer(p)` (pull side) | refuse | apply (Standby → Configured if empty before) | apply (append) | apply (append + connect) |
+| `remove_producer_peer(uid)` | refuse | apply (no-op on empty) | apply | apply (disconnect + remove) |
+| `start()` | refuse | refuse (no artifacts) | apply (Configured → Active) | no-op (idempotent: returns true) |
+| `stop()` | no-op | no-op | apply (Configured → Standby; sockets reset) | apply (Active → Uninitialized via teardown) |
+| destructor | no-op | safe | safe | safe (calls stop() internally) |
+
+**The Standby → Configured transition is where I12 is enforced.**
+Calling a `set_*` mutator IS the act of applying the master's
+just-received approval (§I12).  The role host MUST call the mutator
+in direct response to the master's reply — not from a cached or
+re-applied prior state.
+
+**The Configured → Active transition is the door opening.**  Until
+`start()` runs, no data plane CURVE handshake can complete, no SHM
+attach happens, no ZAP gate is contributory; the queue is just held
+resources.  `start()` is the explicit acknowledgement that the
+framework intends to act on the artifacts the master delivered.
+
+**Error handling on `start()`** (normative — §I12 + the user's
+"either fully transitioned or fully refused" principle):
+
+- Either `start()` fully transitions to Active and returns `true`,
+  or it rolls back to Configured (artifacts preserved) and returns
+  `false` with a logged reason.  No partial / observable intermediate
+  state.
+- Per-peer transport runtime failures (consumer can't reach
+  producer's endpoint; CURVE handshake denied at the peer; SHM
+  segment ACL refuses attach) happen AFTER `start()` returns;
+  libzmq's retry semantics or HEP-0036 §I3 hub-dead path handle
+  them.  `start()` itself completes when local setsockopt /
+  connect-call / attach-call all return; not when handshakes
+  succeed.
+
+**Resource lifecycle for SHM — state machine collapsed at queue
+level**.  ShmQueue's authority artifact (`shm_secret`) is required at
+SHM-segment attach time (HEP-CORE-0002 guard-secret check).  There is
+no meaningful "resource allocated without secret" intermediate at the
+queue layer — attach IS the entire transport setup.  Consequently,
+ShmQueue's factory functions (`create_reader` / `create_writer`)
+collapse Standby + Configured + Active into a single call: the
+role host calls `create_reader(shm_name, shared_secret, ...)` AFTER
+`CONSUMER_REG_ACK` delivers the secret, and the queue is immediately
+Active.  The §I12 master-approval discipline still holds — at the
+role-host layer rather than at the queue layer.  The act of CALLING
+`create_reader` with broker-supplied artifacts IS the application of
+the master's "yes".  No `set_shm_secret` mutator is required on the
+queue interface; the constructor parameter IS that mutator.
+
+**`stop()` semantics — terminal, not reversible** (normative).  Calling
+`stop()` from any non-Uninitialized state returns the queue to a
+destroy-ready state.  Internal `running_` flag is one-way; the queue
+CANNOT be re-started.  The HEP §I3 hub-dead recovery path destroys
+the queue + builds a fresh one after re-registration (consistent with
+§I12: cached artifacts MUST NOT be re-applied, so neither MUST a
+re-started queue carrying remembered state).  The "Configured →
+Standby" row in the mutator table above should be read as "no-op"
+(no transport activity to undo from Configured); only Active → ...
+is observable as a teardown.
+
+**Data-loop ops in non-Active states — existing nullptr return
+preserved** (normative).  The state machine does NOT change the
+`read_acquire(timeout) → const void*` / `write_acquire(timeout) →
+void*` contract.  In Standby / Configured (queue not yet Active),
+both calls return `nullptr` — the existing "nothing right now" /
+"no slot available" signal that callers already handle (timeout,
+ring-empty, ring-full).  Rationale:
+
+- A new return value would force every caller (cycle ops, test
+  harnesses, future direct-poll script bindings) to learn a new
+  state code with no observable semantic difference: in both cases
+  the caller has no data to read / no slot to fill.
+- `nullptr` is state-honest: "nothing available."  An alternative
+  like `TIMEOUT` would be effort-honest ("we tried and waited") —
+  but Standby never tries, so the implication would be false.
+- The script-side affirmative readiness signal lives on a separate
+  channel — `on_allowlist_changed` callback (§I11) fires on
+  Standby → Configured when the allowlist arrives.  Scripts use
+  THAT to know when to expect data flow, not data-loop return
+  values.
+
+**Cycle-ops behavior in non-Active states** (normative).
+ProducerCycleOps / ConsumerCycleOps / ProcessorCycleOps MUST gate
+their data-loop calls on `is_running()` (queue Active state):
+
+- If `!is_running()` for the output queue: skip `write_acquire`;
+  `out_buf_` stays `nullptr`; user's `on_step` / `on_consume`
+  callback does NOT fire (no buffer = nothing to populate).  NO
+  `out_drop_count` increment.
+- If `!is_running()` for the input queue: skip `read_acquire`;
+  `held_input_` stays `nullptr`; user's `on_consume` callback does
+  NOT fire.  NO `in_drop_count` increment.
+- DEBUG log fires ONCE per Standby↔Active edge transition (using a
+  previous-state latch in cycle ops) — not per cycle iteration.
+
+This preserves the diagnostic meaning of drop counters: they count
+genuine *runtime* events on a running queue (peer is busy, ring is
+full).  Standby skips are a *lifecycle* condition (the queue is not
+yet usable); conflating them would mask the AUTH-1 wire-up failure
+mode where allowlist is empty and producer-keeps-sending vs broker-
+allowlist-never-arrives would be indistinguishable in metrics.
+
+**Script-side state query** (normative).  The script API MUST
+expose `api.is_channel_ready(channel) → bool` (Lua + Python +
+Native parity).  Returns `true` iff the named channel's queue is in
+Active state.  Use case: gating script-side housekeeping or
+compute work on whether the channel is usable.  Example:
+
+```lua
+function on_step(api)
+    if not api:is_channel_ready("out") then
+        return  -- housekeeping or skip; data loop won't fire anyway
+    end
+    -- ... real work
+end
+```
+
+NOTE: cycle ops already gates user-script callbacks on `is_running()`
+(see above), so `on_step` does NOT fire for the channel-not-ready
+case.  `is_channel_ready` is for scripts that need to know channel
+state from OTHER callbacks (`on_init`, `on_band_message`, other
+channels' `on_step`, etc.) — not for guarding their own callback.
+
+**Scope of §6.7 — ZmqQueue data channels only** (normative).  This
+state machine applies to `ZmqQueue` instances backing HEP-0007 data
+channels.  `ShmQueue` collapses the state machine into its factory
+(see "Resource lifecycle for SHM" above).  `InboxQueue` (§9.3) will
+INHERIT this state machine — and its parent data channel's
+allowlist — when CURVE wiring lands per §9.3 (currently deferred;
+InboxQueue::start() does not install CURVE setsockopt today).  Band
+sockets are governed by the HEP-0035 §4.1 Layer-1 ZAP gate on the
+broker ROUTER + the role's BRC connectivity state — no separate
+data-plane state machine applies (§9.4).
+
+### 6.8 Scenarios catalog (normative)
+
+This section walks each runtime scenario the queue + role host
+contract supports, showing how the master-approval discipline maps
+to concrete framework actions.
+
+#### 6.8.1 First-time consumer joins a ZMQ channel
+
+```
+  consumer process startup
+    └─ build_rx_queue()                 ← queue: Uninitialized → Standby
+       (no peers required, no connect)
+    └─ register_consumer()              ← REQ → ACK (master "yes" carries producers[])
+       └─ on CONSUMER_REG_ACK:
+          set_producer_peers(ACK.producers[])   ← queue: Standby → Configured
+          start_rx_queue()                      ← queue: Configured → Active
+    └─ data loop unblocks under §I3 / AUTH-3 outer guard
+```
+
+#### 6.8.2 First-time consumer joins an SHM channel
+
+```
+  consumer process startup
+    └─ build_rx_queue()                 ← queue: Uninitialized → Standby
+       (no secret required, no attach)
+    └─ register_consumer()              ← REQ → ACK (master "yes" carries shm_secret)
+       └─ on CONSUMER_REG_ACK:
+          set_shm_secret(ACK.shm_secret)        ← queue: Standby → Configured
+          start_rx_queue()                      ← queue: Configured → Active
+    └─ data loop unblocks
+```
+
+#### 6.8.3 First-time producer opens a ZMQ channel
+
+```
+  producer process startup
+    └─ build_tx_queue()                 ← queue: Uninitialized → Standby
+       (PUSH bind happens here to learn ephemeral endpoint
+        for REG_REQ.zmq_endpoint per HEP-0021 §16.5)
+    └─ register_channel()               ← REQ → ACK (master "yes" carries initial_allowlist)
+       └─ on REG_ACK:
+          set_peer_allowlist(ACK.initial_allowlist)  ← queue: Standby → Configured
+          start_tx_queue()                           ← queue: Configured → Active
+    └─ data loop unblocks
+```
+
+Note: PUSH socket bind must happen at build_tx_queue time because the
+broker needs the resolved endpoint in REG_REQ.  This is an exception
+to "Standby has no transport activity" — bind is local-only and not
+a master-authorized action; the FIRST CURVE handshake to enter is
+gated by the post-start ZAP allowlist (initially empty until
+set_peer_allowlist applies).
+
+#### 6.8.4 New consumer joins an already-running ZMQ channel (producer's view)
+
+```
+  producer is Active with allowlist=[C1]
+    │
+    │   (broker accepts CONSUMER_REG_REQ from C2, updates allowlist)
+    │
+  ↓ NOTIFY arrives via BRC poll thread
+    └─ CHANNEL_AUTH_CHANGED_NOTIFY {channel, reason="consumer_joined"}
+       (doorbell — no payload)
+
+  worker-thread native handler:
+    └─ get_channel_auth(channel, role_uid)            ← pull request
+       └─ on GET_CHANNEL_AUTH_ACK:
+          set_peer_allowlist(ACK.allowlist=[C1, C2])   ← atomic update on live queue
+          (queue stays Active throughout)
+    └─ on_allowlist_changed(channel, [C1, C2], "consumer_joined")
+       fires if script defines the callback
+```
+
+#### 6.8.5 New producer joins an already-running ZMQ channel (consumer's view)
+
+Symmetric to 6.8.4:
+
+```
+  consumer is Active with producers=[P1]
+    │
+    │   (broker accepts REG_REQ from P2, updates ch.producers[])
+    │
+  ↓ NOTIFY arrives via BRC poll thread
+    └─ CHANNEL_PRODUCERS_CHANGED_NOTIFY {channel, reason="producer_joined"}
+
+  worker-thread native handler:
+    └─ get_channel_producers(channel, role_uid)              ← pull request
+       └─ on GET_CHANNEL_PRODUCERS_ACK:
+          set_producer_peers(ACK.producers=[P1, P2])         ← atomic diff:
+                                                                connect to P2,
+                                                                P1 connection
+                                                                unchanged
+          (queue stays Active throughout)
+    └─ on_producers_changed(channel, [P1, P2], "producer_joined")
+       fires if script defines the callback
+```
+
+#### 6.8.6 Consumer leaves cooperatively (producer's view, ZMQ)
+
+Same shape as 6.8.4 but `reason="consumer_left"`; new allowlist is
+the smaller set; `set_peer_allowlist` removes the departed
+consumer's pubkey from the ZAP cache.  Existing data sessions from
+that consumer continue per HEP §I5 (revocation only gates NEW
+connections); fresh handshake attempts are denied.
+
+#### 6.8.7 Producer leaves cooperatively (consumer's view, ZMQ)
+
+Same shape as 6.8.5 but `reason="producer_left"`; new producer set
+is the smaller set; `set_producer_peers` snapshot replace causes
+the queue to disconnect from the departed producer's endpoint.
+In-flight frames from that producer in the consumer's PULL queue
+are still drained; no new connection attempts.
+
+#### 6.8.8 Hub-dead recovery (consumer / producer, ZMQ)
+
+```
+  queue is Active with cached artifacts
+    │
+    │   (BRC ZMTP heartbeat times out per HEP-0023 §2.6)
+    │
+  HUB_DEAD synthesized + drained by worker thread
+    │
+  framework tear-down:
+    └─ stop_rx_queue()                  ← queue: Active → Standby
+       (sockets reset; CACHED ARTIFACTS DROPPED — re-pull required)
+    └─ wait for BRC reconnect
+
+  on BRC reconnect:
+    └─ register_*()                     ← re-issue REG / CONSUMER_REG
+       └─ on freshly-issued ACK:        ← NEW master "yes"; cached state is dead
+          set_*(ACK.artifacts)          ← queue: Standby → Configured
+          start_*()                     ← queue: Configured → Active
+```
+
+The cached artifacts MUST NOT be re-applied — that would violate
+I12 (the framework would be acting on a remembered approval the
+master may have revoked during the disconnect window).  The
+re-registration ACK replaces them in full.
+
+#### 6.8.9 SHM consumer leaves / channel torn down
+
+```
+  consumer is Active, attached to shm_name with shm_secret=S
+    │
+    │   CONSUMER_DEREG_REQ → CONSUMER_DEREG_ACK
+    │   OR heartbeat timeout
+    │
+  framework tear-down:
+    └─ stop_rx_queue()                  ← queue: Active → Standby
+       (detach from SHM segment; secret CLEARED locally)
+    └─ next register_consumer would receive a FRESH shm_secret
+       (broker may have rotated; even if not, cached value is invalid)
+```
+
+Per HEP §I5, the broker does NOT rotate `shm_secret` on consumer
+dereg by default — the producer's writer is unchanged, the segment
+stays.  A revoked consumer that cached the secret could in principle
+re-attach until producer cycles; this is the HEP §I5 acknowledged
+SHM revocation race window.  Mitigation is operator-side bounce of
+the producer to generate a new secret.
+
+---
+
 ### 6.6 Error codes
 
 Added to HEP-CORE-0007 §12.4a Error Code Taxonomy:
@@ -1699,6 +2219,7 @@ Added to HEP-CORE-0007 §12.4a Error Code Taxonomy:
 | `CHANNEL_NOT_READY` | CONSUMER_REG_REQ for a channel that isn't admissible right now.  `reason` field distinguishes the cause: `awaiting_endpoint` (HEP-0021 §16.4 — first producer's port still 0), `awaiting_first_heartbeat` (no producer has reached `kLive`), or `heartbeat_stalled` (producer presence in `kStalled` per HEP-CORE-0023 §2.6). |
 | `CHANNEL_NOT_FOUND` | `GET_CHANNEL_AUTH_REQ` for a channel that does not exist in `ChannelAccessIndex`. |
 | `PRODUCER_NOT_AUTHORIZED` | `GET_CHANNEL_AUTH_REQ` from a caller that is not a registered producer of the named channel.  Defence-in-depth: the broker should never return another channel's allowlist to a non-producer. |
+| `CONSUMER_NOT_AUTHORIZED` | `GET_CHANNEL_PRODUCERS_REQ` from a caller that is not a registered consumer of the named channel.  Defence-in-depth: the broker should never return a channel's producer set to a non-consumer.  Symmetric with `PRODUCER_NOT_AUTHORIZED`. |
 
 No `KEYPAIR_GENERATION_FAILED` error — broker mints no data-plane
 keys (per I6).  No `ALLOWLIST_PUSH_FAILED` /
