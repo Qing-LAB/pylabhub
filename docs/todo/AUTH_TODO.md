@@ -278,16 +278,12 @@ Sub-deliverables:
      - Engine parity (L4): same script logic running under Lua /
        Python observes the same callback args + same polling
        results.  Belongs in AUTH-7.
-5. **B1 — `awaiting_endpoint` vocabulary fix** ⏳ pending.
-   HEP-CORE-0036 §6.6 line 1370 enumerates `awaiting_endpoint`,
-   `awaiting_first_heartbeat`, `heartbeat_stalled` as the valid
-   `CHANNEL_NOT_READY` reasons.  Code at
-   `src/utils/ipc/broker_service.cpp:2226-2241` returns
-   `CHANNEL_NOT_READY` on port-0 with message "has unresolved port 0"
-   — no `awaiting_endpoint` substring.  Client retry loop only matches
-   the other two substrings, so the port-0 case is correctly terminal
-   but the §6.6 catalog vocabulary is incomplete in code.  ~5-line
-   change.  Effort: trivial.
+5. **B1 — `awaiting_endpoint` vocabulary fix** ✅ shipped 2026-06-10.
+   Both port-0 sites (`broker_service.cpp:2063-2069` DISC_REQ and
+   `:2273-2279` CONSUMER_REG_REQ) now include `(awaiting_endpoint)`
+   in the WARN log + the error message, completing the §6.6 catalog
+   vocabulary.  Client retry loops can now match the substring
+   alongside `awaiting_first_heartbeat` and `heartbeat_stalled`.
 
 **Blocks:** AUTH-2, AUTH-3, AUTH-5, AUTH-6, AUTH-7.
 
