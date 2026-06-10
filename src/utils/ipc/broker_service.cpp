@@ -2062,11 +2062,11 @@ nlohmann::json BrokerServiceImpl::handle_disc_req(const nlohmann::json& req)
         auto ep_check = pylabhub::validate_tcp_endpoint(first_prod->zmq_node_endpoint);
         if (ep_check.ok() && ep_check.port == 0)
         {
-            LOGGER_INFO("Broker: DISC_REQ channel '{}' ZMQ endpoint has port 0 (not ready)",
+            LOGGER_INFO("Broker: DISC_REQ channel '{}' ZMQ endpoint has port 0 (awaiting_endpoint)",
                         channel_name);
             return make_error(corr_id, "CHANNEL_NOT_READY",
                               "ZMQ endpoint for channel '" + channel_name +
-                                  "' has unresolved port 0");
+                                  "' has unresolved port 0 (awaiting_endpoint)");
         }
     }
 
@@ -2272,11 +2272,11 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
         auto ep_check = pylabhub::validate_tcp_endpoint(cons_first_prod->zmq_node_endpoint);
         if (ep_check.ok() && ep_check.port == 0)
         {
-            LOGGER_INFO("Broker: CONSUMER_REG_REQ channel '{}' ZMQ endpoint has port 0 (not ready)",
+            LOGGER_INFO("Broker: CONSUMER_REG_REQ channel '{}' ZMQ endpoint has port 0 (awaiting_endpoint)",
                         channel_name);
             return make_error(corr_id, "CHANNEL_NOT_READY",
                               "ZMQ endpoint for channel '" + channel_name +
-                                  "' has unresolved port 0");
+                                  "' has unresolved port 0 (awaiting_endpoint)");
         }
     }
 
