@@ -134,14 +134,12 @@ struct ZmqQueueImpl
     std::atomic<uint64_t> send_retry_count_{0};
     std::atomic<uint64_t> data_drop_count_{0};
 
-    // ── PeerAdmission Phase C — auth state ─────────────────────────────────────
-    // HEP-CORE-0040 §172 + §8.4 (#158): discrete fields replace the
-    // legacy `ZmqAuthOptions` struct.  Empty `identity_key_name_` =
-    // no CURVE wired (legacy unauth path; reachable only via the
-    // plaintext `pull_from`/`push_to` factories that never populate
-    // this field).  When set, `ZmqQueue::start()` reads the identity
-    // from `key_store()` at socket-setup time — bytes never
-    // materialize in this struct.
+    // ── CURVE auth state (HEP-CORE-0036 §7 + HEP-CORE-0040 §8.4) ──────────────
+    // Identity key name (KeyStore lookup key, HEP-CORE-0040 §172) +
+    // optional zap_domain (PUSH side) + server pubkey (PULL/connect
+    // side).  When `identity_key_name_` is set, `ZmqQueue::start()`
+    // reads the identity from `key_store()` at socket-setup time —
+    // secret bytes never materialize in this struct.
     std::string identity_key_name_;
 
     // PUSH/bind side only — zap_domain advertised on the socket
@@ -165,14 +163,14 @@ struct ZmqQueueImpl
     // (reset to Uninitialized) — never by callers.
     std::atomic<Mechanism> mechanism_{Mechanism::Uninitialized};
 
-    // Resolved zap_domain (Phase C): `zap_domain_` if non-empty,
+    // Resolved zap_domain (HEP-CORE-0036 §7): `zap_domain_` if non-empty,
     // else derived from instance_id at start().  Captured here so
     // stop() can release the ZapRouter registration symmetrically.
     std::string resolved_zap_domain_;
 
     // PUSH/bind side allowlist.  Lock-free reads from ZapRouter's
     // pump thread via PortableAtomicSharedPtr.  Mutations through
-    // ZmqQueue::set_peer_allowlist are atomic snapshots (Phase A
+    // ZmqQueue::set_peer_allowlist are atomic snapshots (HEP-CORE-0036 §I3
     // contract).  Unused on PULL/connect side.
     pylabhub::utils::detail::PortableAtomicSharedPtr<
         const pylabhub::utils::security::PeerAllowlist>
@@ -589,7 +587,7 @@ ZmqQueue::build_plaintext_writer_(const std::string& endpoint, std::vector<ZmqSc
 }
 
 // ============================================================================
-// Auth-enabled factories (PeerAdmission Phase C)
+// Auth-enabled factories (PeerAdmission (HEP-CORE-0036 §7))
 // ============================================================================
 
 namespace
@@ -606,7 +604,7 @@ constexpr std::size_t kCurveKeyZ85Chars = 40;
 /// so misconfiguration is surfaced at the factory call site (returns
 /// nullptr with a precise diagnostic) rather than as a cryptic libzmq
 /// failure inside `start()` against a stale errno from an unrelated
-/// prior call (H-Q3).  Used by both `pull_from` (PULL/connect)
+/// prior call.  Used by both `pull_from` (PULL/connect)
 /// and `push_to` (PUSH/bind).
 std::string
 validate_curve_factory_params(std::string_view identity_key_name,
@@ -677,17 +675,18 @@ validate_curve_factory_params(std::string_view identity_key_name,
 // `pull_from` / `push_to` are the canonical CURVE-wired
 // factory entry points: discrete `identity_key_name` (KeyStore lookup)
 // + `Z85PublicKey server_pubkey` (PULL only) + `zap_domain` (PUSH
-// only).  No `ZmqAuthOptions` struct, no `initial_allowlist` (callers
-// seed via `set_peer_allowlist()` post-`start()`; production callers
-// rely on the broker's Phase D `CHANNEL_AUTH_UPDATE` push, the
-// deny-all default is the safe starting point).
+// only).  No `initial_allowlist` parameter — callers seed via
+// `set_peer_allowlist()` post-`start()`.  Production callers will
+// pick up the broker's `CHANNEL_AUTH_UPDATE` push (HEP-CORE-0036
+// §6.5, task #103); the deny-all default is the safe starting point
+// until that update arrives.
 //
-// H-Q1 safety: `ZmqQueue` is `final`, so the `static_cast` from the
+// Final-class safety: `ZmqQueue` is `final`, so the `static_cast` from the
 // abstract QueueReader/QueueWriter return type of `pull_from` /
 // `push_to` to the concrete `ZmqQueue` is sound (the legacy plaintext
 // factories ALWAYS construct the most-derived type).  Asserted at
 // compile time.
-// H-Q2 ordering: the plaintext factory must NOT call `start()` on
+// Ordering invariant: the plaintext factory must NOT call `start()` on
 // the queue before we populate the CURVE fields — otherwise the
 // socket would bind/connect without auth and our later
 // auth-field writes would land on a running socket too late.
@@ -789,7 +788,7 @@ ZmqQueue::push_to(const std::string& endpoint,
 }
 
 // ============================================================================
-// PeerAdmission overrides (Phase A interface)
+// PeerAdmission overrides (`PeerAdmission` interface)
 // ============================================================================
 
 bool ZmqQueue::set_peer_allowlist(
@@ -929,7 +928,7 @@ bool ZmqQueue::start()
         if (pImpl->mode == ZmqQueueImpl::Mode::Write && pImpl->sndhwm > 0)
             pImpl->socket.set(zmq::sockopt::sndhwm, pImpl->sndhwm);
 
-        // ── PeerAdmission Phase C — CURVE + ZAP wiring (HEP-CORE-0036 §6) ────
+        // ── PeerAdmission (HEP-CORE-0036 §7) — CURVE + ZAP wiring (HEP-CORE-0036 §6) ────
         // Empty identity_key_name_ == legacy unauth path (reachable
         // only via plaintext `pull_from`/`push_to` factories which
         // never populate it).  HEP-CORE-0040 §172: keys are sourced
@@ -984,7 +983,7 @@ bool ZmqQueue::start()
                 // contract is "CURVE wired → allowlist exists; admit
                 // ⊆ peers; empty peers ⇒ deny all".  Callers replace
                 // this via `set_peer_allowlist()` (in production,
-                // driven by the broker's Phase D
+                // driven by the broker (task #103)
                 // `CHANNEL_AUTH_UPDATE` push).
                 pImpl->allowlist_.store(
                     std::make_shared<const sec::PeerAllowlist>(),
@@ -1048,7 +1047,7 @@ bool ZmqQueue::start()
     }
     catch (const std::invalid_argument &e)
     {
-        // H-Q3: specific, caller-actionable diagnostic for auth
+        // specific, caller-actionable diagnostic for auth
         // misconfiguration that slipped past factory validation OR
         // (post-#161) the CURVE engagement guard at the bottom of
         // the try block.  The queue did not start; reset the

@@ -217,14 +217,15 @@ public:
     // (CURVE on every role↔hub data path) + HEP-CORE-0040 §8.4 +
     // AUTH_TODO §C2/§C4 (#158, #160): discrete `identity_key_name`
     // (KeyStore lookup) + `Z85PublicKey server_pubkey` (PULL only) +
-    // `zap_domain` (PUSH only).  No `ZmqAuthOptions` struct; no
-    // `initial_allowlist` parameter — callers seed via
-    // `set_peer_allowlist()` AFTER `start()`.  Production callers
-    // rely on the broker's Phase D `CHANNEL_AUTH_UPDATE` push; the
-    // deny-all default is the safe starting point.
+    // `zap_domain` (PUSH only).  No `initial_allowlist` parameter —
+    // callers seed via `set_peer_allowlist()` AFTER `start()`.
+    // Production callers will pick up the broker's
+    // `CHANNEL_AUTH_UPDATE` push (HEP-CORE-0036 §6.5, task #103); the
+    // deny-all default is the safe starting point until that update
+    // arrives.
     //
     // Return the concrete `ZmqQueue` so callers can drive the
-    // `PeerAdmission` interface directly (Phase D broker glue calls
+    // `PeerAdmission` interface directly (broker glue (task #103) calls
     // `set_peer_allowlist` on the PUSH-side queue when
     // `CHANNEL_AUTH_UPDATE` arrives).
     //
@@ -293,7 +294,7 @@ private:
 
 public:
 
-    // ── PeerAdmission overrides (Phase A interface) ────────────────────────────
+    // ── PeerAdmission overrides (`PeerAdmission` interface) ────────────────────────────
     //
     // On the PUSH/bind side: storage backed by PortableAtomicSharedPtr
     // for lock-free reads from the ZapRouter pump thread.

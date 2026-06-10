@@ -1,6 +1,6 @@
 /**
  * @file zmq_queue_auth_workers.cpp
- * @brief Worker bodies — ZmqQueue CURVE+ZAP auth path (PeerAdmission Phase C).
+ * @brief Worker bodies — ZmqQueue CURVE+ZAP auth path (PeerAdmission (HEP-CORE-0036 §7)).
  *
  * Drives the full integration: producer-side `push_to_with_auth` (PUSH
  * + CURVE_SERVER + zap_domain registered with ZapRouter), consumer-
@@ -636,7 +636,7 @@ int auth_set_peer_allowlist_on_pull_side_returns_false(const char *)
         pylabhub::hub::GetZMQContextModule());
 }
 
-/// **Empty allowlist = deny-all.**  Phase D broker bootstrap may
+/// **Empty allowlist = deny-all.**  broker bootstrap (task #103) may
 /// briefly install an empty allowlist before pushing the real one
 /// from the KnownRolesStore; this test pins that the default is
 /// secure (deny everyone) rather than permissive.
@@ -707,7 +707,7 @@ int auth_empty_allowlist_denies_all(const char *)
         pylabhub::hub::GetZMQContextModule());
 }
 
-/// **H-Q3 fix.**  Factory must reject a connect-side CURVE call
+/// Factory must reject a connect-side CURVE call
 /// that has an identity key name but no serverkey — BEFORE
 /// constructing the queue.  Pins the explicit-diagnostic path
 /// (vs. throwing zmq::error_t() against stale errno from inside
@@ -731,7 +731,7 @@ int auth_misconfig_connect_missing_serverkey_factory_returns_nullptr(const char 
                 << "Factory must reject connect-side auth without "
                    "serverkey.  Returning a queue that throws inside "
                    "start() with a stale-errno 'Success' message is "
-                   "the H-Q3 anti-pattern.";
+                   "this anti-pattern (stale-errno diagnostic).";
         },
         "zmq_queue_auth::auth_misconfig_connect_missing_serverkey_factory_returns_nullptr",
         Logger::GetLifecycleModule(),
