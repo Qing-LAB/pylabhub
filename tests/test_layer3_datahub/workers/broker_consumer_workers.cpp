@@ -570,10 +570,15 @@ int get_channel_auth_returns_allowlist()
             pylabhub::tests::BrcHandle cons;
             cons.start(broker.endpoint, broker.pubkey, cons_uid,
                        pylabhub::tests::role_keystore_name(cons_uid));
+            // dereg matches by (consumer_pid, role_uid) per
+            // broker_service.cpp:2640 + broker_request_comm.cpp:960
+            // (`deregister_consumer` sends getpid()).  Register with
+            // the same pid so the dereg-roundtrip assertion below
+            // succeeds.
             ASSERT_TRUE(cons.brc.register_consumer(
                             make_cons_opts(channel, cons_uid,
                                             curve.role(cons_uid).public_z85,
-                                            65100),
+                                            static_cast<uint64_t>(::getpid())),
                             3000).has_value());
 
             // Post-registration: allowlist includes consumer entry.
@@ -590,6 +595,26 @@ int get_channel_auth_returns_allowlist()
             EXPECT_EQ(al[0].value("role_uid", std::string{}), cons_uid);
             EXPECT_EQ(al[0].value("pubkey", std::string{}),
                       curve.role(cons_uid).public_z85);
+
+            // Consumer dereg: broker mutates allowlist (revoke) + fires
+            // CHANNEL_AUTH_CHANGED_NOTIFY (reason="consumer_left").  Pin
+            // that the allowlist now reflects the empty state — the
+            // contract dictates that revocation propagates within the
+            // next producer pull (§I5: revocation prevents new
+            // connections; existing sessions trusted).
+            auto dereg = cons.brc.deregister_consumer(channel, 3000);
+            ASSERT_TRUE(dereg.has_value());
+            EXPECT_EQ(dereg->value("status", std::string{}), "success");
+
+            auto after_dereg =
+                prod.brc.get_channel_auth(channel, prod_uid, 3000);
+            ASSERT_TRUE(after_dereg.has_value());
+            EXPECT_EQ(after_dereg->value("status", std::string{}), "success");
+            ASSERT_TRUE(after_dereg->contains("allowlist"));
+            const auto &al2 = after_dereg->at("allowlist");
+            ASSERT_TRUE(al2.is_array());
+            EXPECT_EQ(al2.size(), 0u)
+                << "allowlist must be empty after consumer dereg";
         });
 }
 
