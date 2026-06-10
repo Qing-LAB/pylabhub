@@ -107,6 +107,13 @@ class ProducerAPI
     /// CHANNEL_AUTH_CHANGED_NOTIFY arrives).
     [[nodiscard]] py::list allowed_peers(const std::string &channel) const;
 
+    /// HEP-CORE-0036 §6.7 (#190) — Python-facing channel-state query.
+    /// Forwards to RoleAPIBase::is_channel_ready.
+    [[nodiscard]] bool is_channel_ready(const std::string &channel) const
+    {
+        return base_->is_channel_ready(channel);
+    }
+
     // ── Python-accessible — custom metrics ───────────────────────────────────
 
     void report_metric(const std::string &key, double value) { base_->report_metric(key, value); }

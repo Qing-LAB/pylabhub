@@ -250,6 +250,20 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     [[nodiscard]] std::vector<AllowedPeer>
     allowed_peers(const std::string &channel) const;
 
+    /// HEP-CORE-0036 §6.7 (#190) — script-side state-machine query.
+    /// True iff the queue serving the named channel is in the Active
+    /// state (`start()` succeeded post-Configured gate).  Resolver:
+    ///   - `channel == out_channel()` → tx side (processor-out specific)
+    ///   - `channel == channel()` → primary side (tx for producer,
+    ///     rx for consumer/processor-in)
+    ///   - else → false
+    /// Use case: scripts gate housekeeping or coordination logic on
+    /// whether the channel's transport is usable, from callbacks
+    /// OTHER than the channel's own data-loop callback (cycle ops
+    /// already short-circuits the data-loop callback on Standby).
+    /// Read-only; no script-side mutation.
+    [[nodiscard]] bool is_channel_ready(const std::string &channel) const noexcept;
+
     /// Sync flexzone checksum on the Tx side (SHM only). No-op otherwise.
     void sync_tx_flexzone_checksum();
 

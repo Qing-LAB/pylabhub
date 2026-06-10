@@ -263,6 +263,13 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_processor, m) // NOLINT
              "authorized peers for the channel.  Processor's TX side "
              "has the same producer-side allowlist semantics as "
              "ProducerAPI.allowed_peers.")
+        .def("is_channel_ready",   &ProcessorAPI::is_channel_ready,
+             py::arg("channel"),
+             "HEP-CORE-0036 §6.7 (#190) — true iff the queue serving the "
+             "named channel is in the Active state.  For processor, the "
+             "channel argument selects the TX side (out_channel) or RX "
+             "side (in_channel); each side is queried independently.  "
+             "Engine-parity with Lua's api.is_channel_ready.  Read-only.")
         .def("slot_logical_size", &ProcessorAPI::slot_logical_size,
              py::arg("side") = py::none())
         .def("flexzone_logical_size", &ProcessorAPI::flexzone_logical_size,

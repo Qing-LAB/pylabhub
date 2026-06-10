@@ -294,6 +294,14 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_producer, m) // NOLINT
              "{'role_uid': str, 'pubkey': str} dicts.  Empty when no "
              "GET_CHANNEL_AUTH_REQ has completed.  Engine-parity with "
              "Lua's api.allowed_peers; read-only.")
+        .def("is_channel_ready",   &producer::ProducerAPI::is_channel_ready,
+             py::arg("channel"),
+             "HEP-CORE-0036 §6.7 (#190) — true iff the queue serving the "
+             "named channel is in the Active state.  Use as a script-side "
+             "gate from non-data-loop callbacks (on_init, on_band_message, "
+             "etc.) — cycle ops already short-circuits the data-loop "
+             "callback on Standby.  Read-only.  Engine-parity with "
+             "Lua's api.is_channel_ready.")
         .def("slot_logical_size", &producer::ProducerAPI::slot_logical_size,
              py::arg("side") = py::none(),
              "Logical C struct size for the slot schema (bytes).")
