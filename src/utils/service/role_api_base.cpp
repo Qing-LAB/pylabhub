@@ -494,6 +494,30 @@ RoleAPIBase::allowed_peers(const std::string &channel) const
     return it->second;          // copy under the lock — caller iterates freely
 }
 
+bool RoleAPIBase::is_channel_ready(const std::string &channel) const noexcept
+{
+    // HEP-CORE-0036 §6.7 (#190) — script-visible state-machine query.
+    // Resolves `channel` against the role's known channel names:
+    //   - For processor with distinct in/out channels, `out_channel`
+    //     is the TX side.
+    //   - For all roles, the primary `channel` field is the role's
+    //     main channel (TX for producer; RX for consumer; RX-in for
+    //     processor).
+    // Returns true iff the corresponding queue is in Active state.
+    if (!pImpl->out_channel.empty() && channel == pImpl->out_channel)
+        return is_tx_active();
+    if (channel == pImpl->channel)
+    {
+        // Single-channel role match.  rx_queue is set for
+        // consumer/processor-input; tx_queue is set for producer.
+        // The first non-null queue is the correct side because
+        // single-channel roles only ever have one of the two.
+        if (pImpl->rx_queue) return is_rx_active();
+        if (pImpl->tx_queue) return is_tx_active();
+    }
+    return false;
+}
+
 void RoleAPIBase::handle_channel_auth_notifies(
     std::vector<pylabhub::scripting::IncomingMessage> &msgs)
 {

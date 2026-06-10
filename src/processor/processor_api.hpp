@@ -81,6 +81,12 @@ class ProcessorAPI
     /// a list of `{"role_uid": str, "pubkey": str}` dicts.
     [[nodiscard]] py::list allowed_peers(const std::string &channel) const;
 
+    /// HEP-CORE-0036 §6.7 (#190) — see ProducerAPI::is_channel_ready.
+    [[nodiscard]] bool is_channel_ready(const std::string &channel) const
+    {
+        return base_->is_channel_ready(channel);
+    }
+
     // Queue state
     [[nodiscard]] uint64_t last_seq()       const noexcept { return base_->last_seq(); }
     [[nodiscard]] uint64_t in_capacity()    const noexcept { return static_cast<uint64_t>(base_->in_capacity()); }

@@ -84,6 +84,12 @@ class ConsumerAPI
     /// shape work unmodified if reused for consumer roles.
     [[nodiscard]] py::list allowed_peers(const std::string &channel) const;
 
+    /// HEP-CORE-0036 §6.7 (#190) — see ProducerAPI::is_channel_ready.
+    [[nodiscard]] bool is_channel_ready(const std::string &channel) const
+    {
+        return base_->is_channel_ready(channel);
+    }
+
     // Spinlocks
     [[nodiscard]] uint64_t slot_logical_size(std::optional<int> side = std::nullopt) const;
     [[nodiscard]] uint64_t flexzone_logical_size(std::optional<int> side = std::nullopt) const;

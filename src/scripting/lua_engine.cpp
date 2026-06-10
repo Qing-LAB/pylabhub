@@ -382,6 +382,7 @@ bool LuaEngine::build_api_(RoleAPIBase &api)
     push_closure("metrics", lua_api_metrics);
     push_closure("queue_mechanism", lua_api_queue_mechanism);
     push_closure("allowed_peers",   lua_api_allowed_peers);
+    push_closure("is_channel_ready", lua_api_is_channel_ready);
 
     // ── Role-specific closures based on role_tag ────────────────────────
     if (api_->role_tag() == "prod")
@@ -2569,6 +2570,25 @@ int LuaEngine::lua_api_allowed_peers(lua_State *L)
         lua_setfield(L, -2, "pubkey");
         lua_rawseti(L, -2, static_cast<int>(i + 1));   // 1-based Lua
     }
+    return 1;
+}
+
+// ============================================================================
+// api.is_channel_ready(channel) → bool — HEP-CORE-0036 §6.7 (#190)
+// ============================================================================
+//
+// True iff the queue serving the named channel is in the Active state.
+// Returns false on empty channel or unknown channel (no exception —
+// scripts use this as a gate, not an assertion).
+int LuaEngine::lua_api_is_channel_ready(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    const char *arg = luaL_checkstring(L, 1);
+    const std::string channel = arg ? arg : "";
+    if (channel.empty())
+        return luaL_error(L,
+            "api.is_channel_ready: channel argument must be a non-empty string");
+    lua_pushboolean(L, self->api_->is_channel_ready(channel) ? 1 : 0);
     return 1;
 }
 
