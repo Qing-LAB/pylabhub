@@ -151,12 +151,12 @@ struct ProducerPeer
 /// EXPECT_EQ(queue.mechanism(), pylabhub::hub::Mechanism::Curve);
 /// ```
 ///
-/// Three values rather than two: a not-yet-started queue is
-/// genuinely different from a queue that started with auth turned
-/// OFF — the latter is the regression we want to surface, the
-/// former is fine.  `Plaintext` collapses libzmq `ZMQ_NULL` /
-/// `ZMQ_PLAIN` because neither is a valid post-C4 state (HEP-0035
-/// §2 — CURVE is unconditional on every role↔hub data path).
+/// Two values: a queue is either pre-start (Uninitialized) or
+/// successfully started with CURVE confirmed (Curve).  The C5
+/// guard inside `start()` throws on any non-CURVE observation
+/// BEFORE writing the field, so a "started with auth off" state is
+/// not representable — it surfaces as a failed start, not as a
+/// mechanism value.
 ///
 /// **Concurrency contract — `is_running() ⇒ mechanism() == Curve`
 /// once start() returns true.**  The observable is written via
@@ -175,13 +175,6 @@ struct ProducerPeer
 enum class Mechanism
 {
     Uninitialized,  ///< `start()` not called, or `stop()` reset the field.
-    Plaintext,      ///< Reserved.  No ZmqQueue ever publishes this value:
-                    ///  the `start()` guard throws BEFORE writing the
-                    ///  mechanism field on any non-CURVE observation,
-                    ///  and the catch handler restores `Uninitialized`.
-                    ///  Kept as a named enum value so callers comparing
-                    ///  arbitrary libzmq mechanisms have a stable name
-                    ///  for the non-CURVE case.
     Curve,          ///< libzmq reported `ZMQ_CURVE`.  The only acceptable post-start value.
 };
 
@@ -192,13 +185,7 @@ enum class Mechanism
 /// the underlying integer encoding of the enum.
 [[nodiscard]] constexpr const char *mechanism_name(Mechanism m) noexcept
 {
-    switch (m)
-    {
-        case Mechanism::Uninitialized: return "Uninitialized";
-        case Mechanism::Plaintext:     return "Plaintext";
-        case Mechanism::Curve:         return "Curve";
-    }
-    return "Uninitialized";  // unreachable; silences -Wreturn-type
+    return m == Mechanism::Curve ? "Curve" : "Uninitialized";
 }
 
 /**
@@ -316,9 +303,6 @@ public:
     // server's concern, gated via curve_serverkey).
     // peer_allowlist_snapshot returns nullopt.  is_peer_allowed
     // returns false unconditionally (no inbound handshakes to gate).
-    // admission_is_enforced returns true iff CURVE keys were
-    // supplied (the consumer side is "enforced" in the sense that
-    // it presents identity to the server's ZAP).
 
     bool set_peer_allowlist(
         pylabhub::utils::security::PeerAllowlist allowlist) override;
@@ -326,7 +310,6 @@ public:
     peer_allowlist_snapshot() const override;
     [[nodiscard]] bool is_peer_allowed(
         const pylabhub::utils::security::PeerIdentity& peer) const override;
-    [[nodiscard]] bool admission_is_enforced() const noexcept override;
 
     // ── Dynamic producer-peer membership (HEP-CORE-0017 §3.3, #103 A2) ──────────
     //

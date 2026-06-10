@@ -316,6 +316,7 @@ class LuaEngine : public ScriptEngine
     static int lua_api_in_slots_received(lua_State *L);
     static int lua_api_out_drop_count(lua_State *L);
     static int lua_api_metrics(lua_State *L);
+    static int lua_api_queue_mechanism(lua_State *L);
     static int lua_api_in_channel(lua_State *L);
     static int lua_api_out_channel(lua_State *L);
 

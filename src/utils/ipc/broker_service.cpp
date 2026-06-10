@@ -218,11 +218,6 @@ public:
         return p->contains(peer);
     }
 
-    [[nodiscard]] bool admission_is_enforced() const noexcept override
-    {
-        return true;
-    }
-
 private:
     pylabhub::utils::detail::PortableAtomicSharedPtr<
         pylabhub::utils::security::PeerAllowlist>

@@ -157,14 +157,6 @@ TEST_F(ZmqQueueAuthTest, Misconfig_FactoryReturnsNullptr)
     });
 }
 
-TEST_F(ZmqQueueAuthTest, AdmissionIsEnforced_Lifecycle)
-{
-    auto w = SpawnWorker(
-        "zmq_queue_auth.auth_admission_is_enforced_lifecycle",
-        {unique_dir("auth_admission_is_enforced_lifecycle")});
-    ExpectWorkerOk(w);
-}
-
 // AUTH_TODO §C5 (#161) — anti-recursion test for the HEP-CORE-0035 §2
 // invariant.  A raw NULL-mech client trying to connect to a
 // CURVE-enforced ZmqQueue producer MUST fail the ZMTP handshake.  The
