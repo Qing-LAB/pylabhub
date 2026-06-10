@@ -115,16 +115,51 @@ TEST_F(ZmqQueueAuthTest, EmptyAllowlist_DeniesAll)
     ExpectWorkerOk(w);
 }
 
-TEST_F(ZmqQueueAuthTest, Misconfig_ConnectMissingServerkey_FactoryReturnsNullptr)
+// HEP-CORE-0036 §6.7 Standby state machine (#188).  Pins the
+// Standby → Configured → Active transitions on the PULL side
+// (consumer):
+//   - `pull_from(empty_endpoint, empty_serverkey, ...)` succeeds
+//     and produces a Standby queue (is_configured=false,
+//     is_running=false).
+//   - `start()` refuses on Standby.
+//   - `set_producer_peers(single-entry)` populates serverkey +
+//     endpoint and transitions to Configured.
+//   - `start()` succeeds in Configured; queue becomes Active.
+//   - `stop()` is terminal (Active → not-running).
+// Worker assertions inside the subprocess do the EXPECT_*; the test
+// only checks the worker exited clean (no unexpected ERROR/WARN logs).
+TEST_F(ZmqQueueAuthTest, Standby_StateTransitions_PullSide)
 {
+    auto w = SpawnWorker(
+        "zmq_queue_auth.auth_standby_state_transitions",
+        {unique_dir("auth_standby_state_transitions")});
+    ExpectWorkerOk(w);
+}
+
+// PUSH-side parity: an empty bind endpoint puts the producer queue
+// in Standby; start() refuses; set_producer_peers is inert.
+TEST_F(ZmqQueueAuthTest, Standby_PushSide_StartRefuses_SetPeersInert)
+{
+    auto w = SpawnWorker(
+        "zmq_queue_auth.auth_standby_push_side",
+        {unique_dir("auth_standby_push_side")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(ZmqQueueAuthTest, ConnectEmptyServerkey_FactorySucceedsStandbyStartRefuses)
+{
+    // HEP-CORE-0036 §6.7 Standby state (#188) — RENAMED from
+    // Misconfig_ConnectMissingServerkey_FactoryReturnsNullptr.  Empty
+    // serverkey is no longer a factory misconfig; it's the explicit
+    // Standby signal.  Factory MUST succeed.  start() MUST refuse on
+    // Standby with the §6.7 diagnostic at DEBUG level (test fixture
+    // does not pin DEBUG substrings — ERROR/WARN only).  Worker
+    // assertions inside the subprocess verify is_configured()/
+    // is_running()/start() return values.
     auto w = SpawnWorker(
         "zmq_queue_auth.auth_misconfig_connect_missing_serverkey_factory_returns_nullptr",
         {unique_dir("auth_misconfig_connect_missing_serverkey_factory_returns_nullptr")});
-    // The factory's LOGGER_ERROR is the expected diagnostic path —
-    // declare a unique substring of the single emitted ERROR line.
-    ExpectWorkerOk(w, {}, {
-        "connect-side CURVE auth requires serverkey_z85",
-    });
+    ExpectWorkerOk(w);
 }
 
 TEST_F(ZmqQueueAuthTest, Misconfig_FactoryReturnsNullptr)
@@ -134,8 +169,14 @@ TEST_F(ZmqQueueAuthTest, Misconfig_FactoryReturnsNullptr)
         {unique_dir("auth_misconfig_factory_returns_nullptr")});
     // Misconfig branches the driver pins:
     //   - name-not-in-KeyStore (HEP-CORE-0040 §172)
-    //   - serverkey missing on connect side (HEP-CORE-0035 §2)
     //   - empty keystore_name (C1 / #157 strict enforcement)
+    //
+    // HEP-CORE-0036 §6.7 Standby state (#188): the
+    // "serverkey missing on connect side" case is NO LONGER a
+    // misconfig — empty serverkey signals Standby.  Pinned by the
+    // dedicated
+    // `ConnectEmptyServerkey_FactorySucceedsStandbyStartRefuses`
+    // worker.
     //
     // HEP-CORE-0040 §8.4 (#158) moved wrong-length pubkey validation
     // OUT of the factory — `Z85PublicKey` enforces the 40-char Z85
@@ -151,7 +192,6 @@ TEST_F(ZmqQueueAuthTest, Misconfig_FactoryReturnsNullptr)
     // substring per matched line.
     ExpectWorkerOk(w, {}, {
         "not present in KeyStore",
-        "connect-side CURVE auth requires serverkey_z85",
         "keystore_name MUST be non-empty",
         "keystore_name MUST be non-empty",
     });

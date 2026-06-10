@@ -224,6 +224,19 @@ public:
     // deny-all default is the safe starting point until that update
     // arrives.
     //
+    // HEP-CORE-0036 §6.7 Standby state (Stage 1A, #188).  PULL-side
+    // `pull_from()` accepts EMPTY `server_pubkey` AND EMPTY `endpoint`
+    // to construct a queue in Standby — held resources without
+    // authority artifacts.  The role host THEN calls
+    // `set_producer_peers(ACK.producers[])` (post-CONSUMER_REG_ACK or
+    // post-§6.5.1 pull) to populate both fields, transitioning the
+    // queue to Configured.  `start()` refuses on non-Configured
+    // queues.  Legacy callers passing non-empty `endpoint` +
+    // `server_pubkey` at construction get a queue already in
+    // Configured state and `start()` works immediately.  PUSH-side
+    // factories continue to accept empty `zap_domain` (resolved at
+    // `start()` time).
+    //
     // Return the concrete `ZmqQueue` so callers can drive the
     // `PeerAdmission` interface directly (broker glue (task #103) calls
     // `set_peer_allowlist` on the PUSH-side queue when
@@ -318,18 +331,40 @@ public:
     // currently authorized to receive from.  Driven by the role-host
     // framework in response to HEP-CORE-0033 §12 channel-event
     // broadcasts (producer joined / left) and by the post-§6.5 notify-
-    // then-pull cycle.  Today the impl is metadata-only — Pattern A vs
-    // Pattern B socket-level fan-in is HEP-CORE-0017 §3.3 future work;
-    // the single-producer connect endpoint still flows through
-    // `pull_from()`'s `endpoint` parameter.
-    // The methods exist now so the A3 dispatch layer has a stable
-    // surface to call.
+    // then-pull cycle.  Single-producer connect endpoint flows through
+    // either `pull_from()`'s `endpoint` parameter (legacy: peer known
+    // at construction) or via `set_producer_peers()` (Standby state;
+    // peer arrives via CONSUMER_REG_ACK or §6.5.1 pull).  Multi-producer
+    // fan-in (Pattern A vs Pattern B socket layout) is HEP-CORE-0017
+    // §3.3 future work.
     //
     // PUSH/bind side: inert.  The producer doesn't "add peers"; consumer
     // admission is handled via the broker-pushed allowlist
     // (`set_peer_allowlist`) + the producer's ZAP handler installed at
     // bind time.  Calling these on a PUSH-side queue returns false +
     // logs once at INFO.
+
+    /// Snapshot-replace this queue's producer peer set
+    /// (HEP-CORE-0036 §6.7 Standby → Configured transition).
+    ///
+    /// On PULL/connect side:
+    /// - If the queue is in Standby (factory called with empty
+    ///   `server_pubkey` / empty endpoint) and `list` is non-empty,
+    ///   `server_pubkey_z85_` is populated from `list[0].pubkey_z85` and
+    ///   the connect endpoint from `list[0].endpoint` — transitioning
+    ///   the queue to Configured.  Single-peer for Stage 1A
+    ///   (multi-producer fan-in deferred to HEP-CORE-0017 §3.3).
+    /// - If the queue is Active (`start()` returned true), the call
+    ///   updates the tracked peer set but does NOT touch the live
+    ///   socket — peer swap on a running socket requires teardown +
+    ///   rebuild per HEP-CORE-0036 §6.7 ("stop() is terminal" + I12).
+    ///   Returns true (the metadata snapshot is replaced).
+    ///
+    /// On PUSH/bind side: inert — returns false + logs once at INFO.
+    ///
+    /// Returns true on successful snapshot replace; false on PUSH side
+    /// or null impl.
+    bool set_producer_peers(std::vector<ProducerPeer> list);
 
     /// Append a producer to this queue's peer set.  Idempotent on
     /// `role_uid` collision (existing entry overwritten in place).
@@ -345,6 +380,19 @@ public:
     /// Number of producer peers currently tracked.  Returns 0 on PUSH
     /// side or null impl.  Diagnostic + test observability.
     [[nodiscard]] std::size_t producer_peer_count() const noexcept;
+
+    /// Queue is Configured (artifacts present) per HEP-CORE-0036 §6.7.
+    ///
+    /// PULL side: returns true iff `server_pubkey_z85_` is populated
+    /// (either at factory time or via `set_producer_peers()`) AND the
+    /// connect endpoint is non-empty.
+    /// PUSH side: returns true iff the bind endpoint is non-empty (CURVE
+    /// server-side artifacts — identity keypair + ZAP handler — are
+    /// resolved at `start()` time, not at factory time).
+    ///
+    /// Diagnostic + state-machine observability.  `start()` refuses on
+    /// non-Configured queues; this accessor lets callers gate explicitly.
+    [[nodiscard]] bool is_configured() const noexcept;
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 

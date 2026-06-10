@@ -348,22 +348,29 @@ TEST_F(ZmqQueueTest, Mechanism_AfterPushBind_IsCurve)
 // factory API.
 
 TEST_F(ZmqQueueTest,
-       PullFrom_EmptyServerPubkey_FailsValidation_Connect)
+       PullFrom_EmptyServerPubkey_ProducesStandbyQueue_StartRefuses)
 {
-    // PULL/connect side: empty Z85PublicKey (default sentinel) fails
-    // factory validation (HEP-0035 §2: server pubkey REQUIRED on
-    // connect side; C1 #157 strict-mode enforcement).  The factory
-    // must return nullptr — silent fallback to plaintext is the
-    // precise failure mode the C-chain was built to close.
+    // HEP-CORE-0036 §6.7 Standby state (#188).  RENAMED from
+    // PullFrom_EmptyServerPubkey_FailsValidation_Connect.  Empty
+    // Z85PublicKey (default sentinel) on PULL/connect is no longer a
+    // factory misconfig — it is the Standby signal: the role host
+    // has built held resources but the master (broker) has not yet
+    // delivered the authority artifact.  Factory MUST succeed;
+    // is_configured() MUST be false; start() MUST refuse with a
+    // §6.7 diagnostic at DEBUG level (no ERROR log emitted, so no
+    // ExpectLogError here).
     namespace sec = pylabhub::utils::security;
-    ExpectLogError("connect-side CURVE auth requires serverkey_z85");
     auto q = ZmqQueue::pull_from(
         "tcp://127.0.0.1:0",
-        sec::Z85PublicKey{},   // default sentinel = "no pubkey set"
+        sec::Z85PublicKey{},   // default sentinel = Standby signal
         blob_schema(kItemSize), "aligned",
         /*identity_key_name=*/sec::kRoleIdentityName,
         /*bind=*/false, 100);
-    EXPECT_EQ(q, nullptr);
+    ASSERT_NE(q, nullptr);
+    EXPECT_FALSE(q->is_configured());
+    EXPECT_FALSE(q->is_running());
+    EXPECT_FALSE(q->start());
+    EXPECT_FALSE(q->is_running());
 }
 
 TEST_F(ZmqQueueTest,

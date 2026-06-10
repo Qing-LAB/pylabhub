@@ -707,11 +707,120 @@ int auth_empty_allowlist_denies_all(const char *)
         pylabhub::hub::GetZMQContextModule());
 }
 
-/// Factory must reject a connect-side CURVE call
-/// that has an identity key name but no serverkey — BEFORE
-/// constructing the queue.  Pins the explicit-diagnostic path
-/// (vs. throwing zmq::error_t() against stale errno from inside
-/// start()).
+/// HEP-CORE-0036 §6.7 Standby state machine (#188): pins the
+/// Standby → Configured → Active transitions.  Empty serverkey +
+/// empty endpoint at factory time produces a Standby queue;
+/// `set_producer_peers(single-entry list)` populates BOTH artifacts
+/// and the queue becomes Configured; `start()` only succeeds in
+/// Configured.  This is the pin against the §I12 "fresh master
+/// approval before authority application" discipline at the
+/// queue-internal layer.
+int auth_standby_state_transitions(const char *)
+{
+    return run_gtest_worker(
+        [&]() {
+            ScopedKeyStore ks;
+            const auto [client_pub, client_sec] = make_keypair();
+            const auto [server_pub, server_sec] = make_keypair();
+            namespace sec = pylabhub::utils::security;
+            sec::key_store().add_identity_from_z85("client", client_pub, client_sec);
+            sec::key_store().add_identity_from_z85("server", server_pub, server_sec);
+
+            // ── Standby: empty endpoint AND empty serverkey ────────
+            auto consumer = ZmqQueue::pull_from(
+                /*endpoint=*/"",                       // Standby signal
+                sec::Z85PublicKey{},                   // Standby signal
+                make_uint32_schema(), "aligned",
+                /*identity_key_name=*/"client",
+                /*bind=*/false);
+            ASSERT_NE(consumer, nullptr)
+                << "pull_from must accept empty endpoint + empty "
+                   "serverkey (HEP-0036 §6.7 Standby).";
+            EXPECT_FALSE(consumer->is_configured());
+            EXPECT_FALSE(consumer->is_running());
+            EXPECT_EQ(consumer->producer_peer_count(), 0u);
+
+            // start() refuses in Standby.
+            EXPECT_FALSE(consumer->start())
+                << "start() must refuse on Standby queue.";
+            EXPECT_FALSE(consumer->is_running());
+
+            // ── Standby → Configured via set_producer_peers ────────
+            std::vector<pylabhub::hub::ProducerPeer> peers;
+            peers.push_back(pylabhub::hub::ProducerPeer{
+                /*role_uid=*/"P0",
+                /*endpoint=*/"tcp://127.0.0.1:5560",
+                /*pubkey_z85=*/server_pub});
+            EXPECT_TRUE(consumer->set_producer_peers(peers));
+            EXPECT_EQ(consumer->producer_peer_count(), 1u);
+            EXPECT_TRUE(consumer->is_configured())
+                << "set_producer_peers MUST populate serverkey + "
+                   "endpoint from peers[0] in Standby.";
+            EXPECT_FALSE(consumer->is_running())
+                << "Configured is not yet Active — start() pending.";
+
+            // ── Configured → Active via start() ────────────────────
+            // (No matching producer required — the consumer's
+            // CURVE handshake will idle waiting for a peer, but
+            // start() returns true once setsockopts + connect()
+            // complete locally.)
+            EXPECT_TRUE(consumer->start())
+                << "start() must succeed in Configured.";
+            EXPECT_TRUE(consumer->is_running());
+
+            // Idempotent start.
+            EXPECT_TRUE(consumer->start());
+
+            // ── Active → terminal (stop is one-way) ─────────────────
+            consumer->stop();
+            EXPECT_FALSE(consumer->is_running());
+        },
+        "zmq_queue_auth::auth_standby_state_transitions",
+        Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(),
+        JsonConfig::GetLifecycleModule(),
+        pylabhub::hub::GetZMQContextModule());
+}
+
+/// Standby on PUSH side: an empty bind endpoint puts the queue in
+/// Standby; start() refuses.  (Production PUSH callers always pass
+/// a non-empty bind endpoint, but the state-machine contract MUST
+/// hold symmetrically with PULL.)
+int auth_standby_push_side(const char *)
+{
+    return run_gtest_worker(
+        [&]() {
+            ScopedKeyStore ks;
+            const auto [server_pub, server_sec] = make_keypair();
+            namespace sec = pylabhub::utils::security;
+            sec::key_store().add_identity_from_z85("server", server_pub, server_sec);
+
+            auto producer = ZmqQueue::push_to(
+                /*endpoint=*/"",                       // Standby signal
+                make_uint32_schema(), "aligned",
+                /*identity_key_name=*/"server",
+                /*zap_domain=*/"",
+                /*bind=*/true);
+            ASSERT_NE(producer, nullptr);
+            EXPECT_FALSE(producer->is_configured());
+            EXPECT_FALSE(producer->start());
+
+            // set_producer_peers is inert on PUSH side.
+            std::vector<pylabhub::hub::ProducerPeer> empty;
+            EXPECT_FALSE(producer->set_producer_peers(empty))
+                << "set_producer_peers on PUSH side MUST return false.";
+        },
+        "zmq_queue_auth::auth_standby_push_side",
+        Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(),
+        JsonConfig::GetLifecycleModule(),
+        pylabhub::hub::GetZMQContextModule());
+}
+
+/// HEP-CORE-0036 §6.7 Standby state (#188) — RENAMED from
+/// auth_misconfig_connect_missing_serverkey_factory_returns_nullptr.
+/// Empty serverkey is now the explicit Standby signal — the factory
+/// MUST succeed and `start()` MUST refuse on Standby.
 int auth_misconfig_connect_missing_serverkey_factory_returns_nullptr(const char *)
 {
     return run_gtest_worker(
@@ -719,19 +828,32 @@ int auth_misconfig_connect_missing_serverkey_factory_returns_nullptr(const char 
             ScopedKeyStore ks;
             const auto [client_pub, client_sec] = make_keypair();
             pylabhub::utils::security::key_store().add_identity_from_z85("client", client_pub, client_sec);
-            // serverkey intentionally empty (default-ctor sentinel) —
-            // factory must reject before constructing the queue.
+            // HEP-CORE-0036 §6.7 Standby state (#188): empty serverkey
+            // at construction is the Standby signal.  Factory MUST
+            // succeed.  The state machine surfaces the (formerly
+            // factory-time) "no serverkey" diagnostic at `start()`
+            // time instead — `start()` refuses on a Standby queue
+            // and logs `queue in Standby` at DEBUG.
             auto consumer = ZmqQueue::pull_from(
                 "tcp://127.0.0.1:5555",
                 pylabhub::utils::security::Z85PublicKey{},  // empty
                 make_uint32_schema(), "aligned",
                 /*identity_key_name=*/"client",
                 /*bind=*/false);
-            EXPECT_EQ(consumer, nullptr)
-                << "Factory must reject connect-side auth without "
-                   "serverkey.  Returning a queue that throws inside "
-                   "start() with a stale-errno 'Success' message is "
-                   "this anti-pattern (stale-errno diagnostic).";
+            ASSERT_NE(consumer, nullptr)
+                << "Factory must accept empty serverkey post-#188; "
+                   "queue is in Standby until set_producer_peers() "
+                   "populates the artifact.";
+            EXPECT_FALSE(consumer->is_configured())
+                << "Standby queue must not report Configured.";
+            EXPECT_FALSE(consumer->is_running())
+                << "Standby queue must not report running.";
+            // start() refuses on a Standby queue — no socket setup,
+            // no CURVE wiring, no transport activity.
+            EXPECT_FALSE(consumer->start())
+                << "start() must refuse on Standby (no serverkey).";
+            EXPECT_FALSE(consumer->is_running())
+                << "Failed start() must leave queue not running.";
         },
         "zmq_queue_auth::auth_misconfig_connect_missing_serverkey_factory_returns_nullptr",
         Logger::GetLifecycleModule(),
@@ -777,8 +899,17 @@ int auth_misconfig_factory_returns_nullptr(const char *)
             const std::vector<Case> cases{
                 {"name not in KeyStore (bind)",
                  "missing.name", empty_serverkey, true, true},
-                {"connect side: KeyStore prerequisite OK, serverkey empty",
-                 "valid", empty_serverkey, false, true},
+                // HEP-CORE-0036 §6.7 Standby (#188): empty serverkey
+                // on connect side is now the Standby signal — factory
+                // succeeds; `start()` refuses on the un-Configured
+                // queue.  Standby behavior is pinned by the dedicated
+                // `auth_misconfig_connect_missing_serverkey_factory_returns_nullptr`
+                // worker above + the
+                // `Standby_PullFromAcceptsEmpty_StartRefusesUntilConfigured`
+                // L2 test; here we only confirm the factory returns
+                // non-null.
+                {"connect side: KeyStore prerequisite OK, serverkey empty (Standby)",
+                 "valid", empty_serverkey, false, false},
                 {"connect side fully valid (control)",
                  "valid", valid_serverkey, false, false},
                 // C1 (#157): empty identity_key_name is rejected on
@@ -964,6 +1095,10 @@ int dispatch_zmq_queue_auth(int argc, char **argv)
         return auth_set_peer_allowlist_on_pull_side_returns_false(tmpdir);
     if (scenario == "auth_empty_allowlist_denies_all")
         return auth_empty_allowlist_denies_all(tmpdir);
+    if (scenario == "auth_standby_state_transitions")
+        return auth_standby_state_transitions(tmpdir);
+    if (scenario == "auth_standby_push_side")
+        return auth_standby_push_side(tmpdir);
     if (scenario == "auth_misconfig_connect_missing_serverkey_factory_returns_nullptr")
         return auth_misconfig_connect_missing_serverkey_factory_returns_nullptr(tmpdir);
     if (scenario == "auth_misconfig_factory_returns_nullptr")
