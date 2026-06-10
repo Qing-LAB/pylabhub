@@ -936,6 +936,16 @@ bool ZmqQueue::is_configured() const noexcept
     // Connect side: PULL+connect needs both endpoint AND serverkey
     // (the connect-side artifact the master delivers via
     // CONSUMER_REG_ACK / §6.5.1 pull).
+    //
+    // Thread-safety (post-#188 review fix M3): `server_pubkey_z85_`
+    // and `endpoint` are mutated by `set_producer_peers()` under
+    // `producer_peers_mu_`.  is_configured() takes the same mutex to
+    // see a consistent snapshot — without it a concurrent reader
+    // (e.g. `start()` called from the role-host main thread while
+    // `set_producer_peers` runs on the worker thread per §I12) could
+    // observe a torn read.  Contention is negligible: the lock is
+    // held for a couple of `std::string::empty()` calls.
+    std::lock_guard<std::mutex> lock(pImpl->producer_peers_mu_);
     if (pImpl->bind_socket)
         return !pImpl->endpoint.empty();
     return !pImpl->server_pubkey_z85_.empty()

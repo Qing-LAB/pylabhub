@@ -1914,7 +1914,7 @@ discipline.
 | `add_producer_peer(p)` (pull side) | refuse | apply (Standby → Configured if empty before) | apply (append) | apply (append + connect) |
 | `remove_producer_peer(uid)` | refuse | apply (no-op on empty) | apply | apply (disconnect + remove) |
 | `start()` | refuse | refuse (no artifacts) | apply (Configured → Active) | no-op (idempotent: returns true) |
-| `stop()` | no-op | no-op | apply (Configured → Standby; sockets reset) | apply (Active → Uninitialized via teardown) |
+| `stop()` | no-op | no-op | no-op (running_ never went true; nothing to undo) | apply (Active → Uninitialized via teardown — terminal, sockets reset) |
 | destructor | no-op | safe | safe | safe (calls stop() internally) |
 
 **The Standby → Configured transition is where I12 is enforced.**
@@ -1960,15 +1960,19 @@ the master's "yes".  No `set_shm_secret` mutator is required on the
 queue interface; the constructor parameter IS that mutator.
 
 **`stop()` semantics — terminal, not reversible** (normative).  Calling
-`stop()` from any non-Uninitialized state returns the queue to a
-destroy-ready state.  Internal `running_` flag is one-way; the queue
-CANNOT be re-started.  The HEP §I3 hub-dead recovery path destroys
-the queue + builds a fresh one after re-registration (consistent with
-§I12: cached artifacts MUST NOT be re-applied, so neither MUST a
-re-started queue carrying remembered state).  The "Configured →
-Standby" row in the mutator table above should be read as "no-op"
-(no transport activity to undo from Configured); only Active → ...
-is observable as a teardown.
+`stop()` from `Active` returns the queue to a destroy-ready state
+(sockets reset, ZAP handle released, recv/send threads joined).
+Internal `running_` flag is one-way; the queue CANNOT be re-started.
+The HEP §I3 hub-dead recovery path destroys the queue + builds a
+fresh one after re-registration (consistent with §I12: cached
+artifacts MUST NOT be re-applied, so neither MUST a re-started queue
+carrying remembered state).  Per the mutator table above, `stop()`
+is a no-op from `Uninitialized` / `Standby` / `Configured` — no
+transport was ever activated, so there is nothing to undo.  The
+"Active → Standby" arc therefore DOES NOT EXIST in this state
+machine; cycle-ops + script-side observers can rely on the
+state-machine direction being one-way (Standby → Configured → Active
+→ destroyed).
 
 **Data-loop ops in non-Active states — existing nullptr return
 preserved** (normative).  The state machine does NOT change the
@@ -2020,8 +2024,15 @@ allowlist-never-arrives would be indistinguishable in metrics.
 **Script-side state query** (normative).  The script API MUST
 expose `api.is_channel_ready(channel) → bool` (Lua + Python +
 Native parity).  Returns `true` iff the named channel's queue is in
-Active state.  Use case: gating script-side housekeeping or
-compute work on whether the channel is usable.  Example:
+Active state.  This is the §I9 framework→script separation discharge
+for the state machine: the framework owns the state transitions
+(§I12 master-approval discipline), the script reads them through this
+read-only accessor — never mutates them.  Complements the §I11
+`api.allowed_peers(channel)` accessor (membership snapshot) and the
+`on_allowlist_changed` callback (membership-change signal): together
+they let scripts coordinate cross-role startup without ever holding
+the gate.  Use case: gating script-side housekeeping or compute work
+on whether the channel is usable.  Example:
 
 ```lua
 function on_step(api)
