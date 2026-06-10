@@ -855,6 +855,18 @@ BrokerRequestComm::register_channel(const nlohmann::json &opts, int timeout_ms)
 }
 
 std::optional<nlohmann::json>
+BrokerRequestComm::get_channel_auth(const std::string &channel,
+                                     const std::string &role_uid,
+                                     int timeout_ms)
+{
+    nlohmann::json opts;
+    opts["channel_name"] = channel;
+    opts["role_uid"]     = role_uid;
+    return pImpl->do_request("GET_CHANNEL_AUTH_REQ", "GET_CHANNEL_AUTH_ACK",
+                             opts, timeout_ms);
+}
+
+std::optional<nlohmann::json>
 BrokerRequestComm::discover_channel(const std::string &channel,
                                         const nlohmann::json &opts,
                                         int timeout_ms)

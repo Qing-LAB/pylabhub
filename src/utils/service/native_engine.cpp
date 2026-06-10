@@ -953,6 +953,21 @@ void NativeEngine::invoke_on_band_lost(const std::string &band,
     fn_on_band_lost_(&args);
 }
 
+void NativeEngine::invoke_on_allowlist_changed(
+    const std::string & /*channel*/,
+    const std::vector<AllowedPeer> & /*allowlist*/,
+    const std::string & /*reason*/)
+{
+    // HEP-CORE-0036 §I11 — Native callback not wired today.  Native
+    // is MVP-only per #84; adding the C-ABI struct for an allowlist
+    // (variable-length array of {role_uid, pubkey}) is a non-trivial
+    // ABI change tracked under follow-up task.  Native plugins can
+    // still poll via the C++ accessor `RoleAPIBase::allowed_peers`
+    // since they have direct access to RoleAPIBase via the role_api()
+    // hook.  When Native gains a full script-engine surface (#84 +
+    // beyond), wire `plh_allowlist_changed_args_t`.
+}
+
 InvokeResult NativeEngine::invoke_produce(
     InvokeTx tx,
     std::vector<IncomingMessage> & /*msgs*/)

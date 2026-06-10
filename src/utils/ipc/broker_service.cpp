@@ -551,6 +551,19 @@ public:
                         const std::string& corr_id,
                         bool               is_consumer) const;
 
+    /// HEP-CORE-0036 §6.1 / §6.3 Layer-2 identity verification.  Checks
+    /// that `(role_uid, claimed_pubkey)` is a single matching record in
+    /// `cfg.known_roles[]`.  Returns std::nullopt on pass; populated
+    /// error JSON on UNKNOWN_ROLE (uid not registered) or
+    /// PUBKEY_MISMATCH (uid registered but with a different pubkey).
+    /// Unconditional — runs regardless of `RoleIdentityPolicy`.
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+    [[nodiscard]] std::optional<nlohmann::json>
+    verify_known_role_binding(const std::string& role_uid,
+                              const std::string& claimed_pubkey,
+                              const std::string& corr_id,
+                              const char*        request_kind) const;
+
     // ── Audit R3.5b (2026-05-19) — wire-boundary grammar + side-aware tag ───
     /// Validate identifier-field grammar at the gate per HEP-CORE-0033
     /// §G2.2.0b + enforce per-handler role-tag policy.
@@ -1420,6 +1433,17 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
                           "REG_REQ `zmq_pubkey` length is " +
                               std::to_string(producer_pubkey.size()) +
                               ", expected 40 (Z85-encoded CURVE25519 pubkey)");
+    }
+
+    // HEP-CORE-0036 §6.1 Layer-2 identity verification — the wire-
+    // claimed (role_uid, zmq_pubkey) pair MUST match a single
+    // known_roles.json record.  Layer-1 ZAP already proved the
+    // connecting socket holds a known_roles pubkey; this binds the
+    // REG_REQ to the specific uid claimed in the body.
+    if (auto err = verify_known_role_binding(role_uid, producer_pubkey,
+                                              corr_id, "REG_REQ"))
+    {
+        return *err;
     }
 
     // Wave M2.5 step 3 — build the new producer entry from the wire
@@ -2520,6 +2544,16 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
                               std::to_string(consumer_pubkey.size()) +
                               ", expected 40 (Z85-encoded CURVE25519 pubkey)");
     }
+
+    // HEP-CORE-0036 §6.3 Layer-2 identity verification — symmetric
+    // with the producer-side REG_REQ check (§6.1).  Binds the
+    // CONSUMER_REG_REQ to a specific (role_uid, pubkey) pair within
+    // the operator-authorized known_roles allowlist.
+    if (auto err = verify_known_role_binding(role_uid, consumer_pubkey,
+                                              corr_id, "CONSUMER_REG_REQ"))
+    {
+        return *err;
+    }
     entry.zmq_pubkey = consumer_pubkey;
     // Capture ZMQ identity for future CHANNEL_CLOSING_NOTIFY.
     entry.zmq_identity.assign(static_cast<const char*>(identity.data()), identity.size());
@@ -2542,6 +2576,29 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     {
         resp["correlation_id"] = corr_id;
     }
+
+    // HEP-CORE-0036 §6.4 — emit `producers[]` so the consumer's
+    // role-host can populate `RxQueueOptions::producer_peers` for the
+    // data-plane PULL socket's CURVE handshake.  ZMQ transport only;
+    // SHM channels use a single `shm_secret` field instead (HEP-0036
+    // §5.6 — broker generation tracked under AUTH-4 / task #164).
+    // Length 1 for single-producer; length N for fan-in (HEP-CORE-0023
+    // §2.1.1) — same wire shape either way.
+    if (auto ch_opt = hub_state_->channel(channel_name);
+        ch_opt.has_value() && ch_opt->data_transport == "zmq")
+    {
+        nlohmann::json producers_array = nlohmann::json::array();
+        for (const auto& p : ch_opt->producers)
+        {
+            producers_array.push_back({
+                {"role_uid", p.role_uid},
+                {"pubkey",   p.zmq_pubkey},
+                {"endpoint", p.zmq_node_endpoint},
+            });
+        }
+        resp["producers"] = std::move(producers_array);
+    }
+
     return resp;
 }
 
@@ -2733,9 +2790,36 @@ BrokerServiceImpl::handle_get_channel_auth_req(const nlohmann::json &req)
     resp["channel_name"] = channel_name;
     if (!corr_id.empty())
         resp["correlation_id"] = corr_id;
+
+    // HEP-CORE-0036 §6.5 (amended 2026-06-10): allowlist entries are
+    // `{role_uid, pubkey}` objects so script-side I11 surfaces
+    // (`api.allowed_peers` polling + `on_allowlist_changed` callback)
+    // can speak in role_uid terms instead of bare Z85 strings.  The
+    // authoritative set still lives in `authorized_consumer_pubkeys`;
+    // we enrich each pubkey with the matching `ConsumerEntry.role_uid`
+    // — `_on_consumer_joined` and `_on_consumer_authorized` fire
+    // together at CONSUMER_REG admission, so consumers[] contains a
+    // matching entry for every authorized pubkey under normal
+    // operation.  A missing match leaves `role_uid` empty — the
+    // pubkey remains the authoritative enforcement key on the
+    // producer side regardless.
     nlohmann::json allowlist_arr = nlohmann::json::array();
     for (const auto &pk : access->authorized_consumer_pubkeys)
-        allowlist_arr.push_back(pk);
+    {
+        std::string role_uid;
+        for (const auto &c : ch->consumers)
+        {
+            if (c.zmq_pubkey == pk)
+            {
+                role_uid = c.role_uid;
+                break;
+            }
+        }
+        nlohmann::json entry;
+        entry["role_uid"] = role_uid;
+        entry["pubkey"]   = pk;
+        allowlist_arr.push_back(std::move(entry));
+    }
     resp["allowlist"] = std::move(allowlist_arr);
     return resp;
 }
@@ -3307,6 +3391,41 @@ BrokerServiceImpl::check_role_identity(const std::string& channel_name,
     {
         LOGGER_INFO("Broker: {} identity recorded for '{}': name='{}' uid='{}'",
                     role_str, channel_name, role_name, role_uid);
+    }
+
+    return std::nullopt;
+}
+
+std::optional<nlohmann::json>
+BrokerServiceImpl::verify_known_role_binding(const std::string& role_uid,
+                                              const std::string& claimed_pubkey,
+                                              const std::string& corr_id,
+                                              const char*        request_kind) const
+{
+    auto it = std::find_if(cfg.known_roles.begin(), cfg.known_roles.end(),
+                           [&](const KnownRole& kr) { return kr.uid == role_uid; });
+    if (it == cfg.known_roles.end())
+    {
+        LOGGER_WARN("Broker: {} rejected — role_uid='{}' not in known_roles "
+                    "(HEP-CORE-0036 §6.1/§6.3 Layer-2 verification)",
+                    request_kind, role_uid);
+        return make_error(corr_id, "UNKNOWN_ROLE",
+                          fmt::format("role_uid '{}' is not registered in "
+                                      "known_roles.json",
+                                      role_uid));
+    }
+
+    if (it->pubkey_z85 != claimed_pubkey)
+    {
+        LOGGER_WARN("Broker: {} rejected — role_uid='{}' presented pubkey "
+                    "that does not match known_roles record "
+                    "(HEP-CORE-0036 §6.1/§6.3 Layer-2 verification)",
+                    request_kind, role_uid);
+        return make_error(corr_id, "PUBKEY_MISMATCH",
+                          fmt::format("zmq_pubkey for role_uid '{}' does not "
+                                      "match the configured pubkey in "
+                                      "known_roles.json",
+                                      role_uid));
     }
 
     return std::nullopt;

@@ -6,6 +6,32 @@
 
 ## Archive batches
 
+### 2026-06-09 (AUTH_TODO restructure — C-chain + HEP-0040 chain + HB audit)
+
+After C1..C5 strict-CURVE cleanup chain shipped (#157-#161 + #186 +
+#187) and the HEP-CORE-0040 Locked Key Memory chain shipped
+(#165–#176), `docs/todo/AUTH_TODO.md` was reorganized from 635 lines
+of history + plan into ~415 lines of clean AUTH-1..7 critical-path
+plan + decision log + backlog.  Historical sections moved verbatim
+to `docs/archive/transient-2026-06-09/todo-completions/AUTH_TODO_completions.md`:
+
+* 2026-06-05 HB-1..HB-6 audit (the silent-fallback hole + verified
+  hard-blocks + test blind spots).
+* 2026-06-05 PM REFRAME — HEP-CORE-0040 absorbs the storage half of
+  C3 + #102.
+* Strict-CURVE cleanup chain — C1..C5 full inventory + per-commit
+  scope tables + implementation order.
+* Phase 5 deferred follow-ups (#186 mechanism binding + L3 NULL-mech
+  test) + #187 vault load-path tightening.
+* Phase C fresh-eye review (2026-06-09) — design residue cleanup.
+
+Mapping of old labels → new AUTH-N numbering preserved in the new
+AUTH_TODO.md §"Critical path — AUTH-1 .. AUTH-7" so prior commits +
+references resolve cleanly.  `docs/TODO_MASTER.md` P3 section + the
+production-readiness gap table updated to the new numbering.
+`MEMORY.md` label-hygiene table extended with the AUTH-N / C1..C5 /
+HB-1..6 / HEP-0040 entries.
+
 ### 2026-06-05 (HEP-CORE-0040 promotion)
 
 `HEP-CORE-0040-Locked-Key-Memory-DRAFT.md` promoted from

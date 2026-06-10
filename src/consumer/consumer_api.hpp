@@ -76,6 +76,14 @@ class ConsumerAPI
     [[nodiscard]] std::string in_policy()       const { return base_->in_policy(); }
     [[nodiscard]] py::dict metrics() const;
 
+    /// HEP-CORE-0036 §I11 polling surface — engine-parity stub on the
+    /// consumer side.  Consumer-side handler does not currently
+    /// populate the cache (broker only sends CHANNEL_AUTH_CHANGED_NOTIFY
+    /// to producers), so this returns an empty list.  API kept for
+    /// uniformity so scripts written against ProducerAPI's polling
+    /// shape work unmodified if reused for consumer roles.
+    [[nodiscard]] py::list allowed_peers(const std::string &channel) const;
+
     // Spinlocks
     [[nodiscard]] uint64_t slot_logical_size(std::optional<int> side = std::nullopt) const;
     [[nodiscard]] uint64_t flexzone_logical_size(std::optional<int> side = std::nullopt) const;

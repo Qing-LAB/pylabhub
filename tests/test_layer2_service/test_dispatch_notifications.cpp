@@ -247,6 +247,10 @@ class RecordingEngine : public ScriptEngine
     {
         band_lost_calls.emplace_back(band, reason);
     }
+    void invoke_on_allowlist_changed(
+        const std::string &,
+        const std::vector<pylabhub::scripting::AllowedPeer> &,
+        const std::string &) override {}
 
     // ── No-op stubs for the rest of the ScriptEngine surface ────────
   protected:

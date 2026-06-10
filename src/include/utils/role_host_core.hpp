@@ -99,6 +99,15 @@ enum class NotificationId : std::uint8_t
                             ///< connection.  NOT a wire frame.  Lets scripts
                             ///< react to losing band membership without
                             ///< exiting the role (peer-hub failure case).
+    ChannelAuthChanged = 8, ///< CHANNEL_AUTH_CHANGED_NOTIFY (HEP-CORE-0036
+                            ///< §6.5 notify-then-pull).  INFRASTRUCTURE-ONLY
+                            ///< — not a script-visible event.  Producer-side
+                            ///< only; worker thread pulls fresh allowlist
+                            ///< via GET_CHANNEL_AUTH_REQ and applies via
+                            ///< ZmqQueue::set_peer_allowlist.  Per HEP-0036
+                            ///< §I11, scripts observe the resulting list via
+                            ///< api.allowed_peers but do not receive this
+                            ///< notify directly.
     Count                   ///< sentinel — must be last
 };
 
@@ -119,6 +128,7 @@ parse_notification_id(std::string_view type) noexcept
     if (type == "BAND_LEAVE_NOTIFY")        return NotificationId::BandMemberLeft;
     if (type == "BAND_BROADCAST_NOTIFY")    return NotificationId::BandMessage;
     if (type == "BAND_LOST")                return NotificationId::BandLost;
+    if (type == "CHANNEL_AUTH_CHANGED_NOTIFY") return NotificationId::ChannelAuthChanged;
     return NotificationId::Unknown;
 }
 

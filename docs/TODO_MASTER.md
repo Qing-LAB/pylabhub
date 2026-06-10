@@ -27,8 +27,8 @@ side dispatch + sibling-HEP code sync pending.
 
 | Item | Status | Tracker |
 |---|---|---|
-| HEP-CORE-0035 auth implementation (7-phase plan in HEP-0035 §8) | 🚧 partial — control plane locked.  Phase B + #101 (§4.6 ACL) + D1 (`ChannelAccessIndex`) + D2 (broker CTRL ZAP) + D3 (notify-then-pull wire, broker_proto 5→6) shipped.  Data-plane CURVE + producer-side ZAP + D4-D7 pending (per `AUTH_TODO.md`).  Legacy `RoleIdentityPolicy` placeholder live; task #152 retires it. | task #74; detail in `docs/todo/AUTH_TODO.md` |
-| HEP-CORE-0036 authenticated connection establishment | Design final (2026-05-28; amended 2026-06-04 for notify-then-pull).  🚧 implementation in flight — D1+D2+D3 shipped; D4 (role-side dispatch) + D5 (`CONSUMER_REG_ACK.producers[]`) + D6 (L3 tests) + D7 (L4 test) pending.  Chain: #101 ✅ + #102 → #74 → #94 + #103 → #104 → #106 (HEP-CORE-0038 script-vault) → done.  #105 federation parallel + non-blocking.  Implementation guideline: `docs/tech_draft/DRAFT_HEP-0036-implementation-guideline_2026-05.md`. | tasks #74, #101, #102, #103, #104, #105, #106 |
+| HEP-CORE-0035 auth implementation (7-phase plan in HEP-0035 §8) | 🚧 partial — control plane locked + strict-CURVE cleanup + Locked Key Memory shipped.  Phase B + #101 (§4.6 ACL) + D1 (`ChannelAccessIndex`) + D2 (broker CTRL ZAP) + D3 (notify-then-pull wire, broker_proto 5→6) shipped; C1..C5 strict-CURVE cleanup chain (#157-#161) shipped 2026-06-09; HEP-CORE-0040 Locked Key Memory chain (#165–#176 + #187) shipped 2026-06-09.  Data-plane gate close (AUTH-1..7 per `AUTH_TODO.md` — D4/D5/D6/D7 + HB-2 + HB-4+5 + HB-6) pending.  Legacy `RoleIdentityPolicy` placeholder live; task #152 retires it. | task #74; detail in `docs/todo/AUTH_TODO.md` |
+| HEP-CORE-0036 authenticated connection establishment | Design final (2026-05-28; amended 2026-06-04 for notify-then-pull).  🚧 implementation in flight — D1+D2+D3 + C-chain + HEP-0040 chain shipped; AUTH-1 (D4 + D5 + B1 + B2; task #103) in-progress + AUTH-2 (HB-2; #162) + AUTH-3 (HB-4+5; #163) + AUTH-4 (HB-6 + #79) + AUTH-5 (sibling-HEP doc sync; #104) + AUTH-6 (L3 broker revival; #154) + AUTH-7 (L4 end-to-end) pending.  #105 federation parallel + non-blocking. | tasks #74, #101, #102, #103, #104, #105, #106, #162, #163, #164 |
 
 ### Label hygiene — read before reading any "M*" label below
 
@@ -133,56 +133,45 @@ the demo inventory + manifest schema.
 - **#73** HEP-CORE-0033 Phase 10 doc closure.
 
 **P3 — HEP-0036 auth implementation chain** (production-readiness
-blocker; detailed execution plan in `docs/todo/AUTH_TODO.md`).
+blocker; detailed execution plan in `docs/todo/AUTH_TODO.md` under the
+AUTH-1..7 numbering).
 
-**2026-06-05 REFRAME (post-audit):** Verified against code that A1
-(commit `164b805c`) + A2 (commit `badfaed1`) shipped but A2
-**silently achieves zero CURVE coverage** due to a `validate_auth_options`
-fallback + a `set_auth` ordering bug.  1998/1998 ctest passes because
-every code path takes the plaintext branch.  See AUTH_TODO.md
-§"CRITICAL — A1+A2 silently shipped zero CURVE coverage" for the
-verified HARD-BLOCKS (HB-1..HB-6).
+**2026-06-09 state:** The C1..C5 strict-CURVE cleanup chain shipped
+(#157-#161 + close-out #186/#187).  The HEP-CORE-0040 Locked Key
+Memory chain shipped (#165–#176).  Live work is AUTH-1..7 against the
+broker glue (Phase D close + downstream).
 
-Sequence (each step blocks the next):
-- **HEP-CORE-0040 chain** (tasks #165–#174; #165 draft ✅ landed
-  2026-06-05) — **prerequisite for C3 / C0**.  Lifts §4.7's
-  flat-utility design into a registered lifecycle subsystem (static
-  `SecureMemorySubsystem` + dynamic `KeyStore` + `LockedKey` RAII).
-  Single locked-memory copy of the seckey per process; symmetric
-  `RoleAPIBase` + `HubAPI` accessor APIs.  Supersedes both **#102**
-  (was flat-utility §4.7) and **#159** (was value-copy C3).  Draft
-  at `docs/tech_draft/HEP-CORE-0040-Locked-Key-Memory-DRAFT.md`;
-  full pivot rationale in `AUTH_TODO.md` §"2026-06-05 PM REFRAME".
-- **C1-C5** strict-CURVE cleanup chain (tasks #157-#161) — **must
-  run BEFORE A3**.  Deletes the all-empty fallback in
-  `validate_auth_options`, strong-types the keypair, makes auth a
-  constructor invariant on `RoleAPIBase` (now via HEP-0040 ref to
-  Config-owned LockedKey, not value copy), deletes the legacy
-  `pull_from`/`push_to` factories, adds CURVE-engagement test
-  assertions.  After C5 there is no path by which CURVE-off can
-  ship and pass tests.
-- **A3** (under #103) — D5 (`CONSUMER_REG_ACK.producers[]` emission)
-  + D4 (BRC notify dispatch + `set_peer_allowlist` call) +
-  consumer-side switch to authed factory + B1 + B2 folded in.
-- **#94** HEP-0021 §16.5 ephemeral binding — co-lands wire-shape
-  per HEP-0036 §14.1.
-- **HB-2** (#162) wire `ZapRouter::pump_one` on BRC poll thread.
-- **HB-4+5** (#163) `RegistrationState::Authorized` + data-loop
-  outer guard (also satisfies HEP-CORE-0036 §14.3 portion of #104).
-- **HB-6** (#164) broker generates random `shm_secret`.
-- **#74 D4-D7** — closes via the above + #154 (D6) + L4 test (D7).
-  D1+D2+D3 already shipped.
-- **#104** Sibling-HEP doc sync — 7 of 8 are pure doc edits;
-  HEP-0023 portion handled by HB-4+5 above.  L (multi-area).
+Current critical path (each step blocks the next unless noted):
 
-Parallel / independent (any order, no #103 dependency):
-- **#101** key-file ACL discipline — already shipped (commit
-  `4f3fb077` + reviews); see archive.
+- **AUTH-1** (task **#103**, in-progress) — Role-side dispatch + D5
+  `CONSUMER_REG_ACK.producers[]` emission + D4 BRC notify dispatch +
+  consumer-side switch to authed factory + B1 (`awaiting_endpoint`)
+  + B2 (`zmq_msg_gets("User-Id")`).  Closes HB-3.  Blocks AUTH-2..7.
+- **AUTH-2** (task **#162**) — Producer-side `ZapRouter::pump_one`
+  on BRC poll thread + multi-peer backlog drain (HB-2).
+- **AUTH-3** (task **#163**) — `RegistrationState::Authorized` FSM
+  state + `any_presence_authorized()` + data-loop outer guard
+  (HB-4 + HB-5; also satisfies HEP-CORE-0036 §14.3 portion of #104).
+- **AUTH-4** (task **#164** + **#79**) — Broker-issued random
+  `shm_secret` end-to-end + `plh_role --init` SHM secret seed (HB-6).
+  Independent of AUTH-1..3 but can land in any order.
+- **AUTH-5** (task **#104**) — Sibling-HEP doc sync; 7 of 8 are pure
+  doc edits.  L (multi-area).
+- **AUTH-6** (task **#154**, in-progress) — Re-create L3 broker tests
+  against refactored lib (D6).
+- **AUTH-7** — L4 end-to-end auth-gated data flow (D7).  Closes #74.
+- **#94** HEP-0021 §16.5 ephemeral binding — co-lands wire-shape per
+  HEP-0036 §14.1 with AUTH-1; doesn't itself gate the auth goal.
+
+Parallel / independent (any order, no AUTH-1 dependency):
+
+- **#101** key-file ACL discipline — already shipped.
 - **#102** runtime key handling — **SUPERSEDED 2026-06-05** by the
-  HEP-CORE-0040 chain (#165–#174).  Now sits IN the critical
-  sequence (precedes C3), not parallel.
+  HEP-CORE-0040 chain (#165–#176 all shipped 2026-06-09); closes
+  when stragglers reach steady state.
 - **#106** HEP-CORE-0038 script-vault keystore — depends on #104
-  shipping first AND on HEP-0040 storage layer (#167 + #170).  L.
+  shipping first AND on HEP-0040 storage layer (#167 + #170 shipped).
+  L.
 - **#105** Federation / HEP-CORE-0037 — explicitly post-MVP per
   HEP-0036 §13.1.  L+.
 

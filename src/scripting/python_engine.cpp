@@ -291,6 +291,8 @@ bool PythonEngine::load_script(const std::filesystem::path &script_dir,
             py::getattr(module_, "on_band_message",       py::none());
         py_on_band_lost_ =
             py::getattr(module_, "on_band_lost",          py::none());
+        py_on_allowlist_changed_ =
+            py::getattr(module_, "on_allowlist_changed",  py::none());
         py_on_produce_ = py::getattr(module_, "on_produce", py::none());
         py_on_consume_ = py::getattr(module_, "on_consume", py::none());
         py_on_process_ = py::getattr(module_, "on_process", py::none());
@@ -320,6 +322,8 @@ bool PythonEngine::load_script(const std::filesystem::path &script_dir,
                                        is_callable(py_on_band_message_));
         set_standard_callback_present("on_band_lost",
                                        is_callable(py_on_band_lost_));
+        set_standard_callback_present("on_allowlist_changed",
+                                       is_callable(py_on_allowlist_changed_));
         set_standard_callback_present("on_produce", is_callable(py_on_produce_));
         set_standard_callback_present("on_consume", is_callable(py_on_consume_));
         set_standard_callback_present("on_process", is_callable(py_on_process_));
@@ -1275,6 +1279,32 @@ void PythonEngine::invoke_on_band_lost(const std::string &band,
     }
 }
 
+void PythonEngine::invoke_on_allowlist_changed(
+    const std::string &channel,
+    const std::vector<AllowedPeer> &allowlist,
+    const std::string &reason)
+{
+    if (!is_callable(py_on_allowlist_changed_)) return;
+    py::gil_scoped_acquire g;
+    try
+    {
+        // Build list-of-dicts: [{"role_uid": ..., "pubkey": ...}, ...]
+        py::list py_allowlist;
+        for (const auto &p : allowlist)
+        {
+            py::dict entry;
+            entry["role_uid"] = p.role_uid;
+            entry["pubkey"]   = p.pubkey;
+            py_allowlist.append(entry);
+        }
+        py_on_allowlist_changed_(channel, py_allowlist, reason, api_obj_);
+    }
+    catch (py::error_already_set &e)
+    {
+        on_python_error_("on_allowlist_changed", e);
+    }
+}
+
 // ============================================================================
 // invoke_produce — on_produce(tx, msgs, api) -> bool
 // ============================================================================
@@ -1656,6 +1686,7 @@ void PythonEngine::clear_pyobjects_()
     release_to_none(py_on_band_member_left_);
     release_to_none(py_on_band_message_);
     release_to_none(py_on_band_lost_);
+    release_to_none(py_on_allowlist_changed_);
     release_to_none(py_on_produce_);
     release_to_none(py_on_consume_);
     release_to_none(py_on_process_);

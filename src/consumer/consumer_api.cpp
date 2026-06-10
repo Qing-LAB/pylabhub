@@ -72,6 +72,23 @@ py::dict ConsumerAPI::metrics() const
         .cast<py::dict>();
 }
 
+py::list ConsumerAPI::allowed_peers(const std::string &channel) const
+{
+    // HEP-CORE-0036 §I11 polling surface (engine-parity stub).
+    // Consumer-side cache is never populated today (no notify path on
+    // PULL side); accessor returns empty list.  Defined for API
+    // uniformity across all three role kinds.
+    py::list out;
+    for (const auto &p : base_->allowed_peers(channel))
+    {
+        py::dict entry;
+        entry["role_uid"] = p.role_uid;
+        entry["pubkey"]   = p.pubkey;
+        out.append(entry);
+    }
+    return out;
+}
+
 uint64_t ConsumerAPI::slot_logical_size(std::optional<int> side) const
 {
     return static_cast<uint64_t>(base_->slot_logical_size(
@@ -251,6 +268,12 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_consumer, m) // NOLINT
         .def_property_readonly_static("Tx", [](py::object) { return static_cast<int>(scripting::ChannelSide::Tx); })
         .def_property_readonly_static("Rx", [](py::object) { return static_cast<int>(scripting::ChannelSide::Rx); })
         .def("metrics",        &ConsumerAPI::metrics)
+        .def("allowed_peers",  &ConsumerAPI::allowed_peers,
+             py::arg("channel"),
+             "HEP-CORE-0036 §I11 polling surface (engine-parity stub).  "
+             "Returns an empty list on consumer side — no allowlist "
+             "exists on the consumer's PULL queue.  Present for API "
+             "uniformity with ProducerAPI.allowed_peers.")
         .def("report_metric",  &ConsumerAPI::report_metric, py::arg("key"), py::arg("value"))
         .def("report_metrics", &ConsumerAPI::report_metrics, py::arg("kv"))
         .def("clear_custom_metrics", &ConsumerAPI::clear_custom_metrics)

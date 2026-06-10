@@ -100,6 +100,13 @@ class ProducerAPI
     [[nodiscard]] uint64_t last_cycle_work_us() const noexcept { return base_->last_cycle_work_us(); }
     [[nodiscard]] py::dict metrics() const;
 
+    /// HEP-CORE-0036 §I11 polling surface — snapshot of authorized
+    /// peers for the named channel.  Returns a Python list of
+    /// `{"role_uid": str, "pubkey": str}` dicts.  Empty list when no
+    /// pull has completed for the channel (e.g. before the first
+    /// CHANNEL_AUTH_CHANGED_NOTIFY arrives).
+    [[nodiscard]] py::list allowed_peers(const std::string &channel) const;
+
     // ── Python-accessible — custom metrics ───────────────────────────────────
 
     void report_metric(const std::string &key, double value) { base_->report_metric(key, value); }

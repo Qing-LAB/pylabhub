@@ -151,6 +151,19 @@ namespace pylabhub::scripting
 {
 
 class ScriptEngine;   // forward declaration (defined in script_engine.hpp)
+
+/// HEP-CORE-0036 §I11 + §6.5 — one entry in the script-side
+/// authorized-peer view.  Producer-side: an authorized consumer of
+/// the channel.  Consumer-side: an authorized producer of the
+/// channel.  Mirrors the wire shape of `GET_CHANNEL_AUTH_ACK.allowlist`
+/// (§6.5) and `CONSUMER_REG_ACK.producers[]` (§6.4): a `{role_uid,
+/// pubkey}` pair, where `pubkey` is the Z85-encoded CURVE identity
+/// and `role_uid` is the operator-assigned role identifier.
+struct PYLABHUB_UTILS_EXPORT AllowedPeer
+{
+    std::string role_uid;
+    std::string pubkey;
+};
 class RoleHandler;    // fwd — defined in utils/role_handler.hpp.  Wave-B
                       // M4c: RoleAPIBase owns the handler via
                       // unique_ptr; the handler holds the role's
@@ -213,6 +226,29 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     /// Reset metrics counters on the Tx/Rx queues. No-op if not wired.
     void reset_tx_queue_metrics();
     void reset_rx_queue_metrics();
+
+    /// HEP-CORE-0036 §6.5 normative producer-side handler flow.
+    /// For each `NotificationId::ChannelAuthChanged` entry in `msgs`,
+    /// pull the broker's current channel allowlist via
+    /// `BrokerRequestComm::get_channel_auth` (sync REQ/REP) and apply
+    /// to the tx queue via `set_peer_allowlist`.  Consumed entries are
+    /// removed from `msgs`; script dispatch never sees them (§I11 —
+    /// auth synchronization is framework infrastructure, not a script
+    /// callback).  Called from the worker thread cycle BEFORE
+    /// `dispatch_notifications`.  No-op for roles without a tx queue
+    /// (consumer-side; defensive — broker doesn't send notifies there).
+    void handle_channel_auth_notifies(
+        std::vector<pylabhub::scripting::IncomingMessage> &msgs);
+
+    /// HEP-CORE-0036 §I11 + §6.5 — script-convenience snapshot of the
+    /// producer-side allowlist for a channel.  Each entry is the
+    /// `(role_uid, pubkey)` pair the broker emitted on the most recent
+    /// `GET_CHANNEL_AUTH_ACK` for that channel.  Returns an empty
+    /// vector if the role is not a producer of the channel or if no
+    /// pull has completed yet.  Thread-safe; returns a copy under the
+    /// internal lock so the caller may iterate without holding it.
+    [[nodiscard]] std::vector<AllowedPeer>
+    allowed_peers(const std::string &channel) const;
 
     /// Sync flexzone checksum on the Tx side (SHM only). No-op otherwise.
     void sync_tx_flexzone_checksum();

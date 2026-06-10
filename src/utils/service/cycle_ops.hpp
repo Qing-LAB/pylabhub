@@ -225,14 +225,20 @@ struct NotificationEntry
 
 inline constexpr NotificationEntry
 kNotificationTable[static_cast<std::size_t>(NotificationId::Count)] = {
-    /* Unknown          */ { nullptr,                  nullptr,                          nullptr                       },
-    /* ChannelClosing   */ { "on_channel_closing",     &invoke_user_channel_closing,     &default_channel_closing      },
-    /* ConsumerDied     */ { "on_consumer_died",       &invoke_user_consumer_died,       &default_consumer_died        },
-    /* HubDead          */ { "on_hub_dead",            &invoke_user_hub_dead,            &default_hub_dead             },
-    /* BandMemberJoined */ { "on_band_member_joined",  &invoke_user_band_member_joined,  &default_band_member_joined   },
-    /* BandMemberLeft   */ { "on_band_member_left",    &invoke_user_band_member_left,    &default_band_member_left     },
-    /* BandMessage      */ { "on_band_message",        &invoke_user_band_message,        &default_band_message         },
-    /* BandLost         */ { "on_band_lost",           &invoke_user_band_lost,           &default_band_lost            },
+    /* Unknown            */ { nullptr,                  nullptr,                          nullptr                       },
+    /* ChannelClosing     */ { "on_channel_closing",     &invoke_user_channel_closing,     &default_channel_closing      },
+    /* ConsumerDied       */ { "on_consumer_died",       &invoke_user_consumer_died,       &default_consumer_died        },
+    /* HubDead            */ { "on_hub_dead",            &invoke_user_hub_dead,            &default_hub_dead             },
+    /* BandMemberJoined   */ { "on_band_member_joined",  &invoke_user_band_member_joined,  &default_band_member_joined   },
+    /* BandMemberLeft     */ { "on_band_member_left",    &invoke_user_band_member_left,    &default_band_member_left     },
+    /* BandMessage        */ { "on_band_message",        &invoke_user_band_message,        &default_band_message         },
+    /* BandLost           */ { "on_band_lost",           &invoke_user_band_lost,           &default_band_lost            },
+    // HEP-CORE-0036 §I11 — ChannelAuthChanged is INFRASTRUCTURE-ONLY.
+    // `RoleAPIBase::handle_channel_auth_notifies` removes these from
+    // the msgs list BEFORE dispatch_notifications runs, so this row's
+    // handlers should never fire.  Entry kept here for table indexing
+    // correctness — Count is the array size and must equal enum max.
+    /* ChannelAuthChanged */ { nullptr,                  nullptr,                          nullptr                       },
 };
 
 /// Single-pass dispatcher.  For each known msg: fire the user
@@ -308,6 +314,14 @@ class ProducerCycleOps final
 
     bool invoke_and_commit(std::vector<IncomingMessage> &msgs)
     {
+        // HEP-CORE-0036 §6.5 producer-side handler flow: process
+        // ChannelAuthChanged notifies BEFORE script dispatch.  These
+        // are framework infrastructure (§I11 — auth synchronization is
+        // not a script-visible event); strip them out of msgs so the
+        // script dispatcher never sees them.  No-op when msgs has no
+        // ChannelAuthChanged entries.
+        api_.handle_channel_auth_notifies(msgs);
+
         // Per HEP-CORE-0011: route every broker-emitted notification
         // (CHANNEL_CLOSING_NOTIFY, CONSUMER_DIED_NOTIFY, …) to its
         // dedicated script callback if defined, stripping the notify
@@ -398,6 +412,14 @@ class ConsumerCycleOps final
 
     bool invoke_and_commit(std::vector<IncomingMessage> &msgs)
     {
+        // HEP-CORE-0036 §6.5 producer-side handler flow: process
+        // ChannelAuthChanged notifies BEFORE script dispatch.  These
+        // are framework infrastructure (§I11 — auth synchronization is
+        // not a script-visible event); strip them out of msgs so the
+        // script dispatcher never sees them.  No-op when msgs has no
+        // ChannelAuthChanged entries.
+        api_.handle_channel_auth_notifies(msgs);
+
         // Per HEP-CORE-0011: route every broker-emitted notification
         // (CHANNEL_CLOSING_NOTIFY, CONSUMER_DIED_NOTIFY, …) to its
         // dedicated script callback if defined, stripping the notify
@@ -502,6 +524,14 @@ class ProcessorCycleOps final
 
     bool invoke_and_commit(std::vector<IncomingMessage> &msgs)
     {
+        // HEP-CORE-0036 §6.5 producer-side handler flow: process
+        // ChannelAuthChanged notifies BEFORE script dispatch.  These
+        // are framework infrastructure (§I11 — auth synchronization is
+        // not a script-visible event); strip them out of msgs so the
+        // script dispatcher never sees them.  No-op when msgs has no
+        // ChannelAuthChanged entries.
+        api_.handle_channel_auth_notifies(msgs);
+
         // Per HEP-CORE-0011: route every broker-emitted notification
         // (CHANNEL_CLOSING_NOTIFY, CONSUMER_DIED_NOTIFY, …) to its
         // dedicated script callback if defined, stripping the notify

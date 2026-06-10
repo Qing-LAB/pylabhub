@@ -148,6 +148,10 @@ struct StubEngine : public ScriptEngine
                                 const nlohmann::json &) override {}
     void invoke_on_band_lost(const std::string &,
                              const std::string &) override {}
+    void invoke_on_allowlist_changed(
+        const std::string &,
+        const std::vector<pylabhub::scripting::AllowedPeer> &,
+        const std::string &) override {}
     InvokeResult invoke_produce(InvokeTx, std::vector<IncomingMessage> &) override
     { return InvokeResult::Commit; }
     InvokeResult invoke_consume(InvokeRx, std::vector<IncomingMessage> &) override
