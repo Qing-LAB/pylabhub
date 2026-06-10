@@ -394,6 +394,153 @@ This invariant is load-bearing: HEP-0036 adds NO new wire messages for "consumer
 - HEP-CORE-0035 §4.6 (file ACL discipline) — pubkey file integrity is the prerequisite for this invariant; tampering with `known_roles.json` defeats it regardless of code-level enforcement.
 - HEP-CORE-0040 §5 (KeyStore) — the *process-private* identity store; orthogonal to this invariant.  KeyStore holds at most one entry per role kind (production constraint); KnownRolesStore enforces the symmetric broker-side constraint that no two role entries share a pubkey.
 
+### I11 — Framework provides protocol; scripts provide coordination
+
+**The framework guarantees a robust, confirmed, consistent protocol for membership state.  It does NOT synchronize scripts' decisions on top of that state.**  Roles coordinate themselves through the observable list.
+
+**What the framework guarantees:**
+
+1. **Identity validation at admission** (per I1 + §6.1 / §6.3): every joining role's `(role_uid, pubkey)` is checked against `known_roles[]` before any data-plane artifact is issued.  An unauthorized peer never appears in the producer's allowlist.
+2. **Asynchronous notification of every membership change** (§6.5): when the authorized-set for a channel changes (consumer joins, deregisters, heartbeat-times-out), the broker fires `CHANNEL_AUTH_CHANGED_NOTIFY` to every kLive producer of the channel.
+3. **Producer-side allowlist update is atomic** (§6.5 producer-side flow below): `ZmqQueue::set_peer_allowlist` mutates the ZAP cache under the queue's internal mutex.  The ZAP handler reads under the same mutex.  A handshake either sees the pre-update set or the post-update set in full — never a torn intermediate.
+4. **Observable + event-driven script surface (engine-parity)**.  Two read-only surfaces, identical across the Lua / Python / Native engines:
+   - **Polling**: `api.allowed_peers(channel)` (producer-side) and `api.producers(channel)` (consumer-side) return a list of `{role_uid, pubkey}` entries — the current authoritative snapshot.  Cheap.  Suitable for per-cycle "do we have enough peers" checks.
+   - **Callback**: scripts may optionally define `on_allowlist_changed(channel, allowlist, reason)` (producer-side script) to react immediately when the framework applies a new list.  The framework invokes the callback **after** `set_peer_allowlist` has succeeded, so the script observation is consistent with what the ZAP cache will admit on the next handshake.  `reason` is the wire string from the triggering NOTIFY (e.g. `"consumer_joined"`, `"consumer_left"`, `"heartbeat_timeout"`).
+   Both surfaces return the SAME data shape and have the SAME safety property: the script cannot mutate the framework's state.  Engines bind the same `(channel, allowlist, reason)` signature, with allowlist as a list of records the host language exposes naturally (Lua table-of-tables, Python list-of-dicts, Native struct array).
+
+**What scripts are responsible for:**
+
+- Deciding whether enough peers are present to begin emitting / consuming.  Common patterns: "wait for N consumers before emitting first frame", "do not consume until producer is on the allowlist", "switch to backup channel if allowlist drops below threshold".  All of these are implementable from either surface (polling for per-cycle gating, callback for event-driven side effects).
+- Coordinating cross-role agreement when more is needed than membership observation.  Use `band` (broadcast) or `inbox` (point-to-point) per HEP-CORE-0030 + HEP-CORE-0027.  The framework provides the channels; the script provides the protocol-on-top-of-the-channel.
+
+**What the framework explicitly does NOT do:**
+
+- Block data emission until a particular peer count is reached.  A producer's data loop runs whenever it has at least one Authorized presence (§8.2 outer guard); whether the consumer set is "enough" is a script decision.
+- Synchronize join/start across roles.  If a script wants barrier semantics ("everyone starts at frame 0 together"), it implements that on band or inbox.
+- Smooth over protocol-level eventual consistency between broker decision and producer cache update (the window discussed in §6.5 producer-side flow below).  Within that window, the ZAP cache is the previous-correct state — the producer continues serving handshakes against the cache it has.  A new consumer's CURVE retry covers the convergence; if the script wants stricter behavior, it gates emission on the observable allowlist.
+- Expose any mutator on the allowlist to scripts.  There is no `api.set_allowed_peers(...)` and there never will be (audit finding S3 — a guardrail, not a TODO).  All mutation goes through the framework's broker-pull → atomic-apply flow.
+
+**Rationale.**  Coordination requirements vary widely across applications (lab-instrument streaming, federated processors, multi-tenant scientific workflows).  Hardcoding a coordination policy into the framework would either be too restrictive for most uses or too generic to be useful.  The framework's job is to make the membership truth available, atomically and observably; the script's job is to apply the policy.
+
+This invariant is what makes the system composable: any coordination logic a user can describe in terms of "who's a member right now" can be written in script, on top of the framework's membership contract, without the framework needing to grow new APIs.
+
+**Example A — Producer waits for at least one consumer before emitting (polling).**
+
+```lua
+-- Producer script: skip cycles when no consumer is on the allowlist.
+function on_cycle(api)
+    local peers = api:allowed_peers(api:channel())
+    if #peers == 0 then return end          -- no audience yet; skip
+    api:emit(compute_frame())
+end
+```
+
+The framework keeps the allowlist converged with the broker; the
+script reads it and decides whether to emit.  Once a consumer's
+CURVE handshake completes (after the producer pulls the new
+allowlist), `#peers > 0`, and the next cycle emits.
+
+**Example B — Producer waits for a specific expected consumer set (polling).**
+
+```lua
+-- Producer script: barrier on a specific list of consumers.
+local EXPECTED = { "cons.viewer.uid1", "cons.viewer.uid2" }
+
+function on_cycle(api)
+    local peers   = api:allowed_peers(api:channel())
+    local present = {}
+    for _, p in ipairs(peers) do present[p.role_uid] = true end
+
+    for _, uid in ipairs(EXPECTED) do
+        if not present[uid] then return end     -- not yet ready
+    end
+    api:emit(compute_frame())
+end
+```
+
+The framework never knew about `EXPECTED` — it's an application-level
+policy.  The script polls the framework-maintained allowlist each
+cycle.
+
+**Example C — Event-driven reaction to membership change (callback).**
+
+```lua
+-- Producer script: log every membership change immediately, without
+-- waiting for the next cycle.  Mark "ready_to_emit" once the expected
+-- consumer set is fully present.
+local EXPECTED = { "cons.viewer.uid1", "cons.viewer.uid2" }
+local ready_to_emit = false
+
+function on_allowlist_changed(api, channel, allowlist, reason)
+    api:log(string.format("channel '%s' membership changed (reason=%s): "
+                          .. "%d peers now authorized",
+                          channel, reason, #allowlist))
+    local present = {}
+    for _, p in ipairs(allowlist) do present[p.role_uid] = true end
+    ready_to_emit = true
+    for _, uid in ipairs(EXPECTED) do
+        if not present[uid] then ready_to_emit = false; break end
+    end
+end
+
+function on_cycle(api)
+    if not ready_to_emit then return end
+    api:emit(compute_frame())
+end
+```
+
+`on_allowlist_changed` fires AFTER the framework has applied the new
+list — the snapshot the script sees IS what the producer's ZAP cache
+will admit on the next handshake.  Equivalent to polling but reacts
+without a one-cycle delay.
+
+**Example D — Cross-role agreement via band (more complex coordination).**
+
+```lua
+-- Producer script: emit only after every band member has signalled "ready".
+local ready = {}
+
+function on_init(api)
+    api:band_join("warmup_coordination")
+end
+
+function on_band_message(api, msg)
+    if msg.text == "ready" then ready[msg.sender_uid] = true end
+end
+
+function on_cycle(api)
+    local peers = api:allowed_peers(api:channel())
+    for _, p in ipairs(peers) do
+        if not ready[p.role_uid] then return end
+    end
+    api:emit(compute_frame())
+end
+```
+
+Membership comes from the framework (`allowed_peers`); readiness
+agreement comes from the script's band-level protocol.  HEP-0036
+provides the channels; the script defines the protocol carried over
+them.
+
+**Example E — Consumer logs the producer set it sees.**
+
+```lua
+function on_init(api)
+    for _, p in ipairs(api:producers(api:channel())) do
+        api:log("producer on channel: " .. p.role_uid
+                .. " @ " .. p.endpoint)
+    end
+end
+```
+
+`producers` is the consumer-side view of the channel's authorized
+producers, populated from `CONSUMER_REG_ACK.producers[]` (§6.4).
+The consumer-side analog of the producer's allowlist.
+
+These examples are illustrative of the I11 division of labour, not
+exhaustive — applications can compose any policy they can express
+in terms of "who's a member" plus the existing band / inbox channels.
+
 ---
 
 ## 4. Architecture
@@ -1084,6 +1231,28 @@ socket.  Only one new field is added:
 The legacy `shm_secret` field (producer-supplied) is deprecated
 and ignored when `wants_shm_secret=true`.
 
+**Identity verification on existing fields.**  REG_REQ already carries
+`role_uid` (HEP-CORE-0023 §2.1.1) and `zmq_pubkey` (HEP-CORE-0021
+§5.2) in the wire body — both are pre-existing producer-declared
+claims, not new HEP-0036 additions.  Per HEP-0035 §4.8 the broker
+loads `known_roles.json` mapping `role_uid ↔ pubkey_z85` (1:1 per
+§I10).  At REG_REQ admission the broker MUST verify the body claims
+against this table:
+
+1. `body.role_uid` is non-empty and present in `cfg.known_roles[]`
+   (otherwise reject with `UNKNOWN_ROLE`).
+2. `cfg.known_roles[body.role_uid].pubkey_z85 == body.zmq_pubkey`
+   (otherwise reject with `PUBKEY_MISMATCH`).
+
+Both checks run unconditionally — no `RoleIdentityPolicy::Open`
+escape hatch and no WITH_TEST bypass at the verification layer.
+Layer-1 ZAP (HEP-0035 §4.1) ensures the connecting socket's CURVE
+key is in the operator-authorized set; this Layer-2 verification
+binds the REG_REQ to a specific `(role_uid, pubkey)` pair within
+that set — a compromised role authenticated via ZAP cannot
+register as a different role uid even if both uids' pubkeys are in
+the allowlist.
+
 ### 6.2 `REG_ACK` (broker → producer) — additions
 
 | Field | Type | Description |
@@ -1097,11 +1266,37 @@ at process startup.
 
 ### 6.3 `CONSUMER_REG_REQ` (consumer → broker) — additions
 
-**No new fields.**  The consumer's identity pubkey is recovered by
-the broker via `zmq_msg_gets("User-Id")` from the BRC socket
-(CURVE-proved identity from Layer-1 ZAP authentication, per
-HEP-0035 §4.1).  Self-claimed pubkeys in the message body are
-NOT accepted — same model as SSH's `authorized_keys`.
+**No new fields.**  CONSUMER_REG_REQ already carries `role_uid`
+(HEP-CORE-0023 §2.1.1) and `zmq_pubkey` (HEP-CORE-0021 §5.2) in
+the wire body — both are pre-existing consumer-declared claims.
+
+**Identity verification.**  Symmetric with §6.1 producer-side: the
+broker MUST verify the body claims against `cfg.known_roles[]`
+before admission:
+
+1. `body.role_uid` is non-empty and present in `cfg.known_roles[]`
+   (otherwise reject with `UNKNOWN_ROLE`).
+2. `cfg.known_roles[body.role_uid].pubkey_z85 == body.zmq_pubkey`
+   (otherwise reject with `PUBKEY_MISMATCH`).
+
+The verified pubkey is then added to the channel-scope
+`authorized_consumer_pubkeys` allowlist via
+`_on_consumer_authorized` (§4.1).  The same value flows into the
+`producers[]` array of CONSUMER_REG_ACK (§6.4) for the consumer's
+own retrieval of its peer producers' pubkeys.
+
+**Why body fields and not a User-Id recovery.**  Earlier drafts
+specified `zmq_msg_gets("User-Id")` as the canonical identity
+source.  That works for the pubkey but not for `role_uid` — the
+broker would need a reverse-index over `known_roles` keyed on
+pubkey to derive the uid, and the wire would still need
+`role_uid` for the operational fields (channel record, logs,
+metrics).  The verification model (body carries the claim; broker
+checks `known_roles`) accepts the same security property without
+adding a second identity-recovery path.  Sequence diagrams in §5
+and handler-step tables in §8 that still read "via
+`zmq_msg_gets("User-Id")`" are stale wording from the prior draft
+and are updated under AUTH-5 (task #104).
 
 ### 6.4 `CONSUMER_REG_ACK` (broker → consumer) — additions
 
@@ -1114,7 +1309,7 @@ wire shape.
 
 | Field | Type | Description |
 |---|---|---|
-| `producers` | array of objects | (transport=zmq only) One entry per registered producer on the channel.  Length 1 for single-producer; length N for fan-in.  Each element: `{role_uid, pubkey, endpoint}` where `pubkey` is the producer's identity pubkey (Z85, 40 chars; read from `ChannelEntry::producers[i].zmq_pubkey` which was populated at the producer's REG time via `zmq_msg_gets("User-Id")` per I6 / no-self-claims) and `endpoint` is the producer's resolved data-plane TCP endpoint (from `ChannelEntry::producers[i].zmq_node_endpoint` per HEP-0021 §16.3).  The `role_uid` is included so the consumer can correlate logs / per-producer metrics. |
+| `producers` | array of objects | (transport=zmq only) One entry per registered producer on the channel.  Length 1 for single-producer; length N for fan-in.  Each element: `{role_uid, pubkey, endpoint}` where `pubkey` is the producer's identity pubkey (Z85, 40 chars; read from `ChannelEntry::producers[i].zmq_pubkey` which was populated at the producer's REG time from REG_REQ body `zmq_pubkey` after verification against `known_roles[role_uid].pubkey_z85` per §6.1) and `endpoint` is the producer's resolved data-plane TCP endpoint (from `ChannelEntry::producers[i].zmq_node_endpoint` per HEP-0021 §16.3).  The `role_uid` is included so the consumer can correlate logs / per-producer metrics. |
 | `shm_secret` | uint64 | (transport=shm only, single-producer by SHM physical constraint) The per-channel SHM guard secret. |
 
 **The legacy single-pubkey `data_server_pubkey` field is NOT
@@ -1186,6 +1381,15 @@ patterns:
   X"; broker replies with the full current set.  Producer applies
   via `ZmqQueue::set_peer_allowlist`.
 
+  **`GET_CHANNEL_AUTH_ACK.allowlist` shape (normative).**  Array of
+  objects `{role_uid, pubkey}` — symmetric with §6.4
+  `CONSUMER_REG_ACK.producers[]`.  The `pubkey` is the Z85-encoded
+  CURVE identity pubkey that the ZAP cache enforces; the `role_uid`
+  is included for script-side convenience (per I11 polling +
+  callback surfaces speak in role_uid terms — users think in role
+  names, not Z85 strings).  Both fields are mandatory on every
+  entry.  Length 0 when no consumer is currently authorized.
+
 **Why this is simpler and equivalent on every important axis.**
 
 1. **No new protocol pattern.**  Fire-and-forget notify + sync
@@ -1245,6 +1449,104 @@ applies a non-empty allowlist replacement, including the new set
 size and the `reason` from the triggering notify (or `"manual"` if
 the pull was operator-driven), so operators can grep for
 unexpected drift.
+
+#### Producer-side handler flow (normative)
+
+This is the protocol the framework MUST implement to keep the producer's
+ZAP cache converged with the broker's `authorized_consumer_pubkeys`
+state.  It uses the existing role-host BRC notification path —
+nothing new is invented at the threading layer.
+
+**Steps.**
+
+1. **BRC poll thread receives `CHANNEL_AUTH_CHANGED_NOTIFY`** from
+   the broker.  Parses the wire string into the typed
+   `NotificationId::ChannelAuthChanged` and packages it as an
+   `IncomingMessage{channel: body.channel_name}`.  Enqueues onto the
+   role's `IncomingMessage` queue (HEP-CORE-0023 §7 messaging path)
+   and returns immediately.  The BRC poll thread MUST NOT call any
+   sync BRC request from inside this callback — re-entrance would
+   deadlock the only thread that can read the reply.
+
+2. **Worker thread drains the queue** at its natural cycle boundary
+   (the same point where `CHANNEL_CLOSING_NOTIFY`, `BAND_*_NOTIFY`,
+   etc., are drained).  The dispatcher recognises
+   `ChannelAuthChanged` as an INFRASTRUCTURE notification — no
+   user-visible script callback exists for it.  The dispatcher fires
+   the framework's native handler with the channel name.
+
+3. **Native handler fires the pull synchronously.**  On the worker
+   thread (NOT the BRC poll thread), the handler calls
+   `BrokerRequestComm::get_channel_auth(channel_name)`.  This is a
+   normal sync REQ/REP — the worker thread blocks until the BRC
+   poll thread reads the matching `GET_CHANNEL_AUTH_ACK` and signals
+   completion.
+
+4. **Handler applies the result atomically.**  On `status="success"`,
+   the handler calls `tx_queue.set_peer_allowlist(reply.allowlist)`.
+   `ZmqQueue::set_peer_allowlist` mutates the ZAP cache under the
+   queue's internal mutex; the ZAP handler reads under the same
+   mutex.  A handshake either observes the pre-update set or the
+   post-update set in full — never a torn intermediate.  This is
+   the framework's atomicity guarantee per I11.
+
+5. **Handler invokes `on_allowlist_changed` script callback if defined**
+   (per I11, optional event-driven surface).  AFTER `set_peer_allowlist`
+   returns success, the framework calls
+   `engine.invoke_on_allowlist_changed(channel, allowlist, reason)`
+   if the loaded script defines the callback.  The snapshot the script
+   observes is the same one now installed in the ZAP cache.  The
+   callback receives the allowlist as a list of `{role_uid, pubkey}`
+   objects (the per-engine binding maps this to the host language's
+   natural shape — Lua table-of-tables, Python list-of-dicts, etc.).
+   Exceptions raised by the callback are logged but do NOT undo the
+   allowlist update — the cache state remains correct regardless of
+   what the script does.
+
+6. **Failure path.**  On pull error (timeout, broker-side error, BRC
+   disconnect mid-pull), the handler logs WARN and returns.  No
+   special escalation — the existing recovery paths cover it:
+   - A subsequent `CHANNEL_AUTH_CHANGED_NOTIFY` will retry.
+   - On sustained BRC failure, hub-dead detection (HEP-CORE-0023
+     §2.6) transitions the presence out of `Authorized`, the data
+     loop exits (§I3), and re-registration via `REG_REQ` →
+     `REG_ACK.initial_allowlist` resynchronises the allowlist from
+     scratch.
+
+**What this flow does NOT do, and why.**
+
+- It does NOT prioritise the auth notify over other queue items.
+  FIFO is correct: every queue item is the framework's commitment to
+  honor the broker's instruction, and the queue is bounded; the
+  worker drains in arrival order.
+- It does NOT block emission while a pull is pending.  The producer's
+  PUSH socket continues to serve handshakes using its current ZAP
+  cache; new consumers retry until the cache converges, existing
+  consumers see no interruption.  Per I5, this is the protocol's
+  eventual-consistency design — not a framework gap.
+- It does NOT escalate pull failure to critical-error.  Stale-but-
+  not-empty ZAP cache is the SAFE direction (still rejects
+  unauthorized peers; only delays NEW joins).  Critical-error would
+  be a denial-of-service multiplier on transient broker hiccups.
+
+**Script coordination on top of this flow** (per I11).  Two
+read-only surfaces are available to scripts (engine-parity across
+Lua / Python / Native):
+
+- **Polling**: `api.allowed_peers(channel)` returns the current
+  snapshot (list of `{role_uid, pubkey}`).  Cheap; suitable for
+  per-cycle gating.
+- **Callback**: `on_allowlist_changed(channel, allowlist, reason)`
+  fires immediately after step 5 above.  Suitable for event-driven
+  reaction (e.g. updating a UI / logging / signalling other roles
+  via band).
+
+Scripts that want to gate emission on "all expected consumers
+present" implement that check themselves on either surface — the
+framework guarantees membership truth, not coordination policy.
+Neither surface lets the script mutate the allowlist; mutation
+flows ONLY through the broker-pull → atomic-apply path described
+above.
 
 #### Push semantics (fire-and-forget notify)
 
@@ -1391,7 +1693,9 @@ Added to HEP-CORE-0007 §12.4a Error Code Taxonomy:
 
 | Code | When |
 |---|---|
-| `UNAUTHORIZED_CONSUMER_PUBKEY` | CONSUMER_REG_REQ from a consumer whose CURVE-proved User-Id pubkey is not in `cfg.known_roles[]` (HEP-0035 §4.1 Layer 2).  Should be unreachable when Layer-1 ZAP is enforcing, but kept as defence-in-depth. |
+| `UNKNOWN_ROLE` | REG_REQ / CONSUMER_REG_REQ where `body.role_uid` is empty or not present in `cfg.known_roles[]` (§6.1 / §6.3 Layer-2 verification step 1).  Operator-side fix: add the role to `<hub_dir>/vault/known_roles.json` via `plh_hub --add-known-role`. |
+| `PUBKEY_MISMATCH` | REG_REQ / CONSUMER_REG_REQ where `body.role_uid` exists in `cfg.known_roles[]` but `body.zmq_pubkey` does not equal the configured `pubkey_z85` for that uid (§6.1 / §6.3 Layer-2 verification step 2).  Indicates either credential drift (role's vault rotated; operator's known_roles entry stale) or a registration attempt under a stolen role uid using the wrong pubkey. |
+| `UNAUTHORIZED_CONSUMER_PUBKEY` | DEPRECATED — pre-verification-model wording.  Use `UNKNOWN_ROLE` or `PUBKEY_MISMATCH` per §6.3.  Retained in this table only to mark the code reserved against accidental reuse. |
 | `CHANNEL_NOT_READY` | CONSUMER_REG_REQ for a channel that isn't admissible right now.  `reason` field distinguishes the cause: `awaiting_endpoint` (HEP-0021 §16.4 — first producer's port still 0), `awaiting_first_heartbeat` (no producer has reached `kLive`), or `heartbeat_stalled` (producer presence in `kStalled` per HEP-CORE-0023 §2.6). |
 | `CHANNEL_NOT_FOUND` | `GET_CHANNEL_AUTH_REQ` for a channel that does not exist in `ChannelAccessIndex`. |
 | `PRODUCER_NOT_AUTHORIZED` | `GET_CHANNEL_AUTH_REQ` from a caller that is not a registered producer of the named channel.  Defence-in-depth: the broker should never return another channel's allowlist to a non-producer. |

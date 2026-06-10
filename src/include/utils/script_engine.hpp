@@ -689,6 +689,37 @@ class ScriptEngine
         const std::string &reason) = 0;
 
     /**
+     * @brief Invoke on_allowlist_changed(channel, allowlist, reason, api)
+     *        if the script defines it (HEP-CORE-0036 §I11 + §6.5).
+     *
+     * The framework calls this AFTER `ZmqQueue::set_peer_allowlist`
+     * has returned success — the snapshot the script observes is the
+     * same one now installed in the ZAP cache.  Engine-parity surface:
+     * the SAME callback name, signature, and shape across Lua, Python,
+     * and Native engines.  Scripts cannot mutate the allowlist via
+     * this callback or any other API; the framework remains the only
+     * mutator (HEP §I11 audit S3 guardrail).
+     *
+     * Same threading contract as `invoke_on_channel_closing`:
+     * worker-thread only; implementations log + suppress script
+     * exceptions; data loop continues.  Exceptions raised by the
+     * script callback do NOT roll back the cache update — the
+     * enforcement state remains correct regardless.
+     *
+     * @param channel    Channel whose allowlist changed.
+     * @param allowlist  Current authoritative list of authorized
+     *                   peers as `{role_uid, pubkey}` records (per
+     *                   §6.5 GET_CHANNEL_AUTH_ACK.allowlist shape).
+     * @param reason     Wire-string reason from the triggering
+     *                   `CHANNEL_AUTH_CHANGED_NOTIFY`
+     *                   (e.g. "consumer_joined", "consumer_left").
+     */
+    virtual void invoke_on_allowlist_changed(
+        const std::string &channel,
+        const std::vector<AllowedPeer> &allowlist,
+        const std::string &reason) = 0;
+
+    /**
      * @brief Invoke on_produce(tx, msgs, api).
      * @param tx   Output direction (writable slot + flexzone).
      * @param msgs Incoming messages (drained from RoleHostCore).

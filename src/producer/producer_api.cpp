@@ -79,6 +79,24 @@ py::dict ProducerAPI::metrics() const
         .cast<py::dict>();
 }
 
+py::list ProducerAPI::allowed_peers(const std::string &channel) const
+{
+    // HEP-CORE-0036 §I11 polling surface (engine-parity with Lua's
+    // `api.allowed_peers`).  Returns a Python list of
+    // `{"role_uid": str, "pubkey": str}` dicts — the same shape as the
+    // `on_allowlist_changed` callback's allowlist argument.  Read-only
+    // snapshot per §I11 audit S3 guardrail.
+    py::list out;
+    for (const auto &p : base_->allowed_peers(channel))
+    {
+        py::dict entry;
+        entry["role_uid"] = p.role_uid;
+        entry["pubkey"]   = p.pubkey;
+        out.append(entry);
+    }
+    return out;
+}
+
 uint64_t ProducerAPI::slot_logical_size(std::optional<int> side) const
 {
     return static_cast<uint64_t>(base_->slot_logical_size(
@@ -269,6 +287,13 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_producer, m) // NOLINT
              "Microseconds of active work (acquire+script+commit) in the last iteration.")
         .def("metrics",            &producer::ProducerAPI::metrics,
              "Combined metrics dict: DataBlock ContextMetrics + loop_overruns + script_errors.")
+        .def("allowed_peers",      &producer::ProducerAPI::allowed_peers,
+             py::arg("channel"),
+             "HEP-CORE-0036 §I11 polling surface — snapshot of "
+             "authorized peers for the named channel.  Returns a list of "
+             "{'role_uid': str, 'pubkey': str} dicts.  Empty when no "
+             "GET_CHANNEL_AUTH_REQ has completed.  Engine-parity with "
+             "Lua's api.allowed_peers; read-only.")
         .def("slot_logical_size", &producer::ProducerAPI::slot_logical_size,
              py::arg("side") = py::none(),
              "Logical C struct size for the slot schema (bytes).")

@@ -73,6 +73,21 @@ py::dict ProcessorAPI::metrics() const
         .cast<py::dict>();
 }
 
+py::list ProcessorAPI::allowed_peers(const std::string &channel) const
+{
+    // HEP-CORE-0036 §I11 polling surface — processor's TX side has the
+    // same producer-side allowlist semantics as ProducerAPI.
+    py::list out;
+    for (const auto &p : base_->allowed_peers(channel))
+    {
+        py::dict entry;
+        entry["role_uid"] = p.role_uid;
+        entry["pubkey"]   = p.pubkey;
+        out.append(entry);
+    }
+    return out;
+}
+
 uint64_t ProcessorAPI::slot_logical_size(std::optional<int> side) const
 {
     return static_cast<uint64_t>(base_->slot_logical_size(
@@ -242,6 +257,12 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_processor, m) // NOLINT
         .def("loop_overrun_count", &ProcessorAPI::loop_overrun_count)
         .def("last_cycle_work_us", &ProcessorAPI::last_cycle_work_us)
         .def("metrics",            &ProcessorAPI::metrics)
+        .def("allowed_peers",      &ProcessorAPI::allowed_peers,
+             py::arg("channel"),
+             "HEP-CORE-0036 §I11 polling surface — snapshot of "
+             "authorized peers for the channel.  Processor's TX side "
+             "has the same producer-side allowlist semantics as "
+             "ProducerAPI.allowed_peers.")
         .def("slot_logical_size", &ProcessorAPI::slot_logical_size,
              py::arg("side") = py::none())
         .def("flexzone_logical_size", &ProcessorAPI::flexzone_logical_size,

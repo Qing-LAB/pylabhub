@@ -76,6 +76,11 @@ class ProcessorAPI
     [[nodiscard]] uint64_t last_cycle_work_us() const noexcept { return base_->last_cycle_work_us(); }
     [[nodiscard]] py::dict metrics() const;
 
+    /// HEP-CORE-0036 §I11 polling surface — processor has a TX side,
+    /// so the producer-side allowlist cache applies here too.  Returns
+    /// a list of `{"role_uid": str, "pubkey": str}` dicts.
+    [[nodiscard]] py::list allowed_peers(const std::string &channel) const;
+
     // Queue state
     [[nodiscard]] uint64_t last_seq()       const noexcept { return base_->last_seq(); }
     [[nodiscard]] uint64_t in_capacity()    const noexcept { return static_cast<uint64_t>(base_->in_capacity()); }

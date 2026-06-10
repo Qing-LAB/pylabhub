@@ -126,6 +126,10 @@ class LuaEngine : public ScriptEngine
                                 const nlohmann::json &body) override;
     void invoke_on_band_lost(const std::string &band,
                              const std::string &reason) override;
+    void invoke_on_allowlist_changed(
+        const std::string &channel,
+        const std::vector<AllowedPeer> &allowlist,
+        const std::string &reason) override;
 
     InvokeResult invoke_produce(
         InvokeTx tx,
@@ -180,6 +184,7 @@ class LuaEngine : public ScriptEngine
     int ref_on_band_member_left_{LUA_NOREF};
     int ref_on_band_message_{LUA_NOREF};
     int ref_on_band_lost_{LUA_NOREF};
+    int ref_on_allowlist_changed_{LUA_NOREF};
     int ref_on_produce_{LUA_NOREF};
     int ref_on_consume_{LUA_NOREF};
     int ref_on_process_{LUA_NOREF};
@@ -317,6 +322,7 @@ class LuaEngine : public ScriptEngine
     static int lua_api_out_drop_count(lua_State *L);
     static int lua_api_metrics(lua_State *L);
     static int lua_api_queue_mechanism(lua_State *L);
+    static int lua_api_allowed_peers(lua_State *L);
     static int lua_api_in_channel(lua_State *L);
     static int lua_api_out_channel(lua_State *L);
 

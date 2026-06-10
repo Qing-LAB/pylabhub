@@ -88,6 +88,14 @@ class PYLABHUB_UTILS_EXPORT NativeEngine : public ScriptEngine
                                 const nlohmann::json &body) override;
     void invoke_on_band_lost(const std::string &band,
                              const std::string &reason) override;
+    /// HEP-CORE-0036 §I11 — Native plugins currently do not implement
+    /// the allowlist-changed callback (Native is MVP per #84/#85);
+    /// scripts using polling via `RoleAPIBase::allowed_peers` still
+    /// work.  Override is a stub that satisfies the pure virtual.
+    void invoke_on_allowlist_changed(
+        const std::string &channel,
+        const std::vector<AllowedPeer> &allowlist,
+        const std::string &reason) override;
 
     InvokeResult invoke_produce(
         InvokeTx tx,

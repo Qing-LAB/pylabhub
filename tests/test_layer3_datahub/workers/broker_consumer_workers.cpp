@@ -362,6 +362,277 @@ int disc_shows_consumer_count()
         });
 }
 
+int consumer_reg_unknown_role()
+{
+    // HEP-CORE-0036 §6.3 Layer-2 verification step 1: when CONSUMER_REG_REQ
+    // body claims a role_uid that is not in `cfg.known_roles[]`, broker
+    // rejects with UNKNOWN_ROLE.  Layer-1 ZAP is satisfied because the
+    // BRC authenticates with a legitimately-known role's key; the
+    // verification gate then catches the body-level uid lie.
+    //
+    // Pre-registers a producer so the channel exists (CHANNEL_NOT_FOUND
+    // would otherwise fire first).  Uses a syntactically-valid but
+    // unregistered cons-uid in the body to surface UNKNOWN_ROLE
+    // specifically.
+    const std::string channel  = pid_chan("consumer.reg_unknown_role");
+    const std::string prod_uid = "prod." + channel;
+    const std::string real_uid = "cons.real." + channel;
+    return run_with_host(
+        "broker_consumer::consumer_reg_unknown_role",
+        {prod_uid, real_uid},
+        [channel, prod_uid, real_uid](
+            pylabhub::tests::HubHostBrokerHandle &broker,
+            pylabhub::tests::CurveSetup &curve) {
+            pylabhub::tests::BrcHandle prod;
+            prod.start(broker.endpoint, broker.pubkey, prod_uid,
+                       pylabhub::tests::role_keystore_name(prod_uid));
+            ASSERT_TRUE(prod.brc.register_channel(
+                            make_reg_opts(channel, prod_uid,
+                                           curve.role(prod_uid).public_z85,
+                                           60000),
+                            3000).has_value());
+            prod.brc.send_heartbeat(channel, prod_uid, "producer",
+                                     json::object());
+
+            pylabhub::tests::BrcHandle bh;
+            bh.start(broker.endpoint, broker.pubkey, real_uid,
+                     pylabhub::tests::role_keystore_name(real_uid));
+
+            // Body declares a syntactically-valid cons-uid that is NOT
+            // in `cfg.known_roles[]`.  The connecting socket's CURVE
+            // key IS in known_roles (real_uid's), so Layer-1 ZAP
+            // passes; only Layer-2 catches the body lie.
+            const std::string fake_uid =
+                "cons.fabricated.unregistered_" + channel;
+            auto resp = bh.brc.register_consumer(
+                make_cons_opts(channel, fake_uid,
+                                curve.role(real_uid).public_z85, 60001),
+                3000);
+            ASSERT_TRUE(resp.has_value());
+            EXPECT_EQ(resp->value("status", std::string{}), "error");
+            EXPECT_EQ(resp->value("error_code", std::string{}), "UNKNOWN_ROLE");
+        },
+        {"CONSUMER_REG_REQ rejected"});
+}
+
+int consumer_reg_pubkey_mismatch()
+{
+    // HEP-CORE-0036 §6.3 Layer-2 verification step 2: when
+    // CONSUMER_REG_REQ body's role_uid IS in known_roles but
+    // `body.zmq_pubkey` does not match `known_roles[role_uid].pubkey_z85`,
+    // broker rejects with PUBKEY_MISMATCH.  This is the spoofing-defence
+    // path — a compromised role authenticated via ZAP cannot register
+    // as a different role uid using that other role's pubkey claim.
+    //
+    // Pre-registers a producer so the channel exists (CHANNEL_NOT_FOUND
+    // would otherwise fire first).
+    const std::string channel    = pid_chan("consumer.reg_pubkey_mismatch");
+    const std::string prod_uid   = "prod." + channel;
+    const std::string real_uid_a = "cons.real_a." + channel;
+    const std::string real_uid_b = "cons.real_b." + channel;
+    return run_with_host(
+        "broker_consumer::consumer_reg_pubkey_mismatch",
+        {prod_uid, real_uid_a, real_uid_b},
+        [channel, prod_uid, real_uid_a, real_uid_b](
+            pylabhub::tests::HubHostBrokerHandle &broker,
+            pylabhub::tests::CurveSetup &curve) {
+            pylabhub::tests::BrcHandle prod;
+            prod.start(broker.endpoint, broker.pubkey, prod_uid,
+                       pylabhub::tests::role_keystore_name(prod_uid));
+            ASSERT_TRUE(prod.brc.register_channel(
+                            make_reg_opts(channel, prod_uid,
+                                           curve.role(prod_uid).public_z85,
+                                           60000),
+                            3000).has_value());
+            prod.brc.send_heartbeat(channel, prod_uid, "producer",
+                                     json::object());
+
+            pylabhub::tests::BrcHandle bh;
+            bh.start(broker.endpoint, broker.pubkey, real_uid_a,
+                     pylabhub::tests::role_keystore_name(real_uid_a));
+
+            // Body claims role_uid=real_uid_a (in known_roles) but
+            // attaches real_uid_b's pubkey — the verification step
+            // catches the (uid, pubkey) split.  Layer-1 ZAP still
+            // passes because the CONNECTING socket uses real_uid_a's
+            // real key.
+            auto resp = bh.brc.register_consumer(
+                make_cons_opts(channel, real_uid_a,
+                                curve.role(real_uid_b).public_z85, 60002),
+                3000);
+            ASSERT_TRUE(resp.has_value());
+            EXPECT_EQ(resp->value("status", std::string{}), "error");
+            EXPECT_EQ(resp->value("error_code", std::string{}),
+                      "PUBKEY_MISMATCH");
+        },
+        {"CONSUMER_REG_REQ rejected"});
+}
+
+int consumer_reg_ack_emits_producers_zmq()
+{
+    // HEP-CORE-0036 §6.4 — CONSUMER_REG_ACK MUST carry a `producers[]`
+    // array (transport=zmq only) so the consumer's role-host can
+    // populate `RxQueueOptions::producer_peers` for the data-plane PULL
+    // socket's CURVE handshake.  Each entry: {role_uid, pubkey,
+    // endpoint}.  Single-producer pins the length-1 case.
+    const std::string channel  = pid_chan("consumer.reg_ack_producers_zmq");
+    const std::string prod_uid = "prod." + channel;
+    const std::string cons_uid = "cons." + channel;
+    const std::string prod_endpoint = "tcp://127.0.0.1:55557";
+    return run_with_host(
+        "broker_consumer::consumer_reg_ack_emits_producers_zmq",
+        {prod_uid, cons_uid},
+        [channel, prod_uid, cons_uid, prod_endpoint](
+            pylabhub::tests::HubHostBrokerHandle &broker,
+            pylabhub::tests::CurveSetup &curve) {
+            pylabhub::tests::BrcHandle prod;
+            prod.start(broker.endpoint, broker.pubkey, prod_uid,
+                       pylabhub::tests::role_keystore_name(prod_uid));
+
+            auto reg_opts = make_reg_opts(
+                channel, prod_uid, curve.role(prod_uid).public_z85, 55001);
+            // Convert to ZMQ transport so the broker emits producers[]
+            // per §6.4 (the array is omitted for SHM channels —
+            // SHM consumers attach via `shm_secret` instead).
+            reg_opts["data_transport"]    = "zmq";
+            reg_opts["zmq_node_endpoint"] = prod_endpoint;
+            auto reg = prod.brc.register_channel(reg_opts, 3000);
+            ASSERT_TRUE(reg.has_value());
+            ASSERT_EQ(reg->value("status", std::string{}), "success");
+
+            prod.brc.send_heartbeat(channel, prod_uid, "producer",
+                                     json::object());
+
+            pylabhub::tests::BrcHandle cons;
+            cons.start(broker.endpoint, broker.pubkey, cons_uid,
+                       pylabhub::tests::role_keystore_name(cons_uid));
+            auto creg = cons.brc.register_consumer(
+                make_cons_opts(channel, cons_uid,
+                                curve.role(cons_uid).public_z85, 55100),
+                3000);
+            ASSERT_TRUE(creg.has_value());
+            EXPECT_EQ(creg->value("status", std::string{}), "success");
+
+            // D5 pin: producers[] present, length 1, single entry's
+            // (role_uid, pubkey, endpoint) match the producer's REG.
+            ASSERT_TRUE(creg->contains("producers"));
+            const auto &producers = creg->at("producers");
+            ASSERT_TRUE(producers.is_array());
+            ASSERT_EQ(producers.size(), 1u);
+            EXPECT_EQ(producers[0].value("role_uid", std::string{}),
+                      prod_uid);
+            EXPECT_EQ(producers[0].value("pubkey", std::string{}),
+                      curve.role(prod_uid).public_z85);
+            EXPECT_EQ(producers[0].value("endpoint", std::string{}),
+                      prod_endpoint);
+        });
+}
+
+int get_channel_auth_returns_allowlist()
+{
+    // HEP-CORE-0036 §6.5 GET_CHANNEL_AUTH_REQ pull — producer fetches
+    // the current channel-scope allowlist via sync BRC call.  After a
+    // consumer registers, the producer should observe the consumer's
+    // pubkey in the pulled allowlist.  This is the lower half of D4's
+    // notify-then-pull contract (the broker emits NOTIFY; producer's
+    // worker thread reacts by calling this very API).
+    const std::string channel  = pid_chan("auth.get_returns_allowlist");
+    const std::string prod_uid = "prod." + channel;
+    const std::string cons_uid = "cons." + channel;
+    return run_with_host(
+        "broker_consumer::get_channel_auth_returns_allowlist",
+        {prod_uid, cons_uid},
+        [channel, prod_uid, cons_uid](
+            pylabhub::tests::HubHostBrokerHandle &broker,
+            pylabhub::tests::CurveSetup &curve) {
+            pylabhub::tests::BrcHandle prod;
+            prod.start(broker.endpoint, broker.pubkey, prod_uid,
+                       pylabhub::tests::role_keystore_name(prod_uid));
+            auto reg_opts = make_reg_opts(
+                channel, prod_uid, curve.role(prod_uid).public_z85, 65001);
+            reg_opts["data_transport"]    = "zmq";
+            reg_opts["zmq_node_endpoint"] = "tcp://127.0.0.1:55558";
+            ASSERT_TRUE(prod.brc.register_channel(reg_opts, 3000).has_value());
+            prod.brc.send_heartbeat(channel, prod_uid, "producer",
+                                     json::object());
+
+            // Pre-registration: allowlist is empty.
+            {
+                auto pre = prod.brc.get_channel_auth(channel, prod_uid, 3000);
+                ASSERT_TRUE(pre.has_value());
+                EXPECT_EQ(pre->value("status", std::string{}), "success");
+                ASSERT_TRUE(pre->contains("allowlist"));
+                EXPECT_TRUE(pre->at("allowlist").is_array());
+                EXPECT_EQ(pre->at("allowlist").size(), 0u);
+            }
+
+            // Consumer joins — broker mutates allowlist + fires NOTIFY.
+            pylabhub::tests::BrcHandle cons;
+            cons.start(broker.endpoint, broker.pubkey, cons_uid,
+                       pylabhub::tests::role_keystore_name(cons_uid));
+            ASSERT_TRUE(cons.brc.register_consumer(
+                            make_cons_opts(channel, cons_uid,
+                                            curve.role(cons_uid).public_z85,
+                                            65100),
+                            3000).has_value());
+
+            // Post-registration: allowlist includes consumer entry.
+            // Per HEP-CORE-0036 §6.5 amendment 2026-06-10: entries are
+            // `{role_uid, pubkey}` objects.
+            auto post = prod.brc.get_channel_auth(channel, prod_uid, 3000);
+            ASSERT_TRUE(post.has_value());
+            EXPECT_EQ(post->value("status", std::string{}), "success");
+            ASSERT_TRUE(post->contains("allowlist"));
+            const auto &al = post->at("allowlist");
+            ASSERT_TRUE(al.is_array());
+            ASSERT_EQ(al.size(), 1u);
+            ASSERT_TRUE(al[0].is_object());
+            EXPECT_EQ(al[0].value("role_uid", std::string{}), cons_uid);
+            EXPECT_EQ(al[0].value("pubkey", std::string{}),
+                      curve.role(cons_uid).public_z85);
+        });
+}
+
+int get_channel_auth_rejects_non_producer()
+{
+    // HEP-CORE-0036 §6.6 PRODUCER_NOT_AUTHORIZED — a role that is NOT
+    // a registered producer of the channel cannot pull the allowlist.
+    // Defence-in-depth on top of Layer-1 ZAP.  Auth contract: only the
+    // role that owns the channel's tx side may observe the allowlist
+    // (no broadcasting of who's authorized to non-producers).
+    const std::string channel       = pid_chan("auth.get_rejects_non_prod");
+    const std::string real_prod_uid = "prod." + channel;
+    const std::string other_uid     = "cons.other." + channel;
+    return run_with_host(
+        "broker_consumer::get_channel_auth_rejects_non_producer",
+        {real_prod_uid, other_uid},
+        [channel, real_prod_uid, other_uid](
+            pylabhub::tests::HubHostBrokerHandle &broker,
+            pylabhub::tests::CurveSetup &curve) {
+            pylabhub::tests::BrcHandle prod;
+            prod.start(broker.endpoint, broker.pubkey, real_prod_uid,
+                       pylabhub::tests::role_keystore_name(real_prod_uid));
+            auto reg_opts = make_reg_opts(channel, real_prod_uid,
+                                           curve.role(real_prod_uid).public_z85,
+                                           65200);
+            reg_opts["data_transport"]    = "zmq";
+            reg_opts["zmq_node_endpoint"] = "tcp://127.0.0.1:55559";
+            ASSERT_TRUE(prod.brc.register_channel(reg_opts, 3000).has_value());
+            prod.brc.send_heartbeat(channel, real_prod_uid, "producer",
+                                     json::object());
+
+            pylabhub::tests::BrcHandle other;
+            other.start(broker.endpoint, broker.pubkey, other_uid,
+                        pylabhub::tests::role_keystore_name(other_uid));
+            auto resp = other.brc.get_channel_auth(channel, other_uid, 3000);
+            ASSERT_TRUE(resp.has_value());
+            EXPECT_EQ(resp->value("status", std::string{}), "error");
+            EXPECT_EQ(resp->value("error_code", std::string{}),
+                      "PRODUCER_NOT_AUTHORIZED");
+        },
+        {"GET_CHANNEL_AUTH_REQ rejected"});
+}
+
 } // namespace broker_consumer
 } // namespace pylabhub::tests::worker
 
@@ -396,6 +667,16 @@ struct BrokerConsumerRegistrar
                     return consumer_dereg_pid_mismatch();
                 if (sc == "disc_shows_consumer_count")
                     return disc_shows_consumer_count();
+                if (sc == "consumer_reg_unknown_role")
+                    return consumer_reg_unknown_role();
+                if (sc == "consumer_reg_pubkey_mismatch")
+                    return consumer_reg_pubkey_mismatch();
+                if (sc == "consumer_reg_ack_emits_producers_zmq")
+                    return consumer_reg_ack_emits_producers_zmq();
+                if (sc == "get_channel_auth_returns_allowlist")
+                    return get_channel_auth_returns_allowlist();
+                if (sc == "get_channel_auth_rejects_non_producer")
+                    return get_channel_auth_rejects_non_producer();
                 return -1;
             });
     }

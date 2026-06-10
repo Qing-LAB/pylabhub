@@ -458,6 +458,10 @@ public:
                                 const nlohmann::json &) override {}
     void invoke_on_band_lost(const std::string &,
                              const std::string &) override {}
+    void invoke_on_allowlist_changed(
+        const std::string &,
+        const std::vector<pylabhub::scripting::AllowedPeer> &,
+        const std::string &) override {}
     pylabhub::scripting::InvokeResult invoke_produce(
         pylabhub::scripting::InvokeTx,
         std::vector<pylabhub::scripting::IncomingMessage> &) override

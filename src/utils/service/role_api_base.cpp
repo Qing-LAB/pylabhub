@@ -60,6 +60,20 @@ struct RoleAPIBase::Impl
     hub::InboxQueue          *inbox_queue{nullptr};
     ScriptEngine             *engine{nullptr};
 
+    // HEP-CORE-0036 §I11 + §6.5 — channel-allowlist cache for the
+    // script-side observability surface (`api.allowed_peers(channel)`
+    // polling + `on_allowlist_changed` callback).  The authoritative
+    // enforcement set lives in `ZmqQueue::peer_allowlist_snapshot()` —
+    // this cache is a SCRIPT-CONVENIENCE COPY enriched with role_uid
+    // (which PeerIdentity doesn't carry).  Updated only by
+    // `handle_channel_auth_notifies` after `set_peer_allowlist`
+    // succeeds, so the cache and the ZAP enforcement state move
+    // together.  Mutex covers the map; readers (script polling) take
+    // a copy under the lock to avoid TOCTOU on the snapshot.
+    mutable std::mutex allowlist_cache_mu;
+    std::unordered_map<std::string, std::vector<AllowedPeer>>
+        allowlist_cache;
+
     // ── Thread-local / set-once-before-spawn state ─────────────────────
     //
     // Every field below this banner is either:
@@ -469,6 +483,188 @@ void RoleAPIBase::reset_tx_queue_metrics()
 void RoleAPIBase::reset_rx_queue_metrics()
 {
     if (pImpl->rx_queue) pImpl->rx_queue->init_metrics();
+}
+
+std::vector<AllowedPeer>
+RoleAPIBase::allowed_peers(const std::string &channel) const
+{
+    std::lock_guard<std::mutex> lk(pImpl->allowlist_cache_mu);
+    auto it = pImpl->allowlist_cache.find(channel);
+    if (it == pImpl->allowlist_cache.end()) return {};
+    return it->second;          // copy under the lock — caller iterates freely
+}
+
+void RoleAPIBase::handle_channel_auth_notifies(
+    std::vector<pylabhub::scripting::IncomingMessage> &msgs)
+{
+    using pylabhub::scripting::NotificationId;
+    namespace sec = pylabhub::utils::security;
+
+    auto it = msgs.begin();
+    while (it != msgs.end())
+    {
+        if (it->notification_id != NotificationId::ChannelAuthChanged)
+        {
+            ++it;
+            continue;
+        }
+
+        const std::string channel =
+            it->details.value("channel_name", std::string{});
+        if (channel.empty())
+        {
+            LOGGER_WARN(
+                "[{}/{}] CHANNEL_AUTH_CHANGED_NOTIFY missing channel_name; "
+                "dropping (HEP-CORE-0036 §6.5)",
+                pImpl->role_tag, pImpl->uid);
+            it = msgs.erase(it);
+            continue;
+        }
+
+        // Channel-bound routing: find the BRC that owns this channel.
+        // resolve_bc_for_channel returns nullptr if this role has no
+        // presence for the channel (defensive — a notify routed to the
+        // wrong role is a broker bug worth logging but not crashing on).
+        auto *brc = pImpl->resolve_bc_for_channel(channel);
+        if (!brc)
+        {
+            LOGGER_WARN(
+                "[{}/{}] no BRC for channel '{}' on auth notify; dropping",
+                pImpl->role_tag, pImpl->uid, channel);
+            it = msgs.erase(it);
+            continue;
+        }
+
+        try
+        {
+            // §6.5 pull — sync REQ/REP on the worker thread (NOT the
+            // BRC poll thread).  No re-entrance hazard: this thread is
+            // not the one reading the BRC socket.
+            auto reply = brc->get_channel_auth(channel, pImpl->uid, 5000);
+            if (!reply.has_value())
+            {
+                // Timeout / transport failure.  Per §6.5, log + return;
+                // the next notify retries, and BRC reconnect re-syncs
+                // via REG_ACK.initial_allowlist.
+                LOGGER_WARN(
+                    "[{}/{}] GET_CHANNEL_AUTH_REQ('{}') no reply within 5000ms; "
+                    "allowlist unchanged",
+                    pImpl->role_tag, pImpl->uid, channel);
+            }
+            else if (reply->value("status", std::string{}) != "success")
+            {
+                // Broker error (CHANNEL_NOT_FOUND, PRODUCER_NOT_AUTHORIZED,
+                // etc.) — race with dereg / channel close.  Log + skip;
+                // not a fatal condition.
+                LOGGER_WARN(
+                    "[{}/{}] GET_CHANNEL_AUTH_REQ('{}') broker error: "
+                    "code='{}' msg='{}'; allowlist unchanged",
+                    pImpl->role_tag, pImpl->uid, channel,
+                    reply->value("error_code", std::string{}),
+                    reply->value("message", std::string{}));
+            }
+            else
+            {
+                // Cross-cast tx_queue to PeerAdmission.  Only ZmqQueue
+                // (PUSH-side) implements both QueueWriter and
+                // PeerAdmission; SHM tx queues have no allowlist (gated
+                // by shm_secret instead, per AUTH-4).  Null cast ⇒
+                // tx_queue isn't a ZAP target ⇒ nothing to apply.
+                auto *admission =
+                    dynamic_cast<sec::PeerAdmission *>(pImpl->tx_queue.get());
+                if (!admission)
+                {
+                    LOGGER_WARN(
+                        "[{}/{}] auth notify for channel '{}' but tx queue "
+                        "is not a PeerAdmission target (SHM or no queue); "
+                        "ignoring",
+                        pImpl->role_tag, pImpl->uid, channel);
+                }
+                else
+                {
+                    // HEP-CORE-0036 §6.5 amended 2026-06-10:
+                    // allowlist entries are `{role_uid, pubkey}`
+                    // objects.  The pubkey is the enforcement key for
+                    // ZAP; role_uid is for the script surface
+                    // (`api.allowed_peers` + `on_allowlist_changed`)
+                    // and not used here.
+                    sec::PeerAllowlist allowlist;
+                    std::vector<AllowedPeer> script_view;
+                    const auto &arr = reply->value("allowlist",
+                                                     nlohmann::json::array());
+                    for (const auto &entry : arr)
+                    {
+                        if (!entry.is_object()) continue;
+                        const auto pk = entry.value("pubkey", std::string{});
+                        if (pk.empty()) continue;
+                        allowlist.peers.insert(
+                            sec::PeerIdentity{"curve", pk});
+                        script_view.push_back(AllowedPeer{
+                            entry.value("role_uid", std::string{}), pk});
+                    }
+                    const auto reason =
+                        it->details.value("reason", std::string{"unknown"});
+                    const bool ok =
+                        admission->set_peer_allowlist(allowlist);
+                    if (ok)
+                    {
+                        LOGGER_INFO(
+                            "[{}/{}] applied channel '{}' allowlist (size={}, "
+                            "reason='{}', HEP-CORE-0036 §6.5)",
+                            pImpl->role_tag, pImpl->uid, channel,
+                            allowlist.peers.size(), reason);
+
+                        // Update the script-side cache + invoke the
+                        // I11 callback AFTER the ZAP cache is in
+                        // place (HEP §6.5 step 5 — the snapshot the
+                        // script sees IS what the next handshake will
+                        // admit).
+                        {
+                            std::lock_guard<std::mutex> lk(
+                                pImpl->allowlist_cache_mu);
+                            pImpl->allowlist_cache[channel] = script_view;
+                        }
+                        if (pImpl->engine)
+                        {
+                            try
+                            {
+                                pImpl->engine->invoke_on_allowlist_changed(
+                                    channel, script_view, reason);
+                            }
+                            catch (const std::exception &e)
+                            {
+                                // Per §I11: callback exceptions do
+                                // NOT roll back the cache update —
+                                // log + continue.
+                                LOGGER_ERROR(
+                                    "[{}/{}] on_allowlist_changed callback "
+                                    "threw for channel '{}': {}",
+                                    pImpl->role_tag, pImpl->uid, channel,
+                                    e.what());
+                            }
+                        }
+                    }
+                    else
+                    {
+                        LOGGER_WARN(
+                            "[{}/{}] set_peer_allowlist returned false for "
+                            "channel '{}' (queue inert on this side?)",
+                            pImpl->role_tag, pImpl->uid, channel);
+                    }
+                }
+            }
+        }
+        catch (const std::exception &e)
+        {
+            // Audit R5: exception safety — a malformed broker reply must
+            // not crash the role.  Log + skip; next notify retries.
+            LOGGER_ERROR(
+                "[{}/{}] exception handling auth notify for '{}': {}",
+                pImpl->role_tag, pImpl->uid, channel, e.what());
+        }
+
+        it = msgs.erase(it);
+    }
 }
 
 void RoleAPIBase::sync_tx_flexzone_checksum()

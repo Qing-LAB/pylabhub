@@ -106,6 +106,17 @@ if(BUILD_TESTS)
   add_subdirectory(test_layer4_plh_hub)
   # test_raii_layer REMOVED: test_result.cpp moved to test_layer1_base (T5.1)
 
+  # HEP-CORE-0036 §I11 audit S3 guardrail — fails if any script binding
+  # exposes an allowlist mutator (`api.set_*peers*` etc.).  Pure grep
+  # over source tree; runs in <1s.
+  add_test(NAME AuthGuardrail_NoScriptAllowlistMutator
+           COMMAND ${CMAKE_SOURCE_DIR}/tools/check_auth_guardrail.sh
+                   ${CMAKE_SOURCE_DIR}
+           WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+  set_tests_properties(AuthGuardrail_NoScriptAllowlistMutator
+                       PROPERTIES LABELS "layer0;hep0036;guardrail"
+                                  TIMEOUT 10)
+
   # Collect all test executables registered by the subdirectories
   get_property(test_executables_to_stage GLOBAL PROPERTY PYLABHUB_TEST_EXECUTABLES_TO_STAGE)
 

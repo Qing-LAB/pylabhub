@@ -232,6 +232,20 @@ class PYLABHUB_UTILS_EXPORT BrokerRequestComm
     [[nodiscard]] std::optional<nlohmann::json>
     deregister_consumer(const std::string &channel, int timeout_ms = 5000);
 
+    /// HEP-CORE-0036 §6.5 notify-then-pull — fetch the channel's current
+    /// authorized-consumer pubkey allowlist from the broker.  Producer-
+    /// side only; broker rejects with `PRODUCER_NOT_AUTHORIZED` if
+    /// `role_uid` is not a registered producer of `channel`.
+    ///
+    /// Returns the broker reply body on either outcome
+    /// (status="success" + allowlist[] / status="error" + error_code), or
+    /// `nullopt` on transport failure / timeout.  Caller applies the
+    /// allowlist via `ZmqQueue::set_peer_allowlist`.
+    [[nodiscard]] std::optional<nlohmann::json>
+    get_channel_auth(const std::string &channel,
+                     const std::string &role_uid,
+                     int timeout_ms = 5000);
+
     [[nodiscard]] std::optional<nlohmann::json>
     query_role_presence(const std::string &uid, int timeout_ms = 5000);
 

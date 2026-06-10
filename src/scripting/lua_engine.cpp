@@ -235,6 +235,7 @@ bool LuaEngine::load_script(const std::filesystem::path &script_dir,
     ref_on_band_member_left_   = extract_callback_ref_("on_band_member_left");
     ref_on_band_message_       = extract_callback_ref_("on_band_message");
     ref_on_band_lost_          = extract_callback_ref_("on_band_lost");
+    ref_on_allowlist_changed_  = extract_callback_ref_("on_allowlist_changed");
     ref_on_produce_ = extract_callback_ref_("on_produce");
     ref_on_consume_ = extract_callback_ref_("on_consume");
     ref_on_process_ = extract_callback_ref_("on_process");
@@ -265,6 +266,8 @@ bool LuaEngine::load_script(const std::filesystem::path &script_dir,
                                   state_.is_ref_callable(ref_on_band_message_));
     set_standard_callback_present("on_band_lost",
                                   state_.is_ref_callable(ref_on_band_lost_));
+    set_standard_callback_present("on_allowlist_changed",
+                                  state_.is_ref_callable(ref_on_allowlist_changed_));
     set_standard_callback_present("on_produce", state_.is_ref_callable(ref_on_produce_));
     set_standard_callback_present("on_consume", state_.is_ref_callable(ref_on_consume_));
     set_standard_callback_present("on_process", state_.is_ref_callable(ref_on_process_));
@@ -378,6 +381,7 @@ bool LuaEngine::build_api_(RoleAPIBase &api)
     push_closure("out_drop_count", lua_api_out_drop_count);
     push_closure("metrics", lua_api_metrics);
     push_closure("queue_mechanism", lua_api_queue_mechanism);
+    push_closure("allowed_peers",   lua_api_allowed_peers);
 
     // ── Role-specific closures based on role_tag ────────────────────────
     if (api_->role_tag() == "prod")
@@ -1218,6 +1222,34 @@ void LuaEngine::invoke_on_band_lost(const std::string &band,
     lua_rawgeti(L, LUA_REGISTRYINDEX, ref_api_);
     if (!state_.pcall(3, 0, "on_band_lost"))
         on_pcall_error_("on_band_lost");
+}
+
+void LuaEngine::invoke_on_allowlist_changed(
+    const std::string &channel,
+    const std::vector<AllowedPeer> &allowlist,
+    const std::string &reason)
+{
+    if (!state_.is_ref_callable(ref_on_allowlist_changed_)) return;
+    lua_State *L = state_.raw();
+    lua_rawgeti(L, LUA_REGISTRYINDEX, ref_on_allowlist_changed_);
+    lua_pushlstring(L, channel.data(), channel.size());
+    // allowlist as table-of-tables: { {role_uid="...", pubkey="..."}, ... }
+    lua_createtable(L, static_cast<int>(allowlist.size()), 0);
+    for (size_t i = 0; i < allowlist.size(); ++i)
+    {
+        lua_createtable(L, 0, 2);
+        lua_pushlstring(L, allowlist[i].role_uid.data(),
+                          allowlist[i].role_uid.size());
+        lua_setfield(L, -2, "role_uid");
+        lua_pushlstring(L, allowlist[i].pubkey.data(),
+                          allowlist[i].pubkey.size());
+        lua_setfield(L, -2, "pubkey");
+        lua_rawseti(L, -2, static_cast<int>(i + 1));   // 1-based Lua
+    }
+    lua_pushlstring(L, reason.data(), reason.size());
+    lua_rawgeti(L, LUA_REGISTRYINDEX, ref_api_);
+    if (!state_.pcall(4, 0, "on_allowlist_changed"))
+        on_pcall_error_("on_allowlist_changed");
 }
 
 // ============================================================================
@@ -2508,6 +2540,38 @@ int LuaEngine::lua_api_band_members(lua_State *L)
 // Side argument: "tx" / "rx" / "out" / "in" (case-insensitive).  For
 // single-side roles (producer / consumer), the no-arg form returns the
 // relevant side automatically.  For processor the arg is required.
+// ============================================================================
+// api.allowed_peers(channel) — script-visible authorized-peer snapshot
+// ============================================================================
+//
+// HEP-CORE-0036 §I11 polling surface.  Returns a table of
+// `{role_uid=..., pubkey=...}` records for the channel's current
+// allowlist.  Empty table when the role is not a producer of the
+// channel or no GET_CHANNEL_AUTH_REQ has completed yet.  Read-only;
+// scripts cannot mutate the framework's state.
+int LuaEngine::lua_api_allowed_peers(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    const char *arg = luaL_checkstring(L, 1);
+    const std::string channel = arg ? arg : "";
+    if (channel.empty())
+        return luaL_error(L,
+            "api.allowed_peers: channel argument must be a non-empty string");
+
+    const auto peers = self->api_->allowed_peers(channel);
+    lua_createtable(L, static_cast<int>(peers.size()), 0);
+    for (size_t i = 0; i < peers.size(); ++i)
+    {
+        lua_createtable(L, 0, 2);
+        lua_pushlstring(L, peers[i].role_uid.data(), peers[i].role_uid.size());
+        lua_setfield(L, -2, "role_uid");
+        lua_pushlstring(L, peers[i].pubkey.data(), peers[i].pubkey.size());
+        lua_setfield(L, -2, "pubkey");
+        lua_rawseti(L, -2, static_cast<int>(i + 1));   // 1-based Lua
+    }
+    return 1;
+}
+
 int LuaEngine::lua_api_queue_mechanism(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));

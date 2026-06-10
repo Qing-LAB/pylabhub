@@ -46,3 +46,33 @@ TEST_F(DatahubBrokerConsumerTest, DiscShowsConsumerCount)
     auto w = SpawnWorker("broker_consumer.disc_shows_consumer_count");
     ExpectWorkerOk(w);
 }
+
+TEST_F(DatahubBrokerConsumerTest, ConsumerRegUnknownRole)
+{
+    auto w = SpawnWorker("broker_consumer.consumer_reg_unknown_role");
+    ExpectWorkerOk(w);
+}
+
+TEST_F(DatahubBrokerConsumerTest, ConsumerRegPubkeyMismatch)
+{
+    auto w = SpawnWorker("broker_consumer.consumer_reg_pubkey_mismatch");
+    ExpectWorkerOk(w);
+}
+
+TEST_F(DatahubBrokerConsumerTest, ConsumerRegAckEmitsProducersZmq)
+{
+    auto w = SpawnWorker("broker_consumer.consumer_reg_ack_emits_producers_zmq");
+    ExpectWorkerOk(w);
+}
+
+TEST_F(DatahubBrokerConsumerTest, GetChannelAuthReturnsAllowlist)
+{
+    auto w = SpawnWorker("broker_consumer.get_channel_auth_returns_allowlist");
+    ExpectWorkerOk(w);
+}
+
+TEST_F(DatahubBrokerConsumerTest, GetChannelAuthRejectsNonProducer)
+{
+    auto w = SpawnWorker("broker_consumer.get_channel_auth_rejects_non_producer");
+    ExpectWorkerOk(w);
+}
