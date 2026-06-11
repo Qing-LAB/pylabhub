@@ -264,7 +264,11 @@ unwind.
 
 ## 4. Native Engine API (native_engine_api.h)
 
-### 4.1 PlhNativeContext (API v6, #194 Phase C, 2026-06-11)
+### 4.1 PlhNativeContext (API v7, #84, 2026-06-11; v6 baseline #194 Phase C, 2026-06-11)
+
+> v7 adds 16 hub-side fn ptrs at the END of the struct (additive — see
+> §4.9 "Hub-side API Surface" for the full matrix).  v6 surface below
+> remains the role-side baseline.
 
 ```c
 typedef struct PlhNativeContext
@@ -474,7 +478,7 @@ typedef struct PlhAbiInfo
     uint32_t api_version;       /* PLH_NATIVE_API_VERSION */
 } PlhAbiInfo;
 
-#define PLH_NATIVE_API_VERSION 6
+#define PLH_NATIVE_API_VERSION 7
 ```
 
 **API version log:**
@@ -513,6 +517,27 @@ typedef struct PlhAbiInfo
   return wrong-type — rebuild against the v6 header.  See HEP-CORE-0032
   §2 for the Two-Tier API Model this cleanup implements; see §2.4 of
   this HEP for the design considerations.
+- v6 → v7 (#84 task: `NativeEngine::build_api_(HubAPI&)` — extend beyond
+  MVP, 2026-06-11): hub-side surface parity with Python/Lua.
+  `PlhNativeContext` gains 16 new fn ptrs at the **end** of the struct
+  (additive — no reordering, no breaking change for v6 plugins running on
+  the role side):
+  - `hub_metrics_json` / `hub_config_json` / `hub_query_metrics_json`
+  - `hub_list_channels_json` / `hub_get_channel_json` (and the 4 list/get
+    pairs for roles/bands/peers)
+  - `hub_close_channel` / `hub_broadcast_channel` / `hub_post_event`
+  - `hub_augment_timeout_ms` / `hub_set_augment_timeout`
+  `wire_hub()` now assigns **every** ctx fn ptr — role-only methods
+  (band/spinlock/queue/slot/metrics_snapshot/flexzone) get noop stubs
+  returning documented sentinels so pure-C hub plugins cannot segfault
+  from missing null-checks.  Symmetric: role-side `wire()` populates the
+  new `hub_*` ptrs with role-side noop stubs (empty `""` for JSON
+  returns, `-1` for hub_close_channel / hub_broadcast_channel /
+  hub_post_event, `0` for hub_augment_timeout_ms).  v6 plugins rebuilt
+  against v7 see new fields zero-initialized in their own struct copy —
+  but plugins never own a `PlhNativeContext`, the host populates it; so
+  pure ABI compatibility (no rebuild needed) is preserved for v6
+  role-side plugins.  See §4.9 for the full hub-side matrix.
 
 The native engine exports `native_abi_info()` returning a pointer to a static `PlhAbiInfo`.
 The framework validates at load time:
@@ -739,6 +764,17 @@ checks the pointer before calling and returns the documented sentinel
 `false` for bool-returning fns) when a fn ptr is unwired.  Plain C
 plugins should defensively null-check before calling.
 
+> The table above covers the role-side surface (v6 baseline).  The 16
+> hub-side fn ptrs added in v7 (`hub_metrics_json` / `hub_config_json` /
+> `hub_query_metrics_json` / 4 list+get pairs / `hub_close_channel` /
+> `hub_broadcast_channel` / `hub_post_event` / `hub_augment_timeout_ms` /
+> `hub_set_augment_timeout`) are documented in §4.9.  Both surfaces are
+> populated on **both** sides of the wire — role-only methods route to
+> noop stubs on hub-side ctx; hub-only methods route to noop stubs on
+> role-side ctx — so plugin code can call any ctx fn without null
+> checks and the response shape is the documented sentinel for the
+> wrong-side case.
+
 ### 4.8 Lifetime + Security Contract (#194 Phase C)
 
 Every borrowed pointer the framework hands to the plugin carries a
@@ -757,6 +793,7 @@ are unambiguously plugin bugs, not framework weaknesses.
 | `plh_allowlist_changed_args_t` + nested `peers[]` (callback arg) | The callback returns |
 | `plh_band_message_args_t` + nested fields (callback arg) | The callback returns |
 | `metrics_snapshot()` return ptr | Next `metrics_snapshot()` call on the **same thread** |
+| `hub_*_json()` return ptr (v7) | Next `hub_*_json()` call on the **same thread** (shared thread-local scratch buffer — same pattern as `metrics_snapshot`) |
 | `plh_*_args_t` for every other on_* callback | The callback returns |
 
 Plugin stashes a borrowed pointer past its lifetime → reads garbage at
@@ -805,6 +842,88 @@ to:
 Out of scope at the C ABI level: side-channel attacks (Spectre, cache
 timing), CPU-level mitigations, kernel-level intrusion via
 `/proc/PID/mem` or `ptrace`.
+
+### 4.9 Hub-side API Surface (API v7, #84, 2026-06-11)
+
+The native plugin engine is loadable on either side: a role
+process via `NativeEngine::build_api_(RoleAPIBase&)`, or a hub
+process via `NativeEngine::build_api_(HubAPI&)`.  Until v7 the
+hub-side `wire_hub()` populated only `log` + `request_stop`,
+forcing pure-C hub plugins to defensively null-check every
+`ctx->fn` before invoking it.  v7 fills every `ctx->fn` on both
+sides — hub-applicable methods route to real `HubAPI`
+implementations; role-only methods (band, allowed_peers,
+spinlock, queue_*, slot_*, metrics_snapshot, flexzone-checksum)
+route to **noop stubs** returning the documented sentinel.  A
+pure-C hub plugin can call any `ctx->fn` without null-checking;
+the behaviour for role-only methods is observationally
+identical to "the queue/state were not ready yet" — the same
+sentinel the role-side impl would return mid-startup.
+
+**Hub-side methods** added in v7 (16 fn ptrs at the END of
+`PlhNativeContext`, additive ABI bump):
+
+| Function Pointer | Signature | Description |
+|---|---|---|
+| `ctx->hub_metrics_json` | `const char *(*)(ctx)` | Hub metrics tree (`utils::get_metrics_tree()`) serialised to JSON. |
+| `ctx->hub_config_json` | `const char *(*)(ctx)` | Hub config dump. |
+| `ctx->hub_query_metrics_json` | `const char *(*)(ctx, const char *categories_json)` | Filtered metrics by category list. |
+| `ctx->hub_list_channels_json` | `const char *(*)(ctx)` | JSON array of channel descriptors. |
+| `ctx->hub_get_channel_json` | `const char *(*)(ctx, const char *name)` | Channel info by name; `"{}"` if absent. |
+| `ctx->hub_list_roles_json` | `const char *(*)(ctx)` | JSON array of role descriptors. |
+| `ctx->hub_get_role_json` | `const char *(*)(ctx, const char *uid)` | Role info by uid; `"{}"` if absent. |
+| `ctx->hub_list_bands_json` | `const char *(*)(ctx)` | JSON array of band descriptors. |
+| `ctx->hub_get_band_json` | `const char *(*)(ctx, const char *name)` | Band info by name; `"{}"` if absent. |
+| `ctx->hub_list_peers_json` | `const char *(*)(ctx)` | JSON array of federation peer descriptors. |
+| `ctx->hub_get_peer_json` | `const char *(*)(ctx, const char *hub_uid)` | Peer info by hub_uid; `"{}"` if absent. |
+| `ctx->hub_close_channel` | `int (*)(ctx, const char *name)` | Schedule close.  1=accepted, -1=error.  Idempotent for unknown names. |
+| `ctx->hub_broadcast_channel` | `int (*)(ctx, const char *channel, const char *message, const char *data_json)` | Control-plane broadcast.  1=accepted, -1=error. |
+| `ctx->hub_post_event` | `int (*)(ctx, const char *name, const char *data_json)` | Post user event; fires `on_app_<name>` on worker thread.  1=accepted, 0=invalid name, -1=error. |
+| `ctx->hub_augment_timeout_ms` | `int64_t (*)(ctx)` | Current augment timeout knob.  -1=infinite, 0=non-blocking, >0=N ms. |
+| `ctx->hub_set_augment_timeout` | `void (*)(ctx, int64_t ms)` | Setter for augment timeout. |
+
+**Sentinels on role-side contexts** — when a plugin calls
+`hub_*` from a role-side ctx (no `HubAPI*` attached), the
+following sentinels are returned:
+
+| Group | Sentinel |
+|---|---|
+| `hub_*_json` (all) | `""` (empty string) |
+| `hub_close_channel` / `hub_broadcast_channel` / `hub_post_event` | `-1` |
+| `hub_augment_timeout_ms` | `0` |
+| `hub_set_augment_timeout` | (noop) |
+
+**Lifetime contract** for JSON returns: every `hub_*_json` fn
+returns a pointer into a **thread-local scratch buffer**.  Valid
+until the next `hub_*_json` call on the same thread.  Plugin
+authors who need a value across more than one call must `strdup`
+or copy into their own storage.  Same shape as
+`metrics_snapshot()` (§4.8) — the host owns the storage; the
+plugin owns the lifetime discipline.
+
+**C++ wrapper** — `plh::Context` gains symmetric `hub_*`
+methods (§5) that return `const char *` (empty `""` on
+unwired), plus a convenience `is_hub()` predicate that the
+plugin can switch on instead of null-checking every call:
+
+```cpp
+plh::Context ctx{raw};
+if (ctx.is_hub()) {
+    auto channels_json = ctx.hub_list_channels_json();
+    // ... parse, react
+} else {
+    // role-side path
+}
+```
+
+**Cross-engine parity.**  Python `pylabhub_hub.HubAPI` and Lua
+`hub_api()` script-side bindings expose the same surface.  Where
+Python returns a `dict`/`list` and Lua returns a table, Native
+returns a JSON string — plugin authors who want structured
+access link `nlohmann/json` (or any JSON parser) in their
+plugin.  The shape of the JSON is the same as what
+`HubAPI::metrics()` / `list_channels()` / etc. serialise via
+their C++ public surface (HEP-CORE-0033 §6).
 
 ---
 
@@ -1066,7 +1185,68 @@ public:
 } // namespace plh
 ```
 
-### 5.7 Export Macros (existing — unchanged)
+### 5.7 Hub-side Wrappers (API v7, #84)
+
+The `plh::Context` wrapper exposes a symmetric `hub_*` surface
+matching the 16 fn ptrs added in v7 (§4.9), plus an `is_hub()`
+predicate for branch-once dispatch.  All wrappers follow the same
+null-safe pattern as the role-side wrappers — unwired fn ptr →
+documented sentinel return — so the same `Context` value works on
+either side of the wire:
+
+```cpp
+extern "C" bool native_init(PlhNativeContext *raw)
+{
+    plh::Context ctx{raw};
+    if (!ctx.valid()) return false;
+
+    if (ctx.is_hub())
+    {
+        // Hub-side: enumerate channels and post a startup event.
+        auto channels = ctx.hub_list_channels_json();
+        ctx.log(plh::LogLevel::Info, channels);
+        ctx.hub_post_event("plugin_started", R"({"version":"1.0"})");
+    }
+    else
+    {
+        // Role-side: register custom metric.
+        ctx.report_metric("startup_count", 1.0);
+    }
+    return true;
+}
+```
+
+**Wrapper method matrix** (every method is `inline`, `noexcept`,
+zero binary cost — same as role-side wrappers):
+
+| C++ method | C ABI delegate | Return on unwired / wrong side |
+|---|---|---|
+| `is_hub()` | role_tag comparison (`"hub"`) | `false` |
+| `hub_metrics_json()` | `ctx->hub_metrics_json` | `""` |
+| `hub_config_json()` | `ctx->hub_config_json` | `""` |
+| `hub_query_metrics_json(categories)` | `ctx->hub_query_metrics_json` | `""` |
+| `hub_list_channels_json()` etc. (4 list+get pairs) | `ctx->hub_list_*` / `ctx->hub_get_*` | `""` |
+| `hub_close_channel(name)` | `ctx->hub_close_channel` | `false` |
+| `hub_broadcast_channel(ch, msg, data)` | `ctx->hub_broadcast_channel` | `false` |
+| `hub_post_event(name, data)` | `ctx->hub_post_event` | `false` |
+| `hub_augment_timeout_ms()` | `ctx->hub_augment_timeout_ms` | `0` |
+| `hub_set_augment_timeout(ms)` | `ctx->hub_set_augment_timeout` | (noop) |
+
+**JSON lifetime contract.**  Every `hub_*_json()` return is a
+`const char *` into a shared thread-local scratch buffer (§4.8).
+Valid only until the next `hub_*_json()` call on the same thread.
+Plugin authors who need the value to survive past the next call
+must copy: `std::string s{ctx.hub_metrics_json()};`.
+
+**`is_hub()` design note.**  Detection is by `role_tag == "hub"`
+(the literal string the host writes during `wire_hub()`).  This
+is intentional — pure-C plugins can do the same check without
+linking the C++ wrapper.  The framework guarantees the role-tag
+string is one of `"producer"`, `"consumer"`, `"processor"`,
+`"hub"`; future role-tag additions for sub-hub variants (e.g.
+federation peers) would need to extend this predicate.
+
+### 5.8 Export Macros (existing — unchanged)
 
 | Macro | Callback Signature | Description |
 |-------|-------------------|-------------|
