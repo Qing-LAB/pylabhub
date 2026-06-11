@@ -855,10 +855,10 @@ int api_band_pub_sub_no_broker_graceful_return(const std::string &plugin_dir)
             EXPECT_EQ(result, InvokeResult::Commit);
 
             auto metrics = core.custom_metrics_snapshot();
-            EXPECT_EQ(static_cast<int>(metrics["test_band_join_null"]), 1);
-            EXPECT_EQ(static_cast<int>(metrics["test_band_leave_zero"]), 1);
+            EXPECT_EQ(static_cast<int>(metrics["test_band_join_failed"]), 1);
+            EXPECT_EQ(static_cast<int>(metrics["test_band_leave_failed"]), 1);
             EXPECT_EQ(static_cast<int>(metrics["test_band_send_ok"]), 1);
-            EXPECT_EQ(static_cast<int>(metrics["test_band_members_null"]), 1);
+            EXPECT_EQ(static_cast<int>(metrics["test_band_members_empty"]), 1);
 
             engine.finalize();
         },

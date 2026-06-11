@@ -409,17 +409,18 @@ Design notes:
 
 Scripts have two explicit stop APIs and the framework auto-stops
 in several scenarios.  The resulting `stop_reason` is observable
-via `api.stop_reason()` (and the C plugin's `ctx->stop_reason(ctx)`)
-and is logged at shutdown.
+via `api.stop_reason()` (Python/Lua) and `ctx->stop_reason(ctx)`
+(Native C plugin) — see §"Cross-Engine Surface Parity" below for
+the typed-vs-string idiom difference.
 
-| Trigger | API call | `stop_reason` after stop | `critical_error()` flag |
+| Trigger | API call | `stop_reason` after stop (Python/Lua string ↔ Native macro) | `critical_error()` flag |
 |---|---|---|---|
-| Script wants to stop the role gracefully | `api.stop()` | `"normal"` | false |
-| Script detects unrecoverable condition | `api.set_critical_error(msg)` | `"critical_error"` | **true** |
-| Script callback raised AND `stop_on_script_error=true` | (framework auto) | `"script_error"` | false |
-| `CHANNEL_CLOSING_NOTIFY` arrived, no `on_channel_closing` override | (framework auto via `default_channel_closing`) | `"channel_closed"` | false |
-| `HUB_DEAD` for master broker, no `on_hub_dead` override | (framework auto via `default_hub_dead`) | `"hub_dead"` | false |
-| Broker-initiated peer-death policy (future Wave-B M2) | (framework auto) | `"peer_dead"` | false |
+| Script wants to stop the role gracefully | `api.stop()` | `"normal"` ↔ `PLH_STOP_REASON_NORMAL` | false |
+| Script detects unrecoverable condition | `api.set_critical_error(msg)` | `"critical_error"` ↔ `PLH_STOP_REASON_CRITICAL_ERROR` | **true** |
+| Script callback raised AND `stop_on_script_error=true` | (framework auto) | `"script_error"` (Python/Lua only — Native C does not currently distinguish; see #194 follow-up) | false |
+| `CHANNEL_CLOSING_NOTIFY` arrived, no `on_channel_closing` override | (framework auto via `default_channel_closing`) | `"channel_closed"` ↔ `PLH_STOP_REASON_CHANNEL_CLOSED` | false |
+| `HUB_DEAD` for master broker, no `on_hub_dead` override | (framework auto via `default_hub_dead`) | `"hub_dead"` ↔ `PLH_STOP_REASON_HUB_DEAD` | false |
+| Broker-initiated peer-death policy (future Wave-B M2) | (framework auto) | `"peer_dead"` ↔ `PLH_STOP_REASON_PEER_DEAD` | false |
 
 **`api.stop()` vs `api.set_critical_error()`:**
 
@@ -503,6 +504,90 @@ PLH_EXPORT bool on_produce(const plh_tx_t *tx) {
     /* fill *tx->slot ... */
     return true;
 }
+```
+
+---
+
+### Cross-Engine Surface Parity — typed vs string idioms (#194 Phase C, 2026-06-11)
+
+The three engines surface the same underlying state but in
+language-idiomatic forms.  **Semantic parity, not literal string
+equality**: the values are identical at the framework level
+(`Mechanism::Curve`, `QueuePolicy::Shm`, `StopReason::Normal`, etc.);
+each engine projects them in the form most natural for its target
+audience.
+
+| Surface | Python (`pybind11`) | Lua (`luaL`) | Native C ABI (Tier 1) | Native C++ wrapper (Tier 2) |
+|---|---|---|---|---|
+| `queue_mechanism(side)` | `str` (e.g. `"Curve"`) | `string` | `int` + `PLH_MECHANISM_*` macros | `plh::Mechanism` enum class |
+| `stop_reason()` | `str` (e.g. `"normal"`) | `string` | `int` + `PLH_STOP_REASON_*` macros | `plh::StopReason` enum class |
+| `out_policy()` / `in_policy()` | `str` (e.g. `"shm"`) | `string` | `int` + `PLH_QUEUE_POLICY_*` macros | `plh::QueuePolicy` enum class |
+| `is_channel_ready(channel)` | `bool` | `boolean` | `int` (1=ready, 0=not, -1=error) | `bool` |
+| `is_in_band(channel)` | `bool` | `boolean` | `int` (1=member, 0=not, -1=error) | `bool` |
+| `allowed_peers(channel)` | `list[dict]` (one alloc) | `table[table]` (one alloc) | visitor (no alloc) + `*_contains` + `*_count` inquiries | `AllowedPeersHandle` (zero-cost) + `.visit / .contains / .count / .to_uid_set` |
+| `band_members(channel)` | `list[dict]` | `table[table]` | visitor + `*_contains` + `*_count` | `BandHandle` (zero-cost) + same API as above |
+| `metrics()` | `dict` (full tree alloc) | `table` (full tree alloc) | opaque `metrics_snapshot()` + `metrics_get(key)` | `plh::MetricsSnapshot` value class + `operator[]` |
+
+**Why the idiom split?**  The dynamic languages already pay for an
+allocation per call (PyDict / Lua-table), so handing them a string
+adds no extra cost and reads idiomatically (`api.queue_mechanism() ==
+"Curve"`).  The C ABI cannot afford a per-call allocation on the
+hot path, cannot guarantee null-termination semantics across
+compilers, and must compose cleanly with `switch` — so `int` +
+preprocessor macro is the right floor.  The C++ wrapper then layers
+`enum class` on top of the same int for compiler-checked exhaustive
+switches.  See HEP-CORE-0028 §2.4 + §4.1 for the Native ABI design
+rationale; see HEP-CORE-0035 §2 for the CURVE-unconditional invariant
+that constrains the `Mechanism` enum's codomain.
+
+**Worked example — comparing across engines:**
+
+```python
+# Python
+if api.queue_mechanism(api.Tx) == "Curve":
+    api.log("info", "tx encrypted")
+```
+
+```lua
+-- Lua
+if api.queue_mechanism(api.Tx) == "Curve" then
+    api.log("info", "tx encrypted")
+end
+```
+
+```c
+/* Native C (Tier 1) */
+if (ctx->queue_mechanism(ctx, PLH_SIDE_TX) == PLH_MECHANISM_CURVE) {
+    ctx->log(ctx, PLH_LOG_INFO, "tx encrypted");
+}
+```
+
+```cpp
+// Native C++ (Tier 2 — the natural choice)
+plh::Context wrap{ctx};
+if (wrap.queue_mechanism(PLH_SIDE_TX) == plh::Mechanism::Curve) {
+    wrap.log(PLH_LOG_INFO, "tx encrypted");
+}
+```
+
+**Membership-check parity:**
+
+```python
+# Python: O(1) lookup via dict
+peers = {p["role_uid"] for p in api.allowed_peers("out")}
+if "consumer_A" in peers: ...
+```
+
+```c
+/* Native C (Tier 1): no boilerplate — first-class inquiry */
+if (ctx->allowed_peer_contains(ctx, "out", "consumer_A") == 1) { ... }
+```
+
+```cpp
+// Native C++ (Tier 2): fluent handle + optional set-once for hot path
+if (wrap.allowed_peers("out").contains("consumer_A")) { ... }
+auto auth = wrap.allowed_peers("out").to_uid_set();   // hot-path: snapshot once
+if (auth.contains("consumer_A")) { ... }
 ```
 
 ---
@@ -1246,6 +1331,9 @@ yet wired when the callback fires.
 | `api.report_metric()` / `api.clear_custom_metrics()` | ✓ | ✓ | ✓ | ✓ |
 | `api.stop()` / `api.set_critical_error()` / `api.critical_error()` | ✓ | ✓ | ✓ | ✓ |
 | `api.spinlock(idx)` (SHM only) | ✓ | ✓ | ✓ | ✓ |
+| `api.queue_mechanism(side)` (HEP-CORE-0035 §2; #186/#194) | ✓ | ✓ | ✓ | ✓ |
+| `api.is_channel_ready(channel)` (HEP-CORE-0036 §6.7; #190) | ✓ (always `false` pre-Active) | ✓ | ✓ | ✓ |
+| `api.allowed_peers(channel)` (HEP-CORE-0036 §I11; #194) | ✓ (empty until first auth-changed) | ✓ | ✓ | ✓ |
 | **`api.band_join(band)`** | **✗ FAILS SILENTLY** (returns `None` — handler not yet up at Step 5; needs Step 6 `start_handler_threads`) | ✓ | ✓ | ✓ |
 | `api.band_leave(band)` | ✗ same as band_join | ✓ | ✓ | ✓ |
 | `api.band_broadcast(band, dict)` | ✗ same | ✓ | ✓ | ✓ |

@@ -244,6 +244,38 @@ gtest_discover_tests(test_layer2_known_roles
 )
 
 # ============================================================================
+# Test: build-flag invariants for test/debug backdoor gates (#205, 2026-06-11)
+# Pins HEP-CORE-0032 §3.2 deployment posture — the test_set_* mutators on
+# RoleHostCore (and the PYLABHUB_UTILS_TEST_EXPORT macro) must be present
+# only in Debug+BUILD_TESTS builds, absent in any Release configuration.
+# ============================================================================
+
+add_executable(test_layer2_build_flag_invariants
+    test_build_flag_invariants.cpp
+)
+
+target_link_libraries(test_layer2_build_flag_invariants
+    PRIVATE
+        pylabhub::utils
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_build_flag_invariants)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_build_flag_invariants
+    SUITE_NAME "Layer2_BuildFlagInvariants"
+)
+layer2_require_staged_utils(test_layer2_build_flag_invariants)
+
+gtest_discover_tests(test_layer2_build_flag_invariants
+    PROPERTIES
+        LABELS "layer2;service;security;build_flags"
+        TIMEOUT 10
+)
+
+# ============================================================================
 # Test: Z85PublicKey strong type (HEP-CORE-0040 §8.4 + AUTH_TODO §C2, #158)
 # Pattern 1 — pure value-type tests; no LOGGER_*, no lifecycle.
 # Pins:
@@ -1451,6 +1483,20 @@ target_compile_features(test_native_multifield_module PRIVATE cxx_std_20)
 set_target_properties(test_native_multifield_module PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${PYLABHUB_STAGING_DIR}/tests"
 )
+
+# Compile-only TU pinning the v6 C++20 concept contracts (#194 Phase C).
+# Built as an OBJECT library so we never link it — the build IS the test:
+# all `static_assert`s inside fire at parse time.  If any future change
+# weakens AllowedPeerVisitor / BandMemberVisitor (drops the noexcept
+# requirement, accepts the wrong arg shape), this target fails to
+# compile and the regression is caught at build time.
+add_library(test_v6_concepts_compile OBJECT
+    test_plugins/test_v6_concepts_compile.cpp
+)
+target_include_directories(test_v6_concepts_compile PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/include
+)
+target_compile_features(test_v6_concepts_compile PRIVATE cxx_std_20)
 
 # ── NativeEngine test binary ─────────────────────────────────────────────
 add_executable(test_layer2_scriptengine_native_dylib

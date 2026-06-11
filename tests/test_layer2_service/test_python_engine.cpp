@@ -557,18 +557,28 @@ TEST_F(PythonEngineIsolatedTest, ApiStopReason_ReflectsAllEnumValues)
 
 TEST_F(PythonEngineIsolatedTest, Metrics_IndividualAccessors_ReadCoreCounters_Live)
 {
+#if defined(NDEBUG)
+    GTEST_SKIP() << "Requires RoleHostCore::test_set_* backdoor; absent "
+                    "in Release builds (HEP-CORE-0032 §3.2).";
+#else
     auto w = SpawnWorker(
         "python_engine.metrics_individual_accessors_read_core_counters_live",
         {unique_dir("metrics_indiv_live")});
     ExpectWorkerOk(w);
+#endif
 }
 
 TEST_F(PythonEngineIsolatedTest, Metrics_InSlotsReceived_Works_Consumer)
 {
+#if defined(NDEBUG)
+    GTEST_SKIP() << "Requires RoleHostCore::test_set_* backdoor; absent "
+                    "in Release builds (HEP-CORE-0032 §3.2).";
+#else
     auto w = SpawnWorker(
         "python_engine.metrics_in_slots_received_works_consumer",
         {unique_dir("metrics_inrx_consumer")});
     ExpectWorkerOk(w);
+#endif
 }
 
 TEST_F(PythonEngineIsolatedTest, MultipleErrors_CountAccumulates)
@@ -611,10 +621,15 @@ TEST_F(PythonEngineIsolatedTest, Metrics_AllLoopFields_AnchoredValues)
 // reshuffling the role sub-dict would slip through all V2 tests.
 TEST_F(PythonEngineIsolatedTest, Metrics_HierarchicalTable_Producer_FullShape)
 {
+#if defined(NDEBUG)
+    GTEST_SKIP() << "Requires RoleHostCore::test_set_* backdoor; absent "
+                    "in Release builds (HEP-CORE-0032 §3.2).";
+#else
     auto w = SpawnWorker(
         "python_engine.metrics_hierarchical_table_producer_full_shape",
         {unique_dir("metrics_ht_prod_full")});
     ExpectWorkerOk(w);
+#endif
 }
 
 // NEW gap-fill — cross-link the engine.script_error_count() and

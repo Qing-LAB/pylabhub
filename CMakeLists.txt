@@ -386,6 +386,27 @@ if(PYLABHUB_CREATE_INSTALL_TARGET)
   )
   install(SCRIPT "${CMAKE_BINARY_DIR}/PreInstallCheck.cmake")
 
+  # NOTE on install scope (#194 Phase C, 2026-06-11): pyLabHub has TWO
+  # overlapping public-header surfaces with conflicting needs:
+  #
+  #   1. Native plugin authors (Tier 2 per HEP-CORE-0028 §2.4) — should
+  #      see ONLY `utils/native_engine_api.h` + `utils/native_invoke_types.h`.
+  #
+  #   2. Embedded API consumers (per docs/README/README_EmbeddedAPI.md)
+  #      — include `<plh_datahub.hpp>` which transitively pulls
+  #      `utils/broker_service.hpp`, `utils/data_block.hpp`,
+  #      `utils/hub_zmq_queue.hpp`, etc.  These are part of the
+  #      EmbeddedAPI public contract and MUST install.
+  #
+  # An earlier remediation attempt added `REGEX "include/utils($|/)"
+  # EXCLUDE` here to enforce surface #1; that broke #2 because the
+  # EmbeddedAPI wrappers no longer compile against the install tree.
+  # Resolving the conflict requires splitting the install layout
+  # (separate `include/plugin/` for surface #1; keep `include/utils/`
+  # for surface #2) — tracked as a follow-up task.  For now, ship
+  # wholesale and rely on documentation (HEP-CORE-0028 §2.4 + the
+  # explicit allowlist comment in src/utils/CMakeLists.txt) to direct
+  # plugin authors to the two public files.
   if(SKBUILD)
     # Wheel mode: exclude static archives, test binaries, pkgconfig —
     # only ship runtime artifacts.

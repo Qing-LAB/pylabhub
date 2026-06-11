@@ -56,7 +56,46 @@
 #define PLH_LOG_WARN   2
 #define PLH_LOG_ERROR  3
 
-/* Invoke direction structs (plh_rx_t, plh_tx_t, plh_inbox_msg_t). */
+/* =========================================================================
+ * Enumerated-return macros (API v6 #194 Phase C, 2026-06-11)
+ *
+ * Every "one-of-N state" return value on PlhNativeContext is surfaced as
+ * an int + preprocessor macro pair.  Pure C does not have type-safe
+ * enums (compilers may widen `enum` to different `int` widths), so the
+ * stable wire form is `int` + macro.  The C++ wrapper layer derives
+ * `enum class : int` types from these macros for type-safe C++ use
+ * (see the C++ convenience layer at the bottom of this file).
+ *
+ * See HEP-CORE-0028 §2.4 (Two-Layer Plugin Authoring Model) for the
+ * design rationale + HEP-CORE-0028 §4.1 for the per-fn-ptr mapping.
+ * ========================================================================= */
+
+/** Negotiated CURVE mechanism for a queue side (HEP-CORE-0035 §2). */
+#define PLH_MECHANISM_UNINITIALIZED   0  /**< queue not started */
+#define PLH_MECHANISM_CURVE           1  /**< CURVE engaged */
+
+/** Queue overflow / mode policy (HEP-CORE-0007).  Maps to the strings
+ *  reported by Python `api.out_policy()` / Lua `api.out_policy()`. */
+#define PLH_QUEUE_POLICY_UNKNOWN     0   /**< unconnected / unrecognized */
+#define PLH_QUEUE_POLICY_SHM         1   /**< shm_read or shm_write */
+#define PLH_QUEUE_POLICY_ZMQ_DROP    2   /**< zmq_push_drop */
+#define PLH_QUEUE_POLICY_ZMQ_BLOCK   3   /**< zmq_push_block */
+#define PLH_QUEUE_POLICY_ZMQ_RING    4   /**< zmq_pull_ring_N */
+
+/** Reason the role host was asked to stop (HEP-CORE-0001).  Values mirror
+ *  `RoleHostCore::StopReason`; widths match the existing `stop_reason_string()`
+ *  mapping so Python/Lua + Native plugins observe the same codomain. */
+#define PLH_STOP_REASON_NORMAL          0
+#define PLH_STOP_REASON_PEER_DEAD       1
+#define PLH_STOP_REASON_HUB_DEAD        2
+#define PLH_STOP_REASON_CRITICAL_ERROR  3
+#define PLH_STOP_REASON_CHANNEL_CLOSED  4
+#define PLH_STOP_REASON_SCRIPT_ERROR    5
+
+/* Invoke direction structs (plh_rx_t, plh_tx_t, plh_inbox_msg_t) +
+ * visitor + arg-struct typedefs (plh_allowed_peer_t,
+ * plh_allowed_peer_visitor, plh_band_member_t, plh_band_member_visitor,
+ * plh_allowlist_changed_args_t, ...). */
 #include "native_invoke_types.h"
 
 #ifdef __cplusplus
@@ -136,9 +175,12 @@ typedef struct
     /** Check if critical error has been flagged. Returns 1 or 0. */
     int (*is_critical_error)(const struct PlhNativeContext *ctx);
 
-    /** Get stop reason string: "normal", "peer_dead", "hub_dead",
-     *  "critical_error", "channel_closed". */
-    const char *(*stop_reason)(const struct PlhNativeContext *ctx);
+    /** Get stop reason as a PLH_STOP_REASON_* macro value
+     *  (NORMAL=0, PEER_DEAD=1, HUB_DEAD=2, CRITICAL_ERROR=3,
+     *  CHANNEL_CLOSED=4, SCRIPT_ERROR=5).  API v6 (#194 Phase C) —
+     *  replaces v5 const char * return.  See PLH_STOP_REASON_* macros
+     *  at the top of this header. */
+    int (*stop_reason)(const struct PlhNativeContext *ctx);
 
     /** Query counters (consistent names across all engines). */
     uint64_t (*out_slots_written)(const struct PlhNativeContext *ctx);
@@ -163,76 +205,150 @@ typedef struct
     /** Role discovery. Returns 1 if found, 0 on timeout. */
     int      (*wait_for_role)(const struct PlhNativeContext *ctx, const char *uid, int timeout_ms);
 
-    /** Band pub/sub (HEP-CORE-0030). JSON strings for body/result. */
-    /** band_join: returns JSON string with member list, or NULL on failure. Caller must free(). */
-    char    *(*band_join)(const struct PlhNativeContext *ctx, const char *channel);
-    /** band_leave: returns 1 on success, 0 on failure. */
-    int      (*band_leave)(const struct PlhNativeContext *ctx, const char *channel);
-    /** band_broadcast: body_json is a JSON string. Fire-and-forget. */
-    void     (*band_broadcast)(const struct PlhNativeContext *ctx, const char *channel, const char *body_json);
-    /** band_members: returns JSON string with member list, or NULL. Caller must free(). */
-    char    *(*band_members)(const struct PlhNativeContext *ctx, const char *channel);
+    /* ── Band pub/sub (HEP-CORE-0030) — API v6 visitor + inquiry ────
+     * Surface uniformity with the allowed-peers cluster below: same
+     * visitor + contains + count triplet on `band_members`, same
+     * lifetime contract on the visitor argument struct.  See
+     * HEP-CORE-0028 §4.1 + §4.8. */
 
-    /* ── Channel-auth observability (HEP-CORE-0036 §I11 + §6.7, API v4 #194) ── */
+    /** band_join: returns 1 on success, 0 on rejection (broker
+     *  returned `{status:error}`), -1 on transport / argument error.
+     *  API v6 drops the list-from-join behaviour — plugin calls
+     *  `band_members()` separately to enumerate after a successful
+     *  join. */
+    int  (*band_join)(const struct PlhNativeContext *ctx, const char *channel);
 
-    /** allowed_peers: returns JSON string `[{"role_uid":...,"pubkey":...}, ...]`
-     *  of the channel's current authorized-peer snapshot, or NULL on failure
-     *  / unknown channel.  Caller must free().  Engine-parity with
-     *  Lua `api.allowed_peers(channel)` + Python `api.allowed_peers(channel)`. */
-    char    *(*allowed_peers)(const struct PlhNativeContext *ctx, const char *channel);
+    /** band_leave: returns 1 on success, 0 on rejection (NOT_A_MEMBER
+     *  or other broker error_code), -1 on transport / argument
+     *  error. */
+    int  (*band_leave)(const struct PlhNativeContext *ctx, const char *channel);
 
-    /** is_channel_ready: returns 1 iff the queue serving `channel` is in the
-     *  HEP-0036 §6.7 Active state (start() succeeded post-Configured gate).
-     *  Use as a script-side gate from non-data-loop callbacks; the framework
-     *  already short-circuits the data-loop callback on Standby. */
-    int      (*is_channel_ready)(const struct PlhNativeContext *ctx, const char *channel);
+    /** band_broadcast: body_json is a JSON string. Fire-and-forget;
+     *  no status return.  Status-return improvement is a cross-engine
+     *  concern tracked under #192. */
+    void (*band_broadcast)(const struct PlhNativeContext *ctx,
+                           const char *channel, const char *body_json);
 
-    /** queue_mechanism: returns the libzmq-reported negotiated mechanism for
-     *  the named side ("Curve"/"Plaintext"/"Uninitialized" per
-     *  hub::Mechanism enum, HEP-CORE-0035 §2 #161 C5).  Static C-string
-     *  literal owned by the host; do NOT free.  Engine-parity with Lua
-     *  `api.queue_mechanism(side)` + Python `api.queue_mechanism(side)`. */
-    const char *(*queue_mechanism)(const struct PlhNativeContext *ctx, int side);
+    /** band_members: visit every current member of the band.  Returns
+     *  the count visited (>=0), or -1 on error (null arg / unknown
+     *  channel / visitor threw — host catches exceptions and aborts
+     *  iteration; see HEP-CORE-0028 §4.8 noexcept rule).  Visitor
+     *  arguments follow the lifetime contract on plh_band_member_t. */
+    int  (*band_members)(const struct PlhNativeContext *ctx,
+                         const char *channel,
+                         plh_band_member_visitor visitor,
+                         void *userdata);
 
-    /* ── Phase B (#194) — diagnostic + flexzone-control + band-membership ── */
+    /** band_member_contains: 1 if `role_uid` is a current band member,
+     *  0 if not, -1 on error (null arg / unknown channel).
+     *
+     *  ⚠ COST: each call issues a fresh broker REQ round-trip via the
+     *  underlying `band_members` RPC (unlike the allowed_peers cluster
+     *  which serves from a local push-cache).  For repeated membership
+     *  queries in a hot path, use `band_members(...)` once with a
+     *  visitor that builds a local std::unordered_set (or the C++
+     *  `plh::BandHandle::to_uid_set()` helper) and query that. */
+    int  (*band_member_contains)(const struct PlhNativeContext *ctx,
+                                 const char *channel,
+                                 const char *role_uid);
 
-    /** metrics_json: returns JSON snapshot equivalent to Python
-     *  `api.metrics()` / Lua `api.metrics()`.  Caller must free(). */
-    char *(*metrics_json)(const struct PlhNativeContext *ctx);
+    /** band_member_count: current band member count (>=0) or -1 on
+     *  error.  Same RPC cost as band_member_contains above. */
+    int  (*band_member_count)(const struct PlhNativeContext *ctx,
+                              const char *channel);
 
-    /** is_in_band: 1 iff this role is a current member of `channel`'s
-     *  band routing table (HEP-CORE-0030 §5.3 S4). */
-    int   (*is_in_band)(const struct PlhNativeContext *ctx, const char *channel);
+    /* ── Channel-auth observability (HEP-CORE-0036 §I11 + §6.7) ─────
+     * Same visitor + inquiry triplet shape as band membership above
+     * — learn one pattern, know both. */
 
-    /** update_flexzone_checksum: SHM-only.  Recomputes + stores the
-     *  flexzone checksum after the plugin mutated fz contents.  Returns
-     *  1 on success, 0 on no-op (e.g. ZMQ side or no fz wired).
-     *  Engine-parity with Lua/Python `api.update_flexzone_checksum()`. */
-    int   (*update_flexzone_checksum)(const struct PlhNativeContext *ctx);
+    /** allowed_peers: visit every currently authorized peer for
+     *  `channel`.  Returns count (>=0) or -1 on error.  Visitor
+     *  argument follows the lifetime contract on plh_allowed_peer_t.
+     *  Visitor MUST be noexcept (HEP-CORE-0028 §4.8). */
+    int  (*allowed_peers)(const struct PlhNativeContext *ctx,
+                          const char *channel,
+                          plh_allowed_peer_visitor visitor,
+                          void *userdata);
 
-    /** set_verify_checksum: SHM-only.  Enables/disables per-read slot +
-     *  flexzone checksum verification.  ZMQ side: silent no-op (ZMQ
-     *  enforces integrity at frame level). */
-    void  (*set_verify_checksum)(const struct PlhNativeContext *ctx, int enable);
+    /** allowed_peer_contains: 1 if `role_uid` is in the channel's
+     *  authorized-peer set, 0 if not, -1 on error. */
+    int  (*allowed_peer_contains)(const struct PlhNativeContext *ctx,
+                                  const char *channel,
+                                  const char *role_uid);
 
-    /* ── Phase B2 (#194) — queue depth + policy + receive seq ───── */
+    /** allowed_peer_count: count of authorized peers (>=0) or -1 on
+     *  error. */
+    int  (*allowed_peer_count)(const struct PlhNativeContext *ctx,
+                               const char *channel);
+
+    /** is_channel_ready: returns 1 iff the queue serving `channel` is
+     *  in the HEP-0036 §6.7 Active state (start() succeeded
+     *  post-Configured gate), 0 otherwise, -1 on error (null arg). */
+    int  (*is_channel_ready)(const struct PlhNativeContext *ctx,
+                             const char *channel);
+
+    /** queue_mechanism: returns a PLH_MECHANISM_* macro value
+     *  (UNINITIALIZED=0, CURVE=1) for the named side.  API v6 #194
+     *  Phase C — replaces v5 const char * return; see PLH_MECHANISM_*
+     *  macros at top of header.  HEP-CORE-0035 §2 CURVE-unconditional
+     *  invariant constrains the codomain. */
+    int  (*queue_mechanism)(const struct PlhNativeContext *ctx, int side);
+
+    /* ── Queue diagnostics: depth + policy + receive seq ──────────── */
 
     /** Output (PUSH) ring buffer slot count.  0 when no tx side. */
     uint64_t (*out_capacity)(const struct PlhNativeContext *ctx);
-    /** Output overflow policy description string ("shm_write" / "zmq_push_drop"
-     *  / "zmq_push_block").  Caller must free().  NULL when no tx side. */
-    char    *(*out_policy)(const struct PlhNativeContext *ctx);
-
     /** Input (PULL) ring buffer slot count.  0 when no rx side. */
     uint64_t (*in_capacity)(const struct PlhNativeContext *ctx);
-    /** Input overflow policy description string ("shm_read" /
-     *  "zmq_pull_ring_N").  Caller must free().  NULL when no rx side. */
-    char    *(*in_policy)(const struct PlhNativeContext *ctx);
+
+    /** Output overflow policy as PLH_QUEUE_POLICY_* macro value.  API
+     *  v6 #194 Phase C — replaces v5 char* return.  Returns
+     *  PLH_QUEUE_POLICY_UNKNOWN when no tx side or unrecognized. */
+    int (*out_policy)(const struct PlhNativeContext *ctx);
+    /** Input overflow policy as PLH_QUEUE_POLICY_* macro value. */
+    int (*in_policy)(const struct PlhNativeContext *ctx);
 
     /** Wire frame sequence number of the last decoded slot (rx side).
      *  0 until first successful read.  ZmqQueue: most recently decoded
      *  frame.  ShmQueue: last slot consumed via read_acquire. */
     uint64_t (*last_seq)(const struct PlhNativeContext *ctx);
+
+    /* ── Metrics snapshot (API v6 #194 Phase C — opaque + key lookup) ─
+     * Replaces v5 metrics_json (which returned a malloc'd JSON string).
+     * Two-call pattern: snapshot once (builds a host-owned thread-local
+     * cache), then look up keys against the opaque pointer. */
+
+    /** metrics_snapshot: build a thread-local snapshot of the current
+     *  role-metrics tree (HEP-CORE-0019) and return an opaque view
+     *  pointer.  Lifetime: valid until the next metrics_snapshot()
+     *  call on the SAME thread.  Plugin MUST NOT share across threads.
+     *  Returns NULL on internal error. */
+    const void *(*metrics_snapshot)(const struct PlhNativeContext *ctx);
+
+    /** metrics_get: dotted-path metric lookup against a snapshot
+     *  pointer (key syntax: "queue.tx.drop_count" etc., matching the
+     *  JSON tree returned by Python `api.metrics()`).  Returns 1 if
+     *  found (writes value into *out), 0 if missing, -1 on error
+     *  (null snap / null out / null key). */
+    int (*metrics_get)(const void *snapshot,
+                       const char *key,
+                       double *out);
+
+    /* ── Flexzone control + band-membership query ──────────────────── */
+
+    /** is_in_band: 1 iff this role is a current member of `channel`'s
+     *  band routing table (HEP-CORE-0030 §5.3 S4).  Local-cache
+     *  query (no broker round trip). */
+    int (*is_in_band)(const struct PlhNativeContext *ctx, const char *channel);
+
+    /** update_flexzone_checksum: SHM-only.  Recomputes + stores the
+     *  flexzone checksum after the plugin mutated fz contents.  Returns
+     *  1 on success, 0 on no-op (e.g. ZMQ side or no fz wired). */
+    int (*update_flexzone_checksum)(const struct PlhNativeContext *ctx);
+
+    /** set_verify_checksum: SHM-only.  Enables/disables per-read slot +
+     *  flexzone checksum verification.  ZMQ side: silent no-op. */
+    void (*set_verify_checksum)(const struct PlhNativeContext *ctx, int enable);
 
     /* ── Opaque host data (do not dereference) ────────────────────── */
     void *_core;               /**< Internal — RoleHostCore pointer for API implementations. */
@@ -314,10 +430,29 @@ typedef struct PlhAbiInfo
  *           parity with Lua + Python (which already exposed these
  *           via per-side closures / `.def`s).  Plugins built against
  *           v4 will be rejected — rebuild against this header.
+ *    v5 → v6 (#194 Phase C, 2026-06-11): Two-Layer Plugin Authoring
+ *           Model cleanup — replaces every malloc-returning fn ptr
+ *           and every `const char *` enumerated return with int +
+ *           PLH_*_* macro / visitor / opaque-snapshot pattern.  No
+ *           allocations cross the C ABI boundary; no exceptions
+ *           cross the boundary either.  Signatures changed for:
+ *           `stop_reason` (`const char *` → `int`); `queue_mechanism`
+ *           (`const char *` → `int`); `out_policy` / `in_policy`
+ *           (`char *` malloc → `int`); `band_join` (`char *` malloc
+ *           → `int`); `band_members`, `allowed_peers` (`char *`
+ *           malloc → visitor pattern returning count).  Added:
+ *           `band_member_contains` / `band_member_count` /
+ *           `allowed_peer_contains` / `allowed_peer_count` (inquiry
+ *           helpers); `metrics_snapshot` + `metrics_get` (replacing
+ *           `metrics_json`).  Plugins built against v5 will be
+ *           rejected with a clear ABI-mismatch error — rebuild
+ *           against this header.  See HEP-CORE-0028 §2.4 (Two-Layer
+ *           Plugin Authoring Model) + §4.1 (PlhNativeContext) +
+ *           §4.8 (Lifetime + Security Contract).
  *
  *  Additive PlhAbiInfo fields are NOT breaking — they're
  *  guarded by struct_size. */
-#define PLH_NATIVE_API_VERSION 5
+#define PLH_NATIVE_API_VERSION 6
 
 /* =========================================================================
  * C-visible pylabhub ComponentVersions constants
@@ -469,10 +604,18 @@ typedef struct PlhAbiInfo
 
 #ifdef __cplusplus
 
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <optional>
+#include <span>
 #include <string>
+#include <string_view>
 #include <type_traits>
+#include <unordered_set>
+#include <utility>
+#include <vector>
 
 // Compile-time layout verification for cross-compiler interop.
 static_assert(std::is_standard_layout_v<PlhNativeContext>,
@@ -487,6 +630,106 @@ namespace plh
 
 /** Log level enum for C++ usage. */
 enum class LogLevel : int { Debug = 0, Info = 1, Warn = 2, Error = 3 };
+
+/* ── Typed enum classes (API v6 #194 Phase C) ─────────────────────────────
+ *
+ * Each enum derives from the C ABI macros at the top of this header.
+ * Underlying type is `int` so `static_cast`-free interop with the C
+ * fn ptrs is guaranteed.  See HEP-CORE-0028 §5.2. */
+
+/** Negotiated CURVE mechanism for a queue side (HEP-CORE-0035 §2). */
+enum class Mechanism : int
+{
+    Uninitialized = PLH_MECHANISM_UNINITIALIZED,
+    Curve         = PLH_MECHANISM_CURVE,
+};
+
+/** Queue overflow / mode policy (HEP-CORE-0007 / HEP-CORE-0019). */
+enum class QueuePolicy : int
+{
+    Unknown  = PLH_QUEUE_POLICY_UNKNOWN,
+    Shm      = PLH_QUEUE_POLICY_SHM,
+    ZmqDrop  = PLH_QUEUE_POLICY_ZMQ_DROP,
+    ZmqBlock = PLH_QUEUE_POLICY_ZMQ_BLOCK,
+    ZmqRing  = PLH_QUEUE_POLICY_ZMQ_RING,
+};
+
+/** Reason the role host was asked to stop (HEP-CORE-0001 +
+ *  RoleHostCore::StopReason). */
+enum class StopReason : int
+{
+    Normal        = PLH_STOP_REASON_NORMAL,
+    PeerDead      = PLH_STOP_REASON_PEER_DEAD,
+    HubDead       = PLH_STOP_REASON_HUB_DEAD,
+    CriticalError = PLH_STOP_REASON_CRITICAL_ERROR,
+    ChannelClosed = PLH_STOP_REASON_CHANNEL_CLOSED,
+    ScriptError   = PLH_STOP_REASON_SCRIPT_ERROR,
+};
+
+/** Compile-time enum → string-view conversions for zero-alloc logging.
+ *  Strings match the Python / Lua wire form so a Native plugin's log
+ *  output reads identically to a Python plugin's. */
+[[nodiscard]] constexpr std::string_view to_string(Mechanism m) noexcept
+{
+    switch (m)
+    {
+    case Mechanism::Curve:         return "Curve";
+    case Mechanism::Uninitialized: return "Uninitialized";
+    }
+    return "Unknown";
+}
+
+[[nodiscard]] constexpr std::string_view to_string(QueuePolicy p) noexcept
+{
+    switch (p)
+    {
+    case QueuePolicy::Shm:      return "shm";
+    case QueuePolicy::ZmqDrop:  return "zmq_push_drop";
+    case QueuePolicy::ZmqBlock: return "zmq_push_block";
+    case QueuePolicy::ZmqRing:  return "zmq_pull_ring";
+    case QueuePolicy::Unknown:  return "unknown";
+    }
+    return "unknown";
+}
+
+[[nodiscard]] constexpr std::string_view to_string(StopReason r) noexcept
+{
+    switch (r)
+    {
+    case StopReason::Normal:        return "normal";
+    case StopReason::PeerDead:      return "peer_dead";
+    case StopReason::HubDead:       return "hub_dead";
+    case StopReason::CriticalError: return "critical_error";
+    case StopReason::ChannelClosed: return "channel_closed";
+    case StopReason::ScriptError:   return "script_error";
+    }
+    return "normal";
+}
+
+/* ── C++20 concepts for visitor type safety (#194 Phase C) ────────────────
+ *
+ * Concepts constrain visitor templates to callables of the right shape
+ * AND enforce the HEP-CORE-0028 §4.8 "visitor MUST be noexcept" rule at
+ * the type system, not just in docs.  A throwing visitor would otherwise
+ * call std::terminate inside the noexcept thunk before the host's
+ * try/catch can react.  Misuse → a clean compile error at the concept
+ * boundary instead of a cryptic template diagnostic inside the thunk.
+ * See HEP-CORE-0028 §5.3. */
+
+template <typename V, typename Arg>
+concept PlhNoexceptVisitorOf =
+    std::invocable<V &, const Arg *>
+ && std::is_nothrow_invocable_v<V &, const Arg *>;
+
+template <typename V>
+concept AllowedPeerVisitor = PlhNoexceptVisitorOf<V, plh_allowed_peer_t>;
+
+template <typename V>
+concept BandMemberVisitor  = PlhNoexceptVisitorOf<V, plh_band_member_t>;
+
+// Forward declaration — Context is defined below; the handle types
+// reference it via raw pointer.
+class Context;
 
 /**
  * @brief C++ wrapper around PlhNativeContext.
@@ -512,13 +755,27 @@ class Context
   public:
     explicit Context(const PlhNativeContext *c) noexcept : c_(c)
     {
-        // Validate both sentinels at construction time.
+        // Validate both sentinels at construction time.  If the magic
+        // doesn't match, nullify the stored pointer — every accessor on
+        // this Context becomes a safe no-op returning the documented
+        // sentinel (nullptr / 0 / false / appropriate enum default).
         if (c && (c->_magic != PLH_CONTEXT_MAGIC || c->_magic_end != PLH_CONTEXT_MAGIC))
-            c_ = nullptr; // invalidate — all methods become safe no-ops
+            c_ = nullptr;
     }
 
-    /// Check if the context is valid (both magic sentinels match).
-    bool valid() const noexcept
+    /// Convenience overload — same magic check, accepts a reference.
+    explicit Context(const PlhNativeContext &c) noexcept : Context(&c) {}
+
+    // Context is a borrowed-pointer view (single pointer, trivially
+    // copyable).  Pass freely by value; the copy is one register move.
+    Context(const Context &)            noexcept = default;
+    Context(Context &&)                 noexcept = default;
+    Context &operator=(const Context &) noexcept = default;
+    Context &operator=(Context &&)      noexcept = default;
+    ~Context()                                   = default;
+
+    /// Check if the context is valid (non-null + both magic sentinels match).
+    [[nodiscard]] bool valid() const noexcept
     {
         return c_ != nullptr
             && c_->_magic     == PLH_CONTEXT_MAGIC
@@ -526,82 +783,98 @@ class Context
     }
 
     // ── Identity ────────────────────────────────────────────────────
-    const char *uid()         const noexcept { return c_->uid; }
-    const char *name()        const noexcept { return c_->name; }
-    const char *channel()     const noexcept { return c_->channel; }
-    const char *out_channel() const noexcept { return c_->out_channel; }
-    const char *log_level_str() const noexcept { return c_->log_level; }
-    const char *role_dir()    const noexcept { return c_->role_dir; }
-    const char *role_tag()    const noexcept { return c_->role_tag; }
+    [[nodiscard]] const char *uid()           const noexcept { return c_ ? c_->uid         : nullptr; }
+    [[nodiscard]] const char *name()          const noexcept { return c_ ? c_->name        : nullptr; }
+    [[nodiscard]] const char *channel()       const noexcept { return c_ ? c_->channel     : nullptr; }
+    [[nodiscard]] const char *out_channel()   const noexcept { return c_ ? c_->out_channel : nullptr; }
+    [[nodiscard]] const char *log_level_str() const noexcept { return c_ ? c_->log_level   : nullptr; }
+    [[nodiscard]] const char *role_dir()      const noexcept { return c_ ? c_->role_dir    : nullptr; }
+    [[nodiscard]] const char *role_tag()      const noexcept { return c_ ? c_->role_tag    : nullptr; }
 
     // ── Logging ─────────────────────────────────────────────────────
-    void log(LogLevel level, const char *msg) const
+    void log(LogLevel level, const char *msg) const noexcept
     {
-        if (c_->log) c_->log(c_, static_cast<int>(level), msg);
+        if (c_ && c_->log) c_->log(c_, static_cast<int>(level), msg);
     }
-    void log(LogLevel level, const std::string &msg) const
+    void log(LogLevel level, const std::string &msg) const noexcept
     {
         log(level, msg.c_str());
     }
+    /// string_view overload — null-terminates into a small stack buffer.
+    /// Falls back to a no-op if the view exceeds the buffer; document
+    /// the cap to plugin authors so they choose between this and the
+    /// const char * overload accordingly.
+    void log(LogLevel level, std::string_view msg) const noexcept
+    {
+        if (!c_ || !c_->log) return;
+        char buf[1024];
+        if (msg.size() >= sizeof(buf)) return;          // log message dropped
+        std::memcpy(buf, msg.data(), msg.size());
+        buf[msg.size()] = '\0';
+        c_->log(c_, static_cast<int>(level), buf);
+    }
 
     // ── Custom metrics ──────────────────────────────────────────────
-    void report_metric(const char *key, double value) const
+    void report_metric(const char *key, double value) const noexcept
     {
-        if (c_->report_metric) c_->report_metric(c_, key, value);
+        if (c_ && c_->report_metric) c_->report_metric(c_, key, value);
     }
-    void clear_custom_metrics() const
+    void clear_custom_metrics() const noexcept
     {
-        if (c_->clear_custom_metrics) c_->clear_custom_metrics(c_);
+        if (c_ && c_->clear_custom_metrics) c_->clear_custom_metrics(c_);
     }
 
     // ── Lifecycle ───────────────────────────────────────────────────
-    void request_stop() const
+    void request_stop() const noexcept
     {
-        if (c_->request_stop) c_->request_stop(c_);
+        if (c_ && c_->request_stop) c_->request_stop(c_);
     }
     /// Flag a critical error and request shutdown.  msg is REQUIRED:
     /// a null-terminated string describing the unrecoverable
     /// condition.  Logged by the host at ERROR level as
     /// `[role_tag/uid] CRITICAL: <msg>` BEFORE flipping state.
-    /// API v3 — uniform with Python `api.set_critical_error(msg)`
-    /// and Lua `api.set_critical_error(msg)`.
-    void set_critical_error(const char *msg) const
+    /// Uniform with Python `api.set_critical_error(msg)` and Lua
+    /// `api.set_critical_error(msg)`.
+    void set_critical_error(const char *msg) const noexcept
     {
-        if (c_->set_critical_error) c_->set_critical_error(c_, msg);
+        if (c_ && c_->set_critical_error) c_->set_critical_error(c_, msg);
     }
-    bool is_critical_error() const
+    [[nodiscard]] bool is_critical_error() const noexcept
     {
-        return c_->is_critical_error ? c_->is_critical_error(c_) != 0 : false;
+        return c_ && c_->is_critical_error && c_->is_critical_error(c_) != 0;
     }
-    const char *stop_reason() const
+    /// API v6 — returns a typed StopReason enum class.  See HEP-CORE-0028 §5.2.
+    [[nodiscard]] StopReason stop_reason() const noexcept
     {
-        return c_->stop_reason ? c_->stop_reason(c_) : "normal";
+        return (c_ && c_->stop_reason)
+            ? static_cast<StopReason>(c_->stop_reason(c_))
+            : StopReason::Normal;
     }
 
     // ── Counters ────────────────────────────────────────────────────
-    uint64_t out_slots_written() const { return c_->out_slots_written ? c_->out_slots_written(c_) : 0; }
-    uint64_t in_slots_received() const { return c_->in_slots_received ? c_->in_slots_received(c_) : 0; }
-    uint64_t out_drop_count()    const { return c_->out_drop_count ? c_->out_drop_count(c_) : 0; }
-    uint64_t script_error_count() const { return c_->script_error_count ? c_->script_error_count(c_) : 0; }
-    uint64_t loop_overrun_count() const { return c_->loop_overrun_count ? c_->loop_overrun_count(c_) : 0; }
-    uint64_t last_cycle_work_us() const { return c_->last_cycle_work_us ? c_->last_cycle_work_us(c_) : 0; }
+    [[nodiscard]] uint64_t out_slots_written()  const noexcept { return (c_ && c_->out_slots_written)  ? c_->out_slots_written(c_)  : 0; }
+    [[nodiscard]] uint64_t in_slots_received()  const noexcept { return (c_ && c_->in_slots_received)  ? c_->in_slots_received(c_)  : 0; }
+    [[nodiscard]] uint64_t out_drop_count()     const noexcept { return (c_ && c_->out_drop_count)     ? c_->out_drop_count(c_)     : 0; }
+    [[nodiscard]] uint64_t script_error_count() const noexcept { return (c_ && c_->script_error_count) ? c_->script_error_count(c_) : 0; }
+    [[nodiscard]] uint64_t loop_overrun_count() const noexcept { return (c_ && c_->loop_overrun_count) ? c_->loop_overrun_count(c_) : 0; }
+    [[nodiscard]] uint64_t last_cycle_work_us() const noexcept { return (c_ && c_->last_cycle_work_us) ? c_->last_cycle_work_us(c_) : 0; }
 
     // ── Spinlock ───────────────────────────────────────────────────
-    bool spinlock_lock(int index, int side = PLH_SIDE_AUTO, int timeout_ms = -1) const
+    [[nodiscard]] bool spinlock_lock(int index, int side = PLH_SIDE_AUTO, int timeout_ms = -1) const noexcept
     {
-        return c_->spinlock_lock ? c_->spinlock_lock(c_, index, side, timeout_ms) != 0 : false;
+        return c_ && c_->spinlock_lock && c_->spinlock_lock(c_, index, side, timeout_ms) != 0;
     }
-    void spinlock_unlock(int index, int side = PLH_SIDE_AUTO) const
+    void spinlock_unlock(int index, int side = PLH_SIDE_AUTO) const noexcept
     {
-        if (c_->spinlock_unlock) c_->spinlock_unlock(c_, index, side);
+        if (c_ && c_->spinlock_unlock) c_->spinlock_unlock(c_, index, side);
     }
-    uint32_t spinlock_count(int side = PLH_SIDE_AUTO) const
+    [[nodiscard]] uint32_t spinlock_count(int side = PLH_SIDE_AUTO) const noexcept
     {
-        return c_->spinlock_count ? c_->spinlock_count(c_, side) : 0;
+        return (c_ && c_->spinlock_count) ? c_->spinlock_count(c_, side) : 0;
     }
-    bool spinlock_is_locked(int index, int side = PLH_SIDE_AUTO) const
+    [[nodiscard]] bool spinlock_is_locked(int index, int side = PLH_SIDE_AUTO) const noexcept
     {
-        return c_->spinlock_is_locked ? c_->spinlock_is_locked(c_, index, side) != 0 : false;
+        return c_ && c_->spinlock_is_locked && c_->spinlock_is_locked(c_, index, side) != 0;
     }
 
     /// RAII spinlock guard — releases on scope exit.
@@ -635,6 +908,11 @@ class Context
     /// Exception-safe: RAII guard releases the lock during stack unwinding
     /// if fn throws — the exception propagates to the caller after release.
     /// NOT noexcept — fn is free to throw.
+    ///
+    /// Note: fn's return value (if any) is intentionally discarded.  The
+    /// `bool` return communicates lock-acquisition status only.  Capture
+    /// data via fn's closure if you need to surface a value:
+    ///   `int value = 0; api.with_spinlock(0, ..., [&]{ value = compute(); });`
     template <typename Fn>
     bool with_spinlock(int index, int side, int timeout_ms, Fn &&fn) const
     {
@@ -659,13 +937,13 @@ class Context
     }
 
     // ── Schema sizes ───────────────────────────────────────────────
-    size_t slot_logical_size(int side = PLH_SIDE_AUTO) const
+    [[nodiscard]] size_t slot_logical_size(int side = PLH_SIDE_AUTO) const noexcept
     {
-        return c_->slot_logical_size ? c_->slot_logical_size(c_, side) : 0;
+        return (c_ && c_->slot_logical_size) ? c_->slot_logical_size(c_, side) : 0;
     }
-    size_t flexzone_logical_size(int side = PLH_SIDE_AUTO) const
+    [[nodiscard]] size_t flexzone_logical_size(int side = PLH_SIDE_AUTO) const noexcept
     {
-        return c_->flexzone_logical_size ? c_->flexzone_logical_size(c_, side) : 0;
+        return (c_ && c_->flexzone_logical_size) ? c_->flexzone_logical_size(c_, side) : 0;
     }
 
     // Flexzone: C/C++ plugins access fz directly via plh_tx_t.fz / plh_rx_t.fz
@@ -674,108 +952,398 @@ class Context
     // path for C/C++. Python/Lua use api.flexzone(side) because reconstructing
     // typed views per invoke is expensive in those languages.
 
-    bool wait_for_role(const char *uid, int timeout_ms = 5000) const
+    [[nodiscard]] bool wait_for_role(const char *uid, int timeout_ms = 5000) const noexcept
     {
-        return c_->wait_for_role ? c_->wait_for_role(c_, uid, timeout_ms) != 0 : false;
+        return c_ && c_->wait_for_role && c_->wait_for_role(c_, uid, timeout_ms) != 0;
     }
 
-    // ── Band pub/sub (HEP-CORE-0030) ─────────────────────────────
-    /** Returns JSON string with member list. Caller must free(). NULL on failure. */
-    char *band_join(const char *channel) const
+    // ── Band pub/sub (HEP-CORE-0030) — API v6 ──────────────────────
+    /// Join a band by name.  Returns true on success, false on rejection
+    /// or transport error.  API v6 drops the list-from-join behaviour —
+    /// call `band(channel).visit_members(...)` separately to enumerate.
+    [[nodiscard]] bool band_join(const char *channel) const noexcept
     {
-        return c_->band_join ? c_->band_join(c_, channel) : nullptr;
+        return c_ && c_->band_join && c_->band_join(c_, channel) == 1;
     }
-    bool band_leave(const char *channel) const
+    [[nodiscard]] bool band_leave(const char *channel) const noexcept
     {
-        return c_->band_leave ? c_->band_leave(c_, channel) != 0 : false;
+        return c_ && c_->band_leave && c_->band_leave(c_, channel) == 1;
     }
-    void band_broadcast(const char *channel, const char *body_json) const
+    void band_broadcast(const char *channel, const char *body_json) const noexcept
     {
-        if (c_->band_broadcast) c_->band_broadcast(c_, channel, body_json);
-    }
-    /** Returns JSON string with member list. Caller must free(). NULL on failure. */
-    char *band_members(const char *channel) const
-    {
-        return c_->band_members ? c_->band_members(c_, channel) : nullptr;
+        if (c_ && c_->band_broadcast) c_->band_broadcast(c_, channel, body_json);
     }
 
-    // ── Channel-auth observability (HEP-CORE-0036 §I11 + §6.7) ───
-    /** Returns JSON string `[{"role_uid":...,"pubkey":...}, ...]` snapshot,
-     *  or NULL on failure / unknown channel.  Caller must free(). */
-    char *allowed_peers(const char *channel) const
+    /// Returns a lightweight handle for band-membership queries.  Zero
+    /// allocation — see HEP-CORE-0028 §5.5.
+    [[nodiscard]] constexpr inline class BandHandle band(const char *channel) const noexcept;
+
+    // ── Channel-auth observability (HEP-CORE-0036 §I11 + §6.7) ──────
+    /// Returns a handle for authorized-peer queries on `channel`.
+    /// See HEP-CORE-0028 §5.5.
+    [[nodiscard]] constexpr inline class AllowedPeersHandle
+    allowed_peers(const char *channel) const noexcept;
+
+    /// True iff the named channel's queue is Active (§6.7).
+    [[nodiscard]] bool is_channel_ready(const char *channel) const noexcept
     {
-        return c_->allowed_peers ? c_->allowed_peers(c_, channel) : nullptr;
-    }
-    /** Returns true iff the named channel's queue is Active (§6.7). */
-    bool is_channel_ready(const char *channel) const
-    {
-        return c_->is_channel_ready ? c_->is_channel_ready(c_, channel) != 0 : false;
-    }
-    /** Returns the negotiated CURVE mechanism string ("Curve" / "Plaintext"
-     *  / "Uninitialized") for the named side.  Static C-string owned by the
-     *  host; do NOT free. */
-    const char *queue_mechanism(int side = PLH_SIDE_AUTO) const
-    {
-        return c_->queue_mechanism ? c_->queue_mechanism(c_, side) : "Uninitialized";
+        return c_ && c_->is_channel_ready
+            && c_->is_channel_ready(c_, channel) == 1;
     }
 
-    // ── Phase B (#194) — diagnostics + flexzone + band-membership ─
-    /** Returns JSON snapshot of role metrics.  Caller must free(). */
-    char *metrics_json() const
+    /// Returns the negotiated CURVE mechanism for the named side as a
+    /// typed enum class.  API v6 — replaces v5 const char * return.
+    [[nodiscard]] Mechanism queue_mechanism(int side = PLH_SIDE_AUTO) const noexcept
     {
-        return c_->metrics_json ? c_->metrics_json(c_) : nullptr;
-    }
-    /** Returns true iff this role is a current member of the band. */
-    bool is_in_band(const char *channel) const
-    {
-        return c_->is_in_band ? c_->is_in_band(c_, channel) != 0 : false;
-    }
-    /** SHM-only.  Recompute + store flexzone checksum. */
-    bool update_flexzone_checksum() const
-    {
-        return c_->update_flexzone_checksum
-                   ? c_->update_flexzone_checksum(c_) != 0
-                   : false;
-    }
-    /** SHM-only.  Enable/disable per-read checksum verification. */
-    void set_verify_checksum(bool enable) const
-    {
-        if (c_->set_verify_checksum) c_->set_verify_checksum(c_, enable ? 1 : 0);
+        return (c_ && c_->queue_mechanism)
+            ? static_cast<Mechanism>(c_->queue_mechanism(c_, side))
+            : Mechanism::Uninitialized;
     }
 
-    // ── Phase B2 (#194) — queue depth + policy + receive seq ─────
-    /** Output ring slot count, or 0 when no tx side. */
-    uint64_t out_capacity() const
+    // ── Metrics snapshot (#194 Phase C) ─────────────────────────────
+    /// Build a thread-local snapshot of the current metrics tree and
+    /// return a typed view.  Lifetime: valid until next snapshot on
+    /// same thread.  See HEP-CORE-0028 §5.4.
+    [[nodiscard]] inline class MetricsSnapshot metrics_snapshot() const noexcept;
+
+    // ── Flexzone control + band-membership query ───────────────────
+    /// True iff this role is a current member of the band routing.
+    [[nodiscard]] bool is_in_band(const char *channel) const noexcept
     {
-        return c_->out_capacity ? c_->out_capacity(c_) : 0;
+        return c_ && c_->is_in_band && c_->is_in_band(c_, channel) == 1;
     }
-    /** Output overflow policy string. Caller frees. NULL when no tx side. */
-    char *out_policy() const
+    /// SHM-only.  Recompute + store flexzone checksum.
+    [[nodiscard]] bool update_flexzone_checksum() const noexcept
     {
-        return c_->out_policy ? c_->out_policy(c_) : nullptr;
+        return c_ && c_->update_flexzone_checksum
+            && c_->update_flexzone_checksum(c_) == 1;
     }
-    /** Input ring slot count, or 0 when no rx side. */
-    uint64_t in_capacity() const
+    /// SHM-only.  Enable/disable per-read checksum verification.
+    void set_verify_checksum(bool enable) const noexcept
     {
-        return c_->in_capacity ? c_->in_capacity(c_) : 0;
-    }
-    /** Input overflow policy string. Caller frees. NULL when no rx side. */
-    char *in_policy() const
-    {
-        return c_->in_policy ? c_->in_policy(c_) : nullptr;
-    }
-    /** Last decoded wire seq on rx side. 0 until first successful read. */
-    uint64_t last_seq() const
-    {
-        return c_->last_seq ? c_->last_seq(c_) : 0;
+        if (c_ && c_->set_verify_checksum)
+            c_->set_verify_checksum(c_, enable ? 1 : 0);
     }
 
-    /// Access the raw C context.
-    const PlhNativeContext *raw() const noexcept { return c_; }
+    // ── Queue diagnostics — depth + policy + last_seq ──────────────
+    [[nodiscard]] uint64_t out_capacity() const noexcept
+    {
+        return (c_ && c_->out_capacity) ? c_->out_capacity(c_) : 0;
+    }
+    [[nodiscard]] uint64_t in_capacity() const noexcept
+    {
+        return (c_ && c_->in_capacity) ? c_->in_capacity(c_) : 0;
+    }
+    /// Output queue overflow policy as a typed enum.  API v6 — replaces
+    /// v5 malloc'd char * return.
+    [[nodiscard]] QueuePolicy out_policy() const noexcept
+    {
+        return (c_ && c_->out_policy)
+            ? static_cast<QueuePolicy>(c_->out_policy(c_))
+            : QueuePolicy::Unknown;
+    }
+    [[nodiscard]] QueuePolicy in_policy() const noexcept
+    {
+        return (c_ && c_->in_policy)
+            ? static_cast<QueuePolicy>(c_->in_policy(c_))
+            : QueuePolicy::Unknown;
+    }
+    [[nodiscard]] uint64_t last_seq() const noexcept
+    {
+        return (c_ && c_->last_seq) ? c_->last_seq(c_) : 0;
+    }
+
+    /// Access the raw C context.  May be nullptr if the Context was
+    /// constructed from an invalid PlhNativeContext (magic mismatch).
+    [[nodiscard]] constexpr const PlhNativeContext *raw() const noexcept { return c_; }
 
   private:
     const PlhNativeContext *c_;
 };
+
+/* ── MetricsSnapshot — opaque handle wrapper (#194 Phase C) ──────────────
+ *
+ * Typed view over the opaque pointer returned by
+ * `ctx->metrics_snapshot()`.  NOT a RAII resource — the underlying
+ * thread-local cache is host-owned; this wrapper merely binds the
+ * pointer to a typed lookup interface.  Lifetime contract: valid until
+ * the next `metrics_snapshot()` call on the SAME thread.  See
+ * HEP-CORE-0028 §5.4. */
+class MetricsSnapshot
+{
+  public:
+    constexpr MetricsSnapshot(const Context &ctx, const void *snap) noexcept
+        : ctx_(&ctx), snap_(snap) {}
+
+    /// Get a metric by dotted-path key.  Returns nullopt if missing,
+    /// snapshot invalid, or ABI fn unwired.
+    [[nodiscard]] std::optional<double> get(const char *key) const noexcept
+    {
+        if (!snap_ || !ctx_->raw()->metrics_get || !key) return std::nullopt;
+        double v = 0.0;
+        if (ctx_->raw()->metrics_get(snap_, key, &v) == 1) return v;
+        return std::nullopt;
+    }
+    [[nodiscard]] std::optional<double> get(std::string_view key) const noexcept
+    {
+        // string_view may not be null-terminated; copy to a stack buffer
+        // first.  Buffer size 512 chosen to cover HEP-CORE-0019 §9
+        // dotted-path metric keys with comfortable headroom (deepest
+        // observed tree path < 128 chars).  Over-cap returns nullopt
+        // (silent-vs-explicit trade-off: plugin authors using
+        // string_view that long should use the const char* overload
+        // with an explicit owned buffer).
+        if (key.size() >= 512) return std::nullopt;
+        char buf[512];
+        std::memcpy(buf, key.data(), key.size());
+        buf[key.size()] = '\0';
+        return get(buf);
+    }
+
+    /// Ergonomic shorthand for get().
+    [[nodiscard]] std::optional<double> operator[](const char *key) const noexcept
+    { return get(key); }
+
+    [[nodiscard]] explicit operator bool() const noexcept { return snap_ != nullptr; }
+    [[nodiscard]] constexpr const void *raw() const noexcept { return snap_; }
+
+  private:
+    const Context *ctx_;
+    const void    *snap_;
+};
+
+/* ── AllowedPeersHandle — handle for HEP-0036 §I11 surface ───────────────
+ *
+ * Lightweight typed view over (ctx, channel).  Two pointers, zero
+ * allocation.  Methods delegate to the C ABI fn ptrs with no extra
+ * runtime work.  See HEP-CORE-0028 §5.5. */
+class AllowedPeersHandle
+{
+  public:
+    constexpr AllowedPeersHandle(const Context &ctx, const char *channel) noexcept
+        : ctx_(&ctx), channel_(channel) {}
+
+    /// Template visitor — concept-constrained, zero-cost thunk forwards
+    /// to the C ABI.  Visitor MUST be noexcept; throwing across the C
+    /// ABI boundary is undefined behaviour (HEP-CORE-0028 §4.8).
+    template <AllowedPeerVisitor V>
+    int visit(V &&v) const noexcept
+    {
+        const auto *c = ctx_->raw();
+        if (!c->allowed_peers) return -1;
+        auto thunk = +[](const plh_allowed_peer_t *p, void *ud) noexcept {
+            (*static_cast<std::decay_t<V> *>(ud))(p);
+        };
+        return c->allowed_peers(c, channel_, thunk, &v);
+    }
+
+    /// Raw-fnptr overload — for callers that already have a plain
+    /// function pointer.
+    int visit(plh_allowed_peer_visitor v, void *userdata) const noexcept
+    {
+        const auto *c = ctx_->raw();
+        return c->allowed_peers
+            ? c->allowed_peers(c, channel_, v, userdata)
+            : -1;
+    }
+
+    /// 1 if `role_uid` is in the channel's allowlist, 0 if not, -1 on
+    /// error.  Wrapper presents as bool — use count() if you need to
+    /// distinguish missing from error.
+    [[nodiscard]] bool contains(const char *role_uid) const noexcept
+    {
+        const auto *c = ctx_->raw();
+        return c->allowed_peer_contains
+            ? c->allowed_peer_contains(c, channel_, role_uid) == 1
+            : false;
+    }
+
+    /// Authorized-peer count (>=0) or -1 on error.
+    [[nodiscard]] int count() const noexcept
+    {
+        const auto *c = ctx_->raw();
+        return c->allowed_peer_count ? c->allowed_peer_count(c, channel_) : -1;
+    }
+
+    /// Snapshot the allowlist's role UIDs into a std::vector.  Encourages
+    /// the "snapshot once, query many times" pattern for hot paths
+    /// (HEP-CORE-0028 §5.5).  Lambda is marked noexcept to satisfy the
+    /// PlhNoexceptVisitorOf concept; `std::bad_alloc` propagates as
+    /// `std::terminate` (standard C++ behavior on container allocator
+    /// failure — there is no recovery from OOM in data-path code).
+    [[nodiscard]] std::vector<std::string> collect_uids() const
+    {
+        std::vector<std::string> out;
+        visit([&](const plh_allowed_peer_t *p) noexcept {
+            if (p && p->role_uid) out.emplace_back(p->role_uid);
+        });
+        return out;
+    }
+
+    /// Snapshot into an unordered_set for O(1) repeated membership
+    /// queries.  Use when the plugin queries the same allowlist many
+    /// times per cycle — measurably faster than repeated contains()
+    /// calls (each of which pays a per-call vector copy in the host).
+    [[nodiscard]] std::unordered_set<std::string> to_uid_set() const
+    {
+        std::unordered_set<std::string> out;
+        visit([&](const plh_allowed_peer_t *p) noexcept {
+            if (p && p->role_uid) out.emplace(p->role_uid);
+        });
+        return out;
+    }
+
+    [[nodiscard]] constexpr const char *channel() const noexcept { return channel_; }
+
+  private:
+    const Context *ctx_;
+    const char    *channel_;
+};
+
+/* ── BandHandle — handle for HEP-CORE-0030 §5.3 surface ─────────────────
+ *
+ * Same shape as AllowedPeersHandle — visitor + contains + count
+ * triplet, plus broadcast pass-through.  Surface uniformity: plugin
+ * authors who learn AllowedPeersHandle already know BandHandle.  See
+ * HEP-CORE-0028 §5.5. */
+class BandHandle
+{
+  public:
+    constexpr BandHandle(const Context &ctx, const char *channel) noexcept
+        : ctx_(&ctx), channel_(channel) {}
+
+    template <BandMemberVisitor V>
+    int visit_members(V &&v) const noexcept
+    {
+        const auto *c = ctx_->raw();
+        if (!c->band_members) return -1;
+        auto thunk = +[](const plh_band_member_t *m, void *ud) noexcept {
+            (*static_cast<std::decay_t<V> *>(ud))(m);
+        };
+        return c->band_members(c, channel_, thunk, &v);
+    }
+
+    int visit_members(plh_band_member_visitor v, void *userdata) const noexcept
+    {
+        const auto *c = ctx_->raw();
+        return c->band_members
+            ? c->band_members(c, channel_, v, userdata)
+            : -1;
+    }
+
+    [[nodiscard]] bool contains(const char *role_uid) const noexcept
+    {
+        const auto *c = ctx_->raw();
+        return c->band_member_contains
+            ? c->band_member_contains(c, channel_, role_uid) == 1
+            : false;
+    }
+
+    [[nodiscard]] int member_count() const noexcept
+    {
+        const auto *c = ctx_->raw();
+        return c->band_member_count ? c->band_member_count(c, channel_) : -1;
+    }
+
+    void broadcast(const char *body_json) const noexcept
+    {
+        const auto *c = ctx_->raw();
+        if (c->band_broadcast) c->band_broadcast(c, channel_, body_json);
+    }
+
+    [[nodiscard]] std::vector<std::string> collect_uids() const
+    {
+        std::vector<std::string> out;
+        visit_members([&](const plh_band_member_t *m) noexcept {
+            if (m && m->role_uid) out.emplace_back(m->role_uid);
+        });
+        return out;
+    }
+
+    [[nodiscard]] std::unordered_set<std::string> to_uid_set() const
+    {
+        std::unordered_set<std::string> out;
+        visit_members([&](const plh_band_member_t *m) noexcept {
+            if (m && m->role_uid) out.emplace(m->role_uid);
+        });
+        return out;
+    }
+
+    [[nodiscard]] constexpr const char *channel() const noexcept { return channel_; }
+
+  private:
+    const Context *ctx_;
+    const char    *channel_;
+};
+
+/* ── AllowlistChangedView — std::span wrapper over event args ────────────
+ *
+ * Wraps `plh_allowlist_changed_args_t *` to expose the peers array as
+ * a `std::span` for idiomatic range-for iteration.  See HEP-CORE-0028
+ * §5.6. */
+class AllowlistChangedView
+{
+  public:
+    constexpr explicit AllowlistChangedView(
+        const plh_allowlist_changed_args_t *a) noexcept
+        : args_(a) {}
+
+    [[nodiscard]] constexpr std::string_view channel() const noexcept
+    { return args_ && args_->channel ? args_->channel : std::string_view{}; }
+
+    [[nodiscard]] constexpr std::string_view reason() const noexcept
+    { return args_ && args_->reason ? args_->reason : std::string_view{}; }
+
+    [[nodiscard]] constexpr std::span<const plh_allowed_peer_t> peers() const noexcept
+    {
+        return args_ ? std::span{args_->peers, args_->peer_count}
+                     : std::span<const plh_allowed_peer_t>{};
+    }
+
+    [[nodiscard]] constexpr explicit operator bool() const noexcept
+    { return args_ != nullptr; }
+
+  private:
+    const plh_allowlist_changed_args_t *args_;
+};
+
+/* ── Context inline factory methods (defined after handle types) ──────── */
+
+constexpr inline AllowedPeersHandle Context::allowed_peers(const char *channel) const noexcept
+{
+    return AllowedPeersHandle(*this, channel);
+}
+
+constexpr inline BandHandle Context::band(const char *channel) const noexcept
+{
+    return BandHandle(*this, channel);
+}
+
+inline MetricsSnapshot Context::metrics_snapshot() const noexcept
+{
+    return MetricsSnapshot(
+        *this,
+        (c_ && c_->metrics_snapshot) ? c_->metrics_snapshot(c_) : nullptr);
+}
+
+/* ── Compile-time verification of zero-cost handle contract (#194 Phase C) ─
+ *
+ * The contract: handles are trivially-copyable two-pointer values that
+ * pass in registers.  If a future change adds a non-trivial member,
+ * build breaks here. */
+
+static_assert(std::is_trivially_copyable_v<MetricsSnapshot>,
+              "plh::MetricsSnapshot must be trivially copyable");
+static_assert(std::is_trivially_copyable_v<AllowedPeersHandle>,
+              "plh::AllowedPeersHandle must be trivially copyable");
+static_assert(std::is_trivially_copyable_v<BandHandle>,
+              "plh::BandHandle must be trivially copyable");
+static_assert(std::is_trivially_copyable_v<AllowlistChangedView>,
+              "plh::AllowlistChangedView must be trivially copyable");
+static_assert(sizeof(AllowedPeersHandle) == 2 * sizeof(void *),
+              "plh::AllowedPeersHandle must be exactly two pointers");
+static_assert(sizeof(BandHandle) == 2 * sizeof(void *),
+              "plh::BandHandle must be exactly two pointers");
 
 /**
  * @brief Typed slot reference — zero-cost wrapper around raw pointer.
@@ -796,6 +1364,7 @@ class SlotRef
     T &operator*() noexcept { return *ptr_; }
     const T &operator*() const noexcept { return *ptr_; }
     T *get() noexcept { return ptr_; }
+    const T *get() const noexcept { return ptr_; }
 
   private:
     T   *ptr_;

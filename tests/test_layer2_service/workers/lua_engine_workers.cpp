@@ -4346,15 +4346,23 @@ int metrics_individual_accessors_read_core_counters_live(const std::string &dir)
             // Phase 0: pristine — both counters start at 0.
             invoke_phase(0, 0, 0);
 
-            // Phase 1: set non-zero values.
+            // Phase 1: set non-zero values.  test_set_* is a backdoor
+            // surface absent in Release builds (HEP-CORE-0032 §3.2);
+            // the calling TEST_F SKIPs in NDEBUG so this worker is
+            // never invoked there.  The #if keeps the worker .cpp
+            // compiling against the Release-mode RoleHostCore.
+#if !defined(NDEBUG)
             core.test_set_out_slots_written(42);
             core.test_set_out_drop_count(7);
+#endif
             invoke_phase(1, 42, 7);
 
             // Phase 2: increment further between invocations — pins
             // LIVE read (cached snapshot would still report 42/7).
+#if !defined(NDEBUG)
             core.test_set_out_slots_written(100);
             core.test_set_out_drop_count(15);
+#endif
             invoke_phase(2, 100, 15);
 
             engine.finalize();
@@ -4400,8 +4408,14 @@ int metrics_in_slots_received_works_consumer(const std::string &dir)
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
             float data = 1.0f;
 
-            // Phase 1: in=15.
+            // Phase 1: in=15.  test_set_* is a backdoor absent in
+            // Release (HEP-CORE-0032 §3.2); the calling TEST_F SKIPs
+            // in NDEBUG so this worker is never invoked there.
+            // #if keeps the worker .cpp compiling against the
+            // Release-mode RoleHostCore.
+#if !defined(NDEBUG)
             core.test_set_in_slots_received(15);
+#endif
             core.set_shared_data("exp_ir", static_cast<int64_t>(15));
             auto r1 = engine.invoke_consume(
                 pylabhub::scripting::InvokeRx{&data, sizeof(data)}, msgs);
@@ -4409,7 +4423,9 @@ int metrics_in_slots_received_works_consumer(const std::string &dir)
             EXPECT_EQ(engine.script_error_count(), 0u);
 
             // Phase 2: bump in=42 between invokes — pins live read.
+#if !defined(NDEBUG)
             core.test_set_in_slots_received(42);
+#endif
             core.set_shared_data("exp_ir", static_cast<int64_t>(42));
             auto r2 = engine.invoke_consume(
                 pylabhub::scripting::InvokeRx{&data, sizeof(data)}, msgs);
@@ -4515,9 +4531,12 @@ int metrics_hierarchical_table_producer_full_shape(const std::string &dir)
             for (int i = 0; i < 2; ++i) core.inc_loop_overrun();
             core.set_last_cycle_work_us(555);
             core.set_configured_period(999);
-            // Pre-set anchored role counters.
+            // Pre-set anchored role counters via backdoor APIs (absent
+            // in Release; calling TEST_F SKIPs in NDEBUG — HEP-0032 §3.2).
+#if !defined(NDEBUG)
             core.test_set_out_slots_written(5);
             core.test_set_out_drop_count(2);
+#endif
 
             float buf = 0.0f;
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
@@ -4588,7 +4607,9 @@ int metrics_hierarchical_table_consumer_full_shape(const std::string &dir)
             end
         )LUA",
         [](LuaEngine &engine, RoleHostCore &core) {
-            core.test_set_in_slots_received(10);
+#if !defined(NDEBUG)
+            core.test_set_in_slots_received(10);  // backdoor — HEP-0032 §3.2
+#endif
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
             float data = 1.0f;
             auto r = engine.invoke_consume(
