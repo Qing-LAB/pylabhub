@@ -1920,9 +1920,16 @@ def on_produce(tx, msgs, api):
             EXPECT_EQ(r1, InvokeResult::Discard);
             EXPECT_EQ(engine.script_error_count(), 0u);
 
-            // Mutate core counters.
+            // Mutate core counters.  test_set_* is a backdoor surface
+            // gated by `defined(PYLABHUB_BUILD_TESTS) && !defined(NDEBUG)`
+            // — absent in Release builds (HEP-CORE-0032 §3.2).  The
+            // calling TEST_F SKIPs in NDEBUG so this worker function
+            // is never invoked in Release; the #if here keeps the
+            // worker .cpp itself compiling.
+#if !defined(NDEBUG)
             core.test_set_out_slots_written(42);
             core.test_set_out_drop_count(7);
+#endif
             core.inc_loop_overrun();
             core.inc_loop_overrun();
             core.inc_loop_overrun();
@@ -1963,7 +1970,9 @@ def on_consume(rx, msgs, api):
             EXPECT_EQ(r1, InvokeResult::Commit);
             EXPECT_EQ(engine.script_error_count(), 0u);
 
-            core.test_set_in_slots_received(15);
+#if !defined(NDEBUG)
+            core.test_set_in_slots_received(15);  // backdoor — see HEP-CORE-0032 §3.2
+#endif
 
             engine.eval("_next_phase()");
             auto r2 = engine.invoke_consume(InvokeRx{nullptr, 0}, msgs);

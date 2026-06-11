@@ -8,6 +8,24 @@
 # When ON, PYLABHUB_BUILD_TESTS is defined project-wide so that
 # PYLABHUB_UTILS_TEST_EXPORT expands to PYLABHUB_UTILS_EXPORT,
 # making test-only symbols visible in the shared library.
+#
+# Default is ON regardless of build type — tests for the normal public
+# API run in both Debug and Release configurations.
+#
+# Tests that DEPEND on the "backdoor" surfaces (PYLABHUB_UTILS_TEST_EXPORT
+# classes, RoleHostCore::test_set_* counter mutators, HEP-CORE-0036
+# §I10 invariant bypass) gate themselves at the SOURCE level using:
+#
+#     #if defined(NDEBUG)
+#         GTEST_SKIP() << "Requires backdoor APIs absent in Release.";
+#     #else
+#         ... real test body using the backdoor surface ...
+#     #endif
+#
+# In Release+BUILD_TESTS=ON these tests skip at runtime (CI green) and
+# the backdoor surfaces themselves are absent from the compiled binary
+# (source gate `PYLABHUB_BUILD_TESTS && !defined(NDEBUG)`).  See
+# HEP-CORE-0032 §3.2 for the deployment posture.
 option(BUILD_TESTS "Build the pyLabHub test suite" ON)
 if(BUILD_TESTS)
     add_compile_definitions(PYLABHUB_BUILD_TESTS)

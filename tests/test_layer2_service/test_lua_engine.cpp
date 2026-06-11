@@ -1220,22 +1220,36 @@ TEST_F(LuaEngineIsolatedTest, Api_FlexzoneAccessor_WithoutSHM_ReturnsNil)
 
 TEST_F(LuaEngineIsolatedTest, Metrics_IndividualAccessors_ReadCoreCounters_Live)
 {
+#if defined(NDEBUG)
+    GTEST_SKIP() << "Requires RoleHostCore::test_set_* backdoor; absent "
+                    "in Release builds (HEP-CORE-0032 §3.2).";
+#else
     auto w = SpawnWorker(
         "lua_engine.metrics_individual_accessors_read_core_counters_live",
         {unique_dir("metrics_indiv_live")});
     ExpectWorkerOk(w);
+#endif
 }
 
 TEST_F(LuaEngineIsolatedTest, Metrics_InSlotsReceived_Works_Consumer)
 {
+#if defined(NDEBUG)
+    GTEST_SKIP() << "Requires RoleHostCore::test_set_* backdoor; absent "
+                    "in Release builds (HEP-CORE-0032 §3.2).";
+#else
     auto w = SpawnWorker(
         "lua_engine.metrics_in_slots_received_works_consumer",
         {unique_dir("metrics_inrx_consumer")});
     ExpectWorkerOk(w);
+#endif
 }
 
 TEST_F(LuaEngineIsolatedTest, Metrics_HierarchicalTable_Producer_FullShape)
 {
+#if defined(NDEBUG)
+    GTEST_SKIP() << "Requires RoleHostCore::test_set_* backdoor; absent "
+                    "in Release builds (HEP-CORE-0032 §3.2).";
+#else
     auto w = SpawnWorker(
         "lua_engine.metrics_hierarchical_table_producer_full_shape",
         {unique_dir("metrics_ht_prod_full")});
@@ -1244,14 +1258,20 @@ TEST_F(LuaEngineIsolatedTest, Metrics_HierarchicalTable_Producer_FullShape)
     ExpectWorkerOk(w, /*required=*/{},
                    /*expected_error_substrings=*/
                    {"seed for script_error_count"});
+#endif
 }
 
 TEST_F(LuaEngineIsolatedTest, Metrics_HierarchicalTable_Consumer_FullShape)
 {
+#if defined(NDEBUG)
+    GTEST_SKIP() << "Requires RoleHostCore::test_set_* backdoor; absent "
+                    "in Release builds (HEP-CORE-0032 §3.2).";
+#else
     auto w = SpawnWorker(
         "lua_engine.metrics_hierarchical_table_consumer_full_shape",
         {unique_dir("metrics_ht_cons_full")});
     ExpectWorkerOk(w);
+#endif
 }
 
 TEST_F(LuaEngineIsolatedTest, Metrics_LoopOverrunCount_LiveIncrements)

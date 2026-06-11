@@ -139,16 +139,30 @@ typedef struct
                                      additions like "evicted"). */
 } plh_band_lost_args_t;
 
-/** One entry in the channel allowlist passed to on_allowlist_changed
- *  (HEP-CORE-0036 §I11 + §6.5; #194).  Mirrors the wire shape of
- *  `GET_CHANNEL_AUTH_ACK.allowlist[]` and `CONSUMER_REG_ACK.producers[]`
- *  (§6.4).  Both fields are valid only for the duration of the
- *  callback. */
+/** One authorized peer entry — used both as the `on_allowlist_changed`
+ *  callback array element (HEP-CORE-0036 §I11; event-driven) AND as the
+ *  visitor argument from `ctx->allowed_peers()` (polling — see
+ *  native_engine_api.h §4.1; API v6 #194 Phase C).  Mirrors the wire
+ *  shape of `GET_CHANNEL_AUTH_ACK.allowlist[]` and
+ *  `CONSUMER_REG_ACK.producers[]` (HEP-CORE-0036 §6.4-§6.5).  Both
+ *  fields are valid only for the duration of the callback / visitor
+ *  call.  Plugin MUST NOT retain past return; strdup if a copy is
+ *  needed.  See HEP-CORE-0028 §4.8 Lifetime + Security Contract. */
 typedef struct
 {
     const char *role_uid;       /**< Operator-assigned role identifier. */
     const char *pubkey_z85;     /**< Z85-encoded 40-char CURVE pubkey. */
 } plh_allowed_peer_t;
+
+/** Visitor signature for `ctx->allowed_peers()` iteration (API v6 #194
+ *  Phase C).  Called once per authorized peer in the channel's
+ *  allowlist.  Visitor MUST be `noexcept` — throwing across the C ABI
+ *  is undefined behaviour.  Host wraps the iteration loop in a
+ *  try/catch as defense-in-depth and aborts (returns -1) on a caught
+ *  exception, but plugin authors must not rely on this safety net.
+ *  See HEP-CORE-0028 §4.8. */
+typedef void (*plh_allowed_peer_visitor)(const plh_allowed_peer_t *peer,
+                                         void *userdata);
 
 /** on_allowlist_changed args (HEP-CORE-0036 §I11; #194).  Fired on the
  *  PRODUCER side after the framework atomically applies a new
@@ -171,5 +185,24 @@ typedef struct
                                           "consumer_left",
                                           "heartbeat_timeout", etc. */
 } plh_allowlist_changed_args_t;
+
+/** One band member — used by the `ctx->band_members()` visitor (API v6
+ *  #194 Phase C).  Symmetric to plh_allowed_peer_t: same lifetime
+ *  contract; same visitor-pattern shape so plugin authors learn one
+ *  pattern and know both subsystems.  Mirrors the field layout of the
+ *  `on_band_member_joined` callback args (see
+ *  plh_band_member_joined_args_t above). */
+typedef struct
+{
+    const char *role_uid;       /**< Member's role UID. */
+    const char *role_name;      /**< Member's display name; may be NULL or
+                                     empty if broker did not supply one. */
+} plh_band_member_t;
+
+/** Visitor signature for `ctx->band_members()` iteration (API v6 #194
+ *  Phase C).  Same noexcept + lifetime rules as
+ *  plh_allowed_peer_visitor. */
+typedef void (*plh_band_member_visitor)(const plh_band_member_t *member,
+                                        void *userdata);
 
 #endif /* PYLABHUB_NATIVE_INVOKE_TYPES_H */

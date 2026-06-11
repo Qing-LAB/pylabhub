@@ -165,13 +165,26 @@ include(GenerateExportHeader)
 # Use an absolute path for EXPORT_FILE_NAME to avoid ambiguity.
 #
 # CUSTOM_CONTENT_FROM_VARIABLE appends test-only export macros to the
-# generated header. PYLABHUB_UTILS_TEST_EXPORT is visible (exported)
-# when PYLABHUB_BUILD_TESTS is defined, hidden otherwise. Use it for
-# internal classes/functions that must be linkable from test binaries
-# but should not be part of the production export surface.
+# generated header.  PYLABHUB_UTILS_TEST_EXPORT is visibility-only —
+# visible (exported) when `PYLABHUB_BUILD_TESTS` is defined (i.e.
+# -DBUILD_TESTS=ON), hidden otherwise.  This intentionally does NOT
+# gate on NDEBUG: the classes marked with TEST_EXPORT
+# (IntegrityValidator, SlotDiagnostics, SlotRecovery, HeartbeatManager)
+# are diagnostic/recovery primitives, not counter-forgery or auth-
+# bypass surfaces; their threat model is "wider ABI surface than
+# HEP-0032 §4.2 intends", not a security risk.  Genuine high-risk
+# backdoor surfaces (`RoleHostCore::test_set_*`, HEP-CORE-0036 §I10
+# invariant bypass) carry an additional `!defined(NDEBUG)` gate at
+# the source-level so they remain absent even in Release+BUILD_TESTS=ON.
+# Production-shipped binaries are built with BUILD_TESTS=OFF, so the
+# entire TEST_EXPORT surface collapses to empty regardless.
+# See HEP-CORE-0032 §3.2 for the full deployment posture.
 set(PYLABHUB_EXPORT_CUSTOM_CONTENT "
-/* Test-only export: visible when PYLABHUB_BUILD_TESTS is defined, hidden otherwise.
-   Use for internal classes/functions that tests need to link against directly. */
+/* Test-only export: visible when PYLABHUB_BUILD_TESTS is defined,
+   hidden otherwise.  Visibility-only — not a security gate.  For
+   genuine security-sensitive backdoors (counter mutators, auth
+   bypass), use the additional `!defined(NDEBUG)` source-level gate.
+   See HEP-CORE-0032 §3.2. */
 #ifdef PYLABHUB_BUILD_TESTS
 #   define PYLABHUB_UTILS_TEST_EXPORT PYLABHUB_UTILS_EXPORT
 #else
@@ -326,6 +339,31 @@ install(FILES
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
 
+# NOTE (#194 Phase C, 2026-06-11): the wholesale `install(DIRECTORY)`
+# pattern below ships ALL of `src/include/utils/` (~93 headers).  An
+# audit during the Native Plugin v6 cleanup wanted to constrain this
+# to the 5-file public allowlist below, on the grounds that plugin
+# authors (HEP-CORE-0028 §2.4 Tier 2) should only see:
+#
+#   - utils/native_engine_api.h
+#   - utils/native_invoke_types.h
+#   - utils/slot_rw_coordinator.h    (HEP-CORE-0032 §2 C API)
+#   - utils/recovery_api.hpp         (HEP-CORE-0032 §2 C API)
+#   - utils/crypto_utils.hpp         (HEP-CORE-0032 §2 C API)
+#
+# However the EmbeddedAPI public header `<plh_datahub.hpp>` (documented
+# in docs/README/README_EmbeddedAPI.md) `#include`s a long chain of
+# internal `utils/*.hpp` headers (broker_service.hpp, data_block.hpp,
+# hub_zmq_queue.hpp, role_identity_policy.hpp, etc.).  Restricting to
+# the 5-file allowlist breaks EmbeddedAPI consumers — those files are
+# framework-internal from the plugin-author perspective but part of
+# the EmbeddedAPI public contract.
+#
+# Resolving this cleanly requires splitting the install layout
+# (separate `include/plugin/` for plugin authors; keep `include/utils/`
+# for EmbeddedAPI) — tracked as a separate cleanup.  For now keep the
+# wholesale install + rely on the docs (HEP-CORE-0028 §2.4 lists the
+# two plugin-author files) to direct authors away from the internals.
 install(DIRECTORY ${CMAKE_SOURCE_DIR}/src/include/utils/
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/utils
 )

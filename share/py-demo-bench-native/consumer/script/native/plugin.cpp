@@ -61,9 +61,11 @@ extern "C" PLH_EXPORT bool on_consume(const plh_rx_t *rx)
 {
     if (!g_band_joined && g_ctx && g_ctx->band_join)
     {
-        char *r = g_ctx->band_join(g_ctx, SHUTDOWN_BAND);
+        // API v6: band_join returns int (1=joined, 0=rejected, -1=error).
+        const int r = g_ctx->band_join(g_ctx, SHUTDOWN_BAND);
         g_band_joined = true;
-        if (r) { if (g_ctx->log) g_ctx->log(g_ctx, PLH_LOG_INFO, "BenchCons joined band"); free(r); }
+        if (r == 1 && g_ctx->log)
+            g_ctx->log(g_ctx, PLH_LOG_INFO, "BenchCons joined band");
     }
     if (!rx || !rx->slot || rx->slot_size < 16) return true;
     g_received++;

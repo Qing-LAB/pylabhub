@@ -11,6 +11,8 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <string>
+#include <string_view>
 
 // ── Schema declarations (matches test config) ───────────────────────────
 // All directional names + alias: one float32 field "value".
@@ -37,11 +39,14 @@ static uint32_t g_test_spinlock_count = 0;
 static int      g_test_cpp_wrapper_ok = 0;
 
 // Band API test results — without a broker, all 4 functions must return
-// gracefully (no crash, sensible null/zero results).
-static int g_test_band_join_null    = 0;  // 1 if band_join returned NULL
-static int g_test_band_leave_zero   = 0;  // 1 if band_leave returned 0
-static int g_test_band_send_ok      = 0;  // 1 if band_broadcast returned (no crash)
-static int g_test_band_members_null = 0;  // 1 if band_members returned NULL
+// gracefully (no crash, sensible failure indication).  API v6 returns
+// ints (1=success, 0=rejected/empty, -1=error); variable names track
+// "test passed" (1) vs "test failed" (0), so a failed band_join sets
+// _failed=1.
+static int g_test_band_join_failed     = 0;  // 1 if band_join did not succeed
+static int g_test_band_leave_failed    = 0;  // 1 if band_leave did not succeed
+static int g_test_band_send_ok         = 0;  // 1 if band_broadcast returned (no crash)
+static int g_test_band_members_empty   = 0;  // 1 if band_members visited 0 entries or errored
 
 // ── Required symbols ────────────────────────────────────────────────────
 
@@ -143,18 +148,22 @@ extern "C" PLH_EXPORT bool on_produce(const plh_tx_t *tx)
     }
 
     // ── Band API: must return gracefully without a broker ────
+    // API v6 (#194 Phase C): band_join / band_leave return int (1/0/-1);
+    // band_members uses the visitor pattern.  "null/zero" sentinel
+    // semantics: band_join without a broker returns 0 (rejected by
+    // framework) or -1 (transport error) — both are non-1, which is
+    // what the harness checks.
     if (g_ctx)
     {
         if (g_ctx->band_join)
         {
-            char *r = g_ctx->band_join(g_ctx, "!l2_test");
-            g_test_band_join_null = (r == nullptr) ? 1 : 0;
-            if (r) free(r);
+            const int r = g_ctx->band_join(g_ctx, "!l2_test");
+            g_test_band_join_failed = (r != 1) ? 1 : 0;
         }
         if (g_ctx->band_leave)
         {
-            g_test_band_leave_zero =
-                (g_ctx->band_leave(g_ctx, "!l2_test") == 0) ? 1 : 0;
+            const int r = g_ctx->band_leave(g_ctx, "!l2_test");
+            g_test_band_leave_failed = (r != 1) ? 1 : 0;
         }
         if (g_ctx->band_broadcast)
         {
@@ -163,9 +172,15 @@ extern "C" PLH_EXPORT bool on_produce(const plh_tx_t *tx)
         }
         if (g_ctx->band_members)
         {
-            char *r = g_ctx->band_members(g_ctx, "!l2_test");
-            g_test_band_members_null = (r == nullptr) ? 1 : 0;
-            if (r) free(r);
+            // Visitor pattern: count members visited.  Without a broker
+            // attached, expected behavior is either -1 (transport error)
+            // or 0 (broker reply was empty) — both indicate "no members
+            // reachable," which is what we pin here.
+            const int n = g_ctx->band_members(
+                g_ctx, "!l2_test",
+                +[](const plh_band_member_t *, void *) noexcept {},
+                nullptr);
+            g_test_band_members_empty = (n <= 0) ? 1 : 0;
         }
     }
 
@@ -197,6 +212,87 @@ extern "C" PLH_EXPORT bool on_produce(const plh_tx_t *tx)
         // Verify spinlock count (0 without SHM).
         if (api.spinlock_count(PLH_SIDE_AUTO) != g_test_spinlock_count)
             g_test_cpp_wrapper_ok = 0;
+
+        // ── v6 typed-enum returns (#194 Phase C) ─────────────────
+        // Without an active queue, queue_mechanism() returns
+        // Mechanism::Uninitialized; out_policy()/in_policy() return
+        // QueuePolicy::Unknown; stop_reason() returns Normal.  Pin the
+        // values + the to_string() helpers.
+        if (api.queue_mechanism(PLH_SIDE_TX) != plh::Mechanism::Uninitialized)
+            g_test_cpp_wrapper_ok = 0;
+        if (plh::to_string(plh::Mechanism::Curve) != std::string_view{"Curve"})
+            g_test_cpp_wrapper_ok = 0;
+        if (api.out_policy() != plh::QueuePolicy::Unknown)
+            g_test_cpp_wrapper_ok = 0;
+        if (api.in_policy() != plh::QueuePolicy::Unknown)
+            g_test_cpp_wrapper_ok = 0;
+        if (plh::to_string(plh::QueuePolicy::Shm) != std::string_view{"shm"})
+            g_test_cpp_wrapper_ok = 0;
+        if (api.stop_reason() != plh::StopReason::Normal)
+            g_test_cpp_wrapper_ok = 0;
+        if (plh::to_string(plh::StopReason::CriticalError)
+                != std::string_view{"critical_error"})
+            g_test_cpp_wrapper_ok = 0;
+
+        // ── v6 MetricsSnapshot ────────────────────────────────────
+        // metrics_snapshot() always returns a non-null view; get(key)
+        // returns an optional<double>.  Without a slot side, queue
+        // metrics are absent → nullopt; the custom metrics this plugin
+        // already reported via ctx->report_metric (e.g. "test_cpp_
+        // wrapper_ok") may not yet be present because we report them
+        // AFTER this block, so we just verify shape:
+        //   - snapshot is truthy
+        //   - lookup of a definitely-absent key returns nullopt
+        //   - operator[] is equivalent to get()
+        auto snap = api.metrics_snapshot();
+        if (!snap) g_test_cpp_wrapper_ok = 0;
+        if (snap.get("definitely.not.a.real.key").has_value())
+            g_test_cpp_wrapper_ok = 0;
+        auto v1 = snap.get("definitely.not.a.real.key");
+        auto v2 = snap["definitely.not.a.real.key"];
+        if (v1.has_value() != v2.has_value())
+            g_test_cpp_wrapper_ok = 0;
+
+        // ── v6 AllowedPeersHandle (#194 Phase C) ──────────────────
+        // Without auth wiring, allowed_peers() returns an empty handle.
+        // visit() returns 0 (count visited); contains() returns false;
+        // count() returns 0 (or -1 on internal error); to_uid_set()
+        // returns an empty set.
+        auto peers = api.allowed_peers("out");
+        int visited = peers.visit([](const plh_allowed_peer_t *) noexcept {});
+        if (visited > 0) g_test_cpp_wrapper_ok = 0;
+        if (peers.contains("nobody")) g_test_cpp_wrapper_ok = 0;
+        const int pcount = peers.count();
+        if (pcount > 0) g_test_cpp_wrapper_ok = 0;
+        auto uid_set = peers.to_uid_set();
+        if (!uid_set.empty()) g_test_cpp_wrapper_ok = 0;
+
+        // ── v6 BandHandle (#194 Phase C) ──────────────────────────
+        // Without a broker, all band ops fail.  visit_members returns
+        // -1 (transport error); contains returns false; member_count
+        // returns -1 (broker REQ failed).
+        auto bh = api.band("!l2_test");
+        bh.visit_members([](const plh_band_member_t *) noexcept {});
+        if (bh.contains("nobody")) g_test_cpp_wrapper_ok = 0;
+        (void)bh.member_count();          // exercise the call path
+        bh.broadcast("{\"k\":1}");        // void return; fire-and-forget
+        auto bset = bh.to_uid_set();
+        if (!bset.empty()) g_test_cpp_wrapper_ok = 0;
+
+        // ── v6 Context::valid() + null-safe accessors (#194 M5) ───
+        plh::Context null_ctx(static_cast<const PlhNativeContext *>(nullptr));
+        if (null_ctx.valid()) g_test_cpp_wrapper_ok = 0;
+        // M5: every accessor on a null Context must be a safe no-op.
+        if (null_ctx.uid() != nullptr) g_test_cpp_wrapper_ok = 0;
+        if (null_ctx.out_slots_written() != 0) g_test_cpp_wrapper_ok = 0;
+        if (null_ctx.queue_mechanism() != plh::Mechanism::Uninitialized)
+            g_test_cpp_wrapper_ok = 0;
+        if (null_ctx.is_channel_ready("anything")) g_test_cpp_wrapper_ok = 0;
+        if (null_ctx.is_critical_error()) g_test_cpp_wrapper_ok = 0;
+        if (null_ctx.stop_reason() != plh::StopReason::Normal)
+            g_test_cpp_wrapper_ok = 0;
+        null_ctx.log(plh::LogLevel::Info, "no-op log on null Context");
+        null_ctx.request_stop();         // no crash
     }
 #endif
 
@@ -213,14 +309,14 @@ extern "C" PLH_EXPORT bool on_produce(const plh_tx_t *tx)
                              static_cast<double>(g_test_cpp_wrapper_ok));
 
         // Band API (graceful behavior without broker).
-        g_ctx->report_metric(g_ctx, "test_band_join_null",
-                             static_cast<double>(g_test_band_join_null));
-        g_ctx->report_metric(g_ctx, "test_band_leave_zero",
-                             static_cast<double>(g_test_band_leave_zero));
+        g_ctx->report_metric(g_ctx, "test_band_join_failed",
+                             static_cast<double>(g_test_band_join_failed));
+        g_ctx->report_metric(g_ctx, "test_band_leave_failed",
+                             static_cast<double>(g_test_band_leave_failed));
         g_ctx->report_metric(g_ctx, "test_band_send_ok",
                              static_cast<double>(g_test_band_send_ok));
-        g_ctx->report_metric(g_ctx, "test_band_members_null",
-                             static_cast<double>(g_test_band_members_null));
+        g_ctx->report_metric(g_ctx, "test_band_members_empty",
+                             static_cast<double>(g_test_band_members_empty));
     }
 
     return true; // commit
@@ -279,7 +375,7 @@ extern "C" PLH_EXPORT uint32_t test_get_spinlock_count(void) { return g_test_spi
 extern "C" PLH_EXPORT int      test_get_cpp_wrapper_ok(void) { return g_test_cpp_wrapper_ok; }
 
 // Band API query symbols (set during on_produce).
-extern "C" PLH_EXPORT int test_get_band_join_null(void)    { return g_test_band_join_null; }
-extern "C" PLH_EXPORT int test_get_band_leave_zero(void)   { return g_test_band_leave_zero; }
-extern "C" PLH_EXPORT int test_get_band_send_ok(void)      { return g_test_band_send_ok; }
-extern "C" PLH_EXPORT int test_get_band_members_null(void) { return g_test_band_members_null; }
+extern "C" PLH_EXPORT int test_get_band_join_failed(void)    { return g_test_band_join_failed; }
+extern "C" PLH_EXPORT int test_get_band_leave_failed(void)   { return g_test_band_leave_failed; }
+extern "C" PLH_EXPORT int test_get_band_send_ok(void)        { return g_test_band_send_ok; }
+extern "C" PLH_EXPORT int test_get_band_members_empty(void)  { return g_test_band_members_empty; }

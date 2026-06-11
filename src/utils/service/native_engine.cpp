@@ -26,7 +26,10 @@
 #include "utils/hub_api.hpp"          // build_api_(HubAPI&) — B13 fix 2026-05-21
 
 #include <fstream>
+#include <optional>
 #include <sstream>
+#include <string>
+#include <unordered_map>
 
 // ── Platform dynamic loading ────────────────────────────────────────────
 // Supports: Linux, macOS, FreeBSD (POSIX dlopen) and Windows (LoadLibrary).
@@ -139,12 +142,15 @@ int ctx_is_critical_error(const PlhNativeContext *ctx)
     return static_cast<RoleHostCore *>(ctx->_core)->is_critical_error() ? 1 : 0;
 }
 
-const char *ctx_stop_reason(const PlhNativeContext *ctx)
+int ctx_stop_reason(const PlhNativeContext *ctx)
 {
-    if (!ctx || !ctx->_core) return "normal";
-    static thread_local std::string buf;
-    buf = static_cast<RoleHostCore *>(ctx->_core)->stop_reason_string();
-    return buf.c_str();
+    // API v6 (#194 Phase C): returns a PLH_STOP_REASON_* macro value.
+    // Cast from the typed enum on RoleHostCore — values match the
+    // PLH_STOP_REASON_* macros at the top of native_engine_api.h, so
+    // the cast is identity-preserving.
+    if (!ctx || !ctx->_core) return PLH_STOP_REASON_NORMAL;
+    return static_cast<int>(
+        static_cast<RoleHostCore *>(ctx->_core)->stop_reason());
 }
 
 uint64_t ctx_out_slots_written(const PlhNativeContext *ctx)
@@ -273,35 +279,80 @@ int ctx_wait_for_role(const PlhNativeContext *ctx, const char *uid, int timeout_
     return static_cast<RoleAPIBase *>(ctx->_api)->wait_for_role(uid, timeout_ms) ? 1 : 0;
 }
 
-// ── Band pub/sub (HEP-CORE-0030) ─────────────────────────────────────────────
+// ── Helper: map RoleAPIBase policy_info() string → PLH_QUEUE_POLICY_* macro ─
 
-char *ctx_band_join(const PlhNativeContext *ctx, const char *channel)
+int policy_string_to_macro(const std::string &s) noexcept
 {
-    if (!ctx || !ctx->_api || !channel) return nullptr;
-    auto result = static_cast<RoleAPIBase *>(ctx->_api)->band_join(channel);
-    if (!result.has_value()) return nullptr;
-    auto s = result->dump();
-    char *out = static_cast<char *>(malloc(s.size() + 1));
-    if (out) { std::memcpy(out, s.c_str(), s.size() + 1); }
-    return out;
+    // Maps the strings reported by ShmQueue::policy_info() and
+    // ZmqQueue::policy_info() onto the v6 macro codomain.  See
+    // hub_shm_queue.cpp + hub_zmq_queue.cpp for the originating strings.
+    // The "shm_unconnected" / "zmq_unconnected" placeholders (returned
+    // when the queue impl pImpl is null) fall through to the final
+    // PLH_QUEUE_POLICY_UNKNOWN return — same as the empty string and
+    // any unrecognized identifier.
+    if (s.empty())                              return PLH_QUEUE_POLICY_UNKNOWN;
+    if (s == "shm_read" || s == "shm_write")    return PLH_QUEUE_POLICY_SHM;
+    if (s == "zmq_push_drop")                   return PLH_QUEUE_POLICY_ZMQ_DROP;
+    if (s == "zmq_push_block")                  return PLH_QUEUE_POLICY_ZMQ_BLOCK;
+    // "zmq_pull_ring_N" — the depth tail is variable per queue.
+    if (s.rfind("zmq_pull_ring", 0) == 0)       return PLH_QUEUE_POLICY_ZMQ_RING;
+    return PLH_QUEUE_POLICY_UNKNOWN;
+}
+
+// ── Helper: snapshot the broker's band-member list for a channel ─────────────
+//
+// Factored out of ctx_band_members / _contains / _count so the three
+// sister functions share one extraction path.  Returns the broker
+// reply's `members[]` array on success, std::nullopt on transport
+// error / not-a-member / unknown channel.
+std::optional<nlohmann::json>
+fetch_band_members(const PlhNativeContext *ctx, const char *channel) noexcept
+{
+    try
+    {
+        auto reply = static_cast<RoleAPIBase *>(ctx->_api)->band_members(channel);
+        if (!reply.has_value()) return std::nullopt;
+        // Broker reply shape: { "members": [ {role_uid, role_name}, ... ] }
+        return reply->value("members", nlohmann::json::array());
+    }
+    catch (...) { return std::nullopt; }
+}
+
+// ── Band pub/sub (HEP-CORE-0030) — API v6 visitor + inquiry ─────────────────
+
+int ctx_band_join(const PlhNativeContext *ctx, const char *channel)
+{
+    // API v6 (#194 Phase C): plain int return; drops the v5 list-from-join
+    // behaviour (which was a malloc'd JSON of the broker reply body).
+    // Plugin calls ctx->band_members(...) separately to enumerate after
+    // a successful join.  Status semantics match band_leave: 1 = success,
+    // 0 = broker rejected (e.g. invalid band name), -1 = arg / transport
+    // error.
+    if (!ctx || !ctx->_api || !channel) return -1;
+    try
+    {
+        auto result = static_cast<RoleAPIBase *>(ctx->_api)->band_join(channel);
+        if (!result.has_value()) return -1;
+        return (result->value("status", std::string{}) == "success") ? 1 : 0;
+    }
+    catch (...) { return -1; }
 }
 
 int ctx_band_leave(const PlhNativeContext *ctx, const char *channel)
 {
-    if (!ctx || !ctx->_api || !channel) return 0;
-    // Audit A1 (2026-05-20): pre-fix this returned `has_value() ? 1 : 0`,
-    // which treats ANY broker reply as success — including the typed
-    // `{status:error, NOT_A_MEMBER}` rejection that broker_proto 5
-    // emits for a leave-while-not-a-member (S4 amendment).  Native
-    // plugins would see a rejected leave as success.  Gate on
-    // status == "success" so the int-bool return matches the
-    // Python/Lua surfaces (which forward the full JSON; plugins on
-    // those engines can see the error_code directly).  Note that
-    // matching the JSON-string-returning ctx_band_join wouldn't help
-    // here — the C ABI commits this function to `int` return.
-    auto result = static_cast<RoleAPIBase *>(ctx->_api)->band_leave(channel);
-    return (result.has_value() &&
-            result->value("status", std::string{}) == "success") ? 1 : 0;
+    // API v6 — same shape as band_join.  See audit A1 (2026-05-20) note
+    // in the v5 history for why we gate on status == "success" rather
+    // than has_value(): broker may reply with a typed
+    // `{status:error, NOT_A_MEMBER}` body which counts as a failed
+    // leave, not a successful one.
+    if (!ctx || !ctx->_api || !channel) return -1;
+    try
+    {
+        auto result = static_cast<RoleAPIBase *>(ctx->_api)->band_leave(channel);
+        if (!result.has_value()) return -1;
+        return (result->value("status", std::string{}) == "success") ? 1 : 0;
+    }
+    catch (...) { return -1; }
 }
 
 void ctx_band_broadcast(const PlhNativeContext *ctx, const char *channel, const char *body_json)
@@ -322,120 +373,273 @@ void ctx_band_broadcast(const PlhNativeContext *ctx, const char *channel, const 
     }
 }
 
-char *ctx_band_members(const PlhNativeContext *ctx, const char *channel)
+int ctx_band_members(const PlhNativeContext *ctx,
+                     const char *channel,
+                     plh_band_member_visitor visitor,
+                     void *userdata)
 {
-    if (!ctx || !ctx->_api || !channel) return nullptr;
-    auto result = static_cast<RoleAPIBase *>(ctx->_api)->band_members(channel);
-    if (!result.has_value()) return nullptr;
-    auto s = result->dump();
-    char *out = static_cast<char *>(malloc(s.size() + 1));
-    if (out) { std::memcpy(out, s.c_str(), s.size() + 1); }
-    return out;
+    // API v6 visitor pattern.  Host snapshots band membership via a
+    // broker REQ, then visits each member through the plugin's
+    // callback.  Per HEP-CORE-0028 §4.8 the visitor MUST be noexcept;
+    // we wrap the loop in a try/catch as defense-in-depth.
+    if (!ctx || !ctx->_api || !channel || !visitor) return -1;
+    auto arr_opt = fetch_band_members(ctx, channel);
+    if (!arr_opt.has_value()) return -1;
+    try
+    {
+        int count = 0;
+        for (const auto &m : *arr_opt)
+        {
+            const std::string uid  = m.value("role_uid",  std::string{});
+            const std::string name = m.value("role_name", std::string{});
+            const plh_band_member_t entry{
+                uid.c_str(),
+                name.empty() ? nullptr : name.c_str(),
+            };
+            visitor(&entry, userdata);
+            ++count;
+        }
+        return count;
+    }
+    catch (...)
+    {
+        LOGGER_ERROR("native_engine: ctx_band_members('{}') visitor "
+                     "threw across C ABI; aborting iteration", channel);
+        return -1;
+    }
 }
 
-// ── Channel-auth observability (HEP-CORE-0036 §I11 + §6.7, #194) ─────────────
-
-char *ctx_allowed_peers(const PlhNativeContext *ctx, const char *channel)
+int ctx_band_member_contains(const PlhNativeContext *ctx,
+                             const char *channel,
+                             const char *role_uid)
 {
-    if (!ctx || !ctx->_api || !channel) return nullptr;
-    const auto peers =
-        static_cast<RoleAPIBase *>(ctx->_api)->allowed_peers(channel);
-    nlohmann::json arr = nlohmann::json::array();
-    for (const auto &p : peers)
-        arr.push_back({{"role_uid", p.role_uid}, {"pubkey", p.pubkey}});
-    auto s = arr.dump();
-    char *out = static_cast<char *>(malloc(s.size() + 1));
-    if (out) { std::memcpy(out, s.c_str(), s.size() + 1); }
-    return out;
+    // NOTE on cost: this fires a broker REQ per call.  Header doc
+    // calls out the asymmetry vs the allowed_peers cluster (which
+    // serves from a local push-cache).  For repeated queries in a hot
+    // loop, plugin should snapshot once via ctx->band_members(...) and
+    // query a local set.
+    if (!ctx || !ctx->_api || !channel || !role_uid) return -1;
+    auto arr_opt = fetch_band_members(ctx, channel);
+    if (!arr_opt.has_value()) return -1;
+    for (const auto &m : *arr_opt)
+        if (m.value("role_uid", std::string{}) == role_uid) return 1;
+    return 0;
+}
+
+int ctx_band_member_count(const PlhNativeContext *ctx, const char *channel)
+{
+    if (!ctx || !ctx->_api || !channel) return -1;
+    auto arr_opt = fetch_band_members(ctx, channel);
+    if (!arr_opt.has_value()) return -1;
+    return static_cast<int>(arr_opt->size());
+}
+
+// ── Channel-auth observability (HEP-CORE-0036 §I11 + §6.7) — API v6 ─────────
+
+int ctx_allowed_peers(const PlhNativeContext *ctx,
+                      const char *channel,
+                      plh_allowed_peer_visitor visitor,
+                      void *userdata)
+{
+    if (!ctx || !ctx->_api || !channel || !visitor) return -1;
+    try
+    {
+        const auto peers =
+            static_cast<RoleAPIBase *>(ctx->_api)->allowed_peers(channel);
+        for (const auto &p : peers)
+        {
+            const plh_allowed_peer_t entry{
+                p.role_uid.c_str(),
+                p.pubkey.c_str(),
+            };
+            visitor(&entry, userdata);
+        }
+        return static_cast<int>(peers.size());
+    }
+    catch (...)
+    {
+        LOGGER_ERROR("native_engine: ctx_allowed_peers('{}') visitor "
+                     "threw across C ABI; aborting iteration", channel);
+        return -1;
+    }
+}
+
+int ctx_allowed_peer_contains(const PlhNativeContext *ctx,
+                              const char *channel,
+                              const char *role_uid)
+{
+    if (!ctx || !ctx->_api || !channel || !role_uid) return -1;
+    try
+    {
+        const auto peers =
+            static_cast<RoleAPIBase *>(ctx->_api)->allowed_peers(channel);
+        for (const auto &p : peers)
+            if (p.role_uid == role_uid) return 1;
+        return 0;
+    }
+    catch (...) { return -1; }
+}
+
+int ctx_allowed_peer_count(const PlhNativeContext *ctx, const char *channel)
+{
+    if (!ctx || !ctx->_api || !channel) return -1;
+    try
+    {
+        return static_cast<int>(
+            static_cast<RoleAPIBase *>(ctx->_api)->allowed_peers(channel).size());
+    }
+    catch (...) { return -1; }
 }
 
 int ctx_is_channel_ready(const PlhNativeContext *ctx, const char *channel)
 {
-    if (!ctx || !ctx->_api || !channel) return 0;
-    return static_cast<RoleAPIBase *>(ctx->_api)->is_channel_ready(channel)
-               ? 1 : 0;
+    if (!ctx || !ctx->_api || !channel) return -1;
+    try
+    {
+        return static_cast<RoleAPIBase *>(ctx->_api)->is_channel_ready(channel)
+            ? 1 : 0;
+    }
+    catch (...) { return -1; }
 }
 
-const char *ctx_queue_mechanism(const PlhNativeContext *ctx, int side)
+int ctx_queue_mechanism(const PlhNativeContext *ctx, int side)
 {
-    if (!ctx || !ctx->_api) return "Uninitialized";
+    // API v6: returns one of PLH_MECHANISM_* macros (UNINITIALIZED=0,
+    // CURVE=1).  hub::Mechanism enum values are co-numbered with the
+    // macros (HEP-CORE-0035 §2), so the int cast is identity.
+    if (!ctx || !ctx->_api) return PLH_MECHANISM_UNINITIALIZED;
     const ChannelSide cs =
         (side == PLH_SIDE_TX) ? ChannelSide::Tx : ChannelSide::Rx;
-    return pylabhub::hub::mechanism_name(
-        static_cast<RoleAPIBase *>(ctx->_api)->queue_mechanism(cs));
+    try
+    {
+        return static_cast<int>(
+            static_cast<RoleAPIBase *>(ctx->_api)->queue_mechanism(cs));
+    }
+    catch (...) { return PLH_MECHANISM_UNINITIALIZED; }
 }
 
-// ── Phase B (#194) — diagnostic + flexzone-control + band-membership ────────
-
-char *ctx_metrics_json(const PlhNativeContext *ctx)
-{
-    if (!ctx || !ctx->_api) return nullptr;
-    auto j = static_cast<RoleAPIBase *>(ctx->_api)->snapshot_metrics_json();
-    auto s = j.dump();
-    char *out = static_cast<char *>(malloc(s.size() + 1));
-    if (out) { std::memcpy(out, s.c_str(), s.size() + 1); }
-    return out;
-}
-
-int ctx_is_in_band(const PlhNativeContext *ctx, const char *channel)
-{
-    if (!ctx || !ctx->_api || !channel) return 0;
-    return static_cast<RoleAPIBase *>(ctx->_api)->is_in_band(channel) ? 1 : 0;
-}
-
-int ctx_update_flexzone_checksum(const PlhNativeContext *ctx)
-{
-    if (!ctx || !ctx->_api) return 0;
-    return static_cast<RoleAPIBase *>(ctx->_api)->update_flexzone_checksum()
-               ? 1 : 0;
-}
-
-void ctx_set_verify_checksum(const PlhNativeContext *ctx, int enable)
-{
-    if (!ctx || !ctx->_api) return;
-    static_cast<RoleAPIBase *>(ctx->_api)->set_verify_checksum(enable != 0);
-}
-
-// ── Phase B2 (#194) — queue depth + policy + receive seq ────────────────────
+// ── Queue diagnostic surface — capacity + policy + last_seq ─────────────────
 
 uint64_t ctx_out_capacity(const PlhNativeContext *ctx)
 {
     if (!ctx || !ctx->_api) return 0;
-    return static_cast<uint64_t>(
-        static_cast<RoleAPIBase *>(ctx->_api)->out_capacity());
-}
-
-char *ctx_out_policy(const PlhNativeContext *ctx)
-{
-    if (!ctx || !ctx->_api) return nullptr;
-    const auto s = static_cast<RoleAPIBase *>(ctx->_api)->out_policy();
-    if (s.empty()) return nullptr;
-    char *out = static_cast<char *>(malloc(s.size() + 1));
-    if (out) { std::memcpy(out, s.c_str(), s.size() + 1); }
-    return out;
+    try { return static_cast<uint64_t>(static_cast<RoleAPIBase *>(ctx->_api)->out_capacity()); }
+    catch (...) { return 0; }
 }
 
 uint64_t ctx_in_capacity(const PlhNativeContext *ctx)
 {
     if (!ctx || !ctx->_api) return 0;
-    return static_cast<uint64_t>(
-        static_cast<RoleAPIBase *>(ctx->_api)->in_capacity());
+    try { return static_cast<uint64_t>(static_cast<RoleAPIBase *>(ctx->_api)->in_capacity()); }
+    catch (...) { return 0; }
 }
 
-char *ctx_in_policy(const PlhNativeContext *ctx)
+int ctx_out_policy(const PlhNativeContext *ctx)
 {
-    if (!ctx || !ctx->_api) return nullptr;
-    const auto s = static_cast<RoleAPIBase *>(ctx->_api)->in_policy();
-    if (s.empty()) return nullptr;
-    char *out = static_cast<char *>(malloc(s.size() + 1));
-    if (out) { std::memcpy(out, s.c_str(), s.size() + 1); }
-    return out;
+    if (!ctx || !ctx->_api) return PLH_QUEUE_POLICY_UNKNOWN;
+    try { return policy_string_to_macro(
+            static_cast<RoleAPIBase *>(ctx->_api)->out_policy()); }
+    catch (...) { return PLH_QUEUE_POLICY_UNKNOWN; }
+}
+
+int ctx_in_policy(const PlhNativeContext *ctx)
+{
+    if (!ctx || !ctx->_api) return PLH_QUEUE_POLICY_UNKNOWN;
+    try { return policy_string_to_macro(
+            static_cast<RoleAPIBase *>(ctx->_api)->in_policy()); }
+    catch (...) { return PLH_QUEUE_POLICY_UNKNOWN; }
 }
 
 uint64_t ctx_last_seq(const PlhNativeContext *ctx)
 {
     if (!ctx || !ctx->_api) return 0;
-    return static_cast<RoleAPIBase *>(ctx->_api)->last_seq();
+    try { return static_cast<RoleAPIBase *>(ctx->_api)->last_seq(); }
+    catch (...) { return 0; }
+}
+
+// ── Metrics snapshot (API v6 #194 Phase C) ──────────────────────────────────
+//
+// Two-call surface: metrics_snapshot() builds a thread-local
+// dotted-key→double map from RoleAPIBase::snapshot_metrics_json() and
+// returns the map pointer as an opaque view; metrics_get() looks up
+// keys against it.  The cache is rebuilt on every snapshot() call —
+// callers that need many lookups should snapshot once, then query
+// repeatedly against the same opaque pointer.
+
+void flatten_json_into(const nlohmann::json &node,
+                       const std::string &prefix,
+                       std::unordered_map<std::string, double> &out)
+{
+    if (node.is_object())
+    {
+        for (const auto &[k, v] : node.items())
+        {
+            const std::string dotted = prefix.empty() ? k : prefix + "." + k;
+            flatten_json_into(v, dotted, out);
+        }
+    }
+    else if (node.is_number())
+    {
+        out.emplace(prefix, node.get<double>());
+    }
+    else if (node.is_boolean())
+    {
+        out.emplace(prefix, node.get<bool>() ? 1.0 : 0.0);
+    }
+    // Strings / arrays / null are not numeric metrics; skip silently.
+}
+
+const void *ctx_metrics_snapshot(const PlhNativeContext *ctx)
+{
+    if (!ctx || !ctx->_api) return nullptr;
+    static thread_local std::unordered_map<std::string, double> cache;
+    try
+    {
+        cache.clear();
+        const auto j =
+            static_cast<RoleAPIBase *>(ctx->_api)->snapshot_metrics_json();
+        flatten_json_into(j, std::string{}, cache);
+        return &cache;
+    }
+    catch (...) { return nullptr; }
+}
+
+int ctx_metrics_get(const void *snapshot, const char *key, double *out)
+{
+    if (!snapshot || !key || !out) return -1;
+    try
+    {
+        const auto *cache =
+            static_cast<const std::unordered_map<std::string, double> *>(snapshot);
+        auto it = cache->find(key);
+        if (it == cache->end()) return 0;
+        *out = it->second;
+        return 1;
+    }
+    catch (...) { return -1; }
+}
+
+// ── Flexzone control + band-membership query ────────────────────────────────
+
+int ctx_is_in_band(const PlhNativeContext *ctx, const char *channel)
+{
+    if (!ctx || !ctx->_api || !channel) return -1;
+    try { return static_cast<RoleAPIBase *>(ctx->_api)->is_in_band(channel) ? 1 : 0; }
+    catch (...) { return -1; }
+}
+
+int ctx_update_flexzone_checksum(const PlhNativeContext *ctx)
+{
+    if (!ctx || !ctx->_api) return 0;
+    try { return static_cast<RoleAPIBase *>(ctx->_api)->update_flexzone_checksum() ? 1 : 0; }
+    catch (...) { return 0; }
+}
+
+void ctx_set_verify_checksum(const PlhNativeContext *ctx, int enable)
+{
+    if (!ctx || !ctx->_api) return;
+    try { static_cast<RoleAPIBase *>(ctx->_api)->set_verify_checksum(enable != 0); }
+    catch (...) { /* defensive: nothing observable to do */ }
 }
 
 } // anonymous namespace
@@ -549,29 +753,36 @@ struct NativeEngine::NativeContextStorage
 
         ctx.wait_for_role  = ctx_wait_for_role;
 
-        // Band pub/sub (HEP-CORE-0030)
-        ctx.band_join      = ctx_band_join;
-        ctx.band_leave     = ctx_band_leave;
-        ctx.band_broadcast = ctx_band_broadcast;
-        ctx.band_members   = ctx_band_members;
+        // Band pub/sub (HEP-CORE-0030) — API v6 visitor + inquiry.
+        ctx.band_join             = ctx_band_join;
+        ctx.band_leave            = ctx_band_leave;
+        ctx.band_broadcast        = ctx_band_broadcast;
+        ctx.band_members          = ctx_band_members;
+        ctx.band_member_contains  = ctx_band_member_contains;
+        ctx.band_member_count     = ctx_band_member_count;
 
-        // Channel-auth observability (HEP-CORE-0036 §I11 + §6.7, #194)
-        ctx.allowed_peers    = ctx_allowed_peers;
-        ctx.is_channel_ready = ctx_is_channel_ready;
-        ctx.queue_mechanism  = ctx_queue_mechanism;
+        // Channel-auth observability (HEP-CORE-0036 §I11 + §6.7) — API v6.
+        ctx.allowed_peers          = ctx_allowed_peers;
+        ctx.allowed_peer_contains  = ctx_allowed_peer_contains;
+        ctx.allowed_peer_count     = ctx_allowed_peer_count;
+        ctx.is_channel_ready       = ctx_is_channel_ready;
+        ctx.queue_mechanism        = ctx_queue_mechanism;
 
-        // Phase B (#194) — diagnostic + flexzone + band-membership.
-        ctx.metrics_json             = ctx_metrics_json;
+        // Queue diagnostic surface — capacity + policy + last_seq.
+        ctx.out_capacity = ctx_out_capacity;
+        ctx.in_capacity  = ctx_in_capacity;
+        ctx.out_policy   = ctx_out_policy;
+        ctx.in_policy    = ctx_in_policy;
+        ctx.last_seq     = ctx_last_seq;
+
+        // Metrics snapshot (#194 Phase C) — replaces v5 metrics_json.
+        ctx.metrics_snapshot         = ctx_metrics_snapshot;
+        ctx.metrics_get              = ctx_metrics_get;
+
+        // Flexzone control + band-membership query.
         ctx.is_in_band               = ctx_is_in_band;
         ctx.update_flexzone_checksum = ctx_update_flexzone_checksum;
         ctx.set_verify_checksum      = ctx_set_verify_checksum;
-
-        // Phase B2 (#194) — queue depth + policy + last_seq.
-        ctx.out_capacity = ctx_out_capacity;
-        ctx.out_policy   = ctx_out_policy;
-        ctx.in_capacity  = ctx_in_capacity;
-        ctx.in_policy    = ctx_in_policy;
-        ctx.last_seq     = ctx_last_seq;
     }
 };
 
@@ -676,9 +887,8 @@ bool NativeEngine::load_script(const std::filesystem::path &script_dir,
         reinterpret_cast<FnOnBandMessage>(resolve_sym_("on_band_message"));
     fn_on_band_lost_ =
         reinterpret_cast<FnOnBandLost>(resolve_sym_("on_band_lost"));
-    // HEP-CORE-0036 §I11 + §6.5 (#194, API v4) — producer-side
-    // event-driven allowlist refresh.  Same shape as the band typed
-    // callbacks above.
+    // HEP-CORE-0036 §I11 + §6.5 — producer-side event-driven allowlist
+    // refresh.  Same shape as the band typed callbacks above.
     fn_on_allowlist_changed_ =
         reinterpret_cast<FnOnAllowlistChanged>(resolve_sym_("on_allowlist_changed"));
     fn_on_produce_    = reinterpret_cast<FnOnProduce>(resolve_sym_("on_produce"));
@@ -746,7 +956,9 @@ bool NativeEngine::build_api_(RoleAPIBase &api)
             std::chrono::milliseconds{5000});
         if (pylabhub::utils::RegisterDynamicModule(std::move(mod)))
         {
-            pylabhub::utils::LoadModule(lifecycle_module_name_.c_str());
+            if (!pylabhub::utils::LoadModule(lifecycle_module_name_.c_str()))
+                LOGGER_WARN("[{}] lifecycle LoadModule({}) returned false",
+                            log_tag_, lifecycle_module_name_);
             lifecycle_registered_ = true;
             LOGGER_DEBUG("[{}] lifecycle module registered: {}", log_tag_, lifecycle_module_name_);
         }
@@ -799,7 +1011,9 @@ bool NativeEngine::build_api_(hub_host::HubAPI &api)
             std::chrono::milliseconds{5000});
         if (pylabhub::utils::RegisterDynamicModule(std::move(mod)))
         {
-            pylabhub::utils::LoadModule(lifecycle_module_name_.c_str());
+            if (!pylabhub::utils::LoadModule(lifecycle_module_name_.c_str()))
+                LOGGER_WARN("[{}] hub lifecycle LoadModule({}) returned false",
+                            log_tag_, lifecycle_module_name_);
             lifecycle_registered_ = true;
             LOGGER_DEBUG("[{}] lifecycle module registered (hub): {}",
                          log_tag_, lifecycle_module_name_);
@@ -850,7 +1064,9 @@ void NativeEngine::finalize_engine_()
     // Unregister from lifecycle (if registered).
     if (lifecycle_registered_)
     {
-        pylabhub::utils::UnloadModule(lifecycle_module_name_.c_str());
+        if (!pylabhub::utils::UnloadModule(lifecycle_module_name_.c_str()))
+            LOGGER_WARN("[{}] lifecycle UnloadModule({}) returned false",
+                        log_tag_, lifecycle_module_name_);
         lifecycle_registered_ = false;
     }
 }
@@ -1090,11 +1306,11 @@ void NativeEngine::invoke_on_allowlist_changed(
 {
     if (!fn_on_allowlist_changed_) return;
 
-    // HEP-CORE-0036 §I11 + §6.5 (#194, API v4).  Build a transient C
-    // ABI args struct + peer array on the stack — same lifetime
-    // contract as `invoke_on_band_message` above: pointers valid for
-    // the duration of this call only; plugin MUST NOT retain past
-    // return; strdup if a copy is needed.
+    // HEP-CORE-0036 §I11 + §6.5.  Build a transient C ABI args struct
+    // + peer array on the stack — same lifetime contract as
+    // `invoke_on_band_message` above: pointers valid for the duration
+    // of this call only; plugin MUST NOT retain past return; strdup
+    // if a copy is needed.
     std::vector<plh_allowed_peer_t> peers_c;
     peers_c.reserve(allowlist.size());
     for (const auto &p : allowlist)

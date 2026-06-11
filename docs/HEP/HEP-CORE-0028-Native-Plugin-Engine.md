@@ -2,7 +2,7 @@
 
 **Status**: Implemented (documenting existing system)
 **Created**: 2026-03-30
-**Updated**: 2026-04-02 (direction objects, required native_sizeof, size cross-validation)
+**Updated**: 2026-06-11 (#194 Phase C — Two-Layer Plugin Authoring Model: C ABI v6 with int+macro returns, visitor pattern, opaque metrics snapshot; expanded C++ wrapper with typed enums, concepts, handle types, std::span view; lifetime + security contract.  Supersedes v5 API.)
 **Scope**: NativeEngine, native_engine_api.h, C/C++ native engine lifecycle, ABI verification, schema validation
 
 ---
@@ -88,8 +88,121 @@ the same lifecycle as PythonEngine and LuaEngine: `initialize()` -> `load_script
 | ScriptEngine | NativeEngine implements the full ScriptEngine interface (HEP-CORE-0011) |
 | PythonEngine / LuaEngine | Peer implementations. Role host selects engine based on `script.type` |
 | RoleHostCore | Provides metrics counters, shutdown flags; passed as opaque `void* core` in PlhNativeContext |
-| native_engine_api.h | The native engine contract. Installed as a public header (`pylabhub/native_engine_api.h`) |
+| native_engine_api.h | The native engine contract.  Installed as a public header at `${CMAKE_INSTALL_PREFIX}/include/utils/native_engine_api.h` (plus the visitor + arg-struct typedefs in `utils/native_invoke_types.h` reached transitively).  Plugin authors include via `#include "utils/native_engine_api.h"` or `#include <utils/native_engine_api.h>`. |
 | ScriptConfig | Parses `script.type`, `script.path`, `script.checksum` |
+
+### 2.4 Two-Layer Plugin Authoring Model (#194 Phase C, 2026-06-11)
+
+The native plugin surface is **two layers**, matching the Two-Tier API Model
+established in HEP-CORE-0032 §2:
+
+| Layer | Header section | Audience | Properties |
+|---|---|---|---|
+| **Tier 1 — C ABI (the floor)** | `extern "C"` portion of `native_engine_api.h` | Pure-C plugins, FFI binding targets, cross-toolchain consumers | Stable across compilers + stdlib versions; primitive returns + opaque pointers + visitor callbacks; **no malloc across the boundary**; **no exceptions across the boundary**; explicit lifetime contracts on every borrowed pointer |
+| **Tier 2 — C++ wrapper (the natural choice)** | `namespace plh { ... }` portion of `native_engine_api.h` | C++ plugins (the common case) | Header-only; zero binary cost; typed `enum class`; C++20 `requires`-constrained visitor templates; lightweight handle types; `std::span` views; `std::optional` returns; RAII where ownership applies |
+
+**Tier 1 design principles** (the C ABI is the *contract* — Tier 2 builds on it):
+
+1. **Return codes, not exceptions.** Per IMPLEMENTATION_GUIDANCE.md §"Error
+   reporting: C vs C++", the C ABI surfaces errors as primitive return values
+   (e.g. `1` = success, `0` = failure, `-1` = error) or out-parameters.
+   Throwing across the C ABI boundary is undefined behaviour; **every host
+   wrapper must catch internally and translate to a return code.**
+2. **`int` + macro instead of `const char *` for enumerated values.**  Bytes
+   that name "one of N states" travel as a primitive (`int`) accompanied by
+   `PLH_*_*` preprocessor macros (`PLH_MECHANISM_CURVE = 1`,
+   `PLH_QUEUE_POLICY_SHM = 1`, etc.).  The plugin gets compile-time symbolic
+   names without owning a string, without paying for an allocation, and
+   without a lifetime contract on the returned bytes.  Macros — not enum
+   names — because the C ABI is consumed from pure C, where `enum` may
+   widen to `int` differently per compiler.
+3. **Visitor pattern for collections.**  When the plugin needs to iterate a
+   list (authorized peers, band members), the C ABI takes a callback +
+   `void *userdata` pair and invokes the callback once per element with a
+   typed-struct pointer.  **No `malloc()` crosses the boundary** — the host
+   constructs an on-stack struct, the plugin reads it during the callback,
+   the struct dies at callback return.  No caller-must-free contracts.
+4. **Inquiry helpers alongside visitors.**  "Is X in the set?" and "how many
+   are there?" are first-class API operations (`*_contains`, `*_count`).
+   Plugin authors should not be required to hand-write a visitor callback +
+   bool flag + early-exit mechanism just to ask a yes/no question.  This
+   gives C plugins an ergonomic surface comparable to Lua/Python's dict
+   membership.
+5. **Opaque snapshot + lookup for batch reads.**  Metrics (a tree of dotted
+   keys → doubles) follow a two-call shape: `metrics_snapshot()` returns
+   an opaque `const void *` view of a host-owned thread-local cache;
+   `metrics_get(snap, key, double *)` resolves keys against it.  Plugin
+   never sees the encoding; host avoids re-building the cache on every
+   query; lifetime is bounded by "the next `metrics_snapshot()` call on
+   the same thread."
+6. **Lifetime contract on every borrowed pointer.**  Every typed-struct
+   pointer handed to a plugin (visitor argument, callback argument,
+   snapshot return) carries a documented "valid for the duration of this
+   call" or "valid until next snapshot on this thread" contract.  Plugins
+   that stash the pointer past its lifetime have introduced their own UB —
+   the framework does not paper over the violation.
+
+**Tier 2 design principles** (the C++ wrapper *promotes* the C ABI without
+sacrificing it):
+
+1. **Header-only, zero binary cost.**  Every wrapper method is `inline` (in
+   the class body or via a `template`).  The plugin includes one header
+   and links nothing extra.  Building the same source against the v6 ABI
+   from a different toolchain still works; the C++ wrapper only adds
+   compile-time machinery.
+2. **Typed `enum class` for enumerated values.**  `plh::Mechanism`,
+   `plh::QueuePolicy`, `plh::StopReason` derive from the C macros with
+   `: int` underlying type — `static_cast`-free interop with the C layer,
+   compiler-checked switch coverage at the C++ layer.  Each enum carries
+   a `constexpr std::string_view to_string(...)` for zero-alloc logging.
+3. **C++20 `requires`-constrained visitor templates.**  Concepts like
+   `plh::AllowedPeerVisitor`, `plh::BandMemberVisitor` constrain the
+   template to callables of the right shape.  Misuse → clean compile
+   error at the concept boundary instead of a 200-line template
+   diagnostic inside the thunk.
+4. **Lightweight handle types — zero-cost typed views.**  `ctx.allowed_peers
+   ("out")` returns an `AllowedPeersHandle` (two pointers) on which the
+   plugin calls `.visit(...)`, `.contains(...)`, `.count()`,
+   `.collect_uids()`, `.to_uid_set()`.  The handle is
+   `trivially_copyable` and passes in registers; `static_assert`s in the
+   header enforce this contract.
+5. **`std::span` for in-callback array views.**  Event-handler arg structs
+   like `plh_allowlist_changed_args_t` are wrapped by
+   `plh::AllowlistChangedView` exposing `.peers() → std::span<const
+   plh_allowed_peer_t>`.  Plugin code becomes idiomatic range-for
+   instead of `for (size_t i = 0; i < args->peer_count; ++i)`.
+6. **Performance via *better patterns*, not lower-level access.**  C++
+   plugins can call `to_uid_set()` once and do O(1) repeated membership
+   queries in O(M) total — the C plugin doing the same via visitors-only
+   pays O(N·M) without manual hash-set boilerplate.  The wrapper exposes
+   the *idiomatic* C++ shape that happens to be faster, so writing the
+   plugin in C++ is the path of least resistance and also the path of
+   highest performance.
+7. **No RAII for things that aren't resources.**  Wrapper objects hold
+   *borrowed* pointers (handle → host state; snapshot → thread-local
+   cache).  Their destructors are trivial.  Genuine RAII is reserved for
+   actual scope-owned acquire/release pairs — currently only
+   `plh::SpinLockGuard` qualifies.  Speculative auto-cleanup
+   (`ScopedBandJoin` was considered and rejected) was avoided because
+   "join and stay" — not transient participation — is the typical band
+   pattern.
+
+**What plugin authors get from each layer:**
+
+| Need | Tier 1 (C) | Tier 2 (C++ wrapper) |
+|---|---|---|
+| Get queue mechanism | `int m = ctx->queue_mechanism(ctx, PLH_SIDE_TX);` + macro switch | `auto m = ctx.queue_mechanism(SideTx); switch (m) { ... }` (compiler verifies exhaustiveness) |
+| Check authorized peer | `int v = ctx->allowed_peer_contains(ctx, "out", "consumer_A");` | `if (ctx.allowed_peers("out").contains("consumer_A"))` |
+| Iterate band members | visitor + static fn + manual flag | range-for over `BandHandle::collect_uids()` or template lambda over `.visit_members(...)` |
+| Read 10 metrics | 1× `metrics_snapshot` + 10× `metrics_get` | `auto snap = ctx.metrics_snapshot(); if (auto v = snap["queue.data_drop_count"]) { ... }` |
+| Handle on_allowlist_changed | iterate `args->peers[i]` by index | `for (auto &p : plh::AllowlistChangedView{args}.peers())` |
+| Acquire spinlock | `ctx->spinlock_lock(ctx, 0, side, -1);` + manual unlock on every exit path | `plh::SpinLockGuard g(ctx, 0, side);` |
+
+The C++ wrapper does not replace the C ABI; **the C ABI is the contract that
+the wrapper compiles down to.**  Every Tier 2 entry point delegates directly
+to a Tier 1 function pointer with no extra runtime work.  When a plugin
+author prefers raw C — for FFI generation, for cross-toolchain stability,
+for a learning project — Tier 1 alone is sufficient and complete.
 
 ---
 
@@ -151,7 +264,7 @@ unwind.
 
 ## 4. Native Engine API (native_engine_api.h)
 
-### 4.1 PlhNativeContext
+### 4.1 PlhNativeContext (API v6, #194 Phase C, 2026-06-11)
 
 ```c
 typedef struct PlhNativeContext
@@ -165,19 +278,36 @@ typedef struct PlhNativeContext
     const char *log_level;     /* Configured log level string */
     const char *role_dir;      /* Role directory path */
 
-    /* ── Framework API (function pointers filled by host) ──────────── */
+    /* ── Framework API (function pointers filled by host) ───────────────
+     * Every fn ptr in this table follows the v6 C ABI contract:
+     *   - returns a primitive int / uint64_t / opaque pointer
+     *   - NEVER throws a C++ exception across the boundary
+     *   - NEVER allocates memory the plugin must free
+     *   - typed-struct pointers handed to visitors are valid only for the
+     *     duration of the visitor call (see §4.8 Lifetime + Security
+     *     Contract).
+     * The C++ wrapper in §5 builds on this contract — typed enums,
+     * concept-constrained visitor templates, std::span views, std::optional
+     * returns. */
+
     void (*log)(const struct PlhNativeContext *ctx, int level, const char *msg);
     void (*report_metric)(const struct PlhNativeContext *ctx,
                           const char *key, double value);
     void (*clear_custom_metrics)(const struct PlhNativeContext *ctx);
     void (*request_stop)(const struct PlhNativeContext *ctx);
-    void (*set_critical_error)(const struct PlhNativeContext *ctx);
+    void (*set_critical_error)(const struct PlhNativeContext *ctx, const char *msg);
     int  (*is_critical_error)(const struct PlhNativeContext *ctx);
-    const char *(*stop_reason)(const struct PlhNativeContext *ctx);
-    uint64_t (*out_written)(const struct PlhNativeContext *ctx);
-    uint64_t (*in_received)(const struct PlhNativeContext *ctx);
-    uint64_t (*drops)(const struct PlhNativeContext *ctx);
-    uint64_t (*script_errors)(const struct PlhNativeContext *ctx);
+
+    /* stop_reason: returns one of PLH_STOP_REASON_* macros (NORMAL=0,
+     * PEER_DEAD=1, HUB_DEAD=2, CRITICAL_ERROR=3, CHANNEL_CLOSED=4,
+     * SCRIPT_ERROR=5).  Replaces v5 const char * return — see §4.7 +
+     * §5.3. */
+    int      (*stop_reason)(const struct PlhNativeContext *ctx);
+
+    uint64_t (*out_slots_written)(const struct PlhNativeContext *ctx);
+    uint64_t (*in_slots_received)(const struct PlhNativeContext *ctx);
+    uint64_t (*out_drop_count)(const struct PlhNativeContext *ctx);
+    uint64_t (*script_error_count)(const struct PlhNativeContext *ctx);
     uint64_t (*loop_overrun_count)(const struct PlhNativeContext *ctx);
     uint64_t (*last_cycle_work_us)(const struct PlhNativeContext *ctx);
 
@@ -199,57 +329,89 @@ typedef struct PlhNativeContext
     int      (*wait_for_role)(const struct PlhNativeContext *ctx,
                               const char *uid, int timeout_ms);
 
-    /* Band pub/sub (HEP-CORE-0030).  JSON strings for body/result. */
-    char    *(*band_join)(const struct PlhNativeContext *ctx,
+    /* ── Band pub/sub (HEP-CORE-0030) — v6 visitor + inquiry pattern ── */
+    /* band_join: returns 1 on success, 0 on rejection, -1 on error.
+     * (v5 returned char *malloc'd JSON; v6 drops list-from-join behaviour
+     * — plugin calls band_members() separately to enumerate after join.) */
+    int      (*band_join)(const struct PlhNativeContext *ctx,
                           const char *channel);
     int      (*band_leave)(const struct PlhNativeContext *ctx,
                            const char *channel);
     void     (*band_broadcast)(const struct PlhNativeContext *ctx,
                                const char *channel,
                                const char *body_json);
-    char    *(*band_members)(const struct PlhNativeContext *ctx,
-                             const char *channel);
 
-    /* Channel-auth observability (HEP-CORE-0036 §I11 + §6.7, API v4 #194). */
-    /* allowed_peers: returns JSON `[{"role_uid":..,"pubkey":..},...]`.
-     * Caller must free().  Engine-parity with Lua + Python
-     * `api.allowed_peers(channel)`. */
-    char        *(*allowed_peers)(const struct PlhNativeContext *ctx,
+    /* Iterate band members.  Visitor MUST be noexcept; host catches and
+     * returns -1 on caught exception (defense in depth).  Returns count
+     * visited (>=0), -1 on error.  See plh_band_member_t in
+     * native_invoke_types.h. */
+    int      (*band_members)(const struct PlhNativeContext *ctx,
+                             const char *channel,
+                             plh_band_member_visitor visitor,
+                             void *userdata);
+    /* Inquiry helpers — same semantics as the visitor + manual flag, but
+     * one C call.  contains: 1=present, 0=absent, -1=error.  count:
+     * count (>=0) or -1=error. */
+    int      (*band_member_contains)(const struct PlhNativeContext *ctx,
+                                     const char *channel,
+                                     const char *role_uid);
+    int      (*band_member_count)(const struct PlhNativeContext *ctx,
                                   const char *channel);
+
+    /* ── Channel-auth observability (HEP-CORE-0036 §I11 + §6.7) ──────── */
+    /* allowed_peers: visit + contains + count triplet (same shape as
+     * band_members above; symmetric so plugin authors learn one pattern). */
+    int      (*allowed_peers)(const struct PlhNativeContext *ctx,
+                              const char *channel,
+                              plh_allowed_peer_visitor visitor,
+                              void *userdata);
+    int      (*allowed_peer_contains)(const struct PlhNativeContext *ctx,
+                                      const char *channel,
+                                      const char *role_uid);
+    int      (*allowed_peer_count)(const struct PlhNativeContext *ctx,
+                                   const char *channel);
     /* is_channel_ready: 1 iff the queue serving `channel` is in HEP-0036
-     * §6.7 Active state.  Engine-parity with Lua + Python
-     * `api.is_channel_ready(channel)`. */
-    int          (*is_channel_ready)(const struct PlhNativeContext *ctx,
-                                     const char *channel);
-    /* queue_mechanism: negotiated mechanism name ("Curve" /
-     * "Plaintext" / "Uninitialized") for the named side; static C-string
-     * owned by the host; do NOT free.  Engine-parity with Lua + Python. */
-    const char  *(*queue_mechanism)(const struct PlhNativeContext *ctx, int side);
+     * §6.7 Active state.  Engine-parity with Lua/Python.  0 = !Active,
+     * -1 = error. */
+    int      (*is_channel_ready)(const struct PlhNativeContext *ctx,
+                                 const char *channel);
+    /* queue_mechanism: returns one of PLH_MECHANISM_* macros
+     * (UNINITIALIZED=0, CURVE=1) for the named side.  Replaces v5
+     * const char * return.  See HEP-CORE-0035 §2 for the
+     * CURVE-unconditional invariant. */
+    int      (*queue_mechanism)(const struct PlhNativeContext *ctx, int side);
 
-    /* Phase B1 (#194) — diagnostic + flexzone-control + band-membership. */
-    /* metrics_json: returns JSON snapshot equivalent to Lua/Python
-     * `api.metrics()`.  Caller must free(). */
-    char         *(*metrics_json)(const struct PlhNativeContext *ctx);
-    /* is_in_band: 1 iff this role is a current member of the band. */
-    int           (*is_in_band)(const struct PlhNativeContext *ctx,
-                                const char *channel);
-    /* update_flexzone_checksum / set_verify_checksum: SHM-only flexzone
-     * checksum control (HEP-CORE-0002 §2.2). */
-    int           (*update_flexzone_checksum)(const struct PlhNativeContext *ctx);
-    void          (*set_verify_checksum)(const struct PlhNativeContext *ctx,
-                                         int enable);
-
-    /* Phase B2 (#194) — queue depth + policy + receive sequence
-     * (diagnostic parity with Lua + Python). */
-    /* Queue ring slot count (0 when side not wired). */
-    uint64_t      (*out_capacity)(const struct PlhNativeContext *ctx);
-    uint64_t      (*in_capacity)(const struct PlhNativeContext *ctx);
-    /* Queue overflow policy description string.  Caller must free().
-     * NULL when side not wired. */
-    char         *(*out_policy)(const struct PlhNativeContext *ctx);
-    char         *(*in_policy)(const struct PlhNativeContext *ctx);
+    /* ── Queue diagnostic surface (HEP-CORE-0019 metrics + HEP-0007) ── */
+    uint64_t (*out_capacity)(const struct PlhNativeContext *ctx);
+    uint64_t (*in_capacity)(const struct PlhNativeContext *ctx);
+    /* Queue overflow policy: returns one of PLH_QUEUE_POLICY_* macros
+     * (UNKNOWN=0, SHM=1, ZMQ_DROP=2, ZMQ_BLOCK=3, ZMQ_RING=4).  Replaces
+     * v5 char *malloc return. */
+    int      (*out_policy)(const struct PlhNativeContext *ctx);
+    int      (*in_policy)(const struct PlhNativeContext *ctx);
     /* Last decoded wire seq on rx side.  0 until first read. */
-    uint64_t      (*last_seq)(const struct PlhNativeContext *ctx);
+    uint64_t (*last_seq)(const struct PlhNativeContext *ctx);
+
+    /* ── Metrics snapshot (v6 opaque-snapshot + key lookup) ─────────── */
+    /* metrics_snapshot: builds a thread-local host-owned cache of the
+     * current metrics tree (HEP-CORE-0019) and returns an opaque view
+     * pointer.  Lifetime: valid until the next metrics_snapshot() call
+     * on the SAME thread.  Plugin MUST NOT share across threads.  NULL
+     * on internal error. */
+    const void *(*metrics_snapshot)(const struct PlhNativeContext *ctx);
+    /* metrics_get: look up a dotted-path metric key against a snapshot
+     * pointer.  Returns 1 if found (writes value to *out), 0 if missing,
+     * -1 on error (null snap / null out / null key). */
+    int      (*metrics_get)(const void *snapshot,
+                            const char *key,
+                            double *out);
+
+    /* ── Flexzone control + band-membership query ───────────────────── */
+    int      (*is_in_band)(const struct PlhNativeContext *ctx,
+                           const char *channel);
+    int      (*update_flexzone_checksum)(const struct PlhNativeContext *ctx);
+    void     (*set_verify_checksum)(const struct PlhNativeContext *ctx,
+                                    int enable);
 
     /* ── Opaque host data (do not dereference) ────────────────────── */
     void *_core;               /* Internal — RoleHostCore pointer for API implementations */
@@ -260,11 +422,36 @@ typedef struct PlhNativeContext
 } PlhNativeContext;
 ```
 
-All strings are null-terminated UTF-8. String pointers are valid from `native_init()`
-until `native_finalize()`. Framework services are accessed through the function pointers
-on the context struct — the native engine passes `ctx` as the first argument to each call
-(e.g., `ctx->log(ctx, PLH_LOG_INFO, "message")`). The `_core` and `_log_label` fields
-are internal to the host and must not be accessed by native engine code.
+All strings are null-terminated UTF-8. String pointers in identity fields
+are valid from `native_init()` until `native_finalize()`. Framework services
+are accessed through the function pointers on the context struct — the
+native engine passes `ctx` as the first argument to each call (e.g.,
+`ctx->log(ctx, PLH_LOG_INFO, "message")`). The `_core`, `_api`, and
+`_log_label` fields are internal to the host and must not be accessed
+by native engine code.
+
+**Enumeration macros (v6).** All "one-of-N" return values are surfaced as
+preprocessor macros, not enums — the C ABI is consumed from pure C where
+`enum` width is implementation-defined.  The C++ wrapper in §5 derives
+`enum class : int` types from these macros for type-safe C++ use.
+
+```c
+#define PLH_MECHANISM_UNINITIALIZED   0
+#define PLH_MECHANISM_CURVE           1
+
+#define PLH_QUEUE_POLICY_UNKNOWN      0
+#define PLH_QUEUE_POLICY_SHM          1
+#define PLH_QUEUE_POLICY_ZMQ_DROP     2
+#define PLH_QUEUE_POLICY_ZMQ_BLOCK    3
+#define PLH_QUEUE_POLICY_ZMQ_RING     4
+
+#define PLH_STOP_REASON_NORMAL          0
+#define PLH_STOP_REASON_PEER_DEAD       1
+#define PLH_STOP_REASON_HUB_DEAD        2
+#define PLH_STOP_REASON_CRITICAL_ERROR  3
+#define PLH_STOP_REASON_CHANNEL_CLOSED  4
+#define PLH_STOP_REASON_SCRIPT_ERROR    5
+```
 
 ### 4.2 Required Symbols
 
@@ -287,7 +474,7 @@ typedef struct PlhAbiInfo
     uint32_t api_version;       /* PLH_NATIVE_API_VERSION */
 } PlhAbiInfo;
 
-#define PLH_NATIVE_API_VERSION 5
+#define PLH_NATIVE_API_VERSION 6
 ```
 
 **API version log:**
@@ -308,6 +495,24 @@ typedef struct PlhAbiInfo
   flexzone-control + queue-depth parity with Lua + Python (which
   already exposed these via per-side closures / `.def`s).  v4 plugins
   silently lacked these; rebuild against the v5 header.
+- v5 → v6 (#194 Phase C, 2026-06-11): **architectural cleanup — the
+  Two-Layer Plugin Authoring Model (§2.4).**  Tier 1 C ABI now
+  malloc-free and exception-free; Tier 2 C++ wrapper substantially
+  expanded with concepts, handles, span views.  Replaced six char*-returning
+  surfaces with int/macro/visitor patterns:
+  - `queue_mechanism` → `int` + `PLH_MECHANISM_*` macros (was `const char *`)
+  - `stop_reason` → `int` + `PLH_STOP_REASON_*` macros (was `const char *`)
+  - `out_policy` / `in_policy` → `int` + `PLH_QUEUE_POLICY_*` macros (were malloc'd char*)
+  - `band_join` → `int` (1/0/-1); dropped list-from-join behaviour (was malloc'd char*)
+  - `metrics_json` → replaced by **opaque snapshot pattern**:
+    `metrics_snapshot()` (returns thread-local view ptr) + `metrics_get(snap, key, out*)`.
+  - `allowed_peers` / `band_members` → **visitor pattern**: visit + contains
+    + count triplet; no allocations cross the boundary; plus inquiry
+    helpers `*_contains` / `*_count` for cheap yes/no membership questions.
+  All v5 plugin code that called any of the above will fail to link or
+  return wrong-type — rebuild against the v6 header.  See HEP-CORE-0032
+  §2 for the Two-Tier API Model this cleanup implements; see §2.4 of
+  this HEP for the design considerations.
 
 The native engine exports `native_abi_info()` returning a pointer to a static `PlhAbiInfo`.
 The framework validates at load time:
@@ -372,19 +577,31 @@ typedef struct plh_inbox_msg_t {
 } plh_inbox_msg_t;
 ```
 
-**Notification arg structs** (defined in `native_invoke_types.h`):
+**Notification + visitor arg structs** (defined in `native_invoke_types.h`):
 
 ```c
-/* on_allowlist_changed args (HEP-CORE-0036 §I11; API v4 #194).
- * Fired on producer/processor after framework atomically applies a new
- * authorized-consumer snapshot to ZAP cache.  Lifetime contract: args
- * struct, peers array, and all char* fields valid ONLY for the duration
- * of the call.  Plugin MUST NOT retain past return; strdup if needed. */
+/* Authorized-peer record — used by:
+ *   (a) on_allowlist_changed callback (event-driven notification), and
+ *   (b) ctx->allowed_peers() visitor (polling — see §4.1).
+ * Symmetric struct definition + lifetime contract across both surfaces;
+ * see §4.8 Lifetime + Security Contract for the contract details. */
 typedef struct plh_allowed_peer_t {
     const char *role_uid;
     const char *pubkey_z85;     /* Z85-encoded 40-char CURVE pubkey */
 } plh_allowed_peer_t;
 
+/* Visitor signature for ctx->allowed_peers() iteration.  Visitor MUST be
+ * noexcept (throwing across the C ABI is undefined behaviour; host wraps
+ * the iteration in a try/catch as defense-in-depth and returns -1 on a
+ * caught exception, but plugin authors must not rely on this).  Pointers
+ * inside `peer` valid only for the duration of this visitor call. */
+typedef void (*plh_allowed_peer_visitor)(const plh_allowed_peer_t *peer,
+                                         void *userdata);
+
+/* on_allowlist_changed args (HEP-CORE-0036 §I11).
+ * Fired on producer/processor after framework atomically applies a new
+ * authorized-consumer snapshot to ZAP cache.  args struct + peers array
+ * + all char* fields valid ONLY for the duration of the call. */
 typedef struct plh_allowlist_changed_args_t {
     const char                *channel;
     const plh_allowed_peer_t  *peers;
@@ -393,11 +610,22 @@ typedef struct plh_allowlist_changed_args_t {
                                               "consumer_left",
                                               "heartbeat_timeout", ... */
 } plh_allowlist_changed_args_t;
+
+/* Band-member record — used by ctx->band_members() visitor (§4.1).
+ * Same lifetime contract as plh_allowed_peer_t. */
+typedef struct plh_band_member_t {
+    const char *role_uid;
+    const char *role_name;      /* May be NULL or empty if broker did not
+                                 * supply one. */
+} plh_band_member_t;
+
+typedef void (*plh_band_member_visitor)(const plh_band_member_t *member,
+                                        void *userdata);
 ```
 
-The band, hub-dead, channel-closing, and consumer-died arg-struct shapes
-follow the same lifetime contract — see `native_invoke_types.h` for the
-full set.
+The band-message, hub-dead, channel-closing, consumer-died, band-member-
+joined, and band-member-left arg-struct shapes follow the same lifetime
+contract — see `native_invoke_types.h` for the full set.
 
 **Return value contract (all data callbacks):**
 - `true` -> `InvokeResult::Commit` (slot is published)
@@ -474,25 +702,124 @@ ctx->request_stop(ctx);
 | `ctx->report_metric` | `void (*)(ctx, const char *key, double value)` | Report a custom key-value metric. |
 | `ctx->clear_custom_metrics` | `void (*)(ctx)` | Clear all previously reported custom metrics. |
 | `ctx->request_stop` | `void (*)(ctx)` | Request graceful role shutdown. |
-| `ctx->set_critical_error` | `void (*)(ctx)` | Signal a critical error (sets flag + requests stop). |
+| `ctx->set_critical_error` | `void (*)(ctx, const char *msg)` | Signal a critical error (sets flag + requests stop). |
 | `ctx->is_critical_error` | `int (*)(ctx)` | Check if critical error has been flagged. Returns 1 or 0. |
-| `ctx->stop_reason` | `const char *(*)(ctx)` | Get stop reason: "normal", "peer_dead", "hub_dead", "critical_error". |
-| `ctx->out_written` | `uint64_t (*)(ctx)` | Slots written (producer/processor output). |
-| `ctx->in_received` | `uint64_t (*)(ctx)` | Slots received (consumer/processor input). |
-| `ctx->drops` | `uint64_t (*)(ctx)` | Dropped slot count. |
-| `ctx->script_errors` | `uint64_t (*)(ctx)` | Script error count. |
+| `ctx->stop_reason` | `int (*)(ctx)` | Get stop reason as a `PLH_STOP_REASON_*` macro value (see §4.1). |
+| `ctx->out_slots_written` | `uint64_t (*)(ctx)` | Slots written (producer/processor output). |
+| `ctx->in_slots_received` | `uint64_t (*)(ctx)` | Slots received (consumer/processor input). |
+| `ctx->out_drop_count` | `uint64_t (*)(ctx)` | Dropped slot count. |
+| `ctx->script_error_count` | `uint64_t (*)(ctx)` | Script error count. |
 | `ctx->loop_overrun_count` | `uint64_t (*)(ctx)` | Loop timing overrun count. |
 | `ctx->last_cycle_work_us` | `uint64_t (*)(ctx)` | Work duration of last iteration in microseconds. |
+| `ctx->queue_mechanism` | `int (*)(ctx, int side)` | Negotiated CURVE mechanism for `side` (`PLH_SIDE_TX`/`RX`) as `PLH_MECHANISM_*` macro. |
+| `ctx->out_capacity` / `ctx->in_capacity` | `uint64_t (*)(ctx)` | Queue ring slot count for tx/rx side (0 when side not wired). |
+| `ctx->out_policy` / `ctx->in_policy` | `int (*)(ctx)` | Queue overflow policy as `PLH_QUEUE_POLICY_*` macro. |
+| `ctx->last_seq` | `uint64_t (*)(ctx)` | Last decoded wire seq on rx side. 0 until first read. |
+| `ctx->is_channel_ready` | `int (*)(ctx, const char *channel)` | 1 iff queue serving `channel` is HEP-0036 §6.7 Active. 0 otherwise; -1 on error. |
+| `ctx->is_in_band` | `int (*)(ctx, const char *channel)` | 1 iff role is current band member. 0 otherwise; -1 on error. |
+| `ctx->update_flexzone_checksum` | `int (*)(ctx)` | Recompute + commit SHM flexzone checksum. 1=ok, 0=skipped, -1=error. |
+| `ctx->set_verify_checksum` | `void (*)(ctx, int enable)` | Toggle per-slot rx checksum verification. |
+| `ctx->band_join` / `band_leave` | `int (*)(ctx, const char *channel)` | Join/leave a band. 1=ok, 0=fail, -1=error. |
+| `ctx->band_broadcast` | `void (*)(ctx, const char *channel, const char *body_json)` | Broadcast JSON body. Fire-and-forget (status return tracked under #192). |
+| `ctx->band_members` | `int (*)(ctx, const char *channel, plh_band_member_visitor visitor, void *userdata)` | Visit each band member. Returns count (>=0), -1 on error. Visitor MUST be noexcept (§4.8). |
+| `ctx->band_member_contains` | `int (*)(ctx, const char *channel, const char *role_uid)` | 1=member, 0=not, -1=error. |
+| `ctx->band_member_count` | `int (*)(ctx, const char *channel)` | Member count (>=0) or -1 on error. |
+| `ctx->allowed_peers` | `int (*)(ctx, const char *channel, plh_allowed_peer_visitor visitor, void *userdata)` | Visit each authorized peer (HEP-0036 §I11). Returns count (>=0), -1 on error. Visitor MUST be noexcept (§4.8). |
+| `ctx->allowed_peer_contains` | `int (*)(ctx, const char *channel, const char *role_uid)` | 1=authorized, 0=not, -1=error. |
+| `ctx->allowed_peer_count` | `int (*)(ctx, const char *channel)` | Authorized-peer count (>=0) or -1 on error. |
+| `ctx->metrics_snapshot` | `const void *(*)(ctx)` | Build a thread-local metrics-tree cache and return an opaque view ptr. NULL on error. Lifetime: until next snapshot on same thread (§4.8). |
+| `ctx->metrics_get` | `int (*)(const void *snap, const char *key, double *out)` | Dotted-path metric lookup. 1=found (writes *out), 0=missing, -1=error. |
+| `ctx->spinlock_lock` / `unlock` / `count` / `is_locked` | see §4.1 | Spinlocks (HEP-CORE-0002 §2.2). |
+| `ctx->slot_logical_size` / `flexzone_logical_size` | see §4.1 | Schema sizes (HEP-CORE-0007). |
+| `ctx->wait_for_role` | see §4.1 | Block until role appears in broker (HEP-CORE-0023). |
 
-All function pointers are null-safe on the host side. The native engine should check for
-NULL before calling if it needs to be defensive, though the host always fills all pointers.
+All function pointers are null-safe on the host side. The C++ wrapper in §5
+checks the pointer before calling and returns the documented sentinel
+(`-1` for int-returning fns, `nullopt` for `MetricsSnapshot::get`,
+`false` for bool-returning fns) when a fn ptr is unwired.  Plain C
+plugins should defensively null-check before calling.
+
+### 4.8 Lifetime + Security Contract (#194 Phase C)
+
+Every borrowed pointer the framework hands to the plugin carries a
+documented lifetime.  The C ABI does not own anything on the plugin's
+behalf — there is no `plh_free()` because nothing was allocated for the
+plugin to free.  This section formalizes the contract so that violations
+are unambiguously plugin bugs, not framework weaknesses.
+
+**Lifetime classes:**
+
+| Pointer surface | Valid until |
+|---|---|
+| `ctx->uid`, `ctx->name`, `ctx->channel`, identity strings | `native_finalize()` returns |
+| `plh_allowed_peer_t::role_uid` / `::pubkey_z85` (visitor arg) | The visitor call returns (host releases the snapshot copy on visitor return) |
+| `plh_band_member_t::role_uid` / `::role_name` (visitor arg) | Same as above |
+| `plh_allowlist_changed_args_t` + nested `peers[]` (callback arg) | The callback returns |
+| `plh_band_message_args_t` + nested fields (callback arg) | The callback returns |
+| `metrics_snapshot()` return ptr | Next `metrics_snapshot()` call on the **same thread** |
+| `plh_*_args_t` for every other on_* callback | The callback returns |
+
+Plugin stashes a borrowed pointer past its lifetime → reads garbage at
+best, segfaults at worst.  This is plugin bug territory: the host has
+no way to invalidate stashed pointers because the plugin's memory is
+in-process and owned by the plugin.
+
+**"Visitor MUST be noexcept" rule.**  Visitor callbacks the plugin
+hands to `ctx->allowed_peers(...)` / `ctx->band_members(...)` are
+invoked synchronously from inside the host.  A C++ exception unwinding
+across the C ABI boundary is undefined behaviour — the host's
+iteration loop has no `catch` clause matching `std::exception`, the
+host's RAII guards may not run, host invariants may break.
+
+The host wraps every visitor invocation in a `try { ... } catch (...)
+{ LOGGER_ERROR(...); return -1; }` as **defense in depth** — a buggy
+plugin throwing will not corrupt the host — but plugin authors must
+not treat this as a feature.  Document this rule prominently in
+plugin-author docs (`README_NativePlugin.md`).
+
+**Threat model.**  The native plugin runs in-process with the role's
+full privileges.  There is no sandbox boundary.  "Compromised plugin"
+is functionally equivalent to "compromised role process."  The C ABI
+surface therefore is **not** designed to defend against a malicious
+plugin (impossible without process-level isolation); it is designed
+to:
+
+1. **Limit accidental damage from buggy plugins** (lifetime contracts,
+   visitor noexcept rule, host-side try/catch).
+2. **Avoid exposing secret material**.  The C ABI surfaces only
+   public-domain information: role UIDs (network-public), pubkeys
+   (publishable by definition), channel names, band names, metric
+   keys + values.  Private keys, ZAP shared secrets, SHM secrets are
+   never reachable via any ctx->fn — they live in the
+   SecureMemorySubsystem (HEP-CORE-0040) and are accessed by host code
+   only.  A compromised plugin that walks the process heap can still
+   find them (in-process), but the C ABI does not narrow that path.
+3. **Resist plugin-internal corruption of host control flow.**  All
+   pointers in `PlhNativeContext` are passed as `const
+   PlhNativeContext *`; a `const_cast` write by the plugin only
+   corrupts the plugin's own future calls (the host never dispatches
+   through the ctx fn ptrs).  An optional future hardening — mprotect
+   the `PlhNativeContext` page to `PROT_READ` after population — is
+   tracked as a follow-up task; not required for the v6 release.
+
+Out of scope at the C ABI level: side-channel attacks (Spectre, cache
+timing), CPU-level mitigations, kernel-level intrusion via
+`/proc/PID/mem` or `ptrace`.
 
 ---
 
-## 5. C++ Convenience Layer
+## 5. C++ Convenience Layer (the natural choice — §2.4 Tier 2)
 
-The C++ convenience layer is available when `native_engine_api.h` is included from a C++
-translation unit. It provides zero-cost abstractions over the raw C API.
+The C++ convenience layer is available when `native_engine_api.h` is included
+from a C++ translation unit at C++20 or later. It is **header-only**: every
+wrapper method is `inline` (in the class body or via `template`).  Plugin
+authors include one header and link nothing extra.  The wrapper compiles
+down to the same indirect-call surface as raw C ABI use — **zero binary
+cost** — while contributing concept-checked templates, typed enums,
+lightweight handle types, `std::span` views, and `std::optional` returns.
+
+The design philosophy is set out in §2.4 (Two-Layer Plugin Authoring Model).
+The Tier 2 wrapper does not replace Tier 1 — it *promotes* it.
 
 ### 5.1 SlotRef\<T\> and ConstSlotRef\<T\>
 
@@ -524,7 +851,222 @@ class ConstSlotRef {
 These wrap raw `void*` pointers with type-safe access and a validity check. The
 `static_assert` on `std::is_standard_layout_v<T>` catches non-POD types at compile time.
 
-### 5.2 Export Macros
+### 5.2 Typed Enum Classes (#194 Phase C)
+
+Each of the three v6 enumerated returns gets an `enum class : int` whose
+enumerators inherit values directly from the C ABI macros (§4.1).  No
+`static_cast` is needed when converting between the C return value and
+the typed enum — the underlying values are identical.
+
+```cpp
+namespace plh {
+
+enum class Mechanism : int {
+    Uninitialized = PLH_MECHANISM_UNINITIALIZED,
+    Curve         = PLH_MECHANISM_CURVE,
+};
+
+enum class QueuePolicy : int {
+    Unknown  = PLH_QUEUE_POLICY_UNKNOWN,
+    Shm      = PLH_QUEUE_POLICY_SHM,
+    ZmqDrop  = PLH_QUEUE_POLICY_ZMQ_DROP,
+    ZmqBlock = PLH_QUEUE_POLICY_ZMQ_BLOCK,
+    ZmqRing  = PLH_QUEUE_POLICY_ZMQ_RING,
+};
+
+enum class StopReason : int {
+    Normal         = PLH_STOP_REASON_NORMAL,
+    PeerDead       = PLH_STOP_REASON_PEER_DEAD,
+    HubDead        = PLH_STOP_REASON_HUB_DEAD,
+    CriticalError  = PLH_STOP_REASON_CRITICAL_ERROR,
+    ChannelClosed  = PLH_STOP_REASON_CHANNEL_CLOSED,
+    ScriptError    = PLH_STOP_REASON_SCRIPT_ERROR,
+};
+
+[[nodiscard]] constexpr std::string_view to_string(Mechanism m) noexcept;
+[[nodiscard]] constexpr std::string_view to_string(QueuePolicy p) noexcept;
+[[nodiscard]] constexpr std::string_view to_string(StopReason r) noexcept;
+
+} // namespace plh
+```
+
+`to_string` returns `std::string_view` of a static literal — zero
+allocation, safe for logging.  `constexpr` so the result is usable in
+compile-time `switch` contexts.
+
+### 5.3 C++20 Concepts for Visitor Type Safety (#194 Phase C)
+
+The visitor templates exposed on handle types (§5.5) are constrained
+by C++20 `requires`-clauses.  Misuse → a clean compile error at the
+concept boundary instead of a 200-line template diagnostic inside the
+thunk.
+
+```cpp
+namespace plh {
+
+template <typename V>
+concept AllowedPeerVisitor =
+    std::invocable<V &, const plh_allowed_peer_t *>;
+
+template <typename V>
+concept BandMemberVisitor =
+    std::invocable<V &, const plh_band_member_t *>;
+
+} // namespace plh
+```
+
+### 5.4 MetricsSnapshot — Opaque Handle Wrapper (#194 Phase C)
+
+`MetricsSnapshot` is a typed value-class wrapper around the opaque
+`const void *` returned by `ctx->metrics_snapshot(ctx)`.  It is **not** a
+RAII resource handle — the underlying thread-local cache is host-owned;
+the wrapper merely binds the snapshot pointer to a typed lookup
+interface.  Lifetime: valid until the next `metrics_snapshot()` call on
+the same thread.
+
+```cpp
+namespace plh {
+
+class MetricsSnapshot {
+    const Context *ctx_;
+    const void    *snap_;
+
+public:
+    constexpr MetricsSnapshot(const Context &ctx, const void *snap) noexcept
+        : ctx_(&ctx), snap_(snap) {}
+
+    /// Get a metric by dotted-path key.  Returns nullopt if missing,
+    /// snapshot invalid, or ABI fn unwired.
+    [[nodiscard]] std::optional<double> get(const char *key) const noexcept;
+    [[nodiscard]] std::optional<double> get(std::string_view key) const noexcept;
+
+    /// Ergonomic shorthand.
+    [[nodiscard]] std::optional<double> operator[](const char *key) const noexcept
+    { return get(key); }
+
+    [[nodiscard]] explicit operator bool() const noexcept { return snap_ != nullptr; }
+    [[nodiscard]] constexpr const void *raw() const noexcept { return snap_; }
+};
+
+} // namespace plh
+```
+
+### 5.5 Handle Types: AllowedPeersHandle, BandHandle (#194 Phase C)
+
+Handles are **lightweight typed views** — each holds exactly two
+pointers (`const Context *` + `const char *channel`) and is
+`trivially_copyable`.  `static_assert`s in the header pin this contract:
+
+```cpp
+static_assert(std::is_trivially_copyable_v<plh::AllowedPeersHandle>);
+static_assert(std::is_trivially_copyable_v<plh::BandHandle>);
+static_assert(std::is_trivially_copyable_v<plh::MetricsSnapshot>);
+static_assert(sizeof(plh::AllowedPeersHandle) == 2 * sizeof(void *));
+```
+
+Returning a handle by value costs nothing — the compiler passes both
+pointers in registers.
+
+```cpp
+namespace plh {
+
+class AllowedPeersHandle {
+    const Context *ctx_;
+    const char    *channel_;
+
+public:
+    constexpr AllowedPeersHandle(const Context &ctx, const char *channel) noexcept
+        : ctx_(&ctx), channel_(channel) {}
+
+    /// Template visitor — concept-constrained, zero-cost thunk forwards to C ABI.
+    template <AllowedPeerVisitor V>
+    int visit(V &&v) const noexcept;
+
+    /// Raw-fnptr overload — for callers that already have a plain function pointer.
+    int visit(plh_allowed_peer_visitor v, void *userdata) const noexcept;
+
+    [[nodiscard]] bool contains(const char *role_uid) const noexcept;
+    [[nodiscard]] int  count() const noexcept;
+
+    /// Collection helpers — encourage "snapshot once, query many" pattern.
+    /// For repeated membership queries against a stable allowlist, calling
+    /// to_uid_set() once and doing O(1) lookups against the std::unordered_set
+    /// is measurably faster than repeated visit/contains calls (each of which
+    /// pays a per-call vector copy under the framework lock).
+    [[nodiscard]] std::vector<std::string>        collect_uids() const;
+    [[nodiscard]] std::unordered_set<std::string> to_uid_set() const;
+
+    [[nodiscard]] constexpr const char *channel() const noexcept { return channel_; }
+};
+
+class BandHandle {
+    const Context *ctx_;
+    const char    *channel_;
+
+public:
+    constexpr BandHandle(const Context &ctx, const char *channel) noexcept
+        : ctx_(&ctx), channel_(channel) {}
+
+    template <BandMemberVisitor V>
+    int visit_members(V &&v) const noexcept;
+    int visit_members(plh_band_member_visitor v, void *userdata) const noexcept;
+
+    [[nodiscard]] bool contains(const char *role_uid) const noexcept;
+    [[nodiscard]] int  member_count() const noexcept;
+
+    /// Fire-and-forget broadcast.  Returns void at the C ABI v6 level
+    /// (status return is a cross-engine concern tracked under #192).
+    void broadcast(const char *body_json) const noexcept;
+
+    [[nodiscard]] std::vector<std::string>        collect_uids() const;
+    [[nodiscard]] std::unordered_set<std::string> to_uid_set() const;
+
+    [[nodiscard]] constexpr const char *channel() const noexcept { return channel_; }
+};
+
+} // namespace plh
+```
+
+Methods on `plh::Context` that produce handles:
+
+```cpp
+[[nodiscard]] constexpr AllowedPeersHandle allowed_peers(const char *channel) const noexcept
+{ return AllowedPeersHandle(*this, channel); }
+
+[[nodiscard]] constexpr BandHandle band(const char *channel) const noexcept
+{ return BandHandle(*this, channel); }
+```
+
+### 5.6 AllowlistChangedView — std::span over Event Args (#194 Phase C)
+
+The `on_allowlist_changed` callback receives a `const
+plh_allowlist_changed_args_t *`.  The C++ wrapper exposes a thin view
+with a `std::span` over the contiguous `peers[]` array, enabling
+idiomatic range-for iteration:
+
+```cpp
+namespace plh {
+
+class AllowlistChangedView {
+    const plh_allowlist_changed_args_t *args_;
+public:
+    constexpr explicit AllowlistChangedView(const plh_allowlist_changed_args_t *a) noexcept
+        : args_(a) {}
+
+    [[nodiscard]] constexpr std::string_view channel() const noexcept
+    { return args_->channel; }
+
+    [[nodiscard]] constexpr std::string_view reason() const noexcept
+    { return args_->reason; }
+
+    [[nodiscard]] constexpr std::span<const plh_allowed_peer_t> peers() const noexcept
+    { return {args_->peers, args_->peer_count}; }
+};
+
+} // namespace plh
+```
+
+### 5.7 Export Macros (existing — unchanged)
 
 | Macro | Callback Signature | Description |
 |-------|-------------------|-------------|
@@ -538,10 +1080,10 @@ These wrap raw `void*` pointers with type-safe access and a validity check. The
 These macros generate the C-linkage `on_produce`/`on_consume`/`on_process` symbols and
 wrap the raw pointers in typed SlotRef/ConstSlotRef before calling the user's function.
 
-### 5.3 Example: C++ Producer Native Engine
+### 5.8 Example: C++ Producer Native Engine (v6 ergonomic surface)
 
 ```cpp
-#include <pylabhub/native_engine_api.h>
+#include <utils/native_engine_api.h>
 
 struct MySlot {
     double   timestamp;
@@ -549,28 +1091,57 @@ struct MySlot {
     uint8_t  status;
 };
 
-PLH_DECLARE_SCHEMA(SlotFrame,
+PLH_DECLARE_SCHEMA(OutSlotFrame,
     "timestamp:float64:1:0|temperature:float32:1:0|status:uint8:1:0",
     sizeof(MySlot))
 
 static const PlhNativeContext *g_ctx = nullptr;
 
-PLH_EXPORT bool native_init(const PlhNativeContext *ctx) {
+extern "C" PLH_EXPORT bool native_init(const PlhNativeContext *ctx) {
     g_ctx = ctx;
-    ctx->log(ctx, PLH_LOG_INFO, "MyProducer initialized");
+    plh::Context wrap{ctx};
+
+    // Typed enum class — switch is compiler-checked.
+    switch (wrap.queue_mechanism(PLH_SIDE_TX)) {
+        case plh::Mechanism::Curve:
+            wrap.log(PLH_LOG_INFO, "tx mechanism = CURVE");
+            break;
+        case plh::Mechanism::Uninitialized:
+            wrap.log(PLH_LOG_WARN, "tx mechanism not yet negotiated");
+            break;
+    }
+
+    // Snapshot-once + O(1) membership check via to_uid_set().
+    auto peers = wrap.allowed_peers("out");
+    auto authorized = peers.to_uid_set();
+    if (!authorized.contains("consumer_A")) {
+        wrap.log(PLH_LOG_WARN, "consumer_A not yet authorized");
+    }
+
     return true;
 }
 
-PLH_EXPORT void native_finalize(void) {
+extern "C" PLH_EXPORT void native_finalize(void) {
     g_ctx = nullptr;
 }
 
-PLH_EXPORT const PlhAbiInfo *native_abi_info(void) {
+extern "C" PLH_EXPORT const PlhAbiInfo *native_abi_info(void) {
     static PlhAbiInfo info = {
-        sizeof(PlhAbiInfo), sizeof(void*), sizeof(size_t), 1,
+        sizeof(PlhAbiInfo), sizeof(void *), sizeof(size_t), 1,
         PLH_NATIVE_API_VERSION
     };
     return &info;
+}
+
+// std::span iteration over the on_allowlist_changed args.
+extern "C" PLH_EXPORT
+void plh_on_allowlist_changed(const plh_allowlist_changed_args_t *args)
+{
+    plh::AllowlistChangedView view{args};
+    plh::Context wrap{g_ctx};
+    for (const auto &peer : view.peers()) {
+        wrap.log(PLH_LOG_INFO, peer.role_uid);
+    }
 }
 
 static bool produce(plh::SlotRef<MySlot> slot) {
@@ -583,9 +1154,30 @@ static bool produce(plh::SlotRef<MySlot> slot) {
 
 PLH_EXPORT_PRODUCE_NOFZ(MySlot, produce)
 
-PLH_EXPORT void on_init(void) {}
-PLH_EXPORT void on_stop(void) {}
+extern "C" PLH_EXPORT void on_init(void) {}
+extern "C" PLH_EXPORT void on_stop(void) {}
 ```
+
+Compare to a pure-C plugin doing the same membership check via raw
+visitor:
+
+```c
+/* Pure C: manual hash-set boilerplate — visit + flag + early exit */
+struct check_ctx { const char *target; int found; };
+static void check_visitor(const plh_allowed_peer_t *p, void *ud) {
+    struct check_ctx *c = (struct check_ctx *)ud;
+    if (strcmp(p->role_uid, c->target) == 0) c->found = 1;
+}
+struct check_ctx cc = { "consumer_A", 0 };
+ctx->allowed_peers(ctx, "out", check_visitor, &cc);
+if (!cc.found) { /* warn */ }
+
+/* Or skip the visitor entirely and use the inquiry function: */
+if (ctx->allowed_peer_contains(ctx, "out", "consumer_A") != 1) { /* warn */ }
+```
+
+Both layers are first-class.  The C ABI is the contract; the C++ wrapper
+is the natural ergonomic surface for the common case.
 
 ---
 
@@ -812,11 +1404,18 @@ applicable to compiled native engines.
 
 Native engine callbacks cannot "raise exceptions" in the script engine sense. If a
 callback crashes (segfault, abort), the entire process dies. The framework provides
-`ctx->set_critical_error(ctx)` for the native engine to signal recoverable errors that
+`ctx->set_critical_error(ctx, msg)` for the native engine to signal recoverable errors that
 should trigger graceful shutdown.
 
+**Exception across the C ABI boundary is undefined behaviour.**  Per §4.8,
+visitor callbacks the plugin hands to `ctx->allowed_peers(...)` /
+`ctx->band_members(...)` MUST be `noexcept`.  The host wraps every
+visitor invocation in a `try/catch` as defense in depth — a buggy plugin
+throwing will not corrupt the host — but plugin authors must not rely
+on this safety net.  Throwing across the boundary is a plugin bug.
+
 `script_error_count()` delegates to `RoleHostCore::script_errors()`, which the native
-engine can increment indirectly via `ctx->set_critical_error(ctx)`.
+engine can increment indirectly via `ctx->set_critical_error(ctx, msg)`.
 
 ---
 
@@ -840,10 +1439,16 @@ engine can increment indirectly via `ctx->set_critical_error(ctx)`.
 
 ## 13. Cross-References
 
-- **HEP-CORE-0011**: ScriptEngine abstraction framework (NativeEngine implements this interface)
+- **HEP-CORE-0011**: ScriptEngine abstraction framework (NativeEngine implements this interface; cross-engine surface table for `queue_mechanism`/`stop_reason`/`is_channel_ready`/`allowed_peers`)
+- **HEP-CORE-0032**: ABI Compatibility Design — Two-Tier API Model that this HEP's §2.4 implements for the native plugin surface (Tier 1 C ABI / Tier 2 C++ wrapper)
 - **HEP-CORE-0008 SS6**: Iteration metrics (NativeEngine participates in the same metrics pipeline)
 - **HEP-CORE-0018 SS15**: Producer/Consumer binary architecture (engine selection logic)
 - **HEP-CORE-0015 SS4**: Processor binary (engine selection, dual-queue dispatch)
 - **HEP-CORE-0027**: Inbox messaging (on_inbox callback, InboxFrame schema validation)
 - **HEP-CORE-0034**: Schema Registry — schema field definitions used in `PLH_DECLARE_SCHEMA` (supersedes HEP-CORE-0016). Native-plugin schemas are owned by the role that hosts the plugin (same as if the role had registered a JSON schema file); citation rules in §9.1 apply unchanged.
-- **HEP-CORE-0019 SS5**: Metrics plane (ctx->report_metric integration)
+- **HEP-CORE-0019 SS5**: Metrics plane (ctx->report_metric integration; metrics_snapshot/metrics_get opaque pattern)
+- **HEP-CORE-0035 §2**: CURVE-unconditional invariant (queue_mechanism enum codomain)
+- **HEP-CORE-0036 §I11 + §6.7**: Authorized-peer + channel-state observability (allowed_peers visitor + inquiry; is_channel_ready)
+- **HEP-CORE-0040**: Locked Key Memory (secret material lives here, not on the C ABI surface — see §4.8 threat model)
+- **IMPLEMENTATION_GUIDANCE.md §"Error reporting: C vs C++"**: foundational rule the v6 C ABI implements (return codes; no exceptions across boundary)
+- **IMPLEMENTATION_GUIDANCE.md §"Explicit noexcept"**: rule for the host-side wrappers backing every ctx fn ptr

@@ -505,6 +505,19 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
         }
     }
 
+    /// Typed accessor mirroring `stop_reason_string()`.  Returns the
+    /// enum value (StopReason::Normal when the atomic int does not
+    /// match a known variant).  Native plugin C ABI v6 uses this for
+    /// `ctx->stop_reason()` to surface the same codomain as the string
+    /// form without owning a buffer.
+    [[nodiscard]] StopReason stop_reason() const noexcept
+    {
+        const int v = stop_reason_.load(std::memory_order_relaxed);
+        if (v < 0 || v > static_cast<int>(StopReason::ScriptError))
+            return StopReason::Normal;
+        return static_cast<StopReason>(v);
+    }
+
     // ── Metric accessors (read) ──────────────────────────────────────────
 
     /// Slots successfully committed to output queue (producer/processor only).
@@ -555,9 +568,17 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
     void inc_loop_overrun()    noexcept { loop_overrun_count_.fetch_add(1, std::memory_order_relaxed); }
     void inc_acquire_retry() noexcept { acquire_retry_count_.fetch_add(1, std::memory_order_relaxed); }
 
-#ifdef PYLABHUB_BUILD_TESTS
-    /// Test-only: directly set counter values for test setup.
-    /// Production code should use inc_*() only.
+// Test-only counter mutators — directly overwrite per-role telemetry
+// values from a test harness.  Production code path is inc_*() only.
+//
+// Gate is double-locked at the source level: BOTH `PYLABHUB_BUILD_TESTS`
+// (set by CMake `-DBUILD_TESTS=ON`) AND `!defined(NDEBUG)` (i.e.
+// CMAKE_BUILD_TYPE=Debug).  An operator who accidentally configures a
+// Release build with `-DBUILD_TESTS=ON` still gets the mutators
+// physically absent from the compiled binary — counter-forgery surface
+// (HEP-CORE-0019 metrics plane) does NOT widen.  See HEP-CORE-0032 §3.2
+// "Deployment posture" for the rationale.
+#if defined(PYLABHUB_BUILD_TESTS) && !defined(NDEBUG)
     void test_set_out_slots_written(uint64_t v) noexcept { out_slots_written_.store(v, std::memory_order_relaxed); }
     void test_set_in_slots_received(uint64_t v) noexcept { in_slots_received_.store(v, std::memory_order_relaxed); }
     void test_set_out_drop_count(uint64_t v)    noexcept { out_drop_count_.store(v, std::memory_order_relaxed); }

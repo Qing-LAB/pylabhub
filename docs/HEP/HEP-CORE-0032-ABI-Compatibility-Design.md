@@ -102,8 +102,14 @@ the shared library (external binaries, plugins, user C++ programs).
 
 ### 3.2 `PYLABHUB_UTILS_TEST_EXPORT`
 
-Test-only export. The symbol is visible only when `PYLABHUB_BUILD_TESTS` is
-defined (i.e., test builds). In production builds the symbol is hidden.
+Test-only export.  The symbol is visible when the CMake option
+`-DBUILD_TESTS=ON` is set (which compiles `PYLABHUB_BUILD_TESTS`),
+otherwise hidden.  This is **visibility-only** — it widens the ABI
+surface for test binaries to instantiate framework-internal classes
+directly, but it is not itself a security boundary.  Genuine
+security-sensitive backdoors (counter mutators, auth bypass) use a
+second source-level `!defined(NDEBUG)` gate on top of
+`PYLABHUB_BUILD_TESTS` (see §3.2.1 "Two risk classes" below).
 
 **Criteria:** The class is internal implementation — used only within the lib
 and by test binaries that need direct access for unit testing.
@@ -112,12 +118,80 @@ and by test binaries that need direct access for unit testing.
 CMake `CUSTOM_CONTENT_FROM_VARIABLE`):
 
 ```c
+/* Test-only export: visible when PYLABHUB_BUILD_TESTS is defined,
+   hidden otherwise.  Visibility-only — not a security gate.  For
+   genuine security-sensitive backdoors (counter mutators, auth
+   bypass), use the additional `!defined(NDEBUG)` source-level gate.
+   See HEP-CORE-0032 §3.2.1. */
 #ifdef PYLABHUB_BUILD_TESTS
 #   define PYLABHUB_UTILS_TEST_EXPORT PYLABHUB_UTILS_EXPORT
 #else
 #   define PYLABHUB_UTILS_TEST_EXPORT
 #endif
 ```
+
+#### 3.2.1 Deployment posture and two risk classes (#205, 2026-06-11)
+
+`BUILD_TESTS=ON` is the default in both Debug and Release.  Tests for
+the normal public API build and run in both configurations.
+
+The codebase distinguishes two risk classes of test-only surface:
+
+| Risk class | Examples | Gate | Behaviour in Release+BUILD_TESTS=ON |
+|---|---|---|---|
+| **(A) Test-only visibility — diagnostic / recovery classes** | `IntegrityValidator`, `SlotDiagnostics`, `SlotRecovery`, `HeartbeatManager`, `verify_ownership` | `defined(PYLABHUB_BUILD_TESTS)` (via `PYLABHUB_UTILS_TEST_EXPORT`) | Present, exported. ABI surface is wider than a shipped binary needs, but not a security risk per se. |
+| **(B) Genuine security backdoor — counter forgery, auth bypass, invariant relaxation** | `RoleHostCore::test_set_*` counter mutators; HEP-CORE-0036 §I10 one-pubkey-per-role-uid bypass | `defined(PYLABHUB_BUILD_TESTS) && !defined(NDEBUG)` (or, for I10, `defined(PYLABHUB_WITH_TEST) && !defined(NDEBUG)`) | **Absent** at the source level.  Counter forgery and invariant relaxation are physically impossible regardless of how `BUILD_TESTS` is configured. |
+
+Tests that depend on class (B) backdoors skip gracefully in Release:
+
+| Configuration | Class A in binary | Class B in binary | Normal-API tests | Class A tests | Class B tests |
+|---|---|---|---|---|---|
+| **Debug** + `BUILD_TESTS=ON` (the dev config) | Present | Present | Build + run | Build + run | Build + run (real path) |
+| **Release** + `BUILD_TESTS=ON` | Present | **Absent** | Build + run | Build + run | Build, skip via `GTEST_SKIP()` |
+| Any + `BUILD_TESTS=OFF` (the ship config) | Absent | Absent | Not built | Not built | Not built |
+
+The class (B) promise is enforced at three layers:
+
+1. **Source-level gate on the backdoor itself** —
+   `RoleHostCore::test_set_*` and the I10 bypass branch are wrapped in
+   `#if defined(PYLABHUB_BUILD_TESTS) && !defined(NDEBUG)`.  Result:
+   Release binaries do not include the surface even when
+   `BUILD_TESTS=ON`.
+
+2. **Source-level wrap on backdoor CALL SITES** — every test/worker
+   file that invokes a class (B) backdoor wraps the call in
+   `#if !defined(NDEBUG)` so the file compiles in Release.
+
+3. **TEST_F-level `GTEST_SKIP()` in NDEBUG** — each `TEST_F` body that
+   depends on backdoor behavior starts with:
+   ```cpp
+   #if defined(NDEBUG)
+       GTEST_SKIP() << "Requires <backdoor API>; absent in Release "
+                       "(HEP-CORE-0032 §3.2).";
+   #else
+       ... real test body ...
+   #endif
+   ```
+   so CI in Release reports the test as SKIPPED (not failed, not built
+   wrong).
+
+This applies to **every** class (B) test-only relaxation added to the
+codebase.  HEP-CORE-0036 §I10 is the canonical security example (the
+one-pubkey-per-role-uid invariant uses `PYLABHUB_WITH_TEST` rather than
+`PYLABHUB_BUILD_TESTS`, but the gating shape is identical:
+`#if defined(NDEBUG) || !defined(PYLABHUB_WITH_TEST)` selects the
+production-enforce branch).  The L2 test
+`test_layer2_known_roles.cpp::I10_BuildFlag_MatchesNDebugDisposition`
+is the gold-standard pin for that gate.  The build-flag invariants
+test at `test_layer2_build_flag_invariants.cpp` extends the same
+pattern to `RoleHostCore::test_set_*`.
+
+The `PYLABHUB_VAULT_TEST_KDF` macro (`tests/CMakeLists.txt`) is a
+separate, narrower gate — KDF parameters relaxed under
+`BUILD_TESTS=ON AND CI-env-detected`.  It is acceptable because
+production builds (`BUILD_TESTS=OFF`) cannot reach the relaxed branch;
+its threat surface is contained to a single derivation function used
+only by L4 vault tests.
 
 ### 3.3 No macro (hidden)
 
