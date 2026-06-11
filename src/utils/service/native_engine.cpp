@@ -365,6 +365,37 @@ const char *ctx_queue_mechanism(const PlhNativeContext *ctx, int side)
         static_cast<RoleAPIBase *>(ctx->_api)->queue_mechanism(cs));
 }
 
+// ── Phase B (#194) — diagnostic + flexzone-control + band-membership ────────
+
+char *ctx_metrics_json(const PlhNativeContext *ctx)
+{
+    if (!ctx || !ctx->_api) return nullptr;
+    auto j = static_cast<RoleAPIBase *>(ctx->_api)->snapshot_metrics_json();
+    auto s = j.dump();
+    char *out = static_cast<char *>(malloc(s.size() + 1));
+    if (out) { std::memcpy(out, s.c_str(), s.size() + 1); }
+    return out;
+}
+
+int ctx_is_in_band(const PlhNativeContext *ctx, const char *channel)
+{
+    if (!ctx || !ctx->_api || !channel) return 0;
+    return static_cast<RoleAPIBase *>(ctx->_api)->is_in_band(channel) ? 1 : 0;
+}
+
+int ctx_update_flexzone_checksum(const PlhNativeContext *ctx)
+{
+    if (!ctx || !ctx->_api) return 0;
+    return static_cast<RoleAPIBase *>(ctx->_api)->update_flexzone_checksum()
+               ? 1 : 0;
+}
+
+void ctx_set_verify_checksum(const PlhNativeContext *ctx, int enable)
+{
+    if (!ctx || !ctx->_api) return;
+    static_cast<RoleAPIBase *>(ctx->_api)->set_verify_checksum(enable != 0);
+}
+
 } // anonymous namespace
 
 // ============================================================================
@@ -486,6 +517,12 @@ struct NativeEngine::NativeContextStorage
         ctx.allowed_peers    = ctx_allowed_peers;
         ctx.is_channel_ready = ctx_is_channel_ready;
         ctx.queue_mechanism  = ctx_queue_mechanism;
+
+        // Phase B (#194) — diagnostic + flexzone + band-membership.
+        ctx.metrics_json             = ctx_metrics_json;
+        ctx.is_in_band               = ctx_is_in_band;
+        ctx.update_flexzone_checksum = ctx_update_flexzone_checksum;
+        ctx.set_verify_checksum      = ctx_set_verify_checksum;
     }
 };
 

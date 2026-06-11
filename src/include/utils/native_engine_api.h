@@ -194,6 +194,27 @@ typedef struct
      *  `api.queue_mechanism(side)` + Python `api.queue_mechanism(side)`. */
     const char *(*queue_mechanism)(const struct PlhNativeContext *ctx, int side);
 
+    /* ── Phase B (#194) — diagnostic + flexzone-control + band-membership ── */
+
+    /** metrics_json: returns JSON snapshot equivalent to Python
+     *  `api.metrics()` / Lua `api.metrics()`.  Caller must free(). */
+    char *(*metrics_json)(const struct PlhNativeContext *ctx);
+
+    /** is_in_band: 1 iff this role is a current member of `channel`'s
+     *  band routing table (HEP-CORE-0030 §5.3 S4). */
+    int   (*is_in_band)(const struct PlhNativeContext *ctx, const char *channel);
+
+    /** update_flexzone_checksum: SHM-only.  Recomputes + stores the
+     *  flexzone checksum after the plugin mutated fz contents.  Returns
+     *  1 on success, 0 on no-op (e.g. ZMQ side or no fz wired).
+     *  Engine-parity with Lua/Python `api.update_flexzone_checksum()`. */
+    int   (*update_flexzone_checksum)(const struct PlhNativeContext *ctx);
+
+    /** set_verify_checksum: SHM-only.  Enables/disables per-read slot +
+     *  flexzone checksum verification.  ZMQ side: silent no-op (ZMQ
+     *  enforces integrity at frame level). */
+    void  (*set_verify_checksum)(const struct PlhNativeContext *ctx, int enable);
+
     /* ── Opaque host data (do not dereference) ────────────────────── */
     void *_core;               /**< Internal — RoleHostCore pointer for API implementations. */
     void *_api;                /**< Internal — RoleAPIBase pointer for spinlock/messaging. */
@@ -671,6 +692,30 @@ class Context
     const char *queue_mechanism(int side = PLH_SIDE_AUTO) const
     {
         return c_->queue_mechanism ? c_->queue_mechanism(c_, side) : "Uninitialized";
+    }
+
+    // ── Phase B (#194) — diagnostics + flexzone + band-membership ─
+    /** Returns JSON snapshot of role metrics.  Caller must free(). */
+    char *metrics_json() const
+    {
+        return c_->metrics_json ? c_->metrics_json(c_) : nullptr;
+    }
+    /** Returns true iff this role is a current member of the band. */
+    bool is_in_band(const char *channel) const
+    {
+        return c_->is_in_band ? c_->is_in_band(c_, channel) != 0 : false;
+    }
+    /** SHM-only.  Recompute + store flexzone checksum. */
+    bool update_flexzone_checksum() const
+    {
+        return c_->update_flexzone_checksum
+                   ? c_->update_flexzone_checksum(c_) != 0
+                   : false;
+    }
+    /** SHM-only.  Enable/disable per-read checksum verification. */
+    void set_verify_checksum(bool enable) const
+    {
+        if (c_->set_verify_checksum) c_->set_verify_checksum(c_, enable ? 1 : 0);
     }
 
     /// Access the raw C context.
