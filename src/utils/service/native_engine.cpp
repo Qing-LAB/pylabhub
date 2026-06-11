@@ -396,6 +396,48 @@ void ctx_set_verify_checksum(const PlhNativeContext *ctx, int enable)
     static_cast<RoleAPIBase *>(ctx->_api)->set_verify_checksum(enable != 0);
 }
 
+// ── Phase B2 (#194) — queue depth + policy + receive seq ────────────────────
+
+uint64_t ctx_out_capacity(const PlhNativeContext *ctx)
+{
+    if (!ctx || !ctx->_api) return 0;
+    return static_cast<uint64_t>(
+        static_cast<RoleAPIBase *>(ctx->_api)->out_capacity());
+}
+
+char *ctx_out_policy(const PlhNativeContext *ctx)
+{
+    if (!ctx || !ctx->_api) return nullptr;
+    const auto s = static_cast<RoleAPIBase *>(ctx->_api)->out_policy();
+    if (s.empty()) return nullptr;
+    char *out = static_cast<char *>(malloc(s.size() + 1));
+    if (out) { std::memcpy(out, s.c_str(), s.size() + 1); }
+    return out;
+}
+
+uint64_t ctx_in_capacity(const PlhNativeContext *ctx)
+{
+    if (!ctx || !ctx->_api) return 0;
+    return static_cast<uint64_t>(
+        static_cast<RoleAPIBase *>(ctx->_api)->in_capacity());
+}
+
+char *ctx_in_policy(const PlhNativeContext *ctx)
+{
+    if (!ctx || !ctx->_api) return nullptr;
+    const auto s = static_cast<RoleAPIBase *>(ctx->_api)->in_policy();
+    if (s.empty()) return nullptr;
+    char *out = static_cast<char *>(malloc(s.size() + 1));
+    if (out) { std::memcpy(out, s.c_str(), s.size() + 1); }
+    return out;
+}
+
+uint64_t ctx_last_seq(const PlhNativeContext *ctx)
+{
+    if (!ctx || !ctx->_api) return 0;
+    return static_cast<RoleAPIBase *>(ctx->_api)->last_seq();
+}
+
 } // anonymous namespace
 
 // ============================================================================
@@ -523,6 +565,13 @@ struct NativeEngine::NativeContextStorage
         ctx.is_in_band               = ctx_is_in_band;
         ctx.update_flexzone_checksum = ctx_update_flexzone_checksum;
         ctx.set_verify_checksum      = ctx_set_verify_checksum;
+
+        // Phase B2 (#194) — queue depth + policy + last_seq.
+        ctx.out_capacity = ctx_out_capacity;
+        ctx.out_policy   = ctx_out_policy;
+        ctx.in_capacity  = ctx_in_capacity;
+        ctx.in_policy    = ctx_in_policy;
+        ctx.last_seq     = ctx_last_seq;
     }
 };
 

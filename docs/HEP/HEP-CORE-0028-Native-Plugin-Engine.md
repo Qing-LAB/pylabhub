@@ -226,7 +226,7 @@ typedef struct PlhNativeContext
      * owned by the host; do NOT free.  Engine-parity with Lua + Python. */
     const char  *(*queue_mechanism)(const struct PlhNativeContext *ctx, int side);
 
-    /* Phase B (#194) — diagnostic + flexzone-control + band-membership. */
+    /* Phase B1 (#194) — diagnostic + flexzone-control + band-membership. */
     /* metrics_json: returns JSON snapshot equivalent to Lua/Python
      * `api.metrics()`.  Caller must free(). */
     char         *(*metrics_json)(const struct PlhNativeContext *ctx);
@@ -238,6 +238,18 @@ typedef struct PlhNativeContext
     int           (*update_flexzone_checksum)(const struct PlhNativeContext *ctx);
     void          (*set_verify_checksum)(const struct PlhNativeContext *ctx,
                                          int enable);
+
+    /* Phase B2 (#194) — queue depth + policy + receive sequence
+     * (diagnostic parity with Lua + Python). */
+    /* Queue ring slot count (0 when side not wired). */
+    uint64_t      (*out_capacity)(const struct PlhNativeContext *ctx);
+    uint64_t      (*in_capacity)(const struct PlhNativeContext *ctx);
+    /* Queue overflow policy description string.  Caller must free().
+     * NULL when side not wired. */
+    char         *(*out_policy)(const struct PlhNativeContext *ctx);
+    char         *(*in_policy)(const struct PlhNativeContext *ctx);
+    /* Last decoded wire seq on rx side.  0 until first read. */
+    uint64_t      (*last_seq)(const struct PlhNativeContext *ctx);
 
     /* ── Opaque host data (do not dereference) ────────────────────── */
     void *_core;               /* Internal — RoleHostCore pointer for API implementations */
@@ -275,20 +287,27 @@ typedef struct PlhAbiInfo
     uint32_t api_version;       /* PLH_NATIVE_API_VERSION */
 } PlhAbiInfo;
 
-#define PLH_NATIVE_API_VERSION 4
+#define PLH_NATIVE_API_VERSION 5
 ```
 
 **API version log:**
 - v1 → v2 (2026-04): initial ABI baseline.
 - v2 → v3 (audit S2, 2026-05-18): `set_critical_error` gained a `const
   char *msg` parameter (uniform with Python/Lua `api.set_critical_error(msg)`).
-- v3 → v4 (#194, 2026-06-10): `PlhNativeContext` gains `allowed_peers` +
-  `is_channel_ready` + `queue_mechanism` function pointers (HEP-CORE-0036
-  §I11 + §6.7 parity with Lua/Python).  New `on_allowlist_changed`
-  callback symbol + `plh_allowlist_changed_args_t` / `plh_allowed_peer_t`
-  arg structs.  v3 plugins silently lacked these (no compile error;
-  runtime behaviour was as if the host didn't expose the §I11 surface
-  at all).  Rebuild plugins against the v4 header.
+- v3 → v4 (#194 Phase A, 2026-06-10): `PlhNativeContext` gains
+  `allowed_peers` + `is_channel_ready` + `queue_mechanism` function
+  pointers (HEP-CORE-0036 §I11 + §6.7 parity with Lua/Python).  New
+  `on_allowlist_changed` callback symbol + `plh_allowlist_changed_args_t`
+  / `plh_allowed_peer_t` arg structs.  v3 plugins silently lacked these
+  (no compile error; runtime behaviour was as if the host didn't expose
+  the §I11 surface at all).  Rebuild plugins against the v4 header.
+- v4 → v5 (#194 Phase B1+B2, 2026-06-10): `PlhNativeContext` gains
+  `metrics_json` + `is_in_band` + `update_flexzone_checksum` +
+  `set_verify_checksum` (Phase B1) plus `out_capacity` + `out_policy` +
+  `in_capacity` + `in_policy` + `last_seq` (Phase B2) — diagnostic +
+  flexzone-control + queue-depth parity with Lua + Python (which
+  already exposed these via per-side closures / `.def`s).  v4 plugins
+  silently lacked these; rebuild against the v5 header.
 
 The native engine exports `native_abi_info()` returning a pointer to a static `PlhAbiInfo`.
 The framework validates at load time:
