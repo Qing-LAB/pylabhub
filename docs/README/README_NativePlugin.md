@@ -571,14 +571,34 @@ C++ wrapper: `ctx.request_stop();`
 ### 7.4 Critical error
 
 ```c
-/* Signal unrecoverable error -- role exits immediately */
-ctx->set_critical_error(ctx);
+/* Signal unrecoverable error -- role exits immediately.
+   API v3+ requires a message parameter (logged at ERROR by the host
+   before flipping state).  Pass a meaningful diagnostic string. */
+ctx->set_critical_error(ctx, "hardware read failed: device returned EIO");
 ```
 
 Use for hardware failures, memory corruption, or any state where continuing
 would produce incorrect data.
 
-C++ wrapper: `ctx.set_critical_error();`
+C++ wrapper: `ctx.set_critical_error("hardware read failed: device returned EIO");`
+
+### 7.5 Other framework helpers (full reference)
+
+The helpers documented in §7.1–§7.4 are the most common ones.  The
+complete current surface — spinlocks, schema-size queries, band
+pub/sub, channel-auth observability (`allowed_peers` /
+`is_channel_ready` / `queue_mechanism`), inbox accessors, queue
+depth + overflow policy + receive sequence, flexzone checksum
+control, role discovery (`wait_for_role`), and the typed-args
+event callbacks (`on_channel_closing`, `on_consumer_died`,
+`on_hub_dead`, `on_band_*`, `on_allowlist_changed`) — is documented
+in `HEP-CORE-0028 §4.1 PlhNativeContext` and §4.4 Role Callback
+Symbols.  That HEP tracks the authoritative current API version
+(v5 as of 2026-06-10) and the version log explaining each bump.
+
+The C++ `plh::Context` wrapper in `native_engine_api.h` exposes
+matching inline methods for every `ctx_*` function pointer; consult
+the header (the wrapper is small and self-documenting).
 
 ---
 

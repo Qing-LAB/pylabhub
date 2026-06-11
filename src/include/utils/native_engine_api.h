@@ -215,6 +215,25 @@ typedef struct
      *  enforces integrity at frame level). */
     void  (*set_verify_checksum)(const struct PlhNativeContext *ctx, int enable);
 
+    /* ── Phase B2 (#194) — queue depth + policy + receive seq ───── */
+
+    /** Output (PUSH) ring buffer slot count.  0 when no tx side. */
+    uint64_t (*out_capacity)(const struct PlhNativeContext *ctx);
+    /** Output overflow policy description string ("shm_write" / "zmq_push_drop"
+     *  / "zmq_push_block").  Caller must free().  NULL when no tx side. */
+    char    *(*out_policy)(const struct PlhNativeContext *ctx);
+
+    /** Input (PULL) ring buffer slot count.  0 when no rx side. */
+    uint64_t (*in_capacity)(const struct PlhNativeContext *ctx);
+    /** Input overflow policy description string ("shm_read" /
+     *  "zmq_pull_ring_N").  Caller must free().  NULL when no rx side. */
+    char    *(*in_policy)(const struct PlhNativeContext *ctx);
+
+    /** Wire frame sequence number of the last decoded slot (rx side).
+     *  0 until first successful read.  ZmqQueue: most recently decoded
+     *  frame.  ShmQueue: last slot consumed via read_acquire. */
+    uint64_t (*last_seq)(const struct PlhNativeContext *ctx);
+
     /* ── Opaque host data (do not dereference) ────────────────────── */
     void *_core;               /**< Internal — RoleHostCore pointer for API implementations. */
     void *_api;                /**< Internal — RoleAPIBase pointer for spinlock/messaging. */
@@ -279,7 +298,7 @@ typedef struct PlhAbiInfo
  *           against v2 will be rejected by the host's `verify_abi_()`
  *           with a clear ABI-mismatch error — rebuild against this
  *           header.
- *    v3 → v4 (#194, 2026-06-10): PlhNativeContext gains
+ *    v3 → v4 (#194 Phase A, 2026-06-10): PlhNativeContext gains
  *           `allowed_peers` / `is_channel_ready` / `queue_mechanism`
  *           function pointers (HEP-CORE-0036 §I11 + §6.7 parity with
  *           Lua/Python).  New `plh_allowlist_changed_args_t` +
@@ -289,10 +308,16 @@ typedef struct PlhAbiInfo
  *           silently lacked these capabilities (no compile error;
  *           runtime behaviour was as if the host didn't expose the
  *           §I11 surface at all).
+ *    v4 → v5 (#194 Phase B2, 2026-06-10): PlhNativeContext gains
+ *           `out_capacity` / `out_policy` / `in_capacity` /
+ *           `in_policy` / `last_seq` function pointers — diagnostic
+ *           parity with Lua + Python (which already exposed these
+ *           via per-side closures / `.def`s).  Plugins built against
+ *           v4 will be rejected — rebuild against this header.
  *
  *  Additive PlhAbiInfo fields are NOT breaking — they're
  *  guarded by struct_size. */
-#define PLH_NATIVE_API_VERSION 4
+#define PLH_NATIVE_API_VERSION 5
 
 /* =========================================================================
  * C-visible pylabhub ComponentVersions constants
@@ -716,6 +741,33 @@ class Context
     void set_verify_checksum(bool enable) const
     {
         if (c_->set_verify_checksum) c_->set_verify_checksum(c_, enable ? 1 : 0);
+    }
+
+    // ── Phase B2 (#194) — queue depth + policy + receive seq ─────
+    /** Output ring slot count, or 0 when no tx side. */
+    uint64_t out_capacity() const
+    {
+        return c_->out_capacity ? c_->out_capacity(c_) : 0;
+    }
+    /** Output overflow policy string. Caller frees. NULL when no tx side. */
+    char *out_policy() const
+    {
+        return c_->out_policy ? c_->out_policy(c_) : nullptr;
+    }
+    /** Input ring slot count, or 0 when no rx side. */
+    uint64_t in_capacity() const
+    {
+        return c_->in_capacity ? c_->in_capacity(c_) : 0;
+    }
+    /** Input overflow policy string. Caller frees. NULL when no rx side. */
+    char *in_policy() const
+    {
+        return c_->in_policy ? c_->in_policy(c_) : nullptr;
+    }
+    /** Last decoded wire seq on rx side. 0 until first successful read. */
+    uint64_t last_seq() const
+    {
+        return c_->last_seq ? c_->last_seq(c_) : 0;
     }
 
     /// Access the raw C context.
