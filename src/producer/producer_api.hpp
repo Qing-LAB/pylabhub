@@ -114,6 +114,19 @@ class ProducerAPI
         return base_->is_channel_ready(channel);
     }
 
+    /// HEP-CORE-0035 §2 (#186, #194) — direct mechanism accessor for
+    /// engine parity with Lua `api.queue_mechanism(side)`.  Returns the
+    /// negotiated mechanism name ("Curve" / "Plaintext" / "Uninitialized").
+    /// Mirrors the snapshot-dict value at `api.metrics()["queue"]["mechanism"]`
+    /// without requiring the script to dig through the metrics payload.
+    [[nodiscard]] std::string queue_mechanism(int side) const
+    {
+        const auto cs = (side == 0) ? scripting::ChannelSide::Tx
+                                    : scripting::ChannelSide::Rx;
+        return std::string{pylabhub::hub::mechanism_name(
+            base_->queue_mechanism(cs))};
+    }
+
     // ── Python-accessible — custom metrics ───────────────────────────────────
 
     void report_metric(const std::string &key, double value) { base_->report_metric(key, value); }

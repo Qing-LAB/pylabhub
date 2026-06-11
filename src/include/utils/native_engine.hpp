@@ -171,6 +171,7 @@ class PYLABHUB_UTILS_EXPORT NativeEngine : public ScriptEngine
     using FnOnBandMemberLeft   = void (*)(const plh_band_member_left_args_t *);
     using FnOnBandMessage      = void (*)(const plh_band_message_args_t *);
     using FnOnBandLost         = void (*)(const plh_band_lost_args_t *);
+    using FnOnAllowlistChanged = void (*)(const plh_allowlist_changed_args_t *);
     using FnOnProduce        = bool (*)(const plh_tx_t *);
     using FnOnConsume        = bool (*)(const plh_rx_t *);
     using FnOnProcess        = bool (*)(const plh_rx_t *, const plh_tx_t *);
@@ -192,6 +193,8 @@ class PYLABHUB_UTILS_EXPORT NativeEngine : public ScriptEngine
     FnOnBandMemberLeft   fn_on_band_member_left_{nullptr};
     FnOnBandMessage      fn_on_band_message_{nullptr};
     FnOnBandLost         fn_on_band_lost_{nullptr};
+    // HEP-CORE-0036 §I11 (#194, 2026-06-10).  v3 → v4 API bump.
+    FnOnAllowlistChanged fn_on_allowlist_changed_{nullptr};
     FnOnProduce        fn_on_produce_{nullptr};
     FnOnConsume        fn_on_consume_{nullptr};
     FnOnProcess        fn_on_process_{nullptr};

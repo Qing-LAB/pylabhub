@@ -87,6 +87,15 @@ class ProcessorAPI
         return base_->is_channel_ready(channel);
     }
 
+    /// HEP-CORE-0035 §2 (#186, #194) — see ProducerAPI::queue_mechanism.
+    [[nodiscard]] std::string queue_mechanism(int side) const
+    {
+        const auto cs = (side == 0) ? scripting::ChannelSide::Tx
+                                    : scripting::ChannelSide::Rx;
+        return std::string{pylabhub::hub::mechanism_name(
+            base_->queue_mechanism(cs))};
+    }
+
     // Queue state
     [[nodiscard]] uint64_t last_seq()       const noexcept { return base_->last_seq(); }
     [[nodiscard]] uint64_t in_capacity()    const noexcept { return static_cast<uint64_t>(base_->in_capacity()); }

@@ -90,6 +90,15 @@ class ConsumerAPI
         return base_->is_channel_ready(channel);
     }
 
+    /// HEP-CORE-0035 §2 (#186, #194) — see ProducerAPI::queue_mechanism.
+    [[nodiscard]] std::string queue_mechanism(int side) const
+    {
+        const auto cs = (side == 0) ? scripting::ChannelSide::Tx
+                                    : scripting::ChannelSide::Rx;
+        return std::string{pylabhub::hub::mechanism_name(
+            base_->queue_mechanism(cs))};
+    }
+
     // Spinlocks
     [[nodiscard]] uint64_t slot_logical_size(std::optional<int> side = std::nullopt) const;
     [[nodiscard]] uint64_t flexzone_logical_size(std::optional<int> side = std::nullopt) const;

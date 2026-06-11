@@ -302,6 +302,13 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_producer, m) // NOLINT
              "etc.) — cycle ops already short-circuits the data-loop "
              "callback on Standby.  Read-only.  Engine-parity with "
              "Lua's api.is_channel_ready.")
+        .def("queue_mechanism",    &producer::ProducerAPI::queue_mechanism,
+             py::arg("side"),
+             "HEP-CORE-0035 §2 (#194) — direct mechanism accessor: returns "
+             "the libzmq-negotiated mechanism name "
+             "('Curve'/'Plaintext'/'Uninitialized') for the named side "
+             "(0=Tx, 1=Rx).  Engine-parity with Lua's api.queue_mechanism; "
+             "closes the parity gap left by #186 which only wired Lua.")
         .def("slot_logical_size", &producer::ProducerAPI::slot_logical_size,
              py::arg("side") = py::none(),
              "Logical C struct size for the slot schema (bytes).")

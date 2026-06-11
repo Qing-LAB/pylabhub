@@ -181,9 +181,57 @@ typedef struct PlhNativeContext
     uint64_t (*loop_overrun_count)(const struct PlhNativeContext *ctx);
     uint64_t (*last_cycle_work_us)(const struct PlhNativeContext *ctx);
 
+    /* Spinlocks (HEP-CORE-0002 §2.2).  side: PLH_SIDE_TX, PLH_SIDE_RX,
+     * or PLH_SIDE_AUTO. */
+    int      (*spinlock_lock)(const struct PlhNativeContext *ctx,
+                              int index, int side, int timeout_ms);
+    void     (*spinlock_unlock)(const struct PlhNativeContext *ctx,
+                                int index, int side);
+    uint32_t (*spinlock_count)(const struct PlhNativeContext *ctx, int side);
+    int      (*spinlock_is_locked)(const struct PlhNativeContext *ctx,
+                                   int index, int side);
+
+    /* Schema sizes (HEP-CORE-0007). */
+    size_t   (*slot_logical_size)(const struct PlhNativeContext *ctx, int side);
+    size_t   (*flexzone_logical_size)(const struct PlhNativeContext *ctx, int side);
+
+    /* Role discovery (HEP-CORE-0023). */
+    int      (*wait_for_role)(const struct PlhNativeContext *ctx,
+                              const char *uid, int timeout_ms);
+
+    /* Band pub/sub (HEP-CORE-0030).  JSON strings for body/result. */
+    char    *(*band_join)(const struct PlhNativeContext *ctx,
+                          const char *channel);
+    int      (*band_leave)(const struct PlhNativeContext *ctx,
+                           const char *channel);
+    void     (*band_broadcast)(const struct PlhNativeContext *ctx,
+                               const char *channel,
+                               const char *body_json);
+    char    *(*band_members)(const struct PlhNativeContext *ctx,
+                             const char *channel);
+
+    /* Channel-auth observability (HEP-CORE-0036 §I11 + §6.7, API v4 #194). */
+    /* allowed_peers: returns JSON `[{"role_uid":..,"pubkey":..},...]`.
+     * Caller must free().  Engine-parity with Lua + Python
+     * `api.allowed_peers(channel)`. */
+    char        *(*allowed_peers)(const struct PlhNativeContext *ctx,
+                                  const char *channel);
+    /* is_channel_ready: 1 iff the queue serving `channel` is in HEP-0036
+     * §6.7 Active state.  Engine-parity with Lua + Python
+     * `api.is_channel_ready(channel)`. */
+    int          (*is_channel_ready)(const struct PlhNativeContext *ctx,
+                                     const char *channel);
+    /* queue_mechanism: negotiated mechanism name ("Curve" /
+     * "Plaintext" / "Uninitialized") for the named side; static C-string
+     * owned by the host; do NOT free.  Engine-parity with Lua + Python. */
+    const char  *(*queue_mechanism)(const struct PlhNativeContext *ctx, int side);
+
     /* ── Opaque host data (do not dereference) ────────────────────── */
     void *_core;               /* Internal — RoleHostCore pointer for API implementations */
+    void *_api;                /* Internal — RoleAPIBase pointer (band/auth accessors) */
     const char *_log_label;    /* Internal — log prefix e.g. "[native libfoo.so]" */
+
+    uint32_t _magic_end;       /* Trailing sentinel; both magics validated */
 } PlhNativeContext;
 ```
 
@@ -214,8 +262,20 @@ typedef struct PlhAbiInfo
     uint32_t api_version;       /* PLH_NATIVE_API_VERSION */
 } PlhAbiInfo;
 
-#define PLH_NATIVE_API_VERSION 1
+#define PLH_NATIVE_API_VERSION 4
 ```
+
+**API version log:**
+- v1 → v2 (2026-04): initial ABI baseline.
+- v2 → v3 (audit S2, 2026-05-18): `set_critical_error` gained a `const
+  char *msg` parameter (uniform with Python/Lua `api.set_critical_error(msg)`).
+- v3 → v4 (#194, 2026-06-10): `PlhNativeContext` gains `allowed_peers` +
+  `is_channel_ready` + `queue_mechanism` function pointers (HEP-CORE-0036
+  §I11 + §6.7 parity with Lua/Python).  New `on_allowlist_changed`
+  callback symbol + `plh_allowlist_changed_args_t` / `plh_allowed_peer_t`
+  arg structs.  v3 plugins silently lacked these (no compile error;
+  runtime behaviour was as if the host didn't expose the §I11 surface
+  at all).  Rebuild plugins against the v4 header.
 
 The native engine exports `native_abi_info()` returning a pointer to a static `PlhAbiInfo`.
 The framework validates at load time:
@@ -246,6 +306,14 @@ and silently skipped.
 | `on_process` | `bool on_process(const plh_rx_t *rx, const plh_tx_t *tx)` | Processor | Read input, write output. true=commit, false=discard. |
 | `on_inbox` | `bool on_inbox(const plh_inbox_msg_t *msg)` | All | Receive a typed inbox message (HEP-CORE-0027). |
 | `on_heartbeat` | `void on_heartbeat(void)` | All | Called from control thread. Must be thread-safe. |
+| `on_channel_closing` | `void on_channel_closing(const plh_channel_closing_args_t *args)` | All | Broker closed a channel this role is on (HEP-CORE-0011). |
+| `on_consumer_died` | `void on_consumer_died(const plh_consumer_died_args_t *args)` | Producer/Processor | Registered consumer died (HEP-CORE-0011). |
+| `on_hub_dead` | `void on_hub_dead(const plh_hub_dead_args_t *args)` | All | ZMTP declared a broker connection dead (HEP-CORE-0023 §2.5). |
+| `on_band_member_joined` | `void on_band_member_joined(const plh_band_member_joined_args_t *args)` | All | Member joined a band this role is in (HEP-CORE-0030 §5.3). |
+| `on_band_member_left` | `void on_band_member_left(const plh_band_member_left_args_t *args)` | All | Member left a band this role is in (HEP-CORE-0030 §5.3). |
+| `on_band_message` | `void on_band_message(const plh_band_message_args_t *args)` | All | Band broadcast received (HEP-CORE-0030 §5.3). |
+| `on_band_lost` | `void on_band_lost(const plh_band_lost_args_t *args)` | All | Synthetic — band routing invalidated (e.g. hub-dead). |
+| `on_allowlist_changed` | `void on_allowlist_changed(const plh_allowlist_changed_args_t *args)` | Producer/Processor | Framework atomically applied a new authorized-consumer snapshot to the queue's ZAP cache (HEP-CORE-0036 §I11). API v4 #194. |
 
 **Direction structs** (defined in `native_invoke_types.h`):
 
@@ -271,6 +339,33 @@ typedef struct plh_inbox_msg_t {
     uint64_t    seq;        /* Message sequence number */
 } plh_inbox_msg_t;
 ```
+
+**Notification arg structs** (defined in `native_invoke_types.h`):
+
+```c
+/* on_allowlist_changed args (HEP-CORE-0036 §I11; API v4 #194).
+ * Fired on producer/processor after framework atomically applies a new
+ * authorized-consumer snapshot to ZAP cache.  Lifetime contract: args
+ * struct, peers array, and all char* fields valid ONLY for the duration
+ * of the call.  Plugin MUST NOT retain past return; strdup if needed. */
+typedef struct plh_allowed_peer_t {
+    const char *role_uid;
+    const char *pubkey_z85;     /* Z85-encoded 40-char CURVE pubkey */
+} plh_allowed_peer_t;
+
+typedef struct plh_allowlist_changed_args_t {
+    const char                *channel;
+    const plh_allowed_peer_t  *peers;
+    size_t                     peer_count;
+    const char                *reason;     /* "consumer_joined",
+                                              "consumer_left",
+                                              "heartbeat_timeout", ... */
+} plh_allowlist_changed_args_t;
+```
+
+The band, hub-dead, channel-closing, and consumer-died arg-struct shapes
+follow the same lifetime contract — see `native_invoke_types.h` for the
+full set.
 
 **Return value contract (all data callbacks):**
 - `true` -> `InvokeResult::Commit` (slot is published)
