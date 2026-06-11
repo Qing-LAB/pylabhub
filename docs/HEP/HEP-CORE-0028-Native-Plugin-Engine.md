@@ -226,6 +226,19 @@ typedef struct PlhNativeContext
      * owned by the host; do NOT free.  Engine-parity with Lua + Python. */
     const char  *(*queue_mechanism)(const struct PlhNativeContext *ctx, int side);
 
+    /* Phase B (#194) — diagnostic + flexzone-control + band-membership. */
+    /* metrics_json: returns JSON snapshot equivalent to Lua/Python
+     * `api.metrics()`.  Caller must free(). */
+    char         *(*metrics_json)(const struct PlhNativeContext *ctx);
+    /* is_in_band: 1 iff this role is a current member of the band. */
+    int           (*is_in_band)(const struct PlhNativeContext *ctx,
+                                const char *channel);
+    /* update_flexzone_checksum / set_verify_checksum: SHM-only flexzone
+     * checksum control (HEP-CORE-0002 §2.2). */
+    int           (*update_flexzone_checksum)(const struct PlhNativeContext *ctx);
+    void          (*set_verify_checksum)(const struct PlhNativeContext *ctx,
+                                         int enable);
+
     /* ── Opaque host data (do not dereference) ────────────────────── */
     void *_core;               /* Internal — RoleHostCore pointer for API implementations */
     void *_api;                /* Internal — RoleAPIBase pointer (band/auth accessors) */
