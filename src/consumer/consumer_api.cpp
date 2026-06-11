@@ -279,6 +279,10 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_consumer, m) // NOLINT
              "HEP-CORE-0036 §6.7 (#190) — true iff the queue serving the "
              "named channel is in the Active state.  Engine-parity with "
              "Lua's api.is_channel_ready.  Read-only.")
+        .def("queue_mechanism",  &ConsumerAPI::queue_mechanism,
+             py::arg("side"),
+             "HEP-CORE-0035 §2 (#194) — direct mechanism accessor; engine "
+             "parity with Lua.  See ProducerAPI::queue_mechanism.")
         .def("report_metric",  &ConsumerAPI::report_metric, py::arg("key"), py::arg("value"))
         .def("report_metrics", &ConsumerAPI::report_metrics, py::arg("kv"))
         .def("clear_custom_metrics", &ConsumerAPI::clear_custom_metrics)

@@ -270,6 +270,10 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_processor, m) // NOLINT
              "channel argument selects the TX side (out_channel) or RX "
              "side (in_channel); each side is queried independently.  "
              "Engine-parity with Lua's api.is_channel_ready.  Read-only.")
+        .def("queue_mechanism",    &ProcessorAPI::queue_mechanism,
+             py::arg("side"),
+             "HEP-CORE-0035 §2 (#194) — direct mechanism accessor; engine "
+             "parity with Lua.  See ProducerAPI::queue_mechanism.")
         .def("slot_logical_size", &ProcessorAPI::slot_logical_size,
              py::arg("side") = py::none())
         .def("flexzone_logical_size", &ProcessorAPI::flexzone_logical_size,

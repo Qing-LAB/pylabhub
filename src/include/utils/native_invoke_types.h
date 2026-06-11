@@ -139,4 +139,37 @@ typedef struct
                                      additions like "evicted"). */
 } plh_band_lost_args_t;
 
+/** One entry in the channel allowlist passed to on_allowlist_changed
+ *  (HEP-CORE-0036 §I11 + §6.5; #194).  Mirrors the wire shape of
+ *  `GET_CHANNEL_AUTH_ACK.allowlist[]` and `CONSUMER_REG_ACK.producers[]`
+ *  (§6.4).  Both fields are valid only for the duration of the
+ *  callback. */
+typedef struct
+{
+    const char *role_uid;       /**< Operator-assigned role identifier. */
+    const char *pubkey_z85;     /**< Z85-encoded 40-char CURVE pubkey. */
+} plh_allowed_peer_t;
+
+/** on_allowlist_changed args (HEP-CORE-0036 §I11; #194).  Fired on the
+ *  PRODUCER side after the framework atomically applies a new
+ *  authorized-consumer snapshot to the queue's ZAP cache via
+ *  `ZmqQueue::set_peer_allowlist`.  Plugin may use this to coordinate
+ *  startup (wait for N consumers) or react to revocation; the
+ *  framework is the sole owner of admission decisions.
+ *
+ *  Lifetime contract: the `args` struct, the `peers` array, and all
+ *  `const char *` fields are valid ONLY for the duration of this
+ *  call.  Plugin MUST NOT retain pointers past return; copy
+ *  (strdup or equivalent) if state must persist. */
+typedef struct
+{
+    const char *channel;             /**< Channel whose allowlist changed. */
+    const plh_allowed_peer_t *peers; /**< Authorized peers array. */
+    size_t                    peer_count; /**< Number of entries in peers[]. */
+    const char *reason;              /**< Wire string from the triggering
+                                          NOTIFY: "consumer_joined",
+                                          "consumer_left",
+                                          "heartbeat_timeout", etc. */
+} plh_allowlist_changed_args_t;
+
 #endif /* PYLABHUB_NATIVE_INVOKE_TYPES_H */

@@ -333,6 +333,38 @@ char *ctx_band_members(const PlhNativeContext *ctx, const char *channel)
     return out;
 }
 
+// ── Channel-auth observability (HEP-CORE-0036 §I11 + §6.7, #194) ─────────────
+
+char *ctx_allowed_peers(const PlhNativeContext *ctx, const char *channel)
+{
+    if (!ctx || !ctx->_api || !channel) return nullptr;
+    const auto peers =
+        static_cast<RoleAPIBase *>(ctx->_api)->allowed_peers(channel);
+    nlohmann::json arr = nlohmann::json::array();
+    for (const auto &p : peers)
+        arr.push_back({{"role_uid", p.role_uid}, {"pubkey", p.pubkey}});
+    auto s = arr.dump();
+    char *out = static_cast<char *>(malloc(s.size() + 1));
+    if (out) { std::memcpy(out, s.c_str(), s.size() + 1); }
+    return out;
+}
+
+int ctx_is_channel_ready(const PlhNativeContext *ctx, const char *channel)
+{
+    if (!ctx || !ctx->_api || !channel) return 0;
+    return static_cast<RoleAPIBase *>(ctx->_api)->is_channel_ready(channel)
+               ? 1 : 0;
+}
+
+const char *ctx_queue_mechanism(const PlhNativeContext *ctx, int side)
+{
+    if (!ctx || !ctx->_api) return "Uninitialized";
+    const ChannelSide cs =
+        (side == PLH_SIDE_TX) ? ChannelSide::Tx : ChannelSide::Rx;
+    return pylabhub::hub::mechanism_name(
+        static_cast<RoleAPIBase *>(ctx->_api)->queue_mechanism(cs));
+}
+
 } // anonymous namespace
 
 // ============================================================================
@@ -449,6 +481,11 @@ struct NativeEngine::NativeContextStorage
         ctx.band_leave     = ctx_band_leave;
         ctx.band_broadcast = ctx_band_broadcast;
         ctx.band_members   = ctx_band_members;
+
+        // Channel-auth observability (HEP-CORE-0036 §I11 + §6.7, #194)
+        ctx.allowed_peers    = ctx_allowed_peers;
+        ctx.is_channel_ready = ctx_is_channel_ready;
+        ctx.queue_mechanism  = ctx_queue_mechanism;
     }
 };
 
@@ -553,6 +590,11 @@ bool NativeEngine::load_script(const std::filesystem::path &script_dir,
         reinterpret_cast<FnOnBandMessage>(resolve_sym_("on_band_message"));
     fn_on_band_lost_ =
         reinterpret_cast<FnOnBandLost>(resolve_sym_("on_band_lost"));
+    // HEP-CORE-0036 §I11 + §6.5 (#194, API v4) — producer-side
+    // event-driven allowlist refresh.  Same shape as the band typed
+    // callbacks above.
+    fn_on_allowlist_changed_ =
+        reinterpret_cast<FnOnAllowlistChanged>(resolve_sym_("on_allowlist_changed"));
     fn_on_produce_    = reinterpret_cast<FnOnProduce>(resolve_sym_("on_produce"));
     fn_on_consume_    = reinterpret_cast<FnOnConsume>(resolve_sym_("on_consume"));
     fn_on_process_    = reinterpret_cast<FnOnProcess>(resolve_sym_("on_process"));
@@ -711,6 +753,7 @@ void NativeEngine::finalize_engine_()
     fn_on_band_member_left_ = nullptr;
     fn_on_band_message_ = nullptr;
     fn_on_band_lost_ = nullptr;
+    fn_on_allowlist_changed_ = nullptr;
     fn_on_produce_ = nullptr;
     fn_on_consume_ = nullptr;
     fn_on_process_ = nullptr;
@@ -741,6 +784,7 @@ bool NativeEngine::has_callback(const std::string &name) const noexcept
     if (name == "on_band_member_left")     return fn_on_band_member_left_     != nullptr;
     if (name == "on_band_message")         return fn_on_band_message_         != nullptr;
     if (name == "on_band_lost")            return fn_on_band_lost_            != nullptr;
+    if (name == "on_allowlist_changed")    return fn_on_allowlist_changed_    != nullptr;
     if (name == "on_produce")    return fn_on_produce_ != nullptr;
     if (name == "on_consume")    return fn_on_consume_ != nullptr;
     if (name == "on_process")    return fn_on_process_ != nullptr;
@@ -954,18 +998,29 @@ void NativeEngine::invoke_on_band_lost(const std::string &band,
 }
 
 void NativeEngine::invoke_on_allowlist_changed(
-    const std::string & /*channel*/,
-    const std::vector<AllowedPeer> & /*allowlist*/,
-    const std::string & /*reason*/)
+    const std::string &channel,
+    const std::vector<AllowedPeer> &allowlist,
+    const std::string &reason)
 {
-    // HEP-CORE-0036 §I11 — Native callback not wired today.  Native
-    // is MVP-only per #84; adding the C-ABI struct for an allowlist
-    // (variable-length array of {role_uid, pubkey}) is a non-trivial
-    // ABI change tracked under follow-up task.  Native plugins can
-    // still poll via the C++ accessor `RoleAPIBase::allowed_peers`
-    // since they have direct access to RoleAPIBase via the role_api()
-    // hook.  When Native gains a full script-engine surface (#84 +
-    // beyond), wire `plh_allowlist_changed_args_t`.
+    if (!fn_on_allowlist_changed_) return;
+
+    // HEP-CORE-0036 §I11 + §6.5 (#194, API v4).  Build a transient C
+    // ABI args struct + peer array on the stack — same lifetime
+    // contract as `invoke_on_band_message` above: pointers valid for
+    // the duration of this call only; plugin MUST NOT retain past
+    // return; strdup if a copy is needed.
+    std::vector<plh_allowed_peer_t> peers_c;
+    peers_c.reserve(allowlist.size());
+    for (const auto &p : allowlist)
+        peers_c.push_back(plh_allowed_peer_t{p.role_uid.c_str(),
+                                             p.pubkey.c_str()});
+
+    const plh_allowlist_changed_args_t args{
+        channel.c_str(),
+        peers_c.empty() ? nullptr : peers_c.data(),
+        peers_c.size(),
+        reason.c_str()};
+    fn_on_allowlist_changed_(&args);
 }
 
 InvokeResult NativeEngine::invoke_produce(

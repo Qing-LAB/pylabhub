@@ -173,6 +173,27 @@ typedef struct
     /** band_members: returns JSON string with member list, or NULL. Caller must free(). */
     char    *(*band_members)(const struct PlhNativeContext *ctx, const char *channel);
 
+    /* ── Channel-auth observability (HEP-CORE-0036 §I11 + §6.7, API v4 #194) ── */
+
+    /** allowed_peers: returns JSON string `[{"role_uid":...,"pubkey":...}, ...]`
+     *  of the channel's current authorized-peer snapshot, or NULL on failure
+     *  / unknown channel.  Caller must free().  Engine-parity with
+     *  Lua `api.allowed_peers(channel)` + Python `api.allowed_peers(channel)`. */
+    char    *(*allowed_peers)(const struct PlhNativeContext *ctx, const char *channel);
+
+    /** is_channel_ready: returns 1 iff the queue serving `channel` is in the
+     *  HEP-0036 §6.7 Active state (start() succeeded post-Configured gate).
+     *  Use as a script-side gate from non-data-loop callbacks; the framework
+     *  already short-circuits the data-loop callback on Standby. */
+    int      (*is_channel_ready)(const struct PlhNativeContext *ctx, const char *channel);
+
+    /** queue_mechanism: returns the libzmq-reported negotiated mechanism for
+     *  the named side ("Curve"/"Plaintext"/"Uninitialized" per
+     *  hub::Mechanism enum, HEP-CORE-0035 §2 #161 C5).  Static C-string
+     *  literal owned by the host; do NOT free.  Engine-parity with Lua
+     *  `api.queue_mechanism(side)` + Python `api.queue_mechanism(side)`. */
+    const char *(*queue_mechanism)(const struct PlhNativeContext *ctx, int side);
+
     /* ── Opaque host data (do not dereference) ────────────────────── */
     void *_core;               /**< Internal — RoleHostCore pointer for API implementations. */
     void *_api;                /**< Internal — RoleAPIBase pointer for spinlock/messaging. */
@@ -237,10 +258,20 @@ typedef struct PlhAbiInfo
  *           against v2 will be rejected by the host's `verify_abi_()`
  *           with a clear ABI-mismatch error — rebuild against this
  *           header.
+ *    v3 → v4 (#194, 2026-06-10): PlhNativeContext gains
+ *           `allowed_peers` / `is_channel_ready` / `queue_mechanism`
+ *           function pointers (HEP-CORE-0036 §I11 + §6.7 parity with
+ *           Lua/Python).  New `plh_allowlist_changed_args_t` +
+ *           `plh_allowed_peer_t` for the `on_allowlist_changed`
+ *           plugin-side callback.  Plugins built against v3 will be
+ *           rejected — rebuild against this header.  v3 plugins
+ *           silently lacked these capabilities (no compile error;
+ *           runtime behaviour was as if the host didn't expose the
+ *           §I11 surface at all).
  *
  *  Additive PlhAbiInfo fields are NOT breaking — they're
  *  guarded by struct_size. */
-#define PLH_NATIVE_API_VERSION 3
+#define PLH_NATIVE_API_VERSION 4
 
 /* =========================================================================
  * C-visible pylabhub ComponentVersions constants
@@ -339,9 +370,14 @@ typedef struct PlhAbiInfo
 /* void on_init(void); */
 /* void on_stop(void); */
 /* void on_heartbeat(void); */
-/* void on_channel_closing(const plh_channel_closing_args_t *args); */
-/* void on_consumer_died (const plh_consumer_died_args_t  *args); */
-/* void on_hub_dead      (const plh_hub_dead_args_t       *args); */
+/* void on_channel_closing  (const plh_channel_closing_args_t   *args); */
+/* void on_consumer_died    (const plh_consumer_died_args_t     *args); */
+/* void on_hub_dead         (const plh_hub_dead_args_t          *args); */
+/* void on_band_member_joined(const plh_band_member_joined_args_t *args); */
+/* void on_band_member_left (const plh_band_member_left_args_t  *args); */
+/* void on_band_message     (const plh_band_message_args_t      *args); */
+/* void on_band_lost        (const plh_band_lost_args_t         *args); */
+/* void on_allowlist_changed(const plh_allowlist_changed_args_t *args); */
 /* bool on_produce (const plh_tx_t *tx); */
 /* bool on_consume (const plh_rx_t *rx); */
 /* bool on_process (const plh_rx_t *rx, const plh_tx_t *tx); */
@@ -615,6 +651,26 @@ class Context
     char *band_members(const char *channel) const
     {
         return c_->band_members ? c_->band_members(c_, channel) : nullptr;
+    }
+
+    // ── Channel-auth observability (HEP-CORE-0036 §I11 + §6.7) ───
+    /** Returns JSON string `[{"role_uid":...,"pubkey":...}, ...]` snapshot,
+     *  or NULL on failure / unknown channel.  Caller must free(). */
+    char *allowed_peers(const char *channel) const
+    {
+        return c_->allowed_peers ? c_->allowed_peers(c_, channel) : nullptr;
+    }
+    /** Returns true iff the named channel's queue is Active (§6.7). */
+    bool is_channel_ready(const char *channel) const
+    {
+        return c_->is_channel_ready ? c_->is_channel_ready(c_, channel) != 0 : false;
+    }
+    /** Returns the negotiated CURVE mechanism string ("Curve" / "Plaintext"
+     *  / "Uninitialized") for the named side.  Static C-string owned by the
+     *  host; do NOT free. */
+    const char *queue_mechanism(int side = PLH_SIDE_AUTO) const
+    {
+        return c_->queue_mechanism ? c_->queue_mechanism(c_, side) : "Uninitialized";
     }
 
     /// Access the raw C context.
