@@ -30,6 +30,7 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 // ── Platform dynamic loading ────────────────────────────────────────────
 // Supports: Linux, macOS, FreeBSD (POSIX dlopen) and Windows (LoadLibrary).
@@ -110,6 +111,256 @@ void ctx_request_stop_hub(const PlhNativeContext *ctx)
 {
     if (!ctx || !ctx->_api) return;
     static_cast<hub_host::HubAPI *>(ctx->_api)->request_shutdown();
+}
+
+// ── Hub-side API surface (API v7 #84, 2026-06-11) ──────────────────────
+//
+// Implementations of the ctx->hub_* fn ptrs.  Each one:
+//   1. Validates ctx + _api are non-null (defensive — the framework
+//      always supplies them, but the C ABI is robust to plugin errors).
+//   2. Calls the corresponding HubAPI method inside a try/catch.
+//   3. For JSON-returning fns: writes the result into a thread-local
+//      std::string and returns its c_str().  Lifetime contract:
+//      pointer valid until the NEXT ctx_hub_*_json call on the SAME
+//      thread (any subsequent call overwrites the shared buffer).
+//
+// The shared buffer is intentional: 13 separate thread_local strings
+// would cost more memory and complicate the lifetime story.  One
+// buffer + one documented "valid until next call" rule is simpler.
+//
+// Symmetric to ctx_metrics_snapshot, plugin authors must drop the
+// pointer in on_stop() to avoid post-finalize aliasing.
+namespace
+{
+// Shared thread-local JSON-string scratch.  See lifetime contract above.
+std::string &hub_json_scratch() noexcept
+{
+    static thread_local std::string buf;
+    return buf;
+}
+
+// Always returns a valid C string into the thread-local scratch.
+// On error (null ctx/api, HubAPI threw): buf cleared to "" and the
+// returned pointer is still valid until the next hub_*_json call on
+// the same thread.  Plugin authors can rely on a non-null return —
+// they distinguish "no data" from "error" by string emptiness +
+// out-of-band signal (logs), or by parsing the returned JSON.
+template <typename Fn>
+const char *hub_json_invoke(const PlhNativeContext *ctx, Fn &&fn) noexcept
+{
+    auto &buf = hub_json_scratch();
+    if (!ctx || !ctx->_api) { buf.clear(); return buf.c_str(); }
+    try
+    {
+        buf = fn(*static_cast<hub_host::HubAPI *>(ctx->_api)).dump();
+    }
+    catch (...) { buf.clear(); }
+    return buf.c_str();
+}
+}  // namespace
+
+const char *ctx_hub_metrics_json(const PlhNativeContext *ctx)
+{
+    return hub_json_invoke(ctx,
+        [](hub_host::HubAPI &api) { return api.metrics(); });
+}
+
+const char *ctx_hub_config_json(const PlhNativeContext *ctx)
+{
+    return hub_json_invoke(ctx,
+        [](hub_host::HubAPI &api) { return api.config(); });
+}
+
+const char *ctx_hub_query_metrics_json(const PlhNativeContext *ctx,
+                                       const char *categories_json)
+{
+    return hub_json_invoke(ctx,
+        [categories_json](hub_host::HubAPI &api) {
+            std::vector<std::string> cats;
+            if (categories_json && *categories_json)
+            {
+                const auto j = nlohmann::json::parse(categories_json);
+                if (j.is_array())
+                    for (const auto &e : j)
+                        if (e.is_string()) cats.push_back(e.get<std::string>());
+            }
+            return api.query_metrics(cats);
+        });
+}
+
+const char *ctx_hub_list_channels_json(const PlhNativeContext *ctx)
+{
+    return hub_json_invoke(ctx,
+        [](hub_host::HubAPI &api) { return api.list_channels(); });
+}
+
+const char *ctx_hub_get_channel_json(const PlhNativeContext *ctx,
+                                     const char *name)
+{
+    if (!name) return nullptr;
+    return hub_json_invoke(ctx,
+        [name](hub_host::HubAPI &api) { return api.get_channel(name); });
+}
+
+const char *ctx_hub_list_roles_json(const PlhNativeContext *ctx)
+{
+    return hub_json_invoke(ctx,
+        [](hub_host::HubAPI &api) { return api.list_roles(); });
+}
+
+const char *ctx_hub_get_role_json(const PlhNativeContext *ctx,
+                                  const char *role_uid)
+{
+    if (!role_uid) return nullptr;
+    return hub_json_invoke(ctx,
+        [role_uid](hub_host::HubAPI &api) { return api.get_role(role_uid); });
+}
+
+const char *ctx_hub_list_bands_json(const PlhNativeContext *ctx)
+{
+    return hub_json_invoke(ctx,
+        [](hub_host::HubAPI &api) { return api.list_bands(); });
+}
+
+const char *ctx_hub_get_band_json(const PlhNativeContext *ctx,
+                                  const char *name)
+{
+    if (!name) return nullptr;
+    return hub_json_invoke(ctx,
+        [name](hub_host::HubAPI &api) { return api.get_band(name); });
+}
+
+const char *ctx_hub_list_peers_json(const PlhNativeContext *ctx)
+{
+    return hub_json_invoke(ctx,
+        [](hub_host::HubAPI &api) { return api.list_peers(); });
+}
+
+const char *ctx_hub_get_peer_json(const PlhNativeContext *ctx,
+                                  const char *hub_uid)
+{
+    if (!hub_uid) return nullptr;
+    return hub_json_invoke(ctx,
+        [hub_uid](hub_host::HubAPI &api) { return api.get_peer(hub_uid); });
+}
+
+int ctx_hub_close_channel(const PlhNativeContext *ctx, const char *name)
+{
+    if (!ctx || !ctx->_api || !name) return -1;
+    try
+    {
+        static_cast<hub_host::HubAPI *>(ctx->_api)->close_channel(name);
+        return 1;
+    }
+    catch (...) { return -1; }
+}
+
+int ctx_hub_broadcast_channel(const PlhNativeContext *ctx,
+                              const char *channel,
+                              const char *message,
+                              const char *data_json)
+{
+    if (!ctx || !ctx->_api || !channel || !message) return -1;
+    try
+    {
+        static_cast<hub_host::HubAPI *>(ctx->_api)->broadcast_channel(
+            channel, message, data_json ? data_json : "");
+        return 1;
+    }
+    catch (...) { return -1; }
+}
+
+int ctx_hub_post_event(const PlhNativeContext *ctx,
+                       const char *name,
+                       const char *data_json)
+{
+    if (!ctx || !ctx->_api || !name) return -1;
+    try
+    {
+        nlohmann::json body = nlohmann::json::object();
+        if (data_json && *data_json)
+            body = nlohmann::json::parse(data_json);
+        static_cast<hub_host::HubAPI *>(ctx->_api)->post_event(name, body);
+        return 1;
+    }
+    catch (const std::invalid_argument &)
+    {
+        // Bad identifier per HEP-CORE-0033 G2.2.0b grammar — distinct
+        // from generic errors so plugin can decide whether to retry.
+        return 0;
+    }
+    catch (...) { return -1; }
+}
+
+int64_t ctx_hub_augment_timeout_ms(const PlhNativeContext *ctx)
+{
+    if (!ctx || !ctx->_api) return -1;
+    try
+    {
+        return static_cast<hub_host::HubAPI *>(ctx->_api)->augment_timeout_ms();
+    }
+    catch (...) { return -1; }
+}
+
+void ctx_hub_set_augment_timeout(const PlhNativeContext *ctx, int64_t ms)
+{
+    if (!ctx || !ctx->_api) return;
+    try
+    {
+        static_cast<hub_host::HubAPI *>(ctx->_api)->set_augment_timeout(ms);
+    }
+    catch (...) { /* defensive: nothing observable to do */ }
+}
+
+// ── Hub-side stubs for role-only fn ptrs (API v7 #84, Part A) ──────────
+//
+// Each stub returns the documented sentinel for its return type.
+// Wired into wire_hub() so pure-C hub plugins can call ANY ctx fn
+// without crashing — same shape as a wired-but-unready surface.
+// See HEP-CORE-0028 §4.9 "Hub-side API surface" matrix.
+
+void     hub_stub_void_role_state(const PlhNativeContext *) noexcept {}
+void     hub_stub_report_metric(const PlhNativeContext *, const char *, double) noexcept {}
+void     hub_stub_set_critical_error(const PlhNativeContext *, const char *) noexcept {}
+int      hub_stub_is_critical_error(const PlhNativeContext *) noexcept { return 0; }
+int      hub_stub_stop_reason(const PlhNativeContext *) noexcept { return PLH_STOP_REASON_NORMAL; }
+uint64_t hub_stub_counter_zero(const PlhNativeContext *) noexcept { return 0; }
+int      hub_stub_spinlock_lock(const PlhNativeContext *, int, int, int) noexcept { return 0; }
+void     hub_stub_spinlock_unlock(const PlhNativeContext *, int, int) noexcept {}
+uint32_t hub_stub_spinlock_count(const PlhNativeContext *, int) noexcept { return 0; }
+int      hub_stub_spinlock_is_locked(const PlhNativeContext *, int, int) noexcept { return 0; }
+size_t   hub_stub_size_arg2_zero(const PlhNativeContext *, int) noexcept { return 0; }
+int      hub_stub_wait_for_role(const PlhNativeContext *, const char *, int) noexcept { return 0; }
+int      hub_stub_band_int_arg2(const PlhNativeContext *, const char *) noexcept { return -1; }
+void     hub_stub_band_broadcast(const PlhNativeContext *, const char *, const char *) noexcept {}
+int      hub_stub_band_members(const PlhNativeContext *, const char *, plh_band_member_visitor, void *) noexcept { return -1; }
+int      hub_stub_band_member_contains(const PlhNativeContext *, const char *, const char *) noexcept { return -1; }
+int      hub_stub_allowed_peers(const PlhNativeContext *, const char *, plh_allowed_peer_visitor, void *) noexcept { return -1; }
+int      hub_stub_allowed_peer_contains(const PlhNativeContext *, const char *, const char *) noexcept { return -1; }
+int      hub_stub_is_channel_ready(const PlhNativeContext *, const char *) noexcept { return -1; }
+int      hub_stub_queue_mechanism(const PlhNativeContext *, int) noexcept { return PLH_MECHANISM_UNINITIALIZED; }
+int      hub_stub_queue_policy(const PlhNativeContext *) noexcept { return PLH_QUEUE_POLICY_UNKNOWN; }
+const void *hub_stub_metrics_snapshot(const PlhNativeContext *) noexcept { return nullptr; }
+int      hub_stub_metrics_get(const void *, const char *, double *) noexcept { return -1; }
+int      hub_stub_is_in_band(const PlhNativeContext *, const char *) noexcept { return -1; }
+int      hub_stub_update_flexzone_checksum(const PlhNativeContext *) noexcept { return 0; }
+void     hub_stub_set_verify_checksum(const PlhNativeContext *, int) noexcept {}
+
+// ── Role-side stubs for hub-only fn ptrs (API v7, #84, 2026-06-11) ────
+// When a plugin runs on a ROLE-side ctx, the hub_* methods are
+// meaningless (the role has no HubAPI* reference).  We wire them to
+// noop stubs returning "" (empty JSON / sentinel) so plugins can call
+// any ctx fn without crashing.  See HEP-CORE-0028 §4.9.
+extern "C"
+{
+const char *role_stub_hub_json_no_arg(const PlhNativeContext *) noexcept { return ""; }
+const char *role_stub_hub_json_query(const PlhNativeContext *, const char *) noexcept { return ""; }
+const char *role_stub_hub_json_query_arg(const PlhNativeContext *, const char *) noexcept { return ""; }
+int     role_stub_hub_close_channel(const PlhNativeContext *, const char *) noexcept { return -1; }
+int     role_stub_hub_broadcast_channel(const PlhNativeContext *, const char *, const char *, const char *) noexcept { return -1; }
+int     role_stub_hub_post_event(const PlhNativeContext *, const char *, const char *) noexcept { return -1; }
+int64_t role_stub_hub_augment_timeout_ms(const PlhNativeContext *) noexcept { return 0; }
+void    role_stub_hub_set_augment_timeout(const PlhNativeContext *, int64_t) noexcept {}
 }
 
 void ctx_set_critical_error(const PlhNativeContext *ctx, const char *msg)
@@ -296,6 +547,19 @@ int policy_string_to_macro(const std::string &s) noexcept
     if (s == "zmq_push_block")                  return PLH_QUEUE_POLICY_ZMQ_BLOCK;
     // "zmq_pull_ring_N" — the depth tail is variable per queue.
     if (s.rfind("zmq_pull_ring", 0) == 0)       return PLH_QUEUE_POLICY_ZMQ_RING;
+    if (s == "shm_unconnected" || s == "zmq_unconnected")
+        return PLH_QUEUE_POLICY_UNKNOWN;        // known placeholder; no warn.
+    // Drift catch — fresh-eye audit B1, 2026-06-11.  A new policy
+    // string added to hub_shm_queue.cpp / hub_zmq_queue.cpp without
+    // updating this mapper silently degrades plugins to UNKNOWN.
+    // Warn once per unique string so the gap surfaces in CI logs
+    // without spamming the data path.
+    static thread_local std::unordered_set<std::string> warned_unknowns;
+    if (warned_unknowns.insert(s).second)
+        LOGGER_WARN("native_engine: policy_string_to_macro encountered "
+                    "unrecognized policy '{}'; mapping to "
+                    "PLH_QUEUE_POLICY_UNKNOWN.  Update the mapper to "
+                    "track the new policy.", s);
     return PLH_QUEUE_POLICY_UNKNOWN;
 }
 
@@ -392,6 +656,11 @@ int ctx_band_members(const PlhNativeContext *ctx,
         {
             const std::string uid  = m.value("role_uid",  std::string{});
             const std::string name = m.value("role_name", std::string{});
+            // Skip malformed entries — broker shouldn't send members
+            // without a role_uid, but defending here keeps plugin
+            // visitors from receiving "" as a real UID (fresh-eye
+            // audit A1, 2026-06-11).
+            if (uid.empty()) continue;
             const plh_band_member_t entry{
                 uid.c_str(),
                 name.empty() ? nullptr : name.c_str(),
@@ -431,7 +700,12 @@ int ctx_band_member_count(const PlhNativeContext *ctx, const char *channel)
     if (!ctx || !ctx->_api || !channel) return -1;
     auto arr_opt = fetch_band_members(ctx, channel);
     if (!arr_opt.has_value()) return -1;
-    return static_cast<int>(arr_opt->size());
+    // Match ctx_band_members semantics — skip malformed entries so
+    // count agrees with what the visitor sees (audit A1).
+    int count = 0;
+    for (const auto &m : *arr_opt)
+        if (!m.value("role_uid", std::string{}).empty()) ++count;
+    return count;
 }
 
 // ── Channel-auth observability (HEP-CORE-0036 §I11 + §6.7) — API v6 ─────────
@@ -589,6 +863,21 @@ void flatten_json_into(const nlohmann::json &node,
     // Strings / arrays / null are not numeric metrics; skip silently.
 }
 
+// Thread-local metrics snapshot cache (#194 Phase C).
+//
+// LIFETIME CONTRACT (HEP-CORE-0028 §5.4 + audit A3):
+//   - The opaque pointer returned by metrics_snapshot() is the address
+//     of a thread-local static.
+//   - "Valid until the next snapshot on the same thread."
+//   - A plugin that stashes the pointer across finalize_engine_() and
+//     a subsequent reload on the same thread will alias the new
+//     plugin's cache — but only the metrics tree for the SAME thread
+//     and only via the shared `&cache` address.  We do not (cannot,
+//     cheaply) prevent this; plugins MUST drop snapshot pointers in
+//     their on_stop().
+//   - As a guard-rail: the cache is cleared at the start of every
+//     snapshot call, so stale pointers retained briefly between calls
+//     return 0 for every key (not stale data from a prior tree).
 const void *ctx_metrics_snapshot(const PlhNativeContext *ctx)
 {
     if (!ctx || !ctx->_api) return nullptr;
@@ -670,11 +959,15 @@ struct NativeEngine::NativeContextStorage
     void  *rx_fz{nullptr};
     size_t rx_fz_sz{0};
 
-    /// Wire the hub-side context (audit B13, 2026-05-21).  Minimal
-    /// surface: log + identity + request_stop.  Role-side function
-    /// pointers stay nullptr — plugins must defensively null-check
-    /// before invoking anything else (band/slot/metric accessors
-    /// have no meaning on the hub side).
+    /// Wire the hub-side context (audit B13, 2026-05-21; #84 expansion
+    /// 2026-06-11).  Every ctx fn ptr is assigned — either to a real
+    /// hub-applicable impl (delegating through HubAPI) or to a noop
+    /// stub returning the documented sentinel.  Pure-C hub plugins
+    /// can call ANY ctx fn without null-checking; the result for
+    /// role-only methods (band, allowed_peers, spinlock, queue_*,
+    /// slot_*, etc.) is the same "absent / unavailable" sentinel
+    /// they'd see if the underlying queue/state were unready.
+    /// See HEP-CORE-0028 §4.9 for the full hub-vs-role matrix.
     void wire_hub(hub_host::HubAPI *api)
     {
         assert(api != nullptr && "HubAPI must not be null");
@@ -693,10 +986,84 @@ struct NativeEngine::NativeContextStorage
         ctx._api       = api;              // HubAPI*
         ctx._log_label = log_label.c_str();
 
-        // Only the engine-agnostic + hub-applicable functions wired.
-        ctx.log          = ctx_log;          // already engine-agnostic
-        ctx.request_stop = ctx_request_stop_hub;
-        // Everything else stays nullptr — plugin null-checks.
+        // ── Engine-agnostic + hub-applicable role-side methods ────────
+        ctx.log                  = ctx_log;
+        ctx.report_metric        = hub_stub_report_metric;
+        ctx.clear_custom_metrics = hub_stub_void_role_state;
+        ctx.request_stop         = ctx_request_stop_hub;
+        ctx.set_critical_error   = hub_stub_set_critical_error;
+        ctx.is_critical_error    = hub_stub_is_critical_error;
+        ctx.stop_reason          = hub_stub_stop_reason;
+
+        // ── Counters — all stubbed to 0 (no hub equivalent) ───────────
+        ctx.out_slots_written  = hub_stub_counter_zero;
+        ctx.in_slots_received  = hub_stub_counter_zero;
+        ctx.out_drop_count     = hub_stub_counter_zero;
+        ctx.script_error_count = hub_stub_counter_zero;
+        ctx.loop_overrun_count = hub_stub_counter_zero;
+        ctx.last_cycle_work_us = hub_stub_counter_zero;
+
+        // ── Spinlocks — all stubbed (no SHM on hub) ───────────────────
+        ctx.spinlock_lock      = hub_stub_spinlock_lock;
+        ctx.spinlock_unlock    = hub_stub_spinlock_unlock;
+        ctx.spinlock_count     = hub_stub_spinlock_count;
+        ctx.spinlock_is_locked = hub_stub_spinlock_is_locked;
+
+        // ── Schema sizes — stubbed (no slots/flexzone on hub) ─────────
+        ctx.slot_logical_size     = hub_stub_size_arg2_zero;
+        ctx.flexzone_logical_size = hub_stub_size_arg2_zero;
+
+        // ── Role discovery — stubbed (hub has list_roles instead) ─────
+        ctx.wait_for_role = hub_stub_wait_for_role;
+
+        // ── Band pub/sub — all stubbed (no role registration on hub) ──
+        ctx.band_join            = hub_stub_band_int_arg2;
+        ctx.band_leave           = hub_stub_band_int_arg2;
+        ctx.band_broadcast       = hub_stub_band_broadcast;
+        ctx.band_members         = hub_stub_band_members;
+        ctx.band_member_contains = hub_stub_band_member_contains;
+        ctx.band_member_count    = hub_stub_band_int_arg2;
+
+        // ── Channel-auth observability — all stubbed (role concept) ───
+        ctx.allowed_peers         = hub_stub_allowed_peers;
+        ctx.allowed_peer_contains = hub_stub_allowed_peer_contains;
+        ctx.allowed_peer_count    = hub_stub_band_int_arg2;
+        ctx.is_channel_ready      = hub_stub_is_channel_ready;
+        ctx.queue_mechanism       = hub_stub_queue_mechanism;
+
+        // ── Queue diagnostics — all stubbed (no role queue on hub) ────
+        ctx.out_capacity = hub_stub_counter_zero;
+        ctx.in_capacity  = hub_stub_counter_zero;
+        ctx.out_policy   = hub_stub_queue_policy;
+        ctx.in_policy    = hub_stub_queue_policy;
+        ctx.last_seq     = hub_stub_counter_zero;
+
+        // ── Metrics snapshot — stubbed (hub uses hub_metrics_json) ────
+        ctx.metrics_snapshot = hub_stub_metrics_snapshot;
+        ctx.metrics_get      = hub_stub_metrics_get;
+
+        // ── Flexzone control + band-membership query — stubbed ────────
+        ctx.is_in_band               = hub_stub_is_in_band;
+        ctx.update_flexzone_checksum = hub_stub_update_flexzone_checksum;
+        ctx.set_verify_checksum      = hub_stub_set_verify_checksum;
+
+        // ── Hub-side surface (API v7) — real impls via HubAPI ─────────
+        ctx.hub_metrics_json        = ctx_hub_metrics_json;
+        ctx.hub_config_json         = ctx_hub_config_json;
+        ctx.hub_query_metrics_json  = ctx_hub_query_metrics_json;
+        ctx.hub_list_channels_json  = ctx_hub_list_channels_json;
+        ctx.hub_get_channel_json    = ctx_hub_get_channel_json;
+        ctx.hub_list_roles_json     = ctx_hub_list_roles_json;
+        ctx.hub_get_role_json       = ctx_hub_get_role_json;
+        ctx.hub_list_bands_json     = ctx_hub_list_bands_json;
+        ctx.hub_get_band_json       = ctx_hub_get_band_json;
+        ctx.hub_list_peers_json     = ctx_hub_list_peers_json;
+        ctx.hub_get_peer_json       = ctx_hub_get_peer_json;
+        ctx.hub_close_channel       = ctx_hub_close_channel;
+        ctx.hub_broadcast_channel   = ctx_hub_broadcast_channel;
+        ctx.hub_post_event          = ctx_hub_post_event;
+        ctx.hub_augment_timeout_ms  = ctx_hub_augment_timeout_ms;
+        ctx.hub_set_augment_timeout = ctx_hub_set_augment_timeout;
     }
 
     void wire(RoleHostCore *core, RoleAPIBase *api)
@@ -783,6 +1150,26 @@ struct NativeEngine::NativeContextStorage
         ctx.is_in_band               = ctx_is_in_band;
         ctx.update_flexzone_checksum = ctx_update_flexzone_checksum;
         ctx.set_verify_checksum      = ctx_set_verify_checksum;
+
+        // ── Hub-side fn ptrs — role-side noop stubs (API v7) ─────────
+        // A role-side ctx has no HubAPI*.  Plugins that mistakenly call
+        // hub_* get a documented empty/sentinel return rather than UB.
+        ctx.hub_metrics_json        = role_stub_hub_json_no_arg;
+        ctx.hub_config_json         = role_stub_hub_json_no_arg;
+        ctx.hub_query_metrics_json  = role_stub_hub_json_query;
+        ctx.hub_list_channels_json  = role_stub_hub_json_no_arg;
+        ctx.hub_get_channel_json    = role_stub_hub_json_query_arg;
+        ctx.hub_list_roles_json     = role_stub_hub_json_no_arg;
+        ctx.hub_get_role_json       = role_stub_hub_json_query_arg;
+        ctx.hub_list_bands_json     = role_stub_hub_json_no_arg;
+        ctx.hub_get_band_json       = role_stub_hub_json_query_arg;
+        ctx.hub_list_peers_json     = role_stub_hub_json_no_arg;
+        ctx.hub_get_peer_json       = role_stub_hub_json_query_arg;
+        ctx.hub_close_channel       = role_stub_hub_close_channel;
+        ctx.hub_broadcast_channel   = role_stub_hub_broadcast_channel;
+        ctx.hub_post_event          = role_stub_hub_post_event;
+        ctx.hub_augment_timeout_ms  = role_stub_hub_augment_timeout_ms;
+        ctx.hub_set_augment_timeout = role_stub_hub_set_augment_timeout;
     }
 };
 
@@ -794,12 +1181,33 @@ NativeEngine::NativeEngine() = default;
 
 NativeEngine::~NativeEngine()
 {
+    // Match the ordering of finalize_engine_() so abnormal exit paths
+    // (exception in build_api_, unhandled in invoke_*, etc.) tear down
+    // in the same order as the normal shutdown path:
+    //   1. native_finalize() — plugin gets one last call
+    //   2. release the host-owned PlhNativeContext + storage strings
+    //   3. dlclose the shared library
+    // dl_handle_ is the gate for ALL plugin-pointing operations:
+    // load_script() nulls dl_handle_ on early-error paths (missing
+    // symbol, ABI mismatch, missing required callback) WITHOUT
+    // clearing fn_finalize_.  Calling fn_finalize_ at that point
+    // is a UAF — the symbol pointed into already-unmapped memory.
+    // Guard on dl_handle_, not fn_finalize_.
+    // Fresh-eye audit A4, 2026-06-11.
     if (dl_handle_)
     {
         if (fn_finalize_)
             fn_finalize_();
+        native_ctx_.reset();
         DL_CLOSE(dl_handle_);
         dl_handle_ = nullptr;
+    }
+    else
+    {
+        // Either never loaded, or load_script() failed after a partial
+        // dlopen.  native_ctx_ is at most a freshly-allocated storage
+        // (no fn_init_ ran), safe to release.
+        native_ctx_.reset();
     }
 }
 
@@ -956,11 +1364,19 @@ bool NativeEngine::build_api_(RoleAPIBase &api)
             std::chrono::milliseconds{5000});
         if (pylabhub::utils::RegisterDynamicModule(std::move(mod)))
         {
-            if (!pylabhub::utils::LoadModule(lifecycle_module_name_.c_str()))
-                LOGGER_WARN("[{}] lifecycle LoadModule({}) returned false",
+            // Track the LOAD outcome, not the REGISTER outcome — calling
+            // UnloadModule() later on a never-loaded module is a no-op at
+            // best, a logged confusion at worst.  Fresh-eye audit A5,
+            // 2026-06-11.
+            lifecycle_registered_ =
+                pylabhub::utils::LoadModule(lifecycle_module_name_.c_str());
+            if (!lifecycle_registered_)
+                LOGGER_WARN("[{}] lifecycle LoadModule({}) returned false; "
+                            "not setting registered flag",
                             log_tag_, lifecycle_module_name_);
-            lifecycle_registered_ = true;
-            LOGGER_DEBUG("[{}] lifecycle module registered: {}", log_tag_, lifecycle_module_name_);
+            else
+                LOGGER_DEBUG("[{}] lifecycle module registered: {}",
+                             log_tag_, lifecycle_module_name_);
         }
     }
 
@@ -1011,12 +1427,16 @@ bool NativeEngine::build_api_(hub_host::HubAPI &api)
             std::chrono::milliseconds{5000});
         if (pylabhub::utils::RegisterDynamicModule(std::move(mod)))
         {
-            if (!pylabhub::utils::LoadModule(lifecycle_module_name_.c_str()))
-                LOGGER_WARN("[{}] hub lifecycle LoadModule({}) returned false",
+            // Audit A5: same fix as the role-side branch above.
+            lifecycle_registered_ =
+                pylabhub::utils::LoadModule(lifecycle_module_name_.c_str());
+            if (!lifecycle_registered_)
+                LOGGER_WARN("[{}] hub lifecycle LoadModule({}) returned false; "
+                            "not setting registered flag",
                             log_tag_, lifecycle_module_name_);
-            lifecycle_registered_ = true;
-            LOGGER_DEBUG("[{}] lifecycle module registered (hub): {}",
-                         log_tag_, lifecycle_module_name_);
+            else
+                LOGGER_DEBUG("[{}] lifecycle module registered (hub): {}",
+                             log_tag_, lifecycle_module_name_);
         }
     }
 

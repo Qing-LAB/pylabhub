@@ -320,8 +320,18 @@ typedef struct
 
     /** metrics_snapshot: build a thread-local snapshot of the current
      *  role-metrics tree (HEP-CORE-0019) and return an opaque view
-     *  pointer.  Lifetime: valid until the next metrics_snapshot()
-     *  call on the SAME thread.  Plugin MUST NOT share across threads.
+     *  pointer.
+     *
+     *  Lifetime contract (HEP-CORE-0028 §4.8):
+     *    - Valid until the next metrics_snapshot() call on the SAME
+     *      thread.
+     *    - Plugin MUST NOT share across threads.
+     *    - Plugin MUST NOT retain the pointer across the engine's
+     *      `native_finalize()` callback — on the same thread, a
+     *      subsequently-loaded plugin would alias the cache and any
+     *      retained pointer would silently read the new plugin's
+     *      metrics.  Drop the pointer in on_stop().
+     *
      *  Returns NULL on internal error. */
     const void *(*metrics_snapshot)(const struct PlhNativeContext *ctx);
 
@@ -349,6 +359,96 @@ typedef struct
     /** set_verify_checksum: SHM-only.  Enables/disables per-read slot +
      *  flexzone checksum verification.  ZMQ side: silent no-op. */
     void (*set_verify_checksum)(const struct PlhNativeContext *ctx, int enable);
+
+    /* ── Hub-side API surface (API v7 #84, 2026-06-11) ─────────────────
+     * These fn ptrs are wired only by NativeEngine::build_api_(HubAPI&)
+     * (i.e. when `script.type = "native"` in hub.json).  On role-side
+     * contexts they are noop-stubs returning the documented sentinel.
+     * On hub-side contexts the role-side surfaces (band_*, allowed_*,
+     * spinlock_*, queue_*, slot_*, etc.) are also stubbed for symmetry
+     * — see HEP-CORE-0028 §4.9 "Hub-side API surface" for the full
+     * matrix.
+     *
+     * Each JSON-returning fn writes into a thread-local `std::string`
+     * buffer and returns its `c_str()`.  Lifetime contract: pointer
+     * valid until the NEXT hub_* JSON call on the SAME thread (any
+     * subsequent hub_metrics_json / hub_config_json / hub_get_*_json /
+     * hub_query_metrics_json / hub_list_*_json overwrites the same
+     * buffer).  Plugin MUST parse or strdup before the next call.
+     *
+     * Return contract: ALWAYS a valid C string — never NULL.
+     * On error (null ctx, null _api, HubAPI threw) the scratch is
+     * cleared and an empty `""` is returned.  Plugin authors can omit
+     * null-checks on the return; distinguish "no data" from "error"
+     * via string emptiness + log signals. */
+
+    /** hub_metrics_json: returns the hub metrics tree as a JSON string.
+     *  NULL on error or when wired as a stub. */
+    const char *(*hub_metrics_json)(const struct PlhNativeContext *ctx);
+
+    /** hub_config_json: returns the hub config as a JSON string. */
+    const char *(*hub_config_json)(const struct PlhNativeContext *ctx);
+
+    /** hub_query_metrics_json: filtered metrics by category list (JSON
+     *  array of strings as input; empty = all). */
+    const char *(*hub_query_metrics_json)(const struct PlhNativeContext *ctx,
+                                          const char *categories_json);
+
+    /** hub_list_channels_json: JSON array of channel descriptors. */
+    const char *(*hub_list_channels_json)(const struct PlhNativeContext *ctx);
+
+    /** hub_get_channel_json: channel info by name; "{}" if absent. */
+    const char *(*hub_get_channel_json)(const struct PlhNativeContext *ctx,
+                                        const char *name);
+
+    /** hub_list_roles_json: JSON array of role descriptors. */
+    const char *(*hub_list_roles_json)(const struct PlhNativeContext *ctx);
+
+    /** hub_get_role_json: role info by uid; "{}" if absent. */
+    const char *(*hub_get_role_json)(const struct PlhNativeContext *ctx,
+                                     const char *role_uid);
+
+    /** hub_list_bands_json: JSON array of band descriptors. */
+    const char *(*hub_list_bands_json)(const struct PlhNativeContext *ctx);
+
+    /** hub_get_band_json: band info by name; "{}" if absent. */
+    const char *(*hub_get_band_json)(const struct PlhNativeContext *ctx,
+                                     const char *name);
+
+    /** hub_list_peers_json: JSON array of federation peer descriptors. */
+    const char *(*hub_list_peers_json)(const struct PlhNativeContext *ctx);
+
+    /** hub_get_peer_json: peer info by hub_uid; "{}" if absent. */
+    const char *(*hub_get_peer_json)(const struct PlhNativeContext *ctx,
+                                     const char *hub_uid);
+
+    /** hub_close_channel: control delegate.  1 on accept, -1 on error.
+     *  Idempotent for unknown names (broker tolerates). */
+    int (*hub_close_channel)(const struct PlhNativeContext *ctx,
+                             const char *name);
+
+    /** hub_broadcast_channel: send a control-plane broadcast to all
+     *  consumers of a channel.  1 on accept, -1 on error. */
+    int (*hub_broadcast_channel)(const struct PlhNativeContext *ctx,
+                                 const char *channel,
+                                 const char *message,
+                                 const char *data_json);
+
+    /** hub_post_event: post a user-defined event onto the worker's
+     *  main-loop queue (fires on_app_<name>(api, data) on the worker
+     *  thread).  Name MUST be a valid identifier per HEP-CORE-0033
+     *  G2.2.0b.  1 on accept, 0 on invalid name, -1 on error. */
+    int (*hub_post_event)(const struct PlhNativeContext *ctx,
+                          const char *name,
+                          const char *data_json);
+
+    /** hub_augment_timeout_ms: current augment timeout knob.
+     *  Convention: -1 = infinite, 0 = non-blocking, >0 = N ms. */
+    int64_t (*hub_augment_timeout_ms)(const struct PlhNativeContext *ctx);
+
+    /** hub_set_augment_timeout: setter for augment_timeout_ms. */
+    void (*hub_set_augment_timeout)(const struct PlhNativeContext *ctx,
+                                    int64_t ms);
 
     /* ── Opaque host data (do not dereference) ────────────────────── */
     void *_core;               /**< Internal — RoleHostCore pointer for API implementations. */
@@ -450,9 +550,24 @@ typedef struct PlhAbiInfo
  *           Plugin Authoring Model) + §4.1 (PlhNativeContext) +
  *           §4.8 (Lifetime + Security Contract).
  *
+ *    v6 → v7 (#84 task: NativeEngine::build_api_(HubAPI&) — extend
+ *           beyond MVP; 2026-06-11): hub-side surface parity with
+ *           Python/Lua.  PlhNativeContext gains 16 new fn ptrs at the
+ *           end of the struct (additive) wiring through to HubAPI:
+ *           hub_metrics_json / hub_config_json / hub_query_metrics_json,
+ *           hub_list_channels_json / hub_get_channel_json (and the
+ *           4 list/get pairs for roles/bands/peers),
+ *           hub_close_channel / hub_broadcast_channel / hub_post_event,
+ *           hub_augment_timeout_ms / hub_set_augment_timeout.
+ *           wire_hub() now assigns EVERY ctx fn ptr — role-only
+ *           methods get noop-stubs returning documented sentinels so
+ *           pure-C hub plugins cannot segfault from missing null
+ *           checks.  See HEP-CORE-0028 §4.9 "Hub-side API surface"
+ *           for the full matrix.
+ *
  *  Additive PlhAbiInfo fields are NOT breaking — they're
  *  guarded by struct_size. */
-#define PLH_NATIVE_API_VERSION 6
+#define PLH_NATIVE_API_VERSION 7
 
 /* =========================================================================
  * C-visible pylabhub ComponentVersions constants
@@ -1051,6 +1166,100 @@ class Context
     [[nodiscard]] uint64_t last_seq() const noexcept
     {
         return (c_ && c_->last_seq) ? c_->last_seq(c_) : 0;
+    }
+
+    // ── Hub-side surface (API v7, #84 2026-06-11) ───────────────────
+    //
+    // Convenience wrappers around the hub_* fn ptrs.  All return an
+    // empty/sentinel value on a role-side context (where the wire layer
+    // routes to role_stub_hub_*) so plugin code can be written once
+    // and dispatch by `is_hub()` rather than null-checking every call.
+    //
+    // String returns: empty `""` for absent/unset.  JSON returns are
+    // owned by a thread-local scratch buffer in the host — valid until
+    // the next hub_* call on the same thread (HEP-CORE-0028 §4.9).
+
+    /// Is this Context attached to a hub (vs a role)?
+    [[nodiscard]] bool is_hub() const noexcept
+    {
+        return c_ && c_->role_tag && std::string_view{c_->role_tag} == "hub";
+    }
+
+    [[nodiscard]] const char *hub_metrics_json() const noexcept
+    {
+        return (c_ && c_->hub_metrics_json) ? c_->hub_metrics_json(c_) : "";
+    }
+    [[nodiscard]] const char *hub_config_json() const noexcept
+    {
+        return (c_ && c_->hub_config_json) ? c_->hub_config_json(c_) : "";
+    }
+    [[nodiscard]] const char *hub_query_metrics_json(const char *categories_json) const noexcept
+    {
+        return (c_ && c_->hub_query_metrics_json)
+            ? c_->hub_query_metrics_json(c_, categories_json) : "";
+    }
+    [[nodiscard]] const char *hub_list_channels_json() const noexcept
+    {
+        return (c_ && c_->hub_list_channels_json) ? c_->hub_list_channels_json(c_) : "";
+    }
+    [[nodiscard]] const char *hub_get_channel_json(const char *name) const noexcept
+    {
+        return (c_ && c_->hub_get_channel_json) ? c_->hub_get_channel_json(c_, name) : "";
+    }
+    [[nodiscard]] const char *hub_list_roles_json() const noexcept
+    {
+        return (c_ && c_->hub_list_roles_json) ? c_->hub_list_roles_json(c_) : "";
+    }
+    [[nodiscard]] const char *hub_get_role_json(const char *uid) const noexcept
+    {
+        return (c_ && c_->hub_get_role_json) ? c_->hub_get_role_json(c_, uid) : "";
+    }
+    [[nodiscard]] const char *hub_list_bands_json() const noexcept
+    {
+        return (c_ && c_->hub_list_bands_json) ? c_->hub_list_bands_json(c_) : "";
+    }
+    [[nodiscard]] const char *hub_get_band_json(const char *name) const noexcept
+    {
+        return (c_ && c_->hub_get_band_json) ? c_->hub_get_band_json(c_, name) : "";
+    }
+    [[nodiscard]] const char *hub_list_peers_json() const noexcept
+    {
+        return (c_ && c_->hub_list_peers_json) ? c_->hub_list_peers_json(c_) : "";
+    }
+    [[nodiscard]] const char *hub_get_peer_json(const char *hub_uid) const noexcept
+    {
+        return (c_ && c_->hub_get_peer_json) ? c_->hub_get_peer_json(c_, hub_uid) : "";
+    }
+
+    /// Schedule the close of a channel.  Returns true on accept.
+    [[nodiscard]] bool hub_close_channel(const char *name) const noexcept
+    {
+        return c_ && c_->hub_close_channel && c_->hub_close_channel(c_, name) == 1;
+    }
+    /// Send a control-plane broadcast.  data_json may be null/empty.
+    [[nodiscard]] bool hub_broadcast_channel(const char *channel,
+                                              const char *message,
+                                              const char *data_json) const noexcept
+    {
+        return c_ && c_->hub_broadcast_channel
+            && c_->hub_broadcast_channel(c_, channel, message, data_json) == 1;
+    }
+    /// Post a user-defined event.  Returns true on accept, false on
+    /// invalid identifier / disabled / error.  data_json may be null.
+    [[nodiscard]] bool hub_post_event(const char *name,
+                                       const char *data_json) const noexcept
+    {
+        return c_ && c_->hub_post_event
+            && c_->hub_post_event(c_, name, data_json) == 1;
+    }
+
+    [[nodiscard]] int64_t hub_augment_timeout_ms() const noexcept
+    {
+        return (c_ && c_->hub_augment_timeout_ms) ? c_->hub_augment_timeout_ms(c_) : 0;
+    }
+    void hub_set_augment_timeout(int64_t ms) const noexcept
+    {
+        if (c_ && c_->hub_set_augment_timeout) c_->hub_set_augment_timeout(c_, ms);
     }
 
     /// Access the raw C context.  May be nullptr if the Context was
