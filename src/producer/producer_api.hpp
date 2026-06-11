@@ -117,8 +117,6 @@ class ProducerAPI
     /// HEP-CORE-0035 §2 (#186, #194) — direct mechanism accessor for
     /// engine parity with Lua `api.queue_mechanism(side)`.  Returns the
     /// negotiated mechanism name ("Curve" / "Plaintext" / "Uninitialized").
-    /// Mirrors the snapshot-dict value at `api.metrics()["queue"]["mechanism"]`
-    /// without requiring the script to dig through the metrics payload.
     [[nodiscard]] std::string queue_mechanism(int side) const
     {
         const auto cs = (side == 0) ? scripting::ChannelSide::Tx
