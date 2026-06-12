@@ -39,30 +39,90 @@ py::object ProcessorAPI::flexzone(std::optional<int> side) const
 
 py::object ProcessorAPI::band_join(const std::string &channel)
 {
-    auto result = base_->band_join(channel);
+    std::optional<nlohmann::json> result;
+    {
+        py::gil_scoped_release release;
+        result = base_->band_join(channel);
+    }
     if (!result.has_value())
         return py::none();
-    return py::module_::import("json").attr("loads")(result->dump());
+    return scripting::detail::json_to_py(*result);
 }
 
 void ProcessorAPI::band_broadcast(const std::string &channel, py::dict body)
 {
-    auto json_mod = py::module_::import("json");
-    std::string body_str = json_mod.attr("dumps")(body).cast<std::string>();
-    base_->band_broadcast(channel, nlohmann::json::parse(body_str));
+    auto body_json = scripting::detail::py_to_json(body);
+    py::gil_scoped_release release;
+    base_->band_broadcast(channel, body_json);
 }
 
 py::object ProcessorAPI::band_members(const std::string &channel)
 {
-    auto result = base_->band_members(channel);
+    std::optional<nlohmann::json> result;
+    {
+        py::gil_scoped_release release;
+        result = base_->band_members(channel);
+    }
     if (!result.has_value())
         return py::none();
-    return py::module_::import("json").attr("loads")(result->dump());
+    return scripting::detail::json_to_py(*result);
 }
 
 bool ProcessorAPI::is_in_band(const std::string &channel) const
 {
     return base_->is_in_band(channel);
+}
+
+bool ProcessorAPI::band_member_contains(const std::string &channel,
+                                         const std::string &role_uid)
+{
+    std::optional<nlohmann::json> result;
+    {
+        py::gil_scoped_release release;
+        result = base_->band_members(channel);
+    }
+    if (!result.has_value())
+        throw py::value_error("band_members transport failure for channel '" +
+                              channel + "'");
+    if (!result->is_array())
+        return false;
+    for (const auto &m : *result)
+        if (m.value("role_uid", std::string{}) == role_uid)
+            return true;
+    return false;
+}
+
+int ProcessorAPI::band_member_count(const std::string &channel)
+{
+    std::optional<nlohmann::json> result;
+    {
+        py::gil_scoped_release release;
+        result = base_->band_members(channel);
+    }
+    if (!result.has_value())
+        throw py::value_error("band_members transport failure for channel '" +
+                              channel + "'");
+    if (!result->is_array())
+        return 0;
+    int count = 0;
+    for (const auto &m : *result)
+        if (!m.value("role_uid", std::string{}).empty())
+            ++count;
+    return count;
+}
+
+bool ProcessorAPI::allowed_peer_contains(const std::string &channel,
+                                          const std::string &role_uid) const
+{
+    for (const auto &p : base_->allowed_peers(channel))
+        if (p.role_uid == role_uid)
+            return true;
+    return false;
+}
+
+int ProcessorAPI::allowed_peer_count(const std::string &channel) const
+{
+    return static_cast<int>(base_->allowed_peers(channel).size());
 }
 
 py::dict ProcessorAPI::metrics() const
@@ -249,6 +309,14 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_processor, m) // NOLINT
         .def("band_broadcast",    &ProcessorAPI::band_broadcast,
              py::arg("channel"), py::arg("body"))
         .def("band_members",      &ProcessorAPI::band_members, py::arg("channel"))
+        .def("band_member_contains", &ProcessorAPI::band_member_contains,
+             py::arg("channel"), py::arg("role_uid"),
+             "Engine-parity inquiry — true iff role_uid is in the band's "
+             "member list.  Raises ValueError on transport failure.")
+        .def("band_member_count", &ProcessorAPI::band_member_count,
+             py::arg("channel"),
+             "Engine-parity inquiry — band member count.  Raises "
+             "ValueError on transport failure.")
         .def("is_in_band",        &ProcessorAPI::is_in_band, py::arg("channel"))
         .def("script_error_count", &ProcessorAPI::script_error_count)
         .def("in_slots_received",  &ProcessorAPI::in_slots_received)
@@ -263,6 +331,13 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_processor, m) // NOLINT
              "authorized peers for the channel.  Processor's TX side "
              "has the same producer-side allowlist semantics as "
              "ProducerAPI.allowed_peers.")
+        .def("allowed_peer_contains", &ProcessorAPI::allowed_peer_contains,
+             py::arg("channel"), py::arg("role_uid"),
+             "Engine-parity inquiry — true iff role_uid is in the "
+             "channel's authorized-peer list.  Served from local cache.")
+        .def("allowed_peer_count", &ProcessorAPI::allowed_peer_count,
+             py::arg("channel"),
+             "Engine-parity inquiry — authorized-peer count.")
         .def("is_channel_ready",   &ProcessorAPI::is_channel_ready,
              py::arg("channel"),
              "HEP-CORE-0036 §6.7 (#190) — true iff the queue serving the "
