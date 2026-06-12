@@ -417,6 +417,40 @@ typedef struct PlhNativeContext
     void     (*set_verify_checksum)(const struct PlhNativeContext *ctx,
                                     int enable);
 
+    /* ── Hub-side API surface (API v7, #84) — see §4.9 ──────────────
+     * On hub-side contexts these delegate to HubAPI; on role-side
+     * contexts they are noop stubs (empty `""` for JSON; -1 / 0 /
+     * noop for the rest).  JSON returns share a thread-local
+     * scratch buffer — valid until next hub_*_json on same thread. */
+    const char *(*hub_metrics_json)(const struct PlhNativeContext *ctx);
+    const char *(*hub_config_json)(const struct PlhNativeContext *ctx);
+    const char *(*hub_query_metrics_json)(const struct PlhNativeContext *ctx,
+                                           const char *categories_json);
+    const char *(*hub_list_channels_json)(const struct PlhNativeContext *ctx);
+    const char *(*hub_get_channel_json)(const struct PlhNativeContext *ctx,
+                                         const char *name);
+    const char *(*hub_list_roles_json)(const struct PlhNativeContext *ctx);
+    const char *(*hub_get_role_json)(const struct PlhNativeContext *ctx,
+                                      const char *uid);
+    const char *(*hub_list_bands_json)(const struct PlhNativeContext *ctx);
+    const char *(*hub_get_band_json)(const struct PlhNativeContext *ctx,
+                                      const char *name);
+    const char *(*hub_list_peers_json)(const struct PlhNativeContext *ctx);
+    const char *(*hub_get_peer_json)(const struct PlhNativeContext *ctx,
+                                      const char *hub_uid);
+    int      (*hub_close_channel)(const struct PlhNativeContext *ctx,
+                                   const char *name);
+    int      (*hub_broadcast_channel)(const struct PlhNativeContext *ctx,
+                                       const char *channel,
+                                       const char *message,
+                                       const char *data_json);
+    int      (*hub_post_event)(const struct PlhNativeContext *ctx,
+                                const char *name,
+                                const char *data_json);
+    int64_t  (*hub_augment_timeout_ms)(const struct PlhNativeContext *ctx);
+    void     (*hub_set_augment_timeout)(const struct PlhNativeContext *ctx,
+                                         int64_t ms);
+
     /* ── Opaque host data (do not dereference) ────────────────────── */
     void *_core;               /* Internal — RoleHostCore pointer for API implementations */
     void *_api;                /* Internal — RoleAPIBase pointer (band/auth accessors) */
@@ -775,7 +809,7 @@ plugins should defensively null-check before calling.
 > checks and the response shape is the documented sentinel for the
 > wrong-side case.
 
-### 4.8 Lifetime + Security Contract (#194 Phase C)
+### 4.8 Lifetime + Security Contract (#194)
 
 Every borrowed pointer the framework hands to the plugin carries a
 documented lifetime.  The C ABI does not own anything on the plugin's
@@ -917,13 +951,23 @@ if (ctx.is_hub()) {
 ```
 
 **Cross-engine parity.**  Python `pylabhub_hub.HubAPI` and Lua
-`hub_api()` script-side bindings expose the same surface.  Where
-Python returns a `dict`/`list` and Lua returns a table, Native
-returns a JSON string — plugin authors who want structured
-access link `nlohmann/json` (or any JSON parser) in their
-plugin.  The shape of the JSON is the same as what
-`HubAPI::metrics()` / `list_channels()` / etc. serialise via
-their C++ public surface (HEP-CORE-0033 §6).
+`hub_api()` script-side bindings expose the same 16 hub-callable
+methods, plus the engine-agnostic `log` / `uid` / `name` /
+`request_shutdown` (which on Native are not prefixed `hub_` —
+they live on `PlhNativeContext` as side-agnostic fn ptrs
+populated on both wires).  Where Python returns a `dict`/`list`
+and Lua returns a table, Native returns a JSON string — plugin
+authors who want structured access link `nlohmann/json` (or any
+JSON parser) in their plugin.  The shape of the JSON is the same
+as what `HubAPI::metrics()` / `list_channels()` / etc. serialise
+via their C++ public surface (HEP-CORE-0033 §6).
+
+> Naming difference: Python/Lua bindings live in a hub-only
+> namespace (e.g. `api.list_channels()` on the script side), so
+> no prefix is needed.  Native's fn ptrs share one
+> `PlhNativeContext` table with the role-side methods (band_*,
+> spinlock_*, queue_*, etc.), so the `hub_` prefix disambiguates
+> at the C ABI surface.
 
 ---
 
@@ -970,7 +1014,7 @@ class ConstSlotRef {
 These wrap raw `void*` pointers with type-safe access and a validity check. The
 `static_assert` on `std::is_standard_layout_v<T>` catches non-POD types at compile time.
 
-### 5.2 Typed Enum Classes (#194 Phase C)
+### 5.2 Typed Enum Classes (#194)
 
 Each of the three v6 enumerated returns gets an `enum class : int` whose
 enumerators inherit values directly from the C ABI macros (§4.1).  No
@@ -1013,7 +1057,7 @@ enum class StopReason : int {
 allocation, safe for logging.  `constexpr` so the result is usable in
 compile-time `switch` contexts.
 
-### 5.3 C++20 Concepts for Visitor Type Safety (#194 Phase C)
+### 5.3 C++20 Concepts for Visitor Type Safety (#194)
 
 The visitor templates exposed on handle types (§5.5) are constrained
 by C++20 `requires`-clauses.  Misuse → a clean compile error at the
@@ -1034,7 +1078,7 @@ concept BandMemberVisitor =
 } // namespace plh
 ```
 
-### 5.4 MetricsSnapshot — Opaque Handle Wrapper (#194 Phase C)
+### 5.4 MetricsSnapshot — Opaque Handle Wrapper (#194)
 
 `MetricsSnapshot` is a typed value-class wrapper around the opaque
 `const void *` returned by `ctx->metrics_snapshot(ctx)`.  It is **not** a
@@ -1070,7 +1114,7 @@ public:
 } // namespace plh
 ```
 
-### 5.5 Handle Types: AllowedPeersHandle, BandHandle (#194 Phase C)
+### 5.5 Handle Types: AllowedPeersHandle, BandHandle (#194)
 
 Handles are **lightweight typed views** — each holds exactly two
 pointers (`const Context *` + `const char *channel`) and is
@@ -1156,7 +1200,7 @@ Methods on `plh::Context` that produce handles:
 { return BandHandle(*this, channel); }
 ```
 
-### 5.6 AllowlistChangedView — std::span over Event Args (#194 Phase C)
+### 5.6 AllowlistChangedView — std::span over Event Args (#194)
 
 The `on_allowlist_changed` callback receives a `const
 plh_allowlist_changed_args_t *`.  The C++ wrapper exposes a thin view
@@ -1205,7 +1249,9 @@ extern "C" bool native_init(PlhNativeContext *raw)
         // Hub-side: enumerate channels and post a startup event.
         auto channels = ctx.hub_list_channels_json();
         ctx.log(plh::LogLevel::Info, channels);
-        ctx.hub_post_event("plugin_started", R"({"version":"1.0"})");
+        auto r = ctx.hub_post_event("plugin_started", R"({"version":"1.0"})");
+        if (r == plh::PostEventResult::InvalidName)
+            ctx.log(plh::LogLevel::Error, "plugin bug: event name rejected");
     }
     else
     {
@@ -1228,7 +1274,7 @@ zero binary cost — same as role-side wrappers):
 | `hub_list_channels_json()` etc. (4 list+get pairs) | `ctx->hub_list_*` / `ctx->hub_get_*` | `""` |
 | `hub_close_channel(name)` | `ctx->hub_close_channel` | `false` |
 | `hub_broadcast_channel(ch, msg, data)` | `ctx->hub_broadcast_channel` | `false` |
-| `hub_post_event(name, data)` | `ctx->hub_post_event` | `false` |
+| `hub_post_event(name, data)` | `ctx->hub_post_event` | `PostEventResult::TransportError` |
 | `hub_augment_timeout_ms()` | `ctx->hub_augment_timeout_ms` | `0` |
 | `hub_set_augment_timeout(ms)` | `ctx->hub_set_augment_timeout` | (noop) |
 
@@ -1260,7 +1306,7 @@ federation peers) would need to extend this predicate.
 These macros generate the C-linkage `on_produce`/`on_consume`/`on_process` symbols and
 wrap the raw pointers in typed SlotRef/ConstSlotRef before calling the user's function.
 
-### 5.8 Example: C++ Producer Native Engine (v6 ergonomic surface)
+### 5.9 Example: C++ Producer Native Engine (v6 ergonomic surface)
 
 ```cpp
 #include <utils/native_engine_api.h>

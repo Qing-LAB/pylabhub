@@ -395,7 +395,7 @@ int ctx_is_critical_error(const PlhNativeContext *ctx)
 
 int ctx_stop_reason(const PlhNativeContext *ctx)
 {
-    // API v6 (#194 Phase C): returns a PLH_STOP_REASON_* macro value.
+    // API v6 (#194): returns a PLH_STOP_REASON_* macro value.
     // Cast from the typed enum on RoleHostCore — values match the
     // PLH_STOP_REASON_* macros at the top of native_engine_api.h, so
     // the cast is identity-preserving.
@@ -586,7 +586,7 @@ fetch_band_members(const PlhNativeContext *ctx, const char *channel) noexcept
 
 int ctx_band_join(const PlhNativeContext *ctx, const char *channel)
 {
-    // API v6 (#194 Phase C): plain int return; drops the v5 list-from-join
+    // API v6 (#194): plain int return; drops the v5 list-from-join
     // behaviour (which was a malloc'd JSON of the broker reply body).
     // Plugin calls ctx->band_members(...) separately to enumerate after
     // a successful join.  Status semantics match band_leave: 1 = success,
@@ -831,7 +831,7 @@ uint64_t ctx_last_seq(const PlhNativeContext *ctx)
     catch (...) { return 0; }
 }
 
-// ── Metrics snapshot (API v6 #194 Phase C) ──────────────────────────────────
+// ── Metrics snapshot (API v6 #194) ──────────────────────────────────────────
 //
 // Two-call surface: metrics_snapshot() builds a thread-local
 // dotted-key→double map from RoleAPIBase::snapshot_metrics_json() and
@@ -863,7 +863,7 @@ void flatten_json_into(const nlohmann::json &node,
     // Strings / arrays / null are not numeric metrics; skip silently.
 }
 
-// Thread-local metrics snapshot cache (#194 Phase C).
+// Thread-local metrics snapshot cache (#194).
 //
 // LIFETIME CONTRACT (HEP-CORE-0028 §5.4 + audit A3):
 //   - The opaque pointer returned by metrics_snapshot() is the address
@@ -1142,7 +1142,7 @@ struct NativeEngine::NativeContextStorage
         ctx.in_policy    = ctx_in_policy;
         ctx.last_seq     = ctx_last_seq;
 
-        // Metrics snapshot (#194 Phase C) — replaces v5 metrics_json.
+        // Metrics snapshot (#194) — replaces v5 metrics_json.
         ctx.metrics_snapshot         = ctx_metrics_snapshot;
         ctx.metrics_get              = ctx_metrics_get;
 
