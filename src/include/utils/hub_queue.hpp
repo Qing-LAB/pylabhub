@@ -18,6 +18,7 @@
  */
 #include "pylabhub_utils_export.h"
 #include "utils/data_block_policy.hpp"
+#include "utils/json_fwd.hpp"                 // nlohmann::json fwd-decl
 #include "utils/shared_memory_spinlock.hpp"   // SharedSpinLock (spinlock accessors on base)
 
 #include <chrono>
@@ -306,6 +307,33 @@ public:
     virtual bool is_running() const noexcept { return true; }
 
     /**
+     * @brief Apply master-approval artifacts (HEP-CORE-0036 §6.7 Standby → Configured).
+     *
+     * Polymorphic Standby → Configured mutator that lets the role host drive
+     * both transports through the same call site.  Concrete implementations
+     * extract their transport-specific fields from `artifacts` and dispatch
+     * to the appropriate mutator:
+     *   - `ZmqQueue` (PULL side): reads `artifacts["producers"]` (array of
+     *     `{role_uid, endpoint, pubkey_z85}` objects per HEP-0036 §6.4)
+     *     and calls `set_producer_peers(...)`.
+     *   - `ZmqQueue` (PUSH side): reads `artifacts["allowlist"]` (per HEP-0036
+     *     §I11) and calls `set_peer_allowlist(...)`.
+     *   - `ShmQueue` rx: reads `artifacts["shm_secret"]` (uint64) and calls
+     *     `set_shm_secret(secret)`.  Missing field is treated as "no broker-
+     *     supplied secret" — the queue keeps any secret set at construction.
+     *
+     * Default implementation returns `true` and no-ops: queues that don't
+     * need broker artifacts (e.g. SHM with config-supplied secret) are
+     * already Active and stay Active.  HEP §6.7's "either fully transitioned
+     * or fully refused" rule applies: on malformed `artifacts`, return
+     * `false` and leave queue state unchanged.
+     */
+    virtual bool apply_master_approval(const nlohmann::json& /*artifacts*/) noexcept
+    {
+        return true;
+    }
+
+    /**
      * @brief True iff this reader is backed by shared memory (vs ZMQ).
      *
      * Single transport-discriminator exposed on the abstract interface, so
@@ -457,6 +485,18 @@ public:
 
     /** @brief Returns true if running (after start(), before stop()). */
     virtual bool is_running() const noexcept { return true; }
+
+    /**
+     * @brief Apply master-approval artifacts (HEP-CORE-0036 §6.7 Standby → Configured).
+     *
+     * See `QueueReader::apply_master_approval` for the polymorphic contract
+     * and per-transport dispatch.  The write-side variant uses the same JSON
+     * shape (`allowlist` for ZMQ PUSH, `shm_secret` for SHM tx).
+     */
+    virtual bool apply_master_approval(const nlohmann::json& /*artifacts*/) noexcept
+    {
+        return true;
+    }
 
     /**
      * @brief True iff this writer is backed by shared memory (vs ZMQ).

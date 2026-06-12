@@ -381,6 +381,20 @@ public:
     /// side or null impl.  Diagnostic + test observability.
     [[nodiscard]] std::size_t producer_peer_count() const noexcept;
 
+    /// HEP-CORE-0036 §6.7 polymorphic Standby → Configured mutator
+    /// for the role host.  Extracts transport-specific fields from
+    /// `artifacts` and dispatches to the right concrete mutator:
+    ///   - PULL side: reads `artifacts["producers"]` array of
+    ///     `{role_uid, endpoint, pubkey_z85}` objects and calls
+    ///     `set_producer_peers(...)`.
+    ///   - PUSH side: reads `artifacts["allowlist"]` per HEP-0036 §I11
+    ///     and calls `set_peer_allowlist(...)`.
+    /// Missing field is treated as "broker did not deliver new
+    /// artifacts" — queue state unchanged, returns true.  Malformed
+    /// JSON (array entry missing a required field) returns false
+    /// with a logged reason; queue state is unchanged.
+    bool apply_master_approval(const nlohmann::json& artifacts) noexcept override;
+
     /// Queue is Configured (artifacts present) per HEP-CORE-0036 §6.7.
     ///
     /// PULL side: returns true iff `server_pubkey_z85_` is populated
