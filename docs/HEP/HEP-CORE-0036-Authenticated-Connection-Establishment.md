@@ -1957,14 +1957,17 @@ then calls `start()` (Configured → Active, performing the attach).
 This is structurally symmetric with ZmqQueue's
 `set_producer_peers` + `start()` flow.
 
-`ShmQueue::create_reader(name, schema, ...)` is the Standby-mode
-factory (no secret parameter).  A test-only convenience overload
-`ShmQueue::create_active_reader(name, secret, schema, ...)`
-collapses Standby + Configured + Active into one call for unit
-tests that don't exercise the §I12 discipline directly; production
-code MUST use the two-step factory + `set_shm_secret` + `start()`
-shape so the master-approval discipline is enforced at the queue
-layer uniformly with ZMQ.
+`ShmQueue::create_reader(name, secret, schema, ...)` is a convenience
+factory that drives all three transitions in one call (build Standby
++ `set_shm_secret(secret)` + `start()`) and returns either a
+fully-Active queue or `nullptr` on any-phase failure.  Existing
+callers that obtain the secret pre-register (config-supplied path)
+keep this signature unchanged — backward-compatible.  Future
+AUTH-4 callers that receive the secret post-register (broker-
+supplied path) drive the same state machine explicitly:
+construct a Standby queue, then drive `set_shm_secret` + `start()`
+through `apply_master_approval(ack)` on the polymorphic
+`QueueReader` / `QueueWriter` interface, uniform with ZMQ.
 
 The "no resource without secret" argument that previously
 justified collapsing this state machine for SHM was a category

@@ -10,6 +10,8 @@
 #include "utils/logger.hpp"
 #include "utils/schema_utils.hpp" // align_to_physical_page
 
+#include <nlohmann/json.hpp>
+
 #include <cassert>
 #include <cstddef>
 #include <span>
@@ -25,7 +27,10 @@ namespace pylabhub::hub
 
 struct ShmQueueImpl
 {
-    // Owning pointers (created by create_writer / create_reader):
+    // ── HEP-CORE-0036 §6.7 state ────────────────────────────────────────────
+    // Owning pointers populated by start() (Configured → Active transition).
+    // Both null in Standby + Configured; one is set in Active depending on
+    // mode_is_reader.
     std::unique_ptr<DataBlockConsumer> dbc;
     std::unique_ptr<DataBlockProducer> dbp;
 
@@ -50,13 +55,64 @@ struct ShmQueueImpl
 
     // Last slot id from read_acquire() (monotonic slot id / commit_index).
     uint64_t last_seq{0};
+
+    // ── HEP-CORE-0036 §6.7 deferred-attach state (Standby / Configured) ─────
+    //
+    // Stored at factory time so start() can do the actual SHM attach /
+    // segment creation using artifacts populated via set_shm_secret().
+    // Set on a Standby-mode factory; ignored when neither factory used
+    // the deferred path (the legacy direct-attach factories populate
+    // dbc/dbp immediately and leave these defaults).
+    bool        mode_is_reader{false};       ///< true: reader; false: writer
+    bool        has_shm_secret{false};       ///< true once set_shm_secret called
+    uint64_t    pending_shm_secret{0};
+
+    // Reader-side deferred params.
+    std::string                       pending_shm_name;
+    std::vector<SchemaFieldDesc>      pending_expected_slot_schema;
+    std::string                       pending_expected_packing;
+    std::string                       pending_consumer_uid;
+    std::string                       pending_consumer_name;
+
+    // Writer-side deferred params.  Big — but the alternative (separate
+    // Impl per mode) would require dispatching in every method.  Kept
+    // here so the queue object is mode-agnostic at the C++ type level.
+    std::vector<SchemaFieldDesc>      pending_slot_schema;
+    std::string                       pending_slot_packing;
+    std::vector<SchemaFieldDesc>      pending_fz_schema;
+    std::string                       pending_fz_packing;
+    uint32_t                          pending_ring_buffer_capacity{0};
+    DataBlockPageSize                 pending_page_size{DataBlockPageSize::Size4K};
+    DataBlockPolicy                   pending_policy{DataBlockPolicy::RingBuffer};
+    ConsumerSyncPolicy                pending_sync_policy{ConsumerSyncPolicy::Latest_only};
+    ChecksumPolicy                    pending_checksum_policy{ChecksumPolicy::None};
+    std::string                       pending_hub_uid;
+    std::string                       pending_hub_name;
+    std::string                       pending_producer_uid;
+    std::string                       pending_producer_name;
+    // SchemaInfo lives in the caller's memory for the role host's lifetime;
+    // we hold raw pointers and rely on caller-managed lifetime extension to
+    // start().  In practice the role host owns these throughout startup.
+    const schema::SchemaInfo *        pending_slot_schema_info{nullptr};
+    const schema::SchemaInfo *        pending_fz_schema_info{nullptr};
 };
 
 // Old factories removed — use create_writer() / create_reader() instead.
 
 // ============================================================================
-// create_writer — creates DataBlock internally from schema
+// create_writer — HEP-CORE-0036 §6.7 Standby + apply + start convenience
 // ============================================================================
+//
+// Builds a Standby ShmQueue (no segment created), applies the broker /
+// config-supplied secret (Standby → Configured), then calls start() to
+// actually create the SHM segment (Configured → Active).  Returns
+// nullptr if any phase fails — preserves the legacy semantics where
+// "create_writer returns nullptr on creation failure".  Production code
+// that gets the secret pre-register (config-supplied) can use this
+// convenience signature unchanged.  Future AUTH-4 (broker-supplied
+// secret post-register) will construct a Standby ShmQueue directly
+// (signature without secret — exposed below), then drive set_shm_secret
+// + start() through `apply_master_approval`.
 
 std::unique_ptr<ShmQueue>
 ShmQueue::create_writer(const std::string &channel_name,
@@ -102,45 +158,48 @@ ShmQueue::create_writer(const std::string &channel_name,
         fz_size = align_to_physical_page(raw_fz_size);
     }
 
-    // Build DataBlockConfig.
-    DataBlockConfig config;
-    config.logical_unit_size    = item_size;
-    config.flex_zone_size       = fz_size;
-    config.ring_buffer_capacity = ring_buffer_capacity;
-    config.physical_page_size   = page_size;
-    config.shared_secret        = shared_secret;
-    config.policy               = policy;
-    config.consumer_sync_policy = sync_policy;
-    config.checksum_policy      = checksum_policy;
-    config.hub_uid              = hub_uid;
-    config.hub_name             = hub_name;
-    config.producer_uid         = producer_uid;
-    config.producer_name        = producer_name;
+    // ── Standby: build the queue object with all schema metadata + the
+    // deferred-attach parameters.  No SHM segment created yet.
+    auto impl                     = std::make_unique<ShmQueueImpl>();
+    impl->mode_is_reader          = false;
+    impl->item_sz                 = item_size;
+    impl->fz_sz                   = fz_size;
+    impl->chan_name               = channel_name;
+    impl->checksum_slot           = checksum_slot;
+    impl->checksum_fz             = checksum_fz;
+    impl->always_clear_slot       = always_clear_slot;
+    impl->pending_slot_schema     = slot_schema;
+    impl->pending_slot_packing    = slot_packing;
+    impl->pending_fz_schema       = fz_schema;
+    impl->pending_fz_packing      = fz_packing;
+    impl->pending_ring_buffer_capacity = ring_buffer_capacity;
+    impl->pending_page_size       = page_size;
+    impl->pending_policy          = policy;
+    impl->pending_sync_policy     = sync_policy;
+    impl->pending_checksum_policy = checksum_policy;
+    impl->pending_hub_uid         = hub_uid;
+    impl->pending_hub_name        = hub_name;
+    impl->pending_producer_uid    = producer_uid;
+    impl->pending_producer_name   = producer_name;
+    impl->pending_slot_schema_info = slot_schema_info;
+    impl->pending_fz_schema_info  = fz_schema_info;
+    std::unique_ptr<ShmQueue> queue(new ShmQueue(std::move(impl)));
 
-    // Create DataBlock.
-    auto dbp = create_datablock_producer_impl(
-        channel_name, policy, config, fz_schema_info, slot_schema_info);
-    if (!dbp)
-    {
-        LOGGER_ERROR("[ShmQueue] create_writer: DataBlock creation failed for '{}'",
-                     channel_name);
+    // ── Configured: apply the broker/config-supplied secret.
+    if (!queue->set_shm_secret(shared_secret))
         return nullptr;
-    }
 
-    // Build ShmQueue wrapping the owned DataBlock.
-    auto impl               = std::make_unique<ShmQueueImpl>();
-    impl->dbp               = std::move(dbp);
-    impl->item_sz            = item_size;
-    impl->fz_sz              = fz_size;
-    impl->chan_name           = channel_name;
-    impl->checksum_slot      = checksum_slot;
-    impl->checksum_fz        = checksum_fz;
-    impl->always_clear_slot  = always_clear_slot;
-    return std::unique_ptr<ShmQueue>(new ShmQueue(std::move(impl)));
+    // ── Active: actually create the SHM segment.  HEP §6.7 "either
+    // fully transitioned or fully refused": on failure, the queue is
+    // destroyed and nullptr returned — preserves the legacy contract
+    // where the convenience factory returns nullptr on any error.
+    if (!queue->start())
+        return nullptr;
+    return queue;
 }
 
 // ============================================================================
-// create_reader — attaches to existing DataBlock, validates schema
+// create_reader — HEP-CORE-0036 §6.7 Standby + apply + start convenience
 // ============================================================================
 
 std::unique_ptr<ShmQueue>
@@ -154,30 +213,9 @@ ShmQueue::create_reader(const std::string &shm_name,
                         const std::string &consumer_uid,
                         const std::string &consumer_name)
 {
-    // Attach to existing DataBlock.
-    const char *uid  = consumer_uid.empty()  ? nullptr : consumer_uid.c_str();
-    const char *cnam = consumer_name.empty() ? nullptr : consumer_name.c_str();
-    std::unique_ptr<DataBlockConsumer> dbc;
-    try
-    {
-        dbc = find_datablock_consumer_impl(shm_name, shared_secret,
-                                           nullptr, nullptr, nullptr, uid, cnam);
-    }
-    catch (const std::exception &e)
-    {
-        LOGGER_ERROR("[ShmQueue] create_reader: attachment failed for '{}': {}",
-                     shm_name, e.what());
-        return nullptr;
-    }
-    if (!dbc)
-    {
-        // Attachment failed — SHM not found or secret mismatch.
-        // This is not necessarily an error (ZMQ fallback may be available).
-        return nullptr;
-    }
-
-    // Compute expected slot size from schema.
-    // Schema hash validation (done at broker level) ensures both sides agree on layout.
+    // Compute expected slot size from schema.  Schema hash validation
+    // (broker level) ensures both sides agree on layout; we keep
+    // item_sz for the metadata accessor.
     size_t item_size = 0;
     if (!expected_slot_schema.empty())
     {
@@ -185,18 +223,178 @@ ShmQueue::create_reader(const std::string &shm_name,
         item_size = sz;
     }
 
-    // Flexzone size from the DataBlock's actual flexible zone span.
-    const size_t fz_size = dbc->flexible_zone_span().size();
+    // ── Standby: build the queue object with deferred-attach params.
+    auto impl                          = std::make_unique<ShmQueueImpl>();
+    impl->mode_is_reader               = true;
+    impl->item_sz                      = item_size;
+    impl->chan_name                    = channel_name;
+    impl->verify_slot                  = verify_slot;
+    impl->verify_fz                    = verify_fz;
+    impl->pending_shm_name             = shm_name;
+    impl->pending_expected_slot_schema = expected_slot_schema;
+    impl->pending_expected_packing     = expected_packing;
+    impl->pending_consumer_uid         = consumer_uid;
+    impl->pending_consumer_name        = consumer_name;
+    std::unique_ptr<ShmQueue> queue(new ShmQueue(std::move(impl)));
 
-    // Build ShmQueue wrapping the owned DataBlock.
-    auto impl          = std::make_unique<ShmQueueImpl>();
-    impl->dbc          = std::move(dbc);
-    impl->item_sz      = item_size;
-    impl->fz_sz        = fz_size;
-    impl->chan_name     = channel_name;
-    impl->verify_slot  = verify_slot;
-    impl->verify_fz    = verify_fz;
-    return std::unique_ptr<ShmQueue>(new ShmQueue(std::move(impl)));
+    // ── Configured + Active: apply secret + attach.  On failure
+    // (segment not found, secret mismatch, schema mismatch) return
+    // nullptr — preserves legacy "create_reader returns nullptr on
+    // bad secret" semantics.
+    if (!queue->set_shm_secret(shared_secret))
+        return nullptr;
+    if (!queue->start())
+        return nullptr;
+    return queue;
+}
+
+// ============================================================================
+// set_shm_secret — HEP-CORE-0036 §6.7 Standby → Configured
+// ============================================================================
+
+bool ShmQueue::set_shm_secret(uint64_t secret) noexcept
+{
+    if (!pImpl) return false;
+    // §6.7 mutator table: refuse from Active (`shm_secret` is per-channel-
+    // lifetime; restart needed).
+    if (pImpl->dbc.get() != nullptr || pImpl->dbp.get() != nullptr)
+    {
+        LOGGER_WARN("[ShmQueue] set_shm_secret refused: queue is Active "
+                    "(`shm_secret` is per-channel-lifetime; HEP-CORE-0036 §6.7)");
+        return false;
+    }
+    pImpl->pending_shm_secret = secret;
+    pImpl->has_shm_secret = true;
+    return true;
+}
+
+// ============================================================================
+// start — HEP-CORE-0036 §6.7 Configured → Active
+// ============================================================================
+
+bool ShmQueue::start()
+{
+    if (!pImpl) return false;
+    // Already Active: idempotent no-op (HEP §6.7 mutator table).
+    if (pImpl->dbc.get() != nullptr || pImpl->dbp.get() != nullptr)
+        return true;
+    // Standby (no secret applied): refuse per §6.7 mutator table.
+    if (!pImpl->has_shm_secret)
+    {
+        LOGGER_ERROR("[ShmQueue] start refused: queue in Standby (no "
+                     "shm_secret applied; HEP-CORE-0036 §6.7)");
+        return false;
+    }
+
+    if (pImpl->mode_is_reader)
+    {
+        const char *uid  = pImpl->pending_consumer_uid.empty()
+                               ? nullptr : pImpl->pending_consumer_uid.c_str();
+        const char *cnam = pImpl->pending_consumer_name.empty()
+                               ? nullptr : pImpl->pending_consumer_name.c_str();
+        std::unique_ptr<DataBlockConsumer> dbc;
+        try
+        {
+            dbc = find_datablock_consumer_impl(
+                pImpl->pending_shm_name, pImpl->pending_shm_secret,
+                nullptr, nullptr, nullptr, uid, cnam);
+        }
+        catch (const std::exception &e)
+        {
+            LOGGER_ERROR("[ShmQueue] start: attachment failed for '{}': {}",
+                         pImpl->pending_shm_name, e.what());
+            return false;
+        }
+        if (!dbc) return false;  // segment missing or secret mismatch
+        // Recompute fz_sz from the actual attached segment.
+        pImpl->fz_sz = dbc->flexible_zone_span().size();
+        pImpl->dbc = std::move(dbc);
+        return true;
+    }
+
+    // Writer mode: create the SHM segment.
+    DataBlockConfig config;
+    config.logical_unit_size    = pImpl->item_sz;
+    config.flex_zone_size       = pImpl->fz_sz;
+    config.ring_buffer_capacity = pImpl->pending_ring_buffer_capacity;
+    config.physical_page_size   = pImpl->pending_page_size;
+    config.shared_secret        = pImpl->pending_shm_secret;
+    config.policy               = pImpl->pending_policy;
+    config.consumer_sync_policy = pImpl->pending_sync_policy;
+    config.checksum_policy      = pImpl->pending_checksum_policy;
+    config.hub_uid              = pImpl->pending_hub_uid;
+    config.hub_name             = pImpl->pending_hub_name;
+    config.producer_uid         = pImpl->pending_producer_uid;
+    config.producer_name        = pImpl->pending_producer_name;
+    auto dbp = create_datablock_producer_impl(
+        pImpl->chan_name, pImpl->pending_policy, config,
+        pImpl->pending_fz_schema_info,
+        pImpl->pending_slot_schema_info);
+    if (!dbp)
+    {
+        LOGGER_ERROR("[ShmQueue] start: DataBlock creation failed for '{}'",
+                     pImpl->chan_name);
+        return false;
+    }
+    pImpl->dbp = std::move(dbp);
+    return true;
+}
+
+// ============================================================================
+// stop — HEP-CORE-0036 §6.7 Active → terminal teardown
+// ============================================================================
+
+void ShmQueue::stop()
+{
+    if (!pImpl) return;
+    // Release outstanding handles before tearing down the DataBlock.
+    if (pImpl->read_handle && pImpl->dbc.get())
+    {
+        (void)pImpl->dbc.get()->release_consume_slot(*pImpl->read_handle);
+        pImpl->read_handle.reset();
+    }
+    if (pImpl->write_handle && pImpl->dbp.get())
+    {
+        (void)pImpl->dbp.get()->release_write_slot(*pImpl->write_handle);
+        pImpl->write_handle.reset();
+    }
+    pImpl->dbc.reset();
+    pImpl->dbp.reset();
+    // Per §6.7 "stop() is terminal": clear pending secret so we don't
+    // silently restart with stale artifacts.
+    pImpl->has_shm_secret = false;
+    pImpl->pending_shm_secret = 0;
+}
+
+// ============================================================================
+// apply_master_approval — HEP-CORE-0036 §6.7 polymorphic dispatch
+// ============================================================================
+
+bool ShmQueue::apply_master_approval(const nlohmann::json& artifacts) noexcept
+{
+    if (!pImpl) return false;
+    // Missing `shm_secret` is a no-op-returning-true: the role host may
+    // call this unconditionally and the legacy config-supplied secret
+    // path stays valid (queue is already Configured or Active).
+    if (!artifacts.contains("shm_secret"))
+        return true;
+    try
+    {
+        if (!artifacts.at("shm_secret").is_number_unsigned())
+        {
+            LOGGER_WARN("[ShmQueue::apply_master_approval] `shm_secret` "
+                        "is not an unsigned number — refusing per HEP-CORE-0036 §6.7");
+            return false;
+        }
+        const uint64_t secret = artifacts.at("shm_secret").get<uint64_t>();
+        return set_shm_secret(secret);
+    }
+    catch (const std::exception &e)
+    {
+        LOGGER_ERROR("[ShmQueue::apply_master_approval] exception "
+                     "parsing artifacts: {}", e.what());
+        return false;
+    }
 }
 
 // ============================================================================
@@ -301,9 +499,10 @@ bool ShmQueue::verify_flexzone_checksum()
 
 bool ShmQueue::is_running() const noexcept
 {
-    // Returns false on a moved-from (null-pImpl) instance.
-    // A live ShmQueue always has a valid DataBlock; the "running" state is
-    // implicit (no start() / stop() lifecycle, no background thread).
+    // HEP-CORE-0036 §6.7: returns true iff the queue is Active (a
+    // DataBlock is attached).  Standby and Configured both return
+    // false (dbc/dbp still null until start() runs).  Moved-from
+    // instances (null pImpl) likewise return false.
     return pImpl && (pImpl->dbc.get() != nullptr || pImpl->dbp.get() != nullptr);
 }
 

@@ -14,7 +14,17 @@
  * ShmQueue is NOT thread-safe; use from exactly one thread at a time.
  *
  * @par Lifecycle
- * start()/stop() are no-ops; the SHM objects are already attached.
+ * ShmQueue implements the HEP-CORE-0036 §6.7 Standby → Configured →
+ * Active state machine.  The Standby-mode factories build a queue
+ * object with deferred-attach metadata (no SHM segment touched);
+ * `set_shm_secret(secret)` transitions Standby → Configured;
+ * `start()` performs the actual SHM discovery (reader) or segment
+ * creation (writer), transitioning Configured → Active.  The
+ * existing `create_reader(name, secret, ...)` / `create_writer(...,
+ * shared_secret, ...)` overloads are convenience wrappers that drive
+ * all three transitions in one call — they return `nullptr` on any
+ * phase failure, preserving the legacy "factory returns nullptr on
+ * bad secret / schema mismatch / missing segment" contract.
  */
 #include "utils/hub_queue.hpp"
 #include "utils/data_block.hpp"
@@ -181,12 +191,62 @@ public:
      */
     std::string policy_info() const override;
 
-    // start()/stop() — no-op (no background thread; queue is always operational once
-    // constructed from a valid DataBlock ref).
+    // ── HEP-CORE-0036 §6.7 state machine ──────────────────────────────────
     //
-    // is_running() — overrides base to return false on a moved-from (null-pImpl) instance.
-    // A freshly constructed ShmQueue is always "running" (the underlying DataBlock is live);
-    // after a move, pImpl is null and is_running() correctly returns false.
+    // ShmQueue follows the same Standby → Configured → Active machine as
+    // ZmqQueue.  The Standby-mode factories (create_reader/create_writer
+    // when called with no secret) populate the queue object with schema
+    // metadata + name + role identity but defer the actual SHM
+    // discovery/create.  set_shm_secret(secret) transitions
+    // Standby → Configured.  start() does the actual
+    // find_datablock_consumer_impl / create_datablock_producer_impl call
+    // (Configured → Active).
+    //
+    // The existing overloads that take a secret are convenience wrappers
+    // that drive Standby → Configured → Active in one call — equivalent
+    // to constructing in Standby, calling set_shm_secret(secret), then
+    // calling start().  Returns nullptr if any phase fails (preserves
+    // legacy "create_reader returns nullptr on bad secret" semantics).
+
+    /**
+     * @brief Apply broker-supplied SHM secret (HEP-CORE-0036 §6.7
+     * Standby → Configured).  Returns true on success.  Refuses
+     * (returns false) from Active per §6.7 mutator table (`shm_secret`
+     * is per-channel-lifetime; restart needed).  Safe to call in
+     * Standby or to replace a previously-set secret in Configured.
+     */
+    bool set_shm_secret(uint64_t secret) noexcept;
+
+    /**
+     * @brief Configured → Active.  Reader: performs SHM discovery via
+     * find_datablock_consumer_impl.  Writer: performs SHM segment
+     * creation via create_datablock_producer_impl.  Returns true on
+     * success or if already Active (idempotent).  Returns false from
+     * Standby (no secret) or on attach failure (with queue state
+     * preserved per HEP §6.7 "either fully transitioned or fully
+     * refused").
+     */
+    bool start() override;
+
+    /**
+     * @brief HEP-CORE-0036 §6.7 polymorphic Standby → Configured mutator.
+     * Extracts `artifacts["shm_secret"]` (uint64) and calls
+     * `set_shm_secret(secret)`.  Missing field is a no-op returning true
+     * — the role host can call this unconditionally regardless of what
+     * the broker emitted; queue state is unchanged when no secret is
+     * present (e.g. legacy config-supplied secret already in place).
+     */
+    bool apply_master_approval(const nlohmann::json& artifacts) noexcept override;
+
+    /** @brief Stop — terminal teardown of any attached SHM resources. */
+    void stop() override;
+
+    /**
+     * @brief is_running() — returns true iff the queue is Active (an
+     * underlying DataBlock is attached).  Standby and Configured both
+     * return false; pre-attach metadata methods continue to return safe
+     * defaults per HEP §6.7 line 1977-1996 "nullptr is state-honest".
+     */
     bool is_running() const noexcept override;
 
     /** @brief ShmQueue is SHM-backed (both reader and writer sides). */
