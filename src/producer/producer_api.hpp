@@ -85,6 +85,20 @@ class ProducerAPI
     /// own band membership.  See RoleAPIBase::is_in_band.
     bool is_in_band(const std::string &channel) const;
 
+    /// O(1) inquiry helpers — engine-parity with Native (visitor
+    /// pattern) and Lua (band_member_contains / _count).  Pythonic
+    /// shape: returns bool / int; raises py::value_error on transport
+    /// failure instead of returning the C-API -1 sentinel.
+    bool band_member_contains(const std::string &channel,
+                              const std::string &role_uid);
+    int  band_member_count(const std::string &channel);
+
+    /// Allowed-peer inquiry helpers — engine-parity with Native +
+    /// Lua.  Served from the local push-cache; no broker round-trip.
+    bool allowed_peer_contains(const std::string &channel,
+                               const std::string &role_uid) const;
+    int  allowed_peer_count(const std::string &channel) const;
+
     py::object open_inbox(const std::string &target_uid);
     bool wait_for_role(const std::string &uid, int timeout_ms = 5000);
     void clear_inbox_cache();

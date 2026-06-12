@@ -41,30 +41,100 @@ py::object ProducerAPI::flexzone(std::optional<int> /*side*/) const
 
 py::object ProducerAPI::band_join(const std::string &channel)
 {
-    auto result = base_->band_join(channel);
+    // Use the shared fast-path walker — same converter the dispatch hot
+    // path uses; replaces the prior `json.loads(dump())` round-trip.
+    // Release GIL across the broker REQ (can block on slow round-trip).
+    std::optional<nlohmann::json> result;
+    {
+        py::gil_scoped_release release;
+        result = base_->band_join(channel);
+    }
     if (!result.has_value())
         return py::none();
-    return py::module_::import("json").attr("loads")(result->dump());
+    return scripting::detail::json_to_py(*result);
 }
 
 void ProducerAPI::band_broadcast(const std::string &channel, py::dict body)
 {
-    auto json_mod = py::module_::import("json");
-    std::string body_str = json_mod.attr("dumps")(body).cast<std::string>();
-    base_->band_broadcast(channel, nlohmann::json::parse(body_str));
+    // Convert body py::dict → nlohmann::json via shared walker (no
+    // json.dumps round-trip).  Release GIL across the broker send.
+    auto body_json = scripting::detail::py_to_json(body);
+    py::gil_scoped_release release;
+    base_->band_broadcast(channel, body_json);
 }
 
 py::object ProducerAPI::band_members(const std::string &channel)
 {
-    auto result = base_->band_members(channel);
+    std::optional<nlohmann::json> result;
+    {
+        py::gil_scoped_release release;
+        result = base_->band_members(channel);
+    }
     if (!result.has_value())
         return py::none();
-    return py::module_::import("json").attr("loads")(result->dump());
+    return scripting::detail::json_to_py(*result);
 }
 
 bool ProducerAPI::is_in_band(const std::string &channel) const
 {
     return base_->is_in_band(channel);
+}
+
+// Engine-parity inquiry helpers (Native + Lua already expose these via
+// ctx->band_member_contains / ctx->band_member_count / ctx->allowed_*).
+// Pythonic shape: return bool / int rather than int tristate.  Raise on
+// transport failure rather than returning -1 sentinel.
+
+bool ProducerAPI::band_member_contains(const std::string &channel,
+                                        const std::string &role_uid)
+{
+    std::optional<nlohmann::json> result;
+    {
+        py::gil_scoped_release release;
+        result = base_->band_members(channel);
+    }
+    if (!result.has_value())
+        throw py::value_error("band_members transport failure for channel '" +
+                              channel + "'");
+    if (!result->is_array())
+        return false;
+    for (const auto &m : *result)
+        if (m.value("role_uid", std::string{}) == role_uid)
+            return true;
+    return false;
+}
+
+int ProducerAPI::band_member_count(const std::string &channel)
+{
+    std::optional<nlohmann::json> result;
+    {
+        py::gil_scoped_release release;
+        result = base_->band_members(channel);
+    }
+    if (!result.has_value())
+        throw py::value_error("band_members transport failure for channel '" +
+                              channel + "'");
+    if (!result->is_array())
+        return 0;
+    int count = 0;
+    for (const auto &m : *result)
+        if (!m.value("role_uid", std::string{}).empty())
+            ++count;
+    return count;
+}
+
+bool ProducerAPI::allowed_peer_contains(const std::string &channel,
+                                         const std::string &role_uid) const
+{
+    for (const auto &p : base_->allowed_peers(channel))
+        if (p.role_uid == role_uid)
+            return true;
+    return false;
+}
+
+int ProducerAPI::allowed_peer_count(const std::string &channel) const
+{
+    return static_cast<int>(base_->allowed_peers(channel).size());
 }
 
 py::dict ProducerAPI::metrics() const
@@ -272,6 +342,15 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_producer, m) // NOLINT
         .def("band_broadcast",    &producer::ProducerAPI::band_broadcast,
              py::arg("channel"), py::arg("body"))
         .def("band_members",      &producer::ProducerAPI::band_members, py::arg("channel"))
+        .def("band_member_contains", &producer::ProducerAPI::band_member_contains,
+             py::arg("channel"), py::arg("role_uid"),
+             "Engine-parity inquiry — true iff role_uid is in the band's "
+             "member list.  Equivalent to `role_uid in api.band_members(ch)` "
+             "but avoids materialising the full list in Python.")
+        .def("band_member_count", &producer::ProducerAPI::band_member_count,
+             py::arg("channel"),
+             "Engine-parity inquiry — band member count.  Raises "
+             "ValueError on broker transport failure.")
         .def("is_in_band",        &producer::ProducerAPI::is_in_band, py::arg("channel"))
         .def("script_error_count", &producer::ProducerAPI::script_error_count)
         .def("out_slots_written",  &producer::ProducerAPI::out_slots_written)
@@ -294,6 +373,15 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_producer, m) // NOLINT
              "{'role_uid': str, 'pubkey': str} dicts.  Empty when no "
              "GET_CHANNEL_AUTH_REQ has completed.  Engine-parity with "
              "Lua's api.allowed_peers; read-only.")
+        .def("allowed_peer_contains", &producer::ProducerAPI::allowed_peer_contains,
+             py::arg("channel"), py::arg("role_uid"),
+             "Engine-parity inquiry — true iff role_uid is in the "
+             "channel's authorized-peer list.  O(N) in the local cache; "
+             "no broker round-trip.")
+        .def("allowed_peer_count", &producer::ProducerAPI::allowed_peer_count,
+             py::arg("channel"),
+             "Engine-parity inquiry — authorized-peer count for the "
+             "channel.  Served from local cache; no broker round-trip.")
         .def("is_channel_ready",   &producer::ProducerAPI::is_channel_ready,
              py::arg("channel"),
              "HEP-CORE-0036 §6.7 (#190) — true iff the queue serving the "

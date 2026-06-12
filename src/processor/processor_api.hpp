@@ -62,6 +62,14 @@ class ProcessorAPI
     py::object band_members(const std::string &channel);
     bool is_in_band(const std::string &channel) const;
 
+    /// Inquiry helpers — engine-parity with Native + Lua.
+    bool band_member_contains(const std::string &channel,
+                              const std::string &role_uid);
+    int  band_member_count(const std::string &channel);
+    bool allowed_peer_contains(const std::string &channel,
+                               const std::string &role_uid) const;
+    int  allowed_peer_count(const std::string &channel) const;
+
     // Inbox
     py::object open_inbox(const std::string &target_uid);
     bool wait_for_role(const std::string &uid, int timeout_ms = 5000);
