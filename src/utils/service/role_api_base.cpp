@@ -393,48 +393,49 @@ bool RoleAPIBase::build_rx_queue(const hub::RxQueueOptions &opts)
     }
     else if (opts.data_transport == "zmq")
     {
-        // HEP-CORE-0017 §3.3 + HEP-CORE-0036 §6.4: `producer_peers` is
-        // the canonical source for the consumer's connect target +
-        // CURVE serverkey, populated from `CONSUMER_REG_ACK.producers[]`
-        // (A3-broker, task #103).  Fan-in over N producers + per-peer
-        // CURVE handshake requires Pattern A vs Pattern B selection
-        // (HEP-CORE-0017 §3.3) and is future work; the current
-        // single-socket connect accepts the first peer's endpoint +
-        // pubkey.
+        // HEP-CORE-0017 §3.3 + HEP-CORE-0036 §6.4 + §6.7: `producer_peers`
+        // is the canonical source for the consumer's connect target +
+        // CURVE serverkey, populated from `CONSUMER_REG_ACK.producers[]`.
         //
-        // HEP-CORE-0035 §2 (CURVE unconditional): a non-empty
-        // `producer_peers.front().pubkey_z85` is required.  Empty
-        // means the broker A3-emission hasn't run yet — refuse to
-        // construct the queue so the misconfiguration surfaces here
-        // instead of as a stuck CURVE handshake at runtime.
-        if (opts.producer_peers.empty()
-            || opts.producer_peers.front().endpoint.empty()
-            || opts.producer_peers.front().pubkey_z85.empty())
-        {
-            LOGGER_ERROR(
-                "[{}] data_transport='zmq' requires producer_peers[0] "
-                "with non-empty endpoint + pubkey_z85 (HEP-CORE-0035 §2 "
-                "CURVE unconditional + HEP-CORE-0036 §6.4 broker A3 "
-                "emission).  Got producer_peers.size={}, endpoint='{}', "
-                "pubkey_z85.size={}.",
-                pImpl->role_tag, opts.producer_peers.size(),
-                opts.producer_peers.empty()
-                    ? "" : opts.producer_peers.front().endpoint,
-                opts.producer_peers.empty()
-                    ? 0u : opts.producer_peers.front().pubkey_z85.size());
-            return false;
-        }
-        const std::string &rx_endpoint = opts.producer_peers.front().endpoint;
+        // Per HEP-0036 §6.7 (the queue state machine), build_rx_queue
+        // returns a ZmqQueue in Standby (empty producer_peers) OR
+        // Configured (peers populated at construction time — test paths
+        // and the legacy pre-AUTH-1 single-step shape).  The
+        // Standby → Configured transition happens later via
+        // `apply_consumer_reg_ack(ack)` on the RoleAPIBase, which
+        // dispatches through the polymorphic
+        // `QueueReader::apply_master_approval`.  Configured → Active is
+        // driven by the same call, via `start()`.
+        //
+        // No early validation rejection here: an empty producer_peers
+        // is the EXPECTED state for the AUTH-1 uniform role-host
+        // pattern, where the broker delivers peers in CONSUMER_REG_ACK
+        // AFTER queue construction.  The CURVE-unconditional invariant
+        // (HEP-CORE-0035 §2) is enforced inside ZmqQueue::start() via
+        // `is_configured()` — start refuses if no artifacts have
+        // arrived, so a missing master delivery surfaces there, not
+        // at queue construction.
         std::string inst_id = opts.instance_id.empty()
                                   ? (pImpl->role_tag + ":" + pImpl->uid + ":rx")
                                   : opts.instance_id;
-        // Expected schema hash auto-computed from specs (single source
-        // of truth — no redundant expected_schema_hash field in opts).
         const auto expected_hash = hub::compute_schema_hash(opts.slot_spec,
                                                              opts.fz_spec);
         namespace sec = pylabhub::utils::security;
+
+        // Standby vs Configured at construction: when producer_peers
+        // is empty, pull_from accepts an empty endpoint + empty
+        // server_pubkey and the queue enters Standby.  When peers are
+        // pre-populated (test-only / legacy paths), the queue enters
+        // Configured immediately and is eligible for start() now.
+        const bool have_peer =
+            !opts.producer_peers.empty()
+            && !opts.producer_peers.front().endpoint.empty()
+            && !opts.producer_peers.front().pubkey_z85.empty();
+        const std::string rx_endpoint =
+            have_peer ? opts.producer_peers.front().endpoint : std::string{};
         const sec::Z85PublicKey server_pubkey{
-            opts.producer_peers.front().pubkey_z85};
+            have_peer ? opts.producer_peers.front().pubkey_z85
+                      : std::string{}};
         reader = hub::ZmqQueue::pull_from(
             rx_endpoint,
             server_pubkey,
@@ -447,7 +448,11 @@ bool RoleAPIBase::build_rx_queue(const hub::RxQueueOptions &opts)
             /*instance_id=*/std::move(inst_id));
         if (!reader)
             return false;
-        if (!reader->start())
+        // Pre-populated peers: start immediately (legacy path
+        // preservation).  Empty peers: queue stays Standby; the
+        // role-host MUST call `apply_consumer_reg_ack(ack)` later to
+        // drive Standby → Configured → Active.
+        if (have_peer && !reader->start())
         {
             LOGGER_ERROR("[{}] ZMQ PULL start() failed for '{}'",
                          pImpl->role_tag, rx_endpoint);
@@ -473,6 +478,38 @@ bool RoleAPIBase::start_tx_queue()
 bool RoleAPIBase::start_rx_queue()
 {
     return pImpl->rx_queue && pImpl->rx_queue->start();
+}
+
+bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
+{
+    if (!pImpl->rx_queue)
+    {
+        LOGGER_ERROR("[{}] apply_consumer_reg_ack: rx_queue not wired",
+                     pImpl->role_tag);
+        return false;
+    }
+    // Standby → Configured.  Polymorphic dispatch per HEP-CORE-0036 §6.7:
+    // ZmqQueue extracts ack["producers"] and calls set_producer_peers;
+    // ShmQueue is a no-op (config-supplied secret already applied at
+    // construction; future AUTH-4 broker-supplied secret will route
+    // through here when the broker emits ack["shm_secret"]).
+    if (!pImpl->rx_queue->apply_master_approval(ack))
+    {
+        LOGGER_ERROR("[{}] apply_consumer_reg_ack: apply_master_approval "
+                     "refused (HEP-CORE-0036 §6.7 'fully refused' — "
+                     "malformed broker delivery)", pImpl->role_tag);
+        return false;
+    }
+    // Configured → Active.  For an already-Active queue (legacy path
+    // or SHM-with-config-secret), start() is idempotent.
+    if (!pImpl->rx_queue->start())
+    {
+        LOGGER_ERROR("[{}] apply_consumer_reg_ack: rx_queue start() "
+                     "failed (HEP-CORE-0036 §6.7 Configured → Active)",
+                     pImpl->role_tag);
+        return false;
+    }
+    return true;
 }
 
 void RoleAPIBase::reset_tx_queue_metrics()

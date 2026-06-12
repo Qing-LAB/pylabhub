@@ -423,6 +423,16 @@ void ProcessorRoleHost::worker_main_()
         }
         else
         {
+            // HEP-CORE-0036 §6.7 — drive Rx queue Standby → Active
+            // from CONSUMER_REG_ACK (carries producers[]).  Same
+            // uniform pattern as consumer_role_host.
+            if (!api_ref.apply_consumer_reg_ack(*cons_result))
+            {
+                LOGGER_ERROR("[proc] apply_consumer_reg_ack failed — "
+                             "Rx queue did not reach Active state");
+                promise_ref.set_value(false);
+                return;
+            }
             auto m = scripting::RoleAPIBase::extract_hub_heartbeat_max(*cons_result);
             if (m.has_value()) hub_max = m;  // consumer's wins (legacy parity)
         }

@@ -223,6 +223,25 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     [[nodiscard]] bool start_tx_queue();
     [[nodiscard]] bool start_rx_queue();
 
+    /// HEP-CORE-0036 §6.7 — apply the broker's `CONSUMER_REG_ACK`
+    /// payload to the Rx queue, driving Standby → Configured → Active.
+    ///
+    /// Uniform across transports: dispatches through the polymorphic
+    /// `QueueReader::apply_master_approval(ack)` which each concrete
+    /// queue resolves to its transport-specific mutator (ZMQ extracts
+    /// `producers[]`; SHM no-op when the secret was config-supplied).
+    /// Then calls `start()` to perform the actual connect / attach
+    /// (Configured → Active).  For Rx queues that are already Active
+    /// (legacy single-step build + start), both calls are no-ops.
+    ///
+    /// Role hosts call this immediately after `register_consumer`
+    /// returns success, before installing the heartbeat.  Returns
+    /// false if the queue is not wired, the master-approval JSON is
+    /// malformed (HEP §6.7 "fully refused"), or start() fails — all
+    /// of which are fatal: the role host should treat any false as a
+    /// startup-failed condition.
+    [[nodiscard]] bool apply_consumer_reg_ack(const nlohmann::json &ack);
+
     /// Reset metrics counters on the Tx/Rx queues. No-op if not wired.
     void reset_tx_queue_metrics();
     void reset_rx_queue_metrics();
