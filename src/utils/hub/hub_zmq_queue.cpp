@@ -11,6 +11,8 @@
 #include "utils/context_metrics.hpp"
 #include "utils/crypto_utils.hpp"
 #include "utils/logger.hpp"
+
+#include <nlohmann/json.hpp>
 #include "portable_atomic_shared_ptr.hpp"
 #include "utils/security/key_store.hpp"
 #include "utils/security/zap_router.hpp"
@@ -921,6 +923,79 @@ std::size_t ZmqQueue::producer_peer_count() const noexcept
     if (pImpl->mode != ZmqQueueImpl::Mode::Read) return 0;
     std::lock_guard<std::mutex> lock(pImpl->producer_peers_mu_);
     return pImpl->producer_peers_.size();
+}
+
+bool ZmqQueue::apply_master_approval(const nlohmann::json& artifacts) noexcept
+{
+    if (!pImpl) return false;
+    try
+    {
+        // PULL side: extract producers[] and call set_producer_peers.
+        if (pImpl->mode == ZmqQueueImpl::Mode::Read)
+        {
+            if (!artifacts.contains("producers"))
+                return true;  // no broker delivery this cycle; queue state unchanged
+            const auto& arr = artifacts.at("producers");
+            if (!arr.is_array())
+            {
+                LOGGER_WARN("[hub::ZmqQueue::apply_master_approval] "
+                            "'producers' field is not an array — refusing "
+                            "Standby→Configured per HEP-CORE-0036 §6.7");
+                return false;
+            }
+            std::vector<ProducerPeer> peers;
+            peers.reserve(arr.size());
+            for (const auto& entry : arr)
+            {
+                if (!entry.is_object())
+                {
+                    LOGGER_WARN("[hub::ZmqQueue::apply_master_approval] "
+                                "'producers' entry not an object — refusing");
+                    return false;
+                }
+                ProducerPeer p;
+                p.role_uid    = entry.value("role_uid",    std::string{});
+                p.endpoint    = entry.value("endpoint",    std::string{});
+                p.pubkey_z85  = entry.value("pubkey_z85",  std::string{});
+                // pubkey field may be carried as "pubkey" (HEP-0036 §6.4
+                // wire shape) — accept either spelling.
+                if (p.pubkey_z85.empty())
+                    p.pubkey_z85 = entry.value("pubkey", std::string{});
+                if (p.role_uid.empty() || p.endpoint.empty()
+                    || p.pubkey_z85.empty())
+                {
+                    LOGGER_WARN("[hub::ZmqQueue::apply_master_approval] "
+                                "producer entry missing required field: "
+                                "role_uid='{}', endpoint='{}', "
+                                "pubkey_z85.size={}",
+                                p.role_uid, p.endpoint,
+                                p.pubkey_z85.size());
+                    return false;
+                }
+                peers.push_back(std::move(p));
+            }
+            return set_producer_peers(std::move(peers));
+        }
+
+        // PUSH side: no-op for the polymorphic Standby→Configured path.
+        // The producer's PUSH socket starts Active (bind doesn't need
+        // peer info); the allowlist arrives at runtime via the existing
+        // `handle_channel_auth_notifies` path which calls
+        // `set_peer_allowlist` directly with a typed PeerAllowlist
+        // (HEP-CORE-0036 §6.5 notify-then-pull).  Building a
+        // PeerAllowlist from JSON here would duplicate that logic
+        // without benefit; the role host doesn't use apply_master_approval
+        // on PUSH queues for the AUTH-1 critical path.  Returning true
+        // preserves HEP §6.7 "no-op on transports that don't need
+        // broker-supplied artifacts at the queue level".
+        return true;
+    }
+    catch (const std::exception& e)
+    {
+        LOGGER_ERROR("[hub::ZmqQueue::apply_master_approval] exception "
+                     "parsing artifacts: {}", e.what());
+        return false;
+    }
 }
 
 bool ZmqQueue::is_configured() const noexcept

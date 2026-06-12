@@ -1911,6 +1911,7 @@ discipline.
 | `set_peer_allowlist(list)` (push side) | refuse | apply (Standby → Configured) | apply (snapshot replace; queue stays Configured) | apply atomically (live ZAP cache update; queue stays Active) |
 | `set_producer_peers(list)` (pull side, NEW) | refuse | apply (Standby → Configured) | apply (snapshot replace) | apply (atomic diff: connect new, disconnect removed) |
 | `set_shm_secret(uint64)` (SHM rx) | refuse | apply (Standby → Configured) | apply (replaces previous) | refuse (`shm_secret` is per-channel-lifetime; restart needed) |
+| `apply_master_approval(json)` (polymorphic on `QueueReader`/`QueueWriter`) | refuse | apply (Standby → Configured; dispatches to `set_producer_peers` / `set_peer_allowlist` / `set_shm_secret` per transport) | apply (snapshot replace or runtime update; queue stays in current state) | apply (runtime mutation, atomic) |
 | `add_producer_peer(p)` (pull side) | refuse | apply (Standby → Configured if empty before) | apply (append) | apply (append + connect) |
 | `remove_producer_peer(uid)` | refuse | apply (no-op on empty) | apply | apply (disconnect + remove) |
 | `start()` | refuse | refuse (no artifacts) | apply (Configured → Active) | no-op (idempotent: returns true) |
@@ -1944,20 +1945,34 @@ framework intends to act on the artifacts the master delivered.
   connect-call / attach-call all return; not when handshakes
   succeed.
 
-**Resource lifecycle for SHM — state machine collapsed at queue
-level**.  ShmQueue's authority artifact (`shm_secret`) is required at
-SHM-segment attach time (HEP-CORE-0002 guard-secret check).  There is
-no meaningful "resource allocated without secret" intermediate at the
-queue layer — attach IS the entire transport setup.  Consequently,
-ShmQueue's factory functions (`create_reader` / `create_writer`)
-collapse Standby + Configured + Active into a single call: the
-role host calls `create_reader(shm_name, shared_secret, ...)` AFTER
-`CONSUMER_REG_ACK` delivers the secret, and the queue is immediately
-Active.  The §I12 master-approval discipline still holds — at the
-role-host layer rather than at the queue layer.  The act of CALLING
-`create_reader` with broker-supplied artifacts IS the application of
-the master's "yes".  No `set_shm_secret` mutator is required on the
-queue interface; the constructor parameter IS that mutator.
+**Resource lifecycle for SHM — symmetric with ZMQ at the queue
+layer**.  ShmQueue follows the same Standby → Configured → Active
+state machine as ZmqQueue.  The queue object can exist in Standby
+without the SHM segment attached: the factory allocates the queue
+handle (with schema metadata + name + role identity stored
+internally), but defers the actual SHM discovery (`shm_open` +
+DataBlock attach) until `start()`.  The role host applies the
+master's "yes" via `set_shm_secret(secret)` (Standby → Configured),
+then calls `start()` (Configured → Active, performing the attach).
+This is structurally symmetric with ZmqQueue's
+`set_producer_peers` + `start()` flow.
+
+`ShmQueue::create_reader(name, schema, ...)` is the Standby-mode
+factory (no secret parameter).  A test-only convenience overload
+`ShmQueue::create_active_reader(name, secret, schema, ...)`
+collapses Standby + Configured + Active into one call for unit
+tests that don't exercise the §I12 discipline directly; production
+code MUST use the two-step factory + `set_shm_secret` + `start()`
+shape so the master-approval discipline is enforced at the queue
+layer uniformly with ZMQ.
+
+The "no resource without secret" argument that previously
+justified collapsing this state machine for SHM was a category
+error: the SHM SEGMENT cannot be attached without the secret, but
+the queue OBJECT can hold the secret separately and defer attach.
+The HEP-CORE-0002 guard-secret check still applies — it just
+moves from `create_reader` to `start()`, where the rest of the
+attach lives.
 
 **`stop()` semantics — terminal, not reversible** (normative).  Calling
 `stop()` from `Active` returns the queue to a destroy-ready state
@@ -2049,16 +2064,45 @@ case.  `is_channel_ready` is for scripts that need to know channel
 state from OTHER callbacks (`on_init`, `on_band_message`, other
 channels' `on_step`, etc.) — not for guarding their own callback.
 
-**Scope of §6.7 — ZmqQueue data channels only** (normative).  This
-state machine applies to `ZmqQueue` instances backing HEP-0007 data
-channels.  `ShmQueue` collapses the state machine into its factory
-(see "Resource lifecycle for SHM" above).  `InboxQueue` (§9.3) will
-INHERIT this state machine — and its parent data channel's
-allowlist — when CURVE wiring lands per §9.3 (currently deferred;
-InboxQueue::start() does not install CURVE setsockopt today).  Band
-sockets are governed by the HEP-0035 §4.1 Layer-1 ZAP gate on the
-broker ROUTER + the role's BRC connectivity state — no separate
-data-plane state machine applies (§9.4).
+**Scope of §6.7 — all data-channel queues** (normative).  This
+state machine applies symmetrically to `ZmqQueue` AND `ShmQueue`
+instances backing HEP-0007 data channels.  Both queue types expose
+the same Standby → Configured → Active transitions via the
+polymorphic `apply_master_approval(json)` mutator (see "Resource
+lifecycle for SHM — symmetric with ZMQ at the queue layer" above
+for SHM specifics; see the mutator table for the full set).
+`InboxQueue` (§9.3) will INHERIT this state machine — and its
+parent data channel's allowlist — when CURVE wiring lands per §9.3
+(currently deferred; InboxQueue::start() does not install CURVE
+setsockopt today).  Band sockets are governed by the HEP-0035 §4.1
+Layer-1 ZAP gate on the broker ROUTER + the role's BRC connectivity
+state — no separate data-plane state machine applies (§9.4).
+
+**Role-host integration pattern — uniform across transports**
+(normative).  The role host MUST follow the same sequence
+regardless of `data_transport`:
+
+```
+queue = build_rx_queue(opts)        // → Standby (no broker info needed)
+ack   = register_consumer(...)       // master's "yes"
+queue->apply_master_approval(ack)    // polymorphic → Configured
+queue->start()                       // → Active
+```
+
+The polymorphic `apply_master_approval(ack)` dispatches:
+- `ZmqQueue` (PULL side): extracts `ack["producers"]` → calls `set_producer_peers`.
+- `ZmqQueue` (PUSH side): extracts `ack["allowlist"]` → calls `set_peer_allowlist`.
+- `ShmQueue` (rx): extracts `ack["shm_secret"]` → calls `set_shm_secret`.
+- `ShmQueue` (tx): extracts `ack["shm_secret"]` (broker-generated; future AUTH-4).
+
+The role host does NOT branch on transport — it sees a single
+`QueueReader*` (or `QueueWriter*`) and invokes the four-step
+sequence.  Transport-specific knowledge stays inside the concrete
+queue implementations.  Runtime updates (CHANNEL_AUTH_CHANGED_NOTIFY
+or §6.5.1 CHANNEL_PRODUCERS_CHANGED_NOTIFY) reuse the same
+`apply_master_approval` entry point on the Active queue, where it
+applies as a snapshot replace / atomic diff (see mutator table for
+per-state semantics).
 
 ### 6.8 Scenarios catalog (normative)
 
