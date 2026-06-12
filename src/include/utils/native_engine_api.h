@@ -748,6 +748,17 @@ typedef struct PlhAbiInfo
 #include <utility>
 #include <vector>
 
+// std::format landed in C++20 but compiler support lagged (gcc 13+, clang
+// 17+).  Feature-detect so older C++20 toolchains continue to build the
+// rest of the wrapper.  Plugin authors on pre-format compilers can still
+// call ctx.log(level, fmt::format(...).c_str()) explicitly.
+#if defined(__cpp_lib_format) && __cpp_lib_format >= 201907L
+#include <format>
+#define PLH_HAS_STD_FORMAT 1
+#else
+#define PLH_HAS_STD_FORMAT 0
+#endif
+
 // Compile-time layout verification for cross-compiler interop.
 static_assert(std::is_standard_layout_v<PlhNativeContext>,
               "PlhNativeContext must be standard-layout for C/C++ interop");
@@ -971,6 +982,37 @@ class Context
         buf[msg.size()] = '\0';
         c_->log(c_, static_cast<int>(level), buf);
     }
+
+#if PLH_HAS_STD_FORMAT
+    /// std::format overload — type-safe inline formatting.  Available
+    /// when the toolchain ships `<format>` (gcc 13+, clang 17+, MSVC
+    /// 19.29+).  Pre-format C++20 toolchains skip the overload; plugins
+    /// must explicitly pre-format and pass `std::string{...}.c_str()`.
+    ///
+    /// Allocates a `std::string` (vformat_to a string) — log_string_view
+    /// path is preferred when no formatting is needed.  No silent
+    /// truncation: messages of any length route through.
+    template <typename... Args>
+    void log(LogLevel level,
+             std::format_string<Args...> fmt,
+             Args &&...args) const noexcept
+    {
+        if (!c_ || !c_->log) return;
+        try
+        {
+            const std::string msg =
+                std::vformat(fmt.get(), std::make_format_args(args...));
+            c_->log(c_, static_cast<int>(level), msg.c_str());
+        }
+        catch (...)
+        {
+            // std::format throws on argument count/type mismatch only at
+            // runtime via std::format_error — should not happen with
+            // format_string<Args...>'s compile-time check, but
+            // defensively swallow to honour noexcept.
+        }
+    }
+#endif
 
     // ── Custom metrics ──────────────────────────────────────────────
     void report_metric(const char *key, double value) const noexcept

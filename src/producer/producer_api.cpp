@@ -283,6 +283,9 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_producer, m) // NOLINT
     namespace producer = pylabhub::producer;
     namespace scripting = pylabhub::scripting;
 
+    // Named string constants for stop_reason() comparisons.
+    scripting::register_stop_reason_constants(m);
+
     // Direction objects — required for invoke_produce(tx, msgs, api).
     py::class_<scripting::PyTxChannel>(m, "TxChannel")
         .def_readwrite("slot", &scripting::PyTxChannel::slot);
