@@ -261,6 +261,8 @@ void ProcessorAPI::clear_inbox_cache()
 
 PYBIND11_EMBEDDED_MODULE(pylabhub_processor, m) // NOLINT
 {
+    pylabhub::scripting::register_stop_reason_constants(m);
+
     using namespace pylabhub::processor; // NOLINT
     namespace scripting = pylabhub::scripting;
 

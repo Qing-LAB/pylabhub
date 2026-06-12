@@ -35,6 +35,38 @@ namespace py = pybind11;
 namespace pylabhub::scripting
 {
 
+// ── StopReason named-constant helper ─────────────────────────────────────────
+
+/// Register `m.StopReason` — a class whose static attributes are the string
+/// values returned by `api.stop_reason()`.  Plugins can write
+/// `api.stop_reason() == module.StopReason.PeerDead` for typed comparisons
+/// with autocompletion + linter visibility, instead of stringly-typed
+/// `== "peer_dead"`.  Matches the C++ `plh::StopReason` enum and the
+/// C ABI `PLH_STOP_REASON_*` macros (HEP-CORE-0028 §4.1).
+///
+/// Strings are kept in sync with `RoleHostCore::stop_reason_string()`
+/// (role_host_core.hpp:495).  Any change there MUST update this list.
+inline void register_stop_reason_constants(py::module_ &m)
+{
+    struct StopReasonNS {};
+    py::class_<StopReasonNS>(m, "StopReason",
+        "String constants matching values returned by api.stop_reason().\n"
+        "Use `api.stop_reason() == module.StopReason.PeerDead` for "
+        "linter-friendly comparisons (avoids hard-coding strings).")
+        .def_property_readonly_static("Normal",
+            [](py::object) -> py::str { return py::str("normal"); })
+        .def_property_readonly_static("PeerDead",
+            [](py::object) -> py::str { return py::str("peer_dead"); })
+        .def_property_readonly_static("HubDead",
+            [](py::object) -> py::str { return py::str("hub_dead"); })
+        .def_property_readonly_static("CriticalError",
+            [](py::object) -> py::str { return py::str("critical_error"); })
+        .def_property_readonly_static("ChannelClosed",
+            [](py::object) -> py::str { return py::str("channel_closed"); })
+        .def_property_readonly_static("ScriptError",
+            [](py::object) -> py::str { return py::str("script_error"); });
+}
+
 // ── Python callable check ────────────────────────────────────────────────────
 
 inline bool is_callable(const py::object &obj)

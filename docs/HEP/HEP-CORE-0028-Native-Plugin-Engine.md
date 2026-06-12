@@ -969,6 +969,11 @@ via their C++ public surface (HEP-CORE-0033 §6).
 > spinlock_*, queue_*, etc.), so the `hub_` prefix disambiguates
 > at the C ABI surface.
 
+> **Sync discipline.**  Adding a new hub-side method requires
+> updating all three engines + Python `.pyi` stubs in the same
+> commit — see HEP-CORE-0011 "Cross-Engine Binding Discipline +
+> Python Type Stubs" for the matrix and policy.
+
 ---
 
 ## 5. C++ Convenience Layer (the natural choice — §2.4 Tier 2)

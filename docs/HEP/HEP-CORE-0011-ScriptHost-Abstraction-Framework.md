@@ -2113,6 +2113,75 @@ use the native `py::dict` directly.
 
 ---
 
+## Cross-Engine Binding Discipline + Python Type Stubs
+
+The framework exposes one logical API surface across three engines —
+Python (pybind11), Lua (push_closure), and Native (C ABI fn ptr).
+When the role-side or hub-side surface changes, **all three engines
+plus the Python type stubs must update in the same commit**.  This is
+the single most-cited source of cross-engine drift in past audits
+(#190 Stage 1C found Native lagging Lua/Python on `is_channel_ready`;
+#194 found 8 missing items on Native's hub-side wire).
+
+### Sync Matrix
+
+| Engine | Source of truth | Update site for one new API method |
+|---|---|---|
+| **Python** (role) | `src/scripting/json_py_helpers.hpp` (converters) | `src/producer/producer_api.cpp` + matching .hpp + module `.def` block |
+| **Python** (hub) | — | `src/scripting/hub_api_python.cpp` `.def` block |
+| **Lua** (role) | `src/scripting/lua_engine.cpp` setup_api section | Add `push_closure("<name>", lua_api_<name>)` + impl |
+| **Lua** (hub) | `src/scripting/lua_engine.cpp` hub_api section | Add `push_closure("<name>", lua_api_hub_<name>)` + impl |
+| **Native** (role) | `src/include/utils/native_engine_api.h` | Add fn ptr to `PlhNativeContext` + bump `PLH_NATIVE_API_VERSION` + impl in `src/utils/service/native_engine.cpp` |
+| **Native** (hub) | Same file, hub_* fn ptrs (§4.9 in HEP-CORE-0028) | Add hub_* fn ptr + bump version + `ctx_hub_*` impl + `wire_hub()` assignment |
+| **Python .pyi stubs** | `share/scripts/python/stubs/<module>-stubs/__init__.pyi` | Add method signature with type hints |
+
+Lua + Python signatures should map naturally between scripting
+languages.  Native is the one that requires the most discipline
+(C ABI bump + matching C++ wrapper + struct layout static_assert).
+
+### Python Type Stub Policy
+
+The four embedded modules — `pylabhub_producer`, `pylabhub_consumer`,
+`pylabhub_processor`, `pylabhub_hub` — are
+`PYBIND11_EMBEDDED_MODULE`.  Their type info is hand-authored as PEP
+561 stub packages because:
+
+- Embedded modules can't be introspected outside the running role/hub
+  binary, so `pybind11-stubgen` is awkward (would need to link the
+  whole framework just to extract symbols).
+- Hand-authored stubs are small (~200 LOC per role module) and the
+  API surface changes infrequently relative to binding implementation
+  details.
+
+**Location.** Stubs live at:
+
+    share/scripts/python/stubs/
+        ├── README.md
+        ├── pylabhub_producer-stubs/{__init__.pyi, py.typed}
+        ├── pylabhub_consumer-stubs/{__init__.pyi, py.typed}
+        ├── pylabhub_processor-stubs/{__init__.pyi, py.typed}
+        └── pylabhub_hub-stubs/{__init__.pyi, py.typed}
+
+`stage_share` (top-level CMakeLists.txt) copies the entire `share/`
+tree into the install prefix automatically — no separate install
+rule needed.  Plugin authors point their type checker at
+`<install>/share/scripts/python/stubs/` (instructions in the
+co-located README).
+
+**Sync rule (BLOCKING).**  Adding or modifying a `.def` in any role
+or hub Python binding **must** update the matching `__init__.pyi` in
+the same commit.  PRs that drift trigger silent loss of IDE
+autocomplete + mypy/pyright false negatives in user code — the worst
+kind of DX regression.  Reviewers MUST verify the .pyi delta when
+reviewing pybind11 binding changes.
+
+**Validation.**  A future task (#87 — three-engine doc parity) can
+add a CI smoke test that imports every method named in the .pyi
+against the live pybind11 module and asserts presence; for now,
+maintenance is by review discipline.
+
+---
+
 ## Implementation Status
 
 | # | Component | Status | Date |
