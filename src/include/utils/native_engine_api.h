@@ -6,8 +6,15 @@
  * All exported symbols use C linkage for ABI stability across compilers.
  *
  * The native engine receives a PlhNativeContext from the framework at init time.
- * All framework services (logging, metrics, shutdown) are accessed through
- * function pointers on the context — no host symbol resolution needed.
+ * All framework services (logging, metrics, shutdown, hub control) are accessed
+ * through function pointers on the context — no host symbol resolution needed.
+ * The same plugin can run on EITHER side of the wire: role-side (default,
+ * receives a `RoleAPIBase`-backed ctx) or hub-side (receives a `HubAPI`-backed
+ * ctx with the 16 `hub_*` fn ptrs wired through).  See `is_hub()` predicate
+ * in the C++ wrapper and §4.9 in HEP-CORE-0028.
+ *
+ * Current ABI version: see `PLH_NATIVE_API_VERSION` below.  v7 (2026-06-11)
+ * is the latest; v3..v6 history is in the version log.
  *
  * ## Minimal Producer Native engine (C)
  *
@@ -91,6 +98,14 @@
 #define PLH_STOP_REASON_CRITICAL_ERROR  3
 #define PLH_STOP_REASON_CHANNEL_CLOSED  4
 #define PLH_STOP_REASON_SCRIPT_ERROR    5
+
+/* hub_post_event return values (API v7 #84): preserve the tristate the
+ * C ABI emits so plugin authors can distinguish "the event name is
+ * malformed" from "the broker / control loop is unhealthy".  The C++
+ * wrapper surfaces these as the `PostEventResult` enum class. */
+#define PLH_POST_EVENT_ACCEPTED        1
+#define PLH_POST_EVENT_INVALID_NAME    0
+#define PLH_POST_EVENT_TRANSPORT_ERROR (-1)
 
 /* Invoke direction structs (plh_rx_t, plh_tx_t, plh_inbox_msg_t) +
  * visitor + arg-struct typedefs (plh_allowed_peer_t,
@@ -383,7 +398,8 @@ typedef struct
      * via string emptiness + log signals. */
 
     /** hub_metrics_json: returns the hub metrics tree as a JSON string.
-     *  NULL on error or when wired as a stub. */
+     *  Never NULL — empty `""` on error or wrong-side stub.  See the
+     *  Return contract block above for shared lifetime semantics. */
     const char *(*hub_metrics_json)(const struct PlhNativeContext *ctx);
 
     /** hub_config_json: returns the hub config as a JSON string. */
@@ -781,6 +797,17 @@ enum class StopReason : int
     ScriptError   = PLH_STOP_REASON_SCRIPT_ERROR,
 };
 
+/** Result of `Context::hub_post_event()`.  Tristate — the C ABI
+ *  distinguishes "the event name is malformed" from "the broker /
+ *  control loop is unhealthy"; the wrapper surfaces both so plugin
+ *  authors can react appropriately (fix the name vs retry / log). */
+enum class PostEventResult : int
+{
+    Accepted       = PLH_POST_EVENT_ACCEPTED,
+    InvalidName    = PLH_POST_EVENT_INVALID_NAME,
+    TransportError = PLH_POST_EVENT_TRANSPORT_ERROR,
+};
+
 /** Compile-time enum → string-view conversions for zero-alloc logging.
  *  Strings match the Python / Lua wire form so a Native plugin's log
  *  output reads identically to a Python plugin's. */
@@ -847,11 +874,25 @@ concept BandMemberVisitor  = PlhNoexceptVisitorOf<V, plh_band_member_t>;
 class Context;
 
 /**
- * @brief C++ wrapper around PlhNativeContext.
+ * @brief C++ wrapper around PlhNativeContext — borrowed-pointer view.
  *
- * All methods are inline and call through the context's function pointers.
- * No host symbol resolution needed — everything crosses the C ABI via
- * the function pointers the host filled at init time.
+ * Trivially copyable single-pointer wrapper.  All methods are inline and
+ * dispatch through the context's function pointers — no host symbol
+ * resolution.  The same Context value works on either side of the wire;
+ * use `is_hub()` to branch hub-only from role-only paths (§4.9).
+ *
+ * Lifetime contract:
+ *  - The Context wraps a borrowed `const PlhNativeContext *`.  The
+ *    pointee is host-owned; valid from the start of native_init() until
+ *    the return of native_finalize().  The plugin MUST NOT stash the
+ *    raw pointer past native_finalize().
+ *  - Identity strings (uid / name / channel / role_dir / log_level) are
+ *    likewise borrowed and valid for the same lifetime.
+ *  - Hub-side JSON returns (hub_*_json()) share a thread-local scratch
+ *    buffer — valid only until the next hub_*_json() call on the same
+ *    thread.  Copy via `std::string{ctx.hub_metrics_json()}` if you
+ *    need a longer-lived value.
+ *  - Visitor / event-args lifetime: see HEP-CORE-0028 §4.8.
  *
  * Usage:
  * ```cpp
@@ -861,6 +902,8 @@ class Context;
  *     static plh::Context ctx(raw);
  *     g_ctx = &ctx;
  *     ctx.log(plh::LogLevel::Info, "native engine initialized");
+ *     if (ctx.is_hub())
+ *         ctx.hub_post_event("plugin_started", R"({"version":"1.0"})");
  *     return true;
  * }
  * ```
@@ -1179,7 +1222,12 @@ class Context
     // owned by a thread-local scratch buffer in the host — valid until
     // the next hub_* call on the same thread (HEP-CORE-0028 §4.9).
 
-    /// Is this Context attached to a hub (vs a role)?
+    /// Is this Context attached to a hub (vs a role)?  Detected via
+    /// `role_tag == "hub"` — the literal string the host writes during
+    /// `wire_hub()`.  Other framework role_tag values today:
+    /// `"producer"`, `"consumer"`, `"processor"`.  Future federation
+    /// peer designs may add new role_tag values; if so this predicate
+    /// would need updating in lock-step.
     [[nodiscard]] bool is_hub() const noexcept
     {
         return c_ && c_->role_tag && std::string_view{c_->role_tag} == "hub";
@@ -1244,13 +1292,18 @@ class Context
         return c_ && c_->hub_broadcast_channel
             && c_->hub_broadcast_channel(c_, channel, message, data_json) == 1;
     }
-    /// Post a user-defined event.  Returns true on accept, false on
-    /// invalid identifier / disabled / error.  data_json may be null.
-    [[nodiscard]] bool hub_post_event(const char *name,
-                                       const char *data_json) const noexcept
+    /// Post a user-defined event.  Returns a tristate (§4.9):
+    ///  - `Accepted`       — event queued; `on_app_<name>` will fire.
+    ///  - `InvalidName`    — name failed HEP-CORE-0033 G2.2.0b identifier
+    ///                       check; nothing posted.  Plugin bug.
+    ///  - `TransportError` — control loop unhealthy / fn ptr unwired.
+    ///                       Treat as observational; consider retry.
+    /// data_json may be null.
+    [[nodiscard]] PostEventResult hub_post_event(const char *name,
+                                                  const char *data_json) const noexcept
     {
-        return c_ && c_->hub_post_event
-            && c_->hub_post_event(c_, name, data_json) == 1;
+        if (!c_ || !c_->hub_post_event) return PostEventResult::TransportError;
+        return static_cast<PostEventResult>(c_->hub_post_event(c_, name, data_json));
     }
 
     [[nodiscard]] int64_t hub_augment_timeout_ms() const noexcept
@@ -1541,6 +1594,10 @@ inline MetricsSnapshot Context::metrics_snapshot() const noexcept
  * pass in registers.  If a future change adds a non-trivial member,
  * build breaks here. */
 
+static_assert(std::is_trivially_copyable_v<Context>,
+              "plh::Context must be trivially copyable (single borrowed pointer)");
+static_assert(sizeof(Context) == sizeof(void *),
+              "plh::Context must be exactly one pointer");
 static_assert(std::is_trivially_copyable_v<MetricsSnapshot>,
               "plh::MetricsSnapshot must be trivially copyable");
 static_assert(std::is_trivially_copyable_v<AllowedPeersHandle>,
