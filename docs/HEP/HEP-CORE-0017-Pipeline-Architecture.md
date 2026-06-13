@@ -344,28 +344,63 @@ same shape — build in Standby, ask the broker, activate inside
   REG_REQ is approved, the framework hands the broker's
   `REG_ACK.initial_allowlist` (array of Z85 pubkey strings per
   HEP-CORE-0036 §6.2 / §6.5) to the queue via the same single
-  polymorphic mutator: `queue->apply_master_approval(REG_ACK)`.  On
-  the PUSH side that mutator installs the ZAP handler (so libzmq
-  consults the seeded allowlist on every CURVE handshake), seeds
-  the ZAP cache from `initial_allowlist`, binds the PUSH socket,
-  spawns the PUSH worker, and transitions Standby → Configured →
-  Active.  As on the PULL side: the queue does **NOT** bind or
-  spawn any worker until `apply_master_approval` runs.
+  polymorphic mutator: `queue->apply_master_approval(REG_ACK)`.
+  Internally the PUSH path does, in order:
+    1. **Load the allowlist** — `set_peer_allowlist(initial_allowlist)`
+       writes the broker-supplied admit set into the queue's
+       allowlist atomic.
+    2. **`start()`** — registers the ZAP domain with the process
+       ZapRouter BEFORE the socket binds (so an early peer connect
+       can't race into an unregistered domain), then binds the PUSH
+       socket and spawns the PUSH worker.  start() preserves the
+       pre-set allowlist; the queue lands Active with the broker-
+       supplied admit set already in force, not a transient empty
+       one.  See HEP-CORE-0011 § "Role Host `worker_main_()` Steps"
+       Step 6d.
+  Transitions Standby → Configured → Active.  As on the PULL side:
+  the queue does **NOT** bind or spawn any worker until
+  `apply_master_approval` runs.
 - **Runtime authorization changes (post-S3)**: when the broker's
   per-channel allowlist changes (consumer joined / revoked), the
   broker fires `CHANNEL_AUTH_CHANGED_NOTIFY` to the producer; the
   role-host's BRC handler pulls the new allowlist via
-  `GET_CHANNEL_AUTH_REQ` and merges it into the queue with
-  `set_peer_allowlist` (HEP-CORE-0036 §6.5 notify-then-pull).  The
-  queue stays Active; future handshakes consult the refreshed cache.
+  `GET_CHANNEL_AUTH_REQ` and **snapshot-replaces** the queue's
+  allowlist with `set_peer_allowlist` (HEP-CORE-0036 §6.5
+  notify-then-pull, amendment 2026-06-04 — supersedes the retired
+  snapshot-push `CHANNEL_AUTH_UPDATE` wire frame).  Replace, not
+  merge: the new allowlist fully replaces the prior one atomically.
+  The queue stays Active; future handshakes consult the refreshed
+  cache.
+
+#### PULL vs PUSH symmetry — and where they differ
+
+Both sides build in Standby, defer all socket I/O to
+`apply_master_approval`, and present scripts a queue interface
+that hides the auth machinery.  Two asymmetries are worth calling
+out so readers don't try to apply one side's runtime API to the
+other:
+
+- **PULL side has per-peer add/remove**:
+  `queue.add_producer_peer(...)` and `queue.remove_producer_peer(...)`
+  let the role-host framework register a new producer or evict a
+  departed one without resetting the rest of the peer set.  Used by
+  the runtime CHANNEL_NOTIFY broadcast path (§4.6.1).
+- **PUSH side is allowlist-only, snapshot-replace**: no per-peer
+  add/remove on the PUSH side.  Allowlist refreshes are always full
+  snapshot replacements via `set_peer_allowlist`.  Rationale: the
+  producer-side ZAP handler enforces a flat pubkey set, not
+  per-connection state — there's nothing to "add" beyond writing a
+  new snapshot.  See HEP-CORE-0036 §6.5 design rationale.
 
 #### Script visibility — both sides
 
 Scripts never see this API.  They see only `queue.write_acquire()`
 / `queue.write_commit()` (producer) or `queue.read_acquire()` /
-`queue.read_release()` (consumer); slots route through whatever
-peer set the framework has populated, fair-queued by the underlying
-ZMQ socket.
+`queue.read_release()` (consumer).  Slots route through whatever
+peer set the framework has populated; the underlying ZMQ socket
+multiplexes per its native semantics — round-robin among
+connected PUSH peers on the PULL side, load-balanced across
+connected PULL consumers on the PUSH side.
 
 **Pattern-neutrality**: HEP-CORE-0017 does NOT specify whether
 ZmqQueue uses Pattern A (PULL binds, peers' PUSH connect to it) or

@@ -719,14 +719,17 @@ spawns happen from the single call site so the §4.2.1 single-master
 rule is preserved automatically:
 
 ```cpp
+// Real implementation (role_api_base.cpp ~1565-1605): a master_spawned
+// flag flips after the first spawn so the same "first is master" rule
+// is preserved; otherwise structurally identical.
 for (size_t i = 0; i < handler.connections().size(); ++i) {
     const std::string slot_name = "handler_ctrl_" + std::to_string(i);
     ThreadManager::SpawnOptions opts;
     opts.is_master = (i == 0);          // first only
+    auto *bc   = pImpl->handler->connections()[i].brc.get();
+    auto *core = pImpl->core;            // `core` is already a pointer
     thread_manager().spawn(slot_name,
-        [this, i](ThreadManager::SlotContext &ctx) {
-            auto *bc   = pImpl->handler->connections()[i].brc.get();
-            auto *core = &pImpl->core_;
+        [bc, core](ThreadManager::SlotContext &ctx) {
             ...
             ctx.with_active_loop([&] {
                 bc->run_poll_loop([core, &ctx] {
