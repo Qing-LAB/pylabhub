@@ -402,29 +402,31 @@ void ProcessorRoleHost::worker_main_()
         // first; same precedence here).
         std::optional<int> hub_max;
 
+        // Per HEP-CORE-0036 §3.5.1 registration failure is FATAL on BOTH
+        // the in-side (consumer registration) and out-side (producer
+        // registration).  Either DEREG side cleans up via
+        // do_role_teardown presence-walk.
         auto prod_result = api_ref.register_producer_channel(prod_reg);
         if (!prod_result.has_value() ||
             prod_result->value("status", std::string{}) != "success")
         {
-            LOGGER_ERROR("[proc] Output producer registration failed");
-            // Per HEP-CORE-0036 §3.5.1 registration failure is FATAL on BOTH the
-            // in-side (consumer registration) and out-side (producer registration).
-            // Either DEREG side cleans up via do_role_teardown presence-walk.
-            // Behavior fix ships under task #103; current branch preserves legacy
-            // non-fatal pending #103.
+            LOGGER_ERROR("[proc] Output producer registration failed — "
+                         "aborting role startup");
+            promise_ref.set_value(false);
+            return;
         }
-        else
+
+        // HEP-CORE-0036 §6.7 — drive Tx queue Standby → Active from
+        // REG_ACK (carries initial_allowlist).  Symmetric with the
+        // in-side consumer activation below.
+        if (!api_ref.apply_producer_reg_ack(*prod_result))
         {
-            // HEP-CORE-0036 §6.7 — drive Tx queue Standby → Active
-            // from REG_ACK (carries initial_allowlist).  Symmetric
-            // with the in-side consumer activation below.
-            if (!api_ref.apply_producer_reg_ack(*prod_result))
-            {
-                LOGGER_ERROR("[proc] apply_producer_reg_ack failed — "
-                             "Tx queue did not reach Active state");
-                promise_ref.set_value(false);
-                return;
-            }
+            LOGGER_ERROR("[proc] apply_producer_reg_ack failed — "
+                         "Tx queue did not reach Active state");
+            promise_ref.set_value(false);
+            return;
+        }
+        {
             auto m = scripting::RoleAPIBase::extract_hub_heartbeat_max(*prod_result);
             if (m.has_value()) hub_max = m;
         }
@@ -433,20 +435,23 @@ void ProcessorRoleHost::worker_main_()
         if (!cons_result.has_value() ||
             cons_result->value("status", std::string{}) != "success")
         {
-            LOGGER_ERROR("[proc] Input consumer registration failed");
+            LOGGER_ERROR("[proc] Input consumer registration failed — "
+                         "aborting role startup");
+            promise_ref.set_value(false);
+            return;
         }
-        else
+
+        // HEP-CORE-0036 §6.7 — drive Rx queue Standby → Active from
+        // CONSUMER_REG_ACK (carries producers[]).  Same uniform pattern
+        // as consumer_role_host.
+        if (!api_ref.apply_consumer_reg_ack(*cons_result))
         {
-            // HEP-CORE-0036 §6.7 — drive Rx queue Standby → Active
-            // from CONSUMER_REG_ACK (carries producers[]).  Same
-            // uniform pattern as consumer_role_host.
-            if (!api_ref.apply_consumer_reg_ack(*cons_result))
-            {
-                LOGGER_ERROR("[proc] apply_consumer_reg_ack failed — "
-                             "Rx queue did not reach Active state");
-                promise_ref.set_value(false);
-                return;
-            }
+            LOGGER_ERROR("[proc] apply_consumer_reg_ack failed — "
+                         "Rx queue did not reach Active state");
+            promise_ref.set_value(false);
+            return;
+        }
+        {
             auto m = scripting::RoleAPIBase::extract_hub_heartbeat_max(*cons_result);
             if (m.has_value()) hub_max = m;  // consumer's wins (legacy parity)
         }
