@@ -215,17 +215,21 @@ Sub-deliverables:
        state from callbacks OTHER than the channel's own data-loop
        callback (e.g., `on_init`, `on_band_message`).
 
-   (b) **Broker wire-shape change for `GET_CHANNEL_AUTH_ACK.allowlist`**
-   per HEP §6.5 amendment (2026-06-10): array entries become
-   `{role_uid, pubkey}` objects (symmetric with §6.4
-   `producers[]`).  Updates needed:
-     - `BrokerServiceImpl::handle_get_channel_auth_req` enumerates the
-       channel's `consumers[]` (already in HubState) and emits
-       `{role_uid, pubkey}` per consumer.
-     - `RoleAPIBase::handle_channel_auth_notifies` extracts `pubkey`
-       from each entry when calling `set_peer_allowlist`.
-     - L3 `GetChannelAuthReturnsAllowlist` worker updated to assert
-       the new shape (currently asserts bare-pubkey form).
+   (b) **Broker wire-shape for `GET_CHANNEL_AUTH_ACK.allowlist`**
+   per HEP §6.5 (locked 2026-06-12): array entries are **bare Z85
+   pubkey strings** — symmetric with §6.2 `REG_ACK.initial_allowlist`
+   and §7.2 producer-side cache `unordered_set<string>`.  The
+   `role_uid` is operator-side metadata and is not carried on the
+   wire.  ✅ shipped 2026-06-12 (Follow-up 6.1):
+     - `BrokerServiceImpl::handle_get_channel_auth_req` enumerates
+       the channel's authorized pubkeys and emits `array<string>`.
+     - `RoleAPIBase::handle_channel_auth_notifies` reads each entry
+       as `entry.get<std::string>()` and builds
+       `PeerIdentity{"curve", pk}` (kind matches production
+       convention; role_uid kept empty in the script-view because
+       it's not on the wire).
+     - L3 `GetChannelAuthReturnsAllowlist` worker asserts
+       `al[0].is_string()` + Z85 pubkey value.
 
    (c) **Script API exposure — polling accessors (audit G1+G2).**
      - `api.allowed_peers(channel)` (producer-side) — returns a
@@ -277,10 +281,11 @@ Sub-deliverables:
    (g) **Tests.**
      - L3 (broker side): broker emits new wire shape +
        reg/dereg propagates through the BRC pull path.  Verified
-       2026-06-10 via the extended
-       `GetChannelAuthReturnsAllowlist` worker — pre-reg empty,
-       post-reg single-entry `{role_uid, pubkey}`, post-dereg
-       empty.  ✅ shipped.
+       2026-06-10 (object shape) → flipped 2026-06-12 to the
+       locked Z85-string-array shape via Follow-up 6.1.  The
+       `GetChannelAuthReturnsAllowlist` worker now asserts
+       pre-reg empty, post-reg single-entry pubkey string,
+       post-dereg empty.  ✅ shipped.
      - L3 script-driven callback firing test — needs a
        producer-role-host worker with a Lua script defining
        `on_allowlist_changed` and recording call sites.  The
@@ -347,46 +352,63 @@ Sub-deliverables:
      `apply_master_approval` drives Standby → Active).
    Full L2+L3 sweep green (1734/1734) post-commit.
 
-**Open follow-ups** (out of scope for this commit; tracked under
-this entry):
-- AUTH_TODO sub-deliverable 4(b) (lines 218-228) said the
-  `GET_CHANNEL_AUTH_ACK.allowlist` wire shape should be
-  `{role_uid, pubkey}` objects per a 2026-06-10 decision.  The
-  2026-06-12 HEP-CORE-0036 §6.5 rewrite locked the shape as
-  `array of Z85 pubkey strings` (symmetric with §6.2
-  `REG_ACK.initial_allowlist` + §7.2 cache).  Both
-  `broker_service.cpp::handle_get_channel_auth_req` (emit) and
-  `role_api_base.cpp::handle_channel_auth_notifies` (read) still
-  use objects.  Flip both sides + update sub-deliverable 4(b)
-  text in this AUTH_TODO.
-- `RoleAPIBase::start_rx_queue()` / `start_tx_queue()` are still
-  public methods (`role_api_base.hpp:223-224`).  No production
-  caller anymore (Producer/Consumer/Processor hosts route
-  through `apply_*_reg_ack`).  Make them private or delete
-  outright once the test fallout below lands.
-- **Test fallout from §6.7 Option B contract change.**
-  `tests/test_layer3_datahub/workers/role_api_flexzone_workers.cpp`
-  has 10 call sites still using `start_rx_queue()` /
-  `start_tx_queue()` directly (lines 206, 233, 363, 434, 788,
-  825, 930, 972, 1056, 1098).  They PASS today (the methods
-  remain on `RoleAPIBase`) but exercise the LEGACY direct
-  activation path, not the canonical
-  `apply_consumer_reg_ack` / `apply_producer_reg_ack` route.
-  This gives false confidence — these tests don't exercise the
-  production code path.  Rewrite each call site to construct a
-  stub `REG_ACK` / `CONSUMER_REG_ACK` and invoke
-  `apply_*_reg_ack(stub)` instead.  Only this file is affected
-  — grep across `tests/` confirmed no other test touches the
-  two-step `set_*` + `start()` pattern.
-- Fatal-on-failure for the bare registration-failure branches
-  in `producer_role_host.cpp:367-386` /
-  `consumer_role_host.cpp:328-360` /
-  `processor_role_host.cpp:405-446` — currently logged
-  non-fatal per the in-file comments; needs the
-  `promise_ref.set_value(false); return` treatment to match
-  the §3.5.1 fatal-on-S2 contract.
+**Open follow-ups under AUTH-1**, in execution priority order
+(out of scope for the 72021c54 commit; each is its own
+follow-up commit):
 
-**Blocks:** AUTH-2, AUTH-3, AUTH-5, AUTH-6, AUTH-7.
+**Follow-up 6.1 — `GET_CHANNEL_AUTH_ACK.allowlist` wire shape
+flip.**  ✅ shipped 2026-06-12.  Flipped both emit + read +
+test-assertion sites to the locked Z85-string-array shape:
+- `broker_service.cpp::handle_get_channel_auth_req` emits
+  `array<string>` of authorized pubkeys.
+- `role_api_base.cpp::handle_channel_auth_notifies` reads each
+  entry as `entry.get<std::string>()`, builds
+  `PeerIdentity{"curve", pk}` for the queue allowlist, and
+  feeds the script-view `AllowedPeer` with empty `role_uid`
+  (not on the wire) + `pubkey`.
+- `tests/.../broker_consumer_workers.cpp::
+  get_channel_auth_returns_allowlist` worker asserts
+  `al[0].is_string()` and the Z85 pubkey value.
+- Sub-deliverable 4(b) text updated above to cite the locked
+  2026-06-12 §6.5 shape (replaces the 2026-06-10 amendment).
+Full L2+L3 sweep green post-flip (1734/1734).
+
+**Follow-up 6.2 — Fatal-on-failure for bare registration
+branches.**  MEDIUM severity (completes §3.5.1 contract).
+Currently the producer / consumer / processor role hosts log
+the failure and fall through (in-file comments document the
+deferred intent).  Add `promise_ref.set_value(false); return`
+to the failure branch in each:
+
+- `producer_role_host.cpp:367-386` (REG_REQ failure)
+- `consumer_role_host.cpp:328-360` (CONSUMER_REG_REQ failure)
+- `processor_role_host.cpp:405-446` (BOTH prod_result + cons_result
+  failure paths)
+
+Three small edits.  Build + full L2/L3 + L4 sweep required to
+catch any test that relied on the half-state.
+
+**Follow-up 6.3 — Migrate 10 test sites off the legacy
+direct-activation path.**  MEDIUM severity (false confidence —
+tests pass but exercise the wrong code path).
+`tests/test_layer3_datahub/workers/role_api_flexzone_workers.cpp`
+lines 206, 233, 363, 434, 788, 825, 930, 972, 1056, 1098 use
+`start_rx_queue()` / `start_tx_queue()` directly.  Each call
+site needs a stub `REG_ACK` / `CONSUMER_REG_ACK` constructed
+and invoked via `apply_consumer_reg_ack(stub)` /
+`apply_producer_reg_ack(stub)`.  Grep across `tests/`
+confirmed no other test file is affected.
+
+**Follow-up 6.4 — Delete `RoleAPIBase::start_rx_queue()` /
+`start_tx_queue()` from the public API.**  LOW severity (cleanup
+once 6.3 is done).  No production caller remains; the public
+surface still invites legacy patterns.  Make private or delete.
+Depends on 6.3.
+
+**Blocks:** 6.1 ✅ shipped 2026-06-12; AUTH-2 unblocked on the
+wire-shape side.  AUTH-3 still waits on 6.2 (fatal-on-failure
+needs to land before RegistrationState::Authorized is wired).
+6.3 + 6.4 can land in parallel with AUTH-2/3.
 
 ### AUTH-2 — Producer-side ZAP pump on BRC poll thread
 
