@@ -453,6 +453,58 @@ sync with current code.  All addressed in one sweep:
 
 Full L2+L3 sweep green post-sweep (1734/1734).
 
+**Follow-up 6.6 — ZapRouter Slice A (UAF + reentrance + single-pumper).**
+✅ shipped 2026-06-13 (task #215; review doc
+`docs/code_review/REVIEW_ZapRouter_UAF_2026-06-13.md`).  Pre-AUTH-2
+architectural blocker.  Reviewer-2 audit found a UAF window in
+`ZapRouter::pump_one` between the shared_lock-protected admission
+lookup and the call into `is_peer_allowed`.  Dormant today (pump_one
+only via test ZapPumpThread); would fire on every handshake-vs-
+teardown race the moment AUTH-2 (#162) puts pump_one on the BRC poll
+thread.  Plus three latent architectural gaps in the same surface:
+reentrant `register_domain` (UB under `std::shared_mutex`), reentrant
+`~ZapDomainHandle` (silent UAF), accidental two-pumper (REP FSM
+corruption).
+
+Fix shape: option (a) shared_lock extension + RecursionGuard belt-and-
+suspenders.  Same doctrine cited in `zap_router.hpp:27` (originally
+applied to the LifecycleManager near-miss); same pattern used by
+`lifecycle_dynamic.cpp:51-60` + `json_config.cpp:69-579`.
+
+- `zap_router.cpp::pump_one` extends shared_lock to cover the
+  admission call; pushes `RecursionGuard(this)` to forbid self-
+  reentrance; wraps the call in try/catch (throw = deny + log);
+  RAII PumpScope atomic counter PANICs on second concurrent entry.
+- `zap_router.cpp::register_domain` refuses + logs + returns inactive
+  handle when `is_recursing(this)`.
+- `zap_router.cpp::unregister_domain_` PLH_PANICs when
+  `is_recursing(this)` — destructor can't react to refusal.
+- `peer_admission.hpp::is_peer_allowed` doc-comment now encodes the
+  four-part reentrance contract (synchronous-thread, no
+  register-callback, no handle-destruction, bounded-time, may-throw).
+- `zap_router.hpp` file-header threading-model section extended with
+  the three runtime-enforced invariants.
+- `HEP-CORE-0036 §7.4` documents the architectural contracts +
+  failure modes + test pinning.
+
+Four L2 regression tests in
+`tests/test_layer2_service/workers/zap_router_workers.cpp`
+(`round3_uaf_destructor_blocks_until_admission_returns`,
+`round3_reentrant_register_refused`,
+`round3_reentrant_unregister_panics`,
+`round3_concurrent_pumpers_panic`).  Mutation sweep: each of the
+four guards reverted independently — each test isolates exactly one
+failure mode (UAF assertion / shared_mutex UB hang / unique_lock
+self-deadlock hang / worker-stays-alive).
+
+Full L2+L3 sweep green post-fix.
+
+OUT OF SCOPE for this follow-up (split to task #216 — "Queue-state
+Slice A2"): B1 PULL `apply_master_approval` state rollback on
+`start()` failure + B2 PUSH `start()` catch handlers leave
+`zap_handle_` orphan.  Both in `hub_zmq_queue.cpp`; different code
+area, different class of bug.  Track separately.
+
 ### AUTH-2 — Producer-side ZAP pump on BRC poll thread
 
 > **Tracker:** task **#162**.

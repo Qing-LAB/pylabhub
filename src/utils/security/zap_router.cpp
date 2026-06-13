@@ -17,6 +17,7 @@
 #include "utils/lifecycle.hpp"
 #include "utils/logger.hpp"
 #include "utils/module_def.hpp"
+#include "utils/recursion_guard.hpp"  // RecursionGuard — Slice A (task #215)
 #include "utils/zmq_context.hpp"
 #include "cppzmq/zmq.hpp"
 #include "cppzmq/zmq_addon.hpp"   // recv_multipart
@@ -27,6 +28,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <exception>  // std::exception for pump_one admission try/catch
 #include <mutex>
 #include <optional>
 #include <shared_mutex>
@@ -143,6 +145,14 @@ struct ZapRouter::Impl
     /// from a known state.
     std::atomic<std::uint64_t> allowed_count{0};
     std::atomic<std::uint64_t> denied_count{0};
+
+    /// Slice A (task #215) — single-pumper invariant runtime enforcement.
+    /// The libzmq REP socket FSM is single-thread; two threads inside
+    /// pump_one simultaneously corrupt it.  `pump_one` increments
+    /// on entry, decrements on exit, and PANICs if the post-increment
+    /// value is > 1.  Detects concurrent pumpers loudly instead of
+    /// silent FSM corruption.  See zap_router.hpp threading model.
+    std::atomic<int> concurrent_pumpers{0};
 };
 
 ZapRouter::ZapRouter() : impl_(std::make_unique<Impl>()) {}
@@ -239,6 +249,26 @@ ZapRouter::register_domain(std::string domain, PeerAdmission *admission)
             "ZapRouter::register_domain: admission must be non-null "
             "(domain='" + domain + "')");
 
+    // Slice A (task #215) — reentrance refuse.  If this thread is
+    // already inside `pump_one`'s admission decision (RecursionGuard
+    // keyed on `this`), it holds `registered_mu` in shared mode;
+    // attempting to acquire `registered_mu` in unique mode below
+    // would be undefined behavior under std::shared_mutex.  Refuse
+    // the call and return an inactive sentinel handle.  See
+    // peer_admission.hpp `is_peer_allowed` reentrance contract.
+    if (pylabhub::basics::RecursionGuard::is_recursing(this))
+    {
+        LOGGER_ERROR("ZapRouter::register_domain: reentrant call "
+                     "detected from inside a PeerAdmission decision "
+                     "(domain='{}').  Refusing — the call site is "
+                     "violating the is_peer_allowed contract that "
+                     "forbids registering domains during the admission "
+                     "scope.  Returning inactive ZapDomainHandle.  "
+                     "See peer_admission.hpp + HEP-CORE-0036 §7.",
+                     domain);
+        return ZapDomainHandle{};
+    }
+
     // First-ever caller in the process registers the dynamic module.
     // Subsequent callers just LoadModule (ref-count++).
     {
@@ -288,6 +318,30 @@ ZapRouter::register_domain(std::string domain, PeerAdmission *admission)
 void ZapRouter::unregister_domain_(const std::string &domain)
 {
     if (domain.empty()) return;
+
+    // Slice A (task #215) — reentrance PANIC.  Unlike register_domain
+    // (where refuse + inactive-handle is recoverable), an unregister
+    // from inside the admission decision is unrecoverable: the
+    // ZapDomainHandle whose destructor is running has no way to
+    // observe the refusal, so the handle would be destroyed while the
+    // router still holds a map entry pointing at admission/queue
+    // memory that's about to be freed — a UAF on the next pump_one.
+    // Loud failure is the only honest response.  See peer_admission.hpp
+    // `is_peer_allowed` reentrance contract.
+    if (pylabhub::basics::RecursionGuard::is_recursing(this))
+    {
+        PLH_PANIC("ZapRouter::unregister_domain_: reentrant call "
+                  "detected from inside a PeerAdmission decision "
+                  "(domain='{}').  This is unrecoverable — destroying "
+                  "a ZapDomainHandle inside is_peer_allowed would "
+                  "leave the router with a dangling map entry "
+                  "pointing at memory that is about to be freed.  An "
+                  "admission implementer's is_peer_allowed MUST NOT "
+                  "trigger destruction of any ZapDomainHandle.  See "
+                  "peer_admission.hpp + HEP-CORE-0036 §7.",
+                  domain);
+    }
+
     {
         std::unique_lock<std::shared_mutex> lk(impl_->registered_mu);
         impl_->registered.erase(domain);
@@ -315,6 +369,45 @@ std::uint64_t ZapRouter::denied_count() const noexcept
 
 bool ZapRouter::pump_one(std::chrono::milliseconds timeout)
 {
+    // Slice A (task #215) — single-pumper invariant runtime check.
+    // libzmq's REP socket FSM is single-thread; concurrent pumpers
+    // silently corrupt it.  Detect simultaneous entry loudly via the
+    // atomic counter, PANIC instead of letting the FSM tear.  The
+    // counter is incremented on entry and decremented on every exit
+    // path (RAII scope guard via dtor).  See zap_router.hpp threading
+    // model.
+    struct PumpScope {
+        std::atomic<int> &counter;
+        bool entered;
+        explicit PumpScope(std::atomic<int> &c)
+            : counter(c), entered(false)
+        {
+            const int post = counter.fetch_add(1,
+                std::memory_order_acq_rel) + 1;
+            if (post > 1)
+            {
+                // Decrement before the PANIC so dtor doesn't double-
+                // decrement a counter that may be inspected by an
+                // unlikely-but-possible post-PANIC log handler.
+                counter.fetch_sub(1, std::memory_order_release);
+                PLH_PANIC("ZapRouter::pump_one: concurrent pumper "
+                          "detected (post-increment count = {}).  The "
+                          "libzmq REP socket FSM is single-thread; two "
+                          "threads pumping simultaneously corrupt it.  "
+                          "Production wires exactly ONE pumper (BRC "
+                          "poll thread per HEP-CORE-0036 §7.1); tests "
+                          "use ZapPumpThread (also one).  See "
+                          "zap_router.hpp threading model.", post);
+            }
+            entered = true;
+        }
+        ~PumpScope() noexcept
+        {
+            if (entered)
+                counter.fetch_sub(1, std::memory_order_release);
+        }
+    } scope(impl_->concurrent_pumpers);
+
     // Snapshot the socket pointer.  If the module isn't loaded yet
     // (no register_domain called), nothing to do.  Touching
     // impl_->sock without lifecycle_mu is safe because the pumping
@@ -422,14 +515,65 @@ bool ZapRouter::pump_one(std::chrono::milliseconds timeout)
         return true;
     }
 
-    PeerAdmission *admission = nullptr;
+    // Slice A (task #215) — admission lookup + decision under shared
+    // lock.  Previously the shared_lock covered only the lookup;
+    // `admission->is_peer_allowed(...)` ran AFTER the lock released,
+    // with a raw pointer that could dangle.  Now the shared_lock
+    // spans both lookup and admission.
+    //
+    // Architectural reason: `admission` is a raw pointer to the
+    // PeerAdmission registered by `register_domain`.  In production
+    // this points at a `ZmqQueue`; the queue's destruction goes
+    // through `~ZapDomainHandle` → `unregister_domain_`, which takes
+    // the same mutex in unique mode.  Holding shared across the
+    // admission call ensures the destructor's unique_lock blocks
+    // until this thread releases — the queue cannot be freed
+    // mid-decision.  Without this scope extension, every handshake-
+    // vs-teardown race is a UAF the moment AUTH-2 (#162) wires
+    // pump_one to the BRC poll thread.
+    //
+    // RecursionGuard keyed on `this` enforces the second half of the
+    // is_peer_allowed contract: implementers MUST NOT call back into
+    // `register_domain` (refused via `is_recursing`) or trigger
+    // destruction of any ZapDomainHandle (`~ZapDomainHandle` would
+    // route through `unregister_domain_` which PANICs).  Per-thread
+    // detection (recursion_guard.hpp is `thread_local`) — concurrent
+    // calls from OTHER threads are unaffected.
+    //
+    // try/catch around the admission call: future implementers may
+    // throw; treat the throw as a deny + log, since the alternative
+    // is an unhandled exception bubbling to the BRC poll thread.
+    bool ok               = false;
+    bool admission_found  = false;
     {
         std::shared_lock<std::shared_mutex> lk(impl_->registered_mu);
         if (auto it = impl_->registered.find(domain);
             it != impl_->registered.end())
-            admission = it->second;
-    }
-    if (admission == nullptr)
+        {
+            admission_found = true;
+            PeerAdmission *admission = it->second;
+            pylabhub::basics::RecursionGuard guard(this);
+            try
+            {
+                ok = admission->is_peer_allowed(
+                    PeerIdentity{"curve", z85});
+            }
+            catch (const std::exception &e)
+            {
+                LOGGER_ERROR("ZapRouter::pump_one: admission threw — "
+                             "treating as deny.  what(): {}", e.what());
+                ok = false;
+            }
+            catch (...)
+            {
+                LOGGER_ERROR("ZapRouter::pump_one: admission threw "
+                             "non-std exception — treating as deny.");
+                ok = false;
+            }
+        }
+    }  // shared_lock + RecursionGuard release here
+
+    if (!admission_found)
     {
         LOGGER_WARN("ZapRouter::pump_one: rejecting handshake — no "
                     "domain registered for '{}' (either misconfigured "
@@ -440,8 +584,6 @@ bool ZapRouter::pump_one(std::chrono::milliseconds timeout)
         return true;
     }
 
-    const bool ok = admission->is_peer_allowed(
-        PeerIdentity{"curve", z85});
     if (ok)
     {
         send_zap_reply(sock, request_id, "200", "OK", z85);
