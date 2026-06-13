@@ -1116,7 +1116,26 @@ operational once attached).
 
 ### 15.4 ZMQ Transport — Channel Establishment Sequence
 
-**Producer role (channel creator):**
+> **⚠️ Library-level supersession (2026-06-13)**: the sequence below
+> documents the **pre-AUTH-1 single-step** flow where the role host
+> bound the PUSH socket immediately on `build_tx_queue` and called a
+> separate `start_tx_queue()` to activate.  That flow no longer exists.
+>
+> Current live design lives in:
+> - **HEP-CORE-0036 §3.5 + §6.7** — auth-gated build → register →
+>   apply → activate sequence (Standby-state queues; PUSH bind /
+>   PULL connect deferred to `apply_*_reg_ack`).
+> - **HEP-CORE-0011 § "Role Host `worker_main_()` Steps"** — Step
+>   6a..6d for the consolidated producer/consumer/processor wiring.
+> - **HEP-CORE-0017 §3.3** — symmetric PULL/PUSH queue lifecycle.
+>
+> `RoleAPIBase::start_tx_queue()` and `start_rx_queue()` were deleted
+> from the public API on 2026-06-13 (commit `638443e4`).  Step 5
+> below references one of those deleted entrypoints; treat the
+> whole §15.4 as historical context for the binary-unification arc
+> and use the live HEPs for current behavior.
+
+**Producer role (channel creator) — historical, pre-AUTH-1:**
 
 1. Role host builds `TxQueueOptions` with `data_transport="zmq"`, `zmq_node_endpoint`,
    `slot_spec` (carries fields + packing), `fz_spec` — schema_hash is auto-computed
@@ -1126,7 +1145,7 @@ operational once attached).
    zmq_node_endpoint advertised)
 3. Broker creates channel entry, stores ZMQ endpoint, replies success
 4. Internal path: creates `ZmqQueue` PUSH socket, binds to endpoint, calls `start()`
-5. Role host: `start_tx_queue()` (idempotent)
+5. Role host: `start_tx_queue()` (idempotent)  *[API deleted 2026-06-13 — see banner above]*
 6. Role host: checksum / metrics / loop-period wiring via RoleAPIBase
 
 **Consumer role (channel joiner):**

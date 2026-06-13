@@ -413,9 +413,45 @@ from `src/utils/service/role_api_base.cpp`.  Pre-deletion sweep
 of `src/` + `tests/` showed zero remaining call sites after
 Follow-up 6.3.  Full L2+L3 sweep green (1734/1734).
 
-**Blocks:** 6.1 + 6.2 ✅ shipped 2026-06-12.  AUTH-2 + AUTH-3
-now fully unblocked from the AUTH-1 side.  6.3 + 6.4 can land
-in parallel with AUTH-2/3.
+**Blocks:** 6.1 + 6.2 ✅ shipped 2026-06-12; 6.3 + 6.4 ✅
+shipped 2026-06-13.  AUTH-2 + AUTH-3 fully unblocked from the
+AUTH-1 side.
+
+**Follow-up 6.5 — HEP lifecycle-sync sweep (Option B).**  ✅
+shipped 2026-06-13 (task #213; review doc
+`docs/code_review/REVIEW_HEP_Lifecycle_Sync_2026-06-13.md`).
+AUTH-1 + the older Wave-B M4f closure left five HEPs out of
+sync with current code.  All addressed in one sweep:
+
+- **HEP-CORE-0011** (ScriptHost) — §"Role Host `worker_main_()`
+  Steps" rewritten in plain language with a Mermaid sequence
+  diagram + 6a/6b/6c/6d sub-steps documenting register →
+  apply_*_reg_ack → install_heartbeat; the "registration
+  failure is FATAL" contract added; mermaid annotation +
+  library-structure binary-name + 14-step recap all updated.
+- **HEP-CORE-0017** (Pipeline Architecture) — §3.3 gains a
+  symmetric PUSH-side mirror paragraph; previously only the PULL
+  side documented the Standby → S3-`apply_master_approval`
+  pattern.
+- **HEP-CORE-0019** (Metrics Plane) — RoleAPIBase row corrected
+  from `start_ctrl_thread (Phase 6: per-presence)` to
+  `install_heartbeat()` after `apply_*_reg_ack`, with pointer
+  back to HEP-0011 Step 6d.
+- **HEP-CORE-0031** (ThreadManager) — §4.2.4 code example
+  updated to `start_handler_threads` loop spawning
+  `handler_ctrl_<N>`; §4.3.1 thread inventory table replaces
+  `ctrl (legacy)` with `handler_ctrl_<N>`; §4.3.5 process
+  thread totals add dual-hub processor rows; §4.3.6 M4
+  transition table marked all phases shipped.
+- **HEP-CORE-0018** (Producer/Consumer Binaries — HISTORICAL) —
+  §15.4 ZMQ channel-establishment block gains a banner pointing
+  at HEP-0036 §3.5 + HEP-0011 + HEP-0017 §3.3 for the live
+  design.
+- **HEP-CORE-0033** (Hub Character) — incidental: §19.8 file
+  map updated to drop the `RoleHostFrame<HostT>` CRTP reference
+  (M9 retired CRTP form).
+
+Full L2+L3 sweep green post-sweep (1734/1734).
 
 ### AUTH-2 — Producer-side ZAP pump on BRC poll thread
 

@@ -713,30 +713,44 @@ UAF.  OS reaps the detached thread + its allocations at process exit.
 
 ### 4.2.4 Role host wiring (the canonical example)
 
-In `RoleAPIBase::start_ctrl_thread` the ctrl thread is marked master:
+In `RoleAPIBase::start_handler_threads` the FIRST handler-ctrl
+thread is marked master; every subsequent one is a peer.  All N
+spawns happen from the single call site so the §4.2.1 single-master
+rule is preserved automatically:
 
 ```cpp
-ThreadManager::SpawnOptions ctrl_opts;
-ctrl_opts.is_master = true;
-thread_manager().spawn("ctrl",
-    [this](ThreadManager::SlotContext &ctx) {
-        ...
-        ctx.with_active_loop([&] {
-            bc->run_poll_loop([core, &ctx] {
-                return core->is_running() && !ctx.shutdown_requested();
+for (size_t i = 0; i < handler.connections().size(); ++i) {
+    const std::string slot_name = "handler_ctrl_" + std::to_string(i);
+    ThreadManager::SpawnOptions opts;
+    opts.is_master = (i == 0);          // first only
+    thread_manager().spawn(slot_name,
+        [this, i](ThreadManager::SlotContext &ctx) {
+            auto *bc   = pImpl->handler->connections()[i].brc.get();
+            auto *core = &pImpl->core_;
+            ...
+            ctx.with_active_loop([&] {
+                bc->run_poll_loop([core, &ctx] {
+                    return core->is_running() && !ctx.shutdown_requested();
+                });
             });
-        });
-        ...
-    },
-    ctrl_opts);
+            ...
+        },
+        opts);
+}
 ```
 
 The poll-loop predicate consults `ctx.shutdown_requested()` —
-ThreadManager raises it only after peers (worker, etc.) are done.
-`core->is_running()` is kept because the worker still flips it in
-`do_role_teardown` Step 12 as a fast-path wake-up (alongside
-`bc->stop()`); the per-slot signal alone wouldn't unblock a thread
-parked in `zmq_poll`.
+ThreadManager raises it only after peers (worker, peer handler-ctrl
+threads) are done.  `core->is_running()` is kept because the worker
+still flips it in `do_role_teardown` Step 9.4 as a fast-path wake-up
+(alongside `bc->stop()`); the per-slot signal alone wouldn't unblock
+a thread parked in `zmq_poll`.
+
+Single-hub roles spawn one thread (`handler_ctrl_0` = master).
+Dual-hub processor spawns two (`handler_ctrl_0` master,
+`handler_ctrl_1` peer); both have peer ordering vs the worker, so
+shutdown drains worker first → peer `handler_ctrl_1` → master
+`handler_ctrl_0` last.
 
 ### 4.2.5 Constraints and trade-offs
 
@@ -796,17 +810,18 @@ owned by `RoleAPIBase::Impl::thread_mgr_` (see
 `role_api_base.cpp::Impl` ctor — created eagerly from
 `(role_tag, uid)`).
 
-| Slot name | Spawned by                                         | Master/peer | Purpose                                                                                              | Bracket vs flag |
-|-----------|----------------------------------------------------|-------------|------------------------------------------------------------------------------------------------------|-----------------|
-| `worker`  | `engine_host.cpp::EngineHost::startup_`            | peer        | Runs `worker_main_()`: schema resolve, REG, run_data_loop, do_role_teardown.  The "action thread."   | bracket — wraps the data loop |
-| `ctrl`    | `role_api_base.cpp::start_ctrl_thread` (legacy)    | **master**  | Drives `pImpl->broker_channel->run_poll_loop()` — polls the role's single BRC's DEALER socket.       | bracket — wraps `run_poll_loop` |
-| (process) | OS process entry (not via ThreadManager)           | n/a         | Main thread.  Runs `plh_role_main.cpp`, constructs RoleHost, waits for worker, exits.                | n/a — not in TM |
+| Slot name           | Spawned by                                                | Master/peer            | Purpose                                                                                                                       | Bracket vs flag |
+|---------------------|-----------------------------------------------------------|------------------------|-------------------------------------------------------------------------------------------------------------------------------|-----------------|
+| `worker`            | `engine_host.cpp::EngineHost::startup_`                   | peer                   | Runs `worker_main_()`: schema resolve, REG, run_data_loop, do_role_teardown.  The "action thread."                            | bracket — wraps the data loop |
+| `handler_ctrl_<N>`  | `role_api_base.cpp::start_handler_threads`                | `_0` master; rest peer | One thread per `RoleHandler::connections()` entry.  Drives `connections()[N].brc->run_poll_loop()`.  Single-hub: just `_0`.   | bracket — wraps `run_poll_loop` |
+| (process)           | OS process entry (not via ThreadManager)                  | n/a                    | Main thread.  Runs `plh_role_main.cpp`, constructs RoleHost, waits for worker, exits.                                          | n/a — not in TM |
 
-The ctrl thread is master per §4.2.4 — its lifetime envelopes
-every peer's (the worker's).  The worker's `do_role_teardown`
+The master handler-ctrl thread (`handler_ctrl_0`) is master per
+§4.2.4 — its lifetime envelopes every peer's (the worker, plus
+`handler_ctrl_1` on dual-hub).  The worker's `do_role_teardown`
 calls `deregister_from_broker()`, which sends DEREG_REQ via the
-ctrl thread's BRC and blocks waiting for DEREG_ACK.  If ctrl
-exited first, worker would block forever; the master/peer
+master's BRC and blocks waiting for DEREG_ACK.  If the master
+exited first, the worker would block forever; the master/peer
 ordering ensures ctrl outlives worker.
 
 ### 4.3.2 Role host process — transport-conditional threads
@@ -864,39 +879,40 @@ TM-managed thread in the process.
 
 | Role topology                       | Role-scope threads (in role TM) | Queue threads (own TM)  | Process-global | Total |
 |-------------------------------------|---------------------------------|-------------------------|----------------|-------|
-| Producer (SHM out)                  | 2 (worker + ctrl)               | 0                       | 2              | 4 + main |
+| Producer (SHM out)                  | 2 (worker + handler_ctrl_0)     | 0                       | 2              | 4 + main |
 | Producer (ZMQ out)                  | 2                               | 1 (send)                | 2              | 5 + main |
 | Consumer (SHM in)                   | 2                               | 0                       | 2              | 4 + main |
 | Consumer (ZMQ in)                   | 2                               | 1 (recv)                | 2              | 5 + main |
-| Processor (SHM/SHM)                 | 2                               | 0                       | 2              | 4 + main |
-| Processor (ZMQ in, SHM out)         | 2                               | 1 (recv)                | 2              | 5 + main |
-| Processor (ZMQ in, ZMQ out)         | 2                               | 2 (recv + send)         | 2              | 6 + main |
+| Processor single-hub (SHM/SHM)      | 2                               | 0                       | 2              | 4 + main |
+| Processor single-hub (ZMQ in, SHM out) | 2                            | 1 (recv)                | 2              | 5 + main |
+| Processor single-hub (ZMQ in, ZMQ out) | 2                            | 2 (recv + send)         | 2              | 6 + main |
+| Processor dual-hub (SHM/SHM)        | 3 (worker + handler_ctrl_0 + _1)| 0                       | 2              | 5 + main |
+| Processor dual-hub (ZMQ in, ZMQ out)| 3                               | 2 (recv + send)         | 2              | 7 + main |
 
 "Main" is the OS process entry thread; "+1" added implicitly to
 every row above.
 
-### 4.3.6 Wave-B M4 transition plan
+### 4.3.6 Wave-B M4 transition plan (historical — all shipped)
 
-Wave-B M4 splits the single `ctrl` thread into N — one per
-`RoleHandler::connections()` slot.  This scales the role-side
-control-plane I/O to dual-hub processor (Wave-B M8 payoff).
+Wave-B M4 split the single `ctrl` thread into N — one per
+`RoleHandler::connections()` slot.  Scaled the role-side control-plane
+I/O to dual-hub processor (Wave-B M8 payoff).  All phases shipped;
+the table below is the historical record.
 
-The transition is incremental.  Each sub-commit must leave the
-process in a coherent thread state:
+| Phase  | Status                | Result in the thread set                                                                                                                                                                                                                                       |
+|--------|-----------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| M4a    | ✅ shipped 2026-05-15 | RoleHandler allocates BRCs in `start_connections()` but spawns NO threads.  The BRCs were inert connected DEALER sockets; the legacy single `ctrl` thread continued to poll `pImpl->broker_channel` only.                                                       |
+| M4b    | ✅ shipped            | Dispatch methods (`send_class_A/B/C/D`) routed through `handler.connections()` BRCs.                                                                                                                                                                          |
+| M4c    | ✅ shipped            | `RoleAPIBase::start_handler_threads(handler)` spawns one ctrl-class thread per `handler.connections()` entry.  First spawn is master, rest are peers (§4.2.1 preserved because all N spawns happen from a single call site).                                   |
+| M4d-e  | ✅ shipped            | Call sites migrated to dispatch via handler.                                                                                                                                                                                                                  |
+| M4f    | ✅ shipped (task #45) | Legacy single `ctrl` retired; `pImpl->broker_channel` retired; `start_ctrl_thread` / `set_broker_comm` deleted.  After M4f the only path to spawn a ctrl-class thread is `start_handler_threads`.                                                              |
+| M8     | ✅ shipped (Wave-B)   | N=2 for dual-hub processor (one `handler_ctrl_<N>` per hub).  Single-hub processor stays N=1 (dedup → 1 connection).                                                                                                                                          |
 
-| Phase                            | Thread set state                                                                                                                       |
-|----------------------------------|----------------------------------------------------------------------------------------------------------------------------------------|
-| **M4a (shipped 2026-05-15)**     | Unchanged from today.  RoleHandler allocates BRCs in `start_connections()` but spawns NO threads.  The BRCs are inert: connected DEALER sockets that no poll loop services.  The legacy single `ctrl` thread continues to poll `pImpl->broker_channel` only. |
-| **M4b (pending)**                | Unchanged.  Dispatch methods (`send_class_A/B/C/D`) route through `handler.connections()` BRCs, but those BRCs still have no poll thread driving them.  L3 tests of dispatch must stand up throwaway poll threads to exercise the round-trip.        |
-| **M4c (pending)**                | **Change.**  `RoleAPIBase::start_ctrl_thread` extends to: (a) spawn one ctrl-class thread per `handler.connections()` entry, or (b) a sibling `start_ctrl_threads()` method does the loop.  First spawn is master, rest are peers — the §4.2.1 single-master rule preserved because all N spawns happen from a single call site.  The legacy single `ctrl` retires; `pImpl->broker_channel` retires alongside. |
-| **M4d-f (pending)**              | Unchanged thread set; call sites migrate to dispatch via handler.                                                                       |
-| **M8 (pending)**                 | N=2 for dual-hub processor (one ctrl per hub).  Single-hub processor stays N=1 (dedup → 1 connection).                                  |
-
-**Thread name convention for M4c**: `handler_ctrl_<N>` where N is
+**Thread name convention** (post-M4c): `handler_ctrl_<N>` where N is
 the connection index in `handler.connections()`.  Single-hub:
 `handler_ctrl_0`.  Dual-hub: `handler_ctrl_0` + `handler_ctrl_1`.
 
-**Why the legacy + new can't coexist transiently**: ThreadManager
+**Historical aside — why legacy + new couldn't coexist transiently**: ThreadManager
 enforces at most one master per instance (§4.2.5).  M4c MUST
 retire the legacy `ctrl` thread atomically with introducing the
 first `handler_ctrl_0` master.  Coexistence (legacy master +

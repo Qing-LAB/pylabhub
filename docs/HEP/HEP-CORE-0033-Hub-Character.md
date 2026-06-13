@@ -3324,13 +3324,13 @@ one architectural change.
 
 ### 19.8 Implementation references
 
-When Wave B lands, this section gets file references for:
+Wave B shipped 2026-05-26 (Wave-B M9, task #72).  Current file map:
 
 - `src/include/utils/role_presence.hpp` — `Presence`, `HubConnection`, `RoleHandler` types
 - `src/utils/service/role_handler.cpp` — implementation
-- Per-role trait specialisations: `src/{producer,consumer,processor}/{producer,consumer,processor}_role_host.hpp` (`role_host_traits<*Host>` specialisations)
-- `src/utils/service/role_host_frame.hpp` — `RoleHostFrame<HostT>` template (5c-large absorption)
-- L4 dual-hub processor test: `tests/test_layer4_plh_hub/test_plh_hub_dual_hub_processor.cpp` (added in M8)
+- Per-role hosts: `src/{producer,consumer,processor}/{producer,consumer,processor}_role_host.{hpp,cpp}`
+- `src/include/utils/role_host_frame.hpp` — `RoleHostFrame` plain class (not template; CRTP form retired in M9 per task #97-#100; producer/consumer/processor RoleHosts inherit directly)
+- L4 dual-hub processor test: `tests/test_layer4_plh_hub/test_plh_hub_dual_hub_processor.cpp`
 
 ### 19.9 Cross-references
 
