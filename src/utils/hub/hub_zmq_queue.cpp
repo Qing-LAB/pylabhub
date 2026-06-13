@@ -1229,22 +1229,47 @@ bool ZmqQueue::start()
                                   pImpl->resolved_zap_domain_);
 
                 // HEP-CORE-0040 §8.4 (#158): seed an EMPTY allowlist
-                // (deny-all secure default).  Storing an empty
-                // PeerAllowlist (rather than leaving the atomic
-                // nullptr) keeps `peer_allowlist_snapshot()` non-nullopt
-                // on a started CURVE-wired queue — the in-memory
-                // contract is "CURVE wired → allowlist exists; admit
-                // ⊆ peers; empty peers ⇒ deny all".  Callers replace
-                // this via `set_peer_allowlist()` (in production,
-                // driven by the role-host BRC handler that pulls
-                // `GET_CHANNEL_AUTH_REQ` in response to
-                // `CHANNEL_AUTH_CHANGED_NOTIFY`, per HEP-CORE-0036
-                // §6.5 amendment 2026-06-04 — the snapshot-push
-                // `CHANNEL_AUTH_UPDATE` wire frame is retired).
+                // (deny-all secure default) ONLY when no caller has
+                // populated one yet.  Two ordering patterns both reach
+                // this branch in a CURVE-wired queue's lifetime:
+                //
+                //   (a) factory → start() → set_peer_allowlist()
+                //       (L2 tests; `push_to` leaves `allowlist_`
+                //       nullptr — see line 801-803).  On start(), the
+                //       atomic is nullptr → seed empty here.  The
+                //       follow-up `set_peer_allowlist()` overwrites.
+                //   (b) factory → set_peer_allowlist(initial_allowlist)
+                //       → start()
+                //       (apply_master_approval(REG_ACK) at S3 per
+                //       HEP-CORE-0036 §6.7).  On start(), the atomic
+                //       already holds the broker-supplied snapshot.
+                //       Clobbering it here would drop REG_ACK's
+                //       `initial_allowlist` on the floor and leave
+                //       the PUSH socket deny-all under CURVE — every
+                //       authorized consumer would fail handshake.
+                //
+                // Architectural symmetry with PULL side: `start()`
+                // READS `server_pubkey_z85_` + `endpoint` that
+                // `set_producer_peers()` populated; it does NOT
+                // overwrite them.  The PUSH-side allowlist follows the
+                // same rule: caller-populated transport artifacts are
+                // load-bearing inputs to start(), not state to seed
+                // unconditionally.
+                //
+                // In-memory contract preserved either way: "CURVE
+                // wired → allowlist exists (admit ⊆ peers; empty
+                // peers ⇒ deny all)" — post-start, the atomic always
+                // holds a non-null shared_ptr.  Runtime refresh via
+                // `CHANNEL_AUTH_CHANGED_NOTIFY` (HEP-CORE-0036 §6.5)
+                // calls `set_peer_allowlist()` on the Active queue;
+                // start() is idempotent so this branch never re-runs.
                 // Task #103 (AUTH-1).
-                pImpl->allowlist_.store(
-                    std::make_shared<const sec::PeerAllowlist>(),
-                    std::memory_order_release);
+                if (!pImpl->allowlist_.load(std::memory_order_acquire))
+                {
+                    pImpl->allowlist_.store(
+                        std::make_shared<const sec::PeerAllowlist>(),
+                        std::memory_order_release);
+                }
 
                 // Register with the router BEFORE bind.  Without this
                 // ordering, an early peer connect could submit a ZAP

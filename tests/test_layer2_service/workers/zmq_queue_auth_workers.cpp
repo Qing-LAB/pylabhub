@@ -843,6 +843,122 @@ int auth_standby_push_side(const char *)
         pylabhub::hub::GetZMQContextModule());
 }
 
+/// HEP-CORE-0036 §3.5.5 S3 / §6.7 Option B contract — PUSH-side
+/// `apply_master_approval(REG_ACK)` must MATERIALISE the broker's
+/// `initial_allowlist` onto the running queue.
+///
+/// Pins the architectural fix to the ordering bug found 2026-06-13:
+/// previously `apply_master_approval` called `set_peer_allowlist`
+/// BEFORE `start()`, and `start()` unconditionally clobbered the
+/// allowlist atomic with a default-constructed (empty) PeerAllowlist
+/// — silently dropping REG_ACK's `initial_allowlist` and leaving the
+/// PUSH socket deny-all under CURVE.  The fix at hub_zmq_queue.cpp
+/// `start()` only seeds the empty default when `allowlist_.load()`
+/// returns nullptr; if the caller populated the atomic before
+/// start() (the apply_master_approval ordering), the populated
+/// allowlist is preserved.  Mutation sweep: if the conditional seed
+/// is reverted to unconditional clobber, the snapshot assertion at
+/// the bottom of this worker fires.
+int auth_apply_master_approval_seeds_initial_allowlist(const char *)
+{
+    return run_gtest_worker(
+        [&]() {
+            ScopedKeyStore ks;
+            const auto [server_pub, server_sec] = make_keypair();
+            const auto [alice_pub, alice_sec]   = make_keypair();
+            const auto [bob_pub,   bob_sec]     = make_keypair();
+            const auto [eve_pub,   eve_sec]     = make_keypair();
+            (void)alice_sec; (void)bob_sec; (void)eve_sec;
+            namespace sec = pylabhub::utils::security;
+            sec::key_store().add_identity_from_z85("server", server_pub, server_sec);
+
+            // ── Standby: factory returns nullptr-allowlist queue ────
+            auto producer = ZmqQueue::push_to(
+                /*endpoint=*/"tcp://127.0.0.1:0",
+                make_uint32_schema(), "aligned",
+                /*identity_key_name=*/"server",
+                /*zap_domain=*/"test.zmq.auth.apply_master_approval.seed",
+                /*bind=*/true);
+            ASSERT_NE(producer, nullptr);
+            EXPECT_FALSE(producer->is_running())
+                << "push_to must not start the queue.";
+            EXPECT_FALSE(producer->peer_allowlist_snapshot().has_value())
+                << "Pre-start, pre-set_peer_allowlist: the allowlist "
+                   "atomic is nullptr (factory leaves it unset per "
+                   "hub_zmq_queue.cpp:801-803).";
+
+            // ── S3: apply_master_approval(REG_ACK) with non-empty
+            //    initial_allowlist.  The mutator MUST drive Standby →
+            //    Configured → Active AND materialise the supplied
+            //    allowlist onto the running queue.
+            nlohmann::json reg_ack;
+            reg_ack["initial_allowlist"] = nlohmann::json::array();
+            reg_ack["initial_allowlist"].push_back(alice_pub);
+            reg_ack["initial_allowlist"].push_back(bob_pub);
+            ASSERT_TRUE(producer->apply_master_approval(reg_ack))
+                << "apply_master_approval(REG_ACK) with a non-empty "
+                   "initial_allowlist MUST succeed on a Standby PUSH "
+                   "queue (HEP-CORE-0036 §3.5.5 S3 / §6.7 Option B).";
+            EXPECT_TRUE(producer->is_running())
+                << "apply_master_approval is the single Standby → "
+                   "Active driver on the PUSH side.";
+
+            // ── The clobber regression: the broker-supplied
+            //    initial_allowlist MUST be observable on the running
+            //    queue.  Pre-fix, start() unconditionally overwrote
+            //    the allowlist atomic with a default-constructed
+            //    (empty) PeerAllowlist between set_peer_allowlist and
+            //    bind — silently dropping REG_ACK's content.
+            auto snap = producer->peer_allowlist_snapshot();
+            ASSERT_TRUE(snap.has_value())
+                << "Post-start invariant: allowlist atomic is non-null.";
+            EXPECT_EQ(snap->peers.size(), 2u)
+                << "REG_ACK.initial_allowlist had 2 entries.  If this "
+                   "is 0, start() clobbered the atomic after "
+                   "apply_master_approval seeded it — the AUTH-1 "
+                   "clobber regression has returned.";
+            EXPECT_TRUE(snap->contains(sec::PeerIdentity{"curve", alice_pub}))
+                << "alice was in REG_ACK.initial_allowlist; the queue "
+                   "must admit her.";
+            EXPECT_TRUE(snap->contains(sec::PeerIdentity{"curve", bob_pub}))
+                << "bob was in REG_ACK.initial_allowlist; the queue "
+                   "must admit him.";
+            EXPECT_FALSE(snap->contains(sec::PeerIdentity{"curve", eve_pub}))
+                << "eve was NOT in REG_ACK.initial_allowlist; the queue "
+                   "must reject her.";
+
+            // ── Symmetric is_peer_allowed gate — pins the ZAP-decision
+            //    path against the same allowlist (snap is just a view).
+            EXPECT_TRUE(producer->is_peer_allowed(
+                sec::PeerIdentity{"curve", alice_pub}));
+            EXPECT_TRUE(producer->is_peer_allowed(
+                sec::PeerIdentity{"curve", bob_pub}));
+            EXPECT_FALSE(producer->is_peer_allowed(
+                sec::PeerIdentity{"curve", eve_pub}));
+
+            // ── Runtime refresh path stays correct on Active queue:
+            //    set_peer_allowlist replaces the snapshot, start() is
+            //    idempotent so no second seed runs.
+            sec::PeerAllowlist refreshed;
+            refreshed.peers.insert(sec::PeerIdentity{"curve", eve_pub});
+            ASSERT_TRUE(producer->set_peer_allowlist(refreshed));
+            snap = producer->peer_allowlist_snapshot();
+            ASSERT_TRUE(snap.has_value());
+            EXPECT_EQ(snap->peers.size(), 1u);
+            EXPECT_TRUE(snap->contains(sec::PeerIdentity{"curve", eve_pub}));
+            EXPECT_FALSE(snap->contains(sec::PeerIdentity{"curve", alice_pub}))
+                << "Runtime refresh is snapshot-replace (HEP-CORE-0036 "
+                   "§6.5), not merge.";
+
+            producer->stop();
+        },
+        "zmq_queue_auth::auth_apply_master_approval_seeds_initial_allowlist",
+        Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(),
+        JsonConfig::GetLifecycleModule(),
+        pylabhub::hub::GetZMQContextModule());
+}
+
 /// HEP-CORE-0036 §6.7 Standby state (#188) — RENAMED from
 /// auth_misconfig_connect_missing_serverkey_factory_returns_nullptr.
 /// Empty serverkey is now the explicit Standby signal — the factory
@@ -1125,6 +1241,8 @@ int dispatch_zmq_queue_auth(int argc, char **argv)
         return auth_standby_state_transitions(tmpdir);
     if (scenario == "auth_standby_push_side")
         return auth_standby_push_side(tmpdir);
+    if (scenario == "auth_apply_master_approval_seeds_initial_allowlist")
+        return auth_apply_master_approval_seeds_initial_allowlist(tmpdir);
     if (scenario == "auth_misconfig_connect_missing_serverkey_factory_returns_nullptr")
         return auth_misconfig_connect_missing_serverkey_factory_returns_nullptr(tmpdir);
     if (scenario == "auth_misconfig_factory_returns_nullptr")

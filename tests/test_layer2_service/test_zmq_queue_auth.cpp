@@ -146,6 +146,22 @@ TEST_F(ZmqQueueAuthTest, Standby_PushSide_StartRefuses_SetPeersInert)
     ExpectWorkerOk(w);
 }
 
+// HEP-CORE-0036 §3.5.5 S3 / §6.7 Option B — `apply_master_approval`
+// on the PUSH side MUST materialise REG_ACK's `initial_allowlist`
+// onto the running queue.  Regression pin for the 2026-06-13 ordering
+// bug where `start()` clobbered the freshly-set allowlist atomic with
+// an empty default after `apply_master_approval` had seeded it.
+// Mutation: revert hub_zmq_queue.cpp's `if (!allowlist_.load())` guard
+// to the prior unconditional store → the worker's snap->peers.size()
+// assertion fires (allowlist is empty post-start).
+TEST_F(ZmqQueueAuthTest, ApplyMasterApproval_SeedsInitialAllowlist)
+{
+    auto w = SpawnWorker(
+        "zmq_queue_auth.auth_apply_master_approval_seeds_initial_allowlist",
+        {unique_dir("auth_apply_master_approval_seeds_initial_allowlist")});
+    ExpectWorkerOk(w);
+}
+
 TEST_F(ZmqQueueAuthTest, ConnectEmptyServerkey_FactorySucceedsStandbyStartRefuses)
 {
     // HEP-CORE-0036 §6.7 Standby state (#188) — RENAMED from
