@@ -31,7 +31,7 @@ const bool ok = admission->is_peer_allowed(...);
 `admission` is a raw pointer to the `PeerAdmission` that
 `register_domain` recorded.  In production this points at a
 `ZmqQueue` (registered via `ZmqQueue::start()` at
-`hub_zmq_queue.cpp:1253-1255`).  After the shared_lock releases on
+`src/utils/hub/hub_zmq_queue.cpp:1279`).  After the shared_lock releases on
 line 431, a parallel `~ZapDomainHandle` on another thread can run
 `unregister_domain_` (unique_lock → erase) → the queue continues
 destruction → `admission` dangles → line 443 dereferences freed

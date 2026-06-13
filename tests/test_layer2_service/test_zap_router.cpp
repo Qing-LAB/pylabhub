@@ -196,11 +196,13 @@ TEST_F(ZapRouterTest, Round3_Reentrant_RegisterRefused)
     auto w = SpawnWorker(
         "zap_router.round3_reentrant_register_refused",
         {unique_dir("round3_reentrant_register_refused")});
-    // The refused register emits an ERROR log — pin the substring so a
-    // regression that silently allowed re-entrance would fail
-    // ExpectWorkerOk's unexpected-ERROR guard.
+    // The refused register emits an ERROR log — pin the exact head of
+    // the message so a regression that silently allowed re-entrance
+    // OR a different "reentrant" log (e.g. from another module) would
+    // fail ExpectWorkerOk's unexpected-ERROR guard.
     ExpectWorkerOk(w, /*required_substrings=*/{},
-                   /*expected_error_substrings=*/{"reentrant"});
+                   /*expected_error_substrings=*/
+                   {"ZapRouter::register_domain: reentrant call detected"});
 }
 
 // Pins the PLH_PANIC path in unregister_domain_.  Death-test shape:
@@ -216,8 +218,13 @@ TEST_F(ZapRouterTest, Round3_Reentrant_UnregisterPanics)
         << "Worker did not abort — reentrant unregister_domain_ "
            "must PLH_PANIC because the router cannot recover from "
            "an erase mid-admission (dangling map entry → UAF).";
+    // Pin the unique tail of the unregister panic so an unrelated
+    // failure that happens to mention `unregister_domain_` would not
+    // be misread as success.
     EXPECT_THAT(w.get_stderr(),
-                ::testing::HasSubstr("ZapRouter::unregister_domain_"))
+                ::testing::HasSubstr(
+                    "reentrant call detected from inside a "
+                    "PeerAdmission decision"))
         << "Expected PLH_PANIC text from unregister_domain_ in stderr.  "
            "Captured stderr:\n" << w.get_stderr();
 }
@@ -236,8 +243,11 @@ TEST_F(ZapRouterTest, Round3_ConcurrentPumpers_Panic)
            "PLH_PANIC.  The libzmq REP socket FSM is single-threaded; "
            "silent racing two pumpers corrupts the FSM and AUTH-2's "
            "BRC pump would observe ETERM/EAGAIN unpredictably.";
+    // Pin the unique tail "concurrent pumper detected" so other
+    // PANICs that happen to name pump_one (e.g. future asserts in the
+    // same function) would not satisfy this matcher.
     EXPECT_THAT(w.get_stderr(),
-                ::testing::HasSubstr("ZapRouter::pump_one"))
+                ::testing::HasSubstr("concurrent pumper detected"))
         << "Expected PLH_PANIC text from pump_one in stderr.  "
            "Captured stderr:\n" << w.get_stderr();
 }
