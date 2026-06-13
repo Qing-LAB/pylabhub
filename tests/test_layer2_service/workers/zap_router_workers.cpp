@@ -33,8 +33,10 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstring>
+#include <future>
 #include <iterator>
 #include <mutex>
 #include <optional>
@@ -826,6 +828,429 @@ int handle_move_assign_releases_previous_registration(const char *)
         pylabhub::hub::GetZMQContextModule());
 }
 
+// ============================================================================
+// Round-3 Slice A — UAF + reentrance + single-pumper invariants
+//
+// These four scenarios pin the architectural fixes from task #215
+// (zap_router.cpp::pump_one + register_domain + unregister_domain_).
+// Each test sets up a custom PeerAdmission that exercises one corner
+// of the contract.  Mutation sweeps in the commit message confirm
+// each test catches the bug it pins.
+// ============================================================================
+
+namespace round3
+{
+
+// Admission whose `is_peer_allowed` parks on a promise.  Used by the
+// UAF test to deterministically interleave a pump_one mid-flight with
+// a destructor on a different thread.
+class BlockingAdmission final : public PeerAdmission
+{
+public:
+    BlockingAdmission() : release_fut_(release_promise_.get_future()) {}
+
+    bool set_peer_allowlist(PeerAllowlist al) override
+    {
+        std::lock_guard<std::mutex> lk(al_mu_);
+        al_ = std::move(al);
+        return true;
+    }
+    std::optional<PeerAllowlist>
+    peer_allowlist_snapshot() const override
+    {
+        std::lock_guard<std::mutex> lk(al_mu_);
+        return al_;
+    }
+    bool is_peer_allowed(const PeerIdentity &p) const override
+    {
+        entered_.store(true);
+        release_fut_.wait();
+        exited_.store(true);
+        std::lock_guard<std::mutex> lk(al_mu_);
+        return al_.has_value() && al_->contains(p);
+    }
+
+    void wait_until_entered() const
+    {
+        while (!entered_.load())
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    void release() { release_promise_.set_value(); }
+    bool was_exited() const { return exited_.load(); }
+
+private:
+    mutable std::mutex          al_mu_;
+    std::optional<PeerAllowlist> al_;
+    mutable std::atomic<bool>    entered_{false};
+    mutable std::atomic<bool>    exited_{false};
+    std::promise<void>           release_promise_;
+    mutable std::shared_future<void> release_fut_;
+};
+
+// Admission whose `is_peer_allowed` tries to register a NEW domain
+// from inside the call.  Pins the RecursionGuard refuse-and-log path
+// in `register_domain`.
+class ReEntrantRegisterAdmission final : public PeerAdmission
+{
+public:
+    bool set_peer_allowlist(PeerAllowlist al) override
+    {
+        std::lock_guard<std::mutex> lk(al_mu_);
+        al_ = std::move(al);
+        return true;
+    }
+    std::optional<PeerAllowlist>
+    peer_allowlist_snapshot() const override
+    {
+        std::lock_guard<std::mutex> lk(al_mu_);
+        return al_;
+    }
+    bool is_peer_allowed(const PeerIdentity &p) const override
+    {
+        // Attempt the prohibited reentrant register.  Per the
+        // RecursionGuard contract, this MUST return an inactive
+        // handle and emit an ERROR log; nothing must throw, deadlock,
+        // or actually register.
+        nested_handle_.emplace(ZapRouter::instance().register_domain(
+            "test.zap.round3.reentrant_register.nested",
+            &nested_admission_));
+        nested_register_attempted_.store(true);
+        nested_register_succeeded_.store(nested_handle_->is_active());
+        std::lock_guard<std::mutex> lk(al_mu_);
+        return al_.has_value() && al_->contains(p);
+    }
+
+    bool nested_register_attempted() const
+    {
+        return nested_register_attempted_.load();
+    }
+    bool nested_register_succeeded() const
+    {
+        return nested_register_succeeded_.load();
+    }
+
+private:
+    mutable std::mutex                          al_mu_;
+    std::optional<PeerAllowlist>                al_;
+    mutable InMemoryAdmission                   nested_admission_;
+    mutable std::optional<ZapDomainHandle>      nested_handle_{};
+    mutable std::atomic<bool>                   nested_register_attempted_{false};
+    mutable std::atomic<bool>                   nested_register_succeeded_{false};
+};
+
+// Admission whose `is_peer_allowed` resets a handle from inside the
+// call.  Pins the PLH_PANIC path in `unregister_domain_`.
+class ReEntrantUnregisterAdmission final : public PeerAdmission
+{
+public:
+    bool set_peer_allowlist(PeerAllowlist al) override
+    {
+        std::lock_guard<std::mutex> lk(al_mu_);
+        al_ = std::move(al);
+        return true;
+    }
+    std::optional<PeerAllowlist>
+    peer_allowlist_snapshot() const override
+    {
+        std::lock_guard<std::mutex> lk(al_mu_);
+        return al_;
+    }
+    bool is_peer_allowed(const PeerIdentity &p) const override
+    {
+        // Reset the held handle inside the admission decision.
+        // ~ZapDomainHandle → unregister_domain_ → RecursionGuard
+        // detects we are inside pump_one's admission scope on this
+        // thread → PLH_PANIC.  The process abort is the test signal.
+        if (handle_to_destroy_)
+            handle_to_destroy_->reset();
+        // Unreachable: the panic above aborts before we get here.
+        std::lock_guard<std::mutex> lk(al_mu_);
+        return al_.has_value() && al_->contains(p);
+    }
+
+    mutable std::optional<ZapDomainHandle> *handle_to_destroy_{nullptr};
+
+private:
+    mutable std::mutex          al_mu_;
+    std::optional<PeerAllowlist> al_;
+};
+
+// Trivial admission for the concurrent-pumpers test — admission body
+// never runs (the second pumper PANICs before reaching the call).
+class NoopAdmission final : public PeerAdmission
+{
+public:
+    bool set_peer_allowlist(PeerAllowlist) override { return true; }
+    std::optional<PeerAllowlist>
+    peer_allowlist_snapshot() const override { return std::nullopt; }
+    bool is_peer_allowed(const PeerIdentity &) const override { return true; }
+};
+
+} // namespace round3
+
+// ── Scenario 1 — UAF destructor blocks until admission returns ──────────────
+//
+// Pins ZapRouter::pump_one's shared_lock extension across the
+// `admission->is_peer_allowed(...)` call.  Mechanism:
+//   - Thread A (pump): receives a valid ZAP request, calls
+//     admission.is_peer_allowed → parks on `release_fut_`.
+//   - Thread B (destroyer): moves the handle into a local scope, so
+//     its destructor calls unregister_domain_'s unique_lock.
+//   - Invariant: unique_lock blocks while pump_one's shared_lock is
+//     held.  ~ZapDomainHandle MUST NOT return until admission returns.
+//   - Test releases the promise → admission returns → shared_lock
+//     released → unique_lock proceeds → destructor returns.
+//
+// Without the fix, pump_one releases shared_lock BEFORE the admission
+// call, so the destructor on Thread B completes immediately while
+// admission is still mid-flight — the assertion
+// `EXPECT_FALSE(destroyed.load())` fails.
+int round3_uaf_destructor_blocks_until_admission_returns(const char *)
+{
+    return run_gtest_worker(
+        [&]() {
+            const auto [client_pub, client_sec] = make_keypair();
+            const std::string domain = "test.zap.round3.uaf.blocking";
+
+            round3::BlockingAdmission admission;
+            PeerAllowlist al;
+            al.peers.insert(PeerIdentity{"curve", client_pub});
+            ASSERT_TRUE(admission.set_peer_allowlist(al));
+
+            ZapDomainHandle handle =
+                ZapRouter::instance().register_domain(domain, &admission);
+            ASSERT_TRUE(handle.is_active());
+
+            ZapPumpThread pump;
+
+            // Drive a valid ZAP request from a side thread; pump_one
+            // picks it up and parks inside admission.  The reply
+            // round-trip completes only after we release the promise.
+            std::thread req_sender([&] {
+                zmq::socket_t req = make_req_to_zap();
+                send_multipart(req, make_zap_req(
+                    "1.0", "round3-uaf-1", domain, "CURVE",
+                    make_raw_pubkey_from_z85(client_pub)));
+                auto reply = recv_zap_reply(req);
+                if (reply.size() == 6u)
+                    EXPECT_EQ(reply[2], "200");
+                else
+                    ADD_FAILURE() << "req_sender got reply.size()="
+                                  << reply.size() << " (expected 6).";
+            });
+
+            admission.wait_until_entered();
+
+            // Start destruction on a separate thread.  The destructor
+            // (`~local` at the inner scope's closing brace) MUST block
+            // waiting for pump_one's shared_lock to release.  We set
+            // `destroyed` AFTER the inner scope ends so the flag flips
+            // only AFTER ~local returns, not when the lambda body
+            // merely started.  Without this ordering, the test would
+            // be checking "lambda thread spawned" rather than
+            // "destructor completed" — and would pass even when the
+            // UAF window is open.
+            std::atomic<bool> destroyed{false};
+            std::thread destroyer([&] {
+                {
+                    ZapDomainHandle local = std::move(handle);
+                    (void) local;
+                }  // ← ~local executes here.  With the fix:
+                   // unregister_domain_'s unique_lock blocks here
+                   // until pump_one's shared_lock releases (which
+                   // requires admission to return first).
+                destroyed.store(true);
+            });
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+            // INVARIANT: destructor still blocked.  If this fires, the
+            // UAF window is open: pump_one released its shared_lock
+            // before calling is_peer_allowed, so unregister_domain_'s
+            // unique_lock proceeded while the admission pointer was
+            // still in use.  Post-AUTH-2 this is a live UAF on every
+            // handshake-vs-teardown race.
+            EXPECT_FALSE(destroyed.load())
+                << "~ZapDomainHandle returned BEFORE in-flight "
+                   "is_peer_allowed completed — UAF window OPEN.  "
+                   "pump_one must hold registered_mu shared across "
+                   "the admission call.";
+            EXPECT_FALSE(admission.was_exited())
+                << "Admission body somehow exited before release — "
+                   "test logic broken, re-check.";
+
+            // Release: admission returns → shared_lock released →
+            // unique_lock proceeds → destructor completes.
+            admission.release();
+
+            destroyer.join();
+            req_sender.join();
+
+            EXPECT_TRUE(destroyed.load());
+            EXPECT_TRUE(admission.was_exited());
+            EXPECT_EQ(ZapRouter::instance()
+                          .registered_domain_count_for_test(), 0u);
+        },
+        "zap_router::round3_uaf_destructor_blocks_until_admission_returns",
+        Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(),
+        JsonConfig::GetLifecycleModule(),
+        pylabhub::hub::GetZMQContextModule());
+}
+
+// ── Scenario 2 — Reentrant register_domain refused ──────────────────────────
+//
+// Pins the RecursionGuard refuse-and-log path in register_domain.
+// An admission that calls ZapRouter::register_domain from inside its
+// own is_peer_allowed MUST get an inactive handle back; the router
+// MUST NOT actually register the nested domain.
+//
+// Without the fix, register_domain would attempt to acquire its
+// unique_lock while the same thread holds pump_one's shared_lock,
+// which is undefined behavior under std::shared_mutex (the thread
+// already holds shared; attempting to acquire shared OR unique
+// without release is UB) — observable as silent deadlock or worse.
+int round3_reentrant_register_refused(const char *)
+{
+    return run_gtest_worker(
+        [&]() {
+            const auto [client_pub, client_sec] = make_keypair();
+            const std::string domain = "test.zap.round3.reentrant_register.outer";
+
+            round3::ReEntrantRegisterAdmission admission;
+            PeerAllowlist al;
+            al.peers.insert(PeerIdentity{"curve", client_pub});
+            ASSERT_TRUE(admission.set_peer_allowlist(al));
+
+            auto handle = ZapRouter::instance().register_domain(
+                domain, &admission);
+            ASSERT_TRUE(handle.is_active());
+            EXPECT_EQ(ZapRouter::instance()
+                          .registered_domain_count_for_test(), 1u);
+
+            ZapPumpThread pump;
+
+            // Drive a valid ZAP request — pump_one will reach
+            // admission, which attempts the nested register.
+            zmq::socket_t req = make_req_to_zap();
+            send_multipart(req, make_zap_req(
+                "1.0", "round3-reentrant-1", domain, "CURVE",
+                make_raw_pubkey_from_z85(client_pub)));
+            auto reply = recv_zap_reply(req);
+            ASSERT_EQ(reply.size(), 6u);
+            EXPECT_EQ(reply[2], "200")
+                << "Outer admission must still admit the client; the "
+                   "nested register attempt should not block the "
+                   "outer decision.";
+
+            // The reentrant register MUST have been refused.  If it
+            // succeeded, the RecursionGuard check is missing from
+            // register_domain.
+            EXPECT_TRUE(admission.nested_register_attempted())
+                << "Admission body did not attempt the nested register "
+                   "— test logic broken.";
+            EXPECT_FALSE(admission.nested_register_succeeded())
+                << "register_domain accepted a call from inside "
+                   "is_peer_allowed.  RecursionGuard check is missing "
+                   "or wrong key.";
+
+            // Router state: only the outer domain is registered.
+            EXPECT_EQ(ZapRouter::instance()
+                          .registered_domain_count_for_test(), 1u);
+        },
+        "zap_router::round3_reentrant_register_refused",
+        Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(),
+        JsonConfig::GetLifecycleModule(),
+        pylabhub::hub::GetZMQContextModule());
+}
+
+// ── Scenario 3 — Reentrant unregister_domain_ panics ────────────────────────
+//
+// Pins the PLH_PANIC path in unregister_domain_.  An admission whose
+// is_peer_allowed triggers `~ZapDomainHandle` from inside the call
+// would leave the router with a dangling map entry — unrecoverable.
+// The runtime MUST panic instead of silently returning.
+//
+// Death test: SpawnWorker expects a non-zero exit code + a stderr
+// substring matching the PLH_PANIC message.
+int round3_reentrant_unregister_panics(const char *)
+{
+    return run_gtest_worker(
+        [&]() {
+            const auto [client_pub, client_sec] = make_keypair();
+            const std::string domain = "test.zap.round3.reentrant_unregister";
+
+            round3::ReEntrantUnregisterAdmission admission;
+            PeerAllowlist al;
+            al.peers.insert(PeerIdentity{"curve", client_pub});
+            ASSERT_TRUE(admission.set_peer_allowlist(al));
+
+            std::optional<ZapDomainHandle> handle =
+                ZapRouter::instance().register_domain(domain, &admission);
+            ASSERT_TRUE(handle->is_active());
+            admission.handle_to_destroy_ = &handle;
+
+            ZapPumpThread pump;
+
+            // Drive a valid ZAP request.  pump_one reaches admission,
+            // admission resets the held handle, ~ZapDomainHandle
+            // calls unregister_domain_, RecursionGuard fires, process
+            // panics.  No reply ever returns.
+            zmq::socket_t req = make_req_to_zap();
+            send_multipart(req, make_zap_req(
+                "1.0", "round3-reentrant-unreg-1", domain, "CURVE",
+                make_raw_pubkey_from_z85(client_pub)));
+            // We must NEVER reach the assertion below — the pump
+            // thread should have aborted the process.  Wait briefly
+            // so the abort surfaces before we exit cleanly.
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            FAIL() << "Worker still alive after admission triggered "
+                      "reentrant unregister — PLH_PANIC did not fire.  "
+                      "RecursionGuard check is missing from "
+                      "unregister_domain_.";
+        },
+        "zap_router::round3_reentrant_unregister_panics",
+        Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(),
+        JsonConfig::GetLifecycleModule(),
+        pylabhub::hub::GetZMQContextModule());
+}
+
+// ── Scenario 4 — Concurrent pumpers panic ───────────────────────────────────
+//
+// Pins the single-pumper invariant via the atomic counter PANIC in
+// pump_one.  Two threads enter pump_one concurrently; whichever loses
+// the race observes the counter > 1 and panics.
+//
+// Death test: non-zero exit + PLH_PANIC substring.
+int round3_concurrent_pumpers_panic(const char *)
+{
+    return run_gtest_worker(
+        [&]() {
+            round3::NoopAdmission admission;
+            auto handle = ZapRouter::instance().register_domain(
+                "test.zap.round3.two_pumpers", &admission);
+            ASSERT_TRUE(handle.is_active());
+
+            // Spawn two pumpers.  pump_one's atomic counter MUST
+            // detect the simultaneous entry and panic.  The order
+            // of panic vs the slower pumper's entry is racy but
+            // either way, at least one PANIC fires.
+            ZapPumpThread pump1(std::chrono::milliseconds(50));
+            ZapPumpThread pump2(std::chrono::milliseconds(50));
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            FAIL() << "Worker still alive with two concurrent "
+                      "ZapPumpThread instances — pump_one's "
+                      "single-pumper PANIC is missing.";
+        },
+        "zap_router::round3_concurrent_pumpers_panic",
+        Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(),
+        JsonConfig::GetLifecycleModule(),
+        pylabhub::hub::GetZMQContextModule());
+}
+
 // ── Dispatcher + registrar ─────────────────────────────────────────────────
 
 int dispatch_zap_router(int argc, char **argv)
@@ -874,6 +1299,14 @@ int dispatch_zap_router(int argc, char **argv)
         return handle_move_construct_transfers_ownership(tmpdir);
     if (scenario == "handle_move_assign_releases_previous_registration")
         return handle_move_assign_releases_previous_registration(tmpdir);
+    if (scenario == "round3_uaf_destructor_blocks_until_admission_returns")
+        return round3_uaf_destructor_blocks_until_admission_returns(tmpdir);
+    if (scenario == "round3_reentrant_register_refused")
+        return round3_reentrant_register_refused(tmpdir);
+    if (scenario == "round3_reentrant_unregister_panics")
+        return round3_reentrant_unregister_panics(tmpdir);
+    if (scenario == "round3_concurrent_pumpers_panic")
+        return round3_concurrent_pumpers_panic(tmpdir);
     std::fprintf(stderr, "zap_router: unknown scenario '%s'\n",
                  scenario.c_str());
     return 1;

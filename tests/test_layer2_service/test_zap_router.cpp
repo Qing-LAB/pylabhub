@@ -15,6 +15,7 @@
  */
 #include "test_patterns.h"
 
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
 #include <atomic>
@@ -169,4 +170,74 @@ TEST_F(ZapRouterTest, Handle_MoveAssign_ReleasesPreviousRegistration)
         "zap_router.handle_move_assign_releases_previous_registration",
         {unique_dir("handle_move_assign_releases_previous_registration")});
     ExpectWorkerOk(w);
+}
+
+// ── Round-3 Slice A — task #215 ZapRouter UAF + reentrance fix ──────────────
+
+// Pins ZapRouter::pump_one's shared_lock extension across the
+// admission call.  Without the lock-scope extension, a parallel
+// ~ZapDomainHandle returns immediately while the admission pointer is
+// still in use — a UAF the moment AUTH-2 wires pump_one onto the BRC
+// poll thread.
+TEST_F(ZapRouterTest, Round3_UAF_DestructorBlocksUntilAdmissionReturns)
+{
+    auto w = SpawnWorker(
+        "zap_router.round3_uaf_destructor_blocks_until_admission_returns",
+        {unique_dir("round3_uaf_destructor_blocks_until_admission_returns")});
+    ExpectWorkerOk(w);
+}
+
+// Pins the RecursionGuard refuse-and-log path in register_domain.
+// An admission that calls back into register_domain from inside
+// is_peer_allowed must get an inactive handle; the router state
+// stays single-domain.
+TEST_F(ZapRouterTest, Round3_Reentrant_RegisterRefused)
+{
+    auto w = SpawnWorker(
+        "zap_router.round3_reentrant_register_refused",
+        {unique_dir("round3_reentrant_register_refused")});
+    // The refused register emits an ERROR log — pin the substring so a
+    // regression that silently allowed re-entrance would fail
+    // ExpectWorkerOk's unexpected-ERROR guard.
+    ExpectWorkerOk(w, /*required_substrings=*/{},
+                   /*expected_error_substrings=*/{"reentrant"});
+}
+
+// Pins the PLH_PANIC path in unregister_domain_.  Death-test shape:
+// the worker subprocess must exit non-zero with the panic substring
+// in stderr.
+TEST_F(ZapRouterTest, Round3_Reentrant_UnregisterPanics)
+{
+    auto w = SpawnWorker(
+        "zap_router.round3_reentrant_unregister_panics",
+        {unique_dir("round3_reentrant_unregister_panics")});
+    w.wait_for_exit();
+    EXPECT_NE(w.exit_code(), 0)
+        << "Worker did not abort — reentrant unregister_domain_ "
+           "must PLH_PANIC because the router cannot recover from "
+           "an erase mid-admission (dangling map entry → UAF).";
+    EXPECT_THAT(w.get_stderr(),
+                ::testing::HasSubstr("ZapRouter::unregister_domain_"))
+        << "Expected PLH_PANIC text from unregister_domain_ in stderr.  "
+           "Captured stderr:\n" << w.get_stderr();
+}
+
+// Pins the atomic counter PANIC in pump_one for concurrent pumpers.
+// Two ZapPumpThread instances race into pump_one; whichever loses
+// the counter race observes count > 1 and PANICs.
+TEST_F(ZapRouterTest, Round3_ConcurrentPumpers_Panic)
+{
+    auto w = SpawnWorker(
+        "zap_router.round3_concurrent_pumpers_panic",
+        {unique_dir("round3_concurrent_pumpers_panic")});
+    w.wait_for_exit();
+    EXPECT_NE(w.exit_code(), 0)
+        << "Worker did not abort — two concurrent pumpers must "
+           "PLH_PANIC.  The libzmq REP socket FSM is single-threaded; "
+           "silent racing two pumpers corrupts the FSM and AUTH-2's "
+           "BRC pump would observe ETERM/EAGAIN unpredictably.";
+    EXPECT_THAT(w.get_stderr(),
+                ::testing::HasSubstr("ZapRouter::pump_one"))
+        << "Expected PLH_PANIC text from pump_one in stderr.  "
+           "Captured stderr:\n" << w.get_stderr();
 }

@@ -37,6 +37,31 @@
  *     BRC dispatch thread (plh_role); tests/demos use
  *     `ZapPumpThread` (a tiny RAII helper, defined alongside).
  *
+ * **Runtime-enforced invariants (Slice A, task #215).**  The
+ * "exactly ONE pumper" contract and the admission-pointer lifetime
+ * are enforced at the call sites, not just documented:
+ *
+ *   1. `pump_one` holds `registered_mu` in shared mode across the
+ *      `admission->is_peer_allowed(...)` call.  `~ZapDomainHandle`
+ *      takes the same mutex in unique mode, so the destructor
+ *      blocks until any in-flight admission decision completes —
+ *      closes the UAF window between the lookup and the call that
+ *      fires the moment AUTH-2 (#162) puts pump_one on the BRC
+ *      poll thread.
+ *   2. `pump_one` pushes a `RecursionGuard` keyed to the router
+ *      instance (per `recursion_guard.hpp` — thread-local, RAII).
+ *      `register_domain` refuses + logs + returns an inactive handle
+ *      when the same thread is already inside an admission decision;
+ *      `unregister_domain_` PLH_PANICs (a destructor can't react to
+ *      a refusal — leaving a dangling map entry would UAF the next
+ *      pump).  See `peer_admission.hpp::is_peer_allowed` reentrance
+ *      contract.
+ *   3. `pump_one` increments an atomic counter on entry; a second
+ *      concurrent entry PLH_PANICs with the post-increment count.
+ *      Catches accidental two-pumper configurations (e.g. a
+ *      `ZapPumpThread` left in scope while the BRC pump is also
+ *      running) before they corrupt the REP socket FSM.
+ *
  * **Failure mode — "registered but unpumped" (design §7.4).**  If a
  * binary calls `register_domain` and never pumps, every CURVE
  * handshake on any socket using that `zap_domain` hangs at libzmq.

@@ -194,6 +194,39 @@ public:
     /// enforcement context.  Must be safe with concurrent
     /// `set_peer_allowlist`.
     ///
+    /// **Reentrance contract (CURVE / ZAP transport, task #215).**
+    /// When `ZapRouter::pump_one` invokes this method it holds
+    /// `registered_mu` in shared mode AND pushes a `RecursionGuard`
+    /// keyed to the router instance on the calling thread (per
+    /// `recursion_guard.hpp` — thread-local, RAII).  Implementers
+    /// of CURVE-side admission:
+    ///   1. MUST run synchronously on the calling thread.  Delegating
+    ///      the decision to a worker thread that calls back into
+    ///      `ZapRouter` defeats the per-thread `RecursionGuard` and
+    ///      can deadlock on `registered_mu`.
+    ///   2. MUST NOT call `ZapRouter::register_domain` from inside
+    ///      this method.  The router detects reentrance via
+    ///      `is_recursing(router)`, logs an ERROR, and returns an
+    ///      inactive sentinel `ZapDomainHandle` (graceful failure).
+    ///   3. MUST NOT trigger destruction of any `ZapDomainHandle`
+    ///      (directly or transitively — e.g. by stopping a queue
+    ///      that owns one).  `~ZapDomainHandle` routes through
+    ///      `unregister_domain_` which PLH_PANICs on reentrance:
+    ///      destroying a handle inside the admission decision is
+    ///      unrecoverable because the router would end up with a
+    ///      dangling map entry pointing at admission/queue memory
+    ///      that is about to be freed.
+    ///   4. SHOULD be bounded time — the shared_lock blocks
+    ///      concurrent unregister; long-running decisions stall
+    ///      teardown.  Production implementers (`ZmqQueue`,
+    ///      `BrokerCtrlAdmission`) do a lock-free atomic load of the
+    ///      allowlist snapshot + a hash-set lookup.
+    ///   5. Throwing is permitted: `pump_one`'s try/catch treats the
+    ///      throw as deny + logs an ERROR.  Prefer returning `false`.
+    ///
+    /// See HEP-CORE-0036 §7 (ZAP enforcement) for the architectural
+    /// rationale.
+    ///
     /// @return true iff @p peer is currently admitted.
     [[nodiscard]] virtual bool
     is_peer_allowed(const PeerIdentity &peer) const = 0;

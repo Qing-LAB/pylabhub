@@ -3390,6 +3390,41 @@ map → allowlist set) → ALLOW iff pubkey ∈ set; else DENY.
 | Endpoint not in producer's bind table | DENY.  Defensive; shouldn't happen if broker is sole endpoint authority. |
 | Handler thread dead | All CURVE handshakes time out at the peer.  Detectable via libzmq socket monitor; producer transitions to critical-error. |
 
+### 7.4 Runtime-enforced ZapRouter contracts (Slice A, task #215)
+
+The `ZapRouter` ZAP REP server is a process-singleton that routes
+authenticated CURVE handshakes from libzmq to per-domain
+`PeerAdmission` decisions.  Three architectural invariants — quietly
+contractual before Slice A — are now enforced at the call sites in
+`zap_router.cpp`.  The invariants exist because Slice A's `pump_one`
+will run on the BRC poll thread once AUTH-2 (#162) lands; any latent
+race that was dormant in test-only `ZapPumpThread` mode becomes a
+live UAF or FSM corruption under AUTH-2.
+
+| # | Invariant | Enforcement | Failure when violated |
+|---|---|---|---|
+| 1 | **Admission-pointer lifetime.** The `PeerAdmission *` looked up under `registered_mu` is valid for the duration of the `is_peer_allowed(...)` call. | `pump_one` holds `registered_mu` in shared mode across the admission call. `~ZapDomainHandle` → `unregister_domain_` takes the same mutex in unique mode, so the destructor blocks until any in-flight admission completes. | (Pre-fix) Handshake-vs-teardown race → UAF on the freed queue's vtable. |
+| 2 | **`is_peer_allowed` reentrance.** The admission implementer MUST run synchronously on the calling thread; MUST NOT call back into `ZapRouter::register_domain` or trigger destruction of any `ZapDomainHandle`. | `pump_one` pushes a `RecursionGuard` keyed to the router (thread-local stack per `recursion_guard.hpp`). `register_domain` refuses + logs + returns an inactive handle. `unregister_domain_` PLH_PANICs (a destructor can't react to a refusal). | (Pre-fix) Reentrant `register_domain` hits `std::shared_mutex` UB (same thread holds shared, requests unique). Reentrant unregister leaves a dangling map entry → UAF on next pump. |
+| 3 | **Single-pumper FSM contract.** At most one thread is inside `pump_one` at a time. | `pump_one` increments an atomic counter on entry; PLH_PANIC if the post-increment value > 1. RAII scope-guard ensures decrement on every exit path. | (Pre-fix) Two pumpers concurrently call `recv_multipart` on the inproc REP socket — libzmq's REP FSM is single-thread; the FSM tears silently and subsequent recv throws EFSM. |
+
+Reentrance contract for `PeerAdmission::is_peer_allowed`
+implementers is encoded in `peer_admission.hpp` doc-comment (§Reentrance
+contract).  The CURVE-side implementers in production
+(`ZmqQueue::is_peer_allowed`, `BrokerCtrlAdmission::is_peer_allowed`)
+are lock-free atomic snapshot loads + hash-set lookups — they
+satisfy the contract by construction.
+
+Regression tests under `tests/test_layer2_service/workers/zap_router_workers.cpp::round3_*`
+pin each invariant; mutation sweeps confirm each test catches the
+specific failure mode it claims (revert the lock-scope extension →
+UAF test fails; remove the `register_domain` guard → reentrant-
+register test hangs on shared_mutex UB; remove the
+`unregister_domain_` guard → reentrant-unregister test hangs on
+unique_lock self-deadlock; remove the pumper counter → concurrent-
+pumpers test stays alive instead of aborting).  See
+`docs/code_review/REVIEW_ZapRouter_UAF_2026-06-13.md` for the
+audit trail.
+
 ---
 
 ## 8. Lifecycle gating in the data loop
