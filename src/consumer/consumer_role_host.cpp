@@ -359,7 +359,9 @@ void ConsumerRoleHost::worker_main_()
                                    hub_max);
     }
 
-    // Step 6b: Startup coordination — wait for prerequisite roles (HEP-0023).
+    // Step 6e: Startup coordination — wait for prerequisite roles (HEP-0023).
+    // Sub-step of Step 6 per HEP-CORE-0011 § "Role Host worker_main_() Steps"
+    // (renumbered 2026-06-13: was 6b in the pre-AUTH-1 step list).
     if (!config_.startup().wait_for_roles.empty())
     {
         if (!scripting::wait_for_roles(api_ref, config_.startup().wait_for_roles, "[cons]"))

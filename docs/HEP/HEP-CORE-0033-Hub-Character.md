@@ -3336,8 +3336,9 @@ Wave B shipped 2026-05-26 (Wave-B M9, task #72).  Current file map:
 
 - §18 — Broker message routing classes (the four-class taxonomy this
   section's `RoleHandler` dispatches against).
-- HEP-CORE-0019 §2.3 / §4.1 — Phase 6 per-presence heartbeats; wire
-  format includes `(uid, role_type)`.
+- HEP-CORE-0019 §2 + §4.1 — Phase 6 per-presence heartbeats (design
+  principles + `HEARTBEAT_REQ` wire format including
+  `(uid, role_type)`).
 - HEP-CORE-0023 §2.1, §2.5.2 — channel-FSM is producer-only;
   per-presence heartbeat contract.
 - HEP-CORE-0023 §5.5 — `wait_for_roles` post-Wave-A: Class B

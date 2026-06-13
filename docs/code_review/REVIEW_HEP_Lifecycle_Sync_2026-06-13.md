@@ -162,12 +162,44 @@ in scope.  Will fix as a footnote within the same commit.
 All items closed.  Ready for archive at the next sweep per
 `docs/DOC_STRUCTURE.md §2.2`.
 
-## Verification
+## Round-2: fresh-eye review (task #214) — addressed in this commit
 
-- Build green (cmake --build -j 2; doc-only changes; no targets rebuilt
-  modulo timestamps).
-- L2 + L3 sweep green: **1734 / 1734 tests passed**.
-- Grep for stale strings outside the intended historical-citation
-  scope (`start_rx_queue`, `start_tx_queue`, `start_ctrl_thread`):
-  zero hits outside HEP-CORE-0018 §15.4 banner (intended) and
-  HEP-CORE-0031 §4.3.6 M4f history row (intended).
+A three-reviewer fresh-eye sweep ran after the Round-1 commit
+(`32f4c320`) and surfaced one **critical code bug** plus seven doc
+issues.  All addressed:
+
+| ID | Issue | Disposition |
+|---|---|---|
+| **CRIT** | `ZmqQueue::start()` unconditionally clobbered the allowlist atomic with empty, dropping REG_ACK's `initial_allowlist` on the floor.  Found via fresh-eye review of HEP-0017 §3.3 wording.  Hidden today because AUTH-2 hasn't shipped; would have broken every CURVE handshake the moment it did. | Code fix + L2 regression test landed in commit `b17d5168` (#214 Phase 1).  Mutation sweep confirmed the test catches the bug.  See `tests/.../zmq_queue_auth_workers.cpp::auth_apply_master_approval_seeds_initial_allowlist`. |
+| **R2-H1** | HEP-0011 had two "Step 8" labels (data loop + first teardown step) — reader confusion. | Teardown sub-steps renumbered to 9.1..9.7.  Thread Shutdown Contract callout updated to match. |
+| **R2-H2** | Jargon cold-start: 8+ acronyms before Step 6c without inline gloss. | Added "Terms used in this section" mini-glossary block before the Mermaid (Standby/Configured/Active, BRC, handler_ctrl_<N>, REG_ACK, allowlist, presence, ZAP, master/peer). |
+| **R2-H3** | Mermaid `H-->>B: DEALER connect` misattributed: the connect runs on the worker thread inside `start_handler_threads` Phase 1, not on the handler-ctrl threads. | Fixed.  Now `API->>B: DEALER connect (Phase 1, on worker thread)` with handler-thread spawn shown as a later step (Phase 3). |
+| **R2-H4** | "ASK" bracket started at Step 6a but 6a is purely local (no broker contact). | Bracket narrowed to "Step 6b-6c — ASK". |
+| **R2-H5** | Step 6a obscured that the role host builds a **fresh** presence vector for `RoleHandler`, distinct from the `presences_` member from Step 1a. | Step 6a prose now calls out "constructed fresh from `config_.in_hub()` / `config_.out_hub()` — mirrors `presences_` but is a separate vector because RoleHandler takes ownership by move". |
+| **R2-H6** | Step 8 didn't document the `!has_tx_side() / !has_rx_side()` skip branch. | Added: "ready-but-empty" path now explicit, with promise-already-set-to-true note. |
+| **R2-H7** | Source comments at producer:400 / consumer:362 / processor:463 still said `// Step 6b` for the wait_for_roles call, conflicting with the HEP doc's new Step 6e label. | All three relabeled to Step 6e with cross-reference back to the HEP and a "(renumbered 2026-06-13)" note. |
+| **R2-M1** | HEP-0017 §3.3 PUSH bullet said `apply_master_approval` "installs the ZAP handler" — wrong attribution.  ZAP `register_domain` happens inside `start()`. | Rewrote the PUSH bullet as an explicit 1-2 ordered list: (1) load allowlist via `set_peer_allowlist`, (2) `start()` registers ZAP domain BEFORE bind, binds socket, spawns worker.  Cross-referenced HEP-0011 Step 6d. |
+| **R2-M2** | HEP-0017 §3.3 said the runtime path "merges" the allowlist — actually full snapshot replacement. | Replaced "merges" with "snapshot-replaces"; added explicit "Replace, not merge" sentence. |
+| **R2-M3** | PULL has per-peer add/remove APIs; PUSH is allowlist-only snapshot-replace — asymmetry not called out. | New sub-section "PULL vs PUSH symmetry — and where they differ" calls it out with rationale. |
+| **R2-M4** | HEP-0019 said heartbeat ticks "fire on the `handler_ctrl_<N>` threads" — actually only on `handler_ctrl_0` (master); `on_heartbeat_tick_` then routes per-presence emissions. | Tightened to precise wording: tick callback fires on master; per-presence emissions routed via `resolve_bc_for_channel`. |
+| **R2-M5** | HEP-0031 §4.2.4 pseudocode used `&pImpl->core_` but real code uses `pImpl->core` (`core` is already a pointer). | Fixed.  Pseudocode also updated to capture `bc` + `core` at the spawn site (matching the real lambda capture shape). |
+| **R2-M6** | HEP-0033 §19.9 cross-ref to `HEP-CORE-0019 §2.3` — anchor doesn't exist (only §2 + §2.1). | Fixed to `§2 + §4.1` with parenthetical explaining what each carries. |
+| **R2-L** | Reviewer-3 concern about HEP-0040 modules contributing process-global threads to HEP-0031 §4.3.5 totals. | Verified: `SecureMemorySubsystem` + `KeyStore` spawn zero threads (grepped `std::thread` / `thread_manager` / `spawn(`).  Totals stay accurate. |
+
+## Verification (final)
+
+- Build green (cmake --build -j 2).
+- L2 + L3 sweep green: **1735 / 1735 tests passed** (1734 pre-existing
+  + 1 new regression test for the clobber bug).
+- Mutation sweep on the code fix: with the conditional-seed guard
+  reverted to unconditional store, `ApplyMasterApproval_SeedsInitialAllowlist`
+  fails with `snap->peers.size() = 0`.  Re-applying the guard
+  restores green.  Test pins the fix.
+- Cross-doc references spot-checked:
+  - HEP-0011 § "Role Host worker_main_() Steps" Step 6d (cited from
+    HEP-0019 line 1122): exists and describes apply_*_reg_ack +
+    install_heartbeat as documented.
+  - HEP-0036 §3.5 + §6.2 + §6.4 + §6.5 + §6.7 (cited from HEP-0011 /
+    HEP-0017 / HEP-0018): all anchors resolve.
+  - HEP-0031 §4.1 / §4.2.1 / §4.2.4 / §4.3.1 (cited from HEP-0011):
+    all anchors resolve.
