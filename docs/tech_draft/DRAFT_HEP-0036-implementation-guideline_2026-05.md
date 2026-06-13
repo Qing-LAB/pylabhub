@@ -16,6 +16,20 @@ permanent on archival, not the reverse).
 
 ---
 
+## §3.5 alignment (added 2026-06-12)
+
+This implementation guideline pre-dates HEP-CORE-0036 §3.5
+(consolidated principle + symmetric Option-α + 4 load-bearing
+invariants, added 2026-06-12).  Where this doc's task ordering or
+scope contracts conflict with §3.5, §3.5 wins.  Specifically:
+producer PUSH bind moves from `setup_infrastructure_` (S1) to
+`apply_master_approval(REG_ACK)` (S3); registration is
+fatal-on-failure; HB cadence starts at S3; ENDPOINT_UPDATE_REQ is
+retired (endpoint in REG_REQ).  Re-read HEP-CORE-0036 §3.5 before
+acting on any task in this doc.
+
+---
+
 ## 1. Purpose
 
 The HEP-CORE-0036 auth chain is a multi-task refactor, not a single

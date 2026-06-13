@@ -125,6 +125,10 @@ When a role starts:
 2. **Consumer** sends `DISC_REQ` to discover the channel, then `CONSUMER_REG_REQ`
    to register. The broker returns connection info (SHM name, ZMQ endpoint, etc.).
    If the consumer has an inbox, its inbox info is also registered.
+   Under HEP-CORE-0036 §3.5.5, the rx/tx queues are constructed pre-REG (Standby
+   state) but only become Active when the broker's ACK is applied via
+   `apply_master_approval` (post-REG, S3) — no data-plane footprint exists before
+   the broker authorizes the role.
 
 3. **Processor** does both: `REG_REQ` for its output channel, `CONSUMER_REG_REQ`
    for its input channel. Its inbox (if configured) is registered via the output REG_REQ.

@@ -327,9 +327,14 @@ bool RoleAPIBase::build_tx_queue(const hub::TxQueueOptions &opts)
         // role↔hub data path.  Producer (PUSH/bind side) presents its
         // identity keypair to libzmq + installs a PeerAdmission
         // handler on the same ZMQ context's ZAP REP (HEP-CORE-0036
-        // §7).  The initial allowlist is empty (broker pushes the
-        // current snapshot via `set_peer_allowlist` once D4 routes
-        // CHANNEL_AUTH_CHANGED_NOTIFY pulls).  zap_domain is
+        // §7).  The initial allowlist is empty until
+        // `apply_master_approval(REG_ACK)` seeds it from
+        // `REG_ACK.initial_allowlist` at S3 per HEP-CORE-0036 §3.5.5
+        // + §6.7 Option B.  Runtime refreshes arrive when the
+        // role-host's BRC handler pulls `GET_CHANNEL_AUTH_REQ` in
+        // response to `CHANNEL_AUTH_CHANGED_NOTIFY` per §6.5
+        // (amendment 2026-06-04 — snapshot-push `CHANNEL_AUTH_UPDATE`
+        // retired).  Tracked under task #103 (AUTH-1).  zap_domain is
         // per-(role,channel,side).
         // HEP-CORE-0040 §172: identity keypair lives in the process
         // KeyStore under `kRoleIdentityName` (seeded by
@@ -351,12 +356,11 @@ bool RoleAPIBase::build_tx_queue(const hub::TxQueueOptions &opts)
             /*instance_id=*/std::move(inst_id));
         if (!writer)
             return false;
-        if (!writer->start())
-        {
-            LOGGER_ERROR("[{}] ZMQ PUSH start() failed for '{}'",
-                         pImpl->role_tag, opts.zmq_node_endpoint);
-            return false;
-        }
+        // HEP-CORE-0036 §3.5.1 + §3.5.5 S1: tx queue is built in
+        // Standby here; no PUSH bind, no ZAP arm.  The role host
+        // drives Standby → Active later at S3 via
+        // `apply_producer_reg_ack(REG_ACK)` once the broker has
+        // accepted the producer's registration.
     }
     else
     {
@@ -450,8 +454,10 @@ bool RoleAPIBase::build_rx_queue(const hub::RxQueueOptions &opts)
             return false;
         // Pre-populated peers: start immediately (legacy path
         // preservation).  Empty peers: queue stays Standby; the
-        // role-host MUST call `apply_consumer_reg_ack(ack)` later to
-        // drive Standby → Configured → Active.
+        // role-host MUST call `apply_consumer_reg_ack(ack)` later —
+        // any set_* args meanwhile are BUFFERED in Standby; merged
+        // into Standby → Configured → Active by `apply_master_approval`
+        // per HEP-CORE-0036 §6.7 Option B.
         if (have_peer && !reader->start())
         {
             LOGGER_ERROR("[{}] ZMQ PULL start() failed for '{}'",
@@ -488,11 +494,14 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
                      pImpl->role_tag);
         return false;
     }
-    // Standby → Configured.  Polymorphic dispatch per HEP-CORE-0036 §6.7:
-    // ZmqQueue extracts ack["producers"] and calls set_producer_peers;
-    // ShmQueue is a no-op (config-supplied secret already applied at
-    // construction; future AUTH-4 broker-supplied secret will route
-    // through here when the broker emits ack["shm_secret"]).
+    // Drive Standby → Active per HEP-CORE-0036 §6.7 Option B.  The
+    // queue's apply_master_approval is the single mutator that
+    // applies the broker's reply.  For PULL queues it extracts
+    // ack["producers"], promotes peer[0] into transport-artifact
+    // fields, and calls start() internally.  For SHM, it is a no-op
+    // (config-supplied secret already applied at construction; future
+    // AUTH-4 broker-supplied secret will route through here when the
+    // broker emits ack["shm_secret"]).
     if (!pImpl->rx_queue->apply_master_approval(ack))
     {
         LOGGER_ERROR("[{}] apply_consumer_reg_ack: apply_master_approval "
@@ -500,13 +509,28 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
                      "malformed broker delivery)", pImpl->role_tag);
         return false;
     }
-    // Configured → Active.  For an already-Active queue (legacy path
-    // or SHM-with-config-secret), start() is idempotent.
-    if (!pImpl->rx_queue->start())
+    return true;
+}
+
+bool RoleAPIBase::apply_producer_reg_ack(const nlohmann::json &ack)
+{
+    if (!pImpl->tx_queue)
     {
-        LOGGER_ERROR("[{}] apply_consumer_reg_ack: rx_queue start() "
-                     "failed (HEP-CORE-0036 §6.7 Configured → Active)",
+        LOGGER_ERROR("[{}] apply_producer_reg_ack: tx_queue not wired",
                      pImpl->role_tag);
+        return false;
+    }
+    // Producer-side mirror of apply_consumer_reg_ack.  Drive Standby
+    // → Active per HEP-CORE-0036 §6.7 Option B.  For PUSH queues,
+    // apply_master_approval extracts ack["initial_allowlist"] (array
+    // of Z85 pubkey strings per HEP-0036 §6.2), seeds the ZAP cache,
+    // and calls start() internally to bind and spawn the PUSH worker.
+    // For SHM tx, it is a no-op today (config-supplied secret).
+    if (!pImpl->tx_queue->apply_master_approval(ack))
+    {
+        LOGGER_ERROR("[{}] apply_producer_reg_ack: apply_master_approval "
+                     "refused (HEP-CORE-0036 §6.7 'fully refused' — "
+                     "malformed broker delivery)", pImpl->role_tag);
         return false;
     }
     return true;

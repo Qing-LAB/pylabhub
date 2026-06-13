@@ -63,15 +63,16 @@ post-I9), §15 references.
 `d9f7d218`, `06798daa`).
 **Decision:** Role-side `RegistrationState` gains a new
 `Authorized` state between `Registered` and `Deregistered`.
-- **Producer's Authorized** fires SYNCHRONOUSLY at end of
-  `setup_infrastructure_` (PUSH bound + ZAP installed +
-  `ENDPOINT_UPDATE_REQ` ACK'd).  `install_heartbeat` is called
-  next; the first heartbeat tick fires; broker's existing
-  `first_heartbeat_seen` mechanism (`hub_state.hpp:107`) flips
-  channel from `kRegistering → kLive`.  Consumer admission is
-  gated on `kLive` (R6 — small broker-side fix at
-  `broker_service.cpp:1959` extending the existing check to match
-  DISC_REQ's behavior).
+- **T2 (LOCKED 2026-06-12 per HEP-CORE-0036 §3.5).**  Producer's
+  `Authorized` fires SYNCHRONOUSLY at the END of
+  `apply_master_approval(REG_ACK)` (S3) — after the allowlist is
+  seeded from `REG_ACK.initial_allowlist` (merged with any S2→S3
+  buffered `set_peer_allowlist` per §6.7 Option B), the PUSH socket
+  binds at the config-determined endpoint, ZAP is armed, and the
+  PUSH worker spawns under ThreadManager scope.  `install_heartbeat`
+  runs at the tail of S3 — HB cadence starts AFTER the data plane
+  is up (§3.5.4 INV1).  ENDPOINT_UPDATE_REQ is RETIRED — config
+  endpoint goes directly in REG_REQ.zmq_node_endpoint.
 - **Consumer's Authorized** fires SYNCHRONOUSLY when
   `CONSUMER_REG_ACK.producers[]` is received and the framework
   constructs the rx queue.  Authorization was completed at REG

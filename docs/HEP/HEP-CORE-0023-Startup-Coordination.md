@@ -781,7 +781,7 @@ struct ProducerEntry {                    // mirrors ConsumerEntry shape
     std::string  inbox_schema_json;       // JSON; empty if no inbox
     std::string  inbox_packing;
     std::string  inbox_checksum;
-    // Per-producer data-plane endpoint (HEP-CORE-0021 §16.3 — Wave M2.5).
+    // Per-producer data-plane endpoint (HEP-CORE-0033 §8 ProducerEntry — Wave M2.5).
     // Each Fan-In producer publishes from its own bound ZMQ socket.
     std::string  zmq_node_endpoint;
     // Per-producer CURVE pubkey for ZMQ ctrl socket auth (HEP-CORE-0021 §5.2).
@@ -810,8 +810,8 @@ struct ChannelEntry {
     std::string                            data_transport{"shm"};
 
     // Per-party rows (1..N producers per HEP-CORE-0023 §2.1.1).  All
-    // per-producer attributes — inbox_*, zmq_node_endpoint (HEP-0021
-    // §16.3), zmq_pubkey (HEP-0021 §5.2), metadata (HEP-0007 §12.4) —
+    // per-producer attributes — inbox_*, zmq_node_endpoint (HEP-CORE-0033
+    // §8 ProducerEntry), zmq_pubkey (HEP-0021 §5.2), metadata (HEP-0007 §12.4) —
     // live on the rows below, NOT at channel scope (Wave M2.5).
     std::vector<ProducerEntry>             producers;
     std::vector<ConsumerEntry>             consumers;
@@ -1141,12 +1141,26 @@ Hub brokers are assumed to be running before any role starts.
 
 ### Phase 2: Hub A registrations (producer + processor input-side)
 
+Per HEP-CORE-0036 §3.5.1, the producer's data-plane socket bind
+happens AFTER the broker accepts the registration — never before.
+The config-determined endpoint (`tr.zmq_endpoint` is the C++
+TransportConfig field; the wire field name is `zmq_node_endpoint`
+per HEP-CORE-0007 §12.3) goes directly in REG_REQ; PUSH bind +
+ZAP arm + allowlist seed are performed by the polymorphic
+`apply_master_approval(REG_ACK)` mutator at S3.
+
 ```
 Producer:
-  bind P2C ROUTER + XPUB sockets
-  → REG_REQ (Hub A)  [role_type="producer"]
-  ← REG_ACK
-  → start heartbeat
+  build tx queue in Standby (HEP-0036 §6.7 — queue object only;
+                              no PUSH bind, no ZAP arm, no thread)
+  → REG_REQ (Hub A)  [role_type="producer"; carries zmq_node_endpoint
+                       and zmq_pubkey directly per HEP-0036 §6.1]
+       (registration failure is FATAL per HEP-0036 §3.5.1)
+  ← REG_ACK            (carries initial_allowlist per HEP-0036 §6.2)
+  → apply_master_approval(REG_ACK)   (Standby → Active: seed allowlist,
+                                       bind PUSH, arm ZAP, spawn PUSH worker)
+  → install_heartbeat                 (interval from REG_ACK.heartbeat;
+                                       cadence starts at S3 per HEP-0036 §3.5.4 INV1)
 
 Processor:
   loop: DISC_REQ (Hub A)
@@ -1165,13 +1179,22 @@ Processor:
 
 ### Phase 4: Hub B registration (processor output-side)
 
+Per HEP-CORE-0036 §3.5.1, the processor's output-side data-plane
+socket bind happens AFTER Hub B accepts the registration.  Same
+symmetric pattern as Phase 2 above — config endpoint in REG_REQ;
+PUSH bind / SHM writer start via `apply_master_approval` at S3.
+
 ```
 Processor:
-  bind out P2C ROUTER + XPUB sockets (if out_transport="shm")
-  OR bind ZMQ PUSH socket (if out_transport="zmq")
-  → REG_REQ (Hub B)  [role_type="processor"]
-  ← REG_ACK
-  → start heartbeat on Hub B
+  build out tx queue in Standby (HEP-0036 §6.7)
+  → REG_REQ (Hub B)  [role_type="processor"; carries out-side
+                       zmq_node_endpoint or shm metadata]
+       (registration failure is FATAL)
+  ← REG_ACK            (carries initial_allowlist or shm_secret)
+  → apply_master_approval(REG_ACK)   (Standby → Active for the out-side
+                                       queue: bind PUSH or start SHM writer;
+                                       arm ZAP; seed allowlist)
+  → install_heartbeat on Hub B
 ```
 
 When `startup.hub_b_after_input_ready = true`, Phase 4 executes after Phase 3 completes.

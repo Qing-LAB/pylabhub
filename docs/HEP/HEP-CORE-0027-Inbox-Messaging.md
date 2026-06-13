@@ -154,33 +154,68 @@ plumbing applies to inbox sockets).
 
 ### 4.1 Receiver Setup (role host startup)
 
+Under HEP-CORE-0036 §3.5.1 ("nothing happens behind the auth door
+before auth"), inbox ROUTER bind and CURVE/ZAP arm are data-plane
+footprint that MUST happen post-REG, inside `apply_*_reg_ack` (S3
+of §3.5.5).  Since the inbox endpoint is config-determined (per
+§3.4 wire fields), the role can put the endpoint into REG_REQ
+without binding first.  The bind itself defers to S3 once the
+broker has accepted the role onto the channel(s) the inbox will
+serve.
+
 ```
-1. Role host reads inbox config (schema, endpoint, buffer_depth, packing)
-2. InboxQueue::bind_at(endpoint, schema_fields, packing, rcvhwm) → unique_ptr
-3. inbox_queue_->start()                    — bind ROUTER socket
-4. inbox_queue_->set_checksum_policy(config_.checksum().policy)
-5. inbox_queue_->actual_endpoint()          — resolve port-0 if used
-6. For EACH presence the role registers (one for producer/consumer roles;
-   two for processor — see HEP-CORE-0033 §19), the inbox metadata
-   block is appended to that presence's registration payload:
-     - producer presence  → REG_REQ          (ProducerRegInputs)
-     - consumer presence  → CONSUMER_REG_REQ (ConsumerRegInputs)
-   Fields per presence: inbox_endpoint, inbox_schema_json, inbox_packing,
-   inbox_checksum.  Same `inbox_endpoint` string is sent in every
-   presence's payload — there is one InboxQueue per role, regardless
-   of how many hubs the role registers with.
-7. Broker stores the metadata once **per producer-presence / per consumer-presence** —
-   inbox lives on the party row, NOT on the channel:
-     - producer-presence registration → `ChannelEntry.producers[i].inbox_*`
-     - consumer-presence registration → `ConsumerEntry.inbox_*`
-   For Fan-In (multi-producer) channels each `ProducerEntry` carries its own
-   inbox fields; a second producer joining the channel does NOT overwrite the
-   first one's inbox.  For dual-hub processor, this means in_hub holds the
-   ConsumerEntry copy (under in_channel) and out_hub holds the producer-row
-   copy on the corresponding `ChannelEntry.producers[*]` (under out_channel) —
-   both with identical inbox_endpoint strings.
-8. inbox_thread_ started: loop { recv_one() → invoke_on_inbox() → send_ack() }
+S1 (setup_infrastructure_) — BUILD ONLY:
+  1. Role host reads inbox config (schema, endpoint, buffer_depth, packing).
+  2. Build InboxQueue in Standby — queue object exists; ROUTER NOT bound;
+     CURVE not configured; ZAP allowlist not installed.  (Parallel to
+     ZmqQueue Standby per HEP-CORE-0036 §6.7.)
+
+S2 (registration) — FATAL on failure:
+  3. For EACH presence the role registers (one for producer/consumer
+     roles; two for processor — see HEP-CORE-0033 §19), the inbox
+     metadata block is appended to that presence's registration
+     payload:
+       - producer presence  → REG_REQ          (ProducerRegInputs)
+       - consumer presence  → CONSUMER_REG_REQ (ConsumerRegInputs)
+     Fields per presence: inbox_endpoint, inbox_schema_json,
+     inbox_packing, inbox_checksum.  Same `inbox_endpoint` string is
+     sent in every presence's payload — there is one InboxQueue per
+     role, regardless of how many hubs the role registers with.
+  4. Broker stores the metadata once **per producer-presence / per
+     consumer-presence** — inbox lives on the party row, NOT on the
+     channel:
+       - producer-presence registration → `ChannelEntry.producers[i].inbox_*`
+       - consumer-presence registration → `ConsumerEntry.inbox_*`
+     For Fan-In (multi-producer) channels each `ProducerEntry` carries
+     its own inbox fields; a second producer joining the channel does
+     NOT overwrite the first one's inbox.  For dual-hub processor,
+     this means in_hub holds the ConsumerEntry copy (under
+     in_channel) and out_hub holds the producer-row copy on the
+     corresponding `ChannelEntry.producers[*]` (under out_channel) —
+     both with identical inbox_endpoint strings.
+
+S3 (apply_*_reg_ack) — ACTIVATE (behind the auth door):
+  5. inbox_queue_->bind_at(endpoint)         — bind ROUTER socket;
+       arm CURVE/ZAP with the role's identity keypair (per
+       HEP-CORE-0036 §I6); seed allowlist by inheriting from the
+       data channel's allowlist (HEP-CORE-0036 §9.3 — the channel-
+       allowlist baseline applies to inbox incoming handshakes too).
+  6. inbox_queue_->set_checksum_policy(config_.checksum().policy)
+  7. inbox_queue_->start()                   — ROUTER active; transitions
+       Standby → Configured → Active per HEP-CORE-0036 §6.7.
+  8. inbox_thread_ started: loop { recv_one() → invoke_on_inbox() → send_ack() }
+       — under ThreadManager scope per HEP-CORE-0036 §3.5.4 invariant 4.
 ```
+
+**Port-0 ephemeral inbox endpoints (task #94 scope).** When the
+config specifies port 0 to request an ephemeral bind, the role
+cannot put a resolved endpoint into REG_REQ at step 3 without
+binding first — this is the same chicken-and-egg the data PUSH
+side faces under HEP-CORE-0021 §16 (RESERVED — task #94).  Under §3.5.1 the resolution
+is task #94's ephemeral-binding production path; until then the
+inbox config endpoint MUST be a fully-resolved address.  A
+freshly-installed `plh_role` rejects port-0 inbox endpoints with a
+clear error.
 
 **Why advertise on every presence.**  ROLE_INFO_REQ (used by senders
 to discover a target's inbox — see §4.2) is a Class B fall-through

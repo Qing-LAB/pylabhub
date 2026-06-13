@@ -331,8 +331,11 @@ void ConsumerRoleHost::worker_main_()
         {
             LOGGER_ERROR("[cons] Broker consumer registration failed — "
                          "broker won't track this consumer for liveness");
-            // Non-fatal: consumer can still receive data via the producer's
-            // direct ZMQ connection if discovery already happened.
+            // Per HEP-CORE-0036 §3.5.1 registration failure is FATAL.  Under §3.5
+            // the consumer's PULL socket is in Standby at S1 and only connects via
+            // apply_master_approval(CONSUMER_REG_ACK) at S3 — without REG_ACK there
+            // is no producer set, no PULL connect, no data flow.  Behavior fix ships
+            // under task #103; current branch preserves legacy non-fatal pending #103.
         }
         else
         {

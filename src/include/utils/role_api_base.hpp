@@ -223,8 +223,12 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     [[nodiscard]] bool start_tx_queue();
     [[nodiscard]] bool start_rx_queue();
 
-    /// HEP-CORE-0036 §6.7 — apply the broker's `CONSUMER_REG_ACK`
-    /// payload to the Rx queue, driving Standby → Configured → Active.
+    /// HEP-CORE-0036 §6.7 Option B — apply the broker's
+    /// `CONSUMER_REG_ACK` payload to the Rx queue.  Per §6.7 Option B
+    /// this is the SINGLE driver of Standby → Configured → Active:
+    /// any bare set_* mutator args set in Standby are BUFFERED only;
+    /// `apply_master_approval` merges them with REG_ACK fields and
+    /// performs the transition in one step.
     ///
     /// Uniform across transports: dispatches through the polymorphic
     /// `QueueReader::apply_master_approval(ack)` which each concrete
@@ -241,6 +245,24 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     /// of which are fatal: the role host should treat any false as a
     /// startup-failed condition.
     [[nodiscard]] bool apply_consumer_reg_ack(const nlohmann::json &ack);
+
+    /// HEP-CORE-0036 §6.7 Option B — apply the broker's `REG_ACK`
+    /// payload to the Tx queue.  Producer-side mirror of
+    /// `apply_consumer_reg_ack`: the same single-mutator Standby →
+    /// Active driver, invoked at S3 after `register_producer_channel`
+    /// returns success.
+    ///
+    /// Dispatches through `QueueWriter::apply_master_approval(ack)`.
+    /// For ZMQ Tx queues, this extracts `ack["initial_allowlist"]`
+    /// (Z85 pubkey strings per HEP-0036 §6.2), seeds the ZAP cache,
+    /// then binds the PUSH socket and spawns the worker.  For SHM Tx,
+    /// it is a no-op today (config-supplied secret applied at
+    /// construction).
+    ///
+    /// Returns false if the queue is not wired, the JSON is malformed,
+    /// or the activation fails — all of which are fatal: the role host
+    /// must treat any false as a startup-failed condition.
+    [[nodiscard]] bool apply_producer_reg_ack(const nlohmann::json &ack);
 
     /// Reset metrics counters on the Tx/Rx queues. No-op if not wired.
     void reset_tx_queue_metrics();

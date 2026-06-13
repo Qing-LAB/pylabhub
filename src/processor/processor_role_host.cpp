@@ -407,10 +407,24 @@ void ProcessorRoleHost::worker_main_()
             prod_result->value("status", std::string{}) != "success")
         {
             LOGGER_ERROR("[proc] Output producer registration failed");
-            // Non-fatal: data loop may still run if discovery already happened.
+            // Per HEP-CORE-0036 §3.5.1 registration failure is FATAL on BOTH the
+            // in-side (consumer registration) and out-side (producer registration).
+            // Either DEREG side cleans up via do_role_teardown presence-walk.
+            // Behavior fix ships under task #103; current branch preserves legacy
+            // non-fatal pending #103.
         }
         else
         {
+            // HEP-CORE-0036 §6.7 — drive Tx queue Standby → Active
+            // from REG_ACK (carries initial_allowlist).  Symmetric
+            // with the in-side consumer activation below.
+            if (!api_ref.apply_producer_reg_ack(*prod_result))
+            {
+                LOGGER_ERROR("[proc] apply_producer_reg_ack failed — "
+                             "Tx queue did not reach Active state");
+                promise_ref.set_value(false);
+                return;
+            }
             auto m = scripting::RoleAPIBase::extract_hub_heartbeat_max(*prod_result);
             if (m.has_value()) hub_max = m;
         }

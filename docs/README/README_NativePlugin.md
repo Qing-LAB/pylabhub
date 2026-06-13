@@ -817,7 +817,9 @@ native_sizeof_*()       -- Size check (REQUIRED — vs compute_field_layout)
 native_init(ctx)        -- One-time initialization; return false to abort
   |
   v
-on_init()               -- Role is registered with broker, data plane ready
+on_init()               -- Role is REGISTERED + AUTHORIZED (data plane bound, ZAP armed,
+                        -- allowlist seeded inside apply_master_approval per
+                        -- HEP-CORE-0036 §3.5.5 S3).
   |
   v
   +-- on_produce() / on_consume() / on_process()  [data thread, repeated]

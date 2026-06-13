@@ -370,9 +370,13 @@ mandatory in production:
 ┌─────────────────────────────────────────────────────────────────┐
 │  Layer 2 — Federation-trust gate (broker registration layer)    │
 │                                                                 │
-│  REG_REQ / CONSUMER_REG_REQ handlers consult the registering    │
-│  socket's CURVE pubkey (recoverable via `zmq_msg_gets("User-Id")│
-│   from the routing frame after CURVE auth).                     │
+│  REG_REQ / CONSUMER_REG_REQ handlers verify Layer-2 via         │
+│  body-claim: `body.role_uid` is looked up in `known_roles[]`    │
+│  (UNKNOWN_ROLE on miss), and `body.zmq_pubkey` is compared to   │
+│  the stored `known_roles[role_uid].pubkey_z85` (PUBKEY_MISMATCH │
+│  on inequality).  Layer-1 ZAP/CURVE remains the cryptographic   │
+│  prerequisite (handshake must have succeeded before the body is │
+│  parsed).  Per HEP-CORE-0036 §6.1 + §6.3.                       │
 │                                                                 │
 │  • If the pubkey matches a local known_roles entry → local      │
 │    role; accept.                                                │
@@ -393,7 +397,9 @@ mandatory in production:
 │  The handler reads from a per-channel allowlist                  │
 │  (`ChannelAccessIndex::authorized_consumer_pubkeys` in HubState  │
 │  per HEP-CORE-0036 §4.1) populated by the broker via             │
-│  CHANNEL_AUTH_UPDATE pushes.                                     │
+│  `CHANNEL_AUTH_CHANGED_NOTIFY` doorbell +                        │
+│  `GET_CHANNEL_AUTH_REQ` pull (HEP-CORE-0036 §6.5 amendment        │
+│  2026-06-04 retired the snapshot-push design).                   │
 │                                                                 │
 │  • Consumer handshake with a pubkey on the producer's            │
 │    channel allowlist → accept.                                   │
@@ -407,6 +413,42 @@ mandatory in production:
 │  the allowlist is the gating mechanism.                          │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+**Layer 3 lifecycle (normative — added 2026-06-12 per HEP-CORE-0036
+§3.5 alignment).**  The producer-side ZAP handler attach AND the
+initial allowlist install happen at **S3 inside
+`apply_master_approval(REG_ACK)`** — NOT at queue construction (S1)
+and NOT before REG_REQ is accepted (S2).  Concretely:
+
+- **S1 (queue construction).**  The framework's queue abstraction
+  builds the data PUSH socket in **Standby** (HEP-CORE-0036 §6.7
+  queue state machine).  No PUSH bind, no ZAP handler attach, no
+  socket option mutation that would expose any data-plane footprint.
+  This honors HEP-CORE-0036 §3.5.1 "nothing happens behind the auth
+  door before auth" — symmetric Option-α producer side.
+- **S2 (REG_REQ sent / accepted).**  Producer wire-frames its
+  config-determined `zmq_node_endpoint` + identity `zmq_pubkey` in
+  REG_REQ; broker validates and replies REG_ACK with
+  `initial_allowlist` (the broker's snapshot of authorized consumer
+  pubkeys at REG_REQ-handling time).  No data-plane wiring yet.
+- **S3 (`apply_master_approval(REG_ACK)`).**  The framework
+  consumes `initial_allowlist` and installs it into the per-context
+  ZAP cache; attaches the per-context ZAP handler to the producer's
+  data PUSH socket; performs the PUSH bind.  Only after these three
+  steps does Layer 3 enforcement become active.  Subsequent
+  allowlist drift arrives via `CHANNEL_AUTH_CHANGED_NOTIFY` (notify-
+  then-pull, HEP-CORE-0036 §6.5).
+
+The S1/S2/S3 split is mandatory.  Layer 3 attached at S1 (queue
+ctor) or before REG_REQ accept would violate the "nothing behind
+the auth door before auth" invariant and create a window where the
+PUSH socket is bound with no ZAP enforcement.
+
+Cross-reference: HEP-CORE-0036 §3.5 (consolidated invariants),
+§3.5.1 (no data-plane footprint before auth), §3.5.3 (REG_ACK
+carries `initial_allowlist`), §3.5.5 (Layer 3 wiring sequence),
+§6.5 (notify-then-pull allowlist drift), §6.7 (queue state machine
+Standby → Active).
 
 ### 4.2 Pubkey index — single source of truth
 
@@ -1132,7 +1174,10 @@ When HEP-0035 ships:
   2026-05-28) builds Layer-3 on top of this HEP's Layers 1+2.
   HEP-0036 is the AUTHORITATIVE source for data-plane peer
   authentication (per-producer ZAP cache + `ChannelAccessIndex` +
-  `CHANNEL_AUTH_UPDATE` flow), inbox CURVE wiring (§9.3), band
+  `CHANNEL_AUTH_CHANGED_NOTIFY` doorbell + `GET_CHANNEL_AUTH_REQ`
+  pull flow per HEP-CORE-0036 §6.5; the prior `CHANNEL_AUTH_UPDATE`
+  snapshot-push was retired in the 2026-06-04 amendment),
+  inbox CURVE wiring (§9.3), band
   CURVE inheritance (§9.4), and the role-side `RegistrationState`
   FSM `Authorized` state (§4.3).  HEP-0035 stays scoped to Layer-1
   (broker ROUTER ZAP) + Layer-2 (federation trust modes) +

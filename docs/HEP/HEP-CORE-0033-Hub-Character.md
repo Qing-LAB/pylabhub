@@ -1225,7 +1225,8 @@ that either calls `send_reply()` or does not):
 Request-reply:
   REG_REQ, DISC_REQ, DEREG_REQ,
   CONSUMER_REG_REQ, CONSUMER_DEREG_REQ, CONSUMER_DEREG_ACK,
-  ENDPOINT_UPDATE_REQ, SCHEMA_REQ,
+  SCHEMA_REQ,
+  GET_CHANNEL_AUTH_REQ, GET_CHANNEL_PRODUCERS_REQ,
   CHANNEL_LIST_REQ, METRICS_REQ, SHM_BLOCK_QUERY_REQ,
   ROLE_PRESENCE_REQ, ROLE_INFO_REQ,
   BAND_JOIN_REQ, BAND_LEAVE_REQ, BAND_MEMBERS_REQ,
@@ -1242,6 +1243,9 @@ Fire-and-forget:
 
   Retired (M1.4, 2026-05-11): METRICS_REPORT_REQ — metrics piggyback
   on HEARTBEAT_REQ per HEP-CORE-0019 §2.3 Phase 6.
+
+  Retired (2026-06-12): ENDPOINT_UPDATE_REQ — config endpoint goes
+  directly in REG_REQ.zmq_node_endpoint per HEP-CORE-0036 §3.5.
 ```
 
 When adding a new msg_type, the contributor MUST classify it
@@ -2987,12 +2991,14 @@ classes are also disjoint — no message dual-classifies.
 | `DEREG_REQ` | A | Producer voluntary close. |
 | `CONSUMER_DEREG_REQ` | A | Consumer voluntary leave. |
 | `DISC_REQ` | A | Discover channel's connection info. |
-| `ENDPOINT_UPDATE_REQ` | A | Producer publishes resolved port (port-0 → real). |
+| ~~`ENDPOINT_UPDATE_REQ`~~ | — | **RETIRED 2026-06-12** per HEP-CORE-0036 §3.5.  Config-determined endpoint goes directly in `REG_REQ.zmq_node_endpoint`; no separate post-bind update.  Port-0 ephemeral binding is incompatible with §3.5.1 and is tracked under task #94 as a separate design problem. |
 | `SCHEMA_REQ` | A (owner-bound) | Routes via the connection where the owning record lives — see HEP-CORE-0034 §10.3. |
 | `CHANNEL_NOTIFY_REQ` | A | Fire-and-forget channel-targeted event. |
 | `CHANNEL_BROADCAST_REQ` | A | Fan-out broadcast on a channel. |
 | `CHECKSUM_ERROR_REPORT` | A | Consumer-detected; routes by channel. |
 | `HEARTBEAT_REQ` (per-presence — HEP-CORE-0019 §2.3) | A | Refreshes the `(uid, role_type)` presence row in `RoleEntry` (§2.1 of HEP-CORE-0023) and writes the matching `MetricsStore` row.  Each heartbeat refreshes only its own presence row — channel observability is derived from the producer-presence's state. |
+| `GET_CHANNEL_AUTH_REQ` | A | Producer pulls current consumer allowlist for a channel it produces; triggered by CHANNEL_AUTH_CHANGED_NOTIFY doorbell.  Broker checks caller is registered producer; reply carries `allowlist[]` (HEP-CORE-0036 §6.5 notify-then-pull). |
+| `GET_CHANNEL_PRODUCERS_REQ` | A | Consumer pulls current producer set for a channel it consumes; triggered by CHANNEL_PRODUCERS_CHANGED_NOTIFY doorbell.  Broker checks caller is registered consumer; reply carries `producers[]` (HEP-CORE-0036 §6.5.1). |
 | `BAND_JOIN_REQ` / `BAND_LEAVE_REQ` / `BAND_BROADCAST_REQ` / `BAND_MEMBERS_REQ` | D | Band lives on the hub the role chooses at join time. |
 | `ROLE_PRESENCE_REQ` | B | "Is uid X alive?" — fall-through. |
 | `ROLE_INFO_REQ` | B | Inbox-discovery — fall-through (HEP-CORE-0027 §4.2). |
@@ -3010,6 +3016,8 @@ classes are also disjoint — no message dual-classifies.
 | `CHANNEL_BROADCAST_NOTIFY` | A | Fan-out result of `CHANNEL_BROADCAST_REQ`. |
 | `CHANNEL_ERROR_NOTIFY` | A | Schema mismatch, etc. |
 | `CONSUMER_DIED_NOTIFY` | A | Producer of channel (when broker detects a consumer process is dead). |
+| `CHANNEL_AUTH_CHANGED_NOTIFY` | A | To every kLive producer of the channel.  Doorbell that triggers `GET_CHANNEL_AUTH_REQ` pull (HEP-CORE-0036 §6.5 notify-then-pull).  Reason ∈ {consumer_joined, consumer_left, consumer_timeout, federation_peer_death}. |
+| `CHANNEL_PRODUCERS_CHANGED_NOTIFY` | A | To every kLive consumer of the channel.  Doorbell that triggers `GET_CHANNEL_PRODUCERS_REQ` pull (HEP-CORE-0036 §6.5.1).  Reason ∈ {producer_joined, producer_left, heartbeat_timeout, process_dead}.  Per HEP-CORE-0036 §3.5.4 INV2 the broker MUST fire `producer_joined` on the producer's first-heartbeat-received edge (channel observable kRegistering → kLive), NOT on REG_REQ accept. |
 | ~~`FORCE_SHUTDOWN`~~ | — | **Removed 2026-05-07** — the prior design used this to force-close lingering consumers after a `Closing` grace window expired; that whole grace path was removed when the channel-FSM was retired (HEP-CORE-0023 §2.1).  Channel teardown is now atomic on producer-presence Disconnected; consumers learn via `CHANNEL_CLOSING_NOTIFY` (best-effort) and any subsequent `DISC_REQ` returns `CHANNEL_NOT_FOUND`. |
 | `BAND_JOIN_NOTIFY` / `BAND_LEAVE_NOTIFY` / `BAND_BROADCAST_NOTIFY` | D | Band members. |
 

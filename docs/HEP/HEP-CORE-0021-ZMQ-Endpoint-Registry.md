@@ -123,8 +123,8 @@ graph TD
 
     subgraph "ZMQ Endpoint Registry"
         direction LR
-        P2["hub::Producer"] -- "REG_REQ\ntransport=zmq\nzmq_endpoint=:5580" --> B2["Broker"]
-        B2 -- "CONSUMER_REG_ACK\nzmq_endpoint=:5580" --> C2["hub::Consumer"]
+        P2["hub::Producer"] -- "REG_REQ\ntransport=zmq\nzmq_node_endpoint=:5580" --> B2["Broker"]
+        B2 -- "CONSUMER_REG_ACK\nzmq_node_endpoint=:5580" --> C2["hub::Consumer"]
         P2 -- "ZMQ PUSH/PULL\n(network/IPC)" --> C2
     end
 ```
@@ -283,20 +283,26 @@ REG_REQ (producer → broker)
   schema_id             string   (optional) Named schema identifier
   schema_hash           string   (optional) BLAKE2b-256 of BLDS
   --- ZMQ fields (transport=zmq) ---
-  zmq_endpoint          string   Bind address, e.g. "tcp://127.0.0.1:5580"
-  zmq_bind              bool     true = producer binds; false = producer connects
+  zmq_node_endpoint     string   Bind address, e.g. "tcp://127.0.0.1:5580"
+  zmq_pubkey            string   (REQUIRED if transport=zmq) Producer's IDENTITY
+                                 pubkey (Z85, 40 chars).  Sourced from KeyStore
+                                 (HEP-CORE-0040 §8.2).  Used by consumers as their
+                                 PULL socket's curve_serverkey per HEP-CORE-0036 §I6.
   --- Common fields ---
-  producer_uid          string
-  producer_name         string
+  role_uid              string
+  role_name             string
+  // HEP-CORE-0007 §12.3 is the canonical wire-format authority for REG_REQ;
+  // this section mirrors it.
 ```
 
 **HEP-0036 note**: under T1 (locked 2026-05-28), the producer does NOT
 send any CURVE keypair-request flags.  The producer's data-plane PUSH
 binds with the role's identity keypair (per HEP-CORE-0036 I6 — broker
-mints nothing on the data plane).  The producer's identity pubkey is
-recovered by the broker from `zmq_msg_gets("User-Id")` on the BRC socket
-at REG time (no self-claims; HEP-CORE-0036 §3 I1 note); it is NOT
-sent in the REG_REQ body.
+mints nothing on the data plane).  Per HEP-CORE-0036 §6.1 + §6.3, the
+body claim `zmq_pubkey` is verified at the broker by comparing against
+`known_roles[role_uid].pubkey_z85` (Layer-2 verification).  ZAP/CURVE
+at Layer-1 establishes the cryptographic identity; the body claim binds
+the wire to a specific role uid.
 
 ### 5.2 CONSUMER_REG_ACK Extension
 
@@ -307,8 +313,9 @@ transport the response carries a `producers[]` array (length 1 for
 single-producer channels, length N for fan-in), each element being
 `{role_uid, pubkey, endpoint}`.  The producer pubkey is the producer's
 IDENTITY pubkey (HEP-CORE-0036 I6 — broker mints NO data-plane keys);
-the endpoint is the producer's bound TCP endpoint (per §16
-ephemeral-binding resolution).
+the endpoint is the producer's bound TCP endpoint (config-resolved
+at startup per HEP-CORE-0036 §3.5.1; §16 RESERVED for ephemeral path
+under task #94).
 
 ```
 CONSUMER_REG_ACK (broker → consumer)
@@ -327,7 +334,8 @@ CONSUMER_REG_ACK (broker → consumer)
                                                 ChannelEntry::producers[i]
                                                 .zmq_pubkey per HEP-0036 §4.1)
                             endpoint    string  Producer's bound TCP endpoint
-                                                (per §16.3 per-producer scope)
+                                                (per-producer scope; lives on
+                                                ProducerEntry, not ChannelEntry)
   --- Common fields ---
   schema_id             string   (optional)
   schema_hash           string   (optional)
@@ -340,9 +348,10 @@ admission (`MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM` per HEP-CORE-0007
 §12.4a) and so always has the single-producer-attach shape.
 
 **Coordinated migration**: this array shape is the sibling of the
-DISC_REQ_ACK migration tracked under task #94 / §16.5 (the
-"per-producer arrays" lift referenced in `broker_service.cpp:1745-1794`
-comment).  Both responses should land in one wire-format change.
+DISC_REQ_ACK "per-producer arrays" lift (referenced in
+`broker_service.cpp:1745-1794` comment).  Both responses should
+land in one wire-format change.  Tracked under task #94 (which
+also owns the future ephemeral-binding production path; see §16).
 
 **Retired wire fields**: the legacy singular `zmq_endpoint` +
 `producer_zmq_pubkey` are REPLACED by the `producers[]` array.  The
@@ -351,10 +360,13 @@ comment).  Both responses should land in one wire-format change.
 
 ### 5.3 Broker Internal State
 
-The broker's `ChannelEntry` struct gains a `transport` discriminator and a
-`zmq_endpoint` field (populated only for `transport=zmq`). No other broker
-state changes. Channel lifecycle management (timeout, heartbeat tracking,
-CHANNEL_CLOSING_NOTIFY, metrics) is identical for both transport types.
+The broker's `ChannelEntry` struct gains a `data_transport` discriminator;
+the per-producer `zmq_node_endpoint` lives on each `ProducerEntry` (Wave
+M2.5; HEP-CORE-0023 §5 + HEP-CORE-0033 §8.  Channel-wide endpoint storage
+is RETIRED — fan-in channels carry distinct endpoints per producer).
+No other broker state changes. Channel lifecycle management (timeout,
+heartbeat tracking, CHANNEL_CLOSING_NOTIFY, metrics) is identical for both
+transport types.
 
 ---
 
@@ -368,8 +380,8 @@ sequenceDiagram
     participant B as Broker<br/>(ROUTER :5570)
     participant C as Consumer
 
-    P->>B: REG_REQ {transport=zmq,<br/>zmq_endpoint=tcp://:5580,<br/>channel="lab.raw"}
-    B->>B: Store ChannelEntry<br/>{transport=zmq,<br/>zmq_endpoint=tcp://:5580}
+    P->>B: REG_REQ {transport=zmq,<br/>zmq_node_endpoint=tcp://:5580,<br/>channel="lab.raw"}
+    B->>B: Store ChannelEntry<br/>{transport=zmq,<br/>zmq_node_endpoint=tcp://:5580}
     B->>P: REG_ACK {status=ok}
     Note over P: Bind PUSH socket at :5580<br/>(ZmqQueue.start())
 
@@ -380,7 +392,7 @@ sequenceDiagram
 
     C->>B: CONSUMER_REG_REQ {channel="lab.raw"}
     B->>B: Lookup ChannelEntry<br/>transport=zmq
-    B->>C: CONSUMER_REG_ACK {transport=zmq,<br/>zmq_endpoint=tcp://:5580}
+    B->>C: CONSUMER_REG_ACK {transport=zmq,<br/>zmq_node_endpoint=tcp://:5580}
     Note over C: Connect PULL socket<br/>to tcp://:5580<br/>(ZmqQueue.start())
 
     P-->>C: ZMQ data frames<br/>(peer-to-peer, not through broker)
@@ -396,12 +408,12 @@ sequenceDiagram
     participant BB as Broker B<br/>(:5571)
 
     Note over P,BA: Hub A side: producer registered
-    P->>BA: REG_REQ {transport=zmq,<br/>channel="lab.bridge.raw",<br/>zmq_endpoint=tcp://X:5580}
+    P->>BA: REG_REQ {transport=zmq,<br/>channel="lab.bridge.raw",<br/>zmq_node_endpoint=tcp://X:5580}
     BA->>P: REG_ACK
 
     Note over PB,BB: Hub B processor starts
     PB->>BA: CONSUMER_REG_REQ {channel="lab.bridge.raw"}<br/>(direct connection to Hub A broker)
-    BA->>PB: CONSUMER_REG_ACK {transport=zmq,<br/>zmq_endpoint=tcp://X:5580}
+    BA->>PB: CONSUMER_REG_ACK {transport=zmq,<br/>zmq_node_endpoint=tcp://X:5580}
     Note over PB: Discovered endpoint without<br/>hardcoding in config file
 
     PB->>BB: REG_REQ {channel="lab.bridge.processed",<br/>transport=shm, ...}
@@ -443,18 +455,34 @@ struct ProducerOptions
 {
     // existing fields ...
     ChannelTransport transport{ChannelTransport::Shm};
-    std::string      zmq_endpoint;   // bind address (transport=Zmq only)
-    bool             zmq_bind{true}; // producer binds by default
+    std::string      zmq_node_endpoint;   // bind address (transport=Zmq only)
+    // Producer always binds at S3 inside apply_master_approval per
+    // HEP-CORE-0036 §3.5.1.  Connect-mode retired 2026-06-12.
 };
 ```
 
-When `transport=Zmq`, `hub::Producer::create()`:
-1. Sends `REG_REQ{transport=zmq, zmq_endpoint}` to the broker
-2. Creates and binds (or connects) a ZMQ PUSH socket at `zmq_endpoint`
-3. Manages the PUSH socket lifetime (start/stop with the producer)
-4. `producer.queue()` returns a `hub::ZmqQueue*` wrapping the PUSH socket
+When `transport=Zmq`, `hub::Producer::create()` follows the
+HEP-CORE-0036 §3.5 staged construction order — the PUSH socket
+does NOT bind until master approval (REG_ACK) arrives:
 
-When `transport=Shm` (default), behavior is unchanged.
+1. **S1 — build tx queue in Standby.**  Construct `ZmqQueue` with
+   `zmq_node_endpoint` from config; no `bind()` call, no worker thread
+   spawn (HEP-CORE-0036 §6.7).
+2. **S2 — send REG_REQ** carrying `zmq_node_endpoint` (resolved at
+   config-load time per §16; ephemeral port-0 is not supported here).
+   Failure is FATAL — producer aborts startup.
+3. **S3 — on REG_ACK**, call `queue->apply_master_approval(REG_ACK)`.
+   This single mutator seeds the broker-issued consumer allowlist,
+   binds the PUSH socket, arms ZAP, and spawns the worker thread
+   under ThreadManager scope (HEP-CORE-0036 §3.5.4 INV4 +
+   §6.7 "Role-host integration pattern").
+4. **S3+ — `install_heartbeat`.**  Heartbeat cadence starts at S3,
+   not S1, per HEP-CORE-0036 §3.5.4 INV1 ("nothing happens behind
+   the auth door before auth").
+
+`producer.queue()` returns a `hub::ZmqQueue*` wrapping the PUSH
+socket.  When `transport=Shm` (default), behavior is unchanged
+(SHM has no socket-bind / auth-door distinction).
 
 ### 7.2 Consumer::connect()
 
@@ -469,9 +497,12 @@ if (ack.transport == "shm")
 }
 else if (ack.transport == "zmq")
 {
-    // queue_ = ZmqQueue::pull_from(ack.zmq_endpoint, producer_pubkey,
-    //                              schema, packing, identity_key_name,
-    //                              bind=false, ...)  // HEP-0040 §8.4
+    // queue_ = build_rx_queue(opts);              // → Standby per HEP-CORE-0036 §6.7
+    // ack    = register_consumer(...);             // fatal on failure (§3.5.1)
+    // queue_->apply_master_approval(ack);          // single mutator: drives Standby → Active
+    //                                              // (extracts ack.producers[i] for each producer,
+    //                                              //  connects with curve_serverkey = pubkey,
+    //                                              //  spawns PULL worker)
 }
 ```
 
@@ -542,7 +573,7 @@ Hub B:  Processor-B has in_hub_dir → Hub A
 Processor-B startup:
   1. Connects to Hub A broker (via in_hub_dir + hub.pubkey)
   2. Sends CONSUMER_REG_REQ for "lab.bridge.raw.bridge"
-  3. Hub A broker returns CONSUMER_REG_ACK{transport=zmq, zmq_endpoint=tcp://X:5580}
+  3. Hub A broker returns CONSUMER_REG_ACK{transport=zmq, zmq_node_endpoint=tcp://X:5580}
   4. Processor-B creates ZmqQueue PULL at tcp://X:5580
   5. Connects to Hub B broker (via out_hub_dir + hub.pubkey) → registers out_channel
 ```
@@ -567,7 +598,7 @@ No `zmq_in_endpoint` in Processor-B — it is discovered from Hub A at runtime.
 | Scenario | Behavior |
 |----------|----------|
 | ZMQ endpoint not yet bound (producer not started) | `CONSUMER_REG_REQ` succeeds (broker has the entry); ZMQ PULL socket connects and queues internally until PUSH becomes available. Same as SHM race condition — producer must be running before consumer reads. |
-| Producer restarts with new ephemeral port | Producer sends new `REG_REQ` with updated `zmq_endpoint`. Broker updates channel entry. Existing consumers receive `CHANNEL_CLOSING_NOTIFY` (broker sees producer re-register), then can re-discover via `CONSUMER_REG_REQ`. |
+| Producer restarts with new ephemeral port | RETIRED 2026-06-12 — port-0 ephemeral binding is rejected at config-load per HEP-CORE-0036 §3.5.1.  Resurrected only if HEP-CORE-0021 §16 ephemeral-binding design is reinstated under task #94. |
 | Consumer discovers endpoint but PUSH never binds | ZMQ PULL socket's reconnect loop retries silently. After `channel_timeout`, broker drops the channel entry (no heartbeat from producer). |
 | Cross-machine deployment | ZMQ endpoints are network addresses — works natively. SHM channels remain same-machine only (no change). |
 | Schema validation | Schema fields in REG_REQ are optional for `transport=zmq`. If provided, broker stores them and echoes back — consumer may validate format independently. |
@@ -591,14 +622,14 @@ No `zmq_in_endpoint` in Processor-B — it is discovered from Hub A at runtime.
 
 | Phase | Scope | Status | Key files |
 |-------|-------|--------|-----------|
-| 1 | Protocol: `transport` + `zmq_endpoint` in REG_REQ / CONSUMER_REG_ACK / ChannelEntry | Done | `broker_service.cpp`, `messenger.cpp` |
+| 1 | Protocol: `transport` + `zmq_node_endpoint` in REG_REQ / CONSUMER_REG_ACK / ChannelEntry | Done | `broker_service.cpp`, `messenger.cpp` |
 | 2 | `hub::Producer` ZMQ mode: `ProducerOptions::transport`, PUSH socket management, `producer.queue()` | Done | `hub_producer.hpp/cpp` |
 | 3 | `hub::Consumer` ZMQ discovery: read transport from ACK, create ZmqQueue PULL, `consumer.queue()` | Done | `hub_consumer.hpp/cpp` |
 | 4 | `ProcessorScriptHost` simplification: remove manual ZmqQueue creation; use `producer/consumer.queue()` | Done | `processor_script_host.hpp/cpp` |
 | 5 | `ProcessorConfig` cleanup: remove `in_transport`/`zmq_in_endpoint`; keep `out_transport`/`zmq_out_endpoint` | Done | `processor_config.hpp/cpp` |
 | 6 | Demo update: Processor-B uses `in_hub_dir` only, no hardcoded ZMQ endpoint | Done | `share/py-demo-dual-processor-bridge/` |
 | Tests | 12 L3 protocol tests (ZmqEndpointRegistryTest) | Done | `test_datahub_zmq_endpoint_registry.cpp` |
-| 7 | Ephemeral port resolution: `ENDPOINT_UPDATE_REQ`, broker readiness guard, `establish_channel` rename | Design | §16 (2026-03-26) |
+| 7 | Ephemeral port binding (RESERVED — retired 2026-06-12 per HEP-CORE-0036 §3.5.1; tracked under task #94) | Reserved | §16 |
 
 ---
 
@@ -742,203 +773,16 @@ set LINGER=0 immediately after.
 
 ---
 
-## 16. Ephemeral Port Resolution (port-0 binding)
+## 16. Ephemeral port binding (RESERVED)
 
-**Status**: Design — 2026-03-26. Not yet implemented.
+This section previously described a port-0 ephemeral binding
+design in which producers would bind to port 0 before sending
+REG_REQ (to learn the resolved port for the wire payload), then
+issue ENDPOINT_UPDATE_REQ after the bind resolved.  That design
+is incompatible with HEP-CORE-0036 §3.5.1 ("nothing happens
+behind the auth door before auth") and was retired 2026-06-12.
 
-### 16.1 Problem
-
-When `zmq_node_endpoint` is configured as `tcp://127.0.0.1:0`, the OS assigns an
-ephemeral port at bind time. The current flow registers the **config value** (`:0`)
-with the broker before the ZmqQueue binds. Consumers discover `:0` from the broker
-and cannot connect.
-
-### 16.2 Current Factory Flow
-
-The Producer has three functions involved in creation:
-
-- **`messenger.create_channel(name, opts)`** — sends `CREATE_CHANNEL_REQ` to broker,
-  returns a `ChannelHandle` (ctrl/data sockets). This is the broker registration step.
-- **`Producer::create(messenger, opts)`** — public entry point (template and non-template
-  variants). Validates types/schemas, calls `create_channel`, creates DataBlock,
-  then calls `establish_channel`.
-- **`Producer::establish_channel(...)`** — assembles
-  the Producer: wires callbacks, creates ZmqQueue, creates ShmQueue wrapper, configures
-  ctrl_queue and peer timeout.
-
-```
-create() / create<F,D>():
-  1. Validate types/schemas (template only)
-  2. messenger.create_channel() → broker stores ":0"          ← BUG: useless endpoint
-  3. Create DataBlock (if SHM)
-  4. Call establish_channel()
-
-establish_channel():
-  5. Wire Messenger callbacks
-  6. ZmqQueue::push_to(":0") → bind → OS assigns :45782
-  7. ZmqQueue::start()                                        ← actual_endpoint() now available
-  8. Create ShmQueue wrapper
-  9. Return Producer
-```
-
-At step 2, the broker stores `:0`. At step 7, the actual port is known but never
-communicated back to the broker.
-
-### 16.3 Design: ENDPOINT_UPDATE_REQ — synchronous, response-required
-
-**Shape (per HEP-CORE-0007 §12.2.1):** Sync Request/Response.  Producer
-sends `ENDPOINT_UPDATE_REQ` and **waits** for the broker's reply
-(`ENDPOINT_UPDATE_ACK` on success, `ERROR` on rejection, or timeout)
-before continuing.  Not fire-and-forget.
-
-After the ZmqQueue binds and starts (step 7), `establish_channel` sends an
-`ENDPOINT_UPDATE_REQ` to the broker with the resolved endpoint from
-`ZmqQueue::actual_endpoint()` and blocks on the reply.
-
-**Wire payload:**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `channel_name` | string | Channel to update |
-| `endpoint_type` | string | `"zmq_node"` (only this type is mutable post-registration). |
-| `endpoint` | string | Resolved endpoint for THIS producer (e.g., `tcp://127.0.0.1:45782`) |
-
-**Broker response:** `ENDPOINT_UPDATE_ACK` with `status="ok"`, or
-`ERROR` with a typed error code (`NOT_CHANNEL_OWNER`,
-`ZMQ_ENDPOINT_PORT_ZERO`, `CHANNEL_NOT_FOUND`, ...).
-
-**Caller contract.** The producer side must inspect the reply and branch:
-  - `status="ok"` — mutation durable on the broker; safe to proceed
-    (start data flow, become discoverable).
-  - typed `ERROR` — mutation rejected; producer aborts startup and
-    surfaces the diagnostic.  Does **not** proceed to data flow on
-    an endpoint the broker doesn't know about.
-  - timeout (no reply within configured budget) — broker unreachable
-    or hung; producer aborts startup and surfaces the timeout.
-
-**Durability guarantee.** The broker MUST mutate
-`ProducerEntry.zmq_node_endpoint` **before** emitting
-`ENDPOINT_UPDATE_ACK`.  This makes the ACK a durability barrier: any
-`DISC_REQ` arriving at the broker after the producer has observed
-the ACK is guaranteed to see the updated endpoint.  This is the
-property the test
-`ZmqEndpointRegistryTest.EndpointUpdate_ReflectedInDiscovery`
-relies on; before this clarification the client API was
-fire-and-forget and the test was flaky on CI under load.
-
-**Why not fire-and-forget.**  ENDPOINT_UPDATE_REQ is a state
-mutation that gates downstream discoverability.  A producer that
-proceeded without confirmation would be in a state where it
-believes it's publishing on an endpoint the broker doesn't know
-about — consumers can't find it, and the producer has no signal
-that anything is wrong.  The caller's next decision (start data
-flow / report ready) depends on broker acceptance, so per
-HEP-CORE-0007 §12.2.1 it MUST be sync.
-
-> **Producer resolution is identity-based (Wave M2.5, 2026-05-11).**
-> The broker identifies which producer is calling by matching the
-> request's ZMQ identity to a registered producer's `zmq_identity`
-> on the channel.  This is more secure than a wire `role_uid` field
-> (which could be spoofed by a producer claiming to be someone else);
-> ZMQ identity is bound to the actual connection by ZMTP and cannot
-> be spoofed without attacking the transport.  If the sender's
-> identity does not match any admitted producer on the channel,
-> the broker rejects with `NOT_CHANNEL_OWNER` (HEP-CORE-0007 §12.4a).
->
-> **Per-producer endpoint scope:** `zmq_node_endpoint` lives on
-> `ProducerEntry`, not on `ChannelEntry`.  Each producer in a Fan-In
-> channel publishes from its own bound socket and advertises its own
-> endpoint string.  ENDPOINT_UPDATE_REQ updates **one** producer's
-> endpoint at a time (the sender's own); sibling producers on the
-> same channel are untouched.
-
-### 16.4 Broker Readiness Guard
-
-The broker maintains a **readiness flag** per producer on each ZMQ channel:
-
-- On REG_REQ with `data_transport == "zmq"`: if the producer's
-  `zmq_node_endpoint` contains port `0` (parsed), that producer's entry
-  is **not ready**.
-- On `ENDPOINT_UPDATE_REQ`: validate the new endpoint (non-zero port),
-  update the matched producer's `ProducerEntry.zmq_node_endpoint`, mark
-  that producer as **ready**.
-- On `CONSUMER_REG_REQ` (discovery): if **all** registered producers on
-  the target channel are not ready, reject with `CHANNEL_NOT_READY`.
-  The consumer can retry after a short delay.  A channel with at least
-  one ready producer is reachable.
-
-For channels whose producers register with specific ports (not `:0`),
-no update is required — each such producer is immediately **ready**.
-
-**Coordination with HEP-CORE-0036**: under HEP-0036 (T2 lock-in,
-2026-05-28; §6.5 wire frame amended to snapshot semantics
-2026-06-02), consumer admission is further gated by the
-`CHANNEL_AUTH_UPDATE` snapshot push (full current allowlist for the
-channel) having ACK'd from at least one `kLive` producer per Q1
-skip-disconnected semantics (HEP-0036 §6.5).  If the push exhausts
-with zero ACKs the broker returns
-`CHANNEL_NOT_READY{reason="no_live_producer"}` instead of the
-endpoint-port-zero error in this section.  The `CHANNEL_NOT_READY`
-error from §16.4 (port-zero / not-ready) and HEP-0036 §6.6 (no live
-producer / first-heartbeat not seen) share the wire code but disambiguate
-via the `reason` field.
-
-### 16.5 Updated Factory Flow
-
-```
-create() / create<F,D>():
-  1. Validate types/schemas (template only)
-  2. messenger.create_channel() → broker stores ":0", marks NOT READY
-  3. Create DataBlock (if SHM)
-  4. Call establish_channel()
-
-establish_channel():
-  5. Wire Messenger callbacks
-  6. ZmqQueue::push_to(":0") → bind → OS assigns :45782
-  7. ZmqQueue::start()
-  8. messenger.update_endpoint(channel, actual_endpoint())    ← sync per §16.3
-     → broker mutates state, emits ENDPOINT_UPDATE_ACK
-     → caller blocks until ACK / ERROR / timeout
-     → on ACK: broker now reports ":45782" + READY
-     → on ERROR / timeout: establish_channel returns nullopt
-  9. Create ShmQueue wrapper
-  10. Return Producer
-```
-
-> **Implementation status (2026-05-21).**  HEP-0021 §16.3 has always
-> intended the sync contract above (§16.6 says "If ENDPOINT_UPDATE_REQ
-> fails, establish_channel returns nullopt" — which implies the caller
-> observes failure).  However the current
-> `BrokerRequestComm::send_endpoint_update` implementation pushes to
-> `cmd_queue` and returns `void`, dropping the ACK.  This is the
-> half-mix shape that HEP-CORE-0007 §12.2.1 prohibits.  Remediation
-> tracked as harness task #90.  Until the BRC fix lands, the L3
-> test `ZmqEndpointRegistryTest.EndpointUpdate_ReflectedInDiscovery`
-> exposes the gap as an intermittent CI failure.
-
-### 16.6 Design Notes
-
-- **No factory reordering**: The create → establish_channel split is unchanged.
-  The update happens within `establish_channel` after ZmqQueue is ready.
-- **Cleanup on failure**: If `ENDPOINT_UPDATE_REQ` fails, `establish_channel`
-  returns nullopt. The ZmqQueue unique_ptr is destroyed automatically.
-  The channel remains in the broker as not-ready; the Producer destructor's
-  `close()` sends the deregistration.
-- **SHM channels unaffected**: The readiness guard only applies when
-  `transport=zmq` and the registered endpoint has port 0.
-- **Existing deployments**: Channels registered with a specific port are
-  immediately ready. No behavior change for non-port-0 configs.
-- **Template vs non-template**: Both `create()` variants call `establish_channel`
-  which handles the update. No duplication.
-- **Rename**: `create_from_parts` → `establish_channel` — done (this commit).
-
-### 16.7 Relation to Producer/Consumer API Layering
-
-This change is internal to `establish_channel` and the broker. No impact on:
-- Role host code (calls `Producer::create()` as before)
-- Forwarding API (`write_acquire`, `queue_metrics`, etc.)
-- Consumer discovery flow (broker returns the correct endpoint once ready)
-
-The only visible change is that consumers connecting to a port-0 channel before the
-producer is fully ready receive `CHANNEL_NOT_READY` instead of a bad endpoint.
-
+A future ephemeral-binding design that respects HEP-CORE-0036
+§3.5 is tracked under task #94.  Until #94 ships, producer
+endpoints MUST be fully resolved at config-load time
+(`tr.zmq_endpoint` carries a real `tcp://host:port`).

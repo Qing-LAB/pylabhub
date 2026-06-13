@@ -2048,8 +2048,10 @@ nlohmann::json BrokerServiceImpl::handle_disc_req(const nlohmann::json& req)
     // not ChannelEntry.  DISC_REQ_ACK returns the FIRST admitted
     // producer's endpoint + pubkey (legacy single-producer wire
     // shape) and the aggregated tree of all producers' metadata
-    // blobs (per §6.1).  Step 5 will lift the endpoint + pubkey to
-    // per-producer arrays when ENDPOINT_UPDATE_REQ migrates.
+    // blobs (per §6.1).
+    // Per-producer arrays surface via CONSUMER_REG_ACK.producers[] per HEP-CORE-0036
+    // §3.5 + §6.4 (symmetric Option-α; ENDPOINT_UPDATE_REQ retired 2026-06-12).
+    // Producer endpoint comes from REG_REQ.zmq_node_endpoint directly.
     const auto *first_prod = entry_ref.first_producer();
 
     // HEP-0021 §16: reject if NO producer has a resolved endpoint.
@@ -2263,8 +2265,8 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     const auto &channel_entry = cit->second;
 
     // HEP-0021 §16: reject if first producer's ZMQ endpoint has unresolved
-    // port 0 (Wave M2.5 transitional — single-producer shape; step 5 expands
-    // to "any ready producer" scan per HEP-CORE-0021 §16.4).
+    // port 0 (single-producer shape — the "any ready producer" scan per
+    // HEP-CORE-0021 §16.4 is future work).
     const auto *cons_first_prod = channel_entry.first_producer();
     if (channel_entry.data_transport == "zmq" && cons_first_prod != nullptr &&
         !cons_first_prod->zmq_node_endpoint.empty())

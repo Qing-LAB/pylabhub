@@ -259,7 +259,7 @@ with no special-cased options struct.
 struct ProducerPeer
 {
     std::string role_uid;       ///< Producer's role uid (HEP-CORE-0033 §G2.2.0b).
-    std::string endpoint;       ///< tcp://host:port (HEP-CORE-0021 §16).
+    std::string endpoint;       ///< tcp://host:port (HEP-CORE-0007 §12.3 zmq_node_endpoint).
     std::string pubkey_z85;     ///< Producer's identity pubkey
                                 ///<  (HEP-CORE-0036 I6 — used by consumer-side
                                 ///<   ZAP wiring if any; the broker-side ZAP
@@ -298,16 +298,34 @@ public:
 };
 ```
 
-**Framework integration**:
+**Framework integration** (staged per HEP-CORE-0036 §3.5 +
+§6.7 "Role-host integration pattern"):
 
-- At queue construction (`build_rx_queue(opts)`), `opts.producer_peers`
-  is the initial set from `CONSUMER_REG_ACK.producers[]` (HEP-0036
-  §6.4).  The queue calls its own internal setup for each.
-- On a "producer joined channel X" broadcast (HEP-CORE-0033 §12
-  channel event), the role-host framework looks up the queue for X
-  and calls `queue.add_producer_peer(new_producer)`.
-- On a "producer left channel X" broadcast, the framework calls
-  `queue.remove_producer_peer(role_uid)`.
+- **S1 — `setup_infrastructure_`**: `build_rx_queue(opts)`
+  constructs the queue in **Standby** state per HEP-CORE-0036 §6.7.
+  At this point `opts.producer_peers` may be empty — no PULL
+  `connect()` happens, no PULL worker is spawned.  The queue object
+  exists; the socket side is dormant.
+- **S3 — `apply_master_approval(CONSUMER_REG_ACK)`**: when the
+  consumer's REG_REQ is approved, the framework hands the broker's
+  `CONSUMER_REG_ACK.producers[]` to the queue via the single
+  polymorphic mutator
+  `queue->apply_master_approval(CONSUMER_REG_ACK)`.  That mutator
+  seeds `producer_peers` (merged with any S2→S3 buffered
+  `set_producer_peers` calls per HEP-CORE-0036 §6.7 Option B —
+  `apply_master_approval` payload wins on overlap), per-producer
+  `connect()`s with `curve_serverkey = producer.pubkey` (HEP-CORE-0036
+  §3.5.4 INV4), spawns the PULL worker under ThreadManager scope,
+  and transitions the queue Standby → Configured → Active.  The
+  queue does **NOT** call `connect()` or spawn any worker until
+  `apply_master_approval` runs.
+- **Runtime add/remove (post-S3, queue Active)**: on a "producer
+  joined channel X" broadcast (HEP-CORE-0033 §12 channel event),
+  the role-host framework looks up the queue for X and calls
+  `queue.add_producer_peer(new_producer)`.  On a "producer left
+  channel X" broadcast, the framework calls
+  `queue.remove_producer_peer(role_uid)`.  These operations apply
+  to an already-Active queue; see §4.6.1 for the full runtime flow.
 - Scripts never see this API.  They see only
   `queue.read_acquire()` / `queue.read_release()` — slots arrive
   from any producer in the current peer set, fair-queued by the
@@ -558,10 +576,28 @@ Under HEP-CORE-0036 the producer set is dynamic — producers join
 and leave during the channel's lifetime.  The flow that keeps the
 consumer's queue in sync with the channel's current producer set:
 
+0. **Initial seeding at S3.**  When the consumer's REG_REQ is
+   accepted, the framework receives `CONSUMER_REG_ACK.producers[]`.
+   It calls `queue->apply_master_approval(CONSUMER_REG_ACK)`,
+   which seeds `producer_peers` (merged with any S2→S3 buffered
+   `set_producer_peers` calls per HEP-CORE-0036 §6.7 Option B;
+   `apply_master_approval` payload wins on overlap), per-producer
+   connects with `curve_serverkey = producer.pubkey`, spawns the
+   PULL worker under ThreadManager scope (HEP-CORE-0036 §3.5.4
+   INV4), and transitions the queue Standby → Configured → Active.
+   All steps below apply to the queue **after** this transition —
+   runtime add/remove operations target an already-Active queue.
 1. **Broker** is the authoritative source of `ChannelEntry::producers[]`.
-   On every producer REG_REQ / DEREG_REQ / heartbeat-timeout, the
-   broker emits a channel-event broadcast (HEP-CORE-0033 §12
-   channel-event family — no new wire messages added by HEP-0036).
+   On producer first-heartbeat-received / DEREG_REQ / heartbeat-timeout,
+   the broker fires `CHANNEL_PRODUCERS_CHANGED_NOTIFY` to every kLive
+   consumer of the channel (HEP-CORE-0036 §6.5.1 — fires on the
+   producer's kRegistering → kLive edge per §3.5.4 INV2, NOT on
+   REG_REQ accept).  Consumer's BRC handler pulls
+   `GET_CHANNEL_PRODUCERS_REQ` and applies the result via
+   `set_producer_peers` on the Active queue.  Symmetric to the
+   producer-side `CHANNEL_AUTH_CHANGED_NOTIFY` flow (HEP-0036 §6.5).
+   HEP-CORE-0036 adds four new wire messages (two doorbells, two
+   pulls) that did not exist pre-§3.5.
 2. **Role-host framework** receives the broadcast on its BRC poll
    thread.  For each affected local rx queue, it calls
    `queue.add_producer_peer(...)` (on join) or
