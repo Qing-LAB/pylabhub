@@ -374,19 +374,20 @@ test-assertion sites to the locked Z85-string-array shape:
 Full L2+L3 sweep green post-flip (1734/1734).
 
 **Follow-up 6.2 — Fatal-on-failure for bare registration
-branches.**  MEDIUM severity (completes §3.5.1 contract).
-Currently the producer / consumer / processor role hosts log
-the failure and fall through (in-file comments document the
-deferred intent).  Add `promise_ref.set_value(false); return`
-to the failure branch in each:
+branches.**  ✅ shipped 2026-06-12.  All three role hosts now
+abort startup on registration failure per HEP-CORE-0036 §3.5.1:
 
-- `producer_role_host.cpp:367-386` (REG_REQ failure)
-- `consumer_role_host.cpp:328-360` (CONSUMER_REG_REQ failure)
-- `processor_role_host.cpp:405-446` (BOTH prod_result + cons_result
-  failure paths)
+- `producer_role_host.cpp` — REG_REQ failure: log + set promise
+  false + return (drops the prior else-branch; flattens control
+  flow).
+- `consumer_role_host.cpp` — CONSUMER_REG_REQ failure: same shape.
+- `processor_role_host.cpp` — BOTH prod_result + cons_result
+  failure paths: log + set promise false + return.  hub_max
+  capture moved into braced blocks so apply_*_reg_ack errors
+  short-circuit before the heartbeat-max read.
 
-Three small edits.  Build + full L2/L3 + L4 sweep required to
-catch any test that relied on the half-state.
+Full L2+L3+L4 sweep green (1862/1862) — no test relied on the
+half-state.
 
 **Follow-up 6.3 — Migrate 10 test sites off the legacy
 direct-activation path.**  MEDIUM severity (false confidence —
@@ -405,10 +406,9 @@ once 6.3 is done).  No production caller remains; the public
 surface still invites legacy patterns.  Make private or delete.
 Depends on 6.3.
 
-**Blocks:** 6.1 ✅ shipped 2026-06-12; AUTH-2 unblocked on the
-wire-shape side.  AUTH-3 still waits on 6.2 (fatal-on-failure
-needs to land before RegistrationState::Authorized is wired).
-6.3 + 6.4 can land in parallel with AUTH-2/3.
+**Blocks:** 6.1 + 6.2 ✅ shipped 2026-06-12.  AUTH-2 + AUTH-3
+now fully unblocked from the AUTH-1 side.  6.3 + 6.4 can land
+in parallel with AUTH-2/3.
 
 ### AUTH-2 — Producer-side ZAP pump on BRC poll thread
 

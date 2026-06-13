@@ -329,35 +329,34 @@ void ConsumerRoleHost::worker_main_()
         if (!reg_result.has_value() ||
             reg_result->value("status", std::string{}) != "success")
         {
+            // Per HEP-CORE-0036 §3.5.1 registration failure is FATAL.  Under
+            // §3.5 the consumer's PULL socket is in Standby at S1 and only
+            // connects via apply_master_approval(CONSUMER_REG_ACK) at S3 —
+            // without REG_ACK there is no producer set, no PULL connect,
+            // no data flow.
             LOGGER_ERROR("[cons] Broker consumer registration failed — "
-                         "broker won't track this consumer for liveness");
-            // Per HEP-CORE-0036 §3.5.1 registration failure is FATAL.  Under §3.5
-            // the consumer's PULL socket is in Standby at S1 and only connects via
-            // apply_master_approval(CONSUMER_REG_ACK) at S3 — without REG_ACK there
-            // is no producer set, no PULL connect, no data flow.  Behavior fix ships
-            // under task #103; current branch preserves legacy non-fatal pending #103.
+                         "aborting role startup");
+            promise_ref.set_value(false);
+            return;
         }
-        else
+
+        // HEP-CORE-0036 §6.7 Standby → Configured → Active.  Drive the Rx
+        // queue from the broker's CONSUMER_REG_ACK payload (which carries
+        // `producers[]` for ZMQ; future AUTH-4 will add `shm_secret` for
+        // SHM).  Polymorphic at the queue layer — role host doesn't branch
+        // on transport.  Fatal on failure: HEP §6.7 "fully refused" rule
+        // means the role host must treat this as a startup failure and
+        // request stop.
+        if (!api_ref.apply_consumer_reg_ack(*reg_result))
         {
-            // HEP-CORE-0036 §6.7 Standby → Configured → Active.  Drive
-            // the Rx queue from the broker's CONSUMER_REG_ACK payload
-            // (which carries `producers[]` for ZMQ; future AUTH-4 will
-            // add `shm_secret` for SHM).  Polymorphic at the queue
-            // layer — role host doesn't branch on transport.  Fatal
-            // on failure: HEP §6.7 "fully refused" rule means the
-            // role host must treat this as a startup failure and
-            // request stop.
-            if (!api_ref.apply_consumer_reg_ack(*reg_result))
-            {
-                LOGGER_ERROR("[cons] apply_consumer_reg_ack failed — "
-                             "Rx queue did not reach Active state");
-                promise_ref.set_value(false);
-                return;
-            }
-            auto hub_max = scripting::RoleAPIBase::extract_hub_heartbeat_max(*reg_result);
-            api_ref.install_heartbeat(config_.timing().heartbeat_interval_ms,
-                                       hub_max);
+            LOGGER_ERROR("[cons] apply_consumer_reg_ack failed — "
+                         "Rx queue did not reach Active state");
+            promise_ref.set_value(false);
+            return;
         }
+        auto hub_max = scripting::RoleAPIBase::extract_hub_heartbeat_max(*reg_result);
+        api_ref.install_heartbeat(config_.timing().heartbeat_interval_ms,
+                                   hub_max);
     }
 
     // Step 6b: Startup coordination — wait for prerequisite roles (HEP-0023).
