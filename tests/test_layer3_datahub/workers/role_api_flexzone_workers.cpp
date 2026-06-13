@@ -69,6 +69,7 @@
 
 #include <fmt/core.h>
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 
 #include <chrono>
 #include <cstring>
@@ -203,7 +204,7 @@ void build_payload_pair(PayloadPair &out,
         out.prod->set_flexzone_info_cache_(fz_info);
     }
     ASSERT_TRUE(out.prod->build_tx_queue(tx_opts));
-    ASSERT_TRUE(out.prod->start_tx_queue());
+    ASSERT_TRUE(out.prod->apply_producer_reg_ack(nlohmann::json::object()));
 
     // One committed slot so the consumer can attach.
     void *slot = out.prod->write_acquire(std::chrono::milliseconds{500});
@@ -230,7 +231,7 @@ void build_payload_pair(PayloadPair &out,
         out.cons->set_flexzone_info_cache_(fz_info);
     }
     ASSERT_TRUE(out.cons->build_rx_queue(rx_opts));
-    ASSERT_TRUE(out.cons->start_rx_queue());
+    ASSERT_TRUE(out.cons->apply_consumer_reg_ack(nlohmann::json::object()));
 }
 
 } // namespace
@@ -360,7 +361,7 @@ int zmq_tx_null()
             opts.slot_spec         = pylabhub::tests::simple_schema();
 
             ASSERT_TRUE(api->build_tx_queue(opts));
-            ASSERT_TRUE(api->start_tx_queue());
+            ASSERT_TRUE(api->apply_producer_reg_ack(nlohmann::json::object()));
 
             EXPECT_EQ(api->flexzone(ChannelSide::Tx), nullptr);
             EXPECT_EQ(api->flexzone_size(ChannelSide::Tx), 0u);
@@ -431,7 +432,7 @@ int zmq_rx_null()
                 /*pubkey_z85=*/curve.role("prod.zmq-fz.rx").public_z85});
 
             ASSERT_TRUE(api->build_rx_queue(rx_opts));
-            ASSERT_TRUE(api->start_rx_queue());
+            ASSERT_TRUE(api->apply_consumer_reg_ack(nlohmann::json::object()));
 
             EXPECT_EQ(api->flexzone(ChannelSide::Rx), nullptr);
             EXPECT_EQ(api->flexzone_size(ChannelSide::Rx), 0u);
@@ -785,7 +786,7 @@ int shm_consumer_wrong_secret_rejected()
             }
             ASSERT_TRUE(prod->build_tx_queue(
                 make_producer_opts(slot_spec, fz_spec, secret)));
-            ASSERT_TRUE(prod->start_tx_queue());
+            ASSERT_TRUE(prod->apply_producer_reg_ack(nlohmann::json::object()));
 
             // Commit one slot so the SHM is in a usable state.
             ASSERT_NE(prod->write_acquire(std::chrono::milliseconds{500}),
@@ -822,7 +823,7 @@ int shm_consumer_wrong_secret_rejected()
             auto good_opts = make_consumer_opts(channel, slot_spec, secret);
             EXPECT_TRUE(cons->build_rx_queue(good_opts))
                 << "build_rx_queue must succeed with correct secret";
-            EXPECT_TRUE(cons->start_rx_queue());
+            EXPECT_TRUE(cons->apply_consumer_reg_ack(nlohmann::json::object()));
 
             cons->close_queues();
             prod->close_queues();
@@ -927,7 +928,7 @@ int shm_slot_checksum_corrupt_detected()
                                                            secret);
             opts.shm_config.checksum_policy = hub::ChecksumPolicy::Enforced;
             ASSERT_TRUE(prod->build_tx_queue(opts));
-            ASSERT_TRUE(prod->start_tx_queue());
+            ASSERT_TRUE(prod->apply_producer_reg_ack(nlohmann::json::object()));
 
             // Write + commit a slot with a known pattern.
             auto *slot = static_cast<uint8_t*>(prod->write_acquire(
@@ -969,7 +970,7 @@ int shm_slot_checksum_corrupt_detected()
             // additional set_verify_checksum call — policy is tested by
             // its config, not by redundant API calls.
             ASSERT_TRUE(cons->build_rx_queue(rx_opts));
-            ASSERT_TRUE(cons->start_rx_queue());
+            ASSERT_TRUE(cons->apply_consumer_reg_ack(nlohmann::json::object()));
 
             const uint64_t errors_before =
                 cons->queue_metrics(ChannelSide::Rx).checksum_error_count;
@@ -1053,7 +1054,7 @@ int shm_flexzone_checksum_corrupt_detected()
             opts.shm_config.checksum_policy = hub::ChecksumPolicy::Enforced;
             opts.flexzone_checksum          = true;
             ASSERT_TRUE(prod->build_tx_queue(opts));
-            ASSERT_TRUE(prod->start_tx_queue());
+            ASSERT_TRUE(prod->apply_producer_reg_ack(nlohmann::json::object()));
 
             // Write a slot with a pattern the consumer's slot-verify accepts.
             auto *slot = static_cast<uint8_t*>(prod->write_acquire(
@@ -1095,7 +1096,7 @@ int shm_flexzone_checksum_corrupt_detected()
             rx_opts.checksum_policy   = hub::ChecksumPolicy::Enforced;
             rx_opts.flexzone_checksum = true;
             ASSERT_TRUE(cons->build_rx_queue(rx_opts));
-            ASSERT_TRUE(cons->start_rx_queue());
+            ASSERT_TRUE(cons->apply_consumer_reg_ack(nlohmann::json::object()));
 
             const uint64_t errors_before =
                 cons->queue_metrics(ChannelSide::Rx).checksum_error_count;

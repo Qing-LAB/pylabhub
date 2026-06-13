@@ -218,11 +218,6 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     /// the options and stores it as a unique_ptr<QueueReader> on Impl.
     [[nodiscard]] bool build_rx_queue(const hub::RxQueueOptions &opts);
 
-    /// Start the Tx/Rx queues. Returns false if the side is not wired or
-    /// the queue start() failed.
-    [[nodiscard]] bool start_tx_queue();
-    [[nodiscard]] bool start_rx_queue();
-
     /// HEP-CORE-0036 §6.7 Option B — apply the broker's
     /// `CONSUMER_REG_ACK` payload to the Rx queue.  Per §6.7 Option B
     /// this is the SINGLE driver of Standby → Configured → Active:
