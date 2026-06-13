@@ -667,25 +667,29 @@ void RoleAPIBase::handle_channel_auth_notifies(
                 }
                 else
                 {
-                    // HEP-CORE-0036 §6.5 amended 2026-06-10:
-                    // allowlist entries are `{role_uid, pubkey}`
-                    // objects.  The pubkey is the enforcement key for
-                    // ZAP; role_uid is for the script surface
-                    // (`api.allowed_peers` + `on_allowlist_changed`)
-                    // and not used here.
+                    // HEP-CORE-0036 §6.5 (locked 2026-06-12):
+                    // allowlist entries are bare Z85 pubkey strings.
+                    // Symmetric with §6.2 `REG_ACK.initial_allowlist`
+                    // + §7.2 cache shape.  The script-side
+                    // `api.allowed_peers` surface still exposes
+                    // `AllowedPeer{role_uid, pubkey}`; we leave
+                    // `role_uid` empty here because the wire no
+                    // longer carries it.  A role host that wants
+                    // role_uids resolves them locally via its
+                    // `known_roles` view (operator-side metadata).
                     sec::PeerAllowlist allowlist;
                     std::vector<AllowedPeer> script_view;
                     const auto &arr = reply->value("allowlist",
                                                      nlohmann::json::array());
                     for (const auto &entry : arr)
                     {
-                        if (!entry.is_object()) continue;
-                        const auto pk = entry.value("pubkey", std::string{});
+                        if (!entry.is_string()) continue;
+                        const auto pk = entry.get<std::string>();
                         if (pk.empty()) continue;
                         allowlist.peers.insert(
                             sec::PeerIdentity{"curve", pk});
                         script_view.push_back(AllowedPeer{
-                            entry.value("role_uid", std::string{}), pk});
+                            /*role_uid=*/std::string{}, pk});
                     }
                     const auto reason =
                         it->details.value("reason", std::string{"unknown"});

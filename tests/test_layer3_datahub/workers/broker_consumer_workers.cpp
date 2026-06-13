@@ -582,8 +582,10 @@ int get_channel_auth_returns_allowlist()
                             3000).has_value());
 
             // Post-registration: allowlist includes consumer entry.
-            // Per HEP-CORE-0036 §6.5 amendment 2026-06-10: entries are
-            // `{role_uid, pubkey}` objects.
+            // Per HEP-CORE-0036 §6.5 (locked 2026-06-12): entries are
+            // bare Z85 pubkey strings — the role_uid is operator-side
+            // metadata and is not carried on the wire (symmetric with
+            // §6.2 REG_ACK.initial_allowlist + §7.2 cache shape).
             auto post = prod.brc.get_channel_auth(channel, prod_uid, 3000);
             ASSERT_TRUE(post.has_value());
             EXPECT_EQ(post->value("status", std::string{}), "success");
@@ -591,9 +593,8 @@ int get_channel_auth_returns_allowlist()
             const auto &al = post->at("allowlist");
             ASSERT_TRUE(al.is_array());
             ASSERT_EQ(al.size(), 1u);
-            ASSERT_TRUE(al[0].is_object());
-            EXPECT_EQ(al[0].value("role_uid", std::string{}), cons_uid);
-            EXPECT_EQ(al[0].value("pubkey", std::string{}),
+            ASSERT_TRUE(al[0].is_string());
+            EXPECT_EQ(al[0].get<std::string>(),
                       curve.role(cons_uid).public_z85);
 
             // Consumer dereg: broker mutates allowlist (revoke) + fires

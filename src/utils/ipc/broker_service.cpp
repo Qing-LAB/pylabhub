@@ -2793,34 +2793,20 @@ BrokerServiceImpl::handle_get_channel_auth_req(const nlohmann::json &req)
     if (!corr_id.empty())
         resp["correlation_id"] = corr_id;
 
-    // HEP-CORE-0036 §6.5 (amended 2026-06-10): allowlist entries are
-    // `{role_uid, pubkey}` objects so script-side I11 surfaces
-    // (`api.allowed_peers` polling + `on_allowlist_changed` callback)
-    // can speak in role_uid terms instead of bare Z85 strings.  The
-    // authoritative set still lives in `authorized_consumer_pubkeys`;
-    // we enrich each pubkey with the matching `ConsumerEntry.role_uid`
-    // — `_on_consumer_joined` and `_on_consumer_authorized` fire
-    // together at CONSUMER_REG admission, so consumers[] contains a
-    // matching entry for every authorized pubkey under normal
-    // operation.  A missing match leaves `role_uid` empty — the
-    // pubkey remains the authoritative enforcement key on the
-    // producer side regardless.
+    // HEP-CORE-0036 §6.5 (locked 2026-06-12): allowlist entries are
+    // bare Z85 pubkey strings — symmetric with §6.2
+    // `REG_ACK.initial_allowlist` and the role-side cache
+    // (`PeerAllowlist::peers` is `std::set<PeerIdentity>` keyed on
+    // pubkey).  The pubkey is the authoritative enforcement key at
+    // the producer's ZAP layer; `role_uid` is operator-side metadata
+    // and is not needed on the wire (a producer that wants the
+    // role_uid for the matching pubkey resolves it locally via its
+    // `known_roles` view, not via this ACK).  Earlier 2026-06-10
+    // `{role_uid, pubkey}` shape retired; see AUTH_TODO sub-6.1.
     nlohmann::json allowlist_arr = nlohmann::json::array();
     for (const auto &pk : access->authorized_consumer_pubkeys)
     {
-        std::string role_uid;
-        for (const auto &c : ch->consumers)
-        {
-            if (c.zmq_pubkey == pk)
-            {
-                role_uid = c.role_uid;
-                break;
-            }
-        }
-        nlohmann::json entry;
-        entry["role_uid"] = role_uid;
-        entry["pubkey"]   = pk;
-        allowlist_arr.push_back(std::move(entry));
+        allowlist_arr.push_back(pk);
     }
     resp["allowlist"] = std::move(allowlist_arr);
     return resp;
