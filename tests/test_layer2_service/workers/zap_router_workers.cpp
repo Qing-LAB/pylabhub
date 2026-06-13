@@ -870,10 +870,23 @@ public:
         return al_.has_value() && al_->contains(p);
     }
 
-    void wait_until_entered() const
+    // Returns true if entered_ flips within `timeout`; false on
+    // timeout.  Caller is expected to assert on the return value so a
+    // never-entered admission fails with a clean test diagnostic
+    // rather than an opaque subprocess hang.
+    [[nodiscard]] bool wait_until_entered(
+        std::chrono::milliseconds timeout =
+            std::chrono::milliseconds(2000)) const
     {
+        const auto deadline =
+            std::chrono::steady_clock::now() + timeout;
         while (!entered_.load())
+        {
+            if (std::chrono::steady_clock::now() >= deadline)
+                return false;
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        return true;
     }
     void release() { release_promise_.set_value(); }
     bool was_exited() const { return exited_.load(); }
@@ -1039,22 +1052,27 @@ int round3_uaf_destructor_blocks_until_admission_returns(const char *)
                                   << reply.size() << " (expected 6).";
             });
 
-            admission.wait_until_entered();
+            ASSERT_TRUE(admission.wait_until_entered())
+                << "Pump never delivered the request to admission "
+                   "within 2s — synthetic ZAP request lost or pump "
+                   "stalled.  Test cannot proceed to the UAF check.";
 
             // Start destruction on a separate thread.  The destructor
             // (`~local` at the inner scope's closing brace) MUST block
-            // waiting for pump_one's shared_lock to release.  We set
-            // `destroyed` AFTER the inner scope ends so the flag flips
-            // only AFTER ~local returns, not when the lambda body
-            // merely started.  Without this ordering, the test would
-            // be checking "lambda thread spawned" rather than
-            // "destructor completed" — and would pass even when the
-            // UAF window is open.
+            // waiting for pump_one's shared_lock to release.  We
+            // signal `destroyer_entered_destructor` immediately BEFORE
+            // ~local runs (so the test thread can synchronize on
+            // "destructor has been entered") and set `destroyed` AFTER
+            // ~local returns (so the flag flips only when the
+            // destructor actually completes, not when the lambda body
+            // merely started).  This gives us two positive
+            // synchronization points instead of a blind sleep.
+            std::atomic<bool> destroyer_entered_destructor{false};
             std::atomic<bool> destroyed{false};
             std::thread destroyer([&] {
                 {
                     ZapDomainHandle local = std::move(handle);
-                    (void) local;
+                    destroyer_entered_destructor.store(true);
                 }  // ← ~local executes here.  With the fix:
                    // unregister_domain_'s unique_lock blocks here
                    // until pump_one's shared_lock releases (which
@@ -1062,7 +1080,27 @@ int round3_uaf_destructor_blocks_until_admission_returns(const char *)
                 destroyed.store(true);
             });
 
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            // Wait for the destroyer to actually enter the destructor
+            // (positive signal — no blind sleep).  2s timeout matches
+            // wait_until_entered's default.
+            {
+                const auto deadline =
+                    std::chrono::steady_clock::now() +
+                    std::chrono::seconds(2);
+                while (!destroyer_entered_destructor.load() &&
+                       std::chrono::steady_clock::now() < deadline)
+                    std::this_thread::sleep_for(
+                        std::chrono::milliseconds(1));
+                ASSERT_TRUE(destroyer_entered_destructor.load())
+                    << "Destroyer thread did not enter ~ZapDomainHandle "
+                       "within 2s — thread spawn or move stalled.";
+            }
+            // Give the destructor a brief window to MAYBE return (it
+            // shouldn't — the unique_lock should block).  This is the
+            // only timing-bound bit of the test; 50ms is enough to
+            // distinguish "blocked indefinitely" from "returned
+            // immediately" on any sane scheduler.
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
             // INVARIANT: destructor still blocked.  If this fires, the
             // UAF window is open: pump_one released its shared_lock

@@ -480,7 +480,7 @@ applied to the LifecycleManager near-miss); same pattern used by
 - `zap_router.cpp::unregister_domain_` PLH_PANICs when
   `is_recursing(this)` — destructor can't react to refusal.
 - `peer_admission.hpp::is_peer_allowed` doc-comment now encodes the
-  four-part reentrance contract (synchronous-thread, no
+  five-part reentrance contract (synchronous-thread, no
   register-callback, no handle-destruction, bounded-time, may-throw).
 - `zap_router.hpp` file-header threading-model section extended with
   the three runtime-enforced invariants.

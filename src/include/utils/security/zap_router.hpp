@@ -30,16 +30,18 @@
  * **Threading model.**
  *   - `register_domain` / `unregister_domain_` — any thread; serialized
  *     by `std::shared_mutex` on the routing table.
- *   - `pump_one` — exactly ONE thread per process at a time.  libzmq
- *     enforces single-thread access on the inproc REP socket; a
- *     second pumping caller would observe `EAGAIN`/`ETERM`.  Phase D
- *     wires this on the broker's main poll thread (plh_hub) and the
- *     BRC dispatch thread (plh_role); tests/demos use
+ *   - `pump_one` — exactly ONE thread per process at a time, enforced
+ *     at runtime by the atomic-counter PANIC documented under
+ *     "Runtime-enforced invariants" (3) below.  libzmq requires
+ *     single-thread access to the inproc REP socket; concurrent
+ *     pumpers would silently corrupt its FSM.  Production wires
+ *     this on the broker's main poll thread (plh_hub) and the BRC
+ *     dispatch thread (plh_role, post-AUTH-2 #162); tests/demos use
  *     `ZapPumpThread` (a tiny RAII helper, defined alongside).
  *
- * **Runtime-enforced invariants (Slice A, task #215).**  The
- * "exactly ONE pumper" contract and the admission-pointer lifetime
- * are enforced at the call sites, not just documented:
+ * **Runtime-enforced invariants (task #215).**  The "exactly ONE
+ * pumper" contract and the admission-pointer lifetime are enforced
+ * at the call sites, not just documented:
  *
  *   1. `pump_one` holds `registered_mu` in shared mode across the
  *      `admission->is_peer_allowed(...)` call.  `~ZapDomainHandle`
