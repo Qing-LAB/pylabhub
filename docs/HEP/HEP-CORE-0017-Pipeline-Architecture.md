@@ -299,7 +299,11 @@ public:
 ```
 
 **Framework integration** (staged per HEP-CORE-0036 §3.5 +
-§6.7 "Role-host integration pattern"):
+§6.7 "Role-host integration pattern").  Both directions follow the
+same shape — build in Standby, ask the broker, activate inside
+`apply_master_approval`.
+
+#### Consumer side (PULL / rx queue)
 
 - **S1 — `setup_infrastructure_`**: `build_rx_queue(opts)`
   constructs the queue in **Standby** state per HEP-CORE-0036 §6.7.
@@ -326,10 +330,42 @@ public:
   channel X" broadcast, the framework calls
   `queue.remove_producer_peer(role_uid)`.  These operations apply
   to an already-Active queue; see §4.6.1 for the full runtime flow.
-- Scripts never see this API.  They see only
-  `queue.read_acquire()` / `queue.read_release()` — slots arrive
-  from any producer in the current peer set, fair-queued by the
-  underlying ZMQ socket.
+
+#### Producer side (PUSH / tx queue) — symmetric
+
+- **S1 — `setup_infrastructure_`**: `build_tx_queue(opts)`
+  constructs the queue in **Standby** state.  The bind endpoint is
+  carried in `opts.zmq_node_endpoint` but the socket is NOT bound
+  yet, the ZAP handler is NOT armed, and no PUSH worker thread
+  exists.  This is the AUTH-gate principle from HEP-CORE-0036 §3.5
+  applied to the producer side — no listening socket exists before
+  the broker has authorized the channel.
+- **S3 — `apply_master_approval(REG_ACK)`**: when the producer's
+  REG_REQ is approved, the framework hands the broker's
+  `REG_ACK.initial_allowlist` (array of Z85 pubkey strings per
+  HEP-CORE-0036 §6.2 / §6.5) to the queue via the same single
+  polymorphic mutator: `queue->apply_master_approval(REG_ACK)`.  On
+  the PUSH side that mutator installs the ZAP handler (so libzmq
+  consults the seeded allowlist on every CURVE handshake), seeds
+  the ZAP cache from `initial_allowlist`, binds the PUSH socket,
+  spawns the PUSH worker, and transitions Standby → Configured →
+  Active.  As on the PULL side: the queue does **NOT** bind or
+  spawn any worker until `apply_master_approval` runs.
+- **Runtime authorization changes (post-S3)**: when the broker's
+  per-channel allowlist changes (consumer joined / revoked), the
+  broker fires `CHANNEL_AUTH_CHANGED_NOTIFY` to the producer; the
+  role-host's BRC handler pulls the new allowlist via
+  `GET_CHANNEL_AUTH_REQ` and merges it into the queue with
+  `set_peer_allowlist` (HEP-CORE-0036 §6.5 notify-then-pull).  The
+  queue stays Active; future handshakes consult the refreshed cache.
+
+#### Script visibility — both sides
+
+Scripts never see this API.  They see only `queue.write_acquire()`
+/ `queue.write_commit()` (producer) or `queue.read_acquire()` /
+`queue.read_release()` (consumer); slots route through whatever
+peer set the framework has populated, fair-queued by the underlying
+ZMQ socket.
 
 **Pattern-neutrality**: HEP-CORE-0017 does NOT specify whether
 ZmqQueue uses Pattern A (PULL binds, peers' PUSH connect to it) or

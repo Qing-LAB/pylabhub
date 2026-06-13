@@ -107,8 +107,11 @@ RoleAPIBase (unified role API -- in pylabhub-utils, Pimpl, ABI-stable)
                         wrapper classes were retired in L3.γ A6.3, 2026-03-01)
   -- wired to (non-owning): RoleHostCore*, BrokerRequestComm*, InboxQueue*
   -- direction-agnostic: role defined by which queues + pointers are set
-  -- owns ctrl thread (start_ctrl_thread): heartbeat, broker notifications,
-     deregistration sequencing -- see HEP-CORE-0023 §2.5
+  -- owns N ctrl-class threads (start_handler_threads): one per
+     RoleHandler::connections() entry — handler_ctrl_0, handler_ctrl_1, ...
+     Each drives a BRC poll loop (heartbeat, broker notifications,
+     deregistration sequencing).  N=1 for single-hub producer/consumer;
+     N=2 for the dual-hub processor (HEP-CORE-0023 §2.5, HEP-CORE-0031 §4.3.1).
 
 EngineHost<ApiT>  (template base, in pylabhub-utils)
   -- generic start/stop scaffold parameterised on the script-visible API:
@@ -202,17 +205,16 @@ pylabhub-scripting (static lib, linked by executables that embed script engines)
   src/scripting/role_host_helpers.hpp        -- Shared helpers (drain_inbox, wait_for_roles, setup_inbox_facility)
   src/scripting/zmq_poll_loop.hpp            -- ZmqPollLoop + HeartbeatTracker
 
-pylabhub-producer (executable)
-  src/producer/producer_role_host.hpp/.cpp   -- ProducerRoleHost (engine-agnostic)
-  src/producer/producer_api.hpp/.cpp         -- ProducerAPI (Python wrapper) + pybind11 module
+src/producer/   -- ProducerRoleHost  (engine-agnostic) + ProducerAPI (pybind11)
+src/consumer/   -- ConsumerRoleHost                    + ConsumerAPI  (pybind11)
+src/processor/  -- ProcessorRoleHost                   + ProcessorAPI (pybind11)
 
-pylabhub-consumer (executable)
-  src/consumer/consumer_role_host.hpp/.cpp   -- ConsumerRoleHost
-  src/consumer/consumer_api.hpp/.cpp         -- ConsumerAPI (Python wrapper) + pybind11 module
-
-pylabhub-processor (executable)
-  src/processor/processor_role_host.hpp/.cpp -- ProcessorRoleHost
-  src/processor/processor_api.hpp/.cpp       -- ProcessorAPI (Python wrapper) + pybind11 module
+plh_role (single executable; HEP-CORE-0024)
+  src/role_cli/plh_role_main.cpp     -- dispatches on --role producer|consumer|processor
+  Per-role hosts compile into pylabhub-utils + pylabhub-scripting; no
+  per-role binary exists.  The historical pylabhub-{producer,consumer,
+  processor} binaries were unified into plh_role 2026-04-21 (see
+  HEP-CORE-0024 §11 + HEP-CORE-0018 / HEP-CORE-0015 supersession notes).
 ```
 
 ---
@@ -997,125 +999,246 @@ and constructs the engine on its worker thread (Step 0 below).
 
 ### Role Host `worker_main_()` Steps
 
-```
-Step 0: Construct the script engine ON THE WORKER THREAD
-  - auto engine = make_engine_from_script_config(config_.script());
-  - For Python config: PythonEngine ctor calls
-    ensure_python_interpreter_loaded() — first call registers + loads
-    the PythonInterpreter dynamic module on this worker thread,
-    constructing py::scoped_interpreter and acquiring the GIL.
-  - For Lua / Native: no lifecycle module is loaded; engine is
-    self-contained.
-  - engine_ = std::move(engine);  // Host now owns the engine.
+The data plane comes up in three plain-English phases — **build**,
+**ask the broker**, **activate** — followed by the data loop, then
+teardown.  The numbered steps below trace that arc.  Source of truth
+for the auth-gated lifecycle is HEP-CORE-0036 §3.5 + §6.7; the steps
+here describe how the role host walks through it.
 
-Step 1: Resolve schemas from config
-  - out_slot_spec_, in_slot_spec_ from role-specific JSON
-  - out_fz_local, in_fz_local from flexzone JSON
-  - inbox_spec_local from inbox JSON
-  - Compute and store on core:
-    core.set_out_slot_spec(spec, compute_schema_size(spec, packing))
-    core.set_out_fz_spec(spec, align_to_physical_page(compute_schema_size(spec, packing)))
-
-Step 2a: Wire api_ identity + config (no infrastructure dependency)
-  - (api_ was constructed earlier by EngineHost::startup_() so the
-     worker thread could spawn under api_'s ThreadManager — bounded join.)
-  - api_->set_name(), set_channel(in or out), set_log_level(),
-     set_script_dir(), set_role_dir(), set_checksum_policy(),
-     set_stop_on_script_error(), set_engine(&engine_).
-  - For processor: also set_out_channel() (processor has BOTH directions).
-
-> **ORDERING (audit B2, 2026-05-20 — demo-harness discovery).**
-> The api_ state wiring MUST happen BEFORE `setup_infrastructure_`,
-> because `build_tx_queue` and `build_rx_queue` read `pImpl->channel`
-> (and `pImpl->out_channel`) to derive the SHM block name —
-> `tx_channel = pImpl->out_channel.empty() ? pImpl->channel : pImpl->out_channel`
-> (`role_api_base.cpp`).  Pre-fix the order was reversed in all three
-> role hosts: setup_infrastructure_ ran first, found an empty channel
-> string, and `shm_create("", ...)` failed with EINVAL — the worker
-> thread threw and the role died at startup.  Discovered via the
-> demo harness; the L3 test that exercises `build_tx_queue` directly
-> through the API (`RoleAPIBase_StartHandlerThreads_DualHub_E2E`) sets
-> channel via `api_->set_channel(...)` before calling build_*_queue,
-> so it never hit the worker_main_ bug.  The fix split Step 2 into
-> Step 2a (api state, unconditional, comes first) + Step 2b
-> (`setup_infrastructure_`, gated on !validate_only) — and the
-> `set_inbox_queue` call moved into Step 2b because it depends on
-> `inbox_queue_` being initialised by `setup_infrastructure_`.
+> **Why the order matters.**  Three invariants drive every choice
+> below:
 >
-> The CRTP refactor in Wave-B M9 (`RoleHostFrame<HostT>`) is meant to
-> lift this phase ordering into a single template body so the
-> duplication across producer/consumer/processor role hosts can't
-> drift again.  When M9 lands, the lifted template MUST inherit this
-> Step-2a-before-Step-2b ordering.
+> 1. **No socket touches the network before the broker has authorized
+>    the channel.**  Data queues live in **Standby** state from
+>    construction (Step 2b) through registration (Step 6c) and only
+>    transition to Active inside `apply_*_reg_ack` (Step 6d).  The
+>    PUSH bind, PULL connect, and ZAP arm all happen there.
+> 2. **Registration failure is FATAL.**  An unregistered producer has
+>    no authorized consumers; an unregistered consumer has no
+>    producer endpoint.  Either failure case is an abort, not a
+>    fall-through (HEP-CORE-0036 §3.5.1).
+> 3. **The ctrl-class threads come up before the first heartbeat.**
+>    `install_heartbeat` (Step 6d) schedules onto threads that
+>    `start_handler_threads` (Step 6b) already spawned.
 
-Step 2b: Setup infrastructure (depends on Step 2a)
-  - Build Tx queue (producer-side) and/or Rx queue (consumer-side) via
-    api_->build_tx_queue(...) / api_->build_rx_queue(...).  The factory
-    selects ShmQueue or ZmqQueue based on the transport in opts; the
-    queue is owned internally by RoleAPIBase.  For SHM rx, the
-    queue option `shm_name` is the channel name (matches the producer's
-    `ShmQueue::create_writer(channel, ...)` first arg — audit B5).
-  - Setup inbox via setup_inbox_facility() (shared helper).
-  - api_->set_inbox_queue(inbox_queue_.get())   // depends on inbox setup above
-  - (Broker REG_REQ + heartbeat are handled later by start_handler_threads
-    + register_*_channel; see Step 6.)
+#### Build → ask → activate (overview)
 
-Step 4: Load engine via engine_lifecycle_startup()
-  - Assembles EngineModuleParams (schemas, packing, script_dir, entry_point)
-  - engine_lifecycle_startup() does:
-    1. engine->initialize(tag, core)
-    2. engine->load_script(dir, entry, required_callback)
-    3. engine->register_slot_type() for each direction (InSlot, OutSlot, InFlex, OutFlex, Inbox)
-    4. Assert flexzone specs page-aligned
-    5. engine->build_api(RoleAPIBase)
-    6. Assert engine type sizes == schema logical sizes
+```mermaid
+sequenceDiagram
+    autonumber
+    participant W as worker thread
+    participant API as RoleAPIBase
+    participant Q as Tx/Rx queue
+    participant H as handler_ctrl_<N> threads
+    participant B as broker
 
-Step 5: invoke_on_init()
-Step 6: api_->start_ctrl_thread(CtrlThreadConfig)
-        — connects BrokerRequestComm to broker
-        — sends REG_REQ / CONSUMER_REG_REQ from the ctrl thread
-        — periodic heartbeat (default 500ms = 2 Hz, see HEP-CORE-0023 §2.5)
-        — dispatches unsolicited broker notifications (CHANNEL_CLOSING_NOTIFY,
-          CHANNEL_ERROR_NOTIFY, ROLE_REGISTERED_NOTIFY,
-          ROLE_DEREGISTERED_NOTIFY) onto the message queue
-        — signal ready
-Step 7: Run data loop (invoke_produce / invoke_consume / invoke_process)
-Step 8: stop_accepting() + deregister_from_broker()
-Step 9: invoke_on_stop()           (ctrl thread still alive for final I/O)
-Step 10: engine->finalize()
-Step 11: broker_comm->stop() + set_running(false)                       (signal ctrl thread; non-destructive)
-Step 12: api.thread_manager().wait_for_active_loop_exit("ctrl", T)      (honor BRC ctrl thread's shutdown contract)
-Step 13: teardown_infrastructure()                                       (disconnect broker, close queues/inbox)
-Step 14: api.thread_manager().drain()                                    (final join; safety net)
+    Note over W,Q: Step 2b — BUILD
+    W->>API: build_tx_queue(opts) / build_rx_queue(opts)
+    API->>Q: construct in **Standby**<br/>(no bind, no connect, no worker)
+    Note over W,B: Step 6a-6c — ASK
+    W->>API: start_handler_threads(handler)
+    API->>H: spawn handler_ctrl_0 [..._1 for dual-hub]
+    H-->>B: DEALER connect (control plane)
+    W->>API: register_producer_channel(opts) / register_consumer(opts)
+    API->>B: REG_REQ (sync REQ/REP)
+    B-->>API: REG_ACK (allowlist / producers[])
+
+    alt registration failed
+        W->>W: promise.set_value(false); return  (FATAL)
+    end
+
+    Note over W,Q: Step 6d — ACTIVATE
+    W->>API: apply_producer_reg_ack(ack) / apply_consumer_reg_ack(ack)
+    API->>Q: apply_master_approval(ack)
+    Q->>Q: Standby → Configured → **Active**<br/>(PUSH binds + ZAP arms /<br/>PULL connects per-producer)
+    W->>API: install_heartbeat(period, hub_max)
+    Note over H: heartbeat ticks begin
+```
+
+#### Step list
+
+The numbered list is what the producer / consumer / processor
+`worker_main_()` bodies actually do, in order:
+
+```
+Step 0  — Construct the script engine ON THE WORKER THREAD
+          - engine = make_engine_from_script_config(config_.script());
+          - PythonEngine ctor calls ensure_python_interpreter_loaded()
+            (lazy: first call registers + loads the PythonInterpreter
+            dynamic module; py::scoped_interpreter ctor runs here; the
+            worker thread now holds the GIL).
+          - Lua / Native: no lifecycle module is loaded.
+          - engine_ = std::move(engine);
+
+Step 1a — Build presences (single-resolve of channel schemas)
+          - One Presence per (hub, channel, role_kind) the role
+            participates in.  Single-hub producer / consumer have one;
+            dual-hub processor has two.
+          - core.set_*_slot_spec(spec, compute_schema_size(spec, packing))
+            and core.set_*_fz_spec(...) populated from the presence's
+            resolved schemas.
+
+Step 1b — Inbox schema (role-level, not per-channel)
+          - inbox_spec_local resolved from inbox JSON.
+
+Step 2a — Wire api_ identity + config (no infrastructure deps)
+          - api_ was constructed earlier by EngineHost::startup_() so
+            the worker thread could spawn under api_'s ThreadManager
+            (bounded join).
+          - api_->set_name(), set_channel(in or out), set_log_level(),
+            set_script_dir(), set_role_dir(), set_checksum_policy(),
+            set_stop_on_script_error(), set_engine(&engine_).
+          - Processor also calls set_out_channel().
+
+Step 2b — Setup infrastructure (depends on Step 2a)
+          - api_->build_tx_queue(opts) and/or api_->build_rx_queue(opts).
+            The factory selects ShmQueue or ZmqQueue from opts.
+          - **The queue is left in Standby**: no PUSH bind, no PULL
+            connect, no socket worker thread spawned.  See
+            HEP-CORE-0036 §6.7 + HEP-CORE-0017 §3.3 for the queue
+            state machine.
+          - For SHM rx: shm_name is the channel name (matches the
+            producer's ShmQueue::create_writer(channel, ...)).
+          - setup_inbox_facility() builds the inbox queue.
+          - api_->set_inbox_queue(inbox_queue_.get()).
+
+Step 4  — Load engine via engine_lifecycle_startup()
+          - Assembles EngineModuleParams (schemas, packing, script_dir,
+            entry_point).
+          - engine_lifecycle_startup() does:
+              1. engine->initialize(tag, core)
+              2. engine->load_script(dir, entry, required_callback)
+              3. engine->register_slot_type() per direction (InSlot,
+                 OutSlot, InFlex, OutFlex, Inbox)
+              4. Assert flexzone specs page-aligned
+              5. engine->build_api(RoleAPIBase)
+              6. Assert engine type sizes == schema logical sizes
+
+Step 5  — engine_->invoke_on_init(api_)
+          - Script's on_init() runs here.  Queue is still Standby;
+            broker is not yet contacted; api.band_join / discover_*
+            APIs that need a BRC will return None (see § "When can
+            a callback use which API").
+
+Step 6  — Connect to broker, register, activate the data plane.
+          Sub-steps 6a..6d execute in order; failures at 6c or 6d
+          abort role startup.
+
+  Step 6a — core_.set_running(true).  Build the RoleHandler with the
+            list of Presences from Step 1a.
+
+  Step 6b — api_->start_handler_threads(std::move(handler))
+            - Spawns one handler_ctrl_<N> thread per
+              handler.connections() entry (N=1 single-hub; N=2 dual-hub
+              processor).  Each thread drives a BRC poll loop on its
+              hub's control plane.
+            - First spawn is master per HEP-CORE-0031 §4.2.1; the rest
+              are peers; ordering preserved because all N spawns
+              happen from a single call site.
+            - Returns false on spawn failure → FATAL.
+
+  Step 6c — Send REG_REQ inline (sync REQ/REP via BRC)
+            - Build REG_REQ / CONSUMER_REG_REQ payload from
+              core + api_ state + CURVE pubkey (HEP-CORE-0036 §4.1).
+            - reg_result = api_ref.register_producer_channel(reg_opts)
+              or api_ref.register_consumer(reg_opts).
+            - On !reg_result.has_value() OR status != "success":
+              **FATAL** — log + promise.set_value(false) + return.
+              Drops the role into teardown without ever opening a
+              data socket.  No "operate locally" mode.
+
+  Step 6d — Activate the data plane + install heartbeat
+            - api_ref.apply_producer_reg_ack(*reg_result) / apply_
+              consumer_reg_ack(*reg_result).  This is the SINGLE
+              Standby → Active driver per HEP-CORE-0036 §6.7 Option B:
+              * PUSH side: extracts REG_ACK.initial_allowlist (array
+                of Z85 pubkey strings, HEP-CORE-0036 §6.2), seeds the
+                ZAP cache, arms the ZAP handler, binds the PUSH
+                socket, spawns the worker.
+              * PULL side: extracts CONSUMER_REG_ACK.producers[]
+                (HEP-CORE-0036 §6.4), promotes peer[0] into transport
+                fields, per-producer connect with the producer's
+                CURVE pubkey, spawns the worker.
+              * SHM side: no-op when shm_secret is config-supplied;
+                future AUTH-4 broker-supplied secret routes through
+                the same call.
+            - On false return: **FATAL** — log + promise.set_value
+              (false) + return.
+            - api_ref.install_heartbeat(period_ms, hub_max).
+              Periodic heartbeat scheduled onto the handler_ctrl_<N>
+              threads (default 500ms / 2 Hz, capped at hub_max from
+              REG_ACK per HEP-CORE-0023 §2.5).
+
+Step 6e — Startup coordination (optional)
+          - If config_.startup().wait_for_roles is non-empty:
+            scripting::wait_for_roles(api_, names, "[role-tag]").
+          - Fails closed: returns false → promise.set_value(false).
+
+Step 7  — Signal ready.  promise.set_value(true).
+
+Step 8  — Run the data loop via shared frame + cycle ops
+          - run_data_loop(engine, cycle_ops, api_, core_) — see
+            data_loop.hpp + cycle_ops.hpp.
+          - Per cycle: acquire → invoke_produce/consume/process(api) →
+            commit/release.  Inner cycle gates on
+            HEP-CORE-0036 §I12 (queue Active); pre-Active reads
+            return "queue not ready" and the loop iterates.
+
+Step 9  — do_role_teardown(api_, core_, [&]{ teardown_infrastructure_(); })
+          - The shared teardown helper runs all of the legacy
+            Steps 8..14 below in the right order.
+```
+
+Steps 8..14 below are the shutdown half, executed by `do_role_teardown`:
+
+```
+Step 8  — stop_accepting() + deregister_from_broker()
+          - DEREG_REQ via the master handler_ctrl_0 BRC; blocks for
+            DEREG_ACK.  Per HEP-CORE-0031 §4.2.4 the master thread
+            outlives every peer so this REQ/REP can complete.
+Step 9  — engine_->invoke_on_stop(api_)
+          - Script's on_stop runs.  Handler threads still alive for
+            final I/O (api.log, api.report_metric).
+Step 10 — engine_->finalize()
+Step 11 — broker_comm->stop()     (signal handler threads; non-destructive)
+          core_.set_running(false)
+Step 12 — api.thread_manager().wait_for_active_loop_exit(slot, T)
+          per handler_ctrl_<N> slot (HEP-CORE-0031 §4.1 contract).
+Step 13 — teardown_infrastructure_()
+          - close_queues(), inbox stop+reset, BRC disconnect+reset.
+Step 14 — api.thread_manager().drain()
+          - Final join.  Safety net per the §4.1 contract.
 ```
 
 > **Thread Shutdown Contract** (canonical: HEP-CORE-0031 §4.1; cross-
 > cutting reference: `docs/IMPLEMENTATION_GUIDANCE.md`).  Steps 11-14
-> honor the contract:
+> honor the contract per handler_ctrl_<N> thread (single-hub: just
+> handler_ctrl_0; dual-hub: both):
 >
-> - Step 11 signals the ctrl thread to exit (sets `stop_requested` +
->   wakes the poll loop).  No destruction.  The ctrl thread observes
->   the signal on its next iteration and exits `loop.run()`.
-> - **Step 12 (NEW under MD1)** waits up to a bounded timeout for the
->   ctrl thread to mark `active_loop_exited` via its `SlotContext`.
->   Per the contract (rule 4), once the flag is set the ctrl thread
->   has released its `pImpl` dependencies — destroying `broker_comm_`
->   is now safe.
+> - Step 11 signals the handler_ctrl_<N> threads to exit (sets
+>   `stop_requested` + wakes the poll loop).  No destruction.  Each
+>   thread observes the signal on its next iteration and exits
+>   `run_poll_loop`.
+> - **Step 12 (NEW under MD1)** waits up to a bounded timeout per
+>   slot for each handler_ctrl_<N> thread to mark `active_loop_exited`
+>   via its `SlotContext`.  Per the contract (rule 4), once the flag
+>   is set the thread has released its `pImpl` dependencies —
+>   destroying the per-connection `BrokerRequestComm` is now safe.
 > - Step 13 runs `teardown_infrastructure_` (role-supplied callback)
 >   to release the role's owned resources in the historical handover
->   order — `clear_inbox_cache`, inbox stop+reset, broker_comm
->   disconnect+reset, `close_queues`.  This step preserves the
->   pre-MD1 placement (resource handover before joins) and is now
->   provably safe because Step 12 honored the BRC ctrl thread's
->   contract.
+>   order — `clear_inbox_cache`, inbox stop+reset,
+>   `stop_handler_threads` (per-connection BRC disconnect+reset),
+>   `close_queues`.  This step preserves the pre-MD1 placement
+>   (resource handover before joins) and is now provably safe because
+>   Step 12 honored every BRC ctrl thread's contract.
 > - Step 14 drains the remaining slots (worker thread self-detaches
 >   since it's the caller; main-thread `EngineHost::shutdown_()`
 >   joins it later).  Acts as the final safety net.
 >
 > **Why this Step 12 was needed.**  `BrokerRequestComm` is
-> externally-threaded — its ctrl thread is spawned into
-> `RoleAPIBase::thread_manager()`, not BRC's own.  Pre-MD1, the
-> ctrl thread's body had dead post-loop pImpl stores at
+> externally-threaded — its poll-loop body runs on a thread spawned
+> into `RoleAPIBase::thread_manager()`, not BRC's own.  Pre-MD1, the
+> thread's body had dead post-loop pImpl stores at
 > `broker_request_comm.cpp:594-595` (verified zero readers); Step 13's
 > `broker_comm_.reset()` raced with those stores under concurrent
 > CPU pressure (1/13 reproductions under `ctest -j2`).  The MD1 fix
@@ -1977,37 +2100,45 @@ stateDiagram-v2
 In Drop mode, `write_acquire(0ms)` never blocks — if output is full, the
 input is released immediately with `inc_out_drop_count`.
 
-### 14-Step Lifecycle Sequence (verified 2026-04-16)
+### Lifecycle Sequence — quick reference
+
+The canonical sequence lives in § "Role Host `worker_main_()` Steps"
+above; this is a one-screen recap.  Use the full section for the
+contract on Standby-state queues, fatal-on-failure registration, and
+the per-presence `handler_ctrl_<N>` thread model.
 
 ```
-Step 1:  Resolve schemas from config
-Step 2:  Setup infrastructure (queues, inbox, broker comm)
-Step 3:  Wire RoleAPIBase (name, channels, engine, queues)
-Step 4:  Engine lifecycle startup (init → load → schema → build_api)
-Step 5:  invoke_on_init()
-Step 6:  Connect broker, start ctrl thread, register
-Step 6b: Startup coordination (wait_for_roles)
-Step 7:  Signal ready
-Step 8:  Run data loop (run_data_loop<CycleOps> + LoopConfig)
-Step 9:  stop_accepting()
-Step 9a: deregister_from_broker()
-Step 10: invoke_on_stop()        ← ctrl thread alive for final I/O
-Step 11: engine->finalize()
-Step 12: broker_comm->stop() + set_running(false)                       (signal ctrl thread)
-Step 12.5 (NEW under MD1): thread_manager().wait_for_active_loop_exit("ctrl", T)
-                                                                        (honor BRC ctrl thread's shutdown contract)
-Step 13: teardown_infrastructure()                                       (resource handover)
-Step 14: thread_manager().drain()                                        (final safety net)
+Step 0   — Construct script engine on worker thread (Python: lazy-load PythonInterpreter)
+Step 1a  — Build presences (one per hub × channel × role_kind)
+Step 1b  — Resolve inbox schema
+Step 2a  — Wire api_ identity + config (channel, name, engine, dirs, policies)
+Step 2b  — Setup infrastructure: build_*_queue → **Standby**; inbox setup
+Step 4   — engine_lifecycle_startup (init → load_script → register_slot_type → build_api)
+Step 5   — invoke_on_init                                   (queue still Standby)
+Step 6a  — core_.set_running(true); build RoleHandler
+Step 6b  — start_handler_threads(handler) → spawns handler_ctrl_<N> threads (N = #connections)
+Step 6c  — register_*_channel(opts) [sync REQ/REP]          (FATAL on failure)
+Step 6d  — apply_*_reg_ack(ack) → Standby → **Active**     (FATAL on failure)
+           install_heartbeat(period, hub_max)
+Step 6e  — wait_for_roles (optional startup coordination)
+Step 7   — promise.set_value(true)
+Step 8   — Run data loop (run_data_loop<CycleOps>)
+Step 9   — do_role_teardown(api_, core_, teardown_infrastructure_)
+             ├─ Step 9.1  stop_accepting + deregister_from_broker
+             ├─ Step 9.2  invoke_on_stop                    (handler threads still alive)
+             ├─ Step 9.3  engine->finalize
+             ├─ Step 9.4  broker_comm->stop + set_running(false)
+             ├─ Step 9.5  wait_for_active_loop_exit per handler_ctrl_<N>  (MD1 contract)
+             ├─ Step 9.6  teardown_infrastructure_ (close queues, inbox, BRC)
+             └─ Step 9.7  thread_manager().drain                (final safety net)
 ```
 
-> See the §"Role Host `worker_main_()` Steps" subsection above for the
-> full **Thread Shutdown Contract** that governs Steps 11-14.  Step
-> 12.5 is the contract-honoring synchronization point added by MD1
-> (2026-05-12); it eliminates the pre-MD1 use-after-free race on
-> `BrokerRequestComm.pImpl` by deterministically waiting for the
-> BRC ctrl thread to mark `active_loop_exited` before
-> `teardown_infrastructure_` destroys `broker_comm_`.  Final drain
-> at Step 14 is unchanged.
+> The Step 9.5 wait is the **Thread Shutdown Contract** synchronization
+> point from MD1 (2026-05-12) — it ensures every handler_ctrl_<N>
+> thread has marked `active_loop_exited` (releasing its pImpl
+> dependencies) before `teardown_infrastructure_` destroys
+> `broker_comm_`.  Pre-MD1 a 1/13 reproductions UAF lived in this gap.
+> Canonical: HEP-CORE-0031 §4.1.5.
 
 ---
 
