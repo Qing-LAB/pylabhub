@@ -370,12 +370,30 @@ void ProducerRoleHost::worker_main_()
         {
             LOGGER_ERROR("[prod] Broker registration failed — "
                          "consumers won't discover this producer");
-            // Non-fatal: producer can still operate locally without
-            // broker discovery.  No heartbeat install in this branch —
-            // hub liveness tracking won't see this role anyway.
+            // Per HEP-CORE-0036 §3.5.1 registration failure is FATAL — there is no
+            // "operate locally" mode under the AUTH-gate principle (an unregistered
+            // producer has no authorized consumers and would be a port-holder with no
+            // peers).  Behavior fix (abort role startup on REG failure) ships under
+            // task #103.  Current branch preserves legacy non-fatal behavior pending
+            // #103; the comment states the design intent so anyone reading this
+            // file does not infer that "non-fatal" is the design.
         }
         else
         {
+            // HEP-CORE-0036 §3.5.5 S3 — drive the tx queue from Standby
+            // to Active using the REG_ACK payload.  apply_producer_reg_ack
+            // dispatches through QueueWriter::apply_master_approval,
+            // which extracts ACK.initial_allowlist (per §6.2), seeds the
+            // ZAP cache, binds the PUSH socket, and spawns the worker.
+            // Must run before install_heartbeat so the first heartbeat
+            // fires after the data plane is up (§3.5.4 INV1).
+            if (!api_ref.apply_producer_reg_ack(*reg_result))
+            {
+                LOGGER_ERROR("[prod] apply_producer_reg_ack failed — "
+                             "tx queue did not activate; aborting startup");
+                promise_ref.set_value(false);
+                return;
+            }
             auto hub_max = scripting::RoleAPIBase::extract_hub_heartbeat_max(*reg_result);
             api_ref.install_heartbeat(config_.timing().heartbeat_interval_ms,
                                        hub_max);

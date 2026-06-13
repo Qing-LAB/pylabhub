@@ -16,15 +16,18 @@
  * @par Lifecycle
  * ShmQueue implements the HEP-CORE-0036 §6.7 Standby → Configured →
  * Active state machine.  The Standby-mode factories build a queue
- * object with deferred-attach metadata (no SHM segment touched);
- * `set_shm_secret(secret)` transitions Standby → Configured;
- * `start()` performs the actual SHM discovery (reader) or segment
- * creation (writer), transitioning Configured → Active.  The
- * existing `create_reader(name, secret, ...)` / `create_writer(...,
- * shared_secret, ...)` overloads are convenience wrappers that drive
- * all three transitions in one call — they return `nullptr` on any
- * phase failure, preserving the legacy "factory returns nullptr on
- * bad secret / schema mismatch / missing segment" contract.
+ * object with deferred-attach metadata (no SHM segment touched).
+ * Under HEP-CORE-0036 §6.7 Option B, `set_shm_secret(secret)` BUFFERS
+ * the secret in Standby; the Standby → Configured → Active transition
+ * is driven by `apply_master_approval(CONSUMER_REG_ACK)`, which
+ * merges any buffered set_* args with REG_ACK fields and then calls
+ * `start()` to perform the actual SHM discovery (reader) or segment
+ * creation (writer).  The existing `create_reader(name, secret, ...)`
+ * / `create_writer(..., shared_secret, ...)` overloads are
+ * convenience wrappers that drive all three transitions in one call
+ * — they return `nullptr` on any phase failure, preserving the
+ * legacy "factory returns nullptr on bad secret / schema mismatch /
+ * missing segment" contract.
  */
 #include "utils/hub_queue.hpp"
 #include "utils/data_block.hpp"

@@ -176,10 +176,11 @@ Sub-deliverables:
    The factory call site at `role_api_base.cpp:421-433` ALREADY uses
    `kRoleIdentityName` + `Z85PublicKey serverkey` from
    `producer_peers.front().pubkey_z85` and ALREADY hard-errors when
-   `producer_peers` is empty.  The REAL work is upstream:
-   `RoleHostFrame::setup_infrastructure_` (`role_host_frame.cpp:163`)
-   builds the rx queue BEFORE `register_consumer` runs, so
-   `producer_peers` is unpopulated when `build_rx_queue` fires.
+   `producer_peers` is empty.  Under HEP-CORE-0036 §3.5 the rx queue
+   is INTENTIONALLY built in Standby at S1 before `register_consumer`
+   runs (no PULL connect, no thread).  `apply_master_approval(CONSUMER_REG_ACK)`
+   at S3 then connects per-producer + spawns the PULL worker.  This
+   is the canonical S1/S3 ordering per §3.5.5.
 
    **Approach (chosen 2026-06-10): option β + state machine** — build
    rx queue with empty `producer_peers` initially, then apply
@@ -304,6 +305,87 @@ Sub-deliverables:
    vocabulary.  Client retry loops can now match the substring
    alongside `awaiting_first_heartbeat` and `heartbeat_stalled`.
 
+6. **Producer-side S3 activation** ✅ shipped 2026-06-12.  *Discovered
+   missing from the AUTH-1 plan during the 2026-06-12 design re-read*
+   — the original 2026-06-10 plan (sub-deliverables 1-5) is entirely
+   consumer-side because the pre-§3.5 design had the producer's
+   PUSH socket bound at S1 inside `setup_infrastructure_`.  The
+   §3.5.1 Option-α decision (locked 2026-06-12) moved producer PUSH
+   bind to S3 inside `apply_master_approval`, leaving the
+   producer-side counterpart of the consumer-side Stages 1A/1B/1C
+   unplanned and unimplemented.  This entry closes that gap:
+   - `hub_zmq_queue.cpp::set_producer_peers` no longer
+     auto-promotes peer[0] into transport-artifact fields — under
+     §6.7 Option B bare `set_*` mutators on Standby BUFFER args
+     only; `apply_master_approval` is the single Standby → Active
+     driver.
+   - `hub_zmq_queue.cpp::apply_master_approval` now actually does
+     work on the PUSH side (was a `return true` no-op): extracts
+     `REG_ACK.initial_allowlist` (per HEP §6.2 — array of Z85
+     pubkey strings), builds a `PeerAllowlist` with
+     `PeerIdentity{"curve", pk}`, seeds the ZAP cache, then calls
+     the queue's private `start()` to bind + arm + spawn worker.
+     PULL side adopts the same shape: extracts `producers[]`,
+     buffers via `set_producer_peers`, promotes peer[0] into
+     `server_pubkey_z85_` + `endpoint`, then `start()`.
+   - `role_api_base.cpp::build_tx_queue` no longer calls
+     `writer->start()` inline — the tx queue is built in Standby
+     symmetrically with the rx queue.
+   - `role_api_base.{cpp,hpp}`: new `apply_producer_reg_ack(ack)`
+     mirror of the existing `apply_consumer_reg_ack`.
+   - `role_host_frame.cpp::setup_infrastructure_` no longer calls
+     `start_rx_queue()` / `start_tx_queue()` — both calls deleted.
+     Queues stay Standby through S1+S2.
+   - `producer_role_host.cpp` + `processor_role_host.cpp` worker
+     bodies: call `apply_producer_reg_ack(*reg_result)` after
+     successful registration, before `install_heartbeat`.  Failure
+     aborts startup with `promise_ref.set_value(false)`.
+   - `tests/.../workers/zmq_queue_auth_workers.cpp` —
+     `auth_standby_state_transitions` worker rewritten to assert
+     the §6.7 Option B contract (bare `set_producer_peers` buffers
+     without transitioning; `start()` refuses on Standby; only
+     `apply_master_approval` drives Standby → Active).
+   Full L2+L3 sweep green (1734/1734) post-commit.
+
+**Open follow-ups** (out of scope for this commit; tracked under
+this entry):
+- AUTH_TODO sub-deliverable 4(b) (lines 218-228) said the
+  `GET_CHANNEL_AUTH_ACK.allowlist` wire shape should be
+  `{role_uid, pubkey}` objects per a 2026-06-10 decision.  The
+  2026-06-12 HEP-CORE-0036 §6.5 rewrite locked the shape as
+  `array of Z85 pubkey strings` (symmetric with §6.2
+  `REG_ACK.initial_allowlist` + §7.2 cache).  Both
+  `broker_service.cpp::handle_get_channel_auth_req` (emit) and
+  `role_api_base.cpp::handle_channel_auth_notifies` (read) still
+  use objects.  Flip both sides + update sub-deliverable 4(b)
+  text in this AUTH_TODO.
+- `RoleAPIBase::start_rx_queue()` / `start_tx_queue()` are still
+  public methods (`role_api_base.hpp:223-224`).  No production
+  caller anymore (Producer/Consumer/Processor hosts route
+  through `apply_*_reg_ack`).  Make them private or delete
+  outright once the test fallout below lands.
+- **Test fallout from §6.7 Option B contract change.**
+  `tests/test_layer3_datahub/workers/role_api_flexzone_workers.cpp`
+  has 10 call sites still using `start_rx_queue()` /
+  `start_tx_queue()` directly (lines 206, 233, 363, 434, 788,
+  825, 930, 972, 1056, 1098).  They PASS today (the methods
+  remain on `RoleAPIBase`) but exercise the LEGACY direct
+  activation path, not the canonical
+  `apply_consumer_reg_ack` / `apply_producer_reg_ack` route.
+  This gives false confidence — these tests don't exercise the
+  production code path.  Rewrite each call site to construct a
+  stub `REG_ACK` / `CONSUMER_REG_ACK` and invoke
+  `apply_*_reg_ack(stub)` instead.  Only this file is affected
+  — grep across `tests/` confirmed no other test touches the
+  two-step `set_*` + `start()` pattern.
+- Fatal-on-failure for the bare registration-failure branches
+  in `producer_role_host.cpp:367-386` /
+  `consumer_role_host.cpp:328-360` /
+  `processor_role_host.cpp:405-446` — currently logged
+  non-fatal per the in-file comments; needs the
+  `promise_ref.set_value(false); return` treatment to match
+  the §3.5.1 fatal-on-S2 contract.
+
 **Blocks:** AUTH-2, AUTH-3, AUTH-5, AUTH-6, AUTH-7.
 
 ### AUTH-2 — Producer-side ZAP pump on BRC poll thread
@@ -317,6 +399,11 @@ Sub-deliverables:
 so CURVE handshakes can complete.  The producer's ZAP cache (the
 allowlist set by AUTH-1's pull) is meaningless if the handshake
 never gets to consult it.
+
+**§3.5 alignment (2026-06-12).**  ZAP arm + `ZapRouter::pump_one`
+wiring occurs inside `apply_master_approval(REG_ACK)` (S3), not in
+`setup_infrastructure_` (S1).  Symmetric with consumer-side
+`apply_master_approval(CONSUMER_REG_ACK)`.
 
 **Scope (do not expand).**
 - Wire `ZapRouter::pump_one(0ms)` into the BRC poll thread's existing
@@ -371,8 +458,12 @@ does not run before the role's auth flow is in place.
 
 **Depends on:** AUTH-1 (the Authorized transition for consumer-side
 fires synchronously upon CONSUMER_REG_ACK arrival with `producers[]`,
-which D5 emits).  Producer-side Authorized fires at REG_ACK
-acceptance — independent of AUTH-1's pull flow.
+which D5 emits).  Producer-side Authorized fires at the END of
+`apply_master_approval(REG_ACK)` (S3 — PUSH bound + ZAP armed +
+allowlist seeded + worker spawned) per HEP-CORE-0036 §3.5.4 INV1.
+Broker fires `CHANNEL_PRODUCERS_CHANGED_NOTIFY {reason=producer_joined}`
+to consumers on the producer's Pending → Ready transition (first HB),
+not on REG_REQ accept (§3.5.4 INV2).
 
 ### AUTH-4 — SHM broker-issued secret end-to-end
 

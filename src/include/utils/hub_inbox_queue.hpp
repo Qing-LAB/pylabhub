@@ -102,7 +102,10 @@ class PYLABHUB_UTILS_EXPORT InboxQueue
 {
 public:
     /**
-     * @brief Factory: create an InboxQueue that binds a ROUTER socket at @p endpoint.
+     * @brief Factory: create an InboxQueue that RECORDS @p endpoint as the future bind target;
+     *        the ROUTER socket is bound by `apply_master_approval` (or `start()` under test
+     *        stubs) at S3 per HEP-CORE-0036 §3.5.1 + HEP-CORE-0027 §4.1.  Behavior fix lands
+     *        under task #103.
      *
      * @param endpoint    ZMQ endpoint to bind (e.g. "tcp://0.0.0.0:5592" or "tcp://0.0.0.0:0").
      *                    Port 0 causes the OS to assign a free port; retrieve it via actual_endpoint().

@@ -706,9 +706,12 @@ void BrokerRequestComm::run_poll_loop(std::function<bool()> should_run)
 
     // Publish a pointer to the loop's periodic_tasks vector so the
     // InstallPeriodicTaskCmd handler can append into it from inside the
-    // drain handler.  The loop starts with an empty vector — even the
-    // first heartbeat install (before REG_ACK) is queued up via the cmd
-    // queue and drained on the first poll iteration.  See HEP-CORE-0023
+    // drain handler.  The loop starts with an empty vector.  install_heartbeat
+    // is invoked POST-REG_ACK at S3 per HEP-CORE-0036 §3.5.4 INV1 (HB cadence
+    // starts only after the data plane is up).  The cmd-queue indirection is
+    // the wakeup mechanism for posting tasks (including the install_heartbeat
+    // call itself) from the role-host thread into this BRC poll loop; the
+    // loop drains the cmd queue on every poll iteration.  See HEP-CORE-0023
     // §2.5 for the heartbeat-cadence negotiation that motivates this.
     pImpl->active_loop_periodic_tasks = &loop.periodic_tasks;
 

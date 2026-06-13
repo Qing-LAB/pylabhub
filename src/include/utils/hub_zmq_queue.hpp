@@ -218,11 +218,16 @@ public:
     // AUTH_TODO §C2/§C4 (#158, #160): discrete `identity_key_name`
     // (KeyStore lookup) + `Z85PublicKey server_pubkey` (PULL only) +
     // `zap_domain` (PUSH only).  No `initial_allowlist` parameter —
-    // callers seed via `set_peer_allowlist()` AFTER `start()`.
-    // Production callers will pick up the broker's
-    // `CHANNEL_AUTH_UPDATE` push (HEP-CORE-0036 §6.5, task #103); the
-    // deny-all default is the safe starting point until that update
-    // arrives.
+    // production callers seed via `apply_master_approval(REG_ACK)` per
+    // HEP-CORE-0036 §6.7 Option B; the bare `set_peer_allowlist`
+    // mutator on a Standby queue BUFFERS the argument and does NOT
+    // transition the queue.  Runtime refreshes arrive via the
+    // role-host's BRC handler pulling `GET_CHANNEL_AUTH_REQ` in
+    // response to `CHANNEL_AUTH_CHANGED_NOTIFY` (HEP-CORE-0036 §6.5
+    // amendment 2026-06-04 — snapshot-push `CHANNEL_AUTH_UPDATE`
+    // retired).  Task #103 (AUTH-1) tracks the implementation; the
+    // deny-all default is the safe starting point until the first ACK
+    // / notify-pull lands.
     //
     // HEP-CORE-0036 §6.7 Standby state (Stage 1A, #188).  PULL-side
     // `pull_from()` accepts EMPTY `server_pubkey` AND EMPTY `endpoint`
@@ -238,9 +243,12 @@ public:
     // `start()` time).
     //
     // Return the concrete `ZmqQueue` so callers can drive the
-    // `PeerAdmission` interface directly (broker glue (task #103) calls
-    // `set_peer_allowlist` on the PUSH-side queue when
-    // `CHANNEL_AUTH_UPDATE` arrives).
+    // `PeerAdmission` interface directly (the role-host BRC handler
+    // calls `set_peer_allowlist` on the PUSH-side queue after pulling
+    // `GET_CHANNEL_AUTH_REQ` in response to
+    // `CHANNEL_AUTH_CHANGED_NOTIFY` — HEP-CORE-0036 §6.5; the
+    // snapshot-push `CHANNEL_AUTH_UPDATE` wire frame was retired
+    // 2026-06-04.  Task #103.
     //
     // Legacy plaintext public `pull_from()` / `push_to()` were
     // deleted in #160 (C4); the bare names now refer exclusively to
@@ -344,21 +352,24 @@ public:
     // bind time.  Calling these on a PUSH-side queue returns false +
     // logs once at INFO.
 
-    /// Snapshot-replace this queue's producer peer set
-    /// (HEP-CORE-0036 §6.7 Standby → Configured transition).
+    /// Snapshot-replace this queue's producer peer set.
     ///
-    /// On PULL/connect side:
-    /// - If the queue is in Standby (factory called with empty
-    ///   `server_pubkey` / empty endpoint) and `list` is non-empty,
-    ///   `server_pubkey_z85_` is populated from `list[0].pubkey_z85` and
-    ///   the connect endpoint from `list[0].endpoint` — transitioning
-    ///   the queue to Configured.  Single-peer for Stage 1A
-    ///   (multi-producer fan-in deferred to HEP-CORE-0017 §3.3).
-    /// - If the queue is Active (`start()` returned true), the call
-    ///   updates the tracked peer set but does NOT touch the live
-    ///   socket — peer swap on a running socket requires teardown +
-    ///   rebuild per HEP-CORE-0036 §6.7 ("stop() is terminal" + I12).
-    ///   Returns true (the metadata snapshot is replaced).
+    /// On Standby this call BUFFERS args only: it records the peer
+    /// list (and on PULL side populates `server_pubkey_z85_` /
+    /// connect endpoint from `list[0]` as a single-peer Stage 1A
+    /// staging step).  It does NOT drive the Standby → Configured
+    /// transition on its own — per HEP-CORE-0036 §6.7 Option B the
+    /// single Standby → Configured → Active driver is
+    /// `apply_master_approval(CONSUMER_REG_ACK)`, which merges any
+    /// buffered set_* args with the REG_ACK fields.  Multi-producer
+    /// fan-in is deferred to HEP-CORE-0017 §3.3.  Behavior fix
+    /// (refusing to transition on bare set_*) lands under task #103.
+    ///
+    /// On PULL/connect side, if the queue is Active (`start()` returned
+    /// true), the call updates the tracked peer set but does NOT touch
+    /// the live socket — peer swap on a running socket requires
+    /// teardown + rebuild per HEP-CORE-0036 §6.7 ("stop() is terminal"
+    /// + I12).  Returns true (the metadata snapshot is replaced).
     ///
     /// On PUSH/bind side: inert — returns false + logs once at INFO.
     ///

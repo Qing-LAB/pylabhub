@@ -745,7 +745,13 @@ int auth_standby_state_transitions(const char *)
                 << "start() must refuse on Standby queue.";
             EXPECT_FALSE(consumer->is_running());
 
-            // ── Standby → Configured via set_producer_peers ────────
+            // ── Bare set_producer_peers BUFFERS only — does NOT transition ──
+            // HEP-CORE-0036 §6.7 Option B (locked 2026-06-12): bare
+            // set_* mutators on a Standby queue store args without
+            // transitioning.  The single Standby → Active driver is
+            // apply_master_approval(ack).  Bare set_producer_peers
+            // therefore returns true (args accepted) but leaves the
+            // queue in Standby (is_configured stays false).
             std::vector<pylabhub::hub::ProducerPeer> peers;
             peers.push_back(pylabhub::hub::ProducerPeer{
                 /*role_uid=*/"P0",
@@ -753,23 +759,43 @@ int auth_standby_state_transitions(const char *)
                 /*pubkey_z85=*/server_pub});
             EXPECT_TRUE(consumer->set_producer_peers(peers));
             EXPECT_EQ(consumer->producer_peer_count(), 1u);
-            EXPECT_TRUE(consumer->is_configured())
-                << "set_producer_peers MUST populate serverkey + "
-                   "endpoint from peers[0] in Standby.";
-            EXPECT_FALSE(consumer->is_running())
-                << "Configured is not yet Active — start() pending.";
+            EXPECT_FALSE(consumer->is_configured())
+                << "bare set_producer_peers MUST NOT transition the "
+                   "queue out of Standby per HEP-0036 §6.7 Option B; "
+                   "only apply_master_approval drives Standby → Active.";
+            EXPECT_FALSE(consumer->is_running());
 
-            // ── Configured → Active via start() ────────────────────
-            // (No matching producer required — the consumer's
-            // CURVE handshake will idle waiting for a peer, but
-            // start() returns true once setsockopts + connect()
-            // complete locally.)
-            EXPECT_TRUE(consumer->start())
-                << "start() must succeed in Configured.";
+            // start() still refuses on Standby even after the bare
+            // set_producer_peers buffered the args.
+            EXPECT_FALSE(consumer->start())
+                << "start() must refuse on Standby queue regardless of "
+                   "buffered set_producer_peers args.";
+            EXPECT_FALSE(consumer->is_running());
+
+            // ── Standby → Active via apply_master_approval ─────────
+            // CONSUMER_REG_ACK shape (HEP-0036 §6.4): array of
+            // {role_uid, pubkey, endpoint} objects.  The mutator
+            // extracts producers[], merges with buffered peers,
+            // promotes peer[0] into transport fields, and calls the
+            // internal start() to perform setsockopt + connect.
+            nlohmann::json ack;
+            ack["producers"] = nlohmann::json::array();
+            ack["producers"].push_back({
+                {"role_uid", "P0"},
+                {"endpoint", "tcp://127.0.0.1:5561"},
+                {"pubkey", server_pub}
+            });
+            EXPECT_TRUE(consumer->apply_master_approval(ack))
+                << "apply_master_approval(CONSUMER_REG_ACK) is the "
+                   "canonical Standby → Active driver per §6.7 Option B.";
+            EXPECT_TRUE(consumer->is_configured());
             EXPECT_TRUE(consumer->is_running());
 
-            // Idempotent start.
-            EXPECT_TRUE(consumer->start());
+            // Idempotent: a second apply_master_approval on an
+            // Active queue is a runtime refresh (no-op for an
+            // unchanged peer set; updates producer_peers_ otherwise).
+            EXPECT_TRUE(consumer->apply_master_approval(ack));
+            EXPECT_TRUE(consumer->is_running());
 
             // ── Active → terminal (stop is one-way) ─────────────────
             consumer->stop();

@@ -355,10 +355,15 @@ class ProducerCycleOps final
         dispatch_notifications(engine_, msgs, StopRequestor{core_});
 
         // HEP-CORE-0036 §6.7 Standby gate (#189).  Re-check Active
-        // state after handle_channel_auth_notifies — it may have
-        // populated set_producer_peers but the queue still requires a
-        // separate start() call (driven by the role host outside this
-        // path).  If still not Active, skip invoke_produce + skip the
+        // state after handle_channel_auth_notifies — those notifies
+        // refresh the ZAP allowlist via `set_peer_allowlist` on the
+        // producer (PUSH) side per §6.5, NOT `set_producer_peers`
+        // (which is the consumer-side PULL membership snapshot).
+        // Under §6.7 Option B the queue stays Standby until
+        // `apply_master_approval(REG_ACK)` runs at S3 (driven by the
+        // role host outside this path); subsequent allowlist updates
+        // apply atomically on the Active queue.  If still not Active,
+        // skip invoke_produce + skip the
         // drop counter.  This preserves the §6.7 discipline:
         //   - Standby skip = lifecycle condition, NOT counted as drop
         //   - Drop counter retains its meaning as "runtime drops on a
@@ -505,10 +510,13 @@ class ConsumerCycleOps final
         // HEP-CORE-0036 §6.7 Standby gate (#189).  Skip
         // invoke_consume when the rx queue is not Active — no
         // user-visible script dispatch, no in_slots_received counter
-        // bump.  The Standby → Configured transition for the consumer
-        // rx queue happens at role-host setup (Stage 1D, task #193):
-        // build_rx_queue with empty producer_peers, register_consumer,
-        // then `rx_queue->set_producer_peers(ACK.producers)` + start().
+        // bump.  rx-side Standby → Active for the consumer is driven
+        // by `apply_master_approval(CONSUMER_REG_ACK)` at S3 — the
+        // polymorphic dispatch (= `apply_consumer_reg_ack`) extracts
+        // `ACK.producers[]` (§6.4), connects per-producer with CURVE,
+        // spawns the PULL worker, and drives Standby → Configured →
+        // Active in one mutator call (HEP-CORE-0036 §6.7 Option B).
+        // Tracked under tasks #103 + #193 (now folded into AUTH-1).
         if (!api_.is_rx_active())
             return true;
 
@@ -646,8 +654,14 @@ class ProcessorCycleOps final
         // PRODUCER side of the processor (refresh tx-queue
         // allowlist); harmless on rx side.  Consumer-side membership
         // refresh will arrive via §6.5.1 CHANNEL_PRODUCERS_CHANGED_NOTIFY
-        // in future Stage 2 work — rx-side Standby → Configured for
-        // processor happens at role-host setup (Stage 1D, task #193).
+        // in future Stage 2 work.  rx-side Standby → Active for the
+        // processor input is driven by
+        // `apply_master_approval(CONSUMER_REG_ACK)` at S3 — the
+        // polymorphic dispatch (= `apply_consumer_reg_ack`) extracts
+        // `ACK.producers[]` (§6.4), connects per-producer with CURVE,
+        // spawns the PULL worker, and drives Standby → Configured →
+        // Active in one mutator call (HEP-CORE-0036 §6.7 Option B).
+        // Tracked under tasks #103 + #193 (now folded into AUTH-1).
         api_.handle_channel_auth_notifies(msgs);
 
         // Per HEP-CORE-0011: route every broker-emitted notification

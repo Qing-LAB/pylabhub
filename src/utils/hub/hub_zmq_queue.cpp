@@ -190,10 +190,16 @@ struct ZmqQueueImpl
     //       Standby, transitioning to Configured.  Multi-producer
     //       fan-in (Pattern A/B socket layout) is HEP-CORE-0017
     //       §3.3 future work piggybacking on §6.5.1 pull path.
-    //   (b) Membership snapshot.  Dispatch layer (A3) on
-    //       CHANNEL_AUTH_CHANGED_NOTIFY → GET_CHANNEL_AUTH_ACK
-    //       refreshes the list via `set_producer_peers` so the queue
-    //       has a stable record of who's authorized.
+    //   (b) Membership snapshot.  Dispatch layer on
+    //       `CHANNEL_PRODUCERS_CHANGED_NOTIFY` →
+    //       `GET_CHANNEL_PRODUCERS_ACK` (HEP-CORE-0036 §6.5.1 —
+    //       consumer-side equivalent of the producer-side §6.5
+    //       allowlist family) refreshes the list via
+    //       `set_producer_peers` on the Active PULL queue, so the
+    //       queue has a stable record of who's authorized.  Initial
+    //       seed: `apply_master_approval(CONSUMER_REG_ACK)` extracts
+    //       `ACK.producers[]` (§6.4) at S3 and drives Standby →
+    //       Configured → Active in one polymorphic call.
     // Mutex-guarded since both broker thread and role thread may
     // touch.  Locked during `set_producer_peers` snapshot replace
     // and per-peer add/remove; `start()` reads `server_pubkey_z85_`
@@ -682,11 +688,15 @@ validate_curve_factory_params(std::string_view identity_key_name,
 // `pull_from` / `push_to` are the canonical CURVE-wired
 // factory entry points: discrete `identity_key_name` (KeyStore lookup)
 // + `Z85PublicKey server_pubkey` (PULL only) + `zap_domain` (PUSH
-// only).  No `initial_allowlist` parameter — callers seed via
-// `set_peer_allowlist()` post-`start()`.  Production callers will
-// pick up the broker's `CHANNEL_AUTH_UPDATE` push (HEP-CORE-0036
-// §6.5, task #103); the deny-all default is the safe starting point
-// until that update arrives.
+// only).  No `initial_allowlist` parameter — production callers
+// seed via `set_peer_allowlist()` after `apply_master_approval`
+// runs (HEP-CORE-0036 §6.7 Option B at S3) or via the runtime
+// notify-pull path on an Active queue: the role-host BRC handler
+// pulls `GET_CHANNEL_AUTH_REQ` in response to
+// `CHANNEL_AUTH_CHANGED_NOTIFY` (HEP-CORE-0036 §6.5 amendment
+// 2026-06-04 — snapshot-push `CHANNEL_AUTH_UPDATE` retired).
+// Task #103 (AUTH-1).  The deny-all default is the safe starting
+// point until that first allowlist write lands.
 //
 // Final-class safety: `ZmqQueue` is `final`, so the `static_cast` from the
 // abstract QueueReader/QueueWriter return type of `pull_from` /
@@ -850,37 +860,22 @@ bool ZmqQueue::set_producer_peers(std::vector<ProducerPeer> list)
         return false;
     }
 
-    // HEP-CORE-0036 §6.7: snapshot-replace.  In Standby, this is the
-    // §I12 master-approval application — it MUST also populate the
-    // CURVE serverkey + connect endpoint from the (single, Stage 1A)
-    // peer entry so the queue transitions to Configured.  In Active,
-    // the running socket is NOT touched (peer-swap requires
-    // teardown+rebuild per §6.7 "stop() is terminal" + §I12 "no
-    // cached-authority replay").
+    // HEP-CORE-0036 §6.7 Option B (locked 2026-06-12).  Bare
+    // set_producer_peers BUFFERS args only — it writes producer_peers_
+    // and returns.  It does NOT promote peer[0] into the queue's
+    // transport-artifact fields (server_pubkey_z85_, endpoint), so
+    // is_configured() stays false and start() stays refused.  The
+    // single Standby → Configured → Active driver is
+    // apply_master_approval(CONSUMER_REG_ACK) (or set_producer_peers
+    // called on an already-Active queue, where it acts as a runtime
+    // refresh).
+    //
+    // For an already-running queue, runtime refresh is just the
+    // snapshot replace; the running socket is not touched (peer-swap
+    // would require teardown+rebuild per §6.7 "stop() is terminal" +
+    // §I12 "no cached-authority replay").
     std::lock_guard<std::mutex> lock(pImpl->producer_peers_mu_);
     pImpl->producer_peers_ = std::move(list);
-
-    const bool already_running =
-        pImpl->running_.load(std::memory_order_acquire);
-
-    // Standby → Configured: populate transport artifacts from peer[0]
-    // (single-peer Stage 1A; multi-producer fan-in is HEP-CORE-0017
-    // §3.3 future work piggybacking on §6.5.1 pull path).  Skip if
-    // already running — the running socket already has its serverkey
-    // baked in and is not safely mutable from outside start().
-    if (!already_running && !pImpl->producer_peers_.empty())
-    {
-        const auto &p0 = pImpl->producer_peers_.front();
-        if (pImpl->server_pubkey_z85_.empty()
-            && !p0.pubkey_z85.empty())
-        {
-            pImpl->server_pubkey_z85_ = p0.pubkey_z85;
-        }
-        if (pImpl->endpoint.empty() && !p0.endpoint.empty())
-        {
-            pImpl->endpoint = p0.endpoint;
-        }
-    }
     return true;
 }
 
@@ -930,17 +925,30 @@ bool ZmqQueue::apply_master_approval(const nlohmann::json& artifacts) noexcept
     if (!pImpl) return false;
     try
     {
-        // PULL side: extract producers[] and call set_producer_peers.
+        // Already-running queues: apply runtime updates per §6.7 Active
+        // column.  PULL side does snapshot-replace of producer_peers_;
+        // PUSH side re-seeds the allowlist.  Either way no socket
+        // bind/connect — that already happened in the prior
+        // apply_master_approval call that drove Standby → Active.
+        const bool already_running =
+            pImpl->running_.load(std::memory_order_acquire);
+
         if (pImpl->mode == ZmqQueueImpl::Mode::Read)
         {
+            // ── PULL (consumer) side ──
+            //
+            // Extract CONSUMER_REG_ACK.producers[] (HEP-CORE-0036 §6.4):
+            // array of objects with {role_uid, endpoint, pubkey_z85}.
+            // No-op tolerance: if the ACK lacks "producers" the queue
+            // is unchanged.  Useful for SHM consumers' ACK that goes
+            // through the SHM branch and for runtime refresh ACKs.
             if (!artifacts.contains("producers"))
-                return true;  // no broker delivery this cycle; queue state unchanged
+                return true;
             const auto& arr = artifacts.at("producers");
             if (!arr.is_array())
             {
                 LOGGER_WARN("[hub::ZmqQueue::apply_master_approval] "
-                            "'producers' field is not an array — refusing "
-                            "Standby→Configured per HEP-CORE-0036 §6.7");
+                            "'producers' field is not an array — refusing");
                 return false;
             }
             std::vector<ProducerPeer> peers;
@@ -974,21 +982,89 @@ bool ZmqQueue::apply_master_approval(const nlohmann::json& artifacts) noexcept
                 }
                 peers.push_back(std::move(p));
             }
-            return set_producer_peers(std::move(peers));
+            if (!set_producer_peers(std::move(peers)))
+                return false;
+
+            // Promote peer[0] into the queue's transport-artifact
+            // fields (server_pubkey_z85_, endpoint).  Stage 1A scope:
+            // single-peer; multi-producer fan-in is HEP-CORE-0017 §3.3
+            // future work.  Only promote when Standby; on an Active
+            // queue these fields are baked into the running socket
+            // and not safely mutable from outside start().
+            if (!already_running)
+            {
+                std::lock_guard<std::mutex> lock(pImpl->producer_peers_mu_);
+                if (!pImpl->producer_peers_.empty())
+                {
+                    const auto &p0 = pImpl->producer_peers_.front();
+                    if (pImpl->server_pubkey_z85_.empty()
+                        && !p0.pubkey_z85.empty())
+                        pImpl->server_pubkey_z85_ = p0.pubkey_z85;
+                    if (pImpl->endpoint.empty() && !p0.endpoint.empty())
+                        pImpl->endpoint = p0.endpoint;
+                }
+            }
+
+            // Drive Standby → Configured → Active.  start() is the
+            // private implementation detail invoked here per §6.7
+            // Option B; production code does not call start() directly.
+            if (already_running)
+                return true;
+            return start();
         }
 
-        // PUSH side: no-op for the polymorphic Standby→Configured path.
-        // The producer's PUSH socket starts Active (bind doesn't need
-        // peer info); the allowlist arrives at runtime via the existing
-        // `handle_channel_auth_notifies` path which calls
-        // `set_peer_allowlist` directly with a typed PeerAllowlist
-        // (HEP-CORE-0036 §6.5 notify-then-pull).  Building a
-        // PeerAllowlist from JSON here would duplicate that logic
-        // without benefit; the role host doesn't use apply_master_approval
-        // on PUSH queues for the AUTH-1 critical path.  Returning true
-        // preserves HEP §6.7 "no-op on transports that don't need
-        // broker-supplied artifacts at the queue level".
-        return true;
+        // ── PUSH (producer) side ──
+        //
+        // Extract REG_ACK.initial_allowlist (HEP-CORE-0036 §6.2):
+        // array of Z85 pubkey strings (40-char each).  No-op tolerance
+        // if absent — the queue retains its prior allowlist state.
+        if (artifacts.contains("initial_allowlist"))
+        {
+            const auto& arr = artifacts.at("initial_allowlist");
+            if (!arr.is_array())
+            {
+                LOGGER_WARN("[hub::ZmqQueue::apply_master_approval] "
+                            "'initial_allowlist' not an array — refusing");
+                return false;
+            }
+            pylabhub::utils::security::PeerAllowlist allowlist;
+            for (const auto& entry : arr)
+            {
+                if (!entry.is_string())
+                {
+                    LOGGER_WARN("[hub::ZmqQueue::apply_master_approval] "
+                                "'initial_allowlist' entry not a string "
+                                "(per HEP-0036 §6.5 the wire shape is array "
+                                "of Z85 pubkey strings)");
+                    return false;
+                }
+                const auto pk = entry.get<std::string>();
+                if (pk.size() != 40)
+                {
+                    LOGGER_WARN("[hub::ZmqQueue::apply_master_approval] "
+                                "allowlist pubkey wrong length: {} "
+                                "(expected 40 Z85 chars)", pk.size());
+                    return false;
+                }
+                // PeerIdentity kind="curve" matches the convention
+                // used by `handle_channel_auth_notifies` (role_api_base.cpp)
+                // and the ZAP router's lookups — empty kind would
+                // never compare equal under PeerIdentity's byte-exact
+                // operator==.
+                allowlist.peers.insert(
+                    pylabhub::utils::security::PeerIdentity{"curve", pk});
+            }
+            if (!set_peer_allowlist(std::move(allowlist)))
+                return false;
+        }
+
+        // Drive Standby → Configured → Active for the PUSH/bind side.
+        // start() refuses unless is_configured() returns true — the
+        // PUSH side just needs a non-empty endpoint (already set at
+        // factory time from the role's config).
+        if (already_running)
+            return true;
+        return start();
     }
     catch (const std::exception& e)
     {
@@ -1160,8 +1236,12 @@ bool ZmqQueue::start()
                 // contract is "CURVE wired → allowlist exists; admit
                 // ⊆ peers; empty peers ⇒ deny all".  Callers replace
                 // this via `set_peer_allowlist()` (in production,
-                // driven by the broker (task #103)
-                // `CHANNEL_AUTH_UPDATE` push).
+                // driven by the role-host BRC handler that pulls
+                // `GET_CHANNEL_AUTH_REQ` in response to
+                // `CHANNEL_AUTH_CHANGED_NOTIFY`, per HEP-CORE-0036
+                // §6.5 amendment 2026-06-04 — the snapshot-push
+                // `CHANNEL_AUTH_UPDATE` wire frame is retired).
+                // Task #103 (AUTH-1).
                 pImpl->allowlist_.store(
                     std::make_shared<const sec::PeerAllowlist>(),
                     std::memory_order_release);

@@ -173,27 +173,22 @@ bool RoleHostFrame::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
         return false;
     }
 
-    // ── 5. Start queues + reset metrics ──
+    // ── 5. Reset per-queue metrics ──
+    //
+    // Per HEP-CORE-0036 §3.5.5 S1, queues are built in Standby here
+    // and not started.  The canonical Standby → Active driver is
+    // `apply_master_approval(ACK)` invoked at S3 by the role host's
+    // worker_main_ after the broker accepts the registration —
+    // `apply_consumer_reg_ack` / `apply_producer_reg_ack` route
+    // through the polymorphic queue mutator per §6.7 Option B.
+    //
+    // Metric counters are reset here regardless of side, so the role
+    // host's metric-snapshot calls (`snapshot_metrics_json()`) reflect
+    // only data observed after build.
     if (rx_opts)
-    {
-        if (!api_ref.start_rx_queue())
-        {
-            LOGGER_ERROR("[{}] start_rx_queue failed for channel '{}'",
-                         frame_cfg_.role_tag, config_.in_channel());
-            return false;
-        }
         api_ref.reset_rx_queue_metrics();
-    }
     if (tx_opts)
-    {
-        if (!api_ref.start_tx_queue())
-        {
-            LOGGER_ERROR("[{}] start_tx_queue failed for channel '{}'",
-                         frame_cfg_.role_tag, config_.out_channel());
-            return false;
-        }
         api_ref.reset_tx_queue_metrics();
-    }
 
     // ── 6. Configured period (role-level) ──
     core_.set_configured_period(

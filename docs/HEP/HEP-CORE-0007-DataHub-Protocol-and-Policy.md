@@ -731,7 +731,7 @@ Messages are grouped into four categories based on their flow pattern:
 
 | Category | Pattern | Examples |
 |----------|---------|---------|
-| **Request/Response** | Client → Broker → Client | REG_REQ/ACK, DISC_REQ/ACK, CHANNEL_LIST_REQ/ACK, METRICS_REQ/ACK, ROLE_PRESENCE_REQ/ACK, ROLE_INFO_REQ/ACK, ENDPOINT_UPDATE_REQ/ACK |
+| **Request/Response** | Client → Broker → Client | REG_REQ/ACK, DISC_REQ/ACK, CHANNEL_LIST_REQ/ACK, METRICS_REQ/ACK, ROLE_PRESENCE_REQ/ACK, ROLE_INFO_REQ/ACK, GET_CHANNEL_AUTH_REQ/ACK, GET_CHANNEL_PRODUCERS_REQ/ACK, ~~ENDPOINT_UPDATE_REQ/ACK~~ (**RETIRED 2026-06-12** per HEP-CORE-0036 §3.5) |
 | **Fire-and-Forget** | Client → Broker (no reply) | HEARTBEAT_REQ, CHECKSUM_ERROR_REPORT, BAND_BROADCAST_REQ |
 | **Unsolicited Push** | Broker → Client (async) | CHANNEL_CLOSING_NOTIFY, CONSUMER_DIED_NOTIFY, BAND_JOIN_NOTIFY, BAND_LEAVE_NOTIFY, BAND_BROADCAST_NOTIFY, ROLE_REGISTERED_NOTIFY, ROLE_DEREGISTERED_NOTIFY |
 | **Band Pub/Sub** | Role → Broker → Members (HEP-CORE-0030) | BAND_JOIN_REQ/ACK, BAND_LEAVE_REQ/ACK, BAND_BROADCAST_REQ, BAND_MEMBERS_REQ/ACK |
@@ -756,7 +756,10 @@ a result, then sends `_ACK` (success) or `ERROR` (rejection).
   guaranteed to see the mutation.
 - **Complete list (audit 2026-05-21):** REG_REQ, DISC_REQ,
   DEREG_REQ, CONSUMER_REG_REQ, CONSUMER_DEREG_REQ,
-  ENDPOINT_UPDATE_REQ, CHANNEL_LIST_REQ, SHM_BLOCK_QUERY_REQ,
+  ~~ENDPOINT_UPDATE_REQ~~ (**RETIRED 2026-06-12** per
+  HEP-CORE-0036 §3.5; config-determined endpoint goes directly in
+  `REG_REQ.zmq_node_endpoint`.  C++ handler may remain pending #103
+  but the wire frame is retired), CHANNEL_LIST_REQ, SHM_BLOCK_QUERY_REQ,
   ROLE_PRESENCE_REQ, ROLE_INFO_REQ, BAND_JOIN_REQ,
   BAND_LEAVE_REQ, BAND_MEMBERS_REQ.  Also: SCHEMA_REQ and
   METRICS_REQ exist as broker handlers but have no production
@@ -866,6 +869,25 @@ Payload (REG_REQ):
   # inbox_schema_json / inbox_packing / inbox_checksum) and
   # HEP-CORE-0034 §11.4 for owner-keyed storage.
 
+  # Transport-citation fields — REQUIRED when data_transport="zmq"
+  # (HEP-CORE-0036 §3.5 + §6.1).  The producer carries its config-
+  # determined endpoint and identity pubkey on REG_REQ; the broker
+  # records both on ProducerEntry at admission time.  The producer's
+  # data PUSH bind happens at S3 inside `apply_master_approval`
+  # AFTER REG_ACK is received — NOT at queue construction (S1) and
+  # NOT before REG_REQ accept (HEP-CORE-0036 §3.5.1 "nothing
+  # happens behind the auth door before auth").  Field shape:
+  zmq_node_endpoint     string   (REQUIRED if data_transport="zmq")
+                                 Producer's TCP endpoint per HEP-CORE-0036 §3.5 + §6.4 (zmq_node_endpoint authority).
+                                 Port-0 ephemeral is incompatible with §3.5.1
+                                 (tracked under task #94 as a separate design
+                                 problem); config-determined ports only.
+  zmq_pubkey            string   (REQUIRED if data_transport="zmq")
+                                 Producer's IDENTITY CURVE pubkey (Z85, 40 chars).
+                                 Per HEP-CORE-0036 I6 the broker mints NO data-plane
+                                 CURVE keys — producer uses its identity keypair
+                                 from KeyStore (HEP-CORE-0040).
+
 Payload (REG_ACK):
   status                string   "success"
   channel_id            string   Echo of the requested channel_name.
@@ -875,6 +897,15 @@ Payload (REG_ACK):
                                    interval_ms             int     Heartbeat cadence
                                    ready_miss_heartbeats   int     Misses before Connected→Pending
                                    pending_miss_heartbeats int     Misses before Pending→Disconnected (atomic teardown)
+  initial_allowlist     array    (REQUIRED if data_transport="zmq")
+                                 Array of authorized consumer pubkeys (Z85 strings)
+                                 at REG_REQ-handling time.  Producer's framework
+                                 feeds this into the ZAP cache seed inside
+                                 `apply_master_approval(REG_ACK)` per
+                                 HEP-CORE-0036 §3.5.3 + §6.7.  Empty array if no
+                                 consumers have registered yet.  Subsequent
+                                 allowlist changes arrive via
+                                 `CHANNEL_AUTH_CHANGED_NOTIFY` (§6.5).
   correlation_id        string   (opt) Echo of request correlation_id if provided.
 
 role_type field (added 2026-03-10):
@@ -1063,7 +1094,7 @@ Payload (CONSUMER_REG_ACK):
                                  Each element: {role_uid, pubkey, endpoint}.
                                  `pubkey` is the producer's IDENTITY pubkey (HEP-0036
                                  I6 — broker mints NO data-plane CURVE keys); `endpoint`
-                                 is the producer's bound TCP endpoint (per HEP-0021 §16).
+                                 is the producer's bound TCP endpoint (per HEP-CORE-0036 §6.4 producers[].endpoint).
                                  REPLACES the pre-HEP-0036 singular `zmq_endpoint` +
                                  `producer_zmq_pubkey` shape (now retired wire fields).
                                  For SHM transport: `producers[]` is absent; `shm_name`
@@ -1105,6 +1136,42 @@ Payload (CONSUMER_DEREG_ACK):
   message               string   "Consumer deregistered successfully" (informational).
   correlation_id        string   (opt) Echo of request correlation_id if provided.
 ```
+
+#### GET_CHANNEL_AUTH_REQ / GET_CHANNEL_AUTH_ACK — Pull current channel allowlist (producer)
+
+Direction: producer → broker (REQ), broker → producer (ACK).
+Trigger: producer's BRC poll loop receives a `CHANNEL_AUTH_CHANGED_NOTIFY` doorbell (HEP-CORE-0036 §6.5) and fires this sync request to refresh its allowlist cache.
+
+Payload (GET_CHANNEL_AUTH_REQ):
+  channel_name          string   (required)
+  role_uid              string   (required — caller's identity; broker validates caller is a registered producer of the channel per HEP-CORE-0036 §6.6 PRODUCER_NOT_AUTHORIZED)
+  correlation_id        string   (optional)
+
+Payload (GET_CHANNEL_AUTH_ACK):
+  status                string   "success" on hit; "error" otherwise
+  allowlist             array of Z85 pubkey strings (40-char each)  Current authorized-consumer set for the channel (per HEP-CORE-0036 §6.5 normative shape).
+  correlation_id        string   Echoed from REQ.
+
+Error codes: CHANNEL_NOT_FOUND (channel not in ChannelAccessIndex);
+PRODUCER_NOT_AUTHORIZED (caller is not a registered producer of the channel — defense-in-depth per HEP-CORE-0036 §6.6).
+
+#### GET_CHANNEL_PRODUCERS_REQ / GET_CHANNEL_PRODUCERS_ACK — Pull current channel producer set (consumer)
+
+Direction: consumer → broker (REQ), broker → consumer (ACK).
+Trigger: consumer's BRC poll loop receives a `CHANNEL_PRODUCERS_CHANGED_NOTIFY` doorbell (HEP-CORE-0036 §6.5.1) and fires this sync request to refresh its producer-set cache.  Symmetric to GET_CHANNEL_AUTH_REQ.
+
+Payload (GET_CHANNEL_PRODUCERS_REQ):
+  channel_name          string   (required)
+  role_uid              string   (required — caller's identity)
+  correlation_id        string   (optional)
+
+Payload (GET_CHANNEL_PRODUCERS_ACK):
+  status                string   "success" or "error"
+  producers             array of {role_uid, pubkey, endpoint}  Current producer set for the channel.  Same shape as CONSUMER_REG_ACK.producers[] per HEP-CORE-0036 §6.4.
+  correlation_id        string   Echoed from REQ.
+
+Error codes: CHANNEL_NOT_FOUND;
+CONSUMER_NOT_AUTHORIZED (caller is not a registered consumer of the channel).
 
 #### DEREG_REQ / DEREG_ACK — Deregister Channel
 
@@ -1328,7 +1395,9 @@ Payload (CHANNEL_LIST_ACK):
                                  Disconnected are removed atomically
                                  (HEP-CORE-0023 §2.1) before the next
                                  CHANNEL_LIST_REQ.
-    producer_uid        string   Producer UID
+    role_uid            string   Role UID (per HEP-CORE-0021 §5.2 which
+                                 retired the legacy `producer_uid` /
+                                 `producer_name` field names)
     schema_id           string   Named schema ID (empty if anonymous)
     consumer_count      int      Number of registered consumer-presences
 
@@ -1454,10 +1523,10 @@ same change.
 | `MISSING_ROLE_UID` | REG_REQ / CONSUMER_REG_REQ without a `role_uid` field when the broker's connection-policy requires one. | Generate or supply a `role_uid` per HEP-CORE-0033 §G2.2.0a. |
 | `NOT_IN_KNOWN_ROLES` | REG_REQ from a `role_uid` not on the broker's `known_roles` allowlist (closed connection-policy mode). | Cannot recover from client side; broker-admin must add the role. |
 | `CHANNEL_NOT_FOUND` | DISC_REQ / CONSUMER_REG_REQ / DEREG_REQ / CONSUMER_DEREG_REQ for a channel that is not registered, OR for a channel whose producer-presence has just been reaped (rare race per HEP-CORE-0023 §2.1). | Retry within the client's discover budget; producer may register shortly.  Give up after the timeout. |
-| `CHANNEL_NOT_READY` | DISC_REQ / CONSUMER_REG_REQ for a channel whose `data_transport=zmq` but `zmq_node_endpoint` has unresolved port `0`. | Wait briefly and retry; producer is still resolving its endpoint. |
+| `CHANNEL_NOT_READY` | CONSUMER_REG_REQ for a channel that isn't admissible right now.  `reason` field: `awaiting_first_heartbeat` \| `heartbeat_stalled` per HEP-CORE-0036 §6.6.  Port-0 `awaiting_endpoint` reason RETIRED 2026-06-12 — port-0 ephemeral binding rejected at config-load per HEP-CORE-0036 §3.5.1. | Wait briefly and retry; producer presence is still warming up (first heartbeat) or stalled. |
 | `TRANSPORT_MISMATCH` | CONSUMER_REG_REQ where the consumer's declared transport (`shm`/`zmq`) doesn't match the producer's. | Programming error or misconfiguration; reconcile the channel's transport setting. |
 | `NOT_REGISTERED` | DEREG_REQ where the (producer_pid, role_uid) tuple doesn't match any admitted producer; CONSUMER_DEREG_REQ where the (consumer_pid, role_uid) tuple doesn't match any admitted consumer.  broker_proto 2→3 (2026-05-15): role_uid mismatch is a NOT_REGISTERED variant; missing role_uid is INVALID_REQUEST instead. | Verify the calling process actually registered first and is sending its own role_uid (not someone else's).  No retry — the request itself is logically wrong. |
-| `NOT_CHANNEL_OWNER` | An admin / control request (e.g. ENDPOINT_UPDATE_REQ) issued by a role whose uid doesn't match the channel's owner. | Cannot recover from non-owner side. |
+| ~~`NOT_CHANNEL_OWNER`~~ | **RETIRED 2026-06-12** with ENDPOINT_UPDATE_REQ.  Was emitted by ENDPOINT_UPDATE_REQ when a role whose uid didn't match the channel's owner issued the request.  No remaining handler emits this code post-§3.5 alignment. | n/a (code retired). |
 | `SCHEMA_MISMATCH` | REG_REQ for an existing channel where the new producer's schema_hash differs from the channel-wide invariant (HEP-CORE-0023 §2.1.1: all producers on a channel must agree). | Reconcile schemas across producers; the channel cannot be re-registered with a different schema. |
 | `MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM` | Second REG_REQ on a `data_transport == "shm"` channel from a different `role_uid` (HEP-CORE-0023 §2.1.1: SHM is physically single-producer; multi-producer channels require ZMQ transport).  Same-`role_uid` does NOT reach this code path — the broker resolves same-uid first and rejects with `UID_CONFLICT` (see next row).  Structurally, the check lives in `ChannelEntry::add_producer` itself rather than the wire layer, so the wire handler cannot bypass it. | Choose a different channel name, or use ZMQ transport for multi-producer Fan-In topologies (HEP-CORE-0017 §4.6). |
 | `UID_CONFLICT` | REG_REQ / CONSUMER_REG_REQ carrying a `role_uid` that already exists in HubState — regardless of whether the existing entry is active (HEP-CORE-0023 §2.1 Connected/Pending) or stale-residue.  Proper uid construction (`tag.name.unique` per HEP-CORE-0033 §G2.2.0b) makes a same-uid collision effectively impossible, so any collision indicates either bookkeeping residue (hub-side bug) or a remote-side breach/violation.  Broker logs at `LOGGER_ERROR`. | Retry with a clean state — if your role process restarted, regenerate a fresh `unique` component for the uid.  Persistent failures after restart mean hub-side residue (file a bug). |
@@ -1476,10 +1545,10 @@ same change.
 | `INVALID_INBOX_ENDPOINT` | REG_REQ / CONSUMER_REG_REQ `inbox_endpoint` failed `validate_tcp_endpoint`. | Fix endpoint syntax; retry. |
 | `INVALID_INBOX_PACKING` | REG_REQ / CONSUMER_REG_REQ `inbox_packing` not in `{"aligned","packed"}`. | Use one of the two valid values. |
 | `INBOX_SCHEMA_INVALID` | REG_REQ / CONSUMER_REG_REQ `inbox_schema_json` failed JSON parse or schema-shape validation. | Fix the inbox schema; retry. |
-| `INBOX_UPDATE_NOT_SUPPORTED` | ENDPOINT_UPDATE_REQ requesting an inbox endpoint update (currently a one-time set, not updateable). | Programming error; design currently doesn't allow inbox endpoint mutation post-registration. |
-| `INVALID_ENDPOINT` | ENDPOINT_UPDATE_REQ with malformed `endpoint`. | Fix endpoint syntax; retry. |
-| `UNKNOWN_ENDPOINT_TYPE` | ENDPOINT_UPDATE_REQ with `key` not in the supported endpoint-key whitelist. | Programming error; check the whitelist in HEP-CORE-0021. |
-| `ENDPOINT_ALREADY_SET` | ENDPOINT_UPDATE_REQ for an endpoint that has already been set (one-time-set fields). | Programming error; endpoints are write-once. |
+| ~~`INBOX_UPDATE_NOT_SUPPORTED`~~ | **RETIRED 2026-06-12** with ENDPOINT_UPDATE_REQ.  Was emitted by ENDPOINT_UPDATE_REQ on an inbox endpoint update attempt.  Inbox endpoint shape now goes through REG_REQ (one-time-set at registration). | n/a (code retired). |
+| ~~`INVALID_ENDPOINT`~~ | **RETIRED 2026-06-12** with ENDPOINT_UPDATE_REQ.  Was emitted by ENDPOINT_UPDATE_REQ on malformed `endpoint`.  REG_REQ validation surfaces `INVALID_REQUEST` instead. | n/a (code retired). |
+| ~~`UNKNOWN_ENDPOINT_TYPE`~~ | **RETIRED 2026-06-12** with ENDPOINT_UPDATE_REQ.  Was emitted by ENDPOINT_UPDATE_REQ on a `key` not in the supported endpoint-key whitelist. | n/a (code retired). |
+| ~~`ENDPOINT_ALREADY_SET`~~ | **RETIRED 2026-06-12** with ENDPOINT_UPDATE_REQ.  Was emitted by ENDPOINT_UPDATE_REQ on an endpoint that had already been set.  Post-§3.5 the endpoint is set exactly once via REG_REQ. | n/a (code retired). |
 
 **Adding a new error_code** — when introducing a new code path that
 emits via `make_error`, also add a row above with: triggering handler,
@@ -1596,6 +1665,53 @@ Payload:
 Script host delivery: Event dict in msgs:
   {"event": "consumer_died", "uid": "<string>", "pid": <uint64>,
    "reason": "<string>"}
+```
+
+#### CHANNEL_AUTH_CHANGED_NOTIFY — Producer-side Allowlist Doorbell (HEP-CORE-0036 §6.5)
+
+```
+Direction:  Broker → every kLive producer on the channel
+              (every ProducerEntry on `ChannelEntry.producers`)
+Trigger:    Consumer-presence membership change that affects the
+            channel's authorized-consumer set: consumer_joined,
+            consumer_left, consumer_timeout (presence
+            Pending→Disconnected), federation_peer_death.
+Effect:     Doorbell — fire-and-forget; carries no payload data.
+            Producer's framework responds by issuing
+            `GET_CHANNEL_AUTH_REQ` to pull the fresh allowlist
+            (notify-then-pull pattern per HEP-CORE-0036 §6.5).
+
+Payload:
+  channel_name          string
+  reason                string   ("consumer_joined" | "consumer_left" |
+                                  "consumer_timeout" | "federation_peer_death")
+
+Cross-reference: HEP-CORE-0033 §18.2 (message inventory); HEP-CORE-0036
+§6.5 (broker→producer allowlist sync); HEP-CORE-0036 §3.5 (post-auth
+allowlist updates).
+```
+
+#### CHANNEL_PRODUCERS_CHANGED_NOTIFY — Consumer-side Producer-Set Doorbell (HEP-CORE-0036 §6.5.1)
+
+```
+Direction:  Broker → every kLive consumer on the channel
+              (every ConsumerEntry on `ChannelEntry.consumers`)
+Trigger:    Producer-presence membership change: producer_joined
+            (fired on Pending→Ready / first heartbeat received per
+            HEP-CORE-0036 §3.5.4 INV2 — NOT on REG_REQ accept),
+            producer_left (DEREG_REQ), heartbeat_timeout, process_dead.
+Effect:     Doorbell — fire-and-forget.  Consumer's framework
+            responds by issuing `GET_CHANNEL_PRODUCERS_REQ` to pull
+            the fresh producer set (notify-then-pull).
+
+Payload:
+  channel_name          string
+  reason                string   ("producer_joined" | "producer_left" |
+                                  "heartbeat_timeout" | "process_dead")
+
+Cross-reference: HEP-CORE-0033 §18.2 (message inventory); HEP-CORE-0036
+§6.5.1 (broker→consumer producer-set sync); HEP-CORE-0036 §3.5.4 INV2
+(producer_joined fires on Ready, not REG_REQ accept).
 ```
 
 #### CHANNEL_ERROR_NOTIFY — Category 1 Error (Invariant Violation)
