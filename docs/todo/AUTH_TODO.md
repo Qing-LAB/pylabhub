@@ -390,21 +390,28 @@ Full L2+L3+L4 sweep green (1862/1862) — no test relied on the
 half-state.
 
 **Follow-up 6.3 — Migrate 10 test sites off the legacy
-direct-activation path.**  MEDIUM severity (false confidence —
-tests pass but exercise the wrong code path).
+direct-activation path.**  ✅ shipped 2026-06-13.
 `tests/test_layer3_datahub/workers/role_api_flexzone_workers.cpp`
-lines 206, 233, 363, 434, 788, 825, 930, 972, 1056, 1098 use
-`start_rx_queue()` / `start_tx_queue()` directly.  Each call
-site needs a stub `REG_ACK` / `CONSUMER_REG_ACK` constructed
-and invoked via `apply_consumer_reg_ack(stub)` /
-`apply_producer_reg_ack(stub)`.  Grep across `tests/`
-confirmed no other test file is affected.
+lines 206 / 233 / 363 / 434 / 788 / 825 / 930 / 972 / 1056 / 1098
+all flipped to `apply_producer_reg_ack(nlohmann::json::object())`
+/ `apply_consumer_reg_ack(nlohmann::json::object())`.  An empty
+JSON object is the canonical stub here: the bypass tests
+construct queues directly so SHM secret is config-supplied (no
+`shm_secret` in the ack) and ZMQ allowlist is empty for the
+sites that don't exercise auth.  The ZMQ-tx case still goes
+through `apply_master_approval` → `start()` → `Mechanism::Curve`
+(pinned by the existing `queue_mechanism(Tx) == Curve`
+assertion); SHM cases are no-ops on already-Active queues built
+by the convenience factory.  Grep `tests/` confirmed no other
+file referenced the legacy entrypoints.
 
 **Follow-up 6.4 — Delete `RoleAPIBase::start_rx_queue()` /
-`start_tx_queue()` from the public API.**  LOW severity (cleanup
-once 6.3 is done).  No production caller remains; the public
-surface still invites legacy patterns.  Make private or delete.
-Depends on 6.3.
+`start_tx_queue()` from the public API.**  ✅ shipped 2026-06-13.
+Both declarations dropped from
+`src/include/utils/role_api_base.hpp` and definitions deleted
+from `src/utils/service/role_api_base.cpp`.  Pre-deletion sweep
+of `src/` + `tests/` showed zero remaining call sites after
+Follow-up 6.3.  Full L2+L3 sweep green (1734/1734).
 
 **Blocks:** 6.1 + 6.2 ✅ shipped 2026-06-12.  AUTH-2 + AUTH-3
 now fully unblocked from the AUTH-1 side.  6.3 + 6.4 can land

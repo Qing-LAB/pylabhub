@@ -476,16 +476,6 @@ bool RoleAPIBase::build_rx_queue(const hub::RxQueueOptions &opts)
     return true;
 }
 
-bool RoleAPIBase::start_tx_queue()
-{
-    return pImpl->tx_queue && pImpl->tx_queue->start();
-}
-
-bool RoleAPIBase::start_rx_queue()
-{
-    return pImpl->rx_queue && pImpl->rx_queue->start();
-}
-
 bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
 {
     if (!pImpl->rx_queue)
