@@ -88,6 +88,7 @@ if(BUILD_TESTS)
   add_subdirectory(test_layer1_base)
   add_subdirectory(test_layer2_service)
   add_subdirectory(test_layer3_datahub)
+  add_subdirectory(test_layer3_pattern4)
   # Historical note — removed test directories:
   #   - test_layer4_actor: pylabhub-actor replaced by per-role binaries
   #     (2026-03), then consolidated into plh_role (2026-04).

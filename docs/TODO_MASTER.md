@@ -93,6 +93,10 @@ the demo inventory + manifest schema.
 - N8+N9 bench variants (scalar dispatch + multi-size sweep).
 - N11 cross-engine `on_band_message` signature parity audit.
 - #154 re-create L3 broker tests against refactored lib code.
+- **Pattern 4 multi-process test ladder.**  #220 shipped rung 1
+  (smoke) + the design pattern doc; rungs 2 (#221 Registration)
+  and 3 (#222 ConsumerLifecycle) are pending; rungs 4 + 5 are
+  blocked on AUTH-2 (#162) and AUTH-3 (#163).
 
 ### Windows / MSVC / cross-platform / CMake (`docs/todo/PLATFORM_TODO.md`)
 

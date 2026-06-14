@@ -17,6 +17,8 @@ add_library(pylabhub-test-framework STATIC
   broker_test_harness.cpp
   broker_test_harness.h
   curve_test_setup.h
+  pattern4_helpers.cpp
+  pattern4_helpers.h
   shared_test_helpers.cpp
   shared_test_helpers.h
   test_entrypoint.cpp

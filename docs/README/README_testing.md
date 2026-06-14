@@ -813,6 +813,33 @@ standard worker-completion markers
 (`[WORKER_BEGIN]` / `[WORKER_END_OK]` / `[WORKER_FINALIZED]`)
 plus exit code 0 are the final verdict.
 
+#### Verification rigor — four axes + mutation discipline
+
+A Pattern-4 test that only asserts "marker X appears somewhere"
+is too weak — it can pass when the contract is subtly broken.
+Every test under `tests/test_layer3_pattern4/` must pin **four
+axes**:
+
+| Axis | What this pins | Loose form (don't) | Tight form (do) |
+|---|---|---|---|
+| **Sequence** | events happen in the right order | three `expect_log` calls in arbitrary order | `expect_log_sequence({m1, m2, m3})` — fails if m2 appears before m1 |
+| **Timing** | the next event happens within a bounded window | timeout = 30 s for every call | per-step bound from canonical constants (REG_ACK within `kMidTimeoutMs` of REG_REQ; first heartbeat within `kShortTimeoutMs * 2`) |
+| **Payload** | wire content matches contract | `expect_log(role, "REG_ACK received")` | `expect_log(role, "REG_ACK received producers=[role.y@tcp://...]")` — pin the bracketed payload |
+| **State** | every transition is observable, not just the end state | only pin the final `Active` state | pin `Connecting→Pending`, `Pending→Registered`, `Standby→Active` as separate markers |
+
+And one **mutation discipline** rule that subsumes the rest:
+
+> Every assertion must be sabotage-verifiable: if you remove the
+> one line of production code that makes the marker fire, the
+> test must fail.  If the test still passes, the assertion is
+> too loose — tighten it before merging.
+
+The smoke test (rung 1 of the test ladder below) demonstrates the
+floor: a single log-content assertion verified by deliberate
+sabotage of the expected substring.  Richer rungs build on the
+same floor and add sequence + payload + state axes per the table
+above.
+
 #### Timestamp precision
 
 Production's `LOGGER_*` macros emit lines like:
@@ -857,6 +884,70 @@ Each Pattern-4 subprocess:
    subprocess via `gtest`'s `EXPECT_*` macros.  If an assertion
    fails inside a subprocess, the subprocess exits non-zero and
    the parent's `ExpectWorkerOk` surfaces the failure.
+
+#### Logging discipline — what subprocesses log and what they DON'T
+
+Pattern 4 verification depends on log markers, but those markers
+live in production code paths.  Bad logging discipline either
+(a) makes the test impossible to write (no marker to pin) or
+(b) pollutes production logs (per-tick INFO floods the journal).
+The rules below apply to **any** production code change driven
+by a Pattern-4 test.
+
+**INFO is one-shot only.**  Acceptable INFO call sites:
+
+- **State transitions** — `Connecting→Pending`,
+  `Pending→Registered`, `Standby→Active`, `→Authorized`.  Fire
+  exactly once per presence / channel per state edge.
+- **One-time events** — REG_REQ sent, REG_ACK received,
+  heartbeat tracker installed, channel registered, broker bind
+  succeeded, first tick received per role.
+- **Lifecycle** — subprocess `[WORKER_BEGIN]` / `[WORKER_END_OK]`
+  / `[WORKER_FINALIZED]` (framework-provided).
+
+**Hot paths get counters, not per-event INFO.**  Per-heartbeat
+tick (every ~250 ms × per channel × per role), per-poll iteration,
+per-message pump, per-ZAP request — these fire hundreds to
+thousands of times per second.  Logging INFO at any of them
+would (a) flood production journals and (b) make CI logs
+unreadable.  Two acceptable patterns instead:
+
+- **Consequence-pinning (preferred default).**  Instead of
+  verifying "heartbeats ticked," pin the consequence: e.g.
+  `Standby→Active` only fires after heartbeat establishment +
+  master/peer approval.  If that transition appears within a
+  bounded window, heartbeat is implicitly working.  **Use this
+  by default**; only fall back to counters when the consequence
+  is too indirect.
+- **Counter + shutdown-summary INFO.**  The module keeps atomics
+  (`heartbeats_sent_`, `heartbeats_received_`) and emits **one**
+  INFO at shutdown summarising the count and rate band:
+  `"role.x: heartbeats_sent=42 over 5.0 s (~8.4 Hz, expected ~4 Hz)"`.
+  The test pins the rate band.  No per-tick logging anywhere.
+
+**Anti-pattern (do NOT do this):**
+
+```cpp
+// in heartbeat_tick() — fires every 250 ms forever
+LOGGER_INFO("Heartbeat tick fired for role.x");  // ✗ floods journal
+```
+
+**Right pattern (one-shot guard):**
+
+```cpp
+// in BrokerService — fires once per role on first tick received
+if (!presence.first_tick_logged_) {
+    LOGGER_INFO("BrokerService: role '{}' heartbeat established "
+                "(first tick at T+{}ms)",
+                uid, since_reg.count());
+    presence.first_tick_logged_ = true;
+}
+```
+
+The rule extends transitively: when a production change makes a
+hot path eligible for INFO, ask "could this fire >10× in any
+realistic deployment?" — if yes, demote to DEBUG or replace with
+a counter + shutdown summary.
 
 #### Example skeleton
 
@@ -987,11 +1078,64 @@ in the parent's `expect_log` sequence list.
 
 #### Reference implementations
 
-> Will be filled in once task #220 lands the first Pattern-4
-> reference test.  Until then, this section reads as "TBD."  The
-> migration target is the L3 broker test family currently in
-> `tests/test_layer3_datahub/workers/` that uses the now-retired
-> `HubHostBrokerHandle` fixture.
+The first reference implementation is the **smoke test** at
+`tests/test_layer3_pattern4/test_pattern4_smoke.cpp` — it
+proves the Pattern 4 infrastructure end-to-end:
+
+- Parent picks an unused TCP port, writes `setup.json`
+  (broker endpoint + CURVE keys for hub + `role.x`) to a
+  per-test temp directory.
+- Broker subprocess (`pattern4_smoke.broker` worker) binds
+  CTRL ROUTER with CURVE + ZAP, retries on `EADDRINUSE`, logs
+  `Pattern4Broker: bound endpoint='tcp://...' pubkey='...'`.
+- Role subprocess (`pattern4_smoke.role_x` worker) builds a
+  `BrokerRequestComm`, performs the CURVE handshake against
+  the broker, logs `Pattern4Role[role.x]: BRC connected`.
+- Parent live-polls each subprocess's captured stderr via
+  `expect_log` with canonical timeouts (`kMidTimeoutMs`,
+  `kLongTimeoutMs`).
+- Both subprocesses self-time-out after 5 seconds and exit
+  cleanly; parent then calls `ExpectWorkerOk` on each.
+
+What the smoke does NOT yet verify: REG_REQ / REG_ACK wire
+shape, heartbeat install, channel lifecycle.  That coverage
+is deliberately split into separate rungs of the test ladder
+below — each rung pins one HEP contract clause, with failure
+diagnostics focused on that clause alone.
+
+The Pattern 4 helpers (port allocation, temp dir, `setup.json`
+serialization, `expect_log`, `wait_for_log`) live in
+`tests/test_framework/pattern4_helpers.{h,cpp}`.
+
+#### Test ladder
+
+Each rung is a separate `TEST_F` (or test file) under
+`tests/test_layer3_pattern4/`.  The ladder is layered so
+failure diagnostics stay focused per rung — a
+heartbeat-related failure cannot be confused with a
+registration-related failure.
+
+| # | Test | HEP contract pinned | Status | Tracker |
+|---|---|---|---|---|
+| 1 | `Pattern4SmokeTest` | broker CURVE bind + role CURVE connect (HEP-CORE-0036 §6 connection shape) | ✅ shipped | task #220 |
+| 2 | `Pattern4RegistrationTest` | REG_REQ wire shape + REG_ACK payload + `RegistrationState: Connecting→Pending→Registered` (HEP-CORE-0036 §5) | ⏳ pending | task #221 |
+| 3 | `Pattern4ConsumerLifecycleTest` | consumer channel construct → `Standby` → master_approval → `Active` (HEP-CORE-0017 §3.3 channel FSM; AUTH-1 `apply_master_approval` path) | ⏳ pending | task #222 |
+| 4 | `Pattern4ProducerLifecycleTest` | producer PUSH channel `Standby → Active` via peer approval (HEP-CORE-0036 §7.4 single-pumper invariant on producer-side ROUTER) | ⏳ blocked | task #162 (AUTH-2) |
+| 5 | `Pattern4DataFlowTest` | `Authorized` state + data-loop outer guard + payload across wire (HEP-CORE-0036 authorization-gated data path) | ⏳ blocked | task #163 (AUTH-3) |
+
+Heartbeat is verified by **consequence-pinning** at rung 3 (no
+master_approval without working heartbeat) — no separate
+heartbeat rung needed in the default plan.  If rung 3's
+consequence pin proves too indirect in practice, add a
+follow-up rung using the counter + shutdown-summary pattern
+from "Logging discipline" above.
+
+**Production-side log markers** required by each rung (REG_REQ
+send, REG_ACK receive, RegistrationState transitions, channel
+Standby/Active transitions, broker heartbeat-tracker install,
+first-tick-received) are added when that rung's task lands —
+not in task #220.  Adding them must satisfy the "Logging
+discipline" subsection above (INFO one-shot only; no per-tick).
 
 ---
 

@@ -59,6 +59,33 @@ task #44 demo framework — inventory pointer still in this file below).
 
 ## Current Focus — Open coverage gaps
 
+### Pattern 4 test ladder — multi-process wire-protocol coverage
+
+Pattern 4 = subprocess-per-role + observing parent.  Canonical:
+`docs/README/README_testing.md` § "Pattern 4 — ...".  The ladder
+rungs each pin one HEP contract clause, with focused failure
+diagnostics per rung.
+
+- **Rung 1 — `Pattern4SmokeTest`** ✅ shipped (task #220).
+  Broker CURVE bind + role CURVE connect; sabotage-verified.
+  Reference impl at `tests/test_layer3_pattern4/`.
+- **Rung 2 — `Pattern4RegistrationTest`** ⏳ task #221.
+  Pins REG_REQ/REG_ACK wire shape + `RegistrationState`
+  `Connecting→Pending→Registered` transitions.
+- **Rung 3 — `Pattern4ConsumerLifecycleTest`** ⏳ task #222.
+  Pins consumer channel `Standby → master_approval → Active`.
+  Heartbeat verified by consequence-pinning.
+- **Rung 4 — `Pattern4ProducerLifecycleTest`** ⏳ blocked on
+  task #162 (AUTH-2).  Producer PUSH channel `Standby→Active`.
+- **Rung 5 — `Pattern4DataFlowTest`** ⏳ blocked on task #163
+  (AUTH-3).  `Authorized` state + data-loop guard + payload
+  across wire.
+
+Verification floor (mandatory for every rung): four axes
+(sequence + timing + payload + state) + mutation discipline.
+Logging discipline: INFO is one-shot only; hot paths get
+counters or consequence-pinning.
+
 ### B8 (#81) — Demo-setup numpy pin
 
 Demos that use numpy currently rely on ad-hoc `pip install numpy`.
@@ -225,6 +252,12 @@ Use these as the L4 reference for any new pipeline scenario; clone
 
 Pattern 3 mechanics canonical in
 `docs/README/README_testing.md` § "Choosing a test pattern".
+Pattern 4 (multi-process wire-protocol; subprocess-per-role +
+observing parent) is the extension introduced for tests that
+require honoring the HEP-CORE-0036 §7.4 single-pumper-per-process
+invariant; helpers live in
+`tests/test_framework/pattern4_helpers.{h,cpp}` and the smoke
+reference at `tests/test_layer3_pattern4/test_pattern4_smoke.cpp`.
 
 ### Platform / sanitizer coverage
 
