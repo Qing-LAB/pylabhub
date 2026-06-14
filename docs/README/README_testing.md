@@ -840,6 +840,40 @@ sabotage of the expected substring.  Richer rungs build on the
 same floor and add sequence + payload + state axes per the table
 above.
 
+What a Pattern-4 test looks like in motion — parent observer,
+two subprocesses, log markers as the only verification surface:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant P as Parent (Test)
+    participant B as Broker subprocess
+    participant R as Role subprocess
+
+    P->>+B: SpawnWorker("...broker", temp_dir)
+    P->>+R: SpawnWorker("...role", temp_dir)
+    Note over B: LifecycleGuard, KeyStore,<br/>CURVE+ZAP bind
+    B-->>B: INFO "bound endpoint='...'"
+    Note over R: LifecycleGuard, KeyStore,<br/>BRC CURVE handshake
+    R-->>R: INFO "BRC connected"
+    par parent polls broker stderr
+        P-->>B: expect_log("bound endpoint", kMidTimeoutMs)
+    and parent polls role stderr
+        P-->>R: expect_log("BRC connected", kLongTimeoutMs)
+    end
+    Note over P: 4 axes pinned —<br/>sequence + timing + payload + state
+    B-->>-P: self-timeout exit
+    R-->>-P: self-timeout exit
+    P->>P: ExpectWorkerOk (exit code + completion markers)
+```
+
+The diagram pins three structural facts: (1) subprocesses
+COMMUNICATE only over the production wire (CURVE handshake),
+never out-of-band; (2) the parent OBSERVES through captured
+stderr only — no shared memory, no test-only IPC; (3) log
+markers are the verification surface — every test rigour axis
+applies to those markers, nothing else.
+
 #### Timestamp precision
 
 Production's `LOGGER_*` macros emit lines like:
@@ -1117,25 +1151,104 @@ registration-related failure.
 
 | # | Test | HEP contract pinned | Status | Tracker |
 |---|---|---|---|---|
-| 1 | `Pattern4SmokeTest` | broker CURVE bind + role CURVE connect (HEP-CORE-0036 §6 connection shape) | ✅ shipped | task #220 |
-| 2 | `Pattern4RegistrationTest` | REG_REQ wire shape + REG_ACK payload + `RegistrationState: Connecting→Pending→Registered` (HEP-CORE-0036 §5) | ⏳ pending | task #221 |
-| 3 | `Pattern4ConsumerLifecycleTest` | consumer channel construct → `Standby` → master_approval → `Active` (HEP-CORE-0017 §3.3 channel FSM; AUTH-1 `apply_master_approval` path) | ⏳ pending | task #222 |
-| 4 | `Pattern4ProducerLifecycleTest` | producer PUSH channel `Standby → Active` via peer approval (HEP-CORE-0036 §7.4 single-pumper invariant on producer-side ROUTER) | ⏳ blocked | task #162 (AUTH-2) |
-| 5 | `Pattern4DataFlowTest` | `Authorized` state + data-loop outer guard + payload across wire (HEP-CORE-0036 authorization-gated data path) | ⏳ blocked | task #163 (AUTH-3) |
+| 1 | `Pattern4SmokeTest` | broker CURVE bind + role CURVE connect (HEP-CORE-0036 §I1 two-conditions gate + §I8 trust model) | ✅ shipped | task #220 |
+| 2 | `Pattern4RegistrationTest` | `REG_REQ` wire shape + `REG_ACK` payload + Presence FSM `Unregistered → RegRequestPending → Registered` (HEP-CORE-0036 §5; `RegistrationState` defined in `role_presence.hpp`) | ⏳ in-progress | task #221 |
+| 3 | `Pattern4HeartbeatTest` | `HEARTBEAT_REQ` cadence negotiation + first-tick latency + steady-state rate band (HEP-CORE-0023 §2.5 cadence; per "Logging discipline" → atomic counter + shutdown-summary INFO, no per-tick log) | ⏳ pending | task #223 |
+| 4 | `Pattern4ConsumerLifecycleTest` | `CONSUMER_REG_REQ`/`CONSUMER_REG_ACK` + consumer channel FSM `Standby → Configured → Active`, both transitions driven by `apply_master_approval(CONSUMER_REG_ACK)` (HEP-CORE-0017 §3.3 channel FSM; AUTH-1 path) | ⏳ pending | task #222 |
+| 5 | `Pattern4ProducerLifecycleTest` | producer channel FSM `Standby → Configured → Active`, driven by `apply_master_approval(REG_ACK)`; plus ZAP-authorized consumer connections to producer-side ROUTER (HEP-CORE-0036 §7.4 single-pumper invariant) | ⏳ blocked | task #162 (AUTH-2) |
+| 6 | `Pattern4DataFlowTest` | `Authorized` state + data-loop outer guard + payload across wire (HEP-CORE-0036 authorization-gated data path) | ⏳ blocked | task #163 (AUTH-3) |
+| 7 | `Pattern4DeregistrationTest` | `DEREG_REQ`/`DEREG_ACK`, `CONSUMER_DEREG_REQ`/`CONSUMER_DEREG_ACK`, `DISC_REQ`/`DISC_ACK`/`DISC_PENDING` (HEP-CORE-0023 §2.2 disconnect protocol); Presence FSM `Registered → Deregistered` | ⏳ pending | task #224 |
+| 8 | `Pattern4ChannelNotifiesTest` | `CHANNEL_CLOSING_NOTIFY` + `CHANNEL_ERROR_NOTIFY` + `CONSUMER_DIED_NOTIFY` + `CHANNEL_EVENT_NOTIFY` + `CHANNEL_PRODUCERS_CHANGED_NOTIFY` (fire-and-forget broker → role notify family) | ⏳ pending | task #225 |
+| 9 | `Pattern4RegistrationErrorTest` | `REG_REQ` rejected — bad pubkey, bad uid claim, length violation (HEP-CORE-0036 §I10 one-pubkey-per-uid invariant; §I1 admission gating; negative paths in `broker_service.cpp` REG_REQ handler) | ⏳ pending | task #226 |
+| 10 | `Pattern4AuthUpdateTest` | `CHANNEL_AUTH_CHANGED_NOTIFY` → `GET_CHANNEL_AUTH_REQ`/`GET_CHANNEL_AUTH_ACK` (HEP-CORE-0036 §6.5 notify-then-pull amendment, 2026-06-04) | ⏳ blocked | task #227 (needs producer channel `Active` from rung 5) |
+| 11 | `Pattern4BandsTest` | `BAND_*_REQ`/`ACK`/`NOTIFY` family — join, leave, members, broadcast (HEP-CORE-0033 §12 Hub Character) | ⏳ pending | task #228 |
+| 12 | `Pattern4RoleIntrospectionTest` | `ROLE_PRESENCE_REQ`/`ACK` (HEP-CORE-0007) + `ROLE_INFO_REQ`/`ACK` + `SHM_BLOCK_QUERY_REQ`/`ACK` (hub-tooling introspection surface) | ⏳ pending | task #229 |
+| 13 | `Pattern4HeartbeatTimeoutTest` | dead-detection FSM `Connected → Pending → Disconnected` + recovery `Pending → Connected` (HEP-CORE-0023 §2 timeout tracker) | ⏳ deferred | needs back-channel pipe infra (pause/resume signal) |
 
-Heartbeat is verified by **consequence-pinning** at rung 3 (no
-master_approval without working heartbeat) — no separate
-heartbeat rung needed in the default plan.  If rung 3's
-consequence pin proves too indirect in practice, add a
-follow-up rung using the counter + shutdown-summary pattern
-from "Logging discipline" above.
+Rung dependency graph — most rungs build on the registration
+contract pinned at rung 2; AUTH-2/3 blockers cut into rungs
+5/6/10; the back-channel pipe infrastructure unlocks rung 13.
+
+```mermaid
+graph LR
+    R1[1·Smoke<br/>✅ #220]
+    R2[2·Registration<br/>⏳ #221]
+    R3[3·Heartbeat<br/>⏳ #223]
+    R4[4·ConsumerLC<br/>⏳ #222]
+    R5[5·ProducerLC<br/>⏳ blocked]
+    R6[6·DataFlow<br/>⏳ blocked]
+    R7[7·Dereg<br/>⏳ #224]
+    R8[8·Notifies<br/>⏳ #225]
+    R9[9·RegError<br/>⏳ #226]
+    R10[10·AuthUpdate<br/>⏳ blocked]
+    R11[11·Bands<br/>⏳ #228]
+    R12[12·RoleIntro<br/>⏳ #229]
+    R13[13·HBTimeout<br/>⏳ deferred]
+
+    R1 --> R2
+    R2 --> R3
+    R2 --> R4
+    R3 --> R4
+    R2 --> R5
+    R5 --> R6
+    R2 --> R7
+    R4 --> R8
+    R2 --> R9
+    R5 --> R10
+    R2 --> R11
+    R2 --> R12
+    R3 -.-> R13
+
+    A2(["AUTH-2 #162"]) -.blocks.-> R5
+    A3(["AUTH-3 #163"]) -.blocks.-> R6
+    Pipe(["pause/resume<br/>pipe infra"]) -.blocks.-> R13
+
+    classDef shipped fill:#dfd,stroke:#070
+    classDef blocked fill:#fee,stroke:#c33,stroke-dasharray:3 3
+    classDef pending fill:#fff,stroke:#888
+    classDef extern fill:#fdf,stroke:#608,stroke-dasharray:2 2
+    class R1 shipped
+    class R5,R6,R10,R13 blocked
+    class R2,R3,R4,R7,R8,R9,R11,R12 pending
+    class A2,A3,Pipe extern
+```
+
+Why heartbeat gets its OWN rung (rung 3) rather than being
+consequence-pinned at rung 4 (see "Logging discipline" §
+"Consequence-pinning" above for the term): heartbeat has
+multiple independent contract facets — cadence (sender
+HEP-0023 §2.5), first-tick latency, steady-state rate band,
+dead-detection (broker tracker HEP-0023 §2) — and
+consequence-pinning at the channel-lifecycle rung would only
+verify that *some* heartbeat was working, not that the rate
+matches the negotiated cadence or that drift is bounded.  Rung 3 pins those directly using
+the **counter + shutdown-summary INFO** pattern from "Logging
+discipline" (no per-tick logging anywhere in production code).
+Rung 13 is the timeout/recovery half of HEP-0023 §2; it stays
+deferred until a back-channel pause/resume signal lands in the
+Pattern 4 helpers (`WorkerProcess::with_quit_signal` extension).
+
+**Not yet on the ladder** (revisit when blockers clear):
+
+- **Federation** — `HUB_PEER_HELLO_ACK`, `HUB_RELAY_MSG`,
+  `HUB_TARGETED_MSG`.  Blocked on task #105 (federation impl)
+  + task #75 (HUB_TARGETED_ACK wire frame).
+- **Reserved / undecided** — `SCHEMA_REQ`/`SCHEMA_ACK`,
+  `METRICS_REQ`/`METRICS_ACK`.  Gated on task #95
+  (KEEP-RESERVED or DELETE decision); test only if KEEP.
+- **Endpoint update** — `ENDPOINT_UPDATE_REQ`/`ACK` already has
+  L3 coverage via the `EndpointUpdate_*` test family (happy-path
+  from task #90; error-path branches added 2026-05-21).  Add a
+  Pattern-4 rung only if a multi-process gap surfaces.
 
 **Production-side log markers** required by each rung (REG_REQ
-send, REG_ACK receive, RegistrationState transitions, channel
-Standby/Active transitions, broker heartbeat-tracker install,
-first-tick-received) are added when that rung's task lands —
-not in task #220.  Adding them must satisfy the "Logging
-discipline" subsection above (INFO one-shot only; no per-tick).
+send, REG_ACK receive, Presence FSM transitions, channel
+Standby/Active transitions, heartbeat-tracker install +
+first-tick-received, counter+summary on shutdown, etc.) are
+added when that rung's task lands — not in task #220.  Adding
+them must satisfy the "Logging discipline" subsection above
+(INFO one-shot only; hot paths use counters + consequence
+pinning).
 
 ---
 

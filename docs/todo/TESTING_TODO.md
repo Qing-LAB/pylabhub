@@ -70,16 +70,46 @@ diagnostics per rung.
   Broker CURVE bind + role CURVE connect; sabotage-verified.
   Reference impl at `tests/test_layer3_pattern4/`.
 - **Rung 2 — `Pattern4RegistrationTest`** ⏳ task #221.
-  Pins REG_REQ/REG_ACK wire shape + `RegistrationState`
-  `Connecting→Pending→Registered` transitions.
-- **Rung 3 — `Pattern4ConsumerLifecycleTest`** ⏳ task #222.
-  Pins consumer channel `Standby → master_approval → Active`.
-  Heartbeat verified by consequence-pinning.
-- **Rung 4 — `Pattern4ProducerLifecycleTest`** ⏳ blocked on
+  Pins `REG_REQ`/`REG_ACK` wire shape + Presence FSM
+  `Unregistered → RegRequestPending → Registered`.
+- **Rung 3 — `Pattern4HeartbeatTest`** ⏳ task #223.
+  Pins `HEARTBEAT_REQ` cadence + first-tick latency + rate
+  band via counter + shutdown-summary INFO (no per-tick log).
+- **Rung 4 — `Pattern4ConsumerLifecycleTest`** ⏳ task #222.
+  Pins `CONSUMER_REG_REQ`/`ACK` + consumer channel
+  `Standby → master_approval → Active`.
+- **Rung 5 — `Pattern4ProducerLifecycleTest`** ⏳ blocked on
   task #162 (AUTH-2).  Producer PUSH channel `Standby→Active`.
-- **Rung 5 — `Pattern4DataFlowTest`** ⏳ blocked on task #163
-  (AUTH-3).  `Authorized` state + data-loop guard + payload
-  across wire.
+- **Rung 6 — `Pattern4DataFlowTest`** ⏳ blocked on task #163
+  (AUTH-3).  `Authorized` + data-loop guard + payload.
+- **Rung 7 — `Pattern4DeregistrationTest`** ⏳ task #224.
+  Pins `DEREG_REQ`/`ACK`, `CONSUMER_DEREG_REQ`/`ACK`,
+  `DISC_REQ`/`ACK`/`PENDING` (HEP-0023 §2.2).
+- **Rung 8 — `Pattern4ChannelNotifiesTest`** ⏳ task #225.
+  Pins fire-and-forget notify family (`CHANNEL_CLOSING_NOTIFY`,
+  `CHANNEL_ERROR_NOTIFY`, `CONSUMER_DIED_NOTIFY`,
+  `CHANNEL_EVENT_NOTIFY`, `CHANNEL_PRODUCERS_CHANGED_NOTIFY`).
+- **Rung 9 — `Pattern4RegistrationErrorTest`** ⏳ task #226.
+  Pins REG_REQ rejection paths (bad pubkey, bad uid claim,
+  length violation; HEP-0036 §I10 / §I1 negative cases).
+- **Rung 10 — `Pattern4AuthUpdateTest`** ⏳ task #227, depends
+  on rung 5.  Pins `CHANNEL_AUTH_CHANGED_NOTIFY` →
+  `GET_CHANNEL_AUTH_REQ`/`ACK` (HEP-0036 §6.5).
+- **Rung 11 — `Pattern4BandsTest`** ⏳ task #228.  Pins
+  `BAND_*_REQ`/`ACK`/`NOTIFY` family (HEP-0033 §12).
+- **Rung 12 — `Pattern4RoleIntrospectionTest`** ⏳ task #229.
+  Pins `ROLE_PRESENCE_REQ`/`ACK`, `ROLE_INFO_REQ`/`ACK`,
+  `SHM_BLOCK_QUERY_REQ`/`ACK`.
+- **Rung 13 — `Pattern4HeartbeatTimeoutTest`** ⏳ deferred.
+  Pins HEP-0023 §2 dead-detection + recovery FSM.  Needs
+  back-channel pause/resume signal in Pattern 4 helpers.
+
+**Off-ladder** until blockers clear: federation
+(`HUB_PEER_HELLO_ACK`, `HUB_RELAY_MSG`, `HUB_TARGETED_MSG` —
+tasks #75 + #105); reserved/undecided (`SCHEMA_REQ`/`ACK`,
+`METRICS_REQ`/`ACK` — task #95).  `ENDPOINT_UPDATE_REQ`/`ACK`
+has L3 coverage from #90–#92; Pattern-4 rung only if a
+multi-process gap surfaces.
 
 Verification floor (mandatory for every rung): four axes
 (sequence + timing + payload + state) + mutation discipline.

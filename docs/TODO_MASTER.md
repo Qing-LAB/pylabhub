@@ -93,10 +93,15 @@ the demo inventory + manifest schema.
 - N8+N9 bench variants (scalar dispatch + multi-size sweep).
 - N11 cross-engine `on_band_message` signature parity audit.
 - #154 re-create L3 broker tests against refactored lib code.
-- **Pattern 4 multi-process test ladder.**  #220 shipped rung 1
-  (smoke) + the design pattern doc; rungs 2 (#221 Registration)
-  and 3 (#222 ConsumerLifecycle) are pending; rungs 4 + 5 are
-  blocked on AUTH-2 (#162) and AUTH-3 (#163).
+- **Pattern 4 multi-process test ladder** (12 in-scope rungs +
+  1 deferred).  #220 shipped rung 1 (smoke) + the design pattern
+  doc; rungs 2 (#221 Registration), 3 (#223 Heartbeat),
+  4 (#222 ConsumerLifecycle), 7 (#224 Deregistration), 8 (#225
+  ChannelNotifies), 9 (#226 RegistrationError), 11 (#228 Bands),
+  12 (#229 RoleIntrospection) are pending; rungs 5 (#162), 6
+  (#163), 10 (#227) blocked on AUTH chain.  Rung 13 deferred on
+  back-channel-pipe infra.  Full ladder + per-rung HEP pin in
+  `docs/README/README_testing.md` § "Pattern 4 — ... — Test ladder".
 
 ### Windows / MSVC / cross-platform / CMake (`docs/todo/PLATFORM_TODO.md`)
 
