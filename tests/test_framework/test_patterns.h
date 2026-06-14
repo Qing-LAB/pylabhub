@@ -131,7 +131,40 @@ class IsolatedProcessTest : public ::testing::Test
                                       bool redirect_stderr_to_console = false)
     {
         return helper::WorkerProcess(g_self_exe_path, scenario, args, redirect_stderr_to_console,
-                                     false);
+                                     /*with_ready_signal=*/false,
+                                     /*with_quit_signal=*/false);
+    }
+
+    /**
+     * @brief Spawns a worker whose lifetime is controlled by a parent-driven
+     *        quit pipe (parent calls `signal_quit()` to tell the worker to exit).
+     *
+     * Use this when the parent's assertions need to drive subprocess shutdown
+     * — e.g. Pattern 4 tests that pin a sequence of log markers and want each
+     * subprocess to exit immediately after the parent has observed everything
+     * it needs, rather than waiting a fixed self-timeout.
+     *
+     * **Worker-side contract:** the worker code calls
+     * `pylabhub::tests::helper::wait_for_quit_or_safety_timeout(safety_seconds)`
+     * after its setup is complete; the call returns when either (a) the parent
+     * closes the pipe (`signal_quit()`) or (b) the safety timeout elapses
+     * (covers parent-crash, must be generous, e.g. 60 s).
+     *
+     * **Parent-side contract:** after the parent's assertions pass, call
+     * `worker.signal_quit()` followed by `ExpectWorkerOk(worker)` (or
+     * `wait_for_exit()`).  `signal_quit()` returns immediately; the worker
+     * still needs ~hundreds of ms to flush Logger + finalize LifecycleGuard.
+     *
+     * POSIX-only as of task #221.  On Windows the constructor falls back to
+     * a plain spawn (worker must rely on its safety timeout to exit).
+     */
+    helper::WorkerProcess SpawnWorkerWithQuitSignal(const std::string &scenario,
+                                                    const std::vector<std::string> &args = {})
+    {
+        return helper::WorkerProcess(g_self_exe_path, scenario, args,
+                                     /*redirect_stderr_to_console=*/false,
+                                     /*with_ready_signal=*/false,
+                                     /*with_quit_signal=*/true);
     }
 
     /**
@@ -148,7 +181,8 @@ class IsolatedProcessTest : public ::testing::Test
     helper::WorkerProcess SpawnWorkerWithReadySignal(const std::string &scenario,
                                                       const std::vector<std::string> &args = {})
     {
-        return helper::WorkerProcess(g_self_exe_path, scenario, args, false, true);
+        return helper::WorkerProcess(g_self_exe_path, scenario, args, false, true,
+                                     /*with_quit_signal=*/false);
     }
 
     /**
@@ -171,7 +205,8 @@ class IsolatedProcessTest : public ::testing::Test
         for (const auto &[scenario, args] : scenarios)
         {
             workers.emplace_back(g_self_exe_path, scenario, args, redirect_stderr_to_console,
-                                 false);
+                                 /*with_ready_signal=*/false,
+                                 /*with_quit_signal=*/false);
         }
         return workers;
     }

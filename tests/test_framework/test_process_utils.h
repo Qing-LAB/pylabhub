@@ -52,10 +52,18 @@ class WorkerProcess
      * @param args A vector of additional string arguments for the worker.
      * @param redirect_stderr_to_console If true, worker stderr goes to console.
      * @param with_ready_signal If true, creates a pipe; child signals via PLH_TEST_READY_FD/HANDLE.
+     * @param with_quit_signal  If true, creates a SECOND pipe; parent calls
+     *                          `signal_quit()` to close its write end, child reads via
+     *                          PLH_TEST_QUIT_FD (POSIX) — read returns EOF and the
+     *                          worker exits.  Used by tests that pin a sequence of
+     *                          markers on a shared log and want the subprocess to exit
+     *                          immediately after the parent's assertions pass, instead
+     *                          of waiting a fixed self-timeout.  POSIX-only for now;
+     *                          Windows is a no-op (worker should still self-time-out).
      */
     WorkerProcess(const std::string &exe_path, const std::string &mode,
                   const std::vector<std::string> &args, bool redirect_stderr_to_console = false,
-                  bool with_ready_signal = false);
+                  bool with_ready_signal = false, bool with_quit_signal = false);
     ~WorkerProcess();
 
     WorkerProcess(const WorkerProcess &) = delete;
@@ -137,6 +145,22 @@ class WorkerProcess
      */
     void send_signal(int sig);
 
+    /**
+     * @brief Tells the child it should exit now (POSIX only).
+     *
+     * Closes the parent end of the quit-signal pipe; the child's
+     * blocking `read()` on `PLH_TEST_QUIT_FD` returns 0 (EOF) and the
+     * worker proceeds to its teardown path.  Idempotent.  No-op when
+     * the WorkerProcess was constructed without `with_quit_signal=true`
+     * or on Windows.
+     *
+     * Pair with `wait_for_exit()`: `signal_quit()` returns immediately
+     * after closing the pipe FD; the child still needs a few hundred
+     * milliseconds to actually shut down (Logger flush, LifecycleGuard
+     * finalize).
+     */
+    void signal_quit();
+
   private:
     void init_with_ready_signal(const std::string &exe_path, const std::string &mode,
                                 const std::vector<std::string> &args,
@@ -151,10 +175,13 @@ class WorkerProcess
     bool waited_ = false;
     bool redirect_stderr_to_console_ = false;
     bool with_ready_signal_ = false;
+    bool with_quit_signal_  = false;
 #if defined(PLATFORM_WIN64)
     HANDLE ready_pipe_read_ = NULL;
+    // Windows quit-signal not implemented yet; parent-side state unused.
 #else
     int ready_pipe_read_ = -1;
+    int quit_pipe_write_ = -1;  ///< parent's write end; close() to signal child
 #endif
 };
 

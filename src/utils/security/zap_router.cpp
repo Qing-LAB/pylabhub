@@ -511,6 +511,12 @@ bool ZapRouter::pump_one(std::chrono::milliseconds timeout)
 
     if (*decision)
     {
+        // Symmetric to the existing deny-path WARN logs (lines 433,
+        // 450, 463, 476, 503): one-shot INFO per allowed handshake
+        // makes ZAP behavior observable for ops debugging without
+        // flooding hot paths (handshakes are bounded by role count).
+        LOGGER_INFO("ZapRouter::pump_one: ALLOW pubkey='{}' on domain='{}'",
+                    z85, domain);
         send_zap_reply(sock, request_id, "200", "OK", z85);
         impl_->allowed_count.fetch_add(1, std::memory_order_relaxed);
     }

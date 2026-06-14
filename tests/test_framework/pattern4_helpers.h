@@ -82,6 +82,15 @@ struct Pattern4Setup
     /// reads its half from this bundle and seeds its own
     /// `CurveKeyStoreFixture` at startup.
     pylabhub::tests::CurveSetup curve;
+
+    /// Shared log file.  Subprocesses redirect their Logger sink here
+    /// via `set_shared_log(shared_log_path)` immediately after the
+    /// LifecycleGuard brings up Logger; the parent reads the merged
+    /// stream via `expect_log_sequence` to pin cross-process ordering
+    /// without timestamp parsing (file-position IS time-order under
+    /// `O_APPEND`).  Empty string disables shared-log mode (smoke test
+    /// stays on the per-subprocess stderr path).
+    std::string shared_log_path;
 };
 
 /// Build a `Pattern4Setup` for a list of role uids.  Picks an unused
@@ -136,5 +145,49 @@ read_pattern4_setup(const std::filesystem::path &path);
 void expect_log(const pylabhub::tests::helper::WorkerProcess &proc,
                 std::string_view substring,
                 std::chrono::milliseconds timeout);
+
+// ─── Shared-log verification (rung 2+) ──────────────────────────────────────
+
+/// **Subprocess-side** — redirect the Logger sink to a file shared
+/// across all Pattern-4 subprocesses for this test.  Uses
+/// `O_APPEND | O_CREAT` (kernel-atomic appends ≤ `PIPE_BUF`) plus
+/// advisory `flock` for belt-and-suspenders serialisation.  Must be
+/// called inside the worker lambda AFTER the LifecycleGuard brings up
+/// the Logger module (i.e. inside the lambda passed to
+/// `run_gtest_worker`) and BEFORE any `LOGGER_*` call that the parent
+/// expects to find via `expect_log_sequence`.
+///
+/// `[WORKER_BEGIN]` / `[WORKER_END_OK]` / `[WORKER_FINALIZED]` markers
+/// continue to land on per-subprocess stderr (they go via
+/// `fmt::print(stderr, ...)`, not through the Logger sink) so
+/// `ExpectWorkerOk` keeps working unchanged.
+///
+/// Throws on failure (caller may want `ASSERT_TRUE` semantics).
+void set_shared_log(const std::filesystem::path &shared_log_path);
+
+/// **Parent-side** — pin a sequence of log markers in `shared_log` IN
+/// ORDER.  Each step is searched starting at the byte offset where the
+/// previous step's match ended; the file's natural append-order under
+/// `O_APPEND` *is* time-order, so this enforces cross-process ordering
+/// without parsing timestamps.
+///
+/// For each step:
+///   - Polls the file every 25 ms until the marker is found at or
+///     past the current search offset, or `per_step_timeout` elapses.
+///   - On match: advances the search offset to the end of the match
+///     and proceeds to the next step.
+///   - On timeout: fails the current gtest scope with a diagnostic
+///     identifying the failed step + how many earlier steps matched
+///     + tail of the shared log.
+///
+/// `per_step_timeout` MUST come from canonical lib constants
+/// (`pylabhub::kShortTimeoutMs` etc.) — arbitrary literals forbidden.
+///
+/// See `docs/README/README_testing.md` § "Pattern 4 — ... — Production
+/// INFO marker contract" for the marker format conventions.
+void expect_log_sequence(
+    const std::filesystem::path &shared_log,
+    std::initializer_list<std::string_view> markers,
+    std::chrono::milliseconds per_step_timeout);
 
 } // namespace pylabhub::tests::pattern4

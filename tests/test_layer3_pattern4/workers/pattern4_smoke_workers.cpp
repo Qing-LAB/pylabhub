@@ -71,12 +71,13 @@ namespace pylabhub::tests::pattern4
 namespace
 {
 
-// Self-timeout for the smoke subprocesses.  Tight on purpose — the
-// parent's expected-log sequence completes in <1s, so 5s is enough
-// for the subprocess to finish its setup and accept incoming
-// connections before exiting on its own.  Follow-up will replace
-// this with a back-channel pipe quit signal.
-constexpr auto kSmokeSelfTimeout = std::chrono::seconds{5};
+// Safety timeout — fires ONLY if the parent crashes or forgets to call
+// `signal_quit()`.  Normal path: parent calls `signal_quit()` after
+// expect_log returns, the read() on PLH_TEST_QUIT_FD returns EOF, and
+// the subprocess shuts down in <1 s.  60 s tolerates fully-loaded -j 2
+// CI without false-tripping.  See README_testing.md § "Pattern 4 —
+// Termination via quit-signal pipe" for the pattern.
+constexpr auto kSmokeSafetyTimeout = std::chrono::seconds{60};
 
 // Bind-retry parameters per Pattern 4 doc § "Bind robustness".
 constexpr int  kBindMaxAttempts = 4;
@@ -159,12 +160,32 @@ int pattern4_smoke_broker(const char *temp_dir_arg)
                       std::future_status::ready)
                 << "Pattern4Broker: on_ready callback did not fire within 2s";
 
-            LOGGER_INFO("Pattern4Broker: entering self-timeout wait "
-                        "({} seconds)",
-                        kSmokeSelfTimeout.count());
-            std::this_thread::sleep_for(kSmokeSelfTimeout);
+            LOGGER_INFO("Pattern4Broker: waiting on quit-signal pipe "
+                        "(safety timeout {} s)",
+                        kSmokeSafetyTimeout.count());
+            const auto wait_result =
+                pylabhub::tests::helper::wait_for_quit_or_safety_timeout(
+                    kSmokeSafetyTimeout);
+            switch (wait_result)
+            {
+            case pylabhub::tests::helper::QuitWaitResult::QuitSignal:
+                LOGGER_INFO("Pattern4Broker: quit signal received, stopping");
+                break;
+            case pylabhub::tests::helper::QuitWaitResult::SafetyTimeout:
+                LOGGER_WARN("Pattern4Broker: safety timeout fired — parent "
+                            "did not call signal_quit() within {} s",
+                            kSmokeSafetyTimeout.count());
+                break;
+            case pylabhub::tests::helper::QuitWaitResult::NoQuitPipe:
+                // Legacy callers (no with_quit_signal=true) — short
+                // fallback so the broker doesn't exit before the parent
+                // has finished reading the shared log.
+                LOGGER_WARN("Pattern4Broker: no PLH_TEST_QUIT_FD — falling "
+                            "back to 3 s sleep before exit");
+                std::this_thread::sleep_for(std::chrono::seconds{3});
+                break;
+            }
 
-            LOGGER_INFO("Pattern4Broker: self-timeout reached, stopping");
             broker->stop();
             broker_thread.join();
             LOGGER_INFO("Pattern4Broker: exiting cleanly");
@@ -215,13 +236,31 @@ int pattern4_smoke_role_x(const char *temp_dir_arg)
                 brc.run_poll_loop([&] { return running.load(); });
             });
 
-            LOGGER_INFO("Pattern4Role[{}]: entering self-timeout wait "
-                        "({} seconds)",
-                        role_uid, kSmokeSelfTimeout.count());
-            std::this_thread::sleep_for(kSmokeSelfTimeout);
+            LOGGER_INFO("Pattern4Role[{}]: waiting on quit-signal pipe "
+                        "(safety timeout {} s)",
+                        role_uid, kSmokeSafetyTimeout.count());
+            const auto wait_result =
+                pylabhub::tests::helper::wait_for_quit_or_safety_timeout(
+                    kSmokeSafetyTimeout);
+            switch (wait_result)
+            {
+            case pylabhub::tests::helper::QuitWaitResult::QuitSignal:
+                LOGGER_INFO("Pattern4Role[{}]: quit signal received, stopping",
+                            role_uid);
+                break;
+            case pylabhub::tests::helper::QuitWaitResult::SafetyTimeout:
+                LOGGER_WARN("Pattern4Role[{}]: safety timeout fired — parent "
+                            "did not call signal_quit() within {} s",
+                            role_uid, kSmokeSafetyTimeout.count());
+                break;
+            case pylabhub::tests::helper::QuitWaitResult::NoQuitPipe:
+                LOGGER_WARN("Pattern4Role[{}]: no PLH_TEST_QUIT_FD — falling "
+                            "back to 3 s sleep before exit",
+                            role_uid);
+                std::this_thread::sleep_for(std::chrono::seconds{3});
+                break;
+            }
 
-            LOGGER_INFO("Pattern4Role[{}]: self-timeout reached, stopping",
-                        role_uid);
             running.store(false);
             brc.stop();
             poll_thread.join();

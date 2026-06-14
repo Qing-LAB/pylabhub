@@ -531,6 +531,45 @@ class ThreadRacer
  */
 void signal_test_ready();
 
+/// Outcome of `wait_for_quit_or_safety_timeout()`.
+enum class QuitWaitResult : std::uint8_t
+{
+    QuitSignal,    ///< Parent closed the quit pipe (clean shutdown path).
+    SafetyTimeout, ///< Safety timeout fired (covers parent crash / forgotten signal_quit).
+    NoQuitPipe,    ///< `PLH_TEST_QUIT_FD` env var not set — worker was not
+                   ///< spawned with `with_quit_signal=true`.  Returns
+                   ///< immediately; caller's fallback path (e.g. legacy
+                   ///< self-timeout) should kick in.
+};
+
+/**
+ * @brief Worker-side: block until the parent signals quit, or a safety
+ *        timeout elapses.
+ *
+ * Reads `PLH_TEST_QUIT_FD` (set by `SpawnWorkerWithQuitSignal`) and uses
+ * `poll()` to wait for either:
+ *   1. parent closes its write end of the pipe → read returns 0 (EOF) →
+ *      returns `QuitSignal` (clean shutdown — the normal path);
+ *   2. `safety_timeout` elapses → returns `SafetyTimeout` (covers parent
+ *      crash or a test that forgot to call `signal_quit()`).
+ *
+ * If `PLH_TEST_QUIT_FD` is not set, returns `NoQuitPipe` immediately —
+ * the worker can fall back to a legacy self-timeout or other mechanism.
+ *
+ * `safety_timeout` MUST be generous — a parent crash is the only path
+ * that uses it, so 30-60 s is appropriate.  Hot-path tests that need
+ * the worker to exit quickly are served by the `QuitSignal` path
+ * (millisecond response).
+ *
+ * POSIX-only as of task #221; on Windows returns `NoQuitPipe`
+ * unconditionally (worker should self-time-out).
+ *
+ * @param safety_timeout Fallback wait duration if parent never signals.
+ * @return One of QuitWaitResult — caller branches on it.
+ */
+[[nodiscard]] QuitWaitResult
+wait_for_quit_or_safety_timeout(std::chrono::seconds safety_timeout);
+
 // ============================================================================
 // DataBlock Test Utilities (for layered test architecture)
 // ============================================================================

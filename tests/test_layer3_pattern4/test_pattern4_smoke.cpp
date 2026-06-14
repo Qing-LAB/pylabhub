@@ -88,9 +88,16 @@ TEST_F(Pattern4SmokeTest, BrokerBindsAndRoleConnects)
     const auto setup        = make_pattern4_setup({"role.x"});
     write_pattern4_setup(setup, temp_dir / "setup.json");
 
-    // ── 2. Spawn subprocesses ──
-    auto broker = SpawnWorker("pattern4_smoke.broker", {temp_dir.string()});
-    auto role   = SpawnWorker("pattern4_smoke.role_x", {temp_dir.string()});
+    // ── 2. Spawn subprocesses with quit-signal pipes ──
+    //
+    // Both broker + role wait on the quit-signal pipe instead of a
+    // fixed self-timeout, so the test exits as soon as the parent has
+    // observed everything it needs.  See README_testing.md § "Pattern 4
+    // — Termination via quit-signal pipe" for the canonical pattern.
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_smoke.broker",
+                                            {temp_dir.string()});
+    auto role   = SpawnWorkerWithQuitSignal("pattern4_smoke.role_x",
+                                            {temp_dir.string()});
 
     // ── 3. Expected sequence — broker binds, role connects ──
     //
@@ -103,8 +110,16 @@ TEST_F(Pattern4SmokeTest, BrokerBindsAndRoleConnects)
     expect_log(role,   "Pattern4Role[role.x]: BRC connected",
                std::chrono::milliseconds{kLongTimeoutMs});
 
-    // ── 4. Both subprocesses self-time-out, exit cleanly ──
+    // ── 4. Parent-driven termination via quit-signal pipes ──
     //
+    // Both subprocesses are blocked in wait_for_quit_or_safety_timeout.
+    // signal_quit() closes the parent's write end of each pipe; the
+    // worker's read() returns EOF and proceeds to clean exit.  Test
+    // wall time is dominated by subprocess shutdown (Logger flush +
+    // LifecycleGuard finalize), not by an arbitrary self-timeout.
+    broker.signal_quit();
+    role.signal_quit();
+
     // ExpectWorkerOk waits for the subprocess to exit, then checks
     // exit code 0 + the three completion markers (BEGIN / END_OK /
     // FINALIZED) per Pattern 3.

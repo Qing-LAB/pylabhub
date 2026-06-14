@@ -1117,6 +1117,16 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
     {
         nlohmann::json resp = handle_reg_req(payload, identity, socket);
         const std::string ack = (resp.value("status", "") == "success") ? "REG_ACK" : "ERROR";
+        if (ack == "REG_ACK")
+        {
+            // "REG_ACK sending" marker (rung 2 of Pattern 4 ladder).
+            // Pin: channel + allowlist payload distinguish a registration ACK
+            // from REG_REQ rejections that already log via existing ERROR/WARN.
+            LOGGER_INFO("Broker: REG_ACK sending channel='{}' initial_allowlist={}",
+                        resp.value("channel_id", "?"),
+                        resp.value("initial_allowlist",
+                                   nlohmann::json::array()).dump());
+        }
         send_reply(socket, identity, ack, resp);
     }
     else if (msg_type == "DISC_REQ")
@@ -1918,10 +1928,14 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
         hub_state_->_on_channel_access_opened(channel_name, /*shm_secret=*/0);
     }
 
-    // Created.
-    LOGGER_INFO("Broker: registered channel '{}' (pending first heartbeat){}",
-                channel_name,
-                admission.channel_opened ? " — channel opened" : " — appended to existing");
+    // "REG_REQ accepted" marker (rung 2 of Pattern 4 ladder).
+    // Pin: role_uid + channel + producer_pubkey identify the registration
+    // uniquely; channel_opened distinguishes first-producer vs subsequent.
+    LOGGER_INFO("Broker: REG_REQ accepted role='{}' channel='{}' producer_pubkey='{}' "
+                "(pending first heartbeat){}",
+                role_uid, channel_name, producer_pubkey,
+                admission.channel_opened ? " - channel opened"
+                                         : " - appended to existing");
     nlohmann::json resp;
     resp["status"]     = "success";
     resp["channel_id"] = channel_name;

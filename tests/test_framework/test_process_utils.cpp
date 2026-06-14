@@ -306,6 +306,71 @@ static ProcessHandle spawn_worker_process_with_ready_pipe(const std::string &exe
     *out_ready_pipe_read = pipe_fds[0];
     return pid;
 }
+
+// POSIX — mirror of spawn_worker_process_with_ready_pipe but for the
+// PARENT→CHILD "quit" direction.  Pipe semantics:
+//   * Parent holds the WRITE end (close() signals "quit now" → child's
+//     read returns 0 / EOF).
+//   * Child holds the READ end (blocks on read() inside its worker body
+//     via wait_for_quit_or_safety_timeout()).  `PLH_TEST_QUIT_FD` env
+//     var passes the FD number to the child.
+static ProcessHandle spawn_worker_process_with_quit_pipe(const std::string &exe_path,
+                                                          const std::string &mode,
+                                                          const std::vector<std::string> &args,
+                                                          const fs::path &stdout_path,
+                                                          const fs::path &stderr_path,
+                                                          bool redirect_stderr_to_console,
+                                                          int *out_quit_pipe_write)
+{
+    *out_quit_pipe_write = -1;
+    int pipe_fds[2];
+    if (pipe(pipe_fds) != 0)
+        return NULL_PROC_HANDLE;
+
+    pid_t pid = fork();
+    if (pid == 0)
+    {
+        close(pipe_fds[1]);  // child closes parent's write end
+        std::string fd_str = std::to_string(pipe_fds[0]);
+        setenv("PLH_TEST_QUIT_FD", fd_str.c_str(), 1);
+
+        int devnull_fd = open("/dev/null", O_RDONLY);
+        if (devnull_fd != -1)
+        {
+            dup2(devnull_fd, 0);
+            close(devnull_fd);
+        }
+
+        int stdout_fd = open(stdout_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (stdout_fd != -1)
+        {
+            dup2(stdout_fd, 1);
+            close(stdout_fd);
+        }
+        if (!redirect_stderr_to_console)
+        {
+            int stderr_fd = open(stderr_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (stderr_fd != -1)
+            {
+                dup2(stderr_fd, 2);
+                close(stderr_fd);
+            }
+        }
+        std::vector<char *> argv;
+        argv.push_back(const_cast<char *>(exe_path.c_str()));
+        argv.push_back(const_cast<char *>(mode.c_str()));
+        for (const auto &arg : args)
+            argv.push_back(const_cast<char *>(arg.c_str()));
+        argv.push_back(nullptr);
+        execv(exe_path.c_str(), argv.data());
+        fprintf(stderr, "[CHILD %d] ERROR: execv failed: %s (errno: %d)\n", getpid(), strerror(errno),
+                errno);
+        _exit(127);
+    }
+    close(pipe_fds[0]);  // parent closes child's read end
+    *out_quit_pipe_write = pipe_fds[1];
+    return pid;
+}
 #endif
 
 // Internal helper to wait for a process and get its exit code.
@@ -400,10 +465,11 @@ static int wait_for_worker_and_get_exit_code(ProcessHandle handle, int timeout_s
 
 WorkerProcess::WorkerProcess(const std::string &exe_path, const std::string &mode,
                              const std::vector<std::string> &args, bool redirect_stderr_to_console,
-                             bool with_ready_signal)
+                             bool with_ready_signal, bool with_quit_signal)
     : mode_(mode),
       redirect_stderr_to_console_(redirect_stderr_to_console),
-      with_ready_signal_(with_ready_signal)
+      with_ready_signal_(with_ready_signal),
+      with_quit_signal_(with_quit_signal)
 {
     auto base_name = fs::path(exe_path).filename().string() + "_" + fs::path(mode).filename().string();
     // Sanitize: replace characters invalid in Windows filenames.
@@ -421,7 +487,21 @@ WorkerProcess::WorkerProcess(const std::string &exe_path, const std::string &mod
         stderr_path_ = fs::temp_directory_path() / fmt::format("{}_{}_stderr.log", base_name, ts);
     }
 
-    if (with_ready_signal_)
+    if (with_quit_signal_)
+    {
+#if defined(PLATFORM_WIN64)
+        // TODO(#221 follow-up): Windows quit-signal via named pipe / event.
+        // Fall back to plain spawn so the worker exits via its safety
+        // timeout (or other mechanism) on Windows.
+        handle_ = spawn_worker_process(exe_path, mode, args, stdout_path_, stderr_path_,
+                                       redirect_stderr_to_console_);
+#else
+        handle_ = spawn_worker_process_with_quit_pipe(exe_path, mode, args, stdout_path_,
+                                                      stderr_path_, redirect_stderr_to_console_,
+                                                      &quit_pipe_write_);
+#endif
+    }
+    else if (with_ready_signal_)
     {
         init_with_ready_signal(exe_path, mode, args, redirect_stderr_to_console_);
     }
@@ -458,6 +538,20 @@ void WorkerProcess::send_signal(int sig)
 #endif
 }
 
+void WorkerProcess::signal_quit()
+{
+#if !defined(PLATFORM_WIN64)
+    if (quit_pipe_write_ >= 0)
+    {
+        // Closing the parent's write end gives the child's read() an
+        // EOF (return value 0).  Idempotent — second call no-ops.
+        close(quit_pipe_write_);
+        quit_pipe_write_ = -1;
+    }
+#endif
+    // Windows: no quit pipe wired yet (see ctor TODO); no-op.
+}
+
 WorkerProcess::~WorkerProcess()
 {
 #if defined(PLATFORM_WIN64)
@@ -471,6 +565,14 @@ WorkerProcess::~WorkerProcess()
     {
         close(ready_pipe_read_);
         ready_pipe_read_ = -1;
+    }
+    if (quit_pipe_write_ >= 0)
+    {
+        // Belt-and-suspenders: if the test forgot to call signal_quit(),
+        // closing here still lets the child observe EOF and exit
+        // cleanly via its safety-timeout path.
+        close(quit_pipe_write_);
+        quit_pipe_write_ = -1;
     }
 #endif
     if (handle_ != NULL_PROC_HANDLE && !waited_)

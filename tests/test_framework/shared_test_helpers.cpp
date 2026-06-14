@@ -14,6 +14,8 @@
 #if PYLABHUB_IS_POSIX
 #include <sys/mman.h> // For shm_unlink
 #include <cerrno>     // For errno
+#include <climits>    // For INT_MAX in wait_for_quit_or_safety_timeout
+#include <poll.h>     // For poll() in wait_for_quit_or_safety_timeout
 #include <unistd.h>   // For write, close
 #elif defined(PLATFORM_WIN64)
 #define WIN32_LEAN_AND_MEAN
@@ -136,6 +138,43 @@ void signal_test_ready()
     CloseHandle(h);
 #else
     (void)0; // Other platforms: no-op
+#endif
+}
+
+QuitWaitResult
+wait_for_quit_or_safety_timeout(std::chrono::seconds safety_timeout)
+{
+#if PYLABHUB_IS_POSIX
+    const char *fd_str = std::getenv("PLH_TEST_QUIT_FD");
+    if (!fd_str || !fd_str[0])
+        return QuitWaitResult::NoQuitPipe;
+    int fd = std::atoi(fd_str);
+    if (fd < 0)
+        return QuitWaitResult::NoQuitPipe;
+
+    // poll() on the read end.  The parent closes its write end via
+    // `WorkerProcess::signal_quit()` — that delivers either POLLIN +
+    // a zero-byte read (EOF) or POLLHUP, depending on libc / kernel.
+    // Either way the FSM advances; treat both as "quit requested".
+    pollfd pfd{};
+    pfd.fd     = fd;
+    pfd.events = POLLIN;
+
+    const long long timeout_ms = static_cast<long long>(safety_timeout.count()) * 1000;
+    const int       capped_ms  = (timeout_ms > INT_MAX) ? -1 : static_cast<int>(timeout_ms);
+
+    const int rc = ::poll(&pfd, 1, capped_ms);
+    close(fd);
+    if (rc < 0)
+        return QuitWaitResult::SafetyTimeout;  // pessimistic on EINTR/etc.
+    if (rc == 0)
+        return QuitWaitResult::SafetyTimeout;
+    // Pipe became readable — either real EOF (parent closed) or a
+    // hangup.  Either is "quit requested" semantics for our use.
+    return QuitWaitResult::QuitSignal;
+#else
+    (void)safety_timeout;
+    return QuitWaitResult::NoQuitPipe;
 #endif
 }
 

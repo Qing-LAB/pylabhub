@@ -926,9 +926,13 @@ RoleAPIBase::register_producer_channel(const nlohmann::json &opts, int timeout_m
     Presence *presence = pImpl->handler_
         ? pImpl->handler_->find_presence_for_channel(ch) : nullptr;
     if (presence)
+    {
         presence->registration_state.store(
             RegistrationState::RegRequestPending,
             std::memory_order_release);
+        LOGGER_INFO("[{}] presence channel='{}' state Unregistered->RegRequestPending (REG_REQ sending)",
+                    pImpl->role_tag, ch);
+    }
 
     auto result = bc->register_channel(opts, timeout_ms);
     // Per HEP-CORE-0007 §12.3, a request-reply method's optional<json>
@@ -949,14 +953,19 @@ RoleAPIBase::register_producer_channel(const nlohmann::json &opts, int timeout_m
                      result->value("error_code", std::string{}),
                      result->value("message", std::string{}));
     else
-        LOGGER_INFO("[{}] Registered producer channel '{}' with broker",
-                    pImpl->role_tag, opts.value("channel_name", "?"));
+        LOGGER_INFO("[{}] REG_ACK received channel='{}' status=success initial_allowlist={}",
+                    pImpl->role_tag, opts.value("channel_name", "?"),
+                    result->value("initial_allowlist",
+                                  nlohmann::json::array()).dump());
 
     if (presence)
-        presence->registration_state.store(
-            registered ? RegistrationState::Registered
-                        : RegistrationState::Unregistered,
-            std::memory_order_release);
+    {
+        const auto new_state = registered ? RegistrationState::Registered
+                                          : RegistrationState::Unregistered;
+        presence->registration_state.store(new_state, std::memory_order_release);
+        LOGGER_INFO("[{}] presence channel='{}' state RegRequestPending->{}",
+                    pImpl->role_tag, ch, to_string(new_state));
+    }
     return result;
 }
 

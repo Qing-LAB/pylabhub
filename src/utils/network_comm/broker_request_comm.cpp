@@ -504,6 +504,18 @@ bool BrokerRequestComm::connect(const Config &cfg)
             return false;
         }
         auto &ks = pylabhub::utils::security::key_store();
+        // One-shot per BRC::connect — surface the CURVE values the
+        // socket was configured with so silent handshake failures
+        // (wrong serverkey, missing client identity) have an
+        // observable diagnostic trail.  Volume is bounded by hub
+        // count per role (typically 1).
+        LOGGER_INFO("BrokerRequestComm::connect: CURVE configured — "
+                    "serverkey='{}' client_pubkey='{}' "
+                    "(KeyStore['{}']) endpoint='{}'",
+                    cfg.broker_pubkey,
+                    ks.pubkey(cfg.keystore_name),
+                    cfg.keystore_name,
+                    cfg.broker_endpoint);
         pImpl->dealer->set(zmq::sockopt::curve_serverkey, cfg.broker_pubkey);
         pImpl->dealer->set(zmq::sockopt::curve_publickey,
                            ks.pubkey(cfg.keystore_name));

@@ -758,23 +758,67 @@ Concretely:
 The parent test does not orchestrate any of this.  It only
 observes the resulting log output.
 
-#### Quit mechanism
+#### Termination via quit-signal pipe (canonical Pattern 4 pattern)
 
 Subprocesses cannot run forever; the test framework needs a clean
 way to tell them "you're done."  Pattern 4 uses a parent-to-child
-back-channel pipe — a tiny extension to `WorkerProcess` with a new
-`with_quit_signal=true` mode, analogous to the existing
-`with_ready_signal=true`.  When the parent calls
-`proc.signal_quit()`, the child reads a byte off `PLH_TEST_QUIT_FD`
-on its poll cycle and triggers clean shutdown
-(`BrokerService::stop()` / `BrokerRequestComm::stop()` →
-`LifecycleGuard` finalize → `_exit(0)`).
+back-channel pipe — a mirror of the existing `with_ready_signal`
+pipe but in the opposite direction.
 
-As a belt-and-suspenders safety net, every Pattern-4 subprocess
-also runs a **self-timeout** — if no event has been processed in
-`kPattern4SelfTimeoutSec` seconds (currently 60s), the subprocess
-exits on its own with a clear log marker.  This ensures a crashed
-or hung parent does not leak subprocesses indefinitely.
+**Implementation surface** (POSIX as of task #221; Windows TBD):
+
+| Component | Where | Role |
+|---|---|---|
+| `SpawnWorkerWithQuitSignal(scenario, args)` | `test_patterns.h` | Parent spawns subprocess + creates pipe; child sees `PLH_TEST_QUIT_FD` env var pointing at read end. |
+| `WorkerProcess::signal_quit()` | `test_process_utils.h` | Parent closes its write end → child's `read()` returns EOF.  Idempotent. |
+| `wait_for_quit_or_safety_timeout(seconds)` | `shared_test_helpers.h` | Worker-side: blocks on `poll(PLH_TEST_QUIT_FD)` until parent signals (`QuitSignal`), safety timeout fires (`SafetyTimeout`), or env var missing (`NoQuitPipe`). |
+
+**Parent-side flow** (mirrors what a careful production deploy does):
+
+```cpp
+auto broker = SpawnWorkerWithQuitSignal("...broker", {temp_dir.string()});
+// Pin assertions on the shared log (or per-subprocess stderr) here.
+expect_log_sequence(shared_log, {...}, kLongTimeoutMs);
+// Tell broker it's done — read() returns EOF in the worker.
+broker.signal_quit();
+ExpectWorkerOk(broker);  // wait_for_exit() + completion-marker check
+```
+
+**Worker-side flow** (in the lambda passed to `run_gtest_worker`):
+
+```cpp
+// ... build BrokerService / RoleAPIBase, run main work ...
+const auto wait_result =
+    pylabhub::tests::helper::wait_for_quit_or_safety_timeout(
+        std::chrono::seconds{60});  // safety covers parent crash
+switch (wait_result) {
+case QuitWaitResult::QuitSignal:    /* parent done — normal exit */ break;
+case QuitWaitResult::SafetyTimeout: LOGGER_WARN(...); break;
+case QuitWaitResult::NoQuitPipe:    std::this_thread::sleep_for(3s); break;
+}
+broker->stop();
+broker_thread.join();
+```
+
+**Why this matters** (task #221 measurement):
+
+| Termination pattern | Smoke test wall time | Registration test wall time |
+|---|---|---|
+| Fixed self-timeout (the legacy placeholder) | 5.0 s | 10.0 s |
+| Quit-signal pipe (this section) | ~0.4 s | ~0.4 s |
+
+The 23× speedup matters: Pattern 4 has 12 in-scope rungs; at 10 s
+per rung the family adds 2 minutes to every L3 sweep.  At 0.4 s it
+adds 5 s.  Future rungs MUST use this pattern — the legacy
+self-timeout is preserved only as the `NoQuitPipe` fallback in the
+helper, and any new Pattern-4 test that doesn't use the quit-signal
+flow is a code-review red flag.
+
+The safety timeout (60 s by convention) covers the only failure
+mode the pattern doesn't handle directly: a parent process that
+crashes mid-test before calling `signal_quit()`.  In that case the
+worker eventually wakes and exits with a `LOGGER_WARN` so CI logs
+make the leak visible.
 
 #### Verification — log-driven sequence assertion
 
@@ -1128,8 +1172,10 @@ proves the Pattern 4 infrastructure end-to-end:
 - Parent live-polls each subprocess's captured stderr via
   `expect_log` with canonical timeouts (`kMidTimeoutMs`,
   `kLongTimeoutMs`).
-- Both subprocesses self-time-out after 5 seconds and exit
-  cleanly; parent then calls `ExpectWorkerOk` on each.
+- Parent calls `signal_quit()` on each subprocess after the
+  `expect_log` assertions pass; both subprocesses exit within ~hundreds
+  of ms (Logger flush + LifecycleGuard finalize), parent then calls
+  `ExpectWorkerOk` on each.  Wall time ~0.4 s.
 
 What the smoke does NOT yet verify: REG_REQ / REG_ACK wire
 shape, heartbeat install, channel lifecycle.  That coverage

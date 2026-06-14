@@ -4,14 +4,18 @@
  */
 #include "pattern4_helpers.h"
 
+#include "utils/logger.hpp"
+
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
 #include <atomic>
 #include <chrono>
 #include <fstream>
+#include <sstream>
 #include <stdexcept>
 #include <thread>
+#include <vector>
 #include <unistd.h>
 
 #if defined(__unix__) || defined(__APPLE__)
@@ -96,6 +100,7 @@ void write_pattern4_setup(const Pattern4Setup &setup, const fs::path &path)
 {
     nlohmann::json j;
     j["broker_endpoint"] = setup.broker_endpoint;
+    j["shared_log_path"] = setup.shared_log_path;  // optional; "" disables
     j["hub"]             = {
         {"public_z85", setup.curve.hub.public_z85},
         {"secret_z85", setup.curve.hub.secret_z85},
@@ -129,6 +134,7 @@ Pattern4Setup read_pattern4_setup(const fs::path &path)
 
     Pattern4Setup s;
     s.broker_endpoint    = j.at("broker_endpoint").get<std::string>();
+    s.shared_log_path    = j.value("shared_log_path", std::string{});
     s.curve.hub.public_z85 = j.at("hub").at("public_z85").get<std::string>();
     s.curve.hub.secret_z85 = j.at("hub").at("secret_z85").get<std::string>();
     for (const auto &item : j.at("role_keys"))
@@ -141,6 +147,30 @@ Pattern4Setup read_pattern4_setup(const fs::path &path)
     }
     return s;
 }
+
+// ─── set_shared_log ─────────────────────────────────────────────────────────
+
+void set_shared_log(const fs::path &shared_log_path)
+{
+    // Belt-and-suspenders: O_APPEND already gives kernel-atomic appends
+    // up to PIPE_BUF (≥ 4 KB on Linux); use_flock=true layers a POSIX
+    // advisory LOCK_EX around each write for full serialisation across
+    // subprocesses sharing this log file.  Logger sink swap is
+    // asynchronous; in practice the first LOGGER_* call after this
+    // returns has already landed on the file by the time it returns
+    // (the Logger's worker thread drains the command queue eagerly).
+    auto &L = pylabhub::utils::Logger::instance();
+    if (!L.set_logfile(shared_log_path.string(), /*use_flock=*/true))
+    {
+        throw std::runtime_error(
+            "Pattern4 set_shared_log: Logger::set_logfile failed for '" +
+            shared_log_path.string() + "'");
+    }
+}
+
+// `expect_log_sequence` is defined further down, after `tail_lines`
+// (which it shares with `expect_log` for the failure diagnostic).
+// See the trailing block of this file.
 
 // ─── wait_for_log / expect_log ──────────────────────────────────────────────
 
@@ -229,6 +259,75 @@ void expect_log(const pylabhub::tests::helper::WorkerProcess &proc,
                   << "ms in worker mode '" << proc.mode() << "'\n"
                   << "Tail of captured stderr (last 10 lines):\n"
                   << tail_lines(snapshot, 10);
+}
+
+// ─── expect_log_sequence ────────────────────────────────────────────────────
+
+namespace
+{
+
+/// Read the shared log file in full.  Returns empty string if the file
+/// doesn't exist yet (subprocesses haven't started writing).
+std::string read_shared_log_snapshot(const fs::path &shared_log)
+{
+    std::error_code ec;
+    if (!fs::exists(shared_log, ec))
+        return {};
+    std::ifstream in(shared_log, std::ios::in | std::ios::binary);
+    if (!in)
+        return {};
+    std::ostringstream oss;
+    oss << in.rdbuf();
+    return oss.str();
+}
+
+} // anon
+
+void expect_log_sequence(
+    const fs::path &shared_log,
+    std::initializer_list<std::string_view> markers,
+    std::chrono::milliseconds per_step_timeout)
+{
+    std::size_t cursor   = 0;   // byte offset; next search starts here
+    std::size_t step_idx = 0;
+    for (auto marker : markers)
+    {
+        const auto deadline = std::chrono::steady_clock::now() + per_step_timeout;
+        bool matched = false;
+        std::string snapshot;
+        while (std::chrono::steady_clock::now() < deadline)
+        {
+            snapshot = read_shared_log_snapshot(shared_log);
+            if (snapshot.size() > cursor)
+            {
+                const auto found = snapshot.find(marker, cursor);
+                if (found != std::string::npos)
+                {
+                    cursor  = found + marker.size();
+                    matched = true;
+                    break;
+                }
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds{25});
+        }
+
+        if (!matched)
+        {
+            ADD_FAILURE()
+                << "expect_log_sequence: step " << step_idx + 1
+                << " of " << markers.size()
+                << " — marker '" << marker
+                << "' not found within " << per_step_timeout.count()
+                << "ms (search from byte offset " << cursor << " of "
+                << snapshot.size() << " total).\n"
+                << "Earlier steps matched: " << step_idx << "\n"
+                << "Tail of shared log (last 20 lines):\n"
+                << tail_lines(snapshot, 20);
+            return;  // stop on first failed step — downstream diagnostics
+                     // are misleading once the sequence breaks
+        }
+        ++step_idx;
+    }
 }
 
 } // namespace pylabhub::tests::pattern4
