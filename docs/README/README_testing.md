@@ -344,6 +344,7 @@ hybrids.
 | **Pattern 1 — `PureApiTest`** | `pylabhub::tests::PureApiTest` (or plain `::testing::Test`) | Pure functions, data structures, algorithms, compile-time traits — **no `LOGGER_*`, no `FileLock`, no `JsonConfig`, no module ctor that hits a lifecycle check** | In-process; runs in the main gtest runner |
 | **Pattern 2 — in-process thread-racer** | plain `::testing::Test` with `ThreadRacer` | Concurrency tests that touch **no** lifecycle module | In-process; still no guard |
 | **Pattern 3 — `IsolatedProcessTest`** | `pylabhub::tests::IsolatedProcessTest` | **Any** test whose body transitively reaches a lifecycle module (`Logger`, `FileLock`, `JsonConfig`, `CryptoUtils`, `ZMQContext`, `HubConfig`, `SchemaStore`, hub `DataBlock`); crash/abort tests; finalize/shutdown tests; IPC tests | Parent spawns a subprocess per `TEST_F`; worker owns its own `LifecycleGuard` |
+| **Pattern 4 — multi-process wire protocol** | `pylabhub::tests::IsolatedProcessTest` (parent) + one Pattern-3 worker per role | Tests that drive a wire protocol between two or more processes that each independently claim a process-global resource (canonical case: HEP-CORE-0036 §7.4 single-pumper invariant — broker + role cannot share a process). Mirrors the production single-role-per-process deployment shape. | Parent spawns N worker subprocesses (one broker + N−1 roles). Each subprocess owns its own `LifecycleGuard` and runs production code for its role. Parent is a pure observer — log-driven sequence assertions + `ExpectWorkerOk` per subprocess. |
 
 #### The framework contract (absolute)
 
@@ -438,6 +439,15 @@ Before writing a new test, answer these in order. If you get to "yes" before
 If any of the above is **yes**, the test body goes into a worker subprocess.
 If **all are no**, Pattern 1 or 2 is allowed.
 
+5. **Does my test drive a wire protocol between two or more processes
+   that each claim a process-global resource the library enforces
+   single-owner per process?** Canonical case: HEP-CORE-0036 §7.4
+   forbids broker + role co-existing in one process (single-pumper
+   invariant on the inproc ZAP REP socket).  Tests of the broker
+   ↔ role wire protocol must mirror the production deployment — one
+   role per process — so each side has its own pumper claim.  If
+   yes → Pattern 4.
+
 #### Antipatterns (forbidden)
 
 | Antipattern | Why it breaks | Correct approach |
@@ -447,6 +457,7 @@ If **all are no**, Pattern 1 or 2 is allowed.
 | `EXPECT_DEATH(...)` inside a lifecycle-backed body | Death-test fork inherits half-initialized state; flakes under load | Spawn a worker that deliberately aborts; parent asserts `exit_code != 0` + panic text |
 | Linking the test binary against both `pylabhub::test_framework` and `GTest::gtest_main` | Two `main()` definitions → link error | Link `pylabhub::test_framework` only — it provides `main()` via `test_entrypoint.cpp` |
 | Worker body returning normally (falling off the end) | Runs pylabhub-utils + libzmq + luajit static dtors → potential 60s hang on CI | Call `run_gtest_worker(...)` and let it `_exit()` |
+| **In-process broker + role co-host** (e.g., the retired `HubHostBrokerHandle` pattern that owned a `BrokerService` while the same process also ran a `BrokerRequestComm`) | Violates HEP-CORE-0036 §7.4 single-pumper invariant — both the broker poll thread and the BRC poll thread try to drain the same inproc ZAP REP socket, and the `PumpScope` counter PANICs (exit 134) when their `pump_one` calls race.  Under `-j 2` the race fires probabilistically and looks like flake on the surface; under isolation it doesn't fire and looks like the test passed.  **Treat the PANIC as the bug it actually is, not as flake.** | Pattern 4 — subprocess per role.  Broker runs in its own subprocess; the role's BRC runs in another.  They communicate over the production wire protocol — same as `plh_hub` + `plh_role` in production. |
 
 > **Migration history (2026-05-14, closed).** The Pattern-3 migration
 > wave converted all 23 then-noncompliant files off the
@@ -625,6 +636,362 @@ LifecycleGuard.  No subprocess workers.
   crypto + ZMQContext).  Demonstrates Pattern 1+ for tests that
   drive real `HubHost` + `AdminService` in-process — the full
   set of lifecycle modules a service-layer test needs.
+
+---
+
+### Pattern 4 — Multi-process wire protocol test (subprocess-per-role + observing parent)
+
+> Added 2026-06-13 as the structural answer to the L3 test
+> regression surfaced by AUTH-2 (task #220 ↔ #162).  Pattern 4
+> formalises what production already did informally — one role per
+> process — and brings test harnesses into alignment with the
+> single-pumper invariant the library enforces at runtime
+> (HEP-CORE-0036 §7.4).
+
+Some tests verify the **wire protocol** between two processes that
+each independently own a process-global resource: the broker owns
+the inproc ZAP REP socket's pumper in `plh_hub`; the BRC owns it
+in `plh_role`.  The library forbids both from claiming the role
+in the same OS process (§7.4 invariant 3 — `PumpScope` PANICs on
+concurrent pumper entry).  This invariant is **production
+behaviour**, not test infrastructure, so tests must respect it
+rather than ask the library to bend.
+
+Pattern 4 mirrors production: each role gets its own subprocess
+(Pattern 3 worker); they talk to each other over the actual
+network wire; the parent test process is a pure observer that
+verifies the expected sequence of events by reading each
+subprocess's live stderr stream.
+
+#### Process model
+
+| Process | Role |
+|---|---|
+| Parent (the `TEST_F` itself) | Spawns N subprocesses (one broker + N−1 roles).  Pure observer — never drives, signals, or coordinates state.  Picks the broker's TCP port up-front, writes a production-shaped `hub.json` to a per-test temp dir, then spawns each subprocess with the temp dir as a CLI arg. |
+| Broker subprocess | A Pattern-3 worker.  Owns its own `LifecycleGuard`, constructs `BrokerService` from the parent's `hub.json`, retries `EADDRINUSE` on bind, runs the broker until told to quit. |
+| Role subprocess(es) | A Pattern-3 worker per role.  Owns its own `LifecycleGuard`, constructs `BrokerRequestComm` from the same `hub.json`, connects to the broker over TCP using the production retry-on-connect behaviour, registers, runs the role's behaviour until told to quit. |
+
+The parent does **no logic**.  It does not send "now do X" commands;
+it does not synthesise the broker's view of state; it does not
+verify cross-process invariants by reaching into either side's
+memory (it can't — they're different processes).  Its only
+responsibilities are setup-plumbing (pick a port, write `hub.json`,
+launch subprocesses) and verdict-rendering (read each subprocess's
+stderr for the expected event sequence, then call
+`ExpectWorkerOk`).
+
+#### Bootstrap (parent setup)
+
+The parent calls a small helper that:
+
+1. **Picks an unused TCP port** with retry — binds to `tcp://127.0.0.1:0`,
+   captures the OS-assigned port, closes the socket, retries up to N
+   times if anything fails.  This is best-effort under `-j 2` load;
+   the broker's bind-side retry (next subsection) catches the small
+   race window where another process grabs the port between close
+   and the broker's bind.
+2. **Writes a production-shaped hub directory** to a per-test temp
+   dir — `hub.json` containing the chosen endpoint + broker's pubkey,
+   plus `vault/known_roles.json` listing every role uid the test
+   uses.  The format is identical to what `plh_hub init` emits in
+   production, so subprocesses read it via `HubConfig::load_from_directory`
+   with no test-only code path.
+3. **Spawns each subprocess** with the temp dir path as its CLI arg.
+
+There is no broker-side "ready signal" the parent has to wait for.
+The role's BRC has connect-retry built into its production
+behaviour (it retries connect for `kMidTimeoutMs` before giving up);
+so even if the role subprocess starts before the broker has
+finished binding, the role naturally waits.
+
+#### Bind robustness (broker subprocess)
+
+In CI, TCP ports can be transiently unavailable (port churn,
+`TIME_WAIT` from prior tests, races between parent's
+find-unused-port helper closing the socket and the broker's bind
+opening it).  The broker subprocess wraps its bind step in a
+retry-on-`EADDRINUSE` loop with exponential backoff:
+
+```cpp
+auto backoff = std::chrono::milliseconds{10};
+for (int attempt = 0; attempt < 4; ++attempt) {
+    try {
+        broker = std::make_unique<BrokerService>(cfg, ...);
+        break;
+    } catch (const zmq::error_t &e) {
+        if (e.num() == EADDRINUSE && attempt < 3) {
+            LOGGER_WARN("broker bind EADDRINUSE — retry in {}ms "
+                        "(attempt {}/4)", backoff.count(), attempt + 1);
+            std::this_thread::sleep_for(backoff);
+            backoff *= 5;  // 10 → 50 → 250 → fail
+            continue;
+        }
+        throw;  // last attempt or non-EADDRINUSE — surface clearly
+    }
+}
+```
+
+**This retry lives in the test wrapper, not in `BrokerService::bind`.**
+Production `plh_hub` operators bind to an explicitly-configured port;
+if that port is unavailable, they deserve to see `EADDRINUSE`
+immediately so they can fix the config.  Silent retries would mask
+a real operator-facing problem.  The test-side retry is scoped to
+the test harness, where transient CI noise is a known concern.
+
+#### Coordination between subprocesses
+
+**The only coordination channel between subprocesses is the
+production wire protocol they are testing.**  No back-channel
+pipes; no shared files; no parent-mediated step-by-step
+synchronisation; no test-specific RPC.
+
+Concretely:
+- The role's BRC connects to the broker's TCP endpoint and goes
+  through the production REG_REQ / REG_ACK handshake.
+- Heartbeats flow per HEP-CORE-0023 §2.5; if either side dies, the
+  surviving side's existing hub-dead / heartbeat-timeout machinery
+  fires.
+- Channel notifications, allowlist updates, federation messages —
+  whatever the production protocol says — happen normally.
+- The test exercises the wire protocol by **using the wire protocol**.
+
+The parent test does not orchestrate any of this.  It only
+observes the resulting log output.
+
+#### Quit mechanism
+
+Subprocesses cannot run forever; the test framework needs a clean
+way to tell them "you're done."  Pattern 4 uses a parent-to-child
+back-channel pipe — a tiny extension to `WorkerProcess` with a new
+`with_quit_signal=true` mode, analogous to the existing
+`with_ready_signal=true`.  When the parent calls
+`proc.signal_quit()`, the child reads a byte off `PLH_TEST_QUIT_FD`
+on its poll cycle and triggers clean shutdown
+(`BrokerService::stop()` / `BrokerRequestComm::stop()` →
+`LifecycleGuard` finalize → `_exit(0)`).
+
+As a belt-and-suspenders safety net, every Pattern-4 subprocess
+also runs a **self-timeout** — if no event has been processed in
+`kPattern4SelfTimeoutSec` seconds (currently 60s), the subprocess
+exits on its own with a clear log marker.  This ensures a crashed
+or hung parent does not leak subprocesses indefinitely.
+
+#### Verification — log-driven sequence assertion
+
+The parent verifies test outcome by reading each subprocess's
+captured stderr file (`WorkerProcess::stderr_path()`) and asserting
+on the presence and order of specific log lines:
+
+```cpp
+expect_log(role_proc,   "BRC: connected to broker",
+           pylabhub::kShortTimeoutMs);
+expect_log(role_proc,   "sending REG_REQ role=role.x",
+           pylabhub::kShortTimeoutMs);
+expect_log(broker_proc, "received REG_REQ from role.x",
+           pylabhub::kShortTimeoutMs);
+// ... etc ...
+```
+
+`expect_log(proc, substring, timeout)` polls the subprocess's
+stderr file with millisecond granularity until either:
+- the substring is found in any line written since the previous
+  `expect_log` returned (success — continues to the next assertion),
+- or the timeout elapses with no match (failure — gtest assertion
+  fires with the message *"expected log line containing '...' in
+  `<scenario>` worker stderr within Xms — last 5 lines were ..."*).
+
+**Timeout values come from canonical library constants** —
+`kShortTimeoutMs`, `kMidTimeoutMs`, `kLongTimeoutMs` in
+`utils/timeout_constants.hpp` — or HEP-defined intervals such as
+the heartbeat cadence per HEP-CORE-0023 §2.5.  **Hardcoded numbers
+like `2s` or `100ms` are forbidden** — they drift from the actual
+library timing the test is supposed to verify.
+
+When all expected events have appeared, the parent sends the quit
+signal to each subprocess and calls `ExpectWorkerOk` on each.  The
+standard worker-completion markers
+(`[WORKER_BEGIN]` / `[WORKER_END_OK]` / `[WORKER_FINALIZED]`)
+plus exit code 0 are the final verdict.
+
+#### Timestamp precision
+
+Production's `LOGGER_*` macros emit lines like:
+
+```
+[LOGGER] [INFO  ] [2026-06-14 03:09:41.890661] [PID:240812 TID:240815] ...
+```
+
+The microsecond-precision wall-clock timestamp lets a Pattern-4
+parent assert relative ordering across subprocesses even when their
+stderr files are merged out-of-order.  If a test cares about
+"event X happened after event Y by less than Z ms," it can parse
+both files post-hoc and assert on the timestamp delta — though in
+practice most Pattern-4 tests get all the rigour they need from
+the in-order `expect_log` polling alone.
+
+#### Subprocess responsibilities
+
+Each Pattern-4 subprocess:
+
+1. **Runs production code** — `BrokerService` for the broker
+   subprocess, `BrokerRequestComm` (and any `RoleHost` shells) for
+   the role subprocess.  No test-only code paths inside the wire
+   protocol layer.
+2. **Emits detailed logs** — production logging already covers
+   every event a Pattern-4 test typically needs: connect / register
+   / heartbeat / notification / disconnect.  Tests should pin
+   against the production log lines, **not** demand custom test-only
+   log emissions.  If a wire-relevant event lacks a production log
+   line that a test wants to pin, the fix is a small additive log
+   to the library (which production diagnostics also benefits from)
+   — **not** a test-only debug print.
+3. **Honours the quit signal** — polls `PLH_TEST_QUIT_FD` on every
+   cycle of its poll loop; on quit byte, performs clean shutdown.
+4. **Exits cleanly** — runs `LifecycleGuard` finalize via
+   `run_gtest_worker`'s standard tail, emits the three completion
+   markers, calls `_exit(0)` on success.
+5. **Runs per-scenario assertions on locally-owned state** via
+   direct C++ access — each subprocess owns its lifecycle, so
+   tests that need to peek at broker-internal state (channel
+   snapshot, registry contents, etc.) do so from inside the broker
+   subprocess via `gtest`'s `EXPECT_*` macros.  If an assertion
+   fails inside a subprocess, the subprocess exits non-zero and
+   the parent's `ExpectWorkerOk` surfaces the failure.
+
+#### Example skeleton
+
+```cpp
+// tests/test_layer3_datahub/test_role_register_smoke.cpp
+
+TEST_F(RoleRegisterSmokeTest, RegisterAndHeartbeat)
+{
+    // ── 1. Parent-side setup: temp hub directory + free port ──
+    pylabhub::tests::CurveSetup setup = make_curve_setup({"role.x"});
+    pylabhub::tests::TempHubDir hub = pylabhub::tests::make_temp_hub_dir(setup);
+
+    // ── 2. Spawn one subprocess per role ──
+    auto broker = SpawnWorker("broker.run_until_signal",
+                              {hub.path().string()});
+    auto role   = SpawnWorker("role.run_until_signal_producer",
+                              {hub.path().string(), "role.x"});
+
+    // ── 3. Verify expected wire sequence (timeouts from lib constants) ──
+    using namespace std::chrono_literals;
+    using pylabhub::kShortTimeoutMs;
+
+    expect_log(role,   "BRC: connected to broker",       kShortTimeoutMs);
+    expect_log(role,   "sending REG_REQ role=role.x",    kShortTimeoutMs);
+    expect_log(broker, "received REG_REQ from role.x",   kShortTimeoutMs);
+    expect_log(broker, "sending REG_ACK to role.x",      kShortTimeoutMs);
+    expect_log(role,   "received REG_ACK",               kShortTimeoutMs);
+    expect_log(role,   "starting heartbeat",             kShortTimeoutMs);
+    expect_log(role,   "sending HEARTBEAT_REQ",
+               heartbeat_interval(hub.config()) + kShortTimeoutMs);
+    expect_log(broker, "received HEARTBEAT_REQ role=role.x",
+               kShortTimeoutMs);
+    expect_log(role,   "received HEARTBEAT_ACK",         kShortTimeoutMs);
+
+    // ── 4. Tell everyone to quit cleanly + render verdict ──
+    role.signal_quit();
+    broker.signal_quit();
+    ExpectWorkerOk(role);
+    ExpectWorkerOk(broker);
+}
+```
+
+And the two subprocess worker functions:
+
+```cpp
+// tests/test_framework/workers/broker_run_until_signal.cpp
+
+int broker_run_until_signal(const char *hub_dir_path)
+{
+    return pylabhub::tests::helper::run_gtest_worker(
+        [&]() {
+            auto cfg = pylabhub::hub::HubConfig::load_from_directory(
+                hub_dir_path);
+
+            // Retry-on-EADDRINUSE wrapper — see Pattern 4 doc.
+            auto broker = bind_broker_with_retry(cfg);
+
+            // Run until parent's quit byte arrives.
+            broker->start();
+            wait_for_quit_signal_or_self_timeout();
+            broker->stop();
+        },
+        "broker.run_until_signal",
+        pylabhub::utils::Logger::GetLifecycleModule(),
+        pylabhub::utils::FileLock::GetLifecycleModule(),
+        pylabhub::utils::JsonConfig::GetLifecycleModule(),
+        pylabhub::hub::GetZMQContextModule());
+}
+
+// tests/test_framework/workers/role_run_until_signal_producer.cpp
+
+int role_run_until_signal_producer(const char *hub_dir_path,
+                                    const char *role_uid)
+{
+    return pylabhub::tests::helper::run_gtest_worker(
+        [&]() {
+            auto cfg = pylabhub::hub::HubConfig::load_from_directory(
+                hub_dir_path);
+
+            // Production behaviour — connect-retry built into BRC.
+            pylabhub::hub::BrokerRequestComm brc(make_brc_config(cfg, role_uid));
+            brc.connect();
+            brc.send_REG_REQ();
+            // (Heartbeat starts automatically after REG_ACK arrives.)
+
+            wait_for_quit_signal_or_self_timeout();
+            brc.stop();
+        },
+        "role.run_until_signal_producer",
+        pylabhub::utils::Logger::GetLifecycleModule(),
+        pylabhub::utils::FileLock::GetLifecycleModule(),
+        pylabhub::utils::JsonConfig::GetLifecycleModule(),
+        pylabhub::hub::GetZMQContextModule());
+}
+```
+
+The subprocess workers are generic — same broker scenario serves
+every test that exercises the broker side; same role scenario
+serves every producer test.  The per-test scenario lives entirely
+in the parent's `expect_log` sequence list.
+
+#### What this pattern is NOT for
+
+| Don't use Pattern 4 if … | Use this instead |
+|---|---|
+| The test does not cross a process boundary | Pattern 3 or Pattern 1+ |
+| The test exercises a pure function or data structure | Pattern 1 |
+| The test wants to share a process-global resource between two competing in-process claimants (e.g., second BRC in same process as broker) | The library forbids this; **respect the invariant**.  If you have a real need for multi-claimant coordination, raise it as a design discussion, not a test-only workaround. |
+| You want to "speed up" a Pattern-3 test by avoiding the subprocess fork | Subprocess fork is ~50 ms; the cost is paid once per `TEST_F`.  Pattern 4 is the right choice when you need multi-process semantics, not when you want to save fork overhead. |
+
+#### Doc cross-references
+
+- **HEP-CORE-0036 §7.1** — single-pumper-per-process invariant; the
+  architectural reason Pattern 4 exists at all.
+- **HEP-CORE-0036 §7.4** — runtime-enforced invariants (`PumpScope`
+  PANIC) that surface when a test violates the single-role-per-process
+  rule.
+- **HEP-CORE-0001** (hybrid-lifecycle-model) — process-wide
+  lifecycle invariants Pattern-3 / Pattern-4 subprocesses rely on.
+- **HEP-CORE-0018** (Producer-Consumer-Binaries) +
+  **HEP-CORE-0015** (Processor-Binary) — the production binaries
+  Pattern 4 mirrors (one role per process).
+- **`tests/test_framework/test_patterns.h`** — where the patterns
+  are encoded in the C++ test framework.
+- **Task #220** — the L3 broker-test migration that introduced
+  Pattern 4 and retired the in-process broker+role co-host
+  antipattern.
+
+#### Reference implementations
+
+> Will be filled in once task #220 lands the first Pattern-4
+> reference test.  Until then, this section reads as "TBD."  The
+> migration target is the L3 broker test family currently in
+> `tests/test_layer3_datahub/workers/` that uses the now-retired
+> `HubHostBrokerHandle` fixture.
 
 ---
 

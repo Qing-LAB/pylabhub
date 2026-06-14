@@ -3336,6 +3336,17 @@ return ALLOW or DENY.
 > (~100 μs keypair generation; the vault layer is bypassed but the
 > wire path is the same as production).
 
+> **Test-pattern cross-reference.**  The single-pumper-per-process
+> invariant in §7.1 + §7.4 is what forces test harnesses to mirror
+> the production single-role-per-process model.  Tests that drive
+> the broker ↔ role wire protocol use **Pattern 4** in
+> `docs/README/README_testing.md` (subprocess per role + observing
+> parent).  Pre-2026-06-13 the in-process broker+role co-host
+> fixture (`HubHostBrokerHandle`, retired by task #220) silently
+> violated this invariant; the runtime PANIC at `PumpScope`
+> exit 134 — the canary for the violation — used to be misread as
+> `-j 2` flake.  Don't.
+
 ### 7.1 Placement and lifetime
 
 - One ZAP socket per ZMQ context (libzmq invariant —
