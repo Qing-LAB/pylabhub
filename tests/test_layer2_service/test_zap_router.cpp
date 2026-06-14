@@ -94,12 +94,8 @@ TEST_F(ZapRouterTest, EmptyDomain_Throws)
     ExpectWorkerOk(w);
 }
 
-TEST_F(ZapRouterTest, NullAdmission_Throws)
-{
-    auto w = SpawnWorker("zap_router.null_admission_throws",
-                         {unique_dir("null_admission_throws")});
-    ExpectWorkerOk(w);
-}
+// `NullAdmission_Throws` was DELETED in task #217 — `register_domain`
+// now takes `PeerAdmission &`, so passing null is a compile error.
 
 TEST_F(ZapRouterTest, PumpOne_WhenUnloaded_ReturnsFalse)
 {

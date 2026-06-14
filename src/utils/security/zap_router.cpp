@@ -27,13 +27,15 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
-#include <cstring>
 #include <exception>  // std::exception for pump_one admission try/catch
+#include <functional>  // std::reference_wrapper for the routing map
 #include <mutex>
 #include <optional>
 #include <shared_mutex>
 #include <stdexcept>
+#include <stop_token>  // std::stop_token paired with std::jthread
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -81,18 +83,18 @@ std::string z85_encode_pubkey(const void *src, std::size_t len)
 /// Send a ZAP reply per RFC 27:
 ///   [0] version, [1] request_id, [2] status_code,
 ///   [3] status_text, [4] user_id, [5] metadata (empty).
-void send_zap_reply(zmq::socket_t      &sock,
-                    const std::string  &request_id,
-                    const char         *status_code,
-                    const char         *status_text,
-                    const std::string  &user_id)
+void send_zap_reply(zmq::socket_t    &sock,
+                    std::string_view  request_id,
+                    std::string_view  status_code,
+                    std::string_view  status_text,
+                    std::string_view  user_id)
 {
-    std::array<zmq::const_buffer, 6> frames{
-        zmq::buffer(kZapVersion, std::strlen(kZapVersion)),
-        zmq::buffer(request_id.data(), request_id.size()),
-        zmq::buffer(status_code, std::strlen(status_code)),
-        zmq::buffer(status_text, std::strlen(status_text)),
-        zmq::buffer(user_id.data(), user_id.size()),
+    const std::array<zmq::const_buffer, 6> frames{
+        zmq::buffer(kZapVersion, std::char_traits<char>::length(kZapVersion)),
+        zmq::buffer(request_id.data(),  request_id.size()),
+        zmq::buffer(status_code.data(), status_code.size()),
+        zmq::buffer(status_text.data(), status_text.size()),
+        zmq::buffer(user_id.data(),     user_id.size()),
         zmq::buffer("", 0),
     };
     for (std::size_t i = 0; i < frames.size(); ++i)
@@ -110,13 +112,17 @@ void send_zap_reply(zmq::socket_t      &sock,
 
 struct ZapRouter::Impl
 {
-    /// Routing map: zap_domain → PeerAdmission*.  Raw pointer; the
-    /// `ZapDomainHandle` returned by `register_domain` keeps the
-    /// mapping alive only for as long as the queue (or other
-    /// admission-bearing surface) needs it.  The handle's destructor
-    /// removes the map entry under `registered_mu` BEFORE the queue
-    /// destructs.
-    std::unordered_map<std::string, PeerAdmission *> registered;
+    /// Routing map: zap_domain → non-null, non-owning reference to a
+    /// `PeerAdmission`.  `std::reference_wrapper` documents
+    /// "non-owning, non-null" at the type level — `register_domain`
+    /// takes `PeerAdmission &`, so a null entry is impossible by
+    /// construction.  The `ZapDomainHandle` returned by
+    /// `register_domain` keeps the mapping alive only for as long as
+    /// the queue (or other admission-bearing surface) needs it; the
+    /// handle's destructor removes the map entry under
+    /// `registered_mu` BEFORE the queue destructs.
+    std::unordered_map<std::string,
+                       std::reference_wrapper<PeerAdmission>> registered;
 
     /// Many readers (`pump_one` looking up admission by domain),
     /// rare writers (register/unregister).
@@ -236,15 +242,13 @@ pylabhub::utils::ModuleDef ZapRouter::make_module_def_()
 // ── register_domain / unregister_domain_ ────────────────────────────────────
 
 ZapDomainHandle
-ZapRouter::register_domain(std::string domain, PeerAdmission *admission)
+ZapRouter::register_domain(std::string domain, PeerAdmission &admission)
 {
     if (domain.empty())
         throw std::runtime_error(
             "ZapRouter::register_domain: domain must be non-empty");
-    if (admission == nullptr)
-        throw std::runtime_error(
-            "ZapRouter::register_domain: admission must be non-null "
-            "(domain='" + domain + "')");
+    // Non-null contract is enforced by the reference parameter — a
+    // caller cannot pass a null admission.
 
     // task #215 — reentrance refuse.  MUST run BEFORE any lock
     // acquisition: if this thread is inside pump_one's admission
@@ -291,8 +295,9 @@ ZapRouter::register_domain(std::string domain, PeerAdmission *admission)
 
     {
         std::unique_lock<std::shared_mutex> lk(impl_->registered_mu);
-        if (auto it = impl_->registered.find(domain);
-            it != impl_->registered.end())
+        auto [it, inserted] =
+            impl_->registered.try_emplace(domain, std::ref(admission));
+        if (!inserted)
         {
             // Roll back the LoadModule to keep ref-counts accurate.
             (void) pylabhub::utils::UnloadModule(kZapModuleName);
@@ -301,7 +306,6 @@ ZapRouter::register_domain(std::string domain, PeerAdmission *admission)
                 "' is already registered (double-registration is a "
                 "regression — each zap_domain must be unique)");
         }
-        impl_->registered.emplace(domain, admission);
     }
 
     return ZapDomainHandle(this, std::move(domain));
@@ -511,11 +515,11 @@ bool ZapRouter::pump_one(std::chrono::milliseconds timeout)
         if (auto it = impl_->registered.find(domain);
             it != impl_->registered.end())
         {
-            PeerAdmission *admission = it->second;
+            PeerAdmission &admission = it->second;  // ref-wrapper → T&
             pylabhub::basics::RecursionGuard guard(this);
             try
             {
-                decision = admission->is_peer_allowed(
+                decision = admission.is_peer_allowed(
                     PeerIdentity{"curve", z85});
             }
             catch (const std::exception &e)
@@ -588,18 +592,19 @@ ZapDomainHandle::~ZapDomainHandle()
 
 // ── ZapPumpThread ───────────────────────────────────────────────────────────
 
+// `std::jthread` carries its own stop_token + auto-joins in its
+// destructor.  The previous shape required a separate atomic stop flag
+// plus a manual join in `~ZapPumpThread`; both are now implicit.
 struct ZapPumpThread::Impl
 {
-    std::atomic<bool> stop{false};
-    std::thread       thread;
+    std::jthread thread;
 };
 
 ZapPumpThread::ZapPumpThread(std::chrono::milliseconds tick)
     : impl_(std::make_unique<Impl>())
 {
-    auto *impl_ptr = impl_.get();
-    impl_->thread  = std::thread([impl_ptr, tick]() {
-        while (!impl_ptr->stop.load(std::memory_order_acquire))
+    impl_->thread = std::jthread([tick](std::stop_token st) {
+        while (!st.stop_requested())
         {
             // pump_one returns false on timeout OR module-not-loaded.
             // Either way we just spin to the next tick to check stop.
@@ -608,12 +613,6 @@ ZapPumpThread::ZapPumpThread(std::chrono::milliseconds tick)
     });
 }
 
-ZapPumpThread::~ZapPumpThread()
-{
-    if (!impl_) return;
-    impl_->stop.store(true, std::memory_order_release);
-    if (impl_->thread.joinable())
-        impl_->thread.join();
-}
+ZapPumpThread::~ZapPumpThread() = default;
 
 } // namespace pylabhub::utils::security

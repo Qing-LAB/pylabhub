@@ -36,6 +36,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstring>
+#include <functional>  // std::function — round3 admission callback
 #include <future>
 #include <iterator>
 #include <mutex>
@@ -168,7 +169,7 @@ int handshake_accept_deny_cycle(const char * /*tmpdir*/)
             auto pull = bind_pull_server(server_pub, server_sec,
                                           "test.zap.handshake.suite1");
             auto handle = ZapRouter::instance().register_domain(
-                "test.zap.handshake.suite1", &admission);
+                "test.zap.handshake.suite1", admission);
             ASSERT_TRUE(handle.is_active());
             EXPECT_EQ(ZapRouter::instance()
                           .registered_domain_count_for_test(), 1u);
@@ -234,7 +235,7 @@ int unknown_domain_denies(const char * /*tmpdir*/)
             al.unrestricted = true;
             (void) unrelated.set_peer_allowlist(std::move(al));
             auto handle = ZapRouter::instance().register_domain(
-                "test.zap.other.domain", &unrelated);
+                "test.zap.other.domain", unrelated);
 
             ZapPumpThread pump;
 
@@ -256,7 +257,7 @@ int handle_unregisters_on_destruction(const char * /*tmpdir*/)
             InMemoryAdmission a;
             {
                 auto h = ZapRouter::instance().register_domain(
-                    "test.zap.handle.lifetime", &a);
+                    "test.zap.handle.lifetime", a);
                 EXPECT_TRUE(h.is_active());
                 EXPECT_EQ(ZapRouter::instance()
                               .registered_domain_count_for_test(), 1u);
@@ -278,9 +279,12 @@ int duplicate_registration_throws(const char * /*tmpdir*/)
             InMemoryAdmission a;
             InMemoryAdmission b;
             auto h = ZapRouter::instance().register_domain(
-                "test.zap.duplicate.domain", &a);
-            EXPECT_THROW(ZapRouter::instance().register_domain(
-                             "test.zap.duplicate.domain", &b),
+                "test.zap.duplicate.domain", a);
+            // (void) silences [[nodiscard]] on register_domain — the
+            // call is expected to throw, so the would-be handle never
+            // exists.  Same idiom at the two other EXPECT_THROW sites.
+            EXPECT_THROW((void) ZapRouter::instance().register_domain(
+                             "test.zap.duplicate.domain", b),
                          std::runtime_error);
             EXPECT_EQ(ZapRouter::instance()
                           .registered_domain_count_for_test(), 1u);
@@ -298,7 +302,7 @@ int empty_domain_throws(const char * /*tmpdir*/)
         [&]() {
             InMemoryAdmission a;
             EXPECT_THROW(
-                ZapRouter::instance().register_domain("", &a),
+                (void) ZapRouter::instance().register_domain("", a),
                 std::runtime_error);
         },
         "zap_router::empty_domain_throws",
@@ -308,20 +312,11 @@ int empty_domain_throws(const char * /*tmpdir*/)
         pylabhub::hub::GetZMQContextModule());
 }
 
-int null_admission_throws(const char * /*tmpdir*/)
-{
-    return run_gtest_worker(
-        [&]() {
-            EXPECT_THROW(
-                ZapRouter::instance().register_domain("test.zap.x", nullptr),
-                std::runtime_error);
-        },
-        "zap_router::null_admission_throws",
-        Logger::GetLifecycleModule(),
-        FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule(),
-        pylabhub::hub::GetZMQContextModule());
-}
+// `null_admission_throws` was DELETED — `register_domain` now takes
+// `PeerAdmission &`, so a null admission is rejected by the type
+// system at compile time; no runtime test is needed (and none could
+// be written without `reinterpret_cast<PeerAdmission &>(*nullptr)`,
+// which would itself be UB).  See task #217.
 
 int pump_one_when_unloaded_returns_false(const char * /*tmpdir*/)
 {
@@ -450,7 +445,7 @@ int pump_one_malformed_short_request_replies_and_recovers(const char *)
             ASSERT_TRUE(admission.set_peer_allowlist(al));
 
             auto handle = ZapRouter::instance().register_domain(
-                domain, &admission);
+                domain, admission);
             ASSERT_TRUE(handle.is_active());
 
             ZapPumpThread pump;
@@ -549,7 +544,7 @@ int pump_one_bad_version_replies_400(const char *)
             ASSERT_TRUE(admission.set_peer_allowlist(al));
 
             auto handle = ZapRouter::instance().register_domain(
-                domain, &admission);
+                domain, admission);
             ZapPumpThread pump;
 
             const auto baseline_denied =
@@ -605,7 +600,7 @@ int pump_one_non_curve_mechanism_replies_400(const char *)
             const std::string domain = "test.zap.plain.mech";
             InMemoryAdmission admission;
             auto handle = ZapRouter::instance().register_domain(
-                domain, &admission);
+                domain, admission);
             ZapPumpThread pump;
 
             const auto baseline_denied =
@@ -657,7 +652,7 @@ int handshake_deny_increments_denied_counter(const char *)
 
             InMemoryAdmission admission;  // empty allowlist → deny-all
             auto handle = ZapRouter::instance().register_domain(
-                domain, &admission);
+                domain, admission);
             auto pull = bind_pull_server(server_pub, server_sec, domain);
             ZapPumpThread pump;
 
@@ -709,7 +704,7 @@ int handshake_allow_increments_allowed_counter(const char *)
             ASSERT_TRUE(admission.set_peer_allowlist(al));
 
             auto handle = ZapRouter::instance().register_domain(
-                domain, &admission);
+                domain, admission);
             auto pull = bind_pull_server(server_pub, server_sec, domain);
             ZapPumpThread pump;
 
@@ -751,7 +746,7 @@ int handle_move_construct_transfers_ownership(const char *)
             InMemoryAdmission a;
             const std::string domain = "test.zap.move.ctor";
 
-            auto h1 = ZapRouter::instance().register_domain(domain, &a);
+            auto h1 = ZapRouter::instance().register_domain(domain, a);
             ASSERT_TRUE(h1.is_active());
             ASSERT_EQ(h1.domain(), domain);
             ASSERT_EQ(ZapRouter::instance()
@@ -790,9 +785,9 @@ int handle_move_assign_releases_previous_registration(const char *)
             InMemoryAdmission b;
 
             auto hA = ZapRouter::instance().register_domain(
-                "test.zap.move.assign.A", &a);
+                "test.zap.move.assign.A", a);
             auto hB = ZapRouter::instance().register_domain(
-                "test.zap.move.assign.B", &b);
+                "test.zap.move.assign.B", b);
             ASSERT_EQ(ZapRouter::instance()
                           .registered_domain_count_for_test(), 2u);
 
@@ -813,12 +808,12 @@ int handle_move_assign_releases_previous_registration(const char *)
             // "A" is gone) and on "B" (which should throw).
             EXPECT_NO_THROW({
                 auto reA = ZapRouter::instance().register_domain(
-                    "test.zap.move.assign.A", &a);
+                    "test.zap.move.assign.A", a);
                 EXPECT_TRUE(reA.is_active());
             });
             EXPECT_THROW(
-                ZapRouter::instance().register_domain(
-                    "test.zap.move.assign.B", &b),
+                (void) ZapRouter::instance().register_domain(
+                    "test.zap.move.assign.B", b),
                 std::runtime_error);
         },
         "zap_router::handle_move_assign_releases_previous_registration",
@@ -926,7 +921,7 @@ public:
         // or actually register.
         nested_handle_.emplace(ZapRouter::instance().register_domain(
             "test.zap.round3.reentrant_register.nested",
-            &nested_admission_));
+            nested_admission_));
         nested_register_attempted_.store(true);
         nested_register_succeeded_.store(nested_handle_->is_active());
         std::lock_guard<std::mutex> lk(al_mu_);
@@ -951,8 +946,13 @@ private:
     mutable std::atomic<bool>                   nested_register_succeeded_{false};
 };
 
-// Admission whose `is_peer_allowed` resets a handle from inside the
-// call.  Pins the PLH_PANIC path in `unregister_domain_`.
+// Admission whose `is_peer_allowed` runs a test-supplied callback
+// inside the call.  The callback is what the test uses to provoke
+// the reentrant `~ZapDomainHandle` → `unregister_domain_` PLH_PANIC.
+// A `std::function<void()>` callback (set by the test fixture)
+// replaces an earlier back-pointer into the fixture's storage; the
+// callback decouples the admission's reentrance behavior from any
+// particular handle's storage location.
 class ReEntrantUnregisterAdmission final : public PeerAdmission
 {
 public:
@@ -970,18 +970,23 @@ public:
     }
     bool is_peer_allowed(const PeerIdentity &p) const override
     {
-        // Reset the held handle inside the admission decision.
-        // ~ZapDomainHandle → unregister_domain_ → RecursionGuard
-        // detects we are inside pump_one's admission scope on this
-        // thread → PLH_PANIC.  The process abort is the test signal.
-        if (handle_to_destroy_)
-            handle_to_destroy_->reset();
-        // Unreachable: the panic above aborts before we get here.
+        // Run the test-installed callback inside the admission
+        // decision.  In the panic test the callback resets the
+        // outer handle: ~ZapDomainHandle → unregister_domain_ →
+        // RecursionGuard detects we are inside pump_one's admission
+        // scope on this thread → PLH_PANIC.  The process abort is
+        // the test signal.
+        if (on_admit_)
+            on_admit_();
+        // Unreachable when on_admit_ provokes the panic; otherwise
+        // we fall through to the allowlist check.
         std::lock_guard<std::mutex> lk(al_mu_);
         return al_.has_value() && al_->contains(p);
     }
 
-    mutable std::optional<ZapDomainHandle> *handle_to_destroy_{nullptr};
+    // Test fixture installs the reentrance trigger here.  Empty by
+    // default — no callback runs.
+    std::function<void()> on_admit_;
 
 private:
     mutable std::mutex          al_mu_;
@@ -1031,7 +1036,7 @@ int round3_uaf_destructor_blocks_until_admission_returns(const char *)
             ASSERT_TRUE(admission.set_peer_allowlist(al));
 
             ZapDomainHandle handle =
-                ZapRouter::instance().register_domain(domain, &admission);
+                ZapRouter::instance().register_domain(domain, admission);
             ASSERT_TRUE(handle.is_active());
 
             ZapPumpThread pump;
@@ -1161,7 +1166,7 @@ int round3_reentrant_register_refused(const char *)
             ASSERT_TRUE(admission.set_peer_allowlist(al));
 
             auto handle = ZapRouter::instance().register_domain(
-                domain, &admission);
+                domain, admission);
             ASSERT_TRUE(handle.is_active());
             EXPECT_EQ(ZapRouter::instance()
                           .registered_domain_count_for_test(), 1u);
@@ -1225,9 +1230,9 @@ int round3_reentrant_unregister_panics(const char *)
             ASSERT_TRUE(admission.set_peer_allowlist(al));
 
             std::optional<ZapDomainHandle> handle =
-                ZapRouter::instance().register_domain(domain, &admission);
+                ZapRouter::instance().register_domain(domain, admission);
             ASSERT_TRUE(handle->is_active());
-            admission.handle_to_destroy_ = &handle;
+            admission.on_admit_ = [&handle] { handle.reset(); };
 
             ZapPumpThread pump;
 
@@ -1268,7 +1273,7 @@ int round3_concurrent_pumpers_panic(const char *)
         [&]() {
             round3::NoopAdmission admission;
             auto handle = ZapRouter::instance().register_domain(
-                "test.zap.round3.two_pumpers", &admission);
+                "test.zap.round3.two_pumpers", admission);
             ASSERT_TRUE(handle.is_active());
 
             // Spawn two pumpers.  pump_one's atomic counter MUST
@@ -1319,8 +1324,6 @@ int dispatch_zap_router(int argc, char **argv)
         return duplicate_registration_throws(tmpdir);
     if (scenario == "empty_domain_throws")
         return empty_domain_throws(tmpdir);
-    if (scenario == "null_admission_throws")
-        return null_admission_throws(tmpdir);
     if (scenario == "pump_one_when_unloaded_returns_false")
         return pump_one_when_unloaded_returns_false(tmpdir);
     if (scenario == "pump_one_malformed_short_request_replies_and_recovers")
