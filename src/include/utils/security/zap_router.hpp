@@ -7,7 +7,9 @@
  * (RFC 27) requires one REP socket bound at `inproc://zeromq.zap.01`
  * per `zmq::context_t` to answer libzmq's CURVE-handshake admission
  * RPCs.  This class owns that socket + a `unordered_map<zap_domain,
- * PeerAdmission*>` routing table.  It does NOT own a thread.  The
+ * reference_wrapper<PeerAdmission>>` routing table (non-owning,
+ * non-null by construction — `register_domain` takes
+ * `PeerAdmission &`).  It does NOT own a thread.  The
  * caller pumps `pump_one(timeout)` from an existing event loop —
  * matching the locked HEP's prescription that the handler "runs on
  * the BRC poll thread" (for `plh_role`) or the broker main poll
@@ -125,10 +127,11 @@ public:
     ///
     /// Throws std::runtime_error if @p domain is already registered
     /// (per-domain uniqueness — a regression that double-registers
-    /// must surface).  Throws std::runtime_error if @p admission is
-    /// nullptr or @p domain is empty.
+    /// must surface) or if @p domain is empty.  The non-null contract
+    /// on `admission` is enforced by the reference type — callers
+    /// cannot pass a null admission.
     [[nodiscard]] ZapDomainHandle
-    register_domain(std::string domain, PeerAdmission *admission);
+    register_domain(std::string domain, PeerAdmission &admission);
 
     /// **Pump one ZAP request from the inproc REP socket.**
     ///
@@ -145,11 +148,11 @@ public:
     ///   on the module-not-loaded path (caller registered nothing yet).
     ///
     /// Implementation: recv multipart, parse ZAP request frames per
-    /// RFC 27, look up `PeerAdmission*` by domain via shared-lock,
-    /// call `is_peer_allowed(PeerIdentity{"curve", z85(pubkey)})`,
-    /// send 200 (allow) or 400 (deny) reply with the peer pubkey as
-    /// `user_id`.
-    bool pump_one(std::chrono::milliseconds timeout);
+    /// RFC 27, look up the `PeerAdmission` reference by domain via
+    /// shared-lock, call `is_peer_allowed(PeerIdentity{"curve",
+    /// z85(pubkey)})`, send 200 (allow) or 400 (deny) reply with the
+    /// peer pubkey as `user_id`.
+    [[nodiscard]] bool pump_one(std::chrono::milliseconds timeout);
 
     /// For tests: count of currently-registered domains.  Returns 0
     /// when the module is unloaded (i.e., not yet first-registered
@@ -239,9 +242,13 @@ private:
 };
 
 /// RAII helper for tests + demos that don't already have a long-
-/// running event loop.  Spawns a single `std::thread` that loops
-/// `ZapRouter::instance().pump_one(tick)` until the destructor sets
-/// a stop flag and joins.
+/// running event loop.  Spawns a single `std::jthread` that loops
+/// `ZapRouter::instance().pump_one(tick)` until the destructor's
+/// `stop_token` is requested (`std::jthread`'s destructor handles
+/// the stop + join automatically).  Note: the pump body blocks in
+/// `recv_multipart` for up to `tick` per iteration, so worst-case
+/// teardown wait is one `tick` interval (100 ms by default) before
+/// the loop top observes the stop request.
 ///
 /// Production binaries (`plh_hub`, `plh_role`) do NOT use this —
 /// they integrate `pump_one` into their existing main event loops

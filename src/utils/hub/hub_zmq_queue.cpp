@@ -1277,7 +1277,7 @@ bool ZmqQueue::start()
                 // gets denied even though admission is configured.
                 pImpl->zap_handle_.emplace(
                     sec::ZapRouter::instance().register_domain(
-                        pImpl->resolved_zap_domain_, this));
+                        pImpl->resolved_zap_domain_, *this));
             }
             else
             {

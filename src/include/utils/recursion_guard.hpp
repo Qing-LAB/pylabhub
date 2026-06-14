@@ -13,6 +13,7 @@
 #include <algorithm> // for std::find
 #include <array>
 #include <cstddef>   // for nullptr
+#include <cstdint>   // for std::uintptr_t (stack storage)
 
 namespace pylabhub::basics
 {
@@ -31,7 +32,14 @@ constexpr size_t kMaxRecursionDepth = PLH_RECURSION_GUARD_MAX_DEPTH;
 
 struct RecursionStack
 {
-    std::array<const void *, kMaxRecursionDepth> keys{};
+    // Storage is `uintptr_t` (a value, not a dereferenceable pointer)
+    // so the array entries are integer identities — debuggers print
+    // them as plain integers and we never accidentally dereference a
+    // stack slot.  The public API still takes `const void *` so call
+    // sites pass `this` directly; the reinterpret_cast on push/find
+    // is the standard pointer-to-integer conversion and is well-
+    // defined for equality comparison.
+    std::array<std::uintptr_t, kMaxRecursionDepth> keys{};
     size_t size = 0;
 };
 
@@ -84,7 +92,7 @@ class RecursionGuard
             auto &st = get_recursion_stack();
             if (st.size >= kMaxRecursionDepth)
                 recursion_guard_panic();
-            st.keys[st.size++] = key_;
+            st.keys[st.size++] = reinterpret_cast<std::uintptr_t>(key_);
         }
     }
 
@@ -101,8 +109,9 @@ class RecursionGuard
             return; // Guard is inert (e.g., it was moved-from)
         }
 
+        const auto key_id = reinterpret_cast<std::uintptr_t>(key_);
         auto &st = get_recursion_stack();
-        if (st.size > 0 && st.keys[st.size - 1] == key_)
+        if (st.size > 0 && st.keys[st.size - 1] == key_id)
         {
             // Common case: LIFO.
             --st.size;
@@ -112,7 +121,7 @@ class RecursionGuard
             // Non-LIFO: find and remove first occurrence (shift tail down).
             auto *beg = st.keys.data();
             auto *end = beg + st.size;
-            auto *it = std::find(beg, end, key_);
+            auto *it = std::find(beg, end, key_id);
             if (it != end)
             {
                 std::move(it + 1, end, it);
@@ -142,13 +151,14 @@ class RecursionGuard
     {
         if (key == nullptr)
             return false;
+        const auto key_id = reinterpret_cast<std::uintptr_t>(key);
         const auto &st = get_recursion_stack();
         if (st.size == 0)
             return false;
-        if (st.keys[st.size - 1] == key)
+        if (st.keys[st.size - 1] == key_id)
             return true;
         const auto *beg = st.keys.data();
-        return std::find(beg, beg + st.size, key) != beg + st.size;
+        return std::find(beg, beg + st.size, key_id) != beg + st.size;
     }
 
   private:

@@ -700,7 +700,7 @@ void BrokerServiceImpl::run()
     router.set(zmq::sockopt::zap_domain, zap_domain);
     ctrl_zap_handle.emplace(
         pylabhub::utils::security::ZapRouter::instance()
-            .register_domain(zap_domain, ctrl_admission.get()));
+            .register_domain(zap_domain, *ctrl_admission));
 
     LOGGER_INFO("Broker: CTRL ZAP installed enforced on domain '{}' "
                 "({} known_roles + {} federation peers = {} allowed)",

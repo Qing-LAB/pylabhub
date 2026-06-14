@@ -505,6 +505,70 @@ Slice A2"): B1 PULL `apply_master_approval` state rollback on
 `zap_handle_` orphan.  Both in `hub_zmq_queue.cpp`; different code
 area, different class of bug.  Track separately.
 
+**Follow-up 6.7 — Modern-C++ polish on the Slice A surface.**  ✅
+shipped 2026-06-13 (task **#217**).  Round-2 systematic review of
+the Slice A commit raised seven idiomatic-C++ items; all addressed
+in one polish commit + four doc-drift edits caught by a fresh-eye
+re-review:
+
+- `ZapRouter::register_domain(PeerAdmission &)` (was `*`) — null
+  contract now enforced by the type system; the runtime
+  `nullptr`-check and the `null_admission_throws` L2 test were
+  deleted (compile-time check supersedes them).  Production call
+  sites at `broker_service.cpp:703` and `hub_zmq_queue.cpp:1279`
+  updated.
+- Routing map value type `unordered_map<string,
+  reference_wrapper<PeerAdmission>>` (was `PeerAdmission *`).
+  `try_emplace(domain, std::ref(admission))` on register; lookup
+  binds `PeerAdmission &admission = it->second;` via
+  ref-wrapper's implicit conversion.  Documents "non-owning,
+  non-null" at the type level.
+- `send_zap_reply` now takes `std::string_view` for all four
+  string args (was a mix of `const std::string &` and
+  `const char *`).  Eliminates `std::strlen` calls and consolidates
+  the signature.
+- `ZapPumpThread` uses `std::jthread` + `std::stop_token` (was a
+  separate `std::atomic<bool> stop` + manual `join()`).
+  `~ZapPumpThread() = default;` lets the standard auto-stop +
+  auto-join run; worst-case teardown is one `tick` interval
+  (100 ms) because `recv_multipart` blocks for `RCVTIMEO`.  This
+  is the FIRST `std::jthread` in the repo.
+- `[[nodiscard]]` added to `ZapRouter::pump_one`; the one
+  intentional discard (`ZapPumpThread`'s loop body) already had
+  `(void)`.  Three `EXPECT_THROW(register_domain(...))` test sites
+  got `(void)` casts to silence the (pre-existing, tolerated)
+  warning.
+- `ReEntrantUnregisterAdmission` (round3 test admission) now
+  takes a `std::function<void()> on_admit_` callback instead of a
+  back-pointer to the fixture's `std::optional<ZapDomainHandle>`.
+  Cleaner decoupling; same panic-trigger semantics.
+- `RecursionStack::keys` stored as `std::array<std::uintptr_t, N>`
+  internally (was `array<const void *, N>`); public API
+  `RecursionGuard(const void *)` / `is_recursing(const void *)`
+  unchanged.  Pointer-to-uintptr-cast on push/find is well-defined
+  for equality.
+
+Doc-drift sweep (Round-2 review):
+- `zap_router.hpp:10` file-header narrative — map type updated to
+  `reference_wrapper<PeerAdmission>`.
+- `zap_router.hpp:149` `pump_one` docstring — "look up
+  `PeerAdmission *`" → "look up the `PeerAdmission` reference".
+- `zap_router.hpp:243-245` `ZapPumpThread` docstring —
+  `std::thread` + stop-flag prose → `std::jthread` + `stop_token`,
+  with the worst-case-teardown note.
+- HEP-CORE-0036 §7.4 row 1 — "Admission-pointer lifetime" →
+  "Admission-reference lifetime"; cell text updated.
+
+Validation: `stage_all` clean (zero warnings).  L2+L3 sweep
+1738/1738 green (was 1739; one test deleted as redundant).
+ZapRouter targeted: 17/17 green.
+
+OUT OF SCOPE for this follow-up: the additional simplifications
+flagged by the modern-C++ reviewer but deferred — `PumpScope` body
+relocation to file-scope anonymous namespace (W1), `BlockingAdmission`
+condvar simplification (W2), `is_recursing(this)`-vs-static-address
+trade-off (W5).  Track if/when they become friction points.
+
 ### AUTH-2 — Producer-side ZAP pump on BRC poll thread
 
 > **Tracker:** task **#162**.
