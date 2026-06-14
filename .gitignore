@@ -35,6 +35,10 @@ htmlcov/
 **/.cursor
 **/.cache/
 
+# Local-only notes — instructions for future ad-hoc cleanup actions,
+# personal scratch, recovery procedures.  Never tracked.
+.local-notes/
+
 # AI tool per-user state (Claude Code memory + settings, etc.)
 .claude/
 **/.claude/

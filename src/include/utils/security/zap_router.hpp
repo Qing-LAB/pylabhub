@@ -6,10 +6,11 @@
  * **Design contract (HEP-CORE-0036 §7.1 + design doc §5.2).**  ZAP
  * (RFC 27) requires one REP socket bound at `inproc://zeromq.zap.01`
  * per `zmq::context_t` to answer libzmq's CURVE-handshake admission
- * RPCs.  This class owns that socket + a `unordered_map<zap_domain,
- * reference_wrapper<PeerAdmission>>` routing table (non-owning,
- * non-null by construction — `register_domain` takes
- * `PeerAdmission &`).  It does NOT own a thread.  The
+ * RPCs.  This class owns that socket + a `DomainRoutingTable` (a
+ * reusable utility that encapsulates the zap_domain → PeerAdmission
+ * map + shared_mutex + lock-bounded callback contract — see
+ * `utils/security/domain_routing_table.hpp`).  It does NOT own a
+ * thread.  The
  * caller pumps `pump_one(timeout)` from an existing event loop —
  * matching the locked HEP's prescription that the handler "runs on
  * the BRC poll thread" (for `plh_role`) or the broker main poll
@@ -148,10 +149,11 @@ public:
     ///   on the module-not-loaded path (caller registered nothing yet).
     ///
     /// Implementation: recv multipart, parse ZAP request frames per
-    /// RFC 27, look up the `PeerAdmission` reference by domain via
-    /// shared-lock, call `is_peer_allowed(PeerIdentity{"curve",
-    /// z85(pubkey)})`, send 200 (allow) or 400 (deny) reply with the
-    /// peer pubkey as `user_id`.
+    /// RFC 27, dispatch to the `DomainRoutingTable::with_admission`
+    /// callback (which holds shared-lock + reentrance guard across
+    /// the admission call), and `is_peer_allowed(PeerIdentity{"curve",
+    /// z85(pubkey)})` returns allow/deny, then send 200 (allow) or
+    /// 400 (deny) reply with the peer pubkey as `user_id`.
     [[nodiscard]] bool pump_one(std::chrono::milliseconds timeout);
 
     /// For tests: count of currently-registered domains.  Returns 0
@@ -249,6 +251,20 @@ private:
 /// `recv_multipart` for up to `tick` per iteration, so worst-case
 /// teardown wait is one `tick` interval (100 ms by default) before
 /// the loop top observes the stop request.
+///
+/// **`ZapPumpThread` is intentionally NOT registered with a
+/// `ThreadManager`** (see `utils/thread_manager.hpp`).  It's a
+/// test/demo helper whose lifetime is bounded by the enclosing scope
+/// (a subprocess in Pattern-3 tests, a `main()` frame in a demo);
+/// bounded-shutdown + per-thread diagnostics are not load-bearing
+/// for this use case.  **Production threads that host
+/// `pump_one`** — e.g. the BRC poll thread post-AUTH-2 (#162), the
+/// broker's main poll thread — MUST be `ThreadManager`-spawned for
+/// bounded shutdown + diagnostics + lifecycle ordering.  The
+/// `jthread` body shape adopted here is itself a valid pattern for
+/// future "loop until stop" threads inside a `ThreadManager` slot;
+/// see HEP-CORE-0031 §4.1 for how `SlotContext::shutdown_requested()`
+/// composes with the cooperative `stop_token` idiom.
 ///
 /// Production binaries (`plh_hub`, `plh_role`) do NOT use this —
 /// they integrate `pump_one` into their existing main event loops

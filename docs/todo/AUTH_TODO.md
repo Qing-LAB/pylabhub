@@ -569,6 +569,50 @@ relocation to file-scope anonymous namespace (W1), `BlockingAdmission`
 condvar simplification (W2), `is_recursing(this)`-vs-static-address
 trade-off (W5).  Track if/when they become friction points.
 
+**Follow-up 6.8 — `DomainRoutingTable` extraction + jthread/ThreadManager
+note (task #219).**  ✅ shipped 2026-06-13.  Per the post-polish design
+review (Q2 + Q5):
+
+- **New utility `pylabhub::utils::security::DomainRoutingTable`** at
+  `src/include/utils/security/domain_routing_table.hpp` +
+  `src/utils/security/domain_routing_table.cpp`.  Encapsulates the
+  `(string → reference_wrapper<PeerAdmission>)` map +
+  `std::shared_mutex` + the lock-bounded callback contract
+  (`with_admission(domain, reentrance_key, fn)` holds the shared lock
+  + pushes `RecursionGuard(reentrance_key)` + try-catches across the
+  callback body).  `ZapRouter::Impl` now holds a `DomainRoutingTable`
+  instead of inlining the map + mutex; `pump_one` invokes
+  `routing.with_admission` instead of repeating the lock-scope prose.
+  Future reusers: HEP-CORE-0037 federation peer ROUTER (#105),
+  CURVE-wrapped admin REP, additional AUTH-2/-3 surfaces.  Substantive
+  contracts (UAF lifetime, reentrance, single-pumper PANIC) unchanged;
+  the polish moves them into one place instead of duplicating prose
+  across every dispatcher.
+
+- **`ZapPumpThread` docstring** updated with a note clarifying why
+  it's intentionally NOT registered with `ThreadManager`: it's a
+  test/demo helper whose lifetime is bounded by the enclosing scope
+  (Pattern-3 subprocess or demo `main()`).  Production threads that
+  host `pump_one` — the BRC poll thread post-AUTH-2 (#162), the
+  broker's main poll thread — MUST be `ThreadManager`-spawned.  The
+  `jthread` body shape adopted in `ZapPumpThread` is itself a valid
+  pattern for future "loop until stop" threads inside ThreadManager
+  slots; references HEP-CORE-0031 §4.1 for SlotContext composition.
+
+- **HEP-CORE-0036 §7.4 row 1** invariant updated to cite
+  `DomainRoutingTable::with_admission` as the runtime-enforced
+  mechanism (was: "`pump_one` holds `registered_mu` in shared mode").
+
+Validation: 17/17 ZapRouter tests pass; full L2+L3 sweep green.
+
+OUT OF SCOPE: T-J2 (extend `SlotContext` with `stop_token()` accessor
+to bridge ThreadManager + `jthread` cooperative-cancellation idiom),
+T-J3 (migrate the four legacy `std::thread + atomic<bool> stop`
+loops in `admin_service.cpp`, `broker_service.cpp`,
+`broker_request_comm.cpp`, `hub_zmq_queue.cpp` to use
+`SlotContext::stop_token()`).  Track as separate codebase
+modernization tasks; not urgent.
+
 ### AUTH-2 — Producer-side ZAP pump on BRC poll thread
 
 > **Tracker:** task **#162**.

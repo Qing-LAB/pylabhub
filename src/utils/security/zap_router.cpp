@@ -18,6 +18,7 @@
 #include "utils/logger.hpp"
 #include "utils/module_def.hpp"
 #include "utils/recursion_guard.hpp"  // RecursionGuard — task #215
+#include "utils/security/domain_routing_table.hpp"  // task #219
 #include "utils/zmq_context.hpp"
 #include "cppzmq/zmq.hpp"
 #include "cppzmq/zmq_addon.hpp"   // recv_multipart
@@ -27,17 +28,13 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
-#include <exception>  // std::exception for pump_one admission try/catch
-#include <functional>  // std::reference_wrapper for the routing map
 #include <mutex>
 #include <optional>
-#include <shared_mutex>
 #include <stdexcept>
 #include <stop_token>  // std::stop_token paired with std::jthread
 #include <string>
 #include <string_view>
 #include <thread>
-#include <unordered_map>
 #include <vector>
 
 namespace pylabhub::utils::security
@@ -112,21 +109,14 @@ void send_zap_reply(zmq::socket_t    &sock,
 
 struct ZapRouter::Impl
 {
-    /// Routing map: zap_domain → non-null, non-owning reference to a
-    /// `PeerAdmission`.  `std::reference_wrapper` documents
-    /// "non-owning, non-null" at the type level — `register_domain`
-    /// takes `PeerAdmission &`, so a null entry is impossible by
-    /// construction.  The `ZapDomainHandle` returned by
-    /// `register_domain` keeps the mapping alive only for as long as
-    /// the queue (or other admission-bearing surface) needs it; the
-    /// handle's destructor removes the map entry under
-    /// `registered_mu` BEFORE the queue destructs.
-    std::unordered_map<std::string,
-                       std::reference_wrapper<PeerAdmission>> registered;
-
-    /// Many readers (`pump_one` looking up admission by domain),
-    /// rare writers (register/unregister).
-    mutable std::shared_mutex registered_mu;
+    /// Admission dispatch table.  Encapsulates the routing map +
+    /// shared_mutex + lock-bounded callback invariants previously
+    /// inlined here.  See `utils/security/domain_routing_table.hpp`.
+    /// The `ZapDomainHandle` returned by `register_domain` keeps the
+    /// mapping alive only for as long as the queue (or other
+    /// admission-bearing surface) needs it; the handle's destructor
+    /// removes the entry BEFORE the admission referent destructs.
+    DomainRoutingTable routing;
 
     /// Inproc REP socket.  Created by `on_module_startup_`, destroyed
     /// by `on_module_shutdown_`.  After startup, accessed ONLY by
@@ -252,9 +242,9 @@ ZapRouter::register_domain(std::string domain, PeerAdmission &admission)
 
     // task #215 — reentrance refuse.  MUST run BEFORE any lock
     // acquisition: if this thread is inside pump_one's admission
-    // scope, it holds `registered_mu` shared; re-acquiring shared OR
-    // unique from the same thread is std::shared_mutex UB.  See
-    // peer_admission.hpp `is_peer_allowed` reentrance contract +
+    // scope, the routing table's shared_lock is held; re-acquiring
+    // shared OR unique from the same thread is std::shared_mutex UB.
+    // See peer_admission.hpp `is_peer_allowed` reentrance contract +
     // HEP-CORE-0036 §7.4 invariant 2.
     if (pylabhub::basics::RecursionGuard::is_recursing(this))
     {
@@ -293,19 +283,14 @@ ZapRouter::register_domain(std::string domain, PeerAdmission &admission)
             std::string(kZapModuleName) + "') failed (domain='" +
             domain + "')");
 
+    if (!impl_->routing.register_domain(domain, admission))
     {
-        std::unique_lock<std::shared_mutex> lk(impl_->registered_mu);
-        auto [it, inserted] =
-            impl_->registered.try_emplace(domain, std::ref(admission));
-        if (!inserted)
-        {
-            // Roll back the LoadModule to keep ref-counts accurate.
-            (void) pylabhub::utils::UnloadModule(kZapModuleName);
-            throw std::runtime_error(
-                "ZapRouter::register_domain: domain '" + domain +
-                "' is already registered (double-registration is a "
-                "regression — each zap_domain must be unique)");
-        }
+        // Roll back the LoadModule to keep ref-counts accurate.
+        (void) pylabhub::utils::UnloadModule(kZapModuleName);
+        throw std::runtime_error(
+            "ZapRouter::register_domain: domain '" + domain +
+            "' is already registered (double-registration is a "
+            "regression — each zap_domain must be unique)");
     }
 
     return ZapDomainHandle(this, std::move(domain));
@@ -333,17 +318,13 @@ void ZapRouter::unregister_domain_(const std::string &domain)
                   domain);
     }
 
-    {
-        std::unique_lock<std::shared_mutex> lk(impl_->registered_mu);
-        impl_->registered.erase(domain);
-    }
+    impl_->routing.unregister_domain(domain);
     (void) pylabhub::utils::UnloadModule(kZapModuleName);
 }
 
 std::size_t ZapRouter::registered_domain_count_for_test() const
 {
-    std::shared_lock<std::shared_mutex> lk(impl_->registered_mu);
-    return impl_->registered.size();
+    return impl_->routing.size();
 }
 
 std::uint64_t ZapRouter::allowed_count() const noexcept
@@ -501,41 +482,21 @@ bool ZapRouter::pump_one(std::chrono::milliseconds timeout)
         return true;
     }
 
-    // task #215 — shared_lock spans BOTH lookup and admission so
-    // ~ZapDomainHandle (taking unique_lock) cannot free admission
-    // memory mid-decision.  RecursionGuard on `this` enforces the
-    // is_peer_allowed contract: implementers MUST NOT call back into
-    // register_domain (refused) or trigger ~ZapDomainHandle (PANIC).
-    // try/catch around the admission body: future implementers may
-    // throw — treat as deny + log instead of crashing the pump
-    // thread.  See HEP-CORE-0036 §7.4 + peer_admission.hpp.
-    std::optional<bool> decision;  // nullopt = no domain registered
-    {
-        std::shared_lock<std::shared_mutex> lk(impl_->registered_mu);
-        if (auto it = impl_->registered.find(domain);
-            it != impl_->registered.end())
-        {
-            PeerAdmission &admission = it->second;  // ref-wrapper → T&
-            pylabhub::basics::RecursionGuard guard(this);
-            try
-            {
-                decision = admission.is_peer_allowed(
-                    PeerIdentity{"curve", z85});
-            }
-            catch (const std::exception &e)
-            {
-                LOGGER_ERROR("ZapRouter::pump_one: admission threw — "
-                             "treating as deny.  what(): {}", e.what());
-                decision = false;
-            }
-            catch (...)
-            {
-                LOGGER_ERROR("ZapRouter::pump_one: admission threw "
-                             "non-std exception — treating as deny.");
-                decision = false;
-            }
-        }
-    }  // shared_lock + RecursionGuard release here
+    // task #215 — DomainRoutingTable::with_admission holds the
+    // shared_lock across the admission call so ~ZapDomainHandle
+    // (which routes through unregister_domain_ → unique_lock) cannot
+    // free the admission referent mid-decision.  RecursionGuard keyed
+    // on `this` enforces the is_peer_allowed contract: implementers
+    // MUST NOT call back into register_domain (refused) or trigger
+    // ~ZapDomainHandle (PANIC).  The table also catches throws from
+    // the admission body and translates to false (deny) so a future
+    // throwing implementer cannot crash the BRC poll thread.
+    // See HEP-CORE-0036 §7.4 + peer_admission.hpp.
+    const std::optional<bool> decision = impl_->routing.with_admission(
+        domain, this, [&](PeerAdmission &admission) {
+            return admission.is_peer_allowed(
+                PeerIdentity{"curve", z85});
+        });
 
     if (!decision.has_value())
     {
