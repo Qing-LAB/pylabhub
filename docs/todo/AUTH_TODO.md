@@ -605,14 +605,6 @@ review (Q2 + Q5):
 
 Validation: 17/17 ZapRouter tests pass; full L2+L3 sweep green.
 
-OUT OF SCOPE: T-J2 (extend `SlotContext` with `stop_token()` accessor
-to bridge ThreadManager + `jthread` cooperative-cancellation idiom),
-T-J3 (migrate the four legacy `std::thread + atomic<bool> stop`
-loops in `admin_service.cpp`, `broker_service.cpp`,
-`broker_request_comm.cpp`, `hub_zmq_queue.cpp` to use
-`SlotContext::stop_token()`).  Track as separate codebase
-modernization tasks; not urgent.
-
 ### AUTH-2 — Producer-side ZAP pump on BRC poll thread
 
 > **Tracker:** task **#162**.
