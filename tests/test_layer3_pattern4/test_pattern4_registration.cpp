@@ -21,7 +21,7 @@
  * Production INFO markers exercised:
  *   - role:   "presence channel='reg.test' state Unregistered->RegRequestPending"
  *   - broker: "Broker: REG_REQ accepted role='<uid>' channel='reg.test' producer_pubkey='...'"
- *   - broker: "Broker: REG_ACK sending channel='reg.test' initial_allowlist=[]"
+ *   - broker: "Broker: REG_ACK sending channel='reg.test' ..."
  *   - role:   "REG_ACK received channel='reg.test' status=success initial_allowlist=[]"
  *   - role:   "presence channel='reg.test' state RegRequestPending->Registered"
  *
@@ -143,7 +143,7 @@ TEST_F(Pattern4RegistrationTest, ProducerRegistersAndStateAdvances)
             fmt::format("Broker: REG_REQ accepted role='{}' "
                         "channel='reg.test' producer_pubkey='",
                         role_uid),
-            "Broker: REG_ACK sending channel='reg.test' initial_allowlist=",
+            "Broker: REG_ACK sending channel='reg.test'",
             "REG_ACK received channel='reg.test' status=success initial_allowlist=",
             "presence channel='reg.test' state RegRequestPending->Registered",
         },

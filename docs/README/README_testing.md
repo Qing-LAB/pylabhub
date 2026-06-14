@@ -30,6 +30,26 @@ Our test suite is built on four core principles:
 
 To achieve this, we use a **multiple-executable model**, where different test categories have their own dedicated test executables.
 
+### 1.1 Multi-process / subprocess test design principles
+
+These apply whenever a test spawns subprocess workers — Pattern 3, Pattern 4, or any other multi-process scenario. Discovered the hard way during multiple test bring-ups; codified here so the lessons don't have to be relearned.
+
+1. **Telemetry stays on the production data; the test reads it on demand.** When verifying state that's owned by production code, the test worker subprocess polls that state (e.g. snapshot of an entry, an atomic counter on a struct) and emits *test-only* log lines reporting the current value. Do NOT add production-side logging just because tests want to assert on a count — the production lifecycle (shutdown order, presence reaping, cleanup races) is hostile to "snapshot at end" patterns.
+
+2. **Shutdown-summary log lines should report BOTH the count AND the elapsed window.** A line like `counter: sent=42 over 5000ms` is one parse away from a rate (`8.4 Hz`); a line like `counter: sent=42` is useless without a separate elapsed reading. Bake the window into the marker.
+
+3. **Multi-process tests assert on RATES, not COUNTS.** The parent test cannot reliably control wall-clock windows for subprocesses — scheduling, lifecycle setup, signal propagation, and OS jitter all stretch the actual window. Compute the rate (`count / elapsed`) from observable state and assert on the rate. Rate is intrinsic; count requires window control the test framework cannot guarantee.
+
+4. **Heavy subprocesses should self-detect "done" and exit autonomously.** Parent-driven shutdown signals (pipe-EOF, signal flags, etc.) are unreliable for subprocesses that have done significant lifecycle setup (multiple modules, thread pools, FD inheritance). Instead, the subprocess watches its own observable state (e.g. counter stable for N ticks, all peers disconnected, a single piece of work completed) and exits when the condition is met. The parent merely reaps. Simple subprocesses (no heavy lifecycle setup) can still rely on a parent quit-signal; reserve self-exit for the heavyweight cases.
+
+5. **CI tolerance is wider than local tolerance.** Use the `PYLABHUB_CI_BUILD` compile-time flag (defined in `tests/test_framework/CMakeLists.txt`) to widen rate-band / timing tolerances on CI. Local mutation-discipline assertions stay tight; CI absorbs scheduling jitter without false-tripping.
+
+6. **Iteration-count gates need explicit drivers in tests.** Some production code uses iteration-count predicates as gates for periodic work (e.g. periodic tasks that fire only when the host's main-loop iteration counter has advanced). Tests that bypass the production main loop must drive the iteration counter explicitly (e.g. a small background thread that calls `inc_iteration_count()`). When in doubt, grep for `iteration_count` against the production code your test exercises.
+
+7. **Run the FULL L1+L2+L3+L4 sweep before committing any lib-side change.** A filtered sweep is for iteration; closure requires the unfiltered sweep. A change to a log marker, a struct field, a lifecycle step, or a helper signature can break tests in a layer you didn't touch. (Reinforces `feedback_lib_change_full_sweep.md`.)
+
+8. **Subprocess "auto" behaviors should be observable in the log.** When the subprocess self-detects "done" (principle 4) or applies a workaround (e.g. fallback to a shorter timeout), it should log WHY it took that branch. Future test-failure investigations rely on the log explaining what the subprocess decided.
+
 ## 2. Test Suite Structure
 
 The test suite is composed of several distinct **CMake targets** located in the `tests/` directory:

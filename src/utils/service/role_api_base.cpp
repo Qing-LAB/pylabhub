@@ -145,6 +145,17 @@ struct RoleAPIBase::Impl
     // eagerly in the Impl ctor from role_tag + uid.
     std::unique_ptr<pylabhub::utils::ThreadManager> thread_mgr_;
 
+    /// HEP-CORE-0023 §2.5 telemetry — count of `HEARTBEAT_REQ` frames
+    /// successfully emitted by this role across all presences.
+    /// Incremented in `on_heartbeat_tick_` per presence-emission;
+    /// emitted as a one-shot summary at `stop_handler_threads` to make
+    /// observed cadence verifiable post-mortem (Pattern 4 rung 3 +
+    /// future ops dashboards).  Reset on a new RoleAPIBase instance;
+    /// not persisted across reconnects.  `relaxed` ordering is
+    /// sufficient — we are counting, not synchronising.
+    std::atomic<std::uint64_t> heartbeats_sent_{0};
+    std::chrono::steady_clock::time_point heartbeat_install_at_{};
+
     // RoleHandler-mode network surface (Wave-B M4c; sole path after M4f).
     //   (a) `handler_` non-null + `ctrl_threads_started_ == true`:
     //       handler-mode active; N ctrl threads polling N BRCs.
@@ -870,6 +881,7 @@ void RoleAPIBase::install_heartbeat(int role_cfg_ms,
 
     LOGGER_INFO("[{}] heartbeat: periodic tick installed at {}ms",
                 pImpl->role_tag, effective_interval_ms);
+    pImpl->heartbeat_install_at_ = std::chrono::steady_clock::now();
 }
 
 void RoleAPIBase::append_inbox_to_reg(nlohmann::json &opts,
@@ -1230,6 +1242,8 @@ void RoleAPIBase::on_heartbeat_tick_()
                      "(uid='{}' role_type='{}')",
                      pImpl->role_tag, p.channel, pImpl->uid, role_type);
         bc->send_heartbeat(p.channel, pImpl->uid, role_type, metrics);
+        // HEP-CORE-0023 §2.5 telemetry — task #223.  Counter, not log.
+        pImpl->heartbeats_sent_.fetch_add(1, std::memory_order_relaxed);
     }
 
     if (eng && eng->has_callback("on_heartbeat"))
@@ -1728,6 +1742,20 @@ void RoleAPIBase::stop_handler_threads() noexcept
 
     pImpl->ctrl_threads_started_ = false;
 
+    // HEP-CORE-0023 §2.5 telemetry — one-shot summary at handler stop
+    // (Pattern 4 rung 3; task #223).  Reports the count of
+    // HEARTBEAT_REQ frames emitted across all presences since
+    // install_heartbeat.  Zero ticks fired = "0 sent" which is a real
+    // observation (broker missed first-tick, install failed, etc.) —
+    // do NOT skip the line.
+    const auto sent  = pImpl->heartbeats_sent_.load(std::memory_order_relaxed);
+    const auto since = pImpl->heartbeat_install_at_.time_since_epoch().count() != 0
+        ? std::chrono::duration_cast<std::chrono::milliseconds>(
+              std::chrono::steady_clock::now() - pImpl->heartbeat_install_at_)
+              .count()
+        : 0;
+    LOGGER_INFO("[{}] heartbeat counter: sent={} over {}ms (since install)",
+                pImpl->role_tag, sent, since);
     LOGGER_INFO("[{}] stop_handler_threads: COMPLETE", pImpl->role_tag);
 }
 

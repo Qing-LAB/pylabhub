@@ -745,6 +745,17 @@ struct RolePresence
     std::chrono::steady_clock::time_point state_since{
         std::chrono::steady_clock::now()};
 
+    /// Monotonic count of `HEARTBEAT_REQ` messages received and applied
+    /// for this presence (i.e. that reached `RoleEntry::on_heartbeat`).
+    /// Mutated under the HubState writer lock alongside `last_heartbeat`,
+    /// so consistent with the FSM snapshot.  Used for:
+    ///   * heartbeat-rate diagnostics (BrokerService stop-summary log
+    ///     prints sent vs received counts per HEP-CORE-0023 §2.5);
+    ///   * Pattern 4 rung 3 (`Pattern4HeartbeatTest`) rate-band
+    ///     verification — task #223.
+    /// Reaped automatically when the presence row is removed.
+    std::uint64_t heartbeats_received{0};
+
     nlohmann::json                        latest_metrics;
     std::chrono::system_clock::time_point metrics_collected_at{};
 };
@@ -938,6 +949,7 @@ struct RoleEntry
             r.was_first_heartbeat_seen  = p.first_heartbeat_seen;
             p.last_heartbeat            = when;
             p.first_heartbeat_seen      = true;
+            p.heartbeats_received      += 1;  // §2.5 telemetry (#223)
             if (p.state != RoleState::Connected)
             {
                 p.state       = RoleState::Connected;
@@ -1470,7 +1482,12 @@ class PYLABHUB_UTILS_EXPORT HubState
     /// another presence's bookkeeping.  Presence rows must already exist
     /// (created at REG_REQ / CONSUMER_REG_REQ time per §2.6); a heartbeat for
     /// an unknown presence is a no-op.
-    void _on_heartbeat(const std::string                           &channel,
+    /// Returns the `HeartbeatEffect` from `RoleEntry::on_heartbeat` so
+    /// the caller can log/respond to one-shot transitions (e.g. the
+    /// first heartbeat for a presence).  On no-op (unknown role / empty
+    /// uid), `presence_found == false`; callers should treat that as
+    /// "nothing to do".
+    HeartbeatEffect _on_heartbeat(const std::string                       &channel,
                        const std::string                           &role_uid,
                        const std::string                           &role_type,
                        std::chrono::steady_clock::time_point        when,

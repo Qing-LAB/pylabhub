@@ -95,13 +95,15 @@ the demo inventory + manifest schema.
 - #154 re-create L3 broker tests against refactored lib code.
 - **Pattern 4 multi-process test ladder** (12 in-scope rungs +
   1 deferred).  #220 shipped rung 1 (smoke) + the design pattern
-  doc; rungs 2 (#221 Registration), 3 (#223 Heartbeat),
-  4 (#222 ConsumerLifecycle), 7 (#224 Deregistration), 8 (#225
-  ChannelNotifies), 9 (#226 RegistrationError), 11 (#228 Bands),
-  12 (#229 RoleIntrospection) are pending; rungs 5 (#162), 6
-  (#163), 10 (#227) blocked on AUTH chain.  Rung 13 deferred on
-  back-channel-pipe infra.  Full ladder + per-rung HEP pin in
-  `docs/README/README_testing.md` § "Pattern 4 — ... — Test ladder".
+  doc; #221 shipped rung 2 (Registration); #223 shipped rung 3
+  (Heartbeat — REG_ACK cadence negotiation + first-tick + rate-
+  band + symmetry); rungs 4 (#222 ConsumerLifecycle), 7 (#224
+  Deregistration), 8 (#225 ChannelNotifies), 9 (#226
+  RegistrationError), 11 (#228 Bands), 12 (#229 RoleIntrospection)
+  are pending; rungs 5 (#162), 6 (#163), 10 (#227) blocked on
+  AUTH chain.  Rung 13 deferred on back-channel-pipe infra.  Full
+  ladder + per-rung HEP pin in `docs/README/README_testing.md`
+  § "Pattern 4 — ... — Test ladder".
 
 ### Windows / MSVC / cross-platform / CMake (`docs/todo/PLATFORM_TODO.md`)
 

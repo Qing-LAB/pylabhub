@@ -1122,8 +1122,18 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
             // "REG_ACK sending" marker (rung 2 of Pattern 4 ladder).
             // Pin: channel + allowlist payload distinguish a registration ACK
             // from REG_REQ rejections that already log via existing ERROR/WARN.
-            LOGGER_INFO("Broker: REG_ACK sending channel='{}' initial_allowlist={}",
+            // `heartbeat_interval_ms` extracted from the REG_ACK heartbeat
+            // block (HEP-CORE-0023 §2.5) so Pattern 4 rung 3 can verify
+            // role honored the hub-authoritative cadence.  Defaults to 0
+            // if the broker shipped without a heartbeat block (legacy).
+            int hb_interval_ms = 0;
+            if (resp.contains("heartbeat") && resp["heartbeat"].is_object())
+                hb_interval_ms = resp["heartbeat"].value(
+                    "heartbeat_interval_ms", 0);
+            LOGGER_INFO("Broker: REG_ACK sending channel='{}' "
+                        "heartbeat_interval_ms={} initial_allowlist={}",
                         resp.value("channel_id", "?"),
+                        hb_interval_ms,
                         resp.value("initial_allowlist",
                                    nlohmann::json::array()).dump());
         }
@@ -3017,11 +3027,26 @@ void BrokerServiceImpl::handle_heartbeat_req(const nlohmann::json& req)
     if (req.contains("metrics") && req["metrics"].is_object())
         metrics_opt = req["metrics"];
 
-    hub_state_->_on_heartbeat(channel_name,
-                             wire_uid,
-                             wire_role_type,
-                             std::chrono::steady_clock::now(),
-                             metrics_opt);
+    const auto eff = hub_state_->_on_heartbeat(channel_name,
+                                                wire_uid,
+                                                wire_role_type,
+                                                std::chrono::steady_clock::now(),
+                                                metrics_opt);
+
+    // HEP-CORE-0023 §2.5 telemetry — first-heartbeat observability.
+    // One-shot per presence per session: gate
+    // `!was_first_heartbeat_seen` is true on the SAME tick that
+    // flipped `first_heartbeat_seen` to true inside `_on_heartbeat`.
+    // Bounded by role count × channel count; never per-tick.  Logged
+    // at the wire layer (here) rather than inside HubState because
+    // HubState is a pure state machine; wire-protocol observability
+    // belongs at the wire layer.
+    if (eff.presence_found && !eff.was_first_heartbeat_seen)
+    {
+        LOGGER_INFO("Broker: first heartbeat received from role='{}' "
+                    "channel='{}' role_type='{}'",
+                    wire_uid, channel_name, wire_role_type);
+    }
 }
 
 // ============================================================================

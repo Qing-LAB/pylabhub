@@ -72,9 +72,14 @@ diagnostics per rung.
 - **Rung 2 — `Pattern4RegistrationTest`** ⏳ task #221.
   Pins `REG_REQ`/`REG_ACK` wire shape + Presence FSM
   `Unregistered → RegRequestPending → Registered`.
-- **Rung 3 — `Pattern4HeartbeatTest`** ⏳ task #223.
-  Pins `HEARTBEAT_REQ` cadence + first-tick latency + rate
-  band via counter + shutdown-summary INFO (no per-tick log).
+- **Rung 3 — `Pattern4HeartbeatTest`** ✅ task #223.
+  Pins four axes: REG_ACK `heartbeat_interval_ms` negotiation,
+  broker first-tick observability, rate-band cadence
+  (±25% on a 2 s measurement window, CI 4 s), and role-sent ↔
+  broker-received symmetry.  Role-side counter via shutdown
+  summary `[role.x] heartbeat counter: sent=N over Mms`;
+  broker-side counter via test-fixture periodic snapshot
+  thread reading `state.snapshot()` (no per-tick production log).
 - **Rung 4 — `Pattern4ConsumerLifecycleTest`** ⏳ task #222.
   Pins `CONSUMER_REG_REQ`/`ACK` + consumer channel
   `Standby → master_approval → Active`.

@@ -1290,23 +1290,24 @@ void HubState::_on_consumer_left(const std::string &channel, const std::string &
     _dispatch_role_disconnected_if_dead(role_uid);
 }
 
-void HubState::_on_heartbeat(const std::string                   &channel,
+HeartbeatEffect HubState::_on_heartbeat(const std::string                   &channel,
                              const std::string                   &role_uid,
                              const std::string                   &role_type,
                              std::chrono::steady_clock::time_point when,
                              const std::optional<nlohmann::json> &metrics)
 {
+    HeartbeatEffect eff_out;  // default-constructed: presence_found = false
     if (!is_valid_identifier(channel, IdentifierKind::Channel) ||
         (!role_uid.empty() && !is_valid_identifier(role_uid, IdentifierKind::RoleUid)))
     {
         bump_invalid_identifier(*pImpl);
-        return;
+        return eff_out;
     }
     // Per HEP-CORE-0023 §2.5.2: each heartbeat refreshes ONLY the
     // matching `(uid, channel, role_type)` presence row.  Presence
     // rows are created eagerly at REG time (§2.6); a heartbeat
     // for an unknown presence is a no-op.
-    if (role_uid.empty() || role_type.empty()) return;
+    if (role_uid.empty() || role_type.empty()) return eff_out;
 
     bool              observable_changed = false;
     ChannelEntry      fired_entry;
@@ -1314,7 +1315,7 @@ void HubState::_on_heartbeat(const std::string                   &channel,
     {
         std::unique_lock lk(pImpl->mu);
         auto             rit = pImpl->roles.find(role_uid);
-        if (rit == pImpl->roles.end()) return;
+        if (rit == pImpl->roles.end()) return eff_out;
 
         // Route the presence-row FSM mutation through RoleEntry's
         // controlled-access API.  The method updates last_heartbeat +
@@ -1333,7 +1334,8 @@ void HubState::_on_heartbeat(const std::string                   &channel,
         //       metrics)` would absorb the post-lock block below.
         const HeartbeatEffect eff =
             rit->second.on_heartbeat(channel, role_type, when);
-        if (!eff.presence_found) return;
+        if (!eff.presence_found) return eff_out;
+        eff_out = eff;  // surface to caller (broker layer logs first-tick)
 
         // Recovery from Pending counts as pending_to_ready (HEP-0023 §2.5).
         if (eff.prev_state == RoleState::Pending)
@@ -1375,6 +1377,7 @@ void HubState::_on_heartbeat(const std::string                   &channel,
                                          pImpl->ch_status_changed))
             h(fired_entry, new_obs);
     }
+    return eff_out;
 }
 
 void HubState::_on_heartbeat_timeout(const std::string &channel,

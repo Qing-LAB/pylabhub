@@ -24,8 +24,10 @@ message(STATUS "** Configuring Layer 3 Pattern-4 reference tests...")
 add_executable(test_layer3_pattern4
     test_pattern4_smoke.cpp
     test_pattern4_registration.cpp
+    test_pattern4_heartbeat.cpp
     workers/pattern4_smoke_workers.cpp
     workers/pattern4_registration_workers.cpp
+    workers/pattern4_heartbeat_workers.cpp
 )
 
 target_include_directories(test_layer3_pattern4 PRIVATE
