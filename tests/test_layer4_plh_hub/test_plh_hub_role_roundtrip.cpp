@@ -14,9 +14,10 @@
  *   2. plh_role producer reads hub.json (broker_endpoint) +
  *      hub.pubkey (broker_pubkey for CURVE pin) from the hub dir,
  *      connects to the broker, and registers a channel via REG_REQ.
- *   3. The broker logs "Broker: registered channel '<name>'" — the
- *      OUTPUT proof that the wire-protocol round-trip succeeded
- *      end-to-end.
+ *   3. The broker logs "Broker: REG_REQ accepted role='<uid>'
+ *      channel='<name>' ..." — the OUTPUT proof that the wire-
+ *      protocol round-trip succeeded end-to-end (Pattern 4 rung 2
+ *      marker contract; task #221).
  *   4. SIGTERM to both; both exit 0 with no stray ERROR-level lines.
  *
  * Test rigor:
@@ -353,14 +354,18 @@ TEST_F(PlhHubCliTest, RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters)
         {"producer", prod_dir.string()});
 
     // The PATH-DISCRIMINATING success marker: hub-side broker logs
-    // "Broker: registered channel '<name>'" only when REG_REQ
-    // succeeded end-to-end (CURVE handshake passed, schema valid,
-    // role registered into HubState).  Pre-F1 the CURVE handshake
-    // would fail (empty pubkey on role side); the marker would
-    // never appear; the watchdog times out cleanly.
+    // "Broker: REG_REQ accepted role='...' channel='<name>' ..."
+    // only when REG_REQ succeeded end-to-end (CURVE handshake passed,
+    // schema valid, role registered into HubState).  Pre-F1 the CURVE
+    // handshake would fail (empty pubkey on role side); the marker
+    // would never appear; the watchdog times out cleanly.
+    //
+    // Marker text aligns with Pattern 4 rung 2 (task #221) marker
+    // contract; broker_service.cpp::handle_reg_req success path.
     EXPECT_TRUE(wait_for_log_marker(hub_dir,
-                                     "Broker: registered channel "
-                                     "'lab.l4.roundtrip'",
+                                     "Broker: REG_REQ accepted "
+                                     "role='prod.l4round.uid12345678' "
+                                     "channel='lab.l4.roundtrip'",
                                      std::chrono::seconds(15)))
         << "role failed to register channel via broker.  This is the F1\n"
            "regression — without hub.pubkey published by --keygen the\n"
