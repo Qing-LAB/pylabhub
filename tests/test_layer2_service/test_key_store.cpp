@@ -55,6 +55,20 @@ class KeyStoreTest : public IsolatedProcessTest
 
 } // namespace
 
+// ── Environmental smoke (runs FIRST by declaration order) ─────────────────
+//
+// Catches a broken libsodium guarded-allocator before the KeyStore
+// scenarios fire and produce a confusing failure storm with cryptic
+// library-internal SIGABRT messages.  If THIS fails, the environment
+// is broken; downstream KeyStore failures are downstream consequences,
+// not distinct regressions.  See worker docstring for rationale.
+TEST_F(KeyStoreTest, SodiumSmoke_AllocatorWorksForKeyStoreSizes)
+{
+    auto w = SpawnWorker("key_store.sodium_smoke",
+                         {unique_dir("sodium_smoke")});
+    ExpectWorkerOk(w);
+}
+
 // ── Lifecycle / singleton invariants ───────────────────────────────────────
 
 TEST_F(KeyStoreTest, OrderingCheck_KeyStoreRequiresSecureMemory)

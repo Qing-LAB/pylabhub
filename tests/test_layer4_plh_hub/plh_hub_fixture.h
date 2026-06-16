@@ -231,6 +231,19 @@ struct ScopedHubPassword
 /// `PYLABHUB_HUB_PASSWORD` exported) before invoking — the spawned
 /// `plh_hub --keygen` reads it from the environment.
 ///
+/// **Outcome check (added 2026-06-16 per task #243 precedent).**  rc
+/// alone is unreliable: a rc=143 (SIGTERM at wait_for_exit deadline)
+/// looks identical to "keygen failed" from the parent's view, but the
+/// vault file may have been written successfully and only the process
+/// teardown hung (see task #242 for the Logger-shutdown detach pattern
+/// that produces exactly this).  We resolve the ambiguity by checking
+/// the vault path on disk after wait_for_exit returns, and distinguish
+/// three diagnostic cases:
+///   1. rc=0           → success
+///   2. rc!=0 + vault present → keygen produced the artifact but
+///      teardown hung; surface as a #242-style failure
+///   3. rc!=0 + vault absent  → real keygen failure
+///
 /// Cost: one Argon2id INTERACTIVE derivation (~100ms locally).
 inline void keygen_minimal_hub(const std::filesystem::path &cfg_path)
 {
@@ -238,11 +251,63 @@ inline void keygen_minimal_hub(const std::filesystem::path &cfg_path)
         plh_hub_binary(), "--config",
         {cfg_path.string(), "--keygen"});
     const int rc = kg.wait_for_exit();
-    if (rc != 0)
+
+    if (rc == 0)
+        return;
+
+    // Resolve the vault path the keygen was supposed to produce.
+    // hub.auth.keyfile is stored relative to hub_dir (= cfg_path's
+    // parent dir, per write_minimal_config above).  If the cfg cannot
+    // be parsed here, we degrade gracefully — the rc!=0 failure still
+    // gets reported, just without the "did the vault land on disk"
+    // breakdown.
+    fs::path vault_abs;
+    bool     vault_exists = false;
     {
-        ADD_FAILURE() << "keygen_minimal_hub: plh_hub --keygen failed (rc=" << rc
-                      << ") for cfg '" << cfg_path << "'; stderr:\n"
-                      << kg.get_stderr();
+        std::ifstream f(cfg_path);
+        if (f.is_open())
+        {
+            auto j = nlohmann::json::parse(f, nullptr, /*allow_exc=*/false);
+            if (!j.is_discarded()
+                && j.contains("hub")
+                && j["hub"].contains("auth")
+                && j["hub"]["auth"].contains("keyfile"))
+            {
+                const std::string kf =
+                    j["hub"]["auth"]["keyfile"].get<std::string>();
+                if (!kf.empty())
+                {
+                    fs::path kf_path = kf;
+                    vault_abs = kf_path.is_absolute()
+                              ? kf_path
+                              : cfg_path.parent_path() / kf_path;
+                    std::error_code ec;
+                    vault_exists = fs::exists(vault_abs, ec);
+                }
+            }
+        }
+    }
+
+    if (vault_exists)
+    {
+        ADD_FAILURE()
+            << "keygen_minimal_hub: plh_hub --keygen produced the vault "
+            << "at '" << vault_abs << "' but the process did NOT exit "
+            << "cleanly within wait_for_exit deadline (rc=" << rc
+            << ").  This matches the Logger-shutdown detach hang pattern "
+            << "tracked as task #242 — keygen WORK SUCCEEDED, only the "
+            << "process teardown hung.  Treat as #242 follow-up, not a "
+            << "regression in --keygen logic.  cfg='" << cfg_path
+            << "'; stderr:\n" << kg.get_stderr();
+    }
+    else
+    {
+        ADD_FAILURE()
+            << "keygen_minimal_hub: plh_hub --keygen FAILED to produce "
+            << "the vault (rc=" << rc << ", vault absent at '"
+            << vault_abs << "').  Real keygen-path failure — investigate "
+            << "the stderr below.  cfg='" << cfg_path << "'; stderr:\n"
+            << kg.get_stderr();
     }
 }
 

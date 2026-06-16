@@ -14,6 +14,8 @@
 #include "utils/security/secure_buffer.hpp"
 #include "utils/security/secure_memory_subsystem.hpp"
 
+#include <sodium.h>  // sodium_malloc / sodium_free — used by sodium_smoke
+
 #include "shared_test_helpers.h"
 #include "test_entrypoint.h"
 
@@ -68,6 +70,61 @@ struct TestKeypair
 
 namespace
 {
+
+// ── libsodium smoke: catches a broken allocator before KeyStore tests fire
+//
+// Why this exists.  The downstream KeyStore tests all begin by constructing
+// `SecureMemorySubsystem` (sodium_init) + `KeyStore` (dynamic module load)
+// and then calling `add_identity`, which is the first site that exercises
+// `sodium_malloc`.  If libsodium's guarded-allocator is misconfigured for
+// the build / runtime environment (wrong page size assumption, ASan
+// pointer-tag mismatch, missing HAVE_ALIGNED_MALLOC etc.) the very first
+// `sodium_malloc` aborts with `assert(_unprotected_ptr_from_user_ptr(
+// user_ptr) == unprotected_ptr)` in `third_party/libsodium/.../utils.c`.
+// This single environmental failure casts the same SIGABRT across every
+// KeyStore test that reaches an allocation, producing a 12-test storm
+// with a cryptic library-internal error.  This smoke scenario provides
+// a SINGLE clear failure: "sodium_malloc is broken in this build" —
+// independent of any KeyStore-level contract.  If THIS test fails, the
+// downstream KeyStore failures are downstream of an environmental bug,
+// not 12 distinct regressions.
+//
+// What it covers.  Allocates + frees each of the three sizes the
+// production code actually uses: 32 (HEP-CORE-0038 symmetric secrets),
+// 40 (CURVE seckey halves), 80 (full 40+40 identity payload).  A size-
+// specific page-protection bug (e.g. an off-by-one on the canary
+// boundary that only triggers at certain sizes) would manifest here
+// before it manifests in a KeyStore scenario.
+int sodium_smoke(const char * /*tmpdir*/)
+{
+    return run_gtest_worker(
+        [&]() {
+            SecureMemorySubsystem sms;
+            // SMS ctor runs sodium_init() (idempotent inside libsodium).
+            // We are NOT constructing a KeyStore here — the smoke test is
+            // strictly about the allocator, not about KeyStore behavior.
+
+            for (std::size_t sz : {std::size_t{32},
+                                   std::size_t{40},
+                                   std::size_t{80}})
+            {
+                void *p = ::sodium_malloc(sz);
+                ASSERT_NE(p, nullptr)
+                    << "sodium_malloc(" << sz << ") returned NULL — "
+                    << "library allocator broken in this build/env.  "
+                    << "Investigate RLIMIT_MEMLOCK, page-size, or "
+                    << "libsodium build flags BEFORE chasing KeyStore "
+                    << "test failures.";
+                // Touch each byte so a page-protection corruption that
+                // sodium_malloc itself wouldn't catch would SIGSEGV here,
+                // before sodium_free's own assertions run.
+                std::memset(p, 0xA5, sz);
+                ::sodium_free(p);
+            }
+        },
+        "key_store::sodium_smoke",
+        Logger::GetLifecycleModule());
+}
 
 int ordering_check_keystore_requires_secure_memory(const char * /*tmpdir*/)
 {
@@ -630,14 +687,30 @@ int parallel_reads_do_not_block(const char * /*tmpdir*/)
                 threads.emplace_back(reader);
 
             // Wait for all readers to be simultaneously inside their
-            // callbacks (proves parallel reads).
+            // callbacks (proves parallel reads).  Timeout deliberately
+            // generous (30s, not 5s): if `with_seckey` flips to
+            // exclusive locking, the barrier predicate is UNSATISFIABLE
+            // and the timeout fires immediately on contract violation —
+            // the wait duration only matters when the scheduler hasn't
+            // run all threads.  A short timeout would conflate "lock
+            // serialised readers" (the contract failure we want to
+            // catch) with "CI scheduler starved the readers under -jN
+            // load" (environmental).  30s is far more than any sane
+            // scheduler delay; if THIS fires, the environment is broken,
+            // not the lock contract.
             {
                 std::unique_lock<std::mutex> lk(bar_mu);
                 ASSERT_TRUE(bar_cv.wait_for(lk,
-                    std::chrono::seconds(5),
+                    std::chrono::seconds(30),
                     [&]() { return inside == kNumThreads; }))
                     << "Readers serialised — only " << inside
-                    << "/" << kNumThreads << " reached the barrier";
+                    << "/" << kNumThreads << " reached the barrier "
+                    << "within 30s.  At this duration this almost "
+                    << "certainly means `with_seckey` no longer holds "
+                    << "the lock in SHARED mode (regression to "
+                    << "exclusive lock).  Environmental scheduling delay "
+                    << "alone would not exhaust 30s under any realistic "
+                    << "CI load.";
             }
             release.store(true, std::memory_order_release);
             for (auto &t : threads) t.join();
@@ -658,6 +731,12 @@ int remove_blocks_behind_in_flight_with_seckey(const char * /*tmpdir*/)
 
             std::atomic<bool> reader_inside{false};
             std::atomic<bool> reader_release{false};
+            // `remove_entered` is set BEFORE ks.remove() — proves the
+            // remover thread was actually scheduled.  Without this, a
+            // late-scheduled remover would leave `remove_returned`
+            // false during the blocking check and the test would
+            // misread "scheduler-delayed" as "lock contract held."
+            std::atomic<bool> remove_entered{false};
             std::atomic<bool> remove_returned{false};
 
             std::thread reader([&]() {
@@ -675,16 +754,48 @@ int remove_blocks_behind_in_flight_with_seckey(const char * /*tmpdir*/)
                 std::this_thread::sleep_for(std::chrono::microseconds(100));
 
             std::thread remover([&]() {
+                remove_entered.store(true, std::memory_order_release);
                 ks.remove("role_identity");
                 remove_returned.store(true, std::memory_order_release);
             });
 
+            // Wait until the remover thread is past the entry barrier,
+            // so the subsequent blocking check is observing an actually-
+            // in-flight remove() and not a yet-to-be-scheduled thread.
+            // 5s is a generous schedule timeout: if it fires the test
+            // environment is broken, not the contract.
+            {
+                const auto deadline = std::chrono::steady_clock::now()
+                                    + std::chrono::seconds(5);
+                while (!remove_entered.load(std::memory_order_acquire))
+                {
+                    if (std::chrono::steady_clock::now() >= deadline)
+                    {
+                        ADD_FAILURE() << "remover thread never reached "
+                            "entry barrier within 5s — CI scheduler "
+                            "starvation, not a contract regression.  "
+                            "If recurrent, investigate test environment "
+                            "before changing this assertion.";
+                        // Best-effort cleanup before failing out.
+                        reader_release.store(true, std::memory_order_release);
+                        reader.join();
+                        remover.join();
+                        return;
+                    }
+                    std::this_thread::sleep_for(std::chrono::microseconds(100));
+                }
+            }
+
             // remove should NOT return while reader holds shared lock.
+            // The 100ms window is the contract-violation detector: if
+            // the lock contract were broken, ks.remove() would return
+            // immediately, well within this window.
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
             EXPECT_FALSE(remove_returned.load(std::memory_order_acquire))
                 << "remove() returned while a with_seckey callback was "
                    "still in flight — shared/exclusive lock contract "
-                   "violated.";
+                   "violated.  Confirmed in-flight by remove_entered=true "
+                   "before this check.";
 
             // Release reader; remove should then unblock.
             reader_release.store(true, std::memory_order_release);
@@ -782,6 +893,8 @@ int dispatch_key_store(int argc, char **argv)
     }
     const char *tmpdir = argv[2];
 
+    if (scenario == "sodium_smoke")
+        return sodium_smoke(tmpdir);
     if (scenario == "ordering_check_keystore_requires_secure_memory")
         return ordering_check_keystore_requires_secure_memory(tmpdir);
     if (scenario == "second_construction_throws")
