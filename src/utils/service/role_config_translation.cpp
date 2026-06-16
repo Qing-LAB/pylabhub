@@ -84,7 +84,12 @@ make_rx_opts(const config::RoleConfig &config,
     if (tr.transport == config::Transport::Zmq)
     {
         opts.data_transport    = "zmq";
-        opts.zmq_node_endpoint = tr.zmq_endpoint;
+        // `producer_peers` left empty per HEP-CORE-0036 §6.7 — the
+        // broker's CONSUMER_REG_ACK.producers[] is the only canonical
+        // source for the consumer's connect target + CURVE serverkey
+        // (HEP-CORE-0017 §3.3 + HEP-CORE-0036 §6.4).  Pre-AUTH-1's
+        // single-producer `zmq_node_endpoint` carrier was retired in
+        // Stage 1D close-out (task #193, 2026-06-15).
         opts.zmq_buffer_depth  = tr.zmq_buffer_depth;
         opts.shm_name.clear();
         opts.shm_shared_secret = 0u;

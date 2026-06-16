@@ -177,7 +177,7 @@ int auth_round_trip_allowed_peer_delivers(const char * /*tmpdir*/)
             // Consumer side: connect with CURVE_CLIENT.
             auto consumer = ZmqQueue::pull_from(
                 producer->actual_endpoint(),
-                pylabhub::utils::security::Z85PublicKey{producer_pub},
+                pylabhub::utils::security::Z85PublicKey::validate(producer_pub),
                 make_uint32_schema(), "aligned",
                 /*identity_key_name=*/"consumer",
                 /*bind=*/false);
@@ -237,7 +237,7 @@ int auth_unallowed_peer_blocked(const char * /*tmpdir*/)
 
             auto denied_consumer = ZmqQueue::pull_from(
                 producer->actual_endpoint(),
-                pylabhub::utils::security::Z85PublicKey{producer_pub},
+                pylabhub::utils::security::Z85PublicKey::validate(producer_pub),
                 make_uint32_schema(), "aligned",
                 /*identity_key_name=*/"denied",
                 /*bind=*/false);
@@ -311,7 +311,7 @@ int auth_allowlist_swap_takes_effect_for_next_connection(const char * /*tmpdir*/
             // Bob can now connect.
             auto bob_consumer = ZmqQueue::pull_from(
                 producer->actual_endpoint(),
-                pylabhub::utils::security::Z85PublicKey{producer_pub},
+                pylabhub::utils::security::Z85PublicKey::validate(producer_pub),
                 make_uint32_schema(), "aligned",
                 /*identity_key_name=*/"bob",
                 /*bind=*/false);
@@ -394,7 +394,7 @@ int auth_deny_then_allow_via_swap_pins_path(const char *)
             {
                 auto consumer = ZmqQueue::pull_from(
                     producer->actual_endpoint(),
-                    pylabhub::utils::security::Z85PublicKey{producer_pub},
+                    pylabhub::utils::security::Z85PublicKey::validate(producer_pub),
                     make_uint32_schema(), "aligned",
                     /*identity_key_name=*/"client",
                     /*bind=*/false);
@@ -434,7 +434,7 @@ int auth_deny_then_allow_via_swap_pins_path(const char *)
             {
                 auto consumer = ZmqQueue::pull_from(
                     producer->actual_endpoint(),
-                    pylabhub::utils::security::Z85PublicKey{producer_pub},
+                    pylabhub::utils::security::Z85PublicKey::validate(producer_pub),
                     make_uint32_schema(), "aligned",
                     /*identity_key_name=*/"client",
                     /*bind=*/false);
@@ -501,7 +501,7 @@ int auth_swap_blocks_old_peer_pins_data(const char *)
             {
                 auto alice = ZmqQueue::pull_from(
                     producer->actual_endpoint(),
-                    pylabhub::utils::security::Z85PublicKey{producer_pub},
+                    pylabhub::utils::security::Z85PublicKey::validate(producer_pub),
                     make_uint32_schema(), "aligned",
                     /*identity_key_name=*/"alice",
                     /*bind=*/false);
@@ -535,7 +535,7 @@ int auth_swap_blocks_old_peer_pins_data(const char *)
             {
                 auto alice_again = ZmqQueue::pull_from(
                     producer->actual_endpoint(),
-                    pylabhub::utils::security::Z85PublicKey{producer_pub},
+                    pylabhub::utils::security::Z85PublicKey::validate(producer_pub),
                     make_uint32_schema(), "aligned",
                     /*identity_key_name=*/"alice",
                     /*bind=*/false);
@@ -563,7 +563,7 @@ int auth_swap_blocks_old_peer_pins_data(const char *)
             {
                 auto bob = ZmqQueue::pull_from(
                     producer->actual_endpoint(),
-                    pylabhub::utils::security::Z85PublicKey{producer_pub},
+                    pylabhub::utils::security::Z85PublicKey::validate(producer_pub),
                     make_uint32_schema(), "aligned",
                     /*identity_key_name=*/"bob",
                     /*bind=*/false);
@@ -607,7 +607,7 @@ int auth_set_peer_allowlist_on_pull_side_returns_false(const char *)
             // serverkey to pass factory validation.
             auto consumer = ZmqQueue::pull_from(
                 "tcp://127.0.0.1:5555",   // never started, no peer
-                pylabhub::utils::security::Z85PublicKey{producer_pub},
+                pylabhub::utils::security::Z85PublicKey::validate(producer_pub),
                 make_uint32_schema(), "aligned",
                 /*identity_key_name=*/"client",
                 /*bind=*/false);
@@ -675,7 +675,7 @@ int auth_empty_allowlist_denies_all(const char *)
 
             auto consumer = ZmqQueue::pull_from(
                 producer->actual_endpoint(),
-                pylabhub::utils::security::Z85PublicKey{producer_pub},
+                pylabhub::utils::security::Z85PublicKey::validate(producer_pub),
                 make_uint32_schema(), "aligned",
                 /*identity_key_name=*/"client",
                 /*bind=*/false);
@@ -1026,7 +1026,8 @@ int auth_misconfig_factory_returns_nullptr(const char *)
             const auto [valid_pub, valid_sec] = make_keypair();
             pylabhub::utils::security::key_store().add_identity_from_z85("valid", valid_pub, valid_sec);
             namespace sec = pylabhub::utils::security;
-            const sec::Z85PublicKey valid_serverkey{valid_pub};
+            const sec::Z85PublicKey valid_serverkey =
+                sec::Z85PublicKey::validate(valid_pub);
             const sec::Z85PublicKey empty_serverkey;  // sentinel
 
             struct Case

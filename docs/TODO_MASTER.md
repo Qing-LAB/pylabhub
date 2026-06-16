@@ -61,6 +61,18 @@ the demo inventory + manifest schema.
 
 ### API / ABI / concurrency / lifecycle (`docs/todo/API_TODO.md`)
 
+- **HIGH PRIORITY** — task #238 — standardize key log-message
+  format (test-contract markers).  Pattern 4 + future ladder rungs
+  grep LOGGER substrings as FSM-transition contracts; standardize
+  BEFORE the 7 pending rungs (#224-#229) ship so they're born in
+  the standard format.  Surfaced 2026-06-16 during AUTH-1 close-out
+  finding #13 discussion.  See `docs/todo/API_TODO.md` "Current
+  Focus".
+- **HIGH PRIORITY** — task #235 — Python `band_member_contains` /
+  `_count` always return false/0 (wrong JSON nesting; 6 buggy
+  sites, silent wrong answer, no test coverage; surfaced
+  2026-06-15 during AUTH-1 close-out finding #11 discussion).
+  See `docs/todo/API_TODO.md` "Current Focus" for full context.
 - Demo-harness audit follow-ups (B3 / B4 / B6+B7 / B10 / B8 / N2 /
   N3+N4 / N5+N6 / N7+N10) — tasks #78-#87.
 - Wave-MD1 ThreadManager Thread Shutdown Contract adoption sweep

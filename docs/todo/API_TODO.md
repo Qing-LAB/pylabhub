@@ -14,6 +14,105 @@ removals from D2 / D3 drift batches).
 
 ## Current Focus
 
+### #238 — [HIGH] Standardize key log-message format (test-contract markers)
+
+Pattern 4 + future test ladder rungs grep LOGGER_INFO substrings as
+their FSM-transition contract.  Any cosmetic edit to a log line
+silently breaks the tests.  With 7 pending Pattern 4 rungs
+(#224-#229) about to add more markers, we want the standard format
+in place BEFORE they ship — fixing all of them later is dramatically
+more expensive.
+
+**Convention proposal:**
+```
+LOGGER_INFO("[<component>] event=<EventName> field1=<v1> field2=<v2> ...");
+```
+
+Tests grep `event=<EventName>` (stable PascalCase token).  Field
+labels + values are part of the contract; surrounding prose is not.
+
+**Migration order:**
+1. Document convention (`docs/IMPLEMENTATION_GUIDANCE.md` +
+   `docs/README/README_testing.md` Pattern 4 section).
+2. Retrofit existing 4 Pattern 4 rungs (1-4 already shipped).
+3. All NEW Pattern 4 rungs (#224-#229) adopt convention from day one.
+4. Sweep remaining test-contract markers across L2/L3/L4.
+
+**Out of scope (deferred):** full typed-event framework — discussed
+during AUTH-1 close-out finding #13 (2026-06-16) and judged a
+phase-of-its-own architectural change.  This task is the
+LIGHT-WEIGHT first step that captures most of the benefit
+(stable contracts) without the framework rewrite.
+
+See task #238 full description for the complete proposal +
+migration mapping for the existing Pattern-4-contract markers.
+
+Effort: S-M.
+
+### #235 — [BUG-HIGH] Python `band_member_contains` / `_count` always return false/0
+
+Six buggy sites across `ConsumerAPI` / `ProducerAPI` / `ProcessorAPI`
+(3 roles × 2 inquiry helpers).  Each function reads
+`base_->band_members(channel)` which returns the broker reply
+`{"members": [...]}` verbatim, then tests `result->is_array()` —
+which is FALSE because the reply is an object wrapping the array.
+Functions short-circuit to `false` / `0` regardless of actual
+membership.
+
+**Root cause:** Python skips the `result->value("members", ...)`
+unwrap that the Native engine performs correctly in
+`fetch_band_members` (`native_engine.cpp:572-583`).  The shape
+divergence is invisible because:
+- The bug class is "silent wrong answer" — no crash, no log,
+  just `False` returned.
+- Happy-path tests don't catch it (they would pass since
+  `False` IS a valid answer for empty bands).
+- `band_members(channel)` itself returns the raw wrapper to scripts
+  (intentional or not — needs confirmation as part of fix).
+
+**Buggy sites** (all 6 share the same `is_array()` check on the
+wrapper object):
+- `src/consumer/consumer_api.cpp:75-92` (`band_member_contains`)
+- `src/consumer/consumer_api.cpp:94-111` (`band_member_count`)
+- `src/producer/producer_api.cpp:88-105` (`band_member_contains`)
+- `src/producer/producer_api.cpp:107-124` (`band_member_count`)
+- `src/processor/processor_api.cpp` (analogous pair)
+
+**Fix:** mirror Native's `fetch_band_members` on the Python side
+(`scripting::detail::fetch_band_members_or_throw(...)` in
+`json_py_helpers.hpp` or a new sibling file).  Collapse all 6
+sites to call the helper + iterate the returned (unwrapped) array.
+Removes both the bug AND the triplication in one shot.
+
+**Required tests** (prevent regression — currently no test exists
+because "always false" passes for empty-band happy-path):
+- L3: role joins band, second role joins, first asserts
+  `api.band_member_contains(band, other_uid) == True`.
+- L3: same setup, `api.band_member_count(band) >= 1`.
+- All three role kinds (consumer / producer / processor).
+
+**Discussion preservation:** surfaced during AUTH-1 close-out code
+review (#103) finding #11 ("ConsumerAPI/ProcessorAPI py::list
+duplication") on 2026-06-15.  Investigation of band-side helpers
+to see if PeerCache could apply revealed (a) Native engine had
+already extracted `fetch_band_members` correctly, (b) Python's
+inline copies tested the wrong JSON level.  See task #235 full
+description for the complete discussion chain + suggested helper
+shape.
+
+**Related parity work** (already filed):
+- #232 — engine parity-test contract; when implemented, the
+  band-membership row would have caught this.
+- #233, #234 — sibling engine-parity gaps for `producers` family.
+
+**References:**
+- HEP-CORE-0030 (band protocol — broker reply shape at
+  `broker_service.cpp:5381`).
+- HEP-CORE-0011 §"Cross-Engine Surface Parity" Read-only
+  observation surface principle (added 2026-06-15).
+
+Effort: S (helper + 6-site collapse + 3 L3 tests).
+
 ### #94 — Implement HEP-CORE-0021 §16.5 ephemeral-binding production path
 
 HEP-0021 §16.5 step 8 describes `messenger.update_endpoint()` inside

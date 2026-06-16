@@ -58,13 +58,12 @@ Z85PublicKey::Z85PublicKey() noexcept
     : z85_(Z85PublicKey::kZ85Chars, '\0')
 {}
 
-Z85PublicKey::Z85PublicKey(std::string_view z85)
-    : z85_(z85.begin(), z85.end())
+Z85PublicKey Z85PublicKey::validate(std::string_view z85)
 {
     if (z85.size() != Z85PublicKey::kZ85Chars)
     {
         throw std::invalid_argument(
-            "pylabhub::utils::security::Z85PublicKey: input length " +
+            "pylabhub::utils::security::Z85PublicKey::validate: input length " +
             std::to_string(z85.size()) +
             " is not the required " +
             std::to_string(Z85PublicKey::kZ85Chars) +
@@ -76,8 +75,9 @@ Z85PublicKey::Z85PublicKey(std::string_view z85)
         if (!make_z85_alphabet_table_(c))
         {
             throw std::invalid_argument(
-                "pylabhub::utils::security::Z85PublicKey: input contains "
-                "non-Z85 character at position " + std::to_string(i) +
+                "pylabhub::utils::security::Z85PublicKey::validate: input "
+                "contains non-Z85 character at position " +
+                std::to_string(i) +
                 " (byte 0x" +
                 [](unsigned char b) {
                     const char hex[] = "0123456789abcdef";
@@ -88,6 +88,11 @@ Z85PublicKey::Z85PublicKey(std::string_view z85)
                 "per RFC 32 §4");
         }
     }
+    // Validation passed — fill the sentinel-default object with the
+    // 40 verified chars and return by value (mandatory copy elision).
+    Z85PublicKey result;
+    result.z85_.assign(z85.begin(), z85.end());
+    return result;
 }
 
 bool Z85PublicKey::empty() const noexcept

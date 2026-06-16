@@ -62,6 +62,7 @@
 #include "utils/role_api_base.hpp"
 #include "utils/role_handler.hpp"
 #include "utils/role_host_core.hpp"
+#include "utils/role_reg_payload.hpp"
 #include "utils/role_uid.hpp"
 #include "utils/security/key_store.hpp"
 #include "utils/security/secure_memory_subsystem.hpp"
@@ -284,16 +285,24 @@ int pattern4_heartbeat_producer_role(const char *temp_dir_arg)
             ASSERT_TRUE(api.start_handler_threads(std::move(handler)));
             ASSERT_NE(api.handler(), nullptr);
 
-            // Send REG_REQ to register the producer channel.
-            nlohmann::json reg_opts;
-            reg_opts["channel_name"]      = channel;
-            reg_opts["pattern"]           = "PubSub";
-            reg_opts["has_shared_memory"] = false;
-            reg_opts["producer_pid"]      = static_cast<uint64_t>(::getpid());
-            reg_opts["role_uid"]          = role_uid;
-            reg_opts["role_name"]         = "pattern4_heartbeat";
-            reg_opts["zmq_pubkey"]        =
-                setup.curve.role_keys.at(role_uid).public_z85;
+            // REG_REQ payload via the PRODUCTION builder.  Mirrors
+            // producer_role_host.cpp:327-349 — `ProducerRegInputs` struct
+            // fed to `hub::build_producer_reg_payload`.  Identity pubkey
+            // read from KeyStore via the production accessor
+            // (HEP-CORE-0040 §172).  Rung 3 does not exercise the data
+            // plane (no build_tx_queue) so `is_zmq_transport=false`.
+            namespace sec = pylabhub::utils::security;
+            pylabhub::hub::ProducerRegInputs reg_in;
+            reg_in.channel          = channel;
+            reg_in.role_uid         = role_uid;
+            reg_in.role_name        = "pattern4_heartbeat";
+            reg_in.role_tag         = "producer";
+            reg_in.has_shm          = false;
+            reg_in.is_zmq_transport = false;
+            reg_in.zmq_pubkey       = std::string(
+                sec::key_store().pubkey(sec::kRoleIdentityName));
+            auto reg_opts =
+                pylabhub::hub::build_producer_reg_payload(reg_in);
 
             auto reg_resp = api.register_producer_channel(
                 reg_opts, pylabhub::kMidTimeoutMs);

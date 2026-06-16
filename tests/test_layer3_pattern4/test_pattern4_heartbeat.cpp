@@ -197,7 +197,9 @@ TEST_F(Pattern4HeartbeatTest, CadenceNegotiatedAndSteadyState)
     // role's "heartbeat: aligned with hub" line is the negotiation
     // observable; "periodic tick installed" is the install
     // observable; broker's "first heartbeat received" is the first
-    // arrival observable.
+    // arrival observable.  expect_log_sequence sorts the log by
+    // embedded timestamp before searching, so cross-process write
+    // interleaving on the shared O_APPEND log cannot flip causal order.
     expect_log_sequence(
         shared_log,
         {

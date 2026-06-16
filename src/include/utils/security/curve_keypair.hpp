@@ -73,12 +73,34 @@ namespace pylabhub::utils::security
 /// loud exception at the construction site, NOT at the libzmq sockopt
 /// boundary far downstream.
 ///
-/// Construction is explicit (no implicit `string` → `Z85PublicKey`
-/// conversion) to force callers to acknowledge the validation.  The
-/// default constructor produces a sentinel "empty" value (40 zero
-/// bytes) so the type is default-constructible for use in maps and
-/// optional contexts — `empty()` distinguishes that from a real
-/// pubkey.
+/// Construction shape — HEP-CORE-0040 §8.4.1.  There are exactly two
+/// construction paths and they are disjoint:
+///
+///   1. `Z85PublicKey{}`              — Standby sentinel (40 internal
+///                                       null bytes).  Used at the
+///                                       HEP-CORE-0036 §6.7 Standby
+///                                       rx-queue construction site
+///                                       BEFORE producer_peers have
+///                                       been delivered.  `empty()`
+///                                       returns `true`.
+///   2. `Z85PublicKey::validate(s)`   — validates `s` is exactly 40
+///                                       Z85-alphabet chars and wraps.
+///                                       Throws `std::invalid_argument`
+///                                       on bad input.  Use at every
+///                                       string → Z85PublicKey site
+///                                       (config load / vault /
+///                                       KnownRolesStore / wire
+///                                       deserialization); `main()`
+///                                       programs catch `std::exception`
+///                                       at the phase boundary.
+///
+/// There is NO string-taking constructor.  A would-be writer of
+/// `Z85PublicKey{maybe_empty_str}` is forced by the compiler to commit
+/// to one of the two forms above, making the author intent visible at
+/// every call site and removing the runtime ambiguity that the
+/// previous-shape constructor created (the empty-string branch threw
+/// instead of producing the Standby sentinel — bug class fixed
+/// 2026-06-14, see HEP-CORE-0040 §8.4.1).
 ///
 /// Pubkeys are PUBLIC by design (HEP-0040 §"pubkey memory placement"
 /// review 2026-06-07): no `mlock`, no special zeroing, no callback
@@ -92,24 +114,19 @@ public:
     /// Same constant the libzmq sockopt expects.
     static constexpr std::size_t kZ85Chars = 40;
 
-    /// Default-constructed sentinel: 40-byte all-zero string.  Used as
-    /// a placeholder in default member initializers + map values; NOT
-    /// a valid pubkey for any cryptographic operation.  Callers query
-    /// `empty()` to distinguish.
+    /// Standby sentinel.  40 internal null bytes — distinguishable
+    /// from any valid Z85 string (Z85 alphabet excludes `\0`) via
+    /// `empty()`.  NOT a valid pubkey for any cryptographic operation.
+    /// This is the ONE form of "unset" — there is no string-taking
+    /// constructor that could produce a different "empty" instance.
     Z85PublicKey() noexcept;
 
-    /// Construct from a 40-char Z85 string.  Throws
-    /// `std::invalid_argument` if the input is not exactly 40 chars
-    /// or contains any non-Z85 character.  The Z85 alphabet is
-    /// `0-9 a-z A-Z .-:+=^!/*?&<>()[]{}@%$#` per RFC 32 §4.
-    explicit Z85PublicKey(std::string_view z85);
-
-    /// Convenience: construct from a `std::string` (matches existing
-    /// `std::string` carriers without forcing every call site to
-    /// build a `string_view`).  Same validation as the `string_view`
-    /// ctor.
-    explicit Z85PublicKey(const std::string &z85)
-        : Z85PublicKey(std::string_view{z85}) {}
+    /// Static factory — validate-and-wrap.  Accepts exactly 40 chars
+    /// from the Z85 alphabet (RFC 32 §4: `0-9 a-z A-Z .-:+=^!/*?&<>()[]{}@%$#`).
+    /// Throws `std::invalid_argument` on bad input.  `main()` programs
+    /// catch `std::exception` at every phase boundary and produce a
+    /// clean exit-1 with a diagnostic.  See HEP-CORE-0040 §8.4.1.
+    [[nodiscard]] static Z85PublicKey validate(std::string_view z85);
 
     Z85PublicKey(const Z85PublicKey &)            = default;
     Z85PublicKey(Z85PublicKey &&) noexcept        = default;

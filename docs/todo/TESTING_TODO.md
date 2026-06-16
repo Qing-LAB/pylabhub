@@ -80,9 +80,14 @@ diagnostics per rung.
   summary `[role.x] heartbeat counter: sent=N over Mms`;
   broker-side counter via test-fixture periodic snapshot
   thread reading `state.snapshot()` (no per-tick production log).
-- **Rung 4 — `Pattern4ConsumerLifecycleTest`** ⏳ task #222.
+- **Rung 4 — `Pattern4ConsumerLifecycleTest`** ✅ task #222.
   Pins `CONSUMER_REG_REQ`/`ACK` + consumer channel
-  `Standby → master_approval → Active`.
+  `Standby → master_approval → Active` across 3 subprocesses
+  (broker + producer with bound tx queue + consumer).  7-marker
+  forward-only sequence covers consumer FSM transitions, broker
+  REQ accept + ACK send, and rx-queue Standby→Configured→Active.
+  Shipped 2026-06-15 (see commit log) — closed alongside the
+  Z85PublicKey lib bug fix (#231) the test surfaced.
 - **Rung 5 — `Pattern4ProducerLifecycleTest`** ⏳ blocked on
   task #162 (AUTH-2).  Producer PUSH channel `Standby→Active`.
 - **Rung 6 — `Pattern4DataFlowTest`** ⏳ blocked on task #163
@@ -210,6 +215,17 @@ commit can cover these):
 - L3 hub-dead → `on_band_lost` cascade end-to-end (`role_api_base.cpp:1166-1176`).
 - Real-engine parity tests for the 4 band callbacks (Python / Lua / Native) and `on_hub_dead`.
 - `api.is_in_band()` — untested at any layer.
+- **Cross-role observation surface parity test** (task #232) — per
+  HEP-CORE-0011 §"Cross-Engine Surface Parity" Read-only observation
+  surface principle (added 2026-06-15): each engine MUST keep one
+  parity test that exercises every observation surface
+  (`allowed_peers`, `producers`, `band_members`, `is_channel_ready`,
+  `queue_mechanism`, etc.) on every role kind and pins both the
+  wrong-side sentinel shape AND the right-side empty-but-correct
+  shape.  Without this, new surfaces silently degrade the principle
+  — Native ABI missing `producers` after AUTH-1 was the inciting
+  incident.  When a new row is added to the HEP-0011 surface table,
+  the parity tests must extend to cover it.
 
 **HubAPI Phase 8c L2 surface — completely untested** (from 2026-05-05
 coverage plan; pre-host-wiring fallbacks + happy-path delegation):

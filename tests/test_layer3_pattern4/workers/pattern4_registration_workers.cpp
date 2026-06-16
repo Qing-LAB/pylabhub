@@ -41,6 +41,7 @@
 #include "utils/role_api_base.hpp"
 #include "utils/role_handler.hpp"
 #include "utils/role_host_core.hpp"
+#include "utils/role_reg_payload.hpp"
 #include "utils/role_uid.hpp"
 #include "utils/security/key_store.hpp"
 #include "utils/security/secure_memory_subsystem.hpp"
@@ -254,16 +255,34 @@ int pattern4_registration_producer_role(const char *temp_dir_arg)
                    "against the broker subprocess";
             ASSERT_NE(api.handler(), nullptr);
 
-            // REG_REQ payload — production shape per HEP-CORE-0036 §5.
-            nlohmann::json reg_opts;
-            reg_opts["channel_name"]      = channel;
-            reg_opts["pattern"]           = "PubSub";
-            reg_opts["has_shared_memory"] = false;
-            reg_opts["producer_pid"]      = static_cast<uint64_t>(::getpid());
-            reg_opts["role_uid"]          = role_uid;
-            reg_opts["role_name"]         = "pattern4_registration";
-            reg_opts["zmq_pubkey"]        =
-                setup.curve.role_keys.at(role_uid).public_z85;
+            // REG_REQ payload via the PRODUCTION builder.  Mirrors
+            // producer_role_host.cpp:327-349 — `ProducerRegInputs` struct
+            // fed to `hub::build_producer_reg_payload`.  Identity pubkey
+            // read from KeyStore via the production accessor
+            // (HEP-CORE-0040 §172) — same path producer_role_host uses,
+            // not the test curve bundle directly.  Hand-rolling the JSON
+            // would silently mask any future change to the payload shape.
+            //
+            // Rung 2 does not exercise the data plane (no build_tx_queue
+            // call), so `is_zmq_transport=false` is appropriate — the
+            // broker is recorded as SHM-channel for this test, mirroring
+            // how a producer that only wants the REG_REQ→ACK protocol
+            // verified would register.  Schema fields are not layered
+            // (broker takes the legacy/anonymous schema path) — same
+            // shape production uses when no BLDS named schema is
+            // configured.
+            namespace sec = pylabhub::utils::security;
+            pylabhub::hub::ProducerRegInputs reg_in;
+            reg_in.channel          = channel;
+            reg_in.role_uid         = role_uid;
+            reg_in.role_name        = "pattern4_registration";
+            reg_in.role_tag         = "producer";
+            reg_in.has_shm          = false;
+            reg_in.is_zmq_transport = false;
+            reg_in.zmq_pubkey       = std::string(
+                sec::key_store().pubkey(sec::kRoleIdentityName));
+            auto reg_opts =
+                pylabhub::hub::build_producer_reg_payload(reg_in);
 
             // Use kMidTimeoutMs (not kLongTimeoutMs) — REG_REQ over
             // local loopback completes in milliseconds when the broker

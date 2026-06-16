@@ -527,6 +527,7 @@ audience.
 | `is_channel_ready(channel)` | `bool` | `boolean` | `int` (1=ready, 0=not, -1=error) | `bool` |
 | `is_in_band(channel)` | `bool` | `boolean` | `int` (1=member, 0=not, -1=error) | `bool` |
 | `allowed_peers(channel)` | `list[dict]` (one alloc) | `table[table]` (one alloc) | visitor (no alloc) + `*_contains` + `*_count` inquiries | `AllowedPeersHandle` (zero-cost) + `.visit / .contains / .count / .to_uid_set` |
+| `producers(channel)` | `list[dict]` (one alloc) | `table[table]` (one alloc) | **not yet exposed** — full cluster (visitor + `*_contains` + `*_count`) pending under #233 | not yet wrapped — pending the Tier-1 surface under #233 |
 | `band_members(channel)` | `list[dict]` | `table[table]` | visitor + `*_contains` + `*_count` | `BandHandle` (zero-cost) + same API as above |
 | `metrics()` | `dict` (full tree alloc) | `table` (full tree alloc) | opaque `metrics_snapshot()` + `metrics_get(key)` | `plh::MetricsSnapshot` value class + `operator[]` |
 
@@ -591,6 +592,84 @@ if (wrap.allowed_peers("out").contains("consumer_A")) { ... }
 auto auth = wrap.allowed_peers("out").to_uid_set();   // hot-path: snapshot once
 if (auth.contains("consumer_A")) { ... }
 ```
+
+#### Read-only observation surface principle (2026-06-15)
+
+Some observation surfaces above (`allowed_peers`, `producers`,
+`band_members`) describe peer-set state that is populated by an
+asymmetric framework path: the producer side's allowlist arrives via
+`CHANNEL_AUTH_CHANGED_NOTIFY`, the consumer side's producer set
+arrives via `CONSUMER_REG_ACK.producers[]` (HEP-CORE-0036 §I11 + §6.4).
+Internally the C++ frame keeps the producer cache (`allowlist_cache`)
+distinct from the consumer cache (`producer_peer_cache`); only the
+"correct side" populates its own cache on its own data path.
+
+**The engine surface is symmetric anyway.** Every read-only observation
+function is exposed on every role kind — producer, consumer,
+processor — through every engine (Lua / Python / Native).  Calling a
+surface from the "wrong side" returns the same shape's empty value
+(see sentinel table below).  Rationale:
+
+1. *Script portability.* A body of script logic moved between role
+   kinds doesn't break on language-binding `AttributeError` /
+   `KeyError`.  The author's role-kind knowledge tells them which
+   surface yields data on their side; the framework doesn't enforce
+   that knowledge at the engine boundary.
+2. *Engine-author uniformity.* Binding code follows one rule ("bind
+   every read-only observation surface on every role") instead of a
+   per-role binding table that the three engines could drift on.
+3. *Internal-frame independence.* The script engine is user-facing and
+   intuitive; it does not have to take the strict shape of the
+   internal C++ data-flow contract.  HEP-CORE-0036 §I11 describes
+   *which side populates which cache*; this section describes
+   *which surface is callable from which role* — they are not the
+   same axis.
+
+**Wrong-side sentinel table.**  For each return-type shape, the
+canonical "this side has no data" sentinel that the engine MUST return
+when the surface is called from a role whose internal cache is never
+populated for that surface.  The same shape is also the legitimate
+not-yet-populated return on the *correct* side — these are
+observationally identical, by design (see "scope" below for why
+that's acceptable).
+
+| Return type | Wrong-side sentinel | Native C ABI counterpart |
+|---|---|---|
+| `list[dict]` / `table[table]` (collection of records) | empty collection | visitor invoked zero times; `*_count` returns `0` |
+| `list[str]` / `table[string]` (collection of strings) | empty collection | visitor invoked zero times; `*_count` returns `0` |
+| `bool` (membership / state query) | `false` | `int` returns `0`; transport error returns `-1` |
+| `int` (count) | `0` | `int` returns `0`; transport error returns `-1` |
+| `str` (mechanism / policy / reason — enumerated) | the framework's documented "uninitialized" / "none" string (e.g. `Mechanism::Uninitialized` → `"Uninitialized"`) | corresponding `PLH_*_NONE` macro |
+
+**Scope of this principle:**
+
+- **In scope** — read-only *polling* surfaces that snapshot framework
+  state into the script's call stack (the rows in the surface table
+  above).  These are the only surfaces where "empty result" is a
+  meaningful and well-defined sentinel.
+- **Out of scope — callbacks.**  Event-driven surfaces like
+  `on_allowlist_changed` (HEP-CORE-0036 §I11) are asymmetric by
+  design: the framework only fires the callback on the side it has
+  data for.  Engines do not synthesize empty wrong-side invocations.
+- **Out of scope — mutators.**  There are no script-side mutators on
+  these caches (HEP-CORE-0036 §I11 audit S3 guardrail).  If a future
+  HEP introduces one, it must define its own per-side admission rule
+  — the symmetric-read principle does not extend to writes.
+- **Out of scope — scalars whose value space already overloads
+  "not-this-side."**  For example `is_channel_ready(channel)`
+  returning `false` already means "not Active"; a script wanting to
+  distinguish "wrong side / unknown channel" from "Active-pending"
+  uses `is_channel_ready` together with role-kind knowledge, not
+  via a sentinel widening.
+
+**Parity-test contract.**  Each engine MUST keep one cross-role parity
+test that exercises every observation surface on every role kind and
+pins both the wrong-side sentinel shape AND the right-side
+empty-but-correct shape.  Without this, new surfaces silently degrade
+the principle — exactly how Native ABI ended up missing `producers`
+when AUTH-1 added the surface to Lua + Python without an
+engine-uniform forcing function.  Tracker: see the
+"Open coverage items" block in `docs/todo/TESTING_TODO.md`.
 
 ---
 

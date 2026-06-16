@@ -9,6 +9,7 @@
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <fstream>
@@ -281,6 +282,76 @@ std::string read_shared_log_snapshot(const fs::path &shared_log)
     return oss.str();
 }
 
+/// Sort a log snapshot by embedded timestamp so cross-process write
+/// interleaving on the shared O_APPEND log cannot flip causal order.
+///
+/// Logger lines look like:
+///   `[LOGGER] [INFO  ] [2026-06-15 06:33:01.181971] [PID:N TID:N] ...`
+/// The bracketed timestamp is lex-sortable (zero-padded YYYY-MM-DD
+/// HH:MM:SS.uuuuuu).  Stable sort keeps lines without a parseable
+/// timestamp (e.g. continuation lines from multi-line emit, gtest
+/// output) in their original relative order — they sort as if they
+/// carried the timestamp of the most recent timestamped line.
+std::string sort_log_by_timestamp(const std::string &snapshot)
+{
+    if (snapshot.empty())
+        return snapshot;
+    std::vector<std::pair<std::string, std::string>> keyed;  // (sort_key, line)
+    keyed.reserve(snapshot.size() / 80 + 1);
+    std::string last_ts;  // most recent observed timestamp; inherited by
+                          // continuation lines without their own
+    std::size_t pos = 0;
+    while (pos < snapshot.size())
+    {
+        const auto eol = snapshot.find('\n', pos);
+        const auto end = (eol == std::string::npos) ? snapshot.size() : eol + 1;
+        std::string_view line{snapshot.data() + pos, end - pos};
+        // Find the THIRD '[' (the timestamp bracket) on a LOGGER line.
+        // LOGGER format prefix: `[LOGGER] [LEVEL ] [TIMESTAMP] [PID:...] ...`
+        // Cheap structural check: starts with `[LOGGER] `.
+        std::string ts;
+        if (line.size() > 9 && line.substr(0, 9) == "[LOGGER] ")
+        {
+            // Skip "[LOGGER] [LEVEL] " — find the 3rd '['.
+            std::size_t bracket_count = 0;
+            std::size_t ts_start      = std::string::npos;
+            for (std::size_t i = 0; i < line.size(); ++i)
+            {
+                if (line[i] == '[')
+                {
+                    if (++bracket_count == 3)
+                    {
+                        ts_start = i + 1;
+                        break;
+                    }
+                }
+            }
+            if (ts_start != std::string::npos)
+            {
+                const auto ts_end = line.find(']', ts_start);
+                if (ts_end != std::string::npos
+                    && ts_end - ts_start >= 19)  // "YYYY-MM-DD HH:MM:SS" minimum
+                {
+                    ts = std::string{line.substr(ts_start, ts_end - ts_start)};
+                    last_ts = ts;
+                }
+            }
+        }
+        // Continuation / non-LOGGER lines inherit the most recent
+        // timestamp so they sort with their emitting LOGGER call.
+        keyed.emplace_back(ts.empty() ? last_ts : ts,
+                           std::string{line});
+        pos = end;
+    }
+    std::stable_sort(keyed.begin(), keyed.end(),
+        [](const auto &a, const auto &b) { return a.first < b.first; });
+    std::string out;
+    out.reserve(snapshot.size());
+    for (auto &p : keyed)
+        out.append(p.second);
+    return out;
+}
+
 } // anon
 
 void expect_log_sequence(
@@ -288,46 +359,74 @@ void expect_log_sequence(
     std::initializer_list<std::string_view> markers,
     std::chrono::milliseconds per_step_timeout)
 {
-    std::size_t cursor   = 0;   // byte offset; next search starts here
-    std::size_t step_idx = 0;
-    for (auto marker : markers)
+    // Re-search from scratch each poll against the sorted snapshot.
+    // Carrying a byte-offset cursor across polls is unsafe: a late-
+    // arriving line with an earlier timestamp gets sorted before
+    // already-matched content, shifting all subsequent bytes, and a
+    // stale cursor either skips real matches or, more commonly,
+    // produces a misleading "marker not found" when the marker IS in
+    // the log but in a causal position that disagrees with the test's
+    // expected order.  Re-search is O(N*M) per poll where N=marker
+    // count (~8), M=log size (~10KB) — microseconds, negligible.
+    //
+    // Per-step deadline: each step gets its own per_step_timeout
+    // window, measured from when the PREVIOUS step first matched.
+    // Tracked by max_matched (highest step count seen across polls);
+    // when it advances, the deadline resets.
+    std::size_t max_matched = 0;
+    auto step_deadline =
+        std::chrono::steady_clock::now() + per_step_timeout;
+    std::size_t cached_raw_size = 0;
+    std::string sorted_snapshot;
+
+    while (std::chrono::steady_clock::now() < step_deadline)
     {
-        const auto deadline = std::chrono::steady_clock::now() + per_step_timeout;
-        bool matched = false;
-        std::string snapshot;
-        while (std::chrono::steady_clock::now() < deadline)
+        const std::string raw = read_shared_log_snapshot(shared_log);
+        if (raw.size() != cached_raw_size)
         {
-            snapshot = read_shared_log_snapshot(shared_log);
-            if (snapshot.size() > cursor)
-            {
-                const auto found = snapshot.find(marker, cursor);
-                if (found != std::string::npos)
-                {
-                    cursor  = found + marker.size();
-                    matched = true;
-                    break;
-                }
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds{25});
+            sorted_snapshot = sort_log_by_timestamp(raw);
+            cached_raw_size = raw.size();
         }
 
-        if (!matched)
+        std::size_t cursor  = 0;
+        std::size_t matched = 0;
+        for (auto marker : markers)
         {
-            ADD_FAILURE()
-                << "expect_log_sequence: step " << step_idx + 1
-                << " of " << markers.size()
-                << " — marker '" << marker
-                << "' not found within " << per_step_timeout.count()
-                << "ms (search from byte offset " << cursor << " of "
-                << snapshot.size() << " total).\n"
-                << "Earlier steps matched: " << step_idx << "\n"
-                << "Tail of shared log (last 20 lines):\n"
-                << tail_lines(snapshot, 20);
-            return;  // stop on first failed step — downstream diagnostics
-                     // are misleading once the sequence breaks
+            const auto pos = sorted_snapshot.find(marker, cursor);
+            if (pos == std::string::npos) break;
+            cursor = pos + marker.size();
+            ++matched;
         }
-        ++step_idx;
+
+        if (matched == markers.size())
+            return;  // all markers found in causal order
+
+        if (matched > max_matched)
+        {
+            max_matched   = matched;
+            step_deadline =
+                std::chrono::steady_clock::now() + per_step_timeout;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{25});
     }
+
+    // Failure: the marker at index max_matched is missing or out of
+    // causal order.
+    auto it = markers.begin();
+    std::advance(it, max_matched);
+    ADD_FAILURE()
+        << "expect_log_sequence: step " << max_matched + 1
+        << " of " << markers.size()
+        << " — marker '" << *it
+        << "' not found within " << per_step_timeout.count()
+        << "ms after step " << max_matched << " matched (sorted snapshot "
+        << sorted_snapshot.size() << " bytes total).\n"
+        << "Note: 'not found' may also mean the marker IS in the log "
+           "but with an EARLIER timestamp than a previously-matched "
+           "step — i.e., a causal-sequence violation.  Inspect the "
+           "tail for both occurrences and their timestamps.\n"
+        << "Tail of shared log (last 20 lines):\n"
+        << tail_lines(sorted_snapshot, 20);
 }
 
 } // namespace pylabhub::tests::pattern4

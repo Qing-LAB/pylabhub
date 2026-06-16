@@ -156,15 +156,21 @@ py::list ProducerAPI::allowed_peers(const std::string &channel) const
     // `{"role_uid": str, "pubkey": str}` dicts — the same shape as the
     // `on_allowlist_changed` callback's allowlist argument.  Read-only
     // snapshot per §I11 audit S3 guardrail.
-    py::list out;
-    for (const auto &p : base_->allowed_peers(channel))
-    {
-        py::dict entry;
-        entry["role_uid"] = p.role_uid;
-        entry["pubkey"]   = p.pubkey;
-        out.append(entry);
-    }
-    return out;
+    return scripting::detail::peer_list_to_py(base_->allowed_peers(channel));
+}
+
+py::list ProducerAPI::producers(const std::string &channel) const
+{
+    // HEP-CORE-0036 §I11 polling surface (engine-parity stub) —
+    // HEP-CORE-0011 §"Cross-Engine Surface Parity" Read-only
+    // observation surface principle: every read-only observation
+    // surface is bound on every role through every engine; on a
+    // role whose cache is never populated for that surface, the
+    // documented sentinel (empty list, here) signals "not applicable
+    // on this side."  Producer-side `producer_peer_cache` is never
+    // populated (CONSUMER_REG_ACK is consumer-side per §6.4), so the
+    // cache lookup always misses and returns an empty vector.
+    return scripting::detail::peer_list_to_py(base_->producers(channel));
 }
 
 uint64_t ProducerAPI::slot_logical_size(std::optional<int> side) const
@@ -376,6 +382,16 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_producer, m) // NOLINT
              "{'role_uid': str, 'pubkey': str} dicts.  Empty when no "
              "GET_CHANNEL_AUTH_REQ has completed.  Engine-parity with "
              "Lua's api.allowed_peers; read-only.")
+        .def("producers",          &producer::ProducerAPI::producers,
+             py::arg("channel"),
+             "HEP-CORE-0036 §I11 polling surface (engine-parity stub). "
+             "Returns an empty list on producer side — the producer-side "
+             "cache is never populated for `producers` (the consumer "
+             "side observes its peer-set via CONSUMER_REG_ACK.producers[] "
+             "per §6.4).  Present for API uniformity with "
+             "ConsumerAPI.producers and Lua's api.producers per "
+             "HEP-CORE-0011 §\"Cross-Engine Surface Parity\" Read-only "
+             "observation surface principle.")
         .def("allowed_peer_contains", &producer::ProducerAPI::allowed_peer_contains,
              py::arg("channel"), py::arg("role_uid"),
              "Engine-parity inquiry — true iff role_uid is in the "

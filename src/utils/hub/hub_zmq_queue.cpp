@@ -1010,6 +1010,9 @@ bool ZmqQueue::apply_master_approval(const nlohmann::json& artifacts) noexcept
             // Option B; production code does not call start() directly.
             if (already_running)
                 return true;
+            LOGGER_INFO("[hub::ZmqQueue] PULL state Standby->Configured "
+                        "queue='{}' endpoint='{}'",
+                        pImpl->queue_name, pImpl->endpoint);
             return start();
         }
 
@@ -1064,6 +1067,9 @@ bool ZmqQueue::apply_master_approval(const nlohmann::json& artifacts) noexcept
         // factory time from the role's config).
         if (already_running)
             return true;
+        LOGGER_INFO("[hub::ZmqQueue] PUSH state Standby->Configured "
+                    "queue='{}' endpoint='{}'",
+                    pImpl->queue_name, pImpl->endpoint);
         return start();
     }
     catch (const std::exception& e)
@@ -1427,6 +1433,15 @@ bool ZmqQueue::start()
             });
     }
 
+    // HEP-CORE-0036 §6.7 — queue has bound/connected its socket and
+    // spawned its worker thread.  Pair-marker to Standby->Configured
+    // emitted by apply_master_approval just above the start() call.
+    LOGGER_INFO("[hub::ZmqQueue] {} state Configured->Active "
+                "queue='{}' endpoint='{}'",
+                pImpl->mode == ZmqQueueImpl::Mode::Read ? "PULL" : "PUSH",
+                pImpl->queue_name,
+                pImpl->bind_socket ? pImpl->actual_endpoint
+                                   : pImpl->endpoint);
     return true;
 }
 

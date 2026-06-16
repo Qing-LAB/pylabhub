@@ -138,15 +138,18 @@ py::list ConsumerAPI::allowed_peers(const std::string &channel) const
     // Consumer-side cache is never populated today (no notify path on
     // PULL side); accessor returns empty list.  Defined for API
     // uniformity across all three role kinds.
-    py::list out;
-    for (const auto &p : base_->allowed_peers(channel))
-    {
-        py::dict entry;
-        entry["role_uid"] = p.role_uid;
-        entry["pubkey"]   = p.pubkey;
-        out.append(entry);
-    }
-    return out;
+    return scripting::detail::peer_list_to_py(base_->allowed_peers(channel));
+}
+
+py::list ConsumerAPI::producers(const std::string &channel) const
+{
+    // HEP-CORE-0036 §I11 + §6.4 polling surface.  Consumer-side mirror
+    // of producer-side `allowed_peers`.  Returns the broker's most
+    // recent CONSUMER_REG_ACK.producers[] snapshot for this channel.
+    // Empty list when the channel was never registered, the broker
+    // delivered an empty list, or the transport is SHM (no producers[]
+    // field per §5.6).  Read-only; scripts cannot mutate.
+    return scripting::detail::peer_list_to_py(base_->producers(channel));
 }
 
 uint64_t ConsumerAPI::slot_logical_size(std::optional<int> side) const
@@ -344,6 +347,14 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_consumer, m) // NOLINT
              "Returns an empty list on consumer side — no allowlist "
              "exists on the consumer's PULL queue.  Present for API "
              "uniformity with ProducerAPI.allowed_peers.")
+        .def("producers",      &ConsumerAPI::producers,
+             py::arg("channel"),
+             "HEP-CORE-0036 §I11 + §6.4 polling surface.  Returns a "
+             "list of {role_uid, pubkey} dicts for the broker's most "
+             "recent CONSUMER_REG_ACK.producers[] delivery.  Empty "
+             "list when the channel was never registered, the broker "
+             "delivered an empty list, or the transport is SHM.  "
+             "Mirrors Lua's api.producers; read-only.")
         .def("allowed_peer_contains", &ConsumerAPI::allowed_peer_contains,
              py::arg("channel"), py::arg("role_uid"),
              "Engine-parity inquiry — always false on consumer side "

@@ -9,9 +9,12 @@
  *   - B5 (2026-05-20): consumer's `shm_name` field never copied from
  *     config → SHM connect failed silently.
  *   - B11 (2026-05-21): consumer/processor's ZMQ fields
- *     (data_transport / zmq_node_endpoint / clear shm_name) never copied
- *     when transport was zmq → build_rx_queue dispatched the SHM path
- *     on a zmq pipeline.
+ *     (data_transport / clear shm_name; pre-Stage-1D also zmq_node_endpoint)
+ *     never copied when transport was zmq → build_rx_queue dispatched
+ *     the SHM path on a zmq pipeline.  Stage 1D (#193, 2026-06-15)
+ *     retired RxQueueOptions::zmq_node_endpoint — the consumer's
+ *     connect target now lives ONLY in producer_peers, populated by
+ *     CONSUMER_REG_ACK.producers[] per HEP-CORE-0036 §6.4 + §6.7.
  * Both lived in the inline body of `setup_infrastructure_` — the
  * "config-to-opts translation" layer.  Existing L3 tests
  * (role_api_flexzone_workers.cpp) hand-constructed `RxQueueOptions`
@@ -340,8 +343,8 @@ TEST_F(SetupInfrastructureTranslationTest, Consumer_ShmTransport_AllFieldsCopied
 
     // SHM transport must NOT activate the ZMQ branch.
     EXPECT_NE(opts.data_transport, "zmq");
-    EXPECT_TRUE(opts.zmq_node_endpoint.empty())
-        << "ZMQ endpoint should be unset on SHM path";
+    EXPECT_TRUE(opts.producer_peers.empty())
+        << "SHM path must not populate producer_peers (ZMQ-only field)";
 
     EXPECT_EQ(opts.checksum_policy, cfg.checksum().policy);
     EXPECT_TRUE(opts.flexzone_checksum);
@@ -374,8 +377,13 @@ TEST_F(SetupInfrastructureTranslationTest, Consumer_ZmqTransport_AllFieldsCopied
     // B11 regression — every ZMQ field MUST propagate.
     EXPECT_EQ(opts.data_transport, "zmq")
         << "B11 regression: data_transport must be 'zmq' for ZMQ pipeline";
-    EXPECT_EQ(opts.zmq_node_endpoint, "tcp://127.0.0.1:5601")
-        << "B11 regression: zmq_node_endpoint must come from config";
+    // Stage 1D (task #193, 2026-06-15): config no longer carries the
+    // consumer's connect target on `RxQueueOptions`.  The broker's
+    // `CONSUMER_REG_ACK.producers[]` is the only canonical source
+    // (HEP-CORE-0017 §3.3 + HEP-CORE-0036 §6.4 + §6.7).
+    EXPECT_TRUE(opts.producer_peers.empty())
+        << "Stage 1D: producer_peers must be empty at translation time — "
+           "broker fills via apply_consumer_reg_ack later";
     EXPECT_EQ(opts.zmq_buffer_depth, 1024);
 
     // B5 corollary — when transport is ZMQ, shm_name MUST be cleared.
@@ -473,7 +481,11 @@ TEST_F(SetupInfrastructureTranslationTest, Processor_ZmqTransport_AllFieldsCopie
     const auto rx = pylabhub::processor::ProcessorRoleHost::make_rx_opts(
         cfg, slot_spec, fz_spec, /*has_rx_fz=*/true);
     EXPECT_EQ(rx.data_transport, "zmq");
-    EXPECT_EQ(rx.zmq_node_endpoint, "tcp://127.0.0.1:5701");
+    // Stage 1D (task #193, 2026-06-15): config no longer carries the
+    // consumer's connect target — broker's CONSUMER_REG_ACK.producers[]
+    // is the only canonical source per HEP-CORE-0036 §6.4 + §6.7.
+    EXPECT_TRUE(rx.producer_peers.empty())
+        << "Stage 1D: producer_peers must be empty at translation time";
     EXPECT_EQ(rx.zmq_buffer_depth, 256);
     EXPECT_TRUE(rx.shm_name.empty())
         << "Processor.rx — B11 regression: shm_name MUST be cleared on ZMQ path";

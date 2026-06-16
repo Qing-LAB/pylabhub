@@ -35,6 +35,45 @@
 namespace pylabhub::scripting
 {
 
+namespace {
+
+/// Internal helper: mutex-guarded per-channel snapshot cache for the
+/// symmetric script-observable peer surfaces (HEP-CORE-0036 §I11).
+/// One instance holds the producer-side allowlist observation; another
+/// holds the consumer-side producers observation.  See HEP-CORE-0011
+/// §"Cross-Engine Surface Parity" Read-only observation surface
+/// principle for why the two caches stay independent instances rather
+/// than being merged on a direction axis.
+class PeerCache
+{
+public:
+    /// Returns a copy of the per-channel snapshot, or an empty vector
+    /// if absent.  Takes the lock internally; callers iterate freely.
+    [[nodiscard]] std::vector<AllowedPeer>
+    snapshot(const std::string &channel) const
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        auto it = map_.find(channel);
+        if (it == map_.end()) return {};
+        return it->second;
+    }
+
+    /// Replace the per-channel entry with `peers`.  Takes the lock
+    /// internally.
+    void put(const std::string &channel,
+             std::vector<AllowedPeer> peers)
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        map_[channel] = std::move(peers);
+    }
+
+private:
+    mutable std::mutex mu_;
+    std::unordered_map<std::string, std::vector<AllowedPeer>> map_;
+};
+
+} // namespace
+
 // ============================================================================
 // Impl
 // ============================================================================
@@ -60,19 +99,33 @@ struct RoleAPIBase::Impl
     hub::InboxQueue          *inbox_queue{nullptr};
     ScriptEngine             *engine{nullptr};
 
-    // HEP-CORE-0036 §I11 + §6.5 — channel-allowlist cache for the
-    // script-side observability surface (`api.allowed_peers(channel)`
-    // polling + `on_allowlist_changed` callback).  The authoritative
-    // enforcement set lives in `ZmqQueue::peer_allowlist_snapshot()` —
-    // this cache is a SCRIPT-CONVENIENCE COPY enriched with role_uid
-    // (which PeerIdentity doesn't carry).  Updated only by
-    // `handle_channel_auth_notifies` after `set_peer_allowlist`
-    // succeeds, so the cache and the ZAP enforcement state move
-    // together.  Mutex covers the map; readers (script polling) take
-    // a copy under the lock to avoid TOCTOU on the snapshot.
-    mutable std::mutex allowlist_cache_mu;
-    std::unordered_map<std::string, std::vector<AllowedPeer>>
-        allowlist_cache;
+    // HEP-CORE-0036 §I11 — symmetric script-observable peer caches.
+    // Both stay independent PeerCache instances per HEP-CORE-0011
+    // §"Cross-Engine Surface Parity" Read-only observation surface
+    // principle: producer-side and consumer-side observation are
+    // independent surfaces; the internal caches mirror that
+    // separation.  See the file-local PeerCache helper above for the
+    // lock + snapshot/put contract.
+    //
+    //   * allowlist_cache (producer-side):
+    //     channel-allowlist cache for `api.allowed_peers(channel)`
+    //     polling + `on_allowlist_changed` callback.  The authoritative
+    //     enforcement set lives in `ZmqQueue::peer_allowlist_snapshot()`
+    //     — this cache is a SCRIPT-CONVENIENCE COPY enriched with
+    //     role_uid (which PeerIdentity doesn't carry).  Updated only by
+    //     `handle_channel_auth_notifies` after `set_peer_allowlist`
+    //     succeeds, so the cache and the ZAP enforcement state move
+    //     together.
+    //
+    //   * producer_peer_cache (consumer-side):
+    //     per-channel snapshot of the AUTHORIZED PRODUCERS that the
+    //     broker delivered via `CONSUMER_REG_ACK.producers[]` (HEP-0036
+    //     §6.4).  Updated by `apply_consumer_reg_ack` after the queue's
+    //     `apply_master_approval` succeeds, so the cache and the queue's
+    //     producer_peers_ move together.  Empty when SHM transport
+    //     (CONSUMER_REG_ACK has no `producers[]` field per §5.6).
+    PeerCache allowlist_cache;
+    PeerCache producer_peer_cache;
 
     // ── Thread-local / set-once-before-spawn state ─────────────────────
     //
@@ -448,9 +501,17 @@ bool RoleAPIBase::build_rx_queue(const hub::RxQueueOptions &opts)
             && !opts.producer_peers.front().pubkey_z85.empty();
         const std::string rx_endpoint =
             have_peer ? opts.producer_peers.front().endpoint : std::string{};
-        const sec::Z85PublicKey server_pubkey{
-            have_peer ? opts.producer_peers.front().pubkey_z85
-                      : std::string{}};
+        // HEP-CORE-0040 §8.4.1 Z85PublicKey construction contract.
+        // Standby path: explicit `Z85PublicKey{}` sentinel — the
+        // HEP-CORE-0036 §6.7 unset state until apply_consumer_reg_ack
+        // delivers real peers.  Have-peer path: validate the wire
+        // string via the throwing factory — a malformed pubkey in the
+        // ACK is a fatal startup error (caught by main()'s phase
+        // try/catch; clean exit-1 with diagnostic).
+        const sec::Z85PublicKey server_pubkey =
+            have_peer ? sec::Z85PublicKey::validate(
+                            opts.producer_peers.front().pubkey_z85)
+                      : sec::Z85PublicKey{};
         reader = hub::ZmqQueue::pull_from(
             rx_endpoint,
             server_pubkey,
@@ -489,28 +550,176 @@ bool RoleAPIBase::build_rx_queue(const hub::RxQueueOptions &opts)
 
 bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
 {
-    if (!pImpl->rx_queue)
+    // Defensive wire-deserialization (HEP-CORE-0036 §I8 "soft
+    // rejection" + §6.4 contract).  The broker is the contract-honoring
+    // party for ACK shape, but a federation peer relaying the ACK, a
+    // tampered message, or a future schema mismatch could deliver a
+    // malformed payload (non-string channel_name/status, non-object
+    // producers entries, etc.).  Catch nlohmann::json access errors at
+    // the function boundary so the exception never escapes to the BRC
+    // poll handler — log + return false instead of propagating.
+    //
+    // We deliberately do NOT catch std::bad_alloc or other system
+    // errors here — those should propagate to the caller's
+    // resource-management policy (apply_consumer_reg_ack runs on a
+    // startup path where OOM is fatal at the role-host level).
+    try
     {
-        LOGGER_ERROR("[{}] apply_consumer_reg_ack: rx_queue not wired",
-                     pImpl->role_tag);
+        // Hoist the "producers" field lookup once: used by the
+        // rx_queue-null error log, the success-path info log, and the
+        // cache commit below.  The "[]" literal avoids constructing a
+        // temporary nlohmann::json::array() when the field is absent
+        // (SHM ACK per §5.6).  The .dump() cost is intrinsic to the
+        // marker shape — operators see the full producer list in the
+        // log for diagnostic value; accepted overhead on this
+        // per-role-lifetime path.
+        const bool has_producers = ack.contains("producers");
+        const std::string producers_dump =
+            has_producers ? ack["producers"].dump() : "[]";
+
+        // Pre-parse script_view + channel_name BEFORE queue mutation.
+        // This eliminates the half-success window: if any of these
+        // parsing operations throws (malformed wire payload), the
+        // queue state is still unchanged — apply_master_approval
+        // hasn't run yet.  Without this pre-parse, a malformed
+        // producers[] entry could cause apply_master_approval to
+        // succeed (queue Active) followed by a parse throw here,
+        // leaving the queue Active without a valid script cache view
+        // and the role-host's failure path having to tear down a
+        // live socket + worker thread.  ack["producers"] (when
+        // present) is guaranteed to be an array by the post-parse
+        // apply_master_approval check at hub_zmq_queue.cpp:948-952,
+        // but per-entry parsing here may throw on a malformed entry
+        // shape that apply_master_approval would also reject.
+        std::vector<AllowedPeer> script_view;
+        if (has_producers)
+        {
+            const auto &producers = ack.at("producers");
+            script_view.reserve(producers.size());
+            for (const auto &p : producers)
+            {
+                if (!p.is_object()) continue;
+                // Wire shape: {role_uid, pubkey, endpoint}.  Script
+                // view exposes only the IDENTITY half ({role_uid,
+                // pubkey}) — endpoint is transport-layer detail per
+                // §I11 (scripts read membership, not connection
+                // mechanics).
+                AllowedPeer entry;
+                entry.role_uid = p.value("role_uid", std::string{});
+                // Wire-field preference matches the queue's CURVE-key
+                // extraction at hub_zmq_queue.cpp:967-971: try
+                // `pubkey_z85` first, fall back to `pubkey`.  Keeps
+                // the script-visible cache and the libzmq serverkey
+                // aligned on transitional wire formats where both
+                // fields could be present with different values.
+                entry.pubkey   = p.value("pubkey_z85", std::string{});
+                if (entry.pubkey.empty())
+                    entry.pubkey = p.value("pubkey", std::string{});
+                if (!entry.pubkey.empty())
+                    script_view.push_back(std::move(entry));
+            }
+        }
+        const auto channel_name =
+            ack.value("channel_name", std::string{});
+
+        // rx_queue precondition check.  The ack-received LOGGER_INFO
+        // below is pinned by Pattern 4 rung 4 as step 5 of the success
+        // sequence (followed by the queue's Standby→Configured +
+        // Configured→Active markers as steps 6 + 7).  Firing the
+        // LOGGER_INFO on the null-rx_queue path would advance the test
+        // ladder past a step that didn't actually complete, producing
+        // a misleading "step 6 timeout" diagnostic that masks the
+        // actual rx_queue wiring bug.  The null-rx_queue path instead
+        // emits a LOGGER_ERROR with the full ACK content so operators
+        // still see the ACK that was dropped (operational
+        // observability via the error log).
+        if (!pImpl->rx_queue)
+        {
+            LOGGER_ERROR("[{}] apply_consumer_reg_ack: rx_queue not "
+                         "wired — discarding ACK (channel='{}' "
+                         "status='{}' producers={})",
+                         pImpl->role_tag,
+                         ack.value("channel_name", "?"),
+                         ack.value("status", "?"),
+                         producers_dump);
+            return false;
+        }
+
+        // rx_queue is wired; emit the observable ACK reception marker
+        // (HEP-CORE-0036 §6.4).  Logged BEFORE apply_master_approval
+        // so this marker chronologically precedes the queue's
+        // Standby->Configured + Configured->Active markers that
+        // apply_master_approval emits internally — matching the rung
+        // 4 expected sequence order.
+        LOGGER_INFO("[{}] CONSUMER_REG_ACK received channel='{}' "
+                    "status={} producers={}",
+                    pImpl->role_tag,
+                    ack.value("channel_name", "?"),
+                    ack.value("status", "?"),
+                    producers_dump);
+
+        // Drive Standby → Active per HEP-CORE-0036 §6.7 Option B.
+        // The queue's apply_master_approval is the single mutator that
+        // applies the broker's reply.  For PULL queues it extracts
+        // ack["producers"], promotes peer[0] into transport-artifact
+        // fields, and calls start() internally.  For SHM, it is a
+        // no-op (config-supplied secret already applied at
+        // construction; future AUTH-4 broker-supplied secret will
+        // route through here when the broker emits ack["shm_secret"]).
+        if (!pImpl->rx_queue->apply_master_approval(ack))
+        {
+            LOGGER_ERROR("[{}] apply_consumer_reg_ack: "
+                         "apply_master_approval refused (HEP-CORE-0036 "
+                         "§6.7 'fully refused' — malformed broker "
+                         "delivery)", pImpl->role_tag);
+            return false;
+        }
+
+        // Queue is Active.  Commit the pre-parsed cache view
+        // atomically under the cache mutex.  The map assignment is
+        // no-throw apart from std::bad_alloc (excluded from this try
+        // block's contract); no half-state possible from here.
+        //
+        // HEP-CORE-0036 §I11 + §6.4 cache contract: mirror the queue's
+        // no-op tolerance at hub_zmq_queue.cpp:945 — when the
+        // `producers` field is ABSENT (SHM ACK per §5.6, or a future
+        // runtime refresh that carries no peer-set change), the queue
+        // preserves its `producer_peers_` and the cache MUST also
+        // preserve, otherwise the two views drift.  When the field is
+        // PRESENT (even as an empty array), the queue does a
+        // snapshot-replace and the cache mirrors that.
+        //
+        // Eventual-consistency property (HEP-CORE-0036 §I11): the
+        // queue's `producer_peers_` (above, under the queue's own
+        // mutex) and this cache (below, under PeerCache::put's
+        // internal lock) are updated by two separate critical
+        // sections, in causal order.  A script poll of api.producers(channel) between
+        // them sees the OLD cache view — a microsecond stale window
+        // on a per-registration (startup-only) path.  This is
+        // acceptable: the cache is ADVISORY observation only.  Actual
+        // data-plane authorization runs through the queue's CURVE
+        // handshake against `producer_peers_` directly; the cache
+        // cannot mis-admit a peer.  Atomic queue+cache coupling would
+        // require exposing a queue update callback (HEP §6.5.1 future
+        // work).
+        if (!channel_name.empty() && has_producers)
+        {
+            pImpl->producer_peer_cache.put(
+                channel_name, std::move(script_view));
+        }
+        return true;
+    }
+    catch (const nlohmann::json::exception &e)
+    {
+        // Malformed wire payload from broker / federation peer.
+        // HEP-CORE-0036 §I8 soft rejection: log + return false; the
+        // caller (consumer_role_host worker_main_) treats this as a
+        // fatal registration failure and tears down via RAII.
+        LOGGER_ERROR("[{}] apply_consumer_reg_ack: malformed broker "
+                     "delivery — rejecting (json error: {})",
+                     pImpl->role_tag, e.what());
         return false;
     }
-    // Drive Standby → Active per HEP-CORE-0036 §6.7 Option B.  The
-    // queue's apply_master_approval is the single mutator that
-    // applies the broker's reply.  For PULL queues it extracts
-    // ack["producers"], promotes peer[0] into transport-artifact
-    // fields, and calls start() internally.  For SHM, it is a no-op
-    // (config-supplied secret already applied at construction; future
-    // AUTH-4 broker-supplied secret will route through here when the
-    // broker emits ack["shm_secret"]).
-    if (!pImpl->rx_queue->apply_master_approval(ack))
-    {
-        LOGGER_ERROR("[{}] apply_consumer_reg_ack: apply_master_approval "
-                     "refused (HEP-CORE-0036 §6.7 'fully refused' — "
-                     "malformed broker delivery)", pImpl->role_tag);
-        return false;
-    }
-    return true;
 }
 
 bool RoleAPIBase::apply_producer_reg_ack(const nlohmann::json &ack)
@@ -550,10 +759,20 @@ void RoleAPIBase::reset_rx_queue_metrics()
 std::vector<AllowedPeer>
 RoleAPIBase::allowed_peers(const std::string &channel) const
 {
-    std::lock_guard<std::mutex> lk(pImpl->allowlist_cache_mu);
-    auto it = pImpl->allowlist_cache.find(channel);
-    if (it == pImpl->allowlist_cache.end()) return {};
-    return it->second;          // copy under the lock — caller iterates freely
+    return pImpl->allowlist_cache.snapshot(channel);
+}
+
+std::vector<AllowedPeer>
+RoleAPIBase::producers(const std::string &channel) const
+{
+    // Consumer-side mirror of `allowed_peers`.  Returns the broker's
+    // most recent `CONSUMER_REG_ACK.producers[]` snapshot for this
+    // channel as a copy.  Empty if the channel was never registered,
+    // is SHM-transport (no producers[] field per §5.6), or the broker
+    // delivered an empty list.  Cache is updated by
+    // `apply_consumer_reg_ack` after the queue's `apply_master_approval`
+    // succeeds.  HEP-CORE-0036 §I11 — read-only script surface.
+    return pImpl->producer_peer_cache.snapshot(channel);
 }
 
 bool RoleAPIBase::is_channel_ready(const std::string &channel) const noexcept
@@ -709,11 +928,7 @@ void RoleAPIBase::handle_channel_auth_notifies(
                         // place (HEP §6.5 step 5 — the snapshot the
                         // script sees IS what the next handshake will
                         // admit).
-                        {
-                            std::lock_guard<std::mutex> lk(
-                                pImpl->allowlist_cache_mu);
-                            pImpl->allowlist_cache[channel] = script_view;
-                        }
+                        pImpl->allowlist_cache.put(channel, script_view);
                         if (pImpl->engine)
                         {
                             try
@@ -1030,9 +1245,15 @@ RoleAPIBase::register_consumer(const nlohmann::json &opts, int timeout_ms)
     Presence *presence = pImpl->handler_
         ? pImpl->handler_->find_presence_for_channel(ch) : nullptr;
     if (presence)
+    {
         presence->registration_state.store(
             RegistrationState::RegRequestPending,
             std::memory_order_release);
+        LOGGER_INFO("[{}] presence channel='{}' role_type=consumer state "
+                    "Unregistered->RegRequestPending (CONSUMER_REG_REQ "
+                    "sending)",
+                    pImpl->role_tag, ch);
+    }
 
     auto result = bc->register_consumer(opts, timeout_ms);
 
@@ -1094,10 +1315,15 @@ RoleAPIBase::register_consumer(const nlohmann::json &opts, int timeout_ms)
                     pImpl->role_tag, opts.value("channel_name", "?"));
 
     if (presence)
-        presence->registration_state.store(
-            registered ? RegistrationState::Registered
-                        : RegistrationState::Unregistered,
-            std::memory_order_release);
+    {
+        const auto new_state = registered ? RegistrationState::Registered
+                                          : RegistrationState::Unregistered;
+        presence->registration_state.store(new_state,
+                                           std::memory_order_release);
+        LOGGER_INFO("[{}] presence channel='{}' role_type=consumer state "
+                    "RegRequestPending->{}",
+                    pImpl->role_tag, ch, to_string(new_state));
+    }
     return result;
 }
 

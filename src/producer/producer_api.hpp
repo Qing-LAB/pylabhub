@@ -121,6 +121,18 @@ class ProducerAPI
     /// CHANNEL_AUTH_CHANGED_NOTIFY arrives).
     [[nodiscard]] py::list allowed_peers(const std::string &channel) const;
 
+    /// HEP-CORE-0036 §I11 polling surface (engine-parity stub —
+    /// HEP-CORE-0011 §"Cross-Engine Surface Parity" Read-only
+    /// observation surface principle).  Producer-side cache is
+    /// never populated for `producers` (the consumer-side cache is
+    /// populated via `CONSUMER_REG_ACK.producers[]` per §6.4; the
+    /// producer side observes peer-set via `allowed_peers` instead).
+    /// Always returns the empty list on `ProducerAPI`; the surface
+    /// is bound only for cross-role / cross-engine API uniformity
+    /// so scripts can be moved between role kinds without
+    /// binding-level errors.
+    [[nodiscard]] py::list producers(const std::string &channel) const;
+
     /// HEP-CORE-0036 §6.7 (#190) — Python-facing channel-state query.
     /// Forwards to RoleAPIBase::is_channel_ready.
     [[nodiscard]] bool is_channel_ready(const std::string &channel) const

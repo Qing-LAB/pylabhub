@@ -382,6 +382,7 @@ bool LuaEngine::build_api_(RoleAPIBase &api)
     push_closure("metrics", lua_api_metrics);
     push_closure("queue_mechanism", lua_api_queue_mechanism);
     push_closure("allowed_peers",   lua_api_allowed_peers);
+    push_closure("producers",       lua_api_producers);
     push_closure("is_channel_ready", lua_api_is_channel_ready);
 
     // ── Role-specific closures based on role_tag ────────────────────────
@@ -2542,6 +2543,32 @@ int LuaEngine::lua_api_band_members(lua_State *L)
 // single-side roles (producer / consumer), the no-arg form returns the
 // relevant side automatically.  For processor the arg is required.
 // ============================================================================
+// Helper: push a vector<AllowedPeer> as a Lua table-of-tables shaped
+// `[{role_uid=..., pubkey=...}, ...]`.  Shared by `lua_api_allowed_peers`
+// and `lua_api_producers` (HEP-CORE-0036 §I11 polling surfaces;
+// HEP-CORE-0011 §"Cross-Engine Surface Parity" Read-only observation
+// surface principle).  File-local; the two callers stay readable inline
+// while the table-push loop has a single source of truth.
+// ============================================================================
+namespace {
+
+void push_peer_table_(lua_State *L, const std::vector<AllowedPeer> &peers)
+{
+    lua_createtable(L, static_cast<int>(peers.size()), 0);
+    for (size_t i = 0; i < peers.size(); ++i)
+    {
+        lua_createtable(L, 0, 2);
+        lua_pushlstring(L, peers[i].role_uid.data(), peers[i].role_uid.size());
+        lua_setfield(L, -2, "role_uid");
+        lua_pushlstring(L, peers[i].pubkey.data(), peers[i].pubkey.size());
+        lua_setfield(L, -2, "pubkey");
+        lua_rawseti(L, -2, static_cast<int>(i + 1));   // 1-based Lua
+    }
+}
+
+} // namespace
+
+// ============================================================================
 // api.allowed_peers(channel) — script-visible authorized-peer snapshot
 // ============================================================================
 //
@@ -2558,18 +2585,30 @@ int LuaEngine::lua_api_allowed_peers(lua_State *L)
     if (channel.empty())
         return luaL_error(L,
             "api.allowed_peers: channel argument must be a non-empty string");
+    push_peer_table_(L, self->api_->allowed_peers(channel));
+    return 1;
+}
 
-    const auto peers = self->api_->allowed_peers(channel);
-    lua_createtable(L, static_cast<int>(peers.size()), 0);
-    for (size_t i = 0; i < peers.size(); ++i)
-    {
-        lua_createtable(L, 0, 2);
-        lua_pushlstring(L, peers[i].role_uid.data(), peers[i].role_uid.size());
-        lua_setfield(L, -2, "role_uid");
-        lua_pushlstring(L, peers[i].pubkey.data(), peers[i].pubkey.size());
-        lua_setfield(L, -2, "pubkey");
-        lua_rawseti(L, -2, static_cast<int>(i + 1));   // 1-based Lua
-    }
+// ============================================================================
+// api.producers(channel) — script-visible authorized-producer snapshot
+// ============================================================================
+//
+// HEP-CORE-0036 §I11 + §6.4 polling surface; consumer-side mirror of
+// `allowed_peers`.  Returns a table of `{role_uid=..., pubkey=...}`
+// records for the channel's most recent CONSUMER_REG_ACK.producers[]
+// delivery.  Empty table when the role is not a consumer of the
+// channel, the broker delivered an empty list, or the transport is
+// SHM (no producers[] field per §5.6).  Read-only; scripts cannot
+// mutate the framework's state.
+int LuaEngine::lua_api_producers(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    const char *arg = luaL_checkstring(L, 1);
+    const std::string channel = arg ? arg : "";
+    if (channel.empty())
+        return luaL_error(L,
+            "api.producers: channel argument must be a non-empty string");
+    push_peer_table_(L, self->api_->producers(channel));
     return 1;
 }
 

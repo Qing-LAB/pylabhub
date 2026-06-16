@@ -171,8 +171,8 @@ inline const pylabhub::utils::security::Z85PublicKey &
 test_server_key()
 {
     namespace sec = pylabhub::utils::security;
-    static const sec::Z85PublicKey cached{std::string{
-        sec::key_store().pubkey(sec::kRoleIdentityName)}};
+    static const sec::Z85PublicKey cached = sec::Z85PublicKey::validate(
+        sec::key_store().pubkey(sec::kRoleIdentityName));
     return cached;
 }
 

@@ -237,8 +237,15 @@ Sub-deliverables:
        of `{role_uid, pubkey}`.  ✅ shipped 2026-06-10 in **Lua** +
        **Python** (via `ProducerAPI`, `ConsumerAPI`, `ProcessorAPI`
        engine-parity bindings).  Native deferred (MVP per #84).
-     - `api.producers(channel)` (consumer-side) — ⏳ pending; gated
-       on sub-task (a) for the producer-peer source data.
+     - `api.producers(channel)` (consumer-side) — ✅ shipped 2026-06-15.
+       `RoleAPIBase::producers()` returns a snapshot of the broker's
+       most recent `CONSUMER_REG_ACK.producers[]` delivery for a
+       channel.  Cache populated inside `apply_consumer_reg_ack` after
+       `apply_master_approval` succeeds, so cache and queue's
+       `producer_peers_` move together.  Lua binding `api.producers`
+       in `lua_engine.cpp:lua_api_producers` + Python bindings on
+       `ConsumerAPI.producers` and `ProcessorAPI.producers` +
+       `__init__.pyi` stubs updated.  Native deferred per #84.
      - Both read-only.  Both return a COPY (script cannot retain a
        reference that the framework later mutates under it).
 

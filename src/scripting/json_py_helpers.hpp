@@ -58,11 +58,14 @@
 
 #include "utils/script_engine.hpp"   // kScriptMaxRecursionDepth
 
+#include "utils/role_api_base.hpp"          // AllowedPeer
+
 #include <pybind11/pybind11.h>
 #include <nlohmann/json.hpp>
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace pylabhub::scripting::detail
 {
@@ -146,6 +149,26 @@ inline nlohmann::json py_to_json(const py::object &obj, int depth = 0)
         return j;
     }
     return py::str(obj).cast<std::string>();
+}
+
+/// Convert a vector of AllowedPeer records → py::list of py::dicts
+/// shaped `[{"role_uid": str, "pubkey": str}, ...]`.  Shared by the
+/// six `allowed_peers` / `producers` bindings on
+/// ProducerAPI / ConsumerAPI / ProcessorAPI (HEP-CORE-0036 §I11
+/// polling surfaces; HEP-CORE-0011 §"Cross-Engine Surface Parity"
+/// Read-only observation surface principle).  Single source of
+/// truth for the AllowedPeer wire shape on the Python side.
+inline py::list peer_list_to_py(const std::vector<AllowedPeer> &peers)
+{
+    py::list out;
+    for (const auto &p : peers)
+    {
+        py::dict entry;
+        entry["role_uid"] = p.role_uid;
+        entry["pubkey"]   = p.pubkey;
+        out.append(entry);
+    }
+    return out;
 }
 
 } // namespace pylabhub::scripting::detail

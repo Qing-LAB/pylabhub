@@ -137,15 +137,14 @@ py::list ProcessorAPI::allowed_peers(const std::string &channel) const
 {
     // HEP-CORE-0036 §I11 polling surface — processor's TX side has the
     // same producer-side allowlist semantics as ProducerAPI.
-    py::list out;
-    for (const auto &p : base_->allowed_peers(channel))
-    {
-        py::dict entry;
-        entry["role_uid"] = p.role_uid;
-        entry["pubkey"]   = p.pubkey;
-        out.append(entry);
-    }
-    return out;
+    return scripting::detail::peer_list_to_py(base_->allowed_peers(channel));
+}
+
+py::list ProcessorAPI::producers(const std::string &channel) const
+{
+    // HEP-CORE-0036 §I11 + §6.4 polling surface — processor's RX side
+    // has the same consumer-side producers semantics as ConsumerAPI.
+    return scripting::detail::peer_list_to_py(base_->producers(channel));
 }
 
 uint64_t ProcessorAPI::slot_logical_size(std::optional<int> side) const
@@ -333,6 +332,12 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_processor, m) // NOLINT
              "authorized peers for the channel.  Processor's TX side "
              "has the same producer-side allowlist semantics as "
              "ProducerAPI.allowed_peers.")
+        .def("producers",          &ProcessorAPI::producers,
+             py::arg("channel"),
+             "HEP-CORE-0036 §I11 + §6.4 polling surface — snapshot of "
+             "authorized producers for the channel.  Processor's RX "
+             "side has the same consumer-side producers semantics as "
+             "ConsumerAPI.producers.")
         .def("allowed_peer_contains", &ProcessorAPI::allowed_peer_contains,
              py::arg("channel"), py::arg("role_uid"),
              "Engine-parity inquiry — true iff role_uid is in the "

@@ -94,6 +94,14 @@ class ConsumerAPI
     /// shape work unmodified if reused for consumer roles.
     [[nodiscard]] py::list allowed_peers(const std::string &channel) const;
 
+    /// HEP-CORE-0036 §I11 + §6.4 consumer-side polling surface
+    /// (mirror of producer-side `allowed_peers`).  Returns the most
+    /// recent CONSUMER_REG_ACK.producers[] snapshot for `channel` as a
+    /// list of `{role_uid, pubkey}` dicts.  Empty when the channel was
+    /// never registered, the broker delivered an empty list, or the
+    /// transport is SHM (no producers[] field per §5.6).  Read-only.
+    [[nodiscard]] py::list producers(const std::string &channel) const;
+
     /// HEP-CORE-0036 §6.7 (#190) — see ProducerAPI::is_channel_ready.
     [[nodiscard]] bool is_channel_ready(const std::string &channel) const
     {

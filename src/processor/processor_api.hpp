@@ -89,6 +89,11 @@ class ProcessorAPI
     /// a list of `{"role_uid": str, "pubkey": str}` dicts.
     [[nodiscard]] py::list allowed_peers(const std::string &channel) const;
 
+    /// HEP-CORE-0036 §I11 + §6.4 consumer-side polling surface for the
+    /// processor's RX side — mirror of `allowed_peers`.  Returns the
+    /// most recent CONSUMER_REG_ACK.producers[] snapshot for `channel`.
+    [[nodiscard]] py::list producers(const std::string &channel) const;
+
     /// HEP-CORE-0036 §6.7 (#190) — see ProducerAPI::is_channel_ready.
     [[nodiscard]] bool is_channel_ready(const std::string &channel) const
     {

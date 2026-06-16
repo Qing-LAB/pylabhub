@@ -1164,6 +1164,24 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
         nlohmann::json resp = handle_consumer_reg_req(payload, identity, socket);
         const std::string ack =
             (resp.value("status", "") == "success") ? "CONSUMER_REG_ACK" : "ERROR";
+        if (ack == "CONSUMER_REG_ACK")
+        {
+            // Parallel to "REG_ACK sending" above.  Pins the
+            // HEP-CORE-0036 §6.4 producers[] payload the consumer
+            // role-host needs for its rx-queue CURVE allowlist.
+            // Empty `[]` is a legal value (no producers attached yet);
+            // ZMQ channels emit a populated list, SHM channels omit
+            // the key entirely (HEP-0036 §5.6).  The "[]" literal
+            // avoids constructing a temporary nlohmann::json::array()
+            // on every accepted REG_REQ; the .dump() cost is intrinsic
+            // to the marker shape (operational diagnostic value).
+            const std::string producers_dump =
+                resp.contains("producers") ? resp["producers"].dump() : "[]";
+            LOGGER_INFO("Broker: CONSUMER_REG_ACK sending channel='{}' "
+                        "producers={}",
+                        resp.value("channel_name", "?"),
+                        producers_dump);
+        }
         send_reply(socket, identity, ack, resp);
     }
     else if (msg_type == "GET_CHANNEL_AUTH_REQ")
@@ -2592,7 +2610,12 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     hub_state_->_on_consumer_authorized(channel_name, consumer_pubkey);
     fire_channel_auth_changed_notify(socket, channel_name, "consumer_joined");
 
-    LOGGER_INFO("Broker: consumer registered for channel '{}'", channel_name);
+    // HEP-CORE-0036 §6.4 — one-shot per accepted CONSUMER_REG_REQ; format
+    // parallels REG_REQ accepted (line ~1148) so test harnesses can grep
+    // by uid/channel/pubkey.  Pubkey is Z85 (40 chars).
+    LOGGER_INFO("Broker: CONSUMER_REG_REQ accepted role='{}' channel='{}' "
+                "consumer_pubkey='{}'",
+                role_uid, channel_name, consumer_pubkey);
     nlohmann::json resp;
     resp["status"]       = "success";
     resp["channel_name"] = channel_name;

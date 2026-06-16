@@ -424,8 +424,12 @@ int zmq_rx_null()
 
             hub::RxQueueOptions rx_opts;
             rx_opts.data_transport    = "zmq";
-            rx_opts.zmq_node_endpoint = "tcp://127.0.0.1:45599";
             rx_opts.slot_spec         = pylabhub::tests::simple_schema();
+            // Stage 1D (task #193, 2026-06-15): the consumer's connect
+            // target now lives ONLY in producer_peers (HEP-CORE-0036
+            // §6.4 + §6.7).  Test pre-populates here to enter Configured
+            // at construction (legacy fast-path); production never does
+            // — broker is the master via CONSUMER_REG_ACK.
             rx_opts.producer_peers.push_back(pylabhub::hub::ProducerPeer{
                 /*role_uid=*/"prod.zmq-fz.rx",
                 /*endpoint=*/"tcp://127.0.0.1:45599",

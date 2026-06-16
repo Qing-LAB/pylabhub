@@ -114,22 +114,18 @@ struct RxQueueOptions
     // Transport (HEP-CORE-0021)
     std::string data_transport{"shm"};
     std::string shm_name{};
-    std::string zmq_node_endpoint{};
     size_t zmq_buffer_depth{kZmqDefaultBufferDepth};
 
-    /// HEP-CORE-0017 §3.3 + HEP-CORE-0036 §4.1 dynamic-membership
-    /// producer set populated from `CONSUMER_REG_ACK.producers[]`
-    /// (HEP-CORE-0036 §6.4).  At `build_rx_queue` time ZmqQueue
-    /// calls its internal setup once per entry.  At runtime, task
-    /// #103 (A2 + A3 slices, in flight) will wire the role-host
-    /// framework into `ZmqQueue::add_producer_peer` /
-    /// `remove_producer_peer` so HEP-CORE-0033 §12 channel-event
-    /// broadcasts drive dynamic membership.  Today the methods +
-    /// struct exist as the stable HEP-specified surface for #103
-    /// to call into — production callers other than the initial
-    /// `build_rx_queue` population are deferred to #103.
-    /// `zmq_node_endpoint` above stays as the single-producer source
-    /// until A2 (no caller migration in A1).
+    /// HEP-CORE-0017 §3.3 + HEP-CORE-0036 §4.1 + §6.4 dynamic-membership
+    /// producer set populated from `CONSUMER_REG_ACK.producers[]`.  At
+    /// `build_rx_queue` time, an empty `producer_peers` is the canonical
+    /// state — `pull_from` accepts empty endpoint + empty serverkey and
+    /// the queue enters Standby (HEP-CORE-0036 §6.7).
+    /// `apply_consumer_reg_ack(ack)` on the RoleAPIBase then drives
+    /// Standby → Configured → Active via the polymorphic
+    /// `QueueReader::apply_master_approval`.  Test/legacy paths MAY
+    /// pre-populate `producer_peers` here to enter Configured at
+    /// construction; production never does — the broker is the master.
     std::vector<ProducerPeer> producer_peers;
 
     // Queue policy
@@ -285,6 +281,18 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     /// internal lock so the caller may iterate without holding it.
     [[nodiscard]] std::vector<AllowedPeer>
     allowed_peers(const std::string &channel) const;
+
+    /// HEP-CORE-0036 §I11 + §6.4 — consumer-side mirror of
+    /// `allowed_peers`.  Snapshot of the authorized PRODUCERS the broker
+    /// delivered via `CONSUMER_REG_ACK.producers[]` for this channel.
+    /// Each entry is `(role_uid, pubkey)` where `pubkey` is the
+    /// Z85-encoded CURVE identity the consumer uses as the data-plane
+    /// curve_serverkey.  Returns an empty vector if the role is not a
+    /// consumer of the channel, the broker delivered an empty list, or
+    /// the transport is SHM (no producers[] field per §5.6).
+    /// Thread-safe; returns a copy under the internal lock.
+    [[nodiscard]] std::vector<AllowedPeer>
+    producers(const std::string &channel) const;
 
     /// HEP-CORE-0036 §6.7 (#190) — script-side state-machine query.
     /// True iff the queue serving the named channel is in the Active

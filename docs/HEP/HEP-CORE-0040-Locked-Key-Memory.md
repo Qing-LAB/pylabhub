@@ -690,6 +690,64 @@ static ZmqQueue ZmqQueue::pull_from(
 
 Factory body calls `key_store().with_seckey(identity_key_name, cb)` to apply the secret half to the socket and `key_store().pubkey(identity_key_name)` for the public half — see the producer-side ZmqQueue example in §8.2.  No `CurveKeypair` parameter on the public API. No `ZmqAuthOptions` struct (it dies in C2). Wrong / missing key name → loud `std::out_of_range` from KeyStore inside `with_seckey` / `pubkey`.
 
+### 8.4.1 Z85PublicKey construction contract — one way to be unset, one way to validate
+
+The `Z85PublicKey` strong type (from C2, #158) has **exactly two construction paths**, by design:
+
+```cpp
+class Z85PublicKey {
+public:
+    // 1. "Unset" sentinel — the Standby-state expression of "no pubkey
+    //    yet" per HEP-CORE-0036 §6.7.  No throw, no string argument.
+    Z85PublicKey() noexcept;
+
+    // 2. Validate-and-wrap factory.  Accepts exactly 40 chars from the
+    //    Z85 alphabet (RFC 32 §4); anything else throws
+    //    std::invalid_argument with a precise diagnostic.  The returned
+    //    object is by value (mandatory copy elision); caller decides
+    //    const / move / sink.
+    static Z85PublicKey validate(std::string_view z85);
+
+    // 3. Non-throwing variant for wire-deserialization paths (e.g.
+    //    AUTH-1 CONSUMER_REG_ACK handler in the role's BRC poll loop).
+    //    Returns std::nullopt on invalid input — caller logs, drops the
+    //    bad message, and remains in the previous state.  Never throws
+    //    from inside a hot poll loop.
+    static std::optional<Z85PublicKey> try_validate(std::string_view z85) noexcept;
+
+    // NO string-taking constructor.  Callers cannot write
+    // `Z85PublicKey{maybe_empty_str}` because the constructor does not
+    // exist — they MUST choose either `Z85PublicKey{}` (intentional
+    // Standby sentinel) or `Z85PublicKey::validate(s)` (validated key,
+    // throws on bad).
+};
+```
+
+**Why the API is shaped this way.**
+
+Before this contract, two surface forms expressed "no pubkey set":
+
+| Form | Behavior |
+|---|---|
+| `Z85PublicKey()` | Default sentinel (40 null bytes), `empty()==true`, noexcept |
+| `Z85PublicKey{std::string{}}` | Validating ctor: empty string fails length check → throws |
+
+Two surface forms for the same author-intent ("I want an unset key") with divergent runtime behavior is a footgun.  A reader of `Z85PublicKey{some_var}` cannot tell from the call site whether `some_var` is intended to be empty (Standby) or non-empty (validated) — the runtime answer depends on inspection of the variable.  The exact bug surfaced 2026-06-14 at `role_api_base.cpp:451-453` in the AUTH-1 Standby-rx-queue path: the writer intended the Standby sentinel; the validating ctor threw at runtime instead.
+
+The factory-only design closes the bug class **at compile time**: there is no `Z85PublicKey{some_var}` construction path at all.  Every author must explicitly write `Z85PublicKey{}` or `Z85PublicKey::validate(some_var)` — the choice is forced, the intent is visible, and the validating constructor's empty branch ceases to exist as an attractive nuisance.
+
+**Which factory to use at each call site.**
+
+| Site | Use | Why |
+|---|---|---|
+| Config load (vault, KnownRolesStore, BRC::Config from disk) | `validate()` | Operator-controlled input; a malformed pubkey is a fatal startup error.  The `main()` programs (`plh_hub_main.cpp`, `plh_role_main.cpp`) wrap every startup phase in `try/catch (const std::exception &) { cerr; return 1; }`, so the throw becomes a clean exit-1 with a precise diagnostic. |
+| Wire deserialization (CONSUMER_REG_ACK.producers[].pubkey, KNOWN_ROLES_REQ response, federation peer announce) | `try_validate()` | Network-arriving input may be tampered with, corrupted, or sent by a buggy peer.  Throwing from a poll-loop callback would unwind out of the poll thread and crash the process.  The handler logs the bad input, drops the offending message, and keeps the process alive. |
+| Standby/sentinel use (rx-queue construction with no producers yet per §6.7) | `Z85PublicKey{}` | Explicit author intent: "no pubkey configured yet."  No string involved; no validation needed. |
+
+**`empty()` predicate still distinguishes the sentinel.**  An "unset" `Z85PublicKey` is 40 internal null bytes; valid Z85 strings cannot contain null bytes (the Z85 alphabet is `0-9 a-z A-Z .-:+=^!/*?&<>()[]{}@%$#`).  The internal `empty()` check loops over the 40 bytes — unambiguous discriminator.
+
+**Audit boundary.**  Construction sites for `Z85PublicKey` are a discrete, greppable surface (`Z85PublicKey(` or `Z85PublicKey{`).  Code review for new auth code should sweep this grep periodically — any new construction path that is not `Z85PublicKey{}`, `Z85PublicKey::validate(...)`, or `Z85PublicKey::try_validate(...)` is a violation.
+
 ### 8.5 Lookup failures are loud — HB-1 closure
 
 Reading a key before `key_store().add_identity(...)` has been called OR before the name is registered throws `std::out_of_range`. There is no path by which `auth_client_pubkey()` returns `""`. There is no silent-fallback hook surviving in any layer. HB-1's "build_tx_queue sees empty keys" mode is structurally impossible.
