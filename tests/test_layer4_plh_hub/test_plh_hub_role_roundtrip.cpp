@@ -363,7 +363,7 @@ TEST_F(PlhHubCliTest, RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters)
     // Marker text aligns with Pattern 4 rung 2 (task #221) marker
     // contract; broker_service.cpp::handle_reg_req success path.
     EXPECT_TRUE(wait_for_log_marker(hub_dir,
-                                     "Broker: REG_REQ accepted "
+                                     "event=RegReqAccepted "
                                      "role='prod.l4round.uid12345678' "
                                      "channel='lab.l4.roundtrip'",
                                      std::chrono::seconds(15)))
