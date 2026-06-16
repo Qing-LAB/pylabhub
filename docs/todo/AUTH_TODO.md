@@ -612,41 +612,63 @@ review (Q2 + Q5):
 
 Validation: 17/17 ZapRouter tests pass; full L2+L3 sweep green.
 
-### AUTH-2 — Producer-side ZAP pump on BRC poll thread
+### AUTH-2 — Role-side ZAP pump via ZapPumpThread lifecycle module
 
 > **Tracker:** task **#162**.
-> **Old labels:** HB-2.
-> **HEP anchors:** §7.1 (producer-side ZAP cache responsibility) +
-> §I11 (framework provides atomic update mechanism).
+> **Old labels:** HB-2.  **Title change 2026-06-16:** moved from
+> "Producer-side ZAP pump on BRC poll thread" to "Role-side ZAP pump
+> via ZapPumpThread lifecycle module" after the multi-BRC analysis
+> below.
+> **HEP anchors:** §7.1 (role-side ZAP cache responsibility, updated
+> 2026-06-16 for the dedicated-thread decision) + §7.4 invariant #3
+> (single-pumper FSM contract preserved by construction) + §I11
+> (framework provides atomic update mechanism).
 
-**Goal.**  Make the producer's data ROUTER's ZAP handler responsive
-so CURVE handshakes can complete.  The producer's ZAP cache (the
-allowlist set by AUTH-1's pull) is meaningless if the handshake
-never gets to consult it.
+**Goal.**  Make the role's data ROUTER ZAP handler responsive so
+CURVE handshakes can complete.  The role's ZAP cache (the allowlist
+set by AUTH-1's pull) is meaningless if the handshake never gets to
+consult it.
 
-**§3.5 alignment (2026-06-12).**  ZAP arm + `ZapRouter::pump_one`
-wiring occurs inside `apply_master_approval(REG_ACK)` (S3), not in
-`setup_infrastructure_` (S1).  Symmetric with consumer-side
-`apply_master_approval(CONSUMER_REG_ACK)`.
+**Design choice — Option F (dedicated lifecycle module).** Originally
+scoped to wire `ZapRouter::pump_one(0ms)` into the BRC poll thread.
+Reconsidered because the dual-hub processor has TWO BRCs in one
+process, both wanting to pump the same process-singleton REP socket;
+the single-pumper invariant (§7.4 #3) would PLH_PANIC the moment two
+handshakes raced.  Coordinated election (atomic active_pumper,
+takeover-on-exit) was rejected as transient machinery that gets
+replaced if ever moving to a dedicated thread.  The dedicated thread
+is invariant-preserving by construction for both single-BRC roles
+(producer / consumer) and multi-BRC roles (processor).  See
+HEP-CORE-0036 §7.1 "Why not 'one BRC pumps'" for full rationale.
 
-**Scope (do not expand).**
-- Wire `ZapRouter::pump_one(0ms)` into the BRC poll thread's existing
-  poll loop, alongside the broker-side dispatch (`broker_service.cpp:811`
-  is the pattern reference).
-- Multi-peer backlog drain: convert to `while (pump_one(0ms)) {}` —
-  one extra line, fold into this commit, no separate task.
+**Scope (shipped 2026-06-16).**
+- `ZapPumpThread` becomes a dynamic LifecycleManager module
+  (depends on `ZapRouter`).  Two activation modes preserved:
+  (1) direct RAII for tests/demos; (2) the module path for
+  production-side wiring.  See `src/include/utils/security/zap_router.hpp`
+  for the doctring contract on both modes.
+- `ZapRouter::ensure_module_registered()` added — idempotent
+  bridge that registers the `ZapRouter` dynamic module without
+  registering a domain.  Lets the role process load the pump
+  module at startup BEFORE any CURVE socket exists.
+- `plh_role_main.cpp` loads `ZapPumpThread::ensure_registered_and_loaded()`
+  after `KeyStore` construction.  Module owns a process-singleton
+  `std::jthread` looping `pump_one(100ms)` until LifecycleGuard
+  shutdown.
 
 **Out of scope (per §I11; do not re-litigate).**
 - Coordinating ZAP responses with allowlist updates: not needed —
   `set_peer_allowlist` already atomic per §6.5 producer-side flow.
-- Backpressure on the BRC poll thread: not needed — pumping is
-  non-blocking, pure local work.
-- Dedicated ZAP thread: not needed — HEP-0036 §7.1 explicitly says
-  pump from an existing poll thread.
+- Backpressure on the pump thread: not needed — pumping is
+  non-blocking, pure local work, idle-tick 100ms.
 
 **Depends on:** AUTH-1 (without producer pubkey emission in D5, no
 consumer attempts CURVE handshake against the producer ROUTER, so
 the pump has nothing to service).
+
+**Validation:** L2 (1478) + L3 (265) + L4 (128) + Pattern 4 (4)
+all green; `PlhRoleInitTest.InitOutputValidates/producer` passes
+after the dep-registration preflight fix.
 
 ### AUTH-3 — Authorized state + data-loop outer guard
 

@@ -3364,17 +3364,40 @@ return ALLOW or DENY.
   note).  The broker installs its CTRL admission **before**
   `router.bind()` for the same reason.
 - Two pumping sites, by design:
-  - **Broker CTRL ROUTER ZAP** — `ZapRouter::pump_one(0ms)` runs on
-    the broker poll thread, called once per `zmq::poll` cycle (D2;
-    `broker_service.cpp`).
-  - **Producer-side data ROUTER ZAP** — runs on the BRC poll thread
-    in the role process (D4+; pending).
+  - **Broker process — CTRL ROUTER ZAP** — `ZapRouter::pump_one(0ms)`
+    runs on the broker poll thread, called once per `zmq::poll`
+    cycle (D2; `broker_service.cpp`).  The broker has a single
+    pollable thread and integrates `pump_one` directly into it.
+  - **Role process — data ROUTER ZAP** — dedicated
+    `ZapPumpThread` lifecycle module (AUTH-2 / #162, 2026-06-16).
+    `plh_role_main` loads the module after `KeyStore` construction;
+    the module's startup thunk spawns a process-singleton
+    `std::jthread` that loops `pump_one(100ms)` until shutdown.
+    The module depends on `ZapRouter`, so the dep graph guarantees
+    `ZapRouter` is loaded (REP socket bound) before the pump
+    thread starts.
   Rationale: (a) cache reads and `GET_CHANNEL_AUTH_ACK`-driven
   writes happen on the same thread per pumping site, no
   synchronization needed;
-  (b) those poll threads already exist; (c) the inproc REP socket
-  is single-process so one pumper per process is sufficient
-  regardless of how many domains are registered.
+  (b) the broker has one natural poll thread already, but the role
+  process can have MULTIPLE BRC poll threads (dual-hub processor
+  has two BRCs); a dedicated pump thread preserves the
+  single-pumper invariant by construction without coordination
+  logic between BRCs;
+  (c) the inproc REP socket is single-process so one pumper per
+  process is sufficient regardless of how many domains are
+  registered.
+
+  **Why not "one BRC pumps" in the role process?**  Considered and
+  rejected for AUTH-2.  The naive wiring (each BRC's poll loop
+  calls `pump_one(0ms)`) would PLH_PANIC on dual-hub processors
+  the moment two CURVE handshakes raced.  A coordinated election
+  (atomic active_pumper + takeover-on-exit) would work but adds
+  coordination machinery that gets ripped out and replaced if
+  ever moving to a dedicated thread.  The dedicated thread is
+  invariant-preserving by construction across single-BRC roles
+  (producer/consumer) AND multi-BRC roles (processor) — same
+  primitive, no special cases.
 
 ### 7.2 Cache contract
 
@@ -3409,16 +3432,17 @@ The `ZapRouter` ZAP REP server is a process-singleton that routes
 authenticated CURVE handshakes from libzmq to per-domain
 `PeerAdmission` decisions.  Three architectural invariants — quietly
 contractual before Slice A — are now enforced at the call sites in
-`zap_router.cpp`.  The invariants exist because Slice A's `pump_one`
-will run on the BRC poll thread once AUTH-2 (#162) lands; any latent
-race that was dormant in test-only `ZapPumpThread` mode becomes a
-live UAF or FSM corruption under AUTH-2.
+`zap_router.cpp`.  The invariants exist because `pump_one` runs
+on a dedicated process-singleton pump thread once AUTH-2 (#162)
+lands; any latent race that was dormant in test-only
+`ZapPumpThread` mode becomes a live UAF or FSM corruption under
+AUTH-2's role-side production wiring.
 
 | # | Invariant | Enforcement | Failure when violated |
 |---|---|---|---|
 | 1 | **Admission-reference lifetime.** The `PeerAdmission &` looked up by domain (via `DomainRoutingTable::with_admission`, which stores `std::reference_wrapper<PeerAdmission>` — non-owning, non-null by construction; `register_domain` takes `PeerAdmission &`) is valid for the duration of the `is_peer_allowed(...)` call. | `DomainRoutingTable::with_admission` holds the routing table's `shared_mutex` in shared mode across the admission callback. `~ZapDomainHandle` → `unregister_domain_` → `DomainRoutingTable::unregister_domain` takes the same mutex in unique mode, so the destructor blocks until any in-flight admission completes. | (Pre-fix) Handshake-vs-teardown race → UAF on the freed queue's vtable. |
 | 2 | **`is_peer_allowed` reentrance.** The admission implementer MUST run synchronously on the calling thread; MUST NOT call back into `ZapRouter::register_domain` or trigger destruction of any `ZapDomainHandle`. | `pump_one` pushes a `RecursionGuard` keyed to the router (thread-local stack per `recursion_guard.hpp`). `register_domain` refuses + logs + returns an inactive handle. `unregister_domain_` PLH_PANICs (a destructor can't react to a refusal). | (Pre-fix) Reentrant `register_domain` hits `std::shared_mutex` UB (same thread holds shared, requests unique). Reentrant unregister leaves a dangling map entry → UAF on next pump. |
-| 3 | **Single-pumper FSM contract.** At most one thread is inside `pump_one` at a time. | `pump_one` increments an atomic counter on entry; PLH_PANIC if the post-increment value > 1. RAII scope-guard ensures decrement on every exit path. | (Pre-fix) Two pumpers concurrently call `recv_multipart` on the inproc REP socket — libzmq's REP FSM is single-thread; the FSM tears silently and subsequent recv throws EFSM. |
+| 3 | **Single-pumper FSM contract.** At most one thread is inside `pump_one` at a time. | `pump_one` increments an atomic counter on entry; PLH_PANIC if the post-increment value > 1. RAII scope-guard ensures decrement on every exit path. **Production wiring preserves by construction:** broker uses its single CTRL poll thread; the role process uses the `ZapPumpThread` dynamic lifecycle module (AUTH-2 / #162) which spawns exactly one pump thread regardless of how many BRCs the role has. | (Pre-fix) Two pumpers concurrently call `recv_multipart` on the inproc REP socket — libzmq's REP FSM is single-thread; the FSM tears silently and subsequent recv throws EFSM. |
 
 Reentrance contract for `PeerAdmission::is_peer_allowed`
 implementers is encoded in `peer_admission.hpp` doc-comment (§Reentrance

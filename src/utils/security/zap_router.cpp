@@ -159,6 +159,25 @@ ZapRouter &ZapRouter::instance()
 
 const char *ZapRouter::module_name() noexcept { return kZapModuleName; }
 
+void ZapRouter::ensure_module_registered()
+{
+    // Same pattern as register_domain's registration block, but
+    // without the domain bookkeeping.  Used by ZapPumpThread to
+    // guarantee its dep is in the registry before LoadModule runs.
+    auto &self = instance();
+    std::lock_guard<std::mutex> lk(self.impl_->lifecycle_mu);
+    if (self.impl_->module_registered.load(std::memory_order_acquire))
+        return;
+    if (!pylabhub::utils::LifecycleManager::instance()
+            .register_dynamic_module(make_module_def_()))
+    {
+        LOGGER_WARN("ZapRouter::ensure_module_registered: "
+                    "register_dynamic_module returned false — module "
+                    "may already be registered in this lifecycle cycle");
+    }
+    self.impl_->module_registered.store(true, std::memory_order_release);
+}
+
 // ── Lifecycle thunks → instance methods ─────────────────────────────────────
 
 void ZapRouter::lifecycle_startup_thunk(const char * /*name*/,
@@ -581,5 +600,118 @@ ZapPumpThread::ZapPumpThread(std::chrono::milliseconds tick)
 }
 
 ZapPumpThread::~ZapPumpThread() = default;
+
+// ── ZapPumpThread lifecycle module API ─────────────────────────────────────
+//
+// Process-singleton pump owned by the LifecycleManager.  Two activation
+// modes coexist on the SAME class:
+//
+//   * Direct RAII (tests, demos): `ZapPumpThread pump;` — destructor joins.
+//   * Lifecycle module (production: `plh_role_main`): startup thunk
+//     emplaces `g_module_pump_`, shutdown thunk destroys it.
+//
+// `pump_one`'s atomic counter PLH_PANICs if both modes are active in the
+// same process — that's the single-pumper safety net per HEP-CORE-0036 §7.4.
+// We intentionally do NOT add a soft preflight check here: the runtime
+// PANIC is the canary the design relies on.  See zap_router.hpp's
+// "Two activation modes" docstring on `ZapPumpThread`.
+
+constexpr const char *kZapPumpThreadModuleName = "ZapPumpThread";
+
+namespace {
+
+// File-scope singleton storage for the lifecycle-module-managed pump.
+// std::optional gives us emplace/reset semantics matching the
+// startup/shutdown thunks.  Mutex guards against the (unlikely)
+// concurrent LoadModule / UnloadModule race.
+std::mutex                       g_module_mu_;
+std::optional<ZapPumpThread>     g_module_pump_;
+std::atomic<bool>                g_module_registered_{false};
+
+} // namespace
+
+const char *ZapPumpThread::module_name() noexcept
+{
+    return kZapPumpThreadModuleName;
+}
+
+void ZapPumpThread::lifecycle_startup_thunk(const char * /*name*/,
+                                              void * /*userdata*/)
+{
+    std::lock_guard<std::mutex> lk(g_module_mu_);
+    if (g_module_pump_.has_value())
+        return;  // idempotent — persistent module may re-startup
+    g_module_pump_.emplace();   // default tick (100 ms shutdown cadence)
+    LOGGER_INFO("[ZapPumpThread] event=ModuleStartup pumper running "
+                "(production path; pumps {})", kZapModuleName);
+}
+
+void ZapPumpThread::lifecycle_shutdown_thunk(const char * /*name*/,
+                                               void * /*userdata*/)
+{
+    std::lock_guard<std::mutex> lk(g_module_mu_);
+    if (!g_module_pump_.has_value())
+        return;
+    g_module_pump_.reset();     // jthread destructor joins
+    LOGGER_INFO("[ZapPumpThread] event=ModuleShutdown pumper joined");
+    // Allow re-registration in a future LifecycleGuard cycle.
+    g_module_registered_.store(false, std::memory_order_release);
+}
+
+pylabhub::utils::ModuleDef ZapPumpThread::make_module_def_()
+{
+    pylabhub::utils::ModuleDef def(kZapPumpThreadModuleName);
+    // Depend on ZapRouter so the dep graph guarantees:
+    //   startup order: ZapRouter starts → ZapPumpThread starts
+    //   shutdown order: ZapPumpThread stops → ZapRouter stops
+    // No risk of pumping a destroyed REP socket.
+    def.add_dependency(kZapModuleName);
+    def.set_startup(ZapPumpThread::lifecycle_startup_thunk);
+    def.set_shutdown(ZapPumpThread::lifecycle_shutdown_thunk,
+                     std::chrono::milliseconds(500));
+    // Persistent: don't tear down on ref_count==0; only on finalize.
+    def.set_as_persistent(true);
+    return def;
+}
+
+void ZapPumpThread::ensure_registered_and_loaded()
+{
+    // Ensure our dep (ZapRouter) is in the dynamic registry first.
+    // ZapRouter registers itself lazily on `register_domain`, but
+    // we're loading at role-startup BEFORE any CURVE socket has been
+    // created; without this preflight, LoadModule below would fail
+    // to resolve the dep.  Idempotent — second-and-later calls are
+    // no-ops.
+    ZapRouter::ensure_module_registered();
+
+    // Register the dynamic module exactly once per process.  Subsequent
+    // calls are no-ops (idempotent).  Lazy bind to LifecycleManager —
+    // we don't drag the dep in at static-init time.
+    {
+        std::lock_guard<std::mutex> lk(g_module_mu_);
+        if (!g_module_registered_.load(std::memory_order_acquire))
+        {
+            if (!pylabhub::utils::LifecycleManager::instance()
+                    .register_dynamic_module(make_module_def_()))
+            {
+                LOGGER_WARN(
+                    "ZapPumpThread: register_dynamic_module returned "
+                    "false — module may already be registered in this "
+                    "lifecycle cycle");
+            }
+            g_module_registered_.store(true,
+                                         std::memory_order_release);
+        }
+    }
+
+    // LoadModule pulls in ZapRouter as a dependency (which binds the
+    // inproc REP socket) before running our startup thunk (which
+    // emplaces the pump thread).  Throws on failure — a role that
+    // can't authenticate CURVE clients shouldn't keep running.
+    if (!pylabhub::utils::LoadModule(kZapPumpThreadModuleName))
+        throw std::runtime_error(
+            "ZapPumpThread::ensure_registered_and_loaded: LoadModule('" +
+            std::string(kZapPumpThreadModuleName) + "') failed");
+}
 
 } // namespace pylabhub::utils::security

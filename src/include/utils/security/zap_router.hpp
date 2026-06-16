@@ -111,6 +111,20 @@ public:
     /// the life of the process.
     static const char *module_name() noexcept;
 
+    /// Idempotently register the `ZapRouter` dynamic module with
+    /// `LifecycleManager` WITHOUT registering a domain.  Used by
+    /// `ZapPumpThread::ensure_registered_and_loaded()` to guarantee
+    /// the dep is in the registry before its `LoadModule` runs —
+    /// without this, the role process would load the pump module at
+    /// startup while no CURVE socket has yet triggered the lazy
+    /// registration that `register_domain` does.
+    ///
+    /// Idempotent: if the module is already registered, returns
+    /// without effect.  Module is only LOADED (and the REP socket
+    /// bound) when a subsequent `LoadModule` is called — either via
+    /// `register_domain` or via `ZapPumpThread`'s startup thunk.
+    static void ensure_module_registered();
+
     /// Register @p admission as the PeerAdmission for ZAP requests
     /// carrying `zap_domain == @p domain`.  Thread-safe (internal
     /// mutex serializes mutations of the routing table).
@@ -243,33 +257,66 @@ private:
     std::string  domain_;
 };
 
-/// RAII helper for tests + demos that don't already have a long-
-/// running event loop.  Spawns a single `std::jthread` that loops
+/// Spawns a single `std::jthread` that loops
 /// `ZapRouter::instance().pump_one(tick)` until the destructor's
 /// `stop_token` is requested (`std::jthread`'s destructor handles
-/// the stop + join automatically).  Note: the pump body blocks in
-/// `recv_multipart` for up to `tick` per iteration, so worst-case
+/// the stop + join automatically).  The pump body blocks in
+/// `recv_multipart` for up to `tick` per iteration; worst-case
 /// teardown wait is one `tick` interval (100 ms by default) before
-/// the loop top observes the stop request.
+/// the loop top observes the stop request.  **ZAP requests
+/// themselves get handled with ~zero latency** — `recv_multipart`
+/// wakes immediately when a request arrives.  `tick` only governs
+/// the shutdown-check cadence.
 ///
-/// **`ZapPumpThread` is intentionally NOT registered with a
-/// `ThreadManager`** (see `utils/thread_manager.hpp`).  It's a
-/// test/demo helper whose lifetime is bounded by the enclosing scope
-/// (a subprocess in Pattern-3 tests, a `main()` frame in a demo);
-/// bounded-shutdown + per-thread diagnostics are not load-bearing
-/// for this use case.  **Production threads that host
-/// `pump_one`** — e.g. the BRC poll thread post-AUTH-2 (#162), the
-/// broker's main poll thread — MUST be `ThreadManager`-spawned for
-/// bounded shutdown + diagnostics + lifecycle ordering.  The
-/// `jthread` body shape adopted here is itself a valid pattern for
-/// future "loop until stop" threads inside a `ThreadManager` slot;
-/// see HEP-CORE-0031 §4.1 for how `SlotContext::shutdown_requested()`
-/// composes with the cooperative `stop_token` idiom.
+/// ## Two activation modes (since AUTH-2 / #162, 2026-06-16)
 ///
-/// Production binaries (`plh_hub`, `plh_role`) do NOT use this —
-/// they integrate `pump_one` into their existing main event loops
-/// (Phase D).  Using both at once would violate the single-pumping-
-/// thread invariant.
+/// 1. **Direct RAII** — `ZapPumpThread pump;` constructs and starts
+///    the thread immediately; destructor joins.  Used by tests,
+///    L2/L3 fixtures that don't bring up the full LifecycleGuard
+///    stack, and demos.  Lifetime is the enclosing scope.
+///
+/// 2. **Lifecycle module** — `ZapPumpThread::ensure_registered_and_loaded()`
+///    registers `ZapPumpThread` as a dynamic LifecycleManager module
+///    (depends on `ZapRouter`) and loads it.  The module's startup
+///    thunk constructs a process-singleton `ZapPumpThread` instance;
+///    shutdown joins it.  This is the **production** path for the
+///    role-host binary (`plh_role`).
+///
+/// ### Production binary policy (single-pumper invariant)
+///
+/// Each process picks **one** pump strategy per the single-pumper
+/// invariant (HEP-CORE-0036 §7.1, §7.4):
+///
+/// - **`plh_role` / processor / consumer** — call
+///   `ZapPumpThread::ensure_registered_and_loaded()` in `main()`
+///   after `KeyStore` construction.  The lifecycle module owns
+///   one pump thread for the life of the process.  Multi-BRC roles
+///   (dual-hub processor) work by construction — the single thread
+///   serves every CURVE handshake regardless of which BRC's owned
+///   socket received the connect.
+/// - **`plh_hub`** — does NOT load this module.  The broker has its
+///   own integrated `pump_one(0ms)` call in its main poll loop
+///   (`broker_service.cpp`).  Loading the module here would create
+///   two pumpers in the same process and `pump_one`'s atomic
+///   counter would `PLH_PANIC` on the first concurrent ZAP request.
+/// - **Tests** — either use the direct-RAII helper (cheap, scoped)
+///   OR load the module (production-path validation).  Mixing both
+///   in one process PANICs by the same single-pumper invariant —
+///   which is exactly the safety net that catches the bug.
+///
+/// ### Threading model
+///
+/// The pump thread is a `std::jthread`, NOT a `ThreadManager`-
+/// managed slot.  Rationale: the thread does one thing forever
+/// (loop `pump_one`), has no per-tick diagnostics worth exposing,
+/// and its stop+join is fully handled by the `jthread` destructor
+/// (`stop_token` is cooperative).  The `ThreadManager` thread-
+/// shutdown contract (HEP-CORE-0031 §4.1) governs threads that
+/// touch role state during teardown; this thread touches only
+/// ZapRouter (which itself outlives the pump per the lifecycle
+/// dependency edge).
+///
+/// ### Direct-RAII usage notes (tests + demos)
 ///
 /// Construct AFTER `LifecycleGuard` is up AND at least one
 /// `register_domain` call has been made (so the inproc REP socket
@@ -293,7 +340,35 @@ public:
     ZapPumpThread(ZapPumpThread &&)                 = delete;
     ZapPumpThread &operator=(ZapPumpThread &&)      = delete;
 
+    // ── Lifecycle module API (AUTH-2 / #162, 2026-06-16) ──────────────
+
+    /// Module name as registered with LifecycleManager.  Exposed for
+    /// test fixtures that want to query module state.  Stable for
+    /// the life of the process.
+    [[nodiscard]] static const char *module_name() noexcept;
+
+    /// Register `ZapPumpThread` as a dynamic LifecycleManager module
+    /// (depends on `ZapRouter`) and `LoadModule` it.  Idempotent.
+    ///
+    /// After this call, a **process-singleton** `ZapPumpThread`
+    /// instance is running, pumping `ZapRouter` for the life of the
+    /// process (the module is persistent).
+    ///
+    /// Call site: `plh_role_main` after `KeyStore` construction.
+    /// MUST NOT be called in `plh_hub_main` — the broker has its own
+    /// integrated `pump_one` call in its main poll loop; loading
+    /// this module in the broker would PANIC the moment two ZAP
+    /// requests race (single-pumper invariant).
+    ///
+    /// Throws `std::runtime_error` on `LoadModule` failure.
+    static void ensure_registered_and_loaded();
+
 private:
+    // ── Lifecycle thunks (free-function ABI to LifecycleManager) ──────
+    static void lifecycle_startup_thunk(const char *name, void *userdata);
+    static void lifecycle_shutdown_thunk(const char *name, void *userdata);
+    static pylabhub::utils::ModuleDef make_module_def_();
+
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

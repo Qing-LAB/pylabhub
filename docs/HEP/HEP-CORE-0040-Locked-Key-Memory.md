@@ -840,7 +840,7 @@ SecureMemorySubsystem + KeyStore follow the HEP-0001 LifecycleModule contract (C
 | 11 | #174 | HubAPI: do NOT add `auth_client_pubkey()` / `auth_client_seckey()` accessors (round-5 design — neither needed).  No code change; this task closes as "no-op confirmed by design" once #170+#172 land. |
 | 12 | #102 close | After 4–11 land, close #102 (utility-only §4.7 plan fully absorbed). |
 | 13 | C-chain resume | After #173 lands, resume C1 (#157 strict validator deletes 5 empty-skip conditionals + silent-ignore) → C2 (#158 Z85PublicKey strong type for non-keypair pubkey fields) → C4 (#160 delete legacy factories + ZmqAuthOptions + migrate 103 test sites) → C5 (#161 CURVE-engagement assertions). |
-| 14 | HB chain | HB-2 (#162 producer-side ZAP pump on BRC poll thread) → HB-3 (folds into A3 / #103 D4 wiring) → HB-4+5 (#163 Authorized state + data-loop guard) → HB-6 (#164 random shm_secret). |
+| 14 | HB chain | HB-2 (#162 role-side ZAP pump via dedicated `ZapPumpThread` dynamic lifecycle module — NOT on BRC poll thread, see HEP-CORE-0036 §7.1 for the multi-BRC rationale) → HB-3 (folds into A3 / #103 D4 wiring) → HB-4+5 (#163 Authorized state + data-loop guard) → HB-6 (#164 random shm_secret). |
 
 ---
 

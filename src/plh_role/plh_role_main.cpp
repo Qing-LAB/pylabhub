@@ -46,6 +46,7 @@
 #include "utils/script_engine_factory.hpp"  // scripting::init_scripting / ensure_python
 #include "utils/security/key_store.hpp"               // HEP-CORE-0040 §172
 #include "utils/security/secure_memory_subsystem.hpp" // HEP-CORE-0040 §4
+#include "utils/security/zap_router.hpp"              // ZapPumpThread (AUTH-2 / #162)
 #include "utils/thread_manager.hpp"  // process_detached_count for exit code
 #include "../scripting/python_interpreter_module.hpp"  // ensure_python_interpreter_loaded
 
@@ -318,6 +319,22 @@ int main(int argc, char *argv[])
     namespace sec = pylabhub::utils::security;
     sec::SecureMemorySubsystem sms;
     sec::KeyStore              ks("role", c.identity().uid);
+
+    // ── ZapPumpThread lifecycle module (AUTH-2 / #162) ─────────────────
+    // HEP-CORE-0036 §7.1 + §7.4 — every CURVE-server socket in this
+    // process needs the singleton ZAP REP socket pumped.  Roles use
+    // the dedicated `ZapPumpThread` lifecycle module (which depends
+    // on `ZapRouter`) because the role process has multiple BRC
+    // poll loops on dual-hub processors; running pump_one on any one
+    // BRC would race the others on the single REP socket (single-
+    // pumper invariant PANIC).  The lifecycle-managed jthread is
+    // process-singleton by construction; multi-BRC processors are
+    // served by the one thread for free.
+    //
+    // `plh_hub_main` deliberately does NOT load this module — the
+    // broker has its own integrated `pump_one(0ms)` call in its main
+    // poll loop (`broker_service.cpp`), and loading both would PANIC.
+    sec::ZapPumpThread::ensure_registered_and_loaded();
 
     // ── Auth: unlock vault (run AND --validate) ────────────────────────
     // HEP-CORE-0035 §2 (gatekeeper / clearance model) +
