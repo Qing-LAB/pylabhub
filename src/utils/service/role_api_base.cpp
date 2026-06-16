@@ -651,7 +651,7 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
         // Standby->Configured + Configured->Active markers that
         // apply_master_approval emits internally — matching the rung
         // 4 expected sequence order.
-        LOGGER_INFO("[{}] CONSUMER_REG_ACK received channel='{}' "
+        LOGGER_INFO("[{}] event=ConsumerRegAckReceived channel='{}' "
                     "status={} producers={}",
                     pImpl->role_tag,
                     ack.value("channel_name", "?"),
@@ -1157,7 +1157,7 @@ RoleAPIBase::register_producer_channel(const nlohmann::json &opts, int timeout_m
         presence->registration_state.store(
             RegistrationState::RegRequestPending,
             std::memory_order_release);
-        LOGGER_INFO("[{}] presence channel='{}' state Unregistered->RegRequestPending (REG_REQ sending)",
+        LOGGER_INFO("[{}] event=PresenceStateTransition channel='{}' role_type=producer from=Unregistered to=RegRequestPending trigger=REG_REQ_sending",
                     pImpl->role_tag, ch);
     }
 
@@ -1180,7 +1180,7 @@ RoleAPIBase::register_producer_channel(const nlohmann::json &opts, int timeout_m
                      result->value("error_code", std::string{}),
                      result->value("message", std::string{}));
     else
-        LOGGER_INFO("[{}] REG_ACK received channel='{}' status=success initial_allowlist={}",
+        LOGGER_INFO("[{}] event=RegAckReceived channel='{}' status=success initial_allowlist={}",
                     pImpl->role_tag, opts.value("channel_name", "?"),
                     result->value("initial_allowlist",
                                   nlohmann::json::array()).dump());
@@ -1190,7 +1190,7 @@ RoleAPIBase::register_producer_channel(const nlohmann::json &opts, int timeout_m
         const auto new_state = registered ? RegistrationState::Registered
                                           : RegistrationState::Unregistered;
         presence->registration_state.store(new_state, std::memory_order_release);
-        LOGGER_INFO("[{}] presence channel='{}' state RegRequestPending->{}",
+        LOGGER_INFO("[{}] event=PresenceStateTransition channel='{}' role_type=producer from=RegRequestPending to={}",
                     pImpl->role_tag, ch, to_string(new_state));
     }
     return result;
@@ -1249,9 +1249,9 @@ RoleAPIBase::register_consumer(const nlohmann::json &opts, int timeout_ms)
         presence->registration_state.store(
             RegistrationState::RegRequestPending,
             std::memory_order_release);
-        LOGGER_INFO("[{}] presence channel='{}' role_type=consumer state "
-                    "Unregistered->RegRequestPending (CONSUMER_REG_REQ "
-                    "sending)",
+        LOGGER_INFO("[{}] event=PresenceStateTransition channel='{}' "
+                    "role_type=consumer from=Unregistered "
+                    "to=RegRequestPending trigger=CONSUMER_REG_REQ_sending",
                     pImpl->role_tag, ch);
     }
 
@@ -1320,8 +1320,8 @@ RoleAPIBase::register_consumer(const nlohmann::json &opts, int timeout_ms)
                                           : RegistrationState::Unregistered;
         presence->registration_state.store(new_state,
                                            std::memory_order_release);
-        LOGGER_INFO("[{}] presence channel='{}' role_type=consumer state "
-                    "RegRequestPending->{}",
+        LOGGER_INFO("[{}] event=PresenceStateTransition channel='{}' "
+                    "role_type=consumer from=RegRequestPending to={}",
                     pImpl->role_tag, ch, to_string(new_state));
     }
     return result;
@@ -1980,7 +1980,7 @@ void RoleAPIBase::stop_handler_threads() noexcept
               std::chrono::steady_clock::now() - pImpl->heartbeat_install_at_)
               .count()
         : 0;
-    LOGGER_INFO("[{}] heartbeat counter: sent={} over {}ms (since install)",
+    LOGGER_INFO("[{}] event=HeartbeatCounterReport sent={} over={}ms (since install)",
                 pImpl->role_tag, sent, since);
     LOGGER_INFO("[{}] stop_handler_threads: COMPLETE", pImpl->role_tag);
 }

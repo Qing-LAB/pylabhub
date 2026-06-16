@@ -203,12 +203,12 @@ TEST_F(Pattern4HeartbeatTest, CadenceNegotiatedAndSteadyState)
     expect_log_sequence(
         shared_log,
         {
-            "presence channel='hb.test' state Unregistered->RegRequestPending",
-            fmt::format("Broker: REG_REQ accepted role='{}' channel='hb.test'",
+            "event=PresenceStateTransition channel='hb.test' role_type=producer from=Unregistered to=RegRequestPending",
+            fmt::format("event=RegReqAccepted role='{}' channel='hb.test'",
                         role_uid),
-            "Broker: REG_ACK sending channel='hb.test' heartbeat_interval_ms=",
-            "REG_ACK received channel='hb.test' status=success",
-            "presence channel='hb.test' state RegRequestPending->Registered",
+            "event=RegAckSending channel='hb.test' heartbeat_interval_ms=",
+            "event=RegAckReceived channel='hb.test' status=success",
+            "event=PresenceStateTransition channel='hb.test' role_type=producer from=RegRequestPending to=Registered",
             // role_cfg (1000ms) > hub_max (500ms) so the role logs
             // the DOWNGRADE-to-hub-max WARN, not the "aligned with
             // hub" INFO.  This IS axis-1 negotiation: hub authority
@@ -234,7 +234,7 @@ TEST_F(Pattern4HeartbeatTest, CadenceNegotiatedAndSteadyState)
     expect_log_sequence(
         shared_log,
         {
-            "heartbeat counter: sent=",                  // role side
+            "event=HeartbeatCounterReport sent=",        // role side
             "Pattern4Broker: counter snapshot ",         // broker side, any tick
         },
         milliseconds{kMidTimeoutMs});
@@ -248,7 +248,7 @@ TEST_F(Pattern4HeartbeatTest, CadenceNegotiatedAndSteadyState)
     // Axis 1 — Negotiation: install_interval ≤ ack_interval.  Role cfg
     // is 1000 ms; hub's typical default is 500 ms; expect install at 500.
     const int ack_interval =
-        extract_int_after(log, "Broker: REG_ACK sending channel='hb.test'",
+        extract_int_after(log, "event=RegAckSending channel='hb.test'",
                           "heartbeat_interval_ms=");
     const int install_interval =
         extract_int_after(log, "heartbeat: periodic tick installed at ",
@@ -277,9 +277,9 @@ TEST_F(Pattern4HeartbeatTest, CadenceNegotiatedAndSteadyState)
     // 600-700 ms occasionally.  The tighter local band is the
     // mutation-discipline floor.
     const int sent_count =
-        extract_int_after(log, "heartbeat counter: sent=", "sent=");
+        extract_int_after(log, "event=HeartbeatCounterReport sent=", "sent=");
     const int elapsed_ms =
-        extract_int_after(log, "heartbeat counter: sent=", "over ");
+        extract_int_after(log, "event=HeartbeatCounterReport sent=", "over=");
     // For the broker side, take the LAST snapshot line — the count is
     // monotone non-decreasing, so the latest is the most accurate.
     const int received_count =

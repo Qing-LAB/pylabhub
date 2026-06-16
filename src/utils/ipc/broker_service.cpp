@@ -1130,7 +1130,7 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
             if (resp.contains("heartbeat") && resp["heartbeat"].is_object())
                 hb_interval_ms = resp["heartbeat"].value(
                     "heartbeat_interval_ms", 0);
-            LOGGER_INFO("Broker: REG_ACK sending channel='{}' "
+            LOGGER_INFO("[broker] event=RegAckSending channel='{}' "
                         "heartbeat_interval_ms={} initial_allowlist={}",
                         resp.value("channel_id", "?"),
                         hb_interval_ms,
@@ -1177,7 +1177,7 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
             // to the marker shape (operational diagnostic value).
             const std::string producers_dump =
                 resp.contains("producers") ? resp["producers"].dump() : "[]";
-            LOGGER_INFO("Broker: CONSUMER_REG_ACK sending channel='{}' "
+            LOGGER_INFO("[broker] event=ConsumerRegAckSending channel='{}' "
                         "producers={}",
                         resp.value("channel_name", "?"),
                         producers_dump);
@@ -1959,7 +1959,7 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     // "REG_REQ accepted" marker (rung 2 of Pattern 4 ladder).
     // Pin: role_uid + channel + producer_pubkey identify the registration
     // uniquely; channel_opened distinguishes first-producer vs subsequent.
-    LOGGER_INFO("Broker: REG_REQ accepted role='{}' channel='{}' producer_pubkey='{}' "
+    LOGGER_INFO("[broker] event=RegReqAccepted role='{}' channel='{}' producer_pubkey='{}' "
                 "(pending first heartbeat){}",
                 role_uid, channel_name, producer_pubkey,
                 admission.channel_opened ? " - channel opened"
@@ -2613,7 +2613,7 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     // HEP-CORE-0036 §6.4 — one-shot per accepted CONSUMER_REG_REQ; format
     // parallels REG_REQ accepted (line ~1148) so test harnesses can grep
     // by uid/channel/pubkey.  Pubkey is Z85 (40 chars).
-    LOGGER_INFO("Broker: CONSUMER_REG_REQ accepted role='{}' channel='{}' "
+    LOGGER_INFO("[broker] event=ConsumerRegReqAccepted role='{}' channel='{}' "
                 "consumer_pubkey='{}'",
                 role_uid, channel_name, consumer_pubkey);
     nlohmann::json resp;

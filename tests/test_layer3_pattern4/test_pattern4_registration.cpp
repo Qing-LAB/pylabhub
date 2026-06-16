@@ -139,13 +139,13 @@ TEST_F(Pattern4RegistrationTest, ProducerRegistersAndStateAdvances)
     expect_log_sequence(
         shared_log,
         {
-            "presence channel='reg.test' state Unregistered->RegRequestPending",
-            fmt::format("Broker: REG_REQ accepted role='{}' "
+            "event=PresenceStateTransition channel='reg.test' role_type=producer from=Unregistered to=RegRequestPending",
+            fmt::format("event=RegReqAccepted role='{}' "
                         "channel='reg.test' producer_pubkey='",
                         role_uid),
-            "Broker: REG_ACK sending channel='reg.test'",
-            "REG_ACK received channel='reg.test' status=success initial_allowlist=",
-            "presence channel='reg.test' state RegRequestPending->Registered",
+            "event=RegAckSending channel='reg.test'",
+            "event=RegAckReceived channel='reg.test' status=success initial_allowlist=",
+            "event=PresenceStateTransition channel='reg.test' role_type=producer from=RegRequestPending to=Registered",
         },
         milliseconds{kLongTimeoutMs});
 

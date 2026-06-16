@@ -136,8 +136,8 @@ TEST_F(Pattern4ConsumerLifecycleTest, ConsumerRegistersAndQueueAdvances)
     expect_log_sequence(
         shared_log,
         {
-            fmt::format("presence channel='data.test' state "
-                        "RegRequestPending->Registered"),
+            "event=PresenceStateTransition channel='data.test' "
+            "role_type=producer from=RegRequestPending to=Registered",
             "Broker: first heartbeat received from role='" + producer_uid + "'",
         },
         milliseconds{kLongTimeoutMs});
@@ -170,17 +170,18 @@ TEST_F(Pattern4ConsumerLifecycleTest, ConsumerRegistersAndQueueAdvances)
     expect_log_sequence(
         shared_log,
         {
-            "presence channel='data.test' role_type=consumer state "
-            "Unregistered->RegRequestPending (CONSUMER_REG_REQ sending)",
-            fmt::format("Broker: CONSUMER_REG_REQ accepted role='{}' "
+            "event=PresenceStateTransition channel='data.test' "
+            "role_type=consumer from=Unregistered to=RegRequestPending "
+            "trigger=CONSUMER_REG_REQ_sending",
+            fmt::format("event=ConsumerRegReqAccepted role='{}' "
                         "channel='data.test' consumer_pubkey='",
                         consumer_uid),
-            "Broker: CONSUMER_REG_ACK sending channel='data.test' producers=",
-            "presence channel='data.test' role_type=consumer state "
-            "RegRequestPending->Registered",
-            "CONSUMER_REG_ACK received channel='data.test' status=success",
-            "[hub::ZmqQueue] PULL state Standby->Configured",
-            "[hub::ZmqQueue] PULL state Configured->Active",
+            "event=ConsumerRegAckSending channel='data.test' producers=",
+            "event=PresenceStateTransition channel='data.test' "
+            "role_type=consumer from=RegRequestPending to=Registered",
+            "event=ConsumerRegAckReceived channel='data.test' status=success",
+            "event=QueueStateTransition side=PULL from=Standby to=Configured",
+            "event=QueueStateTransition side=PULL from=Configured to=Active",
         },
         milliseconds{kLongTimeoutMs});
 
