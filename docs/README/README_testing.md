@@ -1047,6 +1047,86 @@ hot path eligible for INFO, ask "could this fire >10× in any
 realistic deployment?" — if yes, demote to DEBUG or replace with
 a counter + shutdown summary.
 
+#### Log-marker format convention (test-contract markers)
+
+Pattern 4 tests grep production LOGGER substrings as FSM-transition
+contracts.  Any cosmetic edit to a log line — rewording, reordering,
+adding context — can silently break the tests.  As the test ladder
+accumulates more rungs, the implicit-substring contract grows
+fragile.  Standardize the marker format **before** the next rung
+ships so new markers are born compliant and the contract is
+explicit.
+
+**The convention:**
+
+```cpp
+LOGGER_INFO("[<component>] event=<EventName> field1=<v1> field2=<v2> ...");
+```
+
+Required parts:
+
+1. **`[<component>]` prefix** — already convention (e.g.,
+   `[hub::ZmqQueue]`, `[role_tag]`, `[broker]`).  Identifies the
+   subsystem.
+2. **`event=<EventName>`** — stable PascalCase event token.  This
+   is the part tests grep on.  Once shipped, the event name MUST
+   NOT change without updating every test that pins it.
+3. **`field=value` pairs** — `key='value'` for arbitrary strings
+   (quoted to preserve internal whitespace), `key=value` for
+   enums/integers/identifiers (no quotes).
+
+**Test-contract rules:**
+
+- Tests grep on `event=<EventName>` (or
+  `event=<EventName> field=<expected_value>` for stricter assertions).
+- The substring `event=<X>` is part of the wire contract; do NOT
+  change without updating the corresponding test assertions.
+- Field **labels** (`channel`, `status`, `from`, `to`, `role_uid`,
+  etc.) are part of the contract.
+- Field **order** and surrounding **prose** are NOT part of the
+  contract.  Tests must not grep on word order or punctuation
+  outside the `event=<Name>` and `field=<value>` tokens.
+
+**Migration mapping** for the existing Pattern-4-contract markers
+(applied 2026-06-16):
+
+| Pre-standard | Standardized |
+|---|---|
+| `"CONSUMER_REG_ACK received channel='X' status=Y producers=Z"` | `"[<role>] event=ConsumerRegAckReceived channel='X' status=Y producers=Z"` |
+| `"[hub::ZmqQueue] PULL state Standby->Configured queue='X' endpoint='Y'"` | `"[hub::ZmqQueue] event=QueueStateTransition side=PULL from=Standby to=Configured queue='X' endpoint='Y'"` |
+| `"[hub::ZmqQueue] PULL state Configured->Active ..."` | `"[hub::ZmqQueue] event=QueueStateTransition side=PULL from=Configured to=Active ..."` |
+| `"Broker: REG_REQ accepted role='...' channel='...' producer_pubkey='...'"` | `"[broker] event=RegReqAccepted role='...' channel='...' producer_pubkey='...'"` |
+| `"Broker: REG_ACK sending channel='...' heartbeat_interval_ms=N"` | `"[broker] event=RegAckSending channel='...' heartbeat_interval_ms=N"` |
+| `"REG_ACK received channel='X' status=success initial_allowlist=[]"` | `"[<role>] event=RegAckReceived channel='X' status=success initial_allowlist=[]"` |
+| `"Broker: CONSUMER_REG_REQ accepted role='...' ..."` | `"[broker] event=ConsumerRegReqAccepted role='...' ..."` |
+| `"Broker: CONSUMER_REG_ACK sending channel='X' producers=..."` | `"[broker] event=ConsumerRegAckSending channel='X' producers=..."` |
+| `"heartbeat counter: sent=N over Mms"` | `"[<role>] event=HeartbeatCounterReport sent=N over=Mms"` |
+
+**Test-side grep tokens:**
+
+```cpp
+// Pre-standard (fragile to cosmetic edits):
+expect_log_sequence(log, {
+    "CONSUMER_REG_ACK received channel='data.test'",
+    "[hub::ZmqQueue] PULL state Standby->Configured",
+    "[hub::ZmqQueue] PULL state Configured->Active",
+});
+
+// Standardized (stable across cosmetic edits to surrounding prose):
+expect_log_sequence(log, {
+    "event=ConsumerRegAckReceived channel='data.test'",
+    "event=QueueStateTransition side=PULL from=Standby to=Configured",
+    "event=QueueStateTransition side=PULL from=Configured to=Active",
+});
+```
+
+**For new tests + new production markers:** adopt this format from
+day one.  See task #238 for the migration tracker + rationale.
+**Typed-event framework** (separate task) — the long-horizon path
+to fully decouple test contracts from log strings; this format
+convention is the light-weight first step that captures most of
+the benefit without the framework rewrite.
+
 #### Example skeleton
 
 ```cpp
