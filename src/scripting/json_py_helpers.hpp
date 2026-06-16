@@ -171,4 +171,38 @@ inline py::list peer_list_to_py(const std::vector<AllowedPeer> &peers)
     return out;
 }
 
+/// Mirror of Native engine's `fetch_band_members` (HEP-CORE-0030 broker
+/// RPC `BAND_MEMBERS_REQ`/`_ACK`).  Issues the broker round-trip under
+/// `py::gil_scoped_release`, then unwraps the `{"members": [...]}`
+/// wrapper from `BAND_MEMBERS_ACK` and returns the bare array.
+///
+/// Single source of truth for the wire-unwrap step.  Collapses the
+/// 6 buggy sites that hand-rolled the unwrap as `result->is_array()` —
+/// see task #235 (the broker reply is an OBJECT wrapping the array, so
+/// `is_array()` was always false and contains/count silently returned
+/// false/0 across all 3 role APIs).
+///
+/// Throws `py::value_error` on transport failure (broker unreachable /
+/// not-a-member / unknown channel) to match the existing contains/count
+/// semantics.  Returns an empty array on success-but-no-members.
+///
+/// Native engine equivalent: `native_engine.cpp:572-583`.
+inline nlohmann::json
+fetch_band_members_or_throw(RoleAPIBase *base, const std::string &channel)
+{
+    std::optional<nlohmann::json> reply;
+    {
+        py::gil_scoped_release release;
+        reply = base->band_members(channel);
+    }
+    if (!reply.has_value())
+        throw py::value_error(
+            "band_members transport failure for channel '" + channel + "'");
+    // Broker reply shape (HEP-CORE-0030): { "members": [ {role_uid,
+    // role_name}, ... ] }.  Unwrap the members array; default to empty
+    // array if the field is absent (defensive — should always be
+    // present per the BAND_MEMBERS_ACK schema).
+    return reply->value("members", nlohmann::json::array());
+}
+
 } // namespace pylabhub::scripting::detail

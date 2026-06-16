@@ -88,17 +88,12 @@ bool ProducerAPI::is_in_band(const std::string &channel) const
 bool ProducerAPI::band_member_contains(const std::string &channel,
                                         const std::string &role_uid)
 {
-    std::optional<nlohmann::json> result;
-    {
-        py::gil_scoped_release release;
-        result = base_->band_members(channel);
-    }
-    if (!result.has_value())
-        throw py::value_error("band_members transport failure for channel '" +
-                              channel + "'");
-    if (!result->is_array())
-        return false;
-    for (const auto &m : *result)
+    // Bug fix 2026-06-16 (#235): see ConsumerAPI counterpart.  Raw
+    // broker reply is `{"members": [...]}`; previous `result->is_array()`
+    // check was always false; function silently returned false.
+    const auto members =
+        scripting::detail::fetch_band_members_or_throw(base_, channel);
+    for (const auto &m : members)
         if (m.value("role_uid", std::string{}) == role_uid)
             return true;
     return false;
@@ -106,18 +101,11 @@ bool ProducerAPI::band_member_contains(const std::string &channel,
 
 int ProducerAPI::band_member_count(const std::string &channel)
 {
-    std::optional<nlohmann::json> result;
-    {
-        py::gil_scoped_release release;
-        result = base_->band_members(channel);
-    }
-    if (!result.has_value())
-        throw py::value_error("band_members transport failure for channel '" +
-                              channel + "'");
-    if (!result->is_array())
-        return 0;
+    // Bug fix 2026-06-16 (#235): see ConsumerAPI counterpart.
+    const auto members =
+        scripting::detail::fetch_band_members_or_throw(base_, channel);
     int count = 0;
-    for (const auto &m : *result)
+    for (const auto &m : members)
         if (!m.value("role_uid", std::string{}).empty())
             ++count;
     return count;

@@ -75,17 +75,14 @@ bool ConsumerAPI::is_in_band(const std::string &channel) const
 bool ConsumerAPI::band_member_contains(const std::string &channel,
                                         const std::string &role_uid)
 {
-    std::optional<nlohmann::json> result;
-    {
-        py::gil_scoped_release release;
-        result = base_->band_members(channel);
-    }
-    if (!result.has_value())
-        throw py::value_error("band_members transport failure for channel '" +
-                              channel + "'");
-    if (!result->is_array())
-        return false;
-    for (const auto &m : *result)
+    // Bug fix 2026-06-16 (#235): previously checked `result->is_array()`
+    // on the raw broker reply, which is `{"members": [...]}` — an
+    // object, not an array — so this function silently returned false
+    // for all roles regardless of actual membership.  Helper unwraps
+    // the members array correctly (mirrors Native engine pattern).
+    const auto members =
+        scripting::detail::fetch_band_members_or_throw(base_, channel);
+    for (const auto &m : members)
         if (m.value("role_uid", std::string{}) == role_uid)
             return true;
     return false;
@@ -93,18 +90,13 @@ bool ConsumerAPI::band_member_contains(const std::string &channel,
 
 int ConsumerAPI::band_member_count(const std::string &channel)
 {
-    std::optional<nlohmann::json> result;
-    {
-        py::gil_scoped_release release;
-        result = base_->band_members(channel);
-    }
-    if (!result.has_value())
-        throw py::value_error("band_members transport failure for channel '" +
-                              channel + "'");
-    if (!result->is_array())
-        return 0;
+    // Bug fix 2026-06-16 (#235): same `result->is_array()` nesting bug
+    // as band_member_contains; silently returned 0 for all roles.
+    // Helper unwraps the members array correctly.
+    const auto members =
+        scripting::detail::fetch_band_members_or_throw(base_, channel);
     int count = 0;
-    for (const auto &m : *result)
+    for (const auto &m : members)
         if (!m.value("role_uid", std::string{}).empty())
             ++count;
     return count;
