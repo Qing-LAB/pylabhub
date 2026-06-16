@@ -27,6 +27,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdio>
+#include <cstdlib>  // std::getenv — used by sodium_smoke
 #include <cstring>
 #include <mutex>
 #include <span>
@@ -104,17 +105,57 @@ int sodium_smoke(const char * /*tmpdir*/)
             // We are NOT constructing a KeyStore here — the smoke test is
             // strictly about the allocator, not about KeyStore behavior.
 
+            // Diagnostic branching based on the standard CI env var
+            // (`CI=true` is set by GitHub Actions, GitLab CI, CircleCI,
+            // Buildkite, and most other CI services).  This does NOT
+            // change the assertion semantics — both branches FAIL
+            // loudly on a broken allocator.  It only changes WHERE to
+            // look first, since the two environments have very
+            // different prior probabilities for each failure mode:
+            //
+            //   - In CI: the allocator is almost always broken by
+            //     environment (page-size mismatch, RLIMIT_MEMLOCK,
+            //     libsodium build flags, sandboxing).  A code-side
+            //     regression that broke sodium would show up locally
+            //     first.
+            //   - Locally: the dev workstation environment is stable
+            //     and the more likely cause is a real bug — a
+            //     production-code change introducing memory corruption
+            //     that lands on the sodium allocator, a system
+            //     libsodium being preloaded over our bundled
+            //     libsodium, or a broken libsodium install.
+            //
+            // Misclassifying these wastes triage time.  A "investigate
+            // build flags" hint sent to a local dev whose actual
+            // problem is a memory-corruption regression points them at
+            // the wrong tree.
+            const bool is_ci = (std::getenv("CI") != nullptr);
+            const char *failure_hint = is_ci
+                ? "ENV LIKELY (CI): investigate page-size mismatch, "
+                  "RLIMIT_MEMLOCK, libsodium build flags or sandboxing "
+                  "in the runner image BEFORE chasing KeyStore test "
+                  "failures — the 12-test storm in 2026-06-16 CI had "
+                  "this exact signature."
+                : "REGRESSION LIKELY (local dev): sodium does not break "
+                  "spontaneously on a stable workstation.  Likely "
+                  "causes, in order: (1) a recent production-code "
+                  "change has corrupted the allocator state (look at "
+                  "KeyStore / SecureMemorySubsystem / curve_keypair "
+                  "edits); (2) system libsodium is being loaded over "
+                  "our bundled libsodium (check LD_LIBRARY_PATH and "
+                  "linker output); (3) the libsodium build under "
+                  "third_party/ is stale or corrupt (clean build).  "
+                  "Investigate THIS, NOT environment, before opening "
+                  "an environment ticket.";
+
             for (std::size_t sz : {std::size_t{32},
                                    std::size_t{40},
                                    std::size_t{80}})
             {
                 void *p = ::sodium_malloc(sz);
                 ASSERT_NE(p, nullptr)
-                    << "sodium_malloc(" << sz << ") returned NULL — "
-                    << "library allocator broken in this build/env.  "
-                    << "Investigate RLIMIT_MEMLOCK, page-size, or "
-                    << "libsodium build flags BEFORE chasing KeyStore "
-                    << "test failures.";
+                    << "sodium_malloc(" << sz << ") returned NULL.\n"
+                    << failure_hint;
                 // Touch each byte so a page-protection corruption that
                 // sodium_malloc itself wouldn't catch would SIGSEGV here,
                 // before sodium_free's own assertions run.
@@ -731,11 +772,25 @@ int remove_blocks_behind_in_flight_with_seckey(const char * /*tmpdir*/)
 
             std::atomic<bool> reader_inside{false};
             std::atomic<bool> reader_release{false};
-            // `remove_entered` is set BEFORE ks.remove() — proves the
-            // remover thread was actually scheduled.  Without this, a
-            // late-scheduled remover would leave `remove_returned`
-            // false during the blocking check and the test would
-            // misread "scheduler-delayed" as "lock contract held."
+            // `remove_entered` is set immediately on entry to the
+            // remover thread's lambda body, BEFORE `ks.remove()` is
+            // called.  It proves the remover thread was actually
+            // scheduled — without it, a late-scheduled remover would
+            // leave `remove_returned` false during the blocking check
+            // and the test would misread "scheduler-delayed" as
+            // "lock contract held."
+            //
+            // CAVEAT (R2 from code-review of aeda3b32):
+            // remove_entered=true means "remover thread entered its
+            // lambda" — NOT "remover thread acquired the mutex inside
+            // ks.remove."  A pre-emption window remains between
+            // `remove_entered.store(true)` and the actual lock-take
+            // inside ks.remove.  The test still catches the real
+            // contract regressions (remove doesn't lock at all OR
+            // with_seckey releases the lock before invoking the
+            // callback — both would let remove_returned go true within
+            // 100ms).  We just can't tighten this further without
+            // instrumenting the shared_mutex itself.
             std::atomic<bool> remove_entered{false};
             std::atomic<bool> remove_returned{false};
 

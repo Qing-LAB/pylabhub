@@ -281,8 +281,14 @@ inline void keygen_minimal_hub(const std::filesystem::path &cfg_path)
                     vault_abs = kf_path.is_absolute()
                               ? kf_path
                               : cfg_path.parent_path() / kf_path;
+                    // Existence AND non-zero size: a 0-byte file at the
+                    // vault path (partial-write failure) would otherwise
+                    // read as "vault present" and get misclassified as a
+                    // #242 teardown hang.  Real vaults are hundreds of
+                    // bytes minimum (HEP-CORE-0035 §4.6 vault layout).
                     std::error_code ec;
-                    vault_exists = fs::exists(vault_abs, ec);
+                    vault_exists = fs::exists(vault_abs, ec)
+                                && fs::file_size(vault_abs, ec) > 0;
                 }
             }
         }
