@@ -1280,8 +1280,11 @@ Step 6   — Connect to broker, register, activate the data plane.
               * SHM: when REG_ACK carries shm_secret, calls
                 set_shm_secret() (Standby → Configured); otherwise
                 no-op when the secret was config-supplied at
-                construction (AUTH-1 today; AUTH-4 will route the
-                broker-supplied secret through here).
+                construction (AUTH-1 today; **AUTH-4 retired —
+                superseded by HEP-CORE-0041 capability-transport
+                model; the `set_shm_secret` call site stays until
+                HEP-0041 Phase 1 (#248) lands the replacement
+                attach flow**).
             - On false return: **FATAL**.
             - api_ref.install_heartbeat(period_ms, hub_max).
               Installs a periodic task on the master

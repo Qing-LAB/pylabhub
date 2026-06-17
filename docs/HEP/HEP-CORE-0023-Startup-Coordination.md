@@ -1190,7 +1190,10 @@ Processor:
   → REG_REQ (Hub B)  [role_type="processor"; carries out-side
                        zmq_node_endpoint or shm metadata]
        (registration failure is FATAL)
-  ← REG_ACK            (carries initial_allowlist or shm_secret)
+  ← REG_ACK            (carries initial_allowlist or shm_secret;
+                       NOTE 2026-06-16: `shm_secret` field SUPERSEDED
+                       by HEP-CORE-0041 capability-transport — kept
+                       in this flow until HEP-0041 Phase 1 (#248))
   → apply_master_approval(REG_ACK)   (Standby → Active for the out-side
                                        queue: bind PUSH or start SHM writer;
                                        arm ZAP; seed allowlist)

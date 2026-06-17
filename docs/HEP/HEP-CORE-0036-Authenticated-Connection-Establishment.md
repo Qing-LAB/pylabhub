@@ -6,9 +6,9 @@
 | **Title**       | Authenticated Connection Establishment — Single-Gate Access Control for Control + Data Planes               |
 | **Status**     | 🚧 **DESIGN FINAL; IMPLEMENTATION IN FLIGHT** — T1 / T2 / I9 LOCKED 2026-05-28; DP-Q1 (skip-disconnected push) RETRACTED 2026-06-04 along with the snapshot-push-with-ACK design it gated; D1 (`ChannelAccessIndex` in HubState, commit `cacea477`) + D2 (broker CTRL ROUTER ZAP + federation peer pubkey union, commit `d18d2e91` + close-out) shipped 2026-06-03.  §6.5 channel-auth synchronization wire AMENDED 2026-06-04 from snapshot-push-with-ACK to notify-then-pull (`CHANNEL_AUTH_CHANGED_NOTIFY` + `GET_CHANNEL_AUTH_REQ`/`_ACK`); see §6.5 Amendment block.  Remaining auth chain restructured 2026-06-09 from D3-D7 → AUTH-1..7 numbering in `docs/todo/AUTH_TODO.md` (see §1 Status banner) ⏳; sibling tasks #74 / #94 / #101 ✅ / #102 / #103 + Phase 0-11 in §12.  Open items in §13.1 (federation Q1, audit log Q2) are post-MVP. |
 | **Created**     | 2026-05-26                                                                                                  |
-| **Last revised** | 2026-06-04 — §6.5 wire-frame **AMENDED: snapshot-push-with-ACK → notify-then-pull.**  The retired design (2026-06-02) had the broker push a full-allowlist snapshot and synchronously wait for `CHANNEL_AUTH_UPDATE_ACK` per producer, making the broker for the first time a sync-request initiator on the same ROUTER socket it serves as responder.  The new design splits into a fire-and-forget `CHANNEL_AUTH_CHANGED_NOTIFY` (broker→producer; same shape as existing `CHANNEL_CLOSING_NOTIFY` etc.) plus a standard `GET_CHANNEL_AUTH_REQ`/`GET_CHANNEL_AUTH_ACK` request-reply (producer pulls when it cares).  No new protocol patterns; broker stays a pure responder; producer-offline becomes the same code path as the existing `REG_ACK.initial_allowlist` reconnect re-sync.  Drift window honestly equivalent.  See §6.5 "Amendment 2026-06-04" block for the full rationale.  Prior revision 2026-06-02 (delta→snapshot; now superseded) preserved in git history.  Prior revision 2026-05-28 — T1 RESOLVED: symmetric identity-keypair design (broker mints nothing on data plane; both sides reuse their identity keys; SHM keeps broker-generated `shm_secret`).  Prior revision 2026-05-27 — two-conditions gate explicit; revocation reframed as passive (no force-close); inbox/bands inheritance; channels-are-dynamic non-goal; manual pubkey distribution MVP. |
+| **Last revised** | 2026-06-16 — **SHM auth contract delegated to HEP-CORE-0041 (SHM Channel Auth).**  The body of HEP-0036 still describes a broker-minted `shm_secret` (uint64 token transported in `CONSUMER_REG_ACK`) as the SHM Layer-3 artifact — that design is now SUPERSEDED.  See §1 "Amendment 2026-06-16" block for the rationale and the formal pointer to HEP-0041 §9 (D1-D8 decision table) and §10 (phased rollout).  Net effect: AUTH-4 (broker-issued random `shm_secret` end-to-end) is RETIRED as an HEP-0036 deliverable and replaced by HEP-0041's capability-transport model (FD-passing for memfd; HANDLE duplication for Windows; `SHM_ANON` for macOS).  All other HEP-0036 invariants (I1-I12) remain unchanged; the SHM-specific clauses in §3.5.5 stage S3 SHM-consumer path, §I4 SHM-consumer bullet, §I6 "ONE exception is SHM" paragraph, §5.6, §6.4 CONSUMER_REG_ACK SHM shape, §11 transition table SHM row, §10 phasing references to `shm_secret`, §I6 `ChannelAccessEntry::shm_secret{0}` field, §3.5.5 S3 SHM step, and `apply_master_approval`/`set_shm_secret` API surface are now informational-historical; the active contract lives in HEP-0041.  Prior revision 2026-06-04 — §6.5 wire-frame **AMENDED: snapshot-push-with-ACK → notify-then-pull.**  The retired design (2026-06-02) had the broker push a full-allowlist snapshot and synchronously wait for `CHANNEL_AUTH_UPDATE_ACK` per producer, making the broker for the first time a sync-request initiator on the same ROUTER socket it serves as responder.  The new design splits into a fire-and-forget `CHANNEL_AUTH_CHANGED_NOTIFY` (broker→producer; same shape as existing `CHANNEL_CLOSING_NOTIFY` etc.) plus a standard `GET_CHANNEL_AUTH_REQ`/`GET_CHANNEL_AUTH_ACK` request-reply (producer pulls when it cares).  No new protocol patterns; broker stays a pure responder; producer-offline becomes the same code path as the existing `REG_ACK.initial_allowlist` reconnect re-sync.  Drift window honestly equivalent.  See §6.5 "Amendment 2026-06-04" block for the full rationale.  Prior revision 2026-06-02 (delta→snapshot; now superseded) preserved in git history.  Prior revision 2026-05-28 — T1 RESOLVED: symmetric identity-keypair design (broker mints nothing on data plane; both sides reuse their identity keys; SHM keeps broker-generated `shm_secret`).  Prior revision 2026-05-27 — two-conditions gate explicit; revocation reframed as passive (no force-close); inbox/bands inheritance; channels-are-dynamic non-goal; manual pubkey distribution MVP. |
 | **Area**        | Framework Architecture (broker access control, role-side CURVE wiring, data-plane peer authentication)      |
-| **Depends on**  | HEP-CORE-0021 (ZMQ Endpoint Registry — endpoint discovery via broker), HEP-CORE-0035 (Hub-Role Authentication — broker-side ZAP + pubkey index), HEP-CORE-0023 (Startup Coordination — presence FSM) |
+| **Depends on**  | HEP-CORE-0021 (ZMQ Endpoint Registry — endpoint discovery via broker), HEP-CORE-0035 (Hub-Role Authentication — broker-side ZAP + pubkey index), HEP-CORE-0023 (Startup Coordination — presence FSM), HEP-CORE-0040 (Locked Key Memory — KeyStore/LockedKey for role identity secrets), HEP-CORE-0041 (SHM Channel Auth — cross-platform capability-transport SHM auth; supersedes HEP-0036's shm_secret model) |
 | **Blocks**      | Production deployment (data plane currently unauthenticated; see §3 gap analysis)                            |
 
 ---
@@ -25,11 +25,87 @@ critical-path numbering inside `docs/todo/AUTH_TODO.md`: AUTH-1
 (`CONSUMER_REG_ACK.producers[]` + BRC notify dispatch + consumer-side
 switch — closes the D4+D5 work), AUTH-2 (producer-side ZAP pump on
 BRC poll thread), AUTH-3 (`RegistrationState::Authorized` + data-loop
-outer guard), AUTH-4 (broker-issued random `shm_secret` end-to-end),
-AUTH-5 (sibling-HEP doc sync per §14), AUTH-6 (L3 broker tests),
-AUTH-7 (L4 end-to-end auth-gated data flow).  See
+outer guard), ~~AUTH-4 (broker-issued random `shm_secret` end-to-end)~~
+**SUPERSEDED by HEP-CORE-0041 (SHM Channel Auth) — see Amendment 2026-06-16
+block below**, AUTH-5 (sibling-HEP doc sync per §14), AUTH-6 (L3 broker
+tests), AUTH-7 (L4 end-to-end auth-gated data flow).  See
 `docs/todo/AUTH_TODO.md` for the per-task tracking IDs and current
 status.
+
+### Amendment 2026-06-16 — SHM Layer-3 auth delegated to HEP-CORE-0041
+
+**The SHM-specific portions of this HEP are SUPERSEDED.  All SHM
+Layer-3 (data-plane peer authentication) design is now authoritative
+in HEP-CORE-0041 (SHM Channel Auth).**  This HEP remains authoritative
+for the ZMQ data plane and for the cross-transport invariants
+(I1-I12, §3.5 AUTH-gate principle) that both ZMQ and SHM share.
+
+**What is superseded.**  The `shm_secret` (uint64 token) model
+described throughout this HEP — broker mints a random per-channel
+secret, transports it in `CONSUMER_REG_ACK.shm_secret`, role stamps
+it into the DataBlock header, consumer `memcmp`s it on attach — is
+**retired**.  Specifically retired:
+
+- AUTH-4 as a HEP-0036 deliverable (the "broker-issued random
+  `shm_secret` end-to-end" task is replaced by HEP-0041 Phase 1).
+- The §I6 "ONE exception is SHM" paragraph (lines ~419-422):
+  read-only-historical; broker no longer mints SHM auth material.
+- The `CONSUMER_REG_ACK.shm_secret` field in §6.4 + §11 transition
+  table SHM row + §3.5.5 stage S3 SHM-consumer step + `set_shm_secret`
+  buffered op in §6.7 + `ChannelAccessEntry::shm_secret{0}` storage
+  field (line ~1457): all read-only-historical pending the HEP-0041
+  Phase 1 implementation that removes them.
+- The §I4 SHM-consumer bullet "doesn't know the channel's `shm_secret`
+  until `CONSUMER_REG_ACK` carries it": replaced by HEP-0041 §9 D4
+  "pre-attach broker confirmation" — the SHM consumer asks the broker
+  to confirm the channel name + producer identity before mapping the
+  capability it received.
+- The §5.6 SHM section (broker-mints-secret transport): replaced by
+  HEP-0041 §5 capability-transport model
+  (`memfd_create`+`SCM_RIGHTS`/`SHM_ANON`/`DuplicateHandle`).
+- The §I5 revocation bullet "Any new SHM attach by a process that
+  doesn't already hold the current SHM secret will fail the DataBlock
+  guard check": replaced by HEP-0041's capability-transport model —
+  unauthorized peers cannot obtain a capability in the first place
+  because the broker mediates the FD/HANDLE handoff.
+
+**What stays authoritative in HEP-0036.**
+
+- All ZMQ data-plane auth (CURVE + ZAP on PUSH/PULL).  HEP-0041 does
+  not touch ZMQ.
+- All cross-transport invariants (§3 I1-I12 and §3.5 AUTH-gate
+  principle).  HEP-0041's SHM design satisfies the SAME I1
+  two-conditions gate, the SAME I3 control-plane-gates-data-plane
+  lifetime alignment, the SAME I5 passive-revocation semantic, and
+  the SAME §3.5.1 "no data-plane footprint before AUTH" principle.
+- All broker-side machinery (`ChannelAccessIndex`, `known_roles[]`
+  union ZAP, `CHANNEL_AUTH_CHANGED_NOTIFY` + `GET_CHANNEL_AUTH_REQ`
+  in §6.5).  HEP-0041 reuses the same allowlist + notify-then-pull
+  flow; the only thing that changes is the artifact the broker
+  releases on `CONSUMER_REG_ACK` for SHM (capability transport
+  instead of `shm_secret`).
+- The `RegistrationState::Authorized` FSM + data-loop outer guard
+  shipped under AUTH-3 (commit `8ec19eca`): unchanged by HEP-0041.
+
+**Where to read next.**  HEP-CORE-0041 §1 (motivation +
+threat-model gap), §5 (capability-transport architecture), §9 (D1-D8
+decision table — D4 pre-attach broker confirmation pattern is the
+load-bearing one), §10 (phase 1-5 rollout: Phase 1 Linux/FreeBSD
+memfd, Phase 2 macOS, Phase 3 Windows, Phase 4 AEAD/KDF primitives,
+Phase 5 HEP-0036 ZMQ retrofit to symmetric capability semantics —
+task #246).
+
+**Why this amendment (not a full rewrite).**  Surgically tearing
+out every `shm_secret` reference in HEP-0036's body would touch ~15
+cross-references in §3.5 / §I4 / §I5 / §I6 / §5.6 / §6.4 / §6.7 /
+§10 / §11 / §13 + four diagrams, with high risk of breaking
+invariant cross-links that the active ZMQ portion still depends on.
+This amendment block instead establishes HEP-0041 as the
+authoritative source for SHM Layer-3 and leaves the historical
+`shm_secret` text in place as informational context for the design
+trajectory.  Readers implementing SHM auth should treat HEP-0041 as
+the contract and read HEP-0036's SHM passages only for historical
+context.
 
 **§3.5 added 2026-06-12 (symmetric Option-α consolidation).**  The
 new §3.5 ("The AUTH-gate principle and role coordination") states
@@ -1572,7 +1648,7 @@ that a producer is ready to take consumers.
 stateDiagram-v2
     [*]               --> Unregistered: role process start
     Unregistered      --> RegRequestPending: send REG_REQ<br/>(BRC CURVE handshake to broker<br/>already succeeded — HEP-0035 Layer 1)
-    RegRequestPending --> Registered: REG_ACK ok<br/>(producer: initial_allowlist=[];<br/>consumer: producers[] array per §6.4;<br/>SHM consumer: shm_secret)
+    RegRequestPending --> Registered: REG_ACK ok<br/>(producer: initial_allowlist=[];<br/>consumer: producers[] array per §6.4;<br/>SHM consumer: capability per HEP-0041 §9 D4<br/>— legacy diagram label "shm_secret" is superseded;<br/>see §1 Amendment 2026-06-16)
     Registered        --> Authorized: apply_*_reg_ack done<br/>(see entry conditions below)
     Authorized        --> Authorized: brief BRC blip<br/>(within hub_dead_grace — stay)
     Authorized        --> Unregistered: hub-dead detected<br/>(sustained heartbeat loss<br/>→ tear down data infra<br/>presence has no registration anymore<br/>see §4.3.3 — no auto-retry)

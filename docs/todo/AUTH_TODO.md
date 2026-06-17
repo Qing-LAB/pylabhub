@@ -711,19 +711,54 @@ Broker fires `CHANNEL_PRODUCERS_CHANGED_NOTIFY {reason=producer_joined}`
 to consumers on the producer's Pending → Ready transition (first HB),
 not on REG_REQ accept (§3.5.4 INV2).
 
-### AUTH-4 — SHM broker-issued secret end-to-end
+### AUTH-4 — ~~SHM broker-issued secret end-to-end~~ **SUPERSEDED 2026-06-16 by HEP-CORE-0041**
 
-> **Tracker:** tasks **#164** + **#79** (CLI side).
+> **Tracker:** tasks **#164** (closed/superseded) + **#79** (closed/superseded).
+> Replacement work tracked under **#244** (HEP-0041 design — shipped 2026-06-16)
+> + **#248** (HEP-0041 Phase 1 Linux memfd backend) + **#245** (POSIX SHM
+> mode tightening) + **#246** (ZMQ retrofit to symmetric pre-confirm) +
+> **#247** (script-accessible crypto primitives).
 > **Old labels:** HB-6 + B4.
-> **HEP anchors:** §5.6 (broker generates per-channel random uint64)
-> + §I6 (SHM secret is broker-minted, unlike CURVE keys which are
-> role-owned) + §I11 (framework provides token; script doesn't
-> participate in secret negotiation).
+> **HEP anchors:** SUPERSEDED — see HEP-CORE-0041 §1 (motivation), §5
+> (capability-transport model), §9 (D1-D8 decision table; D4 is the
+> load-bearing "pre-attach broker confirmation" pattern), §10 (Phase
+> 1-5 rollout).  HEP-CORE-0036 §1 "Amendment 2026-06-16" block contains
+> the formal retirement notice + cross-reference back here.
+> **Old HEP anchors (informational-historical):** HEP-0036 §5.6 (broker
+> generates per-channel random uint64) + §I6 (SHM secret is broker-
+> minted, unlike CURVE keys which are role-owned) + §I11 (framework
+> provides token; script doesn't participate in secret negotiation).
 
-**Goal.**  Apply the same broker-as-source-of-truth + atomic-update
-pattern to SHM transport that AUTH-1 applies to ZMQ.  Broker mints
-per-channel `shm_secret`; CONSUMER_REG_ACK delivers it; SHM consumer
-enforces it on attach.
+**Status (2026-06-16).**  The 2026-06-13 SHM threat-model audit
+identified that the `shm_secret` model (broker mints uint64; producer
+stamps it in the DataBlock header as a plaintext discriminator) has
+several gaps the user surfaced through sharp questioning:
+
+1. **POSIX 0666 default** (`platform.cpp:478` `kShmModeRw`) lets any
+   local UID open the shm and read the secret from the header bytes.
+2. **Plaintext discriminator, not a cryptographic check** — `memcmp`
+   on the header bytes (`data_block.cpp:2768-2777`) is at best a
+   typo-catcher, not an auth check.
+3. **Drift window between revocation and broker pushback** — a role
+   that quits before the producer's allowlist updates can still
+   re-attach using a cached secret (the same fast-path problem we hit
+   in ZMQ; see #246).
+
+HEP-CORE-0041 replaces the `shm_secret` model with a capability-
+transport model: the producer creates an anonymous shm object (Linux
+`memfd_create`, macOS `SHM_ANON`, Windows `CreateFileMapping(NULL)`),
+the broker holds the only handle to it after consumer authorization,
+and the broker passes the capability to the authorized consumer via
+`SCM_RIGHTS` (POSIX) or `DuplicateHandle` (Windows) after a pre-attach
+`CONSUMER_ATTACH_REQ` confirmation.  Unauthorized peers cannot obtain
+the capability in the first place — there is no plaintext token to
+sniff or replay.
+
+**Original AUTH-4 goal (retained for historical context, do not act on).**
+Apply the same broker-as-source-of-truth + atomic-update pattern to
+SHM transport that AUTH-1 applies to ZMQ.  Broker mints per-channel
+`shm_secret`; CONSUMER_REG_ACK delivers it; SHM consumer enforces it
+on attach.
 
 **Scope (do not expand).**
 1. Broker generates per-channel random `shm_secret` (replaces

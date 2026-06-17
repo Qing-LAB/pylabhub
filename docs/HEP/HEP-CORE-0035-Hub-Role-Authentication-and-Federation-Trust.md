@@ -8,7 +8,7 @@
 | **Created**     | 2026-04-29                                                                                         |
 | **Area**        | Framework Architecture (`BrokerService` socket layer, `HubConfig`, `BrokerService::Config`, federation) |
 | **Depends on**  | HEP-CORE-0022 (Federation), HEP-CORE-0024 (Role Directory), HEP-CORE-0033 (Hub Character)          |
-| **Related**     | HEP-CORE-0036 (Authenticated Connection Establishment) — adds Layer-3 data-plane peer authentication on top of HEP-0035's Layer-1+2 (see §4.1).  HEP-0036 also adds §4.6 (file-ACL discipline) and §4.7 (runtime key handling) to this HEP. |
+| **Related**     | HEP-CORE-0036 (Authenticated Connection Establishment) — adds Layer-3 data-plane peer authentication for ZMQ on top of HEP-0035's Layer-1+2 (see §4.1).  HEP-0036 also adds §4.6 (file-ACL discipline) and §4.7 (runtime key handling) to this HEP.  HEP-CORE-0041 (SHM Channel Auth) — counterpart to HEP-0036 for the SHM data plane; SUPERSEDES the `shm_secret` model that earlier HEP-0035 + HEP-0036 drafts described (any `shm_secret` reference in this HEP — §4.1 boundary note, §6.1 §4.6.5 §4.7 reference paragraphs, §8.1 Phase 6 ZAP-pubkey scope, task #79 — is informational-historical pending the HEP-0041 Phase 1 implementation; the active SHM auth contract lives in HEP-0041 §9 D1-D8 + §10 phasing). |
 | **Supersedes**  | HEP-CORE-0009 §2.7 (`RoleIdentityPolicy` reference) — see §6                                         |
 | **Blocks**      | HEP-CORE-0033 §15 Phase 1 re-introduction of `broker.{known_roles, role_identity_policy, channel_policy_overrides}` in `HubBrokerConfig` |
 

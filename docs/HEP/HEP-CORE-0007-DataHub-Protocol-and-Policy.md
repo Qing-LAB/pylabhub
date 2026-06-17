@@ -1099,6 +1099,12 @@ Payload (CONSUMER_REG_ACK):
                                  `producer_zmq_pubkey` shape (now retired wire fields).
                                  For SHM transport: `producers[]` is absent; `shm_name`
                                  + `shm_secret` carry the SHM attach info (HEP-0036 §6.4).
+                                 **NOTE (2026-06-16):** the `shm_secret` field is SUPERSEDED
+                                 by HEP-CORE-0041 (SHM Channel Auth) — the broker no longer
+                                 mints a per-channel `shm_secret`; SHM consumers receive a
+                                 capability (FD/HANDLE) via the HEP-0041 §9 D4 pre-attach
+                                 confirmation flow.  The field stays in the wire shape until
+                                 HEP-0041 Phase 1 (#248) lands the replacement frame.
 
 role_type field (added 2026-03-10):
   role_type             string   (opt) "producer" | "consumer" | "processor"

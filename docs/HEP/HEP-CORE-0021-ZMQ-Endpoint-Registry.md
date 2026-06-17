@@ -8,6 +8,7 @@
 | **Created**    | 2026-03-05                                                                 |
 | **Area**       | Framework Architecture (`BrokerService`, `hub::Producer`, `hub::Consumer`) |
 | **Depends on** | HEP-CORE-0002 (DataHub), HEP-CORE-0007 (Protocol), HEP-CORE-0017 (Pipeline) |
+| **Related**    | HEP-CORE-0036 (Authenticated Connection Establishment) — adds CURVE+ZAP Layer-3 auth to the ZMQ endpoints this HEP registers.  HEP-CORE-0041 (SHM Channel Auth) — SUPERSEDES the `wants_shm_secret` / `shm_secret` REG_REQ + REG_ACK fields documented in §6.1 / §6.2 / §11.  The broker no longer mints a per-channel `shm_secret`; SHM consumers receive a transport capability (FD/HANDLE) under HEP-0041's pre-attach confirmation model, not a uint64 token.  Treat any `shm_secret` references in §6 wire shapes + §11 sequence-diagram annotations as informational-historical pending HEP-0041 Phase 1 implementation (#248). |
 
 ---
 
