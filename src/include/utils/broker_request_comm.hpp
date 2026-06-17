@@ -246,6 +246,32 @@ class PYLABHUB_UTILS_EXPORT BrokerRequestComm
                      const std::string &role_uid,
                      int timeout_ms = 5000);
 
+    /// HEP-CORE-0041 §9 D4 pre-attach broker confirmation.  Producer
+    /// asks the broker whether one specific consumer is currently
+    /// authorized for `channel` before handing over the SHM capability
+    /// fd.  Producer-side only; broker rejects with
+    /// `PRODUCER_NOT_AUTHORIZED` if `producer_role_uid` is not a
+    /// registered producer of the channel.
+    ///
+    /// Returns the broker reply body:
+    ///   success: `{status="success", channel_name, consumer_pubkey, corr_id}`
+    ///   denied : `{status="denied",  channel_name, consumer_pubkey,
+    ///              denial_reason, corr_id}`
+    ///   error  : `{status="error",   error_code, message, corr_id}`
+    /// Returns `nullopt` on transport failure / timeout.
+    ///
+    /// "denied" is a NORMAL auth outcome (HEP-0041 §9 D4 cached-allowlist
+    /// table) — distinct from `status="error"` which indicates a
+    /// protocol-level failure.  The caller (substep 1e producer L2
+    /// AttachProtocol) uses the distinction to drive the cache-divergence
+    /// WARN logic.
+    [[nodiscard]] std::optional<nlohmann::json>
+    consumer_attach(const std::string &channel,
+                    const std::string &consumer_pubkey,
+                    const std::string &consumer_role_uid,
+                    const std::string &producer_role_uid,
+                    int timeout_ms = 5000);
+
     [[nodiscard]] std::optional<nlohmann::json>
     query_role_presence(const std::string &uid, int timeout_ms = 5000);
 

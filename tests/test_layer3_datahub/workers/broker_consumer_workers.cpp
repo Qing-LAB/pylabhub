@@ -619,6 +619,224 @@ int get_channel_auth_returns_allowlist()
         });
 }
 
+// ── CONSUMER_ATTACH_REQ (HEP-CORE-0041 §9 D4) ────────────────────────────
+//
+// Pre-attach broker confirmation.  Producer queries broker before
+// handing a SHM capability fd to a consumer; broker checks
+// `authorized_consumer_pubkeys` and replies success | denied | ERROR.
+//
+// Test coverage (5 workers):
+//   - consumer_attach_authorized       : success path
+//   - consumer_attach_denied           : clean broker "no" (not ERROR)
+//   - consumer_attach_channel_not_found: ERROR CHANNEL_NOT_FOUND
+//   - consumer_attach_non_producer     : ERROR PRODUCER_NOT_AUTHORIZED
+//   - consumer_attach_invalid_request  : ERROR INVALID_REQUEST
+
+int consumer_attach_authorized()
+{
+    // Happy path: producer registered, consumer registered (in
+    // allowlist), broker confirms attach.
+    const std::string channel  = pid_chan("attach.authorized");
+    const std::string prod_uid = "prod." + channel;
+    const std::string cons_uid = "cons." + channel;
+    return run_with_host(
+        "broker_consumer::consumer_attach_authorized",
+        {prod_uid, cons_uid},
+        [channel, prod_uid, cons_uid](
+            pylabhub::tests::HubHostBrokerHandle &broker,
+            pylabhub::tests::CurveSetup          &curve) {
+            pylabhub::tests::BrcHandle prod;
+            prod.start(broker.endpoint, broker.pubkey, prod_uid,
+                       pylabhub::tests::role_keystore_name(prod_uid));
+            auto reg_opts = make_reg_opts(
+                channel, prod_uid, curve.role(prod_uid).public_z85, 65010);
+            reg_opts["data_transport"]    = "zmq";
+            reg_opts["zmq_node_endpoint"] = "tcp://127.0.0.1:55570";
+            ASSERT_TRUE(prod.brc.register_channel(reg_opts, 3000).has_value());
+            prod.brc.send_heartbeat(channel, prod_uid, "producer",
+                                    json::object());
+
+            // Register consumer — broker mutates allowlist.
+            pylabhub::tests::BrcHandle cons;
+            cons.start(broker.endpoint, broker.pubkey, cons_uid,
+                       pylabhub::tests::role_keystore_name(cons_uid));
+            ASSERT_TRUE(cons.brc.register_consumer(
+                            make_cons_opts(channel, cons_uid,
+                                           curve.role(cons_uid).public_z85,
+                                           static_cast<uint64_t>(::getpid())),
+                            3000).has_value());
+
+            // Producer asks: is this consumer authorized?
+            auto resp = prod.brc.consumer_attach(
+                channel,
+                curve.role(cons_uid).public_z85,  // consumer_pubkey
+                cons_uid,                          // consumer_role_uid
+                prod_uid,                          // producer_role_uid
+                3000);
+            ASSERT_TRUE(resp.has_value());
+            EXPECT_EQ(resp->value("status", std::string{}), "success")
+                << "Broker must confirm 'success' for a registered consumer";
+            EXPECT_EQ(resp->value("channel_name", std::string{}), channel);
+            EXPECT_EQ(resp->value("consumer_pubkey", std::string{}),
+                      curve.role(cons_uid).public_z85);
+            EXPECT_FALSE(resp->contains("denial_reason"))
+                << "denial_reason field must be absent on success";
+        },
+        {"event=ConsumerAttachAuthorized"});
+}
+
+int consumer_attach_denied()
+{
+    // Producer registered, but the queried consumer_pubkey is NOT in
+    // the channel's allowlist (consumer never registered).  Broker
+    // returns CONSUMER_ATTACH_ACK with status="denied" — NOT an ERROR
+    // frame.  Substep 1e (producer cache divergence WARN) depends on
+    // this distinction.
+    const std::string channel       = pid_chan("attach.denied");
+    const std::string prod_uid      = "prod." + channel;
+    const std::string fake_cons_uid = "cons.unregistered." + channel;
+    return run_with_host(
+        "broker_consumer::consumer_attach_denied",
+        {prod_uid, fake_cons_uid},
+        [channel, prod_uid, fake_cons_uid](
+            pylabhub::tests::HubHostBrokerHandle &broker,
+            pylabhub::tests::CurveSetup          &curve) {
+            pylabhub::tests::BrcHandle prod;
+            prod.start(broker.endpoint, broker.pubkey, prod_uid,
+                       pylabhub::tests::role_keystore_name(prod_uid));
+            auto reg_opts = make_reg_opts(
+                channel, prod_uid, curve.role(prod_uid).public_z85, 65011);
+            reg_opts["data_transport"]    = "zmq";
+            reg_opts["zmq_node_endpoint"] = "tcp://127.0.0.1:55571";
+            ASSERT_TRUE(prod.brc.register_channel(reg_opts, 3000).has_value());
+            prod.brc.send_heartbeat(channel, prod_uid, "producer",
+                                    json::object());
+
+            // Consumer's keypair exists in CurveSetup (so we have a
+            // well-formed Z85 pubkey to query) but the consumer has
+            // NOT called register_consumer — pubkey is NOT in the
+            // channel's authorized_consumer_pubkeys.
+            const std::string fake_pubkey =
+                curve.role(fake_cons_uid).public_z85;
+
+            auto resp = prod.brc.consumer_attach(
+                channel, fake_pubkey, fake_cons_uid, prod_uid, 3000);
+            ASSERT_TRUE(resp.has_value());
+            EXPECT_EQ(resp->value("status", std::string{}), "denied")
+                << "Unregistered consumer must yield status='denied' "
+                   "(not 'error') so substep 1e can distinguish broker "
+                   "decision from wire failure";
+            EXPECT_EQ(resp->value("channel_name", std::string{}), channel);
+            EXPECT_EQ(resp->value("consumer_pubkey", std::string{}),
+                      fake_pubkey);
+            EXPECT_TRUE(resp->contains("denial_reason"))
+                << "denial_reason field must be present on denied";
+        },
+        {"event=ConsumerAttachDenied"});
+}
+
+int consumer_attach_channel_not_found()
+{
+    // Channel was never registered with the broker — ERROR
+    // CHANNEL_NOT_FOUND, the standard error envelope.
+    const std::string prod_uid = "prod.attach.no_channel";
+    return run_with_host(
+        "broker_consumer::consumer_attach_channel_not_found",
+        {prod_uid},
+        [prod_uid](pylabhub::tests::HubHostBrokerHandle &broker,
+                   pylabhub::tests::CurveSetup          &curve) {
+            pylabhub::tests::BrcHandle prod;
+            prod.start(broker.endpoint, broker.pubkey, prod_uid,
+                       pylabhub::tests::role_keystore_name(prod_uid));
+
+            auto resp = prod.brc.consumer_attach(
+                "nonexistent.channel",
+                curve.role(prod_uid).public_z85,
+                prod_uid,
+                prod_uid,
+                3000);
+            ASSERT_TRUE(resp.has_value());
+            EXPECT_EQ(resp->value("status", std::string{}), "error");
+            EXPECT_EQ(resp->value("error_code", std::string{}),
+                      "CHANNEL_NOT_FOUND");
+        });
+}
+
+int consumer_attach_non_producer()
+{
+    // Channel exists, but the caller is NOT a registered producer of
+    // it — ERROR PRODUCER_NOT_AUTHORIZED.  Defence in depth: even
+    // though Layer-1 ZAP gated the connection, we never reveal another
+    // channel's auth state to a non-producer caller.  Mirrors
+    // GET_CHANNEL_AUTH_REQ's defence-in-depth.
+    const std::string channel       = pid_chan("attach.non_prod");
+    const std::string real_prod_uid = "prod." + channel;
+    const std::string other_uid     = "cons.other." + channel;
+    return run_with_host(
+        "broker_consumer::consumer_attach_non_producer",
+        {real_prod_uid, other_uid},
+        [channel, real_prod_uid, other_uid](
+            pylabhub::tests::HubHostBrokerHandle &broker,
+            pylabhub::tests::CurveSetup          &curve) {
+            pylabhub::tests::BrcHandle real_prod;
+            real_prod.start(broker.endpoint, broker.pubkey, real_prod_uid,
+                            pylabhub::tests::role_keystore_name(real_prod_uid));
+            auto reg_opts = make_reg_opts(channel, real_prod_uid,
+                                          curve.role(real_prod_uid).public_z85,
+                                          65012);
+            reg_opts["data_transport"]    = "zmq";
+            reg_opts["zmq_node_endpoint"] = "tcp://127.0.0.1:55572";
+            ASSERT_TRUE(real_prod.brc.register_channel(reg_opts, 3000).has_value());
+            real_prod.brc.send_heartbeat(channel, real_prod_uid, "producer",
+                                         json::object());
+
+            // A different role (not a producer of channel) asks.
+            pylabhub::tests::BrcHandle other;
+            other.start(broker.endpoint, broker.pubkey, other_uid,
+                        pylabhub::tests::role_keystore_name(other_uid));
+            auto resp = other.brc.consumer_attach(
+                channel,
+                curve.role(other_uid).public_z85,
+                other_uid,
+                other_uid,  // caller declares its own uid as producer_role_uid
+                3000);
+            ASSERT_TRUE(resp.has_value());
+            EXPECT_EQ(resp->value("status", std::string{}), "error");
+            EXPECT_EQ(resp->value("error_code", std::string{}),
+                      "PRODUCER_NOT_AUTHORIZED");
+        },
+        {"CONSUMER_ATTACH_REQ rejected"});
+}
+
+int consumer_attach_invalid_request()
+{
+    // Missing required field (consumer_pubkey is empty) — ERROR
+    // INVALID_REQUEST.  Boundary validation.
+    const std::string prod_uid = "prod.attach.invalid";
+    return run_with_host(
+        "broker_consumer::consumer_attach_invalid_request",
+        {prod_uid},
+        [prod_uid](pylabhub::tests::HubHostBrokerHandle &broker,
+                   pylabhub::tests::CurveSetup          & /*curve*/) {
+            pylabhub::tests::BrcHandle prod;
+            prod.start(broker.endpoint, broker.pubkey, prod_uid,
+                       pylabhub::tests::role_keystore_name(prod_uid));
+
+            // consumer_pubkey deliberately empty — broker rejects at
+            // shape validation, never reaches channel lookup.
+            auto resp = prod.brc.consumer_attach(
+                "any.channel",
+                /*consumer_pubkey=*/"",
+                "any.consumer.uid",
+                prod_uid,
+                3000);
+            ASSERT_TRUE(resp.has_value());
+            EXPECT_EQ(resp->value("status", std::string{}), "error");
+            EXPECT_EQ(resp->value("error_code", std::string{}),
+                      "INVALID_REQUEST");
+        });
+}
+
 int get_channel_auth_rejects_non_producer()
 {
     // HEP-CORE-0036 §6.6 PRODUCER_NOT_AUTHORIZED — a role that is NOT
@@ -703,6 +921,16 @@ struct BrokerConsumerRegistrar
                     return get_channel_auth_returns_allowlist();
                 if (sc == "get_channel_auth_rejects_non_producer")
                     return get_channel_auth_rejects_non_producer();
+                if (sc == "consumer_attach_authorized")
+                    return consumer_attach_authorized();
+                if (sc == "consumer_attach_denied")
+                    return consumer_attach_denied();
+                if (sc == "consumer_attach_channel_not_found")
+                    return consumer_attach_channel_not_found();
+                if (sc == "consumer_attach_non_producer")
+                    return consumer_attach_non_producer();
+                if (sc == "consumer_attach_invalid_request")
+                    return consumer_attach_invalid_request();
                 return -1;
             });
     }

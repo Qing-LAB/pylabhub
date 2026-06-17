@@ -122,7 +122,7 @@ bool channel_name_matches_glob(const std::string& name, const std::string& glob)
 // When adding a new msg_type to process_message(), it MUST also be listed
 // in the appropriate array below.
 
-constexpr std::array<std::string_view, 17> kRequestReplyTypes = {
+constexpr std::array<std::string_view, 18> kRequestReplyTypes = {
     "REG_REQ", "DISC_REQ", "DEREG_REQ",
     "CONSUMER_REG_REQ", "CONSUMER_DEREG_REQ",
     "ENDPOINT_UPDATE_REQ", "SCHEMA_REQ",
@@ -135,6 +135,13 @@ constexpr std::array<std::string_view, 17> kRequestReplyTypes = {
     // HEP-CORE-0036 §6.5.  Standard request-reply via existing
     // do_request infrastructure.
     "GET_CHANNEL_AUTH_REQ",
+    // Producer asks the broker to confirm one specific consumer is
+    // authorized for a channel before sending the SHM capability fd
+    // (HEP-CORE-0041 §9 D4 pre-attach confirmation).  Reply is
+    // CONSUMER_ATTACH_ACK with status=success|denied for the auth
+    // decision, or ERROR for protocol-level failures.  Read-only
+    // against HubState — pure query, no mutation.
+    "CONSUMER_ATTACH_REQ",
 };
 
 constexpr std::array<std::string_view, 8> kFireAndForgetTypes = {
@@ -392,6 +399,20 @@ public:
     /// Defence-in-depth: never return another channel's allowlist to a
     /// non-producer caller.
     nlohmann::json handle_get_channel_auth_req(const nlohmann::json& req);
+
+    /// `CONSUMER_ATTACH_REQ` handler (HEP-CORE-0041 §9 D4 step 4-5).
+    /// Pre-attach confirmation: the producer asks the broker whether
+    /// one specific consumer is currently authorized for a channel,
+    /// before sending the SHM capability fd.  Reply carries either
+    /// `status="success"` or `status="denied"` (both are normal auth
+    /// decisions wrapped in a CONSUMER_ATTACH_ACK frame so the
+    /// producer-side cache divergence WARN logic can distinguish a
+    /// clean broker "no" from a wire error).  Protocol-level failures
+    /// (shape error, channel not found, caller not a producer,
+    /// HubState invariant broken) return the standard error envelope
+    /// and are surfaced as ERROR replies by the dispatcher.
+    /// Read-only against HubState — pure query.
+    nlohmann::json handle_consumer_attach_req(const nlohmann::json& req);
 
     /// Fire-and-forget `CHANNEL_AUTH_CHANGED_NOTIFY` to every producer
     /// of the named channel (HEP-CORE-0036 §6.5).  Same fan-out shape
@@ -1191,6 +1212,22 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
         nlohmann::json resp = handle_get_channel_auth_req(payload);
         const std::string ack =
             (resp.value("status", "") == "success") ? "GET_CHANNEL_AUTH_ACK" : "ERROR";
+        send_reply(socket, identity, ack, resp);
+    }
+    else if (msg_type == "CONSUMER_ATTACH_REQ")
+    {
+        // HEP-CORE-0041 §9 D4 — producer's pre-attach confirmation.
+        // Special-cased dispatch: "denied" is a normal auth decision,
+        // NOT a wire error.  Both "success" and "denied" map to
+        // CONSUMER_ATTACH_ACK so the producer's cache-divergence
+        // observer (substep 1e) can distinguish a clean broker "no"
+        // from a transport failure.
+        nlohmann::json resp = handle_consumer_attach_req(payload);
+        const std::string status = resp.value("status", "");
+        const std::string ack =
+            (status == "success" || status == "denied")
+                ? "CONSUMER_ATTACH_ACK"
+                : "ERROR";
         send_reply(socket, identity, ack, resp);
     }
     else if (msg_type == "CONSUMER_DEREG_REQ")
@@ -2856,6 +2893,127 @@ BrokerServiceImpl::handle_get_channel_auth_req(const nlohmann::json &req)
         allowlist_arr.push_back(pk);
     }
     resp["allowlist"] = std::move(allowlist_arr);
+    return resp;
+}
+
+nlohmann::json
+BrokerServiceImpl::handle_consumer_attach_req(const nlohmann::json &req)
+{
+    // HEP-CORE-0041 §9 D4 step 4-5 — pre-attach broker confirmation.
+    // Producer asks whether one specific consumer is currently
+    // authorized for a channel before sending the SHM capability fd.
+    //
+    // Request shape:
+    //   { channel_name, consumer_pubkey, consumer_role_uid,
+    //     role_uid (= caller's = producer's), [correlation_id] }
+    //
+    // Reply (auth decision — both wrapped in CONSUMER_ATTACH_ACK by
+    // the dispatcher special case at the call site):
+    //   success: { status="success", channel_name, consumer_pubkey,
+    //              corr_id }
+    //   denied:  { status="denied",  channel_name, consumer_pubkey,
+    //              denial_reason, corr_id }
+    //
+    // Reply (protocol-level error — sent as ERROR frame):
+    //   INVALID_REQUEST / CHANNEL_NOT_FOUND / PRODUCER_NOT_AUTHORIZED /
+    //   INTERNAL_ERROR — caller treats these distinct from "denied".
+    //
+    // Read-only against HubState — pure query, no mutation.
+
+    const std::string corr_id           = req.value("correlation_id", "");
+    const std::string channel_name      = req.value("channel_name", "");
+    const std::string consumer_pubkey   = req.value("consumer_pubkey", "");
+    const std::string consumer_role_uid = req.value("consumer_role_uid", "");
+    const std::string caller_uid        = req.value("role_uid", "");
+
+    if (channel_name.empty() || consumer_pubkey.empty() ||
+        consumer_role_uid.empty() || caller_uid.empty())
+    {
+        return make_error(corr_id, "INVALID_REQUEST",
+                          "CONSUMER_ATTACH_REQ requires non-empty "
+                          "channel_name, consumer_pubkey, "
+                          "consumer_role_uid, and role_uid");
+    }
+
+    auto ch = hub_state_->channel(channel_name);
+    if (!ch.has_value())
+    {
+        return make_error(corr_id, "CHANNEL_NOT_FOUND",
+                          "Channel '" + channel_name + "' does not exist");
+    }
+
+    // Authorization: caller MUST be a registered producer of the
+    // channel.  Mirrors GET_CHANNEL_AUTH_REQ's defence-in-depth — we
+    // never disclose another channel's auth state to a non-producer
+    // caller, even though Layer-1 ZAP already gated who can speak to
+    // the broker.
+    bool caller_is_producer = false;
+    for (const auto &prod : ch->producers)
+    {
+        if (prod.role_uid == caller_uid)
+        {
+            caller_is_producer = true;
+            break;
+        }
+    }
+    if (!caller_is_producer)
+    {
+        LOGGER_WARN(
+            "Broker: CONSUMER_ATTACH_REQ rejected — role_uid='{}' is "
+            "not a registered producer of channel '{}' "
+            "(HEP-CORE-0041 §9 D4 PRODUCER_NOT_AUTHORIZED)",
+            caller_uid, channel_name);
+        return make_error(corr_id, "PRODUCER_NOT_AUTHORIZED",
+                          "Caller role_uid='" + caller_uid +
+                              "' is not a registered producer of channel '" +
+                              channel_name + "'");
+    }
+
+    auto access = hub_state_->channel_access(channel_name);
+    if (!access.has_value())
+    {
+        // Same broker-invariant-broken short-circuit as
+        // handle_get_channel_auth_req: degrading to deny-all here
+        // would silently lock every consumer out of a working
+        // channel; INTERNAL_ERROR forces a hub restart instead.
+        LOGGER_ERROR(
+            "Broker: CONSUMER_ATTACH_REQ for channel '{}' from role_uid='{}' "
+            "found a ChannelEntry but no ChannelAccessEntry — HubState "
+            "invariant broken; returning INTERNAL_ERROR.",
+            channel_name, caller_uid);
+        return make_error(corr_id, "INTERNAL_ERROR",
+                          "ChannelAccessEntry missing for channel '" +
+                              channel_name + "'");
+    }
+
+    const bool authorized =
+        access->authorized_consumer_pubkeys.find(consumer_pubkey) !=
+        access->authorized_consumer_pubkeys.end();
+
+    nlohmann::json resp;
+    resp["channel_name"]    = channel_name;
+    resp["consumer_pubkey"] = consumer_pubkey;
+    if (!corr_id.empty())
+        resp["correlation_id"] = corr_id;
+
+    if (authorized)
+    {
+        resp["status"] = "success";
+        LOGGER_INFO(
+            "[broker] event=ConsumerAttachAuthorized channel='{}' "
+            "consumer_pubkey='{}' consumer_uid='{}' producer_uid='{}'",
+            channel_name, consumer_pubkey, consumer_role_uid, caller_uid);
+    }
+    else
+    {
+        resp["status"]        = "denied";
+        resp["denial_reason"] = "consumer_pubkey not in channel allowlist";
+        LOGGER_INFO(
+            "[broker] event=ConsumerAttachDenied channel='{}' "
+            "consumer_pubkey='{}' consumer_uid='{}' producer_uid='{}' "
+            "reason='not_in_allowlist'",
+            channel_name, consumer_pubkey, consumer_role_uid, caller_uid);
+    }
     return resp;
 }
 

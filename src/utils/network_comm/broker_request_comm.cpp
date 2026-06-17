@@ -882,6 +882,22 @@ BrokerRequestComm::get_channel_auth(const std::string &channel,
 }
 
 std::optional<nlohmann::json>
+BrokerRequestComm::consumer_attach(const std::string &channel,
+                                   const std::string &consumer_pubkey,
+                                   const std::string &consumer_role_uid,
+                                   const std::string &producer_role_uid,
+                                   int                timeout_ms)
+{
+    nlohmann::json opts;
+    opts["channel_name"]      = channel;
+    opts["consumer_pubkey"]   = consumer_pubkey;
+    opts["consumer_role_uid"] = consumer_role_uid;
+    opts["role_uid"]          = producer_role_uid;
+    return pImpl->do_request("CONSUMER_ATTACH_REQ", "CONSUMER_ATTACH_ACK",
+                             opts, timeout_ms);
+}
+
+std::optional<nlohmann::json>
 BrokerRequestComm::discover_channel(const std::string &channel,
                                         const nlohmann::json &opts,
                                         int timeout_ms)

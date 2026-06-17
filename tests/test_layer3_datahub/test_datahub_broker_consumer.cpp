@@ -76,3 +76,35 @@ TEST_F(DatahubBrokerConsumerTest, GetChannelAuthRejectsNonProducer)
     auto w = SpawnWorker("broker_consumer.get_channel_auth_rejects_non_producer");
     ExpectWorkerOk(w);
 }
+
+// ── HEP-CORE-0041 §9 D4 — CONSUMER_ATTACH_REQ broker handler ──────────
+
+TEST_F(DatahubBrokerConsumerTest, ConsumerAttachAuthorized)
+{
+    auto w = SpawnWorker("broker_consumer.consumer_attach_authorized");
+    ExpectWorkerOk(w);
+}
+
+TEST_F(DatahubBrokerConsumerTest, ConsumerAttachDenied)
+{
+    auto w = SpawnWorker("broker_consumer.consumer_attach_denied");
+    ExpectWorkerOk(w);
+}
+
+TEST_F(DatahubBrokerConsumerTest, ConsumerAttachChannelNotFound)
+{
+    auto w = SpawnWorker("broker_consumer.consumer_attach_channel_not_found");
+    ExpectWorkerOk(w);
+}
+
+TEST_F(DatahubBrokerConsumerTest, ConsumerAttachNonProducer)
+{
+    auto w = SpawnWorker("broker_consumer.consumer_attach_non_producer");
+    ExpectWorkerOk(w);
+}
+
+TEST_F(DatahubBrokerConsumerTest, ConsumerAttachInvalidRequest)
+{
+    auto w = SpawnWorker("broker_consumer.consumer_attach_invalid_request");
+    ExpectWorkerOk(w);
+}
