@@ -16,6 +16,32 @@ permanent on archival, not the reverse).
 
 ---
 
+## HEP-0041 alignment (added 2026-06-16)
+
+This implementation guideline pre-dates HEP-CORE-0041 (SHM Channel
+Auth, shipped 2026-06-16, task #244).  All references in this doc to
+"SHM secret" / `shm_secret` / "broker mints SHM secret" / "B4
+non-zero SHM secret" (lines 72, 87, 185) describe the SUPERSEDED
+SHM Layer-3 auth model.  Treat these passages as informational-
+historical; the active SHM auth contract is HEP-CORE-0041 §9 D1-D8
+(capability-transport via `memfd_create` + `SCM_RIGHTS` / `SHM_ANON`
+/ `DuplicateHandle` + pre-attach `CONSUMER_ATTACH_REQ` confirmation).
+
+The §3 invariants (I1-I12) DO still apply abstractly to SHM auth
+under HEP-0041 — capability transport is just a different
+*artifact* satisfying the same I1 two-conditions gate and the same
+I4 "no data artifact before authorization" principle.  Only the
+*concrete artifact* changed (uint64 token → file descriptor /
+HANDLE).  So when this doc says "no data artifact before
+authorization", read it transport-agnostically.
+
+The retired AUTH-4 task (#164 / #79) is tracked under HEP-0041 Phase
+1 (#248) for implementation.  Re-read HEP-CORE-0036 §1 Amendment
+2026-06-16 + HEP-CORE-0041 §10 phasing before acting on any
+SHM-auth task in this doc.
+
+---
+
 ## §3.5 alignment (added 2026-06-12)
 
 This implementation guideline pre-dates HEP-CORE-0036 §3.5

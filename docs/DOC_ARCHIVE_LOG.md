@@ -6,6 +6,32 @@
 
 ## Archive batches
 
+### 2026-06-16 (HEP-0041 supersession sweep — post-design cleanup)
+
+After HEP-CORE-0041 (SHM Channel Auth) shipped (#244, commits
+`565104b8..94b04576`) and the sibling HEP cross-reference sweep
+(commit `df001a33`) added forward-pointers across the 8 sibling HEPs
+that mention `shm_secret`, one stale tech_draft was archived:
+
+* `HEP-0036_review_open_items.md` — pre-HEP-0041 review-open-items
+  tracker.  Original review items closed under AUTH-1..3 (#103/#162/
+  #163); residual SHM-secret references made obsolete by HEP-0041
+  capability-transport model.  Archived to
+  `docs/archive/transient-2026-06-16/HEP-0036_review_open_items.md`.
+  Lasting design content (none — the file was a review tracker, not
+  a design proposal) — no permanent-doc absorption needed.
+
+Active tech_drafts retained (6):
+* `DRAFT_HEP-0036-implementation-guideline_2026-05.md` — drives the
+  AUTH-1..7 chain.  Annotated 2026-06-16 with HEP-0041 alignment
+  banner at top (SHM passages are informational-historical).
+* `SCRIPT_RELOAD_DESIGN_2026-05-20.md` — task #76.
+* `engine_callback_tiers.md` — task #77.
+* `raii_layer_redesign.md` — API_TODO "Template RAII".
+* `abi_check_facility_design.md` — API_TODO "ABI Check Facility".
+* `DRAFT_C2-ZmqAuthOptions-deletion-audit_2026-06-08.md` —
+  C2-cleanup audit notes.
+
 ### 2026-06-09 (AUTH_TODO restructure — C-chain + HEP-0040 chain + HB audit)
 
 After C1..C5 strict-CURVE cleanup chain shipped (#157-#161 + #186 +
