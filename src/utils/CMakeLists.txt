@@ -59,6 +59,7 @@ set(UTILS_SOURCES
   security/domain_routing_table.cpp # pylabhub::utils::security (HEP-CORE-0036 §7.4 — admission dispatch table)
   security/secure_memory_subsystem.cpp # pylabhub::utils::security (HEP-CORE-0040 §4 — process-init lifecycle module)
   security/key_store.cpp           # pylabhub::utils::security (HEP-CORE-0040 §5 — locked-memory secret store)
+  security/shm_capability_channel.cpp # pylabhub::utils::security (HEP-CORE-0041 §6 — cross-platform SHM capability transport; backend lands task #249)
 
   # --- role hosts: lifecycle + data loop for each role ---
   ${CMAKE_SOURCE_DIR}/src/producer/producer_role_host.cpp

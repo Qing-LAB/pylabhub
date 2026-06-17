@@ -313,6 +313,42 @@ gtest_discover_tests(test_layer2_curve_keypair
 )
 
 # ============================================================================
+# Test: ShmCapabilityChannel skeleton (HEP-CORE-0041 §6)
+# Pattern 1 — pure interface pins; no LifecycleGuard, no LOGGER_*.
+# Pins:
+#   - Abstract base types (compile-time static_assert)
+#   - Non-copyable surface (compile-time static_assert)
+#   - Factory stubs throw with documented HEP + task references
+#   - AcceptedPeer POSIX-credential field shape
+# Retires when task #249 lands a real backend and the throws disappear.
+# ============================================================================
+
+add_executable(test_layer2_shm_capability_channel
+    test_shm_capability_channel.cpp
+)
+
+target_link_libraries(test_layer2_shm_capability_channel
+    PRIVATE
+        pylabhub::utils
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_shm_capability_channel)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_shm_capability_channel
+    SUITE_NAME "Layer2_ShmCapabilityChannel"
+)
+layer2_require_staged_utils(test_layer2_shm_capability_channel)
+
+gtest_discover_tests(test_layer2_shm_capability_channel
+    PROPERTIES
+        LABELS "layer2;service;security;shm_capability"
+        TIMEOUT 10
+)
+
+# ============================================================================
 # Test: PeerAdmission abstraction (HEP-CORE-0035 §4.5 / HEP-CORE-0036 §I1)
 # Pattern 1 — pure value-type tests; no LOGGER_*, no lifecycle.
 # Phase A of the PeerAdmission architecture: pins the interface contract
