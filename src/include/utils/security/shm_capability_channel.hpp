@@ -27,10 +27,13 @@
  * SHM regions.
  *
  * **Platform support in this header today.**  POSIX (Linux + FreeBSD +
- * macOS) — the AcceptedPeer struct uses `pid_t` / `uid_t` / `gid_t`
- * from `<sys/types.h>`.  Windows port lands with task #244's Phase 3;
- * at that point the AcceptedPeer shape will need a per-platform
- * variant (PID + token handle instead of POSIX creds).
+ * macOS) at the header level — the AcceptedPeer struct uses `pid_t` /
+ * `uid_t` / `gid_t` from `<sys/types.h>`.  Linux is the only backend
+ * actually wired today (task #249); FreeBSD's SO_PEERCRED equivalent is
+ * `LOCAL_PEERCRED` + `xucred` and lands as a separate task.  Windows
+ * port lands under Phase 3; at that point the AcceptedPeer shape will
+ * need a per-platform variant (PID + token handle instead of POSIX
+ * creds).
  *
  * @see docs/HEP/HEP-CORE-0041-SHM-Channel-Auth.md §5-§6, §9 D1+D4, §10.
  * @see docs/HEP/HEP-CORE-0036-Authenticated-Connection-Establishment.md §1
@@ -79,16 +82,18 @@ class PYLABHUB_UTILS_EXPORT IShmCapabilityProducer
 public:
     /// Per-peer credentials surfaced after `accept_one()`.
     ///
-    /// `peer_socket_fd` is the fd of the accepted Unix-socket
-    /// connection — used to send the capability and (optionally)
-    /// to read further bytes from the peer.  Lifetime is bounded by
-    /// the producer instance; closing the producer closes accepted
-    /// peer sockets.
+    /// **Ownership.**  `peer_socket_fd` is **caller-owned** — the
+    /// producer does NOT track or close it.  The caller closes the
+    /// fd after `send_capability()` (or after deciding to deny).
+    /// Letting the producer track accepted peer fds would create an
+    /// fd-recycle hazard if the caller closes the fd early and the
+    /// kernel reassigns the number before the producer's dtor runs.
     ///
     /// `pid` / `uid` / `gid` come from `SO_PEERCRED` (Linux) or its
     /// per-platform equivalent.  Used by L2's defence-in-depth sanity
     /// check (HEP-0041 §9 D4 step 3): the peer must be in the
-    /// expected trust domain.
+    /// expected trust domain.  Zero defaults (when `SO_PEERCRED`
+    /// fails) fail closed under any non-root expectation.
     struct AcceptedPeer
     {
         int   peer_socket_fd{-1};
