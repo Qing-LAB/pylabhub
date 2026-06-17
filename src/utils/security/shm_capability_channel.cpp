@@ -371,7 +371,12 @@ MemfdConsumer::MemfdConsumer(const std::string       &endpoint,
 
     const ssize_t got           = ::recvmsg(sock, &msg, 0);
     const int     recv_errno    = errno;
-    ::close(sock);  // capability is in the cmsg now; socket no longer needed.
+    // Close the socket unconditionally BEFORE any of the throw paths
+    // below so a malformed recvmsg cannot leak the AF_UNIX fd.  The
+    // capability fd we care about (if any) was already installed into
+    // our process's fd table by the kernel as part of the SCM_RIGHTS
+    // cmsg — we no longer need the socket for anything else.
+    ::close(sock);
 
     if (got != 1)
     {

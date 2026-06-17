@@ -104,6 +104,12 @@ class ShmCapabilityChannelTest : public ::testing::Test
 
 // ── Round-trip: writes on either side are visible on the other ──────────
 
+// AcceptedPeer.peer_socket_fd is caller-owned per the L1 interface
+// contract — see the header docstring.  The L2 AttachProtocol that
+// lands in task #250 enforces close()-after-handoff; this L1 test
+// only exercises the transport mechanic, so it closes the fd
+// explicitly at the end of the RoundTrip body (no producer-side
+// auto-tracking).
 TEST_F(ShmCapabilityChannelTest, RoundTrip_ConsumerSeesProducerWrites)
 {
     constexpr size_t  kSize     = 4096;

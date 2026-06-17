@@ -26,14 +26,18 @@
  * lets the auth orchestration be unit-tested without spinning up real
  * SHM regions.
  *
- * **Platform support in this header today.**  POSIX (Linux + FreeBSD +
- * macOS) at the header level — the AcceptedPeer struct uses `pid_t` /
- * `uid_t` / `gid_t` from `<sys/types.h>`.  Linux is the only backend
- * actually wired today (task #249); FreeBSD's SO_PEERCRED equivalent is
- * `LOCAL_PEERCRED` + `xucred` and lands as a separate task.  Windows
- * port lands under Phase 3; at that point the AcceptedPeer shape will
- * need a per-platform variant (PID + token handle instead of POSIX
- * creds).
+ * **Platform support today.**  The header is POSIX-friendly — the
+ * AcceptedPeer struct uses `pid_t` / `uid_t` / `gid_t` from
+ * `<sys/types.h>` — but only Linux has a working backend (task #249's
+ * `memfd_create` + `SO_PEERCRED` + `SCM_RIGHTS`).  Other platforms:
+ *   - **macOS:** factory throws.  Phase 2 ships `shm_open(SHM_ANON)`
+ *     + `LOCAL_PEERCRED` (different opt+struct than Linux).
+ *   - **FreeBSD:** factory throws.  Has `memfd_create` since 13.0 but
+ *     `SO_PEERCRED` is missing; needs `LOCAL_PEERCRED` + `xucred`.
+ *   - **Windows:** factory throws.  Phase 3 ships
+ *     `CreateFileMapping(NULL)` + `DuplicateHandle`; AcceptedPeer
+ *     shape will need a per-platform variant (PID + token handle
+ *     instead of POSIX creds).
  *
  * @see docs/HEP/HEP-CORE-0041-SHM-Channel-Auth.md §5-§6, §9 D1+D4, §10.
  * @see docs/HEP/HEP-CORE-0036-Authenticated-Connection-Establishment.md §1
@@ -136,6 +140,15 @@ public:
     /// surrounding auth flow (signed-nonce verify, broker
     /// pre-confirm) — this method is the unconditional handoff once
     /// the auth layer says "send it."
+    ///
+    /// **`peer_socket_fd` ownership is unchanged by this call.**
+    /// `AcceptedPeer.peer_socket_fd` remains caller-owned (see the
+    /// `AcceptedPeer` docstring).  This method neither closes
+    /// `peer_socket_fd` on success nor on failure — including
+    /// failure paths leaves the fd open so the caller may inspect
+    /// `errno`, log peer details, or retry.  Caller must close
+    /// `peer_socket_fd` after the handoff (or after deciding to
+    /// abandon it).
     virtual bool send_capability(int peer_socket_fd) = 0;
 
     /// Producer-side RW view of the anonymous SHM segment.  Span
