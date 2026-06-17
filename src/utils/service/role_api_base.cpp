@@ -677,8 +677,15 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
 
         // Queue is Active.  Commit the pre-parsed cache view
         // atomically under the cache mutex.  The map assignment is
-        // no-throw apart from std::bad_alloc (excluded from this try
-        // block's contract); no half-state possible from here.
+        // no-throw apart from std::bad_alloc — the try block catches
+        // only nlohmann::json::exception, so bad_alloc propagates to
+        // the caller.  Failure-mode invariant: if cache.put throws,
+        // the Authorized transition below does NOT fire; the FSM
+        // stays at `Registered`, the §8.2 outer guard refuses the
+        // data loop, the run_data_loop WARN at data_loop.hpp:244
+        // surfaces the half-state.  No silent corruption.  Per
+        // HEP-CORE-0036 §I8 OOM at this startup point is treated as
+        // fatal at the role-host level (caller tears down via RAII).
         //
         // HEP-CORE-0036 §I11 + §6.4 cache contract: mirror the queue's
         // no-op tolerance at hub_zmq_queue.cpp:945 — when the
@@ -706,6 +713,31 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
         {
             pImpl->producer_peer_cache.put(
                 channel_name, std::move(script_view));
+        }
+
+        // HEP-CORE-0036 §4.3.2 — Registered → Authorized at the END
+        // of apply_consumer_reg_ack success.  By this point: REG_ACK
+        // accepted (Layers 1+2), apply_master_approval succeeded
+        // (Layer 3 — PULL configured, per-producer connect with
+        // CURVE serverkey, queue Active), cache committed.  The
+        // role's data plane is armed; the §8.2 outer guard
+        // (`any_presence_authorized()`) will now admit this presence
+        // to the data loop.
+        if (!channel_name.empty() && pImpl->handler_)
+        {
+            Presence *presence = pImpl->handler_
+                ->find_presence_for_channel(channel_name);
+            if (presence)
+            {
+                presence->registration_state.store(
+                    RegistrationState::Authorized,
+                    std::memory_order_release);
+                LOGGER_INFO("[{}] event=PresenceStateTransition "
+                            "channel='{}' role_type=consumer "
+                            "from=Registered to=Authorized "
+                            "trigger=apply_consumer_reg_ack_done",
+                            pImpl->role_tag, channel_name);
+            }
         }
         return true;
     }
@@ -742,6 +774,31 @@ bool RoleAPIBase::apply_producer_reg_ack(const nlohmann::json &ack)
                      "refused (HEP-CORE-0036 §6.7 'fully refused' — "
                      "malformed broker delivery)", pImpl->role_tag);
         return false;
+    }
+
+    // HEP-CORE-0036 §4.3.2 — Registered → Authorized at the END of
+    // apply_producer_reg_ack success.  By this point: REG_ACK accepted
+    // (Layers 1+2), apply_master_approval succeeded (Layer 3 — PUSH
+    // bound, CURVE-server armed, ZAP allowlist seeded, worker spawned,
+    // queue Active).  Data plane armed; §8.2 outer guard
+    // (`any_presence_authorized()`) will now admit this presence to
+    // the data loop.
+    const auto channel_name = ack.value("channel_name", std::string{});
+    if (!channel_name.empty() && pImpl->handler_)
+    {
+        Presence *presence = pImpl->handler_
+            ->find_presence_for_channel(channel_name);
+        if (presence)
+        {
+            presence->registration_state.store(
+                RegistrationState::Authorized,
+                std::memory_order_release);
+            LOGGER_INFO("[{}] event=PresenceStateTransition "
+                        "channel='{}' role_type=producer "
+                        "from=Registered to=Authorized "
+                        "trigger=apply_producer_reg_ack_done",
+                        pImpl->role_tag, channel_name);
+        }
     }
     return true;
 }
@@ -2063,6 +2120,37 @@ void RoleAPIBase::drain_inbox_sync()
 // ============================================================================
 // Identity
 // ============================================================================
+
+#if defined(PYLABHUB_BUILD_TESTS) && !defined(NDEBUG)
+void RoleAPIBase::install_handler_for_test_(
+    std::unique_ptr<RoleHandler> handler)
+{
+    // Private; reachable only through the friend
+    // `test::RoleAPIBaseTestAccess`.  See the header docstring for the
+    // no-bypass contract.  We replace any existing handler — L2 tests
+    // build a fresh RoleAPIBase per scenario.  Symbol physically
+    // absent in Release / non-test builds.
+    pImpl->handler_ = std::move(handler);
+}
+#endif
+
+bool RoleAPIBase::any_presence_authorized() const noexcept
+{
+    // Returns true iff ANY Presence on this role is `Authorized`
+    // (HEP-CORE-0036 §4.3.2 — Layer 3 data plane armed).  Reads are
+    // atomic with acquire ordering; no lock needed.  Null handler
+    // (validate-only / test paths that skip handler construction)
+    // reports `false` — there are no presences to be authorized, so
+    // the data loop's outer guard correctly refuses to enter.
+    if (!pImpl->handler_) return false;
+    for (const auto &p : pImpl->handler_->presences())
+    {
+        if (p.registration_state.load(std::memory_order_acquire)
+            == RegistrationState::Authorized)
+            return true;
+    }
+    return false;
+}
 
 const std::string &RoleAPIBase::role_tag() const   { return pImpl->role_tag; }
 const std::string &RoleAPIBase::uid() const        { return pImpl->uid; }

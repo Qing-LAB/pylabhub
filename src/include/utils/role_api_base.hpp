@@ -174,8 +174,31 @@ enum class ChannelSide : uint8_t { Tx = 0, Rx = 1 };
 // RoleAPIBase
 // ============================================================================
 
+#if defined(PYLABHUB_BUILD_TESTS) && !defined(NDEBUG)
+namespace test { class RoleAPIBaseTestAccess; }
+#endif
+
 class PYLABHUB_UTILS_EXPORT RoleAPIBase
 {
+#if defined(PYLABHUB_BUILD_TESTS) && !defined(NDEBUG)
+    // L2 test access — see `tests/test_framework/role_api_base_test_access.h`.
+    // The test helper installs a legitimately-constructed `RoleHandler`
+    // (with Presences whose `registration_state` the test sets directly
+    // via the public atomic) into `pImpl->handler_`.  Production
+    // protocol invariants — including HEP-CORE-0036 §8.2's
+    // `any_presence_authorized()` gate — run unchanged: the gate
+    // scans the installed presences and reports `true` only when the
+    // test has put a Presence in `Authorized` state.  No bypass.
+    //
+    // Double-gated: both `PYLABHUB_BUILD_TESTS` (CMake `-DBUILD_TESTS=ON`)
+    // AND `!defined(NDEBUG)` (Debug build).  A misconfigured Release
+    // build with -DBUILD_TESTS=ON still gets the friend + private
+    // setter PHYSICALLY ABSENT from the compiled binary — the
+    // protocol-gate surface does not widen.  Mirrors the
+    // `test_set_*` mutator pattern at role_host_core.hpp:581.
+    friend class test::RoleAPIBaseTestAccess;
+#endif
+
   public:
     /// @param core      RoleHostCore owned by the role host (lifetime > api).
     /// @param role_tag  Role type tag: "prod" / "cons" / "proc". Non-empty.
@@ -353,6 +376,19 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     /// `api.report_metric(key, value)` (HEP-CORE-0019 §5.1) — this hook
     /// is the structured-injection companion.
     void set_metrics_hook(std::function<void(nlohmann::json &)> hook);
+
+    // ── FSM predicate (HEP-CORE-0036 §8.2 data-loop outer guard) ─────────────
+
+    /// True iff at least one Presence on this role's handler is in
+    /// `RegistrationState::Authorized` (HEP-CORE-0036 §4.3.2 — Layer 3
+    /// data plane armed).  The data loop's outer guard reads this:
+    /// when no presence is Authorized, the loop exits cleanly (single-
+    /// hub case: presence lost authorization → role winds down; multi-
+    /// hub case: keep running for any presence still authorized on
+    /// other live hubs).  Atomic-only reads — safe from any thread,
+    /// no lock needed.  Returns `false` if `handler_` is null
+    /// (validate-only / test paths that bypass handler construction).
+    [[nodiscard]] bool any_presence_authorized() const noexcept;
 
     // ── Identity ──────────────────────────────────────────────────────────────
 
@@ -856,6 +892,21 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
   private:
     struct Impl;
     std::unique_ptr<Impl> pImpl;
+
+#if defined(PYLABHUB_BUILD_TESTS) && !defined(NDEBUG)
+    // ── L2 test access (friend) ────────────────────────────────────────────
+    //
+    // Private setter for `pImpl->handler_`.  Reachable ONLY through the
+    // `test::RoleAPIBaseTestAccess` friend declaration above; production
+    // code paths (start_handler_threads etc.) use their own internal
+    // moves into the same slot.  This method does NOT bypass any
+    // protocol check — it just installs a handler the test constructed.
+    // The §8.2 outer guard runs unchanged afterward, scanning the
+    // installed handler's presences for `Authorized` state.
+    //
+    // Double-gated PHYSICALLY ABSENT in Release / non-test builds.
+    void install_handler_for_test_(std::unique_ptr<RoleHandler> handler);
+#endif
 
     // ── Ctrl thread private helpers (called from within the ctrl thread) ──
     // Access pImpl members directly — no bare pointers cross thread boundary.

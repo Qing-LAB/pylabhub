@@ -1575,7 +1575,7 @@ stateDiagram-v2
     RegRequestPending --> Registered: REG_ACK ok<br/>(producer: initial_allowlist=[];<br/>consumer: producers[] array per §6.4;<br/>SHM consumer: shm_secret)
     Registered        --> Authorized: apply_*_reg_ack done<br/>(see entry conditions below)
     Authorized        --> Authorized: brief BRC blip<br/>(within hub_dead_grace — stay)
-    Authorized        --> Unregistered: hub-dead detected<br/>(sustained heartbeat loss<br/>→ tear down data infra<br/>→ await BRC reconnect)
+    Authorized        --> Unregistered: hub-dead detected<br/>(sustained heartbeat loss<br/>→ tear down data infra<br/>presence has no registration anymore<br/>see §4.3.3 — no auto-retry)
     Authorized        --> Deregistered: DEREG_REQ sent + DEREG_ACK<br/>(data loop already exited per I3)
     Deregistered      --> [*]
 ```
@@ -1661,32 +1661,46 @@ connect):
   a producer's allowlist updates; ZeroMQ's reconnect-on-failure
   bridges it transparently (see §5.2 property note).
 
-#### 4.3.3 Recovery path — hub-dead → Unregistered
+#### 4.3.3 Hub-dead path — Authorized → Unregistered
 
 Per HEP-CORE-0023 §2.6 + task #59 ("Hub-dead must transition
 presences out of Registered"), sustained loss of broker heartbeat
 ACKs past `hub_dead_grace` triggers presence teardown.  HEP-0036
 extends this:
 
-- Close PUSH/PULL data sockets.  Under T1 / I6 the identity keys
-  themselves are NOT stale (loaded fresh from `.sec` on every
-  startup; survive broker restart), but the broker's view of the
-  channel — `ChannelAccessIndex` entry, allowlist, endpoint cache —
-  is lost on broker restart and must be re-established from
-  scratch via a fresh REG_REQ + CONSUMER_REG_REQ cycle.  Tearing
-  down the data sockets is the clean way to drop in-flight CURVE
-  sessions whose ZAP allowlist on the producer side is about to
-  be re-populated (and may differ from the pre-restart allowlist).
-  T3 covers the broker-restart recovery sequence end-to-end.
+- Close PUSH/PULL data sockets.  In-flight CURVE sessions are
+  dropped along with the sockets.
 - Clear the producer-side ZAP cache entry for the channel.
 - Stop heartbeat tick.
 - Transition `Authorized → Unregistered`.
-- On BRC reconnect (TCP recovery + CURVE handshake retry), the
-  role re-enters the flow from `Unregistered → RegRequestPending`.
+
+`Unregistered` is just the initial-state label — the presence has
+no registration anymore.  The role's data loop exits via the §8.2
+outer guard once no presence is `Authorized` (single-hub case) or
+keeps running for any presence on a still-live hub (multi-hub
+case).
+
+**There is no auto-retry / auto-recovery machinery.**  The
+framework does not preserve any session state across hub-dead,
+does not buffer outgoing data, does not periodically re-issue
+REG_REQ on the role's behalf.  Going to `Unregistered` is purely
+a state-name correction (the presence has no registration); it
+does NOT imply the framework will try anything.
+
+If the operator wants this role to participate again, the *script*
+may call `register_*_channel()` again as a deliberate action — that
+walks the **same first-time-startup path** the role used on its
+initial registration.  Nothing carries over: a new REG_REQ goes
+out, a new REG_ACK comes back with a (possibly different) allowlist,
+fresh sockets get bound, the FSM transitions
+`Unregistered → RegRequestPending → Registered → Authorized` from
+scratch.  The only thing that's "the same" is the on-disk identity
+keypair, and that's a property of the binary's configuration, not
+of any preserved session.
 
 Brief network blips WITHIN `hub_dead_grace` keep the presence in
 `Authorized`: data sockets stay open, CURVE sessions are intact,
-recovery is invisible to the data loop.
+the BRC's reconnect handles the transient invisibly.
 
 ---
 

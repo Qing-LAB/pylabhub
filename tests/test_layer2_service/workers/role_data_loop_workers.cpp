@@ -21,11 +21,14 @@
 #include "service/data_loop.hpp"
 
 #include "utils/role_api_base.hpp"
+#include "utils/role_handler.hpp"   // RoleHandler + Presence construction
 #include "utils/role_host_core.hpp"
+#include "utils/role_presence.hpp"
 #include "utils/script_engine.hpp"
 #include "utils/thread_manager.hpp"
 
 #include "plh_service.hpp"
+#include "role_api_base_test_access.h"  // L2-test install_handler helper
 #include "shared_test_helpers.h"
 #include "test_entrypoint.h"
 
@@ -172,10 +175,64 @@ std::unique_ptr<RoleAPIBase> make_api(RoleHostCore &core, const char *uid)
     return std::make_unique<RoleAPIBase>(core, "test", uid);
 }
 
+#if defined(PYLABHUB_BUILD_TESTS) && !defined(NDEBUG)
+// ─────────────────────────────────────────────────────────────────────────
+// L2 fixture step — install a legitimately-constructed Presence in
+// `Authorized` state on the API so the HEP-CORE-0036 §8.2 outer guard
+// admits the data loop.  NOT a bypass: the gate scans the presences we
+// installed and finds an Authorized one because we put it there with
+// the same atomic store production uses at the end of apply_*_reg_ack.
+// All other Presence fields are dummies — the loop tests don't read
+// them.  See `tests/test_framework/role_api_base_test_access.h` for
+// the no-bypass contract.
+//
+// Symbol absent in Release / non-test builds (mirrors the friend +
+// private-setter gating on RoleAPIBase).  Parent TEST_F bodies
+// GTEST_SKIP before reaching the worker.
+void install_one_authorized_presence(RoleAPIBase &api, const char *channel)
+{
+    using pylabhub::scripting::Presence;
+    using pylabhub::scripting::RegistrationState;
+    using pylabhub::scripting::RoleHandler;
+    using pylabhub::scripting::RoleKind;
+    using pylabhub::scripting::test::RoleAPIBaseTestAccess;
+
+    Presence p;
+    p.hub.broker        = "tcp://l2-test:0";
+    p.hub.broker_pubkey = "l2-test-pubkey";
+    p.channel           = channel;
+    p.role_kind         = RoleKind::Producer;
+    // The actual write the gate observes.  Mirrors apply_*_reg_ack
+    // exactly (role_api_base.cpp transitions).
+    p.registration_state.store(RegistrationState::Authorized,
+                               std::memory_order_release);
+
+    std::vector<Presence> presences;
+    presences.push_back(std::move(p));
+
+    auto handler = std::make_unique<RoleHandler>(std::move(presences));
+    RoleAPIBaseTestAccess::install_handler(api, std::move(handler));
+}
+#endif
+
 } // namespace
 
 // ── run_data_loop scenarios ─────────────────────────────────────────────────
+//
+// Each scenario constructs a Presence(Authorized) via the L2-test
+// helper above so the HEP-CORE-0036 §8.2 outer guard admits the loop.
+// The gate runs unchanged — it scans the installed presences and
+// reports `true` because the test put one in `Authorized` state with
+// the same atomic store production uses at the end of apply_*_reg_ack.
+//
+// Scenario bodies are gated to the same build configuration as the
+// test access friend (`PYLABHUB_BUILD_TESTS && !defined(NDEBUG)`).
+// Outside that, the symbols are absent — parent TEST_F bodies in
+// `test_role_data_loop.cpp` already GTEST_SKIP before spawning the
+// worker, so the dispatcher never tries to route to a missing
+// scenario.
 
+#if defined(PYLABHUB_BUILD_TESTS) && !defined(NDEBUG)
 int shutdown_stops_loop()
 {
     return run_gtest_worker(
@@ -183,6 +240,7 @@ int shutdown_stops_loop()
         {
             RoleHostCore core;
             auto         api = make_api(core, "shutdown_stops_loop");
+            install_one_authorized_presence(*api, "ch.shutdown");
 
             MockCycleOps ops;
             core.set_running(true);
@@ -212,6 +270,7 @@ int invoke_returns_false_stops_loop()
         {
             RoleHostCore core;
             auto         api = make_api(core, "invoke_returns_false");
+            install_one_authorized_presence(*api, "ch.invoke_false");
 
             MockCycleOps ops;
             ops.invoke_returns_continue = false;
@@ -238,6 +297,7 @@ int metrics_increment()
         {
             RoleHostCore core;
             auto         api = make_api(core, "metrics_increment");
+            install_one_authorized_presence(*api, "ch.metrics");
 
             MockCycleOps ops;
             core.set_running(true);
@@ -266,6 +326,7 @@ int no_data_skips_deadline_wait()
         {
             RoleHostCore core;
             auto         api = make_api(core, "no_data_skips_deadline_wait");
+            install_one_authorized_presence(*api, "ch.no_data");
 
             MockCycleOps ops;
             ops.acquire_returns_data = false;
@@ -301,6 +362,7 @@ int overrun_detected()
         {
             RoleHostCore core;
             auto         api = make_api(core, "overrun_detected");
+            install_one_authorized_presence(*api, "ch.overrun");
 
             core.set_running(true);
             SlowOps slow_ops;
@@ -316,6 +378,7 @@ int overrun_detected()
         },
         "role_data_loop::overrun_detected", Logger::GetLifecycleModule());
 }
+#endif // PYLABHUB_BUILD_TESTS && !NDEBUG
 
 // ── ThreadManager scenarios ─────────────────────────────────────────────────
 
@@ -429,6 +492,7 @@ struct RoleDataLoopWorkerRegistrar
                 std::string sc(mode.substr(dot + 1));
                 using namespace pylabhub::tests::worker::role_data_loop;
 
+#if defined(PYLABHUB_BUILD_TESTS) && !defined(NDEBUG)
                 if (sc == "shutdown_stops_loop")
                     return shutdown_stops_loop();
                 if (sc == "invoke_returns_false_stops_loop")
@@ -439,6 +503,7 @@ struct RoleDataLoopWorkerRegistrar
                     return no_data_skips_deadline_wait();
                 if (sc == "overrun_detected")
                     return overrun_detected();
+#endif
                 if (sc == "thread_manager_spawn_and_join")
                     return thread_manager_spawn_and_join();
                 if (sc == "thread_manager_multiple_threads")

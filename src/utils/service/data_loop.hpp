@@ -126,9 +126,19 @@ void run_data_loop(RoleAPIBase &api, RoleHostCore &core,
     const bool release_lock_idle = cfg.release_global_lock_during_wait;
 
     // -- Outer loop ----------------------------------------------------------
+    //
+    // HEP-CORE-0036 §8.2 outer guard — the loop runs only while at
+    // least one Presence is `Authorized` (Layer 3 data plane armed,
+    // §4.3.2).  When the last Authorized presence transitions out
+    // (hub-dead per §4.3.3 → `Unregistered`, voluntary DEREG →
+    // `Deregistered`), `any_presence_authorized()` flips false and
+    // the loop exits cleanly on its next iteration.  Multi-hub roles
+    // (dual-hub processor) keep running as long as any presence on
+    // any live hub stays Authorized.
     while (core.is_running() &&
            !core.is_shutdown_requested() &&
-           !core.is_critical_error())
+           !core.is_critical_error() &&
+           api.any_presence_authorized())
     {
         if (core.is_process_exit_requested())
             break;
@@ -222,9 +232,35 @@ void run_data_loop(RoleAPIBase &api, RoleHostCore &core,
     // -- Post-loop cleanup ---------------------------------------------------
     ops.cleanup_on_exit();
 
-    LOGGER_INFO("[{}] run_data_loop exiting: running={} shutdown={} critical={}",
+    // HEP-CORE-0036 §8.2 — if the loop exited solely because the
+    // §4.3.2 outer guard flipped (no presence Authorized) while the
+    // other flags are still in their running positions, log it
+    // explicitly.  In production this means a hub died and the role
+    // has nothing left to serve; in tests it usually means the test
+    // set up the data loop without walking presences through to
+    // `Authorized` (test misconfiguration).  Either way, the WARN
+    // surfaces the cause instead of leaving operators to guess from
+    // a silent exit.
+    const bool guard_exit =
+        !api.any_presence_authorized() &&
+        core.is_running() &&
+        !core.is_shutdown_requested() &&
+        !core.is_critical_error() &&
+        !core.is_process_exit_requested();
+    if (guard_exit)
+    {
+        LOGGER_WARN("[{}] run_data_loop exiting via §8.2 outer guard: "
+                    "no Presence is Authorized.  In production this "
+                    "means the last live hub for this role died (see "
+                    "HEP-CORE-0036 §4.3.3); in tests it may mean a "
+                    "setup path did not transition any presence through "
+                    "to Authorized.", tag);
+    }
+
+    LOGGER_INFO("[{}] run_data_loop exiting: running={} shutdown={} critical={} "
+                "any_presence_authorized={}",
                 tag, core.is_running(), core.is_shutdown_requested(),
-                core.is_critical_error());
+                core.is_critical_error(), api.any_presence_authorized());
 }
 
 } // namespace pylabhub::scripting

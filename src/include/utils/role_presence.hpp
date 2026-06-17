@@ -59,45 +59,93 @@ enum class RoleKind : std::uint8_t
     Consumer = 2,
 };
 
-/// Role-side registration FSM for a single Presence (audit S1+O4,
-/// 2026-05-17).  Per HEP-CORE-0023 §2 + the Round-2 audit, pre-S1 the
-/// role had no enumerable registration state — it was implicit in the
-/// non-emptiness of `Impl::Shared::producer_channel` /
-/// `consumer_channel`, which couldn't distinguish "never registered"
-/// from "registered then deregistered" and didn't observe the
-/// in-flight window.  This enum makes the four legitimate states
-/// explicit on the Presence record:
+/// Role-side registration FSM for a single Presence.
 ///
-///   Unregistered         — initial state at handler construction; no
-///                          REG_REQ has been attempted for this
-///                          presence yet.
+/// **The three layers of "authorization" this FSM tracks** —
+/// terminology matters, because "registered" / "authorized" /
+/// "known role" all sound like the same thing and they are NOT:
+///
+///  1. **Known-role allowlist** (static, broker-side, on-disk).
+///     The admin pre-populates the broker's `known_roles.json`
+///     with the pubkeys of every role identity it recognizes.
+///     This is a STATIC trust list — it does NOT mean the role
+///     is participating in anything.  HEP-CORE-0036 Phase B /
+///     KnownRolesStore.  Modified outside this FSM via
+///     `plh_hub --add-known-role`.
+///
+///  2. **Broker-side admission** (runtime, broker-side, in-memory).
+///     A role process establishes a CURVE+ZAP control connection
+///     to the broker (Layer 1 of authorization — checks the
+///     pubkey is in the known-roles allowlist).  Once that
+///     succeeds, the role sends a `REG_REQ` for a specific
+///     channel; the broker validates it (Layer 2 of authorization
+///     — channel-scope) and replies with REG_ACK status="success".
+///     The broker's `ChannelAccessIndex` now tracks this role as
+///     an active participant on that channel.  This is what the
+///     `Registered` state captures from the role's perspective.
+///
+///  3. **Role-side data plane armed** (runtime, role-side, in-memory).
+///     After receiving REG_ACK, the role runs `apply_*_reg_ack`:
+///     CURVE-server bind, seed the ZAP allowlist from
+///     REG_ACK.initial_allowlist, spawn the worker.  The role's
+///     OWN data plane is now armed to enforce per-peer auth
+///     (Layer 3 of authorization).  This is the `Authorized`
+///     state.  Data may now safely flow.
+///
+/// **States, in temporal order:**
+///
+///   Unregistered         — initial.  No REG_REQ has been attempted
+///                          for this presence yet.  Also the state
+///                          a presence returns to on hub-dead
+///                          (HEP-CORE-0036 §4.3.3) — the presence
+///                          has no current registration.  No
+///                          framework auto-retry; the script may
+///                          call `register_*_channel()` again as a
+///                          deliberate action, walking the same
+///                          first-time-startup path.
+///
 ///   RegRequestPending    — REG_REQ / CONSUMER_REG_REQ has been
-///                          dispatched; we are waiting for the broker
-///                          to ACK.  Observable: the role-side
-///                          intends to register but the broker has
-///                          not yet confirmed.
-///   Registered           — broker returned a success ACK; the
-///                          presence is admitted into HubState and
-///                          counts as a member of its channel.
-///   Deregistered         — voluntary DEREG_REQ / CONSUMER_DEREG_REQ
-///                          has succeeded (or the broker disappeared
-///                          mid-teardown so we cleared our side
-///                          unilaterally).  Terminal for this
-///                          process; the presence's Presence row
-///                          stays in `handler_->presences()` for
-///                          identity/dedup purposes but no longer
-///                          drives broker traffic.
+///                          dispatched; we are waiting for the
+///                          broker to ACK.  Observable: the role-
+///                          side intends to register but the
+///                          broker has not yet confirmed.
 ///
-/// Mapping to the user's "explicit and confirmed state without
-/// ambiguity" requirement (Round-2 R2.1 S1): callers ask
-/// `presence.registration_state.load()` and get a single enum
-/// instead of inferring state from two string fields' non-emptiness.
+///   Registered           — broker returned REG_ACK status="success"
+///                          (Layers 1+2 done).  Brief transient
+///                          state while `apply_*_reg_ack` runs the
+///                          local data-plane setup.  No data can
+///                          flow YET — Layer 3 is still being set
+///                          up.
+///
+///   Authorized           — `apply_*_reg_ack` completed
+///                          successfully; the data plane is armed
+///                          (Layer 3 done).  This is the "alive"
+///                          state — the data loop runs whenever
+///                          at least one presence is Authorized
+///                          (HEP-CORE-0036 §8.2 outer guard).
+///
+///   Deregistered         — voluntary DEREG_REQ / CONSUMER_DEREG_REQ
+///                          has succeeded.  Distinct from
+///                          `Unregistered`: this means the role
+///                          *chose* to leave, not that the broker
+///                          died.  Terminal; the Presence row stays
+///                          in `handler_->presences()` for
+///                          identity/dedup but no longer drives
+///                          broker traffic.
+///
+/// **There is no auto-retry / auto-recovery machinery.**  Hub-dead
+/// transitions to `Unregistered` purely as a state-name correction;
+/// the framework does not preserve session state, does not buffer
+/// outgoing data, and does not periodically re-issue REG_REQ.  Any
+/// "try again" is a deliberate script-level action, not a framework
+/// behavior.  See HEP-CORE-0036 §4.3.3.
 enum class RegistrationState : std::uint8_t
 {
     Unregistered      = 0,
     RegRequestPending = 1,
     Registered        = 2,
-    Deregistered      = 3,
+    Authorized        = 3,  // HEP-CORE-0036 §4.3.2 — Layer 3 armed
+    Deregistered      = 4,  // shifted from 3; voluntary teardown
 };
 
 [[nodiscard]] inline const char *to_string(RegistrationState s) noexcept
@@ -107,6 +155,7 @@ enum class RegistrationState : std::uint8_t
     case RegistrationState::Unregistered:      return "Unregistered";
     case RegistrationState::RegRequestPending: return "RegRequestPending";
     case RegistrationState::Registered:        return "Registered";
+    case RegistrationState::Authorized:        return "Authorized";
     case RegistrationState::Deregistered:      return "Deregistered";
     }
     return "<unknown>";

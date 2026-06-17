@@ -294,40 +294,44 @@ RoleHandler::DisconnectReap RoleHandler::mark_connection_disconnected(
     {
         if (p.connection != dead_conn) continue;
         const auto cur = p.registration_state.load(std::memory_order_acquire);
-        if (cur != RegistrationState::Registered &&
+        if (cur != RegistrationState::Authorized &&
+            cur != RegistrationState::Registered &&
             cur != RegistrationState::RegRequestPending)
             continue;
 
-        // Race analysis (audit V2, 2026-05-18).
+        // HEP-CORE-0036 §4.3.3 — hub-dead transitions presences to
+        // `Unregistered`, NOT `Deregistered`.  Reason: `Deregistered`
+        // means "the role *chose* to leave via DEREG_REQ + DEREG_ACK"
+        // (voluntary teardown).  Hub-dead is INVOLUNTARY — the broker
+        // disappeared, the role didn't choose this.  `Unregistered`
+        // is the honest state name: "this presence has no current
+        // registration."  Same name as the initial state at
+        // construction, because semantically that's exactly where
+        // we are — no registration on this hub.
         //
-        // This is a read-modify-write WITHOUT compare-and-swap:
-        // load → test → unconditional store of `Deregistered`.
-        // A concurrent `register_*` call on the caller thread could
-        // store `Registered` in between our load and our store —
-        // we would then overwrite that fresh `Registered` with
-        // `Deregistered`.  This is intentionally permitted, for
-        // two reasons:
+        // **There is no auto-retry / auto-recovery machinery.**  Going
+        // back to `Unregistered` does NOT trigger any framework-level
+        // re-registration attempt.  The script may call
+        // `register_*_channel()` again as a deliberate action — that
+        // walks the SAME first-time-startup path the role used on
+        // its initial registration; nothing is preserved.  See
+        // HEP-CORE-0036 §4.3.3 + `RegistrationState` docstring in
+        // `role_presence.hpp`.
         //
-        //   1. **The dead-broker premise makes the outcome correct
-        //      either way.**  We're inside `on_hub_dead`, which
-        //      means ZMTP has declared this connection's broker
-        //      dead.  The broker either has already reaped our
-        //      presences via heartbeat-timeout or will reap them
-        //      shortly.  A `Registered` claim on the role side
-        //      against a dead broker is a LIE — the FSM truthfully
-        //      reflects reality as `Deregistered`.
-        //
-        //   2. **`Deregistered` is a sink state** in the role-side
-        //      FSM.  There is no transition out of it.  So clobbering
-        //      a transient `Registered` with `Deregistered` cannot
-        //      cause oscillation or further confusion — the FSM
-        //      stays at the terminal state from that point on.
-        //
-        // Compare-and-swap would prevent the clobber but would also
-        // leave the FSM at `Registered`, which is the WRONG state
-        // for a dead-broker presence.  Plain store is therefore
-        // both simpler and semantically correct.
-        p.registration_state.store(RegistrationState::Deregistered,
+        // Race analysis (audit V2, 2026-05-18; updated 2026-06-16
+        // for §4.3.3 target change).  Read-modify-write WITHOUT
+        // compare-and-swap: load → test → unconditional store of
+        // `Unregistered`.  A concurrent `register_*` call could
+        // store `Registered` (or transition to `Authorized`) between
+        // our load and store — we would then clobber that with
+        // `Unregistered`.  Intentional: we are inside `on_hub_dead`,
+        // ZMTP has declared this connection's broker dead, any
+        // role-side `Registered` / `Authorized` claim against a
+        // dead broker is a LIE; the FSM truthfully reflects reality
+        // as `Unregistered`.  No oscillation: a follow-up `register_*`
+        // from the script is a deliberate action that honestly walks
+        // `Unregistered → RegRequestPending → ...` from scratch.
+        p.registration_state.store(RegistrationState::Unregistered,
                                     std::memory_order_release);
         ++reap.presences_transitioned;
     }

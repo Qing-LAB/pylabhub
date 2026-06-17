@@ -1,11 +1,15 @@
 #pragma once
 /**
  * @file role_data_loop_workers.h
- * @brief Workers for the run_data_loop and ThreadManager test suite.
+ * @brief Workers for the run_data_loop + ThreadManager test suites.
  *
  * Each test's body constructs a RoleAPIBase, which transitively builds a
  * ThreadManager that registers a dynamic lifecycle module — so every body
  * runs in a subprocess where run_gtest_worker owns a Logger LifecycleGuard.
+ *
+ * The run_data_loop scenarios install a legitimately-constructed
+ * Presence (state=Authorized) via `RoleAPIBaseTestAccess` so the
+ * HEP-CORE-0036 §8.2 outer guard admits the loop — no bypass.
  */
 
 namespace pylabhub::tests::worker
