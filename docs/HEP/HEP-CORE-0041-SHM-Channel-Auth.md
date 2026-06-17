@@ -1,23 +1,24 @@
-# DRAFT — HEP-CORE-0041: SHM Channel Auth (Cross-Platform)
+# HEP-CORE-0041: SHM Channel Auth (Cross-Platform)
 
 | Property | Value |
 |---|---|
-| **HEP (proposed)** | `HEP-CORE-0041` |
-| **Title** | SHM Channel Auth — Capability Transport + Optional Encrypt-at-Rest |
-| **Status** | 🟢 **DRAFT — ALL §9 DECISIONS LOCKED 2026-06-16; ready for HEP promotion** |
+| **HEP** | `HEP-CORE-0041` |
+| **Title** | SHM Channel Auth — Capability Transport + Pre-Confirm Admission |
+| **Status** | 🟢 **DESIGN FINAL** — promoted from `docs/tech_draft/` 2026-06-16 after §9 decisions locked.  Implementation pending — see §10 phasing. |
 | **Created** | 2026-06-16 |
-| **Tracker** | task **#244** |
-| **Sibling docs** | HEP-CORE-0036 (ZMQ Auth — keep, this draft mirrors its shape), HEP-CORE-0002 (DataBlock — gets a transport-policy hook) |
-| **Filed by** | discussion 2026-06-16 after the AUTH-4 (#164) gap analysis surfaced the structural weakness of "secret as discriminator" + POSIX `0666` default |
+| **Last revised** | 2026-06-16 — promoted from tech_draft |
+| **Tracker** | task **#244** (umbrella); per-phase tasks under §10 |
+| **Sibling docs** | HEP-CORE-0036 (ZMQ Auth — symmetrizes to pre-confirm via task #246); HEP-CORE-0002 (DataBlock — consumes capability abstraction); HEP-CORE-0040 (Locked Key Memory — backing for any role-level encryption); HEP-CORE-0038 (script vault — sibling for script audience); HEP-CORE-0011 (script-engine parity — applies to #247 follow-up) |
+| **Filed by** | discussion 2026-06-16 after AUTH-4 (#164) gap analysis surfaced the structural weakness of "secret as discriminator" + POSIX `0666` default |
 | **Cross-platform constraint** | MUST work on Linux + FreeBSD + macOS + Windows |
-| **Blocks** | task **#164** (AUTH-4) and **#79** (SHM seed in `--init`) — both deferred until this lands |
-| **Does NOT block** | task **#245** (POSIX 0666 → 0600 interim hardening) — can ship independently |
+| **Closes** | **#164** (AUTH-4 — superseded; `shm_secret` retires under D1+D7), **#79** (SHM seed in `--init` — superseded with #164) |
+| **Does NOT block** | task **#245** (POSIX 0666 → 0600 interim hardening — can ship independently if needed before Phase 1, becomes moot once capability transport ships) |
 
-> **Read first.**  This is a working draft, not the design of record.
 > The structure mirrors HEP-CORE-0036 deliberately so a reader can
-> compare the SHM model side-by-side with the ZMQ model.  Sections
-> marked "**[DECISION:]**" are explicit asks of the designer — they
-> need answers before this graduates from tech_draft to HEP.
+> compare the SHM model side-by-side with the ZMQ model.  All §9
+> design decisions were locked during the 2026-06-16 discussion; the
+> `[DECISION:]` markers that previously punctuated the body are now
+> answered in the §9 table.
 
 ---
 
