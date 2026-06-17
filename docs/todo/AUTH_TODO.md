@@ -91,7 +91,7 @@ flow, re-read §I11 + §6.5 first — almost always it doesn't.
 | D — Broker glue (gate closes) | 🚧 D1+D2+D3 shipped; **D4–D7 open** | tracked as AUTH-1..6 below |
 | E — Admin loopback enforcement | ⏸ planned | Unblocked once D ships |
 | F — Federation peer ZAP parity | ⏸ planned | Depends on E + Federation HEP (#105) |
-| G — SHM auth migration | ⏸ planned | AUTH-4 below; can interleave |
+| G — SHM auth migration | 🚧 design shipped; impl pending | HEP-CORE-0041 (#244) shipped 2026-06-16; Phase 1 implementation tracked as #248 — see "HEP-0041 implementation chain" below.  Original AUTH-4 design (broker-mints-shm_secret) SUPERSEDED. |
 | H — Demo migration | ⏸ planned | Last; needs D shipped end-to-end |
 
 ---
@@ -868,7 +868,115 @@ end-to-end and that scripts can build coordination on top.
 
 **Depends on:** AUTH-1 + AUTH-2 + AUTH-3 + AUTH-6 shipped.  AUTH-4
 landing first is nice-to-have (SHM gate closed) but not strictly
-required (ZMQ-only L4 test is meaningful).
+required (ZMQ-only L4 test is meaningful).  Under the post-2026-06-16
+plan, the SHM gate closes via HEP-0041 Phase 1 (#248) rather than the
+retired AUTH-4 design — AUTH-7's L4 manifest gains a SHM variant only
+after #248 ships.
+
+---
+
+## HEP-0041 implementation chain — replaces retired AUTH-4
+
+**Status (2026-06-16):** HEP-CORE-0041 (SHM Channel Auth) shipped
+(#244, `94b04576`).  Implementation breaks into 5 phases per
+HEP-0041 §10.  Phase 1 is the production-readiness gate; Phases 2-3
+are cross-platform expansion; Phase 4 is general crypto primitives;
+Phase 5 retrofits ZMQ to the same pattern.
+
+**Sequencing rationale.**  Phase 1 establishes the pre-confirm
+contract on Linux/FreeBSD where the threat model is sharpest
+(`/dev/shm` 0666 default + memfd_create available); Phase 5 (#246)
+deliberately lands AFTER Phase 1 so the ZMQ retrofit replicates a
+proven pattern rather than co-evolving with it.  Quick-win #245
+(`kShmModeRw 0666 → 0600`) is independent of phasing and can land
+anytime — it reduces the attack surface on the live `shm_secret`
+model until Phase 1 retires it.
+
+### HEP-0041 Phase 1 — Linux/FreeBSD `memfd_create` backend
+
+> **Tracker:** task **#248**.
+> **HEP anchors:** HEP-0041 §5 (capability transport architecture),
+> §9 D1 (Option A locked), §9 D4 (pre-attach broker confirmation —
+> the load-bearing decision), §9 D6 (`utils/security/shm_capability/`
+> module home), §10 Phase 1, §13 Linux/FreeBSD primitives.
+> **Closes:** the HEP-0036 §1 Amendment 2026-06-16 deferred work
+> (delete `ChannelAccessEntry::shm_secret`, `ShmQueue::set_shm_secret`,
+> `broker_service.cpp:1956` hardcoded zero); HEP-0007 / HEP-0021 /
+> HEP-0023 `shm_secret` wire-shape fields (HEP-0041 §7 clean break).
+
+**Production-readiness gate.**  Until Phase 1 ships, the SHM
+transport's data-plane peer auth is the legacy `memcmp` against a
+hardcoded-zero `shm_secret` — a typo-catcher, not an auth check.
+
+**Substep plan (proposed; awaiting approval).**
+
+| Step | Scope | Notes |
+|---|---|---|
+| 1a | `utils/security/shm_capability/` module skeleton: `IShmCapability` interface + factory; build wiring; PYLABHUB_UTILS_EXPORT surface for D8 reach | No backend yet; just the abstraction.  L2 unit test pins the interface. |
+| 1b | `MemfdShmCapability` backend: `memfd_create` + `ftruncate` + `mmap` + `dup` lifecycle + `SCM_RIGHTS` send/recv over `AF_UNIX`/`SOCK_STREAM` | Linux primary; FreeBSD `memfd_create` parity verified.  L2 backend unit test (round-trip a capability between two threads in one process). |
+| 1c | Producer-side Unix-socket listen + D4 steps 1-3 (consumer connect → `{role_uid, signed_nonce}` → `SO_PEERCRED` sanity) | Producer endpoint is broker-mediated like ZMQ — endpoint string in REG_REQ. |
+| 1d | Broker `CONSUMER_ATTACH_REQ` / `_ACK` handler: D4 steps 4-5; reads `authorized_consumer_pubkeys` from `ChannelAccessIndex`; replies `{status, denial_reason?}` | New wire frame; HEP-0007 wire-shape doc update. |
+| 1e | Producer-side D4 steps 6-7: cache divergence WARN per §9 table; signed_nonce verify; `SCM_RIGHTS` send on success | The four-way divergence-WARN table is the test contract. |
+| 1f | Consumer-side D4 receive: `SCM_RIGHTS` recv → fd → `mmap` → DataBlock attach via FD (not name) | DataBlock's `attach` factory gains an fd-based path; named-shm path stays for the brief migration window only. |
+| 1g | Wire shape: remove `shm_secret` from `CONSUMER_REG_ACK`; finalize `CONSUMER_ATTACH_REQ` / `_ACK` shapes; HEP-0007 + HEP-0021 doc update | The §7 clean break per D7. |
+| 1h | Config schema rejection of `in_shm_secret` / `out_shm_secret` as unknown fields | `role_config.cpp` whitelist removal; helpful error message pointing to HEP-0041. |
+| 1i | Code cleanup: delete `ChannelAccessEntry::shm_secret`, `ShmQueue::set_shm_secret`, the hardcoded zero at `broker_service.cpp:1956`, the legacy DataBlock guard memcmp at `data_block.cpp:2768-2777`, and the `apply_master_approval` SHM-secret branches | Mechanical; tracked by the audit inventory in 5e936c3c. |
+| 1j | L3 broker tests: `CONSUMER_ATTACH_REQ` success path, denied path, cache-divergence-WARN path | Pattern 4 subprocess-per-role per `docs/README/README_testing.md`. |
+| 1k | L4 e2e test: full producer→consumer SHM flow under capability transport; assertion that unauthorized peers can NOT obtain a capability | Closes the production-readiness gate. |
+
+**Out of scope for Phase 1.**
+- macOS / Windows backends (Phases 2 / 3 — separate tasks).
+- AEAD/KDF primitives (Phase 4 / #247).
+- ZMQ pre-confirm retrofit (Phase 5 / #246).
+- Encryption-at-rest in SHM slots (D2/D3 explicitly out of scope per HEP-0041 §9).
+
+### HEP-0041 Phase 2 — macOS backend
+
+> **Tracker:** to file once Phase 1 ships.
+> **HEP anchors:** HEP-0041 §10 Phase 2; §13 macOS (`SHM_ANON` + `SCM_RIGHTS`).
+
+`shm_open` with `SHM_ANON` (Darwin-specific) replaces `memfd_create`.
+`SCM_RIGHTS` over Unix sockets matches Linux exactly — only the
+anonymous-shm creation primitive differs.  Builds on Phase 1's
+`IShmCapability` interface as a second backend implementation.
+
+### HEP-0041 Phase 3 — Windows backend
+
+> **Tracker:** to file once Phase 1 ships.
+> **HEP anchors:** HEP-0041 §10 Phase 3; §13 Windows
+> (`CreateFileMapping(NULL)` + `DuplicateHandle` via named pipe).
+
+Named pipe replaces Unix socket; `DuplicateHandle` replaces
+`SCM_RIGHTS`.  Producer queries broker for `consumer_process_id`,
+then duplicates the section HANDLE into the consumer process.
+Third backend for `IShmCapability`.
+
+### HEP-0041 Phase 4 — Framework crypto primitives
+
+> **Tracker:** task **#247** (script-accessible variant); native
+> (C++) variant is part of Phase 4 itself.
+> **HEP anchors:** HEP-0041 §9 D8 (public crypto API);
+> §10 Phase 4.
+
+`PYLABHUB_UTILS_EXPORT` AEAD (ChaCha20-Poly1305) + HKDF wrappers
+next to existing `generate_random_*` exports in `crypto_utils.hpp`.
+No SHM-specific work — these are general primitives that roles can
+layer on top of the capability transport when per-slot encryption
+(Option C territory) is the operational answer.  Script-accessible
+`api.crypto.*` bindings (Python / Lua / Native) are sibling task #247.
+
+### HEP-0041 Phase 5 — HEP-0036 ZMQ retrofit (task #246)
+
+> **Tracker:** task **#246**.
+> **HEP anchors:** HEP-0041 §9 D4 last line ("ZMQ symmetrizes via
+> task #246"); HEP-0036 §1 Amendment 2026-06-16 ("Phase 5 HEP-0036
+> ZMQ retrofit to symmetric capability semantics").
+
+Retrofit ZMQ to the same pre-attach broker-confirmation pattern.
+Producer's ZAP handler stops being load-bearing; cache becomes
+observability for ZMQ too.  Mirrors Phase 1's D4 table exactly.
+Lands AFTER Phase 1 establishes the contract on SHM — symmetry
+gained by replication, not co-evolution.
 
 ---
 

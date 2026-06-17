@@ -175,9 +175,17 @@ Current critical path (each step blocks the next unless noted):
 - **AUTH-3** (task **#163**) — `RegistrationState::Authorized` FSM
   state + `any_presence_authorized()` + data-loop outer guard
   (HB-4 + HB-5; also satisfies HEP-CORE-0036 §14.3 portion of #104).
-- **AUTH-4** (task **#164** + **#79**) — Broker-issued random
-  `shm_secret` end-to-end + `plh_role --init` SHM secret seed (HB-6).
-  Independent of AUTH-1..3 but can land in any order.
+- **~~AUTH-4~~** (tasks **#164** + **#79**) — **SUPERSEDED 2026-06-16
+  by HEP-CORE-0041 (#244).**  The broker-mints-`shm_secret` design
+  retired in favor of capability-transport (`memfd_create` +
+  `SCM_RIGHTS` + pre-attach `CONSUMER_ATTACH_REQ` confirmation per
+  HEP-0041 §9 D4).  Replacement work tracked under the HEP-0041
+  implementation chain in `docs/todo/AUTH_TODO.md` § "HEP-0041
+  implementation chain": Phase 1 (#248, Linux/FreeBSD; 11 substeps
+  1a-1k) is the new production-readiness gate; #245 (POSIX 0600
+  hardening) is an independent quick-win; Phases 2-3 (#TBD macOS /
+  Windows), Phase 4 (#247 framework crypto primitives), Phase 5
+  (#246 ZMQ pre-confirm retrofit) follow.
 - **AUTH-5** (task **#104**) — Sibling-HEP doc sync; 7 of 8 are pure
   doc edits.  L (multi-area).
 - **AUTH-6** (task **#154**, in-progress) — Re-create L3 broker tests
