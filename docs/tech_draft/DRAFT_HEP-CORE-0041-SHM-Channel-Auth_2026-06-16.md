@@ -4,7 +4,7 @@
 |---|---|
 | **HEP (proposed)** | `HEP-CORE-0041` |
 | **Title** | SHM Channel Auth — Capability Transport + Optional Encrypt-at-Rest |
-| **Status** | 🟡 **DRAFT — OPEN FOR DESIGNER DECISIONS** |
+| **Status** | 🟢 **DRAFT — ALL §9 DECISIONS LOCKED 2026-06-16; ready for HEP promotion** |
 | **Created** | 2026-06-16 |
 | **Tracker** | task **#244** |
 | **Sibling docs** | HEP-CORE-0036 (ZMQ Auth — keep, this draft mirrors its shape), HEP-CORE-0002 (DataBlock — gets a transport-policy hook) |
@@ -331,46 +331,85 @@ HEP-CORE-0036 stays as-is.  Cross-references added at:
 
 ---
 
-## 9. Open designer decisions (consolidated)
+## 9. Designer decisions
 
-For convenience — every `**[DECISION:]**` from the body:
-
-| # | Question | My recommendation |
+| # | Question | Decision (locked 2026-06-16) |
 |---|---|---|
-| D1 | Which mechanism ships as default? | Option D (A for transport, C opt-in for encryption) |
-| D2 | Lifecycle strategy for encryption keys? | MVP = Strategy 2 (per-channel-open); Phase 2 = Strategy 4 (continuous rotation) |
-| D3 | AES-GCM vs ChaCha20-Poly1305? | ChaCha20-Poly1305 |
-| D4 | Broker proxy fd-pass OR direct producer↔consumer? | Direct, broker issues bearer token |
-| D5 | `consumer_authorization_token` format? | Random nonce + Ed25519 signature by broker, 5-min TTL |
-| D6 | Module home for new code? | `utils/security/shm_capability/` |
-| D7 | Backward compat with existing `shm_secret` configs? | None — clean break, framework is pre-1.0 |
+| **D1** | Which mechanism ships at framework level? | ✅ **Option A** (capability via anonymous mapping + handle transfer).  Encryption (Option C) is a ROLE-level concern; framework exposes uniform crypto primitives (key gen, mlocked key storage, AEAD encrypt/decrypt of memory block, HKDF) so any role that wants per-slot encryption can layer it on top of the capability transport.  Framework never manages encryption keys for channel data. |
+| **D2** | Lifecycle strategy for encryption keys? | ⏭️ **Out of scope** — see D1.  Role decides its own key lifecycle using framework primitives.  Recommended patterns documented separately (e.g., per-channel-open key, optional continuous rotation) but the framework does not enforce. |
+| **D3** | AES-GCM vs ChaCha20-Poly1305? | ⏭️ **Out of scope** — see D1.  Framework's AEAD primitive defaults to ChaCha20-Poly1305 (libsodium `crypto_aead_chacha20poly1305_*`) since it's constant-time without hardware support; a single helper, roles choose to use it or not. |
+| **D4** | How does the producer admit a consumer? | ✅ **Pre-attach broker confirmation on every attempt.  No cached fast-path.  Cached allowlist becomes observability only.** Producer ALWAYS queries broker via BRC before sending the fd; broker checks `authorized_consumer_pubkeys` against current state and replies success/denied.  Cache + broker answer COMPARED — divergence → WARN log, broker's answer always wins.  Drift window is eliminated; revocation of established connections retains HEP-0036 §3 "no force-close" semantic (entry gate is the tight control point).  **ZMQ symmetrizes via task #246** (HEP-CORE-0036 amendment). |
+| **D5** | Bearer-token format? | ⏭️ **Moot under D4** — pre-confirm pattern replaces bearer tokens.  Producer queries broker by `consumer_pubkey` directly; broker is the live authority.  No token signing, no expiration logic needed. |
+| **D6** | Module home for new code? | ✅ **`utils/security/shm_capability/`** — sits alongside `key_store`, `zap_router`, `peer_admission`, `curve_keypair`, etc.  Communicates the security-mechanism role; physical-layer SHM (DataBlock, slot ops) stays in `utils/shm/` and consumes the capability abstraction. |
+| **D7** | Backward compat with existing `shm_secret` configs? | ✅ **Clean break.**  Single unified mechanism, no parallel paths.  `in_shm_secret` / `out_shm_secret` config fields retire (schema validation rejects them as unknown).  `ChannelAccessEntry::shm_secret` field removed; replaced by capability endpoint registration.  Demo configs under `share/` updated.  No deprecation period.  Framework is pre-1.0; clean breaks are accepted; coexistence of two SHM mechanisms is a permanent maintenance liability we explicitly reject. |
+| **D8** | Public-API exposure of framework crypto primitives (AEAD / KDF / random / LockedKey)? | ✅ **Yes for native (C++) consumers via `PYLABHUB_UTILS_EXPORT`.**  New AEAD + KDF wrappers added to `crypto_utils.hpp` next to existing `generate_random_*` exports.  Costs nothing extra over internal-use scope; benefits native plugin developers and external tooling that links `pylabhub-utils`.  Script-accessible variant (Python / Lua / Native plugin engines via `api.crypto.*`) deferred to a sibling task — see §13. |
+
+### D4 attach sequence (detail)
+
+1. Consumer connects to producer's Unix socket / named pipe.
+2. Consumer sends `{role_uid, signed_nonce}` (signature over a producer-issued nonce with consumer's CURVE seckey, to prove pubkey ownership).
+3. Producer reads `SO_PEERCRED` (POSIX) / `GetNamedPipeClientProcessId` (Windows) as a defense-in-depth sanity check (peer must be in the expected trust domain).
+4. **Producer sends `CONSUMER_ATTACH_REQ {channel_name, consumer_pubkey, consumer_role_uid}` to broker over its BRC.**
+5. Broker checks `authorized_consumer_pubkeys` for the channel.  Replies `CONSUMER_ATTACH_ACK {status: success | denied}`.
+6. Producer compares broker's answer against its local cached allowlist:
+   - **Agree (success+in-cache, OR denied+not-in-cache)**: silent.  Normal path.
+   - **Diverge (success+not-in-cache OR denied+in-cache)**: log `WARN` — broker comm health signal — broker's answer wins.
+7. Success → producer validates the signed_nonce against the pubkey, sends fd via `SCM_RIGHTS` (POSIX) or `DuplicateHandle` (Windows).  Denied → producer drops the connection.
+
+### D4 cached-allowlist semantics
+
+The producer's cache is maintained by the same `CHANNEL_AUTH_CHANGED_NOTIFY` doorbell + `GET_CHANNEL_AUTH_REQ`/`_ACK` pull pattern as ZMQ today, but its role flips from **load-bearing** to **observability**:
+
+| Cache vs broker | Meaning | Action |
+|---|---|---|
+| Both say allowed | Healthy | No log |
+| Both say denied | Healthy | No log |
+| Broker allowed, cache says no | Producer missed a NOTIFY add | WARN; admit; investigate NOTIFY pipeline if frequent |
+| Broker denied, cache says yes | Producer missed a NOTIFY remove | WARN; deny; investigate NOTIFY pipeline if frequent |
+
+Sustained divergence rate = broker-NOTIFY-pipeline health metric.  Operators monitor this one signal.
 
 ---
 
-## 10. Implementation phasing (conditional on §9 outcomes)
+## 10. Implementation phasing (locked at D1 + D4)
 
-Strawman, depends on §9 D1 + D2 outcomes:
+1. **Phase 1 — Abstract interface + Linux/FreeBSD `memfd_create` backend + broker `CONSUMER_ATTACH_REQ` handler.** Strongest platform first.  Production roles on Linux can use capability transport with pre-confirm.  Tests pin the divergence-WARN behavior.
+2. **Phase 2 — macOS backend** (`shm_open + SHM_ANON` + `SCM_RIGHTS`).
+3. **Phase 3 — Windows backend** (`CreateFileMapping(NULL) + DuplicateHandle` via named pipe).
+4. **Phase 4 — Framework AEAD/KDF/key-storage primitives.** Cross-platform via libsodium.  No SHM-specific work — these are general crypto primitives that roles can use for any purpose (channel data encryption being one such use case).
+5. **Phase 5 — HEP-CORE-0036 amendment (task #246):** retrofit ZMQ to the same pre-confirm pattern.  Lands AFTER Phase 1 establishes the pattern.
 
-1. **Phase 1 — Abstract interface + Linux/FreeBSD memfd backend.** Strongest platform first.  Production roles on Linux can start using capability transport.  Tests use this.
-2. **Phase 2 — macOS backend** (`shm_open + SHM_ANON`).
-3. **Phase 3 — Windows backend** (`CreateFileMapping(NULL) + DuplicateHandle via named pipe`).
-4. **Phase 4 — Encryption layer** (Option C) if D1=D.  ChaCha20-Poly1305 over the capability transport.
-5. **Phase 5 — Continuous rotation** (Strategy 4) if D2 escalates beyond MVP.
-
-Each phase is its own task and its own commit cluster.  Phase 1 is the only one that's a true blocker for "production-ready SHM channels on Linux."
+Each phase is its own task and commit cluster.  Phase 1 is the production-readiness gate.
 
 ---
 
 ## 11. Next steps
 
-1. Designer reads this draft, answers §9.
-2. Promote to permanent `docs/HEP/HEP-CORE-0041-...md`.
-3. File Phase-1 implementation task + sibling HEP updates per §8.
-4. Revive #164 / #79 either as supersede-close (if D1 retires `shm_secret`) or as scope-update (if D1 keeps it as discriminator).
+All §9 decisions locked.  Remaining work:
+
+1. Promote this draft to permanent `docs/HEP/HEP-CORE-0041-SHM-Channel-Auth.md`.
+2. Update HEP-CORE-0036 §3 (revocation framing) + §5.6 + §6.4 + §I6 per §8 cross-references.
+3. File Phase-1 implementation task (Linux/FreeBSD `memfd_create` backend + broker `CONSUMER_ATTACH_REQ` handler + L3 tests).
+4. Phase 2/3 implementation tasks (macOS, Windows).
+5. Phase 4 task — public `PYLABHUB_UTILS_EXPORT` AEAD + KDF wrappers (D8).
+6. Close out #164 (AUTH-4) and #79 as **superseded** — `shm_secret` retires entirely under D1+D7.
+7. Per task #246, retrofit ZMQ to pre-confirm pattern after Phase 1 lands.
 
 ---
 
-## 12. Appendix: per-platform primitive references
+## 12. Related tasks + cross-references
+
+| Task | Purpose | Status relative to this HEP |
+|---|---|---|
+| **#244** | Tracker for this HEP | This draft IS #244's deliverable |
+| **#164 AUTH-4** | Original broker-mint-shm_secret design | **Superseded** by D1+D7 — `shm_secret` retires entirely; close as superseded when this HEP promotes |
+| **#79** | `plh_role --init` non-zero `shm_secret` seed | **Superseded** with #164 — close together |
+| **#245** | Interim POSIX `kShmModeRw 0666 → 0600` tightening | Independent quick win; can land before this HEP if useful, becomes moot when capability transport ships (no named `shm_open` anymore) |
+| **#246** | HEP-CORE-0036 ZMQ retrofit to pre-confirm pattern | Downstream — lands after Phase 1 here establishes the pattern |
+| **#106 (HEP-CORE-0038)** | Script-accessible vault keystore (`api.vault_save` / `api.vault_load`) | Sibling — script audience for the secret-at-rest side of crypto |
+| **#247** | Script-accessible crypto primitives — `api.crypto.*` bindings (Python/Lua/Native) for AEAD + KDF + random | Sibling to #106; consumer of D8.  Lets scripts use the same primitives roles use natively. |
+
+## 13. Appendix: per-platform primitive references
 
 For implementers / reviewers.  Sources to cite when this becomes a real HEP.
 
