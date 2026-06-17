@@ -887,10 +887,16 @@ Phase 5 retrofits ZMQ to the same pattern.
 contract on Linux/FreeBSD where the threat model is sharpest
 (`/dev/shm` 0666 default + memfd_create available); Phase 5 (#246)
 deliberately lands AFTER Phase 1 so the ZMQ retrofit replicates a
-proven pattern rather than co-evolving with it.  Quick-win #245
-(`kShmModeRw 0666 → 0600`) is independent of phasing and can land
-anytime — it reduces the attack surface on the live `shm_secret`
-model until Phase 1 retires it.
+proven pattern rather than co-evolving with it.
+
+**#245 KILLED 2026-06-17.**  POSIX `kShmModeRw 0666 → 0600` was
+proposed as an interim hardening of the live `shm_secret` model.
+Decision reversed: under HEP-0041 the named-SHM `shm_open` path is
+deleted outright (capability transport via `memfd_create` +
+`SCM_RIGHTS` — no name to discover, no mode bits to harden, no
+code path to tighten).  Spending engineering time hardening a
+surface we're about to delete is waste.  Phase 1 substep 1i
+removes the legacy path entirely.
 
 ### HEP-0041 Phase 1 — Linux/FreeBSD `memfd_create` backend
 

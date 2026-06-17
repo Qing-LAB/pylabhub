@@ -182,10 +182,12 @@ Current critical path (each step blocks the next unless noted):
   HEP-0041 §9 D4).  Replacement work tracked under the HEP-0041
   implementation chain in `docs/todo/AUTH_TODO.md` § "HEP-0041
   implementation chain": Phase 1 (#248, Linux/FreeBSD; 11 substeps
-  1a-1k) is the new production-readiness gate; #245 (POSIX 0600
-  hardening) is an independent quick-win; Phases 2-3 (#TBD macOS /
-  Windows), Phase 4 (#247 framework crypto primitives), Phase 5
-  (#246 ZMQ pre-confirm retrofit) follow.
+  1a-1k) is the new production-readiness gate; Phases 2-3 (#TBD
+  macOS / Windows), Phase 4 (#247 framework crypto primitives),
+  Phase 5 (#246 ZMQ pre-confirm retrofit) follow.  #245 (POSIX 0600
+  interim hardening) KILLED 2026-06-17 — the named-SHM `shm_open`
+  path it would harden is deleted under Phase 1 substep 1i; the
+  interim was waste.
 - **AUTH-5** (task **#104**) — Sibling-HEP doc sync; 7 of 8 are pure
   doc edits.  L (multi-area).
 - **AUTH-6** (task **#154**, in-progress) — Re-create L3 broker tests
