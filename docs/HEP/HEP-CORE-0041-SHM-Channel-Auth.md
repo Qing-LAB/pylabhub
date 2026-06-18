@@ -347,15 +347,24 @@ HEP-CORE-0036 stays as-is.  Cross-references added at:
 
 ### D4 attach sequence (detail)
 
+> **Amended 2026-06-17 (substep 1c implementation).** Steps 2 and 7's "signed_nonce" mechanism was cryptographically broken — CURVE keypairs are Curve25519 (for ECDH), not Ed25519 (for signing), so "signature over a nonce with a CURVE seckey" is not a standard libsodium operation.  Replaced with a two-frame `crypto_box`-based challenge-response using the same CURVE keys (Curve25519 + xsalsa20poly1305 — `crypto_box_easy` / `crypto_box_open_easy`).  The MAC of `crypto_box_easy(challenge, nonce, producer_pk, consumer_sk)` is keyed by `ECDH(consumer_sk, producer_pk)`; successful `crypto_box_open_easy` under `(consumer_pk_from_hello, producer_sk)` proves the cipher was produced by the holder of `consumer_sk` corresponding to `consumer_pk`.  Same security property as ZMQ's CURVE handshake.  See `src/utils/security/attach_protocol.cpp` + `tests/test_layer2_service/test_attach_protocol.cpp::RejectsConsumerWithWrongSeckey`.
+
 1. Consumer connects to producer's Unix socket / named pipe.
-2. Consumer sends `{role_uid, signed_nonce}` (signature over a producer-issued nonce with consumer's CURVE seckey, to prove pubkey ownership).
-3. Producer reads `SO_PEERCRED` (POSIX) / `GetNamedPipeClientProcessId` (Windows) as a defense-in-depth sanity check (peer must be in the expected trust domain).
-4. **Producer sends `CONSUMER_ATTACH_REQ {channel_name, consumer_pubkey, consumer_role_uid}` to broker over its BRC.**
-5. Broker checks `authorized_consumer_pubkeys` for the channel.  Replies `CONSUMER_ATTACH_ACK {status: success | denied}`.
-6. Producer compares broker's answer against its local cached allowlist:
+2. Producer sends frame 1 (length-prefixed JSON): `{protocol_version, nonce_b64, challenge_b64}` — 24-byte `crypto_box` nonce + 16 random challenge bytes.
+3. Consumer encrypts the challenge under its seckey targeting the producer's pubkey:
+   `cipher = crypto_box_easy(challenge, nonce, producer_pk, consumer_sk)`.
+   Sends frame 2 (length-prefixed JSON): `{protocol_version, role_uid, pubkey_z85, challenge_response_b64}`.
+4. Producer reads `SO_PEERCRED` (POSIX) / `GetNamedPipeClientProcessId` (Windows) as a defence-in-depth sanity check (peer must be in the expected trust domain).  Validates the hello shape, decodes the consumer's claimed pubkey from Z85, decrypts:
+   `plaintext = crypto_box_open_easy(cipher, nonce, consumer_pk_from_hello, producer_sk)`.
+   MAC verification + `plaintext == challenge` → cryptographic proof complete.
+5. **Producer sends `CONSUMER_ATTACH_REQ {channel_name, consumer_pubkey, consumer_role_uid}` to broker over its BRC.**
+6. Broker checks `authorized_consumer_pubkeys` for the channel.  Replies `CONSUMER_ATTACH_ACK {status: success | denied}`.
+7. Producer compares broker's answer against its local cached allowlist:
    - **Agree (success+in-cache, OR denied+not-in-cache)**: silent.  Normal path.
    - **Diverge (success+not-in-cache OR denied+in-cache)**: log `WARN` — broker comm health signal — broker's answer wins.
-7. Success → producer validates the signed_nonce against the pubkey, sends fd via `SCM_RIGHTS` (POSIX) or `DuplicateHandle` (Windows).  Denied → producer drops the connection.
+8. Success → producer sends fd via `SCM_RIGHTS` (POSIX) or `DuplicateHandle` (Windows).  Denied → producer drops the connection.
+
+**Mutual-auth gap.**  The current flow proves consumer→producer identity but does NOT prove producer→consumer (a same-UID process could bind the published endpoint and impersonate the producer to a connecting consumer).  Task #262 tracks adding producer-side proof-of-possession (likely as a 3rd frame: producer echoes a consumer-supplied challenge encrypted under producer_sk) before declaring Phase 1 production-ready.
 
 ### D4 cached-allowlist semantics
 

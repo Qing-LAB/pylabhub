@@ -349,6 +349,42 @@ gtest_discover_tests(test_layer2_shm_capability_channel
 )
 
 # ============================================================================
+# Test: AttachProtocol (HEP-CORE-0041 §9 D4 challenge-response, substep 1c)
+# Pattern 1 — direct libsodium + bare Unix sockets; no LOGGER_*, no lifecycle.
+# Pins:
+#   - Happy round-trip hello + challenge-response.
+#   - Cryptographic proof actually rejects wrong-seckey impersonator.
+#   - MAC tampering rejected.
+#   - Hello shape validation (protocol_version, role_uid, size cap, JSON).
+#   - Timeout / connect-failure return shapes.
+# ============================================================================
+
+add_executable(test_layer2_attach_protocol
+    test_attach_protocol.cpp
+)
+
+target_link_libraries(test_layer2_attach_protocol
+    PRIVATE
+        pylabhub::utils
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_attach_protocol)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_attach_protocol
+    SUITE_NAME "Layer2_AttachProtocol"
+)
+layer2_require_staged_utils(test_layer2_attach_protocol)
+
+gtest_discover_tests(test_layer2_attach_protocol
+    PROPERTIES
+        LABELS "layer2;service;security;attach_protocol"
+        TIMEOUT 30
+)
+
+# ============================================================================
 # Test: PeerAdmission abstraction (HEP-CORE-0035 §4.5 / HEP-CORE-0036 §I1)
 # Pattern 1 — pure value-type tests; no LOGGER_*, no lifecycle.
 # Phase A of the PeerAdmission architecture: pins the interface contract
