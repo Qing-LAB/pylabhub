@@ -385,6 +385,47 @@ gtest_discover_tests(test_layer2_attach_protocol
 )
 
 # ============================================================================
+# Test: ShmAttachOrchestrator (HEP-CORE-0041 §9 D4 steps 6-7, substep 1e)
+# Pattern 1+ — binary-wide LifecycleGuard for Logger (orchestrator emits
+# LOGGER_INFO/WARN for the divergence-WARN table).  No cross-test state.
+# Pins (one test per HEP-0041 §9 D4 cached-allowlist table cell + edge cases):
+#   - both allowed → silent + Sent
+#   - both denied → silent + DeniedByBroker
+#   - broker allowed + cache denied → WARN divergence + Sent
+#   - broker denied + cache allowed → WARN divergence + DeniedByBroker
+#   - broker_query nullopt → WARN + DeniedTransportFail
+#   - broker unexpected status → WARN + DeniedTransportFail
+#   - L2 handshake failure → WARN + HandshakeFailed (broker NOT queried)
+#   - no consumer connects → Timeout (no logs)
+# ============================================================================
+
+add_executable(test_layer2_shm_attach_orchestrator
+    test_shm_attach_orchestrator.cpp
+)
+
+target_link_libraries(test_layer2_shm_attach_orchestrator
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_shm_attach_orchestrator)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_shm_attach_orchestrator
+    SUITE_NAME "Layer2_ShmAttachOrchestrator"
+)
+layer2_require_staged_utils(test_layer2_shm_attach_orchestrator)
+
+gtest_discover_tests(test_layer2_shm_attach_orchestrator
+    PROPERTIES
+        LABELS "layer2;service;security;shm_attach_orchestrator"
+        TIMEOUT 30
+)
+
+# ============================================================================
 # Test: PeerAdmission abstraction (HEP-CORE-0035 §4.5 / HEP-CORE-0036 §I1)
 # Pattern 1 — pure value-type tests; no LOGGER_*, no lifecycle.
 # Phase A of the PeerAdmission architecture: pins the interface contract

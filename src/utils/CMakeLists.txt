@@ -61,6 +61,7 @@ set(UTILS_SOURCES
   security/key_store.cpp           # pylabhub::utils::security (HEP-CORE-0040 §5 — locked-memory secret store)
   security/shm_capability_channel.cpp # pylabhub::utils::security (HEP-CORE-0041 §6 — cross-platform SHM capability transport; backend lands task #249)
   security/attach_protocol.cpp     # pylabhub::utils::security (HEP-CORE-0041 §9 D4 — L2 producer-side challenge-response handshake; task #250)
+  security/shm_attach_orchestrator.cpp # pylabhub::utils::security (HEP-CORE-0041 §9 D4 steps 6-7 — broker pre-confirm + divergence WARN + send; task #252)
 
   # --- role hosts: lifecycle + data loop for each role ---
   ${CMAKE_SOURCE_DIR}/src/producer/producer_role_host.cpp
