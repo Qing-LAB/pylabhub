@@ -113,13 +113,67 @@ static const std::unordered_set<std::string> kAllowedKeys = {
     // allowed divergence with no conversion layer → silent corruption.
     // Per-direction: SHM
     "in_shm_enabled", "out_shm_enabled",
-    "in_shm_secret", "out_shm_secret",
+    // HEP-CORE-0041 §7 substep 1h (#255) — `in_shm_secret` /
+    // `out_shm_secret` retired.  The legacy `shm_secret` field was a
+    // header-stored guard secret on SHM channels that the design
+    // determined to be not actually an auth gate (it never gated
+    // ATTACH, only LOOKUP — see HEP-CORE-0041 §1 + §3).  The
+    // capability-transport replacement (substeps 1a-1g) carries no
+    // wire equivalent.  Configs containing this field are rejected
+    // explicitly by `reject_retired_keys` below with a clear message
+    // pointing operators at the migration; the runtime machinery
+    // (`shm_config.hpp:41`, `hub_shm_queue.cpp:379-389`) is now dead
+    // code per the rejection — substep 1i (#256) deletes the dead
+    // runtime path along with `ChannelAccessEntry::shm_secret` and
+    // related fields.
     "in_shm_slot_count", "out_shm_slot_count",
     "in_shm_sync_policy", "out_shm_sync_policy",
     // Role-specific (schemas — validated by role parser, not here)
     "in_slot_schema", "out_slot_schema",
     "in_flexzone_schema", "out_flexzone_schema",
 };
+
+/// HEP-CORE-0041 §7 substep 1h (#255) — explicit retirement of config
+/// keys that were removed from the whitelist for a specific reason
+/// (not "we forgot to add it" but "this is a deliberately retired
+/// surface").  Fires BEFORE `validate_known_keys` so the operator sees
+/// the HEP-referenced migration message instead of a generic
+/// "unknown config key" error that would obscure the actual root
+/// cause.  Each entry includes the substep / commit that retired the
+/// field so a future maintainer can trace the decision.
+static void reject_retired_keys(const nlohmann::json &j, const char *tag)
+{
+    struct RetiredKey
+    {
+        const char *name;
+        const char *hep_ref;
+        const char *migration;
+    };
+    static constexpr RetiredKey kRetiredKeys[] = {
+        // HEP-CORE-0041 substep 1h (#255) — `*_shm_secret` retired.
+        // The header-stored guard secret was determined to not be an
+        // auth gate (it never gated ATTACH, only LOOKUP).  The
+        // capability-transport replacement (substeps 1a-1g) carries
+        // no wire equivalent.
+        {"in_shm_secret",  "HEP-CORE-0041 §7 substep 1h (#255)",
+         "remove the field; auth is now via SCM_RIGHTS capability "
+         "transport (HEP-CORE-0041 §5.1) and requires no config knob"},
+        {"out_shm_secret", "HEP-CORE-0041 §7 substep 1h (#255)",
+         "remove the field; auth is now via SCM_RIGHTS capability "
+         "transport (HEP-CORE-0041 §5.1) and requires no config knob"},
+    };
+
+    for (const auto &rk : kRetiredKeys)
+    {
+        if (j.contains(rk.name))
+        {
+            throw std::runtime_error(
+                std::string(tag) + ": config key '" + rk.name +
+                "' was RETIRED by " + rk.hep_ref +
+                ".  Migration: " + rk.migration + ".");
+        }
+    }
+}
 
 /// Validate that all top-level JSON keys are in the whitelist.
 static void validate_known_keys(const nlohmann::json &j, const char *tag)
@@ -137,6 +191,12 @@ static void validate_known_keys(const nlohmann::json &j, const char *tag)
 void RoleConfig::Impl::load_common(const nlohmann::json &j)
 {
     const char *tag = role_tag.c_str();
+
+    // ── Reject retired keys with a specific HEP-referenced message ──
+    // Fires BEFORE the generic unknown-key check so operators see the
+    // migration hint, not "unknown config key" (HEP-CORE-0041 §7
+    // substep 1h #255 + future retirements).
+    reject_retired_keys(j, tag);
 
     // ── Reject unknown keys before parsing ──────────────────────────
     validate_known_keys(j, tag);

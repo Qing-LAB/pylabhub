@@ -227,7 +227,11 @@ TEST_F(SetupInfrastructureTranslationTest, Producer_ShmTransport_AllFieldsCopied
             j["out_transport"]          = "shm";
             j["out_shm_enabled"]        = true;
             j["out_shm_slot_count"]     = 64;          // template = 8
-            j["out_shm_secret"]         = 4242424242u; // template omits → 0
+            // HEP-CORE-0041 substep 1h (#255) — out_shm_secret retired
+            // (parser throws on this field); a separate rejection
+            // test below pins the throw shape.  Removed from this
+            // round-trip test; the legacy non-zero assertion at the
+            // matching EXPECT_EQ below is also dropped.
             j["out_shm_sync_policy"]    = "sequential_sync"; // template = "sequential"
             j["checksum"]               = "none";      // template = "enforced"
             j["flexzone_checksum"]      = false;       // template = true
@@ -245,7 +249,8 @@ TEST_F(SetupInfrastructureTranslationTest, Producer_ShmTransport_AllFieldsCopied
         << "SHM transport must NOT set data_transport='zmq'";
 
     // SHM block — every field the translation copies under has_shm.
-    EXPECT_EQ(opts.shm_config.shared_secret,        4242424242u);
+    // HEP-CORE-0041 substep 1h (#255) — shared_secret round-trip
+    // assertion removed; the field is no longer settable from config.
     EXPECT_EQ(opts.shm_config.ring_buffer_capacity, 64u);
     EXPECT_EQ(opts.shm_config.policy,
               pylabhub::hub::DataBlockPolicy::RingBuffer);
@@ -326,7 +331,7 @@ TEST_F(SetupInfrastructureTranslationTest, Consumer_ShmTransport_AllFieldsCopied
             j["in_channel"]          = ch;
             j["in_transport"]        = "shm";
             j["in_shm_enabled"]      = true;
-            j["in_shm_secret"]       = 7777777777u;
+            // HEP-CORE-0041 1h (#255) — in_shm_secret retired
             j["checksum"]            = "none";    // not the template default
             j["flexzone_checksum"]   = true;
         });
@@ -339,7 +344,9 @@ TEST_F(SetupInfrastructureTranslationTest, Consumer_ShmTransport_AllFieldsCopied
     // The B5 site: shm_name MUST equal the configured channel.
     EXPECT_EQ(opts.shm_name, ch)
         << "B5 regression: shm_name must equal in_channel for the SHM path";
-    EXPECT_EQ(opts.shm_shared_secret, 7777777777u);
+    // HEP-CORE-0041 1h (#255) — shm_shared_secret no longer settable
+    // from config; field defaults to 0 and lives only as legacy
+    // runtime residue (deleted in 1i #256).
 
     // SHM transport must NOT activate the ZMQ branch.
     EXPECT_NE(opts.data_transport, "zmq");
@@ -413,10 +420,10 @@ TEST_F(SetupInfrastructureTranslationTest, Processor_ShmTransport_AllFieldsCopie
             j["in_transport"]         = "shm";
             j["out_transport"]        = "shm";
             j["in_shm_enabled"]       = true;
-            j["in_shm_secret"]        = 1111111111u;
+            // HEP-CORE-0041 1h (#255) — in_shm_secret retired
             j["out_shm_enabled"]      = true;
             j["out_shm_slot_count"]   = 128;
-            j["out_shm_secret"]       = 2222222222u;
+            // HEP-CORE-0041 1h (#255) — out_shm_secret retired
             j["out_shm_sync_policy"]  = "latest_only";  // template = "sequential"
             j["checksum"]             = "enforced";
             j["flexzone_checksum"]    = true;
@@ -429,7 +436,7 @@ TEST_F(SetupInfrastructureTranslationTest, Processor_ShmTransport_AllFieldsCopie
         cfg, slot_spec, fz_spec, /*has_rx_fz=*/true);
     EXPECT_EQ(rx.shm_name, in_ch)
         << "Processor.rx — B5 regression: shm_name must equal in_channel";
-    EXPECT_EQ(rx.shm_shared_secret, 1111111111u);
+    // HEP-CORE-0041 1h (#255) — shm_shared_secret no longer settable
     EXPECT_NE(rx.data_transport, "zmq");
     EXPECT_EQ(rx.checksum_policy, cfg.checksum().policy);
     EXPECT_TRUE(rx.flexzone_checksum);
@@ -438,7 +445,7 @@ TEST_F(SetupInfrastructureTranslationTest, Processor_ShmTransport_AllFieldsCopie
     const auto tx = pylabhub::processor::ProcessorRoleHost::make_tx_opts(
         cfg, slot_spec, fz_spec, /*has_tx_fz=*/true);
     EXPECT_TRUE(tx.has_shm);
-    EXPECT_EQ(tx.shm_config.shared_secret,        2222222222u);
+    // HEP-CORE-0041 1h (#255) — shared_secret no longer settable from config
     EXPECT_EQ(tx.shm_config.ring_buffer_capacity, 128u);
     EXPECT_EQ(tx.shm_config.policy,
               pylabhub::hub::DataBlockPolicy::RingBuffer);
@@ -567,7 +574,7 @@ TEST_F(SetupInfrastructureTranslationTest,
             j["out_transport"]          = "shm";
             j["out_shm_enabled"]        = true;
             j["out_shm_slot_count"]     = 8;
-            j["out_shm_secret"]         = 1u;
+            // HEP-CORE-0041 1h (#255) — out_shm_secret retired
             j["checksum"]               = "enforced";
             j["flexzone_checksum"]      = true;
         });
@@ -612,7 +619,7 @@ TEST_F(SetupInfrastructureTranslationTest,
             j["in_channel"]             = "test.cons.q23";
             j["in_transport"]           = "shm";
             j["in_shm_enabled"]         = true;
-            j["in_shm_secret"]          = 1u;
+            // HEP-CORE-0041 1h (#255) — in_shm_secret retired
             j["checksum"]               = "enforced";
             j["flexzone_checksum"]      = true;
         });
@@ -651,8 +658,7 @@ TEST_F(SetupInfrastructureTranslationTest,
             j["out_transport"]           = "shm";
             j["in_shm_enabled"]          = true;
             j["out_shm_enabled"]         = true;
-            j["in_shm_secret"]           = 1u;
-            j["out_shm_secret"]          = 2u;
+            // HEP-CORE-0041 1h (#255) — *_shm_secret retired
             j["checksum"]                = "enforced";
             j["flexzone_checksum"]       = true;
         });
@@ -693,5 +699,73 @@ TEST_F(SetupInfrastructureTranslationTest,
             cfg, out_slot_spec, out_fz_spec, /*has_tx_fz=*/false);
         EXPECT_FALSE(tx.flexzone_checksum)
             << "tx has_tx_fz=false must clear tx flexzone_checksum (Q3)";
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HEP-CORE-0041 substep 1h (#255) — retired-key rejection
+// ─────────────────────────────────────────────────────────────────────────────
+// Pin: a config carrying the legacy `out_shm_secret` or `in_shm_secret`
+// field is rejected by `reject_retired_keys` (in role_config.cpp)
+// BEFORE the generic unknown-key check.  The thrown message must
+// carry a recognizable HEP-0041 reference so operators see the
+// migration path, not a generic "unknown config key".
+//
+// Pre-1h these fields were accepted and stamped into the SHM header's
+// `shared_secret` byte field; post-1h the parser rejects them at
+// schema-validation time.  Substep 1i (#256) deletes the dead
+// internal `secret` field on ShmConfig + the
+// `apply_master_approval(ack["shm_secret"])` artifact extraction.
+TEST_F(SetupInfrastructureTranslationTest, RetiredShmSecretKeysRejected)
+{
+    EXPECT_THROW(
+        {
+            (void)generate_and_load(
+                "producer", "producer.json", "TestProdRetired",
+                [](nlohmann::json &j) {
+                    j["out_channel"]     = "test.retired.prod";
+                    j["out_transport"]   = "shm";
+                    j["out_shm_enabled"] = true;
+                    j["out_shm_secret"]  = 4242u; // <- retired
+                });
+        },
+        std::runtime_error);
+
+    EXPECT_THROW(
+        {
+            (void)generate_and_load(
+                "consumer", "consumer.json", "TestConsRetired",
+                [](nlohmann::json &j) {
+                    j["in_channel"]     = "test.retired.cons";
+                    j["in_transport"]   = "shm";
+                    j["in_shm_enabled"] = true;
+                    j["in_shm_secret"]  = 7777u; // <- retired
+                });
+        },
+        std::runtime_error);
+
+    // Verify the message shape — operators searching the log for
+    // "HEP-CORE-0041" must find the rejection.  Pin via try/catch so
+    // we can inspect the what() string.
+    try
+    {
+        (void)generate_and_load(
+            "producer", "producer.json", "TestProdRetiredMsg",
+            [](nlohmann::json &j) {
+                j["out_channel"]     = "test.retired.msg";
+                j["out_transport"]   = "shm";
+                j["out_shm_enabled"] = true;
+                j["out_shm_secret"]  = 1u;
+            });
+        FAIL() << "expected throw on retired out_shm_secret key";
+    }
+    catch (const std::runtime_error &e)
+    {
+        const std::string msg{e.what()};
+        EXPECT_NE(msg.find("out_shm_secret"), std::string::npos)
+            << "rejection message must name the retired key; got: " << msg;
+        EXPECT_NE(msg.find("HEP-CORE-0041"), std::string::npos)
+            << "rejection message must cite HEP-CORE-0041 for the "
+               "migration path; got: " << msg;
     }
 }

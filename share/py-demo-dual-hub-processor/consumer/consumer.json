@@ -9,7 +9,6 @@
   "in_channel":   "lab.demo.processed",
   "in_transport": "shm",
   "in_shm_enabled": true,
-  "in_shm_secret":  2222222222,
   "in_slot_schema": {
     "packing": "aligned",
     "fields": [

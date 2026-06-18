@@ -48,10 +48,14 @@ nlohmann::json producer_config_template(const std::string &uid,
     j["out_transport"]        = "shm";
     j["out_shm_enabled"]      = true;
     j["out_shm_slot_count"]   = 8;
-    // out_shm_secret omitted — 0 is the default ("no secret"); users who need
-    // per-channel authentication add it explicitly. Consumer and processor
-    // templates follow the same convention (shm_secret is advanced, not
-    // boilerplate).
+    // HEP-CORE-0041 §7 substep 1h (#255) — `out_shm_secret` retired.
+    // Pre-1h templates omitted the field for a different reason ("0
+    // means no secret, users who want auth add it"); post-1h the
+    // parser REJECTS any config carrying the field (with a HEP-0041
+    // migration message — see role_config.cpp `reject_retired_keys`).
+    // Auth is now via the SCM_RIGHTS capability transport (HEP-0041
+    // §5.1) and requires no config knob.  Consumer + processor
+    // templates follow the same convention.
 
     // HEP-CORE-0034 §6.2 — packing is required (no silent default).
     j["out_slot_schema"]["packing"] = "aligned";
