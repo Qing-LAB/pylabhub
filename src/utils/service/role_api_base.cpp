@@ -658,6 +658,26 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
                     ack.value("status", "?"),
                     producers_dump);
 
+        // HEP-CORE-0041 §5.3 (substep 1g #254) — for SHM channels the
+        // broker echoes back `shm_capability_endpoint` (the producer's
+        // L2 attach listener URI) and `producer_pubkey_z85` (the
+        // producer's Curve25519 identity, used for the `crypto_box`
+        // challenge-response in §5.5).  Plumb-only in 1g: log them
+        // as the observable wire-reception marker.  Actual dial via
+        // `attach_shm_capability_consumer` + DataBlock fd-source attach
+        // (substep 1f's factories) lands when the legacy
+        // `shm_open(name)` path retires in 1i (#256).
+        const bool has_shm_cap = ack.contains("shm_capability_endpoint");
+        if (has_shm_cap)
+        {
+            LOGGER_INFO("[{}] event=ShmCapabilityFieldsReceived channel='{}' "
+                        "shm_capability_endpoint='{}' producer_pubkey_z85_len={}",
+                        pImpl->role_tag,
+                        ack.value("channel_name", "?"),
+                        ack.value("shm_capability_endpoint", "?"),
+                        ack.value("producer_pubkey_z85", std::string{}).size());
+        }
+
         // Drive Standby → Active per HEP-CORE-0036 §6.7 Option B.
         // The queue's apply_master_approval is the single mutator that
         // applies the broker's reply.  For PULL queues it extracts

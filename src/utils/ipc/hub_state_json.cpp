@@ -68,6 +68,11 @@ nlohmann::json channel_to_json(const ChannelEntry &c, ChannelObservable obs)
         pj["inbox_endpoint"]    = prod.inbox_endpoint;
         // Per-producer data-plane endpoint (HEP-CORE-0021 §16.3 — Wave M2.5).
         pj["zmq_node_endpoint"] = prod.zmq_node_endpoint;
+        // HEP-CORE-0041 §5.1 (substep 1g #254) — SHM channels carry a
+        // per-producer L2 capability-transport endpoint.  Empty for ZMQ
+        // channels; admin dump consumers can distinguish via the
+        // channel-scope `data_transport` field.
+        pj["shm_capability_endpoint"] = prod.shm_capability_endpoint;
         pj["_collected_at"]     = fmt_time(prod.connected_at);
         producers.push_back(std::move(pj));
     }

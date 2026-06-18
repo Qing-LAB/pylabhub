@@ -32,6 +32,7 @@
 #include "utils/role_reg_payload.hpp"
 #include "utils/role_handler.hpp"     // Wave-B M5: handler-mode startup
 #include "utils/security/key_store.hpp"  // HEP-CORE-0040 §173: identity pubkey
+#include "utils/security/shm_capability_channel.hpp"  // HEP-CORE-0041 §5.1: default endpoint helper
 #include "utils/role_presence.hpp"    // Wave-B M5: Presence + RoleKind
 #include "utils/schema_utils.hpp"
 #include "utils/lifecycle.hpp"
@@ -346,6 +347,18 @@ void ProducerRoleHost::worker_main_()
         // use it as the data-plane curve_serverkey.
         reg_in.zmq_pubkey        = std::string(
             pylabhub::utils::security::key_store().pubkey(pylabhub::utils::security::kRoleIdentityName));
+        // HEP-CORE-0041 §5.1 (substep 1g #254) — SHM channels publish
+        // the producer's per-channel L2 capability-transport endpoint
+        // so the broker can echo it back to authorized consumers via
+        // CONSUMER_REG_ACK.shm_capability_endpoint (§5.3).  The helper
+        // returns `unix://${XDG_RUNTIME_DIR}/pylabhub/shmcap-<channel>.sock`
+        // on a systemd Linux host with the `/tmp` fallback path
+        // otherwise (see the helper docstring).  Empty for ZMQ channels.
+        if (reg_in.has_shm && !reg_in.is_zmq_transport)
+        {
+            reg_in.shm_capability_endpoint =
+                pylabhub::utils::security::default_shm_capability_endpoint(ch);
+        }
         auto reg_opts = hub::build_producer_reg_payload(reg_in);
 
         // Schema fields (HEP-CORE-0034 §10.1).  Empty fields → broker

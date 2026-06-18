@@ -34,6 +34,7 @@
 #include "utils/role_reg_payload.hpp"
 #include "utils/role_handler.hpp"     // Wave-B M7: handler-mode startup
 #include "utils/security/key_store.hpp"  // HEP-CORE-0040 §173: identity pubkey
+#include "utils/security/shm_capability_channel.hpp"  // HEP-CORE-0041 §5.1: default endpoint helper
 #include "utils/role_presence.hpp"    // Wave-B M7: Presence + RoleKind
 #include "utils/schema_utils.hpp"
 
@@ -373,6 +374,15 @@ void ProcessorRoleHost::worker_main_()
             // CURVE client pubkey (same vault-loaded value as the BRC).
             reg_in.zmq_pubkey        = std::string(
                 pylabhub::utils::security::key_store().pubkey(pylabhub::utils::security::kRoleIdentityName));
+            // HEP-CORE-0041 §5.1 (substep 1g #254) — same as producer
+            // role host: SHM out-channels publish a capability-transport
+            // endpoint so the broker can echo it to authorized consumers.
+            if (reg_in.has_shm && !reg_in.is_zmq_transport)
+            {
+                reg_in.shm_capability_endpoint =
+                    pylabhub::utils::security::default_shm_capability_endpoint(
+                        reg_in.channel);
+            }
             prod_reg = hub::build_producer_reg_payload(reg_in);
         }
         const auto &pf_for_wire = config_.role_data<ProcessorFields>();

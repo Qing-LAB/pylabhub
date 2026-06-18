@@ -1279,9 +1279,31 @@ attach_datablock_as_writer_impl(const std::string &name,
 // Lifecycle: requires LifecycleGuard with GetDataBlockModule() — same
 // as the name-based factories.
 //
-// Substep 1g/1h (#254/#255) wires these into setup_infrastructure_ /
-// config schema; substep 1i (#256) deletes the name-based factories
+// Substep 1g (#254) wires the producer/consumer role hosts to emit
+// + parse the new `shm_capability_endpoint` field on REG_REQ /
+// CONSUMER_REG_ACK; substep 1h (#255) rejects the legacy `*_shm_secret`
+// config fields; substep 1i (#256) deletes the name-based factories
 // above when the obsolete shm_secret machinery is removed.
+//
+// ⚠ CROSS-FACTORY MIXING HAZARD — do not mix the fd-source factory
+// with a name-based factory on the same logical channel.  Mixing
+// triggers asymmetric behavior:
+//   - fd-source producer + name-based consumer: name-based
+//     `find_datablock_consumer_impl` validates `shared_secret` against
+//     the caller-supplied value (which the cap-transport never carried
+//     to the consumer side), causing a silent secret-mismatch
+//     rejection.  The error is logged but the consumer factory returns
+//     nullptr — easy to miss.
+//   - name-based producer + fd-source consumer: fd-source
+//     `find_datablock_consumer_from_fd_impl` skips the secret check
+//     entirely (cap-transport receipt IS the auth in the new model),
+//     so the consumer attaches successfully but the producer side
+//     never carved the cap-transport listener that the consumer was
+//     supposedly authorized through.  Same logical channel attached
+//     two different ways.
+// Always pair fd-source producer with fd-source consumer, or
+// name-based producer with name-based consumer.  Substep 1i (#256)
+// deletes the name-based factories so this hazard window closes.
 
 /**
  * @brief Compute the total SHM size a DataBlock would occupy under `config`.
