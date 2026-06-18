@@ -26,24 +26,40 @@
  * lets the auth orchestration be unit-tested without spinning up real
  * SHM regions.
  *
- * **Platform support today.**  The header is POSIX-friendly — the
- * AcceptedPeer struct uses `pid_t` / `uid_t` / `gid_t` from
- * `<sys/types.h>` — but only Linux has a working backend (task #249's
- * `memfd_create` + `SO_PEERCRED` + `SCM_RIGHTS`).  Other platforms:
- *   - **macOS:** factory throws.  Phase 2 ships `shm_open(SHM_ANON)`
- *     + `LOCAL_PEERCRED` (different opt+struct than Linux).
- *   - **FreeBSD:** factory throws.  Has `memfd_create` since 13.0 but
- *     `SO_PEERCRED` is missing; needs `LOCAL_PEERCRED` + `xucred`.
- *   - **Windows:** factory throws.  Phase 3 ships
- *     `CreateFileMapping(NULL)` + `DuplicateHandle`; AcceptedPeer
- *     shape will need a per-platform variant (PID + token handle
- *     instead of POSIX creds).
+ * **Platform support today.**  The header surfaces the cross-platform
+ * shape (per-platform `AcceptedPeer` variant; per-platform
+ * `send_capability` signature).  The implementation file has the
+ * full architectural plan for each backend as a detailed comment
+ * block, with a `#error` directive that fires at compile time on any
+ * target platform without a real implementation.  This prevents
+ * shipping a binary that silently does nothing on platforms whose
+ * code paths haven't been written yet.
+ *
+ *   - **Linux:** ✅ Working backend (task #249's `memfd_create` +
+ *     `SO_PEERCRED` + `SCM_RIGHTS`).  Production-ready.
+ *   - **FreeBSD ≥13.0:** ⛔ `#error` — design plan documented in the
+ *     .cpp; implementation tracked under task **#259**.  Near-clone
+ *     of the Linux backend with `getpeereid()` swapped in for
+ *     `SO_PEERCRED` (FreeBSD's `xucred` carries no PID).
+ *   - **macOS:** ⛔ `#error` — design plan documented in the .cpp;
+ *     implementation tracked under task **#260**.  macOS lacks
+ *     `memfd_create`; the design uses the `shm_open`+`shm_unlink`
+ *     trick for anonymous SHM, no `accept4` (so `accept`+`fcntl`),
+ *     `getpeereid()` for cred.
+ *   - **Windows:** ⛔ `#error` — design plan documented in the .cpp;
+ *     implementation tracked under task **#261**.  Different IPC
+ *     model entirely: named pipes instead of Unix sockets;
+ *     `CreateFileMapping` instead of `memfd_create`; `DuplicateHandle`
+ *     instead of `SCM_RIGHTS`.  The `AcceptedPeer` struct uses a
+ *     Windows-specific variant (pipe HANDLE + peer PID; no uid/gid
+ *     because Windows has no such concept).
  *
  * @see docs/HEP/HEP-CORE-0041-SHM-Channel-Auth.md §5-§6, §9 D1+D4, §10.
  * @see docs/HEP/HEP-CORE-0036-Authenticated-Connection-Establishment.md §1
  *      Amendment 2026-06-16 (the supersession that motivates this module).
  */
 
+#include "plh_platform.hpp"  // PYLABHUB_IS_WINDOWS / PYLABHUB_IS_POSIX; pulls in <windows.h> on Win64
 #include "pylabhub_utils_export.h"
 
 #include <chrono>
@@ -52,7 +68,10 @@
 #include <optional>
 #include <span>
 #include <string>
-#include <sys/types.h>  // pid_t, uid_t, gid_t — POSIX SO_PEERCRED triple
+
+#if defined(PYLABHUB_IS_POSIX)
+#    include <sys/types.h>  // pid_t, uid_t, gid_t — POSIX peer-cred triple
+#endif
 
 namespace pylabhub::utils::security
 {
@@ -86,24 +105,48 @@ class PYLABHUB_UTILS_EXPORT IShmCapabilityProducer
 public:
     /// Per-peer credentials surfaced after `accept_one()`.
     ///
-    /// **Ownership.**  `peer_socket_fd` is **caller-owned** — the
-    /// producer does NOT track or close it.  The caller closes the
-    /// fd after `send_capability()` (or after deciding to deny).
-    /// Letting the producer track accepted peer fds would create an
-    /// fd-recycle hazard if the caller closes the fd early and the
-    /// kernel reassigns the number before the producer's dtor runs.
+    /// **Ownership.**  The caller owns the peer-side resource handle
+    /// (`peer_socket_fd` on POSIX, `peer_pipe_handle` on Windows) —
+    /// the producer does NOT track or close it.  The caller closes
+    /// the handle after `send_capability()` (or after deciding to
+    /// deny).  Letting the producer track accepted peer handles
+    /// would create a recycle hazard if the caller closes early and
+    /// the kernel reassigns the number before the producer's dtor
+    /// runs.
     ///
-    /// `pid` / `uid` / `gid` come from `SO_PEERCRED` (Linux) or its
-    /// per-platform equivalent.  Used by L2's defence-in-depth sanity
+    /// **POSIX shape** — `peer_socket_fd` is the accepted Unix-socket
+    /// connection.  `pid` / `uid` / `gid` come from `SO_PEERCRED`
+    /// (Linux), `getpeereid()` (FreeBSD / macOS), or their per-
+    /// platform equivalent.  Used by L2's defence-in-depth sanity
     /// check (HEP-0041 §9 D4 step 3): the peer must be in the
-    /// expected trust domain.  Zero defaults (when `SO_PEERCRED`
-    /// fails) fail closed under any non-root expectation.
+    /// expected trust domain.  Zero defaults (when the cred read
+    /// fails) fail closed under any non-root expectation.  On
+    /// FreeBSD `pid` is always 0 because `xucred` doesn't carry it.
+    ///
+    /// **Windows shape** — `peer_pipe_handle` is a `HANDLE` to the
+    /// connected named pipe (kept opaque as `void*` so the public
+    /// header doesn't drag in `<windows.h>`).  `peer_pid` comes from
+    /// `GetNamedPipeClientProcessId`; the producer uses it later to
+    /// `OpenProcess(PROCESS_DUP_HANDLE)` + `DuplicateHandle` the
+    /// SHM section into the peer.  No `uid`/`gid` fields — Windows
+    /// has no such concept; L2 uses different attestation
+    /// (process-token introspection, deferred).
     struct AcceptedPeer
     {
+#if defined(PYLABHUB_IS_WINDOWS)
+        // void* opaque follows the same convention as
+        // `pylabhub::platform::ShmHandle::opaque` (plh_platform.hpp:152):
+        // public structs do not drag <windows.h> through; the .cpp
+        // casts back to `HANDLE` internally.  Caller must `CloseHandle`
+        // to release.
+        void          *peer_pipe_handle{nullptr};
+        unsigned long  peer_pid{0};
+#else
         int   peer_socket_fd{-1};
         pid_t pid{};
         uid_t uid{};
         gid_t gid{};
+#endif
     };
 
     virtual ~IShmCapabilityProducer() = default;
@@ -134,22 +177,31 @@ public:
     /// Send the anonymous-SHM fd / HANDLE to the previously-accepted
     /// peer via `SCM_RIGHTS` (POSIX) or `DuplicateHandle` (Windows).
     ///
-    /// Producer retains its own dup — the kernel duplicates the
-    /// descriptor into the peer's process during sendmsg.  Returns
-    /// true on successful send.  Caller is responsible for any
-    /// surrounding auth flow (signed-nonce verify, broker
+    /// Producer retains its own copy — the kernel duplicates the
+    /// descriptor / HANDLE into the peer's process during the send.
+    /// Returns true on successful send.  Caller is responsible for
+    /// any surrounding auth flow (signed-nonce verify, broker
     /// pre-confirm) — this method is the unconditional handoff once
     /// the auth layer says "send it."
     ///
-    /// **`peer_socket_fd` ownership is unchanged by this call.**
-    /// `AcceptedPeer.peer_socket_fd` remains caller-owned (see the
-    /// `AcceptedPeer` docstring).  This method neither closes
-    /// `peer_socket_fd` on success nor on failure — including
-    /// failure paths leaves the fd open so the caller may inspect
-    /// `errno`, log peer details, or retry.  Caller must close
-    /// `peer_socket_fd` after the handoff (or after deciding to
-    /// abandon it).
+    /// **The peer-handle remains caller-owned by this call.**  See
+    /// the `AcceptedPeer` docstring.  This method neither closes
+    /// the peer handle on success nor on failure — failure paths
+    /// leave it open so the caller may inspect errno, log peer
+    /// details, or retry.  Caller must close after the handoff (or
+    /// after deciding to abandon it).
+    ///
+    /// **Per-platform signature.**  On POSIX, takes the accepted
+    /// socket fd (int).  On Windows, takes the connected pipe HANDLE
+    /// (opaque void*) plus the peer's PID (the latter is required
+    /// because `DuplicateHandle` needs an open `OpenProcess` handle
+    /// to the target, not the pipe).
+#if defined(PYLABHUB_IS_WINDOWS)
+    virtual bool send_capability(void          *peer_pipe_handle,
+                                 unsigned long  peer_pid) = 0;
+#else
     virtual bool send_capability(int peer_socket_fd) = 0;
+#endif
 
     /// Producer-side RW view of the anonymous SHM segment.  Span
     /// is stable across the producer's lifetime; bytes are visible

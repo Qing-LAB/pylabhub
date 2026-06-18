@@ -21,7 +21,7 @@
 #include <string>
 #include <vector>
 
-#if defined(__linux__)
+#if defined(PYLABHUB_PLATFORM_LINUX) || defined(PYLABHUB_PLATFORM_FREEBSD) || defined(PYLABHUB_PLATFORM_APPLE)
 #    include <fcntl.h>
 #    include <poll.h>
 #    include <sys/mman.h>
@@ -32,10 +32,20 @@
 #    include <unistd.h>
 #endif
 
+#if defined(PYLABHUB_PLATFORM_FREEBSD)
+#    include <sys/ucred.h>     // xucred (FreeBSD-specific)
+#endif
+
+#if defined(PYLABHUB_PLATFORM_APPLE)
+#    include <sys/random.h>    // getentropy for the anonymous-shm name trick
+#endif
+
+// <windows.h> already pulled in by plh_platform.hpp on Windows builds.
+
 namespace pylabhub::utils::security
 {
 
-#if defined(__linux__)
+#if defined(PYLABHUB_PLATFORM_LINUX)
 
 namespace
 {
@@ -472,14 +482,251 @@ attach_shm_capability_consumer(const std::string       &endpoint,
     return std::make_unique<MemfdConsumer>(endpoint, timeout);
 }
 
-#else  // FreeBSD / macOS / Windows / other — backend lands under later phases.
+#endif // PYLABHUB_PLATFORM_LINUX
+
+
+// ============================================================================
+//  FreeBSD backend — PLAN (not implemented; #error fires below if you
+//  try to build this lib on FreeBSD).  Task #259 tracks the work.
+//
+//  ARCHITECTURE.  FreeBSD ≥13.0 has nearly the same primitives as
+//  Linux for this purpose.  The producer creates an anonymous SHM
+//  region via `memfd_create`, binds an AF_UNIX/SOCK_STREAM listener,
+//  accepts a consumer connection, reads kernel-attested credentials
+//  via `getpeereid`, and hands the fd to the consumer via `sendmsg`
+//  with an `SCM_RIGHTS` cmsg.  Consumer's flow mirrors the Linux
+//  version: connect, recvmsg for the fd, fstat, mmap.
+//
+//  SUBSTITUTIONS FROM LINUX:
+//    - `getpeereid(fd, *uid, *gid)` replaces
+//      `getsockopt(SO_PEERCRED, struct ucred)`.  FreeBSD's `xucred`
+//      does NOT carry the peer PID, so `AcceptedPeer.pid` stays at
+//      its default 0 — document in any L2 caller that consumes pid
+//      on this platform.
+//    - `<sys/ucred.h>` is the home of `xucred` (already included
+//      conditionally above; defensive).  `getpeereid` itself lives
+//      in `<unistd.h>`.
+//    - `memfd_create(name, MFD_CLOEXEC)` — same signature as Linux,
+//      same `<sys/mman.h>` header.  Present since FreeBSD 13.0;
+//      pre-13.0 platforms must error out at runtime in the ctor
+//      (or this #error should narrow the platform predicate to
+//      `defined(PYLABHUB_PLATFORM_FREEBSD) && __FreeBSD_version >= 1300000`).
+//    - `accept4(SOCK_CLOEXEC)` — available since FreeBSD 10.0.
+//    - `sendmsg` with `MSG_NOSIGNAL` — supported.
+//
+//  EXPECTED PITFALLS (validate at task #259):
+//    - errno values from these syscalls may differ from Linux.  The
+//      `make_errno_error` helper above uses `strerror` so the message
+//      is portable, but any caller that branches on numeric `errno`
+//      values needs platform-aware handling.
+//    - `EINTR` semantics on `poll(2)`: same return convention as Linux.
+//    - `MFD_ALLOW_SEALING` flag: present on FreeBSD too; not used here
+//      but worth knowing if a future hardening pass wants to seal
+//      writes.
+//
+//  L2 INTEGRATION.  Substep 1c's AttachProtocol will work without
+//  modification on FreeBSD once this backend ships — it consumes
+//  `AcceptedPeer.uid` (populated by `getpeereid`) and ignores `pid`
+//  when zero.  The L2 `peer_socket_fd` ownership semantic from the
+//  Linux backend carries over: caller owns the fd, producer does
+//  not track or close.
+//
+//  HOW TO IMPLEMENT.  Copy the Linux block above, change the
+//  `getsockopt(SO_PEERCRED, ...)` call inside `accept_one` to
+//  `getpeereid`, leave the other code paths intact, run the L2
+//  `RoundTrip_ConsumerSeesProducerWrites` test on a real FreeBSD
+//  host, and only then remove this `#error`.  Update task #259 with
+//  validation evidence.
+// ============================================================================
+
+#if defined(PYLABHUB_PLATFORM_FREEBSD)
+#    error "HEP-CORE-0041 FreeBSD backend not implemented (task #259). See plan in shm_capability_channel.cpp above this line. Refusing to compile until implemented."
+#endif // PYLABHUB_PLATFORM_FREEBSD
+
+
+// ============================================================================
+//  macOS backend — PLAN (not implemented; #error fires below if you
+//  try to build this lib on macOS).  Task #260 tracks the work.
+//
+//  ARCHITECTURE.  macOS / Darwin is BSD-derived but lacks
+//  `memfd_create` and the FreeBSD-only `SHM_ANON` extension that
+//  HEP-CORE-0041 §13 incorrectly attributes to macOS.  The producer
+//  emulates anonymous SHM by creating a named SHM segment with a
+//  random name and immediately unlinking it — the fd remains valid
+//  and `mmap`-able, the name disappears from the kernel namespace,
+//  and no other process can `shm_open` it.  AF_UNIX/SOCK_STREAM
+//  listener + `SCM_RIGHTS` fd handoff work identically to Linux at
+//  the calling-convention level.
+//
+//  ANON-SHM EMULATION (the only non-trivial substitution):
+//    1. Generate a 24-char random name (`/plh_<22 hex>`) — macOS
+//       `PSHMNAMLEN` typically caps names at 31, leaving headroom.
+//       Use `getentropy` (BSD) or `arc4random_buf` for the random
+//       bytes.
+//    2. `shm_open(name, O_CREAT | O_EXCL | O_RDWR, 0600)` — fails
+//       cleanly on collision so retry with a fresh name.
+//    3. `shm_unlink(name)` IMMEDIATELY.  The fd survives the unlink;
+//       the name is gone.  This is the standard portable
+//       "anonymous SHM" trick.
+//    4. `ftruncate` + `mmap` proceed exactly as on Linux.
+//
+//  OTHER SUBSTITUTIONS FROM LINUX:
+//    - No `accept4`.  Use `accept()` and immediately follow with
+//      `fcntl(F_SETFD, FD_CLOEXEC)` on the returned fd.  Acceptable
+//      race window because the spawned fd inherits CLOEXEC from
+//      its listening socket if `SOCK_CLOEXEC` was set at socket()
+//      time (which it is — both `socket()` calls use `SOCK_STREAM |
+//      SOCK_CLOEXEC` and macOS honors that flag).  The `fcntl` here
+//      is belt-and-braces.
+//    - `getpeereid(fd, *uid, *gid)` for cred (same as FreeBSD; no
+//      PID surfaced).
+//    - `SCM_RIGHTS` works as on Linux (BSD-derived).
+//
+//  EXPECTED PITFALLS (validate at task #260):
+//    - macOS `shm_open` mode is honored, but the segment is created
+//      under `/var/db/shm/` style storage; `umask` may further
+//      restrict.  0600 should give owner-only access.
+//    - `PSHMNAMLEN` is technically platform-defined; 31 is the
+//      historical Darwin value.  Pin in the impl rather than relying
+//      on the constant existing in <sys/posix_shm.h>.
+//    - libc's `MAP_FAILED` is `((void*)-1)` everywhere POSIX, but
+//      worth a sanity assert.
+//
+//  L2 INTEGRATION.  Same shape as the Linux/FreeBSD backends — the
+//  L2 AttachProtocol from substep 1c sees an `AcceptedPeer` with
+//  `peer_socket_fd` + `uid`/`gid` populated and `pid` = 0.
+//
+//  HOW TO IMPLEMENT.  Copy the Linux block above.  Replace the
+//  `memfd_create` call in the producer ctor with the shm_open +
+//  shm_unlink dance from steps 1-3.  Replace the
+//  `getsockopt(SO_PEERCRED)` call with `getpeereid`.  Replace
+//  `accept4(SOCK_CLOEXEC)` with `accept()` + `fcntl(F_SETFD,
+//  FD_CLOEXEC)`.  Validate against the L2 round-trip test on a
+//  real macOS host before removing this `#error`.
+// ============================================================================
+
+#if defined(PYLABHUB_PLATFORM_APPLE)
+#    error "HEP-CORE-0041 macOS backend not implemented (task #260). See plan in shm_capability_channel.cpp above this line. Refusing to compile until implemented."
+#endif // PYLABHUB_PLATFORM_APPLE
+
+
+// ============================================================================
+//  Windows backend — PLAN (not implemented; #error fires below if you
+//  try to build this lib on Windows).  Task #261 tracks the work.
+//
+//  ARCHITECTURE.  Windows uses a different IPC model.  Unix sockets
+//  don't exist; named pipes substitute.  `SCM_RIGHTS` fd-passing
+//  doesn't exist; `DuplicateHandle` between processes is the
+//  equivalent kernel-mediated capability transfer.  The conceptual
+//  shape is the same — producer publishes an endpoint, consumer
+//  connects, producer hands a kernel-attested reference to its
+//  anonymous SHM region — but every primitive is different.
+//
+//  PRIMITIVE MAPPING (Linux POSIX → Win64 equivalent):
+//    - `bind` + `listen`(AF_UNIX) → `CreateNamedPipeA(L"\\\\.\\pipe\\
+//      plh_shm_<random>", PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE
+//      | FILE_FLAG_OVERLAPPED, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE,
+//      PIPE_UNLIMITED_INSTANCES, in_buf, out_buf, default_timeout,
+//      NULL_SECURITY_ATTRIBUTES)`.
+//    - `accept`+timeout → `ConnectNamedPipe(handle, &overlapped)` +
+//      `WaitForSingleObject(overlapped.hEvent, timeout_ms)`.  If
+//      WAIT_TIMEOUT, cancel the I/O and return nullopt.
+//    - `SO_PEERCRED` → `GetNamedPipeClientProcessId(pipe, &peer_pid)`.
+//      No uid/gid concept on Windows; L2 attestation will use
+//      process-token introspection in a separate substep.
+//    - `memfd_create` → `CreateFileMappingA(INVALID_HANDLE_VALUE,
+//      NULL, PAGE_READWRITE, size_hi, size_lo, NULL)`.  Same trick
+//      pylabhub::platform::shm_create uses (see platform.cpp:402);
+//      INVALID_HANDLE_VALUE source means pagefile-backed (no on-disk
+//      name).  Caller maps via `MapViewOfFile`.
+//    - `mmap` → `MapViewOfFile(handle, FILE_MAP_ALL_ACCESS, 0, 0,
+//      size)`.  Cleanup: `UnmapViewOfFile` + `CloseHandle`.
+//    - `sendmsg`+`SCM_RIGHTS` → the multi-step DuplicateHandle dance:
+//        1. `OpenProcess(PROCESS_DUP_HANDLE, FALSE, peer_pid)` to
+//           get a handle to the peer's process.
+//        2. `DuplicateHandle(GetCurrentProcess(), section_handle,
+//                            peer_process_handle, &dup_in_peer,
+//                            0, FALSE, DUPLICATE_SAME_ACCESS)`.
+//           The output `dup_in_peer` is a HANDLE VALID IN THE PEER
+//           PROCESS — its numeric value is meaningful only there.
+//        3. `WriteFile(pipe, &dup_in_peer, sizeof(HANDLE), ...)`.
+//           Consumer reads via `ReadFile` and uses the numeric value
+//           directly as a HANDLE in its address space.
+//        4. `CloseHandle(peer_process_handle)`.
+//    - `poll(POLLIN, timeout)` → `WaitForSingleObject(event_handle,
+//      timeout_ms)` on the overlapped I/O event.
+//    - `errno` → `GetLastError()` with `FormatMessageA` for human-
+//      readable strings.  Replace `make_errno_error` with
+//      `make_last_error_error` that wraps both.
+//
+//  PUBLIC-HEADER CHANGES (already landed, see header diff above):
+//    - `AcceptedPeer` Windows variant: `void *peer_pipe_handle` +
+//      `unsigned long peer_pid` (no uid/gid/socket_fd fields).
+//    - `send_capability(void*, unsigned long)` signature taking the
+//      pipe HANDLE and peer PID (NOT a fd).
+//
+//  EXPECTED PITFALLS (validate at task #261):
+//    - `DuplicateHandle` source vs target argument order is easy to
+//      reverse; the impl must triple-check against MSDN.
+//    - `WaitForSingleObject` on the overlapped event must be paired
+//      with `CancelIoEx` if the wait times out, or the next
+//      ConnectNamedPipe call panics.
+//    - `PIPE_REJECT_REMOTE_CLIENTS` flag should be set to prevent
+//      remote SMB clients from connecting (Windows allows this by
+//      default; security-relevant for the L2 trust-domain check).
+//    - SECURITY_ATTRIBUTES — passing NULL gives the default DACL
+//      which on workstations is "owner + admin only" but on domain-
+//      joined hosts may be looser.  Coordinate with task #120
+//      (Windows pathway hardening) for a proper SA construction.
+//    - HANDLE size is 8 bytes on x64; the project requires Win64 so
+//      `WriteFile(&handle, sizeof(HANDLE), ...)` is portable across
+//      the 32→64 boundary that doesn't apply here.
+//    - The HANDLE passed via WriteFile is a 64-bit integer with no
+//      endian gotchas within a single machine.
+//
+//  L2 INTEGRATION.  Substep 1c's AttachProtocol will need a
+//  per-platform branch:
+//    - POSIX: read hello bytes from `AcceptedPeer.peer_socket_fd`.
+//    - Win64: read hello bytes from `AcceptedPeer.peer_pipe_handle`
+//      (cast to HANDLE; use ReadFile with overlapped+timeout).
+//  This branch is already structurally present in the header (the
+//  field-name differences force the caller to branch).  The L2 code
+//  itself stays in the same file, behind a `#if defined(PYLABHUB_IS_
+//  WINDOWS)` block.
+//
+//  HOW TO IMPLEMENT.  Greenfield — do NOT copy the Linux block;
+//  the model is too different.  Write fresh, following the primitive
+//  mapping table above.  Validate against the L2 round-trip test
+//  on a real Windows host (and ensure the test itself adapts to the
+//  HANDLE-based AcceptedPeer variant).  Coordinate with task #120
+//  for SECURITY_ATTRIBUTES hardening before declaring complete.
+// ============================================================================
+
+#if defined(PYLABHUB_PLATFORM_WIN64)
+#    error "HEP-CORE-0041 Windows backend not implemented (task #261). See plan in shm_capability_channel.cpp above this line. Refusing to compile until implemented."
+#endif // PYLABHUB_PLATFORM_WIN64
+
+
+// ============================================================================
+//  Truly unsupported platform (e.g., PYLABHUB_PLATFORM_UNKNOWN).
+//  Runtime throw — distinct from the #error blocks above which fire
+//  at compile time for the target platforms we expect to support
+//  eventually.  This block only matters if plh_platform.hpp tagged
+//  the build host as UNKNOWN, in which case factory invocation
+//  yields a clear runtime error rather than a link failure.
+// ============================================================================
+
+#if !defined(PYLABHUB_PLATFORM_LINUX)   && \
+    !defined(PYLABHUB_PLATFORM_FREEBSD) && \
+    !defined(PYLABHUB_PLATFORM_APPLE)   && \
+    !defined(PYLABHUB_PLATFORM_WIN64)
 
 std::unique_ptr<IShmCapabilityProducer>
 create_shm_capability_producer(size_t /*bytes*/)
 {
     throw std::runtime_error(
         "HEP-CORE-0041 capability transport: no backend for this platform "
-        "(Linux landed in task #249; FreeBSD + macOS + Windows pending).");
+        "(plh_platform.hpp did not detect Linux / FreeBSD / macOS / Win64).");
 }
 
 std::unique_ptr<IShmCapabilityConsumer>
@@ -487,8 +734,7 @@ attach_shm_capability_consumer(const std::string & /*endpoint*/,
                                std::chrono::milliseconds /*timeout*/)
 {
     throw std::runtime_error(
-        "HEP-CORE-0041 capability transport: no backend for this platform "
-        "(Linux landed in task #249; FreeBSD + macOS + Windows pending).");
+        "HEP-CORE-0041 capability transport: no backend for this platform.");
 }
 
 #endif
