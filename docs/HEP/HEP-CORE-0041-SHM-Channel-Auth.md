@@ -4,9 +4,9 @@
 |---|---|
 | **HEP** | `HEP-CORE-0041` |
 | **Title** | SHM Channel Auth — Capability Transport + Pre-Confirm Admission |
-| **Status** | 🟢 **DESIGN FINAL** — promoted from `docs/tech_draft/` 2026-06-16 after §9 decisions locked.  Implementation pending — see §10 phasing. |
+| **Status** | 🟢 **DESIGN FINAL; PHASE 1 IN FLIGHT** — promoted from `docs/tech_draft/` 2026-06-16; substeps 1a-1e shipped; 1f-1k pending.  Live status table at §10.1. |
 | **Created** | 2026-06-16 |
-| **Last revised** | 2026-06-16 — promoted from tech_draft |
+| **Last revised** | 2026-06-18 — **§5 + §6 + §7 + §10 + §11 + §12 + §13 macOS resynced against shipped code**: bearer-token model in §5 replaced by the actual `crypto_box` challenge-response + `CONSUMER_ATTACH_REQ` pre-confirm; §6 strawman code replaced by L1/L2 split as shipped (with verbatim interfaces from headers); §7 compatibility list rewritten to match the substep chain; §10 gained substep-level §10.1 status table; §11 + §12 status updated for what's shipped vs pending; §13 macOS corrected (`SHM_ANON` is FreeBSD-only, not macOS — backend uses `shm_open`+immediate-`shm_unlink` trick).  Prior revision 2026-06-17 — §9 D4 attach sequence amended for crypto_box (substep 1c).  Prior revision 2026-06-16 — promoted from tech_draft. |
 | **Tracker** | task **#244** (umbrella); per-phase tasks under §10 |
 | **Sibling docs** | HEP-CORE-0036 (ZMQ Auth — symmetrizes to pre-confirm via task #246); HEP-CORE-0002 (DataBlock — consumes capability abstraction); HEP-CORE-0040 (Locked Key Memory — backing for any role-level encryption); HEP-CORE-0038 (script vault — sibling for script audience); HEP-CORE-0011 (script-engine parity — applies to #247 follow-up) |
 | **Filed by** | discussion 2026-06-16 after AUTH-4 (#164) gap analysis surfaced the structural weakness of "secret as discriminator" + POSIX `0666` default |
@@ -215,6 +215,13 @@ This is a meaningful escalation from today's plaintext `uint64_t` everywhere.  W
 
 ## 5. Wire protocol delta
 
+> **Rewritten 2026-06-18 against shipped code.**  The original §5 described
+> a bearer-token model (`consumer_authorization_token` signed by broker)
+> that D5 retired under D4's pre-confirm pattern.  Substeps 1c (#250) +
+> 1d (#251) shipped the actual wire shape; the description below matches
+> what's in the code.  Substep 1g (#254) lands the doc + REG_ACK shape
+> cleanup in lockstep with deleting the legacy `shm_secret` field.
+
 If Option A (capability) ships as the default:
 
 ### 5.1 REG_REQ — what producer says
@@ -229,11 +236,16 @@ If Option A (capability) ships as the default:
 }
 ```
 
-Producer is responsible for binding a Unix socket / named pipe at `shm_capability_endpoint`.  Broker validates the endpoint string and stores it in `ChannelAccessEntry`.
+Producer is responsible for binding a Unix socket at `shm_capability_endpoint`
+(via `IShmCapabilityProducer::bind_endpoint`).  Broker validates the
+endpoint string and stores it in `ChannelAccessEntry`.
 
 ### 5.2 REG_ACK — what broker tells producer
 
-No new fields.  REG_ACK confirms admission; producer's local SHM region is created lazily on first consumer demand (broker forwards consumer's identity and Unix socket connect address — see §5.4).
+No new fields.  REG_ACK confirms admission; broker does NOT issue any
+authorization material at this point (per D5: no bearer tokens).
+Authorization happens later, per-attach, via `CONSUMER_ATTACH_REQ`
+(§5.4 below).
 
 ### 5.3 CONSUMER_REG_ACK — what consumer receives
 
@@ -242,83 +254,294 @@ No new fields.  REG_ACK confirms admission; producer's local SHM region is creat
   ...,
   "data_transport": "shm",
   "shm_capability_endpoint": "unix:///var/run/pylabhub/role-acquisition.daq01.prod/shm-cap.sock",
-  "consumer_authorization_token": "<random_64_byte_blob_signed_by_broker>"
+  "producer_pubkey_z85": "<40 Z85 chars>"
 }
 ```
 
-Consumer connects to `shm_capability_endpoint` over Unix socket / named pipe.  Sends `consumer_authorization_token`.  Producer validates the token's signature against the broker's pubkey, sends the SHM fd via `SCM_RIGHTS` (POSIX) or duplicated handle (Windows).  Consumer maps and proceeds.
+The consumer receives the producer's endpoint + the producer's pubkey
+(needed for the consumer-side `crypto_box_easy` encryption in §5.5
+frame 2).  No bearer token; the broker is consulted live by the
+producer on each attach attempt — see §5.4.
 
-### 5.4 Open wire-protocol questions
+### 5.4 CONSUMER_ATTACH_REQ — producer pre-confirms (HEP-0041 §9 D4)
 
-**[DECISION:]** Should the broker proxy the fd-pass (broker-in-the-middle) OR authorize a direct producer-to-consumer Unix socket?
+Per D4's pre-confirm pattern, the producer queries the broker on every
+attach attempt before sending the SHM capability fd.  Shipped under
+substep 1d (#251); handler at `broker_service.cpp::handle_consumer_attach_req`.
 
-- **Proxy**: simpler authorization model (only broker has Unix sockets to both sides).  Higher latency at register time.  Broker holds fd briefly.
-- **Direct**: producer and consumer connect to each other over Unix socket.  Lower latency.  More complex authorization (broker must vouch — hence the signed `consumer_authorization_token` above).
+Request from producer to broker:
+```json
+{
+  "channel_name":      "lab.raw",
+  "consumer_pubkey":   "<40 Z85 chars>",
+  "consumer_role_uid": "consumer.daq01.uid0042",
+  "role_uid":          "<producer's own role_uid>",
+  "correlation_id":    "<optional>"
+}
+```
 
-My read: direct.  Broker's job is to issue the bearer token, not relay fds.
+Reply (auth decision; `CONSUMER_ATTACH_ACK` envelope):
+```json
+{ "status": "success",  "channel_name": "...", "consumer_pubkey": "..." }
+{ "status": "denied",   "channel_name": "...", "consumer_pubkey": "...",
+  "denial_reason": "consumer_pubkey not in channel allowlist" }
+```
 
-**[DECISION:]** What format for `consumer_authorization_token`?
+Reply (protocol-level errors, `ERROR` envelope):
+- `INVALID_REQUEST` — missing field.
+- `CHANNEL_NOT_FOUND` — channel doesn't exist on the broker.
+- `PRODUCER_NOT_AUTHORIZED` — caller `role_uid` is not a registered
+  producer of the channel (defence in depth — never disclose another
+  channel's auth state to a non-producer).
+- `INTERNAL_ERROR` — HubState invariant broken (broker bug).
 
-Strawman: 64-byte random nonce + Ed25519 signature by broker over `(channel_name, consumer_pubkey, expiration_time)`.  Producer validates signature using broker's pubkey (already known via the BRC handshake).  Expiration prevents replay; 5-minute TTL.
+**"denied" is distinct from "error"**: producer-side cache-divergence
+WARN logic (substep 1e, see §9 D4 cached-allowlist semantics) needs
+to distinguish a clean broker "no" from a wire-level transport
+failure.  Dispatcher special-case maps `(status=success | denied)` →
+`CONSUMER_ATTACH_ACK`, others → `ERROR`.
+
+### 5.5 Attach-time L2 handshake — `crypto_box` challenge-response
+
+Per substep 1c (#250), the producer's Unix socket listener runs a
+two-frame challenge-response with the connecting consumer to prove
+the consumer holds the seckey for its claimed pubkey.
+
+Frame 1 (producer → consumer, length-prefixed JSON, 4 KiB DoS cap):
+```json
+{ "protocol_version": "hep-0041-1",
+  "nonce_b64":        "<24-byte crypto_box nonce, base64>",
+  "challenge_b64":    "<16 random bytes, base64>" }
+```
+
+Frame 2 (consumer → producer, same framing):
+```json
+{ "protocol_version":         "hep-0041-1",
+  "role_uid":                 "consumer.daq01.uid0042",
+  "pubkey_z85":               "<40 Z85 chars>",
+  "challenge_response_b64":   "<crypto_box_easy(challenge, nonce,
+                                                 producer_pk,
+                                                 consumer_sk), base64>" }
+```
+
+Producer verifies via `crypto_box_open_easy(cipher, nonce, consumer_pk,
+producer_sk)`; MAC verification + recovered plaintext equality with
+the issued challenge → cryptographic proof of `consumer_sk`
+possession.  Same security property as ZMQ's CURVE handshake, using
+the same Curve25519 keypairs (no separate Ed25519 signing key
+needed).
+
+The `crypto_box` model replaced an earlier "sign with CURVE seckey"
+strawman that was cryptographically broken (CURVE seckeys are
+Curve25519 ECDH keys, not signing keys; libsodium has no such
+primitive).  See substep 1c implementation + §9 D4 amendment block.
+
+**Known limitation.**  This handshake is one-way (consumer proves to
+producer).  The symmetric direction — producer proves to consumer —
+is tracked under task #262 (mutual-auth follow-up) before Phase 1
+production-readiness.
 
 ---
 
 ## 6. Cross-platform abstraction
 
-Code structure (proposed):
+> **Rewritten 2026-06-18 against shipped code.**  The original §6 mixed
+> transport (anon shm + fd handoff) with auth (token validation) in a
+> single `serve_one(SignedAuthToken)` method.  During substep 1a (#248)
+> the design was refactored into an explicit **L1 / L2 split** —
+> backends only know transport primitives; the auth orchestration is
+> a separate layer that consumes L1 from above.  This eliminates
+> per-backend duplication of auth logic when macOS / Windows ship.
+
+### 6.1 Layering
+
+```
+L3  (broker side)        BrokerService::handle_consumer_attach_req
+                         (substep 1d, #251 — read-only against
+                         ChannelAccessIndex.authorized_consumer_pubkeys)
+
+L2c (orchestration)      ShmAttachOrchestrator (substep 1e, #252)
+                           ├─ injected CacheLookup
+                           ├─ injected BrokerQuery (-> CONSUMER_ATTACH_REQ)
+                           └─ divergence-WARN per §9 D4 table
+
+L2b (auth handshake)     AttachProtocolAcceptor (substep 1c, #250)
+                           + initiate_consumer_handshake
+                           ├─ SO_PEERCRED uid sanity (HEP-0036 §I8)
+                           ├─ crypto_box challenge-response (§5.5)
+                           └─ returns AuthenticatedConsumer
+
+L1  (transport)          IShmCapabilityProducer / IShmCapabilityConsumer
+                         (substeps 1a + 1b, #248 + #249)
+                           ├─ bind_endpoint, accept_one, send_capability
+                           └─ per-platform backend (Linux only today;
+                              FreeBSD/macOS/Windows #error pending
+                              tasks #259 / #260 / #261)
+```
+
+### 6.2 Code structure (as shipped)
 
 ```
 src/include/utils/security/
-    shm_capability_channel.hpp      // abstract interface
+    shm_capability_channel.hpp       // L1 abstract interface
+    attach_protocol.hpp              // L2b handshake (substep 1c)
+    shm_attach_orchestrator.hpp      // L2c orchestrator (substep 1e)
 
-src/utils/security/shm_capability/
-    posix_memfd_backend.cpp          // Linux + FreeBSD>=13
-    posix_shm_anon_backend.cpp       // macOS + FreeBSD<13
-    windows_filemap_backend.cpp      // Windows
-
-include/utils/security/shm_capability/
-    *_backend.hpp                    // per-platform headers
+src/utils/security/
+    shm_capability_channel.cpp       // L1: per-platform backends
+                                     //   (Linux working; others #error)
+    attach_protocol.cpp              // L2b impl (Linux only)
+    shm_attach_orchestrator.cpp      // L2c impl (Linux only)
 ```
 
-Abstract interface (rough):
+D6 decision (`utils/security/`) ratified by the as-shipped placement
+above; the proposed `shm_capability/` subdirectory was not needed —
+single-file backends are clearer at current size.
+
+### 6.3 L1 interface (verbatim from shipped header)
 
 ```cpp
-class ShmCapabilityProducer {
+class IShmCapabilityProducer {
 public:
-    static std::unique_ptr<ShmCapabilityProducer> create(size_t bytes);
-    // Bind a Unix socket / named pipe; ready to receive consumer connections.
-    bool bind_capability_endpoint(const std::string& endpoint);
-    // Accept a consumer, validate token, hand off handle.
-    bool serve_one(const SignedAuthToken& expected_token,
-                   std::chrono::milliseconds timeout);
-    // Direct mmap access for the producer's own slot writes.
-    std::span<std::byte> data();
+    struct AcceptedPeer {
+#if defined(PYLABHUB_IS_WINDOWS)
+        void          *peer_pipe_handle{nullptr};  // HANDLE (opaque)
+        unsigned long  peer_pid{0};
+#else
+        int   peer_socket_fd{-1};
+        pid_t pid{};
+        uid_t uid{};
+        gid_t gid{};
+#endif
+    };
+
+    virtual bool bind_endpoint(const std::string& endpoint)        = 0;
+    virtual std::optional<AcceptedPeer>
+        accept_one(std::chrono::milliseconds timeout)              = 0;
+
+#if defined(PYLABHUB_IS_WINDOWS)
+    virtual bool send_capability(void* peer_pipe_handle,
+                                 unsigned long peer_pid)           = 0;
+#else
+    virtual bool send_capability(int peer_socket_fd)               = 0;
+#endif
+
+    virtual std::span<std::byte> data()                            = 0;
+    virtual size_t                size() const noexcept             = 0;
 };
 
-class ShmCapabilityConsumer {
+class IShmCapabilityConsumer {
 public:
-    static std::unique_ptr<ShmCapabilityConsumer> attach(
-        const std::string& capability_endpoint,
-        const SignedAuthToken& token);
-    std::span<const std::byte> data() const;
+    virtual std::span<std::byte> data()                            = 0;
+    virtual size_t                size() const noexcept             = 0;
 };
 ```
 
-Backends implement the abstract interface using the per-platform primitives in §3.1's table.
+Per-platform `AcceptedPeer` variants: POSIX exposes the kernel-cred
+triple; Windows exposes the pipe HANDLE (as `void*` to keep the public
+header free of `<windows.h>` — matches `pylabhub::platform::ShmHandle`
+in `plh_platform.hpp:152`).  `send_capability` similarly per-platform.
 
-**[DECISION:]** Where in the existing module structure does this go?  Strawman: under `utils/security/` next to `key_store` and `zap_router`.
+### 6.4 L2 interface (verbatim from shipped headers)
+
+```cpp
+struct ConsumerAuthMaterial {
+    std::string    role_uid;
+    std::string    pubkey_z85;
+    SeckeyAccessor seckey_accessor;   // use-not-export per HEP-0040 §5.2
+};
+
+struct AuthenticatedConsumer {
+    IShmCapabilityProducer::AcceptedPeer raw_peer;
+    std::string                          consumer_role_uid;
+    std::string                          consumer_pubkey_z85;
+};
+
+class AttachProtocolAcceptor {
+public:
+    AttachProtocolAcceptor(IShmCapabilityProducer& transport,
+                           uid_t expected_uid,
+                           SeckeyAccessor producer_seckey_accessor);
+    std::optional<AuthenticatedConsumer>
+        accept_one(std::chrono::milliseconds timeout);
+};
+
+std::optional<int>
+initiate_consumer_handshake(const std::string& endpoint,
+                            const ConsumerAuthMaterial& self,
+                            const std::string& producer_pubkey_z85,
+                            std::chrono::milliseconds timeout);
+
+class ShmAttachOrchestrator {
+public:
+    using CacheLookup = std::function<bool(const std::string&)>;
+    using BrokerQuery = std::function<std::optional<nlohmann::json>(
+        const std::string& consumer_pubkey,
+        const std::string& consumer_role_uid)>;
+    enum class Outcome { Sent, DeniedByBroker, DeniedTransportFail,
+                         HandshakeFailed, Timeout };
+
+    Outcome accept_and_serve_one(std::chrono::milliseconds timeout);
+};
+```
+
+### 6.5 Per-platform backend status
+
+| Platform | L1 backend | L2b / L2c | Task |
+|---|---|---|---|
+| Linux     | ✅ Shipped (`memfd_create` + `SO_PEERCRED` + `SCM_RIGHTS`) | ✅ Shipped | #249, #250, #252 |
+| FreeBSD   | ⛔ `#error` + design plan in .cpp                          | ⛔ `#error` | #259 |
+| macOS     | ⛔ `#error` + design plan in .cpp                          | ⛔ `#error` | #260 |
+| Windows   | ⛔ `#error` + design plan in .cpp                          | ⛔ `#error` | #261 |
 
 ---
 
 ## 7. Compatibility / migration
 
-- Current code paths through `ShmQueue::apply_master_approval` reading `shm_secret` from REG_ACK and calling `set_shm_secret` retire.
-- `ChannelAccessEntry::shm_secret` field renames to `shm_capability_endpoint` (and, if Option D, `shm_data_key`).
-- `producer_init.cpp` `out_shm_secret` field deprecates.
-- Existing tests using config-supplied `shm_secret` need updating.
-- Backward compat: NONE planned.  Pre-this-HEP SHM channels are insecure by today's definition; we don't want to keep a "fallback" path.
+> **Updated 2026-06-18 against shipped code.**  The original §7 listed
+> "renames" that didn't match what ended up being built (e.g.
+> `ChannelAccessEntry::shm_secret` did not rename to
+> `shm_capability_endpoint`).  The list below reflects what's actually
+> happening across the substep chain.
 
-This is acceptable for a pre-1.0 framework.  An L4 test sweep + L3 broker test rewrites are needed.
+**Substep 1d (#251, shipped):** broker handler for `CONSUMER_ATTACH_REQ`
+added.  No fields removed yet — purely additive.
+
+**Substep 1f (#253, in progress):** DataBlock gains an fd-based
+producer/consumer ctor variant alongside the existing name-based path.
+Both paths coexist briefly so production tests can migrate
+incrementally.
+
+**Substep 1g (#254, pending):** wire-shape clean break.
+- Remove `shm_secret` from `CONSUMER_REG_ACK` (and from the wire-shape
+  conformance helper).
+- Finalize `CONSUMER_ATTACH_REQ` / `_ACK` shape in HEP-CORE-0007.
+- Add `shm_capability_endpoint` + `producer_pubkey_z85` to
+  `CONSUMER_REG_ACK` for SHM channels.
+
+**Substep 1h (#255, pending):** config schema rejection of
+`in_shm_secret` / `out_shm_secret`.  Producer init template stops
+emitting the field.
+
+**Substep 1i (#256, pending):** code cleanup — deletes:
+- `ChannelAccessEntry::shm_secret` field.
+- `ShmQueue::set_shm_secret` API + `apply_master_approval` SHM-secret
+  branch.
+- `broker_service.cpp:1956` hardcoded-zero secret mint.
+- `data_block.cpp:445-449` plaintext secret stamp in the header.
+- `data_block.cpp:2768-2777` memcmp "auth" check.
+- The named-shm `shm_open` code path in `data_block.cpp`.
+- `L2 test_hub_state.cpp` assertions pinning the old contract
+  (lines 3593-3709).
+- The `shared_secret` field in `SharedMemoryHeader`.
+
+**Substep 1k (#258, pending):** L4 end-to-end test on the new path.
+
+**Backward compat: NONE planned** (per D7 clean-break decision).
+Pre-this-HEP SHM channels are insecure by today's definition.
+Pre-1.0 framework; clean breaks are accepted.  Coexistence of two
+SHM mechanisms is a permanent maintenance liability the design
+explicitly rejects.
 
 ---
 
@@ -383,27 +606,51 @@ Sustained divergence rate = broker-NOTIFY-pipeline health metric.  Operators mon
 
 ## 10. Implementation phasing (locked at D1 + D4)
 
-1. **Phase 1 — Abstract interface + Linux/FreeBSD `memfd_create` backend + broker `CONSUMER_ATTACH_REQ` handler.** Strongest platform first.  Production roles on Linux can use capability transport with pre-confirm.  Tests pin the divergence-WARN behavior.
-2. **Phase 2 — macOS backend** (`shm_open + SHM_ANON` + `SCM_RIGHTS`).
+1. **Phase 1 — Abstract interface + Linux `memfd_create` backend + broker `CONSUMER_ATTACH_REQ` handler.** Strongest platform first.  Production roles on Linux can use capability transport with pre-confirm.  Tests pin the divergence-WARN behavior.
+2. **Phase 2 — macOS backend** (anon shm via `shm_open` + immediate `shm_unlink` trick + `SCM_RIGHTS`; see §13).
 3. **Phase 3 — Windows backend** (`CreateFileMapping(NULL) + DuplicateHandle` via named pipe).
 4. **Phase 4 — Framework AEAD/KDF/key-storage primitives.** Cross-platform via libsodium.  No SHM-specific work — these are general crypto primitives that roles can use for any purpose (channel data encryption being one such use case).
 5. **Phase 5 — HEP-CORE-0036 amendment (task #246):** retrofit ZMQ to the same pre-confirm pattern.  Lands AFTER Phase 1 establishes the pattern.
 
 Each phase is its own task and commit cluster.  Phase 1 is the production-readiness gate.
 
+### 10.1 Phase 1 substep chain (live tracker in `docs/todo/AUTH_TODO.md`)
+
+Phase 1 ships as 11 substeps + cross-platform structural + follow-ups:
+
+| Substep | Task | Status | Brief |
+|---|---|---|---|
+| 1a | #248 | ✅ | Abstract `IShmCapabilityProducer`/`Consumer` skeleton |
+| 1b | #249 | ✅ | Linux `memfd_create` + `SCM_RIGHTS` backend |
+| 1c | #250 | ✅ | `AttachProtocol` `crypto_box` challenge-response |
+| 1d | #251 | ✅ | Broker `CONSUMER_ATTACH_REQ` / `_ACK` handler |
+| 1e | #252 | ✅ | `ShmAttachOrchestrator` + divergence-WARN |
+| 1f | #253 | 🚧 | Consumer-side capability receive + DataBlock fd-based attach |
+| 1g | #254 | ⏸ | Wire-shape clean break (delete `shm_secret`; add `shm_capability_endpoint`) |
+| 1h | #255 | ⏸ | Config schema rejection of `in_shm_secret`/`out_shm_secret` |
+| 1i | #256 | ⏸ | Code cleanup — delete obsolete `shm_secret` machinery + named-shm path |
+| 1j | #257 | ⏸ | L3 broker tests (success / denied / divergence-WARN) |
+| 1k | #258 | ⏸ | L4 end-to-end SHM auth-gated data flow |
+| Cross-platform structural | #259/#260/#261 | ✅ | Per-platform `AcceptedPeer` variant + `#error` blocks for FreeBSD/macOS/Windows backends |
+| Mutual-auth follow-up | #262 | ⏸ | Producer→consumer proof-of-possession (closes one-way auth gap from 1c) |
+
+Substeps are reviewed and committed individually; ✅ items are
+production-ready as of their commit (sub-tree green; full L2/L3
+sweeps green where applicable).
+
 ---
 
 ## 11. Next steps
 
-All §9 decisions locked.  Remaining work:
+All §9 decisions locked.  Original promotion + early-task items
+shipped 2026-06-16 / 2026-06-17; the remaining live work is in §10.1's
+substep chain.  Phase-level remaining work:
 
-1. Promote this draft to permanent `docs/HEP/HEP-CORE-0041-SHM-Channel-Auth.md`.
-2. Update HEP-CORE-0036 §3 (revocation framing) + §5.6 + §6.4 + §I6 per §8 cross-references.
-3. File Phase-1 implementation task (Linux/FreeBSD `memfd_create` backend + broker `CONSUMER_ATTACH_REQ` handler + L3 tests).
-4. Phase 2/3 implementation tasks (macOS, Windows).
-5. Phase 4 task — public `PYLABHUB_UTILS_EXPORT` AEAD + KDF wrappers (D8).
-6. Close out #164 (AUTH-4) and #79 as **superseded** — `shm_secret` retires entirely under D1+D7.
-7. Per task #246, retrofit ZMQ to pre-confirm pattern after Phase 1 lands.
+1. Close out Phase 1 by completing substeps 1f → 1k (status table in §10.1).
+2. Close out #262 (mutual auth) before declaring Phase 1 production-ready.
+3. Phase 2/3 implementation under #260 / #261 (per-platform L1 + L2 ports).
+4. Phase 4 — public `PYLABHUB_UTILS_EXPORT` AEAD + KDF wrappers (D8) under #247.
+5. Per task #246, retrofit ZMQ to pre-confirm pattern after Phase 1 lands.
 
 ---
 
@@ -411,13 +658,16 @@ All §9 decisions locked.  Remaining work:
 
 | Task | Purpose | Status relative to this HEP |
 |---|---|---|
-| **#244** | Tracker for this HEP | This draft IS #244's deliverable |
-| **#164 AUTH-4** | Original broker-mint-shm_secret design | **Superseded** by D1+D7 — `shm_secret` retires entirely; close as superseded when this HEP promotes |
-| **#79** | `plh_role --init` non-zero `shm_secret` seed | **Superseded** with #164 — close together |
-| **#245** | Interim POSIX `kShmModeRw 0666 → 0600` tightening | Independent quick win; can land before this HEP if useful, becomes moot when capability transport ships (no named `shm_open` anymore) |
-| **#246** | HEP-CORE-0036 ZMQ retrofit to pre-confirm pattern | Downstream — lands after Phase 1 here establishes the pattern |
-| **#106 (HEP-CORE-0038)** | Script-accessible vault keystore (`api.vault_save` / `api.vault_load`) | Sibling — script audience for the secret-at-rest side of crypto |
-| **#247** | Script-accessible crypto primitives — `api.crypto.*` bindings (Python/Lua/Native) for AEAD + KDF + random | Sibling to #106; consumer of D8.  Lets scripts use the same primitives roles use natively. |
+| **#244** | Tracker for this HEP | This HEP IS #244's deliverable; promoted 2026-06-16 |
+| **#164 AUTH-4** | Original broker-mint-shm_secret design | ✅ Closed as **SUPERSEDED** by D1+D7 — `shm_secret` retires entirely |
+| **#79** | `plh_role --init` non-zero `shm_secret` seed | ✅ Closed as **SUPERSEDED** with #164 |
+| **#245** | Interim POSIX `kShmModeRw 0666 → 0600` tightening | ✅ Closed as **KILLED** — named-shm path deleted under 1i; interim hardening would have been throwaway work |
+| **#246** | HEP-CORE-0036 ZMQ retrofit to pre-confirm pattern | ⏸ Downstream — lands after Phase 1 establishes the pattern |
+| **#248-#258** | Phase 1 substeps 1a-1k | See §10.1 status table |
+| **#259-#261** | Cross-platform backends (FreeBSD/macOS/Windows) | ⏸ Structural shipped (#error placeholders); implementations pending |
+| **#262** | Mutual auth (producer→consumer proof-of-possession) | ⏸ Phase 1 production-readiness gate |
+| **#106 (HEP-CORE-0038)** | Script-accessible vault keystore | ↔ Sibling — script audience for secret-at-rest side of crypto |
+| **#247** | Script-accessible crypto primitives | ↔ Sibling to #106; consumer of D8 |
 
 ## 13. Appendix: per-platform primitive references
 
@@ -435,8 +685,19 @@ For implementers / reviewers.  Sources to cite when this becomes a real HEP.
 
 ### macOS / Darwin
 
-- `shm_open(SHM_ANON, ...)` — supported (yes, despite folklore).  Unlink-on-create yields anon fd.
-- `SCM_RIGHTS` over Unix socket — supported.
+> **Corrected 2026-06-18.**  Earlier text claimed `shm_open(SHM_ANON, ...)` works on
+> macOS; that is **wrong** — `SHM_ANON` is a FreeBSD-specific extension.
+> macOS does NOT have it.  The macOS backend uses the
+> `shm_open`+immediate-`shm_unlink` trick instead (create a named SHM,
+> unlink the name immediately while keeping the fd, mmap the now-anonymous
+> fd).  See task #260 plan block in `shm_capability_channel.cpp`.
+
+- `shm_open(name, O_CREAT|O_EXCL|O_RDWR, 0600)` + `shm_unlink(name)` immediately
+  — emulates an anonymous SHM via the unlink-once-open trick.  Standard portable
+  pattern; macOS has no native anonymous-SHM primitive.
+- `SCM_RIGHTS` over Unix socket — supported (BSD-derived).
+- No `accept4()` — use `accept()` + `fcntl(F_SETFD, FD_CLOEXEC)`.
+- `getpeereid(fd, *uid, *gid)` — replaces Linux `SO_PEERCRED`; carries no PID.
 
 ### Windows
 
