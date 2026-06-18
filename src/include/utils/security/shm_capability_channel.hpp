@@ -211,6 +211,22 @@ public:
     /// Segment size in bytes, fixed at construction.
     [[nodiscard]] virtual size_t size() const noexcept = 0;
 
+    /// POSIX-only: borrow the underlying anonymous-SHM fd for an
+    /// independent `mmap` (e.g. DataBlock fd-based attach in substep
+    /// 1f).  The returned fd remains owned by this producer instance
+    /// — caller MUST NOT close it.  Caller should `dup()` if they
+    /// want an fd that outlives this producer.  Returns -1 if the
+    /// producer is not yet constructed (no anonymous SHM allocated).
+    ///
+    /// Not exposed on Windows: the analogous facility there is the
+    /// pre-existing pagefile HANDLE which would need a different
+    /// abstraction (Windows mapping is `MapViewOfFile`, not `mmap`).
+    /// Cross-platform DataBlock integration is a separate concern
+    /// tracked under #261 + a sibling task.
+#if !defined(PYLABHUB_IS_WINDOWS)
+    [[nodiscard]] virtual int borrow_fd() const noexcept = 0;
+#endif
+
 protected:
     IShmCapabilityProducer() = default;
 };
@@ -238,6 +254,13 @@ public:
     /// Segment size in bytes — obtained from `fstat()` on the
     /// received fd (the producer's `ftruncate()` size).
     [[nodiscard]] virtual size_t size() const noexcept = 0;
+
+    /// POSIX-only: borrow the underlying received fd.  See the matching
+    /// `IShmCapabilityProducer::borrow_fd` docstring for the same
+    /// ownership + lifetime + Windows-omission rationale.
+#if !defined(PYLABHUB_IS_WINDOWS)
+    [[nodiscard]] virtual int borrow_fd() const noexcept = 0;
+#endif
 
 protected:
     IShmCapabilityConsumer() = default;

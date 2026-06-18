@@ -73,6 +73,7 @@ public:
     bool                        send_capability(int peer_socket_fd) override;
     std::span<std::byte>        data() override;
     [[nodiscard]] size_t        size() const noexcept override;
+    [[nodiscard]] int           borrow_fd() const noexcept override { return anon_fd_; }
 
 private:
     int         anon_fd_{-1};
@@ -312,6 +313,7 @@ public:
 
     std::span<std::byte> data() override;
     [[nodiscard]] size_t size() const noexcept override;
+    [[nodiscard]] int    borrow_fd() const noexcept override { return received_fd_; }
 
 private:
     int    received_fd_{-1};
