@@ -4,6 +4,7 @@
 #if defined(_WIN32)
 #include <windows.h>
 #else
+#include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -504,7 +505,23 @@ class DataBlock
 #endif
 
         setup_shm_from_fd_(source_fd, m_size);
-        init_producer_state_(config);
+        // HEP-CORE-0041 substep 1f review B1 — guard the post-mmap
+        // init against `init_producer_state_` exceptions (e.g. the
+        // logical_unit_size overflow check inside).  Without this
+        // try/catch, a partial-ctor throw leaks the dup'd fd + mmap
+        // because the dtor never runs on an incomplete object.  The
+        // consumer-side `attach_consumer_state_` already does its own
+        // shm_close-on-throw cleanup (see its body); this matches the
+        // symmetry on the producer side.
+        try
+        {
+            init_producer_state_(config);
+        }
+        catch (...)
+        {
+            pylabhub::platform::shm_close(&m_shm);
+            throw;
+        }
     }
 
     // HEP-CORE-0041 substep 1f (#253) — body extracted from the
@@ -757,11 +774,22 @@ class DataBlock
             throw std::runtime_error(
                 fmt::format("DataBlock '{}': invalid source fd ({})", m_name, source_fd));
         }
-        int dup_fd = ::dup(source_fd);
+        // HEP-CORE-0041 substep 1f review B2 — use `F_DUPFD_CLOEXEC` with
+        // minimum fd = 1 instead of bare `dup()`.  Two reasons:
+        //   (a) Rules out the dup-returns-0 case (stdin closed before our
+        //       call).  We store the dup'd fd in `m_shm.opaque` as
+        //       `reinterpret_cast<void*>(intptr_t(fd))`; fd=0 becomes the
+        //       nullptr value which `pylabhub::platform::shm_close` skips
+        //       via its null-guard, leaking the fd.  Forcing fd >= 1
+        //       removes the collision with the nullptr sentinel.
+        //   (b) Sets CLOEXEC atomically — the dup'd fd should NOT survive
+        //       across exec, matching the CLOEXEC on the producer's
+        //       original memfd_create (substep 1b).
+        int dup_fd = ::fcntl(source_fd, F_DUPFD_CLOEXEC, 1);
         if (dup_fd < 0)
         {
             throw std::runtime_error(
-                fmt::format("DataBlock '{}': dup() of source fd {} failed (errno={})",
+                fmt::format("DataBlock '{}': fcntl(F_DUPFD_CLOEXEC) of source fd {} failed (errno={})",
                             m_name, source_fd, errno));
         }
         struct stat st = {};
