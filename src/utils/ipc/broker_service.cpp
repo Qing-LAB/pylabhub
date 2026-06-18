@@ -2665,11 +2665,20 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
 
     // HEP-CORE-0036 §6.4 — emit `producers[]` so the consumer's
     // role-host can populate `RxQueueOptions::producer_peers` for the
-    // data-plane PULL socket's CURVE handshake.  ZMQ transport only;
-    // SHM channels use a single `shm_secret` field instead (HEP-0036
-    // §5.6 — broker generation tracked under AUTH-4 / task #164).
+    // data-plane PULL socket's CURVE handshake.  ZMQ transport only.
     // Length 1 for single-producer; length N for fan-in (HEP-CORE-0023
     // §2.1.1) — same wire shape either way.
+    //
+    // SHM transport: today, this builder emits nothing transport-
+    // specific for SHM channels (the ZMQ branch falls through with no
+    // `else`).  HEP-CORE-0041 substep 1g (#254) lands the SHM branch:
+    // `shm_capability_endpoint` (from `ProducerEntry::shm_capability_endpoint`,
+    // populated by the producer's `default_shm_capability_endpoint` helper
+    // and stored by the REG_REQ handler) + `producer_pubkey_z85` (from
+    // `ProducerEntry::zmq_pubkey`, reused for the `crypto_box`
+    // challenge-response in HEP-0041 §5.5).  The legacy AUTH-4 /
+    // task #164 design (a single `shm_secret` field) is SUPERSEDED by
+    // HEP-CORE-0041 and was never wired on the wire — do not add it.
     if (auto ch_opt = hub_state_->channel(channel_name);
         ch_opt.has_value() && ch_opt->data_transport == "zmq")
     {
