@@ -426,6 +426,46 @@ gtest_discover_tests(test_layer2_shm_attach_orchestrator
 )
 
 # ============================================================================
+# Test: DataBlock fd-source ctors + factories (HEP-CORE-0041 substep 1f, #253)
+# Pattern 1+ — binary-wide LifecycleGuard for Logger + CryptoUtils +
+# DataBlock (the fd-source factories require GetDataBlockModule() per
+# the same contract as the name-based factories).
+# Pins:
+#   - in-process round-trip via memfd_create + socketpair/SCM_RIGHTS
+#     (DataBlock-from-fd narrow contract)
+#   - end-to-end via ShmCapabilityProducer + recv_capability → fd
+#     handoff → DataBlock-from-fd on both sides (1b↔1f integration)
+#   - producer ctor rejects fd whose fstat size doesn't match layout
+#     total_size (caller-must-ftruncate contract)
+# ============================================================================
+
+add_executable(test_layer2_data_block_fd_based
+    test_data_block_fd_based.cpp
+)
+
+target_link_libraries(test_layer2_data_block_fd_based
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_data_block_fd_based)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_data_block_fd_based
+    SUITE_NAME "Layer2_DataBlockFdBased"
+)
+layer2_require_staged_utils(test_layer2_data_block_fd_based)
+
+gtest_discover_tests(test_layer2_data_block_fd_based
+    PROPERTIES
+        LABELS "layer2;service;shm;data_block;hep0041"
+        TIMEOUT 30
+)
+
+# ============================================================================
 # Test: PeerAdmission abstraction (HEP-CORE-0035 §4.5 / HEP-CORE-0036 §I1)
 # Pattern 1 — pure value-type tests; no LOGGER_*, no lifecycle.
 # Phase A of the PeerAdmission architecture: pins the interface contract

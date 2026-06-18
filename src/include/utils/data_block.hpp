@@ -1260,6 +1260,96 @@ attach_datablock_as_writer_impl(const std::string &name,
                                 const pylabhub::schema::SchemaInfo *flexzone_schema,
                                 const pylabhub::schema::SchemaInfo *datablock_schema);
 
+// ── HEP-CORE-0041 substep 1f (#253) — fd-source factory functions ──
+//
+// Construct DataBlockProducer / DataBlockConsumer from a borrowed SHM
+// fd instead of a /dev/shm name.  The fd is typically owned by an
+// `IShmCapabilityProducer` (producer side) or received from
+// `IShmCapabilityConsumer::recv_capability()` (consumer side).
+//
+// The fd is dup()'d inside the DataBlock so the DataBlock's lifetime
+// is independent of the ShmCapability instance that produced/received
+// it; the caller MUST NOT close the source fd until the
+// DataBlockProducer/Consumer is destroyed (closing it after dup is
+// safe but not required).
+//
+// The `logical_name` parameter is a log/identity label only; it is
+// NOT used as a /dev/shm name (the fd-source SHM has no name).
+//
+// Lifecycle: requires LifecycleGuard with GetDataBlockModule() — same
+// as the name-based factories.
+//
+// Substep 1g/1h (#254/#255) wires these into setup_infrastructure_ /
+// config schema; substep 1i (#256) deletes the name-based factories
+// above when the obsolete shm_secret machinery is removed.
+
+/**
+ * @brief Compute the total SHM size a DataBlock would occupy under `config`.
+ *
+ * Caller-facing accessor for the internal `DataBlockLayout::from_config()
+ * .total_size` — used to pre-size a ShmCapability before passing its fd
+ * to `create_datablock_producer_from_fd_impl`.
+ *
+ * @return Total byte size including header, slots, flexible zone, and padding.
+ * @throws std::invalid_argument if `config` has unset required fields.
+ */
+[[nodiscard]] PYLABHUB_UTILS_EXPORT size_t
+datablock_layout_total_size(const DataBlockConfig &config);
+
+/**
+ * @brief Construct a DataBlockProducer over an externally-allocated SHM fd.
+ *
+ * The caller (typically the producer side of `IShmCapabilityProducer`)
+ * pre-allocates the SHM via `ftruncate(fd, datablock_layout_total_size(config))`
+ * BEFORE calling this; the ctor validates the fstat size matches.
+ *
+ * @param logical_name      Log/identity label (NOT a /dev/shm name).
+ * @param source_fd         Borrowed SHM fd (typically `IShmCapabilityProducer::borrow_fd()`).
+ * @param policy            DataBlock policy (Single/DoubleBuffer/RingBuffer).
+ * @param config            DataBlockConfig (sizing parameters MUST match the
+ *                          fd's ftruncate size — validated).
+ * @param flexzone_schema   Optional FlexZone schema (nullptr = skip).
+ * @param datablock_schema  Optional DataBlock schema (nullptr = skip).
+ * @return DataBlockProducer (Create mode, fd-backed).
+ * @throws std::runtime_error if fd is invalid, dup/fstat/mmap fail, or
+ *         the fstat size doesn't match the layout size.
+ */
+[[nodiscard]] PYLABHUB_UTILS_EXPORT std::unique_ptr<DataBlockProducer>
+create_datablock_producer_from_fd_impl(const std::string &logical_name,
+                                       int source_fd,
+                                       DataBlockPolicy policy,
+                                       const DataBlockConfig &config,
+                                       const pylabhub::schema::SchemaInfo *flexzone_schema,
+                                       const pylabhub::schema::SchemaInfo *datablock_schema);
+
+/**
+ * @brief Construct a DataBlockConsumer over a received SHM fd.
+ *
+ * The fd was typically received via SCM_RIGHTS from the producer's
+ * `IShmCapabilityProducer::send_capability()`.  The DataBlockConsumer
+ * validates the header magic, version, and total size against the
+ * received fd's fstat size.
+ *
+ * @param logical_name      Log/identity label (NOT a /dev/shm name).
+ * @param source_fd         Received SHM fd (typically `IShmCapabilityConsumer::borrow_fd()`).
+ * @param expected_config   Optional config to validate against stored layout (nullptr = skip).
+ * @param flexzone_schema   Optional FlexZone schema to validate (nullptr = skip).
+ * @param datablock_schema  Optional DataBlock schema to validate (nullptr = skip).
+ * @param consumer_uid      Optional consumer UID (registered in producer's heartbeat slot).
+ * @param consumer_name     Optional consumer name.
+ * @return DataBlockConsumer or nullptr if validation fails.
+ * @throws std::runtime_error if fd is invalid, dup/fstat/mmap fail, or
+ *         header validation times out.
+ */
+[[nodiscard]] PYLABHUB_UTILS_EXPORT std::unique_ptr<DataBlockConsumer>
+find_datablock_consumer_from_fd_impl(const std::string &logical_name,
+                                     int source_fd,
+                                     const DataBlockConfig *expected_config,
+                                     const pylabhub::schema::SchemaInfo *flexzone_schema,
+                                     const pylabhub::schema::SchemaInfo *datablock_schema,
+                                     const char *consumer_uid  = nullptr,
+                                     const char *consumer_name = nullptr);
+
 // Public C++ API: Template-based dual-schema factory functions.
 // Schema derived from template parameters, stored/validated in shared memory.
 

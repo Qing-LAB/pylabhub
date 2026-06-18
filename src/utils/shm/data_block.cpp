@@ -4,6 +4,8 @@
 #if defined(_WIN32)
 #include <windows.h>
 #else
+#include <sys/mman.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -383,6 +385,17 @@ inline std::span<const std::byte> get_flex_zone_span_const(const ImplT* impl) no
 class DataBlock
 {
   public:
+    // HEP-CORE-0041 substep 1f (#253) — disambiguator tag for the
+    // fd-source ctor variants.  Cannot use `int source_fd` overload
+    // alone because the existing `DataBlock(std::string name,
+    // DataBlockOpenMode mode)` 2-arg ctor would conflict with
+    // `DataBlock(std::string name, int fd, ...)` once integral type
+    // promotion is considered.  Explicit tag also documents intent at
+    // every call site.
+    struct FromFdSourceTag
+    {
+    };
+
     // Single point of config validation and memory creation; do not add alternate creation paths without updating this.
     DataBlock(const std::string &name, const DataBlockConfig &config)
         : m_name(name), m_open_mode(DataBlockOpenMode::Create)
@@ -433,6 +446,73 @@ class DataBlock
                 fmt::format("shm_create failed for '{}'. Error: {}", m_name, errno));
 #endif
         }
+
+        init_producer_state_(config);
+    }
+
+    // HEP-CORE-0041 substep 1f (#253) — producer Create from a borrowed
+    // SHM fd.  The fd is typically `IShmCapabilityProducer::borrow_fd()`
+    // but the test path uses a bare `memfd_create` to exercise the
+    // mechanic in isolation.
+    //
+    // The fd is dup()'d so DataBlock's lifetime is independent of the
+    // ShmCapability instance that produced it; either side can outlive
+    // the other.  Caller is responsible for sizing the SHM correctly
+    // (i.e. ftruncate to `DataBlockLayout::from_config(config).total_size`
+    // before constructing here) — we validate via fstat.
+    //
+    // `m_should_unlink_name = false` — fd-source has no /dev/shm name
+    // to unlink; the SHM is freed when the last fd is closed.  The
+    // `logical_name` is purely a log/identity label; it is NOT a SHM
+    // object name.
+    DataBlock(std::string logical_name, const DataBlockConfig &config,
+              int source_fd, FromFdSourceTag /*unused*/)
+        : m_name(std::move(logical_name)),
+          m_open_mode(DataBlockOpenMode::Create),
+          m_should_unlink_name(false)
+    {
+        if (config.policy == DataBlockPolicy::Unset)
+        {
+            LOGGER_ERROR("DataBlock '{}': config.policy must be set explicitly.", m_name);
+            throw std::invalid_argument("DataBlockConfig::policy must be set explicitly");
+        }
+        if (config.consumer_sync_policy == ConsumerSyncPolicy::Unset)
+        {
+            LOGGER_ERROR("DataBlock '{}': config.consumer_sync_policy must be set explicitly.", m_name);
+            throw std::invalid_argument("DataBlockConfig::consumer_sync_policy must be set explicitly");
+        }
+        if (config.physical_page_size == DataBlockPageSize::Unset)
+        {
+            LOGGER_ERROR("DataBlock '{}': config.physical_page_size must be set explicitly.", m_name);
+            throw std::invalid_argument("DataBlockConfig::physical_page_size must be set explicitly");
+        }
+        if (config.ring_buffer_capacity == 0)
+        {
+            LOGGER_ERROR("DataBlock '{}': config.ring_buffer_capacity must be set (>= 1).", m_name);
+            throw std::invalid_argument("DataBlockConfig::ring_buffer_capacity must be set (1 or more)");
+        }
+        if (config.checksum_type == ChecksumType::Unset)
+        {
+            LOGGER_ERROR("DataBlock '{}': config.checksum_type must be set.", m_name);
+            throw std::invalid_argument("DataBlockConfig::checksum_type must be set");
+        }
+
+        m_layout = DataBlockLayout::from_config(config);
+        m_size   = m_layout.total_size;
+#if !defined(NDEBUG)
+        assert(m_layout.validate() && "DataBlockLayout invariant violated");
+#endif
+
+        setup_shm_from_fd_(source_fd, m_size);
+        init_producer_state_(config);
+    }
+
+    // HEP-CORE-0041 substep 1f (#253) — body extracted from the
+    // name-based Create ctor above so the fd-source variant calls the
+    // SAME initialization sequence.  Assumes m_shm.base / m_size /
+    // m_layout are valid before entry.
+    void init_producer_state_(const DataBlockConfig &config)
+    {
         // Placement new for SharedMemoryHeader (value-initialize for deterministic layout; zero padding)
         m_header = new (m_shm.base) SharedMemoryHeader{};
 
@@ -566,6 +646,48 @@ class DataBlock
                 fmt::format("shm_attach failed for attaching '{}'. Error: {}", m_name, errno));
 #endif
         }
+        const char *mode_str = (mode == DataBlockOpenMode::WriteAttach) ? "write-attach" : "read-attach";
+        attach_consumer_state_(mode_str);
+    }
+
+    DataBlock(std::string name) : m_name(std::move(name)), m_open_mode(DataBlockOpenMode::ReadAttach)
+    {
+        m_shm = pylabhub::platform::shm_attach(m_name.c_str());
+        if (m_shm.base == nullptr)
+        {
+#if defined(PYLABHUB_PLATFORM_WIN64)
+            throw std::runtime_error(
+                fmt::format("Failed to open file mapping for consumer '{}'. Error: {}", m_name, GetLastError()));
+#else
+            throw std::runtime_error(
+                fmt::format("shm_attach failed for consumer '{}'. Error: {}", m_name, errno));
+#endif
+        }
+        attach_consumer_state_("consumer");
+    }
+
+    // HEP-CORE-0041 substep 1f (#253) — consumer Attach from a borrowed
+    // SHM fd.  The fd was typically received via SCM_RIGHTS from the
+    // producer's `IShmCapabilityProducer::send_capability()`.  The fd
+    // is dup()'d so DataBlock's lifetime is independent of the
+    // `IShmCapabilityConsumer` instance that received it.
+    //
+    // `m_should_unlink_name = false` is implicit via ReadAttach mode
+    // (only Create unlinks).  The `logical_name` is purely a log label.
+    DataBlock(std::string logical_name, int source_fd, FromFdSourceTag /*unused*/)
+        : m_name(std::move(logical_name)), m_open_mode(DataBlockOpenMode::ReadAttach)
+    {
+        setup_shm_from_fd_(source_fd, /*expected_size=*/0);
+        attach_consumer_state_("consumer-from-fd");
+    }
+
+    // HEP-CORE-0041 substep 1f (#253) — body extracted from the two
+    // name-based consumer ctors above so the fd-source variant calls
+    // the SAME validation + layout reconstruction.  Assumes m_shm is
+    // valid before entry; throws on any header inconsistency
+    // (m_shm is shm_close()'d on throw so the caller doesn't leak).
+    void attach_consumer_state_(const char *mode_str)
+    {
         m_size = m_shm.size;
         m_header = reinterpret_cast<SharedMemoryHeader *>(m_shm.base);
 
@@ -574,10 +696,14 @@ class DataBlock
         {
             pylabhub::platform::shm_close(&m_shm);
             throw std::runtime_error(
-                fmt::format("DataBlock '{}' initialization timeout - creator may have crashed.", m_name));
+                fmt::format("DataBlock '{}' initialization timeout - creator may have crashed or not fully initialized.", m_name));
         }
 
-        // Validate version compatibility
+        // Validate version compatibility.  Use the consumer-relaxed
+        // form (>= major, >= minor) because a writer-attach is also
+        // allowed against a header written by the original creator;
+        // the older 2-arg ctor used the strict (> minor) form and is
+        // preserved by the consumer-relaxed check here.
         if (m_header->version_major != HEADER_VERSION_MAJOR ||
             m_header->version_minor > HEADER_VERSION_MINOR)
         {
@@ -609,79 +735,86 @@ class DataBlock
         m_structured_data_buffer =
             reinterpret_cast<char *>(m_shm.base) + m_layout.structured_buffer_offset;
 
-        const char *mode_str = (mode == DataBlockOpenMode::WriteAttach) ? "write-attach" : "read-attach";
         LOGGER_INFO("DataBlock '{}' attached ({}) with total size {} bytes.", m_name, mode_str, m_size);
     }
 
-    DataBlock(std::string name) : m_name(std::move(name)), m_open_mode(DataBlockOpenMode::ReadAttach)
+    // HEP-CORE-0041 substep 1f (#253) — set up `m_shm` from a borrowed
+    // fd by dup()'ing the fd and mmap()'ing it.  Stores the dup'd fd
+    // in `m_shm.opaque` so the existing `shm_close` (called from dtor)
+    // closes our dup and munmap()s cleanly.  Throws on dup / fstat /
+    // mmap failure.
+    //
+    // - For producer-Create-from-fd: caller pre-sized the underlying
+    //   SHM via ShmCapability + ftruncate; this method validates the
+    //   fstat size matches `expected_size`.
+    // - For consumer-attach-from-fd: caller passes `expected_size = 0`
+    //   to accept whatever the producer ftruncated.
+    void setup_shm_from_fd_(int source_fd, size_t expected_size)
     {
-        m_shm = pylabhub::platform::shm_attach(m_name.c_str());
-        if (m_shm.base == nullptr)
+#if defined(PYLABHUB_IS_POSIX)
+        if (source_fd < 0)
         {
-#if defined(PYLABHUB_PLATFORM_WIN64)
             throw std::runtime_error(
-                fmt::format("Failed to open file mapping for consumer '{}'. Error: {}", m_name, GetLastError()));
+                fmt::format("DataBlock '{}': invalid source fd ({})", m_name, source_fd));
+        }
+        int dup_fd = ::dup(source_fd);
+        if (dup_fd < 0)
+        {
+            throw std::runtime_error(
+                fmt::format("DataBlock '{}': dup() of source fd {} failed (errno={})",
+                            m_name, source_fd, errno));
+        }
+        struct stat st = {};
+        if (::fstat(dup_fd, &st) != 0)
+        {
+            const int saved_errno = errno;
+            ::close(dup_fd);
+            throw std::runtime_error(
+                fmt::format("DataBlock '{}': fstat() of dup'd fd failed (errno={})",
+                            m_name, saved_errno));
+        }
+        const size_t fd_size = static_cast<size_t>(st.st_size);
+        if (expected_size != 0 && fd_size != expected_size)
+        {
+            ::close(dup_fd);
+            throw std::runtime_error(
+                fmt::format("DataBlock '{}': source fd size {} != expected {} (caller must "
+                            "ftruncate fd to DataBlockLayout::total_size before construction)",
+                            m_name, fd_size, expected_size));
+        }
+        void *mapped = ::mmap(nullptr, fd_size, PROT_READ | PROT_WRITE, MAP_SHARED,
+                              dup_fd, 0);
+        if (mapped == MAP_FAILED)
+        {
+            const int saved_errno = errno;
+            ::close(dup_fd);
+            throw std::runtime_error(
+                fmt::format("DataBlock '{}': mmap() of fd-backed SHM failed (errno={})",
+                            m_name, saved_errno));
+        }
+        m_shm.base   = mapped;
+        m_shm.size   = fd_size;
+        m_shm.opaque = reinterpret_cast<void *>(static_cast<intptr_t>(dup_fd));
+        // `shm_close` (POSIX path) does: munmap(base, size) + close(opaque-as-fd).
+        // This matches what we set up here, so the dtor cleans up without
+        // needing an fd-source-specific teardown branch.
 #else
-            throw std::runtime_error(
-                fmt::format("shm_attach failed for consumer '{}'. Error: {}", m_name, errno));
+        // Cross-platform stub — Windows backend is task #261; macOS is
+        // #260; FreeBSD shares the POSIX path above (#259) when its
+        // build is wired.
+        (void)source_fd;
+        (void)expected_size;
+        throw std::runtime_error(
+            fmt::format("DataBlock '{}': fd-source ctor is POSIX-only on this build "
+                        "(HEP-CORE-0041 Phase 1 tasks #259-#261 add other platforms)",
+                        m_name));
 #endif
-        }
-        m_size = m_shm.size;
-
-        m_header = reinterpret_cast<SharedMemoryHeader *>(m_shm.base);
-
-        // Wait for producer to fully initialize the header.
-        if (!wait_for_header_magic_valid(m_header, get_attach_timeout_ms()))
-        {
-            pylabhub::platform::shm_close(&m_shm);
-            throw std::runtime_error(
-                fmt::format("DataBlock '{}' initialization timeout - producer may have crashed or not fully initialized.", m_name));
-        }
-
-        // Validate version compatibility
-        if (m_header->version_major != HEADER_VERSION_MAJOR ||
-            m_header->version_minor >
-                HEADER_VERSION_MINOR) // Consumer can read older minor versions
-        {
-            pylabhub::platform::shm_close(&m_shm);
-            throw std::runtime_error(
-                fmt::format("DataBlock '{}' version mismatch. Producer: {}.{}, Consumer: {}.{}",
-                            m_name, m_header->version_major, m_header->version_minor,
-                            HEADER_VERSION_MAJOR, HEADER_VERSION_MINOR));
-        }
-
-        // Validate total size
-        if (m_size != m_header->total_block_size)
-        {
-            pylabhub::platform::shm_close(&m_shm);
-            throw std::runtime_error(
-                fmt::format("DataBlock '{}' size mismatch. Expected {}, got {}",
-                            m_name, m_header->total_block_size, m_size));
-        }
-
-        // Calculate pointers from layout (single source of truth)
-        m_layout = DataBlockLayout::from_header(m_header);
-#if !defined(NDEBUG)
-        assert(m_layout.validate() && "DataBlockLayout invariant violated");
-#endif
-        m_slot_rw_states_array = reinterpret_cast<SlotRWState *>(
-            reinterpret_cast<char *>(m_shm.base) + m_layout.slot_rw_state_offset);
-        m_flexible_data_zone =
-            reinterpret_cast<char *>(m_shm.base) + m_layout.flexible_zone_offset;
-        m_structured_data_buffer =
-            reinterpret_cast<char *>(m_shm.base) + m_layout.structured_buffer_offset;
-
-        // Populate flexible zone info map (this is tricky for consumer as it doesn't have config)
-        // This will be handled in a factory function with expected_config.
-        // For now, this constructor doesn't know about individual flexible zones.
-
-        LOGGER_INFO("DataBlock '{}' opened by consumer. Total size {} bytes.", m_name, m_size);
     }
 
     ~DataBlock()
     {
         pylabhub::platform::shm_close(&m_shm);
-        if (m_open_mode == DataBlockOpenMode::Create)
+        if (m_open_mode == DataBlockOpenMode::Create && m_should_unlink_name)
         {
             pylabhub::platform::shm_unlink(m_name.c_str());
             LOGGER_INFO("DataBlock '{}' shared memory removed.", m_name);
@@ -757,6 +890,13 @@ class DataBlock
     [[nodiscard]] const DataBlockLayout &layout() const { return m_layout; }
 
   private:
+    // ── HEP-CORE-0041 substep 1f (#253) helpers ─────────────────────────────
+    //
+    // `init_producer_state_`, `attach_consumer_state_`, and
+    // `setup_shm_from_fd_` are defined inline above (alongside the
+    // ctors that call them).  Substep 1i (#256) collapses these into
+    // a single helper when the old name-based ctors and the legacy
+    // shm_secret machinery are deleted.
     std::string m_name;
     DataBlockOpenMode m_open_mode;
     pylabhub::platform::ShmHandle m_shm{};
@@ -769,6 +909,13 @@ class DataBlock
     char *m_structured_data_buffer = nullptr;
     // Removed m_management_mutex as it's no longer managed by DataBlock directly
     // Phase 2 refactoring: m_flexible_zone_info removed (single flex zone, no named mapping)
+
+    // ── HEP-CORE-0041 substep 1f (#253) ─────────────────────────────────────
+    // `true` for name-based Create (existing path); `false` for
+    // fd-source Create.  Dtor only calls `shm_unlink` when both this
+    // flag is true AND `m_open_mode == Create`.  Substep 1i (#256)
+    // deletes this flag along with the name-based ctors.
+    bool m_should_unlink_name = true;
 };
 
 // ============================================================================
@@ -3048,6 +3195,259 @@ attach_datablock_as_writer_impl(const std::string &name,
 }
 
 // Non-template wrappers removed (see comment after create_datablock_producer_impl above).
+
+// HEP-CORE-0041 substep 1f (#253) — public accessor for the internal
+// DataBlockLayout::from_config().total_size.  Callers (ShmCapability
+// producers + fd-source factory consumers) use this to pre-size their
+// SHM via ftruncate before constructing.
+size_t datablock_layout_total_size(const DataBlockConfig &config)
+{
+    return DataBlockLayout::from_config(config).total_size;
+}
+
+// ============================================================================
+// HEP-CORE-0041 substep 1f (#253) — fd-source factory implementations
+// ============================================================================
+//
+// These mirror create_datablock_producer_impl / find_datablock_consumer_impl
+// but accept a borrowed SHM fd in place of a /dev/shm name.  Used by the
+// capability-transport path: producer side `IShmCapabilityProducer::borrow_fd()`
+// → `create_datablock_producer_from_fd_impl`; consumer side
+// `IShmCapabilityConsumer::borrow_fd()` (after `recv_capability`) →
+// `find_datablock_consumer_from_fd_impl`.
+//
+// IMPORTANT — fd-source consumer SKIPS the `shared_secret` check that the
+// name-based `find_datablock_consumer_impl` performs.  In the new auth
+// model the SCM_RIGHTS receipt of the fd IS the proof-of-authorization;
+// the header-stored `shared_secret` is legacy machinery that substep 1i
+// (#256) deletes entirely.  Schema validation + layout-hash + size checks
+// are preserved because they are ABI-integrity checks, not authentication.
+
+std::unique_ptr<DataBlockProducer>
+create_datablock_producer_from_fd_impl(const std::string &logical_name,
+                                       int source_fd,
+                                       DataBlockPolicy policy,
+                                       const DataBlockConfig &config,
+                                       const pylabhub::schema::SchemaInfo *flexzone_schema,
+                                       const pylabhub::schema::SchemaInfo *datablock_schema)
+{
+    if (!datablock_lifecycle_ready())
+    {
+        throw std::runtime_error(
+            "DataBlock: Data Exchange Hub module not initialized. Create a LifecycleGuard in main() "
+            "with pylabhub::hub::GetDataBlockModule() (and typically Logger, CryptoUtils) before creating producers.");
+    }
+    (void)policy; // Reserved for future policy-specific behavior
+    auto impl = std::make_unique<DataBlockProducerImpl>();
+    impl->name = logical_name;
+    impl->dataBlock = std::make_unique<DataBlock>(
+        logical_name, config, source_fd, DataBlock::FromFdSourceTag{});
+    impl->checksum_policy = config.checksum_policy;
+
+    // Single flex zone (Phase 2 refactoring)
+    auto layout = DataBlockLayout::from_config(config);
+    impl->flex_zone_offset = layout.flexible_zone_offset;
+    impl->flex_zone_size = layout.flexible_zone_size;
+
+    auto *header = impl->dataBlock->header();
+    if (header != nullptr)
+    {
+        if (flexzone_schema != nullptr)
+        {
+            std::memcpy(header->flexzone_schema_hash, flexzone_schema->hash.data(),
+                        detail::CHECKSUM_BYTES);
+            LOGGER_DEBUG("[DataBlock:{}] FlexZone schema stored (fd-source): {} v{}",
+                         logical_name, flexzone_schema->name,
+                         flexzone_schema->version.to_string());
+        }
+        else
+        {
+            std::memset(header->flexzone_schema_hash, 0, detail::CHECKSUM_BYTES);
+        }
+
+        if (datablock_schema != nullptr)
+        {
+            std::memcpy(header->datablock_schema_hash, datablock_schema->hash.data(),
+                        detail::CHECKSUM_BYTES);
+            header->schema_version = datablock_schema->version.pack();
+            LOGGER_DEBUG("[DataBlock:{}] DataBlock schema stored (fd-source): {} v{}",
+                         logical_name, datablock_schema->name,
+                         datablock_schema->version.to_string());
+        }
+        else
+        {
+            std::memset(header->datablock_schema_hash, 0, detail::CHECKSUM_BYTES);
+            header->schema_version = 0;
+        }
+
+        auto write_id_str = [](char *dst, size_t dst_size, const std::string &src) {
+            size_t len = src.size() < dst_size ? src.size() : dst_size - 1;
+            std::memcpy(dst, src.c_str(), len);
+            dst[len] = '\0';
+        };
+        write_id_str(header->hub_uid, sizeof(header->hub_uid), config.hub_uid);
+        write_id_str(header->hub_name, sizeof(header->hub_name), config.hub_name);
+        write_id_str(header->producer_uid, sizeof(header->producer_uid), config.producer_uid);
+        write_id_str(header->producer_name, sizeof(header->producer_name), config.producer_name);
+    }
+
+    return std::make_unique<DataBlockProducer>(std::move(impl));
+}
+
+std::unique_ptr<DataBlockConsumer>
+find_datablock_consumer_from_fd_impl(const std::string &logical_name,
+                                     int source_fd,
+                                     const DataBlockConfig *expected_config,
+                                     const pylabhub::schema::SchemaInfo *flexzone_schema,
+                                     const pylabhub::schema::SchemaInfo *datablock_schema,
+                                     const char *consumer_uid,
+                                     const char *consumer_name)
+{
+    if (!datablock_lifecycle_ready())
+    {
+        throw std::runtime_error(
+            "DataBlock: Data Exchange Hub module not initialized. Create a LifecycleGuard in main() "
+            "with pylabhub::hub::GetDataBlockModule() (and typically Logger, CryptoUtils) before finding consumers.");
+    }
+    auto impl = std::make_unique<DataBlockConsumerImpl>();
+    impl->name = logical_name;
+    impl->dataBlock = std::make_unique<DataBlock>(
+        logical_name, source_fd, DataBlock::FromFdSourceTag{});
+
+    auto *header = impl->dataBlock->header();
+    if (header == nullptr)
+    {
+        LOGGER_WARN("[DataBlock:{}] find_consumer (fd-source): attached SHM has no "
+                    "readable header (mapping likely failed).", logical_name);
+        return nullptr;
+    }
+
+    // NOTE — shared_secret check INTENTIONALLY OMITTED.  See banner
+    // comment at top of this section for rationale.
+
+    try
+    {
+        validate_header_layout_hash(header);
+    }
+    catch (const pylabhub::schema::SchemaValidationException &)
+    {
+        header->schema_mismatch_count.fetch_add(1, std::memory_order_relaxed);
+        LOGGER_WARN("[DataBlock:{}] (fd-source) Header layout mismatch during consumer "
+                    "attachment (ABI incompatibility)", logical_name);
+        return nullptr;
+    }
+    if (!validate_attach_layout_and_config(header, expected_config))
+    {
+        LOGGER_WARN("[DataBlock:{}] (fd-source) Layout checksum or config mismatch during consumer attachment.",
+                    logical_name);
+        return nullptr;
+    }
+    impl->checksum_policy = header->checksum_policy;
+
+    auto layout = DataBlockLayout::from_header(header);
+    impl->flex_zone_offset = layout.flexible_zone_offset;
+    impl->flex_zone_size = layout.flexible_zone_size;
+
+    if (flexzone_schema != nullptr)
+    {
+        bool has_flexzone_schema = std::any_of(
+            header->flexzone_schema_hash,
+            header->flexzone_schema_hash + detail::CHECKSUM_BYTES,
+            [](uint8_t byte) { return byte != 0; });
+        if (!has_flexzone_schema)
+        {
+            header->schema_mismatch_count.fetch_add(1, std::memory_order_relaxed);
+            LOGGER_WARN("[DataBlock:{}] (fd-source) Producer did not store FlexZone schema, "
+                        "but consumer expects '{}'", logical_name, flexzone_schema->name);
+            return nullptr;
+        }
+        if (std::memcmp(header->flexzone_schema_hash, flexzone_schema->hash.data(),
+                        detail::CHECKSUM_BYTES) != 0)
+        {
+            header->schema_mismatch_count.fetch_add(1, std::memory_order_relaxed);
+            LOGGER_ERROR("[DataBlock:{}] (fd-source) FlexZone schema hash mismatch! Expected '{}' v{}",
+                         logical_name, flexzone_schema->name,
+                         flexzone_schema->version.to_string());
+            return nullptr;
+        }
+        LOGGER_DEBUG("[DataBlock:{}] (fd-source) FlexZone schema validated: {} v{}",
+                     logical_name, flexzone_schema->name,
+                     flexzone_schema->version.to_string());
+    }
+
+    if (datablock_schema != nullptr)
+    {
+        bool has_datablock_schema = std::any_of(
+            header->datablock_schema_hash,
+            header->datablock_schema_hash + detail::CHECKSUM_BYTES,
+            [](uint8_t byte) { return byte != 0; });
+        if (!has_datablock_schema)
+        {
+            header->schema_mismatch_count.fetch_add(1, std::memory_order_relaxed);
+            LOGGER_WARN("[DataBlock:{}] (fd-source) Producer did not store DataBlock schema, "
+                        "but consumer expects '{}'", logical_name, datablock_schema->name);
+            return nullptr;
+        }
+        if (std::memcmp(header->datablock_schema_hash, datablock_schema->hash.data(),
+                        detail::CHECKSUM_BYTES) != 0)
+        {
+            header->schema_mismatch_count.fetch_add(1, std::memory_order_relaxed);
+            LOGGER_ERROR("[DataBlock:{}] (fd-source) DataBlock schema hash mismatch! Expected '{}' v{}",
+                         logical_name, datablock_schema->name,
+                         datablock_schema->version.to_string());
+            return nullptr;
+        }
+        auto stored_version = pylabhub::schema::SchemaVersion::unpack(header->schema_version);
+        if (stored_version.major != datablock_schema->version.major)
+        {
+            header->schema_mismatch_count.fetch_add(1, std::memory_order_relaxed);
+            LOGGER_ERROR("[DataBlock:{}] (fd-source) Incompatible DataBlock schema version! "
+                         "Producer: {}, Consumer: {}",
+                         logical_name, stored_version.to_string(),
+                         datablock_schema->version.to_string());
+            return nullptr;
+        }
+        LOGGER_DEBUG("[DataBlock:{}] (fd-source) DataBlock schema validated: {} v{}",
+                     logical_name, datablock_schema->name,
+                     datablock_schema->version.to_string());
+    }
+
+    if (consumer_uid != nullptr)
+    {
+        std::strncpy(impl->consumer_uid_buf, consumer_uid,
+                     sizeof(impl->consumer_uid_buf) - 1);
+        impl->consumer_uid_buf[sizeof(impl->consumer_uid_buf) - 1] = '\0';
+    }
+    if (consumer_name != nullptr)
+    {
+        std::strncpy(impl->consumer_name_buf, consumer_name,
+                     sizeof(impl->consumer_name_buf) - 1);
+        impl->consumer_name_buf[sizeof(impl->consumer_name_buf) - 1] = '\0';
+    }
+
+    auto consumer = std::make_unique<DataBlockConsumer>(std::move(impl));
+
+    int heartbeat_slot = consumer->register_heartbeat();
+    if (heartbeat_slot < 0)
+    {
+        LOGGER_WARN("[DataBlock:{}] (fd-source) Consumer heartbeat registration failed.",
+                    logical_name);
+    }
+    else
+    {
+        LOGGER_DEBUG("[DataBlock:{}] (fd-source) Consumer registered heartbeat slot {}",
+                     logical_name, heartbeat_slot);
+        if (header->consumer_sync_policy == ConsumerSyncPolicy::Sequential_sync)
+        {
+            uint64_t join_at = header->commit_index.load(std::memory_order_acquire);
+            consumer_next_read_slot_ptr(header, static_cast<size_t>(heartbeat_slot))
+                ->store((join_at != INVALID_SLOT_ID) ? join_at : 0,
+                        std::memory_order_release);
+        }
+    }
+
+    return consumer;
+}
 
 // ============================================================================
 // DataBlock lifecycle module

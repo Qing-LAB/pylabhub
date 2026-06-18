@@ -4,7 +4,7 @@
 |---|---|
 | **HEP** | `HEP-CORE-0041` |
 | **Title** | SHM Channel Auth — Capability Transport + Pre-Confirm Admission |
-| **Status** | 🟢 **DESIGN FINAL; PHASE 1 IN FLIGHT** — promoted from `docs/tech_draft/` 2026-06-16; substeps 1a-1e shipped; 1f-1k pending.  Live status table at §10.1. |
+| **Status** | 🟢 **DESIGN FINAL; PHASE 1 IN FLIGHT** — promoted from `docs/tech_draft/` 2026-06-16; substeps 1a-1f shipped; 1g-1k pending.  Live status table at §10.1. |
 | **Created** | 2026-06-16 |
 | **Last revised** | 2026-06-18 — **§5 + §6 + §7 + §10 + §11 + §12 + §13 macOS resynced against shipped code**: bearer-token model in §5 replaced by the actual `crypto_box` challenge-response + `CONSUMER_ATTACH_REQ` pre-confirm; §6 strawman code replaced by L1/L2 split as shipped (with verbatim interfaces from headers); §7 compatibility list rewritten to match the substep chain; §10 gained substep-level §10.1 status table; §11 + §12 status updated for what's shipped vs pending; §13 macOS corrected (`SHM_ANON` is FreeBSD-only, not macOS — backend uses `shm_open`+immediate-`shm_unlink` trick).  Prior revision 2026-06-17 — §9 D4 attach sequence amended for crypto_box (substep 1c).  Prior revision 2026-06-16 — promoted from tech_draft. |
 | **Tracker** | task **#244** (umbrella); per-phase tasks under §10 |
@@ -625,7 +625,7 @@ Phase 1 ships as 11 substeps + cross-platform structural + follow-ups:
 | 1c | #250 | ✅ | `AttachProtocol` `crypto_box` challenge-response |
 | 1d | #251 | ✅ | Broker `CONSUMER_ATTACH_REQ` / `_ACK` handler |
 | 1e | #252 | ✅ | `ShmAttachOrchestrator` + divergence-WARN |
-| 1f | #253 | 🚧 | Consumer-side capability receive + DataBlock fd-based attach |
+| 1f | #253 | ✅ | DataBlock fd-source ctors + `create_datablock_producer_from_fd_impl` / `find_datablock_consumer_from_fd_impl` factories + `datablock_layout_total_size` public sizing accessor; producer/consumer `IShmCapability*::borrow_fd()`; L2 test pin (in-process round-trip + ShmCapability end-to-end + under-sized fd throw) |
 | 1g | #254 | ⏸ | Wire-shape clean break (delete `shm_secret`; add `shm_capability_endpoint`) |
 | 1h | #255 | ⏸ | Config schema rejection of `in_shm_secret`/`out_shm_secret` |
 | 1i | #256 | ⏸ | Code cleanup — delete obsolete `shm_secret` machinery + named-shm path |
