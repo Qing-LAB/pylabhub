@@ -50,7 +50,22 @@ struct ProducerRegInputs
     /// `curve_serverkey`).  HEP-CORE-0040 §172 — callers in the
     /// role-host pass `key_store().pubkey("role_identity")`; broker
     /// rejects REG_REQ with empty or wrong-length `zmq_pubkey`.
+    ///
+    /// HEP-CORE-0041 §5.3 — this same pubkey is reused for the
+    /// SHM-capability `crypto_box` challenge-response; broker echoes
+    /// it back as `producer_pubkey_z85` in CONSUMER_REG_ACK for SHM
+    /// channels.
     std::string zmq_pubkey;
+
+    /// HEP-CORE-0041 §5.1 — producer's bound SHM-capability transport
+    /// endpoint (Unix socket on POSIX, named pipe on Windows).
+    /// REQUIRED for SHM channels (i.e. when `has_shm && !is_zmq_transport`);
+    /// empty otherwise.  Producer-side caller computes the canonical
+    /// path via `pylabhub::utils::security::default_shm_capability_endpoint`.
+    /// Broker stores it on `ProducerEntry::shm_capability_endpoint` and
+    /// echoes it back via `CONSUMER_REG_ACK.shm_capability_endpoint`
+    /// for the consumer to dial via `attach_shm_capability_consumer`.
+    std::string shm_capability_endpoint;
 };
 
 /// Inputs to `build_consumer_reg_payload`.  broker_proto 4→5 (audit
@@ -103,6 +118,17 @@ inline nlohmann::json build_producer_reg_payload(const ProducerRegInputs &in)
     {
         reg["data_transport"]    = "zmq";
         reg["zmq_node_endpoint"] = in.zmq_node_endpoint;
+    }
+    else if (in.has_shm)
+    {
+        // HEP-CORE-0041 §5.1 — SHM channels publish their L2
+        // capability-transport endpoint.  Substep 1g (#254): explicit
+        // `data_transport="shm"` discriminates the branch on the
+        // broker side (matches the existing `"zmq"` shape); the
+        // endpoint is the URI the consumer dials via
+        // `attach_shm_capability_consumer`.
+        reg["data_transport"]          = "shm";
+        reg["shm_capability_endpoint"] = in.shm_capability_endpoint;
     }
     return reg;
 }

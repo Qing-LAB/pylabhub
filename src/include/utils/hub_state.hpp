@@ -205,7 +205,29 @@ struct ProducerEntry
     /// migration: the wire field name on REG_REQ is still
     /// `zmq_pubkey`; step 3 routes that into this field instead of
     /// the deprecated channel-scope `ChannelEntry.zmq_pubkey`.
+    ///
+    /// HEP-CORE-0041 §5.3 — this same Curve25519 identity keypair is
+    /// reused for the SHM-capability transport's `crypto_box`
+    /// challenge-response (substep 1c).  The broker emits the value
+    /// as `producer_pubkey_z85` in CONSUMER_REG_ACK for SHM channels
+    /// (mirroring the per-producer ZMQ shape) so the consumer can
+    /// `crypto_box_easy`-encrypt its attach challenge to the producer.
     std::string zmq_pubkey;
+
+    /// HEP-CORE-0041 §5.1 — this producer's bound SHM-capability
+    /// transport endpoint (Unix socket on POSIX, named pipe on
+    /// Windows).  Empty for ZMQ channels.  Wire field name on REG_REQ
+    /// is `shm_capability_endpoint`; broker stores it here, then emits
+    /// it back to authorized consumers via
+    /// `CONSUMER_REG_ACK.shm_capability_endpoint` (HEP-0041 §5.3) so
+    /// each consumer can dial the producer's L2 attach listener via
+    /// `attach_shm_capability_consumer`.
+    ///
+    /// String shape: `unix://<path>` on POSIX (mirroring ZMQ's
+    /// `tcp://` / `ipc://` URI grammar) or pipe name on Windows.
+    /// Producer-side default computed by
+    /// `pylabhub::utils::security::default_shm_capability_endpoint`.
+    std::string shm_capability_endpoint;
 
     /// Producer-supplied free-form context blob (HEP-CORE-0007 §12.4).
     /// `null` if no metadata.  Channel-level DISC_REQ_ACK aggregates
@@ -616,6 +638,27 @@ struct ChannelEntry
             if (p.role_uid == role_uid)
             {
                 p.zmq_pubkey = std::move(pubkey);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// HEP-CORE-0041 §5.1 — set the per-producer SHM-capability
+    /// transport endpoint.  Returns true iff the producer was found.
+    /// Mirrors `set_producer_zmq_node_endpoint`'s per-producer shape so
+    /// future SHM fan-in (if ever required) has the same data-model
+    /// affordances; today's HEP-0041 design is single-producer per SHM
+    /// channel, so the producers[] vector has exactly one element when
+    /// this setter is called.
+    bool set_producer_shm_capability_endpoint(std::string_view role_uid,
+                                                std::string endpoint) noexcept
+    {
+        for (auto &p : producers)
+        {
+            if (p.role_uid == role_uid)
+            {
+                p.shm_capability_endpoint = std::move(endpoint);
                 return true;
             }
         }

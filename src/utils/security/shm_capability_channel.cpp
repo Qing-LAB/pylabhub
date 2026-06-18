@@ -14,8 +14,11 @@
  * @see docs/HEP/HEP-CORE-0041-SHM-Channel-Auth.md §5-§6, §13 Linux.
  */
 #include "utils/security/shm_capability_channel.hpp"
+#include "utils/logger.hpp"
 
+#include <atomic>
 #include <cerrno>
+#include <cstdlib>
 #include <cstring>
 #include <stdexcept>
 #include <string>
@@ -482,6 +485,74 @@ attach_shm_capability_consumer(const std::string       &endpoint,
                                std::chrono::milliseconds timeout)
 {
     return std::make_unique<MemfdConsumer>(endpoint, timeout);
+}
+
+// HEP-CORE-0041 substep 1g (#254) — see header for the contract.
+//
+// Linux: prefer ${XDG_RUNTIME_DIR}/pylabhub/shmcap-<channel>.sock
+// (kernel-enforced mode-0700 per-user isolation via systemd
+// pam_systemd.so).  Fall back to /tmp/pylabhub-shmcap-<uid>-<channel>.sock
+// on non-systemd hosts where the env var is unset — `/tmp` is mode 1777
+// world-readable so we embed the uid in the filename to avoid
+// cross-user collisions, and we log a startup-time WARN so the operator
+// notices the weaker isolation.
+//
+// Caller responsibilities (deferred to the substep that wires
+// IShmCapabilityProducer::bind_endpoint):
+//   - mkdir -p the `pylabhub/` subdir at mode 0700 under XDG_RUNTIME_DIR
+//     before bind (parent dir already mode 0700 from systemd);
+//   - on /tmp fallback, no mkdir needed — bind writes the socket file
+//     directly with the producer's umask applied.
+std::string default_shm_capability_endpoint(std::string_view channel_name)
+{
+    if (channel_name.empty())
+    {
+        throw std::invalid_argument(
+            "default_shm_capability_endpoint: channel_name must be non-empty");
+    }
+    // Defence in depth — reject path separators and the `unix://` scheme
+    // separator so the returned path can't be hijacked by a misconfigured
+    // channel name.  Broker-side channel-name validation should catch
+    // these earlier, but the helper enforces its own input contract.
+    if (channel_name.find('/') != std::string_view::npos ||
+        channel_name.find(':') != std::string_view::npos)
+    {
+        throw std::invalid_argument(
+            "default_shm_capability_endpoint: channel_name must not contain "
+            "'/' or ':' (HEP-CORE-0021 channel-name grammar)");
+    }
+
+    const char *xdg = std::getenv("XDG_RUNTIME_DIR");
+    if (xdg != nullptr && xdg[0] != '\0')
+    {
+        std::string path = "unix://";
+        path += xdg;
+        path += "/pylabhub/shmcap-";
+        path += channel_name;
+        path += ".sock";
+        return path;
+    }
+
+    // Fallback — log once per process so operators on non-systemd hosts
+    // know the per-user isolation is weaker.  Note: LOGGER may not be
+    // initialised at the very first call (early process startup), so a
+    // one-shot atomic flag guards it.
+    static std::atomic<bool> warned{false};
+    if (!warned.exchange(true, std::memory_order_acq_rel))
+    {
+        LOGGER_WARN(
+            "[ShmCapability] XDG_RUNTIME_DIR unset; falling back to "
+            "/tmp/pylabhub-shmcap-<uid>-<channel>.sock for SHM-capability "
+            "endpoints.  This deployment has weaker per-user isolation than "
+            "a systemd-managed host (HEP-CORE-0041 §5.1 hardening note).");
+    }
+
+    std::string path = "unix:///tmp/pylabhub-shmcap-";
+    path += std::to_string(::getuid());
+    path += "-";
+    path += channel_name;
+    path += ".sock";
+    return path;
 }
 
 #endif // PYLABHUB_PLATFORM_LINUX

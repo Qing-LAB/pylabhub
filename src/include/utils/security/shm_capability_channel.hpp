@@ -68,6 +68,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 
 #if defined(PYLABHUB_IS_POSIX)
 #    include <sys/types.h>  // pid_t, uid_t, gid_t — POSIX peer-cred triple
@@ -283,5 +284,42 @@ create_shm_capability_producer(size_t bytes);
 PYLABHUB_UTILS_EXPORT std::unique_ptr<IShmCapabilityConsumer>
 attach_shm_capability_consumer(const std::string       &endpoint,
                                std::chrono::milliseconds timeout);
+
+/// HEP-CORE-0041 substep 1g (#254) — compute the canonical per-user
+/// runtime endpoint string for a SHM channel's capability transport.
+///
+/// The producer side publishes this string in REG_REQ
+/// (`shm_capability_endpoint` field, HEP-0041 §5.1); the broker echoes
+/// it back to authorized consumers in CONSUMER_REG_ACK (§5.3); the
+/// consumer eventually passes it to `attach_shm_capability_consumer`
+/// to dial the producer's L2 attach listener.
+///
+/// The returned string includes the `unix://` scheme prefix on POSIX
+/// (mirroring ZMQ's `tcp://` / `ipc://` shape).  Callers feeding the
+/// path to the L1 backend's `bind_endpoint` / `attach_shm_capability_consumer`
+/// strip the scheme via `strip_unix_scheme` (or equivalent) before
+/// the kernel `bind`/`connect` call.
+///
+/// Per-platform mapping:
+/// - **Linux**: `unix://${XDG_RUNTIME_DIR}/pylabhub/shmcap-<channel>.sock`
+///   when `XDG_RUNTIME_DIR` is set (kernel-enforced mode 0700 per-user
+///   isolation from systemd `pam_systemd.so`); otherwise falls back to
+///   `unix:///tmp/pylabhub-shmcap-<uid>-<channel>.sock` with a startup
+///   WARN that the deployment is on a non-systemd host (uid embedded
+///   in the filename for cross-user collision avoidance in the
+///   world-writable `/tmp`).  Caller is responsible for `mkdir -p`'ing
+///   the `pylabhub/` subdir at mode 0700 before bind (in the XDG case;
+///   the `/tmp` fallback writes directly).
+/// - **FreeBSD/macOS/Windows**: not yet implemented (tasks #259/#260/
+///   #261).  See per-platform plans in shm_capability_channel.cpp.
+///
+/// Throws `std::runtime_error` on platforms whose backend hasn't
+/// landed.  Throws `std::invalid_argument` on empty `channel_name`.
+///
+/// @param channel_name  HEP-0021 channel name; must be non-empty and
+///                      pass the broker's channel-name validation
+///                      (printable ASCII, no `/`, no scheme separators).
+[[nodiscard]] PYLABHUB_UTILS_EXPORT std::string
+default_shm_capability_endpoint(std::string_view channel_name);
 
 } // namespace pylabhub::utils::security
