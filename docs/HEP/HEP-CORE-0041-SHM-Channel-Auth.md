@@ -92,7 +92,7 @@ The producer creates a **nameless** mappable region.  No filename, no kernel-obj
 | Linux | `memfd_create()` | Unix socket + `SCM_RIGHTS` ancillary data |
 | FreeBSD (≥13) | `memfd_create()` | Unix socket + `SCM_RIGHTS` |
 | FreeBSD (<13) | `shm_open(O_CREAT)` + `shm_unlink` immediately | Unix socket + `SCM_RIGHTS` (the unlinked fd survives) |
-| macOS/Darwin | `shm_open(SHM_ANON, ...)` — yes, macOS has `SHM_ANON`! | Unix socket + `SCM_RIGHTS` |
+| macOS/Darwin | `shm_open(name, O_CREAT\|O_EXCL\|O_RDWR, 0600)` + immediate `shm_unlink(name)` (fd survives the unlink; name disappears from kernel namespace — same trick as FreeBSD <13).  ⚠ `SHM_ANON` is **FreeBSD-only**; macOS lacks it (corrected 2026-06-18 — see §13). | Unix socket + `SCM_RIGHTS` |
 | Windows | `CreateFileMapping(INVALID_HANDLE_VALUE, ..., NULL)` — name=NULL → anonymous | Named pipe + `DuplicateHandle` (target process must be reachable for `OpenProcess`) |
 
 **Pros:**
@@ -523,7 +523,26 @@ incrementally.
 `in_shm_secret` / `out_shm_secret`.  Producer init template stops
 emitting the field.
 
-**Substep 1i (#256, pending):** code cleanup — deletes:
+**Substep 1i (#256, in flight; split per 2026-06-18 review — see §10.1
+row for the live status):**
+
+The original §7 1i description below enumerated DELETIONS only — that
+plan was found by the 2026-06-18 pre-1i review to be incomplete: no
+production code calls the new fd-source factories or the
+`ShmAttachOrchestrator` yet, so a pure-deletion 1i would break SHM
+channels.  1i is now split:
+
+- **1i-mig** (production wiring, 5 sub-substeps documented in §10.1) —
+  wires `IShmCapabilityProducer` + `ShmAttachOrchestrator` into the
+  producer/processor role hosts (orchestrator accept thread owned by
+  the role host's own `ThreadManager`, NOT a new lifecycle module);
+  adds `ShmQueue` fd-source path; consumer-side dial lives in
+  `RoleAPIBase::apply_consumer_reg_ack` (D2=a); switches production
+  callers from the legacy name-based factories.
+- **1i-cleanup** — then deletes the legacy machinery enumerated below.
+
+The deletion list below stays accurate as the **1i-cleanup** scope:
+
 - `ChannelAccessEntry::shm_secret` field.
 - `ShmQueue::set_shm_secret` API + `apply_master_approval` SHM-secret
   branch.
@@ -534,6 +553,19 @@ emitting the field.
 - `L2 test_hub_state.cpp` assertions pinning the old contract
   (lines 3593-3709).
 - The `shared_secret` field in `SharedMemoryHeader`.
+
+Recovery tool (`data_block_recovery.cpp`) is the one exception — it
+operates on already-crashed segments offline, where the fd-source
+memfd path doesn't apply.  Its legacy name-based callers stay; the
+factories they call are moved to a recovery-only namespace as part
+of 1i-cleanup so production callers can't accidentally regress to
+the legacy path.
+
+§10.1 substep 1i row is the live, authoritative description of the
+in-flight scope + the open dependencies (PeerAllowlist availability
+for SHM, `BrokerRequestComm::consumer_attach` callback shape for the
+orchestrator's `BrokerQuery`, `AttachProtocolAcceptor` seckey access
+via KeyStore).
 
 **Substep 1k (#258, pending):** L4 end-to-end test on the new path.
 

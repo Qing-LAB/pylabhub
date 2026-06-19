@@ -391,9 +391,16 @@ following bullets enumerate the per-side application of this rule:
   prohibits before authorization.  The broker-issued artifact for
   the producer side is the `initial_allowlist`; binding pre-REG
   would be a footprint without authorization.
-- **SHM consumer** doesn't know the channel's `shm_secret` until
-  `CONSUMER_REG_ACK` carries it.  Without it, SHM attach fails
-  (existing DataBlock secret check, HEP-CORE-0002).
+- **SHM consumer** ⚠ **SUPERSEDED by HEP-CORE-0041 — see §1 Amendment
+  2026-06-16.**  Historical text retained for context: pre-HEP-0041,
+  the SHM consumer didn't know the channel's `shm_secret` until
+  `CONSUMER_REG_ACK` carried it; without it, SHM attach failed (the
+  legacy DataBlock secret check, HEP-CORE-0002).  Post-HEP-0041
+  Phase 1 (1f shipped), the SHM consumer doesn't know the producer's
+  L2 capability-transport endpoint or pubkey until `CONSUMER_REG_ACK`
+  carries `shm_capability_endpoint` + `producer_pubkey_z85`
+  (HEP-0041 §5.3); without those, the consumer can't dial the
+  producer's attach listener (HEP-0041 §9 D4).
 - **SHM producer** has no broker-issued artifact gating the write
   side per se, but follows the same symmetric pattern: queue stays
   in Standby (§6.7) until `apply_producer_reg_ack` runs and starts
@@ -492,10 +499,25 @@ together, so the additional minting and key-distribution machinery
 added complexity without measurable security gain.  Identity
 reuse is the simpler, sound design.
 
-The ONE exception is SHM: the broker DOES generate a per-channel
-`shm_secret` (uint64 token, not a CURVE key) because SHM
-authentication uses the existing DataBlock guard-secret mechanism
-(HEP-CORE-0002), which is unrelated to CURVE.  See §5.6.
+⚠ **SUPERSEDED by HEP-CORE-0041 — see §1 Amendment 2026-06-16.**
+Historical text retained for context: pre-HEP-0041, the ONE exception
+was SHM: the broker generated a per-channel `shm_secret` (uint64
+token, not a CURVE key) because SHM authentication used the legacy
+DataBlock guard-secret mechanism.  Post-HEP-0041 Phase 1 there is no
+exception — the broker mints no data-plane secrets for either ZMQ
+or SHM.  SHM uses the capability-transport model (memfd +
+`SCM_RIGHTS` on Linux/FreeBSD; equivalents per HEP-0041 §13 on
+other platforms); the producer's identity pubkey serves as the
+`crypto_box` recipient key for the consumer's attach challenge
+(HEP-0041 §5.5).  The remaining historical paragraph below is
+preserved for design-archaeology purposes.
+
+The legacy text was:
+
+> The ONE exception is SHM: the broker DOES generate a per-channel
+> `shm_secret` (uint64 token, not a CURVE key) because SHM
+> authentication uses the existing DataBlock guard-secret mechanism
+> (HEP-CORE-0002), which is unrelated to CURVE.  See §5.6.
 
 ### I7 — Endpoint disclosure follows authorization
 
@@ -801,7 +823,7 @@ of trusting a remembered prior approval.
 | Action | The master's "yes" (request → reply) | Framework applies via |
 |---|---|---|
 | Consumer enters ZMQ channel (first time) | `CONSUMER_REG_REQ` → `CONSUMER_REG_ACK.producers[]` | `apply_master_approval(ACK)` — single mutator drives Standby → Active (spawns worker under ThreadManager scope per §3.5.4 INV4) |
-| Consumer enters SHM channel (first time) | `CONSUMER_REG_REQ` → `CONSUMER_REG_ACK.shm_secret` | `apply_master_approval(ACK)` (spawns worker under ThreadManager scope per §3.5.4 INV4) |
+| Consumer enters SHM channel (first time) ⚠ SUPERSEDED — see §1 Amendment + HEP-CORE-0041 §5.3 / §9 D4 | `CONSUMER_REG_REQ` → `CONSUMER_REG_ACK.shm_capability_endpoint` + `producer_pubkey_z85` (HEP-0041 §5.3; legacy `CONSUMER_REG_ACK.shm_secret` retired in HEP-0041 1g) | `apply_master_approval(ACK)` (spawns worker under ThreadManager scope per §3.5.4 INV4); consumer-side dial of producer's L2 capability transport happens in `RoleAPIBase::apply_consumer_reg_ack` before `apply_master_approval` (HEP-0041 1i-mig-4) |
 | Producer opens ZMQ channel (first time) | `REG_REQ` → `REG_ACK.initial_allowlist` | `apply_master_approval(ACK)` (spawns worker under ThreadManager scope per §3.5.4 INV4) |
 | Producer reacts to consumer-join / -leave on running channel | `CHANNEL_AUTH_CHANGED_NOTIFY` (doorbell) → `GET_CHANNEL_AUTH_REQ` → `GET_CHANNEL_AUTH_ACK.allowlist` | `set_peer_allowlist` on Active queue |
 | Consumer reacts to producer-join / -leave on running channel | `CHANNEL_PRODUCERS_CHANGED_NOTIFY` (doorbell) → `GET_CHANNEL_PRODUCERS_REQ` → `GET_CHANNEL_PRODUCERS_ACK.producers[]` | `set_producer_peers` on Active queue |
@@ -2122,6 +2144,16 @@ future handshake from that pubkey is denied.  There is no
 broker-initiated force-disconnect.
 
 ### 5.6 SHM consumer attach
+
+⚠ **SUPERSEDED — see §1 Amendment 2026-06-16 and HEP-CORE-0041 §9 D4.**
+The sequence diagram below describes the pre-HEP-0041 broker-mints-`shm_secret`
+flow.  In post-HEP-0041 Phase 1 (1g shipped), the broker generates no
+SHM secret; the producer publishes its L2 capability-transport endpoint
+via REG_REQ (HEP-0041 §5.1), the broker echoes it in CONSUMER_REG_ACK
+(§5.3), the consumer dials it (1i-mig-4), and the per-attach
+authorization gate is a broker pre-confirm (`CONSUMER_ATTACH_REQ`,
+HEP-0041 §5.4) rather than a secret-match check.  The diagram below is
+retained for design-archaeology purposes only.
 
 ```mermaid
 sequenceDiagram
