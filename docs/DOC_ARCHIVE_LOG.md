@@ -6,6 +6,53 @@
 
 ## Archive batches
 
+### 2026-06-18 (HEP-0041 doc-hygiene sweep — post-1h close-out)
+
+After HEP-CORE-0041 Phase 1 substeps 1f-1h shipped (#253/#254/#255,
+commits `dd7e2770..3c5563b0` + 1g/1h follow-ups) and the post-substep
+doc audit fixed M1/M2/M3/S3 (commit `be6a5116`), the S/C-tier deferred
+items from the same audit were closed out and one stale tech_draft was
+archived:
+
+* `DRAFT_C2-ZmqAuthOptions-deletion-audit_2026-06-08.md` — C2 cleanup
+  audit notes for task #158 (Z85PublicKey strong type + ZmqAuthOptions
+  deletion).  Task #158 shipped; every site listed in the audit's
+  inventory tables was migrated.  No lasting design content (the file
+  was an inventory checklist, not a design proposal) — no
+  permanent-doc absorption needed.  Archived to
+  `docs/archive/transient-2026-06-18/DRAFT_C2-ZmqAuthOptions-deletion-audit_2026-06-08.md`.
+
+Companion doc edits in the same sweep (no archival — content stays
+permanent):
+
+* HEP-CORE-0041 — S1 callout above §3.2 making "Phase 1 ships Option
+  A only" explicit (the Options B/C/D subsections survive as
+  archaeology + future-phase enhancement paths).
+* HEP-CORE-0031 §2 — one-paragraph callout pointing role-scope worker
+  threads (DataLoop, BRC poll, RxQueue poll, SHM
+  `ShmAttachOrchestrator` accept loop) at the role host's existing
+  ThreadManager instance (vs. lifecycle modules, which are for
+  process-singleton infrastructure shared across roles).
+* HEP-CORE-0040 — "Related" line tightened: HEP-0041 is now described
+  as an ACTIVE consumer of the SeckeyAccessor callback (Phase 1
+  substep 1c), not just a future Phase-4 hypothetical.
+* docs/todo/AUTH_TODO.md — added HEP-0041 to the "Authoritative design
+  lives in" list with substep-chain + pre-flight task pointers.
+* IMPLEMENTATION_GUIDANCE.md "Error Taxonomy" — added "SHM Channel
+  Auth attach errors" subsection codifying the wire-protocol error
+  vocabulary (OK / INVALID_REQUEST / CHANNEL_NOT_FOUND /
+  PRODUCER_NOT_AUTHORIZED / INTERNAL_ERROR) used by
+  `AttachProtocolAcceptor` and the L3 test-marker logging contract.
+
+Active tech_drafts retained (5):
+* `DRAFT_HEP-0036-implementation-guideline_2026-05.md` — drives the
+  AUTH-1..7 chain (#103 in_progress; #74/#94/#102/#104/#106 pending).
+  Annotated 2026-06-16 with HEP-0041 alignment banner.
+* `SCRIPT_RELOAD_DESIGN_2026-05-20.md` — task #76.
+* `engine_callback_tiers.md` — task #77.
+* `raii_layer_redesign.md` — API_TODO "Template RAII".
+* `abi_check_facility_design.md` — API_TODO "ABI Check Facility".
+
 ### 2026-06-16 (HEP-0041 supersession sweep — post-design cleanup)
 
 After HEP-CORE-0041 (SHM Channel Auth) shipped (#244, commits

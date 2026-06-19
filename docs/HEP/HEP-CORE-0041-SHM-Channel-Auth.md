@@ -104,6 +104,13 @@ The producer creates a **nameless** mappable region.  No filename, no kernel-obj
 - Broker becomes a handle-passing relay (or authorizes a direct producer-to-consumer Unix socket).
 - Windows path is significantly different (needs `OpenProcess` rights between producer and consumer); deployments where producer and consumer are in different Windows desktops or service contexts may need special handling.
 
+> 📌 **Phase 1 ships Option A only** (per §9 D1 decision).  Options B, C,
+> and D below were considered during the 2026-06-16 design discussion
+> and are documented here for archaeology + as enhancement paths
+> available to future phases.  **Do not treat §3.2 / §3.3 / §3.4 as
+> the implementation plan.**  The locked decision and the substep
+> chain (1a-1k) only address Option A's capability-transport model.
+
 ### 3.2 Option B — Named SHM + 0600 + per-consumer ACL grant
 
 Producer creates `/dev/shm/<random_name>` with mode 0600.  Broker tells producer the consumer's EUID at REG_REQ-accept time.  Producer adds an ACL grant for that EUID.

@@ -29,6 +29,16 @@ handles only the join half of the shutdown.
 > `SlotContext` surface (two co-equal APIs the thread body uses
 > to declare quiescence to the manager).
 
+> **Per-role worker threads belong here.**  Role-scope long-running
+> threads — the script DataLoop, the BRC poll, the RxQueue poll, and
+> (HEP-CORE-0041 1i-mig) the SHM `ShmAttachOrchestrator` accept loop —
+> are owned by the role host's own `ThreadManager` instance, NOT by
+> separate lifecycle modules.  The Shutdown Contract in §4.1 orders
+> their teardown so each thread stops before its dependencies are
+> destroyed.  Process-singleton infrastructure shared across roles
+> (Logger, KeyStore, `ZapPumpThread`) goes in lifecycle modules
+> instead — different shape, different layer.
+
 ```cpp
 class ThreadManager {
 public:

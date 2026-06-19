@@ -1752,6 +1752,33 @@ slot checksums are known to be wrong (user writes raw data without checksum upda
 | SHM header magic/checksum corrupt | Cat 1 | Log + notify all → shutdown |
 | Broker can't reach producer | Cat 1 (timeout) | Already covered by heartbeat path |
 
+### SHM Channel Auth attach errors (HEP-CORE-0041)
+
+The SHM capability-transport attach protocol (HEP-0041 §5) defines its
+own narrow error vocabulary at the producer-side `AttachProtocolAcceptor`.
+These are **wire-protocol** errors signalled in the `CONSUMER_ATTACH_RSP`
+status field — they bypass the Cat 1 / Cat 2 framework above because the
+attach handshake is per-connection and does NOT use the broker `*_NOTIFY`
+push channels.
+
+| status | When | Action |
+|---|---|---|
+| `OK` | challenge decoded; fd duplicated and sent via `SCM_RIGHTS` | none — consumer proceeds to `DataBlock` attach (HEP-0041 §5.7) |
+| `INVALID_REQUEST` | request frame malformed: missing `consumer_uid` / `consumer_pubkey_z85` / `nonce` / `ciphertext`, wrong base64 length, version field absent | log WARN with the field name; close socket; consumer treats as fatal and surfaces to script |
+| `CHANNEL_NOT_FOUND` | the `channel_name` in the request is not in the producer's local registry (race against teardown or wrong endpoint) | log INFO; close socket; consumer retries via the divergence-WARN path (§5.5) |
+| `PRODUCER_NOT_AUTHORIZED` | `crypto_box_open_easy` decryption fails OR challenge mismatch — the consumer pubkey is not the one the broker authorized | log WARN with the consumer_uid and pubkey prefix; close socket; consumer treats as fatal |
+| `INTERNAL_ERROR` | producer-side fault (e.g. KeyStore lookup failure, fd duplication failure, SCM_RIGHTS sendmsg failure) | log ERROR with errno; close socket; consumer retries once then surfaces fatal |
+
+**Repair: never.**  Attach failures are not retried at the protocol layer
+beyond the divergence-WARN single retry — the consumer surfaces fatal to
+the script and the broker is responsible for refreshing the PeerAllowlist
+if the underlying authorization changes.
+
+**Logging contract:** every non-OK status MUST log on both producer and
+consumer side with stable text markers (`shm_attach_invalid_request`,
+`shm_attach_channel_not_found`, `shm_attach_producer_not_authorized`,
+`shm_attach_internal_error`) so L3/L4 tests can pin the path taken.
+
 ### Recovery scope — what pylabhub does NOT attempt
 
 pylabhub is a **same-lifetime** IPC system. Broker, producers, and consumers are expected

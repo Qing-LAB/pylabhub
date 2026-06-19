@@ -20,6 +20,17 @@ data-channel CURVE auth gate.
 - `docs/HEP/HEP-CORE-0040-Locked-Key-Memory.md` — KeyStore +
   LockedKey + SecureMemorySubsystem framework primitives (use-not-
   export discipline, §8.2 / §8.4 / §8.5.1 / §8.6).
+- `docs/HEP/HEP-CORE-0041-SHM-Channel-Auth.md` — SHM Channel Auth
+  capability-transport model (memfd + `SCM_RIGHTS` on Linux/FreeBSD;
+  per-platform equivalents on FreeBSD/macOS/Windows per §13).
+  Supersedes the legacy broker-minted `shm_secret` model (closes
+  original AUTH-4 / #164).  Substep chain 1a-1k tracked under tasks
+  #248-#258; per-platform backends #259-#261; mutual-auth follow-up
+  #262.  Phase 1 substeps 1a-1h shipped as of 2026-06-18; 1i (#256)
+  in flight — split into 1i-mig (production wiring) + 1i-cleanup
+  (legacy deletion) per the 2026-06-18 pre-1i review.  Pre-flight
+  dependencies #263-#265 must resolve before 1i-mig-2 lands.  Live
+  status: HEP-0041 §10.1.
 
 **Status source of truth:** `docs/TODO_MASTER.md` (when PeerAdmission
 work is the active sprint).
