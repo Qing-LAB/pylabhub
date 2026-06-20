@@ -111,6 +111,45 @@ The producer creates a **nameless** mappable region.  No filename, no kernel-obj
 > the implementation plan.**  The locked decision and the substep
 > chain (1a-1k) only address Option A's capability-transport model.
 
+**fd ownership lifecycle (Option A, POSIX).**  Worth visualizing once
+because every later section refers to "the fd" as if there's only one
+— there are several distinct kernel objects.  The producer's original
+fd, the dup'd fd it sends, and the fd the consumer ends up with are
+all separate kernel handles pointing at the same anonymous mapping.
+The kernel refcounts; the mapping disappears when the last handle
+closes.
+
+```mermaid
+sequenceDiagram
+    participant P as Producer
+    participant K as Kernel
+    participant C as Consumer
+
+    Note over P,K: 1. Channel open — producer creates anon SHM (once per channel)
+    P->>K: memfd_create() → fd_orig
+    P->>K: ftruncate(fd_orig, size)
+    P->>K: mmap(fd_orig, ...) → ptr_p
+    Note over P: producer holds fd_orig + ptr_p<br/>for the channel lifetime
+
+    Note over P,C: 2. Per consumer attach (after §5.5 crypto proof + §9 D4 broker confirm)
+    P->>K: dup(fd_orig) → fd_dup
+    P->>C: sendmsg + SCM_RIGHTS (fd_dup)
+    Note over P: producer closes its copy of fd_dup;<br/>kernel keeps the fd live for the consumer
+
+    C->>K: recvmsg → fd_consumer<br/>(kernel-assigned descriptor)
+    C->>K: mmap(fd_consumer, ...) → ptr_c
+    Note over C: consumer holds fd_consumer + ptr_c<br/>for the channel lifetime
+
+    Note over P,C: 3. Teardown — each side independently
+    C->>K: munmap(ptr_c); close(fd_consumer)
+    P->>K: munmap(ptr_p); close(fd_orig)
+    Note over K: kernel refcount → 0;<br/>anon mapping freed
+```
+
+Each kernel handle is independent — closing one does NOT close another.
+The Windows variant has the same shape with `CreateFileMapping(NULL)`
++ `DuplicateHandle` instead of `memfd_create` + `SCM_RIGHTS`.
+
 ### 3.2 Option B — Named SHM + 0600 + per-consumer ACL grant
 
 Producer creates `/dev/shm/<random_name>` with mode 0600.  Broker tells producer the consumer's EUID at REG_REQ-accept time.  Producer adds an ACL grant for that EUID.
@@ -348,6 +387,31 @@ producer).  The symmetric direction — producer proves to consumer —
 is tracked under task #262 (mutual-auth follow-up) before Phase 1
 production-readiness.
 
+**Per-connection state machine (one accept_one() call).**  The
+`AttachProtocolAcceptor` runs a tight per-connection state machine
+between accepting a socket and returning an `AuthenticatedConsumer` to
+the orchestrator above.  Any failed transition closes the socket and
+the consumer treats the close as fatal.
+
+```mermaid
+stateDiagram-v2
+    [*] --> AcceptingPeer: accept thread idle
+    AcceptingPeer --> PeerCredCheck: kernel returns connected fd
+    PeerCredCheck --> Frame1Send: SO_PEERCRED.uid<br/>== expected
+    PeerCredCheck --> Closed: uid mismatch
+    Frame1Send --> AwaitingFrame2: nonce + challenge sent
+    AwaitingFrame2 --> Decrypting: frame 2 received
+    AwaitingFrame2 --> Closed: timeout /<br/>malformed JSON
+    Decrypting --> Verified: crypto_box_open_easy OK<br/>+ plaintext == challenge
+    Decrypting --> Closed: MAC fail OR<br/>challenge mismatch
+    Verified --> [*]: returns AuthenticatedConsumer<br/>to orchestrator (§6.1 L2c)
+    Closed --> [*]: socket closed,<br/>peer dropped
+```
+
+The state machine is one connection deep — concurrent attaches each
+run their own copy on the same accept thread, serialized by the
+single-threaded accept loop.
+
 ---
 
 ## 6. Cross-platform abstraction
@@ -362,29 +426,34 @@ production-readiness.
 
 ### 6.1 Layering
 
+Four layers, split between producer process and broker process.  The
+producer owns L1 / L2b / L2c; the broker owns L3.  L2c is the entry
+point — it owns + drives L2b, which uses L1, and calls L3 over the
+producer's existing BRC channel.
+
+```mermaid
+flowchart TB
+    subgraph Prod ["Producer role host (one process)"]
+        direction TB
+        L2c["<b>L2c — ShmAttachOrchestrator</b><br/>substep 1e, #252<br/>───<br/>injected CacheLookup<br/>injected BrokerQuery<br/>divergence-WARN per §9 D4"]
+        L2b["<b>L2b — AttachProtocolAcceptor</b><br/>+ initiate_consumer_handshake<br/>substep 1c, #250<br/>───<br/>SO_PEERCRED uid sanity (HEP-0036 §I8)<br/>crypto_box challenge-response (§5.5)<br/>returns AuthenticatedConsumer"]
+        L1["<b>L1 — IShmCapabilityProducer / Consumer</b><br/>substeps 1a + 1b, #248 + #249<br/>───<br/>bind_endpoint, accept_one, send_capability<br/>per-platform backend<br/>(Linux only today;<br/>FreeBSD / macOS / Windows pending<br/>#259 / #260 / #261)"]
+        L2c -->|owns + drives| L2b
+        L2b -->|uses| L1
+    end
+
+    subgraph Brk ["Broker process"]
+        L3["<b>L3 — handle_consumer_attach_req</b><br/>substep 1d, #251<br/>───<br/>reads ChannelAccessIndex<br/>.authorized_consumer_pubkeys<br/>(read-only)"]
+    end
+
+    L2c -.->|"BrokerQuery callback<br/>via producer's BRC<br/>(CONSUMER_ATTACH_REQ / _RSP)"| L3
 ```
-L3  (broker side)        BrokerService::handle_consumer_attach_req
-                         (substep 1d, #251 — read-only against
-                         ChannelAccessIndex.authorized_consumer_pubkeys)
 
-L2c (orchestration)      ShmAttachOrchestrator (substep 1e, #252)
-                           ├─ injected CacheLookup
-                           ├─ injected BrokerQuery (-> CONSUMER_ATTACH_REQ)
-                           └─ divergence-WARN per §9 D4 table
-
-L2b (auth handshake)     AttachProtocolAcceptor (substep 1c, #250)
-                           + initiate_consumer_handshake
-                           ├─ SO_PEERCRED uid sanity (HEP-0036 §I8)
-                           ├─ crypto_box challenge-response (§5.5)
-                           └─ returns AuthenticatedConsumer
-
-L1  (transport)          IShmCapabilityProducer / IShmCapabilityConsumer
-                         (substeps 1a + 1b, #248 + #249)
-                           ├─ bind_endpoint, accept_one, send_capability
-                           └─ per-platform backend (Linux only today;
-                              FreeBSD/macOS/Windows #error pending
-                              tasks #259 / #260 / #261)
-```
+Reading the diagram: L2c is the orchestrator a developer wires up in
+the role host; L2b is the per-connection auth state machine (§5.5);
+L1 is the platform-specific transport.  The dashed arrow is a network
+hop (ZMQ REQ/REP over the existing BRC channel) — every other arrow
+is in-process C++ method dispatch.
 
 ### 6.2 Code structure (as shipped)
 
@@ -625,6 +694,75 @@ HEP-CORE-0036 stays as-is.  Cross-references added at:
    - **Agree (success+in-cache, OR denied+not-in-cache)**: silent.  Normal path.
    - **Diverge (success+not-in-cache OR denied+in-cache)**: log `WARN` — broker comm health signal — broker's answer wins.
 8. Success → producer sends fd via `SCM_RIGHTS` (POSIX) or `DuplicateHandle` (Windows).  Denied → producer drops the connection.
+
+#### D4 — Diagram A: crypto handshake (steps 1-4)
+
+The first half of an attach event — the producer and consumer prove
+identity to each other (consumer→producer only in Phase 1; mutual
+follow-up in #262).  No broker traffic yet.  No fd transfer yet.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Consumer<br/>(worker thread)
+    participant Psock as Producer's<br/>Unix socket
+    participant P as Producer<br/>AttachProtocolAcceptor<br/>(accept thread)
+    participant KS as KeyStore<br/>(producer-side<br/>process-singleton)
+
+    C->>Psock: connect to<br/>shm_capability_endpoint
+    Psock->>P: accept_one() →<br/>SO_PEERCRED uid check
+
+    Note over P: generate 24-byte nonce<br/>+ 16-byte challenge
+    P->>C: Frame 1<br/>{nonce_b64, challenge_b64}
+
+    Note over C: cipher = crypto_box_easy(<br/>challenge, nonce,<br/>producer_pk, consumer_sk)
+    C->>P: Frame 2<br/>{role_uid, consumer_pk_z85,<br/>challenge_response_b64}
+
+    Note over P,KS: Producer verifies (HEP-0040 use-not-export)
+    P->>KS: SeckeyAccessor callback
+    KS-->>P: span<const byte> seckey<br/>(lambda scope only)
+    Note over P: plaintext = crypto_box_open_easy(<br/>cipher, nonce,<br/>consumer_pk, producer_sk)<br/>verify MAC + (plaintext == challenge)<br/>seckey span exits scope
+
+    Note over P,C: Identity proven → continue to broker confirm<br/>(Diagram B below)
+```
+
+#### D4 — Diagram B: broker pre-confirm + fd handoff (steps 5-8)
+
+The second half — the producer asks the broker whether this consumer
+is authorized for this channel, compares the answer against its local
+cache (observability, not load-bearing), then sends the fd via
+`SCM_RIGHTS` on approval or drops the connection on denial.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Consumer<br/>(worker thread)
+    participant P as Producer<br/>ShmAttachOrchestrator
+    participant B as Broker<br/>handle_consumer_attach_req
+    participant FD as memfd<br/>(anonymous SHM)
+
+    Note over P,B: Continued from Diagram A
+    P->>B: CONSUMER_ATTACH_REQ<br/>{channel_name,<br/>consumer_pubkey,<br/>consumer_role_uid}
+    Note over B: look up channel in<br/>ChannelAccessIndex<br/>.authorized_consumer_pubkeys
+    B->>P: CONSUMER_ATTACH_RSP<br/>{status}
+
+    Note over P: compare broker answer<br/>vs local cached allowlist<br/>→ WARN if divergent<br/>(broker answer wins)
+
+    alt status == OK
+        P->>FD: dup(memfd) → fd_dup
+        P->>C: sendmsg + SCM_RIGHTS (fd_dup)
+        Note over C: find_datablock_consumer_from_fd_impl(fd)<br/>→ mmap → DataBlock attach
+    else status != OK<br/>(denied, no such channel, internal)
+        Note over P: log denial + reason
+        P->>C: close socket
+        Note over C: consumer treats close as fatal<br/>→ role host exits
+    end
+```
+
+For the per-status error vocabulary (`INVALID_REQUEST`,
+`CHANNEL_NOT_FOUND`, `PRODUCER_NOT_AUTHORIZED`, `INTERNAL_ERROR`) and
+the L3 logging contract, see `docs/IMPLEMENTATION_GUIDANCE.md` §"SHM
+Channel Auth attach errors".
 
 **Mutual-auth gap.**  The current flow proves consumer→producer identity but does NOT prove producer→consumer (a same-UID process could bind the published endpoint and impersonate the producer to a connecting consumer).  Task #262 tracks adding producer-side proof-of-possession (likely as a 3rd frame: producer echoes a consumer-supplied challenge encrypted under producer_sk) before declaring Phase 1 production-ready.
 
