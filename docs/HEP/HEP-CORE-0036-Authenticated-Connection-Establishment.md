@@ -2257,7 +2257,7 @@ sequenceDiagram
 
     Note over P: Per I3, P stops data loop FIRST + closes its PUSH.
     P->>B: DEREG_REQ {channel="lab.raw"}
-    B->>AI: clear ChannelAccessEntry["lab.raw"]<br/>(allowlist + shm_secret gone;<br/>ChannelEntry teardown is atomic per HEP-0023 §2.1.1)
+    B->>AI: clear ChannelAccessEntry["lab.raw"]<br/>(allowlist + shm_secret gone — shm_secret<br/>retired under HEP-0041; see §1 Amendment;<br/>ChannelEntry teardown is atomic per HEP-0023 §2.1.1)
     B->>C1: CHANNEL_CLOSING_NOTIFY {channel="lab.raw"}
     B->>C2: CHANNEL_CLOSING_NOTIFY {channel="lab.raw"}
     B->>P: DEREG_ACK
@@ -2288,10 +2288,12 @@ socket.  Only one new field is added:
 
 | Field | Type | Description |
 |---|---|---|
-| `wants_shm_secret` | bool | (transport=shm only) Producer requests broker to generate a per-channel SHM secret (uint64 guard token for the DataBlock).  Default: `true` post-HEP-0036.  Not applicable to ZMQ transport. |
+| `wants_shm_secret` ⚠ **SUPERSEDED** | bool | (transport=shm only — SUPERSEDED by HEP-CORE-0041; see §1 Amendment 2026-06-16.  Post-HEP-0041 substep 1h (#255) the config-schema parser REJECTS `in_shm_secret`/`out_shm_secret`; the on-wire REG_REQ field is similarly retired in HEP-0041 substep 1g.)  Pre-HEP-0041 meaning: producer requests broker to generate a per-channel SHM secret (uint64 guard token for the DataBlock).  Default: `true` post-HEP-0036.  Not applicable to ZMQ transport. |
 
-The legacy `shm_secret` field (producer-supplied) is deprecated
-and ignored when `wants_shm_secret=true`.
+⚠ **SUPERSEDED by HEP-CORE-0041.**  The legacy `shm_secret` field
+(producer-supplied) is deprecated and ignored when
+`wants_shm_secret=true`.  Both are retired entirely under HEP-0041
+Phase 1 — see §1 Amendment 2026-06-16.
 
 **Identity verification on existing fields.**  REG_REQ already carries
 `role_uid` (HEP-CORE-0023 §2.1.1) and `zmq_pubkey` (HEP-CORE-0021
@@ -2319,7 +2321,7 @@ the allowlist.
 
 | Field | Type | Description |
 |---|---|---|
-| `shm_secret` | uint64 | (transport=shm only) Broker-generated guard secret for the DataBlock.  Unrelated to CURVE (HEP-CORE-0002 mechanism). |
+| `shm_secret` ⚠ **SUPERSEDED** | uint64 | (transport=shm only — SUPERSEDED by HEP-CORE-0041; see §1 Amendment 2026-06-16.  Replaced by HEP-0041 §5.2 — broker echoes the producer's `shm_capability_endpoint` instead of minting a secret.)  Pre-HEP-0041 meaning: broker-generated guard secret for the DataBlock.  Unrelated to CURVE (HEP-CORE-0002 mechanism). |
 | `initial_allowlist` | array<string> | Consumer identity-pubkeys already authorized for this channel (federation pre-registration scenarios).  Usually empty on a fresh channel. |
 
 No data-plane CURVE keypair appears in `REG_ACK` — the producer
@@ -2374,7 +2376,7 @@ wire shape.
 | Field | Type | Description |
 |---|---|---|
 | `producers` | array of objects | (transport=zmq only) One entry per registered producer on the channel.  Length 1 for single-producer; length N for fan-in.  Each element: `{role_uid, pubkey, endpoint}` where `pubkey` is the producer's identity pubkey (Z85, 40 chars; read from `ChannelEntry::producers[i].zmq_pubkey` which was populated at the producer's REG time from REG_REQ body `zmq_pubkey` after verification against `known_roles[role_uid].pubkey_z85` per §6.1) and `endpoint` is the producer's resolved data-plane TCP endpoint (from `ChannelEntry::producers[i].zmq_node_endpoint` per HEP-CORE-0033 §8 ProducerEntry).  The `role_uid` is included so the consumer can correlate logs / per-producer metrics. |
-| `shm_secret` | uint64 | (transport=shm only, single-producer by SHM physical constraint) The per-channel SHM guard secret. |
+| `shm_secret` ⚠ **SUPERSEDED** | uint64 | (transport=shm only — SUPERSEDED by HEP-CORE-0041; see §1 Amendment 2026-06-16.  Active CONSUMER_REG_ACK SHM shape now ships `shm_capability_endpoint` + `producer_pubkey_z85` instead — see HEP-CORE-0041 §5.3.)  Pre-HEP-0041 meaning: the per-channel SHM guard secret (single-producer by SHM physical constraint). |
 
 **The legacy single-pubkey `data_server_pubkey` field is NOT
 added** — it would have to be one-of-N for fan-in, hiding the
@@ -2937,7 +2939,7 @@ queue before the role's own REG_ACK arrived?".
 |---|---|---|---|---|
 | `set_peer_allowlist(list)` (push side) | refuse | buffer (stash args; queue stays Standby — applied at Standby → Configured) | apply (snapshot replace) | apply atomically (live ZAP cache update) |
 | `set_producer_peers(list)` (pull side) | refuse | buffer (stash args; queue stays Standby) | apply (snapshot replace) | apply (atomic diff: connect new, disconnect removed) |
-| `set_shm_secret(uint64)` (SHM rx) | refuse | buffer (stash args; queue stays Standby) | apply (replaces previous) | refuse (`shm_secret` is per-channel-lifetime; restart needed; hub-dead recovery rebuilds via §6.8.8) |
+| `set_shm_secret(uint64)` (SHM rx) ⚠ **SUPERSEDED** | refuse | buffer (stash args; queue stays Standby) | apply (replaces previous) | refuse (`shm_secret` is per-channel-lifetime; restart needed; hub-dead recovery rebuilds via §6.8.8).  ⚠ Whole row is SUPERSEDED by HEP-CORE-0041 — the mutator + the field are retired (substep 1g #254 + 1h #255); SHM attach now flows through the capability-transport handshake described in HEP-0041 §5.5 + §9 D4.  No queue-side mutator equivalent exists. |
 | `apply_master_approval(json)` (polymorphic on `QueueReader`/`QueueWriter`) | refuse | **apply — drives `Standby → Configured` AND `Configured → Active`** (dispatches per transport: PUSH side seeds allowlist + binds + arms ZAP + spawns push worker; PULL side seeds producer set + connects + spawns pull worker; SHM side attaches segment + starts reader/writer) | apply (completes the Standby → Configured → Active arc that this call initiated; or no-op if the queue is already Active — production callers see only Active after `apply_master_approval` returns) | apply (runtime mutation, atomic) |
 | `add_producer_peer(p)` (pull side) | refuse | buffer (merge into buffered set) | apply (append) | apply (append + connect) |
 | `remove_producer_peer(uid)` | refuse | buffer (remove from buffered set; no-op if absent) | apply | apply (disconnect + remove) |
@@ -3263,6 +3265,18 @@ to concrete framework actions.
 ```
 
 #### 6.8.2 First-time consumer joins an SHM channel
+
+> ⚠ **SUPERSEDED by HEP-CORE-0041.**  This trace describes the
+> pre-HEP-0041 path where the broker minted an `shm_secret` and the
+> consumer applied it via `apply_master_approval`.  The current path
+> (substep 1f #253 + 1i-mig pending) instead reads
+> `shm_capability_endpoint` + `producer_pubkey_z85` from
+> CONSUMER_REG_ACK, dials the producer's Unix socket, runs the
+> `crypto_box` challenge-response (§5.5 of HEP-0041), receives an fd
+> via `SCM_RIGHTS`, and calls `find_datablock_consumer_from_fd_impl`
+> instead of the guard-secret attach.  See HEP-CORE-0041 §9 D4
+> "broker pre-confirm + fd handoff" diagram for the up-to-date
+> sequence.  The trace below is preserved for design archaeology.
 
 ```
   consumer process startup
