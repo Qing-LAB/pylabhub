@@ -795,6 +795,96 @@ These examples are illustrative of the I11 division of labour, not
 exhaustive — applications can compose any policy they can express
 in terms of "who's a member" plus the existing band / inbox channels.
 
+#### I11.1 — Cache architecture across transports
+
+The script-observable surface defined by I11 (`api.allowed_peers`,
+`on_allowlist_changed`) must be **transport-agnostic**: a script must
+not be able to tell whether the channel underneath is ZMQ or SHM just
+from the cache shape it observes.  Concretely:
+
+- **One producer-side cache, transport-agnostic.**
+  `RoleAPIBase::allowlist_cache` is the single script-observable
+  snapshot.  It is populated by REG_ACK `initial_allowlist` (at register)
+  + `CHANNEL_AUTH_CHANGED_NOTIFY` pull (on change) — both
+  transport-agnostic wire events per §3.6.
+- **Transport-specific enforcement adds *another* cache *only* for
+  ZMQ.**  ZMQ enforces locally at handshake-time via the ZAP cache
+  (`ZmqQueue::peer_allowlist`).  That cache is loaded from the same
+  wire events but lives separately because the kernel-level ZAP
+  handshake needs O(1) read access.  Writes to ZAP and writes to
+  `allowlist_cache` move together (see code path in
+  `handle_channel_auth_notifies` / `apply_producer_reg_ack`).
+- **SHM has no producer-side enforcement cache.**  SHM's authoritative
+  decision is the broker's `CONSUMER_ATTACH_RSP` on each attach attempt
+  (HEP-CORE-0041 §9 D4).  The orchestrator's `CacheLookup` callback
+  reads `allowlist_cache` *only* for divergence detection — when the
+  broker's answer disagrees with the cache, a WARN log fires; the
+  broker's answer always wins.  The cache is therefore observability,
+  not enforcement, on the SHM path.
+
+```mermaid
+flowchart LR
+    subgraph BR[" Broker process — AUTHORITY "]
+        TRUTH["ChannelAccessIndex<br/>.authorized_consumer_pubkeys<br/><br/>SOURCE OF TRUTH<br/>per-channel set"]
+    end
+
+    subgraph PR[" Producer role process "]
+        direction TB
+        CACHE["<b>RoleAPIBase::allowlist_cache</b><br/><br/>SCRIPT-OBSERVABLE SNAPSHOT<br/>TRANSPORT-AGNOSTIC<br/><br/>One cache for ZMQ + SHM"]
+        SCR["Script surface:<br/>api.allowed_peers(channel)<br/>on_allowlist_changed callback"]
+        ZMQE["<b>ZmqQueue::peer_allowlist</b><br/>+ ZAP cache<br/><br/>LOCAL ENFORCEMENT<br/>ZMQ ONLY<br/>kernel-level handshake gate"]
+        SHMG["<b>ShmAttachOrchestrator</b><br/>BrokerQuery per attach<br/><br/>NO LOCAL ENFORCEMENT<br/>SHM ONLY<br/>broker answer is the gate"]
+    end
+
+    TRUTH -->|"REG_ACK initial_allowlist<br/>(apply_producer_reg_ack)"| CACHE
+    TRUTH -->|"NOTIFY + GET_CHANNEL_AUTH pull<br/>(handle_channel_auth_notifies)"| CACHE
+    CACHE --> SCR
+
+    CACHE -.->|"set_peer_allowlist<br/>(ZMQ tx queues only —<br/>PeerAdmission cast)"| ZMQE
+    CACHE -.->|"CacheLookup callback<br/>(observability — for<br/>divergence-WARN signal)"| SHMG
+    TRUTH ==>|"CONSUMER_ATTACH_REQ<br/>per attempt<br/>(BROKER IS GATE)"| SHMG
+```
+
+**Invariants this diagram pins:**
+
+1. **One script-observable cache.**  `allowlist_cache` is the only
+   producer-side cache scripts see.  Both `api.allowed_peers(channel)`
+   and `on_allowlist_changed` read from it.  The script never sees
+   the ZAP cache or the orchestrator's CacheLookup directly.
+2. **Cache writes are transport-agnostic.**  REG_ACK seed (at register)
+   + NOTIFY refresh (on change) write to `allowlist_cache` regardless
+   of transport.  The `on_allowlist_changed` callback fires on both
+   writes for both transports — including the initial seed.
+3. **Cache writes are uniform whether or not a queue-level
+   enforcement push exists.**  For ZMQ, the same wire event ALSO
+   writes the ZAP cache via `set_peer_allowlist`.  For SHM, the
+   queue-level write is skipped (ShmQueue is not a `PeerAdmission`).
+   The script-observable cache update fires in both cases.
+4. **`allowlist_cache` is NOT a fast-path for enforcement.**  ZMQ
+   reads ZAP at handshake-time; SHM asks the broker per-attempt.
+   `allowlist_cache` exists for scripts and for SHM divergence
+   detection — never as a load-bearing authorization decision.
+5. **Missing `initial_allowlist` in REG_ACK MUST NOT clobber the
+   cache.**  The broker contract (§6.2) requires REG_ACK to include
+   `initial_allowlist` (empty array on a fresh channel, never absent).
+   A reply that omits the field is a broker contract violation; the
+   producer logs WARN and preserves the prior cache snapshot rather
+   than overwriting with `[]`.  This is the operational rule that
+   makes the cache safe to consume across reconnect cycles.
+
+**Mapping to current code (2026-06-20 verification):**
+
+| Artifact | File:symbol | Purpose | Transport |
+|---|---|---|---|
+| `RoleAPIBase::allowlist_cache` | `src/utils/service/role_api_base.cpp` Impl | Script-observable snapshot | Both |
+| `RoleAPIBase::allowed_peers(channel)` | same | Script polling API | Both |
+| `engine->invoke_on_allowlist_changed` | same | Script callback dispatch | Both |
+| `apply_producer_reg_ack` | same | REG_ACK → cache seed | Both |
+| `handle_channel_auth_notifies` | same | NOTIFY → cache refresh + ZAP push | Both (ZAP push gated) |
+| `ZmqQueue::set_peer_allowlist` | `src/utils/hub/hub_zmq_queue.cpp` | ZAP cache write | ZMQ only |
+| `ShmAttachOrchestrator::CacheLookup` | `src/include/utils/security/shm_attach_orchestrator.hpp` | Divergence-detection read | SHM only |
+| `CONSUMER_ATTACH_REQ` handler | `src/utils/ipc/broker_service.cpp` | Per-attempt authoritative gate | SHM only |
+
 ### I12 — Fresh master approval gates every authority application
 
 **Every action against the data plane requires the master's "yes" at
@@ -1524,6 +1614,93 @@ table reads each §3 invariant in turn and points to the spot in
 | I10 (one pubkey per role uid) | §3.5.5 stage S1 — the role loads exactly one identity keypair, used for both the control plane (BRC) and the data plane (PUSH/PULL). |
 | I11 (framework gives protocol; script gives policy) | §3.5.5 stage S1 — the script's `on_init` runs pre-registration on the same worker thread; coordination semantics are unchanged. |
 | I12 (every authority application requires a fresh master reply) | §3.5.5 stage S3 — `apply_master_approval` is invoked with the freshly-received REG_ACK / CONSUMER_REG_ACK; it is the single point where the broker's "yes" applies to the queue (§6.7 Standby → Configured → Active). |
+
+---
+
+### 3.6 Control plane symmetry across transports
+
+The single most-important architectural property of the auth design is
+**the control plane is transport-agnostic**.  Producer registration,
+consumer registration, the broker's authorization decision, and the
+`CHANNEL_AUTH_CHANGED_NOTIFY` propagation all use the same wire frames
+and the same role-side handlers regardless of whether the channel is
+ZMQ or SHM.  Transports differ in exactly one place — the data-plane
+attach step (the last hop between consumer and producer where bytes
+start flowing) — and the differences there reflect kernel-level
+primitives, not different security models.
+
+This section's diagram is the load-bearing visual statement that
+makes the symmetry / asymmetry crisp.  Subsequent HEPs covering
+transport-specific data-plane mechanics (HEP-CORE-0041 for SHM; future
+HEPs for any new transport) inherit the §3.5 invariants from above and
+only need to specify what fills in the alt-branch below.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant P as Producer role
+    participant B as Broker
+    participant C as Consumer role
+    participant DP as Data plane<br/>(per transport)
+
+    Note over P,B: ── Producer registration (TRANSPORT-AGNOSTIC) ──
+    P->>B: REG_REQ {channel, data_transport, endpoint,<br/>role_uid, pubkey}
+    Note over B: §6.1 identity verify;<br/>open ChannelAccessEntry;<br/>collect pre-authorized consumers
+    B->>P: REG_ACK {initial_allowlist[], heartbeat}
+    Note over P: allowlist_cache.put(channel, initial_allowlist)<br/>fire on_allowlist_changed(reason="initial_seed")<br/>(transport-agnostic — see §I11.1)
+
+    Note over C,B: ── Consumer registration (TRANSPORT-AGNOSTIC frame) ──
+    C->>B: CONSUMER_REG_REQ {channel, role_uid, pubkey}
+    Note over B: §6.3 identity verify;<br/>_on_consumer_authorized(channel, pubkey)
+    B->>P: CHANNEL_AUTH_CHANGED_NOTIFY {channel,<br/>reason="consumer_joined"}
+    Note over P: GET_CHANNEL_AUTH_REQ pull;<br/>allowlist_cache.put(channel, new_set);<br/>fire on_allowlist_changed("consumer_joined")
+    B->>C: CONSUMER_REG_ACK<br/>(ZMQ: producers[] / SHM: shm_capability_endpoint +<br/>producer_pubkey_z85)
+
+    Note over C,DP: ── Data-plane attach (TRANSPORT-SPECIFIC) ──
+    alt ZMQ transport
+        C->>DP: PULL socket connect to producer's PUSH endpoint
+        Note over C,DP: ZMQ CURVE handshake
+        Note over P,DP: producer's ZAP cache (seeded above)<br/>admits or denies — LOCAL ENFORCEMENT
+        DP-->>C: data stream established
+    else SHM transport (HEP-CORE-0041)
+        C->>P: dial shm_capability_endpoint (Unix socket)
+        Note over C,P: crypto_box challenge-response<br/>(HEP-0041 §5.5)
+        P->>B: CONSUMER_ATTACH_REQ {channel,<br/>consumer_pubkey}<br/>(broker pre-confirm — HEP-0041 §9 D4)
+        B->>P: CONSUMER_ATTACH_RSP {status}<br/>(BROKER IS THE GATE — local cache used only<br/>for divergence detection, see §I11.1)
+        P->>C: send fd via SCM_RIGHTS<br/>(possession of fd = access)
+        Note over C,DP: SHM mapping accessible
+    end
+```
+
+**Invariants this diagram pins:**
+
+1. **Control plane = transport-agnostic.**  Lines 1-12 are identical
+   for ZMQ and SHM.  Any new transport must satisfy the same wire
+   frames and the same role-side cache + callback semantics on these
+   lines.
+2. **Transport divergence is one step.**  Only lines 13+ branch.  ZMQ
+   and SHM (and any future transport) plug into the alt block with
+   their kernel-level attach mechanism — they do not introduce new
+   control-plane fields, new caches, or new authorization decisions.
+3. **No broker-minted data-plane secret survives in any branch.**  The
+   ZMQ branch enforces locally via the producer's ZAP cache (seeded by
+   the transport-agnostic REG_ACK + NOTIFY writes shown above).  The
+   SHM branch enforces remotely via `CONSUMER_ATTACH_REQ` per-attempt.
+   `shm_secret` appears NOWHERE in this diagram — that is the explicit
+   visual statement that the legacy broker-minted secret has no role
+   in the current design (see HEP-CORE-0041 §1 Amendment 2026-06-16).
+
+**Where to find the matching invariants in this HEP:**
+
+- The transport-agnostic REG_REQ / REG_ACK wire shape: §6.1 + §6.2.
+- The transport-agnostic CONSUMER_REG_REQ wire shape: §6.3.
+- The transport-DEPENDENT CONSUMER_REG_ACK payload: §6.4 (ZMQ
+  `producers[]`) + HEP-CORE-0041 §5.3 (SHM `shm_capability_endpoint` +
+  `producer_pubkey_z85`).
+- `CHANNEL_AUTH_CHANGED_NOTIFY` + `GET_CHANNEL_AUTH_REQ`/`_ACK`: §6.5.
+- ZMQ data-plane attach (CURVE + ZAP cache): §3.5.5 stage S3 + §3.5.6.
+- SHM data-plane attach (Unix socket + `crypto_box` + SCM_RIGHTS):
+  HEP-CORE-0041 §5 + §9 D4.
 
 ---
 

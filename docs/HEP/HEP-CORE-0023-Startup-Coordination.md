@@ -1177,6 +1177,12 @@ Processor:
   start in_queue_
 ```
 
+> **Control-plane registration is transport-agnostic — see HEP-CORE-0036
+> §3.6** for the canonical side-by-side diagram of REG / NOTIFY +
+> data-plane attach across ZMQ and SHM.  The Phase 2 / Phase 3 / Phase 4
+> blocks in this section describe the lifecycle wrapping; §3.6 in
+> HEP-0036 is the security-architecture reference.
+
 > **SHM accept thread startup (HEP-CORE-0041 1i-mig).**  When the role
 > has a TX-side SHM channel (producer / processor out-side), the role
 > host spawns a `ShmAttachOrchestrator` accept thread on its own

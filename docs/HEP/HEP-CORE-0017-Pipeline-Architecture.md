@@ -391,6 +391,15 @@ other:
   producer-side ZAP handler enforces a flat pubkey set, not
   per-connection state — there's nothing to "add" beyond writing a
   new snapshot.  See HEP-CORE-0036 §6.5 design rationale.
+- **Two caches, one per script-observable + one per ZAP**: the
+  PUSH-side `set_peer_allowlist` write feeds the local ZAP cache
+  (transport-specific enforcement); the SAME wire event also writes
+  the script-observable `RoleAPIBase::allowlist_cache` which is
+  transport-agnostic.  For the cache architecture (which cache, who
+  reads, who writes, who is the authority) see HEP-CORE-0036 §I11.1.
+  SHM channels reuse the same script-observable cache but have NO
+  local enforcement cache — broker pre-confirm per attach is the
+  gate (HEP-CORE-0041 §9 D4).
 
 #### Script visibility — both sides
 
@@ -418,15 +427,19 @@ semantics without changing this interface.
 ShmQueue lifecycle is bound to the single DataBlock attach.
 
 > **SHM auth attaches via a different mechanism — not via this surface.**
-> ZMQ consumers populate `producer_peers` from `CONSUMER_REG_ACK.producers`
-> and the PULL socket connects to each.  SHM consumers do NOT use this
-> queue-level peer surface for authorization.  Instead, on
-> `apply_consumer_reg_ack` the consumer reads `shm_capability_endpoint` +
-> `producer_pubkey_z85` from the ACK, dials the producer's Unix socket,
-> runs the `crypto_box` challenge-response (HEP-CORE-0041 §5.5), and
-> receives an SHM fd via `SCM_RIGHTS`.  The ShmQueue is then handed that
-> fd and never sees the legacy ZMQ-style apply_master_approval allowlist
-> path.  See HEP-CORE-0041 §9 D4 for the full sequence.
+> Both transports share the same control-plane registration + NOTIFY
+> flow (canonical side-by-side at HEP-CORE-0036 §3.6); they diverge
+> only in the data-plane attach step.  ZMQ consumers populate
+> `producer_peers` from `CONSUMER_REG_ACK.producers` and the PULL
+> socket connects to each.  SHM consumers do NOT use this queue-level
+> peer surface for authorization.  Instead, on
+> `apply_consumer_reg_ack` the consumer reads `shm_capability_endpoint`
+> + `producer_pubkey_z85` from the ACK, dials the producer's Unix
+> socket, runs the `crypto_box` challenge-response (HEP-CORE-0041
+> §5.5), and receives an SHM fd via `SCM_RIGHTS`.  The ShmQueue is
+> then handed that fd and never sees the legacy ZMQ-style
+> apply_master_approval allowlist path.  See HEP-CORE-0041 §9 D4 for
+> the full sequence.
 
 ### 3.4 Processor role transform loop
 

@@ -721,6 +721,17 @@ HEP-CORE-0036 stays as-is.  Cross-references added at:
 consumes).**  Some things named in this HEP have their definition +
 mutation rules in HEP-0036; HEP-0041 reads but does not own them:
 
+- **Control-plane symmetry** — defined in HEP-0036 **§3.6**.  The
+  registration + NOTIFY flow is transport-agnostic; HEP-0041 only
+  specifies the data-plane attach divergence (the `alt` branch).
+  Any new control-plane field, new cache, or new authorization
+  decision belongs in HEP-0036, not here.
+- **Cache architecture + script-observable contract** — defined in
+  HEP-0036 **§I11.1**.  The producer-side `allowlist_cache` is one
+  cache, transport-agnostic; the script API + `on_allowlist_changed`
+  callback are transport-agnostic.  HEP-0041's `CacheLookup`
+  callback (§6.4) reads this same cache for divergence detection
+  only — never as a load-bearing authorization signal.
 - **`PeerAllowlist` / `ChannelAccessIndex`** — defined in HEP-0036
   §4.1.  Broker is the canonical writer (REG_ACK
   `initial_allowlist`, `CHANNEL_AUTH_CHANGED_NOTIFY`,
@@ -845,6 +856,14 @@ Channel Auth attach errors".
 **Mutual-auth gap.**  The current flow proves consumer→producer identity but does NOT prove producer→consumer (a same-UID process could bind the published endpoint and impersonate the producer to a connecting consumer).  Task #262 tracks adding producer-side proof-of-possession (likely as a 3rd frame: producer echoes a consumer-supplied challenge encrypted under producer_sk) before declaring Phase 1 production-ready.
 
 ### D4 cached-allowlist semantics
+
+> **Cache identity + write paths are defined in HEP-CORE-0036 §I11.1.**
+> This section only adds the divergence-WARN semantics that are
+> specific to SHM's BrokerQuery-per-attempt enforcement model.  The
+> cache the orchestrator's `CacheLookup` callback reads IS the
+> `RoleAPIBase::allowlist_cache` that `api.allowed_peers(channel)`
+> returns to scripts — same source of truth, observability only on
+> the SHM path.
 
 The producer's cache is maintained by the same `CHANNEL_AUTH_CHANGED_NOTIFY` doorbell + `GET_CHANNEL_AUTH_REQ`/`_ACK` pull pattern as ZMQ today, but its role flips from **load-bearing** to **observability**:
 
