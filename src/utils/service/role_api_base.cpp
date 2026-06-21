@@ -798,34 +798,77 @@ bool RoleAPIBase::apply_producer_reg_ack(const nlohmann::json &ack)
 
     const auto channel_name = ack.value("channel_name", std::string{});
 
-    // HEP-CORE-0036 §6.2 — seed the script-side `allowlist_cache` from
-    // REG_ACK.initial_allowlist so `api.allowed_peers(channel)` returns
-    // the live set immediately on (re)connect, without waiting for the
-    // next CHANNEL_AUTH_CHANGED_NOTIFY doorbell.  Symmetric with the
-    // cache update in `handle_channel_auth_notifies`.  The broker
-    // emits `initial_allowlist` for every transport (see broker_service
-    // .cpp `build_reg_ack` lines 2020-2036), so this fires for both
-    // ZMQ and SHM channels — for SHM the cache is observability-only
-    // (HEP-CORE-0041 §9 D4 broker pre-confirm is the authoritative
-    // gate at attach time).
+    // HEP-CORE-0036 §3.6 REG_ACK note + §I11.1 cache architecture:
+    // seed the script-side `allowlist_cache` from REG_ACK.initial_allowlist
+    // and fire `on_allowlist_changed(reason="initial_seed")` so a script
+    // observing the callback (or polling `api.allowed_peers(channel)`)
+    // sees the live set immediately on (re)connect — no waiting for the
+    // next CHANNEL_AUTH_CHANGED_NOTIFY doorbell.  Same shape as the
+    // NOTIFY-driven path in `handle_channel_auth_notifies` (one cache,
+    // transport-agnostic, callback fires on every write — §I11.1
+    // invariants #1–#3).  For SHM the cache is observability-only
+    // (HEP-CORE-0041 §9 D4 broker pre-confirm at attach IS the gate).
+    //
+    // **Missing `initial_allowlist` MUST NOT clobber the cache** —
+    // §I11.1 invariant #5 + HEP-0036 §6.2 broker contract require the
+    // field to be present (empty array on a fresh channel, never absent).
+    // An absent field is a broker contract violation; log WARN, preserve
+    // the prior cache snapshot, do not fire the callback.
     if (!channel_name.empty())
     {
-        const auto &initial_allowlist =
-            ack.value("initial_allowlist", nlohmann::json::array());
-        std::vector<AllowedPeer> script_view;
-        for (const auto &entry : initial_allowlist)
+        if (ack.contains("initial_allowlist") &&
+            ack.at("initial_allowlist").is_array())
         {
-            if (!entry.is_string()) continue;
-            const auto pk = entry.get<std::string>();
-            if (pk.empty()) continue;
-            script_view.push_back(AllowedPeer{
-                /*role_uid=*/std::string{}, pk});
+            const auto &initial_allowlist = ack.at("initial_allowlist");
+            std::vector<AllowedPeer> script_view;
+            for (const auto &entry : initial_allowlist)
+            {
+                if (!entry.is_string()) continue;
+                const auto pk = entry.get<std::string>();
+                if (pk.empty()) continue;
+                script_view.push_back(AllowedPeer{
+                    /*role_uid=*/std::string{}, pk});
+            }
+            pImpl->allowlist_cache.put(channel_name, script_view);
+            LOGGER_INFO(
+                "[{}] event=InitialAllowlistSeeded channel='{}' size={} "
+                "(HEP-CORE-0036 §3.6 + §I11.1)",
+                pImpl->role_tag, channel_name, script_view.size());
+
+            // §3.6 sequence-diagram REG_ACK note: fire the script-side
+            // callback alongside the cache write.  Same callback contract
+            // as the NOTIFY path in handle_channel_auth_notifies — see
+            // §I11.1 invariant #2 (cache writes are transport-agnostic
+            // and the on_allowlist_changed callback fires on each write).
+            if (pImpl->engine)
+            {
+                try
+                {
+                    pImpl->engine->invoke_on_allowlist_changed(
+                        channel_name, script_view, "initial_seed");
+                }
+                catch (const std::exception &e)
+                {
+                    // Symmetric with handle_channel_auth_notifies:
+                    // callback exception does NOT roll back the cache
+                    // update (HEP-0036 §I11).
+                    LOGGER_ERROR(
+                        "[{}] on_allowlist_changed callback threw "
+                        "for channel '{}' (reason=initial_seed): {}",
+                        pImpl->role_tag, channel_name, e.what());
+                }
+            }
         }
-        pImpl->allowlist_cache.put(channel_name, script_view);
-        LOGGER_INFO(
-            "[{}] event=InitialAllowlistSeeded channel='{}' size={} "
-            "(HEP-CORE-0036 §6.2)",
-            pImpl->role_tag, channel_name, script_view.size());
+        else
+        {
+            LOGGER_WARN(
+                "[{}] REG_ACK for channel '{}' is missing "
+                "`initial_allowlist` (or it is not an array) — broker "
+                "contract violation per HEP-CORE-0036 §6.2 + §I11.1 "
+                "invariant #5.  Preserving prior allowlist_cache snapshot "
+                "(do NOT clobber with empty).",
+                pImpl->role_tag, channel_name);
+        }
     }
 
     // HEP-CORE-0036 §4.3.2 — Registered → Authorized at the END of
