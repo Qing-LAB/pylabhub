@@ -661,6 +661,28 @@ HEP-CORE-0036 stays as-is.  Cross-references added at:
 - §6.4 (CONSUMER_REG_ACK shape) — SHM-side fields moved to HEP-CORE-0041 §5.3.
 - §I6 (T1 resolution) — note SHM transport's HEP-0041 replaces the role of CURVE keypairs for SHM.
 
+**Authority chain (concepts owned by HEP-0036 that HEP-0041
+consumes).**  Some things named in this HEP have their definition +
+mutation rules in HEP-0036; HEP-0041 reads but does not own them:
+
+- **`PeerAllowlist` / `ChannelAccessIndex`** — defined in HEP-0036
+  §4.1.  Broker is the canonical writer (REG_ACK
+  `initial_allowlist`, `CHANNEL_AUTH_CHANGED_NOTIFY`,
+  `GET_CHANNEL_AUTH_REQ`).  HEP-0041 §9 D4 consumes it read-only via
+  the producer-side `CONSUMER_ATTACH_REQ` pre-confirm.  No new
+  mutation paths added in HEP-0041.
+- **Identity verification (two-conditions gate)** — defined in
+  HEP-0036 §3.5 / §I1.  HEP-0041's SHM attach satisfies the same gate
+  via a different artifact (capability transport instead of `shm_secret`).
+- **CHANNEL_AUTH_CHANGED_NOTIFY semantics** — defined in HEP-0036
+  §6.5.  Producer-side cache update path is the same as for ZMQ;
+  HEP-0041 just adds one new reader (the orchestrator's
+  `CacheLookup` callback).
+- **Role identity keypair semantics + KeyStore lookup name
+  (`kRoleIdentityName`)** — defined in HEP-CORE-0040 §5.  HEP-0041's
+  `crypto_box` handshake reuses the same Curve25519 keypair; no
+  separate signing key is introduced.
+
 ---
 
 ## 9. Designer decisions
@@ -815,6 +837,25 @@ Substeps are reviewed and committed individually; ✅ items are
 production-ready as of their commit (sub-tree green; full L2/L3
 sweeps green where applicable).
 
+### 10.2 Phase 1 blockers (must resolve before 1i-mig-2)
+
+Three open dependencies were surfaced by the 2026-06-18 pre-1i review.
+Each is tracked as its own task so a developer starting 1i-mig can
+verify readiness at a glance instead of decoding a §10.1 cell comment.
+All three must close before the producer/processor role hosts wire the
+`ShmAttachOrchestrator` (1i-mig-2 / 1i-mig-3).
+
+| Blocker | Task | What needs to be true | How to verify |
+|---|---|---|---|
+| **PeerAllowlist populated for SHM channels** | #263 | The producer-side cache snapshot read by `RoleAPIBase::allowed_peers(channel)` must contain SHM consumers, not just ZMQ peers.  Broker is confirmed correct (§6.5 + `broker_service.cpp:2027-2036` ships `initial_allowlist` for all transports); the producer-side `allowlist_cache.put(channel, ...)` call in `handle_channel_auth_notifies()` is unconditional.  Verify the REG_ACK seed path also feeds the cache so a consumer attaching before the first `CHANNEL_AUTH_CHANGED_NOTIFY` doesn't get denied. | Read `apply_master_approval` / REG_ACK handler path; trace `initial_allowlist` field consumption; confirm `allowlist_cache` is populated at REG_ACK time, not only on NOTIFY. |
+| **`BrokerRequestComm::consumer_attach` callback shape** | #264 | The producer's `ShmAttachOrchestrator` uses an injected `BrokerQuery` callback whose shape must match BRC's existing `consumer_attach(channel, consumer_pubkey, consumer_role_uid, producer_role_uid, timeout_ms)` returning `std::optional<nlohmann::json>` (sync REQ/REP). | Pre-flight confirmed: API already exists at `src/utils/network_comm/broker_request_comm.cpp:885-898`, shipped under substep 1d (#251).  Wiring is one lambda in the role-host setup. |
+| **`AttachProtocolAcceptor` seckey access via KeyStore** | #265 | The acceptor's `SeckeyAccessor` callback (HEP-CORE-0040 §8.5.1 use-not-export pattern) must resolve to `key_store().with_seckey(kRoleIdentityName, cb)` at role-host construction. | Pre-flight confirmed: mirrors the exact shape used in `BrokerService` CTRL bind + `BrokerRequestComm` DEALER connect.  Thread-safe via `std::shared_mutex` per HEP-0040 §5.5. |
+
+Blockers #264 + #265 are GREEN as of the 2026-06-20 pre-flight pass.
+#263 has one remaining verification step (REG_ACK→cache seed path)
+that must run before 1i-mig-2 lands; if the path is broken, a small
+REG_ACK-side fix folds into 1i-mig-2's scope.
+
 ---
 
 ## 11. Next steps
@@ -823,7 +864,7 @@ All §9 decisions locked.  Original promotion + early-task items
 shipped 2026-06-16 / 2026-06-17; the remaining live work is in §10.1's
 substep chain.  Phase-level remaining work:
 
-1. Close out Phase 1 by completing substeps 1f → 1k (status table in §10.1).
+1. Close out Phase 1 by completing substeps 1i-mig → 1k (1a-1h shipped per §10.1; live work is the 1i-mig wiring, 1i-cleanup deletions, 1j L3 tests, 1k L4 end-to-end).
 2. Close out #262 (mutual auth) before declaring Phase 1 production-ready.
 3. Phase 2/3 implementation under #260 / #261 (per-platform L1 + L2 ports).
 4. Phase 4 — public `PYLABHUB_UTILS_EXPORT` AEAD + KDF wrappers (D8) under #247.
