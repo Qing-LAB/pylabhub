@@ -466,6 +466,40 @@ gtest_discover_tests(test_layer2_data_block_fd_based
 )
 
 # ============================================================================
+# Test: ShmQueue capability-fd path (HEP-CORE-0041 substep 1i-mig-1)
+# Pattern 1+ — binary-wide LifecycleGuard (Logger + CryptoUtils + DataBlock,
+# same as test_data_block_fd_based) — Standby-mode create_*_standby
+# factories + set_shm_capability_fd Standby → Configured + start() fd-source
+# branch + mutual-exclusion guards with the legacy secret-mode path.
+# ============================================================================
+
+add_executable(test_layer2_hub_shm_queue_capability
+    test_hub_shm_queue_capability.cpp
+)
+
+target_link_libraries(test_layer2_hub_shm_queue_capability
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_hub_shm_queue_capability)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_hub_shm_queue_capability
+    SUITE_NAME "Layer2_HubShmQueueCapability"
+)
+layer2_require_staged_utils(test_layer2_hub_shm_queue_capability)
+
+gtest_discover_tests(test_layer2_hub_shm_queue_capability
+    PROPERTIES
+        LABELS "layer2;service;shm;hep0041"
+        TIMEOUT 30
+)
+
+# ============================================================================
 # Test: PeerAdmission abstraction (HEP-CORE-0035 §4.5 / HEP-CORE-0036 §I1)
 # Pattern 1 — pure value-type tests; no LOGGER_*, no lifecycle.
 # Phase A of the PeerAdmission architecture: pins the interface contract

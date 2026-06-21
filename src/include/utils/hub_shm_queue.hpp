@@ -148,6 +148,72 @@ public:
                   const std::string &consumer_uid = {},
                   const std::string &consumer_name = {});
 
+    // ── Standby-mode factories (HEP-CORE-0041 capability transport) ──────────
+    //
+    // Build a ShmQueue in Standby WITHOUT driving Configured → Active.  The
+    // role host then drives the rest of the state machine via
+    // `set_shm_capability_fd(fd)` (Standby → Configured) + `start()`
+    // (Configured → Active).
+    //
+    // Used by HEP-CORE-0041 1i-mig wiring (producer + processor role hosts
+    // own an `IShmCapabilityProducer` that creates the anonymous SHM;
+    // consumer side receives the SHM fd over SCM_RIGHTS from the producer's
+    // L2 attach handshake).  The legacy `create_writer` / `create_reader`
+    // factories above will retire in 1i-cleanup.
+
+    /**
+     * @brief Build a write-mode ShmQueue in Standby (no secret, no segment).
+     *
+     * Identical to `create_writer` minus the `shared_secret` parameter.
+     * The returned queue is in Standby — call `set_shm_capability_fd(fd)`
+     * (where fd is borrowed from `IShmCapabilityProducer::borrow_fd()`) to
+     * transition Standby → Configured, then `start()` to transition
+     * Configured → Active (wraps the existing memfd via
+     * `create_datablock_producer_from_fd_impl`).
+     */
+    [[nodiscard]] static std::unique_ptr<ShmQueue>
+    create_writer_standby(const std::string &channel_name,
+                          const std::vector<SchemaFieldDesc> &slot_schema,
+                          const std::string &slot_packing,
+                          const std::vector<SchemaFieldDesc> &fz_schema,
+                          const std::string &fz_packing,
+                          uint32_t ring_buffer_capacity,
+                          DataBlockPageSize page_size,
+                          DataBlockPolicy policy,
+                          ConsumerSyncPolicy sync_policy,
+                          ChecksumPolicy checksum_policy,
+                          bool checksum_slot = false,
+                          bool checksum_fz = false,
+                          bool always_clear_slot = true,
+                          const std::string &hub_uid = {},
+                          const std::string &hub_name = {},
+                          const schema::SchemaInfo *slot_schema_info = nullptr,
+                          const schema::SchemaInfo *fz_schema_info = nullptr,
+                          const std::string &producer_uid = {},
+                          const std::string &producer_name = {});
+
+    /**
+     * @brief Build a read-mode ShmQueue in Standby (no secret, no attach).
+     *
+     * Symmetric with `create_writer_standby`.  Role host transitions
+     * Standby → Configured by calling `set_shm_capability_fd(fd)` (where
+     * fd is the SHM descriptor received over SCM_RIGHTS during the
+     * HEP-CORE-0041 attach handshake), then `start()` for
+     * Configured → Active (attaches via `find_datablock_consumer_from_fd_impl`).
+     *
+     * `shm_name` is purely a diagnostic label here — there is no
+     * kernel-namespace name on the capability path (the SHM is anonymous).
+     */
+    [[nodiscard]] static std::unique_ptr<ShmQueue>
+    create_reader_standby(const std::string &shm_name,
+                          const std::vector<SchemaFieldDesc> &expected_slot_schema,
+                          const std::string &expected_packing,
+                          const std::string &channel_name,
+                          bool verify_slot = false,
+                          bool verify_fz = false,
+                          const std::string &consumer_uid = {},
+                          const std::string &consumer_name = {});
+
     // ── Raw DataBlock accessor (for template RAII path only) ─────────────────
 
     /** @brief Internal accessor for C++ RAII template path. NOT for role hosts. */
@@ -217,8 +283,30 @@ public:
      * (returns false) from Active per §6.7 mutator table (`shm_secret`
      * is per-channel-lifetime; restart needed).  Safe to call in
      * Standby or to replace a previously-set secret in Configured.
+     *
+     * Refuses if `set_shm_capability_fd` has already been called on this
+     * queue: a queue uses EITHER the legacy secret-based path OR the
+     * HEP-CORE-0041 capability-transport path, never both (HEP-0041 D7
+     * "single unified mechanism").
      */
     bool set_shm_secret(uint64_t secret) noexcept;
+
+    /**
+     * @brief Apply HEP-CORE-0041 SHM capability fd (Standby → Configured).
+     *
+     * The fd is BORROWED — typically obtained from
+     * `IShmCapabilityProducer::borrow_fd()` on the writer side or
+     * received over `SCM_RIGHTS` during the attach handshake on the
+     * reader side.  The DataBlock fd-source factories dup the fd
+     * internally (substep 1f), so this ShmQueue does NOT take ownership
+     * — the caller (L1 transport) keeps owning the original fd.
+     *
+     * Refuses (returns false) from Active per §6.7 mutator table.  Refuses
+     * if `set_shm_secret` has already been called (mutual exclusion).
+     * Safe to call from Standby or to replace a previously-set capability
+     * fd in Configured (e.g. attach retry against a different producer).
+     */
+    bool set_shm_capability_fd(int fd) noexcept;
 
     /**
      * @brief Configured → Active.  Reader: performs SHM discovery via
