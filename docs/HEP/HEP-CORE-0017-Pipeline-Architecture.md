@@ -417,6 +417,17 @@ semantics without changing this interface.
 `remove_producer_peer` on a ShmQueue are no-ops post-attach;
 ShmQueue lifecycle is bound to the single DataBlock attach.
 
+> **SHM auth attaches via a different mechanism — not via this surface.**
+> ZMQ consumers populate `producer_peers` from `CONSUMER_REG_ACK.producers`
+> and the PULL socket connects to each.  SHM consumers do NOT use this
+> queue-level peer surface for authorization.  Instead, on
+> `apply_consumer_reg_ack` the consumer reads `shm_capability_endpoint` +
+> `producer_pubkey_z85` from the ACK, dials the producer's Unix socket,
+> runs the `crypto_box` challenge-response (HEP-CORE-0041 §5.5), and
+> receives an SHM fd via `SCM_RIGHTS`.  The ShmQueue is then handed that
+> fd and never sees the legacy ZMQ-style apply_master_approval allowlist
+> path.  See HEP-CORE-0041 §9 D4 for the full sequence.
+
 ### 3.4 Processor role transform loop
 
 | Property | Value |

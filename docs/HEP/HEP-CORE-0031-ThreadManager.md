@@ -30,14 +30,25 @@ handles only the join half of the shutdown.
 > to declare quiescence to the manager).
 
 > **Per-role worker threads belong here.**  Role-scope long-running
-> threads — the script DataLoop, the BRC poll, the RxQueue poll, and
-> (HEP-CORE-0041 1i-mig) the SHM `ShmAttachOrchestrator` accept loop —
-> are owned by the role host's own `ThreadManager` instance, NOT by
-> separate lifecycle modules.  The Shutdown Contract in §4.1 orders
-> their teardown so each thread stops before its dependencies are
-> destroyed.  Process-singleton infrastructure shared across roles
-> (Logger, KeyStore, `ZapPumpThread`) goes in lifecycle modules
-> instead — different shape, different layer.
+> threads — the script DataLoop, the BRC poll, and (HEP-CORE-0041
+> 1i-mig) the SHM `ShmAttachOrchestrator` accept loop — are owned by
+> the role host's own `ThreadManager` instance.  The Shutdown
+> Contract in §4.1 orders their teardown so each thread stops before
+> its dependencies are destroyed.
+>
+> **Three thread categories — don't conflate.**
+>
+> 1. **Role-host ThreadManager** (this callout): per-role control-plane
+>    + worker threads listed above.  One `ThreadManager` per role host.
+> 2. **Queue-owned ThreadManager** (§4.3.2): data-plane transport queues
+>    (`ZmqQueue` pull-side poll, push-side worker) own a SEPARATE
+>    `ThreadManager` instance per queue.  They're not on the role host's
+>    TM because the queue's lifetime + drain semantics differ from the
+>    role's.  Don't move data-plane queue threads up to the role TM.
+> 3. **Process-singleton lifecycle modules**: infrastructure shared
+>    across all roles in the process — `Logger`, `KeyStore`,
+>    `ZapPumpThread`.  Go in lifecycle modules (HEP-CORE-0001), NOT
+>    a `ThreadManager`.  Different shape, different layer.
 
 ```cpp
 class ThreadManager {

@@ -1177,6 +1177,17 @@ Processor:
   start in_queue_
 ```
 
+> **SHM accept thread startup (HEP-CORE-0041 1i-mig).**  When the role
+> has a TX-side SHM channel (producer / processor out-side), the role
+> host spawns a `ShmAttachOrchestrator` accept thread on its own
+> `ThreadManager` (per HEP-CORE-0031 §2 categorization).  The thread
+> binds the `shm_capability_endpoint` Unix socket immediately after
+> the producer-side REG_ACK applies, before any consumer can dial.
+> Shutdown ordering is handled by the role host's ThreadManager
+> Shutdown Contract (HEP-0031 §4.1): the accept thread is a peer of
+> the worker (master), so it drains before the data loop tears down.
+> See HEP-CORE-0041 §10.1 substep 1i-mig-2 + §6.1 layer stack.
+
 ### Phase 4: Hub B registration (processor output-side)
 
 Per HEP-CORE-0036 §3.5.1, the processor's output-side data-plane
