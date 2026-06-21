@@ -24,6 +24,54 @@
 
 ## 1. The gap (why this exists)
 
+### 1.0 Glossary (for fresh readers)
+
+Quick definitions of terms that recur throughout this HEP.  A reader
+unfamiliar with the codebase can skim this and follow the rest.
+
+- **Capability transport** — sending an OS file descriptor (POSIX) or
+  HANDLE (Windows) directly to a peer process so the peer can map the
+  same kernel object.  The fd/HANDLE IS the access token: only holders
+  can map; non-holders cannot, because there's no name to look up.
+  See §3.1.
+- **`shm_capability_endpoint`** — the producer's Unix-socket address
+  (Linux/FreeBSD/macOS) or named-pipe name (Windows) where consumers
+  connect to perform the attach handshake and receive the SHM fd.
+  **NOT** the SHM data location (the SHM mapping is anonymous; it has
+  no name).  Format on Linux: `unix://${XDG_RUNTIME_DIR}/pylabhub/shmcap-<channel>.sock`.
+- **Discriminator** — a token used to detect collisions and stale
+  connections.  NOT an access control mechanism.  In §1.2 we explain
+  why the retired `shm_secret` was at best a discriminator.
+- **SeckeyAccessor** — a callback-of-callback type defined in HEP-0040
+  §8.5.1 that lets code USE a secret key without taking a copy of it.
+  Caller invokes `accessor(use_seckey)`; the accessor looks up the key
+  and invokes `use_seckey(span<bytes>)`; the bytes are valid only inside
+  that inner lambda.  See §5.5 + HEP-CORE-0040 §5 + §8.5.1.
+- **PeerAllowlist** — the broker-maintained set of consumer pubkeys
+  authorized for a channel.  Defined by HEP-0036 §4.1
+  (`ChannelAccessIndex.authorized_consumer_pubkeys`); consumed by
+  HEP-0041's `CONSUMER_ATTACH_REQ` pre-confirm.  See §8 authority chain.
+- **`AttachProtocolAcceptor`** — the per-connection auth state machine
+  on the producer side that runs the `crypto_box` challenge-response
+  with one consumer.  Per-connection; no broker traffic.  See §5.5 + §6.4.
+- **`ShmAttachOrchestrator`** — the producer's per-channel coordinator
+  that owns the accept loop, drives the `AttachProtocolAcceptor`,
+  queries the broker via `BrokerQuery` callback, and sends the fd on
+  approval.  Runs on the role host's `ThreadManager` accept slot.
+  See §6.1 + §6.4.
+- **Divergence WARN** — the producer compares broker's pre-confirm
+  answer against its local cached allowlist; if they disagree, it
+  logs a `WARN` (NOT a hard error).  The broker's answer always
+  wins.  Divergence rate is a notification-pipeline health metric.
+  See §9 D4 "cached-allowlist semantics".
+- **`memfd`** — Linux's anonymous SHM primitive.  `memfd_create()`
+  returns an fd to a kernel-resident mapping with no filesystem path.
+  Other platforms have equivalents (`SHM_ANON` on FreeBSD,
+  `shm_open`+immediate-`shm_unlink` trick on macOS, anonymous
+  `CreateFileMapping` on Windows).  See §3.1 + §13.
+
+---
+
 ### 1.1 What works today on ZMQ transport (HEP-CORE-0036)
 
 - **Layer 1 (control plane)** — BRC CURVE+ZAP authenticates the role to the broker.  Outsider on the wire sees ciphertext; outsider not in `known_roles[]` is rejected at handshake.
@@ -58,6 +106,13 @@ Today's code does not enforce this on any platform.  Operator umask is the *only
 ## 2. Threat model
 
 Explicitly enumerated so the design choices below can be argued against it.
+
+Reading the "In scope to defeat?" column:
+- **YES** — this HEP is designed to defeat this threat.
+- **NO** — out of HEP-0041's scope (either always-loses, e.g. root, or different layer's problem, e.g. network).
+- **PARTIAL** — defended in some aspects; relies on a sibling subsystem (e.g. script sandboxing) for the rest.
+- **OPTIONAL** — operator chooses by selecting a higher option tier
+  (e.g. Option C encryption-at-rest defeats T6).  Default ships without it.
 
 | # | Threat | In scope to defeat? | Mechanism |
 |---|---|---|---|
