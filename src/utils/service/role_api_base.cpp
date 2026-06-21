@@ -796,6 +796,38 @@ bool RoleAPIBase::apply_producer_reg_ack(const nlohmann::json &ack)
         return false;
     }
 
+    const auto channel_name = ack.value("channel_name", std::string{});
+
+    // HEP-CORE-0036 §6.2 — seed the script-side `allowlist_cache` from
+    // REG_ACK.initial_allowlist so `api.allowed_peers(channel)` returns
+    // the live set immediately on (re)connect, without waiting for the
+    // next CHANNEL_AUTH_CHANGED_NOTIFY doorbell.  Symmetric with the
+    // cache update in `handle_channel_auth_notifies`.  The broker
+    // emits `initial_allowlist` for every transport (see broker_service
+    // .cpp `build_reg_ack` lines 2020-2036), so this fires for both
+    // ZMQ and SHM channels — for SHM the cache is observability-only
+    // (HEP-CORE-0041 §9 D4 broker pre-confirm is the authoritative
+    // gate at attach time).
+    if (!channel_name.empty())
+    {
+        const auto &initial_allowlist =
+            ack.value("initial_allowlist", nlohmann::json::array());
+        std::vector<AllowedPeer> script_view;
+        for (const auto &entry : initial_allowlist)
+        {
+            if (!entry.is_string()) continue;
+            const auto pk = entry.get<std::string>();
+            if (pk.empty()) continue;
+            script_view.push_back(AllowedPeer{
+                /*role_uid=*/std::string{}, pk});
+        }
+        pImpl->allowlist_cache.put(channel_name, script_view);
+        LOGGER_INFO(
+            "[{}] event=InitialAllowlistSeeded channel='{}' size={} "
+            "(HEP-CORE-0036 §6.2)",
+            pImpl->role_tag, channel_name, script_view.size());
+    }
+
     // HEP-CORE-0036 §4.3.2 — Registered → Authorized at the END of
     // apply_producer_reg_ack success.  By this point: REG_ACK accepted
     // (Layers 1+2), apply_master_approval succeeded (Layer 3 — PUSH
@@ -803,7 +835,6 @@ bool RoleAPIBase::apply_producer_reg_ack(const nlohmann::json &ack)
     // queue Active).  Data plane armed; §8.2 outer guard
     // (`any_presence_authorized()`) will now admit this presence to
     // the data loop.
-    const auto channel_name = ack.value("channel_name", std::string{});
     if (!channel_name.empty() && pImpl->handler_)
     {
         Presence *presence = pImpl->handler_
@@ -947,51 +978,48 @@ void RoleAPIBase::handle_channel_auth_notifies(
             }
             else
             {
-                // Cross-cast tx_queue to PeerAdmission.  Only ZmqQueue
-                // (PUSH-side) implements both QueueWriter and
-                // PeerAdmission; SHM tx queues have no allowlist (gated
-                // by shm_secret instead, per AUTH-4).  Null cast ⇒
-                // tx_queue isn't a ZAP target ⇒ nothing to apply.
+                // HEP-CORE-0036 §6.5 (locked 2026-06-12): allowlist
+                // entries are bare Z85 pubkey strings.  Symmetric with
+                // §6.2 `REG_ACK.initial_allowlist` + §7.2 cache shape.
+                // The script-side `api.allowed_peers` surface still
+                // exposes `AllowedPeer{role_uid, pubkey}`; we leave
+                // `role_uid` empty here because the wire no longer
+                // carries it.  A role host that wants role_uids
+                // resolves them locally via its `known_roles` view
+                // (operator-side metadata).
+                sec::PeerAllowlist allowlist;
+                std::vector<AllowedPeer> script_view;
+                const auto &arr =
+                    reply->value("allowlist", nlohmann::json::array());
+                for (const auto &entry : arr)
+                {
+                    if (!entry.is_string()) continue;
+                    const auto pk = entry.get<std::string>();
+                    if (pk.empty()) continue;
+                    allowlist.peers.insert(sec::PeerIdentity{"curve", pk});
+                    script_view.push_back(AllowedPeer{
+                        /*role_uid=*/std::string{}, pk});
+                }
+                const auto reason =
+                    it->details.value("reason", std::string{"unknown"});
+
+                // Queue-side enforcement push (ZMQ tx queues only).
+                // Only ZmqQueue (PUSH-side) implements PeerAdmission;
+                // ShmQueue does NOT.  For SHM channels the broker
+                // pre-confirm at attach time (HEP-CORE-0041 §9 D4) is
+                // the authoritative gate — there is no on-role
+                // enforcement cache to seed, so the cast is null and
+                // we skip the queue push.  The script-side cache update
+                // below still fires unconditionally so observability
+                // (`api.allowed_peers(channel)` + the
+                // `on_allowlist_changed` callback) tracks the broker's
+                // current allowlist regardless of transport.
+                bool publish_cache = true;
                 auto *admission =
                     dynamic_cast<sec::PeerAdmission *>(pImpl->tx_queue.get());
-                if (!admission)
+                if (admission)
                 {
-                    LOGGER_WARN(
-                        "[{}/{}] auth notify for channel '{}' but tx queue "
-                        "is not a PeerAdmission target (SHM or no queue); "
-                        "ignoring",
-                        pImpl->role_tag, pImpl->uid, channel);
-                }
-                else
-                {
-                    // HEP-CORE-0036 §6.5 (locked 2026-06-12):
-                    // allowlist entries are bare Z85 pubkey strings.
-                    // Symmetric with §6.2 `REG_ACK.initial_allowlist`
-                    // + §7.2 cache shape.  The script-side
-                    // `api.allowed_peers` surface still exposes
-                    // `AllowedPeer{role_uid, pubkey}`; we leave
-                    // `role_uid` empty here because the wire no
-                    // longer carries it.  A role host that wants
-                    // role_uids resolves them locally via its
-                    // `known_roles` view (operator-side metadata).
-                    sec::PeerAllowlist allowlist;
-                    std::vector<AllowedPeer> script_view;
-                    const auto &arr = reply->value("allowlist",
-                                                     nlohmann::json::array());
-                    for (const auto &entry : arr)
-                    {
-                        if (!entry.is_string()) continue;
-                        const auto pk = entry.get<std::string>();
-                        if (pk.empty()) continue;
-                        allowlist.peers.insert(
-                            sec::PeerIdentity{"curve", pk});
-                        script_view.push_back(AllowedPeer{
-                            /*role_uid=*/std::string{}, pk});
-                    }
-                    const auto reason =
-                        it->details.value("reason", std::string{"unknown"});
-                    const bool ok =
-                        admission->set_peer_allowlist(allowlist);
+                    const bool ok = admission->set_peer_allowlist(allowlist);
                     if (ok)
                     {
                         LOGGER_INFO(
@@ -999,39 +1027,62 @@ void RoleAPIBase::handle_channel_auth_notifies(
                             "reason='{}', HEP-CORE-0036 §6.5)",
                             pImpl->role_tag, pImpl->uid, channel,
                             allowlist.peers.size(), reason);
-
-                        // Update the script-side cache + invoke the
-                        // I11 callback AFTER the ZAP cache is in
-                        // place (HEP §6.5 step 5 — the snapshot the
-                        // script sees IS what the next handshake will
-                        // admit).
-                        pImpl->allowlist_cache.put(channel, script_view);
-                        if (pImpl->engine)
-                        {
-                            try
-                            {
-                                pImpl->engine->invoke_on_allowlist_changed(
-                                    channel, script_view, reason);
-                            }
-                            catch (const std::exception &e)
-                            {
-                                // Per §I11: callback exceptions do
-                                // NOT roll back the cache update —
-                                // log + continue.
-                                LOGGER_ERROR(
-                                    "[{}/{}] on_allowlist_changed callback "
-                                    "threw for channel '{}': {}",
-                                    pImpl->role_tag, pImpl->uid, channel,
-                                    e.what());
-                            }
-                        }
                     }
                     else
                     {
+                        // Keep cache consistent with ZAP enforcement:
+                        // if the queue refused the push, the next
+                        // handshake will NOT admit what's in
+                        // `script_view`, so don't publish a misleading
+                        // snapshot.
                         LOGGER_WARN(
                             "[{}/{}] set_peer_allowlist returned false for "
-                            "channel '{}' (queue inert on this side?)",
+                            "channel '{}' (queue inert on this side?); "
+                            "skipping cache update to stay in sync with "
+                            "ZAP enforcement",
                             pImpl->role_tag, pImpl->uid, channel);
+                        publish_cache = false;
+                    }
+                }
+                else
+                {
+                    // Non-PeerAdmission tx queue (SHM today, or queue
+                    // wired post-1i-mig).  No queue-side enforcement to
+                    // seed; cache is pure observability.
+                    LOGGER_DEBUG(
+                        "[{}/{}] auth notify for channel '{}' on non-ZAP "
+                        "tx queue (SHM); updating script-side cache only "
+                        "(HEP-CORE-0041 §9 D4 broker pre-confirm is the "
+                        "authoritative gate)",
+                        pImpl->role_tag, pImpl->uid, channel);
+                }
+
+                // Script-side cache + I11 callback.  For ZMQ this runs
+                // AFTER the ZAP cache is in place (HEP §6.5 step 5 —
+                // the snapshot the script sees IS what the next
+                // handshake will admit).  For SHM this is pure
+                // observability of the broker's current allowlist.
+                if (publish_cache)
+                {
+                    pImpl->allowlist_cache.put(channel, script_view);
+                    if (pImpl->engine)
+                    {
+                        try
+                        {
+                            pImpl->engine->invoke_on_allowlist_changed(
+                                channel, script_view, reason);
+                        }
+                        catch (const std::exception &e)
+                        {
+                            // Per §I11: callback exceptions do NOT
+                            // roll back the cache update — log +
+                            // continue.
+                            LOGGER_ERROR(
+                                "[{}/{}] on_allowlist_changed callback "
+                                "threw for channel '{}': {}",
+                                pImpl->role_tag, pImpl->uid, channel,
+                                e.what());
+                        }
                     }
                 }
             }

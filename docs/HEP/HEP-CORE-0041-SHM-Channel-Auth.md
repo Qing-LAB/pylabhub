@@ -903,14 +903,14 @@ All three must close before the producer/processor role hosts wire the
 
 | Blocker | Task | What needs to be true | How to verify |
 |---|---|---|---|
-| **PeerAllowlist populated for SHM channels** | #263 | The producer-side cache snapshot read by `RoleAPIBase::allowed_peers(channel)` must contain SHM consumers, not just ZMQ peers.  Broker is confirmed correct (§6.5 + `broker_service.cpp:2027-2036` ships `initial_allowlist` for all transports); the producer-side `allowlist_cache.put(channel, ...)` call in `handle_channel_auth_notifies()` is unconditional.  Verify the REG_ACK seed path also feeds the cache so a consumer attaching before the first `CHANNEL_AUTH_CHANGED_NOTIFY` doesn't get denied. | Read `apply_master_approval` / REG_ACK handler path; trace `initial_allowlist` field consumption; confirm `allowlist_cache` is populated at REG_ACK time, not only on NOTIFY. |
+| **PeerAllowlist populated for SHM channels** | #263 | ✅ **CLOSED 2026-06-20.**  The producer-side cache snapshot read by `RoleAPIBase::allowed_peers(channel)` is now populated for SHM channels.  Two bugs found + fixed in the verification: (a) `handle_channel_auth_notifies` skipped the cache update inside the failed `dynamic_cast<PeerAdmission *>` branch — restructured to make the `allowlist_cache.put` unconditional (queue-side `set_peer_allowlist` still ZMQ-only); (b) `apply_producer_reg_ack` never seeded the cache from `REG_ACK.initial_allowlist` — now does, so consumers attaching before the first `CHANNEL_AUTH_CHANGED_NOTIFY` see the broker's current list.  L2 sweep 1506/1506 green.  Note: under HEP-CORE-0041 §9 D4 the broker pre-confirm is the authoritative gate — the cache is observability-only, so neither bug affected SHM auth correctness, only the divergence-WARN signal usefulness + the script `api.allowed_peers` surface. |
 | **`BrokerRequestComm::consumer_attach` callback shape** | #264 | The producer's `ShmAttachOrchestrator` uses an injected `BrokerQuery` callback whose shape must match BRC's existing `consumer_attach(channel, consumer_pubkey, consumer_role_uid, producer_role_uid, timeout_ms)` returning `std::optional<nlohmann::json>` (sync REQ/REP). | Pre-flight confirmed: API already exists at `src/utils/network_comm/broker_request_comm.cpp:885-898`, shipped under substep 1d (#251).  Wiring is one lambda in the role-host setup. |
 | **`AttachProtocolAcceptor` seckey access via KeyStore** | #265 | The acceptor's `SeckeyAccessor` callback (HEP-CORE-0040 §8.5.1 use-not-export pattern) must resolve to `key_store().with_seckey(kRoleIdentityName, cb)` at role-host construction. | Pre-flight confirmed: mirrors the exact shape used in `BrokerService` CTRL bind + `BrokerRequestComm` DEALER connect.  Thread-safe via `std::shared_mutex` per HEP-0040 §5.5. |
 
-Blockers #264 + #265 are GREEN as of the 2026-06-20 pre-flight pass.
-#263 has one remaining verification step (REG_ACK→cache seed path)
-that must run before 1i-mig-2 lands; if the path is broken, a small
-REG_ACK-side fix folds into 1i-mig-2's scope.
+All three blockers are GREEN as of 2026-06-20.  #263 closed by
+unconditional cache update + REG_ACK initial_allowlist seed (see row
+above).  #264 + #265 confirmed via pre-flight reads only — no code
+change needed.  1i-mig-1 (ShmQueue fd plumbing) is unblocked.
 
 ---
 
