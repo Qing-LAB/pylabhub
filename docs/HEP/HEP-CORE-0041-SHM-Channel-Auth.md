@@ -334,13 +334,42 @@ If Option A (capability) ships as the default:
 {
   ...,
   "data_transport": "shm",
-  "shm_capability_endpoint": "unix:///var/run/pylabhub/role-acquisition.daq01.prod/shm-cap.sock"
+  "shm_capability_endpoint": "unix:///run/user/1000/pylabhub/shmcap-acquisition.sock"
 }
 ```
 
-Producer is responsible for binding a Unix socket at `shm_capability_endpoint`
-(via `IShmCapabilityProducer::bind_endpoint`).  Broker validates the
-endpoint string and stores it in `ChannelAccessEntry`.
+**Endpoint URI shape (canonical).**  The producer obtains the
+endpoint via `default_shm_capability_endpoint(channel)` which returns
+the `unix://` URI form — `unix://${XDG_RUNTIME_DIR}/pylabhub/shmcap-<channel>.sock`
+on systemd Linux hosts; `unix:///tmp/pylabhub-shmcap-<uid>-<channel>.sock`
+fallback when `XDG_RUNTIME_DIR` is unset.  The URI is what travels
+on the wire (REG_REQ above, CONSUMER_REG_ACK in §5.3); both producer
+and consumer strip the `unix://` scheme prefix via the
+`strip_unix_scheme()` helper before passing the bare filesystem path
+to `sockaddr_un::sun_path`.
+
+**`bind_endpoint` responsibilities (1i-mig-2c hardening).**  The L1
+backend `MemfdProducer::bind_endpoint`:
+
+1. Strip `unix://` scheme prefix from the URI.
+2. `mkdir -p` the parent directory at mode 0700 (e.g.
+   `${XDG_RUNTIME_DIR}/pylabhub/`).  Idempotent — no-op when the
+   directory already exists.  systemd's `pam_systemd.so` provides
+   `${XDG_RUNTIME_DIR}` at mode 0700; the `pylabhub/` subdirectory
+   layered under it inherits the same isolation.
+2.5. **Probe-then-unlink** (1i-prod-hardening H3d): before unlinking
+   any stale socket file, attempt `connect()` to the path.  If a
+   live producer is bound, refuse to clobber (return false).  Only
+   when connect fails with `ECONNREFUSED` (stale socket) or
+   `ENOENT` (no file) is the unlink+bind safe.
+3. `socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0)`, then `bind`,
+   then `chmod(sock_path, 0700)`, then `listen(sock, 8)`.
+
+**Producer wire-emission contract.**  The producer MUST publish the
+endpoint string on REG_REQ for SHM channels.  The broker rejects
+REG_REQ with `INVALID_REQUEST` when `data_transport == "shm"` and
+`shm_capability_endpoint` is empty (1i-prod-hardening H3c, symmetric
+with the `zmq_pubkey` requirement for ZMQ channels at §6.1).
 
 ### 5.2 REG_ACK — what broker tells producer
 
@@ -495,15 +524,26 @@ flowchart TB
         L2b["<b>L2b — AttachProtocolAcceptor</b><br/>+ initiate_consumer_handshake<br/>substep 1c, #250<br/>───<br/>SO_PEERCRED uid sanity (HEP-0036 §I8)<br/>crypto_box challenge-response (§5.5)<br/>returns AuthenticatedConsumer"]
         L1["<b>L1 — IShmCapabilityProducer / Consumer</b><br/>substeps 1a + 1b, #248 + #249<br/>───<br/>bind_endpoint, accept_one, send_capability<br/>per-platform backend<br/>(Linux only today;<br/>FreeBSD / macOS / Windows pending<br/>#259 / #260 / #261)"]
         L2c -->|owns + drives| L2b
-        L2b -->|uses| L1
+        L2b -->|uses for accept_one| L1
+        L2c -->|"fd handoff<br/>(send_capability post-broker-OK)"| L1
     end
 
     subgraph Brk ["Broker process"]
         L3["<b>L3 — handle_consumer_attach_req</b><br/>substep 1d, #251<br/>───<br/>reads ChannelAccessIndex<br/>.authorized_consumer_pubkeys<br/>(read-only)"]
     end
 
-    L2c -.->|"BrokerQuery callback<br/>via producer's BRC<br/>(CONSUMER_ATTACH_REQ / _RSP)"| L3
+    L2c -.->|"BrokerQuery callback<br/>via producer's BRC<br/>(CONSUMER_ATTACH_REQ / _ACK)"| L3
 ```
+
+**Ownership note (1i-mig-2c M3 extraction).**  Both `IShmCapabilityProducer`
+(L1) and `AttachProtocolAcceptor` (L2b) + `ShmAttachOrchestrator` (L2c)
+live as a three-pointer bundle on `RoleHostFrame` (the base class for
+ProducerRoleHost + ProcessorRoleHost).  Producer + processor role
+hosts inherit the bundle + the `spawn_shm_auth_listener_` helper
+that builds L2b+L2c+spawns the accept thread on the role's
+`ThreadManager`.  This makes the L2 setup byte-equivalent across
+both role types — neither has any inline orchestrator-construction
+code.
 
 Reading the diagram: L2c is the orchestrator a developer wires up in
 the role host; L2b is the per-connection auth state machine (§5.5);
@@ -560,12 +600,27 @@ public:
 
     virtual std::span<std::byte> data()                            = 0;
     virtual size_t                size() const noexcept             = 0;
+
+    /// Borrow the anonymous-SHM fd (NOT transfer ownership) — the
+    /// caller passes this to `ShmQueue::set_shm_capability_fd` /
+    /// `create_datablock_producer_from_fd_impl` so the producer-side
+    /// DataBlock attaches against the SAME memfd the L1 transport
+    /// just created.  The L1 instance keeps owning + closing the fd
+    /// at dtor time; consumers of `borrow_fd()` MUST NOT close it.
+    /// HEP-0041 §3.1 fd-ownership model.
+    [[nodiscard]] virtual int borrow_fd() const noexcept           = 0;
 };
 
 class IShmCapabilityConsumer {
 public:
     virtual std::span<std::byte> data()                            = 0;
     virtual size_t                size() const noexcept             = 0;
+
+    /// Symmetric to the producer side — consumer borrows the fd it
+    /// received via `SCM_RIGHTS` so `ShmQueue::set_shm_capability_fd`
+    /// /  `find_datablock_consumer_from_fd_impl` can attach the same
+    /// memfd.  Lifetime owned by the L1 consumer instance.
+    [[nodiscard]] virtual int borrow_fd() const noexcept           = 0;
 };
 ```
 
@@ -833,7 +888,7 @@ sequenceDiagram
     Note over P,B: Continued from Diagram A
     P->>B: CONSUMER_ATTACH_REQ<br/>{channel_name,<br/>consumer_pubkey,<br/>consumer_role_uid}
     Note over B: look up channel in<br/>ChannelAccessIndex<br/>.authorized_consumer_pubkeys
-    B->>P: CONSUMER_ATTACH_RSP<br/>{status}
+    B->>P: CONSUMER_ATTACH_ACK<br/>{status}
 
     Note over P: compare broker answer<br/>vs local cached allowlist<br/>→ WARN if divergent<br/>(broker answer wins)
 

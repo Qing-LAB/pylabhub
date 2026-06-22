@@ -114,12 +114,14 @@ struct ShmQueueImpl
 // config-supplied secret (Standby → Configured), then calls start() to
 // actually create the SHM segment (Configured → Active).  Returns
 // nullptr if any phase fails — preserves the legacy semantics where
-// "create_writer returns nullptr on creation failure".  Production code
-// that gets the secret pre-register (config-supplied) can use this
-// convenience signature unchanged.  Future AUTH-4 (broker-supplied
-// secret post-register) will construct a Standby ShmQueue directly
-// (signature without secret — exposed below), then drive set_shm_secret
-// + start() through `apply_master_approval`.
+// "create_writer returns nullptr on creation failure".
+//
+// Note: the original pre-1g design (broker-mints-shm_secret) was
+// SUPERSEDED by HEP-CORE-0041 capability transport.  Post-1i-mig
+// the production path is `create_writer_standby` + `set_shm_capability_fd`
+// + `start()` via `RoleAPIBase::build_tx_queue` (capability dispatch
+// branch).  This factory is dead from production; it survives in
+// the tree only until 1i-cleanup (#275) deletes the legacy machinery.
 
 std::unique_ptr<ShmQueue>
 ShmQueue::create_writer(const std::string &channel_name,

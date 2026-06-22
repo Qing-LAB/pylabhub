@@ -342,11 +342,13 @@ void ConsumerRoleHost::worker_main_()
 
         // HEP-CORE-0036 §6.7 Standby → Configured → Active.  Drive the Rx
         // queue from the broker's CONSUMER_REG_ACK payload (which carries
-        // `producers[]` for ZMQ; future AUTH-4 will add `shm_secret` for
-        // SHM).  Polymorphic at the queue layer — role host doesn't branch
-        // on transport.  Fatal on failure: HEP §6.7 "fully refused" rule
-        // means the role host must treat this as a startup failure and
-        // request stop.
+        // `producers[]` for ZMQ; SHM consumer dial via the
+        // `shm_capability_endpoint` + `producer_pubkey_z85` fields lands
+        // with HEP-CORE-0041 1i-mig-4 / #272 — the pre-HEP-0041
+        // broker-mints-shm_secret design is SUPERSEDED).  Polymorphic at
+        // the queue layer — role host doesn't branch on transport.
+        // Fatal on failure: HEP §6.7 "fully refused" rule means the role
+        // host must treat this as a startup failure and request stop.
         if (!api_ref.apply_consumer_reg_ack(*reg_result))
         {
             LOGGER_ERROR("[cons] apply_consumer_reg_ack failed — "

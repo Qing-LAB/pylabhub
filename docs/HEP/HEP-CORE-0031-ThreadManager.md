@@ -856,18 +856,24 @@ deliberate isolation: the queue's I/O thread should join when the
 queue is torn down (during worker_main_'s setup/teardown), not
 coupled to the role-wide drain.
 
-| Slot name | Spawned by                          | Role TM? | When present                                                          |
-|-----------|-------------------------------------|----------|-----------------------------------------------------------------------|
-| `recv`    | `hub_zmq_queue.cpp:650`             | NO — queue's own TM | rx-side ZMQ transport (`data_transport == "zmq"` on input).  One per ZMQ rx queue. |
-| `send`    | `hub_zmq_queue.cpp:660`             | NO — queue's own TM | tx-side ZMQ transport on output.  One per ZMQ tx queue.               |
+| Slot name          | Spawned by                          | Role TM? | When present                                                          |
+|--------------------|-------------------------------------|----------|-----------------------------------------------------------------------|
+| `recv`             | `hub_zmq_queue.cpp:650`             | NO — queue's own TM | rx-side ZMQ transport (`data_transport == "zmq"` on input).  One per ZMQ rx queue. |
+| `send`             | `hub_zmq_queue.cpp:660`             | NO — queue's own TM | tx-side ZMQ transport on output.  One per ZMQ tx queue.               |
+| `shm_accept_loop`  | `role_host_frame.cpp::spawn_shm_auth_listener_` | **YES — role TM (peer slot)** | tx-side SHM transport (`data_transport == "shm"` on output).  One per SHM tx channel.  Runs the `ShmAttachOrchestrator::accept_and_serve_one` loop per HEP-CORE-0041 §9 D4.  Peer slot (joined by TM drain before role-tx queues + before `cleanup_tx_capability_` releases the L1 socket).  Added 2026-06-22 in 1i-mig-2b-2 (#256). |
 
-Single-hub processor with ZMQ in + SHM out → 1 `recv` thread.
-Dual-direction ZMQ processor → 1 `recv` + 1 `send`.  SHM
-transport adds no threads.  None of these are master — each
-ZmqQueue's drain handles its own thread without master/peer
-sequencing because the worker thread (the only thing that touches
-the queue from outside) drives the start/stop sequence
-deterministically.
+Single-hub processor with ZMQ in + SHM out → 1 `recv` thread +
+1 `shm_accept_loop` thread.  Dual-direction ZMQ processor → 1
+`recv` + 1 `send`.  SHM transport adds 1 `shm_accept_loop` per
+tx-side SHM channel (no thread on the rx side — consumer dial
+runs inline in `apply_consumer_reg_ack`, no accept loop).
+ZmqQueue's `recv`/`send` are NOT master — each ZmqQueue's drain
+handles its own thread without master/peer sequencing because
+the worker thread (the only thing that touches the queue from
+outside) drives the start/stop sequence deterministically.  The
+`shm_accept_loop` IS on the role's TM (peer slot) so the TM
+shutdown contract drains it before role-host teardown releases
+the L1 socket the loop is polling.
 
 ### 4.3.3 plh_hub process threads
 
@@ -903,15 +909,20 @@ TM-managed thread in the process.
 
 | Role topology                       | Role-scope threads (in role TM) | Queue threads (own TM)  | Process-global | Total |
 |-------------------------------------|---------------------------------|-------------------------|----------------|-------|
-| Producer (SHM out)                  | 2 (worker + handler_ctrl_0)     | 0                       | 2              | 4 + main |
+| Producer (SHM out)                  | 3 (worker + handler_ctrl_0 + shm_accept_loop) | 0           | 2              | 5 + main |
 | Producer (ZMQ out)                  | 2                               | 1 (send)                | 2              | 5 + main |
-| Consumer (SHM in)                   | 2                               | 0                       | 2              | 4 + main |
+| Consumer (SHM in)                   | 2 (worker + handler_ctrl_0)     | 0                       | 2              | 4 + main |
 | Consumer (ZMQ in)                   | 2                               | 1 (recv)                | 2              | 5 + main |
-| Processor single-hub (SHM/SHM)      | 2                               | 0                       | 2              | 4 + main |
-| Processor single-hub (ZMQ in, SHM out) | 2                            | 1 (recv)                | 2              | 5 + main |
+| Processor single-hub (SHM/SHM)      | 3 (worker + handler_ctrl_0 + shm_accept_loop) | 0           | 2              | 5 + main |
+| Processor single-hub (ZMQ in, SHM out) | 3 (worker + handler_ctrl_0 + shm_accept_loop) | 1 (recv) | 2              | 6 + main |
 | Processor single-hub (ZMQ in, ZMQ out) | 2                            | 2 (recv + send)         | 2              | 6 + main |
-| Processor dual-hub (SHM/SHM)        | 3 (worker + handler_ctrl_0 + _1)| 0                       | 2              | 5 + main |
+| Processor dual-hub (SHM/SHM)        | 4 (worker + ctrl_0 + ctrl_1 + shm_accept_loop) | 0          | 2              | 6 + main |
 | Processor dual-hub (ZMQ in, ZMQ out)| 3                               | 2 (recv + send)         | 2              | 7 + main |
+
+Post-2026-06-22 update: SHM tx side adds one `shm_accept_loop`
+thread per channel (HEP-CORE-0041 §9 D4; 1i-mig-2b-2 #256).
+Consumer side has no equivalent — consumer dial runs inline in
+`apply_consumer_reg_ack` (no accept loop on the rx path).
 
 "Main" is the OS process entry thread; "+1" added implicitly to
 every row above.

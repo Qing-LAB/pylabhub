@@ -576,6 +576,33 @@ logging).  Beyond-MVP enhancements (HSM-backed identity keys for
 the broker, multi-broker quorum) are tracked as follow-up work in
 §13 open questions.
 
+### I8.1 — Same-UID trust assumption (SO_PEERCRED gate)
+
+**Co-located peers within one uid are mutually trusted.**  The SHM
+capability transport (HEP-CORE-0041 §6.1) uses `SO_PEERCRED` to
+verify that a connecting consumer is running as the same uid as the
+producer — a sanity check that the dialer is in the same Linux user
+namespace as the producer, not an arbitrary system peer.  HEP-CORE-0036's
+trust model (§I8 above) treats this as a hard assumption: roles
+co-located within the same uid are part of one operator-administered
+isolation domain.
+
+This assumption holds for the production deployment shape (one
+operator-managed user per pylabhub installation; per-channel CURVE +
+broker pre-confirm gate cross-uid access).  An adversary with shell
+access *as the same uid* already has read access to the producer's
+private files (CURVE seckey, KeyStore-backed material) — at that
+point, transport-level auth is moot.
+
+Container deployments crossing user-namespace boundaries (different
+visible uids but same Linux namespace mapping) need extra hardening
+beyond `SO_PEERCRED`; tracked under future cross-platform work
+(#259/#260/#261 backends + #262 mutual auth).
+
+Code cites that previously read "HEP-CORE-0036 §I8" for SO_PEERCRED
+should now read "HEP-CORE-0036 §I8.1" — citation drift fixed in
+2026-06-22 doc-sync (#267).
+
 ### I9 — Three-tier separation: broker → framework → queue → script
 
 **Scripts never call ZeroMQ socket APIs directly.**  All
@@ -815,7 +842,7 @@ from the cache shape it observes.  Concretely:
   `allowlist_cache` move together (see code path in
   `handle_channel_auth_notifies` / `apply_producer_reg_ack`).
 - **SHM has no producer-side enforcement cache.**  SHM's authoritative
-  decision is the broker's `CONSUMER_ATTACH_RSP` on each attach attempt
+  decision is the broker's `CONSUMER_ATTACH_ACK` on each attach attempt
   (HEP-CORE-0041 §9 D4).  The orchestrator's `CacheLookup` callback
   reads `allowlist_cache` *only* for divergence detection — when the
   broker's answer disagrees with the cache, a WARN log fires; the
@@ -1669,7 +1696,7 @@ sequenceDiagram
         C->>P: dial shm_capability_endpoint (Unix socket)
         Note over C,P: crypto_box challenge-response<br/>(HEP-0041 §5.5)
         P->>B: CONSUMER_ATTACH_REQ {channel,<br/>consumer_pubkey}<br/>(broker pre-confirm — HEP-0041 §9 D4)
-        B->>P: CONSUMER_ATTACH_RSP {status}<br/>(BROKER IS THE GATE — local cache used only<br/>for divergence detection, see §I11.1)
+        B->>P: CONSUMER_ATTACH_ACK {status}<br/>(BROKER IS THE GATE — local cache used only<br/>for divergence detection, see §I11.1)
         P->>C: send fd via SCM_RIGHTS<br/>(possession of fd = access)
         Note over C,DP: SHM mapping accessible
     end
@@ -1733,6 +1760,16 @@ struct ChannelAccessEntry
     // SHM-only: broker-generated guard secret for the DataBlock
     // (HEP-CORE-0002).  Unrelated to CURVE; SHM auth uses this secret
     // token, not pubkey allowlists.  Zero when transport=zmq.
+    //
+    // **HISTORICAL — PENDING CLEANUP.**  This field was the original
+    // pre-HEP-CORE-0041 SHM auth gate.  HEP-CORE-0041 supersedes the
+    // shm_secret model with capability transport (`memfd_create` +
+    // `SCM_RIGHTS` + `CONSUMER_ATTACH_REQ` broker pre-confirm —
+    // §9 D4).  Broker no longer emits a non-zero value; this field
+    // is always 0 today.  Deleted in HEP-0041 Phase 1 substep
+    // 1i-cleanup (task #275) after consumer-dial (#272) lands —
+    // removal triggers a SharedMemoryHeader layout-hash bump per
+    // the Core Structure Change Protocol.
     uint64_t  shm_secret{0};
 };
 

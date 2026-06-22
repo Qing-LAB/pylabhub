@@ -744,9 +744,12 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
         // applies the broker's reply.  For PULL queues it extracts
         // ack["producers"], promotes peer[0] into transport-artifact
         // fields, and calls start() internally.  For SHM, it is a
-        // no-op (config-supplied secret already applied at
-        // construction; future AUTH-4 broker-supplied secret will
-        // route through here when the broker emits ack["shm_secret"]).
+        // no-op today (consumer dial — 1i-mig-4 / #272 — will route
+        // SHM apply_consumer_reg_ack through a separate path that
+        // builds IShmCapabilityConsumer, runs the §5.5 handshake,
+        // receives the fd via SCM_RIGHTS, and calls
+        // ShmQueue::set_shm_capability_fd + start()).  The original
+        // pre-HEP-0041 broker-mints-shm_secret design is SUPERSEDED.
         if (!pImpl->rx_queue->apply_master_approval(ack))
         {
             LOGGER_ERROR("[{}] apply_consumer_reg_ack: "

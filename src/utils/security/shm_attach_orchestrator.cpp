@@ -249,4 +249,26 @@ ShmAttachOrchestrator::accept_and_serve_one(std::chrono::milliseconds timeout)
 
 #endif // PYLABHUB_PLATFORM_LINUX
 
+// HEP-CORE-0041 §6.5 + 1i-doc-sync #267: symmetric `#error` for
+// non-Linux platforms.  L1 (shm_capability_channel.cpp) and L2b
+// (attach_protocol.cpp) both fire `#error` on non-Linux to surface
+// "not implemented" at compile time.  L2c (this file) was missing
+// the same fallback — on a non-Linux build, the class would silently
+// not exist and callers would hit "undefined symbol" link errors at
+// use time.  The `#error` here surfaces the same "platform-not-yet-
+// supported" diagnostic at compile time, matching L1+L2b discipline.
+// Tasks #259 (FreeBSD), #260 (macOS), #261 (Windows) implement the
+// per-platform L2c when they ship.
+#if !defined(PYLABHUB_PLATFORM_LINUX)
+#    if defined(PYLABHUB_PLATFORM_FREEBSD)
+#        error "HEP-CORE-0041 §6.5: ShmAttachOrchestrator FreeBSD impl not yet shipped — task #259.  Builds against this platform must wait for the FreeBSD backend to land."
+#    elif defined(PYLABHUB_PLATFORM_APPLE)
+#        error "HEP-CORE-0041 §6.5: ShmAttachOrchestrator macOS impl not yet shipped — task #260.  Builds against this platform must wait for the macOS backend to land."
+#    elif defined(PYLABHUB_PLATFORM_WINDOWS)
+#        error "HEP-CORE-0041 §6.5: ShmAttachOrchestrator Windows impl not yet shipped — task #261.  Builds against this platform must wait for the Windows backend to land (named-pipe + DuplicateHandle)."
+#    else
+#        error "HEP-CORE-0041 §6.5: ShmAttachOrchestrator: unknown platform.  Phase 1 supports Linux only; FreeBSD/macOS/Windows are Phases 2-3."
+#    endif
+#endif
+
 } // namespace pylabhub::utils::security
