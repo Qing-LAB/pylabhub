@@ -158,6 +158,35 @@ class PYLABHUB_UTILS_EXPORT RoleHostFrame : public RoleHostBase
     /// `build_presences_()` early).  Per design doc §11.6.2.
     [[nodiscard]] bool setup_infrastructure_(const hub::SchemaSpec &inbox_spec);
 
+    /// HEP-CORE-0041 1i-mig-2 hook: derived role host post-processes
+    /// `tx_opts` after `make_tx_opts` but BEFORE `build_tx_queue`.
+    /// Default: no-op returning true.  Producer / processor override
+    /// to create the per-channel `IShmCapabilityProducer` (L1) for
+    /// SHM TX channels, bind the capability endpoint, and populate
+    /// `opts.shm_capability_fd` from the transport's borrowed fd.
+    ///
+    /// Called only when a TX presence exists.  Return false to abort
+    /// startup (logged + propagated by `setup_infrastructure_`).
+    /// `tx_channel` is `config().out_channel()` (or fallback).
+    ///
+    /// **Ownership.**  The derived role host owns the L1 transport
+    /// for the channel lifetime.  This hook stores the transport in
+    /// a member; `cleanup_tx_capability_` releases it on teardown.
+    virtual bool prepare_tx_capability_(hub::TxQueueOptions      &tx_opts,
+                                          const std::string        &tx_channel)
+    {
+        (void)tx_opts;
+        (void)tx_channel;
+        return true;
+    }
+
+    /// HEP-CORE-0041 1i-mig-2 cleanup hook: derived role host releases
+    /// the L1 transport (and, after 2b-2, the orchestrator + acceptor)
+    /// AFTER `teardown_infrastructure_` has reset `tx_queue` — the
+    /// ShmQueue holds a borrowed fd from the L1 transport, so the
+    /// transport must outlive the queue's destruction.  Default no-op.
+    virtual void cleanup_tx_capability_() {}
+
   private:
     RoleHostFrameConfig frame_cfg_;
 };

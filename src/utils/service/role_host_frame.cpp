@@ -166,11 +166,28 @@ bool RoleHostFrame::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
                      frame_cfg_.role_tag, config_.in_channel());
         return false;
     }
-    if (tx_opts && !api_ref.build_tx_queue(*tx_opts))
+    if (tx_opts)
     {
-        LOGGER_ERROR("[{}] build_tx_queue failed for channel '{}'",
-                     frame_cfg_.role_tag, config_.out_channel());
-        return false;
+        // HEP-CORE-0041 1i-mig-2: derived role host post-processes
+        // `tx_opts` to (a) create the per-channel L1
+        // IShmCapabilityProducer for SHM TX channels and (b) populate
+        // `opts.shm_capability_fd` from the transport's borrowed fd.
+        // No-op for ZMQ TX channels (default impl returns true).
+        if (!prepare_tx_capability_(*tx_opts, config_.out_channel()))
+        {
+            LOGGER_ERROR(
+                "[{}] prepare_tx_capability_ failed for channel '{}' "
+                "— SHM L1 transport setup refused (HEP-CORE-0041 §6.1 + "
+                "1i-mig-2)",
+                frame_cfg_.role_tag, config_.out_channel());
+            return false;
+        }
+        if (!api_ref.build_tx_queue(*tx_opts))
+        {
+            LOGGER_ERROR("[{}] build_tx_queue failed for channel '{}'",
+                         frame_cfg_.role_tag, config_.out_channel());
+            return false;
+        }
     }
 
     // ── 5. Reset per-queue metrics ──
@@ -299,6 +316,13 @@ void RoleHostFrame::teardown_infrastructure_()
                      "Skipping handler-thread stop + queue close.",
                      frame_cfg_.role_tag);
     }
+
+    // HEP-CORE-0041 1i-mig-2: release the L1 transport (and post-2b-2
+    // the orchestrator + acceptor) AFTER `api().close_queues()` has
+    // reset `tx_queue` — the ShmQueue holds a borrowed fd from the L1
+    // transport, so the transport MUST outlive the queue's
+    // destruction.  Default no-op; producer / processor override.
+    cleanup_tx_capability_();
 }
 
 } // namespace pylabhub::scripting
