@@ -89,6 +89,22 @@ class PYLABHUB_UTILS_EXPORT ProcessorRoleHost final : public scripting::RoleHost
     [[nodiscard]] std::vector<scripting::Presence>
     build_presences_(const config::RoleConfig &config) const override;
 
+    /// HEP-CORE-0041 1i-mig-3 hook: create the per-channel
+    /// IShmCapabilityProducer (L1) for SHM TX (OUT) channels, bind the
+    /// capability endpoint, populate `tx_opts.shm_capability_fd` with
+    /// the transport's borrowed fd.  No-op (returns true) for ZMQ TX.
+    /// Symmetric with ProducerRoleHost — RoleHostFrame's M3 helper
+    /// (`spawn_shm_auth_listener_`) handles the L2b/L2c+spawn block
+    /// after `apply_producer_reg_ack` succeeds in worker_main_.
+    ///
+    /// Stores the L1 transport in `RoleHostFrame::shm_transport_`
+    /// (three-pointer SHM auth bundle lives on the frame per 1i-mig-2c).
+    bool prepare_tx_capability_(hub::TxQueueOptions &tx_opts,
+                                  const std::string   &tx_channel) override;
+
+    // cleanup_tx_capability_ inherited from RoleHostFrame (1i-mig-2c
+    // M3 — default impl LIFO-resets the three SHM auth pointers).
+
     // ── Processor-specific members ───────────────────────────────────────────
     // Shared state — core_, config_, engine_, api_, ready_promise_ — lives in
     // RoleHostBase.  Inbox state (`inbox_queue_`, `inbox_cfg_`) lives in
