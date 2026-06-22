@@ -2500,7 +2500,7 @@ the allowlist.
 | Field | Type | Description |
 |---|---|---|
 | `shm_secret` ⚠ **SUPERSEDED** | uint64 | (transport=shm only — SUPERSEDED by HEP-CORE-0041; see §1 Amendment 2026-06-16.  Replaced by HEP-0041 §5.2 — broker echoes the producer's `shm_capability_endpoint` instead of minting a secret.)  Pre-HEP-0041 meaning: broker-generated guard secret for the DataBlock.  Unrelated to CURVE (HEP-CORE-0002 mechanism). |
-| `initial_allowlist` | array<string> | Consumer identity-pubkeys already authorized for this channel (federation pre-registration scenarios).  Usually empty on a fresh channel. |
+| `initial_allowlist` | array<string> | **REQUIRED, never absent — empty array on a fresh channel.**  Consumer identity-pubkeys already authorized for this channel (federation pre-registration scenarios; reconnect re-sync of an existing live set).  Broker MUST emit this field on every REG_ACK regardless of transport so the producer's REG_ACK seed (`apply_producer_reg_ack`) can populate the script-observable cache safely on (re)connect — see §I11.1 invariant #5 for the operational rule that makes this safe across reconnect cycles.  An absent or non-array field is a broker contract violation; the producer logs WARN and preserves the prior cache snapshot rather than clobbering with empty. |
 
 No data-plane CURVE keypair appears in `REG_ACK` — the producer
 uses its identity keypair, already loaded from `<role_uid>.sec`
