@@ -920,6 +920,7 @@ ZMQ to the same pattern.
               │ #267 doc-sync bundle                       │
               │ #268 producer hardening (H3a..d)           │
               │ #269 consumer_attach API scope             │
+              │ #279 Mechanism enum widening (queue leak)  │
               └────────────────────────────────────────────┘
                                 │
                                 ▼
@@ -964,7 +965,7 @@ ZMQ to the same pattern.
 
 | ID | Task | Trigger | Catches |
 |---|---|---|---|
-| REVIEW-A | #271 | After #266+#267+#268+#269 | Drift from rapid sequential commits; doc/code consistency before consumer-dial complexity lands |
+| REVIEW-A | #271 | After #266+#267+#268+#269+#279 | Drift from rapid sequential commits; doc/code consistency before consumer-dial complexity lands |
 | REVIEW-B | #274 | After #272+#273 | Consumer-side correctness pre-legacy-deletion; cutover completeness; last gate where legacy path can fall back |
 | REVIEW-C | #276 | After #275 | Deletion completeness; layout-hash bump consequences; recovery-path integrity post-Core-Structure change |
 | REVIEW-D | #277 | After #257+#258 | Test contract pins reality (not just outcome assertions); §9 D4 sequence pinned at L3; allowlist+revocation cycle exercised at L4 |
@@ -1051,6 +1052,7 @@ hardcoded-zero `shm_secret` — a typo-catcher, not an auth check.
 | **1i-doc-sync** | **#267** | **⏸** | Doc-vs-code bundle: HEP-0041 §5.1 `strip_unix_scheme`+mkdir, §6.1 layering+L2c→L1 edge, §6.3 `borrow_fd`, §9 D4 + HEP-0036 §I11.1 + §3.6 diagram `_RSP→_ACK`, HEP-0036 §4.1 ChannelAccessEntry historical, HEP-0036 §I8 SO_PEERCRED cite fix, HEP-0031 §4.3 `shm_accept_loop` row, non-Linux `#error` symmetry for L2c, broker_proto version-comment decision, L2/L3 known limitations |
 | **1i-prod-hardening** | **#268** | **⏸** | H3a defer accept-spawn past `set_value(true)` + H3b `teardown_infrastructure_` on REG_ACK fail + H3c broker REG_REQ endpoint validation + H3d stale-socket probe-then-unlink |
 | **1i-api-scope** | **#269** | **⏸** | `RoleAPIBase::consumer_attach` script-binding scope decision (verify engine bindings; make internal or `SCRIPT_PRIVATE`) |
+| **Mechanism enum widening** | **#279** | **⏸** | `hub::Mechanism` enum is ZMQ-shaped (`Uninitialized | Curve`); `api.queue_mechanism(side)` returns misleading `Uninitialized` for SHM channels.  Designer decision: widen to include `ShmCapability` (Option A) vs drop `queue_mechanism` in favor of `is_channel_ready` (Option B).  Last queue-layer abstraction leak from the 2026-06-22 architectural assessment. |
 | **★ REVIEW-A** | **#271** | **⏸** | First milestone — gates 1i-mig-4 start |
 | 1i-mig-4 | #272 | ⏸ | Consumer dial in `apply_consumer_reg_ack` + `RxQueueOptions::shm_capability_fd` + `build_rx_queue` dispatch (biggest single piece, ~150 LOC) |
 | 1i-mig-5 | #273 | ⏸ | Cutover + L3 worker fixture migration |
