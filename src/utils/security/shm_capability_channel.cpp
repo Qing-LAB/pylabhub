@@ -224,20 +224,58 @@ MemfdProducer::bind_endpoint(const std::string &endpoint)
         // Best-effort — bind(2) below surfaces the real failure.
     }
 
+    // Populate sockaddr BEFORE the live-peer probe so the probe and
+    // the bind both target the same path.
+    addr.sun_family = AF_UNIX;
+    std::memcpy(addr.sun_path, sock_path.c_str(), sock_path.size());
+    addr.sun_path[sock_path.size()] = '\0';
+
     const int sock = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (sock == -1)
     {
         return false;
     }
 
-    // Best-effort cleanup of a stale socket left by a prior crash.  The
-    // recovery semantic is: a fresh process inheriting the same channel
-    // identity should overwrite any leftover path, not refuse to start.
-    ::unlink(sock_path.c_str());
-
-    addr.sun_family = AF_UNIX;
-    std::memcpy(addr.sun_path, sock_path.c_str(), sock_path.size());
-    addr.sun_path[sock_path.size()] = '\0';
+    // HEP-CORE-0041 1i-prod-hardening H3d — probe-then-unlink to
+    // avoid silently clobbering a live producer.  An unconditional
+    // unlink-before-bind would let two role hosts that picked the
+    // same channel name silently steal the socket from each other
+    // (same-uid race; SO_PEERCRED doesn't protect within one uid).
+    // Behaviour:
+    //   - connect() succeeds → live peer is already bound.  Refuse.
+    //   - connect() fails with ECONNREFUSED → stale socket file (path
+    //     exists, listener gone).  Safe to unlink + proceed.
+    //   - connect() fails with ENOENT → no path; no unlink needed
+    //     (unconditional unlink would be a no-op anyway).
+    //   - any other errno → can't determine state; refuse
+    //     conservatively rather than risk clobbering.
+    {
+        const int probe = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        if (probe == -1)
+        {
+            ::close(sock);
+            return false;
+        }
+        const int rc = ::connect(probe,
+                                  reinterpret_cast<const sockaddr *>(&addr),
+                                  sizeof(addr));
+        const int captured_errno = errno;
+        ::close(probe);
+        if (rc == 0)
+        {
+            // Live peer responded.  Refuse to clobber.
+            ::close(sock);
+            return false;
+        }
+        if (captured_errno != ECONNREFUSED && captured_errno != ENOENT)
+        {
+            // Unknown error (EACCES, EINVAL, …) — can't safely unlink.
+            ::close(sock);
+            return false;
+        }
+        // Safe to unlink (ECONNREFUSED = stale, ENOENT = absent).
+        ::unlink(sock_path.c_str());
+    }
 
     if (::bind(sock, reinterpret_cast<const sockaddr *>(&addr), sizeof(addr)) == -1)
     {

@@ -322,6 +322,7 @@ void ProducerRoleHost::worker_main_()
         if (!api_ref.start_handler_threads(std::move(handler)))
         {
             LOGGER_ERROR("[prod] start_handler_threads failed");
+            teardown_infrastructure_();  // H3b — unwind L1 socket + queues
             promise_ref.set_value(false);
             return;
         }
@@ -388,6 +389,7 @@ void ProducerRoleHost::worker_main_()
             // a port-holder with no peers).
             LOGGER_ERROR("[prod] Broker registration failed — "
                          "aborting role startup");
+            teardown_infrastructure_();  // H3b — unwind L1 socket + queues
             promise_ref.set_value(false);
             return;
         }
@@ -403,24 +405,13 @@ void ProducerRoleHost::worker_main_()
         {
             LOGGER_ERROR("[prod] apply_producer_reg_ack failed — "
                          "tx queue did not activate; aborting startup");
+            teardown_infrastructure_();  // H3b — unwind L1 socket + queues
             promise_ref.set_value(false);
             return;
         }
         auto hub_max = scripting::RoleAPIBase::extract_hub_heartbeat_max(*reg_result);
         api_ref.install_heartbeat(config_.timing().heartbeat_interval_ms,
                                    hub_max);
-
-        // HEP-CORE-0041 1i-mig-2b-2 — for SHM TX channels, wire the
-        // L2b acceptor + L2c orchestrator + accept thread on top of
-        // the L1 transport that prepare_tx_capability_ created.  The
-        // helper lives on RoleHostFrame (1i-mig-2c M3 extraction) so
-        // ProcessorRoleHost (1i-mig-3) inherits the same wiring.
-        // No-op when shm_transport_ is null (ZMQ TX channels).
-        if (shm_transport_ && !spawn_shm_auth_listener_())
-        {
-            promise_ref.set_value(false);
-            return;
-        }
     }
 
     // Step 6e: Startup coordination — wait for prerequisite roles (HEP-0023).
@@ -431,9 +422,29 @@ void ProducerRoleHost::worker_main_()
         if (!scripting::wait_for_roles(api_ref, config_.startup().wait_for_roles, "[prod]"))
         {
             LOGGER_ERROR("[prod] Startup coordination failed — required roles not available");
+            teardown_infrastructure_();  // H3b — unwind L1 socket + queues
             promise_ref.set_value(false);
             return;
         }
+    }
+
+    // Step 6f: Spawn SHM accept thread (HEP-CORE-0041 1i-prod-hardening H3a).
+    //
+    // Moved here from Step 6 (was spawned right after apply_reg_ack)
+    // because spawning earlier admits consumers to the SHM endpoint
+    // BEFORE Step 6e wait_for_roles confirms prerequisites are
+    // satisfied.  If a prerequisite never comes live, consumers were
+    // being served the SHM fd against a role that never reached
+    // "live" state from the framework's perspective.  Sequencing now:
+    // register -> apply_reg_ack -> install_heartbeat -> wait_for_roles
+    // -> spawn -> set_value(true).  If spawn fails, we can still
+    // teardown + set_value(false) cleanly because set_value hasn't
+    // fired yet.  No-op when shm_transport_ is null (ZMQ TX channels).
+    if (shm_transport_ && !spawn_shm_auth_listener_())
+    {
+        teardown_infrastructure_();  // H3b — unwind L1 socket + queues
+        promise_ref.set_value(false);
+        return;
     }
 
     // Step 7: Signal ready.

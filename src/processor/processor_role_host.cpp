@@ -352,6 +352,7 @@ void ProcessorRoleHost::worker_main_()
         if (!api_ref.start_handler_threads(std::move(handler)))
         {
             LOGGER_ERROR("[proc] start_handler_threads failed");
+            teardown_infrastructure_();  // H3b — unwind L1 socket + queues
             promise_ref.set_value(false);
             return;
         }
@@ -422,6 +423,7 @@ void ProcessorRoleHost::worker_main_()
         {
             LOGGER_ERROR("[proc] Output producer registration failed — "
                          "aborting role startup");
+            teardown_infrastructure_();  // H3b — unwind L1 socket + queues
             promise_ref.set_value(false);
             return;
         }
@@ -433,6 +435,7 @@ void ProcessorRoleHost::worker_main_()
         {
             LOGGER_ERROR("[proc] apply_producer_reg_ack failed — "
                          "Tx queue did not reach Active state");
+            teardown_infrastructure_();  // H3b — unwind L1 socket + queues
             promise_ref.set_value(false);
             return;
         }
@@ -447,6 +450,7 @@ void ProcessorRoleHost::worker_main_()
         {
             LOGGER_ERROR("[proc] Input consumer registration failed — "
                          "aborting role startup");
+            teardown_infrastructure_();  // H3b — unwind L1 socket + queues
             promise_ref.set_value(false);
             return;
         }
@@ -458,6 +462,7 @@ void ProcessorRoleHost::worker_main_()
         {
             LOGGER_ERROR("[proc] apply_consumer_reg_ack failed — "
                          "Rx queue did not reach Active state");
+            teardown_infrastructure_();  // H3b — unwind L1 socket + queues
             promise_ref.set_value(false);
             return;
         }
@@ -468,18 +473,6 @@ void ProcessorRoleHost::worker_main_()
 
         api_ref.install_heartbeat(config_.timing().heartbeat_interval_ms,
                                    hub_max);
-
-        // HEP-CORE-0041 1i-mig-3 — for SHM OUT channels, wire the L2b
-        // acceptor + L2c orchestrator + accept thread on top of the L1
-        // transport that prepare_tx_capability_ created.  Symmetric
-        // with ProducerRoleHost (1i-mig-2b-2); helper lives on
-        // RoleHostFrame (1i-mig-2c M3).  No-op when shm_transport_ is
-        // null (ZMQ OUT channels).
-        if (shm_transport_ && !spawn_shm_auth_listener_())
-        {
-            promise_ref.set_value(false);
-            return;
-        }
     }
 
     // Step 6e: Startup coordination — wait for prerequisite roles (HEP-0023).
@@ -490,9 +483,26 @@ void ProcessorRoleHost::worker_main_()
         if (!scripting::wait_for_roles(api_ref, config_.startup().wait_for_roles, "[proc]"))
         {
             LOGGER_ERROR("[proc] Startup coordination failed — required roles not available");
+            teardown_infrastructure_();  // H3b — unwind L1 socket + queues
             promise_ref.set_value(false);
             return;
         }
+    }
+
+    // Step 6f: Spawn SHM accept thread (HEP-CORE-0041 1i-prod-hardening H3a).
+    //
+    // Moved here from Step 6 (was spawned right after install_heartbeat)
+    // because spawning earlier admits consumers to the SHM endpoint
+    // BEFORE Step 6e wait_for_roles confirms prerequisites are
+    // satisfied.  Sequencing now: register x2 + apply_reg_ack x2 +
+    // install_heartbeat + wait_for_roles + spawn + set_value(true).
+    // Symmetric with ProducerRoleHost 1i-prod-hardening.  No-op when
+    // shm_transport_ is null (ZMQ OUT channels).
+    if (shm_transport_ && !spawn_shm_auth_listener_())
+    {
+        teardown_infrastructure_();  // H3b — unwind L1 socket + queues
+        promise_ref.set_value(false);
+        return;
     }
 
     // Step 7: Signal ready.

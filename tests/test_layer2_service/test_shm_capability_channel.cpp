@@ -44,6 +44,8 @@
 #include <type_traits>
 #include <vector>
 
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 namespace fs = std::filesystem;
@@ -366,4 +368,61 @@ TEST_F(ShmCapabilityChannelTest, BindCreatesMissingParentDirectory)
     std::error_code ec;
     fs::remove(sock, ec);
     fs::remove(nested_parent, ec);
+}
+
+// ── HEP-CORE-0041 1i-prod-hardening H3d: probe-then-unlink ─────────────
+//
+// Pre-H3d `bind_endpoint` unconditionally `unlink`'d the path before
+// `bind`.  Two role hosts that picked the same channel name would
+// silently steal the socket from each other (same-uid race;
+// SO_PEERCRED can't protect within one uid).  H3d adds a connect()
+// probe: if a live peer is on the path, refuse to clobber.
+
+TEST_F(ShmCapabilityChannelTest, BindRefusesWhenLivePeerHoldsThePath)
+{
+    const std::string path = unique_socket_path("h3d_live");
+
+    // First producer takes the path successfully.
+    auto first  = create_shm_capability_producer(1024);
+    ASSERT_TRUE(first->bind_endpoint(path));
+
+    // Second producer attempts the same path — the H3d probe must
+    // connect() successfully (first is listening) and refuse to
+    // unlink + rebind.  Pre-H3d this would silently succeed and
+    // orphan first's listen_fd_.
+    auto second = create_shm_capability_producer(1024);
+    EXPECT_FALSE(second->bind_endpoint(path))
+        << "bind_endpoint must refuse to clobber a live peer's socket "
+           "(HEP-CORE-0041 1i-prod-hardening H3d probe-then-unlink).";
+}
+
+TEST_F(ShmCapabilityChannelTest, BindCleansUpStaleSocketFile)
+{
+    const std::string path = unique_socket_path("h3d_stale");
+
+    // Manually create a stale AF_UNIX socket file at the path with NO
+    // listener bound.  This simulates the "previous process crashed
+    // without unlink" scenario H3d still needs to handle gracefully.
+    {
+        const int sk = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        ASSERT_NE(sk, -1);
+        sockaddr_un addr{};
+        addr.sun_family = AF_UNIX;
+        ASSERT_LT(path.size(), sizeof(addr.sun_path));
+        std::memcpy(addr.sun_path, path.c_str(), path.size());
+        ASSERT_EQ(::bind(sk, reinterpret_cast<const sockaddr *>(&addr),
+                          sizeof(addr)),
+                  0);
+        // CLOSE without listen() — connect() to this path returns
+        // ECONNREFUSED (file exists, no listener accepts).
+        ::close(sk);
+    }
+
+    // bind_endpoint should detect ECONNREFUSED, recognize the stale
+    // file, unlink it, and rebind successfully.
+    auto producer = create_shm_capability_producer(1024);
+    EXPECT_TRUE(producer->bind_endpoint(path))
+        << "bind_endpoint must unlink + rebind when the path exists "
+           "but no listener is there (stale socket from prior crash; "
+           "HEP-CORE-0041 1i-prod-hardening H3d ECONNREFUSED branch).";
 }

@@ -1542,12 +1542,32 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     // producer's L2 capability-transport endpoint on REG_REQ; broker
     // stores it on the per-producer entry so the CONSUMER_REG_ACK
     // builder can echo it back to authorized consumers (§5.3).
-    // Empty for ZMQ channels.  No validation here beyond the empty
-    // string check the builder applies: the helper rejects
-    // invalid channel-name characters and the consumer side will
-    // surface a transport failure if the producer never binds.
+    // Empty for ZMQ channels.
+    //
+    // HEP-CORE-0041 1i-prod-hardening H3c — for SHM channels, REJECT
+    // an empty `shm_capability_endpoint` at the wire.  Without the
+    // endpoint string, broker can't echo it to consumers in
+    // CONSUMER_REG_ACK, and consumers will fail with a confusing
+    // "connect to empty path" error after registration.  Symmetric
+    // with the `zmq_pubkey` enforcement above for ZMQ channels.
     primary_producer.shm_capability_endpoint =
         req.value("shm_capability_endpoint", "");
+    const std::string data_transport_req =
+        req.value("data_transport", std::string{"shm"});
+    if (data_transport_req == "shm" &&
+        primary_producer.shm_capability_endpoint.empty())
+    {
+        LOGGER_WARN(
+            "Broker: REG_REQ rejected — channel '{}' role_uid='{}' "
+            "data_transport='shm' but `shm_capability_endpoint` is empty "
+            "(HEP-CORE-0041 §5.1 — SHM channels MUST publish their L2 "
+            "capability endpoint so the broker can echo it to authorized "
+            "consumers in CONSUMER_REG_ACK).",
+            channel_name, role_uid);
+        return make_error(corr_id, "INVALID_REQUEST",
+                          "REG_REQ data_transport='shm' requires non-empty "
+                          "`shm_capability_endpoint` (HEP-CORE-0041 §5.1)");
+    }
     if (req.contains("metadata") && req["metadata"].is_object())
     {
         primary_producer.metadata = req["metadata"];
