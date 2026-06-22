@@ -19,9 +19,19 @@
 #include "utils/role_host_core.hpp"
 #include "utils/role_host_helpers.hpp"          // setup_inbox_facility
 #include "utils/schema_utils.hpp"               // compute_schema_size
+#include "utils/security/attach_protocol.hpp"   // AttachProtocolAcceptor + SeckeyAccessor
+#include "utils/security/key_store.hpp"         // key_store() + kRoleIdentityName
+#include "utils/security/shm_attach_orchestrator.hpp"
+#include "utils/security/shm_capability_channel.hpp"
+#include "utils/thread_manager.hpp"             // ThreadManager::SlotContext
 
+#include <algorithm>
+#include <functional>
 #include <optional>
+#include <span>
 #include <utility>
+
+#include <unistd.h>     // ::getuid
 
 namespace pylabhub::scripting
 {
@@ -317,12 +327,197 @@ void RoleHostFrame::teardown_infrastructure_()
                      frame_cfg_.role_tag);
     }
 
-    // HEP-CORE-0041 1i-mig-2: release the L1 transport (and post-2b-2
-    // the orchestrator + acceptor) AFTER `api().close_queues()` has
-    // reset `tx_queue` — the ShmQueue holds a borrowed fd from the L1
+    // HEP-CORE-0041 1i-mig-2: release the L1 transport + L2b acceptor +
+    // L2c orchestrator AFTER `api().close_queues()` has reset
+    // `tx_queue` — the ShmQueue held a borrowed fd from the L1
     // transport, so the transport MUST outlive the queue's
-    // destruction.  Default no-op; producer / processor override.
+    // destruction.  Default impl (1i-mig-2c M3 extraction) handles
+    // LIFO release; no-op when shm_transport_ is null (ZMQ TX or no
+    // TX presence).
     cleanup_tx_capability_();
+}
+
+// ============================================================================
+// cleanup_tx_capability_ — HEP-CORE-0041 1i-mig-2c M3 default impl
+// ============================================================================
+//
+// Single owner of the SHM auth stack's teardown ordering, shared across
+// every role host with a SHM TX presence.  Pre-1i-mig-2c this lived as
+// a duplicated override on ProducerRoleHost; 1i-mig-3 (processor) would
+// have needed a byte-equivalent copy.  Now both inherit the default.
+
+void RoleHostFrame::cleanup_tx_capability_()
+{
+    // Release order: orchestrator → acceptor → transport.  Each holds
+    // references (non-owning) to the one(s) below it.  By the time
+    // this fires, teardown_infrastructure_ has called
+    // `api().stop_handler_threads()` which drains the role host's
+    // ThreadManager (HEP-CORE-0031 §4.1 Shutdown Contract) — including
+    // the `shm_accept_loop` slot.  So no thread is still executing
+    // inside the orchestrator when we reset it here.
+    if (shm_orchestrator_)
+    {
+        LOGGER_INFO("[{}] event=ShmAttachOrchestratorReleased "
+                    "(HEP-CORE-0041 1i-mig-2b-2)",
+                    frame_cfg_.role_tag);
+        shm_orchestrator_.reset();
+    }
+    if (shm_acceptor_)
+    {
+        shm_acceptor_.reset();
+    }
+    if (shm_transport_)
+    {
+        LOGGER_INFO("[{}] event=ShmCapabilityTransportReleased "
+                    "(HEP-CORE-0041 1i-mig-2)",
+                    frame_cfg_.role_tag);
+        shm_transport_.reset();
+    }
+}
+
+// ============================================================================
+// spawn_shm_auth_listener_ — HEP-CORE-0041 1i-mig-2c M3 extraction
+// ============================================================================
+//
+// Builds the L2b AttachProtocolAcceptor + L2c ShmAttachOrchestrator on
+// top of shm_transport_, then spawns the accept thread on
+// `api().thread_manager()`.  Shared across ProducerRoleHost + the
+// future ProcessorRoleHost — both call this exactly once, after
+// `apply_producer_reg_ack` succeeds (the orchestrator's CacheLookup
+// reads the allowlist cache seeded by REG_ACK).
+
+bool RoleHostFrame::spawn_shm_auth_listener_()
+{
+    namespace sec = pylabhub::utils::security;
+
+    if (!shm_transport_)
+    {
+        LOGGER_ERROR("[{}] spawn_shm_auth_listener_: shm_transport_ is "
+                     "null — prepare_tx_capability_ must run first "
+                     "(HEP-CORE-0041 1i-mig-2c)",
+                     frame_cfg_.role_tag);
+        return false;
+    }
+
+    auto &api_ref = this->api();
+    const std::string tx_ch        = this->config().out_channel();
+    const std::string producer_uid = api_ref.uid();
+
+    // SeckeyAccessor: read the role's own seckey via HEP-CORE-0040
+    // §8.5.1 use-not-export discipline.  The string_view → span<const
+    // byte> shim adapts KeyStore's signature to AttachProtocol's.
+    sec::SeckeyAccessor seckey_accessor =
+        [](std::function<void(std::span<const std::byte>)> use) {
+            sec::key_store().with_seckey(
+                sec::kRoleIdentityName,
+                [&](std::string_view sv) {
+                    use(std::span<const std::byte>(
+                        reinterpret_cast<const std::byte *>(sv.data()),
+                        sv.size()));
+                });
+        };
+
+    try
+    {
+        shm_acceptor_ = std::make_unique<sec::AttachProtocolAcceptor>(
+            *shm_transport_,
+            ::getuid(),  // SO_PEERCRED uid sanity (HEP-0036 §I8)
+            std::move(seckey_accessor));
+    }
+    catch (const std::exception &e)
+    {
+        LOGGER_ERROR("[{}] AttachProtocolAcceptor ctor threw for "
+                     "channel '{}': {}",
+                     frame_cfg_.role_tag, tx_ch, e.what());
+        return false;
+    }
+
+    // CacheLookup: the role's local script-observable cache
+    // (HEP-CORE-0036 §I11.1 — one cache scripts read).
+    sec::ShmAttachOrchestrator::CacheLookup cache_lookup =
+        [&api_ref, tx_ch](const std::string &pk) {
+            const auto peers = api_ref.allowed_peers(tx_ch);
+            return std::any_of(peers.begin(), peers.end(),
+                [&](const auto &p) { return p.pubkey == pk; });
+        };
+
+    // BrokerQuery: route through RoleAPIBase::consumer_attach, which
+    // finds the right BRC for this channel and runs the sync
+    // CONSUMER_ATTACH_REQ.  Producer role_uid identifies the role to
+    // the broker so it can correlate the channel.
+    sec::ShmAttachOrchestrator::BrokerQuery broker_query =
+        [&api_ref, tx_ch, producer_uid](
+            const std::string &consumer_pk,
+            const std::string &consumer_role_uid) {
+            return api_ref.consumer_attach(
+                tx_ch, consumer_pk, consumer_role_uid,
+                producer_uid, /*timeout_ms=*/5000);
+        };
+
+    sec::ShmAttachOrchestrator::Config cfg{
+        tx_ch, producer_uid,
+        std::move(cache_lookup), std::move(broker_query)};
+
+    try
+    {
+        shm_orchestrator_ = std::make_unique<sec::ShmAttachOrchestrator>(
+            *shm_acceptor_, *shm_transport_, std::move(cfg));
+    }
+    catch (const std::exception &e)
+    {
+        LOGGER_ERROR("[{}] ShmAttachOrchestrator ctor threw for "
+                     "channel '{}': {}",
+                     frame_cfg_.role_tag, tx_ch, e.what());
+        shm_acceptor_.reset();
+        return false;
+    }
+
+    // HEP-CORE-0031 §2 (role-scope thread) + §4.1 Shutdown Contract:
+    // spawn on api.thread_manager() with the SlotContext-aware
+    // overload.  Poll ctx.shutdown_requested() with a 100 ms accept
+    // timeout so graceful teardown is bounded.
+    const bool spawned = api_ref.thread_manager().spawn(
+        "shm_accept_loop",
+        [this](pylabhub::utils::ThreadManager::SlotContext &ctx) {
+            while (!ctx.shutdown_requested())
+            {
+                if (!shm_orchestrator_) break;
+                // Per-iteration isolation (HEP-CORE-0041 1i-mig-2c
+                // H2): the orchestrator catches handshake-level
+                // errors internally, but post-broker-query paths
+                // (LOGGER allocation, send_capability edge cases)
+                // can still escape.  Catch + continue keeps the
+                // loop alive across one bad attach.
+                try
+                {
+                    (void)shm_orchestrator_->accept_and_serve_one(
+                        std::chrono::milliseconds(100));
+                }
+                catch (const std::exception &e)
+                {
+                    LOGGER_WARN(
+                        "[{}] shm_accept_loop iteration threw '{}' "
+                        "— continuing (HEP-CORE-0041 §9 D4 "
+                        "per-attach isolation)",
+                        frame_cfg_.role_tag, e.what());
+                }
+            }
+        });
+    if (!spawned)
+    {
+        LOGGER_ERROR("[{}] failed to spawn shm_accept_loop on "
+                     "ThreadManager for channel '{}' "
+                     "(HEP-CORE-0041 1i-mig-2b-2)",
+                     frame_cfg_.role_tag, tx_ch);
+        shm_orchestrator_.reset();
+        shm_acceptor_.reset();
+        return false;
+    }
+
+    LOGGER_INFO("[{}] event=ShmAcceptLoopSpawned channel='{}' "
+                "(HEP-CORE-0041 §9 D4 + 1i-mig-2b-2)",
+                frame_cfg_.role_tag, tx_ch);
+    return true;
 }
 
 } // namespace pylabhub::scripting

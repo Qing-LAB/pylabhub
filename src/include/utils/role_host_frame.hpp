@@ -30,6 +30,13 @@ namespace pylabhub::hub
 class InboxQueue;
 } // namespace pylabhub::hub
 
+namespace pylabhub::utils::security
+{
+class IShmCapabilityProducer;
+class AttachProtocolAcceptor;
+class ShmAttachOrchestrator;
+} // namespace pylabhub::utils::security
+
 namespace pylabhub::scripting
 {
 
@@ -180,12 +187,66 @@ class PYLABHUB_UTILS_EXPORT RoleHostFrame : public RoleHostBase
         return true;
     }
 
-    /// HEP-CORE-0041 1i-mig-2 cleanup hook: derived role host releases
-    /// the L1 transport (and, after 2b-2, the orchestrator + acceptor)
-    /// AFTER `teardown_infrastructure_` has reset `tx_queue` — the
-    /// ShmQueue holds a borrowed fd from the L1 transport, so the
-    /// transport must outlive the queue's destruction.  Default no-op.
-    virtual void cleanup_tx_capability_() {}
+    /// HEP-CORE-0041 1i-mig-2 cleanup hook: releases shm_orchestrator_
+    /// → shm_acceptor_ → shm_transport_ in LIFO destruction order
+    /// AFTER `teardown_infrastructure_` has reset `tx_queue` (the
+    /// ShmQueue held a borrowed fd from the L1 transport).
+    ///
+    /// Default impl handles all three pointers correctly — derived
+    /// role hosts should NOT override unless they have side-effects
+    /// to add (no current role host does).
+    virtual void cleanup_tx_capability_();
+
+    /// HEP-CORE-0041 1i-mig-2c (M3 extraction): build the L2b acceptor
+    /// + L2c orchestrator on top of `shm_transport_` and spawn the
+    /// accept thread on `api().thread_manager()`.  Shared across every
+    /// role host with a SHM TX presence (Producer today, Processor
+    /// after 1i-mig-3).
+    ///
+    /// Pre-conditions:
+    ///   - `shm_transport_` is non-null (caller checked
+    ///     `prepare_tx_capability_` succeeded for SHM).
+    ///   - `apply_producer_reg_ack` has been called and seeded the
+    ///     allowlist cache (the orchestrator's CacheLookup callback
+    ///     reads it).
+    ///
+    /// Effect on success:
+    ///   - `shm_acceptor_` + `shm_orchestrator_` populated.
+    ///   - Accept thread spawned on the role host's ThreadManager
+    ///     (peer slot, named "shm_accept_loop", HEP-CORE-0031 §2
+    ///     categorization).
+    ///   - LOGGER_INFO "event=ShmAcceptLoopSpawned" marker emitted.
+    ///
+    /// Returns false on any failure (ctor throw, spawn refusal);
+    /// caller sets the worker promise to false + returns.  Errors
+    /// are logged at ERROR level with the role's `frame_cfg_.role_tag`
+    /// prefix.
+    [[nodiscard]] bool spawn_shm_auth_listener_();
+
+    /// HEP-CORE-0041 1i-mig-2 members: per-channel SHM auth stack.
+    ///
+    /// Declaration order = construction order = REVERSE destruction:
+    ///   - `shm_transport_` (L1)    — constructed first by
+    ///     `prepare_tx_capability_`; destroyed LAST.
+    ///   - `shm_acceptor_` (L2b)    — constructed by
+    ///     `spawn_shm_auth_listener_` AFTER apply_reg_ack;
+    ///     references the transport.
+    ///   - `shm_orchestrator_` (L2c)— constructed last; references
+    ///     both acceptor and transport.
+    /// Destruction order: orchestrator → acceptor → transport (LIFO).
+    ///
+    /// The accept thread spawned on `api().thread_manager()` is
+    /// joined by the TM Shutdown Contract (HEP-CORE-0031 §4.1) via
+    /// `api().stop_handler_threads()` inside
+    /// `teardown_infrastructure_`, BEFORE `cleanup_tx_capability_`
+    /// resets these members.  So no thread is still inside the
+    /// orchestrator when the reset fires.
+    ///
+    /// All three are nullptr for ZMQ TX channels and for role hosts
+    /// without a TX presence (Consumer).
+    std::unique_ptr<utils::security::IShmCapabilityProducer> shm_transport_;
+    std::unique_ptr<utils::security::AttachProtocolAcceptor> shm_acceptor_;
+    std::unique_ptr<utils::security::ShmAttachOrchestrator>  shm_orchestrator_;
 
   private:
     RoleHostFrameConfig frame_cfg_;

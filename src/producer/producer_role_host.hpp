@@ -43,13 +43,6 @@ namespace pylabhub::hub
 class InboxQueue;
 } // namespace pylabhub::hub
 
-namespace pylabhub::utils::security
-{
-class IShmCapabilityProducer;
-class AttachProtocolAcceptor;
-class ShmAttachOrchestrator;
-} // namespace pylabhub::utils::security
-
 namespace pylabhub::producer
 {
 
@@ -108,19 +101,22 @@ class PYLABHUB_UTILS_EXPORT ProducerRoleHost final : public scripting::RoleHostF
     /// the transport's borrowed fd.  No-op (returns true) for ZMQ TX.
     /// Called between `make_tx_opts` and `build_tx_queue` inside
     /// RoleHostFrame::setup_infrastructure_.
+    ///
+    /// Stores the L1 transport in `RoleHostFrame::shm_transport_`
+    /// (1i-mig-2c M3 — three-pointer bundle now lives on the frame so
+    /// the L2b+L2c+spawn helper can reuse it across role hosts).
     bool prepare_tx_capability_(hub::TxQueueOptions &tx_opts,
                                   const std::string   &tx_channel) override;
 
-    /// HEP-CORE-0041 1i-mig-2 cleanup: release the L1 transport AFTER
-    /// `api().close_queues()` has reset the ShmQueue (the queue holds
-    /// a borrowed fd from this transport).  Called from
-    /// RoleHostFrame::teardown_infrastructure_ tail.
-    void cleanup_tx_capability_() override;
+    // cleanup_tx_capability_ inherited from RoleHostFrame (1i-mig-2c
+    // M3 — default impl LIFO-resets the three SHM auth pointers).
 
     // ── Producer-specific members ────────────────────────────────────────────
     // Shared state — core_, config_, engine_, api_, ready_promise_ — lives in
     // RoleHostBase.  Inbox state (`inbox_queue_`, `inbox_cfg_`) lives in
-    // RoleHostFrame.
+    // RoleHostFrame.  SHM auth listener state (`shm_transport_`,
+    // `shm_acceptor_`, `shm_orchestrator_`) also lives in RoleHostFrame
+    // post-1i-mig-2c M3.
 
     // Local cache of the resolved slot SchemaSpec.  Read by wire-emission
     // code (REG payload composition) later in `worker_main_`; also fed into
@@ -131,26 +127,6 @@ class PYLABHUB_UTILS_EXPORT ProducerRoleHost final : public scripting::RoleHostF
 
     // Lifecycle module name (for UnloadModule on shutdown).
     std::string                             engine_module_name_;
-
-    /// HEP-CORE-0041 1i-mig-2: per-channel L1 SHM capability transport.
-    /// Owned by the role host across the channel's lifetime; ShmQueue
-    /// holds a borrowed fd via `set_shm_capability_fd` (HEP-0041
-    /// §3.1 fd-ownership model).  Released in `cleanup_tx_capability_`
-    /// AFTER `api().close_queues()` has reset the ShmQueue, so the
-    /// borrowed fd is no longer in use.  Empty (nullptr) for ZMQ TX
-    /// channels.  Per HEP-CORE-0041 §10.1 substep 1i-mig-2 + 1i-mig-3,
-    /// processor role hosts mirror this pattern on the out side.
-    ///
-    /// Declaration order matters for destruction.  The accept thread
-    /// (spawned on `api.thread_manager()` in 1i-mig-2b-2) holds a
-    /// reference to `shm_orchestrator_` which holds references to
-    /// `shm_acceptor_` and `shm_transport_`.  The ThreadManager
-    /// Shutdown Contract (HEP-CORE-0031 §4.1) joins the accept slot
-    /// BEFORE `cleanup_tx_capability_` resets these members, so the
-    /// declared order is safe.
-    std::unique_ptr<utils::security::IShmCapabilityProducer> shm_transport_;
-    std::unique_ptr<utils::security::AttachProtocolAcceptor> shm_acceptor_;
-    std::unique_ptr<utils::security::ShmAttachOrchestrator>  shm_orchestrator_;
 };
 
 } // namespace pylabhub::producer
