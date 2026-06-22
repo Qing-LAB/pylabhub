@@ -176,18 +176,22 @@ Current critical path (each step blocks the next unless noted):
   state + `any_presence_authorized()` + data-loop outer guard
   (HB-4 + HB-5; also satisfies HEP-CORE-0036 §14.3 portion of #104).
 - **~~AUTH-4~~** (tasks **#164** + **#79**) — **SUPERSEDED 2026-06-16
-  by HEP-CORE-0041 (#244).**  The broker-mints-`shm_secret` design
-  retired in favor of capability-transport (`memfd_create` +
-  `SCM_RIGHTS` + pre-attach `CONSUMER_ATTACH_REQ` confirmation per
-  HEP-0041 §9 D4).  Replacement work tracked under the HEP-0041
-  implementation chain in `docs/todo/AUTH_TODO.md` § "HEP-0041
-  implementation chain": Phase 1 (#248, Linux/FreeBSD; 11 substeps
-  1a-1k) is the new production-readiness gate; Phases 2-3 (#TBD
-  macOS / Windows), Phase 4 (#247 framework crypto primitives),
-  Phase 5 (#246 ZMQ pre-confirm retrofit) follow.  #245 (POSIX 0600
-  interim hardening) KILLED 2026-06-17 — the named-SHM `shm_open`
-  path it would harden is deleted under Phase 1 substep 1i; the
-  interim was waste.
+  by HEP-CORE-0041 (#244).**  Replaced by capability-transport
+  (`memfd_create` + `SCM_RIGHTS` + pre-attach `CONSUMER_ATTACH_REQ`
+  per HEP-0041 §9 D4).  **Phase 1 status as of 2026-06-22:** substeps
+  1a-1h ✅ (#248-#255); 1i-mig-1/2a/2b-1/2b-2/2c review-fixes/2c M3/3
+  ✅ this session (commits `e283a4ac → 6f31a346`); 1i-mig-M3.5
+  (#266), 1i-doc-sync (#267), 1i-prod-hardening (#268),
+  1i-api-scope (#269) ⏸ next; 1i-mig-4 consumer dial (#272) ⏸ biggest
+  remaining piece; 1i-mig-5 cutover (#273) + 1i-cleanup (#275) +
+  1i-coverage (#270) + 1j (#257) + 1k (#258) + #262 mutual auth ⏸.
+  **Five REVIEW-A..E milestones (#271/#274/#276/#277/#278) gate the
+  remaining chain**; REVIEW-E is the Phase 1 production-ready final
+  gate.  Full chain + milestone schedule in `docs/todo/AUTH_TODO.md`
+  § "HEP-0041 implementation chain" + live tracker in HEP-0041 §10.1.
+  Phases 2-3 (cross-platform #259-#261), Phase 4 (#247 framework
+  crypto), Phase 5 (#246 ZMQ pre-confirm retrofit) follow.  #245
+  (POSIX 0600 interim hardening) KILLED 2026-06-17.
 - **AUTH-5** (task **#104**) — Sibling-HEP doc sync; 7 of 8 are pure
   doc edits.  L (multi-area).
 - **AUTH-6** (task **#154**, in-progress) — Re-create L3 broker tests

@@ -888,11 +888,114 @@ after #248 ships.
 
 ## HEP-0041 implementation chain — replaces retired AUTH-4
 
-**Status (2026-06-16):** HEP-CORE-0041 (SHM Channel Auth) shipped
-(#244, `94b04576`).  Implementation breaks into 5 phases per
-HEP-0041 §10.  Phase 1 is the production-readiness gate; Phases 2-3
-are cross-platform expansion; Phase 4 is general crypto primitives;
-Phase 5 retrofits ZMQ to the same pattern.
+**Status (2026-06-22):** HEP-CORE-0041 (SHM Channel Auth) shipped
+(#244, `94b04576`).  Phase 1 substeps 1a-1h ✅ (#248-#255);
+1i (#256) is split into 1i-mig (production wiring) + 1i-cleanup
+(legacy deletion).  1i-mig-1/2a/2b-1/2b-2/2c/M3/3 ✅ this session
+(commits `e283a4ac → 6f31a346`); 1i-mig-M3.5/doc-sync/prod-hardening/
+api-scope (#266-#269) ⏸; 1i-mig-4 (consumer dial, #272) ⏸ next big
+piece; 1i-mig-5 (#273) + 1i-cleanup (#275) + 1j (#257) + 1k (#258) +
+#262 mutual auth ⏸.  **Five fixed review milestones REVIEW-A..E
+(#271/#274/#276/#277/#278) gate the remaining chain — see schedule
+below + HEP-0041 §10.1.**
+
+Implementation breaks into 5 phases per HEP-0041 §10.  Phase 1 is
+the production-readiness gate; Phases 2-3 are cross-platform
+expansion; Phase 4 is general crypto primitives; Phase 5 retrofits
+ZMQ to the same pattern.
+
+### Phase 1 critical path (post-2026-06-22 reconciliation)
+
+```
+┌─── shipped this session (2026-06-22) ───────────────────────────┐
+│ 1i-mig-1 ✅ (e283a4ac) ── 1i-mig-2a ✅ (e5575329)              │
+│   ── 1i-mig-2b-1 ✅ (31072b3e) ── 1i-mig-2b-2 ✅ (4bae7cfb)    │
+│   ── 1i-mig-2c review-fixes ✅ (78fc6b9d) ── M3 ✅ (8e05a821)  │
+│   ── 1i-mig-3 ✅ (6f31a346)                                     │
+└─────────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+              ┌────────── pre-1i-mig-4 cleanup ────────────┐
+              │ #266 M3.5 promote prepare_tx_capability_   │
+              │ #267 doc-sync bundle                       │
+              │ #268 producer hardening (H3a..d)           │
+              │ #269 consumer_attach API scope             │
+              └────────────────────────────────────────────┘
+                                │
+                                ▼
+                       ★ REVIEW-A (#271) ★
+                                │
+                                ▼
+                #272 1i-mig-4 (consumer dial) — BIGGEST
+                                │
+                                ▼
+                    #273 1i-mig-5 (cutover + test fixups)
+                                │
+                                ▼
+                       ★ REVIEW-B (#274) ★
+                                │
+                                ▼
+       #275 1i-cleanup (Core Structure Protocol for SharedMemoryHeader)
+                                │
+                                ▼
+                       ★ REVIEW-C (#276) ★
+                                │
+                                ▼
+           #270 1i-coverage L2 backfill ── #257 1j L3 tests
+                              │                    │
+                              └──────┬─────────────┘
+                                     ▼
+                              #258 1k L4 e2e
+                                     │
+                                     ▼
+                            ★ REVIEW-D (#277) ★
+                                     │
+                                     ▼
+                   #262 mutual auth (3rd handshake frame)
+                                     │
+                                     ▼
+                            ★ REVIEW-E (#278) ★
+                                     │
+                                     ▼
+                  🟢 PHASE 1 PRODUCTION-READY DECLARATION
+```
+
+### Review milestones — what each catches
+
+| ID | Task | Trigger | Catches |
+|---|---|---|---|
+| REVIEW-A | #271 | After #266+#267+#268+#269 | Drift from rapid sequential commits; doc/code consistency before consumer-dial complexity lands |
+| REVIEW-B | #274 | After #272+#273 | Consumer-side correctness pre-legacy-deletion; cutover completeness; last gate where legacy path can fall back |
+| REVIEW-C | #276 | After #275 | Deletion completeness; layout-hash bump consequences; recovery-path integrity post-Core-Structure change |
+| REVIEW-D | #277 | After #257+#258 | Test contract pins reality (not just outcome assertions); §9 D4 sequence pinned at L3; allowlist+revocation cycle exercised at L4 |
+| REVIEW-E | #278 | After #262 | Threat model alignment; mutual auth closes impersonation window; no residual one-way-auth assumptions in callers; cross-platform inherits symmetric handshake |
+
+Each milestone fires a parallel multi-agent review (4 angles:
+doc-vs-code, dead-code/duplication, gap/integration, edge-case).
+Don't compress them — each is calibrated to a different class of
+error.  Cost is ~5-15 min wall-clock per pass; benefit is bounded
+revisit scope when an error is found (at most one milestone's batch).
+
+### Pre-flights (#263/#264/#265) closed 2026-06-22
+
+All three preflight dependencies verified satisfied by 1i-mig-2b-2
+shipping (commit `4bae7cfb`):
+
+- **#263**: PeerAllowlist populated for SHM channels via
+  `apply_producer_reg_ack` (REG_ACK initial_allowlist seed) +
+  `handle_channel_auth_notifies` (CHANNEL_AUTH_CHANGED_NOTIFY +
+  GET_CHANNEL_AUTH refresh).  Orchestrator's CacheLookup reads
+  `api.allowed_peers(channel)` successfully.
+- **#264**: `BrokerRequestComm::consumer_attach` API at
+  `broker_request_comm.cpp:884-898` matches the orchestrator's
+  `BrokerQuery` callback shape (channel, consumer_pubkey,
+  consumer_role_uid, producer_role_uid, timeout_ms) →
+  `optional<json>`.  `RoleAPIBase::consumer_attach` added as public
+  router (script-binding scope tracked under #269).
+- **#265**: `SeckeyAccessor` in `RoleHostFrame::spawn_shm_auth_listener_`
+  uses `key_store().with_seckey(kRoleIdentityName, cb)` with a
+  string_view→span<const byte> adapter.  HEP-CORE-0040 §8.5.1
+  use-not-export discipline respected.
 
 **Sequencing rationale.**  Phase 1 establishes the pre-confirm
 contract on Linux/FreeBSD where the threat model is sharpest
@@ -925,21 +1028,41 @@ removes the legacy path entirely.
 transport's data-plane peer auth is the legacy `memcmp` against a
 hardcoded-zero `shm_secret` — a typo-catcher, not an auth check.
 
-**Substep plan (proposed; awaiting approval).**
+**Substep status (post-2026-06-22 reconciliation; live source: HEP-0041 §10.1).**
 
-| Step | Scope | Notes |
-|---|---|---|
-| 1a | `utils/security/shm_capability/` module skeleton: `IShmCapability` interface + factory; build wiring; PYLABHUB_UTILS_EXPORT surface for D8 reach | No backend yet; just the abstraction.  L2 unit test pins the interface. |
-| 1b | `MemfdShmCapability` backend: `memfd_create` + `ftruncate` + `mmap` + `dup` lifecycle + `SCM_RIGHTS` send/recv over `AF_UNIX`/`SOCK_STREAM` | Linux primary; FreeBSD `memfd_create` parity verified.  L2 backend unit test (round-trip a capability between two threads in one process). |
-| 1c | Producer-side Unix-socket listen + D4 steps 1-3 (consumer connect → `{role_uid, signed_nonce}` → `SO_PEERCRED` sanity) | Producer endpoint is broker-mediated like ZMQ — endpoint string in REG_REQ. |
-| 1d | Broker `CONSUMER_ATTACH_REQ` / `_ACK` handler: D4 steps 4-5; reads `authorized_consumer_pubkeys` from `ChannelAccessIndex`; replies `{status, denial_reason?}` | New wire frame; HEP-0007 wire-shape doc update. |
-| 1e | Producer-side D4 steps 6-7: cache divergence WARN per §9 table; signed_nonce verify; `SCM_RIGHTS` send on success | The four-way divergence-WARN table is the test contract. |
-| 1f | Consumer-side D4 receive: `SCM_RIGHTS` recv → fd → `mmap` → DataBlock attach via FD (not name) | DataBlock's `attach` factory gains an fd-based path; named-shm path stays for the brief migration window only. |
-| 1g | Wire shape: remove `shm_secret` from `CONSUMER_REG_ACK`; finalize `CONSUMER_ATTACH_REQ` / `_ACK` shapes; HEP-0007 + HEP-0021 doc update | The §7 clean break per D7. |
-| 1h | Config schema rejection of `in_shm_secret` / `out_shm_secret` as unknown fields | `role_config.cpp` whitelist removal; helpful error message pointing to HEP-0041. |
-| 1i | Code cleanup: delete `ChannelAccessEntry::shm_secret`, `ShmQueue::set_shm_secret`, the hardcoded zero at `broker_service.cpp:1956`, the legacy DataBlock guard memcmp at `data_block.cpp:2768-2777`, and the `apply_master_approval` SHM-secret branches | Mechanical; tracked by the audit inventory in 5e936c3c. |
-| 1j | L3 broker tests: `CONSUMER_ATTACH_REQ` success path, denied path, cache-divergence-WARN path | Pattern 4 subprocess-per-role per `docs/README/README_testing.md`. |
-| 1k | L4 e2e test: full producer→consumer SHM flow under capability transport; assertion that unauthorized peers can NOT obtain a capability | Closes the production-readiness gate. |
+| Step | Task | Status | Scope |
+|---|---|---|---|
+| 1a | #248 | ✅ | `utils/security/shm_capability/` interface + factory |
+| 1b | #249 | ✅ | Linux `memfd_create` + `SCM_RIGHTS` backend |
+| 1c | #250 | ✅ | Producer-side `AttachProtocol` `crypto_box` challenge-response |
+| 1d | #251 | ✅ | Broker `CONSUMER_ATTACH_REQ` / `_ACK` handler |
+| 1e | #252 | ✅ | `ShmAttachOrchestrator` + divergence-WARN |
+| 1f | #253 | ✅ | DataBlock fd-source ctors + factories |
+| 1g | #254 | ✅ | Wire-shape additive (CONSUMER_REG_ACK echoes `shm_capability_endpoint` + `producer_pubkey_z85`) |
+| 1h | #255 | ✅ | Config schema rejection of retired `in_/out_shm_secret` keys |
+| 1i-mig-1 | #256 | ✅ `e283a4ac` | `ShmQueue` fd plumbing (`set_shm_capability_fd` + Standby factories + secret/capability mutex) |
+| 1i-mig-2a | #256 | ✅ `e5575329` | `TxQueueOptions::shm_capability_fd` field + `build_tx_queue` capability dispatch |
+| 1i-mig-2b-1 | #256 | ✅ `31072b3e` | Producer owns L1 `IShmCapabilityProducer` via `prepare_tx_capability_` hook |
+| 1i-mig-2b-2 | #256 | ✅ `4bae7cfb` | Producer wires L2b acceptor + L2c orchestrator + accept thread on `api().thread_manager()` |
+| 1i-mig-2c review fixes | #256 | ✅ `78fc6b9d` | `strip_unix_scheme` helper + `bind_endpoint` parent-dir mkdir-0700 + accept-loop per-iter try/catch (H2) |
+| 1i-mig-2c M3 | #256 | ✅ `8e05a821` | Promote 3-pointer SHM auth bundle + cleanup default + `spawn_shm_auth_listener_` helper onto `RoleHostFrame` |
+| 1i-mig-3 | #256 | ✅ `6f31a346` | Processor OUT-side wiring (single `spawn_shm_auth_listener_()` call via M3) |
+| **1i-mig-M3.5** | **#266** | **⏸ next** | Promote `prepare_tx_capability_` (byte-equivalent in producer+processor; ~70 LOC saved) to `RoleHostFrame` default impl |
+| **1i-doc-sync** | **#267** | **⏸** | Doc-vs-code bundle: HEP-0041 §5.1 `strip_unix_scheme`+mkdir, §6.1 layering+L2c→L1 edge, §6.3 `borrow_fd`, §9 D4 + HEP-0036 §I11.1 + §3.6 diagram `_RSP→_ACK`, HEP-0036 §4.1 ChannelAccessEntry historical, HEP-0036 §I8 SO_PEERCRED cite fix, HEP-0031 §4.3 `shm_accept_loop` row, non-Linux `#error` symmetry for L2c, broker_proto version-comment decision, L2/L3 known limitations |
+| **1i-prod-hardening** | **#268** | **⏸** | H3a defer accept-spawn past `set_value(true)` + H3b `teardown_infrastructure_` on REG_ACK fail + H3c broker REG_REQ endpoint validation + H3d stale-socket probe-then-unlink |
+| **1i-api-scope** | **#269** | **⏸** | `RoleAPIBase::consumer_attach` script-binding scope decision (verify engine bindings; make internal or `SCRIPT_PRIVATE`) |
+| **★ REVIEW-A** | **#271** | **⏸** | First milestone — gates 1i-mig-4 start |
+| 1i-mig-4 | #272 | ⏸ | Consumer dial in `apply_consumer_reg_ack` + `RxQueueOptions::shm_capability_fd` + `build_rx_queue` dispatch (biggest single piece, ~150 LOC) |
+| 1i-mig-5 | #273 | ⏸ | Cutover + L3 worker fixture migration |
+| **★ REVIEW-B** | **#274** | **⏸** | Second milestone — gates legacy deletion |
+| 1i-cleanup | #275 | ⏸ | Delete legacy `shm_secret` machinery (HONOR Core Structure Change Protocol for `SharedMemoryHeader::shared_secret[64]`) |
+| **★ REVIEW-C** | **#276** | **⏸** | Third milestone — gates 1j/1k test creation |
+| 1i-coverage | #270 | ⏸ | L2 coverage for `RoleHostFrame::spawn_shm_auth_listener_` + `prepare_tx_capability_` |
+| 1j | #257 | ⏸ | L3 broker tests (success / denied / divergence-WARN) |
+| 1k | #258 | ⏸ | L4 e2e SHM auth-gated data flow |
+| **★ REVIEW-D** | **#277** | **⏸** | Fourth milestone — gates mutual auth |
+| Mutual auth | #262 | ⏸ | 3rd handshake frame (producer signs consumer challenge) — Phase 1 production-readiness gate |
+| **★ REVIEW-E** | **#278** | **⏸** | Fifth milestone — Phase 1 production-ready final gate |
 
 **Out of scope for Phase 1.**
 - macOS / Windows backends (Phases 2 / 3 — separate tasks).
