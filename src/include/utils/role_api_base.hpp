@@ -875,6 +875,31 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     /// Returns the broker's reply body
     /// (`{status: "success" | "denied", ...}`) or `nullopt` on
     /// transport failure / timeout / no-BRC-for-channel.
+    ///
+    /// **FRAMEWORK-INTERNAL — DO NOT BIND TO SCRIPTS.**  This method
+    /// triggers a broker authorization query for an arbitrary
+    /// (channel, consumer_pubkey) pair.  Exposing it to scripts
+    /// would let user code probe the broker for arbitrary peer
+    /// authorization decisions outside the auth flow — an
+    /// information-disclosure surface that bypasses the
+    /// orchestrator's same-process attach gating.
+    ///
+    /// Following the established RoleAPIBase convention: many
+    /// methods (`register_producer_channel`, `start_handler_threads`,
+    /// `apply_producer_reg_ack`, `build_tx_queue`, `set_channel`, …)
+    /// are C++-public for the role host's worker_main_ + RoleHostFrame
+    /// to invoke, but are NEVER added to `push_closure(...)` in
+    /// `src/scripting/lua_engine.cpp` or `.def(...)` in
+    /// `src/scripting/python_engine.cpp` or registered with the
+    /// `native_engine_api.h` C ABI.  Script-visible accessors are
+    /// the observation-only set: `uid`, `name`, `channel`,
+    /// `allowed_peers`, `producers`, `is_channel_ready`,
+    /// `queue_mechanism`, `metrics`, geometry queries, etc.
+    ///
+    /// Audit pin: zero hits for `consumer_attach` in
+    /// `src/scripting/` as of 2026-06-22 (verified during #269
+    /// pre-REVIEW-A scope review).  Engine-binding authors MUST
+    /// preserve this exclusion in any future binding-parity sweep.
     [[nodiscard]] std::optional<nlohmann::json>
     consumer_attach(const std::string &channel,
                     const std::string &consumer_pubkey,
