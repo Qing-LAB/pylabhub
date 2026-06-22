@@ -10,7 +10,6 @@
   "out_transport":      "shm",
   "out_shm_enabled":    true,
   "out_shm_slot_count": 64,
-  "out_shm_secret":     5555555555,
   "out_slot_schema": {
     "packing": "aligned",
     "fields": [

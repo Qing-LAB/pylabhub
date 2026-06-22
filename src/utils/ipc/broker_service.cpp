@@ -1554,7 +1554,15 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
         req.value("shm_capability_endpoint", "");
     const std::string data_transport_req =
         req.value("data_transport", std::string{"shm"});
-    if (data_transport_req == "shm" &&
+    // EDGE-9 (REVIEW-A close-out): tighten to catch explicit empty
+    // `data_transport: ""` too — the default-if-missing covers truly
+    // missing fields, but an explicit empty string would slip past
+    // the strict `== "shm"` check and admit an SHM REG with no
+    // endpoint.  The current handler stores `data_transport` on the
+    // ChannelEntry and the CONSUMER_REG_ACK builder emits SHM-shaped
+    // ACKs based on this field, so empty here would produce broken
+    // ACKs to consumers.
+    if ((data_transport_req == "shm" || data_transport_req.empty()) &&
         primary_producer.shm_capability_endpoint.empty())
     {
         LOGGER_WARN(

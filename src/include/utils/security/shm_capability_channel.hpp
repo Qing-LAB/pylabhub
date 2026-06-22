@@ -15,7 +15,7 @@
  *     pubkeys, brokers, or allowlists.
  *
  *   - **L2 (lives elsewhere — see HEP-0041 §9 D4 attach sequence) —
- *     auth orchestration.**  Signed-nonce verification, SO_PEERCRED
+ *     auth orchestration.**  crypto_box challenge-response (HEP-CORE-0041 §5.5; the pre-1c signed-nonce model was cryptographically broken and was retired in the 2026-06-17 §9 D4 amendment), SO_PEERCRED
  *     sanity check, broker CONSUMER_ATTACH_REQ pre-confirm,
  *     cache-vs-broker divergence WARN.  Uses L1 for the actual fd
  *     handoff but knows nothing about which OS primitive backs the

@@ -9,7 +9,6 @@
   "in_channel":   "lab.demo.lua.processed",
   "in_transport":   "shm",
   "in_shm_enabled": true,
-  "in_shm_secret":  4444444444,
   "in_slot_schema": {
     "packing": "aligned",
     "fields": [

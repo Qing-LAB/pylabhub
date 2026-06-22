@@ -264,7 +264,7 @@ ShmAttachOrchestrator::accept_and_serve_one(std::chrono::milliseconds timeout)
 #        error "HEP-CORE-0041 §6.5: ShmAttachOrchestrator FreeBSD impl not yet shipped — task #259.  Builds against this platform must wait for the FreeBSD backend to land."
 #    elif defined(PYLABHUB_PLATFORM_APPLE)
 #        error "HEP-CORE-0041 §6.5: ShmAttachOrchestrator macOS impl not yet shipped — task #260.  Builds against this platform must wait for the macOS backend to land."
-#    elif defined(PYLABHUB_PLATFORM_WINDOWS)
+#    elif defined(PYLABHUB_PLATFORM_WIN64)
 #        error "HEP-CORE-0041 §6.5: ShmAttachOrchestrator Windows impl not yet shipped — task #261.  Builds against this platform must wait for the Windows backend to land (named-pipe + DuplicateHandle)."
 #    else
 #        error "HEP-CORE-0041 §6.5: ShmAttachOrchestrator: unknown platform.  Phase 1 supports Linux only; FreeBSD/macOS/Windows are Phases 2-3."

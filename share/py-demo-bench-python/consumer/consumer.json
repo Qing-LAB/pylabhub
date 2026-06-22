@@ -7,7 +7,6 @@
   "in_channel": "bench.chan",
   "in_transport": "shm",
   "in_shm_enabled": true,
-  "in_shm_secret": 6111111111,
   "in_slot_schema": {
     "packing": "aligned",
     "fields": [
