@@ -95,21 +95,10 @@ class PYLABHUB_UTILS_EXPORT ProducerRoleHost final : public scripting::RoleHostF
     [[nodiscard]] std::vector<scripting::Presence>
     build_presences_(const config::RoleConfig &config) const override;
 
-    /// HEP-CORE-0041 1i-mig-2 hook: create the per-channel
-    /// IShmCapabilityProducer (L1) for SHM TX channels, bind the
-    /// capability endpoint, populate `tx_opts.shm_capability_fd` with
-    /// the transport's borrowed fd.  No-op (returns true) for ZMQ TX.
-    /// Called between `make_tx_opts` and `build_tx_queue` inside
-    /// RoleHostFrame::setup_infrastructure_.
-    ///
-    /// Stores the L1 transport in `RoleHostFrame::shm_transport_`
-    /// (1i-mig-2c M3 — three-pointer bundle now lives on the frame so
-    /// the L2b+L2c+spawn helper can reuse it across role hosts).
-    bool prepare_tx_capability_(hub::TxQueueOptions &tx_opts,
-                                  const std::string   &tx_channel) override;
-
-    // cleanup_tx_capability_ inherited from RoleHostFrame (1i-mig-2c
-    // M3 — default impl LIFO-resets the three SHM auth pointers).
+    // HEP-CORE-0041 1i-mig: prepare_tx_capability_ + cleanup_tx_capability_
+    // both inherited from RoleHostFrame defaults — prepare_ was identical
+    // in producer + processor; promoted to the frame in 1i-mig-M3.5
+    // (commit set tracked under #266).
 
     // ── Producer-specific members ────────────────────────────────────────────
     // Shared state — core_, config_, engine_, api_, ready_promise_ — lives in

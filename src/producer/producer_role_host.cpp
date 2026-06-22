@@ -526,96 +526,11 @@ ProducerRoleHost::build_presences_(const config::RoleConfig &c) const
     return v;
 }
 
-// ============================================================================
-// prepare_tx_capability_ — HEP-CORE-0041 1i-mig-2 L1 transport ownership
-// ============================================================================
-//
-// Called from RoleHostFrame::setup_infrastructure_ between make_tx_opts
-// and build_tx_queue.  For SHM TX channels, creates the per-channel
-// IShmCapabilityProducer (substep 1b backend), binds the Unix-socket
-// endpoint that the broker echoes to consumers via
-// CONSUMER_REG_ACK.shm_capability_endpoint (HEP-0041 §5.3), and stuffs
-// the borrowed fd into opts.shm_capability_fd so build_tx_queue (2a's
-// dispatch) wraps the same memfd via the substep 1f fd-source factory.
-//
-// No-op for ZMQ TX (returns true with opts unchanged).
-
-bool ProducerRoleHost::prepare_tx_capability_(hub::TxQueueOptions &tx_opts,
-                                                const std::string   &tx_channel)
-{
-    if (!tx_opts.has_shm || tx_opts.data_transport != "shm")
-        return true;
-
-    // Replicate the DataBlockConfig that ShmQueue::start() will build
-    // internally from create_writer_standby + the post-1i-mig-1
-    // capability path.  datablock_layout_total_size() must agree with
-    // ShmQueue's view exactly — the fd-source factory validates
-    // fstat(fd).st_size == this value (HEP-CORE-0041 §6.3 +
-    // data_block.hpp:1308).
-    const auto slot_fields = hub::schema_spec_to_zmq_fields(tx_opts.slot_spec);
-    auto [slot_layout, item_size] =
-        hub::compute_field_layout(slot_fields, tx_opts.slot_spec.packing);
-    size_t fz_size = 0;
-    if (tx_opts.fz_spec.has_schema && !tx_opts.fz_spec.fields.empty())
-    {
-        const auto fz_fields = hub::schema_spec_to_zmq_fields(tx_opts.fz_spec);
-        auto [fz_layout, raw_fz_size] =
-            hub::compute_field_layout(fz_fields, tx_opts.fz_spec.packing);
-        fz_size = hub::align_to_physical_page(raw_fz_size);
-    }
-    hub::DataBlockConfig cfg;
-    cfg.logical_unit_size    = item_size;
-    cfg.flex_zone_size       = fz_size;
-    cfg.ring_buffer_capacity = tx_opts.shm_config.ring_buffer_capacity;
-    cfg.physical_page_size   = tx_opts.shm_config.physical_page_size;
-    cfg.policy               = tx_opts.shm_config.policy;
-    cfg.consumer_sync_policy = tx_opts.shm_config.consumer_sync_policy;
-    cfg.checksum_policy      = tx_opts.shm_config.checksum_policy;
-    const size_t total = hub::datablock_layout_total_size(cfg);
-    if (total == 0)
-    {
-        LOGGER_ERROR(
-            "[prod] prepare_tx_capability_: datablock_layout_total_size "
-            "returned 0 for channel '{}' (item_size={}, fz_size={}) — "
-            "schema/config invariants violated",
-            tx_channel, item_size, fz_size);
-        return false;
-    }
-
-    namespace sec = pylabhub::utils::security;
-    shm_transport_ = sec::create_shm_capability_producer(total);
-    if (!shm_transport_)
-    {
-        LOGGER_ERROR(
-            "[prod] prepare_tx_capability_: create_shm_capability_producer "
-            "failed for channel '{}' (size={}, HEP-CORE-0041 §6.3 L1)",
-            tx_channel, total);
-        return false;
-    }
-
-    const auto endpoint = sec::default_shm_capability_endpoint(tx_channel);
-    if (!shm_transport_->bind_endpoint(endpoint))
-    {
-        LOGGER_ERROR(
-            "[prod] prepare_tx_capability_: bind_endpoint('{}') failed "
-            "for channel '{}' (HEP-CORE-0041 §5.1 L1)",
-            endpoint, tx_channel);
-        shm_transport_.reset();
-        return false;
-    }
-
-    tx_opts.shm_capability_fd = shm_transport_->borrow_fd();
-    LOGGER_INFO(
-        "[prod] event=ShmCapabilityTransportBound channel='{}' endpoint='{}' "
-        "size={} fd={} (HEP-CORE-0041 1i-mig-2)",
-        tx_channel, endpoint, total, tx_opts.shm_capability_fd);
-    return true;
-}
-
-// cleanup_tx_capability_ — moved to RoleHostFrame default impl in
-// 1i-mig-2c M3 extraction.  Producer no longer overrides; the frame's
-// default LIFO-resets shm_orchestrator_ → shm_acceptor_ → shm_transport_
-// after teardown_infrastructure_ has drained the accept thread via
-// api().stop_handler_threads().
+// prepare_tx_capability_ + cleanup_tx_capability_ — both moved to
+// RoleHostFrame default impl.  cleanup_ moved in 1i-mig-2c M3 (commit
+// 8e05a821); prepare_ moved in 1i-mig-M3.5 (#266) after the processor
+// 1i-mig-3 wiring confirmed both hosts had byte-identical bodies.
+// Producer no longer overrides either; both inherit the canonical
+// frame defaults that use frame_cfg_.role_tag for log prefix.
 
 } // namespace pylabhub::producer

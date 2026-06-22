@@ -165,27 +165,29 @@ class PYLABHUB_UTILS_EXPORT RoleHostFrame : public RoleHostBase
     /// `build_presences_()` early).  Per design doc §11.6.2.
     [[nodiscard]] bool setup_infrastructure_(const hub::SchemaSpec &inbox_spec);
 
-    /// HEP-CORE-0041 1i-mig-2 hook: derived role host post-processes
-    /// `tx_opts` after `make_tx_opts` but BEFORE `build_tx_queue`.
-    /// Default: no-op returning true.  Producer / processor override
-    /// to create the per-channel `IShmCapabilityProducer` (L1) for
-    /// SHM TX channels, bind the capability endpoint, and populate
-    /// `opts.shm_capability_fd` from the transport's borrowed fd.
+    /// HEP-CORE-0041 1i-mig hook: post-processes `tx_opts` after
+    /// `make_tx_opts` but BEFORE `build_tx_queue`.  Default impl
+    /// (1i-mig-M3.5 extraction): for SHM TX channels, creates the
+    /// per-channel `IShmCapabilityProducer` (L1), binds the
+    /// capability endpoint via `default_shm_capability_endpoint`,
+    /// populates `tx_opts.shm_capability_fd` from the transport's
+    /// borrowed fd.  No-op (returns true) for ZMQ TX channels.
+    ///
+    /// Same body shared across ProducerRoleHost + ProcessorRoleHost
+    /// (was duplicated byte-for-byte across both pre-1i-mig-M3.5);
+    /// log prefix derives from `frame_cfg_.role_tag`.  Override only
+    /// when a future role host needs different L1 setup (e.g. a
+    /// non-memfd backend).
     ///
     /// Called only when a TX presence exists.  Return false to abort
     /// startup (logged + propagated by `setup_infrastructure_`).
     /// `tx_channel` is `config().out_channel()` (or fallback).
     ///
-    /// **Ownership.**  The derived role host owns the L1 transport
-    /// for the channel lifetime.  This hook stores the transport in
-    /// a member; `cleanup_tx_capability_` releases it on teardown.
-    virtual bool prepare_tx_capability_(hub::TxQueueOptions      &tx_opts,
-                                          const std::string        &tx_channel)
-    {
-        (void)tx_opts;
-        (void)tx_channel;
-        return true;
-    }
+    /// **Ownership.**  RoleHostFrame owns the L1 transport via
+    /// `shm_transport_` (declared below) for the channel lifetime.
+    /// `cleanup_tx_capability_` releases it on teardown.
+    virtual bool prepare_tx_capability_(hub::TxQueueOptions &tx_opts,
+                                          const std::string   &tx_channel);
 
     /// HEP-CORE-0041 1i-mig-2 cleanup hook: releases shm_orchestrator_
     /// → shm_acceptor_ → shm_transport_ in LIFO destruction order
