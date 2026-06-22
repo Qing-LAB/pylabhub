@@ -540,13 +540,24 @@ bool RoleHostFrame::spawn_shm_auth_listener_()
     // finds the right BRC for this channel and runs the sync
     // CONSUMER_ATTACH_REQ.  Producer role_uid identifies the role to
     // the broker so it can correlate the channel.
+    // EDGE-2 (REVIEW-A close-out #280) — consumer_attach timeout MUST
+    // be < the 5s `wait_for_quiescence` budget in
+    // `RoleAPIBase::stop_handler_threads` Phase 3
+    // (`role_api_base.cpp:2226`).  If consumer_attach blocks longer
+    // than 5s, the quiescence wait expires, Phase 4 destroys BRCs,
+    // and the still-blocked accept thread reads freed BRC pImpl.
+    // The `ctx.with_active_loop(...)` bracket below (also EDGE-2)
+    // primarily prevents this — quiescence waits properly — but the
+    // shorter timeout is belt-and-suspenders: if the bracket were
+    // somehow missed (future regression), the request would still
+    // time out before quiescence expires.
     sec::ShmAttachOrchestrator::BrokerQuery broker_query =
         [&api_ref, tx_ch, producer_uid](
             const std::string &consumer_pk,
             const std::string &consumer_role_uid) {
             return api_ref.consumer_attach(
                 tx_ch, consumer_pk, consumer_role_uid,
-                producer_uid, /*timeout_ms=*/5000);
+                producer_uid, /*timeout_ms=*/2000);
         };
 
     sec::ShmAttachOrchestrator::Config cfg{
@@ -571,32 +582,52 @@ bool RoleHostFrame::spawn_shm_auth_listener_()
     // spawn on api.thread_manager() with the SlotContext-aware
     // overload.  Poll ctx.shutdown_requested() with a 100 ms accept
     // timeout so graceful teardown is bounded.
+    //
+    // EDGE-2 (REVIEW-A close-out #280) — the whole loop body lives
+    // inside `ctx.with_active_loop(...)` so `wait_for_quiescence`
+    // in `stop_handler_threads` Phase 3 properly waits for the
+    // in-flight accept to complete BEFORE Phase 4 destroys BRCs.
+    // Pre-#280: the bare `while (!ctx.shutdown_requested())` body
+    // never engaged the bracket → wait_for_quiescence skipped the
+    // slot (depth=0 forever) → Phase 4 destroyed BRCs while the
+    // accept thread could be mid-`broker_query` (consumer_attach
+    // CV wait on BRC's cmd_queue) → read-after-free.  The bracket
+    // makes `active_loop_depth > 0` while we're inside the body,
+    // so quiescence wait blocks until the body returns (which it
+    // does promptly after shutdown_requested is set + the current
+    // 100 ms accept_and_serve_one round completes).  Per HEP-0031
+    // §4.1 rule 3, a thread picks the bracket form OR
+    // `mark_active_loop_exited()` — we use the bracket because
+    // the entire while-loop is the critical region.
     const bool spawned = api_ref.thread_manager().spawn(
         "shm_accept_loop",
         [this](pylabhub::utils::ThreadManager::SlotContext &ctx) {
-            while (!ctx.shutdown_requested())
-            {
-                if (!shm_orchestrator_) break;
-                // Per-iteration isolation (HEP-CORE-0041 1i-mig-2c
-                // H2): the orchestrator catches handshake-level
-                // errors internally, but post-broker-query paths
-                // (LOGGER allocation, send_capability edge cases)
-                // can still escape.  Catch + continue keeps the
-                // loop alive across one bad attach.
-                try
+            ctx.with_active_loop([&] {
+                while (!ctx.shutdown_requested())
                 {
-                    (void)shm_orchestrator_->accept_and_serve_one(
-                        std::chrono::milliseconds(100));
+                    if (!shm_orchestrator_) break;
+                    // Per-iteration isolation (HEP-CORE-0041
+                    // 1i-mig-2c H2): the orchestrator catches
+                    // handshake-level errors internally, but
+                    // post-broker-query paths (LOGGER allocation,
+                    // send_capability edge cases) can still
+                    // escape.  Catch + continue keeps the loop
+                    // alive across one bad attach.
+                    try
+                    {
+                        (void)shm_orchestrator_->accept_and_serve_one(
+                            std::chrono::milliseconds(100));
+                    }
+                    catch (const std::exception &e)
+                    {
+                        LOGGER_WARN(
+                            "[{}] shm_accept_loop iteration threw "
+                            "'{}' — continuing (HEP-CORE-0041 §9 "
+                            "D4 per-attach isolation)",
+                            frame_cfg_.role_tag, e.what());
+                    }
                 }
-                catch (const std::exception &e)
-                {
-                    LOGGER_WARN(
-                        "[{}] shm_accept_loop iteration threw '{}' "
-                        "— continuing (HEP-CORE-0041 §9 D4 "
-                        "per-attach isolation)",
-                        frame_cfg_.role_tag, e.what());
-                }
-            }
+            });
         });
     if (!spawned)
     {
