@@ -343,6 +343,16 @@ public:
     /** @brief ShmQueue is SHM-backed (both reader and writer sides). */
     bool is_shm_backed() const noexcept override { return true; }
 
+    /// HEP-CORE-0041 §6.1 + task #279 (2026-06-22): returns
+    /// `Mechanism::ShmCapability` once `start()` has attached the
+    /// DataBlock (i.e. `is_running() == true`); `Mechanism::Uninitialized`
+    /// otherwise.  Overrides the `QueueReader::mechanism()` virtual
+    /// added in #279 so `RoleAPIBase::queue_mechanism(side)` can
+    /// dispatch polymorphically and return the SHM-shaped value
+    /// instead of a misleading `Uninitialized` for fully-functional
+    /// auth'd SHM channels.
+    [[nodiscard]] Mechanism mechanism() const noexcept override;
+
     /**
      * @brief Unified metrics snapshot (implements QueueReader::metrics() and QueueWriter::metrics()).
      *

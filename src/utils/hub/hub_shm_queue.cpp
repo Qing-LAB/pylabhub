@@ -758,6 +758,22 @@ bool ShmQueue::is_running() const noexcept
     return pImpl && (pImpl->dbc.get() != nullptr || pImpl->dbp.get() != nullptr);
 }
 
+Mechanism ShmQueue::mechanism() const noexcept
+{
+    // HEP-CORE-0041 §6.1 + task #279: report `ShmCapability` whenever
+    // the queue has reached the Active state (DataBlock attached via
+    // start()).  Pre-start (Standby / Configured) reports
+    // `Uninitialized` — symmetric with ZmqQueue's pre-start behavior.
+    //
+    // Note: this implementation reports `ShmCapability` regardless of
+    // which start-mode path was taken (capability fd via 1i-mig-2,
+    // or the legacy secret-mode path that 1i-cleanup deletes).  The
+    // legacy path is dead from production; reporting `ShmCapability`
+    // for it is harmless because no production caller exercises it.
+    // Post-1i-cleanup this distinction disappears entirely.
+    return is_running() ? Mechanism::ShmCapability : Mechanism::Uninitialized;
+}
+
 ShmQueue::ShmQueue(std::unique_ptr<ShmQueueImpl> impl) : pImpl(std::move(impl)) {}
 
 ShmQueue::~ShmQueue()

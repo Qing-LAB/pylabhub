@@ -77,9 +77,17 @@
  * design rationale + HEP-CORE-0028 §4.1 for the per-fn-ptr mapping.
  * ========================================================================= */
 
-/** Negotiated CURVE mechanism for a queue side (HEP-CORE-0035 §2). */
+/** Negotiated transport-level auth mechanism for a queue side
+ *  (HEP-CORE-0035 §2 ZMQ CURVE + HEP-CORE-0041 §6.1 SHM capability).
+ *  Pre-task #279 (2026-06-22) only Uninitialized/Curve existed; SHM
+ *  channels misleadingly returned Uninitialized.  ShmCapability added
+ *  in API v7 close-out (#279) as an additive enum value — existing
+ *  plugins that don't know about it gracefully treat the int as
+ *  unknown rather than mis-interpret. */
 #define PLH_MECHANISM_UNINITIALIZED   0  /**< queue not started */
-#define PLH_MECHANISM_CURVE           1  /**< CURVE engaged */
+#define PLH_MECHANISM_CURVE           1  /**< CURVE engaged (ZMQ) */
+#define PLH_MECHANISM_SHM_CAPABILITY  2  /**< SHM capability auth engaged
+                                              (HEP-CORE-0041 §6.1) */
 
 /** Queue overflow / mode policy (HEP-CORE-0007).  Maps to the strings
  *  reported by Python `api.out_policy()` / Lua `api.out_policy()`. */
@@ -784,6 +792,7 @@ enum class Mechanism : int
 {
     Uninitialized = PLH_MECHANISM_UNINITIALIZED,
     Curve         = PLH_MECHANISM_CURVE,
+    ShmCapability = PLH_MECHANISM_SHM_CAPABILITY,  // added in #279
 };
 
 /** Queue overflow / mode policy (HEP-CORE-0007 / HEP-CORE-0019). */
@@ -827,6 +836,7 @@ enum class PostEventResult : int
     switch (m)
     {
     case Mechanism::Curve:         return "Curve";
+    case Mechanism::ShmCapability: return "ShmCapability";
     case Mechanism::Uninitialized: return "Uninitialized";
     }
     return "Unknown";

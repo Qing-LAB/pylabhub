@@ -324,3 +324,46 @@ TEST_F(ShmQueueCapabilityTest, SetCapabilityFd_RefusesNegativeFd)
     EXPECT_FALSE(queue->set_shm_capability_fd(-1));
     EXPECT_FALSE(queue->set_shm_capability_fd(-42));
 }
+
+// ── Test 7: ShmQueue::mechanism() reports ShmCapability when running ────
+//
+// HEP-CORE-0041 §6.1 + task #279 (2026-06-22) widened `hub::Mechanism`
+// enum with a `ShmCapability` value + virtualized `mechanism()` on
+// `QueueReader` base.  Pre-#279 a started SHM queue reported
+// `Mechanism::Uninitialized` from `RoleAPIBase::queue_mechanism` (the
+// enum had no SHM-shaped value; the role-API dynamic_cast'd to
+// `ZmqQueue*` and returned Uninitialized for everything else).
+//
+// Pins the symmetric ZmqQueue invariant from
+// `test_hub_zmq_queue.cpp::Mechanism_AfterPushBind_IsCurve`:
+//   - Standby (pre-start): `mechanism()` returns `Uninitialized`.
+//   - Active (post-start): `mechanism()` returns `ShmCapability`.
+
+TEST_F(ShmQueueCapabilityTest, Mechanism_AfterStart_IsShmCapability)
+{
+    auto queue = standby_writer("cap-mechanism");
+    ASSERT_NE(queue, nullptr);
+
+    // Pre-start (Standby): no transport-auth confirmation yet.
+    EXPECT_EQ(queue->mechanism(), pylabhub::hub::Mechanism::Uninitialized)
+        << "Standby ShmQueue must report Uninitialized — DataBlock not "
+           "attached yet, so no capability auth has been observed.";
+
+    const int memfd = make_sized_memfd("plh_l2_shmq_cap_mech");
+    ASSERT_GE(memfd, 0);
+    ASSERT_TRUE(queue->set_shm_capability_fd(memfd));
+    ASSERT_TRUE(queue->start());
+    ASSERT_TRUE(queue->is_running());
+
+    // Active (post-start): capability transport engaged.
+    EXPECT_EQ(queue->mechanism(), pylabhub::hub::Mechanism::ShmCapability)
+        << "Active ShmQueue must report ShmCapability — the DataBlock "
+           "was attached via the L1 fd-source factory (HEP-CORE-0041 "
+           "§6.1).  Pre-#279 this was misleadingly Uninitialized.";
+
+    // Mechanism string name (the surface scripts see via
+    // `api.queue_mechanism(side)`).
+    EXPECT_STREQ(pylabhub::hub::mechanism_name(queue->mechanism()),
+                 "ShmCapability");
+}
+

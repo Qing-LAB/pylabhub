@@ -3240,20 +3240,29 @@ hub::QueueMetrics RoleAPIBase::queue_metrics(ChannelSide side) const noexcept
 
 hub::Mechanism RoleAPIBase::queue_mechanism(ChannelSide side) const noexcept
 {
-    // The base classes `QueueReader` / `QueueWriter` are transport-agnostic
-    // and have no mechanism concept; only `ZmqQueue` does.  Downcast and
-    // return `Uninitialized` for everything else (no queue wired, SHM
-    // transport, etc.).  See `hub::Mechanism` in `hub_zmq_queue.hpp` for
-    // the post-C4 invariant — a started ZmqQueue MUST report `Curve`.
+    // Polymorphic dispatch via the QueueReader::mechanism() virtual
+    // added in task #279 (2026-06-22).  Pre-#279 this method
+    // dynamic_cast<ZmqQueue *>'d and returned `Uninitialized` for SHM
+    // (the enum had no SHM-shaped value).  Now ZmqQueue returns
+    // `Curve`, ShmQueue returns `ShmCapability`, InboxQueue (and any
+    // future queue type) returns the base-class default `Uninitialized`.
+    //
+    // tx_queue is held as unique_ptr<QueueWriter> (not Reader), so a
+    // cross-cast to QueueReader* is needed to reach the mechanism()
+    // virtual.  Both ZmqQueue + ShmQueue (the only concrete queue
+    // types today) inherit BOTH QueueReader + QueueWriter, so the
+    // dynamic_cast succeeds; an unknown queue type that only inherits
+    // QueueWriter would gracefully degrade to `Uninitialized`.
+    hub::QueueReader *reader = nullptr;
     if (side == ChannelSide::Tx)
     {
-        if (auto *zq = dynamic_cast<hub::ZmqQueue *>(pImpl->tx_queue.get()))
-            return zq->mechanism();
-        return hub::Mechanism::Uninitialized;
+        reader = dynamic_cast<hub::QueueReader *>(pImpl->tx_queue.get());
     }
-    if (auto *zq = dynamic_cast<hub::ZmqQueue *>(pImpl->rx_queue.get()))
-        return zq->mechanism();
-    return hub::Mechanism::Uninitialized;
+    else
+    {
+        reader = pImpl->rx_queue.get();
+    }
+    return reader ? reader->mechanism() : hub::Mechanism::Uninitialized;
 }
 
 } // namespace pylabhub::scripting

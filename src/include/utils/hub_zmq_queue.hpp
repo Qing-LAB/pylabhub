@@ -172,21 +172,12 @@ struct ProducerPeer
 /// engagement is confirmed.  The L2 tests at `test_hub_zmq_queue.cpp`
 /// "Mechanism_AfterPushBind_IsCurve" assert the post-start value
 /// from the same thread that called start() — no race.
-enum class Mechanism
-{
-    Uninitialized,  ///< `start()` not called, or `stop()` reset the field.
-    Curve,          ///< libzmq reported `ZMQ_CURVE`.  The only acceptable post-start value.
-};
-
-/// String name for a `Mechanism` value — stable surface for script
-/// bindings and telemetry sinks (HEP-CORE-0035 §2 + AUTH_TODO §C5
-/// follow-up #186).  Used by `RoleAPIBase::queue_mechanism` consumers
-/// in Lua / Python / JSON paths so the script side never depends on
-/// the underlying integer encoding of the enum.
-[[nodiscard]] constexpr const char *mechanism_name(Mechanism m) noexcept
-{
-    return m == Mechanism::Curve ? "Curve" : "Uninitialized";
-}
+///
+/// NOTE: `enum class Mechanism` + `mechanism_name(Mechanism)` moved
+/// to `hub_queue.hpp` in task #279 (2026-06-22) so the script-visible
+/// observation is transport-agnostic — `QueueReader::mechanism()`
+/// is now a virtual with `Uninitialized` default; `ZmqQueue::mechanism()`
+/// returns `Curve`, `ShmQueue::mechanism()` returns `ShmCapability`.
 
 /**
  * @class ZmqQueue
@@ -537,7 +528,10 @@ public:
     /// post-C4 this MUST be `Curve` whenever the queue is running.
     /// Thread-safe: read from any thread; written only by
     /// `start()`/`stop()` internally via an atomic.
-    [[nodiscard]] Mechanism mechanism() const noexcept;
+    ///
+    /// Overrides the `QueueReader::mechanism()` virtual added in
+    /// task #279 (2026-06-22).
+    [[nodiscard]] Mechanism mechanism() const noexcept override;
 
 private:
     explicit ZmqQueue(std::unique_ptr<ZmqQueueImpl> impl);

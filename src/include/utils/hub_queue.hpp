@@ -154,6 +154,61 @@ struct QueueMetrics
     X(checksum_error_count)
 // NOLINTEND(cppcoreguidelines-macro-usage)
 
+/// Negotiated transport-level authentication mechanism of a started
+/// queue.  Transport-agnostic enum: each concrete queue subclass
+/// reports the value that describes its data-plane peer auth.
+///
+/// HEP-CORE-0041 §6.1 + HEP-CORE-0035 §2 — moved here from
+/// `hub_zmq_queue.hpp` in 1i-mig-M3.5+ (task #279, 2026-06-22) so
+/// `QueueReader::mechanism()` can be a virtual on the base, not a
+/// `dynamic_cast<ZmqQueue *>` in `RoleAPIBase::queue_mechanism`.
+/// Closes the last script-visible transport-discrimination leak at
+/// the queue API surface — pre-#279 the enum had no value for SHM
+/// channels (returned `Uninitialized` for fully-functional auth'd
+/// SHM queues), which was misleading.
+///
+/// **Per-subclass post-start invariants:**
+/// - `ZmqQueue::mechanism()` → `Curve` (libzmq queried for
+///   `ZMQ_CURVE` at `start()` time; HEP-CORE-0035 §2 makes CURVE
+///   unconditional, so `Curve` is the only acceptable post-start
+///   value).
+/// - `ShmQueue::mechanism()` → `ShmCapability` (HEP-CORE-0041 §6.1
+///   capability transport: `memfd_create` + `SO_PEERCRED` +
+///   `crypto_box` challenge-response + broker `CONSUMER_ATTACH_REQ`
+///   pre-confirm + `SCM_RIGHTS` fd handoff).
+/// - `InboxQueue::mechanism()` → `Uninitialized` for now (HEP-0036
+///   §9.3 InboxQueue CURVE-wiring is future task #191; once that
+///   ships, InboxQueue switches to `Curve`).
+/// - Default base impl (any queue type that doesn't override)
+///   returns `Uninitialized`.
+enum class Mechanism
+{
+    Uninitialized,  ///< `start()` not called, queue stopped, or no auth wired.
+    Curve,          ///< libzmq reported `ZMQ_CURVE` post-start.
+    ShmCapability,  ///< SHM capability-transport authed (HEP-CORE-0041 §6.1).
+};
+
+/// String name for a `Mechanism` value — stable surface for script
+/// bindings + telemetry sinks (HEP-CORE-0035 §2 + HEP-CORE-0041
+/// §6.1 + AUTH_TODO §C5 follow-up #186 + task #279).  Used by
+/// `RoleAPIBase::queue_mechanism` consumers in Lua / Python / Native
+/// paths so the script side never depends on the underlying integer
+/// encoding of the enum.
+///
+/// Strings match the Native ABI `to_string(Mechanism)` in
+/// `native_engine_api.h` so a plugin's log output reads identically
+/// regardless of engine (Lua / Python / Native).
+[[nodiscard]] constexpr const char *mechanism_name(Mechanism m) noexcept
+{
+    switch (m)
+    {
+    case Mechanism::Curve:         return "Curve";
+    case Mechanism::ShmCapability: return "ShmCapability";
+    case Mechanism::Uninitialized: return "Uninitialized";
+    }
+    return "Uninitialized";
+}
+
 /**
  * @class QueueReader
  * @brief Transport-agnostic read-side contract for the hub pipeline.
@@ -344,6 +399,19 @@ public:
      * Default: false (safe for any non-SHM transport). Override in ShmQueue.
      */
     virtual bool is_shm_backed() const noexcept { return false; }
+
+    /// HEP-CORE-0041 §6.1 + task #279 — negotiated transport-level
+    /// authentication mechanism observed at `start()` time.  See the
+    /// `hub::Mechanism` enum docstring above for the per-subclass
+    /// invariants.  Default returns `Uninitialized` for queue types
+    /// that don't override (e.g. `InboxQueue` until #191 CURVE-wires
+    /// it).  `ZmqQueue` overrides to return `Curve` after libzmq
+    /// reports `ZMQ_CURVE`; `ShmQueue` overrides to return
+    /// `ShmCapability` once `start()` has attached the DataBlock.
+    [[nodiscard]] virtual Mechanism mechanism() const noexcept
+    {
+        return Mechanism::Uninitialized;
+    }
 };
 
 /**
