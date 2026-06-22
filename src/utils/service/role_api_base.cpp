@@ -1622,6 +1622,43 @@ RoleAPIBase::deregister_consumer(const std::string &channel, int timeout_ms)
 }
 
 // ============================================================================
+// consumer_attach — HEP-CORE-0041 §9 D4 broker pre-confirm (producer side)
+// ============================================================================
+//
+// Producer-side wrapper for BRC::consumer_attach.  Routes through the
+// channel-bound BRC so the per-channel ShmAttachOrchestrator can hand
+// this method as its `BrokerQuery` callback without leaking BRC types
+// into the orchestrator.  Returns broker's reply body (`{status:
+// "success" | "denied", ...}`) or nullopt on transport failure /
+// timeout / no BRC for the channel.
+//
+// Thread context: called from the SHM accept thread (HEP-CORE-0031 §2,
+// 1i-mig-2 categorization).  BRC's sync REQ/REP is thread-safe (the
+// caller enqueues a request + waits on CV; the BRC poll thread drains
+// and signals).
+
+std::optional<nlohmann::json>
+RoleAPIBase::consumer_attach(const std::string &channel,
+                             const std::string &consumer_pubkey,
+                             const std::string &consumer_role_uid,
+                             const std::string &producer_role_uid,
+                             int                timeout_ms)
+{
+    auto *bc = pImpl->resolve_bc_for_channel(channel);
+    if (!bc || !bc->is_connected())
+    {
+        LOGGER_WARN(
+            "[{}/{}] consumer_attach for channel '{}': no connected BRC "
+            "— returning nullopt (HEP-CORE-0041 §9 D4)",
+            pImpl->role_tag, pImpl->uid, channel);
+        return std::nullopt;
+    }
+    return bc->consumer_attach(channel, consumer_pubkey,
+                                consumer_role_uid, producer_role_uid,
+                                timeout_ms);
+}
+
+// ============================================================================
 // Control thread — broker communication (heartbeat, notifications, requests)
 // ============================================================================
 //

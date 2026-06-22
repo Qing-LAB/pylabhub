@@ -868,6 +868,20 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     [[nodiscard]] std::optional<nlohmann::json>
     deregister_consumer(const std::string &channel, int timeout_ms = 5000);
 
+    /// HEP-CORE-0041 §9 D4 broker pre-confirm: producer-side wrapper
+    /// for `BrokerRequestComm::consumer_attach(...)`.  Routes the call
+    /// through the channel-bound BRC.  Used by the producer's
+    /// `ShmAttachOrchestrator::BrokerQuery` callback at attach time.
+    /// Returns the broker's reply body
+    /// (`{status: "success" | "denied", ...}`) or `nullopt` on
+    /// transport failure / timeout / no-BRC-for-channel.
+    [[nodiscard]] std::optional<nlohmann::json>
+    consumer_attach(const std::string &channel,
+                    const std::string &consumer_pubkey,
+                    const std::string &consumer_role_uid,
+                    const std::string &producer_role_uid,
+                    int                timeout_ms = 5000);
+
     // ── Inbox drain ─────────────────────────────────────────────────────────
     //
     // Drains all pending inbox messages and invokes engine->invoke_on_inbox()

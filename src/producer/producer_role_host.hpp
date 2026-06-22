@@ -46,6 +46,8 @@ class InboxQueue;
 namespace pylabhub::utils::security
 {
 class IShmCapabilityProducer;
+class AttachProtocolAcceptor;
+class ShmAttachOrchestrator;
 } // namespace pylabhub::utils::security
 
 namespace pylabhub::producer
@@ -138,7 +140,17 @@ class PYLABHUB_UTILS_EXPORT ProducerRoleHost final : public scripting::RoleHostF
     /// borrowed fd is no longer in use.  Empty (nullptr) for ZMQ TX
     /// channels.  Per HEP-CORE-0041 §10.1 substep 1i-mig-2 + 1i-mig-3,
     /// processor role hosts mirror this pattern on the out side.
+    ///
+    /// Declaration order matters for destruction.  The accept thread
+    /// (spawned on `api.thread_manager()` in 1i-mig-2b-2) holds a
+    /// reference to `shm_orchestrator_` which holds references to
+    /// `shm_acceptor_` and `shm_transport_`.  The ThreadManager
+    /// Shutdown Contract (HEP-CORE-0031 §4.1) joins the accept slot
+    /// BEFORE `cleanup_tx_capability_` resets these members, so the
+    /// declared order is safe.
     std::unique_ptr<utils::security::IShmCapabilityProducer> shm_transport_;
+    std::unique_ptr<utils::security::AttachProtocolAcceptor> shm_acceptor_;
+    std::unique_ptr<utils::security::ShmAttachOrchestrator>  shm_orchestrator_;
 };
 
 } // namespace pylabhub::producer
