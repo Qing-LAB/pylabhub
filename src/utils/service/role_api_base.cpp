@@ -343,28 +343,89 @@ bool RoleAPIBase::build_tx_queue(const hub::TxQueueOptions &opts)
         auto fz_fields = opts.fz_spec.fields.empty()
             ? std::vector<hub::SchemaFieldDesc>{}
             : hub::schema_spec_to_zmq_fields(opts.fz_spec);
-        auto shm = hub::ShmQueue::create_writer(
-            tx_channel,
-            hub::schema_spec_to_zmq_fields(opts.slot_spec), opts.slot_spec.packing,
-            std::move(fz_fields),                            opts.fz_spec.packing,
-            opts.shm_config.ring_buffer_capacity,
-            opts.shm_config.physical_page_size,
-            opts.shm_config.shared_secret,
-            opts.shm_config.policy,
-            opts.shm_config.consumer_sync_policy,
-            opts.shm_config.checksum_policy,
-            /*checksum_slot=*/false, /*checksum_fz=*/false,
-            opts.always_clear_slot,
-            opts.shm_config.hub_uid,
-            opts.shm_config.hub_name,
-            nullptr, nullptr,
-            opts.shm_config.producer_uid,
-            opts.shm_config.producer_name);
-        if (!shm)
+
+        std::unique_ptr<hub::ShmQueue> shm;
+        if (opts.shm_capability_fd >= 0)
         {
-            LOGGER_ERROR("[{}] ShmQueue create_writer failed for '{}'",
-                         pImpl->role_tag, tx_channel);
-            return false;
+            // HEP-CORE-0041 1i-mig-2: capability-transport path.  The
+            // role host's IShmCapabilityProducer (substep 1b backend)
+            // pre-allocated the memfd at exactly
+            // datablock_layout_total_size(config).  Build the queue in
+            // Standby, attach the borrowed fd, then start() drives
+            // Configured → Active via the substep 1f fd-source factory
+            // (create_datablock_producer_from_fd_impl).  Mutual
+            // exclusion with the legacy secret path is enforced inside
+            // ShmQueue (HEP-CORE-0041 D7 "single unified mechanism").
+            shm = hub::ShmQueue::create_writer_standby(
+                tx_channel,
+                hub::schema_spec_to_zmq_fields(opts.slot_spec), opts.slot_spec.packing,
+                std::move(fz_fields),                            opts.fz_spec.packing,
+                opts.shm_config.ring_buffer_capacity,
+                opts.shm_config.physical_page_size,
+                opts.shm_config.policy,
+                opts.shm_config.consumer_sync_policy,
+                opts.shm_config.checksum_policy,
+                /*checksum_slot=*/false, /*checksum_fz=*/false,
+                opts.always_clear_slot,
+                opts.shm_config.hub_uid,
+                opts.shm_config.hub_name,
+                nullptr, nullptr,
+                opts.shm_config.producer_uid,
+                opts.shm_config.producer_name);
+            if (!shm)
+            {
+                LOGGER_ERROR("[{}] ShmQueue create_writer_standby failed for '{}' "
+                             "(HEP-CORE-0041 1i-mig-2 capability path)",
+                             pImpl->role_tag, tx_channel);
+                return false;
+            }
+            if (!shm->set_shm_capability_fd(opts.shm_capability_fd))
+            {
+                LOGGER_ERROR("[{}] ShmQueue::set_shm_capability_fd refused "
+                             "for '{}' fd={} (HEP-CORE-0041 1i-mig-2 — see "
+                             "queue WARN for reason)",
+                             pImpl->role_tag, tx_channel,
+                             opts.shm_capability_fd);
+                return false;
+            }
+            if (!shm->start())
+            {
+                LOGGER_ERROR("[{}] ShmQueue::start failed for '{}' on "
+                             "capability path (fd={}; see queue ERROR for "
+                             "reason)",
+                             pImpl->role_tag, tx_channel,
+                             opts.shm_capability_fd);
+                return false;
+            }
+        }
+        else
+        {
+            // Legacy secret-based path — retires under HEP-CORE-0041
+            // 1i-cleanup once every production caller populates
+            // opts.shm_capability_fd via the role host's L1 transport.
+            shm = hub::ShmQueue::create_writer(
+                tx_channel,
+                hub::schema_spec_to_zmq_fields(opts.slot_spec), opts.slot_spec.packing,
+                std::move(fz_fields),                            opts.fz_spec.packing,
+                opts.shm_config.ring_buffer_capacity,
+                opts.shm_config.physical_page_size,
+                opts.shm_config.shared_secret,
+                opts.shm_config.policy,
+                opts.shm_config.consumer_sync_policy,
+                opts.shm_config.checksum_policy,
+                /*checksum_slot=*/false, /*checksum_fz=*/false,
+                opts.always_clear_slot,
+                opts.shm_config.hub_uid,
+                opts.shm_config.hub_name,
+                nullptr, nullptr,
+                opts.shm_config.producer_uid,
+                opts.shm_config.producer_name);
+            if (!shm)
+            {
+                LOGGER_ERROR("[{}] ShmQueue create_writer failed for '{}'",
+                             pImpl->role_tag, tx_channel);
+                return false;
+            }
         }
         writer.reset(shm.release()); // upcast: ShmQueue* → QueueWriter*
     }

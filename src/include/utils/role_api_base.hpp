@@ -94,6 +94,24 @@ struct TxQueueOptions
     /// as "<role_tag>:<uid>:tx" from RoleAPIBase identity.  Set
     /// explicitly only for direct-factory tests that bypass RoleAPIBase.
     std::string instance_id{};
+
+    /// HEP-CORE-0041 1i-mig-2: borrowed SHM fd from the role host's
+    /// `IShmCapabilityProducer` (substep 1b backend).  When `>= 0` on a
+    /// SHM channel (`has_shm` + `data_transport=="shm"`),
+    /// `build_tx_queue` selects `ShmQueue::create_writer_standby` +
+    /// `set_shm_capability_fd(this fd)` + `start()` — wraps the
+    /// pre-allocated memfd via the substep 1f fd-source factories
+    /// instead of the legacy `shared_secret`-based path.
+    ///
+    /// **Borrowed reference.**  The role host (L1 transport owner)
+    /// retains ownership of the underlying fd; ShmQueue is non-owning
+    /// and the DataBlock fd-source ctor dups internally.  Caller MUST
+    /// keep the L1 transport alive at least as long as the ShmQueue.
+    ///
+    /// Default `-1` selects the legacy `shm_config.shared_secret` path
+    /// (which 1i-cleanup deletes once production callers all populate
+    /// this field).  When `has_shm == false`, this field is ignored.
+    int shm_capability_fd{-1};
 };
 
 // `ProducerPeer` lives in `hub_zmq_queue.hpp` (next to the
