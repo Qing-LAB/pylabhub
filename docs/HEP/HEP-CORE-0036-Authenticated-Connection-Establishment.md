@@ -864,13 +864,16 @@ flowchart LR
    reads ZAP at handshake-time; SHM asks the broker per-attempt.
    `allowlist_cache` exists for scripts and for SHM divergence
    detection — never as a load-bearing authorization decision.
-5. **Missing `initial_allowlist` in REG_ACK MUST NOT clobber the
-   cache.**  The broker contract (§6.2) requires REG_ACK to include
-   `initial_allowlist` (empty array on a fresh channel, never absent).
-   A reply that omits the field is a broker contract violation; the
-   producer logs WARN and preserves the prior cache snapshot rather
-   than overwriting with `[]`.  This is the operational rule that
-   makes the cache safe to consume across reconnect cycles.
+5. **Missing allowlist field on a success ACK MUST NOT clobber the
+   cache.**  Both broker contracts that feed `allowlist_cache` —
+   §6.2 (REG_ACK `initial_allowlist`) and §6.5 (GET_CHANNEL_AUTH_ACK
+   `allowlist` on `status="success"`) — require the field to be
+   present (empty array on a fresh channel, never absent).  A
+   success reply that omits the field is a broker contract
+   violation; the producer logs WARN and preserves the prior cache
+   snapshot rather than overwriting with `[]`.  This is the
+   operational rule that makes the cache safe to consume across
+   reconnect cycles and across runtime auth-refresh pulls.
 
 **Mapping to current code (2026-06-20 verification):**
 
@@ -2643,7 +2646,13 @@ patterns:
   via `ZmqQueue::set_peer_allowlist`.
 
   **`GET_CHANNEL_AUTH_ACK.allowlist` shape (normative).**  Array of
-  Z85 pubkey strings (40-char each).  Symmetric with
+  Z85 pubkey strings (40-char each).  **REQUIRED on every `status="success"`
+  reply, never absent — empty array when no consumer is currently
+  authorized.**  Broker MUST emit this field so the producer can
+  safely replace its `allowlist_cache` snapshot per §I11.1 invariant
+  #5; an absent or non-array field on a success reply is a broker
+  contract violation, and the producer logs WARN + preserves the
+  prior cache rather than clobbering with empty.  Symmetric with
   `REG_ACK.initial_allowlist` (§6.2) and the cache representation
   (§7.2 `unordered_set<string>`).  The producer's ZAP handler
   enforces by pubkey; `role_uid` is not carried on the allowlist
@@ -2653,7 +2662,7 @@ patterns:
   `CONSUMER_REG_ACK.producers[]` ONLY at the protocol shape (array,
   not delta); the `producers[]` elements ARE objects because each
   producer needs endpoint + pubkey, whereas allowlist entries need
-  only pubkey.  Length 0 when no consumer is currently authorized.
+  only pubkey.
 
 **Why this is simpler and equivalent on every important axis.**
 

@@ -1030,10 +1030,34 @@ void RoleAPIBase::handle_channel_auth_notifies(
                 // carries it.  A role host that wants role_uids
                 // resolves them locally via its `known_roles` view
                 // (operator-side metadata).
+
+                // HEP-CORE-0036 §6.5 + §I11.1 invariant #5: a status
+                // ="success" GET_CHANNEL_AUTH_ACK MUST carry the
+                // `allowlist` field (array, possibly empty) per the
+                // §6.5 normative shape.  An absent or non-array field
+                // on a success reply is a broker contract violation;
+                // log WARN + preserve the prior cache snapshot rather
+                // than clobbering with `[]`.  Symmetric with the
+                // REG_ACK `initial_allowlist` guard in
+                // apply_producer_reg_ack.
+                if (!reply->contains("allowlist") ||
+                    !reply->at("allowlist").is_array())
+                {
+                    LOGGER_WARN(
+                        "[{}/{}] GET_CHANNEL_AUTH_ACK for channel "
+                        "'{}' status=success but `allowlist` is "
+                        "missing or not an array — broker contract "
+                        "violation per HEP-CORE-0036 §6.5 + §I11.1 "
+                        "invariant #5.  Preserving prior "
+                        "allowlist_cache snapshot (do NOT clobber).",
+                        pImpl->role_tag, pImpl->uid, channel);
+                }
+                else
+                {
+
                 sec::PeerAllowlist allowlist;
                 std::vector<AllowedPeer> script_view;
-                const auto &arr =
-                    reply->value("allowlist", nlohmann::json::array());
+                const auto &arr = reply->at("allowlist");
                 for (const auto &entry : arr)
                 {
                     if (!entry.is_string()) continue;
@@ -1128,6 +1152,7 @@ void RoleAPIBase::handle_channel_auth_notifies(
                         }
                     }
                 }
+                } // end of else { /* allowlist field present + array */ }
             }
         }
         catch (const std::exception &e)
