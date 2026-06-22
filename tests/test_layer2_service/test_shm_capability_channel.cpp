@@ -256,3 +256,114 @@ TEST_F(ShmCapabilityChannelTest, BindEndpointTwiceFails)
         << "bind_endpoint is one-shot per instance; the second call must "
            "refuse rather than silently rebind onto a different path.";
 }
+
+// ── HEP-CORE-0041 §5.1 URI scheme: bind + dial accept `unix://...` ──────
+//
+// Production callers compute the endpoint via
+// `default_shm_capability_endpoint`, which returns a `unix://<path>`
+// URI (mirroring ZMQ's `tcp://`/`ipc://` shape; see header §5.1).  The
+// L1 backend strips the scheme before the kernel syscall.  This test
+// pins that contract end-to-end on both bind side and consumer-dial
+// side — failure mode if the strip is missing is a literal
+// `unix:///run/...` file written to the parent dir and `connect(2)`
+// failing on the consumer.  Regression coverage for the 2026-06-22
+// systematic-review B1 finding (substep 1g shipped the URI helper
+// but not the matching stripper, and tests passed raw paths so the
+// gap was invisible).
+
+TEST_F(ShmCapabilityChannelTest, BindAndDialAcceptUnixSchemeURI)
+{
+    constexpr size_t   kSize = 4096;
+    const std::string  path  = unique_socket_path("uri_scheme");
+    const std::string  uri   = "unix://" + path;
+
+    auto producer = create_shm_capability_producer(kSize);
+    ASSERT_TRUE(producer->bind_endpoint(uri))
+        << "bind_endpoint must accept the canonical `unix://` URI "
+           "shape — HEP-CORE-0041 §5.1.";
+
+    EXPECT_TRUE(fs::exists(path))
+        << "bind must create the socket file at the STRIPPED path, "
+           "not at the literal `unix://<path>` string.";
+    EXPECT_FALSE(fs::exists("unix:" + path))
+        << "No file with a `unix:` prefix component should exist — "
+           "that would be the unstripped-URI regression.";
+
+    // Consumer dial — also via URI.
+    std::unique_ptr<IShmCapabilityConsumer> consumer;
+    std::exception_ptr                      consumer_ex;
+    std::thread                             consumer_thread{[&] {
+        try
+        {
+            consumer = attach_shm_capability_consumer(
+                uri, std::chrono::milliseconds{2000});
+        }
+        catch (...)
+        {
+            consumer_ex = std::current_exception();
+        }
+    }};
+
+    auto peer = producer->accept_one(std::chrono::milliseconds{2000});
+    ASSERT_TRUE(peer.has_value());
+    ASSERT_TRUE(producer->send_capability(peer->peer_socket_fd));
+
+    consumer_thread.join();
+    ASSERT_FALSE(consumer_ex)
+        << "attach_shm_capability_consumer must dial via the same URI "
+           "shape the producer published — both ends strip identically.";
+    ASSERT_NE(consumer, nullptr);
+    EXPECT_EQ(consumer->size(), kSize);
+
+    ::close(peer->peer_socket_fd);
+}
+
+// ── HEP-CORE-0041 §5.1 parent-dir mkdir contract ────────────────────────
+//
+// The L1 backend takes responsibility for creating the parent dir at
+// mode 0700 before bind (see header line 310).  Regression coverage
+// for the 2026-06-22 systematic-review B2 finding (docstring at the
+// helper said "caller responsibility" but no caller did it, so the
+// first production bind would hit ENOENT on a host with
+// `${XDG_RUNTIME_DIR}` set but no pre-existing `pylabhub/` subdir).
+
+TEST_F(ShmCapabilityChannelTest, BindCreatesMissingParentDirectory)
+{
+    constexpr size_t kSize = 1024;
+    // Generate a nested parent dir that does not exist yet.
+    const fs::path nested_parent =
+        fs::temp_directory_path() /
+        ("plh_l2_shmcap_mkdir_" + std::to_string(::getpid()) + "_" +
+         std::to_string(::getpid()));
+    paths_.push_back(nested_parent);  // best-effort cleanup
+    const std::string sock = (nested_parent / "the.sock").string();
+    paths_.push_back(sock);
+
+    ASSERT_FALSE(fs::exists(nested_parent))
+        << "test pre-condition: parent dir must not exist before bind";
+
+    auto producer = create_shm_capability_producer(kSize);
+    ASSERT_TRUE(producer->bind_endpoint(sock))
+        << "bind_endpoint must mkdir -p the parent dir before bind(2) "
+           "— HEP-CORE-0041 §5.1.";
+    EXPECT_TRUE(fs::exists(nested_parent));
+    EXPECT_TRUE(fs::exists(sock));
+
+    // Parent dir must be mode 0700 (owner-only); HEP-0041 §5.1
+    // hardening contract.
+    const fs::file_status st = fs::status(nested_parent);
+    const fs::perms       owner_all =
+        fs::perms::owner_read | fs::perms::owner_write |
+        fs::perms::owner_exec;
+    const fs::perms group_others_mask =
+        fs::perms::group_all | fs::perms::others_all;
+    EXPECT_EQ(st.permissions() & owner_all, owner_all)
+        << "owner-all bits must be set on the parent dir.";
+    EXPECT_EQ(st.permissions() & group_others_mask, fs::perms::none)
+        << "group/others bits must be cleared — defence in depth.";
+
+    // Best-effort cleanup; remove socket then dir.
+    std::error_code ec;
+    fs::remove(sock, ec);
+    fs::remove(nested_parent, ec);
+}

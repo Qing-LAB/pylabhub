@@ -20,8 +20,11 @@
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <system_error>
 #include <vector>
 
 #if defined(PYLABHUB_PLATFORM_LINUX) || defined(PYLABHUB_PLATFORM_FREEBSD) || defined(PYLABHUB_PLATFORM_APPLE)
@@ -47,6 +50,21 @@
 
 namespace pylabhub::utils::security
 {
+
+// HEP-CORE-0041 §5.1 — see header docstring.  Cross-platform: every
+// backend that uses an AF_UNIX-style filesystem path needs the bare
+// path, not the canonical URI form.
+std::string
+strip_unix_scheme(std::string_view endpoint)
+{
+    constexpr std::string_view kScheme = "unix://";
+    if (endpoint.size() >= kScheme.size() &&
+        endpoint.substr(0, kScheme.size()) == kScheme)
+    {
+        return std::string{endpoint.substr(kScheme.size())};
+    }
+    return std::string{endpoint};
+}
 
 #if defined(PYLABHUB_PLATFORM_LINUX)
 
@@ -155,11 +173,55 @@ MemfdProducer::bind_endpoint(const std::string &endpoint)
         // Already bound — interface contract: bind once per instance.
         return false;
     }
-    // sun_path is a fixed-size array; reject too-long paths at the boundary.
-    sockaddr_un addr{};
-    if (endpoint.size() >= sizeof(addr.sun_path))
+
+    // HEP-CORE-0041 §5.1: the canonical endpoint shape carries a
+    // `unix://` URI scheme (as emitted by
+    // `default_shm_capability_endpoint`).  `sockaddr_un::sun_path`
+    // needs the bare filesystem path — strip the scheme here so the
+    // backend accepts both URI form (production) and bare paths
+    // (existing L2 tests).
+    const std::string sock_path = strip_unix_scheme(endpoint);
+    if (sock_path.empty())
     {
         return false;
+    }
+
+    // sun_path is a fixed-size array; reject too-long paths at the boundary.
+    sockaddr_un addr{};
+    if (sock_path.size() >= sizeof(addr.sun_path))
+    {
+        return false;
+    }
+
+    // HEP-CORE-0041 §5.1 hardening contract (header line 310):
+    // ensure the parent dir exists at mode 0700.  On systemd-managed
+    // hosts `${XDG_RUNTIME_DIR}` is itself mode 0700 (via
+    // `pam_systemd.so`); the `pylabhub/` subdir layered under it
+    // must be created by us.  Idempotent — `create_directories` is
+    // a no-op if the path already exists.  Errors are swallowed
+    // here; `bind(2)` below will surface the resulting
+    // `ENOENT`/`EACCES` if the parent setup did not take.
+    try
+    {
+        const std::filesystem::path parent =
+            std::filesystem::path{sock_path}.parent_path();
+        if (!parent.empty())
+        {
+            std::error_code ec;
+            std::filesystem::create_directories(parent, ec);
+            if (!ec)
+            {
+                std::filesystem::permissions(
+                    parent,
+                    std::filesystem::perms::owner_all,
+                    std::filesystem::perm_options::replace,
+                    ec);
+            }
+        }
+    }
+    catch (...)
+    {
+        // Best-effort — bind(2) below surfaces the real failure.
     }
 
     const int sock = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
@@ -171,11 +233,11 @@ MemfdProducer::bind_endpoint(const std::string &endpoint)
     // Best-effort cleanup of a stale socket left by a prior crash.  The
     // recovery semantic is: a fresh process inheriting the same channel
     // identity should overwrite any leftover path, not refuse to start.
-    ::unlink(endpoint.c_str());
+    ::unlink(sock_path.c_str());
 
     addr.sun_family = AF_UNIX;
-    std::memcpy(addr.sun_path, endpoint.c_str(), endpoint.size());
-    addr.sun_path[endpoint.size()] = '\0';
+    std::memcpy(addr.sun_path, sock_path.c_str(), sock_path.size());
+    addr.sun_path[sock_path.size()] = '\0';
 
     if (::bind(sock, reinterpret_cast<const sockaddr *>(&addr), sizeof(addr)) == -1)
     {
@@ -188,17 +250,19 @@ MemfdProducer::bind_endpoint(const std::string &endpoint)
     // the cryptographic auth.  This is defence in depth so a path
     // accidentally created in a shared directory does not let an
     // arbitrary local UID even attempt the connect.
-    ::chmod(endpoint.c_str(), 0700);
+    ::chmod(sock_path.c_str(), 0700);
 
     if (::listen(sock, /*backlog=*/8) == -1)
     {
         ::close(sock);
-        ::unlink(endpoint.c_str());
+        ::unlink(sock_path.c_str());
         return false;
     }
 
     listen_fd_  = sock;
-    bound_path_ = endpoint;
+    // Store the stripped path: the dtor unlinks `bound_path_`, and the
+    // kernel-side cleanup needs the bare filesystem path.
+    bound_path_ = sock_path;
     return true;
 }
 
@@ -327,8 +391,14 @@ private:
 MemfdConsumer::MemfdConsumer(const std::string       &endpoint,
                              std::chrono::milliseconds timeout)
 {
+    // HEP-CORE-0041 §5.1: the producer publishes the canonical
+    // `unix://` URI in CONSUMER_REG_ACK; strip the scheme before
+    // `connect(2)` (sockaddr_un::sun_path needs the bare filesystem
+    // path).  Symmetric with MemfdProducer::bind_endpoint.
+    const std::string sock_path = strip_unix_scheme(endpoint);
+
     sockaddr_un addr{};
-    if (endpoint.empty() || endpoint.size() >= sizeof(addr.sun_path))
+    if (sock_path.empty() || sock_path.size() >= sizeof(addr.sun_path))
     {
         throw std::invalid_argument(
             "ShmCapabilityConsumer: invalid endpoint "
@@ -342,8 +412,8 @@ MemfdConsumer::MemfdConsumer(const std::string       &endpoint,
     }
 
     addr.sun_family = AF_UNIX;
-    std::memcpy(addr.sun_path, endpoint.c_str(), endpoint.size());
-    addr.sun_path[endpoint.size()] = '\0';
+    std::memcpy(addr.sun_path, sock_path.c_str(), sock_path.size());
+    addr.sun_path[sock_path.size()] = '\0';
 
     if (::connect(sock, reinterpret_cast<const sockaddr *>(&addr), sizeof(addr)) == -1)
     {

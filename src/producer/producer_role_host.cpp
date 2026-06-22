@@ -510,8 +510,31 @@ void ProducerRoleHost::worker_main_()
                     while (!ctx.shutdown_requested())
                     {
                         if (!shm_orchestrator_) break;
-                        (void)shm_orchestrator_->accept_and_serve_one(
-                            std::chrono::milliseconds(100));
+                        // Per-iteration isolation: the orchestrator's
+                        // own handshake try/catch covers expected
+                        // failure modes, but post-broker-query paths
+                        // (LOGGER allocation, send_capability edge
+                        // cases) can still escape.  Without this
+                        // outer net, a single throw would end the
+                        // body and the ThreadManager wrapper would
+                        // mark the slot done — leaving the role with
+                        // no auth listener until restart.  Catch and
+                        // continue keeps the loop alive across one
+                        // bad attach.
+                        try
+                        {
+                            (void)shm_orchestrator_->accept_and_serve_one(
+                                std::chrono::milliseconds(100));
+                        }
+                        catch (const std::exception &e)
+                        {
+                            LOGGER_WARN(
+                                "[prod] shm_accept_loop iteration "
+                                "threw '{}' — continuing "
+                                "(HEP-CORE-0041 §9 D4 per-attach "
+                                "isolation)",
+                                e.what());
+                        }
                     }
                 });
             if (!spawned)

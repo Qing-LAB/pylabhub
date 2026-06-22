@@ -322,4 +322,19 @@ attach_shm_capability_consumer(const std::string       &endpoint,
 [[nodiscard]] PYLABHUB_UTILS_EXPORT std::string
 default_shm_capability_endpoint(std::string_view channel_name);
 
+/// HEP-CORE-0041 §5.1 — strip the canonical `unix://` URI scheme prefix
+/// from a capability endpoint string, returning the bare filesystem
+/// path suitable for `bind(2)` / `connect(2)`.  If no scheme is
+/// present, the input is returned unchanged (existing L2 tests +
+/// advanced callers may pass bare paths).
+///
+/// The producer side emits the URI shape via
+/// `default_shm_capability_endpoint` and publishes it on the wire
+/// (REG_REQ.shm_capability_endpoint, echoed to consumers in
+/// CONSUMER_REG_ACK).  The L1 backend's `bind_endpoint` /
+/// `attach_shm_capability_consumer` strip the scheme before the
+/// kernel syscall — `sockaddr_un::sun_path` is the bare path.
+[[nodiscard]] PYLABHUB_UTILS_EXPORT std::string
+strip_unix_scheme(std::string_view endpoint);
+
 } // namespace pylabhub::utils::security
