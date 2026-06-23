@@ -888,16 +888,42 @@ after #248 ships.
 
 ## HEP-0041 implementation chain — replaces retired AUTH-4
 
-**Status (2026-06-22):** HEP-CORE-0041 (SHM Channel Auth) shipped
+**Status (2026-06-23):** HEP-CORE-0041 (SHM Channel Auth) shipped
 (#244, `94b04576`).  Phase 1 substeps 1a-1h ✅ (#248-#255);
 1i (#256) is split into 1i-mig (production wiring) + 1i-cleanup
-(legacy deletion).  1i-mig-1/2a/2b-1/2b-2/2c/M3/3 ✅ this session
-(commits `e283a4ac → 6f31a346`); 1i-mig-M3.5/doc-sync/prod-hardening/
-api-scope (#266-#269) ⏸; 1i-mig-4 (consumer dial, #272) ⏸ next big
-piece; 1i-mig-5 (#273) + 1i-cleanup (#275) + 1j (#257) + 1k (#258) +
-#262 mutual auth ⏸.  **Five fixed review milestones REVIEW-A..E
+(legacy deletion).  1i-mig-1/2a/2b-1/2b-2/2c/M3/3 ✅ (commits
+`e283a4ac → 6f31a346`); pre-REVIEW-A cluster #266/#268/#269/#279/#267 ✅
+(commits `e8e10738 → 47fe4806`); REVIEW-A close-out + #280 EDGE-2 ✅
+(commits `8c6ca64a, 22d80291`); **1i-mig-4 (consumer dial, #272) ✅
+(commit `2793a394`, 2026-06-23)**; #281 broker `data_transport` strict
+(side-detour from #272 review, ✅ commit `ecc72337`); 1i-mig-5 (#273) +
+1i-cleanup (#275) + 1j (#257) + 1k (#258) + #262 mutual auth ⏸.
+**Five fixed review milestones REVIEW-A..E
 (#271/#274/#276/#277/#278) gate the remaining chain — see schedule
 below + HEP-0041 §10.1.**
+
+**Cross-cutting future change (2026-06-23 design discussion):**
+#272's self-review surfaced that `apply_consumer_reg_ack_shm_` blocks
+the BRC poll thread for up to ~3.9s during the dial (#282).  Bigger
+than #272 alone — the same pattern recurs in producer L2c
+broker pre-confirm, future #262 mutual auth Frame 3, future
+HUB_TARGETED_REQ (#75), and future api.crypto.* (#247).  Generalized
+solution drafted under #283: HEP-CORE-0031 amendment adding a
+`spawn_bounded` primitive (single sweeper thread + step-function body
+contract).  Tech draft at
+`docs/tech_draft/DRAFT_HEP-0031-bounded-thread_2026-06.md`.  Migration
+plan (#283 §8) lands in two passes:
+- **Pass 1** — convert the affected sites to bounded-sync (no FSM
+  change).  Migrates the work onto framework-managed threads with
+  uniform observability and clean teardown integration; BRC-poll-thread
+  block PERSISTS in this pass.
+- **Pass 2** — convert to truly-async with FSM amendment (insert
+  `RegistrationState::RegAckPending` between `Registered` and
+  `Authorized`; teach §8.2 outer guard to wait for `Authorized`).
+  This is what actually lifts the BRC-poll-thread block.
+- Pass 2 for #272 (consumer dial) sequences under REVIEW-B (#274) or
+  as part of #262.  Pass 2 for #262 (mutual auth) designs async from
+  day one once #283 ships.
 
 Implementation breaks into 5 phases per HEP-0041 §10.  Phase 1 is
 the production-readiness gate; Phases 2-3 are cross-platform
@@ -927,7 +953,8 @@ ZMQ to the same pattern.
                        ★ REVIEW-A (#271) ★
                                 │
                                 ▼
-                #272 1i-mig-4 (consumer dial) — BIGGEST
+                #272 1i-mig-4 ✅ (consumer dial) — BIGGEST
+                #281 ✅ side-detour: broker data_transport strict
                                 │
                                 ▼
                     #273 1i-mig-5 (cutover + test fixups)
@@ -959,6 +986,29 @@ ZMQ to the same pattern.
                                      │
                                      ▼
                   🟢 PHASE 1 PRODUCTION-READY DECLARATION
+```
+
+**Future cross-cutting follow-up (#282 / #283):**
+
+```
+┌─── Parallel track, lands after Pass 1 deploy ──────────────────┐
+│                                                                │
+│ #283 HEP-CORE-0031 amendment + impl                            │
+│   ── draft  (✅ docs/tech_draft/DRAFT_HEP-0031-bounded-...)    │
+│   ── promote (HEP §4.4 Bounded-Deadline Threads)               │
+│   ── implement (`spawn_bounded` + BoundedThreadRegistry)       │
+│                                                                │
+│ #272 Pass 1: consumer dial → bounded-sync (no FSM change)      │
+│   sequencing: under REVIEW-B (#274), validates framework on    │
+│   a concrete protocol                                          │
+│                                                                │
+│ #282 Pass 2: consumer dial → truly-async                       │
+│   FSM amendment: add RegistrationState::RegAckPending          │
+│   sequencing: REVIEW-B (#274) or part of #262                  │
+│                                                                │
+│ #262 mutual auth designs async from day one                    │
+│                                                                │
+└────────────────────────────────────────────────────────────────┘
 ```
 
 ### Review milestones — what each catches
