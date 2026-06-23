@@ -29,11 +29,14 @@ TEST_F(DatahubProducerConsumerTest, AcquireConsumeSlotTimeoutReturnsNull)
     ExpectWorkerOk(proc, {"DataBlock"});
 }
 
-TEST_F(DatahubProducerConsumerTest, FindConsumerWrongSecretReturnsNull)
-{
-    auto proc = SpawnWorker("error_handling.find_consumer_wrong_secret_returns_null", {});
-    ExpectWorkerOk(proc, {"DataBlock"});
-}
+// 2026-06-23 (#275-S2): `FindConsumerWrongSecretReturnsNull` RETIRED.
+// The C API's shared_secret gate it pinned is deleted under
+// HEP-CORE-0041 1i-cleanup.  Equivalent failure modes now live at
+// L2: `test_attach_protocol::RejectsConsumerWithWrongSeckey`
+// (cryptographic auth fail) and `test_shm_capability_channel::
+// ConsumerThrowsOnNonexistentEndpoint` (no rendezvous).  See the
+// retirement doc-block in `workers/datahub_producer_consumer_workers.cpp`
+// for the full rationale + reference to README_testing.md §1.2 rule 6.
 
 TEST_F(DatahubProducerConsumerTest, ReleaseWriteSlotInvalidHandleReturnsFalse)
 {

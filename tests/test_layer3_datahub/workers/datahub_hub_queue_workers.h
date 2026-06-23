@@ -62,8 +62,11 @@ int shm_queue_discard_then_reacquire();
 
 /** create_writer with empty schema → returns nullptr. */
 int shm_queue_create_writer_empty_schema();
-/** create_reader with wrong shared secret → returns nullptr. */
-int shm_queue_create_reader_wrong_secret();
+// 2026-06-23 (#275-S2): `shm_queue_create_reader_wrong_secret` RETIRED.
+// See doc-block in datahub_hub_queue_workers.cpp.  The name-based
+// `ShmQueue::create_reader(name, secret, ...)` factory the test drove
+// is removed under HEP-CORE-0041 1i-cleanup #275-S3; the capability
+// path replacing it has no per-attach secret.
 /** create_reader for nonexistent SHM segment → returns nullptr. */
 int shm_queue_create_reader_nonexistent();
 

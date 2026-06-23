@@ -209,12 +209,14 @@ TEST_F(DatahubShmQueueTest, CreateWriterEmptySchema)
     ExpectWorkerOk(proc, {}, {"slot_schema is empty"});
 }
 
-TEST_F(DatahubShmQueueTest, CreateReaderWrongSecret)
-{
-    // create_reader with wrong shared secret must return nullptr.
-    auto proc = SpawnWorker("hub_queue.shm_queue_create_reader_wrong_secret", {});
-    ExpectWorkerOk(proc);
-}
+// 2026-06-23 (#275-S2): `CreateReaderWrongSecret` RETIRED.
+// The legacy `ShmQueue::create_reader(name, secret, ...)` factory it
+// drove is removed under HEP-CORE-0041 1i-cleanup #275-S3.  The
+// capability path replacing it has no per-attach secret.  See
+// retirement doc-block in `workers/datahub_hub_queue_workers.cpp`.
+// L2 capability-path coverage:
+// `test_hub_shm_queue_capability.cpp::SetCapabilityFd_RefusesNegativeFd`
+// (invalid-fd guard) + Tests 3-5 (state-machine refusals).
 
 TEST_F(DatahubShmQueueTest, CreateReaderNonexistent)
 {

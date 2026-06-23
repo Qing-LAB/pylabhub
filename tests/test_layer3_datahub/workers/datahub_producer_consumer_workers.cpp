@@ -57,33 +57,40 @@ int acquire_consume_slot_timeout_returns_null()
         "acquire_consume_slot_timeout_returns_null", logger_module(), crypto_module(), hub_module());
 }
 
-int find_consumer_wrong_secret_returns_null()
-{
-    return run_gtest_worker(
-        []()
-        {
-            std::string channel = make_test_channel_name("ErrWrongSecret");
-            DataBlockConfig config{};
-            config.policy = DataBlockPolicy::RingBuffer;
-            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
-            config.shared_secret = 60002;
-            config.ring_buffer_capacity = 2;
-            config.physical_page_size = DataBlockPageSize::Size4K;
-
-            auto producer = create_datablock_producer_impl(channel,
-                                                      DataBlockPolicy::RingBuffer, config,
-                                                      nullptr, nullptr);
-            ASSERT_NE(producer, nullptr);
-            uint64_t wrong_secret = config.shared_secret + 1;
-            auto consumer = find_datablock_consumer_impl(channel, wrong_secret,
-                                                        &config, nullptr, nullptr);
-            EXPECT_EQ(consumer.get(), nullptr);
-
-            producer.reset();
-            cleanup_test_datablock(channel);
-        },
-        "find_consumer_wrong_secret_returns_null", logger_module(), crypto_module(), hub_module());
-}
+// ----------------------------------------------------------------------------
+// find_consumer_wrong_secret_returns_null — RETIRED 2026-06-23 (HEP-CORE-0041
+// 1i-cleanup / #275-S2)
+// ----------------------------------------------------------------------------
+//
+// Original intent: pin the C API's `find_datablock_consumer_impl(name,
+// secret, ...)` rejection when the supplied secret didn't match the
+// header-stored secret.  Created producer with secret S; attempted attach
+// with secret S+1; expected nullptr.  This exercised the
+// `memcmp(stored_secret, supplied_secret, 64) != 0` gate in
+// `find_datablock_consumer_impl`.
+//
+// Why retired:
+//   1. The gate IS the surface that HEP-CORE-0041 1i-cleanup deletes.
+//      Under the new capability transport, possession of the SHM fd
+//      (received via SCM_RIGHTS after a `crypto_box` challenge-response
+//      handshake) IS the auth — there is no per-attach secret to mismatch.
+//      `SharedMemoryHeader::shared_secret[64]` itself retires in #275-S5
+//      (Core Structure Change Protocol).
+//   2. The "consumer can't reach this segment" failure mode the test
+//      composed at the C API now lives at the L2 capability transport:
+//        * `test_layer2_service/test_shm_capability_channel.cpp::
+//          ConsumerThrowsOnNonexistentEndpoint` — endpoint discovery fails
+//        * `test_layer2_service/test_attach_protocol.cpp::
+//          RejectsConsumerWithWrongSeckey` — wrong consumer keypair → MAC fail
+//      Both are stronger than the old "wrong secret" gate (cryptographic
+//      vs memcmp) and live at the layer where the gate now exists.
+//   3. Constructing a synthetic-failure capability-path equivalent in this
+//      L3 test would either re-test the L2 mechanism or manufacture a
+//      production-unreachable failure — neither serves the test bar in
+//      `docs/README/README_testing.md` §1.2.
+//
+// Future maintainers: do NOT reintroduce a "wrong secret" test at the
+// DataBlock C API level — there is no secret in the new model.
 
 int release_write_slot_invalid_handle_returns_false()
 {
@@ -405,8 +412,6 @@ struct ErrorHandlingWorkerRegistrar
                 using namespace pylabhub::tests::worker::error_handling;
                 if (scenario == "acquire_consume_slot_timeout_returns_null")
                     return acquire_consume_slot_timeout_returns_null();
-                if (scenario == "find_consumer_wrong_secret_returns_null")
-                    return find_consumer_wrong_secret_returns_null();
                 if (scenario == "release_write_slot_invalid_handle_returns_false")
                     return release_write_slot_invalid_handle_returns_false();
                 if (scenario == "release_consume_slot_invalid_handle_returns_false")

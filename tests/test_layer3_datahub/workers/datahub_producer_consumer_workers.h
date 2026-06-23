@@ -10,8 +10,11 @@ namespace pylabhub::tests::worker::error_handling
 
 /** Consumer acquire_consume_slot times out when no producer has committed → nullptr. */
 int acquire_consume_slot_timeout_returns_null();
-/** find_datablock_consumer with wrong shared_secret → nullptr (no attach). */
-int find_consumer_wrong_secret_returns_null();
+// 2026-06-23 (#275-S2): `find_consumer_wrong_secret_returns_null` RETIRED.
+// See doc-block in datahub_producer_consumer_workers.cpp.  The
+// shared_secret gate it pinned is deleted under HEP-CORE-0041
+// 1i-cleanup; capability-transport receipt IS the auth in the new
+// model — there is no "wrong secret" surface to test.
 /** release_write_slot with default-constructed (invalid) handle → false. */
 int release_write_slot_invalid_handle_returns_false();
 /** release_consume_slot with default-constructed (invalid) handle → false. */

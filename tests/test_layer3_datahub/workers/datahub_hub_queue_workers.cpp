@@ -1065,32 +1065,34 @@ int shm_queue_create_writer_empty_schema()
         logger_module(), crypto_module(), hub_module());
 }
 
-// ============================================================================
-// Error path: create_reader with wrong secret → nullptr
-// ============================================================================
-
-int shm_queue_create_reader_wrong_secret()
-{
-    return run_gtest_worker(
-        []()
-        {
-            DataBlockTestGuard g("ShmQueueCreateReaderWrongSecret");
-            ShmParams p{70023};
-
-            auto writer = ShmQueue::create_writer(
-                g.channel_name(), double_schema(), "aligned", {}, "",
-                p.capacity, p.page_size, p.secret, p.policy, p.sync, p.checksum);
-            ASSERT_NE(writer, nullptr);
-
-            // Wrong secret → attachment fails → nullptr.
-            auto reader = ShmQueue::create_reader(
-                g.channel_name(), p.secret + 1, double_schema(), "aligned",
-                g.channel_name());
-            EXPECT_EQ(reader, nullptr) << "create_reader with wrong secret must return nullptr";
-        },
-        "hub_queue.shm_queue_create_reader_wrong_secret",
-        logger_module(), crypto_module(), hub_module());
-}
+// ----------------------------------------------------------------------------
+// shm_queue_create_reader_wrong_secret — RETIRED 2026-06-23 (HEP-CORE-0041
+// 1i-cleanup / #275-S2)
+// ----------------------------------------------------------------------------
+//
+// Original intent: pin `ShmQueue::create_reader(name, secret, ...)`
+// rejection when the supplied secret didn't match the writer's stored
+// secret.  Created writer with secret S; attempted reader attach with
+// secret S+1; expected nullptr.  Exercised the legacy name-based reader
+// factory at the ShmQueue layer (one level above the C API gate that
+// `find_consumer_wrong_secret_returns_null` exercised).
+//
+// Why retired:
+//   1. The `ShmQueue::create_reader(name, secret, ...)` overload itself
+//      is deleted under #275-S3 (role-layer secret machinery cleanup).
+//      The capability path that replaces it
+//      (`ShmQueue::create_reader_standby(...)` + `set_shm_capability_fd(fd)`
+//      + `start()`) takes no secret — the auth happens out-of-band at the
+//      L2 capability transport layer (HEP-CORE-0041 §5.5).
+//   2. ShmQueue capability-path failure modes are covered at L2 by
+//      `test_layer2_service/test_hub_shm_queue_capability.cpp`:
+//        * Test 6 `SetCapabilityFd_RefusesNegativeFd` — invalid fd guard
+//        * Tests 3-5 — state-machine refusals when fd is set out of order
+//      These pin the SURVIVING surface; the deleted secret-gate has no
+//      successor to test at this layer.
+//
+// Future maintainers: do NOT reintroduce a "wrong secret" test at the
+// ShmQueue layer — there is no per-attach secret in the new model.
 
 // ============================================================================
 // Error path: create_reader for nonexistent SHM → nullptr
@@ -1207,8 +1209,6 @@ struct HubQueueWorkerRegistrar
                     return shm_queue_discard_then_reacquire();
                 if (scenario == "shm_queue_create_writer_empty_schema")
                     return shm_queue_create_writer_empty_schema();
-                if (scenario == "shm_queue_create_reader_wrong_secret")
-                    return shm_queue_create_reader_wrong_secret();
                 if (scenario == "shm_queue_create_reader_nonexistent")
                     return shm_queue_create_reader_nonexistent();
                 if (scenario == "shm_queue_create_writer_zero_size_schema")

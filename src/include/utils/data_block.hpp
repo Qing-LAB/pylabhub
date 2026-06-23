@@ -1499,6 +1499,51 @@ find_datablock_consumer(const std::string &name, uint64_t shared_secret,
                                         consumer_uid, consumer_name);
 }
 
+/**
+ * @brief Discover consumer over a received SHM fd with dual-schema validation.
+ *
+ * Fd-source counterpart of `find_datablock_consumer<F,D>` for the
+ * HEP-CORE-0041 capability transport (#275-S2).  Same compile-time
+ * schema derivation; routes through `find_datablock_consumer_from_fd_impl`
+ * which skips the legacy shared_secret gate (cap-transport receipt IS
+ * the auth in the new model).
+ *
+ * @param logical_name      Log/identity label (NOT a /dev/shm name).
+ * @param source_fd         Borrowed SHM fd (typically
+ *                          `IShmCapabilityConsumer::borrow_fd()` in
+ *                          production, or `::dup(producer_transport->borrow_fd())`
+ *                          in in-process L3 tests).  DataBlock dups
+ *                          internally; caller may close source_fd as
+ *                          soon as this returns.
+ * @param expected_config   Config validated against stored layout.
+ * @return Consumer handle, or nullptr if schema hashes don't match
+ *         or layout incompatible.
+ */
+template <typename FlexZoneT, typename DataBlockT>
+[[nodiscard]] std::unique_ptr<DataBlockConsumer>
+find_datablock_consumer_from_fd(const std::string     &logical_name,
+                                 int                    source_fd,
+                                 const DataBlockConfig &expected_config,
+                                 const char            *consumer_uid  = nullptr,
+                                 const char            *consumer_name = nullptr)
+{
+    static_assert(std::is_void_v<FlexZoneT> || std::is_trivially_copyable_v<FlexZoneT>,
+                  "FlexZoneT must be trivially copyable for shared memory");
+    static_assert(std::is_trivially_copyable_v<DataBlockT>,
+                  "DataBlockT must be trivially copyable for shared memory");
+
+    auto expected_flexzone = pylabhub::schema::generate_schema_info<FlexZoneT>(
+        "FlexZone", pylabhub::schema::SchemaVersion{1, 0, 0});
+    auto expected_datablock = pylabhub::schema::generate_schema_info<DataBlockT>(
+        "DataBlock", pylabhub::schema::SchemaVersion{1, 0, 0});
+
+    return find_datablock_consumer_from_fd_impl(logical_name, source_fd,
+                                                 &expected_config,
+                                                 &expected_flexzone,
+                                                 &expected_datablock,
+                                                 consumer_uid, consumer_name);
+}
+
 // ============================================================================
 // Phase 3: Single-Schema Template Implementations (Deprecated)
 // ============================================================================
