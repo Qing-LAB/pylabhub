@@ -76,9 +76,21 @@ add_executable(test_layer3_datahub
 
     # ── Integration / Scenario (deleted — Step 7 Messenger removal) ─
 
-    # ── WriteAttach mode (broker-owned shared memory) ─────────────────────────
-    test_datahub_write_attach.cpp
-    workers/datahub_write_attach_workers.cpp
+    # ── WriteAttach RETIRED 2026-06-23 (HEP-CORE-0041 1i-cleanup / #275-S2) ──
+    #
+    # `test_datahub_write_attach.cpp` + `workers/datahub_write_attach_workers.cpp`
+    # + `workers/datahub_write_attach_workers.h` deleted.  WriteAttach mode
+    # (hub creates SHM segment, source process attaches as a writer via
+    # `attach_datablock_as_writer_impl(name, secret, ...)`) is obsolete
+    # under HEP-CORE-0041 capability transport: each producer mints its OWN
+    # anonymous memfd via `memfd_create()` and owns it for the role's
+    # lifetime — there is no "attach as writer to someone else's segment"
+    # pattern anymore.  Zero production callers of
+    # `attach_datablock_as_writer_impl` confirmed by grep before deletion;
+    # the impl + signature retire under #275-S4.  Schema-validation
+    # coverage that the WriteAttach tests doubled was redundant with
+    # `test_datahub_schema_validation.cpp`; per-attach-mode coverage
+    # gained nothing once the mode disappeared.
 
     # ── Recovery scenarios (facility: zombie detection, force-reset, dead consumer) ──
     test_datahub_recovery_scenarios.cpp
