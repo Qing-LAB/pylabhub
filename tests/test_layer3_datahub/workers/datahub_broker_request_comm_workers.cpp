@@ -18,6 +18,7 @@
 #include "utils/json_config.hpp"
 #include "utils/lifecycle.hpp"
 #include "utils/role_reg_payload.hpp"
+#include "utils/security/shm_capability_channel.hpp" // #281 default_shm_capability_endpoint
 #include "utils/zmq_context.hpp"
 #include "plh_datahub.hpp"
 
@@ -141,15 +142,20 @@ int register_and_discover()
 
     // Register a channel.
     auto reg_opts = pylabhub::hub::build_producer_reg_payload(
+        // #281 (2026-06-23): `data_transport` REQUIRED — SHM wire shape
+        // mirrors production (HEP-CORE-0041 §5.1).  Endpoint string
+        // only; no L2 listener bound here.
         pylabhub::hub::ProducerRegInputs{
             .channel    = "test_ch",
             .role_uid   = "prod.test.uid00000001",
             .role_name  = "test_producer",
             .role_tag   = "producer",
-            .has_shm    = false,
+            .has_shm    = true,
             .is_zmq_transport  = false,
             .zmq_node_endpoint = {},
             .zmq_pubkey = curve.role(uid).public_z85,
+            .shm_capability_endpoint =
+                pylabhub::utils::security::default_shm_capability_endpoint("test_ch"),
         });
 
     auto reg_result = ch.register_channel(reg_opts, 5000);
@@ -226,17 +232,20 @@ int role_presence()
     if (presence_resp.has_value())
         EXPECT_FALSE(presence_resp->value("present", false));
 
-    // Register a channel so a role exists.
+    // Register a channel so a role exists.  #281 (2026-06-23):
+    // `data_transport` REQUIRED — SHM wire shape (HEP-CORE-0041 §5.1).
     auto reg_opts = pylabhub::hub::build_producer_reg_payload(
         pylabhub::hub::ProducerRegInputs{
             .channel    = "presence_ch",
             .role_uid   = "prod.my.uid00000042",
             .role_name  = "my_producer",
             .role_tag   = "producer",
-            .has_shm    = false,
+            .has_shm    = true,
             .is_zmq_transport  = false,
             .zmq_node_endpoint = {},
             .zmq_pubkey = curve.role(uid).public_z85,
+            .shm_capability_endpoint =
+                pylabhub::utils::security::default_shm_capability_endpoint("presence_ch"),
         });
 
     auto reg = ch.register_channel(reg_opts, 5000);
@@ -289,17 +298,20 @@ int notification_dispatch()
         ch.run_poll_loop([&] { return running.load(); });
     });
 
-    // Register a channel.
+    // Register a channel.  #281 (2026-06-23): `data_transport` REQUIRED
+    // — SHM wire shape (HEP-CORE-0041 §5.1).
     auto reg_opts = pylabhub::hub::build_producer_reg_payload(
         pylabhub::hub::ProducerRegInputs{
             .channel    = "notify_ch",
             .role_uid   = "prod.notify.uid00000001",
             .role_name  = "notify_producer",
             .role_tag   = "producer",
-            .has_shm    = false,
+            .has_shm    = true,
             .is_zmq_transport  = false,
             .zmq_node_endpoint = {},
             .zmq_pubkey = curve.role(uid).public_z85,
+            .shm_capability_endpoint =
+                pylabhub::utils::security::default_shm_capability_endpoint("notify_ch"),
         });
 
     auto reg = ch.register_channel(reg_opts, 5000);

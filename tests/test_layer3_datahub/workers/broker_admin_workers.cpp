@@ -21,6 +21,7 @@
 #include "utils/json_config.hpp"
 #include "utils/logger.hpp"
 #include "utils/role_reg_payload.hpp"
+#include "utils/security/shm_capability_channel.hpp" // #281 default_shm_capability_endpoint
 
 #include <atomic>
 #include <chrono>
@@ -72,16 +73,24 @@ std::string pid_chan(const std::string &base)
 json make_reg_opts(const std::string &channel, const std::string &role_uid,
                    const std::string &zmq_pubkey)
 {
+    // #281 (2026-06-23): post-broker-hardening, `data_transport` is a
+    // REQUIRED REG_REQ field.  This helper is used by tests that exercise
+    // the broker's admin surface (list_channels, snapshot, close_channel)
+    // — they don't care which transport per se, but the wire MUST declare
+    // one.  Mirror production producer_role_host: SHM transport with the
+    // canonical endpoint via `default_shm_capability_endpoint(channel)`.
     return pylabhub::hub::build_producer_reg_payload(
         pylabhub::hub::ProducerRegInputs{
             .channel    = channel,
             .role_uid   = role_uid,
             .role_name  = "test_producer",
             .role_tag   = "producer",
-            .has_shm    = false,
+            .has_shm    = true,
             .is_zmq_transport  = false,
             .zmq_node_endpoint = {},
             .zmq_pubkey = zmq_pubkey,
+            .shm_capability_endpoint =
+                pylabhub::utils::security::default_shm_capability_endpoint(channel),
         });
 }
 
@@ -365,6 +374,272 @@ int close_channel_non_existent()
         });
 }
 
+// ============================================================================
+// #281 (2026-06-23) — REG_REQ wire-contract pins for `data_transport`.
+// ============================================================================
+//
+// Six wire-level pins that exercise the broker REG_REQ handler directly via
+// `BrokerRequestComm::register_channel` (real CURVE + admission via the
+// `run_with_host` harness):
+//
+//   * Four NEGATIVE pins: REG_REQ payloads that should be REJECTED with
+//     INVALID_REQUEST per HEP-CORE-0036 §6.1 + HEP-CORE-0041 §5.1.  The
+//     broker emits a LOGGER_WARN naming the violation; the test harness
+//     declares each via `ExpectLogWarn` so the warn is allowlisted (it is
+//     EXPECTED, not collateral noise).  Without `ExpectLogWarn`, the
+//     harness's end-of-test `AssertNoUnexpectedLogWarnError` would fail
+//     even though the response shape is correct.
+//
+//   * Two POSITIVE pins: the canonical SHM and ZMQ wire shapes that
+//     production producers emit (status="success").
+//
+// Why this lives in `broker_admin_workers.cpp`: the file already wires
+// `run_with_host` (CURVE harness + KeyStore fixture) and `make_reg_opts`
+// helper, and BrokerAdminTest is the natural fixture home for "broker
+// rejects malformed wire shape" coverage.  The L3 broker test ladder
+// (rungs 2/3 under Pattern4*) targets handshake / heartbeat / lifecycle
+// flows, not REG_REQ field-level wire validation — so the pins live here
+// rather than expanding the rung set.
+
+namespace {
+
+/// Build a baseline SHM REG_REQ payload (data_transport="shm" + valid
+/// shm_capability_endpoint) that satisfies the broker's strict checks.
+/// Tests then erase / mutate specific fields to exercise each rejection
+/// branch.  Mirrors `make_reg_opts` shape but exposed locally so the
+/// tests don't accidentally depend on a future change to that helper.
+json make_baseline_shm_reg(const std::string &channel,
+                           const std::string &role_uid,
+                           const std::string &zmq_pubkey)
+{
+    return pylabhub::hub::build_producer_reg_payload(
+        pylabhub::hub::ProducerRegInputs{
+            .channel    = channel,
+            .role_uid   = role_uid,
+            .role_name  = "reg_validation_producer",
+            .role_tag   = "producer",
+            .has_shm    = true,
+            .is_zmq_transport  = false,
+            .zmq_node_endpoint = {},
+            .zmq_pubkey = zmq_pubkey,
+            .shm_capability_endpoint =
+                pylabhub::utils::security::default_shm_capability_endpoint(channel),
+        });
+}
+
+/// Build a baseline ZMQ REG_REQ payload.
+json make_baseline_zmq_reg(const std::string &channel,
+                           const std::string &role_uid,
+                           const std::string &zmq_pubkey)
+{
+    return pylabhub::hub::build_producer_reg_payload(
+        pylabhub::hub::ProducerRegInputs{
+            .channel    = channel,
+            .role_uid   = role_uid,
+            .role_name  = "reg_validation_producer",
+            .role_tag   = "producer",
+            .has_shm    = false,
+            .is_zmq_transport  = true,
+            .zmq_node_endpoint = "tcp://127.0.0.1:0",
+            .zmq_pubkey = zmq_pubkey,
+            .shm_capability_endpoint = {},
+        });
+}
+
+} // anonymous namespace
+
+int reg_validation_missing_data_transport()
+{
+    const std::string channel = pid_chan("reg.val.missing_dt");
+    const std::string uid     = "prod." + channel;
+    return run_with_host(
+        "broker_admin::reg_validation_missing_data_transport", {uid},
+        [channel, uid](pylabhub::tests::HubHostBrokerHandle &broker,
+                       pylabhub::tests::CurveSetup &curve) {
+            pylabhub::tests::BrcHandle bh;
+            bh.start(broker.endpoint, broker.pubkey, uid,
+                     pylabhub::tests::role_keystore_name(uid));
+            auto reg_opts = make_baseline_shm_reg(
+                channel, uid, curve.role(uid).public_z85);
+            reg_opts.erase("data_transport");
+
+            auto resp = bh.brc.register_channel(reg_opts, 3000);
+            ASSERT_TRUE(resp.has_value()) << "REG_REQ timed out";
+            EXPECT_EQ(resp->value("status", std::string{}), "error");
+            EXPECT_EQ(resp->value("error_code", std::string{}), "INVALID_REQUEST");
+            EXPECT_NE(resp->value("message", std::string{})
+                          .find("data_transport"),
+                      std::string::npos)
+                << "Error message should name the missing field; got: "
+                << resp->value("message", std::string{});
+
+            bh.stop();
+        },
+        // Broker emits a LOGGER_WARN naming the rejection — allowlist it.
+        {"missing required `data_transport` field"});
+}
+
+int reg_validation_empty_data_transport()
+{
+    const std::string channel = pid_chan("reg.val.empty_dt");
+    const std::string uid     = "prod." + channel;
+    return run_with_host(
+        "broker_admin::reg_validation_empty_data_transport", {uid},
+        [channel, uid](pylabhub::tests::HubHostBrokerHandle &broker,
+                       pylabhub::tests::CurveSetup &curve) {
+            pylabhub::tests::BrcHandle bh;
+            bh.start(broker.endpoint, broker.pubkey, uid,
+                     pylabhub::tests::role_keystore_name(uid));
+            auto reg_opts = make_baseline_shm_reg(
+                channel, uid, curve.role(uid).public_z85);
+            reg_opts["data_transport"] = "";
+
+            auto resp = bh.brc.register_channel(reg_opts, 3000);
+            ASSERT_TRUE(resp.has_value()) << "REG_REQ timed out";
+            EXPECT_EQ(resp->value("status", std::string{}), "error");
+            EXPECT_EQ(resp->value("error_code", std::string{}), "INVALID_REQUEST");
+
+            bh.stop();
+        },
+        // Broker emits the "not one of {shm,zmq}" WARN for explicit empty.
+        {"is not one of"});
+}
+
+int reg_validation_bogus_data_transport()
+{
+    const std::string channel = pid_chan("reg.val.bogus_dt");
+    const std::string uid     = "prod." + channel;
+    return run_with_host(
+        "broker_admin::reg_validation_bogus_data_transport", {uid},
+        [channel, uid](pylabhub::tests::HubHostBrokerHandle &broker,
+                       pylabhub::tests::CurveSetup &curve) {
+            pylabhub::tests::BrcHandle bh;
+            bh.start(broker.endpoint, broker.pubkey, uid,
+                     pylabhub::tests::role_keystore_name(uid));
+            auto reg_opts = make_baseline_shm_reg(
+                channel, uid, curve.role(uid).public_z85);
+            reg_opts["data_transport"] = "tcp";
+
+            auto resp = bh.brc.register_channel(reg_opts, 3000);
+            ASSERT_TRUE(resp.has_value()) << "REG_REQ timed out";
+            EXPECT_EQ(resp->value("status", std::string{}), "error");
+            EXPECT_EQ(resp->value("error_code", std::string{}), "INVALID_REQUEST");
+            EXPECT_NE(resp->value("message", std::string{}).find("tcp"),
+                      std::string::npos)
+                << "Error message should echo the bad value; got: "
+                << resp->value("message", std::string{});
+
+            bh.stop();
+        },
+        {"is not one of"});
+}
+
+int reg_validation_shm_missing_endpoint()
+{
+    const std::string channel = pid_chan("reg.val.shm_no_ep");
+    const std::string uid     = "prod." + channel;
+    return run_with_host(
+        "broker_admin::reg_validation_shm_missing_endpoint", {uid},
+        [channel, uid](pylabhub::tests::HubHostBrokerHandle &broker,
+                       pylabhub::tests::CurveSetup &curve) {
+            pylabhub::tests::BrcHandle bh;
+            bh.start(broker.endpoint, broker.pubkey, uid,
+                     pylabhub::tests::role_keystore_name(uid));
+            auto reg_opts = make_baseline_shm_reg(
+                channel, uid, curve.role(uid).public_z85);
+            // data_transport stays "shm"; explicitly drop the endpoint.
+            // This closes the pre-#281 coverage gap from #268
+            // (1i-prod-hardening shipped the §5.1 endpoint-required
+            // check without a wire-level regression pin).
+            reg_opts.erase("shm_capability_endpoint");
+
+            auto resp = bh.brc.register_channel(reg_opts, 3000);
+            ASSERT_TRUE(resp.has_value()) << "REG_REQ timed out";
+            EXPECT_EQ(resp->value("status", std::string{}), "error");
+            EXPECT_EQ(resp->value("error_code", std::string{}), "INVALID_REQUEST");
+            EXPECT_NE(resp->value("message", std::string{})
+                          .find("shm_capability_endpoint"),
+                      std::string::npos)
+                << "Error message should name the missing endpoint field; got: "
+                << resp->value("message", std::string{});
+
+            bh.stop();
+        },
+        {"data_transport='shm' but `shm_capability_endpoint` is empty"});
+}
+
+int reg_validation_shm_success()
+{
+    const std::string channel = pid_chan("reg.val.shm_ok");
+    const std::string uid     = "prod." + channel;
+    return run_with_host(
+        "broker_admin::reg_validation_shm_success", {uid},
+        [channel, uid](pylabhub::tests::HubHostBrokerHandle &broker,
+                       pylabhub::tests::CurveSetup &curve) {
+            pylabhub::tests::BrcHandle bh;
+            bh.start(broker.endpoint, broker.pubkey, uid,
+                     pylabhub::tests::role_keystore_name(uid));
+            auto reg_opts = make_baseline_shm_reg(
+                channel, uid, curve.role(uid).public_z85);
+
+            auto resp = bh.brc.register_channel(reg_opts, 3000);
+            ASSERT_TRUE(resp.has_value()) << "REG_REQ timed out";
+            EXPECT_EQ(resp->value("status", std::string{}), "success")
+                << "Canonical SHM REG_REQ shape must succeed; got error_code='"
+                << resp->value("error_code", std::string{}) << "' message='"
+                << resp->value("message", std::string{}) << "'";
+
+            // Sanity: the broker recorded the channel.  We don't pin
+            // the per-channel `data_transport` field here — the
+            // existing list/snapshot admin surfaces (`list_channels_json_str`
+            // and `ChannelSnapshotEntry`) don't expose `data_transport`,
+            // and threading a custom view through just to assert it
+            // would over-specify the test.  The negative pins above
+            // confirm the broker classifies the wire correctly; the
+            // status="success" here is the positive end.
+            auto snap = broker.service().query_channel_snapshot();
+            bool seen = false;
+            for (const auto &ch : snap.channels)
+                if (ch.name == channel) { seen = true; break; }
+            EXPECT_TRUE(seen) << "Channel '" << channel
+                              << "' missing from snapshot after success";
+
+            bh.stop();
+        });
+}
+
+int reg_validation_zmq_success()
+{
+    const std::string channel = pid_chan("reg.val.zmq_ok");
+    const std::string uid     = "prod." + channel;
+    return run_with_host(
+        "broker_admin::reg_validation_zmq_success", {uid},
+        [channel, uid](pylabhub::tests::HubHostBrokerHandle &broker,
+                       pylabhub::tests::CurveSetup &curve) {
+            pylabhub::tests::BrcHandle bh;
+            bh.start(broker.endpoint, broker.pubkey, uid,
+                     pylabhub::tests::role_keystore_name(uid));
+            auto reg_opts = make_baseline_zmq_reg(
+                channel, uid, curve.role(uid).public_z85);
+
+            auto resp = bh.brc.register_channel(reg_opts, 3000);
+            ASSERT_TRUE(resp.has_value()) << "REG_REQ timed out";
+            EXPECT_EQ(resp->value("status", std::string{}), "success")
+                << "Canonical ZMQ REG_REQ shape must succeed; got error_code='"
+                << resp->value("error_code", std::string{}) << "' message='"
+                << resp->value("message", std::string{}) << "'";
+
+            auto snap = broker.service().query_channel_snapshot();
+            bool seen = false;
+            for (const auto &ch : snap.channels)
+                if (ch.name == channel) { seen = true; break; }
+            EXPECT_TRUE(seen) << "Channel '" << channel
+                              << "' missing from snapshot after success";
+
+            bh.stop();
+        });
+}
+
 } // namespace broker_admin
 } // namespace pylabhub::tests::worker
 
@@ -405,6 +680,19 @@ struct BrokerAdminRegistrar
                     return close_channel_existing();
                 if (sc == "close_channel_non_existent")
                     return close_channel_non_existent();
+                // #281 (2026-06-23) REG_REQ wire-contract pins
+                if (sc == "reg_validation_missing_data_transport")
+                    return reg_validation_missing_data_transport();
+                if (sc == "reg_validation_empty_data_transport")
+                    return reg_validation_empty_data_transport();
+                if (sc == "reg_validation_bogus_data_transport")
+                    return reg_validation_bogus_data_transport();
+                if (sc == "reg_validation_shm_missing_endpoint")
+                    return reg_validation_shm_missing_endpoint();
+                if (sc == "reg_validation_shm_success")
+                    return reg_validation_shm_success();
+                if (sc == "reg_validation_zmq_success")
+                    return reg_validation_zmq_success();
                 return -1;
             });
     }

@@ -66,6 +66,7 @@
 #include "utils/role_uid.hpp"
 #include "utils/security/key_store.hpp"
 #include "utils/security/secure_memory_subsystem.hpp"
+#include "utils/security/shm_capability_channel.hpp" // #281 default_shm_capability_endpoint
 #include "utils/timeout_constants.hpp"
 #include "utils/zmq_context.hpp"
 
@@ -290,15 +291,24 @@ int pattern4_heartbeat_producer_role(const char *temp_dir_arg)
             // fed to `hub::build_producer_reg_payload`.  Identity pubkey
             // read from KeyStore via the production accessor
             // (HEP-CORE-0040 §172).  Rung 3 does not exercise the data
-            // plane (no build_tx_queue) so `is_zmq_transport=false`.
+            // plane (no build_tx_queue) but post-#281 (2026-06-23) the
+            // broker REJECTs REG_REQ with missing `data_transport` — the
+            // fixture mirrors the SHM-channel registration shape
+            // production uses: `has_shm=true` + canonical capability
+            // endpoint via `default_shm_capability_endpoint(channel)`
+            // (HEP-CORE-0041 §5.1).  Broker stores the endpoint string;
+            // no L2 listener is bound by this fixture (it doesn't
+            // exercise consumer attach).
             namespace sec = pylabhub::utils::security;
             pylabhub::hub::ProducerRegInputs reg_in;
             reg_in.channel          = channel;
             reg_in.role_uid         = role_uid;
             reg_in.role_name        = "pattern4_heartbeat";
             reg_in.role_tag         = "producer";
-            reg_in.has_shm          = false;
+            reg_in.has_shm          = true;
             reg_in.is_zmq_transport = false;
+            reg_in.shm_capability_endpoint =
+                sec::default_shm_capability_endpoint(channel);
             reg_in.zmq_pubkey       = std::string(
                 sec::key_store().pubkey(sec::kRoleIdentityName));
             auto reg_opts =

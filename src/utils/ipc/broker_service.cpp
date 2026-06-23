@@ -1552,17 +1552,52 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     // with the `zmq_pubkey` enforcement above for ZMQ channels.
     primary_producer.shm_capability_endpoint =
         req.value("shm_capability_endpoint", "");
+
+    // HEP-CORE-0036 §6.1 + HEP-CORE-0041 §5.1 — `data_transport` is a
+    // REQUIRED string field on REG_REQ, one of {"shm", "zmq"}.  No
+    // default — a missing or empty field is a wire-shape contract
+    // violation and is rejected at the boundary.
+    //
+    // Pre-#281 (2026-06-23) the broker silently defaulted absent
+    // `data_transport` to `"shm"`, which then tripped the §5.1 endpoint
+    // check downstream and produced a confusing diagnostic that pointed
+    // at the missing endpoint rather than the actually-missing transport
+    // declaration.  Surfacing the malformed REG_REQ explicitly here
+    // routes wire bugs to the right diagnostic.
+    if (!req.contains("data_transport") || !req["data_transport"].is_string())
+    {
+        LOGGER_WARN(
+            "Broker: REG_REQ rejected — channel '{}' role_uid='{}' "
+            "missing required `data_transport` field "
+            "(HEP-CORE-0036 §6.1 + HEP-CORE-0041 §5.1 — must be string "
+            "'shm' or 'zmq').",
+            channel_name, role_uid);
+        return make_error(corr_id, "INVALID_REQUEST",
+                          "REG_REQ requires `data_transport` field "
+                          "(string, 'shm' or 'zmq')");
+    }
     const std::string data_transport_req =
-        req.value("data_transport", std::string{"shm"});
-    // EDGE-9 (REVIEW-A close-out): tighten to catch explicit empty
-    // `data_transport: ""` too — the default-if-missing covers truly
-    // missing fields, but an explicit empty string would slip past
-    // the strict `== "shm"` check and admit an SHM REG with no
-    // endpoint.  The current handler stores `data_transport` on the
-    // ChannelEntry and the CONSUMER_REG_ACK builder emits SHM-shaped
-    // ACKs based on this field, so empty here would produce broken
-    // ACKs to consumers.
-    if ((data_transport_req == "shm" || data_transport_req.empty()) &&
+        req["data_transport"].get<std::string>();
+    if (data_transport_req != "shm" && data_transport_req != "zmq")
+    {
+        LOGGER_WARN(
+            "Broker: REG_REQ rejected — channel '{}' role_uid='{}' "
+            "`data_transport`='{}' is not one of {{\"shm\",\"zmq\"}} "
+            "(HEP-CORE-0036 §6.1 + HEP-CORE-0041 §5.1).",
+            channel_name, role_uid, data_transport_req);
+        return make_error(corr_id, "INVALID_REQUEST",
+                          "REG_REQ `data_transport`='" + data_transport_req +
+                              "' is invalid; expected 'shm' or 'zmq'");
+    }
+
+    // HEP-CORE-0041 §5.1 — SHM channels MUST publish their L2
+    // capability transport endpoint so the broker can echo it back to
+    // authorized consumers in CONSUMER_REG_ACK (§5.3).  Reject SHM
+    // REG_REQ with empty endpoint at the wire — without it, consumers
+    // would fail with a confusing "connect to empty path" error after
+    // registration.  Symmetric with `zmq_pubkey` enforcement above for
+    // ZMQ channels.
+    if (data_transport_req == "shm" &&
         primary_producer.shm_capability_endpoint.empty())
     {
         LOGGER_WARN(
@@ -1953,7 +1988,10 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     transport_inv.shm_name          = req.value("shm_name", "");
     transport_inv.pattern           = channel_pattern_from_str(
         req.value("channel_pattern", "PubSub"));
-    transport_inv.data_transport    = req.value("data_transport", std::string{"shm"});
+    // Validated above (HEP-CORE-0036 §6.1 + HEP-CORE-0041 §5.1) —
+    // reuse the same local so persisted ChannelEntry.data_transport
+    // cannot drift from the value the §5.1 endpoint check accepted.
+    transport_inv.data_transport    = data_transport_req;
 
     const auto admission = hub_state_->_on_producer_added(
         channel_name,

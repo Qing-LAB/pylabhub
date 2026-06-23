@@ -93,6 +93,16 @@ struct ConsumerRegInputs
 /// fields, no schema).  Equivalent to the manual JSON construction
 /// duplicated in producer_role_host.cpp / processor_role_host.cpp
 /// pre-Phase-5b.
+///
+/// **Contract (HEP-CORE-0036 §6.1 + HEP-CORE-0041 §5.1):** the produced
+/// payload ALWAYS carries an explicit `data_transport` field (string,
+/// one of `"shm"` or `"zmq"`); the broker rejects REG_REQ with missing
+/// or empty `data_transport` as `INVALID_REQUEST` (#281, 2026-06-23).
+/// Callers MUST set exactly one of `in.is_zmq_transport` /
+/// `in.has_shm` to `true`; the other paired field
+/// (`zmq_node_endpoint` for ZMQ, `shm_capability_endpoint` for SHM)
+/// MUST be non-empty.  A "no data plane wired" registration shape no
+/// longer exists — the wire requires an explicit transport spec.
 inline nlohmann::json build_producer_reg_payload(const ProducerRegInputs &in)
 {
     nlohmann::json reg;

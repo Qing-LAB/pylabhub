@@ -2500,6 +2500,18 @@ should run with peers that lack the auth fields once this HEP ships.
 
 ### 6.1 `REG_REQ` (producer → broker) — additions
 
+**`data_transport` is REQUIRED (post-#281, 2026-06-23).**  Every REG_REQ
+MUST carry `data_transport` as a non-empty string equal to one of
+`"shm"` or `"zmq"`.  The broker rejects with `INVALID_REQUEST` when the
+field is missing or its value is empty / not in the admissible set.
+Pre-#281 the broker silently defaulted absent `data_transport` to
+`"shm"` and then surfaced the resulting downstream failure (e.g.
+HEP-CORE-0041 §5.1 endpoint-required check) with a diagnostic that
+pointed at the secondary missing field rather than the primary
+malformed wire shape.  See HEP-CORE-0041 §5.1 for the SHM-side
+endpoint contract that depends on this value, and `role_reg_payload.hpp
+::build_producer_reg_payload` for the production wire emitter.
+
 Per T1 lock-in (I6 symmetric design), there is NO key-minting
 request — the producer uses its own identity keypair on the PUSH
 socket.  Only one new field is added:

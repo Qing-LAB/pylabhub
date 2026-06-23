@@ -19,6 +19,7 @@
 #include "utils/json_config.hpp"
 #include "utils/logger.hpp"
 #include "utils/role_reg_payload.hpp"
+#include "utils/security/shm_capability_channel.hpp" // #281 default_shm_capability_endpoint
 
 #include <atomic>
 #include <memory>
@@ -54,16 +55,21 @@ namespace
 json make_reg_opts(const std::string &channel, const std::string &role_uid,
                    const std::string &zmq_pubkey, uint64_t producer_pid)
 {
+    // #281 (2026-06-23): `data_transport` REQUIRED — mirror production
+    // SHM wire shape (HEP-CORE-0041 §5.1).  Broker only stores the
+    // endpoint string; no L2 listener bound by this helper.
     auto opts = pylabhub::hub::build_producer_reg_payload(
         pylabhub::hub::ProducerRegInputs{
             .channel    = channel,
             .role_uid   = role_uid,
             .role_name  = "test_producer",
             .role_tag   = "producer",
-            .has_shm    = false,
+            .has_shm    = true,
             .is_zmq_transport  = false,
             .zmq_node_endpoint = {},
             .zmq_pubkey = zmq_pubkey,
+            .shm_capability_endpoint =
+                pylabhub::utils::security::default_shm_capability_endpoint(channel),
         });
     opts["producer_pid"] = producer_pid;
     return opts;

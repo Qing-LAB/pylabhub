@@ -45,6 +45,7 @@
 #include "utils/role_uid.hpp"
 #include "utils/security/key_store.hpp"
 #include "utils/security/secure_memory_subsystem.hpp"
+#include "utils/security/shm_capability_channel.hpp" // #281 default_shm_capability_endpoint
 #include "utils/timeout_constants.hpp"
 #include "utils/zmq_context.hpp"
 
@@ -264,21 +265,28 @@ int pattern4_registration_producer_role(const char *temp_dir_arg)
             // would silently mask any future change to the payload shape.
             //
             // Rung 2 does not exercise the data plane (no build_tx_queue
-            // call), so `is_zmq_transport=false` is appropriate — the
-            // broker is recorded as SHM-channel for this test, mirroring
-            // how a producer that only wants the REG_REQ→ACK protocol
-            // verified would register.  Schema fields are not layered
-            // (broker takes the legacy/anonymous schema path) — same
-            // shape production uses when no BLDS named schema is
-            // configured.
+            // call), but the wire MUST still declare a transport.  Post-#281
+            // (2026-06-23) the broker REJECTs any REG_REQ with missing /
+            // empty `data_transport` — pre-#281 the broker silently
+            // defaulted absent `data_transport` to "shm" and only the §5.1
+            // endpoint check downstream rejected the resulting malformed
+            // payload, with a diagnostic that pointed at the wrong field.
+            // This fixture mirrors the SHM-channel registration shape
+            // production uses: `has_shm=true` + the canonical capability
+            // endpoint string via `default_shm_capability_endpoint(channel)`
+            // (HEP-CORE-0041 §5.1).  Broker only stores the endpoint string
+            // on this code path; no L2 listener is bound by the fixture
+            // because the test does not exercise consumer attach.
             namespace sec = pylabhub::utils::security;
             pylabhub::hub::ProducerRegInputs reg_in;
             reg_in.channel          = channel;
             reg_in.role_uid         = role_uid;
             reg_in.role_name        = "pattern4_registration";
             reg_in.role_tag         = "producer";
-            reg_in.has_shm          = false;
+            reg_in.has_shm          = true;
             reg_in.is_zmq_transport = false;
+            reg_in.shm_capability_endpoint =
+                sec::default_shm_capability_endpoint(channel);
             reg_in.zmq_pubkey       = std::string(
                 sec::key_store().pubkey(sec::kRoleIdentityName));
             auto reg_opts =

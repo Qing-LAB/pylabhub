@@ -371,6 +371,23 @@ REG_REQ with `INVALID_REQUEST` when `data_transport == "shm"` and
 `shm_capability_endpoint` is empty (1i-prod-hardening H3c, symmetric
 with the `zmq_pubkey` requirement for ZMQ channels at §6.1).
 
+**`data_transport` is REQUIRED (post-#281, 2026-06-23).**  The broker
+MUST reject any REG_REQ where the `data_transport` key is missing or
+where its value is empty / not one of `{"shm", "zmq"}` — `INVALID_REQUEST`.
+This pre-dates and supersedes the §5.1 endpoint check above: the
+broker validates `data_transport`'s presence + admissible value FIRST,
+then runs the SHM endpoint check.  Pre-#281 the broker silently
+defaulted absent `data_transport` to `"shm"`, which then tripped the
+§5.1 endpoint check and produced a misleading diagnostic that pointed
+at the missing endpoint rather than the actually-missing transport
+declaration.  The strict check at the wire boundary routes the
+malformed REG_REQ to the right diagnostic and removes a "missing
+field" surface that test fixtures could accidentally rely on (the
+issue that triggered #281 — Pattern4 fixtures with both transport
+flags `false` produced a no-`data_transport`-key payload that the
+broker silently mis-classified as SHM).  No `data_transport`-less
+"protocol-only registration" mode exists on this wire.
+
 ### 5.2 REG_ACK — what broker tells producer
 
 No new fields.  REG_ACK confirms admission; broker does NOT issue any
