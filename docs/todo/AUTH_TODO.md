@@ -1182,6 +1182,22 @@ the absence of the original finding text.
 
 ---
 
+### #275 1i-cleanup staged execution (2026-06-23)
+
+Five-stage plan, each individually buildable + green-tested.  Each
+stage runs a full L0-L4 sweep before the next starts.  S5 triggers
+the Core Structure Change Protocol (`docs/IMPLEMENTATION_GUIDANCE.md`
+§ "Core Structure Change Protocol") — the protocol checklist must be
+walked through BEFORE touching `SharedMemoryHeader`.
+
+| Stage | Status | Scope |
+|---|---|---|
+| **#275-S1** | **✅ 2026-06-23** | Migrate 7 SHM tests in `role_api_flexzone_workers.cpp` to capability fast-path (`RxQueueOptions::shm_capability_fd` + `::dup` in-process SCM_RIGHTS substitute).  Helper rewrite drops `secret` param; `PayloadPair` gains `shm_transport` field (destroyed last so fd outlives queues).  2 checksum-corrupt tests rewritten inline.  No production code changed. |
+| #275-S2 | ⏸ | Migrate ~16 L3 datahub workers off `find_datablock_consumer_impl(name, secret, ...)` / `attach_datablock_as_writer_impl(name, secret, ...)`.  Retire secret-gate tests (e.g. `writer_attach_validates_secret`) with Rule-6 doc-blocks (gate goes away in S4).  Migrate schema/checksum/roundtrip tests. |
+| #275-S3 | ⏸ | Delete role-layer secret machinery: `RxQueueOptions::shm_shared_secret`, `TxQueueOptions::shm_config.shared_secret`, `ShmQueue::set_shm_secret`, `ShmQueue::create_reader(name, secret, ...)` + `create_writer(..., shared_secret, ...)` overloads, `shm_config.hpp::ShmConfig::secret`, role-config secret parsing, the `else if (...shm_shared_secret != 0)` branches in `RoleAPIBase::build_rx_queue/build_tx_queue`.  C API + header still take secrets. |
+| #275-S4 | ⏸ | Delete C API secret param from `find_datablock_consumer_impl` / `attach_datablock_as_writer_impl`.  Stop `DataBlock::DataBlock()` from accepting non-zero `config.shared_secret`.  Stop producer init from generating a secret.  Header field stays. |
+| #275-S5 | ⏸ | Core Structure Change.  Rename `SharedMemoryHeader::shared_secret[64]` → `reserved_capability_token[64]` (preserves layout; schema-hash bumps because field name changes).  Update `PYLABHUB_SHARED_MEMORY_HEADER_SCHEMA_FIELDS` row.  Delete the writer-init line at `data_block.cpp:542`.  Walk the Core Structure Change Protocol checklist. |
+
 ### #275 1i-cleanup detailed scope (REVIEW-B 2026-06-23 carry-in)
 
 The cleanup deletes the legacy secret-based path on the producer +

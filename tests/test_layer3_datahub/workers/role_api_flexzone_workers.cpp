@@ -60,6 +60,7 @@
 #include "utils/data_block.hpp"
 #include "utils/schema_utils.hpp"
 #include "utils/zmq_context.hpp"
+#include "utils/security/shm_capability_channel.hpp"
 
 #include "curve_test_setup.h"   // CurveKeyStoreFixture
 #include "shared_test_helpers.h"
@@ -75,6 +76,8 @@
 #include <cstring>
 #include <memory>
 #include <string>
+
+#include <unistd.h>  // ::dup for in-process SCM_RIGHTS substitute (#275-S1)
 
 using pylabhub::scripting::ChannelSide;
 using pylabhub::scripting::RoleAPIBase;
@@ -99,12 +102,18 @@ static auto zmq_module()    { return ::pylabhub::hub::GetZMQContextModule(); }
 static auto hub_module()    { return ::pylabhub::hub::GetDataBlockModule(); }
 
 hub::TxQueueOptions make_producer_opts(const hub::SchemaSpec &slot_spec,
-                                        const hub::SchemaSpec &fz_spec,
-                                        uint64_t secret)
+                                        const hub::SchemaSpec &fz_spec)
 {
+    // HEP-CORE-0041 1i-cleanup #275-S1: capability path only.  No
+    // shared_secret (deleted by 1i-cleanup), no shm_name (capability
+    // transport has no kernel-namespace name — the segment is an
+    // anonymous memfd handed off via SCM_RIGHTS in production; in L3
+    // tests we hand the fd off via ::dup in-process).  The caller
+    // populates `shm_capability_fd` from
+    // `IShmCapabilityProducer::borrow_fd()` before passing to
+    // `build_tx_queue`.
     hub::TxQueueOptions opts;
     opts.has_shm = true;
-    opts.shm_config.shared_secret         = secret;
     opts.shm_config.ring_buffer_capacity  = 4;
     opts.shm_config.physical_page_size    = hub::system_page_size();
     opts.shm_config.policy                = hub::DataBlockPolicy::RingBuffer;
@@ -116,14 +125,53 @@ hub::TxQueueOptions make_producer_opts(const hub::SchemaSpec &slot_spec,
 }
 
 hub::RxQueueOptions make_consumer_opts(const std::string &shm_channel,
-                                        const hub::SchemaSpec &slot_spec,
-                                        uint64_t secret)
+                                        const hub::SchemaSpec &slot_spec)
 {
+    // HEP-CORE-0041 1i-cleanup #275-S1: capability path only.  No
+    // shared_secret (deleted by 1i-cleanup).  `shm_name` is purely a
+    // diagnostic label here — there is no kernel-namespace name on the
+    // capability path.  The caller populates `shm_capability_fd`
+    // (typically `::dup` of the producer's borrowed fd in L3
+    // in-process tests) before passing to `build_rx_queue`.
     hub::RxQueueOptions opts;
     opts.shm_name          = shm_channel;
-    opts.shm_shared_secret = secret;
     opts.slot_spec         = slot_spec;
     return opts;
+}
+
+/// Compute the byte size of the SHM segment that ShmQueue's
+/// fd-source factory expects for a given (slot_spec, fz_spec, ring,
+/// page) config.  Mirrors `RoleHostFrame::prepare_tx_capability_`
+/// exactly — the fd-source factory validates `fstat(fd).st_size ==
+/// this value` (HEP-CORE-0041 §6.3 + data_block.hpp:1308).
+size_t shm_segment_total_size(const hub::SchemaSpec &slot_spec,
+                              const hub::SchemaSpec &fz_spec,
+                              uint32_t               ring_buffer_capacity,
+                              hub::DataBlockPageSize page_size,
+                              hub::DataBlockPolicy   policy,
+                              hub::ConsumerSyncPolicy sync_policy,
+                              hub::ChecksumPolicy    checksum_policy)
+{
+    const auto slot_fields = hub::schema_spec_to_zmq_fields(slot_spec);
+    auto [slot_layout, item_size] =
+        hub::compute_field_layout(slot_fields, slot_spec.packing);
+    size_t fz_size = 0;
+    if (fz_spec.has_schema && !fz_spec.fields.empty())
+    {
+        const auto fz_fields = hub::schema_spec_to_zmq_fields(fz_spec);
+        auto [fz_layout, raw_fz_size] =
+            hub::compute_field_layout(fz_fields, fz_spec.packing);
+        fz_size = hub::align_to_physical_page(raw_fz_size);
+    }
+    hub::DataBlockConfig cfg;
+    cfg.logical_unit_size    = item_size;
+    cfg.flex_zone_size       = fz_size;
+    cfg.ring_buffer_capacity = ring_buffer_capacity;
+    cfg.physical_page_size   = page_size;
+    cfg.policy               = policy;
+    cfg.consumer_sync_policy = sync_policy;
+    cfg.checksum_policy      = checksum_policy;
+    return hub::datablock_layout_total_size(cfg);
 }
 
 /// Compute byte offsets for each field in @p spec (aligned packing).
@@ -141,8 +189,18 @@ std::vector<hub::FieldLayout> layout_for(const hub::SchemaSpec &spec)
 /// reference to the matching `RoleHostCore` inside this same struct.
 /// Moving or copying would dangle.  Pattern: construct on stack, fill
 /// via `build_payload_pair`, use, let destructor run in place.
+///
+/// HEP-CORE-0041 1i-cleanup #275-S1: `shm_transport` owns the memfd
+/// for the capability path.  Declared FIRST so that destruction order
+/// (reverse declaration order) is: cons → prod → cons_core → prod_core
+/// → shm_transport.  The queues' fd-source dups + mmaps are released
+/// when the RoleAPIBase instances destruct; the original memfd is
+/// closed last when `shm_transport` destructs.  Mirrors the production
+/// ordering where RoleHostFrame::shm_transport_ outlives the role's
+/// queues.
 struct PayloadPair
 {
+    std::unique_ptr<pylabhub::utils::security::IShmCapabilityProducer> shm_transport;
     RoleHostCore                 prod_core;
     RoleHostCore                 cons_core;
     std::unique_ptr<RoleAPIBase> prod;
@@ -171,20 +229,54 @@ struct PayloadPairOpts
 /// plain `TEST_F` body or any other context that lacks
 /// `throw_on_failure` — an ASSERT failure would silently `return;` from
 /// this function and leave the caller with a partially-built pair.
+///
+/// HEP-CORE-0041 1i-cleanup #275-S1: capability-path migration.  The
+/// helper:
+///   1. Computes the SHM segment size from (slot_spec, fz_spec) via
+///      `shm_segment_total_size` — same math as
+///      `RoleHostFrame::prepare_tx_capability_` (production parity).
+///   2. Mints an anonymous memfd via `create_shm_capability_producer`
+///      (the same factory production uses) and stows it on
+///      `out.shm_transport`.
+///   3. Borrows the fd, sets it on `tx_opts.shm_capability_fd`, builds
+///      the producer queue — the queue dups internally per the §6.3
+///      fd-source contract.
+///   4. `::dup`s the same fd (substitute for SCM_RIGHTS in this
+///      in-process test), sets it on `rx_opts.shm_capability_fd`,
+///      builds the consumer queue.  The dup is consumed by the queue
+///      (queue dups internally; we close ours immediately after
+///      `build_rx_queue` returns).
 void build_payload_pair(PayloadPair &out,
                          const hub::SchemaSpec &slot_spec,
                          const hub::SchemaSpec &fz_spec,
                          const std::string &channel,
-                         uint64_t secret,
                          const char *uid_tag,
                          const PayloadPairOpts &opts = {})
 {
     out.fz_size = hub::align_to_physical_page(
         hub::compute_schema_size(fz_spec, fz_spec.packing));
 
-    hub::TxQueueOptions tx_opts = make_producer_opts(slot_spec, fz_spec, secret);
+    hub::TxQueueOptions tx_opts = make_producer_opts(slot_spec, fz_spec);
     tx_opts.shm_config.checksum_policy = opts.checksum_policy;
     tx_opts.flexzone_checksum = opts.flexzone_checksum;
+
+    // Mint the capability transport with the EXACT segment size the
+    // fd-source factory will validate against (see
+    // `shm_segment_total_size` above for the size derivation that
+    // mirrors `RoleHostFrame::prepare_tx_capability_`).
+    namespace sec = pylabhub::utils::security;
+    const size_t total = shm_segment_total_size(
+        slot_spec, fz_spec,
+        tx_opts.shm_config.ring_buffer_capacity,
+        tx_opts.shm_config.physical_page_size,
+        tx_opts.shm_config.policy,
+        tx_opts.shm_config.consumer_sync_policy,
+        opts.checksum_policy);
+    ASSERT_GT(total, 0u) << "shm_segment_total_size returned 0";
+    out.shm_transport = sec::create_shm_capability_producer(total);
+    ASSERT_NE(out.shm_transport, nullptr)
+        << "create_shm_capability_producer(" << total << ") returned nullptr";
+    tx_opts.shm_capability_fd = out.shm_transport->borrow_fd();
 
     out.prod = std::make_unique<RoleAPIBase>(
         out.prod_core, "prod", std::string("prod.fz.") + uid_tag);
@@ -211,9 +303,16 @@ void build_payload_pair(PayloadPair &out,
     ASSERT_NE(slot, nullptr);
     out.prod->write_commit();
 
-    hub::RxQueueOptions rx_opts = make_consumer_opts(channel, slot_spec, secret);
+    // Hand the consumer its own fd via ::dup — in-process substitute
+    // for the §5.5 SCM_RIGHTS handoff used in production (the dup'd
+    // fd is a distinct integer pointing at the same kernel memfd
+    // object, matching what `recvmsg` SCM_RIGHTS would deliver).
+    hub::RxQueueOptions rx_opts = make_consumer_opts(channel, slot_spec);
     rx_opts.checksum_policy   = opts.checksum_policy;
     rx_opts.flexzone_checksum = opts.flexzone_checksum;
+    const int rx_fd_dup = ::dup(out.shm_transport->borrow_fd());
+    ASSERT_GE(rx_fd_dup, 0) << "::dup(memfd) failed: errno=" << errno;
+    rx_opts.shm_capability_fd = rx_fd_dup;
 
     out.cons = std::make_unique<RoleAPIBase>(
         out.cons_core, "cons", std::string("cons.fz.") + uid_tag);
@@ -230,7 +329,14 @@ void build_payload_pair(PayloadPair &out,
             hub::align_to_physical_page(fz_info.rx_logical_size);
         out.cons->set_flexzone_info_cache_(fz_info);
     }
-    ASSERT_TRUE(out.cons->build_rx_queue(rx_opts));
+    const bool rx_built = out.cons->build_rx_queue(rx_opts);
+    // The queue's fd-source factory dups internally — close our dup
+    // immediately after build_rx_queue returns (success or failure) to
+    // avoid a leak.  Mirrors the production teardown: the consumer
+    // dial closes its own connected_fd after `set_shm_capability_fd`
+    // returns in `apply_consumer_reg_ack_shm_`.
+    ::close(rx_fd_dup);
+    ASSERT_TRUE(rx_built);
     ASSERT_TRUE(out.cons->apply_consumer_reg_ack(nlohmann::json::object()));
 }
 
@@ -250,8 +356,7 @@ int shm_roundtrip()
 
             PayloadPair pair;
             build_payload_pair(pair, slot_spec, fz_spec,
-                make_test_channel_name("fz_roundtrip"),
-                0xDEAD'BEEF'CAFE'1234ULL, "TEST");
+                make_test_channel_name("fz_roundtrip"), "TEST");
 
             // Flexzone contract — three independent paths must agree:
             //   pair.fz_size                       — test-computed expectation
@@ -462,8 +567,7 @@ int shm_checksum_roundtrip()
 
             PayloadPair pair;
             build_payload_pair(pair, slot_spec, fz_spec,
-                make_test_channel_name("fz_checksum"),
-                0xBABE'FACE'FEED'F00DULL, "CSUM",
+                make_test_channel_name("fz_checksum"), "CSUM",
                 {hub::ChecksumPolicy::Enforced, /*flexzone_checksum=*/true});
 
             void *tx_fz = pair.prod->flexzone(ChannelSide::Tx);
@@ -533,8 +637,7 @@ int shm_roundtrip_padding_sensitive()
 
             PayloadPair pair;
             build_payload_pair(pair, slot_spec, fz_spec,
-                                make_test_channel_name("fz_padding"),
-                                0xCAFE'F00D'FACE'0001ULL, "PAD");
+                                make_test_channel_name("fz_padding"), "PAD");
 
             const auto layout = layout_for(fz_spec);
             ASSERT_EQ(layout.size(), 3u) << "padding_schema has 3 fields";
@@ -603,8 +706,7 @@ int shm_roundtrip_all_types()
 
             PayloadPair pair;
             build_payload_pair(pair, slot_spec, fz_spec,
-                                make_test_channel_name("fz_alltypes"),
-                                0xCAFE'F00D'FACE'0002ULL, "ALL");
+                                make_test_channel_name("fz_alltypes"), "ALL");
 
             const auto layout = layout_for(fz_spec);
             ASSERT_EQ(layout.size(), 13u);
@@ -708,8 +810,7 @@ int shm_roundtrip_array_field()
 
             PayloadPair pair;
             build_payload_pair(pair, slot_spec, fz_spec,
-                                make_test_channel_name("fz_array"),
-                                0xCAFE'F00D'FACE'0003ULL, "ARR");
+                                make_test_channel_name("fz_array"), "ARR");
 
             const auto layout = layout_for(fz_spec);
             ASSERT_EQ(layout.size(), 2u);
@@ -878,10 +979,27 @@ int shm_slot_checksum_corrupt_detected()
             auto fz_spec   = pylabhub::tests::simple_schema();
 
             const std::string channel = make_test_channel_name("fz_csum_corrupt");
-            const uint64_t    secret  = 0xBADD'C0DE'DEAD'BEEFULL;
 
             const size_t fz_logical  = hub::compute_schema_size(fz_spec, fz_spec.packing);
             const size_t fz_physical = hub::align_to_physical_page(fz_logical);
+
+            // HEP-CORE-0041 1i-cleanup #275-S1: capability path.  Mint
+            // the SHM transport BEFORE prod_core so destruction order
+            // (reverse) tears down queues first, then the memfd last.
+            namespace sec = pylabhub::utils::security;
+            hub::TxQueueOptions tx_opts = make_producer_opts(slot_spec, fz_spec);
+            tx_opts.shm_config.checksum_policy = hub::ChecksumPolicy::Enforced;
+            const size_t total = shm_segment_total_size(
+                slot_spec, fz_spec,
+                tx_opts.shm_config.ring_buffer_capacity,
+                tx_opts.shm_config.physical_page_size,
+                tx_opts.shm_config.policy,
+                tx_opts.shm_config.consumer_sync_policy,
+                hub::ChecksumPolicy::Enforced);
+            ASSERT_GT(total, 0u);
+            auto shm_transport = sec::create_shm_capability_producer(total);
+            ASSERT_NE(shm_transport, nullptr);
+            tx_opts.shm_capability_fd = shm_transport->borrow_fd();
 
             // Producer: enforced slot checksum.
             RoleHostCore prod_core;
@@ -897,10 +1015,7 @@ int shm_slot_checksum_corrupt_detected()
                 prod->set_flexzone_info_cache_(fz_info);
             }
 
-            hub::TxQueueOptions opts = make_producer_opts(slot_spec, fz_spec,
-                                                           secret);
-            opts.shm_config.checksum_policy = hub::ChecksumPolicy::Enforced;
-            ASSERT_TRUE(prod->build_tx_queue(opts));
+            ASSERT_TRUE(prod->build_tx_queue(tx_opts));
             ASSERT_TRUE(prod->apply_producer_reg_ack(nlohmann::json::object()));
 
             // Write + commit a slot with a known pattern.
@@ -935,14 +1050,22 @@ int shm_slot_checksum_corrupt_detected()
                 cons->set_flexzone_info_cache_(fz_info);
             }
 
-            hub::RxQueueOptions rx_opts = make_consumer_opts(channel, slot_spec,
-                                                              secret);
+            // In-process ::dup substitute for the production §5.5
+            // SCM_RIGHTS handoff (the dup'd fd is consumed by the
+            // queue's fd-source factory which dups internally — we
+            // close ours right after build_rx_queue returns).
+            hub::RxQueueOptions rx_opts = make_consumer_opts(channel, slot_spec);
             rx_opts.checksum_policy = hub::ChecksumPolicy::Enforced;
+            const int rx_fd_dup = ::dup(shm_transport->borrow_fd());
+            ASSERT_GE(rx_fd_dup, 0) << "::dup(memfd) failed: errno=" << errno;
+            rx_opts.shm_capability_fd = rx_fd_dup;
             // Enforced policy (set via rx_opts.checksum_policy) already
             // flips verify_slot on the reader at build time.  No
             // additional set_verify_checksum call — policy is tested by
             // its config, not by redundant API calls.
-            ASSERT_TRUE(cons->build_rx_queue(rx_opts));
+            const bool rx_built = cons->build_rx_queue(rx_opts);
+            ::close(rx_fd_dup);
+            ASSERT_TRUE(rx_built);
             ASSERT_TRUE(cons->apply_consumer_reg_ack(nlohmann::json::object()));
 
             const uint64_t errors_before =
@@ -1001,10 +1124,31 @@ int shm_flexzone_checksum_corrupt_detected()
             auto fz_spec   = pylabhub::tests::simple_schema();
 
             const std::string channel = make_test_channel_name("fz_fz_csum_corrupt");
-            const uint64_t    secret  = 0xBADD'F00D'FACE'D00DULL;
 
             const size_t fz_logical  = hub::compute_schema_size(fz_spec, fz_spec.packing);
             const size_t fz_physical = hub::align_to_physical_page(fz_logical);
+
+            // HEP-CORE-0041 1i-cleanup #275-S1: capability path.  Mint
+            // the SHM transport BEFORE prod_core so destruction order
+            // (reverse) tears down queues first, then the memfd last.
+            namespace sec = pylabhub::utils::security;
+            // Enforced slot checksum + flexzone checksum enabled.  Slot
+            // checksum is incidental here — the flexzone counter is the
+            // one we're going to drive.
+            hub::TxQueueOptions tx_opts = make_producer_opts(slot_spec, fz_spec);
+            tx_opts.shm_config.checksum_policy = hub::ChecksumPolicy::Enforced;
+            tx_opts.flexzone_checksum          = true;
+            const size_t total = shm_segment_total_size(
+                slot_spec, fz_spec,
+                tx_opts.shm_config.ring_buffer_capacity,
+                tx_opts.shm_config.physical_page_size,
+                tx_opts.shm_config.policy,
+                tx_opts.shm_config.consumer_sync_policy,
+                hub::ChecksumPolicy::Enforced);
+            ASSERT_GT(total, 0u);
+            auto shm_transport = sec::create_shm_capability_producer(total);
+            ASSERT_NE(shm_transport, nullptr);
+            tx_opts.shm_capability_fd = shm_transport->borrow_fd();
 
             RoleHostCore prod_core;
             auto prod = std::make_unique<RoleAPIBase>(
@@ -1019,14 +1163,7 @@ int shm_flexzone_checksum_corrupt_detected()
                 prod->set_flexzone_info_cache_(fz_info);
             }
 
-            // Enforced slot checksum + flexzone checksum enabled.  Slot
-            // checksum is incidental here — the flexzone counter is the
-            // one we're going to drive.
-            hub::TxQueueOptions opts = make_producer_opts(slot_spec, fz_spec,
-                                                           secret);
-            opts.shm_config.checksum_policy = hub::ChecksumPolicy::Enforced;
-            opts.flexzone_checksum          = true;
-            ASSERT_TRUE(prod->build_tx_queue(opts));
+            ASSERT_TRUE(prod->build_tx_queue(tx_opts));
             ASSERT_TRUE(prod->apply_producer_reg_ack(nlohmann::json::object()));
 
             // Write a slot with a pattern the consumer's slot-verify accepts.
@@ -1064,11 +1201,18 @@ int shm_flexzone_checksum_corrupt_detected()
                 cons->set_flexzone_info_cache_(fz_info);
             }
 
-            hub::RxQueueOptions rx_opts = make_consumer_opts(channel, slot_spec,
-                                                              secret);
+            // In-process ::dup substitute for the production §5.5
+            // SCM_RIGHTS handoff (the queue's fd-source factory dups
+            // internally — we close ours right after build_rx_queue).
+            hub::RxQueueOptions rx_opts = make_consumer_opts(channel, slot_spec);
             rx_opts.checksum_policy   = hub::ChecksumPolicy::Enforced;
             rx_opts.flexzone_checksum = true;
-            ASSERT_TRUE(cons->build_rx_queue(rx_opts));
+            const int rx_fd_dup = ::dup(shm_transport->borrow_fd());
+            ASSERT_GE(rx_fd_dup, 0) << "::dup(memfd) failed: errno=" << errno;
+            rx_opts.shm_capability_fd = rx_fd_dup;
+            const bool rx_built = cons->build_rx_queue(rx_opts);
+            ::close(rx_fd_dup);
+            ASSERT_TRUE(rx_built);
             ASSERT_TRUE(cons->apply_consumer_reg_ack(nlohmann::json::object()));
 
             const uint64_t errors_before =
