@@ -125,6 +125,29 @@ struct RxQueueOptions
 {
     uint64_t shm_shared_secret{0};
 
+    /// HEP-CORE-0041 1i-mig-4 (#272) — SHM capability transport fd
+    /// (anonymous memfd received via `SCM_RIGHTS` from the producer).
+    /// Symmetric with `TxQueueOptions::shm_capability_fd`.
+    ///
+    /// **Production flow:** the field stays `-1` at `build_rx_queue`
+    /// time (the consumer doesn't have the fd until AFTER REG_ACK
+    /// arrives carrying the producer's endpoint).  `build_rx_queue`'s
+    /// SHM branch builds the ShmQueue in Standby.  Then
+    /// `apply_consumer_reg_ack` dials the producer's endpoint, runs
+    /// the §5.5 handshake, recvs the fd via SCM_RIGHTS, stores the
+    /// `IShmCapabilityConsumer` on `RoleAPIBase::Impl` (D1 ownership
+    /// decision), and calls `rx_queue->set_shm_capability_fd(fd)` +
+    /// `start()` directly — bypassing this field on the production
+    /// path.
+    ///
+    /// **Test path:** L2/L3 tests MAY pre-populate this field with
+    /// a synthetic memfd to build an Active SHM rx queue at
+    /// construction time (analogous to how `producer_peers` may be
+    /// pre-populated for ZMQ tests).  When set, `build_rx_queue`
+    /// drives Standby → Active immediately via set_shm_capability_fd
+    /// + start.
+    int shm_capability_fd{-1};
+
     /// Slot + flexzone schemas — single source for fields + packing.
     SchemaSpec slot_spec{};
     SchemaSpec fz_spec{};
@@ -971,6 +994,25 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     void on_heartbeat_tick_();
     // M1.4 (2026-05-11): `on_metrics_report_tick_` deleted; metrics
     // piggyback on heartbeat per HEP-CORE-0019 §2.3 Phase 6.
+
+    /// HEP-CORE-0041 1i-mig-4 (#272) — SHM-branch dispatch for
+    /// `apply_consumer_reg_ack`.  Runs the §5.5 ZAP-CURVE dial against
+    /// the producer's `shm_capability_endpoint` (D3: bounded retry on
+    /// ECONNREFUSED to absorb the H3a race window where REG_ACK racing
+    /// the producer's listener-bind), receives the SHM memfd via
+    /// SCM_RIGHTS, hands the fd to the rx queue, and starts it.
+    ///
+    /// On success: `pImpl->shm_consumer` owns the SHM consumer (D1),
+    /// the rx queue is Active.  Returns true.
+    ///
+    /// On failure (timeout, transport error, queue refusal, post-retry
+    /// ECONNREFUSED): logs the cause and returns false.  Caller treats
+    /// false as a fatal registration failure (matches the §6.7 "fully
+    /// refused" semantics on the ZMQ path).
+    [[nodiscard]] bool apply_consumer_reg_ack_shm_(
+        const std::string &channel_name,
+        const std::string &shm_endpoint,
+        const std::string &producer_pubkey_z85);
 };
 
 } // namespace pylabhub::scripting

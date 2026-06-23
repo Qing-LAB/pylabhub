@@ -19,6 +19,9 @@
 #include "utils/metrics_json.hpp"
 #include "utils/role_host_core.hpp"
 #include "utils/schema_utils.hpp"
+#include "utils/security/attach_protocol.hpp"        // HEP-0041 1i-mig-4 (#272)
+#include "utils/security/key_store.hpp"              // HEP-0041 1i-mig-4 (#272)
+#include "utils/security/shm_capability_channel.hpp" // HEP-0041 1i-mig-4 (#272)
 #include "utils/shared_memory_spinlock.hpp"
 #include "utils/thread_manager.hpp"
 
@@ -26,9 +29,12 @@
 #include <atomic>
 #include <chrono>
 #include <cstring>
+#include <functional>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <stdexcept>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 
@@ -98,6 +104,26 @@ struct RoleAPIBase::Impl
     std::unique_ptr<hub::QueueReader> rx_queue;
     hub::InboxQueue          *inbox_queue{nullptr};
     ScriptEngine             *engine{nullptr};
+
+    /// HEP-CORE-0041 1i-mig-4 (#272) — Consumer-side SHM capability owner.
+    ///
+    /// Populated by `apply_consumer_reg_ack`'s SHM branch after the
+    /// §5.5 ZAP-CURVE dial succeeds and the producer sends the memfd
+    /// via `SCM_RIGHTS`.  Owns the mmap'd anonymous SHM region; its
+    /// dtor `munmap`s and `close`s the fd at role teardown
+    /// (consumer-side mirror of producer's `shm_transport_` on
+    /// RoleHostFrame).  Lifetime contract: outlives `rx_queue` because
+    /// the SHM queue mmap maps pages from the same fd this owns; the
+    /// queue must release the mapping (via destruction or
+    /// reset-to-Standby) BEFORE this fd closes.  D1 (designer
+    /// decision): RoleAPIBase owns the consumer side (symmetric with
+    /// RoleHostFrame owning the producer side).
+    ///
+    /// Null when:
+    ///   - Channel uses ZMQ transport (no SHM capability to receive).
+    ///   - SHM channel not yet authorized (REG_ACK didn't arrive or
+    ///     hadn't fired the SHM branch when the role tears down).
+    std::unique_ptr<utils::security::IShmCapabilityConsumer> shm_consumer;
 
     // HEP-CORE-0036 §I11 — symmetric script-observable peer caches.
     // Both stay independent PeerCache instances per HEP-CORE-0011
@@ -508,8 +534,65 @@ bool RoleAPIBase::build_rx_queue(const hub::RxQueueOptions &opts)
     const std::string &rx_channel = pImpl->channel;
 
     std::unique_ptr<hub::QueueReader> reader;
-    if (!opts.shm_name.empty() && opts.shm_shared_secret != 0 && opts.slot_spec.has_schema)
+    if (opts.data_transport == "shm" && opts.slot_spec.has_schema &&
+        opts.shm_shared_secret == 0)
     {
+        // HEP-CORE-0041 1i-mig-4 (#272) — capability-transport rx path.
+        // Build the ShmQueue in Standby; the fd arrives later via
+        // `apply_consumer_reg_ack`'s SHM dispatch (dial → §5.5
+        // handshake → SCM_RIGHTS recv → `set_shm_capability_fd` +
+        // `start`).  Symmetric with `build_tx_queue`'s capability
+        // path above.
+        //
+        // Test-only fast path: `opts.shm_capability_fd >= 0`
+        // pre-populated drives Standby → Active immediately, analogous
+        // to the ZMQ pre-populated-`producer_peers` case below.
+        // Production never sets this field at build time — the
+        // consumer doesn't have the fd until after REG_ACK arrives.
+        auto shm = hub::ShmQueue::create_reader_standby(
+            opts.shm_name,
+            hub::schema_spec_to_zmq_fields(opts.slot_spec),
+            opts.slot_spec.packing,
+            rx_channel,
+            /*verify_slot=*/false, /*verify_fz=*/false,
+            pImpl->uid, pImpl->name);
+        if (!shm)
+        {
+            LOGGER_ERROR("[{}] ShmQueue create_reader_standby failed for "
+                         "channel='{}' shm_name='{}' (HEP-CORE-0041 "
+                         "1i-mig-4 capability path)",
+                         pImpl->role_tag, rx_channel, opts.shm_name);
+            return false;
+        }
+        if (opts.shm_capability_fd >= 0)
+        {
+            if (!shm->set_shm_capability_fd(opts.shm_capability_fd))
+            {
+                LOGGER_ERROR("[{}] ShmQueue::set_shm_capability_fd refused "
+                             "for channel='{}' fd={} (test-pre-populated "
+                             "path; see queue WARN for reason)",
+                             pImpl->role_tag, rx_channel,
+                             opts.shm_capability_fd);
+                return false;
+            }
+            if (!shm->start())
+            {
+                LOGGER_ERROR("[{}] ShmQueue::start failed for channel='{}' "
+                             "on capability path (fd={}; see queue ERROR "
+                             "for reason)",
+                             pImpl->role_tag, rx_channel,
+                             opts.shm_capability_fd);
+                return false;
+            }
+        }
+        reader.reset(shm.release());
+    }
+    else if (!opts.shm_name.empty() && opts.shm_shared_secret != 0 && opts.slot_spec.has_schema)
+    {
+        // Legacy secret-based path — retires under HEP-CORE-0041
+        // 1i-cleanup (#275) once every test path migrates to the
+        // capability transport.  Production traffic always hits the
+        // capability branch above (shm_shared_secret == 0 since 1h).
         auto shm = hub::ShmQueue::create_reader(
             opts.shm_name, opts.shm_shared_secret,
             hub::schema_spec_to_zmq_fields(opts.slot_spec), opts.slot_spec.packing,
@@ -719,44 +802,49 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
                     ack.value("status", "?"),
                     producers_dump);
 
-        // HEP-CORE-0041 §5.3 (substep 1g #254) — for SHM channels the
-        // broker echoes back `shm_capability_endpoint` (the producer's
-        // L2 attach listener URI) and `producer_pubkey_z85` (the
+        // HEP-CORE-0041 1i-mig-4 (#272) — for SHM channels the broker
+        // echoes back `shm_capability_endpoint` (the producer's L2
+        // attach listener URI) and `producer_pubkey_z85` (the
         // producer's Curve25519 identity, used for the `crypto_box`
-        // challenge-response in §5.5).  Plumb-only in 1g: log them
-        // as the observable wire-reception marker.  Actual dial via
-        // `attach_shm_capability_consumer` + DataBlock fd-source attach
-        // (substep 1f's factories) lands when the legacy
-        // `shm_open(name)` path retires in 1i (#256).
+        // challenge-response in §5.5).  Drive the explicit consumer
+        // dial here — D2 (designer decision): SHM does NOT route
+        // through `apply_master_approval` (which is the ZMQ-PULL
+        // peer-set mutator).  SHM activation runs the §5.5 ZAP-CURVE
+        // handshake, recvs the memfd via SCM_RIGHTS, hands the fd to
+        // the rx queue, and starts it.
         const bool has_shm_cap = ack.contains("shm_capability_endpoint");
         if (has_shm_cap)
         {
+            const std::string shm_endpoint =
+                ack.value("shm_capability_endpoint", std::string{});
+            const std::string producer_pubkey_z85 =
+                ack.value("producer_pubkey_z85", std::string{});
             LOGGER_INFO("[{}] event=ShmCapabilityFieldsReceived channel='{}' "
                         "shm_capability_endpoint='{}' producer_pubkey_z85_len={}",
-                        pImpl->role_tag,
-                        ack.value("channel_name", "?"),
-                        ack.value("shm_capability_endpoint", "?"),
-                        ack.value("producer_pubkey_z85", std::string{}).size());
+                        pImpl->role_tag, channel_name, shm_endpoint,
+                        producer_pubkey_z85.size());
+            if (!apply_consumer_reg_ack_shm_(
+                    channel_name, shm_endpoint, producer_pubkey_z85))
+            {
+                return false;
+            }
         }
-
-        // Drive Standby → Active per HEP-CORE-0036 §6.7 Option B.
-        // The queue's apply_master_approval is the single mutator that
-        // applies the broker's reply.  For PULL queues it extracts
-        // ack["producers"], promotes peer[0] into transport-artifact
-        // fields, and calls start() internally.  For SHM, it is a
-        // no-op today (consumer dial — 1i-mig-4 / #272 — will route
-        // SHM apply_consumer_reg_ack through a separate path that
-        // builds IShmCapabilityConsumer, runs the §5.5 handshake,
-        // receives the fd via SCM_RIGHTS, and calls
-        // ShmQueue::set_shm_capability_fd + start()).  The original
-        // pre-HEP-0041 broker-mints-shm_secret design is SUPERSEDED.
-        if (!pImpl->rx_queue->apply_master_approval(ack))
+        else
         {
-            LOGGER_ERROR("[{}] apply_consumer_reg_ack: "
-                         "apply_master_approval refused (HEP-CORE-0036 "
-                         "§6.7 'fully refused' — malformed broker "
-                         "delivery)", pImpl->role_tag);
-            return false;
+            // ZMQ-PULL path — drive Standby → Active per HEP-CORE-0036
+            // §6.7 Option B via the queue's `apply_master_approval`
+            // (the single mutator that applies the broker's reply for
+            // PULL queues: extracts ack["producers"], promotes peer[0]
+            // into transport-artifact fields, and calls start()
+            // internally).
+            if (!pImpl->rx_queue->apply_master_approval(ack))
+            {
+                LOGGER_ERROR("[{}] apply_consumer_reg_ack: "
+                             "apply_master_approval refused (HEP-CORE-0036 "
+                             "§6.7 'fully refused' — malformed broker "
+                             "delivery)", pImpl->role_tag);
+                return false;
+            }
         }
 
         // Queue is Active.  Commit the pre-parsed cache view
@@ -837,6 +925,194 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
         return false;
     }
 }
+
+#if defined(PYLABHUB_PLATFORM_LINUX)
+
+bool RoleAPIBase::apply_consumer_reg_ack_shm_(
+    const std::string &channel_name,
+    const std::string &shm_endpoint,
+    const std::string &producer_pubkey_z85)
+{
+    namespace sec = pylabhub::utils::security;
+
+    if (shm_endpoint.empty() || producer_pubkey_z85.empty())
+    {
+        LOGGER_ERROR("[{}] apply_consumer_reg_ack: SHM channel '{}' "
+                     "ack missing required fields "
+                     "(shm_capability_endpoint='{}' "
+                     "producer_pubkey_z85_len={})",
+                     pImpl->role_tag, channel_name, shm_endpoint,
+                     producer_pubkey_z85.size());
+        return false;
+    }
+
+    // Assemble ConsumerAuthMaterial from the local KeyStore.  D1
+    // (HEP-CORE-0040 §8.5.1 use-not-export): the seckey accessor closes
+    // over the global key_store() lookup; no seckey byte materialises
+    // on this side of the §5.5 handshake.  Symmetric with the
+    // producer-side acceptor wiring in
+    // RoleHostFrame::spawn_shm_auth_listener_.
+    sec::ConsumerAuthMaterial auth;
+    auth.role_uid    = pImpl->uid;
+    try
+    {
+        auth.pubkey_z85 = std::string{sec::key_store().pubkey(sec::kRoleIdentityName)};
+    }
+    catch (const std::exception &e)
+    {
+        LOGGER_ERROR("[{}] apply_consumer_reg_ack: SHM channel '{}' — "
+                     "KeyStore::pubkey('{}') threw: {} (consumer cannot "
+                     "assemble auth material)",
+                     pImpl->role_tag, channel_name,
+                     sec::kRoleIdentityName, e.what());
+        return false;
+    }
+    auth.seckey_accessor =
+        [](std::function<void(std::span<const std::byte>)> use) {
+            sec::key_store().with_seckey(
+                sec::kRoleIdentityName,
+                [&](std::string_view sv) {
+                    use(std::span<const std::byte>(
+                        reinterpret_cast<const std::byte *>(sv.data()),
+                        sv.size()));
+                });
+        };
+
+    // D3: bounded retry on ECONNREFUSED to absorb the H3a race window
+    // where REG_ACK can reach the consumer before the producer's L2
+    // listener bind has happened.  ~10×100ms = up to ~1s of tolerance;
+    // beyond that we fail the registration.  ENOENT (socket file not
+    // yet visible) returns nullopt the same way ECONNREFUSED does, so
+    // both cases reuse this loop.
+    constexpr int  kMaxDialAttempts   = 10;
+    constexpr auto kDialAttemptPeriod = std::chrono::milliseconds{100};
+    std::optional<int> connected_fd_opt;
+    int                attempts_used = 0;
+    for (int attempt = 0; attempt < kMaxDialAttempts; ++attempt)
+    {
+        ++attempts_used;
+        try
+        {
+            connected_fd_opt = sec::initiate_consumer_handshake(
+                shm_endpoint, auth, producer_pubkey_z85,
+                kDialAttemptPeriod);
+        }
+        catch (const std::exception &e)
+        {
+            // Protocol-level failures (framing / JSON / size / sodium):
+            // not the H3a race shape.  Bail immediately.
+            LOGGER_ERROR("[{}] apply_consumer_reg_ack: SHM channel '{}' "
+                         "handshake to '{}' threw on attempt {}/{}: {}",
+                         pImpl->role_tag, channel_name, shm_endpoint,
+                         attempt + 1, kMaxDialAttempts, e.what());
+            return false;
+        }
+        if (connected_fd_opt.has_value())
+            break; // success — fd ready for SCM_RIGHTS recv
+        // nullopt = transport-level connect failure
+        // (ECONNREFUSED/ENOENT).  Brief sleep before retry — keeps the
+        // total wait ~1s which is well under the BRC consumer_attach
+        // 2000ms ceiling (#280 EDGE-2) so the producer-side accept
+        // thread doesn't time out while we retry.
+        if (attempt + 1 < kMaxDialAttempts)
+            std::this_thread::sleep_for(kDialAttemptPeriod);
+    }
+    if (!connected_fd_opt.has_value())
+    {
+        LOGGER_ERROR("[{}] apply_consumer_reg_ack: SHM channel '{}' "
+                     "handshake to '{}' connect-refused after {} attempts "
+                     "(~{}ms total) — H3a race exceeded tolerance window",
+                     pImpl->role_tag, channel_name, shm_endpoint,
+                     attempts_used,
+                     attempts_used * kDialAttemptPeriod.count());
+        return false;
+    }
+    const int connected_fd = *connected_fd_opt;
+
+    // Recv the SHM memfd via SCM_RIGHTS on the post-handshake socket.
+    // The factory takes ownership of `connected_fd` (closes on every
+    // path) and returns an IShmCapabilityConsumer owning the received
+    // memfd + the mmap.  Timeout 2000ms gives the producer's L2c
+    // orchestrator generous headroom to run the broker pre-confirm
+    // (CONSUMER_ATTACH_REQ → ACK) + cache lookup + send_capability.
+    std::unique_ptr<sec::IShmCapabilityConsumer> consumer;
+    try
+    {
+        consumer = sec::attach_shm_capability_consumer_from_socket(
+            connected_fd, std::chrono::milliseconds{2000});
+    }
+    catch (const std::exception &e)
+    {
+        LOGGER_ERROR("[{}] apply_consumer_reg_ack: SHM channel '{}' — "
+                     "SCM_RIGHTS recv failed: {}",
+                     pImpl->role_tag, channel_name, e.what());
+        return false;
+    }
+
+    const int memfd = consumer->borrow_fd();
+    if (memfd < 0)
+    {
+        LOGGER_ERROR("[{}] apply_consumer_reg_ack: SHM channel '{}' — "
+                     "IShmCapabilityConsumer returned invalid borrow_fd",
+                     pImpl->role_tag, channel_name);
+        return false;
+    }
+
+    // Hand the fd to the rx queue + activate.  Ownership note: the
+    // queue dups the fd internally (substep 1f fd-source factory), so
+    // `consumer` keeps owning the original memfd + mmap for the role's
+    // lifetime; rx_queue closes its own dup at its destruction.
+    if (!pImpl->rx_queue->set_shm_capability_fd(memfd))
+    {
+        LOGGER_ERROR("[{}] apply_consumer_reg_ack: SHM channel '{}' — "
+                     "ShmQueue::set_shm_capability_fd refused (fd={}; "
+                     "see queue WARN for reason)",
+                     pImpl->role_tag, channel_name, memfd);
+        return false;
+    }
+    if (!pImpl->rx_queue->start())
+    {
+        LOGGER_ERROR("[{}] apply_consumer_reg_ack: SHM channel '{}' — "
+                     "ShmQueue::start failed (fd={}; see queue ERROR for "
+                     "reason)",
+                     pImpl->role_tag, channel_name, memfd);
+        return false;
+    }
+
+    // Commit ownership AFTER successful activation.  D1: lifetime
+    // outlives the rx queue's mmap (the queue must release its mapping
+    // before the role's stop_handler_threads tears RoleAPIBase down,
+    // which destroys this Impl and the consumer with it).
+    pImpl->shm_consumer = std::move(consumer);
+    LOGGER_INFO("[{}] event=ShmCapabilityActivated channel='{}' "
+                "endpoint='{}' attempts={} (HEP-CORE-0041 1i-mig-4)",
+                pImpl->role_tag, channel_name, shm_endpoint,
+                attempts_used);
+    return true;
+}
+
+#else // non-Linux platforms
+
+bool RoleAPIBase::apply_consumer_reg_ack_shm_(
+    const std::string &channel_name,
+    const std::string & /*shm_endpoint*/,
+    const std::string & /*producer_pubkey_z85*/)
+{
+    // HEP-CORE-0041 §6.5 — symmetric "no backend on this platform"
+    // surface.  Mirrors the #error shape on the L1/L2b/L2c .cpp files
+    // (which fire at compile time on non-Linux).  This runtime branch
+    // only matters for builds that selectively exclude the security
+    // libs at compile time — production builds on
+    // FreeBSD/macOS/Windows fail to link before they get here, per
+    // tasks #259/#260/#261.
+    LOGGER_ERROR("[{}] apply_consumer_reg_ack: SHM channel '{}' — "
+                 "capability transport not implemented on this platform "
+                 "(HEP-CORE-0041 §6.5 — Linux only in Phase 1)",
+                 pImpl->role_tag, channel_name);
+    return false;
+}
+
+#endif // PYLABHUB_PLATFORM_LINUX
 
 bool RoleAPIBase::apply_producer_reg_ack(const nlohmann::json &ack)
 {

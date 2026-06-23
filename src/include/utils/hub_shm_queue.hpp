@@ -305,8 +305,13 @@ public:
      * if `set_shm_secret` has already been called (mutual exclusion).
      * Safe to call from Standby or to replace a previously-set capability
      * fd in Configured (e.g. attach retry against a different producer).
+     *
+     * Overrides the abstract `QueueReader::set_shm_capability_fd` (the
+     * non-SHM default returns `false`).  Same body used for both the
+     * reader- and writer-side ShmQueue instances since the field is
+     * single-stored on Impl regardless of role.
      */
-    bool set_shm_capability_fd(int fd) noexcept;
+    bool set_shm_capability_fd(int fd) noexcept override;
 
     /**
      * @brief Configured → Active.  Reader: performs SHM discovery via

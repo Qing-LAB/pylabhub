@@ -285,6 +285,38 @@ PYLABHUB_UTILS_EXPORT std::unique_ptr<IShmCapabilityConsumer>
 attach_shm_capability_consumer(const std::string       &endpoint,
                                std::chrono::milliseconds timeout);
 
+/// HEP-CORE-0041 1i-mig-4 (#272) — recv the SHM fd via `SCM_RIGHTS`
+/// on an ALREADY-CONNECTED + POST-§5.5-HANDSHAKE socket fd.  Takes
+/// ownership of `socket_fd`: closes it before return on every path
+/// (success, timeout, recv failure, exception).  Returns a fresh
+/// `IShmCapabilityConsumer` owning the received memfd + the mmap.
+///
+/// Used by `RoleAPIBase::apply_consumer_reg_ack` SHM branch — the
+/// consumer dial sequence is:
+///   1. `initiate_consumer_handshake(endpoint, auth_material,
+///       producer_pubkey, timeout)` returns the connected socket fd
+///       (post-handshake; consumer has sent Frame 2; producer has
+///       verified the challenge-response).
+///   2. **THIS HELPER** consumes that fd: polls for the SCM_RIGHTS
+///       message, recvmsg's the memfd, mmaps it, returns the
+///       consumer instance.
+///
+/// Separation from `attach_shm_capability_consumer(endpoint)` (which
+/// bundles connect + recv) lets the dial sequence interleave the
+/// §5.5 handshake between connect and recv — required for the
+/// HEP-CORE-0041 capability transport flow.  The bundled-connect
+/// variant remains useful for tests and the pre-§5.5 paths that
+/// don't need handshake (e.g. orchestrator L2 tests with a synthetic
+/// no-auth producer).
+///
+/// Throws `std::runtime_error` on poll/recvmsg failure or on
+/// timeout.  Throws `std::runtime_error` on non-Linux platforms
+/// until the per-platform backends (#259/#260/#261) ship.
+PYLABHUB_UTILS_EXPORT std::unique_ptr<IShmCapabilityConsumer>
+attach_shm_capability_consumer_from_socket(
+    int                       socket_fd,
+    std::chrono::milliseconds timeout);
+
 /// HEP-CORE-0041 substep 1g (#254) — compute the canonical per-user
 /// runtime endpoint string for a SHM channel's capability transport.
 ///

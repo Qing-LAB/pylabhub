@@ -406,14 +406,25 @@ MemfdProducer::size() const noexcept
     return mmap_size_;
 }
 
-/// Consumer-side: connect, receive SHM fd via SCM_RIGHTS, fstat the size,
-/// mmap.  All set-up happens in the ctor; the socket is closed before the
-/// ctor returns because we no longer need it (the kernel duped the fd
-/// into our process during recvmsg).
+/// Consumer-side: receive SHM fd via SCM_RIGHTS, fstat the size, mmap.
+/// All set-up happens in the ctor; the AF_UNIX socket is closed before
+/// the ctor returns because we no longer need it (the kernel duped the
+/// capability fd into our process during recvmsg).
+///
+/// Two construction modes:
+///   1. (endpoint, timeout): connect + recv.  Used by the legacy
+///      L1-direct factory `attach_shm_capability_consumer` — useful in
+///      L2 tests where the §5.5 ZAP-CURVE handshake is bypassed.
+///   2. (socket_fd, timeout): recv on an ALREADY-CONNECTED + POST-§5.5-
+///      HANDSHAKE socket.  Used by the production-path factory
+///      `attach_shm_capability_consumer_from_socket` (HEP-0041 1i-mig-4
+///      #272 consumer dial).  Takes ownership of `socket_fd`: closes it
+///      before return on every path.
 class MemfdConsumer final : public IShmCapabilityConsumer
 {
 public:
     MemfdConsumer(const std::string &endpoint, std::chrono::milliseconds timeout);
+    MemfdConsumer(int socket_fd, std::chrono::milliseconds timeout);
     ~MemfdConsumer() override;
 
     std::span<std::byte> data() override;
@@ -421,61 +432,49 @@ public:
     [[nodiscard]] int    borrow_fd() const noexcept override { return received_fd_; }
 
 private:
+    /// Poll + recvmsg + fstat + mmap on an already-connected socket.
+    /// Takes ownership of `sock_fd` (closes it before return on every
+    /// path: success, timeout, recv failure, exception).  Stores the
+    /// received fd + mmap into the member fields on success.  Throws
+    /// std::runtime_error on any failure.  `diag_tag` is appended to
+    /// the timeout error message for caller-side observability (e.g.
+    /// "from 'unix:///run/.../shmcap-foo.sock'" or "from socket").
+    void recv_and_mmap_owning_socket_(int                       sock_fd,
+                                      std::chrono::milliseconds timeout,
+                                      const std::string        &diag_tag);
+
     int    received_fd_{-1};
     void  *mmap_base_{nullptr};
     size_t mmap_size_{0};
 };
 
-MemfdConsumer::MemfdConsumer(const std::string       &endpoint,
-                             std::chrono::milliseconds timeout)
+void
+MemfdConsumer::recv_and_mmap_owning_socket_(int                       sock_fd,
+                                            std::chrono::milliseconds timeout,
+                                            const std::string        &diag_tag)
 {
-    // HEP-CORE-0041 §5.1: the producer publishes the canonical
-    // `unix://` URI in CONSUMER_REG_ACK; strip the scheme before
-    // `connect(2)` (sockaddr_un::sun_path needs the bare filesystem
-    // path).  Symmetric with MemfdProducer::bind_endpoint.
-    const std::string sock_path = strip_unix_scheme(endpoint);
-
-    sockaddr_un addr{};
-    if (sock_path.empty() || sock_path.size() >= sizeof(addr.sun_path))
+    // RAII close for the AF_UNIX socket: the kernel duplicates the
+    // capability fd into our process table during recvmsg, so after
+    // we have it we no longer need our local end of the AF_UNIX
+    // connection.  This guard ALSO covers all throw paths below, so a
+    // malformed recvmsg cannot leak the socket fd.
+    struct SockCloser
     {
-        throw std::invalid_argument(
-            "ShmCapabilityConsumer: invalid endpoint "
-            "(empty or longer than sockaddr_un::sun_path).");
-    }
+        int fd;
+        ~SockCloser() { if (fd >= 0) ::close(fd); }
+    } closer{sock_fd};
 
-    const int sock = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
-    if (sock == -1)
-    {
-        throw make_errno_error("Consumer", "socket failed", errno);
-    }
-
-    addr.sun_family = AF_UNIX;
-    std::memcpy(addr.sun_path, sock_path.c_str(), sock_path.size());
-    addr.sun_path[sock_path.size()] = '\0';
-
-    if (::connect(sock, reinterpret_cast<const sockaddr *>(&addr), sizeof(addr)) == -1)
-    {
-        const int captured = errno;
-        ::close(sock);
-        throw make_errno_error("Consumer",
-                               ("connect to '" + endpoint + "' failed").c_str(),
-                               captured);
-    }
-
-    pollfd pfd{sock, POLLIN, 0};
+    pollfd pfd{sock_fd, POLLIN, 0};
     const int n = ::poll(&pfd, 1, static_cast<int>(timeout.count()));
     if (n == 0)
     {
-        ::close(sock);
         throw std::runtime_error(
-            "ShmCapabilityConsumer: timeout waiting for capability fd from '" +
-            endpoint + "'.");
+            "ShmCapabilityConsumer: timeout waiting for capability fd " +
+            diag_tag);
     }
     if (n == -1)
     {
-        const int captured = errno;
-        ::close(sock);
-        throw make_errno_error("Consumer", "poll failed", captured);
+        throw make_errno_error("Consumer", "poll failed", errno);
     }
 
     char   iov_byte = 0;
@@ -492,14 +491,8 @@ MemfdConsumer::MemfdConsumer(const std::string       &endpoint,
     msg.msg_control    = u.buf;
     msg.msg_controllen = sizeof(u.buf);
 
-    const ssize_t got           = ::recvmsg(sock, &msg, 0);
-    const int     recv_errno    = errno;
-    // Close the socket unconditionally BEFORE any of the throw paths
-    // below so a malformed recvmsg cannot leak the AF_UNIX fd.  The
-    // capability fd we care about (if any) was already installed into
-    // our process's fd table by the kernel as part of the SCM_RIGHTS
-    // cmsg — we no longer need the socket for anything else.
-    ::close(sock);
+    const ssize_t got        = ::recvmsg(sock_fd, &msg, 0);
+    const int     recv_errno = errno;
 
     if (got != 1)
     {
@@ -556,6 +549,62 @@ MemfdConsumer::MemfdConsumer(const std::string       &endpoint,
     mmap_size_   = segment_size;
 }
 
+MemfdConsumer::MemfdConsumer(const std::string       &endpoint,
+                             std::chrono::milliseconds timeout)
+{
+    // HEP-CORE-0041 §5.1: the producer publishes the canonical
+    // `unix://` URI in CONSUMER_REG_ACK; strip the scheme before
+    // `connect(2)` (sockaddr_un::sun_path needs the bare filesystem
+    // path).  Symmetric with MemfdProducer::bind_endpoint.
+    const std::string sock_path = strip_unix_scheme(endpoint);
+
+    sockaddr_un addr{};
+    if (sock_path.empty() || sock_path.size() >= sizeof(addr.sun_path))
+    {
+        throw std::invalid_argument(
+            "ShmCapabilityConsumer: invalid endpoint "
+            "(empty or longer than sockaddr_un::sun_path).");
+    }
+
+    const int sock = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (sock == -1)
+    {
+        throw make_errno_error("Consumer", "socket failed", errno);
+    }
+
+    addr.sun_family = AF_UNIX;
+    std::memcpy(addr.sun_path, sock_path.c_str(), sock_path.size());
+    addr.sun_path[sock_path.size()] = '\0';
+
+    if (::connect(sock, reinterpret_cast<const sockaddr *>(&addr), sizeof(addr)) == -1)
+    {
+        const int captured = errno;
+        ::close(sock);
+        throw make_errno_error("Consumer",
+                               ("connect to '" + endpoint + "' failed").c_str(),
+                               captured);
+    }
+
+    recv_and_mmap_owning_socket_(sock, timeout, "from '" + endpoint + "'.");
+}
+
+MemfdConsumer::MemfdConsumer(int                       socket_fd,
+                             std::chrono::milliseconds timeout)
+{
+    // Production path: the §5.5 ZAP-CURVE handshake has already
+    // completed on `socket_fd` (see attach_protocol.cpp
+    // initiate_consumer_handshake).  We just poll + recv the
+    // SCM_RIGHTS message + mmap.  Takes ownership of socket_fd
+    // unconditionally via recv_and_mmap_owning_socket_'s RAII closer.
+    if (socket_fd < 0)
+    {
+        throw std::invalid_argument(
+            "ShmCapabilityConsumer: socket_fd must be >= 0 "
+            "(callers must pass an already-connected + post-§5.5-handshake socket).");
+    }
+    recv_and_mmap_owning_socket_(socket_fd, timeout, "from socket.");
+}
+
 MemfdConsumer::~MemfdConsumer()
 {
     if (mmap_base_ != nullptr)
@@ -593,6 +642,13 @@ attach_shm_capability_consumer(const std::string       &endpoint,
                                std::chrono::milliseconds timeout)
 {
     return std::make_unique<MemfdConsumer>(endpoint, timeout);
+}
+
+std::unique_ptr<IShmCapabilityConsumer>
+attach_shm_capability_consumer_from_socket(int                       socket_fd,
+                                           std::chrono::milliseconds timeout)
+{
+    return std::make_unique<MemfdConsumer>(socket_fd, timeout);
 }
 
 // HEP-CORE-0041 substep 1g (#254) — see header for the contract.
@@ -913,6 +969,14 @@ create_shm_capability_producer(size_t /*bytes*/)
 std::unique_ptr<IShmCapabilityConsumer>
 attach_shm_capability_consumer(const std::string & /*endpoint*/,
                                std::chrono::milliseconds /*timeout*/)
+{
+    throw std::runtime_error(
+        "HEP-CORE-0041 capability transport: no backend for this platform.");
+}
+
+std::unique_ptr<IShmCapabilityConsumer>
+attach_shm_capability_consumer_from_socket(int /*socket_fd*/,
+                                           std::chrono::milliseconds /*timeout*/)
 {
     throw std::runtime_error(
         "HEP-CORE-0041 capability transport: no backend for this platform.");

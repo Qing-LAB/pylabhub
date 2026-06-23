@@ -400,6 +400,25 @@ public:
      */
     virtual bool is_shm_backed() const noexcept { return false; }
 
+    /**
+     * @brief HEP-CORE-0041 1i-mig-4 (#272) — apply the SHM capability
+     * fd received via SCM_RIGHTS during the §5.5 attach handshake.
+     *
+     * Polymorphic Standby → Configured mutator for the capability-
+     * transport path (analogous to `apply_master_approval` for ZMQ
+     * PULL).  The role host's `apply_consumer_reg_ack` SHM branch
+     * dispatches through this so it doesn't need to downcast to
+     * `ShmQueue*`.
+     *
+     * Default implementation returns `false` (non-SHM queues refuse
+     * the call — callers should never reach this path for ZMQ).
+     * `ShmQueue` overrides to drive Standby → Configured via
+     * `set_shm_capability_fd(fd)`.  Returns `false` on refusal
+     * (already-Active queue, mutual-exclusion violation with
+     * `set_shm_secret`, non-SHM transport) so callers can log + fail.
+     */
+    virtual bool set_shm_capability_fd(int /*fd*/) noexcept { return false; }
+
     /// HEP-CORE-0041 §6.1 + task #279 — negotiated transport-level
     /// authentication mechanism observed at `start()` time.  See the
     /// `hub::Mechanism` enum docstring above for the per-subclass
