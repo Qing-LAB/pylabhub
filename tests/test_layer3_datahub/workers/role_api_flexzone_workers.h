@@ -50,12 +50,11 @@ int shm_roundtrip_array_field();
 
 // ── Negative paths — prove the error surface is live ─────────────────────────
 
-/// Consumer attach with wrong shared_secret must fail; subsequent
-/// attach with correct secret must succeed (no sticky corruption).
-int shm_consumer_wrong_secret_rejected();
-
-/// Consumer attach to nonexistent SHM segment must fail.
-int shm_consumer_nonexistent_rejected();
+// 2026-06-23 (#273): `shm_consumer_wrong_secret_rejected` +
+// `shm_consumer_nonexistent_rejected` retired (see doc-blocks in
+// role_api_flexzone_workers.cpp + docs/README/README_testing.md §1.2
+// rule 6).  The legacy SHM secret-based auth surface they pinned is
+// gone under HEP-CORE-0041.
 
 /// Producer commits a slot then corrupts its payload in SHM; consumer
 /// attached with Enforced checksum_policy must detect the mismatch via

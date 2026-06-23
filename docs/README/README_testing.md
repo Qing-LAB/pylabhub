@@ -50,6 +50,33 @@ These apply whenever a test spawns subprocess workers — Pattern 3, Pattern 4, 
 
 8. **Subprocess "auto" behaviors should be observable in the log.** When the subprocess self-detects "done" (principle 4) or applies a workaround (e.g. fallback to a shorter timeout), it should log WHY it took that branch. Future test-failure investigations rely on the log explaining what the subprocess decided.
 
+### 1.2 Mocking discipline + test-only hooks
+
+The baseline is **no mocks — observability over scaffolding** (codified across the project; see also `docs/IMPLEMENTATION_GUIDANCE.md` test-strategy section). Extend real classes' logs / accessors / state machines to make their behavior verifiable; do NOT write parallel-production scaffolding that test code drives differently from production.
+
+A handful of legitimate cases still need a test-only input hook — typically when a production flow involves work the test can't perform (network handshake, cross-process attach, hardware access, time-evolution). When that hook is genuinely necessary, the following discipline applies. **All bullets are non-negotiable for new hooks and for retiring legacy ones.**
+
+1. **The hook lives in production code with a docstring that names both flows.** The docstring states (a) what the field/method does in production, (b) what the test path uses it for, (c) why the two paths converge (same downstream logic). Hidden hooks are not discoverable; future maintainers must be able to grep for the hook and understand its dual purpose from the source.
+
+2. **The mock substitutes a value, not a code path.** The test path through the hook must exercise the SAME downstream logic as production. If the hook causes the code to take a different branch than production would, it is not a mock — it is a bypass, and bypasses are not permitted under this principle.
+
+3. **The hook aligns with the CURRENT design, not a past one.** Before adding or relying on a hook, refresh against the relevant HEP / IMPLEMENTATION_GUIDANCE. Hooks that encode yesterday's design are landmines for refactors. When a design changes such that an existing hook no longer aligns, the hook AND the tests that use it must be re-examined as part of the design change.
+
+4. **The hook has a written justification.** A comment at the production site (or in a referenced HEP / TODO) explains WHY production code alone cannot serve the test. "We need to test this branch" is not justification — that's "what." Justification answers "why can't production-shaped inputs reach this branch."
+
+5. **No invariant in production is loosened to accommodate the hook.** If the hook would require relaxing a production check (e.g. accepting a zero where production rejects, skipping a validation in the test path), the answer is to redesign the test, not loosen production.
+
+6. **Retiring obsolete tests is part of design hygiene.** When a design change deletes the failure mode a test was probing — even a passing test — the right move is to retire that test, NOT to manufacture a synthetic mock that drives a no-longer-meaningful failure path. Retired tests get a doc-block (in the file where the test lived) that records:
+   - the original intent and what design surface it pinned,
+   - what design change removed that surface,
+   - where the equivalent coverage lives now (different layer / different test / accepted gap with rationale),
+   - "do not reintroduce a replacement without identifying a real behavior to pin."
+   The doc-block survives in the codebase so a future maintainer with the same idea can read the prior analysis.
+
+7. **Test layer placement follows what the test exercises, not what it constructs.** A test that validates an API's return-and-state-cleanup behavior with mocked inputs is API-validation (L2 nature) even if it has to live under `tests/test_layer3_*/` because the construction of the system-under-test needs lifecycle modules. Conversely, a test that exercises a protocol flow is L3/L4 regardless of how lightweight its setup looks. Do not let file location dictate test classification when the actual behavior under test is misclassified.
+
+These principles were sharpened during the HEP-CORE-0041 1i-mig-5 cutover (2026-06-23) when the retirement of `shm_consumer_nonexistent_rejected` and `shm_consumer_wrong_secret_rejected` forced an explicit decision: a synthetic-fail capability-path replacement would have been a bypass (rule 2) and would have re-tested L2 guardrails (rule 6 — equivalent coverage exists elsewhere). The doc-blocks left in `role_api_flexzone_workers.cpp` are the canonical examples of rule 6 retirements.
+
 ## 2. Test Suite Structure
 
 The test suite is composed of several distinct **CMake targets** located in the `tests/` directory:

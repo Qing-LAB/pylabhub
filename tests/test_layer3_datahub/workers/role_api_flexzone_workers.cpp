@@ -752,89 +752,55 @@ int shm_roundtrip_array_field()
 // ============================================================================
 
 // ----------------------------------------------------------------------------
-// shm_consumer_wrong_secret_rejected
+// shm_consumer_wrong_secret_rejected — RETIRED 2026-06-23 (HEP-CORE-0041
+// 1i-mig-5 / #273; see docs/README/README_testing.md §1.2 rule 6)
 // ----------------------------------------------------------------------------
 //
-// Producer creates SHM with secret S; consumer tries to attach with
-// secret S^1.  build_rx_queue must return false, and the library must
-// emit a WARN log with "shared_secret mismatch" (symmetrical with the
-// WriteAttach path).  Subsequent attach with the correct secret must
-// succeed — proves the failure was the secret, not a sticky corruption.
-
-int shm_consumer_wrong_secret_rejected()
-{
-    return run_gtest_worker(
-        [&]()
-        {
-            auto slot_spec = pylabhub::tests::simple_schema();
-            auto fz_spec   = pylabhub::tests::simple_schema();
-
-            const std::string channel = make_test_channel_name("fz_wrong_secret");
-            const uint64_t    secret  = 0xA5A5'5A5A'DEAD'BEEFULL;
-
-            // Pre-compute both fz sizes once; pass each side to its cache.
-            const size_t fz_logical  = hub::compute_schema_size(fz_spec, fz_spec.packing);
-            const size_t fz_physical = hub::align_to_physical_page(fz_logical);
-
-            RoleHostCore prod_core;
-            auto prod = std::make_unique<RoleAPIBase>(
-                prod_core, "prod", "prod.fz.wrong");
-            prod->set_channel(channel);
-            prod->set_name("fz-wrong-prod");
-            {
-                RoleAPIBase::FlexzoneInfoCache fz_info;
-                fz_info.has_tx_fz        = fz_spec.has_schema;
-                fz_info.tx_logical_size  = fz_logical;
-                fz_info.tx_physical_size = fz_physical;
-                prod->set_flexzone_info_cache_(fz_info);
-            }
-            ASSERT_TRUE(prod->build_tx_queue(
-                make_producer_opts(slot_spec, fz_spec, secret)));
-            ASSERT_TRUE(prod->apply_producer_reg_ack(nlohmann::json::object()));
-
-            // Commit one slot so the SHM is in a usable state.
-            ASSERT_NE(prod->write_acquire(std::chrono::milliseconds{500}),
-                      nullptr);
-            prod->write_commit();
-
-            // Consumer attempts attach with WRONG secret.  Must fail.
-            RoleHostCore cons_core;
-            auto cons = std::make_unique<RoleAPIBase>(
-                cons_core, "cons", "cons.fz.wrong");
-            cons->set_channel(channel);
-            cons->set_name("fz-wrong-cons");
-            {
-                RoleAPIBase::FlexzoneInfoCache fz_info;
-                fz_info.has_rx_fz        = fz_spec.has_schema;
-                fz_info.rx_logical_size  = fz_logical;
-                fz_info.rx_physical_size = fz_physical;
-                cons->set_flexzone_info_cache_(fz_info);
-            }
-
-            auto bad_opts = make_consumer_opts(channel, slot_spec,
-                                                secret ^ 1ULL);
-            EXPECT_FALSE(cons->build_rx_queue(bad_opts))
-                << "build_rx_queue must reject wrong shared_secret";
-            // No half-state: a failed build must not leave a dangling
-            // rx_queue internal pointer.  Symmetric with the
-            // shm_consumer_nonexistent_rejected post-failure check.
-            EXPECT_FALSE(cons->rx_has_shm());
-            EXPECT_EQ(cons->flexzone(ChannelSide::Rx), nullptr);
-
-            // Sanity: build_rx_queue with the CORRECT secret still works
-            // afterwards — proves the failure was the secret, not a
-            // sticky state-corruption that would mask real bugs.
-            auto good_opts = make_consumer_opts(channel, slot_spec, secret);
-            EXPECT_TRUE(cons->build_rx_queue(good_opts))
-                << "build_rx_queue must succeed with correct secret";
-            EXPECT_TRUE(cons->apply_consumer_reg_ack(nlohmann::json::object()));
-
-            cons->close_queues();
-            prod->close_queues();
-        },
-        "role_api_flexzone::shm_consumer_wrong_secret_rejected",
-        logger_module(), crypto_module(), zmq_module(), hub_module());
-}
+// Original intent: validate the secret-mismatch gate end-to-end at the
+// role layer.  Producer created SHM with secret S; consumer attempted
+// attach with secret S^1 (wrong); the legacy
+// `ShmQueue::create_reader(name, secret, ...)` factory's
+// `memcmp(stored_secret, supplied_secret, 64) != 0` check rejected the
+// attach.  Then verified a follow-up attach with the correct secret
+// succeeded (recovery-after-fail).  Exercised the secret-based mutual
+// auth gate end-to-end through both producer-side
+// (`shm_config.shared_secret`) and consumer-side
+// (`shm_shared_secret`) legacy machinery.
+//
+// Why retired:
+//   1. The secret-mismatch gate IS the surface HEP-CORE-0041 deletes.
+//      Under HEP-CORE-0041 §6 the auth gate moves from
+//      header-stored-secret memcmp to capability-transport SCM_RIGHTS
+//      + crypto_box challenge-response.  There is no "wrong secret" on
+//      the capability path — the secret machinery is gone.  The whole
+//      test premise dissolves; this is a rule-6 retirement
+//      (`docs/README/README_testing.md` §1.2): when a design change
+//      deletes the failure mode a test was probing, retire the test
+//      rather than manufacture a synthetic mock that drives a
+//      no-longer-meaningful failure path.
+//   2. Coverage that the role-layer composition preserves:
+//      * Per-API failure modes: `test_hub_shm_queue_capability.cpp`
+//        (L2) Tests 1, 3, 4, 5, 6 — Standby/Active state machine,
+//        SetCapabilityFd refusals, defensive negative-fd guardrail.
+//      * Recovery-after-fail (build can be re-attempted with valid
+//        inputs after rejecting bad ones): implicit in the L2
+//        Standby → Configured → Active state machine, which proves
+//        each transition is independently driven (no sticky
+//        rejection state).
+//      * End-to-end role-layer composition under real failure
+//        conditions: future L4 test (1k / #258).
+//   3. Constructing a synthetic-fail capability-path equivalent
+//      (e.g. SCM_RIGHTS recv times out, crypto_box verify fails)
+//      would manufacture a failure path the role layer doesn't drive
+//      synchronously.  Per `docs/README/README_testing.md` §1.2
+//      rule 2 (mock substitutes a value, not a code path), inventing
+//      that test would be a bypass, not a mock.
+//
+// Future maintainers: do NOT reintroduce a role-level "build_rx_queue
+// rejects bogus SHM auth" test on the capability path without first
+// identifying a role-layer behavior that L2 + L4 do not cover, AND
+// without satisfying every bullet in `docs/README/README_testing.md`
+// §1.2.
 
 // NOTE: no `shm_consumer_schema_mismatch_rejected` worker at this layer.
 // `ShmQueue::create_reader` deliberately does NOT validate schema shape
@@ -844,44 +810,47 @@ int shm_consumer_wrong_secret_rejected()
 // tier, not in the no-broker L3 role-api integration tests.
 
 // ----------------------------------------------------------------------------
-// shm_consumer_nonexistent_rejected
+// shm_consumer_nonexistent_rejected — RETIRED 2026-06-23 (HEP-CORE-0041
+// 1i-mig-5 / #273)
 // ----------------------------------------------------------------------------
 //
-// Consumer tries to attach to an SHM segment that was never created.
-// build_rx_queue must return false.  Proves the existence-check path
-// in ShmQueue::create_reader is live at the role-API boundary.
-
-int shm_consumer_nonexistent_rejected()
-{
-    return run_gtest_worker(
-        [&]()
-        {
-            RoleHostCore core;
-            auto api = std::make_unique<RoleAPIBase>(
-                core, "cons", "cons.fz.noexist");
-            api->set_channel("test.fz.noexist");
-            api->set_name("fz-noexist-cons");
-
-            hub::RxQueueOptions opts;
-            opts.shm_name          = make_test_channel_name(
-                "fz_nonexistent_segment");
-            opts.shm_shared_secret = 0xF00D'D00D'BAD0'BAD0ULL;
-            opts.slot_spec         = pylabhub::tests::simple_schema();
-
-            EXPECT_FALSE(api->build_rx_queue(opts))
-                << "build_rx_queue must reject nonexistent SHM segment";
-            // Prove no half-state: queue pointer is null after failed build,
-            // so rx_has_shm / flexzone accessors behave as if build never ran.
-            EXPECT_FALSE(api->rx_has_shm());
-            EXPECT_EQ(api->flexzone(ChannelSide::Rx), nullptr);
-        },
-        "role_api_flexzone::shm_consumer_nonexistent_rejected",
-        // No ZMQ code path reached on a nonexistent-SHM attach failure —
-        // drop zmq_module.  Crypto stays: DataBlock declares it as a
-        // hard lifecycle dependency (LifecycleGuard aborts without it),
-        // even if no signing/HMAC work runs on the failure path.
-        logger_module(), crypto_module(), hub_module());
-}
+// Original intent: validate that `build_rx_queue` returns false + leaves
+// no half-state when the consumer tries to attach to a named SHM
+// segment that was never created.  Drove the legacy
+// `ShmQueue::create_reader(name, secret, ...)` factory by setting
+// `RxQueueOptions::shm_shared_secret = 0xF00D...` + a nonexistent
+// `shm_name`.  This exercised the `shm_open(name)` not-found path.
+//
+// Why retired:
+//   1. The failure mode no longer exists on the capability transport
+//      (HEP-CORE-0041 §6).  Post-1i-mig-4 (#272) the consumer-side SHM
+//      attach goes through `apply_consumer_reg_ack_shm_` after REG_ACK
+//      delivers an SHM fd via `SCM_RIGHTS` — there is no `shm_open(name)`
+//      to fail on a nonexistent name.  The legacy branch in
+//      `build_rx_queue` (gated on `shm_shared_secret != 0`) survives
+//      only as a fallback for tests that still inject a secret, and
+//      that fallback is removed entirely under 1i-cleanup (#275).
+//   2. The downstream cleanup-on-fail behavior the original test
+//      composed at the role layer is already covered at L2 by
+//      `test_hub_shm_queue_capability.cpp`:
+//        * Test 6 (`SetCapabilityFd_RefusesNegativeFd`) — invalid-fd guardrail
+//        * Test 1 inverse — `start()` failure when DataBlock attach fails
+//        * Tests 3-5 — state-machine refusals (Active / mutual exclusion)
+//      No new behavior at the role-API boundary needs pinning that
+//      isn't covered at L2 already.
+//   3. Constructing a synthetic-failure capability-path equivalent
+//      (e.g. an implausible-large fd or an undersized memfd) would be
+//      either a re-test of L2's negative-fd guardrail (no new coverage)
+//      or a DataBlock fd-source-factory test (wrong layer).  Neither
+//      meets the bar "mock follows the same logic as production with
+//      clear justification" — both manufacture a failure path that
+//      production code never enters on the capability transport.
+//   4. End-to-end role-layer composition under real failure conditions
+//      is covered by the future L4 test (1k / #258).
+//
+// Future maintainers: do NOT reintroduce a role-level "build_rx_queue
+// rejects bogus SHM" test on the capability path without first
+// identifying a role-layer behavior that L2 + L4 do not cover.
 
 // ----------------------------------------------------------------------------
 // shm_slot_checksum_corrupt_detected
@@ -1170,10 +1139,11 @@ struct RoleApiFlexzoneWorkerRegistrar
                     return shm_roundtrip_all_types();
                 if (sc == "shm_roundtrip_array_field")
                     return shm_roundtrip_array_field();
-                if (sc == "shm_consumer_wrong_secret_rejected")
-                    return shm_consumer_wrong_secret_rejected();
-                if (sc == "shm_consumer_nonexistent_rejected")
-                    return shm_consumer_nonexistent_rejected();
+                // 2026-06-23 (#273): shm_consumer_wrong_secret_rejected
+                // and shm_consumer_nonexistent_rejected retired (see
+                // doc-blocks above + docs/README/README_testing.md §1.2
+                // rule 6).  The legacy SHM secret-based auth surface
+                // they pinned is gone under HEP-CORE-0041.
                 if (sc == "shm_slot_checksum_corrupt_detected")
                     return shm_slot_checksum_corrupt_detected();
                 if (sc == "shm_flexzone_checksum_corrupt_detected")

@@ -81,22 +81,27 @@ TEST_F(RoleApiFlexzoneTest, ShmRoundTrip_ArrayField)
 
 // ── Negative paths — prove the error surface is live ────────────────────────
 // Positive-path tests above can't catch bugs where a validation path is a
-// no-op.  These tests exercise failure modes so that, e.g., a regression
-// that removed secret-verification from ShmQueue::create_reader would be
-// caught here rather than shipping.
-
-TEST_F(RoleApiFlexzoneTest, ShmConsumer_WrongSecret_Rejected)
-{
-    auto w = SpawnWorker(
-        "role_api_flexzone.shm_consumer_wrong_secret_rejected", {});
-    // find_datablock_consumer_impl emits a WARN on secret mismatch
-    // (symmetrical with WriteAttach).  Pin the substring so a
-    // regression that either stopped checking the secret OR removed
-    // the log would fail this test.  Note: WARN-level logs don't
-    // trigger ExpectWorkerOk's "unexpected ERROR" guard, so pinning
-    // must be done via required_substrings (matched against stderr).
-    ExpectWorkerOk(w, /*required_substrings=*/{"shared_secret mismatch"});
-}
+// no-op.  These tests exercise failure modes that need pinning at this layer.
+//
+// 2026-06-23 (#273): two role-layer negative tests retired here when their
+// underlying surface (legacy SHM secret-based auth) was deleted under
+// HEP-CORE-0041:
+//
+//   - ShmConsumer_WrongSecret_Rejected (worker
+//     `shm_consumer_wrong_secret_rejected`) — pinned the
+//     `shared_secret mismatch` WARN on the secret-mismatch gate.  The
+//     gate itself is deleted; equivalent role-layer composition coverage
+//     under real failure conditions lives in the future L4 test
+//     (#258).
+//   - ShmConsumer_Nonexistent_Rejected (worker
+//     `shm_consumer_nonexistent_rejected`) — pinned `attachment failed`
+//     ERROR on the `shm_open(name)` not-found path.  The named-SHM path
+//     is deleted entirely; per-API-failure-mode coverage lives at L2
+//     (`test_hub_shm_queue_capability.cpp` Tests 1, 3, 4, 5, 6).
+//
+// See the doc-blocks in `workers/role_api_flexzone_workers.cpp` for the
+// full retirement analysis + `docs/README/README_testing.md` §1.2 rule 6
+// for the retirement discipline this followed.
 
 // Schema-mismatch at the ShmQueue layer alone does NOT reject (no
 // broker present to run the schema-hash cross-check — that validation
@@ -104,17 +109,6 @@ TEST_F(RoleApiFlexzoneTest, ShmConsumer_WrongSecret_Rejected)
 // schema-mismatch negative test needs a broker in scope; that belongs
 // in the hub/broker test tier, not here.  This test is intentionally
 // absent at the role-API / ShmQueue level.
-
-TEST_F(RoleApiFlexzoneTest, ShmConsumer_Nonexistent_Rejected)
-{
-    auto w = SpawnWorker(
-        "role_api_flexzone.shm_consumer_nonexistent_rejected", {});
-    // Attachment failure emits an ERROR log — pin the message so a
-    // regression that silently succeeded on nonexistent SHM would lose
-    // the log and fail ExpectWorkerOk.
-    ExpectWorkerOk(w, /*required_substrings=*/{},
-                   /*expected_error_substrings=*/{"attachment failed"});
-}
 
 TEST_F(RoleApiFlexzoneTest, ShmSlotChecksum_Corrupt_Detected)
 {
