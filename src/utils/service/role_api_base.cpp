@@ -110,14 +110,20 @@ struct RoleAPIBase::Impl
     /// Populated by `apply_consumer_reg_ack`'s SHM branch after the
     /// §5.5 ZAP-CURVE dial succeeds and the producer sends the memfd
     /// via `SCM_RIGHTS`.  Owns the mmap'd anonymous SHM region; its
-    /// dtor `munmap`s and `close`s the fd at role teardown
-    /// (consumer-side mirror of producer's `shm_transport_` on
-    /// RoleHostFrame).  Lifetime contract: outlives `rx_queue` because
-    /// the SHM queue mmap maps pages from the same fd this owns; the
-    /// queue must release the mapping (via destruction or
-    /// reset-to-Standby) BEFORE this fd closes.  D1 (designer
-    /// decision): RoleAPIBase owns the consumer side (symmetric with
-    /// RoleHostFrame owning the producer side).
+    /// dtor `munmap`s and `close`s the original received fd at role
+    /// teardown (consumer-side mirror of producer's `shm_transport_`
+    /// on RoleHostFrame).  D1 (designer decision): RoleAPIBase owns
+    /// the consumer side (symmetric with RoleHostFrame owning the
+    /// producer side).
+    ///
+    /// Destruction order: `shm_consumer` is declared AFTER `rx_queue`
+    /// above, so it is destroyed FIRST (reverse declaration order).
+    /// Safe because `rx_queue` dups the fd internally on
+    /// `set_shm_capability_fd` (substep 1f fd-source factory at
+    /// `find_datablock_consumer_from_fd_impl`) — closing
+    /// `shm_consumer`'s original fd does not invalidate the queue's
+    /// own dup or its mmap.  The queue closes its dup at its own
+    /// destruction (next in reverse-order).
     ///
     /// Null when:
     ///   - Channel uses ZMQ transport (no SHM capability to receive).

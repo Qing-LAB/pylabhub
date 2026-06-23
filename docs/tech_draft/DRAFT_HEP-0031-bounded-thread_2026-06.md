@@ -3,7 +3,7 @@
 **Status:** Tech draft — design exploration (2026-06-23).
 **Target:** Amendment to `docs/HEP/HEP-CORE-0031-ThreadManager.md` once finalized.
 **Tracked task:** #283.
-**Originating discussion:** #272 self-review surfaced the BRC-poll-thread block in `RoleAPIBase::apply_consumer_reg_ack_shm_` (up to ~3.9s worst case).  See #282 for that specific edge.
+**Originating discussion:** #272 self-review surfaced the consumer-role-host worker-thread block in `RoleAPIBase::apply_consumer_reg_ack_shm_` (up to ~3.9s worst case).  Called from `ConsumerRoleHost::worker_main_` Step 6 — the BRC poll thread already finished its job by delivering REG_ACK onto the IncomingMessage queue, so it is the worker thread (NOT the BRC poll thread) that blocks during the dial.  See #282 for that specific edge.
 
 **Revision history:**
 - v1 (2026-06-23 morning): initial draft.
@@ -18,7 +18,7 @@ A pattern recurs in the codebase:
 
 | Site | Body | Today |
 |---|---|---|
-| Consumer SHM dial (#272) | crypto_box handshake + SCM_RIGHTS recv (~3.9s worst case) | blocks BRC poll thread |
+| Consumer SHM dial (#272) | crypto_box handshake + SCM_RIGHTS recv (~3.9s worst case) | blocks worker thread |
 | Producer L2c broker pre-confirm (#280) | `CONSUMER_ATTACH_REQ` sync RPC (~2s budget) | blocks accept thread |
 | Future #262 mutual auth | extra crypto_box Frame 3 | will block whichever thread invokes it |
 | Future HUB_TARGETED_REQ (#75) | cross-hub sync RPC | will block whichever thread invokes it |
@@ -212,7 +212,7 @@ std::optional<bool> result = handle.wait_for_completion();
 
 - Caller's thread blocks on `wait_for_completion`.
 - No FSM change required at call sites.  This is the migration step that ships first.
-- BRC-poll-thread block from #272 persists in this mode — the work happens on a TM-managed thread, but the caller still waits synchronously.
+- Worker-thread block from #272 persists in this mode — the work happens on a TM-managed thread, but the caller still waits synchronously.
 
 ### 5.2 Truly-async (caller returns immediately)
 
@@ -232,7 +232,7 @@ tm.spawn_bounded(
 // returns immediately; caller's thread is released
 ```
 
-- Caller's thread released.  BRC-poll-thread is no longer blocked.
+- Caller's thread released.  Worker thread is no longer blocked.
 - Requires FSM amendment at the call site to accommodate "REG accepted but dial pending."  For #272 specifically that means adding `RegistrationState::RegAckPending` between `Registered` and `Authorized` and teaching `any_presence_authorized()` to wait for `Authorized` (it already does — the state insertion is mostly additive).
 - The completion callback runs on the bounded thread.  The thread is still tracked in the registry until the callback returns + captures destruct.  If the callback itself violates the non-blocking expectation by hanging, it's caught by the same deadline timer (the total_timeout covers spawn → registry removal, including the callback).
 
@@ -343,17 +343,17 @@ Two passes: first deploy as bounded-sync (no caller-side FSM change), then upgra
 | HUB_TARGETED_REQ (#75) | not yet implemented | designed as bounded-sync from the start | n/a yet |
 | api.crypto.* (#247) | not yet implemented | bounded-sync only (script callers can't deal with callbacks) | n/a yet |
 
-After Pass 1: BRC-poll-thread block in #272 PERSISTS but call site code is cleaner; observability unified; teardown integration is consistent.
+After Pass 1: worker-thread block in #272 PERSISTS but call site code is cleaner; observability unified; teardown integration is consistent.
 
 ### Pass 2 — truly-async + FSM amendments
 
 | Site | FSM change | Pays off | When |
 |---|---|---|---|
-| Consumer SHM dial (#272) | add `RegistrationState::RegAckPending`; teach `any_presence_authorized()` to wait for `Authorized` | BRC poll thread released; concurrent role startup parallelizes | under REVIEW-B (#274) or as part of #262 |
+| Consumer SHM dial (#272) | add `RegistrationState::RegAckPending`; teach `any_presence_authorized()` to wait for `Authorized` | worker thread released; concurrent role startup parallelizes | under REVIEW-B (#274) or as part of #262 |
 | #262 mutual auth | same RegAckPending state — Frame 3 added to dial step machine | producer-side accept loop can interleave consumers | designed async from day one once Pass 1 lands |
 | Producer L2c broker pre-confirm | accept thread services NEXT consumer while previous broker_query is in flight | parallel pre-confirm | optional — complicates the accept-loop FSM, skip until justified |
 
-Pass 2 lifts the BRC-block, but is a real FSM change at each call site.  Sequencing matters: framework lands → Pass 1 migration → REVIEW-B validates → Pass 2 begins.
+Pass 2 lifts the worker-thread block (and, for sites that today block other framework threads, lifts those too), but is a real FSM change at each call site.  Sequencing matters: framework lands → Pass 1 migration → REVIEW-B validates → Pass 2 begins.
 
 ---
 

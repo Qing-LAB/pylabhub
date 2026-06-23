@@ -435,13 +435,24 @@ initiate_consumer_handshake(const std::string          &endpoint,
     // Boundary validation — throw on programmer error, return nullopt
     // only for "endpoint not present right now" which is a normal
     // startup race.
-    sockaddr_un addr{};
-    if (endpoint.empty())
+    //
+    // §5.1 endpoint carries the canonical `unix://...` URI form on the
+    // wire (CONSUMER_REG_ACK.shm_capability_endpoint is delivered
+    // verbatim from `default_shm_capability_endpoint`).  The bare
+    // filesystem path is what AF_UNIX expects in `sun_path` — strip the
+    // scheme once here, before BOTH the size check and the memcpy
+    // below, so the validation and the connect target agree on the
+    // same string.  Cross-platform: every backend that lands here uses
+    // an AF_UNIX-style filesystem path; non-Linux backends will gain
+    // their own path-normalization shim.
+    sockaddr_un       addr{};
+    const std::string sock_path = strip_unix_scheme(endpoint);
+    if (sock_path.empty())
     {
         throw std::invalid_argument(
             "initiate_consumer_handshake: endpoint must be non-empty");
     }
-    if (endpoint.size() >= sizeof(addr.sun_path))
+    if (sock_path.size() >= sizeof(addr.sun_path))
     {
         throw std::invalid_argument(
             "initiate_consumer_handshake: endpoint path too long");
@@ -476,8 +487,8 @@ initiate_consumer_handshake(const std::string          &endpoint,
         throw make_errno_error("consumer", "socket failed", errno);
     }
     addr.sun_family = AF_UNIX;
-    std::memcpy(addr.sun_path, endpoint.c_str(), endpoint.size());
-    addr.sun_path[endpoint.size()] = '\0';
+    std::memcpy(addr.sun_path, sock_path.c_str(), sock_path.size());
+    addr.sun_path[sock_path.size()] = '\0';
     if (::connect(fd, reinterpret_cast<const sockaddr *>(&addr), sizeof(addr)) ==
         -1)
     {

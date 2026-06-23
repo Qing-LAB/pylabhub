@@ -17,17 +17,23 @@
  * ShmQueue implements the HEP-CORE-0036 §6.7 Standby → Configured →
  * Active state machine.  The Standby-mode factories build a queue
  * object with deferred-attach metadata (no SHM segment touched).
- * Under HEP-CORE-0036 §6.7 Option B, `set_shm_secret(secret)` BUFFERS
- * the secret in Standby; the Standby → Configured → Active transition
- * is driven by `apply_master_approval(CONSUMER_REG_ACK)`, which
- * merges any buffered set_* args with REG_ACK fields and then calls
- * `start()` to perform the actual SHM discovery (reader) or segment
- * creation (writer).  The existing `create_reader(name, secret, ...)`
- * / `create_writer(..., shared_secret, ...)` overloads are
- * convenience wrappers that drive all three transitions in one call
- * — they return `nullptr` on any phase failure, preserving the
- * legacy "factory returns nullptr on bad secret / schema mismatch /
- * missing segment" contract.
+ *
+ * Reader side (post-HEP-CORE-0041 §5):
+ *   - Capability path (production): `create_reader_standby(...)`
+ *     followed by `set_shm_capability_fd(fd)` (fd received via
+ *     `SCM_RIGHTS` in `RoleAPIBase::apply_consumer_reg_ack_shm_`,
+ *     or pre-populated by L2/L3 tests via the test fast-path on
+ *     `RxQueueOptions::shm_capability_fd`) and then `start()`.  No
+ *     segment name, no secret.
+ *   - Legacy secret path (test-only fallback, deleted by HEP-CORE-0041
+ *     1i-cleanup #275): `create_reader(name, secret, ...)` drives
+ *     all three transitions in one call.
+ *
+ * Writer side: `create_writer_standby(...)` builds in Standby; the
+ * tx capability factory `create_capability_writer(...)` mints the
+ * memfd inside `RoleHostFrame::prepare_tx_capability_` and drives
+ * the queue Configured → Active.  Both factories return `nullptr`
+ * on any phase failure.
  */
 #include "utils/hub_queue.hpp"
 #include "utils/data_block.hpp"

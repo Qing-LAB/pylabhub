@@ -904,23 +904,27 @@ below + HEP-0041 §10.1.**
 
 **Cross-cutting future change (2026-06-23 design discussion):**
 #272's self-review surfaced that `apply_consumer_reg_ack_shm_` blocks
-the BRC poll thread for up to ~3.9s during the dial (#282).  Bigger
-than #272 alone — the same pattern recurs in producer L2c
-broker pre-confirm, future #262 mutual auth Frame 3, future
-HUB_TARGETED_REQ (#75), and future api.crypto.* (#247).  Generalized
-solution drafted under #283: HEP-CORE-0031 amendment adding a
-`spawn_bounded` primitive (single sweeper thread + step-function body
-contract).  Tech draft at
+the consumer-role-host worker thread for up to ~3.9s during the dial
+(#282).  The blocked thread is the worker (see
+`ConsumerRoleHost::worker_main_` Step 6 dispatch into
+`apply_consumer_reg_ack`), not the BRC poll thread — the BRC poll
+thread already finished its job by delivering the REG_ACK frame onto
+the IncomingMessage queue.  Bigger than #272 alone — the same pattern
+recurs in producer L2c broker pre-confirm, future #262 mutual auth
+Frame 3, future HUB_TARGETED_REQ (#75), and future api.crypto.*
+(#247).  Generalized solution drafted under #283: HEP-CORE-0031
+amendment adding a `spawn_bounded` primitive (single sweeper thread +
+step-function body contract).  Tech draft at
 `docs/tech_draft/DRAFT_HEP-0031-bounded-thread_2026-06.md`.  Migration
 plan (#283 §8) lands in two passes:
 - **Pass 1** — convert the affected sites to bounded-sync (no FSM
   change).  Migrates the work onto framework-managed threads with
-  uniform observability and clean teardown integration; BRC-poll-thread
+  uniform observability and clean teardown integration; worker-thread
   block PERSISTS in this pass.
 - **Pass 2** — convert to truly-async with FSM amendment (insert
   `RegistrationState::RegAckPending` between `Registered` and
   `Authorized`; teach §8.2 outer guard to wait for `Authorized`).
-  This is what actually lifts the BRC-poll-thread block.
+  This is what actually lifts the worker-thread block.
 - Pass 2 for #272 (consumer dial) sequences under REVIEW-B (#274) or
   as part of #262.  Pass 2 for #262 (mutual auth) designs async from
   day one once #283 ships.
@@ -1106,7 +1110,7 @@ hardcoded-zero `shm_secret` — a typo-catcher, not an auth check.
 | **★ REVIEW-A** | **#271** | **⏸** | First milestone — gates 1i-mig-4 start |
 | 1i-mig-4 | #272 | ⏸ | Consumer dial in `apply_consumer_reg_ack` + `RxQueueOptions::shm_capability_fd` + `build_rx_queue` dispatch (biggest single piece, ~150 LOC) |
 | 1i-mig-5 | #273 | ⏸ | Cutover + L3 worker fixture migration |
-| **★ REVIEW-B** | **#274** | **⏸** | Second milestone — gates legacy deletion |
+| **★ REVIEW-B** | **#274** | **✅ 2026-06-23** | Second milestone — closed: B1 strip_unix_scheme fix + B3 worker-thread label fix + B2 deferred to #275 (see scope block below); 5 medium items carried to REVIEW-C (#276) |
 | 1i-cleanup | #275 | ⏸ | Delete legacy `shm_secret` machinery (HONOR Core Structure Change Protocol for `SharedMemoryHeader::shared_secret[64]`) |
 | **★ REVIEW-C** | **#276** | **⏸** | Third milestone — gates 1j/1k test creation |
 | 1i-coverage | #270 | ⏸ | L2 coverage for `RoleHostFrame::spawn_shm_auth_listener_` + `prepare_tx_capability_` |
@@ -1121,6 +1125,117 @@ hardcoded-zero `shm_secret` — a typo-catcher, not an auth check.
 - AEAD/KDF primitives (Phase 4 / #247).
 - ZMQ pre-confirm retrofit (Phase 5 / #246).
 - Encryption-at-rest in SHM slots (D2/D3 explicitly out of scope per HEP-0041 §9).
+
+### REVIEW-B (#274) close-out 2026-06-23
+
+Applied in single batched commit:
+- **B1 HIGH** — `attach_protocol.cpp:438-480` `initiate_consumer_handshake`
+  stripped `unix://` scheme before `connect(2)`.  Production-breaking
+  bug: consumer was connecting to literal `unix://...sock` rather than
+  the bare filesystem path, returning ENOENT for every dial.
+  Symmetric with `MemfdConsumer` ctor's existing strip at
+  `shm_capability_channel.cpp:559`.
+- **B3 HIGH** — corrected "BRC poll thread" → "worker thread" in
+  AUTH_TODO + `DRAFT_HEP-0031-bounded-thread_2026-06.md` at the sites
+  that talk about #272 dial.  The dial is invoked from
+  `ConsumerRoleHost::worker_main_` Step 6, not from the BRC poll
+  loop — the BRC poll thread already finished its job by delivering
+  REG_ACK onto the IncomingMessage queue.  Other "BRC poll thread"
+  mentions (about AUTH-2 #162 ZAP pump) are accurate and left alone.
+- **B2 HIGH** — deferred to #275 (see "#275 1i-cleanup detailed
+  scope" below).  REVIEW-B agent flagged 2 specific tests but the
+  scope is actually 7 SHM tests in
+  `tests/test_layer3_datahub/workers/role_api_flexzone_workers.cpp` —
+  doing only the 2 would be partial work that #275 has to revisit.
+- **Medium docs** — `hub_shm_queue.hpp:17` `@par Lifecycle` rewritten
+  to cover both capability and legacy paths; `role_api_base.cpp:108-135`
+  declaration-order docstring corrected to reflect actual
+  reverse-destruction order + `rx_queue`'s fd-dup making it safe.
+
+**Carry-forward to REVIEW-C (#276):**
+
+Five medium-tier items from the REVIEW-B agent reports were named but
+their concrete agent text was lost when the close-out session context
+compacted.  Candidate sites identified:
+
+- **HEP §11 row** — `docs/HEP/HEP-CORE-0041-*.md:1050` "Next steps"
+  may be missing a row for #272-shipped functionality.
+- **HEP §6.4 missing factory** — `docs/HEP/HEP-CORE-0041-*.md:649`
+  L2 interface section may not list the consumer-side
+  `create_reader_standby` capability factory.
+- **MemfdConsumer ctor RAII** — `shm_capability_channel.cpp:552-...`
+  the two ctors (endpoint-owning vs socket-fd-borrowing) may have
+  asymmetric cleanup on construction failure.
+- **SCM_RIGHTS multi-fd defense** — `shm_capability_channel.cpp:494-512`
+  recvmsg cmsg parsing does NOT check `msg.msg_flags & MSG_CTRUNC`;
+  if a (compromised or buggy) producer sends 2+ fds, the kernel may
+  silently leak the extras into our process and we'd never know.
+- **D3 retry budget** — `role_api_base.cpp:987-1029`
+  `apply_consumer_reg_ack_shm_` retry loop is 10 × 100ms = ~1s,
+  comfortably under the 2s BRC `consumer_attach` ceiling.  Possibly
+  the agent flagged something about budget allocation across the
+  end-to-end dial (handshake retry + recvmsg + SCM_RIGHTS + start).
+
+REVIEW-C (#276) is the natural home for these — it re-reviews the
+same surfaces post-#275 anyway.  Decision: do not fabricate fixes in
+the absence of the original finding text.
+
+---
+
+### #275 1i-cleanup detailed scope (REVIEW-B 2026-06-23 carry-in)
+
+The cleanup deletes the legacy secret-based path on the producer +
+consumer sides (`RxQueueOptions::shm_shared_secret`,
+`TxQueueOptions::shm_config.shared_secret`, the `else if` branch in
+`RoleAPIBase::build_rx_queue` at `role_api_base.cpp:590-603`, the
+mirror branch in `build_tx_queue`, `set_shm_secret`,
+`SharedMemoryHeader::shared_secret[64]`, etc.).  REVIEW-B
+2026-06-23 surfaced that this deletion **breaks 7 SHM tests in
+`tests/test_layer3_datahub/workers/role_api_flexzone_workers.cpp`**
+that currently drive the legacy branch via non-zero secret
+parameters:
+
+- `shm_roundtrip`, `shm_checksum_roundtrip`, `shm_roundtrip_padding_sensitive`,
+  `shm_roundtrip_all_types`, `shm_roundtrip_array_field` — all 5 use the
+  `build_payload_pair(... secret, ...)` helper at lines 174-235 which
+  threads a literal `0xDEAD'BEEF'...`-style secret into
+  `make_consumer_opts` / `make_producer_opts` (lines 214 + 185).
+- `shm_slot_checksum_corrupt_detected`, `shm_flexzone_checksum_corrupt_detected` —
+  use literal `0xBADD'C0DE'...` / `0xBADD'F00D'...` secrets directly
+  (lines 881 + 1004).
+
+Both groups exercise the same `shm_shared_secret != 0` branch in
+`build_rx_queue` and the mirror branch in `build_tx_queue`.
+REVIEW-B's findings table only flagged the 2 literal-secret tests
+because they were the most obvious; the 5 helper-based tests are the
+same problem with the secret threaded through a parameter.
+
+**Migration shape for #275** (per the existing doc-blocks in the
+file at lines 755-853 and the #273 retirement precedent):
+
+1. Rewrite `make_producer_opts` / `make_consumer_opts` /
+   `build_payload_pair` to drive the capability path (the
+   `data_transport=="shm" && shm_shared_secret==0` branch at
+   `role_api_base.cpp:537-589`).  Producer-side: helper creates a
+   memfd as a DataBlock writer (use `MemfdShmCapability::create_*`
+   primitives directly, not the full handshake path — this is
+   in-process so no SCM_RIGHTS step is needed).  Consumer-side:
+   helper pre-populates `RxQueueOptions::shm_capability_fd` with a
+   dup of that fd, driving the test-only fast-path at
+   `role_api_base.cpp:567-587`.
+2. Drop the `secret` parameter from the helper signatures (and from
+   all 7 call sites).
+3. The 7 tests then exercise the surviving capability path with
+   the same per-field assertions; the underlying checksum-verify and
+   roundtrip semantics are unchanged.
+4. Retain the L2 capability fast-path (`set_shm_capability_fd` +
+   `start`) as the production-mirror surface — covered already by
+   `tests/test_utils_security/test_hub_shm_queue_capability.cpp`.
+
+Estimated scope: ~80 LOC of helper rewrite + 7 test sites that
+each lose the `secret` arg.  Lands inside #275's commit (not a
+separate task) — the deletion + the migration MUST move together so
+no commit leaves the test suite broken.
 
 ### HEP-0041 Phase 2 — macOS backend
 

@@ -178,12 +178,16 @@ Current critical path (each step blocks the next unless noted):
 - **~~AUTH-4~~** (tasks **#164** + **#79**) — **SUPERSEDED 2026-06-16
   by HEP-CORE-0041 (#244).**  Replaced by capability-transport
   (`memfd_create` + `SCM_RIGHTS` + pre-attach `CONSUMER_ATTACH_REQ`
-  per HEP-0041 §9 D4).  **Phase 1 status as of 2026-06-22:** substeps
+  per HEP-0041 §9 D4).  **Phase 1 status as of 2026-06-23:** substeps
   1a-1h ✅ (#248-#255); 1i-mig-1/2a/2b-1/2b-2/2c review-fixes/2c M3/3
-  ✅ this session (commits `e283a4ac → 6f31a346`); 1i-mig-M3.5
-  (#266), 1i-doc-sync (#267), 1i-prod-hardening (#268),
-  1i-api-scope (#269) ⏸ next; 1i-mig-4 consumer dial (#272) ⏸ biggest
-  remaining piece; 1i-mig-5 cutover (#273) + 1i-cleanup (#275) +
+  ✅ (commits `e283a4ac → 6f31a346`); 1i-mig-M3.5 (#266), 1i-doc-sync
+  (#267), 1i-prod-hardening (#268), 1i-api-scope (#269) ✅; 1i-mig-4
+  consumer dial (#272) ✅ (commit `2793a394`); 1i-mig-5 cutover
+  (#273) ✅; #281 broker `data_transport` strict ✅ (commit
+  `ecc72337`); **REVIEW-A (#271) ✅; REVIEW-B (#274) ✅ close-out
+  2026-06-23 — B1 strip_unix_scheme fix + B3 worker-thread label fix
+  + B2 deferred to #275 scope + 5 medium items carried to REVIEW-C
+  per AUTH_TODO §"REVIEW-B (#274) close-out"**; 1i-cleanup (#275) +
   1i-coverage (#270) + 1j (#257) + 1k (#258) + #262 mutual auth ⏸.
   **Five REVIEW-A..E milestones (#271/#274/#276/#277/#278) gate the
   remaining chain**; REVIEW-E is the Phase 1 production-ready final
