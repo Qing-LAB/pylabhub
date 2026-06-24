@@ -397,7 +397,8 @@ TEST_F(SetupInfrastructureTranslationTest, Consumer_ZmqTransport_AllFieldsCopied
     EXPECT_TRUE(opts.shm_name.empty())
         << "ZMQ path must clear shm_name (build_rx_queue uses shm_name "
            "to dispatch SHM; a non-empty value misroutes to SHM)";
-    EXPECT_EQ(opts.shm_shared_secret, 0u);
+    // #275-S3: `opts.shm_shared_secret` field retired with the legacy
+    // secret-based ShmQueue path; no field to assert against.
 
     EXPECT_EQ(opts.checksum_policy, cfg.checksum().policy);
     EXPECT_FALSE(opts.flexzone_checksum);
@@ -496,7 +497,8 @@ TEST_F(SetupInfrastructureTranslationTest, Processor_ZmqTransport_AllFieldsCopie
     EXPECT_EQ(rx.zmq_buffer_depth, 256);
     EXPECT_TRUE(rx.shm_name.empty())
         << "Processor.rx — B11 regression: shm_name MUST be cleared on ZMQ path";
-    EXPECT_EQ(rx.shm_shared_secret, 0u);
+    // #275-S3: `rx.shm_shared_secret` field retired with the legacy
+    // secret-based ShmQueue path.
 
     // ── Tx side ──
     const auto tx = pylabhub::processor::ProcessorRoleHost::make_tx_opts(

@@ -27,10 +27,14 @@ make_tx_opts(const config::RoleConfig &config,
     opts.checksum_policy   = config.checksum().policy;
     opts.flexzone_checksum = config.checksum().flexzone && has_tx_fz;
 
-    // SHM config block — only meaningful when shm.enabled.
+    // SHM config block — only meaningful when shm.enabled.  Note
+    // (#275-S3): `opts.shm_config.shared_secret` is no longer populated —
+    // the role-side queue builder retired the legacy secret-based ShmQueue
+    // path; production binds via the capability fd
+    // (`TxQueueOptions::shm_capability_fd`).  The field on
+    // `DataBlockConfig` itself retires in #275-S5.
     if (shm.enabled)
     {
-        opts.shm_config.shared_secret        = shm.secret;
         opts.shm_config.ring_buffer_capacity = shm.slot_count;
         opts.shm_config.policy               = hub::DataBlockPolicy::RingBuffer;
         opts.shm_config.consumer_sync_policy = shm.sync_policy;
@@ -67,8 +71,9 @@ make_rx_opts(const config::RoleConfig &config,
     hub::RxQueueOptions opts;
     // Audit B5/G21: shm_name = in_channel for the SHM path; cleared
     // below if transport is ZMQ (Audit B11).
+    // #275-S3: `opts.shm_shared_secret` retired with the legacy
+    // secret-based ShmQueue path in role_api_base.cpp.
     opts.shm_name          = ch;
-    opts.shm_shared_secret = shm.enabled ? shm.secret : 0u;
     opts.slot_spec         = in_slot_spec;
     opts.fz_spec           = in_fz_spec;
 
@@ -92,7 +97,6 @@ make_rx_opts(const config::RoleConfig &config,
         // Stage 1D close-out (task #193, 2026-06-15).
         opts.zmq_buffer_depth  = tr.zmq_buffer_depth;
         opts.shm_name.clear();
-        opts.shm_shared_secret = 0u;
     }
 
     return opts;

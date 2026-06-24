@@ -475,11 +475,10 @@ int pattern4_consumer_lifecycle_consumer_role(const char *temp_dir_arg)
             // "rx_queue not wired" and the FSM transitions the test
             // pins would never fire.
             //
-            // Empty shm_name + shm_shared_secret=0 selects the ZMQ
-            // branch in build_rx_queue (role_api_base.cpp:397).
-            // No producer_peers → ZmqQueue lands in Standby; broker's
-            // CONSUMER_REG_ACK.producers[] populates them via
-            // apply_consumer_reg_ack below.
+            // Empty shm_name selects the ZMQ branch in build_rx_queue
+            // (role_api_base.cpp).  No producer_peers → ZmqQueue lands
+            // in Standby; broker's CONSUMER_REG_ACK.producers[]
+            // populates them via apply_consumer_reg_ack below.
             //
             // slot_spec MUST be non-empty: `pull_from`'s factory-time
             // schema validator (hub_zmq_queue.cpp ~line 479) rejects

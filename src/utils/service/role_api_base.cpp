@@ -376,18 +376,27 @@ bool RoleAPIBase::build_tx_queue(const hub::TxQueueOptions &opts)
             ? std::vector<hub::SchemaFieldDesc>{}
             : hub::schema_spec_to_zmq_fields(opts.fz_spec);
 
-        std::unique_ptr<hub::ShmQueue> shm;
-        if (opts.shm_capability_fd >= 0)
+        // HEP-CORE-0041 1i-mig-2: capability-transport path is the only
+        // path.  The role host's IShmCapabilityProducer (substep 1b
+        // backend) pre-allocated the memfd at exactly
+        // datablock_layout_total_size(config) and populates
+        // opts.shm_capability_fd.  Build the queue in Standby, attach
+        // the borrowed fd, then start() drives Configured → Active via
+        // the substep 1f fd-source factory
+        // (create_datablock_producer_from_fd_impl).  The legacy
+        // secret-based path (`ShmQueue::create_writer(..., shared_secret, ...)`)
+        // retired in #275-S3.
+        if (opts.shm_capability_fd < 0)
         {
-            // HEP-CORE-0041 1i-mig-2: capability-transport path.  The
-            // role host's IShmCapabilityProducer (substep 1b backend)
-            // pre-allocated the memfd at exactly
-            // datablock_layout_total_size(config).  Build the queue in
-            // Standby, attach the borrowed fd, then start() drives
-            // Configured → Active via the substep 1f fd-source factory
-            // (create_datablock_producer_from_fd_impl).  Mutual
-            // exclusion with the legacy secret path is enforced inside
-            // ShmQueue (HEP-CORE-0041 D7 "single unified mechanism").
+            LOGGER_ERROR("[{}] build_tx_queue: SHM channel '{}' missing "
+                         "shm_capability_fd (HEP-CORE-0041 1i-mig-2 — role "
+                         "host must populate the borrowed fd before "
+                         "build_tx_queue)",
+                         pImpl->role_tag, tx_channel);
+            return false;
+        }
+        std::unique_ptr<hub::ShmQueue> shm;
+        {
             shm = hub::ShmQueue::create_writer_standby(
                 tx_channel,
                 hub::schema_spec_to_zmq_fields(opts.slot_spec), opts.slot_spec.packing,
@@ -427,35 +436,6 @@ bool RoleAPIBase::build_tx_queue(const hub::TxQueueOptions &opts)
                              "reason)",
                              pImpl->role_tag, tx_channel,
                              opts.shm_capability_fd);
-                return false;
-            }
-        }
-        else
-        {
-            // Legacy secret-based path — retires under HEP-CORE-0041
-            // 1i-cleanup once every production caller populates
-            // opts.shm_capability_fd via the role host's L1 transport.
-            shm = hub::ShmQueue::create_writer(
-                tx_channel,
-                hub::schema_spec_to_zmq_fields(opts.slot_spec), opts.slot_spec.packing,
-                std::move(fz_fields),                            opts.fz_spec.packing,
-                opts.shm_config.ring_buffer_capacity,
-                opts.shm_config.physical_page_size,
-                opts.shm_config.shared_secret,
-                opts.shm_config.policy,
-                opts.shm_config.consumer_sync_policy,
-                opts.shm_config.checksum_policy,
-                /*checksum_slot=*/false, /*checksum_fz=*/false,
-                opts.always_clear_slot,
-                opts.shm_config.hub_uid,
-                opts.shm_config.hub_name,
-                nullptr, nullptr,
-                opts.shm_config.producer_uid,
-                opts.shm_config.producer_name);
-            if (!shm)
-            {
-                LOGGER_ERROR("[{}] ShmQueue create_writer failed for '{}'",
-                             pImpl->role_tag, tx_channel);
                 return false;
             }
         }
@@ -540,8 +520,7 @@ bool RoleAPIBase::build_rx_queue(const hub::RxQueueOptions &opts)
     const std::string &rx_channel = pImpl->channel;
 
     std::unique_ptr<hub::QueueReader> reader;
-    if (opts.data_transport == "shm" && opts.slot_spec.has_schema &&
-        opts.shm_shared_secret == 0)
+    if (opts.data_transport == "shm" && opts.slot_spec.has_schema)
     {
         // HEP-CORE-0041 1i-mig-4 (#272) — capability-transport rx path.
         // Build the ShmQueue in Standby; the fd arrives later via
@@ -591,22 +570,6 @@ bool RoleAPIBase::build_rx_queue(const hub::RxQueueOptions &opts)
                 return false;
             }
         }
-        reader.reset(shm.release());
-    }
-    else if (!opts.shm_name.empty() && opts.shm_shared_secret != 0 && opts.slot_spec.has_schema)
-    {
-        // Legacy secret-based path — retires under HEP-CORE-0041
-        // 1i-cleanup (#275) once every test path migrates to the
-        // capability transport.  Production traffic always hits the
-        // capability branch above (shm_shared_secret == 0 since 1h).
-        auto shm = hub::ShmQueue::create_reader(
-            opts.shm_name, opts.shm_shared_secret,
-            hub::schema_spec_to_zmq_fields(opts.slot_spec), opts.slot_spec.packing,
-            rx_channel,
-            /*verify_slot=*/false, /*verify_fz=*/false,
-            pImpl->uid, pImpl->name);
-        if (!shm)
-            return false;
         reader.reset(shm.release());
     }
     else if (opts.data_transport == "zmq")
