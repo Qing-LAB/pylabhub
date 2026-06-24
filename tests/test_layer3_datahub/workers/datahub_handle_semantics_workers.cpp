@@ -8,6 +8,7 @@
 // Secret numbers: 74001+ to avoid conflicts with other test suites.
 
 #include "datahub_handle_semantics_workers.h"
+#include "datahub_fd_test_helper.h"  // #275-S2: fd-source typed helpers
 #include "test_entrypoint.h"
 #include "shared_test_helpers.h"
 #include "test_datahub_types.h"
@@ -28,12 +29,12 @@ static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModu
 static auto crypto_module() { return ::pylabhub::crypto::GetLifecycleModule(); }
 static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
 
-static DataBlockConfig make_config(uint64_t secret)
+/// #275-S2: `secret` param dropped — fd-source factory ignores it.
+static DataBlockConfig make_config()
 {
     DataBlockConfig cfg{};
     cfg.policy = DataBlockPolicy::RingBuffer;
     cfg.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
-    cfg.shared_secret = secret;
     cfg.ring_buffer_capacity = 2;
     cfg.physical_page_size = DataBlockPageSize::Size4K;
     cfg.flex_zone_size = sizeof(EmptyFlexZone);
@@ -53,11 +54,15 @@ int move_producer_transfers_ownership()
         []()
         {
             std::string channel = make_test_channel_name("MoveProducer");
-            auto cfg = make_config(74001);
+            auto cfg = make_config();
 
-            auto producer = create_datablock_producer<EmptyFlexZone, TestDataBlock>(
+            auto p = make_fd_backed_producer_typed<EmptyFlexZone, TestDataBlock>(
                 channel, DataBlockPolicy::RingBuffer, cfg);
-            ASSERT_NE(producer, nullptr);
+            ASSERT_NE(p.producer, nullptr);
+            // Take ownership of the producer so the move semantics under test
+            // operate on a stand-alone unique_ptr; transport stays inside `p`
+            // and tears down at scope end after the producer has been moved.
+            auto producer = std::move(p.producer);
 
             // Move the producer — original should be empty
             auto producer2 = std::move(producer);
@@ -100,14 +105,16 @@ int move_consumer_transfers_ownership()
         []()
         {
             std::string channel = make_test_channel_name("MoveConsumer");
-            auto cfg = make_config(74002);
+            auto cfg = make_config();
 
-            auto producer = create_datablock_producer<EmptyFlexZone, TestDataBlock>(
+            auto p = make_fd_backed_pair_typed<EmptyFlexZone, TestDataBlock>(
                 channel, DataBlockPolicy::RingBuffer, cfg);
-            ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer<EmptyFlexZone, TestDataBlock>(
-                channel, cfg.shared_secret, cfg);
-            ASSERT_NE(consumer, nullptr);
+            ASSERT_NE(p.producer, nullptr);
+            ASSERT_NE(p.consumer, nullptr);
+            auto& producer = p.producer;
+            // Take ownership of the consumer so the move semantics under test
+            // operate on a stand-alone unique_ptr; transport stays inside `p`.
+            auto consumer = std::move(p.consumer);
 
             // Write a slot first
             producer->with_transaction<EmptyFlexZone, TestDataBlock>(
@@ -166,14 +173,14 @@ int default_constructed_handles_are_invalid()
         []()
         {
             std::string channel = make_test_channel_name("DefaultHandles");
-            auto cfg = make_config(74003);
+            auto cfg = make_config();
 
-            auto producer = create_datablock_producer<EmptyFlexZone, TestDataBlock>(
+            auto p = make_fd_backed_pair_typed<EmptyFlexZone, TestDataBlock>(
                 channel, DataBlockPolicy::RingBuffer, cfg);
-            ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer<EmptyFlexZone, TestDataBlock>(
-                channel, cfg.shared_secret, cfg);
-            ASSERT_NE(consumer, nullptr);
+            ASSERT_NE(p.producer, nullptr);
+            ASSERT_NE(p.consumer, nullptr);
+            auto& producer = p.producer;
+            auto& consumer = p.consumer;
 
             // Default-constructed handles are invalid — release must return false
             SlotWriteHandle invalid_write{};

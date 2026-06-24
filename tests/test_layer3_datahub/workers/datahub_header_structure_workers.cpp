@@ -51,7 +51,6 @@ int schema_hashes_populated_with_template_api()
             DataBlockConfig cfg{};
             cfg.policy = DataBlockPolicy::RingBuffer;
             cfg.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
-            cfg.shared_secret = 74001;
             cfg.ring_buffer_capacity = 2;
             cfg.physical_page_size = DataBlockPageSize::Size4K;
             cfg.checksum_policy = ChecksumPolicy::None;
@@ -96,7 +95,6 @@ int schema_hashes_zero_without_schema()
             DataBlockConfig cfg{};
             cfg.policy = DataBlockPolicy::RingBuffer;
             cfg.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
-            cfg.shared_secret = 74002;
             cfg.ring_buffer_capacity = 2;
             cfg.physical_page_size = DataBlockPageSize::Size4K;
             cfg.checksum_policy = ChecksumPolicy::None;
@@ -143,7 +141,6 @@ int different_types_produce_different_hashes()
             cfg.physical_page_size = DataBlockPageSize::Size4K;
             cfg.checksum_policy = ChecksumPolicy::None;
 
-            cfg.shared_secret = 74003;
             cfg.flex_zone_size = sizeof(TestFlexZone);
             auto prod1 =
                 create_datablock_producer<TestFlexZone, TestDataBlock>(ch1,
@@ -151,7 +148,6 @@ int different_types_produce_different_hashes()
                                                                         cfg);
             ASSERT_NE(prod1, nullptr);
 
-            cfg.shared_secret = 74004;
             cfg.flex_zone_size = sizeof(EmptyFlexZone);
             auto prod2 =
                 create_datablock_producer<EmptyFlexZone, MinimalData>(ch2,

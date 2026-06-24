@@ -13,6 +13,7 @@
  */
 #include "role_api_loop_policy_workers.h"
 
+#include "datahub_fd_test_helper.h"  // #275-S2: fd-source typed helpers
 #include "test_datahub_types.h"
 #include "plh_datahub.hpp"
 #include "utils/role_host_core.hpp"
@@ -44,12 +45,14 @@ static auto logger_module() { return utils::Logger::GetLifecycleModule(); }
 static auto crypto_module() { return ::pylabhub::crypto::GetLifecycleModule(); }
 static auto hub_module()    { return ::pylabhub::hub::GetDataBlockModule(); }
 
-DataBlockConfig make_lp_config(uint64_t secret)
+/// #275-S2: `secret` param dropped — fd-source typed factory ignores
+/// `cfg.shared_secret`; HEP-CORE-0041 capability transport authenticates
+/// via fd possession.
+DataBlockConfig make_lp_config()
 {
     DataBlockConfig cfg{};
     cfg.policy                = DataBlockPolicy::RingBuffer;
     cfg.consumer_sync_policy  = ConsumerSyncPolicy::Latest_only;
-    cfg.shared_secret         = secret;
     cfg.ring_buffer_capacity  = 4;
     cfg.physical_page_size    = DataBlockPageSize::Size4K;
     cfg.flex_zone_size        = sizeof(EmptyFlexZone);
@@ -58,22 +61,28 @@ DataBlockConfig make_lp_config(uint64_t secret)
 }
 
 /// Construct a DataBlockProducer suitable for Group A metrics tests.
-/// Centralises the 4-line boilerplate that otherwise repeats across seven
+/// Centralises the boilerplate that otherwise repeats across seven
 /// tests: channel name from tag, default Group-A config, factory call,
 /// non-null assertion.
+///
+/// Under #275-S2 fd-source: mints an `IShmCapabilityProducer`, builds
+/// the producer over its fd, then DROPS the transport — the producer's
+/// internal fd dup keeps the mmap alive for the producer's lifetime.
+/// Returns just the producer (legacy shape) since these tests never
+/// attach a consumer.
 ///
 /// NOTE: ASSERT_NE here is safe only under `throw_on_failure=true`
 /// (set by `run_gtest_worker` before the lambda body runs).  Calling this
 /// from a plain TEST_F body would silently return nullptr on failure.
 std::unique_ptr<DataBlockProducer>
-make_metrics_producer(const char *tag, uint64_t secret)
+make_metrics_producer(const char *tag)
 {
     const std::string channel = make_test_channel_name(tag);
-    auto cfg = make_lp_config(secret);
-    auto producer = create_datablock_producer<EmptyFlexZone, TestDataBlock>(
+    auto cfg = make_lp_config();
+    auto p = make_fd_backed_producer_typed<EmptyFlexZone, TestDataBlock>(
         channel, DataBlockPolicy::RingBuffer, cfg);
-    [&]() { ASSERT_NE(producer, nullptr); }();
-    return producer;
+    [&]() { ASSERT_NE(p.producer, nullptr); }();
+    return std::move(p.producer);
 }
 
 } // namespace
@@ -86,7 +95,7 @@ int producer_metrics_accumulate()
     return run_gtest_worker(
         [&]()
         {
-            auto producer = make_metrics_producer("LPMetricsAccum", 80001);
+            auto producer = make_metrics_producer("LPMetricsAccum");
 
             constexpr int kWrites = 5;
             for (int i = 0; i < kWrites; ++i)
@@ -130,7 +139,7 @@ int producer_metrics_clear()
     return run_gtest_worker(
         [&]()
         {
-            auto producer = make_metrics_producer("LPMetricsClear", 80002);
+            auto producer = make_metrics_producer("LPMetricsClear");
 
             // Set configured_period FIRST so the post-clear assertion
             // actually verifies that clear_metrics preserves the
@@ -211,15 +220,14 @@ int consumer_metrics_accumulate()
         [&]()
         {
             const std::string channel = make_test_channel_name("LPConsumerMetrics");
-            auto cfg = make_lp_config(80005);
+            auto cfg = make_lp_config();
 
-            auto producer = create_datablock_producer<EmptyFlexZone, TestDataBlock>(
+            auto p = make_fd_backed_pair_typed<EmptyFlexZone, TestDataBlock>(
                 channel, DataBlockPolicy::RingBuffer, cfg);
-            ASSERT_NE(producer, nullptr);
-
-            auto consumer = find_datablock_consumer<EmptyFlexZone, TestDataBlock>(
-                channel, cfg.shared_secret, cfg);
-            ASSERT_NE(consumer, nullptr);
+            ASSERT_NE(p.producer, nullptr);
+            ASSERT_NE(p.consumer, nullptr);
+            auto& producer = p.producer;
+            auto& consumer = p.consumer;
 
             constexpr int kCycles = 3;
             for (int i = 0; i < kCycles; ++i)
@@ -265,7 +273,7 @@ int zero_on_creation()
     return run_gtest_worker(
         [&]()
         {
-            auto producer = make_metrics_producer("LPZeroOnCreation", 80006);
+            auto producer = make_metrics_producer("LPZeroOnCreation");
 
             const auto &m = producer->metrics();
             // All ContextMetrics fields start at zero.  Note: iteration
@@ -291,7 +299,7 @@ int max_rate_metrics_period_zero()
     return run_gtest_worker(
         [&]()
         {
-            auto producer = make_metrics_producer("LPMaxRate", 80007);
+            auto producer = make_metrics_producer("LPMaxRate");
 
             // MaxRate ≡ configured_period_us == 0 (default).  Body sleeps
             // that would overrun FixedRate still produce valid metrics —
@@ -328,7 +336,7 @@ int last_slot_work_us_populated()
     return run_gtest_worker(
         [&]()
         {
-            auto producer = make_metrics_producer("LPLastSlotWork", 80008);
+            auto producer = make_metrics_producer("LPLastSlotWork");
 
             {
                 auto h = producer->acquire_write_slot(1000);
@@ -352,7 +360,7 @@ int last_iteration_us_populated()
     return run_gtest_worker(
         [&]()
         {
-            auto producer = make_metrics_producer("LPLastIter", 80009);
+            auto producer = make_metrics_producer("LPLastIter");
 
             // First acquire sets the anchor; second produces the first
             // last_iteration_us measurement.  Measurable inter-iteration
@@ -381,7 +389,7 @@ int max_iteration_us_peak()
     return run_gtest_worker(
         [&]()
         {
-            auto producer = make_metrics_producer("LPMaxIterPeak", 80010);
+            auto producer = make_metrics_producer("LPMaxIterPeak");
 
             // Iteration 1: fast (anchor).
             {
@@ -434,7 +442,7 @@ int context_elapsed_us_monotonic()
     return run_gtest_worker(
         [&]()
         {
-            auto producer = make_metrics_producer("LPContextElapsed", 80011);
+            auto producer = make_metrics_producer("LPContextElapsed");
 
             {
                 auto h = producer->acquire_write_slot(1000);

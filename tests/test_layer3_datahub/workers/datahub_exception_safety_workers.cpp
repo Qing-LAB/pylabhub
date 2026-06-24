@@ -18,6 +18,7 @@
 // Secret numbers: 73001+ to avoid conflicts with other test suites.
 
 #include "datahub_exception_safety_workers.h"
+#include "datahub_fd_test_helper.h"  // #275-S2: fd-source typed helpers
 #include "test_entrypoint.h"
 #include "shared_test_helpers.h"
 #include "test_datahub_types.h"
@@ -38,12 +39,12 @@ static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModu
 static auto crypto_module() { return ::pylabhub::crypto::GetLifecycleModule(); }
 static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
 
-static DataBlockConfig make_config(uint64_t secret)
+/// #275-S2: `secret` param dropped — fd-source factory ignores it.
+static DataBlockConfig make_config()
 {
     DataBlockConfig cfg{};
     cfg.policy = DataBlockPolicy::RingBuffer;
     cfg.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
-    cfg.shared_secret = secret;
     cfg.ring_buffer_capacity = 4;
     cfg.physical_page_size = DataBlockPageSize::Size4K;
     cfg.flex_zone_size = sizeof(EmptyFlexZone);
@@ -65,14 +66,14 @@ int exception_before_publish_aborts_write_slot()
         []()
         {
             std::string channel = make_test_channel_name("ExcBeforePublish");
-            auto cfg = make_config(73001);
+            auto cfg = make_config();
 
-            auto producer = create_datablock_producer<EmptyFlexZone, TestDataBlock>(
+            auto p = make_fd_backed_pair_typed<EmptyFlexZone, TestDataBlock>(
                 channel, DataBlockPolicy::RingBuffer, cfg);
-            ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer<EmptyFlexZone, TestDataBlock>(
-                channel, cfg.shared_secret, cfg);
-            ASSERT_NE(consumer, nullptr);
+            ASSERT_NE(p.producer, nullptr);
+            ASSERT_NE(p.consumer, nullptr);
+            auto& producer = p.producer;
+            auto& consumer = p.consumer;
 
             // Throw before auto-publish — slot must be aborted
             bool exception_caught = false;
@@ -155,11 +156,12 @@ int exception_in_write_transaction_leaves_producer_usable()
         []()
         {
             std::string channel = make_test_channel_name("ExcWriteTxn");
-            auto cfg = make_config(73002);
+            auto cfg = make_config();
 
-            auto producer = create_datablock_producer<EmptyFlexZone, TestDataBlock>(
+            auto p = make_fd_backed_producer_typed<EmptyFlexZone, TestDataBlock>(
                 channel, DataBlockPolicy::RingBuffer, cfg);
-            ASSERT_NE(producer, nullptr);
+            ASSERT_NE(p.producer, nullptr);
+            auto& producer = p.producer;
 
             // Throw immediately in the lambda (no slot acquired)
             bool caught = false;
@@ -215,14 +217,14 @@ int exception_in_read_transaction_leaves_consumer_usable()
         []()
         {
             std::string channel = make_test_channel_name("ExcReadTxn");
-            auto cfg = make_config(73003);
+            auto cfg = make_config();
 
-            auto producer = create_datablock_producer<EmptyFlexZone, TestDataBlock>(
+            auto p = make_fd_backed_pair_typed<EmptyFlexZone, TestDataBlock>(
                 channel, DataBlockPolicy::RingBuffer, cfg);
-            ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer<EmptyFlexZone, TestDataBlock>(
-                channel, cfg.shared_secret, cfg);
-            ASSERT_NE(consumer, nullptr);
+            ASSERT_NE(p.producer, nullptr);
+            ASSERT_NE(p.consumer, nullptr);
+            auto& producer = p.producer;
+            auto& consumer = p.consumer;
 
             // Write slot 1
             producer->with_transaction<EmptyFlexZone, TestDataBlock>(

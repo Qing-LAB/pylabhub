@@ -16,6 +16,7 @@
  */
 #include "role_api_raii_workers.h"
 
+#include "datahub_fd_test_helper.h"  // #275-S2: fd-source typed helpers
 #include "test_datahub_types.h"
 #include "plh_datahub.hpp"
 
@@ -43,12 +44,14 @@ static auto logger_module() { return utils::Logger::GetLifecycleModule(); }
 static auto crypto_module() { return ::pylabhub::crypto::GetLifecycleModule(); }
 static auto hub_module()    { return ::pylabhub::hub::GetDataBlockModule(); }
 
-DataBlockConfig make_raii_config(uint64_t secret)
+/// #275-S2: `secret` param dropped — fd-source typed factory ignores
+/// `cfg.shared_secret`; HEP-CORE-0041 capability transport authenticates
+/// via fd possession.
+DataBlockConfig make_raii_config()
 {
     DataBlockConfig cfg{};
     cfg.policy                = DataBlockPolicy::RingBuffer;
     cfg.consumer_sync_policy  = ConsumerSyncPolicy::Latest_only;
-    cfg.shared_secret         = secret;
     cfg.ring_buffer_capacity  = 4;
     cfg.physical_page_size    = DataBlockPageSize::Size4K;
     cfg.flex_zone_size        = sizeof(EmptyFlexZone);
@@ -67,11 +70,12 @@ int slot_iterator_fixed_rate_pacing()
         [&]()
         {
             const std::string channel = make_test_channel_name("LPIterPacing");
-            auto cfg = make_raii_config(80004);
+            auto cfg = make_raii_config();
 
-            auto producer = create_datablock_producer<EmptyFlexZone, TestDataBlock>(
+            auto p = make_fd_backed_producer_typed<EmptyFlexZone, TestDataBlock>(
                 channel, DataBlockPolicy::RingBuffer, cfg);
-            ASSERT_NE(producer, nullptr);
+            ASSERT_NE(p.producer, nullptr);
+            auto& producer = p.producer;
 
             // 30 ms period → 5 iter → 4 inter-iter sleeps → ≥ 120 ms.
             producer->mutable_metrics().set_configured_period(30000);
@@ -114,11 +118,12 @@ int ctx_metrics_pass_through()
         [&]()
         {
             const std::string channel = make_test_channel_name("LPCtxPassThrough");
-            auto cfg = make_raii_config(80012);
+            auto cfg = make_raii_config();
 
-            auto producer = create_datablock_producer<EmptyFlexZone, TestDataBlock>(
+            auto p = make_fd_backed_producer_typed<EmptyFlexZone, TestDataBlock>(
                 channel, DataBlockPolicy::RingBuffer, cfg);
-            ASSERT_NE(producer, nullptr);
+            ASSERT_NE(p.producer, nullptr);
+            auto& producer = p.producer;
 
             const ContextMetrics *outer_ptr = &producer->metrics();
             const ContextMetrics *inner_ptr = nullptr;
@@ -161,11 +166,12 @@ int raii_producer_last_slot_work_us_multi_iter()
         [&]()
         {
             const std::string channel = make_test_channel_name("LPRaiiProdWork");
-            auto cfg = make_raii_config(80013);
+            auto cfg = make_raii_config();
 
-            auto producer = create_datablock_producer<EmptyFlexZone, TestDataBlock>(
+            auto p = make_fd_backed_producer_typed<EmptyFlexZone, TestDataBlock>(
                 channel, DataBlockPolicy::RingBuffer, cfg);
-            ASSERT_NE(producer, nullptr);
+            ASSERT_NE(p.producer, nullptr);
+            auto& producer = p.producer;
 
             producer->with_transaction<EmptyFlexZone, TestDataBlock>(
                 2000ms,
@@ -203,11 +209,12 @@ int raii_producer_metrics_via_slots()
         [&]()
         {
             const std::string channel = make_test_channel_name("LPRaiiProdMetrics");
-            auto cfg = make_raii_config(80014);
+            auto cfg = make_raii_config();
 
-            auto producer = create_datablock_producer<EmptyFlexZone, TestDataBlock>(
+            auto p = make_fd_backed_producer_typed<EmptyFlexZone, TestDataBlock>(
                 channel, DataBlockPolicy::RingBuffer, cfg);
-            ASSERT_NE(producer, nullptr);
+            ASSERT_NE(p.producer, nullptr);
+            auto& producer = p.producer;
 
             producer->with_transaction<EmptyFlexZone, TestDataBlock>(
                 5000ms,
@@ -249,14 +256,14 @@ int raii_consumer_last_slot_work_us()
         [&]()
         {
             const std::string channel = make_test_channel_name("LPRaiiConsWork");
-            auto cfg = make_raii_config(80016);
+            auto cfg = make_raii_config();
 
-            auto producer = create_datablock_producer<EmptyFlexZone, TestDataBlock>(
+            auto p = make_fd_backed_pair_typed<EmptyFlexZone, TestDataBlock>(
                 channel, DataBlockPolicy::RingBuffer, cfg);
-            ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer<EmptyFlexZone, TestDataBlock>(
-                channel, cfg.shared_secret, cfg);
-            ASSERT_NE(consumer, nullptr);
+            ASSERT_NE(p.producer, nullptr);
+            ASSERT_NE(p.consumer, nullptr);
+            auto& producer = p.producer;
+            auto& consumer = p.consumer;
 
             {
                 auto h = producer->acquire_write_slot(1000);

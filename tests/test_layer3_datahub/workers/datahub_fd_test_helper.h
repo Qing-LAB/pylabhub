@@ -180,4 +180,73 @@ make_fd_backed_pair(const std::string                       &channel,
     return out;
 }
 
+/// Typed counterpart of `make_fd_backed_producer` — same shape but
+/// schema is derived at compile time from the F (FlexZone) / D (DataBlock)
+/// type tags via `create_datablock_producer_from_fd<F, D>`.  Use this
+/// when the test exercises typed APIs (`with_transaction<F, D>`,
+/// `TestDataBlock` casts) and would otherwise re-derive the schema
+/// inline at the call site.
+template <typename FlexZoneT, typename DataBlockT>
+[[nodiscard]] inline FdBackedProducer
+make_fd_backed_producer_typed(const std::string                    &channel,
+                              pylabhub::hub::DataBlockPolicy        policy,
+                              const pylabhub::hub::DataBlockConfig &cfg)
+{
+    namespace sec = pylabhub::utils::security;
+    FdBackedProducer out;
+
+    const size_t total = pylabhub::hub::datablock_layout_total_size(cfg);
+    if (total == 0)
+        return out;
+
+    out.transport = sec::create_shm_capability_producer(total);
+    if (!out.transport)
+        return out;
+
+    out.producer = pylabhub::hub::create_datablock_producer_from_fd<FlexZoneT, DataBlockT>(
+        channel, out.transport->borrow_fd(), policy, cfg);
+    return out;
+}
+
+/// Typed counterpart of `make_fd_backed_pair` — same shape but the
+/// producer + consumer factories derive schemas at compile time from
+/// the F (FlexZone) / D (DataBlock) type tags via the
+/// `_from_fd<F, D>` templates.  Saves ~12 lines of inline transport
+/// mint + dup + close at every typed-pair test site.
+template <typename FlexZoneT, typename DataBlockT>
+[[nodiscard]] inline FdBackedDataBlock
+make_fd_backed_pair_typed(const std::string                    &channel,
+                          pylabhub::hub::DataBlockPolicy        policy,
+                          const pylabhub::hub::DataBlockConfig &cfg,
+                          const char                           *consumer_uid  = nullptr,
+                          const char                           *consumer_name = nullptr)
+{
+    namespace sec = pylabhub::utils::security;
+    FdBackedDataBlock out;
+
+    const size_t total = pylabhub::hub::datablock_layout_total_size(cfg);
+    if (total == 0)
+        return out;
+
+    out.transport = sec::create_shm_capability_producer(total);
+    if (!out.transport)
+        return out;
+
+    out.producer = pylabhub::hub::create_datablock_producer_from_fd<FlexZoneT, DataBlockT>(
+        channel, out.transport->borrow_fd(), policy, cfg);
+    if (!out.producer)
+        return out;
+
+    // In-process substitute for the §5.5 SCM_RIGHTS handoff: dup the
+    // producer's fd for the consumer side.  The consumer factory dups
+    // internally; we close ours immediately after.
+    const int rx_fd = ::dup(out.transport->borrow_fd());
+    if (rx_fd < 0)
+        return out;
+    out.consumer = pylabhub::hub::find_datablock_consumer_from_fd<FlexZoneT, DataBlockT>(
+        channel, rx_fd, cfg, consumer_uid, consumer_name);
+    ::close(rx_fd);
+    return out;
+}
+
 } // namespace pylabhub::tests::helper
