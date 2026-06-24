@@ -3,6 +3,7 @@
 // Hub ShmQueue unit test workers.  Each function creates a DataBlock, wraps it
 // in a ShmQueue, exercises the Queue interface, and asserts the expected results.
 #include "datahub_hub_queue_workers.h"
+#include "datahub_fd_test_helper.h"  // #275-S2: fd-source helpers (remap-stub sites)
 #include "test_entrypoint.h"
 #include "shared_test_helpers.h"
 
@@ -64,12 +65,14 @@ std::vector<SchemaFieldDesc> slot_schema()
 }
 
 /// DataBlockConfig for raw DataBlock tests (not ShmQueue — remap stubs etc.).
-DataBlockConfig make_config(uint64_t shared_secret)
+/// #275-S2: `shared_secret` param dropped — fd-source factories
+/// (`make_fd_backed_pair` / `make_fd_backed_producer`) don't consult it;
+/// HEP-CORE-0041 capability transport authenticates via fd possession.
+DataBlockConfig make_config()
 {
     DataBlockConfig cfg{};
     cfg.policy               = DataBlockPolicy::RingBuffer;
     cfg.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
-    cfg.shared_secret        = shared_secret;
     cfg.ring_buffer_capacity = 4;
     cfg.physical_page_size   = DataBlockPageSize::Size4K;
     return cfg;
@@ -891,11 +894,12 @@ int datablock_producer_remap_stubs_throw()
         []()
         {
             DataBlockTestGuard g("ProducerRemapStubs");
-            DataBlockConfig cfg = make_config(70020);
+            DataBlockConfig cfg = make_config();
 
-            auto producer = create_datablock_producer_impl(
-                g.channel_name(), DataBlockPolicy::RingBuffer, cfg, nullptr, nullptr);
-            ASSERT_NE(producer, nullptr);
+            auto p = make_fd_backed_producer(
+                g.channel_name(), DataBlockPolicy::RingBuffer, cfg);
+            ASSERT_NE(p.producer, nullptr);
+            auto& producer = p.producer;
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
@@ -939,14 +943,13 @@ int datablock_consumer_remap_stubs_throw()
         []()
         {
             DataBlockTestGuard g("ConsumerRemapStubs");
-            DataBlockConfig cfg = make_config(70021);
+            DataBlockConfig cfg = make_config();
 
-            auto producer = create_datablock_producer_impl(
-                g.channel_name(), DataBlockPolicy::RingBuffer, cfg, nullptr, nullptr);
-            ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer_impl(
-                g.channel_name(), cfg.shared_secret, &cfg, nullptr, nullptr);
-            ASSERT_NE(consumer, nullptr);
+            auto p = make_fd_backed_pair(
+                g.channel_name(), DataBlockPolicy::RingBuffer, cfg);
+            ASSERT_NE(p.producer, nullptr);
+            ASSERT_NE(p.consumer, nullptr);
+            auto& consumer = p.consumer;
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"

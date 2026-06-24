@@ -51,6 +51,22 @@
 namespace pylabhub::tests::helper
 {
 
+/// Owns the L1 transport + producer for an in-process fd-source
+/// producer-only attach.  Producer-only tests (release_write_slot
+/// validation, write/commit bounds, double-release idempotence) use
+/// this — avoids spinning up a consumer attach the test never reads.
+struct FdBackedProducer
+{
+    std::unique_ptr<pylabhub::utils::security::IShmCapabilityProducer> transport;
+    std::unique_ptr<pylabhub::hub::DataBlockProducer>                  producer;
+
+    FdBackedProducer()                                     = default;
+    FdBackedProducer(const FdBackedProducer &)             = delete;
+    FdBackedProducer &operator=(const FdBackedProducer &)  = delete;
+    FdBackedProducer(FdBackedProducer &&)                  = default;
+    FdBackedProducer &operator=(FdBackedProducer &&)       = default;
+};
+
 /// Owns the L1 transport + producer + consumer for an in-process
 /// fd-source pair.  Declared so that destruction (reverse order)
 /// tears down consumer → producer → transport — transport outlives
@@ -67,6 +83,48 @@ struct FdBackedDataBlock
     FdBackedDataBlock(FdBackedDataBlock &&)                  = default;
     FdBackedDataBlock &operator=(FdBackedDataBlock &&)       = default;
 };
+
+/// Build a fd-source DataBlock producer ONLY over an in-process
+/// anonymous memfd — no consumer attach.  Returns a FdBackedProducer
+/// with both handles populated (or either null on failure — callers
+/// ASSERT_NE per existing test style).
+///
+/// Use this instead of `make_fd_backed_pair` when the test only
+/// exercises producer-side API (invalid-handle release, write/commit
+/// bounds, double-release idempotence) — spinning up a consumer the
+/// test never reads is wasted work and risks unrelated attach-failure
+/// modes leaking into the assertion.
+///
+/// @param channel     Logical name passed verbatim to the fd-source
+///                    factory (used for log lines + DataBlock identity
+///                    label; no kernel-namespace meaning on this path).
+/// @param policy      DataBlock policy (Single / DoubleBuffer / RingBuffer).
+/// @param cfg         Sizing + policy config.  `cfg.shared_secret` is
+///                    IGNORED — the fd-source factory doesn't read it.
+/// @param fz_schema   Optional FlexZone schema for hash validation.
+/// @param db_schema   Optional DataBlock-slot schema for hash validation.
+[[nodiscard]] inline FdBackedProducer
+make_fd_backed_producer(const std::string                    &channel,
+                        pylabhub::hub::DataBlockPolicy        policy,
+                        const pylabhub::hub::DataBlockConfig &cfg,
+                        const pylabhub::schema::SchemaInfo   *fz_schema = nullptr,
+                        const pylabhub::schema::SchemaInfo   *db_schema = nullptr)
+{
+    namespace sec = pylabhub::utils::security;
+    FdBackedProducer out;
+
+    const size_t total = pylabhub::hub::datablock_layout_total_size(cfg);
+    if (total == 0)
+        return out;
+
+    out.transport = sec::create_shm_capability_producer(total);
+    if (!out.transport)
+        return out;
+
+    out.producer = pylabhub::hub::create_datablock_producer_from_fd_impl(
+        channel, out.transport->borrow_fd(), policy, cfg, fz_schema, db_schema);
+    return out;
+}
 
 /// Build a fd-source DataBlock producer + consumer pair over a single
 /// in-process anonymous memfd.  Returns a FdBackedDataBlock with all

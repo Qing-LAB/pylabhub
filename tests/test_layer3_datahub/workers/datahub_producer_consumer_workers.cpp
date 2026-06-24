@@ -2,22 +2,29 @@
 // DataBlock/slot error paths: timeout, wrong secret, invalid handle, bounds checks.
 // Ensures recoverable errors return false/nullptr/empty instead of undefined behavior.
 #include "datahub_producer_consumer_workers.h"
+#include "datahub_fd_test_helper.h"  // #275-S2: fd-source pair + producer-only helpers
 #include "test_entrypoint.h"
 #include "shared_test_helpers.h"
 #include "test_datahub_types.h"
 #include "plh_datahub.hpp"
+#include "utils/security/shm_capability_channel.hpp"  // template-site direct transport
 #include <gtest/gtest.h>
 #include <fmt/core.h>
 #include <cstring>
+#include <unistd.h>  // ::dup, ::close for template-site rx-fd duplication
 #include <vector>
 
 using namespace pylabhub::hub;
 using namespace pylabhub::tests::helper;
 using namespace std::chrono_literals;
 
-// Note: create_datablock_producer_impl / find_datablock_consumer_impl are declared in
-// data_block.hpp (plh_datahub.hpp) with SchemaInfo* parameter types. No local forward
-// declarations needed — the header declarations are used directly.
+// #275-S2 migration: producer/consumer pairs use the fd-source factories
+// (`create_datablock_producer_from_fd_impl` / `find_datablock_consumer_from_fd_impl`)
+// wrapped by `make_fd_backed_pair` + `make_fd_backed_producer` in
+// `datahub_fd_test_helper.h`.  HEP-CORE-0041 capability transport
+// authenticates via fd possession, not header-stored secret —
+// `cfg.shared_secret` is ignored on these paths and retires entirely
+// in #275-S5.
 
 namespace pylabhub::tests::worker::error_handling
 {
@@ -35,23 +42,18 @@ int acquire_consume_slot_timeout_returns_null()
             DataBlockConfig config{};
             config.policy = DataBlockPolicy::RingBuffer;
             config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
-            config.shared_secret = 60001;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
 
-            auto producer = create_datablock_producer_impl(channel,
-                                                      DataBlockPolicy::RingBuffer, config,
-                                                      nullptr, nullptr);
-            ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer_impl(channel, config.shared_secret,
-                                                        &config, nullptr, nullptr);
-            ASSERT_NE(consumer, nullptr);
-            // Producer never writes/commits → consumer must get nullptr on short timeout
+            auto p = make_fd_backed_pair(channel, DataBlockPolicy::RingBuffer, config);
+            ASSERT_NE(p.producer, nullptr);
+            ASSERT_NE(p.consumer, nullptr);
+            auto& consumer = p.consumer;
+            // Producer is established (p.producer) but never writes/commits →
+            // consumer must get nullptr on short timeout.
             std::unique_ptr<SlotConsumeHandle> h = consumer->acquire_consume_slot(50);
             EXPECT_EQ(h.get(), nullptr);
 
-            producer.reset();
-            consumer.reset();
             cleanup_test_datablock(channel);
         },
         "acquire_consume_slot_timeout_returns_null", logger_module(), crypto_module(), hub_module());
@@ -101,18 +103,15 @@ int release_write_slot_invalid_handle_returns_false()
             DataBlockConfig config{};
             config.policy = DataBlockPolicy::RingBuffer;
             config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
-            config.shared_secret = 60003;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
 
-            auto producer = create_datablock_producer_impl(channel,
-                                                      DataBlockPolicy::RingBuffer, config,
-                                                      nullptr, nullptr);
-            ASSERT_NE(producer, nullptr);
+            auto p = make_fd_backed_producer(channel, DataBlockPolicy::RingBuffer, config);
+            ASSERT_NE(p.producer, nullptr);
+            auto& producer = p.producer;
             SlotWriteHandle invalid_handle; // default-constructed
             EXPECT_FALSE(producer->release_write_slot(invalid_handle));
 
-            producer.reset();
             cleanup_test_datablock(channel);
         },
         "release_write_slot_invalid_handle_returns_false", logger_module(), crypto_module(),
@@ -128,22 +127,16 @@ int release_consume_slot_invalid_handle_returns_false()
             DataBlockConfig config{};
             config.policy = DataBlockPolicy::RingBuffer;
             config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
-            config.shared_secret = 60004;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
 
-            auto producer = create_datablock_producer_impl(channel,
-                                                      DataBlockPolicy::RingBuffer, config,
-                                                      nullptr, nullptr);
-            ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer_impl(channel, config.shared_secret,
-                                                        &config, nullptr, nullptr);
-            ASSERT_NE(consumer, nullptr);
+            auto p = make_fd_backed_pair(channel, DataBlockPolicy::RingBuffer, config);
+            ASSERT_NE(p.producer, nullptr);
+            ASSERT_NE(p.consumer, nullptr);
+            auto& consumer = p.consumer;
             SlotConsumeHandle invalid_handle;
             EXPECT_FALSE(consumer->release_consume_slot(invalid_handle));
 
-            producer.reset();
-            consumer.reset();
             cleanup_test_datablock(channel);
         },
         "release_consume_slot_invalid_handle_returns_false", logger_module(), crypto_module(),
@@ -159,14 +152,12 @@ int write_bounds_return_false()
             DataBlockConfig config{};
             config.policy = DataBlockPolicy::RingBuffer;
             config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
-            config.shared_secret = 60005;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
 
-            auto producer = create_datablock_producer_impl(channel,
-                                                      DataBlockPolicy::RingBuffer, config,
-                                                      nullptr, nullptr);
-            ASSERT_NE(producer, nullptr);
+            auto p = make_fd_backed_producer(channel, DataBlockPolicy::RingBuffer, config);
+            ASSERT_NE(p.producer, nullptr);
+            auto& producer = p.producer;
             auto write_handle = producer->acquire_write_slot(5000);
             ASSERT_NE(write_handle, nullptr);
             size_t slot_size = write_handle->buffer_span().size();
@@ -178,7 +169,6 @@ int write_bounds_return_false()
             EXPECT_FALSE(write_handle->write(buf, 1, slot_size));
 
             EXPECT_TRUE(producer->release_write_slot(*write_handle));
-            producer.reset();
             cleanup_test_datablock(channel);
         },
         "write_bounds_return_false", logger_module(), crypto_module(), hub_module());
@@ -193,21 +183,18 @@ int commit_bounds_return_false()
             DataBlockConfig config{};
             config.policy = DataBlockPolicy::RingBuffer;
             config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
-            config.shared_secret = 60006;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
 
-            auto producer = create_datablock_producer_impl(channel,
-                                                      DataBlockPolicy::RingBuffer, config,
-                                                      nullptr, nullptr);
-            ASSERT_NE(producer, nullptr);
+            auto p = make_fd_backed_producer(channel, DataBlockPolicy::RingBuffer, config);
+            ASSERT_NE(p.producer, nullptr);
+            auto& producer = p.producer;
             auto write_handle = producer->acquire_write_slot(5000);
             ASSERT_NE(write_handle, nullptr);
             size_t slot_size = write_handle->buffer_span().size();
             EXPECT_FALSE(write_handle->commit(slot_size + 1));
 
             EXPECT_TRUE(producer->release_write_slot(*write_handle));
-            producer.reset();
             cleanup_test_datablock(channel);
         },
         "commit_bounds_return_false", logger_module(), crypto_module(), hub_module());
@@ -222,17 +209,14 @@ int read_bounds_return_false()
             DataBlockConfig config{};
             config.policy = DataBlockPolicy::RingBuffer;
             config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
-            config.shared_secret = 60007;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
 
-            auto producer = create_datablock_producer_impl(channel,
-                                                      DataBlockPolicy::RingBuffer, config,
-                                                      nullptr, nullptr);
-            ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer_impl(channel, config.shared_secret,
-                                                        &config, nullptr, nullptr);
-            ASSERT_NE(consumer, nullptr);
+            auto p = make_fd_backed_pair(channel, DataBlockPolicy::RingBuffer, config);
+            ASSERT_NE(p.producer, nullptr);
+            ASSERT_NE(p.consumer, nullptr);
+            auto& producer = p.producer;
+            auto& consumer = p.consumer;
 
             const char payload[] = "x";
             auto write_handle = producer->acquire_write_slot(5000);
@@ -250,8 +234,6 @@ int read_bounds_return_false()
             EXPECT_FALSE(consume_handle->read(buf.data(), 1, slot_size));
 
             consume_handle.reset();
-            producer.reset();
-            consumer.reset();
             cleanup_test_datablock(channel);
         },
         "read_bounds_return_false", logger_module(), crypto_module(), hub_module());
@@ -266,21 +248,18 @@ int double_release_write_slot_idempotent()
             DataBlockConfig config{};
             config.policy = DataBlockPolicy::RingBuffer;
             config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
-            config.shared_secret = 60008;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
 
-            auto producer = create_datablock_producer_impl(channel,
-                                                      DataBlockPolicy::RingBuffer, config,
-                                                      nullptr, nullptr);
-            ASSERT_NE(producer, nullptr);
+            auto p = make_fd_backed_producer(channel, DataBlockPolicy::RingBuffer, config);
+            ASSERT_NE(p.producer, nullptr);
+            auto& producer = p.producer;
             auto write_handle = producer->acquire_write_slot(5000);
             ASSERT_NE(write_handle, nullptr);
             EXPECT_TRUE(write_handle->commit(0));
             EXPECT_TRUE(producer->release_write_slot(*write_handle));
             EXPECT_TRUE(producer->release_write_slot(*write_handle));
 
-            producer.reset();
             cleanup_test_datablock(channel);
         },
         "double_release_write_slot_idempotent", logger_module(), crypto_module(), hub_module());
@@ -292,21 +271,31 @@ int slot_acquire_timeout_returns_error()
         []()
         {
             using namespace pylabhub::tests;
+            namespace sec = pylabhub::utils::security;
             std::string channel = make_test_channel_name("ErrSlotTimeout");
             DataBlockConfig config{};
             config.policy = DataBlockPolicy::RingBuffer;
             config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
-            config.shared_secret = 60009;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
 
             config.flex_zone_size = sizeof(EmptyFlexZone); // rounded up to PAGE_ALIGNMENT at creation
 
-            auto producer = create_datablock_producer<EmptyFlexZone, TestDataBlock>(
-                channel, DataBlockPolicy::RingBuffer, config);
+            // Template-typed fd-source pair: mint transport, build producer
+            // + consumer over a duplicated fd (in-process substitute for
+            // SCM_RIGHTS).  The non-template helper can't carry F/D type
+            // tags through, so the templates are called directly.
+            const size_t total = datablock_layout_total_size(config);
+            auto transport = sec::create_shm_capability_producer(total);
+            ASSERT_NE(transport, nullptr);
+            auto producer = create_datablock_producer_from_fd<EmptyFlexZone, TestDataBlock>(
+                channel, transport->borrow_fd(), DataBlockPolicy::RingBuffer, config);
             ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer<EmptyFlexZone, TestDataBlock>(
-                channel, config.shared_secret, config);
+            const int rx_fd = ::dup(transport->borrow_fd());
+            ASSERT_GE(rx_fd, 0);
+            auto consumer = find_datablock_consumer_from_fd<EmptyFlexZone, TestDataBlock>(
+                channel, rx_fd, config);
+            ::close(rx_fd);
             ASSERT_NE(consumer, nullptr);
 
             // No data written — acquiring a slot must time out.
@@ -325,8 +314,10 @@ int slot_acquire_timeout_returns_error()
                 });
             EXPECT_TRUE(got_timeout);
 
-            producer.reset();
+            // Tear down in reverse: consumer → producer → transport.
             consumer.reset();
+            producer.reset();
+            transport.reset();
             cleanup_test_datablock(channel);
         },
         "slot_acquire_timeout_returns_error", logger_module(), crypto_module(), hub_module());
@@ -341,20 +332,16 @@ int sub_page_logical_size_round_trip()
             DataBlockConfig config{};
             config.policy               = DataBlockPolicy::RingBuffer;
             config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
-            config.shared_secret        = 60010;
             config.ring_buffer_capacity = 128;
             config.physical_page_size   = DataBlockPageSize::Size4K;
             config.logical_unit_size    = 64; // sub-page: 64 B slots, 4 K pages
             config.checksum_policy      = ChecksumPolicy::None;
 
-            auto producer = create_datablock_producer_impl(channel,
-                                                           DataBlockPolicy::RingBuffer,
-                                                           config, nullptr, nullptr);
-            ASSERT_NE(producer, nullptr);
-
-            auto consumer = find_datablock_consumer_impl(channel, config.shared_secret,
-                                                         &config, nullptr, nullptr);
-            ASSERT_NE(consumer, nullptr);
+            auto p = make_fd_backed_pair(channel, DataBlockPolicy::RingBuffer, config);
+            ASSERT_NE(p.producer, nullptr);
+            ASSERT_NE(p.consumer, nullptr);
+            auto& producer = p.producer;
+            auto& consumer = p.consumer;
 
             // Write a 32-byte sentinel pattern into the 64-byte slot.
             const char kPayload[32] = {

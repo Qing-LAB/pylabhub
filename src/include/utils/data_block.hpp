@@ -1464,6 +1464,68 @@ create_datablock_producer(const std::string &name, DataBlockPolicy policy,
 }
 
 /**
+ * @brief Construct a DataBlockProducer over a borrowed SHM fd with dual-schema storage.
+ *
+ * Fd-source counterpart of `create_datablock_producer<F,D>` for the
+ * HEP-CORE-0041 capability transport (#275-S2).  Same compile-time
+ * schema derivation; routes through `create_datablock_producer_from_fd_impl`
+ * which sizes/validates against the fd's fstat size instead of opening
+ * `/dev/shm/<name>`.
+ *
+ * @param logical_name      Log/identity label (NOT a /dev/shm name).
+ * @param source_fd         Borrowed SHM fd (typically
+ *                          `IShmCapabilityProducer::borrow_fd()` in
+ *                          production, or the same fd in in-process
+ *                          L3 tests).  DataBlock dups internally;
+ *                          caller may close source_fd after this returns.
+ * @param policy            DataBlock policy (Single/DoubleBuffer/RingBuffer).
+ * @param config            DataBlockConfig — sizing parameters must
+ *                          match the fd's ftruncate size (validated).
+ * @return DataBlockProducer (Create mode, fd-backed).
+ * @throws std::invalid_argument if config too small for F or D.
+ * @throws std::runtime_error    if fd is invalid or fstat size mismatch.
+ */
+template <typename FlexZoneT, typename DataBlockT>
+[[nodiscard]] std::unique_ptr<DataBlockProducer>
+create_datablock_producer_from_fd(const std::string     &logical_name,
+                                  int                    source_fd,
+                                  DataBlockPolicy        policy,
+                                  const DataBlockConfig &config)
+{
+    static_assert(std::is_void_v<FlexZoneT> || std::is_trivially_copyable_v<FlexZoneT>,
+                  "FlexZoneT must be trivially copyable for shared memory");
+    static_assert(std::is_trivially_copyable_v<DataBlockT>,
+                  "DataBlockT must be trivially copyable for shared memory");
+
+    auto flexzone_schema = pylabhub::schema::generate_schema_info<FlexZoneT>(
+        "FlexZone", pylabhub::schema::SchemaVersion{1, 0, 0});
+
+    auto datablock_schema = pylabhub::schema::generate_schema_info<DataBlockT>(
+        "DataBlock", pylabhub::schema::SchemaVersion{1, 0, 0});
+
+    if constexpr (!std::is_void_v<FlexZoneT>)
+    {
+        if (config.flex_zone_size < sizeof(FlexZoneT))
+        {
+            throw std::invalid_argument(
+                "config.flex_zone_size (" + std::to_string(config.flex_zone_size) +
+                ") too small for FlexZoneT (" + std::to_string(sizeof(FlexZoneT)) + ")");
+        }
+    }
+
+    size_t slot_size = config.effective_logical_unit_size();
+    if (slot_size < sizeof(DataBlockT))
+    {
+        throw std::invalid_argument(
+            "slot size (" + std::to_string(slot_size) +
+            ") too small for DataBlockT (" + std::to_string(sizeof(DataBlockT)) + ")");
+    }
+
+    return create_datablock_producer_from_fd_impl(logical_name, source_fd, policy, config,
+                                                  &flexzone_schema, &datablock_schema);
+}
+
+/**
  * @brief Discovers consumer with dual-schema validation (FlexZone + DataBlock).
  * Schema is derived from the template parameters (FlexZoneT, DataBlockT); no schema argument.
  * @tparam FlexZoneT Expected type of flexible zone (must match producer)
