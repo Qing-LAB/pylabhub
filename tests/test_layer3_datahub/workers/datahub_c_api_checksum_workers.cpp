@@ -18,6 +18,7 @@
 // Secret numbers: 72001+ to avoid conflicts with other test suites
 
 #include "datahub_c_api_checksum_workers.h"
+#include "datahub_fd_test_helper.h"  // #275-S2: fd-source pair helper
 #include "test_entrypoint.h"
 #include "shared_test_helpers.h"
 #include "plh_datahub.hpp"
@@ -35,12 +36,15 @@ static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModu
 static auto crypto_module() { return ::pylabhub::crypto::GetLifecycleModule(); }
 static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
 
-static DataBlockConfig make_config(ChecksumPolicy cs_policy, uint64_t secret)
+// #275-S2: `secret` parameter dropped — the fd-source factory pair
+// (see `make_fd_backed_pair` in datahub_fd_test_helper.h) doesn't
+// consult shared_secret; HEP-CORE-0041 capability transport authenticates
+// via fd possession, not header-stored token.
+static DataBlockConfig make_config(ChecksumPolicy cs_policy)
 {
     DataBlockConfig cfg{};
     cfg.policy = DataBlockPolicy::RingBuffer;
     cfg.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
-    cfg.shared_secret = secret;
     cfg.ring_buffer_capacity = 2;
     cfg.physical_page_size = DataBlockPageSize::Size4K;
     cfg.checksum_policy = cs_policy;
@@ -59,14 +63,13 @@ int enforced_roundtrip_passes()
         []()
         {
             std::string channel = make_test_channel_name("CApiCsRoundtrip");
-            auto cfg = make_config(ChecksumPolicy::Enforced, 72001);
+            auto cfg = make_config(ChecksumPolicy::Enforced);
 
-            auto producer = create_datablock_producer_impl(channel, DataBlockPolicy::RingBuffer,
-                                                           cfg, nullptr, nullptr);
-            ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer_impl(channel, cfg.shared_secret, &cfg,
-                                                         nullptr, nullptr);
-            ASSERT_NE(consumer, nullptr);
+            auto p = make_fd_backed_pair(channel, DataBlockPolicy::RingBuffer, cfg);
+            ASSERT_NE(p.producer, nullptr);
+            ASSERT_NE(p.consumer, nullptr);
+            auto& producer = p.producer;
+            auto& consumer = p.consumer;
 
             const uint64_t kData = 0xCAFEBABEDEADF00DULL;
 
@@ -112,14 +115,13 @@ int enforced_corruption_detected()
         []()
         {
             std::string channel = make_test_channel_name("CApiCsCorrupt");
-            auto cfg = make_config(ChecksumPolicy::Enforced, 72002);
+            auto cfg = make_config(ChecksumPolicy::Enforced);
 
-            auto producer = create_datablock_producer_impl(channel, DataBlockPolicy::RingBuffer,
-                                                           cfg, nullptr, nullptr);
-            ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer_impl(channel, cfg.shared_secret, &cfg,
-                                                         nullptr, nullptr);
-            ASSERT_NE(consumer, nullptr);
+            auto p = make_fd_backed_pair(channel, DataBlockPolicy::RingBuffer, cfg);
+            ASSERT_NE(p.producer, nullptr);
+            ASSERT_NE(p.consumer, nullptr);
+            auto& producer = p.producer;
+            auto& consumer = p.consumer;
 
             // Acquire, get buffer_span BEFORE release (stays valid after release_write_slot)
             std::span<std::byte> slot_span;
@@ -168,14 +170,13 @@ int none_skips_verification()
         []()
         {
             std::string channel = make_test_channel_name("CApiCsNone");
-            auto cfg = make_config(ChecksumPolicy::None, 72003);
+            auto cfg = make_config(ChecksumPolicy::None);
 
-            auto producer = create_datablock_producer_impl(channel, DataBlockPolicy::RingBuffer,
-                                                           cfg, nullptr, nullptr);
-            ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer_impl(channel, cfg.shared_secret, &cfg,
-                                                         nullptr, nullptr);
-            ASSERT_NE(consumer, nullptr);
+            auto p = make_fd_backed_pair(channel, DataBlockPolicy::RingBuffer, cfg);
+            ASSERT_NE(p.producer, nullptr);
+            ASSERT_NE(p.consumer, nullptr);
+            auto& producer = p.producer;
+            auto& consumer = p.consumer;
 
             std::span<std::byte> slot_span;
             {
@@ -227,14 +228,13 @@ int manual_no_auto_checksum()
         []()
         {
             std::string channel = make_test_channel_name("CApiCsManual");
-            auto cfg = make_config(ChecksumPolicy::Manual, 72004);
+            auto cfg = make_config(ChecksumPolicy::Manual);
 
-            auto producer = create_datablock_producer_impl(channel, DataBlockPolicy::RingBuffer,
-                                                           cfg, nullptr, nullptr);
-            ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer_impl(channel, cfg.shared_secret, &cfg,
-                                                         nullptr, nullptr);
-            ASSERT_NE(consumer, nullptr);
+            auto p = make_fd_backed_pair(channel, DataBlockPolicy::RingBuffer, cfg);
+            ASSERT_NE(p.producer, nullptr);
+            ASSERT_NE(p.consumer, nullptr);
+            auto& producer = p.producer;
+            auto& consumer = p.consumer;
 
             std::span<std::byte> slot_span;
             {
@@ -280,14 +280,13 @@ int manual_explicit_checksum_roundtrip()
         []()
         {
             std::string channel = make_test_channel_name("CApiCsManualExplicit");
-            auto cfg = make_config(ChecksumPolicy::Manual, 72005);
+            auto cfg = make_config(ChecksumPolicy::Manual);
 
-            auto producer = create_datablock_producer_impl(channel, DataBlockPolicy::RingBuffer,
-                                                           cfg, nullptr, nullptr);
-            ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer_impl(channel, cfg.shared_secret, &cfg,
-                                                         nullptr, nullptr);
-            ASSERT_NE(consumer, nullptr);
+            auto p = make_fd_backed_pair(channel, DataBlockPolicy::RingBuffer, cfg);
+            ASSERT_NE(p.producer, nullptr);
+            ASSERT_NE(p.consumer, nullptr);
+            auto& producer = p.producer;
+            auto& consumer = p.consumer;
 
             const uint64_t kData = 0xFEEDFACECAFEBEEFULL;
 
@@ -339,14 +338,13 @@ int invalidate_checksum_zero_hash_rejected()
         []()
         {
             std::string channel = make_test_channel_name("CApiCsInvalidate");
-            auto cfg = make_config(ChecksumPolicy::Manual, 72006);
+            auto cfg = make_config(ChecksumPolicy::Manual);
 
-            auto producer = create_datablock_producer_impl(channel, DataBlockPolicy::RingBuffer,
-                                                           cfg, nullptr, nullptr);
-            ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer_impl(channel, cfg.shared_secret, &cfg,
-                                                         nullptr, nullptr);
-            ASSERT_NE(consumer, nullptr);
+            auto p = make_fd_backed_pair(channel, DataBlockPolicy::RingBuffer, cfg);
+            ASSERT_NE(p.producer, nullptr);
+            ASSERT_NE(p.consumer, nullptr);
+            auto& producer = p.producer;
+            auto& consumer = p.consumer;
 
             {
                 auto h = producer->acquire_write_slot(1000);
