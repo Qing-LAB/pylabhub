@@ -116,10 +116,20 @@ add_executable(test_layer3_datahub
     test_datahub_broker_consumer.cpp
     workers/broker_consumer_workers.cpp
 
-    # ── End-to-end multi-process integration test ────────────────────────────────
-    # MASKED — pending HEP-0035 §4.6.5 step 3-revised-F migration.
-    # test_datahub_e2e.cpp
-    # workers/datahub_e2e_workers.cpp
+    # ── e2e (broker in-thread + producer/consumer subprocesses) RETIRED ──
+    # 2026-06-23 (HEP-CORE-0041 1i-cleanup / #275-S2 Batch 1)
+    #
+    # `test_datahub_e2e.cpp` + `workers/datahub_e2e_workers.cpp` + `.h`
+    # deleted.  The test pre-dated HEP-CORE-0041 and drove the legacy
+    # name+secret discovery path between separate subprocesses
+    # (`find_datablock_consumer_impl(shm_name, kE2ESecret, ...)`).  Under
+    # capability transport the cross-process attach requires the full L2
+    # auth dance (broker pre-confirm + crypto_box challenge-response +
+    # SCM_RIGHTS) — which is precisely what #258 1k L4 e2e test builds
+    # against real producer + broker + consumer role hosts.  Reimplementing
+    # that wire-up in this L3 test would duplicate #258's scope without
+    # adding coverage.  Was already MASKED in CMakeLists (commented out)
+    # pre-S2 awaiting this disposition.
 
     # ── ChannelHandle integration tests (deleted — Step 7 Messenger removal) ─
 
