@@ -6,6 +6,7 @@
 // - Tests verify that the RAII layer and C API enforce policies transparently
 // - Heartbeat tests use active_consumer_count from shared memory header as oracle
 #include "datahub_policy_enforcement_workers.h"
+#include "datahub_fd_test_helper.h"  // #275-S2: fd-source typed helpers
 #include "test_entrypoint.h"
 #include "shared_test_helpers.h"
 #include "plh_datahub.hpp"
@@ -14,6 +15,7 @@
 #include <cstring>
 #include <chrono>
 #include <atomic>
+#include <unistd.h>  // #275-S2: ::dup, ::close — checksum_enforced_verify_detects_corruption inline consumer attach
 
 using namespace pylabhub::hub;
 using namespace pylabhub::tests::helper;
@@ -58,13 +60,12 @@ static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
 // Helpers
 // ============================================================================
 
-static DataBlockConfig make_config(ConsumerSyncPolicy sync_policy, ChecksumPolicy cs_policy,
-                                   uint64_t secret)
+/// #275-S2: `secret` param dropped — fd-source factory ignores cfg.shared_secret.
+static DataBlockConfig make_config(ConsumerSyncPolicy sync_policy, ChecksumPolicy cs_policy)
 {
     DataBlockConfig cfg{};
     cfg.policy = DataBlockPolicy::RingBuffer;
     cfg.consumer_sync_policy = sync_policy;
-    cfg.shared_secret = secret;
     cfg.ring_buffer_capacity = 2;
     cfg.physical_page_size = DataBlockPageSize::Size4K;
     cfg.flex_zone_size = sizeof(PolicyFlexZone); // rounded up to PAGE_ALIGNMENT at creation
@@ -82,14 +83,14 @@ int checksum_enforced_write_read_roundtrip()
         []()
         {
             std::string ch = make_test_channel_name("PolicyCs1");
-            auto cfg = make_config(ConsumerSyncPolicy::Latest_only, ChecksumPolicy::Enforced, 80001);
+            auto cfg = make_config(ConsumerSyncPolicy::Latest_only, ChecksumPolicy::Enforced);
 
-            auto producer = create_datablock_producer<PolicyFlexZone, PolicyData>(
+            auto p = make_fd_backed_pair_typed<PolicyFlexZone, PolicyData>(
                 ch, DataBlockPolicy::RingBuffer, cfg);
-            ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer<PolicyFlexZone, PolicyData>(
-                ch, cfg.shared_secret, cfg);
-            ASSERT_NE(consumer, nullptr);
+            ASSERT_NE(p.producer, nullptr);
+            ASSERT_NE(p.consumer, nullptr);
+            auto& producer = p.producer;
+            auto& consumer = p.consumer;
 
             // Write slot — checksum auto-updated on publish
             producer->with_transaction<PolicyFlexZone, PolicyData>(
@@ -138,14 +139,14 @@ int checksum_enforced_flexzone_only_write()
         []()
         {
             std::string ch = make_test_channel_name("PolicyCs2");
-            auto cfg = make_config(ConsumerSyncPolicy::Latest_only, ChecksumPolicy::Enforced, 80002);
+            auto cfg = make_config(ConsumerSyncPolicy::Latest_only, ChecksumPolicy::Enforced);
 
-            auto producer = create_datablock_producer<PolicyFlexZone, PolicyData>(
+            auto p = make_fd_backed_pair_typed<PolicyFlexZone, PolicyData>(
                 ch, DataBlockPolicy::RingBuffer, cfg);
-            ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer<PolicyFlexZone, PolicyData>(
-                ch, cfg.shared_secret, cfg);
-            ASSERT_NE(consumer, nullptr);
+            ASSERT_NE(p.producer, nullptr);
+            ASSERT_NE(p.consumer, nullptr);
+            auto& producer = p.producer;
+            auto& consumer = p.consumer;
 
             // Write only the flexzone — no slot publish
             producer->with_transaction<PolicyFlexZone, PolicyData>(
@@ -179,11 +180,15 @@ int checksum_enforced_verify_detects_corruption()
         []()
         {
             std::string ch = make_test_channel_name("PolicyCs3");
-            auto cfg = make_config(ConsumerSyncPolicy::Latest_only, ChecksumPolicy::Enforced, 80003);
+            auto cfg = make_config(ConsumerSyncPolicy::Latest_only, ChecksumPolicy::Enforced);
 
-            auto producer = create_datablock_producer<PolicyFlexZone, PolicyData>(
+            // Producer-only via fd-source helper; consumer attaches AFTER the
+            // corruption step (preserves original ordering — consumer's
+            // verify_checksum_flexible_zone() then observes the stale checksum).
+            auto p = make_fd_backed_producer_typed<PolicyFlexZone, PolicyData>(
                 ch, DataBlockPolicy::RingBuffer, cfg);
-            ASSERT_NE(producer, nullptr);
+            ASSERT_NE(p.producer, nullptr);
+            auto& producer = p.producer;
 
             // Write and publish one slot normally
             producer->with_transaction<PolicyFlexZone, PolicyData>(
@@ -202,8 +207,12 @@ int checksum_enforced_verify_detects_corruption()
             ASSERT_FALSE(fz_span.empty());
             fz_span[0] ^= std::byte{0xFF}; // flip a byte — checksum now stale
 
-            auto consumer = find_datablock_consumer<PolicyFlexZone, PolicyData>(
-                ch, cfg.shared_secret, cfg);
+            // Now attach consumer via the typed fd-source factory over the same memfd.
+            const int rx_fd = ::dup(p.transport->borrow_fd());
+            ASSERT_GE(rx_fd, 0);
+            auto consumer = find_datablock_consumer_from_fd<PolicyFlexZone, PolicyData>(
+                ch, rx_fd, cfg);
+            ::close(rx_fd);
             ASSERT_NE(consumer, nullptr);
 
             // Consumer should detect checksum mismatch
@@ -228,11 +237,14 @@ int checksum_none_skips_update_verify()
         []()
         {
             std::string ch = make_test_channel_name("PolicyCs4");
-            auto cfg = make_config(ConsumerSyncPolicy::Latest_only, ChecksumPolicy::None, 80004);
+            auto cfg = make_config(ConsumerSyncPolicy::Latest_only, ChecksumPolicy::None);
 
-            auto producer = create_datablock_producer<PolicyFlexZone, PolicyData>(
+            // Producer-only via fd-source helper; consumer attaches AFTER the
+            // corruption step (same pattern as PolicyCs3).
+            auto p = make_fd_backed_producer_typed<PolicyFlexZone, PolicyData>(
                 ch, DataBlockPolicy::RingBuffer, cfg);
-            ASSERT_NE(producer, nullptr);
+            ASSERT_NE(p.producer, nullptr);
+            auto& producer = p.producer;
 
             // Write one slot
             producer->with_transaction<PolicyFlexZone, PolicyData>(
@@ -250,8 +262,11 @@ int checksum_none_skips_update_verify()
             auto fz_span = producer->flexible_zone_span();
             if (!fz_span.empty()) { fz_span[0] ^= std::byte{0xFF}; }
 
-            auto consumer = find_datablock_consumer<PolicyFlexZone, PolicyData>(
-                ch, cfg.shared_secret, cfg);
+            const int rx_fd = ::dup(p.transport->borrow_fd());
+            ASSERT_GE(rx_fd, 0);
+            auto consumer = find_datablock_consumer_from_fd<PolicyFlexZone, PolicyData>(
+                ch, rx_fd, cfg);
+            ::close(rx_fd);
             ASSERT_NE(consumer, nullptr);
 
             // verify_checksum_flexible_zone with None policy: returns false (no checksum stored)
@@ -288,11 +303,12 @@ int checksum_manual_requires_explicit_call()
         []()
         {
             std::string ch = make_test_channel_name("PolicyCs5");
-            auto cfg = make_config(ConsumerSyncPolicy::Latest_only, ChecksumPolicy::Manual, 80005);
+            auto cfg = make_config(ConsumerSyncPolicy::Latest_only, ChecksumPolicy::Manual);
 
-            auto producer = create_datablock_producer<PolicyFlexZone, PolicyData>(
+            auto p = make_fd_backed_producer_typed<PolicyFlexZone, PolicyData>(
                 ch, DataBlockPolicy::RingBuffer, cfg);
-            ASSERT_NE(producer, nullptr);
+            ASSERT_NE(p.producer, nullptr);
+            auto& producer = p.producer;
 
             // Write WITHOUT updating flexzone checksum
             producer->with_transaction<PolicyFlexZone, PolicyData>(
@@ -310,8 +326,11 @@ int checksum_manual_requires_explicit_call()
                     }
                 });
 
-            auto consumer = find_datablock_consumer<PolicyFlexZone, PolicyData>(
-                ch, cfg.shared_secret, cfg);
+            const int rx_fd = ::dup(p.transport->borrow_fd());
+            ASSERT_GE(rx_fd, 0);
+            auto consumer = find_datablock_consumer_from_fd<PolicyFlexZone, PolicyData>(
+                ch, rx_fd, cfg);
+            ::close(rx_fd);
             ASSERT_NE(consumer, nullptr);
 
             // Checksum is stale (never computed) — consumer verify should fail or be invalid
@@ -346,8 +365,19 @@ int consumer_auto_registers_heartbeat_on_construction()
         []()
         {
             std::string ch = make_test_channel_name("PolicyHb1");
-            auto cfg = make_config(ConsumerSyncPolicy::Latest_only, ChecksumPolicy::Enforced, 80010);
+            auto cfg = make_config(ConsumerSyncPolicy::Latest_only, ChecksumPolicy::Enforced);
+            cfg.shared_secret = 80010;  // #275-S2 minimal-touch: legacy named-attach consumer still validates this.
 
+            // #275-S2 MINIMAL TOUCH: this test uses `open_datablock_for_diagnostic(ch)`,
+            // a name-based helper with no fd-source counterpart yet (would require
+            // an `open_datablock_for_diagnostic_from_fd` helper).  Leaving the
+            // legacy `create_datablock_producer<F, D>` / `find_datablock_consumer<F, D>`
+            // calls in place — and the per-site shared_secret too, since the legacy
+            // find_datablock_consumer path still verifies it against the SHM header.
+            // The field retires in #275-S5; this MINIMAL TOUCH retirement waits on
+            // an `open_datablock_for_diagnostic_from_fd` helper.  Same deferral
+            // shape as datahub_header_structure_workers in S2c-4 (which is
+            // producer-only and so didn't trip the consumer-side secret check).
             auto producer = create_datablock_producer<PolicyFlexZone, PolicyData>(
                 ch, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(producer, nullptr);
@@ -383,8 +413,10 @@ int consumer_auto_unregisters_heartbeat_on_destroy()
         []()
         {
             std::string ch = make_test_channel_name("PolicyHb2");
-            auto cfg = make_config(ConsumerSyncPolicy::Latest_only, ChecksumPolicy::Enforced, 80011);
+            auto cfg = make_config(ConsumerSyncPolicy::Latest_only, ChecksumPolicy::Enforced);
+            cfg.shared_secret = 80011;  // #275-S2 minimal-touch — see PolicyHb1.
 
+            // #275-S2 MINIMAL TOUCH: name-based diagnostic — see PolicyHb1.
             auto producer = create_datablock_producer<PolicyFlexZone, PolicyData>(
                 ch, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(producer, nullptr);
@@ -421,8 +453,10 @@ int all_policy_consumers_have_heartbeat()
         []()
         {
             std::string ch = make_test_channel_name("PolicyHb3");
-            auto cfg = make_config(ConsumerSyncPolicy::Sequential_sync, ChecksumPolicy::Enforced, 80012);
+            auto cfg = make_config(ConsumerSyncPolicy::Sequential_sync, ChecksumPolicy::Enforced);
+            cfg.shared_secret = 80012;  // #275-S2 minimal-touch — see PolicyHb1.
 
+            // #275-S2 MINIMAL TOUCH: name-based diagnostic — see PolicyHb1.
             auto producer = create_datablock_producer<PolicyFlexZone, PolicyData>(
                 ch, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(producer, nullptr);
@@ -473,19 +507,18 @@ int sync_reader_producer_respects_consumer_position()
             DataBlockConfig cfg{};
             cfg.policy = DataBlockPolicy::RingBuffer;
             cfg.consumer_sync_policy = ConsumerSyncPolicy::Sequential_sync;
-            cfg.shared_secret = 80020;
+            // #275-S2: cfg.shared_secret dropped — fd-source factory ignores it.
             cfg.ring_buffer_capacity = 1;
             cfg.physical_page_size = DataBlockPageSize::Size4K;
             cfg.flex_zone_size = sizeof(PolicyFlexZone); // rounded up to PAGE_ALIGNMENT at creation
             cfg.checksum_policy = ChecksumPolicy::Enforced;
 
-            auto producer = create_datablock_producer<PolicyFlexZone, PolicyData>(
+            auto p = make_fd_backed_pair_typed<PolicyFlexZone, PolicyData>(
                 ch, DataBlockPolicy::RingBuffer, cfg);
-            ASSERT_NE(producer, nullptr);
-
-            auto consumer = find_datablock_consumer<PolicyFlexZone, PolicyData>(
-                ch, cfg.shared_secret, cfg);
-            ASSERT_NE(consumer, nullptr);
+            ASSERT_NE(p.producer, nullptr);
+            ASSERT_NE(p.consumer, nullptr);
+            auto& producer = p.producer;
+            auto& consumer = p.consumer;
 
             // Producer fills the single slot
             producer->with_transaction<PolicyFlexZone, PolicyData>(
@@ -562,8 +595,9 @@ int producer_operator_increment_updates_heartbeat()
         []()
         {
             std::string ch = make_test_channel_name("PolicyAutoHb1");
-            auto cfg = make_config(ConsumerSyncPolicy::Latest_only, ChecksumPolicy::Enforced, 80030);
+            auto cfg = make_config(ConsumerSyncPolicy::Latest_only, ChecksumPolicy::Enforced);
 
+            // #275-S2 MINIMAL TOUCH: name-based diagnostic — see PolicyHb1.
             auto producer = create_datablock_producer<PolicyFlexZone, PolicyData>(
                 ch, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(producer, nullptr);
@@ -606,8 +640,10 @@ int consumer_operator_increment_updates_heartbeat()
         []()
         {
             std::string ch = make_test_channel_name("PolicyAutoHb2");
-            auto cfg = make_config(ConsumerSyncPolicy::Latest_only, ChecksumPolicy::Enforced, 80031);
+            auto cfg = make_config(ConsumerSyncPolicy::Latest_only, ChecksumPolicy::Enforced);
+            cfg.shared_secret = 80031;  // #275-S2 minimal-touch — see PolicyHb1.
 
+            // #275-S2 MINIMAL TOUCH: name-based diagnostic — see PolicyHb1.
             auto producer = create_datablock_producer<PolicyFlexZone, PolicyData>(
                 ch, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(producer, nullptr);

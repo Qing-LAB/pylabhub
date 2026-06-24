@@ -10,11 +10,13 @@
 // remains for this file.)
 
 #include "datahub_schema_validation_workers.h"
+#include "datahub_fd_test_helper.h"  // #275-S2: fd-source typed helpers
 #include "test_entrypoint.h"
 #include "shared_test_helpers.h"
 #include "plh_datahub.hpp"
 #include <gtest/gtest.h>
 #include <fmt/core.h>
+#include <unistd.h>  // ::dup, ::close — mismatch sites attach consumer inline
 
 using namespace pylabhub::hub;
 using namespace pylabhub::tests::helper;
@@ -59,12 +61,12 @@ static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
 // flex_zone_size must be >= sizeof(FlexZoneT). Since FlexZoneT = SchemaValidV1
 // (sizeof ≈ 8 bytes), 64 bytes is ample and safely page-aligned for the test.
 // ============================================================================
-static DataBlockConfig make_schema_config(uint64_t secret)
+/// #275-S2: `secret` param dropped — fd-source factory ignores cfg.shared_secret.
+static DataBlockConfig make_schema_config()
 {
     DataBlockConfig cfg{};
     cfg.policy = DataBlockPolicy::RingBuffer;
     cfg.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
-    cfg.shared_secret = secret;
     cfg.ring_buffer_capacity = 1;
     cfg.physical_page_size = DataBlockPageSize::Size4K;
     cfg.flex_zone_size = sizeof(SchemaValidV1); // rounded up to PAGE_ALIGNMENT at creation
@@ -84,20 +86,14 @@ int consumer_connects_with_matching_schema()
         []()
         {
             std::string channel = make_test_channel_name("SchemaValidation");
-            auto config = make_schema_config(67890);
+            auto config = make_schema_config();
 
-            // Producer: FlexZoneT = SchemaValidV1, DataBlockT = SchemaValidV1
-            auto producer = create_datablock_producer<SchemaValidV1, SchemaValidV1>(
+            // Producer + consumer pair via fd-source helper (both V1/V1 — matching).
+            auto p = make_fd_backed_pair_typed<SchemaValidV1, SchemaValidV1>(
                 channel, DataBlockPolicy::RingBuffer, config);
-            ASSERT_NE(producer, nullptr);
+            ASSERT_NE(p.producer, nullptr);
+            ASSERT_NE(p.consumer, nullptr) << "Consumer with matching schema must connect successfully";
 
-            // Consumer: same schemas → must connect
-            auto consumer = find_datablock_consumer<SchemaValidV1, SchemaValidV1>(
-                channel, config.shared_secret, config);
-            ASSERT_NE(consumer, nullptr) << "Consumer with matching schema must connect successfully";
-
-            producer.reset();
-            consumer.reset();
             cleanup_test_datablock(channel);
         },
         "consumer_connects_with_matching_schema", logger_module(), crypto_module(), hub_module());
@@ -115,19 +111,24 @@ int consumer_fails_to_connect_with_mismatched_schema()
         []()
         {
             std::string channel = make_test_channel_name("SchemaValidationMismatch");
-            auto config = make_schema_config(67891);
+            auto config = make_schema_config();
 
-            // Producer: DataBlockT = SchemaValidV1
-            auto producer = create_datablock_producer<SchemaValidV1, SchemaValidV1>(
+            // Producer: DataBlockT = SchemaValidV1 (via fd-source helper)
+            auto p = make_fd_backed_producer_typed<SchemaValidV1, SchemaValidV1>(
                 channel, DataBlockPolicy::RingBuffer, config);
-            ASSERT_NE(producer, nullptr);
+            ASSERT_NE(p.producer, nullptr);
 
-            // Consumer: DataBlockT = SchemaValidV2 (different fields → schema hash mismatch)
-            auto consumer = find_datablock_consumer<SchemaValidV1, SchemaValidV2>(
-                channel, config.shared_secret, config);
+            // Consumer: DataBlockT = SchemaValidV2 (different fields → schema hash
+            // mismatch).  Inline attach via the typed fd-source consumer factory:
+            // dup the producer's fd, hand it to the factory, close our dup.  The
+            // factory must reject the attach on schema-hash mismatch.
+            const int rx_fd = ::dup(p.transport->borrow_fd());
+            ASSERT_GE(rx_fd, 0);
+            auto consumer = find_datablock_consumer_from_fd<SchemaValidV1, SchemaValidV2>(
+                channel, rx_fd, config);
+            ::close(rx_fd);
             ASSERT_EQ(consumer, nullptr) << "Consumer with mismatched DataBlock schema must be rejected";
 
-            producer.reset();
             cleanup_test_datablock(channel);
         },
         "consumer_fails_to_connect_with_mismatched_schema", logger_module(), crypto_module(),
@@ -147,22 +148,25 @@ int flexzone_mismatch_rejected()
         []()
         {
             std::string channel = make_test_channel_name("SchemaFzMismatch");
-            auto config = make_schema_config(67892);
+            auto config = make_schema_config();
 
-            // Producer: FlexZoneT = SchemaValidV1, DataBlockT = SchemaValidV1
-            auto producer = create_datablock_producer<SchemaValidV1, SchemaValidV1>(
+            // Producer: FlexZoneT = SchemaValidV1, DataBlockT = SchemaValidV1 (fd-source).
+            auto p = make_fd_backed_producer_typed<SchemaValidV1, SchemaValidV1>(
                 channel, DataBlockPolicy::RingBuffer, config);
-            ASSERT_NE(producer, nullptr);
+            ASSERT_NE(p.producer, nullptr);
 
-            // Consumer: FlexZoneT = SchemaValidV2 (mismatch), DataBlockT = SchemaValidV1 (match)
-            // flex_zone_size of consumer config must be >= sizeof(SchemaValidV2); reuse same config
-            // (both fit within the PAGE_ALIGNMENT-rounded allocation)
-            auto consumer = find_datablock_consumer<SchemaValidV2, SchemaValidV1>(
-                channel, config.shared_secret, config);
+            // Consumer: FlexZoneT = SchemaValidV2 (mismatch), DataBlockT = SchemaValidV1 (match).
+            // flex_zone_size of consumer config must be >= sizeof(SchemaValidV2); reuse
+            // same config (both fit within the PAGE_ALIGNMENT-rounded allocation).
+            // Inline attach via typed fd-source consumer factory; expects rejection.
+            const int rx_fd = ::dup(p.transport->borrow_fd());
+            ASSERT_GE(rx_fd, 0);
+            auto consumer = find_datablock_consumer_from_fd<SchemaValidV2, SchemaValidV1>(
+                channel, rx_fd, config);
+            ::close(rx_fd);
             ASSERT_EQ(consumer, nullptr)
                 << "Consumer with mismatched FlexZone schema must be rejected";
 
-            producer.reset();
             cleanup_test_datablock(channel);
         },
         "flexzone_mismatch_rejected", logger_module(), crypto_module(), hub_module());
@@ -180,20 +184,23 @@ int both_schemas_mismatch_rejected()
         []()
         {
             std::string channel = make_test_channel_name("SchemaBothMismatch");
-            auto config = make_schema_config(67893);
+            auto config = make_schema_config();
 
-            // Producer: FlexZoneT = SchemaValidV1, DataBlockT = SchemaValidV1
-            auto producer = create_datablock_producer<SchemaValidV1, SchemaValidV1>(
+            // Producer: FlexZoneT = SchemaValidV1, DataBlockT = SchemaValidV1 (fd-source).
+            auto p = make_fd_backed_producer_typed<SchemaValidV1, SchemaValidV1>(
                 channel, DataBlockPolicy::RingBuffer, config);
-            ASSERT_NE(producer, nullptr);
+            ASSERT_NE(p.producer, nullptr);
 
-            // Consumer: both V2 — neither schema matches
-            auto consumer = find_datablock_consumer<SchemaValidV2, SchemaValidV2>(
-                channel, config.shared_secret, config);
+            // Consumer: both V2 — neither schema matches.  Inline attach via
+            // typed fd-source consumer factory; expects rejection.
+            const int rx_fd = ::dup(p.transport->borrow_fd());
+            ASSERT_GE(rx_fd, 0);
+            auto consumer = find_datablock_consumer_from_fd<SchemaValidV2, SchemaValidV2>(
+                channel, rx_fd, config);
+            ::close(rx_fd);
             ASSERT_EQ(consumer, nullptr)
                 << "Consumer with both schemas mismatched must be rejected";
 
-            producer.reset();
             cleanup_test_datablock(channel);
         },
         "both_schemas_mismatch_rejected", logger_module(), crypto_module(), hub_module());
@@ -212,23 +219,28 @@ int consumer_mismatched_capacity_rejected()
         {
             std::string channel = make_test_channel_name("SchemaCfgMismatch");
 
-            DataBlockConfig prod_cfg = make_schema_config(67894);
+            DataBlockConfig prod_cfg = make_schema_config();
             prod_cfg.ring_buffer_capacity = 4;
 
-            auto producer = create_datablock_producer<SchemaValidV1, SchemaValidV1>(
+            // Producer built over fd-source helper with prod_cfg layout.
+            auto p = make_fd_backed_producer_typed<SchemaValidV1, SchemaValidV1>(
                 channel, DataBlockPolicy::RingBuffer, prod_cfg);
-            ASSERT_NE(producer, nullptr);
+            ASSERT_NE(p.producer, nullptr);
 
-            // Consumer with different ring_buffer_capacity — config mismatch → nullptr
+            // Consumer with different ring_buffer_capacity — config layout
+            // checksum mismatch → nullptr.  Inline attach via typed fd-source
+            // consumer factory using the divergent cons_cfg.
             DataBlockConfig cons_cfg = prod_cfg;
             cons_cfg.ring_buffer_capacity = 2; // differs from producer
 
-            auto consumer = find_datablock_consumer<SchemaValidV1, SchemaValidV1>(
-                channel, prod_cfg.shared_secret, cons_cfg);
+            const int rx_fd = ::dup(p.transport->borrow_fd());
+            ASSERT_GE(rx_fd, 0);
+            auto consumer = find_datablock_consumer_from_fd<SchemaValidV1, SchemaValidV1>(
+                channel, rx_fd, cons_cfg);
+            ::close(rx_fd);
             ASSERT_EQ(consumer, nullptr)
                 << "Consumer with mismatched ring_buffer_capacity must be rejected";
 
-            producer.reset();
             cleanup_test_datablock(channel);
         },
         "consumer_mismatched_capacity_rejected", logger_module(), crypto_module(), hub_module());

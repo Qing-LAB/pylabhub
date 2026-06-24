@@ -9,6 +9,7 @@
 // - Resource lifecycle is carefully managed (handles destroyed before producer/consumer reset)
 //
 #include "datahub_transaction_api_workers.h"
+#include "datahub_fd_test_helper.h"  // #275-S2: fd-source typed helpers
 #include "test_entrypoint.h"
 #include "shared_test_helpers.h"
 #include "plh_datahub.hpp"
@@ -126,19 +127,18 @@ int with_write_transaction_success()
             DataBlockConfig config{};
             config.policy = DataBlockPolicy::RingBuffer;
             config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
-            config.shared_secret = 70001;
+            // #275-S2: cfg.shared_secret dropped — fd-source factory ignores it.
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
             config.flex_zone_size = sizeof(TxAPITestFlexZone); // rounded up to PAGE_ALIGNMENT at creation
 
-            // Create producer with dual-schema
-            auto producer = create_datablock_producer<TxAPITestFlexZone, TxAPITestMessage>(
+            // Create producer + consumer pair via fd-source helper (dual-schema).
+            auto p = make_fd_backed_pair_typed<TxAPITestFlexZone, TxAPITestMessage>(
                 channel, DataBlockPolicy::RingBuffer, config);
-            ASSERT_NE(producer, nullptr);
-            
-            // Create consumer with matching dual-schema
-            auto consumer = find_datablock_consumer<TxAPITestFlexZone, TxAPITestMessage>(channel, config.shared_secret, config);
-            ASSERT_NE(consumer, nullptr);
+            ASSERT_NE(p.producer, nullptr);
+            ASSERT_NE(p.consumer, nullptr);
+            auto& producer = p.producer;
+            auto& consumer = p.consumer;
 
             // Write using v1.0.0 with_transaction API
             const char test_payload[] = "Transaction API v1.0.0 success";
@@ -235,17 +235,17 @@ int with_write_transaction_timeout()
             DataBlockConfig config{};
             config.policy = DataBlockPolicy::RingBuffer;
             config.consumer_sync_policy = ConsumerSyncPolicy::Sequential;
-            config.shared_secret = 70002;
+            // #275-S2: cfg.shared_secret dropped — fd-source factory ignores it.
             config.ring_buffer_capacity = 1; // Only one slot
             config.physical_page_size = DataBlockPageSize::Size4K;
             config.flex_zone_size = sizeof(TxAPITestFlexZone); // rounded up to PAGE_ALIGNMENT at creation
 
-            auto producer = create_datablock_producer<TxAPITestFlexZone, TxAPITestMessage>(
+            auto p = make_fd_backed_pair_typed<TxAPITestFlexZone, TxAPITestMessage>(
                 channel, DataBlockPolicy::RingBuffer, config);
-            ASSERT_NE(producer, nullptr);
-            
-            auto consumer = find_datablock_consumer<TxAPITestFlexZone, TxAPITestMessage>(channel, config.shared_secret, config);
-            ASSERT_NE(consumer, nullptr);
+            ASSERT_NE(p.producer, nullptr);
+            ASSERT_NE(p.consumer, nullptr);
+            auto& producer = p.producer;
+            auto& consumer = p.consumer;
 
             // Write and commit one slot
             producer->with_transaction<TxAPITestFlexZone, TxAPITestMessage>(
@@ -343,14 +343,15 @@ int WriteTransactionGuard_exception_releases_slot()
             DataBlockConfig config{};
             config.policy = DataBlockPolicy::RingBuffer;
             config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
-            config.shared_secret = 70003;
+            // #275-S2: cfg.shared_secret dropped — fd-source factory ignores it.
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
             config.flex_zone_size = sizeof(TxAPITestFlexZone); // rounded up to PAGE_ALIGNMENT at creation
 
-            auto producer = create_datablock_producer<TxAPITestFlexZone, TxAPITestMessage>(
+            auto p = make_fd_backed_producer_typed<TxAPITestFlexZone, TxAPITestMessage>(
                 channel, DataBlockPolicy::RingBuffer, config);
-            ASSERT_NE(producer, nullptr);
+            ASSERT_NE(p.producer, nullptr);
+            auto& producer = p.producer;
 
             // Test exception safety
             bool exception_caught = false;
@@ -432,17 +433,17 @@ int ReadTransactionGuard_exception_releases_slot()
             DataBlockConfig config{};
             config.policy = DataBlockPolicy::RingBuffer;
             config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
-            config.shared_secret = 70004;
+            // #275-S2: cfg.shared_secret dropped — fd-source factory ignores it.
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
             config.flex_zone_size = sizeof(TxAPITestFlexZone); // rounded up to PAGE_ALIGNMENT at creation
 
-            auto producer = create_datablock_producer<TxAPITestFlexZone, TxAPITestMessage>(
+            auto p = make_fd_backed_pair_typed<TxAPITestFlexZone, TxAPITestMessage>(
                 channel, DataBlockPolicy::RingBuffer, config);
-            ASSERT_NE(producer, nullptr);
-            
-            auto consumer = find_datablock_consumer<TxAPITestFlexZone, TxAPITestMessage>(channel, config.shared_secret, config);
-            ASSERT_NE(consumer, nullptr);
+            ASSERT_NE(p.producer, nullptr);
+            ASSERT_NE(p.consumer, nullptr);
+            auto& producer = p.producer;
+            auto& consumer = p.consumer;
 
             // Producer writes one slot
             producer->with_transaction<TxAPITestFlexZone, TxAPITestMessage>(
@@ -545,17 +546,17 @@ int with_typed_write_read_succeeds()
             DataBlockConfig config{};
             config.policy = DataBlockPolicy::RingBuffer;
             config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
-            config.shared_secret = 70005;
+            // #275-S2: cfg.shared_secret dropped — fd-source factory ignores it.
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
             config.flex_zone_size = sizeof(TxAPITestFlexZone); // rounded up to PAGE_ALIGNMENT at creation
 
-            auto producer = create_datablock_producer<TxAPITestFlexZone, TxAPITestMessage>(
+            auto p = make_fd_backed_pair_typed<TxAPITestFlexZone, TxAPITestMessage>(
                 channel, DataBlockPolicy::RingBuffer, config);
-            ASSERT_NE(producer, nullptr);
-            
-            auto consumer = find_datablock_consumer<TxAPITestFlexZone, TxAPITestMessage>(channel, config.shared_secret, config);
-            ASSERT_NE(consumer, nullptr);
+            ASSERT_NE(p.producer, nullptr);
+            ASSERT_NE(p.consumer, nullptr);
+            auto& producer = p.producer;
+            auto& consumer = p.consumer;
 
             // Write with typed access
             const uint64_t expected_seq = 12345;
@@ -642,17 +643,17 @@ int raii_slot_iterator_roundtrip()
             DataBlockConfig config{};
             config.policy = DataBlockPolicy::RingBuffer;
             config.consumer_sync_policy = ConsumerSyncPolicy::Sequential;
-            config.shared_secret = 70006;
+            // #275-S2: cfg.shared_secret dropped — fd-source factory ignores it.
             config.ring_buffer_capacity = 4;
             config.physical_page_size = DataBlockPageSize::Size4K;
             config.flex_zone_size = sizeof(TxAPITestFlexZone); // rounded up to PAGE_ALIGNMENT at creation
 
-            auto producer = create_datablock_producer<TxAPITestFlexZone, TxAPITestMessage>(
+            auto p = make_fd_backed_pair_typed<TxAPITestFlexZone, TxAPITestMessage>(
                 channel, DataBlockPolicy::RingBuffer, config);
-            ASSERT_NE(producer, nullptr);
-            
-            auto consumer = find_datablock_consumer<TxAPITestFlexZone, TxAPITestMessage>(channel, config.shared_secret, config);
-            ASSERT_NE(consumer, nullptr);
+            ASSERT_NE(p.producer, nullptr);
+            ASSERT_NE(p.consumer, nullptr);
+            auto& producer = p.producer;
+            auto& consumer = p.consumer;
 
             // Write 3 slots
             for (int i = 0; i < 3; ++i)

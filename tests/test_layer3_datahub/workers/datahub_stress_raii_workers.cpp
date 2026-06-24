@@ -15,6 +15,26 @@
 // Thread safety:
 //  - Each sub-worker process is single-threaded; no shared-state concerns within a process.
 //  - The DataBlock shared-memory segment is the sole cross-process channel.
+//
+// #275-S2 migration status: DEFERRED.
+//   This file is multi-process-by-name: the orchestrator spawns a `stress_producer`
+//   subprocess that creates the DataBlock and a separate `stress_consumer`
+//   subprocess that attaches by `/dev/shm/<channel>` name.  The HEP-CORE-0041
+//   fd-source path (anonymous memfd + SCM_RIGHTS handoff) does NOT work over
+//   process boundaries without IPC infrastructure (Unix-socket capability
+//   handshake) that the test harness does not provide.
+//   Cannot migrate to `make_fd_backed_pair_typed` until either (a) the test
+//   gains a capability-handshake harness, or (b) the test is reshaped into
+//   an in-process stress harness.  Sibling deferrals: tasks #182 / #183 / #184
+//   (datahub_broker_health, datahub_e2e, datahub_broker, datahub_role_state).
+//   Both the named-attach `create_datablock_producer<F,D>` /
+//   `find_datablock_consumer<F,D>` calls AND the `cfg.shared_secret = kStressSecret`
+//   assignments below stay intact pending the deeper rework — dropping the
+//   secret without migrating the attach path trips `find_consumer:
+//   shared_secret mismatch` because the producer-side header still records
+//   cfg.shared_secret (0) while the consumer-side passes the explicit
+//   `kStressSecret`.  The full retirement of the field is staged for #275-S5
+//   once this file's rework lands.
 
 #include "datahub_stress_raii_workers.h"
 #include "test_entrypoint.h"
@@ -132,6 +152,11 @@ DataBlockConfig make_latest_only_config()
     cfg.consumer_sync_policy   = ConsumerSyncPolicy::Latest_only;
     cfg.checksum_policy        = ChecksumPolicy::Enforced;
     cfg.flex_zone_size         = static_cast<size_t>(kFlexZoneSize);
+    // #275-S2 deferred (see file header doc-block — multi-process-by-name; no
+    // capability-handshake harness available).  `cfg.shared_secret` must stay
+    // populated until the rework lands: the legacy `find_datablock_consumer<F,D>`
+    // calls below still verify the secret against the SHM header.  The field
+    // retires entirely under #275-S5 once this file's rework also retires.
     cfg.shared_secret          = kStressSecret;
     return cfg;
 }
@@ -147,6 +172,7 @@ DataBlockConfig make_backpressure_config()
     cfg.consumer_sync_policy   = ConsumerSyncPolicy::Sequential;
     cfg.checksum_policy        = ChecksumPolicy::Enforced;
     cfg.flex_zone_size         = static_cast<size_t>(kFlexZoneSize);
+    // #275-S2 deferred — see make_latest_only_config().
     cfg.shared_secret          = kStressSecret;
     return cfg;
 }
