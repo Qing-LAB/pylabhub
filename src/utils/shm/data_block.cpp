@@ -1587,6 +1587,73 @@ void DataBlockProducer::clear_metrics() noexcept
     pImpl->t_iter_start_ = {};
 }
 
+// ─── SHM-header observability accessors ──────────────────────────────────
+//
+// Narrow named accessors over the SHM header that L3 tests use in place
+// of the wide `DataBlockDiagnosticHandle::header()` raw pointer.  All
+// return-by-value to avoid leaking borrowed views into the mmap region;
+// caller-owned bytes are safe to outlive the producer.
+// Schema-hash fields are immutable post-construction so no atomic load is
+// needed; heartbeat fields are atomically loaded with acquire ordering
+// matching the producer's own writes.
+
+std::array<uint8_t, 32> DataBlockProducer::flexzone_schema_hash() const noexcept
+{
+    std::array<uint8_t, 32> out{};
+    if (pImpl == nullptr || pImpl->dataBlock == nullptr)
+        return out;
+    auto *h = pImpl->dataBlock->header();
+    if (h == nullptr)
+        return out;
+    std::memcpy(out.data(), h->flexzone_schema_hash, out.size());
+    return out;
+}
+
+std::array<uint8_t, 32> DataBlockProducer::datablock_schema_hash() const noexcept
+{
+    std::array<uint8_t, 32> out{};
+    if (pImpl == nullptr || pImpl->dataBlock == nullptr)
+        return out;
+    auto *h = pImpl->dataBlock->header();
+    if (h == nullptr)
+        return out;
+    std::memcpy(out.data(), h->datablock_schema_hash, out.size());
+    return out;
+}
+
+uint32_t DataBlockProducer::active_consumer_count() const noexcept
+{
+    if (pImpl == nullptr || pImpl->dataBlock == nullptr)
+        return 0;
+    auto *h = pImpl->dataBlock->header();
+    if (h == nullptr)
+        return 0;
+    return h->active_consumer_count.load(std::memory_order_acquire);
+}
+
+uint64_t DataBlockProducer::last_heartbeat_ns() const noexcept
+{
+    if (pImpl == nullptr || pImpl->dataBlock == nullptr)
+        return 0;
+    auto *h = pImpl->dataBlock->header();
+    if (h == nullptr)
+        return 0;
+    return h->last_heartbeat_ns.load(std::memory_order_acquire);
+}
+
+uint64_t DataBlockProducer::consumer_heartbeat_ns(uint32_t slot_index) const noexcept
+{
+    if (pImpl == nullptr || pImpl->dataBlock == nullptr)
+        return 0;
+    if (slot_index >= detail::MAX_CONSUMER_HEARTBEATS)
+        return 0;
+    auto *h = pImpl->dataBlock->header();
+    if (h == nullptr)
+        return 0;
+    return h->consumer_heartbeats[slot_index].last_heartbeat_ns.load(
+        std::memory_order_acquire);
+}
+
 // ─── Channel Identity Accessors (DataBlockProducer) ───
 
 namespace

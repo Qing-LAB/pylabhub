@@ -366,37 +366,26 @@ int consumer_auto_registers_heartbeat_on_construction()
         {
             std::string ch = make_test_channel_name("PolicyHb1");
             auto cfg = make_config(ConsumerSyncPolicy::Latest_only, ChecksumPolicy::Enforced);
-            cfg.shared_secret = 80010;  // #275-S2 minimal-touch: legacy named-attach consumer still validates this.
 
-            // #275-S2 MINIMAL TOUCH: this test uses `open_datablock_for_diagnostic(ch)`,
-            // a name-based helper with no fd-source counterpart yet (would require
-            // an `open_datablock_for_diagnostic_from_fd` helper).  Leaving the
-            // legacy `create_datablock_producer<F, D>` / `find_datablock_consumer<F, D>`
-            // calls in place — and the per-site shared_secret too, since the legacy
-            // find_datablock_consumer path still verifies it against the SHM header.
-            // The field retires in #275-S5; this MINIMAL TOUCH retirement waits on
-            // an `open_datablock_for_diagnostic_from_fd` helper.  Same deferral
-            // shape as datahub_header_structure_workers in S2c-4 (which is
-            // producer-only and so didn't trip the consumer-side secret check).
-            auto producer = create_datablock_producer<PolicyFlexZone, PolicyData>(
+            // Producer-only mint; consumer is attached inline after the initial
+            // active_consumer_count check so the test can observe the 0→1 transition.
+            auto p = make_fd_backed_producer_typed<PolicyFlexZone, PolicyData>(
                 ch, DataBlockPolicy::RingBuffer, cfg);
-            ASSERT_NE(producer, nullptr);
+            ASSERT_NE(p.producer, nullptr);
+            auto& producer = p.producer;
 
-            // active_consumer_count starts at 0
-            auto diag = open_datablock_for_diagnostic(ch);
-            ASSERT_NE(diag, nullptr);
-            uint32_t before = diag->header()->active_consumer_count.load(std::memory_order_acquire);
-            EXPECT_EQ(before, 0u) << "No consumers yet";
+            EXPECT_EQ(producer->active_consumer_count(), 0u) << "No consumers yet";
 
-            auto consumer = find_datablock_consumer<PolicyFlexZone, PolicyData>(
-                ch, cfg.shared_secret, cfg);
+            const int rx_fd = ::dup(p.transport->borrow_fd());
+            ASSERT_GE(rx_fd, 0);
+            auto consumer = find_datablock_consumer_from_fd<PolicyFlexZone, PolicyData>(
+                ch, rx_fd, cfg);
+            ::close(rx_fd);
             ASSERT_NE(consumer, nullptr);
 
-            uint32_t after = diag->header()->active_consumer_count.load(std::memory_order_acquire);
-            EXPECT_EQ(after, 1u) << "Consumer should auto-register heartbeat at construction";
+            EXPECT_EQ(producer->active_consumer_count(), 1u)
+                << "Consumer should auto-register heartbeat at construction";
 
-            producer.reset();
-            consumer.reset();
             cleanup_test_datablock(ch);
             fmt::print(stderr, "[policy_enforcement] consumer_auto_registers_heartbeat_on_construction ok\n");
         },
@@ -414,29 +403,26 @@ int consumer_auto_unregisters_heartbeat_on_destroy()
         {
             std::string ch = make_test_channel_name("PolicyHb2");
             auto cfg = make_config(ConsumerSyncPolicy::Latest_only, ChecksumPolicy::Enforced);
-            cfg.shared_secret = 80011;  // #275-S2 minimal-touch — see PolicyHb1.
 
-            // #275-S2 MINIMAL TOUCH: name-based diagnostic — see PolicyHb1.
-            auto producer = create_datablock_producer<PolicyFlexZone, PolicyData>(
+            auto p = make_fd_backed_producer_typed<PolicyFlexZone, PolicyData>(
                 ch, DataBlockPolicy::RingBuffer, cfg);
-            ASSERT_NE(producer, nullptr);
-
-            auto diag = open_datablock_for_diagnostic(ch);
-            ASSERT_NE(diag, nullptr);
+            ASSERT_NE(p.producer, nullptr);
+            auto& producer = p.producer;
 
             {
-                auto consumer = find_datablock_consumer<PolicyFlexZone, PolicyData>(
-                    ch, cfg.shared_secret, cfg);
+                const int rx_fd = ::dup(p.transport->borrow_fd());
+                ASSERT_GE(rx_fd, 0);
+                auto consumer = find_datablock_consumer_from_fd<PolicyFlexZone, PolicyData>(
+                    ch, rx_fd, cfg);
+                ::close(rx_fd);
                 ASSERT_NE(consumer, nullptr);
 
-                uint32_t during = diag->header()->active_consumer_count.load(std::memory_order_acquire);
-                EXPECT_EQ(during, 1u) << "Consumer registered";
+                EXPECT_EQ(producer->active_consumer_count(), 1u) << "Consumer registered";
             } // consumer destroyed here
 
-            uint32_t after = diag->header()->active_consumer_count.load(std::memory_order_acquire);
-            EXPECT_EQ(after, 0u) << "Consumer should auto-unregister heartbeat on destruction";
+            EXPECT_EQ(producer->active_consumer_count(), 0u)
+                << "Consumer should auto-unregister heartbeat on destruction";
 
-            producer.reset();
             cleanup_test_datablock(ch);
             fmt::print(stderr, "[policy_enforcement] consumer_auto_unregisters_heartbeat_on_destroy ok\n");
         },
@@ -454,39 +440,37 @@ int all_policy_consumers_have_heartbeat()
         {
             std::string ch = make_test_channel_name("PolicyHb3");
             auto cfg = make_config(ConsumerSyncPolicy::Sequential_sync, ChecksumPolicy::Enforced);
-            cfg.shared_secret = 80012;  // #275-S2 minimal-touch — see PolicyHb1.
 
-            // #275-S2 MINIMAL TOUCH: name-based diagnostic — see PolicyHb1.
-            auto producer = create_datablock_producer<PolicyFlexZone, PolicyData>(
+            auto p = make_fd_backed_producer_typed<PolicyFlexZone, PolicyData>(
                 ch, DataBlockPolicy::RingBuffer, cfg);
-            ASSERT_NE(producer, nullptr);
+            ASSERT_NE(p.producer, nullptr);
+            auto& producer = p.producer;
 
-            auto diag = open_datablock_for_diagnostic(ch);
-            ASSERT_NE(diag, nullptr);
-
-            // Two consumers with different policies share the same heartbeat pool
-            auto consumer_a = find_datablock_consumer<PolicyFlexZone, PolicyData>(
-                ch, cfg.shared_secret, cfg);
+            // Two consumers attach via separate fd dups; both register in the
+            // same heartbeat pool.
+            const int rx_fd_a = ::dup(p.transport->borrow_fd());
+            ASSERT_GE(rx_fd_a, 0);
+            auto consumer_a = find_datablock_consumer_from_fd<PolicyFlexZone, PolicyData>(
+                ch, rx_fd_a, cfg);
+            ::close(rx_fd_a);
             ASSERT_NE(consumer_a, nullptr);
 
-            uint32_t after_first = diag->header()->active_consumer_count.load(std::memory_order_acquire);
-            EXPECT_EQ(after_first, 1u) << "First consumer registered";
+            EXPECT_EQ(producer->active_consumer_count(), 1u) << "First consumer registered";
 
-            // Second consumer (still Sequential_sync — same config)
-            auto consumer_b = find_datablock_consumer<PolicyFlexZone, PolicyData>(
-                ch, cfg.shared_secret, cfg);
+            const int rx_fd_b = ::dup(p.transport->borrow_fd());
+            ASSERT_GE(rx_fd_b, 0);
+            auto consumer_b = find_datablock_consumer_from_fd<PolicyFlexZone, PolicyData>(
+                ch, rx_fd_b, cfg);
+            ::close(rx_fd_b);
             ASSERT_NE(consumer_b, nullptr);
 
-            uint32_t after_second = diag->header()->active_consumer_count.load(std::memory_order_acquire);
-            EXPECT_EQ(after_second, 2u) << "Second consumer registered";
+            EXPECT_EQ(producer->active_consumer_count(), 2u) << "Second consumer registered";
 
             consumer_a.reset();
             consumer_b.reset();
 
-            uint32_t after_reset = diag->header()->active_consumer_count.load(std::memory_order_acquire);
-            EXPECT_EQ(after_reset, 0u) << "Both consumers unregistered";
+            EXPECT_EQ(producer->active_consumer_count(), 0u) << "Both consumers unregistered";
 
-            producer.reset();
             cleanup_test_datablock(ch);
             fmt::print(stderr, "[policy_enforcement] all_policy_consumers_have_heartbeat ok\n");
         },
@@ -597,16 +581,13 @@ int producer_operator_increment_updates_heartbeat()
             std::string ch = make_test_channel_name("PolicyAutoHb1");
             auto cfg = make_config(ConsumerSyncPolicy::Latest_only, ChecksumPolicy::Enforced);
 
-            // #275-S2 MINIMAL TOUCH: name-based diagnostic — see PolicyHb1.
-            auto producer = create_datablock_producer<PolicyFlexZone, PolicyData>(
+            auto p = make_fd_backed_producer_typed<PolicyFlexZone, PolicyData>(
                 ch, DataBlockPolicy::RingBuffer, cfg);
-            ASSERT_NE(producer, nullptr);
-
-            auto diag = open_datablock_for_diagnostic(ch);
-            ASSERT_NE(diag, nullptr);
+            ASSERT_NE(p.producer, nullptr);
+            auto& producer = p.producer;
 
             // Capture producer heartbeat timestamp before the loop
-            uint64_t ts_before = diag->header()->last_heartbeat_ns.load(std::memory_order_acquire);
+            uint64_t ts_before = producer->last_heartbeat_ns();
 
             // Run with_transaction — operator++() should update the heartbeat
             producer->with_transaction<PolicyFlexZone, PolicyData>(
@@ -620,10 +601,9 @@ int producer_operator_increment_updates_heartbeat()
                     }
                 });
 
-            uint64_t ts_after = diag->header()->last_heartbeat_ns.load(std::memory_order_acquire);
+            uint64_t ts_after = producer->last_heartbeat_ns();
             EXPECT_GE(ts_after, ts_before) << "Producer heartbeat should be updated after iterator loop";
 
-            producer.reset();
             cleanup_test_datablock(ch);
             fmt::print(stderr, "[policy_enforcement] producer_operator_increment_updates_heartbeat ok\n");
         },
@@ -641,12 +621,13 @@ int consumer_operator_increment_updates_heartbeat()
         {
             std::string ch = make_test_channel_name("PolicyAutoHb2");
             auto cfg = make_config(ConsumerSyncPolicy::Latest_only, ChecksumPolicy::Enforced);
-            cfg.shared_secret = 80031;  // #275-S2 minimal-touch — see PolicyHb1.
 
-            // #275-S2 MINIMAL TOUCH: name-based diagnostic — see PolicyHb1.
-            auto producer = create_datablock_producer<PolicyFlexZone, PolicyData>(
+            auto p = make_fd_backed_pair_typed<PolicyFlexZone, PolicyData>(
                 ch, DataBlockPolicy::RingBuffer, cfg);
-            ASSERT_NE(producer, nullptr);
+            ASSERT_NE(p.producer, nullptr);
+            ASSERT_NE(p.consumer, nullptr);
+            auto& producer = p.producer;
+            auto& consumer = p.consumer;
 
             // Write one slot for the consumer to read
             producer->with_transaction<PolicyFlexZone, PolicyData>(
@@ -660,24 +641,21 @@ int consumer_operator_increment_updates_heartbeat()
                     }
                 });
 
-            auto consumer = find_datablock_consumer<PolicyFlexZone, PolicyData>(
-                ch, cfg.shared_secret, cfg);
-            ASSERT_NE(consumer, nullptr);
-
-            auto diag = open_datablock_for_diagnostic(ch);
-            ASSERT_NE(diag, nullptr);
-
-            // Capture consumer heartbeat timestamp (slot 0 is the registered slot)
-            uint64_t ts_before = 0;
-            for (size_t i = 0; i < detail::MAX_CONSUMER_HEARTBEATS; ++i)
-            {
-                if (diag->header()->consumer_heartbeats[i].consumer_pid.load() != 0)
+            // Capture consumer heartbeat timestamp.  The consumer occupies
+            // exactly one heartbeat slot (we know `active_consumer_count == 1`);
+            // scan all slots for the first non-zero timestamp — that's the
+            // active consumer's slot (matches the pre-S2c-6 scan over
+            // `consumer_pid.load() != 0`).
+            auto find_active_consumer_hb = [&]() -> uint64_t {
+                for (uint32_t i = 0; i < detail::MAX_CONSUMER_HEARTBEATS; ++i)
                 {
-                    ts_before = diag->header()->consumer_heartbeats[i].last_heartbeat_ns.load(
-                        std::memory_order_acquire);
-                    break;
+                    const uint64_t hb = producer->consumer_heartbeat_ns(i);
+                    if (hb != 0)
+                        return hb;
                 }
-            }
+                return 0;
+            };
+            uint64_t ts_before = find_active_consumer_hb();
 
             // Run with_transaction — operator++() should update consumer heartbeat
             consumer->with_transaction<PolicyFlexZone, PolicyData>(
@@ -691,21 +669,10 @@ int consumer_operator_increment_updates_heartbeat()
                     }
                 });
 
-            uint64_t ts_after = 0;
-            for (size_t i = 0; i < detail::MAX_CONSUMER_HEARTBEATS; ++i)
-            {
-                if (diag->header()->consumer_heartbeats[i].consumer_pid.load() != 0)
-                {
-                    ts_after = diag->header()->consumer_heartbeats[i].last_heartbeat_ns.load(
-                        std::memory_order_acquire);
-                    break;
-                }
-            }
+            uint64_t ts_after = find_active_consumer_hb();
 
             EXPECT_GE(ts_after, ts_before) << "Consumer heartbeat should be updated after iterator loop";
 
-            producer.reset();
-            consumer.reset();
             cleanup_test_datablock(ch);
             fmt::print(stderr, "[policy_enforcement] consumer_operator_increment_updates_heartbeat ok\n");
         },

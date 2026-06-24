@@ -29,6 +29,7 @@
 #include <string_view>
 #include <type_traits>
 #include <variant>
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -682,6 +683,58 @@ class PYLABHUB_UTILS_EXPORT DataBlockProducer
      * Call at the start of each role run to get per-run statistics.
      */
     void clear_metrics() noexcept;
+
+    // ─── SHM-header observability accessors (narrow, by-value) ──────────────
+    //
+    // Named accessors for SHM-header fields the producer observes (schema
+    // hashes recorded at construction; heartbeat state maintained at runtime).
+    // Return by value — no borrowed view into the mmap region — so the
+    // returned data is safe to outlive the producer.  Used by L3 tests in
+    // place of the wide-surface `DataBlockDiagnosticHandle::header()` raw
+    // pointer; see `docs/tech_draft/DRAFT_HEP-0041-pattern4-reform-coverage_2026-06.md`
+    // §2.4-2.5 for the design discussion and HEP-CORE-0019 §5.4.2 for the
+    // direct-accessor pattern this follows.
+
+    /**
+     * @brief Return a copy of the FlexZone schema hash stored in the SHM header.
+     * @return 32-byte BLAKE2b hash, or all-zero if the producer was constructed
+     *         via `_impl` with `nullptr` for flexzone_schema (or pImpl is null).
+     */
+    [[nodiscard]] std::array<uint8_t, 32> flexzone_schema_hash() const noexcept;
+
+    /**
+     * @brief Return a copy of the DataBlock-slot schema hash stored in the SHM header.
+     * @return 32-byte BLAKE2b hash, or all-zero if the producer was constructed
+     *         via `_impl` with `nullptr` for datablock_schema (or pImpl is null).
+     */
+    [[nodiscard]] std::array<uint8_t, 32> datablock_schema_hash() const noexcept;
+
+    /**
+     * @brief Number of consumers currently registered in the producer's
+     *        heartbeat table (`SharedMemoryHeader::active_consumer_count`).
+     * @return Live count, atomically loaded with `memory_order_acquire`; 0 if
+     *         pImpl is null.
+     */
+    [[nodiscard]] uint32_t active_consumer_count() const noexcept;
+
+    /**
+     * @brief Last timestamp at which this producer emitted its own heartbeat
+     *        (`SharedMemoryHeader::last_heartbeat_ns`).
+     * @return Monotonic-ns timestamp, atomically loaded with
+     *         `memory_order_acquire`; 0 if pImpl is null.
+     */
+    [[nodiscard]] uint64_t last_heartbeat_ns() const noexcept;
+
+    /**
+     * @brief Last timestamp at which the consumer occupying heartbeat slot
+     *        `slot_index` updated its heartbeat
+     *        (`SharedMemoryHeader::consumer_heartbeats[slot_index].last_heartbeat_ns`).
+     * @param slot_index Heartbeat-slot index in [0, MAX_CONSUMER_HEARTBEATS).
+     * @return Monotonic-ns timestamp, atomically loaded with
+     *         `memory_order_acquire`; 0 if pImpl is null or slot_index is
+     *         out of range.
+     */
+    [[nodiscard]] uint64_t consumer_heartbeat_ns(uint32_t slot_index) const noexcept;
 
     // ─── Structure Re-Mapping API (NOT IMPLEMENTED) ─────────────────────────
     /**
