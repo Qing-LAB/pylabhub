@@ -45,6 +45,49 @@ For each deferred/retired test it records:
 
 ---
 
+## 1.5 SCOPE RECONCILIATION 2026-06-25 — L2/L4 lesson applied
+
+Initial matrix verdicts (below) used "(a) Pattern 4 reform" for all
+multi-process SHM tests, on the assumption that #285 Pattern 4 reform
+would build SHM rungs via custom worker functions (parallel to the
+existing `pattern4_smoke` / `pattern4_registration` / `pattern4_heartbeat` /
+`pattern4_consumer_lifecycle` rungs).
+
+The 2026-06-25 L2/L4 lesson from #270 revert (`e8ca91b5`) — building a
+parallel production scaffold to invoke protected SHM methods is a
+test-faithfulness antipattern — applies recursively to SHM Pattern 4
+rungs.  A Pattern 4 SHM rung would face the same problem: the producer
+subprocess would need either (i) a parallel production scaffold (the
+exact antipattern), or (ii) a real `plh_role` binary (which makes it
+an L4 test, not Pattern 4).
+
+**Scope split applied:**
+
+| Matrix section | Verdict update | Right home |
+|---|---|---|
+| §2.3 (6 SHM e2e tests) | (a) Pattern 4 reform → **(a') L4 e2e** | #258 (HEP-0041 1k) |
+| §2.6 (2 SHM stress tests) | (a) Pattern 4 reform → **(a') L4 e2e** | #258 (HEP-0041 1k) |
+| §2.7 (3 wire-protocol sibling files, NOT SHM) | (a) Pattern 4 reform — unchanged | #285 (Pattern 4 narrow) |
+
+§2.7 files (`datahub_broker_health`, `datahub_broker`, `datahub_role_state`)
+exercise BRC heartbeat / hub-dead detection / CHANNEL_NOTIFY_REQ /
+REG_REQ wire protocol over ZMQ — they don't need SHM RoleHostFrame
+setup, so the Pattern 4 custom-worker pattern fits naturally.  These
+stay in #285.
+
+§2.3 and §2.6 are SHM data flow / SHM stress — they need the full
+producer-side RoleHostFrame machinery, so they go to L4 (real
+`plh_role` binaries).  The contract verifications previously planned
+as L2 tests in #270 are embedded inside #258 via production marker
+grepping; the §2.3 + §2.6 tests extend that L4 envelope.
+
+After scope split:
+- **#258** absorbs: the original production-readiness e2e test +
+  §2.3 (6 tests) + §2.6 (2 tests) + the #270 L2-contract marker
+  checklist (folded in via L2/L4 lesson)
+- **#285** narrows to: §2.7 only (3 wire-protocol file fanouts)
+- #275 S4 + S5 critical path: blocked by #258 (not by #285)
+
 ## 2. Matrix
 
 ### 2.1 Retired in S2a (commit `2b10b5cb`)
@@ -64,12 +107,12 @@ For each deferred/retired test it records:
 
 | Test | Contract pinned | Pre-S2 access | HEP-0041 status | Verdict |
 |---|---|---|---|---|
-| `DatahubE2ETest.LatestOnlyEndToEndDeliversLastSlot` | end-to-end producer→consumer Latest_only delivery | producer subproc + consumer subproc + named SHM | SHM transport now via fd + SCM_RIGHTS; broker mediates attach | **(a) Pattern 4 reform** → `Pattern4DataPipelineTest.LatestOnlyEndToEnd` |
-| `DatahubE2ETest.SequentialEndToEndDeliversAllSlots` | Sequential policy delivers all slots in order | same | same | **(a)** → `Pattern4DataPipelineTest.SequentialOrdered` |
-| `DatahubE2ETest.ConsumerSeesProducerExitInIsRunning` | consumer observes producer-process death via `is_running()` | header `producer_running` flag + named SHM | flag still exists in header; access via fd-source consumer | **(a)** → `Pattern4DataPipelineTest.ProducerExitVisibleToConsumer` |
-| `DatahubE2ETest.ConsumerSeesFlexZoneWriteInRoundTrip` | flexzone bidirectional writes visible across processes | mmap'd region in named SHM | mmap region preserved over fd-source; visible across SCM_RIGHTS-shared fd | **(a)** → `Pattern4DataPipelineTest.FlexZoneRoundTrip` |
-| `DatahubE2ETest.ConsumerHandlesLateStart` | consumer attaches AFTER producer-started | name lookup retry on `/dev/shm` | broker mediates attach via `CONSUMER_ATTACH_REQ` — broker holds producer's transport; late consumers ask broker | **(a)** → `Pattern4DataPipelineTest.LateConsumerAttachViaBroker` |
-| `DatahubE2ETest.WriteAcquireBackpressureUnderSequential` | producer blocks when ring full + Sequential consumer slow | producer + consumer subprocs racing on named SHM ring | ring still in SHM; access via fd-source pair | **(a)** → `Pattern4DataPipelineTest.SequentialBackpressure` |
+| `DatahubE2ETest.LatestOnlyEndToEndDeliversLastSlot` | end-to-end producer→consumer Latest_only delivery | producer subproc + consumer subproc + named SHM | SHM transport now via fd + SCM_RIGHTS; broker mediates attach | **(a') L4 e2e (#258)** (was planned as `Pattern4DataPipelineTest.LatestOnlyEndToEnd`) |
+| `DatahubE2ETest.SequentialEndToEndDeliversAllSlots` | Sequential policy delivers all slots in order | same | same | **(a') L4 e2e (#258)** (was planned as `Pattern4DataPipelineTest.SequentialOrdered`) |
+| `DatahubE2ETest.ConsumerSeesProducerExitInIsRunning` | consumer observes producer-process death via `is_running()` | header `producer_running` flag + named SHM | flag still exists in header; access via fd-source consumer | **(a') L4 e2e (#258)** (was planned as `Pattern4DataPipelineTest.ProducerExitVisibleToConsumer`) |
+| `DatahubE2ETest.ConsumerSeesFlexZoneWriteInRoundTrip` | flexzone bidirectional writes visible across processes | mmap'd region in named SHM | mmap region preserved over fd-source; visible across SCM_RIGHTS-shared fd | **(a') L4 e2e (#258)** (was planned as `Pattern4DataPipelineTest.FlexZoneRoundTrip`) |
+| `DatahubE2ETest.ConsumerHandlesLateStart` | consumer attaches AFTER producer-started | name lookup retry on `/dev/shm` | broker mediates attach via `CONSUMER_ATTACH_REQ` — broker holds producer's transport; late consumers ask broker | **(a') L4 e2e (#258)** (was planned as `Pattern4DataPipelineTest.LateConsumerAttachViaBroker`) |
+| `DatahubE2ETest.WriteAcquireBackpressureUnderSequential` | producer blocks when ring full + Sequential consumer slow | producer + consumer subprocs racing on named SHM ring | ring still in SHM; access via fd-source pair | **(a') L4 e2e (#258)** (was planned as `Pattern4DataPipelineTest.SequentialBackpressure`) |
 | (any other e2e tests masked or skipped) | TODO: re-confirm against the deleted file's pre-deletion contents | — | — | **(a)** |
 
 ### 2.4 Deferred in S2c-4 — RESOLVED in S2c-6 via option (B)
@@ -98,8 +141,8 @@ matching `DataBlockProducer` accessor.
 
 | Test | Contract pinned | Pre-S2 access | HEP-0041 status | Verdict |
 |---|---|---|---|---|
-| `DatahubStressRaiiTest.MultiProcessFullCapacityStress` | ring-wrap under stress with multi-consumer fan-out + checksum enforcement | producer subproc + N consumer subprocs + named SHM | SHM ring preserved; production geometry IS one role per process | **(a) Pattern 4 reform** → `Pattern4DataStressTest.MultiConsumerRingWrap` |
-| `DatahubStressRaiiTest.SingleReaderBackpressure` | Sequential policy blocks producer when single reader is slow | same (1 producer subproc + 1 consumer subproc) | same | **(a)** → `Pattern4DataStressTest.SequentialBackpressure` (subset of `Pattern4DataPipelineTest.SequentialBackpressure` — possibly fold) |
+| `DatahubStressRaiiTest.MultiProcessFullCapacityStress` | ring-wrap under stress with multi-consumer fan-out + checksum enforcement | producer subproc + N consumer subprocs + named SHM | SHM ring preserved; production geometry IS one role per process | **(a') L4 e2e (#258)** (was planned as `Pattern4DataStressTest.MultiConsumerRingWrap`) |
+| `DatahubStressRaiiTest.SingleReaderBackpressure` | Sequential policy blocks producer when single reader is slow | same (1 producer subproc + 1 consumer subproc) | same | **(a') L4 e2e (#258)** (was planned as `Pattern4DataStressTest.SequentialBackpressure`) (subset of `Pattern4DataPipelineTest.SequentialBackpressure` — possibly fold) |
 
 ### 2.7 Sibling deferrals from pre-#275 tasks (#182 / #183 / #184)
 
