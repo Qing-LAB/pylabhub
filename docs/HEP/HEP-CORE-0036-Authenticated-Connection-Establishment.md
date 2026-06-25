@@ -2491,7 +2491,462 @@ its data loop exit normally.
 
 ---
 
+## 5b. Canonical wire schema & in-process structures (NORMATIVE — single standard)
+
+> **Status: NORMATIVE since 2026-06-25** — this section is the single source of truth for the registration data path.  Tracked under task #286.
+>
+> Supersedes the "additions to a base shape" framing of §6 below — §6 is retained as migration history; §5b is authoritative.  Any field name or structure layout NOT listed in §5b is forbidden on the wire and forbidden in-process.  No aliases, no fallbacks, no compat shims.
+>
+> Cross-references that inherit from §5b: HEP-CORE-0041 §5 (SHM-channel wire), HEP-CORE-0023 §2.5 (heartbeat block), HEP-CORE-0034 §10.3 (schema citation block).
+
+### 5b.1 Why this section exists
+
+Before §5b, HEP-0036 documented REG_REQ / REG_ACK / CONSUMER_REG_* as "additions to a base shape", where the base shape was defined implicitly across multiple builder/reader call sites.  The result: drift accumulated silently — for example the producer REG_ACK builder at `broker_service.cpp:2082` historically emitted `channel_id` while every other ACK builder emitted `channel_name`, and the role-side `apply_producer_reg_ack` read `channel_name`, silently skipping the `Registered → Authorized` transition (gated by `!channel_name.empty()`) and refusing the data loop via the §8.2 outer guard.  That bug surfaced under L4 SHM e2e (task #258).  The audit (2026-06-25, 5 surfaces / 88+ sites) confirmed `channel_id` had ZERO readers — it was pure dead-weight that broke a silent gate.
+
+The lesson: an "additions" doc can describe deltas but cannot enforce that the union of deltas + base remains coherent.  Coherence requires a single normative shape.  §5b is that shape.
+
+### 5b.2 In-process data structures (role side)
+
+```mermaid
+classDiagram
+    direction LR
+
+    class RoleConfig {
+        +out_channel : string                "lab.l4.shm.e2e.a"
+        +out_transport : enum                "shm" | "zmq"
+        +out_hub : HubRefConfig
+        +out_slot_schema : SchemaSpec
+        +out_flexzone_schema : SchemaSpec
+        +auth_keyfile : path                 "vault/<uid>.vault"
+        loaded once from producer.json/consumer.json
+    }
+    class HubRefConfig {
+        +endpoint : string                   "tcp://host:port"
+        +pubkey  : Z85PublicKey              (40 chars)
+    }
+    class RoleHostFrame {
+        +presences_ : vector~Presence~        owned
+        +shm_transport_ : unique_ptr~IShmCapabilityProducer~
+        +inbox_queue_ : unique_ptr~InboxQueue~
+        per-role lifecycle owner
+    }
+    class Presence {
+        +hub : HubRefConfig
+        +channel : string                    "lab.l4.shm.e2e.a"
+        +role_kind : RoleKind                Producer | Consumer
+        +slot_spec : SchemaSpec
+        +fz_spec : SchemaSpec
+        +connection : HubConnection*         non-owning
+        +registration_state : atomic~RegistrationState~
+        per-channel registration row
+    }
+    class RegistrationState {
+        <<enum>>
+        Unregistered      = 0
+        RegRequestPending = 1
+        Registered        = 2
+        Authorized        = 3
+        Deregistered      = 4
+    }
+    class RoleHandler {
+        +presences_ : vector~Presence~        stable after ctor
+        +connections_ : vector~HubConnection~ deduped by hub uid
+        +find_presence_for_channel(name)*: Presence*
+        route table; lookup key = Presence.channel
+    }
+    class RoleAPIBase_Impl {
+        +role_type : string                  "producer" | "consumer" | "processor"
+        +role_uid : string                   "prod.l4shm.uid12345678"
+        +role_name : string                  "L4ShmProducer"
+        +channel : string                    consumer/input channel
+        +out_channel : string                producer/output channel
+        +handler_ : unique_ptr~RoleHandler~
+        +tx_queue : unique_ptr~QueueWriter~
+        +rx_queue : unique_ptr~QueueReader~
+        +engine : ScriptEngine*              non-owning
+        +allowlist_cache : PeerCache         producer side: my consumers
+        +producer_peer_cache : PeerCache     consumer side: my producers
+        +fz_info_cache : FlexzoneInfoCache
+        +thread_mgr_ : unique_ptr~ThreadManager~
+        +connection_alive_mask_ : atomic~u64~
+        the role's runtime hub
+    }
+    class QueueWriter {
+        <<abstract>>
+        +apply_master_approval(ack json) bool*
+    }
+    class ShmQueueTx {
+        apply_master_approval : no-op
+        (HEP-0041 capability transport owns auth out-of-band
+         via accept loop; allowlist gates happen there)
+    }
+    class ZmqQueueTx {
+        apply_master_approval : read ack.initial_allowlist[],
+                                seed ZAP cache, bind PUSH socket,
+                                spawn worker
+    }
+    class PeerCache {
+        +put(channel, peers) void
+        +get_snapshot(channel) vector~AllowedPeer~
+        map~channel : string, vector~AllowedPeer~~
+    }
+    class AllowedPeer {
+        +role_uid : string
+        +pubkey_z85 : string                 40 chars
+    }
+
+    RoleConfig --> RoleHostFrame : loaded by
+    RoleHostFrame "1" *-- "N" Presence : owns
+    RoleHostFrame --> RoleAPIBase_Impl : drives
+    RoleAPIBase_Impl "1" *-- "1" RoleHandler : owns
+    RoleHandler --> Presence : indexes by channel
+    Presence --> RegistrationState : holds atomic
+    RoleAPIBase_Impl --> QueueWriter : owns tx
+    QueueWriter <|-- ShmQueueTx
+    QueueWriter <|-- ZmqQueueTx
+    RoleAPIBase_Impl "1" *-- "2" PeerCache : allowlist + peer caches
+    PeerCache "1" *-- "N" AllowedPeer
+```
+
+### 5b.3 In-process data structures (broker side)
+
+```mermaid
+classDiagram
+    direction LR
+
+    class HubState {
+        +channels : map~string, ChannelEntry~
+        +roles   : map~role_uid, RolePresence~
+        broker's authoritative memory
+    }
+    class ChannelEntry {
+        +name : string                       "lab.l4.shm.e2e.a"  ← canonical key
+        +data_transport : enum               "shm" | "zmq"
+        +schema_hash : string
+        +schema_id : string
+        +producers : vector~ProducerEntry~
+        +consumers : vector~ConsumerEntry~
+        +access : ChannelAccessEntry
+    }
+    class ProducerEntry {
+        +role_uid : string
+        +role_name : string
+        +zmq_pubkey : Z85PublicKey           identity CURVE pubkey
+        +zmq_node_endpoint : string          "tcp://..."  (ZMQ only)
+        +shm_capability_endpoint : string    "unix://..." (SHM only)
+        +producer_pid : u64
+        +producer_hostname : string
+        +inbox_endpoint : string
+        +inbox_schema_json : string
+        +inbox_packing : string
+        +inbox_checksum : string
+        +zmq_identity : bytes                set by ZMQ ROUTER frame
+        +metadata : json
+    }
+    class ConsumerEntry {
+        +role_uid : string
+        +role_name : string
+        +zmq_pubkey : Z85PublicKey
+        ...
+    }
+    class ChannelAccessEntry {
+        +authorized_consumer_pubkeys : vector~Z85PublicKey~
+        layer-2 boundary per §4.1
+    }
+    class RolePresence {
+        +role_uid : string
+        +per-channel presences[]
+    }
+
+    HubState "1" *-- "N" ChannelEntry
+    HubState "1" *-- "N" RolePresence
+    ChannelEntry "1" *-- "N" ProducerEntry
+    ChannelEntry "1" *-- "N" ConsumerEntry
+    ChannelEntry "1" *-- "1" ChannelAccessEntry
+```
+
+### 5b.4 Canonical wire schema — REG_REQ (producer → broker)
+
+| Field | Type | Required | Source (role side) | Sink (broker side) | Meaning |
+|---|---|---|---|---|---|
+| `channel_name` | string | YES | `Presence.channel` | `ChannelEntry.name` (lookup/create key) | Channel identifier |
+| `role_uid` | string | YES | `Impl.role_uid` | `ProducerEntry.role_uid`, identity verification | Unique role ID, e.g. `"prod.l4shm.uid12345678"` |
+| `role_name` | string | YES | `Impl.role_name` | `ProducerEntry.role_name` | Human display label |
+| `role_type` | string | YES | `Impl.role_type` ∈ `{"producer","processor"}` | identity-policy tag check | Classification only — see §5b.10 |
+| `data_transport` | string | YES | `RoleConfig.out_transport` ∈ `{"shm","zmq"}` | `ChannelEntry.data_transport` | Explicit transport (§6.1) |
+| `zmq_pubkey` | Z85 (40 chars) | YES | `KeyStore::pubkey("role_identity")` | `ProducerEntry.zmq_pubkey`, verified against `known_roles[role_uid].pubkey_z85` | Role identity CURVE pubkey |
+| `zmq_node_endpoint` | string | YES if `data_transport == "zmq"` | `RoleConfig.out_zmq_endpoint` after bind resolution | `ProducerEntry.zmq_node_endpoint` | Producer's bind endpoint, `"tcp://host:port"` |
+| `shm_capability_endpoint` | string | YES if `data_transport == "shm"` | `default_shm_capability_endpoint(channel)` | `ProducerEntry.shm_capability_endpoint` | Unix-socket capability endpoint, `"unix:///run/user/<uid>/pylabhub/shmcap-<channel>.sock"` |
+| `schema_blds` | string | OPTIONAL | HEP-0034 wire-schema canonical form | schema-record creation | Slot schema BLDS form |
+| `inbox_endpoint` | string | OPTIONAL | `Impl.inbox_endpoint` | `ProducerEntry.inbox_endpoint` | REP inbox endpoint (resolved, non-port-0) |
+| `inbox_schema_json` | string | OPTIONAL | inbox spec JSON | `ProducerEntry.inbox_schema_json` | Inbox payload schema |
+| `inbox_packing` | string | OPTIONAL | inbox spec | `ProducerEntry.inbox_packing` | Inbox packing |
+| `inbox_checksum` | string | OPTIONAL | inbox spec | `ProducerEntry.inbox_checksum` | Inbox checksum policy |
+| `producer_pid` | uint64 | OPTIONAL | `platform::get_pid()` | `ProducerEntry.producer_pid` | Process ID, diagnostics only |
+| `producer_hostname` | string | OPTIONAL | hostname lookup | `ProducerEntry.producer_hostname` | Hostname, diagnostics only |
+| `metadata` | object | OPTIONAL | role config | `ProducerEntry.metadata` | Arbitrary producer metadata |
+| `correlation_id` | string (uuid) | OPTIONAL | BRC RPC layer | echoed in REG_ACK | RPC correlation |
+
+**Forbidden / removed wire fields** (current emitters MUST be deleted per §5b.9):
+
+| Wire field | Status | Reason |
+|---|---|---|
+| `pattern` (`= "PubSub"`) | DELETE | Write-only constant; broker reads zero callers. |
+| `has_shared_memory` | DELETE | Redundant with `data_transport`. |
+| `shm_name` | DELETE | Duplicate of `channel_name`. |
+| `role_tag` | DELETE (rename) | In-process field is currently `role_tag`; on the wire it is already `role_type`; both unify on `role_type` end-to-end (see §5b.10). |
+
+### 5b.5 Canonical wire schema — REG_ACK (broker → producer)
+
+| Field | Type | Required | Source (broker side) | Sink (role side) | Meaning |
+|---|---|---|---|---|---|
+| `status` | string | YES | broker outcome | `register_producer_channel` success branch | `"success"` \| `"error"` |
+| `channel_name` | string | YES | `ChannelEntry.name` (echo of REQ.channel_name) | `apply_producer_reg_ack` line 1108 — triggers `find_presence_for_channel` + `Registered → Authorized` transition | Echo of REQ.channel_name; gates the Authorized transition |
+| `message` | string | YES | broker | `apply_producer_reg_ack` (log only) | Human-readable status |
+| `heartbeat` | object | YES | `heartbeat_ack_block()` per HEP-0023 §2.5 | `install_heartbeat` reads `interval_ms`, `timeout_ms` | Heartbeat config |
+| `initial_allowlist` | array<Z85> | YES (empty array on fresh channel — NEVER absent) | `ChannelAccessEntry.authorized_consumer_pubkeys` snapshot | `Impl.allowlist_cache.put(channel, peers)`, fires `on_allowlist_changed("initial_seed")` | Pre-authorized consumers per §I11.1 invariant #5 |
+| `correlation_id` | string | echo if REQ had it | broker | BRC RPC layer | Echo of REQ.correlation_id |
+
+**Forbidden / removed wire fields**:
+
+| Wire field | Status | Reason |
+|---|---|---|
+| `channel_id` | DELETE | Alias of `channel_name`. The bug that triggered §5b: producer REG_ACK emitted `channel_id`, role reader looked for `channel_name`, silently empty, `Registered → Authorized` transition skipped, §8.2 outer guard refused data loop. Zero role-side readers (audit 2026-06-25); pure dead-weight. |
+| `shm_secret` | DELETE | Superseded by HEP-CORE-0041 capability transport (no broker-minted secret). |
+
+### 5b.6 Canonical wire schema — CONSUMER_REG_REQ (consumer → broker)
+
+| Field | Type | Required | Source (role side) | Sink (broker side) | Meaning |
+|---|---|---|---|---|---|
+| `channel_name` | string | YES | `Presence.channel` | `ChannelEntry.name` lookup | Channel to subscribe to |
+| `role_uid` | string | YES | `Impl.role_uid` | `ConsumerEntry.role_uid`, identity verification | Unique consumer ID |
+| `role_name` | string | YES | `Impl.role_name` | `ConsumerEntry.role_name` | Human display label |
+| `role_type` | string | YES | `Impl.role_type` ∈ `{"consumer","processor"}` | identity-policy tag check | Classification |
+| `data_transport` | string | YES | `RoleConfig.in_transport` ∈ `{"shm","zmq"}` | transport negotiation (must match channel's transport) | Must equal `ChannelEntry.data_transport` or REJECT |
+| `zmq_pubkey` | Z85 (40) | YES | `KeyStore::pubkey("role_identity")` | `ConsumerEntry.zmq_pubkey`, added to `ChannelAccessEntry.authorized_consumer_pubkeys` | Consumer CURVE identity (allowlist key) |
+| `expected_schema_id` | string | OPTIONAL | HEP-0034 §10.3 named citation | schema validation | Schema ID for named citation |
+| `expected_schema_hash` | string | OPTIONAL | HEP-0034 §10.3 | schema validation | Schema fingerprint |
+| `expected_schema_blds` | string | OPTIONAL | HEP-0034 §10.3 anonymous citation | schema validation | Expected structure (anonymous citation) |
+| `expected_schema_packing` | string | OPTIONAL | HEP-0034 §10.3 | schema validation | Expected packing |
+| `expected_flexzone_blds` | string | OPTIONAL | HEP-0034 Phase 5a | flexzone schema validation | Expected flexzone structure |
+| `expected_flexzone_packing` | string | OPTIONAL | HEP-0034 Phase 5a | flexzone schema validation | Expected flexzone packing |
+| `inbox_endpoint`, `inbox_schema_json`, `inbox_packing`, `inbox_checksum` | string | OPTIONAL | per `ProducerRegInputs` parity | mirrored to `ConsumerEntry.inbox_*` | Inbox companion fields |
+| `consumer_pid` | uint64 | OPTIONAL | `platform::get_pid()` | `ConsumerEntry.consumer_pid` | Diagnostics |
+| `consumer_hostname` | string | OPTIONAL | hostname | `ConsumerEntry.consumer_hostname` | Diagnostics |
+| `correlation_id` | string | OPTIONAL | BRC RPC layer | echoed | RPC correlation |
+
+**Forbidden / removed wire fields**:
+
+| Wire field | Status | Reason |
+|---|---|---|
+| `consumer_queue_type` | DELETE | Subsumed by `data_transport` (which is now REQUIRED symmetrically with REG_REQ). |
+
+### 5b.7 Canonical wire schema — CONSUMER_REG_ACK (broker → consumer)
+
+**Unified shape across transports** (Decision 2026-06-25, Q1=b): SHM and ZMQ ACKs use the SAME `producers[]` array shape.  Length=1 for SHM (physical constraint); length=N for ZMQ fan-in.  Consumer reader code path is identical regardless of transport; the `data_transport` field tells the reader whether to interpret `producers[i].endpoint` as TCP or as a Unix-socket capability endpoint.
+
+| Field | Type | Required | Source (broker side) | Sink (role side) | Meaning |
+|---|---|---|---|---|---|
+| `status` | string | YES | broker outcome | `register_consumer_channel` success branch | `"success"` \| `"error"` |
+| `channel_name` | string | YES | `ChannelEntry.name` (echo of REQ.channel_name) | `apply_consumer_reg_ack` line 736 — triggers `find_presence_for_channel` + Authorized transition | Echo of REQ.channel_name |
+| `message` | string | YES | broker | log only | Human-readable status |
+| `heartbeat` | object | YES | `heartbeat_ack_block()` | `install_heartbeat` | Heartbeat config |
+| `data_transport` | string | YES | `ChannelEntry.data_transport` | drives interpretation of `producers[i].endpoint` | `"shm"` \| `"zmq"` |
+| `producers` | array<object> | YES (non-empty array, length≥1) | iterate `ChannelEntry.producers[]` | `apply_consumer_reg_ack` → `RxQueueOptions::producer_peers` per HEP-0017 §3.3 | Authorized producers on this channel |
+| `producers[].role_uid` | string | YES | `ProducerEntry.role_uid` | per-peer logs / metrics | Producer's role_uid |
+| `producers[].pubkey_z85` | Z85 (40) | YES | `ProducerEntry.zmq_pubkey` | data-plane CURVE `curve_serverkey` (ZMQ) or `crypto_box` peer key (SHM §5.5) | Producer's identity CURVE pubkey |
+| `producers[].endpoint` | string | YES | when transport=zmq: `ProducerEntry.zmq_node_endpoint` (`"tcp://..."`); when transport=shm: `ProducerEntry.shm_capability_endpoint` (`"unix://..."`) | ZmqQueue connect target OR SHM accept-loop dial target | Producer's data-plane endpoint |
+| `correlation_id` | string | echo if REQ had it | broker | BRC RPC layer | Echo of REQ.correlation_id |
+
+**Forbidden / removed wire fields**:
+
+| Wire field | Status | Reason |
+|---|---|---|
+| `producers[].pubkey` | DELETE | Alias of `pubkey_z85`. Two-name dual-write enables drift; one canonical name. |
+| `shm_capability_endpoint` (flat) | DELETE | Folded into `producers[0].endpoint`. Same reader path as ZMQ. |
+| `producer_pubkey_z85` (flat) | DELETE | Folded into `producers[0].pubkey_z85`. Same reader path as ZMQ. |
+| `shm_secret` | DELETE | Superseded by HEP-CORE-0041 capability transport. |
+
+### 5b.8 Sequence — REG_REQ → Authorized → data loop
+
+The diagram below shows the SAME concept (channel name) traveling through every name change.  Wire field names are the canonical §5b.4/§5b.5 names.  In-process field names are the canonical §5b.2 names.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant CFG as RoleConfig
+    participant PR  as worker_main_<br/>(producer)
+    participant FR  as RoleHostFrame
+    participant API as RoleAPIBase::Impl
+    participant H   as RoleHandler
+    participant P   as Presence
+    participant Q   as tx_queue<br/>(QueueWriter)
+    participant BRC as BRC<br/>(CURVE REQ)
+    participant BR  as broker<br/>handle_reg_req
+    participant CE  as ChannelEntry
+
+    Note over CFG,P: ── Setup phase ──
+    CFG->>FR: RoleConfig.out_channel = "lab.l4.shm.e2e.a"
+    FR->>P: Presence.channel ← out_channel
+    P->>P: registration_state = Unregistered
+    FR->>API: Impl.role_uid, role_type, role_name set
+    FR->>FR: setup_infrastructure_<br/>prepare_tx_capability_<br/>shm_transport_.bind_endpoint(default_shm_capability_endpoint(channel))
+    FR->>Q: build_tx_queue → ShmQueueTx (Standby)
+
+    Note over PR,BR: ── REG_REQ ──
+    PR->>API: start_handler_threads()<br/>BRC CURVE handshake
+    PR->>API: build REG_REQ payload<br/>(from Presence + Impl + KeyStore)
+    API->>P: registration_state.store(RegRequestPending)
+    Note right of API: REG_REQ wire (§5b.4):<br/>{<br/>  channel_name : Presence.channel,<br/>  role_uid     : Impl.role_uid,<br/>  role_name    : Impl.role_name,<br/>  role_type    : "producer",<br/>  data_transport : "shm",<br/>  zmq_pubkey   : KeyStore.pubkey("role_identity"),<br/>  shm_capability_endpoint : "unix:///run/user/.../shmcap-<channel>.sock",<br/>  ...<br/>}
+    BRC->>BR: REG_REQ (CURVE-encrypted)
+    BR->>CE: validate, create ChannelEntry if first<br/>ChannelEntry.name = channel_name<br/>append ProducerEntry
+    BR->>BR: LOG event=RegReqAccepted
+    Note left of BR: REG_ACK wire (§5b.5):<br/>{<br/>  status            : "success",<br/>  channel_name      : ChannelEntry.name,   ← canonical, NOT channel_id<br/>  message           : ...,<br/>  heartbeat         : { interval_ms, timeout_ms, ... },<br/>  initial_allowlist : [ Z85, ... ],<br/>  correlation_id    : <echo><br/>}
+
+    Note over BR,P: ── REG_ACK + activation ──
+    BR-->>BRC: REG_ACK
+    BRC-->>API: register_producer_channel returns ack
+    API->>P: registration_state.store(Registered)
+    API->>API: apply_producer_reg_ack(ack)
+    API->>API: channel_name = ack.value("channel_name", "")<br/>↑ §5b.5 requires non-empty
+    API->>Q: tx_queue.apply_master_approval(ack)<br/>ShmQueueTx: no-op<br/>ZmqQueueTx: read ack.initial_allowlist[], seed ZAP, bind, spawn
+    API->>API: allowlist_cache.put(channel_name, seed)<br/>LOG event=InitialAllowlistSeeded
+    API->>H: find_presence_for_channel(channel_name)
+    H-->>API: Presence*
+    API->>P: registration_state.store(Authorized)
+    Note right of P: LOG event=PresenceStateTransition<br/>from=Registered to=Authorized<br/>trigger=apply_producer_reg_ack_done
+
+    Note over PR,P: ── Data loop spin ──
+    PR->>API: install_heartbeat, spawn_shm_auth_listener_
+    PR->>PR: enter run_data_loop
+    PR->>API: any_presence_authorized()
+    API->>P: load(registration_state)
+    P-->>API: Authorized
+    API-->>PR: true
+    Note right of PR: §8.2 outer guard PASSES.<br/>Data loop spins.<br/>SHM accept loop services consumer attaches.
+```
+
+### 5b.9 Information flow — one concept, one name end-to-end
+
+The single-standard property: a concept travels from config → in-process struct → wire → in-process struct → consumer of the concept, **using the same canonical name at every hop**.  No translation tables, no aliases, no fallbacks.
+
+```mermaid
+flowchart LR
+    A1["RoleConfig.out_channel<br/>'lab.l4.shm.e2e.a'"] -->|"loaded at startup"| A2["Presence.channel<br/>'lab.l4.shm.e2e.a'"]
+    A2 -->|"REG_REQ build<br/>role_reg_payload.hpp"| A3["wire REG_REQ.channel_name<br/>'lab.l4.shm.e2e.a'"]
+    A3 -->|"BRC over CURVE"| A4["broker handle_reg_req<br/>req.value('channel_name')"]
+    A4 -->|"lookup/create"| A5["ChannelEntry.name<br/>'lab.l4.shm.e2e.a'"]
+    A5 -->|"REG_ACK build<br/>resp['channel_name'] = name"| A6["wire REG_ACK.channel_name<br/>'lab.l4.shm.e2e.a'"]
+    A6 -->|"BRC reply"| A7["role apply_producer_reg_ack<br/>ack.value('channel_name')"]
+    A7 -->|"non-empty assertion<br/>(§5b.5 contract)"| A8["RoleHandler.find_presence_for_channel<br/>('lab.l4.shm.e2e.a')"]
+    A8 -->|"match by Presence.channel"| A9["Presence.registration_state<br/>= Authorized"]
+    A9 -->|"any_presence_authorized()"| A10["data loop §8.2 guard PASSES"]
+
+    classDef config fill:#e8f5e9,stroke:#388e3c
+    classDef inproc fill:#fff3e0,stroke:#f57c00
+    classDef wire fill:#e3f2fd,stroke:#1976d2
+    classDef broker fill:#fce4ec,stroke:#c2185b
+    classDef terminal fill:#f3e5f5,stroke:#7b1fa2
+
+    class A1 config
+    class A2,A7,A8,A9 inproc
+    class A3,A6 wire
+    class A4,A5 broker
+    class A10 terminal
+```
+
+The same diagram applies to every other canonical concept (`role_uid`, `role_type`, `zmq_pubkey`, `data_transport`, `producers[].endpoint`, `initial_allowlist`).  Each travels under one name.
+
+### 5b.10 The `role_type` field — classification only
+
+Decision 2026-06-25 (Q2): the field is named `role_type` (NOT `role_tag`) in every place — wire, in-process, log markers — because it is purely the role classification axis (`"producer"` | `"consumer"` | `"processor"`).  There is no design intent to bundle additional role-specific information into this field.
+
+Role-specific information that is NOT `role_type`:
+
+| Concept | Canonical field | Where |
+|---|---|---|
+| Role unique identity | `role_uid` | wire + `Impl.role_uid` + `ProducerEntry.role_uid` |
+| Role display label | `role_name` | wire + `Impl.role_name` + `ProducerEntry.role_name` |
+| Process ID | `producer_pid` / `consumer_pid` | wire + `*Entry.*_pid` |
+| Host identifier | `producer_hostname` / `consumer_hostname` | wire + `*Entry.*_hostname` |
+| Arbitrary metadata | `metadata` (object) | wire + `*Entry.metadata` |
+
+Each role-specific concept has its own canonical field name.  `role_type` is reserved for classification.
+
+### 5b.11 The Presence FSM (`RegistrationState`)
+
+Per §5b.2 Presence holds an atomic `registration_state`.  The full FSM:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Unregistered : Presence ctor
+    Unregistered --> RegRequestPending : register_*_channel dispatch<br/>(role_api_base.cpp 1662, 1697, 1754, 1826)
+    RegRequestPending --> Registered : REG_ACK status==success<br/>(implicit at register_*_channel return)
+    Registered --> Authorized : apply_*_reg_ack success<br/>only if ack.channel_name non-empty<br/>(role_api_base.cpp 873, 1196)
+    Registered --> Unregistered : hub-dead transition<br/>(role_handler.cpp 334)
+    Authorized --> Unregistered : hub-dead transition (§4.3.3)
+    Authorized --> Deregistered : deregister_from_broker<br/>(role_api_base.cpp 1851, 1867)
+    RegRequestPending --> Unregistered : REG_ACK status==error
+    Deregistered --> [*]
+```
+
+**§8.2 outer guard.**  The data loop spins only while `any_presence_authorized()` returns true (data_loop.hpp:141).  A presence is Authorized only after a successful `apply_*_reg_ack` — which requires REG_ACK to carry `channel_name`.  Pre-§5b, the producer REG_ACK emitted `channel_id`; the role-side `apply_producer_reg_ack` silently failed the `!channel_name.empty()` gate; the Authorized transition never fired; the §8.2 guard refused the data loop.  §5b makes the wire shape match the reader so this gate cannot silently fail again.
+
+### 5b.12 Single-standard cleanup chain — staged plan
+
+Tracked under **task #286**.  Site list from the 2026-06-25 audit, staged by blast radius.
+
+**Phase B-1 — immediate bug fix (the silent gate that broke L4 SHM e2e).**  Three lines, zero readers of the deleted alias, zero functional change beyond closing the gap.  Lands in the §5b commit.
+
+| File:line | Was | Now |
+|---|---|---|
+| `src/utils/ipc/broker_service.cpp:2082` | `resp["channel_id"] = channel_name;` | `resp["channel_name"] = channel_name;` ✓ |
+| `src/utils/ipc/broker_service.cpp:1156` | log read `resp.value("channel_id", "?")` | `resp.value("channel_name", "?")` ✓ |
+| `src/utils/ipc/broker_service.cpp:1105` | `payload.value("channel_name", payload.value("channel", ""))` legacy fallback | `payload.value("channel_name", "")` — single key ✓ |
+
+After phase B-1, the producer's `Registered → Authorized` transition fires, the §8.2 outer guard passes, and L4 SHM e2e (#258) goes green.  The remaining phases below are §5b conformance — they bring the wire into full alignment with the canonical shape but are not required for the L4 test to pass.
+
+**Phase B-2 — load-bearing field retirement (separate refactor, FOLLOW-UP TASK).**  The fields `pattern`, `has_shared_memory`, `shm_name` participate in the broker's channel-mismatch invariant (HEP-CORE-0007 Cat-1, see `hub_state.cpp:1039-1041`) and appear in DISC responses (`broker_service.cpp:2233,2241`), admin JSON (`hub_state_json.cpp:45,50`), and ~6 L3 test fixtures.  Removal requires:
+
+1. Replace the channel-mismatch invariant's reliance on `(pattern, has_shared_memory, shm_name)` with a single `(channel_name, data_transport, schema_hash)` check.
+2. Drop the fields from `ChannelEntry`, the REG_REQ wire reader, the DISC response, the admin snapshot, and `hub_state_json`.
+3. Update the L3 test workers (`datahub_broker_workers.cpp` x6 sites) to stop asserting on these fields.
+4. Update HEP-CORE-0007 §X (Cat-1 invariant text).
+
+This is its own commit chain.  Tracked under #286 phase B-2.
+
+**Phase B-3 — `role_tag` → `role_type` in-process rename (FOLLOW-UP TASK).**  Currently the wire field is `role_type` (correct per §5b.4 / §5b.6) but the in-process struct field is `role_tag`.  Pure rename across `RoleAPIBase::Impl`, `RoleHostFrame::Config`, builders, log markers (~30+ sites).  No protocol effect.  Tracked under #286 phase B-3.
+
+**Phase B-4 — CONSUMER_REG_ACK shape unification (FOLLOW-UP TASK).**  Per §5b.7 the SHM branch must emit `producers: [{role_uid, pubkey_z85, endpoint}]` length-1 instead of the current flat `shm_capability_endpoint` + `producer_pubkey_z85`.  The ZMQ branch must drop the `producers[].pubkey` dual-name in favor of `pubkey_z85` only.  Both require coordinated emitter (`broker_service.cpp:~2734`) + reader (`role_api_base.cpp::apply_consumer_reg_ack`) changes + HEP-CORE-0041 §5.3 cross-sync.  Tracked under #286 phase B-4.
+
+**Phase B-5 — hard-error on missing canonical fields (FOLLOW-UP TASK).**  Replace silent `if (!channel_name.empty())` skip in `apply_producer_reg_ack` (role_api_base.cpp:1108) and `apply_consumer_reg_ack` (role_api_base.cpp:~736) with `LOGGER_ERROR + return false`.  Pre-condition for #286 phase B-5 is that phases B-1..B-4 are all landed (so the contract is guaranteed by the emitter before the reader assumes it).  Tracked under #286 phase B-5.
+
+**Phase C — sibling HEPs (after B-2..B-5 land):**
+
+| Doc | Update |
+|---|---|
+| HEP-CORE-0036 §6 | Banner already added pointing to §5b as normative. After B-2..B-5: trim §6.1/§6.2/§6.3/§6.4 to reference §5b instead of redefining. |
+| HEP-CORE-0023 §2.5 (heartbeat block) | Confirm heartbeat block shape; cross-reference §5b.5/§5b.7 as consumers. |
+| HEP-CORE-0034 §10.3 (schema citation) | Confirm citation field names match §5b.6 `expected_*` set. |
+| HEP-CORE-0041 §5 (SHM wire) | After B-4: confirm CONSUMER_REG_ACK SHM path uses unified `producers[]` per §5b.7. Update §5.3 accordingly. |
+| HEP-CORE-0007 §X (Cat-1 invariant) | After B-2: replace `(pattern, has_shared_memory, shm_name)` mismatch criteria with `(channel_name, data_transport, schema_hash)`. |
+
+**Phase D — L4 SHM e2e test (#258).**  Remove `DISABLED_` prefix on `ShmE2E_AuthorizedConsumerReceivesAllSlots` and `ShmE2E_UnauthorizedConsumerDeniedByBroker`.  After phase B-1, the producer's data loop spins and the consumer-attach handshake completes — the test goes green against real binaries.  Subsequent phases (B-2..B-5) tighten the wire without changing test behavior.
+
+### 5b.13 Migration discipline (do not re-introduce drift)
+
+After phase C lands:
+
+1. Any new wire field MUST be added to the §5b.4/§5b.5/§5b.6/§5b.7 tables in the same commit that adds the emitter or reader.
+2. Any new in-process field on `Impl`, `Presence`, `ProducerEntry`, `ChannelEntry`, `ChannelAccessEntry` MUST be added to the §5b.2/§5b.3 class diagrams in the same commit.
+3. The §5b.12 cleanup table MUST be empty when phase D completes.  A future audit that finds drift is a §5b violation, not a feature request — fix the drift, do not document around it.
+4. The role-side reader sites for REG_ACK MUST treat missing required fields as hard errors (LOGGER_ERROR + abort/teardown), not silent skips.  Silent skips are how `channel_id` survived undetected for a year.
+
+---
+
 ## 6. Wire format extensions
+
+> **NOTE (2026-06-25): §5b above is normative for the wire shape.**  This §6 is retained as migration history — it documents the *additions* made over the original HEP-CORE-0023 base shape during the HEP-0036 auth rollout.  When §6 and §5b appear to conflict, §5b wins.  Task #286 tracks the cleanup chain that brings every emitter and reader into §5b conformance.
 
 These extensions add fields to existing message schemas. All additions
 are backward-compatible at the protocol level (broker can detect

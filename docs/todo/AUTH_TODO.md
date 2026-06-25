@@ -113,6 +113,29 @@ Numbered renumbering of the live execution chain.  Each entry cites
 its task-system ID + the historical label (D-step / HB-number) it
 replaces so prior commits / docs cross-reference cleanly.
 
+## HEP-0036 §5b canonical wire schema unification (parallel track, opened 2026-06-25)
+
+> **Tracker:** task **#286** (parent — phase A done, B-1 done in same commit).  Sub-phases tracked as separate tasks #287..#291 (all blocked-by #286).
+>
+> **Trigger:** L4 SHM e2e (#258) surfaced a silent gate — producer REG_ACK at `broker_service.cpp:2082` emitted `channel_id`; role-side `apply_producer_reg_ack` read `channel_name` (empty); `Registered → Authorized` transition silently skipped; §8.2 outer guard refused data loop. Audit found `channel_id` had zero readers — pure dead-weight that broke a silent gate.
+>
+> **Outcome:** HEP-CORE-0036 §5b authored as normative single-source for the registration data path (in-process structures + canonical wire schemas + sequence + information-flow Mermaid diagrams).  Phase B-1 fix lands the immediate three-line bug fix in the same commit.  Sub-phases B-2..B-5 deferred to follow-up tasks to keep blast radius bounded.
+
+| Phase | Task | Scope | Status |
+|---|---|---|---|
+| A — HEP §5b authoring | **#286** | Author HEP-CORE-0036 §5b with class diagrams + wire schemas + sequence diagram + info flow + cleanup list | ✅ done 2026-06-25 |
+| B-1 — immediate bug fix | **#286** | `broker_service.cpp:2082` `channel_id` → `channel_name`; `:1156` log read; `:1105` drop `"channel"` legacy fallback | ✅ done 2026-06-25 |
+| B-2 — retire `pattern`/`has_shared_memory`/`shm_name` | **#287** | Refactor channel-mismatch invariant to `(channel_name, data_transport, schema_hash)`; drop 3 legacy REG_REQ fields from emitter + reader + DISC + admin JSON + tests | ⏸ blocked-by #286 (A+B-1 done) |
+| B-3 — rename `role_tag` → `role_type` in-process | **#288** | Pure C++ identifier rename across ~30 sites; zero protocol effect (wire field already canonical) | ⏸ blocked-by #286 |
+| B-4 — unify CONSUMER_REG_ACK shape | **#289** | Emit `producers: [{role_uid, pubkey_z85, endpoint}]` for both SHM and ZMQ; drop flat `shm_capability_endpoint` + `producer_pubkey_z85`; drop `producers[].pubkey` dual-name | ⏸ blocked-by #286 |
+| B-5 — hard-error on missing canonical fields | **#290** | Replace silent `if (!channel_name.empty())` skip in `apply_*_reg_ack` with `LOGGER_ERROR + return false`; only safe AFTER B-1..B-4 | ⏸ blocked-by #286, #287, #288, #289 |
+| C — sibling HEP doc sync | (within sub-tasks) | HEP-0023 §2.5, HEP-0034 §10.3, HEP-0041 §5.3, HEP-0007 Cat-1 | ⏸ |
+| D — L4 SHM e2e green | #258 | Remove `DISABLED_` prefix; B-1 already unlocks the silent gate | 🟡 B-1 unblocks step 6; remaining failure tracked as #291 |
+
+**Adjacent finding (also opened 2026-06-25):** `#291` — SHM consumer-attach handshake failure exposed *after* B-1 fix.  Producer-side log shows `AttachProtocol::producer: peer closed connection mid-frame (got 0 of 4)`.  Independent of §5b; investigating HEP-0041 §5.5 wire-frame handshake on consumer dial path.
+
+
+
 ### AUTH-1 — Role-side dispatch + producer pubkey emission
 
 > **Tracker:** task **#103** (in-progress).

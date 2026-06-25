@@ -1102,7 +1102,7 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
 {
     LOGGER_TRACE("Broker: dispatch {} channel='{}'", msg_type,
                  payload.is_object()
-                     ? payload.value("channel_name", payload.value("channel", std::string{}))
+                     ? payload.value("channel_name", std::string{}) // HEP-0036 §5b
                      : std::string{});
 
     // HEP-CORE-0033 §9.3 S3: unknown msg_type — bump only sys.unknown_msg_type
@@ -1153,7 +1153,7 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
                     "heartbeat_interval_ms", 0);
             LOGGER_INFO("[broker] event=RegAckSending channel='{}' "
                         "heartbeat_interval_ms={} initial_allowlist={}",
-                        resp.value("channel_id", "?"),
+                        resp.value("channel_name", "?"), // HEP-0036 §5b.5
                         hb_interval_ms,
                         resp.value("initial_allowlist",
                                    nlohmann::json::array()).dump());
@@ -2078,10 +2078,10 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
                 admission.channel_opened ? " - channel opened"
                                          : " - appended to existing");
     nlohmann::json resp;
-    resp["status"]     = "success";
-    resp["channel_id"] = channel_name;
-    resp["message"]    = "Producer registered successfully";
-    resp["heartbeat"]  = heartbeat_ack_block(); // HEP-CORE-0023 §2.5
+    resp["status"]       = "success";
+    resp["channel_name"] = channel_name; // HEP-CORE-0036 §5b.5 canonical
+    resp["message"]      = "Producer registered successfully";
+    resp["heartbeat"]    = heartbeat_ack_block(); // HEP-CORE-0023 §2.5
 
     // HEP-CORE-0036 §5.1 + §6.5: REG_ACK carries the channel's current
     // authorized-consumer allowlist so a producer reconnecting to an

@@ -325,6 +325,9 @@ void add_known_role(const fs::path &hub_dir, const std::string &display_name,
 
 // ─── Scenario A: authorized producer + consumer over SHM ───────────────────
 
+// DISABLED_ pending #291 (SHM consumer-attach handshake bug exposed
+// after HEP-0036 §5b phase B-1 unblocked the producer's Authorized
+// transition).  Phase D of #286 re-enables once #291 lands.
 TEST_F(PlhHubCliTest, DISABLED_ShmE2E_AuthorizedConsumerReceivesAllSlots)
 {
     using std::chrono::seconds;
@@ -368,10 +371,12 @@ TEST_F(PlhHubCliTest, DISABLED_ShmE2E_AuthorizedConsumerReceivesAllSlots)
 
     write_shm_producer_config(prod_dir / "producer.json", hub_dir,
                                prod_uid, channel);
-    write_shm_producer_script(prod_dir, kSlots);
+    // plh_role resolves script.path="." + script.type="python" to
+    // <role_dir>/script/python/__init__.py (see roundtrip test pattern).
+    write_shm_producer_script(prod_dir / "script" / "python", kSlots);
     write_shm_consumer_config(cons_dir / "consumer.json", hub_dir,
                                cons_uid, channel);
-    write_shm_consumer_script(cons_dir, kSlots);
+    write_shm_consumer_script(cons_dir / "script" / "python", kSlots);
 
     ::setenv("PYLABHUB_ROLE_PASSWORD", "shme2e-role-pw", /*overwrite=*/1);
 
@@ -405,71 +410,92 @@ TEST_F(PlhHubCliTest, DISABLED_ShmE2E_AuthorizedConsumerReceivesAllSlots)
     WorkerProcess prod(plh_role_binary(), "--role",
         {"producer", prod_dir.string()});
 
+    // Failure-diagnostic helper: dump producer log FILE (production INFO
+    // markers route here after Logger sink switch) + stderr + hub log,
+    // so a missing marker tells us exactly where the chain broke.
+    auto dump_prod = [&](const std::string &where) -> std::string {
+        std::string s;
+        s += "[fail at: " + where + "]\n";
+        s += "── producer log file ──\n" + read_role_log(prod_dir) + "\n";
+        s += "── producer stderr ──\n" + prod.get_stderr() + "\n";
+        s += "── hub log ──\n" + read_hub_log(hub_dir) + "\n";
+        return s;
+    };
+
     // L2 marker contract #1 (prepare_tx_capability_):
     ASSERT_TRUE(wait_for_role_marker(prod_dir, prod,
-        "event=ShmCapabilityTransportBound", seconds(15)))
-        << "producer did not emit ShmCapabilityTransportBound — "
-           "prepare_tx_capability_ SHM path broken.\n"
-        << "stderr:\n" << prod.get_stderr();
+        "event=ShmCapabilityTransportBound", seconds(5)))
+        << dump_prod("ShmCapabilityTransportBound — prepare_tx_capability_ SHM path");
 
-    // Hub-side REG_REQ accepted for producer:
+    // Hub-side REG_REQ accepted for producer.  Production-marker trail
+    // between ShmCapabilityTransportBound and RegReqAccepted (all from
+    // role_api_base.cpp + producer_role_host.cpp):
+    //   start_handler_threads: ENTRY
+    //   start_handler_threads: Phase 1 — connecting N BRC(s)
+    //   start_handler_threads: Phase 1 OK   (or  Phase 1 FAILED)
+    //   start_handler_threads: Phase 2/3 OK
+    //   event=PresenceStateTransition ... trigger=REG_REQ_sending
+    //   Either: event=RegAckReceived  OR  [prod] REG_REQ no response
+    //                                 OR  [prod] REG_REQ failed: error_code=...
+    // Broker-side rejection emits  Broker: REG_REQ rejected — channel='...' reason
     ASSERT_TRUE(wait_for_hub_marker(hub_dir,
         "event=RegReqAccepted role='" + prod_uid + "' channel='" + channel + "'",
-        seconds(15)))
-        << "producer REG_REQ never accepted by broker.\n"
-        << "hub log:\n" << read_hub_log(hub_dir);
+        seconds(7)))
+        << dump_prod("RegReqAccepted (hub side) — REG_REQ chain");
 
     // L2 marker contract #2 (spawn_shm_auth_listener_): after REG_ACK
     ASSERT_TRUE(wait_for_role_marker(prod_dir, prod,
-        "event=ShmAcceptLoopSpawned", seconds(15)))
-        << "producer did not emit ShmAcceptLoopSpawned — "
-           "spawn_shm_auth_listener_ broken.\n"
-        << "stderr:\n" << prod.get_stderr();
+        "event=ShmAcceptLoopSpawned", seconds(5)))
+        << dump_prod("ShmAcceptLoopSpawned — spawn_shm_auth_listener_");
 
     // ── Consumer spawn ────────────────────────────────────────────────────
     WorkerProcess cons(plh_role_binary(), "--role",
         {"consumer", cons_dir.string()});
 
+    // Full-trace dump on consumer/late-phase failures — producer log file
+    // often holds the smoking gun (e.g. role-side post-REG_ACK exit).
+    auto dump_full = [&](const std::string &where) -> std::string {
+        std::string s;
+        s += "[fail at: " + where + "]\n";
+        s += "── producer log file ──\n" + read_role_log(prod_dir) + "\n";
+        s += "── producer stderr ──\n" + prod.get_stderr() + "\n";
+        s += "── consumer log file ──\n" + read_role_log(cons_dir) + "\n";
+        s += "── consumer stderr ──\n" + cons.get_stderr() + "\n";
+        s += "── hub log ──\n" + read_hub_log(hub_dir) + "\n";
+        return s;
+    };
+
     // Consumer REG_REQ accepted by hub:
     ASSERT_TRUE(wait_for_hub_marker(hub_dir,
         "event=ConsumerRegReqAccepted role='" + cons_uid +
-        "' channel='" + channel + "'", seconds(15)))
-        << "consumer REG_REQ never accepted by broker.\n"
-        << "hub log:\n" << read_hub_log(hub_dir);
+        "' channel='" + channel + "'", seconds(5)))
+        << dump_full("ConsumerRegReqAccepted — consumer REG_REQ chain");
 
     // Consumer parses shm_capability_endpoint from REG_ACK:
     ASSERT_TRUE(wait_for_role_marker(cons_dir, cons,
-        "event=ShmCapabilityFieldsReceived", seconds(15)))
-        << "consumer did not parse shm_capability_endpoint from REG_ACK.\n"
-        << "stderr:\n" << cons.get_stderr();
+        "event=ShmCapabilityFieldsReceived", seconds(5)))
+        << dump_full("ShmCapabilityFieldsReceived — consumer parses ACK");
 
     // Broker pre-confirms attach (broker-side ConsumerAttachAuthorized):
     ASSERT_TRUE(wait_for_hub_marker(hub_dir,
-        "event=ConsumerAttachAuthorized", seconds(15)))
-        << "broker did not authorize CONSUMER_ATTACH_REQ pre-confirm.\n"
-        << "hub log:\n" << read_hub_log(hub_dir);
+        "event=ConsumerAttachAuthorized", seconds(5)))
+        << dump_full("ConsumerAttachAuthorized — broker pre-confirm");
 
     // Producer accept loop authorizes the attach (SCM_RIGHTS sent):
     ASSERT_TRUE(wait_for_role_marker(prod_dir, prod,
-        "event=AttachAuthorized", seconds(15)))
-        << "producer accept loop did not log AttachAuthorized.\n"
-        << "stderr:\n" << prod.get_stderr();
+        "event=AttachAuthorized", seconds(5)))
+        << dump_full("AttachAuthorized — producer accept loop");
 
     // Consumer attaches DataBlock via received fd:
     ASSERT_TRUE(wait_for_role_marker(cons_dir, cons,
-        "event=ShmCapabilityActivated", seconds(15)))
-        << "consumer did not log ShmCapabilityActivated — DataBlock "
-           "fd-source attach failed.\n"
-        << "stderr:\n" << cons.get_stderr();
+        "event=ShmCapabilityActivated", seconds(5)))
+        << dump_full("ShmCapabilityActivated — consumer DataBlock attach");
 
     // ── Data flow verification: consumer received all N slots ─────────────
     ASSERT_TRUE(wait_for_role_marker(cons_dir, cons,
-        "cons_test: complete N=" + std::to_string(kSlots), seconds(20)))
-        << "consumer did not receive all " << kSlots << " slots.\n"
-        << "stderr (last 4k bytes):\n"
-        << cons.get_stderr().substr(
-               cons.get_stderr().size() > 4096
-                   ? cons.get_stderr().size() - 4096 : 0);
+        "cons_test: complete N=" + std::to_string(kSlots), seconds(7)))
+        << dump_full("cons_test: complete N=" + std::to_string(kSlots) +
+                     " — data flow");
 
     // ── Shutdown ──────────────────────────────────────────────────────────
     cons.send_signal(SIGTERM);
@@ -560,10 +586,10 @@ TEST_F(PlhHubCliTest, DISABLED_ShmE2E_UnauthorizedConsumerDeniedByBroker)
 
     write_shm_producer_config(prod_dir / "producer.json", hub_dir,
                                prod_uid, channel);
-    write_shm_producer_script(prod_dir, 5);
+    write_shm_producer_script(prod_dir / "script" / "python", 5);
     write_shm_consumer_config(cons_dir / "consumer.json", hub_dir,
                                cons_uid, channel);
-    write_shm_consumer_script(cons_dir, 5);
+    write_shm_consumer_script(cons_dir / "script" / "python", 5);
 
     ::setenv("PYLABHUB_ROLE_PASSWORD", "shme2e-deny-role-pw", /*overwrite=*/1);
 

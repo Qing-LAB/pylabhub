@@ -210,6 +210,15 @@ Current critical path (each step blocks the next unless noted):
 - **AUTH-7** — L4 end-to-end auth-gated data flow (D7).  Closes #74.
 - **#94** HEP-0021 §16.5 ephemeral binding — co-lands wire-shape per
   HEP-0036 §14.1 with AUTH-1; doesn't itself gate the auth goal.
+- **HEP-0036 §5b canonical wire schema unification** (tracks #286 +
+  sub-phases #287/#288/#289/#290; adjacent #291).  Opened 2026-06-25
+  after L4 SHM e2e (#258) surfaced a silent gate — broker producer
+  REG_ACK emitted `channel_id` while role read `channel_name`, silently
+  skipping `Registered → Authorized`.  Phase A (HEP §5b normative
+  authoring) and phase B-1 (immediate three-line fix) shipped together;
+  B-2..B-5 deferred as separately-tracked sub-tasks.  Details:
+  `docs/todo/AUTH_TODO.md` § "HEP-0036 §5b canonical wire schema
+  unification".
 
 Parallel / independent (any order, no AUTH-1 dependency):
 
