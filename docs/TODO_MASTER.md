@@ -190,13 +190,12 @@ Current critical path (each step blocks the next unless noted):
   per AUTH_TODO §"REVIEW-B (#274) close-out"**; **1i-cleanup (#275)
   🟡 in flight** (S1+S2a+S2b+S2c-1..6+S3 ✅ shipped; S4+S5 ⏸
   pending Pattern 4 reform #285 so coverage doesn't regress);
-  **1i-coverage (#270) ✅ shipped `8716d91a`** (L2 tests for
-  `prepare_tx_capability_` + `spawn_shm_auth_listener_` +
-  `cleanup_tx_capability_` + reusable `RoleHostFrameTestShim` in
-  `tests/test_framework/`; production log markers `event=ShmCapabilityTransportBound`
-  + `event=ShmAcceptLoopSpawned` pinned; 4 follow-up items filed in
-  `docs/todo/TESTING_TODO.md` § "HEP-0041 1i-coverage (#270)
-  follow-ups"); 1j (#257) + 1k (#258) + #262 mutual auth ⏸.
+  **1i-coverage (#270) ⏭ folded into #258 (layer pivot 2026-06-25)**
+  — initial L2 implementation reverted after designer review surfaced
+  the shim-as-parallel-production-scaffold smell; multi-process
+  methods test naturally at L4 with real binaries.  See HEP-0041
+  §10.1 1i-coverage row for full reasoning; 1j (#257) + 1k (#258)
+  + #262 mutual auth ⏸.
   **Five REVIEW-A..E milestones (#271/#274/#276/#277/#278) gate the
   remaining chain**; REVIEW-E is the Phase 1 production-ready final
   gate.  Full chain + milestone schedule in `docs/todo/AUTH_TODO.md`

@@ -126,65 +126,36 @@ Verification floor (mandatory for every rung): four axes
 Logging discipline: INFO is one-shot only; hot paths get
 counters or consequence-pinning.
 
-### HEP-0041 1i-coverage (#270) follow-ups
+### Test-faithfulness lesson from #270 layer pivot (2026-06-25)
 
-Four findings filed by the post-commit code review of `8716d91a`.
-Track here so they don't get lost; address either before #285 SHM
-Pattern-4 rungs start (preferred — shim is brand-new and edits are
-cheap), or as `8716d91a` follow-up commits.
+The HEP-0041 1i-coverage (#270) effort initially shipped an L2 test
+that subclassed `RoleHostFrame` with a `RoleHostFrameTestShim`
+exposing protected `prepare_tx_capability_` + `spawn_shm_auth_listener_`
++ `cleanup_tx_capability_` as one-line public forwards (commits
+`8716d91a` + `31b1d2af`).  Designer review surfaced the smell: the
+shim's `worker_main_` override mirrored production's
+`teardown_infrastructure_` ordering, making it a **parallel production
+scaffold** rather than a test of production.  Reverted same day; #270
+folded into #258 L4 e2e where real `plh_hub` + `plh_role` binaries
+exercise the same methods in their real production context.
 
-**(1) Coverage gaps — three negative/robustness paths not pinned.**
-The shipped 4-test set covers happy paths + one pre-condition
-violation.  Production has three more explicit branches that should
-have an L2 anchor before #285 multi-process tests fire on the same
-methods:
-- `prepare_tx_capability_` zero-size schema → `datablock_layout_total_size returned 0`
-  ERROR branch (`role_host_frame.cpp:395-401`).  Inputs:
-  empty `slot_spec.fields` + `has_shm=true`.  Pin via test scenario
-  `PrepareTxCapability_ZeroSizeSchemaRejected`.
-- `prepare_tx_capability_` bind_endpoint failure → `bind_endpoint('...') failed`
-  ERROR branch (`role_host_frame.cpp:416-423`).  Inputs: two shims on
-  the same channel → second `bind_endpoint` fails because Unix
-  socket is already in use.  Pin via `PrepareTxCapability_BindFailsOnDuplicateEndpoint`.
-- `cleanup_tx_capability_` second call must be safe (LIFO idempotence).
-  Production resets the three pointers in LIFO order; double-reset
-  is harmless via `unique_ptr::reset()`.  Pin via `Cleanup_Idempotent`.
+Generalisable rule (candidate addition to README_testing.md §
+"Mocking discipline"):
 
-**(2) Worker boilerplate factor.**
-The four worker scenarios in `role_host_frame_shm_workers.cpp` share
-~30 LOC of setup (KeystoreFixture + producer config + slot_spec +
-presence + frame_cfg + shutdown atomic + shim ctor).  ~120 LOC
-duplicated.  Factor into `make_shim_for_test(dir, scope, role_uid,
-channel, transport)` returning a `ShimTestSetup` struct with
-{ks_fixture, shim, shutdown}.  Borderline at N=4 scenarios; revisit
-if #270 follow-up grows the test list to 7+.
+> When the methods you want to test are setup-step contributors to a
+> multi-process flow — not unit-testable behaviors in isolation —
+> the natural test unit IS the multi-process scenario, not the
+> individual method.  Building a thin subclass with one-line forwards
+> "just to invoke the methods" is a parallel production scaffold,
+> even when each forward is mechanically trivial.  The scaffold's
+> own lifecycle (worker_main_, teardown ordering, fake api
+> construction) becomes test code with no production analogue —
+> precisely what test-faithfulness §2 says to avoid.  Test at the
+> layer where the methods actually do meaningful work.
 
-**(3) `RoleHostFrameTestShim::test_cleanup_tx_capability` public
-method has unstated ordering requirement.**
-The method forwards to `RoleHostFrame::cleanup_tx_capability_`
-which destroys `shm_orchestrator_`.  If invoked while the
-`shm_accept_loop` thread is still inside the orchestrator, the
-caller hits UAF.  Production enforces ordering via
-`teardown_infrastructure_`: `api().stop_handler_threads()` drains
-the accept thread BEFORE `cleanup_tx_capability_` runs.  No current
-test calls `test_cleanup_tx_capability` directly (the shim's own
-`worker_main_` does the cleanup as part of its production-faithful
-teardown).  Two options:
-- (a) document the ordering requirement on the public method:
-  `// MUST be called AFTER api().stop_handler_threads() drains the accept thread`
-- (b) remove from the public surface; callers that need cleanup
-  visibility add a dedicated accessor or use the worker_main_ path.
-Pick (a) if #285 producer rungs need to verify cleanup state
-between prepare and shutdown; (b) if not.
-
-**(4) `RoleHostFrameTestShim::PresenceSeed::fz_spec` unused by
-current tests.**
-The field is stored + plumbed through `build_presences_` but no L2
-test populates it (slot-only path).  Forward provision for #285
-Pattern 4 SHM rungs that exercise flexzone (the `FlexZoneRoundTrip`
-rung in `DRAFT_HEP-0041-pattern4-reform-coverage_2026-06.md` §2.3).
-Acceptable as-is; if #285 ends up not needing flexzone in the SHM
-ladder, remove + simplify the shim ctor.
+Promotion path: when a second instance of this antipattern is
+identified, fold the rule into README_testing.md § "Mocking
+discipline" with both incidents as precedent.
 
 ### B8 (#81) — Demo-setup numpy pin
 
