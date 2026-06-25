@@ -302,20 +302,13 @@ at parse time. Prevents typos, obsolete keys, and ambiguous configuration.
 
 ---
 
-### 2.8 Channel Communication Pattern
+### 2.8 Channel Communication Pattern — RETIRED
 
-**`ChannelPattern`** — `src/include/utils/channel_pattern.hpp`
-**Applied by**: `Messenger.cpp` (producer socket setup); `BrokerService` broadcasts
-the pattern in `CHANNEL_READY_NOTIFY` so consumers can connect with the correct socket.
+**RETIRED 2026-06-25 under HEP-CORE-0036 §5b.4** (task #287).
 
-| Value | Producer socket | Consumer socket | Use case |
-|-------|-----------------|-----------------|----------|
-| `PubSub` | XPUB (binds) | SUB (connects) | 1:many broadcast; consumers may miss frames |
-| `Pipeline` | PUSH (binds) | PULL (connects) | Load-balanced; each frame to one consumer |
-| `Bidir` | ROUTER (binds) | DEALER (connects) | Bidirectional; full routing |
+The `ChannelPattern` enum + `channel_pattern.hpp` header are deleted.  In practice the codebase only ever produced `"PubSub"` as a write-only constant; the `Pipeline` and `Bidir` topologies were aspirational design that never landed in producer / consumer / broker control flow.  Carrying the field shipped a silent-gate risk (the `pattern` mismatch check on REG_REQ would have triggered only if the constant differed, which it never did — dead code masquerading as an invariant).
 
-**Configuration**: `ProducerOptions::channel_pattern` (default: `PubSub`).
-JSON wire values: `"PubSub"` | `"Pipeline"` | `"Bidir"`.
+If Pipeline / Bidir topology selection is implemented in the future, the wire field SHOULD be added back to the §5b.4 normative REG_REQ table — not reintroduced under the existing implicit "additions" framing that allowed §5b's drift to happen.
 
 ---
 
@@ -394,7 +387,6 @@ For **safety-critical** applications, set:
 | `LoopTimingPolicy` | `producer_config.hpp`, `consumer_config.hpp` | `loop_timing` | `ProducerScriptHost` / `ConsumerScriptHost` when `target_period_ms > 0` |
 | `LoopPolicy` *(RAII Pass 2)* | `data_block_policy.hpp` | auto-set from `target_period_ms` | Sleep: `SlotIterator::operator++()`; overrun: `acquire_write_slot()` |
 | `RoleIdentityPolicy` *(legacy placeholder — see §2.7)* | `role_identity_policy.hpp` | **not parsed from hub.json** (HEP-0035 supersedes; auth fields deferred) | `BrokerServiceImpl::check_role_identity()` (live for tests until HEP-0035 Phase 6) |
-| `ChannelPattern` | `channel_pattern.hpp` | `ProducerOptions::channel_pattern` | `Messenger` (socket type) + `BrokerService` (CHANNEL_READY_NOTIFY) |
 
 ---
 
@@ -421,7 +413,6 @@ flowchart TB
 
     subgraph Broker["Broker Layer"]
         CRPol["ChecksumRepairPolicy"]
-        ChanP["ChannelPattern"]
     end
 
     VPol --> ValPol
@@ -445,7 +436,6 @@ flowchart TB
 |------|-------|-------------|
 | `src/include/utils/data_block_policy.hpp` | L3 (public) | `DataBlockPolicy`, `ConsumerSyncPolicy`, `ChecksumPolicy`, `LoopPolicy` |
 | `src/include/utils/role_identity_policy.hpp` | L3 (public) | `RoleIdentityPolicy` enum *(legacy placeholder — superseded by HEP-CORE-0035)* |
-| `src/include/utils/channel_pattern.hpp` | L3 (public) | `ChannelPattern` enum |
 | `src/include/utils/broker_service.hpp` | L3 (public) | `BrokerService::Config` — `ChecksumRepairPolicy`; carries `RoleIdentityPolicy` field, settable only by tests pending HEP-CORE-0035 |
 | `src/producer/producer_config.hpp` | L4 | `ValidationPolicy` struct, `LoopTimingPolicy` |
 | `src/consumer/consumer_config.hpp` | L4 | Same policy config fields for consumer |

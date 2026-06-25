@@ -175,8 +175,6 @@ bool try_register(const std::string &endpoint, const std::string &pubkey,
 
     json opts;
     opts["channel_name"]      = channel;
-    opts["pattern"]           = "PubSub";
-    opts["has_shared_memory"] = false;
     opts["producer_pid"]      = ::getpid();
     opts["role_uid"]          = role_uid;
     opts["role_name"]         = role_name;

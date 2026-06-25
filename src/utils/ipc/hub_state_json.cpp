@@ -40,14 +40,15 @@ inline std::string fmt_time(std::chrono::system_clock::time_point tp)
 
 nlohmann::json channel_to_json(const ChannelEntry &c, ChannelObservable obs)
 {
+    // HEP-CORE-0036 §5b.4: `data_transport` is the only canonical
+    // transport-classification field; pre-§5b duplicates `shm_name`
+    // and `has_shared_memory` retired (`shm_name` was always `name`).
     nlohmann::json j;
     j["name"]                = c.name;
-    j["shm_name"]            = c.shm_name;
     j["schema_hash"]         = c.schema_hash;
     j["schema_version"]      = c.schema_version;
     j["schema_id"]           = c.schema_id;
     j["schema_owner"]        = c.schema_owner;
-    j["has_shared_memory"]   = c.has_shared_memory;
     j["data_transport"]      = c.data_transport;
     // zmq_node_endpoint moved into per-producer sub-objects below
     // (Wave M2.5 step 3 — HEP-CORE-0021 §16.3 per-producer scope).

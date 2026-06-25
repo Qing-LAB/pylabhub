@@ -307,11 +307,8 @@ int broker_reg_disc_happy_path()
 
             nlohmann::json reg_opts;
             reg_opts["channel_name"]      = channel;
-            reg_opts["pattern"]           = "PubSub";
-            reg_opts["has_shared_memory"] = false;
             reg_opts["producer_pid"]      = ::getpid();
             reg_opts["role_uid"]          = uid;
-            reg_opts["shm_name"]          = "broker_reg_disc.shm";
             reg_opts["schema_version"]    = 7;
             auto reg = brc.register_channel(reg_opts, 3000);
             ASSERT_TRUE(reg.has_value()) << "register_channel must succeed";
@@ -321,7 +318,7 @@ int broker_reg_disc_happy_path()
 
             auto disc = brc.discover_channel(channel, {}, 5000);
             ASSERT_TRUE(disc.has_value()) << "discover_channel must find registered channel";
-            EXPECT_EQ(disc->value("shm_name", ""), "broker_reg_disc.shm");
+            // HEP-CORE-0036 §5b.4: shm_name retired (was always == channel_name).
             EXPECT_EQ(disc->value("schema_version", 0), 7);
 
             running.store(false);
@@ -359,7 +356,6 @@ int broker_schema_mismatch()
             // Open policy.
             nlohmann::json req1;
             req1["channel_name"]     = channel;
-            req1["shm_name"]         = "shm_mismatch";
             req1["schema_hash"]      = zero_hex();
             req1["schema_version"]   = 1;
             req1["producer_pid"]     = pid;
@@ -456,8 +452,6 @@ int broker_dereg_happy_path()
 
             nlohmann::json reg_opts;
             reg_opts["channel_name"]      = channel;
-            reg_opts["pattern"]           = "PubSub";
-            reg_opts["has_shared_memory"] = false;
             reg_opts["producer_pid"]      = ::getpid();
             reg_opts["role_uid"]          = uid;
             auto reg = brc.register_channel(reg_opts, 3000);
@@ -525,7 +519,6 @@ int broker_dereg_pid_mismatch()
             // (HEP-CORE-0023 §2.2 — Phase 4 protocol).
             nlohmann::json reg_req;
             reg_req["channel_name"]      = channel;
-            reg_req["shm_name"]          = "shm_pid_mismatch";
             reg_req["schema_hash"]       = zero_hex();
             reg_req["schema_version"]    = 1;
             reg_req["producer_pid"]      = correct_pid;
@@ -575,7 +568,8 @@ int broker_dereg_pid_mismatch()
             ASSERT_FALSE(disc_resp.is_null()) << "DISC_REQ timed out";
             EXPECT_EQ(disc_resp.value("status", std::string("")), "success")
                 << "Channel must still be registered after pid-mismatch deregister attempt";
-            EXPECT_EQ(disc_resp.value("shm_name", std::string("")), "shm_pid_mismatch");
+            // HEP-CORE-0036 §5b.4: shm_name retired (was always == channel_name).
+            // The success status above already proves the channel is still registered.
 
             broker.stop_and_join();
         },
@@ -610,7 +604,6 @@ int broker_dereg_missing_role_uid_rejected()
             // Register a producer so the channel exists.
             nlohmann::json reg_req;
             reg_req["channel_name"]      = channel;
-            reg_req["shm_name"]          = "shm_missing_uid";
             reg_req["schema_hash"]       = zero_hex();
             reg_req["schema_version"]    = 1;
             reg_req["producer_pid"]      = pid;
@@ -695,7 +688,6 @@ nlohmann::json reg_req_template(const std::string &channel,
 {
     nlohmann::json r;
     r["channel_name"]     = channel;
-    r["shm_name"]         = "shm_r35b";
     r["schema_hash"]      = zero_hex();
     r["schema_version"]   = 1;
     r["producer_pid"]     = pylabhub::platform::get_pid();
@@ -879,7 +871,6 @@ nlohmann::json baseline_reg_req(const std::string &channel,
 {
     nlohmann::json req;
     req["channel_name"]      = channel;
-    req["shm_name"]          = shm_name;
     req["schema_version"]    = 1;
     req["producer_pid"]      = pylabhub::platform::get_pid();
     req["producer_hostname"] = "localhost";

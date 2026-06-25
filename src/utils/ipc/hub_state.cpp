@@ -911,8 +911,9 @@ void HubState::_on_channel_registered(ChannelEntry entry)
     const std::string producer_pubkey = entry.producers.empty()
                                            ? std::string{}
                                            : entry.producers.front().zmq_pubkey;
-    const bool        has_shm         = entry.has_shared_memory;
-    const std::string shm_name        = entry.shm_name;
+    // HEP-CORE-0036 §5b.4: data_transport == "shm" classifies SHM; the
+    // SHM block path is the channel name.
+    const bool        has_shm         = (entry.data_transport == "shm");
 
     _set_channel_opened(std::move(entry));
 
@@ -927,7 +928,7 @@ void HubState::_on_channel_registered(ChannelEntry entry)
     }
 
     if (has_shm)
-        _set_shm_block(ShmBlockRef{channel_name, shm_name});
+        _set_shm_block(ShmBlockRef{channel_name, channel_name});
 
 }
 
@@ -974,8 +975,9 @@ HubState::_on_producer_added(const std::string&         channel_name,
     // pubkey lives per-producer per HEP-CORE-0021 §5.2).
     const std::string producer_uid     = producer.role_uid;
     const std::string producer_pubkey  = producer.zmq_pubkey;
-    const bool        has_shm          = transport.has_shared_memory;
-    const std::string shm_name         = transport.shm_name;
+    // HEP-CORE-0036 §5b.4: data_transport == "shm" is the canonical
+    // SHM classifier; the SHM block name is the channel name.
+    const bool        has_shm          = (transport.data_transport == "shm");
 
     ChannelEntry fired_entry;
     bool         did_fire_open = false;
@@ -996,9 +998,6 @@ HubState::_on_producer_added(const std::string&         channel_name,
             entry.schema_id         = schema.schema_id;
             entry.schema_blds       = schema.schema_blds;
             entry.schema_owner      = schema.schema_owner;
-            entry.has_shared_memory = transport.has_shared_memory;
-            entry.shm_name          = transport.shm_name;
-            entry.pattern           = transport.pattern;
             entry.data_transport    = transport.data_transport;
             // Append the producer via the controlled API (Created by
             // construction since producers is empty + we just checked
@@ -1024,7 +1023,8 @@ HubState::_on_producer_added(const std::string&         channel_name,
             // Existing channel — validate invariants match.  Return on
             // first mismatch so the caller can surface a specific code
             // (SCHEMA_MISMATCH for schema_*; TRANSPORT_MISMATCH for
-            // has_shared_memory / data_transport / pattern / shm_name).
+            // data_transport).  HEP-CORE-0036 §5b.4 retired the legacy
+            // duplicates has_shared_memory / shm_name / pattern.
             const auto &cur = it->second;
             auto reject = [&](const char *name) {
                 result.invariant_result     = InvariantSetResult::RejectedMismatch;
@@ -1035,10 +1035,6 @@ HubState::_on_producer_added(const std::string&         channel_name,
             if (cur.schema_id      != schema.schema_id)      { reject("schema_id");      return result; }
             if (cur.schema_blds    != schema.schema_blds)    { reject("schema_blds");    return result; }
             if (cur.schema_owner   != schema.schema_owner)   { reject("schema_owner");   return result; }
-            if (cur.has_shared_memory != transport.has_shared_memory)
-                                                              { reject("has_shared_memory"); return result; }
-            if (cur.shm_name       != transport.shm_name)    { reject("shm_name");       return result; }
-            if (cur.pattern        != transport.pattern)     { reject("pattern");        return result; }
             if (cur.data_transport != transport.data_transport)
                                                               { reject("data_transport"); return result; }
 
@@ -1073,7 +1069,7 @@ HubState::_on_producer_added(const std::string&         channel_name,
     }
 
     if (did_fire_open && has_shm)
-        _set_shm_block(ShmBlockRef{channel_name, shm_name});
+        _set_shm_block(ShmBlockRef{channel_name, channel_name});
 
     return result;
 }

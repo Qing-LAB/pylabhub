@@ -105,12 +105,13 @@ struct ConsumerRegInputs
 /// longer exists — the wire requires an explicit transport spec.
 inline nlohmann::json build_producer_reg_payload(const ProducerRegInputs &in)
 {
+    // HEP-CORE-0036 §5b.4 canonical REG_REQ shape.  Pre-§5b duplicates
+    // `pattern` (constant "PubSub"), `has_shared_memory` (subsumed by
+    // `data_transport`), and `shm_name` (duplicate of `channel_name`)
+    // have been retired.
     nlohmann::json reg;
     reg["channel_name"]      = in.channel;
-    reg["pattern"]           = "PubSub";
-    reg["has_shared_memory"] = in.has_shm;
     reg["producer_pid"]      = pylabhub::platform::get_pid();
-    reg["shm_name"]          = in.channel;
     reg["role_uid"]          = in.role_uid;
     reg["role_name"]         = in.role_name;
     reg["role_type"]         = in.role_tag;

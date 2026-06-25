@@ -6,7 +6,6 @@
 #include "utils/naming.hpp"   // is_valid_identifier (audit R3.5)
 #include "utils/net_address.hpp"
 
-#include "utils/channel_pattern.hpp"
 
 #include "utils/recovery_api.hpp"
 #include "utils/schema_loader.hpp"
@@ -54,10 +53,6 @@ constexpr size_t kZ85KeyLen = 40;
 constexpr std::chrono::milliseconds kPollTimeout{100};
 // Universal framing: Frame 0 type byte for all ZMQ messages.
 constexpr char kFrameTypeControl = 'C';
-
-// Bring shared pattern helpers into scope (defined in utils/channel_pattern.hpp).
-using pylabhub::hub::channel_pattern_to_str;
-using pylabhub::hub::channel_pattern_from_str;
 
 /// Convert a 64-char hex-encoded schema hash string ->std::array<uint8_t, 32>.
 /// Returns a zero-filled array on format error (wrong length or invalid hex).
@@ -1972,9 +1967,10 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     // Remaining reject modes are: UID_CONFLICT (uid spoof or hub-side
     // residue), MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM (SHM cardinality),
     // and the broader invariant-mismatch class (schema_version,
-    // schema_blds, schema_owner, schema_id, has_shared_memory,
-    // shm_name, channel_pattern, data_transport).  A reject in those
-    // remaining cases CAN leave an orphan schema record in
+    // schema_blds, schema_owner, schema_id, data_transport).
+    // (HEP-CORE-0036 §5b.4 retired the legacy duplicates
+    // has_shared_memory / shm_name / channel_pattern.)
+    // A reject in those remaining cases CAN leave an orphan schema record in
     // HubState.schemas (rare anomaly); broker logs ERROR.
     pylabhub::hub::ChannelSchemaInvariants schema_inv;
     schema_inv.schema_hash    = attempted_schema;
@@ -1984,13 +1980,11 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     schema_inv.schema_owner   = final_schema_owner;
 
     pylabhub::hub::ChannelTransportInvariants transport_inv;
-    transport_inv.has_shared_memory = req.value("has_shared_memory", false);
-    transport_inv.shm_name          = req.value("shm_name", "");
-    transport_inv.pattern           = channel_pattern_from_str(
-        req.value("channel_pattern", "PubSub"));
-    // Validated above (HEP-CORE-0036 §6.1 + HEP-CORE-0041 §5.1) —
-    // reuse the same local so persisted ChannelEntry.data_transport
-    // cannot drift from the value the §5.1 endpoint check accepted.
+    // HEP-CORE-0036 §5b.4: `data_transport` is the only canonical
+    // transport-classification field on REG_REQ.  Validated above
+    // (§6.1 + HEP-CORE-0041 §5.1); reuse the same local so the
+    // persisted ChannelEntry.data_transport cannot drift from the
+    // value the §5.1 endpoint check accepted.
     transport_inv.data_transport    = data_transport_req;
 
     const auto admission = hub_state_->_on_producer_added(
@@ -2230,7 +2224,6 @@ nlohmann::json BrokerServiceImpl::handle_disc_req(const nlohmann::json& req)
     LOGGER_INFO("Broker: discovered channel '{}'", channel_name);
     nlohmann::json resp;
     resp["status"]            = "success";
-    resp["shm_name"]          = entry_ref.shm_name;
     resp["schema_hash"]       = entry_ref.schema_hash;
     resp["schema_version"]    = entry_ref.schema_version;
     // metadata wire shape decided in §6.1: per-producer tree keyed by
@@ -2238,8 +2231,9 @@ nlohmann::json BrokerServiceImpl::handle_disc_req(const nlohmann::json& req)
     resp["metadata"]          = entry_ref.aggregate_metadata_tree();
     resp["consumer_count"]    =
         static_cast<uint32_t>(entry_ref.consumers.size());
-    resp["has_shared_memory"] = entry_ref.has_shared_memory;
-    resp["channel_pattern"]   = channel_pattern_to_str(entry_ref.pattern);
+    // HEP-CORE-0036 §5b.4: `data_transport` is the canonical transport
+    // classification; pre-§5b duplicates `shm_name`, `has_shared_memory`,
+    // `channel_pattern` retired.
     // zmq_ctrl_endpoint / zmq_data_endpoint retired in Wave M2.5 step 2c.
     // zmq_pubkey + zmq_node_endpoint use first-producer transitional shape
     // until step 5 lifts them to per-producer arrays.
@@ -4908,11 +4902,11 @@ nlohmann::json BrokerServiceImpl::handle_shm_block_query(const nlohmann::json& r
 nlohmann::json BrokerServiceImpl::collect_shm_info(const std::string& channel) const
 {
     // Snapshot under HubState's own lock (inside snapshot()), then read SHM
-    // outside any broker locks.
+    // outside any broker locks.  HEP-CORE-0036 §5b.4: the SHM segment name
+    // is the channel name; no separate `shm_name` field exists anywhere.
     struct BlockInfo
     {
         std::string                                channel;
-        std::string                                shm_name;
         uint64_t                                   producer_pid{0};
         std::string                                producer_uid;
         std::string                                producer_name;
@@ -4926,11 +4920,12 @@ nlohmann::json BrokerServiceImpl::collect_shm_info(const std::string& channel) c
         {
             if (!channel.empty() && name != channel)
                 continue;
-            if (!entry.has_shared_memory || entry.shm_name.empty())
+            // SHM channels are identified by data_transport == "shm";
+            // the block name is the channel name.
+            if (entry.data_transport != "shm")
                 continue;
             BlockInfo bi;
             bi.channel       = name;
-            bi.shm_name      = entry.shm_name;
             // SHM channels are physically single-producer (HEP-CORE-0023
             // §2.1.1), so reading the first producer is correct here.
             if (const auto *fp = entry.first_producer())
@@ -4954,7 +4949,6 @@ nlohmann::json BrokerServiceImpl::collect_shm_info(const std::string& channel) c
     {
         nlohmann::json blk;
         blk["channel"]  = bi.channel;
-        blk["shm_name"] = bi.shm_name;
 
         nlohmann::json prod;
         prod["pid"]  = bi.producer_pid;
@@ -4974,7 +4968,7 @@ nlohmann::json BrokerServiceImpl::collect_shm_info(const std::string& channel) c
         blk["consumers"] = std::move(cons_arr);
 
         DataBlockMetrics m{};
-        if (::datablock_get_metrics(bi.shm_name.c_str(), &m) == 0)
+        if (::datablock_get_metrics(bi.channel.c_str(), &m) == 0)
         {
             nlohmann::json sm;
             sm["slot_count"]                  = m.slot_count;

@@ -2906,14 +2906,15 @@ Tracked under **task #286**.  Site list from the 2026-06-25 audit, staged by bla
 
 After phase B-1, the producer's `Registered → Authorized` transition fires, the §8.2 outer guard passes, and L4 SHM e2e (#258) goes green.  The remaining phases below are §5b conformance — they bring the wire into full alignment with the canonical shape but are not required for the L4 test to pass.
 
-**Phase B-2 — load-bearing field retirement (separate refactor, FOLLOW-UP TASK).**  The fields `pattern`, `has_shared_memory`, `shm_name` participate in the broker's channel-mismatch invariant (HEP-CORE-0007 Cat-1, see `hub_state.cpp:1039-1041`) and appear in DISC responses (`broker_service.cpp:2233,2241`), admin JSON (`hub_state_json.cpp:45,50`), and ~6 L3 test fixtures.  Removal requires:
+**Phase B-2 — load-bearing field retirement (task #287, SHIPPED 2026-06-25).**  The fields `pattern`, `has_shared_memory`, `shm_name` participated in the broker's channel-mismatch invariant (HEP-CORE-0007 Cat-1) and appeared in DISC responses, admin JSON, and ~10 L3/L2 test fixtures.  Substitution map (no information lost; the canonical replacement was already alongside):
 
-1. Replace the channel-mismatch invariant's reliance on `(pattern, has_shared_memory, shm_name)` with a single `(channel_name, data_transport, schema_hash)` check.
-2. Drop the fields from `ChannelEntry`, the REG_REQ wire reader, the DISC response, the admin snapshot, and `hub_state_json`.
-3. Update the L3 test workers (`datahub_broker_workers.cpp` x6 sites) to stop asserting on these fields.
-4. Update HEP-CORE-0007 §X (Cat-1 invariant text).
+- `pattern`: NO substitution.  Carried a write-only constant `"PubSub"`; `Pipeline` and `Bidir` topologies were never implemented in any control flow.  `ChannelPattern` enum + `channel_pattern.hpp` deleted.  HEP-CORE-0009 §2.8 marked RETIRED.
+- `has_shared_memory` (bool): substituted by `data_transport == "shm"` at the two derivation sites (`hub_state.cpp:914`, `:977`; `broker_service.cpp::collect_shm_info`).  Same information, one bit derived from the canonical enum.
+- `shm_name` (string): substituted by `channel_name`.  Role-side builder hard-coded `reg["shm_name"] = in.channel`; `_set_shm_block` calls now pass `channel_name` twice; `ShmBlockRef.block_path` semantically becomes the channel name.  `BlockInfo.shm_name` test-fixture field dropped from the admin-info struct (was unused).
 
-This is its own commit chain.  Tracked under #286 phase B-2.
+Mismatch invariant simplified: `(schema_*, data_transport)` — pre-§5b checks on `pattern`/`shm_name` were dead (the values never differed between fresh and re-registered REG_REQs of the same channel).
+
+Site list closed: `role_reg_payload.hpp`, `hub_state.hpp`, `hub_state.cpp`, `broker_service.cpp` (REG_REQ reader + DISC response + collect_shm_info), `hub_state_json.cpp`, `plh_datahub.hpp`, `channel_pattern.hpp` (deleted), 9 L3 test workers + 1 L2 test (`test_hub_state.cpp`), HEP-CORE-0009 §2.8.  100% green on 1913-test L2+L3+L4 sweep.
 
 **Phase B-3 — `role_tag` → `role_type` in-process rename (FOLLOW-UP TASK).**  Currently the wire field is `role_type` (correct per §5b.4 / §5b.6) but the in-process struct field is `role_tag`.  Pure rename across `RoleAPIBase::Impl`, `RoleHostFrame::Config`, builders, log markers (~30+ sites).  No protocol effect.  Tracked under #286 phase B-3.
 

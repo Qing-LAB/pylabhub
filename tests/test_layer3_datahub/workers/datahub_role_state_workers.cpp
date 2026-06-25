@@ -119,8 +119,6 @@ nlohmann::json make_reg_opts(const std::string& channel, const std::string& role
 {
     nlohmann::json opts;
     opts["channel_name"]      = channel;
-    opts["pattern"]           = "PubSub";
-    opts["has_shared_memory"] = false;
     opts["producer_pid"]      = ::getpid();
     opts["role_uid"]          = role_uid;
     opts["role_name"]         = "role_state_test";
@@ -1009,8 +1007,6 @@ int role_api_base_start_handler_threads_e2e()
             // and the broker registers the channel.
             nlohmann::json reg_opts;
             reg_opts["channel_name"]      = channel;
-            reg_opts["pattern"]           = "PubSub";
-            reg_opts["has_shared_memory"] = false;
             reg_opts["producer_pid"]      = static_cast<uint64_t>(::getpid());
             reg_opts["role_uid"]          = role_uid;
             reg_opts["role_name"]         = "m4c_e2e";
@@ -1129,8 +1125,6 @@ int role_api_base_start_handler_threads_dual_hub_e2e()
             // Producer side: REG_REQ via brc_for_channel(ch_out).
             nlohmann::json prod_opts;
             prod_opts["channel_name"]      = ch_out;
-            prod_opts["pattern"]           = "PubSub";
-            prod_opts["has_shared_memory"] = false;
             prod_opts["producer_pid"]      = static_cast<uint64_t>(::getpid());
             prod_opts["role_uid"]          = role_uid;
             prod_opts["role_name"]         = "m4c_dual_e2e";
@@ -1151,8 +1145,6 @@ int role_api_base_start_handler_threads_dual_hub_e2e()
             // alive end-to-end.
             nlohmann::json in_prod_opts;
             in_prod_opts["channel_name"]      = ch_in;
-            in_prod_opts["pattern"]           = "PubSub";
-            in_prod_opts["has_shared_memory"] = false;
             in_prod_opts["producer_pid"]      = static_cast<uint64_t>(::getpid());
             in_prod_opts["role_uid"]          = role_uid;
             in_prod_opts["role_name"]         = "m4c_dual_e2e";
@@ -1743,8 +1735,6 @@ int role_api_base_hub_dead_transitions_presences_to_deregistered()
             auto reg_opts_for = [&](const std::string &ch) {
                 nlohmann::json opts;
                 opts["channel_name"]      = ch;
-                opts["pattern"]           = "PubSub";
-                opts["has_shared_memory"] = false;
                 opts["producer_pid"]      = static_cast<uint64_t>(::getpid());
                 opts["role_uid"]          = role_uid;
                 opts["role_name"]         = "r33_test";
@@ -2046,8 +2036,6 @@ int role_api_base_wait_for_role_dual_hub_fallthrough()
 
             nlohmann::json target_reg;
             target_reg["channel_name"]      = target_chan;
-            target_reg["pattern"]           = "PubSub";
-            target_reg["has_shared_memory"] = false;
             target_reg["producer_pid"]      = static_cast<uint64_t>(::getpid());
             target_reg["role_uid"]          = target_uid;
             target_reg["role_name"]         = "a3_target";
@@ -2206,8 +2194,6 @@ int role_api_base_registration_fsm_transitions()
             // Issue REG_REQ.
             nlohmann::json reg_opts;
             reg_opts["channel_name"]      = channel;
-            reg_opts["pattern"]           = "PubSub";
-            reg_opts["has_shared_memory"] = false;
             reg_opts["producer_pid"]      = static_cast<uint64_t>(::getpid());
             reg_opts["role_uid"]          = role_uid;
             reg_opts["role_name"]         = "s1_test";
@@ -2515,8 +2501,6 @@ int role_api_base_dual_hub_heartbeat_per_presence()
             {
                 nlohmann::json upstream_opts;
                 upstream_opts["channel_name"]      = ch_in;
-                upstream_opts["pattern"]           = "PubSub";
-                upstream_opts["has_shared_memory"] = false;
                 upstream_opts["producer_pid"]      =
                     static_cast<uint64_t>(::getpid());
                 upstream_opts["role_uid"]          =
@@ -2549,8 +2533,6 @@ int role_api_base_dual_hub_heartbeat_per_presence()
 
             nlohmann::json prod_opts;
             prod_opts["channel_name"]      = ch_out;
-            prod_opts["pattern"]           = "PubSub";
-            prod_opts["has_shared_memory"] = false;
             prod_opts["producer_pid"]      = static_cast<uint64_t>(::getpid());
             prod_opts["role_uid"]          = proc_uid;
             prod_opts["role_name"]         = "c2hb_proc";

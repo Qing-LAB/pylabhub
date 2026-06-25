@@ -35,7 +35,6 @@
  */
 
 #include "pylabhub_utils_export.h"
-#include "utils/channel_pattern.hpp"
 #include "utils/json_fwd.hpp"
 #include "utils/schema_record.hpp"  // SchemaRecord, SchemaRegOutcome, CitationOutcome
 
@@ -269,12 +268,12 @@ struct ChannelSchemaInvariants
 
 /// Aggregate of channel-wide transport invariants supplied by REG_REQ.
 /// Like `ChannelSchemaInvariants`, these are set on first admission and
-/// validated equal on subsequent admissions.
+/// validated equal on subsequent admissions.  HEP-CORE-0036 §5b.4
+/// canonical wire: only `data_transport` is on the wire; pre-§5b
+/// `pattern`, `has_shared_memory`, and `shm_name` were duplicates of
+/// `data_transport` and `channel_name` and have been retired.
 struct ChannelTransportInvariants
 {
-    bool           has_shared_memory{false};
-    std::string    shm_name;
-    ChannelPattern pattern{ChannelPattern::PubSub};
     std::string    data_transport{"shm"};
 };
 
@@ -372,9 +371,8 @@ struct ProducerAdmissionResult
 
     /// Names which invariant didn't match, when `invariant_result ==
     /// RejectedMismatch`.  One of: `"schema_hash"`, `"schema_version"`,
-    /// `"schema_id"`, `"schema_blds"`, `"schema_owner"`, `"shm_name"`,
-    /// `"has_shared_memory"`, `"pattern"`, `"data_transport"`.  Empty
-    /// on success.  Allows the broker to surface a specific reason
+    /// `"schema_id"`, `"schema_blds"`, `"schema_owner"`, `"data_transport"`.
+    /// Empty on success.  Allows the broker to surface a specific reason
     /// (SCHEMA_MISMATCH vs TRANSPORT_MISMATCH) without re-reading
     /// HubState.
     std::string        mismatched_invariant;
@@ -383,8 +381,10 @@ struct ProducerAdmissionResult
 /// Channel registered with the broker.
 struct ChannelEntry
 {
-    std::string name;          ///< Key in HubState::channels.
-    std::string shm_name;
+    std::string name;          ///< Key in HubState::channels.  Also
+                               ///< serves as the SHM block identifier
+                               ///< (HEP-CORE-0036 §5b.4 — pre-§5b
+                               ///< `shm_name` was a duplicate of this).
     std::string schema_hash;   ///< Hex (64 chars).  Channel-wide
                                ///< invariant — all producers MUST
                                ///< agree (HEP-CORE-0023 §2.1.1).
@@ -409,8 +409,10 @@ struct ChannelEntry
     std::vector<ProducerEntry> producers; ///< 1..N producers (HEP-0023 §2.1.1).
     std::vector<ConsumerEntry> consumers;
 
-    bool           has_shared_memory{false};
-    ChannelPattern pattern{ChannelPattern::PubSub};
+    // HEP-CORE-0036 §5b.4: `data_transport` is the single canonical
+    // transport-classification field.  Pre-§5b siblings `pattern`,
+    // `has_shared_memory`, `shm_name` were duplicate views of either
+    // `data_transport` or `name` and have been retired.
     // zmq_ctrl_endpoint / zmq_data_endpoint retired Wave M2.5 step 2c.
     // zmq_pubkey retired Wave M2.5 step 6.5 — per-producer CURVE
     // pubkey lives on `ProducerEntry.zmq_pubkey` (HEP-CORE-0021 §5.2).

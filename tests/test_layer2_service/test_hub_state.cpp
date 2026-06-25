@@ -67,7 +67,6 @@ ChannelEntry make_channel(const std::string &name)
 {
     ChannelEntry e;
     e.name           = name;
-    e.shm_name       = name + "-shm";
     e.schema_hash    = std::string(64, 'a');
     e.schema_version = 1;
     ProducerEntry p;
@@ -462,7 +461,6 @@ TEST(HubStateOps, ChannelRegistered_ComposesChannelAndRoleAndShmAndCounter)
         [&](const RoleEntry &r) { role_fired.push_back(r.uid); });
 
     auto ch              = make_channel("ch1");
-    ch.has_shared_memory = true;
     // Wave M2.5 step 6.5: zmq_pubkey is per-producer (HEP-CORE-0021
     // §5.2), not channel-scope.  The legacy _on_channel_registered
     // test-only path now reads from the FIRST producer's pubkey.
@@ -493,7 +491,9 @@ TEST(HubStateOps, ChannelRegistered_ComposesChannelAndRoleAndShmAndCounter)
 
     auto shm = s.shm_block("ch1");
     ASSERT_TRUE(shm.has_value());
-    EXPECT_EQ(shm->block_path, "ch1-shm");
+    // HEP-CORE-0036 §5b.4: SHM segment name is the channel name (no
+    // separate `shm_name` field — it was always == channel_name).
+    EXPECT_EQ(shm->block_path, "ch1");
 
     EXPECT_EQ(s.counters().msg_type_counts.count("REG_REQ"), 0u);
     EXPECT_EQ(opened_fired, (std::vector<std::string>{"ch1"}));
@@ -504,7 +504,9 @@ TEST(HubStateOps, ChannelRegistered_NoShm_SkipsShmBlock)
 {
     HubState s;
     auto     ch         = make_channel("ch1");
-    ch.has_shared_memory = false;
+    // HEP-CORE-0036 §5b.4: data_transport == "shm" classifies SHM;
+    // anything else means no SHM block registered.
+    ch.data_transport   = "zmq";
     HubStateTestAccess::on_channel_registered(s, ch);
     EXPECT_FALSE(s.shm_block("ch1").has_value());
 }
@@ -1798,22 +1800,18 @@ ChannelSchemaInvariants make_schema_invariants(const std::string &hash =
     return s;
 }
 
+// HEP-CORE-0036 §5b.4: ChannelTransportInvariants holds only the
+// canonical `data_transport` classifier; pre-§5b duplicates retired.
 ChannelTransportInvariants make_zmq_transport()
 {
     ChannelTransportInvariants t;
-    t.has_shared_memory = false;
-    t.shm_name          = "";
-    t.pattern           = pylabhub::hub::ChannelPattern::PubSub;
     t.data_transport    = "zmq";
     return t;
 }
 
-ChannelTransportInvariants make_shm_transport(const std::string &shm_name)
+ChannelTransportInvariants make_shm_transport(const std::string & /*shm_name*/)
 {
     ChannelTransportInvariants t;
-    t.has_shared_memory = true;
-    t.shm_name          = shm_name;
-    t.pattern           = pylabhub::hub::ChannelPattern::PubSub;
     t.data_transport    = "shm";
     return t;
 }
@@ -2484,7 +2482,6 @@ TEST(HubStateBandCascade, MultiPresenceRole_StaysAlive_KeepsBandMembership)
     HubStateTestAccess::on_channel_registered(s, [&]{
         ChannelEntry e;
         e.name           = "ch.bandcascade.b";
-        e.shm_name       = "ch.bandcascade.b-shm";
         e.schema_hash    = std::string(64, 'a');
         e.schema_version = 1;
         ProducerEntry p;
@@ -2597,7 +2594,6 @@ TEST(HubStateLifecycle, ReRegister_AfterPartialDereg_PresenceFreshConnected)
     HubStateTestAccess::on_channel_registered(s, [&]{
         ChannelEntry e;
         e.name           = "ch.rereg.b";
-        e.shm_name       = "ch.rereg.b-shm";
         e.schema_hash    = std::string(64, 'a');
         e.schema_version = 1;
         ProducerEntry p;

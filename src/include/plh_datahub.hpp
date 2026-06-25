@@ -31,5 +31,4 @@
 #include "utils/data_block.hpp"
 
 #include "utils/role_identity_policy.hpp"
-#include "utils/channel_pattern.hpp"
 #include "utils/data_block_mutex.hpp"

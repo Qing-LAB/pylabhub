@@ -173,8 +173,6 @@ json make_reg_opts(const std::string &channel, const std::string &uid)
 {
     json opts;
     opts["channel_name"]      = channel;
-    opts["pattern"]           = "PubSub";
-    opts["has_shared_memory"] = false;
     opts["producer_pid"]      = ::getpid();
     opts["role_uid"]          = uid;
     opts["role_name"]         = "L3TestProducer";
