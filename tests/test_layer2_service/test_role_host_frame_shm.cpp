@@ -103,7 +103,13 @@ TEST_F(RoleHostFrameShmTest, PrepareTxCapability_Shm_HappyPath)
 {
     auto dir = unique_dir("shm_happy");
     auto w   = SpawnWorker("role_host_frame_shm.prepare_shm_happy", {dir});
-    ExpectWorkerOk(w);
+    // Pin the production INFO marker `prepare_tx_capability_` emits
+    // on success (role_host_frame.cpp:427-431).  This marker is a
+    // public observation surface — Pattern 4 SHM rungs (task #285)
+    // will grep it; locking the format here at the L2 layer keeps
+    // upstream tests from breaking silently if someone reshapes it.
+    ExpectWorkerOk(w,
+        /*required_substrings=*/{"event=ShmCapabilityTransportBound"});
 }
 
 // ─── spawn_shm_auth_listener_ behaviour ──────────────────────────────────────
@@ -136,5 +142,18 @@ TEST_F(RoleHostFrameShmTest, SpawnAndCleanup_FullCycle)
 {
     auto dir = unique_dir("full_cycle");
     auto w   = SpawnWorker("role_host_frame_shm.spawn_and_cleanup", {dir});
-    ExpectWorkerOk(w);
+    // Pin both production INFO markers in the order they fire:
+    //   - `event=ShmCapabilityTransportBound` from prepare_tx_capability_
+    //     (role_host_frame.cpp:427-431)
+    //   - `event=ShmAcceptLoopSpawned` from spawn_shm_auth_listener_
+    //     (role_host_frame.cpp:643-645)
+    // `required_substrings` checks presence (not order) so this is a
+    // robust co-occurrence pin.  Pattern 4 SHM rungs (task #285)
+    // depend on the SAME markers — locking the format at L2 means
+    // any format drift breaks fast + cheap here instead of slow +
+    // expensive at L3.
+    ExpectWorkerOk(w,
+        /*required_substrings=*/{
+            "event=ShmCapabilityTransportBound",
+            "event=ShmAcceptLoopSpawned"});
 }

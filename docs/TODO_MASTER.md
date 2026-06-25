@@ -187,8 +187,16 @@ Current critical path (each step blocks the next unless noted):
   `ecc72337`); **REVIEW-A (#271) ✅; REVIEW-B (#274) ✅ close-out
   2026-06-23 — B1 strip_unix_scheme fix + B3 worker-thread label fix
   + B2 deferred to #275 scope + 5 medium items carried to REVIEW-C
-  per AUTH_TODO §"REVIEW-B (#274) close-out"**; 1i-cleanup (#275) +
-  1i-coverage (#270) + 1j (#257) + 1k (#258) + #262 mutual auth ⏸.
+  per AUTH_TODO §"REVIEW-B (#274) close-out"**; **1i-cleanup (#275)
+  🟡 in flight** (S1+S2a+S2b+S2c-1..6+S3 ✅ shipped; S4+S5 ⏸
+  pending Pattern 4 reform #285 so coverage doesn't regress);
+  **1i-coverage (#270) ✅ shipped `8716d91a`** (L2 tests for
+  `prepare_tx_capability_` + `spawn_shm_auth_listener_` +
+  `cleanup_tx_capability_` + reusable `RoleHostFrameTestShim` in
+  `tests/test_framework/`; production log markers `event=ShmCapabilityTransportBound`
+  + `event=ShmAcceptLoopSpawned` pinned; 4 follow-up items filed in
+  `docs/todo/TESTING_TODO.md` § "HEP-0041 1i-coverage (#270)
+  follow-ups"); 1j (#257) + 1k (#258) + #262 mutual auth ⏸.
   **Five REVIEW-A..E milestones (#271/#274/#276/#277/#278) gate the
   remaining chain**; REVIEW-E is the Phase 1 production-ready final
   gate.  Full chain + milestone schedule in `docs/todo/AUTH_TODO.md`

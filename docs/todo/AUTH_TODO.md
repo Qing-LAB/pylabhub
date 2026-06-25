@@ -1102,18 +1102,18 @@ hardcoded-zero `shm_secret` — a typo-catcher, not an auth check.
 | 1i-mig-2c review fixes | #256 | ✅ `78fc6b9d` | `strip_unix_scheme` helper + `bind_endpoint` parent-dir mkdir-0700 + accept-loop per-iter try/catch (H2) |
 | 1i-mig-2c M3 | #256 | ✅ `8e05a821` | Promote 3-pointer SHM auth bundle + cleanup default + `spawn_shm_auth_listener_` helper onto `RoleHostFrame` |
 | 1i-mig-3 | #256 | ✅ `6f31a346` | Processor OUT-side wiring (single `spawn_shm_auth_listener_()` call via M3) |
-| **1i-mig-M3.5** | **#266** | **⏸ next** | Promote `prepare_tx_capability_` (byte-equivalent in producer+processor; ~70 LOC saved) to `RoleHostFrame` default impl |
-| **1i-doc-sync** | **#267** | **⏸** | Doc-vs-code bundle: HEP-0041 §5.1 `strip_unix_scheme`+mkdir, §6.1 layering+L2c→L1 edge, §6.3 `borrow_fd`, §9 D4 + HEP-0036 §I11.1 + §3.6 diagram `_RSP→_ACK`, HEP-0036 §4.1 ChannelAccessEntry historical, HEP-0036 §I8 SO_PEERCRED cite fix, HEP-0031 §4.3 `shm_accept_loop` row, non-Linux `#error` symmetry for L2c, broker_proto version-comment decision, L2/L3 known limitations |
-| **1i-prod-hardening** | **#268** | **⏸** | H3a defer accept-spawn past `set_value(true)` + H3b `teardown_infrastructure_` on REG_ACK fail + H3c broker REG_REQ endpoint validation + H3d stale-socket probe-then-unlink |
-| **1i-api-scope** | **#269** | **⏸** | `RoleAPIBase::consumer_attach` script-binding scope decision (verify engine bindings; make internal or `SCRIPT_PRIVATE`) |
-| **Mechanism enum widening** | **#279** | **⏸** | `hub::Mechanism` enum is ZMQ-shaped (`Uninitialized | Curve`); `api.queue_mechanism(side)` returns misleading `Uninitialized` for SHM channels.  Designer decision: widen to include `ShmCapability` (Option A) vs drop `queue_mechanism` in favor of `is_channel_ready` (Option B).  Last queue-layer abstraction leak from the 2026-06-22 architectural assessment. |
-| **★ REVIEW-A** | **#271** | **⏸** | First milestone — gates 1i-mig-4 start |
-| 1i-mig-4 | #272 | ⏸ | Consumer dial in `apply_consumer_reg_ack` + `RxQueueOptions::shm_capability_fd` + `build_rx_queue` dispatch (biggest single piece, ~150 LOC) |
-| 1i-mig-5 | #273 | ⏸ | Cutover + L3 worker fixture migration |
-| **★ REVIEW-B** | **#274** | **✅ 2026-06-23** | Second milestone — closed: B1 strip_unix_scheme fix + B3 worker-thread label fix + B2 deferred to #275 (see scope block below); 5 medium items carried to REVIEW-C (#276) |
-| 1i-cleanup | #275 | ⏸ | Delete legacy `shm_secret` machinery (HONOR Core Structure Change Protocol for `SharedMemoryHeader::shared_secret[64]`) |
-| **★ REVIEW-C** | **#276** | **⏸** | Third milestone — gates 1j/1k test creation |
-| 1i-coverage | #270 | ⏸ | L2 coverage for `RoleHostFrame::spawn_shm_auth_listener_` + `prepare_tx_capability_` |
+| 1i-mig-M3.5 | #266 | ✅ `e8e10738` | Promoted `prepare_tx_capability_` (byte-equivalent in producer+processor; ~92 LOC saved net) to `RoleHostFrame` default impl |
+| 1i-doc-sync | #267 | ✅ `47fe4806` | Doc-vs-code bundle: HEP-0041 §5.1 `strip_unix_scheme`+mkdir, §6.1 layering+L2c→L1 edge, §6.3 `borrow_fd`, §9 D4 + HEP-0036 §I11.1 + §3.6 diagram `_RSP→_ACK`, HEP-0036 §4.1 ChannelAccessEntry historical, HEP-0036 §I8 SO_PEERCRED cite fix, HEP-0031 §4.3 `shm_accept_loop` row, non-Linux `#error` symmetry for L2c, broker_proto version-comment decision, L2/L3 known limitations |
+| 1i-prod-hardening | #268 | ✅ `9c0947f1` | H3a defer accept-spawn past `set_value(true)` + H3b `teardown_infrastructure_` on REG_ACK fail + H3c broker REG_REQ endpoint validation + H3d stale-socket probe-then-unlink |
+| 1i-api-scope | #269 | ✅ `0533102e` | `RoleAPIBase::consumer_attach` annotated FRAMEWORK-INTERNAL (Option B — annotate not restructure) |
+| Mechanism enum widening | #279 | ✅ `56deb3ac` | Enum moved to `hub_queue.hpp`; `ShmCapability` added; polymorphic dispatch via `QueueReader::mechanism()` virtual; Native ABI gains `PLH_MECHANISM_SHM_CAPABILITY 2` |
+| ★ REVIEW-A | #271 | ✅ `8c6ca64a` | First milestone — gated 1i-mig-4 start; 4 angles parallel review; close-out commit |
+| 1i-mig-4 | #272 | ✅ `2793a394` | Consumer dial in `apply_consumer_reg_ack` + `RxQueueOptions::shm_capability_fd` + `build_rx_queue` dispatch (~150 LOC) |
+| 1i-mig-5 | #273 | ✅ `9e923c12` | Cutover + L3 worker fixture migration + mocking discipline doc |
+| ★ REVIEW-B | #274 | ✅ `8122bafc` | Second milestone — closed: B1 strip_unix_scheme fix + B3 worker-thread label fix + B2 deferred to #275 (see scope block below); 5 medium items carried to REVIEW-C (#276) |
+| 1i-cleanup | #275 | 🟡 in flight | Delete legacy `shm_secret` machinery (HONOR Core Structure Change Protocol for `SharedMemoryHeader::shared_secret[64]`).  Staged execution: S1+S2a+S2b+S2c-1..6+S3 ✅ shipped; S4 + S5 ⏸ pending Pattern 4 reform (#285) so coverage doesn't regress. |
+| ★ REVIEW-C | #276 | ⏸ | Third milestone — gates 1j/1k test creation |
+| 1i-coverage | #270 | ✅ `8716d91a` | L2 coverage for `RoleHostFrame::spawn_shm_auth_listener_` + `prepare_tx_capability_` + `cleanup_tx_capability_` via `test_layer2_role_host_frame_shm` + reusable `RoleHostFrameTestShim` in `tests/test_framework/`.  Pins production INFO markers `event=ShmCapabilityTransportBound` + `event=ShmAcceptLoopSpawned` so format regressions break fast at L2 instead of slow at L3.  4 follow-up items filed in `docs/todo/TESTING_TODO.md` (coverage gaps, boilerplate factor, cleanup-ordering doc, fz_spec forward-provision). |
 | 1j | #257 | ⏸ | L3 broker tests (success / denied / divergence-WARN) |
 | 1k | #258 | ⏸ | L4 e2e SHM auth-gated data flow |
 | **★ REVIEW-D** | **#277** | **⏸** | Fourth milestone — gates mutual auth |
