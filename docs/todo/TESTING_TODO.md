@@ -135,9 +135,21 @@ exposing protected `prepare_tx_capability_` + `spawn_shm_auth_listener_`
 `8716d91a` + `31b1d2af`).  Designer review surfaced the smell: the
 shim's `worker_main_` override mirrored production's
 `teardown_infrastructure_` ordering, making it a **parallel production
-scaffold** rather than a test of production.  Reverted same day; #270
-folded into #258 L4 e2e where real `plh_hub` + `plh_role` binaries
-exercise the same methods in their real production context.
+scaffold** rather than a test of production.  Reverted same day
+(`e8ca91b5`).
+
+**Critical clarification — the contracts are not dropped, only the
+layer moved.**  The L2 tests were removed because the methods can
+only be invoked correctly inside an L4 environment (no parallel
+production scaffold needed), NOT because the contracts they were
+going to verify are unnecessary.  Every contract is still required;
+each is now embedded inside #258 L4 via production marker grepping
+(`event=ShmCapabilityTransportBound`, `event=ShmAcceptLoopSpawned`,
+`event=AttachAuthorized`, `event=AttachDenied`,
+`event=ShmAttachOrchestratorReleased`,
+`event=ShmCapabilityTransportReleased`, plus broker + consumer
+markers).  Complete checklist with source lines in #258 task
+description — implementer MUST pin each via `expect_log_sequence`.
 
 Generalisable rule (candidate addition to README_testing.md §
 "Mocking discipline"):
@@ -152,6 +164,16 @@ Generalisable rule (candidate addition to README_testing.md §
 > construction) becomes test code with no production analogue —
 > precisely what test-faithfulness §2 says to avoid.  Test at the
 > layer where the methods actually do meaningful work.
+>
+> **Layer migration ≠ contract drop.**  When folding lower-layer
+> tests up into a higher-layer test, every contract the lower-layer
+> test was going to verify MUST be explicitly embedded as a
+> production-marker pin (`required_substrings` /
+> `expect_log_sequence`) at the upper layer.  Otherwise the upper
+> layer's happy-path "did it work end-to-end" assertion silently
+> drops the specific invariants the lower-layer test cared about.
+> Build the marker checklist as part of the layer-migration
+> decision, not as a follow-up.
 
 Promotion path: when a second instance of this antipattern is
 identified, fold the rule into README_testing.md § "Mocking

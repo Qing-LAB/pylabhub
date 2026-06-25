@@ -190,12 +190,12 @@ Current critical path (each step blocks the next unless noted):
   per AUTH_TODO §"REVIEW-B (#274) close-out"**; **1i-cleanup (#275)
   🟡 in flight** (S1+S2a+S2b+S2c-1..6+S3 ✅ shipped; S4+S5 ⏸
   pending Pattern 4 reform #285 so coverage doesn't regress);
-  **1i-coverage (#270) ⏭ folded into #258 (layer pivot 2026-06-25)**
-  — initial L2 implementation reverted after designer review surfaced
-  the shim-as-parallel-production-scaffold smell; multi-process
-  methods test naturally at L4 with real binaries.  See HEP-0041
-  §10.1 1i-coverage row for full reasoning; 1j (#257) + 1k (#258)
-  + #262 mutual auth ⏸.
+  **1i-coverage (#270) ⏭ embedded in #258 (layer pivot 2026-06-25)**
+  — initial L2 implementation reverted (`e8ca91b5`); shim was a
+  parallel production scaffold.  **L2 contracts NOT dropped** —
+  embedded inside #258 L4 via production marker grepping; complete
+  checklist in #258 task description.  Layer migration ≠ contract
+  drop.  1j (#257) + 1k (#258) + #262 mutual auth ⏸.
   **Five REVIEW-A..E milestones (#271/#274/#276/#277/#278) gate the
   remaining chain**; REVIEW-E is the Phase 1 production-ready final
   gate.  Full chain + milestone schedule in `docs/todo/AUTH_TODO.md`
