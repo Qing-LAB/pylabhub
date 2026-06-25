@@ -21,6 +21,8 @@ add_library(pylabhub-test-framework STATIC
   pattern4_helpers.h
   role_api_base_test_access.cpp
   role_api_base_test_access.h
+  role_host_frame_test_shim.cpp
+  role_host_frame_test_shim.h
   shared_test_helpers.cpp
   shared_test_helpers.h
   test_entrypoint.cpp

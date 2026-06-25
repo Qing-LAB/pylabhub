@@ -1544,6 +1544,36 @@ gtest_discover_tests(test_layer2_role_host_base
     PROPERTIES LABELS "layer2;service;role_host_base" TIMEOUT 60)
 
 # ============================================================================
+# Test: RoleHostFrame SHM hooks (HEP-CORE-0041 task #270)
+#
+# Pattern 3 (subprocess per test) — pins the protected SHM auth-stack
+# methods on RoleHostFrame: prepare_tx_capability_ (1i-mig-M3.5 default
+# impl), spawn_shm_auth_listener_ (1i-mig-2c M3), cleanup_tx_capability_.
+# Driven through tests::RoleHostFrameTestShim (test_framework) which
+# exposes the protected surface as one-line public forwards.
+# ============================================================================
+
+add_executable(test_layer2_role_host_frame_shm
+    test_role_host_frame_shm.cpp
+    workers/role_host_frame_shm_workers.cpp)
+target_include_directories(test_layer2_role_host_frame_shm PRIVATE
+    workers
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/producer)
+target_link_libraries(test_layer2_role_host_frame_shm PRIVATE
+    pylabhub::utils
+    pylabhub::test_framework
+    GTest::gtest
+    GTest::gmock)
+pylabhub_ensure_sanitizer_for_executable(test_layer2_role_host_frame_shm)
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_role_host_frame_shm
+    SUITE_NAME "Layer2_RoleHostFrameShm")
+layer2_require_staged_utils(test_layer2_role_host_frame_shm)
+gtest_discover_tests(test_layer2_role_host_frame_shm
+    PROPERTIES LABELS "layer2;service;role_host_frame;shm" TIMEOUT 60)
+
+# ============================================================================
 # Test: LoopTimingPolicy (pure header-only API)
 # ============================================================================
 
