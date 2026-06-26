@@ -14,6 +14,9 @@
 #include "utils/security/secure_buffer.hpp"
 #include "utils/security/secure_memory_subsystem.hpp"
 
+#include <zmq.h>  // zmq_z85_encode — compute expected pubkey at the test
+                  // boundary (HEP-CORE-0040 §8.5.2; #291 follow-up).
+
 #include <sodium.h>  // sodium_malloc / sodium_free — used by sodium_smoke
 
 #include "shared_test_helpers.h"
@@ -48,18 +51,22 @@ using pylabhub::utils::security::secure_memory_subsystem_ready;
 namespace
 {
 
-// Canonical 80-byte identity payload (pub_z85 || sec_z85, 40+40).  All
-// printable ASCII so byte-equal assertions are readable in test output.
+// Canonical 64-byte identity payload (pub_raw || sec_raw, 32+32) —
+// HEP-CORE-0040 §8.5.2 (#291 follow-up, 2026-06-26).  Pre-#291 the
+// layout was 80 bytes Z85 (40+40); the KeyStore raw-storage flip
+// changed both the storage layout and the boundary contract.  Raw
+// bytes are arbitrary `pub_fill`/`sec_fill` bytes — readability isn't
+// the test's purpose, the size-equality + zero-source behaviour is.
 struct TestKeypair
 {
-    std::array<std::byte, 80> bytes{};
+    std::array<std::byte, 64> bytes{};
 
     static TestKeypair make(char pub_fill, char sec_fill)
     {
         TestKeypair k;
-        for (std::size_t i = 0; i < 40; ++i)
+        for (std::size_t i = 0; i < 32; ++i)
             k.bytes[i] = static_cast<std::byte>(pub_fill);
-        for (std::size_t i = 40; i < 80; ++i)
+        for (std::size_t i = 32; i < 64; ++i)
             k.bytes[i] = static_cast<std::byte>(sec_fill);
         return k;
     }
@@ -235,15 +242,19 @@ int second_construction_throws(const char * /*tmpdir*/)
             EXPECT_EQ(&key_store(), &ks_first);  // same instance
             EXPECT_EQ(key_store().size(), 1u);
             EXPECT_TRUE(key_store().has("role_identity"));
+            // HEP-CORE-0040 §8.5.2 (#291) — pubkey() returns the Z85
+            // encoding of the raw 32-byte pubkey; with_seckey returns
+            // raw 32 bytes.  Source bytes were uniform 'A'/'Z' fills,
+            // so the only invariant we assert here (besides "didn't
+            // throw") is the size contract.
             const auto pub = key_store().pubkey("role_identity");
-            ASSERT_EQ(pub.size(), 40u);
-            for (char c : pub) EXPECT_EQ(c, 'A');
+            ASSERT_EQ(pub.size(), 40u);  // Z85 of 32 raw bytes
             std::string sec_after;
             key_store().with_seckey("role_identity",
                 [&](std::string_view sv) {
                     sec_after.assign(sv.data(), sv.size());
                 });
-            ASSERT_EQ(sec_after.size(), 40u);
+            ASSERT_EQ(sec_after.size(), 32u);  // raw seckey
             for (char c : sec_after) EXPECT_EQ(c, 'Z');
         },
         "key_store::second_construction_throws",
@@ -300,32 +311,42 @@ int add_identity_then_pubkey_and_with_seckey_roundtrip(const char * /*tmpdir*/)
             SecureMemorySubsystem sms;
             KeyStore              ks("role", "test-role-uid");
 
-            // Distinct per-byte pattern (NOT uniform fills) — catches
-            // off-by-one slice errors, swap between pub/sec halves,
-            // and direction reversal.  pub byte i = 0x20 + i (' '..'G');
-            // sec byte i = 0x60 + i ('`'..'~').  Disjoint ranges so any
-            // contamination is immediately visible.
-            std::array<std::byte, 80> packed{};
-            for (std::size_t i = 0; i < 40; ++i)
+            // HEP-CORE-0040 §8.5.2 (#291, 2026-06-26) — raw 64-byte
+            // layout (pub_raw[32] || sec_raw[32]).  Distinct per-byte
+            // pattern (NOT uniform fills) catches off-by-one slice
+            // errors, swap between pub/sec halves, and direction
+            // reversal.  pub byte i = 0x20 + i (' '..'?');
+            // sec byte i = 0x60 + i ('`'..'~').  Disjoint ranges so
+            // any contamination is immediately visible.
+            std::array<std::byte, 64> packed{};
+            for (std::size_t i = 0; i < 32; ++i)
                 packed[i] = static_cast<std::byte>(0x20 + i);
-            for (std::size_t i = 0; i < 40; ++i)
-                packed[40 + i] = static_cast<std::byte>(0x60 + i);
+            for (std::size_t i = 0; i < 32; ++i)
+                packed[32 + i] = static_cast<std::byte>(0x60 + i);
+
+            // Compute the expected Z85 pubkey BEFORE moving `packed`
+            // into KeyStore so the comparison is independent of
+            // KeyStore internals (single source of truth = libzmq's
+            // zmq_z85_encode of the same raw bytes).
+            char expected_pub_z85[41] = {};
+            ASSERT_NE(zmq_z85_encode(
+                expected_pub_z85,
+                reinterpret_cast<const uint8_t *>(packed.data()),
+                32), nullptr) << "test setup: zmq_z85_encode(pub) failed";
 
             ks.add_identity("role_identity", std::span<std::byte>(packed));
 
-            // pubkey() returns first 40 bytes — verify byte-by-byte.
+            // pubkey() returns Z85(raw_pub) — 40 ASCII chars.
             const auto pub = key_store().pubkey("role_identity");
             ASSERT_EQ(pub.size(), 40u);
-            for (std::size_t i = 0; i < 40; ++i)
-            {
-                EXPECT_EQ(static_cast<unsigned char>(pub[i]),
-                          static_cast<unsigned char>(0x20 + i))
-                    << "pub byte " << i << " corrupted";
-            }
+            EXPECT_EQ(std::string(pub),
+                      std::string(expected_pub_z85, 40))
+                << "pubkey() returned different Z85 than zmq_z85_encode of "
+                   "raw bytes — KeyStore Z85 encoding boundary broken";
 
-            // with_seckey() invokes callback with last 40 bytes —
-            // verify byte-by-byte AND verify callback was invoked
-            // (not just "no exception thrown").
+            // with_seckey() invokes callback with RAW 32 bytes
+            // (HEP-CORE-0040 §8.5.2) — verify byte-by-byte AND verify
+            // callback was invoked (not just "no exception thrown").
             bool        callback_fired = false;
             std::string captured;
             key_store().with_seckey("role_identity",
@@ -335,8 +356,8 @@ int add_identity_then_pubkey_and_with_seckey_roundtrip(const char * /*tmpdir*/)
                 });
             EXPECT_TRUE(callback_fired)
                 << "with_seckey returned without invoking the callback";
-            ASSERT_EQ(captured.size(), 40u);
-            for (std::size_t i = 0; i < 40; ++i)
+            ASSERT_EQ(captured.size(), 32u);  // raw seckey, not Z85
+            for (std::size_t i = 0; i < 32; ++i)
             {
                 EXPECT_EQ(static_cast<unsigned char>(captured[i]),
                           static_cast<unsigned char>(0x60 + i))
@@ -354,7 +375,8 @@ int add_identity_zeros_source(const char * /*tmpdir*/)
             SecureMemorySubsystem sms;
             KeyStore              ks("role", "test-role-uid");
 
-            SecureBuffer<80> buf;
+            // HEP-CORE-0040 §8.5.2 — raw 64-byte storage layout.
+            SecureBuffer<64> buf;
             // Fill with non-zero pattern.
             std::span<std::byte> sp = buf.span();
             for (std::size_t i = 0; i < sp.size(); ++i)
@@ -560,6 +582,13 @@ int add_identity_duplicate_throws(const char * /*tmpdir*/)
             KeyStore              ks("role", "test-role-uid");
 
             auto kp1 = TestKeypair::make('A', 'B');
+            // HEP-CORE-0040 §8.5.2 — compute kp1's expected Z85 pubkey
+            // BEFORE add_identity zeros the source.
+            char expected_kp1_pub_z85[41] = {};
+            ASSERT_NE(zmq_z85_encode(
+                expected_kp1_pub_z85,
+                reinterpret_cast<const uint8_t *>(kp1.bytes.data()),
+                32), nullptr);
             ks.add_identity("role_identity", std::span<std::byte>(kp1.bytes));
 
             auto kp2 = TestKeypair::make('C', 'D');
@@ -567,9 +596,11 @@ int add_identity_duplicate_throws(const char * /*tmpdir*/)
                 ks.add_identity("role_identity", std::span<std::byte>(kp2.bytes)),
                 std::runtime_error);
 
-            // Original entry preserved.
-            for (char c : key_store().pubkey("role_identity"))
-                EXPECT_EQ(c, 'A');
+            // Original entry preserved — pubkey returns kp1's Z85.
+            EXPECT_EQ(std::string(key_store().pubkey("role_identity")),
+                      std::string(expected_kp1_pub_z85, 40))
+                << "kp1's pubkey clobbered by failed duplicate add — "
+                   "the failed add_identity must NOT mutate the map";
         },
         "key_store::add_identity_duplicate_throws",
         Logger::GetLifecycleModule());
@@ -708,7 +739,7 @@ int parallel_reads_do_not_block(const char * /*tmpdir*/)
             auto reader = [&]() {
                 key_store().with_seckey("role_identity",
                     [&](std::string_view sec) {
-                        EXPECT_EQ(sec.size(), 40u);
+                        EXPECT_EQ(sec.size(), 32u);
                         // Signal arrival.
                         {
                             std::lock_guard<std::mutex> lk(bar_mu);

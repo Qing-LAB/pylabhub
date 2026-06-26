@@ -97,28 +97,37 @@ public:
 
     // ── Writes (exclusive lock) ──────────────────────────────────────
 
-    /// Insert an identity keypair packed as pub_z85 (40 bytes) +
-    /// sec_z85 (40 bytes) — 80 bytes total.  Source buffer zeroed
-    /// before return.
+    /// Insert an identity keypair packed as pub_raw (32 bytes) +
+    /// sec_raw (32 bytes) — 64 bytes total raw binary
+    /// (HEP-CORE-0040 §8.5.2).  Source buffer zeroed before return.
     /// Throws `std::runtime_error` if `name` already present, if the
-    /// span is not exactly 80 bytes, or if `sodium_malloc` fails
+    /// span is not exactly 64 bytes, or if `sodium_malloc` fails
     /// (RLIMIT_MEMLOCK denial).
+    ///
+    /// **Pre-#291 historical note:** packed shape was 80 bytes Z85
+    /// (pub_z85 || sec_z85).  HEP-CORE-0040 §8.5.2 flipped storage to
+    /// raw 64 bytes so every libsodium primitive (and AttachProtocol)
+    /// consumes the canonical form directly; Z85 is computed on-demand
+    /// at the wire / file / display boundary via
+    /// `add_identity_from_z85` / `pubkey()` / `with_seckey_z85`.
     void add_identity(std::string_view name, std::span<std::byte> packed_pub_sec);
 
     /// Convenience: insert an identity keypair given the two Z85
-    /// halves separately.  Internally packs into a `SecureBuffer<80>`
-    /// (zero-on-destruct) and delegates to `add_identity`.
+    /// halves separately.  Internally Z85-decodes both halves into a
+    /// `SecureBuffer<64>` (zero-on-destruct) of raw bytes and
+    /// delegates to `add_identity`.
     ///
     /// This is the SINGLE site (across production + tests) where the
-    /// `(pub_z85, sec_z85) → 80-byte` storage layout is defined.
-    /// Production callers (`HubConfig::load_keypair`,
-    /// `RoleConfig::load_keypair`) and test fixtures both go through
-    /// this method, so changing the layout requires updating only
-    /// `key_store.cpp` — no parallel logic in tests to maintain.
+    /// Z85→raw decode at the security-module boundary lives
+    /// (HEP-CORE-0040 §8.5.2).  Production callers
+    /// (`HubConfig::load_keypair`, `RoleConfig::load_keypair`) and
+    /// test fixtures both go through this method, so the encoding
+    /// boundary is in exactly one place.
     ///
     /// Throws `std::runtime_error` if `name` already present, if
-    /// either half is not exactly 40 chars (Z85 of 32 raw bytes), or
-    /// if `sodium_malloc` fails.
+    /// either half is not exactly 40 chars (Z85 of 32 raw bytes), if
+    /// `zmq_z85_decode` fails (malformed Z85), or if `sodium_malloc`
+    /// fails.
     void add_identity_from_z85(std::string_view name,
                                 std::string_view pub_z85,
                                 std::string_view sec_z85);
@@ -139,31 +148,55 @@ public:
     // ── Reads (shared lock; parallel across consumers) ──────────────
 
     /// Return the Z85 PUBLIC key (40 chars) for an identity entry.
-    /// View points into LockedKey-owned bytes; lifetime is until
-    /// `remove()` or KeyStore dtor.  Pubkeys are non-secret — fine
-    /// to pass / log / copy.
+    /// View points into a non-secret cache stored on the Entry next
+    /// to the LockedKey; lifetime is until `remove()` or KeyStore
+    /// dtor.  Pubkeys are non-secret — fine to pass / log / copy
+    /// (HEP-CORE-0036 §I10 + HEP-CORE-0040 §8.5.2).
     /// Throws `std::out_of_range` if `name` is absent or refers to a
     /// raw entry (use `lookup_raw` for HEP-0038 secrets).
     [[nodiscard]] std::string_view pubkey(std::string_view name) const;
 
-    /// Invoke `use` with the Z85 SECRET key (40 chars) for an
-    /// identity entry.  View is valid ONLY inside `use`; storing it
-    /// past return is undefined behaviour.  Bytes live in the
-    /// LockedKey region; the security module never materializes a
-    /// std::string copy.
+    /// Invoke `use` with the **RAW 32-byte SECRET key**
+    /// (`crypto_box_SECRETKEYBYTES`) for an identity entry, per
+    /// HEP-CORE-0040 §8.5.2 canonical contract.  View is valid ONLY
+    /// inside `use`; storing it past return is undefined behaviour.
+    /// Bytes live in the LockedKey region; the security module never
+    /// materializes a std::string copy.
+    ///
+    /// **Use this for every libsodium / AttachProtocol consumer.**
+    /// If your downstream API requires Z85 (vault round-trip, log
+    /// display, libzmq Z85 socket option set-as-string), use
+    /// `with_seckey_z85` instead — it encodes raw → Z85 on the fly
+    /// into a stack buffer that is sodium_memzero'd before return.
     ///
     /// Shared lock is held for the callback's duration — concurrent
     /// `with_seckey` / `pubkey` / `lookup_raw` calls run in parallel,
     /// but a concurrent `remove(name)` waits.  Callback MUST be
     /// prompt (microseconds): no blocking I/O, no syscalls beyond
     /// what's needed to consume the bytes (typically a single
-    /// `socket.set(zmq::sockopt::curve_secretkey, sv)` call).
+    /// `crypto_box_easy(...)` call).
     ///
     /// Throws `std::out_of_range` if `name` is absent or refers to a
     /// raw entry.  Rethrows anything thrown by `use` after releasing
     /// the shared lock.
     void with_seckey(std::string_view                          name,
                      std::function<void(std::string_view)>     use) const;
+
+    /// Invoke `use` with the **Z85 SECRET key (40 ASCII chars)** for
+    /// an identity entry — the on-disk / on-the-wire form per
+    /// HEP-CORE-0040 §8.5.2.  Encoded on-the-fly from the raw bytes
+    /// in LockedKey into a stack buffer; the buffer is
+    /// `sodium_memzero`'d before this function returns (both on
+    /// normal exit and on exceptions from `use`).
+    ///
+    /// **Prefer `with_seckey` (raw) and encode to Z85 at the wire
+    /// boundary.**  This accessor exists only for the rare downstream
+    /// API that REQUIRES Z85 input (e.g., vault re-serialize, libzmq
+    /// `curve_secretkey` Z85-string set, human-readable log lines).
+    ///
+    /// Same threading semantics as `with_seckey`.
+    void with_seckey_z85(std::string_view                          name,
+                          std::function<void(std::string_view)>     use) const;
 
     /// HEP-0038 raw-secret access (`api.vault_load`).  Span lifetime
     /// is until `remove()` or KeyStore dtor; script bindings MUST

@@ -24,6 +24,8 @@
 #include <unordered_map>
 
 #include <sodium.h>
+#include <zmq.h>  // zmq_z85_encode + zmq_z85_decode — Z85 codec at the
+                  // KeyStore module boundary (HEP-CORE-0040 §8.5.2)
 
 #ifdef __linux__
 #  include <sys/mman.h>   // madvise / MADV_DONTDUMP
@@ -117,10 +119,20 @@ KeyStore    *g_keystore = nullptr;
 // one KeyStore exists per OS process (HEP-CORE-0040 §5.1).
 constexpr const char *kModuleName = "KeyStore";
 
-// Identity-key shape: pub_z85 (40 bytes) + sec_z85 (40 bytes) packed
-// contiguously — see HEP-CORE-0040 §8.1.
-constexpr std::size_t kIdentityKeypairBytes = 80;
-constexpr std::size_t kZ85HalfBytes         = 40;
+// HEP-CORE-0040 §8.5.2 (#291 follow-up, 2026-06-26) — in-memory
+// identity-key shape is RAW: pub_raw (32 bytes) + sec_raw (32 bytes)
+// packed contiguously inside the LockedKey region.  Z85 is reserved
+// for the vault file, the wire, and human/log display — see §8.5.2
+// for the full contract.  Pre-#291 the storage was Z85 (40+40=80)
+// and decoded ad-hoc at every libsodium call site, which silently
+// fed 40-byte spans into a 32-byte-expecting crypto_box; the
+// AttachProtocol size check at attach_protocol.cpp:559 +
+// :388 catches that drift but only after the consumer had to bail
+// mid-handshake.  Centralising the encoding at the KeyStore boundary
+// removes the bug class.
+constexpr std::size_t kRawHalfBytes         = 32; // crypto_box_SECRETKEYBYTES / _PUBLICKEYBYTES
+constexpr std::size_t kIdentityKeypairBytes = 64; // pub_raw || sec_raw
+constexpr std::size_t kZ85HalfBytes         = 40; // wire/file/display half
 } // namespace
 
 // ============================================================================
@@ -134,13 +146,22 @@ struct KeyStore::Impl
     bool        lifecycle_registered = false;
 
     /// Map entry — owns one LockedKey + remembers whether it's an
-    /// identity keypair (80 bytes = pub_z85 || sec_z85) or a raw
-    /// HEP-0038 secret (arbitrary bytes).  No cached `CurveKeypair`
-    /// view: under the use-not-export design (round-5) the bytes
-    /// never leave the LockedKey region as data.
+    /// identity keypair (64 bytes raw = pub_raw[32] || sec_raw[32],
+    /// HEP-CORE-0040 §8.5.2) or a raw HEP-0038 secret (arbitrary
+    /// bytes).  No cached `CurveKeypair` view: under the use-not-
+    /// export design (round-5) the bytes never leave the LockedKey
+    /// region as data.
+    ///
+    /// `pub_z85_cache` — non-secret Z85 view of the pubkey, computed
+    /// once at `add_identity` time so `pubkey()` can return a
+    /// string_view with the same lifetime as the entry (until
+    /// `remove()` or KeyStore dtor) without re-encoding per call.
+    /// Living OUTSIDE the LockedKey region is fine: pubkey is non-
+    /// secret per HEP-CORE-0036 §I10 + HEP-CORE-0040 §8.5.2.
     struct Entry
     {
         std::unique_ptr<LockedKey> key;
+        std::string                pub_z85_cache;  // empty for non-identity
         bool                       is_identity = false;
     };
 
@@ -289,16 +310,35 @@ KeyStore::~KeyStore()
 
 void KeyStore::add_identity(std::string_view name, std::span<std::byte> packed_pub_sec)
 {
+    // HEP-CORE-0040 §8.5.2 (#291 follow-up, 2026-06-26) — the packed
+    // buffer is now RAW 64 bytes (pub_raw[32] || sec_raw[32]), not
+    // Z85 80 bytes.  Pre-#291 callers that packed Z85 must go through
+    // add_identity_from_z85 (or its sibling for raw); direct callers
+    // of add_identity are the SecureBuffer-pack site below.
     if (packed_pub_sec.size_bytes() != kIdentityKeypairBytes)
     {
         throw std::runtime_error(
             "KeyStore::add_identity: packed_pub_sec must be exactly "
             + std::to_string(kIdentityKeypairBytes)
-            + " bytes (pub_z85 || sec_z85), got "
+            + " bytes (pub_raw[32] || sec_raw[32], HEP-CORE-0040 §8.5.2), got "
             + std::to_string(packed_pub_sec.size_bytes()));
     }
 
     std::string name_key(name);
+
+    // Pre-compute pubkey Z85 cache BEFORE moving into LockedKey, so
+    // we can stuff it on the Entry in one shot.  Encoding is from
+    // the raw 32 pubkey bytes in the front half of `packed_pub_sec`;
+    // result is exactly 40 ASCII chars + NUL (Z85 expansion is 5:4).
+    char pub_z85_buf[kZ85HalfBytes + 1] = {};
+    if (zmq_z85_encode(pub_z85_buf,
+                        reinterpret_cast<const uint8_t *>(
+                            packed_pub_sec.data()),
+                        kRawHalfBytes) == nullptr)
+    {
+        throw std::runtime_error(
+            "KeyStore::add_identity: zmq_z85_encode(pub) failed");
+    }
 
     std::unique_lock<std::shared_mutex> wlk(pImpl->mu);
 
@@ -310,8 +350,9 @@ void KeyStore::add_identity(std::string_view name, std::span<std::byte> packed_p
     }
 
     Impl::Entry entry;
-    entry.key         = std::make_unique<LockedKey>(packed_pub_sec);
-    entry.is_identity = true;
+    entry.key           = std::make_unique<LockedKey>(packed_pub_sec);
+    entry.pub_z85_cache = std::string(pub_z85_buf, kZ85HalfBytes);
+    entry.is_identity   = true;
 
     pImpl->store.emplace(std::move(name_key), std::move(entry));
 }
@@ -331,15 +372,26 @@ void KeyStore::add_identity_from_z85(std::string_view name,
             + ", sec=" + std::to_string(sec_z85.size()));
     }
 
-    // SINGLE SOURCE OF TRUTH for the (pub_z85 || sec_z85) layout.
-    // SecureBuffer<80> zero-on-destructs the pack scope; add_identity
-    // also wipes the source before return.  Production callers
-    // (HubConfig / RoleConfig load_keypair) and tests both reach
-    // KeyStore through this method — no parallel packing code.
-    SecureBuffer<kIdentityKeypairBytes> packed;
-    auto buf = packed.span();
-    std::memcpy(buf.data(),                 pub_z85.data(), kZ85HalfBytes);
-    std::memcpy(buf.data() + kZ85HalfBytes, sec_z85.data(), kZ85HalfBytes);
+    // HEP-CORE-0040 §8.5.2 (#291 follow-up, 2026-06-26) — SINGLE
+    // SOURCE OF TRUTH for the Z85→raw decode at the security-module
+    // boundary.  SecureBuffer<64> zero-on-destructs the raw scope;
+    // add_identity also wipes the source before return.  Production
+    // callers (HubConfig / RoleConfig load_keypair, test fixtures)
+    // pass Z85 strings; this is the ONE site that does the decode.
+    SecureBuffer<kIdentityKeypairBytes> raw_packed;
+    auto buf = raw_packed.span();
+    if (zmq_z85_decode(reinterpret_cast<uint8_t *>(buf.data()),
+                        std::string(pub_z85).c_str()) == nullptr)
+    {
+        throw std::runtime_error(
+            "KeyStore::add_identity_from_z85: zmq_z85_decode(pub) failed");
+    }
+    if (zmq_z85_decode(reinterpret_cast<uint8_t *>(buf.data() + kRawHalfBytes),
+                        std::string(sec_z85).c_str()) == nullptr)
+    {
+        throw std::runtime_error(
+            "KeyStore::add_identity_from_z85: zmq_z85_decode(sec) failed");
+    }
     add_identity(name, buf);
 }
 
@@ -379,10 +431,10 @@ std::string_view KeyStore::pubkey(std::string_view name) const
             "KeyStore::pubkey: '" + std::string(name)
             + "' is a raw secret, not an identity keypair — use lookup_raw");
     }
-    // First 40 bytes of the 80-byte packed pub||sec buffer (HEP-CORE-0040 §8.1).
-    const auto bytes = it->second.key->bytes();
-    return std::string_view(reinterpret_cast<const char *>(bytes.data()),
-                            kZ85HalfBytes);
+    // HEP-CORE-0040 §8.5.2 — return the Z85 cache (40 ASCII chars)
+    // computed at add_identity time.  Pubkey is non-secret; the
+    // cache string lives in the Entry (not in LockedKey).
+    return it->second.pub_z85_cache;
 }
 
 void KeyStore::with_seckey(std::string_view                          name,
@@ -403,14 +455,68 @@ void KeyStore::with_seckey(std::string_view                          name,
             + "' is a raw secret, not an identity keypair — use lookup_raw");
     }
 
-    // Last 40 bytes of the 80-byte packed pub||sec buffer.  Shared lock
-    // is held for the callback's duration — concurrent remove(name)
-    // waits.  Callback MUST be prompt (HEP-CORE-0040 §5.5 contract).
+    // HEP-CORE-0040 §8.5.2 (#291 follow-up, 2026-06-26) — return the
+    // RAW 32-byte seckey (sec_raw) from the back half of the 64-byte
+    // packed buffer.  This is the single canonical form at the
+    // security-module API boundary; libsodium primitives
+    // (crypto_box_*, crypto_sign_*) and AttachProtocol's
+    // SeckeyAccessor callback all consume raw bytes.  Z85 callers
+    // use with_seckey_z85 instead.  Shared lock is held for the
+    // callback's duration — concurrent remove(name) waits.  Callback
+    // MUST be prompt (HEP-CORE-0040 §5.5 contract).
     const auto bytes = it->second.key->bytes();
     const std::string_view sec(
-        reinterpret_cast<const char *>(bytes.data() + kZ85HalfBytes),
-        kZ85HalfBytes);
+        reinterpret_cast<const char *>(bytes.data() + kRawHalfBytes),
+        kRawHalfBytes);
     use(sec);
+}
+
+void KeyStore::with_seckey_z85(std::string_view                          name,
+                                std::function<void(std::string_view)>     use) const
+{
+    std::shared_lock<std::shared_mutex> rlk(pImpl->mu);
+
+    const auto it = pImpl->store.find(std::string(name));
+    if (it == pImpl->store.end())
+    {
+        throw std::out_of_range(
+            "KeyStore::with_seckey_z85: name not present: '"
+            + std::string(name) + "'");
+    }
+    if (!it->second.is_identity)
+    {
+        throw std::out_of_range(
+            "KeyStore::with_seckey_z85: '" + std::string(name)
+            + "' is a raw secret, not an identity keypair — use lookup_raw");
+    }
+
+    // HEP-CORE-0040 §8.5.2 — Z85 view of the seckey, encoded
+    // on-the-fly from the raw bytes in LockedKey into a stack buffer.
+    // Used by vault round-trip (re-serialize back to disk) and any
+    // downstream API that requires Z85 input (rare; prefer the raw
+    // accessor + encode at the wire boundary).  Stack buffer is
+    // zeroed before return so the seckey bytes don't survive the
+    // callback's stack frame.
+    const auto bytes = it->second.key->bytes();
+    char       sec_z85_buf[kZ85HalfBytes + 1] = {};
+    if (zmq_z85_encode(sec_z85_buf,
+                        reinterpret_cast<const uint8_t *>(
+                            bytes.data() + kRawHalfBytes),
+                        kRawHalfBytes) == nullptr)
+    {
+        throw std::runtime_error(
+            "KeyStore::with_seckey_z85: zmq_z85_encode(sec) failed");
+    }
+    try
+    {
+        use(std::string_view(sec_z85_buf, kZ85HalfBytes));
+    }
+    catch (...)
+    {
+        ::sodium_memzero(sec_z85_buf, sizeof(sec_z85_buf));
+        throw;
+    }
+    ::sodium_memzero(sec_z85_buf, sizeof(sec_z85_buf));
 }
 
 std::span<const std::byte> KeyStore::lookup_raw(std::string_view name) const

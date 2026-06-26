@@ -778,6 +778,41 @@ Both are freed by `std::string`'s destructor at scope exit without `sodium_memze
 
 If the threat model later tightens to include swap-out during the RoleVault lifetime, the next step is a SecureString-backed Impl member or a custom JSON allocator.
 
+### 8.5.2 Seckey representation at the KeyStore module boundary — canonical contract
+
+**Problem this section pins.**  CURVE keypairs have two well-defined encodings in this codebase:
+
+| Encoding | Size | Where it lives |
+|---|---|---|
+| Z85 (ASCII) | 40 chars for pubkey, 40 chars for seckey | Vault file on disk (HEP-CORE-0035 §4.5), `pubkey_z85` JSON wire fields (HEP-CORE-0036 §5b.7), libzmq `CURVE_PUBLICKEY` / `CURVE_SECRETKEY` socket options when set via the libzmq Z85 path |
+| Raw binary | 32 bytes for pubkey, 32 bytes for seckey | What `crypto_box_easy` / `crypto_box_open_easy` / `crypto_sign_*` actually consume (libsodium primitives); the raw bytes after `zmq_curve_keypair`'s `zmq_z85_decode` |
+
+Both encodings are valid AT THEIR LAYER; the bug is when two layers disagree about which they're passing.  Per a 2026-06-26 root-cause analysis (task #291), the SHM consumer-attach handshake silently failed because the `SeckeyAccessor` lambda in `apply_consumer_reg_ack_shm_` (`role_api_base.cpp`) forwarded `KeyStore::with_seckey`'s 40-byte Z85 string straight into `AttachProtocol`'s `crypto_box_easy` call site, which expects 32 raw bytes.  The size mismatch was caught at `attach_protocol.cpp:559` with `"consumer_sk span must be 32 bytes (got 40)"`, but only AFTER the consumer had already accepted frame 1 and was about to send frame 2 — the producer-side observed only `"peer closed connection mid-frame (got 0 of 4)"`.
+
+**Contract — single canonical form at the security-module API boundary.**
+
+The KeyStore module exposes seckey access via **TWO explicit accessors**.  Callers MUST pick the one that matches their consumer's contract; there is no "default" or "guess":
+
+| API | Span size | When to use |
+|---|---|---|
+| `KeyStore::with_seckey(name, use)` | **RAW 32 bytes** (`crypto_box_SECRETKEYBYTES` from libsodium) | Any libsodium primitive — `crypto_box_easy`, `crypto_box_open_easy`, `crypto_sign_*`, etc.  The `SeckeyAccessor` callback type used by `AttachProtocol` (HEP-CORE-0036 §5.5) takes spans in this encoding.  This is the **default — when in doubt, use this**. |
+| `KeyStore::with_seckey_z85(name, use)` | **40 ASCII chars** (Z85 encoding) | Vault round-trip (re-serialize back to disk), JSON wire emission, libzmq Z85-format socket options if those are used.  ALWAYS prefer the raw API + encode at the wire boundary; reach for `with_seckey_z85` only when a downstream API REQUIRES Z85 input. |
+
+This contract is enforced at FOUR layers:
+
+1. **KeyStore.hpp** declares both accessors with documentation pinning the span size + decoding responsibility.
+2. **AttachProtocol.cpp** `receive_seckey` size assertions at the consumer + producer crypto-box call sites (existing: lines 388 + 559) throw with the field name + expected size — the assertion message NAMES the contract violation, so future drift fails loud at the boundary.
+3. **role_host_frame.cpp** (producer-side acceptor) + **role_api_base.cpp** (consumer-side dialer) seckey_accessor lambda comments cite this section by number.
+4. **HEP-CORE-0036 §5.5** cross-references this section as the authoritative source for "what does AttachProtocol's `SeckeyAccessor` callback receive?"
+
+**Storage layout (HEP-0040 implementation detail; not part of the API contract).**
+
+LockedKey stores the keypair as `pub_raw[32] ‖ sec_raw[32] = 64 bytes` of mlocked, zero-on-destruct memory (raw binary).  The Z85 view is computed on-demand inside `with_seckey_z85` from the raw bytes (cheap; `zmq_z85_encode`).  Pre-#291 storage was `pub_z85[40] ‖ sec_z85[40] = 80 bytes` (Z85), which is what made the size mismatch easy to introduce.  Storage migration is `kZ85HalfBytes (40)` → `kRawKeyBytes (32)` in `key_store.cpp`'s layout constants.
+
+**Migration guarantee.**  Any pre-existing caller of `with_seckey` that assumed Z85 (i.e., copied a 40-char span into a `std::string`) MUST be updated AT THE SAME TIME the storage flips, or the size-check assertion at AttachProtocol will fire.  We treat this as the contract enforcement mechanism: there is no silent path.
+
+**Threat-model interaction with §8.5.1.**  The Z85 → raw conversion happens INSIDE the KeyStore module; the raw 32 bytes never leave the `with_seckey` callback's stack frame without being passed to a libsodium primitive.  The §8.5.1 vault-load path hardening (RoleVault `WipeGuard`) is unchanged — it operates on the vault-side Z85 form before LockedKey absorbs it.
+
 ### 8.6 What this design eliminates
 
 - `client_pubkey / client_seckey` fields in HubConfig::AuthConfig + RoleConfig::AuthConfig

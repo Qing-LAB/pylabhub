@@ -479,6 +479,21 @@ possession.  Same security property as ZMQ's CURVE handshake, using
 the same Curve25519 keypairs (no separate Ed25519 signing key
 needed).
 
+**Seckey representation contract (NORMATIVE).**  The `SeckeyAccessor`
+callbacks passed into `AttachProtocolAcceptor::AttachProtocolAcceptor`
+(producer side) and `initiate_consumer_handshake` (consumer side)
+receive the seckey as **RAW 32 BYTES** (libsodium's
+`crypto_box_SECRETKEYBYTES`).  This is the single canonical
+representation at the security-module API boundary per
+**HEP-CORE-0040 §8.5.2**; Z85 encoding lives only at the
+vault-file boundary, the wire boundary, and human/log display.  The
+size check at `attach_protocol.cpp:559` (consumer side) +
+`attach_protocol.cpp:388` (producer side) is the boundary assertion
+that catches any future drift — message reads
+`"consumer_sk span must be 32 bytes (got N)"` / equivalent on the
+producer side.  See HEP-CORE-0040 §8.5.2 for the full contract +
+the #291 root-cause analysis that established it.
+
 The `crypto_box` model replaced an earlier "sign with CURVE seckey"
 strawman that was cryptographically broken (CURVE seckeys are
 Curve25519 ECDH keys, not signing keys; libsodium has no such
