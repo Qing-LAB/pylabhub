@@ -2733,52 +2733,57 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
         resp["correlation_id"] = corr_id;
     }
 
-    // HEP-CORE-0036 §6.4 — emit `producers[]` so the consumer's
-    // role-host can populate `RxQueueOptions::producer_peers` for the
-    // data-plane PULL socket's CURVE handshake.  ZMQ transport only.
-    // Length 1 for single-producer; length N for fan-in (HEP-CORE-0023
-    // §2.1.1) — same wire shape either way.
+    // HEP-CORE-0036 §5b / §6.4 — unified `producers[]` shape across
+    // transports (B-4, #289, 2026-06-25).  Pre-B-4 the ZMQ branch
+    // emitted `producers[]` while the SHM branch emitted flat
+    // `shm_capability_endpoint` + `producer_pubkey_z85` fields, and
+    // the consumer discriminated by "which field name is present"
+    // (a fragile pattern — the same silent-gate class as the
+    // pre-B-1 `channel_id` vs `channel_name` bug).
     //
-    // SHM transport: today, this builder emits nothing transport-
-    // specific for SHM channels (the ZMQ branch falls through with no
-    // `else`).  HEP-CORE-0041 substep 1g (#254) lands the SHM branch:
-    // `shm_capability_endpoint` (from `ProducerEntry::shm_capability_endpoint`,
-    // populated by the producer's `default_shm_capability_endpoint` helper
-    // and stored by the REG_REQ handler) + `producer_pubkey_z85` (from
-    // `ProducerEntry::zmq_pubkey`, reused for the `crypto_box`
-    // challenge-response in HEP-0041 §5.5).  The legacy AUTH-4 /
-    // task #164 design (a single `shm_secret` field) is SUPERSEDED by
-    // HEP-CORE-0041 and was never wired on the wire — do not add it.
+    // Unified shape:
+    //   resp["data_transport"] ∈ {"shm", "zmq"}  — self-describing
+    //                                              discriminator
+    //   resp["producers"] = [{role_uid, pubkey_z85, endpoint}, ...]
+    //
+    // `endpoint` is transport-specific by value, uniform by key:
+    //   - ZMQ → `ProducerEntry::zmq_node_endpoint` (tcp://host:port)
+    //   - SHM → `ProducerEntry::shm_capability_endpoint`
+    //           (ipc:///run/.../<channel>.sock for the §5.5 ZAP-CURVE
+    //           dial; HEP-CORE-0041 §5.3)
+    //
+    // `pubkey_z85` is the SINGLE canonical key (no `pubkey` dual
+    // name).  HEP-CORE-0036 §I10 invariant: one CURVE pubkey per
+    // role uid, irrespective of transport.
+    //
+    // SHM is single-producer per HEP-CORE-0023 §2.1.1 cardinality;
+    // the broker has already rejected a second SHM producer at
+    // REG_REQ time with MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM, so for
+    // SHM channels `producers[]` has length 1 by construction.
+    //
+    // The legacy AUTH-4 / task #164 design (a single `shm_secret`
+    // field) is SUPERSEDED by HEP-CORE-0041 and was never wired on
+    // the wire — do not add it.
     if (auto ch_opt = hub_state_->channel(channel_name); ch_opt.has_value())
     {
-        if (ch_opt->data_transport == "zmq")
+        resp["data_transport"] = ch_opt->data_transport;
+        nlohmann::json producers_array = nlohmann::json::array();
+        for (const auto& p : ch_opt->producers)
         {
-            nlohmann::json producers_array = nlohmann::json::array();
-            for (const auto& p : ch_opt->producers)
+            nlohmann::json entry;
+            entry["role_uid"]   = p.role_uid;
+            entry["pubkey_z85"] = p.zmq_pubkey;
+            if (ch_opt->data_transport == "shm")
             {
-                producers_array.push_back({
-                    {"role_uid", p.role_uid},
-                    {"pubkey",   p.zmq_pubkey},
-                    {"endpoint", p.zmq_node_endpoint},
-                });
+                entry["endpoint"] = p.shm_capability_endpoint;
             }
-            resp["producers"] = std::move(producers_array);
+            else
+            {
+                entry["endpoint"] = p.zmq_node_endpoint;
+            }
+            producers_array.push_back(std::move(entry));
         }
-        else if (ch_opt->data_transport == "shm" && !ch_opt->producers.empty())
-        {
-            // HEP-CORE-0041 §5.3 (substep 1g #254) — SHM channels carry
-            // the producer's L2 capability-transport endpoint and pubkey
-            // so the consumer can dial via `attach_shm_capability_consumer`
-            // and crypto_box-encrypt its attach challenge (§5.5 frame 2)
-            // against the producer's pubkey.  SHM is single-producer per
-            // HEP-CORE-0023 §2.1.1 cardinality, so we always take the
-            // first (and only) producer; the broker has already rejected
-            // a second SHM producer at REG_REQ time with
-            // MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM.
-            const auto &p = ch_opt->producers.front();
-            resp["shm_capability_endpoint"] = p.shm_capability_endpoint;
-            resp["producer_pubkey_z85"]     = p.zmq_pubkey;
-        }
+        resp["producers"] = std::move(producers_array);
     }
 
     return resp;

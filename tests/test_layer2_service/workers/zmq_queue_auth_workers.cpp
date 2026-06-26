@@ -783,7 +783,7 @@ int auth_standby_state_transitions(const char *)
             ack["producers"].push_back({
                 {"role_uid", "P0"},
                 {"endpoint", "tcp://127.0.0.1:5561"},
-                {"pubkey", server_pub}
+                {"pubkey_z85", server_pub}  // B-4 (#289): single canonical key
             });
             EXPECT_TRUE(consumer->apply_master_approval(ack))
                 << "apply_master_approval(CONSUMER_REG_ACK) is the "

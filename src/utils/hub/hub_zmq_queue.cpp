@@ -964,11 +964,13 @@ bool ZmqQueue::apply_master_approval(const nlohmann::json& artifacts) noexcept
                 ProducerPeer p;
                 p.role_uid    = entry.value("role_uid",    std::string{});
                 p.endpoint    = entry.value("endpoint",    std::string{});
-                p.pubkey_z85  = entry.value("pubkey_z85",  std::string{});
-                // pubkey field may be carried as "pubkey" (HEP-0036 §6.4
-                // wire shape) — accept either spelling.
-                if (p.pubkey_z85.empty())
-                    p.pubkey_z85 = entry.value("pubkey", std::string{});
+                // HEP-CORE-0036 §5b B-4 (#289, 2026-06-25) — single
+                // canonical key `pubkey_z85`.  Pre-B-4 the broker
+                // emitted `pubkey` on producers[] entries and we
+                // accepted both spellings here; B-4 unified the
+                // broker emit to `pubkey_z85` and dropped the dual
+                // name on both readers (here + role_api_base.cpp).
+                p.pubkey_z85 = entry.value("pubkey_z85", std::string{});
                 if (p.role_uid.empty() || p.endpoint.empty()
                     || p.pubkey_z85.empty())
                 {

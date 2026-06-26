@@ -397,11 +397,12 @@ following bullets enumerate the per-side application of this rule:
   the SHM consumer didn't know the channel's `shm_secret` until
   `CONSUMER_REG_ACK` carried it; without it, SHM attach failed (the
   legacy DataBlock secret check, HEP-CORE-0002).  Post-HEP-0041
-  Phase 1 (1f shipped), the SHM consumer doesn't know the producer's
-  L2 capability-transport endpoint or pubkey until `CONSUMER_REG_ACK`
-  carries `shm_capability_endpoint` + `producer_pubkey_z85`
-  (HEP-0041 §5.3); without those, the consumer can't dial the
-  producer's attach listener (HEP-0041 §9 D4).
+  Phase 1 (1f shipped) + §5b B-4 (2026-06-25), the SHM consumer
+  doesn't know the producer's L2 capability-transport endpoint or
+  pubkey until `CONSUMER_REG_ACK.producers[0].endpoint` +
+  `.pubkey_z85` (unified §5b.7 shape for both transports); without
+  those, the consumer can't dial the producer's attach listener
+  (HEP-0041 §9 D4).
 - **SHM producer** has no broker-issued artifact gating the write
   side per se, but follows the same symmetric pattern: queue stays
   in Standby (§6.7) until `apply_producer_reg_ack` runs and starts
@@ -944,7 +945,7 @@ of trusting a remembered prior approval.
 | Action | The master's "yes" (request → reply) | Framework applies via |
 |---|---|---|
 | Consumer enters ZMQ channel (first time) | `CONSUMER_REG_REQ` → `CONSUMER_REG_ACK.producers[]` | `apply_master_approval(ACK)` — single mutator drives Standby → Active (spawns worker under ThreadManager scope per §3.5.4 INV4) |
-| Consumer enters SHM channel (first time) ⚠ SUPERSEDED — see §1 Amendment + HEP-CORE-0041 §5.3 / §9 D4 | `CONSUMER_REG_REQ` → `CONSUMER_REG_ACK.shm_capability_endpoint` + `producer_pubkey_z85` (HEP-0041 §5.3; legacy `CONSUMER_REG_ACK.shm_secret` retired in HEP-0041 1g) | `apply_master_approval(ACK)` (spawns worker under ThreadManager scope per §3.5.4 INV4); consumer-side dial of producer's L2 capability transport happens in `RoleAPIBase::apply_consumer_reg_ack` before `apply_master_approval` (HEP-0041 1i-mig-4) |
+| Consumer enters SHM channel (first time) | `CONSUMER_REG_REQ` → `CONSUMER_REG_ACK.data_transport="shm"` + `producers[0]={role_uid, pubkey_z85, endpoint}` (unified §5b.7 B-4 shape; HEP-0041 §5.3; legacy `shm_secret` retired in HEP-0041 1g; pre-B-4 flat `shm_capability_endpoint` + `producer_pubkey_z85` retired in §5b B-4) | Consumer-side dial of producer's L2 capability transport runs in `RoleAPIBase::apply_consumer_reg_ack`'s SHM branch (no `apply_master_approval` — D2 designer decision §5b note); §5.5 ZAP-CURVE handshake + SCM_RIGHTS recv → ShmQueue Standby → Active (HEP-0041 1i-mig-4) |
 | Producer opens ZMQ channel (first time) | `REG_REQ` → `REG_ACK.initial_allowlist` | `apply_master_approval(ACK)` (spawns worker under ThreadManager scope per §3.5.4 INV4) |
 | Producer reacts to consumer-join / -leave on running channel | `CHANNEL_AUTH_CHANGED_NOTIFY` (doorbell) → `GET_CHANNEL_AUTH_REQ` → `GET_CHANNEL_AUTH_ACK.allowlist` | `set_peer_allowlist` on Active queue |
 | Consumer reacts to producer-join / -leave on running channel | `CHANNEL_PRODUCERS_CHANGED_NOTIFY` (doorbell) → `GET_CHANNEL_PRODUCERS_REQ` → `GET_CHANNEL_PRODUCERS_ACK.producers[]` | `set_producer_peers` on Active queue |
@@ -1684,7 +1685,7 @@ sequenceDiagram
     Note over B: §6.3 identity verify;<br/>_on_consumer_authorized(channel, pubkey)
     B->>P: CHANNEL_AUTH_CHANGED_NOTIFY {channel,<br/>reason="consumer_joined"}
     Note over P: GET_CHANNEL_AUTH_REQ pull;<br/>allowlist_cache.put(channel, new_set);<br/>fire on_allowlist_changed("consumer_joined")
-    B->>C: CONSUMER_REG_ACK<br/>(ZMQ: producers[] / SHM: shm_capability_endpoint +<br/>producer_pubkey_z85)
+    B->>C: CONSUMER_REG_ACK<br/>{data_transport, producers: [{role_uid, pubkey_z85, endpoint}]}<br/>(unified per §5b.7 B-4; SHM endpoint=L2 capability URI)
 
     Note over C,DP: ── Data-plane attach (TRANSPORT-SPECIFIC) ──
     alt ZMQ transport
@@ -1724,9 +1725,11 @@ sequenceDiagram
 
 - The transport-agnostic REG_REQ / REG_ACK wire shape: §6.1 + §6.2.
 - The transport-agnostic CONSUMER_REG_REQ wire shape: §6.3.
-- The transport-DEPENDENT CONSUMER_REG_ACK payload: §6.4 (ZMQ
-  `producers[]`) + HEP-CORE-0041 §5.3 (SHM `shm_capability_endpoint` +
-  `producer_pubkey_z85`).
+- The CONSUMER_REG_ACK payload (unified per §5b.7 B-4): `data_transport`
+  echo + `producers[{role_uid, pubkey_z85, endpoint}]` for both ZMQ
+  and SHM.  Pre-B-4 the SHM branch used flat `shm_capability_endpoint`
+  + `producer_pubkey_z85` and the ZMQ branch used a `pubkey` dual-name;
+  both retired 2026-06-25.  See §5b.7 + HEP-CORE-0041 §5.3.
 - `CHANNEL_AUTH_CHANGED_NOTIFY` + `GET_CHANNEL_AUTH_REQ`/`_ACK`: §6.5.
 - ZMQ data-plane attach (CURVE + ZAP cache): §3.5.5 stage S3 + §3.5.6.
 - SHM data-plane attach (Unix socket + `crypto_box` + SCM_RIGHTS):
@@ -2916,9 +2919,27 @@ Mismatch invariant simplified: `(schema_*, data_transport)` — pre-§5b checks 
 
 Site list closed: `role_reg_payload.hpp`, `hub_state.hpp`, `hub_state.cpp`, `broker_service.cpp` (REG_REQ reader + DISC response + collect_shm_info), `hub_state_json.cpp`, `plh_datahub.hpp`, `channel_pattern.hpp` (deleted), 9 L3 test workers + 1 L2 test (`test_hub_state.cpp`), HEP-CORE-0009 §2.8.  100% green on 1913-test L2+L3+L4 sweep.
 
-**Phase B-3 — `role_tag` → `role_type` in-process rename (FOLLOW-UP TASK).**  Currently the wire field is `role_type` (correct per §5b.4 / §5b.6) but the in-process struct field is `role_tag`.  Pure rename across `RoleAPIBase::Impl`, `RoleHostFrame::Config`, builders, log markers (~30+ sites).  No protocol effect.  Tracked under #286 phase B-3.
+**Phase B-3 — single-standard sweep ✅ shipped 2026-06-25 (commit `a2fd345a`).**  SHORT-form storage uniformly named `short_tag` across `RoleEntry`, `EngineHost`, `HubAPI` ctor param, `RoleAPIBase::short_tag_`, `RoleHostFrameConfig::short_tag`, and `plh::Context::short_tag` (Native ABI v7→v8 bump).  LONG-form storage uniformly named `role_type` across `RoleConfig`, `RoleRuntimeInfo`, `ProducerRegInputs`, `identity_config` + `auth_config` parser params, `plh_role_main`.  Composite renames: `is_role_tag → is_short_tag`, `role_tag_matches → short_tag_matches`, `extract_role_tag → extract_short_tag`.  No protocol effect.
 
-**Phase B-4 — CONSUMER_REG_ACK shape unification (FOLLOW-UP TASK).**  Per §5b.7 the SHM branch must emit `producers: [{role_uid, pubkey_z85, endpoint}]` length-1 instead of the current flat `shm_capability_endpoint` + `producer_pubkey_z85`.  The ZMQ branch must drop the `producers[].pubkey` dual-name in favor of `pubkey_z85` only.  Both require coordinated emitter (`broker_service.cpp:~2734`) + reader (`role_api_base.cpp::apply_consumer_reg_ack`) changes + HEP-CORE-0041 §5.3 cross-sync.  Tracked under #286 phase B-4.
+**Phase B-4 — CONSUMER_REG_ACK shape unification ✅ shipped 2026-06-25.**  Both transports now emit the unified shape:
+
+```json
+{
+  "status": "success",
+  "channel_name": "<name>",
+  "data_transport": "shm" | "zmq",
+  "producers": [
+    { "role_uid": "...", "pubkey_z85": "<40-char Z85>", "endpoint": "..." }
+  ]
+}
+```
+
+- `data_transport` echo (NEW) is the self-describing dispatch discriminator on the consumer side.  Pre-B-4 the consumer branched on "which field name is present" (`ack.contains("shm_capability_endpoint")`), the same fragile pattern as the pre-B-1 `channel_id` silent gate.
+- `producers[]` is now emitted for BOTH transports.  For SHM the array has length 1 by HEP-CORE-0023 §2.1.1 single-producer cardinality.  `endpoint` is the L2 capability URI for SHM (`ipc:///...sock`, HEP-CORE-0041 §5.3) and the data-plane PULL endpoint for ZMQ (`tcp://host:port`).
+- `pubkey_z85` is the SINGLE canonical key.  The pre-B-4 `producers[].pubkey` dual-name has been DROPPED — both readers (`role_api_base.cpp` script-cache + `hub_zmq_queue.cpp::apply_master_approval`) now read only `pubkey_z85`.  Aligns with HEP-CORE-0036 §I10 one-pubkey-per-uid invariant.
+- The pre-B-4 flat `shm_capability_endpoint` and `producer_pubkey_z85` fields have been DROPPED from CONSUMER_REG_ACK.  (REG_REQ still uses `shm_capability_endpoint` — that is a producer-side input field, untouched by B-4.)
+
+L3 mutation pin in `DatahubBrokerConsumerTest.ConsumerRegAckEmitsProducersZmq` asserts `data_transport` echo, `pubkey_z85` key only, and absence of pre-B-4 flat fields + dual-name.
 
 **Phase B-5 — hard-error on missing canonical fields (FOLLOW-UP TASK).**  Replace silent `if (!channel_name.empty())` skip in `apply_producer_reg_ack` (role_api_base.cpp:1108) and `apply_consumer_reg_ack` (role_api_base.cpp:~736) with `LOGGER_ERROR + return false`.  Pre-condition for #286 phase B-5 is that phases B-1..B-4 are all landed (so the contract is guaranteed by the emitter before the reader assumes it).  Tracked under #286 phase B-5.
 

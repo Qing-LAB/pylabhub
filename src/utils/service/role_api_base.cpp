@@ -719,15 +719,14 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
                 // mechanics).
                 AllowedPeer entry;
                 entry.role_uid = p.value("role_uid", std::string{});
-                // Wire-field preference matches the queue's CURVE-key
-                // extraction at hub_zmq_queue.cpp:967-971: try
-                // `pubkey_z85` first, fall back to `pubkey`.  Keeps
-                // the script-visible cache and the libzmq serverkey
-                // aligned on transitional wire formats where both
-                // fields could be present with different values.
-                entry.pubkey   = p.value("pubkey_z85", std::string{});
-                if (entry.pubkey.empty())
-                    entry.pubkey = p.value("pubkey", std::string{});
+                // HEP-CORE-0036 §5b B-4 (#289, 2026-06-25) — single
+                // canonical key `pubkey_z85`.  Pre-B-4 the broker
+                // emitted `pubkey` and we fell back to `pubkey_z85`
+                // here; B-4 unified the broker emit to `pubkey_z85`
+                // (matching the §I10 one-pubkey-per-uid invariant
+                // and the §5b unified shape), and the dual-name
+                // fallback is dropped.
+                entry.pubkey = p.value("pubkey_z85", std::string{});
                 if (!entry.pubkey.empty())
                     script_view.push_back(std::move(entry));
             }
@@ -771,25 +770,46 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
                     ack.value("status", "?"),
                     producers_dump);
 
-        // HEP-CORE-0041 1i-mig-4 (#272) — for SHM channels the broker
-        // echoes back `shm_capability_endpoint` (the producer's L2
-        // attach listener URI) and `producer_pubkey_z85` (the
-        // producer's Curve25519 identity, used for the `crypto_box`
-        // challenge-response in §5.5).  Drive the explicit consumer
-        // dial here — D2 (designer decision): SHM does NOT route
-        // through `apply_master_approval` (which is the ZMQ-PULL
+        // HEP-CORE-0036 §5b B-4 (#289, 2026-06-25) — unified
+        // CONSUMER_REG_ACK shape across transports.  Pre-B-4 the
+        // broker emitted flat `shm_capability_endpoint` +
+        // `producer_pubkey_z85` for SHM and `producers[]` for ZMQ,
+        // and we discriminated by "which field name is present" — a
+        // fragile pattern of the same silent-gate class as the
+        // pre-B-1 `channel_id` vs `channel_name` bug.  Post-B-4 both
+        // transports emit `producers[]` with `pubkey_z85` keyed
+        // consistently, and the broker echoes `data_transport` so
+        // dispatch is data-driven instead of shape-driven.
+        //
+        // D2 (designer decision, unchanged from 1i-mig-4): SHM does
+        // NOT route through `apply_master_approval` (the ZMQ-PULL
         // peer-set mutator).  SHM activation runs the §5.5 ZAP-CURVE
         // handshake, recvs the memfd via SCM_RIGHTS, hands the fd to
-        // the rx queue, and starts it.
-        const bool has_shm_cap = ack.contains("shm_capability_endpoint");
-        if (has_shm_cap)
+        // the rx queue, and starts it — a separate code path.
+        const std::string data_transport_echo =
+            ack.value("data_transport", std::string{});
+        if (data_transport_echo == "shm")
         {
+            // SHM is single-producer per HEP-CORE-0023 §2.1.1
+            // cardinality; the broker has already rejected a second
+            // SHM producer at REG_REQ time.  Take producers[0].
+            if (!ack.contains("producers") || !ack["producers"].is_array() ||
+                ack["producers"].empty())
+            {
+                LOGGER_ERROR(
+                    "[{}] apply_consumer_reg_ack: SHM channel='{}' "
+                    "broker ACK missing producers[] (HEP-CORE-0036 §5b "
+                    "unified shape)",
+                    pImpl->short_tag, channel_name);
+                return false;
+            }
+            const auto &p = ack["producers"][0];
             const std::string shm_endpoint =
-                ack.value("shm_capability_endpoint", std::string{});
+                p.value("endpoint", std::string{});
             const std::string producer_pubkey_z85 =
-                ack.value("producer_pubkey_z85", std::string{});
+                p.value("pubkey_z85", std::string{});
             LOGGER_INFO("[{}] event=ShmCapabilityFieldsReceived channel='{}' "
-                        "shm_capability_endpoint='{}' producer_pubkey_z85_len={}",
+                        "endpoint='{}' producer_pubkey_z85_len={}",
                         pImpl->short_tag, channel_name, shm_endpoint,
                         producer_pubkey_z85.size());
             if (!apply_consumer_reg_ack_shm_(
@@ -806,6 +826,11 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
             // PULL queues: extracts ack["producers"], promotes peer[0]
             // into transport-artifact fields, and calls start()
             // internally).
+            //
+            // Note: the empty-data_transport fall-through here covers
+            // pre-B-4 ACKs in tests that haven't yet been migrated;
+            // B-5 (#290) will replace this with a hard error on
+            // missing `data_transport`.
             if (!pImpl->rx_queue->apply_master_approval(ack))
             {
                 LOGGER_ERROR("[{}] apply_consumer_reg_ack: "

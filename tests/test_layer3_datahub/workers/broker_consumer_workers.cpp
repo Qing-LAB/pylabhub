@@ -498,8 +498,12 @@ int consumer_reg_ack_emits_producers_zmq()
             auto reg_opts = make_reg_opts(
                 channel, prod_uid, curve.role(prod_uid).public_z85, 55001);
             // Convert to ZMQ transport so the broker emits producers[]
-            // per §6.4 (the array is omitted for SHM channels —
-            // SHM consumers attach via `shm_secret` instead).
+            // per §6.4.  Post-B-4 (#289) SHM channels ALSO emit
+            // producers[] with the same shape — the array's `endpoint`
+            // is the SHM L2 capability URI rather than a ZMQ tcp:// —
+            // and the broker echoes `data_transport` as the
+            // consumer-side dispatcher.  This test pins the ZMQ case;
+            // a sibling SHM pin would be added by B-4 follow-up tests.
             reg_opts["data_transport"]    = "zmq";
             reg_opts["zmq_node_endpoint"] = prod_endpoint;
             auto reg = prod.brc.register_channel(reg_opts, 3000);
@@ -520,17 +524,29 @@ int consumer_reg_ack_emits_producers_zmq()
             EXPECT_EQ(creg->value("status", std::string{}), "success");
 
             // D5 pin: producers[] present, length 1, single entry's
-            // (role_uid, pubkey, endpoint) match the producer's REG.
+            // (role_uid, pubkey_z85, endpoint) match the producer's REG.
+            // Post-B-4 (#289) the canonical pubkey key is `pubkey_z85`
+            // — the pre-B-4 `pubkey` dual-name has been dropped.
             ASSERT_TRUE(creg->contains("producers"));
             const auto &producers = creg->at("producers");
             ASSERT_TRUE(producers.is_array());
             ASSERT_EQ(producers.size(), 1u);
             EXPECT_EQ(producers[0].value("role_uid", std::string{}),
                       prod_uid);
-            EXPECT_EQ(producers[0].value("pubkey", std::string{}),
+            EXPECT_EQ(producers[0].value("pubkey_z85", std::string{}),
                       curve.role(prod_uid).public_z85);
             EXPECT_EQ(producers[0].value("endpoint", std::string{}),
                       prod_endpoint);
+            // B-4 pin: ACK echoes `data_transport` so consumers can
+            // dispatch by value, not by "which field is present".
+            EXPECT_EQ(creg->value("data_transport", std::string{}), "zmq");
+            // B-4 mutation pin: ensure the pre-B-4 flat fields are NOT
+            // present (the canonical shape is `producers[]` only).
+            EXPECT_FALSE(creg->contains("shm_capability_endpoint"));
+            EXPECT_FALSE(creg->contains("producer_pubkey_z85"));
+            // B-4 mutation pin: the dual-name `pubkey` key on
+            // producers[] entries has been retired.
+            EXPECT_FALSE(producers[0].contains("pubkey"));
         });
 }
 
