@@ -1423,6 +1423,71 @@ them must satisfy the "Logging discipline" subsection above
 (INFO one-shot only; hot paths use counters + consequence
 pinning).
 
+#### L4 end-to-end binary-driven tests — implicit settings that MUST be set explicitly
+
+Pattern 4 + L4 binary tests (`tests/test_layer4_plh_role/`,
+`tests/test_layer4_plh_hub/`) drive real `plh_role` / `plh_hub`
+binaries as subprocesses and read their output to render verdicts.
+Two implicit settings were the root cause of a self-inflicted #258
+investigation chain (2026-06-26).  Both are now codified here as
+explicit, mandatory items every L4 e2e test author MUST satisfy:
+
+- **Use `fs::absolute(...)` for any path written into a role / hub
+  config JSON.**  Test fixtures' `g_self_exe_path` is `argv[0]`,
+  which is RELATIVE when ctest invokes the binary as
+  `./build/stage-debug/tests/test_layer4_...`.  Paths derived from
+  it (e.g., `test_artifacts/<role_dir>`) are also relative.  When
+  the parent test process serialises a relative path into
+  `<role>.json` (`out_hub_dir`, `keyfile`, etc.) and a subprocess
+  reads it, the subprocess resolves the relative path against its
+  OWN CWD — typically NOT the parent's CWD.  Symptoms: subprocess
+  reports `broker_endpoint cannot be empty`; path-inside-path
+  directories appear under the role_dir (`<role_dir>/build/.../<role_dir>/logs/`).
+  **Fix:** wrap with `fs::absolute(...)` at the fixture's
+  `make_tmp_dir` boundary.  Single point of enforcement — every
+  caller inherits the absolutization.
+
+- **Read the role's rotating log file, NOT `WorkerProcess::get_stderr()`,
+  for markers emitted AFTER the role's Logger sink switch.**  Every
+  `plh_role` / `plh_hub` switches its Logger sink to a RotatingFile
+  early in startup — see HEP-CORE-0004 §"Shutdown observability".
+  After that switch, every `LOGGER_INFO` / `LOGGER_WARN` / `LOGGER_ERROR`
+  call lands in `<role_dir>/logs/<role-name>.log`, NOT on stderr.
+  Asserting markers via `prod.get_stderr().find(marker)` therefore
+  only sees the pre-sink-switch output (banner + initial debug
+  bootstrap).  Production cleanup markers (`event=ShmAttachOrchestratorReleased`,
+  `event=ShmCapabilityTransportReleased`, etc.) fire long after the
+  switch and are INVISIBLE to stderr-only checks.  **Fix:** use
+  `read_role_log(role_dir)` (the helper used by `wait_for_role_marker`)
+  or extend `wait_for_role_marker` to cover any marker you want to
+  pin.  Pattern: `EXPECT_NE(read_role_log(role_dir).find(marker),
+  std::string::npos)`.
+
+- **Persist test-artifact directories on failure** so the rotating
+  log file survives `TearDown` for post-mortem.  `PlhRoleCliTest`
+  and `PlhHubCliTest` honour `PLH_KEEP_TEST_ARTIFACTS=1` (env) and
+  `::testing::Test::HasFailure()` (automatic on failure) and root
+  scratch dirs at `<build-stage>/test_artifacts/plh_(role|hub)_l4/`,
+  NOT `/tmp/`, so tmpfs cleanup / ctest re-invocation can't
+  race-yank the log file.  When debugging an intermittent #258-class
+  failure, set `PLH_KEEP_TEST_ARTIFACTS=1` so dirs survive even on
+  pass — useful for diff'ing log content between a passing and
+  failing run.
+
+- **The L4 test fixture's `make_tmp_dir` is the single
+  contract-enforcement site for both bullets above.**  Don't roll
+  your own dir-creation helper in a new L4 test — that's how the
+  next #258-class regression sneaks in.  If you need a new prefix
+  or a per-subtest sub-directory, add it AROUND the fixture's
+  `tmp(prefix)` helper, not as a parallel `fs::temp_directory_path()
+  / "my_thing_..."` call.
+
+These bullets apply to BOTH the role-only L4 fixture
+(`tests/test_layer4_plh_role/plh_role_fixture.h`) and the hub L4
+fixture (`tests/test_layer4_plh_hub/plh_hub_fixture.h`).  Both
+fixtures have been kept structurally mirrored on purpose; if you
+update one, update the other.
+
 ---
 
 ### Example 3: Lifecycle-backed test (Pattern 3)

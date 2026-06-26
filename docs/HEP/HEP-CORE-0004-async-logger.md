@@ -447,6 +447,29 @@ sink's actual output file survives the test failure and can be read
 post-mortem — the per-message probes that fire during shutdown will
 be in that file, not lost to `/tmp` cleanup.
 
+**Test-side reading discipline — implicit settings to make explicit.**
+
+Tests that drive `plh_role` / `plh_hub` binaries as subprocesses MUST
+read markers from the right surface.  Failure to do so produced a
+#258 self-inflicted investigation chain in 2026-06-26.  Both points
+are codified in `docs/README/README_testing.md` § "L4 end-to-end
+binary-driven tests — implicit settings that MUST be set explicitly":
+
+- After the role's Logger sink switch (early in startup), every
+  `LOGGER_*` call goes to `<role_dir>/logs/<role-name>.log`, NOT
+  stderr.  Asserting via `prod.get_stderr().find(marker)` therefore
+  only sees pre-sink-switch output (banner + bootstrap debug).  Use
+  `read_role_log(role_dir)` (or `wait_for_role_marker`) for any
+  marker that fires after startup.
+- Any path written into a role config JSON (`out_hub_dir`,
+  `keyfile`, etc.) MUST be `fs::absolute(...)` — relative paths
+  derived from `argv[0]` (which ctest invokes as
+  `./build/stage-debug/tests/...`) resolve against the subprocess
+  CWD, not the parent's.
+- Set `PLH_KEEP_TEST_ARTIFACTS=1` (or rely on `HasFailure()`) to
+  preserve `<role_dir>/logs/*.log` across TearDown so the rotating
+  log survives for post-mortem.
+
 **How to investigate when this hits next.**
 
   1. Read `<build>/Testing/Temporary/LastTest.log` for the captured

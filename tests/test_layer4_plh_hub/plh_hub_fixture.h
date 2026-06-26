@@ -21,6 +21,7 @@
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
+#include <fmt/core.h>
 
 #include <atomic>
 #include <cstdlib>
@@ -53,10 +54,37 @@ inline fs::path make_tmp_dir(const std::string &prefix)
 {
     static std::atomic<int> counter{0};
     const int id = counter.fetch_add(1);
-    fs::path dir = fs::temp_directory_path()
-                 / ("plh_hub_l4_" + prefix + "_"
-                    + std::to_string(::getpid()) + "_"
-                    + std::to_string(id));
+
+    // Mirror of plh_role_fixture.h: rooted under
+    // <build-stage>/test_artifacts/plh_hub_l4/ instead of /tmp so the
+    // rotating log file under <dir>/logs/ survives test failure /
+    // ctest re-invocation / tmpfs cleanup (HEP-CORE-0004 §"Shutdown
+    // observability" + #258 e2e investigation).  Override with
+    // PLH_TEST_ARTIFACTS_DIR for CI lanes that want an archive volume.
+    fs::path root;
+    if (const char *override_root = std::getenv("PLH_TEST_ARTIFACTS_DIR"))
+    {
+        root = override_root;
+    }
+    else
+    {
+        // fs::absolute is REQUIRED here — g_self_exe_path is argv[0]
+        // which is relative when ctest invokes the binary as
+        // `./build/stage-debug/tests/test_layer4_plh_hub`.  The path
+        // ends up serialized into role/hub config JSON
+        // (`out_hub_dir`, `keyfile`, etc.) and read back by
+        // subprocesses with different CWDs, so it MUST be absolute or
+        // the subprocess resolves "./build/..." against its own CWD
+        // and creates path-inside-path (the original #258 self-
+        // inflicted bug exposed when the test_artifacts dir was
+        // migrated off /tmp in commit 25bed024).
+        root = fs::absolute(
+                   fs::path(::g_self_exe_path).parent_path().parent_path())
+             / "test_artifacts" / "plh_hub_l4";
+    }
+    fs::path dir = root / ("plh_hub_l4_" + prefix + "_"
+                            + std::to_string(::getpid()) + "_"
+                            + std::to_string(id));
     std::error_code ec;
     fs::remove_all(dir, ec);   // best-effort: previous aborted run
     fs::create_directories(dir);
@@ -188,10 +216,28 @@ class PlhHubCliTest : public pylabhub::tests::IsolatedProcessTest
 protected:
     void TearDown() override
     {
-        for (const auto &p : paths_to_clean_)
+        // Mirror of plh_role_fixture: preserve dirs on failure
+        // (forensics for L4 e2e investigation, #258) OR when
+        // PLH_KEEP_TEST_ARTIFACTS is set.  Otherwise clean up.
+        const bool keep =
+            ::testing::Test::HasFailure() ||
+            (std::getenv("PLH_KEEP_TEST_ARTIFACTS") != nullptr);
+        if (keep)
         {
-            std::error_code ec;
-            fs::remove_all(p, ec);
+            for (const auto &p : paths_to_clean_)
+            {
+                fmt::print(stderr,
+                            "[PLH_TEST_ARTIFACTS] preserved on failure: {}\n",
+                            p.string());
+            }
+        }
+        else
+        {
+            for (const auto &p : paths_to_clean_)
+            {
+                std::error_code ec;
+                fs::remove_all(p, ec);
+            }
         }
         paths_to_clean_.clear();
     }

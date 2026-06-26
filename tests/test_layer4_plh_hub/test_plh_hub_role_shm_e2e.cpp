@@ -1,45 +1,56 @@
 /**
  * @file test_plh_hub_role_shm_e2e.cpp
- * @brief HEP-0041 1k Scenario A — L4 end-to-end SHM auth-gated data flow.
+ * @brief HEP-0041 Phase 1 substep 1k — L4 end-to-end SHM auth-gated data flow.
  *
- * **STATUS 2026-06-25: WIP scaffold — TEST_F bodies prefixed
- * `DISABLED_` until follow-up work removes the prefix.**
+ * **STATUS 2026-06-26: ENABLED + GREEN.**  The investigation chain
+ * that blocked initial enablement is closed across:
  *
- * What's verified working in this commit:
+ *   - Phase B-1: `CONSUMER_REG_ACK` `channel_id`→`channel_name`
+ *     silent-gate fix (HEP-0036 §5b).
+ *   - Phase B-3: `role_tag`/`role_type`/`short_tag` single-standard
+ *     sweep (HEP-0036 §5b.10) + Native ABI v7→v8.
+ *   - Phase B-4: `CONSUMER_REG_ACK.producers[]` unified shape
+ *     across SHM + ZMQ transports (HEP-0036 §5b.7).
+ *   - #291: KeyStore seckey contract — raw 32 bytes at the
+ *     security-module boundary (HEP-CORE-0040 §8.5.2 + HEP-CORE-0041
+ *     §5.5 NORMATIVE).
+ *   - #258 test-infrastructure fixes (this commit):
+ *       * `fs::absolute(...)` on `test_artifacts` root so the
+ *         relative `g_self_exe_path` (argv[0]) doesn't poison
+ *         `out_hub_dir` written into role config JSON;
+ *       * `read_role_log(prod_dir)` for cleanup-marker assertions
+ *         (line 512/517) — `event=ShmAttachOrchestratorReleased` +
+ *         `event=ShmCapabilityTransportReleased` fire AFTER the
+ *         producer's Logger sink switch and land in the rotating
+ *         log file, NOT on stderr.
+ *
+ * Doc anchors for the new-author L4 test-pattern checklist:
+ *   - `docs/README/README_testing.md` § "L4 end-to-end binary-driven
+ *     tests — implicit settings that MUST be set explicitly"
+ *   - `docs/HEP/HEP-CORE-0004-async-logger.md` § "Test-side reading
+ *     discipline"
+ *
+ * What this test verifies (Scenario A — authorized consumer):
  *   - Hub init / keygen / known_roles registration for 2 roles
  *   - Producer SHM TX setup: `event=ShmCapabilityTransportBound`
- *     observed (L2 marker contract #1 from #258 checklist verified)
- *   - L4 helper infrastructure: hub-log reader, role-log reader
- *     (rotating file under `<role_dir>/logs/`), marker waiters with
- *     fallback to stderr
- *   - Producer + consumer configs match working
- *     `share/py-demo-single-processor-shm` shape (out_flexzone_schema,
- *     flexzone_checksum, schema fields)
- *   - Python script API: `api.log('info', ...)`, `tx.slot.<field>`,
- *     `rx.slot.<field>`, `on_consume(rx, msgs, api) -> bool`
+ *   - Producer REG_REQ accepted; first heartbeat advances Pending→Ready
+ *   - Consumer CONSUMER_REG_REQ accepted; broker emits unified
+ *     CONSUMER_REG_ACK shape (B-4) — `data_transport: "shm"` +
+ *     `producers[0]={role_uid, pubkey_z85, endpoint}`
+ *   - Broker preconfirms attach: `event=ConsumerAttachAuthorized`
+ *   - Producer accept loop authorises the SHM auth dial:
+ *     `event=AttachAuthorized` (HEP-CORE-0041 §5.5 challenge-response
+ *     succeeds; consumer's response correctly decrypted under raw
+ *     32-byte seckey per §8.5.2)
+ *   - Consumer activates DataBlock via received SCM_RIGHTS fd:
+ *     `event=ShmCapabilityActivated`
+ *   - Producer ships N slots; consumer reads all N
+ *   - Producer cleanup on SIGTERM emits both markers (LIFO
+ *     teardown of orchestrator + transport)
  *
- * What's blocking the green test:
- *   - Producer's REG_REQ never reaches broker (hub log shows broker
- *     bound + ZAP enforced + 2 known_roles, but no
- *     `event=RegReqAccepted role='prod...' channel='...'` marker
- *     after 15 s).  Producer's SHM transport bound successfully,
- *     so the producer's BRC path (CURVE handshake → REG_REQ send) is
- *     where the flow stalls.  Likely culprits: producer config
- *     missing a required field for SHM path (the demo's
- *     `loop_timing=max_rate` vs my `fixed_rate` may matter), or the
- *     producer's BRC connect handshake fails silently when SHM TX
- *     is the transport.
- *
- * Embedded L2 contract verifications (folded in from #270) — the
- * complete marker checklist this test must validate is in #258 task
- * description.  Each ASSERT below pins one row of that checklist.
- *
- * Mutation pin: a sibling DISABLED_ TEST_F covers the unauthorized
- * consumer denial path (broker denies CONSUMER_ATTACH_REQ; consumer
- * never sees data).
- *
- * To re-enable: remove the `DISABLED_` prefix on each TEST_F, debug
- * REG_REQ flow, iterate to green.
+ * Mutation pin: the sibling `ShmE2E_UnauthorizedConsumerDeniedByBroker`
+ * TEST_F covers the unauthorized-consumer denial path (broker denies
+ * CONSUMER_ATTACH_REQ; consumer never sees data).
  */
 #include "plh_hub_fixture.h"
 
@@ -328,7 +339,7 @@ void add_known_role(const fs::path &hub_dir, const std::string &display_name,
 // DISABLED_ pending #291 (SHM consumer-attach handshake bug exposed
 // after HEP-0036 §5b phase B-1 unblocked the producer's Authorized
 // transition).  Phase D of #286 re-enables once #291 lands.
-TEST_F(PlhHubCliTest, DISABLED_ShmE2E_AuthorizedConsumerReceivesAllSlots)
+TEST_F(PlhHubCliTest, ShmE2E_AuthorizedConsumerReceivesAllSlots)
 {
     using std::chrono::seconds;
     using std::chrono::milliseconds;
@@ -508,17 +519,24 @@ TEST_F(PlhHubCliTest, DISABLED_ShmE2E_AuthorizedConsumerReceivesAllSlots)
         << "producer did not exit cleanly on SIGTERM.\n"
         << prod.get_stderr();
 
-    // L2 marker contract #3 (cleanup_tx_capability_ LIFO teardown):
-    EXPECT_NE(prod.get_stderr().find("event=ShmAttachOrchestratorReleased"),
+    // L2 marker contract #3 (cleanup_tx_capability_ LIFO teardown).
+    // The cleanup markers are emitted from RoleHostFrame::
+    // cleanup_tx_capability_ via LOGGER_INFO AFTER the producer
+    // switched its sink to the rotating log file at startup — see
+    // role_host_frame.cpp:455 + :466.  Read the role's log file
+    // (same path discipline used by wait_for_role_marker above)
+    // instead of stderr, which never sees post-sink-switch output.
+    const std::string prod_log = read_role_log(prod_dir);
+    EXPECT_NE(prod_log.find("event=ShmAttachOrchestratorReleased"),
               std::string::npos)
         << "producer did not log ShmAttachOrchestratorReleased on shutdown "
            "— cleanup_tx_capability_ LIFO teardown broken.\n"
-        << prod.get_stderr();
-    EXPECT_NE(prod.get_stderr().find("event=ShmCapabilityTransportReleased"),
+        << prod_log;
+    EXPECT_NE(prod_log.find("event=ShmCapabilityTransportReleased"),
               std::string::npos)
         << "producer did not log ShmCapabilityTransportReleased on shutdown "
            "— cleanup_tx_capability_ LIFO terminus broken.\n"
-        << prod.get_stderr();
+        << prod_log;
 
     hub.send_signal(SIGTERM);
     EXPECT_EQ(hub.wait_for_exit(10), 0)
@@ -548,7 +566,7 @@ TEST_F(PlhHubCliTest, DISABLED_ShmE2E_AuthorizedConsumerReceivesAllSlots)
 // are received.  This is the regression pin for "removing consumer
 // from known_roles must make the test fail" per the original 1k spec.
 
-TEST_F(PlhHubCliTest, DISABLED_ShmE2E_UnauthorizedConsumerDeniedByBroker)
+TEST_F(PlhHubCliTest, ShmE2E_UnauthorizedConsumerDeniedByBroker)
 {
     using std::chrono::seconds;
 

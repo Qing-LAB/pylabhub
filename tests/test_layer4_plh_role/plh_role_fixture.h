@@ -77,8 +77,14 @@ inline fs::path make_tmp_dir(const std::string &prefix)
     else
     {
         // Test binary lives at  <build-stage>/tests/test_layer4_plh_role
-        // so <build-stage> == binary's parent's parent.
-        root = fs::path(::g_self_exe_path).parent_path().parent_path()
+        // so <build-stage> == binary's parent's parent.  fs::absolute
+        // is REQUIRED — g_self_exe_path is argv[0] (relative when
+        // ctest invokes via `./build/stage-debug/...`), and the path
+        // gets serialized into role config JSON read back by
+        // subprocesses with different CWDs — see #258 self-inflicted
+        // path-resolution bug 2026-06-26.
+        root = fs::absolute(
+                   fs::path(::g_self_exe_path).parent_path().parent_path())
              / "test_artifacts" / "plh_role_l4";
     }
 
