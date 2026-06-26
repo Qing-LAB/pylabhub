@@ -663,15 +663,15 @@ int raw_json(const std::string &dir)
         JsonConfig::GetLifecycleModule());
 }
 
-int role_tag(const std::string &dir)
+int role_type(const std::string &dir)
 {
     return run_gtest_worker(
         [&]() {
             auto path = write_json(dir, "producer.json", minimal_producer_json());
             auto cfg = RoleConfig::load(path.string(), "producer");
-            EXPECT_EQ(cfg.role_tag(), "producer");
+            EXPECT_EQ(cfg.role_type(), "producer");
         },
-        "role_config::role_tag",
+        "role_config::role_type",
         Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
         JsonConfig::GetLifecycleModule());
 }
@@ -850,7 +850,7 @@ int move_assign(const std::string &dir)
             auto cfg2 = RoleConfig::load(path2.string(), "consumer");
             cfg2 = std::move(cfg1);
             EXPECT_EQ(cfg2.identity().uid, "prod.test.uid00000001");
-            EXPECT_EQ(cfg2.role_tag(), "producer");
+            EXPECT_EQ(cfg2.role_type(), "producer");
         },
         "role_config::move_assign",
         Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
@@ -1334,8 +1334,8 @@ struct RoleConfigWorkerRegistrar
 #endif
                 if (sc == "raw_json")
                     return raw_json(dir);
-                if (sc == "role_tag")
-                    return role_tag(dir);
+                if (sc == "role_type")
+                    return role_type(dir);
                 if (sc == "base_dir")
                     return base_dir(dir);
                 if (sc == "load_from_directory")

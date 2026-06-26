@@ -19,7 +19,7 @@ namespace role_host_base
 
 // ── Happy-path + construction workers ───────────────────────────────────────
 
-/** Construct only; assert is_running/script_load_ok false, role_tag == "test". */
+/** Construct only; assert is_running/script_load_ok false, short_tag == "test". */
 int construct_not_running(const std::string &dir);
 
 /** Startup → worker enters loop → shutdown joins cleanly. */
@@ -43,8 +43,8 @@ int virtual_shutdown_override_forwards(const std::string &dir);
 /** External shutdown flag flips → loop exits via core_.is_process_exit_requested. */
 int external_shutdown_flag(const std::string &dir);
 
-/** config() + role_tag() accessor stability across calls. */
-int accessors_config_and_role_tag(const std::string &dir);
+/** config() + short_tag() accessor stability across calls. */
+int accessors_config_and_short_tag(const std::string &dir);
 
 /** wait_for_wakeup returns within bounded time. */
 int wait_for_wakeup_honours_timeout(const std::string &dir);

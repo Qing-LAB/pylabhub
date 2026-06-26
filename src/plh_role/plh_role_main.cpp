@@ -256,10 +256,10 @@ int main(int argc, char *argv[])
     {
         if (!args.role_dir.empty())
             config.emplace(pylabhub::config::RoleConfig::load_from_directory(
-                args.role_dir, info->role_tag.c_str(), info->config_parser));
+                args.role_dir, info->role_type.c_str(), info->config_parser));
         else
             config.emplace(pylabhub::config::RoleConfig::load(
-                args.config_path, info->role_tag.c_str(), info->config_parser));
+                args.config_path, info->role_type.c_str(), info->config_parser));
     }
     catch (const std::exception &e)
     {
@@ -280,13 +280,13 @@ int main(int argc, char *argv[])
     {
         if (c.auth().keyfile.empty())
         {
-            std::cerr << "Error: --keygen requires '" << info->role_tag
+            std::cerr << "Error: --keygen requires '" << info->role_type
                       << ".auth.keyfile' in config\n";
             return 1;
         }
 
         const auto pw_opt = cli::get_new_password(
-            info->role_tag.c_str(),
+            info->role_type.c_str(),
             "PYLABHUB_ROLE_PASSWORD",
             "Role vault password (empty = no encryption): ",
             "Confirm password: ");
@@ -348,7 +348,7 @@ int main(int argc, char *argv[])
     if (!c.auth().keyfile.empty())
     {
         const auto vault_password = cli::get_password(
-            info->role_tag.c_str(),
+            info->role_type.c_str(),
             "PYLABHUB_ROLE_PASSWORD",
             "Role vault password: ");
         if (!vault_password)
@@ -424,7 +424,7 @@ int main(int argc, char *argv[])
 
     if (!host->is_running())
     {
-        std::cerr << "Failed to start " << info->role_tag
+        std::cerr << "Failed to start " << info->role_type
                   << " — loop did not start.\n";
         host->shutdown_();
         return 1;
@@ -451,7 +451,7 @@ int main(int argc, char *argv[])
             "{}"
             "  Uptime:    {}h {}m {}s",
             pylabhub::platform::get_version_string(),
-            info->role_tag, cfg.script().type,
+            info->role_type, cfg.script().type,
             config_dir, cfg.identity().uid,
             channels,
             secs / 3600, (secs % 3600) / 60, secs % 60);

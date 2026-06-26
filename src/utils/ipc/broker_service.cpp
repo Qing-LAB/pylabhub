@@ -3258,7 +3258,7 @@ void BrokerServiceImpl::handle_heartbeat_req(const nlohmann::json& req)
         return;
     }
     {
-        const auto tag_opt = pylabhub::hub::extract_role_tag(wire_uid);
+        const auto tag_opt = pylabhub::hub::extract_short_tag(wire_uid);
         const std::string_view tag = tag_opt.value_or(std::string_view{"?"});
         bool tag_ok = false;
         if (wire_role_type == "producer")
@@ -3758,12 +3758,12 @@ std::string format_expected_tags(std::initializer_list<std::string_view> tags)
 
 /// Returns true iff the uid's role tag is in `expected_tags`.  Requires
 /// the uid already grammar-valid (caller checks `is_valid_identifier`
-/// with `RoleUid` first; `extract_role_tag` is defined as nullopt on
+/// with `RoleUid` first; `extract_short_tag` is defined as nullopt on
 /// invalid input).
-bool role_tag_matches(const std::string& role_uid,
+bool short_tag_matches(const std::string& role_uid,
                       std::initializer_list<std::string_view> expected_tags)
 {
-    const auto tag_opt = pylabhub::hub::extract_role_tag(role_uid);
+    const auto tag_opt = pylabhub::hub::extract_short_tag(role_uid);
     if (!tag_opt.has_value()) return false;
     for (auto t : expected_tags)
     {
@@ -3806,9 +3806,9 @@ BrokerServiceImpl::validate_identity_fields(const std::string& channel_name,
                               "' failed grammar validation "
                               "(HEP-CORE-0033 §G2.2.0b)");
     }
-    if (!role_tag_matches(role_uid, expected_tags))
+    if (!short_tag_matches(role_uid, expected_tags))
     {
-        const auto tag_opt = pylabhub::hub::extract_role_tag(role_uid);
+        const auto tag_opt = pylabhub::hub::extract_short_tag(role_uid);
         const auto tag = tag_opt.has_value() ? std::string{*tag_opt} : std::string{"?"};
         const auto allowed = format_expected_tags(expected_tags);
         LOGGER_WARN("Broker: {} rejected on channel '{}' — role_uid '{}' "
@@ -3852,9 +3852,9 @@ BrokerServiceImpl::validate_role_uid_only(const std::string& role_uid,
                               "' failed grammar validation "
                               "(HEP-CORE-0033 §G2.2.0b)");
     }
-    if (!role_tag_matches(role_uid, expected_tags))
+    if (!short_tag_matches(role_uid, expected_tags))
     {
-        const auto tag_opt = pylabhub::hub::extract_role_tag(role_uid);
+        const auto tag_opt = pylabhub::hub::extract_short_tag(role_uid);
         const auto tag = tag_opt.has_value() ? std::string{*tag_opt} : std::string{"?"};
         const auto allowed = format_expected_tags(expected_tags);
         LOGGER_WARN("Broker: {} rejected — role_uid '{}' has tag '{}' "

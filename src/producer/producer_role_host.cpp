@@ -58,8 +58,10 @@ ProducerRoleHost::ProducerRoleHost(config::RoleConfig config,
                                      std::atomic<bool> *shutdown_flag)
     : scripting::RoleHostFrame(std::move(config),
                                 shutdown_flag,
-                                { /*role_tag=*/         "prod",
-                                  /*role_label=*/       "producer",
+                                // HEP-CORE-0036 §5b.10: short_tag derived
+                                // once from role_type via short_role_tag().
+                                { /*role_type=*/        "producer",
+                                  /*short_tag=*/        std::string(pylabhub::hub::short_role_tag("producer")),
                                   /*required_callback=*/"on_produce" })
 {
     // Engine is constructed in worker_main_ Step 0 (HEP-CORE-0011
@@ -338,7 +340,7 @@ void ProducerRoleHost::worker_main_()
         reg_in.channel           = ch;
         reg_in.role_uid          = id.uid;
         reg_in.role_name         = id.name;
-        reg_in.role_tag          = "producer";
+        reg_in.role_type          = "producer";
         reg_in.has_shm           = shm.enabled;
         reg_in.is_zmq_transport  = (tr.transport == config::Transport::Zmq);
         reg_in.zmq_node_endpoint = tr.zmq_endpoint;
@@ -542,6 +544,6 @@ ProducerRoleHost::build_presences_(const config::RoleConfig &c) const
 // 8e05a821); prepare_ moved in 1i-mig-M3.5 (#266) after the processor
 // 1i-mig-3 wiring confirmed both hosts had byte-identical bodies.
 // Producer no longer overrides either; both inherit the canonical
-// frame defaults that use frame_cfg_.role_tag for log prefix.
+// frame defaults that use frame_cfg_.short_tag for log prefix.
 
 } // namespace pylabhub::producer

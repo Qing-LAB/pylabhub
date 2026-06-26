@@ -274,9 +274,9 @@ TEST_F(RoleConfigTest, RawJson)
     ExpectWorkerOk(w);
 }
 
-TEST_F(RoleConfigTest, RoleTag)
+TEST_F(RoleConfigTest, RoleType)
 {
-    auto w = SpawnWorker("role_config.role_tag", {unique_dir("role_tag")});
+    auto w = SpawnWorker("role_config.role_type", {unique_dir("role_type")});
     ExpectWorkerOk(w);
 }
 

@@ -104,7 +104,7 @@ RoleEntry make_role(const std::string &uid,
     RoleEntry r;
     r.uid       = uid;
     r.name      = uid + "-name";
-    r.role_tag  = "test";
+    r.short_tag  = "test";
     r.presences = std::move(presences);
     return r;
 }

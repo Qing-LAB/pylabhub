@@ -149,7 +149,7 @@ class PYLABHUB_UTILS_EXPORT BrokerRequestComm
     /// per cycle (post-Phase-6) — one for each presence — each with
     /// its own role_type.  Pre-Phase-6 single-tick installation
     /// (today, before role_host migration M2) sends one heartbeat
-    /// with the role_tag-derived role_type; broker-side handler
+    /// with the short_tag-derived role_type; broker-side handler
     /// changes (M1) consume the new fields.
     ///
     /// `metrics` is optional — pass empty json `{}` when nothing

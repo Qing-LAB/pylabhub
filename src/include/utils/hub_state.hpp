@@ -868,7 +868,7 @@ struct RoleEntry
 {
     std::string uid;       ///< Key in HubState::roles.
     std::string name;
-    std::string role_tag;  ///< "prod" / "cons" / "proc" or a custom tag.
+    std::string short_tag;  ///< "prod" / "cons" / "proc" or a custom tag.
     std::vector<std::string> channels;
 
     std::chrono::system_clock::time_point first_seen{
@@ -1461,9 +1461,9 @@ class PYLABHUB_UTILS_EXPORT HubState
     // primitives to `_locked` variants and refactor ops to acquire
     // the writer lock once.
     //
-    // role_tag derivation: today's wire protocol (REG_REQ /
-    // CONSUMER_REG_REQ / BAND_JOIN_REQ) does not carry `role_tag`;
-    // RoleEntry.role_tag is left empty when auto-derived from these
+    // short_tag derivation: today's wire protocol (REG_REQ /
+    // CONSUMER_REG_REQ / BAND_JOIN_REQ) does not carry `short_tag`;
+    // RoleEntry.short_tag is left empty when auto-derived from these
     // messages.  Admin / script paths may fill it in later.
 
     void _on_channel_registered(ChannelEntry entry);

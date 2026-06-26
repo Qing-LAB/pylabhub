@@ -60,7 +60,7 @@ struct RoleRuntimeInfo
 {
     /// Registry key — long form ("producer"/"consumer"/"processor"). Also
     /// the tag passed to @c RoleConfig::load_from_directory for validation.
-    std::string role_tag;
+    std::string role_type;
 
     /// Human-readable label for diagnostics ("Producer"/"Consumer"/...).
     std::string role_label;
@@ -106,7 +106,7 @@ class PYLABHUB_UTILS_EXPORT RoleRegistry
     class PYLABHUB_UTILS_EXPORT RuntimeBuilder
     {
       public:
-        explicit RuntimeBuilder(std::string_view role_tag);
+        explicit RuntimeBuilder(std::string_view role_type);
         ~RuntimeBuilder();
 
         RuntimeBuilder(const RuntimeBuilder &)            = delete;
@@ -118,8 +118,8 @@ class PYLABHUB_UTILS_EXPORT RoleRegistry
         RuntimeBuilder &host_factory(RoleRuntimeInfo::HostFactory f);
         RuntimeBuilder &config_parser(RoleRuntimeInfo::ConfigParser p);
 
-        /// Insert the accumulated entry under the role_tag given at
-        /// construction. Throws std::runtime_error if role_tag is already
+        /// Insert the accumulated entry under the role_type given at
+        /// construction. Throws std::runtime_error if role_type is already
         /// registered or if host_factory was not provided. Idempotent —
         /// repeated calls are no-ops. The destructor commits if not
         /// called explicitly.
@@ -130,14 +130,14 @@ class PYLABHUB_UTILS_EXPORT RoleRegistry
         bool            committed_ = false;
     };
 
-    /// Begin a runtime registration for @p role_tag (long form —
+    /// Begin a runtime registration for @p role_type (long form —
     /// "producer"/"consumer"/"processor").
-    static RuntimeBuilder register_runtime(std::string_view role_tag);
+    static RuntimeBuilder register_runtime(std::string_view role_type);
 
     /// Look up a previously registered runtime entry.
     /// @return pointer to the stored info (valid for process lifetime),
-    ///         or nullptr if no entry matches @p role_tag.
-    static const RoleRuntimeInfo *get_runtime(std::string_view role_tag);
+    ///         or nullptr if no entry matches @p role_type.
+    static const RoleRuntimeInfo *get_runtime(std::string_view role_type);
 };
 
 } // namespace pylabhub::utils

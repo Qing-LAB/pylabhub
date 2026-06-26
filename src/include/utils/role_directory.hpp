@@ -261,9 +261,9 @@ public:
      *       .on_init([](const RoleDirectory &dir, const std::string &name) { ... });
      * @endcode
      *
-     * @param role_tag  "producer", "consumer", "processor", or any custom tag.
+     * @param role_type  "producer", "consumer", "processor", or any custom tag.
      */
-    static RoleRegistrationBuilder register_role(const std::string &role_tag);
+    static RoleRegistrationBuilder register_role(const std::string &role_type);
 
     /**
      * @brief Scaffolding init for a registered role.
@@ -282,7 +282,7 @@ public:
      *   6. Print summary (directory, UID, config path)
      *
      * @param dir       Directory to initialize.
-     * @param role_tag  Registered role tag.
+     * @param role_type  Registered role tag.
      * @param name      Role instance name. Must be non-empty.
      * @param log       Optional CLI overrides for the generated
      *                  @c logging section. Any set field is written
@@ -299,7 +299,7 @@ public:
     };
 
     static int init_directory(const std::filesystem::path &dir,
-                              const std::string &role_tag,
+                              const std::string &role_type,
                               const std::string &name,
                               const LogInitOverrides &log = {});
 
@@ -350,7 +350,7 @@ public:
 
 private:
     friend class RoleDirectory;
-    explicit RoleRegistrationBuilder(std::string role_tag);
+    explicit RoleRegistrationBuilder(std::string role_type);
 
     struct Impl;
     std::unique_ptr<Impl> impl_;

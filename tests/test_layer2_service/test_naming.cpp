@@ -12,7 +12,7 @@
 
 #include <gtest/gtest.h>
 
-using pylabhub::hub::extract_role_tag;
+using pylabhub::hub::extract_short_tag;
 using pylabhub::hub::format_role_ref;
 using pylabhub::hub::IdentifierKind;
 using pylabhub::hub::is_valid_identifier;
@@ -323,15 +323,15 @@ TEST(NamingParsePeerUid, SplitsThreePartsAndRejectsRoleTags)
     EXPECT_FALSE(parse_peer_uid("hub.lab1").has_value());
 }
 
-// ─── extract_role_tag ──────────────────────────────────────────────────────
+// ─── extract_short_tag ──────────────────────────────────────────────────────
 
 TEST(NamingExtractRoleTag, ValidOnly)
 {
-    EXPECT_EQ(extract_role_tag("prod.cam1.pid42").value_or(""), "prod");
-    EXPECT_EQ(extract_role_tag("cons.x.y").value_or(""),        "cons");
-    EXPECT_EQ(extract_role_tag("proc.x.y").value_or(""),        "proc");
-    EXPECT_FALSE(extract_role_tag("hub.x.y").has_value());   // peer, not role
-    EXPECT_FALSE(extract_role_tag("plain").has_value());
+    EXPECT_EQ(extract_short_tag("prod.cam1.pid42").value_or(""), "prod");
+    EXPECT_EQ(extract_short_tag("cons.x.y").value_or(""),        "cons");
+    EXPECT_EQ(extract_short_tag("proc.x.y").value_or(""),        "proc");
+    EXPECT_FALSE(extract_short_tag("hub.x.y").has_value());   // peer, not role
+    EXPECT_FALSE(extract_short_tag("plain").has_value());
 }
 
 // ─── format_role_ref ───────────────────────────────────────────────────────

@@ -188,12 +188,12 @@ TEST_F(RoleHostBaseLifecycleTest, ExternalShutdownFlag_PropagatesToCore)
     ExpectWorkerOk(w);
 }
 
-// ─── config() + role_tag() accessors ────────────────────────────────────────
+// ─── config() + short_tag() accessors ────────────────────────────────────────
 
 TEST_F(RoleHostBaseLifecycleTest, Accessors_ConfigAndRoleTag)
 {
     auto dir = unique_dir("accessors");
-    auto w   = SpawnWorker("role_host_base.accessors_config_and_role_tag", {dir});
+    auto w   = SpawnWorker("role_host_base.accessors_config_and_short_tag", {dir});
     ExpectWorkerOk(w);
 }
 

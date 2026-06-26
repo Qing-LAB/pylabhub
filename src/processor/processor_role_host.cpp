@@ -59,8 +59,10 @@ ProcessorRoleHost::ProcessorRoleHost(config::RoleConfig config,
                                        std::atomic<bool> *shutdown_flag)
     : scripting::RoleHostFrame(std::move(config),
                                 shutdown_flag,
-                                { /*role_tag=*/         "proc",
-                                  /*role_label=*/       "processor",
+                                // HEP-CORE-0036 §5b.10: short_tag derived
+                                // once from role_type via short_role_tag().
+                                { /*role_type=*/        "processor",
+                                  /*short_tag=*/        std::string(pylabhub::hub::short_role_tag("processor")),
                                   /*required_callback=*/"on_process" })
 {
     // Engine constructed in worker_main_ Step 0 — see HEP-CORE-0011
@@ -366,7 +368,7 @@ void ProcessorRoleHost::worker_main_()
             reg_in.channel           = config_.out_channel();
             reg_in.role_uid          = id.uid;
             reg_in.role_name         = id.name;
-            reg_in.role_tag          = "processor";
+            reg_in.role_type          = "processor";
             reg_in.has_shm           = shm.enabled;
             reg_in.is_zmq_transport  = (tr.transport == config::Transport::Zmq);
             reg_in.zmq_node_endpoint = tr.zmq_endpoint;
@@ -641,7 +643,7 @@ ProcessorRoleHost::build_presences_(const config::RoleConfig &c) const
 // prepare_tx_capability_ + cleanup_tx_capability_ — both inherited from
 // RoleHostFrame default impls.  prepare_ was identical to the producer's;
 // promoted to the frame in 1i-mig-M3.5 (#266) so both subclasses share
-// the canonical body.  Log prefix derives from frame_cfg_.role_tag.
+// the canonical body.  Log prefix derives from frame_cfg_.short_tag.
 
 
 } // namespace pylabhub::processor

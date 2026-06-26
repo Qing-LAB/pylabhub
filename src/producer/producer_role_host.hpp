@@ -7,7 +7,7 @@
  * `scripting::RoleHostFrame` (NEW plain-class layer slotted between
  * `RoleHostBase` and the three role hosts).  `RoleHostFrame` carries the
  * shared role-host body + the per-role configuration struct
- * (role_tag/role_label/required_callback).  `RoleHostBase`
+ * (short_tag/role_label/required_callback).  `RoleHostBase`
  * (`= EngineHost<RoleAPIBase>`) still owns the shared state (config,
  * engine, RoleHostCore, RoleAPIBase, ready-promise) and the public
  * lifecycle surface (startup_(), shutdown_(), is_running(),

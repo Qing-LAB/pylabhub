@@ -38,19 +38,19 @@ namespace pylabhub::hub_host
 struct HubAPI::Impl
 {
     Impl(scripting::RoleHostCore &core,
-         std::string              role_tag,
+         std::string              short_tag,
          std::string              uid)
         : core(core)
-        , role_tag(std::move(role_tag))
+        , short_tag(std::move(short_tag))
         , uid(std::move(uid))
-        , thread_mgr(this->role_tag, this->uid)
+        , thread_mgr(this->short_tag, this->uid)
         , augment_timeout_ms(
               static_cast<int64_t>(pylabhub::kDefaultAugmentTimeoutHeartbeats)
               * static_cast<int64_t>(pylabhub::kDefaultHeartbeatIntervalMs))
     {}
 
     scripting::RoleHostCore       &core;             // owned by EngineHost
-    std::string                    role_tag;         // "hub"
+    std::string                    short_tag;         // "hub"
     std::string                    uid;              // hub instance uid
 
     /// HubAPI's own ThreadManager — auto-registered as
@@ -85,15 +85,15 @@ struct HubAPI::Impl
 // ============================================================================
 
 HubAPI::HubAPI(scripting::RoleHostCore &core,
-                std::string             role_tag,
+                std::string             short_tag,
                 std::string             uid)
 {
-    if (role_tag.empty())
-        throw std::invalid_argument("HubAPI: role_tag must be non-empty");
+    if (short_tag.empty())
+        throw std::invalid_argument("HubAPI: short_tag must be non-empty");
     if (uid.empty())
         throw std::invalid_argument("HubAPI: uid must be non-empty");
 
-    impl_ = std::make_unique<Impl>(core, std::move(role_tag), std::move(uid));
+    impl_ = std::make_unique<Impl>(core, std::move(short_tag), std::move(uid));
 }
 
 HubAPI::~HubAPI() = default;
@@ -168,7 +168,7 @@ void HubAPI::log(const std::string &level, const std::string &msg)
     // Same level-token mapping as RoleAPIBase::log (case-insensitive
     // for "Warn"/"Error" too).  Anything we don't recognize routes to
     // LOGGER_INFO — never silently drops the message.  Prefix
-    // "[hub/<uid>]" matches role's "[<role_tag>/<uid>]" so log
+    // "[hub/<uid>]" matches role's "[<short_tag>/<uid>]" so log
     // analysis tooling can parse both cases with one regex.
     const std::string_view lv = level;
     if (lv == "debug" || lv == "Debug")

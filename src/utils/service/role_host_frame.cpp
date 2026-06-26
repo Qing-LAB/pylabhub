@@ -40,7 +40,7 @@ namespace pylabhub::scripting
 RoleHostFrame::RoleHostFrame(config::RoleConfig    config,
                               std::atomic<bool>    *shutdown_flag,
                               RoleHostFrameConfig   frame_cfg)
-    : RoleHostBase(frame_cfg.role_tag,
+    : RoleHostBase(frame_cfg.short_tag,
                    std::move(config),
                    shutdown_flag),
       frame_cfg_(std::move(frame_cfg))
@@ -126,7 +126,7 @@ bool RoleHostFrame::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
             {
                 LOGGER_ERROR("[{}] multiple rx presences not yet supported "
                              "(today's API surface limits to 1 rx queue)",
-                             frame_cfg_.role_tag);
+                             frame_cfg_.short_tag);
                 return false;
             }
             rx_presence = &p;
@@ -136,7 +136,7 @@ bool RoleHostFrame::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
             if (tx_presence)
             {
                 LOGGER_ERROR("[{}] multiple tx presences not yet supported",
-                             frame_cfg_.role_tag);
+                             frame_cfg_.short_tag);
                 return false;
             }
             tx_presence = &p;
@@ -148,11 +148,11 @@ bool RoleHostFrame::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
     {
         auto inbox_result = setup_inbox_facility(
             inbox_spec, inbox_cfg_, config_.checksum().policy,
-            frame_cfg_.role_tag.c_str());
+            frame_cfg_.short_tag.c_str());
         if (!inbox_result)
         {
             LOGGER_ERROR("[{}] setup_inbox_facility failed",
-                         frame_cfg_.role_tag);
+                         frame_cfg_.short_tag);
             return false;
         }
         inbox_queue_ = std::move(inbox_result->queue);
@@ -174,7 +174,7 @@ bool RoleHostFrame::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
     if (rx_opts && !api_ref.build_rx_queue(*rx_opts))
     {
         LOGGER_ERROR("[{}] build_rx_queue failed for channel '{}'",
-                     frame_cfg_.role_tag, config_.in_channel());
+                     frame_cfg_.short_tag, config_.in_channel());
         return false;
     }
     if (tx_opts)
@@ -190,13 +190,13 @@ bool RoleHostFrame::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
                 "[{}] prepare_tx_capability_ failed for channel '{}' "
                 "— SHM L1 transport setup refused (HEP-CORE-0041 §6.1 + "
                 "1i-mig-2)",
-                frame_cfg_.role_tag, config_.out_channel());
+                frame_cfg_.short_tag, config_.out_channel());
             return false;
         }
         if (!api_ref.build_tx_queue(*tx_opts))
         {
             LOGGER_ERROR("[{}] build_tx_queue failed for channel '{}'",
-                         frame_cfg_.role_tag, config_.out_channel());
+                         frame_cfg_.short_tag, config_.out_channel());
             return false;
         }
     }
@@ -255,11 +255,11 @@ bool RoleHostFrame::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
     // ── 7. Startup log lines (per direction) ──
     if (rx_presence)
         LOGGER_INFO("[{}] rx on channel '{}' (shm={})",
-                    frame_cfg_.role_tag, config_.in_channel(),
+                    frame_cfg_.short_tag, config_.in_channel(),
                     api_ref.rx_has_shm());
     if (tx_presence)
         LOGGER_INFO("[{}] tx on channel '{}' (shm={})",
-                    frame_cfg_.role_tag, config_.out_channel(),
+                    frame_cfg_.short_tag, config_.out_channel(),
                     api_ref.tx_has_shm());
 
     return true;
@@ -325,7 +325,7 @@ void RoleHostFrame::teardown_infrastructure_()
                      "constructed by startup_() before the worker spawns "
                      "and destroyed only after the worker is joined).  "
                      "Skipping handler-thread stop + queue close.",
-                     frame_cfg_.role_tag);
+                     frame_cfg_.short_tag);
     }
 
     // HEP-CORE-0041 1i-mig-2: release the L1 transport + L2b acceptor +
@@ -346,7 +346,7 @@ void RoleHostFrame::teardown_infrastructure_()
 // ProducerRoleHost + ProcessorRoleHost (~70 LOC each, identical apart
 // from log-prefix tag).  Promoted to RoleHostFrame default impl so
 // both subclasses inherit one canonical copy; log tag derives from
-// frame_cfg_.role_tag.  Override only if a future role host needs
+// frame_cfg_.short_tag.  Override only if a future role host needs
 // different L1 setup (e.g. a non-memfd backend).
 //
 // Called from RoleHostFrame::setup_infrastructure_ between
@@ -397,7 +397,7 @@ bool RoleHostFrame::prepare_tx_capability_(hub::TxQueueOptions &tx_opts,
             "[{}] prepare_tx_capability_: datablock_layout_total_size "
             "returned 0 for channel '{}' (item_size={}, fz_size={}) — "
             "schema/config invariants violated",
-            frame_cfg_.role_tag, tx_channel, item_size, fz_size);
+            frame_cfg_.short_tag, tx_channel, item_size, fz_size);
         return false;
     }
 
@@ -408,7 +408,7 @@ bool RoleHostFrame::prepare_tx_capability_(hub::TxQueueOptions &tx_opts,
         LOGGER_ERROR(
             "[{}] prepare_tx_capability_: create_shm_capability_producer "
             "failed for channel '{}' (size={}, HEP-CORE-0041 §6.3 L1)",
-            frame_cfg_.role_tag, tx_channel, total);
+            frame_cfg_.short_tag, tx_channel, total);
         return false;
     }
 
@@ -418,7 +418,7 @@ bool RoleHostFrame::prepare_tx_capability_(hub::TxQueueOptions &tx_opts,
         LOGGER_ERROR(
             "[{}] prepare_tx_capability_: bind_endpoint('{}') failed "
             "for channel '{}' (HEP-CORE-0041 §5.1 L1)",
-            frame_cfg_.role_tag, endpoint, tx_channel);
+            frame_cfg_.short_tag, endpoint, tx_channel);
         shm_transport_.reset();
         return false;
     }
@@ -427,7 +427,7 @@ bool RoleHostFrame::prepare_tx_capability_(hub::TxQueueOptions &tx_opts,
     LOGGER_INFO(
         "[{}] event=ShmCapabilityTransportBound channel='{}' endpoint='{}' "
         "size={} fd={} (HEP-CORE-0041 1i-mig)",
-        frame_cfg_.role_tag, tx_channel, endpoint, total,
+        frame_cfg_.short_tag, tx_channel, endpoint, total,
         tx_opts.shm_capability_fd);
     return true;
 }
@@ -454,7 +454,7 @@ void RoleHostFrame::cleanup_tx_capability_()
     {
         LOGGER_INFO("[{}] event=ShmAttachOrchestratorReleased "
                     "(HEP-CORE-0041 1i-mig-2b-2)",
-                    frame_cfg_.role_tag);
+                    frame_cfg_.short_tag);
         shm_orchestrator_.reset();
     }
     if (shm_acceptor_)
@@ -465,7 +465,7 @@ void RoleHostFrame::cleanup_tx_capability_()
     {
         LOGGER_INFO("[{}] event=ShmCapabilityTransportReleased "
                     "(HEP-CORE-0041 1i-mig-2)",
-                    frame_cfg_.role_tag);
+                    frame_cfg_.short_tag);
         shm_transport_.reset();
     }
 }
@@ -490,7 +490,7 @@ bool RoleHostFrame::spawn_shm_auth_listener_()
         LOGGER_ERROR("[{}] spawn_shm_auth_listener_: shm_transport_ is "
                      "null — prepare_tx_capability_ must run first "
                      "(HEP-CORE-0041 1i-mig-2c)",
-                     frame_cfg_.role_tag);
+                     frame_cfg_.short_tag);
         return false;
     }
 
@@ -523,7 +523,7 @@ bool RoleHostFrame::spawn_shm_auth_listener_()
     {
         LOGGER_ERROR("[{}] AttachProtocolAcceptor ctor threw for "
                      "channel '{}': {}",
-                     frame_cfg_.role_tag, tx_ch, e.what());
+                     frame_cfg_.short_tag, tx_ch, e.what());
         return false;
     }
 
@@ -573,7 +573,7 @@ bool RoleHostFrame::spawn_shm_auth_listener_()
     {
         LOGGER_ERROR("[{}] ShmAttachOrchestrator ctor threw for "
                      "channel '{}': {}",
-                     frame_cfg_.role_tag, tx_ch, e.what());
+                     frame_cfg_.short_tag, tx_ch, e.what());
         shm_acceptor_.reset();
         return false;
     }
@@ -624,7 +624,7 @@ bool RoleHostFrame::spawn_shm_auth_listener_()
                             "[{}] shm_accept_loop iteration threw "
                             "'{}' — continuing (HEP-CORE-0041 §9 "
                             "D4 per-attach isolation)",
-                            frame_cfg_.role_tag, e.what());
+                            frame_cfg_.short_tag, e.what());
                     }
                 }
             });
@@ -634,7 +634,7 @@ bool RoleHostFrame::spawn_shm_auth_listener_()
         LOGGER_ERROR("[{}] failed to spawn shm_accept_loop on "
                      "ThreadManager for channel '{}' "
                      "(HEP-CORE-0041 1i-mig-2b-2)",
-                     frame_cfg_.role_tag, tx_ch);
+                     frame_cfg_.short_tag, tx_ch);
         shm_orchestrator_.reset();
         shm_acceptor_.reset();
         return false;
@@ -642,7 +642,7 @@ bool RoleHostFrame::spawn_shm_auth_listener_()
 
     LOGGER_INFO("[{}] event=ShmAcceptLoopSpawned channel='{}' "
                 "(HEP-CORE-0041 §9 D4 + 1i-mig-2b-2)",
-                frame_cfg_.role_tag, tx_ch);
+                frame_cfg_.short_tag, tx_ch);
     return true;
 }
 

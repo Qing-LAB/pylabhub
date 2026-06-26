@@ -942,7 +942,7 @@ struct NativeEngine::NativeContextStorage
     PlhNativeContext ctx{};
 
     // Storage for strings (PlhNativeContext holds pointers into these).
-    std::string role_tag;
+    std::string short_tag;
     std::string uid;
     std::string name;
     std::string channel;
@@ -972,7 +972,7 @@ struct NativeEngine::NativeContextStorage
     {
         assert(api != nullptr && "HubAPI must not be null");
 
-        ctx.role_tag    = "hub";
+        ctx.short_tag    = "hub";
         ctx.uid         = uid.c_str();
         ctx.name        = name.c_str();
         ctx.channel     = nullptr;
@@ -1072,7 +1072,7 @@ struct NativeEngine::NativeContextStorage
         assert(api != nullptr && "RoleAPIBase must not be null");
 
         // Identity strings.
-        ctx.role_tag    = role_tag.c_str();
+        ctx.short_tag    = short_tag.c_str();
         ctx.uid         = uid.c_str();
         ctx.name        = name.c_str();
         ctx.channel     = channel.c_str();
@@ -1334,7 +1334,7 @@ bool NativeEngine::load_script(const std::filesystem::path &script_dir,
 bool NativeEngine::build_api_(RoleAPIBase &api)
 {
     native_ctx_ = std::make_unique<NativeContextStorage>();
-    native_ctx_->role_tag    = api.role_tag();
+    native_ctx_->short_tag    = api.short_tag();
     native_ctx_->uid         = api.uid();
     native_ctx_->name        = api.name();
     native_ctx_->channel     = api.channel();

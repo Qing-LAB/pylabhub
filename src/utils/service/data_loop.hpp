@@ -101,7 +101,7 @@ template <typename Ops>
 void run_data_loop(RoleAPIBase &api, RoleHostCore &core,
                    const LoopConfig &cfg, Ops &ops)
 {
-    const std::string &tag = api.role_tag();
+    const std::string &tag = api.short_tag();
 
     // -- Timing setup --------------------------------------------------------
     const auto policy      = cfg.loop_timing;

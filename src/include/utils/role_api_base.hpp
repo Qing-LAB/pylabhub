@@ -91,7 +91,7 @@ struct TxQueueOptions
     bool always_clear_slot{true};
 
     /// ThreadManager owner id for internal threads.  Empty → auto-derived
-    /// as "<role_tag>:<uid>:tx" from RoleAPIBase identity.  Set
+    /// as "<short_tag>:<uid>:tx" from RoleAPIBase identity.  Set
     /// explicitly only for direct-factory tests that bypass RoleAPIBase.
     std::string instance_id{};
 
@@ -171,7 +171,7 @@ struct RxQueueOptions
     ChecksumPolicy checksum_policy{ChecksumPolicy::Enforced};
     bool flexzone_checksum{true};
 
-    /// Empty → auto-derived as "<role_tag>:<uid>:rx" from RoleAPIBase.
+    /// Empty → auto-derived as "<short_tag>:<uid>:rx" from RoleAPIBase.
     std::string instance_id{};
 };
 
@@ -240,17 +240,17 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
 
   public:
     /// @param core      RoleHostCore owned by the role host (lifetime > api).
-    /// @param role_tag  Role type tag: "prod" / "cons" / "proc". Non-empty.
+    /// @param short_tag  Role type tag: "prod" / "cons" / "proc". Non-empty.
     /// @param uid       Role instance uid (e.g. "prod.sensor.uid00000001"). Non-empty.
     ///
-    /// Identity (role_tag + uid) is required at construction time so the
+    /// Identity (short_tag + uid) is required at construction time so the
     /// role's ThreadManager is built immediately as a member — no
     /// two-stage init, no runtime "did you forget to initialize" check.
     /// The compile-time signature enforces that a caller cannot construct
     /// a RoleAPIBase without providing both halves of role identity.
     /// Throws std::invalid_argument if either string is empty.
     RoleAPIBase(RoleHostCore &core,
-                std::string   role_tag,
+                std::string   short_tag,
                 std::string   uid);
     ~RoleAPIBase();
 
@@ -261,7 +261,7 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
 
     // ── Host wiring (called once by role host after setup_infrastructure_) ────
     //
-    // Note: set_role_tag + set_uid are GONE. Both are now ctor args and
+    // Note: set_short_tag + set_uid are GONE. Both are now ctor args and
     // immutable after construction. All remaining setters are for mutable
     // wiring state (infrastructure pointers, script paths, policies).
 
@@ -431,7 +431,7 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
 
     // ── Identity ──────────────────────────────────────────────────────────────
 
-    [[nodiscard]] const std::string &role_tag() const;
+    [[nodiscard]] const std::string &short_tag() const;
     [[nodiscard]] const std::string &uid() const;
     [[nodiscard]] const std::string &name() const;
     [[nodiscard]] const std::string &channel() const;
@@ -456,7 +456,7 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     /// with `stop_reason_string() == "critical_error"`.
     ///
     /// The framework emits a uniform ERROR-level log line
-    /// `[role_tag/uid] CRITICAL: <msg>` BEFORE flipping state — so
+    /// `[short_tag/uid] CRITICAL: <msg>` BEFORE flipping state — so
     /// log scrapers see the message adjacent to the stop event.
     ///
     /// Audit S2 (2026-05-18) — `msg` is REQUIRED (no default).  All
@@ -687,17 +687,17 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     // managed thread. Future worker threads use the same interface.
 
     /// Access the role's thread manager. Always valid — constructed in
-    /// the RoleAPIBase ctor alongside role_tag/uid. All role-scope
+    /// the RoleAPIBase ctor alongside short_tag/uid. All role-scope
     /// threads (worker / ctrl / inbox drainer / future) live under this
     /// one manager — same dynamic lifecycle module
-    /// "ThreadManager:{role_tag}:{uid}", same bounded-join, same
+    /// "ThreadManager:{short_tag}:{uid}", same bounded-join, same
     /// process-wide leak aggregator. Usage:
     ///
     ///   api_->thread_manager().spawn("worker",
     ///       [&] { scripting::ThreadEngineGuard g(*engine_); worker_main_(); });
     ///
     /// No throw path — invariant "manager is always ready" enforced by
-    /// the ctor signature (role_tag + uid are required positional args).
+    /// the ctor signature (short_tag + uid are required positional args).
     [[nodiscard]] pylabhub::utils::ThreadManager &thread_manager();
 
     // ── Handler-mode control plane (Wave-B M4c, sole path after M4f) ────────

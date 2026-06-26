@@ -55,8 +55,10 @@ ConsumerRoleHost::ConsumerRoleHost(config::RoleConfig config,
                                      std::atomic<bool> *shutdown_flag)
     : scripting::RoleHostFrame(std::move(config),
                                 shutdown_flag,
-                                { /*role_tag=*/         "cons",
-                                  /*role_label=*/       "consumer",
+                                // HEP-CORE-0036 §5b.10: short_tag derived
+                                // once from role_type via short_role_tag().
+                                { /*role_type=*/        "consumer",
+                                  /*short_tag=*/        std::string(pylabhub::hub::short_role_tag("consumer")),
                                   /*required_callback=*/"on_consume" })
 {
     // Engine constructed in worker_main_ Step 0 — see HEP-CORE-0011

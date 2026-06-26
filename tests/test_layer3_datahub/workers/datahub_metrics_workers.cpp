@@ -692,7 +692,7 @@ int query_engine_roles_carry_collected_at()
             ASSERT_TRUE(result["roles"].contains(uid));
             const auto &r = result["roles"][uid];
             EXPECT_EQ(r.value("uid", ""), uid);
-            EXPECT_EQ(r.value("role_tag", ""), "prod");
+            EXPECT_EQ(r.value("short_tag", ""), "prod");
             EXPECT_TRUE(r.contains("_collected_at"));
             EXPECT_FALSE(r.value("_collected_at", "").empty());
 

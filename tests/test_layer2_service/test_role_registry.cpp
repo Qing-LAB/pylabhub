@@ -3,7 +3,7 @@
  * @brief L2 tests for RoleRegistry + RuntimeBuilder.
  *
  * The registry is a process-global singleton — each test uses a unique
- * role_tag (suffixed with an atomic counter) so runs don't collide.
+ * short_tag (suffixed with an atomic counter) so runs don't collide.
  */
 #include "utils/role_registry.hpp"
 #include "utils/engine_host.hpp"
@@ -63,7 +63,7 @@ TEST(RoleRegistryTest, RegisterAndGet_PopulatedInfo)
 
     const RoleRuntimeInfo *info = RoleRegistry::get_runtime(tag);
     ASSERT_NE(info, nullptr);
-    EXPECT_EQ(info->role_tag,      tag);
+    EXPECT_EQ(info->role_type,      tag);
     EXPECT_EQ(info->role_label,    "RR Basic");
     EXPECT_EQ(info->host_factory,  &dummy_host_factory);
     EXPECT_EQ(info->config_parser, &dummy_config_parser);

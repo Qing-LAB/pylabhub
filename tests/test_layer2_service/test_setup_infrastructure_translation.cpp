@@ -25,7 +25,7 @@
  *
  * Strict deployment-path mirror (per user direction 2026-05-22):
  *
- *   1. **Generate**: `RoleDirectory::init_directory(dir, role_tag, name)`
+ *   1. **Generate**: `RoleDirectory::init_directory(dir, role_type, name)`
  *      — the exact library function `plh_role --init` invokes.  Writes
  *      a default JSON config to disk via the registered
  *      `config_template`.
@@ -37,7 +37,7 @@
  *      exercise the values `--init` happens to set, leaving translation
  *      regressions on the other fields invisible.
  *
- *   3. **Load**: `RoleConfig::load_from_directory(dir, role_tag,
+ *   3. **Load**: `RoleConfig::load_from_directory(dir, role_type,
  *      info->config_parser)` — the same path `plh_role` itself takes
  *      (see `src/plh_role/plh_role_main.cpp:249`).
  *
@@ -177,18 +177,18 @@ class SetupInfrastructureTranslationTest : public ::testing::Test
     }
 
     /// Run the deployment round-trip:
-    ///   init_directory(role_tag) → modify JSON with `mutate` → load_from_directory.
+    ///   init_directory(role_type) → modify JSON with `mutate` → load_from_directory.
     /// Returns the loaded RoleConfig.  Test caller then runs the
     /// role-specific make_*_opts + asserts fields.
     template <typename Mutate>
-    RoleConfig generate_and_load(const std::string &role_tag,
+    RoleConfig generate_and_load(const std::string &role_type,
                                   const std::string &cfg_filename,
                                   const std::string &name,
                                   Mutate            &&mutate)
     {
-        fs::path dir = unique_dir(role_tag.c_str());
-        const int rc = RoleDirectory::init_directory(dir, role_tag, name);
-        EXPECT_EQ(rc, 0) << "init_directory failed for role='" << role_tag << "'";
+        fs::path dir = unique_dir(role_type.c_str());
+        const int rc = RoleDirectory::init_directory(dir, role_type, name);
+        EXPECT_EQ(rc, 0) << "init_directory failed for role='" << role_type << "'";
 
         const fs::path cfg_path = dir / cfg_filename;
         EXPECT_TRUE(fs::exists(cfg_path))
@@ -200,11 +200,11 @@ class SetupInfrastructureTranslationTest : public ::testing::Test
         write_json(cfg_path, j);
 
         // ── Production loader path (mirrors src/plh_role/plh_role_main.cpp:249) ──
-        const RoleRuntimeInfo *info = RoleRegistry::get_runtime(role_tag);
+        const RoleRuntimeInfo *info = RoleRegistry::get_runtime(role_type);
         EXPECT_NE(info, nullptr)
-            << "RoleRegistry::get_runtime('" << role_tag << "') returned null";
+            << "RoleRegistry::get_runtime('" << role_type << "') returned null";
         return RoleConfig::load_from_directory(
-            dir.string(), info->role_tag.c_str(), info->config_parser);
+            dir.string(), info->role_type.c_str(), info->config_parser);
     }
 
   private:

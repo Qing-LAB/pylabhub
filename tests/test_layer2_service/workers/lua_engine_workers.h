@@ -40,7 +40,7 @@ int register_slot_type_all_supported_types(const std::string &dir);
 /// engine remains usable for subsequent valid registrations.
 int register_slot_type_unknown_name_rejects_no_side_effect(const std::string &dir);
 
-// ── Alias creation (SlotFrame / FlexFrame based on role_tag) ────────────────
+// ── Alias creation (SlotFrame / FlexFrame based on short_tag) ────────────────
 int alias_slot_frame_producer(const std::string &dir);
 int alias_slot_frame_consumer(const std::string &dir);
 int alias_no_alias_processor(const std::string &dir);

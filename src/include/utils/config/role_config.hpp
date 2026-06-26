@@ -69,20 +69,20 @@ class PYLABHUB_UTILS_EXPORT RoleConfig
 
     /// Load from an explicit config file path.
     /// @param path        Absolute or relative path to the JSON config file.
-    /// @param role_tag    Role type: "producer", "consumer", "processor".
+    /// @param role_type    Role type: "producer", "consumer", "processor".
     /// @param role_parser Optional callback to parse role-specific fields.
     /// @throws std::runtime_error on file/parse/validation error.
     static RoleConfig load(const std::string &path,
-                           const char *role_tag,
+                           const char *role_type,
                            RoleParser role_parser = nullptr);
 
-    /// Load from a role directory (reads <dir>/<role_tag>.json).
+    /// Load from a role directory (reads <dir>/<role_type>.json).
     /// @param dir         Role directory path.
-    /// @param role_tag    Role type: "producer", "consumer", "processor".
+    /// @param role_type    Role type: "producer", "consumer", "processor".
     /// @param role_parser Optional callback to parse role-specific fields.
     /// @throws std::runtime_error on file/parse/validation error.
     static RoleConfig load_from_directory(const std::string &dir,
-                                          const char *role_tag,
+                                          const char *role_type,
                                           RoleParser role_parser = nullptr);
 
     // ── Non-directional accessors ────────────────────────────────────
@@ -153,7 +153,7 @@ class PYLABHUB_UTILS_EXPORT RoleConfig
 
     // ── Metadata ──────────────────────────────────────────────────────
 
-    const std::string              &role_tag()  const;
+    const std::string              &role_type()  const;
     const std::filesystem::path    &base_dir()  const;
 
     // ── Special members (pImpl) ──────────────────────────────────────

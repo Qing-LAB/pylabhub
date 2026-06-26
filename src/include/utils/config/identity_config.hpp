@@ -28,16 +28,16 @@ struct IdentityConfig
 
 /// Parse identity from the role-specific JSON section.
 /// @param j         Root JSON object.
-/// @param role_tag  Role type: "producer", "consumer", "processor".
+/// @param role_type  Role type: "producer", "consumer", "processor".
 ///                  Determines the JSON section name and UID prefix.
 inline IdentityConfig parse_identity_config(const nlohmann::json &j,
-                                             std::string_view role_tag)
+                                             std::string_view role_type)
 {
-    if (!j.contains(std::string(role_tag)) || !j[std::string(role_tag)].is_object())
+    if (!j.contains(std::string(role_type)) || !j[std::string(role_type)].is_object())
         throw std::runtime_error(
-            std::string(role_tag) + " config: missing '" + std::string(role_tag) + "' object");
+            std::string(role_type) + " config: missing '" + std::string(role_type) + "' object");
 
-    const auto &sect = j[std::string(role_tag)];
+    const auto &sect = j[std::string(role_type)];
     // Reject unknown nested keys in the role-tag block.  The block
     // holds identity fields (uid/name/log_level) plus the auth
     // sub-object (validated separately by parse_auth_config).
@@ -46,8 +46,8 @@ inline IdentityConfig parse_identity_config(const nlohmann::json &j,
         const auto &k = it.key();
         if (k != "uid" && k != "name" && k != "log_level" && k != "auth")
             throw std::runtime_error(
-                std::string(role_tag) + ": unknown config key '"
-                + std::string(role_tag) + "." + k + "'");
+                std::string(role_type) + ": unknown config key '"
+                + std::string(role_type) + "." + k + "'");
     }
     IdentityConfig ic;
     ic.uid       = sect.value("uid",       "");
@@ -55,8 +55,8 @@ inline IdentityConfig parse_identity_config(const nlohmann::json &j,
     ic.log_level = sect.value("log_level", "info");
 
     // Short tag for logging (pre-lifecycle).
-    const char *short_tag = (role_tag == "producer") ? "prod"
-                          : (role_tag == "consumer") ? "cons"
+    const char *short_tag = (role_type == "producer") ? "prod"
+                          : (role_type == "consumer") ? "cons"
                           : "proc";
 
     // HEP-CORE-0024 §3.4.2 (revised 2026-06-04, mirrors
@@ -68,7 +68,7 @@ inline IdentityConfig parse_identity_config(const nlohmann::json &j,
     if (ic.uid.empty())
     {
         throw std::runtime_error(
-            std::string(role_tag) + ": '" + std::string(role_tag) +
+            std::string(role_type) + ": '" + std::string(role_type) +
             ".uid' is empty or missing.  Run `plh_role --init --role " +
             std::string(short_tag) + " --uid <uid>` (one-shot) or "
             "`plh_role --skeleton` + edit + `plh_role --keygen` "
@@ -81,22 +81,22 @@ inline IdentityConfig parse_identity_config(const nlohmann::json &j,
             ic.uid, pylabhub::hub::IdentifierKind::RoleUid))
     {
         throw std::runtime_error(
-            std::string(role_tag) + ": invalid '" + std::string(role_tag) +
+            std::string(role_type) + ": invalid '" + std::string(role_type) +
             ".uid' = '" + ic.uid + "'.  Must follow HEP-CORE-0033 "
             "§G2.2.0b RoleUid grammar '<tag>.<name>.uid<8hex>', e.g. '" +
             std::string(short_tag) + ".main.uid3a7f2b1c'.");
     }
 
     // The uid is structurally valid — now verify its tag matches
-    // the role_tag this config section is for. A `cons.*.*` uid
+    // the role_type this config section is for. A `cons.*.*` uid
     // in the `producer` block is nonsense even if grammatically OK.
     const auto parts = pylabhub::hub::parse_role_uid(ic.uid);
     if (!parts || parts->tag != short_tag)
     {
         throw std::runtime_error(
-            std::string(role_tag) + ": uid '" + ic.uid +
+            std::string(role_type) + ": uid '" + ic.uid +
             "' has tag '" + (parts ? std::string(parts->tag) : std::string{}) +
-            "' but is declared in the '" + std::string(role_tag) +
+            "' but is declared in the '" + std::string(role_type) +
             "' block (expected tag '" + std::string(short_tag) + "').");
     }
 

@@ -89,7 +89,7 @@ constexpr std::string_view kRoleTags[]             = {"prod", "cons", "proc"};
 constexpr std::string_view kPeerTag                 = "hub";
 constexpr std::string_view kChannelReservedFirst[]  = {"prod", "cons", "proc", "hub", "sys"};
 
-[[nodiscard]] bool is_role_tag(std::string_view s) noexcept
+[[nodiscard]] bool is_short_tag(std::string_view s) noexcept
 {
     for (auto t : kRoleTags)
         if (s == t) return true;
@@ -204,7 +204,7 @@ bool is_valid_identifier(std::string_view s, IdentifierKind kind) noexcept
 
     case IdentifierKind::RoleUid:
         return is_valid_tagged_uid_structure(s) &&
-               is_role_tag(first_component(s));
+               is_short_tag(first_component(s));
 
     case IdentifierKind::PeerUid:
         return is_valid_tagged_uid_structure(s) &&
@@ -276,7 +276,7 @@ std::optional<SchemaIdParts> parse_schema_id(std::string_view id) noexcept
     return parts;
 }
 
-std::optional<std::string_view> extract_role_tag(std::string_view uid) noexcept
+std::optional<std::string_view> extract_short_tag(std::string_view uid) noexcept
 {
     if (auto p = parse_role_uid(uid)) return p->tag;
     return std::nullopt;

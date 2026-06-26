@@ -3165,7 +3165,7 @@ int type_sizeof_inbox_frame_returns_correct_size(const std::string &dir)
             // (4) Packed-vs-aligned discriminator (Python-specific).
             //     Register InFlexFrame (a distinct canonical name —
             //     register_slot_type accepts all five canonical
-            //     names regardless of role_tag) under "packed"
+            //     names regardless of short_tag) under "packed"
             //     packing, using the SAME multifield_schema.  Under
             //     aligned packing the schema is 40 bytes; packed
             //     drops the interior 3-byte pad (after uint8 flag)

@@ -5,8 +5,8 @@
  *
  * ## UID format (HEP-0033 §G2.2.0b)
  *
- *   Role:  <role_tag>.<name>.uid<8hex>
- *          <role_tag> ∈ {prod, cons, proc}
+ *   Role:  <short_tag>.<name>.uid<8hex>
+ *          <short_tag> ∈ {prod, cons, proc}
  *   Peer:  hub.<name>.uid<8hex>
  *
  * Examples:

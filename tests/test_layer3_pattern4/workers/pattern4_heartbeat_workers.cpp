@@ -304,7 +304,7 @@ int pattern4_heartbeat_producer_role(const char *temp_dir_arg)
             reg_in.channel          = channel;
             reg_in.role_uid         = role_uid;
             reg_in.role_name        = "pattern4_heartbeat";
-            reg_in.role_tag         = "producer";
+            reg_in.role_type         = "producer";
             reg_in.has_shm          = true;
             reg_in.is_zmq_transport = false;
             reg_in.shm_capability_endpoint =

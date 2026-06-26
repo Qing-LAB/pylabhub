@@ -244,15 +244,15 @@ std::unordered_map<std::string, RoleInitEntry> &registry()
 
 struct RoleDirectory::RoleRegistrationBuilder::Impl
 {
-    std::string  role_tag;
+    std::string  role_type;
     RoleInitEntry entry;
     bool committed{false};
 };
 
-RoleDirectory::RoleRegistrationBuilder::RoleRegistrationBuilder(std::string role_tag)
+RoleDirectory::RoleRegistrationBuilder::RoleRegistrationBuilder(std::string role_type)
     : impl_(std::make_unique<Impl>())
 {
-    impl_->role_tag = std::move(role_tag);
+    impl_->role_type = std::move(role_type);
 }
 
 RoleDirectory::RoleRegistrationBuilder::~RoleRegistrationBuilder()
@@ -309,21 +309,21 @@ void RoleDirectory::RoleRegistrationBuilder::commit()
     impl_->committed = true;
 
     std::lock_guard lk(registry_mutex());
-    registry()[impl_->role_tag] = std::move(impl_->entry);
+    registry()[impl_->role_type] = std::move(impl_->entry);
 }
 
 // ── register_role — returns builder ──────────────────────────────────────────
 
 RoleDirectory::RoleRegistrationBuilder
-RoleDirectory::register_role(const std::string &role_tag)
+RoleDirectory::register_role(const std::string &role_type)
 {
-    return RoleRegistrationBuilder(role_tag);
+    return RoleRegistrationBuilder(role_type);
 }
 
 // ── init_directory ───────────────────────────────────────────────────────────
 
 int RoleDirectory::init_directory(const std::filesystem::path &dir,
-                                   const std::string &role_tag,
+                                   const std::string &role_type,
                                    const std::string &name,
                                    const LogInitOverrides &log)
 {
@@ -333,12 +333,12 @@ int RoleDirectory::init_directory(const std::filesystem::path &dir,
     RoleInitEntry info;
     {
         std::lock_guard lk(registry_mutex());
-        auto it = registry().find(role_tag);
+        auto it = registry().find(role_type);
         if (it == registry().end())
         {
             fmt::print(stderr, "init_directory: error: unknown role '{}' — "
                        "not registered via RoleDirectory::register_role()\n",
-                       role_tag);
+                       role_type);
             return 1;
         }
         info = it->second;

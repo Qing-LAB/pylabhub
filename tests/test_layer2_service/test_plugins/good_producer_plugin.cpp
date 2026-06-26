@@ -192,7 +192,7 @@ extern "C" PLH_EXPORT bool on_produce(const plh_tx_t *tx)
         g_test_cpp_wrapper_ok = 1;
 
         // Verify identity accessors.
-        if (!api.uid() || !api.name() || !api.role_tag())
+        if (!api.uid() || !api.name() || !api.short_tag())
             g_test_cpp_wrapper_ok = 0;
 
         // Verify counter accessors match C API results.

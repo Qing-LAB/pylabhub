@@ -34,10 +34,10 @@ namespace pylabhub::scripting
 {
 
 template <typename ApiT>
-EngineHost<ApiT>::EngineHost(std::string_view role_tag,
+EngineHost<ApiT>::EngineHost(std::string_view short_tag,
                               ConfigT config,
                               std::atomic<bool> *shutdown_flag)
-    : role_tag_(role_tag)
+    : short_tag_(short_tag)
     , config_(std::move(config))
     , engine_(nullptr)  // constructed in derived's worker_main_ Step 0
 {
@@ -96,14 +96,14 @@ EngineHost<ApiT>::~EngineHost()
         // compiler-specific but always unambiguous within a single build.
         PLH_PANIC(
             "EngineHost<{}> destructor entered while in Running phase — "
-            "shutdown_() was never called.  role_tag='{}' uid='{}'.  "
+            "shutdown_() was never called.  short_tag='{}' uid='{}'.  "
             "Either the derived destructor did not call shutdown_() as "
             "its first statement, or an override of shutdown_() failed "
             "to call EngineHost::shutdown_().  The worker thread may "
             "still reference now-destroyed derived members; aborting "
             "to avoid silent use-after-free.",
             typeid(ApiT).name(),
-            role_tag_, uid_);
+            short_tag_, uid_);
     }
 }
 
@@ -122,10 +122,10 @@ void EngineHost<ApiT>::startup_()
         // expected == Phase::ShutDown
         PLH_PANIC(
             "EngineHost<{}>::startup_() called after shutdown_() — "
-            "this host instance is single-use.  role_tag='{}' uid='{}'.  "
+            "this host instance is single-use.  short_tag='{}' uid='{}'.  "
             "Construct a new EngineHost instance to start fresh.",
             typeid(ApiT).name(),
-            role_tag_, uid_);
+            short_tag_, uid_);
     }
 
     try
@@ -133,15 +133,15 @@ void EngineHost<ApiT>::startup_()
         ready_promise_ = std::promise<bool>{};
         auto ready_future = ready_promise_.get_future();
 
-        // Construct api_ here (not in ctor) so role_tag + uid are
+        // Construct api_ here (not in ctor) so short_tag + uid are
         // available and the worker thread can be spawned under this
-        // api's ThreadManager.  role_tag_ is the short form
+        // api's ThreadManager.  short_tag_ is the short form
         // ("prod"/"cons"/"proc" for role side; "hub" for hub side)
         // used by the ApiT-owned ThreadManager name + log prefixes.
         // uid_ is the host instance uid carried separately from
         // ConfigT (Phase 7 Option E — see engine_host.hpp ctor docs).
         api_ = std::make_unique<ApiT>(
-            core_, std::string(role_tag_), uid_);
+            core_, std::string(short_tag_), uid_);
 
         api_->thread_manager().spawn("worker", [this] { worker_main_(); });
 
@@ -258,7 +258,7 @@ void EngineHost<ApiT>::shutdown_() noexcept
             "DETACHED; the OS will reap it on process exit.  Some "
             "engine-owned resources (Python objects, sockets) may "
             "leak until then.",
-            role_tag_);
+            short_tag_);
     }
 
     // Detach safety gate (HEP-CORE-0031 §4.2; post-MD1.5 — bugs pinned
@@ -297,7 +297,7 @@ void EngineHost<ApiT>::shutdown_() noexcept
                 "[EngineHost:{}] {} thread(s) were detached during "
                 "shutdown drain but all returned within the grace "
                 "window — proceeding with normal `api_.reset()`.",
-                role_tag_,
+                short_tag_,
                 api_->thread_manager().detached_count_last_drain());
             api_.reset();
             return;
@@ -313,7 +313,7 @@ void EngineHost<ApiT>::shutdown_() noexcept
             "thread (deterministic UAF; see HEP-CORE-0031 §4.2).  The "
             "OS will reap the detached thread(s) and their allocations "
             "at process exit.",
-            role_tag_,
+            short_tag_,
             api_->thread_manager().detached_count_last_drain(),
             kDetachGrace.count());
         (void)api_.release();  // drop ownership without running ~ApiT

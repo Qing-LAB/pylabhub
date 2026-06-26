@@ -41,7 +41,7 @@
  * runtime (`HubScriptRunner`), which is one of `HubHost`'s owned
  * subsystems.
  *
- * Base owns shared state (role_tag, config, engine, RoleHostCore, ApiT,
+ * Base owns shared state (short_tag, config, engine, RoleHostCore, ApiT,
  * ready-promise). Derived owns role/hub-specific state (schemas, queues,
  * BrokerRequestComm, InboxQueue, CycleOps for role side; admin/event
  * pumps for hub side). The @ref ApiT is constructed lazily in @ref
@@ -50,7 +50,7 @@
  * every other role- or hub-scope thread.
  *
  * Contract on `ApiT`:
- *   - Constructor `ApiT(RoleHostCore &, std::string role_tag, std::string uid)`
+ *   - Constructor `ApiT(RoleHostCore &, std::string short_tag, std::string uid)`
  *   - `ThreadManager &thread_manager()` accessor
  *   Both `RoleAPIBase` and `HubAPI` satisfy these (HubAPI added in
  *   HEP-0033 Phase 7 Commit C).
@@ -148,7 +148,7 @@ class PYLABHUB_UTILS_EXPORT EngineHost
     /// Phase 7 Option E).
     using ConfigT = typename script_host_traits<ApiT>::ConfigT;
 
-    /// @param role_tag    Short host tag used for ApiT construction
+    /// @param short_tag    Short host tag used for ApiT construction
     ///                    and log prefixes (e.g. "prod"/"cons"/"proc"
     ///                    for role hosts, "hub" for the hub host).
     /// @param config      Parsed config (moved into the host).  Type is
@@ -190,7 +190,7 @@ class PYLABHUB_UTILS_EXPORT EngineHost
     /// resolution at the binary's link step pulls in the static-lib
     /// definition, while pylabhub-utils consumers that never link
     /// scripting see no libpython dependency.
-    EngineHost(std::string_view role_tag,
+    EngineHost(std::string_view short_tag,
                 ConfigT config,
                 std::atomic<bool> *shutdown_flag = nullptr);
 
@@ -287,7 +287,7 @@ class PYLABHUB_UTILS_EXPORT EngineHost
     [[nodiscard]] bool is_running()     const noexcept { return core_.is_running(); }
     [[nodiscard]] bool script_load_ok() const noexcept { return core_.is_script_load_ok(); }
     [[nodiscard]] const ConfigT            &config()   const noexcept { return config_; }
-    [[nodiscard]] std::string_view          role_tag() const noexcept { return role_tag_; }
+    [[nodiscard]] std::string_view          short_tag() const noexcept { return short_tag_; }
 
     /// Block until wakeup (shutdown, incoming message, or timeout).
     void wait_for_wakeup(int timeout_ms) { core_.wait_for_incoming(timeout_ms); }
@@ -332,7 +332,7 @@ class PYLABHUB_UTILS_EXPORT EngineHost
     virtual void worker_main_() = 0;
 
   private:
-    std::string                    role_tag_;
+    std::string                    short_tag_;
     /// Host instance uid — captured at construction (not derived from
     /// `config_`).  Used for diagnostics + as the uid arg to ApiT's
     /// ctor.  Storing it separately decouples EngineHost from any

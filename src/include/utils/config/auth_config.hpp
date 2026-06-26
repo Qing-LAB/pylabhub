@@ -57,12 +57,12 @@ struct AuthConfig
 /// pointing into that tmpdir.
 ///
 /// @param j         Root JSON object.
-/// @param role_tag  Section name: "producer" / "consumer" / "processor"
+/// @param role_type  Section name: "producer" / "consumer" / "processor"
 ///                  for role configs; "hub" for hub configs.
-inline AuthConfig parse_auth_config(const nlohmann::json &j, std::string_view role_tag)
+inline AuthConfig parse_auth_config(const nlohmann::json &j, std::string_view role_type)
 {
     AuthConfig ac;
-    const auto sect_name = std::string(role_tag);
+    const auto sect_name = std::string(role_type);
     if (!j.contains(sect_name) || !j[sect_name].is_object())
         return ac;  // outer-section absence is handled by the section's own parser.
 

@@ -35,7 +35,7 @@ struct ProducerRegInputs
     std::string channel;     ///< Channel name (= shm_name in current shape).
     std::string role_uid;    ///< HEP-CORE-0023 §2 role uid.
     std::string role_name;   ///< Human-readable role name.
-    std::string role_tag;    ///< "producer" or "processor" (HEP-0024 role tag).
+    std::string role_type;    ///< "producer" or "processor" (HEP-0024 role tag).
     bool        has_shm{false};
 
     /// True when the producer publishes via ZMQ (HEP-CORE-0021).  When
@@ -114,7 +114,7 @@ inline nlohmann::json build_producer_reg_payload(const ProducerRegInputs &in)
     reg["producer_pid"]      = pylabhub::platform::get_pid();
     reg["role_uid"]          = in.role_uid;
     reg["role_name"]         = in.role_name;
-    reg["role_type"]         = in.role_tag;
+    reg["role_type"]         = in.role_type;
     // zmq_pubkey: REQUIRED per HEP-CORE-0036 §4.1 + §5.1 + §6.4.
     // Producer's CURVE identity pubkey, Z85-encoded (40 chars).
     // Broker stores it on ChannelEntry::producers[i].zmq_pubkey, then

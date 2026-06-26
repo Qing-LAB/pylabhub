@@ -29,7 +29,7 @@ struct RoleConfig::Impl
     utils::JsonConfig jcfg;
 
     // Metadata.
-    std::string           role_tag;
+    std::string           role_type;
     std::filesystem::path base_dir;
 
     // Raw JSON snapshot (for raw() accessor and role_parser callback).
@@ -79,7 +79,7 @@ RoleConfig &RoleConfig::operator=(RoleConfig &&) noexcept = default;
 /// Allowed top-level JSON keys. Unknown keys cause a hard error.
 /// Nested objects (producer.uid, script.type, etc.) are validated by their parsers.
 static const std::unordered_set<std::string> kAllowedKeys = {
-    // Identity (nested object — role_tag is the key: "producer", "consumer", "processor")
+    // Identity (nested object — role_type is the key: "producer", "consumer", "processor")
     "producer", "consumer", "processor",
     // Script
     "script", "stop_on_script_error", "python_venv",
@@ -190,7 +190,7 @@ static void validate_known_keys(const nlohmann::json &j, const char *tag)
 
 void RoleConfig::Impl::load_common(const nlohmann::json &j)
 {
-    const char *tag = role_tag.c_str();
+    const char *tag = role_type.c_str();
 
     // ── Reject retired keys with a specific HEP-referenced message ──
     // Fires BEFORE the generic unknown-key check so operators see the
@@ -202,8 +202,8 @@ void RoleConfig::Impl::load_common(const nlohmann::json &j)
     validate_known_keys(j, tag);
 
     // ── Non-directional categories ───────────────────────────────────
-    identity   = parse_identity_config(j, role_tag);
-    auth       = parse_auth_config(j, role_tag);
+    identity   = parse_identity_config(j, role_type);
+    auth       = parse_auth_config(j, role_type);
     script     = parse_script_config(j, base_dir, tag);
     timing     = parse_timing_config(j, tag);
     checksum   = parse_checksum_config(j, tag);
@@ -228,7 +228,7 @@ void RoleConfig::Impl::load_common(const nlohmann::json &j)
 // ============================================================================
 
 RoleConfig RoleConfig::load(const std::string &path,
-                             const char *role_tag,
+                             const char *role_type,
                              RoleParser role_parser)
 {
     namespace fs = std::filesystem;
@@ -237,7 +237,7 @@ RoleConfig RoleConfig::load(const std::string &path,
     cfg.impl_ = std::make_unique<Impl>();
     auto &s = *cfg.impl_;
 
-    s.role_tag = role_tag;
+    s.role_type = role_type;
     s.base_dir = fs::path(path).parent_path();
 
     // JsonConfig as backend.
@@ -277,7 +277,7 @@ RoleConfig RoleConfig::load(const std::string &path,
         std::fprintf(stderr,
                      "[%s] WARN: role config ACL advisory "
                      "(HEP-CORE-0035 §4.6.1):\n%s\n",
-                     s.role_tag.c_str(), v.diagnostic.c_str());
+                     s.role_type.c_str(), v.diagnostic.c_str());
     }
 
     // Role-specific extension.
@@ -288,13 +288,13 @@ RoleConfig RoleConfig::load(const std::string &path,
 }
 
 RoleConfig RoleConfig::load_from_directory(const std::string &dir,
-                                            const char *role_tag,
+                                            const char *role_type,
                                             RoleParser role_parser)
 {
     namespace fs = std::filesystem;
     const fs::path base = fs::weakly_canonical(fs::path(dir));
-    const fs::path cfg_path = base / (std::string(role_tag) + ".json");
-    return load(cfg_path.string(), role_tag, std::move(role_parser));
+    const fs::path cfg_path = base / (std::string(role_type) + ".json");
+    return load(cfg_path.string(), role_type, std::move(role_parser));
 }
 
 // ============================================================================
@@ -344,7 +344,7 @@ bool RoleConfig::load_keypair(const std::string &password)
 {
     assert(impl_);
     auto &auth = impl_->auth;
-    const char *tag = impl_->role_tag.c_str();
+    const char *tag = impl_->role_type.c_str();
     // auth.keyfile guaranteed non-empty by parse_auth_config.
 
     const auto &uid = impl_->identity.uid;
@@ -406,7 +406,7 @@ std::string RoleConfig::create_keypair(const std::string &password)
 {
     assert(impl_);
     const auto &auth = impl_->auth;
-    const char *tag = impl_->role_tag.c_str();
+    const char *tag = impl_->role_type.c_str();
     // auth.keyfile guaranteed non-empty by parse_auth_config
     // (HEP-CORE-0024 §3.4, finalized 2026-05-31).
 
@@ -487,7 +487,7 @@ std::any &RoleConfig::mutable_role_data_any_()
 // Metadata
 // ============================================================================
 
-const std::string           &RoleConfig::role_tag() const { assert(impl_); return impl_->role_tag; }
+const std::string           &RoleConfig::role_type() const { assert(impl_); return impl_->role_type; }
 const std::filesystem::path &RoleConfig::base_dir() const { assert(impl_); return impl_->base_dir; }
 
 } // namespace pylabhub::config

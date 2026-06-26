@@ -67,7 +67,7 @@ enum class IdentifierKind
     Channel,  ///< Plain dotted identifier; first component not in reserved set.
     Band,     ///< Leading sigil '!'.
     RoleUid,  ///< Tag prefix (prod|cons|proc) + name + unique_suffix; ≥3 components.
-    RoleName, ///< Plain dotted display name; tag optional. Paired with role_tag in output.
+    RoleName, ///< Plain dotted display name; tag optional. Paired with short_tag in output.
     PeerUid,  ///< Tag prefix 'hub' + name + unique_suffix; ≥3 components (same shape as RoleUid).
     Schema,   ///< Leading sigil '$'.
     SysKey,   ///< Reserved `sys.` broker-internal keys (counters, event types).
@@ -157,13 +157,46 @@ struct SchemaIdParts
 std::optional<SchemaIdParts> parse_schema_id(std::string_view id) noexcept;
 
 /**
- * @brief Shorthand: the role_tag embedded in a well-formed role uid.
+ * @brief Canonical short tag for a role type, per HEP-CORE-0036 §5b.10.
  *
- * @return "prod" / "cons" / "proc" if @p uid is a valid RoleUid,
+ * The single source of truth for the role-kind short form used in log
+ * prefixes, schema-directory names, engine module names, and uid
+ * prefixes.  All callers MUST derive their short tag from this helper
+ * (or from `RoleAPIBase::short_tag()` which caches the result at ctor)
+ * — never hardcode the short literal alongside a `role_type` of the
+ * matching long form.
+ *
+ * @param role_type One of `"producer"` / `"consumer"` / `"processor"`
+ *                  (§5b.4 canonical role classification).
+ * @return `"prod"` / `"cons"` / `"proc"` respectively.  Falls back to
+ *         the first 4 chars of @p role_type for unknown values; empty
+ *         string_view if @p role_type is empty.
+ */
+[[nodiscard]] constexpr std::string_view
+short_role_tag(std::string_view role_type) noexcept
+{
+    // The known role types map deterministically.  A switch on length
+    // gives a near-perfect-hash dispatch without strcmp on the hot path.
+    if (role_type == "producer")  return "prod";
+    if (role_type == "consumer")  return "cons";
+    if (role_type == "processor") return "proc";
+    // Unknown role kind: take the first 4 chars (or fewer if shorter).
+    return role_type.substr(0, std::min(role_type.size(), std::size_t{4}));
+}
+
+/**
+ * @brief Extract the short role tag embedded in a well-formed role uid.
+ *
+ * Per HEP-CORE-0036 §5b.10: a uid like `prod.foo.bar.uid123` carries
+ * the short tag as its dot-delimited prefix.  This helper recovers
+ * that prefix; equivalent in value to `short_role_tag(role_type)` when
+ * the uid was constructed correctly.
+ *
+ * @return `"prod"` / `"cons"` / `"proc"` if @p uid is a valid RoleUid,
  *         std::nullopt otherwise.
  */
 [[nodiscard]] PYLABHUB_UTILS_EXPORT
-std::optional<std::string_view> extract_role_tag(std::string_view uid) noexcept;
+std::optional<std::string_view> extract_short_tag(std::string_view uid) noexcept;
 
 /**
  * @brief Canonical human-readable reference to a role.

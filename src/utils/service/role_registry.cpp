@@ -34,9 +34,9 @@ std::unordered_map<std::string, RoleRuntimeInfo> &registry_()
 
 // ─── RuntimeBuilder (plain value type, no pimpl) ─────────────────────────────
 
-RoleRegistry::RuntimeBuilder::RuntimeBuilder(std::string_view role_tag)
+RoleRegistry::RuntimeBuilder::RuntimeBuilder(std::string_view role_type)
 {
-    entry_.role_tag = std::string(role_tag);
+    entry_.role_type = std::string(role_type);
 }
 
 RoleRegistry::RuntimeBuilder::~RuntimeBuilder()
@@ -85,37 +85,37 @@ void RoleRegistry::RuntimeBuilder::commit()
     if (entry_.host_factory == nullptr)
     {
         throw std::runtime_error(
-            "RoleRegistry::register_runtime('" + entry_.role_tag +
+            "RoleRegistry::register_runtime('" + entry_.role_type +
             "'): host_factory() is required before commit");
     }
 
     std::lock_guard lk(registry_mutex_());
     auto &map = registry_();
-    auto [it, inserted] = map.emplace(entry_.role_tag, entry_);
+    auto [it, inserted] = map.emplace(entry_.role_type, entry_);
     if (!inserted)
     {
         throw std::runtime_error(
-            "RoleRegistry::register_runtime: role_tag '" +
-            entry_.role_tag + "' already registered");
+            "RoleRegistry::register_runtime: role_type '" +
+            entry_.role_type + "' already registered");
     }
 }
 
 // ─── Static entry points ─────────────────────────────────────────────────────
 
 RoleRegistry::RuntimeBuilder
-RoleRegistry::register_runtime(std::string_view role_tag)
+RoleRegistry::register_runtime(std::string_view role_type)
 {
-    return RuntimeBuilder(role_tag);
+    return RuntimeBuilder(role_type);
 }
 
 const RoleRuntimeInfo *
-RoleRegistry::get_runtime(std::string_view role_tag)
+RoleRegistry::get_runtime(std::string_view role_type)
 {
     std::lock_guard lk(registry_mutex_());
     const auto &map = registry_();
     // unordered_map heterogeneous lookup requires C++20 transparent hash;
     // fall back to string copy for portability (lookup path, not hot).
-    auto it = map.find(std::string(role_tag));
+    auto it = map.find(std::string(role_type));
     return it == map.end() ? nullptr : &it->second;
 }
 

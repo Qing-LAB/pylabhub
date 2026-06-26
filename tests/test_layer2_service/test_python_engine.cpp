@@ -518,9 +518,9 @@ TEST_F(PythonEngineIsolatedTest, ApiCriticalError_SetAndReadAndStopReason)
         "python_engine.api_critical_error_set_and_read_and_stop_reason",
         {unique_dir("api_crit")});
     // Audit S2 (2026-05-18) — RoleAPIBase emits a uniform
-    // "[role_tag/uid] CRITICAL: <msg>" ERROR-level log line for every
+    // "[short_tag/uid] CRITICAL: <msg>" ERROR-level log line for every
     // api.set_critical_error(msg) call (Python / Lua / Native engines
-    // share this format).  Pin BOTH the role_tag/uid prefix (which
+    // share this format).  Pin BOTH the short_tag/uid prefix (which
     // comes from the test's hardcoded `prod.testengine.uid00000001`
     // setup in python_engine_workers.cpp:141) AND the worker-passed
     // message — a mutation that breaks either the prefix format or

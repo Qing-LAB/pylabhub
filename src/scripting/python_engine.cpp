@@ -376,7 +376,7 @@ bool PythonEngine::build_api_(RoleAPIBase &api)
     stop_on_script_error_ = api.stop_on_script_error();
 
     // Create role-specific aliases (SlotFrame/FlexFrame) for single-direction roles.
-    const auto &tag = api.role_tag();
+    const auto &tag = api.short_tag();
     if (tag == "prod")
     {
         if (!out_slot_type_.is_none())
@@ -451,8 +451,8 @@ bool PythonEngine::build_api_(RoleAPIBase &api)
     }
     else
     {
-        LOGGER_ERROR("[{}] build_api: unknown role_tag '{}' — must be 'prod', 'cons', or 'proc'",
-                     log_tag_, api_->role_tag());
+        LOGGER_ERROR("[{}] build_api: unknown short_tag '{}' — must be 'prod', 'cons', or 'proc'",
+                     log_tag_, api_->short_tag());
         return false;
     }
 
@@ -462,8 +462,8 @@ bool PythonEngine::build_api_(RoleAPIBase &api)
     {
         static const char *all_modules[] = {
             "pylabhub_producer", "pylabhub_consumer", "pylabhub_processor"};
-        const char *active = (api_->role_tag() == "prod") ? "pylabhub_producer"
-                           : (api_->role_tag() == "cons") ? "pylabhub_consumer"
+        const char *active = (api_->short_tag() == "prod") ? "pylabhub_producer"
+                           : (api_->short_tag() == "cons") ? "pylabhub_consumer"
                                                        : "pylabhub_processor";
         py::object sys_modules = py::module_::import("sys").attr("modules");
         for (const char *mod : all_modules)

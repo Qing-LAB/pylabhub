@@ -62,7 +62,7 @@ int load_keypair_rejects_corrupt_vault_contents(const std::string &dir);
 
 // ── Raw JSON / metadata ─────────────────────────────────────────────────────
 int raw_json(const std::string &dir);
-int role_tag(const std::string &dir);
+int role_type(const std::string &dir);
 int base_dir(const std::string &dir);
 int load_from_directory(const std::string &dir);
 

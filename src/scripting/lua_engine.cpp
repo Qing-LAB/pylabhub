@@ -321,7 +321,7 @@ bool LuaEngine::build_api_(RoleAPIBase &api)
     // Consumer: SlotFrame = InSlotFrame, FlexFrame = InFlexFrame.
     // Processor: no aliases — both directions are explicit.
     // The alias is a FFI typedef so scripts can use either name.
-    if (api.role_tag() == "prod")
+    if (api.short_tag() == "prod")
     {
         if (ref_out_slot_writable_ != LUA_NOREF)
         {
@@ -334,7 +334,7 @@ bool LuaEngine::build_api_(RoleAPIBase &api)
             ref_fz_alias_ = state_.cache_ffi_typeof("FlexFrame", /*readonly=*/false);
         }
     }
-    else if (api.role_tag() == "cons")
+    else if (api.short_tag() == "cons")
     {
         if (ref_in_slot_readonly_ != LUA_NOREF)
         {
@@ -385,8 +385,8 @@ bool LuaEngine::build_api_(RoleAPIBase &api)
     push_closure("producers",       lua_api_producers);
     push_closure("is_channel_ready", lua_api_is_channel_ready);
 
-    // ── Role-specific closures based on role_tag ────────────────────────
-    if (api_->role_tag() == "prod")
+    // ── Role-specific closures based on short_tag ────────────────────────
+    if (api_->short_tag() == "prod")
     {
         if (api_->has_tx_side())
         {
@@ -400,7 +400,7 @@ bool LuaEngine::build_api_(RoleAPIBase &api)
         push_closure("out_capacity", lua_api_out_capacity);
         push_closure("out_policy", lua_api_out_policy);
     }
-    else if (api_->role_tag() == "cons")
+    else if (api_->short_tag() == "cons")
     {
         if (api_->has_rx_side())
             push_closure("set_verify_checksum", lua_api_set_verify_checksum);
@@ -412,7 +412,7 @@ bool LuaEngine::build_api_(RoleAPIBase &api)
         push_closure("in_policy", lua_api_in_policy);
         push_closure("last_seq", lua_api_last_seq);
     }
-    else if (api_->role_tag() == "proc")
+    else if (api_->short_tag() == "proc")
     {
         push_closure("in_channel", lua_api_in_channel);
         push_closure("out_channel", lua_api_out_channel);
@@ -435,8 +435,8 @@ bool LuaEngine::build_api_(RoleAPIBase &api)
     }
     else
     {
-        LOGGER_ERROR("[{}] build_api: unknown role_tag '{}' — must be 'prod', 'cons', or 'proc'",
-                     log_tag_, api_->role_tag());
+        LOGGER_ERROR("[{}] build_api: unknown short_tag '{}' — must be 'prod', 'cons', or 'proc'",
+                     log_tag_, api_->short_tag());
         lua_pop(L, 1); // pop the api table
         return false;
     }
@@ -2144,7 +2144,7 @@ int LuaEngine::lua_api_set_critical_error(lua_State *L)
             "api.set_critical_error(msg) requires a string message argument");
     const char *msg = lua_tostring(L, 1);
     // Forward to RoleAPIBase so the log line format is uniform across
-    // Python / Lua / Native engines: "[role_tag/uid] CRITICAL: <msg>".
+    // Python / Lua / Native engines: "[short_tag/uid] CRITICAL: <msg>".
     self->api_->set_critical_error(std::string_view{msg});
     return 0;
 }
@@ -2634,7 +2634,7 @@ int LuaEngine::lua_api_is_channel_ready(lua_State *L)
 int LuaEngine::lua_api_queue_mechanism(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    const auto role = self->api_->role_tag();
+    const auto role = self->api_->short_tag();
     scripting::ChannelSide side;
 
     if (lua_gettop(L) == 0)
@@ -2683,7 +2683,7 @@ int LuaEngine::lua_api_metrics(lua_State *L)
     // accessor instead.  Mechanism is a state observable, not a
     // counter, and the metrics path is for counter fields only.
 
-    if (self->api_->role_tag() == "proc")
+    if (self->api_->short_tag() == "proc")
     {
         if (has_rx)
         {
@@ -2698,13 +2698,13 @@ int LuaEngine::lua_api_metrics(lua_State *L)
             lua_setfield(L, -2, "out_queue");
         }
     }
-    else if (self->api_->role_tag() == "prod" && has_tx)
+    else if (self->api_->short_tag() == "prod" && has_tx)
     {
         lua_newtable(L);
         queue_metrics_to_lua(L, self->api_->queue_metrics(scripting::ChannelSide::Tx));
         lua_setfield(L, -2, "queue");
     }
-    else if (self->api_->role_tag() == "cons" && has_rx)
+    else if (self->api_->short_tag() == "cons" && has_rx)
     {
         lua_newtable(L);
         queue_metrics_to_lua(L, self->api_->queue_metrics(scripting::ChannelSide::Rx));

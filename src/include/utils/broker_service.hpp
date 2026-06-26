@@ -454,7 +454,7 @@ public:
      *   "queried_at": "YYYY-MM-DD HH:MM:SS.uuuuuu",
      *   "filter":     { ... echoed back ... },
      *   "channels":   { "<name>": { producer:..., consumers:..., status:..., _collected_at:... }, ... },
-     *   "roles":      { "<uid>": { state, name, role_tag, channels, latest_metrics, _collected_at }, ... },
+     *   "roles":      { "<uid>": { state, name, short_tag, channels, latest_metrics, _collected_at }, ... },
      *   "bands":      { "<name>": { members, created_at, last_activity }, ... },
      *   "peers":      { "<uid>": { endpoint, state, last_seen, relay_channels }, ... },
      *   "broker":     { ready_to_pending_total, ..., msg_type_counts, ... },

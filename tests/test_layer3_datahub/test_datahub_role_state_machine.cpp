@@ -291,7 +291,7 @@ TEST_F(DatahubRoleStateMachineTest, RoleAPIBase_DualHub_Heartbeat_PerPresence)
     // Audit C2 closure (2026-05-19) — pins HEP-CORE-0033 §19.3 step 3:
     // heartbeat is per-presence; a dual-hub processor (Consumer on hub-A
     // + Producer on hub-B) emits ONE heartbeat per presence to its OWN
-    // hub.  Validates the role-side refactor that replaced `role_tag`
+    // hub.  Validates the role-side refactor that replaced `short_tag`
     // string-branching + legacy `pImpl->channel`/`pImpl->out_channel`
     // fields with `handler_->presences()` iteration in
     // `RoleAPIBase::on_heartbeat_tick_` (`src/utils/service/

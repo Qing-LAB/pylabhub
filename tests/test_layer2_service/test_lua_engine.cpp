@@ -549,9 +549,9 @@ TEST_F(LuaEngineIsolatedTest, ApiCriticalError_SetAndReadAndStopReason)
         {unique_dir("api_crit")});
     // Audit S2 (2026-05-18) — log line now emitted by RoleAPIBase
     // (uniform across Python / Lua / Native engines): format is
-    // "[role_tag/uid] CRITICAL: <msg>" replacing the old Lua-only
+    // "[short_tag/uid] CRITICAL: <msg>" replacing the old Lua-only
     // "[uid-lua] CRITICAL: ..." prefix.  Pin BOTH the full prefix
-    // (role_tag + uid as set by lua_engine_workers.cpp:76) AND the
+    // (short_tag + uid as set by lua_engine_workers.cpp:76) AND the
     // worker-passed message — catches a regression in either the
     // prefix format OR the message passthrough.
     ExpectWorkerOk(w, /*required=*/{},

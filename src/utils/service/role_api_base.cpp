@@ -88,10 +88,10 @@ struct RoleAPIBase::Impl
 {
     Impl(RoleHostCore *c, std::string rt, std::string id)
         : core(c),
-          role_tag(std::move(rt)),
+          short_tag(std::move(rt)),
           uid(std::move(id)),
           thread_mgr_(std::make_unique<pylabhub::utils::ThreadManager>(
-              role_tag, uid))
+              short_tag, uid))
     {}
 
     RoleHostCore    *core;
@@ -162,7 +162,7 @@ struct RoleAPIBase::Impl
     // ── Thread-local / set-once-before-spawn state ─────────────────────
     //
     // Every field below this banner is either:
-    //   (a) set in the RoleAPIBase ctor (role_tag, uid), or
+    //   (a) set in the RoleAPIBase ctor (short_tag, uid), or
     //   (b) set via the role host's startup wiring (build_tx_queue,
     //       set_channel, set_name, set_engine, ...) which runs BEFORE
     //       `start_handler_threads()` spawns any other thread.
@@ -173,7 +173,7 @@ struct RoleAPIBase::Impl
     // value with no extra protection.  Adding a field here is a claim
     // that it will NEVER be mutated after `start_ctrl_thread()`.  If
     // that claim ever breaks, move the field into `Shared` below.
-    std::string role_tag;   // "prod", "cons", "proc"
+    std::string short_tag;   // "prod", "cons", "proc"
     hub::ChecksumPolicy checksum_policy{hub::ChecksumPolicy::Enforced};
     bool stop_on_script_error{false};
     std::string uid;
@@ -225,9 +225,9 @@ struct RoleAPIBase::Impl
 
     // The role's sole thread manager. All role-scope threads
     // (worker / ctrl / inbox / future) live under this one instance —
-    // same dynamic lifecycle module "ThreadManager:" + role_tag, same
+    // same dynamic lifecycle module "ThreadManager:" + short_tag, same
     // bounded join, same process-wide leak aggregator. Constructed
-    // eagerly in the Impl ctor from role_tag + uid.
+    // eagerly in the Impl ctor from short_tag + uid.
     std::unique_ptr<pylabhub::utils::ThreadManager> thread_mgr_;
 
     /// HEP-CORE-0023 §2.5 telemetry — count of `HEARTBEAT_REQ` frames
@@ -313,9 +313,9 @@ struct RoleAPIBase::Impl
 // ============================================================================
 
 RoleAPIBase::RoleAPIBase(RoleHostCore &core,
-                         std::string   role_tag,
+                         std::string   short_tag,
                          std::string   uid)
-    : pImpl(std::make_unique<Impl>(&core, std::move(role_tag), std::move(uid)))
+    : pImpl(std::make_unique<Impl>(&core, std::move(short_tag), std::move(uid)))
 {
     // ThreadManager ctor throws std::invalid_argument if either identity
     // string is empty — effectively propagating the compile-time-plus-
@@ -330,7 +330,7 @@ RoleAPIBase &RoleAPIBase::operator=(RoleAPIBase &&) noexcept = default;
 // Host wiring
 // ============================================================================
 
-// set_role_tag and set_uid removed — identity is ctor-only.
+// set_short_tag and set_uid removed — identity is ctor-only.
 
 namespace
 {
@@ -392,7 +392,7 @@ bool RoleAPIBase::build_tx_queue(const hub::TxQueueOptions &opts)
                          "shm_capability_fd (HEP-CORE-0041 1i-mig-2 — role "
                          "host must populate the borrowed fd before "
                          "build_tx_queue)",
-                         pImpl->role_tag, tx_channel);
+                         pImpl->short_tag, tx_channel);
             return false;
         }
         std::unique_ptr<hub::ShmQueue> shm;
@@ -417,7 +417,7 @@ bool RoleAPIBase::build_tx_queue(const hub::TxQueueOptions &opts)
             {
                 LOGGER_ERROR("[{}] ShmQueue create_writer_standby failed for '{}' "
                              "(HEP-CORE-0041 1i-mig-2 capability path)",
-                             pImpl->role_tag, tx_channel);
+                             pImpl->short_tag, tx_channel);
                 return false;
             }
             if (!shm->set_shm_capability_fd(opts.shm_capability_fd))
@@ -425,7 +425,7 @@ bool RoleAPIBase::build_tx_queue(const hub::TxQueueOptions &opts)
                 LOGGER_ERROR("[{}] ShmQueue::set_shm_capability_fd refused "
                              "for '{}' fd={} (HEP-CORE-0041 1i-mig-2 — see "
                              "queue WARN for reason)",
-                             pImpl->role_tag, tx_channel,
+                             pImpl->short_tag, tx_channel,
                              opts.shm_capability_fd);
                 return false;
             }
@@ -434,7 +434,7 @@ bool RoleAPIBase::build_tx_queue(const hub::TxQueueOptions &opts)
                 LOGGER_ERROR("[{}] ShmQueue::start failed for '{}' on "
                              "capability path (fd={}; see queue ERROR for "
                              "reason)",
-                             pImpl->role_tag, tx_channel,
+                             pImpl->short_tag, tx_channel,
                              opts.shm_capability_fd);
                 return false;
             }
@@ -446,14 +446,14 @@ bool RoleAPIBase::build_tx_queue(const hub::TxQueueOptions &opts)
         if (opts.zmq_node_endpoint.empty())
         {
             LOGGER_ERROR("[{}] data_transport='zmq' but zmq_node_endpoint is empty",
-                         pImpl->role_tag);
+                         pImpl->short_tag);
             return false;
         }
         // Compose a stable ThreadManager owner_id from role identity +
         // direction. Uniqueness across the process is guaranteed by the
         // role uid (which is a per-instance UID by construction).
         std::string inst_id = opts.instance_id.empty()
-                                  ? (pImpl->role_tag + ":" + pImpl->uid + ":tx")
+                                  ? (pImpl->short_tag + ":" + pImpl->uid + ":tx")
                                   : opts.instance_id;
         // Schema tag (frame-validation 8-byte identity) is derived
         // from slot_spec + fz_spec.  Auto-computed here so callers
@@ -546,7 +546,7 @@ bool RoleAPIBase::build_rx_queue(const hub::RxQueueOptions &opts)
             LOGGER_ERROR("[{}] ShmQueue create_reader_standby failed for "
                          "channel='{}' shm_name='{}' (HEP-CORE-0041 "
                          "1i-mig-4 capability path)",
-                         pImpl->role_tag, rx_channel, opts.shm_name);
+                         pImpl->short_tag, rx_channel, opts.shm_name);
             return false;
         }
         if (opts.shm_capability_fd >= 0)
@@ -556,7 +556,7 @@ bool RoleAPIBase::build_rx_queue(const hub::RxQueueOptions &opts)
                 LOGGER_ERROR("[{}] ShmQueue::set_shm_capability_fd refused "
                              "for channel='{}' fd={} (test-pre-populated "
                              "path; see queue WARN for reason)",
-                             pImpl->role_tag, rx_channel,
+                             pImpl->short_tag, rx_channel,
                              opts.shm_capability_fd);
                 return false;
             }
@@ -565,7 +565,7 @@ bool RoleAPIBase::build_rx_queue(const hub::RxQueueOptions &opts)
                 LOGGER_ERROR("[{}] ShmQueue::start failed for channel='{}' "
                              "on capability path (fd={}; see queue ERROR "
                              "for reason)",
-                             pImpl->role_tag, rx_channel,
+                             pImpl->short_tag, rx_channel,
                              opts.shm_capability_fd);
                 return false;
             }
@@ -597,7 +597,7 @@ bool RoleAPIBase::build_rx_queue(const hub::RxQueueOptions &opts)
         // arrived, so a missing master delivery surfaces there, not
         // at queue construction.
         std::string inst_id = opts.instance_id.empty()
-                                  ? (pImpl->role_tag + ":" + pImpl->uid + ":rx")
+                                  ? (pImpl->short_tag + ":" + pImpl->uid + ":rx")
                                   : opts.instance_id;
         const auto expected_hash = hub::compute_schema_hash(opts.slot_spec,
                                                              opts.fz_spec);
@@ -646,7 +646,7 @@ bool RoleAPIBase::build_rx_queue(const hub::RxQueueOptions &opts)
         if (have_peer && !reader->start())
         {
             LOGGER_ERROR("[{}] ZMQ PULL start() failed for '{}'",
-                         pImpl->role_tag, rx_endpoint);
+                         pImpl->short_tag, rx_endpoint);
             return false;
         }
     }
@@ -751,7 +751,7 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
             LOGGER_ERROR("[{}] apply_consumer_reg_ack: rx_queue not "
                          "wired — discarding ACK (channel='{}' "
                          "status='{}' producers={})",
-                         pImpl->role_tag,
+                         pImpl->short_tag,
                          ack.value("channel_name", "?"),
                          ack.value("status", "?"),
                          producers_dump);
@@ -766,7 +766,7 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
         // 4 expected sequence order.
         LOGGER_INFO("[{}] event=ConsumerRegAckReceived channel='{}' "
                     "status={} producers={}",
-                    pImpl->role_tag,
+                    pImpl->short_tag,
                     ack.value("channel_name", "?"),
                     ack.value("status", "?"),
                     producers_dump);
@@ -790,7 +790,7 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
                 ack.value("producer_pubkey_z85", std::string{});
             LOGGER_INFO("[{}] event=ShmCapabilityFieldsReceived channel='{}' "
                         "shm_capability_endpoint='{}' producer_pubkey_z85_len={}",
-                        pImpl->role_tag, channel_name, shm_endpoint,
+                        pImpl->short_tag, channel_name, shm_endpoint,
                         producer_pubkey_z85.size());
             if (!apply_consumer_reg_ack_shm_(
                     channel_name, shm_endpoint, producer_pubkey_z85))
@@ -811,7 +811,7 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
                 LOGGER_ERROR("[{}] apply_consumer_reg_ack: "
                              "apply_master_approval refused (HEP-CORE-0036 "
                              "§6.7 'fully refused' — malformed broker "
-                             "delivery)", pImpl->role_tag);
+                             "delivery)", pImpl->short_tag);
                 return false;
             }
         }
@@ -877,7 +877,7 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
                             "channel='{}' role_type=consumer "
                             "from=Registered to=Authorized "
                             "trigger=apply_consumer_reg_ack_done",
-                            pImpl->role_tag, channel_name);
+                            pImpl->short_tag, channel_name);
             }
         }
         return true;
@@ -890,7 +890,7 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
         // fatal registration failure and tears down via RAII.
         LOGGER_ERROR("[{}] apply_consumer_reg_ack: malformed broker "
                      "delivery — rejecting (json error: {})",
-                     pImpl->role_tag, e.what());
+                     pImpl->short_tag, e.what());
         return false;
     }
 }
@@ -910,7 +910,7 @@ bool RoleAPIBase::apply_consumer_reg_ack_shm_(
                      "ack missing required fields "
                      "(shm_capability_endpoint='{}' "
                      "producer_pubkey_z85_len={})",
-                     pImpl->role_tag, channel_name, shm_endpoint,
+                     pImpl->short_tag, channel_name, shm_endpoint,
                      producer_pubkey_z85.size());
         return false;
     }
@@ -932,7 +932,7 @@ bool RoleAPIBase::apply_consumer_reg_ack_shm_(
         LOGGER_ERROR("[{}] apply_consumer_reg_ack: SHM channel '{}' — "
                      "KeyStore::pubkey('{}') threw: {} (consumer cannot "
                      "assemble auth material)",
-                     pImpl->role_tag, channel_name,
+                     pImpl->short_tag, channel_name,
                      sec::kRoleIdentityName, e.what());
         return false;
     }
@@ -972,7 +972,7 @@ bool RoleAPIBase::apply_consumer_reg_ack_shm_(
             // not the H3a race shape.  Bail immediately.
             LOGGER_ERROR("[{}] apply_consumer_reg_ack: SHM channel '{}' "
                          "handshake to '{}' threw on attempt {}/{}: {}",
-                         pImpl->role_tag, channel_name, shm_endpoint,
+                         pImpl->short_tag, channel_name, shm_endpoint,
                          attempt + 1, kMaxDialAttempts, e.what());
             return false;
         }
@@ -991,7 +991,7 @@ bool RoleAPIBase::apply_consumer_reg_ack_shm_(
         LOGGER_ERROR("[{}] apply_consumer_reg_ack: SHM channel '{}' "
                      "handshake to '{}' connect-refused after {} attempts "
                      "(~{}ms total) — H3a race exceeded tolerance window",
-                     pImpl->role_tag, channel_name, shm_endpoint,
+                     pImpl->short_tag, channel_name, shm_endpoint,
                      attempts_used,
                      attempts_used * kDialAttemptPeriod.count());
         return false;
@@ -1014,7 +1014,7 @@ bool RoleAPIBase::apply_consumer_reg_ack_shm_(
     {
         LOGGER_ERROR("[{}] apply_consumer_reg_ack: SHM channel '{}' — "
                      "SCM_RIGHTS recv failed: {}",
-                     pImpl->role_tag, channel_name, e.what());
+                     pImpl->short_tag, channel_name, e.what());
         return false;
     }
 
@@ -1023,7 +1023,7 @@ bool RoleAPIBase::apply_consumer_reg_ack_shm_(
     {
         LOGGER_ERROR("[{}] apply_consumer_reg_ack: SHM channel '{}' — "
                      "IShmCapabilityConsumer returned invalid borrow_fd",
-                     pImpl->role_tag, channel_name);
+                     pImpl->short_tag, channel_name);
         return false;
     }
 
@@ -1036,7 +1036,7 @@ bool RoleAPIBase::apply_consumer_reg_ack_shm_(
         LOGGER_ERROR("[{}] apply_consumer_reg_ack: SHM channel '{}' — "
                      "ShmQueue::set_shm_capability_fd refused (fd={}; "
                      "see queue WARN for reason)",
-                     pImpl->role_tag, channel_name, memfd);
+                     pImpl->short_tag, channel_name, memfd);
         return false;
     }
     if (!pImpl->rx_queue->start())
@@ -1044,7 +1044,7 @@ bool RoleAPIBase::apply_consumer_reg_ack_shm_(
         LOGGER_ERROR("[{}] apply_consumer_reg_ack: SHM channel '{}' — "
                      "ShmQueue::start failed (fd={}; see queue ERROR for "
                      "reason)",
-                     pImpl->role_tag, channel_name, memfd);
+                     pImpl->short_tag, channel_name, memfd);
         return false;
     }
 
@@ -1055,7 +1055,7 @@ bool RoleAPIBase::apply_consumer_reg_ack_shm_(
     pImpl->shm_consumer = std::move(consumer);
     LOGGER_INFO("[{}] event=ShmCapabilityActivated channel='{}' "
                 "endpoint='{}' attempts={} (HEP-CORE-0041 1i-mig-4)",
-                pImpl->role_tag, channel_name, shm_endpoint,
+                pImpl->short_tag, channel_name, shm_endpoint,
                 attempts_used);
     return true;
 }
@@ -1077,7 +1077,7 @@ bool RoleAPIBase::apply_consumer_reg_ack_shm_(
     LOGGER_ERROR("[{}] apply_consumer_reg_ack: SHM channel '{}' — "
                  "capability transport not implemented on this platform "
                  "(HEP-CORE-0041 §6.5 — Linux only in Phase 1)",
-                 pImpl->role_tag, channel_name);
+                 pImpl->short_tag, channel_name);
     return false;
 }
 
@@ -1088,7 +1088,7 @@ bool RoleAPIBase::apply_producer_reg_ack(const nlohmann::json &ack)
     if (!pImpl->tx_queue)
     {
         LOGGER_ERROR("[{}] apply_producer_reg_ack: tx_queue not wired",
-                     pImpl->role_tag);
+                     pImpl->short_tag);
         return false;
     }
     // Producer-side mirror of apply_consumer_reg_ack.  Drive Standby
@@ -1101,7 +1101,7 @@ bool RoleAPIBase::apply_producer_reg_ack(const nlohmann::json &ack)
     {
         LOGGER_ERROR("[{}] apply_producer_reg_ack: apply_master_approval "
                      "refused (HEP-CORE-0036 §6.7 'fully refused' — "
-                     "malformed broker delivery)", pImpl->role_tag);
+                     "malformed broker delivery)", pImpl->short_tag);
         return false;
     }
 
@@ -1142,7 +1142,7 @@ bool RoleAPIBase::apply_producer_reg_ack(const nlohmann::json &ack)
             LOGGER_INFO(
                 "[{}] event=InitialAllowlistSeeded channel='{}' size={} "
                 "(HEP-CORE-0036 §3.6 + §I11.1)",
-                pImpl->role_tag, channel_name, script_view.size());
+                pImpl->short_tag, channel_name, script_view.size());
 
             // §3.6 sequence-diagram REG_ACK note: fire the script-side
             // callback alongside the cache write.  Same callback contract
@@ -1164,7 +1164,7 @@ bool RoleAPIBase::apply_producer_reg_ack(const nlohmann::json &ack)
                     LOGGER_ERROR(
                         "[{}] on_allowlist_changed callback threw "
                         "for channel '{}' (reason=initial_seed): {}",
-                        pImpl->role_tag, channel_name, e.what());
+                        pImpl->short_tag, channel_name, e.what());
                 }
             }
         }
@@ -1176,7 +1176,7 @@ bool RoleAPIBase::apply_producer_reg_ack(const nlohmann::json &ack)
                 "contract violation per HEP-CORE-0036 §6.2 + §I11.1 "
                 "invariant #5.  Preserving prior allowlist_cache snapshot "
                 "(do NOT clobber with empty).",
-                pImpl->role_tag, channel_name);
+                pImpl->short_tag, channel_name);
         }
     }
 
@@ -1200,7 +1200,7 @@ bool RoleAPIBase::apply_producer_reg_ack(const nlohmann::json &ack)
                         "channel='{}' role_type=producer "
                         "from=Registered to=Authorized "
                         "trigger=apply_producer_reg_ack_done",
-                        pImpl->role_tag, channel_name);
+                        pImpl->short_tag, channel_name);
         }
     }
     return true;
@@ -1281,7 +1281,7 @@ void RoleAPIBase::handle_channel_auth_notifies(
             LOGGER_WARN(
                 "[{}/{}] CHANNEL_AUTH_CHANGED_NOTIFY missing channel_name; "
                 "dropping (HEP-CORE-0036 §6.5)",
-                pImpl->role_tag, pImpl->uid);
+                pImpl->short_tag, pImpl->uid);
             it = msgs.erase(it);
             continue;
         }
@@ -1295,7 +1295,7 @@ void RoleAPIBase::handle_channel_auth_notifies(
         {
             LOGGER_WARN(
                 "[{}/{}] no BRC for channel '{}' on auth notify; dropping",
-                pImpl->role_tag, pImpl->uid, channel);
+                pImpl->short_tag, pImpl->uid, channel);
             it = msgs.erase(it);
             continue;
         }
@@ -1314,7 +1314,7 @@ void RoleAPIBase::handle_channel_auth_notifies(
                 LOGGER_WARN(
                     "[{}/{}] GET_CHANNEL_AUTH_REQ('{}') no reply within 5000ms; "
                     "allowlist unchanged",
-                    pImpl->role_tag, pImpl->uid, channel);
+                    pImpl->short_tag, pImpl->uid, channel);
             }
             else if (reply->value("status", std::string{}) != "success")
             {
@@ -1324,7 +1324,7 @@ void RoleAPIBase::handle_channel_auth_notifies(
                 LOGGER_WARN(
                     "[{}/{}] GET_CHANNEL_AUTH_REQ('{}') broker error: "
                     "code='{}' msg='{}'; allowlist unchanged",
-                    pImpl->role_tag, pImpl->uid, channel,
+                    pImpl->short_tag, pImpl->uid, channel,
                     reply->value("error_code", std::string{}),
                     reply->value("message", std::string{}));
             }
@@ -1359,7 +1359,7 @@ void RoleAPIBase::handle_channel_auth_notifies(
                         "violation per HEP-CORE-0036 §6.5 + §I11.1 "
                         "invariant #5.  Preserving prior "
                         "allowlist_cache snapshot (do NOT clobber).",
-                        pImpl->role_tag, pImpl->uid, channel);
+                        pImpl->short_tag, pImpl->uid, channel);
                 }
                 else
                 {
@@ -1401,7 +1401,7 @@ void RoleAPIBase::handle_channel_auth_notifies(
                         LOGGER_INFO(
                             "[{}/{}] applied channel '{}' allowlist (size={}, "
                             "reason='{}', HEP-CORE-0036 §6.5)",
-                            pImpl->role_tag, pImpl->uid, channel,
+                            pImpl->short_tag, pImpl->uid, channel,
                             allowlist.peers.size(), reason);
                     }
                     else
@@ -1416,7 +1416,7 @@ void RoleAPIBase::handle_channel_auth_notifies(
                             "channel '{}' (queue inert on this side?); "
                             "skipping cache update to stay in sync with "
                             "ZAP enforcement",
-                            pImpl->role_tag, pImpl->uid, channel);
+                            pImpl->short_tag, pImpl->uid, channel);
                         publish_cache = false;
                     }
                 }
@@ -1430,7 +1430,7 @@ void RoleAPIBase::handle_channel_auth_notifies(
                         "tx queue (SHM); updating script-side cache only "
                         "(HEP-CORE-0041 §9 D4 broker pre-confirm is the "
                         "authoritative gate)",
-                        pImpl->role_tag, pImpl->uid, channel);
+                        pImpl->short_tag, pImpl->uid, channel);
                 }
 
                 // Script-side cache + I11 callback.  For ZMQ this runs
@@ -1456,7 +1456,7 @@ void RoleAPIBase::handle_channel_auth_notifies(
                             LOGGER_ERROR(
                                 "[{}/{}] on_allowlist_changed callback "
                                 "threw for channel '{}': {}",
-                                pImpl->role_tag, pImpl->uid, channel,
+                                pImpl->short_tag, pImpl->uid, channel,
                                 e.what());
                         }
                     }
@@ -1470,7 +1470,7 @@ void RoleAPIBase::handle_channel_auth_notifies(
             // not crash the role.  Log + skip; next notify retries.
             LOGGER_ERROR(
                 "[{}/{}] exception handling auth notify for '{}': {}",
-                pImpl->role_tag, pImpl->uid, channel, e.what());
+                pImpl->short_tag, pImpl->uid, channel, e.what());
         }
 
         it = msgs.erase(it);
@@ -1523,7 +1523,7 @@ void RoleAPIBase::set_metrics_hook(std::function<void(nlohmann::json &)> hook)
 pylabhub::utils::ThreadManager &RoleAPIBase::thread_manager()
 {
     // Always valid — the Impl ctor constructs thread_mgr_ from the
-    // ctor-required role_tag + uid. No runtime "did you init?" check.
+    // ctor-required short_tag + uid. No runtime "did you init?" check.
     return *pImpl->thread_mgr_;
 }
 
@@ -1563,7 +1563,7 @@ void RoleAPIBase::install_heartbeat(int role_cfg_ms,
                 "[{}] heartbeat: configured interval {} ms exceeds hub's "
                 "tolerated max {} ms — resetting to hub max to avoid "
                 "liveness timeout (HEP-CORE-0023 §2.5)",
-                pImpl->role_tag, role_cfg_ms, hub_max);
+                pImpl->short_tag, role_cfg_ms, hub_max);
             effective_interval_ms = hub_max;
         }
         else
@@ -1571,7 +1571,7 @@ void RoleAPIBase::install_heartbeat(int role_cfg_ms,
             LOGGER_INFO(
                 "[{}] heartbeat: aligned with hub — role cadence {} ms, "
                 "hub max {} ms",
-                pImpl->role_tag, role_cfg_ms, hub_max);
+                pImpl->short_tag, role_cfg_ms, hub_max);
         }
     }
 
@@ -1589,7 +1589,7 @@ void RoleAPIBase::install_heartbeat(int role_cfg_ms,
     {
         LOGGER_ERROR("[{}] install_heartbeat: no BRC available — "
                      "start_handler_threads not called?",
-                     pImpl->role_tag);
+                     pImpl->short_tag);
         return;
     }
 
@@ -1600,7 +1600,7 @@ void RoleAPIBase::install_heartbeat(int role_cfg_ms,
         [core_post] { return core_post->iteration_count(); });
 
     LOGGER_INFO("[{}] heartbeat: periodic tick installed at {}ms",
-                pImpl->role_tag, effective_interval_ms);
+                pImpl->short_tag, effective_interval_ms);
     pImpl->heartbeat_install_at_ = std::chrono::steady_clock::now();
 }
 
@@ -1645,7 +1645,7 @@ RoleAPIBase::register_producer_channel(const nlohmann::json &opts, int timeout_m
     auto *bc = pImpl->resolve_bc_for_channel(ch);
     if (!bc || !bc->is_connected())
     {
-        LOGGER_ERROR("[{}] register_producer_channel: broker comm not connected", pImpl->role_tag);
+        LOGGER_ERROR("[{}] register_producer_channel: broker comm not connected", pImpl->short_tag);
         return std::nullopt;
     }
 
@@ -1663,7 +1663,7 @@ RoleAPIBase::register_producer_channel(const nlohmann::json &opts, int timeout_m
             RegistrationState::RegRequestPending,
             std::memory_order_release);
         LOGGER_INFO("[{}] event=PresenceStateTransition channel='{}' role_type=producer from=Unregistered to=RegRequestPending trigger=REG_REQ_sending",
-                    pImpl->role_tag, ch);
+                    pImpl->short_tag, ch);
     }
 
     auto result = bc->register_channel(opts, timeout_ms);
@@ -1678,15 +1678,15 @@ RoleAPIBase::register_producer_channel(const nlohmann::json &opts, int timeout_m
 
     if (!result.has_value())
         LOGGER_ERROR("[{}] REG_REQ no response for channel '{}' (timeout/disconnect)",
-                     pImpl->role_tag, opts.value("channel_name", "?"));
+                     pImpl->short_tag, opts.value("channel_name", "?"));
     else if (!registered)
         LOGGER_ERROR("[{}] REG_REQ failed for channel '{}': error_code='{}' message='{}'",
-                     pImpl->role_tag, opts.value("channel_name", "?"),
+                     pImpl->short_tag, opts.value("channel_name", "?"),
                      result->value("error_code", std::string{}),
                      result->value("message", std::string{}));
     else
         LOGGER_INFO("[{}] event=RegAckReceived channel='{}' status=success initial_allowlist={}",
-                    pImpl->role_tag, opts.value("channel_name", "?"),
+                    pImpl->short_tag, opts.value("channel_name", "?"),
                     result->value("initial_allowlist",
                                   nlohmann::json::array()).dump());
 
@@ -1696,7 +1696,7 @@ RoleAPIBase::register_producer_channel(const nlohmann::json &opts, int timeout_m
                                           : RegistrationState::Unregistered;
         presence->registration_state.store(new_state, std::memory_order_release);
         LOGGER_INFO("[{}] event=PresenceStateTransition channel='{}' role_type=producer from=RegRequestPending to={}",
-                    pImpl->role_tag, ch, to_string(new_state));
+                    pImpl->short_tag, ch, to_string(new_state));
     }
     return result;
 }
@@ -1716,20 +1716,20 @@ RoleAPIBase::discover_channel(const std::string &channel, int timeout_ms)
     if (!bc) bc = pImpl->resolve_bc_for_role();
     if (!bc || !bc->is_connected())
     {
-        LOGGER_ERROR("[{}] discover_channel: broker comm not connected", pImpl->role_tag);
+        LOGGER_ERROR("[{}] discover_channel: broker comm not connected", pImpl->short_tag);
         return std::nullopt;
     }
     auto result = bc->discover_channel(channel, {}, timeout_ms);
     if (!result.has_value())
         LOGGER_ERROR("[{}] DISC_REQ no response for channel '{}' (timeout/disconnect)",
-                     pImpl->role_tag, channel);
+                     pImpl->short_tag, channel);
     else if (result->value("status", std::string{}) != "success")
         LOGGER_ERROR("[{}] DISC_REQ failed for channel '{}': error_code='{}' message='{}'",
-                     pImpl->role_tag, channel,
+                     pImpl->short_tag, channel,
                      result->value("error_code", std::string{}),
                      result->value("message", std::string{}));
     else
-        LOGGER_INFO("[{}] Discovered channel '{}' from broker", pImpl->role_tag, channel);
+        LOGGER_INFO("[{}] Discovered channel '{}' from broker", pImpl->short_tag, channel);
     return result;
 }
 
@@ -1741,7 +1741,7 @@ RoleAPIBase::register_consumer(const nlohmann::json &opts, int timeout_ms)
     auto *bc = pImpl->resolve_bc_for_channel(ch);
     if (!bc || !bc->is_connected())
     {
-        LOGGER_ERROR("[{}] register_consumer: broker comm not connected", pImpl->role_tag);
+        LOGGER_ERROR("[{}] register_consumer: broker comm not connected", pImpl->short_tag);
         return std::nullopt;
     }
 
@@ -1757,7 +1757,7 @@ RoleAPIBase::register_consumer(const nlohmann::json &opts, int timeout_ms)
         LOGGER_INFO("[{}] event=PresenceStateTransition channel='{}' "
                     "role_type=consumer from=Unregistered "
                     "to=RegRequestPending trigger=CONSUMER_REG_REQ_sending",
-                    pImpl->role_tag, ch);
+                    pImpl->short_tag, ch);
     }
 
     auto result = bc->register_consumer(opts, timeout_ms);
@@ -1791,7 +1791,7 @@ RoleAPIBase::register_consumer(const nlohmann::json &opts, int timeout_ms)
             LOGGER_WARN("[{}] CONSUMER_REG_REQ for '{}' deadline exceeded while "
                         "waiting for channel to become ready (last broker "
                         "reason: '{}')",
-                        pImpl->role_tag, ch,
+                        pImpl->short_tag, ch,
                         result->value("message", std::string{}));
             break;
         }
@@ -1809,15 +1809,15 @@ RoleAPIBase::register_consumer(const nlohmann::json &opts, int timeout_ms)
 
     if (!result.has_value())
         LOGGER_ERROR("[{}] CONSUMER_REG_REQ no response for channel '{}' (timeout/disconnect)",
-                     pImpl->role_tag, opts.value("channel_name", "?"));
+                     pImpl->short_tag, opts.value("channel_name", "?"));
     else if (!registered)
         LOGGER_ERROR("[{}] CONSUMER_REG_REQ failed for channel '{}': error_code='{}' message='{}'",
-                     pImpl->role_tag, opts.value("channel_name", "?"),
+                     pImpl->short_tag, opts.value("channel_name", "?"),
                      result->value("error_code", std::string{}),
                      result->value("message", std::string{}));
     else
         LOGGER_INFO("[{}] Registered consumer on channel '{}' with broker",
-                    pImpl->role_tag, opts.value("channel_name", "?"));
+                    pImpl->short_tag, opts.value("channel_name", "?"));
 
     if (presence)
     {
@@ -1827,7 +1827,7 @@ RoleAPIBase::register_consumer(const nlohmann::json &opts, int timeout_ms)
                                            std::memory_order_release);
         LOGGER_INFO("[{}] event=PresenceStateTransition channel='{}' "
                     "role_type=consumer from=RegRequestPending to={}",
-                    pImpl->role_tag, ch, to_string(new_state));
+                    pImpl->short_tag, ch, to_string(new_state));
     }
     return result;
 }
@@ -1898,7 +1898,7 @@ RoleAPIBase::consumer_attach(const std::string &channel,
         LOGGER_WARN(
             "[{}/{}] consumer_attach for channel '{}': no connected BRC "
             "— returning nullopt (HEP-CORE-0041 §9 D4)",
-            pImpl->role_tag, pImpl->uid, channel);
+            pImpl->short_tag, pImpl->uid, channel);
         return std::nullopt;
     }
     return bc->consumer_attach(channel, consumer_pubkey,
@@ -1944,7 +1944,7 @@ void RoleAPIBase::deregister_from_broker()
         if (p.role_kind != RoleKind::Producer) continue;
         if (!needs_dereg(p)) continue;
         LOGGER_INFO("[{}] ctrl: deregistering producer channel '{}' from broker",
-                    pImpl->role_tag, p.channel);
+                    pImpl->short_tag, p.channel);
         (void)deregister_producer_channel(p.channel);
     }
 
@@ -1954,7 +1954,7 @@ void RoleAPIBase::deregister_from_broker()
         if (p.role_kind != RoleKind::Consumer) continue;
         if (!needs_dereg(p)) continue;
         LOGGER_INFO("[{}] ctrl: deregistering consumer from channel '{}' from broker",
-                    pImpl->role_tag, p.channel);
+                    pImpl->short_tag, p.channel);
         (void)deregister_consumer(p.channel);
     }
 }
@@ -1973,7 +1973,7 @@ void RoleAPIBase::on_heartbeat_tick_()
     {
         LOGGER_WARN("[{}] heartbeat tick fired after context "
                     "invalidated — bailing (V1 safety gate)",
-                    pImpl->role_tag);
+                    pImpl->short_tag);
         return;
     }
 
@@ -1993,7 +1993,7 @@ void RoleAPIBase::on_heartbeat_tick_()
     // own hubs.  Single-hub roles' presence lists have 1 entry and
     // emit 1 heartbeat.  Closes audit H2 (2026-05-15) + audit C2
     // (`REVIEW_Connection_Inbox_Band_2026-05-17.md` — replaces
-    // pre-existing `role_tag` string branching that bypassed the
+    // pre-existing `short_tag` string branching that bypassed the
     // presence list).
     //
     // BC is resolved per-channel via `resolve_bc_for_channel` so each
@@ -2008,7 +2008,7 @@ void RoleAPIBase::on_heartbeat_tick_()
         const auto metrics    = snapshot_metrics_for_presence(role_type);
         LOGGER_TRACE("[{}] ctrl: sending heartbeat for '{}' "
                      "(uid='{}' role_type='{}')",
-                     pImpl->role_tag, p.channel, pImpl->uid, role_type);
+                     pImpl->short_tag, p.channel, pImpl->uid, role_type);
         bc->send_heartbeat(p.channel, pImpl->uid, role_type, metrics);
         // HEP-CORE-0023 §2.5 telemetry — task #223.  Counter, not log.
         pImpl->heartbeats_sent_.fetch_add(1, std::memory_order_relaxed);
@@ -2045,13 +2045,13 @@ bool RoleAPIBase::start_handler_threads(std::unique_ptr<RoleHandler> handler)
         // WARN (not ERROR) — graceful refusal; state preserved.
         LOGGER_WARN("[{}] start_handler_threads: ctrl threads already "
                     "started; refusing re-entry (single-shot per instance)",
-                    pImpl->role_tag);
+                    pImpl->short_tag);
         return false;
     }
     if (handler == nullptr)
     {
         LOGGER_ERROR("[{}] start_handler_threads: handler is null",
-                     pImpl->role_tag);
+                     pImpl->short_tag);
         return false;
     }
 
@@ -2060,28 +2060,28 @@ bool RoleAPIBase::start_handler_threads(std::unique_ptr<RoleHandler> handler)
 
     LOGGER_INFO("[{}] start_handler_threads: ENTRY — {} presence(s) on {} "
                 "unique hub(s) (uid='{}' name='{}')",
-                pImpl->role_tag, n_pres, n_conn,
+                pImpl->short_tag, n_pres, n_conn,
                 pImpl->uid, pImpl->name);
 
     // ── Phase 1: Allocate + connect each BRC (via handler) ───────────────
     LOGGER_INFO("[{}] start_handler_threads: Phase 1 — connecting {} BRC(s)",
-                pImpl->role_tag, n_conn);
+                pImpl->short_tag, n_conn);
     if (!handler->start_connections(*this))
     {
         LOGGER_ERROR("[{}] start_handler_threads: Phase 1 FAILED — "
                      "handler->start_connections returned false",
-                     pImpl->role_tag);
+                     pImpl->short_tag);
         return false;
     }
     LOGGER_INFO("[{}] start_handler_threads: Phase 1 OK — {} BRC(s) connected",
-                pImpl->role_tag, n_conn);
+                pImpl->short_tag, n_conn);
 
     // Take ownership of the handler now — Phase 1 succeeded, so the
     // handler's BRCs are live + we will spawn threads for them.
     pImpl->handler_ = std::move(handler);
 
     auto *core = pImpl->core;
-    const std::string &tag_local = pImpl->role_tag;
+    const std::string &tag_local = pImpl->short_tag;
 
     // ── Phase 1.5: Initialize connection-alive bitmask BEFORE Phase 2 ────
     //
@@ -2108,7 +2108,7 @@ bool RoleAPIBase::start_handler_threads(std::unique_ptr<RoleHandler> handler)
                      "A2 per-connection liveness bitmask only supports up to "
                      "64.  Tracking the first 64; the remainder will report "
                      "is_connection_alive=false from start.",
-                     pImpl->role_tag, n_conn);
+                     pImpl->short_tag, n_conn);
     }
     {
         const std::size_t bits = (n_conn > 64) ? 64 : n_conn;
@@ -2128,7 +2128,7 @@ bool RoleAPIBase::start_handler_threads(std::unique_ptr<RoleHandler> handler)
     // ── Phase 2: Per-BRC notification + hub-dead callbacks ───────────────
     LOGGER_INFO("[{}] start_handler_threads: Phase 2 — wiring notification "
                 "and hub-dead callbacks on {} BRC(s)",
-                pImpl->role_tag, n_conn);
+                pImpl->short_tag, n_conn);
     for (std::size_t i = 0; i < pImpl->handler_->connections().size(); ++i)
     {
         auto *brc = pImpl->handler_->connections()[i].brc.get();
@@ -2348,12 +2348,12 @@ bool RoleAPIBase::start_handler_threads(std::unique_ptr<RoleHandler> handler)
                 core->enqueue_message(std::move(msg));
             });
     }
-    LOGGER_INFO("[{}] start_handler_threads: Phase 2 OK", pImpl->role_tag);
+    LOGGER_INFO("[{}] start_handler_threads: Phase 2 OK", pImpl->short_tag);
 
     // ── Phase 3: Spawn one ctrl thread per HubConnection ─────────────────
     LOGGER_INFO("[{}] start_handler_threads: Phase 3 — spawning {} ctrl "
                 "thread(s) (first = master per HEP-CORE-0031 §4.2.1)",
-                pImpl->role_tag, n_conn);
+                pImpl->short_tag, n_conn);
 
     auto &tm = thread_manager();
     bool master_spawned = false;
@@ -2371,7 +2371,7 @@ bool RoleAPIBase::start_handler_threads(std::unique_ptr<RoleHandler> handler)
 
         LOGGER_INFO("[{}] start_handler_threads: spawning '{}' for "
                     "hub='{}' role=[{}]",
-                    pImpl->role_tag, slot_name, endpoint,
+                    pImpl->short_tag, slot_name, endpoint,
                     opts.is_master ? "MASTER" : "peer");
 
         const bool spawn_ok = tm.spawn(
@@ -2399,7 +2399,7 @@ bool RoleAPIBase::start_handler_threads(std::unique_ptr<RoleHandler> handler)
         {
             LOGGER_ERROR("[{}] start_handler_threads: tm.spawn('{}', "
                          "is_master={}) FAILED — rolling back",
-                         pImpl->role_tag, slot_name, opts.is_master);
+                         pImpl->short_tag, slot_name, opts.is_master);
             // Roll back: signal any spawned BRCs, drain, release.
             // `stop_handler_threads()` does the full sequence + clears
             // state flags so subsequent re-entry isn't blocked by the
@@ -2411,7 +2411,7 @@ bool RoleAPIBase::start_handler_threads(std::unique_ptr<RoleHandler> handler)
         master_spawned = true;
     }
     LOGGER_INFO("[{}] start_handler_threads: Phase 3 OK — {} ctrl thread(s) spawned",
-                pImpl->role_tag, n_conn);
+                pImpl->short_tag, n_conn);
 
     // Audit S3 (2026-05-19): connection_alive_mask_ is now initialised
     // in Phase 1.5 (BEFORE Phase 2 wires the lambdas that capture it
@@ -2429,7 +2429,7 @@ bool RoleAPIBase::start_handler_threads(std::unique_ptr<RoleHandler> handler)
 
     LOGGER_INFO("[{}] start_handler_threads: COMPLETE — handler-mode "
                 "active ({} ctrl thread(s), {} presence(s))",
-                pImpl->role_tag, n_conn, n_pres);
+                pImpl->short_tag, n_conn, n_pres);
     return true;
 }
 
@@ -2441,7 +2441,7 @@ void RoleAPIBase::stop_handler_threads() noexcept
         return;
     }
 
-    LOGGER_INFO("[{}] stop_handler_threads: ENTRY", pImpl->role_tag);
+    LOGGER_INFO("[{}] stop_handler_threads: ENTRY", pImpl->short_tag);
 
     // Wave-B M4f (2026-05-16): the previous Phase 1 cleared the
     // legacy `broker_channel` fallback view before BRCs were
@@ -2454,7 +2454,7 @@ void RoleAPIBase::stop_handler_threads() noexcept
         const std::size_t n_conn = pImpl->handler_->connections().size();
         LOGGER_INFO("[{}] stop_handler_threads: Phase 2 — stopping {} "
                     "BRC poll loop(s)",
-                    pImpl->role_tag, n_conn);
+                    pImpl->short_tag, n_conn);
         for (auto &c : pImpl->handler_->connections())
         {
             if (c.brc) c.brc->stop();
@@ -2463,7 +2463,7 @@ void RoleAPIBase::stop_handler_threads() noexcept
 
     // ── Phase 3: Drain the ThreadManager (HEP-CORE-0031 §4.1) ────────────
     LOGGER_INFO("[{}] stop_handler_threads: Phase 3 — draining ThreadManager",
-                pImpl->role_tag);
+                pImpl->short_tag);
     try
     {
         auto &tm = thread_manager();
@@ -2474,7 +2474,7 @@ void RoleAPIBase::stop_handler_threads() noexcept
     {
         LOGGER_ERROR("[{}] stop_handler_threads: ThreadManager drain "
                      "threw — {}",
-                     pImpl->role_tag, e.what());
+                     pImpl->short_tag, e.what());
     }
 
     // ── Phase 3a: Invalidate the callback-safety beacon (V1, 2026-05-18) ─
@@ -2503,7 +2503,7 @@ void RoleAPIBase::stop_handler_threads() noexcept
     {
         LOGGER_INFO("[{}] stop_handler_threads: Phase 4 — releasing BRCs "
                     "+ handler",
-                    pImpl->role_tag);
+                    pImpl->short_tag);
         pImpl->handler_->stop_connections();
         pImpl->handler_.reset();
     }
@@ -2523,8 +2523,8 @@ void RoleAPIBase::stop_handler_threads() noexcept
               .count()
         : 0;
     LOGGER_INFO("[{}] event=HeartbeatCounterReport sent={} over={}ms (since install)",
-                pImpl->role_tag, sent, since);
-    LOGGER_INFO("[{}] stop_handler_threads: COMPLETE", pImpl->role_tag);
+                pImpl->short_tag, sent, since);
+    LOGGER_INFO("[{}] stop_handler_threads: COMPLETE", pImpl->short_tag);
 }
 
 RoleHandler *RoleAPIBase::handler() const noexcept
@@ -2637,7 +2637,7 @@ bool RoleAPIBase::any_presence_authorized() const noexcept
     return false;
 }
 
-const std::string &RoleAPIBase::role_tag() const   { return pImpl->role_tag; }
+const std::string &RoleAPIBase::short_tag() const   { return pImpl->short_tag; }
 const std::string &RoleAPIBase::uid() const        { return pImpl->uid; }
 const std::string &RoleAPIBase::name() const       { return pImpl->name; }
 const std::string &RoleAPIBase::channel() const    { return pImpl->channel; }
@@ -2666,19 +2666,19 @@ bool RoleAPIBase::stop_on_script_error() const { return pImpl->stop_on_script_er
 void RoleAPIBase::log(const std::string &level, const std::string &msg)
 {
     if (level == "debug" || level == "Debug")
-        LOGGER_DEBUG("[{}/{}] {}", pImpl->role_tag, pImpl->uid, msg);
+        LOGGER_DEBUG("[{}/{}] {}", pImpl->short_tag, pImpl->uid, msg);
     else if (level == "warn" || level == "Warn" || level == "warning")
-        LOGGER_WARN("[{}/{}] {}", pImpl->role_tag, pImpl->uid, msg);
+        LOGGER_WARN("[{}/{}] {}", pImpl->short_tag, pImpl->uid, msg);
     else if (level == "error" || level == "Error")
-        LOGGER_ERROR("[{}/{}] {}", pImpl->role_tag, pImpl->uid, msg);
+        LOGGER_ERROR("[{}/{}] {}", pImpl->short_tag, pImpl->uid, msg);
     else
-        LOGGER_INFO("[{}/{}] {}", pImpl->role_tag, pImpl->uid, msg);
+        LOGGER_INFO("[{}/{}] {}", pImpl->short_tag, pImpl->uid, msg);
 }
 
 void RoleAPIBase::stop()                        { pImpl->core->request_stop(); }
 void RoleAPIBase::set_critical_error(std::string_view msg)
 {
-    // Audit S2 (2026-05-18) — uniform "[role_tag/uid] CRITICAL: <msg>"
+    // Audit S2 (2026-05-18) — uniform "[short_tag/uid] CRITICAL: <msg>"
     // log line for non-empty messages, BEFORE flipping state so log
     // scrapers see the message adjacent to the stop event.  All three
     // engines (Python / Lua / Native C) route through here so the log
@@ -2686,7 +2686,7 @@ void RoleAPIBase::set_critical_error(std::string_view msg)
     if (!msg.empty())
     {
         LOGGER_ERROR("[{}/{}] CRITICAL: {}",
-                     pImpl->role_tag, pImpl->uid, msg);
+                     pImpl->short_tag, pImpl->uid, msg);
     }
     pImpl->core->set_critical_error();
 }
@@ -2757,7 +2757,7 @@ std::optional<nlohmann::json> RoleAPIBase::band_join(const std::string &channel)
     {
         LOGGER_DEBUG("[{}] band_join('{}') broker_rejected — "
                      "clearing any stale band_index_ entry",
-                     pImpl->role_tag, channel);
+                     pImpl->short_tag, channel);
         pImpl->handler_->on_band_left(channel);
     }
     return result;
@@ -2802,7 +2802,7 @@ RoleAPIBase::band_leave(const std::string &channel)
             LOGGER_DEBUG("[{}] band_leave('{}') broker_rejected "
                          "(error_code='{}') — clearing band_index_ "
                          "entry per broker-authority principle",
-                         pImpl->role_tag, channel, code);
+                         pImpl->short_tag, channel, code);
             pImpl->handler_->on_band_left(channel);
         }
     }
@@ -2829,7 +2829,7 @@ void RoleAPIBase::band_broadcast(const std::string &channel,
     {
         LOGGER_WARN("[{}] band_broadcast('{}') dropped — band not in this "
                     "role's index (must call band_join first)",
-                    pImpl->role_tag, channel);
+                    pImpl->short_tag, channel);
     }
 }
 

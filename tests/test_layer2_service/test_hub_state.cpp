@@ -91,7 +91,7 @@ RoleEntry make_role(const std::string &uid, const std::string &tag = "prod")
     RoleEntry r;
     r.uid      = uid;
     r.name     = uid + "-name";
-    r.role_tag = tag;
+    r.short_tag = tag;
     return r;
 }
 
@@ -474,7 +474,7 @@ TEST(HubStateOps, ChannelRegistered_ComposesChannelAndRoleAndShmAndCounter)
 
     auto r = s.role("prod.main.test");
     ASSERT_TRUE(r.has_value());
-    EXPECT_EQ(r->role_tag,   "prod");
+    EXPECT_EQ(r->short_tag,   "prod");
     EXPECT_EQ(r->name,       "main");
     EXPECT_EQ(r->pubkey_z85, "pubkey-xyz");
     ASSERT_EQ(r->channels.size(), 1u);
@@ -600,7 +600,7 @@ TEST(HubStateOps, ConsumerJoined_UpsertsConsumerAndConsumerRole)
 
     auto r = s.role("cons.A.test");
     ASSERT_TRUE(r.has_value());
-    EXPECT_EQ(r->role_tag, "cons");
+    EXPECT_EQ(r->short_tag, "cons");
     EXPECT_EQ(r->name,     "A");
     EXPECT_EQ(r->channels.size(), 1u);
     EXPECT_EQ(r->channels[0], "ch1");
@@ -811,7 +811,7 @@ TEST(HubStateOps, BandJoined_UpsertsMemberRole)
     auto r = s.role("prod.r1.test");
     ASSERT_TRUE(r.has_value());
     EXPECT_EQ(r->name, "r1");
-    EXPECT_EQ(r->role_tag, "prod");
+    EXPECT_EQ(r->short_tag, "prod");
     EXPECT_TRUE(r->channels.empty());
     EXPECT_EQ(s.counters().msg_type_counts.count("BAND_JOIN_REQ"), 0u);
 }

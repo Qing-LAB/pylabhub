@@ -95,7 +95,7 @@ class RoleInitDirectoryTest : public ::testing::Test
 
 struct RoleSpec
 {
-    const char *role_tag;       // "producer" / "consumer" / "processor"
+    const char *role_type;       // "producer" / "consumer" / "processor"
     const char *config_filename;// "producer.json" / ...
     const char *uid_prefix;     // "prod." / "cons." / "proc."
     const char *role_label;     // "Producer" / ...

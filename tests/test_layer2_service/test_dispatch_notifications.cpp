@@ -67,7 +67,7 @@ PLH_BINARY_LIFECYCLE_MODULES(
 //
 // HEP-CORE-0040 §173 + #173 (C3 use-not-export) established that
 // RoleAPIBase's identity wiring is COMPLETELY internal: the public
-// ctor takes only `(RoleHostCore&, role_tag, uid)`, and there is no
+// ctor takes only `(RoleHostCore&, short_tag, uid)`, and there is no
 // `set_auth` accessor that could re-introduce out-of-band key
 // injection.  The keypair is sourced from `key_store()` inside the
 // factory body, keyed by `kRoleIdentityName`.
@@ -83,7 +83,7 @@ PLH_BINARY_LIFECYCLE_MODULES(
 static_assert(
     std::is_constructible_v<RoleAPIBase, RoleHostCore &, std::string,
                             std::string>,
-    "RoleAPIBase MUST be constructible with (RoleHostCore&, role_tag, "
+    "RoleAPIBase MUST be constructible with (RoleHostCore&, short_tag, "
     "uid) — HEP-CORE-0023 §3 identity-at-construction invariant.  If "
     "this fires, the ctor signature has drifted and every test that "
     "instantiates RoleAPIBase will also break.");
@@ -97,7 +97,7 @@ static_assert(
 static_assert(
     !std::is_constructible_v<RoleAPIBase, RoleHostCore &>,
     "RoleAPIBase MUST NOT be constructible with just (RoleHostCore&) — "
-    "role_tag + uid are required for keystore identity resolution + "
+    "short_tag + uid are required for keystore identity resolution + "
     "FlexzoneInfoCache derivation.  A regression that adds default "
     "arguments would break the HEP-CORE-0040 §172 invariant that "
     "every queue resolves its identity via a CALLER-supplied name.");

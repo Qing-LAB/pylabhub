@@ -2419,7 +2419,7 @@ int role_api_base_source_hub_uid_disambiguates_dual_hub()
 //   processor (Consumer on hub-A + Producer on hub-B) emits exactly TWO
 //   heartbeats — one per hub.
 //
-//   Validates the role-side fix that replaced the pre-C2 `role_tag`
+//   Validates the role-side fix that replaced the pre-C2 `short_tag`
 //   string-branching + `pImpl->channel`/`pImpl->out_channel` legacy
 //   fields with `handler_->presences()` iteration.  Mutation: revert
 //   `role_api_base.cpp::on_heartbeat_tick_` to use only `pImpl->channel`
@@ -2608,7 +2608,7 @@ int role_api_base_dual_hub_heartbeat_per_presence()
             EXPECT_TRUE(p_a_cons->first_heartbeat_seen)
                 << "Audit C2: consumer-presence on hub-A must have "
                    "received at least one heartbeat from the role-side "
-                   "presence-list iteration.  Pre-C2-fix the role_tag "
+                   "presence-list iteration.  Pre-C2-fix the short_tag "
                    "branch would also emit here, so this passes pre/post.";
 
             // ── Assertions on hub-B (producer presence) ─────────────────
@@ -2621,8 +2621,8 @@ int role_api_base_dual_hub_heartbeat_per_presence()
                 << "Audit C2 CORE: hub-B must see a producer-presence "
                    "row for ch_out.  Mutation revealing the C2 fix: if "
                    "role_api_base.cpp::on_heartbeat_tick_ reverts to the "
-                   "pre-fix `if role_tag == proc { emit(channel) } else if "
-                   "role_tag == cons { emit(channel) } else { emit(...) }` "
+                   "pre-fix `if short_tag == proc { emit(channel) } else if "
+                   "short_tag == cons { emit(channel) } else { emit(...) }` "
                    "string-branching that bypasses the presence list, the "
                    "producer presence on hub-B never receives a heartbeat "
                    "and this assertion fails.";

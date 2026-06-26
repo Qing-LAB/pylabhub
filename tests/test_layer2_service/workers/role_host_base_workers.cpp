@@ -238,7 +238,7 @@ int construct_not_running(const std::string &dir)
                               &shutdown);
             EXPECT_FALSE(host.is_running());
             EXPECT_FALSE(host.script_load_ok());
-            EXPECT_EQ(host.role_tag(), "test");
+            EXPECT_EQ(host.short_tag(), "test");
         },
         "role_host_base::construct_not_running",
         Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
@@ -394,7 +394,7 @@ int external_shutdown_flag(const std::string &dir)
         JsonConfig::GetLifecycleModule());
 }
 
-int accessors_config_and_role_tag(const std::string &dir)
+int accessors_config_and_short_tag(const std::string &dir)
 {
     return run_gtest_worker(
         [&]()
@@ -403,10 +403,10 @@ int accessors_config_and_role_tag(const std::string &dir)
             std::atomic<bool> shutdown{false};
             TestRoleHost host(build_config(dir),
                               &shutdown);
-            EXPECT_EQ(host.role_tag(), "test");
+            EXPECT_EQ(host.short_tag(), "test");
             EXPECT_EQ(&host.config(), &host.config());
         },
-        "role_host_base::accessors_config_and_role_tag",
+        "role_host_base::accessors_config_and_short_tag",
         Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
         JsonConfig::GetLifecycleModule());
 }
@@ -545,8 +545,8 @@ struct RoleHostBaseWorkerRegistrar
                     return virtual_shutdown_override_forwards(dir);
                 if (sc == "external_shutdown_flag")
                     return external_shutdown_flag(dir);
-                if (sc == "accessors_config_and_role_tag")
-                    return accessors_config_and_role_tag(dir);
+                if (sc == "accessors_config_and_short_tag")
+                    return accessors_config_and_short_tag(dir);
                 if (sc == "wait_for_wakeup_honours_timeout")
                     return wait_for_wakeup_honours_timeout(dir);
 

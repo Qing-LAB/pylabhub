@@ -99,7 +99,7 @@ nlohmann::json role_to_json(const RoleEntry &r)
     nlohmann::json j;
     j["uid"]            = r.uid;
     j["name"]           = r.name;
-    j["role_tag"]       = r.role_tag;
+    j["short_tag"]      = r.short_tag; // HEP-CORE-0036 §5b.10 short-form role tag
     j["channels"]       = r.channels;
     j["pubkey_z85"]     = r.pubkey_z85;
     j["first_seen"]     = fmt_time(r.first_seen);

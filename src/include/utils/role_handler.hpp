@@ -6,7 +6,7 @@
  * `RoleHandler` owns the role's presence list + the deduplicated
  * connection vector + the two O(1) dispatch indexes.  It is the
  * single object that future Wave-B M4 will inject into RoleAPIBase
- * to replace today's hardcoded `broker_channel` pointer + role_tag
+ * to replace today's hardcoded `broker_channel` pointer + short_tag
  * branching.  Design contract: `docs/archive/transient-2026-06-02/role_host_template_design.md §5.6`.
  *
  * Wave-B M3 ships a structural skeleton — enough surface to write
@@ -210,7 +210,7 @@ class PYLABHUB_UTILS_EXPORT RoleHandler
     /// Read-only access to the materialised presence vector.  Order
     /// matches construction-time order.  Used by per-presence
     /// heartbeat emission once M4 lands (today the role-side
-    /// `on_heartbeat_tick_` enumerates presences from role_tag-driven
+    /// `on_heartbeat_tick_` enumerates presences from short_tag-driven
     /// branching; that branching collapses to `for (auto &p :
     /// handler_->presences())` in M5+).
     [[nodiscard]] const std::vector<Presence> &presences() const noexcept

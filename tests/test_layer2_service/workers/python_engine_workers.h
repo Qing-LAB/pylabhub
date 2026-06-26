@@ -36,7 +36,7 @@ int register_slot_type_has_schema_false_returns_false(const std::string &dir);
 /// NEW: coverage fill — registers every scalar type the engine supports.
 int register_slot_type_all_supported_types(const std::string &dir);
 
-// ── Alias creation (SlotFrame / FlexFrame based on role_tag) ────────────────
+// ── Alias creation (SlotFrame / FlexFrame based on short_tag) ────────────────
 int alias_slot_frame_producer(const std::string &dir);
 int alias_slot_frame_consumer(const std::string &dir);
 int alias_no_alias_processor(const std::string &dir);

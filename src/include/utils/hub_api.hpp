@@ -10,7 +10,7 @@
  * binding `RoleAPIBase`).
  *
  * Contract on the EngineHost<HubAPI> instantiation:
- *   - Constructor `HubAPI(scripting::RoleHostCore &, std::string role_tag,
+ *   - Constructor `HubAPI(scripting::RoleHostCore &, std::string short_tag,
  *                         std::string uid)` — same shape as RoleAPIBase
  *     so EngineHost's lazy-construction path in startup_() works for
  *     both ApiT specializations without conditional logic.  RoleHostCore
@@ -78,11 +78,11 @@ public:
     /// @param core      RoleHostCore owned by EngineHost (lifetime > api).
     ///                  Used for cross-thread message queue + shutdown
     ///                  flag wiring.
-    /// @param role_tag  Always "hub" for the hub-side instantiation;
+    /// @param short_tag  Always "hub" for the hub-side instantiation;
     ///                  carried verbatim through to log prefixes.
     /// @param uid       Hub instance uid (e.g. "hub.lab1.uid00000001").
     HubAPI(scripting::RoleHostCore &core,
-           std::string              role_tag,
+           std::string              short_tag,
            std::string              uid);
     ~HubAPI();
 
@@ -118,7 +118,7 @@ public:
     //     metrics view (HEP-CORE-0019 + §9.4); for role it was the
     //     role's own queue + custom metrics.
     //   - `uid()` is the hub equivalent of role's `uid()` accessor;
-    //     `role_tag()` is omitted because it's always "hub".
+    //     `short_tag()` is omitted because it's always "hub".
     //
     // Read accessors below (list_channels / get_channel / etc.) and
     // control delegates (close_channel / etc.) follow the same pattern:

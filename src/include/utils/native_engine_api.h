@@ -13,8 +13,8 @@
  * ctx with the 16 `hub_*` fn ptrs wired through).  See `is_hub()` predicate
  * in the C++ wrapper and §4.9 in HEP-CORE-0028.
  *
- * Current ABI version: see `PLH_NATIVE_API_VERSION` below.  v7 (2026-06-11)
- * is the latest; v3..v6 history is in the version log.
+ * Current ABI version: see `PLH_NATIVE_API_VERSION` below.  v8 (2026-06-25)
+ * is the latest; v3..v7 history is in the version log.
  *
  * ## Minimal Producer Native engine (C)
  *
@@ -156,7 +156,7 @@ typedef struct
     uint32_t _magic;           /**< Must be PLH_CONTEXT_MAGIC. Validates pointer. */
 
     /* ── Identity (read-only, valid until native_finalize) ──────────── */
-    const char *role_tag;      /**< "prod", "cons", or "proc" */
+    const char *short_tag;      /**< "prod", "cons", or "proc" */
     const char *uid;           /**< Role UID */
     const char *name;          /**< Role name */
     const char *channel;       /**< Primary channel (in_channel for processor) */
@@ -182,7 +182,7 @@ typedef struct
     /** Signal a critical error (sets critical flag + requests stop).
      *  @param msg  REQUIRED — null-terminated string describing the
      *              unrecoverable condition.  Logged at ERROR level by
-     *              the host as `[role_tag/uid] CRITICAL: <msg>` BEFORE
+     *              the host as `[short_tag/uid] CRITICAL: <msg>` BEFORE
      *              flipping state so log scrapers see the message
      *              adjacent to the stop event.  Passing NULL is a
      *              plugin bug; the host tolerates it (logs
@@ -589,9 +589,27 @@ typedef struct PlhAbiInfo
  *           checks.  See HEP-CORE-0028 §4.9 "Hub-side API surface"
  *           for the full matrix.
  *
+ *    v7 → v8 (#286/#288 task: HEP-CORE-0036 §5b single-standard sweep;
+ *           2026-06-25): PlhNativeContext::role_tag field RENAMED to
+ *           `short_tag`.  Same semantics (4-letter classification tag
+ *           "prod"/"cons"/"proc"/"hub"), same offset position; only the
+ *           identifier changed.  The C++ accessor `ctx.role_tag()` on
+ *           PlhContext is correspondingly renamed to `ctx.short_tag()`.
+ *           Motivation: pre-v8 the same 4-letter tag was stored under
+ *           three different names across framework surfaces (RoleEntry,
+ *           HubAPI ctor param, Native ABI) — `role_tag`, `short_tag`,
+ *           and `tag` — which led to drift bugs and to two distinct
+ *           concepts being mistaken for one (cf. HEP-CORE-0036 §5b.10
+ *           role_type LONG form vs short_tag SHORT form).  v8 unifies
+ *           every SHORT-form storage slot under `short_tag` and every
+ *           LONG-form storage slot under `role_type`.  Plugins built
+ *           against v7 will be rejected with a clear ABI-mismatch error
+ *           — rebuild against this header.  See HEP-CORE-0036 §5b.10
+ *           + HEP-CORE-0028 §4.1 (PlhNativeContext field names).
+ *
  *  Additive PlhAbiInfo fields are NOT breaking — they're
  *  guarded by struct_size. */
-#define PLH_NATIVE_API_VERSION 7
+#define PLH_NATIVE_API_VERSION 8
 
 /* =========================================================================
  * C-visible pylabhub ComponentVersions constants
@@ -968,7 +986,7 @@ class Context
     [[nodiscard]] const char *out_channel()   const noexcept { return c_ ? c_->out_channel : nullptr; }
     [[nodiscard]] const char *log_level_str() const noexcept { return c_ ? c_->log_level   : nullptr; }
     [[nodiscard]] const char *role_dir()      const noexcept { return c_ ? c_->role_dir    : nullptr; }
-    [[nodiscard]] const char *role_tag()      const noexcept { return c_ ? c_->role_tag    : nullptr; }
+    [[nodiscard]] const char *short_tag()      const noexcept { return c_ ? c_->short_tag    : nullptr; }
 
     // ── Logging ─────────────────────────────────────────────────────
     void log(LogLevel level, const char *msg) const noexcept
@@ -1042,7 +1060,7 @@ class Context
     /// Flag a critical error and request shutdown.  msg is REQUIRED:
     /// a null-terminated string describing the unrecoverable
     /// condition.  Logged by the host at ERROR level as
-    /// `[role_tag/uid] CRITICAL: <msg>` BEFORE flipping state.
+    /// `[short_tag/uid] CRITICAL: <msg>` BEFORE flipping state.
     /// Uniform with Python `api.set_critical_error(msg)` and Lua
     /// `api.set_critical_error(msg)`.
     void set_critical_error(const char *msg) const noexcept
@@ -1275,14 +1293,14 @@ class Context
     // the next hub_* call on the same thread (HEP-CORE-0028 §4.9).
 
     /// Is this Context attached to a hub (vs a role)?  Detected via
-    /// `role_tag == "hub"` — the literal string the host writes during
-    /// `wire_hub()`.  Other framework role_tag values today:
+    /// `short_tag == "hub"` — the literal string the host writes during
+    /// `wire_hub()`.  Other framework short_tag values today:
     /// `"producer"`, `"consumer"`, `"processor"`.  Future federation
-    /// peer designs may add new role_tag values; if so this predicate
+    /// peer designs may add new short_tag values; if so this predicate
     /// would need updating in lock-step.
     [[nodiscard]] bool is_hub() const noexcept
     {
-        return c_ && c_->role_tag && std::string_view{c_->role_tag} == "hub";
+        return c_ && c_->short_tag && std::string_view{c_->short_tag} == "hub";
     }
 
     [[nodiscard]] const char *hub_metrics_json() const noexcept

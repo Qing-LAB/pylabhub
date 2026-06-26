@@ -49,14 +49,18 @@ namespace pylabhub::scripting
 /// template parameters.
 struct RoleHostFrameConfig
 {
-    /// Short role tag.  Forwarded to RoleHostBase as its role_tag; used
-    /// in log prefixes and as the broker uid prefix component
-    /// ("prod" / "cons" / "proc" today).
-    std::string role_tag;
+    /// Canonical role-type classification per HEP-CORE-0036 §5b.4:
+    /// "producer" / "consumer" / "processor".  Single source of truth
+    /// for the role kind — `short_tag` below is the cached 4-char form
+    /// derived via `pylabhub::utils::short_role_tag(role_type)`.
+    std::string role_type;
 
-    /// Human-readable role label for diagnostics ("producer" /
-    /// "consumer" / "processor").
-    std::string role_label;
+    /// Cached 4-char short tag derived from `role_type` at construction
+    /// time via `short_role_tag()`.  Used for log prefixes, broker uid
+    /// prefix component, and engine fast-path dispatch.  Storing here
+    /// (rather than recomputing) avoids the conversion cost at every
+    /// LOGGER_* call site.
+    std::string short_tag;
 
     /// Required script callback name ("on_produce" / "on_consume" /
     /// "on_process").  Engine asserts this exists during init.
@@ -87,7 +91,7 @@ class PYLABHUB_UTILS_EXPORT RoleHostFrame : public RoleHostBase
   protected:
     /// Read-only accessor for the frame configuration.  Derived classes
     /// (and, after sub-step 2c+, the frame's own setup/teardown bodies)
-    /// use this to read role_tag/label/required_callback.
+    /// use this to read short_tag/label/required_callback.
     [[nodiscard]] const RoleHostFrameConfig &frame_cfg() const noexcept
     {
         return frame_cfg_;
@@ -175,7 +179,7 @@ class PYLABHUB_UTILS_EXPORT RoleHostFrame : public RoleHostBase
     ///
     /// Same body shared across ProducerRoleHost + ProcessorRoleHost
     /// (was duplicated byte-for-byte across both pre-1i-mig-M3.5);
-    /// log prefix derives from `frame_cfg_.role_tag`.  Override only
+    /// log prefix derives from `frame_cfg_.short_tag`.  Override only
     /// when a future role host needs different L1 setup (e.g. a
     /// non-memfd backend).
     ///
@@ -221,7 +225,7 @@ class PYLABHUB_UTILS_EXPORT RoleHostFrame : public RoleHostBase
     ///
     /// Returns false on any failure (ctor throw, spawn refusal);
     /// caller sets the worker promise to false + returns.  Errors
-    /// are logged at ERROR level with the role's `frame_cfg_.role_tag`
+    /// are logged at ERROR level with the role's `frame_cfg_.short_tag`
     /// prefix.
     [[nodiscard]] bool spawn_shm_auth_listener_();
 

@@ -746,7 +746,7 @@ namespace
 /// Preconditions (caller-enforced): `uid` is a well-formed RoleUid
 /// per HEP-0033 §G2.2.0b.  This helper assumes validation has
 /// already happened at the `_on_*` op entry and derives `role.name`
-/// and `role.role_tag` from the uid via `parse_role_uid()`.
+/// and `role.short_tag` from the uid via `parse_role_uid()`.
 ///
 /// Callers must hold no lock on entry; this helper takes the state
 /// writer lock briefly and returns the post-mutation entry for event
@@ -812,7 +812,7 @@ RoleEntry upsert_role_locked(Impl &impl, const std::string &uid,
         RoleEntry r;
         r.uid        = uid;
         r.name       = derived_name;
-        r.role_tag   = derived_tag;
+        r.short_tag   = derived_tag;
         r.pubkey_z85 = pubkey_z85;
         if (!added_channel.empty()) r.channels.push_back(added_channel);
         // Eager presence creation per HEP-CORE-0023 §2.6: the presence
@@ -824,10 +824,10 @@ RoleEntry upsert_role_locked(Impl &impl, const std::string &uid,
         return new_it->second;
     }
     auto &ex = it->second;
-    // name + role_tag are derived caches — re-derive on every upsert
-    // so the invariant role_tag == extract_role_tag(uid) always holds.
+    // name + short_tag are derived caches — re-derive on every upsert
+    // so the invariant short_tag == extract_short_tag(uid) always holds.
     ex.name     = derived_name;
-    ex.role_tag = derived_tag;
+    ex.short_tag = derived_tag;
     if (!pubkey_z85.empty()) ex.pubkey_z85 = pubkey_z85;
     if (!added_channel.empty() &&
         std::find(ex.channels.begin(), ex.channels.end(), added_channel) ==
