@@ -179,6 +179,16 @@ struct InteractiveSignalHandler::Impl
                 continue; // Spurious wake.
             }
 
+            // SIGTERM-watchdog forensics: dump Logger state to stderr
+            // BEFORE we begin do_shutdown.  If ctest sent SIGTERM
+            // because the test timed out (e.g. Logger module shutdown
+            // exceeded its 5000ms deadline), this is the only place
+            // the failing run gets to record "Logger has been shutting
+            // down for X ms, queue=Y, worker_joinable=Z" before the
+            // process dies.  Cheap (atomics + try_lock only).
+            ::pylabhub::utils::Logger::instance().debug_dump_state_to_stderr(
+                "InteractiveSignalHandler::watcher_loop signaled");
+
             if (!interactive || count >= 2)
             {
                 // Non-interactive, or double-signal: immediate shutdown.

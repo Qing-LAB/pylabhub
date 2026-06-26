@@ -361,6 +361,110 @@ sequenceDiagram
     Logger-->>Finalize: return
 ```
 
+### Shutdown observability (PLH_DEBUG probe contract)
+
+**Why this contract exists.**  Across multiple sessions (tracked as
+TaskList #93 `PlhRoleInitTest.InitOutputValidates/producer 60s hang`,
+#242 `PlhHubCliTest.NoScriptPasses 60s hang`, and the `PlhRoleValidate
+DirectoryFlavorPasses/processor` flake observed during the HEP-0036
+§5b unification work) we have repeatedly seen tests fail with a
+characteristic signature: the role / hub binary completes its work,
+prints `application finalization done`, then NEVER actually exits.
+ctest sends `SIGTERM` after 60 s, the process dies with `rc=143`, and
+the only on-stderr clue is one line: `pylabhub::utils::Logger uses
+default ASYNC-with-timeout shutdown — spawning timedShutdown worker
+(deadline 5000ms)` followed eventually by `TIMEOUT (5000ms)! Thread
+detached.`  We do not yet know whether this is:
+
+  1. **Our bug.**  A racing condition inside `Impl::shutdown()` /
+     `worker_loop` / `CallbackDispatcher::shutdown` / sink-destructor.
+     For example, a slow `flock()` release in a `FileSink` destructor
+     under contention; or the `RotatingFileSink` flush queueing
+     synchronous writes on a buffer that has accumulated under heavy
+     `-j N` test parallelism.
+
+  2. **Outside our code.**  Filesystem-level contention (tmpfs, `/tmp`
+     cleanup races, NFS), kernel-level scheduling, or pthread teardown
+     interacting with detached threads at process exit.
+
+The probes documented below exist so the next failure is diagnosable
+in one shot instead of one more inconclusive sample.  See `Risk
+Analysis` "Shutdown stalls > deadline" row.
+
+**Routing.**  All shutdown-path probes use `PLH_DEBUG(...)`, which
+routes via `pylabhub::debug::debug_msg()` directly to `stderr`
+(`fmt::print(stderr, "[DBG] ...")`), bypassing the Logger machinery
+entirely.  This is intentional: PLH_DEBUG probes inside the Logger
+must survive sink switches, stuck worker threads, and shutdown stalls.
+
+**Compile-time gate.**  `PLH_DEBUG` is a no-op
+(`do { } while (0)`) when the cmake option
+`PYLABHUB_ENABLE_DEBUG_MESSAGES` is OFF (Release builds default to
+OFF).  Probes are therefore zero-cost in production.
+
+**Probe sites and what they mean.**
+
+| Site | Marker (excerpt) | Tells you |
+|---|---|---|
+| `Impl::shutdown` ENTER | `[+0.000ms] ENTER tid=N` | Logger module shutdown began |
+| `Impl::shutdown` notify | `[+X.XXXms] set shutdown_requested_; about to notify cv_` | Stop flag set; worker should wake |
+| `Impl::shutdown` before/after worker join | `BEFORE/AFTER worker_thread_.join()` | Worker exited cleanly within budget (or not) |
+| `Impl::shutdown` before/after callback_dispatcher_.shutdown | mirrors worker join | Secondary join site |
+| `worker_loop` ENTER | `worker_loop ENTER tid=N` | Worker thread alive |
+| `worker_loop` cv_.wait before/after | `cv_.wait queue_size=K shutdown_req=B` / `WOKE` | Confirms wake on stop flag |
+| `worker_loop` SetSinkCommand sequence | `BEFORE/AFTER old_sink->write`, `old_sink->flush`, `sink_ = move(new_sink)`, `old_sink.reset()`, `new_sink->write` | Per-step sink-switch boundary so a slow flock release or fd close in the OLD sink destructor is named explicitly |
+| `worker_loop` per-message (shutdown-mode only) | `msg I/N BEFORE/AFTER sink_->write` | Gated on `shutdown_requested_.load()` — silent in steady state; only fires once shutdown begins, giving per-message granularity into the drain |
+| `worker_loop` final shutdown branch | `BEFORE/AFTER final sink_->write`, `flush`, `BREAKING from while loop`, `EXIT` | Worker reached normal exit |
+| `CallbackDispatcher::shutdown` | ENTER, notify, before/after `worker_.join()`, EXIT | Secondary thread teardown visibility |
+
+**SIGTERM watchdog dump
+(`Logger::debug_dump_state_to_stderr`).**  When `ctest` (or any
+external supervisor) sends `SIGTERM`,
+`InteractiveSignalHandler::watcher_loop` calls
+`Logger::instance().debug_dump_state_to_stderr(<trigger>)` BEFORE
+`do_shutdown()`.  The dump:
+
+  * reads `shutdown_requested_`, `shutdown_completed_`,
+    `worker_thread_.joinable()` via atomics
+  * `try_lock`s `queue_mutex_` (reports `?(contended)` on failure —
+    never blocks)
+  * computes ms since `Impl::shutdown()` was entered
+    (`shutdown_start_steady_` atomic)
+  * emits ONE line: `[LOGGER_DUMP] trigger='...'
+    shutdown_req=B shutdown_done=B shutdown_age_ms=X.XXX
+    worker_joinable=B queue_mutex_acquirable=B queue_size=N|?(contended)`
+
+This is the post-mortem we previously lacked: if the timeout fires
+while Logger is mid-shutdown, the dump shows us _which atomic was set
+and how long ago_ instead of pure silence.
+
+**Test-artifact persistence.**  L4 plh_role / plh_hub fixtures root
+their scratch directories at `<build>/test_artifacts/<binary>/...`
+(not `/tmp`), and `PlhRoleCliTest::TearDown()` preserves the dir on
+test failure (or when `PLH_KEEP_TEST_ARTIFACTS` is set in the env).
+This means: when a Logger-shutdown stall fires, the rotating-file log
+sink's actual output file survives the test failure and can be read
+post-mortem — the per-message probes that fire during shutdown will
+be in that file, not lost to `/tmp` cleanup.
+
+**How to investigate when this hits next.**
+
+  1. Read `<build>/Testing/Temporary/LastTest.log` for the captured
+     stderr (the probe output and the `[LOGGER_DUMP]` line).
+  2. Read the rotating log file under
+     `<build>/test_artifacts/<binary>/.../logs/<role>.log` for any
+     probes that fired AFTER the sink switch.
+  3. Match `iter=N msg M/K` markers to find which message the worker
+     stalled on.
+  4. If the dump shows `shutdown_age_ms` ≈ 60000 and
+     `worker_joinable=true`, the worker thread is alive but stuck —
+     attach `gdb -p` or read the `[LOGGER_DUMP]` line for which
+     mutex was contended.
+  5. If the dump shows `shutdown_age_ms` ≈ 5000 (~the lifecycle
+     deadline) but the process did NOT exit until SIGTERM at 60 s,
+     the worker was detached after lifecycle gave up — the residual
+     time was spent in pthread teardown, not in `Impl::shutdown()`.
+
 ---
 
 ## Example: Basic Usage
@@ -422,6 +526,7 @@ void handle_fatal_error(const char* msg) {
 | Unbounded memory | Bounded queue; drop when full; configurable size |
 | Deadlock in error callback | Callback runs on dedicated thread; safe to call logger from callback |
 | Single worker bottleneck | I/O is typically bottleneck; sufficient for most apps |
+| **Shutdown stalls beyond the 5000 ms lifecycle deadline** (observed intermittently — see TaskList #93, #242) | Per-step `PLH_DEBUG` probe contract in `Impl::shutdown` + `worker_loop` + `CallbackDispatcher::shutdown` + sink-switch sequence (timing-stamped via monotonic `steady_clock`); SIGTERM-time `Logger::debug_dump_state_to_stderr` in `InteractiveSignalHandler::watcher_loop`; persistent test-artifact dir for post-mortem of the rotating log file. **Root cause unconfirmed** — open question whether stalls originate inside Logger (race / slow sink destructor / drain backlog) or outside (filesystem contention / pthread teardown of detached threads). The probe contract is the instrument to answer this next time it fires. |
 
 ---
 

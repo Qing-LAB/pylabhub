@@ -151,15 +151,25 @@ class CallbackDispatcher
 
     void shutdown()
     {
+        PLH_DEBUG("CallbackDispatcher::shutdown ENTER");
         if (shutdown_requested_.exchange(true))
         {
+            PLH_DEBUG("CallbackDispatcher::shutdown REENTRY no-op");
             return;
         }
+        PLH_DEBUG("CallbackDispatcher::shutdown notifying cv_");
         cv_.notify_one();
         if (worker_.joinable())
         {
+            PLH_DEBUG("CallbackDispatcher::shutdown BEFORE worker_.join()");
             worker_.join();
+            PLH_DEBUG("CallbackDispatcher::shutdown AFTER  worker_.join()");
         }
+        else
+        {
+            PLH_DEBUG("CallbackDispatcher::shutdown worker_ not joinable");
+        }
+        PLH_DEBUG("CallbackDispatcher::shutdown EXIT");
     }
 
   private:
@@ -298,6 +308,18 @@ struct Logger::Impl
     std::atomic<bool> m_was_dropping{false};                  // Size: 1 byte
     std::atomic<size_t> m_messages_dropped{0};                // Batch counter for summary; exchange(0) when processed
     std::atomic<size_t> m_total_dropped_since_sink_switch{0}; // Accumulated total; reset on sink switch
+    // steady_clock::time_point::rep encoding of when Impl::shutdown()
+    // was entered (0 == never).  Read by debug_dump_state_to_stderr()
+    // from a signal handler / SIGTERM watchdog to report
+    // "Logger has been shutting down for X ms".
+    std::atomic<long long> shutdown_start_steady_{0};
+
+  public:
+    /// Async-signal-safe-ish state dump used by the SIGTERM watchdog
+    /// in InteractiveSignalHandler.  Reads atomics directly, try_locks
+    /// queue_mutex_, writes a single fmt::print(stderr,...) line.
+    /// Safe to call when no Logger machinery is alive.
+    void debug_dump_state_to_stderr(const char *trigger) noexcept;
 };
 
 Logger::Impl::Impl() : sink_(std::make_unique<ConsoleSink>())
@@ -401,17 +423,28 @@ bool Logger::Impl::enqueue_command(Command &&cmd)
 // NOLINTNEXTLINE(readability-function-cognitive-complexity) -- command dispatch and shutdown handling
 void Logger::Impl::worker_loop()
 {
+    PLH_DEBUG("Logger worker_loop ENTER tid={}",
+                static_cast<unsigned long long>(
+                    pylabhub::platform::get_native_thread_id()));
     std::vector<Command> local_queue;
+    size_t iter_n = 0;
 
     while (true)
     {
+        ++iter_n;
         bool was_dropping = false;
         size_t dropped_count = 0;
         double dropping_duration_s = 0.0;
 
         {
             std::unique_lock<std::mutex> lock(queue_mutex_);
+            PLH_DEBUG("Logger worker_loop iter={} cv_.wait queue_size={} "
+                        "shutdown_req={}",
+                        iter_n, queue_.size(), shutdown_requested_.load());
             cv_.wait(lock, [this] { return !queue_.empty() || shutdown_requested_.load(); });
+            PLH_DEBUG("Logger worker_loop iter={} cv_.wait WOKE queue_size={} "
+                        "shutdown_req={}",
+                        iter_n, queue_.size(), shutdown_requested_.load());
             local_queue.swap(queue_);
 
             if (m_was_dropping.exchange(false, std::memory_order_relaxed))
@@ -462,18 +495,53 @@ void Logger::Impl::worker_loop()
         }
 
         // --- Process the dequeued batch ---
-        for (ptrdiff_t i = 0; i < static_cast<ptrdiff_t>(local_queue.size()); ++i)
+        // Per-message probes are SILENT in steady state and only spew
+        // once shutdown_requested_ is set, so the normal hot path is
+        // unchanged but the moment teardown begins we get
+        // per-message-write granularity into where time goes.
+        const bool trace_per_msg = shutdown_requested_.load(std::memory_order_relaxed);
+        const ptrdiff_t batch_size = static_cast<ptrdiff_t>(local_queue.size());
+        if (trace_per_msg)
+        {
+            PLH_DEBUG("Logger worker_loop iter={} shutdown-mode batch "
+                        "size={}", iter_n, batch_size);
+        }
+        for (ptrdiff_t i = 0; i < batch_size; ++i)
         {
             try
             {
                 // Fast path: LogMessage
                 if (auto *msg = std::get_if<LogMessage>(&local_queue[i]))
                 {
+                    if (trace_per_msg)
+                    {
+                        PLH_DEBUG("Logger worker_loop iter={} msg {}/{} "
+                                    "BEFORE acquiring m_sink_mutex (lvl={})",
+                                    iter_n, i + 1, batch_size, msg->level);
+                    }
                     std::lock_guard<std::mutex> sink_lock(m_sink_mutex);
+                    if (trace_per_msg)
+                    {
+                        PLH_DEBUG("Logger worker_loop iter={} msg {}/{} "
+                                    "acquired m_sink_mutex", iter_n,
+                                    i + 1, batch_size);
+                    }
                     if (sink_ &&
                         msg->level >= static_cast<int>(level_.load(std::memory_order_relaxed)))
                     {
+                        if (trace_per_msg)
+                        {
+                            PLH_DEBUG("Logger worker_loop iter={} msg {}/{} "
+                                        "BEFORE sink_->write", iter_n,
+                                        i + 1, batch_size);
+                        }
                         sink_->write(*msg, /*sync_flag=*/false);
+                        if (trace_per_msg)
+                        {
+                            PLH_DEBUG("Logger worker_loop iter={} msg {}/{} "
+                                        "AFTER  sink_->write", iter_n,
+                                        i + 1, batch_size);
+                        }
                     }
                     continue; // done with this item; keep ordering
                 }
@@ -569,14 +637,24 @@ void Logger::Impl::worker_loop()
             auto &cmd_variant = local_queue[last_set_sink_idx];
             if (auto *sink_cmd = std::get_if<SetSinkCommand>(&cmd_variant))
             {
+                PLH_DEBUG("Logger worker_loop iter={} SetSinkCommand "
+                            "acquiring m_sink_mutex", iter_n);
                 std::lock_guard<std::mutex> sink_lock(m_sink_mutex);
+                PLH_DEBUG("Logger worker_loop iter={} SetSinkCommand "
+                            "acquired m_sink_mutex", iter_n);
                 if (m_log_sink_messages_enabled_.load(std::memory_order_relaxed))
                 {
                     std::string old_desc = sink_ ? sink_->description() : "null";
                     std::string new_desc =
                         sink_cmd->new_sink ? sink_cmd->new_sink->description() : "null";
+                    PLH_DEBUG("Logger worker_loop iter={} sink switch "
+                                "old='{}' new='{}'",
+                                iter_n, old_desc, new_desc);
                     if (sink_)
                     {
+                        PLH_DEBUG("Logger worker_loop iter={} "
+                                    "BEFORE old_sink->write(switching msg)",
+                                    iter_n);
                         sink_->write(
                             LogMessage{.timestamp = std::chrono::system_clock::now(),
                                        .process_id = pylabhub::platform::get_pid(),
@@ -584,12 +662,34 @@ void Logger::Impl::worker_loop()
                                        .level = static_cast<int>(Logger::Level::L_SYSTEM),
                                        .body = make_buffer("Switching log sink to: {}", new_desc)},
                             /*sync_flag=*/false);
+                        PLH_DEBUG("Logger worker_loop iter={} "
+                                    "AFTER  old_sink->write(switching msg); "
+                                    "BEFORE old_sink->flush()", iter_n);
                         sink_->flush();
+                        PLH_DEBUG("Logger worker_loop iter={} "
+                                    "AFTER  old_sink->flush()", iter_n);
                     }
                     m_total_dropped_since_sink_switch.store(0, std::memory_order_relaxed);
+                    // Carve out the OLD sink so its destructor runs
+                    // OUTSIDE the move and we can bracket it with
+                    // probes.  Otherwise a slow flock release / fd
+                    // close in the FileSink dtor would be invisible.
+                    auto old_sink = std::move(sink_);
+                    PLH_DEBUG("Logger worker_loop iter={} "
+                                "BEFORE sink_ = move(new_sink) (carved out "
+                                "old_sink for explicit destruction)", iter_n);
                     sink_ = std::move(sink_cmd->new_sink);
+                    PLH_DEBUG("Logger worker_loop iter={} "
+                                "AFTER  sink_ = move(new_sink); "
+                                "BEFORE old_sink.reset()", iter_n);
+                    old_sink.reset();
+                    PLH_DEBUG("Logger worker_loop iter={} "
+                                "AFTER  old_sink.reset()", iter_n);
                     if (sink_)
                     {
+                        PLH_DEBUG("Logger worker_loop iter={} "
+                                    "BEFORE new_sink->write(switched-from msg)",
+                                    iter_n);
                         sink_->write(
                             LogMessage{.timestamp = std::chrono::system_clock::now(),
                                        .process_id = pylabhub::platform::get_pid(),
@@ -597,6 +697,9 @@ void Logger::Impl::worker_loop()
                                        .level = static_cast<int>(Logger::Level::L_SYSTEM),
                                        .body = make_buffer("Log sink switched from: {}", old_desc)},
                             /*sync_flag=*/false);
+                        PLH_DEBUG("Logger worker_loop iter={} "
+                                    "AFTER  new_sink->write(switched-from msg)",
+                                    iter_n);
                     }
                 }
                 else
@@ -604,6 +707,8 @@ void Logger::Impl::worker_loop()
                     m_total_dropped_since_sink_switch.store(0, std::memory_order_relaxed);
                     sink_ = std::move(sink_cmd->new_sink);
                 }
+                PLH_DEBUG("Logger worker_loop iter={} sink switch DONE; "
+                            "fulfilling promise", iter_n);
                 promise_set_safe(sink_cmd->promise, true);
             }
         }
@@ -623,43 +728,157 @@ void Logger::Impl::worker_loop()
                 continue;      // Go back to the top of the while(true) loop to process these items.
             }
 
-            PLH_DEBUG("Logger worker thread shutting down.");
+            PLH_DEBUG("Logger worker thread shutting down. iter={}", iter_n);
+            PLH_DEBUG("Logger worker_loop iter={} shutdown branch "
+                        "acquiring m_sink_mutex", iter_n);
             std::lock_guard<std::mutex> sink_lock(m_sink_mutex);
+            PLH_DEBUG("Logger worker_loop iter={} shutdown branch "
+                        "acquired m_sink_mutex", iter_n);
             if (sink_)
             {
+                PLH_DEBUG("Logger worker_loop iter={} shutdown branch "
+                            "BEFORE final sink_->write", iter_n);
                 sink_->write(LogMessage{.timestamp = std::chrono::system_clock::now(),
                                         .process_id = pylabhub::platform::get_pid(),
                                         .thread_id = pylabhub::platform::get_native_thread_id(),
                                         .level = static_cast<int>(Logger::Level::L_SYSTEM),
                                         .body = make_buffer("Logger is shutting down.")},
                              /*sync_flag=*/false);
+                PLH_DEBUG("Logger worker_loop iter={} shutdown branch "
+                            "AFTER  final sink_->write; BEFORE final flush",
+                            iter_n);
                 sink_->flush();
+                PLH_DEBUG("Logger worker_loop iter={} shutdown branch "
+                            "AFTER  final flush", iter_n);
             }
             queue_.clear(); // Ensure queue is explicitly cleared before exit (final safeguard)
             g_logger_state.store(LoggerState::Shutdown, std::memory_order_release);
+            PLH_DEBUG("Logger worker_loop iter={} BREAKING from while loop",
+                        iter_n);
             break;
         }
     }
+    PLH_DEBUG("Logger worker_loop EXIT after iter={}", iter_n);
 }
 
 void Logger::Impl::shutdown()
 {
+    // Monotonic clock baseline for the shutdown sequence.  Every
+    // shutdown-path PLH_DEBUG carries `[+X.XXXms]` from this point so
+    // the next failure trace pinpoints which call ate the budget.
+    // Also exposed via shutdown_start_steady_ so SIGTERM-time dumps
+    // (interactive_signal_handler) can report wall-clock-since-shutdown.
+    //
+    // Guarded on PYLABHUB_ENABLE_DEBUG_MESSAGES so a Release build pays
+    // ZERO cost here.  Side effect: in Release the SIGTERM watchdog
+    // dump reports `shutdown_age_ms=-1.000` (the dump already returns
+    // -1.0 when the atomic is 0); the rest of the dump's fields
+    // (shutdown_req, worker_joinable, queue_size) still work in
+    // Release.
+#if defined(PYLABHUB_ENABLE_DEBUG_MESSAGES)
+    const auto t0 = std::chrono::steady_clock::now();
+    shutdown_start_steady_.store(t0.time_since_epoch().count(),
+                                    std::memory_order_release);
+    auto since_t0 = [t0]() {
+        const auto now = std::chrono::steady_clock::now();
+        return std::chrono::duration<double, std::milli>(now - t0).count();
+    };
+#endif
+
+    PLH_DEBUG("Logger::Impl::shutdown [+{:.3f}ms] ENTER tid={}",
+                since_t0(),
+                static_cast<unsigned long long>(
+                    pylabhub::platform::get_native_thread_id()));
     if (shutdown_completed_.load() || shutdown_requested_.exchange(true))
     {
+        PLH_DEBUG("Logger::Impl::shutdown [+{:.3f}ms] REENTRY no-op "
+                    "(completed={}, req_was_true={})",
+                    since_t0(),
+                    shutdown_completed_.load(), shutdown_requested_.load());
         return;
     }
+    PLH_DEBUG("Logger::Impl::shutdown [+{:.3f}ms] set shutdown_requested_; "
+                "about to notify cv_", since_t0());
     cv_.notify_one();
     if (worker_thread_.joinable())
     {
+        PLH_DEBUG("Logger::Impl::shutdown [+{:.3f}ms] before "
+                    "worker_thread_.join()", since_t0());
         worker_thread_.join();
+        PLH_DEBUG("Logger::Impl::shutdown [+{:.3f}ms] after  "
+                    "worker_thread_.join()", since_t0());
     }
+    else
+    {
+        PLH_DEBUG("Logger::Impl::shutdown [+{:.3f}ms] worker_thread_ not "
+                    "joinable", since_t0());
+    }
+    PLH_DEBUG("Logger::Impl::shutdown [+{:.3f}ms] before "
+                "callback_dispatcher_.shutdown()", since_t0());
     callback_dispatcher_.shutdown();
+    PLH_DEBUG("Logger::Impl::shutdown [+{:.3f}ms] after  "
+                "callback_dispatcher_.shutdown()", since_t0());
     shutdown_completed_.store(true);
+    PLH_DEBUG("Logger::Impl::shutdown [+{:.3f}ms] EXIT", since_t0());
+}
+
+void Logger::Impl::debug_dump_state_to_stderr(const char *trigger) noexcept
+{
+    // Read everything via atomics + try_lock so the dump itself cannot
+    // hang.  Called from the SIGTERM watchdog (signal-handler watcher
+    // thread, not a real signal handler), so we tolerate some
+    // allocation but absolutely no blocking on contended locks.
+    const auto start_rep = shutdown_start_steady_.load(std::memory_order_acquire);
+    double elapsed_ms = -1.0;
+    if (start_rep != 0)
+    {
+        const std::chrono::steady_clock::time_point start{
+            std::chrono::steady_clock::duration{start_rep}};
+        elapsed_ms = std::chrono::duration<double, std::milli>(
+                            std::chrono::steady_clock::now() - start)
+                            .count();
+    }
+
+    bool queue_locked = false;
+    size_t queue_size = 0;
+    {
+        std::unique_lock<std::mutex> lk(queue_mutex_, std::try_to_lock);
+        if (lk.owns_lock())
+        {
+            queue_locked = true;
+            queue_size = queue_.size();
+        }
+    }
+
+    fmt::print(stderr,
+                "[LOGGER_DUMP] trigger='{}' "
+                "shutdown_req={} shutdown_done={} "
+                "shutdown_age_ms={:.3f} "
+                "worker_joinable={} "
+                "queue_mutex_acquirable={} "
+                "queue_size={}\n",
+                trigger ? trigger : "(null)",
+                shutdown_requested_.load(),
+                shutdown_completed_.load(),
+                elapsed_ms,
+                worker_thread_.joinable(),
+                queue_locked,
+                queue_locked ? std::to_string(queue_size)
+                            : std::string("?(contended)"));
+    std::fflush(stderr);
 }
 
 // Logger Public API Implementation
 Logger::Logger() : pImpl(std::make_unique<Impl>()) {}
 Logger::~Logger() = default;
+
+void Logger::debug_dump_state_to_stderr(const char *trigger) noexcept
+{
+    if (pImpl)
+    {
+        pImpl->debug_dump_state_to_stderr(trigger);
+    }
+}
 
 Logger &Logger::instance()
 {

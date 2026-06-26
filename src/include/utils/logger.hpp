@@ -252,6 +252,26 @@ class PYLABHUB_UTILS_EXPORT Logger
     void shutdown();
 
     /**
+     * @brief Async-signal-safe-ish state dump for SIGTERM-watchdog use.
+     *
+     * Writes a single `[LOGGER_DUMP] ...` line to stderr with:
+     *   - `shutdown_req`, `shutdown_done` atomics
+     *   - `shutdown_age_ms`: ms since `Impl::shutdown()` entered (or -1)
+     *   - `worker_joinable`: whether the worker thread is still alive
+     *   - `queue_mutex_acquirable`: true if `try_lock` succeeded
+     *   - `queue_size` or "?(contended)"
+     *
+     * All reads use atomics or `std::try_to_lock` — the dump itself
+     * CANNOT hang on contended state.  Designed to be called from the
+     * SIGTERM watcher thread in `InteractiveSignalHandler` so that
+     * ctest-timeout SIGTERM yields forensics (which call ate the
+     * 5000ms Logger shutdown budget) instead of silence.
+     *
+     * Safe to call when Logger is already shut down — no-op.
+     */
+    void debug_dump_state_to_stderr(const char *trigger) noexcept;
+
+    /**
      * @brief Blocks until the logger has processed all currently queued messages.
      *
      * This is a synchronous call that is useful for ensuring that logs preceding

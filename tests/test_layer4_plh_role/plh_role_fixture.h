@@ -19,8 +19,10 @@
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
+#include <fmt/core.h>
 
 #include <atomic>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -44,17 +46,45 @@ inline std::string plh_role_binary()
             / ".." / "bin" / "plh_role").string();
 }
 
-/// Create a uniquely-named temp directory under the OS temp root.
+/// Create a uniquely-named test scratch directory.
+///
+/// Default root is `<build-stage>/test_artifacts/plh_role_l4/` (sibling
+/// of the test binary's bin/ dir), NOT `/tmp/`, so:
+///   1. Logs survive across runs and ctest re-invocations.
+///   2. tmpfs cleanup (which can race with concurrent tests in -j N
+///      sweeps) can't yank the dir from under us.
+///   3. Forensics from a hung / SIGTERMed binary stay inspectable —
+///      especially the rotating-file log sink, which is the only
+///      place stderr ends up once the role binary switches sinks.
+///
+/// Override the root with env var `PLH_TEST_ARTIFACTS_DIR=<path>` for
+/// CI lanes that want to redirect outputs into an archive volume.
+///
 /// The @p prefix appears in the directory name for grep-ability.
-/// Caller is responsible for cleanup (fixture does it automatically).
+/// Caller is responsible for cleanup; @c PlhRoleCliTest::TearDown
+/// preserves dirs on test failure (forensics) and removes them on
+/// success.
 inline fs::path make_tmp_dir(const std::string &prefix)
 {
     static std::atomic<int> counter{0};
     const int id = counter.fetch_add(1);
-    fs::path dir = fs::temp_directory_path()
-                 / ("plh_role_l4_" + prefix + "_"
-                    + std::to_string(::getpid()) + "_"
-                    + std::to_string(id));
+
+    fs::path root;
+    if (const char *override_root = std::getenv("PLH_TEST_ARTIFACTS_DIR"))
+    {
+        root = override_root;
+    }
+    else
+    {
+        // Test binary lives at  <build-stage>/tests/test_layer4_plh_role
+        // so <build-stage> == binary's parent's parent.
+        root = fs::path(::g_self_exe_path).parent_path().parent_path()
+             / "test_artifacts" / "plh_role_l4";
+    }
+
+    fs::path dir = root / ("plh_role_l4_" + prefix + "_"
+                            + std::to_string(::getpid()) + "_"
+                            + std::to_string(id));
     std::error_code ec;
     fs::remove_all(dir, ec);    // best-effort: previous aborted run
     fs::create_directories(dir);
@@ -203,10 +233,28 @@ class PlhRoleCliTest : public pylabhub::tests::IsolatedProcessTest
   protected:
     void TearDown() override
     {
-        for (const auto &p : paths_to_clean_)
+        // Preserve scratch dirs on failure so the rotating-file log,
+        // generated config files, vault file, etc. can be inspected
+        // post-mortem.  See make_tmp_dir() docstring.
+        const bool keep =
+            ::testing::Test::HasFailure() ||
+            (std::getenv("PLH_KEEP_TEST_ARTIFACTS") != nullptr);
+        if (keep)
         {
-            std::error_code ec;
-            fs::remove_all(p, ec);
+            for (const auto &p : paths_to_clean_)
+            {
+                fmt::print(stderr,
+                            "[PLH_TEST_ARTIFACTS] preserved on failure: {}\n",
+                            p.string());
+            }
+        }
+        else
+        {
+            for (const auto &p : paths_to_clean_)
+            {
+                std::error_code ec;
+                fs::remove_all(p, ec);
+            }
         }
         paths_to_clean_.clear();
     }
