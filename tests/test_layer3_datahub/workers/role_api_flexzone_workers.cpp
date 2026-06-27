@@ -296,7 +296,15 @@ void build_payload_pair(PayloadPair &out,
         out.prod->set_flexzone_info_cache_(fz_info);
     }
     ASSERT_TRUE(out.prod->build_tx_queue(tx_opts));
-    ASSERT_TRUE(out.prod->apply_producer_reg_ack(nlohmann::json::object()));
+    // HEP-CORE-0036 §5b B-5 (#290): `apply_producer_reg_ack` requires a
+    // valid `channel_name` post-B-5.  In this L3 fixture the SHM tx
+    // queue is fully wired by `build_tx_queue` (capability path), and
+    // `apply_master_approval` is a no-op for SHM (no `shm_secret`
+    // expected in the ACK).  The pre-B-5 empty-object call was
+    // therefore a vestigial no-op that never drove FSM state nor cache;
+    // dropping it removes a fictional "ACK applied" assertion that
+    // does not match what this fixture exercises.  The full ACK path
+    // is tested at L3 Pattern-4 + L4 e2e.
 
     // One committed slot so the consumer can attach.
     void *slot = out.prod->write_acquire(std::chrono::milliseconds{500});
@@ -337,7 +345,14 @@ void build_payload_pair(PayloadPair &out,
     // returns in `apply_consumer_reg_ack_shm_`.
     ::close(rx_fd_dup);
     ASSERT_TRUE(rx_built);
-    ASSERT_TRUE(out.cons->apply_consumer_reg_ack(nlohmann::json::object()));
+    // HEP-CORE-0036 §5b B-5 (#290): vestigial.  The SHM rx queue is
+    // already Active after `build_rx_queue` consumes the dup'd
+    // capability fd.  Pre-B-5 the empty-object ACK fell through to the
+    // ZMQ branch (empty `data_transport`) where `apply_master_approval`
+    // is a no-op on a ShmQueue without `shm_secret`.  Post-B-5 this
+    // path hard-errors on missing `channel_name` / `data_transport`,
+    // and the call adds no behavior to assert against in this fixture
+    // (no handler, no cache write, no FSM transition observable).
 }
 
 } // namespace
@@ -466,7 +481,14 @@ int zmq_tx_null()
             opts.slot_spec         = pylabhub::tests::simple_schema();
 
             ASSERT_TRUE(api->build_tx_queue(opts));
-            ASSERT_TRUE(api->apply_producer_reg_ack(nlohmann::json::object()));
+            // HEP-CORE-0036 §5b B-5 (#290): `channel_name` is now
+            // mandatory in REG_ACK.  `initial_allowlist` is omitted —
+            // ZmqQueue::apply_master_approval tolerates absence (keeps
+            // prior allowlist state) and still drives Standby → Active
+            // on the PUSH/bind side, which is what `queue_mechanism`
+            // below requires to observe Mechanism::Curve.
+            ASSERT_TRUE(api->apply_producer_reg_ack(nlohmann::json{
+                {"channel_name", "test.fz.zmq.tx"}}));
 
             EXPECT_EQ(api->flexzone(ChannelSide::Tx), nullptr);
             EXPECT_EQ(api->flexzone_size(ChannelSide::Tx), 0u);
@@ -541,7 +563,15 @@ int zmq_rx_null()
                 /*pubkey_z85=*/curve.role("prod.zmq-fz.rx").public_z85});
 
             ASSERT_TRUE(api->build_rx_queue(rx_opts));
-            ASSERT_TRUE(api->apply_consumer_reg_ack(nlohmann::json::object()));
+            // HEP-CORE-0036 §5b B-5 (#290): `channel_name` +
+            // `data_transport` are now mandatory in CONSUMER_REG_ACK.
+            // `producers` is omitted — ZmqQueue::apply_master_approval
+            // tolerates absence (no-op-returning-true), matching the
+            // pre-B-5 behavior this test relied on.  The flexzone
+            // assertions below depend on `build_rx_queue` only.
+            ASSERT_TRUE(api->apply_consumer_reg_ack(nlohmann::json{
+                {"channel_name", "test.fz.zmq.rx"},
+                {"data_transport", "zmq"}}));
 
             EXPECT_EQ(api->flexzone(ChannelSide::Rx), nullptr);
             EXPECT_EQ(api->flexzone_size(ChannelSide::Rx), 0u);
@@ -1016,7 +1046,12 @@ int shm_slot_checksum_corrupt_detected()
             }
 
             ASSERT_TRUE(prod->build_tx_queue(tx_opts));
-            ASSERT_TRUE(prod->apply_producer_reg_ack(nlohmann::json::object()));
+            // HEP-CORE-0036 §5b B-5 (#290): vestigial.  See
+            // `build_payload_pair` comment — SHM tx queue is fully
+            // wired by `build_tx_queue`; `apply_master_approval` is a
+            // no-op for SHM without `shm_secret`, and this fixture
+            // does not exercise FSM or cache state that the call would
+            // affect.
 
             // Write + commit a slot with a known pattern.
             auto *slot = static_cast<uint8_t*>(prod->write_acquire(
@@ -1066,7 +1101,12 @@ int shm_slot_checksum_corrupt_detected()
             const bool rx_built = cons->build_rx_queue(rx_opts);
             ::close(rx_fd_dup);
             ASSERT_TRUE(rx_built);
-            ASSERT_TRUE(cons->apply_consumer_reg_ack(nlohmann::json::object()));
+            // HEP-CORE-0036 §5b B-5 (#290): vestigial.  See
+            // `build_payload_pair` comment — the SHM rx queue is fully
+            // wired by `build_rx_queue` (consumes the dup'd capability
+            // fd), and `apply_master_approval` is a no-op for SHM
+            // without `shm_secret`.  This fixture exercises read-side
+            // verification semantics, not the broker ACK delivery path.
 
             const uint64_t errors_before =
                 cons->queue_metrics(ChannelSide::Rx).checksum_error_count;
@@ -1164,7 +1204,12 @@ int shm_flexzone_checksum_corrupt_detected()
             }
 
             ASSERT_TRUE(prod->build_tx_queue(tx_opts));
-            ASSERT_TRUE(prod->apply_producer_reg_ack(nlohmann::json::object()));
+            // HEP-CORE-0036 §5b B-5 (#290): vestigial.  See
+            // `build_payload_pair` comment — SHM tx queue is fully
+            // wired by `build_tx_queue`; `apply_master_approval` is a
+            // no-op for SHM without `shm_secret`, and this fixture
+            // does not exercise FSM or cache state that the call would
+            // affect.
 
             // Write a slot with a pattern the consumer's slot-verify accepts.
             auto *slot = static_cast<uint8_t*>(prod->write_acquire(
@@ -1213,7 +1258,12 @@ int shm_flexzone_checksum_corrupt_detected()
             const bool rx_built = cons->build_rx_queue(rx_opts);
             ::close(rx_fd_dup);
             ASSERT_TRUE(rx_built);
-            ASSERT_TRUE(cons->apply_consumer_reg_ack(nlohmann::json::object()));
+            // HEP-CORE-0036 §5b B-5 (#290): vestigial.  See
+            // `build_payload_pair` comment — the SHM rx queue is fully
+            // wired by `build_rx_queue` (consumes the dup'd capability
+            // fd), and `apply_master_approval` is a no-op for SHM
+            // without `shm_secret`.  This fixture exercises read-side
+            // verification semantics, not the broker ACK delivery path.
 
             const uint64_t errors_before =
                 cons->queue_metrics(ChannelSide::Rx).checksum_error_count;

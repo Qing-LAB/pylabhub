@@ -731,8 +731,28 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
                     script_view.push_back(std::move(entry));
             }
         }
+        // HEP-CORE-0036 §5b B-5 (#290, 2026-06-26) — hard-error on
+        // missing canonical wire fields.  Pre-B-5 the function
+        // tolerated empty `channel_name` and silently skipped the
+        // cache commit + Authorized FSM transition further down
+        // (`if (!channel_name.empty() && ...)` patterns), masking
+        // broker-contract violations as "ACK applied" returns.
+        // Post-B-1..B-4 every emitter route is unified on
+        // `channel_name`, so absence is unambiguously a contract
+        // violation worth a hard error.
         const auto channel_name =
             ack.value("channel_name", std::string{});
+        if (channel_name.empty())
+        {
+            LOGGER_ERROR(
+                "[{}] apply_consumer_reg_ack: ACK missing required "
+                "`channel_name` (HEP-CORE-0036 §5b.7 + B-5 #290 — "
+                "broker contract violation; pre-B-5 this would have "
+                "silently skipped cache commit + Authorized FSM "
+                "transition).",
+                pImpl->short_tag);
+            return false;
+        }
 
         // rx_queue precondition check.  The ack-received LOGGER_INFO
         // below is pinned by Pattern 4 rung 4 as step 5 of the success
@@ -786,8 +806,28 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
         // peer-set mutator).  SHM activation runs the §5.5 ZAP-CURVE
         // handshake, recvs the memfd via SCM_RIGHTS, hands the fd to
         // the rx queue, and starts it — a separate code path.
+        // HEP-CORE-0036 §5b B-5 (#290, 2026-06-26) — hard-error on
+        // missing / unknown `data_transport`.  Pre-B-5 a missing
+        // value fell through to the ZMQ branch as a temporary
+        // bridge while older tests were migrated; B-4 unified the
+        // emit so every CONSUMER_REG_ACK now carries the echo, and
+        // the bridge is dead weight.  An unknown value is also a
+        // hard error — silent dispatch to the wrong code path
+        // (ZMQ when SHM is intended, or vice versa) would lead to
+        // a confusing later failure deep in the queue or attach
+        // protocol.
         const std::string data_transport_echo =
             ack.value("data_transport", std::string{});
+        if (data_transport_echo != "shm" && data_transport_echo != "zmq")
+        {
+            LOGGER_ERROR(
+                "[{}] apply_consumer_reg_ack: channel='{}' ACK has "
+                "missing or unknown `data_transport`='{}' "
+                "(HEP-CORE-0036 §5b.7 + B-5 #290 — must be one of "
+                "{{\"shm\",\"zmq\"}}; broker contract violation).",
+                pImpl->short_tag, channel_name, data_transport_echo);
+            return false;
+        }
         if (data_transport_echo == "shm")
         {
             // SHM is single-producer per HEP-CORE-0023 §2.1.1
@@ -827,10 +867,11 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
             // into transport-artifact fields, and calls start()
             // internally).
             //
-            // Note: the empty-data_transport fall-through here covers
-            // pre-B-4 ACKs in tests that haven't yet been migrated;
-            // B-5 (#290) will replace this with a hard error on
-            // missing `data_transport`.
+            // B-5 (#290, 2026-06-26): the pre-B-4 empty-data_transport
+            // fall-through here has been deleted — the discriminator
+            // hard-errors above on missing/unknown `data_transport`,
+            // so reaching this branch implies `data_transport=="zmq"`
+            // by construction.
             if (!pImpl->rx_queue->apply_master_approval(ack))
             {
                 LOGGER_ERROR("[{}] apply_consumer_reg_ack: "
@@ -875,7 +916,9 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
         // cannot mis-admit a peer.  Atomic queue+cache coupling would
         // require exposing a queue update callback (HEP §6.5.1 future
         // work).
-        if (!channel_name.empty() && has_producers)
+        // B-5 (#290): channel_name is non-empty by construction
+        // here — the early hard-error above returned false on absent.
+        if (has_producers)
         {
             pImpl->producer_peer_cache.put(
                 channel_name, std::move(script_view));
@@ -889,7 +932,10 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
         // role's data plane is armed; the §8.2 outer guard
         // (`any_presence_authorized()`) will now admit this presence
         // to the data loop.
-        if (!channel_name.empty() && pImpl->handler_)
+        // B-5 (#290): channel_name is non-empty by construction.
+        // `handler_` may legitimately be null in some test fixtures
+        // (no presence routing); guard that one only.
+        if (pImpl->handler_)
         {
             Presence *presence = pImpl->handler_
                 ->find_presence_for_channel(channel_name);
@@ -1130,7 +1176,22 @@ bool RoleAPIBase::apply_producer_reg_ack(const nlohmann::json &ack)
         return false;
     }
 
+    // HEP-CORE-0036 §5b B-5 (#290, 2026-06-26) — hard-error on
+    // missing `channel_name`.  Symmetric with the consumer-side
+    // check above; same rationale (pre-B-5 silent skip masked
+    // broker-contract violations as "ACK applied" returns).
     const auto channel_name = ack.value("channel_name", std::string{});
+    if (channel_name.empty())
+    {
+        LOGGER_ERROR(
+            "[{}] apply_producer_reg_ack: ACK missing required "
+            "`channel_name` (HEP-CORE-0036 §5b.4 + B-5 #290 — broker "
+            "contract violation; pre-B-5 this would have silently "
+            "skipped `initial_allowlist` cache seed + the Registered "
+            "→ Authorized FSM transition).",
+            pImpl->short_tag);
+        return false;
+    }
 
     // HEP-CORE-0036 §3.6 REG_ACK note + §I11.1 cache architecture:
     // seed the script-side `allowlist_cache` from REG_ACK.initial_allowlist
@@ -1148,7 +1209,6 @@ bool RoleAPIBase::apply_producer_reg_ack(const nlohmann::json &ack)
     // field to be present (empty array on a fresh channel, never absent).
     // An absent field is a broker contract violation; log WARN, preserve
     // the prior cache snapshot, do not fire the callback.
-    if (!channel_name.empty())
     {
         if (ack.contains("initial_allowlist") &&
             ack.at("initial_allowlist").is_array())
@@ -1212,7 +1272,9 @@ bool RoleAPIBase::apply_producer_reg_ack(const nlohmann::json &ack)
     // queue Active).  Data plane armed; §8.2 outer guard
     // (`any_presence_authorized()`) will now admit this presence to
     // the data loop.
-    if (!channel_name.empty() && pImpl->handler_)
+    // B-5 (#290): channel_name is non-empty by construction
+    // (hard-errored above on absent).  Guard only handler_.
+    if (pImpl->handler_)
     {
         Presence *presence = pImpl->handler_
             ->find_presence_for_channel(channel_name);
