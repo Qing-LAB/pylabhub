@@ -122,32 +122,53 @@ AUTH-6 (#154) L3 tests  ──┼──► AUTH-7 L4 e2e  ──► #275 S2..S5 
 - **AUTH-4** SUPERSEDED 2026-06-16 by HEP-CORE-0041 (#244).  See
   archive §5.  Original tasks #164 + #79 closed as SUPERSEDED.
 
-### AUTH-5 — Sibling HEP doc sync
+### AUTH-5 — Sibling HEP doc sync ✅ SHIPPED 2026-06-27
 
-> **Tracker:** task **#104**.
+> **Tracker:** task **#104**.  Closed 2026-06-27.
 > **HEP anchors:** HEP-0036 §14 sibling-HEP update list + §I11.
 
-**Goal.**  Make every sibling HEP consistent with HEP-0036's shipped
-contract.  Pure doc work for 7 HEPs; ~10 LOC code for HEP-0023's
-`Authorized` enum already folded into AUTH-3.
+**Outcome.**  Survey of the 5 scoped items found 4 of 5 were
+ALREADY current against shipped code — only HEP-0036 §5 + §8 had
+genuine stale wording.  Scope reset to "what actually needed to
+change" + a closed sweep across §4/§5/§9/§10/§12/§14:
 
-**Scope (do not expand).**
+| Item | Survey verdict | Action shipped |
+|---|---|---|
+| HEP-0017 §3.3 — ProducerPeer API | ✅ already current (doc matches code at lines 250-443; cites `set_producer_peers` / `add_producer_peer` / `remove_producer_peer`) | none |
+| HEP-0021 — pubkey REQUIRED | ✅ already current at HEP-0021 §5.1:288.  AUTH_TODO's old anchor "§16" was wrong (HEP-0021 §16 is ephemeral-binding — task #94) | scope text corrected to cite §5.1 |
+| HEP-0027 / HEP-0030 / HEP-0007 — wire-version transition | ✅ already correct; `broker_proto` version is authoritative at `plh_version_registry.hpp:206-207` per HEP-CORE-0026 Version Registry; sibling HEPs intentionally don't bake version numbers in text | none |
+| HEP-0033 §G — `ChannelAccessEntry` cross-refs | ✅ already current at line 1155 (acknowledges shm_secret retirement + cross-refs HEP-CORE-0041) | none |
+| HEP-0036 §5 / §8 stale `zmq_msg_gets("User-Id")` wording | 🔴 sweep needed — 13 instances across §4/§5/§9/§10/§12/§14 | swept; §6.3 historical-rationale note updated to record the close |
 
-- HEP-0017 §3.3 — document the shipped `ProducerPeer` +
-  `add_producer_peer` / `remove_producer_peer` API.
-- HEP-0021 §16 — pubkey REQUIRED text.
-- HEP-0027 / HEP-0030 / HEP-0007 — record the wire-version transition.
-- HEP-0033 §G — cross-references for `ChannelAccessEntry`.
-- HEP-0036 §5 sequence diagrams + §8 handler-step tables — replace
-  stale `zmq_msg_gets("User-Id")` wording with §6.1 / §6.3
-  verification-model wording.
+**Sweep details (HEP-CORE-0036 only):**
+- §4.1 (line 1787) + §4.2 (line 1807) — broker-internal-state prose
+- §5.2 producer sequence (line 2069 + ordering-invariants #5 at 2117-2122)
+- §5.2-§5.4 consumer sequences (lines 2159, 2185-2186, 2291, 2323)
+- §9.1 fan-in nuance (line 4425)
+- §10 process lifecycle diagram (line 4579)
+- §12 implementation phases table (rows 1 + 3 at lines 4832, 4834)
+- §14 sibling-HEP update list (line 5007)
+- §6.3 historical note updated to confirm the sweep + cite
+  `broker_service.cpp:3709-3738` (`verify_known_role_binding`)
 
-**Out of scope (per §I11).**
+**Intentionally NOT swept:**
+- §5.6 SHM consumer-attach diagram — carries a SUPERSEDED banner
+  per HEP-CORE-0041 §9 D4 capability-transport model; the diagram
+  is design-archaeology and is frozen alongside also-frozen
+  `shm_secret` references.
+- Layer-1 ZAP `User-Id ∈ known_roles[]` references (e.g. line
+  1976, 2058, 4561) — Layer-1 ZAP path is unchanged.
 
-- Re-litigating the verification model in sibling HEPs.
-- Sibling HEPs proposing their own coordination layers.
+**Verified against code (read-only, no edits):**
+- `verify_known_role_binding` at `broker_service.cpp:3709-3738`
+- `ProducerPeer` struct at `hub_zmq_queue.hpp:120-136`
+- `set_producer_peers` / `add_producer_peer` / `remove_producer_peer`
+  at `hub_zmq_queue.hpp:369-380`
+- `RxQueueOptions::producer_peers` at `role_api_base.hpp:168`
+- `kBrokerProtoMajor` / `kBrokerProtoMinor` at
+  `plh_version_registry.hpp:206-207` (current: 6.0)
 
-**Depends on:** AUTH-1/2/3 shipped ✅.
+**Depends on:** AUTH-1/2/3 shipped ✅ (work done after all three).
 
 ### AUTH-6 — L3 broker test revival
 
