@@ -179,7 +179,7 @@ start_hubhost_broker(const nlohmann::json &j_overrides,
 ///
 ///   BrcHandle bh;
 ///   bh.brc.on_notification([](auto type, auto body){ ... });
-///   bh.start(ep, pk, uid, kp);
+///   bh.start(ep, pk, uid, pylabhub::tests::role_keystore_name(uid));
 struct BrcHandle
 {
     pylabhub::hub::BrokerRequestComm brc;
@@ -196,9 +196,9 @@ struct BrcHandle
     /// Connect a BRC to a HubHost broker.  Caller is responsible for
     /// having seeded the process KeyStore (typically via
     /// `CurveKeyStoreFixture`) under the name `keystore_name` BEFORE
-    /// calling.  Default `keystore_name` matches what
-    /// `role_keystore_name(role_uid)` returns from
-    /// `curve_test_setup.h`.
+    /// calling.  `keystore_name` MUST be the same name used to seed
+    /// the KeyStore — the canonical form is
+    /// `pylabhub::tests::role_keystore_name(role_uid)`.
     ///
     /// HEP-CORE-0040 §172: the role keypair lives only in locked
     /// memory; this signature passes a NAME, not bytes.

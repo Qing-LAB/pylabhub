@@ -17,14 +17,8 @@
 #include "shared_test_helpers.h"
 #include "test_entrypoint.h"
 
-#include <zmq.h>  // zmq_z85_decode — decode setup keys for byte comparison
-
 #include <gtest/gtest.h>
 
-#include <array>
-#include <cstddef>
-#include <cstring>
-#include <span>
 #include <string>
 #include <string_view>
 
@@ -37,26 +31,6 @@ namespace pylabhub::tests::worker
 {
 namespace curve_fixtures
 {
-
-namespace
-{
-
-// Decode a Z85-encoded 40-char string to 32 raw bytes.  Used by the
-// byte-equivalence assertions below (HEP-CORE-0040 §8.5.2 — the
-// fixture's setup carries Z85; the KeyStore's `with_seckey` callback
-// receives raw bytes; we compare at the raw boundary).
-[[nodiscard]] std::array<std::byte, 32>
-z85_decode_32(std::string_view z85)
-{
-    std::array<std::byte, 32> raw{};
-    [[maybe_unused]] auto *rc = ::zmq_z85_decode(
-        reinterpret_cast<uint8_t *>(raw.data()), z85.data());
-    EXPECT_NE(rc, nullptr) << "zmq_z85_decode failed for input length "
-                           << z85.size();
-    return raw;
-}
-
-} // namespace
 
 // ─── §1: canonical-name pins ─────────────────────────────────────────────────
 
@@ -137,22 +111,23 @@ int seeded_bytes_match_setup_for_hub_identity()
             pylabhub::tests::CurveKeyStoreFixture ks_fixture(
                 "test", "test.l2.curve_fixtures.bytes_hub", setup);
 
-            const auto expected = z85_decode_32(setup.hub.secret_z85);
-
-            bool seckey_matched = false;
-            key_store().with_seckey(
+            // Use the Z85 accessor for direct string compare — the
+            // setup carries Z85 (40 ASCII chars per half-key) and
+            // `with_seckey_z85` exposes the same encoding on demand
+            // (encoded on-the-fly from raw bytes, sodium_memzero'd on
+            // exit per HEP-CORE-0040 §8.5.2 wire/file/display rule).
+            std::string seckey_seen;
+            key_store().with_seckey_z85(
                 kHubIdentityName,
-                [&](std::span<const std::byte> seckey)
+                [&](std::string_view seckey_z85)
                 {
-                    ASSERT_EQ(seckey.size(), expected.size())
-                        << "seckey span size != 32 raw bytes (HEP-0040 "
-                           "§8.5.2 contract violation)";
-                    seckey_matched = (std::memcmp(seckey.data(),
-                                                   expected.data(),
-                                                   expected.size()) == 0);
+                    ASSERT_EQ(seckey_z85.size(), 40u)
+                        << "with_seckey_z85 yielded " << seckey_z85.size()
+                        << " chars; HEP-0040 §8.5.2 specifies 40-char Z85.";
+                    seckey_seen.assign(seckey_z85);
                 });
 
-            EXPECT_TRUE(seckey_matched)
+            EXPECT_EQ(seckey_seen, setup.hub.secret_z85)
                 << "Fixture seeded a seckey that does NOT match "
                    "setup.hub.secret_z85 — suggests pubkey↔seckey swap, "
                    "truncated copy, or wrong half-key handed to "
@@ -175,29 +150,27 @@ int seeded_bytes_match_setup_for_role_identity()
             // NOT from setup.hub.  A copy-paste in the seed loop
             // (using setup.hub instead of kp) would silently give
             // every role the hub's secret key.
-            const auto expected = z85_decode_32(setup.role(uid).secret_z85);
-            const auto hub_bytes = z85_decode_32(setup.hub.secret_z85);
+            const std::string expected = setup.role(uid).secret_z85;
 
-            // Defensive sanity: this assertion catches a degenerate
-            // case where setup.role(uid) == setup.hub (which would
-            // make the test trivially pass).
-            ASSERT_NE(std::memcmp(expected.data(), hub_bytes.data(),
-                                  expected.size()), 0)
-                << "Sanity: setup.role(uid) == setup.hub — make_curve_setup "
-                   "minted identical keypairs; test is degenerate.";
+            // Defensive sanity: catches the case where make_curve_setup
+            // mints identical keypairs for the hub and the role
+            // (probability 1/2^256 but cheap to assert; without it,
+            // the test would trivially pass).
+            ASSERT_NE(expected, setup.hub.secret_z85)
+                << "Sanity: setup.role(uid).secret_z85 == "
+                   "setup.hub.secret_z85 — make_curve_setup minted "
+                   "identical keypairs; test is degenerate.";
 
             const std::string name = pylabhub::tests::role_keystore_name(uid);
-            bool seckey_matched = false;
-            key_store().with_seckey(
+            std::string seckey_seen;
+            key_store().with_seckey_z85(
                 name,
-                [&](std::span<const std::byte> seckey)
+                [&](std::string_view seckey_z85)
                 {
-                    seckey_matched = (std::memcmp(seckey.data(),
-                                                   expected.data(),
-                                                   expected.size()) == 0);
+                    seckey_seen.assign(seckey_z85);
                 });
 
-            EXPECT_TRUE(seckey_matched)
+            EXPECT_EQ(seckey_seen, expected)
                 << "Fixture seeded role '" << uid << "' with bytes "
                    "that do NOT match setup.role(uid).secret_z85.";
         },

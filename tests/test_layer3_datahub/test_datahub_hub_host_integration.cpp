@@ -31,29 +31,17 @@ TEST_F(HubHostIntegrationTest, HubHost_RegReq_RoundTripsViaSpawnedBroker)
     ExpectWorkerOk(w);
 }
 
-TEST_F(HubHostIntegrationTest, HubHost_Shutdown_BreaksClientConnection)
-{
-    // Surfaced 2026-06-04 during HEP-0035 §4.6.5 landing slice 4:
-    // under real CURVE (the only production mode now per §2), BRC's
-    // socket-monitor poll does NOT observe ZMQ_EVENT_DISCONNECTED
-    // when the broker socket closes — `on_hub_dead` never fires,
-    // `is_connected()` never flips false.
-    //
-    // 2026-06-04 instrumentation findings (logs in
-    // docs/todo/AUTH_TODO.md § Phase 1 known bugs):
-    //   - During BRC connect: receives CONNECT_DELAYED(0x0002) +
-    //     CONNECTED(0x0001) + HANDSHAKE_SUCCEEDED(0x1000)
-    //   - Broker thread DOES execute router.close() (confirmed via
-    //     stderr trace `[DIAG-BROKER] router.close() pre/post`)
-    //   - BRC monitor receives ZERO events for 40+ seconds after
-    //     router.close() returns (not DISCONNECTED, not CLOSED, not
-    //     any event)
-    // Conclusion: libzmq's CURVE engine does not emit DISCONNECTED
-    // on clean peer-socket close.  Tracked in AUTH_TODO step
-    // 3-revised-A; fix pending — un-skip when fixed.
-    GTEST_SKIP() << "BRC monitor doesn't detect DISCONNECTED under "
-                    "CURVE — HEP-CORE-0023 §2.5.3 production bug "
-                    "filed in AUTH_TODO; un-skip when fixed.";
-    auto w = SpawnWorker("hub_host_integration.hubhost_shutdown_breaksclientconnection");
-    ExpectWorkerOk(w);
-}
+// REMOVED 2026-06-27 — `HubHost_Shutdown_BreaksClientConnection` cannot be
+// expressed at L3.  Designer call (archived
+// `docs/archive/transient-2026-06-05/todo-completions/AUTH_TODO_completions.md`
+// §"Phase 1 known bugs surfaced during landing — BRC monitor CURVE
+// blindspot"): the contract being pinned is HEP-CORE-0023 §2.5.3
+// "disconnect is terminal" cross-process behaviour.  In-process L3
+// shares `pylabhub::hub::get_zmq_context()`, hitting a libzmq
+// shared-context quirk that suppresses ZMQ_EVENT_DISCONNECTED on
+// CURVE-encrypted peer close — a false-negative L3 cannot work around.
+// L4 replacement (spawns plh_hub + plh_role as separate processes, kills
+// plh_hub, asserts role-side observes disconnect within heartbeat
+// timeout) is tracked in `docs/todo/TESTING_TODO.md` as a follow-up
+// that must EVALUATE overlap with existing L4 tests before deciding
+// merge / revise existing / create new.

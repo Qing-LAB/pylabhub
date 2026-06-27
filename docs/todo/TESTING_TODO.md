@@ -59,6 +59,25 @@ task #44 demo framework — inventory pointer still in this file below).
 
 ## Current Focus — Open coverage gaps
 
+### #296 — L4 hub-death observability test (HEP-CORE-0023 §2.5.3 cross-process) ⏳
+
+L3 test `HubHost_Shutdown_BreaksClientConnection` was deleted 2026-06-27 —
+it cannot pin its contract in-process (libzmq's CURVE engine suppresses
+`ZMQ_EVENT_DISCONNECTED` on clean peer close under a shared
+`zmq::context_t`).  The contract being pinned is HEP-CORE-0023 §2.5.3
+"disconnect is terminal" — a cross-process property.
+
+L4 replacement spawns `plh_hub` + `plh_role` as separate processes,
+kills `plh_hub`, asserts the role observes the disconnect within the
+heartbeat-timeout window.  Full requirements in task #296 (description
+includes the contract, the mandatory overlap-audit step against existing
+L4 tests, and the merge / revise / create-new decision flow).
+
+Closure analysis (libzmq shared-context quirk + designer call) archived
+at `docs/archive/transient-2026-06-05/todo-completions/AUTH_TODO_completions.md`
+§"Phase 1 known bugs surfaced during landing — BRC monitor CURVE
+blindspot".
+
 ### Pattern 4 test ladder — multi-process wire-protocol coverage
 
 Pattern 4 = subprocess-per-role + observing parent.  Canonical:
