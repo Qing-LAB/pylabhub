@@ -36,8 +36,6 @@
 #include <unistd.h>
 
 using namespace pylabhub::utils;
-using namespace pylabhub::broker;
-using pylabhub::hub::BrokerRequestComm;
 using pylabhub::tests::LogCaptureFixture;
 using pylabhub::tests::helper::run_gtest_worker;
 using json = nlohmann::json;

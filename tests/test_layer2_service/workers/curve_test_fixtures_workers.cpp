@@ -111,12 +111,13 @@ int seeded_bytes_match_setup_for_hub_identity()
             pylabhub::tests::CurveKeyStoreFixture ks_fixture(
                 "test", "test.l2.curve_fixtures.bytes_hub", setup);
 
-            // Use the Z85 accessor for direct string compare — the
-            // setup carries Z85 (40 ASCII chars per half-key) and
-            // `with_seckey_z85` exposes the same encoding on demand
-            // (encoded on-the-fly from raw bytes, sodium_memzero'd on
-            // exit per HEP-CORE-0040 §8.5.2 wire/file/display rule).
-            std::string seckey_seen;
+            // Compare INSIDE the callback so the Z85 bytes never escape
+            // into an outer std::string — HEP-CORE-0040 §172 use-not-
+            // export discipline.  `with_seckey_z85` sodium_memzero's its
+            // stack buffer on return per §8.5.2 wire/file/display rule;
+            // copying the view out would defeat the very pattern this
+            // test pins.
+            bool seckey_matched = false;
             key_store().with_seckey_z85(
                 kHubIdentityName,
                 [&](std::string_view seckey_z85)
@@ -124,10 +125,10 @@ int seeded_bytes_match_setup_for_hub_identity()
                     ASSERT_EQ(seckey_z85.size(), 40u)
                         << "with_seckey_z85 yielded " << seckey_z85.size()
                         << " chars; HEP-0040 §8.5.2 specifies 40-char Z85.";
-                    seckey_seen.assign(seckey_z85);
+                    seckey_matched = (seckey_z85 == setup.hub.secret_z85);
                 });
 
-            EXPECT_EQ(seckey_seen, setup.hub.secret_z85)
+            EXPECT_TRUE(seckey_matched)
                 << "Fixture seeded a seckey that does NOT match "
                    "setup.hub.secret_z85 — suggests pubkey↔seckey swap, "
                    "truncated copy, or wrong half-key handed to "
@@ -161,16 +162,19 @@ int seeded_bytes_match_setup_for_role_identity()
                    "setup.hub.secret_z85 — make_curve_setup minted "
                    "identical keypairs; test is degenerate.";
 
+            // Compare INSIDE the callback — HEP-CORE-0040 §172
+            // use-not-export (see `seeded_bytes_match_setup_for_hub_identity`
+            // for the rationale).
             const std::string name = pylabhub::tests::role_keystore_name(uid);
-            std::string seckey_seen;
+            bool seckey_matched = false;
             key_store().with_seckey_z85(
                 name,
                 [&](std::string_view seckey_z85)
                 {
-                    seckey_seen.assign(seckey_z85);
+                    seckey_matched = (seckey_z85 == expected);
                 });
 
-            EXPECT_EQ(seckey_seen, expected)
+            EXPECT_TRUE(seckey_matched)
                 << "Fixture seeded role '" << uid << "' with bytes "
                    "that do NOT match setup.role(uid).secret_z85.";
         },

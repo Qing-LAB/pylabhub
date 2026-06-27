@@ -166,8 +166,10 @@ start_hubhost_broker(const nlohmann::json &j_overrides,
 /// Owns a `BrokerRequestComm` + the thread running its `run_poll_loop`.
 /// Lifecycle:
 ///   - `start(...)`  binds the BRC config (broker endpoint + pubkey +
-///                   client keypair + role_uid), connects, spawns the
-///                   poll thread.
+///                   role_uid + keystore_name), connects, spawns the
+///                   poll thread.  HEP-CORE-0040 §172 use-not-export:
+///                   the BRC fetches the role's seckey by NAME, never
+///                   by bytes.
 ///   - `stop()`      flips the loop guard, stops the BRC's socket,
 ///                   joins the thread, disconnects.
 ///   - dtor         best-effort `stop()` if a start ran without a

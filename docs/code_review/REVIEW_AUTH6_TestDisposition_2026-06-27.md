@@ -213,7 +213,7 @@ Retroactively audited (file 15 above).  All 3 TEST_F's verified:
 |---|---|---|
 | HubHost_BrokerReachable_AfterStartup | HubHost::broker_endpoint() non-empty after startup | ✓ surface intact (HEP-CORE-0033 §4 lifecycle) |
 | HubHost_RegReq_RoundTripsViaSpawnedBroker | REG_REQ wire round-trip via real BRC + real BrokerService | ✓ surface intact (HEP-CORE-0007 §2.1) |
-| HubHost_Shutdown_BreaksClientConnection | BRC monitor observes ZMQ_EVENT_DISCONNECTED on broker close | 🟡 GTEST_SKIP — known libzmq CURVE bug, tracked in AUTH_TODO |
+| HubHost_Shutdown_BreaksClientConnection | BRC monitor observes ZMQ_EVENT_DISCONNECTED on broker close | 🔴 REMOVED 2026-06-27 (commit 6e819b73) — cannot pin in-process (libzmq shared-context CURVE quirk); L4 replacement task #296 |
 
 The commit was **valid** — all 3 TEST_F's pin live surfaces; the
 workers file was already migrated to the post-#177-ish KeyStore pattern.
