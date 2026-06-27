@@ -12,16 +12,27 @@ see `docs/DOC_STRUCTURE.md` §2.1.1.
 
 ## Current Sprint Focus
 
-### Ultimate goal — finish hub/broker renovation, ship dual-hub-capable plh_hub
+### Ultimate goal — CURVE auth gate fully closed + CLI tool complete
 
-| Arc | Canonical doc | Status |
+**Locked execution plan (2026-06-27):**
+
+| Phase | Goal | Trackers |
 |---|---|---|
-| **Arc A — `plh_hub` renovation (HUB side)** | `docs/HEP/HEP-CORE-0033-Hub-Character.md` §15 Phase 1..10 | Phases 1-9 shipped; ⏳ Phase 10 doc closure (task #73, doc hygiene only) |
-| **Arc B — Role-host renovation (ROLE side)** | HEP-CORE-0011 + HEP-CORE-0023 + HEP-CORE-0033 (RoleHostFrame + presence model + dual-hub control plane).  Wave-B M0..M9 design history archived at `docs/archive/transient-2026-06-02/role_host_template_design.md`. | M0..M9 shipped.  Dual-hub plh_hub + role binaries (processor in/out on different hubs) operational. |
+| **Phase 0** (in flight) | TODO/archive hygiene — close shipped-but-mislabeled items, archive 6 closed reviews, refresh sprint focus.  Phase 0b (AUTH_TODO compression 1616→~600 lines + #275 S5 Core Structure Change Protocol walk) deferred to next session. | this commit |
+| **Phase 1** — CURVE chain close | AUTH-5 → AUTH-6 → #257 (1j) → AUTH-7 → #275 S2..S5 (1i-cleanup deletion + Core Structure rename) → REVIEW-C → #262 → REVIEW-D → REVIEW-E (production-readiness final gate) | #104, #154, #257, AUTH-7, #275, #276, #262, #277, #278 |
+| **Phase 2a** — Role-host unification | Collapse `ProducerRoleHost` (549 LOC) + `ConsumerRoleHost` (456 LOC) + `ProcessorRoleHost` (649 LOC) into a single canonical `worker_main_()` skeleton inside `RoleHostFrame`. | #292 (new) |
+| **Phase 2b** — Template RAII Phases 2-5 | `SlotIterator` over QueueWriter/Reader, timing parity with `run_data_loop`, `TypedInboxClient<MsgT>` / `TypedBand<EventT>`, `SimpleRoleHost<SlotT>` template parameterising the unified skeleton. | API_TODO §"Template RAII" Phases 2-5 |
+| **Phase 3** — CLI `--init` one-shot bundling | `do_init()` wiring (`get_required_uid` + password chain + `cfg.create_keypair()`) + `HubDirectory::init_directory()` signature extension + 24+ L4 test-site migration. | #155 (in flight) |
+
+**Earlier sprint state (preserved for context):** Arc A (`plh_hub`
+renovation) shipped Phases 1-9; ⏳ Phase 10 doc closure (#73, doc
+hygiene).  Arc B (Role-host renovation) Wave-B M0..M9 shipped.
+RoleHostFrame plain class operational; dual-hub plh_hub + role
+binaries functional.
 
 **Remaining production gap:** HEP-CORE-0035 / HEP-CORE-0036 auth
 chain — control-plane locked (D1+D2+D3), data-plane CURVE + role-
-side dispatch + sibling-HEP code sync pending.
+side dispatch + sibling-HEP code sync pending (covered by Phase 1).
 
 ### Production-readiness gap — CURVE + auth gating control-to-data
 

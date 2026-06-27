@@ -138,9 +138,11 @@ should be verified-fixed-or-still-open before next sprint.
 ### D2 drift
 
 - **B1 — empty `correlation_id` in BAND_JOIN/LEAVE validator errors.**
-  `broker_service.cpp:4488,4584`.  Handlers pass `corr_id=""` to the
-  validator even though the request payload carries `correlation_id`.
-  Fix: `req.value("correlation_id","")` at handler entry.
+  ✅ FIXED — verified 2026-06-27 against current code.  Both handlers extract
+  `corr_id = req.value("correlation_id", "")` at entry (`broker_service.cpp:5540`
+  and `:5651`) and pass it through to `validate_role_uid_only(...)` (`:5577-5580`
+  and `:5678-5681`).  Audit B1 anchors at `:5573-5576` and `:5676-5677` record
+  the fix.  Earlier line references (`:4488,4584`) are stale post-refactor.
 - **Stale-comment scrub (~15 sites).**  References to deleted
   `set_broker_comm` / `start_ctrl_thread` / `pImpl->broker_channel`
   in `role_api_base.{hpp,cpp}`, `hub_script_runner.cpp`, the 3 role

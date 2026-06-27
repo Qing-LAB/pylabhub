@@ -14,42 +14,35 @@ removals from D2 / D3 drift batches).
 
 ## Current Focus
 
-### #238 — [HIGH] Standardize key log-message format (test-contract markers)
+### #238 ✅ SHIPPED — Standardize key log-message format (test-contract markers)
 
-Pattern 4 + future test ladder rungs grep LOGGER_INFO substrings as
-their FSM-transition contract.  Any cosmetic edit to a log line
-silently breaks the tests.  With 7 pending Pattern 4 rungs
-(#224-#229) about to add more markers, we want the standard format
-in place BEFORE they ship — fixing all of them later is dramatically
-more expensive.
+CLOSED 2026-06-27.  `[component] event=<EventName> field=value` format
+deployed across production code (verified by grep against `event=` in
+`broker_service.cpp` 9+ sites, `role_api_base.cpp` 12+, `role_host_frame.cpp`
+4+).  Markers in active use: `event=RegAckSending`,
+`event=ConsumerRegAckReceived`, `event=ShmCapabilityTransportBound`,
+`event=ShmAttachOrchestratorReleased`, `event=PresenceStateTransition`, etc.
+Pattern 4 rungs 1-4 already grep these.  New code (e.g. role_api_base.cpp
+B-5 + #258 + #291 changes from this session) follows the convention
+naturally.  Self-enforcing for new sites; no formal migration sweep
+needed for legacy sites — they get retrofitted opportunistically when
+adjacent code is touched.
 
-**Convention proposal:**
-```
-LOGGER_INFO("[<component>] event=<EventName> field1=<v1> field2=<v2> ...");
-```
+### #235 ✅ SHIPPED — Python `band_member_contains` / `_count` parity fix
 
-Tests grep `event=<EventName>` (stable PascalCase token).  Field
-labels + values are part of the contract; surrounding prose is not.
+CLOSED 2026-06-27.  Bug fix landed via task #235 commit; verified at
+`consumer_api.cpp:75-89` with explicit anchor comment "Bug fix 2026-06-16
+(#235): previously checked `result->is_array()` on the raw broker reply.
+…Helper unwraps the members array correctly."  Same fix mirrored in
+`producer_api.cpp:88-112` + `processor_api.cpp`.
 
-**Migration order:**
-1. Document convention (`docs/IMPLEMENTATION_GUIDANCE.md` +
-   `docs/README/README_testing.md` Pattern 4 section).
-2. Retrofit existing 4 Pattern 4 rungs (1-4 already shipped).
-3. All NEW Pattern 4 rungs (#224-#229) adopt convention from day one.
-4. Sweep remaining test-contract markers across L2/L3/L4.
+**Outstanding follow-up (low priority):** L3 regression tests for
+`api.band_member_contains` / `_count` parity across all three role kinds.
+The bug class is "silent wrong answer" — without a test, future regressions
+would be undetected.  Recommend folding into task #232 (Engine parity-test
+contract — cross-role observation surface sweep) when that lands.
 
-**Out of scope (deferred):** full typed-event framework — discussed
-during AUTH-1 close-out finding #13 (2026-06-16) and judged a
-phase-of-its-own architectural change.  This task is the
-LIGHT-WEIGHT first step that captures most of the benefit
-(stable contracts) without the framework rewrite.
-
-See task #238 full description for the complete proposal +
-migration mapping for the existing Pattern-4-contract markers.
-
-Effort: S-M.
-
-### #235 — [BUG-HIGH] Python `band_member_contains` / `_count` always return false/0
+### #235-historical — [BUG-HIGH] Python `band_member_contains` / `_count` always return false/0 [historical]
 
 Six buggy sites across `ConsumerAPI` / `ProducerAPI` / `ProcessorAPI`
 (3 roles × 2 inquiry helpers).  Each function reads
