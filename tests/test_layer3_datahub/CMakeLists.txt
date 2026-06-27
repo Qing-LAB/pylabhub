@@ -199,9 +199,12 @@ add_executable(test_layer3_datahub
     # workers/datahub_broker_protocol_workers.cpp
 
     # ── HubHost ↔ BrokerService integration (HEP-CORE-0033 §4 / Phase 6.1b) ──
-    # MASKED — pending HEP-0035 §4.6.5 step 3-revised-F migration.
-    # test_datahub_hub_host_integration.cpp
-    # workers/hub_host_integration_workers.cpp
+    # Unmasked 2026-06-27 under #154 — workers file already uses the
+    # CurveKeyStoreFixture + `start_hubhost_broker` + `BrcHandle` migration
+    # pattern (cf. broker_consumer_workers.cpp:130-135).  Pre-migration
+    # MASK was a stale wrapper; file builds + runs against current lib.
+    test_datahub_hub_host_integration.cpp
+    workers/hub_host_integration_workers.cpp
 
     # ── HubHost + LuaEngine integration (HEP-CORE-0033 Phase 7 D3.3) ────────
     # MASKED — depends on HubHost which now throws on empty pubkey per HEP-0035 §2;
