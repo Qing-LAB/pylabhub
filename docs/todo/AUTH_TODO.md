@@ -1,50 +1,36 @@
 # Authentication / PeerAdmission TODO
 
 **Scope:** Open items for HEP-CORE-0035 (Hub-Role auth + federation
-trust) and the PeerAdmission feature track that closes out the
-data-channel CURVE auth gate.
+trust), HEP-CORE-0036 (Authenticated Connection Establishment),
+HEP-CORE-0040 (Locked Key Memory), HEP-CORE-0041 (SHM Channel Auth).
+Compressed 2026-06-27 from 1616 → ~500 lines; completed-phase
+narratives extracted to
+`docs/archive/transient-2026-06-27/todo-completions/AUTH_TODO_completions.md`.
 
 **Authoritative design lives in:**
 
 - `docs/HEP/HEP-CORE-0035-Hub-Role-Authentication-and-Federation-Trust.md`
-  — Layer-1 ZAP + Layer-2 federation trust gate + key-file ACL
-  discipline (§4.6) + runtime key handling (§4.7).
 - `docs/HEP/HEP-CORE-0036-Authenticated-Connection-Establishment.md`
-  — Three-tier auth (transport / identity / authorization),
-  `ChannelAccessIndex` (§4.1), channel-auth notify+pull wire (§6.5
-  amended 2026-06-04), per-producer pubkey + endpoint (§6.4), **one
-  pubkey per role uid (§I10, enforced in `KnownRolesStore` with
-  RELEASE-always-on + DEBUG-WITH_TEST bypass)**.
-- `docs/HEP/HEP-CORE-0017-Queue-Abstraction.md` §3.3 —
-  `RxQueueOptions::producer_peers` queue auth contract.
-- `docs/HEP/HEP-CORE-0040-Locked-Key-Memory.md` — KeyStore +
-  LockedKey + SecureMemorySubsystem framework primitives (use-not-
-  export discipline, §8.2 / §8.4 / §8.5.1 / §8.6).
-- `docs/HEP/HEP-CORE-0041-SHM-Channel-Auth.md` — SHM Channel Auth
-  capability-transport model (memfd + `SCM_RIGHTS` on Linux/FreeBSD;
-  per-platform equivalents on FreeBSD/macOS/Windows per §13).
-  Supersedes the legacy broker-minted `shm_secret` model (closes
-  original AUTH-4 / #164).  Substep chain 1a-1k tracked under tasks
-  #248-#258; per-platform backends #259-#261; mutual-auth follow-up
-  #262.  Phase 1 substeps 1a-1h shipped as of 2026-06-18; 1i (#256)
-  in flight — split into 1i-mig (production wiring) + 1i-cleanup
-  (legacy deletion) per the 2026-06-18 pre-1i review.  Pre-flight
-  dependencies #263-#265 must resolve before 1i-mig-2 lands.  Live
-  status: HEP-0041 §10.1.
+- `docs/HEP/HEP-CORE-0017-Queue-Abstraction.md` §3.3
+- `docs/HEP/HEP-CORE-0040-Locked-Key-Memory.md` (incl. §8.5.2
+  NORMATIVE seckey representation at security-module boundary —
+  added 2026-06-26)
+- `docs/HEP/HEP-CORE-0041-SHM-Channel-Auth.md`
 
-**Status source of truth:** `docs/TODO_MASTER.md` (when PeerAdmission
-work is the active sprint).
+**Status source of truth:** `docs/TODO_MASTER.md` § "Current Sprint
+Focus" — Phase 0/1/2a/2b/3 plan locked 2026-06-27.
 
-**Completed-work archives** (verbatim prose retained for context):
+**Completed-work archives (verbatim prose retained for context):**
 
 - `docs/archive/transient-2026-06-05/todo-completions/AUTH_TODO_completions.md`
-  — Phase A/B/C; D1+D2+D3; landing-phase §4.6.5 no-bypass cleanup; BRC
-  monitor investigation; lib-stabilization exclusion procedure;
-  resolved decisions; considered-but-not-pursued.
+  — Phase A/B/C; D1+D2+D3; landing-phase §4.6.5 no-bypass cleanup.
 - `docs/archive/transient-2026-06-09/todo-completions/AUTH_TODO_completions.md`
-  — 2026-06-05 HB-1..HB-6 audit + 2026-06-05 PM REFRAME + C1..C5
-  cleanup chain (full inventory + per-commit scope) + HEP-CORE-0040
-  impl chain (#165–#176 + #187) + Phase D close-out follow-ons.
+  — HB-1..HB-6 audit + 2026-06-05 PM REFRAME + C1..C5 cleanup chain
+  + HEP-CORE-0040 impl chain (#165–#176 + #187).
+- `docs/archive/transient-2026-06-27/todo-completions/AUTH_TODO_completions.md`
+  — AUTH-1 full narrative + AUTH-2/3 detailed + AUTH-4 SUPERSEDED
+  block + HEP-0041 Phase 1 substep 1a-1k narratives + REVIEW-A/B
+  close-outs + §5b parallel track table.
 
 ---
 
@@ -62,31 +48,29 @@ discussions that re-litigate them are wasted.**
    start, who's ready) is the script's job, implemented via the
    observable allowlist + band + inbox.
 2. **HEP-CORE-0036 §6.5 producer-side handler flow (normative).**
-   The notify-then-pull mechanism uses the existing BRC →
-   `IncomingMessage` queue → worker-thread drain pattern.  BRC poll
-   thread enqueues; worker thread drains, fires sync
-   `GET_CHANNEL_AUTH_REQ` via the BRC, and applies the result via
-   `ZmqQueue::set_peer_allowlist` (atomic under the queue's internal
-   mutex).  On pull failure: log + return; recovery is via the next
-   notify or via the existing hub-dead → re-register path.  No
+   Notify-then-pull via the existing BRC → IncomingMessage queue →
+   worker-thread drain.  BRC poll thread enqueues; worker thread
+   drains, fires sync `GET_CHANNEL_AUTH_REQ` via the BRC, applies the
+   result via `ZmqQueue::set_peer_allowlist`.  On pull failure: log
+   + return; recovery via next notify or hub-dead → re-register.  No
    priority dispatch, no critical-error escalation, no new threads.
 3. **HEP-CORE-0036 §I3 + §I5 + §8.2 — Race-window behaviour is
    PROTOCOL.**  Between broker decision and producer cache update,
    the producer's PUSH socket continues to serve handshakes using
-   its current ZAP cache.  A consumer that joins during the gap
-   retries CURVE until the cache converges; existing CURVE sessions
-   are trusted for their lifetime.  This is the contract — not a
-   bug to be plugged.  Scripts that want stricter "ready-to-emit"
-   semantics gate on the observable allowlist themselves.
+   its current ZAP cache.  Consumer joining during the gap retries
+   CURVE until cache converges; existing CURVE sessions trusted for
+   their lifetime.  This is the contract — not a bug.
 4. **HEP-CORE-0036 §I9 — Three-tier separation.**  Scripts never
-   touch transport primitives.  Broker emits events; framework
-   reacts via queue APIs; queue handles transport plumbing; script
-   sees membership state, not sockets.
+   touch transport primitives.  Broker emits events; framework reacts
+   via queue APIs; queue handles transport plumbing; script sees
+   membership state, not sockets.
+5. **HEP-CORE-0040 §8.5.2 — Seckey representation at module
+   boundary.**  Raw 32 bytes inside the security module; Z85 only at
+   file/wire/display.  No mixed conventions across the boundary.
 
-When extending AUTH-N work: cite these sections instead of
-re-deriving.  If a proposed change appears to require new threading,
-priority dispatch, or critical-error escalation around the auth
-flow, re-read §I11 + §6.5 first — almost always it doesn't.
+If a proposed change appears to require new threading, priority
+dispatch, or critical-error escalation around the auth flow, re-read
+§I11 + §6.5 first — almost always it doesn't.
 
 ---
 
@@ -94,739 +78,61 @@ flow, re-read §I11 + §6.5 first — almost always it doesn't.
 
 | Phase | Status | Notes |
 |---|---|---|
-| A — Abstraction (PeerAdmission interface) | shipped | see 2026-06-05 archive |
-| B — KnownRole + CLI | shipped | see 2026-06-05 archive |
-| C — ZapRouter + ZmqQueue CURVE | shipped | see 2026-06-05 archive |
-| C-chain — Strict-CURVE cleanup (C1..C5) | shipped 2026-06-09 | see 2026-06-09 archive |
-| HEP-0040 — Locked Key Memory impl chain | shipped 2026-06-09 | see 2026-06-09 archive |
-| D — Broker glue (gate closes) | 🚧 D1+D2+D3 shipped; **D4–D7 open** | tracked as AUTH-1..6 below |
-| E — Admin loopback enforcement | ⏸ planned | Unblocked once D ships |
-| F — Federation peer ZAP parity | ⏸ planned | Depends on E + Federation HEP (#105) |
-| G — SHM auth migration | 🚧 design shipped; impl pending | HEP-CORE-0041 (#244) shipped 2026-06-16; Phase 1 implementation tracked as #248 — see "HEP-0041 implementation chain" below.  Original AUTH-4 design (broker-mints-shm_secret) SUPERSEDED. |
-| H — Demo migration | ⏸ planned | Last; needs D shipped end-to-end |
+| A — Abstraction (PeerAdmission interface) | ✅ | 2026-06-05 archive |
+| B — KnownRole + CLI | ✅ | 2026-06-05 archive |
+| C — ZapRouter + ZmqQueue CURVE | ✅ | 2026-06-05 archive |
+| C-chain — Strict-CURVE cleanup (C1..C5) | ✅ | 2026-06-09 archive |
+| HEP-0040 — Locked Key Memory impl chain | ✅ | 2026-06-09 archive |
+| HEP-0040 §8.5.2 — seckey raw-32 contract | ✅ | shipped 2026-06-26 (#291 fix) |
+| HEP-0036 §5b — canonical wire schema unification | ✅ | shipped 2026-06-25/26; archive §1 |
+| D — Broker glue (gate close) | 🟡 | AUTH-1/2/3 ✅; **AUTH-5/6/7 OPEN** |
+| E — Admin loopback enforcement | ⏸ | unblocked once D ships |
+| F — Federation peer ZAP parity | ⏸ | depends on E + #105 |
+| G — SHM auth migration | 🟡 | HEP-0041 design + Phase 1 substeps 1a-1h/1k ✅; **1i-cleanup S2..S5 + 1j + #262 OPEN** |
+| H — Demo migration | ⏸ | last; needs D shipped end-to-end |
 
 ---
 
-## Critical path — AUTH-1 .. AUTH-7
-
-Numbered renumbering of the live execution chain.  Each entry cites
-its task-system ID + the historical label (D-step / HB-number) it
-replaces so prior commits / docs cross-reference cleanly.
-
-## HEP-0036 §5b canonical wire schema unification (parallel track, opened 2026-06-25)
-
-> **Tracker:** task **#286** (parent — phase A done, B-1 done in same commit).  Sub-phases tracked as separate tasks #287..#291 (all blocked-by #286).
->
-> **Trigger:** L4 SHM e2e (#258) surfaced a silent gate — producer REG_ACK at `broker_service.cpp:2082` emitted `channel_id`; role-side `apply_producer_reg_ack` read `channel_name` (empty); `Registered → Authorized` transition silently skipped; §8.2 outer guard refused data loop. Audit found `channel_id` had zero readers — pure dead-weight that broke a silent gate.
->
-> **Outcome:** HEP-CORE-0036 §5b authored as normative single-source for the registration data path (in-process structures + canonical wire schemas + sequence + information-flow Mermaid diagrams).  Phase B-1 fix lands the immediate three-line bug fix in the same commit.  Sub-phases B-2..B-5 deferred to follow-up tasks to keep blast radius bounded.
-
-| Phase | Task | Scope | Status |
-|---|---|---|---|
-| A — HEP §5b authoring | **#286** | Author HEP-CORE-0036 §5b with class diagrams + wire schemas + sequence diagram + info flow + cleanup list | ✅ done 2026-06-25 |
-| B-1 — immediate bug fix | **#286** | `broker_service.cpp:2082` `channel_id` → `channel_name`; `:1156` log read; `:1105` drop `"channel"` legacy fallback | ✅ done 2026-06-25 |
-| B-2 — retire `pattern`/`has_shared_memory`/`shm_name` | **#287** | Channel-mismatch invariant simplified to `(schema_*, data_transport)`; 3 legacy REG_REQ fields + `ChannelPattern` enum + `channel_pattern.hpp` retired from emitter + reader + DISC + admin JSON + 10 test sites + HEP-CORE-0009 §2.8 marked RETIRED.  Substitution map: `pattern`→NONE (dead constant); `has_shared_memory`→`data_transport == "shm"`; `shm_name`→`channel_name`.  100% green on 1913-test L2+L3+L4 sweep. | ✅ shipped 2026-06-25 |
-| B-3 — rename `role_tag` → `role_type` in-process | **#288** | Pure C++ identifier rename across ~30 sites + `short_tag` SHORT-form storage harmonisation + Native ABI v6→v7 | ✅ shipped 2026-06-25 |
-| B-4 — unify CONSUMER_REG_ACK shape | **#289** | Emit `producers: [{role_uid, pubkey_z85, endpoint}]` for both SHM and ZMQ; drop flat `shm_capability_endpoint` + `producer_pubkey_z85`; drop `producers[].pubkey` dual-name | ✅ shipped 2026-06-25 |
-| B-5 — hard-error on missing canonical fields | **#290** | Replaced silent `if (!channel_name.empty())` skip in `apply_*_reg_ack` with `LOGGER_ERROR + return false`; consumer side adds hard-error on missing/unknown `data_transport`.  9 L3 `RoleApiFlexzoneTest` workers updated (ZMQ tests pass minimal valid ACKs; SHM tests drop the vestigial calls). | ✅ shipped 2026-06-26 |
-| C — sibling HEP doc sync | (within sub-tasks) | HEP-0023 §2.5, HEP-0034 §10.3, HEP-0041 §5.3, HEP-0007 Cat-1 | ⏸ |
-| D — L4 SHM e2e green | #258 | DISABLED_ prefix dropped + path resolution fix (fs::absolute) + read_role_log() switch; #291 root-cause fixed via HEP-CORE-0040 §8.5.2 normative seckey contract (raw 32 bytes at module boundary, Z85 at file/wire/display) | ✅ shipped 2026-06-26 |
-
-**Adjacent finding (also opened 2026-06-25):** `#291` — SHM consumer-attach handshake failure exposed *after* B-1 fix.  Producer-side log shows `AttachProtocol::producer: peer closed connection mid-frame (got 0 of 4)`.  Independent of §5b; investigating HEP-0041 §5.5 wire-frame handshake on consumer dial path.
-
-
-
-### AUTH-1 — Role-side dispatch + producer pubkey emission
-
-> **Tracker:** task **#103** (in-progress).
-> **Old labels:** A3 / D4 / D5 / HB-3 / B1 / B2.
-> **Closes:** HEP-0036 §6.5 amended notify-then-pull wire; HB-3
-> (`set_peer_allowlist` zero-callers); HEP-0036 §6.6
-> `awaiting_endpoint` vocabulary gap; HEP-0036 §6.1 / §6.3 Layer-2
-> identity-verification gap.
-
-The single largest auth gate close-out — combines D4, D5, and the B1
-+ B2 wire-shape fixes that surfaced during the 2026-06-05 audit.
-Sub-deliverables:
-
-1. **D5 — `CONSUMER_REG_ACK.producers[]`** ✅ shipped 2026-06-10
-   (commit-1 of AUTH-1 chain).  Broker emits one entry per producer
-   `{role_uid, pubkey, endpoint}` (HEP-CORE-0023 §2.1.1 fan-in); ZMQ
-   transport only — SHM uses `shm_secret` (AUTH-4).  L3 pin:
-   `DatahubBrokerConsumerTest.ConsumerRegAckEmitsProducersZmq` asserts
-   the array shape on the consumer's ACK.
-2. **B2 — Layer-2 identity verification** ✅ shipped 2026-06-10
-   (same commit).  REVISED FROM ORIGINAL SCOPE: the audit's
-   `zmq_msg_gets("User-Id")` plan was replaced with a **verification
-   model** (per user decision 2026-06-10) — body carries declared
-   `(role_uid, zmq_pubkey)` and broker verifies the pair against
-   `cfg.known_roles[]`.  Two new error codes: `UNKNOWN_ROLE`
-   (role_uid not registered) and `PUBKEY_MISMATCH` (uid registered but
-   wrong pubkey).  Helper `verify_known_role_binding` called in both
-   `handle_reg_req` and `handle_consumer_reg_req`.  HEP-CORE-0036
-   §6.1 / §6.3 / §6.4 / §6.6 doc updated to match.  L3 pins:
-   `ConsumerRegUnknownRole` + `ConsumerRegPubkeyMismatch`.  Sequence
-   diagrams in §5 + handler-step tables in §8 retain stale
-   `User-Id`-recovery wording — to be updated under AUTH-5 / #104.
-3. **D4 — BRC notify dispatch** ✅ shipped 2026-06-10.  Implements
-   HEP-CORE-0036 §6.5 producer-side handler flow normative spec
-   exactly.  Closes **HB-3** (set_peer_allowlist now has live callers).
-   - `NotificationId::ChannelAuthChanged = 8` + parse mapping in
-     `role_host_core.hpp`.  BRC's generic `on_notification` callback
-     in `role_api_base.cpp:1094` already enqueues every wire notify
-     by string → IncomingMessage; no callback changes needed.
-   - Simpler than the planned dispatch-table extension: handler runs
-     BEFORE `dispatch_notifications` in each `CycleOps::invoke_and_commit`
-     (3 sites — Producer / Consumer / Processor — defensive on
-     non-producer side).  Strips ChannelAuthChanged out of msgs so
-     the script dispatcher never sees them.  Audit finding G3 fix:
-     no dispatch-table contract change required.
-   - `RoleAPIBase::handle_channel_auth_notifies(msgs)` is the worker-
-     thread handler: routes per-channel via `resolve_bc_for_channel`,
-     calls `BrokerRequestComm::get_channel_auth(channel, role_uid,
-     5000)`, dynamic_casts `tx_queue` to `PeerAdmission`, calls
-     `set_peer_allowlist` on success.  All wrapped in try/catch per
-     audit finding R5.  Logs WARN on every failure path (timeout,
-     CHANNEL_NOT_FOUND, PRODUCER_NOT_AUTHORIZED, malformed reply,
-     no tx queue, no BRC for channel) — no critical-error escalation
-     per §I11.
-   - New `BrokerRequestComm::get_channel_auth(channel, role_uid,
-     timeout_ms=5000)` sync REQ/REP API.  Mirrors `register_channel`
-     pattern.  L3 pins: `GetChannelAuthReturnsAllowlist` (allowlist
-     reflects consumer joins) + `GetChannelAuthRejectsNonProducer`
-     (defence-in-depth check).
-   - Audit finding R1 (queue overflow) confirmed BENIGN: `enqueue_message`
-     drops on full + logs WARN (`role_host_core.cpp:23`).  Operators can
-     grep.  No additional counter needed.
-4. **Consumer-side switch + script-side observability surface (engine
-   parity)** ⏳ pending.  Two-part: (a) production code wiring +
-   (b) script API exposure that obeys §I11 separation.  Direction
-   confirmed 2026-06-10 (option B — polling + callback, both
-   read-only).
-
-   (a) **Wire consumer-side `pull_from` to the authed factory.**
-   *Larger than initially scoped (discovered 2026-06-10); decomposed
-   into Stages 1A / 1B / 1C after design discussion (2026-06-10).*
-   The factory call site at `role_api_base.cpp:421-433` ALREADY uses
-   `kRoleIdentityName` + `Z85PublicKey serverkey` from
-   `producer_peers.front().pubkey_z85` and ALREADY hard-errors when
-   `producer_peers` is empty.  Under HEP-CORE-0036 §3.5 the rx queue
-   is INTENTIONALLY built in Standby at S1 before `register_consumer`
-   runs (no PULL connect, no thread).  `apply_master_approval(CONSUMER_REG_ACK)`
-   at S3 then connects per-producer + spawns the PULL worker.  This
-   is the canonical S1/S3 ordering per §3.5.5.
-
-   **Approach (chosen 2026-06-10): option β + state machine** — build
-   rx queue with empty `producer_peers` initially, then apply
-   `set_producer_peers(ACK.producers[])` after CONSUMER_REG_ACK
-   arrives.  This generalizes to a queue-level state machine
-   (Standby → Configured → Active) formalized in HEP-CORE-0036 §6.7
-   that enforces §I12 "master approval before authority application."
-   Option α (re-order setup) was rejected because (1) it doesn't
-   compose with future dynamic-producer-join via §6.5.1 notify-then-
-   pull (the queue needs the Standby state for hub-dead recovery
-   anyway), and (2) it forces SHM and ZMQ down divergent code paths.
-
-   Decomposed into:
-     - **Stage 1A (#188)** — `ZmqQueue` Standby state machine:
-       relax `pull_from()` to accept empty `Z85PublicKey`; add
-       `set_producer_peers(list)` snapshot mutator; gate `start()`
-       on Configured (both server_pubkey + peers populated);
-       `is_running()` returns true iff Active.  Single-peer support
-       initially (existing tests have 1:1 producer:consumer);
-       multi-producer fan-in piggybacks on §6.5.1 pull path
-       (separate scope).  HEP §6.7 normative spec.
-     - **Stage 1B (#189)** — cycle_ops Standby guard: skip
-       `write_acquire`/`read_acquire` when `!api_.is_*_active()`;
-       no drop counter increment for Standby skip (preserves
-       counter meaning); DEBUG log on Standby↔Active edge.  User
-       callbacks (on_step / on_consume) don't fire when their
-       queue isn't Active — that IS the script-visible "queue
-       not ready" signal.
-     - **Stage 1C (#190)** — `api.is_channel_ready(channel) →
-       bool` script binding (Lua + Python + Native parity).
-       Read-only state query for scripts that need to know channel
-       state from callbacks OTHER than the channel's own data-loop
-       callback (e.g., `on_init`, `on_band_message`).
-
-   (b) **Broker wire-shape for `GET_CHANNEL_AUTH_ACK.allowlist`**
-   per HEP §6.5 (locked 2026-06-12): array entries are **bare Z85
-   pubkey strings** — symmetric with §6.2 `REG_ACK.initial_allowlist`
-   and §7.2 producer-side cache `unordered_set<string>`.  The
-   `role_uid` is operator-side metadata and is not carried on the
-   wire.  ✅ shipped 2026-06-12 (Follow-up 6.1):
-     - `BrokerServiceImpl::handle_get_channel_auth_req` enumerates
-       the channel's authorized pubkeys and emits `array<string>`.
-     - `RoleAPIBase::handle_channel_auth_notifies` reads each entry
-       as `entry.get<std::string>()` and builds
-       `PeerIdentity{"curve", pk}` (kind matches production
-       convention; role_uid kept empty in the script-view because
-       it's not on the wire).
-     - L3 `GetChannelAuthReturnsAllowlist` worker asserts
-       `al[0].is_string()` + Z85 pubkey value.
-
-   (c) **Script API exposure — polling accessors (audit G1+G2).**
-     - `api.allowed_peers(channel)` (producer-side) — returns a
-       snapshot of the current `set_peer_allowlist` state as a list
-       of `{role_uid, pubkey}`.  ✅ shipped 2026-06-10 in **Lua** +
-       **Python** (via `ProducerAPI`, `ConsumerAPI`, `ProcessorAPI`
-       engine-parity bindings).  Native deferred (MVP per #84).
-     - `api.producers(channel)` (consumer-side) — ✅ shipped 2026-06-15.
-       `RoleAPIBase::producers()` returns a snapshot of the broker's
-       most recent `CONSUMER_REG_ACK.producers[]` delivery for a
-       channel.  Cache populated inside `apply_consumer_reg_ack` after
-       `apply_master_approval` succeeds, so cache and queue's
-       `producer_peers_` move together.  Lua binding `api.producers`
-       in `lua_engine.cpp:lua_api_producers` + Python bindings on
-       `ConsumerAPI.producers` and `ProcessorAPI.producers` +
-       `__init__.pyi` stubs updated.  Native deferred per #84.
-     - Both read-only.  Both return a COPY (script cannot retain a
-       reference that the framework later mutates under it).
-
-   (d) **Script API exposure — event callback (option B).**
-     - New `ScriptEngine::invoke_on_allowlist_changed(channel,
-       allowlist, reason)` virtual.  Default implementation: no-op.
-     - Each engine implementation (`LuaEngine`, `PythonEngine`,
-       `NativeEngine`) looks up the script-side function named
-       `on_allowlist_changed` and invokes it with arguments shaped
-       per HEP §6.5 producer-side flow step 5: `channel` (string),
-       `allowlist` (host-natural list-of-record shape), `reason`
-       (string).
-     - `RoleAPIBase::handle_channel_auth_notifies` invokes the
-       callback AFTER `set_peer_allowlist` returns success.
-       Exceptions from the script callback are logged but do NOT
-       roll back the cache (cache stays correct regardless).
-     - Callback fires ONLY on the framework-applied transitions —
-       no synthetic firing on connect/disconnect of the broker; no
-       firing during process startup before the first pull
-       completes.
-
-   (e) **Engine-parity discipline.**  Audit pass after impl: verify
-   the SAME callback name + signature + shape works identically in
-   Lua, Python, and Native plugins.  Add a parity test
-   (`tests/test_layer4_plh_role/...` or similar) that loads the
-   SAME on_allowlist_changed callback in all three engines and
-   asserts identical observed behavior.  Maintains the engine-parity
-   invariant from #89 (N11 cross-engine signature audit).
-
-   (f) **Safety guardrail (audit S3).**  ✅ shipped 2026-06-10 —
-   `tools/check_auth_guardrail.sh` greps the script-binding surface
-   (`src/scripting/`, `producer_api.*`, `consumer_api.*`,
-   `processor_api.*`) for any `set_(allowed_peers|peer_allowlist|
-   allowlist|authorized_peers)` symbol.  Wired into ctest as
-   `AuthGuardrail_NoScriptAllowlistMutator` (layer0 / hep0036 /
-   guardrail labels).  Currently green (0 hits).  ZmqQueue's
-   framework-internal `set_peer_allowlist` is intentionally
-   out-of-scope — it's NOT a script binding.
-
-   (g) **Tests.**
-     - L3 (broker side): broker emits new wire shape +
-       reg/dereg propagates through the BRC pull path.  Verified
-       2026-06-10 (object shape) → flipped 2026-06-12 to the
-       locked Z85-string-array shape via Follow-up 6.1.  The
-       `GetChannelAuthReturnsAllowlist` worker now asserts
-       pre-reg empty, post-reg single-entry pubkey string,
-       post-dereg empty.  ✅ shipped.
-     - L3 script-driven callback firing test — needs a
-       producer-role-host worker with a Lua script defining
-       `on_allowlist_changed` and recording call sites.  The
-       existing `IsolatedProcessTest` pattern in
-       `broker_consumer_workers.cpp` uses BRC handles only — no
-       script engine.  Build cost is higher than other L3 tests.
-       **Disposition**: fold into AUTH-7 (L4 end-to-end gate
-       close) where the demo framework hosts script-driven
-       producer + consumer in real `plh_role` binaries.  Tracking
-       under AUTH-7 scope below.
-     - L2 unit test for `handle_channel_auth_notifies` with a
-       fake-BRC double — possible but the existing L3 path
-       already pins the broker side; adding L2 buys little.
-       **Disposition**: skip unless a regression motivates it.
-     - Engine parity (L4): same script logic running under Lua /
-       Python observes the same callback args + same polling
-       results.  Belongs in AUTH-7.
-5. **B1 — `awaiting_endpoint` vocabulary fix** ✅ shipped 2026-06-10.
-   Both port-0 sites (`broker_service.cpp:2063-2069` DISC_REQ and
-   `:2273-2279` CONSUMER_REG_REQ) now include `(awaiting_endpoint)`
-   in the WARN log + the error message, completing the §6.6 catalog
-   vocabulary.  Client retry loops can now match the substring
-   alongside `awaiting_first_heartbeat` and `heartbeat_stalled`.
-
-6. **Producer-side S3 activation** ✅ shipped 2026-06-12.  *Discovered
-   missing from the AUTH-1 plan during the 2026-06-12 design re-read*
-   — the original 2026-06-10 plan (sub-deliverables 1-5) is entirely
-   consumer-side because the pre-§3.5 design had the producer's
-   PUSH socket bound at S1 inside `setup_infrastructure_`.  The
-   §3.5.1 Option-α decision (locked 2026-06-12) moved producer PUSH
-   bind to S3 inside `apply_master_approval`, leaving the
-   producer-side counterpart of the consumer-side Stages 1A/1B/1C
-   unplanned and unimplemented.  This entry closes that gap:
-   - `hub_zmq_queue.cpp::set_producer_peers` no longer
-     auto-promotes peer[0] into transport-artifact fields — under
-     §6.7 Option B bare `set_*` mutators on Standby BUFFER args
-     only; `apply_master_approval` is the single Standby → Active
-     driver.
-   - `hub_zmq_queue.cpp::apply_master_approval` now actually does
-     work on the PUSH side (was a `return true` no-op): extracts
-     `REG_ACK.initial_allowlist` (per HEP §6.2 — array of Z85
-     pubkey strings), builds a `PeerAllowlist` with
-     `PeerIdentity{"curve", pk}`, seeds the ZAP cache, then calls
-     the queue's private `start()` to bind + arm + spawn worker.
-     PULL side adopts the same shape: extracts `producers[]`,
-     buffers via `set_producer_peers`, promotes peer[0] into
-     `server_pubkey_z85_` + `endpoint`, then `start()`.
-   - `role_api_base.cpp::build_tx_queue` no longer calls
-     `writer->start()` inline — the tx queue is built in Standby
-     symmetrically with the rx queue.
-   - `role_api_base.{cpp,hpp}`: new `apply_producer_reg_ack(ack)`
-     mirror of the existing `apply_consumer_reg_ack`.
-   - `role_host_frame.cpp::setup_infrastructure_` no longer calls
-     `start_rx_queue()` / `start_tx_queue()` — both calls deleted.
-     Queues stay Standby through S1+S2.
-   - `producer_role_host.cpp` + `processor_role_host.cpp` worker
-     bodies: call `apply_producer_reg_ack(*reg_result)` after
-     successful registration, before `install_heartbeat`.  Failure
-     aborts startup with `promise_ref.set_value(false)`.
-   - `tests/.../workers/zmq_queue_auth_workers.cpp` —
-     `auth_standby_state_transitions` worker rewritten to assert
-     the §6.7 Option B contract (bare `set_producer_peers` buffers
-     without transitioning; `start()` refuses on Standby; only
-     `apply_master_approval` drives Standby → Active).
-   Full L2+L3 sweep green (1734/1734) post-commit.
-
-**Open follow-ups under AUTH-1**, in execution priority order
-(out of scope for the 72021c54 commit; each is its own
-follow-up commit):
-
-**Follow-up 6.1 — `GET_CHANNEL_AUTH_ACK.allowlist` wire shape
-flip.**  ✅ shipped 2026-06-12.  Flipped both emit + read +
-test-assertion sites to the locked Z85-string-array shape:
-- `broker_service.cpp::handle_get_channel_auth_req` emits
-  `array<string>` of authorized pubkeys.
-- `role_api_base.cpp::handle_channel_auth_notifies` reads each
-  entry as `entry.get<std::string>()`, builds
-  `PeerIdentity{"curve", pk}` for the queue allowlist, and
-  feeds the script-view `AllowedPeer` with empty `role_uid`
-  (not on the wire) + `pubkey`.
-- `tests/.../broker_consumer_workers.cpp::
-  get_channel_auth_returns_allowlist` worker asserts
-  `al[0].is_string()` and the Z85 pubkey value.
-- Sub-deliverable 4(b) text updated above to cite the locked
-  2026-06-12 §6.5 shape (replaces the 2026-06-10 amendment).
-Full L2+L3 sweep green post-flip (1734/1734).
-
-**Follow-up 6.2 — Fatal-on-failure for bare registration
-branches.**  ✅ shipped 2026-06-12.  All three role hosts now
-abort startup on registration failure per HEP-CORE-0036 §3.5.1:
-
-- `producer_role_host.cpp` — REG_REQ failure: log + set promise
-  false + return (drops the prior else-branch; flattens control
-  flow).
-- `consumer_role_host.cpp` — CONSUMER_REG_REQ failure: same shape.
-- `processor_role_host.cpp` — BOTH prod_result + cons_result
-  failure paths: log + set promise false + return.  hub_max
-  capture moved into braced blocks so apply_*_reg_ack errors
-  short-circuit before the heartbeat-max read.
-
-Full L2+L3+L4 sweep green (1862/1862) — no test relied on the
-half-state.
-
-**Follow-up 6.3 — Migrate 10 test sites off the legacy
-direct-activation path.**  ✅ shipped 2026-06-13.
-`tests/test_layer3_datahub/workers/role_api_flexzone_workers.cpp`
-lines 206 / 233 / 363 / 434 / 788 / 825 / 930 / 972 / 1056 / 1098
-all flipped to `apply_producer_reg_ack(nlohmann::json::object())`
-/ `apply_consumer_reg_ack(nlohmann::json::object())`.  An empty
-JSON object is the canonical stub here: the bypass tests
-construct queues directly so SHM secret is config-supplied (no
-`shm_secret` in the ack) and ZMQ allowlist is empty for the
-sites that don't exercise auth.  The ZMQ-tx case still goes
-through `apply_master_approval` → `start()` → `Mechanism::Curve`
-(pinned by the existing `queue_mechanism(Tx) == Curve`
-assertion); SHM cases are no-ops on already-Active queues built
-by the convenience factory.  Grep `tests/` confirmed no other
-file referenced the legacy entrypoints.
-
-**Follow-up 6.4 — Delete `RoleAPIBase::start_rx_queue()` /
-`start_tx_queue()` from the public API.**  ✅ shipped 2026-06-13.
-Both declarations dropped from
-`src/include/utils/role_api_base.hpp` and definitions deleted
-from `src/utils/service/role_api_base.cpp`.  Pre-deletion sweep
-of `src/` + `tests/` showed zero remaining call sites after
-Follow-up 6.3.  Full L2+L3 sweep green (1734/1734).
-
-**Blocks:** 6.1 + 6.2 ✅ shipped 2026-06-12; 6.3 + 6.4 ✅
-shipped 2026-06-13.  AUTH-2 + AUTH-3 fully unblocked from the
-AUTH-1 side.
-
-**Follow-up 6.5 — HEP lifecycle-sync sweep (Option B).**  ✅
-shipped 2026-06-13 (task #213; review doc
-`docs/code_review/REVIEW_HEP_Lifecycle_Sync_2026-06-13.md`).
-AUTH-1 + the older Wave-B M4f closure left five HEPs out of
-sync with current code.  All addressed in one sweep:
-
-- **HEP-CORE-0011** (ScriptHost) — §"Role Host `worker_main_()`
-  Steps" rewritten in plain language with a Mermaid sequence
-  diagram + 6a/6b/6c/6d sub-steps documenting register →
-  apply_*_reg_ack → install_heartbeat; the "registration
-  failure is FATAL" contract added; mermaid annotation +
-  library-structure binary-name + 14-step recap all updated.
-- **HEP-CORE-0017** (Pipeline Architecture) — §3.3 gains a
-  symmetric PUSH-side mirror paragraph; previously only the PULL
-  side documented the Standby → S3-`apply_master_approval`
-  pattern.
-- **HEP-CORE-0019** (Metrics Plane) — RoleAPIBase row corrected
-  from `start_ctrl_thread (Phase 6: per-presence)` to
-  `install_heartbeat()` after `apply_*_reg_ack`, with pointer
-  back to HEP-0011 Step 6d.
-- **HEP-CORE-0031** (ThreadManager) — §4.2.4 code example
-  updated to `start_handler_threads` loop spawning
-  `handler_ctrl_<N>`; §4.3.1 thread inventory table replaces
-  `ctrl (legacy)` with `handler_ctrl_<N>`; §4.3.5 process
-  thread totals add dual-hub processor rows; §4.3.6 M4
-  transition table marked all phases shipped.
-- **HEP-CORE-0018** (Producer/Consumer Binaries — HISTORICAL) —
-  §15.4 ZMQ channel-establishment block gains a banner pointing
-  at HEP-0036 §3.5 + HEP-0011 + HEP-0017 §3.3 for the live
-  design.
-- **HEP-CORE-0033** (Hub Character) — incidental: §19.8 file
-  map updated to drop the `RoleHostFrame<HostT>` CRTP reference
-  (M9 retired CRTP form).
-
-Full L2+L3 sweep green post-sweep (1734/1734).
-
-**Follow-up 6.6 — ZapRouter Slice A (UAF + reentrance + single-pumper).**
-✅ shipped 2026-06-13 (task #215; review doc
-`docs/code_review/REVIEW_ZapRouter_UAF_2026-06-13.md`).  Pre-AUTH-2
-architectural blocker.  Reviewer-2 audit found a UAF window in
-`ZapRouter::pump_one` between the shared_lock-protected admission
-lookup and the call into `is_peer_allowed`.  Dormant today (pump_one
-only via test ZapPumpThread); would fire on every handshake-vs-
-teardown race the moment AUTH-2 (#162) puts pump_one on the BRC poll
-thread.  Plus three latent architectural gaps in the same surface:
-reentrant `register_domain` (UB under `std::shared_mutex`), reentrant
-`~ZapDomainHandle` (silent UAF), accidental two-pumper (REP FSM
-corruption).
-
-Fix shape: option (a) shared_lock extension + RecursionGuard belt-and-
-suspenders.  Same doctrine cited in `zap_router.hpp:27` (originally
-applied to the LifecycleManager near-miss); same pattern used by
-`lifecycle_dynamic.cpp:51-60` + `json_config.cpp:69-579`.
-
-- `zap_router.cpp::pump_one` extends shared_lock to cover the
-  admission call; pushes `RecursionGuard(this)` to forbid self-
-  reentrance; wraps the call in try/catch (throw = deny + log);
-  RAII PumpScope atomic counter PANICs on second concurrent entry.
-- `zap_router.cpp::register_domain` refuses + logs + returns inactive
-  handle when `is_recursing(this)`.
-- `zap_router.cpp::unregister_domain_` PLH_PANICs when
-  `is_recursing(this)` — destructor can't react to refusal.
-- `peer_admission.hpp::is_peer_allowed` doc-comment now encodes the
-  five-part reentrance contract (synchronous-thread, no
-  register-callback, no handle-destruction, bounded-time, may-throw).
-- `zap_router.hpp` file-header threading-model section extended with
-  the three runtime-enforced invariants.
-- `HEP-CORE-0036 §7.4` documents the architectural contracts +
-  failure modes + test pinning.
-
-Four L2 regression tests in
-`tests/test_layer2_service/workers/zap_router_workers.cpp`
-(`round3_uaf_destructor_blocks_until_admission_returns`,
-`round3_reentrant_register_refused`,
-`round3_reentrant_unregister_panics`,
-`round3_concurrent_pumpers_panic`).  Mutation sweep: each of the
-four guards reverted independently — each test isolates exactly one
-failure mode (UAF assertion / shared_mutex UB hang / unique_lock
-self-deadlock hang / worker-stays-alive).
-
-Full L2+L3 sweep green post-fix.
-
-OUT OF SCOPE for this follow-up (split to task #216 — "Queue-state
-Slice A2"): B1 PULL `apply_master_approval` state rollback on
-`start()` failure + B2 PUSH `start()` catch handlers leave
-`zap_handle_` orphan.  Both in `hub_zmq_queue.cpp`; different code
-area, different class of bug.  Track separately.
-
-**Follow-up 6.7 — Modern-C++ polish on the Slice A surface.**  ✅
-shipped 2026-06-13 (task **#217**).  Round-2 systematic review of
-the Slice A commit raised seven idiomatic-C++ items; all addressed
-in one polish commit + four doc-drift edits caught by a fresh-eye
-re-review:
-
-- `ZapRouter::register_domain(PeerAdmission &)` (was `*`) — null
-  contract now enforced by the type system; the runtime
-  `nullptr`-check and the `null_admission_throws` L2 test were
-  deleted (compile-time check supersedes them).  Production call
-  sites at `broker_service.cpp:703` and `hub_zmq_queue.cpp:1279`
-  updated.
-- Routing map value type `unordered_map<string,
-  reference_wrapper<PeerAdmission>>` (was `PeerAdmission *`).
-  `try_emplace(domain, std::ref(admission))` on register; lookup
-  binds `PeerAdmission &admission = it->second;` via
-  ref-wrapper's implicit conversion.  Documents "non-owning,
-  non-null" at the type level.
-- `send_zap_reply` now takes `std::string_view` for all four
-  string args (was a mix of `const std::string &` and
-  `const char *`).  Eliminates `std::strlen` calls and consolidates
-  the signature.
-- `ZapPumpThread` uses `std::jthread` + `std::stop_token` (was a
-  separate `std::atomic<bool> stop` + manual `join()`).
-  `~ZapPumpThread() = default;` lets the standard auto-stop +
-  auto-join run; worst-case teardown is one `tick` interval
-  (100 ms) because `recv_multipart` blocks for `RCVTIMEO`.  This
-  is the FIRST `std::jthread` in the repo.
-- `[[nodiscard]]` added to `ZapRouter::pump_one`; the one
-  intentional discard (`ZapPumpThread`'s loop body) already had
-  `(void)`.  Three `EXPECT_THROW(register_domain(...))` test sites
-  got `(void)` casts to silence the (pre-existing, tolerated)
-  warning.
-- `ReEntrantUnregisterAdmission` (round3 test admission) now
-  takes a `std::function<void()> on_admit_` callback instead of a
-  back-pointer to the fixture's `std::optional<ZapDomainHandle>`.
-  Cleaner decoupling; same panic-trigger semantics.
-- `RecursionStack::keys` stored as `std::array<std::uintptr_t, N>`
-  internally (was `array<const void *, N>`); public API
-  `RecursionGuard(const void *)` / `is_recursing(const void *)`
-  unchanged.  Pointer-to-uintptr-cast on push/find is well-defined
-  for equality.
-
-Doc-drift sweep (Round-2 review):
-- `zap_router.hpp:10` file-header narrative — map type updated to
-  `reference_wrapper<PeerAdmission>`.
-- `zap_router.hpp:149` `pump_one` docstring — "look up
-  `PeerAdmission *`" → "look up the `PeerAdmission` reference".
-- `zap_router.hpp:243-245` `ZapPumpThread` docstring —
-  `std::thread` + stop-flag prose → `std::jthread` + `stop_token`,
-  with the worst-case-teardown note.
-- HEP-CORE-0036 §7.4 row 1 — "Admission-pointer lifetime" →
-  "Admission-reference lifetime"; cell text updated.
-
-Validation: `stage_all` clean (zero warnings).  L2+L3 sweep
-1738/1738 green (was 1739; one test deleted as redundant).
-ZapRouter targeted: 17/17 green.
-
-OUT OF SCOPE for this follow-up: the additional simplifications
-flagged by the modern-C++ reviewer but deferred — `PumpScope` body
-relocation to file-scope anonymous namespace (W1), `BlockingAdmission`
-condvar simplification (W2), `is_recursing(this)`-vs-static-address
-trade-off (W5).  Track if/when they become friction points.
-
-**Follow-up 6.8 — `DomainRoutingTable` extraction + jthread/ThreadManager
-note (task #219).**  ✅ shipped 2026-06-13.  Per the post-polish design
-review (Q2 + Q5):
-
-- **New utility `pylabhub::utils::security::DomainRoutingTable`** at
-  `src/include/utils/security/domain_routing_table.hpp` +
-  `src/utils/security/domain_routing_table.cpp`.  Encapsulates the
-  `(string → reference_wrapper<PeerAdmission>)` map +
-  `std::shared_mutex` + the lock-bounded callback contract
-  (`with_admission(domain, reentrance_key, fn)` holds the shared lock
-  + pushes `RecursionGuard(reentrance_key)` + try-catches across the
-  callback body).  `ZapRouter::Impl` now holds a `DomainRoutingTable`
-  instead of inlining the map + mutex; `pump_one` invokes
-  `routing.with_admission` instead of repeating the lock-scope prose.
-  Future reusers: HEP-CORE-0037 federation peer ROUTER (#105),
-  CURVE-wrapped admin REP, additional AUTH-2/-3 surfaces.  Substantive
-  contracts (UAF lifetime, reentrance, single-pumper PANIC) unchanged;
-  the polish moves them into one place instead of duplicating prose
-  across every dispatcher.
-
-- **`ZapPumpThread` docstring** updated with a note clarifying why
-  it's intentionally NOT registered with `ThreadManager`: it's a
-  test/demo helper whose lifetime is bounded by the enclosing scope
-  (Pattern-3 subprocess or demo `main()`).  Production threads that
-  host `pump_one` — the BRC poll thread post-AUTH-2 (#162), the
-  broker's main poll thread — MUST be `ThreadManager`-spawned.  The
-  `jthread` body shape adopted in `ZapPumpThread` is itself a valid
-  pattern for future "loop until stop" threads inside ThreadManager
-  slots; references HEP-CORE-0031 §4.1 for SlotContext composition.
-
-- **HEP-CORE-0036 §7.4 row 1** invariant updated to cite
-  `DomainRoutingTable::with_admission` as the runtime-enforced
-  mechanism (was: "`pump_one` holds `registered_mu` in shared mode").
-
-Validation: 17/17 ZapRouter tests pass; full L2+L3 sweep green.
-
-### AUTH-2 — Role-side ZAP pump via ZapPumpThread lifecycle module
-
-> **Tracker:** task **#162**.
-> **Old labels:** HB-2.  **Title change 2026-06-16:** moved from
-> "Producer-side ZAP pump on BRC poll thread" to "Role-side ZAP pump
-> via ZapPumpThread lifecycle module" after the multi-BRC analysis
-> below.
-> **HEP anchors:** §7.1 (role-side ZAP cache responsibility, updated
-> 2026-06-16 for the dedicated-thread decision) + §7.4 invariant #3
-> (single-pumper FSM contract preserved by construction) + §I11
-> (framework provides atomic update mechanism).
-
-**Goal.**  Make the role's data ROUTER ZAP handler responsive so
-CURVE handshakes can complete.  The role's ZAP cache (the allowlist
-set by AUTH-1's pull) is meaningless if the handshake never gets to
-consult it.
-
-**Design choice — Option F (dedicated lifecycle module).** Originally
-scoped to wire `ZapRouter::pump_one(0ms)` into the BRC poll thread.
-Reconsidered because the dual-hub processor has TWO BRCs in one
-process, both wanting to pump the same process-singleton REP socket;
-the single-pumper invariant (§7.4 #3) would PLH_PANIC the moment two
-handshakes raced.  Coordinated election (atomic active_pumper,
-takeover-on-exit) was rejected as transient machinery that gets
-replaced if ever moving to a dedicated thread.  The dedicated thread
-is invariant-preserving by construction for both single-BRC roles
-(producer / consumer) and multi-BRC roles (processor).  See
-HEP-CORE-0036 §7.1 "Why not 'one BRC pumps'" for full rationale.
-
-**Scope (shipped 2026-06-16).**
-- `ZapPumpThread` becomes a dynamic LifecycleManager module
-  (depends on `ZapRouter`).  Two activation modes preserved:
-  (1) direct RAII for tests/demos; (2) the module path for
-  production-side wiring.  See `src/include/utils/security/zap_router.hpp`
-  for the doctring contract on both modes.
-- `ZapRouter::ensure_module_registered()` added — idempotent
-  bridge that registers the `ZapRouter` dynamic module without
-  registering a domain.  Lets the role process load the pump
-  module at startup BEFORE any CURVE socket exists.
-- `plh_role_main.cpp` loads `ZapPumpThread::ensure_registered_and_loaded()`
-  after `KeyStore` construction.  Module owns a process-singleton
-  `std::jthread` looping `pump_one(100ms)` until LifecycleGuard
-  shutdown.
-
-**Out of scope (per §I11; do not re-litigate).**
-- Coordinating ZAP responses with allowlist updates: not needed —
-  `set_peer_allowlist` already atomic per §6.5 producer-side flow.
-- Backpressure on the pump thread: not needed — pumping is
-  non-blocking, pure local work, idle-tick 100ms.
-
-**Depends on:** AUTH-1 (without producer pubkey emission in D5, no
-consumer attempts CURVE handshake against the producer ROUTER, so
-the pump has nothing to service).
-
-**Validation:** L2 (1478) + L3 (265) + L4 (128) + Pattern 4 (4)
-all green; `PlhRoleInitTest.InitOutputValidates/producer` passes
-after the dep-registration preflight fix.
-
-### AUTH-3 — Authorized state + data-loop outer guard
-
-> **Tracker:** task **#163**.
-> **Old labels:** HB-4 + HB-5.
-> **HEP anchors:** §4.3.2 (Authorized entry conditions, synchronous
-> trigger) + §8.2 (data-loop outer guard) + §I3 (control gates
-> data) + §I11 (framework guarantees outer gate; script decides
-> per-cycle send policy).
-
-**Goal.**  Add the FSM state + outer-loop guard so the data loop
-does not run before the role's auth flow is in place.
-
-**Scope (do not expand).**
-- `RegistrationState::Authorized` added to `role_presence.hpp:95-101`
-  + transitions per §4.3.2 (producer: after PUSH bind + REG_ACK ok;
-  consumer: after CONSUMER_REG_ACK with `producers[]` + rx queue
-  built).  Synchronous, no async re-entry.
-- `any_presence_authorized()` predicate.
-- Data-loop outer guard at `data_loop.hpp:129-131` extended:
-  ```cpp
-  while (core.is_running() && !core.is_shutdown_requested()
-         && !core.is_critical_error() && any_presence_authorized())
-  ```
-
-**Out of scope (per §I11; do not re-litigate).**
-- Per-cycle "do we have N peers" check inside the loop — script
-  decision, gates emission, not the loop.
-- Allowlist non-emptiness as guard condition — Authorized is FSM
-  state, not "have peers"; per §I11 emission policy is script-level.
-- Conditional re-entry semantics on transient failures — covered by
-  existing hub-dead path (§4.3.3); do not add new escalation tiers.
-
-**Depends on:** AUTH-1 (the Authorized transition for consumer-side
-fires synchronously upon CONSUMER_REG_ACK arrival with `producers[]`,
-which D5 emits).  Producer-side Authorized fires at the END of
-`apply_master_approval(REG_ACK)` (S3 — PUSH bound + ZAP armed +
-allowlist seeded + worker spawned) per HEP-CORE-0036 §3.5.4 INV1.
-Broker fires `CHANNEL_PRODUCERS_CHANGED_NOTIFY {reason=producer_joined}`
-to consumers on the producer's Pending → Ready transition (first HB),
-not on REG_REQ accept (§3.5.4 INV2).
-
-### AUTH-4 — ~~SHM broker-issued secret end-to-end~~ **SUPERSEDED 2026-06-16 by HEP-CORE-0041**
-
-> **Tracker:** tasks **#164** (closed/superseded) + **#79** (closed/superseded).
-> Replacement work tracked under **#244** (HEP-0041 design — shipped 2026-06-16)
-> + **#248** (HEP-0041 Phase 1 Linux memfd backend) + **#245** (POSIX SHM
-> mode tightening) + **#246** (ZMQ retrofit to symmetric pre-confirm) +
-> **#247** (script-accessible crypto primitives).
-> **Old labels:** HB-6 + B4.
-> **HEP anchors:** SUPERSEDED — see HEP-CORE-0041 §1 (motivation), §5
-> (capability-transport model), §9 (D1-D8 decision table; D4 is the
-> load-bearing "pre-attach broker confirmation" pattern), §10 (Phase
-> 1-5 rollout).  HEP-CORE-0036 §1 "Amendment 2026-06-16" block contains
-> the formal retirement notice + cross-reference back here.
-> **Old HEP anchors (informational-historical):** HEP-0036 §5.6 (broker
-> generates per-channel random uint64) + §I6 (SHM secret is broker-
-> minted, unlike CURVE keys which are role-owned) + §I11 (framework
-> provides token; script doesn't participate in secret negotiation).
-
-**Status (2026-06-16).**  The 2026-06-13 SHM threat-model audit
-identified that the `shm_secret` model (broker mints uint64; producer
-stamps it in the DataBlock header as a plaintext discriminator) has
-several gaps the user surfaced through sharp questioning:
-
-1. **POSIX 0666 default** (`platform.cpp:478` `kShmModeRw`) lets any
-   local UID open the shm and read the secret from the header bytes.
-2. **Plaintext discriminator, not a cryptographic check** — `memcmp`
-   on the header bytes (`data_block.cpp:2768-2777`) is at best a
-   typo-catcher, not an auth check.
-3. **Drift window between revocation and broker pushback** — a role
-   that quits before the producer's allowlist updates can still
-   re-attach using a cached secret (the same fast-path problem we hit
-   in ZMQ; see #246).
-
-HEP-CORE-0041 replaces the `shm_secret` model with a capability-
-transport model: the producer creates an anonymous shm object (Linux
-`memfd_create`, macOS `SHM_ANON`, Windows `CreateFileMapping(NULL)`),
-the broker holds the only handle to it after consumer authorization,
-and the broker passes the capability to the authorized consumer via
-`SCM_RIGHTS` (POSIX) or `DuplicateHandle` (Windows) after a pre-attach
-`CONSUMER_ATTACH_REQ` confirmation.  Unauthorized peers cannot obtain
-the capability in the first place — there is no plaintext token to
-sniff or replay.
-
-**Original AUTH-4 goal (retained for historical context, do not act on).**
-Apply the same broker-as-source-of-truth + atomic-update pattern to
-SHM transport that AUTH-1 applies to ZMQ.  Broker mints per-channel
-`shm_secret`; CONSUMER_REG_ACK delivers it; SHM consumer enforces it
-on attach.
-
-**Scope (do not expand).**
-1. Broker generates per-channel random `shm_secret` (replaces
-   hardcoded zero at `broker_service.cpp:1894`).
-2. `CONSUMER_REG_ACK.shm_secret` field emitted for SHM transport
-   (sibling to ZMQ's `producers[]` per §6.4).
-3. SHM consumer applies as DataBlock guard secret per HEP-CORE-0002.
-4. **#79** — `plh_role --init` provisions a non-zero seed in role
-   config (avoids zero-default that pre-dates this work).
-
-**Out of scope (per §I11).**
-- Secret rotation while channel live: out of scope; secret lifetime
-  is channel lifetime, restart-on-rotate is acceptable for MVP.
-- Cross-channel secret reuse: forbidden — every channel mints fresh.
-- Script-visible secret API: scripts must NEVER see the secret;
-  framework consumes it inside the SHM consumer setup.
-
-**Independent of AUTH-1..3** (SHM transport is orthogonal to ZMQ
-CURVE).  Can interleave or land after.  Order vs AUTH-1: if AUTH-1
-D5 schema lands first, ACK emits `shm_secret=0` until AUTH-4 lands
-the generator — acceptable as long as SHM consumers don't enforce
-until AUTH-4 (3) ships (single landing window per Phase D close-out).
+## Phase 1 — CURVE chain close (active critical path)
+
+Per `docs/TODO_MASTER.md`, the locked execution order is:
+
+```
+AUTH-5 (#104) doc sync  ──┐
+AUTH-6 (#154) L3 tests  ──┼──► AUTH-7 L4 e2e  ──► #275 S2..S5  ──► REVIEW-C (#276)
+#257 (1j) L3 broker tests │                                            │
+                          │                                            ▼
+                                                              #262 mutual auth
+                                                                       │
+                                                                       ▼
+                                                              REVIEW-D (#277)
+                                                                       │
+                                                                       ▼
+                                                              REVIEW-E (#278)
+                                                                       │
+                                                                       ▼
+                                              🟢 PHASE 1 PRODUCTION-READY
+```
+
+**AUTH-1 / AUTH-2 / AUTH-3 / AUTH-4 status:**
+- **AUTH-1** ✅ SHIPPED 2026-06-10 through 2026-06-13.  Closed
+  as #103 + #211/212/213/214/215/217/219.  See archive §2.
+- **AUTH-2** ✅ SHIPPED 2026-06-16.  Closed as #162.  See archive §3.
+- **AUTH-3** ✅ SHIPPED 2026-06-13.  Closed as #163.  See archive §4.
+- **AUTH-4** SUPERSEDED 2026-06-16 by HEP-CORE-0041 (#244).  See
+  archive §5.  Original tasks #164 + #79 closed as SUPERSEDED.
 
 ### AUTH-5 — Sibling HEP doc sync
 
 > **Tracker:** task **#104**.
-> **HEP anchors:** §14 sibling-HEP update list + §I11 (the principle
-> the sibling HEPs adopt by cross-reference, not by re-derivation).
+> **HEP anchors:** HEP-0036 §14 sibling-HEP update list + §I11.
 
-**Goal.**  Make every sibling HEP consistent with HEP-0036's
-shipped contract.  Pure doc work for 7 HEPs; ~10 LOC code for
-HEP-0023's `Authorized` enum already folded into AUTH-3.
+**Goal.**  Make every sibling HEP consistent with HEP-0036's shipped
+contract.  Pure doc work for 7 HEPs; ~10 LOC code for HEP-0023's
+`Authorized` enum already folded into AUTH-3.
 
 **Scope (do not expand).**
+
 - HEP-0017 §3.3 — document the shipped `ProducerPeer` +
   `add_producer_peer` / `remove_producer_peer` API.
 - HEP-0021 §16 — pubkey REQUIRED text.
@@ -834,61 +140,51 @@ HEP-0023's `Authorized` enum already folded into AUTH-3.
 - HEP-0033 §G — cross-references for `ChannelAccessEntry`.
 - HEP-0036 §5 sequence diagrams + §8 handler-step tables — replace
   stale `zmq_msg_gets("User-Id")` wording with §6.1 / §6.3
-  verification-model wording (deferred from AUTH-1's HEP touch).
+  verification-model wording.
 
 **Out of scope (per §I11).**
-- Re-litigating the verification model in sibling HEPs — each
-  sibling cross-refs HEP-0036; no parallel restatement.
-- Sibling HEPs proposing their own coordination layers — coordination
-  lives in script per §I11; sibling HEPs document the channels
-  (band / inbox / queue) the framework provides, not policies.
 
-**Depends on:** AUTH-1, AUTH-2, AUTH-3 shipped (so the docs match
-code).
+- Re-litigating the verification model in sibling HEPs.
+- Sibling HEPs proposing their own coordination layers.
+
+**Depends on:** AUTH-1/2/3 shipped ✅.
 
 ### AUTH-6 — L3 broker test revival
 
 > **Tracker:** task **#154** (in-progress).
-> **Old labels:** D6.
-> **HEP anchors:** §6.5 producer-side handler flow + §I11
-> (observable allowlist as test fixture surface).
+> **HEP anchors:** §6.5 producer-side handler flow + §I11.
 
 **Goal.**  Unmask the 7 worker files masked under task #153
 (lib-stabilization exclusion procedure; see 2026-06-05 archive).
 Per-file commit with mutation-sweep on each restored TEST_F.
 
 **Scope (do not expand).**
+
 - Pins per §I11: broker pushes allowlist on consumer reg / dereg;
   producer applies via the normative handler flow; consumer with
   wrong pubkey rejected; revocation propagates within the contract
   bound.
-- Test surface = observable allowlist state (e.g. `api.allowed_peers`
-  or `tx_queue.peer_allowlist_snapshot()`).  Assertions pin the
+- Test surface = observable allowlist state (`api.allowed_peers` or
+  `tx_queue.peer_allowlist_snapshot()`).  Assertions pin the
   observable, not the implementation thread / dispatcher internals.
 
 **Out of scope (per §I11).**
-- Tests that pin priority dispatch, queue-blocking semantics, or
-  critical-error escalation — none of these are in the contract;
-  asserting them locks future implementations into an arbitrary
-  shape.
-- Tests for script-level coordination policies — those are application
-  concerns; if a sample app uses one, it gets an L4 demo test, not
-  an L3 framework pin.
 
-**Depends on:** AUTH-1 shipped.
+- Tests that pin priority dispatch, queue-blocking semantics, or
+  critical-error escalation — none are in the contract.
+
+**Depends on:** AUTH-1 shipped ✅.
 
 ### AUTH-7 — L4 end-to-end gate close
 
-> **Old labels:** D7.
-> **HEP anchors:** §I11 (script-level coordination demonstrated on
-> top of framework's membership contract) + §5.2 sequence (end-to-
-> end auth flow).
+> **HEP anchors:** §I11 + §5.2 sequence (end-to-end auth flow).
 
 **Goal.**  Full dual-hub auth-gated data flow under the demo
 framework.  Final proof that the data-plane CURVE gate is closed
 end-to-end and that scripts can build coordination on top.
 
 **Scope (do not expand).**
+
 - Demo manifest with producer + consumer roles, real `plh_role`
   binaries, real CURVE handshakes, end-to-end data flow.
 - Assertion: data flows iff consumer is in producer's allowlist;
@@ -897,564 +193,195 @@ end-to-end and that scripts can build coordination on top.
   pattern using `api.allowed_peers` — illustrative of §I11.
 
 **Out of scope (per §I11).**
-- Framework changes — by AUTH-7, all framework work has shipped;
-  AUTH-7 is observation, not implementation.
 
-**Depends on:** AUTH-1 + AUTH-2 + AUTH-3 + AUTH-6 shipped.  AUTH-4
-landing first is nice-to-have (SHM gate closed) but not strictly
-required (ZMQ-only L4 test is meaningful).  Under the post-2026-06-16
-plan, the SHM gate closes via HEP-0041 Phase 1 (#248) rather than the
-retired AUTH-4 design — AUTH-7's L4 manifest gains a SHM variant only
-after #248 ships.
+- Framework changes — by AUTH-7, all framework work has shipped.
+
+**Depends on:** AUTH-1 + AUTH-2 + AUTH-3 + AUTH-6 shipped.  SHM gate
+close via HEP-0041 Phase 1; AUTH-7's L4 manifest gains a SHM variant
+only after #275 S2..S5 + #258 1k ship.
 
 ---
 
-## HEP-0041 implementation chain — replaces retired AUTH-4
+## HEP-0041 implementation chain — capability transport
 
-**Status (2026-06-23):** HEP-CORE-0041 (SHM Channel Auth) shipped
-(#244, `94b04576`).  Phase 1 substeps 1a-1h ✅ (#248-#255);
-1i (#256) is split into 1i-mig (production wiring) + 1i-cleanup
-(legacy deletion).  1i-mig-1/2a/2b-1/2b-2/2c/M3/3 ✅ (commits
-`e283a4ac → 6f31a346`); pre-REVIEW-A cluster #266/#268/#269/#279/#267 ✅
-(commits `e8e10738 → 47fe4806`); REVIEW-A close-out + #280 EDGE-2 ✅
-(commits `8c6ca64a, 22d80291`); **1i-mig-4 (consumer dial, #272) ✅
-(commit `2793a394`, 2026-06-23)**; #281 broker `data_transport` strict
-(side-detour from #272 review, ✅ commit `ecc72337`); 1i-mig-5 (#273) +
-1i-cleanup (#275) + 1j (#257) + 1k (#258) + #262 mutual auth ⏸.
-**Five fixed review milestones REVIEW-A..E
-(#271/#274/#276/#277/#278) gate the remaining chain — see schedule
-below + HEP-0041 §10.1.**
+Replaces the retired AUTH-4 `shm_secret`-mirror design.
 
-**Cross-cutting future change (2026-06-23 design discussion):**
-#272's self-review surfaced that `apply_consumer_reg_ack_shm_` blocks
-the consumer-role-host worker thread for up to ~3.9s during the dial
-(#282).  The blocked thread is the worker (see
-`ConsumerRoleHost::worker_main_` Step 6 dispatch into
-`apply_consumer_reg_ack`), not the BRC poll thread — the BRC poll
-thread already finished its job by delivering the REG_ACK frame onto
-the IncomingMessage queue.  Bigger than #272 alone — the same pattern
-recurs in producer L2c broker pre-confirm, future #262 mutual auth
-Frame 3, future HUB_TARGETED_REQ (#75), and future api.crypto.*
-(#247).  Generalized solution drafted under #283: HEP-CORE-0031
-amendment adding a `spawn_bounded` primitive (single sweeper thread +
-step-function body contract).  Tech draft at
-`docs/tech_draft/DRAFT_HEP-0031-bounded-thread_2026-06.md`.  Migration
-plan (#283 §8) lands in two passes:
-- **Pass 1** — convert the affected sites to bounded-sync (no FSM
-  change).  Migrates the work onto framework-managed threads with
-  uniform observability and clean teardown integration; worker-thread
-  block PERSISTS in this pass.
-- **Pass 2** — convert to truly-async with FSM amendment (insert
-  `RegistrationState::RegAckPending` between `Registered` and
-  `Authorized`; teach §8.2 outer guard to wait for `Authorized`).
-  This is what actually lifts the worker-thread block.
-- Pass 2 for #272 (consumer dial) sequences under REVIEW-B (#274) or
-  as part of #262.  Pass 2 for #262 (mutual auth) designs async from
-  day one once #283 ships.
+**Status (2026-06-27):** Phase 1 substeps 1a-1h ✅; 1i-mig 1-5 ✅;
+1k ✅ (#258, commit `0a341a5b`); 1i-cleanup S1+S2a+S2b+S2c-1..6 ✅;
+**S3+S4+S5 + 1j (#257) + #262 mutual auth + REVIEW-C/D/E all OPEN**.
+See archive §6 for shipped substep narratives + commit hashes.
 
-Implementation breaks into 5 phases per HEP-0041 §10.  Phase 1 is
-the production-readiness gate; Phases 2-3 are cross-platform
-expansion; Phase 4 is general crypto primitives; Phase 5 retrofits
-ZMQ to the same pattern.
-
-### Phase 1 critical path (post-2026-06-22 reconciliation)
-
-```
-┌─── shipped this session (2026-06-22) ───────────────────────────┐
-│ 1i-mig-1 ✅ (e283a4ac) ── 1i-mig-2a ✅ (e5575329)              │
-│   ── 1i-mig-2b-1 ✅ (31072b3e) ── 1i-mig-2b-2 ✅ (4bae7cfb)    │
-│   ── 1i-mig-2c review-fixes ✅ (78fc6b9d) ── M3 ✅ (8e05a821)  │
-│   ── 1i-mig-3 ✅ (6f31a346)                                     │
-└─────────────────────────────────────────────────────────────────┘
-                                │
-                                ▼
-              ┌────────── pre-1i-mig-4 cleanup ────────────┐
-              │ #266 M3.5 promote prepare_tx_capability_   │
-              │ #267 doc-sync bundle                       │
-              │ #268 producer hardening (H3a..d)           │
-              │ #269 consumer_attach API scope             │
-              │ #279 Mechanism enum widening (queue leak)  │
-              └────────────────────────────────────────────┘
-                                │
-                                ▼
-                       ★ REVIEW-A (#271) ★
-                                │
-                                ▼
-                #272 1i-mig-4 ✅ (consumer dial) — BIGGEST
-                #281 ✅ side-detour: broker data_transport strict
-                                │
-                                ▼
-                    #273 1i-mig-5 (cutover + test fixups)
-                                │
-                                ▼
-                       ★ REVIEW-B (#274) ★
-                                │
-                                ▼
-       #275 1i-cleanup (Core Structure Protocol for SharedMemoryHeader)
-                                │
-                                ▼
-                       ★ REVIEW-C (#276) ★
-                                │
-                                ▼
-           #270 1i-coverage L2 backfill ── #257 1j L3 tests
-                              │                    │
-                              └──────┬─────────────┘
-                                     ▼
-                              #258 1k L4 e2e
-                                     │
-                                     ▼
-                            ★ REVIEW-D (#277) ★
-                                     │
-                                     ▼
-                   #262 mutual auth (3rd handshake frame)
-                                     │
-                                     ▼
-                            ★ REVIEW-E (#278) ★
-                                     │
-                                     ▼
-                  🟢 PHASE 1 PRODUCTION-READY DECLARATION
-```
-
-**Future cross-cutting follow-up (#282 / #283):**
-
-```
-┌─── Parallel track, lands after Pass 1 deploy ──────────────────┐
-│                                                                │
-│ #283 HEP-CORE-0031 amendment + impl                            │
-│   ── draft  (✅ docs/tech_draft/DRAFT_HEP-0031-bounded-...)    │
-│   ── promote (HEP §4.4 Bounded-Deadline Threads)               │
-│   ── implement (`spawn_bounded` + BoundedThreadRegistry)       │
-│                                                                │
-│ #272 Pass 1: consumer dial → bounded-sync (no FSM change)      │
-│   sequencing: under REVIEW-B (#274), validates framework on    │
-│   a concrete protocol                                          │
-│                                                                │
-│ #282 Pass 2: consumer dial → truly-async                       │
-│   FSM amendment: add RegistrationState::RegAckPending          │
-│   sequencing: REVIEW-B (#274) or part of #262                  │
-│                                                                │
-│ #262 mutual auth designs async from day one                    │
-│                                                                │
-└────────────────────────────────────────────────────────────────┘
-```
-
-### Review milestones — what each catches
-
-| ID | Task | Trigger | Catches |
-|---|---|---|---|
-| REVIEW-A | #271 | After #266+#267+#268+#269+#279 | Drift from rapid sequential commits; doc/code consistency before consumer-dial complexity lands |
-| REVIEW-B | #274 | After #272+#273 | Consumer-side correctness pre-legacy-deletion; cutover completeness; last gate where legacy path can fall back |
-| REVIEW-C | #276 | After #275 | Deletion completeness; layout-hash bump consequences; recovery-path integrity post-Core-Structure change |
-| REVIEW-D | #277 | After #257+#258 | Test contract pins reality (not just outcome assertions); §9 D4 sequence pinned at L3; allowlist+revocation cycle exercised at L4 |
-| REVIEW-E | #278 | After #262 | Threat model alignment; mutual auth closes impersonation window; no residual one-way-auth assumptions in callers; cross-platform inherits symmetric handshake |
-
-Each milestone fires a parallel multi-agent review (4 angles:
-doc-vs-code, dead-code/duplication, gap/integration, edge-case).
-Don't compress them — each is calibrated to a different class of
-error.  Cost is ~5-15 min wall-clock per pass; benefit is bounded
-revisit scope when an error is found (at most one milestone's batch).
-
-### Pre-flights (#263/#264/#265) closed 2026-06-22
-
-All three preflight dependencies verified satisfied by 1i-mig-2b-2
-shipping (commit `4bae7cfb`):
-
-- **#263**: PeerAllowlist populated for SHM channels via
-  `apply_producer_reg_ack` (REG_ACK initial_allowlist seed) +
-  `handle_channel_auth_notifies` (CHANNEL_AUTH_CHANGED_NOTIFY +
-  GET_CHANNEL_AUTH refresh).  Orchestrator's CacheLookup reads
-  `api.allowed_peers(channel)` successfully.
-- **#264**: `BrokerRequestComm::consumer_attach` API at
-  `broker_request_comm.cpp:884-898` matches the orchestrator's
-  `BrokerQuery` callback shape (channel, consumer_pubkey,
-  consumer_role_uid, producer_role_uid, timeout_ms) →
-  `optional<json>`.  `RoleAPIBase::consumer_attach` added as public
-  router (script-binding scope tracked under #269).
-- **#265**: `SeckeyAccessor` in `RoleHostFrame::spawn_shm_auth_listener_`
-  uses `key_store().with_seckey(kRoleIdentityName, cb)` with a
-  string_view→span<const byte> adapter.  HEP-CORE-0040 §8.5.1
-  use-not-export discipline respected.
-
-**Sequencing rationale.**  Phase 1 establishes the pre-confirm
-contract on Linux/FreeBSD where the threat model is sharpest
-(`/dev/shm` 0666 default + memfd_create available); Phase 5 (#246)
-deliberately lands AFTER Phase 1 so the ZMQ retrofit replicates a
-proven pattern rather than co-evolving with it.
-
-**#245 KILLED 2026-06-17.**  POSIX `kShmModeRw 0666 → 0600` was
-proposed as an interim hardening of the live `shm_secret` model.
-Decision reversed: under HEP-0041 the named-SHM `shm_open` path is
-deleted outright (capability transport via `memfd_create` +
-`SCM_RIGHTS` — no name to discover, no mode bits to harden, no
-code path to tighten).  Spending engineering time hardening a
-surface we're about to delete is waste.  Phase 1 substep 1i
-removes the legacy path entirely.
-
-### HEP-0041 Phase 1 — Linux/FreeBSD `memfd_create` backend
-
-> **Tracker:** task **#248**.
-> **HEP anchors:** HEP-0041 §5 (capability transport architecture),
-> §9 D1 (Option A locked), §9 D4 (pre-attach broker confirmation —
-> the load-bearing decision), §9 D6 (`utils/security/shm_capability/`
-> module home), §10 Phase 1, §13 Linux/FreeBSD primitives.
-> **Closes:** the HEP-0036 §1 Amendment 2026-06-16 deferred work
-> (delete `ChannelAccessEntry::shm_secret`, `ShmQueue::set_shm_secret`,
-> `broker_service.cpp:1956` hardcoded zero); HEP-0007 / HEP-0021 /
-> HEP-0023 `shm_secret` wire-shape fields (HEP-0041 §7 clean break).
-
-**Production-readiness gate.**  Until Phase 1 ships, the SHM
-transport's data-plane peer auth is the legacy `memcmp` against a
-hardcoded-zero `shm_secret` — a typo-catcher, not an auth check.
-
-**Substep status (post-2026-06-22 reconciliation; live source: HEP-0041 §10.1).**
+### Phase 1 critical path (active rows only)
 
 | Step | Task | Status | Scope |
 |---|---|---|---|
-| 1a | #248 | ✅ | `utils/security/shm_capability/` interface + factory |
-| 1b | #249 | ✅ | Linux `memfd_create` + `SCM_RIGHTS` backend |
-| 1c | #250 | ✅ | Producer-side `AttachProtocol` `crypto_box` challenge-response |
-| 1d | #251 | ✅ | Broker `CONSUMER_ATTACH_REQ` / `_ACK` handler |
-| 1e | #252 | ✅ | `ShmAttachOrchestrator` + divergence-WARN |
-| 1f | #253 | ✅ | DataBlock fd-source ctors + factories |
-| 1g | #254 | ✅ | Wire-shape additive (CONSUMER_REG_ACK echoes `shm_capability_endpoint` + `producer_pubkey_z85`) |
-| 1h | #255 | ✅ | Config schema rejection of retired `in_/out_shm_secret` keys |
-| 1i-mig-1 | #256 | ✅ `e283a4ac` | `ShmQueue` fd plumbing (`set_shm_capability_fd` + Standby factories + secret/capability mutex) |
-| 1i-mig-2a | #256 | ✅ `e5575329` | `TxQueueOptions::shm_capability_fd` field + `build_tx_queue` capability dispatch |
-| 1i-mig-2b-1 | #256 | ✅ `31072b3e` | Producer owns L1 `IShmCapabilityProducer` via `prepare_tx_capability_` hook |
-| 1i-mig-2b-2 | #256 | ✅ `4bae7cfb` | Producer wires L2b acceptor + L2c orchestrator + accept thread on `api().thread_manager()` |
-| 1i-mig-2c review fixes | #256 | ✅ `78fc6b9d` | `strip_unix_scheme` helper + `bind_endpoint` parent-dir mkdir-0700 + accept-loop per-iter try/catch (H2) |
-| 1i-mig-2c M3 | #256 | ✅ `8e05a821` | Promote 3-pointer SHM auth bundle + cleanup default + `spawn_shm_auth_listener_` helper onto `RoleHostFrame` |
-| 1i-mig-3 | #256 | ✅ `6f31a346` | Processor OUT-side wiring (single `spawn_shm_auth_listener_()` call via M3) |
-| 1i-mig-M3.5 | #266 | ✅ `e8e10738` | Promoted `prepare_tx_capability_` (byte-equivalent in producer+processor; ~92 LOC saved net) to `RoleHostFrame` default impl |
-| 1i-doc-sync | #267 | ✅ `47fe4806` | Doc-vs-code bundle: HEP-0041 §5.1 `strip_unix_scheme`+mkdir, §6.1 layering+L2c→L1 edge, §6.3 `borrow_fd`, §9 D4 + HEP-0036 §I11.1 + §3.6 diagram `_RSP→_ACK`, HEP-0036 §4.1 ChannelAccessEntry historical, HEP-0036 §I8 SO_PEERCRED cite fix, HEP-0031 §4.3 `shm_accept_loop` row, non-Linux `#error` symmetry for L2c, broker_proto version-comment decision, L2/L3 known limitations |
-| 1i-prod-hardening | #268 | ✅ `9c0947f1` | H3a defer accept-spawn past `set_value(true)` + H3b `teardown_infrastructure_` on REG_ACK fail + H3c broker REG_REQ endpoint validation + H3d stale-socket probe-then-unlink |
-| 1i-api-scope | #269 | ✅ `0533102e` | `RoleAPIBase::consumer_attach` annotated FRAMEWORK-INTERNAL (Option B — annotate not restructure) |
-| Mechanism enum widening | #279 | ✅ `56deb3ac` | Enum moved to `hub_queue.hpp`; `ShmCapability` added; polymorphic dispatch via `QueueReader::mechanism()` virtual; Native ABI gains `PLH_MECHANISM_SHM_CAPABILITY 2` |
-| ★ REVIEW-A | #271 | ✅ `8c6ca64a` | First milestone — gated 1i-mig-4 start; 4 angles parallel review; close-out commit |
-| 1i-mig-4 | #272 | ✅ `2793a394` | Consumer dial in `apply_consumer_reg_ack` + `RxQueueOptions::shm_capability_fd` + `build_rx_queue` dispatch (~150 LOC) |
-| 1i-mig-5 | #273 | ✅ `9e923c12` | Cutover + L3 worker fixture migration + mocking discipline doc |
-| ★ REVIEW-B | #274 | ✅ `8122bafc` | Second milestone — closed: B1 strip_unix_scheme fix + B3 worker-thread label fix + B2 deferred to #275 (see scope block below); 5 medium items carried to REVIEW-C (#276) |
-| 1i-cleanup | #275 | 🟡 in flight | Delete legacy `shm_secret` machinery (HONOR Core Structure Change Protocol for `SharedMemoryHeader::shared_secret[64]`).  Staged execution: S1+S2a+S2b+S2c-1..6+S3 ✅ shipped; S4 + S5 ⏸ pending Pattern 4 reform (#285) so coverage doesn't regress. |
-| ★ REVIEW-C | #276 | ⏸ | Third milestone — gates 1j/1k test creation |
-| 1i-coverage | #270 | ⏭ embedded in #258 | **LAYER PIVOT 2026-06-25** — initial L2 implementation (`8716d91a` + `31b1d2af`) reverted same day (`e8ca91b5`).  Shim was a parallel production scaffold; reverted.  **Contracts NOT dropped — only the test layer moved.**  The L2 contract verifications are EMBEDDED inside #258 L4 via production marker grepping (`event=ShmCapabilityTransportBound`, `event=ShmAcceptLoopSpawned`, `event=AttachAuthorized`, `event=AttachDenied`, `event=ShmAttachOrchestratorReleased`, `event=ShmCapabilityTransportReleased`, plus broker + consumer markers).  Complete checklist with source lines in #258 task description — implementer MUST pin each via `expect_log_sequence`.  Layer migration ≠ contract drop. |
+| 1k | #258 | ✅ shipped 2026-06-26 | L4 e2e SHM auth-gated data flow.  DISABLED_ prefix dropped; fs::absolute path-resolution fix; read_role_log() switch; #291 root-cause fixed via HEP-CORE-0040 §8.5.2 normative seckey contract. |
+| 1i-cleanup S2 | #275 | ⏸ | Migrate ~16 L3 datahub workers off `find_datablock_consumer_impl(name, secret, ...)` / `attach_datablock_as_writer_impl(name, secret, ...)`.  Retire secret-gate tests (e.g. `writer_attach_validates_secret`) with Rule-6 doc-blocks.  Migrate schema/checksum/roundtrip tests. |
+| 1i-cleanup S3 | #275 | ⏸ | Delete role-layer secret machinery: `RxQueueOptions::shm_shared_secret`, `TxQueueOptions::shm_config.shared_secret`, `ShmQueue::set_shm_secret`, `ShmQueue::create_reader(name, secret, ...)` + `create_writer(..., shared_secret, ...)` overloads, `shm_config.hpp::ShmConfig::secret`, role-config secret parsing, `else if (...shm_shared_secret != 0)` branches in `RoleAPIBase::build_rx_queue/build_tx_queue`. |
+| 1i-cleanup S4 | #275 | ⏸ | Delete C API secret param from `find_datablock_consumer_impl` / `attach_datablock_as_writer_impl`.  Stop `DataBlock::DataBlock()` from accepting non-zero `config.shared_secret`.  Stop producer init from generating a secret.  Header field stays (rename in S5). |
+| 1i-cleanup S5 | #275 | ⏸ | Core Structure Change — rename `SharedMemoryHeader::shared_secret[64]` → `reserved_capability_token[64]`.  Walked checklist at `docs/code_review/REVIEW_S5_CoreStructure_2026-06-27.md`. |
 | 1j | #257 | ⏸ | L3 broker tests (success / denied / divergence-WARN) |
-| 1k | #258 | ⏸ | L4 e2e SHM auth-gated data flow |
-| **★ REVIEW-D** | **#277** | **⏸** | Fourth milestone — gates mutual auth |
+| **★ REVIEW-C** | **#276** | **⏸** | Gates 1j post-#275 deletion completeness; carries forward 5 medium items from REVIEW-B (HEP §11 row, §6.4 missing factory, MemfdConsumer ctor RAII, SCM_RIGHTS multi-fd defense, D3 retry budget) |
 | Mutual auth | #262 | ⏸ | 3rd handshake frame (producer signs consumer challenge) — Phase 1 production-readiness gate |
-| **★ REVIEW-E** | **#278** | **⏸** | Fifth milestone — Phase 1 production-ready final gate |
+| **★ REVIEW-D** | **#277** | **⏸** | After #257 + #258 land; test contract pins reality (not just outcome); allowlist+revocation cycle exercised at L4 |
+| **★ REVIEW-E** | **#278** | **⏸** | Phase 1 production-ready final gate; threat model alignment; mutual auth closes impersonation window |
 
-**Out of scope for Phase 1.**
-- macOS / Windows backends (Phases 2 / 3 — separate tasks).
-- AEAD/KDF primitives (Phase 4 / #247).
-- ZMQ pre-confirm retrofit (Phase 5 / #246).
-- Encryption-at-rest in SHM slots (D2/D3 explicitly out of scope per HEP-0041 §9).
+**Verification correction (2026-06-27):** The pre-compression
+AUTH_TODO line 1137 claimed "S1+S2a+S2b+S2c-1..6+S3 ✅ shipped".
+**S3 is NOT actually shipped.**  Verified against code at HEAD:
+`hub_shm_queue.cpp:375` still implements `set_shm_secret()`;
+`:134/198/216/253` still has `shared_secret` parameters in
+`create_writer`/`create_reader` overloads.  The table above reflects
+the corrected status.
 
-### REVIEW-B (#274) close-out 2026-06-23
+**#285 ↔ #275 S4+S5 dependency (verified 2026-06-27):** SOFT.  S3+S4+S5
+operate on the C API + SharedMemoryHeader; #285 Pattern 4 reform is
+test STRUCTURE.  S2 (16 L3 worker migration) is the actual S4
+prerequisite, not Pattern 4 reform.
 
-Applied in single batched commit:
-- **B1 HIGH** — `attach_protocol.cpp:438-480` `initiate_consumer_handshake`
-  stripped `unix://` scheme before `connect(2)`.  Production-breaking
-  bug: consumer was connecting to literal `unix://...sock` rather than
-  the bare filesystem path, returning ENOENT for every dial.
-  Symmetric with `MemfdConsumer` ctor's existing strip at
-  `shm_capability_channel.cpp:559`.
-- **B3 HIGH** — corrected "BRC poll thread" → "worker thread" in
-  AUTH_TODO + `DRAFT_HEP-0031-bounded-thread_2026-06.md` at the sites
-  that talk about #272 dial.  The dial is invoked from
-  `ConsumerRoleHost::worker_main_` Step 6, not from the BRC poll
-  loop — the BRC poll thread already finished its job by delivering
-  REG_ACK onto the IncomingMessage queue.  Other "BRC poll thread"
-  mentions (about AUTH-2 #162 ZAP pump) are accurate and left alone.
-- **B2 HIGH** — deferred to #275 (see "#275 1i-cleanup detailed
-  scope" below).  REVIEW-B agent flagged 2 specific tests but the
-  scope is actually 7 SHM tests in
-  `tests/test_layer3_datahub/workers/role_api_flexzone_workers.cpp` —
-  doing only the 2 would be partial work that #275 has to revisit.
-- **Medium docs** — `hub_shm_queue.hpp:17` `@par Lifecycle` rewritten
-  to cover both capability and legacy paths; `role_api_base.cpp:108-135`
-  declaration-order docstring corrected to reflect actual
-  reverse-destruction order + `rx_queue`'s fd-dup making it safe.
+### #275 1i-cleanup migration shape
 
-**Carry-forward to REVIEW-C (#276):**
-
-Five medium-tier items from the REVIEW-B agent reports were named but
-their concrete agent text was lost when the close-out session context
-compacted.  Candidate sites identified:
-
-- **HEP §11 row** — `docs/HEP/HEP-CORE-0041-*.md:1050` "Next steps"
-  may be missing a row for #272-shipped functionality.
-- **HEP §6.4 missing factory** — `docs/HEP/HEP-CORE-0041-*.md:649`
-  L2 interface section may not list the consumer-side
-  `create_reader_standby` capability factory.
-- **MemfdConsumer ctor RAII** — `shm_capability_channel.cpp:552-...`
-  the two ctors (endpoint-owning vs socket-fd-borrowing) may have
-  asymmetric cleanup on construction failure.
-- **SCM_RIGHTS multi-fd defense** — `shm_capability_channel.cpp:494-512`
-  recvmsg cmsg parsing does NOT check `msg.msg_flags & MSG_CTRUNC`;
-  if a (compromised or buggy) producer sends 2+ fds, the kernel may
-  silently leak the extras into our process and we'd never know.
-- **D3 retry budget** — `role_api_base.cpp:987-1029`
-  `apply_consumer_reg_ack_shm_` retry loop is 10 × 100ms = ~1s,
-  comfortably under the 2s BRC `consumer_attach` ceiling.  Possibly
-  the agent flagged something about budget allocation across the
-  end-to-end dial (handshake retry + recvmsg + SCM_RIGHTS + start).
-
-REVIEW-C (#276) is the natural home for these — it re-reviews the
-same surfaces post-#275 anyway.  Decision: do not fabricate fixes in
-the absence of the original finding text.
-
----
-
-### #275 1i-cleanup staged execution (2026-06-23)
-
-Five-stage plan, each individually buildable + green-tested.  Each
-stage runs a full L0-L4 sweep before the next starts.  S5 triggers
-the Core Structure Change Protocol (`docs/IMPLEMENTATION_GUIDANCE.md`
-§ "Core Structure Change Protocol") — the protocol checklist must be
-walked through BEFORE touching `SharedMemoryHeader`.
-
-| Stage | Status | Scope |
-|---|---|---|
-| **#275-S1** | **✅ 2026-06-23** | Migrate 7 SHM tests in `role_api_flexzone_workers.cpp` to capability fast-path (`RxQueueOptions::shm_capability_fd` + `::dup` in-process SCM_RIGHTS substitute).  Helper rewrite drops `secret` param; `PayloadPair` gains `shm_transport` field (destroyed last so fd outlives queues).  2 checksum-corrupt tests rewritten inline.  No production code changed. |
-| #275-S2 | ⏸ | Migrate ~16 L3 datahub workers off `find_datablock_consumer_impl(name, secret, ...)` / `attach_datablock_as_writer_impl(name, secret, ...)`.  Retire secret-gate tests (e.g. `writer_attach_validates_secret`) with Rule-6 doc-blocks (gate goes away in S4).  Migrate schema/checksum/roundtrip tests. |
-| #275-S3 | ⏸ | Delete role-layer secret machinery: `RxQueueOptions::shm_shared_secret`, `TxQueueOptions::shm_config.shared_secret`, `ShmQueue::set_shm_secret`, `ShmQueue::create_reader(name, secret, ...)` + `create_writer(..., shared_secret, ...)` overloads, `shm_config.hpp::ShmConfig::secret`, role-config secret parsing, the `else if (...shm_shared_secret != 0)` branches in `RoleAPIBase::build_rx_queue/build_tx_queue`.  C API + header still take secrets. |
-| #275-S4 | ⏸ | Delete C API secret param from `find_datablock_consumer_impl` / `attach_datablock_as_writer_impl`.  Stop `DataBlock::DataBlock()` from accepting non-zero `config.shared_secret`.  Stop producer init from generating a secret.  Header field stays. |
-| #275-S5 | ⏸ | Core Structure Change.  Rename `SharedMemoryHeader::shared_secret[64]` → `reserved_capability_token[64]` (preserves layout; schema-hash bumps because field name changes).  Update `PYLABHUB_SHARED_MEMORY_HEADER_SCHEMA_FIELDS` row.  Delete the writer-init line at `data_block.cpp:542`.  Walk the Core Structure Change Protocol checklist. |
-
-### #275 1i-cleanup detailed scope (REVIEW-B 2026-06-23 carry-in)
-
-The cleanup deletes the legacy secret-based path on the producer +
-consumer sides (`RxQueueOptions::shm_shared_secret`,
-`TxQueueOptions::shm_config.shared_secret`, the `else if` branch in
-`RoleAPIBase::build_rx_queue` at `role_api_base.cpp:590-603`, the
-mirror branch in `build_tx_queue`, `set_shm_secret`,
-`SharedMemoryHeader::shared_secret[64]`, etc.).  REVIEW-B
-2026-06-23 surfaced that this deletion **breaks 7 SHM tests in
-`tests/test_layer3_datahub/workers/role_api_flexzone_workers.cpp`**
-that currently drive the legacy branch via non-zero secret
-parameters:
-
-- `shm_roundtrip`, `shm_checksum_roundtrip`, `shm_roundtrip_padding_sensitive`,
-  `shm_roundtrip_all_types`, `shm_roundtrip_array_field` — all 5 use the
-  `build_payload_pair(... secret, ...)` helper at lines 174-235 which
-  threads a literal `0xDEAD'BEEF'...`-style secret into
-  `make_consumer_opts` / `make_producer_opts` (lines 214 + 185).
-- `shm_slot_checksum_corrupt_detected`, `shm_flexzone_checksum_corrupt_detected` —
-  use literal `0xBADD'C0DE'...` / `0xBADD'F00D'...` secrets directly
-  (lines 881 + 1004).
-
-Both groups exercise the same `shm_shared_secret != 0` branch in
-`build_rx_queue` and the mirror branch in `build_tx_queue`.
-REVIEW-B's findings table only flagged the 2 literal-secret tests
-because they were the most obvious; the 5 helper-based tests are the
-same problem with the secret threaded through a parameter.
-
-**Migration shape for #275** (per the existing doc-blocks in the
-file at lines 755-853 and the #273 retirement precedent):
+Per the #273 retirement precedent + the doc-blocks at
+`role_api_flexzone_workers.cpp:755-853`:
 
 1. Rewrite `make_producer_opts` / `make_consumer_opts` /
    `build_payload_pair` to drive the capability path (the
    `data_transport=="shm" && shm_shared_secret==0` branch at
    `role_api_base.cpp:537-589`).  Producer-side: helper creates a
    memfd as a DataBlock writer (use `MemfdShmCapability::create_*`
-   primitives directly, not the full handshake path — this is
-   in-process so no SCM_RIGHTS step is needed).  Consumer-side:
-   helper pre-populates `RxQueueOptions::shm_capability_fd` with a
-   dup of that fd, driving the test-only fast-path at
-   `role_api_base.cpp:567-587`.
-2. Drop the `secret` parameter from the helper signatures (and from
-   all 7 call sites).
-3. The 7 tests then exercise the surviving capability path with
-   the same per-field assertions; the underlying checksum-verify and
-   roundtrip semantics are unchanged.
+   primitives directly, not the full handshake — in-process so no
+   SCM_RIGHTS step).  Consumer-side: helper pre-populates
+   `RxQueueOptions::shm_capability_fd` with a dup of that fd.
+2. Drop the `secret` parameter from helper signatures (and from all
+   call sites).
+3. The migrated tests exercise the surviving capability path with
+   the same per-field assertions; checksum-verify and roundtrip
+   semantics unchanged.
 4. Retain the L2 capability fast-path (`set_shm_capability_fd` +
-   `start`) as the production-mirror surface — covered already by
+   `start`) as production-mirror surface — covered already by
    `tests/test_utils_security/test_hub_shm_queue_capability.cpp`.
 
-Estimated scope: ~80 LOC of helper rewrite + 7 test sites that
-each lose the `secret` arg.  Lands inside #275's commit (not a
-separate task) — the deletion + the migration MUST move together so
-no commit leaves the test suite broken.
+Estimated scope: ~80 LOC helper rewrite + 7 test sites that each
+lose the `secret` arg.  Lands inside #275's commit — deletion + test
+migration MUST move together so no commit leaves the suite broken.
 
-### HEP-0041 Phase 2 — macOS backend
+### HEP-0041 Phases 2-5 (post-Phase-1)
 
-> **Tracker:** to file once Phase 1 ships.
-> **HEP anchors:** HEP-0041 §10 Phase 2; §13 macOS (`SHM_ANON` + `SCM_RIGHTS`).
+| Phase | Tracker | Scope |
+|---|---|---|
+| 2 — macOS backend | to file once Phase 1 ships | `shm_open(SHM_ANON)` replaces `memfd_create`; `SCM_RIGHTS` over Unix sockets identical to Linux |
+| 3 — Windows backend | to file once Phase 1 ships | Named pipe replaces Unix socket; `DuplicateHandle` replaces `SCM_RIGHTS`; producer queries broker for `consumer_process_id` |
+| 4 — Framework crypto primitives | #247 (script-side); native part of Phase 4 | `PYLABHUB_UTILS_EXPORT` AEAD (ChaCha20-Poly1305) + HKDF wrappers; sibling `api.crypto.*` bindings (Python/Lua/Native) |
+| 5 — HEP-0036 ZMQ retrofit | #246 | Retrofit ZMQ to pre-attach broker-confirmation pattern; producer's ZAP handler stops being load-bearing; cache becomes observability for ZMQ too |
 
-`shm_open` with `SHM_ANON` (Darwin-specific) replaces `memfd_create`.
-`SCM_RIGHTS` over Unix sockets matches Linux exactly — only the
-anonymous-shm creation primitive differs.  Builds on Phase 1's
-`IShmCapability` interface as a second backend implementation.
+**Sequencing rationale.**  Phase 1 establishes the pre-confirm
+contract on Linux/FreeBSD where the threat model is sharpest;
+Phase 5 (#246) lands AFTER Phase 1 so ZMQ retrofit replicates a
+proven pattern rather than co-evolving.
 
-### HEP-0041 Phase 3 — Windows backend
-
-> **Tracker:** to file once Phase 1 ships.
-> **HEP anchors:** HEP-0041 §10 Phase 3; §13 Windows
-> (`CreateFileMapping(NULL)` + `DuplicateHandle` via named pipe).
-
-Named pipe replaces Unix socket; `DuplicateHandle` replaces
-`SCM_RIGHTS`.  Producer queries broker for `consumer_process_id`,
-then duplicates the section HANDLE into the consumer process.
-Third backend for `IShmCapability`.
-
-### HEP-0041 Phase 4 — Framework crypto primitives
-
-> **Tracker:** task **#247** (script-accessible variant); native
-> (C++) variant is part of Phase 4 itself.
-> **HEP anchors:** HEP-0041 §9 D8 (public crypto API);
-> §10 Phase 4.
-
-`PYLABHUB_UTILS_EXPORT` AEAD (ChaCha20-Poly1305) + HKDF wrappers
-next to existing `generate_random_*` exports in `crypto_utils.hpp`.
-No SHM-specific work — these are general primitives that roles can
-layer on top of the capability transport when per-slot encryption
-(Option C territory) is the operational answer.  Script-accessible
-`api.crypto.*` bindings (Python / Lua / Native) are sibling task #247.
-
-### HEP-0041 Phase 5 — HEP-0036 ZMQ retrofit (task #246)
-
-> **Tracker:** task **#246**.
-> **HEP anchors:** HEP-0041 §9 D4 last line ("ZMQ symmetrizes via
-> task #246"); HEP-0036 §1 Amendment 2026-06-16 ("Phase 5 HEP-0036
-> ZMQ retrofit to symmetric capability semantics").
-
-Retrofit ZMQ to the same pre-attach broker-confirmation pattern.
-Producer's ZAP handler stops being load-bearing; cache becomes
-observability for ZMQ too.  Mirrors Phase 1's D4 table exactly.
-Lands AFTER Phase 1 establishes the contract on SHM — symmetry
-gained by replication, not co-evolution.
+**#245 KILLED 2026-06-17.**  POSIX `kShmModeRw 0666 → 0600` interim
+hardening rejected — HEP-0041 deletes the named-SHM `shm_open` path
+entirely.  No mode bits to harden.
 
 ---
 
-## Design audit 2026-06-10 — issues found in §I11 / §6.5 contract
+## Cross-cutting future change (#282 / #283)
 
-Honest investigation against the contract just landed.  Each entry
-classifies severity and disposition; nothing here is hand-waving.
+`#272`'s self-review surfaced that `apply_consumer_reg_ack_shm_`
+blocks the consumer-role-host worker thread for up to ~3.9s during
+the dial (#282).  The blocked thread is the worker, not the BRC poll
+thread.  Bigger than #272 alone — same pattern recurs in producer L2c
+broker pre-confirm, future #262 mutual auth Frame 3, future
+HUB_TARGETED_REQ (#75), and future api.crypto.* (#247).
 
-### Gaps in the framework surface (must address before AUTH-7 closes)
+**Generalized solution drafted under #283:** HEP-CORE-0031 amendment
+adding a `spawn_bounded` primitive (single sweeper thread +
+step-function body contract).  Tech draft at
+`docs/tech_draft/DRAFT_HEP-0031-bounded-thread_2026-06.md`.
 
-- **G1 — `api.allowed_peers(channel)` doesn't exist.**  Referenced in
-  HEP §I11 examples + AUTH-6/AUTH-7.  Scripts cannot poll the
-  allowlist today.  **Disposition**: add as explicit sub-task to
-  **AUTH-1.consumer-switch** (it's the same C5-style "expose
-  framework state to scripts" pattern as #186).  Producer-side and
-  consumer-side accessors both needed.
-- **G2 — `api.producers(channel)` doesn't exist on consumer side.**
-  Same situation as G1; symmetric API for §6.4 `producers[]` array.
-  **Disposition**: bundle with G1 under the same AUTH-1 sub-task.
-- **G3 — Internal-only `NotificationId` pattern unestablished.**
-  AUTH-1 D4 will be the first user.  Risk: future code
-  copies-without-understanding and creates non-internal events that
-  silently consume infrastructure events.  **Disposition**: document
-  the "callback_name == nullptr ⇒ internal" rule directly in
-  `cycle_ops.hpp` next to the dispatch loop change.  Trivial.
+**Migration plan (#283 §8) lands in two passes:**
 
-### Race conditions / failure modes worth pinning
+- **Pass 1** — convert affected sites to bounded-sync (no FSM
+  change).  Migrates work onto framework-managed threads with uniform
+  observability + clean teardown integration; worker-thread block
+  PERSISTS in this pass.
+- **Pass 2** — convert to truly-async with FSM amendment (insert
+  `RegistrationState::RegAckPending` between `Registered` and
+  `Authorized`; teach §8.2 outer guard to wait for `Authorized`).
+  This actually lifts the worker-thread block.
 
-- **R1 — Queue overflow.**  `kMaxIncomingQueue=64`.  Verify
-  `enqueue_message` behavior on full: block, drop, throw?  If silent
-  drop, an auth NOTIFY can be lost and the cache never converges.
-  **Severity**: HIGH if drop; medium if block (BRC poll thread
-  blocking is itself a deadlock risk, see analysis above).
-  **Disposition**: investigate as part of AUTH-1 D4 implementation;
-  if drop, add a queue-full counter that scripts/ops can observe and
-  document the recovery via BRC reconnect → REG_ACK.initial_allowlist.
-- **R2 — Worker stuck in long script → queue fills → notify dropped.**
-  Direct consequence of R1.  Operational mitigation: bounded script
-  callback time.  **Disposition**: add operator-facing doc note in
-  README_Scripting_*.md (under AUTH-5 sibling doc sweep).
-- **R3 — GET pull timeout.**  `BrokerRequestComm::get_channel_auth`
-  needs a timeout parameter matching the other sync APIs (5000ms
-  default like `register_channel`).  **Disposition**: enforce in
-  AUTH-1 D4 implementation.
-- **R4 — GET returns `CHANNEL_NOT_FOUND` or `PRODUCER_NOT_AUTHORIZED`.**
-  Race: notify fired, then producer deregistered or channel deleted
-  before pull arrives.  Handler MUST treat as "no allowlist to apply,
-  log + continue" — not as a fatal error.  **Disposition**: explicit
-  handling in AUTH-1 D4 native handler; L3 test pinning the
-  graceful-skip behavior.
-- **R5 — `set_peer_allowlist` exception safety.**  If the apply
-  throws, worker thread dies.  **Disposition**: verify exception
-  spec in implementation; wrap in try/catch in the dispatcher's
-  native-handler call site so a malformed allowlist doesn't crash
-  the role.
+Pass 2 for #272 (consumer dial) sequences under REVIEW-B (#274) or
+as part of #262.  Pass 2 for #262 (mutual auth) designs async from
+day one once #283 ships.
 
-### Acknowledged trade-offs (not bugs; document for future readers)
+---
 
-- **A1 — Revocation race window (HEP §I5).**  Between broker
-  revocation and producer cache update, a revoked consumer can
-  complete a NEW CURVE handshake.  HEP §I5 acknowledges this.
-  **Disposition**: documented; no action.
-- **A2 — Stale-cache during long script callback.**  Cache update
-  delayed by current script's wall-clock.  Scripts that block for
-  seconds defer auth convergence for seconds.  **Disposition**:
-  documented in §I11 + above; operator's responsibility to bound
-  script callback time.
-- **A3 — Allowlist size scalability.**  `set_peer_allowlist` holds a
-  mutex during update; concurrent CURVE handshakes wait.  Fine for
-  tens to low-hundreds of consumers per channel.  Beyond that, the
-  contract still holds but latency grows.  **Disposition**: documented
-  as a non-MVP concern; revisit if a channel ever needs >1000
-  consumers.
+## Design audit 2026-06-10 — open items only
 
-### Federation (HEP-0037, post-MVP)
+Closed items (A1/A2/A3 trade-offs; F1/F2 federation) archived in §9.
+Open items below are anchored to active AUTH-N entries.
 
-- **F1 — Cross-hub `CHANNEL_AUTH_CHANGED_NOTIFY` propagation.**  When
-  producer is on hub A and consumer registers on hub B (federated),
-  the notify path must traverse the inter-hub link.  HEP-0036 §13.1
-  defers this.  **Disposition**: AUTH-N work does NOT handle
-  federation; HEP-0037 will absorb.  Confirmed not blocking.
-- **F2 — `allowed_peers` semantics in federation.**  Per-hub view or
-  union view?  **Disposition**: HEP-0037's call when it lands.
+### Gaps in the framework surface (close before AUTH-7)
 
-### Test gaps
+- **G1 — `api.allowed_peers(channel)` polling accessor.**  ✅
+  shipped 2026-06-10 in Lua + Python; Native deferred per #84 MVP.
+- **G2 — `api.producers(channel)` polling accessor.**  ✅ shipped
+  2026-06-15 in Lua + Python; Native deferred per #84 MVP.
+- **G3 — Internal-only `NotificationId` pattern.**  ✅ shipped
+  2026-06-10 — `cycle_ops.hpp` documents the "callback_name == nullptr
+  ⇒ internal" rule at the dispatch loop.
 
-- **T1 — L4 demos for §I11 examples.**  Examples A/B/C/D should each
-  exist as runnable demos under `share/py-demo-auth-*/` (or similar).
-  **Disposition**: add to AUTH-7 scope.
-- **T2 — Queue-overflow stress test.**  Drive the BRC notify rate
-  above worker drain rate; confirm the documented behavior (drop or
-  block) actually happens + the observability fires.  **Disposition**:
-  add to AUTH-6 scope.
+### Race conditions / failure modes pinned
+
+- **R1 — Queue overflow.**  `kMaxIncomingQueue=64`.  Verified BENIGN
+  via `enqueue_message` drop-on-full + WARN log at
+  `role_host_core.cpp:23`.  Operators can grep.  No counter needed.
+- **R2 — Worker stuck → queue fills → notify dropped.**  Direct
+  consequence of R1.  Operational mitigation: bounded script callback
+  time.  Documented under AUTH-5 sibling sweep.
+- **R3 — GET pull timeout.**  ✅ enforced — `BrokerRequestComm::get_channel_auth`
+  takes 5000ms default like `register_channel`.
+- **R4 — GET returns `CHANNEL_NOT_FOUND` / `PRODUCER_NOT_AUTHORIZED`.**
+  ✅ handled — handler logs + continues; L3 pin
+  `GetChannelAuthRejectsNonProducer` covers the non-producer side.
+- **R5 — `set_peer_allowlist` exception safety.**  ✅ wrapped in
+  try/catch at the dispatcher's native-handler call site
+  (`handle_channel_auth_notifies`).
+
+### Test gaps (open)
+
+- **T1 — L4 demos for §I11 examples.**  Folded into AUTH-7 scope.
+- **T2 — Queue-overflow stress test.**  Folded into AUTH-6 scope.
 - **T3 — Pull failure paths (CHANNEL_NOT_FOUND / PRODUCER_NOT_AUTHORIZED
-  / timeout).**  Each path needs an L3 worker.  **Disposition**: AUTH-6.
-- **T4 — libzmq CURVE auto-retry timing.**  §I3 relies on libzmq
-  retrying handshakes until producer's cache converges.  Pin the
-  retry interval is bounded (no infinite-backoff hazard).
-  **Disposition**: AUTH-6 (single L3 test with a sync barrier).
+  / timeout).**  Folded into AUTH-6 scope.
+- **T4 — libzmq CURVE auto-retry timing bound.**  Folded into AUTH-6
+  scope.
 
-### Honest assessment
+### Honest assessment (carry-forward 2026-06-10)
 
 The contract is sound for the threat model HEP-0036 specifies
 (operator-trusted roles + manual key distribution + accepted
-revocation-race window).  The audit found 5 medium/high concrete
-issues (G1, G2, R1, R3, R4) that MUST land before AUTH-7 close —
-each has an explicit AUTH-N entry pointing to it now.  No design
-gaps that re-open the §I11 / §6.5 discussion.
+revocation-race window).  Original audit found 5 medium/high concrete
+issues (G1, G2, R1, R3, R4) that ALL closed by 2026-06-15.  No
+remaining design gaps that re-open §I11 / §6.5.
 
 If a future request looks like it wants to revisit "should worker
 prioritise auth notifies" / "should pull failure be critical" /
-"should the queue block" — it's hitting issues this audit already
-considered.  Re-read this section and §I11 + §6.5 first.
+"should the queue block" — re-read §I11 + §6.5 first; the audit
+considered these.
 
 ---
 
 ## Backlog — open items NOT on the AUTH-1..7 critical path
 
-These are tracked here so they survive context resets per CLAUDE.md
-§"Session hygiene" — open items must live in a subtopic TODO, not only
-in chat history.
-
 ### Test infrastructure / coverage gaps
 
 - **Allow-path L3 pin for D2.**
   `DatahubBrokerHealthTest.CtrlZapDenyPath` pins the deny path.
-  Symmetric allow-path L3 needs a BRC client whose `client_pubkey` is
-  added to the broker's `known_roles[]` before connect; that requires
+  Symmetric allow-path L3 needs a BRC client whose `client_pubkey`
+  is added to the broker's `known_roles[]` before connect; requires
   the test infrastructure to thread explicit CURVE keys into the
-  worker's broker config (the existing L3 worker pattern uses
-  ephemeral BRC keys, which the worker process cannot know ahead of
-  time to pre-register).  Smallest fix: extend the
+  worker's broker config.  Smallest fix: extend the
   `BrokerService::Config` test-side construction to include a
   pre-generated `known_roles[]` entry built from the test client's
   keypair.  Effort: S.
@@ -1463,13 +390,14 @@ in chat history.
 
 - **`plh_role --keygen` does not publish `<vault>.pub`.**
   HEP-CORE-0035 §4.8.3 specifies `plh_hub --add-known-role <role.pub>`
-  as the canonical operator workflow; that requires the role binary
-  to publish a sibling `.pub` file alongside the vault (the way
+  as the canonical operator workflow; requires the role binary to
+  publish a sibling `.pub` file alongside the vault (the way
   `plh_hub --keygen` publishes `hub.pubkey`).  Currently the L4
   RoundTrip test opens the role vault programmatically to extract the
   pubkey — a test backdoor.  Mirror `HubVault::publish_public_key`
   for `RoleVault` (atomic O_EXCL + O_NOFOLLOW + mode 0644 + symlink
-  defense per HEP-CORE-0035 §4.6.4).  Effort: M.
+  defense per HEP-CORE-0035 §4.6.4).  Effort: M.  **Closes alongside
+  Phase 3 CLI work (#155).**
 
 - **Hot-reload of `known_roles.json` on a running hub** (HEP-CORE-0035
   §4.8.5).  `BrokerCtrlAdmission::set_peer_allowlist` exists with no
@@ -1485,14 +413,13 @@ in chat history.
   work.  Unblocked once AUTH-1..7 ship.
 - **Phase F — Federation peer ZAP parity.**  Depends on Phase E +
   Federation HEP (task #105).
-- **Phase G — SHM auth migration.**  AUTH-4 is the foundation;
-  Phase G is the broader migration (existing SHM consumers gain
-  `shm_secret` enforcement).
+- **Phase G — SHM auth migration.**  HEP-CORE-0041 is the foundation;
+  Phase G is the broader migration to capability transport (existing
+  SHM consumers gain capability-fd path).
 - **Phase H — Demo migration.**  24 role configs across 11 demo dirs
   ship `"auth": { "keyfile": "" }` (pre-dates Phase C, broken since
-  early May 2026; see 2026-06-09 archive for full disposition).
-  Belongs alongside #79 (AUTH-4 step 4) and #155 (CLI --init
-  bundling) as a coordinated refresh wave, not as a Phase C close-out.
+  early May 2026; see 2026-06-09 archive).  Belongs alongside #155
+  (CLI --init bundling) as coordinated refresh wave.
 
 ---
 
@@ -1500,117 +427,138 @@ in chat history.
 
 | # | Decision | Affects | Tentative direction |
 |---|---|---|---|
-| P-InboxQueue | InboxQueue admission policy location | Phase E | **REVISED 2026-06-10:** InboxQueue inherits the parent data channel's allowlist + reuses the role-wide ZAP handler per HEP-0036 §9.3.  No separate per-inbox `PeerAdmission`.  Inbox state follows the parent ZmqQueue's Standby/Configured/Active state machine (HEP §6.7).  Implementation deferred — tracked as task **#191**, picked up after AUTH-7.  HEP-0036 §12 Phase 8's "verification only" wording is inaccurate; CURVE wiring is genuinely missing in `InboxQueue::start()` today (audited 2026-06-10). |
-| P-Admin | AdminService — CURVE-wrap or loopback-only? | Phase E (task #127) | Hard loopback-only enforce (refuse non-loopback bind) for v1; CURVE-wrap is HEP-CORE-0035 §5 future work |
-| P-SHM-Identity | What is a PeerIdentity for SHM? | Phase G + AUTH-4 (task #129) | Broker-issued `shm_secret` primary; optional uid guard if operator sets it; broker controls the gate via secret issuance |
-| P-Demos | How existing demos migrate | Phase H (task #130) | Transitional `--allow-anonymous-data` flag, gated to refuse-bind on non-loopback endpoints; demos updated incrementally |
-| P-HEP | When to sync HEPs vs hold tech_draft | Close-out (task #131) | Tech_draft was archived 2026-06-02; HEPs are now the authoritative source.  No further sync needed unless H surfaces gaps |
+| P-InboxQueue | InboxQueue admission policy location | Phase E | **REVISED 2026-06-10:** InboxQueue inherits parent data channel's allowlist + reuses role-wide ZAP handler per HEP-0036 §9.3.  No separate per-inbox `PeerAdmission`.  Inbox state follows parent ZmqQueue's Standby/Configured/Active state machine (HEP §6.7).  Tracked as task **#191**, picked up after AUTH-7. |
+| P-Admin | AdminService — CURVE-wrap or loopback-only? | Phase E | Hard loopback-only for v1; CURVE-wrap is HEP-CORE-0035 §5 future work |
+| P-SHM-Identity | What is a PeerIdentity for SHM? | HEP-0041 Phase 1 | Capability path: peer identity = consumer pubkey verified during pre-attach `CONSUMER_ATTACH_REQ`.  Superseded the original "broker-issued `shm_secret`" answer. |
+| P-Demos | How existing demos migrate | Phase H | Transitional `--allow-anonymous-data` flag, gated to refuse-bind on non-loopback endpoints; demos updated incrementally |
+| P-HEP | When to sync HEPs vs hold tech_draft | Close-out | Tech_drafts active for in-progress work; promote to HEP at landing.  See `docs/tech_draft/README.md`. |
 
 ---
 
-## Parallel / adjacent tracks (don't sequence into the AUTH-1..7 chain by mistake)
+## Parallel / adjacent tracks
 
-These have their own task IDs but touch the same surface:
+These have their own task IDs but touch the same surface — do NOT
+sequence them into the AUTH-1..7 chain.
 
-- **#74** — HEP-CORE-0035 auth implementation tracker (umbrella for
-  Phase D close + AUTH-1..7; treat as the strategic tracker).
-- **#102** — HEP-CORE-0035 §4.7 runtime key handling — **SUPERSEDED
-  2026-06-05** by the HEP-CORE-0040 chain (#165–#176 all shipped);
-  closes when stragglers reach steady state.
-- **#103** — HEP-CORE-0017 §3.3 + HEP-CORE-0036 implementation;
-  carries AUTH-1.
-- **#104** — Sibling HEP updates per HEP-CORE-0036 §14; carries
-  AUTH-5.
-- **#105** — Federation protocol design + cross-hub reg/comm
-  verification; explicitly post-MVP per HEP-CORE-0036 §13.1.
-- **#106** — HEP-CORE-0038 + impl: script-accessible vault keystore
-  (`api.vault_save/load`); blocked on HEP-0040 storage layer (now
-  shipped).
-- **#120** — Windows pathway hardening for HEP-CORE-0035 §4.6 floor.
+- **#74** — HEP-CORE-0035 auth implementation umbrella tracker.
+- **#102** — HEP-CORE-0035 §4.7 runtime key handling — SUPERSEDED
+  2026-06-05 by HEP-CORE-0040 chain (#165–#176 all shipped 2026-06-09).
+- **#103** — HEP-CORE-0017 §3.3 + HEP-CORE-0036 implementation
+  (AUTH-1 carrier; ✅ shipped).
+- **#104** — Sibling HEP updates per HEP-CORE-0036 §14 (AUTH-5).
+- **#105** — Federation protocol design — explicitly post-MVP per
+  HEP-CORE-0036 §13.1.
+- **#106** — HEP-CORE-0038 + impl script-accessible vault keystore
+  — depends on #104 + HEP-0040 storage (now shipped).
+- **#120** — Windows pathway hardening for HEP-CORE-0035 §4.6 floor
+  — blocked by missing Windows CI.
 - **#152** — Delete legacy `RoleIdentityPolicy` (hygiene; independent).
-- **#154** — Re-create L3 broker tests against refactored lib code;
-  carries AUTH-6.
-- **#162** — HB-2 wiring; carries AUTH-2.
-- **#163** — HB-4+5 wiring; carries AUTH-3.
-- **#164** — HB-6 broker-side shm_secret; carries AUTH-4 steps 1-3.
-- **#79** — `plh_role --init` SHM secret; carries AUTH-4 step 4.
+- **#154** — Re-create L3 broker tests (AUTH-6).
+- **#162** — HB-2 wiring (AUTH-2; ✅ shipped).
+- **#163** — HB-4+5 wiring (AUTH-3; ✅ shipped).
+- **#164** — HB-6 broker-side shm_secret (SUPERSEDED by HEP-0041).
+- **#79**  — `plh_role --init` SHM secret (SUPERSEDED by HEP-0041).
+- **#258** — HEP-0041 1k L4 e2e SHM (✅ shipped 2026-06-26).
+- **#275** — HEP-0041 1i-cleanup (in flight; S2..S5 open).
+- **#262** — HEP-0041 mutual auth (3rd handshake frame).
+- **#291** — SHM consumer-attach handshake failure (✅ closed via
+  KeyStore raw 32-byte seckey representation; HEP-0040 §8.5.2
+  NORMATIVE).
+- **#286/287/288/289/290** — HEP-0036 §5b canonical wire schema
+  unification (✅ all shipped).
 
-### Items NOT on this critical path
+### Items NOT on the critical path
 
-- **#75** HUB_TARGETED_ACK — scope ambiguous; no HEP section, no
-  tech_draft.  Needs design-first work.
-- **#76** Script reload — independent feature; tech_draft exists,
-  HEP not yet numbered.
+- **#75** HUB_TARGETED_ACK — scope ambiguous; needs design first.
+- **#76** Script reload — independent feature; tech_draft exists.
 - **#77** Tier 2 dynamic callbacks — independent feature.
 - **#94** HEP-0021 §16.5 ephemeral binding — paired with AUTH-1 per
-  HEP-0036 §14.1 wire-shape coupling but the production-caller
-  wiring is about multi-hub processor, not auth gating.  Can land in
-  the AUTH-1 commit as a §14.1 deliverable but doesn't itself gate
-  the goal.
-- **#155** Phase 3 (`--init` one-shot bundling) — CLI UX, auth-
-  adjacent but not auth-gating.  Phases 1+2 shipped per commits
-  `3215e5aa` and `c684776a`.
+  HEP-0036 §14.1 wire-shape coupling but production-caller wiring is
+  about multi-hub processor, not auth gating.
+- **#155** CLI Phase 3 (`--init` one-shot bundling) — CLI UX,
+  auth-adjacent but not auth-gating.  This is Phase 3 of the locked
+  execution plan in `docs/TODO_MASTER.md`.
 
 ---
 
 ## Decision log — key calls captured for audit trail
 
+Pre-2026-06-27 entries preserved verbatim in archive §10 (see
+`AUTH_TODO_completions.md`).  New entries below.
+
 - **2026-06-05 — Strict-mode cleanup must precede A3** (now AUTH-1).
-  The 2026-06-05 audit (see 2026-06-09 archive §"How the silent-fallback
-  hole opened") showed A2 (commit `badfaed1`) shipped zero CURVE
-  coverage due to a `validate_auth_options` fallback + a `set_auth`
-  ordering bug.  Strict-mode cleanup chain (C1..C5) sequenced before
-  AUTH-1 to surface dependents as compile/link/run errors instead of
-  silent miscompiles.  Chain closed 2026-06-09.
-- **2026-06-05 PM — Separate STORAGE from API.**  The "keypair as
-  ctor arg" shape creates a second copy of the seckey in process
-  memory.  Decision: storage is one owner per process (HEP-CORE-0040
-  KeyStore + LockedKey); API design exposes OPERATIONS on secret
-  material (`with_seckey(name, cb)`), not byte exports.  Memory rule
-  added: separate STORAGE design from API design when asked "where
-  should X live".  See 2026-06-09 archive §"2026-06-05 PM REFRAME".
-- **2026-06-06 — Use-not-export discipline (round-5).**
-  RoleAPIBase + HubAPI lose the seckey accessor entirely; no
-  legitimate caller exists (tracing every reader of seckey shows
-  they're all libzmq socket-option setters that call `with_seckey`
-  directly).  See HEP-CORE-0040 §8.2 and 2026-06-09 archive
-  §"Strict-CURVE cleanup chain — C1..C5".
-- **2026-06-09 — Queue-level gate, NOT transport-level.**  The broker
+  C1..C5 sequenced before AUTH-1 to surface dependents as
+  compile/link/run errors instead of silent miscompiles.  Chain closed
+  2026-06-09.
+- **2026-06-05 PM — Separate STORAGE from API.**  HEP-CORE-0040
+  KeyStore + LockedKey owns storage (one owner per process); API
+  exposes OPERATIONS (`with_seckey(name, cb)`), not byte exports.
+- **2026-06-06 — Use-not-export discipline (round-5).**  RoleAPIBase
+  + HubAPI lose seckey accessor entirely; no legitimate caller
+  exists.  HEP-CORE-0040 §8.2.
+- **2026-06-09 — Queue-level gate, NOT transport-level.**  Broker
   auth gate sits at QUEUE level (before data channel construction),
   not at SHM/ZMQ transport level (CURVE handshake / shm_secret
-  memcmp).  HEP-CORE-0036 lines 1546, 1797, 1906, 1911 explicitly
-  state this.  Captured here because it surfaced multiple times
-  during the audit.
+  memcmp).
 - **2026-06-09 — Mechanism enum collapsed from 3 to 2 states.**
-  `Plaintext` was structurally unreachable after C1 (validator rejects
-  empty keys).  Collapsed to `Uninitialized` / `Curve`.  See 2026-06-09
-  archive §"Phase C fresh-eye review".
+  `Plaintext` was structurally unreachable after C1.  Collapsed to
+  `Uninitialized` / `Curve`.  Later widened in HEP-0041 to add
+  `ShmCapability` per #279.
 - **2026-06-09 — Demo refresh deferred.**  Phase C did NOT introduce
-  new demo breakage; the `auth.keyfile = ""` breakage pre-dates
-  Phase C (#78 / B3 in early May 2026).  Demo refresh belongs in
-  Phase H alongside #79 + #155, not as a Phase C close-out.  See
-  2026-06-09 archive §"Strict-CURVE cleanup chain — C1..C5".
+  new demo breakage; the `auth.keyfile = ""` breakage pre-dates Phase
+  C (#78 / B3 in early May 2026).
+- **2026-06-16 — HEP-0041 supersedes AUTH-4.**  Capability transport
+  via `memfd_create` + `SCM_RIGHTS` replaces the `shm_secret` model.
+  Tasks #164 + #79 closed as SUPERSEDED.
+- **2026-06-26 — KeyStore seckey representation contract** (HEP-0040
+  §8.5.2 NORMATIVE).  Raw 32 bytes at security-module boundary; Z85
+  only at file/wire/display.  Closed #291; commit `e0f16a44`.
+- **2026-06-27 — AUTH_TODO compression.**  1616 → ~500 lines;
+  completed-phase narratives extracted to
+  `docs/archive/transient-2026-06-27/todo-completions/AUTH_TODO_completions.md`.
+  Verified line 1137 mis-claim ("S3 ✅ shipped") was false against
+  code.
 
 ---
 
 ## Memory rules adopted during the auth track
 
-These survive in the user-level MEMORY.md; included here for the
-audit trail.
+These survive in the user-level MEMORY.md; included here for audit
+trail.
 
 - **Audit stale silent-fallback patterns whenever a contract changes.**
   `if (X.empty()) return /* skip security */` is a contract-violation
-  candidate, not a clean default.  Source: 2026-06-05 audit found A2
-  shipped ZERO CURVE because the validator endorsed all-empty as
-  legacy plaintext.
+  candidate, not a clean default.  Source: 2026-06-05 audit.
 - **Separate STORAGE design from API design.**  When asked "where
   should X live", split into (a) where the bytes live (lowest
   reasonable level, single owner) and (b) what API exposes access
-  (grouped logically per consumer).  Source: 2026-06-05 PM REFRAME on
-  HEP-CORE-0040.
+  (grouped logically per consumer).  Source: 2026-06-05 PM REFRAME.
 - **Refresh against persistent docs at the moment work begins.**  Do
   not re-derive plans from HEPs when AUTH_TODO already has the agreed
-  plan.  Source: 2026-06-09 user correction — "your memory is burnt
-  about what we should do?" — caught me re-deriving HB-1..6 from
-  HEPs instead of reading the AUTH_TODO entries that already
-  captured the plan.
+  plan.  Source: 2026-06-09 user correction.
+- **No flake explanations.**  Different tests failing across runs is
+  a RACE SIGNATURE, not a flake signature.  "Passes when I re-run it"
+  is not investigation, it's re-sampling.  Source: 2026-06-13
+  AUTH-2 concurrent-pumper PANIC.
+- **Read log BEFORE rerun.**  Re-running first overwrites the failure
+  log you needed.  Companion to the no-flake-explanations rule.
+  Source: 2026-06-25 RunMode_LogShowsCorrectStartupAndShutdownOrdering
+  failure.
+- **Seckey representation at module boundary is NORMATIVE.**  Raw
+  bytes inside the security module; encoded only at file/wire/display.
+  HEP-CORE-0040 §8.5.2.  Source: 2026-06-26 #291 root cause.
+
+---
+
+## How to retrieve archived content
+
+```bash
+# Full pre-compression AUTH_TODO (verbatim, all 1616 lines):
+git show dfe86a61:docs/todo/AUTH_TODO.md | less
+
+# Specific narrative section (AUTH-1 sub-deliverables, lines 139-647):
+git show dfe86a61:docs/todo/AUTH_TODO.md | sed -n '139,647p'
+```
+
+See `docs/archive/transient-2026-06-27/todo-completions/AUTH_TODO_completions.md`
+for the index of what was extracted and where each section lives.

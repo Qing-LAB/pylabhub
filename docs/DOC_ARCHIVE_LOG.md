@@ -1099,3 +1099,20 @@ Six code reviews moved to `docs/archive/transient-2026-06-27/code_reviews/`.  Al
 **Active reviews (NOT archived):** `REVIEW_Connection_Inbox_Band_2026-05-17.md` (16 ❌ OPEN — explicitly active per TODO_MASTER), `REVIEW_CatchBlocks_2026-05-01.md` (full-codebase silent-failure sweep), `REVIEW_FullModule_2026-04-06.md`, `REVIEW_HEP_0033_PostP9_2026-05-05.md` (F1 BLOCKER open), `REVIEW_ScriptEngine_2026-03-20.md` (3 OPEN), `REVIEW_WaveM2.5_2026-05-10.md` (5 OPEN), `REVIEW_WaveM3_{2026-05-11,PostFix,Rigorous,FifthPass}.md` (various OPEN items).
 
 **Tech drafts:** 0 archived this batch.  All 8 active tech_drafts drive in-progress work — see `docs/tech_draft/README.md` for the live status table.  Promotion candidates (once their work ships): `DRAFT_HEP-0036-implementation-guideline_2026-05.md` → fold I1-I12 invariants into HEP-CORE-0036 §3.5bis once AUTH-1..7 ship; `engine_callback_tiers.md` → HEP-CORE-0011 once #77 Tier 2 callbacks ship; `raii_layer_redesign.md` Phases 2-5 → HEP-CORE-0024 "Typed C++ Addon Layer" once Phase 5 SimpleRoleHost template ships.
+
+## 2026-06-27 (Phase 0b): AUTH_TODO compression + S5 protocol pre-walk
+
+Doc-only cleanup that compresses the active AUTH_TODO from 1616 → 564 lines and produces a pre-flight Core Structure Change Protocol walkthrough for #275 S5.
+
+**New documents:**
+
+| Document | Purpose |
+|----------|---------|
+| `docs/archive/transient-2026-06-27/todo-completions/AUTH_TODO_completions.md` | Index of AUTH_TODO sections extracted on 2026-06-27 with line ranges into the prior commit (`dfe86a61`) so future readers can fetch verbatim narrative on demand without paging the full pre-compression file.  Companion to the 2026-06-05 and 2026-06-09 archives. |
+| `docs/code_review/REVIEW_S5_CoreStructure_2026-06-27.md` | Walked checklist for #275 S5 — renaming `SharedMemoryHeader::shared_secret[64]` → `reserved_capability_token[64]`.  Each of the 9 Core Structure Change Protocol matrix items (size+alignment, schema macro, ctor init, producer registration, consumer discovery, schema validation, checksum logic, test coverage, documentation) walked against current code; sequencing pre-conditions enumerated; ship-step checklist captured.  Lands as a 2026-MM-DD archive after S5 ships green. |
+
+**Compressed file:**
+
+`docs/todo/AUTH_TODO.md` reduced from 1616 → 564 lines.  Completed-phase narratives (AUTH-1 full sub-deliverables 4(a)-(g) + B1 + producer-S3 + follow-ups 6.1-6.8; AUTH-2/3 detailed; AUTH-4 SUPERSEDED block; HEP-0041 Phase 1 substep 1a-1k narratives + REVIEW-A/B close-outs; HEP-0036 §5b parallel track table; pre-flights #263-#265) extracted to the archive index.  Active AUTH_TODO retains: design principles (verbatim — load-bearing); current PeerAdmission state table; AUTH-5/6/7 active scope; HEP-0041 critical-path table with active rows only; #275 S2..S5 detailed plan; HEP-0041 Phases 2-5 brief; design audit gaps with active anchors; backlog; deferred decisions; parallel tracks; decision log; memory rules.
+
+**Verification correction recorded:** Pre-compression line 1137 claimed `S1+S2a+S2b+S2c-1..6+S3 ✅ shipped`.  Verified against code at HEAD: **S3 is NOT actually shipped** (`hub_shm_queue.cpp:375` still has `set_shm_secret()`; `:134/198/216/253` still has `shared_secret` parameters).  Corrected status carries forward in the compressed AUTH_TODO.

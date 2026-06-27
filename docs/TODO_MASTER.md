@@ -18,7 +18,7 @@ see `docs/DOC_STRUCTURE.md` §2.1.1.
 
 | Phase | Goal | Trackers |
 |---|---|---|
-| **Phase 0** (in flight) | TODO/archive hygiene — close shipped-but-mislabeled items, archive 6 closed reviews, refresh sprint focus.  Phase 0b (AUTH_TODO compression 1616→~600 lines + #275 S5 Core Structure Change Protocol walk) deferred to next session. | this commit |
+| **Phase 0** ✅ DONE | TODO/archive hygiene — close shipped-but-mislabeled items, archive 6 closed reviews, refresh sprint focus.  Phase 0a (commit `dfe86a61`) + Phase 0b 2026-06-27 (this commit) — AUTH_TODO compressed 1616→564 lines (archive index at `docs/archive/transient-2026-06-27/todo-completions/AUTH_TODO_completions.md`); Core Structure Change Protocol walk for #275 S5 at `docs/code_review/REVIEW_S5_CoreStructure_2026-06-27.md`. | shipped |
 | **Phase 1** — CURVE chain close | AUTH-5 → AUTH-6 → #257 (1j) → AUTH-7 → #275 S2..S5 (1i-cleanup deletion + Core Structure rename) → REVIEW-C → #262 → REVIEW-D → REVIEW-E (production-readiness final gate) | #104, #154, #257, AUTH-7, #275, #276, #262, #277, #278 |
 | **Phase 2a** — Role-host unification | Collapse `ProducerRoleHost` (549 LOC) + `ConsumerRoleHost` (456 LOC) + `ProcessorRoleHost` (649 LOC) into a single canonical `worker_main_()` skeleton inside `RoleHostFrame`. | #292 (new) |
 | **Phase 2b** — Template RAII Phases 2-5 | `SlotIterator` over QueueWriter/Reader, timing parity with `run_data_loop`, `TypedInboxClient<MsgT>` / `TypedBand<EventT>`, `SimpleRoleHost<SlotT>` template parameterising the unified skeleton. | API_TODO §"Template RAII" Phases 2-5 |
