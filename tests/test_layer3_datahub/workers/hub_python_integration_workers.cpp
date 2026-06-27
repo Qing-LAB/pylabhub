@@ -20,6 +20,7 @@
 #include "utils/script_engine_factory.hpp"
 #include "../../src/scripting/python_interpreter_module.hpp"
 
+#include "curve_test_setup.h"
 #include "log_capture_fixture.h"
 #include "shared_test_helpers.h"
 #include "test_entrypoint.h"
@@ -187,6 +188,19 @@ def on_stop(api):
             const std::string expected_uid = cfg.identity().uid;
             ASSERT_FALSE(expected_uid.empty())
                 << "init_directory must have generated a hub uid";
+
+            // HEP-CORE-0040 §172 + HEP-CORE-0035 §4.6.5 bypass: seed
+            // the process KeyStore with a fresh hub identity before
+            // HubHost::startup() constructs BrokerService, which
+            // requires key_store().has("hub_identity").  The on-disk
+            // vault round-trip (Argon2id) is intentionally skipped per
+            // §4.6.5 — the L2 vault layer is covered by
+            // test_hub_config; this test exercises the broker bind +
+            // CURVE wire from KeyStore-seeded state onward.  No roles
+            // needed: this test does not drive a BRC client.
+            auto curve = pylabhub::tests::make_curve_setup({});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture(
+                "test", "test.l3.python_hub_integration", curve);
 
             HubHost host(std::move(cfg));
 
