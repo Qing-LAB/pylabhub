@@ -174,27 +174,51 @@ change" + a closed sweep across §4/§5/§9/§10/§12/§14:
 
 > **Tracker:** task **#154** (in-progress).
 > **HEP anchors:** §6.5 producer-side handler flow + §I11.
+> **Audit:** `docs/code_review/REVIEW_AUTH6_TestDisposition_2026-06-27.md`
+> (per-TEST_F disposition table; 194 TEST_F's across 15 files).
 
-**Goal.**  Unmask the 7 worker files masked under task #153
-(lib-stabilization exclusion procedure; see 2026-06-05 archive).
-Per-file commit with mutation-sweep on each restored TEST_F.
+**Goal.**  Bring the L3 datahub test suite back to green against the
+post-renovation lib, applying README_testing §1.2 rules 6 (RETIRE
+obsolete tests) + 7 (layer placement follows what the test
+exercises) — NOT a mechanical unmask-and-migrate.
 
-**Scope (do not expand).**
+**Audit findings (2026-06-27).**  Per the audit doc:
 
-- Pins per §I11: broker pushes allowlist on consumer reg / dereg;
-  producer applies via the normative handler flow; consumer with
-  wrong pubkey rejected; revocation propagates within the contract
-  bound.
-- Test surface = observable allowlist state (`api.allowed_peers` or
-  `tx_queue.peer_allowlist_snapshot()`).  Assertions pin the
-  observable, not the implementation thread / dispatcher internals.
+| Disposition | Count | Notes |
+|---|---|---|
+| **UNMASK + MIGRATE** (surfaces intact, tests correct) | 142 | Files 1-8 + 11-15 of the audit table |
+| **DEFER** (blocked on a not-yet-shipped piece) | 3 | File 9 federation — gated on #105 |
+| **DELETE** (slated for outright deletion) | 7 | File 10 Suite 2 — gated on #152 |
+| **RE-LAYER to L2** (Pattern-1 helpers; production-consumed) | 4 | File 10 Suite 1 |
+
+Files already unmasked (11-15) **retroactively confirmed valid** —
+no rework needed, including the 2026-06-27 commit `86b7b209`
+(`test_datahub_hub_host_integration`).
+
+**Real blocker — task #177.**  Task #177 ("Migrate L3 test workers
++ L2 test_hub_state to KeyStore-based fixtures") hasn't shipped.
+Without #177 the worker bodies can't initialize `SecureMemorySubsystem`
++ `KeyStore` (HEP-CORE-0040 #169-#170 framework primitives).
+**Recommended sequencing:** ship #177 → batch 2a (broker+protocol+
+state-machine) → batch 2b (broker_health+metrics+endpoint_registry)
+→ batch 2c (Lua+Python integration) → Phase 3 (file 9 DEFER + file 10
+DELETE/RE-LAYER) → close out.
 
 **Out of scope (per §I11).**
 
 - Tests that pin priority dispatch, queue-blocking semantics, or
   critical-error escalation — none are in the contract.
+- Re-deriving disposition decisions — the audit table is the source
+  of truth.
 
-**Depends on:** AUTH-1 shipped ✅.
+**Closed-as-merged into AUTH-6:** tasks #293, #294, #295 (originally
+opened 2026-06-27 as separate trackers for metrics, ZMQ endpoint
+registry, and Lua/Python integration revivals — the audit found all
+three are uniform UNMASK+MIGRATE alongside files 1-4, so separate
+trackers are unnecessary).
+
+**Depends on:** AUTH-1 shipped ✅; task **#177** (KeyStore fixtures)
+— REAL BLOCKER, not yet shipped.
 
 ### AUTH-7 — L4 end-to-end gate close
 
