@@ -166,6 +166,42 @@ gtest_discover_tests(test_layer2_key_store
 )
 
 # ============================================================================
+# Test: CurveKeyStoreFixture protocol-validation (HEP-CORE-0040 §172 +
+# HEP-CORE-0035 §4.6.5; task #177).  Pattern 3 — subprocess per scenario.
+# Pins the test fixture's seed contract:
+#   - canonical names (kHubIdentityName, role_keystore_name)
+#   - seed byte-equivalence (no pubkey↔seckey swap)
+#   - minimality (no extra seeded entries)
+# Prevents fixture drift from silently breaking the L3 broker suite.
+# ============================================================================
+add_executable(test_layer2_curve_test_fixtures
+    test_curve_test_fixtures.cpp
+    workers/curve_test_fixtures_workers.cpp
+)
+
+target_link_libraries(test_layer2_curve_test_fixtures
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+        GTest::gmock
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_curve_test_fixtures)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_curve_test_fixtures
+    SUITE_NAME "Layer2_CurveTestFixtures"
+)
+layer2_require_staged_utils(test_layer2_curve_test_fixtures)
+
+gtest_discover_tests(test_layer2_curve_test_fixtures
+    PROPERTIES
+        LABELS "layer2;service;security;test_fixture;curve_test_setup"
+        TIMEOUT 60
+)
+
+# ============================================================================
 # Test: ZmqQueue CURVE+ZAP auth (PeerAdmission Phase C, ZmqQueue side)
 # Pattern 3 — subprocess per scenario.  Pins:
 #   - allowed peer → CURVE handshake succeeds + message round-trip
