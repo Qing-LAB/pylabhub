@@ -207,10 +207,12 @@ add_executable(test_layer3_datahub
     workers/hub_host_integration_workers.cpp
 
     # ── HubHost + LuaEngine integration (HEP-CORE-0033 Phase 7 D3.3) ────────
-    # MASKED — depends on HubHost which now throws on empty pubkey per HEP-0035 §2;
-    # restore in HEP-0035 §4.6.5 step 3-revised-F migration.
-    # test_hub_lua_integration.cpp
-    # workers/hub_lua_integration_workers.cpp
+    # Unmasked 2026-06-27 under #154 / #177 — workers now seed the
+    # process KeyStore via CurveKeyStoreFixture (HEP-CORE-0040 §172 +
+    # HEP-CORE-0035 §4.6.5 bypass discipline) before each HubHost::startup(),
+    # so BrokerService's KeyStore["hub_identity"] check succeeds.
+    test_hub_lua_integration.cpp
+    workers/hub_lua_integration_workers.cpp
 
     # ── HubHost + PythonEngine integration (HEP-CORE-0033 Phase 7 D4.2) ────
     # Unmasked 2026-06-27 under #154 / #177 — worker now seeds the

@@ -39,6 +39,7 @@
 
 #include "hub_lua_integration_workers.h"
 
+#include "curve_test_setup.h"
 #include "log_capture_fixture.h"
 #include "plh_datahub.hpp"
 #include "plh_service.hpp"
@@ -235,6 +236,15 @@ int real_lua_script_on_init_on_stop_fire_and_log()
             ASSERT_FALSE(expected_uid.empty())
                 << "init_directory must have generated a hub uid";
 
+            // HEP-CORE-0040 §172 + HEP-CORE-0035 §4.6.5 bypass —
+            // seed KeyStore["hub_identity"] before HubHost::startup()
+            // constructs BrokerService.  No roles needed (no BRC client
+            // in this test family).  Per-worker RAII; one fixture per
+            // subprocess.
+            auto ks_curve_ = pylabhub::tests::make_curve_setup({});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture_(
+                "test", "test.l3.lua_hub_integration", ks_curve_);
+
             HubHost host(std::move(cfg));
 
             // Wall-clock bound on startup.  Observed steady-state on
@@ -311,6 +321,15 @@ int script_syntax_error_startup_throws()
             const fs::path dir = make_lua_hub_dir("syntax", broken_lua);
 
             auto cfg = HubConfig::load_from_directory(dir.string());
+            // HEP-CORE-0040 §172 + HEP-CORE-0035 §4.6.5 bypass —
+            // seed KeyStore["hub_identity"] before HubHost::startup()
+            // constructs BrokerService.  No roles needed (no BRC client
+            // in this test family).  Per-worker RAII; one fixture per
+            // subprocess.
+            auto ks_curve_ = pylabhub::tests::make_curve_setup({});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture_(
+                "test", "test.l3.lua_hub_integration", ks_curve_);
+
             HubHost host(std::move(cfg));
 
             try
@@ -364,6 +383,15 @@ int on_tick_fires_periodically_when_idle()
                 "tick_idle", lua_body, "fixed_rate", 100);
 
             auto cfg = HubConfig::load_from_directory(dir.string());
+
+            // HEP-CORE-0040 §172 + HEP-CORE-0035 §4.6.5 bypass —
+            // seed KeyStore["hub_identity"] before HubHost::startup()
+            // constructs BrokerService.  No roles needed (no BRC client
+            // in this test family).  Per-worker RAII; one fixture per
+            // subprocess.
+            auto ks_curve_ = pylabhub::tests::make_curve_setup({});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture_(
+                "test", "test.l3.lua_hub_integration", ks_curve_);
 
             HubHost host(std::move(cfg));
             ASSERT_NO_THROW(host.startup());
@@ -437,6 +465,15 @@ int on_tick_catch_up_fixed_rate_with_compensation()
                 "fixed_rate_with_compensation", 100);
 
             auto cfg = HubConfig::load_from_directory(dir.string());
+
+            // HEP-CORE-0040 §172 + HEP-CORE-0035 §4.6.5 bypass —
+            // seed KeyStore["hub_identity"] before HubHost::startup()
+            // constructs BrokerService.  No roles needed (no BRC client
+            // in this test family).  Per-worker RAII; one fixture per
+            // subprocess.
+            auto ks_curve_ = pylabhub::tests::make_curve_setup({});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture_(
+                "test", "test.l3.lua_hub_integration", ks_curve_);
 
             HubHost host(std::move(cfg));
             ASSERT_NO_THROW(host.startup());
@@ -553,6 +590,15 @@ end
             const fs::path dir = make_lua_hub_dir("read_accessors", lua_body);
 
             auto cfg = HubConfig::load_from_directory(dir.string());
+            // HEP-CORE-0040 §172 + HEP-CORE-0035 §4.6.5 bypass —
+            // seed KeyStore["hub_identity"] before HubHost::startup()
+            // constructs BrokerService.  No roles needed (no BRC client
+            // in this test family).  Per-worker RAII; one fixture per
+            // subprocess.
+            auto ks_curve_ = pylabhub::tests::make_curve_setup({});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture_(
+                "test", "test.l3.lua_hub_integration", ks_curve_);
+
             HubHost host(std::move(cfg));
 
             ASSERT_NO_THROW(host.startup());
@@ -616,6 +662,15 @@ end
             const fs::path dir = make_lua_hub_dir("request_shutdown", lua_body);
 
             auto cfg = HubConfig::load_from_directory(dir.string());
+            // HEP-CORE-0040 §172 + HEP-CORE-0035 §4.6.5 bypass —
+            // seed KeyStore["hub_identity"] before HubHost::startup()
+            // constructs BrokerService.  No roles needed (no BRC client
+            // in this test family).  Per-worker RAII; one fixture per
+            // subprocess.
+            auto ks_curve_ = pylabhub::tests::make_curve_setup({});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture_(
+                "test", "test.l3.lua_hub_integration", ks_curve_);
+
             HubHost host(std::move(cfg));
 
             ASSERT_NO_THROW(host.startup());
@@ -680,6 +735,15 @@ end
             const fs::path dir = make_lua_hub_dir(
                 "evt_chan_role", lua_body, "fixed_rate", 100);
             auto cfg = HubConfig::load_from_directory(dir.string());
+            // HEP-CORE-0040 §172 + HEP-CORE-0035 §4.6.5 bypass —
+            // seed KeyStore["hub_identity"] before HubHost::startup()
+            // constructs BrokerService.  No roles needed (no BRC client
+            // in this test family).  Per-worker RAII; one fixture per
+            // subprocess.
+            auto ks_curve_ = pylabhub::tests::make_curve_setup({});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture_(
+                "test", "test.l3.lua_hub_integration", ks_curve_);
+
             HubHost host(std::move(cfg));
             ASSERT_NO_THROW(host.startup());
 
@@ -762,6 +826,15 @@ end
             const fs::path dir = make_lua_hub_dir(
                 "evt_cons_add", lua_body, "fixed_rate", 100);
             auto cfg = HubConfig::load_from_directory(dir.string());
+            // HEP-CORE-0040 §172 + HEP-CORE-0035 §4.6.5 bypass —
+            // seed KeyStore["hub_identity"] before HubHost::startup()
+            // constructs BrokerService.  No roles needed (no BRC client
+            // in this test family).  Per-worker RAII; one fixture per
+            // subprocess.
+            auto ks_curve_ = pylabhub::tests::make_curve_setup({});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture_(
+                "test", "test.l3.lua_hub_integration", ks_curve_);
+
             HubHost host(std::move(cfg));
             ASSERT_NO_THROW(host.startup());
 
@@ -856,6 +929,15 @@ end
             const fs::path dir = make_lua_hub_dir(
                 "post_event", lua_body, "fixed_rate", 100);
             auto cfg = HubConfig::load_from_directory(dir.string());
+            // HEP-CORE-0040 §172 + HEP-CORE-0035 §4.6.5 bypass —
+            // seed KeyStore["hub_identity"] before HubHost::startup()
+            // constructs BrokerService.  No roles needed (no BRC client
+            // in this test family).  Per-worker RAII; one fixture per
+            // subprocess.
+            auto ks_curve_ = pylabhub::tests::make_curve_setup({});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture_(
+                "test", "test.l3.lua_hub_integration", ks_curve_);
+
             HubHost host(std::move(cfg));
             ASSERT_NO_THROW(host.startup());
 
@@ -909,6 +991,15 @@ end
             const fs::path dir = make_lua_hub_dir(
                 "augment_qm", lua_body, "fixed_rate", 100);
             auto cfg = HubConfig::load_from_directory(dir.string());
+            // HEP-CORE-0040 §172 + HEP-CORE-0035 §4.6.5 bypass —
+            // seed KeyStore["hub_identity"] before HubHost::startup()
+            // constructs BrokerService.  No roles needed (no BRC client
+            // in this test family).  Per-worker RAII; one fixture per
+            // subprocess.
+            auto ks_curve_ = pylabhub::tests::make_curve_setup({});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture_(
+                "test", "test.l3.lua_hub_integration", ks_curve_);
+
             HubHost host(std::move(cfg));
             ASSERT_NO_THROW(host.startup());
 
@@ -977,6 +1068,15 @@ end
             const fs::path dir = make_lua_hub_dir(
                 "augment_nil", lua_body, "fixed_rate", 100);
             auto cfg = HubConfig::load_from_directory(dir.string());
+            // HEP-CORE-0040 §172 + HEP-CORE-0035 §4.6.5 bypass —
+            // seed KeyStore["hub_identity"] before HubHost::startup()
+            // constructs BrokerService.  No roles needed (no BRC client
+            // in this test family).  Per-worker RAII; one fixture per
+            // subprocess.
+            auto ks_curve_ = pylabhub::tests::make_curve_setup({});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture_(
+                "test", "test.l3.lua_hub_integration", ks_curve_);
+
             HubHost host(std::move(cfg));
             ASSERT_NO_THROW(host.startup());
 
