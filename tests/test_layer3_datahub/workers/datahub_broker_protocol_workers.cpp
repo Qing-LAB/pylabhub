@@ -23,6 +23,8 @@
 
 #include "datahub_broker_protocol_workers.h"
 
+#include "broker_test_harness.h"
+#include "curve_test_setup.h"
 #include "log_capture_fixture.h"
 #include "plh_datahub.hpp"
 #include "plh_service.hpp"
@@ -34,12 +36,14 @@
 #include "utils/broker_service.hpp"
 #include "utils/config/hub_config.hpp"
 #include "utils/file_lock.hpp"
-#include "utils/hub_directory.hpp"
 #include "utils/hub_host.hpp"
 #include "utils/hub_state.hpp"
 #include "utils/json_config.hpp"
 #include "utils/logger.hpp"
+#include "utils/role_reg_payload.hpp"
 #include "utils/scope_guard.hpp"
+#include "utils/security/key_store.hpp"
+#include "utils/security/shm_capability_channel.hpp"
 #include "utils/timeout_constants.hpp"
 
 #include <cppzmq/zmq.hpp>
@@ -63,25 +67,6 @@
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
-// Forward declaration — `raw_req` is defined in
-// `datahub_broker_workers.cpp` (same `test_layer3_datahub` binary).
-// Used by `wire_conformance_band_corr_id_echo` to send BAND_*_REQ
-// messages with explicit `correlation_id` payloads.  BRC's
-// `do_request` matches replies by message-type today (NOT by
-// correlation_id), so a BRC-based test cannot exercise the
-// echo path — we need raw-ZMQ to inject corr_id and observe the
-// broker's echo.  Closes M1 finding from the 2026-05-20 review
-// of commit `d759424` ("Review A1+B1: ... broker corr_id
-// thread-through").
-namespace pylabhub::tests::worker::broker
-{
-nlohmann::json raw_req(const std::string& endpoint,
-                       const std::string& msg_type,
-                       const nlohmann::json& payload,
-                       int timeout_ms = 2000,
-                       const std::string& server_pubkey = "");
-}
-
 using namespace pylabhub::utils;
 using namespace pylabhub::hub;
 using namespace pylabhub::broker;
@@ -101,123 +86,63 @@ namespace broker_protocol
 namespace
 {
 
-// ─── Real-HubHost RAII wrapper ────────────────────────────────────────────────
+// ─── Broker handle alias + legacy-config → hub.json translation ───────────
+//
+// The previous local `HubHostHandle` + `start_local_broker()` rolled their
+// own ephemeral hub-directory + HubConfig load + HubHost startup.  Post
+// HEP-CORE-0035 §4.6.5 + HEP-CORE-0040 §172 the shared
+// `pylabhub::tests::start_hubhost_broker(j_overrides, curve)` is the
+// canonical assembly — it ALSO writes `known_roles.json` from
+// `curve.role_keys` so the broker's Layer-1 ZAP admits every role in
+// the bundle.  AUTH-6 batch-2a migration pulls this file onto that
+// harness so every L3 broker test funnels through the same code path.
 
-struct HubHostHandle
+using HubHostHandle = pylabhub::tests::HubHostBrokerHandle;
+using pylabhub::tests::BrcHandle;
+
+/// Translate the legacy `BrokerService::Config` overrides callers
+/// customise (heartbeat cadence, ready/pending timeouts, checksum
+/// repair policy) into hub.json overrides for
+/// `start_hubhost_broker(j_overrides, curve)`.  The non-customisable
+/// fields (`network.broker_endpoint=tcp://127.0.0.1:0`, `admin.enabled
+/// =false`, `script.path=""`) are merged in unconditionally so
+/// callers do not have to repeat them.
+json hubhost_overrides_from_cfg(const BrokerService::Config &cfg = {})
 {
-    fs::path                 hub_dir;
-    std::unique_ptr<HubHost> host;
-    std::string              endpoint;
-    std::string              pubkey;
-
-    HubHostHandle() = default;
-    HubHostHandle(HubHostHandle &&) noexcept = default;
-    HubHostHandle &operator=(HubHostHandle &&) noexcept = default;
-    ~HubHostHandle()
-    {
-        if (host)
-            host->shutdown();
-        host.reset();
-        if (!hub_dir.empty())
-        {
-            std::error_code ec;
-            fs::remove_all(hub_dir, ec);
-        }
-    }
-};
-
-HubHostHandle start_local_broker(BrokerService::Config legacy_cfg = {})
-{
-    static std::atomic<int> ctr{0};
-    fs::path dir = fs::temp_directory_path() /
-                   ("plh_l3_proto_" + std::to_string(::getpid()) + "_" +
-                    std::to_string(ctr.fetch_add(1)));
-    fs::remove_all(dir);
-    fs::create_directories(dir);
-    pylabhub::utils::HubDirectory::init_directory(dir, "ProtoTestHub");
-
-    const fs::path hub_json = dir / "hub.json";
-    json j;
-    {
-        std::ifstream f(hub_json);
-        if (f.is_open())
-            j = json::parse(f);
-    }
-    j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0";
-    j["admin"]["enabled"]           = false;
-    j["script"]["path"]             = "";
-
-    // Translate the legacy BrokerService::Config fields callers
-    // customise into hub.json overrides so the original suite's
-    // pattern of "spin up a broker with these specific heartbeat /
-    // policy values" continues to work.
-    if (legacy_cfg.heartbeat_interval.count() > 0)
+    json j{
+        {"network", {{"broker_endpoint", "tcp://127.0.0.1:0"}}},
+        {"admin",   {{"enabled", false}}},
+        {"script",  {{"path", ""}}},
+    };
+    if (cfg.heartbeat_interval.count() > 0)
         j["broker"]["heartbeat_interval_ms"] =
-            static_cast<int>(legacy_cfg.heartbeat_interval.count());
-    if (legacy_cfg.ready_miss_heartbeats > 0)
-        j["broker"]["ready_miss_heartbeats"] = legacy_cfg.ready_miss_heartbeats;
-    if (legacy_cfg.pending_miss_heartbeats > 0)
-        j["broker"]["pending_miss_heartbeats"] = legacy_cfg.pending_miss_heartbeats;
-    if (legacy_cfg.ready_timeout_override.has_value())
+            static_cast<int>(cfg.heartbeat_interval.count());
+    if (cfg.ready_miss_heartbeats > 0)
+        j["broker"]["ready_miss_heartbeats"] = cfg.ready_miss_heartbeats;
+    if (cfg.pending_miss_heartbeats > 0)
+        j["broker"]["pending_miss_heartbeats"] = cfg.pending_miss_heartbeats;
+    if (cfg.ready_timeout_override.has_value())
         j["broker"]["ready_timeout_ms"] =
-            static_cast<int>(legacy_cfg.ready_timeout_override->count());
-    if (legacy_cfg.pending_timeout_override.has_value())
+            static_cast<int>(cfg.ready_timeout_override->count());
+    if (cfg.pending_timeout_override.has_value())
         j["broker"]["pending_timeout_ms"] =
-            static_cast<int>(legacy_cfg.pending_timeout_override->count());
-    if (legacy_cfg.checksum_repair_policy ==
-        ChecksumRepairPolicy::NotifyOnly)
+            static_cast<int>(cfg.pending_timeout_override->count());
+    if (cfg.checksum_repair_policy == ChecksumRepairPolicy::NotifyOnly)
         j["broker"]["checksum_repair_policy"] = "notify_only";
-    {
-        std::ofstream f(hub_json);
-        f << j.dump(2);
-    }
-    fs::create_directories(dir / "schemas");
-
-    HubHostHandle h;
-    h.hub_dir = std::move(dir);
-    h.host    = std::make_unique<HubHost>(
-        HubConfig::load_from_directory(h.hub_dir.string()));
-    h.host->startup();
-    h.endpoint = h.host->broker_endpoint();
-    h.pubkey   = h.host->broker_pubkey();
-    return h;
+    return j;
 }
 
-// ─── BrokerRequestComm handle + poll loop thread ─────────────────────────────
-
-struct BrcHandle
+/// Start a broker via the shared harness with the caller's
+/// `BrokerService::Config` overrides translated to hub.json shape.
+/// `curve` MUST already have been seeded into the KeyStore via
+/// `CurveKeyStoreFixture` (typically by `run_with_host` below).
+HubHostHandle start_local_broker(BrokerService::Config legacy_cfg,
+                                 const pylabhub::tests::CurveSetup &curve)
 {
-    BrokerRequestComm brc;
-    std::atomic<bool> running{true};
-    std::thread       thread;
-
-    void start(const std::string &ep, const std::string &pk, const std::string &uid)
-    {
-        BrokerRequestComm::Config cfg;
-        cfg.broker_endpoint = ep;
-        cfg.broker_pubkey   = pk;
-        cfg.role_uid        = uid;
-        ASSERT_TRUE(brc.connect(cfg));
-        thread = std::thread([this] {
-            brc.run_poll_loop([this] { return running.load(); });
-        });
-    }
-
-    void stop()
-    {
-        running.store(false);
-        brc.stop();
-        if (thread.joinable())
-            thread.join();
-        brc.disconnect();
-    }
-
-    ~BrcHandle()
-    {
-        if (thread.joinable())
-            stop();
-    }
-};
+    return pylabhub::tests::start_hubhost_broker(
+        hubhost_overrides_from_cfg(std::move(legacy_cfg)),
+        curve);
+}
 
 // ─── Channel-name + REG opts builders ─────────────────────────────────────────
 
@@ -226,23 +151,48 @@ std::string pid_chan(const std::string &base)
     return base + ".pid" + std::to_string(::getpid());
 }
 
+/// HEP-CORE-0036 §5b canonical producer REG_REQ shape.  The role's
+/// `zmq_pubkey` is read from the process `key_store()` via the
+/// canonical `role.<uid>` name (HEP-CORE-0040 §172) — same byte the
+/// broker reads when it issues a ZAP challenge to that role on its
+/// data-plane socket.  `producer_pid` is layered on top for the
+/// scenarios that pin a specific pid in their assertions.
 json make_reg_opts(const std::string &channel, const std::string &role_uid)
 {
-    json opts;
-    opts["channel_name"]      = channel;
-    opts["producer_pid"]      = ::getpid();
-    opts["role_uid"]          = role_uid;
-    opts["role_name"]         = "test_producer";
+    namespace sec = pylabhub::utils::security;
+    auto opts = pylabhub::hub::build_producer_reg_payload(
+        pylabhub::hub::ProducerRegInputs{
+            .channel    = channel,
+            .role_uid   = role_uid,
+            .role_name  = "test_producer",
+            .role_type  = "producer",
+            .has_shm    = true,
+            .is_zmq_transport  = false,
+            .zmq_node_endpoint = {},
+            .zmq_pubkey = std::string{sec::key_store().pubkey(
+                pylabhub::tests::role_keystore_name(role_uid))},
+            .shm_capability_endpoint =
+                sec::default_shm_capability_endpoint(channel),
+        });
+    opts["producer_pid"] = ::getpid();
     return opts;
 }
 
-json make_cons_opts(const std::string &channel, const std::string &consumer_uid)
+/// HEP-CORE-0036 §5b canonical consumer REG_REQ shape.  Same pubkey
+/// lookup discipline as `make_reg_opts`.
+json make_cons_opts(const std::string &channel,
+                    const std::string &consumer_uid)
 {
-    json opts;
-    opts["channel_name"]  = channel;
-    opts["role_uid"]  = consumer_uid;
-    opts["role_name"] = "test_consumer";
-    opts["consumer_pid"]  = ::getpid();
+    namespace sec = pylabhub::utils::security;
+    auto opts = pylabhub::hub::build_consumer_reg_payload(
+        pylabhub::hub::ConsumerRegInputs{
+            .channel    = channel,
+            .role_uid   = consumer_uid,
+            .role_name  = "test_consumer",
+            .zmq_pubkey = std::string{sec::key_store().pubkey(
+                pylabhub::tests::role_keystore_name(consumer_uid))},
+        });
+    opts["consumer_pid"] = ::getpid();
     return opts;
 }
 
@@ -277,23 +227,129 @@ struct EventCollector
     }
 };
 
+// ─── Direct ZMQ DEALER request for `correlation_id` echo verification ──────
+//
+// `wire_conformance_band_corr_id_echo` needs to inject explicit
+// `correlation_id` into a BAND_*_REQ and observe the broker's echo in
+// the ACK.  `BrokerRequestComm::do_request` matches replies by
+// message-type today, not by correlation_id — so a BRC-based test
+// cannot exercise the echo path.  This helper opens a fresh DEALER on
+// its own ZMQ context and speaks the wire protocol directly.
+//
+// HEP-CORE-0040 §172: this helper does NOT use the process KeyStore;
+// the caller passes the broker's pubkey for CURVE setup and an
+// ephemeral client keypair is minted per call (no admission gate
+// applies to plaintext-friendly raw inspection paths used by L3
+// wire-conformance tests).
+//
+// NOTE: a sibling copy of this helper lives in
+// `datahub_broker_workers.cpp` for that file's grammar-rejection
+// tests.  When AUTH-6 batch-2a C2 unmasks that file, the two copies
+// should be deduplicated into a shared helper file.  TODO #154.
+json raw_req(const std::string& endpoint,
+             const std::string& msg_type,
+             const json& payload,
+             int timeout_ms = 2000,
+             const std::string& server_pubkey = "",
+             const std::string& role_identity_name = "")
+{
+    constexpr size_t kZ85KeyLen = 40;
+    constexpr size_t kZ85BufLen = 41;
+
+    zmq::context_t ctx(1);
+    zmq::socket_t  dealer(ctx, zmq::socket_type::dealer);
+
+    if (server_pubkey.size() == kZ85KeyLen)
+    {
+        dealer.set(zmq::sockopt::curve_serverkey, server_pubkey);
+        if (!role_identity_name.empty())
+        {
+            // Authenticate as a registered role — broker ZAP gate
+            // matches `known_roles.json`.  HEP-CORE-0040 §172: the
+            // seckey lives only in the callback; ZMQ copies it into
+            // its own socket-internal storage during set(), so it
+            // survives the callback's sodium_memzero.
+            namespace sec = pylabhub::utils::security;
+            const std::string client_pub{sec::key_store().pubkey(role_identity_name)};
+            sec::key_store().with_seckey_z85(
+                role_identity_name,
+                [&](std::string_view seckey_z85) {
+                    dealer.set(zmq::sockopt::curve_publickey, client_pub);
+                    dealer.set(zmq::sockopt::curve_secretkey,
+                               std::string(seckey_z85));
+                });
+        }
+        else
+        {
+            // Ephemeral key — only works against a broker with ZAP
+            // admission disabled, which the harness no longer offers.
+            std::array<char, kZ85BufLen> client_pub{};
+            std::array<char, kZ85BufLen> client_sec{};
+            if (zmq_curve_keypair(client_pub.data(), client_sec.data()) != 0)
+                return {};
+            dealer.set(zmq::sockopt::curve_publickey,
+                       std::string(client_pub.data(), kZ85KeyLen));
+            dealer.set(zmq::sockopt::curve_secretkey,
+                       std::string(client_sec.data(), kZ85KeyLen));
+        }
+    }
+
+    dealer.connect(endpoint);
+
+    static constexpr char kCtrl       = 'C';
+    const std::string     payload_str = payload.dump();
+    std::vector<zmq::const_buffer> send_frames = {
+        zmq::buffer(&kCtrl, 1),
+        zmq::buffer(msg_type),
+        zmq::buffer(payload_str)};
+    if (!zmq::send_multipart(dealer, send_frames))
+        return {};
+
+    std::vector<zmq::pollitem_t> items = {{dealer.handle(), 0, ZMQ_POLLIN, 0}};
+    zmq::poll(items, std::chrono::milliseconds(timeout_ms));
+    if ((items[0].revents & ZMQ_POLLIN) == 0)
+        return {};
+
+    std::vector<zmq::message_t> recv_frames;
+    auto result = zmq::recv_multipart(dealer, std::back_inserter(recv_frames));
+    if (!result || recv_frames.size() < 3)
+        return {};
+    try
+    {
+        return json::parse(recv_frames.back().to_string());
+    }
+    catch (const json::exception&)
+    {
+        return {};
+    }
+}
+
 // ─── Worker harness ───────────────────────────────────────────────────────────
 //
-// `body(broker, log_cap)` receives:
-//   - `broker`: a freshly-started HubHostHandle.  The body may .reset()
-//     and .emplace(start_local_broker(custom_cfg)) to swap to a
-//     custom-config broker — same idiom the original suite used via
-//     `broker_.reset() / broker_.emplace(...)`.
+// `body(broker, curve, log_cap)` receives:
+//   - `broker`: `std::optional<HubHostHandle>` freshly emplaced with
+//     `start_hubhost_broker(hubhost_overrides_from_cfg(), curve)`.
+//     The body may `.reset()` and `.emplace(start_local_broker(cfg, curve))`
+//     to swap to a custom-config broker — same idiom the original
+//     suite used via `broker_.reset() / broker_.emplace(...)`.
+//   - `curve`: the `CurveSetup` whose `role_keys` are seeded into the
+//     process `KeyStore` AND written to `vault/known_roles.json` so the
+//     broker's Layer-1 ZAP gate admits every role uid the body uses.
+//     `role_uids` (the caller-supplied list passed to `run_with_host`)
+//     drives both halves.
 //   - `log_cap`: LogCaptureFixture for tests that need `log_path()`
 //     (Heartbeat wire-payload echo) or ad-hoc ExpectLogWarn calls.
 
 template <typename Body>
-int run_with_host(std::string_view worker_name, Body &&body,
+int run_with_host(std::string_view worker_name,
+                  std::vector<std::string> role_uids,
+                  Body &&body,
                   std::vector<std::string> warns  = {},
                   std::vector<std::string> errors = {})
 {
     return run_gtest_worker(
-        [body = std::forward<Body>(body),
+        [role_uids = std::move(role_uids),
+         body = std::forward<Body>(body),
          warns = std::move(warns),
          errors = std::move(errors)]() mutable {
             LogCaptureFixture log_cap;
@@ -303,10 +359,18 @@ int run_with_host(std::string_view worker_name, Body &&body,
             for (auto &e : errors)
                 log_cap.ExpectLogError(e);
 
-            std::optional<HubHostHandle> broker;
-            broker.emplace(start_local_broker());
+            auto curve = pylabhub::tests::make_curve_setup(role_uids);
+            // HEP-CORE-0040 §172: fixture owns SMS + KeyStore + identity
+            // seeding under `role.<uid>` names; start_hubhost_broker
+            // only reads the KeyStore + writes known_roles.json.
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture(
+                "test.l3", "broker_protocol.harness", curve);
 
-            body(broker, log_cap);
+            std::optional<HubHostHandle> broker;
+            broker.emplace(pylabhub::tests::start_hubhost_broker(
+                hubhost_overrides_from_cfg(), curve));
+
+            body(broker, curve, log_cap);
 
             broker.reset();
             log_cap.AssertNoUnexpectedLogWarnError();
@@ -330,13 +394,14 @@ int checksum_error_report_forwarded_to_producer()
 {
     return run_with_host(
         "broker_protocol::checksum_error_report_forwarded_to_producer",
-        [](std::optional<HubHostHandle> &broker, LogCaptureFixture &) {
+        {"prod." + pid_chan("proto.checksum.prod"), "REPORT-" + pid_chan("proto.checksum.prod")},
+        [](std::optional<HubHostHandle> &broker, pylabhub::tests::CurveSetup &curve, LogCaptureFixture &) {
             broker.reset();
             BrokerService::Config cfg;
             cfg.endpoint               = "tcp://127.0.0.1:0";
             cfg.schema_search_dirs     = {};
             cfg.checksum_repair_policy = ChecksumRepairPolicy::NotifyOnly;
-            broker.emplace(start_local_broker(std::move(cfg)));
+            broker.emplace(start_local_broker(std::move(cfg), curve));
 
             const std::string channel = pid_chan("proto.checksum.prod");
             const std::string uid     = "prod." + channel;
@@ -348,7 +413,7 @@ int checksum_error_report_forwarded_to_producer()
                     if (type == "CHANNEL_EVENT_NOTIFY")
                         prod_events->push(type, body);
                 });
-            prod_bh.start(broker->endpoint, broker->pubkey, uid);
+            prod_bh.start(broker->endpoint, broker->pubkey, uid, pylabhub::tests::role_keystore_name(uid));
 
             auto reg = prod_bh.brc.register_channel(
                 make_reg_opts(channel, uid), 3000);
@@ -356,7 +421,7 @@ int checksum_error_report_forwarded_to_producer()
 
             BrcHandle reporter;
             reporter.start(broker->endpoint, broker->pubkey,
-                           "REPORT-" + channel);
+                           "REPORT-" + channel, pylabhub::tests::role_keystore_name("REPORT-" + channel));
 
             json report;
             report["channel_name"] = channel;
@@ -378,9 +443,10 @@ int checksum_error_report_unknown_channel_silent()
 {
     return run_with_host(
         "broker_protocol::checksum_error_report_unknown_channel_silent",
-        [](std::optional<HubHostHandle> &broker, LogCaptureFixture &) {
+        {"REPORT-bogus"},
+        [](std::optional<HubHostHandle> &broker, pylabhub::tests::CurveSetup &curve, LogCaptureFixture &) {
             BrcHandle reporter;
-            reporter.start(broker->endpoint, broker->pubkey, "REPORT-bogus");
+            reporter.start(broker->endpoint, broker->pubkey, "REPORT-bogus", pylabhub::tests::role_keystore_name("REPORT-bogus"));
 
             json report;
             report["channel_name"] = pid_chan("proto.checksum.bogus");
@@ -402,73 +468,15 @@ int checksum_error_report_unknown_channel_silent()
         {"Cat2 checksum error"});
 }
 
-// ============================================================================
-// 2. CHANNEL_CLOSING_NOTIFY — delivery to ALL registered members
-// ============================================================================
+// RETIRED 2026-06-28 — body for `ClosingNotify_DeliveredToProducerAndConsumer`
+// removed.  Contract (CHANNEL_CLOSING_NOTIFY fan-out to ALL channel
+// members, triggered via in-process `broker.request_close_channel`)
+// absorbed into task #225 `Pattern4ChannelNotifiesTest` (Pattern 4
+// rung 8) per Rule 6 retirement.  Coverage continuity: this is the
+// only test pinning the dual-receipt invariant; #225 description
+// updated 2026-06-28 to explicitly carry forward.  See driver file's
+// retirement doc-block for full reasoning.
 
-int closing_notify_delivered_to_producer_and_consumer()
-{
-    return run_with_host(
-        "broker_protocol::closing_notify_delivered_to_producer_and_consumer",
-        [](std::optional<HubHostHandle> &broker, LogCaptureFixture &) {
-            // Preserve the original suite's broker.reset()+emplace
-            // pattern even though the legacy config is effectively a
-            // no-op (default endpoint, empty schema search dirs).
-            broker.reset();
-            BrokerService::Config cfg;
-            cfg.endpoint           = "tcp://127.0.0.1:0";
-            cfg.schema_search_dirs = {};
-            broker.emplace(start_local_broker(std::move(cfg)));
-
-            const std::string channel  = pid_chan("proto.close.all");
-            const std::string prod_uid = "prod." + channel;
-            const std::string cons_uid = "cons." + channel;
-
-            std::atomic<int> prod_closing{0}, cons_closing{0};
-
-            BrcHandle prod_bh;
-            prod_bh.brc.on_notification(
-                [&](const std::string &type, const json &) {
-                    if (type == "CHANNEL_CLOSING_NOTIFY")
-                        prod_closing.fetch_add(1);
-                });
-            prod_bh.start(broker->endpoint, broker->pubkey, prod_uid);
-
-            auto reg = prod_bh.brc.register_channel(
-                make_reg_opts(channel, prod_uid), 3000);
-            ASSERT_TRUE(reg.has_value());
-
-            BrcHandle cons_bh;
-            cons_bh.brc.on_notification(
-                [&](const std::string &type, const json &) {
-                    if (type == "CHANNEL_CLOSING_NOTIFY")
-                        cons_closing.fetch_add(1);
-                });
-            cons_bh.start(broker->endpoint, broker->pubkey, cons_uid);
-
-            auto cons_reg = cons_bh.brc.register_consumer(
-                make_cons_opts(channel, cons_uid), 3000);
-            ASSERT_TRUE(cons_reg.has_value());
-
-            broker->host->broker().request_close_channel(channel);
-
-            EXPECT_TRUE(poll_until(
-                [&] {
-                    return prod_closing.load() > 0 && cons_closing.load() > 0;
-                },
-                std::chrono::seconds(5)))
-                << "CHANNEL_CLOSING_NOTIFY not delivered to both members "
-                   "within 5s";
-
-            EXPECT_GE(prod_closing.load(), 1)
-                << "Producer did not receive CHANNEL_CLOSING_NOTIFY";
-            EXPECT_GE(cons_closing.load(), 1)
-                << "Consumer did not receive CHANNEL_CLOSING_NOTIFY";
-
-            cons_bh.stop();
-            prod_bh.stop();
-        });
-}
 
 // ============================================================================
 // 3. Duplicate REG_REQ — SHM cardinality + schema hash conflict
@@ -478,21 +486,22 @@ int duplicate_reg_shm_cardinality()
 {
     return run_with_host(
         "broker_protocol::duplicate_reg_shm_cardinality",
-        [](std::optional<HubHostHandle> &broker, LogCaptureFixture &) {
+        {"prod.proto.dup.same.uid00000001", "prod.proto.dup.same.uid00000002"},
+        [](std::optional<HubHostHandle> &broker, pylabhub::tests::CurveSetup &curve, LogCaptureFixture &) {
             const std::string channel  = pid_chan("proto.dup.same");
             const std::string hash_hex = std::string(64, 'a');
             const std::string uid1 = "prod.proto.dup.same.uid00000001";
             const std::string uid2 = "prod.proto.dup.same.uid00000002";
 
             BrcHandle bh1;
-            bh1.start(broker->endpoint, broker->pubkey, uid1);
+            bh1.start(broker->endpoint, broker->pubkey, uid1, pylabhub::tests::role_keystore_name(uid1));
             auto opts1 = make_reg_opts(channel, uid1);
             opts1["schema_hash"] = hash_hex;
             auto h1 = bh1.brc.register_channel(opts1, 3000);
             ASSERT_TRUE(h1.has_value());
 
             BrcHandle bh2;
-            bh2.start(broker->endpoint, broker->pubkey, uid2);
+            bh2.start(broker->endpoint, broker->pubkey, uid2, pylabhub::tests::role_keystore_name(uid2));
             auto opts2 = make_reg_opts(channel, uid2);
             opts2["schema_hash"] = hash_hex;
             auto h2 = bh2.brc.register_channel(opts2, 3000);
@@ -517,7 +526,8 @@ int duplicate_reg_different_schema_hash()
 {
     return run_with_host(
         "broker_protocol::duplicate_reg_different_schema_hash",
-        [](std::optional<HubHostHandle> &broker, LogCaptureFixture &) {
+        {"prod.proto.dup.diff.uid00000001", "prod.proto.dup.diff.uid00000002"},
+        [](std::optional<HubHostHandle> &broker, pylabhub::tests::CurveSetup &curve, LogCaptureFixture &) {
             const std::string channel = pid_chan("proto.dup.diff");
             const std::string hash_a  = std::string(64, 'a');
             const std::string hash_b  = std::string(64, 'b');
@@ -525,14 +535,14 @@ int duplicate_reg_different_schema_hash()
             const std::string uid2 = "prod.proto.dup.diff.uid00000002";
 
             BrcHandle bh1;
-            bh1.start(broker->endpoint, broker->pubkey, uid1);
+            bh1.start(broker->endpoint, broker->pubkey, uid1, pylabhub::tests::role_keystore_name(uid1));
             auto opts1 = make_reg_opts(channel, uid1);
             opts1["schema_hash"] = hash_a;
             auto h1 = bh1.brc.register_channel(opts1, 3000);
             ASSERT_TRUE(h1.has_value());
 
             BrcHandle bh2;
-            bh2.start(broker->endpoint, broker->pubkey, uid2);
+            bh2.start(broker->endpoint, broker->pubkey, uid2, pylabhub::tests::role_keystore_name(uid2));
             auto opts2 = make_reg_opts(channel, uid2);
             opts2["schema_hash"] = hash_b;
             auto h2 = bh2.brc.register_channel(opts2, 3000);
@@ -557,12 +567,13 @@ int heartbeat_transitions_to_ready()
 {
     return run_with_host(
         "broker_protocol::heartbeat_transitions_to_ready",
-        [](std::optional<HubHostHandle> &broker, LogCaptureFixture &) {
+        {"prod." + pid_chan("proto.heartbeat.ready")},
+        [](std::optional<HubHostHandle> &broker, pylabhub::tests::CurveSetup &curve, LogCaptureFixture &) {
             const std::string channel = pid_chan("proto.heartbeat.ready");
             const std::string uid     = "prod." + channel;
 
             BrcHandle bh;
-            bh.start(broker->endpoint, broker->pubkey, uid);
+            bh.start(broker->endpoint, broker->pubkey, uid, pylabhub::tests::role_keystore_name(uid));
             auto reg = bh.brc.register_channel(make_reg_opts(channel, uid),
                                                 3000);
             ASSERT_TRUE(reg.has_value());
@@ -601,7 +612,8 @@ int heartbeat_wire_payload_includes_uid_and_role_type()
 {
     return run_with_host(
         "broker_protocol::heartbeat_wire_payload_includes_uid_and_role_type",
-        [](std::optional<HubHostHandle> &broker, LogCaptureFixture &log_cap) {
+        {"prod." + pid_chan("proto.heartbeat.wire.uid")},
+        [](std::optional<HubHostHandle> &broker, pylabhub::tests::CurveSetup &curve, LogCaptureFixture &log_cap) {
             const auto prev_level =
                 pylabhub::utils::Logger::instance().level();
             pylabhub::utils::Logger::instance().set_level(
@@ -616,7 +628,7 @@ int heartbeat_wire_payload_includes_uid_and_role_type()
             const std::string role_type = "producer";
 
             BrcHandle bh;
-            bh.start(broker->endpoint, broker->pubkey, uid);
+            bh.start(broker->endpoint, broker->pubkey, uid, pylabhub::tests::role_keystore_name(uid));
             auto reg = bh.brc.register_channel(make_reg_opts(channel, uid),
                                                 3000);
             ASSERT_TRUE(reg.has_value()) << "REG_REQ should succeed";
@@ -660,14 +672,15 @@ int heartbeat_keying_producer_vs_consumer_distinct_rows()
 {
     return run_with_host(
         "broker_protocol::heartbeat_keying_producer_vs_consumer_distinct_rows",
-        [](std::optional<HubHostHandle> &broker, LogCaptureFixture &) {
+        {"prod." + pid_chan("proto.heartbeat.keying"), "cons." + pid_chan("proto.heartbeat.keying")},
+        [](std::optional<HubHostHandle> &broker, pylabhub::tests::CurveSetup &curve, LogCaptureFixture &) {
             const std::string channel  = pid_chan("proto.heartbeat.keying");
             const std::string prod_uid = "prod." + channel;
             const std::string cons_uid = "cons." + channel;
 
             BrcHandle prod_h, cons_h;
-            prod_h.start(broker->endpoint, broker->pubkey, prod_uid);
-            cons_h.start(broker->endpoint, broker->pubkey, cons_uid);
+            prod_h.start(broker->endpoint, broker->pubkey, prod_uid, pylabhub::tests::role_keystore_name(prod_uid));
+            cons_h.start(broker->endpoint, broker->pubkey, cons_uid, pylabhub::tests::role_keystore_name(cons_uid));
 
             auto reg = prod_h.brc.register_channel(
                 make_reg_opts(channel, prod_uid), 3000);
@@ -763,9 +776,10 @@ int role_presence_req_unknown_uid()
 {
     return run_with_host(
         "broker_protocol::role_presence_req_unknown_uid",
-        [](std::optional<HubHostHandle> &broker, LogCaptureFixture &) {
+        {"QUERIER-unknown"},
+        [](std::optional<HubHostHandle> &broker, pylabhub::tests::CurveSetup &curve, LogCaptureFixture &) {
             BrcHandle bh;
-            bh.start(broker->endpoint, broker->pubkey, "QUERIER-unknown");
+            bh.start(broker->endpoint, broker->pubkey, "QUERIER-unknown", pylabhub::tests::role_keystore_name("QUERIER-unknown"));
             auto resp = bh.brc.query_role_presence(
                 "prod.unknown.uiddeadbeef", 2000);
             ASSERT_TRUE(resp.has_value())
@@ -780,9 +794,10 @@ int role_info_req_unknown_uid()
 {
     return run_with_host(
         "broker_protocol::role_info_req_unknown_uid",
-        [](std::optional<HubHostHandle> &broker, LogCaptureFixture &) {
+        {"QUERIER-unknown2"},
+        [](std::optional<HubHostHandle> &broker, pylabhub::tests::CurveSetup &curve, LogCaptureFixture &) {
             BrcHandle bh;
-            bh.start(broker->endpoint, broker->pubkey, "QUERIER-unknown2");
+            bh.start(broker->endpoint, broker->pubkey, "QUERIER-unknown2", pylabhub::tests::role_keystore_name("QUERIER-unknown2"));
             auto info = bh.brc.query_role_info(
                 "prod.unknown.uiddeadbeef", 2000);
             if (info.has_value())
@@ -798,12 +813,13 @@ int role_presence_req_producer_uid()
 {
     return run_with_host(
         "broker_protocol::role_presence_req_producer_uid",
-        [](std::optional<HubHostHandle> &broker, LogCaptureFixture &) {
+        {"prod.prestest.uidaaaa0001", "QUERIER-pres-prod"},
+        [](std::optional<HubHostHandle> &broker, pylabhub::tests::CurveSetup &curve, LogCaptureFixture &) {
             const std::string channel = pid_chan("proto.presence.prod");
             const std::string uid     = "prod.prestest.uidaaaa0001";
 
             BrcHandle prod_bh;
-            prod_bh.start(broker->endpoint, broker->pubkey, uid);
+            prod_bh.start(broker->endpoint, broker->pubkey, uid, pylabhub::tests::role_keystore_name(uid));
             auto opts = make_reg_opts(channel, uid);
             opts["role_name"] = "PresTestProd";
             auto reg = prod_bh.brc.register_channel(opts, 3000);
@@ -811,7 +827,7 @@ int role_presence_req_producer_uid()
 
             BrcHandle querier;
             querier.start(broker->endpoint, broker->pubkey,
-                          "QUERIER-pres-prod");
+                          "QUERIER-pres-prod", pylabhub::tests::role_keystore_name("QUERIER-pres-prod"));
             EXPECT_TRUE(querier.brc.query_role_presence(uid, 2000));
 
             querier.stop();
@@ -823,26 +839,27 @@ int role_presence_req_consumer_uid()
 {
     return run_with_host(
         "broker_protocol::role_presence_req_consumer_uid",
-        [](std::optional<HubHostHandle> &broker, LogCaptureFixture &) {
+        {"prod." + pid_chan("proto.presence.cons"), "cons.prestest.uidbbbb0002", "QUERIER-pres-cons"},
+        [](std::optional<HubHostHandle> &broker, pylabhub::tests::CurveSetup &curve, LogCaptureFixture &) {
             const std::string channel      = pid_chan("proto.presence.cons");
             const std::string prod_uid     = "prod." + channel;
             const std::string consumer_uid = "cons.prestest.uidbbbb0002";
 
             BrcHandle prod_bh;
-            prod_bh.start(broker->endpoint, broker->pubkey, prod_uid);
+            prod_bh.start(broker->endpoint, broker->pubkey, prod_uid, pylabhub::tests::role_keystore_name(prod_uid));
             auto reg = prod_bh.brc.register_channel(
                 make_reg_opts(channel, prod_uid), 3000);
             ASSERT_TRUE(reg.has_value());
 
             BrcHandle cons_bh;
-            cons_bh.start(broker->endpoint, broker->pubkey, consumer_uid);
+            cons_bh.start(broker->endpoint, broker->pubkey, consumer_uid, pylabhub::tests::role_keystore_name(consumer_uid));
             auto cons_reg = cons_bh.brc.register_consumer(
                 make_cons_opts(channel, consumer_uid), 3000);
             ASSERT_TRUE(cons_reg.has_value());
 
             BrcHandle querier;
             querier.start(broker->endpoint, broker->pubkey,
-                          "QUERIER-pres-cons");
+                          "QUERIER-pres-cons", pylabhub::tests::role_keystore_name("QUERIER-pres-cons"));
             EXPECT_TRUE(querier.brc.query_role_presence(consumer_uid, 2000));
 
             querier.stop();
@@ -855,7 +872,8 @@ int role_info_req_with_inbox()
 {
     return run_with_host(
         "broker_protocol::role_info_req_with_inbox",
-        [](std::optional<HubHostHandle> &broker, LogCaptureFixture &) {
+        {"prod.roleinfo.uiddddd0004", "QUERIER-roleinfo"},
+        [](std::optional<HubHostHandle> &broker, pylabhub::tests::CurveSetup &curve, LogCaptureFixture &) {
             const std::string channel  = pid_chan("proto.roleinfo.withinbox");
             const std::string uid      = "prod.roleinfo.uiddddd0004";
             const std::string inbox_ep = "tcp://127.0.0.1:9987";
@@ -864,7 +882,7 @@ int role_info_req_with_inbox()
             const std::string packing = "aligned";
 
             BrcHandle prod_bh;
-            prod_bh.start(broker->endpoint, broker->pubkey, uid);
+            prod_bh.start(broker->endpoint, broker->pubkey, uid, pylabhub::tests::role_keystore_name(uid));
 
             auto opts = make_reg_opts(channel, uid);
             opts["role_name"]         = "InboxProd";
@@ -876,7 +894,7 @@ int role_info_req_with_inbox()
 
             BrcHandle querier;
             querier.start(broker->endpoint, broker->pubkey,
-                          "QUERIER-roleinfo");
+                          "QUERIER-roleinfo", pylabhub::tests::role_keystore_name("QUERIER-roleinfo"));
             auto info = querier.brc.query_role_info(uid, 2000);
             ASSERT_TRUE(info.has_value()) << "Expected role info, got nullopt";
             EXPECT_EQ(info->value("inbox_endpoint", ""), inbox_ep);
@@ -895,20 +913,28 @@ int transport_mismatch_shm_producer_zmq_consumer()
 {
     return run_with_host(
         "broker_protocol::transport_mismatch_shm_producer_zmq_consumer",
-        [](std::optional<HubHostHandle> &broker, LogCaptureFixture &) {
+        {"prod." + pid_chan("proto.transport.shm_zmq"), "cons." + pid_chan("proto.transport.shm_zmq")},
+        [](std::optional<HubHostHandle> &broker, pylabhub::tests::CurveSetup &curve, LogCaptureFixture &) {
             const std::string channel  =
                 pid_chan("proto.transport.shm_zmq");
             const std::string prod_uid = "prod." + channel;
             const std::string cons_uid = "cons." + channel;
 
             BrcHandle prod_bh;
-            prod_bh.start(broker->endpoint, broker->pubkey, prod_uid);
+            prod_bh.start(broker->endpoint, broker->pubkey, prod_uid, pylabhub::tests::role_keystore_name(prod_uid));
             auto reg = prod_bh.brc.register_channel(
                 make_reg_opts(channel, prod_uid), 3000);
             ASSERT_TRUE(reg.has_value());
+            // Producer must reach kLive (Connected + first_heartbeat_seen)
+            // before the broker admits CONSUMER_REG_REQ — see HEP-CORE-0036
+            // §5.2 R6 gate (broker_service.cpp:2444-2454).  Without this
+            // heartbeat the consumer-side register hits CHANNEL_NOT_READY
+            // / "awaiting_first_heartbeat" before the transport-arbitration
+            // check that's the actual subject of this test.
+            prod_bh.brc.send_heartbeat(channel, prod_uid, "producer", {});
 
             BrcHandle cons_bh;
-            cons_bh.start(broker->endpoint, broker->pubkey, cons_uid);
+            cons_bh.start(broker->endpoint, broker->pubkey, cons_uid, pylabhub::tests::role_keystore_name(cons_uid));
             auto cons_opts = make_cons_opts(channel, cons_uid);
             cons_opts["consumer_queue_type"] = "zmq";
             auto cons_reg = cons_bh.brc.register_consumer(cons_opts, 3000);
@@ -928,20 +954,23 @@ int transport_match_shm_consumer_shm_producer()
 {
     return run_with_host(
         "broker_protocol::transport_match_shm_consumer_shm_producer",
-        [](std::optional<HubHostHandle> &broker, LogCaptureFixture &) {
+        {"prod." + pid_chan("proto.transport.shm_shm"), "cons." + pid_chan("proto.transport.shm_shm")},
+        [](std::optional<HubHostHandle> &broker, pylabhub::tests::CurveSetup &curve, LogCaptureFixture &) {
             const std::string channel  =
                 pid_chan("proto.transport.shm_shm");
             const std::string prod_uid = "prod." + channel;
             const std::string cons_uid = "cons." + channel;
 
             BrcHandle prod_bh;
-            prod_bh.start(broker->endpoint, broker->pubkey, prod_uid);
+            prod_bh.start(broker->endpoint, broker->pubkey, prod_uid, pylabhub::tests::role_keystore_name(prod_uid));
             auto reg = prod_bh.brc.register_channel(
                 make_reg_opts(channel, prod_uid), 3000);
             ASSERT_TRUE(reg.has_value());
+            // R6 producer-kLive gate — see HEP-CORE-0036 §5.2.
+            prod_bh.brc.send_heartbeat(channel, prod_uid, "producer", {});
 
             BrcHandle cons_bh;
-            cons_bh.start(broker->endpoint, broker->pubkey, cons_uid);
+            cons_bh.start(broker->endpoint, broker->pubkey, cons_uid, pylabhub::tests::role_keystore_name(cons_uid));
             auto cons_opts = make_cons_opts(channel, cons_uid);
             cons_opts["consumer_queue_type"] = "shm";
             auto cons_reg = cons_bh.brc.register_consumer(cons_opts, 3000);
@@ -957,14 +986,15 @@ int transport_match_no_driver_field()
 {
     return run_with_host(
         "broker_protocol::transport_match_no_driver_field",
-        [](std::optional<HubHostHandle> &broker, LogCaptureFixture &) {
+        {"prod." + pid_chan("proto.transport.nofield"), "cons." + pid_chan("proto.transport.nofield")},
+        [](std::optional<HubHostHandle> &broker, pylabhub::tests::CurveSetup &curve, LogCaptureFixture &) {
             const std::string channel  =
                 pid_chan("proto.transport.nofield");
             const std::string prod_uid = "prod." + channel;
             const std::string cons_uid = "cons." + channel;
 
             BrcHandle prod_bh;
-            prod_bh.start(broker->endpoint, broker->pubkey, prod_uid);
+            prod_bh.start(broker->endpoint, broker->pubkey, prod_uid, pylabhub::tests::role_keystore_name(prod_uid));
             auto reg = prod_bh.brc.register_channel(
                 make_reg_opts(channel, prod_uid), 3000);
             ASSERT_TRUE(reg.has_value());
@@ -973,7 +1003,7 @@ int transport_match_no_driver_field()
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
             BrcHandle cons_bh;
-            cons_bh.start(broker->endpoint, broker->pubkey, cons_uid);
+            cons_bh.start(broker->endpoint, broker->pubkey, cons_uid, pylabhub::tests::role_keystore_name(cons_uid));
             auto cons_reg = cons_bh.brc.register_consumer(
                 make_cons_opts(channel, cons_uid), 3000);
             EXPECT_TRUE(cons_reg.has_value())
@@ -992,12 +1022,13 @@ int reg_ack_contains_heartbeat_block_defaults()
 {
     return run_with_host(
         "broker_protocol::reg_ack_contains_heartbeat_block_defaults",
-        [](std::optional<HubHostHandle> &broker, LogCaptureFixture &) {
+        {"prod." + pid_chan("proto.regack.hb_default")},
+        [](std::optional<HubHostHandle> &broker, pylabhub::tests::CurveSetup &curve, LogCaptureFixture &) {
             const std::string channel = pid_chan("proto.regack.hb_default");
             const std::string uid     = "prod." + channel;
 
             BrcHandle bh;
-            bh.start(broker->endpoint, broker->pubkey, uid);
+            bh.start(broker->endpoint, broker->pubkey, uid, pylabhub::tests::role_keystore_name(uid));
             auto reg = bh.brc.register_channel(
                 make_reg_opts(channel, uid), 3000);
             ASSERT_TRUE(reg.has_value());
@@ -1022,20 +1053,21 @@ int reg_ack_heartbeat_block_honors_custom_config()
 {
     return run_with_host(
         "broker_protocol::reg_ack_heartbeat_block_honors_custom_config",
-        [](std::optional<HubHostHandle> &broker, LogCaptureFixture &) {
+        {"prod." + pid_chan("proto.regack.hb_custom")},
+        [](std::optional<HubHostHandle> &broker, pylabhub::tests::CurveSetup &curve, LogCaptureFixture &) {
             broker.reset();
             BrokerService::Config cfg;
             cfg.endpoint                = "tcp://127.0.0.1:0";
             cfg.heartbeat_interval      = std::chrono::milliseconds(250);
             cfg.ready_miss_heartbeats   = 12;
             cfg.pending_miss_heartbeats = 8;
-            broker.emplace(start_local_broker(std::move(cfg)));
+            broker.emplace(start_local_broker(std::move(cfg), curve));
 
             const std::string channel = pid_chan("proto.regack.hb_custom");
             const std::string uid     = "prod." + channel;
 
             BrcHandle bh;
-            bh.start(broker->endpoint, broker->pubkey, uid);
+            bh.start(broker->endpoint, broker->pubkey, uid, pylabhub::tests::role_keystore_name(uid));
             auto reg = bh.brc.register_channel(
                 make_reg_opts(channel, uid), 3000);
             ASSERT_TRUE(reg.has_value());
@@ -1054,20 +1086,21 @@ int consumer_reg_ack_contains_heartbeat_block()
 {
     return run_with_host(
         "broker_protocol::consumer_reg_ack_contains_heartbeat_block",
-        [](std::optional<HubHostHandle> &broker, LogCaptureFixture &) {
+        {"prod." + pid_chan("proto.cons_regack.hb"), "cons." + pid_chan("proto.cons_regack.hb")},
+        [](std::optional<HubHostHandle> &broker, pylabhub::tests::CurveSetup &curve, LogCaptureFixture &) {
             const std::string channel  = pid_chan("proto.cons_regack.hb");
             const std::string prod_uid = "prod." + channel;
             const std::string cons_uid = "cons." + channel;
 
             BrcHandle prod_bh;
-            prod_bh.start(broker->endpoint, broker->pubkey, prod_uid);
+            prod_bh.start(broker->endpoint, broker->pubkey, prod_uid, pylabhub::tests::role_keystore_name(prod_uid));
             auto reg = prod_bh.brc.register_channel(
                 make_reg_opts(channel, prod_uid), 3000);
             ASSERT_TRUE(reg.has_value());
             prod_bh.brc.send_heartbeat(channel, prod_uid, "producer", {});
 
             BrcHandle cons_bh;
-            cons_bh.start(broker->endpoint, broker->pubkey, cons_uid);
+            cons_bh.start(broker->endpoint, broker->pubkey, cons_uid, pylabhub::tests::role_keystore_name(cons_uid));
             auto cons_reg = cons_bh.brc.register_consumer(
                 make_cons_opts(channel, cons_uid), 3000);
             ASSERT_TRUE(cons_reg.has_value());
@@ -1092,7 +1125,8 @@ int broadcast_fan_out_delivered_to_producer_and_consumers()
 {
     return run_with_host(
         "broker_protocol::broadcast_fan_out_delivered_to_producer_and_consumers",
-        [](std::optional<HubHostHandle> &broker, LogCaptureFixture &) {
+        {"prod." + pid_chan("proto.bcast.fanout"), "cons.first." + pid_chan("proto.bcast.fanout"), "cons.second." + pid_chan("proto.bcast.fanout"), "prod.broadcast.sender.pid" + std::to_string(static_cast<unsigned long>(::getpid()))},
+        [](std::optional<HubHostHandle> &broker, pylabhub::tests::CurveSetup &curve, LogCaptureFixture &) {
             const std::string channel   = pid_chan("proto.bcast.fanout");
             const std::string prod_uid  = "prod." + channel;
             const std::string cons1_uid = "cons.first." + channel;
@@ -1113,14 +1147,16 @@ int broadcast_fan_out_delivered_to_producer_and_consumers()
 
             BrcHandle prod_bh;
             prod_bh.brc.on_notification(only_bcast(prod_evts));
-            prod_bh.start(broker->endpoint, broker->pubkey, prod_uid);
+            prod_bh.start(broker->endpoint, broker->pubkey, prod_uid, pylabhub::tests::role_keystore_name(prod_uid));
             auto reg = prod_bh.brc.register_channel(
                 make_reg_opts(channel, prod_uid), 3000);
             ASSERT_TRUE(reg.has_value());
+            // R6 producer-kLive gate — see HEP-CORE-0036 §5.2.
+            prod_bh.brc.send_heartbeat(channel, prod_uid, "producer", {});
 
             BrcHandle cons1_bh;
             cons1_bh.brc.on_notification(only_bcast(cons1_evts));
-            cons1_bh.start(broker->endpoint, broker->pubkey, cons1_uid);
+            cons1_bh.start(broker->endpoint, broker->pubkey, cons1_uid, pylabhub::tests::role_keystore_name(cons1_uid));
             {
                 auto opts = make_cons_opts(channel, cons1_uid);
                 opts["consumer_pid"] =
@@ -1131,7 +1167,7 @@ int broadcast_fan_out_delivered_to_producer_and_consumers()
 
             BrcHandle cons2_bh;
             cons2_bh.brc.on_notification(only_bcast(cons2_evts));
-            cons2_bh.start(broker->endpoint, broker->pubkey, cons2_uid);
+            cons2_bh.start(broker->endpoint, broker->pubkey, cons2_uid, pylabhub::tests::role_keystore_name(cons2_uid));
             {
                 auto opts = make_cons_opts(channel, cons2_uid);
                 opts["consumer_pid"] =
@@ -1143,7 +1179,7 @@ int broadcast_fan_out_delivered_to_producer_and_consumers()
             BrcHandle sender_bh;
             auto sender_evts = std::make_shared<EventCollector>();
             sender_bh.brc.on_notification(only_bcast(sender_evts));
-            sender_bh.start(broker->endpoint, broker->pubkey, send_uid);
+            sender_bh.start(broker->endpoint, broker->pubkey, send_uid, pylabhub::tests::role_keystore_name(send_uid));
 
             sender_bh.brc.send_broadcast(channel, send_uid,
                                           "hello-fan-out", "");
@@ -1194,7 +1230,8 @@ int broadcast_fan_out_data_payload_round_trip()
 {
     return run_with_host(
         "broker_protocol::broadcast_fan_out_data_payload_round_trip",
-        [](std::optional<HubHostHandle> &broker, LogCaptureFixture &) {
+        {"prod." + pid_chan("proto.bcast.payload"), "cons." + pid_chan("proto.bcast.payload"), "ext.bcast.payload.uid00000077"},
+        [](std::optional<HubHostHandle> &broker, pylabhub::tests::CurveSetup &curve, LogCaptureFixture &) {
             const std::string channel  = pid_chan("proto.bcast.payload");
             const std::string prod_uid = "prod." + channel;
             const std::string cons_uid = "cons." + channel;
@@ -1206,10 +1243,12 @@ int broadcast_fan_out_data_payload_round_trip()
             auto cons_evts = std::make_shared<EventCollector>();
 
             BrcHandle prod_bh;
-            prod_bh.start(broker->endpoint, broker->pubkey, prod_uid);
+            prod_bh.start(broker->endpoint, broker->pubkey, prod_uid, pylabhub::tests::role_keystore_name(prod_uid));
             ASSERT_TRUE(prod_bh.brc.register_channel(
                             make_reg_opts(channel, prod_uid), 3000)
                             .has_value());
+            // R6 producer-kLive gate — see HEP-CORE-0036 §5.2.
+            prod_bh.brc.send_heartbeat(channel, prod_uid, "producer", {});
 
             BrcHandle cons_bh;
             cons_bh.brc.on_notification(
@@ -1217,13 +1256,13 @@ int broadcast_fan_out_data_payload_round_trip()
                     if (t == "CHANNEL_BROADCAST_NOTIFY")
                         cons_evts->push(t, b);
                 });
-            cons_bh.start(broker->endpoint, broker->pubkey, cons_uid);
+            cons_bh.start(broker->endpoint, broker->pubkey, cons_uid, pylabhub::tests::role_keystore_name(cons_uid));
             ASSERT_TRUE(cons_bh.brc.register_consumer(
                             make_cons_opts(channel, cons_uid), 3000)
                             .has_value());
 
             BrcHandle sender_bh;
-            sender_bh.start(broker->endpoint, broker->pubkey, send_uid);
+            sender_bh.start(broker->endpoint, broker->pubkey, send_uid, pylabhub::tests::role_keystore_name(send_uid));
             sender_bh.brc.send_broadcast(channel, send_uid, msg, data);
 
             ASSERT_TRUE(cons_evts->wait_for(1, 5000))
@@ -1250,7 +1289,8 @@ int broadcast_unknown_channel_no_notify_delivered()
 {
     return run_with_host(
         "broker_protocol::broadcast_unknown_channel_no_notify_delivered",
-        [](std::optional<HubHostHandle> &broker, LogCaptureFixture &) {
+        {"prod." + pid_chan("proto.bcast.other"), "cons." + pid_chan("proto.bcast.other"), "ext.bcast.unknown.uid00000088"},
+        [](std::optional<HubHostHandle> &broker, pylabhub::tests::CurveSetup &curve, LogCaptureFixture &) {
             const std::string channel  = pid_chan("proto.bcast.unknown");
             const std::string send_uid = "ext.bcast.unknown.uid00000088";
 
@@ -1260,7 +1300,7 @@ int broadcast_unknown_channel_no_notify_delivered()
             auto spec_evts = std::make_shared<EventCollector>();
 
             BrcHandle other_prod;
-            other_prod.start(broker->endpoint, broker->pubkey, other_prd);
+            other_prod.start(broker->endpoint, broker->pubkey, other_prd, pylabhub::tests::role_keystore_name(other_prd));
             ASSERT_TRUE(other_prod.brc.register_channel(
                             make_reg_opts(other_ch, other_prd), 3000)
                             .has_value());
@@ -1271,13 +1311,13 @@ int broadcast_unknown_channel_no_notify_delivered()
                     if (t == "CHANNEL_BROADCAST_NOTIFY")
                         spec_evts->push(t, b);
                 });
-            spec_bh.start(broker->endpoint, broker->pubkey, spec_uid);
+            spec_bh.start(broker->endpoint, broker->pubkey, spec_uid, pylabhub::tests::role_keystore_name(spec_uid));
             ASSERT_TRUE(spec_bh.brc.register_consumer(
                             make_cons_opts(other_ch, spec_uid), 3000)
                             .has_value());
 
             BrcHandle sender_bh;
-            sender_bh.start(broker->endpoint, broker->pubkey, send_uid);
+            sender_bh.start(broker->endpoint, broker->pubkey, send_uid, pylabhub::tests::role_keystore_name(send_uid));
             sender_bh.brc.send_broadcast(channel, send_uid,
                                           "into-the-void", "");
 
@@ -1303,7 +1343,8 @@ int broadcast_fan_out_hub_queue_path_fans_out_same()
 {
     return run_with_host(
         "broker_protocol::broadcast_fan_out_hub_queue_path_fans_out_same",
-        [](std::optional<HubHostHandle> &broker, LogCaptureFixture &) {
+        {"prod." + pid_chan("proto.bcast.hubpath"), "cons." + pid_chan("proto.bcast.hubpath")},
+        [](std::optional<HubHostHandle> &broker, pylabhub::tests::CurveSetup &curve, LogCaptureFixture &) {
             const std::string channel  = pid_chan("proto.bcast.hubpath");
             const std::string prod_uid = "prod." + channel;
             const std::string cons_uid = "cons." + channel;
@@ -1319,10 +1360,12 @@ int broadcast_fan_out_hub_queue_path_fans_out_same()
                     if (t == "CHANNEL_BROADCAST_NOTIFY")
                         prod_evts->push(t, b);
                 });
-            prod_bh.start(broker->endpoint, broker->pubkey, prod_uid);
+            prod_bh.start(broker->endpoint, broker->pubkey, prod_uid, pylabhub::tests::role_keystore_name(prod_uid));
             ASSERT_TRUE(prod_bh.brc.register_channel(
                             make_reg_opts(channel, prod_uid), 3000)
                             .has_value());
+            // R6 producer-kLive gate — see HEP-CORE-0036 §5.2.
+            prod_bh.brc.send_heartbeat(channel, prod_uid, "producer", {});
 
             BrcHandle cons_bh;
             cons_bh.brc.on_notification(
@@ -1330,7 +1373,7 @@ int broadcast_fan_out_hub_queue_path_fans_out_same()
                     if (t == "CHANNEL_BROADCAST_NOTIFY")
                         cons_evts->push(t, b);
                 });
-            cons_bh.start(broker->endpoint, broker->pubkey, cons_uid);
+            cons_bh.start(broker->endpoint, broker->pubkey, cons_uid, pylabhub::tests::role_keystore_name(cons_uid));
             ASSERT_TRUE(cons_bh.brc.register_consumer(
                             make_cons_opts(channel, cons_uid), 3000)
                             .has_value());
@@ -1400,13 +1443,14 @@ int wire_conformance_reg_ack_shape()
 {
     return run_with_host(
         "broker_protocol::wire_conformance_reg_ack_shape",
-        [](std::optional<HubHostHandle> &broker, LogCaptureFixture &) {
+        {"prod." + pid_chan("tr1.regack")},
+        [](std::optional<HubHostHandle> &broker, pylabhub::tests::CurveSetup &curve, LogCaptureFixture &) {
             using namespace pylabhub::tests::wire;
             const std::string channel = pid_chan("tr1.regack");
             const std::string uid     = "prod." + channel;
 
             BrcHandle bh;
-            bh.start(broker->endpoint, broker->pubkey, uid);
+            bh.start(broker->endpoint, broker->pubkey, uid, pylabhub::tests::role_keystore_name(uid));
             auto reg = bh.brc.register_channel(
                 make_reg_opts(channel, uid), 3000);
             ASSERT_TRUE(reg.has_value()) << "REG_REQ timed out";
@@ -1456,7 +1500,8 @@ int wire_conformance_consumer_reg_ack_shape()
 {
     return run_with_host(
         "broker_protocol::wire_conformance_consumer_reg_ack_shape",
-        [](std::optional<HubHostHandle> &broker, LogCaptureFixture &) {
+        {"prod." + pid_chan("tr1.creg"), "cons." + pid_chan("tr1.creg")},
+        [](std::optional<HubHostHandle> &broker, pylabhub::tests::CurveSetup &curve, LogCaptureFixture &) {
             using namespace pylabhub::tests::wire;
             const std::string channel = pid_chan("tr1.creg");
             const std::string prod_uid = "prod." + channel;
@@ -1464,12 +1509,14 @@ int wire_conformance_consumer_reg_ack_shape()
 
             // Producer first so the channel exists for the consumer.
             BrcHandle prod_bh;
-            prod_bh.start(broker->endpoint, broker->pubkey, prod_uid);
+            prod_bh.start(broker->endpoint, broker->pubkey, prod_uid, pylabhub::tests::role_keystore_name(prod_uid));
             ASSERT_TRUE(prod_bh.brc.register_channel(
                 make_reg_opts(channel, prod_uid), 3000).has_value());
+            // R6 producer-kLive gate — see HEP-CORE-0036 §5.2.
+            prod_bh.brc.send_heartbeat(channel, prod_uid, "producer", {});
 
             BrcHandle cons_bh;
-            cons_bh.start(broker->endpoint, broker->pubkey, cons_uid);
+            cons_bh.start(broker->endpoint, broker->pubkey, cons_uid, pylabhub::tests::role_keystore_name(cons_uid));
             auto reg = cons_bh.brc.register_consumer(
                 make_cons_opts(channel, cons_uid), 3000);
             ASSERT_TRUE(reg.has_value()) << "CONSUMER_REG_REQ timed out";
@@ -1501,21 +1548,22 @@ int wire_conformance_role_info_ack_shape()
 {
     return run_with_host(
         "broker_protocol::wire_conformance_role_info_ack_shape",
-        [](std::optional<HubHostHandle> &broker, LogCaptureFixture &) {
+        {"prod." + pid_chan("tr1.roleinfo"), "tr1.querier.uid0000001"},
+        [](std::optional<HubHostHandle> &broker, pylabhub::tests::CurveSetup &curve, LogCaptureFixture &) {
             using namespace pylabhub::tests::wire;
 
             // ── Case 1: target uid found (no inbox configured) ─────
             const std::string channel = pid_chan("tr1.roleinfo");
             const std::string uid     = "prod." + channel;
             BrcHandle bh;
-            bh.start(broker->endpoint, broker->pubkey, uid);
+            bh.start(broker->endpoint, broker->pubkey, uid, pylabhub::tests::role_keystore_name(uid));
             ASSERT_TRUE(bh.brc.register_channel(
                 make_reg_opts(channel, uid), 3000).has_value());
 
             // Side BRC to query.
             BrcHandle querier;
             querier.start(broker->endpoint, broker->pubkey,
-                          "tr1.querier.uid0000001");
+                          "tr1.querier.uid0000001", pylabhub::tests::role_keystore_name("tr1.querier.uid0000001"));
             auto info = querier.brc.query_role_info(uid, 3000);
             ASSERT_TRUE(info.has_value())
                 << "ROLE_INFO_REQ timed out for a registered uid";
@@ -1573,7 +1621,8 @@ int wire_conformance_band_ack_shapes()
 {
     return run_with_host(
         "broker_protocol::wire_conformance_band_ack_shapes",
-        [](std::optional<HubHostHandle> &broker, LogCaptureFixture &) {
+        {"prod." + pid_chan("tr1.bandshape")},
+        [](std::optional<HubHostHandle> &broker, pylabhub::tests::CurveSetup &curve, LogCaptureFixture &) {
             using namespace pylabhub::tests::wire;
 
             // Need a registered channel so BRC has a role_uid + the
@@ -1584,7 +1633,7 @@ int wire_conformance_band_ack_shapes()
             const std::string band    = "!" + pid_chan("tr1.band");
 
             BrcHandle bh;
-            bh.start(broker->endpoint, broker->pubkey, uid);
+            bh.start(broker->endpoint, broker->pubkey, uid, pylabhub::tests::role_keystore_name(uid));
             ASSERT_TRUE(bh.brc.register_channel(
                 make_reg_opts(channel, uid), 3000).has_value());
 
@@ -1657,7 +1706,8 @@ int wire_conformance_band_corr_id_echo()
 {
     return run_with_host(
         "broker_protocol::wire_conformance_band_corr_id_echo",
-        [](std::optional<HubHostHandle> &broker, LogCaptureFixture &lcf) {
+        {"prod." + pid_chan("tr1.bandcorr")},
+        [](std::optional<HubHostHandle> &broker, pylabhub::tests::CurveSetup &curve, LogCaptureFixture &lcf) {
             using namespace pylabhub::tests::wire;
             // Case 3 below deliberately drives the broker's
             // `NOT_A_MEMBER` rejection path, which emits a WARN.
@@ -1676,7 +1726,7 @@ int wire_conformance_band_corr_id_echo()
             // side-aware tag, not registration, but registering keeps
             // the test path symmetric with realistic usage.
             BrcHandle bh;
-            bh.start(broker->endpoint, broker->pubkey, uid);
+            bh.start(broker->endpoint, broker->pubkey, uid, pylabhub::tests::role_keystore_name(uid));
             ASSERT_TRUE(bh.brc.register_channel(
                 make_reg_opts(channel, uid), 3000).has_value())
                 << "REG_REQ setup failed";
@@ -1688,9 +1738,9 @@ int wire_conformance_band_corr_id_echo()
             join_req["role_uid"]       = uid;
             join_req["role_name"]      = role_nm;
             join_req["correlation_id"] = join_corr;
-            auto join_resp = ::pylabhub::tests::worker::broker::raw_req(
+            auto join_resp = raw_req(
                 broker->endpoint, "BAND_JOIN_REQ", join_req, 3000,
-                broker->pubkey);
+                broker->pubkey, pylabhub::tests::role_keystore_name(uid));
             ASSERT_FALSE(join_resp.is_null())
                 << "BAND_JOIN_REQ timed out";
             ASSERT_EQ(join_resp.value("status", std::string{}), "success")
@@ -1709,9 +1759,9 @@ int wire_conformance_band_corr_id_echo()
             leave_req["band"]           = band;
             leave_req["role_uid"]       = uid;
             leave_req["correlation_id"] = leave_corr;
-            auto leave_resp = ::pylabhub::tests::worker::broker::raw_req(
+            auto leave_resp = raw_req(
                 broker->endpoint, "BAND_LEAVE_REQ", leave_req, 3000,
-                broker->pubkey);
+                broker->pubkey, pylabhub::tests::role_keystore_name(uid));
             ASSERT_FALSE(leave_resp.is_null())
                 << "BAND_LEAVE_REQ timed out";
             ASSERT_EQ(leave_resp.value("status", std::string{}), "success")
@@ -1732,9 +1782,9 @@ int wire_conformance_band_corr_id_echo()
             leave_req_err["band"]           = band;
             leave_req_err["role_uid"]       = uid;
             leave_req_err["correlation_id"] = err_corr;
-            auto err_resp = ::pylabhub::tests::worker::broker::raw_req(
+            auto err_resp = raw_req(
                 broker->endpoint, "BAND_LEAVE_REQ", leave_req_err, 3000,
-                broker->pubkey);
+                broker->pubkey, pylabhub::tests::role_keystore_name(uid));
             ASSERT_FALSE(err_resp.is_null())
                 << "BAND_LEAVE_REQ (error path) timed out";
             ASSERT_EQ(err_resp.value("status", std::string{}), "error");
@@ -1755,9 +1805,9 @@ int wire_conformance_band_corr_id_echo()
             rejoin_req["band"]      = band;
             rejoin_req["role_uid"]  = uid;
             rejoin_req["role_name"] = role_nm;
-            auto rejoin = ::pylabhub::tests::worker::broker::raw_req(
+            auto rejoin = raw_req(
                 broker->endpoint, "BAND_JOIN_REQ", rejoin_req, 3000,
-                broker->pubkey);
+                broker->pubkey, pylabhub::tests::role_keystore_name(uid));
             ASSERT_FALSE(rejoin.is_null())
                 << "BAND_JOIN_REQ (no-corr-id) timed out";
             ASSERT_EQ(rejoin.value("status", std::string{}), "success");
@@ -1797,8 +1847,8 @@ struct BrokerProtocolRegistrar
                     return checksum_error_report_forwarded_to_producer();
                 if (sc == "checksum_error_report_unknown_channel_silent")
                     return checksum_error_report_unknown_channel_silent();
-                if (sc == "closing_notify_delivered_to_producer_and_consumer")
-                    return closing_notify_delivered_to_producer_and_consumer();
+                // closing_notify_delivered_to_producer_and_consumer
+                // RETIRED 2026-06-28 → task #225 (Pattern 4 rung 8).
                 if (sc == "duplicate_reg_shm_cardinality")
                     return duplicate_reg_shm_cardinality();
                 if (sc == "duplicate_reg_different_schema_hash")

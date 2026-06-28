@@ -194,9 +194,11 @@ add_executable(test_layer3_datahub
     workers/broker_admin_workers.cpp
 
     # ── Broker control-plane protocol tests (broadcast, notify, list_channels) ──
-    # MASKED — pending HEP-0035 §4.6.5 step 3-revised-F migration.
-    # test_datahub_broker_protocol.cpp
-    # workers/datahub_broker_protocol_workers.cpp
+    # Unmasked 2026-06-28 under #154 batch-2a C1 — migrated to shared
+    # broker_test_harness (HubHostBrokerHandle + BrcHandle) +
+    # CurveKeyStoreFixture + §5b canonical builders per AUTH-6 audit.
+    test_datahub_broker_protocol.cpp
+    workers/datahub_broker_protocol_workers.cpp
 
     # ── HubHost ↔ BrokerService integration (HEP-CORE-0033 §4 / Phase 6.1b) ──
     # Unmasked 2026-06-27 under #154 — workers file already uses the

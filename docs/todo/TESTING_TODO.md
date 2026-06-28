@@ -57,6 +57,25 @@ must use Pattern 1+ (`BinaryLifecycleEnvironment`) or Pattern 3
 (Wave-B M9 RoleHostFrame Q1+Q2+Q3 closure; N1 #83 L2 round-trip test;
 task #44 demo framework — inventory pointer still in this file below).
 
+## Test retirements / cross-layer migrations (CRITICAL — read before retiring any test)
+
+Discipline: a test retirement is incomplete until its contract is
+absorbed into a tracked replacement.  Each retirement entry below
+lists (1) the retired test, (2) the contract it was the SOLE site
+pinning, (3) the destination task ID, and (4) the explicit description
+update made to that task on retirement.  When closing one of the
+destination tasks, verify the absorbed contract is exercised by the
+new test — coverage continuity is the retirement's load-bearing
+guarantee.
+
+| Date | Retired test (file:test) | Contract absorbed | Destination |
+|---|---|---|---|
+| 2026-06-27 | `test_datahub_hub_host_integration.cpp:HubHost_Shutdown_BreaksClientConnection` | HEP-CORE-0023 §2.5.3 "disconnect is terminal" — cross-process hub-death observability (libzmq shared-context CURVE quirk makes L3 impossible) | task #296 (L4 hub-death observability test) |
+| 2026-06-28 | `test_datahub_broker_protocol.cpp:BrokerProtocolTest.ClosingNotify_DeliveredToProducerAndConsumer` | CHANNEL_CLOSING_NOTIFY fan-out to ALL channel members (both producer-side AND consumer-side BRCs after `broker.request_close_channel`) | task **#225** (Pattern 4 rung 8 `Pattern4ChannelNotifiesTest`) — description extended 2026-06-28 with explicit fan-out cardinality / dual-receipt / trigger-path requirements |
+
+When proposing a future retirement: update this table FIRST, then
+update the destination task's description, then delete the test.
+
 ## Recent Completions
 
 - **2026-06-27 — #177 KeyStore fixture infrastructure shipped.**  `CurveKeyStoreFixture`

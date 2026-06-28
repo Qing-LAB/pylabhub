@@ -15,8 +15,9 @@ namespace broker_protocol
 int checksum_error_report_forwarded_to_producer();
 int checksum_error_report_unknown_channel_silent();
 
-// Closing notify fanout
-int closing_notify_delivered_to_producer_and_consumer();
+// Closing notify fanout — RETIRED 2026-06-28: contract absorbed by
+// task #225 (Pattern 4 rung 8 `Pattern4ChannelNotifiesTest`).  See
+// driver file's retirement doc-block for full reasoning.
 
 // Duplicate registration
 int duplicate_reg_shm_cardinality();

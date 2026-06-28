@@ -42,16 +42,19 @@ TEST_F(BrokerProtocolTest, ChecksumErrorReport_UnknownChannel_Silent)
     ExpectWorkerOk(w);
 }
 
-// ============================================================================
-// 2. CHANNEL_CLOSING_NOTIFY — delivery to ALL registered members
-// ============================================================================
-
-TEST_F(BrokerProtocolTest, ClosingNotify_DeliveredToProducerAndConsumer)
-{
-    auto w = SpawnWorker(
-        "broker_protocol.closing_notify_delivered_to_producer_and_consumer");
-    ExpectWorkerOk(w);
-}
+// RETIRED 2026-06-28 — `ClosingNotify_DeliveredToProducerAndConsumer`
+// pinned the CHANNEL_CLOSING_NOTIFY fan-out-to-all-members invariant
+// (broker emits the notify to BOTH producer-side AND consumer-side
+// BRCs after `broker.request_close_channel()`).  That contract is
+// canonical multi-process wire-protocol territory and is now tracked
+// at L4 by Pattern 4 rung 8 (task #225 `Pattern4ChannelNotifiesTest`).
+// Task #225's description was extended on retirement to explicitly
+// absorb the fan-out cardinality + dual-receipt invariant + in-process
+// `request_close_channel` trigger path that this L3 test was the only
+// site pinning.  See README_testing rule 6 (RETIRE obsolete tests) +
+// `docs/code_review/REVIEW_AUTH6_TestDisposition_2026-06-27.md` (audit
+// did not flag this as DELETE — retirement decision made during C1
+// migration after explicit overlap analysis against Pattern 4 ladder).
 
 // ============================================================================
 // 3. Duplicate REG_REQ — SHM cardinality + schema hash conflict
