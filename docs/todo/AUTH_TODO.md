@@ -195,13 +195,15 @@ Files already unmasked (11-15) **retroactively confirmed valid** —
 no rework needed, including the 2026-06-27 commit `86b7b209`
 (`test_datahub_hub_host_integration`).
 
-**Real blocker — task #177.**  Task #177 ("Migrate L3 test workers
-+ L2 test_hub_state to KeyStore-based fixtures") hasn't shipped.
-Without #177 the worker bodies can't initialize `SecureMemorySubsystem`
-+ `KeyStore` (HEP-CORE-0040 #169-#170 framework primitives).
-**Recommended sequencing:** ship #177 → batch 2a (broker+protocol+
-state-machine) → batch 2b (broker_health+metrics+endpoint_registry)
-→ batch 2c (Lua+Python integration) → Phase 3 (file 9 DEFER + file 10
+**Foundational primitive — task #177.**  Task #177 (CurveKeyStoreFixture +
+HEP-CORE-0040 §172 use-not-export discipline + first batch of migrated
+files) ✅ SHIPPED 2026-06-27 (commits `6e819b73` + `db774840`).  Files
+already migrated via the fixture: L2 zmq_queue_auth + L2 hub_state; L3
+broker_request_comm + channel_group (2026-06-07); L3 hub_host_integration
++ hub_lua_integration + hub_python_integration (2026-06-27).
+**Remaining batches under AUTH-6:** batch 2a (broker + broker_protocol +
+role_state_machine) → batch 2b (broker_health + metrics + endpoint_registry;
+absorbs former trackers #293/#294) → Phase 3 (file 9 DEFER + file 10
 DELETE/RE-LAYER) → close out.
 
 **Out of scope (per §I11).**
@@ -218,7 +220,8 @@ three are uniform UNMASK+MIGRATE alongside files 1-4, so separate
 trackers are unnecessary).
 
 **Depends on:** AUTH-1 shipped ✅; task **#177** (KeyStore fixtures)
-— REAL BLOCKER, not yet shipped.
+✅ shipped 2026-06-27 — no remaining blockers; AUTH-6 batches 2a/2b
+ready to start.
 
 ### AUTH-7 — L4 end-to-end gate close
 

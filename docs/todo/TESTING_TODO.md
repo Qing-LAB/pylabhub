@@ -57,6 +57,22 @@ must use Pattern 1+ (`BinaryLifecycleEnvironment`) or Pattern 3
 (Wave-B M9 RoleHostFrame Q1+Q2+Q3 closure; N1 #83 L2 round-trip test;
 task #44 demo framework — inventory pointer still in this file below).
 
+## Recent Completions
+
+- **2026-06-27 — #177 KeyStore fixture infrastructure shipped.**  `CurveKeyStoreFixture`
+  RAII guard (`tests/test_framework/curve_test_setup.h`) constructs
+  `SecureMemorySubsystem` + `KeyStore` and seeds identities under
+  `"hub_identity"` + `"role.<uid>"` names per HEP-CORE-0040 §172.
+  Validated by 5-mutation protocol sweep in
+  `tests/test_layer2_service/workers/curve_test_fixtures_workers.cpp`.
+  Migrated files this session: L3 `hub_host_integration` +
+  `hub_lua_integration` + `hub_python_integration` workers.  Side-effect:
+  L3 `HubHost_Shutdown_BreaksClientConnection` deleted (libzmq shared-
+  context CURVE quirk; L4 replacement filed as #296).  Commits
+  `6e819b73` + `db774840`.  Remaining L3 broker test migrations
+  (broker_health, role_state_machine, broker_protocol, metrics,
+  zmq_endpoint_registry) are AUTH-6 (#154) batch 2a/2b scope.
+
 ## Current Focus — Open coverage gaps
 
 ### #296 — L4 hub-death observability test (HEP-CORE-0023 §2.5.3 cross-process) ⏳
