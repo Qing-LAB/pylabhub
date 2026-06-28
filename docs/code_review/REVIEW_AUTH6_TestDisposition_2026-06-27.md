@@ -104,6 +104,35 @@ With #177 shipped:
    not L4 (no multi-process cross-binary protocol).  README_testing
    §1.2 rule 7 satisfied.
 
+   **ADDENDUM 2026-06-27 — observation §2 was wrong on 4/91 batch-2a tests.**
+   A per-TEST_F layer-fit audit before batch-2a migration found that the
+   following 4 tests in `workers/datahub_role_state_workers.cpp` pin
+   `RoleHandler` single-class state-flag + pointer-identity behavior
+   only — the broker that lived in their workers was scaffolding (its
+   endpoint string fed into `HubRefConfig`, but no REG_REQ was sent and
+   no broker-side assertion was made).  `BRC::is_connected()` returns
+   the BRC's internal `connected` flag set at the end of `connect()`
+   BEFORE any wire handshake (`broker_request_comm.cpp:578`), so the
+   contract pinned does not actually require a real peer.  The 4 tests
+   were re-layered to L2 `test_layer2_service/test_role_handler.cpp`
+   (Pattern 1+ via existing `BinaryLifecycleEnvironment`) on 2026-06-27:
+
+   | Old L3 TEST_F | New L2 TEST |
+   |---|---|
+   | `DatahubRoleStateMachineTest.RoleHandler_Connections_StartStop_Smoke` | `RoleHandlerLifecycle.StartStop_Smoke_SinglePresence` |
+   | `DatahubRoleStateMachineTest.RoleHandler_Connections_DualHub` | `RoleHandlerLifecycle.StartStop_DualHub_BothConnectionsConnected` |
+   | `DatahubRoleStateMachineTest.RoleHandler_Connections_DoubleStart_Rejected` | `RoleHandlerLifecycle.DoubleStart_Rejected_StateNotCleared` |
+   | `DatahubRoleStateMachineTest.RoleHandler_BrcForX_PostStart_PointerIdentity` | `RoleHandlerRouting.BrcForX_PostStart_PointerIdentity` |
+
+   The remaining 19 tests in `test_datahub_role_state_machine.cpp` ARE
+   genuine L3 (they assert broker FSM metrics-counter transitions, real
+   broker death driving role-side `on_hub_dead`, REG_REQ→broker state
+   mirror via `broker.hub_state.role(uid)`, broker-emitted
+   `CONSUMER_DIED_NOTIFY` body shape, multi-broker `source_hub_uid`
+   tagging, etc. — broker behavior is part of the asserted contract).
+   Files 1 + 3 in batch 2a (`broker` + `broker_protocol`, 68 tests
+   total) were all confirmed L3 with no exceptions.
+
 3. **Surfaces all still exist in current code.**  The audit walked each
    TEST_F against the current code state:
    - HEP-CORE-0034 Phase 3/4 schema-registry surfaces (40 schema tests)

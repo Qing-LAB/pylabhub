@@ -662,261 +662,21 @@ int consumer_heartbeat_timeout_fires_consumer_died_notify()
         logger_module(), crypto_module(), zmq_module());
 }
 
-// ============================================================================
-// role_handler_connections_start_stop_smoke
-//   Wave-B M4a — state-only verification of RoleHandler's network
-//   surface.  Allocates BRCs + connects them; verifies state; releases.
-//   NO threads spawned by the handler (handler is a state holder; the
-//   role host owns thread spawning, which lands in M4c).
-// ============================================================================
+// RE-LAYERED 2026-06-27 — the 4 `role_handler_*` worker bodies that
+// lived between this point and `role_api_base_start_handler_threads_e2e`
+// (state-only verification of RoleHandler's network surface) moved to
+// L2 at `tests/test_layer2_service/test_role_handler.cpp`
+// per the AUTH-6 layer-fit audit
+// (`docs/code_review/REVIEW_AUTH6_TestDisposition_2026-06-27.md` §2
+// addendum).  They pin RoleHandler single-class state-flag +
+// pointer-identity behavior; the broker that lived here was scaffolding
+// only because `BRC::is_connected()` reads an internal flag set at end
+// of `connect()` (before any wire handshake).  Mapping:
+//   - role_handler_connections_start_stop_smoke      → RoleHandlerLifecycle.StartStop_Smoke_SinglePresence
+//   - role_handler_connections_dual_hub              → RoleHandlerLifecycle.StartStop_DualHub_BothConnectionsConnected
+//   - role_handler_connections_double_start_rejected → RoleHandlerLifecycle.DoubleStart_Rejected_StateNotCleared
+//   - role_handler_brc_for_x_post_start              → RoleHandlerRouting.BrcForX_PostStart_PointerIdentity
 
-int role_handler_connections_start_stop_smoke()
-{
-    return run_gtest_worker(
-        []() {
-            BrokerService::Config bcfg;
-            bcfg.endpoint  = "tcp://127.0.0.1:0";
-            bcfg.use_curve = false;
-            bcfg.enforce_ctrl_admission = false;
-            auto broker = start_broker_with_cfg(std::move(bcfg));
-
-            // RoleAPIBase carries the role-side identity (uid, name,
-            // auth) — read by RoleHandler::start_connections to build
-            // each BRC's Config.  No threads are spawned by either
-            // RoleAPIBase or RoleHandler in this test; only the BRC's
-            // DEALER socket gets connected.
-            pylabhub::scripting::RoleHostCore core;
-            pylabhub::scripting::RoleAPIBase  api(
-                core, "prod", "prod.handler_smoke.uid00000001");
-            api.set_name("handler_smoke");
-            api.set_auth("", "");
-
-            pylabhub::config::HubRefConfig hub_cfg;
-            hub_cfg.broker        = broker.endpoint;
-            hub_cfg.broker_pubkey = broker.pubkey;
-
-            std::vector<pylabhub::scripting::Presence> presences;
-            {
-                pylabhub::scripting::Presence p;
-                p.hub       = hub_cfg;
-                p.channel   = make_test_channel_name("role_handler.smoke");
-                p.role_kind = pylabhub::scripting::RoleKind::Producer;
-                presences.push_back(std::move(p));
-            }
-            pylabhub::scripting::RoleHandler handler(std::move(presences));
-
-            ASSERT_EQ(handler.presence_count(),   1u);
-            ASSERT_EQ(handler.connection_count(), 1u);
-            EXPECT_FALSE(handler.connections_started());
-            EXPECT_EQ(handler.connections()[0].brc.get(), nullptr);
-
-            ASSERT_TRUE(handler.start_connections(api));
-            EXPECT_TRUE(handler.connections_started());
-            ASSERT_NE(handler.connections()[0].brc.get(), nullptr);
-            EXPECT_TRUE(handler.connections()[0].brc->is_connected());
-
-            handler.stop_connections();
-            EXPECT_FALSE(handler.connections_started());
-            EXPECT_EQ(handler.connections()[0].brc.get(), nullptr);
-
-            handler.stop_connections();  // idempotent
-            EXPECT_FALSE(handler.connections_started());
-
-            broker.stop_and_join();
-        },
-        "role_state.role_handler_connections_start_stop_smoke",
-        logger_module(), crypto_module(), zmq_module());
-}
-
-// ============================================================================
-// role_handler_connections_dual_hub
-//   Wave-B M4a — dual-broker topology pins the M8-payoff state shape
-//   at the network layer (state-only): two HubConnections, two BRCs
-//   each connected to a different broker.  No thread spawning by the
-//   handler; M4c will hook the role host's spawn loop into
-//   `handler.connections()`.
-// ============================================================================
-
-int role_handler_connections_dual_hub()
-{
-    return run_gtest_worker(
-        []() {
-            BrokerService::Config bcfg_a;
-            bcfg_a.endpoint  = "tcp://127.0.0.1:0";
-            bcfg_a.use_curve = false;
-            bcfg_a.enforce_ctrl_admission = false;
-            auto broker_a = start_broker_with_cfg(std::move(bcfg_a));
-
-            BrokerService::Config bcfg_b;
-            bcfg_b.endpoint  = "tcp://127.0.0.1:0";
-            bcfg_b.use_curve = false;
-            bcfg_b.enforce_ctrl_admission = false;
-            auto broker_b = start_broker_with_cfg(std::move(bcfg_b));
-
-            pylabhub::scripting::RoleHostCore core;
-            pylabhub::scripting::RoleAPIBase  api(
-                core, "proc", "proc.dual_hub.uid00000001");
-            api.set_name("dual_hub_smoke");
-            api.set_auth("", "");
-
-            pylabhub::config::HubRefConfig hub_a;
-            hub_a.broker = broker_a.endpoint;
-            pylabhub::config::HubRefConfig hub_b;
-            hub_b.broker = broker_b.endpoint;
-
-            std::vector<pylabhub::scripting::Presence> presences;
-            {
-                pylabhub::scripting::Presence p_in;
-                p_in.hub       = hub_a;
-                p_in.channel   = make_test_channel_name("dual.in");
-                p_in.role_kind = pylabhub::scripting::RoleKind::Consumer;
-                presences.push_back(std::move(p_in));
-                pylabhub::scripting::Presence p_out;
-                p_out.hub       = hub_b;
-                p_out.channel   = make_test_channel_name("dual.out");
-                p_out.role_kind = pylabhub::scripting::RoleKind::Producer;
-                presences.push_back(std::move(p_out));
-            }
-            pylabhub::scripting::RoleHandler handler(std::move(presences));
-            ASSERT_EQ(handler.connection_count(), 2u);
-
-            ASSERT_TRUE(handler.start_connections(api));
-            EXPECT_TRUE(handler.connections_started());
-            EXPECT_TRUE(handler.connections()[0].brc->is_connected());
-            EXPECT_TRUE(handler.connections()[1].brc->is_connected());
-
-            handler.stop_connections();
-            EXPECT_FALSE(handler.connections_started());
-            EXPECT_EQ(handler.connections()[0].brc.get(), nullptr);
-            EXPECT_EQ(handler.connections()[1].brc.get(), nullptr);
-
-            broker_a.stop_and_join();
-            broker_b.stop_and_join();
-        },
-        "role_state.role_handler_connections_dual_hub",
-        logger_module(), crypto_module(), zmq_module());
-}
-
-// ============================================================================
-// role_handler_connections_double_start_rejected
-//   Wave-B M4a — `start_connections()` refuses a second call without
-//   intervening `stop_connections()`.  Pins the docstring idempotency
-//   contract.
-// ============================================================================
-
-int role_handler_connections_double_start_rejected()
-{
-    return run_gtest_worker(
-        []() {
-            BrokerService::Config bcfg;
-            bcfg.endpoint  = "tcp://127.0.0.1:0";
-            bcfg.use_curve = false;
-            bcfg.enforce_ctrl_admission = false;
-            auto broker = start_broker_with_cfg(std::move(bcfg));
-
-            pylabhub::scripting::RoleHostCore core;
-            pylabhub::scripting::RoleAPIBase  api(
-                core, "prod", "prod.double_start.uid00000001");
-            api.set_name("double_start");
-            api.set_auth("", "");
-
-            pylabhub::config::HubRefConfig hub_cfg;
-            hub_cfg.broker = broker.endpoint;
-
-            std::vector<pylabhub::scripting::Presence> presences;
-            {
-                pylabhub::scripting::Presence p;
-                p.hub       = hub_cfg;
-                p.channel   = make_test_channel_name("role_handler.double");
-                p.role_kind = pylabhub::scripting::RoleKind::Producer;
-                presences.push_back(std::move(p));
-            }
-            pylabhub::scripting::RoleHandler handler(std::move(presences));
-
-            ASSERT_TRUE(handler.start_connections(api));
-            EXPECT_TRUE(handler.connections_started());
-
-            EXPECT_FALSE(handler.start_connections(api))
-                << "Double-start without intervening stop must be rejected.";
-            EXPECT_TRUE(handler.connections_started())
-                << "Rejected second start must NOT clear the started state.";
-
-            handler.stop_connections();
-            broker.stop_and_join();
-        },
-        "role_state.role_handler_connections_double_start_rejected",
-        logger_module(), crypto_module(), zmq_module());
-}
-
-// ============================================================================
-// role_handler_brc_for_x_post_start
-//   Wave-B M4b — verify the routing primitives return the right
-//   non-null BRC pointers AFTER start_connections.  L2 tests
-//   (Pattern 1+) verified the lookup logic returns nullptr pre-start;
-//   this L3 test pins the post-start pointer identity (matches
-//   `connections()[i].brc.get()`).
-// ============================================================================
-
-int role_handler_brc_for_x_post_start()
-{
-    return run_gtest_worker(
-        []() {
-            BrokerService::Config bcfg;
-            bcfg.endpoint  = "tcp://127.0.0.1:0";
-            bcfg.use_curve = false;
-            bcfg.enforce_ctrl_admission = false;
-            auto broker = start_broker_with_cfg(std::move(bcfg));
-
-            pylabhub::scripting::RoleHostCore core;
-            pylabhub::scripting::RoleAPIBase  api(
-                core, "prod", "prod.brc_routing.uid00000001");
-            api.set_name("brc_routing");
-            api.set_auth("", "");
-
-            pylabhub::config::HubRefConfig hub_cfg;
-            hub_cfg.broker = broker.endpoint;
-
-            std::vector<pylabhub::scripting::Presence> presences;
-            {
-                pylabhub::scripting::Presence p;
-                p.hub       = hub_cfg;
-                p.channel   = make_test_channel_name("role_handler.routing");
-                p.role_kind = pylabhub::scripting::RoleKind::Producer;
-                presences.push_back(std::move(p));
-            }
-            const std::string ch = presences[0].channel;
-            pylabhub::scripting::RoleHandler handler(std::move(presences));
-
-            ASSERT_TRUE(handler.start_connections(api));
-
-            // brc_for_channel must return the same pointer as
-            // connections()[0].brc.get() — single presence, single
-            // connection, unambiguous routing.
-            auto *expected_brc = handler.connections()[0].brc.get();
-            ASSERT_NE(expected_brc, nullptr);
-
-            EXPECT_EQ(handler.brc_for_channel(ch), expected_brc)
-                << "Class A routing: brc_for_channel must match the "
-                   "connection slot's BRC.";
-            EXPECT_EQ(handler.brc_for_role(), expected_brc)
-                << "Class B routing: brc_for_role returns the first "
-                   "connection's BRC (single-presence role).";
-
-            // Class D: band routing requires on_band_joined first.
-            EXPECT_EQ(handler.brc_for_band("test.band"), nullptr);
-            const auto *p = handler.find_presence_for_channel(ch);
-            ASSERT_NE(p, nullptr);
-            handler.on_band_joined("test.band", p);
-            EXPECT_EQ(handler.brc_for_band("test.band"), expected_brc)
-                << "Class D routing: brc_for_band returns the BRC "
-                   "of the presence that joined the band.";
-
-            handler.stop_connections();
-            broker.stop_and_join();
-        },
-        "role_state.role_handler_brc_for_x_post_start",
-        logger_module(), crypto_module(), zmq_module());
-}
 
 // ============================================================================
 // role_api_base_start_handler_threads_e2e
@@ -2684,14 +2444,8 @@ struct BrokerRoleStateWorkerRegistrar
                     return role_entry_terminal_cleanup_on_consumer_left_last();
                 if (scenario == "consumer_heartbeat_timeout_fires_consumer_died_notify")
                     return consumer_heartbeat_timeout_fires_consumer_died_notify();
-                if (scenario == "role_handler_connections_start_stop_smoke")
-                    return role_handler_connections_start_stop_smoke();
-                if (scenario == "role_handler_connections_dual_hub")
-                    return role_handler_connections_dual_hub();
-                if (scenario == "role_handler_connections_double_start_rejected")
-                    return role_handler_connections_double_start_rejected();
-                if (scenario == "role_handler_brc_for_x_post_start")
-                    return role_handler_brc_for_x_post_start();
+                // role_handler_* dispatchers removed 2026-06-27; bodies
+                // re-layered to L2 test_role_handler.cpp per AUTH-6 audit.
                 if (scenario == "role_api_base_start_handler_threads_e2e")
                     return role_api_base_start_handler_threads_e2e();
                 if (scenario == "role_api_base_start_handler_threads_dual_hub_e2e")

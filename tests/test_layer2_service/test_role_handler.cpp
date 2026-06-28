@@ -1,10 +1,27 @@
 /**
  * @file test_role_handler.cpp
- * @brief L2 unit tests for `RoleHandler` — Wave-B M3 skeleton.
+ * @brief L2 unit tests for `RoleHandler` single-class behavior.
  *
- * Pure data-structure tests: presence enumeration, dedup correctness,
- * channel index lookup, lifetime invariants on the pointer wiring,
- * and the duplicate-channel defensive log.
+ * Coverage:
+ *   - data-structure: presence enumeration, dedup correctness,
+ *     channel index lookup, lifetime invariants, duplicate-channel
+ *     defensive log;
+ *   - start/stop lifecycle: `start_connections()` / `stop_connections()`
+ *     state flags, BRC allocation, idempotency, double-start
+ *     rejection, post-start routing-primitive pointer identity
+ *     (`brc_for_channel/role/band`).
+ *
+ * The M4 tests were RE-LAYERED here from L3
+ * `test_datahub_role_state_machine.cpp` by the AUTH-6 layer-fit audit
+ * (`docs/code_review/REVIEW_AUTH6_TestDisposition_2026-06-27.md` §2
+ * addendum, 2026-06-27).  They belong at L2 because
+ * `BRC::is_connected()` reads the BRC's internal `connected` flag set
+ * at the end of `connect()` — BEFORE any wire handshake.  The L3
+ * placement required a real broker as scaffolding even though no
+ * broker-side protocol behavior was asserted; here the broker
+ * endpoint can be any reachable TCP address (ZMQ DEALER connect is
+ * non-blocking and lazy).  Real-broker protocol assertions stay at
+ * L3.
  *
  * Pattern selection: **Pattern 1+** (`BinaryLifecycleEnvironment` via
  * `PLH_BINARY_LIFECYCLE_MODULES`).  `RoleHandler::build_channel_index_`
@@ -13,31 +30,39 @@
  * can emit `LOGGER_*` needs the binary-wide guard.  See
  * `docs/README/README_testing.md § "Pattern 1+"` for the rationale +
  * the decision checklist (Q1: "Does my test call any `LOGGER_*` macro?
- * (Logger is lifecycle-backed.)").
+ * (Logger is lifecycle-backed.)").  M4 tests also need
+ * `crypto::GetLifecycleModule` + `hub::GetZMQContextModule` because
+ * `BRC::connect()` constructs a CURVE-wired DEALER socket on the
+ * process ZMQ context and reads its seckey from `key_store()` via
+ * `kRoleIdentityName` (HEP-CORE-0040 §172).
  *
  * Compiled as its own executable `test_layer2_role_handler` — NOT
  * part of any aggregate target — because `BinaryLifecycleEnvironment`
  * requires being the only `LifecycleGuard` owner in its binary.
- *
- * Wave-B M4 will add network-touching tests covering `start()` /
- * `shutdown()` / dispatch — those go to L3 (Pattern 3
- * IsolatedProcessTest) because they spawn ThreadManager threads
- * and connect real DEALER sockets to a `BrokerService`.
  */
 
 #include "binary_lifecycle.h"
+#include "curve_test_setup.h"  // gen_curve_keypair
+#include "plh_service.hpp"     // pulls hub::GetZMQContextModule
 #include "utils/logger.hpp"
+#include "utils/role_api_base.hpp"
 #include "utils/role_handler.hpp"
+#include "utils/role_host_core.hpp"
+#include "utils/security/key_store.hpp"
+#include "utils/security/secure_memory_subsystem.hpp"
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
-// Binary-wide LifecycleGuard for Logger.  Required because
-// `RoleHandler::build_channel_index_` emits `LOGGER_ERROR` on a
-// duplicate-channel input.  This is the only `LifecycleGuard` owner
-// in this binary by design — see file header.
+// Binary-wide LifecycleGuard for the 3 modules the M4 lifecycle tests
+// need (Logger / crypto / ZMQ context).  Logger alone was sufficient
+// for the M3 data-structure tests; M4 tests construct real BRCs via
+// `RoleHandler::start_connections()`.  This is the only
+// `LifecycleGuard` owner in this binary by design — see file header.
 PLH_BINARY_LIFECYCLE_MODULES(
-    pylabhub::utils::Logger::GetLifecycleModule()
+    pylabhub::utils::Logger::GetLifecycleModule(),
+    pylabhub::crypto::GetLifecycleModule(),
+    pylabhub::hub::GetZMQContextModule()
 )
 
 #include <string>
@@ -71,6 +96,69 @@ Presence make_presence(const std::string &channel,
     p.channel   = channel;
     p.role_kind = kind;
     return p;
+}
+
+}  // namespace
+
+// ── KeyStore identity seeding for M4 lifecycle tests ──────────────────────
+//
+// `RoleHandler::start_connections(api)` constructs a `BRC::Config` for
+// each connection and calls `brc.connect(cfg)`.  `connect()` reads the
+// role's seckey from `key_store()` via `kRoleIdentityName` per
+// HEP-CORE-0040 §172; an unseeded store causes `connect()` to return
+// false and `start_connections()` to fail.  Seed once per binary,
+// mirroring the pattern in `test_hub_zmq_queue.cpp` lines 109-152.
+//
+// One identity per process per HEP-CORE-0040 §5.3 — fine here because
+// these tests run as a single L2 binary.  Setup runs once via a
+// Pattern-1+ `BinaryLifecycleEnvironment`; teardown happens at the
+// binary's LifecycleGuard.
+namespace
+{
+
+class RoleHandlerTestEnvironment : public ::testing::Environment
+{
+public:
+    void SetUp() override
+    {
+        namespace sec = pylabhub::utils::security;
+        if (!sec::key_store_ready())
+        {
+            // Stash these as `static` so they outlive `SetUp()` and
+            // survive for the binary's lifetime.
+            static sec::SecureMemorySubsystem sms;
+            static sec::KeyStore              ks{"l2",
+                                                 "test_layer2_role_handler"};
+        }
+        auto &ks = sec::key_store();
+        if (!ks.has(sec::kRoleIdentityName))
+        {
+            const auto kp = pylabhub::tests::gen_curve_keypair();
+            ks.add_identity_from_z85(sec::kRoleIdentityName,
+                                     kp.public_z85, kp.secret_z85);
+        }
+    }
+};
+
+[[maybe_unused]] static auto *kRoleHandlerTestEnv =
+    ::testing::AddGlobalTestEnvironment(new RoleHandlerTestEnvironment);
+
+// Returns a `HubRefConfig` with the seeded test identity's pubkey as
+// broker pubkey.  `BrokerRequestComm::connect()` rejects empty / non-
+// Z85 broker pubkey (#172 strict-CURVE), so the M3 helper
+// `make_hub(endpoint)` default `"test-pubkey-aaaa"` is not
+// `start_connections()`-compatible.  CURVE handshake itself never
+// completes in these tests (no real broker is on the other end of
+// the TCP socket), but `connect()` succeeds at the API boundary —
+// which is what `BRC::is_connected()` reports.
+HubRefConfig make_curve_hub(const std::string &endpoint)
+{
+    namespace sec = pylabhub::utils::security;
+    HubRefConfig h;
+    h.broker        = endpoint;
+    h.broker_pubkey =
+        std::string{sec::key_store().pubkey(sec::kRoleIdentityName)};
+    return h;
 }
 
 }  // namespace
@@ -715,4 +803,143 @@ TEST(RoleHandlerRouting, OnBandJoined_EmptyBandName_NoOp)
     nlohmann::json body;
     body["band"] = "";
     EXPECT_EQ(h.find_presence_from_notification("X", body), nullptr);
+}
+
+// ── RoleHandler start/stop lifecycle ────────────────────────────────────
+//
+// Re-layered here from `test_layer3_datahub/test_datahub_role_state_machine.cpp`
+// by the AUTH-6 layer-fit audit (2026-06-27).  See file header for the
+// audit's correction reasoning.  The original L3 placement used a real
+// `HubHost` broker purely as scaffolding for the endpoint string + a
+// peer to attempt to connect to; no broker protocol behavior was
+// asserted.
+
+TEST(RoleHandlerLifecycle, StartStop_Smoke_SinglePresence)
+{
+    std::vector<Presence> presences;
+    presences.push_back(make_presence(
+        "smoke.ch", RoleKind::Producer,
+        make_curve_hub("tcp://127.0.0.1:5570")));
+    RoleHandler handler(std::move(presences));
+
+    EXPECT_EQ(handler.presence_count(),   1u);
+    EXPECT_EQ(handler.connection_count(), 1u);
+    EXPECT_FALSE(handler.connections_started());
+    EXPECT_EQ(handler.connections()[0].brc.get(), nullptr);
+
+    pylabhub::scripting::RoleHostCore core;
+    pylabhub::scripting::RoleAPIBase  api(
+        core, "prod", "prod.smoke.uid00000001");
+    api.set_name("smoke");
+
+    // Post-start: brc allocated + connect() returned true.
+    // `is_connected()` reads the BRC's internal `connected` flag set
+    // at the end of `connect()` — no real broker required.
+    ASSERT_TRUE(handler.start_connections(api));
+    EXPECT_TRUE(handler.connections_started());
+    ASSERT_NE(handler.connections()[0].brc.get(), nullptr);
+    EXPECT_TRUE(handler.connections()[0].brc->is_connected());
+
+    // Post-stop: brc released, flag clears.
+    handler.stop_connections();
+    EXPECT_FALSE(handler.connections_started());
+    EXPECT_EQ(handler.connections()[0].brc.get(), nullptr);
+
+    // Idempotency contract: second stop is a no-op.
+    handler.stop_connections();
+    EXPECT_FALSE(handler.connections_started());
+}
+
+TEST(RoleHandlerLifecycle, StartStop_DualHub_BothConnectionsConnected)
+{
+    std::vector<Presence> presences;
+    presences.push_back(make_presence(
+        "dual.in",  RoleKind::Consumer,
+        make_curve_hub("tcp://127.0.0.1:5571")));
+    presences.push_back(make_presence(
+        "dual.out", RoleKind::Producer,
+        make_curve_hub("tcp://127.0.0.1:5572")));
+    RoleHandler handler(std::move(presences));
+    ASSERT_EQ(handler.connection_count(), 2u);
+
+    pylabhub::scripting::RoleHostCore core;
+    pylabhub::scripting::RoleAPIBase  api(
+        core, "proc", "proc.dual.uid00000001");
+    api.set_name("dual_hub");
+
+    ASSERT_TRUE(handler.start_connections(api));
+    EXPECT_TRUE(handler.connections_started());
+    EXPECT_TRUE(handler.connections()[0].brc->is_connected());
+    EXPECT_TRUE(handler.connections()[1].brc->is_connected());
+
+    handler.stop_connections();
+    EXPECT_FALSE(handler.connections_started());
+    EXPECT_EQ(handler.connections()[0].brc.get(), nullptr);
+    EXPECT_EQ(handler.connections()[1].brc.get(), nullptr);
+}
+
+TEST(RoleHandlerLifecycle, DoubleStart_Rejected_StateNotCleared)
+{
+    std::vector<Presence> presences;
+    presences.push_back(make_presence(
+        "double.ch", RoleKind::Producer,
+        make_curve_hub("tcp://127.0.0.1:5573")));
+    RoleHandler handler(std::move(presences));
+
+    pylabhub::scripting::RoleHostCore core;
+    pylabhub::scripting::RoleAPIBase  api(
+        core, "prod", "prod.double.uid00000001");
+    api.set_name("double_start");
+
+    ASSERT_TRUE(handler.start_connections(api));
+    EXPECT_TRUE(handler.connections_started());
+
+    EXPECT_FALSE(handler.start_connections(api))
+        << "Double-start without intervening stop must be rejected.";
+    EXPECT_TRUE(handler.connections_started())
+        << "Rejected second start must NOT clear the started state.";
+
+    handler.stop_connections();
+}
+
+TEST(RoleHandlerRouting, BrcForX_PostStart_PointerIdentity)
+{
+    // The pre-start nullptr branches are covered by
+    // `BrcForChannel_BeforeStart_ReturnsNullptr_ButPresenceFound` and
+    // `BrcForRole_BeforeStart_ReturnsNullptr`.  This test pins the
+    // POST-start pointer identity for the 3 routing classes.
+    const std::string ch = "routing.ch";
+    std::vector<Presence> presences;
+    presences.push_back(make_presence(
+        ch, RoleKind::Producer,
+        make_curve_hub("tcp://127.0.0.1:5574")));
+    RoleHandler handler(std::move(presences));
+
+    pylabhub::scripting::RoleHostCore core;
+    pylabhub::scripting::RoleAPIBase  api(
+        core, "prod", "prod.routing.uid00000001");
+    api.set_name("brc_routing");
+
+    ASSERT_TRUE(handler.start_connections(api));
+
+    auto *expected_brc = handler.connections()[0].brc.get();
+    ASSERT_NE(expected_brc, nullptr);
+
+    EXPECT_EQ(handler.brc_for_channel(ch), expected_brc)
+        << "Class A routing: brc_for_channel must match the connection "
+           "slot's BRC.";
+    EXPECT_EQ(handler.brc_for_role(), expected_brc)
+        << "Class B routing: brc_for_role returns the first "
+           "connection's BRC (single-presence role).";
+
+    // Class D: band routing requires `on_band_joined` first.
+    EXPECT_EQ(handler.brc_for_band("test.band"), nullptr);
+    const auto *p = handler.find_presence_for_channel(ch);
+    ASSERT_NE(p, nullptr);
+    handler.on_band_joined("test.band", p);
+    EXPECT_EQ(handler.brc_for_band("test.band"), expected_brc)
+        << "Class D routing: brc_for_band returns the BRC of the "
+           "presence that joined the band.";
+
+    handler.stop_connections();
 }

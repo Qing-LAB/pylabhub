@@ -97,52 +97,18 @@ TEST_F(DatahubRoleStateMachineTest, ConsumerHeartbeatTimeout_FiresConsumerDiedNo
     ExpectWorkerOk(proc);
 }
 
-TEST_F(DatahubRoleStateMachineTest, RoleHandler_Connections_StartStop_Smoke)
-{
-    // Wave-B M4a — state-only verification of RoleHandler's network
-    // surface.  start_connections() allocates + connects BRCs;
-    // stop_connections() releases.  NO threads are spawned by the
-    // handler (state holder); thread management lives at the role
-    // host layer and lands in M4c.  Mutation: revert start_connections
-    // to leave brc nullptr → smoke test fails.
-    auto proc = SpawnWorker(
-        "broker_role_state.role_handler_connections_start_stop_smoke", {});
-    ExpectWorkerOk(proc);
-}
-
-TEST_F(DatahubRoleStateMachineTest, RoleHandler_Connections_DualHub)
-{
-    // Wave-B M4a — dual-broker state shape (the M8-payoff data shape):
-    // two HubConnections, two BRCs each connected to a different
-    // broker.  Verifies the dedup-by-identity model materialises
-    // correct distinct connections.  Still state-only (no threads).
-    auto proc = SpawnWorker(
-        "broker_role_state.role_handler_connections_dual_hub", {});
-    ExpectWorkerOk(proc);
-}
-
-TEST_F(DatahubRoleStateMachineTest, RoleHandler_Connections_DoubleStart_Rejected)
-{
-    // Wave-B M4a — `start_connections()` rejects double-call without
-    // intervening `stop_connections()`.  Pins the idempotency contract.
-    auto proc = SpawnWorker(
-        "broker_role_state.role_handler_connections_double_start_rejected", {});
-    ExpectWorkerOk(proc);
-}
-
-TEST_F(DatahubRoleStateMachineTest, RoleHandler_BrcForX_PostStart_PointerIdentity)
-{
-    // Wave-B M4b — verify routing primitives return the right
-    // non-null BRC pointer AFTER start_connections.  L2 tests
-    // (Pattern 1+) cover the lookup logic (returns nullptr pre-start
-    // / unknown channel / unjoined band).  This L3 test pins the
-    // post-start pointer identity: brc_for_channel(ch) ==
-    // connections()[0].brc.get(), and brc_for_band routes via the
-    // joined presence.
-    auto proc = SpawnWorker(
-        "broker_role_state.role_handler_brc_for_x_post_start", {});
-    ExpectWorkerOk(proc);
-}
+// RE-LAYERED 2026-06-27 — 4 `RoleHandler_*` tests moved to L2
+// `tests/test_layer2_service/test_role_handler.cpp` per the AUTH-6
+// layer-fit audit (`docs/code_review/REVIEW_AUTH6_TestDisposition_2026-06-27.md`
+// §2 addendum).  They pin RoleHandler single-class state-flag +
+// pointer-identity behavior; `BRC::is_connected()` reads the BRC's
+// internal `connected` flag (set at end of `connect()`, before any
+// wire handshake), so the broker that lived here was scaffolding
+// only and the L3 layer was incorrect.  Removed:
+//   - RoleHandler_Connections_StartStop_Smoke   → RoleHandlerLifecycle.StartStop_Smoke_SinglePresence
+//   - RoleHandler_Connections_DualHub           → RoleHandlerLifecycle.StartStop_DualHub_BothConnectionsConnected
+//   - RoleHandler_Connections_DoubleStart_Rejected → RoleHandlerLifecycle.DoubleStart_Rejected_StateNotCleared
+//   - RoleHandler_BrcForX_PostStart_PointerIdentity → RoleHandlerRouting.BrcForX_PostStart_PointerIdentity
 
 TEST_F(DatahubRoleStateMachineTest, RoleAPIBase_StartHandlerThreads_E2E)
 {
