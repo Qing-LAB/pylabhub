@@ -220,9 +220,32 @@ void remove_tree(const fs::path &p)
     fs::remove_all(p, ec);
 }
 
-/// Write `vault/known_roles.json` for the directory so the broker's
-/// Layer-1 ZAP gate (HEP-CORE-0035 §4.8) admits the uids in `setup`.
-/// Mirrors the production write path used by `start_hubhost_broker`.
+/// Per-test contract for CURVE admission setup in this file:
+///
+///   A test that NEVER opens a `BrokerRequestComm` ("BRC-less" — only
+///   exercises in-process HubHost / script lifecycle / admin paths)
+///   passes `make_curve_setup({})` to seed `hub_identity` only.
+///   No roles are seeded; `known_roles.json` is not written.  Nothing
+///   ever triggers Layer-1 ZAP admission, so an empty admission file
+///   is correct.
+///
+///   A test that DOES open a BRC and tries to register must:
+///     1. List every BRC uid in `make_curve_setup({uid1, uid2, ...})`
+///        so `CurveKeyStoreFixture` seeds the per-role seckey under
+///        `role.<uid>` (HEP-CORE-0040 §172).  The BRC reads it via
+///        `keystore_name`.
+///     2. Set `bcfg.keystore_name = role_keystore_name(uid)` on each
+///        `BrokerRequestComm::Config` before `connect()`.  Default is
+///        `"role_identity"` which the fixture does NOT seed.
+///     3. Call `write_known_roles(dir, setup)` so the broker's ZAP
+///        admission file lists those uids' pubkeys.
+///     4. Use `make_reg_opts` / `make_cons_opts` below — they emit
+///        HEP-CORE-0036 §5b canonical shape (the broker hard-errors
+///        on missing role_type / data_transport / zmq_pubkey).
+///
+/// `write_known_roles` writes via the production `KnownRolesStore` so
+/// the file format (version + roles + atomic-write + 0600 perms) is
+/// defined in exactly one place — same as `start_hubhost_broker`.
 void write_known_roles(const fs::path &dir,
                        const pylabhub::tests::CurveSetup &setup)
 {
@@ -282,11 +305,11 @@ int real_lua_script_on_init_on_stop_fire_and_log()
             ASSERT_FALSE(expected_uid.empty())
                 << "init_directory must have generated a hub uid";
 
-            // HEP-CORE-0040 §172 + HEP-CORE-0035 §4.6.5 bypass —
-            // seed KeyStore["hub_identity"] before HubHost::startup()
-            // constructs BrokerService.  No roles needed (no BRC client
-            // in this test family).  Per-worker RAII; one fixture per
-            // subprocess.
+            // BRC-less path — see `write_known_roles` doc-block above
+            // for the contract.  This test only exercises in-process
+            // HubHost + script lifecycle; no client ever opens a BRC,
+            // so empty `{}` is correct and `known_roles.json` is not
+            // written.  Per-worker RAII; one fixture per subprocess.
             auto ks_curve_ = pylabhub::tests::make_curve_setup({});
             pylabhub::tests::CurveKeyStoreFixture ks_fixture_(
                 "test", "test.l3.lua_hub_integration", ks_curve_);
@@ -367,11 +390,11 @@ int script_syntax_error_startup_throws()
             const fs::path dir = make_lua_hub_dir("syntax", broken_lua);
 
             auto cfg = HubConfig::load_from_directory(dir.string());
-            // HEP-CORE-0040 §172 + HEP-CORE-0035 §4.6.5 bypass —
-            // seed KeyStore["hub_identity"] before HubHost::startup()
-            // constructs BrokerService.  No roles needed (no BRC client
-            // in this test family).  Per-worker RAII; one fixture per
-            // subprocess.
+            // BRC-less path — see `write_known_roles` doc-block above
+            // for the contract.  This test only exercises in-process
+            // HubHost + script lifecycle; no client ever opens a BRC,
+            // so empty `{}` is correct and `known_roles.json` is not
+            // written.  Per-worker RAII; one fixture per subprocess.
             auto ks_curve_ = pylabhub::tests::make_curve_setup({});
             pylabhub::tests::CurveKeyStoreFixture ks_fixture_(
                 "test", "test.l3.lua_hub_integration", ks_curve_);
@@ -430,11 +453,11 @@ int on_tick_fires_periodically_when_idle()
 
             auto cfg = HubConfig::load_from_directory(dir.string());
 
-            // HEP-CORE-0040 §172 + HEP-CORE-0035 §4.6.5 bypass —
-            // seed KeyStore["hub_identity"] before HubHost::startup()
-            // constructs BrokerService.  No roles needed (no BRC client
-            // in this test family).  Per-worker RAII; one fixture per
-            // subprocess.
+            // BRC-less path — see `write_known_roles` doc-block above
+            // for the contract.  This test only exercises in-process
+            // HubHost + script lifecycle; no client ever opens a BRC,
+            // so empty `{}` is correct and `known_roles.json` is not
+            // written.  Per-worker RAII; one fixture per subprocess.
             auto ks_curve_ = pylabhub::tests::make_curve_setup({});
             pylabhub::tests::CurveKeyStoreFixture ks_fixture_(
                 "test", "test.l3.lua_hub_integration", ks_curve_);
@@ -512,11 +535,11 @@ int on_tick_catch_up_fixed_rate_with_compensation()
 
             auto cfg = HubConfig::load_from_directory(dir.string());
 
-            // HEP-CORE-0040 §172 + HEP-CORE-0035 §4.6.5 bypass —
-            // seed KeyStore["hub_identity"] before HubHost::startup()
-            // constructs BrokerService.  No roles needed (no BRC client
-            // in this test family).  Per-worker RAII; one fixture per
-            // subprocess.
+            // BRC-less path — see `write_known_roles` doc-block above
+            // for the contract.  This test only exercises in-process
+            // HubHost + script lifecycle; no client ever opens a BRC,
+            // so empty `{}` is correct and `known_roles.json` is not
+            // written.  Per-worker RAII; one fixture per subprocess.
             auto ks_curve_ = pylabhub::tests::make_curve_setup({});
             pylabhub::tests::CurveKeyStoreFixture ks_fixture_(
                 "test", "test.l3.lua_hub_integration", ks_curve_);
@@ -636,11 +659,11 @@ end
             const fs::path dir = make_lua_hub_dir("read_accessors", lua_body);
 
             auto cfg = HubConfig::load_from_directory(dir.string());
-            // HEP-CORE-0040 §172 + HEP-CORE-0035 §4.6.5 bypass —
-            // seed KeyStore["hub_identity"] before HubHost::startup()
-            // constructs BrokerService.  No roles needed (no BRC client
-            // in this test family).  Per-worker RAII; one fixture per
-            // subprocess.
+            // BRC-less path — see `write_known_roles` doc-block above
+            // for the contract.  This test only exercises in-process
+            // HubHost + script lifecycle; no client ever opens a BRC,
+            // so empty `{}` is correct and `known_roles.json` is not
+            // written.  Per-worker RAII; one fixture per subprocess.
             auto ks_curve_ = pylabhub::tests::make_curve_setup({});
             pylabhub::tests::CurveKeyStoreFixture ks_fixture_(
                 "test", "test.l3.lua_hub_integration", ks_curve_);
@@ -708,11 +731,11 @@ end
             const fs::path dir = make_lua_hub_dir("request_shutdown", lua_body);
 
             auto cfg = HubConfig::load_from_directory(dir.string());
-            // HEP-CORE-0040 §172 + HEP-CORE-0035 §4.6.5 bypass —
-            // seed KeyStore["hub_identity"] before HubHost::startup()
-            // constructs BrokerService.  No roles needed (no BRC client
-            // in this test family).  Per-worker RAII; one fixture per
-            // subprocess.
+            // BRC-less path — see `write_known_roles` doc-block above
+            // for the contract.  This test only exercises in-process
+            // HubHost + script lifecycle; no client ever opens a BRC,
+            // so empty `{}` is correct and `known_roles.json` is not
+            // written.  Per-worker RAII; one fixture per subprocess.
             auto ks_curve_ = pylabhub::tests::make_curve_setup({});
             pylabhub::tests::CurveKeyStoreFixture ks_fixture_(
                 "test", "test.l3.lua_hub_integration", ks_curve_);
@@ -980,11 +1003,11 @@ end
             const fs::path dir = make_lua_hub_dir(
                 "post_event", lua_body, "fixed_rate", 100);
             auto cfg = HubConfig::load_from_directory(dir.string());
-            // HEP-CORE-0040 §172 + HEP-CORE-0035 §4.6.5 bypass —
-            // seed KeyStore["hub_identity"] before HubHost::startup()
-            // constructs BrokerService.  No roles needed (no BRC client
-            // in this test family).  Per-worker RAII; one fixture per
-            // subprocess.
+            // BRC-less path — see `write_known_roles` doc-block above
+            // for the contract.  This test only exercises in-process
+            // HubHost + script lifecycle; no client ever opens a BRC,
+            // so empty `{}` is correct and `known_roles.json` is not
+            // written.  Per-worker RAII; one fixture per subprocess.
             auto ks_curve_ = pylabhub::tests::make_curve_setup({});
             pylabhub::tests::CurveKeyStoreFixture ks_fixture_(
                 "test", "test.l3.lua_hub_integration", ks_curve_);
@@ -1042,11 +1065,11 @@ end
             const fs::path dir = make_lua_hub_dir(
                 "augment_qm", lua_body, "fixed_rate", 100);
             auto cfg = HubConfig::load_from_directory(dir.string());
-            // HEP-CORE-0040 §172 + HEP-CORE-0035 §4.6.5 bypass —
-            // seed KeyStore["hub_identity"] before HubHost::startup()
-            // constructs BrokerService.  No roles needed (no BRC client
-            // in this test family).  Per-worker RAII; one fixture per
-            // subprocess.
+            // BRC-less path — see `write_known_roles` doc-block above
+            // for the contract.  This test only exercises in-process
+            // HubHost + script lifecycle; no client ever opens a BRC,
+            // so empty `{}` is correct and `known_roles.json` is not
+            // written.  Per-worker RAII; one fixture per subprocess.
             auto ks_curve_ = pylabhub::tests::make_curve_setup({});
             pylabhub::tests::CurveKeyStoreFixture ks_fixture_(
                 "test", "test.l3.lua_hub_integration", ks_curve_);
@@ -1119,11 +1142,11 @@ end
             const fs::path dir = make_lua_hub_dir(
                 "augment_nil", lua_body, "fixed_rate", 100);
             auto cfg = HubConfig::load_from_directory(dir.string());
-            // HEP-CORE-0040 §172 + HEP-CORE-0035 §4.6.5 bypass —
-            // seed KeyStore["hub_identity"] before HubHost::startup()
-            // constructs BrokerService.  No roles needed (no BRC client
-            // in this test family).  Per-worker RAII; one fixture per
-            // subprocess.
+            // BRC-less path — see `write_known_roles` doc-block above
+            // for the contract.  This test only exercises in-process
+            // HubHost + script lifecycle; no client ever opens a BRC,
+            // so empty `{}` is correct and `known_roles.json` is not
+            // written.  Per-worker RAII; one fixture per subprocess.
             auto ks_curve_ = pylabhub::tests::make_curve_setup({});
             pylabhub::tests::CurveKeyStoreFixture ks_fixture_(
                 "test", "test.l3.lua_hub_integration", ks_curve_);
