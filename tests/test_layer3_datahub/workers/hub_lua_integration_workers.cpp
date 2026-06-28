@@ -53,7 +53,11 @@
 #include "utils/hub_host.hpp"
 #include "utils/json_config.hpp"
 #include "utils/logger.hpp"
+#include "utils/role_reg_payload.hpp"
 #include "utils/script_engine_factory.hpp"
+#include "utils/security/key_store.hpp"
+#include "utils/security/known_roles.hpp"
+#include "utils/security/shm_capability_channel.hpp"
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -172,11 +176,41 @@ void flush_logger() { Logger::instance().flush(); }
 
 json make_reg_opts(const std::string &channel, const std::string &uid)
 {
-    json opts;
-    opts["channel_name"]      = channel;
-    opts["producer_pid"]      = ::getpid();
-    opts["role_uid"]          = uid;
-    opts["role_name"]         = "L3TestProducer";
+    // HEP-CORE-0036 §5b canonical shape — broker hard-errors on missing
+    // role_type / data_transport / zmq_pubkey post-#290.  The pubkey is
+    // read from the seeded KeyStore identity (HEP-CORE-0040 §172).
+    namespace sec = pylabhub::utils::security;
+    auto opts = pylabhub::hub::build_producer_reg_payload(
+        pylabhub::hub::ProducerRegInputs{
+            .channel    = channel,
+            .role_uid   = uid,
+            .role_name  = "L3TestProducer",
+            .role_type  = "producer",
+            .has_shm    = true,
+            .is_zmq_transport  = false,
+            .zmq_node_endpoint = {},
+            .zmq_pubkey = std::string{sec::key_store().pubkey(
+                pylabhub::tests::role_keystore_name(uid))},
+            .shm_capability_endpoint =
+                sec::default_shm_capability_endpoint(channel),
+        });
+    opts["producer_pid"] = ::getpid();
+    return opts;
+}
+
+/// HEP-CORE-0036 §5b canonical consumer REG_REQ.
+json make_cons_opts(const std::string &channel, const std::string &uid)
+{
+    namespace sec = pylabhub::utils::security;
+    auto opts = pylabhub::hub::build_consumer_reg_payload(
+        pylabhub::hub::ConsumerRegInputs{
+            .channel    = channel,
+            .role_uid   = uid,
+            .role_name  = "L3TestConsumer",
+            .zmq_pubkey = std::string{sec::key_store().pubkey(
+                pylabhub::tests::role_keystore_name(uid))},
+        });
+    opts["consumer_pid"] = ::getpid();
     return opts;
 }
 
@@ -184,6 +218,18 @@ void remove_tree(const fs::path &p)
 {
     std::error_code ec;
     fs::remove_all(p, ec);
+}
+
+/// Write `vault/known_roles.json` for the directory so the broker's
+/// Layer-1 ZAP gate (HEP-CORE-0035 §4.8) admits the uids in `setup`.
+/// Mirrors the production write path used by `start_hubhost_broker`.
+void write_known_roles(const fs::path &dir,
+                       const pylabhub::tests::CurveSetup &setup)
+{
+    pylabhub::utils::security::KnownRolesStore store;
+    for (const auto &[uid, kp] : setup.role_keys)
+        store.add(pylabhub::tests::make_known_role(uid, kp.public_z85));
+    store.save_to_file(dir / "vault" / "known_roles.json");
 }
 
 /// Module list every worker installs: Logger + FileLock + JsonConfig
@@ -736,13 +782,16 @@ end
                 "evt_chan_role", lua_body, "fixed_rate", 100);
             auto cfg = HubConfig::load_from_directory(dir.string());
             // HEP-CORE-0040 §172 + HEP-CORE-0035 §4.6.5 bypass —
-            // seed KeyStore["hub_identity"] before HubHost::startup()
-            // constructs BrokerService.  No roles needed (no BRC client
-            // in this test family).  Per-worker RAII; one fixture per
-            // subprocess.
-            auto ks_curve_ = pylabhub::tests::make_curve_setup({});
+            // seed KeyStore["hub_identity"] AND the producer's identity
+            // before HubHost::startup() constructs BrokerService.  The
+            // BRC instantiated below reads the seckey via
+            // `keystore_name` and the broker's known_roles.json admits
+            // the uid via ZAP.  Per-worker RAII; one fixture per subprocess.
+            const std::string prod_uid = "prod.l3test.uid12345678";
+            auto ks_curve_ = pylabhub::tests::make_curve_setup({prod_uid});
             pylabhub::tests::CurveKeyStoreFixture ks_fixture_(
                 "test", "test.l3.lua_hub_integration", ks_curve_);
+            write_known_roles(dir, ks_curve_);
 
             HubHost host(std::move(cfg));
             ASSERT_NO_THROW(host.startup());
@@ -751,7 +800,8 @@ end
             pylabhub::hub::BrokerRequestComm::Config bcfg;
             bcfg.broker_endpoint = host.broker_endpoint();
             bcfg.broker_pubkey   = host.broker_pubkey();
-            bcfg.role_uid        = "prod.l3test.uid12345678";
+            bcfg.role_uid        = prod_uid;
+            bcfg.keystore_name   = pylabhub::tests::role_keystore_name(prod_uid);
             ASSERT_TRUE(brc.connect(bcfg));
 
             std::atomic<bool> running{true};
@@ -760,8 +810,7 @@ end
             });
 
             auto reg = brc.register_channel(
-                make_reg_opts("lab.evt.channel",
-                              "prod.l3test.uid12345678"), 3000);
+                make_reg_opts("lab.evt.channel", prod_uid), 3000);
             ASSERT_TRUE(reg.has_value())
                 << "register_channel failed — broker rejected the "
                    "REG_REQ; events never reach the script.";
@@ -827,13 +876,15 @@ end
                 "evt_cons_add", lua_body, "fixed_rate", 100);
             auto cfg = HubConfig::load_from_directory(dir.string());
             // HEP-CORE-0040 §172 + HEP-CORE-0035 §4.6.5 bypass —
-            // seed KeyStore["hub_identity"] before HubHost::startup()
-            // constructs BrokerService.  No roles needed (no BRC client
-            // in this test family).  Per-worker RAII; one fixture per
-            // subprocess.
-            auto ks_curve_ = pylabhub::tests::make_curve_setup({});
+            // seed KeyStore["hub_identity"] AND both BRC identities
+            // before HubHost::startup() constructs BrokerService.
+            // Per-worker RAII; one fixture per subprocess.
+            const std::string prod_uid = "prod.evcons.uid";
+            const std::string cons_uid = "cons.l3.uid12345678";
+            auto ks_curve_ = pylabhub::tests::make_curve_setup({prod_uid, cons_uid});
             pylabhub::tests::CurveKeyStoreFixture ks_fixture_(
                 "test", "test.l3.lua_hub_integration", ks_curve_);
+            write_known_roles(dir, ks_curve_);
 
             HubHost host(std::move(cfg));
             ASSERT_NO_THROW(host.startup());
@@ -842,7 +893,8 @@ end
             pylabhub::hub::BrokerRequestComm::Config bcfg;
             bcfg.broker_endpoint = host.broker_endpoint();
             bcfg.broker_pubkey   = host.broker_pubkey();
-            bcfg.role_uid        = "prod.evcons.uid";
+            bcfg.role_uid        = prod_uid;
+            bcfg.keystore_name   = pylabhub::tests::role_keystore_name(prod_uid);
             ASSERT_TRUE(prod_brc.connect(bcfg));
             std::atomic<bool> prod_running{true};
             std::thread prod_thread([&prod_brc, &prod_running] {
@@ -851,14 +903,17 @@ end
             });
 
             auto prod_reg = prod_brc.register_channel(
-                make_reg_opts("lab.cons.channel", "prod.evcons.uid"), 3000);
+                make_reg_opts("lab.cons.channel", prod_uid), 3000);
             ASSERT_TRUE(prod_reg.has_value()) << "producer REG_REQ failed";
+            // R6 producer-kLive gate — see HEP-CORE-0036 §5.2.
+            prod_brc.send_heartbeat("lab.cons.channel", prod_uid, "producer", {});
 
             pylabhub::hub::BrokerRequestComm cons_brc;
             pylabhub::hub::BrokerRequestComm::Config cbcfg;
             cbcfg.broker_endpoint = host.broker_endpoint();
             cbcfg.broker_pubkey   = host.broker_pubkey();
-            cbcfg.role_uid        = "cons.l3.uid12345678";
+            cbcfg.role_uid        = cons_uid;
+            cbcfg.keystore_name   = pylabhub::tests::role_keystore_name(cons_uid);
             ASSERT_TRUE(cons_brc.connect(cbcfg));
             std::atomic<bool> cons_running{true};
             std::thread cons_thread([&cons_brc, &cons_running] {
@@ -866,12 +921,8 @@ end
                     [&cons_running] { return cons_running.load(); });
             });
 
-            json cons_opts;
-            cons_opts["channel_name"]  = "lab.cons.channel";
-            cons_opts["consumer_pid"]  = ::getpid();
-            cons_opts["role_uid"]  = "cons.l3.uid12345678";
-            cons_opts["role_name"] = "L3TestConsumer";
-            auto cons_reg = cons_brc.register_consumer(cons_opts, 3000);
+            auto cons_reg = cons_brc.register_consumer(
+                make_cons_opts("lab.cons.channel", cons_uid), 3000);
             ASSERT_TRUE(cons_reg.has_value())
                 << "consumer CONSUMER_REG_REQ failed";
 
