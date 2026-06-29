@@ -2,6 +2,7 @@
 // Phase C — BrokerService integration tests.
 #include "datahub_broker_workers.h"
 #include "curve_test_setup.h"
+#include "broker_test_harness.h"
 #include "test_entrypoint.h"
 #include "shared_test_helpers.h"
 
@@ -391,6 +392,65 @@ nlohmann::json raw_req(const std::string& endpoint,
 namespace
 {
 
+// Forward declaration so the heartbeat helper can refer to BrokerHandle.
+struct BrokerHandle;  // Defined above in the outer anonymous namespace.
+
+// raw_heartbeat: HEP-CORE-0036 §5.2 R6 producer-kLive heartbeat — drives a
+// just-registered producer presence to kLive so the broker admits the
+// following CONSUMER_REG_REQ.  Fire-and-forget: the broker doesn't reply
+// to HEARTBEAT_REQ, so we send and rely on the dealer's linger to flush
+// before its destructor runs.  Replaces the 11-line inline block that
+// was copied 11 times pre-2026-06-29 (REVIEW_C2 F8 + F12).
+//
+// The 50 ms post-send sleep gives the broker poll loop one cycle to
+// pick up the heartbeat before the test's next REQ; mirrors the pattern
+// in the legacy pid-mismatch test where this contract was first pinned.
+void raw_heartbeat(const std::string &endpoint,
+                   const std::string &server_pubkey,
+                   const std::string &channel,
+                   const std::string &producer_uid,
+                   uint64_t           producer_pid =
+                       pylabhub::platform::get_pid())
+{
+    constexpr size_t kZ85KeyLen = 40;
+    nlohmann::json hb_req;
+    hb_req["channel_name"] = channel;
+    hb_req["producer_pid"] = producer_pid;
+    hb_req["role_uid"]     = producer_uid;
+    hb_req["role_type"]    = "producer";
+
+    namespace sec = pylabhub::utils::security;
+    zmq::context_t ctx(1);
+    zmq::socket_t  dealer(ctx, zmq::socket_type::dealer);
+    // Bounded linger so the destructor flushes the heartbeat to the
+    // kernel before close (libzmq's default linger=-1 would block on
+    // shutdown).
+    dealer.set(zmq::sockopt::linger, 100);
+    if (server_pubkey.size() == kZ85KeyLen)
+    {
+        dealer.set(zmq::sockopt::curve_serverkey, server_pubkey);
+        const std::string ks_name =
+            pylabhub::tests::role_keystore_name(producer_uid);
+        const std::string client_pub{sec::key_store().pubkey(ks_name)};
+        sec::key_store().with_seckey_z85(
+            ks_name,
+            [&](std::string_view seckey_z85) {
+                dealer.set(zmq::sockopt::curve_publickey, client_pub);
+                dealer.set(zmq::sockopt::curve_secretkey,
+                           std::string(seckey_z85));
+            });
+    }
+    dealer.connect(endpoint);
+
+    static constexpr char kCtrl = 'C';
+    const std::string body = hb_req.dump();
+    std::vector<zmq::const_buffer> frames = {zmq::buffer(&kCtrl, 1),
+                                             zmq::buffer(std::string("HEARTBEAT_REQ")),
+                                             zmq::buffer(body)};
+    (void)zmq::send_multipart(dealer, frames);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+}
+
 // Hex string of N zero bytes (for use as a schema_hash in JSON payloads).
 std::string zero_hex(size_t bytes = 32)
 {
@@ -425,15 +485,9 @@ int broker_reg_disc_happy_path()
             const std::string channel = "broker.ch1";
             const std::string uid     = "prod.broker.ch1.uid00000001";
 
-            BrokerRequestComm brc;
-            BrokerRequestComm::Config brc_cfg;
-            brc_cfg.broker_endpoint = broker.endpoint;
-            brc_cfg.broker_pubkey   = broker.pubkey;
-            brc_cfg.role_uid        = uid;
-            brc_cfg.keystore_name   = pylabhub::tests::role_keystore_name(uid);
-            ASSERT_TRUE(brc.connect(brc_cfg));
-            std::atomic<bool> running{true};
-            std::thread t([&] { brc.run_poll_loop([&] { return running.load(); }); });
+            pylabhub::tests::BrcHandle bh;
+            bh.start(broker.endpoint, broker.pubkey, uid,
+                     pylabhub::tests::role_keystore_name(uid));
 
             // Build §5b-canonical reg payload via the production helper
             // — auto-fills zmq_pubkey (from key_store), role_type,
@@ -455,21 +509,19 @@ int broker_reg_disc_happy_path()
                 });
             reg_opts["producer_pid"]   = ::getpid();
             reg_opts["schema_version"] = 7;
-            auto reg = brc.register_channel(reg_opts, 3000);
+            auto reg = bh.brc.register_channel(reg_opts, 3000);
             ASSERT_TRUE(reg.has_value()) << "register_channel must succeed";
 
-            brc.send_heartbeat(channel, uid, "producer", {});
+            bh.brc.send_heartbeat(channel, uid, "producer", {});
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
-            auto disc = brc.discover_channel(channel, {}, 5000);
+            auto disc = bh.brc.discover_channel(channel, {}, 5000);
             ASSERT_TRUE(disc.has_value()) << "discover_channel must find registered channel";
             // HEP-CORE-0036 §5b.4: shm_name retired (was always == channel_name).
             EXPECT_EQ(disc->value("schema_version", 0), 7);
 
-            running.store(false);
-            brc.stop();
-            if (t.joinable()) t.join();
-            brc.disconnect();
+            // bh.~BrcHandle() runs stop() + join() + disconnect() — no
+            // explicit teardown needed here.
             broker.stop_and_join();
         },
         "broker.broker_reg_disc_happy_path",
@@ -548,25 +600,15 @@ int broker_channel_not_found()
             pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_channel_not_found", curve);
             auto broker = start_broker_in_thread(std::move(cfg), curve);
 
-            BrokerRequestComm brc;
-            BrokerRequestComm::Config brc_cfg;
-            brc_cfg.broker_endpoint = broker.endpoint;
-            brc_cfg.broker_pubkey   = broker.pubkey;
-            brc_cfg.role_uid        = "prod.querier.notfound.uid00000001";
-            brc_cfg.keystore_name   =
-                pylabhub::tests::role_keystore_name(brc_cfg.role_uid);
-            ASSERT_TRUE(brc.connect(brc_cfg));
-            std::atomic<bool> running{true};
-            std::thread t([&] { brc.run_poll_loop([&] { return running.load(); }); });
+            const std::string querier_uid = "prod.querier.notfound.uid00000001";
+            pylabhub::tests::BrcHandle bh;
+            bh.start(broker.endpoint, broker.pubkey, querier_uid,
+                     pylabhub::tests::role_keystore_name(querier_uid));
 
-            auto info = brc.discover_channel("no.such.channel", {}, 2000);
+            auto info = bh.brc.discover_channel("no.such.channel", {}, 2000);
             EXPECT_FALSE(info.has_value())
                 << "discover_channel for unknown channel must return nullopt";
 
-            running.store(false);
-            brc.stop();
-            if (t.joinable()) t.join();
-            brc.disconnect();
             broker.stop_and_join();
         },
         "broker.broker_channel_not_found",
@@ -594,15 +636,9 @@ int broker_dereg_happy_path()
             const std::string channel = "broker.dereg.ch";
             const std::string uid     = "prod.dereg.ch.uid00000001";
 
-            BrokerRequestComm brc;
-            BrokerRequestComm::Config brc_cfg;
-            brc_cfg.broker_endpoint = broker.endpoint;
-            brc_cfg.broker_pubkey   = broker.pubkey;
-            brc_cfg.role_uid        = uid;
-            brc_cfg.keystore_name   = pylabhub::tests::role_keystore_name(uid);
-            ASSERT_TRUE(brc.connect(brc_cfg));
-            std::atomic<bool> running{true};
-            std::thread t([&] { brc.run_poll_loop([&] { return running.load(); }); });
+            pylabhub::tests::BrcHandle bh;
+            bh.start(broker.endpoint, broker.pubkey, uid,
+                     pylabhub::tests::role_keystore_name(uid));
 
             namespace sec = pylabhub::utils::security;
             auto reg_opts = pylabhub::hub::build_producer_reg_payload(
@@ -620,14 +656,14 @@ int broker_dereg_happy_path()
                         sec::default_shm_capability_endpoint(channel),
                 });
             reg_opts["producer_pid"] = ::getpid();
-            auto reg = brc.register_channel(reg_opts, 3000);
+            auto reg = bh.brc.register_channel(reg_opts, 3000);
             ASSERT_TRUE(reg.has_value()) << "register_channel must succeed";
 
-            brc.send_heartbeat(channel, uid, "producer", {});
+            bh.brc.send_heartbeat(channel, uid, "producer", {});
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
             // Verify channel is discoverable
-            auto found = brc.discover_channel(channel, {}, 5000);
+            auto found = bh.brc.discover_channel(channel, {}, 5000);
             ASSERT_TRUE(found.has_value()) << "Channel must be discoverable before deregister";
 
             // Deregister.  Post-Bucket-C contract: assert on
@@ -635,21 +671,17 @@ int broker_dereg_happy_path()
             // → bool conversion only checks `has_value()` (true for
             // both ACK and ERROR responses).
             {
-                auto dereg = brc.deregister_channel(channel);
+                auto dereg = bh.brc.deregister_channel(channel);
                 ASSERT_TRUE(dereg.has_value());
                 EXPECT_EQ(dereg->value("status", std::string{}), "success");
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
             // After deregistration, discover must return nullopt
-            auto after_dereg = brc.discover_channel(channel, {}, 1000);
+            auto after_dereg = bh.brc.discover_channel(channel, {}, 1000);
             EXPECT_FALSE(after_dereg.has_value())
                 << "discover_channel must return nullopt after deregistration";
 
-            running.store(false);
-            brc.stop();
-            if (t.joinable()) t.join();
-            brc.disconnect();
             broker.stop_and_join();
         },
         "broker.broker_dereg_happy_path",
@@ -696,21 +728,12 @@ int broker_dereg_pid_mismatch()
             ASSERT_FALSE(reg_resp.is_null()) << "REG_REQ timed out";
             EXPECT_EQ(reg_resp.value("status", std::string("")), "success");
 
-            // Send HEARTBEAT_REQ — must carry `role_uid` + `role_type`
-            // per HEP-CORE-0019 §4.1 (Phase 6) + broker_proto 5
-            // (R3.5b unification) so the broker flips the producer-
-            // presence's `first_heartbeat_seen=true`, allowing
-            // DISC_REQ later to resolve to DISC_ACK (presence Live).
-            // Fire-and-forget: broker sends no reply; raw_req times out
-            // quickly and we discard the empty json.
-            nlohmann::json hb_req;
-            hb_req["channel_name"] = channel;
-            hb_req["producer_pid"] = correct_pid;
-            hb_req["role_uid"]     = role_uid;
-            hb_req["role_type"]    = "producer";
-            raw_req(broker.endpoint, "HEARTBEAT_REQ", hb_req, 100, broker.pubkey, "prod.broker.pid_mismatch.uid00000001");
-            // Allow the heartbeat to be processed before DISC_REQ.
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            // Send HEARTBEAT_REQ with the producer's REAL pid so the
+            // broker flips `first_heartbeat_seen=true` and the
+            // presence is kLive (HEP-CORE-0019 §4.1 + broker_proto 5
+            // R3.5b).  Fire-and-forget via raw_heartbeat helper.
+            raw_heartbeat(broker.endpoint, broker.pubkey, channel,
+                          role_uid, correct_pid);
 
             // DEREG_REQ with wrong pid + correct role_uid → NOT_REGISTERED.
             // broker_proto 2→3 (2026-05-15 audit C3): `role_uid` is now
@@ -787,16 +810,7 @@ int broker_dereg_missing_role_uid_rejected()
             // so the CONSUMER_REG_REQ below isn't deferred.  The
             // heartbeat must carry the producer's REG_REQ pid (44444)
             // so the broker matches it against the channel record.
-            {
-                nlohmann::json hb_req;
-                hb_req["channel_name"] = channel;
-                hb_req["producer_pid"] = pid;
-                hb_req["role_uid"]     = role_uid;
-                hb_req["role_type"]    = "producer";
-                raw_req(broker.endpoint, "HEARTBEAT_REQ", hb_req, 100,
-                        broker.pubkey, "prod.broker.missing_uid.uid00000001");
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            }
+            raw_heartbeat(broker.endpoint, broker.pubkey, channel, role_uid, pid);
 
             // DEREG_REQ with NO role_uid → INVALID_REQUEST (pre-C3 this
             // path succeeded by deriving role_uid from the matching pid).
@@ -1052,16 +1066,7 @@ int broker_gate_consumer_reg_req_accepts_proc_tag()
             // HEP-CORE-0036 §5.2 R6: broker rejects CONSUMER_REG_REQ until
             // producer's presence is kLive (first heartbeat seen).  Tests
             // pre-dated R6; this heartbeat unblocks the consumer reg below.
-            {
-                nlohmann::json hb_req;
-                hb_req["channel_name"] = "r35b.cregproc.ch";
-
-                hb_req["producer_pid"] = pylabhub::platform::get_pid();
-                hb_req["role_uid"]     = "prod.r35b.cregproc.uid00000001";
-                hb_req["role_type"]    = "producer";
-                raw_req(broker.endpoint, "HEARTBEAT_REQ", hb_req, 100, broker.pubkey, "prod.r35b.cregproc.uid00000001");
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            }
+            raw_heartbeat(broker.endpoint, broker.pubkey, "r35b.cregproc.ch", "prod.r35b.cregproc.uid00000001");
 
             // CONSUMER_REG_REQ with role_uid="proc.x.y" → success.
             nlohmann::json creg;
@@ -1285,16 +1290,7 @@ int broker_sch_consumer_citation_match()
 
             // HEP-CORE-0036 §5.2 R6: producer must reach kLive (first
             // heartbeat seen) before broker admits CONSUMER_REG_REQ.
-            {
-                nlohmann::json hb_req;
-                hb_req["channel_name"] = channel;
-                hb_req["producer_pid"] = pylabhub::platform::get_pid();
-                hb_req["role_uid"]     = p_uid;
-                hb_req["role_type"]    = "producer";
-                raw_req(broker.endpoint, "HEARTBEAT_REQ", hb_req, 100,
-                        broker.pubkey, p_uid);
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            }
+            raw_heartbeat(broker.endpoint, broker.pubkey, channel, p_uid);
 
             // Named-citation mode (HEP-0034 §10.3): consumer cites by id
             // + hash.  Hash must equal channel's stored hash.
@@ -1354,16 +1350,7 @@ int broker_sch_consumer_citation_mismatch()
             // HEP-CORE-0036 §5.2 R6: broker rejects CONSUMER_REG_REQ until
             // producer's presence is kLive (first heartbeat seen).  Tests
             // pre-dated R6; this heartbeat unblocks the consumer reg below.
-            {
-                nlohmann::json hb_req;
-                hb_req["channel_name"] = "broker.sch.cons_bad";
-
-                hb_req["producer_pid"] = pylabhub::platform::get_pid();
-                hb_req["role_uid"]     = "prod.broker.sch_cbad.uid00000001";
-                hb_req["role_type"]    = "producer";
-                raw_req(broker.endpoint, "HEARTBEAT_REQ", hb_req, 100, broker.pubkey, "prod.broker.sch_cbad.uid00000001");
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            }
+            raw_heartbeat(broker.endpoint, broker.pubkey, "broker.sch.cons_bad", "prod.broker.sch_cbad.uid00000001");
 
             // Consumer cites the right id but a wrong hash (its local
             // expectation differs from what the producer registered).
@@ -1943,16 +1930,7 @@ int broker_sch_cons_named_missing_hash()
             // HEP-CORE-0036 §5.2 R6: broker rejects CONSUMER_REG_REQ until
             // producer's presence is kLive (first heartbeat seen).  Tests
             // pre-dated R6; this heartbeat unblocks the consumer reg below.
-            {
-                nlohmann::json hb_req;
-                hb_req["channel_name"] = "broker.sch.cons_no_hash";
-
-                hb_req["producer_pid"] = pylabhub::platform::get_pid();
-                hb_req["role_uid"]     = "prod.broker.cnh.uid00000001";
-                hb_req["role_type"]    = "producer";
-                raw_req(broker.endpoint, "HEARTBEAT_REQ", hb_req, 100, broker.pubkey, "prod.broker.cnh.uid00000001");
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            }
+            raw_heartbeat(broker.endpoint, broker.pubkey, "broker.sch.cons_no_hash", "prod.broker.cnh.uid00000001");
 
             // Consumer cites by id but omits the hash → MISSING_HASH_FOR_NAMED_CITATION.
             nlohmann::json cons;
@@ -2007,16 +1985,7 @@ int broker_sch_cons_anonymous_happy_path()
             // HEP-CORE-0036 §5.2 R6: broker rejects CONSUMER_REG_REQ until
             // producer's presence is kLive (first heartbeat seen).  Tests
             // pre-dated R6; this heartbeat unblocks the consumer reg below.
-            {
-                nlohmann::json hb_req;
-                hb_req["channel_name"] = "broker.sch.cons_anon_ok";
-
-                hb_req["producer_pid"] = pylabhub::platform::get_pid();
-                hb_req["role_uid"]     = "prod.broker.canok.uid00000001";
-                hb_req["role_type"]    = "producer";
-                raw_req(broker.endpoint, "HEARTBEAT_REQ", hb_req, 100, broker.pubkey, "prod.broker.canok.uid00000001");
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            }
+            raw_heartbeat(broker.endpoint, broker.pubkey, "broker.sch.cons_anon_ok", "prod.broker.canok.uid00000001");
 
             // Consumer in anonymous mode: provides full structure (no id).
             // Hash optional — broker recomputes and compares to channel.
@@ -2063,16 +2032,7 @@ int broker_sch_cons_anonymous_missing_packing()
             // HEP-CORE-0036 §5.2 R6: broker rejects CONSUMER_REG_REQ until
             // producer's presence is kLive (first heartbeat seen).  Tests
             // pre-dated R6; this heartbeat unblocks the consumer reg below.
-            {
-                nlohmann::json hb_req;
-                hb_req["channel_name"] = "broker.sch.cons_anon_nopack";
-
-                hb_req["producer_pid"] = pylabhub::platform::get_pid();
-                hb_req["role_uid"]     = "prod.broker.canp.uid00000001";
-                hb_req["role_type"]    = "producer";
-                raw_req(broker.endpoint, "HEARTBEAT_REQ", hb_req, 100, broker.pubkey, "prod.broker.canp.uid00000001");
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            }
+            raw_heartbeat(broker.endpoint, broker.pubkey, "broker.sch.cons_anon_nopack", "prod.broker.canp.uid00000001");
 
             // Anonymous mode with blds but no packing → NACK.
             nlohmann::json cons;
@@ -2127,16 +2087,7 @@ int broker_sch_cons_named_with_structure_mismatch()
             // HEP-CORE-0036 §5.2 R6: broker rejects CONSUMER_REG_REQ until
             // producer's presence is kLive (first heartbeat seen).  Tests
             // pre-dated R6; this heartbeat unblocks the consumer reg below.
-            {
-                nlohmann::json hb_req;
-                hb_req["channel_name"] = "broker.sch.cons_named_struct_bad";
-
-                hb_req["producer_pid"] = pylabhub::platform::get_pid();
-                hb_req["role_uid"]     = "prod.broker.cnsb.uid00000001";
-                hb_req["role_type"]    = "producer";
-                raw_req(broker.endpoint, "HEARTBEAT_REQ", hb_req, 100, broker.pubkey, "prod.broker.cnsb.uid00000001");
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            }
+            raw_heartbeat(broker.endpoint, broker.pubkey, "broker.sch.cons_named_struct_bad", "prod.broker.cnsb.uid00000001");
 
             // Consumer cites by id with correct hash, BUT also provides
             // a structure that doesn't match the channel's hash —
@@ -2580,16 +2531,7 @@ int broker_sch_wire_helpers_register_and_cite()
 
             // HEP-CORE-0036 §5.2 R6: producer must reach kLive (first
             // heartbeat seen) before broker admits CONSUMER_REG_REQ.
-            {
-                nlohmann::json hb_req;
-                hb_req["channel_name"] = channel;
-                hb_req["producer_pid"] = pylabhub::platform::get_pid();
-                hb_req["role_uid"]     = prod_uid;
-                hb_req["role_type"]    = "producer";
-                raw_req(broker.endpoint, "HEARTBEAT_REQ", hb_req, 100,
-                        broker.pubkey, "prod.broker.helpers_n.uid00000001");
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            }
+            raw_heartbeat(broker.endpoint, broker.pubkey, channel, prod_uid);
 
             // ── SCHEMA_REQ owner+id round-trip ─────────────────────────
             // path B → owner = role uid; helper hash/blds must equal what
@@ -2716,16 +2658,7 @@ int broker_sch_wire_helpers_anonymous_citation()
             // HEP-CORE-0036 §5.2 R6: broker rejects CONSUMER_REG_REQ until
             // producer's presence is kLive (first heartbeat seen).  Tests
             // pre-dated R6; this heartbeat unblocks the consumer reg below.
-            {
-                nlohmann::json hb_req;
-                hb_req["channel_name"] = "broker.sch.helpers.anon";
-
-                hb_req["producer_pid"] = pylabhub::platform::get_pid();
-                hb_req["role_uid"]     = "prod.broker.helpers_a.uid00000001";
-                hb_req["role_type"]    = "producer";
-                raw_req(broker.endpoint, "HEARTBEAT_REQ", hb_req, 100, broker.pubkey, "prod.broker.helpers_a.uid00000001");
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            }
+            raw_heartbeat(broker.endpoint, broker.pubkey, "broker.sch.helpers.anon", "prod.broker.helpers_a.uid00000001");
             ASSERT_FALSE(reg_resp.is_null());
             ASSERT_EQ(reg_resp.value("status", std::string{}), "success") << reg_resp.dump();
 
@@ -2853,16 +2786,7 @@ int broker_sch_wire_helpers_flexzone_round_trip()
             // HEP-CORE-0036 §5.2 R6: broker rejects CONSUMER_REG_REQ until
             // producer's presence is kLive (first heartbeat seen).  Tests
             // pre-dated R6; this heartbeat unblocks the consumer reg below.
-            {
-                nlohmann::json hb_req;
-                hb_req["channel_name"] = "broker.sch.helpers.fz";
-
-                hb_req["producer_pid"] = pylabhub::platform::get_pid();
-                hb_req["role_uid"]     = "prod.broker.helpers_fz.uid00000001";
-                hb_req["role_type"]    = "producer";
-                raw_req(broker.endpoint, "HEARTBEAT_REQ", hb_req, 100, broker.pubkey, "prod.broker.helpers_fz.uid00000001");
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            }
+            raw_heartbeat(broker.endpoint, broker.pubkey, "broker.sch.helpers.fz", "prod.broker.helpers_fz.uid00000001");
             ASSERT_FALSE(reg_resp.is_null());
             ASSERT_EQ(reg_resp.value("status", std::string{}), "success")
                 << "Slot+flexzone REG_REQ via helpers must succeed; broker recomputes "
