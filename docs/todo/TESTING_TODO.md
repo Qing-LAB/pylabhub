@@ -95,6 +95,52 @@ update the destination task's description, then delete the test.
 
 ## Current Focus — Open coverage gaps
 
+### REVIEW_C2 follow-ups (deferred from 2026-06-29 review of commit b22313c4) ⏳
+
+Three follow-up items deferred from the C2 review remediation chain
+(commits 4a4ef967 / af3880ef / ded802ab / a2b7d739).  Each has a
+strong reason to defer and a tracked plan; full context in
+`docs/tech_draft/REVIEW_C2_2026-06-29.md`.
+
+- **F10 — consolidate `make_reg_opts` / `make_cons_opts` across L3 worker files.**
+  Five files (`broker_admin_workers.cpp`, `broker_consumer_workers.cpp`,
+  `datahub_broker_health_workers.cpp`, `broker_schema_workers.cpp`,
+  `datahub_broker_workers.cpp`) each carry a private copy with
+  divergent signatures (3-param + caller-supplies-pubkey vs 2-param
+  + helper-looks-up-pubkey).  Hoisting to `tests/test_framework/`
+  requires a design decision on which signature shape to standardize
+  — both are reasonable and each chosen shape changes all callers.
+  Defer reason: not mechanical; design decision pending.  Acceptance
+  criteria: single hoisted `make_reg_opts` in `tests/test_framework/`,
+  all 5 sites switched, full ctest green.
+
+- **F13 — eliminate `hub.json` round-trip in `make_test_hub_directory`.**
+  Test fixture currently calls `HubDirectory::init_directory(dir, "BrokerTestHub")`
+  (writes hub.json from template) then reads + modifies 3 fields
+  (`network.broker_endpoint`, `admin.enabled`, `script.path`) + rewrites.
+  Real fix: extend `HubDirectory::init_directory` with an `InitOverrides`
+  struct accepting those 3 fields.  Defer reason: production API
+  change for test-only convenience is a design smell; alternative
+  approach (skip init_directory and write hub.json directly in the
+  fixture) requires duplicating `build_hub_json_template` from the
+  hub_directory.cpp anon namespace.  Cost of NOT fixing: ~milliseconds
+  per test × 40 tests = ~40ms per full broker-tests run.  Acceptance
+  criteria: design decision on init_directory signature (or template
+  export), one write per fixture init.
+
+- **F14 production-callers follow-up — `KeyStore::with_keypair_z85` rollout.**
+  Test-side migration shipped in `ded802ab`.  Production sites still
+  doing the 2-lookup pattern (`pubkey(name)` + `with_seckey(name, ...)`):
+  - `src/utils/network_comm/broker_request_comm.cpp:520-526`
+  - `src/utils/service/role_api_base.cpp:999 + :1012`
+  - `src/utils/service/hub_host.cpp` (broker bind site — comment at line 187 mentions the pair)
+  Defer reason: holistic grep + per-site review needed; not mechanical
+  (some sites need `with_seckey` raw bytes for libsodium, not `with_seckey_z85`
+  — those need a parallel `with_keypair` raw-bytes variant).
+  Acceptance criteria: grep `key_store\(\).pubkey\|with_seckey` for any
+  remaining pair-pattern sites, migrate each, decide whether to add
+  raw `with_keypair` as a second overload.
+
 ### #296 — L4 hub-death observability test (HEP-CORE-0023 §2.5.3 cross-process) ⏳
 
 L3 test `HubHost_Shutdown_BreaksClientConnection` was deleted 2026-06-27 —
