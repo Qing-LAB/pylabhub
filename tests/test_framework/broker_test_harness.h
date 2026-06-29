@@ -39,8 +39,10 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <thread>
 
@@ -209,5 +211,57 @@ struct BrcHandle
                const std::string &keystore_name);
     void stop();
 };
+
+// ── REG_REQ / CONSUMER_REG_REQ payload builders ─────────────────────────────
+//
+// Per HEP-CORE-0036 §5b + §6.1 + §I10: REG_REQ MUST carry `zmq_pubkey`, and
+// there is EXACTLY ONE pubkey per role uid (KnownRolesStore::add() enforces
+// the injective mapping at load time).  The pubkey is therefore functionally
+// derivable from the role_uid — the helper looks it up from the process
+// `key_store()` via the canonical `role.<uid>` entry name
+// (`pylabhub::tests::role_keystore_name`).  Callers MUST have seeded the
+// keystore via `CurveKeyStoreFixture` before calling.
+//
+// Pre-2026-06-29 the 5 L3 worker files each carried a private copy with
+// divergent signatures (3-param "caller-supplies-pubkey" vs 2-param
+// "helper-looks-it-up").  The 3-param shape was older — written when callers
+// had a `CurveSetup` in scope; the 2-param shape is the design-consistent
+// post-strict-CURVE form (KeyStore is the canonical identity store per
+// HEP-CORE-0040 §172).  Consolidated under this single 2-param shape
+// (REVIEW_C2 F10).
+//
+// `producer_pid` / `consumer_pid` default to `::getpid()` — the common case.
+// Tests that need to pin a specific pid (e.g. dereg-pid-mismatch assertions
+// in broker_consumer_workers.cpp) pass it explicitly.
+[[nodiscard]] nlohmann::json make_reg_opts(
+    const std::string &channel,
+    const std::string &role_uid,
+    std::optional<uint64_t> producer_pid = std::nullopt);
+
+[[nodiscard]] nlohmann::json make_cons_opts(
+    const std::string &channel,
+    const std::string &consumer_uid,
+    std::optional<uint64_t> consumer_pid = std::nullopt);
+
+// Negative-path overload — caller supplies the wire `zmq_pubkey`
+// explicitly so the test can inject a value that DOES NOT match the
+// keystore entry for `role_uid` (or use a `role_uid` that has no
+// keystore entry at all).  Used by tests that pin the broker's
+// UNKNOWN_ROLE / PUBKEY_MISMATCH rejection paths
+// (HEP-CORE-0036 §6.3 Layer-2 verify_known_role_binding).
+//
+// Happy-path tests should use the keystore-derived overload above —
+// it can't accidentally diverge from the broker's known_roles record.
+[[nodiscard]] nlohmann::json make_reg_opts_with_explicit_pubkey(
+    const std::string &channel,
+    const std::string &role_uid,
+    const std::string &zmq_pubkey,
+    std::optional<uint64_t> producer_pid = std::nullopt);
+
+[[nodiscard]] nlohmann::json make_cons_opts_with_explicit_pubkey(
+    const std::string &channel,
+    const std::string &consumer_uid,
+    const std::string &zmq_pubkey,
+    std::optional<uint64_t> consumer_pid = std::nullopt);
 
 } // namespace pylabhub::tests

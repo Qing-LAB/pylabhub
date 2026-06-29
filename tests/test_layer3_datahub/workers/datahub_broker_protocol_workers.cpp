@@ -151,50 +151,11 @@ std::string pid_chan(const std::string &base)
     return base + ".pid" + std::to_string(::getpid());
 }
 
-/// HEP-CORE-0036 §5b canonical producer REG_REQ shape.  The role's
-/// `zmq_pubkey` is read from the process `key_store()` via the
-/// canonical `role.<uid>` name (HEP-CORE-0040 §172) — same byte the
-/// broker reads when it issues a ZAP challenge to that role on its
-/// data-plane socket.  `producer_pid` is layered on top for the
-/// scenarios that pin a specific pid in their assertions.
-json make_reg_opts(const std::string &channel, const std::string &role_uid)
-{
-    namespace sec = pylabhub::utils::security;
-    auto opts = pylabhub::hub::build_producer_reg_payload(
-        pylabhub::hub::ProducerRegInputs{
-            .channel    = channel,
-            .role_uid   = role_uid,
-            .role_name  = "test_producer",
-            .role_type  = "producer",
-            .has_shm    = true,
-            .is_zmq_transport  = false,
-            .zmq_node_endpoint = {},
-            .zmq_pubkey = std::string{sec::key_store().pubkey(
-                pylabhub::tests::role_keystore_name(role_uid))},
-            .shm_capability_endpoint =
-                sec::default_shm_capability_endpoint(channel),
-        });
-    opts["producer_pid"] = ::getpid();
-    return opts;
-}
-
-/// HEP-CORE-0036 §5b canonical consumer REG_REQ shape.  Same pubkey
-/// lookup discipline as `make_reg_opts`.
-json make_cons_opts(const std::string &channel,
-                    const std::string &consumer_uid)
-{
-    namespace sec = pylabhub::utils::security;
-    auto opts = pylabhub::hub::build_consumer_reg_payload(
-        pylabhub::hub::ConsumerRegInputs{
-            .channel    = channel,
-            .role_uid   = consumer_uid,
-            .role_name  = "test_consumer",
-            .zmq_pubkey = std::string{sec::key_store().pubkey(
-                pylabhub::tests::role_keystore_name(consumer_uid))},
-        });
-    opts["consumer_pid"] = ::getpid();
-    return opts;
-}
+// `make_reg_opts` / `make_cons_opts` consolidated into
+// `tests/test_framework/broker_test_harness.h` (REVIEW_C2 F10
+// 2026-06-29).  These were the original 2-param shape that won the
+// consolidation — pubkey is functionally derivable from `role_uid`
+// via the keystore (HEP-CORE-0036 §I10: one pubkey per role_uid).
 
 // ─── Thread-safe event collector ──────────────────────────────────────────────
 

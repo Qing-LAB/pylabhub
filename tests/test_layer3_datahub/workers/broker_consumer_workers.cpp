@@ -47,49 +47,10 @@ namespace broker_consumer
 namespace
 {
 
-// Thin wrappers around the canonical production payload builders
-// (`pylabhub::hub::build_*_reg_payload` in `utils/role_reg_payload.hpp`).
-// `producer_pid` / `consumer_pid` parameters retained because some
-// scenarios pin specific pid values; we layer them on top of the
-// builder's default `get_pid()`.
-json make_reg_opts(const std::string &channel, const std::string &role_uid,
-                   const std::string &zmq_pubkey, uint64_t producer_pid)
-{
-    // #281 (2026-06-23): `data_transport` REQUIRED — mirror production
-    // SHM wire shape (HEP-CORE-0041 §5.1).  Broker only stores the
-    // endpoint string; no L2 listener bound by this helper.
-    auto opts = pylabhub::hub::build_producer_reg_payload(
-        pylabhub::hub::ProducerRegInputs{
-            .channel    = channel,
-            .role_uid   = role_uid,
-            .role_name  = "test_producer",
-            .role_type   = "producer",
-            .has_shm    = true,
-            .is_zmq_transport  = false,
-            .zmq_node_endpoint = {},
-            .zmq_pubkey = zmq_pubkey,
-            .shm_capability_endpoint =
-                pylabhub::utils::security::default_shm_capability_endpoint(channel),
-        });
-    opts["producer_pid"] = producer_pid;
-    return opts;
-}
-
-json make_cons_opts(const std::string &channel,
-                    const std::string &consumer_uid,
-                    const std::string &zmq_pubkey,
-                    uint64_t consumer_pid)
-{
-    auto opts = pylabhub::hub::build_consumer_reg_payload(
-        pylabhub::hub::ConsumerRegInputs{
-            .channel    = channel,
-            .role_uid   = consumer_uid,
-            .role_name  = "test_consumer",
-            .zmq_pubkey = zmq_pubkey,
-        });
-    opts["consumer_pid"] = consumer_pid;
-    return opts;
-}
+// `make_reg_opts` / `make_cons_opts` consolidated into
+// `tests/test_framework/broker_test_harness.h` (REVIEW_C2 F10
+// 2026-06-29).  Optional pid parameter kept for the dereg-pid-mismatch
+// scenarios that pin specific pids.
 
 std::string pid_chan(const std::string &base)
 {
@@ -162,8 +123,7 @@ int consumer_reg_channel_not_found()
             bh.start(broker.endpoint, broker.pubkey, uid, pylabhub::tests::role_keystore_name(uid));
 
             auto resp = bh.brc.register_consumer(
-                make_cons_opts(pid_chan("consumer.no_such_channel"),
-                                uid, curve.role(uid).public_z85, 12345),
+                make_cons_opts(pid_chan("consumer.no_such_channel"), uid, 12345),
                 3000);
             ASSERT_TRUE(resp.has_value());
             EXPECT_EQ(resp->value("status", std::string{}), "error");
@@ -188,7 +148,7 @@ int consumer_reg_happy_path()
             prod.start(broker.endpoint, broker.pubkey, prod_uid,
                        pylabhub::tests::role_keystore_name(prod_uid));
             auto reg = prod.brc.register_channel(
-                make_reg_opts(channel, prod_uid, curve.role(prod_uid).public_z85, 55001), 3000);
+                make_reg_opts(channel, prod_uid, 55001), 3000);
             ASSERT_TRUE(reg.has_value()) << "register_channel failed";
             ASSERT_EQ(reg->value("status", std::string{}), "success");
 
@@ -199,7 +159,7 @@ int consumer_reg_happy_path()
             cons.start(broker.endpoint, broker.pubkey, cons_uid,
                        pylabhub::tests::role_keystore_name(cons_uid));
             auto creg = cons.brc.register_consumer(
-                make_cons_opts(channel, cons_uid, curve.role(cons_uid).public_z85, 55100), 3000);
+                make_cons_opts(channel, cons_uid, 55100), 3000);
             ASSERT_TRUE(creg.has_value());
             EXPECT_EQ(creg->value("status", std::string{}), "success");
 
@@ -228,7 +188,7 @@ int consumer_dereg_happy_path()
             prod.start(broker.endpoint, broker.pubkey, prod_uid,
                        pylabhub::tests::role_keystore_name(prod_uid));
             ASSERT_TRUE(prod.brc.register_channel(
-                            make_reg_opts(channel, prod_uid, curve.role(prod_uid).public_z85, my_pid), 3000)
+                            make_reg_opts(channel, prod_uid, my_pid), 3000)
                             .has_value());
             prod.brc.send_heartbeat(channel, prod_uid, "producer",
                                      json::object());
@@ -237,7 +197,7 @@ int consumer_dereg_happy_path()
             cons.start(broker.endpoint, broker.pubkey, cons_uid,
                        pylabhub::tests::role_keystore_name(cons_uid));
             ASSERT_TRUE(cons.brc.register_consumer(
-                            make_cons_opts(channel, cons_uid, curve.role(cons_uid).public_z85, my_pid), 3000)
+                            make_cons_opts(channel, cons_uid, my_pid), 3000)
                             .has_value());
 
             auto disc1 = cons.brc.discover_channel(channel, json::object(),
@@ -275,7 +235,7 @@ int consumer_dereg_pid_mismatch()
             prod.start(broker.endpoint, broker.pubkey, prod_uid,
                        pylabhub::tests::role_keystore_name(prod_uid));
             ASSERT_TRUE(prod.brc.register_channel(
-                            make_reg_opts(channel, prod_uid, curve.role(prod_uid).public_z85, 56000), 3000)
+                            make_reg_opts(channel, prod_uid, 56000), 3000)
                             .has_value());
             prod.brc.send_heartbeat(channel, prod_uid, "producer",
                                      json::object());
@@ -285,10 +245,7 @@ int consumer_dereg_pid_mismatch()
                                cons_uid_correct,
                                pylabhub::tests::role_keystore_name(cons_uid_correct));
             ASSERT_TRUE(cons_correct.brc
-                            .register_consumer(make_cons_opts(channel,
-                                                                cons_uid_correct,
-                                                                curve.role(cons_uid_correct).public_z85,
-                                                                56001),
+                            .register_consumer(make_cons_opts(channel, cons_uid_correct, 56001),
                                                 3000)
                             .has_value());
 
@@ -328,7 +285,7 @@ int disc_shows_consumer_count()
             prod.start(broker.endpoint, broker.pubkey, prod_uid,
                        pylabhub::tests::role_keystore_name(prod_uid));
             ASSERT_TRUE(prod.brc.register_channel(
-                            make_reg_opts(channel, prod_uid, curve.role(prod_uid).public_z85, my_pid), 3000)
+                            make_reg_opts(channel, prod_uid, my_pid), 3000)
                             .has_value());
             prod.brc.send_heartbeat(channel, prod_uid, "producer",
                                      json::object());
@@ -346,7 +303,7 @@ int disc_shows_consumer_count()
             cons.start(broker.endpoint, broker.pubkey, cons_uid,
                        pylabhub::tests::role_keystore_name(cons_uid));
             ASSERT_TRUE(cons.brc.register_consumer(
-                            make_cons_opts(channel, cons_uid, curve.role(cons_uid).public_z85, my_pid), 3000)
+                            make_cons_opts(channel, cons_uid, my_pid), 3000)
                             .has_value());
 
             auto disc1 = observer.brc.discover_channel(channel, json::object(),
@@ -393,9 +350,7 @@ int consumer_reg_unknown_role()
             prod.start(broker.endpoint, broker.pubkey, prod_uid,
                        pylabhub::tests::role_keystore_name(prod_uid));
             ASSERT_TRUE(prod.brc.register_channel(
-                            make_reg_opts(channel, prod_uid,
-                                           curve.role(prod_uid).public_z85,
-                                           60000),
+                            make_reg_opts(channel, prod_uid, 60000),
                             3000).has_value());
             prod.brc.send_heartbeat(channel, prod_uid, "producer",
                                      json::object());
@@ -410,9 +365,16 @@ int consumer_reg_unknown_role()
             // passes; only Layer-2 catches the body lie.
             const std::string fake_uid =
                 "cons.fabricated.unregistered_" + channel;
+            // Negative-path: fake_uid is NOT in known_roles, so the
+            // 2-param `make_cons_opts` would throw on the keystore
+            // lookup.  Use the explicit-pubkey overload to inject
+            // real_uid's pubkey (passes Layer-1 ZAP) while claiming
+            // fake_uid in the body (Layer-2 catches the lie).
             auto resp = bh.brc.register_consumer(
-                make_cons_opts(channel, fake_uid,
-                                curve.role(real_uid).public_z85, 60001),
+                make_cons_opts_with_explicit_pubkey(
+                    channel, fake_uid,
+                    curve.role(real_uid).public_z85,
+                    60001),
                 3000);
             ASSERT_TRUE(resp.has_value());
             EXPECT_EQ(resp->value("status", std::string{}), "error");
@@ -446,9 +408,7 @@ int consumer_reg_pubkey_mismatch()
             prod.start(broker.endpoint, broker.pubkey, prod_uid,
                        pylabhub::tests::role_keystore_name(prod_uid));
             ASSERT_TRUE(prod.brc.register_channel(
-                            make_reg_opts(channel, prod_uid,
-                                           curve.role(prod_uid).public_z85,
-                                           60000),
+                            make_reg_opts(channel, prod_uid, 60000),
                             3000).has_value());
             prod.brc.send_heartbeat(channel, prod_uid, "producer",
                                      json::object());
@@ -461,10 +421,14 @@ int consumer_reg_pubkey_mismatch()
             // attaches real_uid_b's pubkey — the verification step
             // catches the (uid, pubkey) split.  Layer-1 ZAP still
             // passes because the CONNECTING socket uses real_uid_a's
-            // real key.
+            // real key.  Explicit-pubkey overload required for this
+            // mismatch — the keystore-derived shape would emit
+            // real_uid_a's matching pubkey, hiding the test's intent.
             auto resp = bh.brc.register_consumer(
-                make_cons_opts(channel, real_uid_a,
-                                curve.role(real_uid_b).public_z85, 60002),
+                make_cons_opts_with_explicit_pubkey(
+                    channel, real_uid_a,
+                    curve.role(real_uid_b).public_z85,
+                    60002),
                 3000);
             ASSERT_TRUE(resp.has_value());
             EXPECT_EQ(resp->value("status", std::string{}), "error");
@@ -495,8 +459,7 @@ int consumer_reg_ack_emits_producers_zmq()
             prod.start(broker.endpoint, broker.pubkey, prod_uid,
                        pylabhub::tests::role_keystore_name(prod_uid));
 
-            auto reg_opts = make_reg_opts(
-                channel, prod_uid, curve.role(prod_uid).public_z85, 55001);
+            auto reg_opts = make_reg_opts(channel, prod_uid, 55001);
             // Convert to ZMQ transport so the broker emits producers[]
             // per §6.4.  Post-B-4 (#289) SHM channels ALSO emit
             // producers[] with the same shape — the array's `endpoint`
@@ -517,8 +480,7 @@ int consumer_reg_ack_emits_producers_zmq()
             cons.start(broker.endpoint, broker.pubkey, cons_uid,
                        pylabhub::tests::role_keystore_name(cons_uid));
             auto creg = cons.brc.register_consumer(
-                make_cons_opts(channel, cons_uid,
-                                curve.role(cons_uid).public_z85, 55100),
+                make_cons_opts(channel, cons_uid, 55100),
                 3000);
             ASSERT_TRUE(creg.has_value());
             EXPECT_EQ(creg->value("status", std::string{}), "success");
@@ -570,8 +532,7 @@ int get_channel_auth_returns_allowlist()
             pylabhub::tests::BrcHandle prod;
             prod.start(broker.endpoint, broker.pubkey, prod_uid,
                        pylabhub::tests::role_keystore_name(prod_uid));
-            auto reg_opts = make_reg_opts(
-                channel, prod_uid, curve.role(prod_uid).public_z85, 65001);
+            auto reg_opts = make_reg_opts(channel, prod_uid, 65001);
             reg_opts["data_transport"]    = "zmq";
             reg_opts["zmq_node_endpoint"] = "tcp://127.0.0.1:55558";
             ASSERT_TRUE(prod.brc.register_channel(reg_opts, 3000).has_value());
@@ -598,9 +559,7 @@ int get_channel_auth_returns_allowlist()
             // the same pid so the dereg-roundtrip assertion below
             // succeeds.
             ASSERT_TRUE(cons.brc.register_consumer(
-                            make_cons_opts(channel, cons_uid,
-                                            curve.role(cons_uid).public_z85,
-                                            static_cast<uint64_t>(::getpid())),
+                            make_cons_opts(channel, cons_uid, static_cast<uint64_t>(::getpid())),
                             3000).has_value());
 
             // Post-registration: allowlist includes consumer entry.
@@ -670,8 +629,7 @@ int consumer_attach_authorized()
             pylabhub::tests::BrcHandle prod;
             prod.start(broker.endpoint, broker.pubkey, prod_uid,
                        pylabhub::tests::role_keystore_name(prod_uid));
-            auto reg_opts = make_reg_opts(
-                channel, prod_uid, curve.role(prod_uid).public_z85, 65010);
+            auto reg_opts = make_reg_opts(channel, prod_uid, 65010);
             reg_opts["data_transport"]    = "zmq";
             reg_opts["zmq_node_endpoint"] = "tcp://127.0.0.1:55570";
             ASSERT_TRUE(prod.brc.register_channel(reg_opts, 3000).has_value());
@@ -683,9 +641,7 @@ int consumer_attach_authorized()
             cons.start(broker.endpoint, broker.pubkey, cons_uid,
                        pylabhub::tests::role_keystore_name(cons_uid));
             ASSERT_TRUE(cons.brc.register_consumer(
-                            make_cons_opts(channel, cons_uid,
-                                           curve.role(cons_uid).public_z85,
-                                           static_cast<uint64_t>(::getpid())),
+                            make_cons_opts(channel, cons_uid, static_cast<uint64_t>(::getpid())),
                             3000).has_value());
 
             // Producer asks: is this consumer authorized?
@@ -726,8 +682,7 @@ int consumer_attach_denied()
             pylabhub::tests::BrcHandle prod;
             prod.start(broker.endpoint, broker.pubkey, prod_uid,
                        pylabhub::tests::role_keystore_name(prod_uid));
-            auto reg_opts = make_reg_opts(
-                channel, prod_uid, curve.role(prod_uid).public_z85, 65011);
+            auto reg_opts = make_reg_opts(channel, prod_uid, 65011);
             reg_opts["data_transport"]    = "zmq";
             reg_opts["zmq_node_endpoint"] = "tcp://127.0.0.1:55571";
             ASSERT_TRUE(prod.brc.register_channel(reg_opts, 3000).has_value());
@@ -803,9 +758,7 @@ int consumer_attach_non_producer()
             pylabhub::tests::BrcHandle real_prod;
             real_prod.start(broker.endpoint, broker.pubkey, real_prod_uid,
                             pylabhub::tests::role_keystore_name(real_prod_uid));
-            auto reg_opts = make_reg_opts(channel, real_prod_uid,
-                                          curve.role(real_prod_uid).public_z85,
-                                          65012);
+            auto reg_opts = make_reg_opts(channel, real_prod_uid, 65012);
             reg_opts["data_transport"]    = "zmq";
             reg_opts["zmq_node_endpoint"] = "tcp://127.0.0.1:55572";
             ASSERT_TRUE(real_prod.brc.register_channel(reg_opts, 3000).has_value());
@@ -878,9 +831,7 @@ int get_channel_auth_rejects_non_producer()
             pylabhub::tests::BrcHandle prod;
             prod.start(broker.endpoint, broker.pubkey, real_prod_uid,
                        pylabhub::tests::role_keystore_name(real_prod_uid));
-            auto reg_opts = make_reg_opts(channel, real_prod_uid,
-                                           curve.role(real_prod_uid).public_z85,
-                                           65200);
+            auto reg_opts = make_reg_opts(channel, real_prod_uid, 65200);
             reg_opts["data_transport"]    = "zmq";
             reg_opts["zmq_node_endpoint"] = "tcp://127.0.0.1:55559";
             ASSERT_TRUE(prod.brc.register_channel(reg_opts, 3000).has_value());

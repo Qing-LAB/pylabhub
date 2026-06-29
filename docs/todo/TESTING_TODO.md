@@ -102,17 +102,16 @@ Three follow-up items deferred from the C2 review remediation chain
 strong reason to defer and a tracked plan; full context in
 `docs/tech_draft/REVIEW_C2_2026-06-29.md`.
 
-- **F10 — consolidate `make_reg_opts` / `make_cons_opts` across L3 worker files.**
-  Five files (`broker_admin_workers.cpp`, `broker_consumer_workers.cpp`,
-  `datahub_broker_health_workers.cpp`, `broker_schema_workers.cpp`,
-  `datahub_broker_workers.cpp`) each carry a private copy with
-  divergent signatures (3-param + caller-supplies-pubkey vs 2-param
-  + helper-looks-up-pubkey).  Hoisting to `tests/test_framework/`
-  requires a design decision on which signature shape to standardize
-  — both are reasonable and each chosen shape changes all callers.
-  Defer reason: not mechanical; design decision pending.  Acceptance
-  criteria: single hoisted `make_reg_opts` in `tests/test_framework/`,
-  all 5 sites switched, full ctest green.
+- **F10 — DONE 2026-06-29.**  Consolidated into
+  `tests/test_framework/broker_test_harness.{h,cpp}` as the 2-param
+  keystore-derived `make_reg_opts(channel, role_uid, [pid])` /
+  `make_cons_opts(channel, role_uid, [pid])` + an explicit-pubkey
+  overload (`make_*_with_explicit_pubkey`) for negative-path tests
+  that DELIBERATELY inject a wrong-pubkey shape to pin the broker's
+  UNKNOWN_ROLE / PUBKEY_MISMATCH rejection.  All 4 live worker files
+  migrated; the obsolete 2-param-no-pubkey copy in masked
+  `datahub_broker_health_workers.cpp` will be replaced when that
+  file is unmasked under batch-2b.  Full ctest 2231/2231 green.
 
 - **F13 — KILLED 2026-06-29 (designer decision).**  Test fixture's
   `make_test_hub_directory` writes hub.json twice (init_directory

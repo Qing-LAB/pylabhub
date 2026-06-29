@@ -65,44 +65,9 @@ json hubhost_overrides()
     };
 }
 
-// Thin wrappers around the canonical production payload builders
-// (`pylabhub::hub::build_*_reg_payload` in `utils/role_reg_payload.hpp`).
-// Schema fields are layered on top by callers below.
-json make_reg_opts(const std::string &channel, const std::string &role_uid,
-                   const std::string &zmq_pubkey)
-{
-    return pylabhub::hub::build_producer_reg_payload(
-        // #281 (2026-06-23): `data_transport` is REQUIRED on REG_REQ
-        // (broker rejects missing/empty).  Mirror production
-        // producer_role_host's SHM wire shape — `has_shm=true` + canonical
-        // endpoint via `default_shm_capability_endpoint`
-        // (HEP-CORE-0041 §5.1).  No L2 listener is bound; broker only
-        // stores the endpoint string.
-        pylabhub::hub::ProducerRegInputs{
-            .channel    = channel,
-            .role_uid   = role_uid,
-            .role_name  = "test_producer",
-            .role_type   = "producer",
-            .has_shm    = true,
-            .is_zmq_transport  = false,
-            .zmq_node_endpoint = {},
-            .zmq_pubkey = zmq_pubkey,
-            .shm_capability_endpoint =
-                pylabhub::utils::security::default_shm_capability_endpoint(channel),
-        });
-}
-
-json make_cons_opts(const std::string &channel, const std::string &consumer_uid,
-                    const std::string &zmq_pubkey)
-{
-    return pylabhub::hub::build_consumer_reg_payload(
-        pylabhub::hub::ConsumerRegInputs{
-            .channel    = channel,
-            .role_uid   = consumer_uid,
-            .role_name  = "test_consumer",
-            .zmq_pubkey = zmq_pubkey,
-        });
-}
+// `make_reg_opts` / `make_cons_opts` consolidated into
+// `tests/test_framework/broker_test_harness.h` (REVIEW_C2 F10
+// 2026-06-29).  Schema fields are layered on top by callers below.
 
 std::string canonical_hash_hex(const std::string &slot_blds,
                                const std::string &slot_packing)
@@ -179,7 +144,7 @@ int schema_hash_stored_on_reg()
             pylabhub::tests::BrcHandle bh;
             bh.start(broker.endpoint, broker.pubkey, uid, pylabhub::tests::role_keystore_name(uid));
 
-            auto opts           = make_reg_opts(channel, uid, curve.role(uid).public_z85);
+            auto opts           = make_reg_opts(channel, uid);
             opts["schema_hash"] = hash_hex;
             auto reg = bh.brc.register_channel(opts, 3000);
             ASSERT_TRUE(reg.has_value());
@@ -213,7 +178,7 @@ int schema_id_stored_on_reg()
             pylabhub::tests::BrcHandle bh;
             bh.start(broker.endpoint, broker.pubkey, uid, pylabhub::tests::role_keystore_name(uid));
 
-            auto opts              = make_reg_opts(channel, uid, curve.role(uid).public_z85);
+            auto opts              = make_reg_opts(channel, uid);
             opts["schema_id"]      = schema_id;
             opts["schema_hash"]    = sch.hash;
             opts["schema_packing"] = sch.packing;
@@ -256,7 +221,7 @@ int consumer_schema_id_match_succeeds()
             prod_bh.start(broker.endpoint, broker.pubkey, prod_uid,
                           pylabhub::tests::role_keystore_name(prod_uid));
 
-            auto opts              = make_reg_opts(channel, prod_uid, curve.role(prod_uid).public_z85);
+            auto opts              = make_reg_opts(channel, prod_uid);
             opts["schema_id"]      = schema_id;
             opts["schema_hash"]    = sch.hash;
             opts["schema_packing"] = sch.packing;
@@ -268,7 +233,7 @@ int consumer_schema_id_match_succeeds()
             cons_bh.start(broker.endpoint, broker.pubkey, cons_uid,
                           pylabhub::tests::role_keystore_name(cons_uid));
 
-            auto cons_opts                    = make_cons_opts(channel, cons_uid, curve.role(cons_uid).public_z85);
+            auto cons_opts                    = make_cons_opts(channel, cons_uid);
             cons_opts["expected_schema_id"]   = schema_id;
             cons_opts["expected_schema_hash"] = sch.hash;
             auto cons_reg = cons_bh.brc.register_consumer(cons_opts, 3000);
@@ -299,7 +264,7 @@ int consumer_schema_id_mismatch_fails()
             prod_bh.start(broker.endpoint, broker.pubkey, prod_uid,
                           pylabhub::tests::role_keystore_name(prod_uid));
 
-            auto opts              = make_reg_opts(channel, prod_uid, curve.role(prod_uid).public_z85);
+            auto opts              = make_reg_opts(channel, prod_uid);
             opts["schema_id"]      = prod_sid;
             opts["schema_hash"]    = sch.hash;
             opts["schema_packing"] = sch.packing;
@@ -321,7 +286,7 @@ int consumer_schema_id_mismatch_fails()
             cons_bh.start(broker.endpoint, broker.pubkey, cons_uid,
                           pylabhub::tests::role_keystore_name(cons_uid));
 
-            auto cons_opts                    = make_cons_opts(channel, cons_uid, curve.role(cons_uid).public_z85);
+            auto cons_opts                    = make_cons_opts(channel, cons_uid);
             cons_opts["expected_schema_id"]   = cons_sid;
             cons_opts["expected_schema_hash"] = sch.hash;
             auto cons_reg = cons_bh.brc.register_consumer(cons_opts, 3000);
@@ -355,7 +320,7 @@ int consumer_schema_id_empty_producer_fails()
                           pylabhub::tests::role_keystore_name(prod_uid));
 
             auto reg = prod_bh.brc.register_channel(
-                make_reg_opts(channel, prod_uid, curve.role(prod_uid).public_z85), 3000);
+                make_reg_opts(channel, prod_uid), 3000);
             ASSERT_TRUE(reg.has_value());
 
             // Channel-Ready precondition — see schema_id_mismatch_fails
@@ -367,7 +332,7 @@ int consumer_schema_id_empty_producer_fails()
             cons_bh.start(broker.endpoint, broker.pubkey, cons_uid,
                           pylabhub::tests::role_keystore_name(cons_uid));
 
-            auto cons_opts                  = make_cons_opts(channel, cons_uid, curve.role(cons_uid).public_z85);
+            auto cons_opts                  = make_cons_opts(channel, cons_uid);
             cons_opts["expected_schema_id"] = cons_sid;
             auto cons_reg = cons_bh.brc.register_consumer(cons_opts, 3000);
             ASSERT_TRUE(cons_reg.has_value())
