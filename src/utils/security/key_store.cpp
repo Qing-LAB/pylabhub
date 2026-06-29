@@ -519,6 +519,55 @@ void KeyStore::with_seckey_z85(std::string_view                          name,
     ::sodium_memzero(sec_z85_buf, sizeof(sec_z85_buf));
 }
 
+void KeyStore::with_keypair_z85(
+    std::string_view name,
+    std::function<void(std::string_view /*pubkey*/,
+                       std::string_view /*seckey*/)> use) const
+{
+    std::shared_lock<std::shared_mutex> rlk(pImpl->mu);
+
+    const auto it = pImpl->store.find(std::string(name));
+    if (it == pImpl->store.end())
+    {
+        throw std::out_of_range(
+            "KeyStore::with_keypair_z85: name not present: '"
+            + std::string(name) + "'");
+    }
+    if (!it->second.is_identity)
+    {
+        throw std::out_of_range(
+            "KeyStore::with_keypair_z85: '" + std::string(name)
+            + "' is a raw secret, not an identity keypair — use lookup_raw");
+    }
+
+    // Pubkey: non-secret cached Z85 (40 chars, lifetime = Entry).
+    const std::string_view pub_view(it->second.pub_z85_cache);
+
+    // Seckey: encode raw → Z85 into a stack buffer, zero before
+    // return.  Same shape as with_seckey_z85 above; combining the two
+    // saves one entry lookup + one lock acquisition per call.
+    const auto bytes = it->second.key->bytes();
+    char       sec_z85_buf[kZ85HalfBytes + 1] = {};
+    if (zmq_z85_encode(sec_z85_buf,
+                        reinterpret_cast<const uint8_t *>(
+                            bytes.data() + kRawHalfBytes),
+                        kRawHalfBytes) == nullptr)
+    {
+        throw std::runtime_error(
+            "KeyStore::with_keypair_z85: zmq_z85_encode(sec) failed");
+    }
+    try
+    {
+        use(pub_view, std::string_view(sec_z85_buf, kZ85HalfBytes));
+    }
+    catch (...)
+    {
+        ::sodium_memzero(sec_z85_buf, sizeof(sec_z85_buf));
+        throw;
+    }
+    ::sodium_memzero(sec_z85_buf, sizeof(sec_z85_buf));
+}
+
 std::span<const std::byte> KeyStore::lookup_raw(std::string_view name) const
 {
     std::shared_lock<std::shared_mutex> rlk(pImpl->mu);

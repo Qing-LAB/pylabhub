@@ -198,6 +198,21 @@ public:
     void with_seckey_z85(std::string_view                          name,
                           std::function<void(std::string_view)>     use) const;
 
+    /// Combined keypair accessor — invokes `use(pubkey_z85, seckey_z85)`
+    /// with BOTH halves of an identity entry, encoded as Z85.  One
+    /// entry lookup, one lock acquisition — replaces the common
+    /// `pubkey(name)` + `with_seckey_z85(name, ...)` pair (test +
+    /// production sites that need both halves of a CURVE keypair for a
+    /// ZMQ socket setup or AttachProtocol challenge).  Same lifetime +
+    /// threading semantics as `with_seckey_z85`: both views are valid
+    /// only inside `use`; the seckey buffer is sodium_memzero'd before
+    /// this function returns.  Throws `std::out_of_range` if `name` is
+    /// absent or refers to a raw entry.
+    void with_keypair_z85(
+        std::string_view name,
+        std::function<void(std::string_view /*pubkey*/,
+                           std::string_view /*seckey*/)> use) const;
+
     /// HEP-0038 raw-secret access (`api.vault_load`).  Span lifetime
     /// is until `remove()` or KeyStore dtor; script bindings MUST
     /// materialize the bytes into a script-owned buffer before

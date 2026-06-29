@@ -329,10 +329,11 @@ nlohmann::json raw_req(const std::string& endpoint,
 
         dealer.set(zmq::sockopt::curve_serverkey, server_pubkey);
         // Authenticate as a registered role — broker ZAP gate
-        // matches `known_roles.json`.  HEP-CORE-0040 §172: the
-        // seckey lives only inside the callback; ZMQ copies it
-        // into its socket-internal storage during set() so it
-        // survives the callback's sodium_memzero.
+        // matches `known_roles.json`.  HEP-CORE-0040 §172 + §175
+        // follow-up: `with_keypair_z85` returns both halves through
+        // a single locked entry lookup; ZMQ copies the seckey into
+        // its socket-internal storage during set() so it survives
+        // the callback's sodium_memzero.
         namespace sec = pylabhub::utils::security;
         // `role_identity_name` is the raw uid string the caller
         // owns; the KeyStore entry name is the prefixed
@@ -340,13 +341,13 @@ nlohmann::json raw_req(const std::string& endpoint,
         // (see `pylabhub::tests::role_keystore_name`).
         const std::string ks_name =
             pylabhub::tests::role_keystore_name(role_identity_name);
-        const std::string client_pub{sec::key_store().pubkey(ks_name)};
-        sec::key_store().with_seckey_z85(
+        sec::key_store().with_keypair_z85(
             ks_name,
-            [&](std::string_view seckey_z85) {
-                dealer.set(zmq::sockopt::curve_publickey, client_pub);
+            [&](std::string_view pub_z85, std::string_view sec_z85) {
+                dealer.set(zmq::sockopt::curve_publickey,
+                           std::string(pub_z85));
                 dealer.set(zmq::sockopt::curve_secretkey,
-                           std::string(seckey_z85));
+                           std::string(sec_z85));
             });
     }
 
@@ -431,13 +432,13 @@ void raw_heartbeat(const std::string &endpoint,
         dealer.set(zmq::sockopt::curve_serverkey, server_pubkey);
         const std::string ks_name =
             pylabhub::tests::role_keystore_name(producer_uid);
-        const std::string client_pub{sec::key_store().pubkey(ks_name)};
-        sec::key_store().with_seckey_z85(
+        sec::key_store().with_keypair_z85(
             ks_name,
-            [&](std::string_view seckey_z85) {
-                dealer.set(zmq::sockopt::curve_publickey, client_pub);
+            [&](std::string_view pub_z85, std::string_view sec_z85) {
+                dealer.set(zmq::sockopt::curve_publickey,
+                           std::string(pub_z85));
                 dealer.set(zmq::sockopt::curve_secretkey,
-                           std::string(seckey_z85));
+                           std::string(sec_z85));
             });
     }
     dealer.connect(endpoint);
