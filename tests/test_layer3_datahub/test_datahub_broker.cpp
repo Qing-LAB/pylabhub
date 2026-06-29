@@ -138,11 +138,18 @@ TEST_F(DatahubBrokerTest, Sch_RegHashMismatchSelf)
     ExpectWorkerOk(proc);
 }
 
-// Sch_ConsumerCitationMatch RETIRED 2026-06-28 (AUTH-6 batch-2a C2):
-// duplicate of `broker_schema_workers.cpp::consumer_schema_id_match_succeeds`.
-// Verified by reading both bodies + HEP-CORE-0034 §10.3 (same protocol path,
-// same `expected_schema_id` + `expected_schema_hash` citation match against
-// stored channel hash, same success assertion).
+// Sch_ConsumerCitationMatch reinstated 2026-06-29 (REVIEW_C2 F2): the
+// 2026-06-28 retirement claimed `consumer_schema_id_match_succeeds`
+// in broker_schema_workers.cpp covers the same path, but that twin
+// uses BrcHandle (production BRC client with implicit retry/heartbeat),
+// while this test pins the raw_req wire-layer shape against
+// HEP-CORE-0036 §5.2 R6 + HEP-CORE-0034 §10.3 with explicit heartbeat
+// sequencing.  Different abstractions, both have value.
+TEST_F(DatahubBrokerTest, Sch_ConsumerCitationMatch)
+{
+    auto proc = SpawnWorker("broker.broker_sch_consumer_citation_match", {});
+    ExpectWorkerOk(proc);
+}
 
 TEST_F(DatahubBrokerTest, Sch_ConsumerCitationMismatch)
 {

@@ -55,8 +55,11 @@ int broker_sch_record_path_b_created();
  *  schema_packing set) → second returns SCHEMA_HASH_MISMATCH_SELF. */
 int broker_sch_record_hash_mismatch_self();
 
-/* broker_sch_consumer_citation_match RETIRED 2026-06-28 (AUTH-6 C2) —
- * duplicate of broker_schema_workers.cpp::consumer_schema_id_match_succeeds. */
+/** Producer with schema_packing + consumer with matching expected_packing →
+ *  CONSUMER_REG_REQ succeeds (citation validates).  Reinstated 2026-06-29
+ *  (REVIEW_C2 F2) — pins the raw_req wire-layer shape; the BRC-level
+ *  twin in broker_schema_workers.cpp covers a different abstraction. */
+int broker_sch_consumer_citation_match();
 
 /** Producer with schema_packing + consumer with WRONG expected_packing →
  *  CONSUMER_REG_REQ returns SCHEMA_CITATION_REJECTED. */
