@@ -114,19 +114,12 @@ strong reason to defer and a tracked plan; full context in
   criteria: single hoisted `make_reg_opts` in `tests/test_framework/`,
   all 5 sites switched, full ctest green.
 
-- **F13 — eliminate `hub.json` round-trip in `make_test_hub_directory`.**
-  Test fixture currently calls `HubDirectory::init_directory(dir, "BrokerTestHub")`
-  (writes hub.json from template) then reads + modifies 3 fields
-  (`network.broker_endpoint`, `admin.enabled`, `script.path`) + rewrites.
-  Real fix: extend `HubDirectory::init_directory` with an `InitOverrides`
-  struct accepting those 3 fields.  Defer reason: production API
-  change for test-only convenience is a design smell; alternative
-  approach (skip init_directory and write hub.json directly in the
-  fixture) requires duplicating `build_hub_json_template` from the
-  hub_directory.cpp anon namespace.  Cost of NOT fixing: ~milliseconds
-  per test × 40 tests = ~40ms per full broker-tests run.  Acceptance
-  criteria: design decision on init_directory signature (or template
-  export), one write per fixture init.
+- **F13 — KILLED 2026-06-29 (designer decision).**  Test fixture's
+  `make_test_hub_directory` writes hub.json twice (init_directory
+  template + 3-field patch).  Not a correctness issue, just
+  convenience.  Cost is ~40 ms per full broker-test run, no file
+  contention (each test uses its own temp dir).  Revisit only if
+  file contention or perf becomes a real concern.
 
 - **F14 production-callers follow-up — `KeyStore::with_keypair_z85` rollout.**
   Test-side migration shipped in `ded802ab`.  Production sites still
