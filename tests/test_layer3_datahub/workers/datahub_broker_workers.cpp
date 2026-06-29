@@ -1,6 +1,7 @@
 // tests/test_layer3_datahub/workers/datahub_broker_workers.cpp
 // Phase C — BrokerService integration tests.
 #include "datahub_broker_workers.h"
+#include "curve_test_setup.h"
 #include "test_entrypoint.h"
 #include "shared_test_helpers.h"
 
@@ -13,8 +14,12 @@
 #include "utils/hub_state.hpp"
 #include "utils/json_config.hpp"
 #include "plh_datahub.hpp"
+#include "utils/role_reg_payload.hpp"
 #include "utils/schema_utils.hpp"  // compute_canonical_hash_from_wire (HEP-0034 §6.3)
 #include "utils/format_tools.hpp"  // bytes_to_hex
+#include "utils/security/key_store.hpp"
+#include "utils/security/known_roles.hpp"
+#include "utils/security/shm_capability_channel.hpp"
 
 #include <gtest/gtest.h>
 #include <fmt/core.h>
@@ -105,8 +110,7 @@ struct BrokerHandle
 namespace
 {
 
-std::filesystem::path make_test_hub_directory(bool use_curve,
-                                              const std::vector<std::string> &schema_search_dirs)
+std::filesystem::path make_test_hub_directory(const std::vector<std::string> &schema_search_dirs)
 {
     namespace fs = std::filesystem;
     static std::atomic<int> ctr{0};
@@ -117,7 +121,11 @@ std::filesystem::path make_test_hub_directory(bool use_curve,
     fs::create_directories(dir);
     pylabhub::utils::HubDirectory::init_directory(dir, "BrokerTestHub");
 
-    // Patch hub.json to test-friendly shape.
+    // Patch hub.json to test-friendly shape: ephemeral port, no admin,
+    // no script.  Post-HEP-CORE-0035 §2 CURVE is unconditional in the
+    // production broker, so there is no `use_curve` switch here — the
+    // broker always comes up under CURVE and `start_broker_in_thread`
+    // seeds the matching `known_roles.json` for ZAP admission.
     const fs::path hub_json = dir / "hub.json";
     nlohmann::json j;
     {
@@ -128,14 +136,6 @@ std::filesystem::path make_test_hub_directory(bool use_curve,
     j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0";
     j["admin"]["enabled"] = false;
     j["script"]["path"]   = "";
-    // CURVE setting: HubHost derives `BrokerService::Config::use_curve`
-    // from `auth.client_pubkey` non-empty (hub_host.cpp:167). The legacy
-    // `cfg.use_curve = true` callers don't actually exercise CURVE
-    // mutual auth in this file (they use the broker's pubkey for
-    // client-side CURVE connect but server-side uses default keys).
-    // For these tests, no auth setup is required — broker comes up
-    // without CURVE; clients can still talk plain.
-    (void)use_curve;
     {
         std::ofstream f(hub_json);
         f << j.dump(2);
@@ -170,10 +170,36 @@ std::filesystem::path make_test_hub_directory(bool use_curve,
 
 } // anonymous namespace
 
-BrokerHandle start_broker_in_thread(BrokerService::Config cfg)
+// Start a broker for the test.  Post-HEP-CORE-0035 §4.8 the broker's
+// Layer-1 ZAP gate admits only roles listed in `vault/known_roles.json`;
+// production callers (`start_hubhost_broker`) write that file from a
+// `CurveSetup`.  This helper does the same so admission accepts every
+// uid the caller declares — required for every BRC `connect()` AND
+// every `raw_req()` that uses a `role_identity_name` (the seckey it
+// pulls from `key_store()` only works through ZAP if the matching
+// pubkey is also in `known_roles.json`).
+//
+// Callers seed their `CurveSetup` via `CurveKeyStoreFixture` in scope
+// BEFORE calling — that fixture seeds `kHubIdentityName` + `role.<uid>`
+// into `key_store()` (HEP-CORE-0040 §172).  HubHost::startup() reads
+// `kHubIdentityName` from the KeyStore to wire its own CURVE identity.
+BrokerHandle start_broker_in_thread(BrokerService::Config cfg,
+                                    const pylabhub::tests::CurveSetup &curve)
 {
     BrokerHandle h;
-    h.hub_dir = make_test_hub_directory(cfg.use_curve, cfg.schema_search_dirs);
+    h.hub_dir = make_test_hub_directory(cfg.schema_search_dirs);
+
+    // Write known_roles.json via production `KnownRolesStore::save_to_file`
+    // so the file format (version + roles array + atomic-write + 0600
+    // perms) is defined in exactly one place.  Mirrors the production
+    // path used by `start_hubhost_broker` in `broker_test_harness.cpp`.
+    {
+        pylabhub::utils::security::KnownRolesStore store;
+        for (const auto &[uid, kp] : curve.role_keys)
+            store.add(pylabhub::tests::make_known_role(uid, kp.public_z85));
+        store.save_to_file(h.hub_dir / "vault" / "known_roles.json");
+    }
+
     h.host    = std::make_unique<pylabhub::hub_host::HubHost>(
         pylabhub::config::HubConfig::load_from_directory(h.hub_dir.string()));
     h.host->startup();
@@ -189,6 +215,14 @@ BrokerHandle start_broker_in_thread(BrokerService::Config cfg)
 // returns the parsed response body JSON.  Optionally enables CurveZMQ when
 // server_pubkey is a 40-char Z85 string.
 //
+// `role_identity_name`: identity name in `key_store()` to authenticate as.
+// When set, the CURVE client side uses that role's seeded keypair so the
+// broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8) admits the connection.
+// Required post-strict-CURVE (#157 + HEP-CORE-0040 §172); ephemeral
+// keys no longer pass admission because they're not in
+// `known_roles.json`.  When empty, the ephemeral-key path remains for
+// plaintext-broker tests (server_pubkey also empty).
+//
 // Returns {} (null JSON) on timeout or receive error.
 //
 // Lifted out of the anonymous namespace 2026-05-20 (audit M1 follow-up)
@@ -196,30 +230,102 @@ BrokerHandle start_broker_in_thread(BrokerService::Config cfg)
 // declaration without copying the body.  Reachable as
 // `pylabhub::tests::worker::broker::raw_req`.
 // -----------------------------------------------------------------------------
+// Decorate a REG_REQ payload with the HEP-CORE-0036 §5b canonical
+// fields (`zmq_pubkey`, `data_transport`, `has_shm`,
+// `shm_capability_endpoint`, `role_type`) that the broker rejects as
+// missing post-#290.  Idempotent — leaves any field the caller already
+// set untouched, so tests deliberately exercising a malformed shape
+// (negative-path gate tests) keep their explicit overrides.  `is_cons`
+// switches the producer-side hub-managed fields off for CONSUMER_REG_REQ.
+static void apply_5b_canonical_fields(nlohmann::json &req,
+                                      const std::string &role_uid,
+                                      bool is_cons)
+{
+    namespace sec = pylabhub::utils::security;
+    const std::string ks_name = pylabhub::tests::role_keystore_name(role_uid);
+    if (!req.contains("zmq_pubkey") && sec::key_store().has(ks_name))
+        req["zmq_pubkey"] = std::string{sec::key_store().pubkey(ks_name)};
+    if (!req.contains("role_type"))
+        req["role_type"] = is_cons ? "consumer" : "producer";
+    if (!is_cons)
+    {
+        if (!req.contains("data_transport")) req["data_transport"] = "shm";
+        if (!req.contains("has_shm"))        req["has_shm"]        = true;
+        if (!req.contains("shm_capability_endpoint"))
+            req["shm_capability_endpoint"] =
+                sec::default_shm_capability_endpoint(
+                    req.value("channel_name", std::string{}));
+    }
+}
+
 nlohmann::json raw_req(const std::string& endpoint,
                        const std::string& msg_type,
-                       const nlohmann::json& payload,
+                       const nlohmann::json& payload_in,
                        int timeout_ms = 2000,
-                       const std::string& server_pubkey = "")
+                       const std::string& server_pubkey = "",
+                       const std::string& role_identity_name = "")
 {
     constexpr size_t kZ85KeyLen = 40;
     constexpr size_t kZ85BufLen = 41;
+
+    // Auto-decorate REG_REQ / CONSUMER_REG_REQ payloads with the §5b
+    // canonical fields the broker requires.  Only when the caller
+    // passed a real `role_identity_name` (not the gate-test sentinel)
+    // AND the payload actually has a `role_uid` — gate tests with
+    // empty/malformed uids must reach the broker unchanged so the
+    // uid-shape gate fires.
+    nlohmann::json payload = payload_in;
+    const bool is_reg  = (msg_type == "REG_REQ");
+    const bool is_cons = (msg_type == "CONSUMER_REG_REQ");
+    if ((is_reg || is_cons)
+     && role_identity_name != "wire.gate.uid00000099"
+     && payload.contains("role_uid")
+     && payload["role_uid"].is_string())
+    {
+        const auto &uid = payload["role_uid"].get_ref<const std::string &>();
+        if (!uid.empty())
+            apply_5b_canonical_fields(payload, uid, is_cons);
+    }
 
     zmq::context_t ctx(1);
     zmq::socket_t dealer(ctx, zmq::socket_type::dealer);
 
     if (server_pubkey.size() == kZ85KeyLen)
     {
-        // Generate ephemeral client keypair for this request.
-        std::array<char, kZ85BufLen> client_pub{};
-        std::array<char, kZ85BufLen> client_sec{};
-        if (zmq_curve_keypair(client_pub.data(), client_sec.data()) != 0)
-        {
-            return {};
-        }
         dealer.set(zmq::sockopt::curve_serverkey, server_pubkey);
-        dealer.set(zmq::sockopt::curve_publickey, std::string(client_pub.data(), kZ85KeyLen));
-        dealer.set(zmq::sockopt::curve_secretkey, std::string(client_sec.data(), kZ85KeyLen));
+        if (!role_identity_name.empty())
+        {
+            // Authenticate as a registered role — broker ZAP gate
+            // matches `known_roles.json`.  HEP-CORE-0040 §172: the
+            // seckey lives only inside the callback; ZMQ copies it
+            // into its socket-internal storage during set() so it
+            // survives the callback's sodium_memzero.
+            namespace sec = pylabhub::utils::security;
+            // `role_identity_name` is the raw uid string the caller
+            // owns; the KeyStore entry name is the prefixed
+            // `role.<uid>` form seeded by `CurveKeyStoreFixture`
+            // (see `pylabhub::tests::role_keystore_name`).
+            const std::string ks_name =
+                pylabhub::tests::role_keystore_name(role_identity_name);
+            const std::string client_pub{sec::key_store().pubkey(ks_name)};
+            sec::key_store().with_seckey_z85(
+                ks_name,
+                [&](std::string_view seckey_z85) {
+                    dealer.set(zmq::sockopt::curve_publickey, client_pub);
+                    dealer.set(zmq::sockopt::curve_secretkey,
+                               std::string(seckey_z85));
+                });
+        }
+        else
+        {
+            // Ephemeral client keypair (legacy plaintext-admission path).
+            std::array<char, kZ85BufLen> client_pub{};
+            std::array<char, kZ85BufLen> client_sec{};
+            if (zmq_curve_keypair(client_pub.data(), client_sec.data()) != 0)
+                return {};
+            dealer.set(zmq::sockopt::curve_publickey, std::string(client_pub.data(), kZ85KeyLen));
+            dealer.set(zmq::sockopt::curve_secretkey, std::string(client_sec.data(), kZ85KeyLen));
+        }
     }
 
     dealer.connect(endpoint);
@@ -289,9 +395,12 @@ int broker_reg_disc_happy_path()
         {
             BrokerService::Config cfg;
             cfg.endpoint = "tcp://127.0.0.1:0";
-            cfg.use_curve = true;
-            cfg.enforce_ctrl_admission = false;  // HEP-CORE-0035 §4.8 opt-out: this fixture uses CURVE for wire encryption only — no admission gate (no known_roles populated; test does not exercise ZAP)
-            auto broker = start_broker_in_thread(std::move(cfg));
+            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
+            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
+            // admits each role uid we'll register below.
+            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.ch1.uid00000001"});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_reg_disc_happy_path", curve);
+            auto broker = start_broker_in_thread(std::move(cfg), curve);
 
             const std::string channel = "broker.ch1";
             const std::string uid     = "prod.broker.ch1.uid00000001";
@@ -301,15 +410,31 @@ int broker_reg_disc_happy_path()
             brc_cfg.broker_endpoint = broker.endpoint;
             brc_cfg.broker_pubkey   = broker.pubkey;
             brc_cfg.role_uid        = uid;
+            brc_cfg.keystore_name   = pylabhub::tests::role_keystore_name(uid);
             ASSERT_TRUE(brc.connect(brc_cfg));
             std::atomic<bool> running{true};
             std::thread t([&] { brc.run_poll_loop([&] { return running.load(); }); });
 
-            nlohmann::json reg_opts;
-            reg_opts["channel_name"]      = channel;
-            reg_opts["producer_pid"]      = ::getpid();
-            reg_opts["role_uid"]          = uid;
-            reg_opts["schema_version"]    = 7;
+            // Build §5b-canonical reg payload via the production helper
+            // — auto-fills zmq_pubkey (from key_store), role_type,
+            // data_transport, has_shm, shm_capability_endpoint.
+            namespace sec = pylabhub::utils::security;
+            auto reg_opts = pylabhub::hub::build_producer_reg_payload(
+                pylabhub::hub::ProducerRegInputs{
+                    .channel    = channel,
+                    .role_uid   = uid,
+                    .role_name  = "test_producer",
+                    .role_type  = "producer",
+                    .has_shm    = true,
+                    .is_zmq_transport  = false,
+                    .zmq_node_endpoint = {},
+                    .zmq_pubkey = std::string{sec::key_store().pubkey(
+                        pylabhub::tests::role_keystore_name(uid))},
+                    .shm_capability_endpoint =
+                        sec::default_shm_capability_endpoint(channel),
+                });
+            reg_opts["producer_pid"]   = ::getpid();
+            reg_opts["schema_version"] = 7;
             auto reg = brc.register_channel(reg_opts, 3000);
             ASSERT_TRUE(reg.has_value()) << "register_channel must succeed";
 
@@ -343,9 +468,12 @@ int broker_schema_mismatch()
         {
             BrokerService::Config cfg;
             cfg.endpoint = "tcp://127.0.0.1:0";
-            cfg.use_curve = false;
-            cfg.enforce_ctrl_admission = false;
-            auto broker = start_broker_in_thread(std::move(cfg));
+            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
+            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
+            // admits each role uid we'll register below.
+            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.mismatch.uid00000001"});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_schema_mismatch", curve);
+            auto broker = start_broker_in_thread(std::move(cfg), curve);
 
             const std::string channel  = "broker.mismatch.ch";
             const std::string role_uid = "prod.broker.mismatch.uid00000001";
@@ -362,7 +490,7 @@ int broker_schema_mismatch()
             req1["producer_hostname"] = "localhost";
             req1["role_uid"]         = role_uid;
 
-            nlohmann::json resp1 = raw_req(broker.endpoint, "REG_REQ", req1);
+            nlohmann::json resp1 = raw_req(broker.endpoint, "REG_REQ", req1, 2000, broker.pubkey, "prod.broker.mismatch.uid00000001");
             ASSERT_FALSE(resp1.is_null()) << "raw_req timed out on first REG_REQ";
             EXPECT_EQ(resp1.value("status", std::string("")), "success")
                 << "First registration must succeed; got: " << resp1.dump();
@@ -370,7 +498,7 @@ int broker_schema_mismatch()
             // Second registration — different schema_hash → SCHEMA_MISMATCH
             nlohmann::json req2 = req1;
             req2["schema_hash"] = aa_hex(); // different hash
-            nlohmann::json resp2 = raw_req(broker.endpoint, "REG_REQ", req2);
+            nlohmann::json resp2 = raw_req(broker.endpoint, "REG_REQ", req2, 2000, broker.pubkey, "prod.broker.mismatch.uid00000001");
             ASSERT_FALSE(resp2.is_null()) << "raw_req timed out on second REG_REQ";
             EXPECT_EQ(resp2.value("status", std::string("")), "error")
                 << "Second registration with mismatched hash must be rejected";
@@ -395,15 +523,20 @@ int broker_channel_not_found()
         {
             BrokerService::Config cfg;
             cfg.endpoint = "tcp://127.0.0.1:0";
-            cfg.use_curve = true;
-            cfg.enforce_ctrl_admission = false;  // HEP-CORE-0035 §4.8 opt-out: this fixture uses CURVE for wire encryption only — no admission gate (no known_roles populated; test does not exercise ZAP)
-            auto broker = start_broker_in_thread(std::move(cfg));
+            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
+            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
+            // admits each role uid we'll register below.
+            auto curve = pylabhub::tests::make_curve_setup({"prod.querier.notfound.uid00000001"});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_channel_not_found", curve);
+            auto broker = start_broker_in_thread(std::move(cfg), curve);
 
             BrokerRequestComm brc;
             BrokerRequestComm::Config brc_cfg;
             brc_cfg.broker_endpoint = broker.endpoint;
             brc_cfg.broker_pubkey   = broker.pubkey;
             brc_cfg.role_uid        = "prod.querier.notfound.uid00000001";
+            brc_cfg.keystore_name   =
+                pylabhub::tests::role_keystore_name(brc_cfg.role_uid);
             ASSERT_TRUE(brc.connect(brc_cfg));
             std::atomic<bool> running{true};
             std::thread t([&] { brc.run_poll_loop([&] { return running.load(); }); });
@@ -434,9 +567,12 @@ int broker_dereg_happy_path()
         {
             BrokerService::Config cfg;
             cfg.endpoint = "tcp://127.0.0.1:0";
-            cfg.use_curve = true;
-            cfg.enforce_ctrl_admission = false;  // HEP-CORE-0035 §4.8 opt-out: this fixture uses CURVE for wire encryption only — no admission gate (no known_roles populated; test does not exercise ZAP)
-            auto broker = start_broker_in_thread(std::move(cfg));
+            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
+            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
+            // admits each role uid we'll register below.
+            auto curve = pylabhub::tests::make_curve_setup({"prod.dereg.ch.uid00000001"});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_dereg_happy_path", curve);
+            auto broker = start_broker_in_thread(std::move(cfg), curve);
 
             const std::string channel = "broker.dereg.ch";
             const std::string uid     = "prod.dereg.ch.uid00000001";
@@ -446,14 +582,27 @@ int broker_dereg_happy_path()
             brc_cfg.broker_endpoint = broker.endpoint;
             brc_cfg.broker_pubkey   = broker.pubkey;
             brc_cfg.role_uid        = uid;
+            brc_cfg.keystore_name   = pylabhub::tests::role_keystore_name(uid);
             ASSERT_TRUE(brc.connect(brc_cfg));
             std::atomic<bool> running{true};
             std::thread t([&] { brc.run_poll_loop([&] { return running.load(); }); });
 
-            nlohmann::json reg_opts;
-            reg_opts["channel_name"]      = channel;
-            reg_opts["producer_pid"]      = ::getpid();
-            reg_opts["role_uid"]          = uid;
+            namespace sec = pylabhub::utils::security;
+            auto reg_opts = pylabhub::hub::build_producer_reg_payload(
+                pylabhub::hub::ProducerRegInputs{
+                    .channel    = channel,
+                    .role_uid   = uid,
+                    .role_name  = "test_producer",
+                    .role_type  = "producer",
+                    .has_shm    = true,
+                    .is_zmq_transport  = false,
+                    .zmq_node_endpoint = {},
+                    .zmq_pubkey = std::string{sec::key_store().pubkey(
+                        pylabhub::tests::role_keystore_name(uid))},
+                    .shm_capability_endpoint =
+                        sec::default_shm_capability_endpoint(channel),
+                });
+            reg_opts["producer_pid"] = ::getpid();
             auto reg = brc.register_channel(reg_opts, 3000);
             ASSERT_TRUE(reg.has_value()) << "register_channel must succeed";
 
@@ -503,9 +652,12 @@ int broker_dereg_pid_mismatch()
         {
             BrokerService::Config cfg;
             cfg.endpoint = "tcp://127.0.0.1:0";
-            cfg.use_curve = false;
-            cfg.enforce_ctrl_admission = false;
-            auto broker = start_broker_in_thread(std::move(cfg));
+            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
+            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
+            // admits each role uid we'll register below.
+            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.pid_mismatch.uid00000001"});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_dereg_pid_mismatch", curve);
+            auto broker = start_broker_in_thread(std::move(cfg), curve);
 
             const std::string channel  = "broker.pid_mismatch.ch";
             const std::string role_uid = "prod.broker.pid_mismatch.uid00000001";
@@ -524,7 +676,7 @@ int broker_dereg_pid_mismatch()
             reg_req["producer_pid"]      = correct_pid;
             reg_req["producer_hostname"] = "localhost";
             reg_req["role_uid"]          = role_uid;
-            nlohmann::json reg_resp = raw_req(broker.endpoint, "REG_REQ", reg_req);
+            nlohmann::json reg_resp = raw_req(broker.endpoint, "REG_REQ", reg_req, 2000, broker.pubkey, "prod.broker.pid_mismatch.uid00000001");
             ASSERT_FALSE(reg_resp.is_null()) << "REG_REQ timed out";
             EXPECT_EQ(reg_resp.value("status", std::string("")), "success");
 
@@ -540,7 +692,7 @@ int broker_dereg_pid_mismatch()
             hb_req["producer_pid"] = correct_pid;
             hb_req["role_uid"]     = role_uid;
             hb_req["role_type"]    = "producer";
-            raw_req(broker.endpoint, "HEARTBEAT_REQ", hb_req, 100);
+            raw_req(broker.endpoint, "HEARTBEAT_REQ", hb_req, 100, broker.pubkey, "prod.broker.pid_mismatch.uid00000001");
             // Allow the heartbeat to be processed before DISC_REQ.
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
@@ -554,7 +706,7 @@ int broker_dereg_pid_mismatch()
             dereg_req["channel_name"] = channel;
             dereg_req["role_uid"]     = role_uid;
             dereg_req["producer_pid"] = wrong_pid;
-            nlohmann::json dereg_resp = raw_req(broker.endpoint, "DEREG_REQ", dereg_req);
+            nlohmann::json dereg_resp = raw_req(broker.endpoint, "DEREG_REQ", dereg_req, 2000, broker.pubkey, "prod.broker.pid_mismatch.uid00000001");
             ASSERT_FALSE(dereg_resp.is_null()) << "DEREG_REQ timed out";
             EXPECT_EQ(dereg_resp.value("status", std::string("")), "error")
                 << "DEREG_REQ with wrong pid must be rejected; got: " << dereg_resp.dump();
@@ -564,7 +716,7 @@ int broker_dereg_pid_mismatch()
             // Channel still discoverable via DISC_REQ.
             nlohmann::json disc_req;
             disc_req["channel_name"] = channel;
-            nlohmann::json disc_resp = raw_req(broker.endpoint, "DISC_REQ", disc_req);
+            nlohmann::json disc_resp = raw_req(broker.endpoint, "DISC_REQ", disc_req, 2000, broker.pubkey, "prod.broker.pid_mismatch.uid00000001");
             ASSERT_FALSE(disc_resp.is_null()) << "DISC_REQ timed out";
             EXPECT_EQ(disc_resp.value("status", std::string("")), "success")
                 << "Channel must still be registered after pid-mismatch deregister attempt";
@@ -593,9 +745,12 @@ int broker_dereg_missing_role_uid_rejected()
         {
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
-            cfg.use_curve = false;
-            cfg.enforce_ctrl_admission = false;
-            auto broker = start_broker_in_thread(std::move(cfg));
+            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
+            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
+            // admits each role uid we'll register below.
+            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.missing_uid.uid00000001", "cons.broker.missing_uid.uid00000001"});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_dereg_missing_role_uid_rejected", curve);
+            auto broker = start_broker_in_thread(std::move(cfg), curve);
 
             const std::string channel  = "broker.missing_uid.ch";
             const std::string role_uid = "prod.broker.missing_uid.uid00000001";
@@ -609,9 +764,24 @@ int broker_dereg_missing_role_uid_rejected()
             reg_req["producer_pid"]      = pid;
             reg_req["producer_hostname"] = "localhost";
             reg_req["role_uid"]          = role_uid;
-            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg_req)
+            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg_req, 2000, broker.pubkey, "prod.broker.missing_uid.uid00000001")
                           .value("status", std::string{}),
                       "success");
+
+            // HEP-CORE-0036 §5.2 R6: drive producer presence to kLive
+            // so the CONSUMER_REG_REQ below isn't deferred.  The
+            // heartbeat must carry the producer's REG_REQ pid (44444)
+            // so the broker matches it against the channel record.
+            {
+                nlohmann::json hb_req;
+                hb_req["channel_name"] = channel;
+                hb_req["producer_pid"] = pid;
+                hb_req["role_uid"]     = role_uid;
+                hb_req["role_type"]    = "producer";
+                raw_req(broker.endpoint, "HEARTBEAT_REQ", hb_req, 100,
+                        broker.pubkey, "prod.broker.missing_uid.uid00000001");
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
 
             // DEREG_REQ with NO role_uid → INVALID_REQUEST (pre-C3 this
             // path succeeded by deriving role_uid from the matching pid).
@@ -619,7 +789,7 @@ int broker_dereg_missing_role_uid_rejected()
             dereg["channel_name"] = channel;
             dereg["producer_pid"] = pid;
             // deliberately omit role_uid
-            nlohmann::json resp = raw_req(broker.endpoint, "DEREG_REQ", dereg);
+            nlohmann::json resp = raw_req(broker.endpoint, "DEREG_REQ", dereg, 2000, broker.pubkey, "prod.broker.missing_uid.uid00000001");
             ASSERT_FALSE(resp.is_null()) << "DEREG_REQ timed out";
             EXPECT_EQ(resp.value("status", std::string{}), "error")
                 << "Missing role_uid must be rejected; got: " << resp.dump();
@@ -637,7 +807,7 @@ int broker_dereg_missing_role_uid_rejected()
             cons_reg["consumer_pid"]      = pid;
             cons_reg["consumer_hostname"] = "localhost";
             cons_reg["role_uid"]      = cons_uid;
-            ASSERT_EQ(raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons_reg)
+            ASSERT_EQ(raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons_reg, 2000, broker.pubkey, cons_uid)
                           .value("status", std::string{}),
                       "success");
 
@@ -646,7 +816,7 @@ int broker_dereg_missing_role_uid_rejected()
             cons_dereg["consumer_pid"] = pid;
             // deliberately omit role_uid
             nlohmann::json cresp =
-                raw_req(broker.endpoint, "CONSUMER_DEREG_REQ", cons_dereg);
+                raw_req(broker.endpoint, "CONSUMER_DEREG_REQ", cons_dereg, 2000, broker.pubkey, cons_uid);
             ASSERT_FALSE(cresp.is_null()) << "CONSUMER_DEREG_REQ timed out";
             EXPECT_EQ(cresp.value("status", std::string{}), "error")
                 << "Missing role_uid on CONSUMER_DEREG must be rejected; got: "
@@ -672,13 +842,11 @@ namespace
 
 /// Common broker fixture for R3.5b gate tests.  Returns a thread-owned
 /// broker handle; the worker is responsible for `stop_and_join()`.
-auto start_r35b_broker()
+auto start_r35b_broker(const pylabhub::tests::CurveSetup &curve)
 {
     BrokerService::Config cfg;
     cfg.endpoint  = "tcp://127.0.0.1:0";
-    cfg.use_curve = false;
-    cfg.enforce_ctrl_admission = false;
-    return start_broker_in_thread(std::move(cfg));
+    return start_broker_in_thread(std::move(cfg), curve);
 }
 
 /// Boilerplate REG_REQ that's ALWAYS valid except for the fields a
@@ -702,10 +870,15 @@ int broker_gate_reg_req_rejects_empty_uid()
 {
     return run_gtest_worker(
         []() {
-            auto broker = start_r35b_broker();
+            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
+            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
+            // admits each role uid we'll register below.
+            auto curve = pylabhub::tests::make_curve_setup({"wire.gate.uid00000099"});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_gate_reg_req_rejects_empty_uid", curve);
+            auto broker = start_r35b_broker(curve);
             // REG_REQ with empty role_uid → INVALID_REQUEST (grammar).
             auto req = reg_req_template("r35b.empty_uid.ch", "");
-            auto resp = raw_req(broker.endpoint, "REG_REQ", req);
+            auto resp = raw_req(broker.endpoint, "REG_REQ", req, 2000, broker.pubkey, "wire.gate.uid00000099");
             ASSERT_FALSE(resp.is_null());
             EXPECT_EQ(resp.value("status", std::string{}), "error");
             EXPECT_EQ(resp.value("error_code", std::string{}),
@@ -725,25 +898,30 @@ int broker_gate_reg_req_rejects_malformed_uid()
 {
     return run_gtest_worker(
         []() {
-            auto broker = start_r35b_broker();
+            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
+            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
+            // admits each role uid we'll register below.
+            auto curve = pylabhub::tests::make_curve_setup({"wire.gate.uid00000099"});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_gate_reg_req_rejects_malformed_uid", curve);
+            auto broker = start_r35b_broker(curve);
             // "not-a-uid" → single component, no '.' → fails grammar.
             auto req = reg_req_template("r35b.malformed_uid.ch",
                                         "not-a-uid");
-            auto resp = raw_req(broker.endpoint, "REG_REQ", req);
+            auto resp = raw_req(broker.endpoint, "REG_REQ", req, 2000, broker.pubkey, "wire.gate.uid00000099");
             ASSERT_FALSE(resp.is_null());
             EXPECT_EQ(resp.value("error_code", std::string{}),
                       "INVALID_REQUEST");
 
             // "prod." — has prefix tag but no name/unique components.
             req = reg_req_template("r35b.malformed_uid.ch2", "prod.");
-            resp = raw_req(broker.endpoint, "REG_REQ", req);
+            resp = raw_req(broker.endpoint, "REG_REQ", req, 2000, broker.pubkey, "wire.gate.uid00000099");
             ASSERT_FALSE(resp.is_null());
             EXPECT_EQ(resp.value("error_code", std::string{}),
                       "INVALID_REQUEST");
 
             // "prod.x" — only 2 components; RoleUid requires ≥3.
             req = reg_req_template("r35b.malformed_uid.ch3", "prod.x");
-            resp = raw_req(broker.endpoint, "REG_REQ", req);
+            resp = raw_req(broker.endpoint, "REG_REQ", req, 2000, broker.pubkey, "wire.gate.uid00000099");
             ASSERT_FALSE(resp.is_null());
             EXPECT_EQ(resp.value("error_code", std::string{}),
                       "INVALID_REQUEST");
@@ -758,12 +936,17 @@ int broker_gate_reg_req_rejects_consumer_tag()
 {
     return run_gtest_worker(
         []() {
-            auto broker = start_r35b_broker();
+            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
+            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
+            // admits each role uid we'll register below.
+            auto curve = pylabhub::tests::make_curve_setup({"wire.gate.uid00000099"});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_gate_reg_req_rejects_consumer_tag", curve);
+            auto broker = start_r35b_broker(curve);
             // role_uid="cons.x.y" on REG_REQ → INVALID_ROLE_TAG.
             // REG_REQ accepts {prod, proc}; consumer tag is wrong side.
             auto req = reg_req_template("r35b.wrong_tag.ch",
                                         "cons.r35b.uid00000001");
-            auto resp = raw_req(broker.endpoint, "REG_REQ", req);
+            auto resp = raw_req(broker.endpoint, "REG_REQ", req, 2000, broker.pubkey, "wire.gate.uid00000099");
             ASSERT_FALSE(resp.is_null());
             EXPECT_EQ(resp.value("error_code", std::string{}),
                       "INVALID_ROLE_TAG");
@@ -778,13 +961,18 @@ int broker_gate_reg_req_accepts_proc_tag()
 {
     return run_gtest_worker(
         []() {
-            auto broker = start_r35b_broker();
+            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
+            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
+            // admits each role uid we'll register below.
+            auto curve = pylabhub::tests::make_curve_setup({"proc.r35b.uid00000001"});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_gate_reg_req_accepts_proc_tag", curve);
+            auto broker = start_r35b_broker(curve);
             // role_uid="proc.x.y" on REG_REQ → success.  Processor
             // roles register on the producer side for their output
             // channels per HEP-CORE-0011 Phase 6 dual-side model.
             auto req = reg_req_template("r35b.proc_as_prod.ch",
                                         "proc.r35b.uid00000001");
-            auto resp = raw_req(broker.endpoint, "REG_REQ", req);
+            auto resp = raw_req(broker.endpoint, "REG_REQ", req, 2000, broker.pubkey, "proc.r35b.uid00000001");
             ASSERT_FALSE(resp.is_null());
             EXPECT_EQ(resp.value("status", std::string{}), "success")
                 << "proc.* uid should be accepted on REG_REQ; got: "
@@ -800,12 +988,17 @@ int broker_gate_consumer_reg_req_rejects_producer_tag()
 {
     return run_gtest_worker(
         []() {
-            auto broker = start_r35b_broker();
+            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
+            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
+            // admits each role uid we'll register below.
+            auto curve = pylabhub::tests::make_curve_setup({"prod.r35b.cregwt.uid00000001", "prod.r35b.intruder.uid00000002"});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_gate_consumer_reg_req_rejects_producer_tag", curve);
+            auto broker = start_r35b_broker(curve);
             // Need a channel to register a consumer to.
             const std::string channel  = "r35b.creg_wrong_tag.ch";
             const std::string prod_uid = "prod.r35b.cregwt.uid00000001";
             auto reg = reg_req_template(channel, prod_uid);
-            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg)
+            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, "prod.r35b.cregwt.uid00000001")
                           .value("status", std::string{}),
                       "success");
 
@@ -815,7 +1008,7 @@ int broker_gate_consumer_reg_req_rejects_producer_tag()
             creg["consumer_pid"] = pylabhub::platform::get_pid();
             creg["role_uid"]     = "prod.r35b.intruder.uid00000002";
             creg["role_name"]    = "intruder";
-            auto resp = raw_req(broker.endpoint, "CONSUMER_REG_REQ", creg);
+            auto resp = raw_req(broker.endpoint, "CONSUMER_REG_REQ", creg, 2000, broker.pubkey, "prod.r35b.cregwt.uid00000001");
             ASSERT_FALSE(resp.is_null());
             EXPECT_EQ(resp.value("error_code", std::string{}),
                       "INVALID_ROLE_TAG");
@@ -830,13 +1023,31 @@ int broker_gate_consumer_reg_req_accepts_proc_tag()
 {
     return run_gtest_worker(
         []() {
-            auto broker = start_r35b_broker();
+            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
+            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
+            // admits each role uid we'll register below.
+            auto curve = pylabhub::tests::make_curve_setup({"prod.r35b.cregproc.uid00000001", "proc.r35b.cregproc.uid00000002"});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_gate_consumer_reg_req_accepts_proc_tag", curve);
+            auto broker = start_r35b_broker(curve);
             const std::string channel  = "r35b.cregproc.ch";
             const std::string prod_uid = "prod.r35b.cregproc.uid00000001";
             auto reg = reg_req_template(channel, prod_uid);
-            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg)
+            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, "prod.r35b.cregproc.uid00000001")
                           .value("status", std::string{}),
                       "success");
+            // HEP-CORE-0036 §5.2 R6: broker rejects CONSUMER_REG_REQ until
+            // producer's presence is kLive (first heartbeat seen).  Tests
+            // pre-dated R6; this heartbeat unblocks the consumer reg below.
+            {
+                nlohmann::json hb_req;
+                hb_req["channel_name"] = "r35b.cregproc.ch";
+
+                hb_req["producer_pid"] = pylabhub::platform::get_pid();
+                hb_req["role_uid"]     = "prod.r35b.cregproc.uid00000001";
+                hb_req["role_type"]    = "producer";
+                raw_req(broker.endpoint, "HEARTBEAT_REQ", hb_req, 100, broker.pubkey, "prod.r35b.cregproc.uid00000001");
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
 
             // CONSUMER_REG_REQ with role_uid="proc.x.y" → success.
             nlohmann::json creg;
@@ -844,7 +1055,7 @@ int broker_gate_consumer_reg_req_accepts_proc_tag()
             creg["consumer_pid"] = pylabhub::platform::get_pid();
             creg["role_uid"]     = "proc.r35b.cregproc.uid00000002";
             creg["role_name"]    = "proc_as_cons";
-            auto resp = raw_req(broker.endpoint, "CONSUMER_REG_REQ", creg);
+            auto resp = raw_req(broker.endpoint, "CONSUMER_REG_REQ", creg, 2000, broker.pubkey, "proc.r35b.cregproc.uid00000002");
             ASSERT_FALSE(resp.is_null());
             EXPECT_EQ(resp.value("status", std::string{}), "success")
                 << "proc.* uid should be accepted on CONSUMER_REG_REQ; got: "
@@ -906,9 +1117,12 @@ int broker_sch_record_path_b_created()
         {
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
-            cfg.use_curve = false;
-            cfg.enforce_ctrl_admission = false;
-            auto broker   = start_broker_in_thread(std::move(cfg));
+            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
+            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
+            // admits each role uid we'll register below.
+            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.sch_b.uid00000001"});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_record_path_b_created", curve);
+            auto broker   = start_broker_in_thread(std::move(cfg), curve);
 
             const std::string channel = "broker.sch.path_b";
             const std::string uid     = "prod.broker.sch_b.uid00000001";
@@ -925,7 +1139,7 @@ int broker_sch_record_path_b_created()
             req["schema_packing"] = packing;
             req["schema_blds"]    = blds;
 
-            auto resp = raw_req(broker.endpoint, "REG_REQ", req);
+            auto resp = raw_req(broker.endpoint, "REG_REQ", req, 2000, broker.pubkey, "prod.broker.sch_b.uid00000001");
             ASSERT_FALSE(resp.is_null()) << "raw_req timed out";
             EXPECT_EQ(resp.value("status", std::string{}), "success")
                 << "REG_REQ with full structure must succeed; got: " << resp.dump();
@@ -936,7 +1150,7 @@ int broker_sch_record_path_b_created()
             // The schema record stays Created from the first REG_REQ
             // (the broker's anomaly handling preserves it); only the
             // admission itself fails.
-            auto resp2 = raw_req(broker.endpoint, "REG_REQ", req);
+            auto resp2 = raw_req(broker.endpoint, "REG_REQ", req, 2000, broker.pubkey, "prod.broker.sch_b.uid00000001");
             EXPECT_EQ(resp2.value("status", std::string{}), "error")
                 << "Same-uid re-register must reject; got: " << resp2.dump();
             EXPECT_EQ(resp2.value("error_code", std::string{}), "UID_CONFLICT")
@@ -961,9 +1175,12 @@ int broker_sch_record_hash_mismatch_self()
         {
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
-            cfg.use_curve = false;
-            cfg.enforce_ctrl_admission = false;
-            auto broker   = start_broker_in_thread(std::move(cfg));
+            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
+            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
+            // admits each role uid we'll register below.
+            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.sch_mm.uid00000001"});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_record_hash_mismatch_self", curve);
+            auto broker   = start_broker_in_thread(std::move(cfg), curve);
 
             const std::string ch1 = "broker.sch.mismatch_self.a";
             const std::string ch2 = "broker.sch.mismatch_self.b";
@@ -982,7 +1199,7 @@ int broker_sch_record_hash_mismatch_self()
             req1["schema_hash"]    = hash_a;
             req1["schema_packing"] = packing;
             req1["schema_blds"]    = blds_a;
-            auto r1 = raw_req(broker.endpoint, "REG_REQ", req1);
+            auto r1 = raw_req(broker.endpoint, "REG_REQ", req1, 2000, broker.pubkey, "prod.broker.sch_mm.uid00000001");
             ASSERT_EQ(r1.value("status", std::string{}), "success") << r1.dump();
 
             // Second REG_REQ — same (owner, schema_id) on a DIFFERENT
@@ -995,7 +1212,7 @@ int broker_sch_record_hash_mismatch_self()
             req2["schema_hash"]    = hash_b;
             req2["schema_packing"] = packing;
             req2["schema_blds"]    = blds_b;
-            auto r2 = raw_req(broker.endpoint, "REG_REQ", req2);
+            auto r2 = raw_req(broker.endpoint, "REG_REQ", req2, 2000, broker.pubkey, "prod.broker.sch_mm.uid00000001");
             ASSERT_FALSE(r2.is_null()) << "raw_req timed out";
             EXPECT_EQ(r2.value("status", std::string{}), "error")
                 << "Second REG_REQ with different fingerprint must NACK; got: " << r2.dump();
@@ -1009,56 +1226,13 @@ int broker_sch_record_hash_mismatch_self()
         crypto_module(), hub_module(), zmq_module());
 }
 
-// ── Consumer named-citation (id + matching hash) → success ──────────────────
-
-int broker_sch_consumer_citation_match()
-{
-    return run_gtest_worker(
-        []()
-        {
-            BrokerService::Config cfg;
-            cfg.endpoint  = "tcp://127.0.0.1:0";
-            cfg.use_curve = false;
-            cfg.enforce_ctrl_admission = false;
-            auto broker   = start_broker_in_thread(std::move(cfg));
-
-            const std::string channel = "broker.sch.cons_ok";
-            const std::string p_uid   = "prod.broker.sch_cok.uid00000001";
-            const std::string c_uid   = "cons.broker.sch_cok.uid00000002";
-            const std::string sid     = "$lab.sch_cok.frame.v1";
-            const std::string blds    = "ts:f64:1:0|value:f32:1:0";
-            const std::string packing = "aligned";
-            const std::string hash    = canonical_hash_hex(blds, packing);
-
-            auto reg = baseline_reg_req(channel, p_uid);
-            reg["schema_id"]      = sid;
-            reg["schema_hash"]    = hash;
-            reg["schema_packing"] = packing;
-            reg["schema_blds"]    = blds;
-            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg)
-                          .value("status", std::string{}),
-                      "success");
-
-            // Named-citation mode (HEP-0034 §10.3): consumer cites by id
-            // + hash.  Hash must equal channel's stored hash.
-            nlohmann::json cons_req;
-            cons_req["channel_name"]         = channel;
-            cons_req["role_uid"]         = c_uid;
-            cons_req["role_name"]        = "test_consumer";
-            cons_req["consumer_pid"]         = pylabhub::platform::get_pid();
-            cons_req["expected_schema_id"]   = sid;
-            cons_req["expected_schema_hash"] = hash;
-            auto cr = raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons_req);
-            ASSERT_FALSE(cr.is_null()) << "raw_req timed out";
-            EXPECT_EQ(cr.value("status", std::string{}), "success")
-                << "Named citation match must succeed; got: " << cr.dump();
-
-            broker.stop_and_join();
-        },
-        "broker.broker_sch_consumer_citation_match",
-        logger_module(), file_lock_module(), json_module(),
-        crypto_module(), hub_module(), zmq_module());
-}
+// broker_sch_consumer_citation_match: RETIRED 2026-06-28 under AUTH-6
+// batch-2a C2.  Duplicate of
+// `broker_schema_workers.cpp::consumer_schema_id_match_succeeds`
+// (verified 2026-06-28 by reading both bodies + HEP-CORE-0034 §10.3
+// — same protocol path, same assertion specificity).  Removed per
+// `feedback_test_retirement_tracked_handoff`; the surviving twin in
+// broker_schema_workers.cpp already pins the protocol contract.
 
 // ── Consumer named-citation with WRONG hash → SCHEMA_CITATION_REJECTED ──────
 
@@ -1069,9 +1243,12 @@ int broker_sch_consumer_citation_mismatch()
         {
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
-            cfg.use_curve = false;
-            cfg.enforce_ctrl_admission = false;
-            auto broker   = start_broker_in_thread(std::move(cfg));
+            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
+            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
+            // admits each role uid we'll register below.
+            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.sch_cbad.uid00000001", "cons.broker.sch_cbad.uid00000002"});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_consumer_citation_mismatch", curve);
+            auto broker   = start_broker_in_thread(std::move(cfg), curve);
 
             const std::string channel = "broker.sch.cons_bad";
             const std::string p_uid   = "prod.broker.sch_cbad.uid00000001";
@@ -1089,9 +1266,22 @@ int broker_sch_consumer_citation_mismatch()
             reg["schema_hash"]    = hash_p;
             reg["schema_packing"] = packing;
             reg["schema_blds"]    = blds_p;
-            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg)
+            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, "prod.broker.sch_cbad.uid00000001")
                           .value("status", std::string{}),
                       "success");
+            // HEP-CORE-0036 §5.2 R6: broker rejects CONSUMER_REG_REQ until
+            // producer's presence is kLive (first heartbeat seen).  Tests
+            // pre-dated R6; this heartbeat unblocks the consumer reg below.
+            {
+                nlohmann::json hb_req;
+                hb_req["channel_name"] = "broker.sch.cons_bad";
+
+                hb_req["producer_pid"] = pylabhub::platform::get_pid();
+                hb_req["role_uid"]     = "prod.broker.sch_cbad.uid00000001";
+                hb_req["role_type"]    = "producer";
+                raw_req(broker.endpoint, "HEARTBEAT_REQ", hb_req, 100, broker.pubkey, "prod.broker.sch_cbad.uid00000001");
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
 
             // Consumer cites the right id but a wrong hash (its local
             // expectation differs from what the producer registered).
@@ -1102,7 +1292,7 @@ int broker_sch_consumer_citation_mismatch()
             cons_req["consumer_pid"]         = pylabhub::platform::get_pid();
             cons_req["expected_schema_id"]   = sid;
             cons_req["expected_schema_hash"] = hash_c;  // wrong
-            auto cr = raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons_req);
+            auto cr = raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons_req, 2000, broker.pubkey, "cons.broker.sch_cbad.uid00000002");
             ASSERT_FALSE(cr.is_null()) << "raw_req timed out";
             EXPECT_EQ(cr.value("status", std::string{}), "error")
                 << "Hash mismatch must be NACKed; got: " << cr.dump();
@@ -1126,9 +1316,12 @@ int broker_sch_no_packing_backward_compat()
         {
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
-            cfg.use_curve = false;
-            cfg.enforce_ctrl_admission = false;
-            auto broker   = start_broker_in_thread(std::move(cfg));
+            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
+            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
+            // admits each role uid we'll register below.
+            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.sch_bc.uid00000001"});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_no_packing_backward_compat", curve);
+            auto broker   = start_broker_in_thread(std::move(cfg), curve);
 
             const std::string channel = "broker.sch.bc";
             const std::string uid     = "prod.broker.sch_bc.uid00000001";
@@ -1136,7 +1329,7 @@ int broker_sch_no_packing_backward_compat()
             // No schema_packing → new schema-record block is skipped.
             auto req1 = baseline_reg_req(channel, uid);
             req1["schema_hash"] = zero_hex();
-            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", req1)
+            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", req1, 2000, broker.pubkey, "prod.broker.sch_bc.uid00000001")
                           .value("status", std::string{}),
                       "success");
 
@@ -1146,7 +1339,7 @@ int broker_sch_no_packing_backward_compat()
             // SCHEMA_HASH_MISMATCH_SELF instead).
             auto req2 = req1;
             req2["schema_hash"] = aa_hex();
-            auto r2 = raw_req(broker.endpoint, "REG_REQ", req2);
+            auto r2 = raw_req(broker.endpoint, "REG_REQ", req2, 2000, broker.pubkey, "prod.broker.sch_bc.uid00000001");
             ASSERT_EQ(r2.value("status", std::string{}), "error") << r2.dump();
             EXPECT_EQ(r2.value("error_code", std::string{}), "SCHEMA_MISMATCH")
                 << "Backward-compat REG_REQ must use the legacy "
@@ -1170,9 +1363,12 @@ int broker_sch_schema_req_owner_id()
         {
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
-            cfg.use_curve = false;
-            cfg.enforce_ctrl_admission = false;
-            auto broker   = start_broker_in_thread(std::move(cfg));
+            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
+            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
+            // admits each role uid we'll register below.
+            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.schreq.uid00000001"});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_schema_req_owner_id", curve);
+            auto broker   = start_broker_in_thread(std::move(cfg), curve);
 
             const std::string channel = "broker.sch.schreq";
             const std::string uid     = "prod.broker.schreq.uid00000001";
@@ -1186,7 +1382,7 @@ int broker_sch_schema_req_owner_id()
             reg["schema_hash"]    = hash;
             reg["schema_packing"] = packing;
             reg["schema_blds"]    = blds;
-            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg)
+            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, "prod.broker.schreq.uid00000001")
                           .value("status", std::string{}),
                       "success");
 
@@ -1194,7 +1390,7 @@ int broker_sch_schema_req_owner_id()
             nlohmann::json sreq;
             sreq["owner"]     = uid;
             sreq["schema_id"] = sid;
-            auto sresp = raw_req(broker.endpoint, "SCHEMA_REQ", sreq);
+            auto sresp = raw_req(broker.endpoint, "SCHEMA_REQ", sreq, 2000, broker.pubkey, "prod.broker.schreq.uid00000001");
             ASSERT_FALSE(sresp.is_null());
             EXPECT_EQ(sresp.value("status", std::string{}), "success") << sresp.dump();
             EXPECT_EQ(sresp.value("owner", std::string{}), uid);
@@ -1207,7 +1403,7 @@ int broker_sch_schema_req_owner_id()
             nlohmann::json bad_sreq;
             bad_sreq["owner"]     = uid;
             bad_sreq["schema_id"] = "$lab.does_not_exist.v1";
-            auto bad = raw_req(broker.endpoint, "SCHEMA_REQ", bad_sreq);
+            auto bad = raw_req(broker.endpoint, "SCHEMA_REQ", bad_sreq, 2000, broker.pubkey, "prod.broker.schreq.uid00000001");
             EXPECT_EQ(bad.value("status", std::string{}), "error");
             EXPECT_EQ(bad.value("error_code", std::string{}), "SCHEMA_UNKNOWN");
 
@@ -1215,7 +1411,7 @@ int broker_sch_schema_req_owner_id()
             // schema fields, and now also surfaces `schema_owner`.
             nlohmann::json legacy;
             legacy["channel_name"] = channel;
-            auto lresp = raw_req(broker.endpoint, "SCHEMA_REQ", legacy);
+            auto lresp = raw_req(broker.endpoint, "SCHEMA_REQ", legacy, 2000, broker.pubkey, "prod.broker.schreq.uid00000001");
             EXPECT_EQ(lresp.value("status", std::string{}), "success");
             EXPECT_EQ(lresp.value("schema_owner", std::string{}), uid)
                 << "Phase 3 channels expose their schema_owner via legacy SCHEMA_REQ";
@@ -1238,9 +1434,12 @@ int broker_sch_inbox_path_a()
         {
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
-            cfg.use_curve = false;
-            cfg.enforce_ctrl_admission = false;
-            auto broker   = start_broker_in_thread(std::move(cfg));
+            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
+            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
+            // admits each role uid we'll register below.
+            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.inbox.uid00000001"});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_inbox_path_a", curve);
+            auto broker   = start_broker_in_thread(std::move(cfg), curve);
 
             const std::string channel  = "broker.sch.inbox";
             const std::string uid      = "prod.broker.inbox.uid00000001";
@@ -1252,7 +1451,7 @@ int broker_sch_inbox_path_a()
             reg["inbox_schema_json"] = ibj;
             reg["inbox_packing"]     = "aligned";
             reg["inbox_checksum"]    = "enforced";
-            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg)
+            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, "prod.broker.inbox.uid00000001")
                           .value("status", std::string{}),
                       "success");
 
@@ -1261,7 +1460,7 @@ int broker_sch_inbox_path_a()
             nlohmann::json sreq;
             sreq["owner"]     = uid;
             sreq["schema_id"] = "inbox";
-            auto sresp = raw_req(broker.endpoint, "SCHEMA_REQ", sreq);
+            auto sresp = raw_req(broker.endpoint, "SCHEMA_REQ", sreq, 2000, broker.pubkey, "prod.broker.inbox.uid00000001");
             ASSERT_FALSE(sresp.is_null());
             EXPECT_EQ(sresp.value("status", std::string{}), "success") << sresp.dump();
             EXPECT_EQ(sresp.value("owner", std::string{}), uid);
@@ -1289,9 +1488,12 @@ int broker_sch_inbox_hash_mismatch_self()
         {
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
-            cfg.use_curve = false;
-            cfg.enforce_ctrl_admission = false;
-            auto broker   = start_broker_in_thread(std::move(cfg));
+            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
+            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
+            // admits each role uid we'll register below.
+            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.ibmm.uid00000001"});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_inbox_hash_mismatch_self", curve);
+            auto broker   = start_broker_in_thread(std::move(cfg), curve);
 
             const std::string ch1 = "broker.sch.inbox_mm.a";
             const std::string ch2 = "broker.sch.inbox_mm.b";
@@ -1301,7 +1503,7 @@ int broker_sch_inbox_hash_mismatch_self()
             reg1["inbox_endpoint"]    = "tcp://127.0.0.1:9989";
             reg1["inbox_schema_json"] = R"([{"type":"float64","count":1,"length":0}])";
             reg1["inbox_packing"]     = "aligned";
-            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg1)
+            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg1, 2000, broker.pubkey, "prod.broker.ibmm.uid00000001")
                           .value("status", std::string{}),
                       "success");
 
@@ -1312,7 +1514,7 @@ int broker_sch_inbox_hash_mismatch_self()
             reg2["inbox_endpoint"]    = "tcp://127.0.0.1:9990";
             reg2["inbox_schema_json"] = R"([{"type":"int32","count":4,"length":0}])";
             reg2["inbox_packing"]     = "aligned";
-            auto r2 = raw_req(broker.endpoint, "REG_REQ", reg2);
+            auto r2 = raw_req(broker.endpoint, "REG_REQ", reg2, 2000, broker.pubkey, "prod.broker.ibmm.uid00000001");
             ASSERT_FALSE(r2.is_null());
             EXPECT_EQ(r2.value("status", std::string{}), "error") << r2.dump();
             EXPECT_EQ(r2.value("error_code", std::string{}), "SCHEMA_HASH_MISMATCH_SELF");
@@ -1333,9 +1535,12 @@ int broker_sch_inbox_idempotent()
         {
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
-            cfg.use_curve = false;
-            cfg.enforce_ctrl_admission = false;
-            auto broker   = start_broker_in_thread(std::move(cfg));
+            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
+            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
+            // admits each role uid we'll register below.
+            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.idem.uid00000001"});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_inbox_idempotent", curve);
+            auto broker   = start_broker_in_thread(std::move(cfg), curve);
 
             const std::string ch1 = "broker.sch.inbox_idem.a";
             const std::string ch2 = "broker.sch.inbox_idem.b";
@@ -1346,7 +1551,7 @@ int broker_sch_inbox_idempotent()
             reg1["inbox_endpoint"]    = "tcp://127.0.0.1:9991";
             reg1["inbox_schema_json"] = ibj;
             reg1["inbox_packing"]     = "aligned";
-            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg1)
+            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg1, 2000, broker.pubkey, "prod.broker.idem.uid00000001")
                           .value("status", std::string{}),
                       "success");
 
@@ -1357,7 +1562,7 @@ int broker_sch_inbox_idempotent()
             reg2["inbox_endpoint"]    = "tcp://127.0.0.1:9992";
             reg2["inbox_schema_json"] = ibj;       // identical fields
             reg2["inbox_packing"]     = "aligned"; // identical packing
-            auto r2 = raw_req(broker.endpoint, "REG_REQ", reg2);
+            auto r2 = raw_req(broker.endpoint, "REG_REQ", reg2, 2000, broker.pubkey, "prod.broker.idem.uid00000001");
             EXPECT_EQ(r2.value("status", std::string{}), "success") << r2.dump();
 
             broker.stop_and_join();
@@ -1376,9 +1581,12 @@ int broker_sch_inbox_invalid_json()
         {
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
-            cfg.use_curve = false;
-            cfg.enforce_ctrl_admission = false;
-            auto broker   = start_broker_in_thread(std::move(cfg));
+            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
+            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
+            // admits each role uid we'll register below.
+            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.ibj.uid00000001", "prod.broker.ibj.uid000000011"});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_inbox_invalid_json", curve);
+            auto broker   = start_broker_in_thread(std::move(cfg), curve);
 
             const std::string channel = "broker.sch.inbox_bad_json";
             const std::string uid     = "prod.broker.ibj.uid00000001";
@@ -1388,7 +1596,7 @@ int broker_sch_inbox_invalid_json()
             reg["inbox_endpoint"]    = "tcp://127.0.0.1:9993";
             reg["inbox_schema_json"] = "not-json";
             reg["inbox_packing"]     = "aligned";
-            auto r = raw_req(broker.endpoint, "REG_REQ", reg);
+            auto r = raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, "prod.broker.ibj.uid00000001");
             ASSERT_FALSE(r.is_null());
             EXPECT_EQ(r.value("status", std::string{}), "error") << r.dump();
             EXPECT_EQ(r.value("error_code", std::string{}), "INBOX_SCHEMA_INVALID");
@@ -1398,7 +1606,7 @@ int broker_sch_inbox_invalid_json()
             reg2["inbox_endpoint"]    = "tcp://127.0.0.1:9994";
             reg2["inbox_schema_json"] = R"({"type":"float64"})"; // object, not array
             reg2["inbox_packing"]     = "aligned";
-            auto r2 = raw_req(broker.endpoint, "REG_REQ", reg2);
+            auto r2 = raw_req(broker.endpoint, "REG_REQ", reg2, 2000, broker.pubkey, "prod.broker.ibj.uid00000001");
             EXPECT_EQ(r2.value("error_code", std::string{}), "INBOX_SCHEMA_INVALID");
 
             broker.stop_and_join();
@@ -1417,9 +1625,12 @@ int broker_sch_inbox_two_owners()
         {
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
-            cfg.use_curve = false;
-            cfg.enforce_ctrl_admission = false;
-            auto broker   = start_broker_in_thread(std::move(cfg));
+            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
+            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
+            // admits each role uid we'll register below.
+            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.ib2a.uid00000001", "prod.broker.ib2b.uid00000002"});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_inbox_two_owners", curve);
+            auto broker   = start_broker_in_thread(std::move(cfg), curve);
 
             const std::string ch_a = "broker.sch.inbox_2a";
             const std::string ch_b = "broker.sch.inbox_2b";
@@ -1434,7 +1645,7 @@ int broker_sch_inbox_two_owners()
             rA["inbox_endpoint"]    = "tcp://127.0.0.1:9995";
             rA["inbox_schema_json"] = ibj;
             rA["inbox_packing"]     = "aligned";
-            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", rA)
+            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", rA, 2000, broker.pubkey, "prod.broker.ib2a.uid00000001")
                           .value("status", std::string{}),
                       "success");
 
@@ -1442,7 +1653,7 @@ int broker_sch_inbox_two_owners()
             rB["inbox_endpoint"]    = "tcp://127.0.0.1:9996";
             rB["inbox_schema_json"] = ibj;            // SAME content
             rB["inbox_packing"]     = "aligned";
-            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", rB)
+            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", rB, 2000, broker.pubkey, "prod.broker.ib2a.uid00000001")
                           .value("status", std::string{}),
                       "success") << "Different owner with same fields must succeed";
 
@@ -1452,7 +1663,7 @@ int broker_sch_inbox_two_owners()
                 nlohmann::json sreq;
                 sreq["owner"]     = uid;
                 sreq["schema_id"] = "inbox";
-                auto sresp = raw_req(broker.endpoint, "SCHEMA_REQ", sreq);
+                auto sresp = raw_req(broker.endpoint, "SCHEMA_REQ", sreq, 2000, broker.pubkey, "prod.broker.ib2a.uid00000001");
                 EXPECT_EQ(sresp.value("status", std::string{}), "success") << sresp.dump();
                 EXPECT_EQ(sresp.value("owner", std::string{}), uid);
             }
@@ -1473,15 +1684,18 @@ int broker_sch_schema_req_invalid()
         {
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
-            cfg.use_curve = false;
-            cfg.enforce_ctrl_admission = false;
-            auto broker   = start_broker_in_thread(std::move(cfg));
+            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
+            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
+            // admits each role uid we'll register below.
+            auto curve = pylabhub::tests::make_curve_setup({"prod.test.uid00000001"});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_schema_req_invalid", curve);
+            auto broker   = start_broker_in_thread(std::move(cfg), curve);
 
             // No owner, no schema_id, no channel_name — wire payload is
             // an object with no keys (NOT a null json — wire messages
             // are always objects).
             nlohmann::json sreq = nlohmann::json::object();
-            auto resp = raw_req(broker.endpoint, "SCHEMA_REQ", sreq);
+            auto resp = raw_req(broker.endpoint, "SCHEMA_REQ", sreq, 2000, broker.pubkey, "prod.test.uid00000001");
             ASSERT_FALSE(resp.is_null());
             EXPECT_EQ(resp.value("status", std::string{}), "error") << resp.dump();
             EXPECT_EQ(resp.value("error_code", std::string{}), "INVALID_REQUEST");
@@ -1490,7 +1704,7 @@ int broker_sch_schema_req_invalid()
             // requires channel_name; new form requires both owner + id).
             nlohmann::json half = nlohmann::json::object();
             half["owner"] = "prod.test.uid00000001";
-            auto resp2 = raw_req(broker.endpoint, "SCHEMA_REQ", half);
+            auto resp2 = raw_req(broker.endpoint, "SCHEMA_REQ", half, 2000, broker.pubkey, "prod.test.uid00000001");
             EXPECT_EQ(resp2.value("error_code", std::string{}), "INVALID_REQUEST");
 
             broker.stop_and_join();
@@ -1509,9 +1723,12 @@ int broker_sch_inbox_invalid_packing()
         {
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
-            cfg.use_curve = false;
-            cfg.enforce_ctrl_admission = false;
-            auto broker   = start_broker_in_thread(std::move(cfg));
+            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
+            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
+            // admits each role uid we'll register below.
+            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.ibp.uid00000001"});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_inbox_invalid_packing", curve);
+            auto broker   = start_broker_in_thread(std::move(cfg), curve);
 
             const std::string channel = "broker.sch.inbox_bad_pack";
             const std::string uid     = "prod.broker.ibp.uid00000001";
@@ -1521,7 +1738,7 @@ int broker_sch_inbox_invalid_packing()
             reg["inbox_schema_json"] = R"([{"type":"float64","count":1,"length":0}])";
             reg["inbox_packing"]     = "natural";  // invalid
 
-            auto r = raw_req(broker.endpoint, "REG_REQ", reg);
+            auto r = raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, "prod.broker.ibp.uid00000001");
             ASSERT_FALSE(r.is_null());
             EXPECT_EQ(r.value("status", std::string{}), "error") << r.dump();
             EXPECT_EQ(r.value("error_code", std::string{}), "INVALID_INBOX_PACKING");
@@ -1542,9 +1759,12 @@ int broker_sch_reg_missing_packing()
         {
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
-            cfg.use_curve = false;
-            cfg.enforce_ctrl_admission = false;
-            auto broker   = start_broker_in_thread(std::move(cfg));
+            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
+            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
+            // admits each role uid we'll register below.
+            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.miss_pack.uid00000001"});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_reg_missing_packing", curve);
+            auto broker   = start_broker_in_thread(std::move(cfg), curve);
 
             // schema_id non-empty but schema_packing missing → NACK MISSING_PACKING.
             auto reg = baseline_reg_req("broker.sch.miss_pack",
@@ -1553,7 +1773,7 @@ int broker_sch_reg_missing_packing()
             reg["schema_hash"]    = std::string(64, '0');
             reg["schema_blds"]    = "ts:f64:1:0";
             // intentionally no schema_packing
-            auto r = raw_req(broker.endpoint, "REG_REQ", reg);
+            auto r = raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, "prod.broker.miss_pack.uid00000001");
             EXPECT_EQ(r.value("status", std::string{}), "error") << r.dump();
             EXPECT_EQ(r.value("error_code", std::string{}), "MISSING_PACKING");
 
@@ -1571,9 +1791,12 @@ int broker_sch_reg_fingerprint_inconsistent()
         {
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
-            cfg.use_curve = false;
-            cfg.enforce_ctrl_admission = false;
-            auto broker   = start_broker_in_thread(std::move(cfg));
+            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
+            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
+            // admits each role uid we'll register below.
+            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.fp_bad.uid00000001"});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_reg_fingerprint_inconsistent", curve);
+            auto broker   = start_broker_in_thread(std::move(cfg), curve);
 
             // Producer claims a hash that does NOT match BLDS+packing.
             // Stage-2 broker recomputes and rejects.
@@ -1583,7 +1806,7 @@ int broker_sch_reg_fingerprint_inconsistent()
             reg["schema_packing"] = "aligned";
             reg["schema_blds"]    = "ts:f64:1:0|value:f32:1:0";
             reg["schema_hash"]    = aa_hex();  // bogus — doesn't match canonical
-            auto r = raw_req(broker.endpoint, "REG_REQ", reg);
+            auto r = raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, "prod.broker.fp_bad.uid00000001");
             EXPECT_EQ(r.value("status", std::string{}), "error") << r.dump();
             EXPECT_EQ(r.value("error_code", std::string{}), "FINGERPRINT_INCONSISTENT");
 
@@ -1601,9 +1824,12 @@ int broker_sch_cons_named_missing_hash()
         {
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
-            cfg.use_curve = false;
-            cfg.enforce_ctrl_admission = false;
-            auto broker   = start_broker_in_thread(std::move(cfg));
+            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
+            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
+            // admits each role uid we'll register below.
+            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.cnh.uid00000001", "cons.broker.cnh.uid00000002"});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_cons_named_missing_hash", curve);
+            auto broker   = start_broker_in_thread(std::move(cfg), curve);
 
             const std::string ch  = "broker.sch.cons_no_hash";
             const std::string p   = "prod.broker.cnh.uid00000001";
@@ -1617,9 +1843,22 @@ int broker_sch_cons_named_missing_hash()
             reg["schema_hash"]    = canonical_hash_hex(blds, packing);
             reg["schema_packing"] = packing;
             reg["schema_blds"]    = blds;
-            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg)
+            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, "prod.broker.cnh.uid00000001")
                           .value("status", std::string{}),
                       "success");
+            // HEP-CORE-0036 §5.2 R6: broker rejects CONSUMER_REG_REQ until
+            // producer's presence is kLive (first heartbeat seen).  Tests
+            // pre-dated R6; this heartbeat unblocks the consumer reg below.
+            {
+                nlohmann::json hb_req;
+                hb_req["channel_name"] = "broker.sch.cons_no_hash";
+
+                hb_req["producer_pid"] = pylabhub::platform::get_pid();
+                hb_req["role_uid"]     = "prod.broker.cnh.uid00000001";
+                hb_req["role_type"]    = "producer";
+                raw_req(broker.endpoint, "HEARTBEAT_REQ", hb_req, 100, broker.pubkey, "prod.broker.cnh.uid00000001");
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
 
             // Consumer cites by id but omits the hash → MISSING_HASH_FOR_NAMED_CITATION.
             nlohmann::json cons;
@@ -1629,7 +1868,7 @@ int broker_sch_cons_named_missing_hash()
             cons["consumer_pid"]       = pylabhub::platform::get_pid();
             cons["expected_schema_id"] = sid;
             // intentionally no expected_schema_hash
-            auto cr = raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons);
+            auto cr = raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons, 2000, broker.pubkey, "cons.broker.cnh.uid00000002");
             EXPECT_EQ(cr.value("status", std::string{}), "error") << cr.dump();
             EXPECT_EQ(cr.value("error_code", std::string{}),
                       "MISSING_HASH_FOR_NAMED_CITATION");
@@ -1648,9 +1887,12 @@ int broker_sch_cons_anonymous_happy_path()
         {
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
-            cfg.use_curve = false;
-            cfg.enforce_ctrl_admission = false;
-            auto broker   = start_broker_in_thread(std::move(cfg));
+            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
+            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
+            // admits each role uid we'll register below.
+            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.canok.uid00000001", "cons.broker.canok.uid00000002"});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_cons_anonymous_happy_path", curve);
+            auto broker   = start_broker_in_thread(std::move(cfg), curve);
 
             const std::string ch  = "broker.sch.cons_anon_ok";
             const std::string p   = "prod.broker.canok.uid00000001";
@@ -1665,9 +1907,22 @@ int broker_sch_cons_anonymous_happy_path()
             reg["schema_hash"]    = hash;
             reg["schema_packing"] = packing;
             reg["schema_blds"]    = blds;
-            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg)
+            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, "prod.broker.canok.uid00000001")
                           .value("status", std::string{}),
                       "success");
+            // HEP-CORE-0036 §5.2 R6: broker rejects CONSUMER_REG_REQ until
+            // producer's presence is kLive (first heartbeat seen).  Tests
+            // pre-dated R6; this heartbeat unblocks the consumer reg below.
+            {
+                nlohmann::json hb_req;
+                hb_req["channel_name"] = "broker.sch.cons_anon_ok";
+
+                hb_req["producer_pid"] = pylabhub::platform::get_pid();
+                hb_req["role_uid"]     = "prod.broker.canok.uid00000001";
+                hb_req["role_type"]    = "producer";
+                raw_req(broker.endpoint, "HEARTBEAT_REQ", hb_req, 100, broker.pubkey, "prod.broker.canok.uid00000001");
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
 
             // Consumer in anonymous mode: provides full structure (no id).
             // Hash optional — broker recomputes and compares to channel.
@@ -1679,7 +1934,7 @@ int broker_sch_cons_anonymous_happy_path()
             cons["expected_schema_blds"]    = blds;
             cons["expected_schema_packing"] = packing;
             // (no expected_schema_id, no expected_schema_hash)
-            auto cr = raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons);
+            auto cr = raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons, 2000, broker.pubkey, "cons.broker.canok.uid00000002");
             EXPECT_EQ(cr.value("status", std::string{}), "success") << cr.dump();
 
             broker.stop_and_join();
@@ -1696,18 +1951,34 @@ int broker_sch_cons_anonymous_missing_packing()
         {
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
-            cfg.use_curve = false;
-            cfg.enforce_ctrl_admission = false;
-            auto broker   = start_broker_in_thread(std::move(cfg));
+            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
+            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
+            // admits each role uid we'll register below.
+            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.canp.uid00000001", "cons.broker.canp.uid00000002"});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_cons_anonymous_missing_packing", curve);
+            auto broker   = start_broker_in_thread(std::move(cfg), curve);
 
             const std::string ch = "broker.sch.cons_anon_nopack";
             const std::string p  = "prod.broker.canp.uid00000001";
             const std::string c  = "cons.broker.canp.uid00000002";
 
             auto reg = baseline_reg_req(ch, p);
-            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg)
+            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, "prod.broker.canp.uid00000001")
                           .value("status", std::string{}),
                       "success");
+            // HEP-CORE-0036 §5.2 R6: broker rejects CONSUMER_REG_REQ until
+            // producer's presence is kLive (first heartbeat seen).  Tests
+            // pre-dated R6; this heartbeat unblocks the consumer reg below.
+            {
+                nlohmann::json hb_req;
+                hb_req["channel_name"] = "broker.sch.cons_anon_nopack";
+
+                hb_req["producer_pid"] = pylabhub::platform::get_pid();
+                hb_req["role_uid"]     = "prod.broker.canp.uid00000001";
+                hb_req["role_type"]    = "producer";
+                raw_req(broker.endpoint, "HEARTBEAT_REQ", hb_req, 100, broker.pubkey, "prod.broker.canp.uid00000001");
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
 
             // Anonymous mode with blds but no packing → NACK.
             nlohmann::json cons;
@@ -1717,7 +1988,7 @@ int broker_sch_cons_anonymous_missing_packing()
             cons["consumer_pid"]  = pylabhub::platform::get_pid();
             cons["expected_schema_blds"] = "ts:f64:1:0";
             // intentionally no expected_packing
-            auto cr = raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons);
+            auto cr = raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons, 2000, broker.pubkey, "cons.broker.canp.uid00000002");
             EXPECT_EQ(cr.value("status", std::string{}), "error") << cr.dump();
             EXPECT_EQ(cr.value("error_code", std::string{}),
                       "MISSING_PACKING_FOR_ANONYMOUS_CITATION");
@@ -1736,9 +2007,12 @@ int broker_sch_cons_named_with_structure_mismatch()
         {
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
-            cfg.use_curve = false;
-            cfg.enforce_ctrl_admission = false;
-            auto broker   = start_broker_in_thread(std::move(cfg));
+            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
+            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
+            // admits each role uid we'll register below.
+            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.cnsb.uid00000001", "cons.broker.cnsb.uid00000002"});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_cons_named_with_structure_mismatch", curve);
+            auto broker   = start_broker_in_thread(std::move(cfg), curve);
 
             const std::string ch  = "broker.sch.cons_named_struct_bad";
             const std::string p   = "prod.broker.cnsb.uid00000001";
@@ -1753,9 +2027,22 @@ int broker_sch_cons_named_with_structure_mismatch()
             reg["schema_hash"]    = canonical_hash_hex(blds_p, packing);
             reg["schema_packing"] = packing;
             reg["schema_blds"]    = blds_p;
-            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg)
+            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, "prod.broker.cnsb.uid00000001")
                           .value("status", std::string{}),
                       "success");
+            // HEP-CORE-0036 §5.2 R6: broker rejects CONSUMER_REG_REQ until
+            // producer's presence is kLive (first heartbeat seen).  Tests
+            // pre-dated R6; this heartbeat unblocks the consumer reg below.
+            {
+                nlohmann::json hb_req;
+                hb_req["channel_name"] = "broker.sch.cons_named_struct_bad";
+
+                hb_req["producer_pid"] = pylabhub::platform::get_pid();
+                hb_req["role_uid"]     = "prod.broker.cnsb.uid00000001";
+                hb_req["role_type"]    = "producer";
+                raw_req(broker.endpoint, "HEARTBEAT_REQ", hb_req, 100, broker.pubkey, "prod.broker.cnsb.uid00000001");
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
 
             // Consumer cites by id with correct hash, BUT also provides
             // a structure that doesn't match the channel's hash —
@@ -1769,7 +2056,7 @@ int broker_sch_cons_named_with_structure_mismatch()
             cons["expected_schema_hash"] = canonical_hash_hex(blds_p, packing);
             cons["expected_schema_blds"]        = blds_c;   // diverges from producer
             cons["expected_schema_packing"]     = packing;
-            auto cr = raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons);
+            auto cr = raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons, 2000, broker.pubkey, "cons.broker.cnsb.uid00000002");
             EXPECT_EQ(cr.value("status", std::string{}), "error") << cr.dump();
             EXPECT_EQ(cr.value("error_code", std::string{}), "FINGERPRINT_INCONSISTENT");
 
@@ -1787,9 +2074,12 @@ int broker_sch_inbox_evicts_on_disconnect()
         {
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
-            cfg.use_curve = false;
-            cfg.enforce_ctrl_admission = false;
-            auto broker = start_broker_in_thread(std::move(cfg));
+            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
+            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
+            // admits each role uid we'll register below.
+            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.ibev.uid00000001"});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_inbox_evicts_on_disconnect", curve);
+            auto broker = start_broker_in_thread(std::move(cfg), curve);
 
             const std::string ch  = "broker.sch.inbox_evict";
             const std::string uid = "prod.broker.ibev.uid00000001";
@@ -1801,7 +2091,7 @@ int broker_sch_inbox_evicts_on_disconnect()
             reg["inbox_endpoint"]    = "tcp://127.0.0.1:9998";
             reg["inbox_schema_json"] = R"([{"type":"float64","count":1,"length":0}])";
             reg["inbox_packing"]     = "aligned";
-            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg)
+            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, "prod.broker.ibev.uid00000001")
                           .value("status", std::string{}),
                       "success");
 
@@ -1810,7 +2100,7 @@ int broker_sch_inbox_evicts_on_disconnect()
                 nlohmann::json sreq;
                 sreq["owner"]     = uid;
                 sreq["schema_id"] = "inbox";
-                auto sresp = raw_req(broker.endpoint, "SCHEMA_REQ", sreq);
+                auto sresp = raw_req(broker.endpoint, "SCHEMA_REQ", sreq, 2000, broker.pubkey, "prod.broker.ibev.uid00000001");
                 EXPECT_EQ(sresp.value("status", std::string{}), "success") << sresp.dump();
             }
 
@@ -1821,14 +2111,14 @@ int broker_sch_inbox_evicts_on_disconnect()
             dereg["channel_name"] = ch;
             dereg["role_uid"]     = uid;
             dereg["producer_pid"] = producer_pid;
-            auto dr = raw_req(broker.endpoint, "DEREG_REQ", dereg);
+            auto dr = raw_req(broker.endpoint, "DEREG_REQ", dereg, 2000, broker.pubkey, "prod.broker.ibev.uid00000001");
             ASSERT_EQ(dr.value("status", std::string{}), "success") << dr.dump();
 
             // Inbox record must be evicted by the cascade.
             nlohmann::json sreq;
             sreq["owner"]     = uid;
             sreq["schema_id"] = "inbox";
-            auto after = raw_req(broker.endpoint, "SCHEMA_REQ", sreq);
+            auto after = raw_req(broker.endpoint, "SCHEMA_REQ", sreq, 2000, broker.pubkey, "prod.broker.ibev.uid00000001");
             EXPECT_EQ(after.value("status", std::string{}), "error") << after.dump();
             EXPECT_EQ(after.value("error_code", std::string{}), "SCHEMA_UNKNOWN")
                 << "Inbox record should evict on producer disconnect "
@@ -1896,16 +2186,20 @@ int broker_sch_hub_globals_loaded_at_startup()
 
             BrokerService::Config cfg;
             cfg.endpoint           = "tcp://127.0.0.1:0";
-            cfg.use_curve          = false;
             cfg.schema_search_dirs = {schema_root.string()};
-            auto broker = start_broker_in_thread(std::move(cfg));
+            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
+            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
+            // admits each role uid we'll register below.
+            auto curve = pylabhub::tests::make_curve_setup({"wire.gate.uid00000099"});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_hub_globals_loaded_at_startup", curve);
+            auto broker = start_broker_in_thread(std::move(cfg), curve);
 
             // SCHEMA_REQ for (hub, $lab.demo.frame.v1) must succeed —
             // proves Phase 4b loaded the global into HubState.schemas.
             nlohmann::json sreq;
             sreq["owner"]     = "hub";
             sreq["schema_id"] = "$lab.demo.frame.v1";
-            auto resp = raw_req(broker.endpoint, "SCHEMA_REQ", sreq);
+            auto resp = raw_req(broker.endpoint, "SCHEMA_REQ", sreq, 2000, broker.pubkey, "wire.gate.uid00000099");
             ASSERT_FALSE(resp.is_null());
             EXPECT_EQ(resp.value("status", std::string{}), "success") << resp.dump();
             EXPECT_EQ(resp.value("owner",     std::string{}), "hub");
@@ -1938,9 +2232,13 @@ int broker_sch_path_c_adoption_succeeds()
 
             BrokerService::Config cfg;
             cfg.endpoint           = "tcp://127.0.0.1:0";
-            cfg.use_curve          = false;
             cfg.schema_search_dirs = {schema_root.string()};
-            auto broker = start_broker_in_thread(std::move(cfg));
+            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
+            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
+            // admits each role uid we'll register below.
+            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.adopt.uid00000001"});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_path_c_adoption_succeeds", curve);
+            auto broker = start_broker_in_thread(std::move(cfg), curve);
 
             const std::string channel = "broker.sch.adopt";
             const std::string uid     = "prod.broker.adopt.uid00000001";
@@ -1950,13 +2248,13 @@ int broker_sch_path_c_adoption_succeeds()
             reg["schema_hash"]    = hash;
             reg["schema_packing"] = packing;
             reg["schema_blds"]    = blds;
-            auto resp = raw_req(broker.endpoint, "REG_REQ", reg);
+            auto resp = raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, "prod.broker.adopt.uid00000001");
             EXPECT_EQ(resp.value("status", std::string{}), "success") << resp.dump();
 
             // Verify channel.schema_owner == "hub" via legacy SCHEMA_REQ.
             nlohmann::json sreq;
             sreq["channel_name"] = channel;
-            auto sresp = raw_req(broker.endpoint, "SCHEMA_REQ", sreq);
+            auto sresp = raw_req(broker.endpoint, "SCHEMA_REQ", sreq, 2000, broker.pubkey, "prod.broker.adopt.uid00000001");
             EXPECT_EQ(sresp.value("schema_owner", std::string{}), "hub")
                 << "Path-C-adopted channel should report owner=hub";
 
@@ -1980,9 +2278,13 @@ int broker_sch_path_c_fingerprint_mismatch()
 
             BrokerService::Config cfg;
             cfg.endpoint           = "tcp://127.0.0.1:0";
-            cfg.use_curve          = false;
             cfg.schema_search_dirs = {schema_root.string()};
-            auto broker = start_broker_in_thread(std::move(cfg));
+            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
+            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
+            // admits each role uid we'll register below.
+            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.mm.uid00000001"});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_path_c_fingerprint_mismatch", curve);
+            auto broker = start_broker_in_thread(std::move(cfg), curve);
 
             // HEP-0034 §6.3 — wire `type` is the JSON type name.
             const std::string blds_wrong    = "v:int32:1:0";
@@ -1996,7 +2298,7 @@ int broker_sch_path_c_fingerprint_mismatch()
             reg["schema_hash"]    = hash_wrong;
             reg["schema_packing"] = packing;
             reg["schema_blds"]    = blds_wrong;
-            auto resp = raw_req(broker.endpoint, "REG_REQ", reg);
+            auto resp = raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, "prod.broker.mm.uid00000001");
             EXPECT_EQ(resp.value("status", std::string{}), "error") << resp.dump();
             EXPECT_EQ(resp.value("error_code", std::string{}),
                       "FINGERPRINT_INCONSISTENT");
@@ -2017,8 +2319,6 @@ int broker_sch_path_c_unknown_global()
             // No schema_search_dirs configured → no globals loaded.
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
-            cfg.use_curve = false;
-            cfg.enforce_ctrl_admission = false;
             // Use an explicit (empty) override so the default dirs aren't
             // searched (would be flaky if /usr/share/pylabhub has files).
             cfg.schema_search_dirs = {std::filesystem::temp_directory_path() /
@@ -2026,7 +2326,12 @@ int broker_sch_path_c_unknown_global()
                                        std::to_string(::getpid()))};
             std::filesystem::create_directories(cfg.schema_search_dirs[0]);
             auto schema_root = std::filesystem::path(cfg.schema_search_dirs[0]);
-            auto broker = start_broker_in_thread(std::move(cfg));
+            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
+            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
+            // admits each role uid we'll register below.
+            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.unk.uid00000001"});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_path_c_unknown_global", curve);
+            auto broker = start_broker_in_thread(std::move(cfg), curve);
 
             const std::string blds    = "v:f32:1:0";
             const std::string packing = "aligned";
@@ -2039,7 +2344,7 @@ int broker_sch_path_c_unknown_global()
             reg["schema_hash"]    = hash;
             reg["schema_packing"] = packing;
             reg["schema_blds"]    = blds;
-            auto resp = raw_req(broker.endpoint, "REG_REQ", reg);
+            auto resp = raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, "prod.broker.unk.uid00000001");
             EXPECT_EQ(resp.value("status", std::string{}), "error") << resp.dump();
             EXPECT_EQ(resp.value("error_code", std::string{}), "SCHEMA_UNKNOWN");
 
@@ -2058,9 +2363,12 @@ int broker_sch_path_x_forbidden_owner()
         {
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
-            cfg.use_curve = false;
-            cfg.enforce_ctrl_admission = false;
-            auto broker = start_broker_in_thread(std::move(cfg));
+            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
+            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
+            // admits each role uid we'll register below.
+            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.fbd.uid00000001"});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_path_x_forbidden_owner", curve);
+            auto broker = start_broker_in_thread(std::move(cfg), curve);
 
             const std::string blds    = "v:f32:1:0";
             const std::string packing = "aligned";
@@ -2074,7 +2382,7 @@ int broker_sch_path_x_forbidden_owner()
             reg["schema_hash"]    = hash;
             reg["schema_packing"] = packing;
             reg["schema_blds"]    = blds;
-            auto resp = raw_req(broker.endpoint, "REG_REQ", reg);
+            auto resp = raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, "prod.broker.fbd.uid00000001");
             EXPECT_EQ(resp.value("status", std::string{}), "error") << resp.dump();
             EXPECT_EQ(resp.value("error_code", std::string{}),
                       "SCHEMA_FORBIDDEN_OWNER");
@@ -2119,9 +2427,12 @@ int broker_sch_wire_helpers_register_and_cite()
         {
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
-            cfg.use_curve = false;
-            cfg.enforce_ctrl_admission = false;
-            auto broker   = start_broker_in_thread(std::move(cfg));
+            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
+            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
+            // admits each role uid we'll register below.
+            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.helpers_n.uid00000001", "cons.broker.helpers_n.uid00000002"});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_wire_helpers_register_and_cite", curve);
+            auto broker   = start_broker_in_thread(std::move(cfg), curve);
 
             const std::string channel  = "broker.sch.helpers.named";
             const std::string prod_uid = "prod.broker.helpers_n.uid00000001";
@@ -2166,10 +2477,23 @@ int broker_sch_wire_helpers_register_and_cite()
             ASSERT_FALSE(reg.contains("flexzone_blds"));
             ASSERT_FALSE(reg.contains("flexzone_packing"));
 
-            auto reg_resp = raw_req(broker.endpoint, "REG_REQ", reg);
+            auto reg_resp = raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, "prod.broker.helpers_n.uid00000001");
             ASSERT_FALSE(reg_resp.is_null()) << "REG_REQ raw_req timed out";
             ASSERT_EQ(reg_resp.value("status", std::string{}), "success")
                 << "Helper-built REG_REQ must succeed; got: " << reg_resp.dump();
+
+            // HEP-CORE-0036 §5.2 R6: producer must reach kLive (first
+            // heartbeat seen) before broker admits CONSUMER_REG_REQ.
+            {
+                nlohmann::json hb_req;
+                hb_req["channel_name"] = channel;
+                hb_req["producer_pid"] = pylabhub::platform::get_pid();
+                hb_req["role_uid"]     = prod_uid;
+                hb_req["role_type"]    = "producer";
+                raw_req(broker.endpoint, "HEARTBEAT_REQ", hb_req, 100,
+                        broker.pubkey, "prod.broker.helpers_n.uid00000001");
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
 
             // ── SCHEMA_REQ owner+id round-trip ─────────────────────────
             // path B → owner = role uid; helper hash/blds must equal what
@@ -2177,7 +2501,7 @@ int broker_sch_wire_helpers_register_and_cite()
             nlohmann::json sreq;
             sreq["owner"]     = prod_uid;
             sreq["schema_id"] = sid;
-            auto sresp = raw_req(broker.endpoint, "SCHEMA_REQ", sreq);
+            auto sresp = raw_req(broker.endpoint, "SCHEMA_REQ", sreq, 2000, broker.pubkey, "prod.broker.helpers_n.uid00000001");
             ASSERT_FALSE(sresp.is_null()) << "SCHEMA_REQ raw_req timed out";
             ASSERT_EQ(sresp.value("status", std::string{}), "success") << sresp.dump();
             EXPECT_EQ(sresp.value("owner", std::string{}), prod_uid);
@@ -2212,7 +2536,7 @@ int broker_sch_wire_helpers_register_and_cite()
             EXPECT_FALSE(cons.contains("expected_packing"))
                 << "wire field rename (§10.2): bare expected_packing must not be emitted";
 
-            auto creg_resp = raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons);
+            auto creg_resp = raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons, 2000, broker.pubkey, "cons.broker.helpers_n.uid00000002");
             ASSERT_FALSE(creg_resp.is_null()) << "CONSUMER_REG_REQ raw_req timed out";
             EXPECT_EQ(creg_resp.value("status", std::string{}), "success")
                 << "Helper-built CONSUMER_REG_REQ (named, with defense-in-depth "
@@ -2228,7 +2552,7 @@ int broker_sch_wire_helpers_register_and_cite()
             // the new policy treats same-uid re-registration as a
             // bookkeeping anomaly (residue or breach) — see
             // docs/tech_draft/controlled_access_api_design.md §6.2.
-            auto reg_resp2 = raw_req(broker.endpoint, "REG_REQ", reg);
+            auto reg_resp2 = raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, "prod.broker.helpers_n.uid00000001");
             ASSERT_FALSE(reg_resp2.is_null());
             EXPECT_EQ(reg_resp2.value("status", std::string{}), "error")
                 << "Same-uid re-register must reject; got: "
@@ -2267,9 +2591,12 @@ int broker_sch_wire_helpers_anonymous_citation()
         {
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
-            cfg.use_curve = false;
-            cfg.enforce_ctrl_admission = false;
-            auto broker   = start_broker_in_thread(std::move(cfg));
+            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
+            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
+            // admits each role uid we'll register below.
+            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.helpers_a.uid00000001", "cons.broker.helpers_a.uid00000002"});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_wire_helpers_anonymous_citation", curve);
+            auto broker   = start_broker_in_thread(std::move(cfg), curve);
 
             const std::string channel  = "broker.sch.helpers.anon";
             const std::string prod_uid = "prod.broker.helpers_a.uid00000001";
@@ -2289,7 +2616,20 @@ int broker_sch_wire_helpers_anonymous_citation()
                 nlohmann::json(sid), slot_spec, fz_spec);
             auto reg = baseline_reg_req(channel, prod_uid);
             pylabhub::hub::apply_producer_schema_fields(reg, wp);
-            auto reg_resp = raw_req(broker.endpoint, "REG_REQ", reg);
+            auto reg_resp = raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, "prod.broker.helpers_a.uid00000001");
+            // HEP-CORE-0036 §5.2 R6: broker rejects CONSUMER_REG_REQ until
+            // producer's presence is kLive (first heartbeat seen).  Tests
+            // pre-dated R6; this heartbeat unblocks the consumer reg below.
+            {
+                nlohmann::json hb_req;
+                hb_req["channel_name"] = "broker.sch.helpers.anon";
+
+                hb_req["producer_pid"] = pylabhub::platform::get_pid();
+                hb_req["role_uid"]     = "prod.broker.helpers_a.uid00000001";
+                hb_req["role_type"]    = "producer";
+                raw_req(broker.endpoint, "HEARTBEAT_REQ", hb_req, 100, broker.pubkey, "prod.broker.helpers_a.uid00000001");
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
             ASSERT_FALSE(reg_resp.is_null());
             ASSERT_EQ(reg_resp.value("status", std::string{}), "success") << reg_resp.dump();
 
@@ -2326,7 +2666,7 @@ int broker_sch_wire_helpers_anonymous_citation()
             ASSERT_TRUE(cons.contains("expected_schema_hash"))
                 << "Helper still emits hash; broker uses it for §10.3 self-consistency";
 
-            auto creg_resp = raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons);
+            auto creg_resp = raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons, 2000, broker.pubkey, "cons.broker.helpers_a.uid00000002");
             ASSERT_FALSE(creg_resp.is_null()) << "CONSUMER_REG_REQ raw_req timed out";
             EXPECT_EQ(creg_resp.value("status", std::string{}), "success")
                 << "Helper-built anonymous CONSUMER_REG_REQ must succeed (HEP-0034 "
@@ -2364,9 +2704,12 @@ int broker_sch_wire_helpers_flexzone_round_trip()
         {
             BrokerService::Config cfg;
             cfg.endpoint  = "tcp://127.0.0.1:0";
-            cfg.use_curve = false;
-            cfg.enforce_ctrl_admission = false;
-            auto broker   = start_broker_in_thread(std::move(cfg));
+            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
+            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
+            // admits each role uid we'll register below.
+            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.helpers_fz.uid00000001", "cons.broker.helpers_fz.uid00000002"});
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_wire_helpers_flexzone_round_trip", curve);
+            auto broker   = start_broker_in_thread(std::move(cfg), curve);
 
             const std::string channel  = "broker.sch.helpers.fz";
             const std::string prod_uid = "prod.broker.helpers_fz.uid00000001";
@@ -2410,7 +2753,20 @@ int broker_sch_wire_helpers_flexzone_round_trip()
                 << "Helper must emit flexzone_blds key when fz_spec.has_schema";
             ASSERT_TRUE(reg.contains("flexzone_packing"));
 
-            auto reg_resp = raw_req(broker.endpoint, "REG_REQ", reg);
+            auto reg_resp = raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, "prod.broker.helpers_fz.uid00000001");
+            // HEP-CORE-0036 §5.2 R6: broker rejects CONSUMER_REG_REQ until
+            // producer's presence is kLive (first heartbeat seen).  Tests
+            // pre-dated R6; this heartbeat unblocks the consumer reg below.
+            {
+                nlohmann::json hb_req;
+                hb_req["channel_name"] = "broker.sch.helpers.fz";
+
+                hb_req["producer_pid"] = pylabhub::platform::get_pid();
+                hb_req["role_uid"]     = "prod.broker.helpers_fz.uid00000001";
+                hb_req["role_type"]    = "producer";
+                raw_req(broker.endpoint, "HEARTBEAT_REQ", hb_req, 100, broker.pubkey, "prod.broker.helpers_fz.uid00000001");
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
             ASSERT_FALSE(reg_resp.is_null());
             ASSERT_EQ(reg_resp.value("status", std::string{}), "success")
                 << "Slot+flexzone REG_REQ via helpers must succeed; broker recomputes "
@@ -2420,7 +2776,7 @@ int broker_sch_wire_helpers_flexzone_round_trip()
             nlohmann::json sreq;
             sreq["owner"]     = prod_uid;
             sreq["schema_id"] = sid;
-            auto sresp = raw_req(broker.endpoint, "SCHEMA_REQ", sreq);
+            auto sresp = raw_req(broker.endpoint, "SCHEMA_REQ", sreq, 2000, broker.pubkey, "prod.broker.helpers_fz.uid00000001");
             ASSERT_FALSE(sresp.is_null());
             ASSERT_EQ(sresp.value("status", std::string{}), "success") << sresp.dump();
             EXPECT_EQ(sresp.value("schema_hash", std::string{}), w.schema_hash)
@@ -2447,7 +2803,7 @@ int broker_sch_wire_helpers_flexzone_round_trip()
                 << "Consumer helper must emit expected_flexzone_blds for fz spec";
             ASSERT_TRUE(cons.contains("expected_flexzone_packing"));
 
-            auto creg_resp = raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons);
+            auto creg_resp = raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons, 2000, broker.pubkey, "cons.broker.helpers_fz.uid00000002");
             ASSERT_FALSE(creg_resp.is_null());
             EXPECT_EQ(creg_resp.value("status", std::string{}), "success")
                 << "Helper-built CONSUMER_REG_REQ with slot+flexzone (named, "
@@ -2513,8 +2869,6 @@ struct BrokerWorkerRegistrar
                     return broker_sch_record_path_b_created();
                 if (scenario == "broker_sch_record_hash_mismatch_self")
                     return broker_sch_record_hash_mismatch_self();
-                if (scenario == "broker_sch_consumer_citation_match")
-                    return broker_sch_consumer_citation_match();
                 if (scenario == "broker_sch_consumer_citation_mismatch")
                     return broker_sch_consumer_citation_mismatch();
                 if (scenario == "broker_sch_no_packing_backward_compat")

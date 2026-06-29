@@ -206,6 +206,21 @@ role_state_machine) → batch 2b (broker_health + metrics + endpoint_registry;
 absorbs former trackers #293/#294) → Phase 3 (file 9 DEFER + file 10
 DELETE/RE-LAYER) → close out.
 
+**Batch-2a progress (2026-06-29):**
+- C0 RoleHandler L2 re-layer ✅ shipped.
+- C1 broker_protocol_workers (28 L3 tests) ✅ shipped.
+- C2 broker_workers (40 tests) ✅ shipped: 39 unmasked + 1 retired
+  (`broker_sch_consumer_citation_match` — verified duplicate of
+  `broker_schema_workers.cpp::consumer_schema_id_match_succeeds` by
+  reading both bodies + HEP-CORE-0034 §10.3, no contract loss).
+  Migration shape: per-test `CurveKeyStoreFixture` seed of every uid the
+  test uses, `raw_req` accepts a wire-identity name + auto-decorates
+  REG_REQ / CONSUMER_REG_REQ with §5b canonical fields when the seeded
+  role identity matches, and an R6 heartbeat is sent between producer
+  REG_REQ and consumer CONSUMER_REG_REQ in every test that exercises
+  both handlers.  All 2230/2230 ctest green.
+- C3 role_state_machine (19 L3 tests) — pending.
+
 **Out of scope (per §I11).**
 
 - Tests that pin priority dispatch, queue-blocking semantics, or

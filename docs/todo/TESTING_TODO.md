@@ -72,6 +72,7 @@ guarantee.
 |---|---|---|---|
 | 2026-06-27 | `test_datahub_hub_host_integration.cpp:HubHost_Shutdown_BreaksClientConnection` | HEP-CORE-0023 §2.5.3 "disconnect is terminal" — cross-process hub-death observability (libzmq shared-context CURVE quirk makes L3 impossible) | task #296 (L4 hub-death observability test) |
 | 2026-06-28 | `test_datahub_broker_protocol.cpp:BrokerProtocolTest.ClosingNotify_DeliveredToProducerAndConsumer` | CHANNEL_CLOSING_NOTIFY fan-out to ALL channel members (both producer-side AND consumer-side BRCs after `broker.request_close_channel`) | task **#225** (Pattern 4 rung 8 `Pattern4ChannelNotifiesTest`) — description extended 2026-06-28 with explicit fan-out cardinality / dual-receipt / trigger-path requirements |
+| 2026-06-29 | `test_datahub_broker.cpp:Sch_ConsumerCitationMatch` (worker `broker_sch_consumer_citation_match`) | Named-citation match: consumer's `expected_schema_id`+`expected_schema_hash` matches channel's stored hash → `CONSUMER_REG_REQ` succeeds (HEP-CORE-0034 §10.3) | **already covered** by `broker_schema_workers.cpp::consumer_schema_id_match_succeeds` — verified 2026-06-29 by reading both bodies + HEP-CORE-0034 §10.3 (same protocol path, same assertion specificity).  No new task; existing twin is the surviving site.  Retirement is plain DROP, not migration. |
 
 When proposing a future retirement: update this table FIRST, then
 update the destination task's description, then delete the test.

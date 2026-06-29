@@ -101,9 +101,11 @@ add_executable(test_layer3_datahub
     workers/datahub_integrity_repair_workers.cpp
 
     # ── Broker service integration tests ─────────────────────────────────────────
-    # MASKED — pending HEP-0035 §4.6.5 step 3-revised-F migration.
-    # test_datahub_broker.cpp
-    # workers/datahub_broker_workers.cpp
+    # Unmasked 2026-06-28 under #154 batch-2a C2 — migrated to KeyStore-based
+    # `start_broker_in_thread` + `known_roles.json` (HEP-CORE-0035 §4.8 +
+    # HEP-CORE-0040 §172).
+    test_datahub_broker.cpp
+    workers/datahub_broker_workers.cpp
 
     # ── Role identity policy enforcement tests (placeholder — HEP-0035) ───────
     # MASKED — slated for HEP-CORE-0035 §8 Phase 6 deletion (legacy machinery).

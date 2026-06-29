@@ -138,11 +138,11 @@ TEST_F(DatahubBrokerTest, Sch_RegHashMismatchSelf)
     ExpectWorkerOk(proc);
 }
 
-TEST_F(DatahubBrokerTest, Sch_ConsumerCitationMatch)
-{
-    auto proc = SpawnWorker("broker.broker_sch_consumer_citation_match", {});
-    ExpectWorkerOk(proc);
-}
+// Sch_ConsumerCitationMatch RETIRED 2026-06-28 (AUTH-6 batch-2a C2):
+// duplicate of `broker_schema_workers.cpp::consumer_schema_id_match_succeeds`.
+// Verified by reading both bodies + HEP-CORE-0034 §10.3 (same protocol path,
+// same `expected_schema_id` + `expected_schema_hash` citation match against
+// stored channel hash, same success assertion).
 
 TEST_F(DatahubBrokerTest, Sch_ConsumerCitationMismatch)
 {
