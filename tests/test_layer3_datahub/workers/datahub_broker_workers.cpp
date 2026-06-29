@@ -209,6 +209,38 @@ BrokerHandle start_broker_in_thread(BrokerService::Config cfg,
     return h;
 }
 
+// setup_broker_test — single-call helper that collapses the 5-line test
+// preamble (`Config cfg; make_curve_setup; CurveKeyStoreFixture;
+// start_broker_in_thread`) into one line.  Returns the broker handle
+// plus the seeded fixture; the fixture is heap-allocated so it can be
+// returned through a move-only carrier and stays alive for the
+// caller's stack frame (CurveKeyStoreFixture itself is non-movable).
+//
+// `schema_search_dirs` lets a test seed hub-global schema files
+// (HEP-CORE-0034 §12) at broker startup time — the 4 hub-globals
+// tests use this; others pass nothing.
+struct BrokerTestEnv
+{
+    BrokerHandle                                                  broker;
+    std::unique_ptr<pylabhub::tests::CurveKeyStoreFixture>        ks_fixture;
+};
+
+BrokerTestEnv setup_broker_test(std::vector<std::string>  uids,
+                                std::string_view          tag,
+                                std::vector<std::string>  schema_search_dirs = {})
+{
+    // CURVE setup: seed `key_store()` + `vault/known_roles.json` so the
+    // broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8) admits each role
+    // uid we'll register below.
+    auto curve = pylabhub::tests::make_curve_setup(std::move(uids));
+    auto ks    = std::make_unique<pylabhub::tests::CurveKeyStoreFixture>(
+        "test.l3", std::string{tag}, curve);
+    BrokerService::Config cfg;
+    cfg.schema_search_dirs = std::move(schema_search_dirs);
+    auto broker = start_broker_in_thread(std::move(cfg), curve);
+    return {std::move(broker), std::move(ks)};
+}
+
 } // anonymous namespace
 
 // -----------------------------------------------------------------------------
@@ -281,7 +313,6 @@ nlohmann::json raw_req(const std::string& endpoint,
                        const std::string& role_identity_name = "")
 {
     constexpr size_t kZ85KeyLen = 40;
-    constexpr size_t kZ85BufLen = 41;
 
     // Auto-decorate REG_REQ / CONSUMER_REG_REQ payloads with the §5b
     // canonical fields the broker requires.  Decoration uses the WIRE
@@ -475,13 +506,9 @@ int broker_reg_disc_happy_path()
     return run_gtest_worker(
         []()
         {
-            BrokerService::Config cfg;
-            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
-            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
-            // admits each role uid we'll register below.
-            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.ch1.uid00000001"});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_reg_disc_happy_path", curve);
-            auto broker = start_broker_in_thread(std::move(cfg), curve);
+            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.ch1.uid00000001"},
+
+                "broker.broker_reg_disc_happy_path");
 
             const std::string channel = "broker.ch1";
             const std::string uid     = "prod.broker.ch1.uid00000001";
@@ -539,13 +566,9 @@ int broker_schema_mismatch()
     return run_gtest_worker(
         []()
         {
-            BrokerService::Config cfg;
-            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
-            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
-            // admits each role uid we'll register below.
-            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.mismatch.uid00000001"});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_schema_mismatch", curve);
-            auto broker = start_broker_in_thread(std::move(cfg), curve);
+            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.mismatch.uid00000001"},
+
+                "broker.broker_schema_mismatch");
 
             const std::string channel  = "broker.mismatch.ch";
             const std::string role_uid = "prod.broker.mismatch.uid00000001";
@@ -593,13 +616,9 @@ int broker_channel_not_found()
     return run_gtest_worker(
         []()
         {
-            BrokerService::Config cfg;
-            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
-            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
-            // admits each role uid we'll register below.
-            auto curve = pylabhub::tests::make_curve_setup({"prod.querier.notfound.uid00000001"});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_channel_not_found", curve);
-            auto broker = start_broker_in_thread(std::move(cfg), curve);
+            auto [broker, _ks_fix] = setup_broker_test({"prod.querier.notfound.uid00000001"},
+
+                "broker.broker_channel_not_found");
 
             const std::string querier_uid = "prod.querier.notfound.uid00000001";
             pylabhub::tests::BrcHandle bh;
@@ -626,13 +645,9 @@ int broker_dereg_happy_path()
     return run_gtest_worker(
         []()
         {
-            BrokerService::Config cfg;
-            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
-            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
-            // admits each role uid we'll register below.
-            auto curve = pylabhub::tests::make_curve_setup({"prod.dereg.ch.uid00000001"});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_dereg_happy_path", curve);
-            auto broker = start_broker_in_thread(std::move(cfg), curve);
+            auto [broker, _ks_fix] = setup_broker_test({"prod.dereg.ch.uid00000001"},
+
+                "broker.broker_dereg_happy_path");
 
             const std::string channel = "broker.dereg.ch";
             const std::string uid     = "prod.dereg.ch.uid00000001";
@@ -700,13 +715,9 @@ int broker_dereg_pid_mismatch()
     return run_gtest_worker(
         []()
         {
-            BrokerService::Config cfg;
-            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
-            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
-            // admits each role uid we'll register below.
-            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.pid_mismatch.uid00000001"});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_dereg_pid_mismatch", curve);
-            auto broker = start_broker_in_thread(std::move(cfg), curve);
+            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.pid_mismatch.uid00000001"},
+
+                "broker.broker_dereg_pid_mismatch");
 
             const std::string channel  = "broker.pid_mismatch.ch";
             const std::string role_uid = "prod.broker.pid_mismatch.uid00000001";
@@ -783,13 +794,9 @@ int broker_dereg_missing_role_uid_rejected()
     return run_gtest_worker(
         []()
         {
-            BrokerService::Config cfg;
-            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
-            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
-            // admits each role uid we'll register below.
-            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.missing_uid.uid00000001", "cons.broker.missing_uid.uid00000001"});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_dereg_missing_role_uid_rejected", curve);
-            auto broker = start_broker_in_thread(std::move(cfg), curve);
+            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.missing_uid.uid00000001", "cons.broker.missing_uid.uid00000001"},
+
+                "broker.broker_dereg_missing_role_uid_rejected");
 
             const std::string channel  = "broker.missing_uid.ch";
             const std::string role_uid = "prod.broker.missing_uid.uid00000001";
@@ -870,14 +877,6 @@ int broker_dereg_missing_role_uid_rejected()
 namespace
 {
 
-/// Common broker fixture for R3.5b gate tests.  Returns a thread-owned
-/// broker handle; the worker is responsible for `stop_and_join()`.
-auto start_r35b_broker(const pylabhub::tests::CurveSetup &curve)
-{
-    BrokerService::Config cfg;
-    return start_broker_in_thread(std::move(cfg), curve);
-}
-
 /// Boilerplate REG_REQ that's ALWAYS valid except for the fields a
 /// test overrides explicitly.
 nlohmann::json reg_req_template(const std::string &channel,
@@ -899,12 +898,9 @@ int broker_gate_reg_req_rejects_empty_uid()
 {
     return run_gtest_worker(
         []() {
-            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
-            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
-            // admits each role uid we'll register below.
-            auto curve = pylabhub::tests::make_curve_setup({"wire.gate.uid00000099"});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_gate_reg_req_rejects_empty_uid", curve);
-            auto broker = start_r35b_broker(curve);
+            auto [broker, _ks_fix] = setup_broker_test({"wire.gate.uid00000099"},
+
+                "broker.broker_gate_reg_req_rejects_empty_uid");
             // REG_REQ with empty role_uid → INVALID_REQUEST (grammar).
             auto req = reg_req_template("r35b.empty_uid.ch", "");
             auto resp = raw_req(broker.endpoint, "REG_REQ", req, 2000, broker.pubkey, "wire.gate.uid00000099");
@@ -927,12 +923,9 @@ int broker_gate_reg_req_rejects_malformed_uid()
 {
     return run_gtest_worker(
         []() {
-            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
-            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
-            // admits each role uid we'll register below.
-            auto curve = pylabhub::tests::make_curve_setup({"wire.gate.uid00000099"});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_gate_reg_req_rejects_malformed_uid", curve);
-            auto broker = start_r35b_broker(curve);
+            auto [broker, _ks_fix] = setup_broker_test({"wire.gate.uid00000099"},
+
+                "broker.broker_gate_reg_req_rejects_malformed_uid");
             // "not-a-uid" → single component, no '.' → fails grammar.
             auto req = reg_req_template("r35b.malformed_uid.ch",
                                         "not-a-uid");
@@ -965,12 +958,9 @@ int broker_gate_reg_req_rejects_consumer_tag()
 {
     return run_gtest_worker(
         []() {
-            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
-            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
-            // admits each role uid we'll register below.
-            auto curve = pylabhub::tests::make_curve_setup({"wire.gate.uid00000099"});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_gate_reg_req_rejects_consumer_tag", curve);
-            auto broker = start_r35b_broker(curve);
+            auto [broker, _ks_fix] = setup_broker_test({"wire.gate.uid00000099"},
+
+                "broker.broker_gate_reg_req_rejects_consumer_tag");
             // role_uid="cons.x.y" on REG_REQ → INVALID_ROLE_TAG.
             // REG_REQ accepts {prod, proc}; consumer tag is wrong side.
             auto req = reg_req_template("r35b.wrong_tag.ch",
@@ -990,12 +980,9 @@ int broker_gate_reg_req_accepts_proc_tag()
 {
     return run_gtest_worker(
         []() {
-            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
-            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
-            // admits each role uid we'll register below.
-            auto curve = pylabhub::tests::make_curve_setup({"proc.r35b.uid00000001"});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_gate_reg_req_accepts_proc_tag", curve);
-            auto broker = start_r35b_broker(curve);
+            auto [broker, _ks_fix] = setup_broker_test({"proc.r35b.uid00000001"},
+
+                "broker.broker_gate_reg_req_accepts_proc_tag");
             // role_uid="proc.x.y" on REG_REQ → success.  Processor
             // roles register on the producer side for their output
             // channels per HEP-CORE-0011 Phase 6 dual-side model.
@@ -1017,12 +1004,9 @@ int broker_gate_consumer_reg_req_rejects_producer_tag()
 {
     return run_gtest_worker(
         []() {
-            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
-            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
-            // admits each role uid we'll register below.
-            auto curve = pylabhub::tests::make_curve_setup({"prod.r35b.cregwt.uid00000001", "prod.r35b.intruder.uid00000002"});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_gate_consumer_reg_req_rejects_producer_tag", curve);
-            auto broker = start_r35b_broker(curve);
+            auto [broker, _ks_fix] = setup_broker_test({"prod.r35b.cregwt.uid00000001", "prod.r35b.intruder.uid00000002"},
+
+                "broker.broker_gate_consumer_reg_req_rejects_producer_tag");
             // Need a channel to register a consumer to.
             const std::string channel  = "r35b.creg_wrong_tag.ch";
             const std::string prod_uid = "prod.r35b.cregwt.uid00000001";
@@ -1052,12 +1036,9 @@ int broker_gate_consumer_reg_req_accepts_proc_tag()
 {
     return run_gtest_worker(
         []() {
-            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
-            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
-            // admits each role uid we'll register below.
-            auto curve = pylabhub::tests::make_curve_setup({"prod.r35b.cregproc.uid00000001", "proc.r35b.cregproc.uid00000002"});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_gate_consumer_reg_req_accepts_proc_tag", curve);
-            auto broker = start_r35b_broker(curve);
+            auto [broker, _ks_fix] = setup_broker_test({"prod.r35b.cregproc.uid00000001", "proc.r35b.cregproc.uid00000002"},
+
+                "broker.broker_gate_consumer_reg_req_accepts_proc_tag");
             const std::string channel  = "r35b.cregproc.ch";
             const std::string prod_uid = "prod.r35b.cregproc.uid00000001";
             auto reg = reg_req_template(channel, prod_uid);
@@ -1136,13 +1117,9 @@ int broker_sch_record_path_b_created()
     return run_gtest_worker(
         []()
         {
-            BrokerService::Config cfg;
-            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
-            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
-            // admits each role uid we'll register below.
-            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.sch_b.uid00000001"});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_record_path_b_created", curve);
-            auto broker   = start_broker_in_thread(std::move(cfg), curve);
+            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.sch_b.uid00000001"},
+
+                "broker.broker_sch_record_path_b_created");
 
             const std::string channel = "broker.sch.path_b";
             const std::string uid     = "prod.broker.sch_b.uid00000001";
@@ -1194,13 +1171,9 @@ int broker_sch_record_hash_mismatch_self()
     return run_gtest_worker(
         []()
         {
-            BrokerService::Config cfg;
-            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
-            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
-            // admits each role uid we'll register below.
-            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.sch_mm.uid00000001"});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_record_hash_mismatch_self", curve);
-            auto broker   = start_broker_in_thread(std::move(cfg), curve);
+            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.sch_mm.uid00000001"},
+
+                "broker.broker_sch_record_hash_mismatch_self");
 
             const std::string ch1 = "broker.sch.mismatch_self.a";
             const std::string ch2 = "broker.sch.mismatch_self.b";
@@ -1264,13 +1237,9 @@ int broker_sch_consumer_citation_match()
     return run_gtest_worker(
         []()
         {
-            BrokerService::Config cfg;
-            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
-            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
-            // admits each role uid we'll register below.
-            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.sch_cok.uid00000001", "cons.broker.sch_cok.uid00000002"});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_consumer_citation_match", curve);
-            auto broker   = start_broker_in_thread(std::move(cfg), curve);
+            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.sch_cok.uid00000001", "cons.broker.sch_cok.uid00000002"},
+
+                "broker.broker_sch_consumer_citation_match");
 
             const std::string channel = "broker.sch.cons_ok";
             const std::string p_uid   = "prod.broker.sch_cok.uid00000001";
@@ -1321,13 +1290,9 @@ int broker_sch_consumer_citation_mismatch()
     return run_gtest_worker(
         []()
         {
-            BrokerService::Config cfg;
-            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
-            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
-            // admits each role uid we'll register below.
-            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.sch_cbad.uid00000001", "cons.broker.sch_cbad.uid00000002"});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_consumer_citation_mismatch", curve);
-            auto broker   = start_broker_in_thread(std::move(cfg), curve);
+            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.sch_cbad.uid00000001", "cons.broker.sch_cbad.uid00000002"},
+
+                "broker.broker_sch_consumer_citation_mismatch");
 
             const std::string channel = "broker.sch.cons_bad";
             const std::string p_uid   = "prod.broker.sch_cbad.uid00000001";
@@ -1384,13 +1349,9 @@ int broker_sch_no_packing_backward_compat()
     return run_gtest_worker(
         []()
         {
-            BrokerService::Config cfg;
-            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
-            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
-            // admits each role uid we'll register below.
-            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.sch_bc.uid00000001"});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_no_packing_backward_compat", curve);
-            auto broker   = start_broker_in_thread(std::move(cfg), curve);
+            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.sch_bc.uid00000001"},
+
+                "broker.broker_sch_no_packing_backward_compat");
 
             const std::string channel = "broker.sch.bc";
             const std::string uid     = "prod.broker.sch_bc.uid00000001";
@@ -1431,13 +1392,9 @@ int broker_sch_schema_req_owner_id()
     return run_gtest_worker(
         []()
         {
-            BrokerService::Config cfg;
-            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
-            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
-            // admits each role uid we'll register below.
-            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.schreq.uid00000001"});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_schema_req_owner_id", curve);
-            auto broker   = start_broker_in_thread(std::move(cfg), curve);
+            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.schreq.uid00000001"},
+
+                "broker.broker_sch_schema_req_owner_id");
 
             const std::string channel = "broker.sch.schreq";
             const std::string uid     = "prod.broker.schreq.uid00000001";
@@ -1503,13 +1460,9 @@ int broker_sch_inbox_path_a()
     return run_gtest_worker(
         []()
         {
-            BrokerService::Config cfg;
-            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
-            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
-            // admits each role uid we'll register below.
-            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.inbox.uid00000001"});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_inbox_path_a", curve);
-            auto broker   = start_broker_in_thread(std::move(cfg), curve);
+            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.inbox.uid00000001"},
+
+                "broker.broker_sch_inbox_path_a");
 
             const std::string channel  = "broker.sch.inbox";
             const std::string uid      = "prod.broker.inbox.uid00000001";
@@ -1556,13 +1509,9 @@ int broker_sch_inbox_hash_mismatch_self()
     return run_gtest_worker(
         []()
         {
-            BrokerService::Config cfg;
-            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
-            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
-            // admits each role uid we'll register below.
-            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.ibmm.uid00000001"});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_inbox_hash_mismatch_self", curve);
-            auto broker   = start_broker_in_thread(std::move(cfg), curve);
+            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.ibmm.uid00000001"},
+
+                "broker.broker_sch_inbox_hash_mismatch_self");
 
             const std::string ch1 = "broker.sch.inbox_mm.a";
             const std::string ch2 = "broker.sch.inbox_mm.b";
@@ -1602,13 +1551,9 @@ int broker_sch_inbox_idempotent()
     return run_gtest_worker(
         []()
         {
-            BrokerService::Config cfg;
-            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
-            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
-            // admits each role uid we'll register below.
-            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.idem.uid00000001"});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_inbox_idempotent", curve);
-            auto broker   = start_broker_in_thread(std::move(cfg), curve);
+            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.idem.uid00000001"},
+
+                "broker.broker_sch_inbox_idempotent");
 
             const std::string ch1 = "broker.sch.inbox_idem.a";
             const std::string ch2 = "broker.sch.inbox_idem.b";
@@ -1648,13 +1593,9 @@ int broker_sch_inbox_invalid_json()
     return run_gtest_worker(
         []()
         {
-            BrokerService::Config cfg;
-            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
-            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
-            // admits each role uid we'll register below.
-            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.ibj.uid00000001", "prod.broker.ibj.uid000000011"});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_inbox_invalid_json", curve);
-            auto broker   = start_broker_in_thread(std::move(cfg), curve);
+            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.ibj.uid00000001", "prod.broker.ibj.uid000000011"},
+
+                "broker.broker_sch_inbox_invalid_json");
 
             const std::string channel = "broker.sch.inbox_bad_json";
             const std::string uid     = "prod.broker.ibj.uid00000001";
@@ -1699,13 +1640,9 @@ int broker_sch_inbox_two_owners()
     return run_gtest_worker(
         []()
         {
-            BrokerService::Config cfg;
-            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
-            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
-            // admits each role uid we'll register below.
-            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.ib2a.uid00000001", "prod.broker.ib2b.uid00000002"});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_inbox_two_owners", curve);
-            auto broker   = start_broker_in_thread(std::move(cfg), curve);
+            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.ib2a.uid00000001", "prod.broker.ib2b.uid00000002"},
+
+                "broker.broker_sch_inbox_two_owners");
 
             const std::string ch_a = "broker.sch.inbox_2a";
             const std::string ch_b = "broker.sch.inbox_2b";
@@ -1766,13 +1703,9 @@ int broker_sch_schema_req_invalid()
     return run_gtest_worker(
         []()
         {
-            BrokerService::Config cfg;
-            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
-            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
-            // admits each role uid we'll register below.
-            auto curve = pylabhub::tests::make_curve_setup({"prod.test.uid00000001"});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_schema_req_invalid", curve);
-            auto broker   = start_broker_in_thread(std::move(cfg), curve);
+            auto [broker, _ks_fix] = setup_broker_test({"prod.test.uid00000001"},
+
+                "broker.broker_sch_schema_req_invalid");
 
             // No owner, no schema_id, no channel_name — wire payload is
             // an object with no keys (NOT a null json — wire messages
@@ -1805,13 +1738,9 @@ int broker_sch_inbox_invalid_packing()
     return run_gtest_worker(
         []()
         {
-            BrokerService::Config cfg;
-            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
-            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
-            // admits each role uid we'll register below.
-            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.ibp.uid00000001"});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_inbox_invalid_packing", curve);
-            auto broker   = start_broker_in_thread(std::move(cfg), curve);
+            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.ibp.uid00000001"},
+
+                "broker.broker_sch_inbox_invalid_packing");
 
             const std::string channel = "broker.sch.inbox_bad_pack";
             const std::string uid     = "prod.broker.ibp.uid00000001";
@@ -1840,13 +1769,9 @@ int broker_sch_reg_missing_packing()
     return run_gtest_worker(
         []()
         {
-            BrokerService::Config cfg;
-            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
-            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
-            // admits each role uid we'll register below.
-            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.miss_pack.uid00000001"});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_reg_missing_packing", curve);
-            auto broker   = start_broker_in_thread(std::move(cfg), curve);
+            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.miss_pack.uid00000001"},
+
+                "broker.broker_sch_reg_missing_packing");
 
             // schema_id non-empty but schema_packing missing → NACK MISSING_PACKING.
             auto reg = baseline_reg_req("broker.sch.miss_pack",
@@ -1872,13 +1797,9 @@ int broker_sch_reg_fingerprint_inconsistent()
     return run_gtest_worker(
         []()
         {
-            BrokerService::Config cfg;
-            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
-            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
-            // admits each role uid we'll register below.
-            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.fp_bad.uid00000001"});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_reg_fingerprint_inconsistent", curve);
-            auto broker   = start_broker_in_thread(std::move(cfg), curve);
+            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.fp_bad.uid00000001"},
+
+                "broker.broker_sch_reg_fingerprint_inconsistent");
 
             // Producer claims a hash that does NOT match BLDS+packing.
             // Stage-2 broker recomputes and rejects.
@@ -1905,13 +1826,9 @@ int broker_sch_cons_named_missing_hash()
     return run_gtest_worker(
         []()
         {
-            BrokerService::Config cfg;
-            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
-            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
-            // admits each role uid we'll register below.
-            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.cnh.uid00000001", "cons.broker.cnh.uid00000002"});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_cons_named_missing_hash", curve);
-            auto broker   = start_broker_in_thread(std::move(cfg), curve);
+            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.cnh.uid00000001", "cons.broker.cnh.uid00000002"},
+
+                "broker.broker_sch_cons_named_missing_hash");
 
             const std::string ch  = "broker.sch.cons_no_hash";
             const std::string p   = "prod.broker.cnh.uid00000001";
@@ -1959,13 +1876,9 @@ int broker_sch_cons_anonymous_happy_path()
     return run_gtest_worker(
         []()
         {
-            BrokerService::Config cfg;
-            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
-            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
-            // admits each role uid we'll register below.
-            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.canok.uid00000001", "cons.broker.canok.uid00000002"});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_cons_anonymous_happy_path", curve);
-            auto broker   = start_broker_in_thread(std::move(cfg), curve);
+            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.canok.uid00000001", "cons.broker.canok.uid00000002"},
+
+                "broker.broker_sch_cons_anonymous_happy_path");
 
             const std::string ch  = "broker.sch.cons_anon_ok";
             const std::string p   = "prod.broker.canok.uid00000001";
@@ -2014,13 +1927,9 @@ int broker_sch_cons_anonymous_missing_packing()
     return run_gtest_worker(
         []()
         {
-            BrokerService::Config cfg;
-            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
-            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
-            // admits each role uid we'll register below.
-            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.canp.uid00000001", "cons.broker.canp.uid00000002"});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_cons_anonymous_missing_packing", curve);
-            auto broker   = start_broker_in_thread(std::move(cfg), curve);
+            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.canp.uid00000001", "cons.broker.canp.uid00000002"},
+
+                "broker.broker_sch_cons_anonymous_missing_packing");
 
             const std::string ch = "broker.sch.cons_anon_nopack";
             const std::string p  = "prod.broker.canp.uid00000001";
@@ -2061,13 +1970,9 @@ int broker_sch_cons_named_with_structure_mismatch()
     return run_gtest_worker(
         []()
         {
-            BrokerService::Config cfg;
-            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
-            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
-            // admits each role uid we'll register below.
-            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.cnsb.uid00000001", "cons.broker.cnsb.uid00000002"});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_cons_named_with_structure_mismatch", curve);
-            auto broker   = start_broker_in_thread(std::move(cfg), curve);
+            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.cnsb.uid00000001", "cons.broker.cnsb.uid00000002"},
+
+                "broker.broker_sch_cons_named_with_structure_mismatch");
 
             const std::string ch  = "broker.sch.cons_named_struct_bad";
             const std::string p   = "prod.broker.cnsb.uid00000001";
@@ -2119,13 +2024,9 @@ int broker_sch_inbox_evicts_on_disconnect()
     return run_gtest_worker(
         []()
         {
-            BrokerService::Config cfg;
-            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
-            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
-            // admits each role uid we'll register below.
-            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.ibev.uid00000001"});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_inbox_evicts_on_disconnect", curve);
-            auto broker = start_broker_in_thread(std::move(cfg), curve);
+            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.ibev.uid00000001"},
+
+                "broker.broker_sch_inbox_evicts_on_disconnect");
 
             const std::string ch  = "broker.sch.inbox_evict";
             const std::string uid = "prod.broker.ibev.uid00000001";
@@ -2233,14 +2134,13 @@ int broker_sch_hub_globals_loaded_at_startup()
                 "lab.demo.frame", 1,
                 R"([{"name":"v","type":"float32"}])");
 
-            BrokerService::Config cfg;
-            cfg.schema_search_dirs = {schema_root.string()};
-            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
-            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
-            // admits each role uid we'll register below.
-            auto curve = pylabhub::tests::make_curve_setup({"wire.gate.uid00000099"});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_hub_globals_loaded_at_startup", curve);
-            auto broker = start_broker_in_thread(std::move(cfg), curve);
+            auto [broker, _ks_fix] = setup_broker_test({"wire.gate.uid00000099"},
+
+
+                "broker.broker_sch_hub_globals_loaded_at_startup",
+
+
+                {schema_root.string()});
 
             // SCHEMA_REQ for (hub, $lab.demo.frame.v1) must succeed —
             // proves Phase 4b loaded the global into HubState.schemas.
@@ -2278,14 +2178,13 @@ int broker_sch_path_c_adoption_succeeds()
             const auto schema_root = make_global_schema_dir(
                 sid_dotted, 1, R"([{"name":"v","type":"float32"}])");
 
-            BrokerService::Config cfg;
-            cfg.schema_search_dirs = {schema_root.string()};
-            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
-            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
-            // admits each role uid we'll register below.
-            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.adopt.uid00000001"});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_path_c_adoption_succeeds", curve);
-            auto broker = start_broker_in_thread(std::move(cfg), curve);
+            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.adopt.uid00000001"},
+
+
+                "broker.broker_sch_path_c_adoption_succeeds",
+
+
+                {schema_root.string()});
 
             const std::string channel = "broker.sch.adopt";
             const std::string uid     = "prod.broker.adopt.uid00000001";
@@ -2325,14 +2224,13 @@ int broker_sch_path_c_fingerprint_mismatch()
             const auto schema_root = make_global_schema_dir(
                 "lab.demo.mm", 1, R"([{"name":"v","type":"float32"}])");
 
-            BrokerService::Config cfg;
-            cfg.schema_search_dirs = {schema_root.string()};
-            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
-            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
-            // admits each role uid we'll register below.
-            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.mm.uid00000001"});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_path_c_fingerprint_mismatch", curve);
-            auto broker = start_broker_in_thread(std::move(cfg), curve);
+            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.mm.uid00000001"},
+
+
+                "broker.broker_sch_path_c_fingerprint_mismatch",
+
+
+                {schema_root.string()});
 
             // HEP-0034 §6.3 — wire `type` is the JSON type name.
             const std::string blds_wrong    = "v:int32:1:0";
@@ -2410,13 +2308,9 @@ int broker_sch_path_x_forbidden_owner()
     return run_gtest_worker(
         []()
         {
-            BrokerService::Config cfg;
-            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
-            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
-            // admits each role uid we'll register below.
-            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.fbd.uid00000001"});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_path_x_forbidden_owner", curve);
-            auto broker = start_broker_in_thread(std::move(cfg), curve);
+            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.fbd.uid00000001"},
+
+                "broker.broker_sch_path_x_forbidden_owner");
 
             const std::string blds    = "v:f32:1:0";
             const std::string packing = "aligned";
@@ -2474,13 +2368,9 @@ int broker_sch_wire_helpers_register_and_cite()
     return run_gtest_worker(
         []()
         {
-            BrokerService::Config cfg;
-            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
-            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
-            // admits each role uid we'll register below.
-            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.helpers_n.uid00000001", "cons.broker.helpers_n.uid00000002"});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_wire_helpers_register_and_cite", curve);
-            auto broker   = start_broker_in_thread(std::move(cfg), curve);
+            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.helpers_n.uid00000001", "cons.broker.helpers_n.uid00000002"},
+
+                "broker.broker_sch_wire_helpers_register_and_cite");
 
             const std::string channel  = "broker.sch.helpers.named";
             const std::string prod_uid = "prod.broker.helpers_n.uid00000001";
@@ -2628,13 +2518,9 @@ int broker_sch_wire_helpers_anonymous_citation()
     return run_gtest_worker(
         []()
         {
-            BrokerService::Config cfg;
-            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
-            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
-            // admits each role uid we'll register below.
-            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.helpers_a.uid00000001", "cons.broker.helpers_a.uid00000002"});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_wire_helpers_anonymous_citation", curve);
-            auto broker   = start_broker_in_thread(std::move(cfg), curve);
+            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.helpers_a.uid00000001", "cons.broker.helpers_a.uid00000002"},
+
+                "broker.broker_sch_wire_helpers_anonymous_citation");
 
             const std::string channel  = "broker.sch.helpers.anon";
             const std::string prod_uid = "prod.broker.helpers_a.uid00000001";
@@ -2732,13 +2618,9 @@ int broker_sch_wire_helpers_flexzone_round_trip()
     return run_gtest_worker(
         []()
         {
-            BrokerService::Config cfg;
-            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
-            // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
-            // admits each role uid we'll register below.
-            auto curve = pylabhub::tests::make_curve_setup({"prod.broker.helpers_fz.uid00000001", "cons.broker.helpers_fz.uid00000002"});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_wire_helpers_flexzone_round_trip", curve);
-            auto broker   = start_broker_in_thread(std::move(cfg), curve);
+            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.helpers_fz.uid00000001", "cons.broker.helpers_fz.uid00000002"},
+
+                "broker.broker_sch_wire_helpers_flexzone_round_trip");
 
             const std::string channel  = "broker.sch.helpers.fz";
             const std::string prod_uid = "prod.broker.helpers_fz.uid00000001";

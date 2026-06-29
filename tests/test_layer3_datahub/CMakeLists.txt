@@ -101,7 +101,7 @@ add_executable(test_layer3_datahub
     workers/datahub_integrity_repair_workers.cpp
 
     # ── Broker service integration tests ─────────────────────────────────────────
-    # Unmasked 2026-06-28 under #154 batch-2a C2 — migrated to KeyStore-based
+    # Unmasked 2026-06-29 under #154 batch-2a C2 — migrated to KeyStore-based
     # `start_broker_in_thread` + `known_roles.json` (HEP-CORE-0035 §4.8 +
     # HEP-CORE-0040 §172).
     test_datahub_broker.cpp
