@@ -22,6 +22,7 @@
 //   5. no_reader_races_on_clean_wraparound    — N full write+read cycles; reader_race_detected == 0
 
 #include "datahub_c_api_draining_workers.h"
+#include "datahub_fd_test_helper.h"
 #include "test_entrypoint.h"
 #include "shared_test_helpers.h"
 #include "plh_datahub.hpp"
@@ -86,16 +87,16 @@ int draining_state_entered_on_wraparound()
             std::string channel = make_test_channel_name("DrainState");
             auto cfg = make_one_slot_config(72001);
 
-            auto producer = create_datablock_producer_impl(channel,
-                                                           DataBlockPolicy::RingBuffer,
-                                                           cfg, nullptr, nullptr);
-            ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer_impl(channel, cfg.shared_secret,
-                                                         &cfg, nullptr, nullptr);
-            ASSERT_NE(consumer, nullptr);
+            auto pair_ = pylabhub::tests::helper::make_fd_backed_pair(
+                channel, DataBlockPolicy::RingBuffer, cfg);
+            ASSERT_NE(pair_.producer, nullptr);
+            ASSERT_NE(pair_.consumer, nullptr);
+            auto &producer = pair_.producer;
+            auto &consumer = pair_.consumer;
 
             // Open diagnostic handle to inspect raw slot state
-            auto diag = open_datablock_for_diagnostic(channel);
+            auto diag = pylabhub::hub::open_datablock_for_diagnostic_from_fd(
+                pair_.transport->borrow_fd());
             ASSERT_NE(diag, nullptr);
             SlotRWState *rw = diag->slot_rw_state(0);
             ASSERT_NE(rw, nullptr);
@@ -134,9 +135,7 @@ int draining_state_entered_on_wraparound()
             (void)consumer->release_consume_slot(*rh);
             writer.join();
 
-            producer.reset();
-            consumer.reset();
-            cleanup_test_datablock(channel);
+            // FdBackedDataBlock dtor releases consumer → producer → transport.
         },
         "draining_state_entered_on_wraparound", logger_module(), crypto_module(), hub_module());
 }
@@ -155,15 +154,15 @@ int draining_rejects_new_readers()
             std::string channel = make_test_channel_name("DrainReject");
             auto cfg = make_one_slot_config(72002);
 
-            auto producer = create_datablock_producer_impl(channel,
-                                                           DataBlockPolicy::RingBuffer,
-                                                           cfg, nullptr, nullptr);
-            ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer_impl(channel, cfg.shared_secret,
-                                                         &cfg, nullptr, nullptr);
-            ASSERT_NE(consumer, nullptr);
+            auto pair_ = pylabhub::tests::helper::make_fd_backed_pair(
+                channel, DataBlockPolicy::RingBuffer, cfg);
+            ASSERT_NE(pair_.producer, nullptr);
+            ASSERT_NE(pair_.consumer, nullptr);
+            auto &producer = pair_.producer;
+            auto &consumer = pair_.consumer;
 
-            auto diag = open_datablock_for_diagnostic(channel);
+            auto diag = pylabhub::hub::open_datablock_for_diagnostic_from_fd(
+                pair_.transport->borrow_fd());
             ASSERT_NE(diag, nullptr);
             SlotRWState *rw = diag->slot_rw_state(0);
             ASSERT_NE(rw, nullptr);
@@ -206,9 +205,7 @@ int draining_rejects_new_readers()
             (void)consumer->release_consume_slot(*rh1);
             writer.join();
 
-            producer.reset();
-            consumer.reset();
-            cleanup_test_datablock(channel);
+            // FdBackedDataBlock dtor releases consumer → producer → transport.
         },
         "draining_rejects_new_readers", logger_module(), crypto_module(), hub_module());
 }
@@ -227,15 +224,15 @@ int draining_resolves_after_reader_release()
             std::string channel = make_test_channel_name("DrainResolve");
             auto cfg = make_one_slot_config(72003);
 
-            auto producer = create_datablock_producer_impl(channel,
-                                                           DataBlockPolicy::RingBuffer,
-                                                           cfg, nullptr, nullptr);
-            ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer_impl(channel, cfg.shared_secret,
-                                                         &cfg, nullptr, nullptr);
-            ASSERT_NE(consumer, nullptr);
+            auto pair_ = pylabhub::tests::helper::make_fd_backed_pair(
+                channel, DataBlockPolicy::RingBuffer, cfg);
+            ASSERT_NE(pair_.producer, nullptr);
+            ASSERT_NE(pair_.consumer, nullptr);
+            auto &producer = pair_.producer;
+            auto &consumer = pair_.consumer;
 
-            auto diag = open_datablock_for_diagnostic(channel);
+            auto diag = pylabhub::hub::open_datablock_for_diagnostic_from_fd(
+                pair_.transport->borrow_fd());
             ASSERT_NE(diag, nullptr);
             SlotRWState *rw = diag->slot_rw_state(0);
             ASSERT_NE(rw, nullptr);
@@ -283,9 +280,7 @@ int draining_resolves_after_reader_release()
             EXPECT_EQ(read_val, kNewValue) << "Consumer should read new value written after drain";
             (void)consumer->release_consume_slot(*rh2);
 
-            producer.reset();
-            consumer.reset();
-            cleanup_test_datablock(channel);
+            // FdBackedDataBlock dtor releases consumer → producer → transport.
         },
         "draining_resolves_after_reader_release", logger_module(), crypto_module(), hub_module());
 }
@@ -305,15 +300,15 @@ int draining_timeout_restores_committed()
             std::string channel = make_test_channel_name("DrainTimeout");
             auto cfg = make_one_slot_config(72004);
 
-            auto producer = create_datablock_producer_impl(channel,
-                                                           DataBlockPolicy::RingBuffer,
-                                                           cfg, nullptr, nullptr);
-            ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer_impl(channel, cfg.shared_secret,
-                                                         &cfg, nullptr, nullptr);
-            ASSERT_NE(consumer, nullptr);
+            auto pair_ = pylabhub::tests::helper::make_fd_backed_pair(
+                channel, DataBlockPolicy::RingBuffer, cfg);
+            ASSERT_NE(pair_.producer, nullptr);
+            ASSERT_NE(pair_.consumer, nullptr);
+            auto &producer = pair_.producer;
+            auto &consumer = pair_.consumer;
 
-            auto diag = open_datablock_for_diagnostic(channel);
+            auto diag = pylabhub::hub::open_datablock_for_diagnostic_from_fd(
+                pair_.transport->borrow_fd());
             ASSERT_NE(diag, nullptr);
             SlotRWState *rw = diag->slot_rw_state(0);
             ASSERT_NE(rw, nullptr);
@@ -365,9 +360,7 @@ int draining_timeout_restores_committed()
             EXPECT_EQ(rw->write_lock.load(std::memory_order_acquire), 0u)
                 << "write_lock must remain 0 after reader release";
 
-            producer.reset();
-            consumer.reset();
-            cleanup_test_datablock(channel);
+            // FdBackedDataBlock dtor releases consumer → producer → transport.
         },
         "draining_timeout_restores_committed", logger_module(), crypto_module(), hub_module());
 }
@@ -394,13 +387,12 @@ int no_reader_races_on_clean_wraparound()
             cfg.physical_page_size = DataBlockPageSize::Size4K;
             cfg.checksum_policy = ChecksumPolicy::None;
 
-            auto producer = create_datablock_producer_impl(channel,
-                                                           DataBlockPolicy::RingBuffer,
-                                                           cfg, nullptr, nullptr);
-            ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer_impl(channel, cfg.shared_secret,
-                                                         &cfg, nullptr, nullptr);
-            ASSERT_NE(consumer, nullptr);
+            auto pair_ = pylabhub::tests::helper::make_fd_backed_pair(
+                channel, DataBlockPolicy::RingBuffer, cfg);
+            ASSERT_NE(pair_.producer, nullptr);
+            ASSERT_NE(pair_.consumer, nullptr);
+            auto &producer = pair_.producer;
+            auto &consumer = pair_.consumer;
 
             constexpr int kIterations = 20;
             for (int i = 0; i < kIterations; ++i)
@@ -423,9 +415,7 @@ int no_reader_races_on_clean_wraparound()
             EXPECT_EQ(metrics.reader_race_detected, 0u)
                 << "reader_race_detected must be 0 for clean single-threaded wraparounds";
 
-            producer.reset();
-            consumer.reset();
-            cleanup_test_datablock(channel);
+            // FdBackedDataBlock dtor releases consumer → producer → transport.
         },
         "no_reader_races_on_clean_wraparound", logger_module(), crypto_module(), hub_module());
 }
@@ -460,15 +450,15 @@ int single_reader_ring_full_blocks_not_draining()
             cfg.physical_page_size = DataBlockPageSize::Size4K;
             cfg.checksum_policy = ChecksumPolicy::None;
 
-            auto producer = create_datablock_producer_impl(channel,
-                                                           DataBlockPolicy::RingBuffer,
-                                                           cfg, nullptr, nullptr);
-            ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer_impl(channel, cfg.shared_secret,
-                                                         &cfg, nullptr, nullptr);
-            ASSERT_NE(consumer, nullptr);
+            auto pair_ = pylabhub::tests::helper::make_fd_backed_pair(
+                channel, DataBlockPolicy::RingBuffer, cfg);
+            ASSERT_NE(pair_.producer, nullptr);
+            ASSERT_NE(pair_.consumer, nullptr);
+            auto &producer = pair_.producer;
+            auto &consumer = pair_.consumer;
 
-            auto diag = open_datablock_for_diagnostic(channel);
+            auto diag = pylabhub::hub::open_datablock_for_diagnostic_from_fd(
+                pair_.transport->borrow_fd());
             ASSERT_NE(diag, nullptr);
             SlotRWState *rw0 = diag->slot_rw_state(0);
             SlotRWState *rw1 = diag->slot_rw_state(1);
@@ -520,9 +510,7 @@ int single_reader_ring_full_blocks_not_draining()
                 << "Slot 1 must remain COMMITTED; DRAINING was never entered";
 
             (void)consumer->release_consume_slot(*rh);
-            producer.reset();
-            consumer.reset();
-            cleanup_test_datablock(channel);
+            // FdBackedDataBlock dtor releases consumer → producer → transport.
         },
         "single_reader_ring_full_blocks_not_draining", logger_module(), crypto_module(),
         hub_module());
@@ -550,19 +538,28 @@ int sync_reader_ring_full_blocks_not_draining()
             cfg.physical_page_size = DataBlockPageSize::Size4K;
             cfg.checksum_policy = ChecksumPolicy::None;
 
-            auto producer = create_datablock_producer_impl(channel,
-                                                           DataBlockPolicy::RingBuffer,
-                                                           cfg, nullptr, nullptr);
-            ASSERT_NE(producer, nullptr);
-            // Two independent consumers (each registers its own heartbeat/position slot)
-            auto consumer1 = find_datablock_consumer_impl(channel, cfg.shared_secret,
-                                                          &cfg, nullptr, nullptr);
-            ASSERT_NE(consumer1, nullptr);
-            auto consumer2 = find_datablock_consumer_impl(channel, cfg.shared_secret,
-                                                          &cfg, nullptr, nullptr);
+            // Pair gives us producer + consumer1 from one transport.
+            // Consumer2 is built from a SECOND dup of the transport's fd:
+            // the fd-source factory dups internally, so we close ours
+            // immediately.  Each consumer registers its own heartbeat /
+            // position slot via the on-disk DataBlock header so two
+            // independent consumers off the same transport behave
+            // identically to two consumers off two name-based opens.
+            auto pair_ = pylabhub::tests::helper::make_fd_backed_pair(
+                channel, DataBlockPolicy::RingBuffer, cfg);
+            ASSERT_NE(pair_.producer, nullptr);
+            ASSERT_NE(pair_.consumer, nullptr);
+            auto &producer  = pair_.producer;
+            auto &consumer1 = pair_.consumer;
+            const int rx2_fd = ::dup(pair_.transport->borrow_fd());
+            ASSERT_GE(rx2_fd, 0) << "dup() for consumer2: errno=" << errno;
+            auto consumer2 = pylabhub::hub::find_datablock_consumer_from_fd_impl(
+                channel, rx2_fd, &cfg, nullptr, nullptr, nullptr, nullptr);
+            ::close(rx2_fd);
             ASSERT_NE(consumer2, nullptr);
 
-            auto diag = open_datablock_for_diagnostic(channel);
+            auto diag = pylabhub::hub::open_datablock_for_diagnostic_from_fd(
+                pair_.transport->borrow_fd());
             ASSERT_NE(diag, nullptr);
 
             // Fill the ring: 3 slots committed
@@ -613,10 +610,10 @@ int sync_reader_ring_full_blocks_not_draining()
 
             (void)consumer1->release_consume_slot(*rh1);
             (void)consumer2->release_consume_slot(*rh2);
-            producer.reset();
-            consumer1.reset();
             consumer2.reset();
-            cleanup_test_datablock(channel);
+            // Pair dtor releases consumer1 → producer → transport
+            // (consumer2 already released above so its memory mapping
+            // unwinds before transport closes the underlying memfd).
         },
         "sync_reader_ring_full_blocks_not_draining", logger_module(), crypto_module(),
         hub_module());
@@ -640,13 +637,12 @@ int drain_hold_true_never_returns_nullptr()
             std::string channel = make_test_channel_name("DrainHoldNoNull");
             auto cfg = make_one_slot_config(72008);
 
-            auto producer = create_datablock_producer_impl(channel,
-                                                           DataBlockPolicy::RingBuffer,
-                                                           cfg, nullptr, nullptr);
-            ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer_impl(channel, cfg.shared_secret,
-                                                         &cfg, nullptr, nullptr);
-            ASSERT_NE(consumer, nullptr);
+            auto pair_ = pylabhub::tests::helper::make_fd_backed_pair(
+                channel, DataBlockPolicy::RingBuffer, cfg);
+            ASSERT_NE(pair_.producer, nullptr);
+            ASSERT_NE(pair_.consumer, nullptr);
+            auto &producer = pair_.producer;
+            auto &consumer = pair_.consumer;
 
             // First write: slot 0 → COMMITTED
             {
@@ -682,7 +678,8 @@ int drain_hold_true_never_returns_nullptr()
                 });
 
             // Wait for DRAINING so writer is definitely blocked
-            auto diag = open_datablock_for_diagnostic(channel);
+            auto diag = pylabhub::hub::open_datablock_for_diagnostic_from_fd(
+                pair_.transport->borrow_fd());
             ASSERT_NE(diag, nullptr);
             SlotRWState *rw = diag->slot_rw_state(0);
             ASSERT_NE(rw, nullptr);
@@ -703,9 +700,7 @@ int drain_hold_true_never_returns_nullptr()
                 << "drain_hold=true: writer must return a valid slot handle after drain "
                    "completes, never nullptr";
 
-            producer.reset();
-            consumer.reset();
-            cleanup_test_datablock(channel);
+            // FdBackedDataBlock dtor releases consumer → producer → transport.
         },
         "drain_hold_true_never_returns_nullptr", logger_module(), crypto_module(), hub_module());
 }
@@ -726,13 +721,12 @@ int drain_hold_true_metrics_accumulated()
             std::string channel = make_test_channel_name("DrainHoldMetrics");
             auto cfg = make_one_slot_config(72009);
 
-            auto producer = create_datablock_producer_impl(channel,
-                                                           DataBlockPolicy::RingBuffer,
-                                                           cfg, nullptr, nullptr);
-            ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer_impl(channel, cfg.shared_secret,
-                                                         &cfg, nullptr, nullptr);
-            ASSERT_NE(consumer, nullptr);
+            auto pair_ = pylabhub::tests::helper::make_fd_backed_pair(
+                channel, DataBlockPolicy::RingBuffer, cfg);
+            ASSERT_NE(pair_.producer, nullptr);
+            ASSERT_NE(pair_.consumer, nullptr);
+            auto &producer = pair_.producer;
+            auto &consumer = pair_.consumer;
 
             // First write: slot 0 → COMMITTED
             {
@@ -782,9 +776,7 @@ int drain_hold_true_metrics_accumulated()
             EXPECT_GT(m.writer_blocked_total_ns, 0u)
                 << "writer_blocked_total_ns must be > 0 after drain-hold timeout resets";
 
-            producer.reset();
-            consumer.reset();
-            cleanup_test_datablock(channel);
+            // FdBackedDataBlock dtor releases consumer → producer → transport.
         },
         "drain_hold_true_metrics_accumulated", logger_module(), crypto_module(), hub_module());
 }

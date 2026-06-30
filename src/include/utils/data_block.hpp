@@ -1236,11 +1236,42 @@ class PYLABHUB_UTILS_EXPORT DataBlockDiagnosticHandle
     std::unique_ptr<DataBlockDiagnosticHandleImpl> pImpl;
     friend PYLABHUB_UTILS_EXPORT std::unique_ptr<DataBlockDiagnosticHandle>
     open_datablock_for_diagnostic(const std::string &name);
+    friend PYLABHUB_UTILS_EXPORT std::unique_ptr<DataBlockDiagnosticHandle>
+    open_datablock_for_diagnostic_from_fd(int source_fd);
 };
 
 /** Opens an existing DataBlock by name for read-only diagnostics. Returns nullptr on failure. */
 [[nodiscard]] PYLABHUB_UTILS_EXPORT std::unique_ptr<DataBlockDiagnosticHandle>
 open_datablock_for_diagnostic(const std::string &name);
+
+/**
+ * @brief Opens a DataBlock from an fd (e.g. memfd from `IShmCapabilityProducer`)
+ *        for read-only diagnostics.  Sibling of `open_datablock_for_diagnostic`
+ *        on the HEP-CORE-0041 fd-source path: producers under the capability
+ *        transport own anonymous memfds with no shm_open() name, so the
+ *        name-based open does not apply.
+ *
+ * Implementation contract mirrors `DataBlock::setup_shm_from_fd_`:
+ *  - `F_DUPFD_CLOEXEC` with min fd 1 (avoids the fd=0 vs opaque=nullptr
+ *    collision in `shm_close`; sets CLOEXEC atomically).
+ *  - `fstat` to determine the segment size.
+ *  - `mmap(PROT_READ | PROT_WRITE, MAP_SHARED)` — write perms required so
+ *    diagnostic callers observe atomic updates the producer makes to
+ *    `SlotRWState` during a drain window (header is otherwise treated
+ *    as read-only by callers).
+ *  - Magic-number + layout validation matching the name-based path.
+ *
+ * Caller retains ownership of `source_fd` (we dup before consuming).
+ * Returns `nullptr` on dup / fstat / mmap / validation failure;
+ * caller distinguishes failure by `nullptr` per the existing sibling.
+ *
+ * @param source_fd File descriptor referring to a DataBlock-shaped SHM region.
+ *                  Must be a regular fd to a memfd-style region; passing a
+ *                  non-fd (e.g. -1) returns nullptr.
+ * @return Diagnostic handle on success; nullptr on any failure.
+ */
+[[nodiscard]] PYLABHUB_UTILS_EXPORT std::unique_ptr<DataBlockDiagnosticHandle>
+open_datablock_for_diagnostic_from_fd(int source_fd);
 
 /** @brief Canonical RAII alias for a diagnostic handle (move-only unique_ptr).
  *

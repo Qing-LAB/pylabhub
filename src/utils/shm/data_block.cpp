@@ -1520,6 +1520,95 @@ std::unique_ptr<DataBlockDiagnosticHandle> open_datablock_for_diagnostic(const s
     }
 }
 
+std::unique_ptr<DataBlockDiagnosticHandle>
+open_datablock_for_diagnostic_from_fd(int source_fd)
+{
+#if defined(PYLABHUB_IS_POSIX)
+    if (source_fd < 0)
+    {
+        LOGGER_DEBUG("DataBlockDiagnosticHandle: invalid source fd ({})", source_fd);
+        return nullptr;
+    }
+    // F_DUPFD_CLOEXEC with min fd 1 — matches `DataBlock::setup_shm_from_fd_`:
+    // (a) rules out the dup-returns-0 case where opaque becomes nullptr and
+    //     `shm_close`'s null-guard skips the close (fd leak);
+    // (b) sets CLOEXEC atomically so the dup doesn't survive across exec.
+    const int dup_fd = ::fcntl(source_fd, F_DUPFD_CLOEXEC, 1);
+    if (dup_fd < 0)
+    {
+        LOGGER_DEBUG("DataBlockDiagnosticHandle: fcntl(F_DUPFD_CLOEXEC) of fd {} "
+                     "failed (errno={})", source_fd, errno);
+        return nullptr;
+    }
+    struct stat st = {};
+    if (::fstat(dup_fd, &st) != 0)
+    {
+        const int saved_errno = errno;
+        ::close(dup_fd);
+        LOGGER_DEBUG("DataBlockDiagnosticHandle: fstat() of dup'd fd failed (errno={})",
+                     saved_errno);
+        return nullptr;
+    }
+    const size_t fd_size = static_cast<size_t>(st.st_size);
+    if (fd_size == 0)
+    {
+        ::close(dup_fd);
+        LOGGER_DEBUG("DataBlockDiagnosticHandle: source fd has zero size — not a "
+                     "DataBlock region");
+        return nullptr;
+    }
+    void *mapped = ::mmap(nullptr, fd_size, PROT_READ | PROT_WRITE, MAP_SHARED,
+                          dup_fd, 0);
+    if (mapped == MAP_FAILED)
+    {
+        const int saved_errno = errno;
+        ::close(dup_fd);
+        LOGGER_DEBUG("DataBlockDiagnosticHandle: mmap() of fd-backed SHM failed "
+                     "(errno={})", saved_errno);
+        return nullptr;
+    }
+    auto impl = std::make_unique<DataBlockDiagnosticHandleImpl>();
+    impl->m_shm.base   = mapped;
+    impl->m_shm.size   = fd_size;
+    impl->m_shm.opaque = reinterpret_cast<void *>(static_cast<intptr_t>(dup_fd));
+    // From this point on, ownership of mapped + dup_fd transfers to `impl`
+    // (its m_shm dtor runs `shm_close` which munmap()s + closes the fd).
+    try
+    {
+        impl->header_ptr = reinterpret_cast<SharedMemoryHeader *>(impl->m_shm.base);
+        if (!detail::is_header_magic_valid(&impl->header_ptr->magic_number,
+                                            detail::DATABLOCK_MAGIC_NUMBER))
+        {
+            LOGGER_DEBUG("DataBlockDiagnosticHandle: fd does not point to a valid "
+                         "DataBlock region (magic number mismatch)");
+            return nullptr;
+        }
+        DataBlockLayout layout = DataBlockLayout::from_header(impl->header_ptr);
+        impl->ring_buffer_capacity = layout.slot_count_value();
+        impl->slot_rw_states = reinterpret_cast<SlotRWState *>(
+            reinterpret_cast<char *>(impl->m_shm.base) + layout.slot_rw_state_offset);
+        return std::unique_ptr<DataBlockDiagnosticHandle>(
+            new DataBlockDiagnosticHandle(std::move(impl)));
+    }
+    catch (const std::exception &e)
+    {
+        LOGGER_DEBUG("DataBlockDiagnosticHandle: layout validation failed: {}", e.what());
+        return nullptr;
+    }
+    catch (...)
+    {
+        LOGGER_DEBUG("DataBlockDiagnosticHandle: layout validation failed "
+                     "(non-std exception)");
+        return nullptr;
+    }
+#else
+    (void)source_fd;
+    LOGGER_DEBUG("DataBlockDiagnosticHandle: fd-based open not supported on "
+                 "this platform");
+    return nullptr;
+#endif
+}
+
 uint64_t DataBlockProducer::last_slot_id() const noexcept
 {
     if (pImpl == nullptr || pImpl->dataBlock == nullptr)
