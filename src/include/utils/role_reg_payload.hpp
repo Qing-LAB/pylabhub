@@ -22,6 +22,7 @@
 #include "utils/json_fwd.hpp"
 #include "plh_platform.hpp"  // pylabhub::platform::get_pid()
 
+#include <stdexcept>
 #include <string>
 
 namespace pylabhub::hub
@@ -140,6 +141,25 @@ inline nlohmann::json build_producer_reg_payload(const ProducerRegInputs &in)
         // `attach_shm_capability_consumer`.
         reg["data_transport"]          = "shm";
         reg["shm_capability_endpoint"] = in.shm_capability_endpoint;
+    }
+    else
+    {
+        // HEP-CORE-0036 §5b + HEP-CORE-0041 §5.1: exactly one transport
+        // discriminator MUST be set.  Reaching here means the caller's
+        // upstream config translation produced `{has_shm=false,
+        // is_zmq_transport=false}` — typically `shm.enabled=false` with
+        // `transport` defaulted to "shm" (transport_config.hpp:30).
+        // Without this guard the payload omits `data_transport`
+        // entirely; the broker's strict #281 check rejects with
+        // INVALID_REQUEST and the role tears down with a misleading
+        // wire-shape diagnostic that points away from the actual
+        // config mismatch.  Fail HERE with a config-pointing message.
+        throw std::logic_error(
+            "build_producer_reg_payload: neither is_zmq_transport nor "
+            "has_shm is set on ProducerRegInputs.  Caller config "
+            "mismatch — likely shm.enabled=false with transport "
+            "defaulted to \"shm\".  Verify transport==\"zmq\" OR "
+            "shm.enabled==true in the role config.");
     }
     return reg;
 }

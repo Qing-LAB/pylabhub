@@ -2534,14 +2534,41 @@ int LuaEngine::lua_api_band_members(lua_State *L)
 }
 
 // ============================================================================
-// api.queue_mechanism([side]) — script-visible CURVE engagement state
+// api.queue_mechanism([side]) — script-visible auth-engagement state
 // ============================================================================
 //
-// Returns a string: "Curve" / "Uninitialized".  HEP-CORE-0035 §2 +
-// AUTH_TODO §C5 (#186): any started ZmqQueue MUST report Curve.
+// Returns one of THREE strings — must match `hub::mechanism_name`
+// (see `hub_queue.hpp`):
+//
+//   - "Curve"          — ZmqQueue started + CURVE engaged (HEP-CORE-0035 §2;
+//                        AUTH_TODO §C5 / task #186: any started ZmqQueue
+//                        MUST report this).
+//   - "ShmCapability"  — ShmQueue active under the HEP-CORE-0041 §6.1
+//                        capability-transport attach protocol (added 2026-06-19
+//                        with `Mechanism::ShmCapability`; task #279).
+//   - "Uninitialized"  — queue stopped, never started, or no auth wired.
+//
+// MIGRATION NOTE (HEP-CORE-0041 widening, 2026-06-30, task #302):
+// Pre-HEP-0041 the only auth-engaged value was "Curve"; the historical
+// script idiom `assert(api.queue_mechanism(side) == "Curve")` was the
+// "is auth engaged?" check.  Post-HEP-0041 that idiom returns FALSE for
+// SHM channels (which now correctly report "ShmCapability") — scripts
+// must use a multi-value check to avoid silently wrong branching:
+//
+//   local m = api.queue_mechanism(side)
+//   assert(m ~= "Uninitialized", "auth not engaged on " .. side)
+//   -- or, equivalently:
+//   assert(m == "Curve" or m == "ShmCapability")
+//
 // Side argument: "tx" / "rx" / "out" / "in" (case-insensitive).  For
 // single-side roles (producer / consumer), the no-arg form returns the
 // relevant side automatically.  For processor the arg is required.
+//
+// PARITY:
+//   - Native ABI: same surface via `ctx->queue_mechanism(ctx, side)`
+//     returning a `PLH_MECHANISM_*` macro (native_engine_api.h:87-89).
+//   - Python: no binding currently — script parity gap tracked under
+//     task #302 (mechanism docstring + engine parity sweep).
 // ============================================================================
 // Helper: push a vector<AllowedPeer> as a Lua table-of-tables shaped
 // `[{role_uid=..., pubkey=...}, ...]`.  Shared by `lua_api_allowed_peers`

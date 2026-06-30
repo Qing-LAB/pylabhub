@@ -342,6 +342,36 @@ pylabhub_register_test_for_staging(
 )
 layer2_require_staged_utils(test_layer2_curve_keypair)
 
+# ============================================================================
+# role_reg_payload — pure-value invariants for REG_REQ payload builder
+# (origin: 2026-06-30 workflow code-review finding [4] CONFIRMED, task #303)
+# ============================================================================
+
+add_executable(test_layer2_role_reg_payload
+    test_role_reg_payload.cpp
+)
+
+target_link_libraries(test_layer2_role_reg_payload
+    PRIVATE
+        pylabhub::utils
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_role_reg_payload)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_role_reg_payload
+    SUITE_NAME "Layer2_RoleRegPayload"
+)
+layer2_require_staged_utils(test_layer2_role_reg_payload)
+
+gtest_discover_tests(test_layer2_role_reg_payload
+    PROPERTIES
+        LABELS "layer2;service;role_reg_payload"
+        TIMEOUT 10
+)
+
 gtest_discover_tests(test_layer2_curve_keypair
     PROPERTIES
         LABELS "layer2;service;security;curve_keypair"

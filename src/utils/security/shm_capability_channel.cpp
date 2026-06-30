@@ -390,7 +390,21 @@ MemfdProducer::send_capability(int peer_socket_fd)
     cmsg->cmsg_len   = CMSG_LEN(sizeof(int));
     std::memcpy(CMSG_DATA(cmsg), &anon_fd_, sizeof(int));
 
-    const ssize_t sent = ::sendmsg(peer_socket_fd, &msg, MSG_NOSIGNAL);
+    // EINTR retry: a signal delivered while sendmsg is in flight
+    // (SIGCHLD from a spawned helper, SIGPROF from a profiler timer,
+    // debug signals, SIGUSR1 from ThreadManager) returns -1 with
+    // errno=EINTR.  Without retry the producer-side fd handover
+    // spuriously fails despite both peers being healthy.  The
+    // SCM_RIGHTS payload is a single byte + one cmsg — small enough
+    // that a partial send returning sent != 1 != -1 is impossible
+    // on a SOCK_DGRAM-like AF_UNIX socket; the only retry-worthy
+    // case is sent == -1 with errno == EINTR.  Origin: 2026-06-30
+    // workflow code-review finding [6] PLAUSIBLE, task #304.
+    ssize_t sent;
+    do
+    {
+        sent = ::sendmsg(peer_socket_fd, &msg, MSG_NOSIGNAL);
+    } while (sent < 0 && errno == EINTR);
     return sent == 1;
 }
 
@@ -491,8 +505,22 @@ MemfdConsumer::recv_and_mmap_owning_socket_(int                       sock_fd,
     msg.msg_control    = u.buf;
     msg.msg_controllen = sizeof(u.buf);
 
-    const ssize_t got        = ::recvmsg(sock_fd, &msg, 0);
-    const int     recv_errno = errno;
+    // EINTR retry — symmetric with the producer-side sendmsg loop
+    // above.  Without retry, any signal delivered to the consumer's
+    // role process while it's parked in recvmsg (waiting up to
+    // 2000 ms for the producer's SCM_RIGHTS message) turns a
+    // healthy in-flight fd handover into a hard handshake failure,
+    // and the role propagates that failure up through
+    // `apply_consumer_reg_ack_shm_` → consumer registration fails.
+    // Same single-byte payload rationale as send side: partial recv
+    // returning got != 1 != -1 is not a real possibility.  Origin:
+    // 2026-06-30 workflow code-review finding [5] PLAUSIBLE, task #304.
+    ssize_t got;
+    do
+    {
+        got = ::recvmsg(sock_fd, &msg, 0);
+    } while (got < 0 && errno == EINTR);
+    const int recv_errno = errno;
 
     if (got != 1)
     {
