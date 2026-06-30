@@ -138,9 +138,12 @@ add_executable(test_layer3_datahub
     # ── Hub Producer/Consumer unified API tests (deleted — Step 7 Messenger removal) ─
 
     # ── Broker/Producer/Consumer health and notification tests ────────────────────
-    # MASKED — pending HEP-0035 §4.6.5 step 3-revised-F migration.
-    # test_datahub_broker_health.cpp
-    # workers/datahub_broker_health_workers.cpp
+    # Unmasked 2026-06-30 under #154 batch-2a C4 — migrated to shared
+    # broker_test_harness (HubHostBrokerHandle + DirectBrokerHandle +
+    # BrcHandle + make_reg_opts/make_cons_opts) + CurveKeyStoreFixture
+    # per AUTH-6 audit.  10 single-broker L3 tests.
+    test_datahub_broker_health.cpp
+    workers/datahub_broker_health_workers.cpp
 
     # ── Broker role-liveness state machine (HEP-CORE-0023 §2.5) ──────────────────
     # Unmasked 2026-06-29 under #154 batch-2a C3 — migrated to shared
