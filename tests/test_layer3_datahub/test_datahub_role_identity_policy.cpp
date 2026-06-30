@@ -1,93 +1,45 @@
 /**
  * @file test_datahub_role_identity_policy.cpp
- * @brief Role identity policy tests — placeholder mechanism per
- *        HEP-CORE-0035 §1 (pending HEP-0035 Phase 6 retirement).
+ * @brief Role identity policy broker enforcement tests — placeholder
+ *        mechanism per HEP-CORE-0035 §1.
  *
- * Two suites:
+ * Suite 2 only.  Suite 1 (`RoleIdentityPolicyEnumTest`) — the pure
+ * `_to_str` / `_from_str` helper tests — was RE-LAYERED to L2 on
+ * 2026-06-30 as `tests/test_layer2_service/test_role_identity_policy.cpp`
+ * (#154 AUTH-6 batch-2a C6, audit
+ * `REVIEW_AUTH6_TestDisposition_2026-06-27.md` File 10 Suite 1).  The
+ * helpers themselves stay in production for use by WARN logs + error
+ * responses in `broker_service.cpp::check_role_identity`.
  *
- *   Suite 1 (`RoleIdentityPolicyEnumTest`) — pure enum/string
- *     conversion.  Stays Pattern 1 (in-process `::testing::Test`):
- *     no `LOGGER_*`, no lifecycle modules, no broker.  Guards the
- *     `role_identity_policy_to_str` helper that production WARN log
- *     lines + error responses still consume
- *     (`broker_service.cpp` `LOGGER_WARN` + `make_error` sites in
- *     `check_role_identity`).
+ * Suite 2 (`RoleIdentityPolicyBrokerTest`) — broker enforcement of the
+ * four `RoleIdentityPolicy` modes + per-channel glob override.
+ * Migrated 2026-05-13 from the in-process `SetUpTestSuite`-owned
+ * `LifecycleGuard` antipattern to Pattern 3 (subprocess per TEST_F).
+ * Worker bodies live in `workers/role_identity_policy_workers.cpp` —
+ * see that file's header for the placeholder-mechanism rationale
+ * (real-HubHost wiring is structurally blocked because
+ * `HubBrokerConfig` deliberately omits the auth fields pending
+ * HEP-0035).
  *
- *   Suite 2 (`RoleIdentityPolicyBrokerTest`) — broker enforcement of
- *     the four `RoleIdentityPolicy` modes + per-channel glob
- *     override.  Migrated 2026-05-13 from the in-process
- *     `SetUpTestSuite`-owned `LifecycleGuard` antipattern to Pattern 3
- *     (subprocess per TEST_F).  Worker bodies live in
- *     `workers/role_identity_policy_workers.cpp` — see that file's
- *     header for the placeholder-mechanism rationale (real-HubHost
- *     wiring is structurally blocked because `HubBrokerConfig`
- *     deliberately omits the auth fields pending HEP-0035).
+ * SCHEDULED FOR DELETION 2026-06-30 (audit File 10 Suite 2): the
+ * placeholder `RoleIdentityPolicy` mechanism retires with task #152
+ * (HEP-CORE-0035 §8 Phase 6).  Suite 2 + its workers retire as part of
+ * the same change.  Until #152 ships, the file stays MASKED in
+ * `tests/test_layer3_datahub/CMakeLists.txt` so it compiles cleanly
+ * against the post-strict-CURVE surface only when the surface still
+ * exists.
  *
  * Renamed 2026-05-13 from `test_datahub_channel_access_policy.cpp` —
- * the legacy name was misleading: the mechanism verifies role
- * identity at registration, not channel access.  "Channel" enters
- * only via the per-glob override selector
- * (`ChannelPolicyOverride`), not as the subject of verification.
+ * the legacy name was misleading: the mechanism verifies role identity
+ * at registration, not channel access.
  *
  * @see HEP-CORE-0035 §1 (status: placeholder pending retirement)
- * @see HEP-CORE-0035 §8 Phase 6 (deletion plan — happens after HEP-0035
- *      replacement Layers 1+2 are functional)
+ * @see HEP-CORE-0035 §8 Phase 6 (deletion plan — task #152)
  */
 
 #include "test_patterns.h"
-#include "utils/role_identity_policy.hpp"
 
 #include <gtest/gtest.h>
-
-using pylabhub::broker::RoleIdentityPolicy;
-using pylabhub::broker::role_identity_policy_from_str;
-using pylabhub::broker::role_identity_policy_to_str;
-
-// ============================================================================
-// Suite 1 — Enum conversion (Pattern 1; pure unit tests, no broker)
-// ============================================================================
-
-class RoleIdentityPolicyEnumTest : public ::testing::Test
-{
-};
-
-TEST_F(RoleIdentityPolicyEnumTest, ToStrAllValues)
-{
-    EXPECT_STREQ(role_identity_policy_to_str(RoleIdentityPolicy::Open),     "open");
-    EXPECT_STREQ(role_identity_policy_to_str(RoleIdentityPolicy::Tracked),  "tracked");
-    EXPECT_STREQ(role_identity_policy_to_str(RoleIdentityPolicy::Required), "required");
-    EXPECT_STREQ(role_identity_policy_to_str(RoleIdentityPolicy::Verified), "verified");
-}
-
-TEST_F(RoleIdentityPolicyEnumTest, FromStrKnownValues)
-{
-    EXPECT_EQ(role_identity_policy_from_str("open"),     RoleIdentityPolicy::Open);
-    EXPECT_EQ(role_identity_policy_from_str("tracked"),  RoleIdentityPolicy::Tracked);
-    EXPECT_EQ(role_identity_policy_from_str("required"), RoleIdentityPolicy::Required);
-    EXPECT_EQ(role_identity_policy_from_str("verified"), RoleIdentityPolicy::Verified);
-}
-
-TEST_F(RoleIdentityPolicyEnumTest, FromStrUnknownFallsToOpen)
-{
-    EXPECT_EQ(role_identity_policy_from_str("verfied"),  RoleIdentityPolicy::Open);
-    EXPECT_EQ(role_identity_policy_from_str("REQUIRED"), RoleIdentityPolicy::Open);
-    EXPECT_EQ(role_identity_policy_from_str(""),         RoleIdentityPolicy::Open);
-    EXPECT_EQ(role_identity_policy_from_str("open "),    RoleIdentityPolicy::Open);
-}
-
-TEST_F(RoleIdentityPolicyEnumTest, ToStrFromStrRoundTrip)
-{
-    for (auto pol : {RoleIdentityPolicy::Open, RoleIdentityPolicy::Tracked,
-                     RoleIdentityPolicy::Required, RoleIdentityPolicy::Verified})
-    {
-        EXPECT_EQ(role_identity_policy_from_str(role_identity_policy_to_str(pol)),
-                  pol);
-    }
-}
-
-// ============================================================================
-// Suite 2 — Broker policy enforcement (Pattern 3; subprocess per TEST_F)
-// ============================================================================
 
 using pylabhub::tests::IsolatedProcessTest;
 

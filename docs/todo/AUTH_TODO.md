@@ -232,6 +232,17 @@ DELETE/RE-LAYER) → close out.
   test client's keypair is still seeded in the keystore.
   `dead_consumer_*` 2-subprocess test extends temp-file shape from 3 to
   6 lines (now includes consumer Z85 keypair).
+- C6 Phase 3 federation DEFER + RoleIdentityPolicy Suite 1 RE-LAYER
+  ✅ shipped 2026-06-30: `test_datahub_hub_federation.cpp` driver
+  unmasked with all 3 TEST_F's gated on `GTEST_SKIP() << "#105"`;
+  workers file stays masked.  `test_datahub_role_identity_policy.cpp`
+  Suite 1 (4 enum helper TEST_F's) moved to
+  `tests/test_layer2_service/test_role_identity_policy.cpp`; Suite 2
+  (7 broker TEST_F's) stays at L3 and stays MASKED awaiting #152.
+  Helpers themselves stay in production for use by
+  `broker_service.cpp::check_role_identity` WARN logs + error
+  responses.  File 10 Suite 2 DELETE is the only remaining AUTH-6
+  bookkeeping item; it lands as part of #152 ship.
 - C5 metrics + zmq_endpoint_registry ✅ shipped 2026-06-30 (this commit):
   17 metrics tests + 8 zmq_endpoint_registry tests migrated.
   ZmqEndpointRegistryTest.ReqShape_SyncReqTimesOutOnNoReply RETIRED

@@ -255,8 +255,15 @@ add_executable(test_layer3_datahub
     workers/zmq_endpoint_registry_workers.cpp
 
     # ── HEP-CORE-0022 Hub Federation Broadcast protocol tests ────────────
-    # MASKED — pending HEP-0035 §4.6.5 step 3-revised-F migration.
-    # test_datahub_hub_federation.cpp
+    # DEFER (#154 AUTH-6 C6, 2026-06-30 — audit File 9): TEST_F driver
+    # unmasked but every TEST_F is GTEST_SKIP-gated on task #105
+    # (federation protocol design).  Workers file stays masked because
+    # its bodies don't compile against the post-strict-CURVE broker
+    # surface yet — re-enable when #105 ships and the federation broker
+    # handlers land.  See
+    # `docs/code_review/REVIEW_AUTH6_TestDisposition_2026-06-27.md`
+    # File 9 disposition + § "Recommended action plan" Phase 3.
+    test_datahub_hub_federation.cpp
     # workers/hub_federation_workers.cpp
 
     # ── Hub InboxQueue + InboxClient unit tests (Phase 3 Inbox Facility) ─

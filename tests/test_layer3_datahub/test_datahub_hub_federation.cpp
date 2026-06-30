@@ -11,6 +11,17 @@
  * `LifecycleGuard` antipattern.  Worker bodies live in
  * `workers/hub_federation_workers.cpp` and register their dispatcher
  * at static-init.
+ *
+ * DEFERRED 2026-06-30 (#154 AUTH-6 batch-2a C6, audit
+ * `REVIEW_AUTH6_TestDisposition_2026-06-27.md` File 9): the HELLO /
+ * TARGETED_MSG / PEER_BYE control-plane handlers these tests pin are
+ * gated on the federation design (#105 "Federation protocol design +
+ * cross-hub reg/comm verification").  Tests are DEFERRED — not retired
+ * — because the test surfaces themselves are correct; only the broker-
+ * side implementation is missing.  Each TEST_F below calls
+ * `GTEST_SKIP` with a #105 citation.  When #105 ships, drop the
+ * GTEST_SKIP lines and re-enable the workers + the CMakeLists.txt
+ * source entries.
  */
 
 #include "test_patterns.h"
@@ -24,18 +35,19 @@ class BrokerFederationTest : public IsolatedProcessTest
 
 TEST_F(BrokerFederationTest, HelloHandshake_FiresOnHubConnected)
 {
-    auto w = SpawnWorker("hub_federation.hello_handshake_fires_on_hub_connected");
-    ExpectWorkerOk(w);
+    GTEST_SKIP() << "DEFERRED — federation HELLO handler depends on "
+                    "task #105 (federation protocol design + cross-hub "
+                    "reg/comm verification).  Re-enable when #105 ships.";
 }
 
 TEST_F(BrokerFederationTest, TargetedMessage_FiresOnHubMessage)
 {
-    auto w = SpawnWorker("hub_federation.targeted_message_fires_on_hub_message");
-    ExpectWorkerOk(w);
+    GTEST_SKIP() << "DEFERRED — federation TARGETED_MSG handler depends "
+                    "on task #105.  Re-enable when #105 ships.";
 }
 
 TEST_F(BrokerFederationTest, PeerBye_TriggersOnHubDisconnected)
 {
-    auto w = SpawnWorker("hub_federation.peer_bye_triggers_on_hub_disconnected");
-    ExpectWorkerOk(w);
+    GTEST_SKIP() << "DEFERRED — federation PEER_BYE handler depends on "
+                    "task #105.  Re-enable when #105 ships.";
 }
