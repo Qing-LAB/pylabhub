@@ -4,6 +4,7 @@
 #include "datahub_c_api_recovery_workers.h"
 #include "test_entrypoint.h"
 #include "shared_test_helpers.h"
+#include "datahub_fd_test_helper.h"
 #include "plh_datahub.hpp"
 #include "utils/heartbeat_manager.hpp"
 #include "utils/integrity_validator.hpp"
@@ -134,23 +135,18 @@ int heartbeat_manager_registers_and_pulses()
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
 
-            auto producer = create_datablock_producer_impl(
-                channel, DataBlockPolicy::RingBuffer, config, nullptr, nullptr);
-            ASSERT_NE(producer, nullptr);
-
-            auto consumer = find_datablock_consumer_impl(
-                channel, config.shared_secret, &config, nullptr, nullptr);
-            ASSERT_NE(consumer, nullptr);
+            auto pair = make_fd_backed_pair(
+                channel, DataBlockPolicy::RingBuffer, config);
+            ASSERT_NE(pair.producer, nullptr);
+            ASSERT_NE(pair.consumer, nullptr);
 
             {
-                HeartbeatManager mgr(*consumer);
+                HeartbeatManager mgr(*pair.consumer);
                 EXPECT_TRUE(mgr.is_registered()) << "HeartbeatManager should be registered";
                 mgr.pulse();
                 EXPECT_TRUE(mgr.is_registered()) << "HeartbeatManager should remain registered after pulse";
             }
-            producer.reset();
-            consumer.reset();
-            cleanup_test_datablock(channel);
+            // FdBackedDataBlock dtor releases consumer → producer → transport.
         },
         "heartbeat_manager_registers_and_pulses", logger_module(), crypto_module(), hub_module());
 }

@@ -19,6 +19,7 @@
 #include "test_entrypoint.h"
 #include "shared_test_helpers.h"
 #include "test_datahub_types.h"
+#include "datahub_fd_test_helper.h"
 #include "plh_datahub.hpp"
 #include <gtest/gtest.h>
 #include <fmt/core.h>
@@ -96,13 +97,13 @@ int varied_schema_sizes_allocation()
                 auto cfg = make_config(secret_base++, schema_sz, kCapacity);
                 size_t expected_slot_stride = round_to_cacheline(schema_sz);
 
-                auto producer = create_datablock_producer_impl(
-                    channel, cfg.policy, cfg, nullptr, nullptr);
-                ASSERT_NE(producer, nullptr)
+                auto prod = make_fd_backed_producer(channel, cfg.policy, cfg);
+                ASSERT_NE(prod.producer, nullptr)
                     << "Failed to create producer for schema_size=" << schema_sz;
 
-                // Inspect header via diagnostic handle
-                auto diag = open_datablock_for_diagnostic(channel);
+                // Inspect header via fd-source diagnostic handle.
+                auto diag = open_datablock_for_diagnostic_from_fd(
+                    prod.transport->borrow_fd());
                 ASSERT_NE(diag, nullptr)
                     << "Failed to open diagnostic for schema_size=" << schema_sz;
                 auto *hdr = diag->header();
@@ -122,16 +123,14 @@ int varied_schema_sizes_allocation()
                     << " must be >= " << min_total;
 
                 // Verify slot buffer size matches expected stride
-                auto write_handle = producer->acquire_write_slot(5000);
+                auto write_handle = prod.producer->acquire_write_slot(5000);
                 ASSERT_NE(write_handle, nullptr)
                     << "Failed to acquire write slot for schema_size=" << schema_sz;
                 EXPECT_EQ(write_handle->buffer_span().size_bytes(), expected_slot_stride)
                     << "schema_size=" << schema_sz;
-                EXPECT_TRUE(producer->release_write_slot(*write_handle));
+                EXPECT_TRUE(prod.producer->release_write_slot(*write_handle));
 
-                producer.reset();
-                diag.reset();
-                cleanup_test_datablock(channel);
+                // FdBackedProducer dtor releases producer → transport.
             }
         },
         "varied_schema_sizes_allocation", logger_module(), crypto_module(), hub_module());
@@ -164,12 +163,12 @@ int ring_buffer_scaling()
 
                 auto cfg = make_config(secret_base++, kSchemaSize, cap);
 
-                auto producer = create_datablock_producer_impl(
-                    channel, cfg.policy, cfg, nullptr, nullptr);
-                ASSERT_NE(producer, nullptr)
+                auto prod = make_fd_backed_producer(channel, cfg.policy, cfg);
+                ASSERT_NE(prod.producer, nullptr)
                     << "Failed to create producer for capacity=" << cap;
 
-                auto diag = open_datablock_for_diagnostic(channel);
+                auto diag = open_datablock_for_diagnostic_from_fd(
+                    prod.transport->borrow_fd());
                 ASSERT_NE(diag, nullptr);
                 auto *hdr = diag->header();
                 ASSERT_NE(hdr, nullptr);
@@ -186,15 +185,13 @@ int ring_buffer_scaling()
                     << " must be >= " << min_total;
 
                 // Verify we can acquire at least one slot
-                auto write_handle = producer->acquire_write_slot(5000);
+                auto write_handle = prod.producer->acquire_write_slot(5000);
                 ASSERT_NE(write_handle, nullptr)
                     << "Failed to acquire write slot for capacity=" << cap;
                 EXPECT_EQ(write_handle->buffer_span().size_bytes(), expected_stride);
-                EXPECT_TRUE(producer->release_write_slot(*write_handle));
+                EXPECT_TRUE(prod.producer->release_write_slot(*write_handle));
 
-                producer.reset();
-                diag.reset();
-                cleanup_test_datablock(channel);
+                // FdBackedProducer dtor releases producer → transport.
             }
         },
         "ring_buffer_scaling", logger_module(), crypto_module(), hub_module());
@@ -230,21 +227,16 @@ int write_read_roundtrip_varied_sizes()
                 auto cfg = make_config(secret_base++, schema_sz, kCapacity);
                 size_t slot_stride = round_to_cacheline(schema_sz);
 
-                auto producer = create_datablock_producer_impl(
-                    channel, cfg.policy, cfg, nullptr, nullptr);
-                ASSERT_NE(producer, nullptr)
+                auto pair = make_fd_backed_pair(channel, cfg.policy, cfg);
+                ASSERT_NE(pair.producer, nullptr)
                     << "Failed to create producer for schema_size=" << schema_sz;
-
-                auto consumer = find_datablock_consumer_impl(
-                    channel, cfg.shared_secret, &cfg, nullptr, nullptr,
-                    "test_consumer", "test_consumer");
-                ASSERT_NE(consumer, nullptr)
+                ASSERT_NE(pair.consumer, nullptr)
                     << "Failed to create consumer for schema_size=" << schema_sz;
 
                 // Write 3 slots with known patterns
                 for (uint32_t i = 0; i < 3; ++i)
                 {
-                    auto wh = producer->acquire_write_slot(5000);
+                    auto wh = pair.producer->acquire_write_slot(5000);
                     ASSERT_NE(wh, nullptr)
                         << "Write acquire failed at i=" << i
                         << " schema_size=" << schema_sz;
@@ -259,13 +251,13 @@ int write_read_roundtrip_varied_sizes()
                     for (size_t b = 0; b < fill_len; ++b)
                         ptr[b] = static_cast<uint8_t>((i + b) & 0xFF);
 
-                    EXPECT_TRUE(producer->release_write_slot(*wh));
+                    EXPECT_TRUE(pair.producer->release_write_slot(*wh));
                 }
 
                 // Read back and verify
                 for (uint32_t i = 0; i < 3; ++i)
                 {
-                    auto rh = consumer->acquire_consume_slot(5000);
+                    auto rh = pair.consumer->acquire_consume_slot(5000);
                     ASSERT_NE(rh, nullptr)
                         << "Read acquire failed at i=" << i
                         << " schema_size=" << schema_sz;
@@ -285,12 +277,10 @@ int write_read_roundtrip_varied_sizes()
                             break; // one failure message is enough
                     }
 
-                    consumer->release_consume_slot(*rh);
+                    pair.consumer->release_consume_slot(*rh);
                 }
 
-                consumer.reset();
-                producer.reset();
-                cleanup_test_datablock(channel);
+                // FdBackedDataBlock dtor releases consumer → producer → transport.
             }
         },
         "write_read_roundtrip_varied_sizes", logger_module(), crypto_module(),

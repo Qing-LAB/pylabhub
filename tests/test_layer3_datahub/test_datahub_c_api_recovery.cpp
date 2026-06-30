@@ -44,13 +44,12 @@ TEST_F(DatahubCApiRecoveryTest, SlotRecovery_ReleaseZombieReadersOnEmptySlot)
 TEST_F(DatahubCApiRecoveryTest, HeartbeatManager_RegistersAndPulses)
 {
     auto proc = SpawnWorker("recovery.heartbeat_manager_registers", {});
-    // HEP-CORE-0041 substep 1f (#253) review B3 — the 1-arg consumer
-    // DataBlock ctor's log line was unified with the 2-arg ctor's
-    // wording when the consumer attach body was extracted into
-    // `attach_consumer_state_`.  Old: "DataBlock '...' opened by
-    // consumer.".  New: "DataBlock '...' attached (consumer) with
-    // total size <N> bytes." (the uniform end-state form).
-    ExpectWorkerOk(proc, {"attached (consumer)"});
+    // HEP-CORE-0041 1i-cleanup S2 step 3 — worker migrated to fd-source
+    // helper `make_fd_backed_pair`; the consumer goes through
+    // `find_datablock_consumer_from_fd_impl`, which emits "attached
+    // (consumer-from-fd)" (distinct end-state log from the name-based
+    // "attached (consumer)" line).
+    ExpectWorkerOk(proc, {"attached (consumer-from-fd)"});
 }
 
 TEST_F(DatahubCApiRecoveryTest, ProducerUpdateHeartbeat_ExplicitSucceeds)
