@@ -1313,7 +1313,7 @@ create_datablock_producer_impl(const std::string &name, DataBlockPolicy policy,
                                const pylabhub::schema::SchemaInfo *datablock_schema);
 
 [[nodiscard]] PYLABHUB_UTILS_EXPORT std::unique_ptr<DataBlockConsumer>
-find_datablock_consumer_impl(const std::string &name, uint64_t shared_secret,
+find_datablock_consumer_impl(const std::string &name,
                              const DataBlockConfig *expected_config,
                              const pylabhub::schema::SchemaInfo *flexzone_schema,
                              const pylabhub::schema::SchemaInfo *datablock_schema,
@@ -1325,12 +1325,13 @@ find_datablock_consumer_impl(const std::string &name, uint64_t shared_secret,
  *
  * Used by the hub/broker architecture: the hub creates the segment (Create mode)
  * and the source process attaches with R/W access (WriteAttach mode).
- * Performs the same shared_secret and schema validation as find_datablock_consumer_impl.
+ * Performs schema validation; HEP-CORE-0041 1i-cleanup S4 (#275) retired
+ * the shared_secret gate (the header-stored token never gated ATTACH,
+ * only LOOKUP — see HEP-CORE-0041 §1 + §3).
  * The returned DataBlockProducer does NOT own the segment and will not unlink it on
  * destruction; the hub (creator) is responsible for segment lifetime.
  *
  * @param name           Shared memory segment name (same as used by the hub creator)
- * @param shared_secret  Must match the value stored at creation
  * @param expected_config Optional config to validate against stored layout (nullptr = skip)
  * @param flexzone_schema Optional FlexZone schema to validate (nullptr = skip)
  * @param datablock_schema Optional DataBlock schema to validate (nullptr = skip)
@@ -1339,7 +1340,6 @@ find_datablock_consumer_impl(const std::string &name, uint64_t shared_secret,
  */
 [[nodiscard]] PYLABHUB_UTILS_EXPORT std::unique_ptr<DataBlockProducer>
 attach_datablock_as_writer_impl(const std::string &name,
-                                uint64_t shared_secret,
                                 const DataBlockConfig *expected_config,
                                 const pylabhub::schema::SchemaInfo *flexzone_schema,
                                 const pylabhub::schema::SchemaInfo *datablock_schema);
@@ -1615,6 +1615,11 @@ create_datablock_producer_from_fd(const std::string     &logical_name,
 /**
  * @brief Discovers consumer with dual-schema validation (FlexZone + DataBlock).
  * Schema is derived from the template parameters (FlexZoneT, DataBlockT); no schema argument.
+ *
+ * HEP-CORE-0041 1i-cleanup S4 (#275) — `shared_secret` parameter
+ * retired; SHM auth runs on the L2 capability-fd handshake
+ * (HEP-CORE-0041 §5.5), not a header-stored token.
+ *
  * @tparam FlexZoneT Expected type of flexible zone (must match producer)
  * @tparam DataBlockT Expected type of datablock slot (must match producer)
  * @param expected_config Config to validate against producer's config (REQUIRED for type-safe API)
@@ -1624,7 +1629,7 @@ create_datablock_producer_from_fd(const std::string     &logical_name,
  */
 template <typename FlexZoneT, typename DataBlockT>
 [[nodiscard]] std::unique_ptr<DataBlockConsumer>
-find_datablock_consumer(const std::string &name, uint64_t shared_secret,
+find_datablock_consumer(const std::string &name,
                         const DataBlockConfig &expected_config,
                         const char *consumer_uid  = nullptr,
                         const char *consumer_name = nullptr)
@@ -1643,7 +1648,7 @@ find_datablock_consumer(const std::string &name, uint64_t shared_secret,
         "DataBlock", pylabhub::schema::SchemaVersion{1, 0, 0});
 
     // Call internal implementation with BOTH schemas for validation + consumer identity
-    return find_datablock_consumer_impl(name, shared_secret, &expected_config,
+    return find_datablock_consumer_impl(name, &expected_config,
                                         &expected_flexzone, &expected_datablock,
                                         consumer_uid, consumer_name);
 }

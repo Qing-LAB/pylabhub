@@ -538,13 +538,13 @@ class DataBlock
         m_header->version_minor = HEADER_VERSION_MINOR;
         m_header->total_block_size = m_size;
 
-        pylabhub::crypto::generate_random_bytes(
-            m_header->shared_secret, sizeof(m_header->shared_secret)); // Generate random secret
-        if (config.shared_secret != 0)
-        {
-            std::memcpy(m_header->shared_secret, &config.shared_secret,
-                        sizeof(config.shared_secret)); // Store capability for discovery
-        }
+        // HEP-CORE-0041 1i-cleanup S4 (#275) — DataBlock ctor no longer
+        // stamps a `shared_secret`.  The field stays in
+        // `SharedMemoryHeader` (renamed `reserved_capability_token` in
+        // S5 under the Core Structure Change Protocol); SHM zero-init
+        // leaves it all-zero, which is the post-S5 "unset" state.
+        // SHM auth runs on the L2 capability-fd handshake
+        // (HEP-CORE-0041 §5.5), not a header-stored token.
 
         m_header->schema_version = 0; // Will be set by factory function if schema is used
         std::memset(m_header->flexzone_schema_hash, 0, sizeof(m_header->flexzone_schema_hash));
@@ -3070,8 +3070,13 @@ create_datablock_producer_impl(const std::string &name, DataBlockPolicy policy,
 // Template API in header calls impl inline.
 
 // Phase 4: Internal implementation with dual schema validation
+//
+// HEP-CORE-0041 1i-cleanup S4 (#275) — `shared_secret` parameter
+// retired.  The header-stored token never gated ATTACH (only LOOKUP);
+// the capability-transport replacement carries no per-attach secret
+// (HEP-CORE-0041 §1 + §3 + §5.5).
 std::unique_ptr<DataBlockConsumer>
-find_datablock_consumer_impl(const std::string &name, uint64_t shared_secret,
+find_datablock_consumer_impl(const std::string &name,
                              const DataBlockConfig *expected_config,
                              const pylabhub::schema::SchemaInfo *flexzone_schema,
                              const pylabhub::schema::SchemaInfo *datablock_schema,
@@ -3093,17 +3098,6 @@ find_datablock_consumer_impl(const std::string &name, uint64_t shared_secret,
     {
         LOGGER_WARN("[DataBlock:{}] find_consumer: attached SHM has no "
                     "readable header (mapping likely failed).", name);
-        return nullptr;
-    }
-
-    // Validate shared secret (first 8 bytes store capability for discovery).
-    // Symmetrical with the WriteAttach path below so a legit
-    // misconfiguration surfaces in the operator log instead of a silent
-    // nullptr return.
-    if (std::memcmp(header->shared_secret, &shared_secret, sizeof(shared_secret)) != 0)
-    {
-        LOGGER_WARN("[DataBlock:{}] find_consumer: shared_secret mismatch.",
-                    name);
         return nullptr;
     }
 
@@ -3256,10 +3250,10 @@ find_datablock_consumer_impl(const std::string &name, uint64_t shared_secret,
 // Attaches to an existing shared memory segment as a writer (WriteAttach mode).
 // Used for the hub/broker architecture: the hub creates the segment and the source
 // process attaches R/W without initializing or owning the segment.
-// Validation mirrors find_datablock_consumer_impl (secret + schema).
+// Validation mirrors find_datablock_consumer_impl (schema-only after
+// HEP-CORE-0041 1i-cleanup S4 #275).
 std::unique_ptr<DataBlockProducer>
 attach_datablock_as_writer_impl(const std::string &name,
-                                uint64_t shared_secret,
                                 const DataBlockConfig *expected_config,
                                 const pylabhub::schema::SchemaInfo *flexzone_schema,
                                 const pylabhub::schema::SchemaInfo *datablock_schema)
@@ -3284,12 +3278,11 @@ attach_datablock_as_writer_impl(const std::string &name,
         return nullptr;
     }
 
-    // Validate shared secret (first 8 bytes)
-    if (std::memcmp(header->shared_secret, &shared_secret, sizeof(shared_secret)) != 0)
-    {
-        LOGGER_WARN("[DataBlock:{}] WriteAttach: shared_secret mismatch.", name);
-        return nullptr;
-    }
+    // HEP-CORE-0041 1i-cleanup S4 (#275) — shared_secret gate retired
+    // (the header-stored token never gated ATTACH, only LOOKUP).
+    // SHM auth runs on the L2 capability-fd handshake; this name-based
+    // path survives only to back the recovery_api + slot_rw_coordinator
+    // C API tests per CLAUDE.md NO-GO list.
 
     // Validate header layout hash (ABI compatibility)
     try

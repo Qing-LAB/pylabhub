@@ -698,14 +698,15 @@ extern "C"
             expected_config.checksum_policy = header->checksum_policy;
             uint64_t secret = 0;
             std::memcpy(&secret, header->shared_secret, sizeof(secret));
-            expected_config.shared_secret = secret;
+            expected_config.shared_secret = secret;  // mirror header field
+                                                     // (S5 will rename it)
 
             // 5. Checksums
             if (static_cast<pylabhub::hub::ChecksumType>(header->checksum_type) !=
                 pylabhub::hub::ChecksumType::Unset)
             {
                 auto consumer = pylabhub::hub::find_datablock_consumer_impl(
-                    ctx->shm_name, expected_config.shared_secret,
+                    ctx->shm_name,
                     &expected_config, nullptr, nullptr);
 
                 if (!consumer)

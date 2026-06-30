@@ -331,7 +331,7 @@ int stress_consumer(int argc, char **argv)
             for (int attempt = 0; attempt < 50 && !consumer; ++attempt)
             {
                 consumer = find_datablock_consumer<StressFlexZone, StressSlotData>(
-                    channel, kStressSecret, cfg);
+                    channel, cfg);
                 if (!consumer)
                     std::this_thread::sleep_for(100ms);
             }
@@ -581,7 +581,7 @@ int backpressure_consumer(int argc, char **argv)
             for (int attempt = 0; attempt < 50 && !consumer; ++attempt)
             {
                 consumer = find_datablock_consumer<StressFlexZone, StressSlotData>(
-                    channel, kStressSecret, cfg);
+                    channel, cfg);
                 if (!consumer)
                     std::this_thread::sleep_for(100ms);
             }
