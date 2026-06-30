@@ -760,18 +760,31 @@ channels.  1i is now split:
   callers from the legacy name-based factories.
 - **1i-cleanup** — then deletes the legacy machinery enumerated below.
 
-The deletion list below stays accurate as the **1i-cleanup** scope:
+The deletion list below stays accurate as the **1i-cleanup** scope.
+Status reflects 2026-06-30 progress:
 
-- `ChannelAccessEntry::shm_secret` field.
-- `ShmQueue::set_shm_secret` API + `apply_master_approval` SHM-secret
-  branch.
-- `broker_service.cpp:1956` hardcoded-zero secret mint.
-- `data_block.cpp:445-449` plaintext secret stamp in the header.
-- `data_block.cpp:2768-2777` memcmp "auth" check.
-- The named-shm `shm_open` code path in `data_block.cpp`.
-- `L2 test_hub_state.cpp` assertions pinning the old contract
-  (lines 3593-3709).
-- The `shared_secret` field in `SharedMemoryHeader`.
+- ✅ **S3a (commit `b1a2d9ce`):** `ChannelAccessEntry::shm_secret`
+  field deleted; `ShmConfig::secret` field deleted; `shm_secret`
+  parameter dropped from `HubState::_on_channel_access_opened`;
+  L2 `test_hub_state.cpp` shm_secret assertions retired via
+  Rule-6 doc-blocks (2 tests).
+- ⏸ **S3c (pending):** `ShmQueue::set_shm_secret` API +
+  `ShmQueue::create_writer(name, ..., shared_secret, ...)` +
+  `ShmQueue::create_reader(name, shared_secret, ...)` legacy
+  factories + `apply_master_approval` SHM-secret artifact read +
+  the legacy branch in `ShmQueue::start()` + `ShmQueueImpl`
+  `pending_shm_secret`/`has_shm_secret` fields + mutual-exclusion
+  guards.
+- ⏸ **S4 (pending):** `broker_service.cpp` hardcoded-zero secret
+  mint, `data_block.cpp` plaintext secret stamp + memcmp "auth"
+  check, C API secret param.  Named-SHM `shm_open` path stays
+  alive to back the recovery_api + slot_rw_coordinator C API
+  tests (CLAUDE.md project NO-GO list — these tests are
+  preserved).
+- ⏸ **S5 (pending):** rename `SharedMemoryHeader::shared_secret[64]`
+  → `reserved_capability_token[64]` (Core Structure Change
+  Protocol — walked at
+  `docs/code_review/REVIEW_S5_CoreStructure_2026-06-27.md`).
 
 Recovery tool (`data_block_recovery.cpp`) is the one exception — it
 operates on already-crashed segments offline, where the fd-source

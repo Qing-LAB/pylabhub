@@ -707,7 +707,6 @@ Example `producer.json` (matches current `--init` output):
   "out_transport": "shm",
   "out_shm_enabled":    true,
   "out_shm_slot_count": 8,
-  "out_shm_secret":     1111111111,
 
   "out_slot_schema": {
     "packing": "aligned",
@@ -728,12 +727,13 @@ Example `producer.json` (matches current `--init` output):
 }
 ```
 
-**SHM secret note (Audit B4):**  `--init` writes `out_shm_secret`
-unset (defaults to 0).  Secret = 0 is a sentinel "SHM not configured"
-— `build_tx_queue` will skip the SHM path.  Operators MUST set a
-non-zero `out_shm_secret` for an SHM-transport producer.  The
-consumer / processor must set a matching `in_shm_secret` on the
-other end.
+**SHM auth note (HEP-CORE-0041 + 1i-cleanup S3, #275):**  The legacy
+`out_shm_secret` / `in_shm_secret` config keys are RETIRED — the
+config parser hard-rejects them at load time with a HEP-CORE-0041
+migration message.  SHM auth runs on the SCM_RIGHTS capability-fd
+handshake at L2 (HEP-CORE-0041 §5.5) and requires no config knob.
+The pre-1h "non-zero secret means enable SHM" sentinel is gone:
+`out_shm_enabled: true` alone enables SHM.
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
@@ -760,7 +760,6 @@ other end.
 | `shm.enabled` | no | `true` | Allocate SHM segment |
 | `shm.slot_count` | yes§ | — | Ring buffer depth (number of slots) |
 | `shm.reader_sync_policy` | no | `"sequential"` | `"sequential"` (FIFO, no data loss) or `"latest_only"` (skip to newest) |
-| `shm.secret` | no | `0` | Shared secret for SHM name derivation |
 | `inbox_schema` | no | absent | Inbox field list (enables inbox receive facility) |
 | `inbox_endpoint` | no | auto | ZMQ ROUTER bind endpoint for inbox |
 | `inbox_buffer_depth` | no | `64` | Inbox recv buffer depth (must be > 0) |
@@ -825,7 +824,6 @@ Example `consumer.json` (matches current `--init` output):
   "in_channel":   "lab.sensors.temperature",
   "in_transport": "shm",
   "in_shm_enabled": true,
-  "in_shm_secret":  1111111111,
 
   "in_slot_schema": {
     "packing": "aligned",
@@ -865,7 +863,6 @@ Example `consumer.json` (matches current `--init` output):
 | `flexzone_schema` | no | absent | Input flexzone layout (SHM only; zero-copy read) |
 | `zmq_buffer_depth` | no | `64` | Internal recv-ring buffer depth for ZMQ transport (must be > 0) |
 | `shm.enabled` | no | `true` | Attach to producer's SHM segment (`queue_type=shm`) |
-| `shm.secret` | no | `0` | Shared secret matching the producer's `shm.secret` |
 | `inbox_schema` | no | absent | Inbox field list (enables inbox receive facility) |
 | `inbox_endpoint` | no | auto | ZMQ ROUTER bind endpoint for inbox |
 | `inbox_buffer_depth` | no | `64` | Inbox recv buffer depth (must be > 0) |
@@ -911,11 +908,11 @@ hubs (`in_hub_dir` / `out_hub_dir`) for cross-hub bridging.
 > 🆕 **2026-05-21 — nested `shm.in` / `shm.out` flattened to
 > top-level `in_shm_<field>` / `out_shm_<field>`.**  Use `plh_role
 > --init --role processor <processor-dir>` for the canonical
-> template.  Same SHM-secret note as producer / consumer — secret = 0
-> is a sentinel "no SHM"; operators MUST set matching non-zero
-> secrets on each side of the pipeline (producer's `out_shm_secret`
-> ↔ processor's `in_shm_secret`; processor's `out_shm_secret` ↔
-> consumer's `in_shm_secret`).
+> template.  HEP-CORE-0041 1i-cleanup S3 (#275, 2026-06-30) — the
+> legacy `in_shm_secret` / `out_shm_secret` keys are RETIRED; SHM
+> auth runs on the L2 capability-fd handshake (HEP-CORE-0041 §5.5)
+> and requires no config knob.  Use `in_shm_enabled: true` /
+> `out_shm_enabled: true` to opt in to the SHM transport.
 
 Example `processor.json` (matches current `--init` output):
 
@@ -936,10 +933,8 @@ Example `processor.json` (matches current `--init` output):
   "in_transport":  "shm",
   "out_transport": "shm",
   "in_shm_enabled":     true,
-  "in_shm_secret":      1111111111,
   "out_shm_enabled":    true,
   "out_shm_slot_count": 8,
-  "out_shm_secret":     2222222222,
 
   "in_slot_schema": {
     "packing": "aligned",
