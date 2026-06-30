@@ -53,6 +53,7 @@
  * CONSUMER_ATTACH_REQ; consumer never sees data).
  */
 #include "plh_hub_fixture.h"
+#include "role_e2e_harness.h"
 
 #include "utils/role_vault.hpp"
 
@@ -60,101 +61,22 @@
 #include <csignal>
 #include <cstdlib>
 #include <fstream>
-#include <regex>
 #include <thread>
 #include <vector>
 
 using namespace pylabhub::tests::plh_hub_l4;
 using pylabhub::tests::helper::WorkerProcess;
-using pylabhub::tests::helper::ExpectVaultFileSecured;
+using pylabhub::tests::plh_role_e2e::read_hub_log;
+using pylabhub::tests::plh_role_e2e::wait_for_hub_marker;
+using pylabhub::tests::plh_role_e2e::read_role_log;
+using pylabhub::tests::plh_role_e2e::wait_for_role_marker;
+using pylabhub::tests::plh_role_e2e::extract_bound_endpoint;
+using pylabhub::tests::plh_role_e2e::plh_role_binary;
+using pylabhub::tests::plh_role_e2e::keygen_role_and_read_pubkey;
+using pylabhub::tests::plh_role_e2e::add_known_role;
 
 namespace
 {
-
-// ─── Shared log-reading helpers ─────────────────────────────────────────────
-//
-// hub log: file under <hub_dir>/logs/*.log (plh_hub configures a
-// rolling log).  role logs: stderr captured by WorkerProcess.
-
-std::string read_hub_log(const fs::path &hub_dir)
-{
-    const fs::path logs = hub_dir / "logs";
-    std::error_code ec;
-    if (!fs::is_directory(logs, ec)) return {};
-    fs::path newest;
-    for (const auto &e : fs::directory_iterator(logs, ec))
-        if (e.path().extension() == ".log" && e.path() > newest)
-            newest = e.path();
-    if (newest.empty()) return {};
-    std::ifstream f(newest);
-    return std::string(std::istreambuf_iterator<char>(f),
-                       std::istreambuf_iterator<char>{});
-}
-
-bool wait_for_hub_marker(const fs::path &dir, const std::string &marker,
-                         std::chrono::milliseconds timeout =
-                             std::chrono::milliseconds(10000))
-{
-    const auto deadline = std::chrono::steady_clock::now() + timeout;
-    while (std::chrono::steady_clock::now() < deadline)
-    {
-        if (read_hub_log(dir).find(marker) != std::string::npos)
-            return true;
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    }
-    return false;
-}
-
-/// Reads the role's rotating log file (under <role_dir>/logs/).
-/// After Logger sink switch (early in plh_role main), the role's
-/// production INFO/WARN/ERROR markers go HERE — not stderr.
-std::string read_role_log(const fs::path &role_dir)
-{
-    const fs::path logs = role_dir / "logs";
-    std::error_code ec;
-    if (!fs::is_directory(logs, ec)) return {};
-    fs::path newest;
-    for (const auto &e : fs::directory_iterator(logs, ec))
-        if (e.path().extension() == ".log" && e.path() > newest)
-            newest = e.path();
-    if (newest.empty()) return {};
-    std::ifstream f(newest);
-    return std::string(std::istreambuf_iterator<char>(f),
-                       std::istreambuf_iterator<char>{});
-}
-
-bool wait_for_role_marker(const fs::path &role_dir, WorkerProcess &p,
-                          const std::string &marker,
-                          std::chrono::milliseconds timeout =
-                              std::chrono::milliseconds(10000))
-{
-    const auto deadline = std::chrono::steady_clock::now() + timeout;
-    while (std::chrono::steady_clock::now() < deadline)
-    {
-        // Check log file first (production INFO/ERROR markers land here),
-        // then stderr (early-boot messages before log sink switch).
-        if (read_role_log(role_dir).find(marker) != std::string::npos)
-            return true;
-        if (p.get_stderr().find(marker) != std::string::npos)
-            return true;
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    }
-    return false;
-}
-
-std::string extract_bound_endpoint(const std::string &log)
-{
-    static const std::regex re(R"(Broker: listening on (tcp://[^\s]+))");
-    std::smatch m;
-    if (std::regex_search(log, m, re)) return m[1].str();
-    return {};
-}
-
-std::string plh_role_binary()
-{
-    return (fs::path(::g_self_exe_path).parent_path()
-            / ".." / "bin" / "plh_role").string();
-}
 
 // ─── Producer config + script (SHM TX) ─────────────────────────────────────
 
@@ -297,39 +219,6 @@ void write_shm_consumer_script(const fs::path &script_dir,
          "\n"
          "def on_stop(api):\n"
          "    api.log('info', 'cons_test: stop')\n";
-}
-
-// ─── Vault + known-roles helpers (lifted from roundtrip pattern) ───────────
-
-/// Spawn `plh_role --keygen` for a role and assert vault success.
-std::string keygen_role_and_read_pubkey(
-    const fs::path &role_dir, const std::string &role_kind,
-    const std::string &uid, const std::string &role_password)
-{
-    WorkerProcess kg(plh_role_binary(), "--role",
-        {role_kind, "--config",
-         (role_dir / (role_kind + ".json")).string(), "--keygen"});
-    EXPECT_EQ(kg.wait_for_exit(), 0)
-        << "plh_role --keygen (" << role_kind << ") failed:\n"
-        << kg.get_stderr();
-    const fs::path vault_path = role_dir / "vault" / (uid + ".vault");
-    ExpectVaultFileSecured(vault_path);
-    auto vault = pylabhub::utils::RoleVault::open(
-        vault_path, uid, role_password);
-    return std::string(vault.public_key());
-}
-
-/// Add a role to known_roles.json via plh_hub --add-known-role.
-void add_known_role(const fs::path &hub_dir, const std::string &display_name,
-                    const std::string &uid, const std::string &role_kind,
-                    const std::string &pubkey_z85)
-{
-    WorkerProcess add(plh_hub_binary(), "--config",
-        {(hub_dir / "hub.json").string(),
-         "--add-known-role",
-         display_name, uid, role_kind, pubkey_z85});
-    ASSERT_EQ(add.wait_for_exit(), 0)
-        << "plh_hub --add-known-role failed:\n" << add.get_stderr();
 }
 
 } // namespace
