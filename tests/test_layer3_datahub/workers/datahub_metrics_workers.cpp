@@ -4,39 +4,36 @@
  *        (HEP-CORE-0019 + HEP-CORE-0033 §10.3 unified query engine;
  *        Pattern 3).
  *
- * Migrated 2026-05-14 from the in-process `SetUpTestSuite`-owned
- * `LifecycleGuard` antipattern.  Bodies transplanted verbatim,
- * preserving:
- *   - `wait_for_metric(channel, pred, timeout)` poll_until helper
- *     (replaces the pre-2026-05-01 `sleep_for + query + assert`
- *     Class B ordering — preserves the audit-§1.3 rationale inline).
- *   - `raw_request(...)` raw-wire DEALER helper for test #15's
+ * Bodies preserve:
+ *   - `wait_for_metric(channel, pred, timeout)` `poll_until` helper —
+ *     pins ordering deterministically (replaces the pre-2026-05-01
+ *     `sleep_for + query + assert` Class B antipattern).
+ *   - `raw_request(...)` raw-wire DEALER helper for the
  *     METRICS_REPORT_REQ retirement check.
  *   - Wave M1.4 + M2.5 G1 + M3 H34 contract pins (heartbeat-piggyback
  *     unified path; per-uid producer/consumer tree; multi-presence
  *     no-cross-attribution; retired-wire-path UNKNOWN_MSG_TYPE).
  *
- * **Real-production-wiring refactor (2026-05-14)**: switched from
- * the legacy `LocalBrokerHandle` (raw HubState + bare BrokerService
- * + raw `std::thread`) to real `HubHost` via
- * `HubConfig::load_from_directory(...)`.  Per the test-design
- * principle in `feedback_test_layering_and_no_mocks.md`: L3 broker
- * tests MUST run against the real HubHost composite (real
- * BrokerService + real HubState + real AdminService +
- * ThreadManager-backed broker run-loop) so regressions in HubHost's
- * threading / lifecycle / state-ownership wiring are actually
- * caught.  Same refactor shape as zmq_endpoint_registry commit
- * `07382d0`.
+ * Each TEST_F runs as a Pattern-3 subprocess against the real
+ * `HubHost` composite (real BrokerService + real HubState + real
+ * AdminService + ThreadManager-backed run-loop), wired through
+ * `pylabhub::tests::start_hubhost_broker(overrides, curve)` from
+ * `broker_test_harness.h`.  CURVE identities are seeded via
+ * `CurveKeyStoreFixture` per HEP-CORE-0040 §172 use-not-export.
+ * Per the test-design principle in
+ * `feedback_test_layering_and_no_mocks.md`, regressions in HubHost's
+ * threading / lifecycle / state-ownership wiring are actually caught.
  *
  * Module surface: Logger + FileLock + JsonConfig + CryptoUtils +
- * ZMQContext (5 modules).  FileLock + JsonConfig added because
- * `HubConfig::load_from_directory` reads hub.json via the
- * JsonConfig module (which uses FileLock).  Matches the
+ * ZMQContext.  FileLock + JsonConfig are needed because the
+ * canonical harness reads hub.json via the JsonConfig module (which
+ * uses FileLock) when emitting the temp hub directory.  Matches the
  * broker_schema / broker_admin / hub_lua_integration profile.
  *
  * @see HEP-CORE-0019 §2.3 (heartbeat-piggyback metrics, Phase 6 post-M1.4)
  * @see HEP-CORE-0033 §10.3 (unified query engine)
  * @see HEP-CORE-0033 §G2.2.0b (role_uid format invariant)
+ * @see HEP-CORE-0036 §5.2 R6 (producer-kLive gate before consumer reg)
  */
 
 #include "datahub_metrics_workers.h"
@@ -61,12 +58,11 @@
 #include <gtest/gtest.h>
 #include <cppzmq/zmq_addon.hpp>
 #include <nlohmann/json.hpp>
+#include <sodium.h>
 
 #include <array>
-#include <atomic>
 #include <chrono>
 #include <functional>
-#include <memory>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -126,6 +122,18 @@ std::string pid_chan(const std::string &base)
 /// refuses anything else — `BrokerRequestComm::connect` won't accept
 /// plain TCP, but this helper opens a raw DEALER, so it dials in with
 /// the role's z85 keys directly from `CurveSetup`).
+///
+/// ⚠ EPHEMERAL TEST KEYS — DO NOT COPY THIS PATTERN TO PRODUCTION.
+/// `CurveKeypair` carries an ephemeral test seckey by design (see
+/// `tests/test_framework/curve_test_setup.h` — generated per-process,
+/// disposable, NOT a `LockedKey`).  The `std::string` temporaries
+/// below leak the z85 seckey bytes onto freed heap; we wipe them with
+/// `sodium_memzero` after libzmq copies them into its CURVE context,
+/// but that's belt-and-suspenders — the real protection is "tests own
+/// the only copy and the process exits seconds later".  A future
+/// production caller MUST use a `LockedKey` view + a libzmq raw API
+/// path that doesn't materialize the seckey as a `std::string`.  See
+/// #309.
 json raw_request(const std::string                  &endpoint,
                  const std::string                  &server_pubkey,
                  const pylabhub::tests::CurveKeypair &client_keys,
@@ -137,10 +145,20 @@ json raw_request(const std::string                  &endpoint,
                          zmq::socket_type::dealer);
     dealer.set(zmq::sockopt::linger, 0);
     dealer.set(zmq::sockopt::curve_serverkey, server_pubkey);
-    dealer.set(zmq::sockopt::curve_publickey,
-               std::string(client_keys.public_z85.data(), 40));
-    dealer.set(zmq::sockopt::curve_secretkey,
-               std::string(client_keys.secret_z85.data(), 40));
+
+    // Materialize then wipe — libzmq copies the bytes into its CURVE
+    // state on `set()`, so wiping the test-side temp after the call
+    // closes the seckey-on-freed-heap window for THIS process.  Public
+    // half stays cleartext (it isn't secret).
+    {
+        std::string pub_tmp(client_keys.public_z85.data(), 40);
+        dealer.set(zmq::sockopt::curve_publickey, pub_tmp);
+    }
+    {
+        std::string sec_tmp(client_keys.secret_z85.data(), 40);
+        dealer.set(zmq::sockopt::curve_secretkey, sec_tmp);
+        sodium_memzero(sec_tmp.data(), sec_tmp.size());
+    }
 
     dealer.connect(endpoint);
 
@@ -198,18 +216,24 @@ int run_with_broker(std::string_view              worker_name,
          expect_log_warns = std::move(expect_log_warns)]() mutable {
             LogCaptureFixture log_cap;
             log_cap.Install();
-            // Baseline noise allow-list (post-strict-CURVE harness):
-            //   - "recovery: Failed to open '...' for diagnosis"
-            //     fires when the broker's recovery-API pre-flight
-            //     inspects an SHM channel that doesn't exist yet (fresh
-            //     test, no prior session).  Benign.
-            //   - "HEARTBEAT_REQ for '...' missing or zero producer_pid"
-            //     fires for CONSUMER heartbeats — BRC's send_heartbeat
-            //     doesn't populate producer_pid for the consumer side
-            //     (broker_service.cpp:3294 logs it for diagnostics but
-            //     accepts the heartbeat).  Benign.
-            log_cap.ExpectLogError("recovery: Failed to open");
-            log_cap.ExpectLogError("missing or zero producer_pid");
+            // Baseline noise allow-list (post-strict-CURVE harness).
+            // Patterns are pinned to the FULL message body
+            // (`data_block_recovery.cpp:39`, `broker_service.cpp:3301`)
+            // so a future regression that emits a DIFFERENT error
+            // string at the same call site, or the same string from a
+            // new site, surfaces as a test failure instead of being
+            // silently swallowed.  See #308 for the source-side fix
+            // (gate the diagnostic at the emitter so this allow-list
+            // can retire).
+            //   - SHM recovery probes the test's fresh channel name
+            //     before producer reg; channel doesn't exist yet so
+            //     `open()` fails.  Benign.
+            //   - HEARTBEAT_REQ from a CONSUMER carries no
+            //     producer_pid; broker logs at ERROR for diagnostics
+            //     but accepts the heartbeat.  Benign.
+            log_cap.ExpectLogError("recovery: Failed to open '");
+            log_cap.ExpectLogError(
+                "' missing or zero producer_pid");
             for (auto &w : expect_log_warns)
                 log_cap.ExpectLogWarn(w);
 
@@ -845,9 +869,11 @@ int old_metrics_report_req_gets_unknown_msg_type()
             log_cap.Install();
             log_cap.ExpectLogWarn("unknown msg_type 'METRICS_REPORT_REQ'");
             // Same baseline noise allow-list as `run_with_broker` (see
-            // comment there).
-            log_cap.ExpectLogError("recovery: Failed to open");
-            log_cap.ExpectLogError("missing or zero producer_pid");
+            // comment there) — patterns pin the full message body to
+            // avoid swallowing future regressions.
+            log_cap.ExpectLogError("recovery: Failed to open '");
+            log_cap.ExpectLogError(
+                "' missing or zero producer_pid");
 
             auto curve = pylabhub::tests::make_curve_setup({uid});
             CurveKeyStoreFixture ks_fixture(
