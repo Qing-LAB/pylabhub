@@ -277,25 +277,24 @@ struct ChannelTransportInvariants
     std::string    data_transport{"shm"};
 };
 
-/// HEP-CORE-0036 §4.1 — per-channel access scaffolding.  Two fields:
+/// HEP-CORE-0036 §4.1 — per-channel access scaffolding.
 ///   - `authorized_consumer_pubkeys`: Z85 (40-char) consumer pubkeys
 ///     allowed to pull from this channel.  Producer's ZAP handler
 ///     enforces; updated via CHANNEL_AUTH_UPDATE pushes (HEP-0036 §6.5).
 ///     Per-channel, NOT per-producer — a consumer authorized for a
 ///     channel can connect to ANY producer of that channel (fan-in
 ///     per HEP-CORE-0023 §2.1.1).
-///   - `shm_secret`: SHM-only broker-generated guard secret for the
-///     DataBlock (HEP-CORE-0002).  Zero when transport != "shm".
-///     Unrelated to CURVE; SHM auth uses this secret token, not
-///     pubkey allowlists.
 ///
 /// Per-producer identity (pubkey + endpoint) is NOT duplicated here —
 /// it lives on `ProducerEntry::zmq_pubkey` + `zmq_node_endpoint`.
 /// Channel-scope duplication would collapse fan-in.
+///
+/// HEP-CORE-0041 1i-cleanup S3 (#275) removed the SHM-only `shm_secret`
+/// field; SHM auth runs on the capability-fd handshake at L2
+/// (HEP-CORE-0041 §5.5), not a broker-minted shared token.
 struct ChannelAccessEntry
 {
     std::unordered_set<std::string> authorized_consumer_pubkeys;
-    std::uint64_t                   shm_secret{0};
 };
 
 enum class AddProducerResult
@@ -1632,14 +1631,11 @@ class PYLABHUB_UTILS_EXPORT HubState
     /// `_on_producer_added` succeeded for a fresh channel).  Idempotent:
     /// no-op if a record already exists for `channel_name`.
     ///
-    /// @param shm_secret Broker-generated random uint64.  Zero when
-    ///                   the channel's `data_transport` != "shm".
-    ///                   Non-zero for SHM channels — consumers receive
-    ///                   it via `CONSUMER_REG_ACK.shm_secret` (HEP-0036
-    ///                   §6.4) and pass it as the DataBlock guard token
-    ///                   (HEP-CORE-0002).
-    void _on_channel_access_opened(const std::string &channel_name,
-                                    std::uint64_t      shm_secret);
+    /// HEP-CORE-0041 1i-cleanup S3 (#275) dropped the legacy `shm_secret`
+    /// parameter; SHM auth runs on the capability-fd handshake at L2
+    /// (HEP-CORE-0041 §5.5).  The wire never carried it (substep 1g
+    /// closed CONSUMER_REG_ACK without a `shm_secret` field).
+    void _on_channel_access_opened(const std::string &channel_name);
 
     /// Delete a channel-access record on last-producer atomic teardown
     /// (called from the broker after `_on_channel_closed` /

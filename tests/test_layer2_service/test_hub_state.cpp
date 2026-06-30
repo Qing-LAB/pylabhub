@@ -3586,45 +3586,38 @@ TEST(HubStateChannelAccess, OpenedThenClosed_Roundtrip)
     // Before open: no record.
     EXPECT_FALSE(s.channel_access("ch.auth").has_value());
 
-    HubStateTestAccess::on_channel_access_opened(s, "ch.auth", /*shm_secret=*/0);
+    HubStateTestAccess::on_channel_access_opened(s, "ch.auth");
     auto a = s.channel_access("ch.auth");
     ASSERT_TRUE(a.has_value());
     EXPECT_TRUE(a->authorized_consumer_pubkeys.empty());
-    EXPECT_EQ(a->shm_secret, 0u);
 
     HubStateTestAccess::on_channel_access_closed(s, "ch.auth");
     EXPECT_FALSE(s.channel_access("ch.auth").has_value());
 }
 
-TEST(HubStateChannelAccess, Opened_ShmSecret_Preserved)
-{
-    HubState s;
-    constexpr std::uint64_t kSecret = 0xCAFEBABE'DEADBEEFULL;
-    HubStateTestAccess::on_channel_access_opened(s, "ch.shm", kSecret);
-    auto a = s.channel_access("ch.shm");
-    ASSERT_TRUE(a.has_value());
-    EXPECT_EQ(a->shm_secret, kSecret);
-}
-
-TEST(HubStateChannelAccess, Opened_Idempotent_DoesNotOverwriteShmSecret)
-{
-    // Re-opening MUST NOT rotate the SHM secret out from under
-    // attached consumers (HEP-0036 §I5 — secrets are stable for the
-    // channel's lifetime).
-    HubState s;
-    constexpr std::uint64_t kFirst  = 0x11111111'22222222ULL;
-    constexpr std::uint64_t kSecond = 0x33333333'44444444ULL;
-    HubStateTestAccess::on_channel_access_opened(s, "ch.shm", kFirst);
-    HubStateTestAccess::on_channel_access_opened(s, "ch.shm", kSecond);
-    auto a = s.channel_access("ch.shm");
-    ASSERT_TRUE(a.has_value());
-    EXPECT_EQ(a->shm_secret, kFirst);
-}
+// ─── Rule-6 retirement: Opened_ShmSecret_Preserved ───────────────────
+// HEP-CORE-0041 1i-cleanup S3 (#275, 2026-06-30) — retired.
+//
+// Pinned `ChannelAccessEntry::shm_secret` round-trip semantics for the
+// AUTH-4 / #164 design (broker-minted SHM guard secret carried on
+// CONSUMER_REG_ACK).  HEP-CORE-0041 SUPERSEDED that design: SHM auth
+// runs on the capability-fd handshake at L2 (§5.5), not a broker-
+// minted shared token.  The wire never carried it (substep 1g closed
+// CONSUMER_REG_ACK without a `shm_secret` field), the `shm_secret`
+// field on `ChannelAccessEntry` was deleted in S3 (#275), and the
+// `_on_channel_access_opened` parameter became single-arg.  No
+// surviving contract for this test to pin.
+//
+// ─── Rule-6 retirement: Opened_Idempotent_DoesNotOverwriteShmSecret ─
+// Same retirement reason — pinned the idempotent-preservation
+// semantics of the now-deleted `shm_secret` field.  The idempotent-
+// open semantic for `authorized_consumer_pubkeys` is still pinned by
+// `OpenedThenClosed_Roundtrip` and `ConsumerAuthorized_Idempotent`.
 
 TEST(HubStateChannelAccess, ConsumerAuthorized_AddsToAllowlist)
 {
     HubState s;
-    HubStateTestAccess::on_channel_access_opened(s, "ch.auth", 0);
+    HubStateTestAccess::on_channel_access_opened(s, "ch.auth");
     HubStateTestAccess::on_consumer_authorized(s, "ch.auth", "PUB-CONS-A");
     HubStateTestAccess::on_consumer_authorized(s, "ch.auth", "PUB-CONS-B");
     auto a = s.channel_access("ch.auth");
@@ -3637,7 +3630,7 @@ TEST(HubStateChannelAccess, ConsumerAuthorized_AddsToAllowlist)
 TEST(HubStateChannelAccess, ConsumerAuthorized_Idempotent)
 {
     HubState s;
-    HubStateTestAccess::on_channel_access_opened(s, "ch.auth", 0);
+    HubStateTestAccess::on_channel_access_opened(s, "ch.auth");
     HubStateTestAccess::on_consumer_authorized(s, "ch.auth", "PUB-A");
     HubStateTestAccess::on_consumer_authorized(s, "ch.auth", "PUB-A");
     auto a = s.channel_access("ch.auth");
@@ -3648,7 +3641,7 @@ TEST(HubStateChannelAccess, ConsumerAuthorized_Idempotent)
 TEST(HubStateChannelAccess, ConsumerRevoked_RemovesFromAllowlist)
 {
     HubState s;
-    HubStateTestAccess::on_channel_access_opened(s, "ch.auth", 0);
+    HubStateTestAccess::on_channel_access_opened(s, "ch.auth");
     HubStateTestAccess::on_consumer_authorized(s, "ch.auth", "PUB-A");
     HubStateTestAccess::on_consumer_authorized(s, "ch.auth", "PUB-B");
     HubStateTestAccess::on_consumer_revoked(s, "ch.auth", "PUB-A");
@@ -3662,7 +3655,7 @@ TEST(HubStateChannelAccess, ConsumerRevoked_RemovesFromAllowlist)
 TEST(HubStateChannelAccess, ConsumerRevoked_Idempotent_NoSuchPubkey)
 {
     HubState s;
-    HubStateTestAccess::on_channel_access_opened(s, "ch.auth", 0);
+    HubStateTestAccess::on_channel_access_opened(s, "ch.auth");
     HubStateTestAccess::on_consumer_authorized(s, "ch.auth", "PUB-A");
     // Revoke a pubkey that was never authorized — no-op.
     HubStateTestAccess::on_consumer_revoked(s, "ch.auth", "PUB-NEVER");
@@ -3691,8 +3684,8 @@ TEST(HubStateChannelAccess, Close_Idempotent_NoSuchChannel)
 TEST(HubStateChannelAccess, MultiChannel_Isolated)
 {
     HubState s;
-    HubStateTestAccess::on_channel_access_opened(s, "ch.A", 100);
-    HubStateTestAccess::on_channel_access_opened(s, "ch.B", 200);
+    HubStateTestAccess::on_channel_access_opened(s, "ch.A");
+    HubStateTestAccess::on_channel_access_opened(s, "ch.B");
     HubStateTestAccess::on_consumer_authorized(s, "ch.A", "PUB-A1");
     HubStateTestAccess::on_consumer_authorized(s, "ch.B", "PUB-B1");
     HubStateTestAccess::on_consumer_authorized(s, "ch.B", "PUB-B2");
@@ -3701,8 +3694,6 @@ TEST(HubStateChannelAccess, MultiChannel_Isolated)
     auto b = s.channel_access("ch.B");
     ASSERT_TRUE(a.has_value());
     ASSERT_TRUE(b.has_value());
-    EXPECT_EQ(a->shm_secret, 100u);
-    EXPECT_EQ(b->shm_secret, 200u);
     EXPECT_EQ(a->authorized_consumer_pubkeys.size(), 1u);
     EXPECT_EQ(b->authorized_consumer_pubkeys.size(), 2u);
 
@@ -3719,7 +3710,7 @@ TEST(HubStateChannelAccess, InvalidChannelName_BumpsCounterAndNoOp)
     const auto before =
         cnts_before.count("sys.invalid_identifier_rejected")
             ? cnts_before.at("sys.invalid_identifier_rejected") : 0u;
-    HubStateTestAccess::on_channel_access_opened(s, "not a valid channel id", 0);
+    HubStateTestAccess::on_channel_access_opened(s, "not a valid channel id");
     const auto &cnts_after = s.counters().msg_type_counts;
     const auto after =
         cnts_after.at("sys.invalid_identifier_rejected");
@@ -3731,7 +3722,7 @@ TEST(HubStateChannelAccess, InvalidChannelName_BumpsCounterAndNoOp)
 TEST(HubStateChannelAccess, EmptyPubkey_BumpsCounterAndNoOp)
 {
     HubState s;
-    HubStateTestAccess::on_channel_access_opened(s, "ch.auth", 0);
+    HubStateTestAccess::on_channel_access_opened(s, "ch.auth");
     const auto &cnts_before = s.counters().msg_type_counts;
     const auto before =
         cnts_before.count("sys.invalid_identifier_rejected")
@@ -3757,7 +3748,7 @@ TEST(HubStateChannelAccess, ConsumerRevoked_AfterClose_NoOp)
     // counter (revoke-without-record is silent safe-default per the
     // mutator contract — `hub_state.cpp:_on_consumer_revoked`).
     HubState s;
-    HubStateTestAccess::on_channel_access_opened(s, "ch.gone", 0);
+    HubStateTestAccess::on_channel_access_opened(s, "ch.gone");
     HubStateTestAccess::on_consumer_authorized(s, "ch.gone", "PUB-A");
     HubStateTestAccess::on_channel_access_closed(s, "ch.gone");
 
@@ -3783,7 +3774,7 @@ TEST(HubStateChannelAccess, ConsumerAuthorized_AfterClose_DoesNotResurrect)
     // allowlist.  Pin the documented contract: authorize without
     // record is a no-op.
     HubState s;
-    HubStateTestAccess::on_channel_access_opened(s, "ch.gone", 0);
+    HubStateTestAccess::on_channel_access_opened(s, "ch.gone");
     HubStateTestAccess::on_consumer_authorized(s, "ch.gone", "PUB-A");
     HubStateTestAccess::on_channel_access_closed(s, "ch.gone");
     HubStateTestAccess::on_consumer_authorized(s, "ch.gone", "PUB-B");
@@ -3799,7 +3790,7 @@ TEST(HubStateChannelAccess, EmptyPubkey_Revoke_BumpsCounter)
     // `_on_consumer_revoked` (no bump) would slip through without
     // this test.
     HubState s;
-    HubStateTestAccess::on_channel_access_opened(s, "ch.auth", 0);
+    HubStateTestAccess::on_channel_access_opened(s, "ch.auth");
     HubStateTestAccess::on_consumer_authorized(s, "ch.auth", "PUB-A");
     const auto &cnts_before = s.counters().msg_type_counts;
     const auto before =
@@ -3832,7 +3823,7 @@ TEST(HubStateChannelAccess, InvalidChannel_AllFourMutators_BumpCounter)
                    ? c.at("sys.invalid_identifier_rejected") : 0u;
     };
     const auto b0 = base();
-    HubStateTestAccess::on_channel_access_opened(s, bad, 0);
+    HubStateTestAccess::on_channel_access_opened(s, bad);
     EXPECT_EQ(base(), b0 + 1);
     HubStateTestAccess::on_channel_access_closed(s, bad);
     EXPECT_EQ(base(), b0 + 2);
@@ -3851,8 +3842,8 @@ TEST(HubStateChannelAccess, MultiChannel_SamePubkey_RevokeIsScoped)
     // per channel).  This test uses the SAME pubkey on two channels
     // and verifies revoke on one doesn't leak to the other.
     HubState s;
-    HubStateTestAccess::on_channel_access_opened(s, "ch.A", 0);
-    HubStateTestAccess::on_channel_access_opened(s, "ch.B", 0);
+    HubStateTestAccess::on_channel_access_opened(s, "ch.A");
+    HubStateTestAccess::on_channel_access_opened(s, "ch.B");
     HubStateTestAccess::on_consumer_authorized(s, "ch.A", "PUB-SAME");
     HubStateTestAccess::on_consumer_authorized(s, "ch.B", "PUB-SAME");
     HubStateTestAccess::on_consumer_revoked(s, "ch.A", "PUB-SAME");

@@ -239,11 +239,12 @@ struct HubStateTestAccess
     }
 
     // ── Channel-access forwarders (HEP-CORE-0036 §4.1) ────────────────
+    // HEP-CORE-0041 1i-cleanup S3 (#275) dropped the `shm_secret`
+    // parameter; SHM auth runs on the capability-fd handshake at L2.
     static void on_channel_access_opened(HubState          &s,
-                                          const std::string &channel_name,
-                                          std::uint64_t      shm_secret)
+                                          const std::string &channel_name)
     {
-        s._on_channel_access_opened(channel_name, shm_secret);
+        s._on_channel_access_opened(channel_name);
     }
     static void on_channel_access_closed(HubState          &s,
                                           const std::string &channel_name)

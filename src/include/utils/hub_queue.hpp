@@ -373,15 +373,15 @@ public:
      *     and calls `set_producer_peers(...)`.
      *   - `ZmqQueue` (PUSH side): reads `artifacts["allowlist"]` (per HEP-0036
      *     §I11) and calls `set_peer_allowlist(...)`.
-     *   - `ShmQueue` rx: reads `artifacts["shm_secret"]` (uint64) and calls
-     *     `set_shm_secret(secret)`.  Missing field is treated as "no broker-
-     *     supplied secret" — the queue keeps any secret set at construction.
+     *   - `ShmQueue`: no artifact field — SHM consumer/producer wiring
+     *     runs through the capability-fd handshake at L2
+     *     (HEP-CORE-0041 §5.5), not the broker-artifact channel.
+     *     `ShmQueue::apply_master_approval` is a no-op returning true.
      *
-     * Default implementation returns `true` and no-ops: queues that don't
-     * need broker artifacts (e.g. SHM with config-supplied secret) are
-     * already Active and stay Active.  HEP §6.7's "either fully transitioned
-     * or fully refused" rule applies: on malformed `artifacts`, return
-     * `false` and leave queue state unchanged.
+     * Default implementation returns `true` and no-ops.  HEP §6.7's
+     * "either fully transitioned or fully refused" rule applies:
+     * on malformed `artifacts`, return `false` and leave queue state
+     * unchanged.
      */
     virtual bool apply_master_approval(const nlohmann::json& /*artifacts*/) noexcept
     {
@@ -414,8 +414,8 @@ public:
      * the call — callers should never reach this path for ZMQ).
      * `ShmQueue` overrides to drive Standby → Configured via
      * `set_shm_capability_fd(fd)`.  Returns `false` on refusal
-     * (already-Active queue, mutual-exclusion violation with
-     * `set_shm_secret`, non-SHM transport) so callers can log + fail.
+     * (already-Active queue, non-SHM transport) so callers can
+     * log + fail.
      */
     virtual bool set_shm_capability_fd(int /*fd*/) noexcept { return false; }
 
@@ -577,8 +577,10 @@ public:
      * @brief Apply master-approval artifacts (HEP-CORE-0036 §6.7 Standby → Configured).
      *
      * See `QueueReader::apply_master_approval` for the polymorphic contract
-     * and per-transport dispatch.  The write-side variant uses the same JSON
-     * shape (`allowlist` for ZMQ PUSH, `shm_secret` for SHM tx).
+     * and per-transport dispatch.  The write-side variant uses `allowlist`
+     * for ZMQ PUSH; `ShmQueue` writers wire via the capability-fd
+     * handshake at L2 (HEP-CORE-0041 §5.5), so `apply_master_approval`
+     * is a no-op returning true on the SHM tx side.
      */
     virtual bool apply_master_approval(const nlohmann::json& /*artifacts*/) noexcept
     {

@@ -1366,8 +1366,11 @@ attach_datablock_as_writer_impl(const std::string &name,
 // Substep 1g (#254) wires the producer/consumer role hosts to emit
 // + parse the new `shm_capability_endpoint` field on REG_REQ /
 // CONSUMER_REG_ACK; substep 1h (#255) rejects the legacy `*_shm_secret`
-// config fields; substep 1i (#256) deletes the name-based factories
-// above when the obsolete shm_secret machinery is removed.
+// config fields; substep 1i-cleanup S3 (#275) retired the legacy
+// secret-based machinery from the role + ShmQueue layers.  The
+// name-based factories above survive only to back the recovery_api
+// + slot_rw_coordinator C API tests (CLAUDE.md project NO-GO list);
+// production no longer reaches them.
 //
 // ⚠ CROSS-FACTORY MIXING HAZARD — do not mix the fd-source factory
 // with a name-based factory on the same logical channel.  Mixing

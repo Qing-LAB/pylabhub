@@ -2060,7 +2060,7 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     // separately (HEP-CORE-0036 §12 Phase 5 + task #106).
     if (admission.channel_opened)
     {
-        hub_state_->_on_channel_access_opened(channel_name, /*shm_secret=*/0);
+        hub_state_->_on_channel_access_opened(channel_name);
     }
 
     // "REG_REQ accepted" marker (rung 2 of Pattern 4 ladder).

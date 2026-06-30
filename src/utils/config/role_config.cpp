@@ -121,11 +121,12 @@ static const std::unordered_set<std::string> kAllowedKeys = {
     // capability-transport replacement (substeps 1a-1g) carries no
     // wire equivalent.  Configs containing this field are rejected
     // explicitly by `reject_retired_keys` below with a clear message
-    // pointing operators at the migration; the runtime machinery
-    // (`shm_config.hpp:41`, `hub_shm_queue.cpp:379-389`) is now dead
-    // code per the rejection — substep 1i (#256) deletes the dead
-    // runtime path along with `ChannelAccessEntry::shm_secret` and
-    // related fields.
+    // pointing operators at the migration; substep 1i-cleanup S3
+    // (#275) deleted the runtime machinery
+    // (`shm_config.hpp::ShmConfig::secret`, `ChannelAccessEntry::shm_secret`,
+    // role-layer state).  The `ShmQueue::set_shm_secret` + legacy
+    // factories retire in S3c (#275); `SharedMemoryHeader` field
+    // renames in S5.
     "in_shm_slot_count", "out_shm_slot_count",
     "in_shm_sync_policy", "out_shm_sync_policy",
     // Role-specific (schemas — validated by role parser, not here)

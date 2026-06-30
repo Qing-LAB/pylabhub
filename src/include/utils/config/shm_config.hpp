@@ -4,8 +4,12 @@
  * @brief ShmConfig — categorical config for shared-memory data plane.
  *
  * Parsed from directional JSON fields: <direction>_shm_enabled,
- * <direction>_shm_secret, <direction>_shm_slot_count, <direction>_shm_sync_policy.
+ * <direction>_shm_slot_count, <direction>_shm_sync_policy.
  * Checksum policy is per-role (see checksum_config.hpp), not per-direction.
+ *
+ * HEP-CORE-0041 1h (#255) hard-rejects `<dir>_shm_secret` at config load;
+ * 1i-cleanup S3 (#275) removed the corresponding in-memory field.  Auth
+ * is via the capability-fd handshake at L2 (HEP-CORE-0041 §5.5).
  */
 
 #include "utils/data_block_policy.hpp" // ConsumerSyncPolicy, parse_consumer_sync_policy
@@ -21,7 +25,6 @@ namespace pylabhub::config
 struct ShmConfig
 {
     bool                     enabled{true};
-    uint64_t                 secret{0};
     uint32_t                 slot_count{8};
     hub::ConsumerSyncPolicy  sync_policy{hub::ConsumerSyncPolicy::Sequential};
 };
@@ -38,7 +41,6 @@ inline ShmConfig parse_shm_config(const nlohmann::json &j,
 
     ShmConfig sc;
     sc.enabled    = j.value(pfx + "shm_enabled", true);
-    sc.secret     = j.value(pfx + "shm_secret", uint64_t{0});
     sc.slot_count = j.value(pfx + "shm_slot_count", uint32_t{8});
 
     const std::string sync_str = j.value(pfx + "shm_sync_policy", std::string{"sequential"});

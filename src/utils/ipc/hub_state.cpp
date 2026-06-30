@@ -1629,8 +1629,7 @@ void HubState::_on_peer_disconnected(const std::string &hub_uid)
 
 // ─── Channel-access capability ops (HEP-CORE-0036 §4.1) ─────────────────────
 
-void HubState::_on_channel_access_opened(const std::string &channel_name,
-                                          std::uint64_t      shm_secret)
+void HubState::_on_channel_access_opened(const std::string &channel_name)
 {
     if (!is_valid_identifier(channel_name, IdentifierKind::Channel))
     {
@@ -1639,15 +1638,8 @@ void HubState::_on_channel_access_opened(const std::string &channel_name,
     }
     std::unique_lock lk(pImpl->mu);
     // Idempotent open: if the channel already has an access record,
-    // do not overwrite — the existing allowlist + shm_secret are the
-    // canonical record (a re-open would silently rotate the SHM
-    // secret out from under attached consumers).
-    auto [it, inserted] = pImpl->channel_access_index.try_emplace(
-        channel_name, ChannelAccessEntry{});
-    if (inserted)
-    {
-        it->second.shm_secret = shm_secret;
-    }
+    // do not overwrite — the existing allowlist is the canonical record.
+    pImpl->channel_access_index.try_emplace(channel_name, ChannelAccessEntry{});
 }
 
 void HubState::_on_channel_access_closed(const std::string &channel_name)
