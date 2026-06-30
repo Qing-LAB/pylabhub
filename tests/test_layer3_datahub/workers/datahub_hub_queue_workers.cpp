@@ -1,5 +1,24 @@
 // tests/test_layer3_datahub/workers/datahub_hub_queue_workers.cpp
 //
+// RETIRED 2026-06-30 (HEP-CORE-0041 1i-cleanup S3b, #275) per Rule 6.
+//
+// The 25 worker functions below drive ShmQueue scenarios through the
+// legacy `ShmQueue::create_writer(name, ..., shared_secret, ...)` /
+// `ShmQueue::create_reader(name, shared_secret, ...)` factories that
+// are deleted in S3c.  The capability-transport path
+// (`create_writer_standby` + `set_shm_capability_fd` + `start`) is
+// the surviving production API and has no per-attach secret.  See
+// the driver file `test_datahub_hub_queue.cpp` for the full
+// coverage-continuity mapping and the TESTING_TODO retirement row
+// (2026-06-30).  CMakeLists.txt masks both files from the L3
+// aggregate; REVIEW-C (#276) will delete them after the post-
+// deletion sweep confirms zero downstream references.
+//
+// File stays on disk so git blame preserves the scenario-level
+// intent for anyone backporting the capability-path equivalents.
+//
+// ---- pre-retirement banner ----
+//
 // Hub ShmQueue unit test workers.  Each function creates a DataBlock, wraps it
 // in a ShmQueue, exercises the Queue interface, and asserts the expected results.
 #include "datahub_hub_queue_workers.h"

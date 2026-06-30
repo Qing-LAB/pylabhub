@@ -1,6 +1,39 @@
 /**
  * @file test_datahub_hub_queue.cpp
- * @brief Hub ShmQueue unit tests.
+ * @brief Hub ShmQueue unit tests — RETIRED 2026-06-30 (#275-S3b).
+ *
+ * RETIRED 2026-06-30 (HEP-CORE-0041 1i-cleanup S3b, #275) per Rule 6.
+ * The 25 TEST_F's below exercised ShmQueue scenarios through the
+ * legacy `ShmQueue::create_writer(name, ..., shared_secret, ...)` +
+ * `ShmQueue::create_reader(name, shared_secret, ...)` factories that
+ * are deleted in S3c.  The capability-transport path
+ * (`create_writer_standby` + `set_shm_capability_fd` + `start`) is
+ * the surviving production API and has no per-attach secret.
+ *
+ * Coverage continuity — each retired scenario maps to surviving cover:
+ *   - ShmQueue state-machine + mutual-exclusion guards + invalid-fd guard
+ *     → L2 `test_hub_shm_queue_capability.cpp` (Tests 1-7).
+ *   - DataBlock ring-buffer + slot-allocation + ring-wrap + draining
+ *     + last_seq + checksum + discard/reacquire scenarios
+ *     → L3 fd-source workers `datahub_slot_allocation_workers.cpp`,
+ *       `datahub_c_api_draining_workers.cpp`,
+ *       `datahub_c_api_slot_protocol_workers.cpp` (all migrated
+ *       under #275-S2 to `make_fd_backed_pair`).
+ *   - End-to-end producer→consumer SHM data flow + flexzone
+ *     bidirectional + multiple-consumer state isolation
+ *     → L4 `test_plh_hub_role_shm_e2e.cpp` (#258).
+ *   - Error-path: empty schema / zero-size schema / nonexistent
+ *     attach → covered by L2 capability test's state-machine
+ *     refusals + the surviving production-path WARN/ERROR contracts
+ *     that AUTH-7 L4 e2e (#258) exercises.
+ *
+ * Full retirement entry with per-test contract-handoff mapping:
+ *   `docs/todo/TESTING_TODO.md` § "Test retirements / cross-layer
+ *   migrations", row dated 2026-06-30.
+ *
+ * File stays on disk for git history; CMakeLists.txt masks it
+ * from the L3 aggregate.  REVIEW-C (#276) will delete the file
+ * after confirming zero downstream references.
  *
  * Tests hub::ShmQueue — the shared-memory-backed Queue implementation.
  * Each test spawns an isolated subprocess that creates DataBlock objects directly
