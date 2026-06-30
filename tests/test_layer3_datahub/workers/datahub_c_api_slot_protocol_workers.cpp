@@ -4,7 +4,10 @@
 // timeout behavior, and metrics accumulation.
 //
 // Tests DataBlockProducer/Consumer C++ wrappers directly without RAII templates.
-// Uses create_datablock_producer_impl with null schemas (no schema validation overhead).
+// Producer + consumer pairs are built via `make_fd_backed_pair` (HEP-CORE-0041
+// 1i-mig fd-source path) — no name-based shm_open, no shared_secret.  Migrated
+// 2026-06-30 (#275-S2 — strict-CURVE cleanup) from the retired
+// `find_datablock_consumer_impl(name, secret, ...)` factory.
 //
 // Test strategy:
 // - Each test runs in an isolated process via run_gtest_worker
@@ -23,6 +26,7 @@
 //   8. metrics_accumulate_across_writes    — N commits → total_slots_written==N; consumer read counted
 
 #include "datahub_c_api_slot_protocol_workers.h"
+#include "datahub_fd_test_helper.h"
 #include "test_entrypoint.h"
 #include "shared_test_helpers.h"
 #include "plh_datahub.hpp"
@@ -66,12 +70,12 @@ int write_slot_read_slot_roundtrip()
             std::string channel = make_test_channel_name("CApiRoundtrip");
             auto cfg = make_config(ConsumerSyncPolicy::Latest_only, 2, 71001);
 
-            auto producer = create_datablock_producer_impl(channel, DataBlockPolicy::RingBuffer,
-                                                           cfg, nullptr, nullptr);
-            ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer_impl(channel, cfg.shared_secret, &cfg,
-                                                         nullptr, nullptr);
-            ASSERT_NE(consumer, nullptr);
+            auto pair_ = pylabhub::tests::helper::make_fd_backed_pair(
+                channel, DataBlockPolicy::RingBuffer, cfg);
+            ASSERT_NE(pair_.producer, nullptr);
+            ASSERT_NE(pair_.consumer, nullptr);
+            auto &producer = pair_.producer;
+            auto &consumer = pair_.consumer;
 
             const uint64_t kTestValue = 0xDEADBEEF12345678ULL;
 
@@ -98,9 +102,7 @@ int write_slot_read_slot_roundtrip()
                 (void)consumer->release_consume_slot(*rh);
             }
 
-            producer.reset();
-            consumer.reset();
-            cleanup_test_datablock(channel);
+            // FdBackedDataBlock dtor releases consumer → producer → transport.
         },
         "write_slot_read_slot_roundtrip", logger_module(), crypto_module(), hub_module());
 }
@@ -119,9 +121,10 @@ int commit_advances_metrics()
             std::string channel = make_test_channel_name("CApiCommitMetrics");
             auto cfg = make_config(ConsumerSyncPolicy::Latest_only, 4, 71002);
 
-            auto producer = create_datablock_producer_impl(channel, DataBlockPolicy::RingBuffer,
-                                                           cfg, nullptr, nullptr);
-            ASSERT_NE(producer, nullptr);
+            auto fpp_ = pylabhub::tests::helper::make_fd_backed_producer(
+                channel, DataBlockPolicy::RingBuffer, cfg);
+            ASSERT_NE(fpp_.producer, nullptr);
+            auto &producer = fpp_.producer;
 
             // Before any commits: total_slots_written == 0
             DataBlockMetrics metrics{};
@@ -153,8 +156,7 @@ int commit_advances_metrics()
             ASSERT_EQ(producer->get_metrics(metrics), 0);
             EXPECT_EQ(metrics.total_slots_written, 3u) << "Three commits must advance counter to 3";
 
-            producer.reset();
-            cleanup_test_datablock(channel);
+            // FdBackedProducer dtor releases producer → transport.
         },
         "commit_advances_metrics", logger_module(), crypto_module(), hub_module());
 }
@@ -173,12 +175,12 @@ int abort_does_not_commit()
             std::string channel = make_test_channel_name("CApiAbort");
             auto cfg = make_config(ConsumerSyncPolicy::Latest_only, 2, 71003);
 
-            auto producer = create_datablock_producer_impl(channel, DataBlockPolicy::RingBuffer,
-                                                           cfg, nullptr, nullptr);
-            ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer_impl(channel, cfg.shared_secret, &cfg,
-                                                         nullptr, nullptr);
-            ASSERT_NE(consumer, nullptr);
+            auto pair_ = pylabhub::tests::helper::make_fd_backed_pair(
+                channel, DataBlockPolicy::RingBuffer, cfg);
+            ASSERT_NE(pair_.producer, nullptr);
+            ASSERT_NE(pair_.consumer, nullptr);
+            auto &producer = pair_.producer;
+            auto &consumer = pair_.consumer;
 
             // Acquire a write slot but intentionally do NOT call commit()
             {
@@ -200,9 +202,7 @@ int abort_does_not_commit()
             auto rh = consumer->acquire_consume_slot(50);
             EXPECT_EQ(rh, nullptr) << "Aborted write must not be visible to consumer";
 
-            producer.reset();
-            consumer.reset();
-            cleanup_test_datablock(channel);
+            // FdBackedDataBlock dtor releases consumer → producer → transport.
         },
         "abort_does_not_commit", logger_module(), crypto_module(), hub_module());
 }
@@ -222,12 +222,12 @@ int latest_only_reads_latest()
             std::string channel = make_test_channel_name("CApiLatestOnly");
             auto cfg = make_config(ConsumerSyncPolicy::Latest_only, 4, 71004);
 
-            auto producer = create_datablock_producer_impl(channel, DataBlockPolicy::RingBuffer,
-                                                           cfg, nullptr, nullptr);
-            ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer_impl(channel, cfg.shared_secret, &cfg,
-                                                         nullptr, nullptr);
-            ASSERT_NE(consumer, nullptr);
+            auto pair_ = pylabhub::tests::helper::make_fd_backed_pair(
+                channel, DataBlockPolicy::RingBuffer, cfg);
+            ASSERT_NE(pair_.producer, nullptr);
+            ASSERT_NE(pair_.consumer, nullptr);
+            auto &producer = pair_.producer;
+            auto &consumer = pair_.consumer;
 
             // Write 3 sequential values (1, 2, 3); Latest_only must return 3
             for (uint64_t i = 1; i <= 3; ++i)
@@ -251,9 +251,7 @@ int latest_only_reads_latest()
             auto next = consumer->acquire_consume_slot(50);
             EXPECT_EQ(next, nullptr) << "No new data after consuming latest; must return null";
 
-            producer.reset();
-            consumer.reset();
-            cleanup_test_datablock(channel);
+            // FdBackedDataBlock dtor releases consumer → producer → transport.
         },
         "latest_only_reads_latest", logger_module(), crypto_module(), hub_module());
 }
@@ -273,12 +271,12 @@ int single_reader_reads_sequentially()
             // capacity=4 to hold all 3 writes without blocking
             auto cfg = make_config(ConsumerSyncPolicy::Sequential, 4, 71005);
 
-            auto producer = create_datablock_producer_impl(channel, DataBlockPolicy::RingBuffer,
-                                                           cfg, nullptr, nullptr);
-            ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer_impl(channel, cfg.shared_secret, &cfg,
-                                                         nullptr, nullptr);
-            ASSERT_NE(consumer, nullptr);
+            auto pair_ = pylabhub::tests::helper::make_fd_backed_pair(
+                channel, DataBlockPolicy::RingBuffer, cfg);
+            ASSERT_NE(pair_.producer, nullptr);
+            ASSERT_NE(pair_.consumer, nullptr);
+            auto &producer = pair_.producer;
+            auto &consumer = pair_.consumer;
 
             // Write 3 sequential values (1, 2, 3)
             for (uint64_t i = 1; i <= 3; ++i)
@@ -306,9 +304,7 @@ int single_reader_reads_sequentially()
             auto extra = consumer->acquire_consume_slot(50);
             EXPECT_EQ(extra, nullptr) << "All slots consumed; ring must be empty";
 
-            producer.reset();
-            consumer.reset();
-            cleanup_test_datablock(channel);
+            // FdBackedDataBlock dtor releases consumer → producer → transport.
         },
         "single_reader_reads_sequentially", logger_module(), crypto_module(), hub_module());
 }
@@ -328,9 +324,10 @@ int write_returns_null_when_ring_full()
             // capacity=2: fill both slots without consuming → 3rd acquire must fail
             auto cfg = make_config(ConsumerSyncPolicy::Sequential, 2, 71006);
 
-            auto producer = create_datablock_producer_impl(channel, DataBlockPolicy::RingBuffer,
-                                                           cfg, nullptr, nullptr);
-            ASSERT_NE(producer, nullptr);
+            auto fpp_ = pylabhub::tests::helper::make_fd_backed_producer(
+                channel, DataBlockPolicy::RingBuffer, cfg);
+            ASSERT_NE(fpp_.producer, nullptr);
+            auto &producer = fpp_.producer;
 
             // Fill the ring: 2 committed, unconsumed slots
             for (int i = 0; i < 2; ++i)
@@ -356,8 +353,7 @@ int write_returns_null_when_ring_full()
             ASSERT_EQ(producer->get_metrics(metrics), 0);
             EXPECT_GE(metrics.writer_timeout_count, 1u) << "Failed acquire must increment writer_timeout_count";
 
-            producer.reset();
-            cleanup_test_datablock(channel);
+            // FdBackedProducer dtor releases producer → transport.
         },
         "write_returns_null_when_ring_full", logger_module(), crypto_module(), hub_module());
 }
@@ -376,21 +372,18 @@ int read_returns_null_on_empty_ring()
             std::string channel = make_test_channel_name("CApiReadEmpty");
             auto cfg = make_config(ConsumerSyncPolicy::Latest_only, 2, 71007);
 
-            auto producer = create_datablock_producer_impl(channel, DataBlockPolicy::RingBuffer,
-                                                           cfg, nullptr, nullptr);
-            ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer_impl(channel, cfg.shared_secret, &cfg,
-                                                         nullptr, nullptr);
-            ASSERT_NE(consumer, nullptr);
+            auto pair_ = pylabhub::tests::helper::make_fd_backed_pair(
+                channel, DataBlockPolicy::RingBuffer, cfg);
+            ASSERT_NE(pair_.producer, nullptr);
+            ASSERT_NE(pair_.consumer, nullptr);
+            auto &consumer = pair_.consumer;
 
             // Nothing written yet: consumer must return null after short timeout.
             // acquire_consume_slot with a small timeout correctly returns null for empty ring.
             auto rh = consumer->acquire_consume_slot(50);
             EXPECT_EQ(rh, nullptr) << "Empty ring must return null when no slots committed";
 
-            producer.reset();
-            consumer.reset();
-            cleanup_test_datablock(channel);
+            // FdBackedDataBlock dtor releases consumer → producer → transport.
         },
         "read_returns_null_on_empty_ring", logger_module(), crypto_module(), hub_module());
 }
@@ -410,12 +403,12 @@ int metrics_accumulate_across_writes()
             // Large capacity to avoid ring-full during the 5 writes
             auto cfg = make_config(ConsumerSyncPolicy::Latest_only, 8, 71008);
 
-            auto producer = create_datablock_producer_impl(channel, DataBlockPolicy::RingBuffer,
-                                                           cfg, nullptr, nullptr);
-            ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer_impl(channel, cfg.shared_secret, &cfg,
-                                                         nullptr, nullptr);
-            ASSERT_NE(consumer, nullptr);
+            auto pair_ = pylabhub::tests::helper::make_fd_backed_pair(
+                channel, DataBlockPolicy::RingBuffer, cfg);
+            ASSERT_NE(pair_.producer, nullptr);
+            ASSERT_NE(pair_.consumer, nullptr);
+            auto &producer = pair_.producer;
+            auto &consumer = pair_.consumer;
 
             constexpr int kWrites = 5;
             for (int i = 0; i < kWrites; ++i)
@@ -438,9 +431,7 @@ int metrics_accumulate_across_writes()
             ASSERT_NE(rh, nullptr);
             (void)consumer->release_consume_slot(*rh);
 
-            producer.reset();
-            consumer.reset();
-            cleanup_test_datablock(channel);
+            // FdBackedDataBlock dtor releases consumer → producer → transport.
         },
         "metrics_accumulate_across_writes", logger_module(), crypto_module(), hub_module());
 }
