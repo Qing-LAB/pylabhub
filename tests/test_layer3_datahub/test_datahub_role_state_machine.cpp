@@ -128,81 +128,16 @@ TEST_F(DatahubRoleStateMachineTest, RoleAPIBase_StartHandlerThreads_E2E)
     ExpectWorkerOk(proc);
 }
 
-TEST_F(DatahubRoleStateMachineTest, RoleAPIBase_StartHandlerThreads_DualHub_E2E)
-{
-    // Wave-B M4c review follow-up — multi-connection variant.
-    // Two brokers, two HubConnections, two ctrl threads (first =
-    // MASTER, second = peer per HEP-CORE-0031 §4.2.1).  REG_REQ
-    // dispatched per-connection via `handler->brc_for_channel(ch)`
-    // (not via the fallback view — that only reaches one of the
-    // two BRCs).  Each broker observes its own registration.  Pins
-    // the M8-payoff data-flow shape at the network layer: both
-    // ctrl threads actually drive their BRCs (not just spawned but
-    // running poll loops).
-    auto proc = SpawnWorker(
-        "broker_role_state.role_api_base_start_handler_threads_dual_hub_e2e",
-        {});
-    ExpectWorkerOk(proc);
-}
-
-TEST_F(DatahubRoleStateMachineTest, RoleAPIBase_HubDead_TransitionsPresencesToDeregistered)
-{
-    // Audit R3.3 (2026-05-17) — on_hub_dead must transition every
-    // presence pointing at the dead connection from Registered →
-    // Deregistered.  Pre-fix the FSM kept claiming Registered against
-    // a broker that had already reaped the role via heartbeat-timeout.
-    // Companion to A2 (which establishes that the role keeps running
-    // on master after peer death); R3.3 establishes that the FSM
-    // truthfully reflects the broker-side reality.
-    auto proc = SpawnWorker(
-        "broker_role_state.role_api_base_hub_dead_transitions_presences_to_deregistered",
-        {});
-    ExpectWorkerOk(proc);
-}
-
-TEST_F(DatahubRoleStateMachineTest, RoleAPIBase_HubDead_PeerKeepsRoleAlive)
-{
-    // A2 (Wave-B M8 prep) — dual-hub fault tolerance: PEER broker
-    // death must NOT trigger role-wide shutdown.  Pre-A2 any-of-N
-    // on_hub_dead callbacks unconditionally called request_stop, so
-    // a dual-hub processor exited if EITHER broker hiccupped —
-    // strictly worse than single-hub.  Post-A2: master (i==0) death
-    // still triggers role exit (preserves single-hub semantics);
-    // peer (i>0) death marks the connection dead in the bitmask
-    // accessible via api.is_connection_alive(i) but the role keeps
-    // running on the master.  See HEP-CORE-0023 §2.5.
-    auto proc = SpawnWorker(
-        "broker_role_state.role_api_base_hub_dead_peer_keeps_role_alive", {});
-    ExpectWorkerOk(proc);
-}
-
-TEST_F(DatahubRoleStateMachineTest, RoleAPIBase_HubDead_MasterExitsRole)
-{
-    // A2 baseline — master broker death MUST still trigger role-wide
-    // shutdown (single-hub semantics preserved).  Twin of the peer-
-    // keeps-alive test; mutates broker_a (the master) instead of
-    // broker_b.  Asserts core.is_running() flips false within 3s and
-    // stop_reason becomes "hub_dead".
-    auto proc = SpawnWorker(
-        "broker_role_state.role_api_base_hub_dead_master_exits_role", {});
-    ExpectWorkerOk(proc);
-}
-
-TEST_F(DatahubRoleStateMachineTest, RoleAPIBase_WaitForRole_DualHub_Fallthrough)
-{
-    // A3 (Wave-B M8 prep) — Class B (role-bound) queries must fall
-    // through across all connections per HEP-CORE-0033 §18.3.
-    // Spawns 2 brokers, registers a "target" role on hub-B only,
-    // builds a dual-hub querier (conn[0]=hub-A, conn[1]=hub-B), and
-    // asserts api.wait_for_role(target_uid) finds it via fall-through.
-    // Pre-A3 wait_for_role only polled connection[0] (hub-A) and
-    // returned false because hub-A doesn't know about target.
-    // Mutation: revert iteration → test fails on EXPECT_TRUE.
-    auto proc = SpawnWorker(
-        "broker_role_state.role_api_base_wait_for_role_dual_hub_fallthrough",
-        {});
-    ExpectWorkerOk(proc);
-}
+// RETIRED 2026-06-29 under #154 C3 — 7 dual-broker tests
+// (StartHandlerThreads_DualHub_E2E, HubDead_{Peer,Transitions,Master},
+// WaitForRole_DualHub_Fallthrough, SourceHubUid_Disambiguates_DualHub,
+// DualHub_Heartbeat_PerPresence) deleted from this file: two in-process
+// `BrokerService` instances violate the HEP-CORE-0036 §7.1 single-pumper
+// invariant (`ZapRouter::pump_one` PANICs on concurrent entry from two
+// broker poll loops sharing one ZapRouter).  Absorbed contracts tracked
+// in `docs/todo/TESTING_TODO.md` § "Test retirements / cross-layer
+// migrations" 2026-06-29 rows; L4 successors blocked on #298
+// (Pattern4Setup multi-hub extension).
 
 TEST_F(DatahubRoleStateMachineTest, RoleAPIBase_BandNotify_WireField_And_Routing)
 {
@@ -248,48 +183,6 @@ TEST_F(DatahubRoleStateMachineTest, RoleAPIBase_RegistrationFSM_Transitions)
     // role_api_base.cpp and not externally observable.
     auto proc = SpawnWorker(
         "broker_role_state.role_api_base_registration_fsm_transitions",
-        {});
-    ExpectWorkerOk(proc);
-}
-
-TEST_F(DatahubRoleStateMachineTest, RoleAPIBase_DualHub_Heartbeat_PerPresence)
-{
-    // Audit C2 closure (2026-05-19) — pins HEP-CORE-0033 §19.3 step 3:
-    // heartbeat is per-presence; a dual-hub processor (Consumer on hub-A
-    // + Producer on hub-B) emits ONE heartbeat per presence to its OWN
-    // hub.  Validates the role-side refactor that replaced `short_tag`
-    // string-branching + legacy `pImpl->channel`/`pImpl->out_channel`
-    // fields with `handler_->presences()` iteration in
-    // `RoleAPIBase::on_heartbeat_tick_` (`src/utils/service/
-    // role_api_base.cpp` line 832ish).
-    //
-    // Mutation: revert the iteration to a hardcoded
-    // `emit(pImpl->channel, "consumer")` for proc-role → hub-B never
-    // receives a producer-presence heartbeat → broker_b's RoleEntry's
-    // producer-presence row never flips `first_heartbeat_seen=true`
-    // → test fails on EXPECT_TRUE.
-    auto proc = SpawnWorker(
-        "broker_role_state.role_api_base_dual_hub_heartbeat_per_presence",
-        {});
-    ExpectWorkerOk(proc);
-}
-
-TEST_F(DatahubRoleStateMachineTest, RoleAPIBase_SourceHubUid_Disambiguates_DualHub)
-{
-    // Audit C3 (2026-05-17) — pins `IncomingMessage::source_hub_uid`
-    // as the dual-hub message origin tag (HEP-CORE-0023 §7 +
-    // HEP-CORE-0033 §18.3 / §19.4).  Pre-C3 the field didn't exist:
-    // a dual-hub processor's script had no way to tell which hub a
-    // notification came from without comparing channel/band names
-    // back to its own presence list.
-    //
-    // Test shape: 2 brokers, dual-hub handler, processor joins one
-    // band on each hub; external BRC clients also join, triggering
-    // BAND_JOIN_NOTIFY fanout from each broker.  Test asserts both
-    // notifies arrive with distinct `source_hub_uid` values that
-    // match the respective broker endpoints.
-    auto proc = SpawnWorker(
-        "broker_role_state.role_api_base_source_hub_uid_disambiguates_dual_hub",
         {});
     ExpectWorkerOk(proc);
 }

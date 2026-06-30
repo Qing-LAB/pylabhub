@@ -143,9 +143,11 @@ add_executable(test_layer3_datahub
     # workers/datahub_broker_health_workers.cpp
 
     # ── Broker role-liveness state machine (HEP-CORE-0023 §2.5) ──────────────────
-    # MASKED — pending HEP-0035 §4.6.5 step 3-revised-F migration.
-    # test_datahub_role_state_machine.cpp
-    # workers/datahub_role_state_workers.cpp
+    # Unmasked 2026-06-29 under #154 batch-2a C3 — migrated to shared
+    # broker_test_harness (DirectBrokerHandle + BrcHandle + make_reg_opts /
+    # make_cons_opts) + CurveKeyStoreFixture per AUTH-6 audit.
+    test_datahub_role_state_machine.cpp
+    workers/datahub_role_state_workers.cpp
 
     # ── RAII layer stress tests (multi-process, full-capacity, random delays) ─────
     test_datahub_stress_raii.cpp
