@@ -59,18 +59,14 @@ struct ShmQueueImpl
     // ── HEP-CORE-0036 §6.7 deferred-attach state (Standby / Configured) ─────
     //
     // Stored at factory time so start() can do the actual SHM attach /
-    // segment creation using artifacts populated via set_shm_secret().
-    // Set on a Standby-mode factory; ignored when neither factory used
-    // the deferred path (the legacy direct-attach factories populate
-    // dbc/dbp immediately and leave these defaults).
+    // segment creation using the HEP-CORE-0041 capability-transport
+    // borrowed fd populated via set_shm_capability_fd().
     bool        mode_is_reader{false};       ///< true: reader; false: writer
-    bool        has_shm_secret{false};       ///< true once set_shm_secret called
-    uint64_t    pending_shm_secret{0};
 
-    // HEP-CORE-0041 capability-transport path (mutually exclusive with
-    // shm_secret above).  Borrowed fd from IShmCapabilityProducer (writer
-    // side) or received via SCM_RIGHTS (reader side); DataBlock fd-source
-    // factories dup internally so ShmQueue does NOT own the fd.
+    // HEP-CORE-0041 capability-transport path.  Borrowed fd from
+    // IShmCapabilityProducer (writer side) or received via SCM_RIGHTS
+    // (reader side); DataBlock fd-source factories dup internally so
+    // ShmQueue does NOT own the fd.
     bool        has_capability_fd{false};
     int         pending_capability_fd{-1};
 
@@ -104,158 +100,11 @@ struct ShmQueueImpl
     const schema::SchemaInfo *        pending_fz_schema_info{nullptr};
 };
 
-// Old factories removed — use create_writer() / create_reader() instead.
-
-// ============================================================================
-// create_writer — HEP-CORE-0036 §6.7 Standby + apply + start convenience
-// ============================================================================
-//
-// Builds a Standby ShmQueue (no segment created), applies the broker /
-// config-supplied secret (Standby → Configured), then calls start() to
-// actually create the SHM segment (Configured → Active).  Returns
-// nullptr if any phase fails — preserves the legacy semantics where
-// "create_writer returns nullptr on creation failure".
-//
-// Note: the original pre-1g design (broker-mints-shm_secret) was
-// SUPERSEDED by HEP-CORE-0041 capability transport.  Post-1i-mig
-// the production path is `create_writer_standby` + `set_shm_capability_fd`
-// + `start()` via `RoleAPIBase::build_tx_queue` (capability dispatch
-// branch).  This factory is dead from production; it survives in
-// the tree only until 1i-cleanup (#275) deletes the legacy machinery.
-
-std::unique_ptr<ShmQueue>
-ShmQueue::create_writer(const std::string &channel_name,
-                        const std::vector<SchemaFieldDesc> &slot_schema,
-                        const std::string &slot_packing,
-                        const std::vector<SchemaFieldDesc> &fz_schema,
-                        const std::string &fz_packing,
-                        uint32_t ring_buffer_capacity,
-                        DataBlockPageSize page_size,
-                        uint64_t shared_secret,
-                        DataBlockPolicy policy,
-                        ConsumerSyncPolicy sync_policy,
-                        ChecksumPolicy checksum_policy,
-                        bool checksum_slot,
-                        bool checksum_fz,
-                        bool always_clear_slot,
-                        const std::string &hub_uid,
-                        const std::string &hub_name,
-                        const schema::SchemaInfo *slot_schema_info,
-                        const schema::SchemaInfo *fz_schema_info,
-                        const std::string &producer_uid,
-                        const std::string &producer_name)
-{
-    if (slot_schema.empty())
-    {
-        LOGGER_ERROR("[ShmQueue] create_writer: slot_schema is empty");
-        return nullptr;
-    }
-
-    // Compute slot size from schema (authoritative).
-    auto [slot_layout, item_size] = compute_field_layout(slot_schema, slot_packing);
-    if (item_size == 0)
-    {
-        LOGGER_ERROR("[ShmQueue] create_writer: computed slot size is 0");
-        return nullptr;
-    }
-
-    // Compute flexzone size from schema (0 if no flexzone).
-    size_t fz_size = 0;
-    if (!fz_schema.empty())
-    {
-        auto [fz_layout, raw_fz_size] = compute_field_layout(fz_schema, fz_packing);
-        fz_size = align_to_physical_page(raw_fz_size);
-    }
-
-    // ── Standby: build the queue object with all schema metadata + the
-    // deferred-attach parameters.  No SHM segment created yet.
-    auto impl                     = std::make_unique<ShmQueueImpl>();
-    impl->mode_is_reader          = false;
-    impl->item_sz                 = item_size;
-    impl->fz_sz                   = fz_size;
-    impl->chan_name               = channel_name;
-    impl->checksum_slot           = checksum_slot;
-    impl->checksum_fz             = checksum_fz;
-    impl->always_clear_slot       = always_clear_slot;
-    impl->pending_slot_schema     = slot_schema;
-    impl->pending_slot_packing    = slot_packing;
-    impl->pending_fz_schema       = fz_schema;
-    impl->pending_fz_packing      = fz_packing;
-    impl->pending_ring_buffer_capacity = ring_buffer_capacity;
-    impl->pending_page_size       = page_size;
-    impl->pending_policy          = policy;
-    impl->pending_sync_policy     = sync_policy;
-    impl->pending_checksum_policy = checksum_policy;
-    impl->pending_hub_uid         = hub_uid;
-    impl->pending_hub_name        = hub_name;
-    impl->pending_producer_uid    = producer_uid;
-    impl->pending_producer_name   = producer_name;
-    impl->pending_slot_schema_info = slot_schema_info;
-    impl->pending_fz_schema_info  = fz_schema_info;
-    std::unique_ptr<ShmQueue> queue(new ShmQueue(std::move(impl)));
-
-    // ── Configured: apply the broker/config-supplied secret.
-    if (!queue->set_shm_secret(shared_secret))
-        return nullptr;
-
-    // ── Active: actually create the SHM segment.  HEP §6.7 "either
-    // fully transitioned or fully refused": on failure, the queue is
-    // destroyed and nullptr returned — preserves the legacy contract
-    // where the convenience factory returns nullptr on any error.
-    if (!queue->start())
-        return nullptr;
-    return queue;
-}
-
-// ============================================================================
-// create_reader — HEP-CORE-0036 §6.7 Standby + apply + start convenience
-// ============================================================================
-
-std::unique_ptr<ShmQueue>
-ShmQueue::create_reader(const std::string &shm_name,
-                        uint64_t shared_secret,
-                        const std::vector<SchemaFieldDesc> &expected_slot_schema,
-                        const std::string &expected_packing,
-                        const std::string &channel_name,
-                        bool verify_slot,
-                        bool verify_fz,
-                        const std::string &consumer_uid,
-                        const std::string &consumer_name)
-{
-    // Compute expected slot size from schema.  Schema hash validation
-    // (broker level) ensures both sides agree on layout; we keep
-    // item_sz for the metadata accessor.
-    size_t item_size = 0;
-    if (!expected_slot_schema.empty())
-    {
-        auto [layout, sz] = compute_field_layout(expected_slot_schema, expected_packing);
-        item_size = sz;
-    }
-
-    // ── Standby: build the queue object with deferred-attach params.
-    auto impl                          = std::make_unique<ShmQueueImpl>();
-    impl->mode_is_reader               = true;
-    impl->item_sz                      = item_size;
-    impl->chan_name                    = channel_name;
-    impl->verify_slot                  = verify_slot;
-    impl->verify_fz                    = verify_fz;
-    impl->pending_shm_name             = shm_name;
-    impl->pending_expected_slot_schema = expected_slot_schema;
-    impl->pending_expected_packing     = expected_packing;
-    impl->pending_consumer_uid         = consumer_uid;
-    impl->pending_consumer_name        = consumer_name;
-    std::unique_ptr<ShmQueue> queue(new ShmQueue(std::move(impl)));
-
-    // ── Configured + Active: apply secret + attach.  On failure
-    // (segment not found, secret mismatch, schema mismatch) return
-    // nullptr — preserves legacy "create_reader returns nullptr on
-    // bad secret" semantics.
-    if (!queue->set_shm_secret(shared_secret))
-        return nullptr;
-    if (!queue->start())
-        return nullptr;
-    return queue;
-}
+// HEP-CORE-0041 1i-cleanup S3c (#275) — legacy secret-based factories
+// (`create_writer(name, ..., shared_secret, ...)` +
+// `create_reader(name, shared_secret, ...)`) deleted.  The
+// capability-transport path below (`create_writer_standby` +
+// `set_shm_capability_fd` + `start`) is the surviving production API.
 
 // ============================================================================
 // create_writer_standby — HEP-CORE-0041 capability-transport Standby factory
@@ -369,37 +218,6 @@ ShmQueue::create_reader_standby(const std::string &shm_name,
 }
 
 // ============================================================================
-// set_shm_secret — HEP-CORE-0036 §6.7 Standby → Configured
-// ============================================================================
-
-bool ShmQueue::set_shm_secret(uint64_t secret) noexcept
-{
-    if (!pImpl) return false;
-    // §6.7 mutator table: refuse from Active (`shm_secret` is per-channel-
-    // lifetime; restart needed).
-    if (pImpl->dbc.get() != nullptr || pImpl->dbp.get() != nullptr)
-    {
-        LOGGER_WARN("[ShmQueue] set_shm_secret refused: queue is Active "
-                    "(`shm_secret` is per-channel-lifetime; HEP-CORE-0036 §6.7)");
-        return false;
-    }
-    // HEP-CORE-0041 D7 "single unified mechanism": a queue uses EITHER the
-    // legacy secret-based path OR the capability-transport path, never
-    // both.  The secret-based path retires in 1i-cleanup; this guard
-    // catches accidental mixing during the migration window.
-    if (pImpl->has_capability_fd)
-    {
-        LOGGER_WARN("[ShmQueue] set_shm_secret refused: queue is already "
-                    "in capability-transport mode (HEP-CORE-0041 D7 — "
-                    "modes are mutually exclusive)");
-        return false;
-    }
-    pImpl->pending_shm_secret = secret;
-    pImpl->has_shm_secret = true;
-    return true;
-}
-
-// ============================================================================
 // set_shm_capability_fd — HEP-CORE-0041 Standby → Configured (capability)
 // ============================================================================
 
@@ -423,14 +241,6 @@ bool ShmQueue::set_shm_capability_fd(int fd) noexcept
                     "HEP-CORE-0036 §6.7 / HEP-CORE-0041 §5.5)");
         return false;
     }
-    // Mutual exclusion with the legacy secret-based path (HEP-CORE-0041 D7).
-    if (pImpl->has_shm_secret)
-    {
-        LOGGER_WARN("[ShmQueue] set_shm_capability_fd refused: queue is "
-                    "already in secret-based mode (HEP-CORE-0041 D7 — "
-                    "modes are mutually exclusive)");
-        return false;
-    }
     pImpl->pending_capability_fd = fd;
     pImpl->has_capability_fd     = true;
     return true;
@@ -446,96 +256,16 @@ bool ShmQueue::start()
     // Already Active: idempotent no-op (HEP §6.7 mutator table).
     if (pImpl->dbc.get() != nullptr || pImpl->dbp.get() != nullptr)
         return true;
-    // Standby (neither mode applied): refuse per §6.7 mutator table.
-    if (!pImpl->has_shm_secret && !pImpl->has_capability_fd)
+    // Standby (no capability fd applied): refuse per §6.7 mutator table.
+    if (!pImpl->has_capability_fd)
     {
-        LOGGER_ERROR("[ShmQueue] start refused: queue in Standby (neither "
-                     "shm_secret nor capability fd applied; "
-                     "HEP-CORE-0036 §6.7 / HEP-CORE-0041 §5.5)");
+        LOGGER_ERROR("[ShmQueue] start refused: queue in Standby (no "
+                     "capability fd applied; HEP-CORE-0041 §5.5)");
         return false;
     }
 
-    // HEP-CORE-0041 capability-transport path takes precedence (the
-    // legacy secret-based branch below retires in 1i-cleanup; mutual
-    // exclusion in set_shm_secret + set_shm_capability_fd ensures at
-    // most one is set at start() time).
-    if (pImpl->has_capability_fd)
-    {
-        if (pImpl->mode_is_reader)
-        {
-            const char *uid  = pImpl->pending_consumer_uid.empty()
-                                   ? nullptr : pImpl->pending_consumer_uid.c_str();
-            const char *cnam = pImpl->pending_consumer_name.empty()
-                                   ? nullptr : pImpl->pending_consumer_name.c_str();
-            std::unique_ptr<DataBlockConsumer> dbc;
-            try
-            {
-                // No expected_config — the producer-side ftruncate fixed
-                // the layout; consumer validates against the SHM header
-                // it reads from the received fd.
-                dbc = find_datablock_consumer_from_fd_impl(
-                    pImpl->chan_name, pImpl->pending_capability_fd,
-                    /*expected_config=*/nullptr,
-                    pImpl->pending_fz_schema_info,
-                    pImpl->pending_slot_schema_info,
-                    uid, cnam);
-            }
-            catch (const std::exception &e)
-            {
-                LOGGER_ERROR("[ShmQueue] start (capability): consumer "
-                             "attach failed for channel='{}' fd={}: {}",
-                             pImpl->chan_name,
-                             pImpl->pending_capability_fd, e.what());
-                return false;
-            }
-            if (!dbc) return false;
-            pImpl->fz_sz = dbc->flexible_zone_span().size();
-            pImpl->dbc   = std::move(dbc);
-            return true;
-        }
-
-        // Writer mode (capability): wrap the externally-allocated fd
-        // (typically from IShmCapabilityProducer::borrow_fd()).  The
-        // L1 transport pre-allocated via memfd_create + ftruncate to
-        // datablock_layout_total_size(config); the fd-source ctor
-        // validates fstat size matches.
-        DataBlockConfig config;
-        config.logical_unit_size    = pImpl->item_sz;
-        config.flex_zone_size       = pImpl->fz_sz;
-        config.ring_buffer_capacity = pImpl->pending_ring_buffer_capacity;
-        config.physical_page_size   = pImpl->pending_page_size;
-        // shared_secret is irrelevant on the capability path; left at
-        // default (0).  Auth is via L2 attach handshake (HEP-0041 §5.5).
-        config.policy               = pImpl->pending_policy;
-        config.consumer_sync_policy = pImpl->pending_sync_policy;
-        config.checksum_policy      = pImpl->pending_checksum_policy;
-        config.hub_uid              = pImpl->pending_hub_uid;
-        config.hub_name             = pImpl->pending_hub_name;
-        config.producer_uid         = pImpl->pending_producer_uid;
-        config.producer_name        = pImpl->pending_producer_name;
-        std::unique_ptr<DataBlockProducer> dbp;
-        try
-        {
-            dbp = create_datablock_producer_from_fd_impl(
-                pImpl->chan_name, pImpl->pending_capability_fd,
-                pImpl->pending_policy, config,
-                pImpl->pending_fz_schema_info,
-                pImpl->pending_slot_schema_info);
-        }
-        catch (const std::exception &e)
-        {
-            LOGGER_ERROR("[ShmQueue] start (capability): producer create "
-                         "failed for channel='{}' fd={}: {}",
-                         pImpl->chan_name,
-                         pImpl->pending_capability_fd, e.what());
-            return false;
-        }
-        if (!dbp) return false;
-        pImpl->dbp = std::move(dbp);
-        return true;
-    }
-
-    // Legacy secret-based path (1i-cleanup will delete this entire branch).
+    // HEP-CORE-0041 capability-transport path is the only path
+    // (1i-cleanup S3c #275 deleted the legacy secret-based branch).
     if (pImpl->mode_is_reader)
     {
         const char *uid  = pImpl->pending_consumer_uid.empty()
@@ -545,30 +275,42 @@ bool ShmQueue::start()
         std::unique_ptr<DataBlockConsumer> dbc;
         try
         {
-            dbc = find_datablock_consumer_impl(
-                pImpl->pending_shm_name, pImpl->pending_shm_secret,
-                nullptr, nullptr, nullptr, uid, cnam);
+            // No expected_config — the producer-side ftruncate fixed
+            // the layout; consumer validates against the SHM header
+            // it reads from the received fd.
+            dbc = find_datablock_consumer_from_fd_impl(
+                pImpl->chan_name, pImpl->pending_capability_fd,
+                /*expected_config=*/nullptr,
+                pImpl->pending_fz_schema_info,
+                pImpl->pending_slot_schema_info,
+                uid, cnam);
         }
         catch (const std::exception &e)
         {
-            LOGGER_ERROR("[ShmQueue] start: attachment failed for '{}': {}",
-                         pImpl->pending_shm_name, e.what());
+            LOGGER_ERROR("[ShmQueue] start (capability): consumer "
+                         "attach failed for channel='{}' fd={}: {}",
+                         pImpl->chan_name,
+                         pImpl->pending_capability_fd, e.what());
             return false;
         }
-        if (!dbc) return false;  // segment missing or secret mismatch
-        // Recompute fz_sz from the actual attached segment.
+        if (!dbc) return false;
         pImpl->fz_sz = dbc->flexible_zone_span().size();
-        pImpl->dbc = std::move(dbc);
+        pImpl->dbc   = std::move(dbc);
         return true;
     }
 
-    // Writer mode: create the SHM segment.
+    // Writer mode (capability): wrap the externally-allocated fd
+    // (typically from IShmCapabilityProducer::borrow_fd()).  The
+    // L1 transport pre-allocated via memfd_create + ftruncate to
+    // datablock_layout_total_size(config); the fd-source ctor
+    // validates fstat size matches.
     DataBlockConfig config;
     config.logical_unit_size    = pImpl->item_sz;
     config.flex_zone_size       = pImpl->fz_sz;
     config.ring_buffer_capacity = pImpl->pending_ring_buffer_capacity;
     config.physical_page_size   = pImpl->pending_page_size;
-    config.shared_secret        = pImpl->pending_shm_secret;
+    // shared_secret is irrelevant on the capability path; left at
+    // default (0).  Auth is via L2 attach handshake (HEP-0041 §5.5).
     config.policy               = pImpl->pending_policy;
     config.consumer_sync_policy = pImpl->pending_sync_policy;
     config.checksum_policy      = pImpl->pending_checksum_policy;
@@ -576,16 +318,24 @@ bool ShmQueue::start()
     config.hub_name             = pImpl->pending_hub_name;
     config.producer_uid         = pImpl->pending_producer_uid;
     config.producer_name        = pImpl->pending_producer_name;
-    auto dbp = create_datablock_producer_impl(
-        pImpl->chan_name, pImpl->pending_policy, config,
-        pImpl->pending_fz_schema_info,
-        pImpl->pending_slot_schema_info);
-    if (!dbp)
+    std::unique_ptr<DataBlockProducer> dbp;
+    try
     {
-        LOGGER_ERROR("[ShmQueue] start: DataBlock creation failed for '{}'",
-                     pImpl->chan_name);
+        dbp = create_datablock_producer_from_fd_impl(
+            pImpl->chan_name, pImpl->pending_capability_fd,
+            pImpl->pending_policy, config,
+            pImpl->pending_fz_schema_info,
+            pImpl->pending_slot_schema_info);
+    }
+    catch (const std::exception &e)
+    {
+        LOGGER_ERROR("[ShmQueue] start (capability): producer create "
+                     "failed for channel='{}' fd={}: {}",
+                     pImpl->chan_name,
+                     pImpl->pending_capability_fd, e.what());
         return false;
     }
+    if (!dbp) return false;
     pImpl->dbp = std::move(dbp);
     return true;
 }
@@ -610,12 +360,10 @@ void ShmQueue::stop()
     }
     pImpl->dbc.reset();
     pImpl->dbp.reset();
-    // Per §6.7 "stop() is terminal": clear pending secret + capability
-    // fd so we don't silently restart with stale artifacts.  The fd
-    // itself is non-owning (L1 transport owns it), so we only forget
-    // our reference; we do not close().
-    pImpl->has_shm_secret        = false;
-    pImpl->pending_shm_secret    = 0;
+    // Per §6.7 "stop() is terminal": clear pending capability fd so
+    // we don't silently restart with stale artifacts.  The fd itself
+    // is non-owning (L1 transport owns it), so we only forget our
+    // reference; we do not close().
     pImpl->has_capability_fd     = false;
     pImpl->pending_capability_fd = -1;
 }
@@ -624,31 +372,15 @@ void ShmQueue::stop()
 // apply_master_approval — HEP-CORE-0036 §6.7 polymorphic dispatch
 // ============================================================================
 
-bool ShmQueue::apply_master_approval(const nlohmann::json& artifacts) noexcept
+bool ShmQueue::apply_master_approval(const nlohmann::json& /*artifacts*/) noexcept
 {
-    if (!pImpl) return false;
-    // Missing `shm_secret` is a no-op-returning-true: the role host may
-    // call this unconditionally and the legacy config-supplied secret
-    // path stays valid (queue is already Configured or Active).
-    if (!artifacts.contains("shm_secret"))
-        return true;
-    try
-    {
-        if (!artifacts.at("shm_secret").is_number_unsigned())
-        {
-            LOGGER_WARN("[ShmQueue::apply_master_approval] `shm_secret` "
-                        "is not an unsigned number — refusing per HEP-CORE-0036 §6.7");
-            return false;
-        }
-        const uint64_t secret = artifacts.at("shm_secret").get<uint64_t>();
-        return set_shm_secret(secret);
-    }
-    catch (const std::exception &e)
-    {
-        LOGGER_ERROR("[ShmQueue::apply_master_approval] exception "
-                     "parsing artifacts: {}", e.what());
-        return false;
-    }
+    // HEP-CORE-0041 1i-cleanup S3c (#275) — the legacy `shm_secret`
+    // artifact read retired with `set_shm_secret`.  SHM wires via the
+    // capability-fd handshake at L2 (HEP-CORE-0041 §5.5), not the
+    // broker-artifact channel; this override stays as a no-op-true to
+    // honor the abstract `QueueReader/Writer::apply_master_approval`
+    // contract (role hosts call it unconditionally).
+    return pImpl != nullptr;
 }
 
 // ============================================================================

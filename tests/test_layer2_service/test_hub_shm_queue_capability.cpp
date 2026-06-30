@@ -288,33 +288,21 @@ TEST_F(ShmQueueCapabilityTest, SetCapabilityFd_RefusesFromActive)
         << "set_shm_capability_fd must refuse from Active";
 }
 
-// ── Test 4: capability path refuses when secret path already used ────
-TEST_F(ShmQueueCapabilityTest, SetCapabilityFd_RefusesWhenSecretAlreadySet)
-{
-    auto queue = standby_writer("cap-vs-secret-1");
-    ASSERT_NE(queue, nullptr);
-    // Apply legacy secret first.  Does NOT start() — leaves queue in
-    // Configured(secret-mode).
-    ASSERT_TRUE(queue->set_shm_secret(0x1234));
-
-    const int memfd = make_sized_memfd("plh_l2_shmq_cap_excl1");
-    ASSERT_GE(memfd, 0);
-    EXPECT_FALSE(queue->set_shm_capability_fd(memfd))
-        << "HEP-CORE-0041 D7 mutual exclusion violated";
-}
-
-// ── Test 5: secret path refuses when capability path already used ────
-TEST_F(ShmQueueCapabilityTest, SetShmSecret_RefusesWhenCapabilityAlreadySet)
-{
-    auto queue = standby_writer("cap-vs-secret-2");
-    ASSERT_NE(queue, nullptr);
-    const int memfd = make_sized_memfd("plh_l2_shmq_cap_excl2");
-    ASSERT_GE(memfd, 0);
-    ASSERT_TRUE(queue->set_shm_capability_fd(memfd));
-
-    EXPECT_FALSE(queue->set_shm_secret(0xABCD))
-        << "HEP-CORE-0041 D7 mutual exclusion violated";
-}
+// ─── Rule-6 retirement: SetCapabilityFd_RefusesWhenSecretAlreadySet
+//                       + SetShmSecret_RefusesWhenCapabilityAlreadySet ───
+// HEP-CORE-0041 1i-cleanup S3c (#275, 2026-06-30) — retired.
+//
+// Pinned the HEP-CORE-0041 D7 "single unified mechanism" mutual-
+// exclusion guards between the legacy secret-based path and the
+// capability-transport path.  S3c deleted `ShmQueue::set_shm_secret`
+// and the legacy state machine entirely; there is no longer a
+// "secret path" to guard against.  Mutual exclusion is satisfied
+// trivially — only one mode exists.
+//
+// The surviving "refuse from Active" guard on `set_shm_capability_fd`
+// stays pinned by Tests 3 (`SetCapabilityFd_RefusesFromActive`).
+// See `docs/todo/TESTING_TODO.md` § "Test retirements" row dated
+// 2026-06-30 (S3c).
 
 // ── Test 6: defensive guardrail on negative fd ───────────────────────
 TEST_F(ShmQueueCapabilityTest, SetCapabilityFd_RefusesNegativeFd)

@@ -19,21 +19,22 @@
  * object with deferred-attach metadata (no SHM segment touched).
  *
  * Reader side (post-HEP-CORE-0041 §5):
- *   - Capability path (production): `create_reader_standby(...)`
- *     followed by `set_shm_capability_fd(fd)` (fd received via
- *     `SCM_RIGHTS` in `RoleAPIBase::apply_consumer_reg_ack_shm_`,
- *     or pre-populated by L2/L3 tests via the test fast-path on
- *     `RxQueueOptions::shm_capability_fd`) and then `start()`.  No
- *     segment name, no secret.
- *   - Legacy secret path (test-only fallback, deleted by HEP-CORE-0041
- *     1i-cleanup #275): `create_reader(name, secret, ...)` drives
- *     all three transitions in one call.
+ * Reader side: `create_reader_standby(...)` followed by
+ * `set_shm_capability_fd(fd)` (fd received via `SCM_RIGHTS` in
+ * `RoleAPIBase::apply_consumer_reg_ack_shm_`, or pre-populated by
+ * L2/L3 tests via the test fast-path on
+ * `RxQueueOptions::shm_capability_fd`) and then `start()`.  No
+ * segment name, no secret.
  *
  * Writer side: `create_writer_standby(...)` builds in Standby; the
  * tx capability factory `create_capability_writer(...)` mints the
  * memfd inside `RoleHostFrame::prepare_tx_capability_` and drives
  * the queue Configured → Active.  Both factories return `nullptr`
  * on any phase failure.
+ *
+ * HEP-CORE-0041 1i-cleanup S3c (#275) deleted the legacy secret-based
+ * factories (`create_writer(name, ..., shared_secret, ...)` +
+ * `create_reader(name, shared_secret, ...)`) + `set_shm_secret` API.
  */
 #include "utils/hub_queue.hpp"
 #include "utils/data_block.hpp"
@@ -56,12 +57,12 @@ struct ShmQueueImpl;
  * Inherits both QueueReader and QueueWriter. Factories return the appropriate
  * abstract base pointer.
  *
- * @par Read mode (create_reader)
+ * @par Read mode (create_reader_standby + capability fd)
  * Creates and owns a DataBlockConsumer. read_acquire() acquires the next committed slot.
  * read_release() releases the read lock on that slot.
  * Validates expected schema against the SHM header at creation.
  *
- * @par Write mode (create_writer)
+ * @par Write mode (create_writer_standby + capability fd)
  * Creates and owns a DataBlockProducer. write_acquire() acquires a free slot.
  * write_commit() commits it; write_discard() releases without committing.
  * Computes slot/flexzone sizes from schema via compute_field_layout().
@@ -69,91 +70,6 @@ struct ShmQueueImpl;
 class PYLABHUB_UTILS_EXPORT ShmQueue final : public QueueReader, public QueueWriter
 {
 public:
-    // ── Factories ─────────────────────────────────────────────────────────────
-
-    /**
-     * @brief Create a write-mode ShmQueue (producer — creates SHM).
-     *
-     * Creates DataBlock internally from schema + SHM parameters. Computes
-     * slot size and flexzone size via compute_field_layout(). Symmetric with
-     * ZmqQueue::push_to().
-     *
-     * Returns unique_ptr<ShmQueue> (concrete type, not QueueWriter base) so
-     * the caller can store as ShmQueue for direct access to SHM-specific
-     * methods (raw_producer(), spinlock), or move into unique_ptr<QueueWriter>
-     * via implicit upcast when only the unified queue interface is needed.
-     * Use dynamic_cast for safe downcasting from QueueWriter* when needed.
-     *
-     * @param channel_name       SHM segment name (from broker channel).
-     * @param slot_schema        Slot field definitions.
-     * @param slot_packing       "aligned" or "packed".
-     * @param fz_schema          Flexzone field definitions (empty = no flexzone).
-     * @param fz_packing         Flexzone packing.
-     * @param ring_buffer_capacity Number of slots in the ring buffer.
-     * @param page_size          OS SHM page size.
-     * @param shared_secret      Access token for SHM discovery.
-     * @param policy             Buffer management strategy.
-     * @param sync_policy        Consumer synchronization contract.
-     * @param checksum_policy    Checksum enforcement level.
-     * @param checksum_slot      Enable slot checksum on write_commit().
-     * @param checksum_fz        Enable flexzone checksum on write_commit().
-     * @param always_clear_slot  Zero-fill slot buffer on write_acquire().
-     * @param hub_uid            Hub identity (stored in SHM header).
-     * @param hub_name           Hub name (stored in SHM header).
-     * @param slot_schema_info   Schema hash for consumer validation (stored in header).
-     * @param fz_schema_info     Flexzone schema hash (stored in header).
-     * @return QueueWriter, or nullptr on failure.
-     */
-    [[nodiscard]] static std::unique_ptr<ShmQueue>
-    create_writer(const std::string &channel_name,
-                  const std::vector<SchemaFieldDesc> &slot_schema,
-                  const std::string &slot_packing,
-                  const std::vector<SchemaFieldDesc> &fz_schema,
-                  const std::string &fz_packing,
-                  uint32_t ring_buffer_capacity,
-                  DataBlockPageSize page_size,
-                  uint64_t shared_secret,
-                  DataBlockPolicy policy,
-                  ConsumerSyncPolicy sync_policy,
-                  ChecksumPolicy checksum_policy,
-                  bool checksum_slot = false,
-                  bool checksum_fz = false,
-                  bool always_clear_slot = true,
-                  const std::string &hub_uid = {},
-                  const std::string &hub_name = {},
-                  const schema::SchemaInfo *slot_schema_info = nullptr,
-                  const schema::SchemaInfo *fz_schema_info = nullptr,
-                  const std::string &producer_uid = {},
-                  const std::string &producer_name = {});
-
-    /**
-     * @brief Create a read-mode ShmQueue (consumer — attaches to existing SHM).
-     *
-     * Attaches to an existing DataBlock, validates schema against the SHM
-     * header. Returns nullptr on attachment failure or schema mismatch.
-     *
-     * @param shm_name           SHM segment name (from broker discovery).
-     * @param shared_secret      Access token for SHM attachment.
-     * @param expected_slot_schema Expected slot field definitions (for validation).
-     * @param expected_packing   Expected packing (for size validation).
-     * @param channel_name       Diagnostic name.
-     * @param verify_slot        Enable slot checksum verification on read_acquire().
-     * @param verify_fz          Enable flexzone checksum verification on read_acquire().
-     * @param consumer_uid       Consumer identity (stored in SHM header).
-     * @param consumer_name      Consumer name.
-     * @return QueueReader, or nullptr on failure or validation error.
-     */
-    [[nodiscard]] static std::unique_ptr<ShmQueue>
-    create_reader(const std::string &shm_name,
-                  uint64_t shared_secret,
-                  const std::vector<SchemaFieldDesc> &expected_slot_schema,
-                  const std::string &expected_packing,
-                  const std::string &channel_name,
-                  bool verify_slot = false,
-                  bool verify_fz = false,
-                  const std::string &consumer_uid = {},
-                  const std::string &consumer_name = {});
-
     // ── Standby-mode factories (HEP-CORE-0041 capability transport) ──────────
     //
     // Build a ShmQueue in Standby WITHOUT driving Configured → Active.  The
@@ -164,13 +80,15 @@ public:
     // Used by HEP-CORE-0041 1i-mig wiring (producer + processor role hosts
     // own an `IShmCapabilityProducer` that creates the anonymous SHM;
     // consumer side receives the SHM fd over SCM_RIGHTS from the producer's
-    // L2 attach handshake).  The legacy `create_writer` / `create_reader`
-    // factories above will retire in 1i-cleanup.
+    // L2 attach handshake).
+    //
+    // HEP-CORE-0041 1i-cleanup S3c (#275) deleted the legacy
+    // `create_writer(name, ..., shared_secret, ...)` +
+    // `create_reader(name, shared_secret, ...)` factories.
 
     /**
-     * @brief Build a write-mode ShmQueue in Standby (no secret, no segment).
+     * @brief Build a write-mode ShmQueue in Standby (no segment created).
      *
-     * Identical to `create_writer` minus the `shared_secret` parameter.
      * The returned queue is in Standby — call `set_shm_capability_fd(fd)`
      * (where fd is borrowed from `IShmCapabilityProducer::borrow_fd()`) to
      * transition Standby → Configured, then `start()` to transition
@@ -269,33 +187,15 @@ public:
     // ── HEP-CORE-0036 §6.7 state machine ──────────────────────────────────
     //
     // ShmQueue follows the same Standby → Configured → Active machine as
-    // ZmqQueue.  The Standby-mode factories (create_reader/create_writer
-    // when called with no secret) populate the queue object with schema
-    // metadata + name + role identity but defer the actual SHM
-    // discovery/create.  set_shm_secret(secret) transitions
-    // Standby → Configured.  start() does the actual
-    // find_datablock_consumer_impl / create_datablock_producer_impl call
+    // ZmqQueue.  The Standby-mode factories populate the queue object
+    // with schema metadata + role identity but defer the actual SHM
+    // wrap.  `set_shm_capability_fd(fd)` transitions Standby → Configured.
+    // `start()` does the actual `create_datablock_*_from_fd_impl` call
     // (Configured → Active).
     //
-    // The existing overloads that take a secret are convenience wrappers
-    // that drive Standby → Configured → Active in one call — equivalent
-    // to constructing in Standby, calling set_shm_secret(secret), then
-    // calling start().  Returns nullptr if any phase fails (preserves
-    // legacy "create_reader returns nullptr on bad secret" semantics).
-
-    /**
-     * @brief Apply broker-supplied SHM secret (HEP-CORE-0036 §6.7
-     * Standby → Configured).  Returns true on success.  Refuses
-     * (returns false) from Active per §6.7 mutator table (`shm_secret`
-     * is per-channel-lifetime; restart needed).  Safe to call in
-     * Standby or to replace a previously-set secret in Configured.
-     *
-     * Refuses if `set_shm_capability_fd` has already been called on this
-     * queue: a queue uses EITHER the legacy secret-based path OR the
-     * HEP-CORE-0041 capability-transport path, never both (HEP-0041 D7
-     * "single unified mechanism").
-     */
-    bool set_shm_secret(uint64_t secret) noexcept;
+    // HEP-CORE-0041 1i-cleanup S3c (#275) deleted `set_shm_secret` +
+    // the legacy convenience-factory overloads that drove the three
+    // transitions in one call.
 
     /**
      * @brief Apply HEP-CORE-0041 SHM capability fd (Standby → Configured).
@@ -307,8 +207,7 @@ public:
      * internally (substep 1f), so this ShmQueue does NOT take ownership
      * — the caller (L1 transport) keeps owning the original fd.
      *
-     * Refuses (returns false) from Active per §6.7 mutator table.  Refuses
-     * if `set_shm_secret` has already been called (mutual exclusion).
+     * Refuses (returns false) from Active per §6.7 mutator table.
      * Safe to call from Standby or to replace a previously-set capability
      * fd in Configured (e.g. attach retry against a different producer).
      *
@@ -320,23 +219,23 @@ public:
     bool set_shm_capability_fd(int fd) noexcept override;
 
     /**
-     * @brief Configured → Active.  Reader: performs SHM discovery via
-     * find_datablock_consumer_impl.  Writer: performs SHM segment
-     * creation via create_datablock_producer_impl.  Returns true on
+     * @brief Configured → Active.  Reader: `find_datablock_consumer_from_fd_impl`.
+     * Writer: `create_datablock_producer_from_fd_impl`.  Returns true on
      * success or if already Active (idempotent).  Returns false from
-     * Standby (no secret) or on attach failure (with queue state
-     * preserved per HEP §6.7 "either fully transitioned or fully
+     * Standby (no capability fd applied) or on attach failure (with queue
+     * state preserved per HEP §6.7 "either fully transitioned or fully
      * refused").
      */
     bool start() override;
 
     /**
      * @brief HEP-CORE-0036 §6.7 polymorphic Standby → Configured mutator.
-     * Extracts `artifacts["shm_secret"]` (uint64) and calls
-     * `set_shm_secret(secret)`.  Missing field is a no-op returning true
-     * — the role host can call this unconditionally regardless of what
-     * the broker emitted; queue state is unchanged when no secret is
-     * present (e.g. legacy config-supplied secret already in place).
+     *
+     * No-op-returning-true for `ShmQueue` — the SHM transport wires via
+     * the capability-fd handshake at L2 (HEP-CORE-0041 §5.5), not the
+     * broker-artifact channel.  Role hosts call `apply_master_approval`
+     * unconditionally; this override keeps that uniform-dispatch shape
+     * working without driving a state transition.
      */
     bool apply_master_approval(const nlohmann::json& artifacts) noexcept override;
 
