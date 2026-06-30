@@ -247,14 +247,12 @@ add_executable(test_layer3_datahub
     # aggregate.
 
     # ── HEP-CORE-0019 Metrics Plane tests ────────────────────────────────
-    # MASKED — pending HEP-0035 §4.6.5 step 3-revised-F migration.
-    # test_datahub_metrics.cpp
-    # workers/datahub_metrics_workers.cpp
+    test_datahub_metrics.cpp
+    workers/datahub_metrics_workers.cpp
 
     # ── HEP-CORE-0021 ZMQ Endpoint Registry protocol tests ────────────
-    # MASKED — pending HEP-0035 §4.6.5 step 3-revised-F migration.
-    # test_datahub_zmq_endpoint_registry.cpp
-    # workers/zmq_endpoint_registry_workers.cpp
+    test_datahub_zmq_endpoint_registry.cpp
+    workers/zmq_endpoint_registry_workers.cpp
 
     # ── HEP-CORE-0022 Hub Federation Broadcast protocol tests ────────────
     # MASKED — pending HEP-0035 §4.6.5 step 3-revised-F migration.

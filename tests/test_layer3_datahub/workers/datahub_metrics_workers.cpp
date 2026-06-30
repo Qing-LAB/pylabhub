@@ -41,6 +41,8 @@
 
 #include "datahub_metrics_workers.h"
 
+#include "broker_test_harness.h"
+#include "curve_test_setup.h"
 #include "log_capture_fixture.h"
 #include "plh_datahub.hpp"
 #include "plh_service.hpp"
@@ -49,16 +51,13 @@
 #include "test_sync_utils.h"
 #include "utils/broker_request_comm.hpp"
 #include "utils/broker_service.hpp"
-#include "utils/config/hub_config.hpp"
 #include "utils/file_lock.hpp"
-#include "utils/hub_directory.hpp"
 #include "utils/hub_host.hpp"
 #include "utils/hub_metrics_filter.hpp"
 #include "utils/hub_state.hpp"
 #include "utils/json_config.hpp"
 #include "utils/logger.hpp"
 
-#include <fstream>
 #include <gtest/gtest.h>
 #include <cppzmq/zmq_addon.hpp>
 #include <nlohmann/json.hpp>
@@ -67,9 +66,7 @@
 #include <atomic>
 #include <chrono>
 #include <functional>
-#include <future>
 #include <memory>
-#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -77,14 +74,13 @@
 #include <utility>
 #include <vector>
 
-namespace fs = std::filesystem;
-using pylabhub::config::HubConfig;
-using pylabhub::hub_host::HubHost;
+using pylabhub::tests::CurveKeyStoreFixture;
+using pylabhub::tests::CurveSetup;
+using pylabhub::tests::HubHostBrokerHandle;
 using pylabhub::tests::LogCaptureFixture;
 using pylabhub::tests::helper::poll_until;
 using pylabhub::tests::helper::run_gtest_worker;
 using pylabhub::utils::FileLock;
-using pylabhub::utils::HubDirectory;
 using pylabhub::utils::JsonConfig;
 using pylabhub::utils::Logger;
 using namespace pylabhub::broker;
@@ -98,69 +94,23 @@ namespace datahub_metrics
 namespace
 {
 
-// ── Real-HubHost broker startup (matches plh_hub binary path) ──────────────
+// ── Canonical HubHost broker startup (matches plh_hub binary path) ─────────
+//
+// Strict-CURVE migration (#154 AUTH-6 C5, 2026-06-30): switched from the
+// raw `HubConfig::load_from_directory(make_test_hub_dir())` shape to
+// `pylabhub::tests::start_hubhost_broker(overrides, curve)`.  The shared
+// harness wires the temp hub_dir + KnownRolesStore + KeyStore seeding
+// per HEP-CORE-0040 §172 so the broker admits each role uid declared
+// in the per-test `role_uids` list.
 
-fs::path make_test_hub_dir()
+json hub_overrides_baseline()
 {
-    static std::atomic<int> ctr{0};
-    fs::path dir = fs::temp_directory_path() /
-                   ("plh_l3_metrics_" + std::to_string(::getpid()) + "_" +
-                    std::to_string(ctr.fetch_add(1)));
-    fs::remove_all(dir);
-    fs::create_directories(dir);
-    HubDirectory::init_directory(dir, "MetricsTestHub");
-
-    const fs::path hub_json = dir / "hub.json";
-    json j;
-    {
-        std::ifstream f(hub_json);
-        if (f.is_open())
-            j = json::parse(f);
-    }
-    j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0";
-    j["admin"]["enabled"]           = false;
-    j["script"]["path"]             = "";
-    {
-        std::ofstream f(hub_json);
-        f << j.dump(2);
-    }
-    return dir;
+    return json{
+        {"network", {{"broker_endpoint", "tcp://127.0.0.1:0"}}},
+        {"admin",   {{"enabled", false}}},
+        {"script",  {{"path", ""}}},
+    };
 }
-
-struct BrcHandle
-{
-    pylabhub::hub::BrokerRequestComm brc;
-    std::atomic<bool>                running{true};
-    std::thread                      thread;
-
-    void start(const std::string &ep, const std::string &pk,
-               const std::string &uid)
-    {
-        pylabhub::hub::BrokerRequestComm::Config cfg;
-        cfg.broker_endpoint = ep;
-        cfg.broker_pubkey   = pk;
-        cfg.role_uid        = uid;
-        ASSERT_TRUE(brc.connect(cfg));
-        thread = std::thread([this] {
-            brc.run_poll_loop([this] { return running.load(); });
-        });
-    }
-
-    void stop()
-    {
-        running.store(false);
-        brc.stop();
-        if (thread.joinable())
-            thread.join();
-        brc.disconnect();
-    }
-
-    ~BrcHandle()
-    {
-        if (thread.joinable())
-            stop();
-    }
-};
 
 std::string pid_chan(const std::string &base)
 {
@@ -170,30 +120,27 @@ std::string pid_chan(const std::string &base)
 /// Raw-wire DEALER helper for test #15 — sends a literal msg_type
 /// (METRICS_REPORT_REQ) to verify the retired wire path returns
 /// UNKNOWN_MSG_TYPE.  Mirrors the pattern in
-/// `datahub_broker_workers.cpp::raw_req`.  Single-shot, two-frame
-/// [type, payload].  Returns the parsed reply body, or null JSON on
-/// timeout.
-json raw_request(const std::string &endpoint,
-                 const std::string &server_pubkey,
-                 const std::string &msg_type,
-                 const json        &payload,
-                 int                timeout_ms = 2000)
+/// `datahub_broker_workers.cpp::raw_req`.  Two-frame [type, payload]
+/// over a CURVE-secured DEALER under the same role identity the test
+/// already seeded in the keystore (post-strict-CURVE the broker
+/// refuses anything else — `BrokerRequestComm::connect` won't accept
+/// plain TCP, but this helper opens a raw DEALER, so it dials in with
+/// the role's z85 keys directly from `CurveSetup`).
+json raw_request(const std::string                  &endpoint,
+                 const std::string                  &server_pubkey,
+                 const pylabhub::tests::CurveKeypair &client_keys,
+                 const std::string                  &msg_type,
+                 const json                         &payload,
+                 int                                 timeout_ms = 2000)
 {
-    zmq::context_t ctx(1);
-    zmq::socket_t  dealer(ctx, zmq::socket_type::dealer);
-
-    if (server_pubkey.size() == 40)
-    {
-        std::array<char, 41> client_pub{};
-        std::array<char, 41> client_sec{};
-        if (zmq_curve_keypair(client_pub.data(), client_sec.data()) != 0)
-            return {};
-        dealer.set(zmq::sockopt::curve_serverkey, server_pubkey);
-        dealer.set(zmq::sockopt::curve_publickey,
-                   std::string(client_pub.data(), 40));
-        dealer.set(zmq::sockopt::curve_secretkey,
-                   std::string(client_sec.data(), 40));
-    }
+    zmq::socket_t dealer(pylabhub::hub::get_zmq_context(),
+                         zmq::socket_type::dealer);
+    dealer.set(zmq::sockopt::linger, 0);
+    dealer.set(zmq::sockopt::curve_serverkey, server_pubkey);
+    dealer.set(zmq::sockopt::curve_publickey,
+               std::string(client_keys.public_z85.data(), 40));
+    dealer.set(zmq::sockopt::curve_secretkey,
+               std::string(client_keys.secret_z85.data(), 40));
 
     dealer.connect(endpoint);
 
@@ -216,31 +163,8 @@ json raw_request(const std::string &endpoint,
                                     recv_frames.back().size()));
 }
 
-json make_reg_opts(const std::string &channel, const std::string &role_uid)
-{
-    json opts;
-    opts["channel_name"]      = channel;
-    opts["producer_pid"]      = ::getpid();
-    opts["role_uid"]          = role_uid;
-    opts["role_name"]         = "test_producer";
-    return opts;
-}
-
-json make_cons_opts(const std::string &channel,
-                    const std::string &consumer_uid)
-{
-    json opts;
-    opts["channel_name"]  = channel;
-    opts["role_uid"]  = consumer_uid;
-    opts["role_name"] = "test_consumer";
-    opts["consumer_pid"]  = ::getpid();
-    return opts;
-}
-
-/// Module list for every worker in this TU.  Grown from the pre-
-/// refactor 3-module list (Logger + Crypto + ZMQContext) because
-/// HubConfig::load_from_directory + HubHost startup transitively
-/// require FileLock + JsonConfig.
+/// Module list for every worker in this TU.  HubConfig load +
+/// HubHost startup transitively require FileLock + JsonConfig.
 #define PLH_METRICS_MODS                                                       \
     Logger::GetLifecycleModule(),                                              \
     FileLock::GetLifecycleModule(),                                            \
@@ -248,38 +172,59 @@ json make_cons_opts(const std::string &channel,
     pylabhub::crypto::GetLifecycleModule(),                                    \
     pylabhub::hub::GetZMQContextModule()
 
-/// Per-worker fixture: install LogCaptureFixture, spin up a real
-/// HubHost via `HubConfig::load_from_directory(...)`, run the body
-/// with refs to the broker.  Uninstall + log assertion at end.  Body
-/// receives:
-///   - `ep` / `pk`: broker endpoint + pubkey
-///   - `svc`: BrokerService reference (for query_metrics / query_metrics_json_str)
+/// Per-worker fixture: install LogCaptureFixture, seed a CurveKeyStore
+/// for `role_uids`, spin up a HubHost via the canonical harness, run
+/// the body with refs to the broker.  Uninstall + log assertion at end.
+///
+/// Body signature: `(const std::string& ep, const std::string& pk,
+///                   BrokerService& svc)` — same shape as the pre-
+/// migration template; only the wrapper's setup path changed (now
+/// goes through the canonical CurveSetup + KeyStore fixture + harness).
+///
+/// `role_uids` is the set of role uids the body will register.  Each
+/// is seeded into the per-process KeyStore as `role.<uid>` (canonical
+/// name) and pushed onto the broker's KnownRolesStore via
+/// `start_hubhost_broker`.  Body sites call BRC via
+/// `bh.start(ep, pk, uid, pylabhub::tests::role_keystore_name(uid))`.
 template <typename Body>
-int run_with_broker(std::string_view worker_name, Body &&body,
-                    std::vector<std::string> expect_log_warns = {})
+int run_with_broker(std::string_view              worker_name,
+                    std::vector<std::string>      role_uids,
+                    Body                        &&body,
+                    std::vector<std::string>      expect_log_warns = {})
 {
     return run_gtest_worker(
-        [body = std::forward<Body>(body),
+        [role_uids        = std::move(role_uids),
+         body             = std::forward<Body>(body),
          expect_log_warns = std::move(expect_log_warns)]() mutable {
             LogCaptureFixture log_cap;
             log_cap.Install();
+            // Baseline noise allow-list (post-strict-CURVE harness):
+            //   - "recovery: Failed to open '...' for diagnosis"
+            //     fires when the broker's recovery-API pre-flight
+            //     inspects an SHM channel that doesn't exist yet (fresh
+            //     test, no prior session).  Benign.
+            //   - "HEARTBEAT_REQ for '...' missing or zero producer_pid"
+            //     fires for CONSUMER heartbeats — BRC's send_heartbeat
+            //     doesn't populate producer_pid for the consumer side
+            //     (broker_service.cpp:3294 logs it for diagnostics but
+            //     accepts the heartbeat).  Benign.
+            log_cap.ExpectLogError("recovery: Failed to open");
+            log_cap.ExpectLogError("missing or zero producer_pid");
             for (auto &w : expect_log_warns)
                 log_cap.ExpectLogWarn(w);
 
-            const fs::path dir = make_test_hub_dir();
-            auto host = std::make_unique<HubHost>(
-                HubConfig::load_from_directory(dir.string()));
-            host->startup();
-            ASSERT_TRUE(host->is_running());
+            auto curve = pylabhub::tests::make_curve_setup(role_uids);
+            CurveKeyStoreFixture ks_fixture(
+                "test.l3", "datahub_metrics.harness", curve);
+            auto broker = pylabhub::tests::start_hubhost_broker(
+                hub_overrides_baseline(), curve);
+            ASSERT_TRUE(broker.host && broker.host->is_running());
 
-            body(host->broker_endpoint(), host->broker_pubkey(),
-                 host->broker());
+            body(broker.endpoint, broker.pubkey, broker.service());
 
-            host.reset();
+            broker.stop_and_join();
             log_cap.AssertNoUnexpectedLogWarnError();
             log_cap.Uninstall();
-            std::error_code ec;
-            fs::remove_all(dir, ec);
         },
         std::string(worker_name).c_str(),
         PLH_METRICS_MODS);
@@ -310,15 +255,16 @@ bool wait_for_metric(BrokerService &svc, const std::string &channel,
 
 int heartbeat_metrics_stored_by_broker()
 {
+    const std::string channel = pid_chan("metrics.heartbeat.stored");
+    const std::string uid     = "prod." + channel;
     return run_with_broker(
         "datahub_metrics::heartbeat_metrics_stored_by_broker",
-        [](const std::string &ep, const std::string &pk, BrokerService &svc) {
-            const std::string channel = pid_chan("metrics.heartbeat.stored");
-            const std::string uid     = "prod." + channel;
-
-            BrcHandle bh;
-            bh.start(ep, pk, uid);
-            auto reg = bh.brc.register_channel(make_reg_opts(channel, uid),
+        {uid},
+        [channel, uid](const std::string &ep, const std::string &pk,
+                       BrokerService &svc) {
+            pylabhub::tests::BrcHandle bh;
+            bh.start(ep, pk, uid, pylabhub::tests::role_keystore_name(uid));
+            auto reg = bh.brc.register_channel(pylabhub::tests::make_reg_opts(channel, uid),
                                                 3000);
             ASSERT_TRUE(reg.has_value());
 
@@ -356,24 +302,46 @@ int heartbeat_metrics_stored_by_broker()
 
 int consumer_heartbeat_metrics_stored_by_broker()
 {
+    const std::string channel  = pid_chan("metrics.consumer.stored");
+    const std::string prod_uid = "prod." + channel;
+    const std::string cons_uid = "cons." + channel;
     return run_with_broker(
         "datahub_metrics::consumer_heartbeat_metrics_stored_by_broker",
-        [](const std::string &ep, const std::string &pk, BrokerService &svc) {
-            const std::string channel  = pid_chan("metrics.consumer.stored");
-            const std::string prod_uid = "prod." + channel;
-            const std::string cons_uid = "cons." + channel;
-
-            BrcHandle prod_bh;
-            prod_bh.start(ep, pk, prod_uid);
+        {prod_uid, cons_uid},
+        [channel, prod_uid, cons_uid](const std::string &ep,
+                                       const std::string &pk,
+                                       BrokerService &svc) {
+            pylabhub::tests::BrcHandle prod_bh;
+            prod_bh.start(ep, pk, prod_uid, pylabhub::tests::role_keystore_name(prod_uid));
             auto reg = prod_bh.brc.register_channel(
-                make_reg_opts(channel, prod_uid), 3000);
+                pylabhub::tests::make_reg_opts(channel, prod_uid), 3000);
             ASSERT_TRUE(reg.has_value());
 
-            BrcHandle cons_bh;
-            cons_bh.start(ep, pk, cons_uid);
+            // HEP-CORE-0036 §5.2 R6: CONSUMER_REG_REQ requires producer
+            // kLive (Connected + first_heartbeat_seen).  Send a
+            // producer heartbeat with a marker metric, then poll the
+            // metrics tree to confirm the broker observed it before
+            // registering the consumer.
+            prod_bh.brc.send_heartbeat(channel, prod_uid, "producer",
+                                        json{{"_ready", 1}});
+            ASSERT_TRUE(poll_until([&] {
+                auto r = query_metrics_single(svc, channel);
+                return r.contains("metrics")
+                    && r["metrics"].contains("producers")
+                    && r["metrics"]["producers"].contains(prod_uid)
+                    && r["metrics"]["producers"][prod_uid]
+                           .value("_ready", 0) == 1;
+            }, std::chrono::seconds(2)))
+                << "producer did not reach kLive within 2s "
+                   "(HEP-CORE-0036 §5.2 R6 pre-consumer-reg gate)";
+
+            pylabhub::tests::BrcHandle cons_bh;
+            cons_bh.start(ep, pk, cons_uid, pylabhub::tests::role_keystore_name(cons_uid));
             auto cons_reg = cons_bh.brc.register_consumer(
-                make_cons_opts(channel, cons_uid), 3000);
+                pylabhub::tests::make_cons_opts(channel, cons_uid), 3000);
             ASSERT_TRUE(cons_reg.has_value());
+            ASSERT_EQ(cons_reg->value("status", ""), "success")
+                << "CONSUMER_REG_REQ failed: " << cons_reg->dump();
 
             // M1.4: metrics piggyback on HEARTBEAT_REQ.
             json cons_metrics;
@@ -409,6 +377,7 @@ int query_metrics_unknown_channel_returns_empty()
 {
     return run_with_broker(
         "datahub_metrics::query_metrics_unknown_channel_returns_empty",
+        {},
         [](const std::string &, const std::string &, BrokerService &svc) {
             auto result = query_metrics_single(svc, pid_chan("metrics.unknown"));
             EXPECT_EQ(result.value("status", ""), "success");
@@ -421,15 +390,16 @@ int query_metrics_unknown_channel_returns_empty()
 
 int query_metrics_all_channels()
 {
+    const std::string channel = pid_chan("metrics.all");
+    const std::string uid     = "prod." + channel;
     return run_with_broker(
         "datahub_metrics::query_metrics_all_channels",
-        [](const std::string &ep, const std::string &pk, BrokerService &svc) {
-            const std::string channel = pid_chan("metrics.all");
-            const std::string uid     = "prod." + channel;
-
-            BrcHandle bh;
-            bh.start(ep, pk, uid);
-            auto reg = bh.brc.register_channel(make_reg_opts(channel, uid),
+        {uid},
+        [channel, uid](const std::string &ep, const std::string &pk,
+                       BrokerService &svc) {
+            pylabhub::tests::BrcHandle bh;
+            bh.start(ep, pk, uid, pylabhub::tests::role_keystore_name(uid));
+            auto reg = bh.brc.register_channel(pylabhub::tests::make_reg_opts(channel, uid),
                                                 3000);
             ASSERT_TRUE(reg.has_value());
 
@@ -457,15 +427,16 @@ int query_metrics_all_channels()
 
 int heartbeat_no_metrics_backward_compat()
 {
+    const std::string channel = pid_chan("metrics.no.payload");
+    const std::string uid     = "prod." + channel;
     return run_with_broker(
         "datahub_metrics::heartbeat_no_metrics_backward_compat",
-        [](const std::string &ep, const std::string &pk, BrokerService &svc) {
-            const std::string channel = pid_chan("metrics.no.payload");
-            const std::string uid     = "prod." + channel;
-
-            BrcHandle bh;
-            bh.start(ep, pk, uid);
-            auto reg = bh.brc.register_channel(make_reg_opts(channel, uid),
+        {uid},
+        [channel, uid](const std::string &ep, const std::string &pk,
+                       BrokerService &svc) {
+            pylabhub::tests::BrcHandle bh;
+            bh.start(ep, pk, uid, pylabhub::tests::role_keystore_name(uid));
+            auto reg = bh.brc.register_channel(pylabhub::tests::make_reg_opts(channel, uid),
                                                 3000);
             ASSERT_TRUE(reg.has_value());
 
@@ -482,15 +453,16 @@ int heartbeat_no_metrics_backward_compat()
 
 int metrics_update_overwrite_on_heartbeat()
 {
+    const std::string channel = pid_chan("metrics.overwrite");
+    const std::string uid     = "prod." + channel;
     return run_with_broker(
         "datahub_metrics::metrics_update_overwrite_on_heartbeat",
-        [](const std::string &ep, const std::string &pk, BrokerService &svc) {
-            const std::string channel = pid_chan("metrics.overwrite");
-            const std::string uid     = "prod." + channel;
-
-            BrcHandle bh;
-            bh.start(ep, pk, uid);
-            auto reg = bh.brc.register_channel(make_reg_opts(channel, uid),
+        {uid},
+        [channel, uid](const std::string &ep, const std::string &pk,
+                       BrokerService &svc) {
+            pylabhub::tests::BrcHandle bh;
+            bh.start(ep, pk, uid, pylabhub::tests::role_keystore_name(uid));
+            auto reg = bh.brc.register_channel(pylabhub::tests::make_reg_opts(channel, uid),
                                                 3000);
             ASSERT_TRUE(reg.has_value());
 
@@ -536,15 +508,16 @@ int metrics_update_overwrite_on_heartbeat()
 
 int producer_pid_in_query_result()
 {
+    const std::string channel = pid_chan("metrics.pid");
+    const std::string uid     = "prod." + channel;
     return run_with_broker(
         "datahub_metrics::producer_pid_in_query_result",
-        [](const std::string &ep, const std::string &pk, BrokerService &svc) {
-            const std::string channel = pid_chan("metrics.pid");
-            const std::string uid     = "prod." + channel;
-
-            BrcHandle bh;
-            bh.start(ep, pk, uid);
-            auto reg = bh.brc.register_channel(make_reg_opts(channel, uid),
+        {uid},
+        [channel, uid](const std::string &ep, const std::string &pk,
+                       BrokerService &svc) {
+            pylabhub::tests::BrcHandle bh;
+            bh.start(ep, pk, uid, pylabhub::tests::role_keystore_name(uid));
+            auto reg = bh.brc.register_channel(pylabhub::tests::make_reg_opts(channel, uid),
                                                 3000);
             ASSERT_TRUE(reg.has_value());
 
@@ -576,14 +549,16 @@ int producer_pid_in_query_result()
 
 int query_engine_empty_filter_all_categories_present()
 {
+    const std::string channel = pid_chan("query.empty.all");
+    const std::string uid     = "prod." + channel;
     return run_with_broker(
         "datahub_metrics::query_engine_empty_filter_all_categories_present",
-        [](const std::string &ep, const std::string &pk, BrokerService &svc) {
-            const std::string channel = pid_chan("query.empty.all");
-            const std::string uid     = "prod." + channel;
-            BrcHandle bh;
-            bh.start(ep, pk, uid);
-            auto reg = bh.brc.register_channel(make_reg_opts(channel, uid),
+        {uid},
+        [channel, uid](const std::string &ep, const std::string &pk,
+                       BrokerService &svc) {
+            pylabhub::tests::BrcHandle bh;
+            bh.start(ep, pk, uid, pylabhub::tests::role_keystore_name(uid));
+            auto reg = bh.brc.register_channel(pylabhub::tests::make_reg_opts(channel, uid),
                                                 3000);
             ASSERT_TRUE(reg.has_value());
 
@@ -610,6 +585,7 @@ int query_engine_category_filter_only_broker()
 {
     return run_with_broker(
         "datahub_metrics::query_engine_category_filter_only_broker",
+        {},
         [](const std::string &, const std::string &, BrokerService &svc) {
             pylabhub::hub::MetricsFilter f;
             f.categories.insert(pylabhub::hub::metrics_category::kBroker);
@@ -630,19 +606,22 @@ int query_engine_category_filter_only_broker()
 
 int query_engine_channel_identity_filter()
 {
+    const std::string ch1     = pid_chan("query.identity.A");
+    const std::string ch2     = pid_chan("query.identity.B");
+    const std::string uid1    = "prod." + ch1;
+    const std::string uid2    = "prod." + ch2;
     return run_with_broker(
         "datahub_metrics::query_engine_channel_identity_filter",
-        [](const std::string &ep, const std::string &pk, BrokerService &svc) {
-            const std::string ch1 = pid_chan("query.identity.A");
-            const std::string ch2 = pid_chan("query.identity.B");
-
-            BrcHandle b1; b1.start(ep, pk, "prod." + ch1);
-            auto r1 = b1.brc.register_channel(make_reg_opts(ch1, "prod." + ch1),
+        {uid1, uid2},
+        [ch1, ch2, uid1, uid2](const std::string &ep, const std::string &pk,
+                               BrokerService &svc) {
+            pylabhub::tests::BrcHandle b1; b1.start(ep, pk, uid1, pylabhub::tests::role_keystore_name(uid1));
+            auto r1 = b1.brc.register_channel(pylabhub::tests::make_reg_opts(ch1, uid1),
                                                3000);
             ASSERT_TRUE(r1.has_value());
 
-            BrcHandle b2; b2.start(ep, pk, "prod." + ch2);
-            auto r2 = b2.brc.register_channel(make_reg_opts(ch2, "prod." + ch2),
+            pylabhub::tests::BrcHandle b2; b2.start(ep, pk, uid2, pylabhub::tests::role_keystore_name(uid2));
+            auto r2 = b2.brc.register_channel(pylabhub::tests::make_reg_opts(ch2, uid2),
                                                3000);
             ASSERT_TRUE(r2.has_value());
 
@@ -662,14 +641,16 @@ int query_engine_channel_identity_filter()
 
 int query_engine_roles_carry_collected_at()
 {
+    const std::string channel = pid_chan("query.role.collected");
+    const std::string uid     = "prod." + channel;
     return run_with_broker(
         "datahub_metrics::query_engine_roles_carry_collected_at",
-        [](const std::string &ep, const std::string &pk, BrokerService &svc) {
-            const std::string channel = pid_chan("query.role.collected");
-            const std::string uid     = "prod." + channel;
-            BrcHandle bh;
-            bh.start(ep, pk, uid);
-            auto reg = bh.brc.register_channel(make_reg_opts(channel, uid),
+        {uid},
+        [channel, uid](const std::string &ep, const std::string &pk,
+                       BrokerService &svc) {
+            pylabhub::tests::BrcHandle bh;
+            bh.start(ep, pk, uid, pylabhub::tests::role_keystore_name(uid));
+            auto reg = bh.brc.register_channel(pylabhub::tests::make_reg_opts(channel, uid),
                                                 3000);
             ASSERT_TRUE(reg.has_value());
 
@@ -702,14 +683,16 @@ int query_engine_roles_carry_collected_at()
 
 int query_engine_channels_have_producer_and_consumer_metrics()
 {
+    const std::string channel = pid_chan("query.channel.metrics");
+    const std::string uid     = "prod." + channel;
     return run_with_broker(
         "datahub_metrics::query_engine_channels_have_producer_and_consumer_metrics",
-        [](const std::string &ep, const std::string &pk, BrokerService &svc) {
-            const std::string channel = pid_chan("query.channel.metrics");
-            const std::string uid     = "prod." + channel;
-            BrcHandle bh;
-            bh.start(ep, pk, uid);
-            auto reg = bh.brc.register_channel(make_reg_opts(channel, uid),
+        {uid},
+        [channel, uid](const std::string &ep, const std::string &pk,
+                       BrokerService &svc) {
+            pylabhub::tests::BrcHandle bh;
+            bh.start(ep, pk, uid, pylabhub::tests::role_keystore_name(uid));
+            auto reg = bh.brc.register_channel(pylabhub::tests::make_reg_opts(channel, uid),
                                                 3000);
             ASSERT_TRUE(reg.has_value());
 
@@ -750,31 +733,32 @@ int query_engine_channels_have_producer_and_consumer_metrics()
 
 int fan_in_two_producers_metrics_do_not_overwrite()
 {
+    const std::string channel = pid_chan("metrics.fanin");
+    // HEP-CORE-0033 §G2.2.0b: each tag.name.unique component
+    // starts with a letter; pidNNN prefix keeps the last
+    // component letter-led.
+    const std::string uid_a   =
+        "prod.fanin.a.pid" + std::to_string(::getpid());
+    const std::string uid_b   =
+        "prod.fanin.b.pid" + std::to_string(::getpid());
     return run_with_broker(
         "datahub_metrics::fan_in_two_producers_metrics_do_not_overwrite",
-        [](const std::string &ep, const std::string &pk, BrokerService &svc) {
-            const std::string channel = pid_chan("metrics.fanin");
-            // HEP-CORE-0033 §G2.2.0b: each tag.name.unique component
-            // starts with a letter; pidNNN prefix keeps the last
-            // component letter-led.
-            const std::string uid_a   =
-                "prod.fanin.a.pid" + std::to_string(::getpid());
-            const std::string uid_b   =
-                "prod.fanin.b.pid" + std::to_string(::getpid());
-
-            BrcHandle bh_a, bh_b;
-            bh_a.start(ep, pk, uid_a);
-            bh_b.start(ep, pk, uid_b);
+        {uid_a, uid_b},
+        [channel, uid_a, uid_b](const std::string &ep, const std::string &pk,
+                                 BrokerService &svc) {
+            pylabhub::tests::BrcHandle bh_a, bh_b;
+            bh_a.start(ep, pk, uid_a, pylabhub::tests::role_keystore_name(uid_a));
+            bh_b.start(ep, pk, uid_b, pylabhub::tests::role_keystore_name(uid_b));
 
             // ZMQ transport — SHM forbids multi-producer
             // (HEP-CORE-0023 §2.1.1).
-            auto opts_a = make_reg_opts(channel, uid_a);
+            auto opts_a = pylabhub::tests::make_reg_opts(channel, uid_a);
             opts_a["data_transport"] = "zmq";
             auto reg_a = bh_a.brc.register_channel(opts_a, 3000);
             ASSERT_TRUE(reg_a.has_value()) << reg_a.value_or(json{}).dump();
             ASSERT_EQ(reg_a->value("status", ""), "success") << reg_a->dump();
 
-            auto opts_b = make_reg_opts(channel, uid_b);
+            auto opts_b = pylabhub::tests::make_reg_opts(channel, uid_b);
             opts_b["data_transport"] = "zmq";
             auto reg_b = bh_b.brc.register_channel(opts_b, 3000);
             ASSERT_TRUE(reg_b.has_value()) << reg_b.value_or(json{}).dump();
@@ -820,6 +804,7 @@ int query_engine_filter_echo()
 {
     return run_with_broker(
         "datahub_metrics::query_engine_filter_echo",
+        {},
         [](const std::string &, const std::string &, BrokerService &svc) {
             pylabhub::hub::MetricsFilter f;
             f.categories.insert("role");
@@ -840,24 +825,45 @@ int query_engine_filter_echo()
 
 int old_metrics_report_req_gets_unknown_msg_type()
 {
-    return run_with_broker(
-        "datahub_metrics::old_metrics_report_req_gets_unknown_msg_type",
-        [](const std::string &ep, const std::string &pk, BrokerService &svc) {
-            (void)svc;  // svc unused; we send via raw_request below
-            // M1.4 contract: METRICS_REPORT_REQ is RETIRED — broker
-            // returns UNKNOWN_MSG_TYPE.  Sensitivity: a regression that
-            // re-adds METRICS_REPORT_REQ to the dispatch table OR to
-            // kFireAndForgetTypes would fail this test.
+    // M1.4 contract: METRICS_REPORT_REQ is RETIRED — broker returns
+    // UNKNOWN_MSG_TYPE.  Sensitivity: a regression that re-adds
+    // METRICS_REPORT_REQ to the dispatch table OR to kFireAndForgetTypes
+    // would fail this test.
+    //
+    // This test inlines the harness setup (rather than using
+    // `run_with_broker`) because it needs direct access to `curve` —
+    // `raw_request` opens a CURVE-secured DEALER bypassing BRC, so it
+    // needs the role uid's CURVE keypair directly.  Post-strict-CURVE
+    // the broker refuses any pubkey that isn't in known_roles, so the
+    // DEALER MUST present the same uid's keys the test seeded into the
+    // KeyStore + KnownRolesStore via the harness.
+    const std::string channel = pid_chan("metrics.retired");
+    const std::string uid     = "prod." + channel;
+    return run_gtest_worker(
+        [channel, uid]() {
+            LogCaptureFixture log_cap;
+            log_cap.Install();
+            log_cap.ExpectLogWarn("unknown msg_type 'METRICS_REPORT_REQ'");
+            // Same baseline noise allow-list as `run_with_broker` (see
+            // comment there).
+            log_cap.ExpectLogError("recovery: Failed to open");
+            log_cap.ExpectLogError("missing or zero producer_pid");
 
-            const std::string channel = pid_chan("metrics.retired");
-            const std::string uid     = "prod." + channel;
+            auto curve = pylabhub::tests::make_curve_setup({uid});
+            CurveKeyStoreFixture ks_fixture(
+                "test.l3", "datahub_metrics.retired", curve);
+            auto broker = pylabhub::tests::start_hubhost_broker(
+                hub_overrides_baseline(), curve);
+            ASSERT_TRUE(broker.host && broker.host->is_running());
 
             // Pre-register the channel so the rejection is about
             // msg_type, not channel-not-found.
-            BrcHandle bh;
-            bh.start(ep, pk, uid);
-            ASSERT_TRUE(bh.brc.register_channel(make_reg_opts(channel, uid),
-                                                  3000)
+            pylabhub::tests::BrcHandle bh;
+            bh.start(broker.endpoint, broker.pubkey, uid,
+                     pylabhub::tests::role_keystore_name(uid));
+            ASSERT_TRUE(bh.brc.register_channel(
+                            pylabhub::tests::make_reg_opts(channel, uid),
+                            3000)
                             .has_value());
 
             json payload;
@@ -865,7 +871,12 @@ int old_metrics_report_req_gets_unknown_msg_type()
             payload["uid"]          = uid;
             payload["metrics"]      = json{{"legacy_field", 1}};
 
-            json reply = raw_request(ep, pk, "METRICS_REPORT_REQ", payload);
+            // Raw DEALER under the role uid's CURVE keys — bypasses BRC
+            // because the test is about the broker's dispatch table
+            // fallback, not BRC behavior.
+            json reply = raw_request(broker.endpoint, broker.pubkey,
+                                      curve.role(uid),
+                                      "METRICS_REPORT_REQ", payload);
             ASSERT_FALSE(reply.is_null())
                 << "Expected an UNKNOWN_MSG_TYPE reply within 2 s; got "
                    "nothing (the broker may be silently dropping the "
@@ -877,39 +888,68 @@ int old_metrics_report_req_gets_unknown_msg_type()
                    "broker_service.cpp dispatch fallback";
 
             bh.stop();
+            broker.stop_and_join();
+            log_cap.AssertNoUnexpectedLogWarnError();
+            log_cap.Uninstall();
         },
-        {"unknown msg_type 'METRICS_REPORT_REQ'"});
+        "datahub_metrics::old_metrics_report_req_gets_unknown_msg_type",
+        PLH_METRICS_MODS);
 }
 
 // ─── M1.4 + M3 H34: end-to-end multi-presence isolation ────────────────────
 
 int multi_presence_end_to_end_no_cross_attribution()
 {
+    const std::string ch_a = pid_chan("metrics.multi.A");
+    const std::string ch_b = pid_chan("metrics.multi.B");
+    const std::string p_a  = "prod.A." + ch_a;
+    const std::string p_b  = "prod.B." + ch_b;
+    const std::string c_a  = "cons.A." + ch_a;
+    const std::string c_b  = "cons.B." + ch_b;
     return run_with_broker(
         "datahub_metrics::multi_presence_end_to_end_no_cross_attribution",
-        [](const std::string &ep, const std::string &pk, BrokerService &svc) {
-            const std::string ch_a = pid_chan("metrics.multi.A");
-            const std::string ch_b = pid_chan("metrics.multi.B");
-            const std::string p_a  = "prod.A." + ch_a;
-            const std::string p_b  = "prod.B." + ch_b;
-            const std::string c_a  = "cons.A." + ch_a;
-            const std::string c_b  = "cons.B." + ch_b;
-
-            BrcHandle prod_a_bh, prod_b_bh;
-            prod_a_bh.start(ep, pk, p_a);
-            prod_b_bh.start(ep, pk, p_b);
+        {p_a, p_b, c_a, c_b},
+        [ch_a, ch_b, p_a, p_b, c_a, c_b](const std::string &ep,
+                                          const std::string &pk,
+                                          BrokerService &svc) {
+            pylabhub::tests::BrcHandle prod_a_bh, prod_b_bh;
+            prod_a_bh.start(ep, pk, p_a, pylabhub::tests::role_keystore_name(p_a));
+            prod_b_bh.start(ep, pk, p_b, pylabhub::tests::role_keystore_name(p_b));
             ASSERT_TRUE(prod_a_bh.brc.register_channel(
-                            make_reg_opts(ch_a, p_a), 3000).has_value());
+                            pylabhub::tests::make_reg_opts(ch_a, p_a), 3000).has_value());
             ASSERT_TRUE(prod_b_bh.brc.register_channel(
-                            make_reg_opts(ch_b, p_b), 3000).has_value());
+                            pylabhub::tests::make_reg_opts(ch_b, p_b), 3000).has_value());
 
-            BrcHandle cons_a_bh, cons_b_bh;
-            cons_a_bh.start(ep, pk, c_a);
-            cons_b_bh.start(ep, pk, c_b);
+            // HEP-CORE-0036 §5.2 R6 producer-kLive gate (see
+            // consumer_heartbeat_metrics_stored_by_broker for the
+            // rationale).  Drive both producers to kLive via a probing
+            // heartbeat with a marker metric, then poll until the
+            // broker has observed both before the consumers register.
+            prod_a_bh.brc.send_heartbeat(ch_a, p_a, "producer",
+                                          json{{"_ready", 1}});
+            prod_b_bh.brc.send_heartbeat(ch_b, p_b, "producer",
+                                          json{{"_ready", 1}});
+            ASSERT_TRUE(poll_until([&] {
+                auto r = query_metrics_single(svc);
+                if (!r.contains("channels")) return false;
+                const auto &chans = r["channels"];
+                return chans.contains(ch_a) && chans.contains(ch_b)
+                    && chans[ch_a].contains("producers")
+                    && chans[ch_b].contains("producers")
+                    && chans[ch_a]["producers"].contains(p_a)
+                    && chans[ch_b]["producers"].contains(p_b)
+                    && chans[ch_a]["producers"][p_a].value("_ready", 0) == 1
+                    && chans[ch_b]["producers"][p_b].value("_ready", 0) == 1;
+            }, std::chrono::seconds(2)))
+                << "producers did not reach kLive within 2s";
+
+            pylabhub::tests::BrcHandle cons_a_bh, cons_b_bh;
+            cons_a_bh.start(ep, pk, c_a, pylabhub::tests::role_keystore_name(c_a));
+            cons_b_bh.start(ep, pk, c_b, pylabhub::tests::role_keystore_name(c_b));
             ASSERT_TRUE(cons_a_bh.brc.register_consumer(
-                            make_cons_opts(ch_a, c_a), 3000).has_value());
+                            pylabhub::tests::make_cons_opts(ch_a, c_a), 3000).has_value());
             ASSERT_TRUE(cons_b_bh.brc.register_consumer(
-                            make_cons_opts(ch_b, c_b), 3000).has_value());
+                            pylabhub::tests::make_cons_opts(ch_b, c_b), 3000).has_value());
 
             // Distinct metrics — literal values make cross-attribution
             // impossible to miss in the assertions.
@@ -975,28 +1015,28 @@ int multi_presence_end_to_end_no_cross_attribution()
 
 int all_channels_includes_channels_without_metrics()
 {
+    // M1.4 behavioral change: pre-fix `query_metrics()` (all-
+    // channels) iterated `metrics_store_` (only channels with
+    // reports); post-fix iterates HubState's
+    // `snapshot().channels` (ALL registered channels).
+    const std::string channel_with    = pid_chan("metrics.has.metrics");
+    const std::string channel_without = pid_chan("metrics.no.metrics");
+    const std::string uid_with        = "prod." + channel_with;
+    const std::string uid_without     = "prod." + channel_without;
     return run_with_broker(
         "datahub_metrics::all_channels_includes_channels_without_metrics",
-        [](const std::string &ep, const std::string &pk, BrokerService &svc) {
-            // M1.4 behavioral change: pre-fix `query_metrics()` (all-
-            // channels) iterated `metrics_store_` (only channels with
-            // reports); post-fix iterates HubState's
-            // `snapshot().channels` (ALL registered channels).
-            const std::string channel_with    =
-                pid_chan("metrics.has.metrics");
-            const std::string channel_without =
-                pid_chan("metrics.no.metrics");
-            const std::string uid_with        = "prod." + channel_with;
-            const std::string uid_without     = "prod." + channel_without;
-
-            BrcHandle bh1, bh2;
-            bh1.start(ep, pk, uid_with);
-            bh2.start(ep, pk, uid_without);
+        {uid_with, uid_without},
+        [channel_with, channel_without, uid_with, uid_without](
+            const std::string &ep, const std::string &pk,
+            BrokerService &svc) {
+            pylabhub::tests::BrcHandle bh1, bh2;
+            bh1.start(ep, pk, uid_with, pylabhub::tests::role_keystore_name(uid_with));
+            bh2.start(ep, pk, uid_without, pylabhub::tests::role_keystore_name(uid_without));
             ASSERT_TRUE(bh1.brc.register_channel(
-                            make_reg_opts(channel_with, uid_with), 3000)
+                            pylabhub::tests::make_reg_opts(channel_with, uid_with), 3000)
                             .has_value());
             ASSERT_TRUE(bh2.brc.register_channel(
-                            make_reg_opts(channel_without, uid_without), 3000)
+                            pylabhub::tests::make_reg_opts(channel_without, uid_without), 3000)
                             .has_value());
 
             bh1.brc.send_heartbeat(channel_with, uid_with, "producer",

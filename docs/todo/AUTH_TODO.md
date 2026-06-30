@@ -219,7 +219,30 @@ DELETE/RE-LAYER) → close out.
   role identity matches, and an R6 heartbeat is sent between producer
   REG_REQ and consumer CONSUMER_REG_REQ in every test that exercises
   both handlers.  All 2230/2230 ctest green.
-- C3 role_state_machine (19 L3 tests) — pending.
+- C3 role_state_machine ✅ shipped 2026-06-30 (commit `0a75d9f6`): 12
+  single-broker tests unmasked + 7 dual-broker tests retired with L4
+  successor handoffs (#296 / #228 / #229 / #299; blocked on #298 multi-hub
+  Pattern4Setup extension).  Migration shape mirrors C2.
+- C4 broker_health ✅ shipped 2026-06-30 (commit `9bbd549a`): full rewrite
+  of 10 single-broker tests against canonical `start_hubhost_broker` +
+  `CurveKeyStoreFixture`.  Two tests that need
+  `broker.consumer_liveness_check_interval_seconds` (not exposed via
+  hub.json) use `start_health_direct_broker` helper.  `ctrl_zap_deny_path`
+  builds the broker with empty `role_keys` (deny-all by construction);
+  test client's keypair is still seeded in the keystore.
+  `dead_consumer_*` 2-subprocess test extends temp-file shape from 3 to
+  6 lines (now includes consumer Z85 keypair).
+- C5 metrics + zmq_endpoint_registry ✅ shipped 2026-06-30 (this commit):
+  17 metrics tests + 8 zmq_endpoint_registry tests migrated.
+  ZmqEndpointRegistryTest.ReqShape_SyncReqTimesOutOnNoReply RETIRED
+  (handoff #307) — its `StubBrcHandle` drove BRC into the timeout branch
+  via plain-TCP, which HEP-CORE-0035 §2 strict-CURVE refuses at
+  `BrokerRequestComm::connect()`.  Metrics tests now drive the producer
+  to kLive via a probe heartbeat with a marker metric before consumer
+  registration (HEP-CORE-0036 §5.2 R6 producer-kLive gate).  Local
+  `BrcHandle` / `make_test_hub_dir` / `make_reg_opts` / `make_cons_opts`
+  / `raw_request` rewritten to canonical harness shape.  All 2282/2282
+  ctest green.
 
 **Out of scope (per §I11).**
 

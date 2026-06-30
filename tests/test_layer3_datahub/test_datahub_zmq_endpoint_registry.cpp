@@ -87,19 +87,14 @@ TEST_F(ZmqEndpointRegistryTest, ReqShape_NoUnmatchedRepliesForFireAndForget)
     ExpectWorkerOk(w);
 }
 
-// ── HEP-CORE-0007 §12.2.1 timeout-path conformance (Option A minimal) ───
-// Drives a representative sample of sync REQ methods (REG, CHANNEL_LIST,
-// ENDPOINT_UPDATE) against a silent ROUTER stub that accepts BRC
-// connections but emits no replies.  Asserts each method returns
-// nullopt and the elapsed time matches the declared timeout_ms (didn't
-// skip the wait; didn't block past the budget).  Catches: BRC sync
-// method that silently degraded to fire-and-forget shape (would return
-// instantly), and BRC sync method that hangs past its declared timeout
-// (would return >>budget).
-
-TEST_F(ZmqEndpointRegistryTest, ReqShape_SyncReqTimesOutOnNoReply)
-{
-    auto w = SpawnWorker(
-        "zmq_endpoint_registry.req_shape_sync_req_times_out_on_no_reply");
-    ExpectWorkerOk(w);
-}
+// ── RETIRED 2026-06-30 (#154 AUTH-6 C5 — handoff #307) ──────────────────
+// Was: ReqShape_SyncReqTimesOutOnNoReply — HEP-CORE-0007 §12.2.1
+// timeout-path conformance against a plain-TCP silent ROUTER stub.
+// Why retired: HEP-CORE-0035 §2 strict-CURVE causes
+// BrokerRequestComm::connect() to refuse any cfg without broker_pubkey +
+// KeyStore role_identity.  The plain-TCP `StubBrcHandle` bypass the test
+// depended on is no longer legal — connect() returns false before any
+// REQ goes out.
+// Coverage handoff: #307 reinstates this contract either via a
+// CURVE-capable silent router fixture (option a) or an L2 test against
+// BrokerRequestComm::do_request directly with a mock socket (option b).

@@ -21,6 +21,7 @@
 #include "zmq_endpoint_registry_workers.h"
 
 #include "broker_test_harness.h"
+#include "curve_test_setup.h"  // CurveKeyStoreFixture + role_keystore_name
 #include "plh_datahub.hpp"
 #include "plh_service.hpp"
 #include "shared_test_helpers.h"
@@ -68,81 +69,23 @@ json hubhost_overrides()
     };
 }
 
-// ─── Stub-only BRC handle (wire-level fixture, NOT broker) ──────────────────
-// PURPOSE: BRC timeout-conformance tests against `SilentRouterStub`,
-//   a bare ZMQ ROUTER socket on plain TCP that records what BRC
-//   sends but emits no replies.  Used ONLY by
-//   `req_shape_sync_req_times_out_on_no_reply` to drive BRC's
-//   `do_request` into its deterministic timeout branch.
-// BYPASS: Plain-TCP connection (no CURVE) — `cfg.broker_pubkey = ""`
-//   and no client keypair.  Per HEP-CORE-0035 §4.6.5 §"no-bypass"
-//   discipline, every test that drives a BROKER uses real CURVE +
-//   admission via `pylabhub::tests::BrcHandle`.  The stub here is
-//   NOT a broker — it's a wire-level fixture that doesn't speak
-//   CURVE because the test is about REQ-timeout behaviour, which
-//   doesn't depend on CURVE.  Per `feedback_no_mocks_via_
-//   observability`, a wire-level stub that records what BRC sends
-//   is a fixture, not a mock of broker logic.
-// CANONICAL STORAGE: BRC connection state lives in
-//   `BrokerRequestComm::pImpl`; the matching the harness type is
-//   `pylabhub::tests::BrcHandle` (CURVE).
-// RE-EXAMINE WHEN: BRC's connection grammar changes such that
-//   plain-TCP connect is no longer accepted at all (no test path
-//   could exist).  Or if §4.6.5 is amended to forbid wire-level
-//   stubs entirely.
-struct StubBrcHandle
-{
-    BrokerRequestComm brc;
-    std::atomic<bool> running{true};
-    std::thread       thread;
-
-    void start(const std::string &ep, const std::string &pk,
-               const std::string &uid)
-    {
-        BrokerRequestComm::Config cfg;
-        cfg.broker_endpoint = ep;
-        cfg.broker_pubkey   = pk;
-        cfg.role_uid        = uid;
-        ASSERT_TRUE(brc.connect(cfg));
-        thread = std::thread([this] {
-            brc.run_poll_loop([this] { return running.load(); });
-        });
-    }
-
-    void stop()
-    {
-        running.store(false);
-        brc.stop();
-        if (thread.joinable())
-            thread.join();
-        brc.disconnect();
-    }
-
-    ~StubBrcHandle()
-    {
-        if (thread.joinable())
-            stop();
-    }
-};
-
 std::string pid_chan(const std::string &base)
 {
     return base + ".pid" + std::to_string(::getpid());
 }
 
-json make_reg_opts(const std::string &channel, const std::string &role_uid)
-{
-    json opts;
-    opts["channel_name"]      = channel;
-    opts["producer_pid"]      = ::getpid();
-    opts["role_uid"]          = role_uid;
-    opts["role_name"]         = "test_producer";
-    return opts;
-}
-
 /// Run a worker body with a freshly spun-up HubHostBrokerHandle under
 /// real CURVE + admission (HEP-CORE-0035 §2 + §4.6.5).  Body receives
 /// (broker, curve).
+///
+/// Strict-CURVE migration (#154 AUTH-6 C5, 2026-06-30): each subprocess
+/// now constructs a `CurveKeyStoreFixture` that seeds
+/// `kHubIdentityName` and `role.<uid>` for every uid the worker will
+/// register, so the canonical `BrcHandle` can resolve client keys by
+/// `role_keystore_name(uid)` per HEP-CORE-0040 §172.  REG_REQ payloads
+/// come from the canonical `make_reg_opts` / `make_cons_opts` helpers
+/// in the shared harness (they carry the §5b canonical fields the
+/// broker now requires).
 template <typename Body>
 int run_with_host(std::string_view worker_name,
                   std::vector<std::string> role_uids,
@@ -152,6 +95,8 @@ int run_with_host(std::string_view worker_name,
         [role_uids = std::move(role_uids),
          body = std::forward<Body>(body)]() mutable {
             auto curve = pylabhub::tests::make_curve_setup(role_uids);
+            pylabhub::tests::CurveKeyStoreFixture ks_fixture(
+                "test.l3", "zmq_endpoint_registry.harness", curve);
             auto broker = pylabhub::tests::start_hubhost_broker(
                 hubhost_overrides(), curve);
             ASSERT_TRUE(broker.host && broker.host->is_running());
@@ -182,8 +127,8 @@ int default_transport_is_shm()
             pylabhub::tests::HubHostBrokerHandle &broker,
             pylabhub::tests::CurveSetup &curve) {
             pylabhub::tests::BrcHandle bh;
-            bh.start(broker.endpoint, broker.pubkey, uid, curve.role(uid));
-            auto reg = bh.brc.register_channel(make_reg_opts(channel, uid),
+            bh.start(broker.endpoint, broker.pubkey, uid, pylabhub::tests::role_keystore_name(uid));
+            auto reg = bh.brc.register_channel(pylabhub::tests::make_reg_opts(channel, uid),
                                                  3000);
             ASSERT_TRUE(reg.has_value());
 
@@ -191,7 +136,7 @@ int default_transport_is_shm()
 
             pylabhub::tests::BrcHandle cons_bh;
             cons_bh.start(broker.endpoint, broker.pubkey, cons_uid,
-                          curve.role(cons_uid));
+                          pylabhub::tests::role_keystore_name(cons_uid));
             auto disc = cons_bh.brc.discover_channel(channel, {}, 3000);
             ASSERT_TRUE(disc.has_value());
             EXPECT_EQ(disc->value("data_transport", ""), "shm");
@@ -215,9 +160,9 @@ int zmq_transport_round_trip()
             const std::string zmq_ep = "tcp://127.0.0.1:55555";
 
             pylabhub::tests::BrcHandle bh;
-            bh.start(broker.endpoint, broker.pubkey, uid, curve.role(uid));
+            bh.start(broker.endpoint, broker.pubkey, uid, pylabhub::tests::role_keystore_name(uid));
 
-            auto opts                 = make_reg_opts(channel, uid);
+            auto opts                 = pylabhub::tests::make_reg_opts(channel, uid);
             opts["data_transport"]    = "zmq";
             opts["zmq_node_endpoint"] = zmq_ep;
             auto reg = bh.brc.register_channel(opts, 3000);
@@ -227,7 +172,7 @@ int zmq_transport_round_trip()
 
             pylabhub::tests::BrcHandle cons_bh;
             cons_bh.start(broker.endpoint, broker.pubkey, cons_uid,
-                          curve.role(cons_uid));
+                          pylabhub::tests::role_keystore_name(cons_uid));
             auto disc = cons_bh.brc.discover_channel(channel, {}, 3000);
             ASSERT_TRUE(disc.has_value());
             EXPECT_EQ(disc->value("data_transport", ""), "zmq");
@@ -253,9 +198,9 @@ int multiple_consumers_discover_same_endpoint()
             const std::string zmq_ep = "tcp://127.0.0.1:55556";
 
             pylabhub::tests::BrcHandle bh;
-            bh.start(broker.endpoint, broker.pubkey, uid, curve.role(uid));
+            bh.start(broker.endpoint, broker.pubkey, uid, pylabhub::tests::role_keystore_name(uid));
 
-            auto opts                 = make_reg_opts(channel, uid);
+            auto opts                 = pylabhub::tests::make_reg_opts(channel, uid);
             opts["data_transport"]    = "zmq";
             opts["zmq_node_endpoint"] = zmq_ep;
             auto reg = bh.brc.register_channel(opts, 3000);
@@ -265,9 +210,9 @@ int multiple_consumers_discover_same_endpoint()
 
             pylabhub::tests::BrcHandle c1, c2;
             c1.start(broker.endpoint, broker.pubkey, c1_uid,
-                     curve.role(c1_uid));
+                     pylabhub::tests::role_keystore_name(c1_uid));
             c2.start(broker.endpoint, broker.pubkey, c2_uid,
-                     curve.role(c2_uid));
+                     pylabhub::tests::role_keystore_name(c2_uid));
 
             auto d1 = c1.brc.discover_channel(channel, {}, 3000);
             auto d2 = c2.brc.discover_channel(channel, {}, 3000);
@@ -296,15 +241,15 @@ int shm_and_zmq_coexist()
             pylabhub::tests::CurveSetup &curve) {
             pylabhub::tests::BrcHandle shm_bh;
             shm_bh.start(broker.endpoint, broker.pubkey, shm_uid,
-                         curve.role(shm_uid));
+                         pylabhub::tests::role_keystore_name(shm_uid));
             auto shm_reg = shm_bh.brc.register_channel(
-                make_reg_opts(shm_ch, shm_uid), 3000);
+                pylabhub::tests::make_reg_opts(shm_ch, shm_uid), 3000);
             ASSERT_TRUE(shm_reg.has_value());
 
             pylabhub::tests::BrcHandle zmq_bh;
             zmq_bh.start(broker.endpoint, broker.pubkey, zmq_uid,
-                         curve.role(zmq_uid));
-            auto zmq_opts                 = make_reg_opts(zmq_ch, zmq_uid);
+                         pylabhub::tests::role_keystore_name(zmq_uid));
+            auto zmq_opts                 = pylabhub::tests::make_reg_opts(zmq_ch, zmq_uid);
             zmq_opts["data_transport"]    = "zmq";
             zmq_opts["zmq_node_endpoint"] = "tcp://127.0.0.1:55557";
             auto zmq_reg = zmq_bh.brc.register_channel(zmq_opts, 3000);
@@ -339,9 +284,9 @@ int endpoint_update_reflected_in_discovery()
             const std::string updated_ep = "tcp://127.0.0.1:44444";
 
             pylabhub::tests::BrcHandle bh;
-            bh.start(broker.endpoint, broker.pubkey, uid, curve.role(uid));
+            bh.start(broker.endpoint, broker.pubkey, uid, pylabhub::tests::role_keystore_name(uid));
 
-            auto opts                 = make_reg_opts(channel, uid);
+            auto opts                 = pylabhub::tests::make_reg_opts(channel, uid);
             opts["data_transport"]    = "zmq";
             opts["zmq_node_endpoint"] = "tcp://127.0.0.1:0";
             auto reg = bh.brc.register_channel(opts, 3000);
@@ -372,7 +317,7 @@ int endpoint_update_reflected_in_discovery()
 
             pylabhub::tests::BrcHandle cons_bh;
             cons_bh.start(broker.endpoint, broker.pubkey, cons_uid,
-                          curve.role(cons_uid));
+                          pylabhub::tests::role_keystore_name(cons_uid));
             auto disc = cons_bh.brc.discover_channel(channel, {}, 5000);
             ASSERT_TRUE(disc.has_value()) << "DISC_REQ timed out";
             EXPECT_EQ(disc->value("zmq_node_endpoint", ""), updated_ep);
@@ -408,8 +353,8 @@ int endpoint_update_non_producer_returns_error()
             // Producer registers the channel.
             pylabhub::tests::BrcHandle prod_bh;
             prod_bh.start(broker.endpoint, broker.pubkey, prod_uid,
-                          curve.role(prod_uid));
-            auto opts                 = make_reg_opts(channel, prod_uid);
+                          pylabhub::tests::role_keystore_name(prod_uid));
+            auto opts                 = pylabhub::tests::make_reg_opts(channel, prod_uid);
             opts["data_transport"]    = "zmq";
             opts["zmq_node_endpoint"] = "tcp://127.0.0.1:0";
             auto reg = prod_bh.brc.register_channel(opts, 3000);
@@ -421,7 +366,7 @@ int endpoint_update_non_producer_returns_error()
             // a registered producer's zmq_identity, else NOT_CHANNEL_OWNER.
             pylabhub::tests::BrcHandle other_bh;
             other_bh.start(broker.endpoint, broker.pubkey, other_uid,
-                           curve.role(other_uid));
+                           pylabhub::tests::role_keystore_name(other_uid));
             auto upd = other_bh.brc.send_endpoint_update(
                 channel, "zmq_node", updated_ep, 2000);
 
@@ -464,9 +409,9 @@ int endpoint_update_port_zero_returns_error()
         [channel, uid](pylabhub::tests::HubHostBrokerHandle &broker,
                        pylabhub::tests::CurveSetup &curve) {
             pylabhub::tests::BrcHandle bh;
-            bh.start(broker.endpoint, broker.pubkey, uid, curve.role(uid));
+            bh.start(broker.endpoint, broker.pubkey, uid, pylabhub::tests::role_keystore_name(uid));
 
-            auto opts                 = make_reg_opts(channel, uid);
+            auto opts                 = pylabhub::tests::make_reg_opts(channel, uid);
             opts["data_transport"]    = "zmq";
             opts["zmq_node_endpoint"] = "tcp://127.0.0.1:0";
             auto reg = bh.brc.register_channel(opts, 3000);
@@ -504,173 +449,15 @@ int endpoint_update_port_zero_returns_error()
 //     ENDPOINT_UPDATE half-mix shipped 2026-05-21).
 // Either way, the silently-dropped reply is observable now.
 
-// ── HEP-CORE-0007 §12.2.1 TIMEOUT-path conformance (Option A minimal) ──
-//
-// "Silent stub" — a bare ZMQ ROUTER socket that accepts BRC's plain-TCP
-// DEALER connection, receives REQs, and emits NO reply.  Drives BRC's
-// `do_request` into its timeout branch deterministically (no need to
-// kill the broker mid-call or use a flaky tiny-timeout heuristic
-// against the real broker).
-//
-// Per `feedback_no_mocks_via_observability.md`: this is a wire-level
-// test fixture (records what BRC sends; replies per a policy), NOT a
-// mock of broker logic.  No production behaviour is duplicated.
-//
-// HEP contract under test:
-//   - Sync REQ methods (per HEP-CORE-0007 §12.2.1 catalog) MUST return
-//     `nullopt` when no reply arrives within `timeout_ms`.
-//   - The wait MUST be approximately `timeout_ms` (not zero — would
-//     mean the method skipped the wait; not >>budget — would mean the
-//     method blocked past its declared deadline).
-
-class SilentRouterStub
-{
-  public:
-    SilentRouterStub()
-        : sock_(pylabhub::hub::get_zmq_context(), zmq::socket_type::router)
-    {
-        sock_.set(zmq::sockopt::linger, 0);
-        sock_.bind("tcp://127.0.0.1:*");
-        endpoint_ = sock_.get(zmq::sockopt::last_endpoint);
-        thread_ = std::thread([this] { run_(); });
-    }
-
-    ~SilentRouterStub()
-    {
-        stop_.store(true, std::memory_order_release);
-        if (thread_.joinable())
-            thread_.join();
-    }
-
-    const std::string &endpoint() const noexcept { return endpoint_; }
-    size_t  received_count() const noexcept
-    {
-        return received_count_.load(std::memory_order_relaxed);
-    }
-
-  private:
-    void run_()
-    {
-        // Drain incoming messages; discard them.  No reply on any.
-        while (!stop_.load(std::memory_order_acquire))
-        {
-            zmq::pollitem_t items[] = {
-                {static_cast<void *>(sock_), 0, ZMQ_POLLIN, 0}};
-            (void)zmq::poll(items, 1, std::chrono::milliseconds(50));
-            if (items[0].revents & ZMQ_POLLIN)
-            {
-                // Drain the full frame (identity + possible empty +
-                // payload).  Don't reply.
-                while (true)
-                {
-                    zmq::message_t msg;
-                    auto r = sock_.recv(msg, zmq::recv_flags::dontwait);
-                    if (!r.has_value()) break;
-                    if (!msg.more()) break;
-                }
-                received_count_.fetch_add(1, std::memory_order_relaxed);
-            }
-        }
-    }
-
-    zmq::socket_t       sock_;
-    std::string         endpoint_;
-    std::thread         thread_;
-    std::atomic<bool>   stop_{false};
-    std::atomic<size_t> received_count_{0};
-};
-
-int req_shape_sync_req_times_out_on_no_reply()
-{
-    return run_gtest_worker(
-        [] {
-            // Bring up the silent stub on a random local port.
-            SilentRouterStub stub;
-
-            // BRC connects with empty pubkey → plain TCP (no CURVE).
-            // Uses StubBrcHandle — the declared bypass for wire-level
-            // fixtures (see fixture block at top of file).
-            StubBrcHandle bh;
-            bh.start(stub.endpoint(), /*pubkey=*/"",
-                     /*uid=*/"req-shape-timeout-test");
-
-            // Probe sync REQs from across the §12.2.1 catalog.  Each
-            // MUST return nullopt after waiting ~kTimeoutMs.  Sample
-            // covers a state-mutator (REG), a state-query (CHANNEL_LIST),
-            // and the bug-of-the-session (ENDPOINT_UPDATE) — gives us
-            // coverage across the do_request shapes.
-            constexpr int kTimeoutMs       = 200;
-            constexpr int kMinElapsedMs    = 150;  // didn't skip the wait
-            constexpr int kMaxElapsedMs    = 500;  // didn't block past it
-
-            using clk = std::chrono::steady_clock;
-            using ms  = std::chrono::milliseconds;
-
-            auto time_call = [](auto &&fn) {
-                auto t0 = clk::now();
-                auto r  = fn();
-                auto el = std::chrono::duration_cast<ms>(clk::now() - t0).count();
-                return std::make_pair(r, el);
-            };
-
-            // 1. REG_REQ — state mutation, do_request("REG_REQ", "REG_ACK").
-            {
-                auto opts = make_reg_opts(pid_chan("timeout.reg"),
-                                          "prod.timeout-test");
-                auto [reg, el] = time_call(
-                    [&] { return bh.brc.register_channel(opts, kTimeoutMs); });
-                EXPECT_FALSE(reg.has_value())
-                    << "REG_REQ must return nullopt on no-reply, got: "
-                    << (reg ? reg->dump() : "<nullopt>");
-                EXPECT_GE(el, kMinElapsedMs)
-                    << "REG_REQ returned too fast (" << el << "ms) — "
-                    << "did it skip the wait?";
-                EXPECT_LE(el, kMaxElapsedMs)
-                    << "REG_REQ blocked past timeout (" << el << "ms > "
-                    << kMaxElapsedMs << "ms budget)";
-            }
-
-            // 2. CHANNEL_LIST_REQ — pure query, do_request("CHANNEL_LIST_REQ",
-            //    "CHANNEL_LIST_ACK").
-            {
-                auto [list, el] = time_call(
-                    [&] { return bh.brc.list_channels(kTimeoutMs); });
-                EXPECT_FALSE(list.has_value())
-                    << "CHANNEL_LIST_REQ must return nullopt on no-reply";
-                EXPECT_GE(el, kMinElapsedMs);
-                EXPECT_LE(el, kMaxElapsedMs);
-            }
-
-            // 3. ENDPOINT_UPDATE_REQ — the bug-of-the-session.  Verifies
-            //    the just-shipped sync conversion (8228f1ac) waits + times
-            //    out correctly under the same fixture.
-            {
-                auto [upd, el] = time_call([&] {
-                    return bh.brc.send_endpoint_update(
-                        "timeout.ep", "zmq_node",
-                        "tcp://127.0.0.1:44321", kTimeoutMs);
-                });
-                EXPECT_FALSE(upd.has_value())
-                    << "ENDPOINT_UPDATE_REQ must return nullopt on no-reply";
-                EXPECT_GE(el, kMinElapsedMs);
-                EXPECT_LE(el, kMaxElapsedMs);
-            }
-
-            // Sanity: stub did receive at least one frame (BRC isn't
-            // failing at the socket layer — it's reaching the wire,
-            // just timing out as designed).
-            EXPECT_GT(stub.received_count(), 0u)
-                << "Stub received zero frames — BRC may not have connected";
-
-            bh.stop();
-        },
-        "zmq_endpoint_registry::req_shape_sync_req_times_out_on_no_reply",
-        Logger::GetLifecycleModule(),
-        FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule(),
-        pylabhub::crypto::GetLifecycleModule(),
-        pylabhub::hub::GetZMQContextModule());
-}
+// ── RETIRED 2026-06-30 (#154 AUTH-6 C5 — handoff #307) ──────────────────
+// Was: SilentRouterStub + StubBrcHandle + req_shape_sync_req_times_out_
+// on_no_reply.  Drove BRC's `do_request` into its timeout branch via a
+// plain-TCP ROUTER stub.  HEP-CORE-0035 §2 strict-CURVE now refuses
+// `BrokerRequestComm::connect()` without broker_pubkey + KeyStore
+// role_identity, so the plain-TCP bypass is dead.  Coverage handoff:
+// #307 reinstates this either via a CURVE-capable silent router (option
+// a) or an L2 test against BRC do_request directly with a mock socket
+// (option b).
 
 int req_shape_no_unmatched_replies_for_fire_and_forget()
 {
@@ -682,11 +469,11 @@ int req_shape_no_unmatched_replies_for_fire_and_forget()
         [channel, uid](pylabhub::tests::HubHostBrokerHandle &broker,
                        pylabhub::tests::CurveSetup &curve) {
             pylabhub::tests::BrcHandle bh;
-            bh.start(broker.endpoint, broker.pubkey, uid, curve.role(uid));
+            bh.start(broker.endpoint, broker.pubkey, uid, pylabhub::tests::role_keystore_name(uid));
 
             // Register channel — needed so heartbeat / broadcast / band
             // calls have a legitimate target.
-            auto opts = make_reg_opts(channel, uid);
+            auto opts = pylabhub::tests::make_reg_opts(channel, uid);
             opts["data_transport"]    = "zmq";
             opts["zmq_node_endpoint"] = "tcp://127.0.0.1:44777";
             auto reg = bh.brc.register_channel(opts, 3000);
@@ -800,8 +587,6 @@ struct ZmqEndpointRegistryRegistrar
                     return endpoint_update_port_zero_returns_error();
                 if (sc == "req_shape_no_unmatched_replies_for_fire_and_forget")
                     return req_shape_no_unmatched_replies_for_fire_and_forget();
-                if (sc == "req_shape_sync_req_times_out_on_no_reply")
-                    return req_shape_sync_req_times_out_on_no_reply();
                 return -1;
             });
     }
