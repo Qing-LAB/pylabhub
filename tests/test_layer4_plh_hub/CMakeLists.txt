@@ -23,6 +23,7 @@ add_executable(test_layer4_plh_hub
     test_plh_hub_runmode.cpp
     test_plh_hub_role_roundtrip.cpp
     test_plh_hub_role_shm_e2e.cpp
+    test_plh_hub_role_zmq_e2e.cpp
     test_plh_hub_known_roles.cpp
 )
 

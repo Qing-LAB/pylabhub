@@ -297,6 +297,16 @@ end-to-end and that scripts can build coordination on top.
 close via HEP-0041 Phase 1; AUTH-7's L4 manifest gains a SHM variant
 only after #275 S2..S5 + #258 1k ship.
 
+**Progress (2026-06-30):**
+
+- **SHM variant ✅ shipped 2026-06-26** as `ShmE2E_AuthorizedConsumerReceivesAllSlots` + `ShmE2E_UnauthorizedConsumerDeniedByBroker` (commit `0a341a5b`, task #258).  Both green.
+- **ZMQ variant infra shipped 2026-06-30** (this batch):
+  - **Commit 1** (`de38c541`): extracted `role_e2e_harness.h` from the SHM file — 8 transport-agnostic helpers (log/marker waiters, plh_role binary path, vault keygen, known_roles) into `tests/test_layer4_plh_hub/role_e2e_harness.h`.  SHM tests still green post-extraction.
+  - **Commit 2** (this commit): added `test_plh_hub_role_zmq_e2e.cpp` with `ZmqE2E_AuthorizedConsumerReceivesAllSlots` (DEFERRED — see below) + `ZmqE2E_UnauthorizedConsumerDeniedByBroker` (✅ green).
+- **ZMQ authorized scenario DEFERRED to #246.**  The AUTH-7 happy path on ZMQ depends on the pre-confirm allowlist sync that HEP-CORE-0036 §6.5 specifies and #246 implements.  Observed race: broker sends `CONSUMER_REG_ACK` to consumer (consumer dials producer ~110 ms before) the producer's CHANNEL_AUTH_CHANGED_NOTIFY → GET_CHANNEL_AUTH chain seeds the producer's PUSH allowlist with the consumer's pubkey.  libzmq's initial CURVE handshake fails on the empty allowlist; the consumer never receives data.  The deny scenario doesn't depend on this gate (broker denies CONSUMER_REG before any dial).  Test file written + harness verified by the deny scenario; the auth scenario calls `GTEST_SKIP() << "#246"`.  Re-enable when #246 ships.
+
+**Critical-path implication.**  AUTH-7 cannot fully close until #246 ships.  The ZMQ deny scenario + SHM happy/deny scenarios pass today; the ZMQ happy path is the last remaining gap.
+
 ---
 
 ## HEP-0041 implementation chain — capability transport
