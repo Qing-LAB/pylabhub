@@ -499,12 +499,63 @@ Each phase ships green before the next.
 
 ## 10. Sibling HEP updates (Phase 1 promotion enumeration)
 
-- **HEP-CORE-0041 §Phase-5** (authoritative home).  §4-§6 substance merged; §7-§9 do NOT promote (pre-promotion artifacts).
-- **HEP-CORE-0036 §6.5.2** (cross-reference stub).  "Pre-attach admission for ZMQ is specified in HEP-CORE-0041 §Phase-5.  §6.5 covers post-attach runtime doorbell-then-pull; pre-attach admission gating is a separate concern owned by HEP-CORE-0041."
-- **HEP-CORE-0035 §I5** (revocation semantics).  Amendment paragraph: "Revocation propagation is confirmed via `CHANNEL_AUTH_APPLIED_REQ`.  Broker maintains `confirmed_version[K][P]` as the highest applied snapshot per producer.  A revoke is committed at producer P only when `confirmed_version[K][P] >= channel_version[K]` after the revoke bump.  Existing CURVE sessions per §I5 stay up; new handshakes deny per updated ZAP cache."
-- **HEP-CORE-0011** (script callback contract).  ⚠️ Contingent on §7.8 resolution.  If (a) or (b), add script-responsibility clause for fan-in partial success + how-to example.  If (c), rewrite with polling pattern.
-- **HEP-CORE-0028** (Native ABI + script-surface parity).  Four new API entries (§7.6).  Native C ABI version bump; parity work across Lua / Python / Native.
-- **docs/todo/AUTH_TODO.md**: task #246 moves from "amendment retrofit" to "HEP-CORE-0041 §Phase-5 shipped."
+Merge plan per HEP.  Paste-ready contract text below — no wordsmithing at Phase 1 execution time.
+
+### 10.1 HEP-CORE-0041 §Phase-5 (authoritative home)
+
+Merge §0, §4, §5, §6 substance verbatim.  §7-§9 do NOT promote (pre-promotion artifacts; open questions become resolved-and-inlined text during Phase 1).  §12 sequence diagram promotes.  §11 (scope discipline) becomes §Phase-5.scope-discipline.  §Design Principles + guardrails table promote to §Phase-5.design-principles as the operational scope for future §Phase-5 amendments.
+
+### 10.2 HEP-CORE-0036 §6.5.2 (cross-reference stub)
+
+New subsection §6.5.2, paste-ready:
+
+> **§6.5.2 Pre-attach admission for ZMQ.**  This section (§6.5) specifies the doorbell-then-pull runtime allowlist synchronization protocol between broker and producers.  A distinct concern — pre-attach admission gating that prevents a fresh consumer from dialing a producer whose ZAP cache does not yet contain the consumer's pubkey — is specified in **HEP-CORE-0041 §Phase-5** (ZMQ pre-attach broker confirmation).  §6.5's `CHANNEL_AUTH_CHANGED_NOTIFY` and `GET_CHANNEL_AUTH_REQ/ACK` wires are reused unchanged by §Phase-5; the additions are `CONSUMER_ATTACH_REQ_ZMQ/_ACK` (consumer↔broker) and `CHANNEL_AUTH_APPLIED_REQ/_ACK` (producer↔broker).  See HEP-CORE-0041 §Phase-5 for the full protocol.
+
+### 10.3 HEP-CORE-0035 §I5 (revocation semantics)
+
+Append this paragraph to §I5, paste-ready:
+
+> **§I5 revocation confirmation under HEP-CORE-0041 §Phase-5 (ZMQ pre-attach).**  For channels using the ZMQ pre-attach protocol, revocation propagation is confirmed via `CHANNEL_AUTH_APPLIED_REQ` (see HEP-CORE-0041 §Phase-5).  Broker maintains `confirmed_version[K][P]` as the highest allowlist snapshot version each producer's current instance has confirmed applying.  A revoke is committed at producer P once `confirmed_version[K][P] >= channel_version[K]` where `channel_version[K]` is the post-revoke bump.  Existing CURVE sessions per §I5 baseline stay up on revoke (per libzmq semantics); new handshakes deny at the producer's ZAP handler because the cache — populated by the confirmed pull — no longer contains the revoked pubkey.  The producer-instance-epoch guard (§Phase-5 §4.2a `instance_id`) prevents stale APPLIED_REQ from a crashed producer instance from falsely committing a revoke.
+
+### 10.4 HEP-CORE-0011 (script callback contract — CONTINGENT on §7.8)
+
+⚠️ **Text depends on §7.8 resolution.**  Three paste-ready alternatives:
+
+**Alternative (a) — `on_channel_ready(channel)` already exists in HEP-0011:**  add this subsection under the existing callback definition:
+
+> **Fan-in channels — script responsibility (HEP-CORE-0041 §Phase-5).**  When `on_channel_ready(channel)` fires for a consumer role on a fan-in ZMQ channel, the channel may have partial producer admission — some producers admitted, others denied or timed out.  The script is RESPONSIBLE for querying `api.producers_declared(channel)` and comparing against `api.producers_connected(channel)` (see HEP-CORE-0028) to decide whether the admitted subset is acceptable.  The framework does NOT encode a policy — a script that requires all-N producers must check and decide (continue with degraded coverage or call `api.channel_stop(channel)`).
+
+**Alternative (b) — new `on_channel_ready` callback added under this amendment:**  same body as (a); the callback definition itself is a new addition to HEP-0011's callback table, with cross-engine binding work landing in Phase 4.
+
+**Alternative (c) — no callback, script uses `on_start` + `api.is_channel_ready()` polling:**
+
+> **Fan-in channels — script responsibility (HEP-CORE-0041 §Phase-5).**  For consumer role scripts on fan-in ZMQ channels, the `on_start` callback should invoke `api.is_channel_ready(channel)` polling until ready (or timeout).  Once ready, query `api.producers_declared(channel)` and `api.producers_connected(channel)` (HEP-CORE-0028) to inspect per-producer admission outcome.  The framework does NOT encode a policy — script decides whether the admitted subset is acceptable.
+
+### 10.5 HEP-CORE-0028 (Native ABI + script-surface parity)
+
+Four new API entries need parity across Lua / Python / Native.  Text for the API contract subsection (add to HEP-0028's "Script API reference"):
+
+> **`api.producers_declared(channel) → list<string>`**  
+> Returns the list of producer `role_uid` strings declared in the consumer's most recent `CONSUMER_REG_ACK` for the given channel.  Reflects the broker's view of "producers this consumer was told to expect."  Read-only; no mutation surface.  Available on consumer role hosts only; returns empty list on other roles.
+>
+> **`api.producers_connected(channel) → list<string>`**  
+> Returns the subset of `producers_declared` whose pre-attach handshake succeeded (see HEP-CORE-0041 §Phase-5).  Populated once the channel-ready callback / signal fires.  Read-only.
+>
+> **`api.producer_attach_status(channel, uid) → string`**  
+> Returns the enumerated wire status for the given producer's pre-attach outcome: one of `"success"` / `"denied"` / `"timeout"` (per HEP-CORE-0041 §Phase-5 §4.1).  Returns `"not_declared"` if `uid` was not in `producers_declared`.
+>
+> **`api.producer_attach_reason(channel, uid) → string`**  
+> Returns the enumerated reason string per HEP-CORE-0041 §Phase-5 §5.5 taxonomy: `"consumer_not_in_channel_allowlist"` / `"producer_not_live"` / `"channel_closing"` / `"producer_did_not_confirm_within_budget"` / `""` (empty on success).
+
+Native C ABI version bump.  Impl work: Lua binding + Python binding + Native binding all touched.  Estimated ~1 day cross-engine parity.
+
+### 10.6 docs/todo/AUTH_TODO.md
+
+Task #246 status updates: "amendment retrofit" → "HEP-CORE-0041 §Phase-5 shipped."  Task description points at the merged §Phase-5.
+
+### 10.7 Follow-on tasks (created at Phase 1 promotion)
+
+- Test-infrastructure task: build/extend a broker-side test helper to synthesize `CHANNEL_AUTH_APPLIED_REQ` payloads with arbitrary `instance_id` values.  Required by `AppliedReq_FromStaleInstance_SilentlyDropped` (§8).  Estimated small (~half a day).
 
 ---
 
