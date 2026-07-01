@@ -163,10 +163,20 @@ Other reused wires unchanged: `CHANNEL_AUTH_CHANGED_NOTIFY`, `GET_CHANNEL_AUTH_R
 
 Broker tracks two version counters — one per channel, one per (channel, producer) pair:
 
-- `channel_version[K]` — monotonic counter per channel, bumped on ANY mutation to `ChannelAccessIndex[K]` (add / remove / any consumer pubkey change).  Shared across all producers on K.
-- `confirmed_version[K][P]` — per-(channel, producer) counter; the highest version producer P has confirmed applying via `CHANNEL_AUTH_APPLIED_REQ`.  Reset to 0 on producer disconnect or broker restart.
+- `channel_version[K]` — monotonic `uint64_t` per channel, bumped on ANY mutation to `ChannelAccessIndex[K]` (add / remove / any consumer pubkey change).  Shared across all producers on K.  Width MUST be at least 64 bits: at 1 mutation/ms (aggressive), wraparound is >584 million years — practically infinite.
+- `confirmed_version[K][P]` — per-(channel, producer) `uint64_t`; the highest version producer P has confirmed applying via `CHANNEL_AUTH_APPLIED_REQ`.  Reset to 0 on ANY of:
+  - Producer P disconnects (ROUTER-observed) or transitions to kDead (heartbeat-observed).
+  - Producer P re-registers with the same role_uid (new instance — old cache state must not carry over).
+  - Broker restarts.
 
 Total broker state: `M + M·N` integers for M channels × N producers.
+
+**Producer re-registration — reset semantics.**  The register handler resets `confirmed_version[K][P] = 0` for all K covered by producer P atomically as part of the register operation.  What this covers:
+
+- **Normal case** (stale APPLIED_REQ arrives BEFORE the re-registration): stale APPLIED advances `confirmed_version` momentarily, then re-registration resets it to 0 → next ATTACH_REQ goes wait-path → producer's NEW instance pulls + applies → correct state.
+- **Interleaved case** (stale APPLIED_REQ arrives AFTER the re-registration): re-registration sets confirmed to 0, stale APPLIED then re-advances it to a stale value.  Consumer's fast-path may briefly succeed against an empty cache — CURVE handshake FAILS (no security leak per P4 direction A "succeeds → confirmed"), user script retries (per P3).  Window self-heals on next `channel_version[K]` bump (any subsequent admit / revoke resets the fast-path calculus).
+
+The interleaved case is bounded degraded UX, not a security regression.  Accepted per P1/P3.  Robust fix (producer-instance-epoch tracking) would add per-(K,P) state — deferred as a follow-on if operational data ever surfaces the case as more than rare.
 
 **Fast-path invariant:** `confirmed_version[K][P] >= channel_version[K]` ⇒ P's ZAP cache reflects the current allowlist (which includes the consumer we're about to admit, since step 2 verified consumer's pubkey IS in the current allowlist).
 
@@ -211,6 +221,10 @@ On producer P disconnect (ROUTER event / kDead transition):
    → confirmed_version[K][*disconnected P*] = 0.
    → walk P's pending_attach_queue: reply {status="denied", reason="producer_not_live"}
      (unified reason with dispatch-time denial — no timing-boundary distinction).
+
+On producer P re-registration under same role_uid:
+   → confirmed_version[K][P] = 0 for all K covered by P.
+   → new instance's ZAP cache is presumed empty; next ATTACH_REQ takes wait-path.
 
 On channel K close:
    → delete ChannelAccessIndex[K], channel_version[K], all confirmed_version[K][*].
@@ -419,7 +433,10 @@ Recommendation: **(a) → (b) → (c) emergency-only.**  I verify at Phase 1 pro
 - `AttachReqZmq_DrainsPendingOnAppliedReq` — after producer's APPLIED_REQ, pending consumers drain.
 - `AttachReqZmq_TimeoutReplyWhenProducerSilent` — timeout budget elapsed → status="timeout".
 - `AttachReqZmq_DeniedWhenNotInAllowlist` — pubkey not in ChannelAccessIndex → status="denied".
-- `AttachReqZmq_DeniedWhenProducerNotLive` — producer kDead / disconnected → status="denied".
+- `AttachReqZmq_DeniedWhenProducerNotLive` — producer kDead / disconnected AT DISPATCH TIME (step 3) → status="denied", reason="producer_not_live".
+- `AttachReqZmq_DeniedWhenProducerDisconnectsWhilePending` — pins the §5.3 post-enqueue disconnect drain path.  ATTACH_REQ enqueued while P is kLive; P disconnects; verify queued REQ is drained as denied (reason="producer_not_live").
+- `AttachReqZmq_PartialDrainOnAppliedReq` — pins the §5.3 partial-drain path.  Multi-entry queue with mixed target_versions W1 < W2 < W3; APPLIED_REQ arrives at W2; verify entries at W1 and W2 drain as success, entry at W3 remains queued (drains on next APPLIED_REQ or times out).
+- `AppliedReq_ResetsAfterProducerReRegistration` — pins the §5.2 producer re-registration reset rule.  Advance confirmed_version[K][P] to N via APPLIED_REQ; P re-registers under same role_uid; verify confirmed_version[K][P] = 0; verify next ATTACH_REQ against P takes wait-path.
 - `AppliedReq_AdvancesConfirmedVersion` — receives APPLIED_REQ, confirmed_version advances.
 - `ChannelClose_DrainsPendingAsDenied` — channel closure while pending → status="denied", reason="channel_closing".
 
