@@ -27,14 +27,14 @@
 //   gains a capability-handshake harness, or (b) the test is reshaped into
 //   an in-process stress harness.  Sibling deferrals: tasks #182 / #183 / #184
 //   (datahub_broker_health, datahub_e2e, datahub_broker, datahub_role_state).
-//   Both the named-attach `create_datablock_producer<F,D>` /
-//   `find_datablock_consumer<F,D>` calls AND the `cfg.shared_secret = kStressSecret`
-//   assignments below stay intact pending the deeper rework — dropping the
-//   secret without migrating the attach path trips `find_consumer:
-//   shared_secret mismatch` because the producer-side header still records
-//   cfg.shared_secret (0) while the consumer-side passes the explicit
-//   `kStressSecret`.  The full retirement of the field is staged for #275-S5
-//   once this file's rework lands.
+//   The named-attach `create_datablock_producer<F,D>` /
+//   `find_datablock_consumer<F,D>` calls below stay intact pending the deeper
+//   rework onto fd-source helpers.  The `cfg.shared_secret = kStressSecret`
+//   assignments are dead-writes post-#275-S4 (the DataBlock ctor no longer
+//   stamps + the memcmp gate is deleted) and post-#275-S5 (the header field
+//   was renamed `reserved_capability_token[64]`); they persist for now as
+//   the field itself has not yet been deleted from `DataBlockConfig`.  See
+//   the REVIEW-C follow-up task for the full-cleanup pass that drops both.
 
 #include "datahub_stress_raii_workers.h"
 #include "test_entrypoint.h"
@@ -152,11 +152,12 @@ DataBlockConfig make_latest_only_config()
     cfg.consumer_sync_policy   = ConsumerSyncPolicy::Latest_only;
     cfg.checksum_policy        = ChecksumPolicy::Enforced;
     cfg.flex_zone_size         = static_cast<size_t>(kFlexZoneSize);
-    // #275-S2 deferred (see file header doc-block — multi-process-by-name; no
-    // capability-handshake harness available).  `cfg.shared_secret` must stay
-    // populated until the rework lands: the legacy `find_datablock_consumer<F,D>`
-    // calls below still verify the secret against the SHM header.  The field
-    // retires entirely under #275-S5 once this file's rework also retires.
+    // #275-S2 deferred (see file header doc-block — multi-process-by-name;
+    // no capability-handshake harness available).  Post-#275-S4 the memcmp
+    // gate this line targeted is gone (`find_datablock_consumer<F,D>` no
+    // longer takes a secret) and post-#275-S5 the header field was renamed;
+    // this write is now dead but persists until the field itself is deleted
+    // from `DataBlockConfig` in the tracked REVIEW-C follow-up.
     cfg.shared_secret          = kStressSecret;
     return cfg;
 }

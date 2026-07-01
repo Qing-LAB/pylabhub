@@ -161,18 +161,12 @@ add_executable(test_layer3_datahub
     # was retired in favour of the HEP-CORE-0033 §6.1 `pylabhub::config::HubConfig`
     # composite (tests for the replacement live in test_layer2_service/).
 
-    # ── Hub ShmQueue unit tests ────────────────────────────────────────────────
-    # RETIRED 2026-06-30 (HEP-CORE-0041 1i-cleanup S3b, #275) — both
-    # files masked from the L3 aggregate.  The 25 TEST_F's exercised
-    # ShmQueue scenarios through the legacy `create_writer(name, ..., secret, ...)`
-    # / `create_reader(name, secret, ...)` factories that are deleted
-    # in S3c.  Coverage continuity at L2/L3-fd-source/L4 per the
-    # TESTING_TODO § "Test retirements / cross-layer migrations"
-    # row dated 2026-06-30.  Files stay on disk with top-of-file
-    # Rule-6 doc-blocks recording the retirement; remove in REVIEW-C
-    # (#276) after the post-deletion sweep confirms zero residue.
-    # test_datahub_hub_queue.cpp
-    # workers/datahub_hub_queue_workers.cpp
+    # ── Hub ShmQueue unit tests: RETIRED (HEP-CORE-0041 1i-cleanup S3b, #275) ──
+    # The 25 TEST_F's + 25 workers / 45 legacy-factory call sites were
+    # retired 2026-06-30 with the ShmQueue legacy public surface (S3c).
+    # Coverage continuity per TESTING_TODO § "Test retirements /
+    # cross-layer migrations" row dated 2026-06-30.  Physical file
+    # deletion shipped in REVIEW-C (#276).
 
     # ── Role-API integration: flexzone round-trip through RoleAPIBase ────────
     test_role_api_flexzone.cpp

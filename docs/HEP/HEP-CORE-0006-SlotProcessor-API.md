@@ -37,7 +37,7 @@
 | `src/utils/hub/hub_shm_queue.cpp` | impl | `ShmQueue::from_consumer()` / `from_producer()` |
 | `src/utils/hub/hub_zmq_queue.cpp` | impl | `ZmqQueue` PULL/PUSH with bounded internal queue |
 | `tests/test_layer3_datahub/test_datahub_hub_processor.cpp` | test | Processor: handler, hot-swap, timeout, critical error, zero-fill |
-| `tests/test_layer3_datahub/test_datahub_hub_queue.cpp` | test | ShmQueue read/write, overflow policy |
+| `tests/test_layer2_service/test_hub_shm_queue_capability.cpp` | test | ShmQueue state machine (Standby/Configured/Active) + capability-fd path (HEP-CORE-0041 §5.5).  *L3 `test_datahub_hub_queue.cpp` retired in #275 S3b; replaced by this L2 test + fd-source workers under `test_layer3_datahub/workers/`.* |
 | `tests/test_layer2_service/test_hub_zmq_queue.cpp` | test | ZmqQueue PULL/PUSH, overflow, close |
 
 ### Processor Pipeline Architecture
