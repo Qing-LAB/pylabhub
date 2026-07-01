@@ -397,55 +397,54 @@ The attach-loop lines are test-contract-stable markers.  Format:
 
 ---
 
-## 7. Design decisions — remaining questions for you
+## 7. Design decisions — ALL RESOLVED 2026-07-01
 
-Tag `[user]` = your call; tag `[me]` = I resolve at Phase 1 promotion.
+Recommendations locked as-written on 2026-07-01.  Section retained for traceability; contents apply verbatim to Phase 1 promotion.
 
-### 7.1 D3 ✅ RESOLVED 2026-06-30
+### 7.1 ✅ D3 (RESOLVED 2026-06-30)
 
 Cache is producer's SINGLE reference for allow/deny; admit + revoke both use bidirectional confirmation (§4.2).  ZAP handler stays load-bearing.
 
-### 7.2 Fan-in serialization
+### 7.2 ✅ Fan-in serialization — MVP serial (LOCKED 2026-07-01)
 
-Consumer serializes per-producer ATTACH REQ (§6.1).  Worst-case for 10-producer fan-in: ~30 s (broker replies at server-side budget) to ~50 s (silent broker → client-side budget).  Acceptable for MVP?
+Consumer serializes per-producer ATTACH REQ (§6.1).  Worst-case for 10-producer fan-in: ~30 s (broker replies at server-side budget) to ~50 s (silent broker → client-side budget).  Concurrent alternatives (multi-outstanding BRC, coalesced ATTACH_REQ) deferred as follow-on tasks if operational data ever surfaces the latency as a real problem.
 
-Recommendation: **MVP serial.**  Concurrent alternatives deferred as follow-on tasks.
+### 7.3 ✅ HEP-CORE-0041 §Phase-5 owns the amendment (LOCKED 2026-07-01)
 
-### 7.3 Which HEP owns the amendment?
+Authoritative home = HEP-CORE-0041 §Phase-5.  HEP-CORE-0036 gains a §6.5.2 pointer stub (see §10.2 for paste-ready text).  Reason: pre-confirm pattern is HEP-0041's central design; HEP-0036 §6.5 is about the post-attach doorbell-then-pull sync, a related but distinct concern.
 
-Recommendation: **HEP-CORE-0041 Phase 5** with a §6.5.2 pointer stub in HEP-CORE-0036.  Reason: pre-confirm pattern IS HEP-0041's central design.
+### 7.4 ✅ Fan-in partial-success policy (LOCKED 2026-07-01)
 
-### 7.4 Fan-in partial-success policy
-
-Recommendation LOCK:
-- Loop always runs to completion.
+- Loop always runs to completion (regardless of per-producer outcomes).
 - Loop-level failure returns `false` ONLY when ZERO producers were admitted.
 - Failed producers excluded from `set_producer_peers()` — consumer never dials them.
 - No automatic retry within the loop; failed producers retry on next consumer restart.
 
-### 7.5 Per-failure callback
+### 7.5 ✅ Per-failure callback — query-only MVP (LOCKED 2026-07-01)
 
-Recommendation: query-only for MVP via `api.producer_attach_status(channel, uid)` — no new callback.
+No new `on_producer_attach_failed` callback.  Script inspects per-producer outcome via `api.producer_attach_status(channel, uid)` from within the existing channel-ready hook (see §7.8).
 
-### 7.6 Script observation surface — Shape A (decomposed) chosen
+### 7.6 ✅ Script observation surface — Shape A decomposed (LOCKED 2026-07-01)
+
+Four accessors, all read-only, cross-engine parity required (Lua / Python / Native):
 
 - `api.producers_declared(channel) → list<uid>` — REG_ACK-declared set.
 - `api.producers_connected(channel) → list<uid>` — admitted subset.
 - `api.producer_attach_status(channel, uid) → enum` — `success` / `denied` / `timeout` / `not_declared`.
 - `api.producer_attach_reason(channel, uid) → string` — reason from §5.5 taxonomy.
 
-### 7.7 Log discipline — lock §6.3 as normative
+### 7.7 ✅ Log discipline — §6.3 markers are normative (LOCKED 2026-07-01)
 
-Recommendation: promote §6.3 verbatim to HEP-CORE-0041 §Phase-5.log-format as normative table.  Confirm.
+§6.3 log-format table promotes verbatim to HEP-CORE-0041 §Phase-5.log-format as normative marker contract.  Downstream test contracts (`AttachLoop_LogMarkers_*`) depend on the exact strings; changes require HEP amendment, not a code commit.
 
-### 7.8 Channel-ready callback wiring
+### 7.8 ✅ Channel-ready callback wiring (LOCKED 2026-07-01)
 
-§10's HEP-CORE-0011 bullet assumes `on_channel_ready(channel)` exists.  Resolution:
-- **(a)** callback already exists in HEP-CORE-0011 → use as-is.
-- **(b)** add new callback in this amendment's Phase 4 (cross-engine parity work).
-- **(c)** hook `on_start` + poll `api.is_channel_ready()`.
+Verification order: **(a) → (b) → (c) emergency-only.**
+- (a) If `on_channel_ready(channel)` already exists in HEP-CORE-0011 → use as-is.  §10.4 alternative (a) text lands.
+- (b) If not → add the callback under this amendment's Phase 4 (cross-engine parity work included).  §10.4 alternative (b) text lands.
+- (c) Only if (b) faces a strong objection → fall back to `on_start` + poll `api.is_channel_ready()`.  §10.4 alternative (c) text lands.
 
-Recommendation: **(a) → (b) → (c) emergency-only.**  I verify at Phase 1 promotion.
+I verify at Phase 1 promotion time and select the resolution.
 
 ---
 
@@ -614,18 +613,19 @@ sequenceDiagram
 ## 13. Open discussion items
 
 **Resolved:**
-- ✅ §7.1: D3-corrected LOCKED 2026-06-30.
+**Resolved:**
+- ✅ §7.1: D3 LOCKED 2026-06-30.
+- ✅ §7.2: MVP serial (LOCKED 2026-07-01).
+- ✅ §7.3: HEP-CORE-0041 §Phase-5 (LOCKED 2026-07-01).
+- ✅ §7.4: fan-in best-effort partial-success (LOCKED 2026-07-01).
+- ✅ §7.5: query-only MVP; no new callback (LOCKED 2026-07-01).
+- ✅ §7.6: Shape A decomposed accessors (LOCKED 2026-07-01).
+- ✅ §7.7: §6.3 markers normative (LOCKED 2026-07-01).
+- ✅ §7.8: (a) → (b) → (c) verification order (LOCKED 2026-07-01); I verify at Phase 1 promotion.
 
-**Awaiting your call:**
-- `[user]` §7.2: fan-in serialization — MVP serial acceptable?
-- `[user]` §7.3: HEP-0041 Phase 5 as authoritative home.
-- `[user]` §7.4: fan-in partial-success policy — best-effort continue?
-- `[user]` §7.5: per-failure callback — query-only for MVP?
-- `[user]` §7.6: script observation surface shape.
-- `[user]` §7.7: lock §6.3 log format as normative.
-- `[user]` §7.8: channel-ready callback wiring — (a) → (b) → (c) order?
-
-**I'll resolve at Phase 1 promotion:**
+**I'll resolve at Phase 1 promotion (mechanical):**
 - `[me]` §4.1 + §4.2: payload field-name choices — align with existing HEP-0036 §6.4 shapes.
 - `[me]` §5.5: timeout defaults — align with HEP-0041 SHM prior-art.
-- `[me]` §10: contract-text merge plan for each permanent HEP.
+- `[me]` §10: paste-ready contract text per §10.1-§10.7 — no wordsmithing needed.
+
+Phase 1 promotion is unblocked.
