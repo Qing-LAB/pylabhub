@@ -462,20 +462,33 @@ response in that case is incident response, not protocol: kill
 the compromised process, rotate the key, redeploy.
 
 **§I5 revocation confirmation timing (added 2026-07-01 — HEP-CORE-0042
-integration).**  For channels using either transport under
-HEP-CORE-0042 (Channel Attach Coordination Protocol), revocation
-propagation is confirmed via `CHANNEL_AUTH_APPLIED_REQ` (HEP-0042
-§5.5.2).  Broker maintains `confirmed_version[K][P]` as the highest
-allowlist snapshot version each producer's current instance has
-confirmed applying.  A revoke is committed at producer P once
-`confirmed_version[K][P] >= channel_version[K]` where
-`channel_version[K]` is the post-revoke bump.  Existing sessions per
-§I5 baseline stay up on revoke (per libzmq semantics); new
-handshakes deny at the producer's cache — populated by the
-confirmed pull — because the cache no longer contains the revoked
-pubkey.  The producer-instance-epoch guard (HEP-0042 §5.2
-`instance_id`) prevents stale APPLIED_REQ from a crashed producer
-instance from falsely committing a revoke.
+integration).**  Confirmation semantics differ by transport under
+HEP-CORE-0042 (Channel Attach Coordination Protocol):
+
+- **ZMQ (HEP-0042 §6.2 Bindings.ZMQ).**  Revocation propagation is
+  confirmed via `CHANNEL_AUTH_APPLIED_REQ` (HEP-0042 §5.5.2).  Broker
+  maintains `confirmed_version[K][P]` as the highest allowlist snapshot
+  version each producer's current instance has confirmed applying.  A
+  revoke is committed at producer P once `confirmed_version[K][P] >=
+  channel_version[K]` where `channel_version[K]` is the post-revoke
+  bump.  The producer-instance-epoch guard (HEP-0042 §5.2
+  `instance_id`) prevents stale APPLIED_REQ from a crashed producer
+  instance from falsely committing a revoke.
+- **SHM (HEP-0042 §6.1 Bindings.SHM).**  Revocation is naturally
+  respected without producer-side cache tracking: the SHM
+  `CONSUMER_ATTACH_REQ` is producer-initiated on EVERY attach attempt
+  (§6.1), and the broker's reply reflects the current
+  `ChannelAccessIndex[K].authorized_consumer_pubkeys` at query time.  A
+  revoke is "committed" the instant the broker processes the
+  allowlist mutation; the next SHM attach attempt against P sees the
+  updated state.  No cache-version confirmation state is needed
+  because there is no producer-side lag to close.
+
+Existing sessions per §I5 baseline stay up on revoke for both
+transports (per libzmq semantics for ZMQ; per capability-fd
+handover-once semantics for SHM); new handshakes deny at the
+producer's authorization check (ZAP cache for ZMQ; per-attempt broker
+query for SHM).
 
 ### I6 — Identity keys reused on the data plane; broker mints nothing
 
@@ -3157,12 +3170,14 @@ section owns the notify-then-pull *mechanism* that synchronizes
 producer-side and consumer-side caches with the broker's record.  A
 distinct concern — coordinating the timing of a consumer's data-plane
 attach around that cache sync so the consumer's handshake succeeds
-against a caught-up producer cache — is owned by **HEP-CORE-0042
+against a authoritative broker check — is owned by **HEP-CORE-0042
 (Channel Attach Coordination Protocol)**.  §6.5's
 `CHANNEL_AUTH_CHANGED_NOTIFY` and `GET_CHANNEL_AUTH_REQ/ACK` wires are
-reused unchanged by HEP-0042; HEP-0042 adds `CONSUMER_ATTACH_REQ`
-(consumer↔broker, per-transport shape) and `CHANNEL_AUTH_APPLIED_REQ`
-(producer↔broker bidirectional confirmation).
+reused unchanged by HEP-0042's ZMQ binding; HEP-0042 adds
+`CONSUMER_ATTACH_REQ` (per-transport shape and direction — see
+HEP-0042 §6 bindings for details: SHM is producer→broker, ZMQ is
+consumer→broker) and, for the ZMQ binding, `CHANNEL_AUTH_APPLIED_REQ`
+(producer→broker bidirectional confirmation).
 
 This section formalizes the two symmetric notify-then-pull paths
 that keep both sides of a channel's auth state converged with the

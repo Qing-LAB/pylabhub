@@ -78,6 +78,14 @@ Any amendment to this HEP MUST be checked against these principles.  A finding t
 
 ## 5. Abstract protocol
 
+### 5.0 Scope of the abstract protocol
+
+The abstract protocol below (state model §5.2, handler flow §5.4, wire spec §5.5, timeout budgets §5.6) describes the case where the **producer maintains a per-connection auth cache that can lag** the broker's authoritative allowlist.  This is the ZMQ instantiation (§6.2 Bindings.ZMQ) — the producer's ZAP handler consults the cache on every CURVE handshake, and the cache must be re-synced via `CHANNEL_AUTH_CHANGED_NOTIFY` + `GET_CHANNEL_AUTH_REQ` after each mutation.  The `channel_version` / `confirmed_version` / `instance_id` state exists to close the race between broker mutation and producer cache update.
+
+The SHM instantiation (§6.1 Bindings.SHM) is a **stateless degenerate case**: SHM's `CONSUMER_ATTACH_REQ` is producer-initiated on EVERY attach attempt, and the broker's reply reflects the current `ChannelAccessIndex[K]` at query time.  No producer-side cache lags; therefore no `confirmed_version` state and no `CHANNEL_AUTH_APPLIED_REQ` handshake are needed.  What SHM shares with ZMQ is the *coordination principle* — the broker mediates the attach, not the producer's own local check — plus the transport-agnostic wire shape (`consumer_pubkey` / `producer_role_uid` / `channel_name`, common reason strings on denial).
+
+Downstream sections in §5 apply to the ZMQ instantiation.  §6.1 documents the SHM instantiation as a compact per-attempt query without redundantly restating the state model.
+
 ### 5.1 One-sentence mental model
 
 Broker tracks a monotonic version per channel and a confirmed version per (channel, producer) pair.  When a consumer needs to attach and the producer isn't caught up, ONE `CHANNEL_AUTH_CHANGED_NOTIFY`-triggered pull cycle syncs them.  Bad network = timeout + user retry.  Producer restart = new instance epoch (no cross-instance leak).
@@ -325,6 +333,9 @@ apply_consumer_reg_ack(reg_ack):
   connected = []
   attach_results = {}   # uid → (status, reason)
 
+  LOGGER_INFO("[{}] attach:begin channel={} producers={}",
+              short_tag, reg_ack.channel_name, len(reg_ack.producers))
+
   for producer_uid in reg_ack.producers:
     attach_ack = brc.request(CONSUMER_ATTACH_REQ_ZMQ{
       channel_name: reg_ack.channel_name,
@@ -352,6 +363,9 @@ apply_consumer_reg_ack(reg_ack):
 
   ZmqQueue::set_producer_peers(connected)   # ONLY dial admitted producers
   publish_attach_results(attach_results)    # feeds §8 accessors + on_channel_ready
+
+  LOGGER_INFO("[{}] attach:complete channel={} admitted={}/{}",
+              short_tag, reg_ack.channel_name, len(connected), len(reg_ack.producers))
 
   return (len(connected) > 0)   # per §5 fan-in partial-success policy
 ```
