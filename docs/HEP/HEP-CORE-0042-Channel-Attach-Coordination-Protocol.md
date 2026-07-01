@@ -161,14 +161,16 @@ On channel K close:
 
 ### 5.5 Wire spec
 
-#### 5.5.1 `CONSUMER_ATTACH_REQ` / `_ACK` (consumer ↔ broker)
+#### 5.5.1 `CONSUMER_ATTACH_REQ_ZMQ` / `_ACK_ZMQ` (consumer → broker)
 
-Direction: consumer → broker.  Per-transport payload additions live in §6 bindings.  Common shape:
+**Scope:** ZMQ instantiation only, per §5.0.  SHM's `CONSUMER_ATTACH_REQ` is producer-initiated with a distinct payload (see §6.1).
+
+Direction: consumer → broker.
 
 **Request:**
 ```json
 {
-  "envelope":         "CONSUMER_ATTACH_REQ_<TRANSPORT>",
+  "envelope":         "CONSUMER_ATTACH_REQ_ZMQ",
   "channel_name":     "lab.sensors.temperature",
   "consumer_pubkey":  "<40 Z85 chars>",
   "producer_role_uid":"prod.mysensor.uid00000001"
@@ -177,12 +179,12 @@ Direction: consumer → broker.  Per-transport payload additions live in §6 bin
 
 **Reply (per §5.4 outcomes):**
 ```json
-{ "status": "success" }
-{ "status": "denied",  "reason": "consumer_not_in_channel_allowlist" | "producer_not_live" | "channel_closing" }
-{ "status": "timeout", "reason": "producer_did_not_confirm_within_budget" }
+{ "envelope": "CONSUMER_ATTACH_ACK_ZMQ", "status": "success" }
+{ "envelope": "CONSUMER_ATTACH_ACK_ZMQ", "status": "denied",  "reason": "consumer_not_in_channel_allowlist" | "producer_not_live" | "channel_closing" }
+{ "envelope": "CONSUMER_ATTACH_ACK_ZMQ", "status": "timeout", "reason": "producer_did_not_confirm_within_budget" }
 ```
 
-Concrete envelope names + per-transport payload extensions in §6.
+§6.2.1 restates this shape in the ZMQ binding context (with `consumer_role_uid` for the fan-in tracker).
 
 #### 5.5.2 `CHANNEL_AUTH_APPLIED_REQ` / `_ACK` (producer → broker)
 
