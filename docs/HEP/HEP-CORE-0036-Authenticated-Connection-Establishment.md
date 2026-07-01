@@ -476,7 +476,7 @@ HEP-CORE-0042 (Channel Attach Coordination Protocol):
   instance from falsely committing a revoke.
 - **SHM (HEP-0042 §6.1 Bindings.SHM).**  Revocation is naturally
   respected without producer-side cache tracking: the SHM
-  `CONSUMER_ATTACH_REQ` is producer-initiated on EVERY attach attempt
+  `CONSUMER_ATTACH_REQ_SHM` is producer-initiated on EVERY attach attempt
   (§6.1), and the broker's reply reflects the current
   `ChannelAccessIndex[K].authorized_consumer_pubkeys` at query time.  A
   revoke is "committed" the instant the broker processes the
@@ -872,7 +872,7 @@ from the cache shape it observes.  Concretely:
   `allowlist_cache` move together (see code path in
   `handle_channel_auth_notifies` / `apply_producer_reg_ack`).
 - **SHM has no producer-side enforcement cache.**  SHM's authoritative
-  decision is the broker's `CONSUMER_ATTACH_ACK` on each attach attempt
+  decision is the broker's `CONSUMER_ATTACH_ACK_SHM` on each attach attempt
   (HEP-CORE-0041 §9 D4).  The orchestrator's `CacheLookup` callback
   reads `allowlist_cache` *only* for divergence detection — when the
   broker's answer disagrees with the cache, a WARN log fires; the
@@ -899,7 +899,7 @@ flowchart LR
 
     CACHE -.->|"set_peer_allowlist<br/>(ZMQ tx queues only —<br/>PeerAdmission cast)"| ZMQE
     CACHE -.->|"CacheLookup callback<br/>(observability — for<br/>divergence-WARN signal)"| SHMG
-    TRUTH ==>|"CONSUMER_ATTACH_REQ<br/>per attempt<br/>(BROKER IS GATE)"| SHMG
+    TRUTH ==>|"CONSUMER_ATTACH_REQ_SHM<br/>per attempt<br/>(BROKER IS GATE)"| SHMG
 ```
 
 **Invariants this diagram pins:**
@@ -943,7 +943,7 @@ flowchart LR
 | `handle_channel_auth_notifies` | same | NOTIFY → cache refresh + ZAP push | Both (ZAP push gated) |
 | `ZmqQueue::set_peer_allowlist` | `src/utils/hub/hub_zmq_queue.cpp` | ZAP cache write | ZMQ only |
 | `ShmAttachOrchestrator::CacheLookup` | `src/include/utils/security/shm_attach_orchestrator.hpp` | Divergence-detection read | SHM only |
-| `CONSUMER_ATTACH_REQ` handler | `src/utils/ipc/broker_service.cpp` | Per-attempt authoritative gate | SHM only |
+| `CONSUMER_ATTACH_REQ_SHM` handler | `src/utils/ipc/broker_service.cpp` | Per-attempt authoritative gate | SHM only |
 
 ### I12 — Fresh master approval gates every authority application
 
@@ -1725,8 +1725,8 @@ sequenceDiagram
     else SHM transport (HEP-CORE-0041)
         C->>P: dial shm_capability_endpoint (Unix socket)
         Note over C,P: crypto_box challenge-response<br/>(HEP-0041 §5.5)
-        P->>B: CONSUMER_ATTACH_REQ {channel,<br/>consumer_pubkey}<br/>(broker pre-confirm — HEP-0041 §9 D4)
-        B->>P: CONSUMER_ATTACH_ACK {status}<br/>(BROKER IS THE GATE — local cache used only<br/>for divergence detection, see §I11.1)
+        P->>B: CONSUMER_ATTACH_REQ_SHM {channel,<br/>consumer_pubkey}<br/>(broker pre-confirm — HEP-0041 §9 D4)
+        B->>P: CONSUMER_ATTACH_ACK_SHM {status}<br/>(BROKER IS THE GATE — local cache used only<br/>for divergence detection, see §I11.1)
         P->>C: send fd via SCM_RIGHTS<br/>(possession of fd = access)
         Note over C,DP: SHM mapping accessible
     end
@@ -1745,7 +1745,7 @@ sequenceDiagram
 3. **No broker-minted data-plane secret survives in any branch.**  The
    ZMQ branch enforces locally via the producer's ZAP cache (seeded by
    the transport-agnostic REG_ACK + NOTIFY writes shown above).  The
-   SHM branch enforces remotely via `CONSUMER_ATTACH_REQ` per-attempt.
+   SHM branch enforces remotely via `CONSUMER_ATTACH_REQ_SHM` per-attempt.
    `shm_secret` appears NOWHERE in this diagram — that is the explicit
    visual statement that the legacy broker-minted secret has no role
    in the current design (see HEP-CORE-0041 §1 Amendment 2026-06-16).
@@ -1796,7 +1796,7 @@ struct ChannelAccessEntry
     // **HISTORICAL — PENDING CLEANUP.**  This field was the original
     // pre-HEP-CORE-0041 SHM auth gate.  HEP-CORE-0041 supersedes the
     // shm_secret model with capability transport (`memfd_create` +
-    // `SCM_RIGHTS` + `CONSUMER_ATTACH_REQ` broker pre-confirm —
+    // `SCM_RIGHTS` + `CONSUMER_ATTACH_REQ_SHM` broker pre-confirm —
     // §9 D4).  Broker no longer emits a non-zero value; this field
     // is always 0 today.  Deleted in HEP-0041 Phase 1 substep
     // 1i-cleanup (task #275) after consumer-dial (#272) lands —
@@ -2413,7 +2413,7 @@ flow.  In post-HEP-0041 Phase 1 (1g shipped), the broker generates no
 SHM secret; the producer publishes its L2 capability-transport endpoint
 via REG_REQ (HEP-0041 §5.1), the broker echoes it in CONSUMER_REG_ACK
 (§5.3), the consumer dials it (1i-mig-4), and the per-attach
-authorization gate is a broker pre-confirm (`CONSUMER_ATTACH_REQ`,
+authorization gate is a broker pre-confirm (`CONSUMER_ATTACH_REQ_SHM`,
 HEP-0041 §5.4) rather than a secret-match check.  The diagram below is
 retained for design-archaeology purposes only.
 
@@ -3174,7 +3174,7 @@ against a authoritative broker check — is owned by **HEP-CORE-0042
 (Channel Attach Coordination Protocol)**.  §6.5's
 `CHANNEL_AUTH_CHANGED_NOTIFY` and `GET_CHANNEL_AUTH_REQ/ACK` wires are
 reused unchanged by HEP-0042's ZMQ binding; HEP-0042 adds
-`CONSUMER_ATTACH_REQ` (per-transport shape and direction — see
+`CONSUMER_ATTACH_REQ_SHM` (per-transport shape and direction — see
 HEP-0042 §6 bindings for details: SHM is producer→broker, ZMQ is
 consumer→broker) and, for the ZMQ binding, `CHANNEL_AUTH_APPLIED_REQ`
 (producer→broker bidirectional confirmation).

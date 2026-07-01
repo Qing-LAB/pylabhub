@@ -189,7 +189,7 @@ Current critical path (each step blocks the next unless noted):
   (HB-4 + HB-5; also satisfies HEP-CORE-0036 §14.3 portion of #104).
 - **~~AUTH-4~~** (tasks **#164** + **#79**) — **SUPERSEDED 2026-06-16
   by HEP-CORE-0041 (#244).**  Replaced by capability-transport
-  (`memfd_create` + `SCM_RIGHTS` + pre-attach `CONSUMER_ATTACH_REQ`
+  (`memfd_create` + `SCM_RIGHTS` + pre-attach `CONSUMER_ATTACH_REQ_SHM`
   per HEP-0041 §9 D4).  **Phase 1 status as of 2026-06-23:** substeps
   1a-1h ✅ (#248-#255); 1i-mig-1/2a/2b-1/2b-2/2c review-fixes/2c M3/3
   ✅ (commits `e283a4ac → 6f31a346`); 1i-mig-M3.5 (#266), 1i-doc-sync

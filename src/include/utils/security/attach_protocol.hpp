@@ -112,7 +112,7 @@ struct ConsumerAuthMaterial
 
 /// What the producer-side L2 returns after a successful accept +
 /// hello + challenge-response verification.  The L2 caller (substep
-/// 1e) then runs the broker pre-confirm (`CONSUMER_ATTACH_REQ`) and,
+/// 1e) then runs the broker pre-confirm (`CONSUMER_ATTACH_REQ_SHM`) and,
 /// if confirmed, sends the capability fd via the L1
 /// `send_capability`.
 struct PYLABHUB_UTILS_EXPORT AuthenticatedConsumer

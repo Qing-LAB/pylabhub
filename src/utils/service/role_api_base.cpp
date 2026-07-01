@@ -1074,7 +1074,7 @@ bool RoleAPIBase::apply_consumer_reg_ack_shm_(
     // path) and returns an IShmCapabilityConsumer owning the received
     // memfd + the mmap.  Timeout 2000ms gives the producer's L2c
     // orchestrator generous headroom to run the broker pre-confirm
-    // (CONSUMER_ATTACH_REQ → ACK) + cache lookup + send_capability.
+    // (CONSUMER_ATTACH_REQ_SHM → ACK) + cache lookup + send_capability.
     std::unique_ptr<sec::IShmCapabilityConsumer> consumer;
     try
     {

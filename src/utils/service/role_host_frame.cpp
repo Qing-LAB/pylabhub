@@ -538,7 +538,7 @@ bool RoleHostFrame::spawn_shm_auth_listener_()
 
     // BrokerQuery: route through RoleAPIBase::consumer_attach, which
     // finds the right BRC for this channel and runs the sync
-    // CONSUMER_ATTACH_REQ.  Producer role_uid identifies the role to
+    // CONSUMER_ATTACH_REQ_SHM.  Producer role_uid identifies the role to
     // the broker so it can correlate the channel.
     // EDGE-2 (REVIEW-A close-out #280) — consumer_attach timeout MUST
     // be < the 5s `wait_for_quiescence` budget in

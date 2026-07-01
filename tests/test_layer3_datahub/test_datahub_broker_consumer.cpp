@@ -77,7 +77,7 @@ TEST_F(DatahubBrokerConsumerTest, GetChannelAuthRejectsNonProducer)
     ExpectWorkerOk(w);
 }
 
-// ── HEP-CORE-0041 §9 D4 — CONSUMER_ATTACH_REQ broker handler ──────────
+// ── HEP-CORE-0041 §9 D4 — CONSUMER_ATTACH_REQ_SHM broker handler ──────────
 
 TEST_F(DatahubBrokerConsumerTest, ConsumerAttachAuthorized)
 {

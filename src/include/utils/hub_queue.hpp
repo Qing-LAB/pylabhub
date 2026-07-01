@@ -174,7 +174,7 @@ struct QueueMetrics
 ///   value).
 /// - `ShmQueue::mechanism()` → `ShmCapability` (HEP-CORE-0041 §6.1
 ///   capability transport: `memfd_create` + `SO_PEERCRED` +
-///   `crypto_box` challenge-response + broker `CONSUMER_ATTACH_REQ`
+///   `crypto_box` challenge-response + broker `CONSUMER_ATTACH_REQ_SHM`
 ///   pre-confirm + `SCM_RIGHTS` fd handoff).
 /// - `InboxQueue::mechanism()` → `Uninitialized` for now (HEP-0036
 ///   §9.3 InboxQueue CURVE-wiring is future task #191; once that

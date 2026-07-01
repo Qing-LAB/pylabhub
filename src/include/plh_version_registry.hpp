@@ -203,7 +203,27 @@ inline constexpr uint8_t kShmMinor             = 0;
 // Supersedes the 2026-06-02 `CHANNEL_AUTH_UPDATE` snapshot-push-with-
 // ACK design (retracted with the DP-Q1 skip-disconnected lock-in;
 // see HEP-0036 §6.5 Amendment 2026-06-04 for the full rationale).
-inline constexpr uint8_t kBrokerProtoMajor     = 6;
+//
+// broker_proto 6 → 7 (HEP-CORE-0042 Phase 2.1b, 2026-07-01, task #246):
+//   - RENAMED (symmetry with new ZMQ sibling envelopes):
+//       CONSUMER_ATTACH_REQ → CONSUMER_ATTACH_REQ_SHM
+//       CONSUMER_ATTACH_ACK → CONSUMER_ATTACH_ACK_SHM
+//     Same payload shape; wire literal renamed to remove the
+//     "SHM is the default / unsuffixed" implicit reading now that
+//     ZMQ's sibling envelope exists at the same layer.  Both
+//     transports are peer instantiations of the HEP-CORE-0042
+//     coordination protocol (§6.1 Bindings.SHM + §6.2 Bindings.ZMQ);
+//     naming reflects that.
+//   - NEW (consumer → broker → consumer, request-reply):
+//       CONSUMER_ATTACH_REQ_ZMQ / CONSUMER_ATTACH_ACK_ZMQ
+//     Consumer-initiated ZMQ pre-attach gate (HEP-CORE-0042 §6.2).
+//     Handler stub in this bump; full impl lands in Phase 2.2+.
+//   - NEW (producer → broker → producer, request-reply):
+//       CHANNEL_AUTH_APPLIED_REQ / CHANNEL_AUTH_APPLIED_ACK
+//     Bidirectional D3 confirmation with instance_id guard
+//     (HEP-CORE-0042 §5.5.2).  Handler stub in this bump; full impl
+//     lands in Phase 2.2+.
+inline constexpr uint8_t kBrokerProtoMajor     = 7;
 inline constexpr uint8_t kBrokerProtoMinor     = 0;
 inline constexpr uint8_t kZmqFrameMajor        = 1;
 inline constexpr uint8_t kZmqFrameMinor        = 0;

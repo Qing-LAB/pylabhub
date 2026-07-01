@@ -650,7 +650,7 @@ typedef struct PlhAbiInfo
  *   producer of an inbox payload — semantically distinct from local
  *   role.uid).
  * Keep in sync with `src/include/plh_version_registry.hpp` constants. */
-#define PLH_COMPONENT_BROKER_PROTO_MAJOR   6
+#define PLH_COMPONENT_BROKER_PROTO_MAJOR   7
 #define PLH_COMPONENT_BROKER_PROTO_MINOR   0
 #define PLH_COMPONENT_ZMQ_FRAME_MAJOR      1
 #define PLH_COMPONENT_ZMQ_FRAME_MINOR      0

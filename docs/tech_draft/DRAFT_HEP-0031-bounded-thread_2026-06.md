@@ -19,7 +19,7 @@ A pattern recurs in the codebase:
 | Site | Body | Today |
 |---|---|---|
 | Consumer SHM dial (#272) | crypto_box handshake + SCM_RIGHTS recv (~3.9s worst case) | blocks worker thread |
-| Producer L2c broker pre-confirm (#280) | `CONSUMER_ATTACH_REQ` sync RPC (~2s budget) | blocks accept thread |
+| Producer L2c broker pre-confirm (#280) | `CONSUMER_ATTACH_REQ_SHM` sync RPC (~2s budget) | blocks accept thread |
 | Future #262 mutual auth | extra crypto_box Frame 3 | will block whichever thread invokes it |
 | Future HUB_TARGETED_REQ (#75) | cross-hub sync RPC | will block whichever thread invokes it |
 | Future api.crypto.* (#247) | script-invoked crypto | (per-call, bounded by script call) |

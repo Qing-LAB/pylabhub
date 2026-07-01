@@ -80,7 +80,7 @@ public:
     /// cached allowlist for the channel?
     using CacheLookup = std::function<bool(const std::string &consumer_pubkey)>;
 
-    /// Callback: send a CONSUMER_ATTACH_REQ to the broker and return
+    /// Callback: send a CONSUMER_ATTACH_REQ_SHM to the broker and return
     /// the reply body (or `nullopt` on transport timeout / connection
     /// loss).  Reply shape is whatever `BRC::consumer_attach` returns:
     ///   {status: "success" | "denied", denial_reason?: ..., ...}

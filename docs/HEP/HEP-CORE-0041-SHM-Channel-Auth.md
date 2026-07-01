@@ -7,7 +7,7 @@
 | **Transport scope** | **SHM data plane ONLY.**  ZMQ data plane is HEP-CORE-0036.  A reader hunting for ZMQ-side auth should route to HEP-0036 instead.  Shared concepts (PeerAllowlist, identity keys, broker authorization) are owned by HEP-0036; HEP-0041 reuses them — see §8 authority chain. |
 | **Status** | 🟢 **DESIGN FINAL; PHASE 1 IN FLIGHT** — substeps 1a-1h ✅; 1i-mig-1/2a/2b-1/2b-2/2c/M3/3 ✅ (TX side complete on both producer + processor); **pre-REVIEW-A cluster #266/#267/#268/#269/#279 ALL ✅** (M3.5 + doc-sync + producer hardening + consumer_attach scope + Mechanism enum widening — shipped 2026-06-22); **REVIEW-A ✅ closed 2026-06-22** (4 angles parallel review; 4 blockers → close-out commit; 1 HIGH BRC UAF finding tracked as #280 + blocks #272); 1i-mig-4 (consumer dial) ⏸ NEXT (D1-D4 designer decisions locked); 1i-mig-5 + 1i-cleanup + 1j + 1k + #262 ⏸.  Five REVIEW-A..E milestones bracket the remaining chain.  Live tracker at §10.1. |
 | **Created** | 2026-06-16 |
-| **Last revised** | 2026-06-22 — **§10.1 expanded with live sub-status for 1i-mig + REVIEW-A..E milestone schedule**: 1i-mig-1/2a/2b-1/2b-2/2c review fixes/2c M3/3 shipped with commit shas; new sub-substeps 1i-mig-M3.5 (`prepare_tx_capability_` promotion), 1i-doc-sync, 1i-prod-hardening, 1i-api-scope filed as #266-#269 from the 2026-06-22 systematic review reconciliation; 1i-mig-4 (consumer dial) scope inlined; 1i-cleanup Core-Structure-Change-Protocol note added; five fixed REVIEW-A..E milestones bracketing remaining Phase 1 work.  Prior revision 2026-06-18 — §5 + §6 + §7 + §10 + §11 + §12 + §13 macOS resynced against shipped code: bearer-token model in §5 replaced by the actual `crypto_box` challenge-response + `CONSUMER_ATTACH_REQ` pre-confirm; §6 strawman code replaced by L1/L2 split as shipped (with verbatim interfaces from headers); §7 compatibility list rewritten to match the substep chain; §10 gained substep-level §10.1 status table; §11 + §12 status updated for what's shipped vs pending; §13 macOS corrected (`SHM_ANON` is FreeBSD-only, not macOS — backend uses `shm_open`+immediate-`shm_unlink` trick).  Prior revision 2026-06-17 — §9 D4 attach sequence amended for crypto_box (substep 1c).  Prior revision 2026-06-16 — promoted from tech_draft. |
+| **Last revised** | 2026-06-22 — **§10.1 expanded with live sub-status for 1i-mig + REVIEW-A..E milestone schedule**: 1i-mig-1/2a/2b-1/2b-2/2c review fixes/2c M3/3 shipped with commit shas; new sub-substeps 1i-mig-M3.5 (`prepare_tx_capability_` promotion), 1i-doc-sync, 1i-prod-hardening, 1i-api-scope filed as #266-#269 from the 2026-06-22 systematic review reconciliation; 1i-mig-4 (consumer dial) scope inlined; 1i-cleanup Core-Structure-Change-Protocol note added; five fixed REVIEW-A..E milestones bracketing remaining Phase 1 work.  Prior revision 2026-06-18 — §5 + §6 + §7 + §10 + §11 + §12 + §13 macOS resynced against shipped code: bearer-token model in §5 replaced by the actual `crypto_box` challenge-response + `CONSUMER_ATTACH_REQ_SHM` pre-confirm; §6 strawman code replaced by L1/L2 split as shipped (with verbatim interfaces from headers); §7 compatibility list rewritten to match the substep chain; §10 gained substep-level §10.1 status table; §11 + §12 status updated for what's shipped vs pending; §13 macOS corrected (`SHM_ANON` is FreeBSD-only, not macOS — backend uses `shm_open`+immediate-`shm_unlink` trick).  Prior revision 2026-06-17 — §9 D4 attach sequence amended for crypto_box (substep 1c).  Prior revision 2026-06-16 — promoted from tech_draft. |
 | **Tracker** | task **#244** (umbrella); per-phase tasks under §10 |
 | **Sibling docs** | HEP-CORE-0036 (ZMQ Auth — symmetrizes to pre-confirm via task #246); HEP-CORE-0002 (DataBlock — consumes capability abstraction); HEP-CORE-0040 (Locked Key Memory — backing for any role-level encryption); HEP-CORE-0038 (script vault — sibling for script audience); HEP-CORE-0011 (script-engine parity — applies to #247 follow-up) |
 | **Filed by** | discussion 2026-06-16 after AUTH-4 (#164) gap analysis surfaced the structural weakness of "secret as discriminator" + POSIX `0666` default |
@@ -51,7 +51,7 @@ unfamiliar with the codebase can skim this and follow the rest.
 - **PeerAllowlist** — the broker-maintained set of consumer pubkeys
   authorized for a channel.  Defined by HEP-0036 §4.1
   (`ChannelAccessIndex.authorized_consumer_pubkeys`); consumed by
-  HEP-0041's `CONSUMER_ATTACH_REQ` pre-confirm.  See §8 authority chain.
+  HEP-0041's `CONSUMER_ATTACH_REQ_SHM` pre-confirm.  See §8 authority chain.
 - **`AttachProtocolAcceptor`** — the per-connection auth state machine
   on the producer side that runs the `crypto_box` challenge-response
   with one consumer.  Per-connection; no broker traffic.  See §5.5 + §6.4.
@@ -392,7 +392,7 @@ broker silently mis-classified as SHM).  No `data_transport`-less
 
 No new fields.  REG_ACK confirms admission; broker does NOT issue any
 authorization material at this point (per D5: no bearer tokens).
-Authorization happens later, per-attach, via `CONSUMER_ATTACH_REQ`
+Authorization happens later, per-attach, via `CONSUMER_ATTACH_REQ_SHM`
 (§5.4 below).
 
 ### 5.3 CONSUMER_REG_ACK — what consumer receives
@@ -411,7 +411,7 @@ The consumer receives the producer's endpoint + the producer's pubkey
 frame 2).  No bearer token; the broker is consulted live by the
 producer on each attach attempt — see §5.4.
 
-### 5.4 CONSUMER_ATTACH_REQ — producer pre-confirms
+### 5.4 CONSUMER_ATTACH_REQ_SHM — producer pre-confirms
 
 **Relocated to HEP-CORE-0042 §6.1 Bindings.SHM as of 2026-07-01 (task #246 Phase 1).**  The full wire spec (request payload, reply shapes, error taxonomy, "denied is distinct from error" invariant) lives there as the SHM instantiation of the transport-agnostic Channel Attach Coordination Protocol.  Handler code at `broker_service.cpp::handle_consumer_attach_req` is unchanged; only the doc anchor moved.  See HEP-CORE-0042 §6.1 for the shape and §5.4 (handler flow) for the coordination protocol that governs it.
 
@@ -530,7 +530,7 @@ flowchart TB
         L3["<b>L3 — handle_consumer_attach_req</b><br/>substep 1d, #251<br/>───<br/>reads ChannelAccessIndex<br/>.authorized_consumer_pubkeys<br/>(read-only)"]
     end
 
-    L2c -.->|"BrokerQuery callback<br/>via producer's BRC<br/>(CONSUMER_ATTACH_REQ / _ACK)"| L3
+    L2c -.->|"BrokerQuery callback<br/>via producer's BRC<br/>(CONSUMER_ATTACH_REQ_SHM / _ACK)"| L3
 ```
 
 **Ownership note (1i-mig-2c M3 extraction).**  Both `IShmCapabilityProducer`
@@ -689,7 +689,7 @@ public:
 > `shm_capability_endpoint`).  The list below reflects what's actually
 > happening across the substep chain.
 
-**Substep 1d (#251, shipped):** broker handler for `CONSUMER_ATTACH_REQ`
+**Substep 1d (#251, shipped):** broker handler for `CONSUMER_ATTACH_REQ_SHM`
 added.  No fields removed yet — purely additive.
 
 **Substep 1f (#253, in progress):** DataBlock gains an fd-based
@@ -700,7 +700,7 @@ incrementally.
 **Substep 1g (#254, pending):** wire-shape clean break.
 - Remove `shm_secret` from `CONSUMER_REG_ACK` (and from the wire-shape
   conformance helper).
-- Finalize `CONSUMER_ATTACH_REQ` / `_ACK` shape in HEP-CORE-0007.
+- Finalize `CONSUMER_ATTACH_REQ_SHM` / `_ACK` shape in HEP-CORE-0007.
 - Add `shm_capability_endpoint` + `producer_pubkey_z85` to
   `CONSUMER_REG_ACK` for SHM channels.
 
@@ -788,7 +788,7 @@ HEP-CORE-0036 stays as-is for the auth framework foundation.  Cross-references a
 - §6.4 (CONSUMER_REG_ACK shape) — SHM-side fields moved to HEP-CORE-0041 §5.3.
 - §I6 (T1 resolution) — note SHM transport's HEP-0041 replaces the role of CURVE keypairs for SHM.
 
-**Coordination protocol (added 2026-07-01, task #246).**  The transport-agnostic *coordination* for a channel attach (broker's role in gating the consumer's data-plane handshake against the producer's cached allowlist) is owned by **HEP-CORE-0042** (Channel Attach Coordination Protocol).  Both HEP-0041 (SHM) and the ZMQ transport instantiate the same coordination pattern.  HEP-CORE-0042 §6.1 Bindings.SHM documents SHM's `CONSUMER_ATTACH_REQ` shape; HEP-CORE-0042 §6.2 Bindings.ZMQ documents ZMQ's shape.  HEP-0041 §5.4 above is a pointer to §6.1.  ZMQ pre-attach content lives in HEP-CORE-0042, NOT HEP-CORE-0036.
+**Coordination protocol (added 2026-07-01, task #246).**  The transport-agnostic *coordination* for a channel attach (broker's role in gating the consumer's data-plane handshake against the producer's cached allowlist) is owned by **HEP-CORE-0042** (Channel Attach Coordination Protocol).  Both HEP-0041 (SHM) and the ZMQ transport instantiate the same coordination pattern.  HEP-CORE-0042 §6.1 Bindings.SHM documents SHM's `CONSUMER_ATTACH_REQ_SHM` shape; HEP-CORE-0042 §6.2 Bindings.ZMQ documents ZMQ's shape.  HEP-0041 §5.4 above is a pointer to §6.1.  ZMQ pre-attach content lives in HEP-CORE-0042, NOT HEP-CORE-0036.
 
 **Authority chain (concepts owned by HEP-0036 that HEP-0041
 consumes).**  Some things named in this HEP have their definition +
@@ -809,7 +809,7 @@ mutation rules in HEP-0036; HEP-0041 reads but does not own them:
   §4.1.  Broker is the canonical writer (REG_ACK
   `initial_allowlist`, `CHANNEL_AUTH_CHANGED_NOTIFY`,
   `GET_CHANNEL_AUTH_REQ`).  HEP-0041 §9 D4 consumes it read-only via
-  the producer-side `CONSUMER_ATTACH_REQ` pre-confirm.  No new
+  the producer-side `CONSUMER_ATTACH_REQ_SHM` pre-confirm.  No new
   mutation paths added in HEP-0041.
 - **Identity verification (two-conditions gate)** — defined in
   HEP-0036 §3.5 / §I1.  HEP-0041's SHM attach satisfies the same gate
@@ -850,8 +850,8 @@ mutation rules in HEP-0036; HEP-0041 reads but does not own them:
 4. Producer reads `SO_PEERCRED` (POSIX) / `GetNamedPipeClientProcessId` (Windows) as a defence-in-depth sanity check (peer must be in the expected trust domain).  Validates the hello shape, decodes the consumer's claimed pubkey from Z85, decrypts:
    `plaintext = crypto_box_open_easy(cipher, nonce, consumer_pk_from_hello, producer_sk)`.
    MAC verification + `plaintext == challenge` → cryptographic proof complete.
-5. **Producer sends `CONSUMER_ATTACH_REQ {channel_name, consumer_pubkey, consumer_role_uid}` to broker over its BRC.**
-6. Broker checks `authorized_consumer_pubkeys` for the channel.  Replies `CONSUMER_ATTACH_ACK {status: success | denied}`.
+5. **Producer sends `CONSUMER_ATTACH_REQ_SHM {channel_name, consumer_pubkey, consumer_role_uid}` to broker over its BRC.**
+6. Broker checks `authorized_consumer_pubkeys` for the channel.  Replies `CONSUMER_ATTACH_ACK_SHM {status: success | denied}`.
 7. Producer compares broker's answer against its local cached allowlist:
    - **Agree (success+in-cache, OR denied+not-in-cache)**: silent.  Normal path.
    - **Diverge (success+not-in-cache OR denied+in-cache)**: log `WARN` — broker comm health signal — broker's answer wins.
@@ -904,9 +904,9 @@ sequenceDiagram
     participant FD as memfd<br/>(anonymous SHM)
 
     Note over P,B: Continued from Diagram A
-    P->>B: CONSUMER_ATTACH_REQ<br/>{channel_name,<br/>consumer_pubkey,<br/>consumer_role_uid}
+    P->>B: CONSUMER_ATTACH_REQ_SHM<br/>{channel_name,<br/>consumer_pubkey,<br/>consumer_role_uid}
     Note over B: look up channel in<br/>ChannelAccessIndex<br/>.authorized_consumer_pubkeys
-    B->>P: CONSUMER_ATTACH_ACK<br/>{status}
+    B->>P: CONSUMER_ATTACH_ACK_SHM<br/>{status}
 
     Note over P: compare broker answer<br/>vs local cached allowlist<br/>→ WARN if divergent<br/>(broker answer wins)
 
@@ -953,7 +953,7 @@ Sustained divergence rate = broker-NOTIFY-pipeline health metric.  Operators mon
 
 ## 10. Implementation phasing (locked at D1 + D4)
 
-1. **Phase 1 — Abstract interface + Linux `memfd_create` backend + broker `CONSUMER_ATTACH_REQ` handler.** Strongest platform first.  Production roles on Linux can use capability transport with pre-confirm.  Tests pin the divergence-WARN behavior.
+1. **Phase 1 — Abstract interface + Linux `memfd_create` backend + broker `CONSUMER_ATTACH_REQ_SHM` handler.** Strongest platform first.  Production roles on Linux can use capability transport with pre-confirm.  Tests pin the divergence-WARN behavior.
 2. **Phase 2 — macOS backend** (anon shm via `shm_open` + immediate `shm_unlink` trick + `SCM_RIGHTS`; see §13).
 3. **Phase 3 — Windows backend** (`CreateFileMapping(NULL) + DuplicateHandle` via named pipe).
 4. **Phase 4 — Framework AEAD/KDF/key-storage primitives.** Cross-platform via libsodium.  No SHM-specific work — these are general crypto primitives that roles can use for any purpose (channel data encryption being one such use case).
@@ -970,7 +970,7 @@ Phase 1 ships as 11 substeps + cross-platform structural + follow-ups:
 | 1a | #248 | ✅ | Abstract `IShmCapabilityProducer`/`Consumer` skeleton |
 | 1b | #249 | ✅ | Linux `memfd_create` + `SCM_RIGHTS` backend |
 | 1c | #250 | ✅ | `AttachProtocol` `crypto_box` challenge-response |
-| 1d | #251 | ✅ | Broker `CONSUMER_ATTACH_REQ` / `_ACK` handler |
+| 1d | #251 | ✅ | Broker `CONSUMER_ATTACH_REQ_SHM` / `_ACK` handler |
 | 1e | #252 | ✅ | `ShmAttachOrchestrator` + divergence-WARN |
 | 1f | #253 | ✅ | DataBlock fd-source ctors + `create_datablock_producer_from_fd_impl` / `find_datablock_consumer_from_fd_impl` factories + `datablock_layout_total_size` public sizing accessor; producer/consumer `IShmCapability*::borrow_fd()`; L2 test pin (in-process round-trip + ShmCapability end-to-end + under-sized fd throw); post-ship review fixed an fd-leak (try/catch around `init_producer_state_` in fd-source Create ctor), the `dup → 0` edge case (`F_DUPFD_CLOEXEC` minimum-fd-1), and a stale L3 log-pin |
 | 1g | #254 | ✅ | Wire-shape additive (no removal — `shm_secret` was never on the wire): `default_shm_capability_endpoint(channel)` helper (Linux XDG_RUNTIME_DIR → `/tmp` fallback); `ProducerEntry::shm_capability_endpoint` field + `set_producer_shm_capability_endpoint` setter; `ProducerRegInputs::shm_capability_endpoint` field; `build_producer_reg_payload` emits `data_transport="shm"` + `shm_capability_endpoint` for SHM channels; producer + processor role hosts populate the field; broker REG_REQ handler extracts and stores it; broker `CONSUMER_REG_ACK` builder echoes `shm_capability_endpoint` + `producer_pubkey_z85` (sourced from `ProducerEntry::zmq_pubkey`) for SHM channels; consumer-side `apply_consumer_reg_ack` logs `ShmCapabilityFieldsReceived` (plumb-only — actual dial happens in 1i when the legacy named-shm path retires); `hub_state_json.cpp` includes the new field in the admin dump; cross-factory mixing-hazard docstring on the fd-source factories |

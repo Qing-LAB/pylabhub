@@ -133,11 +133,13 @@ constexpr std::array<std::string_view, 20> kRequestReplyTypes = {
     // Producer asks the broker to confirm one specific consumer is
     // authorized for a channel before sending the SHM capability fd
     // (HEP-CORE-0041 §9 D4 pre-attach confirmation; HEP-CORE-0042
-    // §6.1 Bindings.SHM).  Reply is CONSUMER_ATTACH_ACK with
+    // §6.1 Bindings.SHM).  Reply is CONSUMER_ATTACH_ACK_SHM with
     // status=success|denied for the auth decision, or ERROR for
     // protocol-level failures.  Read-only against HubState — pure
-    // query, no mutation.
-    "CONSUMER_ATTACH_REQ",
+    // query, no mutation.  Renamed from CONSUMER_ATTACH_REQ →
+    // CONSUMER_ATTACH_REQ_SHM (broker_proto 6 → 7, 2026-07-01) for
+    // symmetry with the sibling ZMQ envelope below.
+    "CONSUMER_ATTACH_REQ_SHM",
     // Consumer asks the broker to gate a ZMQ data-plane attach against
     // producer P for channel K (HEP-CORE-0042 §6.2 Bindings.ZMQ).  Reply
     // is CONSUMER_ATTACH_ACK_ZMQ with status=success (fast-path or drained
@@ -414,15 +416,15 @@ public:
     /// non-producer caller.
     nlohmann::json handle_get_channel_auth_req(const nlohmann::json& req);
 
-    /// `CONSUMER_ATTACH_REQ` handler (SHM binding, HEP-CORE-0041 §9 D4
-    /// step 4-5 = HEP-CORE-0042 §6.1 Bindings.SHM).  Pre-attach
+    /// `CONSUMER_ATTACH_REQ_SHM` handler (SHM binding, HEP-CORE-0041
+    /// §9 D4 step 4-5 = HEP-CORE-0042 §6.1 Bindings.SHM).  Pre-attach
     /// confirmation: the producer asks the broker whether one specific
     /// consumer is currently authorized for a channel, before sending
     /// the SHM capability fd.  Reply carries either `status="success"`
     /// or `status="denied"` (both are normal auth decisions wrapped in
-    /// a CONSUMER_ATTACH_ACK frame so the producer-side cache divergence
-    /// WARN logic can distinguish a clean broker "no" from a wire
-    /// error).  Protocol-level failures (shape error, channel not found,
+    /// a CONSUMER_ATTACH_ACK_SHM frame so the producer-side cache
+    /// divergence WARN logic can distinguish a clean broker "no" from
+    /// a wire error).  Protocol-level failures (shape error, channel not found,
     /// caller not a producer, HubState invariant broken) return the
     /// standard error envelope and are surfaced as ERROR replies by the
     /// dispatcher.  Read-only against HubState — pure query.
@@ -1267,19 +1269,19 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
             (resp.value("status", "") == "success") ? "GET_CHANNEL_AUTH_ACK" : "ERROR";
         send_reply(socket, identity, ack, resp);
     }
-    else if (msg_type == "CONSUMER_ATTACH_REQ")
+    else if (msg_type == "CONSUMER_ATTACH_REQ_SHM")
     {
         // HEP-CORE-0041 §9 D4 = HEP-CORE-0042 §6.1 Bindings.SHM.  Producer's
         // pre-attach confirmation for SHM transport.  Special-cased dispatch:
         // "denied" is a normal auth decision, NOT a wire error.  Both
-        // "success" and "denied" map to CONSUMER_ATTACH_ACK so the producer's
-        // cache-divergence observer (HEP-0041 substep 1e) can distinguish a
-        // clean broker "no" from a transport failure.
+        // "success" and "denied" map to CONSUMER_ATTACH_ACK_SHM so the
+        // producer's cache-divergence observer (HEP-0041 substep 1e) can
+        // distinguish a clean broker "no" from a transport failure.
         nlohmann::json resp = handle_consumer_attach_req_shm(payload);
         const std::string status = resp.value("status", "");
         const std::string ack =
             (status == "success" || status == "denied")
-                ? "CONSUMER_ATTACH_ACK"
+                ? "CONSUMER_ATTACH_ACK_SHM"
                 : "ERROR";
         send_reply(socket, identity, ack, resp);
     }
@@ -3091,7 +3093,7 @@ BrokerServiceImpl::handle_consumer_attach_req_shm(const nlohmann::json &req)
     //   { channel_name, consumer_pubkey, consumer_role_uid,
     //     role_uid (= caller's = producer's), [correlation_id] }
     //
-    // Reply (auth decision — both wrapped in CONSUMER_ATTACH_ACK by
+    // Reply (auth decision — both wrapped in CONSUMER_ATTACH_ACK_SHM by
     // the dispatcher special case at the call site):
     //   success: { status="success", channel_name, consumer_pubkey,
     //              corr_id }
@@ -3114,7 +3116,7 @@ BrokerServiceImpl::handle_consumer_attach_req_shm(const nlohmann::json &req)
         consumer_role_uid.empty() || caller_uid.empty())
     {
         return make_error(corr_id, "INVALID_REQUEST",
-                          "CONSUMER_ATTACH_REQ requires non-empty "
+                          "CONSUMER_ATTACH_REQ_SHM requires non-empty "
                           "channel_name, consumer_pubkey, "
                           "consumer_role_uid, and role_uid");
     }
@@ -3143,7 +3145,7 @@ BrokerServiceImpl::handle_consumer_attach_req_shm(const nlohmann::json &req)
     if (!caller_is_producer)
     {
         LOGGER_WARN(
-            "Broker: CONSUMER_ATTACH_REQ rejected — role_uid='{}' is "
+            "Broker: CONSUMER_ATTACH_REQ_SHM rejected — role_uid='{}' is "
             "not a registered producer of channel '{}' "
             "(HEP-CORE-0041 §9 D4 PRODUCER_NOT_AUTHORIZED)",
             caller_uid, channel_name);
@@ -3161,7 +3163,7 @@ BrokerServiceImpl::handle_consumer_attach_req_shm(const nlohmann::json &req)
         // would silently lock every consumer out of a working
         // channel; INTERNAL_ERROR forces a hub restart instead.
         LOGGER_ERROR(
-            "Broker: CONSUMER_ATTACH_REQ for channel '{}' from role_uid='{}' "
+            "Broker: CONSUMER_ATTACH_REQ_SHM for channel '{}' from role_uid='{}' "
             "found a ChannelEntry but no ChannelAccessEntry — HubState "
             "invariant broken; returning INTERNAL_ERROR.",
             channel_name, caller_uid);

@@ -124,7 +124,7 @@ HEP §5.1 requires its parent dir 0700 + the socket itself 0700.
 | `handle_consumer_attach_req` happy | authorized → `status=success` + echoed pubkey |
 | `handle_consumer_attach_req` denied | not allowlisted → `status=denied` + `denial_reason` |
 | `handle_consumer_attach_req` errors | missing field → INVALID_REQUEST; unknown channel → CHANNEL_NOT_FOUND; non-producer caller → PRODUCER_NOT_AUTHORIZED; internal invariant → INTERNAL_ERROR |
-| Envelope routing | success+denied → `CONSUMER_ATTACH_ACK`; error → `ERROR` |
+| Envelope routing | success+denied → `CONSUMER_ATTACH_ACK_SHM`; error → `ERROR` |
 | `handle_reg_req` `data_transport` gate | missing → INVALID_REQUEST; empty → INVALID_REQUEST; bogus → INVALID_REQUEST; `"shm"` + missing endpoint → INVALID_REQUEST; `"shm"` + valid endpoint → success; `"zmq"` + valid pubkey → success |
 | **`CONSUMER_REG_ACK.shm_capability_endpoint` emission** | SHM channel ACK contains producer's endpoint + producer_pubkey_z85; ZMQ channel ACK does NOT contain those fields |
 | **`REG_REQ.shm_capability_endpoint` parse + store** | producer's endpoint stored in HubState; used to populate CONSUMER_REG_ACK |

@@ -50,7 +50,7 @@
  *
  * Mutation pin: the sibling `ShmE2E_UnauthorizedConsumerDeniedByBroker`
  * TEST_F covers the unauthorized-consumer denial path (broker denies
- * CONSUMER_ATTACH_REQ; consumer never sees data).
+ * CONSUMER_ATTACH_REQ_SHM; consumer never sees data).
  */
 #include "plh_hub_fixture.h"
 #include "role_e2e_harness.h"
@@ -450,7 +450,7 @@ TEST_F(PlhHubCliTest, ShmE2E_AuthorizedConsumerReceivesAllSlots)
 // ─── Mutation pin (denial scenario, abridged) ──────────────────────────────
 //
 // Same setup as Scenario A but the consumer is NOT added to
-// known_roles.  Expectation: broker denies CONSUMER_ATTACH_REQ
+// known_roles.  Expectation: broker denies CONSUMER_ATTACH_REQ_SHM
 // pre-confirm; consumer never logs ShmCapabilityActivated; no slots
 // are received.  This is the regression pin for "removing consumer
 // from known_roles must make the test fail" per the original 1k spec.
@@ -540,7 +540,7 @@ TEST_F(PlhHubCliTest, ShmE2E_UnauthorizedConsumerDeniedByBroker)
 
     // The denial path: either the consumer's CTRL CURVE handshake
     // fails (ZAP gate denies on absence from known_roles) OR the
-    // consumer connects but its REG_REQ / CONSUMER_ATTACH_REQ is
+    // consumer connects but its REG_REQ / CONSUMER_ATTACH_REQ_SHM is
     // denied.  Either way it MUST NOT see ShmCapabilityActivated.
     // We give it a generous window then assert absence.
     std::this_thread::sleep_for(seconds(5));

@@ -7,7 +7,7 @@
 **Scope.**  Transport-agnostic coordination protocol for channel attach.  Specifies how the broker mediates a channel attach between a producer and a consumer so that the consumer's data-plane handshake (CURVE for ZMQ, `crypto_box` for SHM) succeeds against a producer whose per-connection auth cache reflects the broker's current allowlist.
 
 Concrete transport instantiations of the coordination protocol live under §6 "Bindings":
-- **§6.1 Bindings.SHM** — HEP-CORE-0041 `CONSUMER_ATTACH_REQ` (memfd + `SCM_RIGHTS` capability fd via Unix socket).
+- **§6.1 Bindings.SHM** — HEP-CORE-0041 `CONSUMER_ATTACH_REQ_SHM` (memfd + `SCM_RIGHTS` capability fd via Unix socket).
 - **§6.2 Bindings.ZMQ** — this HEP's original substance: `CONSUMER_ATTACH_REQ_ZMQ` + `CHANNEL_AUTH_APPLIED_REQ` (bidirectional broker↔producer confirmation) + producer-instance-epoch guard.
 
 **Relationship to sibling HEPs.**
@@ -15,7 +15,7 @@ Concrete transport instantiations of the coordination protocol live under §6 "B
 | HEP | Owns | This HEP |
 |---|---|---|
 | HEP-CORE-0036 | Auth framework foundation: invariants (§I1-§I12), REG/DEREG wire schemas, `CHANNEL_AUTH_CHANGED_NOTIFY` + `GET_CHANNEL_AUTH_REQ` mechanism (§6.5).  `PeerAllowlist` / `ChannelAccessIndex` definition + mutation rules. | Reads.  Reuses §6.5 doorbell-then-pull as the substrate the pre-confirm layer builds on. |
-| HEP-CORE-0041 | SHM transport specifics: memfd + `SCM_RIGHTS` capability transport, `crypto_box` challenge-response (L2 attach-time handshake, §5.5), per-platform backends (§6.5). | Cross-linked.  HEP-0041 §5.4 CONSUMER_ATTACH_REQ moved here as §6.1 Bindings.SHM.  HEP-0041 §5.5 `crypto_box` stays there (SHM-transport-specific crypto). |
+| HEP-CORE-0041 | SHM transport specifics: memfd + `SCM_RIGHTS` capability transport, `crypto_box` challenge-response (L2 attach-time handshake, §5.5), per-platform backends (§6.5). | Cross-linked.  HEP-0041 §5.4 CONSUMER_ATTACH_REQ_SHM moved here as §6.1 Bindings.SHM.  HEP-0041 §5.5 `crypto_box` stays there (SHM-transport-specific crypto). |
 | HEP-CORE-0035 | Hub-role auth + federation trust; key-file storage. | Reads.  §I5 revocation semantics get a paragraph pointing at this HEP for confirmation timing. |
 | HEP-CORE-0011 | Script host abstraction + callback contract. | Adds `on_channel_ready(channel)` callback (§10.4 of promotion source; landed under this HEP's §8 script-facing surface). |
 | HEP-CORE-0028 | Native plugin engine + script API reference. | Adds four accessors (`producers_declared`, `producers_connected`, `producer_attach_status`, `producer_attach_reason`) — §8 documents them here; HEP-0028 documents the C ABI shape. |
@@ -82,7 +82,7 @@ Any amendment to this HEP MUST be checked against these principles.  A finding t
 
 The abstract protocol below (state model §5.2, handler flow §5.4, wire spec §5.5, timeout budgets §5.6) describes the case where the **producer maintains a per-connection auth cache that can lag** the broker's authoritative allowlist.  This is the ZMQ instantiation (§6.2 Bindings.ZMQ) — the producer's ZAP handler consults the cache on every CURVE handshake, and the cache must be re-synced via `CHANNEL_AUTH_CHANGED_NOTIFY` + `GET_CHANNEL_AUTH_REQ` after each mutation.  The `channel_version` / `confirmed_version` / `instance_id` state exists to close the race between broker mutation and producer cache update.
 
-The SHM instantiation (§6.1 Bindings.SHM) is a **stateless degenerate case**: SHM's `CONSUMER_ATTACH_REQ` is producer-initiated on EVERY attach attempt, and the broker's reply reflects the current `ChannelAccessIndex[K]` at query time.  No producer-side cache lags; therefore no `confirmed_version` state and no `CHANNEL_AUTH_APPLIED_REQ` handshake are needed.  What SHM shares with ZMQ is the *coordination principle* — the broker mediates the attach, not the producer's own local check — plus the transport-agnostic wire shape (`consumer_pubkey` / `producer_role_uid` / `channel_name`, common reason strings on denial).
+The SHM instantiation (§6.1 Bindings.SHM) is a **stateless degenerate case**: SHM's `CONSUMER_ATTACH_REQ_SHM` is producer-initiated on EVERY attach attempt, and the broker's reply reflects the current `ChannelAccessIndex[K]` at query time.  No producer-side cache lags; therefore no `confirmed_version` state and no `CHANNEL_AUTH_APPLIED_REQ` handshake are needed.  What SHM shares with ZMQ is the *coordination principle* — the broker mediates the attach, not the producer's own local check — plus the transport-agnostic wire shape (`consumer_pubkey` / `producer_role_uid` / `channel_name`, common reason strings on denial).
 
 Downstream sections in §5 apply to the ZMQ instantiation.  §6.1 documents the SHM instantiation as a compact per-attempt query without redundantly restating the state model.
 
@@ -115,7 +115,7 @@ Broker tracks three counters:
 ### 5.4 Handler flow (normative)
 
 ```
-On CONSUMER_ATTACH_REQ from consumer C for (K, P):
+On CONSUMER_ATTACH_REQ_SHM from consumer C for (K, P):
 
 1. Validate payload shape.
 2. If C.pubkey ∉ ChannelAccessIndex[K].authorized_consumer_pubkeys
@@ -163,7 +163,7 @@ On channel K close:
 
 #### 5.5.1 `CONSUMER_ATTACH_REQ_ZMQ` / `_ACK_ZMQ` (consumer → broker)
 
-**Scope:** ZMQ instantiation only, per §5.0.  SHM's `CONSUMER_ATTACH_REQ` is producer-initiated with a distinct payload (see §6.1).
+**Scope:** ZMQ instantiation only, per §5.0.  SHM's `CONSUMER_ATTACH_REQ_SHM` is producer-initiated with a distinct payload (see §6.1).
 
 Direction: consumer → broker.
 
@@ -252,7 +252,7 @@ Empty on success.  Script-facing `producer_attach_reason(channel, uid)` returns 
 
 ## 6. Bindings — per-transport instantiations
 
-### 6.1 Bindings.SHM — HEP-CORE-0041 CONSUMER_ATTACH_REQ
+### 6.1 Bindings.SHM — HEP-CORE-0041 CONSUMER_ATTACH_REQ_SHM
 
 Per §5.4's pre-confirm pattern, the producer queries the broker on every attach attempt before sending the SHM capability fd.  Shipped under HEP-CORE-0041 Phase 1 substep 1d (#251); handler at `broker_service.cpp::handle_consumer_attach_req`.
 
@@ -267,7 +267,7 @@ Request from producer to broker:
 }
 ```
 
-Reply (auth decision; `CONSUMER_ATTACH_ACK` envelope):
+Reply (auth decision; `CONSUMER_ATTACH_ACK_SHM` envelope):
 ```json
 { "status": "success",  "channel_name": "...", "consumer_pubkey": "..." }
 { "status": "denied",   "channel_name": "...", "consumer_pubkey": "...",
@@ -280,9 +280,9 @@ Reply (protocol-level errors, `ERROR` envelope):
 - `PRODUCER_NOT_AUTHORIZED` — caller `role_uid` is not a registered producer of the channel (defence in depth — never disclose another channel's auth state to a non-producer).
 - `INTERNAL_ERROR` — HubState invariant broken (broker bug).
 
-**"denied" is distinct from "error"**: producer-side cache-divergence WARN logic (HEP-CORE-0041 substep 1e) needs to distinguish a clean broker "no" from a wire-level transport failure.  Dispatcher special-case maps `(status=success | denied)` → `CONSUMER_ATTACH_ACK`, others → `ERROR`.
+**"denied" is distinct from "error"**: producer-side cache-divergence WARN logic (HEP-CORE-0041 substep 1e) needs to distinguish a clean broker "no" from a wire-level transport failure.  Dispatcher special-case maps `(status=success | denied)` → `CONSUMER_ATTACH_ACK_SHM`, others → `ERROR`.
 
-**Note on SHM's pre-confirm shape.**  SHM's `CONSUMER_ATTACH_REQ` is producer-initiated (producer asks broker "should I hand this consumer the capability fd?") whereas ZMQ's `CONSUMER_ATTACH_REQ_ZMQ` is consumer-initiated (consumer asks broker "will producer's ZAP accept me?").  Both fall under the same coordination pattern: BROKER is the arbiter, and the data-plane handshake proceeds ONLY after broker confirmation.  SHM's L2 `crypto_box` challenge-response (HEP-CORE-0041 §5.5) is orthogonal — it proves the consumer holds the seckey after the broker has authorized the handshake.
+**Note on SHM's pre-confirm shape.**  SHM's `CONSUMER_ATTACH_REQ_SHM` is producer-initiated (producer asks broker "should I hand this consumer the capability fd?") whereas ZMQ's `CONSUMER_ATTACH_REQ_ZMQ` is consumer-initiated (consumer asks broker "will producer's ZAP accept me?").  Both fall under the same coordination pattern: BROKER is the arbiter, and the data-plane handshake proceeds ONLY after broker confirmation.  SHM's L2 `crypto_box` challenge-response (HEP-CORE-0041 §5.5) is orthogonal — it proves the consumer holds the seckey after the broker has authorized the handshake.
 
 ### 6.2 Bindings.ZMQ — CONSUMER_ATTACH_REQ_ZMQ + CHANNEL_AUTH_APPLIED_REQ
 
@@ -487,7 +487,7 @@ Four accessors, all read-only, cross-engine parity required (Lua / Python / Nati
 
 - **HEP-CORE-0036 §I5 (revocation semantics)** — this HEP's `confirmed_version[K][P]` is the confirmation mechanism.  A revoke is committed at producer P when `confirmed_version[K][P] >= channel_version[K]` after the revoke bump.  Existing sessions per §I5 baseline stay up; new handshakes deny at the producer's per-connection cache.  Stale-instance guard (§5.2) prevents crashed-producer leftover APPLIED_REQ from falsely committing a revoke.
 - **HEP-CORE-0036 §6.5 (notify-then-pull)** — reused as the substrate for this HEP's wait-path.  §6.5 owns the mechanism; this HEP owns the coordination that hangs off it.
-- **HEP-CORE-0041 §5.4 (SHM CONSUMER_ATTACH_REQ)** — relocated to §6.1 Bindings.SHM of this HEP as the SHM instantiation of the coordination protocol.  HEP-0041 §5.4 becomes a 3-line pointer.
+- **HEP-CORE-0041 §5.4 (SHM CONSUMER_ATTACH_REQ_SHM)** — relocated to §6.1 Bindings.SHM of this HEP as the SHM instantiation of the coordination protocol.  HEP-0041 §5.4 becomes a 3-line pointer.
 - **HEP-CORE-0041 §8 (What stays in HEP-0036)** — updated: ZMQ pre-attach content is in HEP-CORE-0042, not HEP-0036.
 - **HEP-CORE-0035** — no direct edit; HEP-0035 focuses on hub-role auth foundation; this HEP is transport-agnostic coordination.
 - **HEP-CORE-0011** — adds `on_channel_ready(channel)` callback contract.
@@ -505,7 +505,7 @@ sequenceDiagram
 
     Note over C,P: Prior state: producer P registered<br/>with instance_id=I; confirmed_version[K][P] behind channel_version[K]
 
-    C->>B: CONSUMER_ATTACH_REQ (K, P, C.pubkey)
+    C->>B: CONSUMER_ATTACH_REQ_SHM (K, P, C.pubkey)
     Note over B: Step 2: pubkey ∈ allowlist? ✓<br/>Step 3: P.state == kLive? ✓<br/>Step 4: confirmed < channel_version → wait path
     B->>B: enqueue with target_version=channel_version[K]
 
@@ -520,7 +520,7 @@ sequenceDiagram
     B->>P: {status="ok"}
     Note over B: confirmed_version[K][P] = W<br/>drain pending_attach_queue
 
-    B->>C: CONSUMER_ATTACH_ACK {status="success"}
+    B->>C: CONSUMER_ATTACH_ACK_SHM {status="success"}
 
     Note over C: dial producer P (CURVE / crypto_box handshake)<br/>succeeds against caught-up cache
 ```

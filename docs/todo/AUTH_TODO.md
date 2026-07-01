@@ -390,7 +390,7 @@ proven pattern rather than co-evolving.
 transport-agnostic Channel Attach Coordination Protocol replaces the
 "HEP-0036 amendment" framing.  Both SHM and ZMQ pre-attach coordinate
 via the same protocol (HEP-0042 §5 abstract, §6 per-transport
-bindings).  HEP-0041 §5.4 SHM CONSUMER_ATTACH_REQ relocated to
+bindings).  HEP-0041 §5.4 SHM CONSUMER_ATTACH_REQ_SHM relocated to
 HEP-0042 §6.1.  Impl phases 2-4 (L2 broker unit tests → L3 role-broker
 integration → L4 e2e) are the next work chain for #246.  Test-fixture
 follow-on (broker-side helper to synthesize APPLIED_REQ with arbitrary
@@ -547,7 +547,7 @@ considered these.
 |---|---|---|---|
 | P-InboxQueue | InboxQueue admission policy location | Phase E | **REVISED 2026-06-10:** InboxQueue inherits parent data channel's allowlist + reuses role-wide ZAP handler per HEP-0036 §9.3.  No separate per-inbox `PeerAdmission`.  Inbox state follows parent ZmqQueue's Standby/Configured/Active state machine (HEP §6.7).  Tracked as task **#191**, picked up after AUTH-7. |
 | P-Admin | AdminService — CURVE-wrap or loopback-only? | Phase E | Hard loopback-only for v1; CURVE-wrap is HEP-CORE-0035 §5 future work |
-| P-SHM-Identity | What is a PeerIdentity for SHM? | HEP-0041 Phase 1 | Capability path: peer identity = consumer pubkey verified during pre-attach `CONSUMER_ATTACH_REQ`.  Superseded the original "broker-issued `shm_secret`" answer. |
+| P-SHM-Identity | What is a PeerIdentity for SHM? | HEP-0041 Phase 1 | Capability path: peer identity = consumer pubkey verified during pre-attach `CONSUMER_ATTACH_REQ_SHM`.  Superseded the original "broker-issued `shm_secret`" answer. |
 | P-Demos | How existing demos migrate | Phase H | Transitional `--allow-anonymous-data` flag, gated to refuse-bind on non-loopback endpoints; demos updated incrementally |
 | P-HEP | When to sync HEPs vs hold tech_draft | Close-out | Tech_drafts active for in-progress work; promote to HEP at landing.  See `docs/tech_draft/README.md`. |
 

@@ -25,7 +25,7 @@ non-zero SHM secret" (lines 72, 87, 185) describe the SUPERSEDED
 SHM Layer-3 auth model.  Treat these passages as informational-
 historical; the active SHM auth contract is HEP-CORE-0041 §9 D1-D8
 (capability-transport via `memfd_create` + `SCM_RIGHTS` / `SHM_ANON`
-/ `DuplicateHandle` + pre-attach `CONSUMER_ATTACH_REQ` confirmation).
+/ `DuplicateHandle` + pre-attach `CONSUMER_ATTACH_REQ_SHM` confirmation).
 
 The §3 invariants (I1-I12) DO still apply abstractly to SHM auth
 under HEP-0041 — capability transport is just a different

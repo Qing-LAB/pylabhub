@@ -600,7 +600,7 @@ int get_channel_auth_returns_allowlist()
         });
 }
 
-// ── CONSUMER_ATTACH_REQ (HEP-CORE-0041 §9 D4) ────────────────────────────
+// ── CONSUMER_ATTACH_REQ_SHM (HEP-CORE-0041 §9 D4 = HEP-0042 §6.1) ────────
 //
 // Pre-attach broker confirmation.  Producer queries broker before
 // handing a SHM capability fd to a consumer; broker checks
@@ -667,7 +667,7 @@ int consumer_attach_denied()
 {
     // Producer registered, but the queried consumer_pubkey is NOT in
     // the channel's allowlist (consumer never registered).  Broker
-    // returns CONSUMER_ATTACH_ACK with status="denied" — NOT an ERROR
+    // returns CONSUMER_ATTACH_ACK_SHM with status="denied" — NOT an ERROR
     // frame.  Substep 1e (producer cache divergence WARN) depends on
     // this distinction.
     const std::string channel       = pid_chan("attach.denied");
@@ -780,7 +780,7 @@ int consumer_attach_non_producer()
             EXPECT_EQ(resp->value("error_code", std::string{}),
                       "PRODUCER_NOT_AUTHORIZED");
         },
-        {"CONSUMER_ATTACH_REQ rejected"});
+        {"CONSUMER_ATTACH_REQ_SHM rejected"});
 }
 
 int consumer_attach_invalid_request()

@@ -893,7 +893,7 @@ BrokerRequestComm::consumer_attach(const std::string &channel,
     opts["consumer_pubkey"]   = consumer_pubkey;
     opts["consumer_role_uid"] = consumer_role_uid;
     opts["role_uid"]          = producer_role_uid;
-    return pImpl->do_request("CONSUMER_ATTACH_REQ", "CONSUMER_ATTACH_ACK",
+    return pImpl->do_request("CONSUMER_ATTACH_REQ_SHM", "CONSUMER_ATTACH_ACK_SHM",
                              opts, timeout_ms);
 }
 

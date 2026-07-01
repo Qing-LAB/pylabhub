@@ -112,7 +112,7 @@ ShmAttachOrchestrator::accept_and_serve_one(std::chrono::milliseconds timeout)
 
     // ── Step 2: broker pre-confirm ────────────────────────────────────────
     //
-    // Per HEP-0041 §9 D4: producer sends CONSUMER_ATTACH_REQ to broker
+    // Per HEP-0041 §9 D4: producer sends CONSUMER_ATTACH_REQ_SHM to broker
     // and reads the reply.  Reply shape (from substep 1d handler):
     //   { status: "success" | "denied", denial_reason?: ... }
     // Or the BrokerQuery callback returns nullopt on transport-level
