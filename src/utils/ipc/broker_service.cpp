@@ -941,6 +941,13 @@ void BrokerServiceImpl::run()
                     on_channel_closed(router, ch, *hub_entry, "script_requested");
                     hub_state_->_on_channel_closed(
                         ch, pylabhub::hub::ChannelCloseReason::AdminClose);
+                    // HEP-CORE-0036 §6.5 + HEP-CORE-0042 §5.4: drop the
+                    // channel-access record.  Idempotent — safe even if
+                    // _on_channel_access_opened was never called.
+                    // Symmetric with the VoluntaryDereg last-producer
+                    // path in handle_dereg_req and the HeartbeatTimeout
+                    // last-producer path in sweep_pending_timeouts.
+                    hub_state_->_on_channel_access_closed(ch);
                 }
             }
 
@@ -4329,6 +4336,23 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
                                     "pending_timeout");
                 on_channel_closed(socket, d.channel, d.pre_drop_channel,
                                   "pending_timeout");
+                // HEP-CORE-0036 §6.5 + HEP-CORE-0042 §5.4: drop the
+                // channel-access record now that the channel is gone.
+                // Idempotent — safe even if _on_channel_access_opened
+                // was never called.  Symmetric with the VoluntaryDereg
+                // last-producer path in handle_dereg_req (line ~2430);
+                // omitting this call would leak the full
+                // ChannelAccessEntry — authorized_consumer_pubkeys,
+                // channel_version, and confirmed_version_per_producer
+                // — into channel_access_index[K] even though the
+                // channel itself is gone.  Prior to the 2026-07-01
+                // Phase 2.2 close-out this asymmetry was masked by
+                // channel_access_index being drained on broker restart
+                // (only path); with HEP-CORE-0042's fast-path reading
+                // channel_version + confirmed_version, a subsequent
+                // channel re-open on the same name would inherit stale
+                // state.
+                hub_state_->_on_channel_access_closed(d.channel);
                 // M1.4 (2026-05-11): no metrics_store_.erase — see
                 // comment at handle_dereg_req last-producer path.
                 LOGGER_INFO("Broker: channel '{}' torn down (last "
