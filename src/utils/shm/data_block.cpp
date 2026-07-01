@@ -538,11 +538,11 @@ class DataBlock
         m_header->version_minor = HEADER_VERSION_MINOR;
         m_header->total_block_size = m_size;
 
-        // HEP-CORE-0041 1i-cleanup S4 (#275) — DataBlock ctor no longer
-        // stamps a `shared_secret`.  The field stays in
-        // `SharedMemoryHeader` (renamed `reserved_capability_token` in
-        // S5 under the Core Structure Change Protocol); SHM zero-init
-        // leaves it all-zero, which is the post-S5 "unset" state.
+        // HEP-CORE-0041 1i-cleanup S4 + S5 (#275) — DataBlock ctor no
+        // longer stamps the header byte-token.  Substep S5 renamed the
+        // header field `shared_secret[64]` → `reserved_capability_token[64]`
+        // under the Core Structure Change Protocol; SHM zero-init
+        // leaves it all-zero, which is the reserved-bytes state.
         // SHM auth runs on the L2 capability-fd handshake
         // (HEP-CORE-0041 §5.5), not a header-stored token.
 

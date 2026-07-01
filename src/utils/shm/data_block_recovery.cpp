@@ -697,9 +697,11 @@ extern "C"
                 static_cast<pylabhub::hub::ChecksumType>(header->checksum_type);
             expected_config.checksum_policy = header->checksum_policy;
             uint64_t secret = 0;
-            std::memcpy(&secret, header->shared_secret, sizeof(secret));
+            std::memcpy(&secret, header->reserved_capability_token,
+                        sizeof(secret));
             expected_config.shared_secret = secret;  // mirror header field
-                                                     // (S5 will rename it)
+                                                     // — bytes are reserved
+                                                     // post-S5 (#275)
 
             // 5. Checksums
             if (static_cast<pylabhub::hub::ChecksumType>(header->checksum_type) !=

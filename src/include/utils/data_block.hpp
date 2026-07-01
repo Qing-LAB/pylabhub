@@ -211,7 +211,20 @@ struct alignas(PYLABHUB_PHYSICAL_PAGE_SIZE) SharedMemoryHeader
     uint64_t total_block_size; // Total shared memory size
 
     // === Security and Schema ===
-    uint8_t shared_secret[64]; // Access capability token
+    //
+    // HEP-CORE-0041 1i-cleanup S5 (#275, 2026-06-30) — renamed from
+    // `shared_secret[64]` → `reserved_capability_token[64]` under the
+    // Core Structure Change Protocol (REVIEW_S5_CoreStructure_2026-06-27).
+    // The legacy name reflected an obsolete model where the broker
+    // minted a per-channel secret that gated SHM ATTACH; HEP-CORE-0041
+    // proved that gate "never gated ATTACH, only LOOKUP" (§1 + §3) and
+    // replaced it with the L2 capability-fd handshake (§5.5).  The
+    // bytes are now RESERVED — zero-initialized by SHM zero-init, never
+    // written by the DataBlock ctor, never read by the discovery path
+    // (S4 retired the memcmp gate).  The name preserves header layout
+    // (same offset, same 64-byte size) so the rename is
+    // schema-hash-only — operators see no on-the-wire change.
+    uint8_t reserved_capability_token[64];
     
     // Phase 4: Dual schema support (FlexZone + DataBlock)
     uint8_t flexzone_schema_hash[32];   // BLAKE2b hash of FlexZone schema
@@ -342,7 +355,7 @@ static_assert(alignof(SharedMemoryHeader) >= PYLABHUB_PHYSICAL_PAGE_SIZE,
     OP(version_minor, "u16")                                                                  \
     OP(total_block_size, "u64")                                                               \
     /* Security and Schema (Phase 4: Dual schema) */                                         \
-    OP(shared_secret, "u8[64]")                                                               \
+    OP(reserved_capability_token, "u8[64]")                                                   \
     OP(flexzone_schema_hash, "u8[32]")                                                        \
     OP(datablock_schema_hash, "u8[32]")                                                       \
     OP(schema_version, "u32")                                                                 \

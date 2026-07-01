@@ -781,10 +781,15 @@ Status reflects 2026-06-30 progress:
   alive to back the recovery_api + slot_rw_coordinator C API
   tests (CLAUDE.md project NO-GO list — these tests are
   preserved).
-- ⏸ **S5 (pending):** rename `SharedMemoryHeader::shared_secret[64]`
-  → `reserved_capability_token[64]` (Core Structure Change
-  Protocol — walked at
-  `docs/code_review/REVIEW_S5_CoreStructure_2026-06-27.md`).
+- ✅ **S5 (shipped 2026-06-30):** renamed `SharedMemoryHeader::shared_secret[64]`
+  → `reserved_capability_token[64]` under the Core Structure Change
+  Protocol (pre-walk at
+  `docs/code_review/REVIEW_S5_CoreStructure_2026-06-27.md`).  Layout
+  preserved (same offset, same 64-byte size); schema hash bumps via
+  `PYLABHUB_SHARED_MEMORY_HEADER_SCHEMA_FIELDS` macro (field name
+  participates in hash input).  `data_block_recovery.cpp` consumer
+  updated; HEP-CORE-0002 §"Security and Schema" layout diagram +
+  sentinel-semantics paragraph refreshed.
 
 Recovery tool (`data_block_recovery.cpp`) is the one exception — it
 operates on already-crashed segments offline, where the fd-source

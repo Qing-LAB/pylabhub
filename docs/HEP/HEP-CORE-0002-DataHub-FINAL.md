@@ -584,7 +584,11 @@ struct alignas(4096) SharedMemoryHeader {
     uint64_t total_block_size;           // Total shared memory size (bytes)
 
     // === Security and Schema ===
-    uint8_t shared_secret[64];           // Access capability token
+    // HEP-CORE-0041 1i-cleanup S5 (#275, 2026-06-30) — renamed from
+    // `shared_secret[64]` after the broker-minted-token model was
+    // SUPERSEDED by the L2 capability-fd handshake (HEP-CORE-0041 §5.5).
+    // Reserved-zero post-S5; layout preserved (same offset, same 64-byte size).
+    uint8_t reserved_capability_token[64];
     // Phase 4: Dual schema — FlexZone and DataBlock schemas tracked independently.
     // Producers set both hashes at create_channel(); consumers validate at attach.
     uint8_t flexzone_schema_hash[32];    // BLAKE2b-256 of the FlexZone type schema
@@ -1452,7 +1456,7 @@ Correct use of the following **helper modules** is required for consistent layou
 - **physical_page_size** — Allocation granularity (e.g. 4K, 4M).
 - **ring_buffer_capacity** — Number of slots (≥ 1).
 
-**Optional / sentinel semantics:** logical_unit_size (0 = use physical_page_size; any non-zero value is silently rounded up to the nearest 64-byte cache-line boundary before use — no error thrown), shared_secret (0 = generate or discovery), checksum_policy, flexible_zone_configs. checksum_type is mandatory (default BLAKE2b). See implementation docs for full list.
+**Optional / sentinel semantics:** logical_unit_size (0 = use physical_page_size; any non-zero value is silently rounded up to the nearest 64-byte cache-line boundary before use — no error thrown), checksum_policy, flexible_zone_configs. checksum_type is mandatory (default BLAKE2b). See implementation docs for full list.  *Historical: a `shared_secret` field carried 0-as-sentinel for "generate or discovery" semantics; HEP-CORE-0041 1i-cleanup S4+S5 (#275) retired both the runtime stamp/validate gates and the header field's name (renamed `reserved_capability_token` in S5).*
 
 **Correct use:**
 1. **Producer:** Build a `DataBlockConfig` with all required fields set, then call the creator (e.g. factory that ultimately calls the creator constructor). Do not rely on implicit defaults for policy, consumer_sync_policy, physical_page_size, or ring_buffer_capacity.

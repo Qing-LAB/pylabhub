@@ -6,6 +6,22 @@
 
 ## Archive batches
 
+### 2026-06-30 (HEP-0041 1i-cleanup S5 close-out)
+
+After #275 S5 shipped (renamed `SharedMemoryHeader::shared_secret[64]`
+→ `reserved_capability_token[64]` per the Core Structure Change
+Protocol), the pre-walked review doc was archived per
+`REVIEW_S5_CoreStructure_2026-06-27.md` closing checklist:
+
+* `REVIEW_S5_CoreStructure_2026-06-27.md` — 9-item impact-matrix
+  pre-walk done at Phase 0b (2026-06-27); every checkpoint verified
+  green when S5 executed 2026-06-30 (build clean, full ctest 2261/2261,
+  static_assert(sizeof(SharedMemoryHeader)==4096) passes).  Lasting
+  reference lives in `docs/HEP/HEP-CORE-0041-SHM-Channel-Auth.md`
+  §1i-cleanup status table + `docs/HEP/HEP-CORE-0002-DataHub-FINAL.md`
+  §"Security and Schema" refreshed layout diagram.  Archived to
+  `docs/archive/transient-2026-06-30/code_reviews/REVIEW_S5_CoreStructure_2026-06-27.md`.
+
 ### 2026-06-18 (HEP-0041 doc-hygiene sweep — post-1h close-out)
 
 After HEP-CORE-0041 Phase 1 substeps 1f-1h shipped (#253/#254/#255,
