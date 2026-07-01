@@ -34,7 +34,7 @@ The race is a real production-readiness gap. HEP-CORE-0041 §5.5 already solved 
 
 - **D1-A: Consumer initiates a new `CONSUMER_ATTACH_REQ_ZMQ` wire** after receiving `CONSUMER_REG_ACK`, before dialing producer.  This mirrors SHM's `CONSUMER_ATTACH_REQ` shape exactly.
 - **D2-X: Broker synchronously holds the consumer's ATTACH REQ** until the producer's `GET_CHANNEL_AUTH_REQ` arrives (proof-of-cache-populated).  Adds one broker-side RTT to the consumer-attach path.  See §5 for how this differs from the 2026-06-04 retracted pattern.
-- **D3-corrected: Producer's ZAP handler stays load-bearing** for enforcement (cache is the source of truth at handshake time).  The pre-confirm eliminates the admit-side race; the cache is still enforcement-authoritative because revocation propagates through the same cache path.  This is a correction from the initial "cache as observability" framing — see §7 for why.
+- **D3-corrected (locked 2026-06-30): Cache is the producer's SINGLE reference for allow/deny.**  Producer's ZAP handler always reads the cache — no fallback, no consult-the-broker-at-handshake-time.  Both admit AND revoke are propagated via **explicit bidirectional confirmation**: broker → producer notify+pull delivers the update, and producer → broker `CHANNEL_AUTH_APPLIED_REQ` confirms application before the broker treats the operation as committed.  Under this shape, cache-in-sync is an observable invariant (broker knows definitively what each producer's cache holds), not a hope.  See §4.2 for the new wire and §5 for the updated broker handler flow.  This corrects the initial "cache as observability" framing — see §7.1 for the reasoning.
 
 ---
 
@@ -96,12 +96,48 @@ Same pattern as HEP-CORE-0041 SHM `CONSUMER_ATTACH_ACK.status="denied"` (`broker
 
 Producer did not send `GET_CHANNEL_AUTH_REQ` within the timeout budget (see §6.3).  Consumer treats as attach failure; can retry.
 
-### 4.2 Reused wires (no changes)
+### 4.2 New wire: `CHANNEL_AUTH_APPLIED_REQ` / `CHANNEL_AUTH_APPLIED_ACK`
+
+Direction: producer → broker.  Sent by the producer AFTER `ZmqQueue::set_peer_allowlist` successfully applies the freshly-pulled allowlist to the cache.  This is the **bidirectional confirmation** locked in D3-corrected (§3) — the broker now knows *definitively* that the producer's cache reflects the broker's authoritative state.
+
+**Request payload (`CHANNEL_AUTH_APPLIED_REQ`):**
+
+```json
+{
+  "channel_name":       "lab.sensors.temperature",
+  "producer_role_uid":  "prod.mysensor.uid00000001",
+  "applied_version":    42
+}
+```
+
+- `channel_name` — Which channel's allowlist was applied.
+- `producer_role_uid` — Producer's own role_uid (for broker-side per-producer tracking).
+- `applied_version` — Monotonic snapshot version carried on the just-received `GET_CHANNEL_AUTH_ACK`, echoed back here.  Lets the broker distinguish "producer applied THIS pull" from stale confirmations under NOTIFY-storm conditions.
+
+**Reply (`CHANNEL_AUTH_APPLIED_ACK`):**
+
+```json
+{
+  "status":           "ok",
+  "channel_name":     "lab.sensors.temperature",
+  "applied_version":  42
+}
+```
+
+Ack is not fire-and-forget — it lets the producer detect broker-side failure and log accordingly (e.g., broker restart clearing the pending queue).  If ack doesn't arrive within budget, producer logs a WARN but does NOT roll back the cache; the applied cache remains authoritative locally.
+
+**Broker's use of `_REQ`:**
+1. Marks per-producer-per-channel "cache in sync at version X" state.  Feeds the pending-ATTACH-drain step (§5.2).
+2. For revoke operations: broker now has explicit proof that the revoked pubkey is no longer accepted at the producer's ZAP handler.  Feeds any revocation audit trail / retry decisions.
+
+**Broker MUST NOT** treat an admit or revoke as globally committed until `CHANNEL_AUTH_APPLIED_REQ` arrives for the version that carried that change.  If the ACK never arrives (producer disconnected mid-sequence), the broker's timeout budget on the pending consumer ATTACH REQ closes the admit path with `status="timeout"`; revoke retries via re-NOTIFY.
+
+### 4.3 Reused wires (no changes)
 
 - `CHANNEL_AUTH_CHANGED_NOTIFY` — HEP-0036 §6.5.0.  Broker → producer fire-and-forget doorbell.
-- `GET_CHANNEL_AUTH_REQ` / `GET_CHANNEL_AUTH_ACK` — HEP-0036 §6.5.  Producer → broker request-reply, producer applies allowlist via `ZmqQueue::set_peer_allowlist`.
+- `GET_CHANNEL_AUTH_REQ` / `GET_CHANNEL_AUTH_ACK` — HEP-0036 §6.5.  Producer → broker request-reply, producer applies allowlist via `ZmqQueue::set_peer_allowlist`.  Now extended: `GET_CHANNEL_AUTH_ACK` carries the monotonic `applied_version` field the producer echoes on `CHANNEL_AUTH_APPLIED_REQ`.
 
-The pre-confirm reuses these existing surfaces for the producer-side flow; only the consumer-broker leg is new.
+The pre-confirm reuses these existing surfaces for the pull leg; the consumer-broker leg (§4.1) and the producer→broker confirmation leg (§4.2) are new.
 
 ---
 
@@ -121,20 +157,31 @@ CONSUMER_ATTACH_REQ_ZMQ arrives from consumer C for channel K + producer P:
    - If C.pubkey ∉ allowlist → reply CONSUMER_ATTACH_ACK_ZMQ{status="denied", reason=...}. Handler complete.
 3. Look up ChannelEntry[K].producers to find P.
    - If P not present or not kLive → reply {status="denied", reason="producer_not_live"}. Handler complete.
-4. If C.pubkey is already known to be in P's cache (broker-side tracking; see §5.4):
+4. If C.pubkey is CONFIRMED-in-P's-cache (broker-side tracking via last APPLIED_REQ version; see §5.4):
    → reply CONSUMER_ATTACH_ACK_ZMQ{status="success"} immediately. Fast path.
 5. Otherwise:
-   a. Enqueue this ATTACH REQ (consumer C, channel K, producer P, request identity) into a
-      per-producer "pending attach" queue on ChannelEntry[K].producer[P].pending_attach_queue.
+   a. Enqueue this ATTACH REQ (consumer C, channel K, producer P, request identity, target_version=V) into
+      per-producer "pending attach" queue on ChannelEntry[K].producer[P].pending_attach_queue,
+      where V is the current version of ChannelAccessIndex[K] snapshot.
    b. Fire CHANNEL_AUTH_CHANGED_NOTIFY to P (fire-and-forget, existing wire).
       This nudges P to send GET_CHANNEL_AUTH_REQ if it hasn't already.
    c. Do NOT send an ATTACH_ACK yet.  Handler returns to the ROUTER loop without replying.
 
-When P's GET_CHANNEL_AUTH_REQ subsequently arrives:
-   a. Reply GET_CHANNEL_AUTH_ACK to P normally (existing §6.5 flow).
-   b. Broker-side marker: after replying, walk ChannelEntry[K].producer[P].pending_attach_queue
-      and reply CONSUMER_ATTACH_ACK_ZMQ{status="success"} to each pending consumer whose
-      pubkey is in the allowlist just returned to P.  Drain the queue.
+When P's GET_CHANNEL_AUTH_REQ arrives:
+   a. Snapshot ChannelAccessIndex[K], stamp version W.
+   b. Reply GET_CHANNEL_AUTH_ACK{allowlist, applied_version=W} to P normally.
+   c. Record broker-side: served_version[K][P] = W.  Do NOT yet touch pending_attach_queue —
+      the producer hasn't confirmed application yet.
+
+When P's CHANNEL_AUTH_APPLIED_REQ{channel=K, applied_version=W} arrives (the D3 bidirectional confirmation):
+   a. Reply CHANNEL_AUTH_APPLIED_ACK{status="ok", applied_version=W}.
+   b. Mark broker-side: confirmed_version[K][P] = W.  P's ZAP cache is now known to enforce
+      the allowlist at version W or newer.
+   c. Walk ChannelEntry[K].producer[P].pending_attach_queue.  For each pending REQ whose
+      target_version ≤ W AND whose consumer's pubkey is in the allowlist snapshot at version W:
+        → reply CONSUMER_ATTACH_ACK_ZMQ{status="success"}.  Remove from queue.
+   d. For pending REQs whose target_version > W (a NEWER admit landed while W was in flight):
+      leave in queue; they drain on the NEXT APPLIED_REQ.
 ```
 
 ### 5.3 Why this is NOT the retracted "broker as sync-request initiator" pattern
@@ -144,18 +191,28 @@ The 2026-06-04 amendment (§6.5) retracted having the broker be a sync-request I
 This amendment has the broker be a sync-response HOLDER for a specific inbound REQ, waiting for a DIFFERENT normal inbound REQ from a specific expected sender (the producer's `GET_CHANNEL_AUTH_REQ`, which is a first-class existing wire pattern).  Distinctions from the retracted design:
 
 - Broker never initiates.  Every wire event on the broker's ROUTER is either an inbound REQ or an outbound REP.
-- Broker doesn't fan-out or wait for fan-in.  ONE consumer's REQ waits for ONE producer's REQ.
+- Broker doesn't fan-out or wait for fan-in.  ONE consumer's REQ waits for ONE producer's REQ (the APPLIED_REQ that confirms cache-in-sync).
 - Broker's poll loop keeps draining normally — the pending REQ just doesn't get replied-to yet.  No new demultiplexing logic; the ROUTER's socket identity/routing already lets the reply-later step work via the recorded identity.
-- Existing dispatch machinery.  `GET_CHANNEL_AUTH_REQ` handler already exists; the only NEW thing is the post-reply drain step that ACKs pending consumers.
+- Existing dispatch machinery.  `GET_CHANNEL_AUTH_REQ` handler already exists; the NEW handlers are the pre-confirm ATTACH REQ (§4.1) and the APPLIED confirmation REQ (§4.2) — both first-class inbound REQ patterns, not initiated-by-broker.
 
-### 5.4 Broker-side cache: which pubkeys does each producer's ZAP already know?
+**Why the D3 confirmation wire strengthens the case further:** even if you squint at "broker holds a REQ until another REQ arrives" and worry about pattern drift, note that the `CHANNEL_AUTH_APPLIED_REQ` the broker waits for is a NORMAL producer→broker request that the producer sends unconditionally after every successful `set_peer_allowlist`.  The broker isn't polling or asking; it's just noting arrival.  Same discipline as HEARTBEAT_REQ: a producer-initiated REQ the broker records receipt of.
 
-For the fast-path check at §5.2 step 4, the broker needs to know which consumer pubkeys the producer's cache already contains.  Options:
+### 5.4 Broker-side cache-in-sync tracking (under D3 bidirectional confirmation)
 
-- **Option A (chosen)**: Track the last-served snapshot per producer inside `BrokerService`.  After every `GET_CHANNEL_AUTH_ACK` reply to producer P for channel K, the broker records `served_cache[K][P] = {pubkeys just replied with}`.  On a new ATTACH REQ, the broker compares C.pubkey against `served_cache[K][P]` to decide fast-path vs wait.  Memory cost: O(channels × producers × pubkeys).  Same order as `ChannelAccessIndex` itself.
-- **Option B (rejected)**: Producer reports its cache state to broker.  Adds a new wire; wastes bandwidth; broker already knows what it served.
+D3-corrected (§3) locks the shape: broker maintains `confirmed_version[K][P]` — the highest allowlist snapshot version P has explicitly confirmed applying via `CHANNEL_AUTH_APPLIED_REQ`.
 
-The broker's tracked `served_cache` is best-effort — it's advisory for the fast-path decision.  If the producer dropped a NOTIFY or restarted, `served_cache` may over-estimate what the producer has cached.  The wait-path then fires an extra NOTIFY and gets a fresh pull — self-corrects on next round-trip.
+**Fast-path decision at §5.2 step 4:**
+- Broker knows the version V at which C.pubkey was added to ChannelAccessIndex[K].
+- If `confirmed_version[K][P] >= V` → P's cache is guaranteed to hold C.pubkey → fast path.
+- Otherwise → wait path.
+
+**No optimistic served_cache.**  My initial draft proposed a `served_cache` that recorded what the broker *sent* (in GET_CHANNEL_AUTH_ACK) — advisory for fast-path.  Under D3 that's replaced by `confirmed_version`, which records what the producer *confirmed applying*.  Difference: served is optimistic ("I told them"); confirmed is deterministic ("they told me they applied it").  Simpler mental model, no self-correcting drift path.
+
+**Memory cost:** O(channels × producers) — just an integer version per (K, P) pair.  Much smaller than the earlier "set of pubkeys per pair" option.
+
+**On producer disconnect:** clear `confirmed_version[K][*disconnected_P*]` for that producer.  Any subsequent ATTACH REQ against P goes through the wait path with a fresh producer instance's confirmed_version once it (re-)authenticates and pulls.
+
+**On broker restart:** all `confirmed_version` state is lost.  First post-restart ATTACH REQ against any producer takes the wait path; on that producer's next pull + APPLIED_REQ, `confirmed_version` reconstitutes.  Self-healing without special-casing.
 
 ### 5.5 Timeout + failure modes
 
@@ -201,15 +258,40 @@ The pre-confirm is per-producer.  For fan-in channels the consumer serializes th
 
 ### 6.2 Producer role side
 
-**No code change required for MVP.**  The producer already runs the `CHANNEL_AUTH_CHANGED_NOTIFY → GET_CHANNEL_AUTH_REQ → set_peer_allowlist` chain from HEP-0036 §6.5 (shipped 2026-06-03 as part of D1).  The pre-confirm just makes the consumer wait for that chain to reach `set_peer_allowlist` before dialing.
+**One code change required under D3 bidirectional confirmation.** The producer's `GET_CHANNEL_AUTH_ACK` handler currently applies the allowlist and returns.  Under this amendment it must additionally send `CHANNEL_AUTH_APPLIED_REQ` back to the broker after `set_peer_allowlist` succeeds.
 
-**Optional producer-side observability**: producer logs `[{}] pre-attach: served allowlist to broker (size={}, channel={})` on every `GET_CHANNEL_AUTH_REQ` handled.  Operator-visible confirmation that the ZAP handler is now ready.  Non-normative.
+Current shape (pseudo):
+```
+on GET_CHANNEL_AUTH_ACK(ack):
+  ZmqQueue::set_peer_allowlist(ack.allowlist)      ← updates producer's ZAP cache
+  # done
+```
+
+Post-amendment shape:
+```
+on GET_CHANNEL_AUTH_ACK(ack):
+  ok = ZmqQueue::set_peer_allowlist(ack.allowlist)
+  if ok:
+    brc.request(CHANNEL_AUTH_APPLIED_REQ{
+      channel_name: ack.channel_name,
+      producer_role_uid: pImpl->uid,
+      applied_version: ack.applied_version
+    }, timeout_ms=applied_ack_wait_ms)             ← D3 bidirectional confirmation
+    # ack from broker is logged; failure is WARN, cache stays applied
+  else:
+    LOGGER_ERROR("[{}] set_peer_allowlist failed for channel {}", short_tag, ack.channel_name)
+```
+
+Rationale: broker MUST know when the producer's ZAP cache has actually reflected each snapshot.  Without APPLIED_REQ, broker would treat GET_CHANNEL_AUTH_ACK-delivered as proof — but that only proves libzmq delivered the ACK bytes, not that `set_peer_allowlist` succeeded or that the ZAP cache is now enforcing the new snapshot.
+
+**Producer-side observability** (existing, retained): producer logs `[{}] pre-attach: applied allowlist v{} (size={}, channel={})` on every successful `set_peer_allowlist`.
 
 ### 6.3 Budget shape
 
 - Consumer's `CONSUMER_ATTACH_REQ_ZMQ` timeout (client-side): `attach_ack_wait_ms`, default 5000 ms.
-- Broker's producer-pull wait (server-side): `producer_pull_wait_ms`, default 3000 ms.
-- Budget ordering: consumer's timeout MUST be > broker's timeout so the consumer always gets a real ACK (success/denied/timeout) rather than transport-level timeout.  Default (5000 > 3000) satisfies this.
+- Broker's producer-pull+apply wait (server-side): `producer_pull_wait_ms`, default 3000 ms.  Covers the round-trip from `CHANNEL_AUTH_CHANGED_NOTIFY` fired → producer's `CHANNEL_AUTH_APPLIED_REQ` received.
+- Producer's `CHANNEL_AUTH_APPLIED_REQ` timeout (producer-side): `applied_ack_wait_ms`, default 1000 ms.  Producer WARN-logs on missed ack; cache stays applied locally.
+- Budget ordering: consumer's timeout MUST be > broker's timeout so the consumer always gets a real ACK (success/denied/timeout) rather than transport-level timeout.  Default (5000 > 3000) satisfies this.  Producer's applied_ack timeout is independent (not on the consumer's critical path).
 
 ---
 
@@ -217,25 +299,15 @@ The pre-confirm is per-producer.  For fan-in channels the consumer serializes th
 
 These are the items I flagged where the initial three-decision framing needs refinement.  Please confirm or redirect.
 
-### 7.1 D3 revocation semantics
+### 7.1 D3 revocation semantics ✅ RESOLVED 2026-06-30
 
-**Original framing (needs correction):** "Producer's ZAP becomes cache-only observability."
+Corrected D3 locked (§3): cache is producer's SINGLE reference for allow/deny; both admit AND revoke propagate via explicit bidirectional confirmation (§4.2 new `CHANNEL_AUTH_APPLIED_REQ`).  Cache is enforcement-authoritative AND observable.
 
-**Problem I found while drafting:** If ZAP always admits (observability-only), a revoked consumer can still complete a fresh CURVE handshake — breaks HEP-CORE-0035 §I5.  Revocation needs an enforcement gate somewhere, and the ZAP handler is the natural place.
-
-**Corrected D3 (proposed):** Producer's ZAP handler stays load-bearing for enforcement — cache is the source of truth at handshake time.  Pre-confirm eliminates the admit-side race.  Revocation propagates through the same `CHANNEL_AUTH_CHANGED_NOTIFY → GET_CHANNEL_AUTH → set_peer_allowlist` chain that already exists.  Cache is BOTH load-bearing AND observable (via `api.allowed_peers()`).
-
-Please confirm this correction OR redirect if you want a different revocation shape.
-
-### 7.2 Broker-side `served_cache` size
-
-Memory cost is O(channels × producers × pubkeys) — same order as `ChannelAccessIndex` — but adds a per-producer dimension on top.  For the target scale (dozens of channels, ≤ few producers per channel, ≤ few dozen consumers), that's <1 MB total.  Fine for MVP.  Do you want a hard cap / eviction policy, or is "same lifecycle as ChannelAccessIndex" sufficient?
-
-### 7.3 Fan-in serialization
+### 7.2 Fan-in serialization
 
 Consumer serializes per-producer ATTACH REQ (§6.1).  For a 10-producer fan-in channel with 3s producer_pull_wait_ms each, worst-case consumer-attach becomes 30 s.  Acceptable for MVP?  Or concurrency an MVP requirement?
 
-### 7.4 Which HEP owns the amendment?
+### 7.3 Which HEP owns the amendment?
 
 Two options:
 - **HEP-0036 §6.5 amendment** (this doc's default).  Extends the doorbell-then-pull framework with a new pre-confirm.
@@ -243,17 +315,31 @@ Two options:
 
 My recommendation: **HEP-0041 Phase 5** with a §6.5.2 pointer from HEP-0036.  Reason: the pre-confirm pattern IS HEP-0041's central design; HEP-0036 §6.5 is about post-attach runtime sync (doorbell-then-pull), not pre-attach admission.
 
+### 7.4 Revocation retry policy
+
+Under D3 bidirectional confirmation the broker knows when a revoke has propagated to each producer.  If a producer's `CHANNEL_AUTH_APPLIED_REQ` never arrives within budget for a revoke-triggered NOTIFY (producer offline, network drop), what should the broker do?
+
+Options:
+- **(a)** Re-fire `CHANNEL_AUTH_CHANGED_NOTIFY` on a periodic retry schedule until confirmed or producer marked kDead.
+- **(b)** One-shot: log the revoke as "not confirmed at P" and rely on the next producer heartbeat cycle to catch up (via a heartbeat-piggybacked "latest_confirmed_version" field).
+- **(c)** Producer's re-registration always includes its `confirmed_version[K]` per channel; broker reconciles on re-reg.
+
+My recommendation: **(c)** — cheapest, no timer state, and re-registration IS the resynchronization point.  For (a)-style aggressive retry we'd want it as a follow-on ticket, not MVP.
+
 ---
 
 ## 8. Test plan
 
 **L2 broker unit tests** (extend `test_broker_service.cpp` or add new file):
-- `HandlesConsumerAttachReqZmq_FastPath_WhenCacheHasPubkey` — cache-hit → immediate ACK.
-- `HandlesConsumerAttachReqZmq_WaitPath_WhenProducerNeedsPull` — cache-miss → fires NOTIFY, holds REQ.
-- `HandlesConsumerAttachReqZmq_DrainsPendingOnProducerPull` — after producer's GET_CHANNEL_AUTH_REQ, pending consumers drain.
+- `HandlesConsumerAttachReqZmq_FastPath_WhenConfirmedVersionCovers` — `confirmed_version[K][P] >= V` → immediate ACK.
+- `HandlesConsumerAttachReqZmq_WaitPath_WhenProducerNeedsPull` — no fresh confirmed version → fires NOTIFY, holds REQ.
+- `HandlesConsumerAttachReqZmq_DrainsPendingOnAppliedReq` — after producer's `CHANNEL_AUTH_APPLIED_REQ`, pending consumers drain (NOT drained after `GET_CHANNEL_AUTH_REQ` alone).
 - `HandlesConsumerAttachReqZmq_TimeoutReplyWhenProducerSilent` — timeout budget → status="timeout".
 - `HandlesConsumerAttachReqZmq_DeniedWhenNotInAllowlist` — pubkey not in ChannelAccessIndex → status="denied".
 - `HandlesConsumerAttachReqZmq_DeniedWhenProducerDeadWhileWaiting` — producer disconnect during wait → status="denied".
+- `HandlesChannelAuthAppliedReq_UpdatesConfirmedVersion` — receives APPLIED_REQ, `confirmed_version` advances.
+- `HandlesChannelAuthAppliedReq_StaleVersionIgnored` — APPLIED_REQ with older version than current confirmed_version → no state change, ack OK.
+- `RevokePath_ConfirmedVersionAdvancesOnAppliedReq` — revoke NOTIFY → pull → APPLIED_REQ → confirmed_version reflects post-revoke state.
 
 **L3 sequence pin** (extend `test_datahub_broker_protocol.cpp` or add new worker):
 - `PreConfirmSequenceEliminatesRace_ZmqConsumerDialsAfterProducerCacheReady` — full sequence pin.  Verify producer's `set_peer_allowlist` fires BEFORE consumer's `pull_from` dial via log-marker sequencing.
@@ -271,10 +357,15 @@ My recommendation: **HEP-0041 Phase 5** with a §6.5.2 pointer from HEP-0036.  R
 Each phase is a single commit; ships green before the next starts.
 
 - **Phase 1: HEP promotion.** Merge this tech_draft into `docs/HEP/HEP-CORE-0041-SHM-Channel-Auth.md` (§Phase 5 section) + cross-ref stub in HEP-CORE-0036 §6.5.2.  No code changes.  Reviewers can gate here.
-- **Phase 2: Broker side.** Add `handle_consumer_attach_req_zmq` + the `served_cache` + the pending-attach queue on `ChannelEntry::producer`.  L2 tests pin the state machine.
-- **Phase 3: Consumer side.** Extend `RoleAPIBase::apply_consumer_reg_ack` ZMQ branch with the per-producer pre-confirm loop.  BRC layer gains the `CONSUMER_ATTACH_REQ_ZMQ` helper if not already present.
-- **Phase 4: Test unskip + L3 sequence pin.** Remove `GTEST_SKIP` in AUTH-7 L4 ZMQ test; add L3 sequence-pin worker.
-- **Phase 5: REVIEW-D gate.** Full systematic review of the pre-confirm arc.  Any residual §6.5 amendment doc-drift closes here.
+- **Phase 2: Broker side.** Two handlers + version tracking:
+  - `handle_consumer_attach_req_zmq` — enqueues on wait-path.
+  - `handle_channel_auth_applied_req` — records `confirmed_version[K][P]`, drains pending queue.
+  - `GET_CHANNEL_AUTH_ACK` extended with `applied_version` field.
+  - L2 tests pin the state machine including bidirectional confirmation.
+- **Phase 3: Producer side.** Extend `GET_CHANNEL_AUTH_ACK` handler with post-`set_peer_allowlist` `CHANNEL_AUTH_APPLIED_REQ` send.  BRC layer gains the helper.
+- **Phase 4: Consumer side.** Extend `RoleAPIBase::apply_consumer_reg_ack` ZMQ branch with the per-producer pre-confirm loop.  BRC layer gains the `CONSUMER_ATTACH_REQ_ZMQ` helper if not already present.
+- **Phase 5: Test unskip + L3 sequence pin.** Remove `GTEST_SKIP` in AUTH-7 L4 ZMQ test; add L3 sequence-pin worker for both admit and revoke paths.
+- **Phase 6: REVIEW-D gate.** Full systematic review of the pre-confirm arc.  Any residual §6.5 amendment doc-drift closes here.
 
 ---
 
@@ -293,8 +384,15 @@ At Phase 1 promotion (or Phase 5 close-out):
 
 - **Does not touch #262 (mutual auth).** Producer→consumer proof-of-possession is a separate wire (3rd handshake frame) on the SHM capability path.  Orthogonal.
 - **Does not add a broker-hosted ZAP handler.** libzmq supports it but the re-arch cost is unjustified — cache-based ZAP with pre-confirm covers the race without new architecture.
-- **Does not eliminate the producer's ZAP allowlist cache.** Cache remains load-bearing for both admit and revoke; pre-confirm just makes the cache populated at handshake time.
+- **Does not eliminate the producer's ZAP allowlist cache.** Under D3-corrected, cache is the producer's SINGLE reference for allow/deny.  Pre-confirm + bidirectional APPLIED_REQ just guarantees the cache is populated + confirmed-in-sync at handshake time.
 - **Does not change SHM's pre-attach protocol.** SHM's `CONSUMER_ATTACH_REQ` stays exactly as HEP-0041 §5.5 specifies.  This amendment mirrors the shape onto ZMQ.
+
+## 11.1 What this amendment DOES do for the revocation path
+
+Revocation gets the same bidirectional treatment as admission — this is a NEW guarantee under D3-corrected, not just a rename of existing behavior:
+
+- **Today (pre-amendment):** broker updates ChannelAccessIndex on revoke, fires `CHANNEL_AUTH_CHANGED_NOTIFY` fire-and-forget.  If NOTIFY is dropped or the producer errors during apply, broker never knows; revoked pubkey may remain in producer's ZAP cache indefinitely.  Silent security hole.
+- **Post-amendment:** broker updates index, fires NOTIFY, producer pulls, applies, sends `CHANNEL_AUTH_APPLIED_REQ` with the new version.  Broker records `confirmed_version[K][P] = W`.  If confirmation doesn't arrive within budget, broker knows the revoke didn't propagate to P and can escalate (log audit event, retry per §7.4 policy, refuse to admit fresh consumers against P until it re-syncs).
 
 ---
 
@@ -312,23 +410,35 @@ sequenceDiagram
     Note over C,P: Pre-amendment: consumer would dial P now (RACE)
 
     rect rgba(220,240,255,0.5)
-        Note over C,B: This amendment (§4.1)
+        Note over C,B: This amendment (§4.1 + §4.2)
         C->>B: CONSUMER_ATTACH_REQ_ZMQ{channel, C.uid, P.uid}
-        alt fast path (broker knows P has C.pubkey)
+        alt fast path (confirmed_version[K][P] >= V)
             B-->>C: CONSUMER_ATTACH_ACK_ZMQ{status="success"}
         else wait path
             B->>P: CHANNEL_AUTH_CHANGED_NOTIFY{channel, reason="consumer_joined"}
-            Note over B: holds C's REQ in per-producer pending queue
+            Note over B: enqueues C's REQ, target_version=V
             P->>B: GET_CHANNEL_AUTH_REQ
-            B-->>P: GET_CHANNEL_AUTH_ACK{allowlist}
-            Note over P: applies via set_peer_allowlist
-            Note over B: post-reply drain: walks pending queue,<br/>ACKs waiting consumers whose pubkey is in the just-served allowlist
+            B-->>P: GET_CHANNEL_AUTH_ACK{allowlist, applied_version=W}
+            Note over P: applies via set_peer_allowlist(v=W)
+            P->>B: CHANNEL_AUTH_APPLIED_REQ{channel, applied_version=W}
+            B-->>P: CHANNEL_AUTH_APPLIED_ACK{status="ok"}
+            Note over B: confirmed_version[K][P] = W;<br/>drain queue: ACK consumers with target_version ≤ W
             B-->>C: CONSUMER_ATTACH_ACK_ZMQ{status="success"}
         end
     end
 
-    C->>P: ZMQ PULL dial (CURVE handshake — cache is populated)
+    C->>P: ZMQ PULL dial (CURVE handshake — cache is confirmed-in-sync)
     P-->>C: CURVE handshake succeeds; data flows
+
+    Note over C,P: --- REVOCATION PATH (D3 bidirectional; §11.1) ---
+    Note over B: broker revokes C.pubkey from ChannelAccessIndex[K]
+    B->>P: CHANNEL_AUTH_CHANGED_NOTIFY{channel, reason="revoke"}
+    P->>B: GET_CHANNEL_AUTH_REQ
+    B-->>P: GET_CHANNEL_AUTH_ACK{allowlist(without C), applied_version=W+1}
+    Note over P: applies; cache no longer has C.pubkey
+    P->>B: CHANNEL_AUTH_APPLIED_REQ{channel, applied_version=W+1}
+    B-->>P: CHANNEL_AUTH_APPLIED_ACK{status="ok"}
+    Note over B: confirmed_version[K][P] = W+1;<br/>revoke known to be enforced at P
 ```
 
 ---
@@ -337,9 +447,10 @@ sequenceDiagram
 
 Tag `[user]` = your call; tag `[me]` = I'll resolve during Phase 1 promotion.
 
-- `[user]` §7.1: confirm D3-corrected (revocation via ZAP-with-cache, not observability-only).
-- `[user]` §7.2: `served_cache` memory bound — accept "same lifecycle as ChannelAccessIndex" or want an explicit cap?
-- `[user]` §7.3: fan-in serialization acceptable for MVP, or want concurrent-per-producer?
-- `[user]` §7.4: HEP-0041 Phase 5 vs HEP-0036 §6.5 amendment as authoritative home.
+- ✅ §7.1: D3-corrected LOCKED 2026-06-30 — cache is producer's SINGLE reference; admit + revoke both use bidirectional confirmation (§4.2 `CHANNEL_AUTH_APPLIED_REQ`).
+- `[user]` §7.2 (was 7.3): fan-in serialization acceptable for MVP, or want concurrent-per-producer?
+- `[user]` §7.3 (was 7.4): HEP-0041 Phase 5 vs HEP-0036 §6.5 amendment as authoritative home.
+- `[user]` §7.4 (NEW): revocation retry policy on missed APPLIED_REQ — recommend option (c) re-registration reconciliation; confirm or redirect.
 - `[me]` §5.5: timeout defaults are proposed; if you have prior-art values from HEP-0041 SHM, I'll align.
-- `[me]` §4.1: payload field-name choices (`consumer_role_uid` vs `role_uid` etc.) — I'll align with the existing HEP-0036 §6.4 CONSUMER_REG_REQ shape at promotion time.
+- `[me]` §4.1 + §4.2: payload field-name choices (`consumer_role_uid` vs `role_uid`, `applied_version` naming) — I'll align with existing HEP-0036 §6.4 shapes at promotion time.
+- `[me]` §5.4: `confirmed_version` state is just an integer per (K, P) — small enough that no explicit memory-bound question remains (former §7.2 is dropped).
