@@ -341,6 +341,7 @@ Current rows (post-D1/D2 + S4 expansion 2026-05-19):
 | `BandMemberLeft`   | `on_band_member_left`   | `default_band_member_left` → no-op |
 | `BandMessage`      | `on_band_message`       | `default_band_message` → no-op |
 | `BandLost`         | `on_band_lost`          | `default_band_lost` → no-op (synthetic event from hub-dead; the role can lose band routing without exiting — by-default scripts proceed on whichever connections remain alive.  Scripts wanting to exit on band loss override and call `api.stop()`.) |
+| `ChannelReady`     | `on_channel_ready`      | `default_channel_ready` → no-op (consumer-role callback fired once when `apply_consumer_reg_ack` attach loop completes per HEP-CORE-0042 §7.1.  Script inspects per-producer admission via `api.producer_attach_status(channel, uid)` + `api.producer_attach_reason(channel, uid)` and decides whether the admitted subset is acceptable.  Default is no-op because the framework has already dialed the admitted producers via `set_producer_peers()`; scripts that require all-N producers override and call `api.channel_stop(channel)` on partial admission.) |
 
 Band-callback signatures (defined in `ScriptEngine`):
 
@@ -348,6 +349,7 @@ Band-callback signatures (defined in `ScriptEngine`):
 - `on_band_member_left(band: str, role_uid: str, reason: str, api)` — peer left.  `reason` ∈ `{voluntary, heartbeat_timeout, process_dead}` per HEP-CORE-0023 §2.1.1 reason vocabulary.
 - `on_band_message(band: str, sender_role_uid: str, body: dict/table, api)` — broadcast received from another band member.  Broker enforces sender-must-be-member (HEP-CORE-0030 §5.2), so `sender_role_uid` is guaranteed to be a band member at emission time.
 - `on_band_lost(band: str, reason: str, api)` — synthetic, fired when role-side band routing is invalidated.  Currently `reason="hub_dead"` only (the role's broker connection died, so the BRC for this band is no longer reachable).  NOT a wire frame.
+- `on_channel_ready(channel: str, api)` — consumer-role callback fired once per channel when the pre-attach loop (HEP-CORE-0042 §7.1) completes.  Script queries `api.producers_declared(channel)`, `api.producers_connected(channel)`, `api.producer_attach_status(channel, uid)`, `api.producer_attach_reason(channel, uid)` (HEP-CORE-0042 §8) to inspect per-producer admission and decide policy.  Framework encodes no policy — scripts that require all-N producers must check and decide.  NOT a wire frame; synthesized by the consumer's role host from the attach-loop result.
 
 Native C ABI mirror: each callback has a matching `plh_band_*_args_t` struct in `native_invoke_types.h` carrying the same fields (plus `body_json` for `on_band_message` — the C ABI doesn't ship a JSON parser so plugins receive the body as a JSON string).
 

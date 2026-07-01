@@ -809,6 +809,17 @@ plugins should defensively null-check before calling.
 > checks and the response shape is the documented sentinel for the
 > wrong-side case.
 
+**HEP-CORE-0042 additions — pending Native C ABI shape (added 2026-07-01).**
+Four consumer-role accessors need Native C ABI parity per
+HEP-CORE-0042 §8: `producers_declared`, `producers_connected`,
+`producer_attach_status`, `producer_attach_reason`.  Concrete
+signatures follow the existing pattern (visitor for list-returning
+fns; `int (*)(ctx, const char *channel, const char *uid, char *buf,
+size_t buflen)` for status/reason).  Wired under task #232 (cross-
+engine parity sweep) as part of HEP-0042 Phase 2 rollout — signature
+lock at implementation time to avoid ABI churn if HEP-0042 review
+uncovers a shape change.
+
 ### 4.8 Lifetime + Security Contract (#194)
 
 Every borrowed pointer the framework hands to the plugin carries a

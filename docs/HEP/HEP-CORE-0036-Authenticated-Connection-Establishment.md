@@ -461,6 +461,22 @@ attacker apart from the legitimate role's process.  Operator
 response in that case is incident response, not protocol: kill
 the compromised process, rotate the key, redeploy.
 
+**§I5 revocation confirmation timing (added 2026-07-01 — HEP-CORE-0042
+integration).**  For channels using either transport under
+HEP-CORE-0042 (Channel Attach Coordination Protocol), revocation
+propagation is confirmed via `CHANNEL_AUTH_APPLIED_REQ` (HEP-0042
+§5.5.2).  Broker maintains `confirmed_version[K][P]` as the highest
+allowlist snapshot version each producer's current instance has
+confirmed applying.  A revoke is committed at producer P once
+`confirmed_version[K][P] >= channel_version[K]` where
+`channel_version[K]` is the post-revoke bump.  Existing sessions per
+§I5 baseline stay up on revoke (per libzmq semantics); new
+handshakes deny at the producer's cache — populated by the
+confirmed pull — because the cache no longer contains the revoked
+pubkey.  The producer-instance-epoch guard (HEP-0042 §5.2
+`instance_id`) prevents stale APPLIED_REQ from a crashed producer
+instance from falsely committing a revoke.
+
 ### I6 — Identity keys reused on the data plane; broker mints nothing
 
 **The role's identity keypair (from `plh_role --keygen`, HEP-0035)
@@ -3135,6 +3151,18 @@ both should land coordinated as one wire-format migration.  See
 §14.1 for the HEP-0021 update list.
 
 ### 6.5 Channel-state synchronization (notify-then-pull)
+
+**Relationship to HEP-CORE-0042 (added 2026-07-01, task #246).**  This
+section owns the notify-then-pull *mechanism* that synchronizes
+producer-side and consumer-side caches with the broker's record.  A
+distinct concern — coordinating the timing of a consumer's data-plane
+attach around that cache sync so the consumer's handshake succeeds
+against a caught-up producer cache — is owned by **HEP-CORE-0042
+(Channel Attach Coordination Protocol)**.  §6.5's
+`CHANNEL_AUTH_CHANGED_NOTIFY` and `GET_CHANNEL_AUTH_REQ/ACK` wires are
+reused unchanged by HEP-0042; HEP-0042 adds `CONSUMER_ATTACH_REQ`
+(consumer↔broker, per-transport shape) and `CHANNEL_AUTH_APPLIED_REQ`
+(producer↔broker bidirectional confirmation).
 
 This section formalizes the two symmetric notify-then-pull paths
 that keep both sides of a channel's auth state converged with the
