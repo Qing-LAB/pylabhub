@@ -411,43 +411,9 @@ The consumer receives the producer's endpoint + the producer's pubkey
 frame 2).  No bearer token; the broker is consulted live by the
 producer on each attach attempt — see §5.4.
 
-### 5.4 CONSUMER_ATTACH_REQ — producer pre-confirms (HEP-0041 §9 D4)
+### 5.4 CONSUMER_ATTACH_REQ — producer pre-confirms
 
-Per D4's pre-confirm pattern, the producer queries the broker on every
-attach attempt before sending the SHM capability fd.  Shipped under
-substep 1d (#251); handler at `broker_service.cpp::handle_consumer_attach_req`.
-
-Request from producer to broker:
-```json
-{
-  "channel_name":      "lab.raw",
-  "consumer_pubkey":   "<40 Z85 chars>",
-  "consumer_role_uid": "consumer.daq01.uid0042",
-  "role_uid":          "<producer's own role_uid>",
-  "correlation_id":    "<optional>"
-}
-```
-
-Reply (auth decision; `CONSUMER_ATTACH_ACK` envelope):
-```json
-{ "status": "success",  "channel_name": "...", "consumer_pubkey": "..." }
-{ "status": "denied",   "channel_name": "...", "consumer_pubkey": "...",
-  "denial_reason": "consumer_pubkey not in channel allowlist" }
-```
-
-Reply (protocol-level errors, `ERROR` envelope):
-- `INVALID_REQUEST` — missing field.
-- `CHANNEL_NOT_FOUND` — channel doesn't exist on the broker.
-- `PRODUCER_NOT_AUTHORIZED` — caller `role_uid` is not a registered
-  producer of the channel (defence in depth — never disclose another
-  channel's auth state to a non-producer).
-- `INTERNAL_ERROR` — HubState invariant broken (broker bug).
-
-**"denied" is distinct from "error"**: producer-side cache-divergence
-WARN logic (substep 1e, see §9 D4 cached-allowlist semantics) needs
-to distinguish a clean broker "no" from a wire-level transport
-failure.  Dispatcher special-case maps `(status=success | denied)` →
-`CONSUMER_ATTACH_ACK`, others → `ERROR`.
+**Relocated to HEP-CORE-0042 §6.1 Bindings.SHM as of 2026-07-01 (task #246 Phase 1).**  The full wire spec (request payload, reply shapes, error taxonomy, "denied is distinct from error" invariant) lives there as the SHM instantiation of the transport-agnostic Channel Attach Coordination Protocol.  Handler code at `broker_service.cpp::handle_consumer_attach_req` is unchanged; only the doc anchor moved.  See HEP-CORE-0042 §6.1 for the shape and §5.4 (handler flow) for the coordination protocol that governs it.
 
 ### 5.5 Attach-time L2 handshake — `crypto_box` challenge-response
 
@@ -814,13 +780,15 @@ explicitly rejects.
 
 ---
 
-## 8. What stays in HEP-CORE-0036
+## 8. What stays in HEP-CORE-0036 (and HEP-CORE-0042)
 
-HEP-CORE-0036 stays as-is.  Cross-references added at:
+HEP-CORE-0036 stays as-is for the auth framework foundation.  Cross-references added at:
 - §3.5 (AUTH-gate principle) — note that the principle applies to SHM transport via HEP-CORE-0041; layering is symmetric.
 - §5.6 (SHM in current diagrams) — replace with cross-reference to HEP-CORE-0041 §5.
 - §6.4 (CONSUMER_REG_ACK shape) — SHM-side fields moved to HEP-CORE-0041 §5.3.
 - §I6 (T1 resolution) — note SHM transport's HEP-0041 replaces the role of CURVE keypairs for SHM.
+
+**Coordination protocol (added 2026-07-01, task #246).**  The transport-agnostic *coordination* for a channel attach (broker's role in gating the consumer's data-plane handshake against the producer's cached allowlist) is owned by **HEP-CORE-0042** (Channel Attach Coordination Protocol).  Both HEP-0041 (SHM) and the ZMQ transport instantiate the same coordination pattern.  HEP-CORE-0042 §6.1 Bindings.SHM documents SHM's `CONSUMER_ATTACH_REQ` shape; HEP-CORE-0042 §6.2 Bindings.ZMQ documents ZMQ's shape.  HEP-0041 §5.4 above is a pointer to §6.1.  ZMQ pre-attach content lives in HEP-CORE-0042, NOT HEP-CORE-0036.
 
 **Authority chain (concepts owned by HEP-0036 that HEP-0041
 consumes).**  Some things named in this HEP have their definition +
