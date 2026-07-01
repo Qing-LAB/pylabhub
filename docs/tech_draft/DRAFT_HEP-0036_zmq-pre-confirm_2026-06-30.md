@@ -14,7 +14,7 @@
 
 Five principles, locked.  They exist because 10 prior fresh-eye review passes each pressured the doc to spec more corner cases, ballooning it from ~350 → ~1250 lines with cascading regressions (each cleanup introduced new bugs in adjacent sections).  The principles set the boundary: what a reviewer should worry about and what they should leave alone.
 
-**One-sentence mental model.**  Broker tracks TWO integers per (channel, producer) pair.  When a consumer needs to attach and the producer isn't caught up, ONE NOTIFY-triggered pull cycle syncs them.  Bad network = timeout + user retry.  Pubkey rotations = one extra sync cycle.  No aging, no debounce, no capability negotiation.
+**One-sentence mental model.**  Broker tracks a monotonic version per channel and a confirmed version per (channel, producer) pair.  When a consumer needs to attach and the producer isn't caught up, ONE NOTIFY-triggered pull cycle syncs them.  Bad network = timeout + user retry.  Pubkey rotations = one extra sync cycle.  No aging, no debounce, no capability negotiation.
 
 - **P0: Network-stable operating assumption.**  Design assumes broker + producer + consumer are all reachable on the happy path.  When they're not, we degrade to timeout + retry, not to elaborate recovery machinery.  Reviewers should NOT propose defenses against dropped packets, ROUTER hiccups, or NTP jumps — those are P3 territory.
 - **P1: Simple over corner-perfect.**  The ONLY asynchrony this design handles is pubkey allowlist changes (admit / revoke / rotate).  Each such change costs at most ONE wait-path attach cycle.  Rare secondary events (broker restart, dropped NOTIFY under bad network, mixed-fleet transition) also cost one cycle each and are handled by the same wait-path mechanism — no dedicated code for them.  Attach is a startup-time cost, not a data-plane cost.
@@ -161,10 +161,12 @@ Other reused wires unchanged: `CHANNEL_AUTH_CHANGED_NOTIFY`, `GET_CHANNEL_AUTH_R
 
 ### 5.2 State + notation
 
-Broker tracks two integers per (channel K, producer P):
+Broker tracks two version counters — one per channel, one per (channel, producer) pair:
 
-- `channel_version[K]` — monotonic counter, bumped on ANY mutation to `ChannelAccessIndex[K]` (add / remove / any consumer pubkey change).
-- `confirmed_version[K][P]` — highest version producer P has confirmed applying via `CHANNEL_AUTH_APPLIED_REQ`.  Reset to 0 on producer disconnect or broker restart.
+- `channel_version[K]` — monotonic counter per channel, bumped on ANY mutation to `ChannelAccessIndex[K]` (add / remove / any consumer pubkey change).  Shared across all producers on K.
+- `confirmed_version[K][P]` — per-(channel, producer) counter; the highest version producer P has confirmed applying via `CHANNEL_AUTH_APPLIED_REQ`.  Reset to 0 on producer disconnect or broker restart.
+
+Total broker state: `M + M·N` integers for M channels × N producers.
 
 **Fast-path invariant:** `confirmed_version[K][P] >= channel_version[K]` ⇒ P's ZAP cache reflects the current allowlist (which includes the consumer we're about to admit, since step 2 verified consumer's pubkey IS in the current allowlist).
 
@@ -268,9 +270,12 @@ apply_consumer_reg_ack(REG_ACK ack):
       consumer_role_uid: pImpl->uid,
       producer_role_uid: producer.role_uid
     }, timeout_ms=attach_ack_wait_ms)
-    # If broker never replied, brc.request returns null → treat as client-side timeout
+    # If broker never replied (client-side BRC timeout), synthesize the SAME §5.5 reason
+    # used for broker-observed timeouts — the two failure modes are indistinguishable from
+    # the script's perspective (both mean "producer didn't confirm; retry may help") and
+    # the reason string enum is closed to §5.5 taxonomy per §7.6.
     if attach_ack IS NULL:
-      attach_ack = {status: "timeout", reason: "no_broker_reply_within_client_budget"}
+      attach_ack = {status: "timeout", reason: "producer_did_not_confirm_within_budget"}
     per_producer_outcome[producer.role_uid] = (attach_ack.status, attach_ack.reason ?? "")
     if attach_ack.status == "success":
       LOGGER_INFO("[{}] channel={} producer[{}/{}]={} attach: success",
