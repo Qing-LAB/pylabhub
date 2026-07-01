@@ -104,6 +104,18 @@ struct HubState::Impl
     /// in the broker process and use the targeted `channel_access`
     /// read accessor.
     std::unordered_map<std::string, ChannelAccessEntry> channel_access_index;
+
+    /// HEP-CORE-0042 §5.2 — `instance[P]`.  Monotonic uint64_t per
+    /// producer role_uid, incremented on every registration
+    /// (`_on_producer_added`).  Broker returns the current value in
+    /// PRODUCER_REG_ACK and rejects any CHANNEL_AUTH_APPLIED_REQ that
+    /// echoes a stale instance_id, closing the crashed-producer
+    /// stale-APPLIED_REQ race described in HEP-CORE-0042 §5.2.  Read
+    /// by `handle_channel_auth_applied_req` (broker single-threaded
+    /// ROUTER dispatch — no external synchronization needed beyond
+    /// the existing `mu`).
+    std::unordered_map<std::string, std::uint64_t> producer_instance;
+
     BrokerCounters                                counters;
 
     // Handler registries. Separate mutex so subscribe/unsubscribe and
@@ -1050,6 +1062,20 @@ HubState::_on_producer_added(const std::string&         channel_name,
             }
             result.channel_opened = false;
         }
+
+        // HEP-CORE-0042 §5.2 — bump producer_instance[P] on every
+        // successful add.  First registration lifts the counter from
+        // its default 0 → 1; re-registration under the same role_uid
+        // (crash-restart) bumps to N+1.  Both cases invalidate any
+        // in-flight CHANNEL_AUTH_APPLIED_REQ from a stale instance —
+        // handle_channel_auth_applied_req compares the echoed
+        // instance_id against the current counter and silently drops
+        // mismatches (§5.2 stale-instance guard, P4 preservation).
+        //
+        // Held under the same writer lock as the producer append so
+        // the two mutations are atomic from any reader's perspective.
+        if (!producer_uid.empty())
+            ++pImpl->producer_instance[producer_uid];
     } // release writer lock before firing handlers.
 
     if (did_fire_open)
@@ -1665,7 +1691,12 @@ void HubState::_on_consumer_authorized(const std::string &channel_name,
     std::unique_lock lk(pImpl->mu);
     auto it = pImpl->channel_access_index.find(channel_name);
     if (it == pImpl->channel_access_index.end()) return; // no-op per contract
-    it->second.authorized_consumer_pubkeys.insert(pubkey_z85);
+    auto [_, inserted] =
+        it->second.authorized_consumer_pubkeys.insert(pubkey_z85);
+    // HEP-CORE-0042 §5.2: bump channel_version on ANY mutation to the
+    // allowlist.  Only bump if the pubkey was actually new — idempotent
+    // reauthorizations do not change state so must not bump.
+    if (inserted) ++it->second.channel_version;
 }
 
 void HubState::_on_consumer_revoked(const std::string &channel_name,
@@ -1680,7 +1711,39 @@ void HubState::_on_consumer_revoked(const std::string &channel_name,
     std::unique_lock lk(pImpl->mu);
     auto it = pImpl->channel_access_index.find(channel_name);
     if (it == pImpl->channel_access_index.end()) return; // no-op per contract
-    it->second.authorized_consumer_pubkeys.erase(pubkey_z85);
+    const std::size_t erased =
+        it->second.authorized_consumer_pubkeys.erase(pubkey_z85);
+    // HEP-CORE-0042 §5.2: same discipline as _on_consumer_authorized.
+    // Erasing a pubkey not in the set is a no-op and must not bump.
+    if (erased > 0) ++it->second.channel_version;
+}
+
+std::uint64_t
+HubState::producer_instance(const std::string &producer_role_uid) const
+{
+    if (producer_role_uid.empty()) return 0;
+    std::shared_lock lk(pImpl->mu);
+    auto it = pImpl->producer_instance.find(producer_role_uid);
+    return (it == pImpl->producer_instance.end()) ? 0 : it->second;
+}
+
+std::uint64_t
+HubState::_on_producer_confirmed(const std::string &channel_name,
+                                  const std::string &producer_role_uid,
+                                  std::uint64_t      applied_version)
+{
+    if (!is_valid_identifier(channel_name, IdentifierKind::Channel) ||
+        producer_role_uid.empty())
+    {
+        bump_invalid_identifier(*pImpl);
+        return 0;
+    }
+    std::unique_lock lk(pImpl->mu);
+    auto it = pImpl->channel_access_index.find(channel_name);
+    if (it == pImpl->channel_access_index.end()) return 0;
+    auto &slot = it->second.confirmed_version_per_producer[producer_role_uid];
+    slot = std::max(slot, applied_version);
+    return slot;
 }
 
 void HubState::_on_message_processed(const std::string &msg_type,

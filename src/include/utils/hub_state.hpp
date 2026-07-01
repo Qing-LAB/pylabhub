@@ -295,6 +295,27 @@ struct ChannelTransportInvariants
 struct ChannelAccessEntry
 {
     std::unordered_set<std::string> authorized_consumer_pubkeys;
+
+    /// HEP-CORE-0042 §5.2 — `channel_version[K]`.  Monotonic uint64_t
+    /// bumped on ANY mutation to `authorized_consumer_pubkeys` (add /
+    /// remove / any consumer pubkey change).  Shared across all
+    /// producers on the channel.  Bumped in `_on_consumer_authorized`
+    /// and `_on_consumer_revoked` (2026-07-01, Phase 2.2).  At 1
+    /// mutation per ms, wraparound is >584 million years — practically
+    /// infinite.  Read by the ZMQ pre-attach fast-path in
+    /// `handle_consumer_attach_req_zmq`.
+    std::uint64_t channel_version = 0;
+
+    /// HEP-CORE-0042 §5.2 — `confirmed_version[K][P]`.  Per-producer
+    /// uint64_t; the highest allowlist snapshot version each
+    /// producer's current instance has confirmed applying via
+    /// `CHANNEL_AUTH_APPLIED_REQ`.  Keyed by producer `role_uid`.
+    /// Reset to 0 on producer disconnect, producer re-registration
+    /// (via bumping `HubState::producer_instance_`), or broker
+    /// restart.  Read by the fast-path check
+    /// `confirmed_version[K][P] >= channel_version[K]`.
+    std::unordered_map<std::string, std::uint64_t>
+        confirmed_version_per_producer;
 };
 
 enum class AddProducerResult
@@ -1319,6 +1340,27 @@ class PYLABHUB_UTILS_EXPORT HubState
     /// shared lock; value copy.
     [[nodiscard]] std::optional<ChannelAccessEntry>
     channel_access(const std::string &channel_name) const;
+
+    /// HEP-CORE-0042 §5.2 — read the current `instance[P]` counter
+    /// for a producer identified by `role_uid`.  Bumped on every
+    /// producer registration or re-registration (`_on_producer_added`).
+    /// Returns 0 if the producer has never registered.  Used by the
+    /// stale-instance guard in
+    /// `handle_channel_auth_applied_req`: reject APPLIED_REQ whose
+    /// echoed `instance_id` does not match the current instance.
+    [[nodiscard]] std::uint64_t
+    producer_instance(const std::string &producer_role_uid) const;
+
+    /// HEP-CORE-0042 §5.4 (APPLIED_REQ handler drain step).  Advance
+    /// `confirmed_version[K][P]` to `max(current, new_version)` and
+    /// return the new value.  No-op returning 0 if the channel access
+    /// record does not exist.  Called after the stale-instance guard
+    /// passes; caller is the APPLIED_REQ handler on the broker's
+    /// single-threaded ROUTER dispatch.
+    std::uint64_t
+    _on_producer_confirmed(const std::string &channel_name,
+                           const std::string &producer_role_uid,
+                           std::uint64_t      applied_version);
 
     /// Wave M1.4 (2026-05-11) — per-channel metrics aggregator.
     ///

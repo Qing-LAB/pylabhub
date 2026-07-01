@@ -3221,22 +3221,165 @@ BrokerServiceImpl::handle_consumer_attach_req_shm(const nlohmann::json &req)
 nlohmann::json BrokerServiceImpl::handle_consumer_attach_req_zmq(
     const nlohmann::json &req)
 {
-    // Extract correlation_id if present so error replies remain
-    // trace-linkable per §5.4.  All other payload fields intentionally
-    // unread until Phase 2.2's handler flow lands.
-    const std::string corr_id = req.value("correlation_id", "");
-    return make_error(corr_id, "INTERNAL_ERROR",
-                      "handle_consumer_attach_req_zmq stub — "
-                      "not_implemented_hep_0042_phase_2_1");
+    // HEP-CORE-0042 §5.4 handler flow — Phase 2.2 fast-path only.  Steps 1-4
+    // are implemented; step 5 wait-path (enqueue + NOTIFY + hold reply)
+    // ships in Phase 2.3.  A cache-behind consumer under the current build
+    // gets an immediate {status="denied", reason="producer_did_not_confirm_within_budget"}
+    // stand-in — the wait-path replaces this with proper hold + drain.
+    const std::string corr_id            = req.value("correlation_id", "");
+    const std::string channel_name       = req.value("channel_name", "");
+    const std::string consumer_role_uid  = req.value("consumer_role_uid", "");
+    const std::string consumer_pubkey    = req.value("consumer_pubkey", "");
+    const std::string producer_role_uid  = req.value("producer_role_uid", "");
+
+    // Step 1: validate payload shape.
+    if (channel_name.empty() || consumer_pubkey.empty() ||
+        consumer_role_uid.empty() || producer_role_uid.empty())
+    {
+        return make_error(corr_id, "INVALID_REQUEST",
+                          "CONSUMER_ATTACH_REQ_ZMQ requires non-empty "
+                          "channel_name, consumer_pubkey, "
+                          "consumer_role_uid, and producer_role_uid");
+    }
+
+    auto make_denied = [&](const std::string &reason) {
+        nlohmann::json resp;
+        resp["status"]             = "denied";
+        resp["reason"]              = reason;
+        resp["channel_name"]        = channel_name;
+        resp["producer_role_uid"]   = producer_role_uid;
+        if (!corr_id.empty()) resp["correlation_id"] = corr_id;
+        return resp;
+    };
+
+    // Step 2: consumer's pubkey must be in the channel allowlist.
+    auto access = hub_state_->channel_access(channel_name);
+    if (!access.has_value())
+    {
+        // No access record for the channel is functionally the same as
+        // "consumer not in allowlist" for the caller — deny per §5.4.
+        return make_denied("consumer_not_in_channel_allowlist");
+    }
+    if (access->authorized_consumer_pubkeys.find(consumer_pubkey) ==
+        access->authorized_consumer_pubkeys.end())
+    {
+        return make_denied("consumer_not_in_channel_allowlist");
+    }
+
+    // Step 3: producer P must be kLive on channel K.  ProducerEntry does
+    // not carry an inline state field — liveness is inferred from the
+    // producer's RolePresence.  On disconnect + reap, the producer entry
+    // is removed from ch->producers[] atomically per HEP-CORE-0023 §2.1;
+    // therefore "producer is still in ch->producers" is the coarse-grained
+    // signal used across the broker (mirrors SHM's
+    // handle_consumer_attach_req_shm producer-authorization check).  For
+    // presence-state-aware "Connected+first_heartbeat_seen" gating (finer
+    // than reap-based), Phase 2.3 will wire in the snapshot-lookup pattern
+    // used by handle_discover_channel_req.
+    auto ch = hub_state_->channel(channel_name);
+    if (!ch.has_value()) return make_denied("producer_not_live");
+    bool producer_registered = false;
+    for (const auto &prod : ch->producers)
+    {
+        if (prod.role_uid == producer_role_uid)
+        {
+            producer_registered = true;
+            break;
+        }
+    }
+    if (!producer_registered) return make_denied("producer_not_live");
+
+    // Step 4: fast-path check — is producer P caught up to the current
+    // allowlist version?
+    std::uint64_t confirmed = 0;
+    auto pit = access->confirmed_version_per_producer.find(producer_role_uid);
+    if (pit != access->confirmed_version_per_producer.end())
+        confirmed = pit->second;
+
+    if (confirmed >= access->channel_version)
+    {
+        nlohmann::json resp;
+        resp["status"]            = "success";
+        resp["channel_name"]      = channel_name;
+        resp["producer_role_uid"] = producer_role_uid;
+        if (!corr_id.empty()) resp["correlation_id"] = corr_id;
+        return resp;
+    }
+
+    // Step 5 wait-path: not implemented in Phase 2.2.  Return a
+    // clearly-labeled degraded reply so a caller hitting this
+    // codepath under real load surfaces obviously in logs.  Consumer's
+    // §7.1 retry loop treats this as recoverable per P3.  Phase 2.3
+    // replaces this branch with pending_attach_queue + NOTIFY fire.
+    return make_denied("producer_did_not_confirm_within_budget");
 }
 
 nlohmann::json BrokerServiceImpl::handle_channel_auth_applied_req(
     const nlohmann::json &req)
 {
-    const std::string corr_id = req.value("correlation_id", "");
-    return make_error(corr_id, "INTERNAL_ERROR",
-                      "handle_channel_auth_applied_req stub — "
-                      "not_implemented_hep_0042_phase_2_1");
+    // HEP-CORE-0042 §5.4 APPLIED_REQ handler — Phase 2.2 impl.  Stale-
+    // instance guard (step a) + confirmed_version advance (step b/c) are
+    // in.  Queue drain (step d) is a no-op in Phase 2.2 since the
+    // pending_attach_queue lands in Phase 2.3.
+    const std::string corr_id            = req.value("correlation_id", "");
+    const std::string channel_name       = req.value("channel_name", "");
+    const std::string producer_role_uid  = req.value("producer_role_uid", "");
+    const std::uint64_t incoming_instance = req.value("instance_id",
+                                                       std::uint64_t{0});
+    const std::uint64_t applied_version   = req.value("applied_version",
+                                                       std::uint64_t{0});
+
+    if (channel_name.empty() || producer_role_uid.empty())
+    {
+        return make_error(corr_id, "INVALID_REQUEST",
+                          "CHANNEL_AUTH_APPLIED_REQ requires non-empty "
+                          "channel_name and producer_role_uid");
+    }
+
+    // §5.4 step (a): stale-instance guard.  If the echoed instance_id
+    // does not match the current instance[P], the message is from a
+    // crashed prior instance — silently drop without advancing
+    // confirmed_version.  Broker returns a shaped "silent_drop" marker
+    // that the dispatcher wraps as ERROR (matching the current wire
+    // conformance — full silent-drop-without-reply support lands with
+    // Phase 2.4 timer wiring which will let us withhold the reply
+    // entirely).
+    const std::uint64_t current_instance =
+        hub_state_->producer_instance(producer_role_uid);
+    if (incoming_instance != current_instance)
+    {
+        LOGGER_WARN(
+            "[broker] event=ChannelAuthAppliedStaleInstance channel='{}' "
+            "producer_uid='{}' incoming_instance={} current_instance={} "
+            "applied_version={} (HEP-CORE-0042 §5.2 stale-instance guard)",
+            channel_name, producer_role_uid, incoming_instance,
+            current_instance, applied_version);
+        return make_error(corr_id, "STALE_INSTANCE",
+                          "CHANNEL_AUTH_APPLIED_REQ from stale producer "
+                          "instance dropped per HEP-CORE-0042 §5.2");
+    }
+
+    // §5.4 step (c): confirmed_version[K][P] = max(current, applied_version).
+    const std::uint64_t new_confirmed =
+        hub_state_->_on_producer_confirmed(channel_name, producer_role_uid,
+                                            applied_version);
+
+    LOGGER_INFO(
+        "[broker] event=ChannelAuthApplied channel='{}' producer_uid='{}' "
+        "instance={} applied_version={} confirmed_version={}",
+        channel_name, producer_role_uid, incoming_instance, applied_version,
+        new_confirmed);
+
+    // §5.4 step (b): reply {status="ok", ...}.
+    nlohmann::json resp;
+    resp["status"]           = "ok";
+    resp["channel_name"]     = channel_name;
+    resp["applied_version"]  = new_confirmed;
+    if (!corr_id.empty()) resp["correlation_id"] = corr_id;
+    return resp;
+
+    // §5.4 step (d) queue drain — deferred to Phase 2.3 when
+    // pending_attach_queue lands.
 }
 
 void BrokerServiceImpl::fire_channel_auth_changed_notify(

@@ -3857,3 +3857,198 @@ TEST(HubStateChannelAccess, MultiChannel_SamePubkey_RevokeIsScoped)
         << "revoke on ch.A leaked into ch.B — allowlist is not per-channel";
 }
 
+// ═══ HEP-CORE-0042 §5.2 state — channel_version / confirmed_version / instance
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// State-level tests for the Channel Attach Coordination Protocol
+// (task #246 Phase 2.2, 2026-07-01).  The three counters exercised here
+// underpin the ZMQ pre-attach fast-path in
+// `BrokerServiceImpl::handle_consumer_attach_req_zmq` and the drain
+// semantics in `handle_channel_auth_applied_req`.  Handler-level flow is
+// covered at L3 (Phase 2.3/2.4); this block pins the pure state
+// mutations directly on HubState so any future refactor that regresses
+// the counter contract fails here first.
+
+TEST(HubStateHep0042, ChannelVersion_BumpsOnDistinctAuthorize)
+{
+    // §5.2: channel_version bumps on ANY mutation to
+    // authorized_consumer_pubkeys.  Two distinct pubkeys => two bumps.
+    HubState s;
+    HubStateTestAccess::on_channel_access_opened(s, "ch.hep42");
+
+    auto v0 = s.channel_access("ch.hep42");
+    ASSERT_TRUE(v0.has_value());
+    EXPECT_EQ(v0->channel_version, 0u) << "initial channel_version must be 0";
+
+    HubStateTestAccess::on_consumer_authorized(s, "ch.hep42", "PUB-A");
+    auto v1 = s.channel_access("ch.hep42");
+    ASSERT_TRUE(v1.has_value());
+    EXPECT_EQ(v1->channel_version, 1u);
+
+    HubStateTestAccess::on_consumer_authorized(s, "ch.hep42", "PUB-B");
+    auto v2 = s.channel_access("ch.hep42");
+    ASSERT_TRUE(v2.has_value());
+    EXPECT_EQ(v2->channel_version, 2u);
+}
+
+TEST(HubStateHep0042, ChannelVersion_NoBumpOnDuplicateAuthorize)
+{
+    // §5.2: idempotent re-authorize does NOT bump channel_version —
+    // pubkey already in the set is a no-op mutation.  A false bump
+    // here would force spurious wait-path cycles on downstream
+    // consumers and inflate the P1 accepted cost.
+    HubState s;
+    HubStateTestAccess::on_channel_access_opened(s, "ch.hep42");
+    HubStateTestAccess::on_consumer_authorized(s, "ch.hep42", "PUB-DUP");
+    auto v1 = s.channel_access("ch.hep42");
+    ASSERT_TRUE(v1.has_value());
+    ASSERT_EQ(v1->channel_version, 1u);
+
+    HubStateTestAccess::on_consumer_authorized(s, "ch.hep42", "PUB-DUP");
+    auto v2 = s.channel_access("ch.hep42");
+    ASSERT_TRUE(v2.has_value());
+    EXPECT_EQ(v2->channel_version, 1u)
+        << "idempotent re-authorize must not bump channel_version";
+}
+
+TEST(HubStateHep0042, ChannelVersion_BumpsOnRevoke)
+{
+    // §5.2: revoke that actually removes an entry bumps channel_version.
+    HubState s;
+    HubStateTestAccess::on_channel_access_opened(s, "ch.hep42");
+    HubStateTestAccess::on_consumer_authorized(s, "ch.hep42", "PUB-X");
+    auto v1 = s.channel_access("ch.hep42");
+    ASSERT_TRUE(v1.has_value());
+    ASSERT_EQ(v1->channel_version, 1u);
+
+    HubStateTestAccess::on_consumer_revoked(s, "ch.hep42", "PUB-X");
+    auto v2 = s.channel_access("ch.hep42");
+    ASSERT_TRUE(v2.has_value());
+    EXPECT_EQ(v2->channel_version, 2u);
+}
+
+TEST(HubStateHep0042, ChannelVersion_NoBumpOnMissingRevoke)
+{
+    // §5.2: revoking a pubkey not present is a no-op and must not
+    // bump.  Symmetric with the idempotent-authorize invariant.
+    HubState s;
+    HubStateTestAccess::on_channel_access_opened(s, "ch.hep42");
+    auto v0 = s.channel_access("ch.hep42");
+    ASSERT_TRUE(v0.has_value());
+    ASSERT_EQ(v0->channel_version, 0u);
+
+    HubStateTestAccess::on_consumer_revoked(s, "ch.hep42", "PUB-NOT-THERE");
+    auto v1 = s.channel_access("ch.hep42");
+    ASSERT_TRUE(v1.has_value());
+    EXPECT_EQ(v1->channel_version, 0u);
+}
+
+TEST(HubStateHep0042, ProducerInstance_BumpsOnFirstRegistration)
+{
+    // §5.2: producer_instance starts at 0 for a never-seen role_uid.
+    // First _on_producer_added lifts to 1.  Broker echoes this to
+    // producer in PRODUCER_REG_ACK per §4.2a.
+    HubState s;
+    EXPECT_EQ(s.producer_instance("prod.first.uid00000001"), 0u)
+        << "unseen producer must read as instance 0";
+
+    auto r = HubStateTestAccess::on_producer_added(
+        s, "ch.hep42.instance",
+        make_schema_invariants(),
+        make_zmq_transport(),
+        make_producer("prod.first.uid00000001", 1001));
+    ASSERT_EQ(r.producer_result, AddProducerResult::Created);
+
+    EXPECT_EQ(s.producer_instance("prod.first.uid00000001"), 1u)
+        << "first registration must lift instance 0 → 1";
+}
+
+TEST(HubStateHep0042, ProducerInstance_BumpsOnReRegistration)
+{
+    // §5.2 P4 stale-instance guard: re-registration under same
+    // role_uid must bump the counter.  This is what makes a
+    // stale CHANNEL_AUTH_APPLIED_REQ from a crashed prior instance
+    // silently dropped by the broker handler (§5.4 step a).
+    //
+    // In production _on_producer_added under the same role_uid on the
+    // same channel returns RejectedUidConflict (existing entry).  For
+    // the counter test, use a fresh channel per registration — the
+    // per-producer instance counter is CHANNEL-INDEPENDENT (keyed by
+    // role_uid alone), so each registration bumps it regardless of
+    // which channel the entry landed on.
+    HubState s;
+    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+                  s, "ch.hep42.rerun.a",
+                  make_schema_invariants(),
+                  make_zmq_transport(),
+                  make_producer("prod.rerun.uid00000001", 2002))
+                  .producer_result,
+              AddProducerResult::Created);
+    ASSERT_EQ(s.producer_instance("prod.rerun.uid00000001"), 1u);
+
+    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+                  s, "ch.hep42.rerun.b",
+                  make_schema_invariants(),
+                  make_zmq_transport(),
+                  make_producer("prod.rerun.uid00000001", 2002))
+                  .producer_result,
+              AddProducerResult::Created);
+    EXPECT_EQ(s.producer_instance("prod.rerun.uid00000001"), 2u)
+        << "re-registration must bump instance 1 → 2 (§5.2 stale-instance guard)";
+}
+
+TEST(HubStateHep0042, ProducerConfirmed_AdvancesConfirmedVersion)
+{
+    // §5.4 step c: _on_producer_confirmed advances
+    // confirmed_version[K][P] to max(current, applied).  Read-back via
+    // channel_access() reflects the new value.
+    HubState s;
+    HubStateTestAccess::on_channel_access_opened(s, "ch.hep42.confirm");
+
+    const auto ret =
+        s._on_producer_confirmed("ch.hep42.confirm", "prod.confirm.uid1", 42);
+    EXPECT_EQ(ret, 42u);
+
+    auto access = s.channel_access("ch.hep42.confirm");
+    ASSERT_TRUE(access.has_value());
+    auto it = access->confirmed_version_per_producer.find(
+        "prod.confirm.uid1");
+    ASSERT_NE(it, access->confirmed_version_per_producer.end());
+    EXPECT_EQ(it->second, 42u);
+}
+
+TEST(HubStateHep0042, ProducerConfirmed_MonotonicMax)
+{
+    // §5.4 step c wording "= max(current, applied)": a lower incoming
+    // applied_version must NOT regress the stored confirmed_version.
+    // Guards against out-of-order APPLIED_REQ arrivals from the SAME
+    // producer instance (network reorder).
+    HubState s;
+    HubStateTestAccess::on_channel_access_opened(s, "ch.hep42.mono");
+
+    EXPECT_EQ(s._on_producer_confirmed("ch.hep42.mono", "prod.mono.uid1", 10),
+              10u);
+    // Out-of-order lower version — no regression.
+    EXPECT_EQ(s._on_producer_confirmed("ch.hep42.mono", "prod.mono.uid1", 5),
+              10u);
+    // Same-version idempotent.
+    EXPECT_EQ(s._on_producer_confirmed("ch.hep42.mono", "prod.mono.uid1", 10),
+              10u);
+    // Higher advances.
+    EXPECT_EQ(s._on_producer_confirmed("ch.hep42.mono", "prod.mono.uid1", 15),
+              15u);
+}
+
+TEST(HubStateHep0042, ProducerConfirmed_NoOpOnMissingChannel)
+{
+    // §5.4 (defensive): _on_producer_confirmed for a channel with no
+    // access record returns 0 and mutates nothing.  Guards against
+    // typo channels reaching the storage layer.
+    HubState s;
+    EXPECT_EQ(s._on_producer_confirmed("ch.hep42.does-not-exist",
+                                        "prod.p1.uid1", 99),
+              0u);
+    // Verify no access record magically appeared.
+    EXPECT_FALSE(s.channel_access("ch.hep42.does-not-exist").has_value());
+}
+
