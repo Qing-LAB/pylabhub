@@ -502,7 +502,22 @@ Merge plan per HEP.  Paste-ready contract text below — no wordsmithing at Phas
 
 ### 10.1 HEP-CORE-0041 §Phase-5 (authoritative home)
 
-Merge §0, §4, §5, §6 substance verbatim.  §7-§9 do NOT promote (pre-promotion artifacts; open questions become resolved-and-inlined text during Phase 1).  §12 sequence diagram promotes.  §11 (scope discipline) becomes §Phase-5.scope-discipline.  §Design Principles + guardrails table promote to §Phase-5.design-principles as the operational scope for future §Phase-5 amendments.
+**Promote verbatim (normative substance):**
+- §0 Glossary (fold entries not already in HEP-0041 glossary into HEP-0041 §Glossary).
+- §1 Motivation → §Phase-5.motivation (one-paragraph condensation acceptable; retain the race description + skipped-test evidence).
+- §2 Design goal → §Phase-5.design-goal.
+- §3 Design decisions (D1-D3) → §Phase-5.design-decisions.
+- §4, §5, §6 substance verbatim.
+- §11 (scope discipline) → §Phase-5.scope-discipline.
+- §12 sequence diagram → §Phase-5.sequence-diagram.
+- Design Principles + guardrails table → §Phase-5.design-principles (operational scope for future §Phase-5 amendments).
+
+**Do NOT promote (pre-promotion artifacts):**
+- §7 Design decisions — resolved recommendations are already inlined in §4-§6 normative text; the open-question framing does not belong in a permanent HEP.
+- §8 Test plan — Phase 2/3/4 tickets track the actual test work; test names live in the L2/L3/L4 test files.
+- §9 Phased implementation — Phase 2+ track their own docs.
+- §10 (this section) — bootstrap-only; it's the merge plan, not durable content.
+- §13 Open discussion items — resolved.
 
 ### 10.2 HEP-CORE-0036 §6.5.2 (cross-reference stub)
 
@@ -613,7 +628,6 @@ sequenceDiagram
 ## 13. Open discussion items
 
 **Resolved:**
-**Resolved:**
 - ✅ §7.1: D3 LOCKED 2026-06-30.
 - ✅ §7.2: MVP serial (LOCKED 2026-07-01).
 - ✅ §7.3: HEP-CORE-0041 §Phase-5 (LOCKED 2026-07-01).
@@ -623,9 +637,9 @@ sequenceDiagram
 - ✅ §7.7: §6.3 markers normative (LOCKED 2026-07-01).
 - ✅ §7.8: (a) → (b) → (c) verification order (LOCKED 2026-07-01); I verify at Phase 1 promotion.
 
-**I'll resolve at Phase 1 promotion (mechanical):**
-- `[me]` §4.1 + §4.2: payload field-name choices — align with existing HEP-0036 §6.4 shapes.
-- `[me]` §5.5: timeout defaults — align with HEP-0041 SHM prior-art.
-- `[me]` §10: paste-ready contract text per §10.1-§10.7 — no wordsmithing needed.
+**Verification-only at Phase 1 promotion (no design change expected):**
+- `[me]` §4.1 + §4.2: payload field names.  Values LOCKED as written in the tech_draft; at promotion I verify they don't collide with existing HEP-CORE-0036 §6.4 field names.  If they do, rename to disambiguate — normative shape unchanged.
+- `[me]` §5.5: timeout defaults 5000/3000/1000 ms are LOCKED as normative.  At promotion I confirm no conflicting HEP-CORE-0041 SHM prior-art specifies different values.  If there is prior-art, I align (documenting the choice); if not, these defaults stand.
+- `[me]` §10: paste-ready contract text (§10.1-§10.7) merges verbatim.  No wordsmithing.
 
 Phase 1 promotion is unblocked.
