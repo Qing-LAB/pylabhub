@@ -12,12 +12,15 @@
 
 ## Design principles (explicit trade-offs, locked 2026-07-01)
 
-Four principles, locked.  They exist because 10 prior fresh-eye review passes each pressured the doc to spec more corner cases, ballooning it from ~350 → ~1250 lines with cascading regressions (each cleanup introduced new bugs in adjacent sections).  The principles set the boundary: what a reviewer should worry about and what they should leave alone.
+Five principles, locked.  They exist because 10 prior fresh-eye review passes each pressured the doc to spec more corner cases, ballooning it from ~350 → ~1250 lines with cascading regressions (each cleanup introduced new bugs in adjacent sections).  The principles set the boundary: what a reviewer should worry about and what they should leave alone.
 
-- **P1: Simple over corner-perfect.**  Rare events (pubkey rotation, broker restart, dropped NOTIFY, mixed-fleet transition) may cost ONE wait-path attach cycle each.  Acceptable: attach is a startup-time cost, not a data-plane cost.
+**One-sentence mental model.**  Broker tracks TWO integers per (channel, producer) pair.  When a consumer needs to attach and the producer isn't caught up, ONE NOTIFY-triggered pull cycle syncs them.  Bad network = timeout + user retry.  Pubkey rotations = one extra sync cycle.  No aging, no debounce, no capability negotiation.
+
+- **P0: Network-stable operating assumption.**  Design assumes broker + producer + consumer are all reachable on the happy path.  When they're not, we degrade to timeout + retry, not to elaborate recovery machinery.  Reviewers should NOT propose defenses against dropped packets, ROUTER hiccups, or NTP jumps — those are P3 territory.
+- **P1: Simple over corner-perfect.**  The ONLY asynchrony this design handles is pubkey allowlist changes (admit / revoke / rotate).  Each such change costs at most ONE wait-path attach cycle.  Rare secondary events (broker restart, dropped NOTIFY under bad network, mixed-fleet transition) also cost one cycle each and are handled by the same wait-path mechanism — no dedicated code for them.  Attach is a startup-time cost, not a data-plane cost.
 - **P2: Strict contract over hopeful contract.**  All producers on a pre-confirm channel MUST support `CHANNEL_AUTH_APPLIED_REQ`.  Mixed-fleet coexistence is out of scope — Phase 3 (producer upgrade) MUST complete fleet-wide before Phase 4 (consumer pre-confirm).  Deploy discipline replaces protocol negotiation.
-- **P3: Retry over recovery.**  User scripts retry on failure.  Framework does not build recovery mechanisms for transient bad-network conditions.  Bad network = degraded attach experience, not a supported operating mode.
-- **P4: No leak, no security regression.**  Any simplification MUST preserve the correctness invariant: a consumer's CURVE handshake against producer P succeeds if-and-only-if broker has confirmed P's ZAP cache holds the consumer's pubkey.
+- **P3: Retry over recovery.**  User scripts retry on failure.  Framework does not build recovery mechanisms for transient bad-network conditions.  Bad network = degraded attach experience (timeouts), not a supported operating mode.
+- **P4: No leak, no security regression.**  Any simplification MUST preserve the correctness invariant: a consumer's CURVE handshake against producer P succeeds if-and-only-if broker has confirmed P's ZAP cache holds the consumer's pubkey.  This is the ONE invariant the design is not allowed to weaken.
 
 ### Review guardrails — worry / don't worry list
 
@@ -37,9 +40,9 @@ When reviewing this design, use these as the decision boundary.  If a finding is
 | Idempotency of the APPLIED_REQ handler under legitimate retries. | Explicit debounce state machines to prevent redundant NOTIFYs.  Fire-every-time is acceptable per P1; wire is cheap. |
 | Field-name consistency across §4 / §5 / §10. | Alternate naming schemes (e.g., snapshot_version vs applied_version rename cycles).  Names are locked once specified. |
 
-**Meta-rule for reviewers:** if a finding requires adding a new corner-case-handling mechanism (state, timer, capability negotiation, retry loop, distinct enum value), CHECK the guardrails first.  If the corner case falls under P1/P2/P3, the finding is closed as accepted-degradation with a one-line note in §11 (scope discipline) — NOT with a design change.
+**Meta-rule for reviewers:** if a finding requires adding a new corner-case-handling mechanism (state, timer, capability negotiation, retry loop, distinct enum value), CHECK the guardrails first.  If the corner case falls under P0/P1/P2/P3, the finding is closed as accepted-degradation with a one-line note in §11 (scope discipline) — NOT with a design change.  ONLY findings that touch P4 (security correctness) or reveal a plain-and-simple mistake (wrong field name, contradiction between sections, broken cross-reference) warrant edits.
 
-**Meta-rule for the author (me):** if 10 prior review passes have not found a specific design bug, and the 11th surfaces a novel one, apply the guardrails BEFORE committing a fix.  Cascading corner-case coverage is what generated the pre-simplification bloat.
+**Meta-rule for the author (me):** if 10 prior review passes have not found a specific design bug, and the 11th surfaces a novel one, apply the guardrails BEFORE committing a fix.  Cascading corner-case coverage is what generated the pre-simplification bloat.  Novel corner cases are almost always P0/P1/P3 territory.
 
 ---
 
