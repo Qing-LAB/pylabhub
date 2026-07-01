@@ -4,15 +4,17 @@
  * @brief In-process fd-source producer/consumer pair helper for L3
  *        DataBlock C-API tests under HEP-CORE-0041 1i-cleanup (#275-S2).
  *
- * Tests that previously wrote
+ * Tests that previously wrote the legacy secret-shaped name-based
+ * pattern:
  *
  *     cfg.shared_secret = SECRET;
  *     auto producer = create_datablock_producer_impl(channel, policy, cfg, ...);
  *     auto consumer = find_datablock_consumer_impl(channel, cfg.shared_secret, &cfg, ...);
  *
- * use the legacy name-based factories that retire in #275-S3/S4.  Under
- * the new capability model, producers own their own anonymous memfd and
- * hand the fd to consumers — name + secret have no role.
+ * have been migrated onto this helper.  Post #275-S3/S4/S5 + #316 the
+ * `DataBlockConfig::shared_secret` field is gone entirely; under the
+ * capability model, producers own their own anonymous memfd and hand
+ * the fd to consumers — name + secret have no role.
  *
  * This helper wraps the in-process equivalent: mint an `IShmCapabilityProducer`
  * sized to the layout, build the producer over its memfd via the fd-source

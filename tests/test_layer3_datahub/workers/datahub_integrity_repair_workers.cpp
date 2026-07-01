@@ -34,7 +34,6 @@ static DataBlockConfig make_integrity_config(uint64_t secret, ChecksumPolicy cp)
     DataBlockConfig cfg{};
     cfg.policy = DataBlockPolicy::RingBuffer;
     cfg.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
-    cfg.shared_secret = secret;
     cfg.ring_buffer_capacity = 2;
     cfg.physical_page_size = DataBlockPageSize::Size4K;
     cfg.checksum_policy = cp;

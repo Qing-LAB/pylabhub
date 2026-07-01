@@ -43,7 +43,6 @@ static DataBlockConfig make_config(uint64_t secret, size_t logical_size, uint32_
     DataBlockConfig cfg{};
     cfg.policy = DataBlockPolicy::RingBuffer;
     cfg.consumer_sync_policy = ConsumerSyncPolicy::Sequential;
-    cfg.shared_secret = secret;
     cfg.ring_buffer_capacity = capacity;
     cfg.physical_page_size = DataBlockPageSize::Size4K;
     cfg.logical_unit_size = logical_size;

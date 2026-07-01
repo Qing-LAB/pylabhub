@@ -158,7 +158,6 @@ DataBlockConfig make_latest_only_config()
     // longer takes a secret) and post-#275-S5 the header field was renamed;
     // this write is now dead but persists until the field itself is deleted
     // from `DataBlockConfig` in the tracked REVIEW-C follow-up.
-    cfg.shared_secret          = kStressSecret;
     return cfg;
 }
 
@@ -174,7 +173,6 @@ DataBlockConfig make_backpressure_config()
     cfg.checksum_policy        = ChecksumPolicy::Enforced;
     cfg.flex_zone_size         = static_cast<size_t>(kFlexZoneSize);
     // #275-S2 deferred — see make_latest_only_config().
-    cfg.shared_secret          = kStressSecret;
     return cfg;
 }
 

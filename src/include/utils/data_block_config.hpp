@@ -93,8 +93,12 @@ struct DataBlockConfig
     // ── Identity ──────────────────────────────────────────────────────────────
     std::string name; ///< SHM segment name; derived from channel_name in hub API.
 
-    /** Access capability token. 0 = auto-generate random; non-zero = fixed for discovery. */
-    uint64_t shared_secret = 0;
+    // HEP-CORE-0041 1i-cleanup residue (#316, follows #275-S5 header rename):
+    // the legacy `shared_secret` field was deleted here.  SHM auth runs on
+    // the L2 capability-fd handshake (HEP-CORE-0041 §5.5), not a header-
+    // stored token; the DataBlock ctor stopped stamping in #275-S4 and
+    // the SharedMemoryHeader byte-slot was renamed `reserved_capability_token`
+    // in #275-S5.  This config field's writes were dead-writes post-S4.
 
     // ── Memory Layout ─────────────────────────────────────────────────────────
 

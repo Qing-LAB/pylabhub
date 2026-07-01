@@ -34,7 +34,6 @@ static DataBlockConfig make_valid_config(uint64_t secret, uint32_t capacity = 2)
     DataBlockConfig cfg{};
     cfg.policy = DataBlockPolicy::RingBuffer;
     cfg.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
-    cfg.shared_secret = secret;
     cfg.ring_buffer_capacity = capacity;
     cfg.physical_page_size = DataBlockPageSize::Size4K;
     cfg.checksum_policy = ChecksumPolicy::None;

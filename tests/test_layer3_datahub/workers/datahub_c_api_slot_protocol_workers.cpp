@@ -49,7 +49,6 @@ static DataBlockConfig make_config(ConsumerSyncPolicy sync_policy, int capacity,
     DataBlockConfig cfg{};
     cfg.policy = DataBlockPolicy::RingBuffer;
     cfg.consumer_sync_policy = sync_policy;
-    cfg.shared_secret = secret;
     cfg.ring_buffer_capacity = capacity;
     cfg.physical_page_size = DataBlockPageSize::Size4K;
     cfg.checksum_policy = ChecksumPolicy::None; // C API protocol tests; checksum tested separately

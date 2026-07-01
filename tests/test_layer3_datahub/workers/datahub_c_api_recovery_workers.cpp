@@ -48,7 +48,6 @@ int integrity_validator_validate_succeeds_on_created_datablock()
             DataBlockConfig config{};
             config.policy = DataBlockPolicy::RingBuffer;
             config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
-            config.shared_secret = 12345;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
 
@@ -75,7 +74,6 @@ int slot_diagnostics_refresh_succeeds_on_created_datablock()
             DataBlockConfig config{};
             config.policy = DataBlockPolicy::RingBuffer;
             config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
-            config.shared_secret = 12345;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
 
@@ -103,7 +101,6 @@ int slot_recovery_release_zombie_readers_on_empty_slot()
             DataBlockConfig config{};
             config.policy = DataBlockPolicy::RingBuffer;
             config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
-            config.shared_secret = 12345;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
 
@@ -131,7 +128,6 @@ int heartbeat_manager_registers_and_pulses()
             DataBlockConfig config{};
             config.policy = DataBlockPolicy::RingBuffer;
             config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
-            config.shared_secret = 54321;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
 
@@ -160,7 +156,6 @@ int producer_update_heartbeat_explicit_succeeds()
             DataBlockConfig config{};
             config.policy = DataBlockPolicy::RingBuffer;
             config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
-            config.shared_secret = 65432;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
 
@@ -186,7 +181,6 @@ int producer_heartbeat_and_is_writer_alive()
             DataBlockConfig config{};
             config.policy = DataBlockPolicy::RingBuffer;
             config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
-            config.shared_secret = 76543;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
 

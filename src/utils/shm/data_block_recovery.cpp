@@ -696,12 +696,10 @@ extern "C"
             expected_config.checksum_type =
                 static_cast<pylabhub::hub::ChecksumType>(header->checksum_type);
             expected_config.checksum_policy = header->checksum_policy;
-            uint64_t secret = 0;
-            std::memcpy(&secret, header->reserved_capability_token,
-                        sizeof(secret));
-            expected_config.shared_secret = secret;  // mirror header field
-                                                     // — bytes are reserved
-                                                     // post-S5 (#275)
+            // HEP-CORE-0041 1i-cleanup #316 (post-S5): the header's 64-byte
+            // `reserved_capability_token` slot is not read on the recovery
+            // consumer path — S4 deleted the memcmp gate and #316 deleted
+            // the `DataBlockConfig::shared_secret` mirror field.
 
             // 5. Checksums
             if (static_cast<pylabhub::hub::ChecksumType>(header->checksum_type) !=

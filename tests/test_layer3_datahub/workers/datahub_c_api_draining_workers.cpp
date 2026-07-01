@@ -50,7 +50,6 @@ static DataBlockConfig make_one_slot_config(uint64_t secret)
     DataBlockConfig cfg{};
     cfg.policy = DataBlockPolicy::RingBuffer;
     cfg.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
-    cfg.shared_secret = secret;
     cfg.ring_buffer_capacity = 1;
     cfg.physical_page_size = DataBlockPageSize::Size4K;
     cfg.checksum_policy = ChecksumPolicy::None;
@@ -382,7 +381,6 @@ int no_reader_races_on_clean_wraparound()
             DataBlockConfig cfg{};
             cfg.policy = DataBlockPolicy::RingBuffer;
             cfg.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
-            cfg.shared_secret = 72005;
             cfg.ring_buffer_capacity = 2; // 2 slots: forces wrap every 2 writes
             cfg.physical_page_size = DataBlockPageSize::Size4K;
             cfg.checksum_policy = ChecksumPolicy::None;
@@ -445,7 +443,6 @@ int single_reader_ring_full_blocks_not_draining()
             DataBlockConfig cfg{};
             cfg.policy = DataBlockPolicy::RingBuffer;
             cfg.consumer_sync_policy = ConsumerSyncPolicy::Sequential;
-            cfg.shared_secret = 72006;
             cfg.ring_buffer_capacity = 2;
             cfg.physical_page_size = DataBlockPageSize::Size4K;
             cfg.checksum_policy = ChecksumPolicy::None;
@@ -533,7 +530,6 @@ int sync_reader_ring_full_blocks_not_draining()
             DataBlockConfig cfg{};
             cfg.policy = DataBlockPolicy::RingBuffer;
             cfg.consumer_sync_policy = ConsumerSyncPolicy::Sequential_sync;
-            cfg.shared_secret = 72007;
             cfg.ring_buffer_capacity = 3;
             cfg.physical_page_size = DataBlockPageSize::Size4K;
             cfg.checksum_policy = ChecksumPolicy::None;
