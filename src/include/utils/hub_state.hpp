@@ -310,10 +310,16 @@ struct ChannelAccessEntry
     /// uint64_t; the highest allowlist snapshot version each
     /// producer's current instance has confirmed applying via
     /// `CHANNEL_AUTH_APPLIED_REQ`.  Keyed by producer `role_uid`.
-    /// Reset to 0 on producer disconnect, producer re-registration
-    /// (via bumping `HubState::producer_instance_`), or broker
-    /// restart.  Read by the fast-path check
-    /// `confirmed_version[K][P] >= channel_version[K]`.
+    /// Reset to 0 by erasing the map entry on:
+    /// - Producer re-registration under the same role_uid (bumped in
+    ///   `_on_producer_added` alongside `HubState::producer_instance`).
+    /// - Producer disconnect / drop (`_on_producer_dropped` non-last-
+    ///   producer path; last-producer path implicitly clears via
+    ///   `_on_channel_access_closed`).
+    /// - Broker restart (state is fresh).
+    /// Read by the fast-path check `confirmed_version[K][P] >=
+    /// channel_version[K]`; a missing map entry is treated as 0 by
+    /// `handle_consumer_attach_req_zmq` (§5.4 fast-path).
     std::unordered_map<std::string, std::uint64_t>
         confirmed_version_per_producer;
 };

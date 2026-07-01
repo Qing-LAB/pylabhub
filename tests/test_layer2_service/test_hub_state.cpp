@@ -3963,38 +3963,130 @@ TEST(HubStateHep0042, ProducerInstance_BumpsOnFirstRegistration)
         << "first registration must lift instance 0 → 1";
 }
 
-TEST(HubStateHep0042, ProducerInstance_BumpsOnReRegistration)
+TEST(HubStateHep0042, ProducerInstance_BumpsAcrossMultiChannelRegistration)
 {
-    // §5.2 P4 stale-instance guard: re-registration under same
-    // role_uid must bump the counter.  This is what makes a
-    // stale CHANNEL_AUTH_APPLIED_REQ from a crashed prior instance
-    // silently dropped by the broker handler (§5.4 step a).
-    //
-    // In production _on_producer_added under the same role_uid on the
-    // same channel returns RejectedUidConflict (existing entry).  For
-    // the counter test, use a fresh channel per registration — the
-    // per-producer instance counter is CHANNEL-INDEPENDENT (keyed by
-    // role_uid alone), so each registration bumps it regardless of
-    // which channel the entry landed on.
+    // Instance is CHANNEL-INDEPENDENT (keyed by role_uid alone).  A
+    // producer serving two channels bumps its instance twice — once
+    // per _on_producer_added.  This pins the per-role_uid semantics of
+    // the counter (as opposed to per-(channel, producer)).
     HubState s;
     ASSERT_EQ(HubStateTestAccess::on_producer_added(
-                  s, "ch.hep42.rerun.a",
+                  s, "ch.hep42.multi.a",
                   make_schema_invariants(),
                   make_zmq_transport(),
-                  make_producer("prod.rerun.uid00000001", 2002))
+                  make_producer("prod.multi.uid00000001", 2002))
                   .producer_result,
               AddProducerResult::Created);
-    ASSERT_EQ(s.producer_instance("prod.rerun.uid00000001"), 1u);
+    ASSERT_EQ(s.producer_instance("prod.multi.uid00000001"), 1u);
 
     ASSERT_EQ(HubStateTestAccess::on_producer_added(
-                  s, "ch.hep42.rerun.b",
+                  s, "ch.hep42.multi.b",
                   make_schema_invariants(),
                   make_zmq_transport(),
-                  make_producer("prod.rerun.uid00000001", 2002))
+                  make_producer("prod.multi.uid00000001", 2002))
                   .producer_result,
               AddProducerResult::Created);
-    EXPECT_EQ(s.producer_instance("prod.rerun.uid00000001"), 2u)
-        << "re-registration must bump instance 1 → 2 (§5.2 stale-instance guard)";
+    EXPECT_EQ(s.producer_instance("prod.multi.uid00000001"), 2u);
+}
+
+TEST(HubStateHep0042, ProducerInstance_BumpsOnCrashRestartSameChannel)
+{
+    // §5.2 P4 stale-instance guard — the real crash-restart scenario:
+    // producer runs on channel K, gets reaped, new instance re-adds
+    // to K.  The counter must bump on the re-add so the OLD instance's
+    // in-flight APPLIED_REQ (echoing instance=1) gets dropped when
+    // the new instance is at 2.
+    //
+    // Simulated via _on_producer_dropped (reap) + _on_producer_added.
+    // add_producer's UidConflict short-circuit is NOT hit here because
+    // the reap already emptied producers[].
+    const std::string uid = "prod.crash.uid00000001";
+    const std::string ch  = "ch.hep42.crash";
+
+    HubState s;
+    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+                  s, ch, make_schema_invariants(), make_zmq_transport(),
+                  make_producer(uid, 3001))
+                  .producer_result,
+              AddProducerResult::Created);
+    ASSERT_EQ(s.producer_instance(uid), 1u);
+
+    // Add a second producer so the reap of `uid` is NOT the last-
+    // producer path (which would nuke the whole channel via atomic
+    // teardown).  This mirrors the fan-in production case: one
+    // producer crashes while another survives.
+    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+                  s, ch, make_schema_invariants(), make_zmq_transport(),
+                  make_producer("prod.sibling.uid00000002", 3002))
+                  .producer_result,
+              AddProducerResult::Created);
+
+    auto rm = HubStateTestAccess::on_producer_dropped(
+        s, ch, uid, pylabhub::hub::ChannelCloseReason::VoluntaryDereg);
+    ASSERT_TRUE(rm.removed);
+    ASSERT_FALSE(rm.channel_now_empty);
+
+    // Re-add the same uid — the counter must bump.
+    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+                  s, ch, make_schema_invariants(), make_zmq_transport(),
+                  make_producer(uid, 3001))
+                  .producer_result,
+              AddProducerResult::Created);
+    EXPECT_EQ(s.producer_instance(uid), 2u)
+        << "crash-restart on same channel must bump instance (§5.2)";
+}
+
+TEST(HubStateHep0042, ConfirmedVersion_ResetOnReRegistration)
+{
+    // §5.4 mandates confirmed_version[K][P] = 0 on re-registration.
+    // Without this, the new instance inherits the OLD instance's
+    // confirmed state — fast-path admits against an empty ZAP cache,
+    // CURVE handshake fails, and P1 ("one wait-path cycle per rare
+    // event") is broken until the next channel_version bump.
+    const std::string uid = "prod.reset.uid00000001";
+    const std::string ch  = "ch.hep42.reset";
+
+    HubState s;
+    HubStateTestAccess::on_channel_access_opened(s, ch);
+
+    // Register + advance confirmed to 42.
+    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+                  s, ch, make_schema_invariants(), make_zmq_transport(),
+                  make_producer(uid, 4001))
+                  .producer_result,
+              AddProducerResult::Created);
+    ASSERT_EQ(s._on_producer_confirmed(ch, uid, 42), 42u);
+
+    // Sibling to keep the channel alive across the reap.
+    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+                  s, ch, make_schema_invariants(), make_zmq_transport(),
+                  make_producer("prod.sibling.reset.uid00000002", 4002))
+                  .producer_result,
+              AddProducerResult::Created);
+
+    auto rm = HubStateTestAccess::on_producer_dropped(
+        s, ch, uid, pylabhub::hub::ChannelCloseReason::VoluntaryDereg);
+    ASSERT_TRUE(rm.removed);
+
+    // Verify confirmed_version cleared after the drop.
+    auto after_drop = s.channel_access(ch);
+    ASSERT_TRUE(after_drop.has_value());
+    EXPECT_EQ(after_drop->confirmed_version_per_producer.count(uid), 0u)
+        << "producer drop must erase confirmed_version[K][P]";
+
+    // Re-register the crashed uid.  Instance bumps 1 → 2 AND
+    // confirmed_version stays at 0 for this pair.
+    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+                  s, ch, make_schema_invariants(), make_zmq_transport(),
+                  make_producer(uid, 4001))
+                  .producer_result,
+              AddProducerResult::Created);
+    auto after_readd = s.channel_access(ch);
+    ASSERT_TRUE(after_readd.has_value());
+    auto it = after_readd->confirmed_version_per_producer.find(uid);
+    if (it != after_readd->confirmed_version_per_producer.end())
+        FAIL() << "confirmed_version must be reset (map entry erased) "
+                  "on re-registration; instead saw " << it->second;
 }
 
 TEST(HubStateHep0042, ProducerConfirmed_AdvancesConfirmedVersion)

@@ -1072,10 +1072,27 @@ HubState::_on_producer_added(const std::string&         channel_name,
         // instance_id against the current counter and silently drops
         // mismatches (§5.2 stale-instance guard, P4 preservation).
         //
+        // §5.4 mandates confirmed_version[K][P] = 0 on re-registration.
+        // Erase the map entry (equivalent to reset-to-0 given
+        // handle_consumer_attach_req_zmq treats a missing key as 0)
+        // atomically with the counter bump.  Without this, a fresh
+        // producer instance inherits the OLD instance's confirmed
+        // state, making the fast-path admit a consumer whose pubkey
+        // is not in the new instance's empty cache — CURVE handshake
+        // fails (P4 direction A survives), but the P1 "one wait-path
+        // cycle per rare event" promise is broken (persistent hard
+        // failure until the next channel_version bump).
+        //
         // Held under the same writer lock as the producer append so
-        // the two mutations are atomic from any reader's perspective.
+        // the state triple stays consistent for any reader.
         if (!producer_uid.empty())
+        {
             ++pImpl->producer_instance[producer_uid];
+            auto acc_it = pImpl->channel_access_index.find(channel_name);
+            if (acc_it != pImpl->channel_access_index.end())
+                acc_it->second.confirmed_version_per_producer
+                    .erase(producer_uid);
+        }
     } // release writer lock before firing handlers.
 
     if (did_fire_open)
@@ -1151,6 +1168,19 @@ HubState::_on_producer_dropped(const std::string& channel_name,
                 (void)rit->second.drop_channel_if_orphaned(channel_name);
                 transitioned = true;
             }
+            // HEP-CORE-0042 §5.4 mandates confirmed_version[K][P] = 0
+            // on producer disconnect.  Held under the same writer lock
+            // as the producer removal for atomicity with the state
+            // triple.  Erase (equivalent to reset-to-0) so subsequent
+            // fast-path checks for this (K, P) treat the pair as
+            // never-confirmed until the new instance's APPLIED_REQ
+            // pipeline runs.  Last-producer path skips this — the
+            // whole ChannelAccessEntry is nuked by
+            // _on_channel_access_closed downstream.
+            auto acc_it = pImpl->channel_access_index.find(channel_name);
+            if (acc_it != pImpl->channel_access_index.end())
+                acc_it->second.confirmed_version_per_producer
+                    .erase(role_uid);
             // Fall through to dispatch after lock release.
         }
         // Last-producer path: leave the producer in producers[] so
