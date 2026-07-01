@@ -132,7 +132,12 @@ Ack is not fire-and-forget — it lets the producer detect broker-side failure a
 1. Marks per-producer-per-channel "cache in sync at version X" state.  Feeds the pending-ATTACH-drain step (§5.2).
 2. For revoke operations: broker now has explicit proof that the revoked pubkey is no longer accepted at the producer's ZAP handler.  Feeds any revocation audit trail / retry decisions.
 
-**Broker MUST NOT** treat an admit or revoke as globally committed until `CHANNEL_AUTH_APPLIED_REQ` arrives for the version that carried that change.  If the ACK never arrives (producer disconnected mid-sequence), the broker's timeout budget on the pending consumer ATTACH REQ closes the admit path with `status="timeout"`; revoke retries via re-NOTIFY.
+**Broker MUST NOT** treat an admit or revoke as globally committed until `CHANNEL_AUTH_APPLIED_REQ` arrives for the version that carried that change.  Two failure modes when APPLIED_REQ never arrives:
+
+- **Broker detects producer disconnect** (ROUTER socket event, presence transition to kDead): closes any pending consumer ATTACH REQ with `status="denied"`, reason `producer_disconnected` per §5.5.
+- **Broker cannot detect disconnect within budget** (silent TCP drop, producer alive but stuck): `producer_apply_wait_ms` timer expires; broker closes pending consumer ATTACH REQ with `status="timeout"`.
+
+Revoke path: broker re-NOTIFYs on the next update cycle; producer catches up when reachable again.
 
 ### 4.3 Reused wires — one payload extension, otherwise unchanged
 
@@ -245,7 +250,7 @@ sequenceDiagram
     Note over B: confirmed_version[K][P] = 13<br/>drain queue:<br/>  B (target 12 ≤ 13) → ACK success<br/>  C (target 13 ≤ 13) → ACK success
 ```
 
-Why using "current snapshot version at time of REQ" for `target_version` (my earlier ambiguous phrasing) would be WRONG:  suppose the current snapshot version when B's ATTACH_REQ arrives is 13 (because C also joined by then).  If we stored `target_version=13` for B, B would wait until producer catches up to version 13 even though B only needs producer at version 12.  If C never joins in some scenario, B would wait indefinitely for changes it doesn't care about.  Storing `v_add(B, K)=12` is minimally correct.
+Why `target_version = v_add(C, K)` and NOT "current snapshot version at time of REQ": suppose when B's ATTACH_REQ arrives, C has also joined, so the current snapshot is at version 13.  If we stored `target_version=13` for B, B would wait until producer catches up to version 13 — but B's pubkey exists at version 12.  Any producer confirmation ≥ 12 already covers B; requiring ≥ 13 forces B to wait for changes B doesn't care about (say, C's admission), delaying B's dial for no security or correctness reason.  `target_version = v_add(B, K) = 12` is minimally correct.
 
 ### 5.3 Why this is NOT the retracted "broker as sync-request initiator" pattern
 
@@ -270,7 +275,7 @@ Notation is defined in §5.2 preamble.  Recap: `confirmed_version[K][P]` = highe
 
 **Memory cost:** O(channels × producers) — just an integer version per (K, P) pair.  Much smaller than the earlier "set of pubkeys per pair" option.
 
-**On producer disconnect:** clear `confirmed_version[K][*P*]` for that producer.  Any subsequent ATTACH REQ against P goes through the wait path; a re-authenticated producer instance's `confirmed_version` rebuilds on its next pull + APPLIED_REQ.
+**On producer disconnect:** clear `confirmed_version[K][P]` for the disconnected producer P.  Any subsequent ATTACH REQ against P goes through the wait path; a re-authenticated producer instance's `confirmed_version` rebuilds on its next pull + APPLIED_REQ.
 
 **On broker restart:** all `confirmed_version` state is lost.  First post-restart ATTACH REQ against any producer takes the wait path; on that producer's next pull + APPLIED_REQ, `confirmed_version` reconstitutes.  Self-healing without special-casing.
 
@@ -374,18 +379,28 @@ Post-amendment shape:
 ```
 on GET_CHANNEL_AUTH_ACK(ack):
   ok = ZmqQueue::set_peer_allowlist(ack.allowlist)
-  if ok:
-    brc.request(CHANNEL_AUTH_APPLIED_REQ{
-      channel_name: ack.channel_name,
-      producer_role_uid: pImpl->uid,
-      applied_version: ack.applied_version
-    }, timeout_ms=applied_ack_wait_ms)             ← D3 bidirectional confirmation
-    # ack from broker is logged; failure is WARN, cache stays applied
-  else:
+  if not ok:
     # MVP: silent to broker — broker will observe as timeout on any pending ATTACH REQ.
-    #       Producer logs ERROR for post-mortem.  Distinct negative-confirm wire
-    #       (APPLIED_REQ{status="failed"}) is deferred as follow-on (§13 [me] item).
+    #       Distinct negative-confirm wire (APPLIED_REQ{status="failed"}) deferred
+    #       as follow-on (§13 [me] item).
     LOGGER_ERROR("[{}] set_peer_allowlist failed for channel {}", short_tag, ack.channel_name)
+    return
+
+  # D3 bidirectional confirmation
+  applied_ack = brc.request(CHANNEL_AUTH_APPLIED_REQ{
+    channel_name: ack.channel_name,
+    producer_role_uid: pImpl->uid,
+    applied_version: ack.applied_version
+  }, timeout_ms=applied_ack_wait_ms)
+
+  if applied_ack.status == "ok":
+    LOGGER_INFO("[{}] pre-attach: applied allowlist v{} (size={}, channel={})",
+                short_tag, ack.applied_version, ack.allowlist.size(), ack.channel_name)
+  else:
+    # timeout, transport error, or broker error — cache STAYS applied locally;
+    # only observability lost.  Broker will re-drive on the next NOTIFY cycle.
+    LOGGER_WARN("[{}] applied confirmation not acknowledged by broker for channel {} v{} — cache remains applied",
+                short_tag, ack.channel_name, ack.applied_version)
 ```
 
 Rationale: broker MUST know when the producer's ZAP cache has actually reflected each snapshot.  Without APPLIED_REQ, broker would treat GET_CHANNEL_AUTH_ACK-delivered as proof — but that only proves libzmq delivered the ACK bytes, not that `set_peer_allowlist` succeeded or that the ZAP cache is now enforcing the new snapshot.
@@ -583,7 +598,7 @@ Phase 1 promotion is NOT a pointer-only cross-ref update.  Each of these HEPs ne
 
 ### 10.1 HEP-CORE-0041 (authoritative home — new §Phase 5)
 
-Merge §4-§6 substance verbatim into new subsections of HEP-CORE-0041.  §7 (open questions) and §13 (open discussion items) do NOT promote — those are pre-promotion review artifacts.  §11 revocation guarantee lands as §Phase 5.6.
+Merge §4-§6 substance verbatim into new subsections of HEP-CORE-0041.  §7 (open questions) and §13 (open discussion items) do NOT promote — those are pre-promotion review artifacts.  §11.1 revocation guarantee (NOT the §11 scope-discipline list) lands as §Phase 5.6.
 
 - **§Phase 5.1 — Wire spec.** §4.1 CONSUMER_ATTACH_REQ_ZMQ / _ACK + §4.2 CHANNEL_AUTH_APPLIED_REQ / _ACK + §4.3 GET_CHANNEL_AUTH_ACK `applied_version` extension.
 - **§Phase 5.2 — Broker handler.** §5.2 flow + §5.3 discipline explainer + §5.4 confirmed_version state + §5.5 timeout/failure taxonomy table.
@@ -666,7 +681,7 @@ Three new API entries need parity across Lua / Python / Native.  Status + reason
 | `api.producer_attach_reason(channel, uid)` | `string` | Free-form; when status = `success`, empty.  When status = `denied` or `timeout`, one of the reason strings enumerated in §5.5 (e.g., `consumer_not_in_channel_allowlist`, `producer_not_live`, `producer_disconnected`, `channel_closing`, `producer_did_not_confirm_within_budget`). |
 
 - `not_declared` — returned when queried uid isn't in the REG_ACK.producers[] set.  Defensive; distinguishes "never tried" from "tried and failed."
-- Status enum values map directly to wire (§4.1); no `producer_dead` or `producer_disconnected` at the enum level — those are REASONS under `denied`.
+- Status enum values map directly to wire (§4.1); disconnect / not-live conditions are REASONS under `denied` (see §5.5), not top-level status values.
 
 Native C ABI version bump per HEP-0028 policy.  Ties to existing #234 (producers_contains / producers_count gap) — resolve together.
 
@@ -676,7 +691,7 @@ Fan-in geometry is unchanged; the new observability just makes per-producer stat
 
 ### 10.7 HEP-CORE-0023 (BRC — no normative change)
 
-BRC synchronous REQ/REP contract absorbs `CONSUMER_ATTACH_REQ_ZMQ` + `CHANNEL_AUTH_APPLIED_REQ` transparently — same shape as existing HEARTBEAT_REQ / GET_CHANNEL_AUTH_REQ.  No new BRC-layer contract text.  If Option C (concurrent coalesced ATTACH_REQ) is ever picked up as follow-on, HEP-0023 would need multi-outstanding contract; deferred.
+BRC synchronous REQ/REP contract absorbs `CONSUMER_ATTACH_REQ_ZMQ` + `CHANNEL_AUTH_APPLIED_REQ` transparently — same shape as existing HEARTBEAT_REQ / GET_CHANNEL_AUTH_REQ.  No new BRC-layer contract text.  If a concurrent coalesced `ATTACH_REQ{producers[]}` follow-on is ever picked up (the fan-in optimization alternative floated in §7.2), HEP-0023 would need multi-outstanding contract; deferred.
 
 ### 10.8 docs/todo/AUTH_TODO.md + docs/todo/MESSAGEHUB_TODO.md
 
