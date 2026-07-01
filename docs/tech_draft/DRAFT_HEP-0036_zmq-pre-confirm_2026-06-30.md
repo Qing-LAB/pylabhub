@@ -26,6 +26,7 @@ Anchor for terms used throughout — expanded here to reduce round-trips to sibl
 | BRC | BrokerRequestComm — the consumer/producer-side sync REQ/REP wrapper used to talk to broker's ROUTER. |
 | SCM_RIGHTS | Unix syscall message type for passing an open file descriptor between processes over an AF_UNIX socket.  Used on SHM path (HEP-0041), NOT on ZMQ path — mentioned for symmetry only. |
 | CONSUMER_REG_ACK.producers[] (aka `REG_ACK.producers[]` in shorthand) | Payload of CONSUMER_REG_ACK — list of `{role_uid, endpoint, pubkey_z85}` objects for producers on the channel.  Doc uses both forms interchangeably; long form on first use, short form thereafter. |
+| `api.channel_stop(channel)` | Script-side accessor referenced in §10.4 how-to and §12.1 script decision.  Assumes existing framework API (Stage 1A / HEP-CORE-0011); NOT introduced by this amendment.  If it does not exist as an existing API, §10.4 how-to must fall back to alternative shutdown (returning from callback without proceeding, or `api.role_stop()`). |
 
 ---
 
@@ -186,7 +187,7 @@ Revoke path retry policy on missed APPLIED_REQ is DEFERRED to §7.4 (`[user]`). 
 }
 ```
 
-**Backward-compatibility caveat.** The extension is byte-additive to the wire, but it is NOT semantically additive under D3.  A mixed deployment — new-consumer + old-producer that doesn't emit APPLIED_REQ — leaves `confirmed_version[K][P]=0` forever; every new consumer's ATTACH_REQ hits the wait path, waits `producer_apply_wait_ms`, and times out.  The correct operator model is "the wire is protocol-bumped in Phase 2; old producers cannot coexist with new consumers on a pre-confirm channel."  Do NOT rely on "additive" as a mixed-fleet strategy.
+**Backward-compatibility caveat.** The extension is byte-additive to the wire, but it is NOT semantically additive under D3.  A mixed deployment — new-consumer + old-producer that doesn't emit APPLIED_REQ — leaves `confirmed_version[K][P]=0` forever; every new consumer's ATTACH_REQ hits the wait path, waits `producer_apply_wait_ms`, and times out.  The correct operator model is "old producers cannot coexist with new consumers on a pre-confirm channel."  The coexistence hazard fires at Phase 3 rollout time (producer-side APPLIED_REQ implementation), NOT Phase 2 (broker-side changes are silent to old producers).  §9 rollout-ordering constraint spells out the enforcement mechanism.  Do NOT rely on "additive" as a mixed-fleet strategy.
 
 The pre-confirm reuses these existing surfaces for the pull leg; the consumer-broker leg (§4.1) and the producer→broker confirmation leg (§4.2) are new.
 
@@ -228,19 +229,26 @@ CONSUMER_ATTACH_REQ_ZMQ arrives from consumer C for channel K + producer P:
 5. Wait path (confirmed_version[K][P] < v_add(C, K)):
    a. Enqueue this ATTACH REQ into ChannelEntry[K].producer[P].pending_attach_queue with
       target_version = v_add(C, K)  (the version we need P to catch up to).
-   b. Fire CHANNEL_AUTH_CHANGED_NOTIFY to P (fire-and-forget, existing wire) — BUT ONLY
-      IF `notify_outstanding[K][P] == false` (no NOTIFY has been fired since the last
-      GET_CHANNEL_AUTH_REQ from P was received).  If `true`, skip: the earlier NOTIFY
-      is still "in flight" and P's forthcoming pull will snapshot ChannelAccessIndex[K]
-      at that moment — which INCLUDES this new consumer's admission (index was already
-      bumped in step 2's lookup context).
-      Fire condition: set `notify_outstanding[K][P] = true` when NOTIFY sent.
-      Clear condition: set `notify_outstanding[K][P] = false` when GET_CHANNEL_AUTH_REQ
-      from P arrives (see next handler block).
-      **Why NOT time-window debounce:** a wall-clock window can skip a NOTIFY for a
-      consumer admitted AFTER the prior pull already completed on an older snapshot;
-      that consumer would then wait indefinitely for a NOTIFY that already happened.
-      Keying debounce on "outstanding pull" (not "recent NOTIFY") avoids this.
+   b. Fire CHANNEL_AUTH_CHANGED_NOTIFY to P (fire-and-forget, existing wire) — with debounce:
+      **Fire condition:** `notify_outstanding[K][P] == false` OR the outstanding NOTIFY has
+      aged past `notify_max_age_ms` (default: 1000 ms, MUST be < `producer_apply_wait_ms`).
+      **State on fire:** set `notify_outstanding[K][P] = true` and stamp `notify_fired_at[K][P] = now`.
+      **State on skip:** the earlier NOTIFY's pull will snapshot ChannelAccessIndex[K] which
+      INCLUDES this new consumer (step 2's index bump preceded this handler).
+      **Aging rationale:** if the NOTIFY frame was DROPPED (network glitch, ROUTER hiccup,
+      producer socket flap), the bool would otherwise stay true forever and wedge the
+      channel.  Aging past `notify_max_age_ms` treats the bool as stale and re-fires.
+      **Clear conditions** (also spec'd in §5.4):
+      - GET_CHANNEL_AUTH_REQ from P arrives → clear immediately (normal case).
+      - Any pending ATTACH REQ for (K, P) times out at `producer_apply_wait_ms` → force-clear
+        so the next ATTACH REQ re-fires NOTIFY (safety net for dropped-NOTIFY case).
+      - P transitions to kDead / disconnects → clear (fresh producer instance needs fresh NOTIFY).
+      - Channel K closes → clear (state deleted with channel).
+      **Why NOT time-window debounce:** a pure wall-clock window can skip a NOTIFY for a
+      consumer admitted AFTER the prior pull already completed on an older snapshot; that
+      consumer would then wait indefinitely for a NOTIFY that already happened.  The
+      bool-with-aging rule handles both cases: normal fan-in coalesces via bool; dropped
+      NOTIFY self-heals via aging.
    c. Do NOT send an ATTACH_ACK yet. Handler returns to the ROUTER loop.
 
 When P's GET_CHANNEL_AUTH_REQ arrives:
@@ -253,13 +261,21 @@ When P's GET_CHANNEL_AUTH_REQ arrives:
       again on P's subsequent APPLIED_REQ.
 
 When P's CHANNEL_AUTH_APPLIED_REQ{channel=K, applied_version=W} arrives (D3 bidirectional confirmation):
-   a. Reply CHANNEL_AUTH_APPLIED_ACK{status="ok", channel_name=K, applied_version=W}.
-   b. Advance broker state: confirmed_version[K][P] = max(confirmed_version[K][P], W).
-      P's ZAP cache now enforces the allowlist at version W.
-   c. Walk pending_attach_queue.  For each pending REQ with target_version ≤ W:
-        → reply status="success". Remove from queue.
-   d. Leave entries with target_version > W (a NEWER consumer joined while W was in flight);
-      they drain on the NEXT APPLIED_REQ from P.
+   a. Check channel exists: if K not in ChannelAccessIndex (broker restarted, channel closed)
+      → reply CHANNEL_AUTH_APPLIED_ACK{status="unknown_channel", reason="channel_not_in_broker_registry"}.
+      Handler complete (no state change; producer will drop this snapshot's follow-up on its side).
+   b. Check freshness: if W < confirmed_version[K][P] (producer sent a stale APPLIED_REQ; possible
+      under NOTIFY-storm or retry conditions where a NEWER apply already landed) →
+      reply CHANNEL_AUTH_APPLIED_ACK{status="stale", reason="applied_version_older_than_current",
+      channel_name=K, applied_version=confirmed_version[K][P]}.
+      Handler complete: broker state unchanged (already at newer version); no drain (already drained on the newer APPLIED_REQ).
+   c. Otherwise (W >= confirmed_version[K][P] — the normal case):
+      i.  Reply CHANNEL_AUTH_APPLIED_ACK{status="ok", channel_name=K, applied_version=W}.
+      ii. Advance broker state: confirmed_version[K][P] = W.  P's ZAP cache now enforces the allowlist at version W.
+      iii. Walk pending_attach_queue.  For each pending REQ with target_version ≤ W:
+             → reply CONSUMER_ATTACH_ACK_ZMQ{status="success"}.  Remove from queue.
+      iv. Leave entries with target_version > W (a NEWER consumer joined while W was in flight);
+          they drain on the NEXT APPLIED_REQ from P.
 ```
 
 **Worked example — why the two invariants matter.**  Timeline of a fan-in channel K with producer P and three consumers A, B, C admitted in order:
@@ -361,11 +377,10 @@ stateDiagram-v2
     [*] --> Absent: (uid, pubkey, K) not in v_add table
     Absent --> Live: CONSUMER_REG admits (uid, pubkey) to K<br/>write v_add((uid, pubkey), K) = current_version
     Live --> Absent: CONSUMER_REG revokes (uid, pubkey) from K<br/>delete v_add((uid, pubkey), K)
-    Live --> Retired: CONSUMER_REG rotates (uid → pubkey_new)<br/>delete v_add((uid, pubkey_old), K)<br/>[a fresh Absent→Live tuple exists for (uid, pubkey_new, K)]
+    Live --> Absent: CONSUMER_REG rotates (uid → pubkey_new)<br/>delete v_add((uid, pubkey_old), K)<br/>[a fresh Absent→Live tuple exists for (uid, pubkey_new, K)]<br/>(uid, pubkey_old) is now Absent — same terminal-Absent as revoke)
     Absent --> Live: CONSUMER_REG re-admits (uid, pubkey) to K<br/>write FRESH v_add((uid, pubkey), K) = current_version<br/>(NOT the old value; §5.4 rule 2)
     Live --> [*]: channel K closes<br/>delete all v_add(*, *, K)
     Absent --> [*]: channel K closes
-    Retired --> [*]: channel K closes
 ```
 
 **Reading the rotation transition:** treat it as TWO simultaneous events on TWO different tuples.  The (uid, pubkey_old, K) tuple goes Live→Retired.  A different (uid, pubkey_new, K) tuple, previously Absent (because pubkey_new wasn't admitted before), goes Absent→Live at the same broker-side atomic step.  Both writes reflect the same monotonic version bump.
@@ -463,6 +478,12 @@ apply_consumer_reg_ack(REG_ACK ack):
         consumer_role_uid: pImpl->uid,
         producer_role_uid: producer.role_uid
       }, timeout_ms=attach_ack_wait_ms)
+      # If brc.request itself timed out (no wire reply from broker at all — distinct from
+      # broker's wire-level status="timeout" which means broker DID reply but producer
+      # was silent), synthesize a client-side outcome that api.producer_attach_status
+      # can distinguish from wire-timeout:
+      if attach_ack IS NULL:                                                          ← client-side timeout
+        attach_ack = { status: "timeout", reason: "no_broker_reply_within_client_budget" }
       # Capture BOTH status AND reason — api.producer_attach_status() reads
       # status; api.producer_attach_reason() reads reason (§10.5 accessors).
       per_producer_outcome[producer.role_uid] = {
@@ -521,6 +542,15 @@ on GET_CHANNEL_AUTH_ACK(ack):
   # done
 ```
 
+**Producer-side state added under this amendment:**
+```
+# Per-channel, per-producer local state:
+producer_applied_version_by_channel[K] : int  # highest applied_version successfully sent
+                                              # via CHANNEL_AUTH_APPLIED_REQ for channel K.
+                                              # Feeds §7.4(c) re-registration reconciliation.
+                                              # Initialized to 0 on producer startup.
+```
+
 Post-amendment shape:
 ```
 on GET_CHANNEL_AUTH_ACK(ack):
@@ -544,13 +574,30 @@ on GET_CHANNEL_AUTH_ACK(ack):
     applied_version: ack.snapshot_version
   }, timeout_ms=applied_ack_wait_ms)
 
+  # Branch on wire status enum from §4.2:
+  # Update producer-side per-channel state (feeds §7.4(c) reconciliation on re-reg).
+  producer_applied_version_by_channel[ack.channel_name] = max(
+    producer_applied_version_by_channel[ack.channel_name],
+    ack.snapshot_version
+  )
+
   if applied_ack.status == "ok":
-    LOGGER_INFO("[{}] pre-attach: applied allowlist v{} (size={}, channel={})",
+    LOGGER_INFO("[{}] pre-attach: applied allowlist v{} (size={}, channel={}) — ack ok",
                 short_tag, ack.snapshot_version, ack.allowlist.size(), ack.channel_name)
+  elif applied_ack.status == "stale":
+    # Normal case under NOTIFY-storm / out-of-order retries; a newer version already applied.
+    # Cache is CORRECT locally (producer's applied newer snapshot).  Log INFO per §4.2 table.
+    LOGGER_INFO("[{}] pre-attach: applied v{} superseded — broker at v{} (channel={})",
+                short_tag, ack.snapshot_version, applied_ack.applied_version, ack.channel_name)
+  elif applied_ack.status == "unknown_channel":
+    # Broker restart or channel closed since our pull.  Cache is fine locally; broker will re-drive.
+    LOGGER_WARN("[{}] pre-attach: broker doesn't recognize channel {} — likely restart; local cache preserved",
+                short_tag, ack.channel_name)
   else:
-    # timeout, transport error, or broker error — cache STAYS applied locally;
-    # only observability lost.  Broker will re-drive on the next NOTIFY cycle.
-    LOGGER_WARN("[{}] applied confirmation not acknowledged by broker for channel {} v{} — cache remains applied",
+    # Producer-side timeout OR transport error — no wire response at all.
+    # Per §4.2 note: this is NOT a wire status enum, it's a producer-observable-only outcome.
+    # Cache STAYS applied locally.  Broker will re-drive on next NOTIFY cycle.
+    LOGGER_WARN("[{}] pre-attach: no applied_ack from broker within applied_ack_wait_ms for channel {} v{} — local cache preserved",
                 short_tag, ack.channel_name, ack.snapshot_version)
 ```
 
@@ -563,7 +610,7 @@ Rationale: broker MUST know when the producer's ZAP cache has actually reflected
 - Consumer's `CONSUMER_ATTACH_REQ_ZMQ` timeout (client-side): `attach_ack_wait_ms`, default 5000 ms.
 - Broker's producer-apply wait (server-side): `producer_apply_wait_ms`, default 3000 ms.  Covers the round-trip from `CHANNEL_AUTH_CHANGED_NOTIFY` fired → producer's `CHANNEL_AUTH_APPLIED_REQ` received.  Renamed from earlier draft's `producer_pull_wait_ms` — the wait now bounds the WHOLE apply cycle (pull + apply + confirm), not just the pull.
 - Producer's `CHANNEL_AUTH_APPLIED_REQ` timeout (producer-side): `applied_ack_wait_ms`, default 1000 ms.  Producer WARN-logs on missed ack; cache stays applied locally.
-- **Budget ordering invariant (NORMATIVE — restated for locality):** `attach_ack_wait_ms > producer_apply_wait_ms`.  Any config change to `producer_apply_wait_ms` upward MUST bump `attach_ack_wait_ms` correspondingly (config-validation check at load time recommended).  Default (5000 > 3000) satisfies this.  Producer's `applied_ack_wait_ms` is independent (not on the consumer's critical path).  This invariant is ALSO stated in §5.5 for locality in the timeout/failure taxonomy section.
+- **Budget ordering invariant (NORMATIVE — restated for locality):** `attach_ack_wait_ms > producer_apply_wait_ms`.  Any config change to `producer_apply_wait_ms` upward MUST bump `attach_ack_wait_ms` correspondingly (config-validation check at load time recommended).  Default (5000 > 3000) satisfies this.  Producer's `applied_ack_wait_ms` is independent (not on the consumer's critical path).  This invariant is ALSO stated in §5.7 for locality in the transition-boundary section.
 
 ### 6.4 Log discipline for multi-role attach (normative)
 
@@ -613,6 +660,11 @@ Consumer serializes per-producer ATTACH REQ (§6.1).  Worst-case consumer-attach
 - If broker fails to reply at all and consumer's client-side budget expires (`attach_ack_wait_ms` = 5 s) per producer: ~50 s total.
 
 Both bounds should inform any operator-facing overall-attach budget.  Acceptable for MVP, or want concurrency an MVP requirement?
+
+**Alternative concurrency shapes (referenced elsewhere as "Option C"):**
+- **Option A — MVP serial (current design).** Per-producer BRC sync REQ/REP.  Total budget ~N×attach_ack_wait_ms.
+- **Option B — Multi-outstanding BRC.** Consumer maintains multiple in-flight ATTACH_REQs; broker replies out of order via ROUTER identity.  Requires BRC REQ-multiplexing (new HEP-0023 contract).
+- **Option C — Coalesced ATTACH_REQ.** Single consumer→broker REQ with `producers[]` array; broker replies with per-producer status vector.  Requires new wire; broker parallelizes on its side while consumer waits ONE REQ.  Referenced in §10.7 as the future fan-in-optimization path.  Not MVP.
 
 ### 7.3 Which HEP owns the amendment?
 
@@ -728,9 +780,11 @@ Recommendation: **(a) atomic**.  Phase 3 (producer-side impl) MUST include the a
 - `RevokePath_ConfirmedVersionAdvancesOnAppliedReq` — revoke NOTIFY → pull → APPLIED_REQ → confirmed_version reflects post-revoke state.
 - `VAdd_UpdatesOnReAdmit_FastPathHonorsFreshVersion` — pins §5.4 rule 2.  Admit C at v=11, revoke at v=12, re-admit at v=13; verify v_add(C.uid, C.pubkey, K) = 13 (not stale 11); verify fast-path check against confirmed_version=12 fails and takes wait-path.
 - `VAdd_PubkeyRotation_FreshEntryForNewPubkey` — pins §5.4 rule 3.  Admit (uid, pubkey_old) at v=20, rotate to (uid, pubkey_new) at v=21; verify v_add((uid, pubkey_new), K) = 21 and old (uid, pubkey_old) entry retired; fast-path check against confirmed_version=20 fails.
-- `BrokerRestart_PendingQueueEmpty_ConsumerTimeoutFires` — pins §5.5a broker-restart contract.  Force broker restart while ATTACH_REQ pending; verify consumer sees `attach_ack_wait_ms` timeout (no ACK), and post-restart broker's confirmed_version reconstitutes on next producer pull.
-- `ProducerRestart_MidCycle_ConsumerTimeoutFires` — pins §5.5a producer-restart contract.  Force producer restart between GET_ACK and APPLIED_REQ; verify pending ATTACH times out at producer_apply_wait_ms; verify re-registered producer's fresh pull rebuilds confirmed_version.
-- `NotifyDebouncing_FanIn_SingleNotifyPerBurst` — pins §5.2 5b debounce rule.  Fire 5 ATTACH_REQs within notify_debounce_ms window; verify broker fires exactly 1 NOTIFY (not 5).
+- `BrokerRestart_PendingQueueEmpty_ConsumerTimeoutFires` — pins §5.6 broker-restart contract.  Force broker restart while ATTACH_REQ pending; verify consumer sees `attach_ack_wait_ms` timeout (no ACK), and post-restart broker's confirmed_version reconstitutes on next producer pull.
+- `ProducerRestart_MidCycle_ConsumerTimeoutFires` — pins §5.6 producer-restart contract.  Force producer restart between GET_ACK and APPLIED_REQ; verify pending ATTACH times out at producer_apply_wait_ms; verify re-registered producer's fresh pull rebuilds confirmed_version.
+- `NotifyDebouncing_FanIn_OutstandingPullCoalesces` — pins §5.2 5b bool-keyed debounce.  Fire 5 ATTACH_REQs while `notify_outstanding[K][P]=true`; verify broker fires exactly 1 NOTIFY (the first).  Then GET_CHANNEL_AUTH_REQ arrives, bool clears; fire a 6th ATTACH_REQ; verify broker fires a fresh NOTIFY.
+- `NotifyDebouncing_AgingReFires_OnDroppedNotify` — pins the §5.2 5b aging rule.  Fire ATTACH_REQ → NOTIFY fires, bool=true, notify_fired_at stamped.  Force notify_max_age_ms to elapse without a GET_REQ (simulates dropped NOTIFY).  Fire second ATTACH_REQ; verify broker re-fires NOTIFY (not skipped).
+- `NotifyDebouncing_TimeoutForcesReClear` — pins the §5.4/§5.5 force-clear rule.  Fire ATTACH_REQ, let it time out at producer_apply_wait_ms; verify `notify_outstanding[K][P]` clears; verify next ATTACH_REQ re-fires NOTIFY.
 
 **L3 sequence pin + fan-in coverage** (extend `test_datahub_broker_protocol.cpp` or add new worker):
 - `PreConfirmSequenceEliminatesRace_ZmqConsumerDialsAfterProducerCacheReady` — admit-path sequence pin.  Verify producer's `set_peer_allowlist` fires BEFORE consumer's `pull_from` dial via log-marker sequencing.
@@ -758,6 +812,7 @@ Each phase is a single commit; ships green before the next starts.
   - §7.3 (HEP promotion target) MUST be resolved.
   - §7.9 (channel-ready callback wiring) MUST be resolved — §10.4 HEP-0011 addition depends on it.
   - §7.5-§7.8 SHOULD be resolved so §Phase-5 subsections don't carry unresolved-question text.
+  - §7.10 SHOULD be resolved before Phase 3 (producer-side impl) — the atomicity contract determines whether the queue impl needs a transaction wrapper.
   - §7.2 + §7.4 MAY remain deferred as follow-on tasks if user prefers, but the doc MUST reflect the deferral explicitly (not silent).
 - **Phase 2: Broker side.** Two handlers + version tracking:
   - `handle_consumer_attach_req_zmq` — enqueues on wait-path.
@@ -766,7 +821,7 @@ Each phase is a single commit; ships green before the next starts.
   - L2 tests pin the state machine including bidirectional confirmation.
 - **Phase 3: Producer side.** Extend `GET_CHANNEL_AUTH_ACK` handler with post-`set_peer_allowlist` `CHANNEL_AUTH_APPLIED_REQ` send.  BRC layer gains the helper.
 - **Phase 4: Consumer side.** Extend `RoleAPIBase::apply_consumer_reg_ack` ZMQ branch with the per-producer pre-confirm loop.  BRC layer gains the `CONSUMER_ATTACH_REQ_ZMQ` helper if not already present.
-- **Rollout ordering constraint (per §4.3 backward-compat note):** Phase 3 (producer-side APPLIED_REQ send) MUST complete rollout to ALL producers BEFORE any consumer runs Phase 4 (pre-confirm loop).  Mixed-fleet: new-consumer + old-producer leaves `confirmed_version[K][P]=0` forever, timing out every attach.  Enforcement recommendation: Phase 3 lands as a producer capability bump (advertised in producer registration); broker rejects new-consumer ATTACH_REQ if the target producer's registered capability version predates Phase 3.
+- **Rollout ordering constraint (per §4.3 backward-compat note):** Phase 3 (producer-side APPLIED_REQ send) MUST complete rollout to ALL producers BEFORE any consumer runs Phase 4 (pre-confirm loop).  Mixed-fleet: new-consumer + old-producer leaves `confirmed_version[K][P]=0` forever, timing out every attach.  Enforcement mechanism (concrete): PRODUCER_REG_REQ payload gains a `pre_confirm_capability_version` integer field (0 = pre-amendment, 1 = supports APPLIED_REQ).  Broker records this on the producer's ChannelEntry.  On `handle_consumer_attach_req_zmq` step 3, broker adds check: if `producer.pre_confirm_capability_version == 0` → reply `denied, reason="producer_lacks_pre_confirm_capability"`.  This reason string joins the §5.5 taxonomy for the mixed-fleet transition window; can be retired once all producers are ≥1.
 - **Phase 5: Test unskip + L3 sequence pin.** Remove `GTEST_SKIP` in AUTH-7 L4 ZMQ test; add L3 sequence-pin worker for both admit and revoke paths.
 - **Phase 6: Systematic review (internal Phase-6 gate).** Full systematic review of the pre-confirm arc.  Distinct from the chain-position REVIEW-D referenced in the doc header (which covers a broader HEP-0041 arc); this Phase-6 review is scoped to the pre-confirm amendment only.  Any residual §6.5 amendment doc-drift closes here.
 
