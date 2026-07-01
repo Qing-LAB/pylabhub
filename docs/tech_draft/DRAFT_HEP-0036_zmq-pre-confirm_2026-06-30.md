@@ -126,10 +126,12 @@ Direction: producer → broker.  Sent after `ZmqQueue::set_peer_allowlist` succe
 {
   "channel_name":       "lab.sensors.temperature",
   "producer_role_uid":  "prod.mysensor.uid00000001",
+  "instance_id":        7,
   "applied_version":    42
 }
 ```
 
+- `instance_id` — the producer's shift number (see §4.2a).  Broker rejects the message if it doesn't match the current registered instance for this producer, preventing stale-instance APPLIED_REQ from a crashed old producer instance from advancing broker state.
 - `applied_version` — the `snapshot_version` from the preceding `GET_CHANNEL_AUTH_ACK`.  Broker uses it to advance `confirmed_version[K][P]`.
 
 **Reply:**
@@ -141,7 +143,23 @@ Direction: producer → broker.  Sent after `ZmqQueue::set_peer_allowlist` succe
 }
 ```
 
-Broker always replies `ok` on successful receipt.  Ack is not fire-and-forget — the ack lets the producer detect a network-level broker unreachable event via producer-side timeout (producer's local action is unchanged either way: cache stays applied, log the outcome, continue).
+Broker always replies `ok` on successful receipt (or silently drops on stale instance_id — producer's local ack timeout handles that path).  Ack is not fire-and-forget — the ack lets the producer detect a network-level broker unreachable event via producer-side timeout (producer's local action is unchanged either way: cache stays applied, log the outcome, continue).
+
+### 4.2a `PRODUCER_REG_ACK` extension — instance_id
+
+Direction: broker → producer.  Existing wire under HEP-CORE-0036; this amendment adds one integer field.
+
+**Payload extension:**
+```json
+{
+  ...existing REG_ACK fields...,
+  "instance_id": 7
+}
+```
+
+- `instance_id` — a monotonic `uint64_t` the broker assigns per registration (first-time or re-registration).  Broker tracks the current instance_id per producer role_uid; producer stores its assigned instance_id and echoes it on every `CHANNEL_AUTH_APPLIED_REQ` (§4.2).  Every re-registration increments the broker-side counter and returns a NEW instance_id.
+
+The instance_id closes the "stale APPLIED_REQ from crashed producer instance" race described in §5.2.  Zero new round-trips: rides on the existing register handshake.
 
 ### 4.3 Reused wire — one payload extension
 
@@ -161,22 +179,15 @@ Other reused wires unchanged: `CHANNEL_AUTH_CHANGED_NOTIFY`, `GET_CHANNEL_AUTH_R
 
 ### 5.2 State + notation
 
-Broker tracks two version counters — one per channel, one per (channel, producer) pair:
+Broker tracks three counters:
 
-- `channel_version[K]` — monotonic `uint64_t` per channel, bumped on ANY mutation to `ChannelAccessIndex[K]` (add / remove / any consumer pubkey change).  Shared across all producers on K.  Width MUST be at least 64 bits: at 1 mutation/ms (aggressive), wraparound is >584 million years — practically infinite.
-- `confirmed_version[K][P]` — per-(channel, producer) `uint64_t`; the highest version producer P has confirmed applying via `CHANNEL_AUTH_APPLIED_REQ`.  Reset to 0 on ANY of:
-  - Producer P disconnects (ROUTER-observed) or transitions to kDead (heartbeat-observed).
-  - Producer P re-registers with the same role_uid (new instance — old cache state must not carry over).
-  - Broker restarts.
+- `channel_version[K]` — monotonic `uint64_t` per channel, bumped on ANY mutation to `ChannelAccessIndex[K]` (add / remove / any consumer pubkey change).  Shared across all producers on K.  Width MUST be at least 64 bits: at 1 mutation/ms, wraparound is >584 million years — practically infinite.
+- `confirmed_version[K][P]` — per-(channel, producer) `uint64_t`; the highest version producer P's current instance has confirmed applying via `CHANNEL_AUTH_APPLIED_REQ`.  Reset to 0 on producer disconnect (ROUTER-observed / kDead heartbeat), producer re-registration, or broker restart.
+- `instance[P]` — monotonic `uint64_t` per producer role_uid, incremented on every registration.  Broker returns the current value in `PRODUCER_REG_ACK` (§4.2a); producer echoes it on every `CHANNEL_AUTH_APPLIED_REQ` (§4.2).  Broker rejects any APPLIED_REQ whose `instance_id` doesn't match the current `instance[P]`.
 
-Total broker state: `M + M·N` integers for M channels × N producers.
+Total broker state: `M + M·N + N` integers for M channels × N producers.  Cost of the instance guard is one extra integer per producer.
 
-**Producer re-registration — reset semantics.**  The register handler resets `confirmed_version[K][P] = 0` for all K covered by producer P atomically as part of the register operation.  What this covers:
-
-- **Normal case** (stale APPLIED_REQ arrives BEFORE the re-registration): stale APPLIED advances `confirmed_version` momentarily, then re-registration resets it to 0 → next ATTACH_REQ goes wait-path → producer's NEW instance pulls + applies → correct state.
-- **Interleaved case** (stale APPLIED_REQ arrives AFTER the re-registration): re-registration sets confirmed to 0, stale APPLIED then re-advances it to a stale value.  Consumer's fast-path may briefly succeed against an empty cache — CURVE handshake FAILS (no security leak per P4 direction A "succeeds → confirmed"), user script retries (per P3).  Window self-heals on next `channel_version[K]` bump (any subsequent admit / revoke resets the fast-path calculus).
-
-The interleaved case is bounded degraded UX, not a security regression.  Accepted per P1/P3.  Robust fix (producer-instance-epoch tracking) would add per-(K,P) state — deferred as a follow-on if operational data ever surfaces the case as more than rare.
+**Stale-instance guard (P4).**  The `instance[P]` counter closes the race where a crashed producer's leftover `CHANNEL_AUTH_APPLIED_REQ` (still in flight when the crash happened) advances `confirmed_version` under the NEW producer instance's empty cache.  After re-registration, `instance[P]` bumps; the leftover message from the old instance carries the OLD `instance_id`; broker's handler-flow check (§5.3) drops it.  No leak, no persistent false-success, regardless of message arrival order.  Cost: 1 nanosecond per APPLIED_REQ (integer compare), one integer in state, one integer field on two existing wire messages, no new round-trips.
 
 **Fast-path invariant:** `confirmed_version[K][P] >= channel_version[K]` ⇒ P's ZAP cache reflects the current allowlist (which includes the consumer we're about to admit, since step 2 verified consumer's pubkey IS in the current allowlist).
 
@@ -208,10 +219,12 @@ On GET_CHANNEL_AUTH_REQ from P:
    a. Snapshot ChannelAccessIndex[K], stamp version W = channel_version[K].
    b. Reply GET_CHANNEL_AUTH_ACK{allowlist, snapshot_version=W}.
 
-On CHANNEL_AUTH_APPLIED_REQ from P at applied_version=W:
-   a. Reply {status="ok", channel_name=K, applied_version=W}.
-   b. confirmed_version[K][P] = max(confirmed_version[K][P], W).
-   c. Walk pending_attach_queue: for entries with target_version ≤ confirmed_version[K][P],
+On CHANNEL_AUTH_APPLIED_REQ from P at applied_version=W, instance_id=I:
+   a. Stale-instance guard: if I ≠ instance[P] → silently drop (message is from a
+      crashed prior instance of P; do not touch broker state).  Done.
+   b. Reply {status="ok", channel_name=K, applied_version=W}.
+   c. confirmed_version[K][P] = max(confirmed_version[K][P], W).
+   d. Walk pending_attach_queue: for entries with target_version ≤ confirmed_version[K][P],
       reply {status="success"} and remove from queue.
 
 On pending-entry timeout (producer_apply_wait_ms elapsed):
@@ -222,9 +235,13 @@ On producer P disconnect (ROUTER event / kDead transition):
    → walk P's pending_attach_queue: reply {status="denied", reason="producer_not_live"}
      (unified reason with dispatch-time denial — no timing-boundary distinction).
 
-On producer P re-registration under same role_uid:
+On producer P registration or re-registration under same role_uid:
+   → instance[P] += 1  (assign fresh instance number).
    → confirmed_version[K][P] = 0 for all K covered by P.
-   → new instance's ZAP cache is presumed empty; next ATTACH_REQ takes wait-path.
+   → Reply PRODUCER_REG_ACK with the new instance_id (§4.2a).
+   → New instance's ZAP cache is presumed empty; next ATTACH_REQ takes wait-path.
+   → Any subsequent APPLIED_REQ carrying the OLD instance_id (from crashed prior instance,
+     still in flight) is silently dropped by the stale-instance guard above.
 
 On channel K close:
    → delete ChannelAccessIndex[K], channel_version[K], all confirmed_version[K][*].
@@ -325,7 +342,14 @@ apply_consumer_reg_ack(REG_ACK ack):
 
 ### 6.2 Producer role side
 
+**Producer-side state (added under this amendment):**
+- `pImpl->instance_id` — assigned by broker at registration (echoed from PRODUCER_REG_ACK); echoed on every CHANNEL_AUTH_APPLIED_REQ.  Overwritten on any subsequent re-registration.
+
 ```
+on PRODUCER_REG_ACK(ack):
+  pImpl->instance_id = ack.instance_id   # from §4.2a; store for later APPLIED_REQs
+  # ... other existing REG_ACK handling ...
+
 on GET_CHANNEL_AUTH_ACK(ack):
   ok = ZmqQueue::set_peer_allowlist(ack.allowlist)
   if not ok:
@@ -339,6 +363,7 @@ on GET_CHANNEL_AUTH_ACK(ack):
   applied_ack = brc.request(CHANNEL_AUTH_APPLIED_REQ{
     channel_name: ack.channel_name,
     producer_role_uid: pImpl->uid,
+    instance_id: pImpl->instance_id,
     applied_version: ack.snapshot_version
   }, timeout_ms=applied_ack_wait_ms)
 
@@ -436,7 +461,8 @@ Recommendation: **(a) → (b) → (c) emergency-only.**  I verify at Phase 1 pro
 - `AttachReqZmq_DeniedWhenProducerNotLive` — producer kDead / disconnected AT DISPATCH TIME (step 3) → status="denied", reason="producer_not_live".
 - `AttachReqZmq_DeniedWhenProducerDisconnectsWhilePending` — pins the §5.3 post-enqueue disconnect drain path.  ATTACH_REQ enqueued while P is kLive; P disconnects; verify queued REQ is drained as denied (reason="producer_not_live").
 - `AttachReqZmq_PartialDrainOnAppliedReq` — pins the §5.3 partial-drain path.  Multi-entry queue with mixed target_versions W1 < W2 < W3; APPLIED_REQ arrives at W2; verify entries at W1 and W2 drain as success, entry at W3 remains queued (drains on next APPLIED_REQ or times out).
-- `AppliedReq_ResetsAfterProducerReRegistration` — pins the §5.2 producer re-registration reset rule.  Advance confirmed_version[K][P] to N via APPLIED_REQ; P re-registers under same role_uid; verify confirmed_version[K][P] = 0; verify next ATTACH_REQ against P takes wait-path.
+- `AppliedReq_ResetsAfterProducerReRegistration` — pins the §5.3 producer re-registration reset.  Advance confirmed_version[K][P] to N via APPLIED_REQ; P re-registers under same role_uid; verify confirmed_version[K][P] = 0, instance[P] bumped, next ATTACH_REQ takes wait-path.
+- `AppliedReq_FromStaleInstance_SilentlyDropped` — pins the §4.2/§5.3 stale-instance guard.  Simulate a producer crash + re-registration; inject an APPLIED_REQ carrying the OLD instance_id after the re-registration; verify: broker does NOT advance confirmed_version, broker does NOT reply to producer (silent drop), no pending ATTACH_REQ drains as spurious success.  This test proves the P4 stale-instance guard closes the race regardless of message ordering.
 - `AppliedReq_AdvancesConfirmedVersion` — receives APPLIED_REQ, confirmed_version advances.
 - `ChannelClose_DrainsPendingAsDenied` — channel closure while pending → status="denied", reason="channel_closing".
 
@@ -517,7 +543,8 @@ sequenceDiagram
             P->>B: GET_CHANNEL_AUTH_REQ
             B-->>P: GET_CHANNEL_AUTH_ACK{allowlist, snapshot_version=W}
             Note over P: set_peer_allowlist(v=W)
-            P->>B: CHANNEL_AUTH_APPLIED_REQ{channel, applied_version=W}
+            P->>B: CHANNEL_AUTH_APPLIED_REQ{channel, instance_id=I, applied_version=W}
+            Note over B: check instance_id=I matches instance[P]; else drop
             B-->>P: CHANNEL_AUTH_APPLIED_ACK{status="ok", channel_name, applied_version=W}
             Note over B: confirmed_version[K][P] = W;<br/>drain queue
             B-->>C: CONSUMER_ATTACH_ACK_ZMQ{status="success"}
