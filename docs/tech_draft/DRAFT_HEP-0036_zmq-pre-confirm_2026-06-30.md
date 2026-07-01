@@ -172,7 +172,7 @@ The pre-confirm reuses these existing surfaces for the pull leg; the consumer-br
 **Notation used throughout this section (defined once, applied consistently):**
 
 - `ChannelAccessIndex[K]` — the broker's authoritative allowlist for channel K.  Versioned: every add or remove bumps a monotonic counter.
-- `v_add(C, K)` — the version at which consumer C's pubkey was ADDED to `ChannelAccessIndex[K]`.  Fixed per (C, K) once assigned; recorded by broker when the CONSUMER_REG handler admits C.
+- `v_add(C, K)` — the version at which consumer C's pubkey CURRENTLY exists in `ChannelAccessIndex[K]`.  Recorded by broker when the CONSUMER_REG handler admits C.  **On revoke-then-re-admit, v_add MUST update to the new re-admit version** — otherwise a stale v_add could satisfy the fast-path check against a producer whose cache is at a post-revoke snapshot missing C, causing CURVE handshake to fail after admit.  See §5.4 "revoke-then-re-admit" note.
 - `confirmed_version[K][P]` — the highest version producer P has confirmed applying to its ZAP cache, via `CHANNEL_AUTH_APPLIED_REQ`.  Grows over time.  Zero if never confirmed.  **This is the only version-tracking state the broker needs** for pre-confirm decisions; `served_version[K][P]` (what broker sent) is intentionally NOT tracked (§5.4).
 
 **Fast-path invariant:** `confirmed_version[K][P] >= v_add(C, K)` ⇒ C.pubkey is in P's ZAP cache.  (Any snapshot at or after C's addition contains C.)
@@ -279,6 +279,15 @@ Notation is defined in §5.2 preamble.  Recap: `confirmed_version[K][P]` = highe
 
 **On broker restart:** all `confirmed_version` state is lost.  First post-restart ATTACH REQ against any producer takes the wait path; on that producer's next pull + APPLIED_REQ, `confirmed_version` reconstitutes.  Self-healing without special-casing.
 
+**Revoke-then-re-admit note (correctness invariant).**  Consumer C's `v_add(C, K)` MUST be updated whenever C is (re-)admitted, not just at first admission.  Concrete failure mode without this rule:
+1. C admitted at version 11 → v_add(C, K) = 11.  Producer P confirms at v=11.
+2. C revoked at version 12.  Producer P pulls, applies v=12 (cache no longer has C), sends APPLIED_REQ.  confirmed_version[K][P] = 12.
+3. C re-admitted at version 13.
+4. C sends ATTACH_REQ.  Broker step 4: `confirmed_version=12 >= v_add=11 (stale)` → fast-path admit.
+5. C dials producer.  Producer's cache is at v=12 which does NOT have C.  Handshake fails.
+
+Fresh v_add=13 forces wait-path: `12 >= 13` false → NOTIFY producer → pull v=13 (has C) → APPLIED_REQ → fast-path drains C's REQ.  Handshake succeeds.
+
 ### 5.5 Timeout + failure modes
 
 - **Timeout budget**: `producer_apply_wait_ms` (config, default proposed: 3000 ms).  Broker-side timer on each pending ATTACH REQ.  Named for what it actually bounds — the round-trip from broker firing `CHANNEL_AUTH_CHANGED_NOTIFY` to receiving `CHANNEL_AUTH_APPLIED_REQ`.  Producer might have pulled but failed to confirm apply; from the broker's view they're indistinguishable and treated as one timeout.
@@ -360,10 +369,14 @@ apply_consumer_reg_ack(REG_ACK ack):
 
     # per_producer_outcome stored on ConsumerChannelState so both accessors
     # (api.producer_attach_status + api.producer_attach_reason) can read
-    # from the ready callback.  api.producers_declared() reads REG_ACK
-    # producer list verbatim; api.producers_connected() reads `connected`.
+    # from the ready callback.  api.producers_declared() projects to the
+    # role_uid list; api.producers_connected() reads `connected` projected
+    # to role_uids likewise.  Storage keeps full REG_ACK.producers[] shape
+    # (role_uid + endpoint + pubkey) for internal use; script surface exposes
+    # only role_uid strings — endpoints/pubkeys are NEVER surfaced.
     ConsumerChannelState[ack.channel_name].producer_attach_outcome = per_producer_outcome
-    ConsumerChannelState[ack.channel_name].producers_declared     = ack.producers
+    ConsumerChannelState[ack.channel_name].producers_declared     = ack.producers   # full objects (internal)
+    ConsumerChannelState[ack.channel_name].producers_connected    = connected       # full objects (internal)
     set_producer_peers(connected)                                                   ← only the admitted set
     start()                                                                          ← channel-ready callback
                                                                                     #  fires with partial state
@@ -536,7 +549,7 @@ My recommendation: **Shape A** — matches existing observation-surface conventi
 
 §6.4 defines the log-line format for attach-loop events.  Because these lines double as test-contract markers (per `feedback_test_outcome_vs_path` + #238 discipline), they need to be locked in the HEP promotion, not left to per-commit drift.
 
-Recommend: promote §6.4 verbatim to HEP-CORE-0041 §Phase 5.log-format as a normative table.  Any change to marker format thereafter is a HEP amendment, not a code commit.
+Recommend: promote §6.4 verbatim to HEP-CORE-0041 §Phase-5.log-format as a normative table.  Any change to marker format thereafter is a HEP amendment, not a code commit.
 
 Confirm this locking?
 
@@ -564,9 +577,9 @@ Please confirm the resolution order (a → c → b) or redirect.
 - `HandlesConsumerAttachReqZmq_FastPath_WhenConfirmedVersionCovers` — `confirmed_version[K][P] >= V` → immediate ACK.
 - `HandlesConsumerAttachReqZmq_WaitPath_WhenProducerNeedsPull` — no fresh confirmed version → fires NOTIFY, holds REQ.
 - `HandlesConsumerAttachReqZmq_DrainsPendingOnAppliedReq` — after producer's `CHANNEL_AUTH_APPLIED_REQ`, pending consumers drain (NOT drained after `GET_CHANNEL_AUTH_REQ` alone).
-- `HandlesConsumerAttachReqZmq_TimeoutReplyWhenProducerSilent` — timeout budget → status="timeout".
+- `HandlesConsumerAttachReqZmq_TimeoutReplyWhenProducerSilentStuck` — producer alive but never sends APPLIED_REQ within `producer_apply_wait_ms`; broker cannot detect disconnect → status="timeout", reason="producer_did_not_confirm_within_budget".
 - `HandlesConsumerAttachReqZmq_DeniedWhenNotInAllowlist` — pubkey not in ChannelAccessIndex → status="denied".
-- `HandlesConsumerAttachReqZmq_DeniedWhenProducerDisconnectedWhileWaiting` — producer disconnect during wait → status="denied", reason="producer_disconnected".
+- `HandlesConsumerAttachReqZmq_DeniedWhenProducerDisconnectedWhileWaiting` — broker detects producer disconnect (ROUTER event / kDead transition) while REQ pending → status="denied", reason="producer_disconnected".  Distinct from the timeout case above: this is broker-observed disconnect, that is silent-stuck.
 - `HandlesChannelAuthAppliedReq_UpdatesConfirmedVersion` — receives APPLIED_REQ, `confirmed_version` advances.
 - `HandlesChannelAuthAppliedReq_StaleVersionIgnored` — APPLIED_REQ with older version than current confirmed_version → no state change, ack OK.
 - `RevokePath_ConfirmedVersionAdvancesOnAppliedReq` — revoke NOTIFY → pull → APPLIED_REQ → confirmed_version reflects post-revoke state.
@@ -575,7 +588,7 @@ Please confirm the resolution order (a → c → b) or redirect.
 - `PreConfirmSequenceEliminatesRace_ZmqConsumerDialsAfterProducerCacheReady` — full sequence pin.  Verify producer's `set_peer_allowlist` fires BEFORE consumer's `pull_from` dial via log-marker sequencing.
 - `AttachLoop_PartialSuccess_FanIn3Producers1Timeout` — 3-producer fan-in with 1 producer forced to skip pull.  Verify: 2 producers admitted; consumer's `api.producers_connected(channel)` returns the 2 uids; failed producer's `api.producer_attach_status` returns `timeout`; `set_producer_peers` receives 2-element set only.
 - `AttachLoop_AllFail_FanIn3ProducersAllTimeout` — 3-producer fan-in with all forced to skip pull.  Verify: `apply_consumer_reg_ack` returns false; channel unusable; ERROR-level "0/3 admitted" log line emitted.
-- `AttachLoop_LogMarkers_FanInLoopBeginContainsCountAndModality` — assert on the exact log-line strings from §6.4 (loop-begin + per-producer + loop-complete markers).  Pin as contract per `feedback_test_outcome_vs_path`.
+- `AttachLoop_LogMarkers_LoopBeginPerProducerAndLoopCompleteAllPinned` — assert on the exact log-line strings from §6.4 across ALL marker events: loop-begin (count + modality), per-producer success/failure, and loop-complete (partial/full/all-fail).  Pin as contract per `feedback_test_outcome_vs_path`.
 
 **L4 e2e unskip:**
 - Remove `GTEST_SKIP` from `PlhHubCliTest.ZmqE2E_AuthorizedConsumerReceivesAllSlots`.  Verify the deferred scenario passes green.
@@ -584,7 +597,7 @@ Please confirm the resolution order (a → c → b) or redirect.
 - `ZmqE2E_UnauthorizedConsumerDeniedByBroker` — post-amendment, denial arrives as `CONSUMER_ATTACH_ACK_ZMQ{status="denied"}` from the broker BEFORE the consumer would have dialed.  Any assertion pinning the pre-amendment failure mode (empty read, timeout on data, ZAP-side denial log) must be updated to the new pre-attach-denial log line + wire response.  Pre-existing test is not truly untouched; expect ~5-10 line assertion adjustments.
 
 **L4 e2e fan-in partial-success:**
-- `ZmqE2E_FanIn_PartialSuccessDataFlowsFromAdmittedSubset` — 3-producer fan-in, 1 producer's ZAP handler forced to fail apply, consumer script continues on partial success.  Verify: data flows from 2 admitted producers; the failed producer's dial attempts are ZAP-rejected (confirms `set_producer_peers` correctly excluded it from the allowlist per §7.5 defense-in-depth).
+- `ZmqE2E_FanIn_PartialSuccessDataFlowsFromAdmittedSubset` — 3-producer fan-in, 1 producer forced to fail pre-confirm (e.g., broker-side denial), consumer script continues on partial success.  Verify: data flows from 2 admitted producers; consumer's PULL never attempts a CURVE dial toward the excluded producer (confirms `set_producer_peers` correctly received the admitted-only subset per §7.5).
 
 ---
 
@@ -592,7 +605,7 @@ Please confirm the resolution order (a → c → b) or redirect.
 
 Each phase is a single commit; ships green before the next starts.
 
-- **Phase 1: HEP promotion.** Merge this tech_draft into `docs/HEP/HEP-CORE-0041-SHM-Channel-Auth.md` (§Phase 5 section) + cross-ref stub in HEP-CORE-0036 §6.5.2.  No code changes.  Reviewers can gate here.
+- **Phase 1: HEP promotion.** Merge this tech_draft into the HEP selected by §7.3 (default recommendation: `docs/HEP/HEP-CORE-0041-SHM-Channel-Auth.md` new §Phase-5 section) + cross-ref stub in the sibling HEP.  No code changes.  Reviewers can gate here.  §7.3 MUST be resolved before Phase 1 executes.
 - **Phase 2: Broker side.** Two handlers + version tracking:
   - `handle_consumer_attach_req_zmq` — enqueues on wait-path.
   - `handle_channel_auth_applied_req` — records `confirmed_version[K][P]`, drains pending queue.
@@ -609,33 +622,33 @@ Each phase is a single commit; ships green before the next starts.
 
 Phase 1 promotion is NOT a pointer-only cross-ref update.  Each of these HEPs needs SPECIFIC contract text merged in so a future implementer or script author reading the permanent doc gets the full picture without needing to open this tech_draft (which will be archived at Phase 1 close).
 
-### 10.1 HEP-CORE-0041 (authoritative home — new §Phase 5)
+### 10.1 HEP-CORE-0041 (authoritative home — new §Phase-5)
 
-Merge §4-§6 substance verbatim into new subsections of HEP-CORE-0041.  §7 (open questions) and §13 (open discussion items) do NOT promote — those are pre-promotion review artifacts.  §11.1 revocation guarantee (NOT the §11 scope-discipline list) lands as §Phase 5.6.
+Merge §4-§6 substance verbatim into new subsections of HEP-CORE-0041.  §7 (open questions) and §13 (open discussion items) do NOT promote — those are pre-promotion review artifacts.  §11.2 revocation guarantee (NOT the §11.1 scope-discipline list) lands as §Phase-5.6.
 
-- **§Phase 5.1 — Wire spec.** §4.1 CONSUMER_ATTACH_REQ_ZMQ / _ACK + §4.2 CHANNEL_AUTH_APPLIED_REQ / _ACK + §4.3 GET_CHANNEL_AUTH_ACK `applied_version` extension.
-- **§Phase 5.2 — Broker handler.** §5.2 flow + §5.3 discipline explainer + §5.4 confirmed_version state + §5.5 timeout/failure taxonomy table.
-- **§Phase 5.3 — Consumer contract (NORMATIVE — resolves §7.5 fan-in partial-success policy).**  Explicit:
+- **§Phase-5.1 — Wire spec.** §4.1 CONSUMER_ATTACH_REQ_ZMQ / _ACK + §4.2 CHANNEL_AUTH_APPLIED_REQ / _ACK + §4.3 GET_CHANNEL_AUTH_ACK `applied_version` extension.
+- **§Phase-5.2 — Broker handler.** §5.2 flow + §5.3 discipline explainer + §5.4 confirmed_version state + §5.5 timeout/failure taxonomy table.
+- **§Phase-5.3 — Consumer contract (NORMATIVE — resolves §7.5 fan-in partial-success policy).**  Explicit:
   > "The consumer's `apply_consumer_reg_ack` ZMQ branch MUST attempt attach for every producer in `REG_ACK.producers[]`, record per-producer (status, reason) outcome, and treat the channel as usable if ≥1 producer was admitted.  Zero-admitted is the only loop-level failure.  Failed producers MUST be excluded from `set_producer_peers()` so the consumer never initiates a CURVE dial toward them.  (Note: consumer is CURVE client — no consumer-side ZAP handler exists; the exclusion prevents any dial attempt, not a ZAP-side rejection.)"
-- **§Phase 5.4 — Producer contract.**  §6.2 CHANNEL_AUTH_APPLIED_REQ send after every successful `set_peer_allowlist`.
-- **§Phase 5.5 — Log format (NORMATIVE — §6.4 table verbatim).**  Locked-in marker format; downstream test contracts depend on these strings.
-- **§Phase 5.6 — Revocation contract.** §11.1 bidirectional guarantee for revoke.
+- **§Phase-5.4 — Producer contract.**  §6.2 CHANNEL_AUTH_APPLIED_REQ send after every successful `set_peer_allowlist`.
+- **§Phase-5.5 — Log format (NORMATIVE — §6.4 table verbatim).**  Locked-in marker format; downstream test contracts depend on these strings.
+- **§Phase-5.6 — Revocation contract.** §11.2 bidirectional guarantee for revoke.
 
 **Explicit non-merge list** (stays in tech_draft archive, does not enter permanent HEP):
-- §7 subsections (open questions, all resolutions to be inlined into §Phase 5.x normative text before merge).
+- §7 subsections (open questions, all resolutions to be inlined into §Phase-5.x normative text before merge).
 - §13 discussion items list.
 - §12 sequence diagrams — MAY promote if they clarify the normative flow; check if HEP-0041's existing diagram style accommodates.
 
 ### 10.2 HEP-CORE-0036 §6.5.2 (cross-reference stub)
 
 Two paragraphs:
-- "Pre-attach admission for ZMQ is specified in HEP-CORE-0041 §Phase 5.  §6.5 covers post-attach runtime doorbell-then-pull sync; pre-attach admission gating (which prevents new consumers from dialing before the producer's ZAP cache is populated) is a separate concern owned by HEP-CORE-0041."
-- Restate the D3-corrected invariant: "Cache is the producer's SINGLE reference for allow/deny.  Both admit and revoke propagate via bidirectional confirmation (see HEP-CORE-0041 §Phase 5.1).  The doorbell-then-pull chain here is the transport mechanism the pre-attach handshake reuses."
+- "Pre-attach admission for ZMQ is specified in HEP-CORE-0041 §Phase-5.  §6.5 covers post-attach runtime doorbell-then-pull sync; pre-attach admission gating (which prevents new consumers from dialing before the producer's ZAP cache is populated) is a separate concern owned by HEP-CORE-0041."
+- Restate the D3-corrected invariant: "Cache is the producer's SINGLE reference for allow/deny.  Both admit and revoke propagate via bidirectional confirmation (see HEP-CORE-0041 §Phase-5.1).  The doorbell-then-pull chain here is the transport mechanism the pre-attach handshake reuses."
 
 ### 10.3 HEP-CORE-0035 §I5 (revocation semantics)
 
 Amendment paragraph:
-- "Revocation propagation is confirmed via `CHANNEL_AUTH_APPLIED_REQ` (HEP-CORE-0041 §Phase 5.1).  Broker maintains `confirmed_version[K][P]` = highest applied snapshot at each producer.  A revoke is considered committed at producer P only when `confirmed_version[K][P]` covers the revoke's snapshot version.  Existing CURVE sessions per §I5 still stay up on revoke; the confirmation covers ZAP-cache-in-sync so subsequent fresh handshakes deny correctly."
+- "Revocation propagation is confirmed via `CHANNEL_AUTH_APPLIED_REQ` (HEP-CORE-0041 §Phase-5.1).  Broker maintains `confirmed_version[K][P]` = highest applied snapshot at each producer.  A revoke is considered committed at producer P only when `confirmed_version[K][P]` covers the revoke's snapshot version.  Existing CURVE sessions per §I5 still stay up on revoke; the confirmation covers ZAP-cache-in-sync so subsequent fresh handshakes deny correctly."
 
 ### 10.4 HEP-CORE-0011 (script callback contract — NORMATIVE addition)
 
@@ -693,8 +706,8 @@ Three new API entries need parity across Lua / Python / Native.  Status + reason
 
 | API | Return type | Values |
 |---|---|---|
-| `api.producers_declared(channel)` | `list<string>` | Full REG_ACK-declared producer role_uids |
-| `api.producers_connected(channel)` | `list<string>` | Subset that succeeded pre-confirm |
+| `api.producers_declared(channel)` | `list<string>` | Full REG_ACK-declared producer role_uids.  Internally the storage retains full producer objects (role_uid + endpoint + pubkey); this accessor projects out ONLY the role_uid list.  Endpoints and pubkeys are NEVER surfaced to script. |
+| `api.producers_connected(channel)` | `list<string>` | Subset of role_uids that succeeded pre-confirm.  Same projection discipline as `producers_declared`. |
 | `api.producer_attach_status(channel, uid)` | `string` (enum) | `success` \| `denied` \| `timeout` \| `not_declared` |
 | `api.producer_attach_reason(channel, uid)` | `string` | Free-form; when status = `success`, empty.  When status = `denied` or `timeout`, one of the reason strings enumerated in §5.5 (e.g., `consumer_not_in_channel_allowlist`, `producer_not_live`, `producer_disconnected`, `channel_closing`, `producer_did_not_confirm_within_budget`). |
 
@@ -705,7 +718,7 @@ Native C ABI version bump per HEP-0028 policy.  Ties to existing #234 (producers
 
 ### 10.6 HEP-CORE-0017 (channel model — no normative change)
 
-Fan-in geometry is unchanged; the new observability just makes per-producer state queryable.  Add a one-line pointer to HEP-0041 §Phase 5.3 for the partial-success contract.
+Fan-in geometry is unchanged; the new observability just makes per-producer state queryable.  Add a one-line pointer to HEP-0041 §Phase-5.3 for the partial-success contract.
 
 ### 10.7 HEP-CORE-0023 (BRC — no normative change)
 
@@ -713,18 +726,20 @@ BRC synchronous REQ/REP contract absorbs `CONSUMER_ATTACH_REQ_ZMQ` + `CHANNEL_AU
 
 ### 10.8 docs/todo/AUTH_TODO.md + docs/todo/MESSAGEHUB_TODO.md
 
-Task #246 moves from "amendment retrofit" wording to "HEP-CORE-0041 Phase 5 shipped" with links to the new §Phase 5.x subsections.  Task #234 (engine-parity gap) gains scope: `producer_attach_status` binding parity.
+Task #246 moves from "amendment retrofit" wording to "HEP-CORE-0041 Phase 5 shipped" with links to the new §Phase-5.x subsections.  Task #234 (engine-parity gap) gains scope: `producer_attach_status` binding parity.
 
 ---
 
-## 11. What this amendment does NOT do (scope discipline)
+## 11. Scope
+
+### 11.1 What this amendment does NOT do (scope discipline)
 
 - **Does not touch #262 (mutual auth).** Producer→consumer proof-of-possession is a separate wire (3rd handshake frame) on the SHM capability path.  Orthogonal.
 - **Does not add a broker-hosted ZAP handler.** libzmq supports it but the re-arch cost is unjustified — cache-based ZAP with pre-confirm covers the race without new architecture.
 - **Does not eliminate the producer's ZAP allowlist cache.** Under D3-corrected, cache is the producer's SINGLE reference for allow/deny.  Pre-confirm + bidirectional APPLIED_REQ just guarantees the cache is populated + confirmed-in-sync at handshake time.
 - **Does not change SHM's pre-attach protocol.** SHM's `CONSUMER_ATTACH_REQ` stays exactly as HEP-0041 §5.5 specifies.  This amendment mirrors the shape onto ZMQ.
 
-## 11.1 What this amendment DOES do for the revocation path
+### 11.2 What this amendment DOES do for the revocation path
 
 Revocation gets the same bidirectional treatment as admission — this is a NEW guarantee under D3-corrected, not just a rename of existing behavior:
 
@@ -758,7 +773,7 @@ sequenceDiagram
             B-->>P: GET_CHANNEL_AUTH_ACK{allowlist, applied_version=W}
             Note over P: applies via set_peer_allowlist(v=W)
             P->>B: CHANNEL_AUTH_APPLIED_REQ{channel, applied_version=W}
-            B-->>P: CHANNEL_AUTH_APPLIED_ACK{status="ok"}
+            B-->>P: CHANNEL_AUTH_APPLIED_ACK{status="ok", channel_name=K, applied_version=W}
             Note over B: confirmed_version[K][P] = W;<br/>drain queue: ACK consumers with target_version ≤ W
             B-->>C: CONSUMER_ATTACH_ACK_ZMQ{status="success"}
         end
@@ -769,7 +784,7 @@ sequenceDiagram
 
     Note over C,P: For fan-in (N > 1 producers in REG_ACK.producers[]):<br/>C repeats §4.1 REQ per producer in serial loop.<br/>Per-producer outcome recorded; partial success is loop-level success.<br/>See §12.1 for the fan-in flow.
 
-    Note over C,P: --- REVOCATION PATH (D3 bidirectional; §11.1) ---
+    Note over C,P: --- REVOCATION PATH (D3 bidirectional; §11.2) ---
     Note over B: broker revokes C.pubkey from ChannelAccessIndex[K]
     B->>P: CHANNEL_AUTH_CHANGED_NOTIFY{channel}
     Note over B: (revoke triggered)
@@ -777,7 +792,7 @@ sequenceDiagram
     B-->>P: GET_CHANNEL_AUTH_ACK{allowlist(without C), applied_version=W+1}
     Note over P: applies; cache no longer has C.pubkey
     P->>B: CHANNEL_AUTH_APPLIED_REQ{channel, applied_version=W+1}
-    B-->>P: CHANNEL_AUTH_APPLIED_ACK{status="ok"}
+    B-->>P: CHANNEL_AUTH_APPLIED_ACK{status="ok", channel_name=K, applied_version=W+1}
     Note over B: confirmed_version[K][P] = W+1;<br/>revoke known to be enforced at P
 ```
 
@@ -814,17 +829,17 @@ sequenceDiagram
     Note over C: LOG: producer[3/3]=P3 attach: success
 
     Note over C: ok_count=2, fail_count=1<br/>LOG: attach loop complete: 2/3 admitted, 1 failed (partial success)
-    Note over C: ConsumerChannelState stores:<br/>declared=[P1,P2,P3]<br/>connected=[P1,P3]<br/>per_producer_status={P1:success, P2:denied, P3:success}
+    Note over C: ConsumerChannelState stores:<br/>producers_declared=[P1,P2,P3]<br/>connected=[P1,P3]<br/>per_producer_outcome={P1:(success, ""), P2:(denied, "producer_not_live"), P3:(success, "")}
 
     C->>C: set_producer_peers([P1, P3])
-    Note over C: ZAP allowlist for consumer's PULL includes P1+P3 only.<br/>Defense-in-depth: if P2 (excluded) ever dials, ZAP denies.
+    Note over C: Consumer's PULL only knows endpoints for P1 and P3.<br/>Consumer never initiates a CURVE dial toward P2.<br/>(Consumer is CURVE client — no ZAP handler exists on this side.)
     C->>C: start()
     C->>Script: on_channel_ready(channel)
-    Script->>C: api.producers_declared() → [P1,P2,P3]
-    Script->>C: api.producers_connected() → [P1,P3]
+    Script->>C: api.producers_declared(channel) → [P1,P2,P3]
+    Script->>C: api.producers_connected(channel) → [P1,P3]
     Note over Script: sees len(connected)=2 < len(declared)=3
-    Script->>C: api.producer_attach_status(P2) → "denied"
-    Script->>C: api.producer_attach_reason(P2) → "producer_not_live"
+    Script->>C: api.producer_attach_status(channel, P2) → "denied"
+    Script->>C: api.producer_attach_reason(channel, P2) → "producer_not_live"
     Note over Script: Application decides:<br/>e.g., 2/3 acceptable → continue<br/>OR api.channel_stop(channel)
 
     P1->>C: data flows (admitted)
@@ -847,7 +862,7 @@ Tag `[user]` = your call; tag `[me]` = I'll resolve during Phase 1 promotion.
 - `[user]` §7.5: fan-in partial-success policy — confirm best-effort continue + fail-only-if-zero-admitted.
 - `[user]` §7.6: per-failure callback — MVP query-only OR add `on_producer_attach_failed`?  Recommendation: query-only for MVP.
 - `[user]` §7.7: script observation surface — Shape A (decomposed 4 accessors) vs Shape B (composite).  Recommendation: Shape A.
-- `[user]` §7.8: lock §6.4 log-line format as normative in HEP-CORE-0041 §Phase 5.log-format.  Confirm.
+- `[user]` §7.8: lock §6.4 log-line format as normative in HEP-CORE-0041 §Phase-5.log-format.  Confirm.
 - `[user]` §7.9 (NEW post-review): channel-ready callback wiring — (a) verify `on_channel_ready` already exists in HEP-0011, (b) add new callback, or (c) hook `on_start` + poll?  Recommendation: (a) → (c) fallback.
 
 **I'll resolve at Phase 1 promotion:**
