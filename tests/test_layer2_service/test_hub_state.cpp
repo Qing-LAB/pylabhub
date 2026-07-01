@@ -4089,6 +4089,65 @@ TEST(HubStateHep0042, ConfirmedVersion_ResetOnReRegistration)
                   "on re-registration; instead saw " << it->second;
 }
 
+TEST(HubStateHep0042, ConfirmedVersion_ResetOnHeartbeatTimeout)
+{
+    // §5.4: kDead heartbeat is a normative reset trigger.  Pin the
+    // reset in _on_pending_timeout (multi-producer non-last branch)
+    // so a producer that times out doesn't leak stale
+    // confirmed_version state into a subsequent re-registration.
+    //
+    // Two producers on the same channel; A gets driven Connected →
+    // Pending → Disconnected via the heartbeat FSM; the surviving
+    // sibling keeps the channel alive so the drop enters the non-
+    // last-producer branch (parallel to _on_producer_dropped's
+    // VoluntaryDereg branch).
+    const std::string uid_a = "prod.hbtimeout.a.uid00000001";
+    const std::string uid_b = "prod.hbtimeout.b.uid00000002";
+    const std::string ch    = "ch.hep42.hbtimeout";
+
+    HubState s;
+    HubStateTestAccess::on_channel_access_opened(s, ch);
+    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+                  s, ch, make_schema_invariants(), make_zmq_transport(),
+                  make_producer(uid_a, 5001))
+                  .producer_result,
+              AddProducerResult::Created);
+    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+                  s, ch, make_schema_invariants(), make_zmq_transport(),
+                  make_producer(uid_b, 5002))
+                  .producer_result,
+              AddProducerResult::Created);
+
+    // A applies allowlist v42 — the state that the timeout must clear.
+    ASSERT_EQ(s._on_producer_confirmed(ch, uid_a, 42), 42u);
+
+    // First heartbeat for both so the FSM has a Connected state to
+    // transition FROM.
+    const auto now = std::chrono::steady_clock::now();
+    HubStateTestAccess::on_heartbeat(s, ch, uid_a, "producer", now,
+                                      std::nullopt);
+    HubStateTestAccess::on_heartbeat(s, ch, uid_b, "producer", now,
+                                      std::nullopt);
+
+    // A → Pending → Disconnected via heartbeat FSM.
+    HubStateTestAccess::on_heartbeat_timeout(s, ch, uid_a);
+    auto pt = HubStateTestAccess::on_pending_timeout(s, ch, uid_a);
+    ASSERT_TRUE(pt.removed);
+    ASSERT_FALSE(pt.channel_now_empty);
+
+    // A's confirmed_version[K][P] must have been erased alongside the
+    // producer removal.
+    auto after = s.channel_access(ch);
+    ASSERT_TRUE(after.has_value());
+    EXPECT_EQ(after->confirmed_version_per_producer.count(uid_a), 0u)
+        << "kDead (heartbeat-timeout) must erase confirmed_version[K][P] "
+           "(HEP-CORE-0042 §5.4 kDead reset trigger)";
+    // Sanity: didn't clobber B's state (B was never confirmed here, but
+    // the count must be 0 for the un-confirmed uid too — i.e., no
+    // spurious side-effect on the sibling).
+    EXPECT_EQ(after->confirmed_version_per_producer.count(uid_b), 0u);
+}
+
 TEST(HubStateHep0042, ProducerConfirmed_AdvancesConfirmedVersion)
 {
     // §5.4 step c: _on_producer_confirmed advances

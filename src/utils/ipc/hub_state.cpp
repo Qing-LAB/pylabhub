@@ -1591,6 +1591,15 @@ HubState::_on_pending_timeout(const std::string &channel,
             result.removed           = rm.removed;
             result.channel_now_empty = false;
             (void)rit->second.drop_channel_if_orphaned(channel);
+            // HEP-CORE-0042 §5.4: kDead heartbeat is a normative
+            // reset trigger for confirmed_version[K][P] (same
+            // discipline as VoluntaryDereg in _on_producer_dropped).
+            // Held under the same writer lock as remove_producer so
+            // the state triple stays consistent for readers.
+            auto acc_it = pImpl->channel_access_index.find(channel);
+            if (acc_it != pImpl->channel_access_index.end())
+                acc_it->second.confirmed_version_per_producer
+                    .erase(role_uid);
             // Fall through to the dispatch step.
         }
         // Last-producer path: leave the producer in producers[] so
