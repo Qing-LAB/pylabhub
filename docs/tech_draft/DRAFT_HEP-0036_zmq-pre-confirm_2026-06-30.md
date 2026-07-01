@@ -328,14 +328,17 @@ on GET_CHANNEL_AUTH_ACK(ack):
     applied_version: ack.snapshot_version
   }, timeout_ms=applied_ack_wait_ms)
 
+  # Guard null (client-side timeout — brc.request returned no reply within
+  # applied_ack_wait_ms).  Cache STAYS applied locally either way; broker will
+  # re-drive on next NOTIFY cycle if needed.  Mirrors §6.1 null-synthesis pattern.
+  if applied_ack IS NULL:
+    LOGGER_WARN("[{}] pre-attach: no ack from broker for channel {} v{} — cache preserved",
+                short_tag, ack.channel_name, ack.snapshot_version)
+    return
+
   if applied_ack.status == "ok":
     LOGGER_INFO("[{}] pre-attach: applied allowlist v{} (size={}, channel={})",
                 short_tag, ack.snapshot_version, ack.allowlist.size(), ack.channel_name)
-  else:
-    # applied_ack was null (client-side timeout) — cache STAYS applied locally.
-    # Broker will re-drive on next NOTIFY cycle if needed.
-    LOGGER_WARN("[{}] pre-attach: no ack from broker for channel {} v{} — cache preserved",
-                short_tag, ack.channel_name, ack.snapshot_version)
 ```
 
 ### 6.3 Log discipline (normative markers)
@@ -398,7 +401,7 @@ Recommendation: promote §6.3 verbatim to HEP-CORE-0041 §Phase-5.log-format as 
 
 ### 7.8 Channel-ready callback wiring
 
-§10.4 HEP-0011 addition assumes `on_channel_ready(channel)` exists.  Resolution:
+§10's HEP-CORE-0011 bullet assumes `on_channel_ready(channel)` exists.  Resolution:
 - **(a)** callback already exists in HEP-CORE-0011 → use as-is.
 - **(b)** add new callback in this amendment's Phase 4 (cross-engine parity work).
 - **(c)** hook `on_start` + poll `api.is_channel_ready()`.
