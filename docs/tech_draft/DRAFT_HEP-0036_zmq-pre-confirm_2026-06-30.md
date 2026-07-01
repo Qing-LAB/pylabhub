@@ -114,7 +114,7 @@ Direction: producer → broker.  Sent by the producer AFTER `ZmqQueue::set_peer_
 
 - `channel_name` — Which channel's allowlist was applied.
 - `producer_role_uid` — Producer's own role_uid (for broker-side per-producer tracking).
-- `applied_version` — Monotonic snapshot version carried on the just-received `GET_CHANNEL_AUTH_ACK`, echoed back here.  Lets the broker distinguish "producer applied THIS pull" from stale confirmations under NOTIFY-storm conditions.
+- `applied_version` — the `snapshot_version` from the just-received `GET_CHANNEL_AUTH_ACK`, echoed back here AFTER `set_peer_allowlist` succeeded.  Name change from `snapshot_version` → `applied_version` is intentional: on the ACK it's what the broker SNAPSHOTTED; on this REQ it's what the producer APPLIED.  Lets the broker distinguish "producer applied THIS pull" from stale confirmations under NOTIFY-storm conditions.
 
 **Reply (`CHANNEL_AUTH_APPLIED_ACK`):**
 
@@ -132,30 +132,30 @@ Ack is not fire-and-forget — it lets the producer detect broker-side failure a
 1. Marks per-producer-per-channel "cache in sync at version X" state.  Feeds the pending-ATTACH-drain step (§5.2).
 2. For revoke operations: broker now has explicit proof that the revoked pubkey is no longer accepted at the producer's ZAP handler.  Feeds any revocation audit trail / retry decisions.
 
-**Broker MUST NOT** treat an admit or revoke as globally committed until `CHANNEL_AUTH_APPLIED_REQ` arrives for the version that carried that change.  Two failure modes when APPLIED_REQ never arrives:
+**Broker MUST NOT** treat an admit or revoke as **producer-cache-reflected** until `CHANNEL_AUTH_APPLIED_REQ` arrives for the version that carried that change.  (Note: broker DOES mutate `ChannelAccessIndex[K]` immediately at admit/revoke time; §5.2 step 2 relies on that mutation for denials.  What lags is only the producer's ZAP cache reflection, not the authoritative index.)  Two failure modes when APPLIED_REQ never arrives:
 
 - **Broker detects producer disconnect** (ROUTER socket event, presence transition to kDead): closes any pending consumer ATTACH REQ with `status="denied"`, reason `producer_disconnected` per §5.5.
 - **Broker cannot detect disconnect within budget** (silent TCP drop, producer alive but stuck): `producer_apply_wait_ms` timer expires; broker closes pending consumer ATTACH REQ with `status="timeout"`.
 
-Revoke path: broker re-NOTIFYs on the next update cycle; producer catches up when reachable again.
+Revoke path retry policy on missed APPLIED_REQ is DEFERRED to §7.4 (`[user]`).  The three candidate mechanisms (a/b/c) each have different implications; broker MUST wait for §7.4 resolution before Phase 2 broker-side implementation.
 
 ### 4.3 Reused wires — one payload extension, otherwise unchanged
 
 - `CHANNEL_AUTH_CHANGED_NOTIFY` — HEP-0036 §6.5.0.  Broker → producer fire-and-forget doorbell.  No change.
 - `GET_CHANNEL_AUTH_REQ` — HEP-0036 §6.5.  Producer → broker request.  No change.
-- `GET_CHANNEL_AUTH_ACK` — HEP-0036 §6.5.  Broker → producer reply.  **Extended:** payload gains an `applied_version` field carrying the snapshot version the allowlist was taken from.  Producer echoes this back on the follow-up `CHANNEL_AUTH_APPLIED_REQ` (§4.2).
+- `GET_CHANNEL_AUTH_ACK` — HEP-0036 §6.5.  Broker → producer reply.  **Extended:** payload gains a `snapshot_version` field carrying the version the allowlist was snapshotted at.  Producer echoes this back on the follow-up `CHANNEL_AUTH_APPLIED_REQ` as `applied_version` (§4.2) after successfully applying via `set_peer_allowlist`.  Name changes intentionally between the two wires: on the ACK it's the SNAPSHOT (nothing applied yet); on the follow-up REQ it's the APPLIED confirmation.
 
 **Extended `GET_CHANNEL_AUTH_ACK` payload (extension shown in bold):**
 
 ```json
 {
-  "channel_name":  "lab.sensors.temperature",
-  "allowlist":     ["pubkey1_z85", "pubkey2_z85", "..."],
-  "applied_version": 42                                    ← NEW under D3
+  "channel_name":     "lab.sensors.temperature",
+  "allowlist":        ["pubkey1_z85", "pubkey2_z85", "..."],
+  "snapshot_version": 42                                    ← NEW under D3
 }
 ```
 
-Older producers that don't send `CHANNEL_AUTH_APPLIED_REQ` (pre-amendment binaries) can ignore `applied_version` — it's additive.  For strict version enforcement, the wire-protocol bump lands with the amendment (see Phase 2 in §9).
+**Backward-compatibility caveat.** The extension is byte-additive to the wire, but it is NOT semantically additive under D3.  A mixed deployment — new-consumer + old-producer that doesn't emit APPLIED_REQ — leaves `confirmed_version[K][P]=0` forever; every new consumer's ATTACH_REQ hits the wait path, waits `producer_apply_wait_ms`, and times out.  The correct operator model is "the wire is protocol-bumped in Phase 2; old producers cannot coexist with new consumers on a pre-confirm channel."  Do NOT rely on "additive" as a mixed-fleet strategy.
 
 The pre-confirm reuses these existing surfaces for the pull leg; the consumer-broker leg (§4.1) and the producer→broker confirmation leg (§4.2) are new.
 
@@ -172,7 +172,11 @@ The pre-confirm reuses these existing surfaces for the pull leg; the consumer-br
 **Notation used throughout this section (defined once, applied consistently):**
 
 - `ChannelAccessIndex[K]` — the broker's authoritative allowlist for channel K.  Versioned: every add or remove bumps a monotonic counter.
-- `v_add(C, K)` — the version at which consumer C's pubkey CURRENTLY exists in `ChannelAccessIndex[K]`.  Recorded by broker when the CONSUMER_REG handler admits C.  **On revoke-then-re-admit, v_add MUST update to the new re-admit version** — otherwise a stale v_add could satisfy the fast-path check against a producer whose cache is at a post-revoke snapshot missing C, causing CURVE handshake to fail after admit.  See §5.4 "revoke-then-re-admit" note.
+- `v_add(C, K)` — the version at which the (uid, pubkey) pair that CURRENTLY maps consumer C to channel K's allowlist was set.  Keyed by `(C.uid, C.pubkey, K)` — pubkey rotation for the same uid produces a NEW `v_add` under the new key.  Broker MUST write `v_add` whenever it mutates the entry for `(C.uid, K)`:
+  - First admission (uid new to K's allowlist).
+  - Re-admission after revoke (uid removed then re-added).
+  - Pubkey rotation (uid's mapped pubkey changes; the OLD entry is retired, the NEW pubkey has a fresh v_add).
+  See §5.4 "keying + update trigger" for correctness invariants and the failure modes each write case prevents.
 - `confirmed_version[K][P]` — the highest version producer P has confirmed applying to its ZAP cache, via `CHANNEL_AUTH_APPLIED_REQ`.  Grows over time.  Zero if never confirmed.  **This is the only version-tracking state the broker needs** for pre-confirm decisions; `served_version[K][P]` (what broker sent) is intentionally NOT tracked (§5.4).
 
 **Fast-path invariant:** `confirmed_version[K][P] >= v_add(C, K)` ⇒ C.pubkey is in P's ZAP cache.  (Any snapshot at or after C's addition contains C.)
@@ -199,7 +203,7 @@ CONSUMER_ATTACH_REQ_ZMQ arrives from consumer C for channel K + producer P:
 
 When P's GET_CHANNEL_AUTH_REQ arrives:
    a. Snapshot ChannelAccessIndex[K], stamp its current version W.
-   b. Reply GET_CHANNEL_AUTH_ACK{allowlist, applied_version=W}.
+   b. Reply GET_CHANNEL_AUTH_ACK{allowlist, snapshot_version=W}.
    c. Do NOT touch pending_attach_queue or confirmed_version yet — P hasn't
       confirmed application.  W travels back on the ACK; broker will see it
       again on P's subsequent APPLIED_REQ.
@@ -230,7 +234,7 @@ sequenceDiagram
     Note over B: v_add(A, K) = 11
     B->>P: CHANNEL_AUTH_CHANGED_NOTIFY
     P->>B: GET_CHANNEL_AUTH_REQ
-    B-->>P: GET_CHANNEL_AUTH_ACK{allowlist=[A], applied_version=11}
+    B-->>P: GET_CHANNEL_AUTH_ACK{allowlist=[A], snapshot_version=11}
     P->>B: CHANNEL_AUTH_APPLIED_REQ{applied_version=11}
     Note over B: confirmed_version[K][P] = 11
 
@@ -245,7 +249,7 @@ sequenceDiagram
     Note over B: C sends ATTACH_REQ:<br/>confirmed(11) < v_add(C)=13 → WAIT<br/>target_version=13 enqueued
 
     P->>B: GET_CHANNEL_AUTH_REQ (finally pulls)
-    B-->>P: GET_CHANNEL_AUTH_ACK{allowlist=[A,B,C], applied_version=13}
+    B-->>P: GET_CHANNEL_AUTH_ACK{allowlist=[A,B,C], snapshot_version=13}
     P->>B: CHANNEL_AUTH_APPLIED_REQ{applied_version=13}
     Note over B: confirmed_version[K][P] = 13<br/>drain queue:<br/>  B (target 12 ≤ 13) → ACK success<br/>  C (target 13 ≤ 13) → ACK success
 ```
@@ -267,11 +271,11 @@ This amendment has the broker be a sync-response HOLDER for a specific inbound R
 
 ### 5.4 Broker-side cache-in-sync tracking (under D3 bidirectional confirmation)
 
-Notation is defined in §5.2 preamble.  Recap: `confirmed_version[K][P]` = highest allowlist snapshot version P has confirmed applying via `CHANNEL_AUTH_APPLIED_REQ`; `v_add(C, K)` = version at which C's pubkey was added.
+Notation is defined in §5.2 preamble.  Recap: `confirmed_version[K][P]` = highest allowlist snapshot version P has confirmed applying via `CHANNEL_AUTH_APPLIED_REQ`; `v_add(C, K)` = version at which the CURRENT (C.uid, C.pubkey, K) entry was set (see §5.2 for keying + update triggers).
 
 **Fast-path invariant:** `confirmed_version[K][P] >= v_add(C, K)` ⇒ C.pubkey is in P's ZAP cache.  Broker replies success without waiting.
 
-**Why `confirmed_version` and not "what broker sent"?**  My initial draft proposed tracking what the broker *sent* to producers (call it `served_cache`) — advisory, optimistic.  Under D3 that's replaced by `confirmed_version`, which records what the producer *confirmed applying*.  Difference: served is optimistic ("I told them"); confirmed is deterministic ("they told me they applied it").  Simpler mental model; no self-correcting drift path when a NOTIFY drops or an apply fails silently.
+**Why `confirmed_version` and not "what broker sent"?**  Earlier draft variants proposed tracking what the broker *sent* to producers (variously called `served_version` or `served_cache` in prior revisions — both retired names for the same discarded concept).  Under D3 that's replaced by `confirmed_version`, which records what the producer *confirmed applying*.  Difference: served is optimistic ("I told them"); confirmed is deterministic ("they told me they applied it").  Simpler mental model; no self-correcting drift path when a NOTIFY drops or an apply fails silently.
 
 **Memory cost:** O(channels × producers) — just an integer version per (K, P) pair.  Much smaller than the earlier "set of pubkeys per pair" option.
 
@@ -279,14 +283,30 @@ Notation is defined in §5.2 preamble.  Recap: `confirmed_version[K][P]` = highe
 
 **On broker restart:** all `confirmed_version` state is lost.  First post-restart ATTACH REQ against any producer takes the wait path; on that producer's next pull + APPLIED_REQ, `confirmed_version` reconstitutes.  Self-healing without special-casing.
 
-**Revoke-then-re-admit note (correctness invariant).**  Consumer C's `v_add(C, K)` MUST be updated whenever C is (re-)admitted, not just at first admission.  Concrete failure mode without this rule:
-1. C admitted at version 11 → v_add(C, K) = 11.  Producer P confirms at v=11.
-2. C revoked at version 12.  Producer P pulls, applies v=12 (cache no longer has C), sends APPLIED_REQ.  confirmed_version[K][P] = 12.
-3. C re-admitted at version 13.
+**Keying + update trigger (correctness invariant).**  Broker keys `v_add` by `(C.uid, C.pubkey, K)`, not just `(C.uid, K)`.  Update triggers:
+
+1. **First admission** — new (uid, K) pair: write v_add = current ChannelAccessIndex[K] version after the mutation bump.
+2. **Revoke-then-re-admit** — same (uid, pubkey) removed then re-added: write fresh v_add at the re-admit bump.
+3. **Pubkey rotation** — uid's mapped pubkey changes: the OLD (uid, oldkey) entry is discarded from the v_add table; the NEW (uid, newkey) entry gets its own fresh v_add at the rotation bump.
+
+Concrete failure mode without rule 2 (revoke-then-re-admit case):
+1. C admitted at v=11 → v_add(C.uid, C.pubkey, K) = 11.  Producer P confirms at v=11.
+2. C revoked at v=12.  Producer P pulls, applies v=12 (cache no longer has C), sends APPLIED_REQ.  confirmed_version[K][P] = 12.
+3. C re-admitted at v=13.  Without rule 2, v_add STAYS at 11.
 4. C sends ATTACH_REQ.  Broker step 4: `confirmed_version=12 >= v_add=11 (stale)` → fast-path admit.
 5. C dials producer.  Producer's cache is at v=12 which does NOT have C.  Handshake fails.
 
 Fresh v_add=13 forces wait-path: `12 >= 13` false → NOTIFY producer → pull v=13 (has C) → APPLIED_REQ → fast-path drains C's REQ.  Handshake succeeds.
+
+Concrete failure mode without rule 3 (pubkey rotation case):
+1. C.uid admitted with pubkey_old at v=20 → v_add((uid, pubkey_old), K) = 20.  Producer P confirms at v=20.
+2. Operator rotates C.uid to pubkey_new at v=21.  ChannelAccessIndex[K] now has (uid → pubkey_new).
+3. C (with pubkey_new) sends ATTACH_REQ.  If broker keyed v_add only by (uid, K), the stale record still says v_add=20; fast-path `confirmed=20 >= 20` admits.
+4. C dials producer.  Producer's ZAP cache (at v=20) has pubkey_old, NOT pubkey_new.  Handshake fails.
+
+Fresh v_add((uid, pubkey_new), K) = 21 forces wait-path: `20 >= 21` false → producer catches up to v=21 (pubkey_new) → APPLIED_REQ → fast-path drains.  Handshake succeeds.
+
+**Broker implementation note.**  On any CONSUMER_REG mutation of ChannelAccessIndex[K] for consumer C, the broker (a) applies the mutation, (b) bumps the index version, (c) writes v_add for the RESULTING (uid, pubkey, K) tuple, (d) clears any prior (uid, *, K) entries with a different pubkey from the v_add table (rotation cleanup).
 
 ### 5.5 Timeout + failure modes
 
@@ -411,17 +431,17 @@ on GET_CHANNEL_AUTH_ACK(ack):
   applied_ack = brc.request(CHANNEL_AUTH_APPLIED_REQ{
     channel_name: ack.channel_name,
     producer_role_uid: pImpl->uid,
-    applied_version: ack.applied_version
+    applied_version: ack.snapshot_version
   }, timeout_ms=applied_ack_wait_ms)
 
   if applied_ack.status == "ok":
     LOGGER_INFO("[{}] pre-attach: applied allowlist v{} (size={}, channel={})",
-                short_tag, ack.applied_version, ack.allowlist.size(), ack.channel_name)
+                short_tag, ack.snapshot_version, ack.allowlist.size(), ack.channel_name)
   else:
     # timeout, transport error, or broker error — cache STAYS applied locally;
     # only observability lost.  Broker will re-drive on the next NOTIFY cycle.
     LOGGER_WARN("[{}] applied confirmation not acknowledged by broker for channel {} v{} — cache remains applied",
-                short_tag, ack.channel_name, ack.applied_version)
+                short_tag, ack.channel_name, ack.snapshot_version)
 ```
 
 Rationale: broker MUST know when the producer's ZAP cache has actually reflected each snapshot.  Without APPLIED_REQ, broker would treat GET_CHANNEL_AUTH_ACK-delivered as proof — but that only proves libzmq delivered the ACK bytes, not that `set_peer_allowlist` succeeded or that the ZAP cache is now enforcing the new snapshot.
@@ -585,7 +605,8 @@ Please confirm the resolution order (a → c → b) or redirect.
 - `RevokePath_ConfirmedVersionAdvancesOnAppliedReq` — revoke NOTIFY → pull → APPLIED_REQ → confirmed_version reflects post-revoke state.
 
 **L3 sequence pin + fan-in coverage** (extend `test_datahub_broker_protocol.cpp` or add new worker):
-- `PreConfirmSequenceEliminatesRace_ZmqConsumerDialsAfterProducerCacheReady` — full sequence pin.  Verify producer's `set_peer_allowlist` fires BEFORE consumer's `pull_from` dial via log-marker sequencing.
+- `PreConfirmSequenceEliminatesRace_ZmqConsumerDialsAfterProducerCacheReady` — admit-path sequence pin.  Verify producer's `set_peer_allowlist` fires BEFORE consumer's `pull_from` dial via log-marker sequencing.
+- `RevokePropagationConfirmed_ZmqAppliedReqAdvancesConfirmedVersion` — revoke-path sequence pin.  Verify broker's `confirmed_version[K][P]` advances past the revoke's ChannelAccessIndex version only after the producer's post-revoke `CHANNEL_AUTH_APPLIED_REQ` arrives.  Covers §9 Phase 5 requirement for L3 revoke sequence pin.
 - `AttachLoop_PartialSuccess_FanIn3Producers1Timeout` — 3-producer fan-in with 1 producer forced to skip pull.  Verify: 2 producers admitted; consumer's `api.producers_connected(channel)` returns the 2 uids; failed producer's `api.producer_attach_status` returns `timeout`; `set_producer_peers` receives 2-element set only.
 - `AttachLoop_AllFail_FanIn3ProducersAllTimeout` — 3-producer fan-in with all forced to skip pull.  Verify: `apply_consumer_reg_ack` returns false; channel unusable; ERROR-level "0/3 admitted" log line emitted.
 - `AttachLoop_LogMarkers_LoopBeginPerProducerAndLoopCompleteAllPinned` — assert on the exact log-line strings from §6.4 across ALL marker events: loop-begin (count + modality), per-producer success/failure, and loop-complete (partial/full/all-fail).  Pin as contract per `feedback_test_outcome_vs_path`.
@@ -609,12 +630,12 @@ Each phase is a single commit; ships green before the next starts.
 - **Phase 2: Broker side.** Two handlers + version tracking:
   - `handle_consumer_attach_req_zmq` — enqueues on wait-path.
   - `handle_channel_auth_applied_req` — records `confirmed_version[K][P]`, drains pending queue.
-  - `GET_CHANNEL_AUTH_ACK` extended with `applied_version` field.
+  - `GET_CHANNEL_AUTH_ACK` extended with `snapshot_version` field.
   - L2 tests pin the state machine including bidirectional confirmation.
 - **Phase 3: Producer side.** Extend `GET_CHANNEL_AUTH_ACK` handler with post-`set_peer_allowlist` `CHANNEL_AUTH_APPLIED_REQ` send.  BRC layer gains the helper.
 - **Phase 4: Consumer side.** Extend `RoleAPIBase::apply_consumer_reg_ack` ZMQ branch with the per-producer pre-confirm loop.  BRC layer gains the `CONSUMER_ATTACH_REQ_ZMQ` helper if not already present.
 - **Phase 5: Test unskip + L3 sequence pin.** Remove `GTEST_SKIP` in AUTH-7 L4 ZMQ test; add L3 sequence-pin worker for both admit and revoke paths.
-- **Phase 6: REVIEW-D gate.** Full systematic review of the pre-confirm arc.  Any residual §6.5 amendment doc-drift closes here.
+- **Phase 6: Systematic review (internal Phase-6 gate).** Full systematic review of the pre-confirm arc.  Distinct from the chain-position REVIEW-D referenced in the doc header (which covers a broader HEP-0041 arc); this Phase-6 review is scoped to the pre-confirm amendment only.  Any residual §6.5 amendment doc-drift closes here.
 
 ---
 
@@ -626,7 +647,7 @@ Phase 1 promotion is NOT a pointer-only cross-ref update.  Each of these HEPs ne
 
 Merge §4-§6 substance verbatim into new subsections of HEP-CORE-0041.  §7 (open questions) and §13 (open discussion items) do NOT promote — those are pre-promotion review artifacts.  §11.2 revocation guarantee (NOT the §11.1 scope-discipline list) lands as §Phase-5.6.
 
-- **§Phase-5.1 — Wire spec.** §4.1 CONSUMER_ATTACH_REQ_ZMQ / _ACK + §4.2 CHANNEL_AUTH_APPLIED_REQ / _ACK + §4.3 GET_CHANNEL_AUTH_ACK `applied_version` extension.
+- **§Phase-5.1 — Wire spec.** §4.1 CONSUMER_ATTACH_REQ_ZMQ / _ACK + §4.2 CHANNEL_AUTH_APPLIED_REQ / _ACK + §4.3 GET_CHANNEL_AUTH_ACK `snapshot_version` extension.
 - **§Phase-5.2 — Broker handler.** §5.2 flow + §5.3 discipline explainer + §5.4 confirmed_version state + §5.5 timeout/failure taxonomy table.
 - **§Phase-5.3 — Consumer contract (NORMATIVE — resolves §7.5 fan-in partial-success policy).**  Explicit:
   > "The consumer's `apply_consumer_reg_ack` ZMQ branch MUST attempt attach for every producer in `REG_ACK.producers[]`, record per-producer (status, reason) outcome, and treat the channel as usable if ≥1 producer was admitted.  Zero-admitted is the only loop-level failure.  Failed producers MUST be excluded from `set_producer_peers()` so the consumer never initiates a CURVE dial toward them.  (Note: consumer is CURVE client — no consumer-side ZAP handler exists; the exclusion prevents any dial attempt, not a ZAP-side rejection.)"
@@ -767,10 +788,10 @@ sequenceDiagram
         alt fast path (confirmed_version[K][P] >= v_add(C, K))
             B-->>C: CONSUMER_ATTACH_ACK_ZMQ{status="success"}
         else wait path
-            B->>P: CHANNEL_AUTH_CHANGED_NOTIFY{channel}
             Note over B: (consumer just joined)<br/>enqueues C's REQ, target_version=v_add(C, K)
+            B->>P: CHANNEL_AUTH_CHANGED_NOTIFY{channel}
             P->>B: GET_CHANNEL_AUTH_REQ
-            B-->>P: GET_CHANNEL_AUTH_ACK{allowlist, applied_version=W}
+            B-->>P: GET_CHANNEL_AUTH_ACK{allowlist, snapshot_version=W}
             Note over P: applies via set_peer_allowlist(v=W)
             P->>B: CHANNEL_AUTH_APPLIED_REQ{channel, applied_version=W}
             B-->>P: CHANNEL_AUTH_APPLIED_ACK{status="ok", channel_name=K, applied_version=W}
@@ -789,7 +810,7 @@ sequenceDiagram
     B->>P: CHANNEL_AUTH_CHANGED_NOTIFY{channel}
     Note over B: (revoke triggered)
     P->>B: GET_CHANNEL_AUTH_REQ
-    B-->>P: GET_CHANNEL_AUTH_ACK{allowlist(without C), applied_version=W+1}
+    B-->>P: GET_CHANNEL_AUTH_ACK{allowlist(without C), snapshot_version=W+1}
     Note over P: applies; cache no longer has C.pubkey
     P->>B: CHANNEL_AUTH_APPLIED_REQ{channel, applied_version=W+1}
     B-->>P: CHANNEL_AUTH_APPLIED_ACK{status="ok", channel_name=K, applied_version=W+1}
@@ -829,7 +850,7 @@ sequenceDiagram
     Note over C: LOG: producer[3/3]=P3 attach: success
 
     Note over C: ok_count=2, fail_count=1<br/>LOG: attach loop complete: 2/3 admitted, 1 failed (partial success)
-    Note over C: ConsumerChannelState stores:<br/>producers_declared=[P1,P2,P3]<br/>connected=[P1,P3]<br/>per_producer_outcome={P1:(success, ""), P2:(denied, "producer_not_live"), P3:(success, "")}
+    Note over C: ConsumerChannelState stores:<br/>producers_declared=[P1,P2,P3]<br/>producers_connected=[P1,P3]<br/>per_producer_outcome={P1:(success, ""), P2:(denied, "producer_not_live"), P3:(success, "")}
 
     C->>C: set_producer_peers([P1, P3])
     Note over C: Consumer's PULL only knows endpoints for P1 and P3.<br/>Consumer never initiates a CURVE dial toward P2.<br/>(Consumer is CURVE client — no ZAP handler exists on this side.)
