@@ -117,7 +117,7 @@ bool channel_name_matches_glob(const std::string& name, const std::string& glob)
 // When adding a new msg_type to process_message(), it MUST also be listed
 // in the appropriate array below.
 
-constexpr std::array<std::string_view, 18> kRequestReplyTypes = {
+constexpr std::array<std::string_view, 20> kRequestReplyTypes = {
     "REG_REQ", "DISC_REQ", "DEREG_REQ",
     "CONSUMER_REG_REQ", "CONSUMER_DEREG_REQ",
     "ENDPOINT_UPDATE_REQ", "SCHEMA_REQ",
@@ -132,11 +132,30 @@ constexpr std::array<std::string_view, 18> kRequestReplyTypes = {
     "GET_CHANNEL_AUTH_REQ",
     // Producer asks the broker to confirm one specific consumer is
     // authorized for a channel before sending the SHM capability fd
-    // (HEP-CORE-0041 §9 D4 pre-attach confirmation).  Reply is
-    // CONSUMER_ATTACH_ACK with status=success|denied for the auth
-    // decision, or ERROR for protocol-level failures.  Read-only
-    // against HubState — pure query, no mutation.
+    // (HEP-CORE-0041 §9 D4 pre-attach confirmation; HEP-CORE-0042
+    // §6.1 Bindings.SHM).  Reply is CONSUMER_ATTACH_ACK with
+    // status=success|denied for the auth decision, or ERROR for
+    // protocol-level failures.  Read-only against HubState — pure
+    // query, no mutation.
     "CONSUMER_ATTACH_REQ",
+    // Consumer asks the broker to gate a ZMQ data-plane attach against
+    // producer P for channel K (HEP-CORE-0042 §6.2 Bindings.ZMQ).  Reply
+    // is CONSUMER_ATTACH_ACK_ZMQ with status=success (fast-path or drained
+    // after producer confirmed cache) / denied / timeout.  Wait-path
+    // enqueues the REQ and holds the reply until producer's
+    // CHANNEL_AUTH_APPLIED_REQ advances confirmed_version[K][P].
+    // Handler stub in Phase 2.1 — full impl in Phase 2.2 (fast-path)
+    // and Phase 2.3 (wait-path + denial cases).
+    "CONSUMER_ATTACH_REQ_ZMQ",
+    // Producer confirms it has applied a specific allowlist snapshot
+    // version (HEP-CORE-0042 §5.5.2 + §6.2).  Broker replies "ok",
+    // advances confirmed_version[K][P] iff the producer's echoed
+    // instance_id matches the current instance[P] (stale-instance
+    // guard), and drains any pending CONSUMER_ATTACH_REQ_ZMQ entries
+    // whose target_version ≤ confirmed_version.  Handler stub in
+    // Phase 2.1 — full impl in Phase 2.2 (fast-path + APPLIED drain) +
+    // Phase 2.4 (stale-instance drop).
+    "CHANNEL_AUTH_APPLIED_REQ",
 };
 
 constexpr std::array<std::string_view, 8> kFireAndForgetTypes = {
@@ -395,19 +414,58 @@ public:
     /// non-producer caller.
     nlohmann::json handle_get_channel_auth_req(const nlohmann::json& req);
 
-    /// `CONSUMER_ATTACH_REQ` handler (HEP-CORE-0041 §9 D4 step 4-5).
-    /// Pre-attach confirmation: the producer asks the broker whether
-    /// one specific consumer is currently authorized for a channel,
-    /// before sending the SHM capability fd.  Reply carries either
-    /// `status="success"` or `status="denied"` (both are normal auth
-    /// decisions wrapped in a CONSUMER_ATTACH_ACK frame so the
-    /// producer-side cache divergence WARN logic can distinguish a
-    /// clean broker "no" from a wire error).  Protocol-level failures
-    /// (shape error, channel not found, caller not a producer,
-    /// HubState invariant broken) return the standard error envelope
-    /// and are surfaced as ERROR replies by the dispatcher.
-    /// Read-only against HubState — pure query.
-    nlohmann::json handle_consumer_attach_req(const nlohmann::json& req);
+    /// `CONSUMER_ATTACH_REQ` handler (SHM binding, HEP-CORE-0041 §9 D4
+    /// step 4-5 = HEP-CORE-0042 §6.1 Bindings.SHM).  Pre-attach
+    /// confirmation: the producer asks the broker whether one specific
+    /// consumer is currently authorized for a channel, before sending
+    /// the SHM capability fd.  Reply carries either `status="success"`
+    /// or `status="denied"` (both are normal auth decisions wrapped in
+    /// a CONSUMER_ATTACH_ACK frame so the producer-side cache divergence
+    /// WARN logic can distinguish a clean broker "no" from a wire
+    /// error).  Protocol-level failures (shape error, channel not found,
+    /// caller not a producer, HubState invariant broken) return the
+    /// standard error envelope and are surfaced as ERROR replies by the
+    /// dispatcher.  Read-only against HubState — pure query.
+    ///
+    /// Named `_shm` for symmetry with the sibling
+    /// `handle_consumer_attach_req_zmq` under HEP-CORE-0042 §6.2 (both
+    /// instantiate the transport-agnostic coordination protocol; SHM
+    /// is producer-initiated and stateless, ZMQ is consumer-initiated
+    /// and stateful with the `confirmed_version` cache-tracking layer).
+    nlohmann::json handle_consumer_attach_req_shm(const nlohmann::json& req);
+
+    /// `CONSUMER_ATTACH_REQ_ZMQ` handler (ZMQ binding, HEP-CORE-0042
+    /// §6.2 Bindings.ZMQ + §5.4 handler flow).  Consumer-initiated
+    /// pre-attach gate: consumer asks the broker whether producer P's
+    /// per-connection ZAP cache is caught up enough to admit consumer
+    /// C on channel K.  Fast-path: `confirmed_version[K][P] >=
+    /// channel_version[K]` → reply `success` immediately.  Wait-path:
+    /// enqueue in `pending_attach_queue[K][P]`, fire
+    /// `CHANNEL_AUTH_CHANGED_NOTIFY` to P, hold reply until either
+    /// `CHANNEL_AUTH_APPLIED_REQ` from P advances confirmed_version
+    /// past the enqueued target_version, or the
+    /// `producer_apply_wait_ms` budget elapses.
+    ///
+    /// Phase 2.1 stub: returns INTERNAL_ERROR with reason
+    /// "not_implemented_hep_0042_phase_2_1" so exercise paths surface
+    /// clearly.  Fast-path logic lands in Phase 2.2; wait-path +
+    /// timeout in Phase 2.3; denials in Phase 2.4; stale-instance
+    /// guard in Phase 2.5.
+    nlohmann::json handle_consumer_attach_req_zmq(const nlohmann::json& req);
+
+    /// `CHANNEL_AUTH_APPLIED_REQ` handler (HEP-CORE-0042 §5.5.2 +
+    /// §5.4).  Producer P confirms it has applied allowlist snapshot
+    /// version W and echoes its instance_id.  Broker: if
+    /// `instance_id != instance[P]` → silently drop (stale-instance
+    /// guard, P4).  Otherwise: reply `{status="ok"}`, advance
+    /// `confirmed_version[K][P] = max(current, W)`, drain any pending
+    /// CONSUMER_ATTACH_REQ_ZMQ entries whose target_version ≤
+    /// confirmed_version.
+    ///
+    /// Phase 2.1 stub: returns INTERNAL_ERROR with reason
+    /// "not_implemented_hep_0042_phase_2_1".  Full impl in Phase 2.2
+    /// (advance + drain) + Phase 2.5 (stale-instance guard).
+    nlohmann::json handle_channel_auth_applied_req(const nlohmann::json& req);
 
     /// Fire-and-forget `CHANNEL_AUTH_CHANGED_NOTIFY` to every producer
     /// of the named channel (HEP-CORE-0036 §6.5).  Same fan-out shape
@@ -1211,18 +1269,43 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
     }
     else if (msg_type == "CONSUMER_ATTACH_REQ")
     {
-        // HEP-CORE-0041 §9 D4 — producer's pre-attach confirmation.
-        // Special-cased dispatch: "denied" is a normal auth decision,
-        // NOT a wire error.  Both "success" and "denied" map to
-        // CONSUMER_ATTACH_ACK so the producer's cache-divergence
-        // observer (substep 1e) can distinguish a clean broker "no"
-        // from a transport failure.
-        nlohmann::json resp = handle_consumer_attach_req(payload);
+        // HEP-CORE-0041 §9 D4 = HEP-CORE-0042 §6.1 Bindings.SHM.  Producer's
+        // pre-attach confirmation for SHM transport.  Special-cased dispatch:
+        // "denied" is a normal auth decision, NOT a wire error.  Both
+        // "success" and "denied" map to CONSUMER_ATTACH_ACK so the producer's
+        // cache-divergence observer (HEP-0041 substep 1e) can distinguish a
+        // clean broker "no" from a transport failure.
+        nlohmann::json resp = handle_consumer_attach_req_shm(payload);
         const std::string status = resp.value("status", "");
         const std::string ack =
             (status == "success" || status == "denied")
                 ? "CONSUMER_ATTACH_ACK"
                 : "ERROR";
+        send_reply(socket, identity, ack, resp);
+    }
+    else if (msg_type == "CONSUMER_ATTACH_REQ_ZMQ")
+    {
+        // HEP-CORE-0042 §6.2 Bindings.ZMQ.  Consumer-initiated pre-attach
+        // gate.  Phase 2.1 stub returns INTERNAL_ERROR → ERROR envelope
+        // (only success/denied/timeout become CONSUMER_ATTACH_ACK_ZMQ once
+        // the real handler ships in Phase 2.2+).
+        nlohmann::json resp = handle_consumer_attach_req_zmq(payload);
+        const std::string status = resp.value("status", "");
+        const std::string ack =
+            (status == "success" || status == "denied" || status == "timeout")
+                ? "CONSUMER_ATTACH_ACK_ZMQ"
+                : "ERROR";
+        send_reply(socket, identity, ack, resp);
+    }
+    else if (msg_type == "CHANNEL_AUTH_APPLIED_REQ")
+    {
+        // HEP-CORE-0042 §5.5.2.  Producer confirms allowlist snapshot
+        // applied; broker advances confirmed_version and drains pending
+        // ATTACH_REQ_ZMQ entries.  Phase 2.1 stub returns INTERNAL_ERROR
+        // → ERROR envelope.
+        nlohmann::json resp = handle_channel_auth_applied_req(payload);
+        const std::string ack =
+            (resp.value("status", "") == "ok") ? "CHANNEL_AUTH_APPLIED_ACK" : "ERROR";
         send_reply(socket, identity, ack, resp);
     }
     else if (msg_type == "CONSUMER_DEREG_REQ")
@@ -2998,7 +3081,7 @@ BrokerServiceImpl::handle_get_channel_auth_req(const nlohmann::json &req)
 }
 
 nlohmann::json
-BrokerServiceImpl::handle_consumer_attach_req(const nlohmann::json &req)
+BrokerServiceImpl::handle_consumer_attach_req_shm(const nlohmann::json &req)
 {
     // HEP-CORE-0041 §9 D4 step 4-5 — pre-attach broker confirmation.
     // Producer asks whether one specific consumer is currently
@@ -3116,6 +3199,42 @@ BrokerServiceImpl::handle_consumer_attach_req(const nlohmann::json &req)
             channel_name, consumer_pubkey, consumer_role_uid, caller_uid);
     }
     return resp;
+}
+
+// ===========================================================================
+// HEP-CORE-0042 §6.2 Bindings.ZMQ + §5.4/§5.5 handler stubs (Phase 2.1 scaffold)
+// ===========================================================================
+//
+// Phase 2.1 scope: envelope registration + dispatch + method skeleton.  Both
+// stubs return INTERNAL_ERROR with reason "not_implemented_hep_0042_phase_2_1"
+// so any exercise path (accidental production traffic, out-of-order test
+// setup) surfaces clearly instead of silently misbehaving.
+//
+// Full behavior lands in later phases per HEP-CORE-0042 §9 test plan:
+//   - Phase 2.2: fast-path + wait-path enqueue + APPLIED_REQ advance/drain
+//   - Phase 2.3: denial paths (not-in-allowlist / not-live / disconnect-drain)
+//   - Phase 2.4: channel-close drain + timeout-timer wiring
+//   - Phase 2.5: instance-epoch guard (stale-instance APPLIED_REQ silent drop)
+
+nlohmann::json BrokerServiceImpl::handle_consumer_attach_req_zmq(
+    const nlohmann::json &req)
+{
+    // Extract correlation_id if present so error replies remain
+    // trace-linkable per §5.4.  All other payload fields intentionally
+    // unread until Phase 2.2's handler flow lands.
+    const std::string corr_id = req.value("correlation_id", "");
+    return make_error(corr_id, "INTERNAL_ERROR",
+                      "handle_consumer_attach_req_zmq stub — "
+                      "not_implemented_hep_0042_phase_2_1");
+}
+
+nlohmann::json BrokerServiceImpl::handle_channel_auth_applied_req(
+    const nlohmann::json &req)
+{
+    const std::string corr_id = req.value("correlation_id", "");
+    return make_error(corr_id, "INTERNAL_ERROR",
+                      "handle_channel_auth_applied_req stub — "
+                      "not_implemented_hep_0042_phase_2_1");
 }
 
 void BrokerServiceImpl::fire_channel_auth_changed_notify(
