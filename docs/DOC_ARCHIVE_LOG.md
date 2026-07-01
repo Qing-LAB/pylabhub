@@ -6,6 +6,26 @@
 
 ## Archive batches
 
+### 2026-07-01 (task #246 Phase 1 promotion — HEP-CORE-0042 adopted)
+
+Task #246's tech_draft substance promoted to **HEP-CORE-0042 (Channel
+Attach Coordination Protocol)** — a new HEP that owns the transport-
+agnostic pre-attach coordination pattern.  Under Execution B, both SHM
+and ZMQ pre-attach instantiate the same protocol; HEP-CORE-0041 §5.4
+(SHM CONSUMER_ATTACH_REQ) relocated to HEP-0042 §6.1 Bindings.SHM
+(HEP-0041 §5.4 becomes a 3-line pointer).  Sibling HEPs (0036, 0011,
+0028) updated per HEP-0042 §11.
+
+* `DRAFT_HEP-0036_zmq-pre-confirm_2026-06-30.md` — 645-line design
+  draft from 2026-06-30 promoted verbatim to HEP-CORE-0042 §5-§8
+  (abstract protocol + ZMQ binding).  Design principles P0-P4 +
+  review guardrails table lifted from the draft's Design Principles
+  section.  §7 designer decisions all locked 2026-07-01 with
+  recommendations approved by user (see chat transcript).
+  §10 sibling HEP contract text pasted verbatim into HEP-0042 §11
+  cross-references.  Archived to
+  `docs/archive/transient-2026-07-01/tech_draft-completions/DRAFT_HEP-0036_zmq-pre-confirm_2026-06-30.md`.
+
 ### 2026-06-30 (HEP-0041 1i-cleanup S5 close-out)
 
 After #275 S5 shipped (renamed `SharedMemoryHeader::shared_secret[64]`

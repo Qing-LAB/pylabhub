@@ -212,7 +212,7 @@ Current critical path (each step blocks the next unless noted):
   gate.  Full chain + milestone schedule in `docs/todo/AUTH_TODO.md`
   § "HEP-0041 implementation chain" + live tracker in HEP-0041 §10.1.
   Phases 2-3 (cross-platform #259-#261), Phase 4 (#247 framework
-  crypto), Phase 5 (#246 ZMQ pre-confirm retrofit) follow.  #245
+  crypto), Phase 5 (#246 — design ✅ 2026-07-01 as HEP-CORE-0042; ZMQ retrofit impl pending) follow.  #245
   (POSIX 0600 interim hardening) KILLED 2026-06-17.
 - **AUTH-5** (task **#104**) — Sibling-HEP doc sync; 7 of 8 are pure
   doc edits.  L (multi-area).

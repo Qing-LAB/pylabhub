@@ -379,12 +379,23 @@ migration MUST move together so no commit leaves the suite broken.
 | 2 — macOS backend | to file once Phase 1 ships | `shm_open(SHM_ANON)` replaces `memfd_create`; `SCM_RIGHTS` over Unix sockets identical to Linux |
 | 3 — Windows backend | to file once Phase 1 ships | Named pipe replaces Unix socket; `DuplicateHandle` replaces `SCM_RIGHTS`; producer queries broker for `consumer_process_id` |
 | 4 — Framework crypto primitives | #247 (script-side); native part of Phase 4 | `PYLABHUB_UTILS_EXPORT` AEAD (ChaCha20-Poly1305) + HKDF wrappers; sibling `api.crypto.*` bindings (Python/Lua/Native) |
-| 5 — HEP-0036 ZMQ retrofit | #246 | Retrofit ZMQ to pre-attach broker-confirmation pattern; producer's ZAP handler stops being load-bearing; cache becomes observability for ZMQ too |
+| 5 — HEP-0036 ZMQ retrofit | #246 (design ✅ shipped 2026-07-01 as HEP-CORE-0042; impl phases 2+ pending) | Retrofit ZMQ to pre-attach broker-confirmation pattern; producer's ZAP handler stops being load-bearing; cache becomes observability for ZMQ too |
 
 **Sequencing rationale.**  Phase 1 establishes the pre-confirm
 contract on Linux/FreeBSD where the threat model is sharpest;
 Phase 5 (#246) lands AFTER Phase 1 so ZMQ retrofit replicates a
 proven pattern rather than co-evolving.
+
+**#246 Phase 1 design landed 2026-07-01 as HEP-CORE-0042.**  The
+transport-agnostic Channel Attach Coordination Protocol replaces the
+"HEP-0036 amendment" framing.  Both SHM and ZMQ pre-attach coordinate
+via the same protocol (HEP-0042 §5 abstract, §6 per-transport
+bindings).  HEP-0041 §5.4 SHM CONSUMER_ATTACH_REQ relocated to
+HEP-0042 §6.1.  Impl phases 2-4 (L2 broker unit tests → L3 role-broker
+integration → L4 e2e) are the next work chain for #246.  Test-fixture
+follow-on (broker-side helper to synthesize APPLIED_REQ with arbitrary
+`instance_id` for the stale-instance guard test) tracked as a
+follow-on task filed at HEP-0042 §11.
 
 **#245 KILLED 2026-06-17.**  POSIX `kShmModeRw 0666 → 0600` interim
 hardening rejected — HEP-0041 deletes the named-SHM `shm_open` path
