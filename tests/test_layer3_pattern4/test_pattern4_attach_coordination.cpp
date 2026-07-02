@@ -64,6 +64,116 @@ protected:
         return dir;
     }
 
+    // ── Fixture helpers — shared across all attach-coordination tests ──
+    //
+    // GTest note: fatal-assertion macros (`ASSERT_*`) inside these
+    // methods `return;` from the METHOD, not from the calling test.
+    // Callers MUST wrap invocations with `ASSERT_NO_FATAL_FAILURE(...)`
+    // so a failed REG / HEARTBEAT / CONSUMER_REG aborts the test at
+    // the correct call site instead of cascading into a downstream
+    // misattributed failure.  (Per MEMORY rule "tests pin path + timing".)
+
+    /// Construct a BrokerWireClient bound to `setup.broker_endpoint`
+    /// using the given role keypair.  Delegates to Phase 2.4a's
+    /// movable BrokerWireClient — one ctx per test is enough.
+    BrokerWireClient make_wire_client(
+        zmq::context_t &ctx,
+        const pylabhub::tests::pattern4::Pattern4Setup &setup,
+        const pylabhub::tests::CurveKeypair &kp)
+    {
+        BrokerWireClient::Config c;
+        c.broker_endpoint = setup.broker_endpoint;
+        c.broker_pubkey   = setup.curve.hub.public_z85;
+        c.client_pubkey   = kp.public_z85;
+        c.client_seckey   = kp.secret_z85;
+        return BrokerWireClient(ctx, c);
+    }
+
+    /// Producer REG_REQ → assert REG_ACK.status=="success", then
+    /// HEARTBEAT_REQ (fire-and-forget) to clear the
+    /// `awaiting_first_heartbeat` gate that CONSUMER_REG_REQ trips
+    /// (HEP-CORE-0023 §2.5.3).  Sleeps 100ms to give the broker time
+    /// to process the heartbeat before the caller proceeds — the
+    /// broker's `channel_ready` gate is polled on the CONSUMER_REG
+    /// path.
+    void producer_reg_and_heartbeat(
+        BrokerWireClient  &client,
+        const std::string &channel,
+        const std::string &uid,
+        const std::string &pubkey,
+        int                data_port)
+    {
+        using pylabhub::kLongTimeoutMs;
+
+        pylabhub::hub::ProducerRegInputs in;
+        in.channel           = channel;
+        in.role_uid          = uid;
+        in.role_name         = uid.substr(uid.rfind('.') + 1);
+        in.role_type         = "producer";
+        in.is_zmq_transport  = true;
+        in.zmq_node_endpoint = "tcp://127.0.0.1:" + std::to_string(data_port);
+        in.zmq_pubkey        = pubkey;
+        auto payload = pylabhub::hub::build_producer_reg_payload(in);
+        auto reply = client.request(
+            "REG_REQ", payload, "REG_ACK",
+            std::chrono::milliseconds{kLongTimeoutMs});
+        ASSERT_TRUE(reply.has_value()) << "producer REG_REQ: no reply";
+        ASSERT_EQ(reply->value("status", ""), "success")
+            << "producer REG_REQ failed: " << reply->dump();
+
+        nlohmann::json hb;
+        hb["channel_name"] = channel;
+        hb["role_uid"]     = uid;
+        hb["role_type"]    = "producer";
+        hb["producer_pid"] = 1;
+        client.send("HEARTBEAT_REQ", hb);
+        std::this_thread::sleep_for(std::chrono::milliseconds{100});
+    }
+
+    /// Consumer CONSUMER_REG_REQ → assert CONSUMER_REG_ACK.status==
+    /// "success".  This mutation bumps `channel_version[K]` by 1 and
+    /// fires a fan-out CHANNEL_AUTH_CHANGED_NOTIFY to every producer
+    /// of K (per HEP-CORE-0036 §6.5).
+    void consumer_reg(
+        BrokerWireClient  &client,
+        const std::string &channel,
+        const std::string &uid,
+        const std::string &pubkey)
+    {
+        using pylabhub::kLongTimeoutMs;
+
+        pylabhub::hub::ConsumerRegInputs in;
+        in.channel    = channel;
+        in.role_uid   = uid;
+        in.role_name  = uid.substr(uid.rfind('.') + 1);
+        in.zmq_pubkey = pubkey;
+        auto payload = pylabhub::hub::build_consumer_reg_payload(in);
+        auto reply = client.request(
+            "CONSUMER_REG_REQ", payload, "CONSUMER_REG_ACK",
+            std::chrono::milliseconds{kLongTimeoutMs});
+        ASSERT_TRUE(reply.has_value()) << "consumer REG_REQ: no reply";
+        ASSERT_EQ(reply->value("status", ""), "success")
+            << "consumer REG_REQ failed: " << reply->dump();
+    }
+
+    /// Log-barrier — blocks until the broker logs the §5.4 step 5
+    /// wait-path enqueue marker for `channel`.  Only the wait-path
+    /// branch emits this marker (fast-path admit + step-2/3 denials
+    /// do not), so seeing it PROVES §5.4 step 5 was taken.  Eliminates
+    /// the cross-DEALER wire race that would otherwise let a
+    /// subsequent producer message (APPLIED_REQ, DEREG_REQ) beat the
+    /// consumer's ATTACH_REQ to the broker's ROUTER and produce a
+    /// wire-identical false-pass reply from the fast-path branch.
+    void wait_for_attach_enqueue(
+        const pylabhub::tests::helper::WorkerProcess &broker,
+        const std::string                           &channel)
+    {
+        using pylabhub::kMidTimeoutMs;
+        expect_log(broker,
+                    "event=AttachReqZmqEnqueued channel='" + channel + "'",
+                    std::chrono::milliseconds{kMidTimeoutMs});
+    }
+
     std::vector<fs::path> paths_to_clean_;
 };
 
@@ -114,75 +224,17 @@ TEST_F(Pattern4AttachCoordinationTest, FastPathAdmit)
     zmq::context_t ctx;
     const auto &prod_kp = setup.curve.role(producer_uid);
     const auto &cons_kp = setup.curve.role(consumer_uid);
+    auto prod_client = make_wire_client(ctx, setup, prod_kp);
+    auto cons_client = make_wire_client(ctx, setup, cons_kp);
 
-    BrokerWireClient::Config prod_cfg;
-    prod_cfg.broker_endpoint = setup.broker_endpoint;
-    prod_cfg.broker_pubkey   = setup.curve.hub.public_z85;
-    prod_cfg.client_pubkey   = prod_kp.public_z85;
-    prod_cfg.client_seckey   = prod_kp.secret_z85;
-    BrokerWireClient prod_client(ctx, prod_cfg);
+    // ── 4. Producer REG_REQ + HEARTBEAT_REQ ──
+    ASSERT_NO_FATAL_FAILURE(producer_reg_and_heartbeat(
+        prod_client, channel_name, producer_uid,
+        prod_kp.public_z85, producer_data_port));
 
-    BrokerWireClient::Config cons_cfg;
-    cons_cfg.broker_endpoint = setup.broker_endpoint;
-    cons_cfg.broker_pubkey   = setup.curve.hub.public_z85;
-    cons_cfg.client_pubkey   = cons_kp.public_z85;
-    cons_cfg.client_seckey   = cons_kp.secret_z85;
-    BrokerWireClient cons_client(ctx, cons_cfg);
-
-    // ── 4. Producer REG_REQ → REG_ACK ──
-    {
-        pylabhub::hub::ProducerRegInputs in;
-        in.channel           = channel_name;
-        in.role_uid          = producer_uid;
-        in.role_name         = "p";
-        in.role_type         = "producer";
-        in.is_zmq_transport  = true;
-        in.zmq_node_endpoint = "tcp://127.0.0.1:" + std::to_string(producer_data_port);
-        in.zmq_pubkey        = prod_kp.public_z85;
-        auto payload = pylabhub::hub::build_producer_reg_payload(in);
-
-        auto reply = prod_client.request(
-            "REG_REQ", payload, "REG_ACK",
-            std::chrono::milliseconds{kLongTimeoutMs});
-        ASSERT_TRUE(reply.has_value()) << "producer REG_REQ: no reply";
-        ASSERT_EQ(reply->value("status", ""), "success")
-            << "producer REG_REQ failed: " << reply->dump();
-    }
-
-    // ── 4b. Producer HEARTBEAT_REQ (fire-and-forget) ──
-    // Broker rejects CONSUMER_REG_REQ with CHANNEL_NOT_READY until the
-    // producer has sent at least one heartbeat (HEP-CORE-0023 §2.5.3
-    // "awaiting_first_heartbeat" gate).
-    {
-        nlohmann::json hb;
-        hb["channel_name"] = channel_name;
-        hb["role_uid"]     = producer_uid;
-        hb["role_type"]    = "producer";
-        hb["producer_pid"] = 1;
-        prod_client.send("HEARTBEAT_REQ", hb);
-        // No reply expected — HEARTBEAT_REQ is fire-and-forget.
-        // Give the broker a beat to process before consumer REG.
-        std::this_thread::sleep_for(std::chrono::milliseconds{100});
-    }
-
-    // ── 5. Consumer CONSUMER_REG_REQ → CONSUMER_REG_ACK ──
-    // Broker will bump channel_version[K] from 0 → 1 as it adds
-    // consumer.pubkey to authorized_consumer_pubkeys.
-    {
-        pylabhub::hub::ConsumerRegInputs in;
-        in.channel    = channel_name;
-        in.role_uid   = consumer_uid;
-        in.role_name  = "c";
-        in.zmq_pubkey = cons_kp.public_z85;
-        auto payload = pylabhub::hub::build_consumer_reg_payload(in);
-
-        auto reply = cons_client.request(
-            "CONSUMER_REG_REQ", payload, "CONSUMER_REG_ACK",
-            std::chrono::milliseconds{kLongTimeoutMs});
-        ASSERT_TRUE(reply.has_value()) << "consumer REG_REQ: no reply";
-        ASSERT_EQ(reply->value("status", ""), "success")
-            << "consumer REG_REQ failed: " << reply->dump();
-    }
+    // ── 5. Consumer CONSUMER_REG_REQ → channel_version 0→1 ──
+    ASSERT_NO_FATAL_FAILURE(consumer_reg(
+        cons_client, channel_name, consumer_uid, cons_kp.public_z85));
 
     // ── 6. Producer sends CHANNEL_AUTH_APPLIED_REQ(v=1, instance=1) ──
     // Simulates the producer's cache having caught up to the new
@@ -269,47 +321,13 @@ TEST_F(Pattern4AttachCoordinationTest, DeniedConsumerNotInAllowlist)
     zmq::context_t ctx;
     const auto &prod_kp = setup.curve.role(producer_uid);
     const auto &cons_kp = setup.curve.role(consumer_uid);
-
-    BrokerWireClient::Config prod_cfg;
-    prod_cfg.broker_endpoint = setup.broker_endpoint;
-    prod_cfg.broker_pubkey   = setup.curve.hub.public_z85;
-    prod_cfg.client_pubkey   = prod_kp.public_z85;
-    prod_cfg.client_seckey   = prod_kp.secret_z85;
-    BrokerWireClient prod_client(ctx, prod_cfg);
-
-    BrokerWireClient::Config cons_cfg;
-    cons_cfg.broker_endpoint = setup.broker_endpoint;
-    cons_cfg.broker_pubkey   = setup.curve.hub.public_z85;
-    cons_cfg.client_pubkey   = cons_kp.public_z85;
-    cons_cfg.client_seckey   = cons_kp.secret_z85;
-    BrokerWireClient cons_client(ctx, cons_cfg);
+    auto prod_client = make_wire_client(ctx, setup, prod_kp);
+    auto cons_client = make_wire_client(ctx, setup, cons_kp);
 
     // Producer REG + heartbeat — opens the channel.
-    {
-        pylabhub::hub::ProducerRegInputs in;
-        in.channel           = channel_name;
-        in.role_uid          = producer_uid;
-        in.role_name         = "p";
-        in.role_type         = "producer";
-        in.is_zmq_transport  = true;
-        in.zmq_node_endpoint = "tcp://127.0.0.1:" + std::to_string(producer_data_port);
-        in.zmq_pubkey        = prod_kp.public_z85;
-        auto payload = pylabhub::hub::build_producer_reg_payload(in);
-        auto reply = prod_client.request(
-            "REG_REQ", payload, "REG_ACK",
-            std::chrono::milliseconds{kLongTimeoutMs});
-        ASSERT_TRUE(reply.has_value());
-        ASSERT_EQ(reply->value("status", ""), "success") << reply->dump();
-    }
-    {
-        nlohmann::json hb;
-        hb["channel_name"] = channel_name;
-        hb["role_uid"]     = producer_uid;
-        hb["role_type"]    = "producer";
-        hb["producer_pid"] = 1;
-        prod_client.send("HEARTBEAT_REQ", hb);
-        std::this_thread::sleep_for(std::chrono::milliseconds{100});
-    }
+    ASSERT_NO_FATAL_FAILURE(producer_reg_and_heartbeat(
+        prod_client, channel_name, producer_uid,
+        prod_kp.public_z85, producer_data_port));
 
     // Consumer attaches WITHOUT registering — its pubkey is not in
     // the channel's allowlist.
@@ -379,62 +397,14 @@ TEST_F(Pattern4AttachCoordinationTest, DeniedProducerNotLive)
     zmq::context_t ctx;
     const auto &prod_kp = setup.curve.role(producer_uid);
     const auto &cons_kp = setup.curve.role(consumer_uid);
+    auto prod_client = make_wire_client(ctx, setup, prod_kp);
+    auto cons_client = make_wire_client(ctx, setup, cons_kp);
 
-    BrokerWireClient::Config prod_cfg;
-    prod_cfg.broker_endpoint = setup.broker_endpoint;
-    prod_cfg.broker_pubkey   = setup.curve.hub.public_z85;
-    prod_cfg.client_pubkey   = prod_kp.public_z85;
-    prod_cfg.client_seckey   = prod_kp.secret_z85;
-    BrokerWireClient prod_client(ctx, prod_cfg);
-
-    BrokerWireClient::Config cons_cfg;
-    cons_cfg.broker_endpoint = setup.broker_endpoint;
-    cons_cfg.broker_pubkey   = setup.curve.hub.public_z85;
-    cons_cfg.client_pubkey   = cons_kp.public_z85;
-    cons_cfg.client_seckey   = cons_kp.secret_z85;
-    BrokerWireClient cons_client(ctx, cons_cfg);
-
-    // Producer REG + heartbeat.
-    {
-        pylabhub::hub::ProducerRegInputs in;
-        in.channel           = channel_name;
-        in.role_uid          = producer_uid;
-        in.role_name         = "p";
-        in.role_type         = "producer";
-        in.is_zmq_transport  = true;
-        in.zmq_node_endpoint = "tcp://127.0.0.1:" + std::to_string(producer_data_port);
-        in.zmq_pubkey        = prod_kp.public_z85;
-        auto payload = pylabhub::hub::build_producer_reg_payload(in);
-        auto reply = prod_client.request(
-            "REG_REQ", payload, "REG_ACK",
-            std::chrono::milliseconds{kLongTimeoutMs});
-        ASSERT_TRUE(reply.has_value());
-        ASSERT_EQ(reply->value("status", ""), "success") << reply->dump();
-    }
-    {
-        nlohmann::json hb;
-        hb["channel_name"] = channel_name;
-        hb["role_uid"]     = producer_uid;
-        hb["role_type"]    = "producer";
-        hb["producer_pid"] = 1;
-        prod_client.send("HEARTBEAT_REQ", hb);
-        std::this_thread::sleep_for(std::chrono::milliseconds{100});
-    }
-
-    // Consumer REG — bumps channel_version, gets pubkey on allowlist.
-    {
-        pylabhub::hub::ConsumerRegInputs in;
-        in.channel    = channel_name;
-        in.role_uid   = consumer_uid;
-        in.role_name  = "c";
-        in.zmq_pubkey = cons_kp.public_z85;
-        auto payload = pylabhub::hub::build_consumer_reg_payload(in);
-        auto reply = cons_client.request(
-            "CONSUMER_REG_REQ", payload, "CONSUMER_REG_ACK",
-            std::chrono::milliseconds{kLongTimeoutMs});
-        ASSERT_TRUE(reply.has_value());
-        ASSERT_EQ(reply->value("status", ""), "success") << reply->dump();
-    }
+    ASSERT_NO_FATAL_FAILURE(producer_reg_and_heartbeat(
+        prod_client, channel_name, producer_uid,
+        prod_kp.public_z85, producer_data_port));
+    ASSERT_NO_FATAL_FAILURE(consumer_reg(
+        cons_client, channel_name, consumer_uid, cons_kp.public_z85));
 
     // Consumer attaches to a BOGUS producer_role_uid on the same channel.
     // The channel exists (producer P is registered) and the consumer is
@@ -508,63 +478,16 @@ TEST_F(Pattern4AttachCoordinationTest, WaitPathEnqueueAndDrainOnAppliedReq)
     zmq::context_t ctx;
     const auto &prod_kp = setup.curve.role(producer_uid);
     const auto &cons_kp = setup.curve.role(consumer_uid);
+    auto prod_client = make_wire_client(ctx, setup, prod_kp);
+    auto cons_client = make_wire_client(ctx, setup, cons_kp);
 
-    BrokerWireClient::Config prod_cfg;
-    prod_cfg.broker_endpoint = setup.broker_endpoint;
-    prod_cfg.broker_pubkey   = setup.curve.hub.public_z85;
-    prod_cfg.client_pubkey   = prod_kp.public_z85;
-    prod_cfg.client_seckey   = prod_kp.secret_z85;
-    BrokerWireClient prod_client(ctx, prod_cfg);
-
-    BrokerWireClient::Config cons_cfg;
-    cons_cfg.broker_endpoint = setup.broker_endpoint;
-    cons_cfg.broker_pubkey   = setup.curve.hub.public_z85;
-    cons_cfg.client_pubkey   = cons_kp.public_z85;
-    cons_cfg.client_seckey   = cons_kp.secret_z85;
-    BrokerWireClient cons_client(ctx, cons_cfg);
-
-    // Producer REG + heartbeat.
-    {
-        pylabhub::hub::ProducerRegInputs in;
-        in.channel           = channel_name;
-        in.role_uid          = producer_uid;
-        in.role_name         = "p";
-        in.role_type         = "producer";
-        in.is_zmq_transport  = true;
-        in.zmq_node_endpoint = "tcp://127.0.0.1:" + std::to_string(producer_data_port);
-        in.zmq_pubkey        = prod_kp.public_z85;
-        auto payload = pylabhub::hub::build_producer_reg_payload(in);
-        auto reply = prod_client.request(
-            "REG_REQ", payload, "REG_ACK",
-            std::chrono::milliseconds{kLongTimeoutMs});
-        ASSERT_TRUE(reply.has_value());
-        ASSERT_EQ(reply->value("status", ""), "success") << reply->dump();
-    }
-    {
-        nlohmann::json hb;
-        hb["channel_name"] = channel_name;
-        hb["role_uid"]     = producer_uid;
-        hb["role_type"]    = "producer";
-        hb["producer_pid"] = 1;
-        prod_client.send("HEARTBEAT_REQ", hb);
-        std::this_thread::sleep_for(std::chrono::milliseconds{100});
-    }
-
-    // Consumer REG — bumps channel_version[K] 0→1, fires NOTIFY at
+    ASSERT_NO_FATAL_FAILURE(producer_reg_and_heartbeat(
+        prod_client, channel_name, producer_uid,
+        prod_kp.public_z85, producer_data_port));
+    // Consumer REG bumps channel_version[K] 0→1 and fires NOTIFY at
     // producer (fan-out from CONSUMER_REG's allowlist mutation).
-    {
-        pylabhub::hub::ConsumerRegInputs in;
-        in.channel    = channel_name;
-        in.role_uid   = consumer_uid;
-        in.role_name  = "c";
-        in.zmq_pubkey = cons_kp.public_z85;
-        auto payload = pylabhub::hub::build_consumer_reg_payload(in);
-        auto reply = cons_client.request(
-            "CONSUMER_REG_REQ", payload, "CONSUMER_REG_ACK",
-            std::chrono::milliseconds{kLongTimeoutMs});
-        ASSERT_TRUE(reply.has_value());
-        ASSERT_EQ(reply->value("status", ""), "success") << reply->dump();
-    }
+    ASSERT_NO_FATAL_FAILURE(consumer_reg(
+        cons_client, channel_name, consumer_uid, cons_kp.public_z85));
 
     // ── Wait-path trigger: consumer ATTACH_REQ without producer having
     //    APPLIED_REQ first ──
@@ -594,8 +517,7 @@ TEST_F(Pattern4AttachCoordinationTest, WaitPathEnqueueAndDrainOnAppliedReq)
     // The `event=AttachReqZmqEnqueued` log marker only fires on the
     // §5.4 step 5 wait-path enqueue, so seeing it PROVES the drain
     // code path is under test.
-    expect_log(broker, "event=AttachReqZmqEnqueued channel='" + channel_name + "'",
-                std::chrono::milliseconds{kMidTimeoutMs});
+    wait_for_attach_enqueue(broker, channel_name);
 
     // Confirm the consumer is NOT receiving a reply yet — the
     // deferred-reply contract mandates the dispatcher sends NOTHING on
@@ -697,69 +619,18 @@ TEST_F(Pattern4AttachCoordinationTest, WaitPathDrainOnProducerDisconnect)
     const auto &p1_kp   = setup.curve.role(producer1_uid);
     const auto &p2_kp   = setup.curve.role(producer2_uid);
     const auto &cons_kp = setup.curve.role(consumer_uid);
+    auto p1_client   = make_wire_client(ctx, setup, p1_kp);
+    auto p2_client   = make_wire_client(ctx, setup, p2_kp);
+    auto cons_client = make_wire_client(ctx, setup, cons_kp);
 
-    auto build_client = [&](const pylabhub::tests::CurveKeypair &kp) {
-        BrokerWireClient::Config c;
-        c.broker_endpoint = setup.broker_endpoint;
-        c.broker_pubkey   = setup.curve.hub.public_z85;
-        c.client_pubkey   = kp.public_z85;
-        c.client_seckey   = kp.secret_z85;
-        return BrokerWireClient{ctx, c};
-    };
-    auto p1_client   = build_client(p1_kp);
-    auto p2_client   = build_client(p2_kp);
-    auto cons_client = build_client(cons_kp);
-
-    auto reg_and_heartbeat = [&](BrokerWireClient &client,
-                                  const std::string &uid,
-                                  const std::string &pubkey,
-                                  int data_port) {
-        pylabhub::hub::ProducerRegInputs in;
-        in.channel           = channel_name;
-        in.role_uid          = uid;
-        in.role_name         = uid.substr(uid.rfind('.') + 1);
-        in.role_type         = "producer";
-        in.is_zmq_transport  = true;
-        in.zmq_node_endpoint = "tcp://127.0.0.1:" + std::to_string(data_port);
-        in.zmq_pubkey        = pubkey;
-        auto payload = pylabhub::hub::build_producer_reg_payload(in);
-        auto reply = client.request(
-            "REG_REQ", payload, "REG_ACK",
-            std::chrono::milliseconds{kLongTimeoutMs});
-        ASSERT_TRUE(reply.has_value());
-        ASSERT_EQ(reply->value("status", ""), "success") << reply->dump();
-
-        nlohmann::json hb;
-        hb["channel_name"] = channel_name;
-        hb["role_uid"]     = uid;
-        hb["role_type"]    = "producer";
-        hb["producer_pid"] = 1;
-        client.send("HEARTBEAT_REQ", hb);
-        std::this_thread::sleep_for(std::chrono::milliseconds{50});
-    };
-    // GTest's ASSERT_* macros inside the lambda only return from the
-    // lambda, not the test — wrap with ASSERT_NO_FATAL_FAILURE so a
-    // producer-REG failure aborts the test at the correct call site
-    // instead of cascading into a misleading downstream assertion.
-    ASSERT_NO_FATAL_FAILURE(
-        reg_and_heartbeat(p1_client, producer1_uid, p1_kp.public_z85, producer1_data_port));
-    ASSERT_NO_FATAL_FAILURE(
-        reg_and_heartbeat(p2_client, producer2_uid, p2_kp.public_z85, producer2_data_port));
-
-    // Consumer REG — bumps channel_version.
-    {
-        pylabhub::hub::ConsumerRegInputs in;
-        in.channel    = channel_name;
-        in.role_uid   = consumer_uid;
-        in.role_name  = "c";
-        in.zmq_pubkey = cons_kp.public_z85;
-        auto payload = pylabhub::hub::build_consumer_reg_payload(in);
-        auto reply = cons_client.request(
-            "CONSUMER_REG_REQ", payload, "CONSUMER_REG_ACK",
-            std::chrono::milliseconds{kLongTimeoutMs});
-        ASSERT_TRUE(reply.has_value());
-        ASSERT_EQ(reply->value("status", ""), "success") << reply->dump();
-    }
+    ASSERT_NO_FATAL_FAILURE(producer_reg_and_heartbeat(
+        p1_client, channel_name, producer1_uid,
+        p1_kp.public_z85, producer1_data_port));
+    ASSERT_NO_FATAL_FAILURE(producer_reg_and_heartbeat(
+        p2_client, channel_name, producer2_uid,
+        p2_kp.public_z85, producer2_data_port));
+    ASSERT_NO_FATAL_FAILURE(consumer_reg(
+        cons_client, channel_name, consumer_uid, cons_kp.public_z85));
 
     // Wait-path: consumer targets P1.  Fast-path misses because
     // neither producer has sent APPLIED_REQ.
@@ -777,8 +648,7 @@ TEST_F(Pattern4AttachCoordinationTest, WaitPathDrainOnProducerDisconnect)
     // and the ATTACH would take the fast-path step-3 denial with the
     // wire-identical `{status="denied", reason="producer_not_live"}`
     // envelope.  Test would pass without exercising the drain code.
-    expect_log(broker, "event=AttachReqZmqEnqueued channel='" + channel_name + "'",
-                std::chrono::milliseconds{kMidTimeoutMs});
+    wait_for_attach_enqueue(broker, channel_name);
 
     // P1 deregisters — non-last-producer path (P2 still alive) →
     // producer-disconnect drain fires the deferred denied reply.
@@ -849,62 +719,14 @@ TEST_F(Pattern4AttachCoordinationTest, WaitPathDrainOnChannelClose)
     zmq::context_t ctx;
     const auto &prod_kp = setup.curve.role(producer_uid);
     const auto &cons_kp = setup.curve.role(consumer_uid);
+    auto prod_client = make_wire_client(ctx, setup, prod_kp);
+    auto cons_client = make_wire_client(ctx, setup, cons_kp);
 
-    BrokerWireClient::Config prod_cfg;
-    prod_cfg.broker_endpoint = setup.broker_endpoint;
-    prod_cfg.broker_pubkey   = setup.curve.hub.public_z85;
-    prod_cfg.client_pubkey   = prod_kp.public_z85;
-    prod_cfg.client_seckey   = prod_kp.secret_z85;
-    BrokerWireClient prod_client(ctx, prod_cfg);
-
-    BrokerWireClient::Config cons_cfg;
-    cons_cfg.broker_endpoint = setup.broker_endpoint;
-    cons_cfg.broker_pubkey   = setup.curve.hub.public_z85;
-    cons_cfg.client_pubkey   = cons_kp.public_z85;
-    cons_cfg.client_seckey   = cons_kp.secret_z85;
-    BrokerWireClient cons_client(ctx, cons_cfg);
-
-    // Producer REG + heartbeat.
-    {
-        pylabhub::hub::ProducerRegInputs in;
-        in.channel           = channel_name;
-        in.role_uid          = producer_uid;
-        in.role_name         = "p";
-        in.role_type         = "producer";
-        in.is_zmq_transport  = true;
-        in.zmq_node_endpoint = "tcp://127.0.0.1:" + std::to_string(producer_data_port);
-        in.zmq_pubkey        = prod_kp.public_z85;
-        auto payload = pylabhub::hub::build_producer_reg_payload(in);
-        auto reply = prod_client.request(
-            "REG_REQ", payload, "REG_ACK",
-            std::chrono::milliseconds{kLongTimeoutMs});
-        ASSERT_TRUE(reply.has_value());
-        ASSERT_EQ(reply->value("status", ""), "success") << reply->dump();
-    }
-    {
-        nlohmann::json hb;
-        hb["channel_name"] = channel_name;
-        hb["role_uid"]     = producer_uid;
-        hb["role_type"]    = "producer";
-        hb["producer_pid"] = 1;
-        prod_client.send("HEARTBEAT_REQ", hb);
-        std::this_thread::sleep_for(std::chrono::milliseconds{100});
-    }
-
-    // Consumer REG.
-    {
-        pylabhub::hub::ConsumerRegInputs in;
-        in.channel    = channel_name;
-        in.role_uid   = consumer_uid;
-        in.role_name  = "c";
-        in.zmq_pubkey = cons_kp.public_z85;
-        auto payload = pylabhub::hub::build_consumer_reg_payload(in);
-        auto reply = cons_client.request(
-            "CONSUMER_REG_REQ", payload, "CONSUMER_REG_ACK",
-            std::chrono::milliseconds{kLongTimeoutMs});
-        ASSERT_TRUE(reply.has_value());
-        ASSERT_EQ(reply->value("status", ""), "success") << reply->dump();
-    }
+    ASSERT_NO_FATAL_FAILURE(producer_reg_and_heartbeat(
+        prod_client, channel_name, producer_uid,
+        prod_kp.public_z85, producer_data_port));
+    ASSERT_NO_FATAL_FAILURE(consumer_reg(
+        cons_client, channel_name, consumer_uid, cons_kp.public_z85));
 
     // Wait-path enqueue.
     {
@@ -922,8 +744,7 @@ TEST_F(Pattern4AttachCoordinationTest, WaitPathDrainOnChannelClose)
     // (consumer_not_in_channel_allowlist because access record is
     // gone), causing the test to fail with a misleading root-cause
     // pointer.  A -j2 flake instead of a correctness signal.
-    expect_log(broker, "event=AttachReqZmqEnqueued channel='" + channel_name + "'",
-                std::chrono::milliseconds{kMidTimeoutMs});
+    wait_for_attach_enqueue(broker, channel_name);
 
     // Producer DEREG — LAST-producer branch → channel closes → drain.
     {
@@ -1014,62 +835,14 @@ TEST_F(Pattern4AttachCoordinationTest, WaitPathTimeoutOnMissingAppliedReq)
     zmq::context_t ctx;
     const auto &prod_kp = setup.curve.role(producer_uid);
     const auto &cons_kp = setup.curve.role(consumer_uid);
+    auto prod_client = make_wire_client(ctx, setup, prod_kp);
+    auto cons_client = make_wire_client(ctx, setup, cons_kp);
 
-    BrokerWireClient::Config prod_cfg;
-    prod_cfg.broker_endpoint = setup.broker_endpoint;
-    prod_cfg.broker_pubkey   = setup.curve.hub.public_z85;
-    prod_cfg.client_pubkey   = prod_kp.public_z85;
-    prod_cfg.client_seckey   = prod_kp.secret_z85;
-    BrokerWireClient prod_client(ctx, prod_cfg);
-
-    BrokerWireClient::Config cons_cfg;
-    cons_cfg.broker_endpoint = setup.broker_endpoint;
-    cons_cfg.broker_pubkey   = setup.curve.hub.public_z85;
-    cons_cfg.client_pubkey   = cons_kp.public_z85;
-    cons_cfg.client_seckey   = cons_kp.secret_z85;
-    BrokerWireClient cons_client(ctx, cons_cfg);
-
-    // Producer REG + heartbeat.
-    {
-        pylabhub::hub::ProducerRegInputs in;
-        in.channel           = channel_name;
-        in.role_uid          = producer_uid;
-        in.role_name         = "p";
-        in.role_type         = "producer";
-        in.is_zmq_transport  = true;
-        in.zmq_node_endpoint = "tcp://127.0.0.1:" + std::to_string(producer_data_port);
-        in.zmq_pubkey        = prod_kp.public_z85;
-        auto payload = pylabhub::hub::build_producer_reg_payload(in);
-        auto reply = prod_client.request(
-            "REG_REQ", payload, "REG_ACK",
-            std::chrono::milliseconds{kLongTimeoutMs});
-        ASSERT_TRUE(reply.has_value());
-        ASSERT_EQ(reply->value("status", ""), "success") << reply->dump();
-    }
-    {
-        nlohmann::json hb;
-        hb["channel_name"] = channel_name;
-        hb["role_uid"]     = producer_uid;
-        hb["role_type"]    = "producer";
-        hb["producer_pid"] = 1;
-        prod_client.send("HEARTBEAT_REQ", hb);
-        std::this_thread::sleep_for(std::chrono::milliseconds{100});
-    }
-
-    // Consumer REG.
-    {
-        pylabhub::hub::ConsumerRegInputs in;
-        in.channel    = channel_name;
-        in.role_uid   = consumer_uid;
-        in.role_name  = "c";
-        in.zmq_pubkey = cons_kp.public_z85;
-        auto payload = pylabhub::hub::build_consumer_reg_payload(in);
-        auto reply = cons_client.request(
-            "CONSUMER_REG_REQ", payload, "CONSUMER_REG_ACK",
-            std::chrono::milliseconds{kLongTimeoutMs});
-        ASSERT_TRUE(reply.has_value());
-        ASSERT_EQ(reply->value("status", ""), "success") << reply->dump();
-    }
+    ASSERT_NO_FATAL_FAILURE(producer_reg_and_heartbeat(
+        prod_client, channel_name, producer_uid,
+        prod_kp.public_z85, producer_data_port));
+    ASSERT_NO_FATAL_FAILURE(consumer_reg(
+        cons_client, channel_name, consumer_uid, cons_kp.public_z85));
 
     // Wait-path enqueue — producer will NEVER send APPLIED_REQ.
     {
@@ -1084,8 +857,7 @@ TEST_F(Pattern4AttachCoordinationTest, WaitPathTimeoutOnMissingAppliedReq)
     // if REG_ACK cache raced ahead of ATTACH somehow the test would
     // still pass but not for the reason claimed — the enqueue marker
     // proves §5.4 step 5 was actually taken.
-    expect_log(broker, "event=AttachReqZmqEnqueued channel='" + channel_name + "'",
-                std::chrono::milliseconds{kMidTimeoutMs});
+    wait_for_attach_enqueue(broker, channel_name);
 
     // Consumer polls until the timeout sweep drains the entry.
     // Budget: default producer_apply_wait_ms=3000ms + heartbeat sweep
@@ -1145,31 +917,15 @@ TEST_F(Pattern4AttachCoordinationTest, StaleInstanceGuardOnAppliedReq)
 
     zmq::context_t ctx;
     const auto &prod_kp = setup.curve.role(producer_uid);
+    auto prod_client = make_wire_client(ctx, setup, prod_kp);
 
-    BrokerWireClient::Config prod_cfg;
-    prod_cfg.broker_endpoint = setup.broker_endpoint;
-    prod_cfg.broker_pubkey   = setup.curve.hub.public_z85;
-    prod_cfg.client_pubkey   = prod_kp.public_z85;
-    prod_cfg.client_seckey   = prod_kp.secret_z85;
-    BrokerWireClient prod_client(ctx, prod_cfg);
-
-    // Producer REG.  Broker assigns instance[P] = 1 on first REG.
-    {
-        pylabhub::hub::ProducerRegInputs in;
-        in.channel           = channel_name;
-        in.role_uid          = producer_uid;
-        in.role_name         = "p";
-        in.role_type         = "producer";
-        in.is_zmq_transport  = true;
-        in.zmq_node_endpoint = "tcp://127.0.0.1:" + std::to_string(producer_data_port);
-        in.zmq_pubkey        = prod_kp.public_z85;
-        auto payload = pylabhub::hub::build_producer_reg_payload(in);
-        auto reply = prod_client.request(
-            "REG_REQ", payload, "REG_ACK",
-            std::chrono::milliseconds{kLongTimeoutMs});
-        ASSERT_TRUE(reply.has_value());
-        ASSERT_EQ(reply->value("status", ""), "success") << reply->dump();
-    }
+    // Producer REG + heartbeat.  Broker assigns instance[P] = 1 on
+    // first REG.  (Heartbeat is not strictly required for this test
+    // since no consumer REG follows, but uses the shared helper for
+    // uniformity — the extra 100ms is not on the critical path.)
+    ASSERT_NO_FATAL_FAILURE(producer_reg_and_heartbeat(
+        prod_client, channel_name, producer_uid,
+        prod_kp.public_z85, producer_data_port));
 
     // Send APPLIED_REQ with a stale instance_id.  Broker returns ERROR
     // with error_code="STALE_INSTANCE" per handle_channel_auth_applied_req.

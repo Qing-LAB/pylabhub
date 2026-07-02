@@ -108,6 +108,49 @@ update the destination task's description, then delete the test.
 
 ## Current Focus — Open coverage gaps
 
+### HEP-CORE-0042 Phase 2.4b — post-review follow-up flake risks (2026-07-01) ⏳
+
+Filed as follow-ups from the xhigh review of `tests/test_layer3_pattern4/
+test_pattern4_attach_coordination.cpp` (5 test-adding commits `4693c83d..
+6a7a7508`).  Reviewer flagged these as PLAUSIBLE-but-refuted — the
+mechanisms are real but not confirmed to fire today.  Track so they
+don't get lost when broker defaults or NOTIFY behaviour changes.
+
+- **WaitPathTimeoutOnMissingAppliedReq — 6000ms budget is tight.**  Test
+  polls consumer for 6000ms; broker's timeout drain fires at
+  `producer_apply_wait_ms + heartbeat_interval` = 3000ms + 500ms = ~3500ms.
+  Cushion is only 2500ms.  Under high `-j2` CI load or an ubsan/asan
+  build with 3-5x slowdown, the sweep could easily slip past the poll
+  budget → hard fail with misleading "sweep_pending_attach_timeouts_
+  likely broken" diagnostic.  Fix: raise to `2 * producer_apply_wait_ms`
+  budget OR pass an explicit shorter `producer_apply_wait_ms` config to
+  the broker subprocess (requires a new pattern4_smoke.broker variant
+  with config-override CLI).
+
+- **WaitPathTimeoutOnMissingAppliedReq — broker default coupling.**
+  Test's magic 6000ms is bound to `BrokerService::Config::
+  producer_apply_wait_ms` default (3000ms).  If the default is ever
+  changed (raised for production robustness, lowered for latency), the
+  test either times out spuriously or runs stale.  No comment in the
+  test says "coupled to broker default X".  Fix (compat): add a docstring
+  block that names the source-of-truth constant so a grep for the field
+  name finds this test.  Fix (proper): pass the config value explicitly
+  and compute the receive budget from it.
+
+- **WaitPathDrainOnProducerDisconnect — receive() doesn't filter frames.**
+  After the DEREG, consumer's `receive()` asserts the FIRST frame is
+  `CONSUMER_ATTACH_ACK_ZMQ` — no filter.  The sibling channel-close
+  test at line 924-937 DOES filter past `CHANNEL_CLOSING_NOTIFY`.
+  Asymmetric.  If HEP-CORE-0036 §6.5 ever gains a fan-out notification
+  on producer-DEREG (e.g. "producer-count changed"), this test would
+  flake by picking up the notification instead of the ACK.  Fix:
+  apply the same receive-and-filter loop pattern used in the channel-
+  close test.
+
+None of these fire today (all 8 tests pass sub-second in normal
+runs).  Address before adding new similar tests so the pattern is
+established, or when a broker default is next touched.
+
 ### REVIEW_C2 follow-ups (deferred from 2026-06-29 review of commit b22313c4) ⏳
 
 Three follow-up items deferred from the C2 review remediation chain
