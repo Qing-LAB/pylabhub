@@ -20,6 +20,7 @@
 #include "shared_test_helpers.h"
 #include "test_patterns.h"
 
+#include "plh_platform.hpp"
 #include "utils/role_reg_payload.hpp"
 #include "utils/timeout_constants.hpp"
 
@@ -629,6 +630,306 @@ TEST_F(Pattern4AttachCoordinationTest, WaitPathEnqueueAndDrainOnAppliedReq)
             << reply->second.dump();
         EXPECT_EQ(reply->second.value("channel_name", ""), channel_name);
         EXPECT_EQ(reply->second.value("producer_role_uid", ""), producer_uid);
+    }
+
+    broker.signal_quit();
+    ExpectWorkerOk(broker);
+}
+
+// ─── Wait-path drain: producer disconnects (§5.4 producer-not-live) ────
+//
+// Setup:
+//   - producers P1 and P2 both REG + heartbeat on channel K
+//     (multi-producer channel per HEP-CORE-0023 §2.1.1).
+//   - consumer C REGs → channel_version[K]: 0 → 1.
+// Wait-path + drain:
+//   - consumer sends CONSUMER_ATTACH_REQ_ZMQ(K, P1) → fast-path miss
+//     → enqueued in pending_attach_queue_[K][P1] + return pending.
+//   - P1 sends DEREG_REQ → broker: non-last-producer branch (P2 keeps
+//     channel alive), calls drain_pending_attach_queue_for_producer_
+//     denied_(reason="producer_not_live") → sends deferred denied
+//     reply to consumer's ROUTER identity.
+//   - consumer's DEALER receives {status="denied",
+//     reason="producer_not_live"}.
+
+TEST_F(Pattern4AttachCoordinationTest, WaitPathDrainOnProducerDisconnect)
+{
+    using namespace std::chrono;
+    using pylabhub::kLongTimeoutMs;
+    using pylabhub::kMidTimeoutMs;
+
+    const std::string producer1_uid = "prod.p1.uid00000001";
+    const std::string producer2_uid = "prod.p2.uid00000002";
+    const std::string consumer_uid  = "cons.c.uid00000003";
+    const std::string channel_name  = "ch.attach.drain_pnotlive";
+
+    const fs::path temp_dir = make_test_temp_dir("attach_drain_pnotlive");
+    const auto setup = make_pattern4_setup(
+        {producer1_uid, producer2_uid, consumer_uid});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+    const int producer1_data_port = pick_unused_port();
+    const int producer2_data_port = pick_unused_port();
+
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_smoke.broker",
+                                             {temp_dir.string()});
+    expect_log(broker, "Pattern4Broker: bound endpoint",
+                std::chrono::milliseconds{kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    const auto &p1_kp   = setup.curve.role(producer1_uid);
+    const auto &p2_kp   = setup.curve.role(producer2_uid);
+    const auto &cons_kp = setup.curve.role(consumer_uid);
+
+    auto build_client = [&](const pylabhub::tests::CurveKeypair &kp) {
+        BrokerWireClient::Config c;
+        c.broker_endpoint = setup.broker_endpoint;
+        c.broker_pubkey   = setup.curve.hub.public_z85;
+        c.client_pubkey   = kp.public_z85;
+        c.client_seckey   = kp.secret_z85;
+        return BrokerWireClient{ctx, c};
+    };
+    auto p1_client   = build_client(p1_kp);
+    auto p2_client   = build_client(p2_kp);
+    auto cons_client = build_client(cons_kp);
+
+    auto reg_and_heartbeat = [&](BrokerWireClient &client,
+                                  const std::string &uid,
+                                  const std::string &pubkey,
+                                  int data_port) {
+        pylabhub::hub::ProducerRegInputs in;
+        in.channel           = channel_name;
+        in.role_uid          = uid;
+        in.role_name         = uid.substr(uid.rfind('.') + 1);
+        in.role_type         = "producer";
+        in.is_zmq_transport  = true;
+        in.zmq_node_endpoint = "tcp://127.0.0.1:" + std::to_string(data_port);
+        in.zmq_pubkey        = pubkey;
+        auto payload = pylabhub::hub::build_producer_reg_payload(in);
+        auto reply = client.request(
+            "REG_REQ", payload, "REG_ACK",
+            std::chrono::milliseconds{kLongTimeoutMs});
+        ASSERT_TRUE(reply.has_value());
+        ASSERT_EQ(reply->value("status", ""), "success") << reply->dump();
+
+        nlohmann::json hb;
+        hb["channel_name"] = channel_name;
+        hb["role_uid"]     = uid;
+        hb["role_type"]    = "producer";
+        hb["producer_pid"] = 1;
+        client.send("HEARTBEAT_REQ", hb);
+        std::this_thread::sleep_for(std::chrono::milliseconds{50});
+    };
+    reg_and_heartbeat(p1_client, producer1_uid, p1_kp.public_z85, producer1_data_port);
+    reg_and_heartbeat(p2_client, producer2_uid, p2_kp.public_z85, producer2_data_port);
+
+    // Consumer REG — bumps channel_version.
+    {
+        pylabhub::hub::ConsumerRegInputs in;
+        in.channel    = channel_name;
+        in.role_uid   = consumer_uid;
+        in.role_name  = "c";
+        in.zmq_pubkey = cons_kp.public_z85;
+        auto payload = pylabhub::hub::build_consumer_reg_payload(in);
+        auto reply = cons_client.request(
+            "CONSUMER_REG_REQ", payload, "CONSUMER_REG_ACK",
+            std::chrono::milliseconds{kLongTimeoutMs});
+        ASSERT_TRUE(reply.has_value());
+        ASSERT_EQ(reply->value("status", ""), "success") << reply->dump();
+    }
+
+    // Wait-path: consumer targets P1.  Fast-path misses because
+    // neither producer has sent APPLIED_REQ.
+    {
+        nlohmann::json attach;
+        attach["channel_name"]      = channel_name;
+        attach["consumer_role_uid"] = consumer_uid;
+        attach["consumer_pubkey"]   = cons_kp.public_z85;
+        attach["producer_role_uid"] = producer1_uid;
+        cons_client.send("CONSUMER_ATTACH_REQ_ZMQ", attach);
+        std::this_thread::sleep_for(std::chrono::milliseconds{100});
+    }
+
+    // P1 deregisters — non-last-producer path (P2 still alive) →
+    // producer-disconnect drain fires the deferred denied reply.
+    {
+        nlohmann::json dereg;
+        dereg["channel_name"] = channel_name;
+        dereg["role_uid"]     = producer1_uid;
+        dereg["producer_pid"] = pylabhub::platform::get_pid();
+        auto reply = p1_client.request(
+            "DEREG_REQ", dereg, "DEREG_ACK",
+            std::chrono::milliseconds{kLongTimeoutMs});
+        ASSERT_TRUE(reply.has_value());
+        ASSERT_EQ(reply->value("status", ""), "success") << reply->dump();
+    }
+
+    // Consumer receives the drain-denied reply.
+    {
+        auto reply = cons_client.receive(
+            std::chrono::milliseconds{kLongTimeoutMs});
+        ASSERT_TRUE(reply.has_value())
+            << "consumer did not receive drain-denied reply — "
+               "producer-disconnect drain (§5.4 producer_not_live) "
+               "likely broken.";
+        EXPECT_EQ(reply->first, "CONSUMER_ATTACH_ACK_ZMQ");
+        EXPECT_EQ(reply->second.value("status", ""), "denied")
+            << reply->second.dump();
+        EXPECT_EQ(reply->second.value("reason", ""), "producer_not_live")
+            << reply->second.dump();
+    }
+
+    broker.signal_quit();
+    ExpectWorkerOk(broker);
+}
+
+// ─── Wait-path drain: channel closes (§5.4 channel_closing) ────────────
+//
+// Setup:
+//   - single producer P REGs + heartbeats on channel K.
+//   - consumer C REGs → channel_version[K]: 0 → 1.
+// Wait-path + drain:
+//   - consumer sends CONSUMER_ATTACH_REQ_ZMQ → wait-path enqueue.
+//   - P sends DEREG_REQ → LAST-producer branch → channel teardown +
+//     drain_pending_attach_queue_for_channel_denied_(reason=
+//     "channel_closing") → sends deferred denied reply to consumer.
+//   - consumer's DEALER receives {status="denied",
+//     reason="channel_closing"}.
+
+TEST_F(Pattern4AttachCoordinationTest, WaitPathDrainOnChannelClose)
+{
+    using namespace std::chrono;
+    using pylabhub::kLongTimeoutMs;
+    using pylabhub::kMidTimeoutMs;
+
+    const std::string producer_uid = "prod.p.uid00000001";
+    const std::string consumer_uid = "cons.c.uid00000002";
+    const std::string channel_name = "ch.attach.drain_chclose";
+
+    const fs::path temp_dir = make_test_temp_dir("attach_drain_chclose");
+    const auto setup = make_pattern4_setup({producer_uid, consumer_uid});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+    const int producer_data_port = pick_unused_port();
+
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_smoke.broker",
+                                             {temp_dir.string()});
+    expect_log(broker, "Pattern4Broker: bound endpoint",
+                std::chrono::milliseconds{kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    const auto &prod_kp = setup.curve.role(producer_uid);
+    const auto &cons_kp = setup.curve.role(consumer_uid);
+
+    BrokerWireClient::Config prod_cfg;
+    prod_cfg.broker_endpoint = setup.broker_endpoint;
+    prod_cfg.broker_pubkey   = setup.curve.hub.public_z85;
+    prod_cfg.client_pubkey   = prod_kp.public_z85;
+    prod_cfg.client_seckey   = prod_kp.secret_z85;
+    BrokerWireClient prod_client(ctx, prod_cfg);
+
+    BrokerWireClient::Config cons_cfg;
+    cons_cfg.broker_endpoint = setup.broker_endpoint;
+    cons_cfg.broker_pubkey   = setup.curve.hub.public_z85;
+    cons_cfg.client_pubkey   = cons_kp.public_z85;
+    cons_cfg.client_seckey   = cons_kp.secret_z85;
+    BrokerWireClient cons_client(ctx, cons_cfg);
+
+    // Producer REG + heartbeat.
+    {
+        pylabhub::hub::ProducerRegInputs in;
+        in.channel           = channel_name;
+        in.role_uid          = producer_uid;
+        in.role_name         = "p";
+        in.role_type         = "producer";
+        in.is_zmq_transport  = true;
+        in.zmq_node_endpoint = "tcp://127.0.0.1:" + std::to_string(producer_data_port);
+        in.zmq_pubkey        = prod_kp.public_z85;
+        auto payload = pylabhub::hub::build_producer_reg_payload(in);
+        auto reply = prod_client.request(
+            "REG_REQ", payload, "REG_ACK",
+            std::chrono::milliseconds{kLongTimeoutMs});
+        ASSERT_TRUE(reply.has_value());
+        ASSERT_EQ(reply->value("status", ""), "success") << reply->dump();
+    }
+    {
+        nlohmann::json hb;
+        hb["channel_name"] = channel_name;
+        hb["role_uid"]     = producer_uid;
+        hb["role_type"]    = "producer";
+        hb["producer_pid"] = 1;
+        prod_client.send("HEARTBEAT_REQ", hb);
+        std::this_thread::sleep_for(std::chrono::milliseconds{100});
+    }
+
+    // Consumer REG.
+    {
+        pylabhub::hub::ConsumerRegInputs in;
+        in.channel    = channel_name;
+        in.role_uid   = consumer_uid;
+        in.role_name  = "c";
+        in.zmq_pubkey = cons_kp.public_z85;
+        auto payload = pylabhub::hub::build_consumer_reg_payload(in);
+        auto reply = cons_client.request(
+            "CONSUMER_REG_REQ", payload, "CONSUMER_REG_ACK",
+            std::chrono::milliseconds{kLongTimeoutMs});
+        ASSERT_TRUE(reply.has_value());
+        ASSERT_EQ(reply->value("status", ""), "success") << reply->dump();
+    }
+
+    // Wait-path enqueue.
+    {
+        nlohmann::json attach;
+        attach["channel_name"]      = channel_name;
+        attach["consumer_role_uid"] = consumer_uid;
+        attach["consumer_pubkey"]   = cons_kp.public_z85;
+        attach["producer_role_uid"] = producer_uid;
+        cons_client.send("CONSUMER_ATTACH_REQ_ZMQ", attach);
+        std::this_thread::sleep_for(std::chrono::milliseconds{100});
+    }
+
+    // Producer DEREG — LAST-producer branch → channel closes → drain.
+    {
+        nlohmann::json dereg;
+        dereg["channel_name"] = channel_name;
+        dereg["role_uid"]     = producer_uid;
+        dereg["producer_pid"] = pylabhub::platform::get_pid();
+        auto reply = prod_client.request(
+            "DEREG_REQ", dereg, "DEREG_ACK",
+            std::chrono::milliseconds{kLongTimeoutMs});
+        ASSERT_TRUE(reply.has_value());
+        ASSERT_EQ(reply->value("status", ""), "success") << reply->dump();
+    }
+
+    // Consumer receives the channel-close drain reply.
+    // On last-producer teardown the broker ALSO fires
+    // CHANNEL_CLOSING_NOTIFY to consumers of K (HEP-CORE-0023 §2.1);
+    // that frame arrives before the deferred CONSUMER_ATTACH_ACK_ZMQ,
+    // so we loop until we find the ACK we're actually pinning.
+    {
+        std::optional<std::pair<std::string, nlohmann::json>> reply;
+        const auto deadline = std::chrono::steady_clock::now() +
+                              std::chrono::milliseconds{kLongTimeoutMs};
+        while (std::chrono::steady_clock::now() < deadline)
+        {
+            auto remaining =
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    deadline - std::chrono::steady_clock::now());
+            auto next = cons_client.receive(remaining);
+            if (!next.has_value())
+                break;
+            if (next->first == "CONSUMER_ATTACH_ACK_ZMQ")
+            {
+                reply = std::move(next);
+                break;
+            }
+            // Silently drop other frames (e.g. CHANNEL_CLOSING_NOTIFY).
+        }
+        ASSERT_TRUE(reply.has_value())
+            << "consumer did not receive drain-denied reply — "
+               "channel-close drain (§5.4 channel_closing) likely broken.";
+        EXPECT_EQ(reply->second.value("status", ""), "denied")
+            << reply->second.dump();
+        EXPECT_EQ(reply->second.value("reason", ""), "channel_closing")
+            << reply->second.dump();
     }
 
     broker.signal_quit();
