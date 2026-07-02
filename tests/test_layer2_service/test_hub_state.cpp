@@ -4089,6 +4089,51 @@ TEST(HubStateHep0042, ConfirmedVersion_ResetOnReRegistration)
                   "on re-registration; instead saw " << it->second;
 }
 
+TEST(HubStateHep0042, ChannelAccess_ErasedByChannelAccessClosed)
+{
+    // Pin the broker-side teardown-symmetry invariant enforced across
+    // three call sites in `broker_service.cpp` (VoluntaryDereg last-
+    // producer, HeartbeatTimeout last-producer, script-requested close):
+    // the caller MUST invoke `_on_channel_access_closed(K)` when the
+    // channel is torn down, otherwise the entire ChannelAccessEntry —
+    // including channel_version + confirmed_version_per_producer —
+    // leaks into `channel_access_index`.  If a subsequent channel with
+    // the same name is later opened, it inherits stale state that a
+    // fast-path check would treat as up-to-date.
+    //
+    // This L2 test pins the HubState primitive (idempotent erase) so
+    // any future test that goes through the broker teardown path can
+    // ASSERT_FALSE(channel_access(K).has_value()) with confidence in
+    // what "erased" means.
+    HubState s;
+    HubStateTestAccess::on_channel_access_opened(s, "ch.hep42.teardown");
+    HubStateTestAccess::on_consumer_authorized(s, "ch.hep42.teardown", "PUB-A");
+    auto before = s.channel_access("ch.hep42.teardown");
+    ASSERT_TRUE(before.has_value());
+    ASSERT_EQ(before->channel_version, 1u);
+    ASSERT_EQ(before->authorized_consumer_pubkeys.count("PUB-A"), 1u);
+
+    HubStateTestAccess::on_channel_access_closed(s, "ch.hep42.teardown");
+    EXPECT_FALSE(s.channel_access("ch.hep42.teardown").has_value())
+        << "teardown must drop the entire ChannelAccessEntry (not just "
+           "reset its fields) so a same-named re-open starts clean";
+
+    // Idempotent: a second call is a silent no-op (safe for the
+    // symmetry contract's "call it on every teardown path" wording,
+    // which permits double-invocation across race paths).
+    HubStateTestAccess::on_channel_access_closed(s, "ch.hep42.teardown");
+    EXPECT_FALSE(s.channel_access("ch.hep42.teardown").has_value());
+
+    // Re-open under the same name must start with fresh state (no
+    // leaked channel_version or authorized pubkeys).
+    HubStateTestAccess::on_channel_access_opened(s, "ch.hep42.teardown");
+    auto after = s.channel_access("ch.hep42.teardown");
+    ASSERT_TRUE(after.has_value());
+    EXPECT_EQ(after->channel_version, 0u);
+    EXPECT_EQ(after->authorized_consumer_pubkeys.size(), 0u);
+    EXPECT_EQ(after->confirmed_version_per_producer.size(), 0u);
+}
+
 TEST(HubStateHep0042, ConfirmedVersion_ResetOnHeartbeatTimeout)
 {
     // §5.4: kDead heartbeat is a normative reset trigger.  Pin the
