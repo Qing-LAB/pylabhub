@@ -459,4 +459,180 @@ TEST_F(Pattern4AttachCoordinationTest, DeniedProducerNotLive)
     ExpectWorkerOk(broker);
 }
 
+// ─── Wait-path: enqueue + NOTIFY + APPLIED_REQ drain (§5.4 step 5 + d) ──
+//
+// Setup:
+//   - producer P REGs on channel K + heartbeats.
+//   - consumer C REGs (bumps channel_version[K]: 0 → 1).
+//     Producer's DEALER receives a CHANNEL_AUTH_CHANGED_NOTIFY fan-
+//     out from the CONSUMER_REG mutation — the test ignores it (it
+//     will be discarded by producer's next request() poll).
+// Wait-path:
+//   - consumer sends CONSUMER_ATTACH_REQ_ZMQ WITHOUT the producer
+//     having sent APPLIED_REQ first.  Broker: fast-path miss
+//     (confirmed_version 0 < channel_version 1) → enqueue in
+//     pending_attach_queue_[K][P] + fire targeted NOTIFY
+//     (reason="attach_wait_path") to producer + return
+//     {status="pending"} sentinel (dispatcher sends NOTHING to
+//     consumer — the reply is deferred).
+//   - producer sends CHANNEL_AUTH_APPLIED_REQ(v=1, instance=1) →
+//     broker advances confirmed_version = 1, walks pending_attach_
+//     queue, drains the consumer's entry, sends deferred
+//     CONSUMER_ATTACH_ACK_ZMQ{status="success"} to consumer.
+//   - consumer's DEALER receives the deferred success reply.
+
+TEST_F(Pattern4AttachCoordinationTest, WaitPathEnqueueAndDrainOnAppliedReq)
+{
+    using namespace std::chrono;
+    using pylabhub::kLongTimeoutMs;
+    using pylabhub::kMidTimeoutMs;
+
+    const std::string producer_uid = "prod.p.uid00000001";
+    const std::string consumer_uid = "cons.c.uid00000002";
+    const std::string channel_name = "ch.attach.waitpath";
+
+    const fs::path temp_dir = make_test_temp_dir("attach_waitpath");
+    const auto setup = make_pattern4_setup({producer_uid, consumer_uid});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+    const int producer_data_port = pick_unused_port();
+
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_smoke.broker",
+                                             {temp_dir.string()});
+    expect_log(broker, "Pattern4Broker: bound endpoint",
+                std::chrono::milliseconds{kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    const auto &prod_kp = setup.curve.role(producer_uid);
+    const auto &cons_kp = setup.curve.role(consumer_uid);
+
+    BrokerWireClient::Config prod_cfg;
+    prod_cfg.broker_endpoint = setup.broker_endpoint;
+    prod_cfg.broker_pubkey   = setup.curve.hub.public_z85;
+    prod_cfg.client_pubkey   = prod_kp.public_z85;
+    prod_cfg.client_seckey   = prod_kp.secret_z85;
+    BrokerWireClient prod_client(ctx, prod_cfg);
+
+    BrokerWireClient::Config cons_cfg;
+    cons_cfg.broker_endpoint = setup.broker_endpoint;
+    cons_cfg.broker_pubkey   = setup.curve.hub.public_z85;
+    cons_cfg.client_pubkey   = cons_kp.public_z85;
+    cons_cfg.client_seckey   = cons_kp.secret_z85;
+    BrokerWireClient cons_client(ctx, cons_cfg);
+
+    // Producer REG + heartbeat.
+    {
+        pylabhub::hub::ProducerRegInputs in;
+        in.channel           = channel_name;
+        in.role_uid          = producer_uid;
+        in.role_name         = "p";
+        in.role_type         = "producer";
+        in.is_zmq_transport  = true;
+        in.zmq_node_endpoint = "tcp://127.0.0.1:" + std::to_string(producer_data_port);
+        in.zmq_pubkey        = prod_kp.public_z85;
+        auto payload = pylabhub::hub::build_producer_reg_payload(in);
+        auto reply = prod_client.request(
+            "REG_REQ", payload, "REG_ACK",
+            std::chrono::milliseconds{kLongTimeoutMs});
+        ASSERT_TRUE(reply.has_value());
+        ASSERT_EQ(reply->value("status", ""), "success") << reply->dump();
+    }
+    {
+        nlohmann::json hb;
+        hb["channel_name"] = channel_name;
+        hb["role_uid"]     = producer_uid;
+        hb["role_type"]    = "producer";
+        hb["producer_pid"] = 1;
+        prod_client.send("HEARTBEAT_REQ", hb);
+        std::this_thread::sleep_for(std::chrono::milliseconds{100});
+    }
+
+    // Consumer REG — bumps channel_version[K] 0→1, fires NOTIFY at
+    // producer (fan-out from CONSUMER_REG's allowlist mutation).
+    {
+        pylabhub::hub::ConsumerRegInputs in;
+        in.channel    = channel_name;
+        in.role_uid   = consumer_uid;
+        in.role_name  = "c";
+        in.zmq_pubkey = cons_kp.public_z85;
+        auto payload = pylabhub::hub::build_consumer_reg_payload(in);
+        auto reply = cons_client.request(
+            "CONSUMER_REG_REQ", payload, "CONSUMER_REG_ACK",
+            std::chrono::milliseconds{kLongTimeoutMs});
+        ASSERT_TRUE(reply.has_value());
+        ASSERT_EQ(reply->value("status", ""), "success") << reply->dump();
+    }
+
+    // ── Wait-path trigger: consumer ATTACH_REQ without producer having
+    //    APPLIED_REQ first ──
+    //
+    // Fire-and-forget send: the broker will enqueue instead of
+    // replying immediately (§5.4 step 5).  The consumer's DEALER
+    // sees no reply until the producer's APPLIED_REQ arrives + the
+    // broker drains the queue.
+    {
+        nlohmann::json attach;
+        attach["channel_name"]      = channel_name;
+        attach["consumer_role_uid"] = consumer_uid;
+        attach["consumer_pubkey"]   = cons_kp.public_z85;
+        attach["producer_role_uid"] = producer_uid;
+        cons_client.send("CONSUMER_ATTACH_REQ_ZMQ", attach);
+    }
+
+    // Give the broker a beat to enqueue and fire NOTIFY.  Confirm the
+    // consumer is NOT receiving a reply yet — the deferred-reply
+    // contract mandates the dispatcher sends NOTHING on fast-path
+    // miss.  A tiny non-blocking poll surfaces any premature reply.
+    {
+        auto premature = cons_client.receive(std::chrono::milliseconds{50});
+        ASSERT_FALSE(premature.has_value())
+            << "consumer received a reply BEFORE producer sent "
+               "APPLIED_REQ — deferred-reply contract broken.  Frame: "
+            << (premature->first + " " + premature->second.dump());
+    }
+
+    // ── Producer sends APPLIED_REQ → broker drains the queue ──
+    // `request()` filters out any NOTIFY frames that the producer's
+    // DEALER queued up (from CONSUMER_REG fan-out + the wait-path
+    // targeted NOTIFY) so we cleanly see the APPLIED_ACK.
+    {
+        nlohmann::json applied;
+        applied["channel_name"]      = channel_name;
+        applied["producer_role_uid"] = producer_uid;
+        applied["applied_version"]   = 1u;
+        applied["instance_id"]       = 1u;
+
+        auto reply = prod_client.request(
+            "CHANNEL_AUTH_APPLIED_REQ", applied,
+            "CHANNEL_AUTH_APPLIED_ACK",
+            std::chrono::milliseconds{kLongTimeoutMs});
+        ASSERT_TRUE(reply.has_value())
+            << "producer APPLIED_REQ: no ACK";
+        ASSERT_EQ(reply->value("status", ""), "ok") << reply->dump();
+        ASSERT_EQ(reply->value("applied_version", 0u), 1u);
+    }
+
+    // ── Consumer receives the deferred CONSUMER_ATTACH_ACK_ZMQ ──
+    // The queue drain in handle_channel_auth_applied_req routes the
+    // reply back to the consumer's ROUTER identity captured at
+    // enqueue time (§5.4 step d).  Consumer's DEALER only receives
+    // ACK-side frames (NOTIFYs are targeted at producers), so a
+    // plain receive() is sufficient.
+    {
+        auto reply = cons_client.receive(
+            std::chrono::milliseconds{kLongTimeoutMs});
+        ASSERT_TRUE(reply.has_value())
+            << "consumer did not receive deferred ATTACH_ACK — "
+               "wait-path drain (§5.4 step d) likely broken.";
+        EXPECT_EQ(reply->first, "CONSUMER_ATTACH_ACK_ZMQ")
+            << "got msg_type='" << reply->first << "'";
+        EXPECT_EQ(reply->second.value("status", ""), "success")
+            << reply->second.dump();
+        EXPECT_EQ(reply->second.value("channel_name", ""), channel_name);
+        EXPECT_EQ(reply->second.value("producer_role_uid", ""), producer_uid);
+    }
+
+    broker.signal_quit();
+    ExpectWorkerOk(broker);
+}
+
 } // namespace
