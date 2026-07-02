@@ -2378,6 +2378,31 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     // admission above) has already bumped.
     resp["instance_id"] = hub_state_->producer_instance(role_uid);
 
+    // HEP-CORE-0042 §5.5.4: REG_ACK echoes `snapshot_version` —
+    // the `channel_version[K]` value at the moment `initial_allowlist`
+    // above was extracted.  This is the version the producer will
+    // quote as `applied_version` in the CHANNEL_AUTH_APPLIED_REQ
+    // that follows a successful `apply_master_approval`.  Since the
+    // extraction above already grabbed a consistent snapshot under
+    // hub_state_'s per-channel lock (single-threaded ROUTER dispatch
+    // holds no concurrent writer race here), reading channel_version
+    // immediately after is atomic with the allowlist snapshot.
+    // Zero for a channel that has never had a consumer REG (fresh-
+    // opened channel — allowlist is empty and version is 0).
+    if (auto access = hub_state_->channel_access(channel_name);
+        access.has_value())
+    {
+        resp["snapshot_version"] = access->channel_version;
+    }
+    else
+    {
+        // Freshly-opened channel — no ChannelAccessEntry yet from
+        // the consumer side (§5.2 channel_version[K] undefined ==
+        // 0).  Emit 0 explicitly so the producer's capture code
+        // doesn't have to distinguish absent from zero.
+        resp["snapshot_version"] = std::uint64_t{0};
+    }
+
     if (!corr_id.empty())
     {
         resp["correlation_id"] = corr_id;
@@ -3289,6 +3314,19 @@ BrokerServiceImpl::handle_get_channel_auth_req(const nlohmann::json &req)
         allowlist_arr.push_back(pk);
     }
     resp["allowlist"] = std::move(allowlist_arr);
+
+    // HEP-CORE-0042 §5.5.4: GET_CHANNEL_AUTH_ACK echoes
+    // `snapshot_version` — the `channel_version[K]` value at the
+    // moment `allowlist` above was extracted.  The producer applies
+    // the allowlist to its ZAP cache, then emits
+    // CHANNEL_AUTH_APPLIED_REQ with `applied_version =
+    // snapshot_version` so the broker can advance
+    // confirmed_version[K][P] and drain any pending attach requests
+    // waiting for this producer to catch up (§5.4 wait-path).
+    // Reading `access->channel_version` here reflects the same
+    // snapshot as the allowlist copy above (single-threaded ROUTER
+    // dispatch context, no interleaved writer).
+    resp["snapshot_version"] = access->channel_version;
     return resp;
 }
 

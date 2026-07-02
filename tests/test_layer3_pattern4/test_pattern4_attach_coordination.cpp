@@ -143,6 +143,16 @@ protected:
         if (out_instance_id != nullptr)
             *out_instance_id = instance_id;
 
+        // §5.5.4 requires REG_ACK echo `snapshot_version` — the
+        // channel_version at the moment `initial_allowlist` was
+        // extracted.  For a freshly-opened channel this is 0
+        // (no consumer REG yet).  Asserting `contains` is the
+        // regression pin; the value bounds are covered by dedicated
+        // §5.5.4 tests.
+        ASSERT_TRUE(reply->contains("snapshot_version"))
+            << "REG_ACK missing HEP-CORE-0042 §5.5.4 `snapshot_version` "
+               "echo: " << reply->dump();
+
         nlohmann::json hb;
         hb["channel_name"] = channel;
         hb["role_uid"]     = uid;
