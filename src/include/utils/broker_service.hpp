@@ -197,10 +197,16 @@ public:
         /// one (§5.4 deferred-reply contract).
         std::chrono::milliseconds producer_apply_wait_ms{3000};
 
+        /// FLOORED at `heartbeat_interval`, matching
+        /// `effective_ready_timeout` / `effective_pending_timeout` — the
+        /// timeout sweep is piggybacked on `check_heartbeat_timeouts`
+        /// (once per heartbeat cadence), so a budget shorter than one
+        /// heartbeat is silently rounded up to that cadence.  Clamp
+        /// visibly rather than accept misleading precision.
         [[nodiscard]] std::chrono::milliseconds effective_producer_apply_wait() const noexcept
         {
-            return (producer_apply_wait_ms < std::chrono::milliseconds{1})
-                       ? std::chrono::milliseconds{1}
+            return (producer_apply_wait_ms < heartbeat_interval)
+                       ? heartbeat_interval
                        : producer_apply_wait_ms;
         }
 

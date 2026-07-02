@@ -297,7 +297,7 @@ public:
     /// - `router_identity` — ZMQ ROUTER identity of the requesting
     ///   consumer.  Used verbatim as the destination when the deferred
     ///   reply is later sent from `handle_channel_auth_applied_req`
-    ///   (drain) or `sweep_pending_timeouts` (timeout).
+    ///   (drain) or `sweep_pending_attach_timeouts_` (timeout).
     /// - `correlation_id` — echoed back on the deferred reply so the
     ///   consumer-side script API can match reply to the originating
     ///   request.  May be empty (consumer didn't send one).
@@ -339,7 +339,7 @@ public:
     /// - Channel-close drain (§5.4 channel_closing, Phase 2.3b) —
     ///   iterate the outer map's entry for `channel`, drain every
     ///   producer's deque as {status="denied", reason="channel_closing"}.
-    /// - Timeout sweep (§5.5 producer_apply_wait_ms, Phase 2.3c) —
+    /// - Timeout sweep (§5.6 producer_apply_wait_ms, Phase 2.3c) —
     ///   full iteration; drain entries older than the budget.
     ///
     /// Concurrency: mutations happen exclusively on the ROUTER dispatch
@@ -373,7 +373,7 @@ public:
     ///
     /// Called from:
     /// - `handle_dereg_req` non-last-producer (producer_not_live).
-    /// - `sweep_pending_timeouts` non-last-producer (producer_not_live).
+    /// - `check_heartbeat_timeouts` non-last-producer (producer_not_live).
     /// - The three broker teardown paths that call
     ///   `_on_channel_access_closed` (channel_closing).
     std::size_t drain_pending_attach_queue_for_producer_denied_(
@@ -571,7 +571,7 @@ public:
     ///   tuple into `pending_attach_queue_[channel][producer_uid]`, and
     ///   fired CHANNEL_AUTH_CHANGED_NOTIFY to the producer.  The reply
     ///   will be sent from `handle_channel_auth_applied_req` (Phase 2.3b
-    ///   drain path) or `sweep_pending_timeouts` (Phase 2.3c timeout
+    ///   drain path) or `sweep_pending_attach_timeouts_` (Phase 2.3c timeout
     ///   sweep, once wired) using the enqueued router identity.
     /// - `status="internal_error"` → dispatcher sends ERROR.
     ///
@@ -588,7 +588,7 @@ public:
     ///   contract.  ✅ SHIPPED (this commit).
     /// - Phase 2.3b APPLIED_REQ drain (§5.4 step d) + disconnect drain
     ///   (§5.4 producer-disconnect) + channel-close drain.  ⏳ pending.
-    /// - Phase 2.3c timeout sweep (§5.5 producer_apply_wait_ms).
+    /// - Phase 2.3c timeout sweep (§5.6 producer_apply_wait_ms).
     ///   ⏳ pending.
     nlohmann::json handle_consumer_attach_req_zmq(
         const nlohmann::json& req,
@@ -1091,7 +1091,7 @@ void BrokerServiceImpl::run()
                     // _on_channel_access_opened was never called.
                     // Symmetric with the VoluntaryDereg last-producer
                     // path in handle_dereg_req and the HeartbeatTimeout
-                    // last-producer path in sweep_pending_timeouts.
+                    // last-producer path in check_heartbeat_timeouts.
                     hub_state_->_on_channel_access_closed(ch);
                     // HEP-CORE-0042 §5.4 channel-close drain (script-
                     // requested close variant).  Reply denied to every
@@ -1456,7 +1456,7 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
         //   into pending_attach_queue_.  The reply will be sent later by
         //   handle_channel_auth_applied_req (§5.4 step d drain, Phase 2.3b),
         //   the producer-disconnect / channel-close drain paths (Phase 2.3b),
-        //   or sweep_pending_timeouts (§5.5 producer_apply_wait_ms, Phase 2.3c).
+        //   or sweep_pending_attach_timeouts_ (§5.6 producer_apply_wait_ms, Phase 2.3c).
         // - Anything else → send ERROR.
         // `identity` is the ROUTER identity frame (zmq::message_t); the
         // handler stores it as a string so the deferred-reply path can
@@ -3417,7 +3417,7 @@ BrokerServiceImpl::handle_consumer_attach_req_shm(const nlohmann::json &req)
 //                deferred-reply sentinel.  ✅
 //   Phase 2.3b — APPLIED_REQ drain (step d) + producer-disconnect drain +
 //                channel-close drain.  ⏳ pending.
-//   Phase 2.3c — timeout sweep (§5.5 producer_apply_wait_ms) + L2/L3
+//   Phase 2.3c — timeout sweep (§5.6 producer_apply_wait_ms) + L2/L3
 //                queue-state tests.  ⏳ pending.
 
 nlohmann::json BrokerServiceImpl::handle_consumer_attach_req_zmq(
@@ -3438,8 +3438,8 @@ nlohmann::json BrokerServiceImpl::handle_consumer_attach_req_zmq(
     //   sends denied replies from _on_producer_dropped / _on_pending_timeout.
     // - Channel-close drain (§5.4 channel_closing): pops entries + sends
     //   denied replies from the three teardown paths.
-    // - Timeout sweep (§5.5 producer_apply_wait_ms, default 3000 ms):
-    //   pops expired entries + sends timeout replies from sweep_pending_timeouts.
+    // - Timeout sweep (§5.6 producer_apply_wait_ms, default 3000 ms):
+    //   pops expired entries + sends timeout replies from sweep_pending_attach_timeouts_.
     const std::string corr_id            = req.value("correlation_id", "");
     const std::string channel_name       = req.value("channel_name", "");
     const std::string consumer_role_uid  = req.value("consumer_role_uid", "");
@@ -3761,7 +3761,7 @@ BrokerServiceImpl::drain_pending_attach_queue_for_producer_denied_(
 {
     // HEP-CORE-0042 §5.4 producer-disconnect drain.  Empties the entire
     // (K, P) deque and sends a denied reply for each entry.  Used by
-    // handle_dereg_req non-last-producer + sweep_pending_timeouts
+    // handle_dereg_req non-last-producer + check_heartbeat_timeouts
     // non-last-producer (reason="producer_not_live") as the pair to the
     // §5.4 confirmed_version reset on producer disconnect.
     auto ch_it = pending_attach_queue_.find(channel_name);
