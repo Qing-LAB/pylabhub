@@ -392,6 +392,45 @@ TEST_F(PlhHubCliTest, ZmqE2E_AuthorizedConsumerReceivesAllSlots)
         "event=ConsumerRegAckReceived", seconds(5)))
         << dump_full("ConsumerRegAckReceived (consumer side)");
 
+    // ── HEP-CORE-0042 §7.1 markers (test-adequacy strengthening, 2026-07-02)
+    //
+    // The prior test body relied on `cons_test: complete N=5` as the sole
+    // §7.1 pin.  Under an infinite-loop producer that continuously writes
+    // slots into its PUSH buffer, that assertion is compatible with §7.1
+    // being FULLY BYPASSED — the consumer's PULL dials, CURVE handshake
+    // fails at ZAP, libzmq reconnects every ~100 ms, and the broker's
+    // legacy CHANNEL_AUTH_CHANGED_NOTIFY chain re-seeds the producer's
+    // allowlist within ~110 ms.  Next reconnect handshake succeeds and
+    // buffered slots flow through.  Test passes with §7.1 broken.
+    //
+    // Fix: explicitly pin the new Phase 3a/3b markers that ONLY fire when
+    // §7.1 actually runs.  A regression that reverts §7.1 will fail here
+    // with a specific diagnostic instead of silently passing.
+
+    // Producer-side (Phase 3a): captured instance_id + emitted APPLIED_REQ.
+    ASSERT_TRUE(wait_for_role_marker(prod_dir, prod,
+        "event=ProducerInstanceIdCaptured channel='" + channel + "'",
+        seconds(5)))
+        << dump_full("event=ProducerInstanceIdCaptured (Phase 3a.2)");
+    ASSERT_TRUE(wait_for_role_marker(prod_dir, prod,
+        "event=ChannelAuthApplied channel='" + channel + "'",
+        seconds(5)))
+        << dump_full("event=ChannelAuthApplied (Phase 3a.3b APPLIED_REQ RTT)");
+
+    // Consumer-side (Phase 3b.2): §7.1 pre-attach loop begin+success+complete.
+    // These are Category-A markers per HEP §I11 observability contract.
+    ASSERT_TRUE(wait_for_role_marker(cons_dir, cons,
+        "attach:begin channel=" + channel, seconds(5)))
+        << dump_full("attach:begin (Phase 3b.2 §7.1 loop entry)");
+    ASSERT_TRUE(wait_for_role_marker(cons_dir, cons,
+        "attach:success channel=" + channel + " producer=" + prod_uid,
+        seconds(5)))
+        << dump_full("attach:success (Phase 3b.2 §7.1 admit)");
+    ASSERT_TRUE(wait_for_role_marker(cons_dir, cons,
+        "attach:complete channel=" + channel + " admitted=1/1",
+        seconds(5)))
+        << dump_full("attach:complete (Phase 3b.2 §7.1 loop end)");
+
     // ── Data flow verification: consumer received all N slots ─────────────
     ASSERT_TRUE(wait_for_role_marker(cons_dir, cons,
         "cons_test: complete N=" + std::to_string(kSlots), seconds(10)))
