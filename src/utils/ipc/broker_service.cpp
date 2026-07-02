@@ -351,6 +351,41 @@ public:
                             std::deque<PendingAttachEntry>>>
         pending_attach_queue_;
 
+    /// HEP-CORE-0042 §5.4 step d — pending queue drain on APPLIED_REQ.
+    /// Pops from `pending_attach_queue_[channel_name][producer_role_uid]`
+    /// every entry whose `target_version <= new_confirmed`, replies
+    /// `{status="success", ...}` to each drained entry using its
+    /// captured `router_identity` + `correlation_id`, and cleans up
+    /// empty inner / outer map entries.  Returns the number drained.
+    ///
+    /// Called from `handle_channel_auth_applied_req` (Phase 2.3b).
+    std::size_t drain_pending_attach_queue_for_producer_confirmed_(
+        zmq::socket_t&     socket,
+        const std::string& channel_name,
+        const std::string& producer_role_uid,
+        std::uint64_t      new_confirmed);
+
+    /// HEP-CORE-0042 §5.4 producer-disconnect + channel-close drains.
+    /// Pops EVERY entry from `pending_attach_queue_[channel_name][producer_role_uid]`
+    /// (producer-not-live) or from `pending_attach_queue_[channel_name][*]`
+    /// (channel_closing) and replies `{status="denied", reason=<reason>}`
+    /// to each.  Cleans up empty inner / outer map entries.
+    ///
+    /// Called from:
+    /// - `handle_dereg_req` non-last-producer (producer_not_live).
+    /// - `sweep_pending_timeouts` non-last-producer (producer_not_live).
+    /// - The three broker teardown paths that call
+    ///   `_on_channel_access_closed` (channel_closing).
+    std::size_t drain_pending_attach_queue_for_producer_denied_(
+        zmq::socket_t&     socket,
+        const std::string& channel_name,
+        const std::string& producer_role_uid,
+        const std::string& reason);
+    std::size_t drain_pending_attach_queue_for_channel_denied_(
+        zmq::socket_t&     socket,
+        const std::string& channel_name,
+        const std::string& reason);
+
     /// Serializes the run() thread's post-poll work against external
     /// readers (e.g. `list_channels_json_str()`).  HubState has its own
     /// internal mutex; this one only protects broker-private structures
@@ -559,7 +594,12 @@ public:
     /// Phase 2.1 stub: returns INTERNAL_ERROR with reason
     /// "not_implemented_hep_0042_phase_2_1".  Full impl in Phase 2.2
     /// (advance + drain) + Phase 2.5 (stale-instance guard).
-    nlohmann::json handle_channel_auth_applied_req(const nlohmann::json& req);
+    /// Takes `socket` so the §5.4 step d queue drain (Phase 2.3b) can
+    /// send deferred CONSUMER_ATTACH_ACK_ZMQ replies to the ROUTER
+    /// identities captured at wait-path enqueue time.
+    nlohmann::json handle_channel_auth_applied_req(
+        const nlohmann::json& req,
+        zmq::socket_t&        socket);
 
     /// Fire-and-forget `CHANNEL_AUTH_CHANGED_NOTIFY` to every producer
     /// of the named channel (HEP-CORE-0036 §6.5).  Same fan-out shape
@@ -1040,6 +1080,12 @@ void BrokerServiceImpl::run()
                     // path in handle_dereg_req and the HeartbeatTimeout
                     // last-producer path in sweep_pending_timeouts.
                     hub_state_->_on_channel_access_closed(ch);
+                    // HEP-CORE-0042 §5.4 channel-close drain (script-
+                    // requested close variant).  Reply denied to every
+                    // pending ATTACH_REQ_ZMQ so consumers get a bounded
+                    // outcome even when the close was operator-initiated.
+                    drain_pending_attach_queue_for_channel_denied_(
+                        router, ch, "channel_closing");
                 }
             }
 
@@ -1434,7 +1480,7 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
         // applied; broker advances confirmed_version and drains pending
         // ATTACH_REQ_ZMQ entries.  Phase 2.1 stub returns INTERNAL_ERROR
         // → ERROR envelope.
-        nlohmann::json resp = handle_channel_auth_applied_req(payload);
+        nlohmann::json resp = handle_channel_auth_applied_req(payload, socket);
         const std::string ack =
             (resp.value("status", "") == "ok") ? "CHANNEL_AUTH_APPLIED_ACK" : "ERROR";
         send_reply(socket, identity, ack, resp);
@@ -2557,6 +2603,11 @@ nlohmann::json BrokerServiceImpl::handle_dereg_req(const nlohmann::json& req,
         // the channel is gone.  Idempotent — safe even if
         // `_on_channel_access_opened` was never called.
         hub_state_->_on_channel_access_closed(channel_name);
+        // HEP-CORE-0042 §5.4 channel-close drain — pop every pending
+        // ATTACH_REQ_ZMQ across all producers of this channel and reply
+        // {status="denied", reason="channel_closing"} to each.
+        drain_pending_attach_queue_for_channel_denied_(
+            socket, channel_name, "channel_closing");
         // M1.4 (2026-05-11): no metrics_store_.erase needed — metrics
         // live on per-presence rows which are erased atomically by
         // `_on_channel_closed`'s cascade.
@@ -2565,6 +2616,13 @@ nlohmann::json BrokerServiceImpl::handle_dereg_req(const nlohmann::json& req,
     }
     else
     {
+        // HEP-CORE-0042 §5.4 producer-disconnect drain — pop every
+        // pending ATTACH_REQ_ZMQ for THIS (K, P) and reply
+        // {status="denied", reason="producer_not_live"}.  Pairs with the
+        // confirmed_version[K][P] erase in
+        // HubState::_on_producer_dropped for the non-last-producer path.
+        drain_pending_attach_queue_for_producer_denied_(
+            socket, channel_name, target_role_uid, "producer_not_live");
         // Multi-producer channel survives: producer X left, the rest
         // continue.  No CHANNEL_CLOSING_NOTIFY (channel is still
         // alive).  Metrics for the channel stay (other producers'
@@ -3548,7 +3606,8 @@ nlohmann::json BrokerServiceImpl::handle_consumer_attach_req_zmq(
 }
 
 nlohmann::json BrokerServiceImpl::handle_channel_auth_applied_req(
-    const nlohmann::json &req)
+    const nlohmann::json &req,
+    zmq::socket_t        &socket)
 {
     // HEP-CORE-0042 §5.4 APPLIED_REQ handler.
     //
@@ -3556,9 +3615,10 @@ nlohmann::json BrokerServiceImpl::handle_channel_auth_applied_req(
     // confirmed_version advance (step b/c).
     // Phase 2.3a shipped: pending_attach_queue_ storage (populated by
     // handle_consumer_attach_req_zmq wait-path).
-    // Phase 2.3b pending: queue drain (step d) — walk
+    // Phase 2.3b shipped (this commit): queue drain (step d) — walks
     // pending_attach_queue_[K][P] after advancing confirmed_version and
-    // send deferred success replies to each drained entry.
+    // sends deferred CONSUMER_ATTACH_ACK_ZMQ{status="success"} to each
+    // entry whose target_version has been surpassed.
     const std::string corr_id            = req.value("correlation_id", "");
     const std::string channel_name       = req.value("channel_name", "");
     const std::string producer_role_uid  = req.value("producer_role_uid", "");
@@ -3608,6 +3668,18 @@ nlohmann::json BrokerServiceImpl::handle_channel_auth_applied_req(
         channel_name, producer_role_uid, incoming_instance, applied_version,
         new_confirmed);
 
+    // §5.4 step (d): drain pending_attach_queue_[K][P] of every entry
+    // whose target_version has been surpassed by new_confirmed, and send
+    // the deferred CONSUMER_ATTACH_ACK_ZMQ{status="success"} reply to
+    // each drained entry.  Ordering vs. step (b) reply: we do the drain
+    // BEFORE returning the APPLIED_ACK so a producer that reads its own
+    // ACK and immediately issues more ATTACH_REQ traffic can't observe a
+    // stale (undrained) pending_attach_queue_ (single-pumper serializes
+    // these anyway, but the ordering is intent-preserving per §5.4 step
+    // d "walk … and remove").
+    drain_pending_attach_queue_for_producer_confirmed_(
+        socket, channel_name, producer_role_uid, new_confirmed);
+
     // §5.4 step (b): reply {status="ok", ...}.
     nlohmann::json resp;
     resp["status"]           = "ok";
@@ -3615,11 +3687,158 @@ nlohmann::json BrokerServiceImpl::handle_channel_auth_applied_req(
     resp["applied_version"]  = new_confirmed;
     if (!corr_id.empty()) resp["correlation_id"] = corr_id;
     return resp;
+}
 
-    // §5.4 step (d) queue drain — Phase 2.3b pending.  When shipped,
-    // this will pop entries from pending_attach_queue_[K][P] whose
-    // target_version <= new_confirmed and send deferred success replies
-    // using each entry's captured router_identity + correlation_id.
+std::size_t
+BrokerServiceImpl::drain_pending_attach_queue_for_producer_confirmed_(
+    zmq::socket_t     &socket,
+    const std::string &channel_name,
+    const std::string &producer_role_uid,
+    std::uint64_t      new_confirmed)
+{
+    // HEP-CORE-0042 §5.4 step d — drain success replies.  Walks the
+    // (K, P) deque IN ORDER; per §5.4 step d "walk pending_attach_queue:
+    // for entries with target_version ≤ confirmed_version[K][P], reply
+    // {status="success"} and remove from queue."  Because
+    // channel_version is monotonic and target_version is snapshotted at
+    // enqueue time, all drainable entries sit at the front of the deque
+    // — we stop at the first entry whose target_version is still
+    // strictly greater than new_confirmed.
+    auto ch_it = pending_attach_queue_.find(channel_name);
+    if (ch_it == pending_attach_queue_.end()) return 0;
+    auto p_it = ch_it->second.find(producer_role_uid);
+    if (p_it == ch_it->second.end()) return 0;
+
+    auto &queue = p_it->second;
+    std::size_t drained = 0;
+    while (!queue.empty() && queue.front().target_version <= new_confirmed)
+    {
+        const auto &entry = queue.front();
+        nlohmann::json reply;
+        reply["status"]            = "success";
+        reply["channel_name"]      = channel_name;
+        reply["producer_role_uid"] = producer_role_uid;
+        if (!entry.correlation_id.empty())
+            reply["correlation_id"] = entry.correlation_id;
+        send_to_identity(socket, entry.router_identity,
+                          "CONSUMER_ATTACH_ACK_ZMQ", reply);
+        queue.pop_front();
+        ++drained;
+    }
+
+    if (queue.empty())
+    {
+        ch_it->second.erase(p_it);
+        if (ch_it->second.empty())
+            pending_attach_queue_.erase(ch_it);
+    }
+
+    if (drained > 0)
+    {
+        LOGGER_INFO(
+            "[broker] event=AttachQueueDrainedSuccess channel='{}' "
+            "producer_uid='{}' drained_count={} new_confirmed_version={} "
+            "(HEP-CORE-0042 §5.4 step d)",
+            channel_name, producer_role_uid, drained, new_confirmed);
+    }
+    return drained;
+}
+
+std::size_t
+BrokerServiceImpl::drain_pending_attach_queue_for_producer_denied_(
+    zmq::socket_t     &socket,
+    const std::string &channel_name,
+    const std::string &producer_role_uid,
+    const std::string &reason)
+{
+    // HEP-CORE-0042 §5.4 producer-disconnect drain.  Empties the entire
+    // (K, P) deque and sends a denied reply for each entry.  Used by
+    // handle_dereg_req non-last-producer + sweep_pending_timeouts
+    // non-last-producer (reason="producer_not_live") as the pair to the
+    // §5.4 confirmed_version reset on producer disconnect.
+    auto ch_it = pending_attach_queue_.find(channel_name);
+    if (ch_it == pending_attach_queue_.end()) return 0;
+    auto p_it = ch_it->second.find(producer_role_uid);
+    if (p_it == ch_it->second.end()) return 0;
+
+    auto &queue = p_it->second;
+    std::size_t drained = 0;
+    while (!queue.empty())
+    {
+        const auto &entry = queue.front();
+        nlohmann::json reply;
+        reply["status"]            = "denied";
+        reply["reason"]             = reason;
+        reply["channel_name"]      = channel_name;
+        reply["producer_role_uid"] = producer_role_uid;
+        if (!entry.correlation_id.empty())
+            reply["correlation_id"] = entry.correlation_id;
+        send_to_identity(socket, entry.router_identity,
+                          "CONSUMER_ATTACH_ACK_ZMQ", reply);
+        queue.pop_front();
+        ++drained;
+    }
+
+    ch_it->second.erase(p_it);
+    if (ch_it->second.empty()) pending_attach_queue_.erase(ch_it);
+
+    if (drained > 0)
+    {
+        LOGGER_INFO(
+            "[broker] event=AttachQueueDrainedDenied channel='{}' "
+            "producer_uid='{}' reason='{}' drained_count={} "
+            "(HEP-CORE-0042 §5.4 producer-disconnect drain)",
+            channel_name, producer_role_uid, reason, drained);
+    }
+    return drained;
+}
+
+std::size_t
+BrokerServiceImpl::drain_pending_attach_queue_for_channel_denied_(
+    zmq::socket_t     &socket,
+    const std::string &channel_name,
+    const std::string &reason)
+{
+    // HEP-CORE-0042 §5.4 channel-close drain.  Empties every producer's
+    // deque for the named channel and sends a denied reply for each
+    // entry.  Used by the three broker teardown paths that call
+    // _on_channel_access_closed (reason="channel_closing"): last-producer
+    // DEREG_REQ, last-producer heartbeat-timeout, script-requested close.
+    auto ch_it = pending_attach_queue_.find(channel_name);
+    if (ch_it == pending_attach_queue_.end()) return 0;
+
+    std::size_t drained = 0;
+    for (auto &kv : ch_it->second)
+    {
+        const std::string &producer_uid = kv.first;
+        auto              &queue        = kv.second;
+        while (!queue.empty())
+        {
+            const auto &entry = queue.front();
+            nlohmann::json reply;
+            reply["status"]            = "denied";
+            reply["reason"]             = reason;
+            reply["channel_name"]      = channel_name;
+            reply["producer_role_uid"] = producer_uid;
+            if (!entry.correlation_id.empty())
+                reply["correlation_id"] = entry.correlation_id;
+            send_to_identity(socket, entry.router_identity,
+                              "CONSUMER_ATTACH_ACK_ZMQ", reply);
+            queue.pop_front();
+            ++drained;
+        }
+    }
+    pending_attach_queue_.erase(ch_it);
+
+    if (drained > 0)
+    {
+        LOGGER_INFO(
+            "[broker] event=AttachQueueDrainedDeniedChannel channel='{}' "
+            "reason='{}' drained_count={} "
+            "(HEP-CORE-0042 §5.4 channel-close drain)",
+            channel_name, reason, drained);
+    }
+    return drained;
 }
 
 void BrokerServiceImpl::fire_channel_auth_changed_notify(
@@ -4586,6 +4805,13 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
                 // channel re-open on the same name would inherit stale
                 // state.
                 hub_state_->_on_channel_access_closed(d.channel);
+                // HEP-CORE-0042 §5.4 channel-close drain — reply
+                // {status="denied", reason="channel_closing"} to every
+                // pending ATTACH_REQ_ZMQ across all producers of this
+                // channel.  Symmetric with the VoluntaryDereg last-
+                // producer path in handle_dereg_req.
+                drain_pending_attach_queue_for_channel_denied_(
+                    socket, d.channel, "channel_closing");
                 // M1.4 (2026-05-11): no metrics_store_.erase — see
                 // comment at handle_dereg_req last-producer path.
                 LOGGER_INFO("Broker: channel '{}' torn down (last "
@@ -4595,6 +4821,14 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
             }
             else if (drop.removed)
             {
+                // HEP-CORE-0042 §5.4 producer-disconnect drain (kDead) —
+                // reply {status="denied", reason="producer_not_live"} to
+                // every pending ATTACH_REQ_ZMQ for THIS (K, P).  Pairs
+                // with HubState::_on_pending_timeout's
+                // confirmed_version[K][P] erase (2.2 close-out) on the
+                // non-last-producer branch.
+                drain_pending_attach_queue_for_producer_denied_(
+                    socket, d.channel, d.role_uid, "producer_not_live");
                 LOGGER_INFO("Broker: producer '{}' dropped on '{}' "
                             "(presence-timeout; {} producer(s) remain — "
                             "channel survives)",
