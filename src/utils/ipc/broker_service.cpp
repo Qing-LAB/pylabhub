@@ -3333,19 +3333,21 @@ BrokerServiceImpl::handle_consumer_attach_req_shm(const nlohmann::json &req)
 }
 
 // ===========================================================================
-// HEP-CORE-0042 §6.2 Bindings.ZMQ + §5.4/§5.5 handler stubs (Phase 2.1 scaffold)
+// HEP-CORE-0042 §6.2 Bindings.ZMQ + §5.4/§5.5 handlers (Phase 2.x impl chain)
 // ===========================================================================
 //
-// Phase 2.1 scope: envelope registration + dispatch + method skeleton.  Both
-// stubs return INTERNAL_ERROR with reason "not_implemented_hep_0042_phase_2_1"
-// so any exercise path (accidental production traffic, out-of-order test
-// setup) surfaces clearly instead of silently misbehaving.
-//
-// Full behavior lands in later phases per HEP-CORE-0042 §9 test plan:
-//   - Phase 2.2: fast-path + wait-path enqueue + APPLIED_REQ advance/drain
-//   - Phase 2.3: denial paths (not-in-allowlist / not-live / disconnect-drain)
-//   - Phase 2.4: channel-close drain + timeout-timer wiring
-//   - Phase 2.5: instance-epoch guard (stale-instance APPLIED_REQ silent drop)
+// Authoritative status table lives in HEP-CORE-0042 §5.4 "Implementation
+// status".  Summary as of 2026-07-01:
+//   Phase 2.1 — envelope registration + dispatch + method skeleton.  ✅
+//   Phase 2.2 — fast-path (steps 1-4) + stale-instance guard + §5.4
+//               confirmed_version reset on re-registration / VoluntaryDereg /
+//               kDead heartbeat + broker teardown-symmetry.  ✅
+//   Phase 2.3a — wait-path enqueue + targeted §5.4 step 5b NOTIFY to P +
+//                deferred-reply sentinel.  ✅
+//   Phase 2.3b — APPLIED_REQ drain (step d) + producer-disconnect drain +
+//                channel-close drain.  ⏳ pending.
+//   Phase 2.3c — timeout sweep (§5.5 producer_apply_wait_ms) + L2/L3
+//                queue-state tests.  ⏳ pending.
 
 nlohmann::json BrokerServiceImpl::handle_consumer_attach_req_zmq(
     const nlohmann::json &req,
@@ -3419,12 +3421,17 @@ nlohmann::json BrokerServiceImpl::handle_consumer_attach_req_zmq(
     // used by handle_discover_channel_req.
     auto ch = hub_state_->channel(channel_name);
     if (!ch.has_value()) return make_denied("producer_not_live");
-    bool producer_registered = false;
+    bool        producer_registered = false;
+    std::string producer_zmq_identity;
     for (const auto &prod : ch->producers)
     {
         if (prod.role_uid == producer_role_uid)
         {
-            producer_registered = true;
+            producer_registered  = true;
+            // Captured for the §5.4 step 5b targeted NOTIFY below.  May be
+            // empty for pre-REG_ACK / partial-state producers; the wait-path
+            // handles the empty case explicitly (see the send site).
+            producer_zmq_identity = prod.zmq_identity;
             break;
         }
     }
@@ -3459,13 +3466,21 @@ nlohmann::json BrokerServiceImpl::handle_consumer_attach_req_zmq(
     // target_version = channel_version[K] snapshotted at this moment.
     // The drain condition on APPLIED_REQ arrival (Phase 2.3b) is
     // confirmed_version[K][P] >= target_version.  Fire
-    // CHANNEL_AUTH_CHANGED_NOTIFY to fan out the "please pull the new
-    // allowlist" doorbell to every producer of K (§5.4 step 5b: always
-    // fire, no debounce).  Return the {status="pending"} sentinel so
-    // the dispatcher skips sending an immediate reply — the reply
-    // will be sent later by whichever drain path (APPLIED_REQ /
-    // producer-disconnect / channel-close / timeout) claims this
-    // entry.
+    // CHANNEL_AUTH_CHANGED_NOTIFY as a TARGETED doorbell to producer P
+    // only (§5.4 step 5b — "Fire CHANNEL_AUTH_CHANGED_NOTIFY to P.
+    // Always fire — no debounce.").  Do NOT reuse the fan-out helper
+    // fire_channel_auth_changed_notify() here — that helper is used by
+    // REG / DEREG allowlist mutations which legitimately affect every
+    // producer's cache; the wait-path only needs P's cache poked
+    // because only P is behind.  Fanning to all producers on wait-path
+    // miss would cause spurious CHANNEL_AUTH_APPLIED_REQ traffic from
+    // every other P' that is already caught up (correctness-safe, but
+    // waste under channels with many producers).
+    //
+    // Return the {status="pending"} sentinel so the dispatcher skips
+    // sending an immediate reply — the reply will be sent later by
+    // whichever drain path (APPLIED_REQ / producer-disconnect /
+    // channel-close / timeout) claims this entry.
     //
     // Enqueue captures router_identity + corr_id so the deferred
     // reply can be addressed back to the originating consumer.  The
@@ -3490,13 +3505,35 @@ nlohmann::json BrokerServiceImpl::handle_consumer_attach_req_zmq(
         access->channel_version, confirmed,
         pending_attach_queue_[channel_name][producer_role_uid].size());
 
-    // Fan-out the doorbell to every producer of the channel.  Reuses
-    // the existing helper (also used by REG / DEREG allowlist mutations)
-    // to keep the wire shape consistent — see HEP-CORE-0036 §6.5 for the
-    // NOTIFY semantics.  Reason string "attach_wait_path" distinguishes
-    // this fire from REG / DEREG in producer-side logs + tests.
-    fire_channel_auth_changed_notify(socket, channel_name,
-                                     "attach_wait_path");
+    // Targeted doorbell to producer P only — HEP-CORE-0042 §5.4 step 5b.
+    // If P's zmq_identity was empty at step 3 capture time (pre-REG_ACK /
+    // partial state), skip the send but keep the enqueued entry: P will
+    // still eventually issue APPLIED_REQ when its REG_ACK completes and
+    // it pulls the initial_allowlist via the REG_ACK path.  Wire shape
+    // matches HEP-CORE-0036 §6.5 CHANNEL_AUTH_CHANGED_NOTIFY.  Reason
+    // string "attach_wait_path" distinguishes this fire from REG / DEREG
+    // in producer-side logs + tests.
+    if (!producer_zmq_identity.empty())
+    {
+        nlohmann::json notify;
+        notify["channel_name"] = channel_name;
+        notify["reason"]       = "attach_wait_path";
+        send_to_identity(socket, producer_zmq_identity,
+                          "CHANNEL_AUTH_CHANGED_NOTIFY", notify);
+        LOGGER_DEBUG(
+            "[broker] event=AttachWaitPathNotifyTargeted channel='{}' "
+            "producer_uid='{}' (HEP-CORE-0042 §5.4 step 5b singular-P)",
+            channel_name, producer_role_uid);
+    }
+    else
+    {
+        LOGGER_WARN(
+            "[broker] event=AttachWaitPathNotifySkipped channel='{}' "
+            "producer_uid='{}' (empty zmq_identity — producer in pre-REG_ACK "
+            "or partial state; producer will pick up allowlist via REG_ACK "
+            "initial_allowlist path and issue APPLIED_REQ when caught up)",
+            channel_name, producer_role_uid);
+    }
 
     // Sentinel — dispatcher sees status="pending" and does NOT
     // send_reply().  The producer-side APPLIED_REQ (or the timeout
@@ -3513,10 +3550,15 @@ nlohmann::json BrokerServiceImpl::handle_consumer_attach_req_zmq(
 nlohmann::json BrokerServiceImpl::handle_channel_auth_applied_req(
     const nlohmann::json &req)
 {
-    // HEP-CORE-0042 §5.4 APPLIED_REQ handler — Phase 2.2 impl.  Stale-
-    // instance guard (step a) + confirmed_version advance (step b/c) are
-    // in.  Queue drain (step d) is a no-op in Phase 2.2 since the
-    // pending_attach_queue lands in Phase 2.3.
+    // HEP-CORE-0042 §5.4 APPLIED_REQ handler.
+    //
+    // Phase 2.2 shipped: stale-instance guard (step a) +
+    // confirmed_version advance (step b/c).
+    // Phase 2.3a shipped: pending_attach_queue_ storage (populated by
+    // handle_consumer_attach_req_zmq wait-path).
+    // Phase 2.3b pending: queue drain (step d) — walk
+    // pending_attach_queue_[K][P] after advancing confirmed_version and
+    // send deferred success replies to each drained entry.
     const std::string corr_id            = req.value("correlation_id", "");
     const std::string channel_name       = req.value("channel_name", "");
     const std::string producer_role_uid  = req.value("producer_role_uid", "");
@@ -3574,8 +3616,10 @@ nlohmann::json BrokerServiceImpl::handle_channel_auth_applied_req(
     if (!corr_id.empty()) resp["correlation_id"] = corr_id;
     return resp;
 
-    // §5.4 step (d) queue drain — deferred to Phase 2.3 when
-    // pending_attach_queue lands.
+    // §5.4 step (d) queue drain — Phase 2.3b pending.  When shipped,
+    // this will pop entries from pending_attach_queue_[K][P] whose
+    // target_version <= new_confirmed and send deferred success replies
+    // using each entry's captured router_identity + correlation_id.
 }
 
 void BrokerServiceImpl::fire_channel_auth_changed_notify(
