@@ -348,9 +348,12 @@ TEST_F(Pattern4AttachCoordinationTest, DeniedConsumerNotInAllowlist)
 //   - Broker: producer_role_uid ∉ ch->producers[] →
 //     {status="denied", reason="producer_not_live"}.
 //
-// The bogus uid uses the canonical `prod.<name>.<unique>` grammar so
-// the wire-format guard doesn't short-circuit — we want the §5.4 step 3
-// producer-live check to be the branch that runs.
+// handle_consumer_attach_req_zmq's step 1 only rejects empty
+// `producer_role_uid`; there is no validate_identity_fields grammar
+// check on the ATTACH path (that helper only guards REG / DEREG).
+// Any non-empty uid that is not in ch->producers[] takes the step-3
+// producer-live denial — using a canonical-looking uid keeps the
+// intent legible without depending on a guard that isn't there.
 
 TEST_F(Pattern4AttachCoordinationTest, DeniedProducerNotLive)
 {
@@ -579,10 +582,25 @@ TEST_F(Pattern4AttachCoordinationTest, WaitPathEnqueueAndDrainOnAppliedReq)
         cons_client.send("CONSUMER_ATTACH_REQ_ZMQ", attach);
     }
 
-    // Give the broker a beat to enqueue and fire NOTIFY.  Confirm the
-    // consumer is NOT receiving a reply yet — the deferred-reply
-    // contract mandates the dispatcher sends NOTHING on fast-path
-    // miss.  A tiny non-blocking poll surfaces any premature reply.
+    // Log-barrier: wait for the broker to log the wait-path enqueue
+    // BEFORE proceeding.  This is the discipline against the wire-race
+    // silent-false-pass — cross-DEALER ordering is not FIFO on the
+    // broker's ROUTER, so a naked sleep before the producer's next
+    // message could let APPLIED_REQ race ahead of ATTACH_REQ.  When it
+    // wins the race, the broker takes the fast-path admit branch
+    // (confirmed[K][P] >= channel_version already), which produces a
+    // wire-identical CONSUMER_ATTACH_ACK_ZMQ{status="success"} — the
+    // test would pass without ever exercising the drain code it names.
+    // The `event=AttachReqZmqEnqueued` log marker only fires on the
+    // §5.4 step 5 wait-path enqueue, so seeing it PROVES the drain
+    // code path is under test.
+    expect_log(broker, "event=AttachReqZmqEnqueued channel='" + channel_name + "'",
+                std::chrono::milliseconds{kMidTimeoutMs});
+
+    // Confirm the consumer is NOT receiving a reply yet — the
+    // deferred-reply contract mandates the dispatcher sends NOTHING on
+    // fast-path miss.  A tiny non-blocking poll surfaces any premature
+    // reply.
     {
         auto premature = cons_client.receive(std::chrono::milliseconds{50});
         ASSERT_FALSE(premature.has_value())
@@ -719,8 +737,14 @@ TEST_F(Pattern4AttachCoordinationTest, WaitPathDrainOnProducerDisconnect)
         client.send("HEARTBEAT_REQ", hb);
         std::this_thread::sleep_for(std::chrono::milliseconds{50});
     };
-    reg_and_heartbeat(p1_client, producer1_uid, p1_kp.public_z85, producer1_data_port);
-    reg_and_heartbeat(p2_client, producer2_uid, p2_kp.public_z85, producer2_data_port);
+    // GTest's ASSERT_* macros inside the lambda only return from the
+    // lambda, not the test — wrap with ASSERT_NO_FATAL_FAILURE so a
+    // producer-REG failure aborts the test at the correct call site
+    // instead of cascading into a misleading downstream assertion.
+    ASSERT_NO_FATAL_FAILURE(
+        reg_and_heartbeat(p1_client, producer1_uid, p1_kp.public_z85, producer1_data_port));
+    ASSERT_NO_FATAL_FAILURE(
+        reg_and_heartbeat(p2_client, producer2_uid, p2_kp.public_z85, producer2_data_port));
 
     // Consumer REG — bumps channel_version.
     {
@@ -746,8 +770,15 @@ TEST_F(Pattern4AttachCoordinationTest, WaitPathDrainOnProducerDisconnect)
         attach["consumer_pubkey"]   = cons_kp.public_z85;
         attach["producer_role_uid"] = producer1_uid;
         cons_client.send("CONSUMER_ATTACH_REQ_ZMQ", attach);
-        std::this_thread::sleep_for(std::chrono::milliseconds{100});
     }
+    // Log-barrier: prove the wait-path enqueue happened BEFORE the
+    // producer's DEREG.  Without this, cross-DEALER wire race could
+    // land DEREG first — the drain would run on an empty queue (no-op)
+    // and the ATTACH would take the fast-path step-3 denial with the
+    // wire-identical `{status="denied", reason="producer_not_live"}`
+    // envelope.  Test would pass without exercising the drain code.
+    expect_log(broker, "event=AttachReqZmqEnqueued channel='" + channel_name + "'",
+                std::chrono::milliseconds{kMidTimeoutMs});
 
     // P1 deregisters — non-last-producer path (P2 still alive) →
     // producer-disconnect drain fires the deferred denied reply.
@@ -883,8 +914,16 @@ TEST_F(Pattern4AttachCoordinationTest, WaitPathDrainOnChannelClose)
         attach["consumer_pubkey"]   = cons_kp.public_z85;
         attach["producer_role_uid"] = producer_uid;
         cons_client.send("CONSUMER_ATTACH_REQ_ZMQ", attach);
-        std::this_thread::sleep_for(std::chrono::milliseconds{100});
     }
+    // Log-barrier: prove the wait-path enqueue happened BEFORE the
+    // producer's DEREG.  Without this, cross-DEALER wire race could
+    // land DEREG first — the drain would run on an empty queue (no-op)
+    // and the ATTACH would then take a DIFFERENT fast-path denial
+    // (consumer_not_in_channel_allowlist because access record is
+    // gone), causing the test to fail with a misleading root-cause
+    // pointer.  A -j2 flake instead of a correctness signal.
+    expect_log(broker, "event=AttachReqZmqEnqueued channel='" + channel_name + "'",
+                std::chrono::milliseconds{kMidTimeoutMs});
 
     // Producer DEREG — LAST-producer branch → channel closes → drain.
     {
@@ -1041,6 +1080,12 @@ TEST_F(Pattern4AttachCoordinationTest, WaitPathTimeoutOnMissingAppliedReq)
         attach["producer_role_uid"] = producer_uid;
         cons_client.send("CONSUMER_ATTACH_REQ_ZMQ", attach);
     }
+    // Log-barrier: pin the enqueue-then-poll sequence.  Without this,
+    // if REG_ACK cache raced ahead of ATTACH somehow the test would
+    // still pass but not for the reason claimed — the enqueue marker
+    // proves §5.4 step 5 was actually taken.
+    expect_log(broker, "event=AttachReqZmqEnqueued channel='" + channel_name + "'",
+                std::chrono::milliseconds{kMidTimeoutMs});
 
     // Consumer polls until the timeout sweep drains the entry.
     // Budget: default producer_apply_wait_ms=3000ms + heartbeat sweep
