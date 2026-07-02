@@ -3609,16 +3609,14 @@ nlohmann::json BrokerServiceImpl::handle_channel_auth_applied_req(
     const nlohmann::json &req,
     zmq::socket_t        &socket)
 {
-    // HEP-CORE-0042 §5.4 APPLIED_REQ handler.
-    //
-    // Phase 2.2 shipped: stale-instance guard (step a) +
-    // confirmed_version advance (step b/c).
-    // Phase 2.3a shipped: pending_attach_queue_ storage (populated by
-    // handle_consumer_attach_req_zmq wait-path).
-    // Phase 2.3b shipped (this commit): queue drain (step d) — walks
+    // HEP-CORE-0042 §5.4 APPLIED_REQ handler.  Implements step (a)
+    // stale-instance guard, step (b) reply, step (c) confirmed_version
+    // advance, and step (d) queue drain — walks
     // pending_attach_queue_[K][P] after advancing confirmed_version and
     // sends deferred CONSUMER_ATTACH_ACK_ZMQ{status="success"} to each
-    // entry whose target_version has been surpassed.
+    // entry whose target_version has been surpassed.  See
+    // docs/HEP/HEP-CORE-0042 §5.4 "Implementation status" for the
+    // authoritative phase mapping.
     const std::string corr_id            = req.value("correlation_id", "");
     const std::string channel_name       = req.value("channel_name", "");
     const std::string producer_role_uid  = req.value("producer_role_uid", "");
@@ -3671,12 +3669,9 @@ nlohmann::json BrokerServiceImpl::handle_channel_auth_applied_req(
     // §5.4 step (d): drain pending_attach_queue_[K][P] of every entry
     // whose target_version has been surpassed by new_confirmed, and send
     // the deferred CONSUMER_ATTACH_ACK_ZMQ{status="success"} reply to
-    // each drained entry.  Ordering vs. step (b) reply: we do the drain
-    // BEFORE returning the APPLIED_ACK so a producer that reads its own
-    // ACK and immediately issues more ATTACH_REQ traffic can't observe a
-    // stale (undrained) pending_attach_queue_ (single-pumper serializes
-    // these anyway, but the ordering is intent-preserving per §5.4 step
-    // d "walk … and remove").
+    // each drained entry.  Single-pumper ROUTER serialises drain vs.
+    // reply; the drain-then-reply order below is intent-preserving per
+    // §5.4 step d wording ("walk … and remove").
     drain_pending_attach_queue_for_producer_confirmed_(
         socket, channel_name, producer_role_uid, new_confirmed);
 
