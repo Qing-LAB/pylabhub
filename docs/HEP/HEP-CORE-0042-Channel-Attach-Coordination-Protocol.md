@@ -123,7 +123,7 @@ Broker tracks three counters:
 | §5.4 step d APPLIED_REQ drain (walk queue, reply success) | 2.3b | ✅ shipped 2026-07-01 |
 | Producer-disconnect drain (§5.4 producer disconnect) | 2.3b | ✅ shipped 2026-07-01 |
 | Channel-close drain (§5.4 channel K close) | 2.3b | ✅ shipped 2026-07-01 |
-| §5.4 pending-entry timeout + §5.5 producer_apply_wait_ms sweep | 2.3c | ⏳ pending |
+| §5.4 pending-entry timeout + §5.5 producer_apply_wait_ms sweep | 2.3c | ✅ shipped 2026-07-01 |
 | §5.4 stale-instance guard (APPLIED_REQ step a) | 2.2 | ✅ shipped 2026-07-01 |
 | §5.4 confirmed_version reset on re-registration / disconnect / kDead | 2.2 close-out | ✅ shipped 2026-07-01 |
 

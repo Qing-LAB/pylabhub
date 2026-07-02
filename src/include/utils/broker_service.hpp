@@ -184,6 +184,26 @@ public:
             return (v < heartbeat_interval) ? heartbeat_interval : v;
         }
 
+        /// HEP-CORE-0042 §5.6 producer_apply_wait_ms — budget for how
+        /// long the broker holds a deferred CONSUMER_ATTACH_ACK_ZMQ
+        /// reply while waiting for the producer's
+        /// CHANNEL_AUTH_APPLIED_REQ.  When the budget elapses, the
+        /// timeout sweep in `check_heartbeat_timeouts` drains matching
+        /// entries and replies `{status="timeout",
+        /// reason="producer_did_not_confirm_within_budget"}`.
+        ///
+        /// Consumer-side `attach_ack_wait_ms` MUST be > this value so
+        /// broker-observed timeout arrives before a client-synthesised
+        /// one (§5.4 deferred-reply contract).
+        std::chrono::milliseconds producer_apply_wait_ms{3000};
+
+        [[nodiscard]] std::chrono::milliseconds effective_producer_apply_wait() const noexcept
+        {
+            return (producer_apply_wait_ms < std::chrono::milliseconds{1})
+                       ? std::chrono::milliseconds{1}
+                       : producer_apply_wait_ms;
+        }
+
         /// How often broker checks whether registered consumer PIDs are still alive.
         /// Set to 0 to disable liveness checks entirely.
         std::chrono::seconds consumer_liveness_check_interval{5};

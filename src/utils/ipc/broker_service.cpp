@@ -386,6 +386,19 @@ public:
         const std::string& channel_name,
         const std::string& reason);
 
+    /// HEP-CORE-0042 §5.4 pending-entry timeout + §5.6
+    /// producer_apply_wait_ms sweep.  Walks every (K, P) deque in
+    /// `pending_attach_queue_`; pops entries whose age exceeds
+    /// `cfg.effective_producer_apply_wait()`; sends
+    /// `{status="timeout", reason="producer_did_not_confirm_within_budget"}`.
+    ///
+    /// Called from `check_heartbeat_timeouts` (Phase 2.3c), piggybacked
+    /// on the existing sweep cadence.  Returns total number drained.
+    std::size_t sweep_pending_attach_timeouts_(
+        zmq::socket_t&                        socket,
+        std::chrono::steady_clock::time_point now,
+        std::chrono::milliseconds             budget);
+
     /// Serializes the run() thread's post-poll work against external
     /// readers (e.g. `list_channels_json_str()`).  HubState has its own
     /// internal mutex; this one only protects broker-private structures
@@ -3836,6 +3849,77 @@ BrokerServiceImpl::drain_pending_attach_queue_for_channel_denied_(
     return drained;
 }
 
+std::size_t BrokerServiceImpl::sweep_pending_attach_timeouts_(
+    zmq::socket_t                        &socket,
+    std::chrono::steady_clock::time_point now,
+    std::chrono::milliseconds             budget)
+{
+    // HEP-CORE-0042 §5.4 pending-entry timeout + §5.6
+    // producer_apply_wait_ms sweep.  Walks every (K, P) deque; pops
+    // front entries while their age exceeds the budget.  Because
+    // entries are enqueued in monotonic wall order and `enqueued_at`
+    // is captured under the single-pumper, the deque's front is
+    // always the oldest — front-only stop-early check is correct
+    // (parallel to the drain_pending_attach_queue_for_producer_confirmed_
+    // monotonic-target_version invariant).
+    //
+    // Total O(K * P + drained).  For thousands of channels this is a
+    // linear scan on the sweep cadence; acceptable per §4 P1 (queue
+    // growth accepted-degradation), and Phase 2.3c's coarse-grained
+    // sweep is intentionally piggybacked on check_heartbeat_timeouts
+    // instead of introducing a new timer thread (HEP-CORE-0031
+    // spawn_bounded #283 lands the finer-grained primitive later).
+    std::size_t total_drained = 0;
+
+    for (auto ch_it = pending_attach_queue_.begin();
+          ch_it != pending_attach_queue_.end(); )
+    {
+        for (auto p_it = ch_it->second.begin();
+              p_it != ch_it->second.end(); )
+        {
+            auto &queue = p_it->second;
+            std::size_t drained_this_pair = 0;
+            while (!queue.empty() && (now - queue.front().enqueued_at) > budget)
+            {
+                const auto &entry = queue.front();
+                nlohmann::json reply;
+                reply["status"]            = "timeout";
+                reply["reason"]             = "producer_did_not_confirm_within_budget";
+                reply["channel_name"]      = ch_it->first;
+                reply["producer_role_uid"] = p_it->first;
+                if (!entry.correlation_id.empty())
+                    reply["correlation_id"] = entry.correlation_id;
+                send_to_identity(socket, entry.router_identity,
+                                  "CONSUMER_ATTACH_ACK_ZMQ", reply);
+                queue.pop_front();
+                ++drained_this_pair;
+                ++total_drained;
+            }
+
+            if (drained_this_pair > 0)
+            {
+                LOGGER_WARN(
+                    "[broker] event=AttachQueueDrainedTimeout channel='{}' "
+                    "producer_uid='{}' drained_count={} budget_ms={} "
+                    "(HEP-CORE-0042 §5.4 pending-entry timeout — producer "
+                    "did not APPLIED_REQ within budget)",
+                    ch_it->first, p_it->first, drained_this_pair,
+                    static_cast<long long>(budget.count()));
+            }
+
+            if (queue.empty())
+                p_it = ch_it->second.erase(p_it);
+            else
+                ++p_it;
+        }
+        if (ch_it->second.empty())
+            ch_it = pending_attach_queue_.erase(ch_it);
+        else
+            ++ch_it;
+    }
+    return total_drained;
+}
+
 void BrokerServiceImpl::fire_channel_auth_changed_notify(
     zmq::socket_t&     socket,
     const std::string& channel_name,
@@ -4618,9 +4702,21 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
     // Timeouts are ALWAYS enforced; effective_*_timeout() is floored at 1 heartbeat.
     const auto ready_timeout   = cfg.effective_ready_timeout();
     const auto pending_timeout = cfg.effective_pending_timeout();
+    const auto attach_budget   = cfg.effective_producer_apply_wait();
 
     const auto snap = hub_state_->snapshot();
     const auto now  = std::chrono::steady_clock::now();
+
+    // HEP-CORE-0042 §5.4 pending-entry timeout sweep — piggybacked on
+    // the heartbeat-timeout cadence.  Runs BEFORE the Pass 1/2
+    // presence FSM so a producer that goes silent for both
+    // producer_apply_wait_ms and pending_timeout on the same tick has
+    // its attach-queue drained with reason="timeout" before the
+    // producer-disconnect drain would have re-classified those same
+    // consumers as reason="producer_not_live" — timeout is the more
+    // specific reason (broker observed the missed deadline; producer
+    // may still be alive but slow).
+    sweep_pending_attach_timeouts_(socket, now, attach_budget);
 
     // ── Pass 1: Connected (live) -> Pending demotion (HEP-CORE-0023 §2.1) ─
     // Migrated 2026-06-02 to `for_each_presence_matching` per HEP-0039
