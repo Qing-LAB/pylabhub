@@ -71,6 +71,16 @@ struct RequestCmd
     std::condition_variable           cv;
     bool                              done{false};
     std::optional<nlohmann::json>     result;
+    /// Set by the CALLER thread on client-side timeout.  Read by
+    /// the CTRL thread's poll_recv: if a late broker reply arrives
+    /// AFTER `abandoned=true`, the reply is dropped (as if it never
+    /// arrived) and the entry is removed from `pending_requests`.
+    /// This prevents cross-wiring of a stale reply into the caller's
+    /// NEXT sync REQ of the same ack type — HEP-CORE-0042 §7.1
+    /// fan-in loop review fix (2026-07-02).  Atomic because the
+    /// timeout write and the poll_recv read are on different threads
+    /// with no other synchronization.
+    std::atomic<bool>                 abandoned{false};
 };
 
 /// Install a periodic task into the running poll loop.
@@ -223,6 +233,21 @@ struct BrokerRequestComm::Impl
             {
                 auto req = it->second;
                 remove_from_pending(req); // erase all ack-key entries for this request
+                // HEP-CORE-0042 Phase 3 review fix (2026-07-02):
+                // if the caller has ABANDONED this request (client-
+                // side timeout fired), drop the reply on the floor
+                // rather than delivering it to the caller's next
+                // sync REQ of the same ack type.  The caller has
+                // already returned nullopt and moved on; delivering
+                // this stale reply would cross-wire it.
+                if (req->abandoned.load(std::memory_order_acquire))
+                {
+                    LOGGER_WARN("BrokerRequestComm: late reply for '{}' "
+                                "arrived after caller-side timeout; "
+                                "dropping to prevent cross-wire",
+                                msg_type);
+                    continue;
+                }
                 {
                     std::lock_guard<std::mutex> lk(req->mu);
                     req->result = std::move(body);
@@ -432,6 +457,14 @@ struct BrokerRequestComm::Impl
         {
             LOGGER_WARN("BrokerRequestComm: {} timed out after {}ms",
                         msg_type, timeout_ms);
+            // HEP-CORE-0042 Phase 3 review fix (2026-07-02) — mark
+            // the request ABANDONED so if a late broker reply arrives
+            // (client-side timeout fired but the reply was in flight),
+            // poll_recv drops it on the floor instead of cross-wiring
+            // it into the caller's NEXT sync REQ of the same ack type.
+            // Without this, iteration N's stale reply could satisfy
+            // iteration N+1 of the fan-in loop in apply_consumer_reg_ack.
+            req->abandoned.store(true, std::memory_order_release);
             return std::nullopt;
         }
         return req->result;

@@ -2357,7 +2357,18 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     // freshly-opened channel.  This is the producer-offline recovery
     // path called out in §6.5 (replaces the retired snapshot-push-with-
     // ACK design).
+    // HEP-CORE-0042 §5.5.4 review fix (2026-07-02) — capture the
+    // channel snapshot ONCE and reuse for both `initial_allowlist`
+    // and `snapshot_version`.  Prior version used two separate
+    // channel_access() calls, each acquiring its own shared_lock;
+    // the paired snapshot the earlier comment claimed was NOT
+    // actually atomic against a concurrent writer.  Today's broker
+    // uses a single ROUTER dispatch thread so no concurrent writer
+    // exists in practice, but a future federation-relay thread or
+    // background sweep would silently corrupt this pairing.  One
+    // access grab = one lock scope = truly atomic.
     nlohmann::json allowlist = nlohmann::json::array();
+    std::uint64_t snapshot_version = 0;
     if (auto access = hub_state_->channel_access(channel_name);
         access.has_value())
     {
@@ -2365,6 +2376,7 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
         {
             allowlist.push_back(pk);
         }
+        snapshot_version = access->channel_version;
     }
     resp["initial_allowlist"] = std::move(allowlist);
 
@@ -2379,29 +2391,13 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     resp["instance_id"] = hub_state_->producer_instance(role_uid);
 
     // HEP-CORE-0042 §5.5.4: REG_ACK echoes `snapshot_version` —
-    // the `channel_version[K]` value at the moment `initial_allowlist`
-    // above was extracted.  This is the version the producer will
-    // quote as `applied_version` in the CHANNEL_AUTH_APPLIED_REQ
-    // that follows a successful `apply_master_approval`.  Since the
-    // extraction above already grabbed a consistent snapshot under
-    // hub_state_'s per-channel lock (single-threaded ROUTER dispatch
-    // holds no concurrent writer race here), reading channel_version
-    // immediately after is atomic with the allowlist snapshot.
+    // the `channel_version[K]` at the same instant as the allowlist
+    // snapshot above (single `access` grab; see comment above).
     // Zero for a channel that has never had a consumer REG (fresh-
-    // opened channel — allowlist is empty and version is 0).
-    if (auto access = hub_state_->channel_access(channel_name);
-        access.has_value())
-    {
-        resp["snapshot_version"] = access->channel_version;
-    }
-    else
-    {
-        // Freshly-opened channel — no ChannelAccessEntry yet from
-        // the consumer side (§5.2 channel_version[K] undefined ==
-        // 0).  Emit 0 explicitly so the producer's capture code
-        // doesn't have to distinguish absent from zero.
-        resp["snapshot_version"] = std::uint64_t{0};
-    }
+    // opened channel; §5.2 channel_version[K] undefined == 0).
+    // Emit unconditionally so the producer's capture code doesn't
+    // have to distinguish absent from zero.
+    resp["snapshot_version"] = snapshot_version;
 
     if (!corr_id.empty())
     {

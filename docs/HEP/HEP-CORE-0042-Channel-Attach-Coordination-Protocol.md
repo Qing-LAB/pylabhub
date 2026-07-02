@@ -377,13 +377,21 @@ The consumer's `pImpl->uid` / pubkey come from the KeyStore (HEP-CORE-0040), NOT
 
 ```
 apply_consumer_reg_ack(reg_ack):
-  connected = []
-  attach_results = {}   # uid → (status, reason)
+  admitted_producers = []   # subset of reg_ack.producers[] that broker admitted
+  attach_results = {}       # uid → (status, reason)
 
   LOGGER_INFO("[{}] attach:begin channel={} producers={}",
               short_tag, reg_ack.channel_name, len(reg_ack.producers))
 
-  for producer_uid in reg_ack.producers:
+  for producer_entry in reg_ack.producers:
+    producer_uid = producer_entry.role_uid
+    if producer_uid IS empty:
+      # Malformed entry — log WARN and continue per fan-in policy;
+      # DO NOT abort the loop (see 'always runs to completion' below).
+      LOGGER_WARN("[{}] attach:malformed_entry channel={} — missing role_uid",
+                  short_tag, reg_ack.channel_name)
+      continue
+
     attach_ack = brc.request(CONSUMER_ATTACH_REQ_ZMQ{
       channel_name: reg_ack.channel_name,
       consumer_role_uid: pImpl->uid,
@@ -400,7 +408,7 @@ apply_consumer_reg_ack(reg_ack):
 
     attach_results[producer_uid] = (attach_ack.status, attach_ack.reason)
     if attach_ack.status == "success":
-      connected.append(producer_uid)
+      admitted_producers.append(producer_entry)   # keep full entry incl. endpoint/pubkey
       LOGGER_INFO("[{}] attach:success channel={} producer={}",
                   short_tag, reg_ack.channel_name, producer_uid)
     else:
@@ -408,14 +416,27 @@ apply_consumer_reg_ack(reg_ack):
                   short_tag, attach_ack.status, reg_ack.channel_name,
                   producer_uid, attach_ack.reason)
 
-  ZmqQueue::set_producer_peers(connected)   # ONLY dial admitted producers
-  publish_attach_results(attach_results)    # feeds §8 accessors + on_channel_ready
-
   LOGGER_INFO("[{}] attach:complete channel={} admitted={}/{}",
-              short_tag, reg_ack.channel_name, len(connected), len(reg_ack.producers))
+              short_tag, reg_ack.channel_name,
+              len(admitted_producers), len(reg_ack.producers))
 
-  return (len(connected) > 0)   # per §5 fan-in partial-success policy
+  # §7.1 Placement decision (Option A) — filter the ACK to the admitted
+  # subset + hand it to apply_master_approval.  apply_master_approval's
+  # HEP-CORE-0036 §6.7 "single mutator" contract sees the truth-of-record;
+  # the queue NEVER dials denied producers.  Do NOT call set_producer_peers
+  # after an unfiltered apply_master_approval — that would briefly dial ALL
+  # producers before the reduction, running ZAP handshakes against denied
+  # peers.
+  filtered_ack = reg_ack.with_producers(admitted_producers)   # deep-copy replacement
+  publish_producer_peer_cache(admitted_producers)             # cache MIRRORS queue (§I11)
+  publish_attach_results(attach_results)                      # feeds §8 accessors + on_channel_ready
+  return rx_queue.apply_master_approval(filtered_ack) AND (len(admitted_producers) > 0)
+  # per §5 fan-in partial-success policy — false ONLY if zero admitted OR queue-refuse.
 ```
+
+Notes on the algorithm:
+- **`publish_producer_peer_cache(admitted_producers)`** mirrors the queue's post-`apply_master_approval` `producer_peers_` set into the script-visible cache.  Cache MUST derive from the SAME `admitted_producers` list that fed `apply_master_approval`; publishing the unfiltered `reg_ack.producers` would break the §I11 cache-mirrors-queue invariant.
+- **Loop-abort-on-malformed is forbidden.**  Per the partial-success policy immediately below, the loop always runs to completion.  A single malformed entry logs WARN and is skipped; remaining valid entries proceed through the pre-attach normally.
 
 **Fan-in partial-success (locked policy).**  The loop always runs to completion.  Loop-level failure returns `false` ONLY when ZERO producers were admitted.  Failed producers are excluded from `set_producer_peers()` — consumer never dials them.  No automatic retry within the loop; failed producers retry on next consumer restart.
 

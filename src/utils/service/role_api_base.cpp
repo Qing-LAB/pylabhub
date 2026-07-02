@@ -957,14 +957,19 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
                     p.value("role_uid", std::string{});
                 if (producer_uid.empty())
                 {
-                    // Malformed entry (missing role_uid).  HEP-0036
-                    // §5b requires role_uid in every producers[] row.
-                    // Treat as broker contract violation.
-                    LOGGER_ERROR(
-                        "[{}] apply_consumer_reg_ack: producers[] entry "
-                        "missing `role_uid` (channel '{}')",
+                    // Malformed entry (missing role_uid).  HEP-CORE-0042
+                    // §7.1 fan-in policy: loop ALWAYS runs to completion.
+                    // Log WARN + skip this entry; continue processing
+                    // remaining producers.  Aborting here (previous
+                    // behavior) would strand N-1 valid producers and
+                    // fail apply_consumer_reg_ack even if the broker
+                    // would have admitted the rest.
+                    LOGGER_WARN(
+                        "[{}] attach:malformed_entry channel='{}' — "
+                        "producers[] row missing `role_uid` (HEP-0036 §5b "
+                        "contract); skipping this entry, continuing loop",
                         pImpl->short_tag, channel_name);
-                    return false;
+                    continue;
                 }
 
                 auto reply = brc->consumer_attach_zmq(
@@ -1055,7 +1060,7 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
             // Placement decision): only admitted producers reach the
             // Standby → Active transition.
             nlohmann::json filtered_ack = ack;
-            filtered_ack["producers"] = std::move(admitted_producers);
+            filtered_ack["producers"] = admitted_producers;   // copy for later cache-filter walk
 
             if (!pImpl->rx_queue->apply_master_approval(filtered_ack))
             {
@@ -1068,6 +1073,32 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
                     pImpl->short_tag);
                 return false;
             }
+
+            // HEP-CORE-0042 §7.1 (2026-07-02 review fix): cache MUST
+            // mirror the queue's producer_peers_ (§I11.1 invariant #1).
+            // The queue was fed a FILTERED ACK — only admitted producers
+            // reached it.  Rebuild `script_view` (still in scope from
+            // the pre-parse above) to keep only entries whose role_uid
+            // appears in `admitted_producers`.  Rebuilding here keeps
+            // the cache commit below transport-agnostic (SHM branch does
+            // no filtering, its script_view is already correct).
+            std::vector<AllowedPeer> filtered_script_view;
+            filtered_script_view.reserve(script_view.size());
+            for (const auto &p : admitted_producers)
+            {
+                if (!p.is_object()) continue;
+                const auto admitted_uid =
+                    p.value("role_uid", std::string{});
+                for (const auto &sv_entry : script_view)
+                {
+                    if (sv_entry.role_uid == admitted_uid)
+                    {
+                        filtered_script_view.push_back(sv_entry);
+                        break;
+                    }
+                }
+            }
+            script_view = std::move(filtered_script_view);
         }
 
         // Queue is Active.  Commit the pre-parsed cache view
@@ -1106,6 +1137,10 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
         // work).
         // B-5 (#290): channel_name is non-empty by construction
         // here — the early hard-error above returned false on absent.
+        //
+        // §I11 cache-mirrors-queue: ZMQ branch above already reduced
+        // `script_view` to the admitted subset; SHM branch's
+        // script_view was never filtered (no §7.1 pre-attach loop).
         if (has_producers)
         {
             pImpl->producer_peer_cache.put(
@@ -1350,6 +1385,41 @@ bool RoleAPIBase::apply_producer_reg_ack(const nlohmann::json &ack)
                      pImpl->short_tag);
         return false;
     }
+    try
+    {
+    // Boundary validation FIRST (before any state mutation).  A
+    // malformed / broker-regressed REG_ACK must be rejected BEFORE
+    // apply_master_approval spawns queue workers — otherwise a
+    // downstream hard-error returns false while the tx queue is
+    // Active, leaving RAII-only cleanup for a half-live state that
+    // the role host can't observe from its own return-value check.
+    //
+    // §5b B-5 hard-error: `channel_name` mandatory.
+    const auto channel_name_pre = ack.value("channel_name", std::string{});
+    if (channel_name_pre.empty())
+    {
+        LOGGER_ERROR(
+            "[{}] apply_producer_reg_ack: ACK missing required "
+            "`channel_name` (HEP-CORE-0036 §5b.4 + B-5 #290 — broker "
+            "contract violation).",
+            pImpl->short_tag);
+        return false;
+    }
+    // §5.5.3 hard-error: `instance_id` mandatory + nonzero.  Reject
+    // before queue mutation so a zero value doesn't defeat the
+    // stale-instance guard silently.
+    const auto instance_id_pre = ack.value("instance_id", std::uint64_t{0});
+    if (instance_id_pre == 0)
+    {
+        LOGGER_ERROR(
+            "[{}] apply_producer_reg_ack: ACK missing/zero "
+            "`instance_id` for channel '{}' — HEP-CORE-0042 §5.5.3 "
+            "requires PRODUCER_REG_ACK to echo the broker-assigned "
+            "instance counter (§5.2 monotonic uint64, starts at 1).",
+            pImpl->short_tag, channel_name_pre);
+        return false;
+    }
+
     // Producer-side mirror of apply_consumer_reg_ack.  Drive Standby
     // → Active per HEP-CORE-0036 §6.7 Option B.  For PUSH queues,
     // apply_master_approval extracts ack["initial_allowlist"] (array
@@ -1364,47 +1434,10 @@ bool RoleAPIBase::apply_producer_reg_ack(const nlohmann::json &ack)
         return false;
     }
 
-    // HEP-CORE-0036 §5b B-5 (#290, 2026-06-26) — hard-error on
-    // missing `channel_name`.  Symmetric with the consumer-side
-    // check above; same rationale (pre-B-5 silent skip masked
-    // broker-contract violations as "ACK applied" returns).
-    const auto channel_name = ack.value("channel_name", std::string{});
-    if (channel_name.empty())
-    {
-        LOGGER_ERROR(
-            "[{}] apply_producer_reg_ack: ACK missing required "
-            "`channel_name` (HEP-CORE-0036 §5b.4 + B-5 #290 — broker "
-            "contract violation; pre-B-5 this would have silently "
-            "skipped `initial_allowlist` cache seed + the Registered "
-            "→ Authorized FSM transition).",
-            pImpl->short_tag);
-        return false;
-    }
-
-    // HEP-CORE-0042 §5.5.3 — capture the broker-echoed `instance_id`
-    // for use on subsequent CHANNEL_AUTH_APPLIED_REQ (Phase 3a.3
-    // emission, pending).  §5.2 defines the counter as monotonic
-    // per-uid starting at 1; a zero or absent field is a broker
-    // contract violation.  Hard-error at the boundary — a silent
-    // skip here would leave `producer_instance_id_ == 0` and Phase
-    // 3a.3's APPLIED_REQ would be rejected by the broker's
-    // stale-instance guard (§5.4 step a), which would surface as a
-    // hard-to-diagnose "APPLIED_REQ never advances confirmed_version"
-    // symptom instead of the actual "REG_ACK contract broken"
-    // root cause.
-    const auto instance_id = ack.value("instance_id", std::uint64_t{0});
-    if (instance_id == 0)
-    {
-        LOGGER_ERROR(
-            "[{}] apply_producer_reg_ack: ACK missing/zero "
-            "`instance_id` for channel '{}' — HEP-CORE-0042 §5.5.3 "
-            "requires PRODUCER_REG_ACK to echo the broker-assigned "
-            "instance counter (§5.2 monotonic uint64, starts at 1).  "
-            "A zero value would silently defeat the stale-instance "
-            "guard on CHANNEL_AUTH_APPLIED_REQ (§5.4 step a).",
-            pImpl->short_tag, channel_name);
-        return false;
-    }
+    // Pre-validated at function entry — reuse locals.  Store instance_id
+    // now that all boundary checks have passed.
+    const auto &channel_name = channel_name_pre;
+    const auto instance_id = instance_id_pre;
     pImpl->producer_instance_id_.store(instance_id,
                                         std::memory_order_relaxed);
     LOGGER_INFO(
@@ -1491,16 +1524,53 @@ bool RoleAPIBase::apply_producer_reg_ack(const nlohmann::json &ack)
     // timeout / transport failure / STALE_INSTANCE the broker will
     // re-drive us via the next NOTIFY.
     //
+    // Emitted ONLY for ZMQ producers (§5.5.2 is scoped to the ZMQ
+    // instantiation per §5.0; SHM channels use broker pre-confirm and
+    // don't participate in the confirmed-version machinery).  Detected
+    // by `dynamic_cast<sec::PeerAdmission*>` — mirror of the NOTIFY-
+    // path gate in `handle_channel_auth_notifies` (single ZMQ marker
+    // shared between the two emission sites).
+    //
     // Reads `snapshot_version` from the REG_ACK we're processing —
     // that's the channel_version at the time `initial_allowlist`
     // above was extracted (§5.5.4).  For a freshly-opened channel
     // (no consumers yet) this is 0; the broker still accepts and
-    // records the confirmation as a no-op advance.
-    const auto applied_version = ack.value("snapshot_version",
-                                            std::uint64_t{0});
+    // records the confirmation as a no-op advance.  A REG_ACK without
+    // `snapshot_version` is a §5.5.4 broker-contract violation — log
+    // WARN + skip (do NOT silently emit applied_version=0; that would
+    // stall real wait-path drains).
+    namespace sec = pylabhub::utils::security;
+    auto *admission_tx =
+        dynamic_cast<sec::PeerAdmission *>(pImpl->tx_queue.get());
     auto *brc = pImpl->resolve_bc_for_channel(channel_name);
-    if (brc && instance_id > 0)
+    if (!admission_tx)
     {
+        // SHM producer — no APPLIED_REQ emission per §5.0 SHM scope.
+        // Fall through to §4.3.2 FSM transition below.
+    }
+    else if (!ack.contains("snapshot_version") ||
+             !ack.at("snapshot_version").is_number_unsigned())
+    {
+        LOGGER_WARN(
+            "[{}] apply_producer_reg_ack: ACK for channel '{}' missing "
+            "or non-numeric `snapshot_version` — HEP-CORE-0042 §5.5.4 "
+            "broker contract violation.  Skipping APPLIED_REQ emission "
+            "(next NOTIFY drives resync); DO NOT silently substitute "
+            "applied_version=0.",
+            pImpl->short_tag, channel_name);
+    }
+    else if (!brc)
+    {
+        LOGGER_WARN(
+            "[{}] no BRC for channel '{}' at apply_producer_reg_ack; "
+            "skipping CHANNEL_AUTH_APPLIED_REQ (HEP-CORE-0042 §5.5.2 "
+            "silent-drop safe: broker will re-drive on next NOTIFY)",
+            pImpl->short_tag, channel_name);
+    }
+    else
+    {
+        const auto applied_version =
+            ack.at("snapshot_version").get<std::uint64_t>();
         auto reply = brc->channel_auth_applied(
             channel_name, pImpl->uid, applied_version, instance_id);
         if (!reply.has_value())
@@ -1530,14 +1600,6 @@ bool RoleAPIBase::apply_producer_reg_ack(const nlohmann::json &ack)
                 pImpl->short_tag, channel_name, applied_version);
         }
     }
-    else if (!brc)
-    {
-        LOGGER_WARN(
-            "[{}] no BRC for channel '{}' at apply_producer_reg_ack; "
-            "skipping CHANNEL_AUTH_APPLIED_REQ (HEP-CORE-0042 §5.5.2 "
-            "silent-drop safe: broker will re-drive on next NOTIFY)",
-            pImpl->short_tag, channel_name);
-    }
 
     // HEP-CORE-0036 §4.3.2 — Registered → Authorized at the END of
     // apply_producer_reg_ack success.  By this point: REG_ACK accepted
@@ -1565,6 +1627,19 @@ bool RoleAPIBase::apply_producer_reg_ack(const nlohmann::json &ack)
         }
     }
     return true;
+    } // end try
+    catch (const nlohmann::json::exception &e)
+    {
+        // Symmetric with `apply_consumer_reg_ack` — a malformed broker
+        // reply (wrong-typed field, e.g. `instance_id: "1"` string
+        // instead of uint) must NOT crash the producer thread.  Log
+        // ERROR + return false so the role host tears down cleanly.
+        LOGGER_ERROR("[{}] apply_producer_reg_ack: malformed broker "
+                     "reply (JSON exception): {} — treating as REG_ACK "
+                     "failure.  Ack shape: {}",
+                     pImpl->short_tag, e.what(), ack.dump());
+        return false;
+    }
 }
 
 std::uint64_t RoleAPIBase::producer_instance_id() const noexcept

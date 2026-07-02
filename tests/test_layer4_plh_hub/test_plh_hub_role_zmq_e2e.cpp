@@ -255,12 +255,12 @@ void write_zmq_consumer_script(const fs::path &script_dir,
 
 TEST_F(PlhHubCliTest, ZmqE2E_AuthorizedConsumerReceivesAllSlots)
 {
-    GTEST_SKIP() << "DEFERRED — ZMQ pre-confirm allowlist sync depends "
-                    "on task #246 (HEP-CORE-0036 amendment: retrofit "
-                    "ZMQ to pre-confirm pattern).  Re-enable when "
-                    "#246 ships.  Test body kept intact; the harness "
-                    "+ config writers + scenario shape are verified by "
-                    "ZmqE2E_UnauthorizedConsumerDeniedByBroker.";
+    // Un-skipped 2026-07-02 as part of task #246 Phase 3 close-out
+    // review remediation.  The HEP-CORE-0042 ZMQ pre-attach coord-
+    // ination chain (producer emission Phase 3a + consumer §7.1
+    // loop Phase 3b) is now production-live and this test is the
+    // designated L4 happy-path pin for §7.1 (consumer registers,
+    // pre-attaches, dials, receives data).
     using std::chrono::seconds;
 
     const std::string channel  = "lab.l4.zmq.e2e.a";
