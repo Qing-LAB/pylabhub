@@ -4,10 +4,15 @@
  *
  * Verifies the raw-DEALER wire client can:
  *   - complete the CURVE handshake against a real broker subprocess;
- *   - send a well-formed REG_REQ frame ([C, "REG_REQ", body]);
- *   - receive a reply frame the broker sends back (REG_ACK on success;
- *     ERROR on schema-validation failure — either satisfies the smoke
- *     goal of "the round-trip works").
+ *   - send a well-formed producer REG_REQ frame ([C, "REG_REQ", body])
+ *     whose `role_uid` matches the HEP-CORE-0036 §5b naming grammar
+ *     (`(prod|cons|proc).<name>.<unique>`); the broker's
+ *     validate_identity_fields check accepts it and dispatches to the
+ *     REG_ACK success path.
+ *   - receive the REG_ACK reply — this pins the success codepath, not
+ *     the schema-reject path — so a future regression in REG_ACK
+ *     dispatch (e.g. body construction, envelope shape) breaks the
+ *     smoke instead of silently degrading to an ERROR round-trip.
  *
  * Scope: proves the L3 broker-only test harness is viable.  HEP-0042
  * attach-coordination scenarios (fast-path admit, wait-path enqueue,
@@ -20,6 +25,7 @@
 #include "shared_test_helpers.h"
 #include "test_patterns.h"
 
+#include "utils/role_reg_payload.hpp"
 #include "utils/timeout_constants.hpp"
 
 #include <cppzmq/zmq.hpp>
@@ -73,8 +79,14 @@ TEST_F(Pattern4BrokerWireSmokeTest, ClientCurveHandshakeAndReply)
     using pylabhub::kMidTimeoutMs;
 
     // ── 1. Setup: temp dir + Pattern4Setup with one client uid ──
+    //
+    // HEP-CORE-0036 §5b + naming.hpp grammar: role uid MUST be
+    // `(prod|cons|proc).<name>.<unique>`.  Using a non-conforming uid
+    // makes the broker short-circuit REG_REQ with INVALID_REQUEST
+    // before ever exercising REG_ACK, which would silently pin this
+    // smoke test to the error branch and hide REG_ACK regressions.
+    const std::string client_uid = "prod.smoke.uid00000001";
     const fs::path temp_dir = make_test_temp_dir("broker_wire_smoke");
-    const std::string client_uid = "wire_client.smoke";
     const auto setup = make_pattern4_setup({client_uid});
     write_pattern4_setup(setup, temp_dir / "setup.json");
 
@@ -105,44 +117,48 @@ TEST_F(Pattern4BrokerWireSmokeTest, ClientCurveHandshakeAndReply)
 
     BrokerWireClient client(ctx, cfg);
 
-    // ── 4. Send REG_REQ + expect a reply ──
+    // ── 4. Send REG_REQ + expect REG_ACK ──
     //
-    // Body carries the canonical HEP-0036 §5b fields the broker needs
-    // to validate a producer REG_REQ.  This test is not asserting on
-    // the reply's success/failure semantics — the smoke goal is "the
-    // round-trip works," so ERROR is as good as REG_ACK.  What we do
-    // pin: SOME reply arrives within the budget.
-    nlohmann::json req;
-    req["role_uid"]      = client_uid;
-    req["role"]           = "producer";
-    req["role_type"]     = "test.producer";
-    req["channel_name"]  = "ch.wire_smoke";
-    req["data_transport"] = "zmq";
-    req["short_tag"]     = "wire.smoke";
-    req["schema_hash"]   = 0u;
-    req["slot_bytes"]    = 4096u;
-    req["slot_count"]    = 4u;
+    // Body built via the canonical `build_producer_reg_payload` helper
+    // so the smoke pins the CURRENT HEP-CORE-0036 §5b wire shape
+    // rather than a hand-rolled snapshot that would drift as the
+    // schema evolves.  We pin the REG_ACK success path specifically:
+    // an ERROR reply here means either the schema regressed or the
+    // wire client regressed, both of which the smoke must catch.
+    // `request()` returns early on ERROR (with the error body) so a
+    // broker-side rejection surfaces the reason instead of burning
+    // the whole budget.
+    pylabhub::hub::ProducerRegInputs in;
+    in.channel           = "ch.wire_smoke";
+    in.role_uid          = client_uid;
+    in.role_name         = "smoke";
+    in.role_type         = "producer";
+    in.is_zmq_transport  = true;
+    // ZMQ node endpoint — for the smoke this is just the identity the
+    // broker records on ChannelEntry.zmq_node_endpoint; no data-plane
+    // socket actually binds here (that's a Phase 2.4b concern).  Use a
+    // syntactically-valid tcp:// URI on an unused port.
+    in.zmq_node_endpoint = "tcp://127.0.0.1:0";
+    // Producer's CURVE identity — required per HEP-CORE-0036 §4.1;
+    // the broker validates 40-char z85.
+    in.zmq_pubkey        = role_kp.public_z85;
+    nlohmann::json req   = pylabhub::hub::build_producer_reg_payload(in);
 
-    auto reply = client.receive(std::chrono::milliseconds{kMidTimeoutMs});
-    // Nothing yet — the CURVE handshake is async.  send() then
-    // receive() with a fresh budget covers both.  (Above receive() is
-    // a NOP-poll to drain any spurious pre-handshake frame; expected
-    // to return nullopt.)
-    ASSERT_FALSE(reply.has_value()) << "unexpected pre-request frame received";
-
-    client.send("REG_REQ", req);
-    auto reply2 = client.receive(std::chrono::milliseconds{kLongTimeoutMs});
-    ASSERT_TRUE(reply2.has_value())
-        << "BrokerWireClient did not receive any reply within budget "
+    auto reply = client.request("REG_REQ", req, "REG_ACK",
+                                 std::chrono::milliseconds{kLongTimeoutMs});
+    ASSERT_TRUE(reply.has_value())
+        << "BrokerWireClient did not receive REG_ACK or ERROR within budget "
            "(CURVE handshake failed silently, broker never sent, or client "
            "poll starved)";
 
-    // The reply MUST be one of the canonical shapes the broker sends
-    // back to a REG_REQ.  We don't pin which — this smoke covers only
-    // that the wire round-trip completes.
-    const std::string &kind = reply2->first;
-    EXPECT_TRUE(kind == "REG_ACK" || kind == "ERROR")
-        << "unexpected reply msg_type='" << kind << "'";
+    // `request()` returns on REG_ACK OR ERROR.  The success codepath
+    // sets `status="success"`; a schema/wire regression would set
+    // "error" or carry an `error_code` field.  Assert success to pin
+    // that the broker exercised the REG_ACK dispatch.
+    const std::string status = reply->value("status", "");
+    ASSERT_EQ(status, "success")
+        << "REG_REQ round-trip did not exercise REG_ACK success path — "
+           "reply body: " << reply->dump();
 
     // ── 5. Teardown ──
     broker.signal_quit();
