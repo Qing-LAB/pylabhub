@@ -131,6 +131,7 @@ Broker tracks three counters:
 | §5.5.2 producer captures + emits `CHANNEL_AUTH_APPLIED_REQ` (initial REG + NOTIFY-triggered paths) | 3a.3b | ✅ shipped 2026-07-02 |
 | Phase 3a L3 close-out: error-path pin via real idle producer (timeout drain) | 3a.4 | ✅ shipped 2026-07-02 |
 | Phase 3a L4 close-out: happy-path + wider error scenarios via real cycle-driving producer | 3a follow-up | ⏳ deferred to L4 (see `docs/todo/TESTING_TODO.md`) |
+| §7.1 BRC `consumer_attach_zmq` method (declared + impl) | 3b.1 | ✅ shipped 2026-07-02 |
 
 **Deferred-reply wire contract (Phase 2.3a).**  When the broker enters the wait-path (step 5), it does NOT send a reply immediately.  The consumer will receive its `CONSUMER_ATTACH_ACK_ZMQ` reply later, via one of four drain paths:
 - `CHANNEL_AUTH_APPLIED_REQ` from producer P advances `confirmed_version[K][P]` past the enqueued `target_version` → reply `{status="success"}`.
@@ -355,6 +356,22 @@ Fully documented in §5.5.2; ZMQ producer sends after `ZmqQueue::set_peer_allowl
 ### 7.1 Consumer role side (ZMQ; `RoleAPIBase::apply_consumer_reg_ack`)
 
 Runs during `apply_consumer_reg_ack`; between `register_consumer` returning REG_ACK and the consumer dialing producers.
+
+**Placement decision (design-locked 2026-07-02, Phase 3b.1).**  The `CONSUMER_ATTACH_REQ_ZMQ` loop runs BEFORE `rx_queue->apply_master_approval(reg_ack)` (Option A), not after via a `set_producer_peers(admitted)` override (Option B).  Rationale:
+
+- **Consumer never dials denied producers.**  Under A the queue's `apply_master_approval` receives an ACK whose `producers[]` has ALREADY been filtered to the admitted subset — no ZAP handshake ever runs against a producer the broker rejected.  Under B the queue would briefly dial ALL producers, then get overwritten; even the transient dial state costs measurable ZAP work + a potential race window where a denied producer's handshake completes just before `set_producer_peers` reduces the peer set.
+- **`apply_master_approval` sees the truth-of-record.**  HEP-CORE-0036 §6.7 defines `apply_master_approval` as the single Standby→Active mutator on the queue.  Feeding it the filtered ACK keeps the "one source of truth" invariant clean — the ACK bytes it processes MATCH the ACK bytes the queue-level tests observe.  Under B, the queue would briefly hold a state that no ACK ever wrote.
+- **Failure mode is a no-op, not a rollback.**  Under A, if the broker denies all N producers the ACK's `producers[]` becomes empty and `apply_master_approval` sees `producers=[]` — the queue stays in Standby.  Under B we'd have to un-dial after the fact, which requires a queue-level "retract peer" API that doesn't exist today.
+
+The consumer's `pImpl->uid` / pubkey come from the KeyStore (HEP-CORE-0040), NOT from `reg_ack` — the ACK carries the consumer's uid only for the broker's authority-of-record; the role's own identity is the trusted source.
+
+**Log markers (per §I11 observability).**  Emit these INFO/WARN lines from the loop for L3 test contracts + operator visibility:
+- `[<tag>] attach:begin channel={} producers={N}` — one per `apply_consumer_reg_ack` entry.
+- `[<tag>] attach:success channel={} producer={}` — one per admitted producer.
+- `[<tag>] attach:denied channel={} producer={} reason={}` — one per denied.
+- `[<tag>] attach:timeout channel={} producer={} reason={}` — one per timeout (both broker-observed AND client-synthesized §7.1 null path).
+- `[<tag>] attach:complete channel={} admitted={}/{}` — one at end.
+
 
 ```
 apply_consumer_reg_ack(reg_ack):

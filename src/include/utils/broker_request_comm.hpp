@@ -297,6 +297,48 @@ class PYLABHUB_UTILS_EXPORT BrokerRequestComm
     /// protocol-level failure.  The caller (substep 1e producer L2
     /// AttachProtocol) uses the distinction to drive the cache-divergence
     /// WARN logic.
+    /// HEP-CORE-0042 §5.5.1 + §6.2.1 pre-attach coordination for ZMQ.
+    /// Consumer-side counterpart to the SHM `consumer_attach` below —
+    /// same coordination principle (broker mediates the attach) but a
+    /// distinct wire envelope and dispatch path.  Called once per
+    /// declared producer inside `apply_consumer_reg_ack` (§7.1 loop)
+    /// BEFORE the consumer dials the ZMQ endpoint; on `status="success"`
+    /// the consumer proceeds to `set_producer_peers` with the admitted
+    /// uid, on `denied` / `timeout` the uid is excluded from the dial
+    /// set.
+    ///
+    /// Broker semantics:
+    ///   - Fast-path (confirmed[K][P] >= channel_version[K]): reply
+    ///     immediately with `status="success"`.
+    ///   - Wait-path (confirmed[K][P] < channel_version[K]): enqueue
+    ///     under §5.4 step 5, fire NOTIFY to P, deferred-reply on P's
+    ///     APPLIED_REQ drain / P disconnect / channel close / sweep
+    ///     timeout.  The broker's ACK carries §5.6 reason strings on
+    ///     denied / timeout — the closed set includes
+    ///     `producer_did_not_confirm_within_budget`.
+    ///
+    /// Return semantics:
+    ///   - `optional<json>` reply body on any broker-observed outcome
+    ///     (success / denied / timeout — all `status` values are
+    ///     terminal from the consumer's perspective).
+    ///   - `nullopt` on client-side BRC transport failure or
+    ///     BRC-observed timeout.  Per §7.1 the caller MUST synthesize
+    ///     a `{status="timeout", reason=
+    ///     "producer_did_not_confirm_within_budget"}` body — same
+    ///     reason string as the broker-observed timeout drain — to
+    ///     keep the reason enum closed to §5.6 taxonomy across both
+    ///     failure modes.
+    ///
+    /// Default timeout matches HEP-0042 §5.6 `attach_ack_wait_ms`
+    /// (5000ms).  §5.6 invariant: this MUST be > `producer_apply_wait_ms`
+    /// so a broker-observed timeout wins over a client-observed one.
+    [[nodiscard]] std::optional<nlohmann::json>
+    consumer_attach_zmq(const std::string &channel,
+                         const std::string &consumer_role_uid,
+                         const std::string &consumer_pubkey,
+                         const std::string &producer_role_uid,
+                         int                timeout_ms = 5000);
+
     [[nodiscard]] std::optional<nlohmann::json>
     consumer_attach(const std::string &channel,
                     const std::string &consumer_pubkey,

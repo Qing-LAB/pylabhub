@@ -903,6 +903,30 @@ BrokerRequestComm::channel_auth_applied(const std::string &channel,
 }
 
 std::optional<nlohmann::json>
+BrokerRequestComm::consumer_attach_zmq(const std::string &channel,
+                                        const std::string &consumer_role_uid,
+                                        const std::string &consumer_pubkey,
+                                        const std::string &producer_role_uid,
+                                        int                timeout_ms)
+{
+    // HEP-CORE-0042 §5.5.1 wire shape.  `role_uid` on the wire is a
+    // sibling-BRC-method naming convention (`get_channel_auth`,
+    // `channel_auth_applied`, `consumer_attach` for SHM all use the
+    // same key) — historic identifier the broker's dispatcher keys
+    // on for producer resolution.  Body-shape parity with the SHM
+    // sibling helps future §6.2.1 wire-format audits catch drift
+    // between the two per-transport branches.
+    nlohmann::json opts;
+    opts["channel_name"]      = channel;
+    opts["consumer_role_uid"] = consumer_role_uid;
+    opts["consumer_pubkey"]   = consumer_pubkey;
+    opts["producer_role_uid"] = producer_role_uid;
+    return pImpl->do_request("CONSUMER_ATTACH_REQ_ZMQ",
+                              "CONSUMER_ATTACH_ACK_ZMQ",
+                              opts, timeout_ms);
+}
+
+std::optional<nlohmann::json>
 BrokerRequestComm::consumer_attach(const std::string &channel,
                                    const std::string &consumer_pubkey,
                                    const std::string &consumer_role_uid,
