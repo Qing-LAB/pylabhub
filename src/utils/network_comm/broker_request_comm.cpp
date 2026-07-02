@@ -882,6 +882,27 @@ BrokerRequestComm::get_channel_auth(const std::string &channel,
 }
 
 std::optional<nlohmann::json>
+BrokerRequestComm::channel_auth_applied(const std::string &channel,
+                                         const std::string &role_uid,
+                                         std::uint64_t      applied_version,
+                                         std::uint64_t      instance_id,
+                                         int                timeout_ms)
+{
+    // HEP-CORE-0042 §5.5.2 wire shape.  `producer_role_uid` is the
+    // canonical field name on the wire (broker handler dispatches on
+    // it); mapping from the `role_uid` parameter matches the naming
+    // used by sibling BRC methods (get_channel_auth, consumer_attach).
+    nlohmann::json opts;
+    opts["channel_name"]      = channel;
+    opts["producer_role_uid"] = role_uid;
+    opts["applied_version"]   = applied_version;
+    opts["instance_id"]       = instance_id;
+    return pImpl->do_request("CHANNEL_AUTH_APPLIED_REQ",
+                              "CHANNEL_AUTH_APPLIED_ACK",
+                              opts, timeout_ms);
+}
+
+std::optional<nlohmann::json>
 BrokerRequestComm::consumer_attach(const std::string &channel,
                                    const std::string &consumer_pubkey,
                                    const std::string &consumer_role_uid,

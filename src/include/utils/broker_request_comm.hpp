@@ -246,6 +246,38 @@ class PYLABHUB_UTILS_EXPORT BrokerRequestComm
                      const std::string &role_uid,
                      int timeout_ms = 5000);
 
+    /// HEP-CORE-0042 §5.5.2 — producer signals the broker that its
+    /// per-connection ZAP cache has been updated to `applied_version`.
+    /// The broker advances `confirmed_version[K][P] = max(current,
+    /// applied_version)` and drains any pending wait-path attach
+    /// requests waiting on this producer (§5.4 step d).
+    ///
+    /// Called after every successful `apply_master_approval` on the
+    /// producer side:
+    ///   (1) initial `apply_producer_reg_ack` — applied_version =
+    ///       REG_ACK.snapshot_version (§5.5.4).
+    ///   (2) NOTIFY-driven pull in `handle_channel_auth_notifies` —
+    ///       applied_version = GET_CHANNEL_AUTH_ACK.snapshot_version.
+    ///
+    /// `instance_id` is the value captured from the producer's most
+    /// recent `PRODUCER_REG_ACK` (§5.5.3).  Broker's stale-instance
+    /// guard rejects with ERROR / error_code="STALE_INSTANCE" if the
+    /// value doesn't match its current `instance[P]` — that's a race
+    /// with a concurrent re-REG and safely handled by the next
+    /// NOTIFY cycle.
+    ///
+    /// Returns the broker reply body on either outcome (success:
+    /// `{status="ok", channel_name, applied_version}`; stale-instance:
+    /// `{status="error", error_code="STALE_INSTANCE", ...}`), or
+    /// `nullopt` on transport failure / timeout.  Default timeout
+    /// matches `applied_ack_wait_ms` from HEP-0042 §5.6.
+    [[nodiscard]] std::optional<nlohmann::json>
+    channel_auth_applied(const std::string &channel,
+                          const std::string &role_uid,
+                          std::uint64_t      applied_version,
+                          std::uint64_t      instance_id,
+                          int                timeout_ms = 1000);
+
     /// HEP-CORE-0041 §9 D4 pre-attach broker confirmation.  Producer
     /// asks the broker whether one specific consumer is currently
     /// authorized for `channel` before handing over the SHM capability

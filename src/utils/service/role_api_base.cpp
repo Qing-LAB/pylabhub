@@ -1314,6 +1314,61 @@ bool RoleAPIBase::apply_producer_reg_ack(const nlohmann::json &ack)
         }
     }
 
+    // HEP-CORE-0042 §5.5.2 — signal the broker that our cache is at
+    // `snapshot_version`.  Broker advances `confirmed_version[K][P]`
+    // and drains pending wait-path attaches (§5.4 step d).  Sync
+    // REQ with `applied_ack_wait_ms=1000` budget per §5.6; on
+    // timeout / transport failure / STALE_INSTANCE the broker will
+    // re-drive us via the next NOTIFY.
+    //
+    // Reads `snapshot_version` from the REG_ACK we're processing —
+    // that's the channel_version at the time `initial_allowlist`
+    // above was extracted (§5.5.4).  For a freshly-opened channel
+    // (no consumers yet) this is 0; the broker still accepts and
+    // records the confirmation as a no-op advance.
+    const auto applied_version = ack.value("snapshot_version",
+                                            std::uint64_t{0});
+    auto *brc = pImpl->resolve_bc_for_channel(channel_name);
+    if (brc && instance_id > 0)
+    {
+        auto reply = brc->channel_auth_applied(
+            channel_name, pImpl->uid, applied_version, instance_id);
+        if (!reply.has_value())
+        {
+            LOGGER_WARN(
+                "[{}] CHANNEL_AUTH_APPLIED_REQ('{}') no reply within "
+                "budget — cache stays applied, broker may re-drive on "
+                "next NOTIFY (HEP-CORE-0042 §5.5.2 + §5.6)",
+                pImpl->short_tag, channel_name);
+        }
+        else if (reply->value("status", std::string{}) != "ok")
+        {
+            // STALE_INSTANCE (a re-REG races) or transport error.
+            // Log WARN + continue — the next NOTIFY drives resync.
+            LOGGER_WARN(
+                "[{}] CHANNEL_AUTH_APPLIED_REQ('{}') non-ok reply: "
+                "status='{}' error_code='{}' — cache stays applied",
+                pImpl->short_tag, channel_name,
+                reply->value("status", std::string{}),
+                reply->value("error_code", std::string{}));
+        }
+        else
+        {
+            LOGGER_INFO(
+                "[{}] event=ChannelAuthApplied channel='{}' "
+                "applied_version={} (HEP-CORE-0042 §5.5.2)",
+                pImpl->short_tag, channel_name, applied_version);
+        }
+    }
+    else if (!brc)
+    {
+        LOGGER_WARN(
+            "[{}] no BRC for channel '{}' at apply_producer_reg_ack; "
+            "skipping CHANNEL_AUTH_APPLIED_REQ (HEP-CORE-0042 §5.5.2 "
+            "silent-drop safe: broker will re-drive on next NOTIFY)",
+            pImpl->short_tag, channel_name);
+    }
+
     // HEP-CORE-0036 §4.3.2 — Registered → Authorized at the END of
     // apply_producer_reg_ack success.  By this point: REG_ACK accepted
     // (Layers 1+2), apply_master_approval succeeded (Layer 3 — PUSH
@@ -1599,6 +1654,56 @@ void RoleAPIBase::handle_channel_auth_notifies(
                                 "threw for channel '{}': {}",
                                 pImpl->short_tag, pImpl->uid, channel,
                                 e.what());
+                        }
+                    }
+
+                    // HEP-CORE-0042 §5.5.2 — cache is now applied at
+                    // GET_CHANNEL_AUTH_ACK.snapshot_version.  Signal
+                    // the broker so it advances confirmed_version[K][P]
+                    // and drains pending wait-path attaches (§5.4 step
+                    // d).  Only emitted for ZMQ (publish_cache branch);
+                    // SHM channels use broker pre-confirm and don't
+                    // participate in the ZMQ confirmed-version machinery.
+                    // Skip if REG_ACK hasn't been observed yet (defensive:
+                    // a NOTIFY should never precede REG_ACK in practice,
+                    // but a zero instance_id would defeat the
+                    // stale-instance guard).
+                    const auto instance_id =
+                        pImpl->producer_instance_id_.load(
+                            std::memory_order_relaxed);
+                    const auto snapshot_version =
+                        reply->value("snapshot_version", std::uint64_t{0});
+                    if (admission && instance_id > 0)
+                    {
+                        auto applied = brc->channel_auth_applied(
+                            channel, pImpl->uid, snapshot_version, instance_id);
+                        if (!applied.has_value())
+                        {
+                            LOGGER_WARN(
+                                "[{}/{}] CHANNEL_AUTH_APPLIED_REQ('{}') no "
+                                "reply within budget — cache stays applied, "
+                                "broker may re-drive on next NOTIFY (HEP-"
+                                "CORE-0042 §5.5.2 + §5.6)",
+                                pImpl->short_tag, pImpl->uid, channel);
+                        }
+                        else if (applied->value("status",
+                                                 std::string{}) != "ok")
+                        {
+                            LOGGER_WARN(
+                                "[{}/{}] CHANNEL_AUTH_APPLIED_REQ('{}') "
+                                "non-ok reply: status='{}' error_code='{}'",
+                                pImpl->short_tag, pImpl->uid, channel,
+                                applied->value("status", std::string{}),
+                                applied->value("error_code", std::string{}));
+                        }
+                        else
+                        {
+                            LOGGER_INFO(
+                                "[{}/{}] event=ChannelAuthApplied channel='{}'"
+                                " applied_version={} reason='{}' "
+                                "(HEP-CORE-0042 §5.5.2)",
+                                pImpl->short_tag, pImpl->uid, channel,
+                                snapshot_version, reason);
                         }
                     }
                 }
