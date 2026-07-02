@@ -153,6 +153,41 @@ because the scope is naturally wider than "one more log-marker
 assertion" — the same real-role infrastructure that enables Test B
 also enables the other three scenarios above.
 
+### HEP-CORE-0042 Phase 3 review-B follow-ups (2026-07-02) ⏳
+
+Second-round xhigh workflow-backed review of the Phase 3 chain
+(commits `e830faf9..45ff541b`) surfaced two coverage gaps that Phase 1
++ Phase 2 of the remediation did not close.  Filed here rather than
+deferred to phantom future work.
+
+- **Multi-producer L4 scenario (review finding #7).**  The un-skipped
+  `ZmqE2E_AuthorizedConsumerReceivesAllSlots` uses a single producer,
+  so the §7.1 fan-in loop degenerates to N=1.  Multi-producer scenarios
+  (mixed admit/deny, malformed-entry skip+continue, zero-admitted
+  return-false, partial-success policy) are untested end-to-end after
+  the Pattern4 rung 4 retirement.  Building a 2-producer variant needs
+  2 keygen operations, 2 producer configs, 2 subprocess spawns, and a
+  consumer script + config that expects 2 producers (~150 LOC).
+  Scope: extend `test_plh_hub_role_zmq_e2e.cpp` with
+  `ZmqE2E_MultiProducer_TwoAuthorized` (both admitted, both slots
+  received) and later `ZmqE2E_MultiProducer_MixedAdmitDeny` (one
+  denied → §5 partial-success policy + §I11 cache mirrors admitted
+  subset).
+
+- **BRC abandoned-flag path coverage (review finding #8).**  The
+  `abandoned` flag on `RequestCmd` (plus the sibling `producer_role_uid`
+  echo verification in `consumer_attach_zmq` and `channel_name` echo
+  verification in `channel_auth_applied`) has zero active test coverage.
+  The mechanism only fires when a broker REQ times out client-side and
+  a delayed reply arrives after the caller has moved on.  Design a
+  fault-injection test that simulates broker slowness (or use a
+  BrokerStub with configurable reply delay per REQ) and asserts:
+  (a) `RequestCmd::abandoned` is set on client-side timeout,
+  (b) late reply is dropped via the `abandoned` check in `poll_recv`,
+  (c) mismatched `producer_role_uid` reply is treated as timeout by
+  `consumer_attach_zmq` (§7.1 synthesized reason).  Belongs at L2
+  (BrokerStub-based) or L3 with a broker-slowness config knob.
+
 ### HEP-CORE-0042 Phase 2.4b — post-review follow-up flake risks (2026-07-01) ⏳
 
 Filed as follow-ups from the xhigh review of `tests/test_layer3_pattern4/
