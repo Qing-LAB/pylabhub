@@ -114,6 +114,27 @@ Broker tracks three counters:
 
 ### 5.4 Handler flow (normative)
 
+**Implementation status (task #246 impl chain):**
+
+| Step | Phase | Status |
+|---|---|---|
+| §5.4 steps 1-4 fast-path (validate + allowlist + producer-live + confirmed check) | 2.2 | ✅ shipped 2026-07-01 |
+| §5.4 step 5a enqueue + step 5b NOTIFY fire + deferred-reply sentinel | 2.3a | ✅ shipped 2026-07-01 |
+| §5.4 step d APPLIED_REQ drain (walk queue, reply success) | 2.3b | ⏳ pending |
+| Producer-disconnect drain (§5.4 producer disconnect) | 2.3b | ⏳ pending |
+| Channel-close drain (§5.4 channel K close) | 2.3b | ⏳ pending |
+| §5.4 pending-entry timeout + §5.5 producer_apply_wait_ms sweep | 2.3c | ⏳ pending |
+| §5.4 stale-instance guard (APPLIED_REQ step a) | 2.2 | ✅ shipped 2026-07-01 |
+| §5.4 confirmed_version reset on re-registration / disconnect / kDead | 2.2 close-out | ✅ shipped 2026-07-01 |
+
+**Deferred-reply wire contract (Phase 2.3a).**  When the broker enters the wait-path (step 5), it does NOT send a reply immediately.  The consumer will receive its `CONSUMER_ATTACH_ACK_ZMQ` reply later, via one of four drain paths:
+- `CHANNEL_AUTH_APPLIED_REQ` from producer P advances `confirmed_version[K][P]` past the enqueued `target_version` → reply `{status="success"}`.
+- Producer P disconnects (ROUTER-observed or kDead heartbeat) → reply `{status="denied", reason="producer_not_live"}`.
+- Channel K closes → reply `{status="denied", reason="channel_closing"}`.
+- `producer_apply_wait_ms` budget elapses → reply `{status="timeout", reason="producer_did_not_confirm_within_budget"}`.
+
+Consumer-side `attach_ack_wait_ms` (§5.6) must be > `producer_apply_wait_ms` so a broker-observed timeout arrives before a client-synthesized one.  All four drain paths use the ROUTER identity + correlation_id captured at enqueue time.
+
 ```
 On CONSUMER_ATTACH_REQ_SHM from consumer C for (K, P):
 

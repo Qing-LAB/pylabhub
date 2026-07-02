@@ -288,6 +288,69 @@ public:
     pylabhub::hub::HubState *hub_state_{nullptr};
     std::atomic<bool>     stop_requested{false};
 
+    /// HEP-CORE-0042 §5.4 wait-path pending queue entry.  One entry per
+    /// deferred CONSUMER_ATTACH_REQ_ZMQ that the broker enqueued instead
+    /// of replying to synchronously.  All fields are captured under the
+    /// broker's single-threaded ROUTER dispatch, so no synchronization
+    /// is needed — reads (drain, sweep) happen on the same thread.
+    ///
+    /// - `router_identity` — ZMQ ROUTER identity of the requesting
+    ///   consumer.  Used verbatim as the destination when the deferred
+    ///   reply is later sent from `handle_channel_auth_applied_req`
+    ///   (drain) or `sweep_pending_timeouts` (timeout).
+    /// - `correlation_id` — echoed back on the deferred reply so the
+    ///   consumer-side script API can match reply to the originating
+    ///   request.  May be empty (consumer didn't send one).
+    /// - `consumer_pubkey`, `consumer_role_uid` — carried for log
+    ///   observability of the drain path; not used as decision inputs.
+    /// - `target_version` — value of `ChannelAccessEntry.channel_version`
+    ///   snapshotted at enqueue time.  The drain condition is
+    ///   `confirmed_version[K][P] >= target_version`.  Multiple entries
+    ///   with the same (K, P) can have different target_versions because
+    ///   channel_version can bump between enqueues; the drain per §5.4
+    ///   step d walks the deque in order and drains every entry whose
+    ///   target_version has been surpassed by an APPLIED_REQ.
+    /// - `enqueued_at` — steady-clock timestamp for the Phase 2.3c
+    ///   timeout sweep (`producer_apply_wait_ms` budget, default 3000
+    ///   ms per HEP-CORE-0042 §5.5 taxonomy).
+    struct PendingAttachEntry
+    {
+        std::string                                    router_identity;
+        std::string                                    correlation_id;
+        std::string                                    consumer_pubkey;
+        std::string                                    consumer_role_uid;
+        std::uint64_t                                  target_version = 0;
+        std::chrono::steady_clock::time_point          enqueued_at;
+    };
+
+    /// HEP-CORE-0042 §5.4 step 5 — pending attach queue.  Owned by the
+    /// broker (not HubState) because the queue entry carries the ROUTER
+    /// identity + `zmq::socket_t` reply target, both of which are
+    /// broker-orchestration concerns rather than pure state.  Keyed by
+    /// `channel_name → producer_role_uid → deque<PendingAttachEntry>`
+    /// so the two normative drain paths run in constant time:
+    ///
+    /// - APPLIED_REQ drain (§5.4 step d, Phase 2.3b) — direct lookup by
+    ///   (channel, producer_uid), walk the deque, drain entries whose
+    ///   `target_version` has been surpassed.
+    /// - Producer-disconnect drain (§5.4 producer-not-live, Phase 2.3b)
+    ///   — direct lookup by (channel, disconnected_uid), drain everything
+    ///   as {status="denied", reason="producer_not_live"}.
+    /// - Channel-close drain (§5.4 channel_closing, Phase 2.3b) —
+    ///   iterate the outer map's entry for `channel`, drain every
+    ///   producer's deque as {status="denied", reason="channel_closing"}.
+    /// - Timeout sweep (§5.5 producer_apply_wait_ms, Phase 2.3c) —
+    ///   full iteration; drain entries older than the budget.
+    ///
+    /// Concurrency: mutations happen exclusively on the ROUTER dispatch
+    /// thread (single-pumper, HEP-CORE-0036 §7.4).  No external mutex —
+    /// the ROUTER pump serialises all writes and reads.
+    std::unordered_map<
+        std::string,
+        std::unordered_map<std::string,
+                            std::deque<PendingAttachEntry>>>
+        pending_attach_queue_;
+
     /// Serializes the run() thread's post-poll work against external
     /// readers (e.g. `list_channels_json_str()`).  HubState has its own
     /// internal mutex; this one only protects broker-private structures
@@ -442,18 +505,47 @@ public:
     /// per-connection ZAP cache is caught up enough to admit consumer
     /// C on channel K.  Fast-path: `confirmed_version[K][P] >=
     /// channel_version[K]` → reply `success` immediately.  Wait-path:
-    /// enqueue in `pending_attach_queue[K][P]`, fire
-    /// `CHANNEL_AUTH_CHANGED_NOTIFY` to P, hold reply until either
+    /// enqueue in `pending_attach_queue_[K][P]`, fire
+    /// `CHANNEL_AUTH_CHANGED_NOTIFY` to P, RETURN A SENTINEL
+    /// `{status="pending"}` to the dispatcher (which then sends
+    /// NOTHING — the reply will be sent later, once
     /// `CHANNEL_AUTH_APPLIED_REQ` from P advances confirmed_version
     /// past the enqueued target_version, or the
-    /// `producer_apply_wait_ms` budget elapses.
+    /// `producer_apply_wait_ms` budget elapses).
     ///
-    /// Phase 2.1 stub: returns INTERNAL_ERROR with reason
-    /// "not_implemented_hep_0042_phase_2_1" so exercise paths surface
-    /// clearly.  Fast-path logic lands in Phase 2.2; wait-path +
-    /// timeout in Phase 2.3; denials in Phase 2.4; stale-instance
-    /// guard in Phase 2.5.
-    nlohmann::json handle_consumer_attach_req_zmq(const nlohmann::json& req);
+    /// **Deferred-reply contract (Phase 2.3a, 2026-07-01).**  Handler
+    /// return codes and dispatcher behavior:
+    /// - `status="success"|"denied"` → dispatcher sends CONSUMER_ATTACH_ACK_ZMQ.
+    /// - `status="timeout"` (future — Phase 2.3c) → dispatcher sends CONSUMER_ATTACH_ACK_ZMQ.
+    /// - `status="pending"` (Phase 2.3a) → dispatcher SENDS NOTHING.
+    ///   The handler has already enqueued the (identity, correlation_id,
+    ///   consumer_pubkey, consumer_role_uid, target_version, enqueued_at)
+    ///   tuple into `pending_attach_queue_[channel][producer_uid]`, and
+    ///   fired CHANNEL_AUTH_CHANGED_NOTIFY to the producer.  The reply
+    ///   will be sent from `handle_channel_auth_applied_req` (Phase 2.3b
+    ///   drain path) or `sweep_pending_timeouts` (Phase 2.3c timeout
+    ///   sweep, once wired) using the enqueued router identity.
+    /// - `status="internal_error"` → dispatcher sends ERROR.
+    ///
+    /// Because the handler mutates broker-side state
+    /// (`pending_attach_queue_`) and needs the socket to fire NOTIFY +
+    /// the ROUTER identity to enqueue the deferred-reply target, the
+    /// signature differs from the SHM sibling: it takes both the
+    /// socket handle and the requester's ROUTER identity.
+    ///
+    /// **Impl phasing:**
+    /// - Phase 2.1 stub: returns INTERNAL_ERROR.  ✅ SHIPPED (2.1a).
+    /// - Phase 2.2 fast-path (§5.4 steps 1-4).  ✅ SHIPPED (2.2).
+    /// - Phase 2.3a wait-path enqueue + NOTIFY + deferred-reply
+    ///   contract.  ✅ SHIPPED (this commit).
+    /// - Phase 2.3b APPLIED_REQ drain (§5.4 step d) + disconnect drain
+    ///   (§5.4 producer-disconnect) + channel-close drain.  ⏳ pending.
+    /// - Phase 2.3c timeout sweep (§5.5 producer_apply_wait_ms).
+    ///   ⏳ pending.
+    nlohmann::json handle_consumer_attach_req_zmq(
+        const nlohmann::json& req,
+        zmq::socket_t&        socket,
+        const std::string&    router_identity);
 
     /// `CHANNEL_AUTH_APPLIED_REQ` handler (HEP-CORE-0042 §5.5.2 +
     /// §5.4).  Producer P confirms it has applied allowlist snapshot
@@ -1294,17 +1386,47 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
     }
     else if (msg_type == "CONSUMER_ATTACH_REQ_ZMQ")
     {
-        // HEP-CORE-0042 §6.2 Bindings.ZMQ.  Consumer-initiated pre-attach
-        // gate.  Phase 2.1 stub returns INTERNAL_ERROR → ERROR envelope
-        // (only success/denied/timeout become CONSUMER_ATTACH_ACK_ZMQ once
-        // the real handler ships in Phase 2.2+).
-        nlohmann::json resp = handle_consumer_attach_req_zmq(payload);
+        // HEP-CORE-0042 §6.2 Bindings.ZMQ + §5.4 handler flow.  Consumer-
+        // initiated pre-attach gate.  Fast-path replies are sent here;
+        // wait-path replies are DEFERRED per the §5.4 wait-path contract.
+        //
+        // Deferred-reply contract (Phase 2.3a shipped):
+        // - status="success" / "denied" / "timeout" → send CONSUMER_ATTACH_ACK_ZMQ.
+        // - status="pending" → SEND NOTHING.  The handler has already
+        //   enqueued the reply target (router identity + correlation_id)
+        //   into pending_attach_queue_.  The reply will be sent later by
+        //   handle_channel_auth_applied_req (§5.4 step d drain, Phase 2.3b),
+        //   the producer-disconnect / channel-close drain paths (Phase 2.3b),
+        //   or sweep_pending_timeouts (§5.5 producer_apply_wait_ms, Phase 2.3c).
+        // - Anything else → send ERROR.
+        // `identity` is the ROUTER identity frame (zmq::message_t); the
+        // handler stores it as a string so the deferred-reply path can
+        // send back to this specific consumer.
+        const std::string identity_str(
+            static_cast<const char*>(identity.data()), identity.size());
+        nlohmann::json resp =
+            handle_consumer_attach_req_zmq(payload, socket, identity_str);
         const std::string status = resp.value("status", "");
-        const std::string ack =
-            (status == "success" || status == "denied" || status == "timeout")
-                ? "CONSUMER_ATTACH_ACK_ZMQ"
-                : "ERROR";
-        send_reply(socket, identity, ack, resp);
+        if (status == "pending")
+        {
+            // §5.4 wait-path: reply is deferred.  Do not send anything here.
+            // Log at TRACE level for debug; the enqueue site already
+            // LOGGER_INFO'd the full context.
+            LOGGER_TRACE("[broker] event=AttachReqZmqDeferred "
+                         "channel='{}' producer_uid='{}' (wait-path reply "
+                         "will be sent from drain/timeout paths)",
+                         resp.value("channel_name", ""),
+                         resp.value("producer_role_uid", ""));
+        }
+        else
+        {
+            const std::string ack =
+                (status == "success" || status == "denied" ||
+                 status == "timeout")
+                    ? "CONSUMER_ATTACH_ACK_ZMQ"
+                    : "ERROR";
+            send_reply(socket, identity, ack, resp);
+        }
     }
     else if (msg_type == "CHANNEL_AUTH_APPLIED_REQ")
     {
@@ -3226,13 +3348,25 @@ BrokerServiceImpl::handle_consumer_attach_req_shm(const nlohmann::json &req)
 //   - Phase 2.5: instance-epoch guard (stale-instance APPLIED_REQ silent drop)
 
 nlohmann::json BrokerServiceImpl::handle_consumer_attach_req_zmq(
-    const nlohmann::json &req)
+    const nlohmann::json &req,
+    zmq::socket_t        &socket,
+    const std::string    &router_identity)
 {
-    // HEP-CORE-0042 §5.4 handler flow — Phase 2.2 fast-path only.  Steps 1-4
-    // are implemented; step 5 wait-path (enqueue + NOTIFY + hold reply)
-    // ships in Phase 2.3.  A cache-behind consumer under the current build
-    // gets an immediate {status="denied", reason="producer_did_not_confirm_within_budget"}
-    // stand-in — the wait-path replaces this with proper hold + drain.
+    // HEP-CORE-0042 §5.4 handler flow — Phase 2.3a fast-path + wait-path
+    // enqueue.  Fast-path (steps 1-4) synchronously replies success/denied.
+    // Wait-path (step 5) enqueues into pending_attach_queue_ + fires NOTIFY
+    // + returns {status="pending"} as the sentinel the dispatcher special-
+    // cases to skip send_reply.
+    //
+    // Deferred branches (Phase 2.3b onward):
+    // - APPLIED_REQ drain (§5.4 step d): pops matching entries + sends the
+    //   deferred success replies from handle_channel_auth_applied_req.
+    // - Producer-disconnect drain (§5.4 producer-not-live): pops entries +
+    //   sends denied replies from _on_producer_dropped / _on_pending_timeout.
+    // - Channel-close drain (§5.4 channel_closing): pops entries + sends
+    //   denied replies from the three teardown paths.
+    // - Timeout sweep (§5.5 producer_apply_wait_ms, default 3000 ms):
+    //   pops expired entries + sends timeout replies from sweep_pending_timeouts.
     const std::string corr_id            = req.value("correlation_id", "");
     const std::string channel_name       = req.value("channel_name", "");
     const std::string consumer_role_uid  = req.value("consumer_role_uid", "");
@@ -3305,6 +3439,12 @@ nlohmann::json BrokerServiceImpl::handle_consumer_attach_req_zmq(
 
     if (confirmed >= access->channel_version)
     {
+        LOGGER_DEBUG(
+            "[broker] event=AttachReqZmqFastPath channel='{}' "
+            "producer_uid='{}' consumer_uid='{}' confirmed_version={} "
+            "channel_version={} (HEP-CORE-0042 §5.4 fast-path admit)",
+            channel_name, producer_role_uid, consumer_role_uid,
+            confirmed, access->channel_version);
         nlohmann::json resp;
         resp["status"]            = "success";
         resp["channel_name"]      = channel_name;
@@ -3313,12 +3453,61 @@ nlohmann::json BrokerServiceImpl::handle_consumer_attach_req_zmq(
         return resp;
     }
 
-    // Step 5 wait-path: not implemented in Phase 2.2.  Return a
-    // clearly-labeled degraded reply so a caller hitting this
-    // codepath under real load surfaces obviously in logs.  Consumer's
-    // §7.1 retry loop treats this as recoverable per P3.  Phase 2.3
-    // replaces this branch with pending_attach_queue + NOTIFY fire.
-    return make_denied("producer_did_not_confirm_within_budget");
+    // Step 5 wait-path (HEP-CORE-0042 §5.4 step 5, Phase 2.3a shipped).
+    //
+    // Enqueue this REQ into pending_attach_queue_[K][P] with
+    // target_version = channel_version[K] snapshotted at this moment.
+    // The drain condition on APPLIED_REQ arrival (Phase 2.3b) is
+    // confirmed_version[K][P] >= target_version.  Fire
+    // CHANNEL_AUTH_CHANGED_NOTIFY to fan out the "please pull the new
+    // allowlist" doorbell to every producer of K (§5.4 step 5b: always
+    // fire, no debounce).  Return the {status="pending"} sentinel so
+    // the dispatcher skips sending an immediate reply — the reply
+    // will be sent later by whichever drain path (APPLIED_REQ /
+    // producer-disconnect / channel-close / timeout) claims this
+    // entry.
+    //
+    // Enqueue captures router_identity + corr_id so the deferred
+    // reply can be addressed back to the originating consumer.  The
+    // producer-uid keyed inner map ensures FIFO ordering per (K, P)
+    // — the drain per §5.4 step d walks the deque in order.
+    PendingAttachEntry entry;
+    entry.router_identity   = router_identity;
+    entry.correlation_id    = corr_id;
+    entry.consumer_pubkey   = consumer_pubkey;
+    entry.consumer_role_uid = consumer_role_uid;
+    entry.target_version    = access->channel_version;
+    entry.enqueued_at       = std::chrono::steady_clock::now();
+    pending_attach_queue_[channel_name][producer_role_uid]
+        .push_back(std::move(entry));
+
+    LOGGER_INFO(
+        "[broker] event=AttachReqZmqEnqueued channel='{}' producer_uid='{}' "
+        "consumer_uid='{}' consumer_pubkey='{}' target_version={} "
+        "confirmed_version={} queue_depth={} (HEP-CORE-0042 §5.4 wait-path; "
+        "firing CHANNEL_AUTH_CHANGED_NOTIFY doorbell)",
+        channel_name, producer_role_uid, consumer_role_uid, consumer_pubkey,
+        access->channel_version, confirmed,
+        pending_attach_queue_[channel_name][producer_role_uid].size());
+
+    // Fan-out the doorbell to every producer of the channel.  Reuses
+    // the existing helper (also used by REG / DEREG allowlist mutations)
+    // to keep the wire shape consistent — see HEP-CORE-0036 §6.5 for the
+    // NOTIFY semantics.  Reason string "attach_wait_path" distinguishes
+    // this fire from REG / DEREG in producer-side logs + tests.
+    fire_channel_auth_changed_notify(socket, channel_name,
+                                     "attach_wait_path");
+
+    // Sentinel — dispatcher sees status="pending" and does NOT
+    // send_reply().  The producer-side APPLIED_REQ (or the timeout
+    // sweep) will drain this entry and send the reply with the
+    // captured router_identity + corr_id.
+    nlohmann::json resp;
+    resp["status"]            = "pending";
+    resp["channel_name"]      = channel_name;
+    resp["producer_role_uid"] = producer_role_uid;
+    if (!corr_id.empty()) resp["correlation_id"] = corr_id;
+    return resp;
 }
 
 nlohmann::json BrokerServiceImpl::handle_channel_auth_applied_req(
