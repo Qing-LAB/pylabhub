@@ -129,6 +129,8 @@ Broker tracks three counters:
 | §5.5.3 `PRODUCER_REG_ACK.instance_id` echo (broker → producer) | 3a.1 | ✅ shipped 2026-07-02 |
 | §5.5.4 `snapshot_version` echo on `PRODUCER_REG_ACK` + `GET_CHANNEL_AUTH_ACK` | 3a.3a | ✅ shipped 2026-07-02 |
 | §5.5.2 producer captures + emits `CHANNEL_AUTH_APPLIED_REQ` (initial REG + NOTIFY-triggered paths) | 3a.3b | ✅ shipped 2026-07-02 |
+| Phase 3a L3 close-out: error-path pin via real idle producer (timeout drain) | 3a.4 | ✅ shipped 2026-07-02 |
+| Phase 3a L4 close-out: happy-path + wider error scenarios via real cycle-driving producer | 3a follow-up | ⏳ deferred to L4 (see `docs/todo/TESTING_TODO.md`) |
 
 **Deferred-reply wire contract (Phase 2.3a).**  When the broker enters the wait-path (step 5), it does NOT send a reply immediately.  The consumer will receive its `CONSUMER_ATTACH_ACK_ZMQ` reply later, via one of four drain paths:
 - `CHANNEL_AUTH_APPLIED_REQ` from producer P advances `confirmed_version[K][P]` past the enqueued `target_version` → reply `{status="success"}`.

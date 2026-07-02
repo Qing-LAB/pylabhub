@@ -108,6 +108,51 @@ update the destination task's description, then delete the test.
 
 ## Current Focus — Open coverage gaps
 
+### HEP-CORE-0042 Phase 3a.4 — L4 end-to-end scenarios (2026-07-02) ⏳
+
+Phase 3a shipped the producer-side emission chain for the HEP-CORE-
+0042 ZMQ attach-coordination protocol.  L3 coverage is complete for:
+- Broker-side handler flow (8 scenarios in
+  `test_pattern4_attach_coordination.cpp`).
+- Producer-side initial-REG emission via real producer (Test A:
+  `Pattern4ConsumerLifecycleTest.IdleProducerYieldsTimeoutDrainToConsumer`).
+- Timeout drain via real producer (same Test A).
+
+**Gap:** happy-path with active-cycle producer + fast-path admit
+observation.  Belongs at L4 rather than L3 because:
+- The scenario needs a producer that actually iterates `run_data_loop`
+  (so `cycle_ops::invoke_and_commit` runs, which calls
+  `handle_channel_auth_notifies`, which drives the NOTIFY-triggered
+  APPLIED_REQ emission).
+- Every existing Pattern4 worker uses `install_heartbeat` + sleep;
+  none run a real data-loop.  Adding one worker per scenario is
+  linear cost.
+- L4 uses the real `plh_role` binary with a Lua script.  One test
+  infrastructure, many scenarios — happy path + kill-mid-flight +
+  allowlist revoke + multi-consumer + re-registration all belong
+  in the same L4 test bundle.
+
+**Scope for the L4 follow-up:**
+
+1. Happy path — real producer + real consumer, consumer attach
+   observes broker's `event=AttachReqZmqFastPath` after producer's
+   NOTIFY-triggered APPLIED_REQ.
+2. Real producer dies mid-flight — consumer's attach observes the
+   §5.4 producer-disconnect drain with `producer_not_live`.
+3. Real producer registered but its cycle is paused (e.g. a slow
+   Lua callback) — consumer observes the §5.4 timeout drain with
+   `producer_did_not_confirm_within_budget` (extends Test A's
+   coverage from a subprocess with no cycle to a subprocess with
+   a slow cycle).
+4. Allowlist revoke mid-attach — consumer's attach observes
+   `consumer_not_in_channel_allowlist` even though the consumer
+   had previously registered.
+
+Filed as follow-up to Phase 3a rather than a Phase 3a.4 Test B
+because the scope is naturally wider than "one more log-marker
+assertion" — the same real-role infrastructure that enables Test B
+also enables the other three scenarios above.
+
 ### HEP-CORE-0042 Phase 2.4b — post-review follow-up flake risks (2026-07-01) ⏳
 
 Filed as follow-ups from the xhigh review of `tests/test_layer3_pattern4/
