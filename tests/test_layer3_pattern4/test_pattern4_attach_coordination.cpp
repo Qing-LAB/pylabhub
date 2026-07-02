@@ -234,4 +234,229 @@ TEST_F(Pattern4AttachCoordinationTest, FastPathAdmit)
     ExpectWorkerOk(broker);
 }
 
+// ─── Denied: consumer pubkey not in channel allowlist (§5.4 step 2) ─────
+//
+// Setup:
+//   - producer P registers on channel K + heartbeats (channel exists).
+//   - consumer C's pubkey is NOT added to the allowlist (C never sends
+//     CONSUMER_REG_REQ).
+// Attach:
+//   - C sends CONSUMER_ATTACH_REQ_ZMQ with its own pubkey.
+//   - Broker: consumer_pubkey ∉ authorized_consumer_pubkeys →
+//     {status="denied", reason="consumer_not_in_channel_allowlist"}.
+
+TEST_F(Pattern4AttachCoordinationTest, DeniedConsumerNotInAllowlist)
+{
+    using namespace std::chrono;
+    using pylabhub::kLongTimeoutMs;
+    using pylabhub::kMidTimeoutMs;
+
+    const std::string producer_uid = "prod.p.uid00000001";
+    const std::string consumer_uid = "cons.c.uid00000002";
+    const std::string channel_name = "ch.attach.denied_allowlist";
+
+    const fs::path temp_dir = make_test_temp_dir("attach_denied_allowlist");
+    const auto setup = make_pattern4_setup({producer_uid, consumer_uid});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+    const int producer_data_port = pick_unused_port();
+
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_smoke.broker",
+                                             {temp_dir.string()});
+    expect_log(broker, "Pattern4Broker: bound endpoint",
+                std::chrono::milliseconds{kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    const auto &prod_kp = setup.curve.role(producer_uid);
+    const auto &cons_kp = setup.curve.role(consumer_uid);
+
+    BrokerWireClient::Config prod_cfg;
+    prod_cfg.broker_endpoint = setup.broker_endpoint;
+    prod_cfg.broker_pubkey   = setup.curve.hub.public_z85;
+    prod_cfg.client_pubkey   = prod_kp.public_z85;
+    prod_cfg.client_seckey   = prod_kp.secret_z85;
+    BrokerWireClient prod_client(ctx, prod_cfg);
+
+    BrokerWireClient::Config cons_cfg;
+    cons_cfg.broker_endpoint = setup.broker_endpoint;
+    cons_cfg.broker_pubkey   = setup.curve.hub.public_z85;
+    cons_cfg.client_pubkey   = cons_kp.public_z85;
+    cons_cfg.client_seckey   = cons_kp.secret_z85;
+    BrokerWireClient cons_client(ctx, cons_cfg);
+
+    // Producer REG + heartbeat — opens the channel.
+    {
+        pylabhub::hub::ProducerRegInputs in;
+        in.channel           = channel_name;
+        in.role_uid          = producer_uid;
+        in.role_name         = "p";
+        in.role_type         = "producer";
+        in.is_zmq_transport  = true;
+        in.zmq_node_endpoint = "tcp://127.0.0.1:" + std::to_string(producer_data_port);
+        in.zmq_pubkey        = prod_kp.public_z85;
+        auto payload = pylabhub::hub::build_producer_reg_payload(in);
+        auto reply = prod_client.request(
+            "REG_REQ", payload, "REG_ACK",
+            std::chrono::milliseconds{kLongTimeoutMs});
+        ASSERT_TRUE(reply.has_value());
+        ASSERT_EQ(reply->value("status", ""), "success") << reply->dump();
+    }
+    {
+        nlohmann::json hb;
+        hb["channel_name"] = channel_name;
+        hb["role_uid"]     = producer_uid;
+        hb["role_type"]    = "producer";
+        hb["producer_pid"] = 1;
+        prod_client.send("HEARTBEAT_REQ", hb);
+        std::this_thread::sleep_for(std::chrono::milliseconds{100});
+    }
+
+    // Consumer attaches WITHOUT registering — its pubkey is not in
+    // the channel's allowlist.
+    {
+        nlohmann::json attach;
+        attach["channel_name"]      = channel_name;
+        attach["consumer_role_uid"] = consumer_uid;
+        attach["consumer_pubkey"]   = cons_kp.public_z85;
+        attach["producer_role_uid"] = producer_uid;
+
+        auto reply = cons_client.request(
+            "CONSUMER_ATTACH_REQ_ZMQ", attach,
+            "CONSUMER_ATTACH_ACK_ZMQ",
+            std::chrono::milliseconds{kLongTimeoutMs});
+        ASSERT_TRUE(reply.has_value())
+            << "consumer ATTACH_REQ: no reply";
+        EXPECT_EQ(reply->value("status", ""), "denied") << reply->dump();
+        EXPECT_EQ(reply->value("reason", ""),
+                   "consumer_not_in_channel_allowlist")
+            << reply->dump();
+    }
+
+    broker.signal_quit();
+    ExpectWorkerOk(broker);
+}
+
+// ─── Denied: producer not live on the channel (§5.4 step 3) ────────────
+//
+// Setup:
+//   - REAL producer P registers on channel K + heartbeats + is caught
+//     up (so we have a valid channel with a valid allowlist).
+//   - consumer C REGs → its pubkey IS in the allowlist.
+// Attach:
+//   - C sends ATTACH_REQ referencing a DIFFERENT producer_role_uid that
+//     was never registered on K.
+//   - Broker: producer_role_uid ∉ ch->producers[] →
+//     {status="denied", reason="producer_not_live"}.
+//
+// The bogus uid uses the canonical `prod.<name>.<unique>` grammar so
+// the wire-format guard doesn't short-circuit — we want the §5.4 step 3
+// producer-live check to be the branch that runs.
+
+TEST_F(Pattern4AttachCoordinationTest, DeniedProducerNotLive)
+{
+    using namespace std::chrono;
+    using pylabhub::kLongTimeoutMs;
+    using pylabhub::kMidTimeoutMs;
+
+    const std::string producer_uid = "prod.p.uid00000001";
+    const std::string consumer_uid = "cons.c.uid00000002";
+    const std::string bogus_producer_uid = "prod.ghost.uid00000099";
+    const std::string channel_name = "ch.attach.denied_notlive";
+
+    const fs::path temp_dir = make_test_temp_dir("attach_denied_notlive");
+    const auto setup = make_pattern4_setup({producer_uid, consumer_uid});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+    const int producer_data_port = pick_unused_port();
+
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_smoke.broker",
+                                             {temp_dir.string()});
+    expect_log(broker, "Pattern4Broker: bound endpoint",
+                std::chrono::milliseconds{kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    const auto &prod_kp = setup.curve.role(producer_uid);
+    const auto &cons_kp = setup.curve.role(consumer_uid);
+
+    BrokerWireClient::Config prod_cfg;
+    prod_cfg.broker_endpoint = setup.broker_endpoint;
+    prod_cfg.broker_pubkey   = setup.curve.hub.public_z85;
+    prod_cfg.client_pubkey   = prod_kp.public_z85;
+    prod_cfg.client_seckey   = prod_kp.secret_z85;
+    BrokerWireClient prod_client(ctx, prod_cfg);
+
+    BrokerWireClient::Config cons_cfg;
+    cons_cfg.broker_endpoint = setup.broker_endpoint;
+    cons_cfg.broker_pubkey   = setup.curve.hub.public_z85;
+    cons_cfg.client_pubkey   = cons_kp.public_z85;
+    cons_cfg.client_seckey   = cons_kp.secret_z85;
+    BrokerWireClient cons_client(ctx, cons_cfg);
+
+    // Producer REG + heartbeat.
+    {
+        pylabhub::hub::ProducerRegInputs in;
+        in.channel           = channel_name;
+        in.role_uid          = producer_uid;
+        in.role_name         = "p";
+        in.role_type         = "producer";
+        in.is_zmq_transport  = true;
+        in.zmq_node_endpoint = "tcp://127.0.0.1:" + std::to_string(producer_data_port);
+        in.zmq_pubkey        = prod_kp.public_z85;
+        auto payload = pylabhub::hub::build_producer_reg_payload(in);
+        auto reply = prod_client.request(
+            "REG_REQ", payload, "REG_ACK",
+            std::chrono::milliseconds{kLongTimeoutMs});
+        ASSERT_TRUE(reply.has_value());
+        ASSERT_EQ(reply->value("status", ""), "success") << reply->dump();
+    }
+    {
+        nlohmann::json hb;
+        hb["channel_name"] = channel_name;
+        hb["role_uid"]     = producer_uid;
+        hb["role_type"]    = "producer";
+        hb["producer_pid"] = 1;
+        prod_client.send("HEARTBEAT_REQ", hb);
+        std::this_thread::sleep_for(std::chrono::milliseconds{100});
+    }
+
+    // Consumer REG — bumps channel_version, gets pubkey on allowlist.
+    {
+        pylabhub::hub::ConsumerRegInputs in;
+        in.channel    = channel_name;
+        in.role_uid   = consumer_uid;
+        in.role_name  = "c";
+        in.zmq_pubkey = cons_kp.public_z85;
+        auto payload = pylabhub::hub::build_consumer_reg_payload(in);
+        auto reply = cons_client.request(
+            "CONSUMER_REG_REQ", payload, "CONSUMER_REG_ACK",
+            std::chrono::milliseconds{kLongTimeoutMs});
+        ASSERT_TRUE(reply.has_value());
+        ASSERT_EQ(reply->value("status", ""), "success") << reply->dump();
+    }
+
+    // Consumer attaches to a BOGUS producer_role_uid on the same channel.
+    // The channel exists (producer P is registered) and the consumer is
+    // on the allowlist, so §5.4 step 2 (allowlist) passes, but step 3
+    // (producer-live) fails because bogus_producer_uid is not in
+    // ch->producers[].
+    {
+        nlohmann::json attach;
+        attach["channel_name"]      = channel_name;
+        attach["consumer_role_uid"] = consumer_uid;
+        attach["consumer_pubkey"]   = cons_kp.public_z85;
+        attach["producer_role_uid"] = bogus_producer_uid;
+
+        auto reply = cons_client.request(
+            "CONSUMER_ATTACH_REQ_ZMQ", attach,
+            "CONSUMER_ATTACH_ACK_ZMQ",
+            std::chrono::milliseconds{kLongTimeoutMs});
+        ASSERT_TRUE(reply.has_value())
+            << "consumer ATTACH_REQ: no reply";
+        EXPECT_EQ(reply->value("status", ""), "denied") << reply->dump();
+        EXPECT_EQ(reply->value("reason", ""), "producer_not_live")
+            << reply->dump();
+    }
+
+    broker.signal_quit();
+    ExpectWorkerOk(broker);
+}
+
 } // namespace
