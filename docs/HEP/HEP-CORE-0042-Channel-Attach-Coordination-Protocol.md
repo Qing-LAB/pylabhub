@@ -126,6 +126,7 @@ Broker tracks three counters:
 | §5.4 pending-entry timeout + §5.6 producer_apply_wait_ms sweep | 2.3c | ✅ shipped 2026-07-01 |
 | §5.4 stale-instance guard (APPLIED_REQ step a) | 2.2 | ✅ shipped 2026-07-01 |
 | §5.4 confirmed_version reset on re-registration / disconnect / kDead | 2.2 close-out | ✅ shipped 2026-07-01 |
+| §5.5.3 `PRODUCER_REG_ACK.instance_id` echo (broker → producer) | 3a.1 | ✅ shipped 2026-07-02 |
 
 **Deferred-reply wire contract (Phase 2.3a).**  When the broker enters the wait-path (step 5), it does NOT send a reply immediately.  The consumer will receive its `CONSUMER_ATTACH_ACK_ZMQ` reply later, via one of four drain paths:
 - `CHANNEL_AUTH_APPLIED_REQ` from producer P advances `confirmed_version[K][P]` past the enqueued `target_version` → reply `{status="success"}`.

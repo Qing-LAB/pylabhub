@@ -96,12 +96,20 @@ protected:
     /// to process the heartbeat before the caller proceeds — the
     /// broker's `channel_ready` gate is polled on the CONSUMER_REG
     /// path.
+    ///
+    /// Also writes the broker-assigned `instance_id` from REG_ACK
+    /// into `*out_instance_id` if the pointer is non-null.  This is
+    /// the HEP-CORE-0042 §5.5.3 echo field the producer will quote
+    /// on subsequent CHANNEL_AUTH_APPLIED_REQ.  Tests that only need
+    /// the REG side effect (channel opened, producer live) pass
+    /// nullptr and ignore.
     void producer_reg_and_heartbeat(
-        BrokerWireClient  &client,
-        const std::string &channel,
-        const std::string &uid,
-        const std::string &pubkey,
-        int                data_port)
+        BrokerWireClient   &client,
+        const std::string  &channel,
+        const std::string  &uid,
+        const std::string  &pubkey,
+        int                 data_port,
+        std::uint64_t      *out_instance_id = nullptr)
     {
         using pylabhub::kLongTimeoutMs;
 
@@ -120,6 +128,20 @@ protected:
         ASSERT_TRUE(reply.has_value()) << "producer REG_REQ: no reply";
         ASSERT_EQ(reply->value("status", ""), "success")
             << "producer REG_REQ failed: " << reply->dump();
+
+        // §5.5.3 requires REG_ACK echo `instance_id`.  We assert it's
+        // present here (not merely gate-on-caller-wants-it) so any
+        // regression that drops the field surfaces immediately in
+        // every test that uses the helper.
+        ASSERT_TRUE(reply->contains("instance_id"))
+            << "REG_ACK missing HEP-CORE-0042 §5.5.3 `instance_id` echo: "
+            << reply->dump();
+        const auto instance_id = reply->value("instance_id", std::uint64_t{0});
+        ASSERT_GE(instance_id, 1u)
+            << "instance_id must be >= 1 (§5.2 counter starts at 1 on "
+               "first REG): " << reply->dump();
+        if (out_instance_id != nullptr)
+            *out_instance_id = instance_id;
 
         nlohmann::json hb;
         hb["channel_name"] = channel;
@@ -228,28 +250,34 @@ TEST_F(Pattern4AttachCoordinationTest, FastPathAdmit)
     auto cons_client = make_wire_client(ctx, setup, cons_kp);
 
     // ── 4. Producer REG_REQ + HEARTBEAT_REQ ──
+    // Capture the broker-assigned `instance_id` from REG_ACK (§5.5.3
+    // echo).  On first REG for this uid the broker assigns 1; we
+    // don't hard-code that here — the whole point of the echo is
+    // that the producer quotes what the broker returned, not what
+    // it guessed.
+    std::uint64_t producer_instance = 0;
     ASSERT_NO_FATAL_FAILURE(producer_reg_and_heartbeat(
         prod_client, channel_name, producer_uid,
-        prod_kp.public_z85, producer_data_port));
+        prod_kp.public_z85, producer_data_port, &producer_instance));
 
     // ── 5. Consumer CONSUMER_REG_REQ → channel_version 0→1 ──
     ASSERT_NO_FATAL_FAILURE(consumer_reg(
         cons_client, channel_name, consumer_uid, cons_kp.public_z85));
 
-    // ── 6. Producer sends CHANNEL_AUTH_APPLIED_REQ(v=1, instance=1) ──
+    // ── 6. Producer sends CHANNEL_AUTH_APPLIED_REQ(v=1, instance=echoed) ──
     // Simulates the producer's cache having caught up to the new
     // allowlist version.  Broker advances confirmed_version[K][P] = 1.
-    //
-    // instance_id: broker assigns instance=1 on first REG (§5.2 instance
-    // monotonic starts at 1; §5.4 producer registration bumps).  Since
-    // REG_ACK doesn't yet echo instance (Phase 3a TODO), the test uses
-    // the known-first-registration value.
+    // The `instance_id` we send here is exactly what REG_ACK echoed —
+    // if the echo mechanism regressed, `producer_instance` would be
+    // 0 or wrong and the broker's stale-instance guard (§5.4 step a)
+    // would reject with STALE_INSTANCE instead of the ok reply this
+    // test expects.
     {
         nlohmann::json applied;
         applied["channel_name"]     = channel_name;
         applied["producer_role_uid"] = producer_uid;
         applied["applied_version"]  = 1u;
-        applied["instance_id"]      = 1u;
+        applied["instance_id"]      = producer_instance;
 
         auto reply = prod_client.request(
             "CHANNEL_AUTH_APPLIED_REQ", applied,
@@ -481,9 +509,10 @@ TEST_F(Pattern4AttachCoordinationTest, WaitPathEnqueueAndDrainOnAppliedReq)
     auto prod_client = make_wire_client(ctx, setup, prod_kp);
     auto cons_client = make_wire_client(ctx, setup, cons_kp);
 
+    std::uint64_t producer_instance = 0;
     ASSERT_NO_FATAL_FAILURE(producer_reg_and_heartbeat(
         prod_client, channel_name, producer_uid,
-        prod_kp.public_z85, producer_data_port));
+        prod_kp.public_z85, producer_data_port, &producer_instance));
     // Consumer REG bumps channel_version[K] 0→1 and fires NOTIFY at
     // producer (fan-out from CONSUMER_REG's allowlist mutation).
     ASSERT_NO_FATAL_FAILURE(consumer_reg(
@@ -540,7 +569,11 @@ TEST_F(Pattern4AttachCoordinationTest, WaitPathEnqueueAndDrainOnAppliedReq)
         applied["channel_name"]      = channel_name;
         applied["producer_role_uid"] = producer_uid;
         applied["applied_version"]   = 1u;
-        applied["instance_id"]       = 1u;
+        // §5.5.3 echo — quote what REG_ACK returned, not a hardcoded
+        // guess.  Pins the round-trip so an echo regression breaks
+        // the test with STALE_INSTANCE instead of masquerading as
+        // wait-path breakage.
+        applied["instance_id"]       = producer_instance;
 
         auto reply = prod_client.request(
             "CHANNEL_AUTH_APPLIED_REQ", applied,

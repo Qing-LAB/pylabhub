@@ -2368,6 +2368,16 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     }
     resp["initial_allowlist"] = std::move(allowlist);
 
+    // HEP-CORE-0042 §5.5.3: REG_ACK echoes the broker-assigned
+    // `instance_id` for this producer identity so the role can quote
+    // it on subsequent CHANNEL_AUTH_APPLIED_REQ.  The broker's
+    // stale-instance guard (§5.4 step a) uses the echoed value to
+    // reject APPLIED_REQ from a prior crashed instance that a fresh
+    // REG has since superseded.  `producer_instance()` returns the
+    // counter that `_on_producer_added` (invoked during the REG_REQ
+    // admission above) has already bumped.
+    resp["instance_id"] = hub_state_->producer_instance(role_uid);
+
     if (!corr_id.empty())
     {
         resp["correlation_id"] = corr_id;
