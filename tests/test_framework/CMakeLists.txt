@@ -16,6 +16,8 @@ add_library(pylabhub-test-framework STATIC
   binary_lifecycle.h
   broker_test_harness.cpp
   broker_test_harness.h
+  broker_wire_client.cpp
+  broker_wire_client.h
   curve_test_setup.h
   pattern4_helpers.cpp
   pattern4_helpers.h
