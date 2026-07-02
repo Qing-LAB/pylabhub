@@ -930,9 +930,32 @@ BrokerRequestComm::channel_auth_applied(const std::string &channel,
     opts["producer_role_uid"] = role_uid;
     opts["applied_version"]   = applied_version;
     opts["instance_id"]       = instance_id;
-    return pImpl->do_request("CHANNEL_AUTH_APPLIED_REQ",
-                              "CHANNEL_AUTH_APPLIED_ACK",
-                              opts, timeout_ms);
+    auto reply = pImpl->do_request("CHANNEL_AUTH_APPLIED_REQ",
+                                    "CHANNEL_AUTH_APPLIED_ACK",
+                                    opts, timeout_ms);
+    // HEP-CORE-0042 Phase 3 review-B fix (2026-07-02) — DEFENSIVE
+    // reply-content verification (see consumer_attach_zmq for full
+    // rationale).  If the broker's `CHANNEL_AUTH_APPLIED_ACK` echoes
+    // a channel_name that doesn't match our request, treat as timeout
+    // — likely a cross-wire from a concurrent APPLIED_REQ for a
+    // different channel that got serialized through the same BRC
+    // pending_requests slot.
+    if (reply.has_value())
+    {
+        const auto echoed_channel =
+            reply->value("channel_name", std::string{});
+        if (!echoed_channel.empty() && echoed_channel != channel)
+        {
+            LOGGER_WARN(
+                "BrokerRequestComm::channel_auth_applied('{}'): reply "
+                "echoed channel_name='{}' — cross-wire suspected; "
+                "treating as no-reply (broker will re-drive via next "
+                "NOTIFY per §5.5.2)",
+                channel, echoed_channel);
+            return std::nullopt;
+        }
+    }
+    return reply;
 }
 
 std::optional<nlohmann::json>
@@ -954,9 +977,41 @@ BrokerRequestComm::consumer_attach_zmq(const std::string &channel,
     opts["consumer_role_uid"] = consumer_role_uid;
     opts["consumer_pubkey"]   = consumer_pubkey;
     opts["producer_role_uid"] = producer_role_uid;
-    return pImpl->do_request("CONSUMER_ATTACH_REQ_ZMQ",
-                              "CONSUMER_ATTACH_ACK_ZMQ",
-                              opts, timeout_ms);
+    auto reply = pImpl->do_request("CONSUMER_ATTACH_REQ_ZMQ",
+                                    "CONSUMER_ATTACH_ACK_ZMQ",
+                                    opts, timeout_ms);
+    // HEP-CORE-0042 Phase 3 review-B fix (2026-07-02) — DEFENSIVE
+    // reply-content verification.  BRC's `pending_requests` map keys
+    // by msg_type only; under fan-in (§7.1 loop calls this method
+    // serially for N producers), if iter N times out client-side and
+    // a delayed CONSUMER_ATTACH_ACK_ZMQ for producer N arrives after
+    // iter N+1 has registered a new request under the same ack type,
+    // the delayed reply cross-wires into iter N+1's waiter.  The
+    // `abandoned` flag on RequestCmd protects a narrow window before
+    // the map overwrite; this check catches the post-overwrite case.
+    // If the reply's `producer_role_uid` echo doesn't match what we
+    // asked about, treat as timeout (log WARN + return nullopt) so
+    // the §7.1 loop synthesizes the standard timeout reason.  Proper
+    // BRC-level fix (per-request correlation_id keying) is tracked
+    // as follow-up.
+    if (reply.has_value())
+    {
+        const auto echoed_uid =
+            reply->value("producer_role_uid", std::string{});
+        if (echoed_uid != producer_role_uid)
+        {
+            LOGGER_WARN(
+                "BrokerRequestComm::consumer_attach_zmq('{}','{}'): reply "
+                "echoed producer_role_uid='{}' but expected '{}' — likely "
+                "fan-in cross-wire (BRC msg_type-only keying + slow "
+                "broker reply after client-side timeout).  Treating as "
+                "timeout; §7.1 loop will synthesize a §5.6 timeout "
+                "reason.",
+                channel, producer_role_uid, echoed_uid, producer_role_uid);
+            return std::nullopt;
+        }
+    }
+    return reply;
 }
 
 std::optional<nlohmann::json>

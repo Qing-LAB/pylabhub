@@ -37,6 +37,7 @@
 #include <string_view>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace pylabhub::scripting
 {
@@ -953,6 +954,23 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
             nlohmann::json admitted_producers = nlohmann::json::array();
             for (const auto &p : producers_arr)
             {
+                // HEP-CORE-0042 §7.1 fan-in policy: loop ALWAYS runs to
+                // completion.  Skip non-object entries (e.g., a broker
+                // regression that emits a string/number where a producer
+                // row belongs) without aborting — else `p.value(...)`
+                // would throw `nlohmann::json::type_error` and the outer
+                // catch would return false, dropping N-1 valid producers.
+                // Mirror of the pre-parse guard at ~line 732.
+                if (!p.is_object())
+                {
+                    LOGGER_WARN(
+                        "[{}] attach:malformed_entry channel='{}' — "
+                        "producers[] row is not a JSON object (HEP-0036 "
+                        "§5b contract); skipping this entry, continuing "
+                        "loop",
+                        pImpl->short_tag, channel_name);
+                    continue;
+                }
                 const auto producer_uid =
                     p.value("role_uid", std::string{});
                 if (producer_uid.empty())
@@ -1082,21 +1100,25 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
             // appears in `admitted_producers`.  Rebuilding here keeps
             // the cache commit below transport-agnostic (SHM branch does
             // no filtering, its script_view is already correct).
-            std::vector<AllowedPeer> filtered_script_view;
-            filtered_script_view.reserve(script_view.size());
+            //
+            // review-B optimization (2026-07-02): use unordered_set
+            // membership lookup — O(A + S) instead of the earlier
+            // O(A * S) nested walk.  Matters at channels with dozens
+            // of producers on a startup path.
+            std::unordered_set<std::string> admitted_uids;
+            admitted_uids.reserve(admitted_producers.size());
             for (const auto &p : admitted_producers)
             {
                 if (!p.is_object()) continue;
-                const auto admitted_uid =
-                    p.value("role_uid", std::string{});
-                for (const auto &sv_entry : script_view)
-                {
-                    if (sv_entry.role_uid == admitted_uid)
-                    {
-                        filtered_script_view.push_back(sv_entry);
-                        break;
-                    }
-                }
+                admitted_uids.insert(
+                    p.value("role_uid", std::string{}));
+            }
+            std::vector<AllowedPeer> filtered_script_view;
+            filtered_script_view.reserve(script_view.size());
+            for (const auto &sv_entry : script_view)
+            {
+                if (admitted_uids.count(sv_entry.role_uid))
+                    filtered_script_view.push_back(sv_entry);
             }
             script_view = std::move(filtered_script_view);
         }
@@ -1461,6 +1483,15 @@ bool RoleAPIBase::apply_producer_reg_ack(const nlohmann::json &ack)
     // field to be present (empty array on a fresh channel, never absent).
     // An absent field is a broker contract violation; log WARN, preserve
     // the prior cache snapshot, do not fire the callback.
+    // Deferred callback firing (2026-07-02 review-B fix): a slow
+    // `on_allowlist_changed(reason="initial_seed")` callback used to
+    // inflate the broker-observed producer_apply_wait_ms budget
+    // because it fired synchronously BEFORE the APPLIED_REQ RTT.
+    // We now seed the cache here, then emit APPLIED_REQ (fast broker
+    // round-trip), THEN fire the callback — the broker's confirmed_
+    // version[K][P] advances immediately regardless of script latency.
+    std::vector<AllowedPeer> pending_initial_seed_view;
+    bool have_initial_seed = false;
     {
         if (ack.contains("initial_allowlist") &&
             ack.at("initial_allowlist").is_array())
@@ -1480,30 +1511,8 @@ bool RoleAPIBase::apply_producer_reg_ack(const nlohmann::json &ack)
                 "[{}] event=InitialAllowlistSeeded channel='{}' size={} "
                 "(HEP-CORE-0036 §3.6 + §I11.1)",
                 pImpl->short_tag, channel_name, script_view.size());
-
-            // §3.6 sequence-diagram REG_ACK note: fire the script-side
-            // callback alongside the cache write.  Same callback contract
-            // as the NOTIFY path in handle_channel_auth_notifies — see
-            // §I11.1 invariant #2 (cache writes are transport-agnostic
-            // and the on_allowlist_changed callback fires on each write).
-            if (pImpl->engine)
-            {
-                try
-                {
-                    pImpl->engine->invoke_on_allowlist_changed(
-                        channel_name, script_view, "initial_seed");
-                }
-                catch (const std::exception &e)
-                {
-                    // Symmetric with handle_channel_auth_notifies:
-                    // callback exception does NOT roll back the cache
-                    // update (HEP-0036 §I11).
-                    LOGGER_ERROR(
-                        "[{}] on_allowlist_changed callback threw "
-                        "for channel '{}' (reason=initial_seed): {}",
-                        pImpl->short_tag, channel_name, e.what());
-                }
-            }
+            pending_initial_seed_view = std::move(script_view);
+            have_initial_seed = true;
         }
         else
         {
@@ -1598,6 +1607,30 @@ bool RoleAPIBase::apply_producer_reg_ack(const nlohmann::json &ack)
                 "[{}] event=ChannelAuthApplied channel='{}' "
                 "applied_version={} (HEP-CORE-0042 §5.5.2)",
                 pImpl->short_tag, channel_name, applied_version);
+        }
+    }
+
+    // Deferred callback fire (2026-07-02 review-B fix): APPLIED_REQ has
+    // now succeeded (or been correctly WARN-skipped for SHM or missing
+    // snapshot_version).  Fire the script-side on_allowlist_changed
+    // AFTER the broker RTT so a slow callback CANNOT inflate the
+    // broker-observed producer_apply_wait_ms and cause spurious wait-
+    // path timeouts for consumers waiting on this producer's confirm.
+    // §I11 cache-write invariant #2 (callback fires on each write) is
+    // preserved — only the ORDERING versus the broker RTT changes.
+    if (have_initial_seed && pImpl->engine)
+    {
+        try
+        {
+            pImpl->engine->invoke_on_allowlist_changed(
+                channel_name, pending_initial_seed_view, "initial_seed");
+        }
+        catch (const std::exception &e)
+        {
+            LOGGER_ERROR(
+                "[{}] on_allowlist_changed callback threw for channel "
+                "'{}' (reason=initial_seed): {}",
+                pImpl->short_tag, channel_name, e.what());
         }
     }
 
@@ -1913,12 +1946,38 @@ void RoleAPIBase::handle_channel_auth_notifies(
                     // a NOTIFY should never precede REG_ACK in practice,
                     // but a zero instance_id would defeat the
                     // stale-instance guard).
+                    //
+                    // 2026-07-02 review-B fix: sibling of the REG_ACK-
+                    // path guard.  A `GET_CHANNEL_AUTH_ACK` without
+                    // `snapshot_version` is a §5.5.4 broker contract
+                    // violation — WARN + skip emission (DO NOT silently
+                    // substitute applied_version=0; that would advance
+                    // confirmed_version[K][P] to max(current, 0) — a
+                    // no-op — and stall real wait-path drains).
                     const auto instance_id =
                         pImpl->producer_instance_id_.load(
                             std::memory_order_relaxed);
+                    const bool have_snapshot_version =
+                        reply->contains("snapshot_version") &&
+                        reply->at("snapshot_version").is_number_unsigned();
+                    if (!have_snapshot_version)
+                    {
+                        LOGGER_WARN(
+                            "[{}/{}] handle_channel_auth_notifies: "
+                            "GET_CHANNEL_AUTH_ACK for channel '{}' "
+                            "missing or non-numeric `snapshot_version` "
+                            "— HEP-CORE-0042 §5.5.4 broker contract "
+                            "violation.  Skipping APPLIED_REQ emission "
+                            "(next NOTIFY drives resync); DO NOT silently "
+                            "substitute applied_version=0.",
+                            pImpl->short_tag, pImpl->uid, channel);
+                    }
                     const auto snapshot_version =
-                        reply->value("snapshot_version", std::uint64_t{0});
-                    if (admission && instance_id > 0)
+                        have_snapshot_version
+                            ? reply->at("snapshot_version")
+                                  .get<std::uint64_t>()
+                            : std::uint64_t{0};
+                    if (admission && instance_id > 0 && have_snapshot_version)
                     {
                         auto applied = brc->channel_auth_applied(
                             channel, pImpl->uid, snapshot_version, instance_id);

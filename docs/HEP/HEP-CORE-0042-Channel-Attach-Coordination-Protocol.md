@@ -428,10 +428,20 @@ apply_consumer_reg_ack(reg_ack):
   # producers before the reduction, running ZAP handshakes against denied
   # peers.
   filtered_ack = reg_ack.with_producers(admitted_producers)   # deep-copy replacement
+  if NOT rx_queue.apply_master_approval(filtered_ack):
+    return false                                              # queue refused — do NOT publish cache
+
+  # ORDERING NOTE (2026-07-02 review-B fix): publish caches AFTER
+  # apply_master_approval succeeds.  Publishing before the queue commits
+  # would leave the script-visible cache showing admitted producers
+  # while the queue is still in Standby — a direct §I11 cache-mirrors-
+  # queue invariant violation (invariant #1).  Publish order matches
+  # the actual C++ implementation at role_api_base.cpp (apply_master_
+  # approval → producer_peer_cache.put → Registered→Authorized).
   publish_producer_peer_cache(admitted_producers)             # cache MIRRORS queue (§I11)
   publish_attach_results(attach_results)                      # feeds §8 accessors + on_channel_ready
-  return rx_queue.apply_master_approval(filtered_ack) AND (len(admitted_producers) > 0)
-  # per §5 fan-in partial-success policy — false ONLY if zero admitted OR queue-refuse.
+  return (len(admitted_producers) > 0)
+  # per §5 fan-in partial-success policy — false ONLY if zero admitted.
 ```
 
 Notes on the algorithm:
