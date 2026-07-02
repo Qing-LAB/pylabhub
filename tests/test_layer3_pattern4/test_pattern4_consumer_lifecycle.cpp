@@ -99,109 +99,38 @@ protected:
     std::vector<fs::path> paths_to_clean_;
 };
 
-// ─── Rung 4: CONSUMER_REG_REQ/ACK + rx queue Standby→Configured→Active ──────
-
-TEST_F(Pattern4ConsumerLifecycleTest, ConsumerRegistersAndQueueAdvances)
-{
-    using namespace std::chrono;
-    using pylabhub::kLongTimeoutMs;
-    using pylabhub::kMidTimeoutMs;
-
-    const std::string producer_uid = pylabhub::scripting::make_role_uid(
-        pylabhub::scripting::RoleUidTag::Producer, "pattern4cons", 1u);
-    const std::string consumer_uid = pylabhub::scripting::make_role_uid(
-        pylabhub::scripting::RoleUidTag::Consumer, "pattern4cons", 1u);
-
-    const fs::path temp_dir = make_test_temp_dir("consumer_registers");
-    // Both role uids share the keystore so the consumer subprocess's
-    // ks_fixture can seed its own kRoleIdentityName from the same
-    // setup bundle (CurveKeyStoreFixture::add_identity per uid).
-    auto setup            = make_pattern4_setup({producer_uid, consumer_uid});
-    setup.shared_log_path = (temp_dir / "shared.log").string();
-    write_pattern4_setup(setup, temp_dir / "setup.json");
-
-    const fs::path shared_log = setup.shared_log_path;
-
-    // ── 1. Broker subprocess (held via quit-pipe) ──
-    auto broker = SpawnWorkerWithQuitSignal(
-        "pattern4_consumer_lifecycle.broker", {temp_dir.string()});
-    expect_log_sequence(
-        shared_log,
-        {"Pattern4Broker: bound endpoint='"},
-        milliseconds{kMidTimeoutMs});
-
-    // ── 2. Producer subprocess (held via quit-pipe; sends heartbeat) ──
-    //
-    // Waiting for the producer's "first heartbeat received" broker-side
-    // marker BEFORE spawning the consumer eliminates the consumer's
-    // retry loop on `awaiting_first_heartbeat` — keeps the test's
-    // marker sequence deterministic.
-    auto producer = SpawnWorkerWithQuitSignal(
-        "pattern4_consumer_lifecycle.producer_role",
-        {temp_dir.string()});
-    expect_log_sequence(
-        shared_log,
-        {
-            "event=PresenceStateTransition channel='data.test' "
-            "role_type=producer from=RegRequestPending to=Registered",
-            "Broker: first heartbeat received from role='" + producer_uid + "'",
-        },
-        milliseconds{kLongTimeoutMs});
-
-    // ── 3. Consumer subprocess (exits after register_consumer +
-    //      apply_consumer_reg_ack drives the rx queue Active) ──
-    auto consumer = SpawnWorker(
-        "pattern4_consumer_lifecycle.consumer_role",
-        {temp_dir.string()});
-
-    // ── 4. Pin the 7-marker rung 4 contract sequence ──
-    //
-    // All markers are one-shot INFO emitted from production code
-    // (role_api_base.cpp + broker_service.cpp + hub_zmq_queue.cpp).
-    // Substring matches tolerate stable evolution of intra-line
-    // payloads (e.g. producers=[...] content) while pinning the
-    // identifying anchors.
-    // Chronological order (forward-only search):
-    //   1. consumer FSM Unregistered->RegRequestPending
-    //      (RoleAPIBase::register_consumer entry — role_api_base.cpp:1056)
-    //   2. broker CONSUMER_REG_REQ accepted
-    //   3. broker CONSUMER_REG_ACK sending
-    //   4. consumer FSM RegRequestPending->Registered
-    //      (RoleAPIBase::register_consumer exit — role_api_base.cpp:1127,
-    //      BEFORE the worker calls apply_consumer_reg_ack)
-    //   5. consumer-side apply_consumer_reg_ack head log
-    //      (CONSUMER_REG_ACK received — role_api_base.cpp:497)
-    //   6. queue PULL Standby->Configured (inside apply_master_approval)
-    //   7. queue PULL Configured->Active
-    expect_log_sequence(
-        shared_log,
-        {
-            "event=PresenceStateTransition channel='data.test' "
-            "role_type=consumer from=Unregistered to=RegRequestPending "
-            "trigger=CONSUMER_REG_REQ_sending",
-            fmt::format("event=ConsumerRegReqAccepted role='{}' "
-                        "channel='data.test' consumer_pubkey='",
-                        consumer_uid),
-            "event=ConsumerRegAckSending channel='data.test' producers=",
-            "event=PresenceStateTransition channel='data.test' "
-            "role_type=consumer from=RegRequestPending to=Registered",
-            "event=ConsumerRegAckReceived channel='data.test' status=success",
-            "event=QueueStateTransition side=PULL from=Standby to=Configured",
-            "event=QueueStateTransition side=PULL from=Configured to=Active",
-        },
-        milliseconds{kLongTimeoutMs});
-
-    // ── 5. Termination: consumer exits on its own; producer + broker via pipe ──
-    consumer.wait_for_exit();
-    producer.signal_quit();
-    producer.wait_for_exit();
-    broker.signal_quit();
-    broker.wait_for_exit();
-
-    ExpectWorkerOk(broker);
-    ExpectWorkerOk(producer);
-    ExpectWorkerOk(consumer);
-}
+// ─── Rung 4 happy-path RETIRED 2026-07-02 (Phase 3b.2) ──────────────
+//
+// The former `ConsumerRegistersAndQueueAdvances` pinned the 7-marker
+// sequence for "consumer REGs against an idle producer → rx queue
+// PULL Configured → Active".  That contract held ONLY under the pre-
+// Phase-3b consumer flow, where `apply_consumer_reg_ack` handed the
+// broker's ACK directly to `rx_queue->apply_master_approval` without
+// coordinating with the producer.
+//
+// Phase 3b.2 (commit this file) makes `apply_consumer_reg_ack` issue
+// HEP-CORE-0042 §7.1 `CONSUMER_ATTACH_REQ_ZMQ` for each declared
+// producer BEFORE the queue starts.  Against the idle
+// `pattern4_consumer_lifecycle.producer_role` worker (which never
+// runs a data-loop cycle, so it never processes NOTIFY and never
+// emits CHANNEL_AUTH_APPLIED_REQ), the broker's timeout drain (§5.4
+// wait-path + §5.6 `producer_apply_wait_ms`) is the CORRECT protocol
+// outcome — the queue must stay in Standby and the consumer's
+// `apply_consumer_reg_ack` must return false.  A "success" outcome
+// under those inputs would violate HEP-CORE-0042 §4 P4 (security-
+// correctness invariant: the consumer only dials producers the broker
+// has confirmed have the consumer's pubkey in their cache).
+//
+// Happy-path coverage moved to L4 (`test_plh_hub_role_zmq_e2e.cpp`)
+// where the real `plh_role` binary + Lua script produce a cycling
+// producer that DOES process NOTIFY and DOES emit APPLIED_REQ — the
+// end-to-end scenario the retired L3 test approximated.  Error-path
+// coverage stays at L3 via `IdleProducerYieldsTimeoutDrainToConsumer`
+// (Phase 3a.4 Test A, below).
+//
+// See `docs/HEP/HEP-CORE-0042-Channel-Attach-Coordination-Protocol.md`
+// §7.1 (consumer flow) + `docs/todo/TESTING_TODO.md` (Phase 3a L4
+// follow-up section) for the migration record.
 
 // ─── Error-path: idle real producer → broker timeout drain ────────────
 //

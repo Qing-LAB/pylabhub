@@ -878,24 +878,194 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
         }
         else
         {
-            // ZMQ-PULL path — drive Standby → Active per HEP-CORE-0036
-            // §6.7 Option B via the queue's `apply_master_approval`
-            // (the single mutator that applies the broker's reply for
-            // PULL queues: extracts ack["producers"], promotes peer[0]
-            // into transport-artifact fields, and calls start()
-            // internally).
+            // ZMQ-PULL path — HEP-CORE-0042 §7.1 pre-attach coordination
+            // BEFORE Standby → Active.  Per the §7.1 "Placement decision"
+            // (Option A), the consumer_attach_zmq loop runs FIRST and
+            // filters `ack.producers[]` down to the admitted subset;
+            // only then does `apply_master_approval` see the filtered
+            // ACK.  Rationale (see §7.1):
+            //   1. Consumer never dials denied producers — no ZAP
+            //      handshake ever runs against a broker-rejected peer.
+            //   2. `apply_master_approval` sees truth-of-record — the
+            //      bytes it processes MATCH the bytes the queue-level
+            //      tests observe (HEP-CORE-0036 §6.7 single-mutator
+            //      invariant).
+            //   3. Failure mode is a no-op, not a rollback — zero
+            //      admitted → filtered ACK carries `producers=[]` →
+            //      queue stays in Standby → this function returns false.
             //
-            // B-5 (#290, 2026-06-26): the pre-B-4 empty-data_transport
-            // fall-through here has been deleted — the discriminator
-            // hard-errors above on missing/unknown `data_transport`,
-            // so reaching this branch implies `data_transport=="zmq"`
-            // by construction.
-            if (!pImpl->rx_queue->apply_master_approval(ack))
+            // §7.1 partial-success policy: the loop runs to completion.
+            // Loop-level failure returns false ONLY when ZERO producers
+            // were admitted.  Failed producers are excluded from the
+            // dial set; no automatic retry (retry happens on next
+            // consumer restart per §7.1 P0/P3 principles).
+
+            // Consumer's pubkey — from KeyStore.  Symmetric with the
+            // SHM `apply_consumer_reg_ack_shm_` path (line ~1186);
+            // the ACK does NOT carry the consumer's own pubkey (the
+            // broker knows it from CONSUMER_REG_REQ), so we source
+            // it from the trusted identity store.
+            namespace sec = pylabhub::utils::security;
+            std::string consumer_pubkey_z85;
+            try
             {
-                LOGGER_ERROR("[{}] apply_consumer_reg_ack: "
-                             "apply_master_approval refused (HEP-CORE-0036 "
-                             "§6.7 'fully refused' — malformed broker "
-                             "delivery)", pImpl->short_tag);
+                consumer_pubkey_z85 = std::string{
+                    sec::key_store().pubkey(sec::kRoleIdentityName)};
+            }
+            catch (const std::exception &e)
+            {
+                LOGGER_ERROR(
+                    "[{}] apply_consumer_reg_ack: ZMQ channel '{}' — "
+                    "KeyStore::pubkey('{}') threw: {} (consumer cannot "
+                    "issue §7.1 pre-attach REQs)",
+                    pImpl->short_tag, channel_name,
+                    sec::kRoleIdentityName, e.what());
+                return false;
+            }
+
+            auto *brc = pImpl->resolve_bc_for_channel(channel_name);
+            if (!brc)
+            {
+                LOGGER_ERROR(
+                    "[{}] apply_consumer_reg_ack: ZMQ channel '{}' — "
+                    "no BRC resolved; cannot issue §7.1 pre-attach REQs",
+                    pImpl->short_tag, channel_name);
+                return false;
+            }
+
+            // Extract producers[] from ACK.  B-5 upstream guarantees
+            // this field is present + array for ZMQ; check anyway to
+            // surface a broker regression cleanly.
+            if (!ack.contains("producers") || !ack["producers"].is_array())
+            {
+                LOGGER_ERROR(
+                    "[{}] apply_consumer_reg_ack: ZMQ ACK for channel "
+                    "'{}' missing/malformed `producers` field — HEP-"
+                    "CORE-0036 §5b B-5 broker contract violation.",
+                    pImpl->short_tag, channel_name);
+                return false;
+            }
+            const auto &producers_arr = ack["producers"];
+            LOGGER_INFO(
+                "[{}] attach:begin channel={} producers={}",
+                pImpl->short_tag, channel_name, producers_arr.size());
+
+            nlohmann::json admitted_producers = nlohmann::json::array();
+            for (const auto &p : producers_arr)
+            {
+                const auto producer_uid =
+                    p.value("role_uid", std::string{});
+                if (producer_uid.empty())
+                {
+                    // Malformed entry (missing role_uid).  HEP-0036
+                    // §5b requires role_uid in every producers[] row.
+                    // Treat as broker contract violation.
+                    LOGGER_ERROR(
+                        "[{}] apply_consumer_reg_ack: producers[] entry "
+                        "missing `role_uid` (channel '{}')",
+                        pImpl->short_tag, channel_name);
+                    return false;
+                }
+
+                auto reply = brc->consumer_attach_zmq(
+                    channel_name, pImpl->uid, consumer_pubkey_z85,
+                    producer_uid);
+
+                // §7.1 null-synthesis: on client-side BRC failure /
+                // timeout, synthesize the SAME §5.6 reason string
+                // used for broker-observed timeouts — the two failure
+                // modes are indistinguishable from the script's
+                // perspective, and the reason enum is closed to §5.6
+                // taxonomy per §8.
+                std::string status;
+                std::string reason;
+                if (!reply.has_value())
+                {
+                    status = "timeout";
+                    reason = "producer_did_not_confirm_within_budget";
+                }
+                else
+                {
+                    status = reply->value("status", std::string{});
+                    reason = reply->value("reason", std::string{});
+                }
+
+                if (status == "success")
+                {
+                    admitted_producers.push_back(p);
+                    LOGGER_INFO(
+                        "[{}] attach:success channel={} producer={}",
+                        pImpl->short_tag, channel_name, producer_uid);
+                }
+                else if (status == "denied")
+                {
+                    LOGGER_WARN(
+                        "[{}] attach:denied channel={} producer={} "
+                        "reason={}",
+                        pImpl->short_tag, channel_name, producer_uid,
+                        reason);
+                }
+                else if (status == "timeout")
+                {
+                    LOGGER_WARN(
+                        "[{}] attach:timeout channel={} producer={} "
+                        "reason={}",
+                        pImpl->short_tag, channel_name, producer_uid,
+                        reason);
+                }
+                else
+                {
+                    // Unknown status — broker regression.  Log WARN
+                    // (not ERROR — the loop continues per §7.1) but
+                    // exclude from admitted since we can't reason
+                    // about the outcome.
+                    LOGGER_WARN(
+                        "[{}] attach:unknown_status channel={} producer={}"
+                        " status='{}' reason='{}' (broker regression?)",
+                        pImpl->short_tag, channel_name, producer_uid,
+                        status, reason);
+                }
+            }
+
+            LOGGER_INFO(
+                "[{}] attach:complete channel={} admitted={}/{}",
+                pImpl->short_tag, channel_name,
+                admitted_producers.size(), producers_arr.size());
+
+            // §7.1 partial-success policy — zero admitted → return
+            // false.  The filtered ACK below would carry
+            // `producers=[]` which `apply_master_approval` treats as
+            // "no peer-set change" (queue-side no-op for empty peers
+            // — see HEP-CORE-0036 §I11 + hub_zmq_queue.cpp:945).
+            // Returning false HERE surfaces the failure to the role
+            // host at startup instead of leaving the queue in Standby
+            // with no diagnostic.
+            if (admitted_producers.empty())
+            {
+                LOGGER_WARN(
+                    "[{}] apply_consumer_reg_ack: ZERO producers admitted"
+                    " for channel '{}' — queue stays in Standby "
+                    "(HEP-CORE-0042 §7.1 partial-success policy: "
+                    "return false)",
+                    pImpl->short_tag, channel_name);
+                return false;
+            }
+
+            // Feed the queue the FILTERED ACK (Option A per §7.1
+            // Placement decision): only admitted producers reach the
+            // Standby → Active transition.
+            nlohmann::json filtered_ack = ack;
+            filtered_ack["producers"] = std::move(admitted_producers);
+
+            if (!pImpl->rx_queue->apply_master_approval(filtered_ack))
+            {
+                LOGGER_ERROR(
+                    "[{}] apply_consumer_reg_ack: apply_master_approval "
+                    "refused post-filter (HEP-CORE-0036 §6.7 'fully "
+                    "refused' — malformed broker delivery or the "
+                    "filtered ACK produced by §7.1 loop is queue-"
+                    "unacceptable)",
+                    pImpl->short_tag);
                 return false;
             }
         }

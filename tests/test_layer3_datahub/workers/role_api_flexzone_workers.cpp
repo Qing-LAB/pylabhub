@@ -567,15 +567,18 @@ int zmq_rx_null()
                 /*pubkey_z85=*/curve.role("prod.zmq-fz.rx").public_z85});
 
             ASSERT_TRUE(api->build_rx_queue(rx_opts));
-            // HEP-CORE-0036 §5b B-5 (#290): `channel_name` +
-            // `data_transport` are now mandatory in CONSUMER_REG_ACK.
-            // `producers` is omitted — ZmqQueue::apply_master_approval
-            // tolerates absence (no-op-returning-true), matching the
-            // pre-B-5 behavior this test relied on.  The flexzone
-            // assertions below depend on `build_rx_queue` only.
-            ASSERT_TRUE(api->apply_consumer_reg_ack(nlohmann::json{
-                {"channel_name", "test.fz.zmq.rx"},
-                {"data_transport", "zmq"}}));
+            // HEP-CORE-0042 Phase 3b.2 (2026-07-02) —
+            // `apply_consumer_reg_ack` now issues §7.1
+            // `CONSUMER_ATTACH_REQ_ZMQ` per declared producer
+            // BEFORE queue Standby → Active.  That requires a live
+            // BRC + a real broker to service the pre-attach REQs.
+            // This isolation worker has neither (no `set_handler`,
+            // no broker subprocess), so the call would fail on the
+            // BRC lookup and return false.  The flexzone assertions
+            // below depend on `build_rx_queue` output only — no
+            // apply_consumer_reg_ack needed to exercise them.
+            // Pre-3b.2 the call was a defensive no-op; now the test
+            // is scoped precisely to the flexzone check.
 
             EXPECT_EQ(api->flexzone(ChannelSide::Rx), nullptr);
             EXPECT_EQ(api->flexzone_size(ChannelSide::Rx), 0u);

@@ -421,159 +421,6 @@ int pattern4_consumer_lifecycle_producer_role(const char *temp_dir_arg)
         pylabhub::hub::GetZMQContextModule());
 }
 
-// ─── pattern4_consumer_lifecycle.consumer_role ──────────────────────────────
-
-int pattern4_consumer_lifecycle_consumer_role(const char *temp_dir_arg)
-{
-    return pylabhub::tests::helper::run_gtest_worker(
-        [&]() {
-            const fs::path temp_dir = temp_dir_arg;
-            const auto     setup    = read_pattern4_setup(temp_dir / "setup.json");
-            const std::string role_uid = pylabhub::scripting::make_role_uid(
-                pylabhub::scripting::RoleUidTag::Consumer,
-                "pattern4cons", 1u);
-            const std::string channel = "data.test";
-
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture(
-                "pattern4", "consumer_lifecycle.consumer_role", setup.curve);
-            pylabhub::tests::CurveKeyStoreFixture::add_identity(
-                pylabhub::utils::security::kRoleIdentityName,
-                setup.curve.role_keys.at(role_uid));
-
-            maybe_redirect_to_shared_log(setup);
-
-            pylabhub::scripting::RoleHostCore core;
-            core.set_running(true);
-            pylabhub::scripting::RoleAPIBase api(core, "cons", role_uid);
-            api.set_name("pattern4_consumer_lifecycle_consumer");
-            api.set_channel(channel);
-
-            pylabhub::config::HubRefConfig hub_cfg;
-            hub_cfg.broker        = setup.broker_endpoint;
-            hub_cfg.broker_pubkey = setup.curve.hub.public_z85;
-
-            std::vector<pylabhub::scripting::Presence> presences;
-            {
-                pylabhub::scripting::Presence p;
-                p.hub       = hub_cfg;
-                p.channel   = channel;
-                p.role_kind = pylabhub::scripting::RoleKind::Consumer;
-                presences.push_back(std::move(p));
-            }
-            auto handler =
-                std::make_unique<pylabhub::scripting::RoleHandler>(
-                    std::move(presences));
-
-            ASSERT_TRUE(api.start_handler_threads(std::move(handler)));
-            ASSERT_NE(api.handler(), nullptr);
-
-            // Build the rx queue in Standby BEFORE register_consumer.
-            // Production replicates this via RoleHostFrame::setup_
-            // infrastructure_ → build_rx_queue with default-empty
-            // producer_peers (HEP-CORE-0036 §6.7).  Without an rx
-            // queue, `apply_consumer_reg_ack` would refuse with
-            // "rx_queue not wired" and the FSM transitions the test
-            // pins would never fire.
-            //
-            // Empty shm_name selects the ZMQ branch in build_rx_queue
-            // (role_api_base.cpp).  No producer_peers → ZmqQueue lands
-            // in Standby; broker's CONSUMER_REG_ACK.producers[]
-            // populates them via apply_consumer_reg_ack below.
-            //
-            // slot_spec MUST be non-empty: `pull_from`'s factory-time
-            // schema validator (hub_zmq_queue.cpp ~line 479) rejects
-            // an empty fields list with "schema must not be empty".
-            // The consumer's slot_spec is consumer-LOCAL config (not
-            // delivered by the ACK — the ACK delivers producer_peers
-            // only); production gets it from the consumer's role
-            // config.  A minimal single-uint32 schema is enough for
-            // this rung — the queue never actually carries data
-            // because the test exits after apply_consumer_reg_ack
-            // drives Standby → Configured → Active.
-            // ── Step 1: build_rx_queue in Standby (mirror
-            //    RoleHostFrame::setup_infrastructure_ §4 — rx queue built
-            //    BEFORE registration; the broker's CONSUMER_REG_ACK
-            //    populates producer_peers later via apply_master_approval,
-            //    per HEP-CORE-0036 §6.7).  slot_spec must match the
-            //    producer's (broker enforces schema-hash consistency).
-            hub::RxQueueOptions rx_opts;
-            rx_opts.data_transport      = "zmq";
-            rx_opts.slot_spec.has_schema = true;
-            rx_opts.slot_spec.fields.push_back(
-                pylabhub::hub::FieldDef{"value", "uint32", 1u, 0u});
-            ASSERT_TRUE(api.build_rx_queue(rx_opts))
-                << "Pattern4Role[consumer]: build_rx_queue must succeed in "
-                   "Standby (empty producer_peers, ZMQ transport)";
-
-            // ── Step 2: build CONSUMER_REG_REQ via the production builder.
-            //    Mirrors consumer_role_host.cpp:302-321 — `ConsumerRegInputs`
-            //    struct fed to `hub::build_consumer_reg_payload`, then
-            //    `apply_consumer_schema_fields` layers the schema info.
-            //    Identity pubkey read from KeyStore via the production
-            //    accessor (HEP-CORE-0040 §172).  Hand-rolling the JSON
-            //    here would silently mask any future change to the
-            //    production payload shape.
-            namespace sec = pylabhub::utils::security;
-            pylabhub::hub::ConsumerRegInputs reg_in;
-            reg_in.channel    = channel;
-            reg_in.role_uid   = role_uid;
-            reg_in.role_name  = "pattern4_consumer_lifecycle_consumer";
-            reg_in.zmq_pubkey = std::string(
-                sec::key_store().pubkey(sec::kRoleIdentityName));
-            auto reg_opts =
-                pylabhub::hub::build_consumer_reg_payload(reg_in);
-
-            // ── Step 3: schema fields layered on top (HEP-CORE-0034
-            //    §10.3).  Production passes the consumer's slot_schema_json
-            //    when present; the test uses anonymous mode (empty json)
-            //    matching the producer's choice.
-            const pylabhub::hub::SchemaSpec empty_fz_spec{};
-            const auto wire_schema = pylabhub::hub::make_wire_schema_fields(
-                nlohmann::json{},               // slot_schema_json (anonymous mode)
-                rx_opts.slot_spec,
-                empty_fz_spec);
-            pylabhub::hub::apply_consumer_schema_fields(reg_opts, wire_schema);
-
-            // ── Step 4: register_consumer → apply_consumer_reg_ack
-            //    (HEP-CORE-0036 §3.5.5 S2/S3).  register_consumer
-            //    internally retries CHANNEL_NOT_READY/awaiting_first_heartbeat
-            //    until the producer's first heartbeat lands — kLongTimeoutMs
-            //    covers the producer-startup + first-heartbeat budget on
-            //    a busy -j 2 CI box.
-            auto reg_resp = api.register_consumer(
-                reg_opts, pylabhub::kLongTimeoutMs);
-            ASSERT_TRUE(reg_resp.has_value())
-                << "Pattern4Role[consumer]: CONSUMER_REG_REQ must reach "
-                   "broker + return ACK";
-            ASSERT_EQ(reg_resp->value("status", std::string{}), "success")
-                << "Pattern4Role[consumer]: CONSUMER_REG_ACK status must be "
-                   "success — got error_code='"
-                << reg_resp->value("error_code", std::string{}) << "'";
-
-            // Drive Standby → Configured → Active on the rx queue
-            // per HEP-CORE-0036 §6.7.  apply_consumer_reg_ack emits
-            // the "CONSUMER_REG_ACK received" marker (head of fn)
-            // and the queue's "Standby->Configured" + "Configured->
-            // Active" markers (start() success path) the parent pins.
-            ASSERT_TRUE(api.apply_consumer_reg_ack(*reg_resp))
-                << "Pattern4Role[consumer]: apply_consumer_reg_ack must "
-                   "drive rx queue to Active";
-
-            // Hold briefly so all markers land on the shared log
-            // before LifecycleGuard finalize starts tearing down
-            // (same 200 ms used in rung 2 for the same reason).
-            std::this_thread::sleep_for(std::chrono::milliseconds{200});
-
-            api.stop_handler_threads();
-            LOGGER_INFO("Pattern4Role[{}]: exiting cleanly", role_uid);
-        },
-        "pattern4_consumer_lifecycle.consumer_role",
-        pylabhub::utils::Logger::GetLifecycleModule(),
-        pylabhub::utils::FileLock::GetLifecycleModule(),
-        pylabhub::utils::JsonConfig::GetLifecycleModule(),
-        pylabhub::hub::GetZMQContextModule());
-}
-
 // ─── Dispatcher registration ────────────────────────────────────────────────
 
 int dispatch_pattern4_consumer_lifecycle(int argc, char **argv)
@@ -599,8 +446,11 @@ int dispatch_pattern4_consumer_lifecycle(int argc, char **argv)
         return pattern4_consumer_lifecycle_broker(temp_dir);
     if (scenario == "producer_role")
         return pattern4_consumer_lifecycle_producer_role(temp_dir);
-    if (scenario == "consumer_role")
-        return pattern4_consumer_lifecycle_consumer_role(temp_dir);
+    // NOTE: `consumer_role` scenario retired 2026-07-02 (Phase 3b.2)
+    // alongside the L3 test that dispatched it — see test_pattern4_
+    // consumer_lifecycle.cpp head-of-file retirement block for the
+    // migration record.  L4 (`test_plh_hub_role_zmq_e2e.cpp`) owns
+    // the happy-path scenario the retired L3 test approximated.
 
     std::fprintf(stderr,
                  "pattern4_consumer_lifecycle: unknown scenario '%s'\n",
