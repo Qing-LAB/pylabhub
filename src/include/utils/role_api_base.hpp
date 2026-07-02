@@ -317,6 +317,24 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     /// must treat any false as a startup-failed condition.
     [[nodiscard]] bool apply_producer_reg_ack(const nlohmann::json &ack);
 
+    /// HEP-CORE-0042 §5.5.3 — most-recent broker-echoed `instance_id`
+    /// from PRODUCER_REG_ACK.  Zero means "no REG_ACK observed yet"
+    /// (pre-registration or validate-only startup).  A nonzero value
+    /// is guaranteed after any successful `apply_producer_reg_ack`
+    /// (that function hard-errors on absent/zero per §5.2 "counter
+    /// starts at 1").  Consumers of this value:
+    ///   - Phase 3a.3 CHANNEL_AUTH_APPLIED_REQ emission — echoes
+    ///     this value in the wire message so the broker's stale-
+    ///     instance guard (§5.4 step a) can accept or reject.
+    ///   - Observability / L3 tests — verifies REG_ACK capture without
+    ///     needing to reach into pImpl internals.
+    /// Overwritten on any subsequent REG_ACK — the field reflects
+    /// LAST observed instance, not the FIRST or a channel-specific
+    /// one.  Callers reading this concurrently with a live REG_ACK
+    /// see either the pre- or post-value; no torn read (atomic
+    /// uint64 with relaxed ordering).
+    [[nodiscard]] std::uint64_t producer_instance_id() const noexcept;
+
     /// Reset metrics counters on the Tx/Rx queues. No-op if not wired.
     void reset_tx_queue_metrics();
     void reset_rx_queue_metrics();

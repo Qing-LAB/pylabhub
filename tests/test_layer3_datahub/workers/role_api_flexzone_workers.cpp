@@ -488,7 +488,11 @@ int zmq_tx_null()
             // on the PUSH/bind side, which is what `queue_mechanism`
             // below requires to observe Mechanism::Curve.
             ASSERT_TRUE(api->apply_producer_reg_ack(nlohmann::json{
-                {"channel_name", "test.fz.zmq.tx"}}));
+                {"channel_name", "test.fz.zmq.tx"},
+                // HEP-CORE-0042 §5.5.3 — apply_producer_reg_ack
+                // hard-errors on absent/zero `instance_id`.  Broker
+                // assigns starting at 1 (§5.2 monotonic).
+                {"instance_id", 1u}}));
 
             EXPECT_EQ(api->flexzone(ChannelSide::Tx), nullptr);
             EXPECT_EQ(api->flexzone_size(ChannelSide::Tx), 0u);

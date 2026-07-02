@@ -241,6 +241,24 @@ struct RoleAPIBase::Impl
     std::atomic<std::uint64_t> heartbeats_sent_{0};
     std::chrono::steady_clock::time_point heartbeat_install_at_{};
 
+    /// HEP-CORE-0042 §7 — most-recent `instance_id` echoed from
+    /// PRODUCER_REG_ACK.  Assigned by the broker at every REG or
+    /// re-REG; the producer echoes it verbatim on every
+    /// CHANNEL_AUTH_APPLIED_REQ (Phase 3a.3, pending).
+    /// **Overwritten** on every subsequent REG_ACK — if the producer
+    /// registers on multiple channels, or re-registers after a
+    /// broker-side DEREG / heartbeat-timeout, the counter advances
+    /// and the stored value is the LAST assignment.  This matches
+    /// broker semantics: only the current `instance[P]` matches
+    /// APPLIED_REQ's echo (any prior value is stale by definition).
+    /// Zero means "no REG_ACK observed yet"; a nonzero value is
+    /// guaranteed by §5.5.3 (broker echo) + the hard-error in
+    /// `apply_producer_reg_ack` on absent/zero.
+    /// `relaxed` ordering — same rationale as `heartbeats_sent_`
+    /// above (single-writer producer, occasional read; no
+    /// synchronization dependency between the two counters).
+    std::atomic<std::uint64_t> producer_instance_id_{0};
+
     // RoleHandler-mode network surface (Wave-B M4c; sole path after M4f).
     //   (a) `handler_` non-null + `ctrl_threads_started_ == true`:
     //       handler-mode active; N ctrl threads polling N BRCs.
@@ -1193,6 +1211,37 @@ bool RoleAPIBase::apply_producer_reg_ack(const nlohmann::json &ack)
         return false;
     }
 
+    // HEP-CORE-0042 §5.5.3 — capture the broker-echoed `instance_id`
+    // for use on subsequent CHANNEL_AUTH_APPLIED_REQ (Phase 3a.3
+    // emission, pending).  §5.2 defines the counter as monotonic
+    // per-uid starting at 1; a zero or absent field is a broker
+    // contract violation.  Hard-error at the boundary — a silent
+    // skip here would leave `producer_instance_id_ == 0` and Phase
+    // 3a.3's APPLIED_REQ would be rejected by the broker's
+    // stale-instance guard (§5.4 step a), which would surface as a
+    // hard-to-diagnose "APPLIED_REQ never advances confirmed_version"
+    // symptom instead of the actual "REG_ACK contract broken"
+    // root cause.
+    const auto instance_id = ack.value("instance_id", std::uint64_t{0});
+    if (instance_id == 0)
+    {
+        LOGGER_ERROR(
+            "[{}] apply_producer_reg_ack: ACK missing/zero "
+            "`instance_id` for channel '{}' — HEP-CORE-0042 §5.5.3 "
+            "requires PRODUCER_REG_ACK to echo the broker-assigned "
+            "instance counter (§5.2 monotonic uint64, starts at 1).  "
+            "A zero value would silently defeat the stale-instance "
+            "guard on CHANNEL_AUTH_APPLIED_REQ (§5.4 step a).",
+            pImpl->short_tag, channel_name);
+        return false;
+    }
+    pImpl->producer_instance_id_.store(instance_id,
+                                        std::memory_order_relaxed);
+    LOGGER_INFO(
+        "[{}] event=ProducerInstanceIdCaptured channel='{}' "
+        "instance_id={} (HEP-CORE-0042 §5.5.3)",
+        pImpl->short_tag, channel_name, instance_id);
+
     // HEP-CORE-0036 §3.6 REG_ACK note + §I11.1 cache architecture:
     // seed the script-side `allowlist_cache` from REG_ACK.initial_allowlist
     // and fire `on_allowlist_changed(reason="initial_seed")` so a script
@@ -1291,6 +1340,11 @@ bool RoleAPIBase::apply_producer_reg_ack(const nlohmann::json &ack)
         }
     }
     return true;
+}
+
+std::uint64_t RoleAPIBase::producer_instance_id() const noexcept
+{
+    return pImpl->producer_instance_id_.load(std::memory_order_relaxed);
 }
 
 void RoleAPIBase::reset_tx_queue_metrics()
