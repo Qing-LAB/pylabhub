@@ -936,4 +936,223 @@ TEST_F(Pattern4AttachCoordinationTest, WaitPathDrainOnChannelClose)
     ExpectWorkerOk(broker);
 }
 
+// ─── Wait-path timeout (§5.4 pending-entry timeout + §5.6 budget) ──────
+//
+// Setup:
+//   - producer P REGs + heartbeats + is caught up to channel_version=0.
+//   - consumer C REGs → channel_version[K] = 1.
+// Timeout:
+//   - consumer sends CONSUMER_ATTACH_REQ_ZMQ → wait-path enqueue.
+//   - producer NEVER sends APPLIED_REQ.
+//   - after `producer_apply_wait_ms` (default 3000ms) elapses,
+//     broker's `sweep_pending_attach_timeouts_` drains the entry
+//     with {status="timeout",
+//     reason="producer_did_not_confirm_within_budget"}.
+//   - consumer receives the timeout reply.
+//
+// Wall-clock: ~3.5s (budget + ~500ms sweep cadence at heartbeat_interval).
+
+TEST_F(Pattern4AttachCoordinationTest, WaitPathTimeoutOnMissingAppliedReq)
+{
+    using namespace std::chrono;
+    using pylabhub::kLongTimeoutMs;
+    using pylabhub::kMidTimeoutMs;
+
+    const std::string producer_uid = "prod.p.uid00000001";
+    const std::string consumer_uid = "cons.c.uid00000002";
+    const std::string channel_name = "ch.attach.timeout";
+
+    const fs::path temp_dir = make_test_temp_dir("attach_timeout");
+    const auto setup = make_pattern4_setup({producer_uid, consumer_uid});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+    const int producer_data_port = pick_unused_port();
+
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_smoke.broker",
+                                             {temp_dir.string()});
+    expect_log(broker, "Pattern4Broker: bound endpoint",
+                std::chrono::milliseconds{kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    const auto &prod_kp = setup.curve.role(producer_uid);
+    const auto &cons_kp = setup.curve.role(consumer_uid);
+
+    BrokerWireClient::Config prod_cfg;
+    prod_cfg.broker_endpoint = setup.broker_endpoint;
+    prod_cfg.broker_pubkey   = setup.curve.hub.public_z85;
+    prod_cfg.client_pubkey   = prod_kp.public_z85;
+    prod_cfg.client_seckey   = prod_kp.secret_z85;
+    BrokerWireClient prod_client(ctx, prod_cfg);
+
+    BrokerWireClient::Config cons_cfg;
+    cons_cfg.broker_endpoint = setup.broker_endpoint;
+    cons_cfg.broker_pubkey   = setup.curve.hub.public_z85;
+    cons_cfg.client_pubkey   = cons_kp.public_z85;
+    cons_cfg.client_seckey   = cons_kp.secret_z85;
+    BrokerWireClient cons_client(ctx, cons_cfg);
+
+    // Producer REG + heartbeat.
+    {
+        pylabhub::hub::ProducerRegInputs in;
+        in.channel           = channel_name;
+        in.role_uid          = producer_uid;
+        in.role_name         = "p";
+        in.role_type         = "producer";
+        in.is_zmq_transport  = true;
+        in.zmq_node_endpoint = "tcp://127.0.0.1:" + std::to_string(producer_data_port);
+        in.zmq_pubkey        = prod_kp.public_z85;
+        auto payload = pylabhub::hub::build_producer_reg_payload(in);
+        auto reply = prod_client.request(
+            "REG_REQ", payload, "REG_ACK",
+            std::chrono::milliseconds{kLongTimeoutMs});
+        ASSERT_TRUE(reply.has_value());
+        ASSERT_EQ(reply->value("status", ""), "success") << reply->dump();
+    }
+    {
+        nlohmann::json hb;
+        hb["channel_name"] = channel_name;
+        hb["role_uid"]     = producer_uid;
+        hb["role_type"]    = "producer";
+        hb["producer_pid"] = 1;
+        prod_client.send("HEARTBEAT_REQ", hb);
+        std::this_thread::sleep_for(std::chrono::milliseconds{100});
+    }
+
+    // Consumer REG.
+    {
+        pylabhub::hub::ConsumerRegInputs in;
+        in.channel    = channel_name;
+        in.role_uid   = consumer_uid;
+        in.role_name  = "c";
+        in.zmq_pubkey = cons_kp.public_z85;
+        auto payload = pylabhub::hub::build_consumer_reg_payload(in);
+        auto reply = cons_client.request(
+            "CONSUMER_REG_REQ", payload, "CONSUMER_REG_ACK",
+            std::chrono::milliseconds{kLongTimeoutMs});
+        ASSERT_TRUE(reply.has_value());
+        ASSERT_EQ(reply->value("status", ""), "success") << reply->dump();
+    }
+
+    // Wait-path enqueue — producer will NEVER send APPLIED_REQ.
+    {
+        nlohmann::json attach;
+        attach["channel_name"]      = channel_name;
+        attach["consumer_role_uid"] = consumer_uid;
+        attach["consumer_pubkey"]   = cons_kp.public_z85;
+        attach["producer_role_uid"] = producer_uid;
+        cons_client.send("CONSUMER_ATTACH_REQ_ZMQ", attach);
+    }
+
+    // Consumer polls until the timeout sweep drains the entry.
+    // Budget: default producer_apply_wait_ms=3000ms + heartbeat sweep
+    // cadence (500ms) → observable at ~3.5s.  Poll for 6s to
+    // absorb CI jitter.
+    {
+        auto reply = cons_client.receive(std::chrono::milliseconds{6000});
+        ASSERT_TRUE(reply.has_value())
+            << "consumer did not receive timeout reply within 6s — "
+               "sweep_pending_attach_timeouts_ likely broken.";
+        EXPECT_EQ(reply->first, "CONSUMER_ATTACH_ACK_ZMQ");
+        EXPECT_EQ(reply->second.value("status", ""), "timeout")
+            << reply->second.dump();
+        EXPECT_EQ(reply->second.value("reason", ""),
+                   "producer_did_not_confirm_within_budget")
+            << reply->second.dump();
+    }
+
+    broker.signal_quit();
+    ExpectWorkerOk(broker);
+}
+
+// ─── Stale-instance guard (§5.4 step a on APPLIED_REQ) ──────────────────
+//
+// Setup: producer P REGs (instance[P] = 1).
+// Stale attempt:
+//   - P sends CHANNEL_AUTH_APPLIED_REQ with instance_id=999 (deliberately
+//     wrong).
+//   - Broker: incoming_instance (999) != current_instance (1) →
+//     returns ERROR with error_code="STALE_INSTANCE".  Silently drops
+//     the state advance — this is the guard that HEP-CORE-0042 §5.2
+//     uses to protect against APPLIED_REQ from crashed prior
+//     instances still in flight.
+//
+// (Realistic reproduction would DEREG + re-REG to bump instance to 2,
+// then send with instance_id=1 — but the guard fires on any mismatch,
+// so the simpler wrong-value pattern is sufficient to pin behaviour.)
+
+TEST_F(Pattern4AttachCoordinationTest, StaleInstanceGuardOnAppliedReq)
+{
+    using namespace std::chrono;
+    using pylabhub::kLongTimeoutMs;
+    using pylabhub::kMidTimeoutMs;
+
+    const std::string producer_uid = "prod.p.uid00000001";
+    const std::string channel_name = "ch.attach.stale_instance";
+
+    const fs::path temp_dir = make_test_temp_dir("attach_stale_instance");
+    const auto setup = make_pattern4_setup({producer_uid});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+    const int producer_data_port = pick_unused_port();
+
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_smoke.broker",
+                                             {temp_dir.string()});
+    expect_log(broker, "Pattern4Broker: bound endpoint",
+                std::chrono::milliseconds{kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    const auto &prod_kp = setup.curve.role(producer_uid);
+
+    BrokerWireClient::Config prod_cfg;
+    prod_cfg.broker_endpoint = setup.broker_endpoint;
+    prod_cfg.broker_pubkey   = setup.curve.hub.public_z85;
+    prod_cfg.client_pubkey   = prod_kp.public_z85;
+    prod_cfg.client_seckey   = prod_kp.secret_z85;
+    BrokerWireClient prod_client(ctx, prod_cfg);
+
+    // Producer REG.  Broker assigns instance[P] = 1 on first REG.
+    {
+        pylabhub::hub::ProducerRegInputs in;
+        in.channel           = channel_name;
+        in.role_uid          = producer_uid;
+        in.role_name         = "p";
+        in.role_type         = "producer";
+        in.is_zmq_transport  = true;
+        in.zmq_node_endpoint = "tcp://127.0.0.1:" + std::to_string(producer_data_port);
+        in.zmq_pubkey        = prod_kp.public_z85;
+        auto payload = pylabhub::hub::build_producer_reg_payload(in);
+        auto reply = prod_client.request(
+            "REG_REQ", payload, "REG_ACK",
+            std::chrono::milliseconds{kLongTimeoutMs});
+        ASSERT_TRUE(reply.has_value());
+        ASSERT_EQ(reply->value("status", ""), "success") << reply->dump();
+    }
+
+    // Send APPLIED_REQ with a stale instance_id.  Broker returns ERROR
+    // with error_code="STALE_INSTANCE" per handle_channel_auth_applied_req.
+    // `request()` treats ERROR as an early-return outcome (Phase 2.4a
+    // close-out), so the reply body IS the ERROR envelope.
+    {
+        nlohmann::json applied;
+        applied["channel_name"]      = channel_name;
+        applied["producer_role_uid"] = producer_uid;
+        applied["applied_version"]   = 1u;
+        applied["instance_id"]       = 999u;  // deliberately wrong
+
+        auto reply = prod_client.request(
+            "CHANNEL_AUTH_APPLIED_REQ", applied,
+            "CHANNEL_AUTH_APPLIED_ACK",
+            std::chrono::milliseconds{kLongTimeoutMs});
+        ASSERT_TRUE(reply.has_value())
+            << "producer APPLIED_REQ: no reply — stale-instance guard "
+               "should surface as an ERROR, not silence.";
+        // The reply IS the ERROR body (status="error",
+        // error_code="STALE_INSTANCE").
+        EXPECT_EQ(reply->value("status", ""), "error") << reply->dump();
+        EXPECT_EQ(reply->value("error_code", ""), "STALE_INSTANCE")
+            << reply->dump();
+    }
+
+    broker.signal_quit();
+    ExpectWorkerOk(broker);
+}
+
 } // namespace
