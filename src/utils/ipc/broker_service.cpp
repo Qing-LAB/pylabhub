@@ -3573,6 +3573,16 @@ BrokerServiceImpl::handle_consumer_attach_req_shm(const nlohmann::json &req)
                           "consumer_role_uid, and role_uid");
     }
 
+    // HEP-CORE-0032 §8 — log producer's ABI fingerprint on ATTACH ingest.
+    // Log-only: this is a per-consumer authorization query from an
+    // already-registered producer (strict-mode reject already exercised
+    // at REG_REQ if configured); redundant rejection here would be
+    // heavy-handed.
+    (void)log_peer_abi_fingerprint(req, caller_uid,
+                                    "ConsumerAttachAbiReceived",
+                                    "ConsumerAttachAbiDetail",
+                                    /*strict_mode=*/false);
+
     auto ch = hub_state_->channel(channel_name);
     if (!ch.has_value())
     {
@@ -3633,6 +3643,14 @@ BrokerServiceImpl::handle_consumer_attach_req_shm(const nlohmann::json &req)
     resp["consumer_pubkey"] = consumer_pubkey;
     if (!corr_id.empty())
         resp["correlation_id"] = corr_id;
+    // HEP-CORE-0032 §8.2 — broker ABI envelope echo on
+    // CONSUMER_ATTACH_ACK_SHM.  Symmetric with REG_ACK path.
+    resp["broker_abi_fingerprint"] = pylabhub::version::to_json_object(
+        pylabhub::version::current());
+    if (const char *bid = pylabhub::version::build_id())
+    {
+        resp["broker_build_id"] = bid;
+    }
 
     if (authorized)
     {
@@ -3708,6 +3726,14 @@ nlohmann::json BrokerServiceImpl::handle_consumer_attach_req_zmq(
                           "consumer_role_uid, and producer_role_uid");
     }
 
+    // HEP-CORE-0032 §8 — log consumer's ABI fingerprint on ATTACH ingest.
+    // Log-only (same rationale as SHM handler: consumer already passed
+    // strict-mode REG_REQ if configured).
+    (void)log_peer_abi_fingerprint(req, consumer_role_uid,
+                                    "ConsumerAttachAbiReceived",
+                                    "ConsumerAttachAbiDetail",
+                                    /*strict_mode=*/false);
+
     auto make_denied = [&](const std::string &reason) {
         nlohmann::json resp;
         resp["status"]             = "denied";
@@ -3780,6 +3806,14 @@ nlohmann::json BrokerServiceImpl::handle_consumer_attach_req_zmq(
         resp["channel_name"]      = channel_name;
         resp["producer_role_uid"] = producer_role_uid;
         if (!corr_id.empty()) resp["correlation_id"] = corr_id;
+        // HEP-CORE-0032 §8.2 — broker ABI envelope echo on
+        // CONSUMER_ATTACH_ACK_ZMQ (fast-path success).
+        resp["broker_abi_fingerprint"] = pylabhub::version::to_json_object(
+            pylabhub::version::current());
+        if (const char *bid = pylabhub::version::build_id())
+        {
+            resp["broker_build_id"] = bid;
+        }
         return resp;
     }
 
