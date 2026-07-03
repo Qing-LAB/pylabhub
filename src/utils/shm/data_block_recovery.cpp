@@ -837,6 +837,36 @@ extern "C"
         return result_code;
     }
 
+    int datablock_get_metrics_from_fd(int source_fd, DataBlockMetrics *out_metrics)
+    {
+        // HEP-CORE-0041 §10.5 (task #317) — fd-source sibling of
+        // `datablock_get_metrics(shm_name)`.  Under HEP-0041 SHM
+        // channels are memfd-backed (no /dev/shm name), so the
+        // name-based path fails with ENOENT; observers must attach
+        // via a passed fd.  Symmetric with `datablock_diagnose_slot`'s
+        // fd surface, but the metrics path doesn't need slot indexing —
+        // just the header's atomic counters.
+        if (source_fd < 0 || out_metrics == nullptr)
+        {
+            return -1;
+        }
+        auto handle = pylabhub::hub::open_datablock_for_diagnostic_from_fd(source_fd);
+        if (!handle)
+        {
+            LOGGER_ERROR("recovery: Failed to open memfd (source_fd={}) for "
+                          "diagnostic metrics read.", source_fd);
+            return -1;
+        }
+        pylabhub::hub::SharedMemoryHeader *header = handle->header();
+        if (header == nullptr)
+        {
+            LOGGER_ERROR("recovery: Failed to get header from memfd handle "
+                          "(source_fd={}).", source_fd);
+            return -1;
+        }
+        return slot_rw_get_metrics(header, out_metrics);
+    }
+
     int datablock_reset_metrics(const char *shm_name)
     {
         if (shm_name == nullptr)

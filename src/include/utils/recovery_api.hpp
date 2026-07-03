@@ -219,6 +219,44 @@ extern "C"
                                                                        DataBlockMetrics *out_metrics);
 
     /**
+     * @brief Fd-source sibling of `datablock_get_metrics` — reads
+     *        metrics from a memfd-backed DataBlock via an already-open
+     *        source fd (task #317, HEP-CORE-0041 §10.5).
+     *
+     * Under HEP-CORE-0041, SHM channels are backed by anonymous
+     * `memfd_create` file descriptors — they have NO name in
+     * `/dev/shm/`, so `datablock_get_metrics(channel_name)` fails with
+     * ENOENT for every healthy SHM channel.  This fd-source variant
+     * lets an observer (broker, admin plane, dashboard adjacent to
+     * the producer) read live atomic metrics from a memfd it has
+     * received via SCM_RIGHTS, preserving the real-time observation
+     * property (no wire hop, no heartbeat wait) HEP-CORE-0019 built
+     * SHM metrics for.
+     *
+     * The `source_fd` is DUP'd internally via `F_DUPFD_CLOEXEC`; the
+     * caller retains ownership of the passed fd (must close on their
+     * own lifecycle).  Mirror of `open_datablock_for_diagnostic_from_fd`
+     * which does the same dup-then-mmap pattern.
+     *
+     * @param source_fd  A valid file descriptor referring to a memfd
+     *                   sized to hold a DataBlock (typically received
+     *                   via SCM_RIGHTS from the producer at REG_ACK).
+     * @param out_metrics Pointer to a `DataBlockMetrics` struct to fill.
+     * @return 0 on success, -1 on error (invalid fd, dup failed,
+     *         mmap failed, header magic invalid, layout mismatch).
+     *
+     * @note C API — no exceptions, returns error codes.
+     * @note Fast enough for admin-plane polling (single mmap+read+munmap
+     *       cycle); operators querying at heartbeat cadence (~10Hz) is
+     *       fine.  For higher-frequency observation, callers should
+     *       cache their own `DataBlockDiagnosticHandle` via
+     *       `open_datablock_for_diagnostic_from_fd` and read the header
+     *       directly.
+     */
+    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT int
+    datablock_get_metrics_from_fd(int source_fd, DataBlockMetrics *out_metrics);
+
+    /**
      * @brief Resets metrics for a DataBlock by name.
      * 
      * Resets all metric counters to zero while preserving state fields (commit_index, slot_count).

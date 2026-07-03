@@ -51,6 +51,7 @@
 #include "utils/data_block_policy.hpp"
 #include "utils/hub_shm_queue.hpp"
 #include "utils/logger.hpp"
+#include "utils/recovery_api.hpp"
 #include "utils/schema_types.hpp"
 
 // Cross-directory header-only helper — no L3 process infra reached.
@@ -460,4 +461,71 @@ TEST_F(ShmQueueContractTest, DataBlockProducerRemapStubsThrow)
             << "wrong runtime_error path; what(): " << msg;
     }
 #pragma GCC diagnostic pop
+}
+
+// ─── Test 5: datablock_get_metrics_from_fd (#317 Phase A) ────────────
+//
+// HEP-CORE-0041 §10.5 (task #317) — memfd-source metrics reader.
+// The name-based `datablock_get_metrics` fails with ENOENT for
+// memfd-backed segments (no /dev/shm name).  This fd-source variant
+// lets an observer (broker, admin plane) read live metrics from a
+// memfd received via SCM_RIGHTS.
+//
+// Test scope:
+// - Success path: producer writes N slots; `..._from_fd` returns 0,
+//   metrics show total_slots_written == N.
+// - Error paths: invalid fd (-1), null out pointer, non-DataBlock fd
+//   (mmap'd memfd with garbage header) — all return -1 without
+//   crashing.
+TEST_F(ShmQueueContractTest, DataBlockGetMetricsFromFd)
+{
+    auto [_, item_size] =
+        pylabhub::hub::compute_field_layout(slot_schema(), "aligned");
+    const DataBlockConfig cfg =
+        make_config(item_size, /*fz_size=*/0, ChecksumPolicy::None);
+
+    auto p = pylabhub::tests::helper::make_fd_backed_producer(
+        "shm-queue-metrics-fd", DataBlockPolicy::RingBuffer, cfg);
+    ASSERT_NE(p.producer, nullptr);
+
+    // Produce two slots so total_slots_written reflects a live counter,
+    // not a fresh-init zero.
+    for (int i = 0; i < 2; ++i)
+    {
+        auto handle = p.producer->acquire_write_slot(/*timeout_ms=*/100);
+        ASSERT_NE(handle, nullptr);
+        auto buf = handle->buffer_span();
+        ASSERT_GE(buf.size(), sizeof(int32_t));
+        int32_t sentinel = i;
+        std::memcpy(buf.data(), &sentinel, sizeof(sentinel));
+        ASSERT_TRUE(handle->commit(sizeof(sentinel)));
+        ASSERT_TRUE(p.producer->release_write_slot(*handle));
+    }
+
+    // ── Success: read metrics via the observation fd ─────────────────
+    DataBlockMetrics m{};
+    const int rc = ::datablock_get_metrics_from_fd(
+        p.transport->borrow_fd(), &m);
+    EXPECT_EQ(rc, 0) << "datablock_get_metrics_from_fd should succeed on a "
+                     << "live memfd-backed DataBlock";
+    EXPECT_GE(m.total_slots_written, 2u)
+        << "metrics should reflect at least the 2 slots we committed";
+    EXPECT_GT(m.slot_count, 0u) << "slot_count must be non-zero";
+
+    // ── Error: invalid fd (-1) ──────────────────────────────────────
+    DataBlockMetrics m_bad{};
+    EXPECT_EQ(::datablock_get_metrics_from_fd(-1, &m_bad), -1);
+
+    // ── Error: null out pointer ─────────────────────────────────────
+    EXPECT_EQ(::datablock_get_metrics_from_fd(
+                  p.transport->borrow_fd(), nullptr), -1);
+
+    // ── Error: non-DataBlock fd (memfd with no valid header) ────────
+    const int garbage_fd = ::memfd_create("plh_l2_garbage", MFD_CLOEXEC);
+    ASSERT_GE(garbage_fd, 0);
+    track_fd(garbage_fd);
+    // Truncate to a plausible size but leave contents zero — header
+    // magic won't match; the from-fd open should refuse.
+    ASSERT_EQ(0, ::ftruncate(garbage_fd, static_cast<off_t>(4096)));
+    EXPECT_EQ(::datablock_get_metrics_from_fd(garbage_fd, &m_bad), -1);
 }
