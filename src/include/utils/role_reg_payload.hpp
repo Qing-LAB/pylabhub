@@ -21,6 +21,7 @@
 
 #include "utils/json_fwd.hpp"
 #include "plh_platform.hpp"  // pylabhub::platform::get_pid()
+#include "plh_version_registry.hpp"  // ABI fingerprint (HEP-CORE-0032 §8)
 
 #include <stdexcept>
 #include <string>
@@ -126,6 +127,25 @@ inline nlohmann::json build_producer_reg_payload(const ProducerRegInputs &in)
     // there is no fallback.
     reg["zmq_pubkey"]        = in.zmq_pubkey;
 
+    // HEP-CORE-0032 §8.2 — ABI fingerprint envelope.  The
+    // 15-field ComponentVersions object.  Broker verifies via
+    // `verify_peer_versions()` on ingest and logs per §8.6.  In slice C
+    // (2026-07-03) this is emitted UNCONDITIONALLY; broker's ingest
+    // treats absence as verdict='ABSENT' + accept during the roll-out
+    // window (§8.5 default lenient policy).  A future MAJOR bump on
+    // broker_proto promotes to REQUIRED.
+    reg["abi_fingerprint"] = pylabhub::version::to_json_object(
+        pylabhub::version::current());
+    // Optional sibling: build_id is a per-build identifier, only
+    // populated when compiled with build-id support
+    // (PYLABHUB_HAVE_BUILD_ID).  Serialized as a bare string next to
+    // abi_fingerprint per §8.2 last paragraph so it can be omitted
+    // independently of the ComponentVersions block.
+    if (const char *bid = pylabhub::version::build_id())
+    {
+        reg["build_id"] = bid;
+    }
+
     if (in.is_zmq_transport)
     {
         reg["data_transport"]    = "zmq";
@@ -178,6 +198,16 @@ inline nlohmann::json build_consumer_reg_payload(const ConsumerRegInputs &in)
     reg["role_name"]    = in.role_name;
     reg["consumer_pid"] = pylabhub::platform::get_pid();
     reg["zmq_pubkey"]   = in.zmq_pubkey;
+    // HEP-CORE-0032 §8.2 — same ABI fingerprint envelope as
+    // build_producer_reg_payload.  See that function's comment for
+    // slice-C roll-out policy (verdict='ABSENT' + accept during
+    // migration window).
+    reg["abi_fingerprint"] = pylabhub::version::to_json_object(
+        pylabhub::version::current());
+    if (const char *bid = pylabhub::version::build_id())
+    {
+        reg["build_id"] = bid;
+    }
     return reg;
 }
 

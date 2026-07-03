@@ -21,6 +21,7 @@
 #include "utils/security/peer_admission.hpp"   // HEP-CORE-0035 Phase D
 #include "utils/security/zap_router.hpp"       // HEP-CORE-0035 Phase D
 #include "portable_atomic_shared_ptr.hpp"      // sibling header in src/utils/
+#include "plh_version_registry.hpp"            // HEP-CORE-0032 §8 ABI fingerprint
 #include "utils/timeout_constants.hpp"
 #include "utils/zmq_context.hpp"
 
@@ -246,6 +247,134 @@ private:
         pylabhub::utils::security::PeerAllowlist>
         current_;
 };
+
+// HEP-CORE-0032 §8 — ABI fingerprint verification on REG_REQ /
+// CONSUMER_REG_REQ / CONSUMER_ATTACH_REQ ingest.  Slice C (2026-07-03):
+// LOG-ONLY mode.  Parse envelope + build_id sibling if present, call
+// `verify_peer_versions`, emit two log lines per §8.6.  No reject
+// path yet — `broker.strict_abi_mismatch` config knob lands in a
+// later slice; strict rejection also lands then.
+//
+// Absent envelope during roll-out window (§8.5 default lenient
+// policy): verdict = 'ABSENT', accept.  A future MAJOR bump on
+// broker_proto promotes the field to REQUIRED.
+static void log_peer_abi_fingerprint(const nlohmann::json &req,
+                                     const std::string &role_uid,
+                                     const char *event_prefix,
+                                     const char *event_detail)
+{
+    // Absence path — no envelope on the wire (older role, or role
+    // built before slice C shipped).  Log verdict='ABSENT' and
+    // return; no verify call.
+    if (!req.contains("abi_fingerprint") ||
+        !req["abi_fingerprint"].is_object())
+    {
+        LOGGER_INFO(
+            "[broker] event={} role='{}' verdict='ABSENT' mismatched_axes=''",
+            event_prefix, role_uid);
+        return;
+    }
+
+    // Parse envelope.  Malformed shape (missing axis fields, wrong
+    // types) throws std::invalid_argument per §8.7 — surface as
+    // verdict='INVALID_ENVELOPE' and continue (slice C accepts;
+    // strict-mode reject lands later).
+    pylabhub::version::ComponentVersions peer{};
+    try
+    {
+        peer = pylabhub::version::from_json_object(req["abi_fingerprint"]);
+    }
+    catch (const std::exception &e)
+    {
+        LOGGER_INFO(
+            "[broker] event={} role='{}' verdict='INVALID_ENVELOPE' "
+            "mismatched_axes='' error='{}'",
+            event_prefix, role_uid, e.what());
+        return;
+    }
+
+    // Optional sibling: build_id.  nullptr → skip build_id comparison.
+    const std::string build_id_str =
+        req.value("build_id", std::string{});
+    const char *peer_bid =
+        build_id_str.empty() ? nullptr : build_id_str.c_str();
+
+    const auto verdict = pylabhub::version::verify_peer_versions(peer, peer_bid);
+
+    // Compute mismatched-axes list.  Per §8.6, comma-separated axis
+    // names.  Empty on OK / BUILD_ONLY.
+    std::string axes;
+    auto append_axis = [&](bool flag, const char *name) {
+        if (!flag) return;
+        if (!axes.empty()) axes += ",";
+        axes += name;
+    };
+    append_axis(verdict.major_mismatch.library,       "library");
+    append_axis(verdict.major_mismatch.shm,           "shm");
+    append_axis(verdict.major_mismatch.broker_proto,  "broker_proto");
+    append_axis(verdict.major_mismatch.zmq_frame,     "zmq_frame");
+    append_axis(verdict.major_mismatch.script_api,    "script_api");
+    append_axis(verdict.major_mismatch.script_engine, "script_engine");
+    append_axis(verdict.major_mismatch.config,        "config");
+    append_axis(verdict.major_mismatch.build_id,      "build_id");
+
+    // Verdict classification per §8.5 table.  Slice C is default
+    // lenient — major mismatch → MAJOR_MISMATCH_ACCEPTED (no strict
+    // path yet).  Minor-mismatch detection: verdict is compatible
+    // (no major flag) but message says otherwise.  Actually detail
+    // from the AbiCheckResult: `compatible == true` + `message !=
+    // "ABI OK"` means minor mismatch was noted internally but not
+    // via any struct flag we expose.  We approximate: axes empty +
+    // compatible + build_id irrelevant → OK; peer build_id
+    // differs-only → BUILD_ONLY; incompatible + axes populated →
+    // MAJOR_MISMATCH_ACCEPTED.  For minor-mismatch detection we
+    // would need to expose minor flags from compute_verdict — that's
+    // a later slice enhancement; slice C conflates minor into OK
+    // (verdict.compatible=true).
+    const char *verdict_str = "OK";
+    if (!verdict.compatible)
+    {
+        // Major mismatch of some axis.  Distinguish
+        // build-id-only-major from other-axis-major for the
+        // BUILD_ONLY case.  When ONLY build_id flag is set + no
+        // axis flag, use BUILD_ONLY.
+        const bool only_build_id =
+            verdict.major_mismatch.build_id &&
+            !verdict.major_mismatch.library &&
+            !verdict.major_mismatch.shm &&
+            !verdict.major_mismatch.broker_proto &&
+            !verdict.major_mismatch.zmq_frame &&
+            !verdict.major_mismatch.script_api &&
+            !verdict.major_mismatch.script_engine &&
+            !verdict.major_mismatch.config;
+        verdict_str = only_build_id ? "BUILD_ONLY"
+                                    : "MAJOR_MISMATCH_ACCEPTED";
+    }
+
+    LOGGER_INFO(
+        "[broker] event={} role='{}' verdict='{}' mismatched_axes='{}'",
+        event_prefix, role_uid, verdict_str, axes);
+
+    // Detail line — §8.6 says emit only when verdict != OK.
+    if (std::string_view(verdict_str) != "OK")
+    {
+        LOGGER_INFO(
+            "[broker] event={} role='{}' role_versions='{}' broker_versions='{}'",
+            event_detail, role_uid,
+            fmt::format("lib={}.{}.{},shm={}.{},broker_proto={}.{},"
+                         "zmq_frame={}.{},script_api={}.{},"
+                         "script_engine={}.{},config={}.{}",
+                         peer.library_major, peer.library_minor,
+                         peer.library_rolling,
+                         peer.shm_major, peer.shm_minor,
+                         peer.broker_proto_major, peer.broker_proto_minor,
+                         peer.zmq_frame_major, peer.zmq_frame_minor,
+                         peer.script_api_major, peer.script_api_minor,
+                         peer.script_engine_major, peer.script_engine_minor,
+                         peer.config_major, peer.config_minor),
+            pylabhub::version::version_info_string());
+    }
+}
 
 } // namespace
 
@@ -1732,6 +1861,15 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
         return *err;
     }
 
+    // HEP-CORE-0032 §8 — ABI fingerprint verification (slice C:
+    // LOG-ONLY, no reject).  Runs AFTER wire-shape validation (a
+    // malformed identity is a separate reject class) but BEFORE any
+    // state mutation, so a later strict-mode reject would land here
+    // without leaving broker state dirty.
+    log_peer_abi_fingerprint(req, role_uid,
+                              "AbiFingerprintReceived",
+                              "AbiFingerprintDetail");
+
     const std::string attempted_schema = req.value("schema_hash", "");
     const uint64_t    attempted_pid    = req.value("producer_pid", uint64_t{0});
 
@@ -2714,6 +2852,12 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     {
         return *err;
     }
+
+    // HEP-CORE-0032 §8 — ABI fingerprint verification (slice C:
+    // LOG-ONLY, no reject).  Same shape as REG_REQ handler above.
+    log_peer_abi_fingerprint(req, role_uid,
+                              "AbiFingerprintReceived",
+                              "AbiFingerprintDetail");
 
     // Single HubState snapshot covers channel-existence, endpoint
     // freshness, R6 producer-readiness gate, and downstream schema
