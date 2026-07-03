@@ -73,6 +73,7 @@
 #include <functional>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
 
 #if defined(PYLABHUB_IS_POSIX)
@@ -97,6 +98,25 @@ namespace pylabhub::utils::security
 /// no longer valid.
 using SeckeyAccessor =
     std::function<void(std::function<void(std::span<const std::byte>)>)>;
+
+/// Exception type raised when the handshake exceeds its budget
+/// (recv poll timeout or send poll timeout in `recv_all_until` /
+/// `send_all`).  Task #300 (2026-07-03): callers of
+/// `initiate_consumer_handshake` and `AttachProtocolAcceptor::
+/// accept_one` catch this specifically to distinguish a startup-race
+/// timeout (retry-worthy: producer L1 bound but L2 accept thread not
+/// spawned yet, or vice-versa) from a genuine protocol error
+/// (framing / JSON / crypto — not retry-worthy).  Prior to task #300,
+/// timeout was a bare `std::runtime_error` indistinguishable from
+/// protocol errors; the consumer-side retry loop caught only
+/// ECONNREFUSED (nullopt path from `::connect`) and bailed on
+/// timeout, dropping the remaining retry budget on the exact race
+/// the loop was written to absorb.
+class PYLABHUB_UTILS_EXPORT AttachProtocolTimeout : public std::runtime_error
+{
+  public:
+    using std::runtime_error::runtime_error;
+};
 
 /// Material the consumer needs to assemble the hello and the
 /// challenge-response.  Mirrors what the consumer's role obtains

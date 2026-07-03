@@ -88,8 +88,8 @@ recv_all(int fd, void *buf, std::size_t n,
         const int rc = ::poll(&pfd, 1, static_cast<int>(remaining.count()));
         if (rc == 0)
         {
-            throw std::runtime_error(std::string{"AttachProtocol::"} + side +
-                                     ": poll timed out");
+            throw AttachProtocolTimeout(std::string{"AttachProtocol::"} + side +
+                                         ": poll timed out");
         }
         if (rc < 0)
         {
@@ -144,17 +144,17 @@ recv_all_until(int fd, void *buf, std::size_t n,
         const auto rem = remaining_ms(deadline);
         if (rem.count() == 0)
         {
-            throw std::runtime_error(std::string{"AttachProtocol::"} + side +
-                                     ": timeout waiting for " +
-                                     std::to_string(n) + " bytes (got " +
-                                     std::to_string(got) + ")");
+            throw AttachProtocolTimeout(std::string{"AttachProtocol::"} + side +
+                                         ": timeout waiting for " +
+                                         std::to_string(n) + " bytes (got " +
+                                         std::to_string(got) + ")");
         }
         pollfd pfd{fd, POLLIN, 0};
         const int rc = ::poll(&pfd, 1, static_cast<int>(rem.count()));
         if (rc == 0)
         {
-            throw std::runtime_error(std::string{"AttachProtocol::"} + side +
-                                     ": poll timed out");
+            throw AttachProtocolTimeout(std::string{"AttachProtocol::"} + side +
+                                         ": poll timed out");
         }
         if (rc < 0)
         {
@@ -200,7 +200,7 @@ send_all(int fd, const void *buf, std::size_t n,
         const auto rem = remaining_ms(deadline);
         if (rem.count() == 0)
         {
-            throw std::runtime_error(
+            throw AttachProtocolTimeout(
                 std::string{"AttachProtocol::"} + side +
                 ": send timeout (sent " + std::to_string(sent) + " of " +
                 std::to_string(n) + " bytes) — peer socket buffer full "
@@ -210,7 +210,7 @@ send_all(int fd, const void *buf, std::size_t n,
         const int rc = ::poll(&pfd, 1, static_cast<int>(rem.count()));
         if (rc == 0)
         {
-            throw std::runtime_error(
+            throw AttachProtocolTimeout(
                 std::string{"AttachProtocol::"} + side +
                 ": send poll timed out (sent " + std::to_string(sent) +
                 " of " + std::to_string(n) + " bytes)");
@@ -641,8 +641,24 @@ initiate_consumer_handshake(const std::string          &endpoint,
         std::chrono::steady_clock::now() + timeout;
 
     // ── 2. Receive + parse frame 1 ───────────────────────────────────────
-    const nlohmann::json challenge_in = receive_frame(fd, handshake_deadline,
-                                                       "consumer");
+    //
+    // #300 (2026-07-03): if the receive TIMES OUT (producer bound the
+    // Unix socket but the L2 accept thread hasn't spawned yet — the
+    // exact H3a race the caller's retry loop was written to absorb),
+    // return nullopt so the caller retries.  This mirrors the ENOENT /
+    // ECONNREFUSED nullopt path above at the `connect` step.  A
+    // protocol-level throw (framing / JSON / crypto — a plain
+    // std::runtime_error) still propagates so callers bail on real
+    // contract violations.
+    nlohmann::json challenge_in;
+    try
+    {
+        challenge_in = receive_frame(fd, handshake_deadline, "consumer");
+    }
+    catch (const AttachProtocolTimeout &)
+    {
+        return std::nullopt;
+    }
     if (challenge_in.value("protocol_version", std::string{}) != kProtocolVersion)
     {
         throw std::runtime_error(
@@ -709,7 +725,17 @@ initiate_consumer_handshake(const std::string          &endpoint,
     hello["role_uid"]               = self.role_uid;
     hello["pubkey_z85"]             = self.pubkey_z85;
     hello["challenge_response_b64"] = b64_encode({cipher.data(), cipher.size()});
-    send_frame(fd, hello, handshake_deadline, "consumer");
+    // #300 (2026-07-03): send timeout (producer's L2 accept thread
+    // spawned but stalled reading) is same H3a-race class as the
+    // recv timeout above — nullopt for retry, not a protocol error.
+    try
+    {
+        send_frame(fd, hello, handshake_deadline, "consumer");
+    }
+    catch (const AttachProtocolTimeout &)
+    {
+        return std::nullopt;
+    }
 
     // ── 5. Success.  Hand fd to caller. ─────────────────────────────────
     guard.release();
