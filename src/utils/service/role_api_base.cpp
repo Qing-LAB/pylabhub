@@ -36,6 +36,7 @@
 #include <span>
 #include <stdexcept>
 #include <string_view>
+#include <cstdlib>  // std::getenv (HEP-0032 §8 slice B strict-mode gate)
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -84,9 +85,16 @@ private:
 // envelope echoed on REG_ACK / CONSUMER_REG_ACK.  Symmetric with the
 // broker-side helper at broker_service.cpp `log_peer_abi_fingerprint`.
 //
-// Log-only in slice D.3 (2026-07-03).  A future `role.strict_abi_mismatch`
-// config knob will refuse the Registered transition on MAJOR mismatch;
-// filed as follow-up.
+// Slice D.3 shipped log-only.  Slice B (2026-07-03) adds env-var
+// strict-mode gate: `PLH_TEST_ROLE_STRICT_ABI_MISMATCH=1` flips
+// verdict from `MAJOR_MISMATCH_ACCEPTED` to `MAJOR_MISMATCH_REJECTED`
+// so L3 tests can pin the strict-mode log signal.
+//
+// Production RoleConfig plumbing (JSON field + parser + threading
+// through RoleAPIBase construction so scripts don't need env vars)
+// remains deferred as a follow-up — the state-machine action
+// (refuse-Registered) that a real config knob would drive is not
+// yet enforced; slice B is log-signal-only on the role side.
 //
 // Convention 1 log format per §8.6:
 //   [<short_tag>] event=BrokerAbiFingerprintReceived role='X' verdict='V' mismatched_axes='...'
@@ -152,7 +160,24 @@ inline void log_broker_abi_fingerprint(const nlohmann::json &ack,
             !verdict.major_mismatch.script_api &&
             !verdict.major_mismatch.script_engine &&
             !verdict.major_mismatch.config;
-        verdict_str = only_build_id ? "BUILD_ONLY" : "MAJOR_MISMATCH_ACCEPTED";
+        // Slice B (2026-07-03) env-var strict mode: flip verdict from
+        // MAJOR_MISMATCH_ACCEPTED to MAJOR_MISMATCH_REJECTED when
+        // PLH_TEST_ROLE_STRICT_ABI_MISMATCH=1.  Production RoleConfig
+        // plumbing + state-machine refuse-Registered is filed as
+        // follow-up.
+        const bool role_strict = [] {
+            const char *env = std::getenv("PLH_TEST_ROLE_STRICT_ABI_MISMATCH");
+            return env != nullptr && std::string_view(env) == "1";
+        }();
+        if (only_build_id)
+        {
+            verdict_str = "BUILD_ONLY";
+        }
+        else
+        {
+            verdict_str = role_strict ? "MAJOR_MISMATCH_REJECTED"
+                                       : "MAJOR_MISMATCH_ACCEPTED";
+        }
     }
 
     LOGGER_INFO(
