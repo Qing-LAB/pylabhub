@@ -1383,6 +1383,55 @@ Any new directory structure should include or reference these tests; do not drop
 more recovery_api scenarios, error codes, NULL handling). When adding higher-level tests (C++
 primitive, schema, RAII), do NOT replace or remove C API tests that cover the same behavior.
 
+### Cross-Platform Test Coverage Policy (added 2026-07-02)
+
+**Rule:** Every test that exercises code inside a
+`#if defined(__linux__) ... #else ... #endif` block MUST have a
+platform-matrix counterpart that exercises the `#else` branch, either
+by:
+
+1. **Running the same test on the non-Linux platform** (preferred —
+   requires non-Linux CI), OR
+2. **Adding an explicit compile-time or config-time rejection test**
+   that asserts the non-Linux path fails FAST (at build / start-up)
+   rather than late (mid-runtime after side-effects).
+
+**Reason.** All current CI runs on Linux, so `#else` branches never
+execute in tests.  Code review #246 review-C caught
+`role_api_base.cpp:1381` — a non-Linux SHM REG_ACK branch that logs
+`capability transport not implemented on this platform` and returns
+false AFTER build_rx_queue has already constructed the queue and
+apply_master_approval succeeded.  Users see registration failure with
+no config-time hint that SHM is unsupported on their platform.
+
+**What "clearly document" means for a code path:**
+
+If a platform is not yet supported (e.g., HEP-0041 FreeBSD/macOS/Windows
+backends #259-#261), the code path MUST either:
+
+- Guard at CONFIG-LOAD time — reject `data_transport=shm` (or the
+  equivalent unsupported feature) with a diagnostic that names the
+  platform + the tracking task.  Example: task #306 tracks moving the
+  role_api_base.cpp:1381 late-fail to a config-time reject for SHM on
+  non-Linux platforms before #259/#260/#261 ship.
+- OR run the L2 rejection test on ALL platforms and assert that the
+  guard fires.
+
+**Applies to:**
+- Any `#if defined(PYLABHUB_IS_LINUX)` / `defined(__linux__)` /
+  `defined(__APPLE__)` / `defined(_WIN32)` conditional whose `#else`
+  branch is not a trivial no-op.
+- Any `platform::*` function that has more than one implementation.
+- Any HEP §"Cross-platform" section that names a per-platform backend.
+
+**Enforcement (pending #241 mechanical enforcement):** for now, code
+review must explicitly ask "does this touch a `#if defined(__linux__)`
+guard or a `platform::*` function?  If yes, where is the non-Linux
+test?"
+
+Related: task #306 (non-Linux SHM REG_ACK early-rejection), tasks
+#259-#261 (HEP-0041 per-platform L1 backends).
+
 ### Code-Review Scope Specification (added 2026-07-02)
 
 **Rule:** When requesting a workflow-backed code review focused on

@@ -1048,6 +1048,131 @@ change needed.  1i-mig-1 (ShmQueue fd plumbing) is unblocked.
 
 ---
 
+## 10.5 Broker-side SHM metrics observability (added 2026-07-02)
+
+**Problem.** Pre-HEP-0041, `BROKER_SHM_INFO_REQ` returned live
+per-channel metrics (slot_count, commit_index, throughput, checksum
+failures, uptime, contention counters, etc.) by having the broker call
+`datablock_get_metrics(channel_name)` — which internally
+`shm_open("/dev/shm/<channel>")`s the segment and reads atomic header
+fields directly.  This was **real-time by design**: the observation
+path never touches the wire, never waits for a heartbeat, and never
+serializes through a role process.  Same-machine competing processes
+(dashboards, admin tools, secondary consumers) can read the same
+segment to coordinate on live slot state.
+
+Under HEP-0041, SHM channels are backed by `memfd_create` — anonymous
+file descriptors with **no name in `/dev/shm/`**.  `shm_open(name)`
+fails with ENOENT for every healthy SHM channel; broker's
+`collect_shm_info` at `broker_service.cpp:5866` reports
+`shm_metrics=null` unconditionally.  Operators / dashboards can no
+longer distinguish "healthy channel, broker can't observe" from
+"channel dead."  The per-slot observability surface HEP-CORE-0019
+provides is dark for the entire SHM transport.
+
+**Design invariant to preserve.**  SHM metrics observation MUST remain
+real-time — no wire round-trip, no heartbeat wait, no role-side
+serialization.  Metrics are consumed by processes competing for slot
+access; even one heartbeat interval of stale data can misdirect
+coordination decisions.
+
+**Decision — fd-transfer, symmetric with consumer attach.**
+
+Producer sends its memfd to broker via `SCM_RIGHTS` at REG_ACK time
+(same primitive HEP-0041 §5.5 uses for producer→consumer).  Broker
+holds the fd for the channel's lifetime and reads metrics via a new
+`datablock_get_metrics_from_fd(int fd, DataBlockMetrics *out)` C API
+(sibling of the existing `open_datablock_for_diagnostic_from_fd`).
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant P as Producer
+    participant B as Broker
+    participant C as Consumer
+    participant O as Operator / Dashboard
+
+    Note over P: memfd_create + configure DataBlock
+    P->>B: REG_REQ { channel, uid, ..., data_transport=shm }
+    Note over B: HEP-0036 §5b admit path
+    B-->>P: REG_ACK (sync REQ/REP)
+    Note over P,B: NEW: producer sends memfd via SCM_RIGHTS<br/>on Unix-socket bound at REG time
+    P->>B: SCM_RIGHTS(memfd) — observation fd
+    Note over B: cache fd in BrokerChannel::add_producer
+
+    Note over P,C: HEP-0041 §5.5 consumer attach — producer sends<br/>SEPARATE dup of same memfd to authorized consumer
+    C->>B: CONSUMER_ATTACH_REQ_SHM
+    B-->>C: CONSUMER_ATTACH_ACK_SHM
+    C->>P: connect on shm_capability socket
+    P->>C: SCM_RIGHTS(memfd)
+
+    Note over P,C: Data plane — writes/reads via mmap'd memfd
+
+    O->>B: BROKER_SHM_INFO_REQ (via admin plane)
+    Note over B: collect_shm_info reads live<br/>atomic header via cached fd
+    B->>B: datablock_get_metrics_from_fd(cached_fd, &m)
+    B-->>O: shm_metrics { slot_count, commit_index, ... }
+
+    Note over P: producer terminates / re-registers
+    P->>B: DISC or heartbeat-timeout
+    Note over B: on_producer_removed closes cached fd
+```
+
+**Why fd-transfer (not `/proc/<pid>/fd/<n>` scraping).**
+
+An alternative (Option A2 in the design triage) is publishing
+`(producer_pid, memfd_num)` in REG_REQ and having the broker
+`open("/proc/<pid>/fd/<n>", O_RDWR)`.  Rejected because:
+
+1. **Trust asymmetry.**  `/proc/<pid>/fd/*` gives broker access to ALL
+   the producer's file descriptors, not just the intended one.  The
+   SCM_RIGHTS envelope earns exactly one fd.
+2. **PID-recycle risk.**  Producer restart with a recycled PID can
+   silently redirect the broker's `/proc` lookup to a different
+   process's fd — no invariant lets the broker detect this.  SCM_RIGHTS
+   at REG_ACK is bound to the producer's REG session; producer restart
+   → new REG_ACK → new fd hand-over.
+3. **Mental-model consistency.**  HEP-0041 already establishes fd
+   hand-over as the ONLY authorized SHM-observation entry.  Adding a
+   `/proc` back-door contradicts the design's D1 clean-slate choice.
+
+**Wire delta.**
+
+- REG_REQ gains no new fields (broker already knows the producer's
+  Unix socket from the pre-established shm_capability listener).
+- REG_ACK is followed by a separate SCM_RIGHTS envelope on the same
+  Unix socket the consumer attach handshake uses.  Reuses
+  `ShmCapabilityChannel::send_capability_to(fd)`.
+
+**Broker state.**
+
+- `BrokerChannel::add_producer` gains a `LockedFd observation_fd_`
+  field.
+- `on_producer_removed` closes it.
+
+**API additions.**
+
+- `datablock_get_metrics_from_fd(int fd, DataBlockMetrics *out)` in
+  `recovery_api.hpp` + impl in `data_block_recovery.cpp` — wraps
+  `open_datablock_for_diagnostic_from_fd(fd)` + `slot_rw_get_metrics`.
+
+**Compatibility.**
+
+- Under HEP-0041 the broker already receives fd envelopes from
+  producers for other purposes (see §5.5 sequence).  Extending the
+  same channel to carry the observation fd is one code path.
+- Pre-HEP-0041 the wire never carried fds — this addition has no
+  pre-Phase-1 baseline to break.
+
+**Real-time property preserved.**
+
+Broker reads `slot_rw_state[i]` atomics directly from mmap'd memfd —
+same code path a same-machine dashboard would use — no wire hop, no
+heartbeat latency.  A `BROKER_SHM_INFO_REQ` from an admin plane
+completes in the same wall-clock as pre-HEP-0041.
+
+**Tracked as task #317 — Broker SHM observation fd via SCM_RIGHTS.**
+
 ## 11. Next steps
 
 All §9 decisions locked.  Original promotion + early-task items

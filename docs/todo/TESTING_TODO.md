@@ -153,48 +153,27 @@ because the scope is naturally wider than "one more log-marker
 assertion" — the same real-role infrastructure that enables Test B
 also enables the other three scenarios above.
 
-### Broader review-C findings (2026-07-02, scope drift) ⏳
+### Broader review-C findings (2026-07-02, scope drift) — ALL FILED AS TASKS
 
 Third-round workflow-backed review requested to focus on the last 3
 commits of the Phase 3 remediation drifted into `@{upstream}...HEAD`
 scope (241 files).  ONE finding — BRC ERROR-path bypasses `abandoned`
 flag — was a real bug in my Phase 3 code and fixed in commit `810c47e5`.
-The other findings are legitimate defects but sit in code owned by
-other HEPs / tasks.  Recording them here for future triage rather than
-losing them.
+The other 9 findings are legitimate defects sitting in HEP-CORE-0041
+or L3-retirement territory.  ALL are now filed as concrete tasks
+(triage complete 2026-07-02):
 
-- **`role_api_base.cpp:856` SHM consumer dial retry loop** — only
-  catches ECONNREFUSED (H3a pre-bind race); receive-frame poll timeout
-  in the post-L1-bind / pre-L2-spawn window bypasses the retry budget.
-  Belongs to HEP-CORE-0041.  Sibling of #300.
-- **`broker_service.cpp:5866` `datablock_get_metrics`** does
-  `shm_open(channel)` against memfd-backed segments; always returns
-  null under HEP-CORE-0041.  Broker metrics unavailable for SHM
-  channels.  Belongs to HEP-CORE-0041.
-- **`attach_protocol.cpp:96` `send_all` unbounded send loop** — accept
-  thread can stall indefinitely on a slow/stuck peer, defeating the
-  ThreadManager shutdown poll.  Belongs to HEP-CORE-0041 §5.5.
-- **`attach_protocol.cpp:344` receive_frame timeout budget doubling**
-  — CONFIRMED.  Frame 1 + Frame 2 each get a fresh `timeout` value;
-  worst-case handshake wall time is 2× budget instead of 1×.  Fix:
-  pass a shared `steady_clock::time_point` deadline.  Belongs to
-  HEP-CORE-0041.
-- **`role_api_base.cpp:1055` filter-then-approve empty-endpoint
-  rejection** — broker admits producers on `role_uid` presence but
-  queue's apply_master_approval requires non-empty endpoint; any
-  under-populated peer rejects the whole filtered_ack.  Edge case
-  (broker registration should always populate endpoint).  Defensive
-  fix: skip producers with empty endpoint in the §7.1 filter loop.
-- **`shm_capability_channel.cpp:251` TOCTOU on /tmp fallback bind** —
-  same-uid attacker can win the probe→unlink→bind window.  Belongs to
-  HEP-CORE-0041.
-- **`shm_capability_channel.cpp:344` `accept4` EINTR gap** — the sister
-  `::poll` retries on EINTR but `accept4` does not; a spurious signal
-  drops the connection attempt.  Belongs to HEP-CORE-0041.
-- **`tests/test_layer3_datahub/CMakeLists.txt:79` L3 ShmQueue coverage
-  loss** — S3c retirement removed `test_datahub_hub_queue.cpp` (25
-  tests including `VerifyChecksumMismatch`, `NoFlexzone`, `RemapStubsThrow`)
-  without equivalent replacement in L2.  Belongs to task #313 close-out.
+| Finding | Task | Status |
+|---|---|---|
+| `role_api_base.cpp:856` SHM consumer dial retry — only catches ECONNREFUSED | **#300** (pre-existing) | Same defect verified |
+| `broker_service.cpp:5866` `datablock_get_metrics` broken for memfd (broker SHM observability dark) | **#317** (new) | Design + mermaid in HEP-CORE-0041 §10.5 |
+| `attach_protocol.cpp:96` `send_all` unbounded | **#319** (new) | Fix pattern: shared deadline (sibling of #318) |
+| `attach_protocol.cpp:344` receive_frame budget doubling — worst-case 2× budget | **#318** (new) | Fix: pass `steady_clock::time_point` deadline through recv_all + receive_frame |
+| `role_api_base.cpp:1055` filter-then-approve empty-endpoint rejection | **#320** (new) | Defensive skip in §7.1 filter loop |
+| `role_api_base.cpp:1381` Non-Linux SHM REG_ACK late-fail | **#306** (pre-existing) | + cross-platform test policy documented in `docs/IMPLEMENTATION_GUIDANCE.md § Cross-Platform Test Coverage Policy` |
+| `shm_capability_channel.cpp:251` TOCTOU on /tmp fallback bind | **#321** (new) | Same-uid DoS; fix via in-directory temp-file-then-rename OR drop /tmp fallback |
+| `shm_capability_channel.cpp:344` `accept4` EINTR gap | **#322** (new) | Sibling of completed #304 (recvmsg/sendmsg EINTR) |
+| `tests/test_layer3_datahub/CMakeLists.txt:79` L3 ShmQueue coverage loss from S3c retirement | **#323** (new) | VERIFIED that neither L4 SHM e2e (2 tests) NOR L2 SHM capability (6 tests) covers `VerifyChecksumMismatch` / `NoFlexzone` / `Bidirectional` / `RemapStubsThrow`.  Scope: new L2 `test_hub_shm_queue_contract.cpp` (per test-pattern discipline; NOT L4 — these are low-level queue contracts). |
 
 ### HEP-CORE-0042 Phase 3 review-B follow-ups (2026-07-02) ⏳
 
