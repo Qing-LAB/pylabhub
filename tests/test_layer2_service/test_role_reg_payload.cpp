@@ -22,6 +22,7 @@
  */
 
 #include "utils/role_reg_payload.hpp"
+#include "plh_version_registry.hpp"
 
 #include <gtest/gtest.h>
 
@@ -107,6 +108,159 @@ TEST(RoleRegPayload, NeitherTransportFlag_DiagnosticPointsAtConfig)
         EXPECT_NE(msg.find("transport"), std::string::npos)
             << "Diagnostic must name the `transport` config field — got: "
             << msg;
+    }
+}
+
+// ── HEP-CORE-0032 §8 ABI fingerprint wire binding ──────────────────────
+//
+// Task #326.  Pins the shape and roundtrip of the `abi_fingerprint`
+// wire field carried on REG_REQ / CONSUMER_REG_REQ per §8.2.  A
+// refactor that renames a field or omits the envelope breaks these
+// tests immediately.
+
+using pylabhub::hub::ConsumerRegInputs;
+using pylabhub::hub::build_consumer_reg_payload;
+
+ConsumerRegInputs make_consumer_baseline()
+{
+    ConsumerRegInputs in;
+    in.channel   = "test.channel";
+    in.role_uid  = "cons.test.uid00000001";
+    in.role_name = "test_consumer";
+    in.zmq_pubkey = "01234567890123456789012345678901234567";
+    return in;
+}
+
+TEST(RoleRegPayload, ProducerReg_CarriesAbiFingerprintEnvelope)
+{
+    auto reg = build_producer_reg_payload(
+        make_baseline(/*has_shm=*/false, /*is_zmq_transport=*/true));
+
+    ASSERT_TRUE(reg.contains("abi_fingerprint"))
+        << "REG_REQ MUST carry `abi_fingerprint` per HEP-CORE-0032 §8.2";
+    ASSERT_TRUE(reg["abi_fingerprint"].is_object());
+
+    // Every REQUIRED axis field per §8.2 must be present.  Refactor
+    // that drops one of these silently breaks §8.5 verify_peer_versions
+    // classification — pin the whole set.
+    const auto &fp = reg["abi_fingerprint"];
+    EXPECT_TRUE(fp.contains("library_major"));
+    EXPECT_TRUE(fp.contains("library_minor"));
+    EXPECT_TRUE(fp.contains("library_rolling"));
+    EXPECT_TRUE(fp.contains("shm_major"));
+    EXPECT_TRUE(fp.contains("shm_minor"));
+    EXPECT_TRUE(fp.contains("broker_proto_major"));
+    EXPECT_TRUE(fp.contains("broker_proto_minor"));
+    EXPECT_TRUE(fp.contains("zmq_frame_major"));
+    EXPECT_TRUE(fp.contains("zmq_frame_minor"));
+    EXPECT_TRUE(fp.contains("script_api_major"));
+    EXPECT_TRUE(fp.contains("script_api_minor"));
+    EXPECT_TRUE(fp.contains("script_engine_major"));
+    EXPECT_TRUE(fp.contains("script_engine_minor"));
+    EXPECT_TRUE(fp.contains("config_major"));
+    EXPECT_TRUE(fp.contains("config_minor"));
+}
+
+TEST(RoleRegPayload, ConsumerReg_CarriesAbiFingerprintEnvelope)
+{
+    auto reg = build_consumer_reg_payload(make_consumer_baseline());
+
+    ASSERT_TRUE(reg.contains("abi_fingerprint"))
+        << "CONSUMER_REG_REQ MUST carry `abi_fingerprint` per §8.2";
+    ASSERT_TRUE(reg["abi_fingerprint"].is_object());
+
+    // Same 15-field envelope check.  Refactor divergence between
+    // producer + consumer builders is a silent-bug class this catches.
+    const auto &fp = reg["abi_fingerprint"];
+    EXPECT_TRUE(fp.contains("library_major"));
+    EXPECT_TRUE(fp.contains("shm_major"));
+    EXPECT_TRUE(fp.contains("broker_proto_major"));
+    EXPECT_TRUE(fp.contains("zmq_frame_major"));
+    EXPECT_TRUE(fp.contains("script_api_major"));
+    EXPECT_TRUE(fp.contains("script_engine_major"));
+    EXPECT_TRUE(fp.contains("config_major"));
+}
+
+TEST(RoleRegPayload, ProducerReg_AbiFingerprintMatchesCurrentComponentVersions)
+{
+    // Round-trip: envelope on the wire must parse back to the same
+    // ComponentVersions the running library reports via current().
+    // A refactor that hardcodes a value or drifts from current()
+    // breaks this pin.
+    auto reg = build_producer_reg_payload(
+        make_baseline(/*has_shm=*/false, /*is_zmq_transport=*/true));
+    const auto parsed = pylabhub::version::from_json_object(
+        reg["abi_fingerprint"]);
+    const auto cur = pylabhub::version::current();
+
+    EXPECT_EQ(parsed.library_major,       cur.library_major);
+    EXPECT_EQ(parsed.library_minor,       cur.library_minor);
+    EXPECT_EQ(parsed.library_rolling,     cur.library_rolling);
+    EXPECT_EQ(parsed.shm_major,           cur.shm_major);
+    EXPECT_EQ(parsed.shm_minor,           cur.shm_minor);
+    EXPECT_EQ(parsed.broker_proto_major,  cur.broker_proto_major);
+    EXPECT_EQ(parsed.broker_proto_minor,  cur.broker_proto_minor);
+    EXPECT_EQ(parsed.zmq_frame_major,     cur.zmq_frame_major);
+    EXPECT_EQ(parsed.zmq_frame_minor,     cur.zmq_frame_minor);
+    EXPECT_EQ(parsed.script_api_major,    cur.script_api_major);
+    EXPECT_EQ(parsed.script_api_minor,    cur.script_api_minor);
+    EXPECT_EQ(parsed.script_engine_major, cur.script_engine_major);
+    EXPECT_EQ(parsed.script_engine_minor, cur.script_engine_minor);
+    EXPECT_EQ(parsed.config_major,        cur.config_major);
+    EXPECT_EQ(parsed.config_minor,        cur.config_minor);
+}
+
+TEST(RoleRegPayload, ProducerReg_BuildIdIsSiblingNotNested)
+{
+    // §8.2 last paragraph — build_id is a SIBLING string field next
+    // to abi_fingerprint, not nested inside it.  This lets a receiver
+    // omit the build_id check independently of the envelope check.
+    // Refactor that nests build_id inside the envelope silently
+    // breaks the receiver-side comparator contract.
+    auto reg = build_producer_reg_payload(
+        make_baseline(/*has_shm=*/false, /*is_zmq_transport=*/true));
+
+    EXPECT_FALSE(reg["abi_fingerprint"].contains("build_id"))
+        << "build_id MUST NOT live inside the abi_fingerprint envelope; "
+        << "it's a sibling top-level field per HEP-CORE-0032 §8.2.";
+
+    // Conditional: present iff the library reports one.  This mirrors
+    // the emit-side logic in role_reg_payload.hpp.
+    if (const char *bid = pylabhub::version::build_id())
+    {
+        EXPECT_TRUE(reg.contains("build_id"))
+            << "Library reports build_id='" << bid
+            << "' — REG_REQ must carry the sibling field.";
+        EXPECT_EQ(reg.value("build_id", std::string{}),
+                  std::string(bid));
+    }
+    else
+    {
+        EXPECT_FALSE(reg.contains("build_id"))
+            << "Library has no build_id — REG_REQ MUST NOT emit the "
+            << "sibling field with an empty value (would confuse the "
+            << "broker's `nullptr → skip build_id check` rule).";
+    }
+}
+
+TEST(RoleRegPayload, ConsumerReg_BuildIdIsSiblingNotNested)
+{
+    // Same sibling-field contract on CONSUMER_REG_REQ.  This catches
+    // the same drift class as the producer test above but on the
+    // consumer path.
+    auto reg = build_consumer_reg_payload(make_consumer_baseline());
+
+    EXPECT_FALSE(reg["abi_fingerprint"].contains("build_id"));
+
+    if (const char *bid = pylabhub::version::build_id())
+    {
+        EXPECT_TRUE(reg.contains("build_id"));
+        EXPECT_EQ(reg.value("build_id", std::string{}),
+                  std::string(bid));
+    }
+    else
+    {
+        EXPECT_FALSE(reg.contains("build_id"));
     }
 }
 
