@@ -16,6 +16,7 @@
  */
 
 #include "plh_version_registry.hpp"
+#include "utils/json_fwd.hpp"
 
 #include <cstring>
 
@@ -338,4 +339,119 @@ TEST(VerifyPeerVersionsTest, ResultMatchesCheckAbi_ExceptForStderrSideEffect)
     EXPECT_EQ(rc.major_mismatch.script_engine,   rv.major_mismatch.script_engine);
     EXPECT_EQ(rc.major_mismatch.config,          rv.major_mismatch.config);
     EXPECT_EQ(rc.major_mismatch.build_id,        rv.major_mismatch.build_id);
+}
+
+// ============================================================================
+// to_json_object / from_json_object — wire-envelope serialization
+//
+// HEP-CORE-0032 §8.2 + task #325 slice B.  Round-trip contract:
+//   to_json_object → JSON → from_json_object == identity.
+// Field-shape contract: HEP-0032 §8.2 lists the exact axis keys.
+// Forward-compat contract: extra unknown fields are ignored per §8.3.2.
+// Robustness contract: missing REQUIRED axis fields throw
+//   std::invalid_argument — broker treats malformed envelope as
+//   INVALID_REQUEST per §8.7.
+// ============================================================================
+
+using pylabhub::version::to_json_object;
+using pylabhub::version::from_json_object;
+
+TEST(AbiFingerprintJsonTest, RoundTrip_Identity)
+{
+    const auto cur = current();
+    const nlohmann::json j = to_json_object(cur);
+    const auto parsed = from_json_object(j);
+
+    EXPECT_EQ(parsed.library_major,       cur.library_major);
+    EXPECT_EQ(parsed.library_minor,       cur.library_minor);
+    EXPECT_EQ(parsed.library_rolling,     cur.library_rolling);
+    EXPECT_EQ(parsed.shm_major,           cur.shm_major);
+    EXPECT_EQ(parsed.shm_minor,           cur.shm_minor);
+    EXPECT_EQ(parsed.broker_proto_major,  cur.broker_proto_major);
+    EXPECT_EQ(parsed.broker_proto_minor,  cur.broker_proto_minor);
+    EXPECT_EQ(parsed.zmq_frame_major,     cur.zmq_frame_major);
+    EXPECT_EQ(parsed.zmq_frame_minor,     cur.zmq_frame_minor);
+    EXPECT_EQ(parsed.script_api_major,    cur.script_api_major);
+    EXPECT_EQ(parsed.script_api_minor,    cur.script_api_minor);
+    EXPECT_EQ(parsed.script_engine_major, cur.script_engine_major);
+    EXPECT_EQ(parsed.script_engine_minor, cur.script_engine_minor);
+    EXPECT_EQ(parsed.config_major,        cur.config_major);
+    EXPECT_EQ(parsed.config_minor,        cur.config_minor);
+}
+
+TEST(AbiFingerprintJsonTest, WireShape_ExactFieldNames)
+{
+    // §8.2 lists these exact keys.  A test refactor that renames one
+    // MUST bump broker_proto MINOR per §8.4.
+    const nlohmann::json j = to_json_object(current());
+    EXPECT_TRUE(j.contains("library_major"));
+    EXPECT_TRUE(j.contains("library_minor"));
+    EXPECT_TRUE(j.contains("library_rolling"));
+    EXPECT_TRUE(j.contains("shm_major"));
+    EXPECT_TRUE(j.contains("shm_minor"));
+    EXPECT_TRUE(j.contains("broker_proto_major"));
+    EXPECT_TRUE(j.contains("broker_proto_minor"));
+    EXPECT_TRUE(j.contains("zmq_frame_major"));
+    EXPECT_TRUE(j.contains("zmq_frame_minor"));
+    EXPECT_TRUE(j.contains("script_api_major"));
+    EXPECT_TRUE(j.contains("script_api_minor"));
+    EXPECT_TRUE(j.contains("script_engine_major"));
+    EXPECT_TRUE(j.contains("script_engine_minor"));
+    EXPECT_TRUE(j.contains("config_major"));
+    EXPECT_TRUE(j.contains("config_minor"));
+
+    // build_id is NOT part of the envelope — it's a SIBLING wire
+    // field per §8.2 last paragraph.  This pins that separation.
+    EXPECT_FALSE(j.contains("build_id"));
+}
+
+TEST(AbiFingerprintJsonTest, UnknownFieldsIgnored_ForwardCompat)
+{
+    // MINOR-bump forward-compat: adding a new field to a future wire
+    // shape must not break older receivers per §8.3.2.  from_json_object
+    // must accept + ignore unknown keys.
+    nlohmann::json j = to_json_object(current());
+    j["future_axis_major"] = 99;
+    j["future_axis_minor"] = 42;
+    j["unrelated_metadata"] = "hello";
+
+    // Should NOT throw.
+    ASSERT_NO_THROW({
+        const auto parsed = from_json_object(j);
+        (void)parsed;
+    });
+}
+
+TEST(AbiFingerprintJsonTest, MissingRequiredField_Throws)
+{
+    nlohmann::json j = to_json_object(current());
+    j.erase("shm_major");
+    EXPECT_THROW(from_json_object(j), std::invalid_argument);
+}
+
+TEST(AbiFingerprintJsonTest, NonObjectInput_Throws)
+{
+    // Broker's INVALID_REQUEST path — a peer that sends a string or
+    // array where an object is expected fails cleanly.
+    EXPECT_THROW(from_json_object(nlohmann::json("not-an-object")),
+                 std::invalid_argument);
+    EXPECT_THROW(from_json_object(nlohmann::json::array({1, 2, 3})),
+                 std::invalid_argument);
+    EXPECT_THROW(from_json_object(nlohmann::json(nullptr)),
+                 std::invalid_argument);
+}
+
+TEST(AbiFingerprintJsonTest, VerifyPeerVersions_FromParsedWire)
+{
+    // End-to-end: role serializes its ComponentVersions to JSON,
+    // broker parses it and calls verify_peer_versions.  Verdict must
+    // be compatible when both sides are running the same build.
+    const auto role_versions = current();
+    const nlohmann::json wire = to_json_object(role_versions);
+
+    // Simulate broker's ingest: parse + verify.
+    const auto peer = from_json_object(wire);
+    const auto verdict = verify_peer_versions(peer, nullptr);
+    EXPECT_TRUE(verdict.compatible);
+    EXPECT_EQ(verdict.message, "ABI OK");
 }

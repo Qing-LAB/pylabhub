@@ -8,12 +8,14 @@
 #include "plh_platform.hpp"
 #include "pylabhub_version.h"  // PYLABHUB_RELEASE_VERSION, PYLABHUB_PYTHON_RUNTIME_VERSION
 #include "utils/data_block.hpp" // HEADER_VERSION_MAJOR/MINOR
+#include "utils/json_fwd.hpp"  // full nlohmann::json for to_json_object/from_json_object
 #include "utils/native_engine_api.h"  // PLH_COMPONENT_* C-visible mirrors
 
 #include <fmt/format.h>
 
 #include <cstdio>
 #include <cstring>
+#include <stdexcept>
 #include <vector>
 
 // ============================================================================
@@ -278,6 +280,74 @@ AbiCheckResult verify_peer_versions(const ComponentVersions &peer_versions,
                                     const char *peer_build_id) noexcept
 {
     return detail::compute_verdict(peer_versions, peer_build_id).result;
+}
+
+// ============================================================================
+// JSON serialization for wire binding (HEP-CORE-0032 §8.2)
+// ============================================================================
+
+nlohmann::json to_json_object(const ComponentVersions &v)
+{
+    return nlohmann::json{
+        {"library_major",       v.library_major},
+        {"library_minor",       v.library_minor},
+        {"library_rolling",     v.library_rolling},
+        {"shm_major",           v.shm_major},
+        {"shm_minor",           v.shm_minor},
+        {"broker_proto_major",  v.broker_proto_major},
+        {"broker_proto_minor",  v.broker_proto_minor},
+        {"zmq_frame_major",     v.zmq_frame_major},
+        {"zmq_frame_minor",     v.zmq_frame_minor},
+        {"script_api_major",    v.script_api_major},
+        {"script_api_minor",    v.script_api_minor},
+        {"script_engine_major", v.script_engine_major},
+        {"script_engine_minor", v.script_engine_minor},
+        {"config_major",        v.config_major},
+        {"config_minor",        v.config_minor},
+    };
+}
+
+ComponentVersions from_json_object(const nlohmann::json &j)
+{
+    if (!j.is_object())
+    {
+        throw std::invalid_argument(
+            "abi_fingerprint: expected JSON object");
+    }
+
+    // Small helper: fetch a REQUIRED integer axis field.  A missing
+    // field is treated as INVALID_REQUEST per HEP-CORE-0032 §8.7 —
+    // wire-shape invariant, not a silently-defaulted value.
+    auto req_axis = [&](const char *key) -> unsigned {
+        auto it = j.find(key);
+        if (it == j.end() || !it->is_number_unsigned())
+        {
+            throw std::invalid_argument(
+                fmt::format("abi_fingerprint: missing or non-unsigned "
+                             "axis field '{}'", key));
+        }
+        return it->get<unsigned>();
+    };
+
+    ComponentVersions v{};
+    v.library_major       = static_cast<uint16_t>(req_axis("library_major"));
+    v.library_minor       = static_cast<uint16_t>(req_axis("library_minor"));
+    v.library_rolling     = static_cast<uint16_t>(req_axis("library_rolling"));
+    v.shm_major           = static_cast<uint8_t>(req_axis("shm_major"));
+    v.shm_minor           = static_cast<uint8_t>(req_axis("shm_minor"));
+    v.broker_proto_major  = static_cast<uint8_t>(req_axis("broker_proto_major"));
+    v.broker_proto_minor  = static_cast<uint8_t>(req_axis("broker_proto_minor"));
+    v.zmq_frame_major     = static_cast<uint8_t>(req_axis("zmq_frame_major"));
+    v.zmq_frame_minor     = static_cast<uint8_t>(req_axis("zmq_frame_minor"));
+    v.script_api_major    = static_cast<uint8_t>(req_axis("script_api_major"));
+    v.script_api_minor    = static_cast<uint8_t>(req_axis("script_api_minor"));
+    v.script_engine_major = static_cast<uint8_t>(req_axis("script_engine_major"));
+    v.script_engine_minor = static_cast<uint8_t>(req_axis("script_engine_minor"));
+    v.config_major        = static_cast<uint8_t>(req_axis("config_major"));
+    v.config_minor        = static_cast<uint8_t>(req_axis("config_minor"));
+    // Unknown / extra fields intentionally ignored — MINOR-bump
+    // forward-compat contract per HEP-CORE-0032 §8.3.2.
+    return v;
 }
 
 } // namespace pylabhub::version

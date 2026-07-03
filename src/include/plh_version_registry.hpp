@@ -51,6 +51,7 @@
 
 #include "pylabhub_utils_export.h"
 #include "pylabhub_version.h"
+#include "utils/json_fwd.hpp"
 
 #ifdef PYLABHUB_HAVE_BUILD_ID
 #include "pylabhub_build_id.h"
@@ -375,6 +376,56 @@ AbiCheckResult check_abi(const ComponentVersions &expected,
 PYLABHUB_UTILS_EXPORT
 AbiCheckResult verify_peer_versions(const ComponentVersions &peer_versions,
                                     const char *peer_build_id = nullptr) noexcept;
+
+// ============================================================================
+// JSON serialization for wire binding (HEP-CORE-0032 §8.2)
+// ============================================================================
+
+/**
+ * @brief Serialize a `ComponentVersions` envelope to a JSON object.
+ *
+ * The shape MUST match the `abi_fingerprint` schema in HEP-CORE-0032
+ * §8.2 — the same field names as `version_info_json()`.  Used by
+ * role-side REG_REQ / CONSUMER_ATTACH_REQ builders to embed the
+ * caller's ABI envelope on the wire; used by broker-side REG_ACK /
+ * CONSUMER_ATTACH_ACK builders to echo broker's own envelope.
+ *
+ * Field shape (7 axes × major/minor + library.rolling):
+ * @code
+ * {
+ *   "library_major": <uint>, "library_minor": <uint>, "library_rolling": <uint>,
+ *   "shm_major": <uint>,     "shm_minor": <uint>,
+ *   "broker_proto_major": <uint>, "broker_proto_minor": <uint>,
+ *   "zmq_frame_major": <uint>,    "zmq_frame_minor": <uint>,
+ *   "script_api_major": <uint>,   "script_api_minor": <uint>,
+ *   "script_engine_major": <uint>,"script_engine_minor": <uint>,
+ *   "config_major": <uint>,       "config_minor": <uint>
+ * }
+ * @endcode
+ *
+ * `build_id` is NOT part of this envelope — it's serialised as a
+ * SIBLING string field on the parent wire message (`"build_id":
+ * "<string>"` next to `"abi_fingerprint": {...}`) so it can be
+ * omitted independently of the ComponentVersions block.
+ */
+PYLABHUB_UTILS_EXPORT
+nlohmann::json to_json_object(const ComponentVersions &v);
+
+/**
+ * @brief Parse a `ComponentVersions` from a JSON object.
+ *
+ * Reverse of `to_json_object`.  Missing REQUIRED fields (any of the
+ * axis fields above) throw `std::invalid_argument` — the receiver
+ * treats a malformed `abi_fingerprint` as INVALID_REQUEST at the
+ * broker level (§8.7 sequence).
+ *
+ * Extra / unknown fields are IGNORED — this is the MINOR-bump forward
+ * compatibility contract from HEP-CORE-0032 §8.3.2: adding a new
+ * axis-field on the wire is a MINOR bump; older receivers must
+ * ignore it (JSON: unknown keys), not reject it.
+ */
+PYLABHUB_UTILS_EXPORT
+ComponentVersions from_json_object(const nlohmann::json &j);
 
 // ============================================================================
 // Query API
