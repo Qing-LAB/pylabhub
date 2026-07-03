@@ -516,33 +516,66 @@ mismatch is a runbook-worthy event.
 
 ### 8.6 Log format (canonical)
 
-Two log lines per REG_REQ ingest for observability + compact triage:
+Log lines follow **Convention 1** (task #238 style,
+`[component] event=EventName field='value'`) — the same convention
+already used on the sibling REG_REQ log line at
+`broker_service.cpp:2342` (`[broker] event=RegReqAccepted role='X'
+channel='Y' producer_pubkey='Z'`).  Deviating from this convention
+without a `broker_proto` MINOR bump per §8.4 breaks the
+test-contract discipline established by task #238.
 
-**Verdict line (always logged):**
+**Verdict line (always logged on REG_REQ ingest):**
 
 ```
-REG_REQ role_uid=<X> abi_verdict=<verdict> mismatched_axes=[<comma-sep axis names, empty on OK>]
+[broker] event=AbiFingerprintReceived role='{X}' verdict='{V}' mismatched_axes='{list}'
 ```
 
-Verdict values (mirroring §8.5):
+Where:
+- `{X}` = role's `role_uid`, single-quoted.
+- `{V}` ∈ `OK` | `BUILD_ONLY` | `MINOR_MISMATCH` | `MAJOR_MISMATCH_ACCEPTED` | `MAJOR_MISMATCH_REJECTED` | `ABSENT`, single-quoted.
+- `{list}` = comma-separated axis names (e.g. `shm,broker_proto`) or empty on OK / BUILD_ONLY / ABSENT.  Single-quoted.
+
+Verdict values (matches §8.5 table):
 - `OK` — envelopes match.
 - `BUILD_ONLY` — only `build_id` differs.
 - `MINOR_MISMATCH` — one or more axes differ on minor only.
 - `MAJOR_MISMATCH_ACCEPTED` — major mismatch, default (lenient) mode.
 - `MAJOR_MISMATCH_REJECTED` — major mismatch, strict mode.
+- `ABSENT` — role's REG_REQ carried no `abi_fingerprint` (migration
+  window while roles roll out §8's wire binding).
 
-**Detail line (logged only when verdict != OK):**
+**Detail line (logged at same INFO level, only when verdict ≠ OK):**
 
 ```
-REG_REQ role_uid=<X> role_versions=<version_info_string()> broker_versions=<version_info_string()>
+[broker] event=AbiFingerprintDetail role='{X}' role_versions='{s}' broker_versions='{s}'
 ```
 
-`version_info_string()` is the existing formatter in
-`version_registry.cpp`; the output shape is stable and MUST NOT be
-refactored without a `library` axis MINOR bump.
+Where `{s}` = existing `pylabhub::version::version_info_string()`
+output.  The `version_info_string()` output shape is stable per
+`plh_version_registry.hpp` and MUST NOT be refactored without a
+`library` axis MINOR bump.
 
-**These templates are pinned by L3 tests (task #326).**  Refactoring
-them requires a MINOR bump on the appropriate axis per §8.4.
+**Symmetric role-side lines** on REG_ACK receive (broker's echo
+carries `broker_abi_fingerprint`):
+
+```
+[role] event=BrokerAbiFingerprintReceived role='{X}' verdict='{V}' mismatched_axes='{list}'
+[role] event=BrokerAbiFingerprintDetail role='{X}' role_versions='{s}' broker_versions='{s}'
+```
+
+**Same treatment on CONSUMER_ATTACH_REQ_SHM / _ZMQ ingest** (HEP-0041
+§9 D4, HEP-0042 §6.2):
+
+```
+[broker] event=ConsumerAttachAbiReceived role='{X}' transport='{shm|zmq}' verdict='{V}' mismatched_axes='{list}'
+```
+
+**These log-line templates are test-contract-stable**, pinned by L3
+tests (task #326).  Refactoring them requires a MINOR bump on the
+appropriate axis per §8.4.  New sites emitting the fingerprint
+verdict MUST follow this Convention 1 shape — grep neighbours in the
+same file (`broker_service.cpp` sibling REG_REQ lines) for pattern
+parity before writing new log calls.
 
 ### 8.7 Handshake sequence
 
