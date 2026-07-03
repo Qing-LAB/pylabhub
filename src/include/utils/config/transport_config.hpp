@@ -56,7 +56,27 @@ inline TransportConfig parse_transport_config(const nlohmann::json &j,
 
     const std::string transport_str = j.value(pfx + "transport", std::string{"shm"});
     if (transport_str == "shm")
+    {
+#if !defined(__linux__)
+        // #306 (2026-07-02) — reject SHM transport at CONFIG-LOAD time
+        // on non-Linux platforms.  HEP-CORE-0041 Phase 1 ships only a
+        // Linux backend (memfd_create + SCM_RIGHTS); FreeBSD / macOS /
+        // Windows backends are tracked as #259/#260/#261.  Prior code
+        // silently accepted the config, then failed LATE at
+        // `apply_consumer_reg_ack_shm_` after `build_rx_queue` already
+        // constructed the queue and `apply_master_approval` succeeded.
+        // Users saw an obscure REG_ACK failure with no config-time
+        // hint that SHM is unsupported.  Fail fast, name the platform,
+        // point at the tracking task.
+        throw std::invalid_argument(
+            std::string(tag) + ": '" + pfx + "transport = \"shm\"' is not "
+            "supported on this platform (HEP-CORE-0041 Phase 1 ships only "
+            "a Linux backend; FreeBSD/macOS/Windows tracked as #259/#260/"
+            "#261).  Use \"" + pfx + "transport\": \"zmq\" instead, or "
+            "wait for the per-platform backend to ship.");
+#endif
         tc.transport = Transport::Shm;
+    }
     else if (transport_str == "zmq")
         tc.transport = Transport::Zmq;
     else if (!transport_str.empty())
