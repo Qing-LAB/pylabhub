@@ -272,15 +272,45 @@ struct BrokerRequestComm::Impl
             // timeout/disconnect.
             if (msg_type == "ERROR" && !pending_requests.empty())
             {
-                auto first = pending_requests.begin();
-                auto req = first->second;
-                remove_from_pending(req);
+                // HEP-CORE-0042 Phase 3 review-C fix (2026-07-02): scan
+                // pending requests for the FIRST non-abandoned entry.
+                // Prior code always picked `pending_requests.begin()`
+                // without an abandoned check — a late ERROR for a
+                // client-side-timed-out request would be delivered to
+                // whatever REQ currently owns an ack slot, producing a
+                // misleading `{status=error, error_code=STALE_INSTANCE}`
+                // reply for the WRONG channel.  ERROR bodies do NOT
+                // carry `producer_role_uid` / `channel_name`, so the
+                // wrapper-level echo check in `consumer_attach_zmq` and
+                // `channel_auth_applied` can't rescue this — the
+                // abandoned filter MUST live in poll_recv.
+                //
+                // If ALL pending requests are abandoned, drop the ERROR
+                // (nobody's waiting for it that we can identify safely).
+                std::shared_ptr<RequestCmd> live;
+                for (auto &kv : pending_requests)
                 {
-                    std::lock_guard<std::mutex> lk(req->mu);
-                    req->result = std::move(body);
-                    req->done = true;
+                    if (!kv.second->abandoned.load(
+                            std::memory_order_acquire))
+                    {
+                        live = kv.second;
+                        break;
+                    }
                 }
-                req->cv.notify_one();
+                if (!live)
+                {
+                    LOGGER_WARN("BrokerRequestComm: ERROR reply arrived "
+                                "but all pending requests are abandoned; "
+                                "dropping to prevent cross-wire");
+                    continue;
+                }
+                remove_from_pending(live);
+                {
+                    std::lock_guard<std::mutex> lk(live->mu);
+                    live->result = std::move(body);
+                    live->done = true;
+                }
+                live->cv.notify_one();
                 continue;
             }
 
