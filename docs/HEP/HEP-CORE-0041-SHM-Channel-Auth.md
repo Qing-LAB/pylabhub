@@ -1230,7 +1230,82 @@ is no filesystem truncation surface that would raise SIGBUS on a
 mapped page.  A SIGBUS handler + siglongjmp would add complexity for
 a scenario that cannot occur.  Skipped.
 
+**Role separation and isolation (2026-07-03 design refinement).**
+
+The broker's observation role is **NOT a consumer.**  Consumers
+participate in the ring-buffer protocol (slot acquire / commit /
+release, sync policy).  Broker only reads header-resident atomic
+counters — it has NO business in data slots or flexzone.  Three
+consequences that shape the API and wire mechanism:
+
+1. **Distinct role name: `observer`, not `consumer`.**  The wire
+   handshake distinguishes observer from consumer at role_type; the
+   producer's `AttachProtocolAcceptor` routes observer handshakes to
+   a different verification path (broker pubkey from KnownRoles)
+   than consumer handshakes (channel's `authorized_consumer_pubkeys`).
+
+2. **Header-only mmap: `DataBlockObserverHandle`.**  A dedicated
+   observer-side attach API mmaps ONLY the first header page,
+   `PROT_READ`.  Data slots and flexzone are physically unmapped
+   from the broker's address space — even if broker code has a bug
+   walking into the data zone, the kernel returns SIGSEGV, not
+   corrupted data.  Receiver-side discipline enforced via the
+   factory: broker code MUST use `open_datablock_for_observer_from_fd`,
+   never `open_datablock_for_diagnostic_from_fd`.
+
+3. **Producer can DENY observation (opt-in with graceful fallback).**
+   Producer's shm_capability listener is configurable to reject
+   observer-role handshakes via `producer.shm_metrics_observer`
+   (default `true`).  A denied broker doesn't crash — it falls back
+   to the heartbeat-based metrics reporting.  Broker's
+   `BROKER_SHM_INFO_REQ` response gains a `metrics_source` field:
+   `"live_observation"` | `"heartbeat"` | `"unavailable"`.
+
+**Phase B open design questions (Phase B MUST resolve before landing).**
+
+1. **DataBlock ABI/version compatibility.**  Current diagnostic and
+   observer factories check only `magic_number == DATABLOCK_MAGIC_NUMBER`.
+   That validates "is a DataBlock" but NOT "compatible header layout."
+   A broker built from tree revision X vs producer built from
+   revision X+1 with a `SharedMemoryHeader` field addition would
+   silently read wrong offsets.  Need `header_layout_version` (or
+   layout-hash) field + explicit check in both factories.  Pre-existing
+   gap; observer path makes it more visible (broker + producer may be
+   updated independently under upgrade rollouts).
+
+2. **Read-only enforcement at the callee.**  `mmap(PROT_READ)` is
+   correct at the VM layer — any write from observer's address space
+   raises SIGSEGV.  But `slot_rw_get_metrics(SharedMemoryHeader*, ...)`
+   takes a non-const pointer today.  If it ever writes (a snapshot
+   side-effect, counter reset), the observer crashes.  Prefer:
+   introduce `slot_rw_get_metrics_const(const SharedMemoryHeader*, ...)`
+   and route observer through it — compile-time constness contract,
+   not a runtime hope.
+
+3. **Post-handshake revocation.**  `shm_metrics_observer` is
+   HANDSHAKE-ONLY.  Once broker has the fd, producer cannot withdraw
+   it — memfd is kernel-refcounted independently.  If threat model
+   requires post-attach revocation, the answer is Layer 1 (broker
+   eagerly releases on producer-death detection), NOT producer-enforced.
+   `memfd_add_seals(F_SEAL_WRITE)` is producer-wide, so can't
+   selectively deny broker while allowing self.  Documented explicitly
+   as accepted: opt-in is at REG_ACK time, not per-read.
+
+4. **Cross-platform.**  Observer's `PROT_READ` mmap primitive is
+   POSIX-portable; the source memfd is Linux-only (#248-#249).  Under
+   FreeBSD (#259) `SHM_ANON` maps the same shape.  macOS (#260) lacks
+   memfd — Phase C wire delta needs a per-platform fallback path (or
+   the SHM channel is unsupported on that platform, same class as
+   #306's config-time rejection).  Observer API introduces no new
+   platform-specific surface beyond what HEP-0041 §6.1 already
+   enumerates.
+
 **Tracked as task #317 — Broker SHM observation fd via SCM_RIGHTS.**
+Phase A (`datablock_get_metrics_from_fd` C API) shipped 2026-07-03
+(commit `b3d5e36d`).  Phase B (observer handle + version check +
+const enforcement + producer config) pending answers to questions
+1-2 above.  Phase C (broker wiring + wire delta + `metrics_source`
+envelope) depends on Phase B.
 
 ## 11. Next steps
 
