@@ -14,6 +14,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <vector>
 
 // ============================================================================
 // Pin the header's SHM constants against data_block.hpp's authoritative
@@ -141,84 +142,142 @@ std::string version_info_json()
 }
 
 // ============================================================================
-// check_abi — runtime compatibility assertion
+// Pure comparator — no side effects, no I/O.
+//
+// Shared by:
+//   - `check_abi`             (startup self-check; caller's exp vs mine)
+//   - `verify_peer_versions`  (peer verification; peer's versions vs mine)
+//
+// Two public entry points, one internal comparator.  See
+// HEP-CORE-0032 §8.5 for the taxonomy this implements.
+// ============================================================================
+
+namespace detail
+{
+
+/// Compare `remote` (peer or startup expectation) against local
+/// `current()`, filling in `major_mismatch` flags for MAJOR-axis
+/// differences and appending `minor_notes` for MINOR differences.
+/// Neither log output nor stderr is produced here; callers decide
+/// where to sink the verdict.
+struct RawVerdict
+{
+    AbiCheckResult    result;
+    std::string       minor_notes;   ///< one per minor mismatch, "; "-joined
+    std::vector<const char *> major_axes;  ///< names of MAJOR-mismatched axes
+    std::vector<const char *> minor_axes;  ///< names of MINOR-mismatched axes
+};
+
+static RawVerdict compute_verdict(const ComponentVersions &remote,
+                                  const char *remote_build_id) noexcept
+{
+    RawVerdict v{};
+    v.result.compatible = true;
+    const auto cur = current();
+
+    auto check_major = [&](const char *name, auto rem, auto loc, bool &flag) {
+        if (rem != loc)
+        {
+            flag                    = true;
+            v.result.compatible     = false;
+            v.result.message += fmt::format("{} major {} != {}; ",
+                                            name, static_cast<unsigned>(rem),
+                                            static_cast<unsigned>(loc));
+            v.major_axes.push_back(name);
+        }
+    };
+    check_major("library",       remote.library_major,        cur.library_major,
+                v.result.major_mismatch.library);
+    check_major("shm",           remote.shm_major,            cur.shm_major,
+                v.result.major_mismatch.shm);
+    check_major("broker_proto",  remote.broker_proto_major,   cur.broker_proto_major,
+                v.result.major_mismatch.broker_proto);
+    check_major("zmq_frame",     remote.zmq_frame_major,      cur.zmq_frame_major,
+                v.result.major_mismatch.zmq_frame);
+    check_major("script_api",    remote.script_api_major,     cur.script_api_major,
+                v.result.major_mismatch.script_api);
+    check_major("script_engine", remote.script_engine_major,  cur.script_engine_major,
+                v.result.major_mismatch.script_engine);
+    check_major("config",        remote.config_major,         cur.config_major,
+                v.result.major_mismatch.config);
+
+    // build_id: strict freshness check when non-null.
+    if (remote_build_id != nullptr)
+    {
+        const char *cur_bid = build_id();
+        if (cur_bid == nullptr || std::strcmp(remote_build_id, cur_bid) != 0)
+        {
+            v.result.major_mismatch.build_id = true;
+            v.result.compatible              = false;
+            v.result.message += fmt::format("build_id {} != {}; ",
+                                            remote_build_id,
+                                            cur_bid ? cur_bid : "(no build_id)");
+            v.major_axes.push_back("build_id");
+        }
+    }
+
+    auto note_minor = [&](const char *name, auto rem, auto loc) {
+        if (rem != loc)
+        {
+            if (!v.minor_notes.empty()) v.minor_notes += "; ";
+            v.minor_notes += fmt::format("{} minor {} != {}",
+                                          name,
+                                          static_cast<unsigned>(rem),
+                                          static_cast<unsigned>(loc));
+            v.minor_axes.push_back(name);
+        }
+    };
+    note_minor("library",       remote.library_minor,        cur.library_minor);
+    note_minor("shm",           remote.shm_minor,            cur.shm_minor);
+    note_minor("broker_proto",  remote.broker_proto_minor,   cur.broker_proto_minor);
+    note_minor("zmq_frame",     remote.zmq_frame_minor,      cur.zmq_frame_minor);
+    note_minor("script_api",    remote.script_api_minor,     cur.script_api_minor);
+    note_minor("script_engine", remote.script_engine_minor,  cur.script_engine_minor);
+    note_minor("config",        remote.config_minor,         cur.config_minor);
+
+    if (v.result.compatible && v.result.message.empty())
+        v.result.message = "ABI OK";
+    else if (!v.result.message.empty() && v.result.message.back() == ' ')
+        v.result.message.pop_back();  // trim trailing space after "; "
+
+    return v;
+}
+
+} // namespace detail
+
+// ============================================================================
+// check_abi — startup self-check.  Emits minor warnings to stderr
+// because it runs BEFORE LifecycleGuard (Logger state is still
+// Uninitialized; LOGGER_WARN would trigger PLH_PANIC per
+// logger.cpp:67).  Direct stderr keeps the WARN visible without a
+// lifecycle precondition.
 // ============================================================================
 
 AbiCheckResult check_abi(const ComponentVersions &exp,
                          const char *exp_build_id) noexcept
 {
-    AbiCheckResult r{};
-    r.compatible = true;
-    const auto cur = current();
-
-    auto check_major = [&](const char *name, auto e, auto c, bool &flag) {
-        if (e != c)
-        {
-            flag = true;
-            r.compatible = false;
-            r.message += fmt::format("{} major {} != {}; ",
-                                     name, static_cast<unsigned>(e),
-                                     static_cast<unsigned>(c));
-        }
-    };
-    check_major("library",       exp.library_major,        cur.library_major,
-                r.major_mismatch.library);
-    check_major("shm",           exp.shm_major,            cur.shm_major,
-                r.major_mismatch.shm);
-    check_major("broker_proto",  exp.broker_proto_major,   cur.broker_proto_major,
-                r.major_mismatch.broker_proto);
-    check_major("zmq_frame",     exp.zmq_frame_major,      cur.zmq_frame_major,
-                r.major_mismatch.zmq_frame);
-    check_major("script_api",    exp.script_api_major,     cur.script_api_major,
-                r.major_mismatch.script_api);
-    check_major("script_engine", exp.script_engine_major,  cur.script_engine_major,
-                r.major_mismatch.script_engine);
-    check_major("config",        exp.config_major,         cur.config_major,
-                r.major_mismatch.config);
-
-    // Build_id: strict freshness check when non-null.
-    if (exp_build_id != nullptr)
+    auto v = detail::compute_verdict(exp, exp_build_id);
+    if (!v.minor_notes.empty())
     {
-        const char *cur_bid = build_id();
-        if (cur_bid == nullptr || std::strcmp(exp_build_id, cur_bid) != 0)
-        {
-            r.major_mismatch.build_id = true;
-            r.compatible = false;
-            r.message += fmt::format("build_id {} != {}; ",
-                                     exp_build_id,
-                                     cur_bid ? cur_bid : "(library has no build_id)");
-        }
+        std::fprintf(stderr,
+                      "[pylabhub] ABI check WARN: %s "
+                      "(additive change; caller should re-inspect runtime surface)\n",
+                      v.minor_notes.c_str());
     }
+    return v.result;
+}
 
-    // Minor-only deltas → stderr WARN.  check_abi() is called BEFORE
-    // LifecycleGuard in the canonical main() pattern — using
-    // LOGGER_WARN here would trigger PLH_PANIC because the Logger
-    // state machine is still Uninitialized (logger.cpp:67).  Direct
-    // stderr keeps the WARN visible without a lifecycle precondition.
-    auto warn_minor = [&](const char *name, auto e, auto c) {
-        if (e != c)
-        {
-            std::fprintf(stderr,
-                "[pylabhub] ABI check WARN: %s minor %u != %u "
-                "(additive change; caller should re-inspect runtime surface)\n",
-                name, static_cast<unsigned>(e),
-                static_cast<unsigned>(c));
-        }
-    };
-    warn_minor("library",       exp.library_minor,        cur.library_minor);
-    warn_minor("shm",           exp.shm_minor,            cur.shm_minor);
-    warn_minor("broker_proto",  exp.broker_proto_minor,   cur.broker_proto_minor);
-    warn_minor("zmq_frame",     exp.zmq_frame_minor,      cur.zmq_frame_minor);
-    warn_minor("script_api",    exp.script_api_minor,     cur.script_api_minor);
-    warn_minor("script_engine", exp.script_engine_minor,  cur.script_engine_minor);
-    warn_minor("config",        exp.config_minor,         cur.config_minor);
+// ============================================================================
+// verify_peer_versions — peer verification on wire ingest.  Pure: no
+// I/O, no logger call, no stderr write.  Caller (broker's REG_REQ
+// handler or role's REG_ACK handler) emits the log line via the
+// Logger per HEP-CORE-0032 §8.6.
+// ============================================================================
 
-    if (r.compatible && r.message.empty())
-        r.message = "ABI OK";
-    else if (!r.message.empty() && r.message.back() == ' ')
-        r.message.pop_back(); // trim trailing space after "; "
-
-    return r;
+AbiCheckResult verify_peer_versions(const ComponentVersions &peer_versions,
+                                    const char *peer_build_id) noexcept
+{
+    return detail::compute_verdict(peer_versions, peer_build_id).result;
 }
 
 } // namespace pylabhub::version

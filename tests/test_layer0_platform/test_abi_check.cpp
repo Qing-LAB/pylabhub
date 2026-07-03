@@ -236,3 +236,106 @@ TEST(AbiCheckTest, AbiExpectedHere_MatchesCurrent)
         << "caller's abi_expected_here() must match the library it's "
            "running against; got: " << r.message;
 }
+
+// ============================================================================
+// verify_peer_versions — peer verification entry point
+//
+// HEP-CORE-0032 §8 + task #325.  Shares the underlying comparator with
+// check_abi but is PURE — no stderr, no logger — so callers on the
+// wire ingest path can emit their own structured log line.
+// ============================================================================
+
+using pylabhub::version::verify_peer_versions;
+
+TEST(VerifyPeerVersionsTest, IdenticalPeer_Compatible_NoStderr)
+{
+    // Capture stderr — verify_peer_versions must NOT write anything,
+    // whereas check_abi writes minor WARNs.  This test pins the
+    // "peer-verification is pure" contract.
+    ::testing::internal::CaptureStderr();
+    const auto r = verify_peer_versions(current(), nullptr);
+    const std::string stderr_out = ::testing::internal::GetCapturedStderr();
+
+    EXPECT_TRUE(r.compatible);
+    EXPECT_EQ(r.message, "ABI OK");
+    EXPECT_TRUE(stderr_out.empty())
+        << "verify_peer_versions must be pure — no stderr side effect. "
+        << "Got: " << stderr_out;
+}
+
+TEST(VerifyPeerVersionsTest, PeerMinorMismatch_CompatibleAndSilent)
+{
+    // Minor mismatch is compatible (accept + WARN in caller's log).
+    // verify_peer_versions itself does NOT emit the WARN — that's
+    // the caller's job (broker's REG_REQ handler emits per §8.6).
+    const auto peer = with_minor_bumped(current(), "broker_proto");
+    ::testing::internal::CaptureStderr();
+    const auto r = verify_peer_versions(peer, nullptr);
+    const std::string stderr_out = ::testing::internal::GetCapturedStderr();
+
+    EXPECT_TRUE(r.compatible);
+    EXPECT_EQ(r.message, "ABI OK")
+        << "compatible minor deltas leave message = 'ABI OK'; only "
+        << "major mismatches populate the message with per-axis text.";
+    EXPECT_TRUE(stderr_out.empty())
+        << "verify_peer_versions must NOT emit minor WARN to stderr "
+        << "(that's check_abi's job at startup, before Logger is up).";
+}
+
+TEST(VerifyPeerVersionsTest, PeerMajorMismatch_Incompatible_FlagAndMessage)
+{
+    const auto peer = with_major_bumped(current(), "shm");
+    const auto r = verify_peer_versions(peer, nullptr);
+
+    EXPECT_FALSE(r.compatible);
+    EXPECT_TRUE(r.major_mismatch.shm);
+    EXPECT_EQ(r.major_mismatch.library,      false);
+    EXPECT_EQ(r.major_mismatch.broker_proto, false);
+    EXPECT_NE(r.message.find("shm major"), std::string::npos)
+        << "message: " << r.message;
+}
+
+TEST(VerifyPeerVersionsTest, PeerBuildIdMismatch_Incompatible)
+{
+    // Only meaningful when the running library has a build_id compiled
+    // in.  Skip otherwise — same shape as the check_abi build_id test.
+    const char *cur_bid = pylabhub::version::build_id();
+    if (cur_bid == nullptr)
+    {
+        GTEST_SKIP() << "build_id support not compiled in (Release without "
+                        "PYLABHUB_STRICT_ABI_CHECK)";
+    }
+    const auto r = verify_peer_versions(current(),
+                                         "peer-has-a-different-build-id-string");
+    EXPECT_FALSE(r.compatible);
+    EXPECT_TRUE(r.major_mismatch.build_id);
+    EXPECT_NE(r.message.find("build_id"), std::string::npos)
+        << "message: " << r.message;
+}
+
+TEST(VerifyPeerVersionsTest, ResultMatchesCheckAbi_ExceptForStderrSideEffect)
+{
+    // Contract: verify_peer_versions and check_abi return IDENTICAL
+    // AbiCheckResult for identical inputs.  Only difference is
+    // stderr emission on minor mismatch.  This test asserts the
+    // result equivalence.
+    const auto peer = with_major_bumped(
+        with_minor_bumped(current(), "config"), "zmq_frame");
+
+    ::testing::internal::CaptureStderr();
+    const auto rc = check_abi(peer, nullptr);
+    (void)::testing::internal::GetCapturedStderr();  // discard the WARN
+
+    const auto rv = verify_peer_versions(peer, nullptr);
+
+    EXPECT_EQ(rc.compatible,                     rv.compatible);
+    EXPECT_EQ(rc.message,                        rv.message);
+    EXPECT_EQ(rc.major_mismatch.library,         rv.major_mismatch.library);
+    EXPECT_EQ(rc.major_mismatch.shm,             rv.major_mismatch.shm);
+    EXPECT_EQ(rc.major_mismatch.broker_proto,    rv.major_mismatch.broker_proto);
+    EXPECT_EQ(rc.major_mismatch.zmq_frame,       rv.major_mismatch.zmq_frame);
+    EXPECT_EQ(rc.major_mismatch.script_api,      rv.major_mismatch.script_api);
+    EXPECT_EQ(rc.major_mismatch.script_engine,   rv.major_mismatch.script_engine);
+    EXPECT_EQ(rc.major_mismatch.config,          rv.major_mismatch.config);
+    EXPECT_EQ(rc.major_mismatch.build_id,        rv.major_mismatch.build_id);
+}

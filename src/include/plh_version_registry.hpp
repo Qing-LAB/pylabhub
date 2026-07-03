@@ -349,6 +349,33 @@ PYLABHUB_UTILS_EXPORT
 AbiCheckResult check_abi(const ComponentVersions &expected,
                          const char *expected_build_id = nullptr) noexcept;
 
+/**
+ * @brief Verify a peer's ABI envelope received over the wire.
+ *
+ * Same underlying per-axis major-reject / minor-warn comparator as
+ * `check_abi`, but with a distinct entry point because the semantic
+ * context is peer verification, not startup self-check:
+ *
+ * - `check_abi` is called BEFORE `LifecycleGuard` at process startup;
+ *   its minor-mismatch WARN goes to stderr because the Logger state
+ *   machine is still Uninitialized (see `version_registry.cpp:193`).
+ * - `verify_peer_versions` is called by the broker on REG_REQ /
+ *   CONSUMER_ATTACH_REQ ingest — long after startup, with the Logger
+ *   fully initialized.  This entry point is **pure** (no side effects,
+ *   no I/O); caller emits any log lines via the Logger with their
+ *   preferred structured format (HEP-CORE-0032 §8.6).
+ *
+ * Both entry points share `detail::compute_verdict` for the actual
+ * comparison — a single comparator with two sinks.
+ *
+ * @param peer_versions   ABI envelope received from peer.
+ * @param peer_build_id   Peer's build_id (nullptr → skip build_id check).
+ * @return Same `AbiCheckResult` shape as `check_abi`.
+ */
+PYLABHUB_UTILS_EXPORT
+AbiCheckResult verify_peer_versions(const ComponentVersions &peer_versions,
+                                    const char *peer_build_id = nullptr) noexcept;
+
 // ============================================================================
 // Query API
 // ============================================================================
