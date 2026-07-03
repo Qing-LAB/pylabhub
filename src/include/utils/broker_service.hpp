@@ -141,6 +141,21 @@ public:
     {
         std::string endpoint{"tcp://0.0.0.0:5570"};
 
+        /// HEP-CORE-0032 §8.5 — strict ABI-mismatch enforcement mode.
+        /// When `true`, the broker REJECTS REG_REQ / CONSUMER_REG_REQ /
+        /// CONSUMER_ATTACH_REQ with `status=abi_major_mismatch` on any
+        /// MAJOR-axis mismatch (per §8.3.1 taxonomy).  When `false`
+        /// (default), the mismatch is logged at INFO with verdict=
+        /// `MAJOR_MISMATCH_ACCEPTED` and the registration proceeds
+        /// (rolling-upgrade friendly).  MINOR-mismatch and BUILD-only
+        /// diffs never reject regardless of this flag; they log with
+        /// verdict=`MINOR_MISMATCH` / `BUILD_ONLY` and accept.
+        ///
+        /// Operators enable strict mode for regulated / production-
+        /// hardened deployments where a build-version mismatch is a
+        /// runbook-worthy event.
+        bool strict_abi_mismatch{false};
+
         // ── Role liveness (HEP-CORE-0023 §2.5) ───────────────────────────
         // Single source of truth: effective timeouts are derived from the
         // heartbeat cadence times the miss-heartbeat counts, unless an explicit

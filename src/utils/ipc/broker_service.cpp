@@ -249,36 +249,58 @@ private:
 };
 
 // HEP-CORE-0032 §8 — ABI fingerprint verification on REG_REQ /
-// CONSUMER_REG_REQ / CONSUMER_ATTACH_REQ ingest.  Slice C (2026-07-03):
-// LOG-ONLY mode.  Parse envelope + build_id sibling if present, call
-// `verify_peer_versions`, emit two log lines per §8.6.  No reject
-// path yet — `broker.strict_abi_mismatch` config knob lands in a
-// later slice; strict rejection also lands then.
+// CONSUMER_REG_REQ / CONSUMER_ATTACH_REQ ingest.
+//
+// Slice C shipped log-only.  Slice D (2026-07-03) adds the strict-mode
+// reject path: caller passes `strict_mode` from `BrokerService::Config::
+// strict_abi_mismatch`; a MAJOR-axis mismatch in strict mode logs
+// verdict=`MAJOR_MISMATCH_REJECTED` and populates
+// `AbiFingerprintOutcome::reject=true` + `mismatched_axes`.  Caller
+// short-circuits with a `status=abi_major_mismatch` response.
 //
 // Absent envelope during roll-out window (§8.5 default lenient
-// policy): verdict = 'ABSENT', accept.  A future MAJOR bump on
-// broker_proto promotes the field to REQUIRED.
-static void log_peer_abi_fingerprint(const nlohmann::json &req,
-                                     const std::string &role_uid,
-                                     const char *event_prefix,
-                                     const char *event_detail)
+// policy): verdict = 'ABSENT', accept regardless of strict mode.  A
+// future MAJOR bump on broker_proto promotes the field to REQUIRED
+// (which will make ABSENT a reject at the wire-shape level, not the
+// ABI-fingerprint level).
+//
+// Malformed envelope: verdict = 'INVALID_ENVELOPE', accept regardless
+// of strict mode (wire-shape errors handled elsewhere; §8 fingerprint
+// only rejects ABI-major mismatches, not JSON parse failures).
+struct AbiFingerprintOutcome
 {
+    bool        reject = false;         ///< strict + MAJOR mismatch → true
+    std::string mismatched_axes;        ///< comma-separated axes (for error message)
+};
+
+static AbiFingerprintOutcome
+log_peer_abi_fingerprint(const nlohmann::json &req,
+                          const std::string &role_uid,
+                          const char *event_prefix,
+                          const char *event_detail,
+                          bool strict_mode)
+{
+    AbiFingerprintOutcome outcome;
     // Absence path — no envelope on the wire (older role, or role
     // built before slice C shipped).  Log verdict='ABSENT' and
-    // return; no verify call.
+    // return; no verify call.  Strict mode does NOT reject on absence
+    // — the wire field is optional until a broker_proto MAJOR bump
+    // promotes it to required.
     if (!req.contains("abi_fingerprint") ||
         !req["abi_fingerprint"].is_object())
     {
         LOGGER_INFO(
             "[broker] event={} role='{}' verdict='ABSENT' mismatched_axes=''",
             event_prefix, role_uid);
-        return;
+        return outcome;
     }
 
     // Parse envelope.  Malformed shape (missing axis fields, wrong
     // types) throws std::invalid_argument per §8.7 — surface as
-    // verdict='INVALID_ENVELOPE' and continue (slice C accepts;
-    // strict-mode reject lands later).
+    // verdict='INVALID_ENVELOPE'.  Not a strict-mode reject — that
+    // path is reserved for ABI-major mismatches only (§8 fingerprint
+    // is about ABI compat, not JSON parse errors).  Wire-shape
+    // rejection lives in the surrounding wire-shape validators.
     pylabhub::version::ComponentVersions peer{};
     try
     {
@@ -290,7 +312,7 @@ static void log_peer_abi_fingerprint(const nlohmann::json &req,
             "[broker] event={} role='{}' verdict='INVALID_ENVELOPE' "
             "mismatched_axes='' error='{}'",
             event_prefix, role_uid, e.what());
-        return;
+        return outcome;
     }
 
     // Optional sibling: build_id.  nullptr → skip build_id comparison.
@@ -318,26 +340,22 @@ static void log_peer_abi_fingerprint(const nlohmann::json &req,
     append_axis(verdict.major_mismatch.config,        "config");
     append_axis(verdict.major_mismatch.build_id,      "build_id");
 
-    // Verdict classification per §8.5 table.  Slice C is default
-    // lenient — major mismatch → MAJOR_MISMATCH_ACCEPTED (no strict
-    // path yet).  Minor-mismatch detection: verdict is compatible
-    // (no major flag) but message says otherwise.  Actually detail
-    // from the AbiCheckResult: `compatible == true` + `message !=
-    // "ABI OK"` means minor mismatch was noted internally but not
-    // via any struct flag we expose.  We approximate: axes empty +
-    // compatible + build_id irrelevant → OK; peer build_id
-    // differs-only → BUILD_ONLY; incompatible + axes populated →
-    // MAJOR_MISMATCH_ACCEPTED.  For minor-mismatch detection we
-    // would need to expose minor flags from compute_verdict — that's
-    // a later slice enhancement; slice C conflates minor into OK
-    // (verdict.compatible=true).
+    // Verdict classification per §8.5 table.
+    //
+    // Distinguishing an ABI-major mismatch from BUILD-only diff:
+    // when ONLY `build_id` flag is set (no axis flag), the mismatch
+    // is purely at the build-hash level → verdict='BUILD_ONLY',
+    // always accept (informational, per §8.3.3).  Any axis flag =
+    // real MAJOR mismatch, which strict mode rejects and default
+    // mode accepts-with-warn.
+    //
+    // Slice C conflated minor mismatches into OK because
+    // `verify_peer_versions` returns compatible=true and doesn't
+    // expose per-axis minor flags.  Exposing those flags is a later
+    // enhancement to `detail::compute_verdict`.
     const char *verdict_str = "OK";
     if (!verdict.compatible)
     {
-        // Major mismatch of some axis.  Distinguish
-        // build-id-only-major from other-axis-major for the
-        // BUILD_ONLY case.  When ONLY build_id flag is set + no
-        // axis flag, use BUILD_ONLY.
         const bool only_build_id =
             verdict.major_mismatch.build_id &&
             !verdict.major_mismatch.library &&
@@ -347,8 +365,20 @@ static void log_peer_abi_fingerprint(const nlohmann::json &req,
             !verdict.major_mismatch.script_api &&
             !verdict.major_mismatch.script_engine &&
             !verdict.major_mismatch.config;
-        verdict_str = only_build_id ? "BUILD_ONLY"
-                                    : "MAJOR_MISMATCH_ACCEPTED";
+        if (only_build_id)
+        {
+            verdict_str = "BUILD_ONLY";
+        }
+        else
+        {
+            verdict_str = strict_mode ? "MAJOR_MISMATCH_REJECTED"
+                                       : "MAJOR_MISMATCH_ACCEPTED";
+            if (strict_mode)
+            {
+                outcome.reject          = true;
+                outcome.mismatched_axes = axes;
+            }
+        }
     }
 
     LOGGER_INFO(
@@ -374,6 +404,7 @@ static void log_peer_abi_fingerprint(const nlohmann::json &req,
                          peer.config_major, peer.config_minor),
             pylabhub::version::version_info_string());
     }
+    return outcome;
 }
 
 } // namespace
@@ -1861,14 +1892,20 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
         return *err;
     }
 
-    // HEP-CORE-0032 §8 — ABI fingerprint verification (slice C:
-    // LOG-ONLY, no reject).  Runs AFTER wire-shape validation (a
-    // malformed identity is a separate reject class) but BEFORE any
-    // state mutation, so a later strict-mode reject would land here
-    // without leaving broker state dirty.
-    log_peer_abi_fingerprint(req, role_uid,
-                              "AbiFingerprintReceived",
-                              "AbiFingerprintDetail");
+    // HEP-CORE-0032 §8 — ABI fingerprint verification.  Runs AFTER
+    // wire-shape validation (a malformed identity is a separate
+    // reject class) but BEFORE any state mutation, so strict-mode
+    // reject short-circuits without leaving broker state dirty.
+    // Slice D (2026-07-03): strict mode gated on `cfg.strict_abi_mismatch`
+    // (default false — rolling-upgrade friendly).
+    if (auto abi = log_peer_abi_fingerprint(
+            req, role_uid, "AbiFingerprintReceived", "AbiFingerprintDetail",
+            cfg.strict_abi_mismatch);
+        abi.reject)
+    {
+        return make_error(corr_id, "abi_major_mismatch",
+                           "ABI major-axis mismatch on: " + abi.mismatched_axes);
+    }
 
     const std::string attempted_schema = req.value("schema_hash", "");
     const uint64_t    attempted_pid    = req.value("producer_pid", uint64_t{0});
@@ -2853,11 +2890,18 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
         return *err;
     }
 
-    // HEP-CORE-0032 §8 — ABI fingerprint verification (slice C:
-    // LOG-ONLY, no reject).  Same shape as REG_REQ handler above.
-    log_peer_abi_fingerprint(req, role_uid,
-                              "AbiFingerprintReceived",
-                              "AbiFingerprintDetail");
+    // HEP-CORE-0032 §8 — ABI fingerprint verification.  Same shape as
+    // REG_REQ handler above; strict mode gated on same
+    // `cfg.strict_abi_mismatch` knob for symmetric behavior across
+    // producer + consumer REG_REQ paths.
+    if (auto abi = log_peer_abi_fingerprint(
+            req, role_uid, "AbiFingerprintReceived", "AbiFingerprintDetail",
+            cfg.strict_abi_mismatch);
+        abi.reject)
+    {
+        return make_error(corr_id, "abi_major_mismatch",
+                           "ABI major-axis mismatch on: " + abi.mismatched_axes);
+    }
 
     // Single HubState snapshot covers channel-existence, endpoint
     // freshness, R6 producer-readiness gate, and downstream schema
