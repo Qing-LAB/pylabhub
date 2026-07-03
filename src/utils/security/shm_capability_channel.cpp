@@ -334,10 +334,24 @@ MemfdProducer::accept_one(std::chrono::milliseconds timeout)
         throw make_errno_error("Producer::accept_one", "poll failed", captured);
     }
 
-    const int peer = ::accept4(listen_fd_, nullptr, nullptr, SOCK_CLOEXEC);
-    if (peer == -1)
+    // #322 (2026-07-02) — retry accept4 on EINTR.  The sister ::poll
+    // above already returns nullopt on EINTR so the caller's outer
+    // loop retries; without an EINTR retry HERE, a signal delivered
+    // between poll returning ready and accept4 completing throws and
+    // drops the consumer's connection attempt entirely.  Sibling fix
+    // of task #304 (recvmsg/sendmsg EINTR) — same syscall family,
+    // missed in #304's scope.  Retry loop is bounded implicitly by
+    // the caller's outer timeout — a persistent EINTR storm would
+    // eventually surface via that outer bound.
+    int peer;
+    for (;;)
     {
-        throw make_errno_error("Producer::accept_one", "accept4 failed", errno);
+        peer = ::accept4(listen_fd_, nullptr, nullptr, SOCK_CLOEXEC);
+        if (peer >= 0) break;
+        const int captured = errno;
+        if (captured == EINTR) continue;
+        throw make_errno_error("Producer::accept_one", "accept4 failed",
+                                captured);
     }
 
     AcceptedPeer result{};

@@ -117,18 +117,117 @@ recv_all(int fd, void *buf, std::size_t n,
     }
 }
 
+// Compute remaining budget from an absolute deadline; zero if past.
+// Used to bound each recv/send call against a SHARED deadline so an
+// entire multi-call handshake step (recv len + recv body, or send len
+// + send body) is bounded at exactly `timeout` — not `2 * timeout`.
+[[nodiscard]] inline std::chrono::milliseconds
+remaining_ms(std::chrono::steady_clock::time_point deadline)
+{
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline) return std::chrono::milliseconds{0};
+    return std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
+}
+
+// recv_all variant that takes an absolute deadline directly.  Kept
+// alongside the timeout-based overload for callers that don't need
+// deadline sharing (unit tests, one-shot recv).
 void
-send_all(int fd, const void *buf, std::size_t n, const char *side)
+recv_all_until(int fd, void *buf, std::size_t n,
+               std::chrono::steady_clock::time_point deadline,
+               const char *side)
+{
+    auto      *p        = static_cast<std::byte *>(buf);
+    std::size_t got     = 0;
+    while (got < n)
+    {
+        const auto rem = remaining_ms(deadline);
+        if (rem.count() == 0)
+        {
+            throw std::runtime_error(std::string{"AttachProtocol::"} + side +
+                                     ": timeout waiting for " +
+                                     std::to_string(n) + " bytes (got " +
+                                     std::to_string(got) + ")");
+        }
+        pollfd pfd{fd, POLLIN, 0};
+        const int rc = ::poll(&pfd, 1, static_cast<int>(rem.count()));
+        if (rc == 0)
+        {
+            throw std::runtime_error(std::string{"AttachProtocol::"} + side +
+                                     ": poll timed out");
+        }
+        if (rc < 0)
+        {
+            const int e = errno;
+            if (e == EINTR)
+                continue;
+            throw make_errno_error(side, "poll failed", e);
+        }
+        const ssize_t r = ::recv(fd, p + got, n - got, 0);
+        if (r == 0)
+        {
+            throw std::runtime_error(std::string{"AttachProtocol::"} + side +
+                                     ": peer closed connection mid-frame "
+                                     "(got " + std::to_string(got) + " of " +
+                                     std::to_string(n) + ")");
+        }
+        if (r < 0)
+        {
+            const int e = errno;
+            if (e == EINTR)
+                continue;
+            throw make_errno_error(side, "recv failed", e);
+        }
+        got += static_cast<std::size_t>(r);
+    }
+}
+
+// #319 (2026-07-02): send_all now takes an absolute deadline and
+// polls POLLOUT with remaining budget before each ::send call.  Prior
+// version had no deadline — a peer that connects then stops reading
+// could stall the accept thread indefinitely, defeating
+// ThreadManager::shutdown_requested() poll and blocking role teardown
+// past the 5s stop-handler-threads quiescence budget.
+void
+send_all(int fd, const void *buf, std::size_t n,
+         std::chrono::steady_clock::time_point deadline,
+         const char *side)
 {
     const auto *p    = static_cast<const std::byte *>(buf);
     std::size_t sent = 0;
     while (sent < n)
     {
-        const ssize_t r = ::send(fd, p + sent, n - sent, MSG_NOSIGNAL);
-        if (r < 0)
+        const auto rem = remaining_ms(deadline);
+        if (rem.count() == 0)
+        {
+            throw std::runtime_error(
+                std::string{"AttachProtocol::"} + side +
+                ": send timeout (sent " + std::to_string(sent) + " of " +
+                std::to_string(n) + " bytes) — peer socket buffer full "
+                "or reader stalled");
+        }
+        pollfd pfd{fd, POLLOUT, 0};
+        const int rc = ::poll(&pfd, 1, static_cast<int>(rem.count()));
+        if (rc == 0)
+        {
+            throw std::runtime_error(
+                std::string{"AttachProtocol::"} + side +
+                ": send poll timed out (sent " + std::to_string(sent) +
+                " of " + std::to_string(n) + " bytes)");
+        }
+        if (rc < 0)
         {
             const int e = errno;
             if (e == EINTR)
+                continue;
+            throw make_errno_error(side, "send poll failed", e);
+        }
+        const ssize_t r = ::send(fd, p + sent, n - sent,
+                                  MSG_NOSIGNAL | MSG_DONTWAIT);
+        if (r < 0)
+        {
+            const int e = errno;
+            if (e == EINTR || e == EAGAIN || e == EWOULDBLOCK)
                 continue;
             throw make_errno_error(side, "send failed", e);
         }
@@ -137,7 +236,9 @@ send_all(int fd, const void *buf, std::size_t n, const char *side)
 }
 
 void
-send_frame(int fd, const nlohmann::json &body, const char *side)
+send_frame(int fd, const nlohmann::json &body,
+           std::chrono::steady_clock::time_point deadline,
+           const char *side)
 {
     const std::string s = body.dump();
     if (s.size() > kMaxFrameBytes)
@@ -154,15 +255,22 @@ send_frame(int fd, const nlohmann::json &body, const char *side)
         static_cast<std::uint8_t>((len >> 16) & 0xFF),
         static_cast<std::uint8_t>((len >> 24) & 0xFF),
     };
-    send_all(fd, lb, 4, side);
-    send_all(fd, s.data(), s.size(), side);
+    send_all(fd, lb, 4, deadline, side);
+    send_all(fd, s.data(), s.size(), deadline, side);
 }
 
+// #318 (2026-07-02): receive_frame now takes an absolute deadline so
+// the recv-length + recv-body pair is bounded at exactly `deadline`
+// wall time.  Prior version passed the SAME `timeout` value to both
+// recv_all calls — worst case handshake step burned 2× the documented
+// budget (frame 1 lands right before deadline → frame 2 gets full
+// timeout again).
 nlohmann::json
-receive_frame(int fd, std::chrono::milliseconds timeout, const char *side)
+receive_frame(int fd, std::chrono::steady_clock::time_point deadline,
+              const char *side)
 {
     std::uint8_t lb[4]{};
-    recv_all(fd, lb, 4, timeout, side);
+    recv_all_until(fd, lb, 4, deadline, side);
     const std::uint32_t len = static_cast<std::uint32_t>(lb[0]) |
                               (static_cast<std::uint32_t>(lb[1]) << 8) |
                               (static_cast<std::uint32_t>(lb[2]) << 16) |
@@ -180,7 +288,7 @@ receive_frame(int fd, std::chrono::milliseconds timeout, const char *side)
                                  std::to_string(kMaxFrameBytes));
     }
     std::vector<char> body(len);
-    recv_all(fd, body.data(), len, timeout, side);
+    recv_all_until(fd, body.data(), len, deadline, side);
     try
     {
         return nlohmann::json::parse(body.begin(), body.end());
@@ -310,6 +418,15 @@ AttachProtocolAcceptor::accept_one(std::chrono::milliseconds timeout)
         void release() { released = true; }
     } guard{fd};
 
+    // #318 + #319 (2026-07-02): compute a SHARED deadline for the
+    // entire handshake (send frame 1 + recv frame 2 + all sub-recvs).
+    // Prior version passed the same `timeout` value to each recv/send
+    // call — worst-case wall time was ~3× the documented budget (send
+    // + recv-len + recv-body).  Sharing the deadline bounds the whole
+    // step at exactly `timeout`.
+    const auto handshake_deadline =
+        std::chrono::steady_clock::now() + timeout;
+
     // ── 1. SO_PEERCRED uid sanity (HEP-CORE-0036 §I8) ────────────────────
     if (peer->uid != expected_uid_)
     {
@@ -331,11 +448,12 @@ AttachProtocolAcceptor::accept_one(std::chrono::milliseconds timeout)
         out["protocol_version"] = kProtocolVersion;
         out["nonce_b64"]        = b64_encode({nonce, kNonceBytes});
         out["challenge_b64"]    = b64_encode({challenge, kChallengeBytes});
-        send_frame(fd, out, "producer");
+        send_frame(fd, out, handshake_deadline, "producer");
     }
 
     // ── 4. Receive frame 2 ───────────────────────────────────────────────
-    const nlohmann::json hello = receive_frame(fd, timeout, "producer");
+    const nlohmann::json hello = receive_frame(fd, handshake_deadline,
+                                                 "producer");
 
     // ── 5. Validate hello shape ──────────────────────────────────────────
     if (hello.value("protocol_version", std::string{}) != kProtocolVersion)
@@ -517,8 +635,14 @@ initiate_consumer_handshake(const std::string          &endpoint,
         void release() { released = true; }
     } guard{fd};
 
+    // #318 + #319 (2026-07-02): shared handshake deadline (see
+    // AttachProtocolAcceptor::accept_one for full rationale).
+    const auto handshake_deadline =
+        std::chrono::steady_clock::now() + timeout;
+
     // ── 2. Receive + parse frame 1 ───────────────────────────────────────
-    const nlohmann::json challenge_in = receive_frame(fd, timeout, "consumer");
+    const nlohmann::json challenge_in = receive_frame(fd, handshake_deadline,
+                                                       "consumer");
     if (challenge_in.value("protocol_version", std::string{}) != kProtocolVersion)
     {
         throw std::runtime_error(
@@ -585,7 +709,7 @@ initiate_consumer_handshake(const std::string          &endpoint,
     hello["role_uid"]               = self.role_uid;
     hello["pubkey_z85"]             = self.pubkey_z85;
     hello["challenge_response_b64"] = b64_encode({cipher.data(), cipher.size()});
-    send_frame(fd, hello, "consumer");
+    send_frame(fd, hello, handshake_deadline, "consumer");
 
     // ── 5. Success.  Hand fd to caller. ─────────────────────────────────
     guard.release();

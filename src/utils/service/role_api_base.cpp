@@ -1015,6 +1015,34 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
 
                 if (status == "success")
                 {
+                    // #320 (2026-07-02) — defensive skip: broker admits
+                    // on producer_role_uid presence but does NOT
+                    // validate endpoint availability.  If an admitted
+                    // producer's ACK entry has an empty `endpoint`
+                    // (edge case: producer registered but endpoint
+                    // update not yet reflected, or endpoint cleared
+                    // during in-flight teardown), `apply_master_
+                    // approval(filtered_ack)` at hub_zmq_queue.cpp
+                    // would reject the ENTIRE filtered_ack ("producer
+                    // entry missing required field: endpoint"), nuking
+                    // the whole batch.  Log WARN + continue per §7.1
+                    // fan-in policy — one under-populated peer must
+                    // not fail the batch.
+                    const auto endpoint =
+                        p.value("endpoint", std::string{});
+                    if (endpoint.empty())
+                    {
+                        LOGGER_WARN(
+                            "[{}] attach:success_but_empty_endpoint "
+                            "channel={} producer={} — broker admitted "
+                            "but ACK entry has no endpoint; skipping "
+                            "producer from filtered_ack (would else "
+                            "reject the whole batch at "
+                            "apply_master_approval)",
+                            pImpl->short_tag, channel_name,
+                            producer_uid);
+                        continue;
+                    }
                     admitted_producers.push_back(p);
                     LOGGER_INFO(
                         "[{}] attach:success channel={} producer={}",
