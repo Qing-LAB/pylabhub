@@ -36,6 +36,12 @@ extern "C"
 // (curve_keypair.cpp comment cites zmq_z85_decode as the canonical
 // path for CURVE keys).
 uint8_t *zmq_z85_decode(uint8_t *dest, const char *src);
+// libzmq's Z85 encoder.  Converts 32 raw bytes into a 40-char Z85 string
+// (plus null terminator).  Used only by the #262 mutual-auth Frame 3
+// path to encode the pubkey the producer derives on the fly via
+// `crypto_scalarmult_base`; the rest of the codebase gets pubkey_z85
+// already-encoded from `KeyStore::add_identity` at startup.
+char    *zmq_z85_encode(char *dest, const uint8_t *src, size_t size);
 } // extern "C"
 #endif
 
@@ -65,7 +71,7 @@ make_errno_error(const char *side, const char *what, int captured_errno)
 // Receive exactly `n` bytes from `fd` under a `total_timeout` budget,
 // or throw.  Treats EOF (recv returns 0) as a transport error so a
 // peer that drops mid-frame surfaces immediately rather than hanging.
-void
+[[maybe_unused]] void
 recv_all(int fd, void *buf, std::size_t n,
          std::chrono::milliseconds total_timeout, const char *side)
 {
@@ -553,7 +559,100 @@ AttachProtocolAcceptor::accept_one(std::chrono::milliseconds timeout)
             "the claimed pubkey)");
     }
 
-    // ── 8. Success.  Release the fd to the caller. ──────────────────────
+    // ── 8. Optional mutual-auth Frame 3 (HEP-CORE-0041 §D4.5, #262) ──────
+    //
+    // If the consumer sent `consumer_nonce_b64` + `consumer_challenge_b64`
+    // on Frame 2, respond with Frame 3 proving possession of our seckey.
+    // Absent fields → pre-#262 consumer that doesn't want mutual auth;
+    // skip Frame 3 (backward compat).
+    {
+        const std::string cons_nonce_b64 =
+            hello.value("consumer_nonce_b64", std::string{});
+        const std::string cons_challenge_b64 =
+            hello.value("consumer_challenge_b64", std::string{});
+        if (!cons_nonce_b64.empty() || !cons_challenge_b64.empty())
+        {
+            if (cons_nonce_b64.empty() || cons_challenge_b64.empty())
+            {
+                throw std::runtime_error(
+                    "AttachProtocol::producer: consumer sent partial "
+                    "mutual-auth fields (consumer_nonce_b64 and "
+                    "consumer_challenge_b64 must both be present or both absent)");
+            }
+            const auto cons_nonce_vec     = b64_decode(cons_nonce_b64);
+            const auto cons_challenge_vec = b64_decode(cons_challenge_b64);
+            if (cons_nonce_vec.size() != kNonceBytes ||
+                cons_challenge_vec.size() != kChallengeBytes)
+            {
+                throw std::runtime_error(
+                    "AttachProtocol::producer: consumer mutual-auth field size "
+                    "mismatch (expected nonce=" +
+                    std::to_string(kNonceBytes) + ", challenge=" +
+                    std::to_string(kChallengeBytes) + ")");
+            }
+
+            std::vector<unsigned char> proof_cipher(kChallengeBytes + kMacBytes);
+            std::array<unsigned char, kRawKeyBytes> producer_pk_raw{};
+            bool proof_ok = false;
+            producer_seckey_accessor_(
+                [&](std::span<const std::byte> producer_sk_span) {
+                    if (producer_sk_span.size() != kRawKeyBytes)
+                    {
+                        throw std::runtime_error(
+                            "AttachProtocol::producer: seckey span must be " +
+                            std::to_string(kRawKeyBytes) + " bytes for Frame 3");
+                    }
+                    // Derive our pubkey from the seckey inside the accessor
+                    // scope so we don't need to store or receive it separately.
+                    // X25519: pubkey = base_point^seckey.  Same primitive
+                    // crypto_box uses.
+                    if (::crypto_scalarmult_base(
+                            producer_pk_raw.data(),
+                            reinterpret_cast<const unsigned char *>(producer_sk_span.data())) != 0)
+                    {
+                        throw std::runtime_error(
+                            "AttachProtocol::producer: crypto_scalarmult_base "
+                            "failed while deriving pubkey for Frame 3");
+                    }
+                    const int rc = ::crypto_box_easy(
+                        proof_cipher.data(),
+                        cons_challenge_vec.data(), kChallengeBytes,
+                        cons_nonce_vec.data(), consumer_pk_raw.data(),
+                        reinterpret_cast<const unsigned char *>(producer_sk_span.data()));
+                    if (rc != 0)
+                    {
+                        throw std::runtime_error(
+                            "AttachProtocol::producer: crypto_box_easy for "
+                            "Frame 3 proof failed (rc=" +
+                            std::to_string(rc) + ")");
+                    }
+                    proof_ok = true;
+                });
+            if (!proof_ok)
+            {
+                throw std::runtime_error(
+                    "AttachProtocol::producer: seckey accessor did not run "
+                    "for Frame 3 (programmer error)");
+            }
+
+            // Encode derived pubkey to z85 for the wire.
+            char producer_pk_z85_buf[kZ85PubkeyChars + 1] = {};
+            if (::zmq_z85_encode(producer_pk_z85_buf, producer_pk_raw.data(),
+                                  kRawKeyBytes) == nullptr)
+            {
+                throw std::runtime_error(
+                    "AttachProtocol::producer: zmq_z85_encode failed for "
+                    "Frame 3 pubkey");
+            }
+            nlohmann::json proof;
+            proof["producer_pubkey_z85"] = std::string(producer_pk_z85_buf);
+            proof["proof_response_b64"] =
+                b64_encode({proof_cipher.data(), proof_cipher.size()});
+            send_frame(fd, proof, handshake_deadline, "producer");
+        }
+    }
+
+    // ── 9. Success.  Release the fd to the caller. ──────────────────────
     guard.release();
     AuthenticatedConsumer ac;
     ac.raw_peer            = *peer;
@@ -570,7 +669,8 @@ std::optional<int>
 initiate_consumer_handshake(const std::string          &endpoint,
                             const ConsumerAuthMaterial &self,
                             const std::string          &producer_pubkey_z85,
-                            std::chrono::milliseconds   timeout)
+                            std::chrono::milliseconds   timeout,
+                            bool                        require_mutual_auth)
 {
     ensure_sodium_init();
 
@@ -758,6 +858,27 @@ initiate_consumer_handshake(const std::string          &endpoint,
     // treated as `"consumer"` by the producer's acceptor for backward
     // compatibility with pre-#317 role builds.
     hello["role_type"]              = "consumer";
+
+    // HEP-CORE-0041 §D4.5 mutual-auth extension (#262, opt-in 2026-07-03).
+    // Consumer piggybacks its own nonce+challenge onto Frame 2 so the
+    // producer can prove possession of its seckey in Frame 3.  Producer
+    // that sees these fields responds with Frame 3; consumer that sent
+    // them requires Frame 3.  Pre-#262 producers ignore the extras and
+    // never send Frame 3 — which the consumer's requirement then flags
+    // as `PRODUCER_NOT_AUTHENTICATED` (correct fail-loud behaviour when
+    // the operator opted in to mutual auth against an outdated peer).
+    std::array<unsigned char, kNonceBytes>     consumer_nonce{};
+    std::array<unsigned char, kChallengeBytes> consumer_challenge{};
+    if (require_mutual_auth)
+    {
+        ::randombytes_buf(consumer_nonce.data(), kNonceBytes);
+        ::randombytes_buf(consumer_challenge.data(), kChallengeBytes);
+        hello["consumer_nonce_b64"] =
+            b64_encode({consumer_nonce.data(), kNonceBytes});
+        hello["consumer_challenge_b64"] =
+            b64_encode({consumer_challenge.data(), kChallengeBytes});
+    }
+
     // #300 (2026-07-03): send timeout (producer's L2 accept thread
     // spawned but stalled reading) is same H3a-race class as the
     // recv timeout above — nullopt for retry, not a protocol error.
@@ -770,7 +891,90 @@ initiate_consumer_handshake(const std::string          &endpoint,
         return std::nullopt;
     }
 
-    // ── 5. Success.  Hand fd to caller. ─────────────────────────────────
+    // ── 5. Mutual-auth Frame 3 (opt-in per §D4.5) ────────────────────────
+    if (require_mutual_auth)
+    {
+        nlohmann::json proof;
+        try
+        {
+            proof = receive_frame(fd, handshake_deadline, "consumer");
+        }
+        catch (const AttachProtocolTimeout &)
+        {
+            // Frame 3 missing — treat as producer-not-authenticated
+            // rather than nullopt-retry.  A producer that opened the
+            // socket, spoke Frames 1+2, and then went quiet is
+            // affirmatively failing to prove identity.
+            throw std::runtime_error(
+                "AttachProtocol::consumer: producer did not send Frame 3 within budget "
+                "(attach_producer_not_authenticated) — either the producer is a "
+                "pre-#262 build that does not support mutual auth, or the peer "
+                "is not the real producer");
+        }
+        const std::string proof_producer_pk =
+            proof.value("producer_pubkey_z85", std::string{});
+        const std::string proof_response_b64 =
+            proof.value("proof_response_b64", std::string{});
+        if (proof_producer_pk.size() != kZ85PubkeyChars ||
+            proof_response_b64.empty())
+        {
+            throw std::runtime_error(
+                "AttachProtocol::consumer: Frame 3 malformed "
+                "(attach_producer_not_authenticated) — expected "
+                "producer_pubkey_z85 + proof_response_b64");
+        }
+        if (proof_producer_pk != producer_pubkey_z85)
+        {
+            // Peer identified with a different pubkey than the broker
+            // told us to expect.  Squatter scenario per §D4.5 threat model.
+            throw std::runtime_error(
+                "AttachProtocol::consumer: producer_pubkey_z85 mismatch "
+                "(attach_producer_not_authenticated) — expected '" +
+                producer_pubkey_z85 + "' but peer identified as '" +
+                proof_producer_pk + "'");
+        }
+        const auto proof_cipher = b64_decode(proof_response_b64);
+        if (proof_cipher.size() != kChallengeBytes + kMacBytes)
+        {
+            throw std::runtime_error(
+                "AttachProtocol::consumer: proof_response_b64 size mismatch "
+                "(attach_producer_not_authenticated) — expected " +
+                std::to_string(kChallengeBytes + kMacBytes) + " bytes, got " +
+                std::to_string(proof_cipher.size()));
+        }
+        // Verify with our seckey against producer's expected pubkey.
+        // Same use-not-export pattern as consumer's own signing above.
+        bool proof_verified = false;
+        self.seckey_accessor([&](std::span<const std::byte> consumer_sk_span) {
+            if (consumer_sk_span.size() != kRawKeyBytes)
+            {
+                throw std::runtime_error(
+                    "AttachProtocol::consumer: consumer_sk span must be " +
+                    std::to_string(kRawKeyBytes) + " bytes for Frame 3 verify");
+            }
+            std::array<unsigned char, kChallengeBytes> proof_plain{};
+            const int rc = ::crypto_box_open_easy(
+                proof_plain.data(), proof_cipher.data(), proof_cipher.size(),
+                consumer_nonce.data(), producer_pk_raw.data(),
+                reinterpret_cast<const unsigned char *>(consumer_sk_span.data()));
+            if (rc == 0 && ::sodium_memcmp(proof_plain.data(),
+                                            consumer_challenge.data(),
+                                            kChallengeBytes) == 0)
+            {
+                proof_verified = true;
+            }
+            ::sodium_memzero(proof_plain.data(), kChallengeBytes);
+        });
+        if (!proof_verified)
+        {
+            throw std::runtime_error(
+                "AttachProtocol::consumer: Frame 3 crypto verify failed "
+                "(attach_producer_not_authenticated) — producer does not hold "
+                "the seckey corresponding to the expected pubkey");
+        }
+    }
+
+    // ── 6. Success.  Hand fd to caller. ─────────────────────────────────
     guard.release();
     return fd;
 }

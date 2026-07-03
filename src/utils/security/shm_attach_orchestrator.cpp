@@ -25,7 +25,7 @@ namespace pylabhub::utils::security
 namespace
 {
 
-void
+[[maybe_unused]] void
 close_if_valid(int fd) noexcept
 {
     if (fd >= 0)

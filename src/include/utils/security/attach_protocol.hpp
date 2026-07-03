@@ -207,11 +207,27 @@ private:
 ///
 /// Throws `std::runtime_error` on protocol-level failures (framing,
 /// JSON, size limit, libsodium failure, peer disconnect mid-frame).
+///
+/// **HEP-CORE-0041 §D4.5 mutual auth (task #262, opt-in 2026-07-03).**
+/// When `require_mutual_auth == true`, the consumer:
+///   1. Sends `consumer_nonce_b64` + `consumer_challenge_b64` as extra
+///      fields on the Frame 2 hello.
+///   2. After Frame 2, waits for producer's Frame 3
+///      `{producer_pubkey_z85, proof_response_b64}`.
+///   3. Verifies `producer_pubkey_z85` matches `producer_pubkey_z85`
+///      argument (broker-supplied expectation).
+///   4. Runs `crypto_box_open_easy` on `proof_response_b64` and
+///      requires the plaintext to equal the challenge sent in step 1.
+///   5. Any missing / mismatched piece raises `std::runtime_error`
+///      with an `attach_producer_not_authenticated` marker.
+/// When `require_mutual_auth == false` (default), the consumer keeps
+/// the original 2-frame flow (backward compatible with pre-#262 producers).
 PYLABHUB_UTILS_EXPORT std::optional<int>
 initiate_consumer_handshake(const std::string          &endpoint,
                             const ConsumerAuthMaterial &self,
                             const std::string          &producer_pubkey_z85,
-                            std::chrono::milliseconds   timeout);
+                            std::chrono::milliseconds   timeout,
+                            bool require_mutual_auth = false);
 
 #endif // PYLABHUB_PLATFORM_LINUX
 
