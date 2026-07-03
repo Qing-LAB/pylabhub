@@ -968,7 +968,155 @@ For the per-status error vocabulary (`INVALID_REQUEST`,
 the L3 logging contract, see `docs/IMPLEMENTATION_GUIDANCE.md` §"SHM
 Channel Auth attach errors".
 
-**Mutual-auth gap.**  The current flow proves consumer→producer identity but does NOT prove producer→consumer (a same-UID process could bind the published endpoint and impersonate the producer to a connecting consumer).  Task #262 tracks adding producer-side proof-of-possession (likely as a 3rd frame: producer echoes a consumer-supplied challenge encrypted under producer_sk) before declaring Phase 1 production-ready.
+**Mutual-auth gap.**  The current flow proves consumer→producer identity but does NOT prove producer→consumer (a same-UID process could bind the published endpoint and impersonate the producer to a connecting consumer).  Task #262 tracks adding producer-side proof-of-possession before declaring Phase 1 production-ready.
+
+### D4.5 Mutual auth — planned (#262, spec 2026-07-03)
+
+**Threat model closed.**  A hostile process at the same uid as the
+producer binds to a predictable `shm_capability_endpoint` after the
+real producer crashes.  Consumer connects, receives a memfd
+containing corrupted or crafted DataBlock content.  Under the
+current Phase 1 flow the consumer has no cryptographic evidence
+that its peer is the producer that the broker authorized — it just
+trusts SO_PEERCRED.uid + broker's allowlist naming.  Same-uid
+squatting defeats both.
+
+**Wire extension — one added frame + one hello field.**
+
+The existing Diagram A handshake becomes three frames instead of
+two.  Consumer's Frame 2 (the existing challenge response) piggybacks
+its own challenge for the producer; producer's new Frame 3 carries the
+proof of possession.
+
+```
+Frame 1 — producer → consumer   (unchanged shape today)
+  { protocol_version,
+    nonce_b64,             ← producer's nonce
+    challenge_b64 }        ← producer's challenge for the consumer
+
+Frame 2 — consumer → producer   (existing fields + one added field)
+  { protocol_version,
+    role_type,             ← §10.5 addition — "consumer" here
+    role_uid,
+    pubkey_z85,            ← consumer's pubkey
+    challenge_response_b64,← proves consumer holds consumer_sk
+    consumer_nonce_b64,    ← NEW — consumer's nonce
+    consumer_challenge_b64 } ← NEW — consumer's challenge for the producer
+
+Frame 3 — producer → consumer   (NEW)
+  { producer_pubkey_z85,   ← so consumer knows which pubkey we claim to be
+    proof_response_b64 }   ← crypto_box_easy(consumer_challenge,
+                          ←   consumer_nonce, consumer_pk, producer_sk)
+
+Consumer verification of Frame 3
+  crypto_box_open_easy(proof_response,
+                       consumer_nonce, producer_pk, consumer_sk)
+  → must equal the challenge consumer sent in Frame 2
+```
+
+**Consumer's trust anchor for `producer_pubkey_z85`.**  The
+`CONSUMER_REG_ACK.producers[i].zmq_pubkey` field (HEP-CORE-0036 §6.4,
+which the SHM path already reuses) tells the consumer WHICH pubkey
+to expect from each producer.  The consumer compares the pubkey in
+Frame 3 against the broker-supplied expectation and REJECTS
+if they don't match.  No new key material or new wire ACK carrier
+needed.
+
+**Producer-side seckey access.**  Same
+`use-not-export`-callback pattern as the existing consumer verification
+step at Diagram A step 8 (HEP-CORE-0040 §5.2).  `SeckeyAccessor`
+lambda; seckey bytes never leave the security module's view.  Producer
+already runs the callback once for consumer verification; slice #262
+adds a second call for the producer proof step.  No plaintext seckey
+material is added to any surface.
+
+**Sequence diagram — extended handshake.**
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Consumer
+    participant P as Producer<br/>AttachProtocolAcceptor
+    participant KS as KeyStore
+
+    C->>P: connect + SO_PEERCRED uid check
+
+    Note over P: generate producer_nonce + producer_challenge
+    P->>C: Frame 1 {producer_nonce_b64, producer_challenge_b64}
+
+    Note over C: cipher_p = crypto_box_easy(<br/>producer_challenge, producer_nonce,<br/>producer_pk, consumer_sk)<br/>generate consumer_nonce + consumer_challenge
+    C->>P: Frame 2 {role_type, role_uid, consumer_pk_z85,<br/>challenge_response_b64=cipher_p,<br/>consumer_nonce_b64, consumer_challenge_b64}
+
+    Note over P,KS: Verify consumer proof (existing path)
+    P->>KS: SeckeyAccessor callback
+    KS-->>P: producer_sk span
+    Note over P: crypto_box_open_easy(cipher_p, producer_nonce,<br/>consumer_pk, producer_sk)<br/>must equal producer_challenge
+
+    Note over P,KS: NEW — build producer proof
+    P->>KS: SeckeyAccessor callback (2nd call)
+    KS-->>P: producer_sk span
+    Note over P: cipher_c = crypto_box_easy(<br/>consumer_challenge, consumer_nonce,<br/>consumer_pk, producer_sk)
+
+    P->>C: Frame 3 {producer_pk_z85, proof_response_b64=cipher_c}
+
+    Note over C: crypto_box_open_easy(cipher_c,<br/>consumer_nonce, producer_pk, consumer_sk)<br/>must equal consumer_challenge<br/>AND producer_pk_z85 must equal<br/>the broker-supplied expectation
+    Note over C,P: BOTH sides proven → continue to Diagram B
+```
+
+**Compatibility.**  A pre-#262 producer that sees the new consumer
+Frame 2 with `consumer_nonce_b64` + `consumer_challenge_b64` present
+simply ignores the extra fields (JSON forward-compat) and never
+sends Frame 3.  A post-#262 consumer whose CONSUMER_REG_ACK carries a
+`producer_pubkey_z85` MUST require Frame 3 — treats "handshake ended
+after Frame 2 without Frame 3" as `PRODUCER_NOT_AUTHORIZED`.  This
+mode-flip is the compatibility break; needs a `broker_proto` MINOR
+bump per HEP-CORE-0032 §8.3.2 (additive on wire, additive on required
+behavior).
+
+**Error taxonomy addition.**  A new wire status
+`PRODUCER_NOT_AUTHENTICATED` fires when Frame 3 is missing or its
+crypto verify fails.  Distinguished from the existing
+`PRODUCER_NOT_AUTHORIZED` (which today means "broker-allowlist
+denied" per `IMPLEMENTATION_GUIDANCE.md` §"SHM Channel Auth attach
+errors") — new status is "cryptographic proof of producer identity
+failed."  Both are fatal to the attach and are logged with distinct
+markers so operators can tell "wrong keys" from "wrong allowlist" at
+a glance.
+
+**Implementation plan (task #262).**
+
+1. Extend `AttachProtocol` wire per the frame shapes above (~50 LOC
+   in `attach_protocol.cpp`; sends Frame 3 on producer side, receives
+   + verifies on consumer side).
+2. Consumer stores `producer_pubkey_z85` from `CONSUMER_REG_ACK.
+   producers[i]` in the attach context; passes it into
+   `initiate_consumer_handshake` for the Frame 3 verify.  (Field
+   already present; just need to plumb it into the call site.)
+3. Amend `IMPLEMENTATION_GUIDANCE.md` §"SHM Channel Auth attach
+   errors" with `PRODUCER_NOT_AUTHENTICATED` (`shm_attach_producer_not_authenticated`
+   log marker for L3/L4 test grep).
+4. `broker_proto` MINOR bump (per HEP-CORE-0032 §8.3.2) — the
+   handshake extension is additive on wire, additive on required
+   behavior; MINOR captures both.
+5. L2 test: matched producer pubkey handshakes succeed; mismatched
+   producer pubkey rejects with `PRODUCER_NOT_AUTHENTICATED` log
+   marker.  Bytes flowing over stdin/stdout of a test rig; no L4
+   broker needed for the L2 check.
+6. L4 test: producer-squatter attack scenario.  Start real producer,
+   kill it, spawn attacker at same uid binding the freed endpoint,
+   consumer connects, attacker fails Frame 3 (has no producer_sk),
+   consumer refuses the attach with the correct marker.
+7. HEP-CORE-0041 §8 acceptance criteria updated — Phase 1 complete
+   only after this ships.
+8. Blocks REVIEW-E (#278).
+
+**Not chosen (rejected alternatives).**
+
+- **SO_PEERCRED + broker naming only** (weaker; single point of
+  compromise at broker).  Considered; rejected.
+- **TLS-style two-way handshake in a single round-trip** (protocol
+  overkill; requires cipher-suite negotiation and adds ~800 LOC).
+  Considered; rejected.
 
 ### D4 cached-allowlist semantics
 

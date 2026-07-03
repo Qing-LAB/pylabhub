@@ -466,6 +466,30 @@ AttachProtocolAcceptor::accept_one(std::chrono::milliseconds timeout)
     {
         throw std::runtime_error("AttachProtocol::producer: hello role_uid empty");
     }
+    // HEP-CORE-0041 §10.5 observer-role wiring (#317 C.1, 2026-07-03).
+    // Route on `role_type`: `"consumer"` (or empty for pre-#317 role
+    // builds) → existing CURVE-against-channel-allowlist path.
+    // `"observer"` → broker-observer path (not yet implemented; reject
+    // with clear diagnostic until #317 Phase C.2 broker-dial lands).
+    // Any other value → protocol violation.
+    const std::string role_type =
+        hello.value("role_type", std::string{"consumer"});
+    if (role_type != "consumer" && role_type != "observer")
+    {
+        throw std::runtime_error(
+            "AttachProtocol::producer: hello role_type must be "
+            "\"consumer\" or \"observer\" (got \"" + role_type + "\")");
+    }
+    if (role_type == "observer")
+    {
+        // Phase C.2 will add broker-observer verification.  Until it
+        // does, an observer handshake is not yet supported; reject
+        // cleanly so operators see a specific diagnostic rather than
+        // a downstream CURVE-verify failure.
+        throw std::runtime_error(
+            "AttachProtocol::producer: role_type=\"observer\" received "
+            "but broker-observer path not yet implemented (#317 Phase C.2 pending).");
+    }
     const std::string pubkey_z85 = hello.value("pubkey_z85", std::string{});
     if (pubkey_z85.size() != kZ85PubkeyChars)
     {
@@ -725,6 +749,15 @@ initiate_consumer_handshake(const std::string          &endpoint,
     hello["role_uid"]               = self.role_uid;
     hello["pubkey_z85"]             = self.pubkey_z85;
     hello["challenge_response_b64"] = b64_encode({cipher.data(), cipher.size()});
+    // HEP-CORE-0041 §10.5 observer-role wiring (#317 C.1, 2026-07-03).
+    // Explicit `role_type` field on the hello so producer's acceptor
+    // can route consumer handshakes vs. broker-observer handshakes to
+    // different verification paths.  Emitted as `"consumer"` here;
+    // broker's observer-attach client will send `"observer"` (Phase C
+    // when that path lands, still TODO).  Empty / absent field is
+    // treated as `"consumer"` by the producer's acceptor for backward
+    // compatibility with pre-#317 role builds.
+    hello["role_type"]              = "consumer";
     // #300 (2026-07-03): send timeout (producer's L2 accept thread
     // spawned but stalled reading) is same H3a-race class as the
     // recv timeout above — nullopt for retry, not a protocol error.
