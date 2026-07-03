@@ -33,6 +33,9 @@
 #    include <sys/mman.h>
 #    include <sys/socket.h>
 #    include <time.h>       // clock_gettime — #321 atomic-rename bind (2026-07-03)
+#    include <fcntl.h>      // AT_FDCWD — #321 fix (renameat2 RENAME_NOREPLACE)
+#    include <sys/syscall.h> // SYS_renameat2 — Linux 3.15+ (2014)
+#    include <linux/fs.h>   // RENAME_NOREPLACE flag
 #    include <sys/stat.h>
 #    include <sys/types.h>
 #    include <sys/un.h>
@@ -244,9 +247,11 @@ MemfdProducer::bind_endpoint(const std::string &endpoint)
     // catch).  Behaviour:
     //   - connect() succeeds → live peer is already bound.  Refuse.
     //   - connect() fails with ECONNREFUSED → stale socket file (path
-    //     exists, listener gone).  Safe to proceed with atomic replace.
-    //   - connect() fails with ENOENT → no path; safe to proceed.
+    //     exists, listener gone).  Unlink it; the RENAME_NOREPLACE
+    //     rename below then succeeds on the empty target.
+    //   - connect() fails with ENOENT → no path; nothing to unlink.
     //   - any other errno → can't determine state; refuse conservatively.
+    bool target_needs_unlink = false;
     {
         const int probe = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
         if (probe == -1)
@@ -265,7 +270,14 @@ MemfdProducer::bind_endpoint(const std::string &endpoint)
             ::close(sock);
             return false;
         }
-        if (captured_errno != ECONNREFUSED && captured_errno != ENOENT)
+        if (captured_errno == ECONNREFUSED)
+        {
+            // Stale socket file at target (prior producer crashed
+            // without cleanup, or systemd killed it).  Unlink it
+            // before rename(NOREPLACE) so the target is empty.
+            target_needs_unlink = true;
+        }
+        else if (captured_errno != ENOENT)
         {
             // Unknown error (EACCES, EINVAL, …) — can't safely proceed.
             ::close(sock);
@@ -322,11 +334,39 @@ MemfdProducer::bind_endpoint(const std::string &endpoint)
     // connect.
     ::chmod(temp_path.c_str(), 0700);
 
-    // Atomic move into the target path.  rename(2) is atomic per
-    // POSIX; overwrites destination unconditionally.  Any late-comer
-    // that snuck in between our probe and here gets replaced.
-    if (::rename(temp_path.c_str(), sock_path.c_str()) == -1)
+    // If the probe reported a stale socket file at the target
+    // (ECONNREFUSED path above set target_needs_unlink=true), unlink
+    // it now so the RENAME_NOREPLACE rename below sees an empty
+    // target and succeeds.  Any concurrent racer who binds between
+    // this unlink and our rename will be caught by RENAME_NOREPLACE
+    // failing with EEXIST (the correct outcome — refuse to clobber
+    // a live listener even in the same-channel-name misconfig case).
+    if (target_needs_unlink)
     {
+        ::unlink(sock_path.c_str());  // best-effort; racer may have won
+    }
+
+    // Atomic move into the target path.  Uses renameat2(2) with
+    // RENAME_NOREPLACE so the rename FAILS with EEXIST if another
+    // process bound at sock_path between our probe (line ~254) and
+    // here.  Preserves the pre-#321 loud-fail semantics on
+    // same-channel-name collisions — two producers both starting up
+    // with the same channel name now: the second one's rename returns
+    // EEXIST, its bind_endpoint() returns false, its caller sees the
+    // error, instead of silently clobbering the first producer's
+    // socket and leaving it bound to an orphaned inode (2026-07-03
+    // code review Finding #2).
+    //
+    // Linux 3.15+ (2014) is required for renameat2; the syscall
+    // interface is used directly rather than the glibc wrapper so we
+    // don't depend on glibc >= 2.28.
+    if (::syscall(SYS_renameat2, AT_FDCWD, temp_path.c_str(), AT_FDCWD,
+                   sock_path.c_str(), RENAME_NOREPLACE) == -1)
+    {
+        // EEXIST → another process won the bind race; refuse rather
+        // than clobber.  Any other errno → unexpected rename failure.
+        // Both cases surface as bind_endpoint() returning false; the
+        // caller's diagnostic points at the endpoint contention.
         ::unlink(temp_path.c_str());  // best-effort cleanup
         ::close(sock);
         return false;

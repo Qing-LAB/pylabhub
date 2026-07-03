@@ -639,9 +639,24 @@ TEST_F(AttachProtocolTest, MutualAuth_RoundTripSucceeds)
         }
     }};
 
-    auto auth = acceptor.accept_one(std::chrono::milliseconds{2000});
+    // 2026-07-03 code review Finding #8 — wrap accept_one to prevent
+    // std::terminate() when a future regression makes accept_one throw
+    // while the consumer thread is still joinable.  Sibling test
+    // MutualAuth_RejectsWrongProducerPubkey follows this pattern
+    // already.
+    std::optional<pylabhub::utils::security::AuthenticatedConsumer> auth;
+    std::exception_ptr                                              acc_exc;
+    try
+    {
+        auth = acceptor.accept_one(std::chrono::milliseconds{2000});
+    }
+    catch (...)
+    {
+        acc_exc = std::current_exception();
+    }
     cons_thread.join();
 
+    ASSERT_FALSE(acc_exc) << "acceptor threw on mutual-auth happy path";
     ASSERT_FALSE(cons_exc) << "mutual-auth happy path threw";
     ASSERT_TRUE(auth.has_value());
     EXPECT_EQ(auth->consumer_pubkey_z85, cons.pub_z85);
@@ -771,9 +786,20 @@ TEST_F(AttachProtocolTest, MutualAuth_BackwardCompat_OldConsumerNoFrame3)
         }
     }};
 
-    auto auth = acceptor.accept_one(std::chrono::milliseconds{2000});
+    // 2026-07-03 code review Finding #8 — try/catch wrap.
+    std::optional<pylabhub::utils::security::AuthenticatedConsumer> auth;
+    std::exception_ptr                                              acc_exc;
+    try
+    {
+        auth = acceptor.accept_one(std::chrono::milliseconds{2000});
+    }
+    catch (...)
+    {
+        acc_exc = std::current_exception();
+    }
     cons_thread.join();
 
+    ASSERT_FALSE(acc_exc) << "acceptor threw on backward-compat path";
     ASSERT_FALSE(cons_exc)
         << "Backward-compat consumer (require=false) MUST succeed with "
         << "a mutual-auth-capable producer — producer sees no consumer "

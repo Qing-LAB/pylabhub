@@ -566,10 +566,27 @@ AttachProtocolAcceptor::accept_one(std::chrono::milliseconds timeout)
     // Absent fields → pre-#262 consumer that doesn't want mutual auth;
     // skip Frame 3 (backward compat).
     {
-        const std::string cons_nonce_b64 =
-            hello.value("consumer_nonce_b64", std::string{});
-        const std::string cons_challenge_b64 =
-            hello.value("consumer_challenge_b64", std::string{});
+        // 2026-07-03 code review Finding #10 — catch json::type_error
+        // for mutual-auth field type mismatches, symmetric with the
+        // consumer-side Frame 3 wrap.  A peer sending
+        // {"consumer_nonce_b64": null, ...} would otherwise throw a
+        // bare nlohmann type_error that escapes past acceptor-side
+        // callers.
+        std::string cons_nonce_b64;
+        std::string cons_challenge_b64;
+        try
+        {
+            cons_nonce_b64 =
+                hello.value("consumer_nonce_b64", std::string{});
+            cons_challenge_b64 =
+                hello.value("consumer_challenge_b64", std::string{});
+        }
+        catch (const nlohmann::json::exception &e)
+        {
+            throw std::runtime_error(
+                std::string("AttachProtocol::producer: consumer mutual-auth "
+                            "field wrong type — ") + e.what());
+        }
         if (!cons_nonce_b64.empty() || !cons_challenge_b64.empty())
         {
             if (cons_nonce_b64.empty() || cons_challenge_b64.empty())
@@ -911,10 +928,30 @@ initiate_consumer_handshake(const std::string          &endpoint,
                 "pre-#262 build that does not support mutual auth, or the peer "
                 "is not the real producer");
         }
-        const std::string proof_producer_pk =
-            proof.value("producer_pubkey_z85", std::string{});
-        const std::string proof_response_b64 =
-            proof.value("proof_response_b64", std::string{});
+        // 2026-07-03 code review Finding #7 — catch json::type_error
+        // from `.value<string>()` when the field is present but
+        // non-string.  Without this wrap, a peer sending
+        // {"producer_pubkey_z85": 42, ...} triggers nlohmann's
+        // `type_error.302` which escapes with the bare nlohmann
+        // message, bypassing the intended
+        // `attach_producer_not_authenticated` marker that §D4.5
+        // callers grep for.
+        std::string proof_producer_pk;
+        std::string proof_response_b64;
+        try
+        {
+            proof_producer_pk =
+                proof.value("producer_pubkey_z85", std::string{});
+            proof_response_b64 =
+                proof.value("proof_response_b64", std::string{});
+        }
+        catch (const nlohmann::json::exception &e)
+        {
+            throw std::runtime_error(
+                std::string("AttachProtocol::consumer: Frame 3 field wrong "
+                            "type (attach_producer_not_authenticated) — ") +
+                e.what());
+        }
         if (proof_producer_pk.size() != kZ85PubkeyChars ||
             proof_response_b64.empty())
         {

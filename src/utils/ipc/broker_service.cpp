@@ -278,8 +278,18 @@ log_peer_abi_fingerprint(const nlohmann::json &req,
                           const std::string &role_uid,
                           const char *event_prefix,
                           const char *event_detail,
-                          bool strict_mode)
+                          bool strict_mode,
+                          const char *transport = nullptr)
 {
+    // `transport` is non-null for CONSUMER_ATTACH_REQ ingest (values
+    // "shm" / "zmq") per HEP-CORE-0032 §8.6.  null → REG_REQ /
+    // CONSUMER_REG_REQ; the `transport='...'` slot is omitted from the
+    // format string.  (2026-07-03 code review Finding #5.)
+    auto trans_slot = [&]() -> std::string {
+        return transport != nullptr
+            ? fmt::format(" transport='{}'", transport)
+            : std::string{};
+    };
     AbiFingerprintOutcome outcome;
     // Absence path — no envelope on the wire (older role, or role
     // built before slice C shipped).  Log verdict='ABSENT' and
@@ -290,8 +300,8 @@ log_peer_abi_fingerprint(const nlohmann::json &req,
         !req["abi_fingerprint"].is_object())
     {
         LOGGER_INFO(
-            "[broker] event={} role='{}' verdict='ABSENT' mismatched_axes=''",
-            event_prefix, role_uid);
+            "[broker] event={} role='{}'{} verdict='ABSENT' mismatched_axes=''",
+            event_prefix, role_uid, trans_slot());
         return outcome;
     }
 
@@ -309,9 +319,9 @@ log_peer_abi_fingerprint(const nlohmann::json &req,
     catch (const std::exception &e)
     {
         LOGGER_INFO(
-            "[broker] event={} role='{}' verdict='INVALID_ENVELOPE' "
+            "[broker] event={} role='{}'{} verdict='INVALID_ENVELOPE' "
             "mismatched_axes='' error='{}'",
-            event_prefix, role_uid, e.what());
+            event_prefix, role_uid, trans_slot(), e.what());
         return outcome;
     }
 
@@ -349,11 +359,27 @@ log_peer_abi_fingerprint(const nlohmann::json &req,
     // real MAJOR mismatch, which strict mode rejects and default
     // mode accepts-with-warn.
     //
-    // Slice C conflated minor mismatches into OK because
-    // `verify_peer_versions` returns compatible=true and doesn't
-    // expose per-axis minor flags.  Exposing those flags is a later
-    // enhancement to `detail::compute_verdict`.
+    // Minor-axis mismatch is compatible=true (§8.3.2 additive), but
+    // §8.6 requires a distinct MINOR_MISMATCH verdict when at least
+    // one minor flag is set and no major flag fired.  (2026-07-03
+    // code review Finding #4.)
     const char *verdict_str = "OK";
+    // Compute minor-axes list for logging.
+    std::string minor_axes_str;
+    auto append_minor = [&](bool flag, const char *name) {
+        if (!flag) return;
+        if (!minor_axes_str.empty()) minor_axes_str += ",";
+        minor_axes_str += name;
+    };
+    append_minor(verdict.minor_mismatch.library,       "library");
+    append_minor(verdict.minor_mismatch.shm,           "shm");
+    append_minor(verdict.minor_mismatch.broker_proto,  "broker_proto");
+    append_minor(verdict.minor_mismatch.zmq_frame,     "zmq_frame");
+    append_minor(verdict.minor_mismatch.script_api,    "script_api");
+    append_minor(verdict.minor_mismatch.script_engine, "script_engine");
+    append_minor(verdict.minor_mismatch.config,        "config");
+    const bool any_minor = !minor_axes_str.empty();
+
     if (!verdict.compatible)
     {
         const bool only_build_id =
@@ -380,10 +406,24 @@ log_peer_abi_fingerprint(const nlohmann::json &req,
             }
         }
     }
+    else if (any_minor)
+    {
+        // Compatible but non-zero minor drift.
+        verdict_str = "MINOR_MISMATCH";
+    }
+
+    // For MINOR_MISMATCH the axis list carried on the log line is the
+    // minor-axes list (major-axes are empty by definition).  For OK
+    // both are empty.  For MAJOR_MISMATCH_* / BUILD_ONLY use the
+    // major-axes list.
+    const std::string &axes_for_log =
+        (std::string_view(verdict_str) == "MINOR_MISMATCH")
+            ? minor_axes_str
+            : axes;
 
     LOGGER_INFO(
-        "[broker] event={} role='{}' verdict='{}' mismatched_axes='{}'",
-        event_prefix, role_uid, verdict_str, axes);
+        "[broker] event={} role='{}'{} verdict='{}' mismatched_axes='{}'",
+        event_prefix, role_uid, trans_slot(), verdict_str, axes_for_log);
 
     // Detail line — §8.6 says emit only when verdict != OK.
     if (std::string_view(verdict_str) != "OK")
@@ -3581,7 +3621,8 @@ BrokerServiceImpl::handle_consumer_attach_req_shm(const nlohmann::json &req)
     (void)log_peer_abi_fingerprint(req, caller_uid,
                                     "ConsumerAttachAbiReceived",
                                     "ConsumerAttachAbiDetail",
-                                    /*strict_mode=*/false);
+                                    /*strict_mode=*/false,
+                                    /*transport=*/"shm");
 
     auto ch = hub_state_->channel(channel_name);
     if (!ch.has_value())
@@ -3732,7 +3773,8 @@ nlohmann::json BrokerServiceImpl::handle_consumer_attach_req_zmq(
     (void)log_peer_abi_fingerprint(req, consumer_role_uid,
                                     "ConsumerAttachAbiReceived",
                                     "ConsumerAttachAbiDetail",
-                                    /*strict_mode=*/false);
+                                    /*strict_mode=*/false,
+                                    /*transport=*/"zmq");
 
     auto make_denied = [&](const std::string &reason) {
         nlohmann::json resp;

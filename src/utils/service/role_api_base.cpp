@@ -938,9 +938,12 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
 
         // HEP-CORE-0032 §8 — verify + log broker's ABI envelope echoed
         // on CONSUMER_REG_ACK.  Symmetric with the producer-side path.
-        // Log-only in slice D.3.
-        log_broker_abi_fingerprint(ack, pImpl->short_tag,
-                                    ack.value("role_uid", std::string{}));
+        // Log-only in slice D.3.  Pass `pImpl->uid` (the consumer's own
+        // role UID) rather than reading role_uid from the ACK — the
+        // ACK doesn't carry role_uid at all, so `ack.value("role_uid",
+        // "")` returned "" and rendered log lines with role='' (2026-07-03
+        // code review Finding #3).
+        log_broker_abi_fingerprint(ack, pImpl->short_tag, pImpl->uid);
 
         // HEP-CORE-0036 §5b B-4 (#289, 2026-06-25) — unified
         // CONSUMER_REG_ACK shape across transports.  Pre-B-4 the
@@ -1144,6 +1147,12 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
                 {
                     status = reply->value("status", std::string{});
                     reason = reply->value("reason", std::string{});
+                    // HEP-CORE-0032 §8.6 — verify + log broker's ABI
+                    // envelope echoed on CONSUMER_ATTACH_ACK_ZMQ.
+                    // Symmetric with REG_ACK / CONSUMER_REG_ACK paths.
+                    // (2026-07-03 code review Finding #6.)
+                    log_broker_abi_fingerprint(*reply, pImpl->short_tag,
+                                                pImpl->uid);
                 }
 
                 if (status == "success")

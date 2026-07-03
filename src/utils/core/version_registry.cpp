@@ -15,6 +15,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <limits>       // std::numeric_limits — from_json_object range check
 #include <stdexcept>
 #include <vector>
 
@@ -218,9 +219,10 @@ static RawVerdict compute_verdict(const ComponentVersions &remote,
         }
     }
 
-    auto note_minor = [&](const char *name, auto rem, auto loc) {
+    auto note_minor = [&](const char *name, auto rem, auto loc, bool &flag) {
         if (rem != loc)
         {
+            flag = true;
             if (!v.minor_notes.empty()) v.minor_notes += "; ";
             v.minor_notes += fmt::format("{} minor {} != {}",
                                           name,
@@ -229,13 +231,20 @@ static RawVerdict compute_verdict(const ComponentVersions &remote,
             v.minor_axes.push_back(name);
         }
     };
-    note_minor("library",       remote.library_minor,        cur.library_minor);
-    note_minor("shm",           remote.shm_minor,            cur.shm_minor);
-    note_minor("broker_proto",  remote.broker_proto_minor,   cur.broker_proto_minor);
-    note_minor("zmq_frame",     remote.zmq_frame_minor,      cur.zmq_frame_minor);
-    note_minor("script_api",    remote.script_api_minor,     cur.script_api_minor);
-    note_minor("script_engine", remote.script_engine_minor,  cur.script_engine_minor);
-    note_minor("config",        remote.config_minor,         cur.config_minor);
+    note_minor("library",       remote.library_minor,        cur.library_minor,
+                v.result.minor_mismatch.library);
+    note_minor("shm",           remote.shm_minor,            cur.shm_minor,
+                v.result.minor_mismatch.shm);
+    note_minor("broker_proto",  remote.broker_proto_minor,   cur.broker_proto_minor,
+                v.result.minor_mismatch.broker_proto);
+    note_minor("zmq_frame",     remote.zmq_frame_minor,      cur.zmq_frame_minor,
+                v.result.minor_mismatch.zmq_frame);
+    note_minor("script_api",    remote.script_api_minor,     cur.script_api_minor,
+                v.result.minor_mismatch.script_api);
+    note_minor("script_engine", remote.script_engine_minor,  cur.script_engine_minor,
+                v.result.minor_mismatch.script_engine);
+    note_minor("config",        remote.config_minor,         cur.config_minor,
+                v.result.minor_mismatch.config);
 
     if (v.result.compatible && v.result.message.empty())
         v.result.message = "ABI OK";
@@ -315,10 +324,14 @@ ComponentVersions from_json_object(const nlohmann::json &j)
             "abi_fingerprint: expected JSON object");
     }
 
-    // Small helper: fetch a REQUIRED integer axis field.  A missing
-    // field is treated as INVALID_REQUEST per HEP-CORE-0032 §8.7 —
-    // wire-shape invariant, not a silently-defaulted value.
-    auto req_axis = [&](const char *key) -> unsigned {
+    // Small helper: fetch a REQUIRED integer axis field, range-checked
+    // against the target type's max.  A missing field, wrong type, or
+    // out-of-range value is treated as INVALID_REQUEST per
+    // HEP-CORE-0032 §8.7 — wire-shape invariant, not a silently-truncated
+    // value (an unchecked static_cast<uint8_t>(256) → 0 would let a peer
+    // bypass strict-mode reject by wrapping around to the local axis
+    // value; see 2026-07-03 code review Finding #1).
+    auto req_axis_u8 = [&](const char *key) -> uint8_t {
         auto it = j.find(key);
         if (it == j.end() || !it->is_number_unsigned())
         {
@@ -326,25 +339,49 @@ ComponentVersions from_json_object(const nlohmann::json &j)
                 fmt::format("abi_fingerprint: missing or non-unsigned "
                              "axis field '{}'", key));
         }
-        return it->get<unsigned>();
+        const auto raw = it->get<uint64_t>();
+        if (raw > std::numeric_limits<uint8_t>::max())
+        {
+            throw std::invalid_argument(
+                fmt::format("abi_fingerprint: axis '{}' value {} exceeds "
+                             "uint8_t range", key, raw));
+        }
+        return static_cast<uint8_t>(raw);
+    };
+    auto req_axis_u16 = [&](const char *key) -> uint16_t {
+        auto it = j.find(key);
+        if (it == j.end() || !it->is_number_unsigned())
+        {
+            throw std::invalid_argument(
+                fmt::format("abi_fingerprint: missing or non-unsigned "
+                             "axis field '{}'", key));
+        }
+        const auto raw = it->get<uint64_t>();
+        if (raw > std::numeric_limits<uint16_t>::max())
+        {
+            throw std::invalid_argument(
+                fmt::format("abi_fingerprint: axis '{}' value {} exceeds "
+                             "uint16_t range", key, raw));
+        }
+        return static_cast<uint16_t>(raw);
     };
 
     ComponentVersions v{};
-    v.library_major       = static_cast<uint16_t>(req_axis("library_major"));
-    v.library_minor       = static_cast<uint16_t>(req_axis("library_minor"));
-    v.library_rolling     = static_cast<uint16_t>(req_axis("library_rolling"));
-    v.shm_major           = static_cast<uint8_t>(req_axis("shm_major"));
-    v.shm_minor           = static_cast<uint8_t>(req_axis("shm_minor"));
-    v.broker_proto_major  = static_cast<uint8_t>(req_axis("broker_proto_major"));
-    v.broker_proto_minor  = static_cast<uint8_t>(req_axis("broker_proto_minor"));
-    v.zmq_frame_major     = static_cast<uint8_t>(req_axis("zmq_frame_major"));
-    v.zmq_frame_minor     = static_cast<uint8_t>(req_axis("zmq_frame_minor"));
-    v.script_api_major    = static_cast<uint8_t>(req_axis("script_api_major"));
-    v.script_api_minor    = static_cast<uint8_t>(req_axis("script_api_minor"));
-    v.script_engine_major = static_cast<uint8_t>(req_axis("script_engine_major"));
-    v.script_engine_minor = static_cast<uint8_t>(req_axis("script_engine_minor"));
-    v.config_major        = static_cast<uint8_t>(req_axis("config_major"));
-    v.config_minor        = static_cast<uint8_t>(req_axis("config_minor"));
+    v.library_major       = req_axis_u16("library_major");
+    v.library_minor       = req_axis_u16("library_minor");
+    v.library_rolling     = req_axis_u16("library_rolling");
+    v.shm_major           = req_axis_u8("shm_major");
+    v.shm_minor           = req_axis_u8("shm_minor");
+    v.broker_proto_major  = req_axis_u8("broker_proto_major");
+    v.broker_proto_minor  = req_axis_u8("broker_proto_minor");
+    v.zmq_frame_major     = req_axis_u8("zmq_frame_major");
+    v.zmq_frame_minor     = req_axis_u8("zmq_frame_minor");
+    v.script_api_major    = req_axis_u8("script_api_major");
+    v.script_api_minor    = req_axis_u8("script_api_minor");
+    v.script_engine_major = req_axis_u8("script_engine_major");
+    v.script_engine_minor = req_axis_u8("script_engine_minor");
+    v.config_major        = req_axis_u8("config_major");
+    v.config_minor        = req_axis_u8("config_minor");
     // Unknown / extra fields intentionally ignored — MINOR-bump
     // forward-compat contract per HEP-CORE-0032 §8.3.2.
     return v;

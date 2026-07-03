@@ -330,8 +330,16 @@ struct AbiCheckResult
         bool script_api     = false;
         bool script_engine  = false;
         bool config         = false;
-        bool build_id       = false;
-    } major_mismatch;
+        bool build_id       = false;  ///< only meaningful under major_mismatch
+    };
+    MismatchFlags major_mismatch;
+    /// Per-axis MINOR-version drift.  `compatible` is unaffected by
+    /// minor mismatches (they are additive per HEP-CORE-0032 §8.3.2);
+    /// verdict callers use this to emit `MINOR_MISMATCH` observability
+    /// per §8.6 when at least one flag is set and no `major_mismatch`
+    /// flag is set.  `build_id` inside this struct is unused (build_id
+    /// carries no minor axis).
+    MismatchFlags minor_mismatch;
 };
 
 /**
