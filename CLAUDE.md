@@ -29,19 +29,34 @@ Working tree: `/home/qqing/Work/pylabhub`.
   `docs/IMPLEMENTATION_GUIDANCE.md` when the change touches policy /
   core structures / error handling). Do not rely on recall — the doc
   is the source of truth.
-- **Search HEPs before filing a "missing mechanism" or "design gap".**
-  Cross-cutting policy (ABI, versioning, threading, keys, error
-  taxonomy, schema) is HEP-owned unless proven otherwise. If you can
-  find the mechanism in the codebase but can't see how it composes
-  with your subsystem, `ls docs/HEP/HEP-CORE-*` for a topical HEP
-  BEFORE writing "we need to design X" back to the user. The failure
-  mode this catches: reading the codebase, guessing the doc doesn't
-  exist, and filing a straw-man design question that becomes an
-  amendment against a documented mechanism that already answered
-  it. Cost: five-second doc list vs. wasted design pass + rollback.
-  Source: 2026-07-03 filed HEP-CORE-0041 §10.5 Phase B "open design
-  questions" for ABI compat when HEP-CORE-0032 already fully covered
-  it.
+- **Search HEPs AND grep the codebase for existing infrastructure
+  before writing "new mechanism" text.** Cross-cutting policy (ABI,
+  versioning, threading, keys, error taxonomy, schema) is HEP-owned
+  unless proven otherwise, AND concrete implementations already
+  exist for most of it. Two checks BEFORE writing "we need to
+  design X" or drafting HEP amendment text that prescribes new
+  types/functions/constants:
+  1. `ls docs/HEP/HEP-CORE-*` for a topical HEP by name.
+  2. `grep -rn "<topic keywords>" src/include/ src/utils/core/` for
+     existing types/functions on the topic. Related keyword sets:
+     ABI → `version_registry|check_abi|ComponentVersions|PLH_COMPONENT`;
+     schema → `SchemaInfo|BLDS|schema_hash`;
+     threading → `ThreadManager|jthread|spawn_bounded`;
+     keys → `KeyStore|LockedKey|SecureMemorySubsystem`.
+  New HEP text MUST compose with what's already there, not
+  reinvent it under a different name.
+  Failure modes this catches:
+  (a) Straw-man design questions against mechanisms that already
+      exist (source: 2026-07-03 filed HEP-0041 §10.5 Phase B ABI
+      questions when HEP-0032 already answered them).
+  (b) HEP amendment text prescribing new constants/wire fields when
+      the codebase already has a 7-axis version registry doing the
+      same job (source: 2026-07-03 HEP-0032 §8 first draft invented
+      `PLH_ABI_MAJOR`/`MINOR` when `ComponentVersions` +
+      `check_abi()` already carried 7 axes with per-component
+      major/minor + build_id + drift static-asserts).
+  Cost: five-second doc list + one grep vs. wasted design pass +
+  wrong-shape HEP amendment + user having to catch it.
 
 ## Work discipline
 
