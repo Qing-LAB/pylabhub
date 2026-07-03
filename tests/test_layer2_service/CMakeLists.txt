@@ -600,6 +600,46 @@ gtest_discover_tests(test_layer2_hub_shm_queue_capability
 )
 
 # ============================================================================
+# Test: ShmQueue contract L2 revival post-S3c retirement (task #323)
+# Pattern 1+ — same as _capability sibling above.
+# Covers 4 low-level ShmQueue / DataBlockProducer contracts that the S3c
+# retirement dropped without a real L2/L4 replacement:
+#   1. NoFlexzone                — flexzone()/flexzone_size()=={nullptr,0}.
+#   2. FlexzoneBidirectional     — one shared region, both endpoints see writes.
+#   3. VerifyChecksumMismatch    — read_acquire refuses slot_valid=0.
+#   4. DataBlockProducerRemapStubsThrow — request_/commit_structure_remap throw.
+# Uses the header-only make_fd_backed_producer helper from
+# test_layer3_datahub/workers/datahub_fd_test_helper.h — same fd-source
+# factory the sibling capability test's inline path uses.
+# ============================================================================
+
+add_executable(test_layer2_hub_shm_queue_contract
+    test_hub_shm_queue_contract.cpp
+)
+
+target_link_libraries(test_layer2_hub_shm_queue_contract
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_hub_shm_queue_contract)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_hub_shm_queue_contract
+    SUITE_NAME "Layer2_HubShmQueueContract"
+)
+layer2_require_staged_utils(test_layer2_hub_shm_queue_contract)
+
+gtest_discover_tests(test_layer2_hub_shm_queue_contract
+    PROPERTIES
+        LABELS "layer2;service;shm;hep0041"
+        TIMEOUT 30
+)
+
+# ============================================================================
 # Test: PeerAdmission abstraction (HEP-CORE-0035 §4.5 / HEP-CORE-0036 §I1)
 # Pattern 1 — pure value-type tests; no LOGGER_*, no lifecycle.
 # Phase A of the PeerAdmission architecture: pins the interface contract
