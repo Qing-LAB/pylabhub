@@ -1297,6 +1297,75 @@ open_datablock_for_diagnostic_from_fd(int source_fd);
  */
 using ScopedDiagnosticHandle = std::unique_ptr<DataBlockDiagnosticHandle>;
 
+// ─── Observer attach: header-only, read-only (HEP-CORE-0041 §10.5) ───
+//
+// Metrics observation role for the broker / admin plane / dashboards
+// under HEP-CORE-0041 (task #317).  Observers are NOT consumers:
+// consumers participate in the ring-buffer protocol (slot acquire /
+// release / sync policy); observers only read header-resident atomic
+// counters.
+//
+// Isolation (mmap-level):
+//   The factory maps ONLY `sizeof(SharedMemoryHeader)` bytes with
+//   `PROT_READ` + `MAP_SHARED`.  Data slots and flexzone are unmapped
+//   from the observer's address space; a regression that walks past
+//   the header raises SIGSEGV instead of returning corrupted data.
+//
+// ABI validation:
+//   The factory calls `validate_header_layout_hash` on the mapped
+//   header — same mechanism the DataBlockConsumer attach path uses.
+//   A broker + producer built from tree revisions with divergent
+//   `SharedMemoryHeader` layouts fails the factory return, not the
+//   downstream metric read.
+//
+// The underlying fd (SCM_RIGHTS'd from producer under Phase C wiring)
+// grants full-file access; the isolation is at the mmap window, not
+// at the fd level.  This is the correct engineering trade-off — full
+// per-consumer fd variants would require producer-side per-consumer
+// memfd re-creation, defeating the zero-copy point of the DataBlock.
+struct DataBlockObserverHandleImpl;
+
+class PYLABHUB_UTILS_EXPORT DataBlockObserverHandle
+{
+  public:
+    ~DataBlockObserverHandle() noexcept;
+    DataBlockObserverHandle(DataBlockObserverHandle &&) noexcept;
+    DataBlockObserverHandle &operator=(DataBlockObserverHandle &&) noexcept;
+    DataBlockObserverHandle(const DataBlockObserverHandle &)            = delete;
+    DataBlockObserverHandle &operator=(const DataBlockObserverHandle &) = delete;
+
+    /// Read-only pointer to the mapped SharedMemoryHeader.
+    /// Never null on a successful factory return.
+    const SharedMemoryHeader *header() const noexcept;
+
+    // Intentionally NO slot_rw_state / flexzone / data accessors —
+    // those regions are unmapped in the observer's address space.
+
+  private:
+    explicit DataBlockObserverHandle(std::unique_ptr<DataBlockObserverHandleImpl> impl);
+    std::unique_ptr<DataBlockObserverHandleImpl> pImpl;
+    friend PYLABHUB_UTILS_EXPORT std::unique_ptr<DataBlockObserverHandle>
+    open_datablock_for_observer_from_fd(int source_fd);
+};
+
+/**
+ * @brief Attach to a memfd-backed DataBlock in HEADER-ONLY observer mode.
+ *
+ * Opens `source_fd` (dup'd via `F_DUPFD_CLOEXEC`), `mmap`s ONLY the
+ * `sizeof(SharedMemoryHeader)` prefix of the file with `PROT_READ` +
+ * `MAP_SHARED`, validates the header magic AND the layout ABI hash,
+ * and returns a `DataBlockObserverHandle`.  Data slots and flexzone
+ * are NOT mapped into the observer's address space.
+ *
+ * @param source_fd Valid fd referring to a DataBlock-shaped memfd.
+ *                  Caller retains ownership (we dup internally).
+ * @return Observer handle on success; nullptr on any failure (invalid
+ *         fd, dup / fstat / mmap failure, header magic mismatch, ABI
+ *         layout hash mismatch).
+ */
+[[nodiscard]] PYLABHUB_UTILS_EXPORT std::unique_ptr<DataBlockObserverHandle>
+open_datablock_for_observer_from_fd(int source_fd);
+
 /** @brief Returns the logical name (part before any runtime suffix) for comparison/lookup.
  * Producer/Consumer name() may append a suffix " | pid:<pid>-<idx>"; for channel or broker
  * comparison use this. See docs/NAME_CONVENTIONS.md. */

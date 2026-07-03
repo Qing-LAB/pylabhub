@@ -1609,6 +1609,135 @@ open_datablock_for_diagnostic_from_fd(int source_fd)
 #endif
 }
 
+// ─── DataBlockObserverHandle (HEP-CORE-0041 §10.5, task #317) ──────────
+//
+// Header-only, read-only observer attach.  See declaration comment in
+// data_block.hpp for full contract + isolation rationale.
+
+struct DataBlockObserverHandleImpl
+{
+    pylabhub::platform::ShmHandle m_shm{};
+    const SharedMemoryHeader *header_ptr{nullptr};
+    ~DataBlockObserverHandleImpl() noexcept
+    {
+        pylabhub::platform::shm_close(&m_shm);
+    }
+};
+
+DataBlockObserverHandle::DataBlockObserverHandle(
+    std::unique_ptr<DataBlockObserverHandleImpl> impl)
+    : pImpl(std::move(impl))
+{}
+
+DataBlockObserverHandle::~DataBlockObserverHandle() noexcept = default;
+DataBlockObserverHandle::DataBlockObserverHandle(
+    DataBlockObserverHandle &&) noexcept = default;
+DataBlockObserverHandle &
+DataBlockObserverHandle::operator=(
+    DataBlockObserverHandle &&) noexcept = default;
+
+const SharedMemoryHeader *DataBlockObserverHandle::header() const noexcept
+{
+    return pImpl ? pImpl->header_ptr : nullptr;
+}
+
+std::unique_ptr<DataBlockObserverHandle>
+open_datablock_for_observer_from_fd(int source_fd)
+{
+#if defined(PYLABHUB_IS_POSIX)
+    if (source_fd < 0)
+    {
+        LOGGER_DEBUG("DataBlockObserverHandle: invalid source fd ({})",
+                     source_fd);
+        return nullptr;
+    }
+    const int dup_fd = ::fcntl(source_fd, F_DUPFD_CLOEXEC, 1);
+    if (dup_fd < 0)
+    {
+        LOGGER_DEBUG("DataBlockObserverHandle: fcntl(F_DUPFD_CLOEXEC) of "
+                     "fd {} failed (errno={})", source_fd, errno);
+        return nullptr;
+    }
+    struct stat st = {};
+    if (::fstat(dup_fd, &st) != 0)
+    {
+        const int saved_errno = errno;
+        ::close(dup_fd);
+        LOGGER_DEBUG("DataBlockObserverHandle: fstat of dup'd fd failed "
+                     "(errno={})", saved_errno);
+        return nullptr;
+    }
+    // Sanity: fd must be large enough to hold at least a header.  The
+    // full DataBlock is much larger (slots + flexzone); we only map
+    // the header prefix.
+    if (static_cast<size_t>(st.st_size) < sizeof(SharedMemoryHeader))
+    {
+        ::close(dup_fd);
+        LOGGER_DEBUG("DataBlockObserverHandle: fd size {} < sizeof(header) "
+                     "{}", st.st_size, sizeof(SharedMemoryHeader));
+        return nullptr;
+    }
+    // HEADER-ONLY mmap.  Data slots + flexzone stay unmapped in this
+    // process's address space.  `PROT_READ` enforces read-only at the
+    // VM layer; any write from this side raises SIGSEGV.
+    constexpr size_t header_map_size = sizeof(SharedMemoryHeader);
+    void *mapped = ::mmap(nullptr, header_map_size, PROT_READ, MAP_SHARED,
+                          dup_fd, 0);
+    if (mapped == MAP_FAILED)
+    {
+        const int saved_errno = errno;
+        ::close(dup_fd);
+        LOGGER_DEBUG("DataBlockObserverHandle: mmap of header prefix "
+                     "failed (errno={})", saved_errno);
+        return nullptr;
+    }
+    auto impl = std::make_unique<DataBlockObserverHandleImpl>();
+    impl->m_shm.base   = mapped;
+    impl->m_shm.size   = header_map_size;
+    impl->m_shm.opaque = reinterpret_cast<void *>(
+        static_cast<intptr_t>(dup_fd));
+    // Ownership of mapped + dup_fd transfers to `impl` here (its m_shm
+    // dtor runs shm_close which munmap()s + closes).
+    impl->header_ptr = reinterpret_cast<const SharedMemoryHeader *>(
+        impl->m_shm.base);
+    if (!detail::is_header_magic_valid(&impl->header_ptr->magic_number,
+                                        detail::DATABLOCK_MAGIC_NUMBER))
+    {
+        LOGGER_DEBUG("DataBlockObserverHandle: fd does not point to a "
+                     "valid DataBlock region (magic number mismatch)");
+        return nullptr;
+    }
+    // ABI check — same mechanism the DataBlockConsumer attach path
+    // uses (see data_block.cpp:3107).  Prevents silent metric
+    // corruption from broker + producer built at divergent tree
+    // revisions with a `SharedMemoryHeader` field change.
+    try
+    {
+        validate_header_layout_hash(impl->header_ptr);
+    }
+    catch (const pylabhub::schema::SchemaValidationException &e)
+    {
+        LOGGER_DEBUG("DataBlockObserverHandle: header layout hash "
+                     "mismatch (broker + producer at divergent ABI): {}",
+                     e.what());
+        return nullptr;
+    }
+    catch (const std::exception &e)
+    {
+        LOGGER_DEBUG("DataBlockObserverHandle: header layout validation "
+                     "threw: {}", e.what());
+        return nullptr;
+    }
+    return std::unique_ptr<DataBlockObserverHandle>(
+        new DataBlockObserverHandle(std::move(impl)));
+#else
+    (void)source_fd;
+    LOGGER_DEBUG("DataBlockObserverHandle: fd-based open not supported on "
+                 "this platform");
+    return nullptr;
+#endif
+}
+
 uint64_t DataBlockProducer::last_slot_id() const noexcept
 {
     if (pImpl == nullptr || pImpl->dataBlock == nullptr)

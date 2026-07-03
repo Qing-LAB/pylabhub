@@ -529,3 +529,73 @@ TEST_F(ShmQueueContractTest, DataBlockGetMetricsFromFd)
     ASSERT_EQ(0, ::ftruncate(garbage_fd, static_cast<off_t>(4096)));
     EXPECT_EQ(::datablock_get_metrics_from_fd(garbage_fd, &m_bad), -1);
 }
+
+// ─── Test 6: DataBlockObserverHandle — header-only + ABI check ──────
+//
+// HEP-CORE-0041 §10.5 (task #317 Phase B): the observer factory maps
+// ONLY sizeof(SharedMemoryHeader) bytes with PROT_READ, and runs
+// `validate_header_layout_hash` for ABI compatibility.
+//
+// Test surface:
+//   (a) Success: producer writes slots; observer sees a non-null
+//       header; magic_number reads non-zero.
+//   (b) Isolation: DataBlockConfig-computed total size is strictly
+//       greater than sizeof(SharedMemoryHeader) — pins the design
+//       invariant that we're NOT mapping the whole DataBlock.
+//   (c) ABI: garbage memfd is refused (magic OR layout hash fails).
+TEST_F(ShmQueueContractTest, DataBlockObserverHandle_HeaderOnlyIsolation)
+{
+    auto [_, item_size] =
+        pylabhub::hub::compute_field_layout(slot_schema(), "aligned");
+    const DataBlockConfig cfg =
+        make_config(item_size, /*fz_size=*/0, ChecksumPolicy::None);
+
+    auto p = pylabhub::tests::helper::make_fd_backed_producer(
+        "shm-queue-observer", DataBlockPolicy::RingBuffer, cfg);
+    ASSERT_NE(p.producer, nullptr);
+
+    // Do a write so the header has non-init state.
+    {
+        auto handle = p.producer->acquire_write_slot(/*timeout_ms=*/100);
+        ASSERT_NE(handle, nullptr);
+        auto buf = handle->buffer_span();
+        ASSERT_GE(buf.size(), sizeof(int32_t));
+        int32_t v = 0xC0FFEE;
+        std::memcpy(buf.data(), &v, sizeof(v));
+        ASSERT_TRUE(handle->commit(sizeof(v)));
+        ASSERT_TRUE(p.producer->release_write_slot(*handle));
+    }
+
+    // (a) Success — observer handle exposes the atomic header.
+    auto obs = pylabhub::hub::open_datablock_for_observer_from_fd(
+        p.transport->borrow_fd());
+    ASSERT_NE(obs, nullptr);
+    ASSERT_NE(obs->header(), nullptr);
+
+    const uint32_t magic = obs->header()->magic_number.load(
+        std::memory_order_acquire);
+    EXPECT_NE(magic, 0u)
+        << "Observer must read the atomic magic_number field";
+
+    // (b) Isolation — total DataBlock region is strictly larger than
+    // the header we mapped.  Design invariant: observer's mmap is
+    // HEADER-ONLY.
+    const size_t total = pylabhub::hub::datablock_layout_total_size(cfg);
+    EXPECT_GT(total, sizeof(pylabhub::hub::SharedMemoryHeader))
+        << "Test premise: total region exceeds header, so observer's "
+        << "PROT_READ mmap of sizeof(header) does NOT cover slots/fz.";
+
+    // (c) ABI / magic gate — garbage memfd refused.  A zero-header
+    // memfd fails is_header_magic_valid before validate_header_layout_hash
+    // can run; both gates are protective.  This subtest pins the
+    // combined refusal, not a specific gate.
+    const int garbage_fd = ::memfd_create("plh_l2_obs_garbage",
+                                            MFD_CLOEXEC);
+    ASSERT_GE(garbage_fd, 0);
+    track_fd(garbage_fd);
+    ASSERT_EQ(0, ::ftruncate(garbage_fd,
+                              static_cast<off_t>(sizeof(pylabhub::hub::SharedMemoryHeader) + 4096)));
+    auto bad = pylabhub::hub::open_datablock_for_observer_from_fd(garbage_fd);
+    EXPECT_EQ(bad, nullptr)
+        << "Observer factory must reject a memfd whose header is invalid";
+}

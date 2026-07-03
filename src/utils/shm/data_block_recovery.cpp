@@ -843,25 +843,37 @@ extern "C"
         // `datablock_get_metrics(shm_name)`.  Under HEP-0041 SHM
         // channels are memfd-backed (no /dev/shm name), so the
         // name-based path fails with ENOENT; observers must attach
-        // via a passed fd.  Symmetric with `datablock_diagnose_slot`'s
-        // fd surface, but the metrics path doesn't need slot indexing —
-        // just the header's atomic counters.
+        // via a passed fd.
+        //
+        // Uses `open_datablock_for_observer_from_fd` — HEADER-ONLY
+        // mmap with PROT_READ + validate_header_layout_hash ABI check.
+        // Slot data + flexzone are physically absent from the
+        // observer's address space.  `slot_rw_get_metrics` takes
+        // `const SharedMemoryHeader *` (slot_rw_coordinator.h:181) —
+        // no cast required; the const-correct chain reaches down to
+        // the atomic loads inside the coordinator.
+        //
+        // For broker-side polling this is the ONLY correct entry.
+        // Recovery / repair tools that legitimately need slot or
+        // flexzone access use `open_datablock_for_diagnostic_from_fd`
+        // instead.
         if (source_fd < 0 || out_metrics == nullptr)
         {
             return -1;
         }
-        auto handle = pylabhub::hub::open_datablock_for_diagnostic_from_fd(source_fd);
+        auto handle = pylabhub::hub::open_datablock_for_observer_from_fd(source_fd);
         if (!handle)
         {
             LOGGER_ERROR("recovery: Failed to open memfd (source_fd={}) for "
-                          "diagnostic metrics read.", source_fd);
+                          "observer metrics read (magic / ABI / mmap "
+                          "check may have failed).", source_fd);
             return -1;
         }
-        pylabhub::hub::SharedMemoryHeader *header = handle->header();
+        const pylabhub::hub::SharedMemoryHeader *header = handle->header();
         if (header == nullptr)
         {
-            LOGGER_ERROR("recovery: Failed to get header from memfd handle "
-                          "(source_fd={}).", source_fd);
+            LOGGER_ERROR("recovery: Failed to get header from observer "
+                          "handle (source_fd={}).", source_fd);
             return -1;
         }
         return slot_rw_get_metrics(header, out_metrics);
