@@ -331,85 +331,33 @@ log_peer_abi_fingerprint(const nlohmann::json &req,
     const char *peer_bid =
         build_id_str.empty() ? nullptr : build_id_str.c_str();
 
-    const auto verdict = pylabhub::version::verify_peer_versions(peer, peer_bid);
+    const auto verdict    = pylabhub::version::verify_peer_versions(peer, peer_bid);
+    const auto classified = pylabhub::version::classify_peer_verdict(verdict);
 
-    // Compute mismatched-axes list.  Per §8.6, comma-separated axis
-    // names.  Empty on OK / BUILD_ONLY.
-    std::string axes;
-    auto append_axis = [&](bool flag, const char *name) {
-        if (!flag) return;
-        if (!axes.empty()) axes += ",";
-        axes += name;
-    };
-    append_axis(verdict.major_mismatch.library,       "library");
-    append_axis(verdict.major_mismatch.shm,           "shm");
-    append_axis(verdict.major_mismatch.broker_proto,  "broker_proto");
-    append_axis(verdict.major_mismatch.zmq_frame,     "zmq_frame");
-    append_axis(verdict.major_mismatch.script_api,    "script_api");
-    append_axis(verdict.major_mismatch.script_engine, "script_engine");
-    append_axis(verdict.major_mismatch.config,        "config");
-    append_axis(verdict.major_mismatch.build_id,      "build_id");
-
-    // Verdict classification per §8.5 table.
-    //
-    // Distinguishing an ABI-major mismatch from BUILD-only diff:
-    // when ONLY `build_id` flag is set (no axis flag), the mismatch
-    // is purely at the build-hash level → verdict='BUILD_ONLY',
-    // always accept (informational, per §8.3.3).  Any axis flag =
-    // real MAJOR mismatch, which strict mode rejects and default
-    // mode accepts-with-warn.
-    //
-    // Minor-axis mismatch is compatible=true (§8.3.2 additive), but
-    // §8.6 requires a distinct MINOR_MISMATCH verdict when at least
-    // one minor flag is set and no major flag fired.  (2026-07-03
-    // code review Finding #4.)
+    // Map classifier Kind → §8.6 log verdict string, applying
+    // strict_mode to the MAJOR case only.  Shared helper used by
+    // both broker and role side (2026-07-03 review Finding #14).
     const char *verdict_str = "OK";
-    // Compute minor-axes list for logging.
-    std::string minor_axes_str;
-    auto append_minor = [&](bool flag, const char *name) {
-        if (!flag) return;
-        if (!minor_axes_str.empty()) minor_axes_str += ",";
-        minor_axes_str += name;
-    };
-    append_minor(verdict.minor_mismatch.library,       "library");
-    append_minor(verdict.minor_mismatch.shm,           "shm");
-    append_minor(verdict.minor_mismatch.broker_proto,  "broker_proto");
-    append_minor(verdict.minor_mismatch.zmq_frame,     "zmq_frame");
-    append_minor(verdict.minor_mismatch.script_api,    "script_api");
-    append_minor(verdict.minor_mismatch.script_engine, "script_engine");
-    append_minor(verdict.minor_mismatch.config,        "config");
-    const bool any_minor = !minor_axes_str.empty();
-
-    if (!verdict.compatible)
+    switch (classified.kind)
     {
-        const bool only_build_id =
-            verdict.major_mismatch.build_id &&
-            !verdict.major_mismatch.library &&
-            !verdict.major_mismatch.shm &&
-            !verdict.major_mismatch.broker_proto &&
-            !verdict.major_mismatch.zmq_frame &&
-            !verdict.major_mismatch.script_api &&
-            !verdict.major_mismatch.script_engine &&
-            !verdict.major_mismatch.config;
-        if (only_build_id)
-        {
-            verdict_str = "BUILD_ONLY";
-        }
-        else
-        {
-            verdict_str = strict_mode ? "MAJOR_MISMATCH_REJECTED"
-                                       : "MAJOR_MISMATCH_ACCEPTED";
-            if (strict_mode)
-            {
-                outcome.reject          = true;
-                outcome.mismatched_axes = axes;
-            }
-        }
-    }
-    else if (any_minor)
-    {
-        // Compatible but non-zero minor drift.
+    case pylabhub::version::AbiPeerVerdict::Kind::Ok:
+        verdict_str = "OK";
+        break;
+    case pylabhub::version::AbiPeerVerdict::Kind::MinorMismatch:
         verdict_str = "MINOR_MISMATCH";
+        break;
+    case pylabhub::version::AbiPeerVerdict::Kind::BuildOnly:
+        verdict_str = "BUILD_ONLY";
+        break;
+    case pylabhub::version::AbiPeerVerdict::Kind::MajorMismatch:
+        verdict_str = strict_mode ? "MAJOR_MISMATCH_REJECTED"
+                                   : "MAJOR_MISMATCH_ACCEPTED";
+        if (strict_mode)
+        {
+            outcome.reject          = true;
+            outcome.mismatched_axes = classified.major_axes;
+        }
+        break;
     }
 
     // For MINOR_MISMATCH the axis list carried on the log line is the
@@ -417,9 +365,9 @@ log_peer_abi_fingerprint(const nlohmann::json &req,
     // both are empty.  For MAJOR_MISMATCH_* / BUILD_ONLY use the
     // major-axes list.
     const std::string &axes_for_log =
-        (std::string_view(verdict_str) == "MINOR_MISMATCH")
-            ? minor_axes_str
-            : axes;
+        (classified.kind == pylabhub::version::AbiPeerVerdict::Kind::MinorMismatch)
+            ? classified.minor_axes
+            : classified.major_axes;
 
     LOGGER_INFO(
         "[broker] event={} role='{}'{} verdict='{}' mismatched_axes='{}'",

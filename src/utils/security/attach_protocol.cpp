@@ -68,61 +68,6 @@ make_errno_error(const char *side, const char *what, int captured_errno)
                               what + ": " + std::strerror(captured_errno));
 }
 
-// Receive exactly `n` bytes from `fd` under a `total_timeout` budget,
-// or throw.  Treats EOF (recv returns 0) as a transport error so a
-// peer that drops mid-frame surfaces immediately rather than hanging.
-[[maybe_unused]] void
-recv_all(int fd, void *buf, std::size_t n,
-         std::chrono::milliseconds total_timeout, const char *side)
-{
-    const auto deadline = std::chrono::steady_clock::now() + total_timeout;
-    auto      *p        = static_cast<std::byte *>(buf);
-    std::size_t got     = 0;
-    while (got < n)
-    {
-        const auto now = std::chrono::steady_clock::now();
-        if (now >= deadline)
-        {
-            throw std::runtime_error(std::string{"AttachProtocol::"} + side +
-                                     ": timeout waiting for " +
-                                     std::to_string(n) + " bytes (got " +
-                                     std::to_string(got) + ")");
-        }
-        const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
-            deadline - now);
-        pollfd pfd{fd, POLLIN, 0};
-        const int rc = ::poll(&pfd, 1, static_cast<int>(remaining.count()));
-        if (rc == 0)
-        {
-            throw AttachProtocolTimeout(std::string{"AttachProtocol::"} + side +
-                                         ": poll timed out");
-        }
-        if (rc < 0)
-        {
-            const int e = errno;
-            if (e == EINTR)
-                continue;
-            throw make_errno_error(side, "poll failed", e);
-        }
-        const ssize_t r = ::recv(fd, p + got, n - got, 0);
-        if (r == 0)
-        {
-            throw std::runtime_error(std::string{"AttachProtocol::"} + side +
-                                     ": peer closed connection mid-frame "
-                                     "(got " + std::to_string(got) + " of " +
-                                     std::to_string(n) + ")");
-        }
-        if (r < 0)
-        {
-            const int e = errno;
-            if (e == EINTR)
-                continue;
-            throw make_errno_error(side, "recv failed", e);
-        }
-        got += static_cast<std::size_t>(r);
-    }
-}
-
 // Compute remaining budget from an absolute deadline; zero if past.
 // Used to bound each recv/send call against a SHARED deadline so an
 // entire multi-call handshake step (recv len + recv body, or send len
@@ -473,18 +418,21 @@ AttachProtocolAcceptor::accept_one(std::chrono::milliseconds timeout)
         throw std::runtime_error("AttachProtocol::producer: hello role_uid empty");
     }
     // HEP-CORE-0041 §10.5 observer-role wiring (#317 C.1, 2026-07-03).
-    // Route on `role_type`: `"consumer"` (or empty for pre-#317 role
-    // builds) → existing CURVE-against-channel-allowlist path.
-    // `"observer"` → broker-observer path (not yet implemented; reject
-    // with clear diagnostic until #317 Phase C.2 broker-dial lands).
-    // Any other value → protocol violation.
+    // Route on `role_type`: `"consumer"` OR empty string OR absent field
+    // → existing CURVE-against-channel-allowlist path (pre-#317 role
+    // builds emit no field; JSON serializers that always emit every
+    // key produce empty-string; both must map to consumer).  Fix per
+    // 2026-07-03 code review Finding #12.  `"observer"` → broker-
+    // observer path (not yet implemented; reject with clear diagnostic
+    // until #317 Phase C.2 broker-dial lands).  Any other value →
+    // protocol violation.
     const std::string role_type =
         hello.value("role_type", std::string{"consumer"});
-    if (role_type != "consumer" && role_type != "observer")
+    if (!role_type.empty() && role_type != "consumer" && role_type != "observer")
     {
         throw std::runtime_error(
             "AttachProtocol::producer: hello role_type must be "
-            "\"consumer\" or \"observer\" (got \"" + role_type + "\")");
+            "\"consumer\", \"observer\", or empty (got \"" + role_type + "\")");
     }
     if (role_type == "observer")
     {

@@ -165,10 +165,10 @@ namespace detail
 /// where to sink the verdict.
 struct RawVerdict
 {
-    AbiCheckResult    result;
-    std::string       minor_notes;   ///< one per minor mismatch, "; "-joined
-    std::vector<const char *> major_axes;  ///< names of MAJOR-mismatched axes
-    std::vector<const char *> minor_axes;  ///< names of MINOR-mismatched axes
+    AbiCheckResult              result;
+    std::vector<std::string>    minor_notes;   ///< one entry per drifted minor axis
+    std::vector<const char *>   major_axes;    ///< names of MAJOR-mismatched axes
+    std::vector<const char *>   minor_axes;    ///< names of MINOR-mismatched axes
 };
 
 static RawVerdict compute_verdict(const ComponentVersions &remote,
@@ -212,9 +212,16 @@ static RawVerdict compute_verdict(const ComponentVersions &remote,
         {
             v.result.major_mismatch.build_id = true;
             v.result.compatible              = false;
+            // Fix 2026-07-03 code review Finding #13: keep the
+            // side-specific hint ("this library"/"library has no
+            // build_id") so operators reading the diagnostic can tell
+            // WHICH side lacks build_id without inspecting both
+            // binaries.  Post-refactor the shorter "(no build_id)"
+            // ambiguously read as either side.
             v.result.message += fmt::format("build_id {} != {}; ",
                                             remote_build_id,
-                                            cur_bid ? cur_bid : "(no build_id)");
+                                            cur_bid ? cur_bid
+                                                     : "(library has no build_id)");
             v.major_axes.push_back("build_id");
         }
     }
@@ -223,11 +230,10 @@ static RawVerdict compute_verdict(const ComponentVersions &remote,
         if (rem != loc)
         {
             flag = true;
-            if (!v.minor_notes.empty()) v.minor_notes += "; ";
-            v.minor_notes += fmt::format("{} minor {} != {}",
-                                          name,
-                                          static_cast<unsigned>(rem),
-                                          static_cast<unsigned>(loc));
+            v.minor_notes.push_back(fmt::format("{} minor {} != {}",
+                                                name,
+                                                static_cast<unsigned>(rem),
+                                                static_cast<unsigned>(loc)));
             v.minor_axes.push_back(name);
         }
     };
@@ -268,12 +274,17 @@ AbiCheckResult check_abi(const ComponentVersions &exp,
                          const char *exp_build_id) noexcept
 {
     auto v = detail::compute_verdict(exp, exp_build_id);
-    if (!v.minor_notes.empty())
+    // 2026-07-03 code review Finding #9 — emit ONE stderr WARN line
+    // per drifted minor axis rather than one joined line for all of
+    // them.  Log-aggregators that count distinct WARN lines to gauge
+    // drift severity (fire alert on ≥2 axes) previously miscounted a
+    // multi-axis drift as a single event.
+    for (const auto &note : v.minor_notes)
     {
         std::fprintf(stderr,
                       "[pylabhub] ABI check WARN: %s "
                       "(additive change; caller should re-inspect runtime surface)\n",
-                      v.minor_notes.c_str());
+                      note.c_str());
     }
     return v.result;
 }
@@ -289,6 +300,66 @@ AbiCheckResult verify_peer_versions(const ComponentVersions &peer_versions,
                                     const char *peer_build_id) noexcept
 {
     return detail::compute_verdict(peer_versions, peer_build_id).result;
+}
+
+// ============================================================================
+// classify_peer_verdict — HEP-CORE-0032 §8.6 verdict classification.
+// Shared helper for broker-side + role-side observability so the two
+// stay in sync on taxonomy changes.  (2026-07-03 code review
+// Finding #14.)
+// ============================================================================
+
+AbiPeerVerdict classify_peer_verdict(const AbiCheckResult &v)
+{
+    AbiPeerVerdict out;
+
+    // Append helpers for axis lists.
+    auto append = [](std::string &dst, bool flag, const char *name) {
+        if (!flag) return;
+        if (!dst.empty()) dst += ",";
+        dst += name;
+    };
+    append(out.major_axes, v.major_mismatch.library,       "library");
+    append(out.major_axes, v.major_mismatch.shm,           "shm");
+    append(out.major_axes, v.major_mismatch.broker_proto,  "broker_proto");
+    append(out.major_axes, v.major_mismatch.zmq_frame,     "zmq_frame");
+    append(out.major_axes, v.major_mismatch.script_api,    "script_api");
+    append(out.major_axes, v.major_mismatch.script_engine, "script_engine");
+    append(out.major_axes, v.major_mismatch.config,        "config");
+    append(out.major_axes, v.major_mismatch.build_id,      "build_id");
+
+    append(out.minor_axes, v.minor_mismatch.library,       "library");
+    append(out.minor_axes, v.minor_mismatch.shm,           "shm");
+    append(out.minor_axes, v.minor_mismatch.broker_proto,  "broker_proto");
+    append(out.minor_axes, v.minor_mismatch.zmq_frame,     "zmq_frame");
+    append(out.minor_axes, v.minor_mismatch.script_api,    "script_api");
+    append(out.minor_axes, v.minor_mismatch.script_engine, "script_engine");
+    append(out.minor_axes, v.minor_mismatch.config,        "config");
+
+    if (!v.compatible)
+    {
+        // BUILD_ONLY iff build_id is the ONLY major flag set.
+        const bool only_build_id =
+            v.major_mismatch.build_id &&
+            !v.major_mismatch.library &&
+            !v.major_mismatch.shm &&
+            !v.major_mismatch.broker_proto &&
+            !v.major_mismatch.zmq_frame &&
+            !v.major_mismatch.script_api &&
+            !v.major_mismatch.script_engine &&
+            !v.major_mismatch.config;
+        out.kind = only_build_id ? AbiPeerVerdict::Kind::BuildOnly
+                                  : AbiPeerVerdict::Kind::MajorMismatch;
+    }
+    else if (!out.minor_axes.empty())
+    {
+        out.kind = AbiPeerVerdict::Kind::MinorMismatch;
+    }
+    else
+    {
+        out.kind = AbiPeerVerdict::Kind::Ok;
+    }
+    return out;
 }
 
 // ============================================================================

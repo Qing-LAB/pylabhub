@@ -22,18 +22,6 @@ namespace pylabhub::utils::security
 
 #if defined(PYLABHUB_PLATFORM_LINUX)
 
-namespace
-{
-
-[[maybe_unused]] void
-close_if_valid(int fd) noexcept
-{
-    if (fd >= 0)
-        ::close(fd);
-}
-
-} // anonymous namespace
-
 ShmAttachOrchestrator::ShmAttachOrchestrator(
     AttachProtocolAcceptor &acceptor, IShmCapabilityProducer &transport,
     Config config)

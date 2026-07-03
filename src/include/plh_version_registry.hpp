@@ -385,6 +385,38 @@ PYLABHUB_UTILS_EXPORT
 AbiCheckResult verify_peer_versions(const ComponentVersions &peer_versions,
                                     const char *peer_build_id = nullptr) noexcept;
 
+/**
+ * @brief HEP-CORE-0032 §8.6 verdict classification of a peer ABI check.
+ *
+ * Turns the raw `AbiCheckResult` (which just carries per-axis flags)
+ * into the terminal §8.6 verdict string that log lines emit.  Shared
+ * between broker-side and role-side observability helpers so both
+ * agree on the taxonomy (2026-07-03 code review Finding #14 — remove
+ * ~90 LOC of duplication that risked classifier drift on future
+ * taxonomy changes).
+ *
+ * The verdict enum values map 1:1 to §8.6 log strings.  `Reject` is
+ * NOT decided here (strict-mode is caller policy); callers combine
+ * `MajorMismatch` with their strict-mode flag to pick between
+ * `MAJOR_MISMATCH_ACCEPTED` and `MAJOR_MISMATCH_REJECTED`.
+ */
+struct AbiPeerVerdict
+{
+    enum class Kind
+    {
+        Ok,             ///< identical envelopes on all 7 axes
+        BuildOnly,      ///< build_id differs but no axis differs
+        MinorMismatch,  ///< at least one minor axis drift, no major
+        MajorMismatch,  ///< at least one major axis flagged
+    };
+    Kind        kind;
+    std::string major_axes;   ///< comma-separated names of major-drifted axes
+    std::string minor_axes;   ///< comma-separated names of minor-drifted axes
+};
+
+PYLABHUB_UTILS_EXPORT
+AbiPeerVerdict classify_peer_verdict(const AbiCheckResult &verdict);
+
 // ============================================================================
 // JSON serialization for wire binding (HEP-CORE-0032 §8.2)
 // ============================================================================

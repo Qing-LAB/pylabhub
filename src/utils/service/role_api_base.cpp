@@ -131,59 +131,53 @@ inline void log_broker_abi_fingerprint(const nlohmann::json &ack,
     const std::string bid_str = ack.value("broker_build_id", std::string{});
     const char *broker_bid = bid_str.empty() ? nullptr : bid_str.c_str();
 
-    const auto verdict = pylabhub::version::verify_peer_versions(broker, broker_bid);
+    const auto verdict    = pylabhub::version::verify_peer_versions(broker, broker_bid);
+    const auto classified = pylabhub::version::classify_peer_verdict(verdict);
 
-    std::string axes;
-    auto append_axis = [&](bool flag, const char *name) {
-        if (!flag) return;
-        if (!axes.empty()) axes += ",";
-        axes += name;
-    };
-    append_axis(verdict.major_mismatch.library,       "library");
-    append_axis(verdict.major_mismatch.shm,           "shm");
-    append_axis(verdict.major_mismatch.broker_proto,  "broker_proto");
-    append_axis(verdict.major_mismatch.zmq_frame,     "zmq_frame");
-    append_axis(verdict.major_mismatch.script_api,    "script_api");
-    append_axis(verdict.major_mismatch.script_engine, "script_engine");
-    append_axis(verdict.major_mismatch.config,        "config");
-    append_axis(verdict.major_mismatch.build_id,      "build_id");
+    // 2026-07-03 code review Finding #11 — snapshot the env once via
+    // std::call_once.  std::getenv is not thread-safe against concurrent
+    // setenv in another thread; this helper runs on socket-worker threads.
+    // Test fixtures must set PLH_TEST_ROLE_STRICT_ABI_MISMATCH BEFORE any
+    // role-worker thread reads a REG_ACK / CONSUMER_REG_ACK — already the
+    // pattern.
+    static std::once_flag role_strict_once;
+    static bool           role_strict_cache = false;
+    std::call_once(role_strict_once, [] {
+        const char *env = std::getenv("PLH_TEST_ROLE_STRICT_ABI_MISMATCH");
+        role_strict_cache = env != nullptr && std::string_view(env) == "1";
+    });
+    const bool role_strict = role_strict_cache;
 
+    // Map classified.kind → §8.6 verdict string.  Uses shared classifier
+    // (2026-07-03 code review Finding #14 — was ~90 LOC duplicated with
+    // the broker-side helper).
     const char *verdict_str = "OK";
-    if (!verdict.compatible)
+    switch (classified.kind)
     {
-        const bool only_build_id =
-            verdict.major_mismatch.build_id &&
-            !verdict.major_mismatch.library &&
-            !verdict.major_mismatch.shm &&
-            !verdict.major_mismatch.broker_proto &&
-            !verdict.major_mismatch.zmq_frame &&
-            !verdict.major_mismatch.script_api &&
-            !verdict.major_mismatch.script_engine &&
-            !verdict.major_mismatch.config;
-        // Slice B (2026-07-03) env-var strict mode: flip verdict from
-        // MAJOR_MISMATCH_ACCEPTED to MAJOR_MISMATCH_REJECTED when
-        // PLH_TEST_ROLE_STRICT_ABI_MISMATCH=1.  Production RoleConfig
-        // plumbing + state-machine refuse-Registered is filed as
-        // follow-up.
-        const bool role_strict = [] {
-            const char *env = std::getenv("PLH_TEST_ROLE_STRICT_ABI_MISMATCH");
-            return env != nullptr && std::string_view(env) == "1";
-        }();
-        if (only_build_id)
-        {
-            verdict_str = "BUILD_ONLY";
-        }
-        else
-        {
-            verdict_str = role_strict ? "MAJOR_MISMATCH_REJECTED"
-                                       : "MAJOR_MISMATCH_ACCEPTED";
-        }
+    case pylabhub::version::AbiPeerVerdict::Kind::Ok:
+        verdict_str = "OK";
+        break;
+    case pylabhub::version::AbiPeerVerdict::Kind::MinorMismatch:
+        verdict_str = "MINOR_MISMATCH";
+        break;
+    case pylabhub::version::AbiPeerVerdict::Kind::BuildOnly:
+        verdict_str = "BUILD_ONLY";
+        break;
+    case pylabhub::version::AbiPeerVerdict::Kind::MajorMismatch:
+        verdict_str = role_strict ? "MAJOR_MISMATCH_REJECTED"
+                                   : "MAJOR_MISMATCH_ACCEPTED";
+        break;
     }
+
+    const std::string &axes_for_log =
+        (classified.kind == pylabhub::version::AbiPeerVerdict::Kind::MinorMismatch)
+            ? classified.minor_axes
+            : classified.major_axes;
 
     LOGGER_INFO(
         "[{}] event=BrokerAbiFingerprintReceived role='{}' verdict='{}' "
         "mismatched_axes='{}'",
-        short_tag, role_uid, verdict_str, axes);
+        short_tag, role_uid, verdict_str, axes_for_log);
 
     if (std::string_view(verdict_str) != "OK")
     {
