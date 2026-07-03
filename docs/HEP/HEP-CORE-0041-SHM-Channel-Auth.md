@@ -1171,6 +1171,65 @@ same code path a same-machine dashboard would use — no wire hop, no
 heartbeat latency.  A `BROKER_SHM_INFO_REQ` from an admin plane
 completes in the same wall-clock as pre-HEP-0041.
 
+**Failure-mode analysis (added 2026-07-03 — design-review question).**
+
+*What if the producer crashes while the broker holds the observation
+fd?*
+
+**Not a crash risk.**  Under Linux, memfd is refcounted at the kernel
+level.  SCM_RIGHTS gave the broker its OWN independent fd; the memfd
+object's lifetime is `max(producer_fd, broker_fd, any_consumer_fd)`.
+Producer death closes the producer's fd, but the underlying anonymous-
+file object stays alive as long as the broker's fd holds a ref.
+Existing `mmap`s stay valid; `datablock_get_metrics_from_fd(cached_fd,
+&m)` continues to succeed.  Also: memfd has no backing filesystem, so
+SIGBUS from filesystem truncation (a `shm_open` risk) does not apply.
+
+**Real risks (subtler than a crash).**
+
+1. **Stale metrics.**  Producer stops updating atomic counters at
+   moment of death.  Broker's reads return last-known values
+   indefinitely.  Operator dashboards report a healthy channel that
+   is actually dead.  WORSE than the current null-metrics failure
+   mode — null is at least honest.
+2. **Kernel memory pressure.**  Broker holds the memfd + mmap
+   forever, pinning pages that nobody's using.  At many-channel
+   scale this leaks measurable RAM.
+3. **Instance-ID mismatch on producer restart.**  New producer
+   instance registers with a fresh memfd.  Broker still holds the
+   OLD fd.  Metrics reported for the channel are the dead producer's
+   stale values, not the new instance's, until broker refreshes.
+
+**Risk-isolation design (mandatory for #317 impl).**
+
+- **Layer 1 — eager release on producer-death detection.**
+  `BrokerChannel::on_producer_removed` (already fires on heartbeat
+  timeout + explicit DISC) MUST close the observation fd and munmap
+  immediately.  Bounds the stale-metrics window to one heartbeat
+  interval (~10-30s depending on HEP-CORE-0023 §2.5 config).
+- **Layer 2 — metrics include producer liveness state.**  The
+  `BROKER_SHM_INFO_REQ` response for each channel adds:
+  ```
+  producer_state: "Live" | "HeartbeatMissed" | "Dead"
+  producer_last_heartbeat_ms_ago: <int>
+  ```
+  Dashboards / operators distinguish live-metrics from stale-metrics
+  based on state, not on presence-of-metrics.  A "Live" reading is
+  trustworthy; anything else is explicitly marked.
+- **Layer 3 — new-instance fd refresh on re-REG.**  When a producer
+  re-REGs (instance_id bump), `on_producer_added` closes the old
+  observation fd + accepts the new SCM_RIGHTS envelope.  Broker's
+  fd tracks the current instance, not a stale one.
+
+Layer 1 + Layer 2 are load-bearing.  Layer 3 is a natural consequence
+of the existing per-REG SCM_RIGHTS envelope shape — no extra wire
+change beyond what §10.5 already specifies.
+
+*Optional: SIGBUS defensive read.*  Not recommended.  On memfd there
+is no filesystem truncation surface that would raise SIGBUS on a
+mapped page.  A SIGBUS handler + siglongjmp would add complexity for
+a scenario that cannot occur.  Skipped.
+
 **Tracked as task #317 — Broker SHM observation fd via SCM_RIGHTS.**
 
 ## 11. Next steps
