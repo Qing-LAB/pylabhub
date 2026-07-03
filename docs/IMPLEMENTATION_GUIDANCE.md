@@ -1383,6 +1383,101 @@ Any new directory structure should include or reference these tests; do not drop
 more recovery_api scenarios, error codes, NULL handling). When adding higher-level tests (C++
 primitive, schema, RAII), do NOT replace or remove C API tests that cover the same behavior.
 
+### Code-Review Scope Specification (added 2026-07-02)
+
+**Rule:** When requesting a workflow-backed code review focused on
+recent commits, specify the diff range EXPLICITLY in the review
+target — do not rely on the reviewer's default `@{upstream}...HEAD`
+which encompasses the ENTIRE branch divergence from main.
+
+**Reason.** The default `@{upstream}...HEAD` scope on a long-lived
+feature branch (hundreds of commits, 200+ changed files) triggers
+scope drift: the review returns high-quality findings, most of which
+are unrelated to the requested target.  In the task #246 Phase 3
+review-C round, only 1 of 10 findings was in the requested last-3-
+commit scope; the other 9 landed in unrelated HEP-CORE-0041 SHM
+machinery.
+
+**Correct form:**
+
+Instead of "review the last 3 commits" (which the reviewer implements
+as `@{upstream}...HEAD`), specify:
+
+```
+review target: HEAD~3..HEAD — <description>
+```
+
+The reviewer will run `git diff HEAD~3..HEAD` and stay in scope.
+
+**When drift is beneficial.** Broader-scope reviews DO find real
+defects that would otherwise ship undetected — the 9 out-of-scope
+findings in review-C were all legitimate bugs.  If a broad audit is
+what you want, ASK for it explicitly ("audit the whole branch for
+correctness residue"); if you want a scoped review, PIN the diff
+range.  The two intents are different work products.
+
+Related: task #246 Phase 3 review-C round (commit `7c288732` files
+the scope-drift findings so nothing is lost).
+
+### BRC Reply-Delivery Discipline (added 2026-07-02)
+
+**Rule (mandatory):** Any change to `BrokerRequestComm` internals that
+touches `pending_requests`, `poll_recv`, `handle_command`, or the
+`RequestCmd` struct MUST enumerate EVERY code path that reads or
+mutates `pending_requests` and audit each for the invariant being
+changed.
+
+**Reason.** The BRC's `pending_requests` map is keyed by ACK `msg_type`
+only, not by a per-request correlation ID.  Every path that delivers a
+reply to a waiter is a potential cross-wire site if a new invariant is
+added on only one path.  The remediation of task #246 Phase 3 hit this
+twice in a row:
+
+1. **Round 1 (commit `e830faf9`).** Added `std::atomic<bool> abandoned`
+   on `RequestCmd` + timeout marks it.  Missed that `handle_command`
+   unconditionally overwrites `pending_requests[ack]` when the caller
+   issues the next REQ of the same ack type, orphaning the abandoned
+   flag.  Reviewer found this in the next round.
+2. **Round 2 (commit `45ff541b`).** Added `producer_role_uid` /
+   `channel_name` echo verification in the wrapper methods
+   (`consumer_attach_zmq`, `channel_auth_applied`) as a defense-in-depth
+   layer on top of the abandoned flag.  Missed that the SUCCESS path
+   at `poll_recv:220-231` had an abandoned check but the ERROR path at
+   `poll_recv:248-260` did NOT, AND that ERROR bodies do not carry the
+   echo fields the wrappers were verifying.  Reviewer found this in
+   the round-3 review.
+3. **Round 3 (commit `810c47e5`).** Fixed by scanning
+   `pending_requests` for the first non-abandoned entry in the ERROR
+   branch.  Verified against the audit rule below.
+
+**Audit rule for future BRC changes:**
+
+Enumerate EVERY location that reads `pending_requests[k]` OR calls
+`remove_from_pending` OR mutates `pending_requests` and either:
+
+1. Confirm the new invariant holds at that location, OR
+2. Add the same guard explicitly at that location.
+
+Do NOT rely on a wrapper-level check to compensate for a missing
+`poll_recv`-level check — the wrapper does not see the raw envelope
+that ERROR replies carry (no echo fields).
+
+The proper long-term fix is per-request `correlation_id` keying (broker
+already echoes `correlation_id` in replies).  Until that lands, this
+audit rule is load-bearing.
+
+**Cross-file audit sites (as of 2026-07-02):**
+- `src/utils/network_comm/broker_request_comm.cpp`
+  - `Impl::poll_recv` SUCCESS branch (line ~220)
+  - `Impl::poll_recv` ERROR branch (line ~248)
+  - `Impl::do_request_multi` timeout path (line ~430)
+  - `Impl::handle_command` register path (line ~369)
+  - `Impl::remove_from_pending` (line ~392)
+  - Wrapper methods (`consumer_attach_zmq`, `channel_auth_applied`)
+    for echo verification (lines ~918, ~939)
+
+Related: HEP-CORE-0042 §7.1 (fan-in loop exposed the cross-wire race).
+
 ### Core Structure Change Protocol
 
 **Rule (mandatory):** Before modifying any of the following ABI-sensitive structures, run through
