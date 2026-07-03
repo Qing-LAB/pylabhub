@@ -22,6 +22,7 @@
 #include "utils/security/attach_protocol.hpp"        // HEP-0041 1i-mig-4 (#272)
 #include "utils/security/key_store.hpp"              // HEP-0041 1i-mig-4 (#272)
 #include "utils/security/shm_capability_channel.hpp" // HEP-0041 1i-mig-4 (#272)
+#include "plh_version_registry.hpp"                  // HEP-0032 §8 ABI fingerprint
 #include "utils/shared_memory_spinlock.hpp"
 #include "utils/thread_manager.hpp"
 
@@ -78,6 +79,107 @@ private:
     mutable std::mutex mu_;
     std::unordered_map<std::string, std::vector<AllowedPeer>> map_;
 };
+
+// HEP-CORE-0032 §8 — role-side verification of the broker's ABI
+// envelope echoed on REG_ACK / CONSUMER_REG_ACK.  Symmetric with the
+// broker-side helper at broker_service.cpp `log_peer_abi_fingerprint`.
+//
+// Log-only in slice D.3 (2026-07-03).  A future `role.strict_abi_mismatch`
+// config knob will refuse the Registered transition on MAJOR mismatch;
+// filed as follow-up.
+//
+// Convention 1 log format per §8.6:
+//   [<short_tag>] event=BrokerAbiFingerprintReceived role='X' verdict='V' mismatched_axes='...'
+//   [<short_tag>] event=BrokerAbiFingerprintDetail role='X' role_versions='...' broker_versions='...'
+// Detail line only when verdict != OK, matching broker-side pattern.
+inline void log_broker_abi_fingerprint(const nlohmann::json &ack,
+                                        const std::string &short_tag,
+                                        const std::string &role_uid)
+{
+    if (!ack.contains("broker_abi_fingerprint") ||
+        !ack["broker_abi_fingerprint"].is_object())
+    {
+        LOGGER_INFO(
+            "[{}] event=BrokerAbiFingerprintReceived role='{}' verdict='ABSENT' "
+            "mismatched_axes=''",
+            short_tag, role_uid);
+        return;
+    }
+
+    pylabhub::version::ComponentVersions broker{};
+    try
+    {
+        broker = pylabhub::version::from_json_object(ack["broker_abi_fingerprint"]);
+    }
+    catch (const std::exception &e)
+    {
+        LOGGER_INFO(
+            "[{}] event=BrokerAbiFingerprintReceived role='{}' "
+            "verdict='INVALID_ENVELOPE' mismatched_axes='' error='{}'",
+            short_tag, role_uid, e.what());
+        return;
+    }
+
+    const std::string bid_str = ack.value("broker_build_id", std::string{});
+    const char *broker_bid = bid_str.empty() ? nullptr : bid_str.c_str();
+
+    const auto verdict = pylabhub::version::verify_peer_versions(broker, broker_bid);
+
+    std::string axes;
+    auto append_axis = [&](bool flag, const char *name) {
+        if (!flag) return;
+        if (!axes.empty()) axes += ",";
+        axes += name;
+    };
+    append_axis(verdict.major_mismatch.library,       "library");
+    append_axis(verdict.major_mismatch.shm,           "shm");
+    append_axis(verdict.major_mismatch.broker_proto,  "broker_proto");
+    append_axis(verdict.major_mismatch.zmq_frame,     "zmq_frame");
+    append_axis(verdict.major_mismatch.script_api,    "script_api");
+    append_axis(verdict.major_mismatch.script_engine, "script_engine");
+    append_axis(verdict.major_mismatch.config,        "config");
+    append_axis(verdict.major_mismatch.build_id,      "build_id");
+
+    const char *verdict_str = "OK";
+    if (!verdict.compatible)
+    {
+        const bool only_build_id =
+            verdict.major_mismatch.build_id &&
+            !verdict.major_mismatch.library &&
+            !verdict.major_mismatch.shm &&
+            !verdict.major_mismatch.broker_proto &&
+            !verdict.major_mismatch.zmq_frame &&
+            !verdict.major_mismatch.script_api &&
+            !verdict.major_mismatch.script_engine &&
+            !verdict.major_mismatch.config;
+        verdict_str = only_build_id ? "BUILD_ONLY" : "MAJOR_MISMATCH_ACCEPTED";
+    }
+
+    LOGGER_INFO(
+        "[{}] event=BrokerAbiFingerprintReceived role='{}' verdict='{}' "
+        "mismatched_axes='{}'",
+        short_tag, role_uid, verdict_str, axes);
+
+    if (std::string_view(verdict_str) != "OK")
+    {
+        LOGGER_INFO(
+            "[{}] event=BrokerAbiFingerprintDetail role='{}' role_versions='{}' "
+            "broker_versions='{}'",
+            short_tag, role_uid,
+            fmt::format("lib={}.{}.{},shm={}.{},broker_proto={}.{},"
+                         "zmq_frame={}.{},script_api={}.{},"
+                         "script_engine={}.{},config={}.{}",
+                         broker.library_major, broker.library_minor,
+                         broker.library_rolling,
+                         broker.shm_major, broker.shm_minor,
+                         broker.broker_proto_major, broker.broker_proto_minor,
+                         broker.zmq_frame_major, broker.zmq_frame_minor,
+                         broker.script_api_major, broker.script_api_minor,
+                         broker.script_engine_major, broker.script_engine_minor,
+                         broker.config_major, broker.config_minor),
+            pylabhub::version::version_info_string());
+    }
+}
 
 } // namespace
 
@@ -808,6 +910,12 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
                     ack.value("channel_name", "?"),
                     ack.value("status", "?"),
                     producers_dump);
+
+        // HEP-CORE-0032 §8 — verify + log broker's ABI envelope echoed
+        // on CONSUMER_REG_ACK.  Symmetric with the producer-side path.
+        // Log-only in slice D.3.
+        log_broker_abi_fingerprint(ack, pImpl->short_tag,
+                                    ack.value("role_uid", std::string{}));
 
         // HEP-CORE-0036 §5b B-4 (#289, 2026-06-25) — unified
         // CONSUMER_REG_ACK shape across transports.  Pre-B-4 the
@@ -2263,10 +2371,17 @@ RoleAPIBase::register_producer_channel(const nlohmann::json &opts, int timeout_m
                      result->value("error_code", std::string{}),
                      result->value("message", std::string{}));
     else
+    {
         LOGGER_INFO("[{}] event=RegAckReceived channel='{}' status=success initial_allowlist={}",
                     pImpl->short_tag, opts.value("channel_name", "?"),
                     result->value("initial_allowlist",
                                   nlohmann::json::array()).dump());
+        // HEP-CORE-0032 §8 — verify + log broker's ABI envelope echoed
+        // on REG_ACK.  Log-only in slice D.3; strict-mode reject filed
+        // as follow-up.
+        log_broker_abi_fingerprint(*result, pImpl->short_tag,
+                                    opts.value("role_uid", std::string{}));
+    }
 
     if (presence)
     {

@@ -2524,6 +2524,17 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     resp["channel_name"] = channel_name; // HEP-CORE-0036 §5b.5 canonical
     resp["message"]      = "Producer registered successfully";
     resp["heartbeat"]    = heartbeat_ack_block(); // HEP-CORE-0023 §2.5
+    // HEP-CORE-0032 §8.2 — broker echoes its own ABI envelope on
+    // REG_ACK so role-side verification per §8.7 sequence can compare
+    // broker versions against role's own local ComponentVersions.
+    // Field name `broker_abi_fingerprint` distinguishes from the
+    // role-emitted `abi_fingerprint` on REG_REQ.
+    resp["broker_abi_fingerprint"] = pylabhub::version::to_json_object(
+        pylabhub::version::current());
+    if (const char *bid = pylabhub::version::build_id())
+    {
+        resp["broker_build_id"] = bid;
+    }
 
     // HEP-CORE-0036 §5.1 + §6.5: REG_ACK carries the channel's current
     // authorized-consumer allowlist so a producer reconnecting to an
@@ -3232,6 +3243,15 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     resp["channel_name"] = channel_name;
     resp["message"]      = "Consumer registered successfully";
     resp["heartbeat"]    = heartbeat_ack_block(); // HEP-CORE-0023 §2.5
+    // HEP-CORE-0032 §8.2 — broker ABI envelope echo, symmetric with
+    // REG_ACK path so consumer-side verification per §8.7 can use the
+    // same broker_abi_fingerprint field name across both ACK shapes.
+    resp["broker_abi_fingerprint"] = pylabhub::version::to_json_object(
+        pylabhub::version::current());
+    if (const char *bid = pylabhub::version::build_id())
+    {
+        resp["broker_build_id"] = bid;
+    }
     if (!corr_id.empty())
     {
         resp["correlation_id"] = corr_id;
