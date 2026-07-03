@@ -33,6 +33,7 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cstdlib>       // ::setenv / ::unsetenv (HEP-0032 §8 strict-mode test)
 #include <filesystem>
 #include <string>
 
@@ -161,6 +162,112 @@ TEST_F(Pattern4BrokerWireSmokeTest, ClientCurveHandshakeAndReply)
            "reply body: " << reply->dump();
 
     // ── 5. Teardown ──
+    broker.signal_quit();
+    ExpectWorkerOk(broker);
+}
+
+// ─── HEP-CORE-0032 §8 strict-mode ABI reject (task #326 L3) ─────────
+//
+// End-to-end proof that a broker configured with
+// `strict_abi_mismatch=true` rejects a REG_REQ carrying an
+// abi_fingerprint envelope that differs on a MAJOR axis.  The client
+// bumps `shm_major` in the envelope after `build_producer_reg_payload`
+// generates it, which is a minimal edit that simulates what a
+// mismatched-build role would send.  Broker's `verify_peer_versions`
+// returns incompatible + `major_mismatch.shm=true`; the helper flags
+// the outcome and `handle_reg_req` returns
+// `error_code='abi_major_mismatch'` before any state mutation.
+//
+// Env var `PLH_TEST_STRICT_ABI_MISMATCH=1` enables strict mode on the
+// broker worker (see pattern4_smoke_workers.cpp) — avoids extending
+// the Pattern4Setup schema for a single-test flag.
+TEST_F(Pattern4BrokerWireSmokeTest, StrictModeRejects_MajorAbiMismatchOnRegReq)
+{
+    using namespace std::chrono;
+    using pylabhub::kLongTimeoutMs;
+    using pylabhub::kMidTimeoutMs;
+
+    const std::string client_uid = "prod.strict.uid00000001";
+    const fs::path temp_dir = make_test_temp_dir("broker_strict_abi");
+    const auto setup = make_pattern4_setup({client_uid});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+
+    // Enable strict mode BEFORE the child inherits our env.  Unset in
+    // the RAII-style cleanup so subsequent tests in the binary don't
+    // inherit strict mode.
+    ::setenv("PLH_TEST_STRICT_ABI_MISMATCH", "1", /*overwrite=*/1);
+    struct EnvGuard {
+        ~EnvGuard() { ::unsetenv("PLH_TEST_STRICT_ABI_MISMATCH"); }
+    } env_guard;
+
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_smoke.broker",
+                                             {temp_dir.string()});
+    expect_log(broker, "Pattern4Broker: bound endpoint",
+                std::chrono::milliseconds{kMidTimeoutMs});
+    expect_log(broker,
+                "Pattern4Broker: strict_abi_mismatch=true",
+                std::chrono::milliseconds{kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    const auto &role_kp = setup.curve.role(client_uid);
+
+    BrokerWireClient::Config cfg;
+    cfg.broker_endpoint = setup.broker_endpoint;
+    cfg.broker_pubkey   = setup.curve.hub.public_z85;
+    cfg.client_pubkey   = role_kp.public_z85;
+    cfg.client_seckey   = role_kp.secret_z85;
+
+    BrokerWireClient client(ctx, cfg);
+
+    pylabhub::hub::ProducerRegInputs in;
+    in.channel           = "ch.strict_abi";
+    in.role_uid          = client_uid;
+    in.role_name         = "strict";
+    in.role_type         = "producer";
+    in.is_zmq_transport  = true;
+    in.zmq_node_endpoint = "tcp://127.0.0.1:0";
+    in.zmq_pubkey        = role_kp.public_z85;
+    nlohmann::json req = pylabhub::hub::build_producer_reg_payload(in);
+
+    // Bump shm_major by +1 to simulate a mismatched build.  The rest of
+    // the envelope stays consistent with `current()`; only this axis
+    // drifts, so mismatched_axes must contain exactly "shm".
+    ASSERT_TRUE(req.contains("abi_fingerprint"));
+    const unsigned original_shm_major =
+        req["abi_fingerprint"].value("shm_major", 0u);
+    req["abi_fingerprint"]["shm_major"] = original_shm_major + 1;
+
+    auto reply = client.request("REG_REQ", req, "REG_ACK",
+                                 std::chrono::milliseconds{kLongTimeoutMs});
+    ASSERT_TRUE(reply.has_value())
+        << "BrokerWireClient did not receive REG_ACK or ERROR within budget";
+
+    // Expected shape: broker rejects with error_code=abi_major_mismatch.
+    // A "success" here means strict mode was NOT active — a regression
+    // in the reject path or in the env-var gate.
+    const std::string status     = reply->value("status", "");
+    const std::string error_code = reply->value("error_code", "");
+    EXPECT_EQ(status, "error")
+        << "Strict-mode broker must reject major mismatch — reply body: "
+        << reply->dump();
+    EXPECT_EQ(error_code, "abi_major_mismatch")
+        << "Reject must carry HEP-0032 §8.7 error_code — reply body: "
+        << reply->dump();
+
+    // Broker log must carry the §8.6 MAJOR_MISMATCH_REJECTED verdict
+    // for the shm axis specifically.  This double-pins the log-content
+    // stability contract per §8.4 (log-message content = MINOR-bump
+    // concern) alongside the wire-level status.
+    expect_log(broker,
+                "event=AbiFingerprintReceived",
+                std::chrono::milliseconds{kMidTimeoutMs});
+    expect_log(broker,
+                "verdict='MAJOR_MISMATCH_REJECTED'",
+                std::chrono::milliseconds{kMidTimeoutMs});
+    expect_log(broker,
+                "mismatched_axes='shm'",
+                std::chrono::milliseconds{kMidTimeoutMs});
+
     broker.signal_quit();
     ExpectWorkerOk(broker);
 }

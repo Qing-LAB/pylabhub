@@ -40,6 +40,9 @@
 #include "test_entrypoint.h"
 
 #include "utils/broker_request_comm.hpp"
+
+#include <cstdlib>       // std::getenv (HEP-0032 §8 strict-mode gate)
+#include <string_view>
 #include "utils/broker_service.hpp"
 #include "utils/file_lock.hpp"
 #include "utils/hub_state.hpp"
@@ -106,6 +109,18 @@ int pattern4_smoke_broker(const char *temp_dir_arg)
             pylabhub::broker::BrokerService::Config cfg;
             cfg.endpoint = setup.broker_endpoint;
             pylabhub::tests::apply_curve_to(cfg, setup.curve);
+            // HEP-CORE-0032 §8 — parent test may request strict-mode ABI
+            // rejection via env var.  Env var (vs a JSON field) avoids
+            // touching the Pattern4Setup schema shared with every other
+            // Pattern4 test; only strict-mode L3 tests set this and it's
+            // ignored by every other worker binary.
+            if (const char *strict = std::getenv("PLH_TEST_STRICT_ABI_MISMATCH");
+                strict != nullptr && std::string_view(strict) == "1")
+            {
+                cfg.strict_abi_mismatch = true;
+                LOGGER_INFO("Pattern4Broker: strict_abi_mismatch=true "
+                             "(PLH_TEST_STRICT_ABI_MISMATCH=1)");
+            }
 
             // on_ready logs the bound endpoint so the parent can pin
             // it via expect_log.
