@@ -29,6 +29,19 @@ Working tree: `/home/qqing/Work/pylabhub`.
   `docs/IMPLEMENTATION_GUIDANCE.md` when the change touches policy /
   core structures / error handling). Do not rely on recall — the doc
   is the source of truth.
+- **Search HEPs before filing a "missing mechanism" or "design gap".**
+  Cross-cutting policy (ABI, versioning, threading, keys, error
+  taxonomy, schema) is HEP-owned unless proven otherwise. If you can
+  find the mechanism in the codebase but can't see how it composes
+  with your subsystem, `ls docs/HEP/HEP-CORE-*` for a topical HEP
+  BEFORE writing "we need to design X" back to the user. The failure
+  mode this catches: reading the codebase, guessing the doc doesn't
+  exist, and filing a straw-man design question that becomes an
+  amendment against a documented mechanism that already answered
+  it. Cost: five-second doc list vs. wasted design pass + rollback.
+  Source: 2026-07-03 filed HEP-CORE-0041 §10.5 Phase B "open design
+  questions" for ABI compat when HEP-CORE-0032 already fully covered
+  it.
 
 ## Work discipline
 

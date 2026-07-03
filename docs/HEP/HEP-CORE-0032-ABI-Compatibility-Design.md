@@ -339,6 +339,200 @@ uses as-is.
 
 ---
 
-## 8. Copyright
+## 8. Handshake ABI Fingerprint
+
+**Amended 2026-07-03.**  §§1–7 above cover API-surface stability at
+the SO / .dll level (what a linker sees).  §8 covers a distinct
+concern: how peers on the wire prove they were built from a
+compatible ABI *before* they exchange trust-anchored data.
+
+### 8.1 Motivation
+
+`validate_header_layout_hash` (existing, called by `DataBlockConsumer`
+attach at `data_block.cpp:3107` and by the new observer factory) is a
+per-attach ABI gate: it catches a broker + producer built from
+divergent `SharedMemoryHeader` layouts at the moment one process
+tries to mmap the other's segment.  Two gaps:
+
+1. **Too late in the flow.**  Discovery happens after registration,
+   after credentials are exchanged, after the consumer has spent budget
+   dialling.  A brokerless-side observability channel that catches
+   incompatibility at REG_REQ ingest is cheaper and centralises the
+   failure signal.
+
+2. **Header-only.**  The wire schema (BLDS layout of REG_REQ,
+   CONSUMER_ATTACH_REQ, etc.) can drift independently of
+   `SharedMemoryHeader`.  A minor field addition to REG_REQ that older
+   brokers reject with a shape-mismatch throws away the informative
+   signal (broker just sees "malformed REG_REQ").
+
+**Solution:** every REG_REQ (producer + consumer) and every
+CONSUMER_ATTACH_REQ (HEP-CORE-0041 SHM handshake) carries a
+three-field ABI fingerprint.  Broker verifies + logs + optionally
+rejects; broker echoes its own triple back so role sees broker's
+build.  Central observability, single log line per handshake, opt-in
+strict enforcement.
+
+### 8.2 Wire envelope
+
+```
+"abi_fingerprint": {
+  "abi_major":  <uint32>,        // breaking-change counter
+  "abi_minor":  <uint32>,        // additive-change counter
+  "build_hash": "<12 hex chars>" // 48-bit build fingerprint
+}
+```
+
+Carried on:
+- **REG_REQ** (both producer and consumer variants).
+- **CONSUMER_ATTACH_REQ** (HEP-CORE-0041 §9 D4).
+
+Broker's response carries the broker's own triple:
+- **REG_ACK** (both producer + consumer): `broker_abi_fingerprint`.
+- **CONSUMER_ATTACH_ACK**: `broker_abi_fingerprint`.
+
+### 8.3 Versioning taxonomy — MAJOR / MINOR / BUILD
+
+Whether a change bumps MAJOR, MINOR, or leaves both alone (BUILD hash
+change only) is determined by whether a peer can OBSERVE the change
+and misinterpret it.
+
+#### 8.3.1 MAJOR bump — reject on mismatch (strict mode)
+
+Anything a peer can observe and get wrong if it applies its own ABI
+assumptions:
+
+| Change | Rationale |
+|---|---|
+| `SharedMemoryHeader` layout: add/remove/reorder/resize any field | Peer reads at wrong offset → silent corruption. |
+| `SharedMemoryHeader` semantic change on existing field (same offset, different meaning) | Peer reads correct offset but misinterprets. |
+| Wire message: rename existing field, change existing field's type, remove existing field | Peer's serializer / deserializer breaks. |
+| `protocol_version` bump (existing HEP-CORE-0036 field) | Same. |
+| C API signature change: delete / reorder / retype params | Existing binary linkers see wrong ABI (see also HEP-CORE-0028 native plugin ABI). |
+| Retire a message type or callback | Handler contract broken. |
+
+#### 8.3.2 MINOR bump — warn + accept
+
+Anything a peer can safely ignore if it doesn't understand:
+
+| Change | Rationale |
+|---|---|
+| Add new OPTIONAL field to a wire message | JSON: unknown keys ignored.  BLDS: reserved-slot discipline. |
+| Add new enum value | Unknown value → safe fallback per HEP-CORE-0007. |
+| Add new metric field in HEP-CORE-0019 metrics tree | Metrics is additive by contract. |
+| Add new BROKER_XXX message type | Older peer replies UNKNOWN_TYPE — graceful. |
+| Add new optional callback | Peer that doesn't implement it gets default no-op. |
+| Additive HEP that leaves existing wire untouched | New subsystem, existing peers unaffected. |
+| **Log message CONTENT change** | Tests read message content — content-shape stability is a MINOR-bump contract. |
+
+#### 8.3.3 BUILD hash change only — informational
+
+Everything that changes bytes without changing behavior contracts:
+
+| Change | Rationale |
+|---|---|
+| Compile flags: debug vs release, sanitizers on/off, optimization level | No behavior contract change. |
+| Default log level | Log level is operator concern, not peer concern. |
+| Log timestamp precision, log line framing | NOT log message content (which is MINOR). |
+| Config default values that aren't enforced by protocol | Role can override. |
+| Third-party lib version bumps with unchanged API | No observable difference. |
+| Non-inlined tuning constants within HEP-declared budgets | Same. |
+
+### 8.4 Log-format stability contract
+
+**Log message CONTENT is a MINOR-bump concern.**  L2/L3 tests
+routinely assert `EXPECT_LOG_CONTAINS("substring")` — the substring is
+part of the message content.  Reshaping a log message so a test's
+substring no longer matches IS a MINOR-observable change and MUST
+bump MINOR.
+
+**Log framing (timestamp, level, thread-id prefix) is BUILD-only.**
+Tests must not assert against framing — a test that does is
+mis-scoped and should be corrected.
+
+### 8.5 Behavioral policy
+
+Verdict on fingerprint comparison:
+
+| Comparison | Verdict | Default behavior | Strict behavior |
+|---|---|---|---|
+| triples equal | OK | log INFO, accept | log INFO, accept |
+| BUILD hash differs only | INFO | log INFO, accept | log INFO, accept |
+| MINOR differs (MAJOR equal) | MINOR MISMATCH | WARN, accept | WARN, accept |
+| MAJOR differs | MAJOR MISMATCH | WARN, accept | ERROR, reject |
+
+Strict mode is opt-in via configuration:
+- **`broker.strict_abi_mismatch`** (bool, default `false`)
+- **`role.strict_abi_mismatch`** (bool, default `false`) — role verifies broker's triple in REG_ACK.
+
+Rationale for default `false`: rolling upgrades of a fleet should not
+break connectivity mid-rollout; operators enable strict mode for
+regulated / production-hardened deployments where a build-version
+mismatch is a runbook-worthy event.
+
+### 8.6 Log format (canonical)
+
+```
+REG_REQ role_uid=<X> abi=<M>.<m>/<b> vs broker=<M>.<m>/<b> → <verdict>
+```
+
+where `<verdict>` is one of:
+- `OK`
+- `BUILD DIFF (accept)`
+- `MINOR MISMATCH (accept)`
+- `MAJOR MISMATCH (accepted)` — lenient mode (default)
+- `MAJOR MISMATCH (rejected)` — strict mode
+
+**These templates are pinned by L3 tests (task #326).**  Refactoring
+them requires a MINOR bump per §8.4.
+
+### 8.7 Handshake sequence
+
+```mermaid
+sequenceDiagram
+    participant Role
+    participant Broker
+
+    Role->>Broker: REG_REQ + abi_fingerprint {major, minor, build}
+    Note over Broker: verify per §8.5<br/>log per §8.6
+
+    alt MAJOR mismatch + broker.strict_abi_mismatch=true
+        Broker-->>Role: REG_ACK {status: "abi_major_mismatch", ...}
+        Note over Role: role bails; no Registered transition
+    else all other cases
+        Broker-->>Role: REG_ACK {status: "ok", broker_abi_fingerprint}
+        Note over Role: verify broker triple per §8.5<br/>if role.strict_abi_mismatch=true<br/>and MAJOR mismatch → bail
+        Note over Role: else → Registered
+    end
+```
+
+Same envelope + verification applies to CONSUMER_ATTACH_REQ /
+CONSUMER_ATTACH_ACK on the HEP-CORE-0041 SHM handshake path.
+
+### 8.8 Generated build-time constants
+
+- **`PLH_ABI_MAJOR`** — `constexpr uint32_t`, in a generated header.  Bumped per §8.3.1.
+- **`PLH_ABI_MINOR`** — `constexpr uint32_t`, same header.  Bumped per §8.3.2.
+- **`PLH_BUILD_HASH`** — first 12 hex chars of `git describe --always --dirty`, computed at cmake configure time.  For reproducible builds, derive from `SOURCE_DATE_EPOCH` + toolchain triple.
+
+Rules for bumping MAJOR / MINOR live in this section (§8.3).  A PR that changes anything on the §8.3.1 list MUST bump MAJOR in the same commit; a PR that changes anything on §8.3.2 MUST bump MINOR.  BUILD hash is automatic — no manual action.
+
+### 8.9 Cross-references
+
+- **HEP-CORE-0028** (Native Plugin C ABI) — C API signature-change discipline is a MAJOR concern.
+- **HEP-CORE-0036 §5b** (canonical wire schema) — cross-referenced FROM the wire-schema doc INTO this section.  Wire-schema changes classify against §8.3 to determine bump level.
+- **HEP-CORE-0041 §9 D4** — CONSUMER_ATTACH_REQ carries the same envelope.
+- **HEP-CORE-0041 §10.5** (broker SHM observation) — observer attach fingerprint is echoed on CONSUMER_ATTACH_ACK.
+- **`validate_header_layout_hash`** — remains the per-attach in-process gate.  Fingerprint on the wire is the earlier + centralised counterpart.
+
+### 8.10 Implementation tracking
+
+- **#324** — this design amendment (in this HEP).
+- **#325** — impl: emit + verify + log fingerprint on REG_REQ + CONSUMER_ATTACH_REQ.
+- **#326** — L2/L3 tests: matched / minor / major (lenient) / major (strict) / build-only-diff paths.
+
+---
+
+## 9. Copyright
 
 Copyright (c) 2026 pyLabHub Contributors. All rights reserved.
