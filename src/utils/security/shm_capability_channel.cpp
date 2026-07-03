@@ -32,6 +32,7 @@
 #    include <poll.h>
 #    include <sys/mman.h>
 #    include <sys/socket.h>
+#    include <time.h>       // clock_gettime — #321 atomic-rename bind (2026-07-03)
 #    include <sys/stat.h>
 #    include <sys/types.h>
 #    include <sys/un.h>
@@ -236,19 +237,16 @@ MemfdProducer::bind_endpoint(const std::string &endpoint)
         return false;
     }
 
-    // HEP-CORE-0041 1i-prod-hardening H3d — probe-then-unlink to
-    // avoid silently clobbering a live producer.  An unconditional
-    // unlink-before-bind would let two role hosts that picked the
-    // same channel name silently steal the socket from each other
-    // (same-uid race; SO_PEERCRED doesn't protect within one uid).
-    // Behaviour:
+    // HEP-CORE-0041 1i-prod-hardening H3d — probe-then-refuse-if-live.
+    // The probe is a safety gate to detect a working producer at the
+    // target path and refuse to clobber it (two role hosts picking
+    // the same channel name; same-uid race that SO_PEERCRED doesn't
+    // catch).  Behaviour:
     //   - connect() succeeds → live peer is already bound.  Refuse.
     //   - connect() fails with ECONNREFUSED → stale socket file (path
-    //     exists, listener gone).  Safe to unlink + proceed.
-    //   - connect() fails with ENOENT → no path; no unlink needed
-    //     (unconditional unlink would be a no-op anyway).
-    //   - any other errno → can't determine state; refuse
-    //     conservatively rather than risk clobbering.
+    //     exists, listener gone).  Safe to proceed with atomic replace.
+    //   - connect() fails with ENOENT → no path; safe to proceed.
+    //   - any other errno → can't determine state; refuse conservatively.
     {
         const int probe = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
         if (probe == -1)
@@ -269,26 +267,70 @@ MemfdProducer::bind_endpoint(const std::string &endpoint)
         }
         if (captured_errno != ECONNREFUSED && captured_errno != ENOENT)
         {
-            // Unknown error (EACCES, EINVAL, …) — can't safely unlink.
+            // Unknown error (EACCES, EINVAL, …) — can't safely proceed.
             ::close(sock);
             return false;
         }
-        // Safe to unlink (ECONNREFUSED = stale, ENOENT = absent).
-        ::unlink(sock_path.c_str());
     }
 
-    if (::bind(sock, reinterpret_cast<const sockaddr *>(&addr), sizeof(addr)) == -1)
+    // #321 (2026-07-03) — atomic-rename bind.  Replaces the earlier
+    // unlink → bind sequence which had a TOCTOU: between our unlink
+    // and our bind, a hostile local process (or a racing legitimate
+    // process on the same uid) could bind at the target path,
+    // causing our bind to fail with EADDRINUSE.  DoS on producer
+    // startup.
+    //
+    // Fix: bind to a unique temp path in the same directory, then
+    // rename(2) atomically into place.  rename(2) on POSIX overwrites
+    // the destination unconditionally in a single syscall — no race
+    // window between "verify path is safe" and "occupy path."  Nobody
+    // can slip in.
+    //
+    // Temp-name uniqueness: PID + monotonic-clock nanoseconds.  On
+    // POSIX, two threads in the same PID getting the same nsec is
+    // astronomically unlikely; a same-machine attacker predicting
+    // this exact pair to plant a symlink is infeasible.
+    struct timespec ts{};
+    ::clock_gettime(CLOCK_MONOTONIC, &ts);
+    const std::string temp_path =
+        sock_path + ".tmp-" + std::to_string(::getpid()) + "-" +
+        std::to_string(static_cast<uint64_t>(ts.tv_sec) * 1'000'000'000ULL +
+                        static_cast<uint64_t>(ts.tv_nsec));
+    if (temp_path.size() >= sizeof(addr.sun_path))
+    {
+        // Temp name overflows sun_path.  Extremely unlikely given
+        // realistic channel names, but bail cleanly.
+        ::close(sock);
+        return false;
+    }
+    sockaddr_un temp_addr{};
+    temp_addr.sun_family = AF_UNIX;
+    std::memcpy(temp_addr.sun_path, temp_path.c_str(), temp_path.size());
+    temp_addr.sun_path[temp_path.size()] = '\0';
+
+    if (::bind(sock, reinterpret_cast<const sockaddr *>(&temp_addr),
+                sizeof(temp_addr)) == -1)
     {
         ::close(sock);
         return false;
     }
 
-    // Tighten the path's permissions.  This is NOT the security gate —
-    // L2 (HEP-CORE-0041 §9 D4 attach sequence, lands in task #250+) does
-    // the cryptographic auth.  This is defence in depth so a path
-    // accidentally created in a shared directory does not let an
-    // arbitrary local UID even attempt the connect.
-    ::chmod(sock_path.c_str(), 0700);
+    // chmod before rename so target inherits the tight mode from the
+    // moment it appears at the final path.  This is NOT the security
+    // gate — the cryptographic handshake (HEP-CORE-0041 §5.3) is —
+    // but defence in depth against another local UID trying to
+    // connect.
+    ::chmod(temp_path.c_str(), 0700);
+
+    // Atomic move into the target path.  rename(2) is atomic per
+    // POSIX; overwrites destination unconditionally.  Any late-comer
+    // that snuck in between our probe and here gets replaced.
+    if (::rename(temp_path.c_str(), sock_path.c_str()) == -1)
+    {
+        ::unlink(temp_path.c_str());  // best-effort cleanup
+        ::close(sock);
+        return false;
+    }
 
     if (::listen(sock, /*backlog=*/8) == -1)
     {

@@ -348,8 +348,8 @@ and consumer strip the `unix://` scheme prefix via the
 `strip_unix_scheme()` helper before passing the bare filesystem path
 to `sockaddr_un::sun_path`.
 
-**`bind_endpoint` responsibilities (1i-mig-2c hardening).**  The L1
-backend `MemfdProducer::bind_endpoint`:
+**`bind_endpoint` responsibilities (1i-mig-2c hardening + #321
+atomic-rename, 2026-07-03).**  The L1 backend `MemfdProducer::bind_endpoint`:
 
 1. Strip `unix://` scheme prefix from the URI.
 2. `mkdir -p` the parent directory at mode 0700 (e.g.
@@ -357,13 +357,55 @@ backend `MemfdProducer::bind_endpoint`:
    directory already exists.  systemd's `pam_systemd.so` provides
    `${XDG_RUNTIME_DIR}` at mode 0700; the `pylabhub/` subdirectory
    layered under it inherits the same isolation.
-2.5. **Probe-then-unlink** (1i-prod-hardening H3d): before unlinking
-   any stale socket file, attempt `connect()` to the path.  If a
-   live producer is bound, refuse to clobber (return false).  Only
-   when connect fails with `ECONNREFUSED` (stale socket) or
-   `ENOENT` (no file) is the unlink+bind safe.
-3. `socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0)`, then `bind`,
-   then `chmod(sock_path, 0700)`, then `listen(sock, 8)`.
+3. **Probe-then-refuse-if-live** (1i-prod-hardening H3d): attempt
+   `connect()` to the target path.  If a live producer is bound,
+   refuse to clobber (return false).  Only when connect fails with
+   `ECONNREFUSED` (stale socket) or `ENOENT` (no file) is it safe
+   to proceed.
+4. **Atomic-rename bind** (#321, 2026-07-03).  Instead of the earlier
+   `unlink → bind` sequence, `bind` to a unique temp path in the same
+   directory (`<sock_path>.tmp-<pid>-<monotonic-ns>`), `chmod 0700`
+   on the temp, then `rename(2)` atomically into the final path.
+   `rename(2)` is atomic on POSIX and overwrites the destination
+   unconditionally — no race window between "verify path is safe"
+   (probe) and "occupy path" (rename).  Fixes the TOCTOU where a
+   hostile local process could bind at the target path between our
+   unlink and our bind, causing our bind to fail with EADDRINUSE
+   (DoS on producer startup).  DoS-only fix; no privilege
+   escalation was ever possible (sticky bit on `/tmp` prevents
+   cross-user clobber; `chmod 0700` prevents cross-user connect;
+   crypto handshake in §5.3 remains the security gate).
+5. `listen(sock, 8)`.
+
+### 5.1.1 Deployment environment matrix (§5.1 endpoint resolution)
+
+The `default_shm_capability_endpoint(channel)` helper returns
+different paths depending on process environment; the atomic-rename
+bind (§5.1 step 4) makes both paths race-safe.  All paths are
+kernel-secured by `chmod 0700` and the crypto handshake regardless.
+
+| Environment | Path resolution | Isolation properties | Operator action required |
+|---|---|---|---|
+| Linux with systemd + login session (SSH included) | `${XDG_RUNTIME_DIR}/pylabhub/shmcap-<channel>.sock` where `XDG_RUNTIME_DIR` is typically `/run/user/<uid>` | Parent dir mode 0700 (private per-user) + kernel-managed lifetime + no metadata leak to other users | None. |
+| Linux without systemd (Docker without systemd, Alpine minimal, minimal Void, minimal Arch bootstrap) | Same XDG path IF operator sets `XDG_RUNTIME_DIR`; else `/tmp/pylabhub-shmcap-<uid>-<channel>.sock` fallback | XDG path: as above.  `/tmp` fallback: mode 0700 on the socket + sticky-bit isolation on `/tmp` — attacker at different uid can't clobber; metadata (channel names) visible via `ls /tmp` | Prefer: `export XDG_RUNTIME_DIR=/run/user/$(id -u); mkdir -p -m 0700 "$XDG_RUNTIME_DIR"`.  Accept: rely on the /tmp fallback (WARN emitted at startup). |
+| Linux HPC batch job (Slurm / PBS / LSF / OpenPBS) | Depends on job scheduler's pam_systemd behavior — often `XDG_RUNTIME_DIR` is unset in `srun`/`mpirun` child sessions | Same as above | In the submission script: `export XDG_RUNTIME_DIR=/tmp/pylabhub-xdg-${SLURM_JOB_ID}; mkdir -p -m 0700 "$XDG_RUNTIME_DIR"` (analogous vars for PBS/LSF) OR accept the /tmp fallback (single-user HPC allocation typically owns the whole node). |
+| Linux WSL1 | No systemd; `XDG_RUNTIME_DIR` unset by default | /tmp fallback | Add `export XDG_RUNTIME_DIR=/run/user/$(id -u)` to `~/.bashrc` OR accept /tmp fallback. |
+| Linux WSL2 with newer systemd support | `XDG_RUNTIME_DIR` set by systemd | XDG path | None. |
+| FreeBSD | Config-time reject (task #259 pending) | N/A — SHM disabled | Use ZMQ transport, or wait for #259. |
+| macOS | Config-time reject (task #260 pending) | N/A — SHM disabled | Use ZMQ transport, or wait for #260. |
+| Windows (including PowerShell / cmd) | Config-time reject (task #261 pending) | N/A — SHM disabled | Use ZMQ transport, or wait for #261. |
+
+**Fallback WARN.**  On the /tmp fallback path, the producer emits
+one WARN at startup (`[ShmCapability] XDG_RUNTIME_DIR unset; falling
+back to /tmp/...`) so operators notice the weaker isolation.  The
+WARN is emitted once per process (atomic guard), not once per
+channel — a role hosting many channels sees a single line.
+
+**Race-safety is uniform.**  The atomic-rename bind in §5.1 step 4
+applies to both XDG and /tmp paths equally — race-hardening does
+not depend on the choice of directory.  The /tmp fallback is
+weaker on **metadata leakage** and **shared-resource DoS surface
+via /tmp fill-up**, not on the socket-file race.
 
 **Producer wire-emission contract.**  The producer MUST publish the
 endpoint string on REG_REQ for SHM channels.  The broker rejects
