@@ -10,32 +10,44 @@ see `docs/DOC_STRUCTURE.md` §2.1.1.
 
 ---
 
-## Resume point (2026-07-04)
+## Resume point (2026-07-04, latest)
 
 **Where we are:**
-- Mid-session pivot from #317 C.2 chain to **SEC-Fold** (consolidate
-  security module + HEPs).  Trigger: the 2026-07-04 CI failure
-  exposed the sodium_init gap.  See
-  `docs/tech_draft/DRAFT_security_module_and_hep_consolidation_2026-07.md`
-  for the full design + self-review R1-R8.
-- CI stopgap `9d0a7eb4` (module-boundary gate + debug logs) shipped
-  + pushed.  Awaiting CI verdict.
-- SEC-Fold task filed in `docs/todo/AUTH_TODO.md` under
-  `SEC-Fold-1` (HEP consolidation) + `SEC-Fold-2` (module fold).
+- **Debug CI green** on `9d0a7eb4` (sodium fix worked).
+- **Release CI test bug** exposed AFTER sodium fix — `RunDataLoopTest`
+  cases skipped-but-not-early-returned in Release.  Fixed in
+  `441c376e` (GTEST_SKIP must fire in test scope, not helper scope).
+- **SEC-Fold-1 (HEP consolidation)** landed as HEP-CORE-0043
+  (`docs/HEP/HEP-CORE-0043-Security-Subsystem.md`) — §0-§2
+  architectural design authoritative, §3-§10 stubs with pointers to
+  old HEPs (0036, 0038, 0040, 0041) for full detail.  Old four
+  marked SUPERSEDED-STATUS-ONLY banner.  All 8 self-review items
+  (R1-R8) addressed in the new HEP.
 
 **Next action on resume:**
-1. Confirm CI result on `9d0a7eb4`.  Read `[SMS] event=SodiumInit`,
-   `[KeyStore] event=AddRaw`, `[LockedKey] event=SodiumMalloc` log
-   lines.  Decide from evidence.
-2. If CI passed OR CI still fails but for a different reason (data
-   is in the log now), start **SEC-Fold-1** (docs) per the tech
-   draft's Resume checklist.
-3. Then **SEC-Fold-2** (C++ refactor).
+1. Confirm Release CI on `441c376e`.
+2. Start **SEC-Fold-2 (C++ module refactor)** against HEP-CORE-0043
+   §2.  Order per HEP §2.1 sketch:
+   (a) Rename `SecureMemorySubsystem` → `SecureSubsystem`; keep old
+       name as type alias for transition.
+   (b) Add wrapper methods on `SecureSubsystem` for random / hash /
+       KDF / AEAD / box (§2.1 public surface).
+   (c) Migrate consumers file by file: `uuid_utils.cpp`,
+       `crypto_utils.cpp`, `vault_crypto.cpp`, `hub_vault.cpp`,
+       `attach_protocol.cpp`.  Each file's raw sodium calls become
+       `secure().X(...)` calls.  Delete raw `<sodium.h>` includes
+       from each file after migration.
+   (d) `KeyStore` becomes a member of `SecureSubsystem`, accessed
+       via `secure().keys()`.  Old free-function `key_store()`
+       preserved as a shim during transition.
+   (e) 2319/2319 ctest after each file.
+3. **SEC-Fold-1b** (§3-§10 content migration from superseded HEPs
+   into HEP-CORE-0043) can proceed in parallel or after SEC-Fold-2.
 4. Then return to **#317 C.2.c onwards** — currently paused at
    C.2.b (commit `ce956972`).  Rest of the chain (C.2.c
    PeerDeathWatcher, C.2.d broker dial + fd cache, D5 opt-out,
-   C.3 metrics-source, C.4 L4 tests, C.5 HEP status sync) all
-   remains open under the NEW architecture.
+   C.3 metrics-source, C.4 L4 tests, C.5 HEP status sync) will
+   land against the NEW architecture (post-SEC-Fold-2).
 
 **In-flight, unfinished:**
 - #317 C.2 chain: C.2.a ✅ `029bbe31`, C.2.b ✅ `ce956972`, C.2.c-C.5

@@ -1,5 +1,14 @@
 # HEP-CORE-0041: SHM Channel Auth (Cross-Platform)
 
+> **⚠ SUPERSEDED-STATUS-ONLY by HEP-CORE-0043 §9.2 (2026-07-04).**
+> Content in this HEP remains **AUTHORITATIVE** until §9.2 detail
+> migration completes.  Architectural design contract has moved to
+> HEP-CORE-0043.  Wire-protocol detail (memfd_create +
+> SCM_RIGHTS handshake, D1-D8 flow, §D4.5 mutual auth, §D1(d)
+> observer, cross-platform phasing) is the source of truth until
+> further notice.  See HEP-CORE-0043 §0.4 for migration status.
+
+
 | Property | Value |
 |---|---|
 | **HEP** | `HEP-CORE-0041` |

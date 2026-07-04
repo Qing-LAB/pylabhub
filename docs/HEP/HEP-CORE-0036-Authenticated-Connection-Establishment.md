@@ -1,5 +1,15 @@
 # HEP-CORE-0036: Authenticated Connection Establishment
 
+> **⚠ SUPERSEDED-STATUS-ONLY by HEP-CORE-0043 §9.1 (2026-07-04).**
+> Content in this HEP remains **AUTHORITATIVE** until §9.1 detail
+> migration completes.  Architectural design contract (module
+> ownership, init gate, use-not-export) has moved to
+> `HEP-CORE-0043 §1-§2`.  Wire-protocol detail (CURVE + ZAP flows,
+> §I sections, §5b canonical wire schema) is the source of truth
+> until further notice.  See HEP-CORE-0043 §0.4 for migration
+> status.
+
+
 | Property        | Value                                                                                                       |
 |-----------------|-------------------------------------------------------------------------------------------------------------|
 | **HEP**         | `HEP-CORE-0036`                                                                                             |

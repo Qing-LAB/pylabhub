@@ -1,5 +1,15 @@
 # HEP-CORE-0040: Locked Key Memory
 
+> **⚠ SUPERSEDED-STATUS-ONLY by HEP-CORE-0043 §2 + §7 (2026-07-04).**
+> Content in this HEP remains **AUTHORITATIVE** until those
+> sections' detail migration completes.  Architectural design
+> contract (module ownership, init gate, use-not-export) has moved
+> to HEP-CORE-0043 §1-§2.  §5.2 KeyStore API + §6 LockedKey RAII +
+> §8 integration + §8.5.2 seckey raw-32 contract are all still
+> the source of truth until further notice.  See HEP-CORE-0043
+> §0.4 for migration status.
+
+
 | Field           | Value |
 |-----------------|-------|
 | **Status**      | 🚧 **Design — impl in flight.** Promoted from tech_draft 2026-06-05 after four fresh-eye review rounds (#166). Implementation tracked as tasks #169 (SecureMemorySubsystem) + #170 (KeyStore + LockedKey + SecureBuffer) + #171 (HubConfig/RoleConfig migration) + #172 (BrokerService/BRC migration) + #173 (RoleAPIBase accessors) + #174 (HubAPI accessors) + #175 (vault hardening prerequisite). |
