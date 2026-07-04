@@ -1094,12 +1094,26 @@ void BrokerServiceImpl::run()
     // diagnostics + the on_ready callback that publishes it to test
     // harnesses / federation peer config.
     const std::string hub_pubkey_z85(ks.pubkey(sec::kHubIdentityName));
+    // Emit the "listening on" log line BEFORE firing the on_ready
+    // callback.  Rationale: on_ready is the sync signal that unblocks
+    // HubHost's main-thread startup path — which then logs
+    // "[HubHost:...] startup complete".  If we log after on_ready, the
+    // broker-thread log message races the main-thread one for a spot
+    // in the LOGGER queue.  Test PlhHubCliTest.RunMode_LogShowsCorrect
+    // StartupAndShutdownOrdering asserts "Broker: listening on"
+    // appears BEFORE "startup complete" — an invariant that is only
+    // structurally guaranteed when the log line is emitted from THIS
+    // thread before the main thread is woken.  Source incident:
+    // 2026-07-04 intermittent failure of that test, root-caused via
+    // persistent log (test_artifacts/plh_hub_l4/.../logs/) showing
+    // main-thread "startup complete" at 932086µs BEFORE broker-thread
+    // "listening on" at 932218µs — 132µs race.
+    LOGGER_INFO("Broker: listening on {}", bound);
+    LOGGER_INFO("Broker: hub identity pubkey = {}", hub_pubkey_z85);
     if (cfg.on_ready)
     {
         cfg.on_ready(bound, hub_pubkey_z85);
     }
-    LOGGER_INFO("Broker: listening on {}", bound);
-    LOGGER_INFO("Broker: hub identity pubkey = {}", hub_pubkey_z85);
 
     // ── Wave M3 step 5f (2026-05-11): subscribe to band_left ──
     // HubState's terminal cleanup cascades band membership removal

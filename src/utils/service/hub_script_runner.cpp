@@ -319,8 +319,20 @@ void HubScriptRunner::worker_main_()
 
     // ── F. Signal ready ───────────────────────────────────────────────────
     //
-    // After this, parent thread's startup_() returns; HubHost::startup()
-    // checks is_running() and proceeds.
+    // After set_value the parent thread's startup_() returns and
+    // HubHost::startup() emits `[HubHost:...] startup complete`.  If
+    // any log line here fires AFTER set_value, it races the parent's
+    // startup-complete line for the LOGGER queue on independent
+    // threads — same shape as the broker startup race fixed at
+    // broker_service.cpp:1091 (2026-07-04, siblings of task #93 /
+    // #242).  Discipline: emit our "ready" log line FIRST so it hits
+    // the log queue before the parent is woken.
+    //
+    // Log format: convention 1 (task #238) — `[component] event=X
+    // field='value'`.  Component `HubScriptRunner:{uid}` matches the
+    // file's existing prefix style; `event=Ready` per the newer
+    // NORMATIVE marker convention.
+    LOGGER_INFO("[HubScriptRunner:{}] event=Ready", uid);
     ready_promise().set_value(true);
 
     // ── G. Event/tick loop ────────────────────────────────────────────────
