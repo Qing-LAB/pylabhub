@@ -324,10 +324,12 @@ ensure_sodium_init()
 
 AttachProtocolAcceptor::AttachProtocolAcceptor(
     IShmCapabilityProducer &transport, uid_t expected_uid,
-    SeckeyAccessor producer_seckey_accessor)
+    SeckeyAccessor producer_seckey_accessor,
+    ObserverPubkeyAccessor broker_observer_pubkey_accessor)
     : transport_(transport),
       expected_uid_(expected_uid),
-      producer_seckey_accessor_(std::move(producer_seckey_accessor))
+      producer_seckey_accessor_(std::move(producer_seckey_accessor)),
+      broker_observer_pubkey_accessor_(std::move(broker_observer_pubkey_accessor))
 {
     ensure_sodium_init();
     if (!producer_seckey_accessor_)
@@ -434,16 +436,6 @@ AttachProtocolAcceptor::accept_one(std::chrono::milliseconds timeout)
             "AttachProtocol::producer: hello role_type must be "
             "\"consumer\", \"observer\", or empty (got \"" + role_type + "\")");
     }
-    if (role_type == "observer")
-    {
-        // Phase C.2 will add broker-observer verification.  Until it
-        // does, an observer handshake is not yet supported; reject
-        // cleanly so operators see a specific diagnostic rather than
-        // a downstream CURVE-verify failure.
-        throw std::runtime_error(
-            "AttachProtocol::producer: role_type=\"observer\" received "
-            "but broker-observer path not yet implemented (#317 Phase C.2 pending).");
-    }
     const std::string pubkey_z85 = hello.value("pubkey_z85", std::string{});
     if (pubkey_z85.size() != kZ85PubkeyChars)
     {
@@ -451,6 +443,65 @@ AttachProtocolAcceptor::accept_one(std::chrono::milliseconds timeout)
             "AttachProtocol::producer: hello pubkey_z85 must be " +
             std::to_string(kZ85PubkeyChars) + " chars (got " +
             std::to_string(pubkey_z85.size()) + ")");
+    }
+    if (role_type == "observer")
+    {
+        // HEP-CORE-0041 §D1(d) observer handshake (task #317 C.2.b).
+        //
+        // The observer path shadows the consumer path with ONE
+        // distinguishing check: the observer's claimed pubkey MUST
+        // equal the broker observer pubkey the producer stashed via
+        // its REG_ACK path (task #317 D2 / f7d3a51e).  No channel
+        // allowlist involvement — the broker is not a channel peer,
+        // it's the sole trusted observer.
+        //
+        // Fall-through into the standard challenge-response validation
+        // below after the pubkey identity check succeeds.  This means
+        // the observer must ALSO hold the seckey corresponding to the
+        // pubkey the producer trusts — a compromised broker pubkey
+        // stash on the producer AND a squatter with a matching keypair
+        // would both need to occur simultaneously to defeat this.
+        if (!broker_observer_pubkey_accessor_)
+        {
+            throw std::runtime_error(
+                "AttachProtocol::producer: role_type=\"observer\" received "
+                "but no observer pubkey accessor installed on this acceptor "
+                "(role host must pass one at AttachProtocolAcceptor "
+                "construction — HEP-CORE-0041 §D1(d) task #317 C.2.b).");
+        }
+        const std::string trusted_broker_pubkey =
+            broker_observer_pubkey_accessor_();
+        if (trusted_broker_pubkey.empty())
+        {
+            // Broker's REG_ACK hasn't populated the stash yet, OR broker
+            // failed to generate its observer keypair at startup.  Either
+            // way the observer path is not currently trusted; reject.
+            throw std::runtime_error(
+                "AttachProtocol::producer: role_type=\"observer\" received "
+                "but no broker observer pubkey known yet (broker did not "
+                "publish `broker_observer_pubkey_z85` on REG_ACK, or "
+                "REG_ACK has not been processed yet — HEP-CORE-0041 "
+                "§D1(d) task #317 C.2.a).");
+        }
+        if (pubkey_z85.size() != trusted_broker_pubkey.size() ||
+            ::sodium_memcmp(pubkey_z85.data(), trusted_broker_pubkey.data(),
+                            pubkey_z85.size()) != 0)
+        {
+            // Constant-time compare — pubkeys are not secret, but this
+            // is the standard discipline for identity-check paths and
+            // makes drift-testing easier.
+            throw std::runtime_error(
+                "AttachProtocol::producer: role_type=\"observer\" hello "
+                "pubkey_z85 does not match the broker observer pubkey "
+                "the producer trusts (rejecting; possible squatter or "
+                "broker-restart with unlearned new keypair).");
+        }
+        // Identity check passed.  Fall through — the crypto_box_open_easy
+        // challenge verification below (§7) verifies the observer holds
+        // the seckey matching pubkey_z85.  On success the acceptor
+        // hands over the memfd via the same SCM_RIGHTS path as the
+        // consumer flow.  Observer sees the header page; no data-plane
+        // access (DataBlockObserverHandle enforces read-only mapping).
     }
     const std::string response_b64 =
         hello.value("challenge_response_b64", std::string{});

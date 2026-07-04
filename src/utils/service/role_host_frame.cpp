@@ -512,12 +512,25 @@ bool RoleHostFrame::spawn_shm_auth_listener_()
                 });
         };
 
+    // HEP-CORE-0041 §D1(d) observer pubkey accessor (task #317 C.2.b).
+    // The acceptor calls this ONCE per observer handshake to fetch the
+    // broker observer pubkey the producer trusts (learned via REG_ACK
+    // per task #317 D2 / f7d3a51e).  Snapshotted under RoleAPIBase's
+    // shared_mutex — thread-safe.  Empty return → observer handshakes
+    // rejected with a clear diagnostic; broker's SHM metrics path
+    // falls back to the heartbeat source.
+    sec::ObserverPubkeyAccessor observer_pubkey_accessor =
+        [&api_ref]() -> std::string {
+            return api_ref.broker_observer_pubkey_z85();
+        };
+
     try
     {
         shm_acceptor_ = std::make_unique<sec::AttachProtocolAcceptor>(
             *shm_transport_,
             ::getuid(),  // SO_PEERCRED uid sanity (HEP-0036 §I8)
-            std::move(seckey_accessor));
+            std::move(seckey_accessor),
+            std::move(observer_pubkey_accessor));
     }
     catch (const std::exception &e)
     {

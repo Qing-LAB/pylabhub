@@ -99,6 +99,19 @@ namespace pylabhub::utils::security
 using SeckeyAccessor =
     std::function<void(std::function<void(std::span<const std::byte>)>)>;
 
+/// HEP-CORE-0041 §D1(d) broker observer pubkey accessor (task #317 C.2.b).
+/// Called by the acceptor when a Frame 2 hello arrives with
+/// `role_type="observer"`.  Returns the Z85-encoded broker observer
+/// pubkey the producer currently trusts (learned via REG_ACK), or empty
+/// string if none is known (broker hasn't published one yet, or the
+/// producer's stash hasn't been populated).  Empty return → observer
+/// handshakes are rejected with a clear diagnostic.
+///
+/// The accessor is invoked ONCE per observer handshake — under
+/// `RoleAPIBase::broker_observer_pubkey_z85()` in production, which
+/// snapshots the value under a shared_mutex.  Thread-safe by design.
+using ObserverPubkeyAccessor = std::function<std::string()>;
+
 /// Exception type raised when the handshake exceeds its budget
 /// (recv poll timeout or send poll timeout in `recv_all_until` /
 /// `send_all`).  Task #300 (2026-07-03): callers of
@@ -161,7 +174,8 @@ public:
     ///                              Must be non-empty.
     AttachProtocolAcceptor(IShmCapabilityProducer &transport,
                            uid_t                   expected_uid,
-                           SeckeyAccessor          producer_seckey_accessor);
+                           SeckeyAccessor          producer_seckey_accessor,
+                           ObserverPubkeyAccessor  broker_observer_pubkey_accessor = nullptr);
 
     ~AttachProtocolAcceptor() = default;
 
@@ -194,6 +208,7 @@ private:
     IShmCapabilityProducer &transport_;
     uid_t                   expected_uid_;
     SeckeyAccessor          producer_seckey_accessor_;
+    ObserverPubkeyAccessor  broker_observer_pubkey_accessor_;
 };
 
 /// Consumer-side counterpart.  Connect to producer's endpoint, run
