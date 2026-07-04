@@ -23,7 +23,9 @@
 
 #include "pylabhub_utils_export.h"
 
+#include <cstddef>
 #include <memory>
+#include <span>
 
 namespace pylabhub::utils::security
 {
@@ -71,9 +73,37 @@ public:
     /// by the free-function `sodium_ready()` probe.
     [[nodiscard]] bool sodium_initialized() const noexcept;
 
+    // ─────────────────────────────────────────────────────────────────
+    // SEC-Fold-2 wrapper API (HEP-CORE-0043 §2.1) — libsodium boundary.
+    // Every direct sodium primitive in the codebase migrates to these
+    // wrappers.  Nothing outside this module `#include <sodium.h>`
+    // once migration completes.  All methods assert `sodium_ready()`
+    // internally; consumers do not check.
+    // ─────────────────────────────────────────────────────────────────
+
+    /// Fill `out` with cryptographically-secure random bytes.
+    /// Wrapper for libsodium `randombytes_buf`.
+    void random_bytes(std::span<std::byte> out);
+
+    /// Constant-time memory compare — replaces `sodium_memcmp`.
+    /// Returns true iff spans are equal length AND byte-equal.
+    [[nodiscard]] bool memcmp_ct(std::span<const std::byte> a,
+                                  std::span<const std::byte> b) noexcept;
+
+    /// Zero a memory region such that the compiler cannot optimize it
+    /// away — replaces `sodium_memzero`.
+    void memzero(std::span<std::byte> region) noexcept;
+
 private:
     std::unique_ptr<Impl> pImpl;
 };
+
+/// HEP-CORE-0043 §2.1 — public class name for SEC-Fold-2.  For the
+/// transition window we keep both names in play; `SecureSubsystem` is
+/// the target name (see HEP-0043 §1.1 Nature), `SecureMemorySubsystem`
+/// is the historical name (HEP-CORE-0040 §4.1).  Full rename in a
+/// follow-up commit once all callers migrate.
+using SecureSubsystem = SecureMemorySubsystem;
 
 /// Global access — guarded singleton accessor (HEP-CORE-0040 §4.6).
 /// Returns a reference to the process's `SecureMemorySubsystem`
@@ -96,5 +126,13 @@ secure_memory_subsystem_ready() noexcept;
 /// undefined behavior; throw a clear runtime_error or PANIC.
 [[nodiscard]] PYLABHUB_UTILS_EXPORT bool
 sodium_ready() noexcept;
+
+/// HEP-CORE-0043 §2.1 — canonical accessor for the module's public
+/// API.  Alias for `secure_memory_subsystem()` during the SEC-Fold-2
+/// transition; will BECOME the primary accessor after all consumers
+/// migrate off `secure_memory_subsystem()`.  Throws if not
+/// constructed (same contract).
+[[nodiscard]] PYLABHUB_UTILS_EXPORT SecureSubsystem &
+secure();
 
 } // namespace pylabhub::utils::security

@@ -353,4 +353,58 @@ bool sodium_ready() noexcept
     return g_sms != nullptr && g_sms->sodium_initialized();
 }
 
+SecureSubsystem &secure()
+{
+    return secure_memory_subsystem();
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// SEC-Fold-2 wrapper API implementations (HEP-CORE-0043 §2.1)
+//
+// Each wrapper asserts sodium_initialized() first, then delegates to
+// the raw libsodium primitive.  Consumers do not check the gate —
+// they call `secure().X()` and get a runtime_error if SMS hasn't been
+// constructed, matching the "gate at the module boundary" contract
+// (HEP-0043 §1.2).
+// ─────────────────────────────────────────────────────────────────────
+
+namespace
+{
+// Shared gate check used by every wrapper.  Throws with a specific
+// message naming the wrapper method so the failure trace is
+// unambiguous.
+inline void check_sodium_ready_or_throw(const char *method_name)
+{
+    if (!sodium_ready())
+    {
+        throw std::runtime_error(
+            std::string{"SecureSubsystem::"} + method_name +
+            ": sodium not ready — SecureMemorySubsystem must be "
+            "constructed before use (HEP-CORE-0043 §1.2).");
+    }
+}
+} // anonymous namespace
+
+void SecureSubsystem::random_bytes(std::span<std::byte> out)
+{
+    check_sodium_ready_or_throw("random_bytes");
+    ::randombytes_buf(out.data(), out.size());
+}
+
+bool SecureSubsystem::memcmp_ct(std::span<const std::byte> a,
+                                 std::span<const std::byte> b) noexcept
+{
+    if (a.size() != b.size()) return false;
+    if (a.empty())            return true;
+    // sodium_memcmp is constant-time.  Both spans same size at this
+    // point; safe to compare.
+    return ::sodium_memcmp(a.data(), b.data(), a.size()) == 0;
+}
+
+void SecureSubsystem::memzero(std::span<std::byte> region) noexcept
+{
+    if (region.empty()) return;
+    ::sodium_memzero(region.data(), region.size());
+}
+
 } // namespace pylabhub::utils::security
