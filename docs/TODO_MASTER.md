@@ -10,6 +10,47 @@ see `docs/DOC_STRUCTURE.md` §2.1.1.
 
 ---
 
+## Resume point (2026-07-04)
+
+**Where we are:**
+- Mid-session pivot from #317 C.2 chain to **SEC-Fold** (consolidate
+  security module + HEPs).  Trigger: the 2026-07-04 CI failure
+  exposed the sodium_init gap.  See
+  `docs/tech_draft/DRAFT_security_module_and_hep_consolidation_2026-07.md`
+  for the full design + self-review R1-R8.
+- CI stopgap `9d0a7eb4` (module-boundary gate + debug logs) shipped
+  + pushed.  Awaiting CI verdict.
+- SEC-Fold task filed in `docs/todo/AUTH_TODO.md` under
+  `SEC-Fold-1` (HEP consolidation) + `SEC-Fold-2` (module fold).
+
+**Next action on resume:**
+1. Confirm CI result on `9d0a7eb4`.  Read `[SMS] event=SodiumInit`,
+   `[KeyStore] event=AddRaw`, `[LockedKey] event=SodiumMalloc` log
+   lines.  Decide from evidence.
+2. If CI passed OR CI still fails but for a different reason (data
+   is in the log now), start **SEC-Fold-1** (docs) per the tech
+   draft's Resume checklist.
+3. Then **SEC-Fold-2** (C++ refactor).
+4. Then return to **#317 C.2.c onwards** — currently paused at
+   C.2.b (commit `ce956972`).  Rest of the chain (C.2.c
+   PeerDeathWatcher, C.2.d broker dial + fd cache, D5 opt-out,
+   C.3 metrics-source, C.4 L4 tests, C.5 HEP status sync) all
+   remains open under the NEW architecture.
+
+**In-flight, unfinished:**
+- #317 C.2 chain: C.2.a ✅ `029bbe31`, C.2.b ✅ `ce956972`, C.2.c-C.5
+  pending.  D2 storage ✅ `f7d3a51e`, D1 slice A ✅ `d6f5d621`.
+  Design record: `docs/tech_draft/DRAFT_broker_shm_observer_2026-07.md`.
+- #262 mutual auth: wire mechanism + role wiring shipped
+  (`b6914077`, `5c8d04c1`); L4 squatter test + default flip pending.
+- #327 strict_abi_mismatch: fully shipped.
+
+**HEP-0032 ABI fingerprint chain:** fully shipped this session
+(broker echo, role verify, strict-mode reject, tests).  Documented
+in HEP-CORE-0041 §D4.5 status sync (`678a5868`).
+
+---
+
 ## Current Sprint Focus
 
 ### Ultimate goal — CURVE auth gate fully closed + CLI tool complete
