@@ -436,6 +436,16 @@ public:
     pylabhub::hub::HubState *hub_state_{nullptr};
     std::atomic<bool>     stop_requested{false};
 
+    /// HEP-CORE-0041 §D1(d) broker observer pubkey (task #317 C.2.a).
+    /// Broker generates a fresh CURVE keypair at construction via
+    /// `keystore.generate_and_add_identity("broker.observer")`; the
+    /// pubkey is cached here for the REG_ACK emitter to include in
+    /// `broker_observer_pubkey_z85`.  Seckey stays in KeyStore
+    /// (mlocked, use-not-export) for future observer-dial slices.
+    /// Rotated on every broker startup — producers relearn via the
+    /// REG_ACK stashing path shipped in #317 D2 (f7d3a51e).
+    std::string broker_observer_pubkey_z85;
+
     /// HEP-CORE-0042 §5.4 wait-path pending queue entry.  One entry per
     /// deferred CONSUMER_ATTACH_REQ_ZMQ that the broker enqueued instead
     /// of replying to synchronously.  All fields are captured under the
@@ -2522,6 +2532,19 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     if (const char *bid = pylabhub::version::build_id())
     {
         resp["broker_build_id"] = bid;
+    }
+    // HEP-CORE-0041 §D1(d) — broker observer pubkey (task #317
+    // C.2.a).  Producer stashes this via #317 D2 extraction path;
+    // consumer of the pubkey is the producer's
+    // AttachProtocolAcceptor when C.2.b lights up the observer
+    // handshake verify.  Emit even when the observer role_type
+    // hasn't shipped end-to-end yet — the producer's stash is
+    // idempotent and pre-#317 producers ignore unknown fields.
+    // Empty string means keygen failed at broker startup (logged
+    // at ERROR); producer treats as "no observer available."
+    if (!broker_observer_pubkey_z85.empty())
+    {
+        resp["broker_observer_pubkey_z85"] = broker_observer_pubkey_z85;
     }
 
     // HEP-CORE-0036 §5.1 + §6.5: REG_ACK carries the channel's current
@@ -5909,6 +5932,46 @@ BrokerService::BrokerService(Config cfg, pylabhub::hub::HubState& state)
             "the broker.");
     pImpl->cfg = std::move(cfg);
     pImpl->hub_state_ = &state;  // non-owning; HubHost (or test fixture) owns it
+
+    // HEP-CORE-0041 §D1(d) — generate broker's ephemeral observer
+    // keypair (task #317 C.2.a).  Called ONCE at broker startup.
+    // The pubkey is cached on `pImpl->broker_observer_pubkey_z85`
+    // for REG_ACK emission (see PRODUCER_REG_ACK build site).  The
+    // seckey stays in KeyStore under `"broker.observer"` — accessed
+    // via `with_seckey` in future C.2.d observer-dial code.
+    //
+    // Broker restart rotates the keypair; producers relearn via the
+    // #317 D2 (f7d3a51e) extraction path.  Under no circumstances
+    // does the seckey leave the KeyStore module.
+    try
+    {
+        // Idempotent under process-wide KeyStore reuse (L3 test
+        // fixtures spin up multiple brokers in one process).
+        // `remove` is a no-op if the entry is absent per the
+        // HEP-CORE-0040 §5.2 contract, so this is safe on cold
+        // start too.  Broker restart semantics = fresh keypair,
+        // exactly matching HEP-CORE-0041 §D1(d) design.
+        sec::key_store().remove("broker.observer");
+        pImpl->broker_observer_pubkey_z85 =
+            sec::key_store().generate_and_add_identity("broker.observer");
+        LOGGER_INFO(
+            "[broker] event=BrokerObserverKeypairGenerated "
+            "pubkey_z85='{}'",
+            pImpl->broker_observer_pubkey_z85);
+    }
+    catch (const std::exception &e)
+    {
+        // Non-fatal: broker still functions without observer
+        // capability; SHM channel metrics fall back to
+        // heartbeat-piggyback.  Log at ERROR so the degradation is
+        // visible without crashing production brokers on a corner
+        // case (e.g., name collision under test double-init).
+        LOGGER_ERROR(
+            "[broker] event=BrokerObserverKeypairGenerationFailed "
+            "reason='{}' (SHM metrics will fall back to heartbeat "
+            "source; HEP-CORE-0041 §D1(d) task #317 C.2.a)",
+            e.what());
+    }
 }
 
 BrokerService::~BrokerService() = default;
