@@ -77,22 +77,31 @@ public:
     // SEC-Fold-2 wrapper API (HEP-CORE-0043 §2.1) — libsodium boundary.
     // Every direct sodium primitive in the codebase migrates to these
     // wrappers.  Nothing outside this module `#include <sodium.h>`
-    // once migration completes.  All methods assert `sodium_ready()`
-    // internally; consumers do not check.
+    // once migration completes.
+    //
+    // Contract: every method gates on `sodium_ready()` and PANICS
+    // (`PLH_PANIC` → process abort) if false.  Calling any of these
+    // before SecureMemorySubsystem is constructed is a programmer
+    // error — a violation of the module's singularity+init contract.
+    // Same pattern as FileLock and Logger; not a recoverable
+    // exception.
     // ─────────────────────────────────────────────────────────────────
 
     /// Fill `out` with cryptographically-secure random bytes.
-    /// Wrapper for libsodium `randombytes_buf`.
+    /// Wrapper for libsodium `randombytes_buf`.  Panics if
+    /// `sodium_ready()` is false.
     void random_bytes(std::span<std::byte> out);
 
     /// Constant-time memory compare — replaces `sodium_memcmp`.
     /// Returns true iff spans are equal length AND byte-equal.
+    /// Panics if `sodium_ready()` is false.
     [[nodiscard]] bool memcmp_ct(std::span<const std::byte> a,
-                                  std::span<const std::byte> b) noexcept;
+                                  std::span<const std::byte> b);
 
     /// Zero a memory region such that the compiler cannot optimize it
-    /// away — replaces `sodium_memzero`.
-    void memzero(std::span<std::byte> region) noexcept;
+    /// away — replaces `sodium_memzero`.  Panics if `sodium_ready()`
+    /// is false.
+    void memzero(std::span<std::byte> region);
 
 private:
     std::unique_ptr<Impl> pImpl;

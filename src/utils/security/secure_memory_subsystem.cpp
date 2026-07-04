@@ -361,48 +361,52 @@ SecureSubsystem &secure()
 // ─────────────────────────────────────────────────────────────────────
 // SEC-Fold-2 wrapper API implementations (HEP-CORE-0043 §2.1)
 //
-// Each wrapper asserts sodium_initialized() first, then delegates to
-// the raw libsodium primitive.  Consumers do not check the gate —
-// they call `secure().X()` and get a runtime_error if SMS hasn't been
-// constructed, matching the "gate at the module boundary" contract
-// (HEP-0043 §1.2).
+// Every wrapper gates on `sodium_ready()` first, then delegates to
+// libsodium.  A wrapper called before SecureMemorySubsystem is
+// constructed is a PROGRAMMER ERROR — the caller violated the
+// module's singularity+init contract.  Same pattern as FileLock and
+// Logger: `PLH_PANIC` aborts the process.  We do NOT throw an
+// exception here — this is not a recoverable failure, it's a broken
+// static-module contract and the program cannot proceed safely.
 // ─────────────────────────────────────────────────────────────────────
 
 namespace
 {
-// Shared gate check used by every wrapper.  Throws with a specific
-// message naming the wrapper method so the failure trace is
-// unambiguous.
-inline void check_sodium_ready_or_throw(const char *method_name)
+// Shared gate check used by every wrapper.  Aborts the process via
+// PLH_PANIC when the SecureMemorySubsystem hasn't been constructed
+// (or `sodium_init` failed).  Mirrors FileLock's `lifecycle_
+// initialized()` check + `PLH_PANIC` at each direct constructor.
+inline void panic_if_not_ready(const char *method_name)
 {
     if (!sodium_ready())
     {
-        throw std::runtime_error(
-            std::string{"SecureSubsystem::"} + method_name +
-            ": sodium not ready — SecureMemorySubsystem must be "
-            "constructed before use (HEP-CORE-0043 §1.2).");
+        PLH_PANIC("FATAL: SecureSubsystem::{}() called before "
+                  "SecureMemorySubsystem was constructed via "
+                  "LifecycleManager. Aborting. (HEP-CORE-0043 §1.2)",
+                  method_name);
     }
 }
 } // anonymous namespace
 
 void SecureSubsystem::random_bytes(std::span<std::byte> out)
 {
-    check_sodium_ready_or_throw("random_bytes");
+    panic_if_not_ready("random_bytes");
+    if (out.empty()) return;
     ::randombytes_buf(out.data(), out.size());
 }
 
 bool SecureSubsystem::memcmp_ct(std::span<const std::byte> a,
-                                 std::span<const std::byte> b) noexcept
+                                 std::span<const std::byte> b)
 {
+    panic_if_not_ready("memcmp_ct");
     if (a.size() != b.size()) return false;
     if (a.empty())            return true;
-    // sodium_memcmp is constant-time.  Both spans same size at this
-    // point; safe to compare.
     return ::sodium_memcmp(a.data(), b.data(), a.size()) == 0;
 }
 
-void SecureSubsystem::memzero(std::span<std::byte> region) noexcept
+void SecureSubsystem::memzero(std::span<std::byte> region)
 {
+    panic_if_not_ready("memzero");
     if (region.empty()) return;
     ::sodium_memzero(region.data(), region.size());
 }

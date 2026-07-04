@@ -123,9 +123,10 @@ before any other libsodium function is called.**  `SecureSubsystem`
 owns this init exclusively and gates all consumer access to
 libsodium behind it.
 
-Mechanism, three layers deep:
+Mechanism, four layers deep:
 
-1. **Init happens exactly once, in the constructor.**  `SecureSubsystem::SecureSubsystem()` calls `::sodium_init()`
+1. **Init happens exactly once, in the constructor.**
+   `SecureSubsystem::SecureSubsystem()` calls `::sodium_init()`
    as its first step.  A successful return (>= 0) sets
    `pImpl->sodium_initialized = true`.  Failure throws
    `std::runtime_error` — the process cannot proceed.
@@ -135,16 +136,26 @@ Mechanism, three layers deep:
    noexcept` both return `true` iff the singleton exists AND its
    init flag is true.  Non-throwing, safe to call from any
    context including test fixtures and unrelated startup code.
-3. **The gate is enforced at every module entry point.**  Every
-   public method on `SecureSubsystem` that reaches libsodium
-   asserts `sodium_initialized()` before doing work.  Consumers
-   never touch libsodium directly, so they cannot bypass the
-   gate.
-4. **Compile-time enforcement.**  After SEC-Fold-2 lands,
-   `<sodium.h>` is included ONLY in `src/utils/security/*.cpp`.
-   Any file elsewhere that adds `#include <sodium.h>` is a CI
-   lint violation.  Reaching libsodium without going through
-   `SecureSubsystem` becomes structurally impossible.
+3. **Every wrapper method PANICS on gate violation.**  Every
+   public method on `SecureSubsystem` that touches libsodium
+   (`random_bytes`, `memcmp_ct`, `memzero`, and every future
+   wrapper for hash/KDF/AEAD/box) starts with
+   `if (!sodium_ready()) PLH_PANIC(...)` — same pattern FileLock
+   and Logger use when their static module is called before
+   init.  Reaching a `SecureSubsystem` method without having
+   constructed the subsystem is a **programmer error**, not a
+   recoverable exception.  The program aborts.  No per-call
+   carve-outs, no "this specific primitive tolerates pre-init"
+   exceptions — the module owns the boundary uniformly.
+   KeyStore's public methods (`add_identity`, `add_raw`, ...)
+   follow the same PANIC pattern.
+4. **Compile-time enforcement (post-SEC-Fold-2).**  Once all
+   consumer files migrate to the wrapper API, `<sodium.h>` is
+   included ONLY in `src/utils/security/*.cpp`.  Any file
+   elsewhere that adds `#include <sodium.h>` is a CI lint
+   violation.  Reaching libsodium without going through
+   `SecureSubsystem` becomes structurally impossible — and every
+   path through the wrapper goes through the panic gate.
 
 Consequence: the 2026-07-04 CI failure class (sodium primitives
 called before `sodium_init`) cannot recur.  Even in Debug/pre-
