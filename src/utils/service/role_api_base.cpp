@@ -100,9 +100,19 @@ private:
 //   [<short_tag>] event=BrokerAbiFingerprintReceived role='X' verdict='V' mismatched_axes='...'
 //   [<short_tag>] event=BrokerAbiFingerprintDetail role='X' role_versions='...' broker_versions='...'
 // Detail line only when verdict != OK, matching broker-side pattern.
-inline void log_broker_abi_fingerprint(const nlohmann::json &ack,
+/// @param config_strict Config-driven strict mode (task #327,
+///                       `RoleAPIBase::strict_abi_mismatch()`).  When
+///                       true, a MAJOR mismatch flips verdict to
+///                       MAJOR_MISMATCH_REJECTED and the return is
+///                       true (caller MUST refuse Registered).
+///                       Env var `PLH_TEST_ROLE_STRICT_ABI_MISMATCH=1`
+///                       is OR'd in for test-only override.
+/// @return true if strict mode is on AND a MAJOR mismatch was detected;
+///         caller MUST refuse the Registered transition.
+inline bool log_broker_abi_fingerprint(const nlohmann::json &ack,
                                         const std::string &short_tag,
-                                        const std::string &role_uid)
+                                        const std::string &role_uid,
+                                        bool config_strict)
 {
     if (!ack.contains("broker_abi_fingerprint") ||
         !ack["broker_abi_fingerprint"].is_object())
@@ -111,7 +121,7 @@ inline void log_broker_abi_fingerprint(const nlohmann::json &ack,
             "[{}] event=BrokerAbiFingerprintReceived role='{}' verdict='ABSENT' "
             "mismatched_axes=''",
             short_tag, role_uid);
-        return;
+        return false;
     }
 
     pylabhub::version::ComponentVersions broker{};
@@ -125,7 +135,7 @@ inline void log_broker_abi_fingerprint(const nlohmann::json &ack,
             "[{}] event=BrokerAbiFingerprintReceived role='{}' "
             "verdict='INVALID_ENVELOPE' mismatched_axes='' error='{}'",
             short_tag, role_uid, e.what());
-        return;
+        return false;
     }
 
     const std::string bid_str = ack.value("broker_build_id", std::string{});
@@ -134,19 +144,16 @@ inline void log_broker_abi_fingerprint(const nlohmann::json &ack,
     const auto verdict    = pylabhub::version::verify_peer_versions(broker, broker_bid);
     const auto classified = pylabhub::version::classify_peer_verdict(verdict);
 
-    // 2026-07-03 code review Finding #11 — snapshot the env once via
-    // std::call_once.  std::getenv is not thread-safe against concurrent
-    // setenv in another thread; this helper runs on socket-worker threads.
-    // Test fixtures must set PLH_TEST_ROLE_STRICT_ABI_MISMATCH BEFORE any
-    // role-worker thread reads a REG_ACK / CONSUMER_REG_ACK — already the
-    // pattern.
+    // Strict-mode gate: config-driven (task #327) OR env-var
+    // (test-only override).  Env-var snapshot is thread-safe per
+    // std::call_once (2026-07-03 review Finding #11).
     static std::once_flag role_strict_once;
-    static bool           role_strict_cache = false;
+    static bool           role_strict_env_cache = false;
     std::call_once(role_strict_once, [] {
         const char *env = std::getenv("PLH_TEST_ROLE_STRICT_ABI_MISMATCH");
-        role_strict_cache = env != nullptr && std::string_view(env) == "1";
+        role_strict_env_cache = env != nullptr && std::string_view(env) == "1";
     });
-    const bool role_strict = role_strict_cache;
+    const bool role_strict = config_strict || role_strict_env_cache;
 
     // Map classified.kind → §8.6 verdict string.  Uses shared classifier
     // (2026-07-03 code review Finding #14 — was ~90 LOC duplicated with
@@ -198,6 +205,11 @@ inline void log_broker_abi_fingerprint(const nlohmann::json &ack,
                          broker.config_major, broker.config_minor),
             pylabhub::version::version_info_string());
     }
+
+    // Task #327 — refuse Registered when strict mode AND MAJOR mismatch.
+    return role_strict &&
+           classified.kind ==
+               pylabhub::version::AbiPeerVerdict::Kind::MajorMismatch;
 }
 
 } // namespace
@@ -298,6 +310,12 @@ struct RoleAPIBase::Impl
     std::string short_tag;   // "prod", "cons", "proc"
     hub::ChecksumPolicy checksum_policy{hub::ChecksumPolicy::Enforced};
     bool stop_on_script_error{false};
+    /// HEP-CORE-0032 §8.6 strict-mode ABI reject (task #327).  Set by
+    /// role host from `config.startup().strict_abi_mismatch`.  When
+    /// true, `log_broker_abi_fingerprint` on the two ACK-processing
+    /// sites emits `verdict='MAJOR_MISMATCH_REJECTED'` and returns
+    /// true to signal the caller to refuse the Registered transition.
+    bool strict_abi_mismatch{false};
     std::string uid;
     std::string name;
     std::string channel;
@@ -932,12 +950,22 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
 
         // HEP-CORE-0032 §8 — verify + log broker's ABI envelope echoed
         // on CONSUMER_REG_ACK.  Symmetric with the producer-side path.
-        // Log-only in slice D.3.  Pass `pImpl->uid` (the consumer's own
-        // role UID) rather than reading role_uid from the ACK — the
-        // ACK doesn't carry role_uid at all, so `ack.value("role_uid",
-        // "")` returned "" and rendered log lines with role='' (2026-07-03
-        // code review Finding #3).
-        log_broker_abi_fingerprint(ack, pImpl->short_tag, pImpl->uid);
+        // Task #327: helper returns true when strict-mode + MAJOR
+        // mismatch, in which case the caller (apply_consumer_reg_ack)
+        // MUST return false to refuse the Registered transition.
+        // Pass `pImpl->uid` (the consumer's own role UID) rather than
+        // reading role_uid from the ACK — the ACK doesn't carry role_uid
+        // (2026-07-03 code review Finding #3).
+        const bool abi_refuse = log_broker_abi_fingerprint(
+            ack, pImpl->short_tag, pImpl->uid, pImpl->strict_abi_mismatch);
+        if (abi_refuse)
+        {
+            LOGGER_ERROR(
+                "[{}] CONSUMER_REG_ACK strict-ABI reject for channel '{}' — "
+                "refusing Registered transition (task #327)",
+                pImpl->short_tag, ack.value("channel_name", "?"));
+            return false;
+        }
 
         // HEP-CORE-0036 §5b B-4 (#289, 2026-06-25) — unified
         // CONSUMER_REG_ACK shape across transports.  Pre-B-4 the
@@ -1145,8 +1173,26 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
                     // envelope echoed on CONSUMER_ATTACH_ACK_ZMQ.
                     // Symmetric with REG_ACK / CONSUMER_REG_ACK paths.
                     // (2026-07-03 code review Finding #6.)
-                    log_broker_abi_fingerprint(*reply, pImpl->short_tag,
-                                                pImpl->uid);
+                    // Task #327: on strict-ABI reject at this ATTACH
+                    // hop, downgrade the reply to a synthetic
+                    // "abi_major_mismatch" status.  The pre-attach loop
+                    // treats non-"success" as a per-producer failure
+                    // and drops the entry from the eventual filtered_ack
+                    // — preserving §7.1 fan-in policy (one failed peer
+                    // must not fail the batch).
+                    const bool abi_refuse = log_broker_abi_fingerprint(
+                        *reply, pImpl->short_tag, pImpl->uid,
+                        pImpl->strict_abi_mismatch);
+                    if (abi_refuse)
+                    {
+                        LOGGER_ERROR(
+                            "[{}] CONSUMER_ATTACH_ACK_ZMQ strict-ABI reject "
+                            "channel='{}' producer='{}' — dropping producer "
+                            "from filtered_ack (task #327)",
+                            pImpl->short_tag, channel_name, producer_uid);
+                        status = "error";
+                        reason = "abi_major_mismatch";
+                    }
                 }
 
                 if (status == "success")
@@ -2225,6 +2271,8 @@ void RoleAPIBase::set_role_dir(std::string d)         { pImpl->role_dir = std::m
 void RoleAPIBase::set_checksum_policy(hub::ChecksumPolicy p) { pImpl->checksum_policy = p; }
 void RoleAPIBase::set_engine(ScriptEngine *e)          { pImpl->engine = e; }
 void RoleAPIBase::set_stop_on_script_error(bool v)    { pImpl->stop_on_script_error = v; }
+void RoleAPIBase::set_strict_abi_mismatch(bool v)     { pImpl->strict_abi_mismatch = v; }
+bool RoleAPIBase::strict_abi_mismatch() const         { return pImpl->strict_abi_mismatch; }
 void RoleAPIBase::set_metrics_hook(std::function<void(nlohmann::json &)> hook)
 {
     pImpl->metrics_hook = std::move(hook);
@@ -2386,7 +2434,7 @@ RoleAPIBase::register_producer_channel(const nlohmann::json &opts, int timeout_m
     // means no response (timeout/disconnect).  Status field discriminates
     // the success vs error branch; error_code (HEP-0007 §12.4a taxonomy)
     // tells the caller what specifically failed.
-    const bool registered =
+    bool registered =
         result.has_value() &&
         result->value("status", std::string{}) == "success";
 
@@ -2405,10 +2453,21 @@ RoleAPIBase::register_producer_channel(const nlohmann::json &opts, int timeout_m
                     result->value("initial_allowlist",
                                   nlohmann::json::array()).dump());
         // HEP-CORE-0032 §8 — verify + log broker's ABI envelope echoed
-        // on REG_ACK.  Log-only in slice D.3; strict-mode reject filed
-        // as follow-up.
-        log_broker_abi_fingerprint(*result, pImpl->short_tag,
-                                    opts.value("role_uid", std::string{}));
+        // on REG_ACK.  Task #327: if strict-mode AND MAJOR mismatch,
+        // helper returns true and the caller MUST refuse the Registered
+        // transition (flip `registered` to false).
+        const bool abi_refuse = log_broker_abi_fingerprint(
+            *result, pImpl->short_tag,
+            opts.value("role_uid", std::string{}),
+            pImpl->strict_abi_mismatch);
+        if (abi_refuse)
+        {
+            LOGGER_ERROR(
+                "[{}] REG_ACK strict-ABI reject for channel '{}' — "
+                "refusing Registered transition (task #327)",
+                pImpl->short_tag, opts.value("channel_name", "?"));
+            registered = false;
+        }
     }
 
     if (presence)
@@ -2524,7 +2583,7 @@ RoleAPIBase::register_consumer(const nlohmann::json &opts, int timeout_ms)
         result = bc->register_consumer(opts, static_cast<int>(remaining_ms));
     }
 
-    const bool registered =
+    bool registered =
         result.has_value() &&
         result->value("status", std::string{}) == "success";
 

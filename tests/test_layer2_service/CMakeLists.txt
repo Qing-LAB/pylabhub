@@ -56,6 +56,33 @@ gtest_discover_tests(test_layer2_framework_selftest
         TIMEOUT 60
 )
 
+# ── StartupConfig parser (task #327) ────────────────────────────────────────
+
+add_executable(test_layer2_startup_config
+    test_startup_config.cpp
+)
+
+target_link_libraries(test_layer2_startup_config
+    PRIVATE
+        pylabhub::utils
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_startup_config)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_startup_config
+    SUITE_NAME "Layer2_StartupConfig"
+)
+layer2_require_staged_utils(test_layer2_startup_config)
+
+gtest_discover_tests(test_layer2_startup_config
+    PROPERTIES
+        LABELS "layer2;config;startup"
+        TIMEOUT 30
+)
+
 # ── Net Address Validation ──────────────────────────────────────────────────
 
 add_executable(test_layer2_net_address

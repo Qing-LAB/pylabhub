@@ -21,6 +21,14 @@ namespace pylabhub::config
 struct StartupConfig
 {
     std::vector<pylabhub::WaitForRole> wait_for_roles;
+
+    /// HEP-CORE-0032 §8.6 strict-mode ABI reject on the role side.
+    /// When true, on a broker REG_ACK / CONSUMER_REG_ACK whose ABI
+    /// envelope reports a MAJOR-axis mismatch, the role refuses the
+    /// Registered transition (`register_producer` / `apply_consumer_reg_ack`
+    /// return false) instead of just logging.  Default false — same
+    /// behaviour as pre-#327 log-only mode.  Task #327.
+    bool strict_abi_mismatch{false};
 };
 
 /// Parse "startup.wait_for_roles" from a JSON config object.
@@ -39,10 +47,22 @@ inline StartupConfig parse_startup_config(const nlohmann::json &j, const char *t
     // Reject unknown nested keys under "startup".
     for (auto it = s.begin(); it != s.end(); ++it)
     {
-        if (it.key() != "wait_for_roles")
+        if (it.key() != "wait_for_roles" &&
+            it.key() != "strict_abi_mismatch")
             throw std::runtime_error(
                 "startup: unknown config key 'startup." + it.key() + "'");
     }
+
+    // HEP-CORE-0032 §8.6 strict-mode ABI reject (task #327, 2026-07-03).
+    // Optional bool; default false (log-only ABI-check behaviour).
+    if (s.contains("strict_abi_mismatch"))
+    {
+        if (!s.at("strict_abi_mismatch").is_boolean())
+            throw std::runtime_error(
+                "startup.strict_abi_mismatch: must be a boolean");
+        sc.strict_abi_mismatch = s.at("strict_abi_mismatch").get<bool>();
+    }
+
     if (!s.contains("wait_for_roles") || !s.at("wait_for_roles").is_array())
         return sc;
 

@@ -409,6 +409,16 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     void set_checksum_policy(hub::ChecksumPolicy p);
     void set_stop_on_script_error(bool v);
 
+    /// HEP-CORE-0032 §8.6 strict-mode ABI reject on the role side.
+    /// When true, on a broker REG_ACK / CONSUMER_REG_ACK carrying a
+    /// MAJOR-axis ABI mismatch, the role refuses the Registered
+    /// transition (register_producer / apply_consumer_reg_ack return
+    /// false) instead of just logging.  Called once during setup by
+    /// the role host from `config.startup().strict_abi_mismatch`.
+    /// Task #327.
+    void set_strict_abi_mismatch(bool v);
+    bool strict_abi_mismatch() const;
+
     /// **Reserved C++ extension point (as of 2026-05-20 — no callers in
     /// src/ or tests/).**  Full design in HEP-CORE-0019 §5.5; do not
     /// delete on dead-code sweeps — the consumer branches at
