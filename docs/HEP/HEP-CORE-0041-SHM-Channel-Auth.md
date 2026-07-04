@@ -970,7 +970,17 @@ Channel Auth attach errors".
 
 **Mutual-auth gap.**  The current flow proves consumer→producer identity but does NOT prove producer→consumer (a same-UID process could bind the published endpoint and impersonate the producer to a connecting consumer).  Task #262 tracks adding producer-side proof-of-possession before declaring Phase 1 production-ready.
 
-### D4.5 Mutual auth — planned (#262, spec 2026-07-03)
+### D4.5 Mutual auth — wire mechanism SHIPPED, default-off (#262)
+
+**Status (2026-07-03).**  The wire mechanism + producer proof + role-side
+opt-in config knob (`startup.shm_require_mutual_auth`, default false) are
+all shipped and unit-tested — see commit trail `b6914077` (E.2 wire),
+`6066f6ba` (L2 tests), `5c8d04c1` (production config knob).  The
+remaining Phase 1 work is L4 end-to-end squatter-attack coverage +
+the eventual default-flip to require-mutual-auth (blocked on the L4
+test + a `broker_proto` MINOR bump per HEP-CORE-0032 §8.3.2).
+
+
 
 **Threat model closed.**  A hostile process at the same uid as the
 producer binds to a predictable `shm_capability_endpoint` after the
@@ -1083,32 +1093,46 @@ failed."  Both are fatal to the attach and are logged with distinct
 markers so operators can tell "wrong keys" from "wrong allowlist" at
 a glance.
 
-**Implementation plan (task #262).**
+**Implementation status (task #262).**
 
-1. Extend `AttachProtocol` wire per the frame shapes above (~50 LOC
-   in `attach_protocol.cpp`; sends Frame 3 on producer side, receives
-   + verifies on consumer side).
-2. Consumer stores `producer_pubkey_z85` from `CONSUMER_REG_ACK.
-   producers[i]` in the attach context; passes it into
-   `initiate_consumer_handshake` for the Frame 3 verify.  (Field
-   already present; just need to plumb it into the call site.)
-3. Amend `IMPLEMENTATION_GUIDANCE.md` §"SHM Channel Auth attach
-   errors" with `PRODUCER_NOT_AUTHENTICATED` (`shm_attach_producer_not_authenticated`
-   log marker for L3/L4 test grep).
-4. `broker_proto` MINOR bump (per HEP-CORE-0032 §8.3.2) — the
-   handshake extension is additive on wire, additive on required
-   behavior; MINOR captures both.
-5. L2 test: matched producer pubkey handshakes succeed; mismatched
-   producer pubkey rejects with `PRODUCER_NOT_AUTHENTICATED` log
-   marker.  Bytes flowing over stdin/stdout of a test rig; no L4
-   broker needed for the L2 check.
-6. L4 test: producer-squatter attack scenario.  Start real producer,
-   kill it, spawn attacker at same uid binding the freed endpoint,
-   consumer connects, attacker fails Frame 3 (has no producer_sk),
-   consumer refuses the attach with the correct marker.
-7. HEP-CORE-0041 §8 acceptance criteria updated — Phase 1 complete
-   only after this ships.
-8. Blocks REVIEW-E (#278).
+1. ✅ **SHIPPED** (`b6914077`) — `AttachProtocol` wire extension.
+   `initiate_consumer_handshake` gains `require_mutual_auth` bool
+   parameter (default false).  Consumer sends `consumer_nonce_b64` +
+   `consumer_challenge_b64` on Frame 2; producer's acceptor detects
+   them, derives its pubkey via `crypto_scalarmult_base` inside the
+   `SeckeyAccessor` scope, and sends Frame 3
+   `{producer_pubkey_z85, proof_response_b64}`.
+2. ✅ **SHIPPED** (`5c8d04c1`) — Consumer call-site opt-in.
+   `apply_consumer_reg_ack`'s SHM-dial retry loop passes
+   `pImpl->shm_require_mutual_auth` through, set once at role host
+   startup from `config.startup().shm_require_mutual_auth`
+   (see `RoleAPIBase::set_shm_require_mutual_auth`).  The
+   `producer_pubkey_z85` field on CONSUMER_REG_ACK.producers[i] was
+   already delivered by HEP-CORE-0036 §5b B-4 (#289); slice E.2 wires
+   it into the Frame 3 verify.
+3. ⏸ **DEFERRED** — `IMPLEMENTATION_GUIDANCE.md` §"SHM Channel Auth
+   attach errors" amendment.  Error marker `attach_producer_not_authenticated`
+   is already emitted by the L2 code (`attach_protocol.cpp:900+`);
+   guidance-doc entry is a housekeeping follow-up.
+4. ⏸ **DEFERRED** — `broker_proto` MINOR bump.  Not needed until the
+   DEFAULT flips to require-mutual-auth; the current opt-in field is
+   additive at both wire and behaviour levels, so pre-#262 producers
+   continue to interop without a bump.  Bump lands with step 8.
+5. ✅ **SHIPPED** (`6066f6ba`) — L2 tests.  3 pattern-1 tests in
+   `test_attach_protocol.cpp` bracket the observable state space:
+   happy path (matched pubkey), wrong-pubkey reject (primary threat
+   model), and require=false backward-compat.
+6. ⏸ **PENDING** — L4 squatter attack.  Needs infrastructure to spawn
+   real producer, SIGKILL it, spawn attacker at the same uid binding
+   the freed endpoint, observe the consumer refuse the attach with
+   the correct marker.  Filed under REVIEW-E prep (#278).
+7. ⏸ **PENDING** — HEP §8 acceptance-criteria update.  Ships alongside
+   step 8 default flip.
+8. ⏸ **BLOCKED** — Default flip (`shm_require_mutual_auth = true` at
+   role hosts + broker_proto MINOR bump + operator migration docs).
+   Blocked on step 6 L4 coverage landing, plus a designer call on
+   when the deployment guarantee shifts from "opt-in security" to
+   "default hardened".
 
 **Not chosen (rejected alternatives).**
 
