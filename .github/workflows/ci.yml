@@ -62,17 +62,16 @@ jobs:
         run: cmake --build build -j$(nproc)
 
       - name: Test
-        # HEP-CORE-0040 KeyStore + LockedKey machinery relies on
-        # `sodium_malloc`, which calls mlock().  Each keypair pins
-        # ~16 KB (payload + two libsodium guard pages).  GitHub-hosted
-        # runners default RLIMIT_MEMLOCK to ~8 MB, enough for a
-        # handful of keys but not for the parallel L2/L3 suites that
-        # hold many keystores simultaneously.  `prlimit --pid $$`
-        # raises the LIMIT on THIS shell, which ctest then inherits.
-        # (Each GH Actions run: block starts a fresh shell, so the
-        # limit + the tests must live in the same step.)  Failure to
-        # raise (unexpected sudo-less environments) is non-fatal — we
-        # log and continue so the test log surfaces the real error.
+        # Raising RLIMIT_MEMLOCK here is defence-in-depth (sodium_malloc
+        # can fail if the runner's memlock limit is very small under
+        # parallel keystores), but the real ROOT CAUSE of the
+        # 2026-07-04 CI failure was that libsodium's `sodium_init()`
+        # was never called before `sodium_malloc()` in KeyStore-only
+        # test workers — fixed in the same commit by moving the init
+        # call into `SecureMemorySubsystem`'s constructor.  Keeping
+        # this ulimit raise so future keystore-count growth doesn't
+        # surprise us on constrained runners.  Non-fatal fallback if
+        # sudo isn't available.
         run: |
           sudo prlimit --pid $$ --memlock=1073741824:1073741824 \
             || echo "warning: prlimit failed; ulimit -l stays at default"

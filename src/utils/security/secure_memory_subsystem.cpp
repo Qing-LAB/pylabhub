@@ -11,6 +11,8 @@
 #include "utils/logger.hpp"
 #include "utils/module_def.hpp"
 
+#include <sodium.h>
+
 #include <cerrno>
 #include <cstring>
 #include <mutex>
@@ -176,6 +178,36 @@ unsigned long inspect_memlock_capability() noexcept
 SecureMemorySubsystem::SecureMemorySubsystem()
     : pImpl(std::make_unique<Impl>())
 {
+    // Step 0: initialize libsodium (2026-07-04 CI-triaged fix).
+    //
+    // Every subsequent libsodium call (KeyStore's `sodium_malloc`,
+    // AttachProtocol's `crypto_box_*`, `sodium_memzero` etc.) requires
+    // `sodium_init()` to have run first — it seeds the CSPRNG and
+    // sets `page_size` used by the guarded allocator's pointer math.
+    //
+    // Historical: `sodium_init` was ONLY called from AttachProtocol's
+    // `ensure_sodium_init` (attach_protocol.cpp:310).  KeyStore-only
+    // test workers (e.g. `KeyStoreTest.AddRaw_LookupRawRoundtrip`)
+    // never touched AttachProtocol, so init never ran; guard-page
+    // arithmetic in `_sodium_malloc` ran against zero `page_size` and
+    // fired the internal assertion
+    // `_unprotected_ptr_from_user_ptr(user_ptr) == unprotected_ptr`.
+    // Locally the test happened to work because LTO/linker order in
+    // the local build pulled AttachProtocol's static init in as a
+    // side effect; CI's linker order didn't.  Undefined-behaviour
+    // class visible only under different build flags — thanks to the
+    // 2026-07-04 reviewer for the exit-code-134 = abort() catch.
+    //
+    // Idempotent: `sodium_init()` returns 0 on first call, 1 if
+    // already initialized (both non-error).  Only < 0 is fatal.
+    if (::sodium_init() < 0)
+    {
+        throw std::runtime_error(
+            "SecureMemorySubsystem: sodium_init() failed — libsodium "
+            "will not be usable.  Check CSPRNG availability "
+            "(/dev/urandom / getrandom); HEP-CORE-0040 §4.0.");
+    }
+
     // Step 1: disable core dumps.  Throws on fatal platform failure.
     disable_core_dumps_or_throw();
 
