@@ -90,6 +90,66 @@ dispatch, or critical-error escalation around the auth flow, re-read
 | F — Federation peer ZAP parity | ⏸ | depends on E + #105 |
 | G — SHM auth migration | 🟡 | HEP-0041 design + Phase 1 substeps 1a-1h/1k ✅; **1i-cleanup S2..S5 + 1j + #262 OPEN** |
 | H — Demo migration | ⏸ | last; needs D shipped end-to-end |
+| **SEC-Fold — Consolidated Security Module + HEP** | 🔴 **PLANNING** | filed 2026-07-04 — see `SEC-Fold` section below |
+
+---
+
+## SEC-Fold — Consolidated Security Module + unified HEP (filed 2026-07-04)
+
+**Trigger:** 2026-07-04 CI failure exposed a `sodium_init()` gap —
+no single module owned libsodium initialization; every consumer file
+`#include`d `<sodium.h>` and called sodium directly.  Fixed for the
+narrow case in commit `9d0a7eb4` (module-boundary gate at KeyStore
+public API + init flag on SMS + init call in SMS ctor + debug logs),
+but the fix is a stopgap.  The underlying design smell — **security
+concerns spread across 9 files and 6 HEPs, with no single owner** —
+remains.
+
+**Two tasks filed for the correct architecture.  Both blocked by
+neither of them being started; do in the order below.**
+
+**SEC-Fold-1 — HEP consolidation (docs-only, do FIRST).**  Fold
+HEP-CORE-0035, -0036, -0038, -0040, -0041, -0042 plus two live tech
+drafts (`DRAFT_keystore_ephemeral_and_script_crypto_2026-07`,
+`DRAFT_broker_shm_observer_2026-07`) into ONE unified HEP.
+Structure sketched in
+`docs/tech_draft/DRAFT_security_module_and_hep_consolidation_2026-07.md`
+Part 2.  Old HEPs marked SUPERSEDED and archived per
+`DOC_STRUCTURE.md §2.2`.  Sizing: 1-2 commits.
+Ships BEFORE SEC-Fold-2 so the module refactor is guided by the
+unified design, not the reverse.
+
+**SEC-Fold-2 — Module fold (C++ refactor, do SECOND).**  One module
+(rename `SecureMemorySubsystem` → `SecureSubsystem`, or new class
+`Secure`) owns EVERY libsodium API.  Nothing else `#include
+<sodium.h>` in production.  Every consumer changes from raw sodium
+call → `secure().X(...)`.  KeyStore becomes a submodule of `Secure`,
+not a peer.  Wrapper API sketched in tech draft Part 1.  Sizing:
+~9 production files + tests, 500-800 LOC touched, ~3-5 commits.
+
+**Design record:**
+`docs/tech_draft/DRAFT_security_module_and_hep_consolidation_2026-07.md`.
+
+**Why it matters — from the 2026-07-04 user message:** "we have
+real application and needs for key management and security
+management and our code has scattered design all over the place."
+The current design produces runtime bugs (2026-07-04 sodium_init
+gap), design questions requiring 3-HEP paging, and no compile-time
+guarantee that consumers use sodium correctly.  All three problems
+close structurally after SEC-Fold-2.
+
+**Interaction with in-flight work:**
+
+- Task #262 (SHM mutual auth) — can complete before SEC-Fold-2.
+  Wire mechanism + config knob already shipped `5c8d04c1`.
+- Task #317 C.2 (broker SHM observer) — CURRENTLY IN FLIGHT.
+  D1 slice A (`d6f5d621`), D2 (`f7d3a51e`), C.2.a (`029bbe31`),
+  C.2.b (`ce956972`) already shipped.  Remaining C.2.c/d + D5 +
+  C.3-5 can complete before SEC-Fold-2.
+- Task #247 (script crypto API) — SEC-Fold-2 IS partly this task.
+  Do SEC-Fold-2 first; #247 collapses into it.
+- Task #262 mutual auth L4 test + default flip — folds into
+  unified HEP §7.3.
 
 ---
 
