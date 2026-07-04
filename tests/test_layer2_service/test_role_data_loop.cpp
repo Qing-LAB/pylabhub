@@ -19,57 +19,64 @@ using pylabhub::tests::IsolatedProcessTest;
 
 class RunDataLoopTest : public IsolatedProcessTest
 {
-  protected:
-    // L2 protocol-gate test access is physically gated to
-    // `PYLABHUB_BUILD_TESTS && !defined(NDEBUG)` (mirrors
-    // `role_host_core.hpp:581` `test_set_*` mutators).  Outside
-    // that build configuration the friend declaration + private
-    // setter on `RoleAPIBase` don't exist, the helper symbol is
-    // absent, the worker scenarios can't install a Presence to
-    // satisfy the §8.2 outer guard, so the tests skip cleanly
-    // instead of failing with link or runtime errors.
-    static void SkipIfNoTestAccess()
-    {
-#if !(defined(PYLABHUB_BUILD_TESTS) && !defined(NDEBUG))
-        GTEST_SKIP() << "Built without PYLABHUB_BUILD_TESTS+Debug — "
-                     << "RoleAPIBase protocol-gate test access is "
-                     << "compiled out (mirrors role_host_core.hpp:581 "
-                     << "test-mutator gating).";
-#endif
-    }
 };
+
+// L2 protocol-gate test access is physically gated to
+// `PYLABHUB_BUILD_TESTS && !defined(NDEBUG)` (mirrors
+// `role_host_core.hpp:581` `test_set_*` mutators).  Outside
+// that build configuration the friend declaration + private setter
+// on `RoleAPIBase` don't exist, the helper symbol is absent, the
+// worker scenarios can't install a Presence to satisfy the §8.2
+// outer guard, so the tests skip cleanly instead of failing with
+// link or runtime errors.
+//
+// 2026-07-04: converted from a static helper to a macro so
+// `GTEST_SKIP()` returns from the TEST_F, not from the helper.
+// Prior helper-based form left the TEST_F running past the SKIP
+// point into `SpawnWorker(...)`, which then died with "unknown
+// scenario" in Release builds (the scenarios are compiled out
+// alongside the test-mutators).  Only visible after the 2026-07-04
+// sodium_init fix let Release CI reach these tests.
+#if defined(PYLABHUB_BUILD_TESTS) && !defined(NDEBUG)
+#  define SKIP_IF_NO_TEST_ACCESS() ((void)0)
+#else
+#  define SKIP_IF_NO_TEST_ACCESS()                                                       \
+      GTEST_SKIP() << "Built without PYLABHUB_BUILD_TESTS+Debug — "                      \
+                   << "RoleAPIBase protocol-gate test access is compiled out (mirrors "  \
+                   << "role_host_core.hpp:581 test-mutator gating)."
+#endif
 
 TEST_F(RunDataLoopTest, ShutdownStopsLoop)
 {
-    SkipIfNoTestAccess();
+    SKIP_IF_NO_TEST_ACCESS();
     auto w = SpawnWorker("role_data_loop.shutdown_stops_loop", {});
     ExpectWorkerOk(w);
 }
 
 TEST_F(RunDataLoopTest, InvokeReturnsFalseStopsLoop)
 {
-    SkipIfNoTestAccess();
+    SKIP_IF_NO_TEST_ACCESS();
     auto w = SpawnWorker("role_data_loop.invoke_returns_false_stops_loop", {});
     ExpectWorkerOk(w);
 }
 
 TEST_F(RunDataLoopTest, MetricsIncrement)
 {
-    SkipIfNoTestAccess();
+    SKIP_IF_NO_TEST_ACCESS();
     auto w = SpawnWorker("role_data_loop.metrics_increment", {});
     ExpectWorkerOk(w);
 }
 
 TEST_F(RunDataLoopTest, NoDataSkipsDeadlineWait)
 {
-    SkipIfNoTestAccess();
+    SKIP_IF_NO_TEST_ACCESS();
     auto w = SpawnWorker("role_data_loop.no_data_skips_deadline_wait", {});
     ExpectWorkerOk(w);
 }
 
 TEST_F(RunDataLoopTest, OverrunDetected)
 {
-    SkipIfNoTestAccess();
+    SKIP_IF_NO_TEST_ACCESS();
     auto w = SpawnWorker("role_data_loop.overrun_detected", {});
     ExpectWorkerOk(w);
 }
