@@ -112,6 +112,33 @@ public:
     /// `add_identity_from_z85` / `pubkey()` / `with_seckey_z85`.
     void add_identity(std::string_view name, std::span<std::byte> packed_pub_sec);
 
+    /// Generate a fresh CURVE keypair in-memory and register it under
+    /// `name`.  Returns the Z85 pubkey; the seckey is accessible only
+    /// via `with_seckey(name, ...)`, per the HEP-CORE-0040 §5.2
+    /// use-not-export contract.
+    ///
+    /// The keypair lives for the KeyStore's lifetime (typically the
+    /// process lifetime).  No disk write anywhere; libsodium primitives
+    /// operate on mlocked LockedKey memory.
+    ///
+    /// **Naming.**  Callers pick their own names; storage enforces no
+    /// naming rules.  When the script crypto API lands (task #247),
+    /// script bindings will TRANSLATE script-provided names into
+    /// sandboxed storage names before calling this method (e.g.,
+    /// `"script." + role_uid + "." + user_name`).  Storage need not
+    /// know about the sandbox distinction; it just stores whatever
+    /// name the caller passes.
+    ///
+    /// Design record: `docs/tech_draft/DRAFT_keystore_ephemeral_and_
+    /// script_crypto_2026-07.md`; will promote to HEP-CORE-0043 (or
+    /// HEP-CORE-0040 amendment) once script bindings land.  First
+    /// consumer: broker observer identity per HEP-CORE-0041 §D1(d).
+    ///
+    /// Throws `std::runtime_error` if `name` already present, if
+    /// libzmq CSPRNG init fails, or if `sodium_malloc` fails.
+    [[nodiscard]] std::string
+    generate_and_add_identity(std::string_view name);
+
     /// Convenience: insert an identity keypair given the two Z85
     /// halves separately.  Internally Z85-decodes both halves into a
     /// `SecureBuffer<64>` (zero-on-destruct) of raw bytes and

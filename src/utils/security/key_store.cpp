@@ -9,6 +9,7 @@
  * materializes as a std::string outside the LockedKey region.
  */
 #include "utils/security/key_store.hpp"
+#include "utils/security/curve_keypair.hpp"  // generate_curve_keypair — #317 D1
 
 #include "utils/lifecycle.hpp"
 #include "utils/logger.hpp"
@@ -393,6 +394,43 @@ void KeyStore::add_identity_from_z85(std::string_view name,
             "KeyStore::add_identity_from_z85: zmq_z85_decode(sec) failed");
     }
     add_identity(name, buf);
+}
+
+std::string KeyStore::generate_and_add_identity(std::string_view name)
+{
+    // #317 D1 — ephemeral in-memory keypair, no disk.
+    //
+    // Delegates to the existing paths:
+    //   1. `generate_curve_keypair()` calls libzmq's `zmq_curve_keypair`
+    //      into a `CurveKeypair { public_z85, secret_z85 }` value.
+    //      Cost: ~100 μs.
+    //   2. `add_identity_from_z85` runs the canonical Z85→raw decode
+    //      into a `SecureBuffer<64>` and calls `add_identity`, which
+    //      installs the LockedKey and zeros the source buffer.
+    //
+    // Exposure note (HEP-CORE-0040 §175 accepted trade-off): the
+    // secret_z85 std::string returned by generate_curve_keypair lives
+    // briefly on the stack in unlocked heap-adjacent memory before
+    // add_identity_from_z85 decodes it into a sodium_malloc region.
+    // Same window as the vault-load path.  We `sodium_memzero` the
+    // string's data before returning to reduce the residency window
+    // to the minimum a normal std::string permits (best-effort — the
+    // std::string may already have been copied by the return-value
+    // path).
+    auto kp = pylabhub::utils::security::generate_curve_keypair();
+    try
+    {
+        add_identity_from_z85(name, kp.public_z85, kp.secret_z85);
+    }
+    catch (...)
+    {
+        // Wipe both halves before propagating.
+        sodium_memzero(kp.secret_z85.data(), kp.secret_z85.size());
+        sodium_memzero(kp.public_z85.data(), kp.public_z85.size());
+        throw;
+    }
+    sodium_memzero(kp.secret_z85.data(), kp.secret_z85.size());
+    return kp.public_z85;
 }
 
 void KeyStore::add_raw(std::string_view name, std::span<std::byte> plaintext)
