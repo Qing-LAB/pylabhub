@@ -32,8 +32,13 @@ Full triage narrative + design self-review R1-R8:
 
 ### 0.2 What this HEP covers
 
-- **§1 Design principles** — five load-bearing principles the
-  security subsystem enforces.
+- **§1 The contract** — three load-bearing statements plus three
+  supporting principles.  §1.1-§1.3 are the headline: **Nature**
+  (what the module IS), the **init flag/gate** (how sodium_init
+  is enforced), and the **singularity model** (exactly one
+  instance per process, five enforcement mechanisms).  §1.4-§1.6
+  are supporting: use-not-export, rotation & lifetime, cross-
+  platform layering.
 - **§2 Module surface** — the C++ class shape (`SecureSubsystem`),
   lifecycle registration, cross-platform layering.  This section
   is the SEC-Fold-2 refactor spec.
@@ -71,71 +76,153 @@ Full triage narrative + design self-review R1-R8:
 
 ---
 
-## 1. Design principles
+## 1. The contract
 
-Five principles.  Every implementation contradicting them is wrong;
-every design discussion re-litigating them is wasted.
+The three load-bearing statements about `SecureSubsystem`.  Every
+subsequent section — the API sketch (§2), primitives (§3-§7),
+protocols (§9) — is downstream of these three.
 
-### 1.1 Single-module ownership of libsodium
+### 1.1 Nature — what SecureSubsystem IS
 
-**One module owns every `#include <sodium.h>` in production code.**
-Nothing else in the codebase includes sodium headers or calls
-sodium primitives directly.  The module — `SecureSubsystem` —
-exposes typed wrappers for every primitive the codebase needs
-(§3-§7).
+**`SecureSubsystem` is the one C++ subsystem in the codebase that
+owns and mediates every access to libsodium.**  It is:
 
-Consequences:
-- **The sodium_init gate becomes structural** (compile-time,
-  unreachable without going through the module) instead of runtime-
-  checkable-but-easy-to-miss.
-- **libsodium version knowledge concentrates** in one file.
-- **Testing has one mock target**, not nine.
-- **When Windows / macOS SHM backends land**, sodium interactions
-  concentrate in one file.
+- **The libsodium boundary.**  Only file that `#include <sodium.h>`
+  in production code.  Every raw sodium primitive
+  (`sodium_malloc`, `sodium_memzero`, `randombytes_buf`,
+  `crypto_box_*`, `crypto_secretbox_*`, `crypto_pwhash`,
+  `crypto_generichash`, `sodium_memcmp`, ...) is exposed through a
+  typed C++ wrapper method on this module.
+- **The keystore.**  Owns the `KeyStore` submodule that holds
+  every long-term identity keypair and every ephemeral runtime
+  key in mlocked memory (via `sodium_malloc`).  Enforces the
+  use-not-export contract (§1.4).
+- **The platform hardening layer.**  Disables core dumps,
+  configures RLIMIT_MEMLOCK, sets PR_SET_DUMPABLE on Linux,
+  excludes the binary from Windows Error Reporting.
+- **The single lifecycle-registered security module.**  Registers
+  itself as `"SecureSubsystem"` with the LifecycleManager,
+  depends on Logger.  No other security-related lifecycle module
+  exists (KeyStore is a member, not a peer).
 
-Enforcement mechanism: the C++ refactor (SEC-Fold-2) rewrites every
-existing sodium call to go through `SecureSubsystem`.  After that
-refactor, `#include <sodium.h>` outside `src/utils/security/` is
-grounds for CI failure (enforced by a follow-up lint rule).
+What it is NOT:
+- Not a wire protocol implementation — AttachProtocol, ZapRouter,
+  vault_crypto, hub_vault continue to exist as their own layers.
+  They USE `secure().*` for the crypto steps; they own their own
+  framing/state/file-format logic.
+- Not a script binding surface — language bindings (Python, Lua,
+  Native) live in the script layer; they call `secure().*` for
+  crypto but own their own name-translation sandboxing (§10).
+- Not a federation trust layer — HEP-CORE-0035 owns hub-role
+  federation trust, cross-references `secure().*` for crypto.
 
-### 1.2 Use-not-export for secret bytes
+### 1.2 The init flag/gate
 
-**Secret bytes never leave the KeyStore's mlocked memory region as
-data.**  Consumers pass a KeyStore entry NAME and a use-callback;
-the callback runs against a `span<const std::byte>` view whose
+**libsodium requires `sodium_init()` to have completed successfully
+before any other libsodium function is called.**  `SecureSubsystem`
+owns this init exclusively and gates all consumer access to
+libsodium behind it.
+
+Mechanism, three layers deep:
+
+1. **Init happens exactly once, in the constructor.**  `SecureSubsystem::SecureSubsystem()` calls `::sodium_init()`
+   as its first step.  A successful return (>= 0) sets
+   `pImpl->sodium_initialized = true`.  Failure throws
+   `std::runtime_error` — the process cannot proceed.
+2. **The flag is exposed as a probe.**  Public methods
+   `SecureSubsystem::sodium_initialized() const noexcept` and the
+   free function `pylabhub::utils::security::sodium_ready()
+   noexcept` both return `true` iff the singleton exists AND its
+   init flag is true.  Non-throwing, safe to call from any
+   context including test fixtures and unrelated startup code.
+3. **The gate is enforced at every module entry point.**  Every
+   public method on `SecureSubsystem` that reaches libsodium
+   asserts `sodium_initialized()` before doing work.  Consumers
+   never touch libsodium directly, so they cannot bypass the
+   gate.
+4. **Compile-time enforcement.**  After SEC-Fold-2 lands,
+   `<sodium.h>` is included ONLY in `src/utils/security/*.cpp`.
+   Any file elsewhere that adds `#include <sodium.h>` is a CI
+   lint violation.  Reaching libsodium without going through
+   `SecureSubsystem` becomes structurally impossible.
+
+Consequence: the 2026-07-04 CI failure class (sodium primitives
+called before `sodium_init`) cannot recur.  Even in Debug/pre-
+refactor state, calling `secure().random_bytes(...)` before
+constructing `SecureSubsystem` throws a clear runtime error, not
+libsodium's inscrutable internal assertion.
+
+Historical: prior to 2026-07-04 the codebase had FIVE independent
+sodium_init call sites (`uuid_utils.cpp`, `crypto_utils.cpp`,
+`vault_crypto.cpp`, `attach_protocol.cpp`, `SecureMemorySubsystem`)
+plus two in tests.  None was authoritative.  A test worker that
+skipped all five paths hit an uninitialized libsodium and aborted
+with a guard-page pointer-arithmetic assertion.  Commit `9d0a7eb4`
+ripped every self-init out and centralized on the SMS constructor;
+this HEP formalizes that as the permanent contract.
+
+### 1.3 Singularity — exactly one instance per process
+
+**There is exactly one `SecureSubsystem` instance per OS process.**
+No process can have zero, no process can have two.
+
+Enforced by five mechanisms:
+
+1. **File-scope singleton pointer.**  `secure_memory_subsystem.cpp`
+   holds a `SecureSubsystem *g_sms` under `std::mutex g_sms_mu`.
+   Set by the constructor after the singleton claim; cleared by
+   the destructor.
+2. **Constructor throws on second construction.**  If
+   `g_sms != nullptr` at ctor entry, throws `std::logic_error`
+   with an explicit "already constructed" message.  The claim
+   check runs BEFORE any expensive init work, so the second-
+   construction attempt fails fast with no side effects.
+3. **Non-copyable, non-movable.**  Explicit `= delete` on copy
+   ctor, copy assign, move ctor, move assign.  There is one
+   object, no way to duplicate it.
+4. **Global accessor returns a reference to the same instance.**
+   `pylabhub::utils::security::secure()` returns
+   `SecureSubsystem &` — never a copy, never a new instance.
+   Throws `std::runtime_error` if called before construction.
+5. **Lifecycle manager registers exactly one module.**  The
+   constructor registers `"SecureSubsystem"` with LifecycleGuard;
+   the LifecycleManager itself rejects a second registration of
+   the same name.  This is the outermost belt-and-braces.
+
+Standard construction site: very early in `plh_role_main` /
+`plh_hub_main` — after the Logger module is up, before any
+`SecureSubsystem` consumer (vault open, keystore population,
+identity resolution).  Tests construct SMS via a `LifecycleGuard`
+inside `run_gtest_worker` with the `"SecureMemory"` module in the
+`Mods...` pack.
+
+Consequence: the codebase can rely on `secure()` always returning
+the same object; state (KeyStore contents, sodium_initialized
+flag) is process-global.  No coordination needed across
+subsystems that all touch security.
+
+### 1.4 Use-not-export for secret bytes
+
+**Secret bytes never leave `KeyStore`'s mlocked memory region as
+data.**  Consumers pass a `KeyStore` entry NAME and a use-callback;
+the callback runs against a `std::span<const std::byte>` view whose
 lifetime ends when the callback returns.  Bytes are never
 materialized into a `std::string` copy, a heap buffer, or any
 storage the module doesn't own.
 
-This principle was established in HEP-CORE-0040 §5.2 as the
-NORMATIVE contract for `KeyStore::with_seckey`.  It extends to
-`SecureSubsystem`'s asymmetric operations (§6): `box_seal_using`
-and `box_open_using` take a name, not a raw seckey.  The seckey
-is dereferenced INSIDE the module, encrypts INSIDE the module,
-never crosses the module boundary.
+Established as NORMATIVE in HEP-CORE-0040 §5.2 for
+`KeyStore::with_seckey`.  Extends to `SecureSubsystem`'s
+asymmetric operations (§6): `box_seal_using` and `box_open_using`
+take a name, not a raw seckey.  The seckey is dereferenced INSIDE
+the module, used INSIDE the module, never crosses the module
+boundary.
 
-Consequence for API design: no `SecureSubsystem` method takes a
-raw `std::span<const std::byte, 32>` seckey argument.  Ever.  If a
-future feature needs to encrypt with a caller-owned seckey, the
-seckey enters the module via `KeyStore::add_raw` first.
+API design consequence: no `SecureSubsystem` method takes a raw
+`std::span<const std::byte, 32>` seckey argument.  If a future
+feature needs to encrypt with a caller-owned seckey, the seckey
+enters the module via `KeyStore::add_raw` first.
 
-### 1.3 Init gate at module boundary (compile-time, not runtime)
-
-**The `SecureSubsystem` module gates every libsodium call at its
-public API boundary.**  Consumers cannot compile a call to sodium
-outside the module.
-
-This principle was VIOLATED prior to 2026-07-04 (multiple files
-called `sodium_init` themselves + called sodium primitives without
-any check).  Ripped out in commit `9d0a7eb4`; the module-boundary
-runtime gate is a stopgap.  The SEC-Fold-2 refactor makes it
-structural.
-
-Compile-time enforcement: after SEC-Fold-2, `<sodium.h>` is
-included ONLY in `src/utils/security/*.cpp`; violations are caught
-by CI lint.
-
-### 1.4 Rotation & lifetime
+### 1.5 Rotation & lifetime
 
 Two classes of keys with different lifetime semantics:
 
@@ -157,7 +244,7 @@ level; the distinction is who OWNS the naming: framework
 Broker observer keypair is the exemplar ephemeral key: HEP-0041
 §D1(d), shipped in task #317 D1 slice A (commit `d6f5d621`).
 
-### 1.5 Cross-platform layering
+### 1.6 Cross-platform layering
 
 Sodium primitives are available identically on Linux, FreeBSD,
 macOS, and Windows.  Sodium doesn't need per-OS abstraction; the
