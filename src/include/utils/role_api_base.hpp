@@ -427,6 +427,21 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     void set_shm_require_mutual_auth(bool v);
     bool shm_require_mutual_auth() const;
 
+    /// HEP-CORE-0041 §D1(d) broker observer pubkey (task #317).  Stashed
+    /// by producer's `apply_producer_reg_ack` from the
+    /// `broker_observer_pubkey_z85` field on REG_ACK.  The producer's
+    /// `AttachProtocolAcceptor` reads it (via an accessor callback set up
+    /// by the role host) to verify observer handshakes from the broker
+    /// — same crypto_box_open_easy pattern as the existing consumer path,
+    /// but with this pubkey as the trust anchor instead of a channel
+    /// allowlist entry.  Setter is safe to re-invoke on broker restart
+    /// (broker generates fresh observer keypair per startup); acceptor
+    /// picks up the new value on next handshake with no rewiring.
+    void set_broker_observer_pubkey_z85(std::string pubkey_z85);
+    /// Returns the currently-known broker observer pubkey (Z85, 40 chars),
+    /// or empty string if no REG_ACK has delivered one yet.
+    std::string broker_observer_pubkey_z85() const;
+
     /// **Reserved C++ extension point (as of 2026-05-20 — no callers in
     /// src/ or tests/).**  Full design in HEP-CORE-0019 §5.5; do not
     /// delete on dead-code sweeps — the consumer branches at

@@ -33,6 +33,7 @@
 #include <functional>
 #include <mutex>
 #include <optional>
+#include <shared_mutex>  // #317 D2 broker_observer_pubkey_mu
 #include <span>
 #include <stdexcept>
 #include <string_view>
@@ -321,6 +322,15 @@ struct RoleAPIBase::Impl
     /// Passed to `initiate_consumer_handshake(...,require_mutual_auth)`
     /// in the SHM-dial site of `apply_consumer_reg_ack`.
     bool shm_require_mutual_auth{false};
+    /// HEP-CORE-0041 §D1(d) broker observer pubkey (task #317).
+    /// Stashed by `apply_producer_reg_ack` from REG_ACK's
+    /// `broker_observer_pubkey_z85` field.  Under shared_mutex because
+    /// the setter runs on the BRC-poll thread (REG_ACK arrival) while
+    /// the reader (`AttachProtocolAcceptor` on the accept thread) may
+    /// need it concurrently.  Snapshotting a `std::string` under a
+    /// read lock is cheap; broker-restart rotations are rare.
+    mutable std::shared_mutex broker_observer_pubkey_mu;
+    std::string broker_observer_pubkey_z85_val;
     std::string uid;
     std::string name;
     std::string channel;
@@ -2281,6 +2291,21 @@ void RoleAPIBase::set_strict_abi_mismatch(bool v)     { pImpl->strict_abi_mismat
 bool RoleAPIBase::strict_abi_mismatch() const         { return pImpl->strict_abi_mismatch; }
 void RoleAPIBase::set_shm_require_mutual_auth(bool v) { pImpl->shm_require_mutual_auth = v; }
 bool RoleAPIBase::shm_require_mutual_auth() const     { return pImpl->shm_require_mutual_auth; }
+
+void RoleAPIBase::set_broker_observer_pubkey_z85(std::string pubkey_z85)
+{
+    // Exclusive lock for the write; setters run on the BRC poll thread
+    // during REG_ACK ingest (task #317 D1(d)).  Reads on the accept
+    // thread take a shared lock.
+    std::unique_lock<std::shared_mutex> wlk(pImpl->broker_observer_pubkey_mu);
+    pImpl->broker_observer_pubkey_z85_val = std::move(pubkey_z85);
+}
+
+std::string RoleAPIBase::broker_observer_pubkey_z85() const
+{
+    std::shared_lock<std::shared_mutex> rlk(pImpl->broker_observer_pubkey_mu);
+    return pImpl->broker_observer_pubkey_z85_val;
+}
 void RoleAPIBase::set_metrics_hook(std::function<void(nlohmann::json &)> hook)
 {
     pImpl->metrics_hook = std::move(hook);
@@ -2475,6 +2500,26 @@ RoleAPIBase::register_producer_channel(const nlohmann::json &opts, int timeout_m
                 "refusing Registered transition (task #327)",
                 pImpl->short_tag, opts.value("channel_name", "?"));
             registered = false;
+        }
+
+        // HEP-CORE-0041 §D1(d) — stash broker's observer pubkey (task
+        // #317).  Broker generates a fresh observer keypair at startup
+        // and echoes the pubkey here.  Producer's
+        // `AttachProtocolAcceptor` uses it as the trust anchor when
+        // verifying observer handshakes.  Safe to re-invoke on broker
+        // restart (idempotent setter takes an exclusive lock).  Empty
+        // string means the broker didn't publish one — the observer
+        // path stays "not yet implemented" and legacy behaviour holds.
+        const auto observer_pk =
+            result->value("broker_observer_pubkey_z85", std::string{});
+        if (!observer_pk.empty())
+        {
+            set_broker_observer_pubkey_z85(observer_pk);
+            LOGGER_INFO(
+                "[{}] event=BrokerObserverPubkeyReceived channel='{}' "
+                "pubkey_z85='{}'",
+                pImpl->short_tag, opts.value("channel_name", "?"),
+                observer_pk);
         }
     }
 
