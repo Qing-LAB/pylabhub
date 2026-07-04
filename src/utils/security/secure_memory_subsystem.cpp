@@ -7,6 +7,7 @@
  */
 #include "utils/security/secure_memory_subsystem.hpp"
 
+#include "utils/debug_info.hpp"
 #include "utils/lifecycle.hpp"
 #include "utils/logger.hpp"
 #include "utils/module_def.hpp"
@@ -17,9 +18,10 @@
 #  include <unistd.h>  // getpid — used in the SodiumInit event log line
 #endif
 
+#include <atomic>
 #include <cerrno>
+#include <cstdint>
 #include <cstring>
-#include <mutex>
 #include <stdexcept>
 #include <string>
 
@@ -39,17 +41,52 @@ namespace pylabhub::utils::security
 {
 
 // ============================================================================
-// File-scope singleton accessor state (HEP-CORE-0040 §4.6)
+// File-scope singleton state (HEP-CORE-0043 §1.2 + §1.3)
 // ============================================================================
+//
+// Three-state atomic lifecycle flag, same shape as Logger's
+// `g_logger_state` (logger.cpp:59) — the codebase's canonical pattern
+// for a static global module's init-visibility contract:
+//
+//   Uninitialized  → default; no ctor has run yet.
+//   InitCalled     → ctor entered, work in progress, not yet safe.
+//                    Any consumer that catches this state is looking
+//                    at a half-constructed subsystem — must not
+//                    proceed.
+//   Initialized    → ctor complete, all invariants hold, `g_sms`
+//                    published under release fence.  This is the ONLY
+//                    state where consumer API calls may proceed.
+//   ShuttingDown   → dtor entered, teardown in progress.
+//   Shutdown       → dtor complete.
+//
+// Idempotency: the CAS from Uninitialized→InitCalled in the ctor
+// guarantees exactly one initialization sequence per process.  Any
+// concurrent or subsequent construction attempt sees a non-
+// Uninitialized state and PANICs (HEP-CORE-0043 §1.3 singularity).
+//
+// Memory ordering: writes prior to the release store of Initialized
+// happen-before any consumer's acquire load of Initialized — so
+// `g_sms` (plain pointer, written before the release) is visible to
+// any thread that observes the Initialized state.  Matches Logger's
+// acquire/release discipline.
+
+enum class SmsState : std::uint8_t
+{
+    Uninitialized,
+    InitCalled,
+    Initialized,
+    ShuttingDown,
+    Shutdown
+};
 
 namespace
 {
-std::mutex             g_sms_mu;
-SecureMemorySubsystem *g_sms = nullptr;
+std::atomic<SmsState>  g_sms_state{SmsState::Uninitialized};
+SecureMemorySubsystem *g_sms = nullptr;  // Published under Initialized release fence.
 
 // Module name registered with LifecycleManager.  Singleton — no
 // scope/uid suffix because exactly one SecureMemorySubsystem exists
-// per OS process (HEP-CORE-0040 §4.1).
+// per OS process (HEP-CORE-0043 §1.3).
 constexpr const char *kModuleName = "SecureMemory";
 
 // RLIMIT_MEMLOCK threshold below which we WARN.  256 KiB chosen so a
@@ -66,10 +103,12 @@ constexpr unsigned long kMemlockWarnThresholdBytes = 256UL * 1024UL;
 struct SecureMemorySubsystem::Impl
 {
     bool lifecycle_registered = false;
-    /// True iff `sodium_init()` was called AND returned >= 0 during
-    /// this SMS's construction.  Gated by `sodium_ready()`; every
-    /// libsodium consumer MUST check.
-    bool sodium_initialized = false;
+    /// The rc returned by `sodium_init()`; 0 = first init, 1 = already
+    /// initialized (both success).  Kept for diagnostic use only —
+    /// the load-bearing "is init successful" flag is the global
+    /// `g_sms_state == Initialized` (HEP-CORE-0043 §1.2), NOT this
+    /// per-instance field.
+    int sodium_init_rc = -1;
 };
 
 // ============================================================================
@@ -79,13 +118,12 @@ struct SecureMemorySubsystem::Impl
 namespace
 {
 
-/// Validator runs from LifecycleManager's async shutdown thread.  We
-/// check the file-scope singleton pointer (the lifetime guarantee
-/// `secure_memory_subsystem()` provides) — userdata is unused.
+/// Validator runs from LifecycleManager's async shutdown thread.  Read
+/// the atomic state under acquire ordering; g_sms is safe to observe
+/// only while state == Initialized (release/acquire fence).
 bool sms_impl_validate(void * /*userdata*/, uint64_t /*key*/) noexcept
 {
-    std::lock_guard<std::mutex> lk(g_sms_mu);
-    return g_sms != nullptr;
+    return g_sms_state.load(std::memory_order_acquire) == SmsState::Initialized;
 }
 
 /// Startup thunk: no-op.  Real work runs in the SecureMemorySubsystem
@@ -106,9 +144,10 @@ void sms_shutdown(const char * /*arg*/, void * /*userdata*/)
 // Platform startup primitives (HEP-CORE-0040 §4.2)
 // ----------------------------------------------------------------------------
 
-/// Step 1: disable core dumps.  Throws std::runtime_error on fatal
-/// platform failure (POSIX setrlimit, Linux prctl, Windows SetErrorMode).
-void disable_core_dumps_or_throw()
+/// Step 3 platform hardening: disable core dumps.  PANICs on fatal
+/// platform failure — static global module contract, no recovery
+/// path (matches sodium_init failure discipline; HEP-CORE-0043 §1.2).
+void disable_core_dumps_or_panic()
 {
 #ifndef _WIN32
     // POSIX: setrlimit(RLIMIT_CORE, 0).  Forbids the kernel from
@@ -119,10 +158,10 @@ void disable_core_dumps_or_throw()
     if (::setrlimit(RLIMIT_CORE, &rl) != 0)
     {
         const int saved_errno = errno;
-        throw std::runtime_error(
-            "SecureMemorySubsystem: setrlimit(RLIMIT_CORE, 0) failed (errno="
-            + std::to_string(saved_errno) + ": "
-            + std::strerror(saved_errno) + ")");
+        PLH_PANIC(
+            "FATAL: SecureMemorySubsystem: setrlimit(RLIMIT_CORE, 0) failed "
+            "(errno={}: {}).  Aborting. (HEP-CORE-0043 §1.2)",
+            saved_errno, std::strerror(saved_errno));
     }
 
 #  ifdef __linux__
@@ -133,10 +172,10 @@ void disable_core_dumps_or_throw()
     if (::prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) != 0)
     {
         const int saved_errno = errno;
-        throw std::runtime_error(
-            "SecureMemorySubsystem: prctl(PR_SET_DUMPABLE, 0) failed (errno="
-            + std::to_string(saved_errno) + ": "
-            + std::strerror(saved_errno) + ")");
+        PLH_PANIC(
+            "FATAL: SecureMemorySubsystem: prctl(PR_SET_DUMPABLE, 0) failed "
+            "(errno={}: {}).  Aborting. (HEP-CORE-0043 §1.2)",
+            saved_errno, std::strerror(saved_errno));
     }
 #  endif // __linux__
 #else  // _WIN32
@@ -186,7 +225,35 @@ unsigned long inspect_memlock_capability() noexcept
 SecureMemorySubsystem::SecureMemorySubsystem()
     : pImpl(std::make_unique<Impl>())
 {
-    // Step 0: initialize libsodium (2026-07-04 CI-triaged fix).
+    // ── Step 1: singularity claim + mid-init marker ──────────────────
+    //
+    // CAS from Uninitialized → InitCalled.  Exactly one thread can
+    // succeed (HEP-CORE-0043 §1.3).  Any other observed state
+    // (InitCalled / Initialized / ShuttingDown / Shutdown) means
+    // either a concurrent ctor is running or the singleton was
+    // already constructed — both are broken-contract programmer
+    // errors, PANIC and abort.
+    //
+    // Happens FIRST so a second-construction attempt bails out
+    // immediately, before doing any expensive platform work.
+    {
+        SmsState expected = SmsState::Uninitialized;
+        if (!g_sms_state.compare_exchange_strong(
+                expected,
+                SmsState::InitCalled,
+                std::memory_order_acq_rel,
+                std::memory_order_acquire))
+        {
+            PLH_PANIC(
+                "FATAL: SecureMemorySubsystem ctor invoked while another "
+                "instance is present or in-flight (observed state={}). "
+                "Exactly one instance per process (HEP-CORE-0043 §1.3). "
+                "Aborting.",
+                static_cast<int>(expected));
+        }
+    }
+
+    // Step 2: initialize libsodium (2026-07-04 CI-triaged fix).
     //
     // Every subsequent libsodium call (KeyStore's `sodium_malloc`,
     // AttachProtocol's `crypto_box_*`, `sodium_memzero` etc.) requires
@@ -217,17 +284,24 @@ SecureMemorySubsystem::SecureMemorySubsystem()
         static_cast<int>(::getpid()));
     if (sodium_rc < 0)
     {
-        throw std::runtime_error(
-            "SecureMemorySubsystem: sodium_init() failed — libsodium "
-            "will not be usable.  Check CSPRNG availability "
-            "(/dev/urandom / getrandom); HEP-CORE-0040 §4.0.");
+        // Static-global-module contract failure: CSPRNG unavailable →
+        // process cannot proceed.  Same discipline as FileLock / Logger:
+        // PANIC, do not throw.  The g_sms_state remains at InitCalled
+        // for postmortem visibility.
+        PLH_PANIC(
+            "FATAL: SecureMemorySubsystem: sodium_init() returned {}. "
+            "CSPRNG unavailable (check /dev/urandom / getrandom on POSIX; "
+            "system entropy on Windows).  Aborting. (HEP-CORE-0043 §1.2)",
+            sodium_rc);
     }
-    pImpl->sodium_initialized = true;
+    pImpl->sodium_init_rc = sodium_rc;
 
-    // Step 1: disable core dumps.  Throws on fatal platform failure.
-    disable_core_dumps_or_throw();
+    // Step 3: disable core dumps.  PANICs on fatal platform failure
+    // (same discipline as sodium_init above — static global module
+    // contract failure).
+    disable_core_dumps_or_panic();
 
-    // Step 2: inspect mlock capability + WARN if low.
+    // Step 4: inspect mlock capability + WARN if low.
     const unsigned long memlock_limit = inspect_memlock_capability();
     if (memlock_limit > 0 && memlock_limit < kMemlockWarnThresholdBytes)
     {
@@ -247,21 +321,20 @@ SecureMemorySubsystem::SecureMemorySubsystem()
         "Rights Assignment.");
 #endif
 
-    // Step 3: claim singleton + register lifecycle module.
-    // Singleton claim happens BEFORE lifecycle registration so a second
-    // SecureMemorySubsystem ctor fails fast without polluting the
-    // LifecycleManager registry.
-    {
-        std::lock_guard<std::mutex> lk(g_sms_mu);
-        if (g_sms != nullptr)
-        {
-            throw std::logic_error(
-                "SecureMemorySubsystem: already constructed (HEP-CORE-0040 "
-                "§4.1 — exactly one instance per process)");
-        }
-        g_sms = this;
-    }
+    // Step 5: publish the instance pointer + transition to Initialized.
+    //
+    // Order matters: the plain write to `g_sms` happens BEFORE the
+    // release store on `g_sms_state`.  Any thread that observes
+    // Initialized via an acquire load will therefore see the
+    // published pointer (C++ memory model synchronizes-with edge).
+    //
+    // From this point on, consumers reading `sodium_ready()` /
+    // `secure()` are guaranteed a fully constructed subsystem.
+    g_sms = this;
+    g_sms_state.store(SmsState::Initialized, std::memory_order_release);
 
+    // Step 6: register lifecycle module (best-effort — ordering only,
+    // not required for the module to be usable).
     try
     {
         ModuleDef mod(kModuleName, pImpl.get(), sms_impl_validate);
@@ -296,15 +369,26 @@ SecureMemorySubsystem::SecureMemorySubsystem()
 
 SecureMemorySubsystem::~SecureMemorySubsystem()
 {
-    // Clear singleton pointer FIRST — any subsequent
-    // secure_memory_subsystem_ready() returns false.
+    // Step 1: publish the ShuttingDown transition FIRST.  Any concurrent
+    // consumer's acquire load of Initialized happens-before this
+    // release store; any subsequent load sees ShuttingDown and the
+    // gate (`sodium_ready()` → false) closes.  Callers can NO
+    // LONGER reach into g_sms after this point.
+    g_sms_state.store(SmsState::ShuttingDown, std::memory_order_release);
+
+    // Step 2: clear pointer — safe now that the gate is closed.
+    // If a stale caller races past the state check on an older core's
+    // cache, they'd see either the still-valid `this` (before dtor
+    // runs member deinit) or the nullptr.  Neither races with dtor
+    // internals because the state gate on the accessor already
+    // rejected them.
+    if (g_sms == this)
     {
-        std::lock_guard<std::mutex> lk(g_sms_mu);
-        if (g_sms == this)
-            g_sms = nullptr;
+        g_sms = nullptr;
     }
 
-    // Deregister lifecycle module (best-effort).
+    // Step 3: deregister lifecycle module (best-effort — dtors must
+    // not throw, so swallow lifecycle-layer exceptions).
     if (pImpl && pImpl->lifecycle_registered)
     {
         try
@@ -314,9 +398,12 @@ SecureMemorySubsystem::~SecureMemorySubsystem()
         }
         catch (...)
         {
-            // Dtors must not throw; lifecycle layer logs internally.
         }
     }
+
+    // Step 4: terminal state.  Any subsequent gate check sees Shutdown
+    // and PANICs (via the accessor / wrapper panic path).
+    g_sms_state.store(SmsState::Shutdown, std::memory_order_release);
 }
 
 // ============================================================================
@@ -325,36 +412,45 @@ SecureMemorySubsystem::~SecureMemorySubsystem()
 
 SecureMemorySubsystem &secure_memory_subsystem()
 {
-    std::lock_guard<std::mutex> lk(g_sms_mu);
-    if (g_sms == nullptr)
+    // Gate: only Initialized is a passable state.  Any other observed
+    // state (Uninitialized / InitCalled / ShuttingDown / Shutdown) is
+    // a broken-contract programmer error — PANIC, matches FileLock +
+    // Logger discipline (HEP-CORE-0043 §1.2).
+    const auto state = g_sms_state.load(std::memory_order_acquire);
+    if (state != SmsState::Initialized)
     {
-        throw std::runtime_error(
-            "secure_memory_subsystem(): SecureMemorySubsystem has not been "
-            "constructed (HEP-CORE-0040 §4.6).  Construct it in main() "
-            "BEFORE the first vault open / KeyStore construction.");
+        PLH_PANIC(
+            "FATAL: secure_memory_subsystem() called with SMS in state={} "
+            "(expected Initialized).  Construct SecureMemorySubsystem in "
+            "main() via LifecycleGuard BEFORE any consumer.  Aborting. "
+            "(HEP-CORE-0043 §1.2)",
+            static_cast<int>(state));
     }
     return *g_sms;
 }
 
 bool secure_memory_subsystem_ready() noexcept
 {
-    std::lock_guard<std::mutex> lk(g_sms_mu);
-    return g_sms != nullptr;
+    return g_sms_state.load(std::memory_order_acquire) == SmsState::Initialized;
 }
 
 bool SecureMemorySubsystem::sodium_initialized() const noexcept
 {
-    return pImpl != nullptr && pImpl->sodium_initialized;
+    // Global atomic is the source of truth; the per-instance rc is
+    // diagnostic-only.  This method matches Logger's
+    // `lifecycle_initialized()`: reads the atomic, no PANIC (probe).
+    return g_sms_state.load(std::memory_order_acquire) == SmsState::Initialized;
 }
 
 bool sodium_ready() noexcept
 {
-    std::lock_guard<std::mutex> lk(g_sms_mu);
-    return g_sms != nullptr && g_sms->sodium_initialized();
+    return g_sms_state.load(std::memory_order_acquire) == SmsState::Initialized;
 }
 
 SecureSubsystem &secure()
 {
+    // Delegates to the panic-gated accessor; a broken contract
+    // aborts here just as if the caller had used the long name.
     return secure_memory_subsystem();
 }
 
@@ -372,18 +468,19 @@ SecureSubsystem &secure()
 
 namespace
 {
-// Shared gate check used by every wrapper.  Aborts the process via
-// PLH_PANIC when the SecureMemorySubsystem hasn't been constructed
-// (or `sodium_init` failed).  Mirrors FileLock's `lifecycle_
-// initialized()` check + `PLH_PANIC` at each direct constructor.
+// Shared gate: passes only when g_sms_state == Initialized (acquire
+// load).  Any other state — Uninitialized, InitCalled (ctor in
+// flight), ShuttingDown, Shutdown — is a broken-contract programmer
+// error, PANIC.  Mirror of Logger's `logger_is_loggable`
+// (logger.cpp:62) adapted to SMS's three-state lifecycle.
 inline void panic_if_not_ready(const char *method_name)
 {
-    if (!sodium_ready())
+    const auto state = g_sms_state.load(std::memory_order_acquire);
+    if (state != SmsState::Initialized)
     {
-        PLH_PANIC("FATAL: SecureSubsystem::{}() called before "
-                  "SecureMemorySubsystem was constructed via "
-                  "LifecycleManager. Aborting. (HEP-CORE-0043 §1.2)",
-                  method_name);
+        PLH_PANIC("FATAL: SecureSubsystem::{}() called with SMS in state={} "
+                  "(expected Initialized).  Aborting. (HEP-CORE-0043 §1.2)",
+                  method_name, static_cast<int>(state));
     }
 }
 } // anonymous namespace
