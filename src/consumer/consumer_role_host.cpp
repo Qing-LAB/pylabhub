@@ -208,6 +208,8 @@ void ConsumerRoleHost::worker_main_()
     api_ref.set_checksum_policy(config_.checksum().policy);
     api_ref.set_stop_on_script_error(sc.stop_on_script_error);
     api_ref.set_strict_abi_mismatch(config_.startup().strict_abi_mismatch);
+    api_ref.set_shm_require_mutual_auth(
+        config_.startup().shm_require_mutual_auth);
     api_ref.set_engine(&engine_ref);
 
     // ── Step 2b: Setup infrastructure (inherited from RoleHostFrame) ─────────

@@ -316,6 +316,11 @@ struct RoleAPIBase::Impl
     /// sites emits `verdict='MAJOR_MISMATCH_REJECTED'` and returns
     /// true to signal the caller to refuse the Registered transition.
     bool strict_abi_mismatch{false};
+    /// HEP-CORE-0041 §D4.5 mutual-auth opt-in (task #262).  Set by
+    /// role host from `config.startup().shm_require_mutual_auth`.
+    /// Passed to `initiate_consumer_handshake(...,require_mutual_auth)`
+    /// in the SHM-dial site of `apply_consumer_reg_ack`.
+    bool shm_require_mutual_auth{false};
     std::string uid;
     std::string name;
     std::string channel;
@@ -1490,7 +1495,8 @@ bool RoleAPIBase::apply_consumer_reg_ack_shm_(
         {
             connected_fd_opt = sec::initiate_consumer_handshake(
                 shm_endpoint, auth, producer_pubkey_z85,
-                kDialAttemptPeriod);
+                kDialAttemptPeriod,
+                pImpl->shm_require_mutual_auth);
         }
         catch (const std::exception &e)
         {
@@ -2273,6 +2279,8 @@ void RoleAPIBase::set_engine(ScriptEngine *e)          { pImpl->engine = e; }
 void RoleAPIBase::set_stop_on_script_error(bool v)    { pImpl->stop_on_script_error = v; }
 void RoleAPIBase::set_strict_abi_mismatch(bool v)     { pImpl->strict_abi_mismatch = v; }
 bool RoleAPIBase::strict_abi_mismatch() const         { return pImpl->strict_abi_mismatch; }
+void RoleAPIBase::set_shm_require_mutual_auth(bool v) { pImpl->shm_require_mutual_auth = v; }
+bool RoleAPIBase::shm_require_mutual_auth() const     { return pImpl->shm_require_mutual_auth; }
 void RoleAPIBase::set_metrics_hook(std::function<void(nlohmann::json &)> hook)
 {
     pImpl->metrics_hook = std::move(hook);

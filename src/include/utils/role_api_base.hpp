@@ -419,6 +419,14 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     void set_strict_abi_mismatch(bool v);
     bool strict_abi_mismatch() const;
 
+    /// HEP-CORE-0041 §D4.5 mutual-auth opt-in (task #262).  When true,
+    /// the consumer's SHM attach handshake in `apply_consumer_reg_ack`
+    /// runs the 3-frame variant and requires the producer to prove
+    /// possession of `producer_pubkey_z85`.  Called once during setup
+    /// by the role host from `config.startup().shm_require_mutual_auth`.
+    void set_shm_require_mutual_auth(bool v);
+    bool shm_require_mutual_auth() const;
+
     /// **Reserved C++ extension point (as of 2026-05-20 — no callers in
     /// src/ or tests/).**  Full design in HEP-CORE-0019 §5.5; do not
     /// delete on dead-code sweeps — the consumer branches at

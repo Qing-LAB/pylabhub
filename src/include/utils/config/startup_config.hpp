@@ -29,6 +29,19 @@ struct StartupConfig
     /// return false) instead of just logging.  Default false — same
     /// behaviour as pre-#327 log-only mode.  Task #327.
     bool strict_abi_mismatch{false};
+
+    /// HEP-CORE-0041 §D4.5 mutual-auth requirement on the consumer's
+    /// SHM attach handshake.  When true, `initiate_consumer_handshake`
+    /// runs the 3-frame variant and requires the producer to prove
+    /// possession of the seckey matching the `producer_pubkey_z85`
+    /// broker delivered in `CONSUMER_REG_ACK.producers[i].zmq_pubkey`.
+    /// Producer-side impersonation (a squatter that opens the same
+    /// AF_UNIX endpoint after the real producer crashes) fails Frame 3
+    /// and the consumer refuses the attach with a
+    /// PRODUCER_NOT_AUTHENTICATED marker.  Default false — same
+    /// backwards-compat 2-frame handshake as pre-#262 role builds.
+    /// Task #262.
+    bool shm_require_mutual_auth{false};
 };
 
 /// Parse "startup.wait_for_roles" from a JSON config object.
@@ -48,7 +61,8 @@ inline StartupConfig parse_startup_config(const nlohmann::json &j, const char *t
     for (auto it = s.begin(); it != s.end(); ++it)
     {
         if (it.key() != "wait_for_roles" &&
-            it.key() != "strict_abi_mismatch")
+            it.key() != "strict_abi_mismatch" &&
+            it.key() != "shm_require_mutual_auth")
             throw std::runtime_error(
                 "startup: unknown config key 'startup." + it.key() + "'");
     }
@@ -61,6 +75,16 @@ inline StartupConfig parse_startup_config(const nlohmann::json &j, const char *t
             throw std::runtime_error(
                 "startup.strict_abi_mismatch: must be a boolean");
         sc.strict_abi_mismatch = s.at("strict_abi_mismatch").get<bool>();
+    }
+
+    // HEP-CORE-0041 §D4.5 mutual-auth opt-in (task #262, 2026-07-03).
+    if (s.contains("shm_require_mutual_auth"))
+    {
+        if (!s.at("shm_require_mutual_auth").is_boolean())
+            throw std::runtime_error(
+                "startup.shm_require_mutual_auth: must be a boolean");
+        sc.shm_require_mutual_auth =
+            s.at("shm_require_mutual_auth").get<bool>();
     }
 
     if (!s.contains("wait_for_roles") || !s.at("wait_for_roles").is_array())

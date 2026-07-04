@@ -92,4 +92,50 @@ TEST(StartupConfig, StrictAbiMismatch_CoexistsWithWaitForRoles)
     EXPECT_EQ(sc.wait_for_roles[0].uid, "prod.foo.uid00000001");
 }
 
+// ── task #262: shm_require_mutual_auth ────────────────────────────────────────
+
+TEST(StartupConfig, ShmRequireMutualAuth_DefaultFalse_WhenAbsent)
+{
+    const auto j = nlohmann::json::object();
+    const auto sc = parse_startup_config(j, "test");
+    EXPECT_FALSE(sc.shm_require_mutual_auth);
+}
+
+TEST(StartupConfig, ShmRequireMutualAuth_ExplicitTrue_PropagatesToStruct)
+{
+    const auto j = nlohmann::json::parse(R"({
+        "startup": {"shm_require_mutual_auth": true}
+    })");
+    const auto sc = parse_startup_config(j, "test");
+    EXPECT_TRUE(sc.shm_require_mutual_auth);
+}
+
+TEST(StartupConfig, ShmRequireMutualAuth_NonBoolean_Throws)
+{
+    const auto j = nlohmann::json::parse(R"({
+        "startup": {"shm_require_mutual_auth": "yes"}
+    })");
+    EXPECT_THROW(parse_startup_config(j, "test"), std::runtime_error);
+}
+
+TEST(StartupConfig, ShmRequireMutualAuth_CoexistsWithStrictAbiAndWaitForRoles)
+{
+    // All three `startup` keys populated: verify no "unknown key"
+    // error and each flag lands on the right struct field.
+    const auto j = nlohmann::json::parse(R"({
+        "startup": {
+            "strict_abi_mismatch": true,
+            "shm_require_mutual_auth": true,
+            "wait_for_roles": [
+                {"uid": "cons.foo.uid00000001", "timeout_ms": 3000}
+            ]
+        }
+    })");
+    const auto sc = parse_startup_config(j, "test");
+    EXPECT_TRUE(sc.strict_abi_mismatch);
+    EXPECT_TRUE(sc.shm_require_mutual_auth);
+    ASSERT_EQ(sc.wait_for_roles.size(), 1u);
+    EXPECT_EQ(sc.wait_for_roles[0].uid, "cons.foo.uid00000001");
+}
+
 } // anon
