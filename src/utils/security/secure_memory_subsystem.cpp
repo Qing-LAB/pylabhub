@@ -13,6 +13,10 @@
 
 #include <sodium.h>
 
+#ifndef _WIN32
+#  include <unistd.h>  // getpid — used in the SodiumInit event log line
+#endif
+
 #include <cerrno>
 #include <cstring>
 #include <mutex>
@@ -62,6 +66,10 @@ constexpr unsigned long kMemlockWarnThresholdBytes = 256UL * 1024UL;
 struct SecureMemorySubsystem::Impl
 {
     bool lifecycle_registered = false;
+    /// True iff `sodium_init()` was called AND returned >= 0 during
+    /// this SMS's construction.  Gated by `sodium_ready()`; every
+    /// libsodium consumer MUST check.
+    bool sodium_initialized = false;
 };
 
 // ============================================================================
@@ -200,13 +208,21 @@ SecureMemorySubsystem::SecureMemorySubsystem()
     //
     // Idempotent: `sodium_init()` returns 0 on first call, 1 if
     // already initialized (both non-error).  Only < 0 is fatal.
-    if (::sodium_init() < 0)
+    const int sodium_rc = ::sodium_init();
+    LOGGER_INFO(
+        "[SMS] event=SodiumInit rc={} libsodium_ver={}.{} pid={}",
+        sodium_rc,
+        ::sodium_library_version_major(),
+        ::sodium_library_version_minor(),
+        static_cast<int>(::getpid()));
+    if (sodium_rc < 0)
     {
         throw std::runtime_error(
             "SecureMemorySubsystem: sodium_init() failed — libsodium "
             "will not be usable.  Check CSPRNG availability "
             "(/dev/urandom / getrandom); HEP-CORE-0040 §4.0.");
     }
+    pImpl->sodium_initialized = true;
 
     // Step 1: disable core dumps.  Throws on fatal platform failure.
     disable_core_dumps_or_throw();
@@ -324,6 +340,17 @@ bool secure_memory_subsystem_ready() noexcept
 {
     std::lock_guard<std::mutex> lk(g_sms_mu);
     return g_sms != nullptr;
+}
+
+bool SecureMemorySubsystem::sodium_initialized() const noexcept
+{
+    return pImpl != nullptr && pImpl->sodium_initialized;
+}
+
+bool sodium_ready() noexcept
+{
+    std::lock_guard<std::mutex> lk(g_sms_mu);
+    return g_sms != nullptr && g_sms->sodium_initialized();
 }
 
 } // namespace pylabhub::utils::security

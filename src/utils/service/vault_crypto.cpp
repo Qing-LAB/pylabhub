@@ -212,10 +212,13 @@ std::vector<uint8_t> read_file(const fs::path &path)
 
 void vault_require_sodium()
 {
-    if (sodium_init() == -1)
-    {
-        throw std::runtime_error("vault: sodium_init() failed");
-    }
+    // No-op.  sodium_init is SecureMemorySubsystem's job
+    // (HEP-CORE-0040 §4.0).  Self-init call removed 2026-07-04.  This
+    // function is kept as a stable API name; the gate lives inside
+    // KeyStore's public entry points.  Callers who reach vault ops
+    // without SMS being up hit `randombytes_buf` UB — but that's not
+    // this shim's problem.  Delete this function in a follow-up
+    // once every caller has been audited.
 }
 
 std::array<uint8_t, kVaultKeyBytes> vault_derive_key(const std::string &password,

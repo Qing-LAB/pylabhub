@@ -66,6 +66,11 @@ public:
     /// `pylabhub::utils::ThreadManager::Impl` (HEP-CORE-0031).
     struct Impl;
 
+    /// Non-throwing accessor — returns true iff `sodium_init()` was
+    /// called and returned >= 0 during this SMS's construction.  Used
+    /// by the free-function `sodium_ready()` probe.
+    [[nodiscard]] bool sodium_initialized() const noexcept;
+
 private:
     std::unique_ptr<Impl> pImpl;
 };
@@ -81,5 +86,15 @@ secure_memory_subsystem();
 /// to fail fast on ordering violations without exception machinery.
 [[nodiscard]] PYLABHUB_UTILS_EXPORT bool
 secure_memory_subsystem_ready() noexcept;
+
+/// Non-throwing probe — true iff SMS is constructed AND `sodium_init()`
+/// has completed successfully.  This is the gate every consumer of
+/// libsodium (`KeyStore`, `AttachProtocol`, `vault_crypto`, `uuid_utils`,
+/// ...) MUST check before calling any libsodium function.  No consumer
+/// may call `sodium_init()` on its own — it's the SMS module's job,
+/// and only its job.  If this returns false, libsodium calls have
+/// undefined behavior; throw a clear runtime_error or PANIC.
+[[nodiscard]] PYLABHUB_UTILS_EXPORT bool
+sodium_ready() noexcept;
 
 } // namespace pylabhub::utils::security

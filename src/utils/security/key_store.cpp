@@ -54,6 +54,11 @@ public:
         : buf_(static_cast<std::byte *>(::sodium_malloc(plaintext_src.size_bytes()))),
           len_(plaintext_src.size_bytes())
     {
+        // Debug — first sodium_malloc site.  Shows exactly what happens
+        // when the failing CI test hits the allocator.
+        LOGGER_INFO(
+            "[LockedKey] event=SodiumMalloc size={} buf_null={}",
+            len_, buf_ == nullptr);
         if (buf_ == nullptr)
         {
             throw std::runtime_error(
@@ -311,6 +316,15 @@ KeyStore::~KeyStore()
 
 void KeyStore::add_identity(std::string_view name, std::span<std::byte> packed_pub_sec)
 {
+    // Module-boundary gate — see add_raw for the reasoning.
+    if (!pylabhub::utils::security::sodium_ready())
+    {
+        throw std::runtime_error(
+            "KeyStore::add_identity: SecureMemorySubsystem must be "
+            "constructed before KeyStore is used (HEP-CORE-0040 §4.5).");
+    }
+    LOGGER_INFO("[KeyStore] event=AddIdentity name='{}' size={}",
+                std::string(name), packed_pub_sec.size_bytes());
     // HEP-CORE-0040 §8.5.2 (#291 follow-up, 2026-06-26) — the packed
     // buffer is now RAW 64 bytes (pub_raw[32] || sec_raw[32]), not
     // Z85 80 bytes.  Pre-#291 callers that packed Z85 must go through
@@ -435,6 +449,17 @@ std::string KeyStore::generate_and_add_identity(std::string_view name)
 
 void KeyStore::add_raw(std::string_view name, std::span<std::byte> plaintext)
 {
+    // Module-boundary gate.  KeyStore uses libsodium; libsodium requires
+    // sodium_init; sodium_init is SecureMemorySubsystem's job.  Callers
+    // don't check — the module checks itself.
+    if (!pylabhub::utils::security::sodium_ready())
+    {
+        throw std::runtime_error(
+            "KeyStore::add_raw: SecureMemorySubsystem must be constructed "
+            "before KeyStore is used (HEP-CORE-0040 §4.5).");
+    }
+    LOGGER_INFO("[KeyStore] event=AddRaw name='{}' size={}",
+                std::string(name), plaintext.size());
     std::string name_key(name);
 
     std::unique_lock<std::shared_mutex> wlk(pImpl->mu);

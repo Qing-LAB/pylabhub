@@ -12,58 +12,8 @@
 
 namespace pylabhub::crypto
 {
-
-// ============================================================================
-// Libsodium Initialization (Internal)
-// ============================================================================
-
-namespace
-{
-/**
- * @brief Internal flag to track libsodium initialization status.
- * @details Libsodium's sodium_init() is idempotent and thread-safe,
- *          but we track this for logging purposes.
- */
-std::atomic<bool> g_sodium_initialized{false};
-
-/**
- * @brief Ensures libsodium is initialized, calling sodium_init() if needed.
- * @return True if libsodium is initialized, false on catastrophic failure.
- */
-bool ensure_sodium_init() noexcept
-{
-    // Fast path: already initialized
-    if (g_sodium_initialized.load(std::memory_order_acquire))
-    {
-        return true;
-    }
-
-    // Slow path: initialize libsodium
-    // sodium_init() is thread-safe and idempotent
-    int result = sodium_init();
-
-    if (result == -1)
-    {
-        // Catastrophic failure (should never happen)
-        LOGGER_ERROR("[CryptoUtils] FATAL: sodium_init() failed!");
-        return false;
-    }
-
-    // result == 0: first initialization
-    // result == 1: already initialized by another thread
-    bool first_init = (result == 0);
-
-    g_sodium_initialized.store(true, std::memory_order_release);
-
-    if (first_init)
-    {
-        LOGGER_INFO("[CryptoUtils] libsodium initialized successfully");
-    }
-
-    return true;
-}
-
-} // anonymous namespace
+// sodium_init is SecureMemorySubsystem's job (HEP-CORE-0040 §4.0).
+// Previous self-init + per-call gate removed 2026-07-04.
 
 // ============================================================================
 // BLAKE2b Hashing Implementation
@@ -71,11 +21,6 @@ bool ensure_sodium_init() noexcept
 
 bool compute_blake2b(uint8_t *out, const void *data, size_t len) noexcept
 {
-    if (!ensure_sodium_init())
-    {
-        return false;
-    }
-
     if (out == nullptr || data == nullptr)
     {
         LOGGER_ERROR("[CryptoUtils] compute_blake2b: null pointer argument");
@@ -115,11 +60,6 @@ std::array<uint8_t, BLAKE2B_HASH_BYTES> compute_blake2b_array(const void *data, 
 
 bool verify_blake2b(const uint8_t *stored, const void *data, size_t len) noexcept
 {
-    if (!ensure_sodium_init())
-    {
-        return false;
-    }
-
     if (stored == nullptr || data == nullptr)
     {
         LOGGER_ERROR("[CryptoUtils] verify_blake2b: null pointer argument");
@@ -158,16 +98,8 @@ void generate_random_bytes(uint8_t *out, size_t len) noexcept
         return;
     }
 
-    if (!ensure_sodium_init())
-    {
-        // This should never happen, but fill with zeros for safety
-        LOGGER_ERROR(
-            "[CryptoUtils] FATAL: Cannot generate random bytes, libsodium not initialized!");
-        std::memset(out, 0, len);
-        return;
-    }
-
-    // libsodium's randombytes_buf never fails (will abort on catastrophic RNG failure)
+    // libsodium's randombytes_buf never fails (will abort on catastrophic RNG failure).
+    // sodium_init is SecureMemorySubsystem's job; caller must have SMS up.
     randombytes_buf(out, len);
 }
 
@@ -206,14 +138,7 @@ void crypto_startup(const char *arg, void * /*userdata*/)
     (void)arg; // Unused
 
     LOGGER_DEBUG("[CryptoUtils] Module starting up...");
-
-    if (!ensure_sodium_init())
-    {
-        LOGGER_ERROR("[CryptoUtils] FATAL: Failed to initialize libsodium!");
-        // This is catastrophic - the application cannot continue
-        std::abort();
-    }
-
+    // sodium_init is SecureMemorySubsystem's job (HEP-CORE-0040 §4.0).
     LOGGER_INFO("[CryptoUtils] Module initialized successfully");
 }
 
@@ -229,7 +154,7 @@ void crypto_shutdown(const char *arg, void * /*userdata*/)
     LOGGER_DEBUG("[CryptoUtils] Module shutting down...");
     // Libsodium does not require explicit cleanup, and sodium_init() is irrevocable —
     // resetting g_sodium_initialized to false would be misleading (and could race with
-    // concurrent ensure_sodium_init() calls post-shutdown). Leave it as true.
+    // concurrent ensure_sodium_ready() calls post-shutdown). Leave it as true.
     LOGGER_INFO("[CryptoUtils] Module shutdown complete");
 }
 

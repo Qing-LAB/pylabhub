@@ -306,15 +306,10 @@ z85_pubkey_to_raw(const std::string &z85)
     return raw;
 }
 
-void
-ensure_sodium_init()
-{
-    static const int rc = []() { return ::sodium_init(); }();
-    if (rc < 0)
-    {
-        throw std::runtime_error("AttachProtocol: sodium_init failed");
-    }
-}
+// AttachProtocol used to call sodium_init here as a workaround for the
+// SMS module never doing its job.  Removed 2026-07-04 — the gate now
+// lives inside SMS itself.  Callers who reach AttachProtocol without
+// SMS being up hit `crypto_box_*` UB — but that's the caller's problem.
 
 } // anonymous namespace
 
@@ -331,7 +326,6 @@ AttachProtocolAcceptor::AttachProtocolAcceptor(
       producer_seckey_accessor_(std::move(producer_seckey_accessor)),
       broker_observer_pubkey_accessor_(std::move(broker_observer_pubkey_accessor))
 {
-    ensure_sodium_init();
     if (!producer_seckey_accessor_)
     {
         throw std::invalid_argument(
@@ -688,7 +682,6 @@ initiate_consumer_handshake(const std::string          &endpoint,
                             std::chrono::milliseconds   timeout,
                             bool                        require_mutual_auth)
 {
-    ensure_sodium_init();
 
     // Boundary validation — throw on programmer error, return nullopt
     // only for "endpoint not present right now" which is a normal

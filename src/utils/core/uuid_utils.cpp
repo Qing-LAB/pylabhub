@@ -15,17 +15,11 @@ namespace pylabhub::utils
 
 std::string generate_uuid4()
 {
-    // sodium_init() is idempotent and thread-safe; returns 0 (first call),
-    // 1 (already initialised), or -1 (catastrophic failure — rare; randombytes_buf
-    // still works on Linux via getrandom but behaviour on other platforms is
-    // undefined). Capture the result so warn_unused_result is satisfied.
-    const int sodium_rc = sodium_init();
-    if (sodium_rc == -1)
-    {
-        PLH_PANIC("sodium_init() returned -1 — libsodium CSPRNG initialization failed. "
-                  "UUID generation and cryptographic operations are unsafe. Aborting.");
-    }
-
+    // sodium_init is SecureMemorySubsystem's job (HEP-CORE-0040 §4.0).
+    // Self-init call removed 2026-07-04.  If sodium isn't ready,
+    // `randombytes_buf` below has undefined behaviour — but that's
+    // the caller's problem (they must construct SMS first).  The gate
+    // lives at the SMS module boundary, not here.
     uint8_t bytes[16];
     randombytes_buf(bytes, sizeof(bytes));
 

@@ -84,8 +84,8 @@ struct TestKeypair
 TestKeypair
 make_test_keypair()
 {
-    if (::sodium_init() < 0)
-        throw std::runtime_error("make_test_keypair: sodium_init failed");
+    // No self-init: sodium_init is SecureMemorySubsystem's job.
+    // Test fixture must construct SMS before reaching here.
     TestKeypair kp;
     ::crypto_box_keypair(kp.pub_raw.data(), kp.sec_raw.data());
     char z85[41] = {};
