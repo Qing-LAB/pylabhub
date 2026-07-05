@@ -2,12 +2,9 @@
  * @file test_hub_vault.cpp
  * @brief Unit tests for HubVault: create, open, publish_public_key.
  *
- * Post-SEC-Fold-2 (HEP-CORE-0043): sodium calls in this file's
- * dependency chain (uuid_utils::generate_uuid4 via `secure().random_
- * bytes(...)`) require SecureMemorySubsystem to be constructed at
- * binary startup — via `PLH_BINARY_LIFECYCLE_MODULES` + a lifecycle
- * environment that constructs SMS.  Mirror of the production
- * bringup shape in `plh_hub_main`.
+ * HubVault has no lifecycle dependency — sodium_init() is called internally,
+ * and the only external state is the filesystem. Tests run in-process with
+ * gtest_main; each test gets an isolated temp directory.
  *
  * Note: Argon2id with OPSLIMIT_INTERACTIVE runs in ~0.5 s per call on reference
  * hardware. Each test that invokes create() or open() will therefore take ~0.5–1 s.
@@ -15,37 +12,10 @@
  */
 #include "plh_platform.hpp"
 #include "utils/hub_vault.hpp"
-#include "utils/logger.hpp"
 #include "utils/security/key_file_acl.hpp"
-#include "utils/security/secure_memory_subsystem.hpp"
 #include "utils/uuid_utils.hpp"
 
-#include "binary_lifecycle.h"
-
 #include <gtest/gtest.h>
-
-// Binary lifecycle setup — see comment at file top.
-PLH_BINARY_LIFECYCLE_MODULES(
-    pylabhub::utils::Logger::GetLifecycleModule()
-)
-
-namespace
-{
-class SecureSubsystemBinaryEnvironment : public ::testing::Environment
-{
-public:
-    void SetUp() override
-    {
-        namespace sec = pylabhub::utils::security;
-        if (!sec::secure_memory_subsystem_ready())
-        {
-            static sec::SecureMemorySubsystem sms;
-        }
-    }
-};
-const auto *const g_secure_env =
-    ::testing::AddGlobalTestEnvironment(new SecureSubsystemBinaryEnvironment);
-} // namespace
 
 #include <cctype>
 #include <filesystem>

@@ -5,44 +5,14 @@
  * Mirrors the HubVault test pattern. RoleVault is simpler (no admin_token,
  * no publish_public_key) — stores only public_key + secret_key + role_uid.
  *
- * Post-SEC-Fold-2 (HEP-CORE-0043): sodium calls in this file's
- * dependency chain (uuid_utils::generate_uuid4 via `secure().random_
- * bytes(...)`) require SecureMemorySubsystem to be constructed at
- * binary startup — matching production shape in `plh_role_main`.
- * Argon2id KDF takes ~0.5s per call; timeout set to 120s.
+ * Pure API test — no lifecycle, no workers. Each test gets an isolated temp
+ * directory. Argon2id KDF takes ~0.5s per call; timeout set to 120s.
  */
 #include "utils/role_vault.hpp"
-#include "utils/logger.hpp"
 #include "utils/security/key_file_acl.hpp"
-#include "utils/security/secure_memory_subsystem.hpp"
 #include "utils/uuid_utils.hpp"
 
-#include "binary_lifecycle.h"
-
 #include <gtest/gtest.h>
-
-// Binary lifecycle setup — see comment at file top.
-PLH_BINARY_LIFECYCLE_MODULES(
-    pylabhub::utils::Logger::GetLifecycleModule()
-)
-
-namespace
-{
-class SecureSubsystemBinaryEnvironment : public ::testing::Environment
-{
-public:
-    void SetUp() override
-    {
-        namespace sec = pylabhub::utils::security;
-        if (!sec::secure_memory_subsystem_ready())
-        {
-            static sec::SecureMemorySubsystem sms;
-        }
-    }
-};
-const auto *const g_secure_env =
-    ::testing::AddGlobalTestEnvironment(new SecureSubsystemBinaryEnvironment);
-} // namespace
 
 #include <cctype>
 #include <filesystem>

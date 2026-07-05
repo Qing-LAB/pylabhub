@@ -4,31 +4,24 @@
  */
 #include "utils/uuid_utils.hpp"
 #include "utils/debug_info.hpp"
-#include "utils/security/secure_memory_subsystem.hpp"
+
+#include <sodium.h>
 
 #include <cctype>
-#include <cstddef>
 #include <cstdint>
-#include <span>
 
 namespace pylabhub::utils
 {
 
 std::string generate_uuid4()
 {
-    // SEC-Fold-2 migration (HEP-CORE-0043 §2.1): every libsodium call
-    // in production code goes through the SecureSubsystem wrapper.
-    // No `<sodium.h>` include in this file.  `secure().random_bytes`
-    // PANICs at the module boundary if SMS isn't constructed
-    // (broken singularity+init contract; HEP-0043 §1.2) — no runtime
-    // "check + skip" branch here.
-    std::byte bytes_raw[16];
-    security::secure().random_bytes(
-        std::span<std::byte>{bytes_raw, sizeof(bytes_raw)});
-    // Retain uint8_t view for the RFC 4122 §4.4 bit-twiddling below.
-    // std::byte and uint8_t are trivially interconvertible per
-    // [basic.compound]; safe reinterpret_cast.
-    auto *bytes = reinterpret_cast<uint8_t *>(bytes_raw);
+    // sodium_init is SecureMemorySubsystem's job (HEP-CORE-0040 §4.0).
+    // Self-init call removed 2026-07-04.  If sodium isn't ready,
+    // `randombytes_buf` below has undefined behaviour — but that's
+    // the caller's problem (they must construct SMS first).  The gate
+    // lives at the SMS module boundary, not here.
+    uint8_t bytes[16];
+    randombytes_buf(bytes, sizeof(bytes));
 
     // RFC 4122 §4.4 — set version and variant nibbles.
     bytes[6] = static_cast<uint8_t>((bytes[6] & 0x0FU) | 0x40U);  // version = 4
