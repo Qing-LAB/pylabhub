@@ -10,44 +10,43 @@ see `docs/DOC_STRUCTURE.md` §2.1.1.
 
 ---
 
-## Resume point (2026-07-04, latest)
+## Resume point (2026-07-04, IN-SESSION latest)
+
+**Session-start reading order (mandatory):**
+1. `docs/tech_draft/DRAFT_sec_fold_2_resume_state_2026-07.md`
+   — current position, unpushed commits, attempts+reverts, next
+   action.
+2. `docs/tech_draft/DRAFT_sec_fold_2_plan_and_guidance_2026-07.md`
+   — authoritative plan; §1 naming discipline and §2 absolute
+   rules MUST be re-read before any code work.
+3. `docs/HEP/HEP-CORE-0043-Security-Subsystem.md` (§0-§2).
+4. `docs/README/README_testing.md` § "framework contract (absolute)".
+5. Memory files listed in resume-state §0.
 
 **Where we are:**
-- **Debug CI green** on `9d0a7eb4` (sodium fix worked).
-- **Release CI test bug** exposed AFTER sodium fix — `RunDataLoopTest`
-  cases skipped-but-not-early-returned in Release.  Fixed in
-  `441c376e` (GTEST_SKIP must fire in test scope, not helper scope).
-- **SEC-Fold-1 (HEP consolidation)** landed as HEP-CORE-0043
-  (`docs/HEP/HEP-CORE-0043-Security-Subsystem.md`) — §0-§2
-  architectural design authoritative, §3-§10 stubs with pointers to
-  old HEPs (0036, 0038, 0040, 0041) for full detail.  Old four
-  marked SUPERSEDED-STATUS-ONLY banner.  All 8 self-review items
-  (R1-R8) addressed in the new HEP.
+- SEC-Fold-1 (HEP consolidation) shipped.
+- SEC-Fold-2 foundation shipped (three-state atomic + PANIC gate
+  + `SecureSubsystem` alias + wrapper stubs + broker log-race fix).
+- SEC-Fold-2 Phase B attempted, reverted (`bf6ae2c6`) — test-side
+  scaffold pattern.
+- SEC-Fold-2 Phase C.0 attempted, reverted (`9e19fc89`) — same.
+- Root cause of both reverts + full plan captured in the two
+  transient docs above.  Follow the plan; do not re-attempt the
+  reverted approaches.
 
 **Next action on resume:**
-1. Confirm Release CI on `441c376e`.
-2. Start **SEC-Fold-2 (C++ module refactor)** against HEP-CORE-0043
-   §2.  Order per HEP §2.1 sketch:
-   (a) Rename `SecureMemorySubsystem` → `SecureSubsystem`; keep old
-       name as type alias for transition.
-   (b) Add wrapper methods on `SecureSubsystem` for random / hash /
-       KDF / AEAD / box (§2.1 public surface).
-   (c) Migrate consumers file by file: `uuid_utils.cpp`,
-       `crypto_utils.cpp`, `vault_crypto.cpp`, `hub_vault.cpp`,
-       `attach_protocol.cpp`.  Each file's raw sodium calls become
-       `secure().X(...)` calls.  Delete raw `<sodium.h>` includes
-       from each file after migration.
-   (d) `KeyStore` becomes a member of `SecureSubsystem`, accessed
-       via `secure().keys()`.  Old free-function `key_store()`
-       preserved as a shim during transition.
-   (e) 2319/2319 ctest after each file.
-3. **SEC-Fold-1b** (§3-§10 content migration from superseded HEPs
-   into HEP-CORE-0043) can proceed in parallel or after SEC-Fold-2.
-4. Then return to **#317 C.2.c onwards** — currently paused at
-   C.2.b (commit `ce956972`).  Rest of the chain (C.2.c
-   PeerDeathWatcher, C.2.d broker dial + fd cache, D5 opt-out,
-   C.3 metrics-source, C.4 L4 tests, C.5 HEP status sync) will
-   land against the NEW architecture (post-SEC-Fold-2).
+See resume-state doc §6.  Executive summary: Phase A — add
+`SecureSubsystem::GetLifecycleModule()` matching Logger /
+CryptoUtils / FileLock pattern.  SMS becomes a proper lifecycle
+module.  Delete stack-local `SMS sms;` usages in Phases B and C
+(one production main.cpp / one worker file at a time).
+
+**Downstream tasks paused:**
+- #317 C.2.c-C.5 (broker SHM observer) — resume after SEC-Fold-2
+  Phase E class-rename completes.
+- #262 SHM mutual auth L4 squatter test — orthogonal, can complete
+  anytime.
+- SEC-Fold-1b (HEP-0043 §3-§10 content migration) — Phase G.
 
 **In-flight, unfinished:**
 - #317 C.2 chain: C.2.a ✅ `029bbe31`, C.2.b ✅ `ce956972`, C.2.c-C.5
