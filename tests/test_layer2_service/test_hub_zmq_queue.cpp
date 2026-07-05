@@ -130,12 +130,14 @@ public:
     void SetUp() override
     {
         namespace sec = pylabhub::utils::security;
+        // SMS is brought up by the shared BinaryLifecycleEnvironment
+        // (see binary_lifecycle.h) — do NOT construct a second SMS
+        // here or the singleton-claim CAS PANICs (HEP-CORE-0043 §1.3).
+        // KeyStore is still per-binary because it has scope_tag +
+        // owner_id parameters that differ across binaries.
         if (!sec::key_store_ready())
         {
-            // Stash these as `static` so they outlive the SetUp call
-            // and survive for the binary's lifetime.
-            static sec::SecureMemorySubsystem sms;
-            static sec::KeyStore              ks{"l2", "test_layer2_zmq_queue"};
+            static sec::KeyStore ks{"l2", "test_layer2_zmq_queue"};
         }
         auto &ks = pylabhub::utils::security::key_store();
         if (!ks.has(pylabhub::utils::security::kRoleIdentityName))

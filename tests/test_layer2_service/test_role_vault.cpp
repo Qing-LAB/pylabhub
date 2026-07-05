@@ -14,35 +14,18 @@
 #include "utils/role_vault.hpp"
 #include "utils/logger.hpp"
 #include "utils/security/key_file_acl.hpp"
-#include "utils/security/secure_memory_subsystem.hpp"
 #include "utils/uuid_utils.hpp"
 
 #include "binary_lifecycle.h"
 
 #include <gtest/gtest.h>
 
-// Binary lifecycle setup — see comment at file top.
+// Binary lifecycle setup — brings up Logger + SecureMemorySubsystem
+// (per binary_lifecycle.h contract).  RoleVault + generate_uuid4 both
+// require SMS at the gate boundary (HEP-CORE-0043 §1.2).
 PLH_BINARY_LIFECYCLE_MODULES(
     pylabhub::utils::Logger::GetLifecycleModule()
 )
-
-namespace
-{
-class SecureSubsystemBinaryEnvironment : public ::testing::Environment
-{
-public:
-    void SetUp() override
-    {
-        namespace sec = pylabhub::utils::security;
-        if (!sec::secure_memory_subsystem_ready())
-        {
-            static sec::SecureMemorySubsystem sms;
-        }
-    }
-};
-const auto *const g_secure_env =
-    ::testing::AddGlobalTestEnvironment(new SecureSubsystemBinaryEnvironment);
-} // namespace
 
 #include <cctype>
 #include <filesystem>

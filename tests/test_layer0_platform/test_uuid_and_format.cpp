@@ -9,7 +9,6 @@
 #include "utils/uuid_utils.hpp"
 #include "utils/format_tools.hpp"
 #include "utils/logger.hpp"
-#include "utils/security/secure_memory_subsystem.hpp"
 
 #include "binary_lifecycle.h"
 
@@ -22,41 +21,12 @@ using namespace pylabhub::utils;
 using pylabhub::format_tools::bytes_from_hex;
 using pylabhub::format_tools::bytes_to_hex;
 
-// ============================================================================
-// Binary lifecycle setup (HEP-CORE-0043 §1 SEC-Fold-2)
-// ============================================================================
-//
-// generate_uuid4() now goes through `secure().random_bytes(...)` which
-// PANICs if SecureMemorySubsystem is not constructed (HEP-CORE-0043
-// §1.2 gate).  Match production shape (plh_hub_main /
-// plh_role_main): bring up Logger via LifecycleGuard + construct SMS
-// once, at binary startup, in a GTest environment.  Pattern mirror
-// of `test_hub_zmq_queue.cpp:103-140`.
+// generate_uuid4() calls secure().random_bytes(...) which PANICs
+// without SMS (HEP-CORE-0043 §1.2).  BinaryLifecycleEnvironment
+// constructs SMS after LifecycleGuard fires — see binary_lifecycle.h.
 PLH_BINARY_LIFECYCLE_MODULES(
     pylabhub::utils::Logger::GetLifecycleModule()
 )
-
-namespace
-{
-class SecureSubsystemBinaryEnvironment : public ::testing::Environment
-{
-public:
-    void SetUp() override
-    {
-        namespace sec = pylabhub::utils::security;
-        if (!sec::secure_memory_subsystem_ready())
-        {
-            // `static` so it outlives SetUp and lives for the full
-            // binary lifetime — same shape as SMS in `plh_hub_main()`.
-            // Sole instance per process; HEP-CORE-0043 §1.3
-            // singularity holds by construction.
-            static sec::SecureMemorySubsystem sms;
-        }
-    }
-};
-const auto *const g_secure_env =
-    ::testing::AddGlobalTestEnvironment(new SecureSubsystemBinaryEnvironment);
-} // namespace
 
 // ============================================================================
 // uuid_utils — generate_uuid4

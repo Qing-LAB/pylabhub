@@ -1,9 +1,24 @@
 #pragma once
 /**
  * @file binary_lifecycle.h
+ *
+ * ── TEST-ONLY HEADER ──────────────────────────────────────────────
+ *
+ * NOT part of the shipped pylabhub library.  Lives under
+ * `tests/test_framework/` and is exposed only via the
+ * `pylabhub::test_framework` INTERFACE target linked into test
+ * binaries.  Do NOT include from anything under `src/` — production
+ * code has no reason to touch a GTest environment.
+ *
+ * ──────────────────────────────────────────────────────────────────
+ *
  * @brief Binary-wide `LifecycleGuard` for in-process Pattern 1/2 tests
  *        whose subject reaches a lifecycle module (`Logger`, etc.) but
- *        has no inter-test interference.
+ *        has no inter-test interference.  Also constructs
+ *        `SecureMemorySubsystem` after the guard fires — every test
+ *        binary that uses this env gets SMS for free, matching the
+ *        production shape in `plh_hub_main` / `plh_role_main`
+ *        (SEC-Fold-2, HEP-CORE-0043).
  *
  * ─────────────────────────────────────────────────────────────────
  * Scope, vs. the other test-framework lifecycle mechanisms
@@ -81,6 +96,7 @@
  */
 
 #include "utils/lifecycle.hpp"
+#include "utils/security/secure_memory_subsystem.hpp"
 
 #include <gtest/gtest.h>
 
@@ -110,16 +126,38 @@ public:
         // SetUp exactly once per `RUN_ALL_TESTS`, so the move-out is
         // safe; mods_ is left empty after this.
         guard_.emplace(std::move(mods_), std::source_location::current());
+
+        // Construct SecureMemorySubsystem AFTER the LifecycleGuard so
+        // its dependencies (Logger, per HEP-CORE-0043 §2.3) are
+        // already up.  SMS registers ITSELF as a dynamic module in
+        // its ctor; nothing to add to the mods_ list.  Matches the
+        // production bringup order in plh_hub_main / plh_role_main.
+        //
+        // Idempotent: if a test binary already constructed SMS via a
+        // per-fixture path (e.g. legacy CurveKeyStoreFixture), skip.
+        // The gate check + PANIC-on-double-construct on SMS's ctor
+        // itself would fire otherwise; the readiness probe lets us
+        // preserve any older test's setup during migration.
+        namespace sec = pylabhub::utils::security;
+        if (!sec::secure_memory_subsystem_ready())
+        {
+            sms_.emplace();
+        }
     }
 
     void TearDown() override
     {
+        // Reverse-order teardown: SMS first (its dtor closes the
+        // module-lifecycle gate immediately per HEP-0043 §1.2), then
+        // guard (Logger goes away last, so SMS's dtor can still log).
+        sms_.reset();
         guard_.reset();
     }
 
 private:
     std::vector<pylabhub::utils::ModuleDef> mods_;
     std::optional<pylabhub::utils::LifecycleGuard> guard_;
+    std::optional<pylabhub::utils::security::SecureMemorySubsystem> sms_;
 };
 
 } // namespace pylabhub::tests
