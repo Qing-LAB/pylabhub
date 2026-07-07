@@ -241,6 +241,11 @@ pylabhub::utils::ModuleDef ZapRouter::make_module_def_()
     pylabhub::utils::ModuleDef def(kZapModuleName);
     def.add_dependency("pylabhub::utils::Logger");
     def.add_dependency("ZMQContext");
+    // NOTE: ZapRouter does NOT depend on SecureSubsystem.  ZAP handles
+    // ZMQ CURVE negotiation via libzmq's internal path; libzmq lazy-
+    // initializes libsodium on its own.  Adding a SecureSubsystem dep
+    // was tried on 2026-07-07 and reverted — it caused ZapRouterTest
+    // failures because those tests do not stand up SMS.
     def.set_startup(ZapRouter::lifecycle_startup_thunk);
     def.set_shutdown(ZapRouter::lifecycle_shutdown_thunk,
                      std::chrono::milliseconds(500));

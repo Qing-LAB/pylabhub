@@ -26,7 +26,6 @@ namespace pylabhub::tests::worker::handle_semantics
 {
 
 static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
-static auto crypto_module() { return ::pylabhub::crypto::GetLifecycleModule(); }
 static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
 
 /// #275-S2: `secret` param dropped — fd-source factory ignores it.
@@ -90,7 +89,7 @@ int move_producer_transfers_ownership()
             producer2.reset();
             cleanup_test_datablock(channel);
         },
-        "move_producer_transfers_ownership", logger_module(), crypto_module(), hub_module());
+        "move_producer_transfers_ownership", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -158,7 +157,7 @@ int move_consumer_transfers_ownership()
             consumer2.reset();
             cleanup_test_datablock(channel);
         },
-        "move_consumer_transfers_ownership", logger_module(), crypto_module(), hub_module());
+        "move_consumer_transfers_ownership", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -203,7 +202,7 @@ int default_constructed_handles_are_invalid()
             consumer.reset();
             cleanup_test_datablock(channel);
         },
-        "default_constructed_handles_are_invalid", logger_module(), crypto_module(), hub_module());
+        "default_constructed_handles_are_invalid", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 } // namespace pylabhub::tests::worker::handle_semantics

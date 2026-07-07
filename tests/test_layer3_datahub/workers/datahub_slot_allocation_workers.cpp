@@ -35,7 +35,6 @@ namespace pylabhub::tests::worker::slot_allocation
 {
 
 static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
-static auto crypto_module() { return ::pylabhub::crypto::GetLifecycleModule(); }
 static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
 
 static DataBlockConfig make_config(uint64_t secret, size_t logical_size, uint32_t capacity)
@@ -132,7 +131,7 @@ int varied_schema_sizes_allocation()
                 // FdBackedProducer dtor releases producer → transport.
             }
         },
-        "varied_schema_sizes_allocation", logger_module(), crypto_module(), hub_module());
+        "varied_schema_sizes_allocation", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -193,7 +192,7 @@ int ring_buffer_scaling()
                 // FdBackedProducer dtor releases producer → transport.
             }
         },
-        "ring_buffer_scaling", logger_module(), crypto_module(), hub_module());
+        "ring_buffer_scaling", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -282,7 +281,7 @@ int write_read_roundtrip_varied_sizes()
                 // FdBackedDataBlock dtor releases consumer → producer → transport.
             }
         },
-        "write_read_roundtrip_varied_sizes", logger_module(), crypto_module(),
+        "write_read_roundtrip_varied_sizes", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         hub_module());
 }
 

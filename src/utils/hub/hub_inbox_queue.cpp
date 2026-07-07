@@ -13,7 +13,6 @@
  *   DEALER receives ACK:    ["", ack_byte]  (ZMQ strips identity; app drains empty frame)
  */
 #include "utils/hub_inbox_queue.hpp"
-#include "utils/crypto_utils.hpp"
 #include "utils/logger.hpp"
 #include "utils/zmq_context.hpp"
 #include "zmq_wire_helpers.hpp"
@@ -164,7 +163,7 @@ static std::array<uint8_t, 8> compute_inbox_schema_tag(
     }
     canonical += "|pack:";
     canonical += packing;
-    auto full_hash = pylabhub::crypto::compute_blake2b_array(canonical.data(), canonical.size());
+    auto full_hash = pylabhub::utils::security::secure().compute_blake2b_array(canonical.data(), canonical.size());
     std::array<uint8_t, 8> tag{};
     std::memcpy(tag.data(), full_hash.data(), 8);
     return tag;
@@ -376,7 +375,7 @@ const InboxItem* InboxQueue::recv_one(std::chrono::milliseconds timeout) noexcep
         // Checksum verification.
         if (pImpl->checksum_policy_ != ChecksumPolicy::None)
         {
-            if (!pylabhub::crypto::verify_blake2b(
+            if (!pylabhub::utils::security::secure().verify_blake2b(
                     env.checksum, pImpl->decode_buf_.data(), pImpl->item_sz))
             {
                 pImpl->checksum_error_count_.fetch_add(1, std::memory_order_relaxed);
@@ -578,7 +577,7 @@ uint8_t InboxClient::send(std::chrono::milliseconds ack_timeout) noexcept
     uint8_t checksum[32]{};
     if (pImpl->checksum_policy_ == ChecksumPolicy::Enforced)
     {
-        pylabhub::crypto::compute_blake2b(
+        pylabhub::utils::security::secure().compute_blake2b(
             checksum, pImpl->write_buf_.data(), pImpl->item_sz);
     }
 

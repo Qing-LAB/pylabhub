@@ -4,7 +4,7 @@
  * @file recovery_workers.h
  * @brief Worker functions for recovery_api, integrity_validator, slot_diagnostics, slot_recovery, heartbeat_manager.
  *
- * These workers run with full lifecycle (CryptoUtils, MessageHub) and create
+ * These workers run with full lifecycle (SecureSubsystem, MessageHub) and create
  * DataBlocks to exercise the recovery and diagnostics APIs.
  */
 

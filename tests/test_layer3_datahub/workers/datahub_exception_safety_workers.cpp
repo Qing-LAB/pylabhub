@@ -36,7 +36,6 @@ namespace pylabhub::tests::worker::exception_safety
 {
 
 static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
-static auto crypto_module() { return ::pylabhub::crypto::GetLifecycleModule(); }
 static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
 
 /// #275-S2: `secret` param dropped — fd-source factory ignores it.
@@ -140,7 +139,7 @@ int exception_before_publish_aborts_write_slot()
             consumer.reset();
             cleanup_test_datablock(channel);
         },
-        "exception_before_publish_aborts_write_slot", logger_module(), crypto_module(),
+        "exception_before_publish_aborts_write_slot", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         hub_module());
 }
 
@@ -201,7 +200,7 @@ int exception_in_write_transaction_leaves_producer_usable()
             producer.reset();
             cleanup_test_datablock(channel);
         },
-        "exception_in_write_transaction_leaves_producer_usable", logger_module(), crypto_module(),
+        "exception_in_write_transaction_leaves_producer_usable", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         hub_module());
 }
 
@@ -302,7 +301,7 @@ int exception_in_read_transaction_leaves_consumer_usable()
             consumer.reset();
             cleanup_test_datablock(channel);
         },
-        "exception_in_read_transaction_leaves_consumer_usable", logger_module(), crypto_module(),
+        "exception_in_read_transaction_leaves_consumer_usable", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         hub_module());
 }
 

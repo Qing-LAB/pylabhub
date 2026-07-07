@@ -9,25 +9,26 @@
  * test runs against a CURVE-disabled or admission-disabled broker.
  * HEP-CORE-0040 §172 adds the use-not-export contract: role/hub
  * identity keypairs live ONLY in the process `KeyStore` (locked
- * memory); test fixtures must construct `SecureMemorySubsystem` +
+ * memory); test fixtures must construct `SecureSubsystem` +
  * `KeyStore` and seed them with identities BEFORE the BRC / queue
  * code paths run.
  *
- * Typical fixture wiring:
+ * Typical wiring:
  *
  * @code
  * // Mint hub + per-role keypairs (no vault file — keys live only in
- * // the test process's heap until handed to the fixture).
+ * // the test process's heap until seeded into KeyStore).
  * auto setup = pylabhub::tests::make_curve_setup({uid_a, uid_b});
  *
- * // RAII: constructs SecureMemorySubsystem + KeyStore (one per
- * // process) and seeds "hub_identity" + "role.<uid>" for each role.
- * pylabhub::tests::CurveKeyStoreFixture ks_fixture(
- *     "test", "test.fixture", setup);
+ * // Seed `"hub_identity"` + `"role.<uid>"` for each uid into the
+ * // process KeyStore.  Post-SEC-Fold-2 (HEP-CORE-0043 §2.2) SMS +
+ * // KeyStore are up via the enclosing LifecycleGuard's mod pack —
+ * // this call just populates entries.
+ * pylabhub::tests::seed_curve_identities(setup);
  *
  * // BrokerService::Config carries no keypair (HEP-CORE-0040 §172) —
  * // apply_curve_to only seeds known_roles[].  The CURVE keypair is
- * // read from `key_store()` by name at run() time.
+ * // read from `secure().keys()` by name at run() time.
  * BrokerService::Config bs_cfg;
  * pylabhub::tests::apply_curve_to(bs_cfg, setup);
  *
@@ -39,14 +40,14 @@
  *
  * CURVE + ZAP install in `BrokerService::run()` is unconditional
  * (HEP-CORE-0035 §2 + §4.6.5).  `BrokerService` ctor throws if
- * `KeyStore` entry `"hub_identity"` is absent, so every fixture must
- * construct a `CurveKeyStoreFixture` before building the broker.
+ * `KeyStore` entry `"hub_identity"` is absent, so every test that
+ * builds a broker must call `seed_curve_identities(setup)` first.
  */
 
 #include "utils/broker_service.hpp"
 #include "utils/security/key_store.hpp"
 #include "utils/security/known_roles.hpp"   // pylabhub::broker::KnownRole
-#include "utils/security/secure_memory_subsystem.hpp"
+#include "utils/security/secure_subsystem.hpp"
 
 #include <zmq.h>
 
@@ -157,8 +158,8 @@ inline CurveSetup make_curve_setup(const std::vector<std::string> &role_uids)
 ///
 /// HEP-CORE-0040 §172: the hub's CURVE keypair is NO LONGER carried
 /// on `BrokerService::Config` — `BrokerService::run()` reads it from
-/// `key_store()` under `"hub_identity"`.  Callers MUST construct a
-/// `CurveKeyStoreFixture` (which seeds `"hub_identity"` from
+/// `secure().keys()` under `"hub_identity"`.  Callers MUST call
+/// `seed_curve_identities(setup)` (which seeds `"hub_identity"` from
 /// `setup.hub`) BEFORE building the `BrokerService` instance.
 inline void apply_curve_to(pylabhub::broker::BrokerService::Config &cfg,
                            const CurveSetup &setup)
@@ -181,66 +182,42 @@ role_keystore_name(const std::string &uid)
     return "role." + uid;
 }
 
-/// RAII fixture: construct `SecureMemorySubsystem` + `KeyStore` and
-/// seed identities from a `CurveSetup`.
+/// Seed one identity under `name` from a `CurveKeypair` into the
+/// process KeyStore.  Delegates to `secure().keys().add_identity_from_z85`
+/// — the single production site where the (pub_z85 || sec_z85) → 80-
+/// byte layout is defined.  Post-SEC-Fold-2 (HEP-CORE-0043 §2.2)
+/// KeyStore is a member of SMS; access via the `secure().keys()` shim.
 ///
-/// Per HEP-CORE-0040 §4.5 + §5.1 there must be at most one
-/// SecureMemorySubsystem and one KeyStore per process — instantiate
-/// this fixture exactly once per Pattern-3 subprocess (or once per
-/// L2 test binary, depending on test layering).  Constructing it
-/// twice in the same process throws from the KeyStore ctor.
-///
-/// Loads:
+/// Used by tests that need an ad-hoc identity in addition to the
+/// setup-driven ones from `seed_curve_identities`.
+inline void
+add_curve_identity(std::string_view name, const CurveKeypair &kp)
+{
+    pylabhub::utils::security::secure().keys().add_identity_from_z85(
+        name, kp.public_z85, kp.secret_z85);
+}
+
+/// Seed the canonical CURVE identities from a `CurveSetup` into the
+/// process KeyStore:
 ///   - `"hub_identity"`          ← `setup.hub`
 ///   - `"role." + uid`           ← `setup.role_keys.at(uid)` for each entry
 ///
-/// Tests that need an additional ad-hoc identity (minted after
-/// fixture construction) call `add_identity(name, kp)` directly.
-class CurveKeyStoreFixture
+/// Post-SEC-Fold-2 (HEP-CORE-0043 §2.2) SMS+KeyStore are brought up
+/// automatically via the enclosing binary's / test-subprocess's
+/// `LifecycleGuard` mod pack (`SecureSubsystem::GetLifecycleModule()`).
+/// This is a plain seeding function — no RAII, no ownership.  Call
+/// once per Pattern-3 subprocess (or once per L2 test binary) after
+/// the LifecycleGuard is up and before constructing any code that
+/// reads identity entries by name (`BrokerService`, `BrokerRequestComm`,
+/// CURVE-wired `ZmqQueue`).
+inline void
+seed_curve_identities(const CurveSetup &setup)
 {
-public:
-    /// @param scope_tag  KeyStore scope tag ("test" or "test.<sub>");
-    ///                   non-empty.  No behavioral effect — just goes
-    ///                   into the lifecycle-module name.
-    /// @param owner_id   KeyStore owner uid; non-empty.
-    /// @param setup      Identities to seed into the new KeyStore.
-    CurveKeyStoreFixture(const std::string &scope_tag,
-                         const std::string &owner_id,
-                         const CurveSetup  &setup)
-        : sms_(),
-          ks_(scope_tag, owner_id)
+    add_curve_identity(pylabhub::utils::security::kHubIdentityName, setup.hub);
+    for (const auto &[uid, kp] : setup.role_keys)
     {
-        seed_from(setup);
+        add_curve_identity(role_keystore_name(uid), kp);
     }
-
-    CurveKeyStoreFixture(const CurveKeyStoreFixture &)            = delete;
-    CurveKeyStoreFixture &operator=(const CurveKeyStoreFixture &) = delete;
-    CurveKeyStoreFixture(CurveKeyStoreFixture &&)                 = delete;
-    CurveKeyStoreFixture &operator=(CurveKeyStoreFixture &&)      = delete;
-
-    /// Add one identity under `name` from a CurveKeypair.  Delegates
-    /// to `KeyStore::add_identity_from_z85` — the single production
-    /// site where the (pub_z85 || sec_z85) → 80-byte layout is
-    /// defined.  No parallel packing logic lives in this fixture.
-    static void
-    add_identity(std::string_view name, const CurveKeypair &kp)
-    {
-        pylabhub::utils::security::key_store().add_identity_from_z85(
-            name, kp.public_z85, kp.secret_z85);
-    }
-
-private:
-    pylabhub::utils::security::SecureMemorySubsystem sms_;
-    pylabhub::utils::security::KeyStore              ks_;
-
-    void seed_from(const CurveSetup &setup)
-    {
-        add_identity(pylabhub::utils::security::kHubIdentityName, setup.hub);
-        for (const auto &[uid, kp] : setup.role_keys)
-        {
-            add_identity(role_keystore_name(uid), kp);
-        }
-    }
-};
+}
 
 } // namespace pylabhub::tests

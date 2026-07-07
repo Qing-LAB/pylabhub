@@ -238,7 +238,7 @@ public:
         /// site (bind ROUTER, federation peer DEALERs).  Production
         /// path: `HubConfig::load_keypair(password)` seeds the
         /// KeyStore from the vault BEFORE `HubHost::startup` constructs
-        /// the broker.  Test path: `CurveKeyStoreFixture` (see
+        /// the broker.  Test path: `seed_curve_identities()` (see
         /// `tests/test_framework/curve_test_setup.h`) seeds it from a
         /// `CurveSetup`.  `BrokerService` ctor throws
         /// `std::logic_error` if the entry is absent.
@@ -248,7 +248,7 @@ public:
         /// needed here (HEP-CORE-0035 §2 + HEP-CORE-0040 §5.4).
 
         /// Optional: called from run() after bind() with (bound_endpoint, pubkey).
-        /// pubkey is read from `key_store().pubkey("hub_identity")` at on_ready
+        /// pubkey is read from `secure().keys().pubkey("hub_identity")` at on_ready
         /// time and passed as a fresh std::string.
         /// Useful for tests using dynamic port assignment (endpoint="tcp://127.0.0.1:0").
         ///

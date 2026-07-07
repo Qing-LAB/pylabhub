@@ -33,7 +33,6 @@ namespace pylabhub::tests::worker::c_api_checksum
 {
 
 static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
-static auto crypto_module() { return ::pylabhub::crypto::GetLifecycleModule(); }
 static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
 
 // #275-S2: `secret` parameter dropped — the fd-source factory pair
@@ -96,7 +95,7 @@ int enforced_roundtrip_passes()
             consumer.reset();
             cleanup_test_datablock(channel);
         },
-        "enforced_roundtrip_passes", logger_module(), crypto_module(), hub_module());
+        "enforced_roundtrip_passes", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -155,7 +154,7 @@ int enforced_corruption_detected()
             consumer.reset();
             cleanup_test_datablock(channel);
         },
-        "enforced_corruption_detected", logger_module(), crypto_module(), hub_module());
+        "enforced_corruption_detected", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -212,7 +211,7 @@ int none_skips_verification()
             consumer.reset();
             cleanup_test_datablock(channel);
         },
-        "none_skips_verification", logger_module(), crypto_module(), hub_module());
+        "none_skips_verification", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -264,7 +263,7 @@ int manual_no_auto_checksum()
             consumer.reset();
             cleanup_test_datablock(channel);
         },
-        "manual_no_auto_checksum", logger_module(), crypto_module(), hub_module());
+        "manual_no_auto_checksum", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -323,7 +322,7 @@ int manual_explicit_checksum_roundtrip()
             consumer.reset();
             cleanup_test_datablock(channel);
         },
-        "manual_explicit_checksum_roundtrip", logger_module(), crypto_module(), hub_module());
+        "manual_explicit_checksum_roundtrip", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -372,7 +371,7 @@ int invalidate_checksum_zero_hash_rejected()
             consumer.reset();
             cleanup_test_datablock(channel);
         },
-        "invalidate_checksum_zero_hash_rejected", logger_module(), crypto_module(), hub_module());
+        "invalidate_checksum_zero_hash_rejected", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 } // namespace pylabhub::tests::worker::c_api_checksum

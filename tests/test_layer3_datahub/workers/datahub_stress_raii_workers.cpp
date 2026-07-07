@@ -131,7 +131,6 @@ namespace pylabhub::tests::worker::stress_raii
 // --- Lifecycle module helpers -----------------------------------------------
 
 static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
-static auto crypto_module() { return ::pylabhub::crypto::GetLifecycleModule(); }
 static auto hub_module()    { return ::pylabhub::hub::GetDataBlockModule(); }
 
 // ============================================================================
@@ -302,7 +301,7 @@ int stress_producer(int argc, char **argv)
             cleanup_test_datablock(channel);
         },
         "stress_raii.stress_producer",
-        logger_module(), crypto_module(), hub_module());
+        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -430,7 +429,7 @@ int stress_consumer(int argc, char **argv)
                        consumer_idx, reads, last_seq, pattern_errors);
         },
         "stress_raii.stress_consumer",
-        logger_module(), crypto_module(), hub_module());
+        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -479,7 +478,7 @@ int multi_process_stress_orchestrator(int argc, char **argv)
             expect_worker_ok(producer);
         },
         "stress_raii.multi_process_stress_orchestrator",
-        logger_module(), crypto_module(), hub_module());
+        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -555,7 +554,7 @@ int backpressure_producer(int argc, char **argv)
             cleanup_test_datablock(channel);
         },
         "stress_raii.backpressure_producer",
-        logger_module(), crypto_module(), hub_module());
+        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -671,7 +670,7 @@ int backpressure_consumer(int argc, char **argv)
                        expected_seq, kNumSlotsBP, pattern_errors);
         },
         "stress_raii.backpressure_consumer",
-        logger_module(), crypto_module(), hub_module());
+        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -714,7 +713,7 @@ int backpressure_orchestrator(int argc, char **argv)
             expect_worker_ok(producer);
         },
         "stress_raii.backpressure_orchestrator",
-        logger_module(), crypto_module(), hub_module());
+        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 } // namespace pylabhub::tests::worker::stress_raii

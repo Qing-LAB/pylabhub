@@ -39,10 +39,9 @@ namespace
 {
 
 /// Lifecycle modules the metric tests need.  Logger for worker-begin/end
-/// milestones + the subprocess's own log stream; CryptoUtils +
+/// milestones + the subprocess's own log stream; SecureSubsystem +
 /// DataBlock for the producer/consumer construction.
 static auto logger_module() { return utils::Logger::GetLifecycleModule(); }
-static auto crypto_module() { return ::pylabhub::crypto::GetLifecycleModule(); }
 static auto hub_module()    { return ::pylabhub::hub::GetDataBlockModule(); }
 
 /// #275-S2: `secret` param dropped — fd-source typed factory ignores
@@ -128,7 +127,7 @@ int producer_metrics_accumulate()
                 << "context_elapsed_us must advance after ≥ 1 acquire";
         },
         "role_api_loop_policy::producer_metrics_accumulate",
-        logger_module(), crypto_module(), hub_module());
+        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ----------------------------------------------------------------------------
@@ -182,7 +181,7 @@ int producer_metrics_clear()
                 << "clear_metrics must preserve configured_period (config, not counter)";
         },
         "role_api_loop_policy::producer_metrics_clear",
-        logger_module(), crypto_module(), hub_module());
+        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ----------------------------------------------------------------------------
@@ -262,7 +261,7 @@ int consumer_metrics_accumulate()
             EXPECT_GT(cm.context_elapsed_us_val(), uint64_t{0});
         },
         "role_api_loop_policy::consumer_metrics_accumulate",
-        logger_module(), crypto_module(), hub_module());
+        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ----------------------------------------------------------------------------
@@ -288,7 +287,7 @@ int zero_on_creation()
             EXPECT_EQ(m.context_start_time_val(), ContextMetrics::Clock::time_point{});
         },
         "role_api_loop_policy::zero_on_creation",
-        logger_module(), crypto_module(), hub_module());
+        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ----------------------------------------------------------------------------
@@ -325,7 +324,7 @@ int max_rate_metrics_period_zero()
             EXPECT_GT(m.context_elapsed_us_val(),    uint64_t{0});
         },
         "role_api_loop_policy::max_rate_metrics_period_zero",
-        logger_module(), crypto_module(), hub_module());
+        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ----------------------------------------------------------------------------
@@ -349,7 +348,7 @@ int last_slot_work_us_populated()
             EXPECT_GT(producer->metrics().last_slot_exec_us_val(), uint64_t{0});
         },
         "role_api_loop_policy::last_slot_work_us_populated",
-        logger_module(), crypto_module(), hub_module());
+        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ----------------------------------------------------------------------------
@@ -378,7 +377,7 @@ int last_iteration_us_populated()
             EXPECT_GT(producer->metrics().last_iteration_us_val(), uint64_t{0});
         },
         "role_api_loop_policy::last_iteration_us_populated",
-        logger_module(), crypto_module(), hub_module());
+        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ----------------------------------------------------------------------------
@@ -431,7 +430,7 @@ int max_iteration_us_peak()
             EXPECT_GE(m.max_iteration_us_val(), m.last_iteration_us_val());
         },
         "role_api_loop_policy::max_iteration_us_peak",
-        logger_module(), crypto_module(), hub_module());
+        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ----------------------------------------------------------------------------
@@ -472,7 +471,7 @@ int context_elapsed_us_monotonic()
                 << "after a 2ms sleep + second acquire, elapsed should advance";
         },
         "role_api_loop_policy::context_elapsed_us_monotonic",
-        logger_module(), crypto_module(), hub_module());
+        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 } // namespace pylabhub::tests::worker::role_api_loop_policy

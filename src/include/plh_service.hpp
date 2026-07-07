@@ -5,14 +5,13 @@
  *
  * Provides lifecycle management, file locking, logging, cryptographic utilities,
  * backoff strategies, UID generation, ZMQ context, and interactive signal handling.
- * Include this when you need application lifecycle, FileLock, Logger, CryptoUtils,
+ * Include this when you need application lifecycle, FileLock, Logger, SecureSubsystem,
  * UID/UUID utilities, InteractiveSignalHandler, or backoff strategies for spin loops.
  */
 #include "plh_base.hpp"
 
 #include "utils/backoff_strategy.hpp"
 #include "utils/lifecycle.hpp"
-#include "utils/crypto_utils.hpp"
 #include "utils/file_lock.hpp"
 #include "utils/logger.hpp"
 #include "utils/timeout_constants.hpp"

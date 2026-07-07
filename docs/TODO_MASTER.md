@@ -10,7 +10,7 @@ see `docs/DOC_STRUCTURE.md` §2.1.1.
 
 ---
 
-## Resume point (2026-07-04, IN-SESSION latest)
+## Resume point (2026-07-05, IN-SESSION latest)
 
 **Session-start reading order (mandatory):**
 1. `docs/tech_draft/DRAFT_sec_fold_2_resume_state_2026-07.md`
@@ -35,11 +35,15 @@ see `docs/DOC_STRUCTURE.md` §2.1.1.
   reverted approaches.
 
 **Next action on resume:**
-See resume-state doc §6.  Executive summary: Phase A — add
-`SecureSubsystem::GetLifecycleModule()` matching Logger /
-CryptoUtils / FileLock pattern.  SMS becomes a proper lifecycle
-module.  Delete stack-local `SMS sms;` usages in Phases B and C
-(one production main.cpp / one worker file at a time).
+See resume-state doc §6.  Executive summary: Phase A — SMS becomes
+a proper STATIC lifecycle module in the LOGGER/FileLock shape
+(function-local `instance()`, friend startup/shutdown thunks
+driving `Impl::bringup()`, `GetLifecycleModule()` registered via
+mod pack).  Then **Phase A2 (2026-07-05 amendment) — CryptoUtils
+FULL MERGE into SMS**: `pylabhub::crypto` namespace deleted; ~11
+prod callers migrate to `secure().X(...)`; ~43 mod-pack entries
+removed.  Then Phases B/C delete stack-local `SMS sms;` usages
+(one prod main.cpp / one worker file at a time).
 
 **Downstream tasks paused:**
 - #317 C.2.c-C.5 (broker SHM observer) — resume after SEC-Fold-2

@@ -50,7 +50,7 @@ struct ProducerRegInputs
     /// `ChannelEntry::producers[i].zmq_pubkey`; consumers receive it
     /// via `CONSUMER_REG_ACK.producers[]` and use it as the data-plane
     /// `curve_serverkey`).  HEP-CORE-0040 §172 — callers in the
-    /// role-host pass `key_store().pubkey("role_identity")`; broker
+    /// role-host pass `secure().keys().pubkey("role_identity")`; broker
     /// rejects REG_REQ with empty or wrong-length `zmq_pubkey`.
     ///
     /// HEP-CORE-0041 §5.3 — this same pubkey is reused for the
@@ -85,7 +85,7 @@ struct ConsumerRegInputs
     /// HEP-CORE-0036 §6.5: the broker uses it to populate the channel's
     /// authorized-consumer allowlist via
     /// `HubState::_on_consumer_authorized`.  HEP-CORE-0040 §172 —
-    /// callers in the role-host pass `key_store().pubkey("role_identity")`;
+    /// callers in the role-host pass `secure().keys().pubkey("role_identity")`;
     /// broker rejects CONSUMER_REG_REQ with empty or wrong-length
     /// `zmq_pubkey`.
     std::string zmq_pubkey;

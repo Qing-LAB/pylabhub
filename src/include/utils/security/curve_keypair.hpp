@@ -34,9 +34,9 @@
  *     lifecycle module.  Production code does NOT construct or move
  *     bare `CurveKeypair` values around — it accesses identity keys
  *     via the use-not-export API (HEP-CORE-0040 §5.2 / §8.2):
- *     `key_store().pubkey(name)` returns a `std::string_view` into
+ *     `secure().keys().pubkey(name)` returns a `std::string_view` into
  *     KeyStore-owned locked memory (non-secret half), and
- *     `key_store().with_seckey(name, callback)` invokes the callback
+ *     `secure().keys().with_seckey(name, callback)` invokes the callback
  *     with a `std::string_view` to the secret half — bytes never leave
  *     the LockedKey region.  The bare struct here is the simple
  *     value-type baseline used only by (a) the keygen utility below,

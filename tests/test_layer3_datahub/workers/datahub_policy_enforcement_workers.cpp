@@ -53,7 +53,6 @@ namespace pylabhub::tests::worker::policy_enforcement
 {
 
 static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
-static auto crypto_module() { return ::pylabhub::crypto::GetLifecycleModule(); }
 static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
 
 // ============================================================================
@@ -125,7 +124,7 @@ int checksum_enforced_write_read_roundtrip()
             cleanup_test_datablock(ch);
             fmt::print(stderr, "[policy_enforcement] checksum_enforced_write_read_roundtrip ok\n");
         },
-        "checksum_enforced_write_read_roundtrip", logger_module(), crypto_module(), hub_module());
+        "checksum_enforced_write_read_roundtrip", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -167,7 +166,7 @@ int checksum_enforced_flexzone_only_write()
             cleanup_test_datablock(ch);
             fmt::print(stderr, "[policy_enforcement] checksum_enforced_flexzone_only_write ok\n");
         },
-        "checksum_enforced_flexzone_only_write", logger_module(), crypto_module(), hub_module());
+        "checksum_enforced_flexzone_only_write", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -224,7 +223,7 @@ int checksum_enforced_verify_detects_corruption()
             cleanup_test_datablock(ch);
             fmt::print(stderr, "[policy_enforcement] checksum_enforced_verify_detects_corruption ok\n");
         },
-        "checksum_enforced_verify_detects_corruption", logger_module(), crypto_module(), hub_module());
+        "checksum_enforced_verify_detects_corruption", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -290,7 +289,7 @@ int checksum_none_skips_update_verify()
             cleanup_test_datablock(ch);
             fmt::print(stderr, "[policy_enforcement] checksum_none_skips_update_verify ok\n");
         },
-        "checksum_none_skips_update_verify", logger_module(), crypto_module(), hub_module());
+        "checksum_none_skips_update_verify", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -352,7 +351,7 @@ int checksum_manual_requires_explicit_call()
             cleanup_test_datablock(ch);
             fmt::print(stderr, "[policy_enforcement] checksum_manual_requires_explicit_call ok\n");
         },
-        "checksum_manual_requires_explicit_call", logger_module(), crypto_module(), hub_module());
+        "checksum_manual_requires_explicit_call", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -389,7 +388,7 @@ int consumer_auto_registers_heartbeat_on_construction()
             cleanup_test_datablock(ch);
             fmt::print(stderr, "[policy_enforcement] consumer_auto_registers_heartbeat_on_construction ok\n");
         },
-        "consumer_auto_registers_heartbeat_on_construction", logger_module(), crypto_module(), hub_module());
+        "consumer_auto_registers_heartbeat_on_construction", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -426,7 +425,7 @@ int consumer_auto_unregisters_heartbeat_on_destroy()
             cleanup_test_datablock(ch);
             fmt::print(stderr, "[policy_enforcement] consumer_auto_unregisters_heartbeat_on_destroy ok\n");
         },
-        "consumer_auto_unregisters_heartbeat_on_destroy", logger_module(), crypto_module(), hub_module());
+        "consumer_auto_unregisters_heartbeat_on_destroy", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -474,7 +473,7 @@ int all_policy_consumers_have_heartbeat()
             cleanup_test_datablock(ch);
             fmt::print(stderr, "[policy_enforcement] all_policy_consumers_have_heartbeat ok\n");
         },
-        "all_policy_consumers_have_heartbeat", logger_module(), crypto_module(), hub_module());
+        "all_policy_consumers_have_heartbeat", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -566,7 +565,7 @@ int sync_reader_producer_respects_consumer_position()
             cleanup_test_datablock(ch);
             fmt::print(stderr, "[policy_enforcement] sync_reader_producer_respects_consumer_position ok\n");
         },
-        "sync_reader_producer_respects_consumer_position", logger_module(), crypto_module(), hub_module());
+        "sync_reader_producer_respects_consumer_position", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -607,7 +606,7 @@ int producer_operator_increment_updates_heartbeat()
             cleanup_test_datablock(ch);
             fmt::print(stderr, "[policy_enforcement] producer_operator_increment_updates_heartbeat ok\n");
         },
-        "producer_operator_increment_updates_heartbeat", logger_module(), crypto_module(), hub_module());
+        "producer_operator_increment_updates_heartbeat", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -676,7 +675,7 @@ int consumer_operator_increment_updates_heartbeat()
             cleanup_test_datablock(ch);
             fmt::print(stderr, "[policy_enforcement] consumer_operator_increment_updates_heartbeat ok\n");
         },
-        "consumer_operator_increment_updates_heartbeat", logger_module(), crypto_module(), hub_module());
+        "consumer_operator_increment_updates_heartbeat", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 } // namespace pylabhub::tests::worker::policy_enforcement

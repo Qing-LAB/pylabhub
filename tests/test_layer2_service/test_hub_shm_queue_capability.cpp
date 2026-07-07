@@ -4,7 +4,7 @@
  *        capability-fd plumbing (set_shm_capability_fd + Standby-mode
  *        create_*_standby factories + start() fd-source branch).
  *
- * Pattern 1+ — binary-wide `LifecycleGuard` for `Logger` + `CryptoUtils`
+ * Pattern 1+ — binary-wide `LifecycleGuard` for `Logger` + `SecureSubsystem`
  * + `DataBlock` (the fd-source factories require the DataBlock module
  * per the same contract as the name-based factories).  No cross-test
  * state.
@@ -28,8 +28,8 @@
  *   - SetCapabilityFd_RefusesNegativeFd — defensive guardrail on
  *     the setter input.
  */
+#include "utils/security/secure_subsystem.hpp"
 #include "binary_lifecycle.h"
-#include "utils/crypto_utils.hpp"
 #include "utils/data_block.hpp"
 #include "utils/data_block_config.hpp"
 #include "utils/data_block_policy.hpp"
@@ -61,7 +61,7 @@ using pylabhub::hub::datablock_layout_total_size;
 
 PLH_BINARY_LIFECYCLE_MODULES(
     pylabhub::utils::Logger::GetLifecycleModule(),
-    pylabhub::crypto::GetLifecycleModule(),
+    pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
     pylabhub::hub::GetDataBlockModule())
 
 namespace

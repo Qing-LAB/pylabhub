@@ -127,14 +127,14 @@ void remove_tree(const fs::path &p)
 
 /// Lifecycle module list shared by every worker in this TU.  HubHost's
 /// startup transitively touches all five: Logger always, FileLock as
-/// JsonConfig's dep, JsonConfig for HubConfig::load, CryptoUtils for
+/// JsonConfig's dep, JsonConfig for HubConfig::load, SecureSubsystem for
 /// the broker CURVE init path (harmless when use_curve=false at
 /// runtime), and ZMQContext for the broker's ROUTER socket.
 #define PLH_HUB_HOST_MODS                                                      \
     Logger::GetLifecycleModule(),                                              \
     FileLock::GetLifecycleModule(),                                            \
     JsonConfig::GetLifecycleModule(),                                          \
-    pylabhub::crypto::GetLifecycleModule(),                                    \
+    pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),                        \
     pylabhub::hub::GetZMQContextModule()
 
 } // namespace

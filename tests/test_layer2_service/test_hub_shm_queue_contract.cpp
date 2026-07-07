@@ -33,7 +33,7 @@
  *      name.  Pins the "explicit not-implemented" contract that a
  *      future silent-noop regression cannot mimic success.
  *
- * Pattern 1+ — binary-wide `LifecycleGuard` for Logger + CryptoUtils
+ * Pattern 1+ — binary-wide `LifecycleGuard` for Logger + SecureSubsystem
  * + DataBlock, same shape as `test_hub_shm_queue_capability.cpp`
  * which lives next door.
  *
@@ -44,8 +44,8 @@
  * test's inline `make_sized_memfd` path (same fd-source factory,
  * same DataBlockConfig shape).
  */
+#include "utils/security/secure_subsystem.hpp"
 #include "binary_lifecycle.h"
-#include "utils/crypto_utils.hpp"
 #include "utils/data_block.hpp"
 #include "utils/data_block_config.hpp"
 #include "utils/data_block_policy.hpp"
@@ -82,7 +82,7 @@ using pylabhub::hub::datablock_layout_total_size;
 
 PLH_BINARY_LIFECYCLE_MODULES(
     pylabhub::utils::Logger::GetLifecycleModule(),
-    pylabhub::crypto::GetLifecycleModule(),
+    pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
     pylabhub::hub::GetDataBlockModule())
 
 namespace

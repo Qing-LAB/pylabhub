@@ -18,6 +18,7 @@
 #include "plh_version_registry.hpp"
 #include "utils/config/role_config.hpp"
 #include "utils/interactive_signal_handler.hpp"
+#include "utils/security/secure_subsystem.hpp"
 #include "utils/timeout_constants.hpp"
 
 #include <atomic>
@@ -53,8 +54,12 @@ namespace pylabhub::scripting
  * from the config's @c LoggingConfig section (HEP-0024 §12 CLI↔Config
  * separation: no CLI flag redirects runtime log output).
  *
- * All six modules (Logger, FileLock, Crypto, JsonConfig, ZMQ, DataExchangeHub) are
- * required by every role binary. A binary needing extra modules can append them:
+ * All six modules (Logger, SecureSubsystem, FileLock, JsonConfig, ZMQ,
+ * DataExchangeHub) are required by every role binary.  `SecureSubsystem`
+ * (HEP-CORE-0043 §2) owns the libsodium boundary + KeyStore + all
+ * crypto operations (BLAKE2b, secretbox, pwhash, ...); the legacy
+ * `pylabhub::crypto` module was folded into `SecureSubsystem` 2026-07-06.
+ * A binary needing extra modules can append them:
  * @code
  *   auto mods = scripting::role_lifecycle_modules();
  *   mods.push_back(MyExtra::GetLifecycleModule());
@@ -65,8 +70,8 @@ inline std::vector<pylabhub::utils::ModuleDef> role_lifecycle_modules()
 {
     return pylabhub::utils::MakeModDefList(
         pylabhub::utils::Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         pylabhub::utils::FileLock::GetLifecycleModule(),
-        pylabhub::crypto::GetLifecycleModule(),
         pylabhub::utils::JsonConfig::GetLifecycleModule(),
         pylabhub::hub::GetZMQContextModule(),
         pylabhub::hub::GetDataBlockModule()

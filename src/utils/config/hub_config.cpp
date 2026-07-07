@@ -273,13 +273,13 @@ bool HubConfig::load_keypair(const std::string &password)
         const auto adm = vault.admin_token();              // string_view
 
         // HEP-CORE-0040 §171: identity keypair lives in
-        // `pylabhub::utils::security::key_store()` (LockedKey storage,
+        // `pylabhub::utils::security::secure().keys()` (LockedKey storage,
         // mlock'd + zero-on-destruct).  `add_identity_from_z85` is the
         // single site (production + tests) where the (pub_z85 ||
         // sec_z85) layout is defined; it packs into a SecureBuffer<80>
         // and hands off, then KeyStore + SecureBuffer dtor both zero
         // the source.  No `std::string` copy survives.
-        pylabhub::utils::security::key_store().add_identity_from_z85(
+        pylabhub::utils::security::secure().keys().add_identity_from_z85(
             pylabhub::utils::security::kHubIdentityName, pub, sec);
 
         // Admin token is a separate secret; for now it continues as a

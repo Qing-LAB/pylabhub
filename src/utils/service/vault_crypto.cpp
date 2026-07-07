@@ -4,13 +4,13 @@
  */
 #include "vault_crypto.hpp"
 #include "plh_platform.hpp"
+#include "utils/security/secure_subsystem.hpp"
 
 #include <cerrno>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
-#include <sodium.h>
 #include <stdexcept>
 #include <vector>
 
@@ -212,32 +212,36 @@ std::vector<uint8_t> read_file(const fs::path &path)
 
 void vault_require_sodium()
 {
-    // No-op.  sodium_init is SecureMemorySubsystem's job
-    // (HEP-CORE-0040 §4.0).  Self-init call removed 2026-07-04.  This
-    // function is kept as a stable API name; the gate lives inside
-    // KeyStore's public entry points.  Callers who reach vault ops
-    // without SMS being up hit `randombytes_buf` UB — but that's not
-    // this shim's problem.  Delete this function in a follow-up
-    // once every caller has been audited.
+    // No-op — retained as a stable API name during the SEC-Fold-2
+    // rollout.  All vault ops now route through `secure()` /
+    // `secure()`'s gate, which PANICs if SMS is not
+    // `Initialized`.  Delete this shim once callers stop referencing it.
 }
 
 std::array<uint8_t, kVaultKeyBytes> vault_derive_key(const std::string &password,
                                                       const std::string &uid)
 {
+    namespace sec = pylabhub::utils::security;
     // Salt = BLAKE2b-16(uid): deterministic, per-vault domain separation.
     // Same password on two vaults with different uids produces different keys.
+    // Salt derivation via the purpose-specific SMS method
+    // `derive_pwhash_salt`.  Encapsulates the "16 bytes because
+    // Argon2id" reasoning inside the security module — this call
+    // site just names the operation.
+    static_assert(kVaultSaltBytes ==
+                  pylabhub::utils::security::SecureSubsystem::kPwhashSaltBytes,
+                  "vault salt size must match SMS's Argon2id salt size");
     uint8_t salt[kVaultSaltBytes]{};
-    crypto_generichash(salt, kVaultSaltBytes,
-                       reinterpret_cast<const uint8_t *>(uid.data()), uid.size(),
-                       nullptr, 0);
+    if (!sec::secure().derive_pwhash_salt(salt, uid))
+    {
+        throw std::runtime_error("vault: salt derivation failed");
+    }
 
     std::array<uint8_t, kVaultKeyBytes> key{};
-    if (crypto_pwhash(key.data(), key.size(),
-                      password.data(), password.size(),
-                      salt,
-                      kVaultOpsLimit,
-                      kVaultMemLimit,
-                      crypto_pwhash_ALG_ARGON2ID13) != 0)
+    if (!sec::secure().pwhash_argon2id(
+            key.data(), key.size(),
+            password.data(), password.size(),
+            salt))
     {
         throw std::runtime_error("vault: Argon2id key derivation failed (insufficient memory?)");
     }
@@ -249,26 +253,35 @@ void vault_write(const fs::path &path,
                  const std::string &password,
                  const std::string &uid)
 {
+    namespace sec = pylabhub::utils::security;
     vault_require_sodium();
 
     auto key = vault_derive_key(password, uid);
     struct KeyGuard
     {
         std::array<uint8_t, kVaultKeyBytes> &k;
-        ~KeyGuard() { sodium_memzero(k.data(), k.size()); }
+        ~KeyGuard() {
+            pylabhub::utils::security::secure().memzero(
+                std::span<std::uint8_t>(k.data(), k.size()));
+        }
     } key_guard{key};
 
     // Random nonce.
     uint8_t nonce[kVaultNonceBytes]{};
-    randombytes_buf(nonce, kVaultNonceBytes);
+    sec::secure().random_bytes(nonce, kVaultNonceBytes);
 
     // Encrypt: [MAC(16) || ciphertext].
     const std::size_t clen = json_payload.size() + kVaultMacBytes;
     std::vector<uint8_t> ciphertext(clen);
-    crypto_secretbox_easy(ciphertext.data(),
-                          reinterpret_cast<const uint8_t *>(json_payload.data()),
-                          json_payload.size(),
-                          nonce, key.data());
+    const std::size_t written = sec::secure().secretbox_encrypt(
+        ciphertext.data(), ciphertext.size(),
+        reinterpret_cast<const std::uint8_t *>(json_payload.data()),
+        json_payload.size(),
+        nonce, key.data());
+    if (written == 0)
+    {
+        throw std::runtime_error("vault: secretbox_encrypt failed");
+    }
 
     // Write [nonce(24) || MAC+ciphertext] to path at mode 0600.
     std::vector<uint8_t> vault_bytes;
@@ -283,6 +296,7 @@ std::size_t vault_read_secure(const fs::path           &path,
                               const std::string        &uid,
                               std::span<std::byte>      out_buf)
 {
+    namespace sec = pylabhub::utils::security;
     vault_require_sodium();
 
     const auto vault_bytes = read_file(path);
@@ -298,12 +312,11 @@ std::size_t vault_read_secure(const fs::path           &path,
     const std::size_t clen       = vault_bytes.size() - kVaultNonceBytes;
     const std::size_t plain_len  = clen - kVaultMacBytes;
 
+    auto span_as_u8 = std::span<std::uint8_t>(
+        reinterpret_cast<std::uint8_t *>(out_buf.data()), out_buf.size_bytes());
     if (plain_len > out_buf.size_bytes())
     {
-        // Zero the caller's span on any throwing path that may have
-        // partially populated it (defence-in-depth; we haven't written
-        // yet here, but keeps the contract uniform).
-        sodium_memzero(out_buf.data(), out_buf.size_bytes());
+        sec::secure().memzero(span_as_u8);
         throw std::runtime_error(
             "vault_read_secure: out_buf too small (need "
             + std::to_string(plain_len) + " bytes, got "
@@ -314,24 +327,25 @@ std::size_t vault_read_secure(const fs::path           &path,
     struct KeyGuard
     {
         std::array<uint8_t, kVaultKeyBytes> &k;
-        ~KeyGuard() { sodium_memzero(k.data(), k.size()); }
+        ~KeyGuard() {
+            pylabhub::utils::security::secure().memzero(
+                std::span<std::uint8_t>(k.data(), k.size()));
+        }
     } key_guard{key};
 
-    // Decrypt directly into the caller's span.  No std::string / no
-    // intermediate std::vector<uint8_t> plaintext copy (HEP-CORE-0040
-    // §175).  reinterpret_cast is necessary because libsodium's API
-    // is uint8_t* but std::span<std::byte> is layout-compatible.
-    auto *out_ptr = reinterpret_cast<uint8_t *>(out_buf.data());
-    if (crypto_secretbox_open_easy(out_ptr, ciphertext, clen, nonce, key.data()) != 0)
+    // Decrypt into the caller's span via Crypto sub-container
+    // (HEP-CORE-0043 §2.1 category 2).
+    const std::size_t decoded = sec::secure().secretbox_decrypt(
+        span_as_u8.data(), span_as_u8.size(),
+        ciphertext, clen, nonce, key.data());
+    if (decoded == 0)
     {
-        // Decrypt may have partially written before the MAC check
-        // failed; zero whatever's there.
-        sodium_memzero(out_buf.data(), out_buf.size_bytes());
+        sec::secure().memzero(span_as_u8);
         throw std::runtime_error(
             "vault: decryption failed — wrong password or corrupted file: " + path.string());
     }
 
-    return plain_len;
+    return decoded;
 }
 
 } // namespace pylabhub::utils::detail

@@ -13,12 +13,21 @@
 
 #include "utils/broker_service.hpp"
 #include "utils/hub_state.hpp"
+#include "utils/logger.hpp"
 #include "utils/security/key_store.hpp"
-#include "utils/security/secure_memory_subsystem.hpp"
+#include "utils/security/secure_subsystem.hpp"
 #include "hub_state_test_access.h"
+#include "binary_lifecycle.h"
 #include "curve_test_setup.h"
 
 #include <gtest/gtest.h>
+
+// Parent-lifecycle bringup — SMS is a member of the mod pack per the
+// SMS five-point pattern (HEP-CORE-0043 §2.2).  Tests below rely on
+// `secure().keys()` and the `secure().keys()` shim being valid.
+PLH_BINARY_LIFECYCLE_MODULES(
+    pylabhub::utils::Logger::GetLifecycleModule(),
+    pylabhub::utils::security::SecureSubsystem::GetLifecycleModule())
 
 #include <array>
 #include <atomic>
@@ -893,12 +902,11 @@ TEST(BrokerServicePlumbing, HubStateAccessorReturnsExternalAggregate)
     // CURVE is unconditional (HEP-CORE-0035 §2); HEP-CORE-0040 §172
     // moved hub identity into the process KeyStore, so BrokerService
     // ctor now requires the "hub_identity" entry to be present.
-    // Construct a CurveKeyStoreFixture for an ephemeral hub identity
+    // Construct a seed_curve_identities for an ephemeral hub identity
     // — this test never calls run() so no socket is bound, but the
     // ctor's KeyStore check still fires.
     auto setup = pylabhub::tests::make_curve_setup({});
-    pylabhub::tests::CurveKeyStoreFixture ks_fixture(
-        "test", "test.hub_state.plumbing", setup);
+    pylabhub::tests::seed_curve_identities(setup);
 
     pylabhub::broker::BrokerService::Config cfg;
     cfg.endpoint = "tcp://127.0.0.1:0";
@@ -935,8 +943,6 @@ TEST(BrokerServiceCtor, MissingHubIdentityInKeyStoreThrowsLogicError)
 {
     namespace sec = pylabhub::utils::security;
 
-    sec::SecureMemorySubsystem sms;
-    sec::KeyStore              ks("test", "test.broker_ctor.negative");
 
     // Seed an UNRELATED name so the KeyStore is non-empty but the
     // ctor's specific lookup for "hub_identity" misses.  Catching
@@ -945,7 +951,7 @@ TEST(BrokerServiceCtor, MissingHubIdentityInKeyStoreThrowsLogicError)
     // silently pass — this assertion forces the ctor to use the
     // exact HEP-CORE-0040 §172 contract name.
     const auto kp = pylabhub::tests::gen_curve_keypair();
-    sec::key_store().add_identity_from_z85(
+    sec::secure().keys().add_identity_from_z85(
         "not_hub_identity", kp.public_z85, kp.secret_z85);
 
     pylabhub::hub::HubState state;

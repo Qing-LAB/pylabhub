@@ -189,7 +189,7 @@ json make_reg_opts(const std::string &channel, const std::string &uid)
             .has_shm    = true,
             .is_zmq_transport  = false,
             .zmq_node_endpoint = {},
-            .zmq_pubkey = std::string{sec::key_store().pubkey(
+            .zmq_pubkey = std::string{sec::secure().keys().pubkey(
                 pylabhub::tests::role_keystore_name(uid))},
             .shm_capability_endpoint =
                 sec::default_shm_capability_endpoint(channel),
@@ -207,7 +207,7 @@ json make_cons_opts(const std::string &channel, const std::string &uid)
             .channel    = channel,
             .role_uid   = uid,
             .role_name  = "L3TestConsumer",
-            .zmq_pubkey = std::string{sec::key_store().pubkey(
+            .zmq_pubkey = std::string{sec::secure().keys().pubkey(
                 pylabhub::tests::role_keystore_name(uid))},
         });
     opts["consumer_pid"] = ::getpid();
@@ -231,7 +231,7 @@ void remove_tree(const fs::path &p)
 ///
 ///   A test that DOES open a BRC and tries to register must:
 ///     1. List every BRC uid in `make_curve_setup({uid1, uid2, ...})`
-///        so `CurveKeyStoreFixture` seeds the per-role seckey under
+///        so `seed_curve_identities()` seeds the per-role seckey under
 ///        `role.<uid>` (HEP-CORE-0040 §172).  The BRC reads it via
 ///        `keystore_name`.
 ///     2. Set `bcfg.keystore_name = role_keystore_name(uid)` on each
@@ -266,7 +266,7 @@ void write_known_roles(const fs::path &dir,
     Logger::GetLifecycleModule(),                                              \
     FileLock::GetLifecycleModule(),                                            \
     JsonConfig::GetLifecycleModule(),                                          \
-    pylabhub::crypto::GetLifecycleModule(),                                    \
+    pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),                        \
     pylabhub::hub::GetZMQContextModule()
 
 } // namespace
@@ -311,8 +311,7 @@ int real_lua_script_on_init_on_stop_fire_and_log()
             // so empty `{}` is correct and `known_roles.json` is not
             // written.  Per-worker RAII; one fixture per subprocess.
             auto ks_curve_ = pylabhub::tests::make_curve_setup({});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture_(
-                "test", "test.l3.lua_hub_integration", ks_curve_);
+            pylabhub::tests::seed_curve_identities(ks_curve_);
 
             HubHost host(std::move(cfg));
 
@@ -396,8 +395,7 @@ int script_syntax_error_startup_throws()
             // so empty `{}` is correct and `known_roles.json` is not
             // written.  Per-worker RAII; one fixture per subprocess.
             auto ks_curve_ = pylabhub::tests::make_curve_setup({});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture_(
-                "test", "test.l3.lua_hub_integration", ks_curve_);
+            pylabhub::tests::seed_curve_identities(ks_curve_);
 
             HubHost host(std::move(cfg));
 
@@ -459,8 +457,7 @@ int on_tick_fires_periodically_when_idle()
             // so empty `{}` is correct and `known_roles.json` is not
             // written.  Per-worker RAII; one fixture per subprocess.
             auto ks_curve_ = pylabhub::tests::make_curve_setup({});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture_(
-                "test", "test.l3.lua_hub_integration", ks_curve_);
+            pylabhub::tests::seed_curve_identities(ks_curve_);
 
             HubHost host(std::move(cfg));
             ASSERT_NO_THROW(host.startup());
@@ -541,8 +538,7 @@ int on_tick_catch_up_fixed_rate_with_compensation()
             // so empty `{}` is correct and `known_roles.json` is not
             // written.  Per-worker RAII; one fixture per subprocess.
             auto ks_curve_ = pylabhub::tests::make_curve_setup({});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture_(
-                "test", "test.l3.lua_hub_integration", ks_curve_);
+            pylabhub::tests::seed_curve_identities(ks_curve_);
 
             HubHost host(std::move(cfg));
             ASSERT_NO_THROW(host.startup());
@@ -665,8 +661,7 @@ end
             // so empty `{}` is correct and `known_roles.json` is not
             // written.  Per-worker RAII; one fixture per subprocess.
             auto ks_curve_ = pylabhub::tests::make_curve_setup({});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture_(
-                "test", "test.l3.lua_hub_integration", ks_curve_);
+            pylabhub::tests::seed_curve_identities(ks_curve_);
 
             HubHost host(std::move(cfg));
 
@@ -737,8 +732,7 @@ end
             // so empty `{}` is correct and `known_roles.json` is not
             // written.  Per-worker RAII; one fixture per subprocess.
             auto ks_curve_ = pylabhub::tests::make_curve_setup({});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture_(
-                "test", "test.l3.lua_hub_integration", ks_curve_);
+            pylabhub::tests::seed_curve_identities(ks_curve_);
 
             HubHost host(std::move(cfg));
 
@@ -812,8 +806,7 @@ end
             // the uid via ZAP.  Per-worker RAII; one fixture per subprocess.
             const std::string prod_uid = "prod.l3test.uid12345678";
             auto ks_curve_ = pylabhub::tests::make_curve_setup({prod_uid});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture_(
-                "test", "test.l3.lua_hub_integration", ks_curve_);
+            pylabhub::tests::seed_curve_identities(ks_curve_);
             write_known_roles(dir, ks_curve_);
 
             HubHost host(std::move(cfg));
@@ -905,8 +898,7 @@ end
             const std::string prod_uid = "prod.evcons.uid";
             const std::string cons_uid = "cons.l3.uid12345678";
             auto ks_curve_ = pylabhub::tests::make_curve_setup({prod_uid, cons_uid});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture_(
-                "test", "test.l3.lua_hub_integration", ks_curve_);
+            pylabhub::tests::seed_curve_identities(ks_curve_);
             write_known_roles(dir, ks_curve_);
 
             HubHost host(std::move(cfg));
@@ -1009,8 +1001,7 @@ end
             // so empty `{}` is correct and `known_roles.json` is not
             // written.  Per-worker RAII; one fixture per subprocess.
             auto ks_curve_ = pylabhub::tests::make_curve_setup({});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture_(
-                "test", "test.l3.lua_hub_integration", ks_curve_);
+            pylabhub::tests::seed_curve_identities(ks_curve_);
 
             HubHost host(std::move(cfg));
             ASSERT_NO_THROW(host.startup());
@@ -1071,8 +1062,7 @@ end
             // so empty `{}` is correct and `known_roles.json` is not
             // written.  Per-worker RAII; one fixture per subprocess.
             auto ks_curve_ = pylabhub::tests::make_curve_setup({});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture_(
-                "test", "test.l3.lua_hub_integration", ks_curve_);
+            pylabhub::tests::seed_curve_identities(ks_curve_);
 
             HubHost host(std::move(cfg));
             ASSERT_NO_THROW(host.startup());
@@ -1148,8 +1138,7 @@ end
             // so empty `{}` is correct and `known_roles.json` is not
             // written.  Per-worker RAII; one fixture per subprocess.
             auto ks_curve_ = pylabhub::tests::make_curve_setup({});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture_(
-                "test", "test.l3.lua_hub_integration", ks_curve_);
+            pylabhub::tests::seed_curve_identities(ks_curve_);
 
             HubHost host(std::move(cfg));
             ASSERT_NO_THROW(host.startup());

@@ -7,7 +7,7 @@
 //   - All test brokers come up CURVE-only via the canonical
 //     `pylabhub::tests::start_direct_broker(cfg, setup)` path
 //     (HEP-CORE-0035 §2 + §4.6.5 — no bypass switch).
-//   - Per-test `CurveKeyStoreFixture` seeds `hub_identity` +
+//   - Per-test `seed_curve_identities()` seeds `hub_identity` +
 //     `role.<uid>` for every uid the test will use as a BRC client.
 //   - REG_REQ / CONSUMER_REG_REQ payloads come from the canonical
 //     `make_reg_opts` / `make_cons_opts` helpers in
@@ -48,7 +48,6 @@ using namespace pylabhub::hub;
 using pylabhub::broker::BrokerService;
 using pylabhub::broker::RoleStateMetrics;
 using pylabhub::tests::BrcHandle;
-using pylabhub::tests::CurveKeyStoreFixture;
 using pylabhub::tests::DirectBrokerHandle;
 using pylabhub::tests::role_keystore_name;
 
@@ -56,7 +55,6 @@ namespace pylabhub::tests::worker::broker_role_state
 {
 
 static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
-static auto crypto_module() { return ::pylabhub::crypto::GetLifecycleModule(); }
 static auto zmq_module()    { return ::pylabhub::hub::GetZMQContextModule(); }
 
 // ============================================================================
@@ -71,7 +69,7 @@ int metrics_reclaim_cycle()
             const std::string uid = "prod." + ch;
 
             auto curve = pylabhub::tests::make_curve_setup({uid});
-            CurveKeyStoreFixture ks_fixture("test.l3", "role_state.metrics_cycle", curve);
+            pylabhub::tests::seed_curve_identities(curve);
 
             BrokerService::Config cfg;
             cfg.endpoint = "tcp://127.0.0.1:0";
@@ -114,7 +112,7 @@ int metrics_reclaim_cycle()
             broker.stop_and_join();
         },
         "role_state.metrics_reclaim_cycle",
-        logger_module(), crypto_module(), zmq_module());
+        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
 }
 
 // ============================================================================
@@ -129,7 +127,7 @@ int pending_recovers_to_ready()
             const std::string uid = "prod." + ch;
 
             auto curve = pylabhub::tests::make_curve_setup({uid});
-            CurveKeyStoreFixture ks_fixture("test.l3", "role_state.recover", curve);
+            pylabhub::tests::seed_curve_identities(curve);
 
             BrokerService::Config cfg;
             cfg.endpoint = "tcp://127.0.0.1:0";
@@ -172,7 +170,7 @@ int pending_recovers_to_ready()
             broker.stop_and_join();
         },
         "role_state.pending_recovers_to_ready",
-        logger_module(), crypto_module(), zmq_module());
+        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
 }
 
 // ============================================================================
@@ -187,7 +185,7 @@ int stuck_in_pending_reclaimed()
             const std::string uid = "prod." + ch;
 
             auto curve = pylabhub::tests::make_curve_setup({uid});
-            CurveKeyStoreFixture ks_fixture("test.l3", "role_state.stuck_pending", curve);
+            pylabhub::tests::seed_curve_identities(curve);
 
             // Per HEP-CORE-0023 §2.1 the registered-but-never-heartbeat
             // case is `Connected` with `first_heartbeat_seen=false`
@@ -231,7 +229,7 @@ int stuck_in_pending_reclaimed()
             broker.stop_and_join();
         },
         "role_state.stuck_in_pending_reclaimed",
-        logger_module(), crypto_module(), zmq_module());
+        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
 }
 
 // ============================================================================
@@ -249,7 +247,7 @@ int band_membership_cleaned_on_role_close()
             const std::string band    = "!" + make_test_channel_name("test.band");
 
             auto curve = pylabhub::tests::make_curve_setup({uid_a, uid_b});
-            CurveKeyStoreFixture ks_fixture("test.l3", "role_state.band_close", curve);
+            pylabhub::tests::seed_curve_identities(curve);
 
             BrokerService::Config cfg;
             cfg.endpoint = "tcp://127.0.0.1:0";
@@ -304,7 +302,7 @@ int band_membership_cleaned_on_role_close()
             broker.stop_and_join();
         },
         "role_state.band_membership_cleaned_on_role_close",
-        logger_module(), crypto_module(), zmq_module());
+        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
 }
 
 // ============================================================================
@@ -324,7 +322,7 @@ int role_entry_terminal_cleanup_on_last_presence_dereg()
             const std::string uid = "prod." + ch;
 
             auto curve = pylabhub::tests::make_curve_setup({uid});
-            CurveKeyStoreFixture ks_fixture("test.l3", "role_state.cleanup_prod", curve);
+            pylabhub::tests::seed_curve_identities(curve);
 
             BrokerService::Config cfg;
             cfg.endpoint = "tcp://127.0.0.1:0";
@@ -364,7 +362,7 @@ int role_entry_terminal_cleanup_on_last_presence_dereg()
             broker.stop_and_join();
         },
         "role_state.role_entry_terminal_cleanup_on_last_presence_dereg",
-        logger_module(), crypto_module(), zmq_module());
+        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
 }
 
 // ============================================================================
@@ -383,7 +381,7 @@ int role_entry_terminal_cleanup_on_consumer_left_last()
             const std::string cons_uid   = "cons." + ch;
 
             auto curve = pylabhub::tests::make_curve_setup({prod_uid, cons_uid});
-            CurveKeyStoreFixture ks_fixture("test.l3", "role_state.cleanup_cons", curve);
+            pylabhub::tests::seed_curve_identities(curve);
 
             BrokerService::Config cfg;
             cfg.endpoint = "tcp://127.0.0.1:0";
@@ -441,7 +439,7 @@ int role_entry_terminal_cleanup_on_consumer_left_last()
             broker.stop_and_join();
         },
         "role_state.role_entry_terminal_cleanup_on_consumer_left_last",
-        logger_module(), crypto_module(), zmq_module());
+        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
 }
 
 // ============================================================================
@@ -463,7 +461,7 @@ int consumer_heartbeat_timeout_fires_consumer_died_notify()
             const std::string cons_uid = "cons." + ch;
 
             auto curve = pylabhub::tests::make_curve_setup({prod_uid, cons_uid});
-            CurveKeyStoreFixture ks_fixture("test.l3", "role_state.cons_hb_timeout", curve);
+            pylabhub::tests::seed_curve_identities(curve);
 
             // Match the other state-machine tests: 150 ms each side
             // gives ~300 ms minimum + ~100 ms broker sweep cadence.
@@ -605,7 +603,7 @@ int consumer_heartbeat_timeout_fires_consumer_died_notify()
             broker.stop_and_join();
         },
         "role_state.consumer_heartbeat_timeout_fires_consumer_died_notify",
-        logger_module(), crypto_module(), zmq_module());
+        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
 }
 
 // RE-LAYERED 2026-06-27 — the 4 `role_handler_*` worker bodies that
@@ -644,13 +642,13 @@ int role_api_base_start_handler_threads_e2e()
             const std::string channel  = make_test_channel_name("m4c.e2e");
 
             auto curve = pylabhub::tests::make_curve_setup({role_uid});
-            CurveKeyStoreFixture ks_fixture("test.l3", "m4c.e2e", curve);
+            pylabhub::tests::seed_curve_identities(curve);
             // RoleAPIBase/RoleHandler's internal BRC uses
             // `kRoleIdentityName` ("role_identity") as the KeyStore
             // lookup name (HEP-CORE-0040 §172 + #173) — production
             // ships one role identity per process.  Seed the api
             // role's keys under that name too.
-            CurveKeyStoreFixture::add_identity(
+            pylabhub::tests::add_curve_identity(
                 pylabhub::utils::security::kRoleIdentityName,
                 curve.role(role_uid));
 
@@ -746,7 +744,7 @@ int role_api_base_start_handler_threads_e2e()
             broker.stop_and_join();
         },
         "role_state.role_api_base_start_handler_threads_e2e",
-        logger_module(), crypto_module(), zmq_module());
+        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
 }
 
 // ============================================================================
@@ -774,8 +772,8 @@ int role_api_base_band_join_handler_mode()
             const std::string band     = "!test_band_a0";  // R3.5: `!`-prefixed per HEP-0030 §3
 
             auto curve = pylabhub::tests::make_curve_setup({role_uid});
-            CurveKeyStoreFixture ks_fixture("test.l3", "a0_band", curve);
-            CurveKeyStoreFixture::add_identity(
+            pylabhub::tests::seed_curve_identities(curve);
+            pylabhub::tests::add_curve_identity(
                 pylabhub::utils::security::kRoleIdentityName,
                 curve.role(role_uid));
 
@@ -839,7 +837,7 @@ int role_api_base_band_join_handler_mode()
             broker.stop_and_join();
         },
         "role_state.role_api_base_band_join_handler_mode",
-        logger_module(), crypto_module(), zmq_module());
+        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
 }
 
 // ============================================================================
@@ -871,7 +869,7 @@ int broker_band_rejects_invalid_identifier()
             const std::string role_uid = "prod.r35.uid00000001";
 
             auto curve = pylabhub::tests::make_curve_setup({role_uid});
-            CurveKeyStoreFixture ks_fixture("test.l3", "r35", curve);
+            pylabhub::tests::seed_curve_identities(curve);
 
             BrokerService::Config bcfg;
             bcfg.endpoint = "tcp://127.0.0.1:0";
@@ -941,7 +939,7 @@ int broker_band_rejects_invalid_identifier()
             broker.stop_and_join();
         },
         "role_state.broker_band_rejects_invalid_identifier",
-        logger_module(), crypto_module(), zmq_module());
+        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
 }
 
 // ============================================================================
@@ -987,9 +985,9 @@ int role_api_base_band_notify_wire_field_and_routing()
             const std::string band       = "!" + make_test_channel_name("b1.band");
 
             auto curve = pylabhub::tests::make_curve_setup({role_uid_a, role_uid_b});
-            CurveKeyStoreFixture ks_fixture("test.l3", "b1", curve);
+            pylabhub::tests::seed_curve_identities(curve);
             // role A is the api role; role B is a raw BRC.
-            CurveKeyStoreFixture::add_identity(
+            pylabhub::tests::add_curve_identity(
                 pylabhub::utils::security::kRoleIdentityName,
                 curve.role(role_uid_a));
 
@@ -1107,7 +1105,7 @@ int role_api_base_band_notify_wire_field_and_routing()
             broker.stop_and_join();
         },
         "role_state.role_api_base_band_notify_wire_field_and_routing",
-        logger_module(), crypto_module(), zmq_module());
+        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
 }
 
 // ============================================================================
@@ -1153,8 +1151,8 @@ int role_api_base_registration_fsm_transitions()
             const std::string channel  = make_test_channel_name("s1.chan");
 
             auto curve = pylabhub::tests::make_curve_setup({role_uid});
-            CurveKeyStoreFixture ks_fixture("test.l3", "s1", curve);
-            CurveKeyStoreFixture::add_identity(
+            pylabhub::tests::seed_curve_identities(curve);
+            pylabhub::tests::add_curve_identity(
                 pylabhub::utils::security::kRoleIdentityName,
                 curve.role(role_uid));
 
@@ -1263,7 +1261,7 @@ int role_api_base_registration_fsm_transitions()
             broker.stop_and_join();
         },
         "role_state.role_api_base_registration_fsm_transitions",
-        logger_module(), crypto_module(), zmq_module());
+        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
 }
 
 } // namespace pylabhub::tests::worker::broker_role_state

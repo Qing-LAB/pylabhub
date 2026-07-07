@@ -4,7 +4,7 @@
  *        fd-source ctors + `create_datablock_producer_from_fd_impl` /
  *        `find_datablock_consumer_from_fd_impl` factories.
  *
- * Pattern 1+ — binary-wide `LifecycleGuard` for `Logger` + `CryptoUtils`
+ * Pattern 1+ — binary-wide `LifecycleGuard` for `Logger` + `SecureSubsystem`
  * + `DataBlock` (the fd-source factories require
  * `pylabhub::hub::GetDataBlockModule()` per the same contract as the
  * name-based factories).  No cross-test state.
@@ -32,8 +32,8 @@
  * Test isolation: each TEST_F gets its own memfd / socketpair / socket
  * path; the fixture closes/unlinks on TearDown.
  */
+#include "utils/security/secure_subsystem.hpp"
 #include "binary_lifecycle.h"
-#include "utils/crypto_utils.hpp"
 #include "utils/data_block.hpp"
 #include "utils/data_block_config.hpp"
 #include "utils/data_block_policy.hpp"
@@ -71,11 +71,11 @@ using pylabhub::hub::find_datablock_consumer_from_fd_impl;
 using pylabhub::utils::security::attach_shm_capability_consumer;
 using pylabhub::utils::security::create_shm_capability_producer;
 
-// Register binary-wide lifecycle: Logger + CryptoUtils + DataBlock.
+// Register binary-wide lifecycle: Logger + SecureSubsystem + DataBlock.
 // DataBlock depends on the other two (per its module def).
 PLH_BINARY_LIFECYCLE_MODULES(
     pylabhub::utils::Logger::GetLifecycleModule(),
-    pylabhub::crypto::GetLifecycleModule(),
+    pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
     pylabhub::hub::GetDataBlockModule())
 
 namespace

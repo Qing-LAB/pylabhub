@@ -31,7 +31,6 @@ set(UTILS_SOURCES
   service/lifecycle_topology.cpp
   service/lifecycle_dynamic.cpp
   service/file_lock.cpp
-  service/crypto_utils.cpp
   service/vault_crypto.cpp
   service/hub_vault.cpp
   service/role_vault.cpp
@@ -57,10 +56,13 @@ set(UTILS_SOURCES
   security/known_roles.cpp         # pylabhub::utils::security (PeerAdmission Phase B)
   security/zap_router.cpp          # pylabhub::utils::security (PeerAdmission Phase C — caller-pumped)
   security/domain_routing_table.cpp # pylabhub::utils::security (HEP-CORE-0036 §7.4 — admission dispatch table)
-  security/secure_memory_subsystem.cpp # pylabhub::utils::security (HEP-CORE-0040 §4 — process-init lifecycle module)
-  security/key_store.cpp           # pylabhub::utils::security (HEP-CORE-0040 §5 — locked-memory secret store)
+  security/secure_subsystem.cpp # pylabhub::utils::security (HEP-CORE-0043 §1 + §2 — libsodium boundary + lifecycle facade)
+  security/key_store.cpp        # pylabhub::utils::security (HEP-CORE-0043 §2.2 + §7 — key management sub-container)
   security/shm_capability_channel.cpp # pylabhub::utils::security (HEP-CORE-0041 §6 — cross-platform SHM capability transport; backend lands task #249)
   security/attach_protocol.cpp     # pylabhub::utils::security (HEP-CORE-0041 §9 D4 — L2 producer-side challenge-response handshake; task #250)
+  security/attach_channel_shm.cpp  # pylabhub::utils::security (Phase 3 transport-abstraction — SHM/AF_UNIX binding of IAttachChannel)
+  security/attach_channel_zmq.cpp  # pylabhub::utils::security (Phase 4a transport-abstraction — ZMQ ROUTER/DEALER binding of IAttachChannel)
+  security/attach_protocol_zmq.cpp # pylabhub::utils::security (Phase 4c minimal — ZmqAttachProtocolAcceptor + initiate_zmq_consumer_handshake)
   security/shm_attach_orchestrator.cpp # pylabhub::utils::security (HEP-CORE-0041 §9 D4 steps 6-7 — broker pre-confirm + divergence WARN + send; task #252)
 
   # --- role hosts: lifecycle + data loop for each role ---

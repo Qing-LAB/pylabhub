@@ -35,7 +35,6 @@ namespace pylabhub::tests::worker::header_structure
 {
 
 static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
-static auto crypto_module() { return ::pylabhub::crypto::GetLifecycleModule(); }
 static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
 
 static bool has_nonzero_bytes(const std::array<uint8_t, 32> &arr)
@@ -76,7 +75,7 @@ int schema_hashes_populated_with_template_api()
 
             cleanup_test_datablock(channel);
         },
-        "schema_hashes_populated_with_template_api", logger_module(), crypto_module(),
+        "schema_hashes_populated_with_template_api", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         hub_module());
 }
 
@@ -119,7 +118,7 @@ int schema_hashes_zero_without_schema()
             transport.reset();
             cleanup_test_datablock(channel);
         },
-        "schema_hashes_zero_without_schema", logger_module(), crypto_module(), hub_module());
+        "schema_hashes_zero_without_schema", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -172,7 +171,7 @@ int different_types_produce_different_hashes()
             cleanup_test_datablock(ch1);
             cleanup_test_datablock(ch2);
         },
-        "different_types_produce_different_hashes", logger_module(), crypto_module(),
+        "different_types_produce_different_hashes", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         hub_module());
 }
 

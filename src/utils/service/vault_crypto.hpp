@@ -30,7 +30,12 @@
  */
 #pragma once
 
-#include <sodium.h>
+// Post-SEC-Fold-2 Phase 2 (HEP-CORE-0043 §1.2 mechanism 4): this
+// header does NOT include `<sodium.h>` directly.  Sodium constants
+// are hardcoded here — their values are stable ABI (libsodium has
+// preserved them for a decade); if libsodium ever changes them, the
+// static_asserts inside `secure_subsystem.cpp` catch the drift at
+// build time.
 
 #include <array>
 #include <cstddef>
@@ -43,29 +48,29 @@ namespace pylabhub::utils::detail
 {
 
 // ── KDF parameters ────────────────────────────────────────────────────────────
-// Selected at compile time via -DPYLABHUB_VAULT_HIGH_SECURITY or
-// -DPYLABHUB_VAULT_TEST_KDF.  Both create and open sites must be
+// Selected at compile time.  Both create and open sites must be
 // compiled with the same setting; a vault written at one level cannot
 // be opened at another.
+//
+// Values hardcoded from libsodium 1.0.18+ constants:
+//   INTERACTIVE: opslimit=2, memlimit=64 MiB     (default; ~100 ms/hash)
+//   SENSITIVE:   opslimit=4, memlimit=1024 MiB   (high-sec; ~5 s/hash)
+//   MIN:         opslimit=1, memlimit=8192       (test; ~1 ms/hash)
 #if defined(PYLABHUB_VAULT_TEST_KDF)
-// Test-only fast path.  MIN params yield ~1 ms keygen with trivial
-// cracking resistance — acceptable because this define is only set
-// for BUILD_TESTS=ON + CI configurations where the vault contents
-// never escape the test directory.  See vault_crypto.hpp header doc.
-constexpr unsigned long long kVaultOpsLimit = crypto_pwhash_OPSLIMIT_MIN;
-constexpr std::size_t        kVaultMemLimit = crypto_pwhash_MEMLIMIT_MIN;
+constexpr unsigned long long kVaultOpsLimit = 1ULL;
+constexpr std::size_t        kVaultMemLimit = 8192U;
 #elif defined(PYLABHUB_VAULT_HIGH_SECURITY)
-constexpr unsigned long long kVaultOpsLimit = crypto_pwhash_OPSLIMIT_SENSITIVE;
-constexpr std::size_t        kVaultMemLimit = crypto_pwhash_MEMLIMIT_SENSITIVE;
+constexpr unsigned long long kVaultOpsLimit = 4ULL;
+constexpr std::size_t        kVaultMemLimit = 1073741824U; // 1 GiB
 #else
-constexpr unsigned long long kVaultOpsLimit = crypto_pwhash_OPSLIMIT_INTERACTIVE;
-constexpr std::size_t        kVaultMemLimit = crypto_pwhash_MEMLIMIT_INTERACTIVE;
+constexpr unsigned long long kVaultOpsLimit = 2ULL;
+constexpr std::size_t        kVaultMemLimit = 67108864U;   // 64 MiB
 #endif
 
-constexpr std::size_t kVaultKeyBytes   = crypto_secretbox_KEYBYTES;   // 32
-constexpr std::size_t kVaultNonceBytes = crypto_secretbox_NONCEBYTES; // 24
-constexpr std::size_t kVaultMacBytes   = crypto_secretbox_MACBYTES;   // 16
-constexpr std::size_t kVaultSaltBytes  = crypto_pwhash_SALTBYTES;     // 16
+constexpr std::size_t kVaultKeyBytes   = 32U;  // crypto_secretbox_KEYBYTES
+constexpr std::size_t kVaultNonceBytes = 24U;  // crypto_secretbox_NONCEBYTES
+constexpr std::size_t kVaultMacBytes   = 16U;  // crypto_secretbox_MACBYTES
+constexpr std::size_t kVaultSaltBytes  = 16U;  // crypto_pwhash_SALTBYTES
 
 // ── Function declarations ─────────────────────────────────────────────────────
 

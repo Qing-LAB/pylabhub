@@ -4,8 +4,7 @@
  */
 #include "utils/uuid_utils.hpp"
 #include "utils/debug_info.hpp"
-
-#include <sodium.h>
+#include "utils/security/secure_subsystem.hpp"
 
 #include <cctype>
 #include <cstdint>
@@ -15,13 +14,12 @@ namespace pylabhub::utils
 
 std::string generate_uuid4()
 {
-    // sodium_init is SecureMemorySubsystem's job (HEP-CORE-0040 §4.0).
-    // Self-init call removed 2026-07-04.  If sodium isn't ready,
-    // `randombytes_buf` below has undefined behaviour — but that's
-    // the caller's problem (they must construct SMS first).  The gate
-    // lives at the SMS module boundary, not here.
+    // Random bytes via SMS's Cat 1 wrapper — SMS is the libsodium
+    // boundary (HEP-CORE-0043 §1.2).  The wrapper PANICs if SMS is
+    // not `Initialized`, so the caller-must-construct-SMS invariant
+    // is enforced at this call site.
     uint8_t bytes[16];
-    randombytes_buf(bytes, sizeof(bytes));
+    pylabhub::utils::security::secure().random_bytes(bytes, sizeof(bytes));
 
     // RFC 4122 §4.4 — set version and variant nibbles.
     bytes[6] = static_cast<uint8_t>((bytes[6] & 0x0FU) | 0x40U);  // version = 4

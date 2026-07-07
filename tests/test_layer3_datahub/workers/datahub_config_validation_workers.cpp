@@ -26,7 +26,6 @@ namespace pylabhub::tests::worker::config_validation
 {
 
 static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
-static auto crypto_module() { return ::pylabhub::crypto::GetLifecycleModule(); }
 static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
 
 // Returns a fully-valid baseline config. Tests override individual fields to trigger throws.
@@ -90,7 +89,7 @@ int policy_unset_throws()
             expect_invalid_arg(channel, cfg, DataBlockPolicy::Unset,
                                "DataBlockConfig::policy must be set explicitly");
         },
-        "policy_unset_throws", logger_module(), crypto_module(), hub_module());
+        "policy_unset_throws", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -110,7 +109,7 @@ int consumer_sync_policy_unset_throws()
             expect_invalid_arg(channel, cfg, cfg.policy,
                                "DataBlockConfig::consumer_sync_policy must be set explicitly");
         },
-        "consumer_sync_policy_unset_throws", logger_module(), crypto_module(), hub_module());
+        "consumer_sync_policy_unset_throws", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -130,7 +129,7 @@ int physical_page_size_unset_throws()
             expect_invalid_arg(channel, cfg, cfg.policy,
                                "DataBlockConfig::physical_page_size must be set explicitly");
         },
-        "physical_page_size_unset_throws", logger_module(), crypto_module(), hub_module());
+        "physical_page_size_unset_throws", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -150,7 +149,7 @@ int ring_buffer_capacity_zero_throws()
             expect_invalid_arg(channel, cfg, cfg.policy,
                                "DataBlockConfig::ring_buffer_capacity must be set");
         },
-        "ring_buffer_capacity_zero_throws", logger_module(), crypto_module(), hub_module());
+        "ring_buffer_capacity_zero_throws", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -173,7 +172,7 @@ int valid_config_creates_successfully()
             producer.reset();
             cleanup_test_datablock(channel);
         },
-        "valid_config_creates_successfully", logger_module(), crypto_module(), hub_module());
+        "valid_config_creates_successfully", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -206,7 +205,7 @@ int sub_cache_line_logical_size_rounds_up()
             producer.reset();
             cleanup_test_datablock(channel);
         },
-        "sub_cache_line_logical_size_rounds_up", logger_module(), crypto_module(), hub_module());
+        "sub_cache_line_logical_size_rounds_up", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 } // namespace pylabhub::tests::worker::config_validation

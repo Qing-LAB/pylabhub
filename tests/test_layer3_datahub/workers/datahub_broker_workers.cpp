@@ -50,7 +50,6 @@ namespace pylabhub::tests::worker::broker
 static auto logger_module()    { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
 static auto file_lock_module() { return ::pylabhub::utils::FileLock::GetLifecycleModule(); }
 static auto json_module()      { return ::pylabhub::utils::JsonConfig::GetLifecycleModule(); }
-static auto crypto_module()    { return ::pylabhub::crypto::GetLifecycleModule(); }
 static auto hub_module()       { return ::pylabhub::hub::GetDataBlockModule(); }
 static auto zmq_module()       { return ::pylabhub::hub::GetZMQContextModule(); }
 
@@ -177,12 +176,12 @@ std::filesystem::path make_test_hub_directory(const std::vector<std::string> &sc
 // `CurveSetup`.  This helper does the same so admission accepts every
 // uid the caller declares — required for every BRC `connect()` AND
 // every `raw_req()` that uses a `role_identity_name` (the seckey it
-// pulls from `key_store()` only works through ZAP if the matching
+// pulls from `secure().keys()` only works through ZAP if the matching
 // pubkey is also in `known_roles.json`).
 //
-// Callers seed their `CurveSetup` via `CurveKeyStoreFixture` in scope
+// Callers seed their `CurveSetup` via `seed_curve_identities()` in scope
 // BEFORE calling — that fixture seeds `kHubIdentityName` + `role.<uid>`
-// into `key_store()` (HEP-CORE-0040 §172).  HubHost::startup() reads
+// into `secure().keys()` (HEP-CORE-0040 §172).  HubHost::startup() reads
 // `kHubIdentityName` from the KeyStore to wire its own CURVE identity.
 BrokerHandle start_broker_in_thread(BrokerService::Config cfg,
                                     const pylabhub::tests::CurveSetup &curve)
@@ -210,35 +209,33 @@ BrokerHandle start_broker_in_thread(BrokerService::Config cfg,
 }
 
 // setup_broker_test — single-call helper that collapses the 5-line test
-// preamble (`Config cfg; make_curve_setup; CurveKeyStoreFixture;
+// preamble (`Config cfg; make_curve_setup; seed_curve_identities;
 // start_broker_in_thread`) into one line.  Returns the broker handle
 // plus the seeded fixture; the fixture is heap-allocated so it can be
 // returned through a move-only carrier and stays alive for the
-// caller's stack frame (CurveKeyStoreFixture itself is non-movable).
+// caller's stack frame (seed_curve_identities itself is non-movable).
 //
 // `schema_search_dirs` lets a test seed hub-global schema files
 // (HEP-CORE-0034 §12) at broker startup time — the 4 hub-globals
 // tests use this; others pass nothing.
 struct BrokerTestEnv
 {
-    BrokerHandle                                                  broker;
-    std::unique_ptr<pylabhub::tests::CurveKeyStoreFixture>        ks_fixture;
+    BrokerHandle broker;
 };
 
 BrokerTestEnv setup_broker_test(std::vector<std::string>  uids,
-                                std::string_view          tag,
+                                std::string_view          /*tag*/,
                                 std::vector<std::string>  schema_search_dirs = {})
 {
-    // CURVE setup: seed `key_store()` + `vault/known_roles.json` so the
+    // CURVE setup: seed `secure().keys()` + `vault/known_roles.json` so the
     // broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8) admits each role
     // uid we'll register below.
     auto curve = pylabhub::tests::make_curve_setup(std::move(uids));
-    auto ks    = std::make_unique<pylabhub::tests::CurveKeyStoreFixture>(
-        "test.l3", std::string{tag}, curve);
+    pylabhub::tests::seed_curve_identities(curve);
     BrokerService::Config cfg;
     cfg.schema_search_dirs = std::move(schema_search_dirs);
     auto broker = start_broker_in_thread(std::move(cfg), curve);
-    return {std::move(broker), std::move(ks)};
+    return {std::move(broker)};
 }
 
 } // anonymous namespace
@@ -248,7 +245,7 @@ BrokerTestEnv setup_broker_test(std::vector<std::string>  uids,
 // returns the parsed response body JSON.  Optionally enables CurveZMQ when
 // server_pubkey is a 40-char Z85 string.
 //
-// `role_identity_name`: identity name in `key_store()` to authenticate as.
+// `role_identity_name`: identity name in `secure().keys()` to authenticate as.
 // REQUIRED whenever `server_pubkey` is non-empty (i.e. a CURVE handshake
 // is happening) per HEP-CORE-0035 §2 + #157 strict-CURVE: the broker is
 // unconditionally CURVE-only and `start_broker_in_thread` mandates a
@@ -290,8 +287,8 @@ static void apply_5b_canonical_fields(nlohmann::json &req,
     namespace sec = pylabhub::utils::security;
     const std::string ks_name =
         pylabhub::tests::role_keystore_name(wire_identity_uid);
-    if (!req.contains("zmq_pubkey") && sec::key_store().has(ks_name))
-        req["zmq_pubkey"] = std::string{sec::key_store().pubkey(ks_name)};
+    if (!req.contains("zmq_pubkey") && sec::secure().keys().has(ks_name))
+        req["zmq_pubkey"] = std::string{sec::secure().keys().pubkey(ks_name)};
     if (!req.contains("role_type"))
         req["role_type"] = is_cons ? "consumer" : "producer";
     if (!is_cons)
@@ -368,11 +365,11 @@ nlohmann::json raw_req(const std::string& endpoint,
         namespace sec = pylabhub::utils::security;
         // `role_identity_name` is the raw uid string the caller
         // owns; the KeyStore entry name is the prefixed
-        // `role.<uid>` form seeded by `CurveKeyStoreFixture`
+        // `role.<uid>` form seeded by `seed_curve_identities()`
         // (see `pylabhub::tests::role_keystore_name`).
         const std::string ks_name =
             pylabhub::tests::role_keystore_name(role_identity_name);
-        sec::key_store().with_keypair_z85(
+        sec::secure().keys().with_keypair_z85(
             ks_name,
             [&](std::string_view pub_z85, std::string_view sec_z85) {
                 dealer.set(zmq::sockopt::curve_publickey,
@@ -463,7 +460,7 @@ void raw_heartbeat(const std::string &endpoint,
         dealer.set(zmq::sockopt::curve_serverkey, server_pubkey);
         const std::string ks_name =
             pylabhub::tests::role_keystore_name(producer_uid);
-        sec::key_store().with_keypair_z85(
+        sec::secure().keys().with_keypair_z85(
             ks_name,
             [&](std::string_view pub_z85, std::string_view sec_z85) {
                 dealer.set(zmq::sockopt::curve_publickey,
@@ -506,7 +503,7 @@ int broker_reg_disc_happy_path()
     return run_gtest_worker(
         []()
         {
-            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.ch1.uid00000001"},
+            auto [broker] = setup_broker_test({"prod.broker.ch1.uid00000001"},
 
                 "broker.broker_reg_disc_happy_path");
 
@@ -530,7 +527,7 @@ int broker_reg_disc_happy_path()
                     .has_shm    = true,
                     .is_zmq_transport  = false,
                     .zmq_node_endpoint = {},
-                    .zmq_pubkey = std::string{sec::key_store().pubkey(
+                    .zmq_pubkey = std::string{sec::secure().keys().pubkey(
                         pylabhub::tests::role_keystore_name(uid))},
                     .shm_capability_endpoint =
                         sec::default_shm_capability_endpoint(channel),
@@ -554,7 +551,7 @@ int broker_reg_disc_happy_path()
         },
         "broker.broker_reg_disc_happy_path",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), hub_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
 }
 
 // ============================================================================
@@ -566,7 +563,7 @@ int broker_schema_mismatch()
     return run_gtest_worker(
         []()
         {
-            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.mismatch.uid00000001"},
+            auto [broker] = setup_broker_test({"prod.broker.mismatch.uid00000001"},
 
                 "broker.broker_schema_mismatch");
 
@@ -604,7 +601,7 @@ int broker_schema_mismatch()
         },
         "broker.broker_schema_mismatch",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), hub_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
 }
 
 // ============================================================================
@@ -616,7 +613,7 @@ int broker_channel_not_found()
     return run_gtest_worker(
         []()
         {
-            auto [broker, _ks_fix] = setup_broker_test({"prod.querier.notfound.uid00000001"},
+            auto [broker] = setup_broker_test({"prod.querier.notfound.uid00000001"},
 
                 "broker.broker_channel_not_found");
 
@@ -633,7 +630,7 @@ int broker_channel_not_found()
         },
         "broker.broker_channel_not_found",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), hub_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
 }
 
 // ============================================================================
@@ -645,7 +642,7 @@ int broker_dereg_happy_path()
     return run_gtest_worker(
         []()
         {
-            auto [broker, _ks_fix] = setup_broker_test({"prod.dereg.ch.uid00000001"},
+            auto [broker] = setup_broker_test({"prod.dereg.ch.uid00000001"},
 
                 "broker.broker_dereg_happy_path");
 
@@ -666,7 +663,7 @@ int broker_dereg_happy_path()
                     .has_shm    = true,
                     .is_zmq_transport  = false,
                     .zmq_node_endpoint = {},
-                    .zmq_pubkey = std::string{sec::key_store().pubkey(
+                    .zmq_pubkey = std::string{sec::secure().keys().pubkey(
                         pylabhub::tests::role_keystore_name(uid))},
                     .shm_capability_endpoint =
                         sec::default_shm_capability_endpoint(channel),
@@ -702,7 +699,7 @@ int broker_dereg_happy_path()
         },
         "broker.broker_dereg_happy_path",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), hub_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
 }
 
 // ============================================================================
@@ -715,7 +712,7 @@ int broker_dereg_pid_mismatch()
     return run_gtest_worker(
         []()
         {
-            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.pid_mismatch.uid00000001"},
+            auto [broker] = setup_broker_test({"prod.broker.pid_mismatch.uid00000001"},
 
                 "broker.broker_dereg_pid_mismatch");
 
@@ -778,7 +775,7 @@ int broker_dereg_pid_mismatch()
         },
         "broker.broker_dereg_pid_mismatch",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), hub_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
 }
 
 // ============================================================================
@@ -794,7 +791,7 @@ int broker_dereg_missing_role_uid_rejected()
     return run_gtest_worker(
         []()
         {
-            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.missing_uid.uid00000001", "cons.broker.missing_uid.uid00000001"},
+            auto [broker] = setup_broker_test({"prod.broker.missing_uid.uid00000001", "cons.broker.missing_uid.uid00000001"},
 
                 "broker.broker_dereg_missing_role_uid_rejected");
 
@@ -865,7 +862,7 @@ int broker_dereg_missing_role_uid_rejected()
         },
         "broker.broker_dereg_missing_role_uid_rejected",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), hub_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
 }
 
 // ============================================================================
@@ -898,7 +895,7 @@ int broker_gate_reg_req_rejects_empty_uid()
 {
     return run_gtest_worker(
         []() {
-            auto [broker, _ks_fix] = setup_broker_test({"wire.gate.uid00000099"},
+            auto [broker] = setup_broker_test({"wire.gate.uid00000099"},
 
                 "broker.broker_gate_reg_req_rejects_empty_uid");
             // REG_REQ with empty role_uid → INVALID_REQUEST (grammar).
@@ -916,14 +913,14 @@ int broker_gate_reg_req_rejects_empty_uid()
         },
         "broker.gate_reg_req_rejects_empty_uid",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), hub_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
 }
 
 int broker_gate_reg_req_rejects_malformed_uid()
 {
     return run_gtest_worker(
         []() {
-            auto [broker, _ks_fix] = setup_broker_test({"wire.gate.uid00000099"},
+            auto [broker] = setup_broker_test({"wire.gate.uid00000099"},
 
                 "broker.broker_gate_reg_req_rejects_malformed_uid");
             // "not-a-uid" → single component, no '.' → fails grammar.
@@ -951,14 +948,14 @@ int broker_gate_reg_req_rejects_malformed_uid()
         },
         "broker.gate_reg_req_rejects_malformed_uid",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), hub_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
 }
 
 int broker_gate_reg_req_rejects_consumer_tag()
 {
     return run_gtest_worker(
         []() {
-            auto [broker, _ks_fix] = setup_broker_test({"wire.gate.uid00000099"},
+            auto [broker] = setup_broker_test({"wire.gate.uid00000099"},
 
                 "broker.broker_gate_reg_req_rejects_consumer_tag");
             // role_uid="cons.x.y" on REG_REQ → INVALID_ROLE_TAG.
@@ -973,14 +970,14 @@ int broker_gate_reg_req_rejects_consumer_tag()
         },
         "broker.gate_reg_req_rejects_consumer_tag",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), hub_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
 }
 
 int broker_gate_reg_req_accepts_proc_tag()
 {
     return run_gtest_worker(
         []() {
-            auto [broker, _ks_fix] = setup_broker_test({"proc.r35b.uid00000001"},
+            auto [broker] = setup_broker_test({"proc.r35b.uid00000001"},
 
                 "broker.broker_gate_reg_req_accepts_proc_tag");
             // role_uid="proc.x.y" on REG_REQ → success.  Processor
@@ -997,14 +994,14 @@ int broker_gate_reg_req_accepts_proc_tag()
         },
         "broker.gate_reg_req_accepts_proc_tag",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), hub_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
 }
 
 int broker_gate_consumer_reg_req_rejects_producer_tag()
 {
     return run_gtest_worker(
         []() {
-            auto [broker, _ks_fix] = setup_broker_test({"prod.r35b.cregwt.uid00000001", "prod.r35b.intruder.uid00000002"},
+            auto [broker] = setup_broker_test({"prod.r35b.cregwt.uid00000001", "prod.r35b.intruder.uid00000002"},
 
                 "broker.broker_gate_consumer_reg_req_rejects_producer_tag");
             // Need a channel to register a consumer to.
@@ -1029,14 +1026,14 @@ int broker_gate_consumer_reg_req_rejects_producer_tag()
         },
         "broker.gate_consumer_reg_req_rejects_producer_tag",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), hub_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
 }
 
 int broker_gate_consumer_reg_req_accepts_proc_tag()
 {
     return run_gtest_worker(
         []() {
-            auto [broker, _ks_fix] = setup_broker_test({"prod.r35b.cregproc.uid00000001", "proc.r35b.cregproc.uid00000002"},
+            auto [broker] = setup_broker_test({"prod.r35b.cregproc.uid00000001", "proc.r35b.cregproc.uid00000002"},
 
                 "broker.broker_gate_consumer_reg_req_accepts_proc_tag");
             const std::string channel  = "r35b.cregproc.ch";
@@ -1065,7 +1062,7 @@ int broker_gate_consumer_reg_req_accepts_proc_tag()
         },
         "broker.gate_consumer_reg_req_accepts_proc_tag",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), hub_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
 }
 
 // ============================================================================
@@ -1117,7 +1114,7 @@ int broker_sch_record_path_b_created()
     return run_gtest_worker(
         []()
         {
-            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.sch_b.uid00000001"},
+            auto [broker] = setup_broker_test({"prod.broker.sch_b.uid00000001"},
 
                 "broker.broker_sch_record_path_b_created");
 
@@ -1158,7 +1155,7 @@ int broker_sch_record_path_b_created()
         },
         "broker.broker_sch_record_path_b_created",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), hub_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
 }
 
 // ── Same uid + same schema_id on DIFFERENT channels, different fingerprints
@@ -1171,7 +1168,7 @@ int broker_sch_record_hash_mismatch_self()
     return run_gtest_worker(
         []()
         {
-            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.sch_mm.uid00000001"},
+            auto [broker] = setup_broker_test({"prod.broker.sch_mm.uid00000001"},
 
                 "broker.broker_sch_record_hash_mismatch_self");
 
@@ -1217,7 +1214,7 @@ int broker_sch_record_hash_mismatch_self()
         },
         "broker.broker_sch_record_hash_mismatch_self",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), hub_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
 }
 
 // ── Consumer named-citation (id + matching hash) → success ──────────────────
@@ -1237,7 +1234,7 @@ int broker_sch_consumer_citation_match()
     return run_gtest_worker(
         []()
         {
-            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.sch_cok.uid00000001", "cons.broker.sch_cok.uid00000002"},
+            auto [broker] = setup_broker_test({"prod.broker.sch_cok.uid00000001", "cons.broker.sch_cok.uid00000002"},
 
                 "broker.broker_sch_consumer_citation_match");
 
@@ -1280,7 +1277,7 @@ int broker_sch_consumer_citation_match()
         },
         "broker.broker_sch_consumer_citation_match",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), hub_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
 }
 
 // ── Consumer named-citation with WRONG hash → SCHEMA_CITATION_REJECTED ──────
@@ -1290,7 +1287,7 @@ int broker_sch_consumer_citation_mismatch()
     return run_gtest_worker(
         []()
         {
-            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.sch_cbad.uid00000001", "cons.broker.sch_cbad.uid00000002"},
+            auto [broker] = setup_broker_test({"prod.broker.sch_cbad.uid00000001", "cons.broker.sch_cbad.uid00000002"},
 
                 "broker.broker_sch_consumer_citation_mismatch");
 
@@ -1339,7 +1336,7 @@ int broker_sch_consumer_citation_mismatch()
         },
         "broker.broker_sch_consumer_citation_mismatch",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), hub_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
 }
 
 // ── REG_REQ without schema_packing → no record created (backward compat) ────
@@ -1349,7 +1346,7 @@ int broker_sch_no_packing_backward_compat()
     return run_gtest_worker(
         []()
         {
-            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.sch_bc.uid00000001"},
+            auto [broker] = setup_broker_test({"prod.broker.sch_bc.uid00000001"},
 
                 "broker.broker_sch_no_packing_backward_compat");
 
@@ -1382,7 +1379,7 @@ int broker_sch_no_packing_backward_compat()
         },
         "broker.broker_sch_no_packing_backward_compat",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), hub_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
 }
 
 // ── SCHEMA_REQ owner+id keying (HEP-0034 §10.3) ─────────────────────────────
@@ -1392,7 +1389,7 @@ int broker_sch_schema_req_owner_id()
     return run_gtest_worker(
         []()
         {
-            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.schreq.uid00000001"},
+            auto [broker] = setup_broker_test({"prod.broker.schreq.uid00000001"},
 
                 "broker.broker_sch_schema_req_owner_id");
 
@@ -1450,7 +1447,7 @@ int broker_sch_schema_req_owner_id()
         },
         "broker.broker_sch_schema_req_owner_id",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), hub_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
 }
 
 // ── Inbox path-A: REG_REQ inbox metadata creates record under (uid, "inbox") ─
@@ -1460,7 +1457,7 @@ int broker_sch_inbox_path_a()
     return run_gtest_worker(
         []()
         {
-            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.inbox.uid00000001"},
+            auto [broker] = setup_broker_test({"prod.broker.inbox.uid00000001"},
 
                 "broker.broker_sch_inbox_path_a");
 
@@ -1499,7 +1496,7 @@ int broker_sch_inbox_path_a()
         },
         "broker.broker_sch_inbox_path_a",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), hub_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
 }
 
 // ── Inbox: same uid, different inbox schema → SCHEMA_HASH_MISMATCH_SELF ─────
@@ -1509,7 +1506,7 @@ int broker_sch_inbox_hash_mismatch_self()
     return run_gtest_worker(
         []()
         {
-            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.ibmm.uid00000001"},
+            auto [broker] = setup_broker_test({"prod.broker.ibmm.uid00000001"},
 
                 "broker.broker_sch_inbox_hash_mismatch_self");
 
@@ -1541,7 +1538,7 @@ int broker_sch_inbox_hash_mismatch_self()
         },
         "broker.broker_sch_inbox_hash_mismatch_self",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), hub_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
 }
 
 // ── Inbox: idempotent re-registration (same uid + same fields → success) ────
@@ -1551,7 +1548,7 @@ int broker_sch_inbox_idempotent()
     return run_gtest_worker(
         []()
         {
-            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.idem.uid00000001"},
+            auto [broker] = setup_broker_test({"prod.broker.idem.uid00000001"},
 
                 "broker.broker_sch_inbox_idempotent");
 
@@ -1583,7 +1580,7 @@ int broker_sch_inbox_idempotent()
         },
         "broker.broker_sch_inbox_idempotent",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), hub_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
 }
 
 // ── Inbox: malformed inbox_schema_json → INBOX_SCHEMA_INVALID ───────────────
@@ -1593,7 +1590,7 @@ int broker_sch_inbox_invalid_json()
     return run_gtest_worker(
         []()
         {
-            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.ibj.uid00000001", "prod.broker.ibj.uid000000011"},
+            auto [broker] = setup_broker_test({"prod.broker.ibj.uid00000001", "prod.broker.ibj.uid000000011"},
 
                 "broker.broker_sch_inbox_invalid_json");
 
@@ -1630,7 +1627,7 @@ int broker_sch_inbox_invalid_json()
         },
         "broker.broker_sch_inbox_invalid_json",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), hub_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
 }
 
 // ── Inbox: two different roles, each with own inbox → both records exist ────
@@ -1640,7 +1637,7 @@ int broker_sch_inbox_two_owners()
     return run_gtest_worker(
         []()
         {
-            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.ib2a.uid00000001", "prod.broker.ib2b.uid00000002"},
+            auto [broker] = setup_broker_test({"prod.broker.ib2a.uid00000001", "prod.broker.ib2b.uid00000002"},
 
                 "broker.broker_sch_inbox_two_owners");
 
@@ -1693,7 +1690,7 @@ int broker_sch_inbox_two_owners()
         },
         "broker.broker_sch_inbox_two_owners",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), hub_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
 }
 
 // ── SCHEMA_REQ with no key fields → INVALID_REQUEST ─────────────────────────
@@ -1703,7 +1700,7 @@ int broker_sch_schema_req_invalid()
     return run_gtest_worker(
         []()
         {
-            auto [broker, _ks_fix] = setup_broker_test({"prod.test.uid00000001"},
+            auto [broker] = setup_broker_test({"prod.test.uid00000001"},
 
                 "broker.broker_sch_schema_req_invalid");
 
@@ -1728,7 +1725,7 @@ int broker_sch_schema_req_invalid()
         },
         "broker.broker_sch_schema_req_invalid",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), hub_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
 }
 
 // ── Inbox packing must be "aligned" or "packed" ─────────────────────────────
@@ -1738,7 +1735,7 @@ int broker_sch_inbox_invalid_packing()
     return run_gtest_worker(
         []()
         {
-            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.ibp.uid00000001"},
+            auto [broker] = setup_broker_test({"prod.broker.ibp.uid00000001"},
 
                 "broker.broker_sch_inbox_invalid_packing");
 
@@ -1759,7 +1756,7 @@ int broker_sch_inbox_invalid_packing()
         },
         "broker.broker_sch_inbox_invalid_packing",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), hub_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
 }
 
 // ── Phase 3 follow-up — Stage-2 verification + tightened gates ──────────────
@@ -1769,7 +1766,7 @@ int broker_sch_reg_missing_packing()
     return run_gtest_worker(
         []()
         {
-            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.miss_pack.uid00000001"},
+            auto [broker] = setup_broker_test({"prod.broker.miss_pack.uid00000001"},
 
                 "broker.broker_sch_reg_missing_packing");
 
@@ -1789,7 +1786,7 @@ int broker_sch_reg_missing_packing()
         },
         "broker.broker_sch_reg_missing_packing",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), hub_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
 }
 
 int broker_sch_reg_fingerprint_inconsistent()
@@ -1797,7 +1794,7 @@ int broker_sch_reg_fingerprint_inconsistent()
     return run_gtest_worker(
         []()
         {
-            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.fp_bad.uid00000001"},
+            auto [broker] = setup_broker_test({"prod.broker.fp_bad.uid00000001"},
 
                 "broker.broker_sch_reg_fingerprint_inconsistent");
 
@@ -1818,7 +1815,7 @@ int broker_sch_reg_fingerprint_inconsistent()
         },
         "broker.broker_sch_reg_fingerprint_inconsistent",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), hub_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
 }
 
 int broker_sch_cons_named_missing_hash()
@@ -1826,7 +1823,7 @@ int broker_sch_cons_named_missing_hash()
     return run_gtest_worker(
         []()
         {
-            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.cnh.uid00000001", "cons.broker.cnh.uid00000002"},
+            auto [broker] = setup_broker_test({"prod.broker.cnh.uid00000001", "cons.broker.cnh.uid00000002"},
 
                 "broker.broker_sch_cons_named_missing_hash");
 
@@ -1868,7 +1865,7 @@ int broker_sch_cons_named_missing_hash()
         },
         "broker.broker_sch_cons_named_missing_hash",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), hub_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
 }
 
 int broker_sch_cons_anonymous_happy_path()
@@ -1876,7 +1873,7 @@ int broker_sch_cons_anonymous_happy_path()
     return run_gtest_worker(
         []()
         {
-            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.canok.uid00000001", "cons.broker.canok.uid00000002"},
+            auto [broker] = setup_broker_test({"prod.broker.canok.uid00000001", "cons.broker.canok.uid00000002"},
 
                 "broker.broker_sch_cons_anonymous_happy_path");
 
@@ -1919,7 +1916,7 @@ int broker_sch_cons_anonymous_happy_path()
         },
         "broker.broker_sch_cons_anonymous_happy_path",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), hub_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
 }
 
 int broker_sch_cons_anonymous_missing_packing()
@@ -1927,7 +1924,7 @@ int broker_sch_cons_anonymous_missing_packing()
     return run_gtest_worker(
         []()
         {
-            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.canp.uid00000001", "cons.broker.canp.uid00000002"},
+            auto [broker] = setup_broker_test({"prod.broker.canp.uid00000001", "cons.broker.canp.uid00000002"},
 
                 "broker.broker_sch_cons_anonymous_missing_packing");
 
@@ -1962,7 +1959,7 @@ int broker_sch_cons_anonymous_missing_packing()
         },
         "broker.broker_sch_cons_anonymous_missing_packing",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), hub_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
 }
 
 int broker_sch_cons_named_with_structure_mismatch()
@@ -1970,7 +1967,7 @@ int broker_sch_cons_named_with_structure_mismatch()
     return run_gtest_worker(
         []()
         {
-            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.cnsb.uid00000001", "cons.broker.cnsb.uid00000002"},
+            auto [broker] = setup_broker_test({"prod.broker.cnsb.uid00000001", "cons.broker.cnsb.uid00000002"},
 
                 "broker.broker_sch_cons_named_with_structure_mismatch");
 
@@ -2016,7 +2013,7 @@ int broker_sch_cons_named_with_structure_mismatch()
         },
         "broker.broker_sch_cons_named_with_structure_mismatch",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), hub_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
 }
 
 int broker_sch_inbox_evicts_on_disconnect()
@@ -2024,7 +2021,7 @@ int broker_sch_inbox_evicts_on_disconnect()
     return run_gtest_worker(
         []()
         {
-            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.ibev.uid00000001"},
+            auto [broker] = setup_broker_test({"prod.broker.ibev.uid00000001"},
 
                 "broker.broker_sch_inbox_evicts_on_disconnect");
 
@@ -2078,7 +2075,7 @@ int broker_sch_inbox_evicts_on_disconnect()
         },
         "broker.broker_sch_inbox_evicts_on_disconnect",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), hub_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
 }
 
 // ============================================================================
@@ -2134,7 +2131,7 @@ int broker_sch_hub_globals_loaded_at_startup()
                 "lab.demo.frame", 1,
                 R"([{"name":"v","type":"float32"}])");
 
-            auto [broker, _ks_fix] = setup_broker_test({"wire.gate.uid00000099"},
+            auto [broker] = setup_broker_test({"wire.gate.uid00000099"},
 
 
                 "broker.broker_sch_hub_globals_loaded_at_startup",
@@ -2159,7 +2156,7 @@ int broker_sch_hub_globals_loaded_at_startup()
         },
         "broker.broker_sch_hub_globals_loaded_at_startup",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), hub_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
 }
 
 int broker_sch_path_c_adoption_succeeds()
@@ -2178,7 +2175,7 @@ int broker_sch_path_c_adoption_succeeds()
             const auto schema_root = make_global_schema_dir(
                 sid_dotted, 1, R"([{"name":"v","type":"float32"}])");
 
-            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.adopt.uid00000001"},
+            auto [broker] = setup_broker_test({"prod.broker.adopt.uid00000001"},
 
 
                 "broker.broker_sch_path_c_adoption_succeeds",
@@ -2211,7 +2208,7 @@ int broker_sch_path_c_adoption_succeeds()
         },
         "broker.broker_sch_path_c_adoption_succeeds",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), hub_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
 }
 
 int broker_sch_path_c_fingerprint_mismatch()
@@ -2224,7 +2221,7 @@ int broker_sch_path_c_fingerprint_mismatch()
             const auto schema_root = make_global_schema_dir(
                 "lab.demo.mm", 1, R"([{"name":"v","type":"float32"}])");
 
-            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.mm.uid00000001"},
+            auto [broker] = setup_broker_test({"prod.broker.mm.uid00000001"},
 
 
                 "broker.broker_sch_path_c_fingerprint_mismatch",
@@ -2255,7 +2252,7 @@ int broker_sch_path_c_fingerprint_mismatch()
         },
         "broker.broker_sch_path_c_fingerprint_mismatch",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), hub_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
 }
 
 int broker_sch_path_c_unknown_global()
@@ -2272,11 +2269,11 @@ int broker_sch_path_c_unknown_global()
                                        std::to_string(::getpid()))};
             std::filesystem::create_directories(cfg.schema_search_dirs[0]);
             auto schema_root = std::filesystem::path(cfg.schema_search_dirs[0]);
-            // CURVE setup: seed `key_store()` + `vault/known_roles.json`
+            // CURVE setup: seed `secure().keys()` + `vault/known_roles.json`
             // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
             // admits each role uid we'll register below.
             auto curve = pylabhub::tests::make_curve_setup({"prod.broker.unk.uid00000001"});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture("test.l3", "broker.broker_sch_path_c_unknown_global", curve);
+            pylabhub::tests::seed_curve_identities(curve);
             auto broker = start_broker_in_thread(std::move(cfg), curve);
 
             const std::string blds    = "v:f32:1:0";
@@ -2300,7 +2297,7 @@ int broker_sch_path_c_unknown_global()
         },
         "broker.broker_sch_path_c_unknown_global",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), hub_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
 }
 
 int broker_sch_path_x_forbidden_owner()
@@ -2308,7 +2305,7 @@ int broker_sch_path_x_forbidden_owner()
     return run_gtest_worker(
         []()
         {
-            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.fbd.uid00000001"},
+            auto [broker] = setup_broker_test({"prod.broker.fbd.uid00000001"},
 
                 "broker.broker_sch_path_x_forbidden_owner");
 
@@ -2334,7 +2331,7 @@ int broker_sch_path_x_forbidden_owner()
         },
         "broker.broker_sch_path_x_forbidden_owner",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), hub_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
 }
 
 // ── Wire-fields helpers × broker integration tests ──────────────────────────
@@ -2368,7 +2365,7 @@ int broker_sch_wire_helpers_register_and_cite()
     return run_gtest_worker(
         []()
         {
-            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.helpers_n.uid00000001", "cons.broker.helpers_n.uid00000002"},
+            auto [broker] = setup_broker_test({"prod.broker.helpers_n.uid00000001", "cons.broker.helpers_n.uid00000002"},
 
                 "broker.broker_sch_wire_helpers_register_and_cite");
 
@@ -2495,7 +2492,7 @@ int broker_sch_wire_helpers_register_and_cite()
         },
         "broker.broker_sch_wire_helpers_register_and_cite",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), hub_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
 }
 
 // Worker B — anonymous citation via helpers.
@@ -2518,7 +2515,7 @@ int broker_sch_wire_helpers_anonymous_citation()
     return run_gtest_worker(
         []()
         {
-            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.helpers_a.uid00000001", "cons.broker.helpers_a.uid00000002"},
+            auto [broker] = setup_broker_test({"prod.broker.helpers_a.uid00000001", "cons.broker.helpers_a.uid00000002"},
 
                 "broker.broker_sch_wire_helpers_anonymous_citation");
 
@@ -2592,7 +2589,7 @@ int broker_sch_wire_helpers_anonymous_citation()
         },
         "broker.broker_sch_wire_helpers_anonymous_citation",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), hub_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
 }
 
 // Worker D — slot + flexzone via helpers, full round-trip.
@@ -2618,7 +2615,7 @@ int broker_sch_wire_helpers_flexzone_round_trip()
     return run_gtest_worker(
         []()
         {
-            auto [broker, _ks_fix] = setup_broker_test({"prod.broker.helpers_fz.uid00000001", "cons.broker.helpers_fz.uid00000002"},
+            auto [broker] = setup_broker_test({"prod.broker.helpers_fz.uid00000001", "cons.broker.helpers_fz.uid00000002"},
 
                 "broker.broker_sch_wire_helpers_flexzone_round_trip");
 
@@ -2717,7 +2714,7 @@ int broker_sch_wire_helpers_flexzone_round_trip()
         },
         "broker.broker_sch_wire_helpers_flexzone_round_trip",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), hub_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
 }
 
 } // namespace pylabhub::tests::worker::broker

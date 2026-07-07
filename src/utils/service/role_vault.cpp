@@ -9,11 +9,11 @@
 #include "utils/security/curve_keypair.hpp"
 #include "utils/security/key_file_acl.hpp"
 #include "utils/security/secure_buffer.hpp"
+#include "utils/security/secure_subsystem.hpp"
 
 #include "vault_crypto.hpp"
 
 #include "utils/json_fwd.hpp"
-#include <sodium.h>
 #include <zmq.h>
 
 #include <array>
@@ -49,8 +49,13 @@ struct RoleVault::Impl
 
     ~Impl() noexcept
     {
-        sodium_memzero(public_z85.data(), public_z85.size());
-        sodium_memzero(secret_z85.data(), secret_z85.size());
+        namespace sec = pylabhub::utils::security;
+        sec::secure().memzero(std::span<std::uint8_t>(
+            reinterpret_cast<std::uint8_t *>(public_z85.data()),
+            public_z85.size()));
+        sec::secure().memzero(std::span<std::uint8_t>(
+            reinterpret_cast<std::uint8_t *>(secret_z85.data()),
+            secret_z85.size()));
         // role_uid_ is not secret — no zero needed, std::string dtor
         // releases the heap memory normally.
     }
@@ -195,8 +200,11 @@ RoleVault RoleVault::open(const fs::path    &vault_path,
             std::string &s;
             ~WipeGuard() noexcept
             {
-                sodium_memzero(p.data(), p.size());
-                sodium_memzero(s.data(), s.size());
+                namespace sec = pylabhub::utils::security;
+                sec::secure().memzero(std::span<std::uint8_t>(
+                    reinterpret_cast<std::uint8_t *>(p.data()), p.size()));
+                sec::secure().memzero(std::span<std::uint8_t>(
+                    reinterpret_cast<std::uint8_t *>(s.data()), s.size()));
             }
         } wipe_on_exit{pub_ref, sec_ref};
 

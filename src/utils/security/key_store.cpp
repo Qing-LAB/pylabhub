@@ -15,7 +15,7 @@
 #include "utils/logger.hpp"
 #include "utils/module_def.hpp"
 #include "utils/security/secure_buffer.hpp"
-#include "utils/security/secure_memory_subsystem.hpp"
+#include "utils/security/secure_subsystem.hpp"
 
 #include <cstring>
 #include <mutex>
@@ -71,7 +71,7 @@ public:
 #ifdef __linux__
         // Page-granular defence-in-depth (HEP-CORE-0040 §4.2 + §7) —
         // in addition to the process-wide PR_SET_DUMPABLE=0 set by
-        // SecureMemorySubsystem.  Best-effort: failure here is logged,
+        // SecureSubsystem.  Best-effort: failure here is logged,
         // not fatal, since the process-wide setting is the primary
         // line of defence.
         if (::madvise(buf_, len_, MADV_DONTDUMP) != 0)
@@ -113,18 +113,16 @@ private:
 } // namespace
 
 // ============================================================================
-// File-scope singleton accessor state (HEP-CORE-0040 §5.6)
+// File-scope constants
 // ============================================================================
-
+//
+// Post-SEC-Fold-2 there is no file-scope KeyStore pointer, no
+// KeyStore-side singleton mutex, no KeyStore lifecycle module name.
+// KeyStore is a MEMBER of `SecureSubsystem::Impl`; access is via
+// `secure().keys()`.  Ordering / bringup / teardown are inherited
+// from SMS's lifecycle module.  See HEP-CORE-0043 §2.2.
 namespace
 {
-std::mutex   g_keystore_mu;
-KeyStore    *g_keystore = nullptr;
-
-// Module name registered with LifecycleManager.  Singleton — exactly
-// one KeyStore exists per OS process (HEP-CORE-0040 §5.1).
-constexpr const char *kModuleName = "KeyStore";
-
 // HEP-CORE-0040 §8.5.2 (#291 follow-up, 2026-06-26) — in-memory
 // identity-key shape is RAW: pub_raw (32 bytes) + sec_raw (32 bytes)
 // packed contiguously inside the LockedKey region.  Z85 is reserved
@@ -147,10 +145,6 @@ constexpr std::size_t kZ85HalfBytes         = 40; // wire/file/display half
 
 struct KeyStore::Impl
 {
-    std::string scope_tag;
-    std::string owner_id;
-    bool        lifecycle_registered = false;
-
     /// Map entry — owns one LockedKey + remembers whether it's an
     /// identity keypair (64 bytes raw = pub_raw[32] || sec_raw[32],
     /// HEP-CORE-0040 §8.5.2) or a raw HEP-0038 secret (arbitrary
@@ -176,153 +170,42 @@ struct KeyStore::Impl
 };
 
 // ============================================================================
-// Lifecycle bridge — static thunks called by LifecycleManager
+// KeyStore — ctor + dtor
 // ============================================================================
+//
+// Post-SEC-Fold-2 KeyStore is a MEMBER of `SecureSubsystem::Impl`.  The
+// ctor is trivial (allocates `pImpl` only).  Bringup ordering is
+// inherited from SMS's `Impl::bringup()`: KeyStore's map is empty and
+// safe to access from the moment `secure().keys()` returns; sodium
+// primitives (`sodium_malloc`, etc.) called by add_identity / add_raw
+// are guaranteed to see an initialized libsodium because the accessor
+// gate in `secure()` blocks entry before SMS state is `Initialized`.
 
-namespace
-{
-
-/// Validator runs from LifecycleManager's async shutdown thread.  We
-/// check the file-scope singleton pointer (the lifetime guarantee
-/// `key_store()` provides) — userdata is unused.
-bool ks_impl_validate(void * /*userdata*/, uint64_t /*key*/) noexcept
-{
-    std::lock_guard<std::mutex> lk(g_keystore_mu);
-    return g_keystore != nullptr;
-}
-
-void ks_startup(const char * /*arg*/, void * /*userdata*/)
-{
-    // No-op — the actual work runs in KeyStore::add_identity/add_raw
-    // as scopes call them during their own startup.
-}
-
-void ks_shutdown(const char * /*arg*/, void * /*userdata*/)
-{
-    // No-op — the destructor owns teardown (sodium_memzero +
-    // sodium_free for each entry).  This thunk exists only to
-    // participate in the LifecycleGuard ordering graph.
-}
-
-} // namespace
-
-// ============================================================================
-// KeyStore
-// ============================================================================
-
-KeyStore::KeyStore(std::string scope_tag, std::string owner_id)
+KeyStore::KeyStore()
     : pImpl(std::make_unique<Impl>())
-{
-    if (scope_tag.empty())
-        throw std::invalid_argument("KeyStore: scope_tag must be non-empty");
-    if (owner_id.empty())
-        throw std::invalid_argument("KeyStore: owner_id must be non-empty");
-
-    if (!secure_memory_subsystem_ready())
-    {
-        throw std::logic_error(
-            "KeyStore: SecureMemorySubsystem not initialized (HEP-CORE-0040 "
-            "§4.5).  Construct SecureMemorySubsystem in main() BEFORE the "
-            "first KeyStore construction.");
-    }
-
-    pImpl->scope_tag = std::move(scope_tag);
-    pImpl->owner_id  = std::move(owner_id);
-
-    // Singleton claim — fails fast on second construction without
-    // polluting the LifecycleManager registry.
-    {
-        std::lock_guard<std::mutex> lk(g_keystore_mu);
-        if (g_keystore != nullptr)
-        {
-            throw std::logic_error(
-                "KeyStore: already constructed (HEP-CORE-0040 §5.1 — "
-                "exactly one instance per process)");
-        }
-        g_keystore = this;
-    }
-
-    try
-    {
-        ModuleDef mod(kModuleName, pImpl.get(), ks_impl_validate);
-        mod.add_dependency("SecureMemory");
-        mod.add_dependency("pylabhub::utils::Logger");
-        mod.set_startup(ks_startup);
-        mod.set_shutdown(ks_shutdown, std::chrono::milliseconds{100});
-        mod.set_owner_managed_teardown(true);
-        if (LifecycleManager::instance().register_dynamic_module(std::move(mod)))
-        {
-            (void)LoadModule(kModuleName);
-            pImpl->lifecycle_registered = true;
-        }
-        else
-        {
-            LOGGER_WARN(
-                "[KeyStore:{}:{}] lifecycle module registration returned "
-                "false — continuing without lifecycle integration",
-                pImpl->scope_tag, pImpl->owner_id);
-        }
-    }
-    catch (const std::exception &e)
-    {
-        LOGGER_WARN(
-            "[KeyStore:{}:{}] lifecycle registration threw: {} — continuing "
-            "without lifecycle integration",
-            pImpl->scope_tag, pImpl->owner_id, e.what());
-    }
-}
+{}
 
 KeyStore::~KeyStore()
 {
-    // 1. Block NEW callers — any subsequent `key_store()` throws.
-    {
-        std::lock_guard<std::mutex> lk(g_keystore_mu);
-        if (g_keystore == this)
-            g_keystore = nullptr;
-    }
-
-    // 2. Drain in-flight readers (HEP-CORE-0040 §5.5).  Acquiring the
+    // Drain in-flight readers (HEP-CORE-0040 §5.5).  Acquiring the
     // exclusive lock blocks until every active `with_seckey` callback
     // / `pubkey` / `lookup_raw` call has released its shared lock.
-    // The lock is released as `drain_lk` goes out of scope; after this
-    // point, no consumer holds any reference into `pImpl` (well-
-    // disciplined consumers don't store views past method return; the
-    // lifecycle ordering guarantee — broker / BRC stop before scope
-    // dtor — combined with this drain closes the UAF window the
-    // earlier impl had).
+    // After this point, no consumer holds any reference into `pImpl`;
+    // std::unordered_map dtor walks Entry map — each Entry's
+    // unique_ptr<LockedKey> dtor runs sodium_memzero + sodium_free.
     if (pImpl)
     {
         std::unique_lock<std::shared_mutex> drain_lk(pImpl->mu);
         // drain_lk released as it goes out of scope.
     }
-
-    // 3. Store destruction is automatic — std::unordered_map<Entry>
-    // walks entries; each Entry's unique_ptr<LockedKey> dtor runs
-    // sodium_memzero + sodium_free.
-
-    if (pImpl && pImpl->lifecycle_registered)
-    {
-        try
-        {
-            (void)LifecycleManager::instance().unload_module(
-                kModuleName, std::source_location::current());
-        }
-        catch (...)
-        {
-            // Dtors must not throw.
-        }
-    }
 }
 
 void KeyStore::add_identity(std::string_view name, std::span<std::byte> packed_pub_sec)
 {
-    // Module-boundary gate — see add_raw for the reasoning.
-    if (!pylabhub::utils::security::sodium_ready())
-    {
-        throw std::runtime_error(
-            "KeyStore::add_identity: SecureMemorySubsystem must be "
-            "constructed before KeyStore is used (HEP-CORE-0040 §4.5).");
-    }
+    // No sodium_ready() gate needed post-SEC-Fold-2 (HEP-CORE-0043
+    // §2.2): the only way to reach this method is via
+    // `secure().keys().add_identity(...)`, and `secure()` PANICs if
+    // SMS is not `Initialized`.  Sodium is guaranteed initialized.
     LOGGER_INFO("[KeyStore] event=AddIdentity name='{}' size={}",
                 std::string(name), packed_pub_sec.size_bytes());
     // HEP-CORE-0040 §8.5.2 (#291 follow-up, 2026-06-26) — the packed
@@ -449,15 +332,8 @@ std::string KeyStore::generate_and_add_identity(std::string_view name)
 
 void KeyStore::add_raw(std::string_view name, std::span<std::byte> plaintext)
 {
-    // Module-boundary gate.  KeyStore uses libsodium; libsodium requires
-    // sodium_init; sodium_init is SecureMemorySubsystem's job.  Callers
-    // don't check — the module checks itself.
-    if (!pylabhub::utils::security::sodium_ready())
-    {
-        throw std::runtime_error(
-            "KeyStore::add_raw: SecureMemorySubsystem must be constructed "
-            "before KeyStore is used (HEP-CORE-0040 §4.5).");
-    }
+    // No sodium_ready() gate needed post-SEC-Fold-2 (HEP-CORE-0043
+    // §2.2): entry via `secure().keys()` PANICs on non-Initialized SMS.
     LOGGER_INFO("[KeyStore] event=AddRaw name='{}' size={}",
                 std::string(name), plaintext.size());
     std::string name_key(name);
@@ -660,30 +536,6 @@ std::size_t KeyStore::size() const noexcept
 {
     std::shared_lock<std::shared_mutex> rlk(pImpl->mu);
     return pImpl->store.size();
-}
-
-// ============================================================================
-// Namespace accessors
-// ============================================================================
-
-KeyStore &key_store()
-{
-    std::lock_guard<std::mutex> lk(g_keystore_mu);
-    if (g_keystore == nullptr)
-    {
-        throw std::runtime_error(
-            "key_store(): KeyStore has not been constructed "
-            "(HEP-CORE-0040 §5.6).  Construct it in the HubHost / "
-            "RoleHostFrame ctor BEFORE any code path that reads identity "
-            "keys.");
-    }
-    return *g_keystore;
-}
-
-bool key_store_ready() noexcept
-{
-    std::lock_guard<std::mutex> lk(g_keystore_mu);
-    return g_keystore != nullptr;
 }
 
 } // namespace pylabhub::utils::security

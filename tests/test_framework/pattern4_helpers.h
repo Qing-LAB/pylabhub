@@ -80,7 +80,7 @@ struct Pattern4Setup
 
     /// CURVE bundle: hub keypair + per-role keypair.  Each subprocess
     /// reads its half from this bundle and seeds its own
-    /// `CurveKeyStoreFixture` at startup.
+    /// `seed_curve_identities()` at startup.
     pylabhub::tests::CurveSetup curve;
 
     /// Shared log file.  Subprocesses redirect their Logger sink here

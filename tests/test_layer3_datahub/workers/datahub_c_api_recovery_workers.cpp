@@ -24,7 +24,6 @@ namespace pylabhub::tests::worker::recovery
 {
 
 static auto logger_module() { return pylabhub::utils::Logger::GetLifecycleModule(); }
-static auto crypto_module() { return pylabhub::crypto::GetLifecycleModule(); }
 static auto hub_module() { return pylabhub::hub::GetDataBlockModule(); }
 
 int datablock_is_process_alive_returns_true_for_self()
@@ -36,7 +35,7 @@ int datablock_is_process_alive_returns_true_for_self()
             EXPECT_TRUE(datablock_is_process_alive(my_pid))
                 << "datablock_is_process_alive should return true for current process";
         },
-        "datablock_is_process_alive_returns_true_for_self", logger_module(), crypto_module(), hub_module());
+        "datablock_is_process_alive_returns_true_for_self", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 int integrity_validator_validate_succeeds_on_created_datablock()
@@ -62,7 +61,7 @@ int integrity_validator_validate_succeeds_on_created_datablock()
             producer.reset();
             cleanup_test_datablock(channel);
         },
-        "integrity_validator_validate_succeeds_on_created_datablock", logger_module(), crypto_module(), hub_module());
+        "integrity_validator_validate_succeeds_on_created_datablock", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 int slot_diagnostics_refresh_succeeds_on_created_datablock()
@@ -89,7 +88,7 @@ int slot_diagnostics_refresh_succeeds_on_created_datablock()
             producer.reset();
             cleanup_test_datablock(channel);
         },
-        "slot_diagnostics_refresh_succeeds_on_created_datablock", logger_module(), crypto_module(), hub_module());
+        "slot_diagnostics_refresh_succeeds_on_created_datablock", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 int slot_recovery_release_zombie_readers_on_empty_slot()
@@ -116,7 +115,7 @@ int slot_recovery_release_zombie_readers_on_empty_slot()
             producer.reset();
             cleanup_test_datablock(channel);
         },
-        "slot_recovery_release_zombie_readers_on_empty_slot", logger_module(), crypto_module(), hub_module());
+        "slot_recovery_release_zombie_readers_on_empty_slot", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 int heartbeat_manager_registers_and_pulses()
@@ -144,7 +143,7 @@ int heartbeat_manager_registers_and_pulses()
             }
             // FdBackedDataBlock dtor releases consumer → producer → transport.
         },
-        "heartbeat_manager_registers_and_pulses", logger_module(), crypto_module(), hub_module());
+        "heartbeat_manager_registers_and_pulses", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 int producer_update_heartbeat_explicit_succeeds()
@@ -169,7 +168,7 @@ int producer_update_heartbeat_explicit_succeeds()
             producer.reset();
             cleanup_test_datablock(channel);
         },
-        "producer_update_heartbeat_explicit_succeeds", logger_module(), crypto_module(), hub_module());
+        "producer_update_heartbeat_explicit_succeeds", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 int producer_heartbeat_and_is_writer_alive()
@@ -217,7 +216,7 @@ int producer_heartbeat_and_is_writer_alive()
             diag.reset();
             cleanup_test_datablock(channel);
         },
-        "producer_heartbeat_and_is_writer_alive", logger_module(), crypto_module(), hub_module());
+        "producer_heartbeat_and_is_writer_alive", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 } // namespace pylabhub::tests::worker::recovery

@@ -18,7 +18,7 @@
 #include "utils/schema_field_layout.hpp"
 #include "utils/security/key_store.hpp"
 #include "utils/security/peer_admission.hpp"
-#include "utils/security/secure_memory_subsystem.hpp"
+#include "utils/security/secure_subsystem.hpp"
 #include "utils/security/zap_router.hpp"
 #include "utils/zmq_context.hpp"
 
@@ -83,22 +83,6 @@ std::pair<std::string, std::string> make_keypair()
 /// production `KeyStore::add_identity_from_z85` API directly at each
 /// call site so the (pub_z85 || sec_z85) → 80-byte layout has exactly
 /// one definition (in `key_store.cpp`).
-class ScopedKeyStore
-{
-public:
-    ScopedKeyStore()
-        : sms_(),
-          ks_("test", "test.zmq_queue_auth")
-    {}
-    ScopedKeyStore(const ScopedKeyStore &)            = delete;
-    ScopedKeyStore &operator=(const ScopedKeyStore &) = delete;
-    ScopedKeyStore(ScopedKeyStore &&)                 = delete;
-    ScopedKeyStore &operator=(ScopedKeyStore &&)      = delete;
-
-private:
-    pylabhub::utils::security::SecureMemorySubsystem sms_;
-    pylabhub::utils::security::KeyStore              ks_;
-};
 
 /// Simple uint32 schema used by all worker tests — sufficient to
 /// exercise the message round-trip; the schema layer is not the
@@ -144,11 +128,10 @@ int auth_round_trip_allowed_peer_delivers(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
         [&]() {
-            ScopedKeyStore ks;
             const auto [producer_pub, producer_sec] = make_keypair();
             const auto [consumer_pub, consumer_sec] = make_keypair();
-            pylabhub::utils::security::key_store().add_identity_from_z85("producer", producer_pub, producer_sec);
-            pylabhub::utils::security::key_store().add_identity_from_z85("consumer", consumer_pub, consumer_sec);
+            pylabhub::utils::security::secure().keys().add_identity_from_z85("producer", producer_pub, producer_sec);
+            pylabhub::utils::security::secure().keys().add_identity_from_z85("consumer", consumer_pub, consumer_sec);
 
             // Producer side: bind, CURVE_SERVER, ZAP-gated.
             // HEP-CORE-0040 §8.4 (#158): allowlist is no longer a
@@ -194,6 +177,7 @@ int auth_round_trip_allowed_peer_delivers(const char * /*tmpdir*/)
         },
         "zmq_queue_auth::auth_round_trip_allowed_peer_delivers",
         Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         FileLock::GetLifecycleModule(),
         JsonConfig::GetLifecycleModule(),
         pylabhub::hub::GetZMQContextModule());
@@ -203,12 +187,11 @@ int auth_unallowed_peer_blocked(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
         [&]() {
-            ScopedKeyStore ks;
             const auto [producer_pub, producer_sec] = make_keypair();
             const auto [allowed_pub,  allowed_sec]  = make_keypair();
             const auto [denied_pub,   denied_sec]   = make_keypair();
-            pylabhub::utils::security::key_store().add_identity_from_z85("producer", producer_pub, producer_sec);
-            pylabhub::utils::security::key_store().add_identity_from_z85("denied", denied_pub, denied_sec);
+            pylabhub::utils::security::secure().keys().add_identity_from_z85("producer", producer_pub, producer_sec);
+            pylabhub::utils::security::secure().keys().add_identity_from_z85("denied", denied_pub, denied_sec);
             // allowed_pub is intentionally not added to the KeyStore —
             // no socket on the allowed side is constructed in this
             // scenario; the allowlist holds the pubkey alone (no socket
@@ -254,6 +237,7 @@ int auth_unallowed_peer_blocked(const char * /*tmpdir*/)
         },
         "zmq_queue_auth::auth_unallowed_peer_blocked",
         Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         FileLock::GetLifecycleModule(),
         JsonConfig::GetLifecycleModule(),
         pylabhub::hub::GetZMQContextModule());
@@ -263,12 +247,11 @@ int auth_allowlist_swap_takes_effect_for_next_connection(const char * /*tmpdir*/
 {
     return run_gtest_worker(
         [&]() {
-            ScopedKeyStore ks;
             const auto [producer_pub, producer_sec] = make_keypair();
             const auto [alice_pub, alice_sec]       = make_keypair();
             const auto [bob_pub,   bob_sec]         = make_keypair();
-            pylabhub::utils::security::key_store().add_identity_from_z85("producer", producer_pub, producer_sec);
-            pylabhub::utils::security::key_store().add_identity_from_z85("bob", bob_pub, bob_sec);
+            pylabhub::utils::security::secure().keys().add_identity_from_z85("producer", producer_pub, producer_sec);
+            pylabhub::utils::security::secure().keys().add_identity_from_z85("bob", bob_pub, bob_sec);
             (void)alice_sec;  // alice_pub seeds the allowlist but no
                               // alice-side socket is constructed.
 
@@ -328,6 +311,7 @@ int auth_allowlist_swap_takes_effect_for_next_connection(const char * /*tmpdir*/
         },
         "zmq_queue_auth::auth_allowlist_swap_takes_effect_for_next_connection",
         Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         FileLock::GetLifecycleModule(),
         JsonConfig::GetLifecycleModule(),
         pylabhub::hub::GetZMQContextModule());
@@ -363,11 +347,10 @@ int auth_deny_then_allow_via_swap_pins_path(const char *)
 {
     return run_gtest_worker(
         [&]() {
-            ScopedKeyStore ks;
             const auto [producer_pub, producer_sec] = make_keypair();
             const auto [client_pub, client_sec] = make_keypair();
-            pylabhub::utils::security::key_store().add_identity_from_z85("producer", producer_pub, producer_sec);
-            pylabhub::utils::security::key_store().add_identity_from_z85("client", client_pub, client_sec);
+            pylabhub::utils::security::secure().keys().add_identity_from_z85("producer", producer_pub, producer_sec);
+            pylabhub::utils::security::secure().keys().add_identity_from_z85("client", client_pub, client_sec);
 
             // Producer: CURVE wired, allowlist EMPTY (deny-all).
             // `push_to` no longer takes an initial allowlist
@@ -458,6 +441,7 @@ int auth_deny_then_allow_via_swap_pins_path(const char *)
         },
         "zmq_queue_auth::auth_deny_then_allow_via_swap_pins_path",
         Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         FileLock::GetLifecycleModule(),
         JsonConfig::GetLifecycleModule(),
         pylabhub::hub::GetZMQContextModule());
@@ -471,13 +455,12 @@ int auth_swap_blocks_old_peer_pins_data(const char *)
 {
     return run_gtest_worker(
         [&]() {
-            ScopedKeyStore ks;
             const auto [producer_pub, producer_sec] = make_keypair();
             const auto [alice_pub, alice_sec] = make_keypair();
             const auto [bob_pub,   bob_sec]   = make_keypair();
-            pylabhub::utils::security::key_store().add_identity_from_z85("producer", producer_pub, producer_sec);
-            pylabhub::utils::security::key_store().add_identity_from_z85("alice", alice_pub, alice_sec);
-            pylabhub::utils::security::key_store().add_identity_from_z85("bob", bob_pub, bob_sec);
+            pylabhub::utils::security::secure().keys().add_identity_from_z85("producer", producer_pub, producer_sec);
+            pylabhub::utils::security::secure().keys().add_identity_from_z85("alice", alice_pub, alice_sec);
+            pylabhub::utils::security::secure().keys().add_identity_from_z85("bob", bob_pub, bob_sec);
 
             PeerAllowlist initial_allow;
             initial_allow.peers.insert(PeerIdentity{"curve", alice_pub});
@@ -580,6 +563,7 @@ int auth_swap_blocks_old_peer_pins_data(const char *)
         },
         "zmq_queue_auth::auth_swap_blocks_old_peer_pins_data",
         Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         FileLock::GetLifecycleModule(),
         JsonConfig::GetLifecycleModule(),
         pylabhub::hub::GetZMQContextModule());
@@ -594,10 +578,9 @@ int auth_set_peer_allowlist_on_pull_side_returns_false(const char *)
 {
     return run_gtest_worker(
         [&]() {
-            ScopedKeyStore ks;
             const auto [producer_pub, producer_sec] = make_keypair();
             const auto [client_pub, client_sec] = make_keypair();
-            pylabhub::utils::security::key_store().add_identity_from_z85("client", client_pub, client_sec);
+            pylabhub::utils::security::secure().keys().add_identity_from_z85("client", client_pub, client_sec);
             (void)producer_sec;  // producer's pubkey is used as the
                                  // serverkey for factory validation; no
                                  // producer socket is constructed here.
@@ -631,6 +614,7 @@ int auth_set_peer_allowlist_on_pull_side_returns_false(const char *)
         },
         "zmq_queue_auth::auth_set_peer_allowlist_on_pull_side_returns_false",
         Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         FileLock::GetLifecycleModule(),
         JsonConfig::GetLifecycleModule(),
         pylabhub::hub::GetZMQContextModule());
@@ -644,11 +628,10 @@ int auth_empty_allowlist_denies_all(const char *)
 {
     return run_gtest_worker(
         [&]() {
-            ScopedKeyStore ks;
             const auto [producer_pub, producer_sec] = make_keypair();
             const auto [client_pub, client_sec] = make_keypair();
-            pylabhub::utils::security::key_store().add_identity_from_z85("producer", producer_pub, producer_sec);
-            pylabhub::utils::security::key_store().add_identity_from_z85("client", client_pub, client_sec);
+            pylabhub::utils::security::secure().keys().add_identity_from_z85("producer", producer_pub, producer_sec);
+            pylabhub::utils::security::secure().keys().add_identity_from_z85("client", client_pub, client_sec);
 
             // `push_to` drops the initial_allowlist param —
             // empty (deny-all) is the new default.  Exactly what this
@@ -702,6 +685,7 @@ int auth_empty_allowlist_denies_all(const char *)
         },
         "zmq_queue_auth::auth_empty_allowlist_denies_all",
         Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         FileLock::GetLifecycleModule(),
         JsonConfig::GetLifecycleModule(),
         pylabhub::hub::GetZMQContextModule());
@@ -719,12 +703,11 @@ int auth_standby_state_transitions(const char *)
 {
     return run_gtest_worker(
         [&]() {
-            ScopedKeyStore ks;
             const auto [client_pub, client_sec] = make_keypair();
             const auto [server_pub, server_sec] = make_keypair();
             namespace sec = pylabhub::utils::security;
-            sec::key_store().add_identity_from_z85("client", client_pub, client_sec);
-            sec::key_store().add_identity_from_z85("server", server_pub, server_sec);
+            sec::secure().keys().add_identity_from_z85("client", client_pub, client_sec);
+            sec::secure().keys().add_identity_from_z85("server", server_pub, server_sec);
 
             // ── Standby: empty endpoint AND empty serverkey ────────
             auto consumer = ZmqQueue::pull_from(
@@ -803,6 +786,7 @@ int auth_standby_state_transitions(const char *)
         },
         "zmq_queue_auth::auth_standby_state_transitions",
         Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         FileLock::GetLifecycleModule(),
         JsonConfig::GetLifecycleModule(),
         pylabhub::hub::GetZMQContextModule());
@@ -816,10 +800,9 @@ int auth_standby_push_side(const char *)
 {
     return run_gtest_worker(
         [&]() {
-            ScopedKeyStore ks;
             const auto [server_pub, server_sec] = make_keypair();
             namespace sec = pylabhub::utils::security;
-            sec::key_store().add_identity_from_z85("server", server_pub, server_sec);
+            sec::secure().keys().add_identity_from_z85("server", server_pub, server_sec);
 
             auto producer = ZmqQueue::push_to(
                 /*endpoint=*/"",                       // Standby signal
@@ -838,6 +821,7 @@ int auth_standby_push_side(const char *)
         },
         "zmq_queue_auth::auth_standby_push_side",
         Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         FileLock::GetLifecycleModule(),
         JsonConfig::GetLifecycleModule(),
         pylabhub::hub::GetZMQContextModule());
@@ -863,14 +847,13 @@ int auth_apply_master_approval_seeds_initial_allowlist(const char *)
 {
     return run_gtest_worker(
         [&]() {
-            ScopedKeyStore ks;
             const auto [server_pub, server_sec] = make_keypair();
             const auto [alice_pub, alice_sec]   = make_keypair();
             const auto [bob_pub,   bob_sec]     = make_keypair();
             const auto [eve_pub,   eve_sec]     = make_keypair();
             (void)alice_sec; (void)bob_sec; (void)eve_sec;
             namespace sec = pylabhub::utils::security;
-            sec::key_store().add_identity_from_z85("server", server_pub, server_sec);
+            sec::secure().keys().add_identity_from_z85("server", server_pub, server_sec);
 
             // ── Standby: factory returns nullptr-allowlist queue ────
             auto producer = ZmqQueue::push_to(
@@ -954,6 +937,7 @@ int auth_apply_master_approval_seeds_initial_allowlist(const char *)
         },
         "zmq_queue_auth::auth_apply_master_approval_seeds_initial_allowlist",
         Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         FileLock::GetLifecycleModule(),
         JsonConfig::GetLifecycleModule(),
         pylabhub::hub::GetZMQContextModule());
@@ -967,9 +951,8 @@ int auth_misconfig_connect_missing_serverkey_factory_returns_nullptr(const char 
 {
     return run_gtest_worker(
         [&]() {
-            ScopedKeyStore ks;
             const auto [client_pub, client_sec] = make_keypair();
-            pylabhub::utils::security::key_store().add_identity_from_z85("client", client_pub, client_sec);
+            pylabhub::utils::security::secure().keys().add_identity_from_z85("client", client_pub, client_sec);
             // HEP-CORE-0036 §6.7 Standby state (#188): empty serverkey
             // at construction is the Standby signal.  Factory MUST
             // succeed.  The state machine surfaces the (formerly
@@ -999,6 +982,7 @@ int auth_misconfig_connect_missing_serverkey_factory_returns_nullptr(const char 
         },
         "zmq_queue_auth::auth_misconfig_connect_missing_serverkey_factory_returns_nullptr",
         Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         FileLock::GetLifecycleModule(),
         JsonConfig::GetLifecycleModule(),
         pylabhub::hub::GetZMQContextModule());
@@ -1022,9 +1006,8 @@ int auth_misconfig_factory_returns_nullptr(const char *)
 {
     return run_gtest_worker(
         [&]() {
-            ScopedKeyStore ks;
             const auto [valid_pub, valid_sec] = make_keypair();
-            pylabhub::utils::security::key_store().add_identity_from_z85("valid", valid_pub, valid_sec);
+            pylabhub::utils::security::secure().keys().add_identity_from_z85("valid", valid_pub, valid_sec);
             namespace sec = pylabhub::utils::security;
             const sec::Z85PublicKey valid_serverkey =
                 sec::Z85PublicKey::validate(valid_pub);
@@ -1089,6 +1072,7 @@ int auth_misconfig_factory_returns_nullptr(const char *)
         },
         "zmq_queue_auth::auth_misconfig_factory_returns_nullptr",
         Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         FileLock::GetLifecycleModule(),
         JsonConfig::GetLifecycleModule(),
         pylabhub::hub::GetZMQContextModule());
@@ -1109,9 +1093,8 @@ int auth_null_mech_client_handshake_fails(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
         [&]() {
-            ScopedKeyStore ks;
             const auto [producer_pub, producer_sec] = make_keypair();
-            pylabhub::utils::security::key_store().add_identity_from_z85(
+            pylabhub::utils::security::secure().keys().add_identity_from_z85(
                 "producer", producer_pub, producer_sec);
 
             // CURVE-enforced producer: PUSH+bind, ZAP-gated.  Empty
@@ -1199,6 +1182,7 @@ int auth_null_mech_client_handshake_fails(const char * /*tmpdir*/)
         },
         "zmq_queue_auth::auth_null_mech_client_handshake_fails",
         Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         FileLock::GetLifecycleModule(),
         JsonConfig::GetLifecycleModule(),
         pylabhub::hub::GetZMQContextModule());

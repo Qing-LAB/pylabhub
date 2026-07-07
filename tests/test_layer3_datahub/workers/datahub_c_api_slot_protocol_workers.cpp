@@ -41,7 +41,6 @@ namespace pylabhub::tests::worker::c_api_slot_protocol
 {
 
 static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
-static auto crypto_module() { return ::pylabhub::crypto::GetLifecycleModule(); }
 static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
 
 static DataBlockConfig make_config(ConsumerSyncPolicy sync_policy, int capacity, uint64_t secret)
@@ -103,7 +102,7 @@ int write_slot_read_slot_roundtrip()
 
             // FdBackedDataBlock dtor releases consumer → producer → transport.
         },
-        "write_slot_read_slot_roundtrip", logger_module(), crypto_module(), hub_module());
+        "write_slot_read_slot_roundtrip", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -157,7 +156,7 @@ int commit_advances_metrics()
 
             // FdBackedProducer dtor releases producer → transport.
         },
-        "commit_advances_metrics", logger_module(), crypto_module(), hub_module());
+        "commit_advances_metrics", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -203,7 +202,7 @@ int abort_does_not_commit()
 
             // FdBackedDataBlock dtor releases consumer → producer → transport.
         },
-        "abort_does_not_commit", logger_module(), crypto_module(), hub_module());
+        "abort_does_not_commit", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -252,7 +251,7 @@ int latest_only_reads_latest()
 
             // FdBackedDataBlock dtor releases consumer → producer → transport.
         },
-        "latest_only_reads_latest", logger_module(), crypto_module(), hub_module());
+        "latest_only_reads_latest", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -305,7 +304,7 @@ int single_reader_reads_sequentially()
 
             // FdBackedDataBlock dtor releases consumer → producer → transport.
         },
-        "single_reader_reads_sequentially", logger_module(), crypto_module(), hub_module());
+        "single_reader_reads_sequentially", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -354,7 +353,7 @@ int write_returns_null_when_ring_full()
 
             // FdBackedProducer dtor releases producer → transport.
         },
-        "write_returns_null_when_ring_full", logger_module(), crypto_module(), hub_module());
+        "write_returns_null_when_ring_full", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -384,7 +383,7 @@ int read_returns_null_on_empty_ring()
 
             // FdBackedDataBlock dtor releases consumer → producer → transport.
         },
-        "read_returns_null_on_empty_ring", logger_module(), crypto_module(), hub_module());
+        "read_returns_null_on_empty_ring", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -432,7 +431,7 @@ int metrics_accumulate_across_writes()
 
             // FdBackedDataBlock dtor releases consumer → producer → transport.
         },
-        "metrics_accumulate_across_writes", logger_module(), crypto_module(), hub_module());
+        "metrics_accumulate_across_writes", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 } // namespace pylabhub::tests::worker::c_api_slot_protocol

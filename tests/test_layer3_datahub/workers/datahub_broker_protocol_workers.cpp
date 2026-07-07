@@ -135,7 +135,7 @@ json hubhost_overrides_from_cfg(const BrokerService::Config &cfg = {})
 /// Start a broker via the shared harness with the caller's
 /// `BrokerService::Config` overrides translated to hub.json shape.
 /// `curve` MUST already have been seeded into the KeyStore via
-/// `CurveKeyStoreFixture` (typically by `run_with_host` below).
+/// `seed_curve_identities()` (typically by `run_with_host` below).
 HubHostHandle start_local_broker(BrokerService::Config legacy_cfg,
                                  const pylabhub::tests::CurveSetup &curve)
 {
@@ -231,8 +231,8 @@ json raw_req(const std::string& endpoint,
             // its own socket-internal storage during set(), so it
             // survives the callback's sodium_memzero.
             namespace sec = pylabhub::utils::security;
-            const std::string client_pub{sec::key_store().pubkey(role_identity_name)};
-            sec::key_store().with_seckey_z85(
+            const std::string client_pub{sec::secure().keys().pubkey(role_identity_name)};
+            sec::secure().keys().with_seckey_z85(
                 role_identity_name,
                 [&](std::string_view seckey_z85) {
                     dealer.set(zmq::sockopt::curve_publickey, client_pub);
@@ -324,8 +324,7 @@ int run_with_host(std::string_view worker_name,
             // HEP-CORE-0040 §172: fixture owns SMS + KeyStore + identity
             // seeding under `role.<uid>` names; start_hubhost_broker
             // only reads the KeyStore + writes known_roles.json.
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture(
-                "test.l3", "broker_protocol.harness", curve);
+            pylabhub::tests::seed_curve_identities(curve);
 
             std::optional<HubHostHandle> broker;
             broker.emplace(pylabhub::tests::start_hubhost_broker(
@@ -341,7 +340,7 @@ int run_with_host(std::string_view worker_name,
         Logger::GetLifecycleModule(),
         FileLock::GetLifecycleModule(),
         JsonConfig::GetLifecycleModule(),
-        pylabhub::crypto::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         pylabhub::hub::GetZMQContextModule());
 }
 

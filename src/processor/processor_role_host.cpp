@@ -348,7 +348,7 @@ void ProcessorRoleHost::worker_main_()
             presences.push_back(std::move(prod));
         }
 
-        // HEP-CORE-0040 §173: CURVE keypair lives in `key_store()`.
+        // HEP-CORE-0040 §173: CURVE keypair lives in `secure().keys()`.
         // RoleHandler dedups connections; single-hub processor → 1 BRC,
         // dual-hub → 2.
         auto handler = std::make_unique<scripting::RoleHandler>(
@@ -379,7 +379,7 @@ void ProcessorRoleHost::worker_main_()
             // REQUIRED on REG_REQ; processor uses its own role's
             // CURVE client pubkey (same vault-loaded value as the BRC).
             reg_in.zmq_pubkey        = std::string(
-                pylabhub::utils::security::key_store().pubkey(pylabhub::utils::security::kRoleIdentityName));
+                pylabhub::utils::security::secure().keys().pubkey(pylabhub::utils::security::kRoleIdentityName));
             // HEP-CORE-0041 §5.1 (substep 1g #254) — same as producer
             // role host: SHM out-channels publish a capability-transport
             // endpoint so the broker can echo it to authorized consumers.
@@ -405,7 +405,7 @@ void ProcessorRoleHost::worker_main_()
         auto cons_reg = hub::build_consumer_reg_payload(
             hub::ConsumerRegInputs{config_.in_channel(), id.uid, id.name,
                                     std::string(pylabhub::utils::security::
-                                                key_store().pubkey(pylabhub::utils::security::kRoleIdentityName))});
+                                                secure().keys().pubkey(pylabhub::utils::security::kRoleIdentityName))});
         const auto in_wire = hub::make_wire_schema_fields(
             pf_for_wire.in_slot_schema_json, in_slot_spec_, in_fz_local);
         hub::apply_consumer_schema_fields(cons_reg, in_wire);

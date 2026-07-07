@@ -13,7 +13,6 @@
 #include <cassert>
 #include <cstdlib>
 #include <cstring>
-#include "utils/crypto_utils.hpp"
 #include "utils/format_tools.hpp"
 #include "utils/lifecycle.hpp"
 #include "utils/logger.hpp"
@@ -1358,6 +1357,10 @@ bool NativeEngine::build_api_(RoleAPIBase &api)
     {
         pylabhub::utils::ModuleDef mod(lifecycle_module_name_.c_str());
         mod.add_dependency("pylabhub::utils::Logger");
+        // NativeEngine's schema-hash path calls
+        // `secure().compute_blake2b_array(...)`, so it needs SMS up
+        // before its startup runs (HEP-CORE-0043 §2.1 category 1).
+        mod.add_dependency("SecureSubsystem");
         mod.set_startup([](const char *, void *) {}, ""); // no-op
         mod.set_shutdown(
             [](const char *, void *) {},
@@ -1421,6 +1424,10 @@ bool NativeEngine::build_api_(hub_host::HubAPI &api)
     {
         pylabhub::utils::ModuleDef mod(lifecycle_module_name_.c_str());
         mod.add_dependency("pylabhub::utils::Logger");
+        // NativeEngine's schema-hash path calls
+        // `secure().compute_blake2b_array(...)`, so it needs SMS up
+        // before its startup runs (HEP-CORE-0043 §2.1 category 1).
+        mod.add_dependency("SecureSubsystem");
         mod.set_startup([](const char *, void *) {}, "");
         mod.set_shutdown(
             [](const char *, void *) {},
@@ -2098,7 +2105,7 @@ bool NativeEngine::verify_file_checksum_() const
         return false;
     }
 
-    auto hash = pylabhub::crypto::compute_blake2b_array(buf.data(), buf.size());
+    auto hash = pylabhub::utils::security::secure().compute_blake2b_array(buf.data(), buf.size());
 
     // Convert to hex string for comparison.
     std::string hex;

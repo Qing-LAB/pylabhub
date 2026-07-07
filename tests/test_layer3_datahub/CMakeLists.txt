@@ -113,7 +113,7 @@ add_executable(test_layer3_datahub
     # workers/role_identity_policy_workers.cpp
 
     # ── Consumer registration protocol tests ─────────────────────────────────────
-    # Unmasked 2026-06-07 under #154 — migrated to CurveKeyStoreFixture +
+    # Unmasked 2026-06-07 under #154 — migrated to seed_curve_identities +
     # production build_*_reg_payload helpers.
     test_datahub_broker_consumer.cpp
     workers/broker_consumer_workers.cpp
@@ -140,7 +140,7 @@ add_executable(test_layer3_datahub
     # ── Broker/Producer/Consumer health and notification tests ────────────────────
     # Unmasked 2026-06-30 under #154 batch-2a C4 — migrated to shared
     # broker_test_harness (HubHostBrokerHandle + DirectBrokerHandle +
-    # BrcHandle + make_reg_opts/make_cons_opts) + CurveKeyStoreFixture
+    # BrcHandle + make_reg_opts/make_cons_opts) + seed_curve_identities
     # per AUTH-6 audit.  10 single-broker L3 tests.
     test_datahub_broker_health.cpp
     workers/datahub_broker_health_workers.cpp
@@ -148,7 +148,7 @@ add_executable(test_layer3_datahub
     # ── Broker role-liveness state machine (HEP-CORE-0023 §2.5) ──────────────────
     # Unmasked 2026-06-29 under #154 batch-2a C3 — migrated to shared
     # broker_test_harness (DirectBrokerHandle + BrcHandle + make_reg_opts /
-    # make_cons_opts) + CurveKeyStoreFixture per AUTH-6 audit.
+    # make_cons_opts) + seed_curve_identities per AUTH-6 audit.
     test_datahub_role_state_machine.cpp
     workers/datahub_role_state_workers.cpp
 
@@ -189,7 +189,7 @@ add_executable(test_layer3_datahub
     workers/datahub_schema_loader_workers.cpp
 
     # ── Broker named schema protocol tests (HEP-CORE-0034 path B / inbox path A) ──
-    # Unmasked 2026-06-07 under #154 — migrated to CurveKeyStoreFixture pattern.
+    # Unmasked 2026-06-07 under #154 — migrated to seed_curve_identities pattern.
     test_datahub_broker_schema.cpp
     workers/broker_schema_workers.cpp
 
@@ -199,20 +199,20 @@ add_executable(test_layer3_datahub
     # (covered by test_hub_state.cpp + test_datahub_broker.cpp Sch_*).
 
     # ── BrokerService admin API tests ─────────────────────────────────────────
-    # Unmasked 2026-06-07 under #154 — migrated to CurveKeyStoreFixture pattern.
+    # Unmasked 2026-06-07 under #154 — migrated to seed_curve_identities pattern.
     test_datahub_broker_admin.cpp
     workers/broker_admin_workers.cpp
 
     # ── Broker control-plane protocol tests (broadcast, notify, list_channels) ──
     # Unmasked 2026-06-28 under #154 batch-2a C1 — migrated to shared
     # broker_test_harness (HubHostBrokerHandle + BrcHandle) +
-    # CurveKeyStoreFixture + §5b canonical builders per AUTH-6 audit.
+    # seed_curve_identities + §5b canonical builders per AUTH-6 audit.
     test_datahub_broker_protocol.cpp
     workers/datahub_broker_protocol_workers.cpp
 
     # ── HubHost ↔ BrokerService integration (HEP-CORE-0033 §4 / Phase 6.1b) ──
     # Unmasked 2026-06-27 under #154 — workers file already uses the
-    # CurveKeyStoreFixture + `start_hubhost_broker` + `BrcHandle` migration
+    # seed_curve_identities + `start_hubhost_broker` + `BrcHandle` migration
     # pattern (cf. broker_consumer_workers.cpp:130-135).  Pre-migration
     # MASK was a stale wrapper; file builds + runs against current lib.
     test_datahub_hub_host_integration.cpp
@@ -220,7 +220,7 @@ add_executable(test_layer3_datahub
 
     # ── HubHost + LuaEngine integration (HEP-CORE-0033 Phase 7 D3.3) ────────
     # Unmasked 2026-06-27 under #154 / #177 — workers now seed the
-    # process KeyStore via CurveKeyStoreFixture (HEP-CORE-0040 §172 +
+    # process KeyStore via seed_curve_identities (HEP-CORE-0040 §172 +
     # HEP-CORE-0035 §4.6.5 bypass discipline) before each HubHost::startup(),
     # so BrokerService's KeyStore["hub_identity"] check succeeds.
     test_hub_lua_integration.cpp
@@ -228,7 +228,7 @@ add_executable(test_layer3_datahub
 
     # ── HubHost + PythonEngine integration (HEP-CORE-0033 Phase 7 D4.2) ────
     # Unmasked 2026-06-27 under #154 / #177 — worker now seeds the
-    # process KeyStore via CurveKeyStoreFixture (HEP-CORE-0040 §172 +
+    # process KeyStore via seed_curve_identities (HEP-CORE-0040 §172 +
     # HEP-CORE-0035 §4.6.5 bypass discipline) before HubHost::startup(),
     # so BrokerService's KeyStore["hub_identity"] check succeeds.
     test_hub_python_integration.cpp

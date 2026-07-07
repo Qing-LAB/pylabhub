@@ -1005,7 +1005,7 @@ inline bool update_checksum_flexible_zone_impl(DataBlock *block, bool compute = 
 
     if (compute)
     {
-        if (!pylabhub::crypto::compute_blake2b(
+        if (!pylabhub::utils::security::secure().compute_blake2b(
                 hdr->flexible_zone_checksums[flex_zone_idx].checksum_bytes, flex, len))
         {
             return false;
@@ -1053,7 +1053,7 @@ inline bool update_checksum_slot_impl(DataBlock *block, size_t slot_index, bool 
     if (compute)
     {
         const void *slot_data = buf + slot_index * slot_size;
-        if (!pylabhub::crypto::compute_blake2b(slot_checksum, slot_data, slot_size))
+        if (!pylabhub::utils::security::secure().compute_blake2b(slot_checksum, slot_data, slot_size))
         {
             return false;
         }
@@ -1113,7 +1113,7 @@ inline bool verify_checksum_flexible_zone_impl(const DataBlock *block,
     const char *flex = block->flexible_data_zone();
     size_t len = layout.flexible_zone_size;
 
-    if (pylabhub::crypto::verify_blake2b(entry.checksum_bytes, flex, len))
+    if (pylabhub::utils::security::secure().verify_blake2b(entry.checksum_bytes, flex, len))
     {
         entry.cks_is_valid.store(1, std::memory_order_release);
         return true;
@@ -1174,7 +1174,7 @@ inline bool verify_checksum_slot_impl(const DataBlock *block, size_t slot_index,
     const char *buf = block->structured_data_buffer();
     assert(buf != nullptr && "structured_data_buffer must be mapped after construction");
     const void *slot_data = buf + slot_index * slot_size;
-    if (pylabhub::crypto::verify_blake2b(slot_checksum, slot_data, slot_size))
+    if (pylabhub::utils::security::secure().verify_blake2b(slot_checksum, slot_data, slot_size))
     {
         slot_cks_is_valid->store(1, std::memory_order_release);
         return true;
@@ -3134,7 +3134,7 @@ create_datablock_producer_impl(const std::string &name, DataBlockPolicy policy,
     {
         throw std::runtime_error(
             "DataBlock: Data Exchange Hub module not initialized. Create a LifecycleGuard in main() "
-            "with pylabhub::hub::GetDataBlockModule() (and typically Logger, CryptoUtils) before creating producers.");
+            "with pylabhub::hub::GetDataBlockModule() (and typically Logger, SecureSubsystem) before creating producers.");
     }
     (void)policy; // Reserved for future policy-specific behavior
     auto impl = std::make_unique<DataBlockProducerImpl>();
@@ -3216,7 +3216,7 @@ find_datablock_consumer_impl(const std::string &name,
     {
         throw std::runtime_error(
             "DataBlock: Data Exchange Hub module not initialized. Create a LifecycleGuard in main() "
-            "with pylabhub::hub::GetDataBlockModule() (and typically Logger, CryptoUtils) before finding consumers.");
+            "with pylabhub::hub::GetDataBlockModule() (and typically Logger, SecureSubsystem) before finding consumers.");
     }
     auto impl = std::make_unique<DataBlockConsumerImpl>();
     impl->name = name;
@@ -3391,7 +3391,7 @@ attach_datablock_as_writer_impl(const std::string &name,
     {
         throw std::runtime_error(
             "DataBlock: Data Exchange Hub module not initialized. Create a LifecycleGuard in main() "
-            "with pylabhub::hub::GetDataBlockModule() (and typically Logger, CryptoUtils) before attaching as writer.");
+            "with pylabhub::hub::GetDataBlockModule() (and typically Logger, SecureSubsystem) before attaching as writer.");
     }
 
     auto impl = std::make_unique<DataBlockProducerImpl>();
@@ -3541,7 +3541,7 @@ create_datablock_producer_from_fd_impl(const std::string &logical_name,
     {
         throw std::runtime_error(
             "DataBlock: Data Exchange Hub module not initialized. Create a LifecycleGuard in main() "
-            "with pylabhub::hub::GetDataBlockModule() (and typically Logger, CryptoUtils) before creating producers.");
+            "with pylabhub::hub::GetDataBlockModule() (and typically Logger, SecureSubsystem) before creating producers.");
     }
     (void)policy; // Reserved for future policy-specific behavior
     auto impl = std::make_unique<DataBlockProducerImpl>();
@@ -3613,7 +3613,7 @@ find_datablock_consumer_from_fd_impl(const std::string &logical_name,
     {
         throw std::runtime_error(
             "DataBlock: Data Exchange Hub module not initialized. Create a LifecycleGuard in main() "
-            "with pylabhub::hub::GetDataBlockModule() (and typically Logger, CryptoUtils) before finding consumers.");
+            "with pylabhub::hub::GetDataBlockModule() (and typically Logger, SecureSubsystem) before finding consumers.");
     }
     auto impl = std::make_unique<DataBlockConsumerImpl>();
     impl->name = logical_name;
@@ -3778,7 +3778,11 @@ void do_datablock_shutdown(const char * /*arg*/, void * /*userdata*/)
 pylabhub::utils::ModuleDef GetDataBlockModule()
 {
     pylabhub::utils::ModuleDef module("pylabhub::hub::DataBlock");
-    module.add_dependency("CryptoUtils");
+    // DataBlock computes BLAKE2b via `secure().compute_blake2b(...)` in
+    // its runtime write/verify paths (HEP-CORE-0043 §2.1 category 1).
+    // Depends on SecureSubsystem instead of the retired "SecureSubsystem"
+    // module (folded in 2026-07-06 SEC-Fold-2 Phase 2).
+    module.add_dependency("SecureSubsystem");
     module.add_dependency("pylabhub::utils::Logger");
     module.set_startup(&do_datablock_startup);
     module.set_shutdown(&do_datablock_shutdown,

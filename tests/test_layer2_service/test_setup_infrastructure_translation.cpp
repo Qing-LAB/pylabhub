@@ -64,6 +64,7 @@
  * assert they propagate unchanged (one-line check; not the focus).
  */
 
+#include "utils/security/secure_subsystem.hpp"
 #include "consumer_init.hpp"
 #include "consumer_role_host.hpp"
 #include "processor_init.hpp"
@@ -81,7 +82,6 @@
 // JsonConfig + FileLock + Logger.  Without this, `JsonConfig::JsonConfig()`
 // panics with "created before its module was initialized via LifecycleManager".
 #include "binary_lifecycle.h"
-#include "utils/crypto_utils.hpp"
 #include "utils/file_lock.hpp"
 #include "utils/json_config.hpp"
 #include "utils/logger.hpp"
@@ -108,9 +108,9 @@ using pylabhub::utils::RoleRuntimeInfo;
 // modules `RoleConfig::load_from_directory` actually touches.
 PLH_BINARY_LIFECYCLE_MODULES(
     pylabhub::utils::Logger::GetLifecycleModule(),
+    pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
     pylabhub::utils::FileLock::GetLifecycleModule(),
-    pylabhub::utils::JsonConfig::GetLifecycleModule(),
-    pylabhub::crypto::GetLifecycleModule())
+    pylabhub::utils::JsonConfig::GetLifecycleModule())
 
 namespace
 {

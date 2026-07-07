@@ -58,7 +58,7 @@ Pattern proven across (a) helper-style `run_with_host` files, (b) per-scenario f
 
 Established infrastructure (this task drove these changes):
   - `KeyStore::add_identity_from_z85` production API (single packing site for tests + production)
-  - `CurveKeyStoreFixture` (caller-side SMS+KS+seed; both broker helpers only read)
+  - `seed_curve_identities()` (caller-side SMS+KS+seed; both broker helpers only read)
   - `start_hubhost_broker` rewritten with explicit BYPASS PATTERN documentation
   - Stale doc references cleaned in 6 lib headers
 

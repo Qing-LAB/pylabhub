@@ -38,6 +38,7 @@
  * meaningful when 6.2b/c land.
  */
 
+#include "utils/security/secure_subsystem.hpp"
 #include "utils/admin_service.hpp"
 
 #include "binary_lifecycle.h"
@@ -84,9 +85,9 @@ using nlohmann::json;
 // the interference-vector audit.
 PLH_BINARY_LIFECYCLE_MODULES(
     pylabhub::utils::Logger::GetLifecycleModule(),
+    pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
     pylabhub::utils::FileLock::GetLifecycleModule(),
     pylabhub::utils::JsonConfig::GetLifecycleModule(),
-    pylabhub::crypto::GetLifecycleModule(),
     pylabhub::hub::GetZMQContextModule()
 )
 

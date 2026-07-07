@@ -566,7 +566,7 @@ int load_keypair_refuses_loose_parent_dir_mode(const std::string &dir)
 // AUTH_TODO §C5 (#161) loader contract: vault file present with the
 // correct 0600 ACL + 0700 parent, but its CONTENTS are garbage of the
 // wrong length.  `RoleConfig::load_keypair` MUST throw on the decode
-// path AND leave `key_store()` untouched — no partial state, no
+// path AND leave `secure().keys()` untouched — no partial state, no
 // half-loaded identity.  Pins the gate the C-chain relies on:
 // illegal CURVE key → no valid identity in KeyStore → every
 // downstream `ZmqQueue` factory rejects → no socket is bound.
@@ -607,8 +607,8 @@ int load_keypair_rejects_corrupt_vault_contents(const std::string &dir)
 
             namespace sec = pylabhub::utils::security;
             const bool pre_seeded =
-                sec::key_store_ready() &&
-                sec::key_store().has(sec::kRoleIdentityName);
+                sec::sodium_ready() &&
+                sec::secure().keys().has(sec::kRoleIdentityName);
 
             try {
                 (void) cfg.load_keypair("l2-pw");
@@ -630,9 +630,9 @@ int load_keypair_rejects_corrupt_vault_contents(const std::string &dir)
             // If a refactor allowed a half-loaded identity to leak,
             // downstream `ZmqQueue` factory validators would accept
             // it and a regression would ship.
-            if (sec::key_store_ready())
+            if (sec::sodium_ready())
             {
-                EXPECT_EQ(sec::key_store().has(sec::kRoleIdentityName),
+                EXPECT_EQ(sec::secure().keys().has(sec::kRoleIdentityName),
                           pre_seeded)
                     << "load_keypair MUST NOT seed the KeyStore on a "
                        "failed decode — the gate fires AFTER the "

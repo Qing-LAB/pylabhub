@@ -8,7 +8,7 @@
 //     real HubConfig) or `start_direct_broker` (when a test needs
 //     direct BrokerService::Config timing overrides) per HEP-CORE-0035
 //     §2 + §4.6.5.  No bypass switches.
-//   - Per-test `CurveKeyStoreFixture` seeds `hub_identity` + every
+//   - Per-test `seed_curve_identities()` seeds `hub_identity` + every
 //     `role.<uid>` the test exercises as a BRC client.
 //   - REG_REQ / CONSUMER_REG_REQ payloads come from the canonical
 //     `make_reg_opts` / `make_cons_opts` helpers in
@@ -24,8 +24,8 @@
 //     what the test pins.
 //   - `dead_consumer_*` two-subprocess test extends its temp-file
 //     handoff to ALSO carry the consumer's Z85 keypair so the exiter
-//     subprocess can reconstruct its own `CurveKeyStoreFixture` (each
-//     subprocess has its own SecureMemorySubsystem + KeyStore per
+//     subprocess can reconstruct its own `seed_curve_identities()` (each
+//     subprocess has its own SecureSubsystem + KeyStore per
 //     HEP-CORE-0040 §4.5 + §5.1).
 
 #include "datahub_broker_health_workers.h"
@@ -40,7 +40,7 @@
 #include "utils/hub_state.hpp"
 #include "utils/json_config.hpp"
 #include "utils/security/key_store.hpp"
-#include "utils/security/secure_memory_subsystem.hpp"
+#include "utils/security/secure_subsystem.hpp"
 #include "utils/security/zap_router.hpp"  // HEP-CORE-0035 §4.2 deny-path observability
 #include "plh_datahub.hpp"
 
@@ -64,7 +64,6 @@ using namespace pylabhub::hub;
 using pylabhub::broker::BrokerService;
 using pylabhub::broker::ChannelSnapshot;
 using pylabhub::tests::BrcHandle;
-using pylabhub::tests::CurveKeyStoreFixture;
 using pylabhub::tests::CurveKeypair;
 using pylabhub::tests::CurveSetup;
 using pylabhub::tests::DirectBrokerHandle;
@@ -77,7 +76,6 @@ namespace pylabhub::tests::worker::broker_health
 static auto logger_module()    { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
 static auto file_lock_module() { return ::pylabhub::utils::FileLock::GetLifecycleModule(); }
 static auto json_module()      { return ::pylabhub::utils::JsonConfig::GetLifecycleModule(); }
-static auto crypto_module()    { return ::pylabhub::crypto::GetLifecycleModule(); }
 static auto zmq_module()       { return ::pylabhub::hub::GetZMQContextModule(); }
 
 namespace
@@ -157,7 +155,7 @@ int producer_gets_closing_notify(int /*argc*/, char ** /*argv*/)
             const std::string uid     = "prod." + ch_name;
 
             auto curve = pylabhub::tests::make_curve_setup({uid});
-            CurveKeyStoreFixture ks_fixture("test.l3", "health.closing_notify", curve);
+            pylabhub::tests::seed_curve_identities(curve);
 
             // Fast reclaim: ready+pending ≈ 1s, then NOTIFY.
             auto broker = pylabhub::tests::start_hubhost_broker(
@@ -197,7 +195,7 @@ int producer_gets_closing_notify(int /*argc*/, char ** /*argv*/)
         },
         "broker_health.producer_gets_closing_notify",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
 }
 
 // ============================================================================
@@ -213,7 +211,7 @@ int consumer_auto_deregisters(int /*argc*/, char ** /*argv*/)
             const std::string cons_uid = "cons." + ch_name;
 
             auto curve = pylabhub::tests::make_curve_setup({prod_uid, cons_uid});
-            CurveKeyStoreFixture ks_fixture("test.l3", "health.consumer_dereg", curve);
+            pylabhub::tests::seed_curve_identities(curve);
 
             auto broker = pylabhub::tests::start_hubhost_broker(
                 hub_overrides_baseline(), curve, "HealthConsumerDeregHub");
@@ -268,7 +266,7 @@ int consumer_auto_deregisters(int /*argc*/, char ** /*argv*/)
         },
         "broker_health.consumer_auto_deregisters",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
 }
 
 // ============================================================================
@@ -284,7 +282,7 @@ int producer_auto_deregisters(int /*argc*/, char ** /*argv*/)
             const std::string prod_b_uid   = "prod.b." + ch_name;
 
             auto curve = pylabhub::tests::make_curve_setup({prod_a_uid, prod_b_uid});
-            CurveKeyStoreFixture ks_fixture("test.l3", "health.producer_dereg", curve);
+            pylabhub::tests::seed_curve_identities(curve);
 
             // Long timeouts so the test verifies DEREG actually fired,
             // not that a sweep evicted the channel from inactivity.
@@ -328,7 +326,7 @@ int producer_auto_deregisters(int /*argc*/, char ** /*argv*/)
         },
         "broker_health.producer_auto_deregisters",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
 }
 
 // ============================================================================
@@ -348,8 +346,8 @@ int producer_auto_deregisters(int /*argc*/, char ** /*argv*/)
 //   6. consumer seckey Z85
 //
 // The exiter rebuilds a single-uid `CurveSetup` from lines 4-6, seeds
-// its own `CurveKeyStoreFixture` (each subprocess has its own
-// SecureMemorySubsystem + KeyStore per HEP-CORE-0040 §4.5).  The
+// its own `seed_curve_identities()` (each subprocess has its own
+// SecureSubsystem + KeyStore per HEP-CORE-0040 §4.5).  The
 // broker's `known_roles` (populated by the orchestrator from its
 // `CurveSetup`) admits the consumer's pubkey.
 // ============================================================================
@@ -370,7 +368,7 @@ int dead_consumer_orchestrator(int argc, char **argv)
             const std::string cons_uid = "cons." + ch_name;
 
             auto curve = pylabhub::tests::make_curve_setup({prod_uid, cons_uid});
-            CurveKeyStoreFixture ks_fixture("test.l3", "health.dead_consumer.orch", curve);
+            pylabhub::tests::seed_curve_identities(curve);
 
             // Liveness-check ON (1s) so the broker detects the exiter's
             // dead PID quickly.  Ready/pending timeouts long (15s) so
@@ -438,7 +436,7 @@ int dead_consumer_orchestrator(int argc, char **argv)
         },
         "broker_health.dead_consumer_orchestrator",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
 }
 
 int dead_consumer_exiter(int argc, char **argv)
@@ -484,8 +482,7 @@ int dead_consumer_exiter(int argc, char **argv)
             curve.hub = pylabhub::tests::gen_curve_keypair();
             curve.role_keys.emplace(
                 cons_uid, CurveKeypair{cons_pub_z85, cons_sec_z85});
-            CurveKeyStoreFixture ks_fixture(
-                "test.l3", "health.dead_consumer.exit", curve);
+            pylabhub::tests::seed_curve_identities(curve);
 
             BrcHandle bh;
             bh.start(endpoint, hub_pubkey, cons_uid,
@@ -501,7 +498,7 @@ int dead_consumer_exiter(int argc, char **argv)
         },
         "broker_health.dead_consumer_exiter",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
 }
 
 // ============================================================================
@@ -519,7 +516,7 @@ int schema_mismatch_notify(int /*argc*/, char ** /*argv*/)
             const std::string hash_b   = std::string(64, 'b');
 
             auto curve = pylabhub::tests::make_curve_setup({uid_a, uid_b});
-            CurveKeyStoreFixture ks_fixture("test.l3", "health.schema_mismatch", curve);
+            pylabhub::tests::seed_curve_identities(curve);
 
             auto broker = pylabhub::tests::start_hubhost_broker(
                 hub_overrides_baseline(), curve, "HealthSchemaMismatchHub");
@@ -571,7 +568,7 @@ int schema_mismatch_notify(int /*argc*/, char ** /*argv*/)
         },
         "broker_health.schema_mismatch_notify",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
 }
 
 // ============================================================================
@@ -591,7 +588,7 @@ int multi_producer_partial_pending_timeout(int /*argc*/, char ** /*argv*/)
             const std::string prod_b_uid = "prod.b." + ch_name;
 
             auto curve = pylabhub::tests::make_curve_setup({prod_a_uid, prod_b_uid});
-            CurveKeyStoreFixture ks_fixture("test.l3", "health.multi_prod_partial", curve);
+            pylabhub::tests::seed_curve_identities(curve);
 
             auto broker = pylabhub::tests::start_hubhost_broker(
                 hub_overrides_with_timeouts(/*ready=*/500, /*pending=*/500),
@@ -664,7 +661,7 @@ int multi_producer_partial_pending_timeout(int /*argc*/, char ** /*argv*/)
         },
         "broker_health.multi_producer_partial_pending_timeout",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
 }
 
 // Consumer heartbeat-timeout: CONSUMER_DIED_NOTIFY with
@@ -679,7 +676,7 @@ int consumer_heartbeat_timeout_notify(int /*argc*/, char ** /*argv*/)
             const std::string cons_uid = "cons." + ch_name;
 
             auto curve = pylabhub::tests::make_curve_setup({prod_uid, cons_uid});
-            CurveKeyStoreFixture ks_fixture("test.l3", "health.cons_hb_timeout", curve);
+            pylabhub::tests::seed_curve_identities(curve);
 
             // PID liveness sweep OFF: only the heartbeat-timeout path
             // can fire CONSUMER_DIED_NOTIFY.  The direct broker path
@@ -761,7 +758,7 @@ int consumer_heartbeat_timeout_notify(int /*argc*/, char ** /*argv*/)
         },
         "broker_health.consumer_heartbeat_timeout_notify",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
 }
 
 // Two-snapshot invariant: a presence that demotes Connected→Pending in
@@ -777,7 +774,7 @@ int two_snapshot_invariant(int /*argc*/, char ** /*argv*/)
             const std::string prod_uid = "prod." + ch_name;
 
             auto curve = pylabhub::tests::make_curve_setup({prod_uid});
-            CurveKeyStoreFixture ks_fixture("test.l3", "health.two_snapshot", curve);
+            pylabhub::tests::seed_curve_identities(curve);
 
             auto broker = pylabhub::tests::start_hubhost_broker(
                 hub_overrides_with_timeouts(/*ready=*/500, /*pending=*/500),
@@ -845,7 +842,7 @@ int two_snapshot_invariant(int /*argc*/, char ** /*argv*/)
         },
         "broker_health.two_snapshot_invariant",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
 }
 
 // `channel_torn_down` short-circuit (HEP-0039 P8 Step B prerequisite).
@@ -862,7 +859,7 @@ int channel_torn_down_consumer_pass2_skipped(int /*argc*/, char ** /*argv*/)
             const std::string cons_uid = "cons." + ch_name;
 
             auto curve = pylabhub::tests::make_curve_setup({prod_uid, cons_uid});
-            CurveKeyStoreFixture ks_fixture("test.l3", "health.channel_torn_down", curve);
+            pylabhub::tests::seed_curve_identities(curve);
 
             auto broker = pylabhub::tests::start_hubhost_broker(
                 hub_overrides_with_timeouts(/*ready=*/500, /*pending=*/500),
@@ -928,7 +925,7 @@ int channel_torn_down_consumer_pass2_skipped(int /*argc*/, char ** /*argv*/)
         },
         "broker_health.channel_torn_down_consumer_pass2_skipped",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
 }
 
 // ============================================================================
@@ -945,7 +942,7 @@ int channel_torn_down_consumer_pass2_skipped(int /*argc*/, char ** /*argv*/)
 // the BRC reads keys from the process KeyStore by name (HEP-CORE-0040
 // §172).  The test now:
 //   - Generates a fresh CURVE keypair via `make_curve_setup({deny_uid})`
-//     and seeds it in the process KeyStore via `CurveKeyStoreFixture`
+//     and seeds it in the process KeyStore via `seed_curve_identities()`
 //     under name `role.<deny_uid>`.
 //   - Builds the broker with a SEPARATE `CurveSetup` (the `setup` arg
 //     to `start_direct_broker`) whose `role_keys` map is EMPTY.  That
@@ -976,8 +973,7 @@ int ctrl_zap_deny_path(int /*argc*/, char ** /*argv*/)
             client_setup.hub = pylabhub::tests::gen_curve_keypair();
             client_setup.role_keys.emplace(
                 deny_uid, pylabhub::tests::gen_curve_keypair());
-            CurveKeyStoreFixture ks_fixture(
-                "test.l3", "health.ctrl_zap_deny", client_setup);
+            pylabhub::tests::seed_curve_identities(client_setup);
 
             // Step 2: build the broker's CurveSetup with EMPTY
             // role_keys — so `apply_curve_to` pushes ZERO entries to
@@ -1048,7 +1044,7 @@ int ctrl_zap_deny_path(int /*argc*/, char ** /*argv*/)
         },
         "broker_health.ctrl_zap_deny_path",
         logger_module(), file_lock_module(), json_module(),
-        crypto_module(), zmq_module());
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
 }
 
 } // namespace pylabhub::tests::worker::broker_health

@@ -69,7 +69,7 @@ PLH_BINARY_LIFECYCLE_MODULES(
 // RoleAPIBase's identity wiring is COMPLETELY internal: the public
 // ctor takes only `(RoleHostCore&, short_tag, uid)`, and there is no
 // `set_auth` accessor that could re-introduce out-of-band key
-// injection.  The keypair is sourced from `key_store()` inside the
+// injection.  The keypair is sourced from `secure().keys()` inside the
 // factory body, keyed by `kRoleIdentityName`.
 //
 // These compile-time pins land here because (1) this file already

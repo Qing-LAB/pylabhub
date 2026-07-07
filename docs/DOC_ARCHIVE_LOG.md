@@ -6,6 +6,42 @@
 
 ## Archive batches
 
+### 2026-07-06 (SEC-Fold-2 KeyStore merger — HEP-CORE-0043 §2.2 + §7 SHIPPED)
+
+The KeyStore-into-SecureSubsystem merger shipped 2026-07-06 alongside
+the SMS lifecycle-module refactor.  HEP-CORE-0043 §2.2 (KeyStore as
+member of `SecureSubsystem::Impl`) and §7 (KeyStore API surface) are
+now present-tense authoritative.  HEP-CORE-0040 §4 (SecureMemorySubsystem)
+and §5 (KeyStore) received inline "SUPERSEDED IN FULL" callouts pointing
+to HEP-CORE-0043.  HEP-CORE-0038 banner rewritten to reflect the same.
+
+Archived rationale document (no longer needed as decision record — the
+shipped HEP-CORE-0043 supersedes its purpose):
+
+* `DRAFT_security_module_and_hep_consolidation_2026-07.md` — 479-line
+  design-rationale draft from 2026-07-04 capturing the CI-triage
+  sodium_init failure that motivated HEP-CORE-0043's creation.
+  Content substance absorbed into HEP-CORE-0043 §0-§2 (the "Why"
+  narrative + the fold decision).  Historical value only; not
+  authoritative.  Location: `docs/archive/transient-2026-07-06/`.
+
+Additional transient docs archived after SEC-Fold-2 Phases A-E +
+review-follow-ups all shipped:
+
+* `DRAFT_sec_fold_2_plan_and_guidance_2026-07.md` — the phased plan
+  doc + five-point pattern rule.  Its substance is in HEP-CORE-0043
+  §1-§2 + the shipped code + the `feedback_sms_five_point_pattern.md`
+  memory file.  Location: `docs/archive/transient-2026-07-06/`.
+* `DRAFT_sec_fold_2_resume_state_2026-07.md` — session-resume
+  document tracking in-flight state.  Now obsolete — all listed
+  work shipped 2026-07-06.  Location:
+  `docs/archive/transient-2026-07-06/`.
+* `DRAFT_task_list_snapshot_2026-07.md` — handoff snapshot of
+  in-session task tracking.  Superseded by the shipped code +
+  archived rationale docs.  Location:
+  `docs/archive/transient-2026-07-06/`.
+
+
 ### 2026-07-01 (task #246 Phase 1 promotion — HEP-CORE-0042 adopted)
 
 Task #246's tech_draft substance promoted to **HEP-CORE-0042 (Channel

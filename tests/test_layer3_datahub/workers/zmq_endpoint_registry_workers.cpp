@@ -21,7 +21,7 @@
 #include "zmq_endpoint_registry_workers.h"
 
 #include "broker_test_harness.h"
-#include "curve_test_setup.h"  // CurveKeyStoreFixture + role_keystore_name
+#include "curve_test_setup.h"  // seed_curve_identities + role_keystore_name
 #include "plh_datahub.hpp"
 #include "plh_service.hpp"
 #include "shared_test_helpers.h"
@@ -79,7 +79,7 @@ std::string pid_chan(const std::string &base)
 /// (broker, curve).
 ///
 /// Strict-CURVE migration (#154 AUTH-6 C5, 2026-06-30): each subprocess
-/// now constructs a `CurveKeyStoreFixture` that seeds
+/// now constructs a `seed_curve_identities()` that seeds
 /// `kHubIdentityName` and `role.<uid>` for every uid the worker will
 /// register, so the canonical `BrcHandle` can resolve client keys by
 /// `role_keystore_name(uid)` per HEP-CORE-0040 §172.  REG_REQ payloads
@@ -95,8 +95,7 @@ int run_with_host(std::string_view worker_name,
         [role_uids = std::move(role_uids),
          body = std::forward<Body>(body)]() mutable {
             auto curve = pylabhub::tests::make_curve_setup(role_uids);
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture(
-                "test.l3", "zmq_endpoint_registry.harness", curve);
+            pylabhub::tests::seed_curve_identities(curve);
             auto broker = pylabhub::tests::start_hubhost_broker(
                 hubhost_overrides(), curve);
             ASSERT_TRUE(broker.host && broker.host->is_running());
@@ -109,7 +108,7 @@ int run_with_host(std::string_view worker_name,
         Logger::GetLifecycleModule(),
         FileLock::GetLifecycleModule(),
         JsonConfig::GetLifecycleModule(),
-        pylabhub::crypto::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         pylabhub::hub::GetZMQContextModule());
 }
 

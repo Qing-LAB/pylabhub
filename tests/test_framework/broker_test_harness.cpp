@@ -58,9 +58,9 @@ DirectBrokerHandle
 start_direct_broker(pylabhub::broker::BrokerService::Config cfg,
                     const CurveSetup &setup)
 {
-    // HEP-CORE-0040 §172: the hub identity is read from `key_store()`
+    // HEP-CORE-0040 §172: the hub identity is read from `secure().keys()`
     // under `"hub_identity"`.  Caller MUST have a
-    // `CurveKeyStoreFixture` in scope BEFORE calling — its ctor
+    // `seed_curve_identities()` in scope BEFORE calling — its ctor
     // seeded the KeyStore from `setup`.  Per HEP-CORE-0035 §2 the
     // CURVE install is unconditional; BrokerService ctor throws if
     // the entry is absent.
@@ -138,7 +138,7 @@ start_hubhost_broker(const nlohmann::json &j_overrides,
                      std::string_view hub_name)
 {
     // HEP-CORE-0040 §172.  Same contract as `start_direct_broker`:
-    // the caller has a `CurveKeyStoreFixture` in scope which has
+    // the caller has a `seed_curve_identities()` in scope which has
     // already seeded the process KeyStore with `"hub_identity"`
     // (from `setup.hub`) and one `"role.<uid>"` entry per role uid
     // in `setup.role_keys`.  This helper only READS — it never
@@ -147,12 +147,12 @@ start_hubhost_broker(const nlohmann::json &j_overrides,
     // The pre-check is loud and specific so a missing fixture
     // surfaces at the call site instead of inside HubHost::startup.
     namespace sec = pylabhub::utils::security;
-    if (!sec::key_store_ready() ||
-        !sec::key_store().has(sec::kHubIdentityName))
+    if (!sec::sodium_ready() ||
+        !sec::secure().keys().has(sec::kHubIdentityName))
     {
         throw std::logic_error(
             "start_hubhost_broker: KeyStore entry 'hub_identity' is "
-            "absent.  Construct `pylabhub::tests::CurveKeyStoreFixture` "
+            "absent.  Construct `pylabhub::tests::seed_curve_identities` "
             "in scope BEFORE calling — it owns SMS + KeyStore + the "
             "identity seeding (HEP-CORE-0040 §172).  Same contract "
             "as start_direct_broker; both helpers only read.");
@@ -215,7 +215,7 @@ start_hubhost_broker(const nlohmann::json &j_overrides,
         pylabhub::config::HubConfig::load_from_directory(h.hub_dir);
 
     // Step 5 — construct HubHost and start the broker.  `startup()`
-    // builds the BrokerService (which checks `key_store().has(
+    // builds the BrokerService (which checks `secure().keys().has(
     // "hub_identity")`), wires the admin/script subsystems, and
     // spawns the broker thread.  After startup() returns the broker
     // is listening on `broker_endpoint()`.
@@ -279,8 +279,8 @@ nlohmann::json make_reg_opts(const std::string &channel,
             // HEP-CORE-0036 §I10: one pubkey per role_uid — derived from
             // the keystore, not passed by the caller.  Throws
             // `std::out_of_range` if the caller forgot to seed the
-            // `CurveKeyStoreFixture` for this uid.
-            .zmq_pubkey = std::string{sec::key_store().pubkey(
+            // `seed_curve_identities()` for this uid.
+            .zmq_pubkey = std::string{sec::secure().keys().pubkey(
                 pylabhub::tests::role_keystore_name(role_uid))},
             .shm_capability_endpoint =
                 sec::default_shm_capability_endpoint(channel),
@@ -302,7 +302,7 @@ nlohmann::json make_cons_opts(const std::string &channel,
             .role_uid   = consumer_uid,
             .role_name  = "test_consumer",
             // Same §I10 derivation as `make_reg_opts`.
-            .zmq_pubkey = std::string{sec::key_store().pubkey(
+            .zmq_pubkey = std::string{sec::secure().keys().pubkey(
                 pylabhub::tests::role_keystore_name(consumer_uid))},
         });
     opts["consumer_pid"] =

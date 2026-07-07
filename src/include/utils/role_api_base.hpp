@@ -777,8 +777,8 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     /// Diagnostics: emits per-step INFO logs so the spawn sequence
     /// across N threads is observable in test + production logs.
     /// HEP-CORE-0040 §172: the role CURVE identity must already be
-    /// in `key_store()` under `"role_identity"` before this method
-    /// runs (handler's BRCs read it on-site via `key_store()`).
+    /// in `secure().keys()` under `"role_identity"` before this method
+    /// runs (handler's BRCs read it on-site via `secure().keys()`).
     [[nodiscard]] bool start_handler_threads(std::unique_ptr<RoleHandler> handler);
 
     /// Symmetric teardown: signal each BRC's poll loop, drain the

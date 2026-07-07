@@ -1,13 +1,37 @@
 # HEP-CORE-0040: Locked Key Memory
 
-> **⚠ SUPERSEDED-STATUS-ONLY by HEP-CORE-0043 §2 + §7 (2026-07-04).**
-> Content in this HEP remains **AUTHORITATIVE** until those
-> sections' detail migration completes.  Architectural design
-> contract (module ownership, init gate, use-not-export) has moved
-> to HEP-CORE-0043 §1-§2.  §5.2 KeyStore API + §6 LockedKey RAII +
-> §8 integration + §8.5.2 seckey raw-32 contract are all still
-> the source of truth until further notice.  See HEP-CORE-0043
-> §0.4 for migration status.
+> **⚠ PARTIALLY SUPERSEDED by HEP-CORE-0043 §2.2 + §7 (KeyStore
+> merger SHIPPED 2026-07-06).**
+>
+> **SUPERSEDED (do not consult):**
+> - §4 (SecureMemorySubsystem) → HEP-CORE-0043 §1-§2 authoritative.
+>   `SecureMemorySubsystem` renamed to `SecureSubsystem` (alias
+>   during transition).  Lifecycle model rewritten: Logger-shape
+>   static module via `GetLifecycleModule()` mod-pack registration
+>   (not dynamic self-registration).
+> - §5.1 (singularity — "throws on second construction") →
+>   replaced by function-local static in `SecureSubsystem::instance()`;
+>   KeyStore is a MEMBER of SMS, no independent construction site.
+> - §5.4 (dynamic lifecycle-module registration) → deleted.
+>   KeyStore has no separate lifecycle module.
+> - §5.6 (namespace accessor `key_store()`) → now an inline shim
+>   delegating to `secure().keys()`; deleted in Phase 4.
+>
+> **STILL AUTHORITATIVE (preserved verbatim through the merger):**
+> - §5.2 KeyStore API surface — every method preserved on the class.
+>   HEP-CORE-0043 §7 mirrors the surface.
+> - §5.3 canonical entry names (`kHubIdentityName`, `kRoleIdentityName`).
+> - §5.5 thread-safety contract (shared-lock reads, exclusive-lock
+>   writes, prompt callbacks).
+> - §6 LockedKey RAII (sodium_malloc + mlock + guard pages + canary
+>   + zero-on-destruct).
+> - §8 integration surface (how BrokerService / BRC / HubConfig /
+>   RoleConfig / RoleAPIBase consume KeyStore).
+> - §8.5.2 seckey raw-32 contract (`with_seckey` returns raw 32 bytes).
+>
+> Phase 7 of the SEC-Fold-2 landing archives this HEP after
+> HEP-0043 §7 fully absorbs the API-surface content.  See
+> HEP-CORE-0043 §0.4 for migration status.
 
 
 | Field           | Value |
@@ -139,6 +163,17 @@ Two pieces, both registered LifecycleGuard modules:
 ---
 
 ## 4. SecureMemorySubsystem (static)
+
+> **⚠ SUPERSEDED IN FULL by HEP-CORE-0043 §1 + §2.  Do not consult
+> this section for the shipped design.**  The 2026-07-06 refactor
+> renamed the class to `SecureSubsystem` (alias preserved during
+> transition), replaced dynamic self-registration with a Logger-shape
+> static lifecycle module registered via `SecureSubsystem::
+> GetLifecycleModule()` in the caller's `LifecycleGuard` mod pack,
+> and folded KeyStore in as a MEMBER of `SecureSubsystem::Impl`.
+> The description below documents the pre-fold design for
+> historical reference; see HEP-CORE-0043 §1-§2 + §7 for the shipped
+> design.
 
 ### 4.1 Charter
 
@@ -276,6 +311,17 @@ The **class API** (`secure_memory_subsystem()` accessor) is a separate concern f
 ---
 
 ## 5. KeyStore (dynamic)
+
+> **⚠ SUPERSEDED IN FULL by HEP-CORE-0043 §2.2 + §7.  Do not consult
+> this section for the shipped design.**  The 2026-07-06 refactor
+> made KeyStore a MEMBER of `SecureSubsystem::Impl` (field `keys_`);
+> the dynamic lifecycle module `"KeyStore"` was deleted; the ctor is
+> now no-args; there is no `add_dependency("SecureSubsystem")`
+> anywhere; access is via `secure().keys()`.  The API surface
+> (`add_identity`, `add_raw`, `pubkey`, `with_seckey`, etc.) is
+> preserved verbatim on HEP-CORE-0043 §7 — consult §7, not this
+> section.  The description below documents the pre-fold dynamic-
+> module design for historical reference.
 
 ### 5.1 Charter
 
@@ -869,6 +915,15 @@ SecureMemorySubsystem + KeyStore follow the HEP-0001 LifecycleModule contract (C
 ---
 
 ## 10. Implementation plan (mirror of task chain)
+
+> **⚠ HISTORICAL.**  The task chain in this table describes the
+> pre-fold implementation.  The 2026-07-06 SEC-Fold-2 refactor
+> superseded steps 5 (SecureMemorySubsystem), 6 (KeyStore ctor
+> chain), 7 (integration).  Current shipped state: see HEP-CORE-0043
+> §1-§2 + §7.  Table row 5 in particular ("ctor registers
+> `SecureMemory`") is factually obsolete — the class no longer
+> self-registers; static mod-pack registration via `SecureSubsystem::
+> GetLifecycleModule()` replaces it.
 
 | Step | Task | Scope |
 |---|---|---|

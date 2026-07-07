@@ -107,9 +107,8 @@ int run_with_host(std::string_view worker_name,
             auto curve = pylabhub::tests::make_curve_setup(role_uids);
             // HEP-CORE-0040 §172: fixture owns SMS + KeyStore + identity
             // seeding (the production-shaped path); start_hubhost_broker
-            // only reads from key_store().
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture(
-                "test.l3", "test.broker_schema.harness", curve);
+            // only reads from secure().keys().
+            pylabhub::tests::seed_curve_identities(curve);
             auto broker = pylabhub::tests::start_hubhost_broker(
                 hubhost_overrides(), curve);
             ASSERT_TRUE(broker.host && broker.host->is_running());
@@ -124,7 +123,7 @@ int run_with_host(std::string_view worker_name,
         Logger::GetLifecycleModule(),
         FileLock::GetLifecycleModule(),
         JsonConfig::GetLifecycleModule(),
-        pylabhub::crypto::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         pylabhub::hub::GetZMQContextModule());
 }
 

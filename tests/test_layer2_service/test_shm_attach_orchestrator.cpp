@@ -25,6 +25,7 @@
 #include "log_capture_fixture.h"
 #include "utils/logger.hpp"
 #include "utils/security/attach_protocol.hpp"
+#include "utils/security/key_store.hpp"          // secure().keys().add_identity_from_z85
 #include "utils/security/shm_attach_orchestrator.hpp"
 #include "utils/security/shm_capability_channel.hpp"
 
@@ -60,14 +61,19 @@ namespace fs = std::filesystem;
 using pylabhub::utils::security::AttachProtocolAcceptor;
 using pylabhub::utils::security::ConsumerAuthMaterial;
 using pylabhub::utils::security::IShmCapabilityProducer;
-using pylabhub::utils::security::SeckeyAccessor;
 using pylabhub::utils::security::ShmAttachOrchestrator;
 using pylabhub::utils::security::create_shm_capability_producer;
 using pylabhub::utils::security::initiate_consumer_handshake;
+using pylabhub::utils::security::secure;
 
-// Pattern 1+: binary-wide LifecycleGuard for Logger (orchestrator emits
-// LOGGER_INFO/WARN).
-PLH_BINARY_LIFECYCLE_MODULES(pylabhub::utils::Logger::GetLifecycleModule())
+// Pattern 1+: binary-wide LifecycleGuard for Logger + SMS.  SMS is
+// required for `secure().keys()` — AttachProtocol resolves seckeys by
+// KeyStore ENTRY NAME (HEP-CORE-0043 §6), so this test seeds
+// per-test keypairs into `secure().keys()` and passes their names to
+// `AttachProtocolAcceptor` / `ConsumerAuthMaterial`.
+PLH_BINARY_LIFECYCLE_MODULES(
+    pylabhub::utils::Logger::GetLifecycleModule(),
+    pylabhub::utils::security::SecureSubsystem::GetLifecycleModule())
 
 namespace
 {
@@ -77,32 +83,35 @@ constexpr std::size_t kRawKeyBytes = 32;
 struct TestKeypair
 {
     std::array<unsigned char, kRawKeyBytes> pub_raw{};
-    std::array<unsigned char, kRawKeyBytes> sec_raw{};
     std::string                             pub_z85;
+    std::string                             name;   // KeyStore entry name
 };
 
+/// Mint a fresh CURVE keypair, seed it into the process KeyStore
+/// under `name`, and return the pubkey (raw + Z85) plus the name.
+/// The seckey stays inside KeyStore — the test only needs the name
+/// to pass to AttachProtocol.  Caller is responsible for
+/// `secure().keys().remove(name)` in teardown.
 TestKeypair
-make_test_keypair()
+make_and_seed_test_keypair(std::string_view name)
 {
-    // No self-init: sodium_init is SecureMemorySubsystem's job.
-    // Test fixture must construct SMS before reaching here.
     TestKeypair kp;
-    ::crypto_box_keypair(kp.pub_raw.data(), kp.sec_raw.data());
-    char z85[41] = {};
-    if (::zmq_z85_encode(z85, kp.pub_raw.data(), kRawKeyBytes) == nullptr)
-        throw std::runtime_error("make_test_keypair: zmq_z85_encode failed");
-    kp.pub_z85 = std::string(z85, 40);
+    std::array<unsigned char, kRawKeyBytes> sec_raw{};
+    ::crypto_box_keypair(kp.pub_raw.data(), sec_raw.data());
+    char pub_z85[41] = {};
+    char sec_z85[41] = {};
+    if (::zmq_z85_encode(pub_z85, kp.pub_raw.data(), kRawKeyBytes) == nullptr)
+        throw std::runtime_error("make_and_seed_test_keypair: zmq_z85_encode pub failed");
+    if (::zmq_z85_encode(sec_z85, sec_raw.data(), kRawKeyBytes) == nullptr)
+        throw std::runtime_error("make_and_seed_test_keypair: zmq_z85_encode sec failed");
+    kp.pub_z85 = std::string(pub_z85, 40);
+    kp.name    = std::string(name);
+    secure().keys().add_identity_from_z85(
+        kp.name, kp.pub_z85, std::string(sec_z85, 40));
+    // sec_raw is a local; falls out of scope here.  This test file
+    // never needs raw bytes — the orchestrator tests all go through
+    // the production API (name-based).
     return kp;
-}
-
-SeckeyAccessor
-make_seckey_accessor(const TestKeypair &kp)
-{
-    return [&kp](auto use_sk) {
-        use_sk(std::span<const std::byte>{
-            reinterpret_cast<const std::byte *>(kp.sec_raw.data()),
-            kRawKeyBytes});
-    };
 }
 
 class ShmAttachOrchestratorTest : public ::testing::Test,
@@ -118,6 +127,12 @@ class ShmAttachOrchestratorTest : public ::testing::Test,
             fs::remove(p, ec);
         }
         paths_.clear();
+        // Remove any KeyStore entries seeded during the test.  The
+        // KeyStore is process-wide; a stale entry from one test would
+        // collide with the next test's seed.
+        for (const auto &name : seeded_names_)
+            secure().keys().remove(name);
+        seeded_names_.clear();
         AssertNoUnexpectedLogWarnError();
         LogCaptureFixture::Uninstall();
     }
@@ -134,7 +149,21 @@ class ShmAttachOrchestratorTest : public ::testing::Test,
         return p.string();
     }
 
-    std::vector<fs::path> paths_;
+    /// Mint + seed a fresh CURVE keypair under a unique KeyStore name.
+    /// Records the name in `seeded_names_` for TearDown cleanup.
+    TestKeypair
+    MakeKeypair(const char *tag)
+    {
+        static std::atomic<int> ctr{0};
+        std::string             name = "test.orch." + std::string(tag) + "." +
+                          std::to_string(ctr.fetch_add(1));
+        TestKeypair kp = make_and_seed_test_keypair(name);
+        seeded_names_.push_back(name);
+        return kp;
+    }
+
+    std::vector<fs::path>    paths_;
+    std::vector<std::string> seeded_names_;
 };
 
 // Helper: run the consumer side of the handshake in a thread.  After
@@ -154,7 +183,7 @@ spawn_consumer_thread(const std::string &endpoint, const TestKeypair &cons_kp,
         try
         {
             ConsumerAuthMaterial cons_auth{cons_uid, cons_kp.pub_z85,
-                                           make_seckey_accessor(cons_kp)};
+                                           cons_kp.name};
             auto fd = initiate_consumer_handshake(endpoint, cons_auth,
                                                   prod_pubkey_z85,
                                                   std::chrono::milliseconds{2000});
@@ -213,15 +242,15 @@ spawn_consumer_thread(const std::string &endpoint, const TestKeypair &cons_kp,
 
 TEST_F(ShmAttachOrchestratorTest, BothAllowed_SilentAndSent)
 {
-    const auto prod = make_test_keypair();
-    const auto cons = make_test_keypair();
+    const auto prod = MakeKeypair("prod");
+    const auto cons = MakeKeypair("cons");
     const auto path = unique_socket_path("both_allow");
 
     auto transport = create_shm_capability_producer(4096);
     ASSERT_TRUE(transport->bind_endpoint(path));
 
     AttachProtocolAcceptor acceptor{*transport, ::getuid(),
-                                    make_seckey_accessor(prod)};
+                                    prod.name};
 
     ShmAttachOrchestrator::Config cfg{
         "test.channel.both_allow",
@@ -254,15 +283,15 @@ TEST_F(ShmAttachOrchestratorTest, BothAllowed_SilentAndSent)
 
 TEST_F(ShmAttachOrchestratorTest, BothDenied_SilentAndDeniedByBroker)
 {
-    const auto prod = make_test_keypair();
-    const auto cons = make_test_keypair();
+    const auto prod = MakeKeypair("prod");
+    const auto cons = MakeKeypair("cons");
     const auto path = unique_socket_path("both_deny");
 
     auto transport = create_shm_capability_producer(4096);
     ASSERT_TRUE(transport->bind_endpoint(path));
 
     AttachProtocolAcceptor acceptor{*transport, ::getuid(),
-                                    make_seckey_accessor(prod)};
+                                    prod.name};
 
     ShmAttachOrchestrator::Config cfg{
         "test.channel.both_deny",
@@ -294,15 +323,15 @@ TEST_F(ShmAttachOrchestratorTest, BothDenied_SilentAndDeniedByBroker)
 
 TEST_F(ShmAttachOrchestratorTest, BrokerAllowedCacheDenied_WarnAndSent)
 {
-    const auto prod = make_test_keypair();
-    const auto cons = make_test_keypair();
+    const auto prod = MakeKeypair("prod");
+    const auto cons = MakeKeypair("cons");
     const auto path = unique_socket_path("div_admit");
 
     auto transport = create_shm_capability_producer(4096);
     ASSERT_TRUE(transport->bind_endpoint(path));
 
     AttachProtocolAcceptor acceptor{*transport, ::getuid(),
-                                    make_seckey_accessor(prod)};
+                                    prod.name};
 
     ShmAttachOrchestrator::Config cfg{
         "test.channel.div_admit",
@@ -337,15 +366,15 @@ TEST_F(ShmAttachOrchestratorTest, BrokerAllowedCacheDenied_WarnAndSent)
 
 TEST_F(ShmAttachOrchestratorTest, BrokerDeniedCacheAllowed_WarnAndDenied)
 {
-    const auto prod = make_test_keypair();
-    const auto cons = make_test_keypair();
+    const auto prod = MakeKeypair("prod");
+    const auto cons = MakeKeypair("cons");
     const auto path = unique_socket_path("div_deny");
 
     auto transport = create_shm_capability_producer(4096);
     ASSERT_TRUE(transport->bind_endpoint(path));
 
     AttachProtocolAcceptor acceptor{*transport, ::getuid(),
-                                    make_seckey_accessor(prod)};
+                                    prod.name};
 
     ShmAttachOrchestrator::Config cfg{
         "test.channel.div_deny",
@@ -379,15 +408,15 @@ TEST_F(ShmAttachOrchestratorTest, BrokerDeniedCacheAllowed_WarnAndDenied)
 
 TEST_F(ShmAttachOrchestratorTest, BrokerNullopt_FailsClosed)
 {
-    const auto prod = make_test_keypair();
-    const auto cons = make_test_keypair();
+    const auto prod = MakeKeypair("prod");
+    const auto cons = MakeKeypair("cons");
     const auto path = unique_socket_path("brk_nullopt");
 
     auto transport = create_shm_capability_producer(4096);
     ASSERT_TRUE(transport->bind_endpoint(path));
 
     AttachProtocolAcceptor acceptor{*transport, ::getuid(),
-                                    make_seckey_accessor(prod)};
+                                    prod.name};
 
     ShmAttachOrchestrator::Config cfg{
         "test.channel.brk_nullopt",
@@ -416,15 +445,15 @@ TEST_F(ShmAttachOrchestratorTest, BrokerNullopt_FailsClosed)
 
 TEST_F(ShmAttachOrchestratorTest, BrokerUnexpectedStatus_FailsClosed)
 {
-    const auto prod = make_test_keypair();
-    const auto cons = make_test_keypair();
+    const auto prod = MakeKeypair("prod");
+    const auto cons = MakeKeypair("cons");
     const auto path = unique_socket_path("brk_bad_status");
 
     auto transport = create_shm_capability_producer(4096);
     ASSERT_TRUE(transport->bind_endpoint(path));
 
     AttachProtocolAcceptor acceptor{*transport, ::getuid(),
-                                    make_seckey_accessor(prod)};
+                                    prod.name};
 
     ShmAttachOrchestrator::Config cfg{
         "test.channel.brk_bad_status",
@@ -457,16 +486,16 @@ TEST_F(ShmAttachOrchestratorTest, BrokerUnexpectedStatus_FailsClosed)
 
 TEST_F(ShmAttachOrchestratorTest, HandshakeFailure_FromImpersonator)
 {
-    const auto prod      = make_test_keypair();
-    const auto k_legit   = make_test_keypair();   // claimed pubkey
-    const auto k_attacker = make_test_keypair();  // actual seckey used
+    const auto prod      = MakeKeypair("test");
+    const auto k_legit   = MakeKeypair("test");   // claimed pubkey
+    const auto k_attacker = MakeKeypair("test");  // actual seckey used
     const auto path      = unique_socket_path("hs_fail");
 
     auto transport = create_shm_capability_producer(4096);
     ASSERT_TRUE(transport->bind_endpoint(path));
 
     AttachProtocolAcceptor acceptor{*transport, ::getuid(),
-                                    make_seckey_accessor(prod)};
+                                    prod.name};
 
     bool                          broker_query_invoked = false;
     ShmAttachOrchestrator::Config cfg{
@@ -491,7 +520,7 @@ TEST_F(ShmAttachOrchestratorTest, HandshakeFailure_FromImpersonator)
         try
         {
             ConsumerAuthMaterial bogus{"impersonator.test", k_legit.pub_z85,
-                                       make_seckey_accessor(k_attacker)};
+                                       k_attacker.name};
             auto fd = initiate_consumer_handshake(
                 path, bogus, prod.pub_z85, std::chrono::milliseconds{2000});
             if (fd && *fd >= 0)
@@ -516,14 +545,14 @@ TEST_F(ShmAttachOrchestratorTest, HandshakeFailure_FromImpersonator)
 
 TEST_F(ShmAttachOrchestratorTest, TimeoutReturnsTimeout)
 {
-    const auto prod = make_test_keypair();
+    const auto prod = MakeKeypair("prod");
     const auto path = unique_socket_path("timeout");
 
     auto transport = create_shm_capability_producer(4096);
     ASSERT_TRUE(transport->bind_endpoint(path));
 
     AttachProtocolAcceptor acceptor{*transport, ::getuid(),
-                                    make_seckey_accessor(prod)};
+                                    prod.name};
 
     bool broker_query_invoked = false;
     bool cache_lookup_invoked = false;

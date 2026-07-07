@@ -30,7 +30,7 @@
  * sender_id_is_preserved test (`EXPECT_EQ(ack, 0u)` instead of
  * discarding the ack) is preserved unchanged.
  *
- * Module surface: Logger + CryptoUtils + ZMQContext (matches the
+ * Module surface: Logger + SecureSubsystem + ZMQContext (matches the
  * original SetUpTestSuite).
  *
  * @see HEP-CORE-0007 §"Inbox" (broker inbox queue wire protocol)
@@ -41,7 +41,6 @@
 #include "log_capture_fixture.h"
 #include "shared_test_helpers.h"
 #include "test_entrypoint.h"
-#include "utils/crypto_utils.hpp"
 #include "utils/hub_inbox_queue.hpp"
 #include "utils/logger.hpp"
 #include "utils/zmq_context.hpp"
@@ -84,12 +83,12 @@ std::vector<ZmqSchemaField> uint32_schema()
 
 /// 3-module lifecycle list shared across every worker: Logger for
 /// `LOGGER_*` macros and the LogCaptureFixture's sink redirect,
-/// CryptoUtils for hash routines underneath checksum/schema
+/// SecureSubsystem for hash routines underneath checksum/schema
 /// fingerprinting, ZMQContext for the production ZMQ context the
 /// InboxQueue/InboxClient pull via `pylabhub::hub::get_zmq_context()`.
 #define PLH_INBOX_MODS                                                         \
     Logger::GetLifecycleModule(),                                              \
-    pylabhub::crypto::GetLifecycleModule(),                                    \
+    pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),                        \
     pylabhub::hub::GetZMQContextModule()
 
 } // namespace

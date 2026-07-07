@@ -873,7 +873,7 @@ to:
    (publishable by definition), channel names, band names, metric
    keys + values.  Private keys, ZAP shared secrets, SHM secrets are
    never reachable via any ctx->fn — they live in the
-   SecureMemorySubsystem (HEP-CORE-0040) and are accessed by host code
+   SecureSubsystem (HEP-CORE-0043 §1-§2) and are accessed by host code
    only.  A compromised plugin that walks the process heap can still
    find them (in-process), but the C ABI does not narrow that path.
 3. **Resist plugin-internal corruption of host control flow.**  All

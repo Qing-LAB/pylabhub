@@ -25,7 +25,6 @@ namespace pylabhub::tests::worker::c_api_validation
 {
 
 static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
-static auto crypto_module() { return ::pylabhub::crypto::GetLifecycleModule(); }
 static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
 
 // Returns a fully-valid baseline config.
@@ -64,7 +63,7 @@ int validate_integrity_on_fresh_datablock()
             producer.reset();
             cleanup_test_datablock(channel);
         },
-        "validate_integrity_on_fresh_datablock", logger_module(), crypto_module(), hub_module());
+        "validate_integrity_on_fresh_datablock", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -84,7 +83,7 @@ int validate_integrity_nonexistent_fails()
                 << "datablock_validate_integrity must not return RECOVERY_SUCCESS for a "
                    "non-existent DataBlock";
         },
-        "validate_integrity_nonexistent_fails", logger_module(), crypto_module(), hub_module());
+        "validate_integrity_nonexistent_fails", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -113,7 +112,7 @@ int get_metrics_fresh_has_zero_commits()
             producer.reset();
             cleanup_test_datablock(channel);
         },
-        "get_metrics_fresh_has_zero_commits", logger_module(), crypto_module(), hub_module());
+        "get_metrics_fresh_has_zero_commits", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -143,7 +142,7 @@ int diagnose_slot_fresh_is_free()
             producer.reset();
             cleanup_test_datablock(channel);
         },
-        "diagnose_slot_fresh_is_free", logger_module(), crypto_module(), hub_module());
+        "diagnose_slot_fresh_is_free", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -174,7 +173,7 @@ int diagnose_all_slots_returns_capacity()
             producer.reset();
             cleanup_test_datablock(channel);
         },
-        "diagnose_all_slots_returns_capacity", logger_module(), crypto_module(), hub_module());
+        "diagnose_all_slots_returns_capacity", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 } // namespace pylabhub::tests::worker::c_api_validation

@@ -53,7 +53,6 @@ namespace pylabhub::tests::worker::schema_validation
 {
 
 static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
-static auto crypto_module() { return ::pylabhub::crypto::GetLifecycleModule(); }
 static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
 
 // ============================================================================
@@ -96,7 +95,7 @@ int consumer_connects_with_matching_schema()
 
             cleanup_test_datablock(channel);
         },
-        "consumer_connects_with_matching_schema", logger_module(), crypto_module(), hub_module());
+        "consumer_connects_with_matching_schema", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -131,7 +130,7 @@ int consumer_fails_to_connect_with_mismatched_schema()
 
             cleanup_test_datablock(channel);
         },
-        "consumer_fails_to_connect_with_mismatched_schema", logger_module(), crypto_module(),
+        "consumer_fails_to_connect_with_mismatched_schema", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         hub_module());
 }
 
@@ -169,7 +168,7 @@ int flexzone_mismatch_rejected()
 
             cleanup_test_datablock(channel);
         },
-        "flexzone_mismatch_rejected", logger_module(), crypto_module(), hub_module());
+        "flexzone_mismatch_rejected", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -203,7 +202,7 @@ int both_schemas_mismatch_rejected()
 
             cleanup_test_datablock(channel);
         },
-        "both_schemas_mismatch_rejected", logger_module(), crypto_module(), hub_module());
+        "both_schemas_mismatch_rejected", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -243,7 +242,7 @@ int consumer_mismatched_capacity_rejected()
 
             cleanup_test_datablock(channel);
         },
-        "consumer_mismatched_capacity_rejected", logger_module(), crypto_module(), hub_module());
+        "consumer_mismatched_capacity_rejected", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 } // namespace pylabhub::tests::worker::schema_validation

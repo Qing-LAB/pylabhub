@@ -55,7 +55,7 @@
  *
  * Preconditions for use:
  *   - A `LifecycleGuard` providing Logger, FileLock, JsonConfig,
- *     CryptoUtils, and ZMQContext modules MUST be active before
+ *     SecureSubsystem, and ZMQContext modules MUST be active before
  *     `startup()` is called.  HubHost itself is **not** a
  *     `LifecycleGuard` module — it is an application-level
  *     start/stop owner, like `RoleHostBase` on the role side.  Its

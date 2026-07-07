@@ -9,7 +9,6 @@
  */
 #include "utils/hub_zmq_queue.hpp"
 #include "utils/context_metrics.hpp"
-#include "utils/crypto_utils.hpp"
 #include "utils/logger.hpp"
 
 #include <nlohmann/json.hpp>
@@ -140,7 +139,7 @@ struct ZmqQueueImpl
     // Identity key name (KeyStore lookup key, HEP-CORE-0040 §172) +
     // optional zap_domain (PUSH side) + server pubkey (PULL/connect
     // side).  When `identity_key_name_` is set, `ZmqQueue::start()`
-    // reads the identity from `key_store()` at socket-setup time —
+    // reads the identity from `secure().keys()` at socket-setup time —
     // secret bytes never materialize in this struct.
     std::string identity_key_name_;
 
@@ -323,7 +322,7 @@ struct ZmqQueueImpl
                 // Checksum verification.
                 if (checksum_policy_ != ChecksumPolicy::None)
                 {
-                    if (!pylabhub::crypto::verify_blake2b(
+                    if (!pylabhub::utils::security::secure().verify_blake2b(
                             env.checksum, decode_tmp_.data(), item_sz))
                     {
                         ctx_metrics_.inc_checksum_error();
@@ -397,7 +396,7 @@ struct ZmqQueueImpl
                 uint8_t checksum[32]{};
                 if (checksum_policy_ == ChecksumPolicy::Enforced)
                 {
-                    pylabhub::crypto::compute_blake2b(
+                    pylabhub::utils::security::secure().compute_blake2b(
                         checksum, send_local_buf_.data(), item_sz);
                 }
 
@@ -648,12 +647,12 @@ validate_curve_factory_params(std::string_view identity_key_name,
     {
         namespace sec = pylabhub::utils::security;
         const std::string name_str{identity_key_name};
-        if (!sec::key_store_ready())
+        if (!sec::sodium_ready())
             return "keystore_name='" + name_str +
                    "' but KeyStore is not initialized (process must "
-                   "construct SecureMemorySubsystem + KeyStore before "
+                   "construct SecureSubsystem + KeyStore before "
                    "any CURVE-wired queue is built)";
-        auto &ks = sec::key_store();
+        auto &ks = sec::secure().keys();
         if (!ks.has(name_str))
             return "keystore_name='" + name_str +
                    "' not present in KeyStore (caller must "
@@ -1193,14 +1192,14 @@ bool ZmqQueue::start()
         // Empty identity_key_name_ == legacy unauth path (reachable
         // only via plaintext `pull_from`/`push_to` factories which
         // never populate it).  HEP-CORE-0040 §172: keys are sourced
-        // from `key_store()` by name — secret bytes flow from
+        // from `secure().keys()` by name — secret bytes flow from
         // LockedKey region directly into libzmq's internal CURVE
         // state inside `with_seckey` callback scope; no std::string
         // copy holds the seckey at queue scope.
         if (!pImpl->identity_key_name_.empty())
         {
             namespace sec = pylabhub::utils::security;
-            auto &ks = sec::key_store();
+            auto &ks = sec::secure().keys();
 
             pImpl->socket.set(zmq::sockopt::curve_publickey,
                               ks.pubkey(pImpl->identity_key_name_));

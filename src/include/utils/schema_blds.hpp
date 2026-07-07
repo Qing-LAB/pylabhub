@@ -34,7 +34,8 @@
  *
  * @see HEP-CORE-0002-DataHub-FINAL.md Section 11 (Schema Validation)
  */
-#include "utils/crypto_utils.hpp"
+#include "utils/security/secure_subsystem.hpp"  // secure().compute_blake2b_array
+
 #include <array>
 #include <atomic>
 #include <string>
@@ -226,7 +227,7 @@ struct SchemaInfo
         canonical.append(blds);
         canonical.append("|pack:");
         canonical.append(packing);
-        hash = pylabhub::crypto::compute_blake2b_array(canonical.data(), canonical.size());
+        hash = pylabhub::utils::security::secure().compute_blake2b_array(canonical.data(), canonical.size());
     }
 
     /**

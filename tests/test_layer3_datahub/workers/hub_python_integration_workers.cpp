@@ -192,15 +192,14 @@ def on_stop(api):
             // HEP-CORE-0040 §172 + HEP-CORE-0035 §4.6.5 bypass: seed
             // the process KeyStore with a fresh hub identity before
             // HubHost::startup() constructs BrokerService, which
-            // requires key_store().has("hub_identity").  The on-disk
+            // requires secure().keys().has("hub_identity").  The on-disk
             // vault round-trip (Argon2id) is intentionally skipped per
             // §4.6.5 — the L2 vault layer is covered by
             // test_hub_config; this test exercises the broker bind +
             // CURVE wire from KeyStore-seeded state onward.  No roles
             // needed: this test does not drive a BRC client.
             auto curve = pylabhub::tests::make_curve_setup({});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture(
-                "test", "test.l3.python_hub_integration", curve);
+            pylabhub::tests::seed_curve_identities(curve);
 
             HubHost host(std::move(cfg));
 
@@ -291,7 +290,7 @@ def on_stop(api):
         Logger::GetLifecycleModule(),
         FileLock::GetLifecycleModule(),
         JsonConfig::GetLifecycleModule(),
-        pylabhub::crypto::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         pylabhub::hub::GetZMQContextModule());
 }
 

@@ -45,7 +45,7 @@
 #include "utils/role_registry.hpp"
 #include "utils/script_engine_factory.hpp"  // scripting::init_scripting / ensure_python
 #include "utils/security/key_store.hpp"               // HEP-CORE-0040 §172
-#include "utils/security/secure_memory_subsystem.hpp" // HEP-CORE-0040 §4
+#include "utils/security/secure_subsystem.hpp" // HEP-CORE-0040 §4
 #include "utils/security/zap_router.hpp"              // ZapPumpThread (AUTH-2 / #162)
 #include "utils/thread_manager.hpp"  // process_detached_count for exit code
 #include "../scripting/python_interpreter_module.hpp"  // ensure_python_interpreter_loaded
@@ -309,16 +309,12 @@ int main(int argc, char *argv[])
         return 0;
     }
 
-    // ── SecureMemorySubsystem + KeyStore (HEP-CORE-0040 §4 + §5) ───────
-    // Constructed BEFORE `c.load_keypair` so that load_keypair's
-    // `key_store().add_identity(kRoleIdentityName, ...)` call has a
-    // destination.  Stack-scoped here so RAII destruction order
-    // guarantees the KeyStore outlives the RoleHost below — host
-    // shutdown may still consume `key_store()` while BRC dealers
-    // close, and SMS must outlive both.
+    // ── KeyStore (HEP-CORE-0040 §5) ────────────────────────────────────
+    // SecureSubsystem is brought up by the LifecycleGuard's mod pack
+    // (`role_lifecycle_modules()`) — SEC-Fold-2 Phase A/B landing.
+    // KeyStore's dep on "SecureSubsystem" resolves against the static
+    // registration in that mod pack.
     namespace sec = pylabhub::utils::security;
-    sec::SecureMemorySubsystem sms;
-    sec::KeyStore              ks("role", c.identity().uid);
 
     // ── ZapPumpThread lifecycle module (AUTH-2 / #162) ─────────────────
     // HEP-CORE-0036 §7.1 + §7.4 — every CURVE-server socket in this

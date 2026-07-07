@@ -10,6 +10,7 @@
  */
 
 #include "utils/json_fwd.hpp"
+#include "utils/security/secure_subsystem.hpp"  // secure() surface
 
 #include <stdexcept>
 #include <string>
@@ -22,13 +23,13 @@ struct AuthConfig
 {
     /// Vault path (REQUIRED non-empty per HEP-CORE-0024 §3.4).
     /// After HEP-CORE-0040 §171: this is the ONLY field — keypair bytes
-    /// live in `pylabhub::utils::security::key_store()` (LockedKey storage,
+    /// live in `pylabhub::utils::security::secure().keys()` (LockedKey storage,
     /// mlock'd + zero-on-destruct), populated by `load_keypair(password)`
-    /// via `key_store().add_identity_from_z85("hub_identity" |
+    /// via `secure().keys().add_identity_from_z85("hub_identity" |
     /// "role_identity", pub_z85, sec_z85)`.
     /// Sites that previously read `auth().client_pubkey` /
-    /// `auth().client_seckey` now call `key_store().pubkey(name)` and
-    /// `key_store().with_seckey(name, cb)` at the libzmq socket-option
+    /// `auth().client_seckey` now call `secure().keys().pubkey(name)` and
+    /// `secure().keys().with_seckey(name, cb)` at the libzmq socket-option
     /// site (HEP-CORE-0040 §8.2 — use-not-export).
     std::string keyfile;
 };

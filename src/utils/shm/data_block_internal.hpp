@@ -19,7 +19,6 @@
 
 #include "plh_platform.hpp"
 #include "utils/backoff_strategy.hpp"
-#include "utils/crypto_utils.hpp"
 #include "utils/lifecycle.hpp"
 #include "utils/logger.hpp"
 #include "utils/data_block.hpp"

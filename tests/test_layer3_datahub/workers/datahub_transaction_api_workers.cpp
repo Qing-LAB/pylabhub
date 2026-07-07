@@ -90,7 +90,6 @@ namespace pylabhub::tests::worker::transaction_api
 {
 
 static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
-static auto crypto_module() { return ::pylabhub::crypto::GetLifecycleModule(); }
 static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
 
 // ============================================================================
@@ -205,7 +204,7 @@ int with_write_transaction_success()
             cleanup_test_datablock(channel);
             fmt::print(stderr, "[transaction_api] with_write_transaction_success ok\n");
         },
-        "with_write_transaction_success", logger_module(), crypto_module(), hub_module());
+        "with_write_transaction_success", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -310,7 +309,7 @@ int with_write_transaction_timeout()
             cleanup_test_datablock(channel);
             fmt::print(stderr, "[transaction_api] with_write_transaction_timeout ok\n");
         },
-        "with_write_transaction_timeout", logger_module(), crypto_module(), hub_module());
+        "with_write_transaction_timeout", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -400,7 +399,7 @@ int WriteTransactionGuard_exception_releases_slot()
             cleanup_test_datablock(channel);
             fmt::print(stderr, "[transaction_api] WriteTransactionGuard_exception_releases_slot ok\n");
         },
-        "WriteTransactionGuard_exception_releases_slot", logger_module(), crypto_module(),
+        "WriteTransactionGuard_exception_releases_slot", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         hub_module());
 }
 
@@ -510,7 +509,7 @@ int ReadTransactionGuard_exception_releases_slot()
             cleanup_test_datablock(channel);
             fmt::print(stderr, "[transaction_api] ReadTransactionGuard_exception_releases_slot ok\n");
         },
-        "ReadTransactionGuard_exception_releases_slot", logger_module(), crypto_module(),
+        "ReadTransactionGuard_exception_releases_slot", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         hub_module());
 }
 
@@ -615,7 +614,7 @@ int with_typed_write_read_succeeds()
             cleanup_test_datablock(channel);
             fmt::print(stderr, "[transaction_api] with_typed_write_read_succeeds ok\n");
         },
-        "with_typed_write_read_succeeds", logger_module(), crypto_module(), hub_module());
+        "with_typed_write_read_succeeds", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -708,7 +707,7 @@ int raii_slot_iterator_roundtrip()
             cleanup_test_datablock(channel);
             fmt::print(stderr, "[transaction_api] raii_slot_iterator_roundtrip ok\n");
         },
-        "raii_slot_iterator_roundtrip", logger_module(), crypto_module(), hub_module());
+        "raii_slot_iterator_roundtrip", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 } // namespace pylabhub::tests::worker::transaction_api

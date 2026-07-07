@@ -51,7 +51,7 @@
  *
  * ─────────────────────────────────────────────────────────────────────────
  *
- * Module surface: Logger + CryptoUtils + ZMQContext.  Matches the
+ * Module surface: Logger + SecureSubsystem + ZMQContext.  Matches the
  * original `SetUpTestSuite` — no FileLock / JsonConfig because the
  * direct `BrokerService::Config` construction skips HubConfig
  * loading entirely.
@@ -223,7 +223,7 @@ int run_with_broker(std::string_view worker_name,
         },
         std::string(worker_name).c_str(),
         Logger::GetLifecycleModule(),
-        pylabhub::crypto::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         pylabhub::hub::GetZMQContextModule());
 }
 

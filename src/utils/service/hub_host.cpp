@@ -170,8 +170,8 @@ void HubHost::startup()
     // KeyStore entry `"hub_identity"`.  Tests call it through the
     // same vault path.  Absence here means the caller skipped both —
     // a programmer error per HEP-0035 §4.6.5 (no-bypass discipline).
-    if (!pylabhub::utils::security::key_store_ready()
-     || !pylabhub::utils::security::key_store().has(
+    if (!pylabhub::utils::security::sodium_ready()
+     || !pylabhub::utils::security::secure().keys().has(
             pylabhub::utils::security::kHubIdentityName))
     {
         impl_->phase.store(Impl::Phase::Constructed,
@@ -184,7 +184,7 @@ void HubHost::startup()
     broker::BrokerService::Config bcfg;
     bcfg.endpoint = impl_->cfg.network().broker_endpoint;
     // HEP-CORE-0040 §172: BrokerService bind site now calls
-    // `key_store().with_seckey("hub_identity", ...)` + `pubkey(...)`
+    // `secure().keys().with_seckey("hub_identity", ...)` + `pubkey(...)`
     // directly — no keypair field in `bcfg`.
 
     // Hub-global schema records live at `<hub_dir>/schemas/` per

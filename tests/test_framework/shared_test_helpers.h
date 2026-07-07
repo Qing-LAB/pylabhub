@@ -33,6 +33,7 @@ typedef int ssize_t;
 
 // Required for run_gtest_worker: LifecycleGuard, PLH_DEBUG, print_stack_trace (Layer 2 umbrella)
 #include "plh_service.hpp"
+#include "utils/security/secure_subsystem.hpp"
 #include "utils/thread_manager.hpp"
 
 // Required for ThreadRacer

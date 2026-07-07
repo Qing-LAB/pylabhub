@@ -1,12 +1,19 @@
 # HEP-CORE-0038: Script-Accessible Vault Keystore
 
-> **⚠ SUPERSEDED-STATUS-ONLY by HEP-CORE-0043 §5 + §8 + §10
-> (2026-07-04).**  Content in this HEP remains **AUTHORITATIVE**
-> until those sections' detail migration completes.  Architectural
-> design contract has moved to HEP-CORE-0043.  Vault file format +
-> KDF + AEAD + script-facing API detail is the source of truth
-> until further notice.  See HEP-CORE-0043 §0.4 for migration
-> status.
+> **⚠ PARTIALLY SUPERSEDED by HEP-CORE-0043 (updated 2026-07-06).**
+>
+> - **Design contract for KeyStore storage/access (adds & retrieves
+>   vault entries via `add_raw` / `lookup_raw`)** — SUPERSEDED by
+>   **HEP-CORE-0043 §2.2 + §7** (SHIPPED 2026-07-06).  KeyStore is
+>   a member of `SecureSubsystem::Impl`; script-vault entries land
+>   in the same store via `secure().keys().add_raw(name, bytes)`.
+>   Consult HEP-0043 §7 for the storage API.
+> - **STILL AUTHORITATIVE:** vault file format (§4), KDF (§5) and
+>   AEAD (§6) parameters, script-facing API shape (§7-§8),
+>   reserved-prefix + name-sandboxing rules for scripts (§9).
+>   HEP-CORE-0043 §5 (KDF) + §5 (AEAD) + §10 (script API) will
+>   absorb these in a follow-on doc migration; until then this HEP
+>   is the source of truth for those subsections.
 
 
 | Property        | Value                                                           |

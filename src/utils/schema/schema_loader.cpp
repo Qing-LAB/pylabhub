@@ -28,7 +28,6 @@
 //   - count > 1 → array of count scalars; alignment = scalar alignment
 
 #include "utils/schema_loader.hpp"
-#include "utils/crypto_utils.hpp"
 #include "utils/format_tools.hpp"
 #include "utils/logger.hpp"
 #include "utils/naming.hpp"

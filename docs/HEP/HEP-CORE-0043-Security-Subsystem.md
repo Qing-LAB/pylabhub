@@ -4,7 +4,7 @@
 |-----------------|-------|
 | **HEP**         | `HEP-CORE-0043` |
 | **Title**       | Security Subsystem — unified module + HEP consolidation |
-| **Status**      | 🚧 **DRAFT — SEC-Fold-1 landing.**  §0-§2 (architecture + module fold design) authoritative and ready for review.  §3-§10 (per-primitive + per-protocol) cite the existing HEPs (0036, 0038, 0040, 0041) authoritatively for full detail; those HEPs are marked **SUPERSEDED-STATUS-ONLY** — their content remains authoritative until §3-§10 fully migrate content (SEC-Fold-1b, follow-up). |
+| **Status**      | 🚀 **IN PROGRESS — SEC-Fold-2 §2 + §7 SHIPPED 2026-07-06.**  §0-§2 (architecture, three-category facade, module fold) authoritative and matches the shipped C++ code (`SecureSubsystem` + `KeyStore` member of `Impl` + `Crypto` sub-container stub).  §7 (KeyStore API surface) authoritative.  §3-§6 + §8-§10 remain SECTION STUBS pointing to HEP-CORE-0036 / 0038 / 0040 / 0041 for full detail; those HEPs are **PARTIALLY SUPERSEDED** — their content remains authoritative for the not-yet-migrated sections until SEC-Fold-2b content migration completes. |
 | **Created**     | 2026-07-04 |
 | **Area**        | Framework Architecture (security module, libsodium ownership, key management, wire auth) |
 | **Depends on**  | HEP-CORE-0001 (Hybrid Lifecycle Model), HEP-CORE-0031 (ThreadManager pattern) |
@@ -27,8 +27,12 @@ correctly.  All three problems close STRUCTURALLY (compile-time,
 not runtime-checked) after this HEP + SEC-Fold-2's C++ refactor
 lands.
 
-Full triage narrative + design self-review R1-R8:
-`docs/tech_draft/DRAFT_security_module_and_hep_consolidation_2026-07.md`.
+Full triage narrative + design self-review R1-R8 was drafted in
+`docs/tech_draft/DRAFT_security_module_and_hep_consolidation_2026-07.md`
+and archived to `docs/archive/transient-2026-07-06/` after §0-§2
+of this HEP absorbed the authoritative content.  Refer to this HEP
+directly for shipped design; consult the archived draft only for
+historical R1-R8 reasoning trace.
 
 ### 0.2 What this HEP covers
 
@@ -63,16 +67,52 @@ Full triage narrative + design self-review R1-R8:
 - **Federation crypto**, **hub-to-hub trust chains** — future
   work, will land in HEP-0035 amendments.
 
-### 0.4 Migration status (2026-07-04)
+### 0.4 Migration status (2026-07-07)
 
-- **§0-§2** — authoritative; new content addressing the
-  scattered-design problem.  Ready for review.
-- **§3-§10** — SECTION STUBS with pointers to existing HEPs
-  (0036, 0038, 0040, 0041) as the authoritative source of full
-  detail until content migration completes.  Old HEPs marked
-  **SUPERSEDED-STATUS-ONLY** — their content remains valid, but
-  the design contract now lives here.
+- **§0-§2** — authoritative; describes the shipped design.
+- **§2.1 (SecureSubsystem class — two-category facade) — SHIPPED
+  2026-07-07** — the prior `Crypto` sub-container was collapsed;
+  encryption verbs live flat on `SecureSubsystem` alongside sodium
+  primitives.
+- **§2.2 (KeyStore submodule) — SHIPPED 2026-07-06** — KeyStore is a
+  member of `SecureSubsystem::Impl`.  Present-tense authoritative.
+- **§2.3 (Lifecycle registration) — SHIPPED 2026-07-06** — describes
+  the Logger-shape static module currently registered.
+- **§3 (Random + hash) — SHIPPED 2026-07-07** — Category 1a + 1b
+  methods on `SecureSubsystem`.  The `pylabhub::crypto` namespace
+  and its `GetLifecycleModule` are DELETED.
+- **§4 (KDF pwhash_argon2id) — SHIPPED 2026-07-07** — Category 1b.
+- **§5 (Symmetric secretbox) — SHIPPED 2026-07-07** — Category 1c;
+  `vault_crypto.cpp` migrated.
+- **§6 (Asymmetric box) — NOT SHIPPED** — future migration of
+  `attach_protocol.cpp` will fold it into Category 1c methods on
+  `SecureSubsystem`.  Attach protocol currently uses sodium
+  directly within the security-module boundary (legal per §1.2).
+- **§7 (KeyStore API surface) — SHIPPED 2026-07-06** — carries the
+  full API surface preserved from HEP-CORE-0040 §5.2.  Now the
+  primary reference.
+- **§8–§10** — SECTION STUBS with pointers to existing HEPs
+  as the authoritative source of full detail until content migration
+  completes.  Old HEPs marked **PARTIALLY SUPERSEDED** — the sections
+  each stub points at remain valid; sections describing lifecycle /
+  singleton / registration are superseded and flagged inline in the
+  old HEPs.
 - **§11-§13** — supporting.
+
+**Retired frameworks (deleted from the codebase):**
+- `pylabhub::crypto` namespace + its `"CryptoUtils"` lifecycle module
+  — folded into `SecureSubsystem` Category 1a/1b methods (2026-07-07).
+- `pylabhub::utils::security::Crypto` scaffolding class — collapsed
+  into `SecureSubsystem` Category 1c methods (2026-07-07).
+- `pylabhub::utils::security::key_store()` / `key_store_ready()`
+  free-function shims — deleted; access is `secure().keys()` /
+  `sodium_ready()` (2026-07-06 Phase D).
+- `SecureMemorySubsystem` class name + `"SecureMemory"` lifecycle
+  module name — renamed to `SecureSubsystem` (2026-07-06 Phase E).
+- `CurveKeyStoreFixture` test class — replaced by free function
+  `seed_curve_identities(setup)` (2026-07-06).
+- `g_sms` file-scope rendezvous pointer — deleted; every accessor
+  routes through `SecureSubsystem::instance()` (2026-07-06 Phase E).
 
 ---
 
@@ -165,7 +205,7 @@ libsodium's inscrutable internal assertion.
 
 Historical: prior to 2026-07-04 the codebase had FIVE independent
 sodium_init call sites (`uuid_utils.cpp`, `crypto_utils.cpp`,
-`vault_crypto.cpp`, `attach_protocol.cpp`, `SecureMemorySubsystem`)
+`vault_crypto.cpp`, `attach_protocol.cpp`, `SecureSubsystem`)
 plus two in tests.  None was authoritative.  A test worker that
 skipped all five paths hit an uninitialized libsodium and aborted
 with a guard-page pointer-arithmetic assertion.  Commit `9d0a7eb4`
@@ -177,35 +217,51 @@ this HEP formalizes that as the permanent contract.
 **There is exactly one `SecureSubsystem` instance per OS process.**
 No process can have zero, no process can have two.
 
-Enforced by five mechanisms:
+Enforced by five mechanisms (updated 2026-07-06 post-SEC-Fold-2
+Phase E — stack-local sites deleted, `g_sms` rendezvous pointer
+deleted):
 
-1. **File-scope singleton pointer.**  `secure_memory_subsystem.cpp`
-   holds a `SecureSubsystem *g_sms` under `std::mutex g_sms_mu`.
-   Set by the constructor after the singleton claim; cleared by
-   the destructor.
-2. **Constructor throws on second construction.**  If
-   `g_sms != nullptr` at ctor entry, throws `std::logic_error`
-   with an explicit "already constructed" message.  The claim
-   check runs BEFORE any expensive init work, so the second-
-   construction attempt fails fast with no side effects.
+1. **Function-local static singleton.**
+   `SecureSubsystem::instance()` returns a reference to
+   `static SecureSubsystem sole;` — C++11 guarantees thread-
+   safe once-only initialization.  Matches `Logger::instance()`
+   (`src/utils/logging/logger.cpp:883-890`).  Ctor is `private`;
+   the ONLY construction path is `instance()` (called by the
+   startup thunk and the free-function accessor `secure()`).
+2. **Bringup CAS on `g_state`.**  `Impl::bringup()`'s first step
+   is a compare-exchange from `Uninitialized → InitCalled`.  Any
+   second construction — from any thread, any code path — sees a
+   non-`Uninitialized` state and PANICs via `PLH_PANIC` (matches
+   FileLock / Logger discipline; not a recoverable exception).
+   The CAS is the load-bearing singularity enforcer.
 3. **Non-copyable, non-movable.**  Explicit `= delete` on copy
    ctor, copy assign, move ctor, move assign.  There is one
    object, no way to duplicate it.
-4. **Global accessor returns a reference to the same instance.**
-   `pylabhub::utils::security::secure()` returns
-   `SecureSubsystem &` — never a copy, never a new instance.
-   Throws `std::runtime_error` if called before construction.
-5. **Lifecycle manager registers exactly one module.**  The
-   constructor registers `"SecureSubsystem"` with LifecycleGuard;
-   the LifecycleManager itself rejects a second registration of
-   the same name.  This is the outermost belt-and-braces.
+4. **Static lifecycle module registered via mod pack.**
+   `SecureSubsystem::GetLifecycleModule()` returns a
+   `ModuleDef("SecureSubsystem")` with dependency on
+   `"pylabhub::utils::Logger"`.  Callers add it to their
+   `LifecycleGuard` mods pack (production `main()`, test workers
+   via `run_gtest_worker(..., mods...)`).  LifecycleManager
+   rejects a second registration of the same name.  Matches
+   Logger + FileLock static-module discipline — NOT dynamic
+   ctor-side self-registration.
+5. **KeyStore and Crypto are members of `SecureSubsystem::Impl`.**
+   Neither is a separate lifecycle module (SHIPPED 2026-07-06 per
+   §2.2).  Both ctors are private + friend `SecureSubsystem::Impl`
+   — no external construction site is possible at compile time.
+   Their lifetime is bound to SMS's — same singleton guarantee,
+   same bringup ordering.  Access via `secure().keys()` and
+   `secure().crypto()`.
 
-Standard construction site: very early in `plh_role_main` /
-`plh_hub_main` — after the Logger module is up, before any
-`SecureSubsystem` consumer (vault open, keystore population,
-identity resolution).  Tests construct SMS via a `LifecycleGuard`
-inside `run_gtest_worker` with the `"SecureMemory"` module in the
-`Mods...` pack.
+Standard construction site: `SecureSubsystem::GetLifecycleModule()`
+in the mods pack of `plh_hub_main` / `plh_role_main`, immediately
+after `Logger::GetLifecycleModule()`.  Tests do the same in their
+subprocess worker's mods pack (Pattern 3) or in
+`PLH_BINARY_LIFECYCLE_MODULES` (parent-lifecycle tests).  No
+stack-local `SMS sms;` or `KeyStore ks(...)` sites remain anywhere
+in `src/` or `tests/` (grep-enforced 2026-07-06; Phase 5 CI lint
+gates this invariant).
 
 Consequence: the codebase can rely on `secure()` always returning
 the same object; state (KeyStore contents, sodium_initialized
@@ -265,8 +321,8 @@ Platform-specific concerns concentrate at TWO other layers:
 
 - **`SecureSubsystem` startup platform hardening** — core dumps,
   PR_SET_DUMPABLE, RLIMIT_MEMLOCK, SeLockMemoryPrivilege.  Per-OS
-  logic in `secure_memory_subsystem.cpp` `disable_core_dumps_or_
-  throw` + `inspect_memlock_capability`.
+  logic in `secure_subsystem.cpp` `disable_core_dumps_or_panic`
+  + `inspect_memlock_capability`.
 - **Wire protocols (§9)** — SHM channel auth uses AF_UNIX +
   SCM_RIGHTS on Linux; kqueue on BSD; Windows AF_UNIX or named
   pipes.  See per-protocol subsections + HEP-0041 for Linux
@@ -283,123 +339,162 @@ in the two layers above.
 design for the C++ class shape and lifecycle registration.
 Implementers of SEC-Fold-2 build to this contract.
 
-### 2.1 The `SecureSubsystem` class
+### 2.1 The `SecureSubsystem` class — two-category facade
 
-**Name.**  `SecureSubsystem` (renamed from
-`SecureMemorySubsystem` per SEC-Fold R2 (c)).  Old name kept as a
-type alias for the SEC-Fold-2 transition window; deleted after
-all callers migrated.
+**Name.**  `SecureSubsystem`.  Header: `src/include/utils/security/
+secure_subsystem.hpp`.  Namespace-scope accessor `secure()`; the
+class ctor is `private` (singleton via `instance()`).
 
-Header path: `src/include/utils/security/secure_subsystem.hpp`
-(new); old `secure_memory_subsystem.hpp` is preserved as a shim
-until callers migrate.
+**Design shape (SHIPPED 2026-07-06, revised 2026-07-07).**
+`SecureSubsystem` is a facade over TWO service categories.  All
+sodium operations — from stateless byte primitives to protocol-level
+encryption verbs — live as FLAT methods on the class (Category 1).
+Key management is the ONE nested sub-container (Category 2), because
+`KeyStore` genuinely encapsulates state (the map, `shared_mutex`,
+`LockedKey` machinery).
 
-**Public surface** (sketch — final API refined during SEC-Fold-2
-implementation):
+| Category | What it does | Access pattern |
+|---|---|---|
+| **1a. Byte primitives** | Stateless wrappers on single sodium functions — random, memcmp_ct, memzero, bin2hex | `secure().random_bytes(out)` |
+| **1b. Hash + KDF** | BLAKE2b + verify + Argon2id | `secure().compute_blake2b(...)` |
+| **1c. Encryption / decryption** | Higher-level protocol operations — secretbox (shipped), future box/aead/sealed_box | `secure().secretbox_encrypt(...)` |
+| **2. Key management** | KeyStore — long-term identities + ephemeral keys under use-not-export | `secure().keys().add_identity(...)` |
+
+Categories 1a/1b/1c are DOCUMENTATION groupings — all their methods
+are flat on `SecureSubsystem`.  Encryption verbs live flat because
+they have no state to encapsulate: `secretbox_encrypt(plaintext,
+key, nonce)` is a stateless call.  Grouping them by concept lives in
+header section markers, not class boundaries.
+
+The prior `Crypto` nested sub-container (introduced as scaffolding
+in the initial 2b design) was collapsed 2026-07-07 after realizing
+its `Impl` was empty and every method was stateless — the class
+provided false symmetry with `KeyStore` (which encapsulates real
+state).  `KeyStore` stays nested; encryption verbs go flat.
+
+**Public surface (shipped shape):**
 
 ```cpp
 namespace pylabhub::utils::security {
+
+inline constexpr std::size_t BLAKE2B_HASH_BYTES = 32;
 
 class PYLABHUB_UTILS_EXPORT SecureSubsystem
 {
 public:
     // ── Lifecycle ─────────────────────────────────────────────
-    SecureSubsystem();
+    static SecureSubsystem      &instance();
+    static ModuleDef             GetLifecycleModule();
+    static bool                  lifecycle_initialized() noexcept;
     ~SecureSubsystem();
-    SecureSubsystem(const SecureSubsystem &)            = delete;
-    SecureSubsystem &operator=(const SecureSubsystem &) = delete;
-    SecureSubsystem(SecureSubsystem &&)                 = delete;
-    SecureSubsystem &operator=(SecureSubsystem &&)      = delete;
+    // ... deleted copy/move ctors ...
 
-    // ── Random + hash (§3) ────────────────────────────────────
-    void random_bytes(std::span<std::byte> out);
-    std::uint64_t random_u64();
-    std::string uuid4();
-    std::array<std::byte, 32> blake2b(std::span<const std::byte> data);
-
-    // ── KDF (§4) ──────────────────────────────────────────────
-    std::array<std::byte, 32> pwhash(std::string_view password,
-                                     std::span<const std::byte> salt);
-
-    // ── Symmetric AEAD (§5) ───────────────────────────────────
-    void secretbox_seal(std::span<std::byte> out,
-                        std::span<const std::byte> plaintext,
-                        std::span<const std::byte, 24> nonce,
-                        std::span<const std::byte, 32> key);
-    bool secretbox_open(std::span<std::byte> out,
-                        std::span<const std::byte> ciphertext,
-                        std::span<const std::byte, 24> nonce,
-                        std::span<const std::byte, 32> key);
-
-    // ── Asymmetric box (§6) — use-not-export via KeyStore name.
-    void box_seal_using(std::string_view seckey_name,
-                        const Z85PublicKey &peer_pubkey,
-                        std::span<const std::byte, 24> nonce,
-                        std::span<const std::byte> plaintext,
-                        std::span<std::byte> out);
-    bool box_open_using(std::string_view seckey_name,
-                        const Z85PublicKey &peer_pubkey,
-                        std::span<const std::byte, 24> nonce,
-                        std::span<const std::byte> ciphertext,
-                        std::span<std::byte> out);
-
-    // ── Constant-time helpers ─────────────────────────────────
-    bool memcmp_ct(std::span<const std::byte>,
-                   std::span<const std::byte>);
-    void memzero(std::span<std::byte>);
-
-    // ── KeyStore submodule (§7) ───────────────────────────────
+    // ── Category 2: key management (nested) ───────────────────
     KeyStore &keys();
-    const KeyStore &keys() const;
 
-    // ── Readiness probe (superseded post-SEC-Fold-2) ──────────
-    [[nodiscard]] bool sodium_initialized() const noexcept;
+    // ── Category 1a: byte primitives ──────────────────────────
+    void          random_bytes(std::span<std::uint8_t> out);
+    void          random_bytes(std::uint8_t *out, std::size_t len);
+    std::uint64_t random_u64();
+    std::array<std::uint8_t, 64> generate_shared_secret();
+    bool          memcmp_ct(std::span<const std::uint8_t>,
+                            std::span<const std::uint8_t>);
+    void          memzero(std::span<std::uint8_t>);
+    void          bin2hex(char *hex, std::size_t hex_max_len,
+                          const std::uint8_t *bin, std::size_t bin_len);
 
-    struct Impl;
+    // ── Category 1b: hash + KDF ───────────────────────────────
+    bool          compute_blake2b(std::uint8_t *out, const void *data,
+                                   std::size_t len);
+    std::array<std::uint8_t, 32>
+                  compute_blake2b_array(const void *data, std::size_t len);
+    bool          verify_blake2b(const std::uint8_t *stored,
+                                  const void *data, std::size_t len);
+    bool          verify_blake2b(const std::array<std::uint8_t, 32> &stored,
+                                  const void *data, std::size_t len);
+    bool          pwhash_argon2id(std::uint8_t *out, std::size_t out_len,
+                                   const char *password, std::size_t password_len,
+                                   const std::uint8_t *salt);
+
+    // ── Category 1c: encryption / decryption ──────────────────
+    // Symmetric authenticated (XSalsa20-Poly1305):
+    std::size_t   secretbox_encrypt(std::uint8_t *out, std::size_t out_max_len,
+                                     const std::uint8_t *plaintext, std::size_t plaintext_len,
+                                     const std::uint8_t *nonce,
+                                     const std::uint8_t *key);
+    std::size_t   secretbox_decrypt(std::uint8_t *out, std::size_t out_max_len,
+                                     const std::uint8_t *ciphertext, std::size_t ciphertext_len,
+                                     const std::uint8_t *nonce,
+                                     const std::uint8_t *key);
+    static constexpr std::size_t kSecretboxKeyBytes   = 32;
+    static constexpr std::size_t kSecretboxNonceBytes = 24;
+    static constexpr std::size_t kSecretboxMacBytes   = 16;
+
+    // Future encryption verbs (crypto_box_*, crypto_aead_*, sealed_box)
+    // will land as additional flat methods on this class.
+
+    struct Impl;                 // opaque, defined in .cpp
+
 private:
+    SecureSubsystem();           // singleton; only `instance()` calls
     std::unique_ptr<Impl> pImpl;
 };
 
-// Global accessor — throws if not constructed.
-[[nodiscard]] PYLABHUB_UTILS_EXPORT SecureSubsystem &secure();
-
-// Non-throwing probe.  Post-SEC-Fold-2 this is not needed
-// (structural gate); pre-fold callers use it for readiness.
-[[nodiscard]] PYLABHUB_UTILS_EXPORT bool secure_ready() noexcept;
+// Namespace-scope free functions:
+[[nodiscard]] SecureSubsystem &secure();        // PANICs on gate
+[[nodiscard]] bool             sodium_ready() noexcept;
 
 } // namespace pylabhub::utils::security
 ```
 
+`KeyStore` is declared in its own header (`key_store.hpp`),
+pImpl-owned, private ctor + `friend struct SecureSubsystem::Impl` —
+the only construction site is Impl's member-init list.
+
+**Gate discipline.**  Every accessor (`secure()`, `keys()`, and
+every Category 1 method) routes through one helper
+`panic_if_not_ready(context)` which PANICs when
+`g_state != Initialized`.  The `keys()` gate is defensive against
+`SecureSubsystem::instance().keys()` bypass paths.  `sodium_ready()`
+and `lifecycle_initialized()` are the non-throwing probes.
+
 **R2 (naming) resolution.**  `SecureSubsystem` chosen (not `Secure`
 which was too generic, not `Security` which collides with narrower
 Authentication scope).  Accessor `secure()` matches the tightness
-of `thread_manager()` and `key_store()` conventions elsewhere.
+of `thread_manager()` conventions elsewhere.
 
 **R7 (LockedKey) resolution.**  `LockedKey` is an implementation
 detail of `KeyStore`, never exposed at `SecureSubsystem`'s public
 surface.  Its declaration stays in `key_store.cpp` (anonymous
 namespace).
 
-**R8 (Z85PublicKey) resolution.**  `box_seal_using` /
-`box_open_using` accept `Z85PublicKey` directly, matching the
-existing strong-type discipline from task #231.  The Z85 → raw
-decode happens once inside the module.
+**R8 (Z85PublicKey) resolution.**  Future `box_*` methods on SMS
+accept `Z85PublicKey` directly, matching the existing strong-type
+discipline from task #231.  The Z85 → raw decode happens once
+inside the module.
 
-### 2.2 `KeyStore` submodule
+### 2.2 `KeyStore` submodule (SHIPPED 2026-07-06)
 
-**Ownership.**  `KeyStore` is a member of `SecureSubsystem`
-(NOT a separate lifecycle module).  Access is via
-`secure().keys()`.  The old free-function `key_store()` accessor
-is preserved as a shim during SEC-Fold-2 transition.
+**Ownership.**  `KeyStore` is a MEMBER of `SecureSubsystem::Impl`
+(field `keys_`).  Access is via `secure().keys()` exclusively —
+the old `key_store()` / `key_store_ready()` inline shims were
+deleted in Phase D (2026-07-06); all ~200 caller sites migrated
+grep-mechanically.  There is no separate KeyStore lifecycle
+module — LifecycleManager sees exactly one module
+(`"SecureSubsystem"`), not two.  `KeyStore()` ctor is `private`
+with `friend struct SecureSubsystem::Impl` — external construction
+is a compile error.
 
-**R1 (static vs dynamic) resolution.**  `SecureSubsystem` is
-STATIC (constructed at `main()` entry, holds no keys initially).
-`KeyStore` INSIDE it is logically DYNAMIC (mutations tracked, key
-inserts happen at arbitrary runtime moments).  The two-phase
-lifecycle is preserved WITHOUT a separate lifecycle module
-registration — the map is a member of `SecureSubsystem`, mutated
-via `secure().keys().add_*` calls.  Lifecycle manager sees ONE
-module ("SecureSubsystem"), not two.
+**R1 (static vs dynamic) resolution — SHIPPED.**  `SecureSubsystem`
+is STATIC (constructed once at LifecycleGuard init).  `KeyStore`
+INSIDE it is logically DYNAMIC (key inserts happen at arbitrary
+runtime moments) — but its DYNAMISM is now internal state on the
+KeyStore map, not a separate lifecycle module.  KeyStore's ctor
+is trivial (`pImpl = make_unique<Impl>()`); the map is empty at
+SMS bringup and populated as consumers call `secure().keys().
+add_identity(...)`.  KeyStore's dtor drains the reader-writer lock
+then destructs the map (each Entry's `LockedKey` runs
+`sodium_memzero` + `sodium_free`).
 
 **Public API** (surface preserved from HEP-CORE-0040 §5.2, methods
 now on `KeyStore` accessed via `secure().keys()`):
@@ -418,24 +513,55 @@ now on `KeyStore` accessed via `secure().keys()`):
 - `lookup_raw(name)` — HEP-0038 raw span.
 - `has(name)`, `size()`.
 
-Full contract: HEP-CORE-0040 §5 until migrated to §7 of this HEP
-(SEC-Fold-1b).
+Full contract: HEP-CORE-0040 §5.2 (API surface preserved verbatim
+through the merger).  Sections of HEP-0040 SUPERSEDED by the
+2026-07-06 merger: §5.1 (singularity — now enforced by SMS's
+singleton), §5.6 (namespace accessor — deleted; access is
+`secure().keys()`), §5.4 (dynamic-module registration — deleted).
+§5.3 (canonical entry names), §5.5 (thread-safety contract),
+§6 (LockedKey RAII), §8.5.2 (raw-32 seckey contract) remain
+authoritative.
 
 ### 2.3 Lifecycle registration
 
 **One lifecycle module: `"SecureSubsystem"`** (renamed from
 `"SecureMemory"`).  Dependency: `"pylabhub::utils::Logger"`.
-Startup thunk: no-op (real work in ctor).  Shutdown thunk: no-op
-(irreversible; core dumps stay disabled to process exit).
+STATIC module — registered via a `LifecycleGuard` mods pack
+(NOT dynamic ctor-side self-registration).  Same shape as
+`Logger::GetLifecycleModule()` + `FileLock::GetLifecycleModule()`.
+
+**Startup thunk (`do_secure_subsystem_startup`)** triggers
+construction of the function-local static `sole` inside
+`SecureSubsystem::instance()`.  It then calls
+`instance().pImpl->bringup()`, which does the singularity CAS,
+calls `sodium_init()`, disables core dumps, inspects mlock
+capability, and publishes `g_state = Initialized` under a
+release fence.
+The thunk is a friend of `SecureSubsystem` so it can drive
+`pImpl` — same discipline as Logger's `do_logger_startup`
+(`src/utils/logging/logger.cpp:1272-1295`).
+
+**Shutdown thunk (`do_secure_subsystem_shutdown`)** compare-
+exchanges the state gate from `Initialized → ShuttingDown`, then
+calls `pImpl->shutdown_module()` which publishes the terminal
+`Shutdown` state.  Sodium is stateless and core-dump disable is
+irreversible (HEP-CORE-0043 §1.5) — there is nothing to unwind,
+just gate-close via state transitions so late accessors PANIC.
+
+**Singleton lifetime** is program-lifetime.  `sole` is a function-
+local static → atexit-destructed.  The shutdown thunk closes the
+gate but does NOT delete the outer object; that avoids any
+`new`/`delete` of `SecureSubsystem` crossing the shared-lib
+boundary.  Matches Logger.
 
 Post-SEC-Fold-2 the old `"KeyStore"` dynamic module is DELETED —
 its work is absorbed into `SecureSubsystem`.
 
 Ordering invariant (unchanged from HEP-CORE-0040 §4.5):
 `SecureSubsystem` must be constructed BEFORE any consumer of
-`secure()`.  Standard call site: very early in `plh_role` /
-`plh_hub` `main()`, immediately after the Logger module is up,
-before vault open.
+`secure()`.  Standard call site: `SecureSubsystem::
+GetLifecycleModule()` in the mods pack of `plh_hub` / `plh_role`
+`main()`, immediately after `Logger::GetLifecycleModule()`.
 
 ### 2.4 Cross-platform stubs
 
@@ -455,75 +581,229 @@ identical.  Only the startup hardening + wire-protocol backends
 
 ---
 
-## 3. Random + hash
+## 3. Random + hash (Category 1a + 1b — SHIPPED 2026-07-07)
 
-**Section stub.**  Full detail: HEP-CORE-0038 §2 (random for
-script use) and inline usage sites documented per-caller.
+Category 1a byte primitives + Category 1b hash/KDF on
+`SecureSubsystem` (§2.1).  All formerly `pylabhub::crypto::*` free
+functions folded here 2026-07-07:
+
+| SMS method | Replaces | Callers migrated |
+|---|---|---|
+| `random_bytes(out)` / `random_bytes(ptr, len)` | `randombytes_buf` + `pylabhub::crypto::generate_random_bytes` | uuid_utils, hub_vault, vault_crypto, attach_protocol, tests |
+| `random_u64()` | `pylabhub::crypto::generate_random_u64` | native_engine, tests |
+| `generate_shared_secret()` | `pylabhub::crypto::generate_shared_secret` | data_block startup |
+| `compute_blake2b(out, data, len)` | `pylabhub::crypto::compute_blake2b` | data_block (checksums) + schema_utils + schema_blds |
+| `compute_blake2b_array(data, len)` | `pylabhub::crypto::compute_blake2b_array` | schema_utils + native_engine |
+| `verify_blake2b(stored, data, len)` | `pylabhub::crypto::verify_blake2b` | data_block (slot integrity) |
+| `derive_pwhash_salt(out, domain)` | (new — replaces inline `crypto_generichash(salt, 16, uid, ...)` in vault_crypto) | vault_crypto (Argon2 salt) |
+| `bin2hex(hex, hex_max_len, bin, bin_len)` | `sodium_bin2hex` | hub_vault (admin token) |
+
+The `pylabhub::crypto` namespace + its `GetLifecycleModule()` are
+DELETED (2026-07-07).  Consumer files are grep-verifiable: zero
+`#include <sodium.h>` outside `src/utils/security/*` (HEP-CORE-0043
+§1.2 mechanism 4 SHIPPED).
+
+### 3.1 BLAKE2b output length — purpose-specific methods, not variable-length
+
+**Design rule (2026-07-07):** the SMS BLAKE2b surface exposes
+**purpose-specific methods with a FIXED output length each**, not a
+single variable-length method with an `out_len` parameter.  Every
+production BLAKE2b use case has a known, fixed size mandated by its
+consumer.  Exposing "pick your own length" invites bugs — the
+migration to SMS actually hit one (a stack smash during vault
+decryption) when the caller's intended 16-byte call was silently
+turned into a 32-byte write into a 16-byte stack buffer.
+
+Two purposes, two methods:
+
+| Purpose | Method | Size | Consumer |
+|---|---|---|---|
+| **Content addressing** (checksums, schema hashes, integrity verify) | `compute_blake2b(out, data, len)` | 32 (`BLAKE2B_HASH_BYTES`) | data_block, schema_utils, schema_blds, native_engine |
+| **Argon2id KDF salt** | `derive_pwhash_salt(salt_out, domain)` | 16 (`kPwhashSaltBytes` = `crypto_pwhash_SALTBYTES`) | vault_crypto |
+
+If a third purpose ever emerges (e.g. a 64-byte MAC key, or a
+domain-specific short digest for a wire format), it lands as a
+THIRD purpose-specific method (`derive_mac_key(...)`,
+`compute_digest_short(...)`, ...) — NOT as a fourth position on an
+`out_len` parameter.  Reader intent stays encoded in the method name.
+
+### 3.2 BLAKE2b-16 is a genuine hash, not a truncation of BLAKE2b-32
+
+**Cryptographic detail worth pinning explicitly.**  BLAKE2b's
+digest_length is a **parameter of the algorithm**, not a
+post-truncation length.  Per RFC 7693 §3.1, the digest_length is
+placed in byte 0 of the parameter block P (a 64-byte structure).
+Before ANY compression round runs, the initial hash state H₀ is
+computed as:
+
+```
+H₀ = IV XOR P
+```
+
+The digest_length is therefore XOR'd into `H₀[0]`.  This means:
+
+- `BLAKE2b("hello", outlen=16)` and `BLAKE2b("hello", outlen=32)`
+  start with **different H₀ values**, run compression through
+  **different states**, and produce **completely different bytes**.
+- `BLAKE2b("hello", outlen=32)[0..16]` is a truncation of a
+  different hash and is **NOT** equal to `BLAKE2b("hello", outlen=16)`.
+- The two are cryptographically distinct primitives.
+
+Concrete illustration:
+```
+BLAKE2b-16("hello") =                          e7d1acfa9dfffce02d9c8b93a01ecfa5
+BLAKE2b-32("hello") = 324dcf027dd4a30a932c441f365a25e86b173defa4b8e58948253471b81b72cf
+BLAKE2b-32("hello")[0..16] =                   324dcf027dd4a30a932c441f365a25e8   ← different from BLAKE2b-16
+```
+
+`derive_pwhash_salt` therefore calls `crypto_generichash(salt, 16,
+domain, ...)` — invoking BLAKE2b in genuine 16-byte mode.  It does
+NOT compute a 32-byte hash and truncate.  This matches the vault
+format's pre-existing derivation (`crypto_generichash(salt,
+kVaultSaltBytes=16, uid, ...)`); changing to any other scheme would
+silently invalidate every existing vault file (different salt →
+different derived key → MAC verify fails on decrypt).
+
+## 4. KDF (pwhash — argon2id, Category 1b — SHIPPED 2026-07-07)
+
+### 4.1 Provenance — upstream, not our implementation
+
+Argon2id is **not implemented in pyLabHub**.  Ownership chain:
+
+- **Argon2 reference implementation** — `github.com/P-H-C/phc-winner-argon2`,
+  the winning entry of the 2015 Password Hashing Competition
+  (Biryukov, Dinu, Khovratovich).
+- **libsodium** vendors the reference impl and wraps it as
+  `crypto_pwhash(...)` with algorithm selector
+  `crypto_pwhash_ALG_ARGON2ID13` (the "13" is Argon2's own spec
+  version v1.3).
+- **pyLabHub SMS** wraps libsodium's `crypto_pwhash` as
+  `secure().pwhash_argon2id(...)`.
+
+We do not modify the cryptographic implementation, do not maintain
+our own Argon2, and do not select any non-standard parameters
+beyond the ops/mem-limit tuple (which libsodium exposes as
+`INTERACTIVE` / `SENSITIVE` / `MIN` presets).
+
+### 4.2 Salt-size ABI
+
+`crypto_pwhash`'s salt parameter has **NO length argument**:
+
+```c
+int crypto_pwhash(unsigned char *out, unsigned long long outlen,
+                  const char *passwd, unsigned long long passwdlen,
+                  const unsigned char *salt,   // ← reads exactly SALTBYTES from this pointer
+                  unsigned long long opslimit, size_t memlimit, int alg);
+```
+
+libsodium reads exactly `crypto_pwhash_SALTBYTES = 16` bytes from
+that pointer.  This is an ABI, not a configurable parameter.
+Passing a longer buffer wastes bytes silently; a shorter buffer
+reads past the buffer (undefined behaviour).
+
+The `derive_pwhash_salt` method above produces the correct 16-byte
+input.  The static_assert in `secure_subsystem.cpp` verifies
+`SecureSubsystem::kPwhashSaltBytes == crypto_pwhash_SALTBYTES` at
+build time — if libsodium ever changes the constant (they haven't
+in 10 years), the build fails loud with a clear message.
+
+### 4.3 SMS surface
+
+- `pwhash_argon2id(out, out_len, password, password_len, salt)` —
+  wrapper around `crypto_pwhash(...)` with algorithm hardcoded to
+  `crypto_pwhash_ALG_ARGON2ID13`.  `salt` MUST be exactly
+  `kPwhashSaltBytes` (16) bytes; typically produced by
+  `derive_pwhash_salt(salt, domain)` (§3.1).  Uses INTERACTIVE
+  ops/mem-limit constants — appropriate for vault-file unlock; NOT
+  for password-storage KDF (the SENSITIVE preset would be needed
+  there, and we don't currently expose it — vault decryption is our
+  only Argon2 use case).
+- `derive_pwhash_salt(salt_out, domain)` — produces the 16-byte
+  Argon2 salt from a domain string.  See §3.1.
+- `kPwhashSaltBytes` — public constexpr, value 16.
+
+Only caller today: `vault_crypto::vault_derive_key`.
+
+## 5. Symmetric encryption (secretbox — Category 1c — SHIPPED 2026-07-07)
 
 Surface (§2.1):
-- `random_bytes(out)` — replaces `randombytes_buf(out.data(), out.size())`.
-  ~8 caller migration sites (uuid_utils, crypto_utils, vault_crypto,
-  hub_vault, attach_protocol, tests).
-- `random_u64()`, `uuid4()` — convenience.
-- `blake2b(data)` — replaces `crypto_generichash(...)`.  Used by
-  `crypto_utils::compute_blake2b`.
+- `secretbox_encrypt(out, out_max_len, plaintext, plaintext_len, nonce, key)`
+  — replaces `crypto_secretbox_easy`.  Returns bytes written on
+  success, 0 on failure.  Ciphertext includes MAC as 16-byte prefix.
+- `secretbox_decrypt(out, out_max_len, ciphertext, ciphertext_len, nonce, key)`
+  — replaces `crypto_secretbox_open_easy`.  Returns bytes written on
+  success, 0 on MAC failure or bad input.  Callers MUST check
+  return value.
+- Constants: `kSecretboxKeyBytes` (32), `kSecretboxNonceBytes` (24),
+  `kSecretboxMacBytes` (16).
+- Callers: `vault_crypto::vault_write` / `vault_read_secure`.
 
-Full content migration: SEC-Fold-1b follow-up.
+**Use-case boundary.**  Symmetric encryption is appropriate when
+the SAME party (or same process instance) is on both sides — e.g.
+file-at-rest with a password-derived key.  For two-party mutual
+auth (broker ↔ role, hub ↔ hub), use `box_*` methods (§6).
 
-## 4. KDF (pwhash — argon2id)
+## 6. Asymmetric box (crypto_box — wire + observer, Category 1c — NOT YET SHIPPED)
 
-**Section stub.**  Full detail: HEP-CORE-0038 §3 (vault password
-derivation).
+**Status.**  Design for future migration; not yet shipped.  Current
+callers still touch sodium directly inside the security module
+(`attach_protocol.cpp`), which is legal per §1.2 mechanism 4
+(sodium.h boundary confined to `src/utils/security/*`).
 
-Surface (§2.1):
-- `pwhash(password, salt)` — replaces `crypto_pwhash(...)`.  Only
-  caller: `vault_crypto::vault_derive_key`.
+Expected surface (Category 1c on `SecureSubsystem`):
+- `box_encrypt_using(seckey_name, peer_pubkey, nonce, plaintext, out)` —
+  wrapper that reads the seckey via `KeyStore::with_seckey` and
+  calls `crypto_box_easy` internally.  Seckey never leaves the
+  LockedKey region (use-not-export, §1.4).
+- `box_decrypt_using(seckey_name, peer_pubkey, nonce, ciphertext, out)` —
+  same pattern for `crypto_box_open_easy`.
 
-Full content migration: SEC-Fold-1b follow-up.
-
-## 5. Symmetric AEAD (secretbox — vault at rest)
-
-**Section stub.**  Full detail: HEP-CORE-0038 §4 (vault file
-encryption).
-
-Surface (§2.1):
-- `secretbox_seal` / `secretbox_open` — replace
-  `crypto_secretbox_easy` / `crypto_secretbox_open_easy`.  Callers:
-  `vault_crypto::vault_encrypt` / `_decrypt`.
-
-Full content migration: SEC-Fold-1b follow-up.
-
-## 6. Asymmetric box (crypto_box — wire + observer)
-
-**Section stub.**  Full detail: HEP-CORE-0040 §5.5 (`SeckeyAccessor`
-pattern) and HEP-CORE-0041 §5.5, §D4.5 (mutual auth), §D1(d) (observer).
-
-Surface (§2.1):
-- `box_seal_using(name, peer_pubkey, nonce, plaintext, out)` —
-  replaces `KeyStore::with_seckey(name, cb)` +
-  `crypto_box_easy(...)` combination.
-- `box_open_using(name, peer_pubkey, nonce, ciphertext, out)` —
-  replaces `KeyStore::with_seckey(name, cb)` +
-  `crypto_box_open_easy(...)`.
+**Use-case boundary.**  Asymmetric box is appropriate for two-party
+mutual authentication where both parties have their own long-term
+identity keypair and know the other's PUBKEY through the KeyStore.
+Broker ↔ role authentication (`AttachProtocol`), hub ↔ hub
+federation (HEP-CORE-0033) are the canonical use cases.
 
 **R3 (AttachProtocol scope) resolution.**  `AttachProtocol` is
 NOT a crypto primitive; it's a 1000+ LOC protocol (framing, poll,
 EINTR, Frame 3, observer verify, SCM_RIGHTS handover).
-`AttachProtocol` continues to exist as its own subsystem; it USES
-`secure().box_seal_using(...)` / `secure().box_open_using(...)`
-for the crypto steps.  No `secure().attach()` method.
+`AttachProtocol` continues to exist as its own subsystem; when Cat
+1c box methods land, `AttachProtocol` USES them for the crypto
+steps.  No `secure().attach()` method.
 
-Full content migration: SEC-Fold-1b follow-up.
+## 7. `KeyStore` submodule (SHIPPED 2026-07-06)
 
-## 7. `KeyStore` submodule
+**Shipped state.**  KeyStore is a MEMBER of `SecureSubsystem::Impl`
+per §2.2.  Access via `secure().keys()` throughout production +
+tests.  No separate lifecycle module.  No stack-local ctor sites
+anywhere in the codebase (grep-enforced).
 
-**Section stub.**  Full detail: HEP-CORE-0040 §5, §6, §8 (KeyStore
-API, LockedKey RAII, integration with vault/role/broker).
+**API surface (SHIPPED unchanged from HEP-CORE-0040 §5.2).**  All
+methods accessible via `secure().keys()`:
 
-Surface: §2.2 above.
+| Method | Semantics |
+|---|---|
+| `add_identity(name, packed_pub_sec)` | Insert 64-byte identity (pub_raw[32] ‖ sec_raw[32]).  Source span zeroed on return.  Throws on duplicate name. |
+| `add_identity_from_z85(name, pub_z85, sec_z85)` | Convenience: Z85 pair → raw 64 bytes via `SecureBuffer<64>` (zero-on-destruct) → `add_identity`.  Single site for Z85→raw decode at the module boundary. |
+| `generate_and_add_identity(name) → std::string` | Generate fresh CURVE keypair in-memory; return Z85 pubkey; seckey accessible only via `with_seckey`. |
+| `add_raw(name, plaintext)` | HEP-CORE-0038 vault_save: opaque bytes.  Source span zeroed on return. |
+| `remove(name)` | Delete a stored secret; blocks until in-flight `with_seckey` callbacks return. |
+| `pubkey(name) → string_view` | Z85 pubkey (40 chars).  Non-secret; view lifetime = KeyStore lifetime. |
+| `with_seckey(name, callback)` | Raw 32-byte seckey via callback; view valid only inside callback (use-not-export). |
+| `with_seckey_z85(name, callback)` | Z85 seckey (40 ASCII) via callback; encoded on-the-fly, buffer sodium_memzero'd on return. |
+| `with_keypair_z85(name, callback)` | Both halves Z85 via callback. |
+| `lookup_raw(name) → span<const byte>` | HEP-CORE-0038 vault_load: raw bytes span. |
+| `has(name)` / `size()` | Existence + count probes. |
 
-**R7 resolution.**  `LockedKey` is an implementation detail;
-never exposed publicly.
+**LockedKey (HEP-CORE-0040 §6).**  Each entry owns a
+`sodium_malloc`'d region: mlock'd + guard-paged + canaried +
+`sodium_memzero` on dtor.  `LockedKey` is an implementation detail
+of KeyStore's `.cpp`; never exposed publicly (R7 resolution).
+
+**Concurrency (HEP-CORE-0040 §5.5).**  `pubkey` / `with_seckey` /
+`lookup_raw` / `has` / `size` take a shared lock (parallel reads
+OK); `add_identity` / `add_raw` / `remove` take exclusive.
+Callbacks must be prompt (µs) — no blocking I/O.
 
 **Naming convention** (from `DRAFT_keystore_ephemeral_and_script_
 crypto_2026-07.md`):

@@ -10,11 +10,11 @@
 #include "utils/security/curve_keypair.hpp"
 #include "utils/security/key_file_acl.hpp"
 #include "utils/security/secure_buffer.hpp"
+#include "utils/security/secure_subsystem.hpp"
 
 #include "vault_crypto.hpp"
 
 #include "utils/json_fwd.hpp"
-#include <sodium.h>
 #include <zmq.h>
 
 #include <array>
@@ -66,9 +66,19 @@ struct HubVault::Impl
 
     ~Impl() noexcept
     {
-        sodium_memzero(broker_secret_z85.data(), broker_secret_z85.size());
-        sodium_memzero(broker_public_z85.data(), broker_public_z85.size());
-        sodium_memzero(admin_token_hex.data(),   admin_token_hex.size());
+        // Wipe via SMS (HEP-CORE-0043 §2.1 category 1) — the security
+        // module owns every sodium primitive.  Cast to uint8_t* is safe
+        // (byte-addressable char array).
+        namespace sec = pylabhub::utils::security;
+        sec::secure().memzero(std::span<std::uint8_t>(
+            reinterpret_cast<std::uint8_t *>(broker_secret_z85.data()),
+            broker_secret_z85.size()));
+        sec::secure().memzero(std::span<std::uint8_t>(
+            reinterpret_cast<std::uint8_t *>(broker_public_z85.data()),
+            broker_public_z85.size()));
+        sec::secure().memzero(std::span<std::uint8_t>(
+            reinterpret_cast<std::uint8_t *>(admin_token_hex.data()),
+            admin_token_hex.size()));
     }
 };
 
@@ -83,13 +93,15 @@ constexpr std::size_t kAdminRawBytes = 32; // → 64 hex chars
 
 std::string generate_admin_token()
 {
+    namespace sec = pylabhub::utils::security;
     uint8_t raw[kAdminRawBytes]{};
-    randombytes_buf(raw, sizeof(raw));
+    sec::secure().random_bytes(raw, sizeof(raw));
     char hex[kAdminRawBytes * 2 + 1]{};
-    sodium_bin2hex(hex, sizeof(hex), raw, sizeof(raw));
+    sec::secure().bin2hex(hex, sizeof(hex), raw, sizeof(raw));
     std::string token(hex, kAdminRawBytes * 2);
-    sodium_memzero(raw, sizeof(raw));
-    sodium_memzero(hex, sizeof(hex));
+    sec::secure().memzero(std::span<std::uint8_t>(raw, sizeof(raw)));
+    sec::secure().memzero(std::span<std::uint8_t>(
+        reinterpret_cast<std::uint8_t *>(hex), sizeof(hex)));
     return token;
 }
 

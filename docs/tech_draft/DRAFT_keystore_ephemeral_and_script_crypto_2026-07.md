@@ -1,20 +1,29 @@
 # KeyStore ephemeral keys + script crypto API — tech draft
 
-> **Status:** DRAFT, 2026-07-03.  Captures design decisions from a
-> conversation while implementing the broker observer path
-> (#317 D1).  Not a HEP yet; will promote to HEP-CORE-0043 (or
-> HEP-CORE-0040 amendment) once script bindings land under task #247.
+> **Status:** DRAFT, 2026-07-03.  Refreshed 2026-07-06 for the
+> SEC-Fold-2 KeyStore merger.  Captures design decisions from the
+> broker observer path (#317 D1).  Will promote to HEP-CORE-0043 §10
+> (script crypto) once script bindings land under task #247.
 > **Scope of the immediate work:** one narrow KeyStore extension for
 > the broker observer use case, everything else deferred.
+>
+> **2026-07-06 correction to the code references below.**  Post-
+> SEC-Fold-2, KeyStore is a MEMBER of `SecureSubsystem::Impl`
+> (HEP-CORE-0043 §2.2 + §7).  All `key_store().X()` references below
+> should be read as `secure().keys().X()` (or equivalently through
+> the transitional `key_store()` inline shim).  The `generate_and_
+> add_identity(name)` method described in this doc SHIPPED under
+> `secure().keys().generate_and_add_identity(name)` semantics — the
+> API surface didn't change, only the container.
 
 ## Background
 
-`KeyStore` (HEP-CORE-0040) today stores keypairs and raw secrets under
-a `name → LockedKey` map, with the seckey accessible only through
-`with_seckey(name, callback)` (use-not-export).  Entries are added via
-`add_identity` (raw 64-byte pack) or `add_identity_from_z85` (Z85 pair)
-— both assume the caller has the keypair already in hand from a config
-file or vault.
+`KeyStore` (HEP-CORE-0043 §7, formerly HEP-CORE-0040 §5) stores keypairs
+and raw secrets under a `name → LockedKey` map, with the seckey
+accessible only through `with_seckey(name, callback)` (use-not-export).
+Entries are added via `add_identity` (raw 64-byte pack) or
+`add_identity_from_z85` (Z85 pair) — both assume the caller has the
+keypair already in hand from a config file or vault.
 
 There is no on-the-fly path: framework code that needs a fresh keypair
 for runtime-lifetime use (broker's observer identity, future ephemeral

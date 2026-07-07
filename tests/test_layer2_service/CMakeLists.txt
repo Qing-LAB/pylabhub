@@ -155,10 +155,10 @@ gtest_discover_tests(test_layer2_zap_router
 
 # ============================================================================
 # Test: KeyStore + LockedKey + SecureBuffer (HEP-CORE-0040 §170)
-# Pattern 3 — subprocess per scenario.  SecureMemorySubsystem and KeyStore
+# Pattern 3 — subprocess per scenario.  SecureSubsystem and KeyStore
 # are process singletons (HEP-0040 §4.1 + §5.1); serial isolation needed.
 # Pins:
-#   - ordering: KeyStore ctor throws if SecureMemorySubsystem not ready
+#   - ordering: KeyStore ctor throws if SecureSubsystem not ready
 #   - singleton: second KeyStore ctor throws
 #   - use-not-export: pubkey/with_seckey/lookup_raw error paths
 #   - thread safety: parallel reads, remove blocks behind with_seckey
@@ -193,7 +193,7 @@ gtest_discover_tests(test_layer2_key_store
 )
 
 # ============================================================================
-# Test: CurveKeyStoreFixture protocol-validation (HEP-CORE-0040 §172 +
+# Test: seed_curve_identities protocol-validation (HEP-CORE-0040 §172 +
 # HEP-CORE-0035 §4.6.5; task #177).  Pattern 3 — subprocess per scenario.
 # Pins the test fixture's seed contract:
 #   - canonical names (kHubIdentityName, role_keystore_name)
@@ -493,6 +493,7 @@ add_executable(test_layer2_attach_protocol
 target_link_libraries(test_layer2_attach_protocol
     PRIVATE
         pylabhub::utils
+        pylabhub::test_framework   # PLH_BINARY_LIFECYCLE_MODULES for SMS setup
         GTest::gtest
         GTest::gtest_main
 )
@@ -553,8 +554,84 @@ gtest_discover_tests(test_layer2_shm_attach_orchestrator
 )
 
 # ============================================================================
+# Test: ZmqAttachChannel (Phase 4a transport-abstraction)
+# Pattern 1+ — binary-wide LifecycleGuard for Logger.  No SMS needed:
+# the channel exchanges JSON frames, doesn't touch KeyStore.
+# Pins:
+#   - roundtrip: DEALER-ROUTER inproc, both directions
+#   - deadline discipline: recv times out cleanly
+#   - DoS cap: oversized sends AND oversized incoming frames rejected
+#   - malformed JSON raises runtime_error (not AttachProtocolTimeout)
+# ============================================================================
+
+add_executable(test_layer2_zmq_attach_channel
+    test_zmq_attach_channel.cpp
+)
+
+target_link_libraries(test_layer2_zmq_attach_channel
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+        GTest::gtest_main
+        pylabhub::third_party::cppzmq  # zmq::message_t, zmq::socket_t
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_zmq_attach_channel)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_zmq_attach_channel
+    SUITE_NAME "Layer2_ZmqAttachChannel"
+)
+layer2_require_staged_utils(test_layer2_zmq_attach_channel)
+
+gtest_discover_tests(test_layer2_zmq_attach_channel
+    PROPERTIES
+        LABELS "layer2;service;security;zmq_attach_channel"
+        TIMEOUT 30
+)
+
+# ============================================================================
+# Test: ZMQ AttachProtocol end-to-end (Phase 4c minimal)
+# Pattern 1+ — binary-wide LifecycleGuard for Logger + SMS.  Runs the
+# FULL Frame 1/2/3 challenge-response over ZMQ ROUTER/DEALER via
+# ZmqAttachProtocolAcceptor + initiate_zmq_consumer_handshake.
+# Pins:
+#   - end-to-end happy path with mutual-auth Frame 3
+#   - impersonator (claims a pubkey it doesn't hold the seckey for) rejected
+# ============================================================================
+
+add_executable(test_layer2_zmq_attach_protocol
+    test_zmq_attach_protocol.cpp
+)
+
+target_link_libraries(test_layer2_zmq_attach_protocol
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+        GTest::gtest_main
+        pylabhub::third_party::cppzmq
+        pylabhub::third_party::libsodium  # test uses ::crypto_box_keypair directly
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_zmq_attach_protocol)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_zmq_attach_protocol
+    SUITE_NAME "Layer2_ZmqAttachProtocol"
+)
+layer2_require_staged_utils(test_layer2_zmq_attach_protocol)
+
+gtest_discover_tests(test_layer2_zmq_attach_protocol
+    PROPERTIES
+        LABELS "layer2;service;security;zmq_attach_protocol"
+        TIMEOUT 30
+)
+
+# ============================================================================
 # Test: DataBlock fd-source ctors + factories (HEP-CORE-0041 substep 1f, #253)
-# Pattern 1+ — binary-wide LifecycleGuard for Logger + CryptoUtils +
+# Pattern 1+ — binary-wide LifecycleGuard for Logger + SecureSubsystem +
 # DataBlock (the fd-source factories require GetDataBlockModule() per
 # the same contract as the name-based factories).
 # Pins:
@@ -594,7 +671,7 @@ gtest_discover_tests(test_layer2_data_block_fd_based
 
 # ============================================================================
 # Test: ShmQueue capability-fd path (HEP-CORE-0041 substep 1i-mig-1)
-# Pattern 1+ — binary-wide LifecycleGuard (Logger + CryptoUtils + DataBlock,
+# Pattern 1+ — binary-wide LifecycleGuard (Logger + SecureSubsystem + DataBlock,
 # same as test_data_block_fd_based) — Standby-mode create_*_standby
 # factories + set_shm_capability_fd Standby → Configured + start() fd-source
 # branch + mutual-exclusion guards with the legacy secret-mode path.
@@ -900,32 +977,38 @@ gtest_discover_tests(test_layer2_shared_memory_spinlock
 )
 
 # ============================================================================
-# CRITICAL Test: Crypto Utils (blocks schema validation)
+# CRITICAL Test: SMS Category 1 primitives (blocks schema validation)
 # ============================================================================
+#
+# Post-2026-07-06 CryptoUtils merger (HEP-CORE-0043 §2.1): this binary
+# tests the SecureSubsystem Category 1 surface (BLAKE2b hash, random,
+# lifecycle).  File names retain the historical `crypto_*` prefix
+# because the worker file name feeds subprocess dispatch strings; the
+# fixture class was renamed `CryptoUtilsTest` → `SMS_PrimitivesTest`.
 
-add_executable(test_layer2_crypto_utils
+add_executable(test_layer2_sms_primitives
     test_crypto_utils.cpp
     workers/crypto_workers.cpp
 )
 
-target_include_directories(test_layer2_crypto_utils PRIVATE workers)
+target_include_directories(test_layer2_sms_primitives PRIVATE workers)
 
-target_link_libraries(test_layer2_crypto_utils
+target_link_libraries(test_layer2_sms_primitives
     PRIVATE
         pylabhub::utils
         pylabhub::test_framework
         GTest::gtest
 )
 
-pylabhub_ensure_sanitizer_for_executable(test_layer2_crypto_utils)
+pylabhub_ensure_sanitizer_for_executable(test_layer2_sms_primitives)
 
 pylabhub_register_test_for_staging(
-    TARGET test_layer2_crypto_utils
-    SUITE_NAME "Layer2_CryptoUtils"
+    TARGET test_layer2_sms_primitives
+    SUITE_NAME "Layer2_SecureSubsystem"
 )
-layer2_require_staged_utils(test_layer2_crypto_utils)
+layer2_require_staged_utils(test_layer2_sms_primitives)
 
-gtest_discover_tests(test_layer2_crypto_utils
+gtest_discover_tests(test_layer2_sms_primitives
     PROPERTIES
         LABELS "layer2;service;crypto;critical"
         TIMEOUT 60
@@ -1889,7 +1972,7 @@ gtest_discover_tests(test_layer2_scriptengine_native_dylib
 
 message(STATUS "Layer 2 (Service) tests configured successfully")
 message(STATUS "  - test_layer2_framework_selftest (CRITICAL - framework self-verification)")
-message(STATUS "  - test_layer2_crypto_utils       (multi-process)")
+message(STATUS "  - test_layer2_sms_primitives      (multi-process)")
 message(STATUS "  - test_layer2_lifecycle          (multi-process)")
 message(STATUS "  - test_layer2_lifecycle_dynamic  (multi-process)")
 message(STATUS "  - test_layer2_filelock           (multi-process IPC)")

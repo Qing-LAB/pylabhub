@@ -1084,7 +1084,7 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
             try
             {
                 consumer_pubkey_z85 = std::string{
-                    sec::key_store().pubkey(sec::kRoleIdentityName)};
+                    sec::secure().keys().pubkey(sec::kRoleIdentityName)};
             }
             catch (const std::exception &e)
             {
@@ -1458,7 +1458,7 @@ bool RoleAPIBase::apply_consumer_reg_ack_shm_(
 
     // Assemble ConsumerAuthMaterial from the local KeyStore.  D1
     // (HEP-CORE-0040 §8.5.1 use-not-export): the seckey accessor closes
-    // over the global key_store() lookup; no seckey byte materialises
+    // over the global secure().keys() lookup; no seckey byte materialises
     // on this side of the §5.5 handshake.  Symmetric with the
     // producer-side acceptor wiring in
     // RoleHostFrame::spawn_shm_auth_listener_.
@@ -1466,7 +1466,7 @@ bool RoleAPIBase::apply_consumer_reg_ack_shm_(
     auth.role_uid    = pImpl->uid;
     try
     {
-        auth.pubkey_z85 = std::string{sec::key_store().pubkey(sec::kRoleIdentityName)};
+        auth.pubkey_z85 = std::string{sec::secure().keys().pubkey(sec::kRoleIdentityName)};
     }
     catch (const std::exception &e)
     {
@@ -1477,16 +1477,7 @@ bool RoleAPIBase::apply_consumer_reg_ack_shm_(
                      sec::kRoleIdentityName, e.what());
         return false;
     }
-    auth.seckey_accessor =
-        [](std::function<void(std::span<const std::byte>)> use) {
-            sec::key_store().with_seckey(
-                sec::kRoleIdentityName,
-                [&](std::string_view sv) {
-                    use(std::span<const std::byte>(
-                        reinterpret_cast<const std::byte *>(sv.data()),
-                        sv.size()));
-                });
-        };
+    auth.own_seckey_name = std::string(sec::kRoleIdentityName);
 
     // D3: bounded retry on ECONNREFUSED to absorb the H3a race window
     // where REG_ACK can reach the consumer before the producer's L2

@@ -51,7 +51,7 @@ class PYLABHUB_UTILS_EXPORT BrokerRequestComm
         /// (CURVE is unconditional); `connect()` returns false on empty.
         std::string broker_pubkey;
         /// HEP-CORE-0040 §172: the role's CURVE keypair is NOT carried
-        /// here — `connect()` reads it on-site from `key_store()` by
+        /// here — `connect()` reads it on-site from `secure().keys()` by
         /// the name below.  `KeyStore::add_identity_from_z85(keystore_name, ...)`
         /// must have been called (typically by `RoleConfig::load_keypair`
         /// for production, or by the test fixture) before `connect()`

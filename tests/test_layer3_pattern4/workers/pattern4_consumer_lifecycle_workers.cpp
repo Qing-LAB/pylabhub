@@ -26,7 +26,7 @@
  *
  *   3. **Production parameter SHAPES.**  REG_REQ payloads are built via
  *      `hub::build_*_reg_payload` (NOT hand-rolled JSON).  The
- *      identity pubkey comes from `key_store().pubkey(kRoleIdentityName)`
+ *      identity pubkey comes from `secure().keys().pubkey(kRoleIdentityName)`
  *      (NOT the test setup's curve bundle directly).  Schema fields
  *      go through `make_wire_schema_fields` + `apply_*_schema_fields`.
  *      Values (port number, channel name) may be test-chosen, but
@@ -92,7 +92,7 @@
 #include "utils/role_uid.hpp"
 #include "utils/schema_utils.hpp"
 #include "utils/security/key_store.hpp"
-#include "utils/security/secure_memory_subsystem.hpp"
+#include "utils/security/secure_subsystem.hpp"
 #include "utils/timeout_constants.hpp"
 #include "utils/zmq_context.hpp"
 
@@ -140,8 +140,7 @@ int pattern4_consumer_lifecycle_broker(const char *temp_dir_arg)
             const fs::path temp_dir = temp_dir_arg;
             const auto     setup    = read_pattern4_setup(temp_dir / "setup.json");
 
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture(
-                "pattern4", "consumer_lifecycle.broker", setup.curve);
+            pylabhub::tests::seed_curve_identities(setup.curve);
 
             maybe_redirect_to_shared_log(setup);
 
@@ -225,6 +224,7 @@ int pattern4_consumer_lifecycle_broker(const char *temp_dir_arg)
         },
         "pattern4_consumer_lifecycle.broker",
         pylabhub::utils::Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         pylabhub::utils::FileLock::GetLifecycleModule(),
         pylabhub::utils::JsonConfig::GetLifecycleModule(),
         pylabhub::hub::GetZMQContextModule());
@@ -243,9 +243,8 @@ int pattern4_consumer_lifecycle_producer_role(const char *temp_dir_arg)
                 "pattern4cons", 1u);
             const std::string channel = "data.test";
 
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture(
-                "pattern4", "consumer_lifecycle.producer_role", setup.curve);
-            pylabhub::tests::CurveKeyStoreFixture::add_identity(
+            pylabhub::tests::seed_curve_identities(setup.curve);
+            pylabhub::tests::add_curve_identity(
                 pylabhub::utils::security::kRoleIdentityName,
                 setup.curve.role_keys.at(role_uid));
 
@@ -326,7 +325,7 @@ int pattern4_consumer_lifecycle_producer_role(const char *temp_dir_arg)
             reg_in.is_zmq_transport  = true;
             reg_in.zmq_node_endpoint = tx_endpoint;
             reg_in.zmq_pubkey        = std::string(
-                sec::key_store().pubkey(sec::kRoleIdentityName));
+                sec::secure().keys().pubkey(sec::kRoleIdentityName));
             auto reg_opts =
                 pylabhub::hub::build_producer_reg_payload(reg_in);
 
@@ -416,6 +415,7 @@ int pattern4_consumer_lifecycle_producer_role(const char *temp_dir_arg)
         },
         "pattern4_consumer_lifecycle.producer_role",
         pylabhub::utils::Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         pylabhub::utils::FileLock::GetLifecycleModule(),
         pylabhub::utils::JsonConfig::GetLifecycleModule(),
         pylabhub::hub::GetZMQContextModule());

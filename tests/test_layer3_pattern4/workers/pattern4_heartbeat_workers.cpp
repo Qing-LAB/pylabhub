@@ -65,7 +65,7 @@
 #include "utils/role_reg_payload.hpp"
 #include "utils/role_uid.hpp"
 #include "utils/security/key_store.hpp"
-#include "utils/security/secure_memory_subsystem.hpp"
+#include "utils/security/secure_subsystem.hpp"
 #include "utils/security/shm_capability_channel.hpp" // #281 default_shm_capability_endpoint
 #include "utils/timeout_constants.hpp"
 #include "utils/zmq_context.hpp"
@@ -116,8 +116,7 @@ int pattern4_heartbeat_broker(const char *temp_dir_arg)
             const fs::path temp_dir = temp_dir_arg;
             const auto     setup    = read_pattern4_setup(temp_dir / "setup.json");
 
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture(
-                "pattern4", "heartbeat.broker", setup.curve);
+            pylabhub::tests::seed_curve_identities(setup.curve);
 
             maybe_redirect_to_shared_log(setup);
 
@@ -236,6 +235,7 @@ int pattern4_heartbeat_broker(const char *temp_dir_arg)
         },
         "pattern4_heartbeat.broker",
         pylabhub::utils::Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         pylabhub::utils::FileLock::GetLifecycleModule(),
         pylabhub::utils::JsonConfig::GetLifecycleModule(),
         pylabhub::hub::GetZMQContextModule());
@@ -253,9 +253,8 @@ int pattern4_heartbeat_producer_role(const char *temp_dir_arg)
                 pylabhub::scripting::RoleUidTag::Producer, "pattern4hb", 1u);
             const std::string channel  = "hb.test";
 
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture(
-                "pattern4", "heartbeat.producer_role", setup.curve);
-            pylabhub::tests::CurveKeyStoreFixture::add_identity(
+            pylabhub::tests::seed_curve_identities(setup.curve);
+            pylabhub::tests::add_curve_identity(
                 pylabhub::utils::security::kRoleIdentityName,
                 setup.curve.role_keys.at(role_uid));
 
@@ -310,7 +309,7 @@ int pattern4_heartbeat_producer_role(const char *temp_dir_arg)
             reg_in.shm_capability_endpoint =
                 sec::default_shm_capability_endpoint(channel);
             reg_in.zmq_pubkey       = std::string(
-                sec::key_store().pubkey(sec::kRoleIdentityName));
+                sec::secure().keys().pubkey(sec::kRoleIdentityName));
             auto reg_opts =
                 pylabhub::hub::build_producer_reg_payload(reg_in);
 
@@ -376,6 +375,7 @@ int pattern4_heartbeat_producer_role(const char *temp_dir_arg)
         },
         "pattern4_heartbeat.producer_role",
         pylabhub::utils::Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         pylabhub::utils::FileLock::GetLifecycleModule(),
         pylabhub::utils::JsonConfig::GetLifecycleModule(),
         pylabhub::hub::GetZMQContextModule());

@@ -36,7 +36,6 @@ using namespace pylabhub::broker;
 static auto logger_module()    { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
 static auto file_lock_module() { return ::pylabhub::utils::FileLock::GetLifecycleModule(); }
 static auto json_module()      { return ::pylabhub::utils::JsonConfig::GetLifecycleModule(); }
-static auto crypto_module()    { return ::pylabhub::crypto::GetLifecycleModule(); }
 static auto hub_module()       { return ::pylabhub::hub::GetDataBlockModule(); }
 static auto zmq_module()       { return ::pylabhub::hub::GetZMQContextModule(); }
 
@@ -74,14 +73,13 @@ nlohmann::json brc_hub_overrides()
 int connect_and_heartbeat()
 {
     auto mods = utils::MakeModDefList(logger_module(), file_lock_module(),
-                                          json_module(), crypto_module(),
+                                          json_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
                                           hub_module(), zmq_module());
     utils::LifecycleGuard guard(std::move(mods));
 
     const std::string uid = "prod.brc.uid00000001";
     auto curve = pylabhub::tests::make_curve_setup({uid});
-    pylabhub::tests::CurveKeyStoreFixture ks_fixture(
-        "test.l3", "test.brc.harness", curve);
+    pylabhub::tests::seed_curve_identities(curve);
     auto broker = pylabhub::tests::start_hubhost_broker(brc_hub_overrides(), curve);
 
     BrokerRequestComm ch;
@@ -117,14 +115,13 @@ int connect_and_heartbeat()
 int register_and_discover()
 {
     auto mods = utils::MakeModDefList(logger_module(), file_lock_module(),
-                                          json_module(), crypto_module(),
+                                          json_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
                                           hub_module(), zmq_module());
     utils::LifecycleGuard guard(std::move(mods));
 
     const std::string uid = "prod.test.uid00000001";
     auto curve = pylabhub::tests::make_curve_setup({uid});
-    pylabhub::tests::CurveKeyStoreFixture ks_fixture(
-        "test.l3", "test.brc.harness", curve);
+    pylabhub::tests::seed_curve_identities(curve);
     auto broker = pylabhub::tests::start_hubhost_broker(brc_hub_overrides(), curve);
 
     BrokerRequestComm ch;
@@ -199,14 +196,13 @@ int register_and_discover()
 int role_presence()
 {
     auto mods = utils::MakeModDefList(logger_module(), file_lock_module(),
-                                          json_module(), crypto_module(),
+                                          json_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
                                           hub_module(), zmq_module());
     utils::LifecycleGuard guard(std::move(mods));
 
     const std::string uid = "prod.my.uid00000042";
     auto curve = pylabhub::tests::make_curve_setup({uid});
-    pylabhub::tests::CurveKeyStoreFixture ks_fixture(
-        "test.l3", "test.brc.harness", curve);
+    pylabhub::tests::seed_curve_identities(curve);
     auto broker = pylabhub::tests::start_hubhost_broker(brc_hub_overrides(), curve);
 
     BrokerRequestComm ch;
@@ -268,14 +264,13 @@ int role_presence()
 int notification_dispatch()
 {
     auto mods = utils::MakeModDefList(logger_module(), file_lock_module(),
-                                          json_module(), crypto_module(),
+                                          json_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
                                           hub_module(), zmq_module());
     utils::LifecycleGuard guard(std::move(mods));
 
     const std::string uid = "prod.notify.uid00000001";
     auto curve = pylabhub::tests::make_curve_setup({uid});
-    pylabhub::tests::CurveKeyStoreFixture ks_fixture(
-        "test.l3", "test.brc.harness", curve);
+    pylabhub::tests::seed_curve_identities(curve);
     auto broker = pylabhub::tests::start_hubhost_broker(brc_hub_overrides(), curve);
 
     BrokerRequestComm ch;

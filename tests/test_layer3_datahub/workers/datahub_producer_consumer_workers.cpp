@@ -30,7 +30,6 @@ namespace pylabhub::tests::worker::error_handling
 {
 
 static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
-static auto crypto_module() { return ::pylabhub::crypto::GetLifecycleModule(); }
 static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
 
 int acquire_consume_slot_timeout_returns_null()
@@ -56,7 +55,7 @@ int acquire_consume_slot_timeout_returns_null()
 
             cleanup_test_datablock(channel);
         },
-        "acquire_consume_slot_timeout_returns_null", logger_module(), crypto_module(), hub_module());
+        "acquire_consume_slot_timeout_returns_null", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ----------------------------------------------------------------------------
@@ -114,7 +113,7 @@ int release_write_slot_invalid_handle_returns_false()
 
             cleanup_test_datablock(channel);
         },
-        "release_write_slot_invalid_handle_returns_false", logger_module(), crypto_module(),
+        "release_write_slot_invalid_handle_returns_false", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         hub_module());
 }
 
@@ -139,7 +138,7 @@ int release_consume_slot_invalid_handle_returns_false()
 
             cleanup_test_datablock(channel);
         },
-        "release_consume_slot_invalid_handle_returns_false", logger_module(), crypto_module(),
+        "release_consume_slot_invalid_handle_returns_false", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         hub_module());
 }
 
@@ -171,7 +170,7 @@ int write_bounds_return_false()
             EXPECT_TRUE(producer->release_write_slot(*write_handle));
             cleanup_test_datablock(channel);
         },
-        "write_bounds_return_false", logger_module(), crypto_module(), hub_module());
+        "write_bounds_return_false", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 int commit_bounds_return_false()
@@ -197,7 +196,7 @@ int commit_bounds_return_false()
             EXPECT_TRUE(producer->release_write_slot(*write_handle));
             cleanup_test_datablock(channel);
         },
-        "commit_bounds_return_false", logger_module(), crypto_module(), hub_module());
+        "commit_bounds_return_false", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 int read_bounds_return_false()
@@ -236,7 +235,7 @@ int read_bounds_return_false()
             consume_handle.reset();
             cleanup_test_datablock(channel);
         },
-        "read_bounds_return_false", logger_module(), crypto_module(), hub_module());
+        "read_bounds_return_false", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 int double_release_write_slot_idempotent()
@@ -262,7 +261,7 @@ int double_release_write_slot_idempotent()
 
             cleanup_test_datablock(channel);
         },
-        "double_release_write_slot_idempotent", logger_module(), crypto_module(), hub_module());
+        "double_release_write_slot_idempotent", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 int slot_acquire_timeout_returns_error()
@@ -320,7 +319,7 @@ int slot_acquire_timeout_returns_error()
             transport.reset();
             cleanup_test_datablock(channel);
         },
-        "slot_acquire_timeout_returns_error", logger_module(), crypto_module(), hub_module());
+        "slot_acquire_timeout_returns_error", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 int sub_page_logical_size_round_trip()
@@ -375,7 +374,7 @@ int sub_page_logical_size_round_trip()
             consumer.reset();
             cleanup_test_datablock(channel);
         },
-        "sub_page_logical_size_round_trip", logger_module(), crypto_module(), hub_module());
+        "sub_page_logical_size_round_trip", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 } // namespace pylabhub::tests::worker::error_handling

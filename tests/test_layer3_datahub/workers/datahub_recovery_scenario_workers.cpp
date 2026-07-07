@@ -36,7 +36,6 @@ namespace pylabhub::tests::worker::recovery_scenarios
 {
 
 static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
-static auto crypto_module() { return ::pylabhub::crypto::GetLifecycleModule(); }
 static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
 
 // INT32_MAX as a dead PID — guaranteed not to be a live process on any Linux system.
@@ -133,7 +132,7 @@ int zombie_writer_detected_and_released()
             producer.reset();
             cleanup_test_datablock(channel);
         },
-        "zombie_writer_detected_and_released", logger_module(), crypto_module(), hub_module());
+        "zombie_writer_detected_and_released", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -206,7 +205,7 @@ int zombie_readers_force_cleared()
             producer.reset();
             cleanup_test_datablock(channel);
         },
-        "zombie_readers_force_cleared", logger_module(), crypto_module(), hub_module());
+        "zombie_readers_force_cleared", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -283,7 +282,7 @@ int force_reset_slot_on_dead_writer()
             producer.reset();
             cleanup_test_datablock(channel);
         },
-        "force_reset_slot_on_dead_writer", logger_module(), crypto_module(), hub_module());
+        "force_reset_slot_on_dead_writer", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -345,7 +344,7 @@ int dead_consumer_cleanup()
             producer.reset();
             cleanup_test_datablock(channel);
         },
-        "dead_consumer_cleanup", logger_module(), crypto_module(), hub_module());
+        "dead_consumer_cleanup", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -366,7 +365,7 @@ int is_process_alive_false_for_nonexistent()
             EXPECT_TRUE(datablock_is_process_alive(my_pid))
                 << "is_process_alive must return true for current process PID " << my_pid;
         },
-        "is_process_alive_false_for_nonexistent", logger_module(), crypto_module(), hub_module());
+        "is_process_alive_false_for_nonexistent", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -410,7 +409,7 @@ int force_reset_unsafe_when_writer_alive()
             producer.reset();
             cleanup_test_datablock(channel);
         },
-        "force_reset_unsafe_when_writer_alive", logger_module(), crypto_module(), hub_module());
+        "force_reset_unsafe_when_writer_alive", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 } // namespace pylabhub::tests::worker::recovery_scenarios

@@ -4,7 +4,7 @@
  * @file schema_blds_workers.h
  * @brief Worker function declarations for schema_blds isolated-process tests.
  *
- * These workers initialize the CryptoUtils lifecycle module and run
+ * These workers initialize the SecureSubsystem lifecycle module and run
  * SchemaInfo/generate_schema_info assertions that require BLAKE2b hashing.
  */
 

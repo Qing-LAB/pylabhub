@@ -6,7 +6,7 @@
  * Migrated 2026-05-13 from the in-process `SetUpTestSuite`-owned
  * `LifecycleGuard` antipattern.  Each scenario constructs `HubHost`
  * (spawning a `BrokerService` thread) and a `BrokerRequestComm` client
- * — transitively touches Logger / FileLock / JsonConfig / CryptoUtils /
+ * — transitively touches Logger / FileLock / JsonConfig / SecureSubsystem /
  * ZMQContext; Pattern 3 isolation required per README_testing.md.
  */
 
@@ -101,9 +101,7 @@ int hubhost_brokerreachable_afterstartup()
 
             const std::string uid = "prod.test.uid_reachable";
             auto curve = pylabhub::tests::make_curve_setup({uid});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture(
-                "test", "test.l3.hub_host_integration.brokerreachable",
-                curve);
+            pylabhub::tests::seed_curve_identities(curve);
             auto broker = pylabhub::tests::start_hubhost_broker(
                 hubhost_overrides(), curve);
             ASSERT_FALSE(broker.endpoint.empty())
@@ -124,7 +122,7 @@ int hubhost_brokerreachable_afterstartup()
         Logger::GetLifecycleModule(),
         FileLock::GetLifecycleModule(),
         JsonConfig::GetLifecycleModule(),
-        pylabhub::crypto::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         pylabhub::hub::GetZMQContextModule());
 }
 
@@ -138,9 +136,7 @@ int hubhost_regreq_roundtripsviaspawnedbroker()
             const std::string uid     = "prod.cam.uid_regreq";
             const std::string channel = pid_chan("hubhost.regreq");
             auto curve = pylabhub::tests::make_curve_setup({uid});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture(
-                "test", "test.l3.hub_host_integration.regreq",
-                curve);
+            pylabhub::tests::seed_curve_identities(curve);
             auto broker = pylabhub::tests::start_hubhost_broker(
                 hubhost_overrides(), curve);
 
@@ -172,7 +168,7 @@ int hubhost_regreq_roundtripsviaspawnedbroker()
         Logger::GetLifecycleModule(),
         FileLock::GetLifecycleModule(),
         JsonConfig::GetLifecycleModule(),
-        pylabhub::crypto::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         pylabhub::hub::GetZMQContextModule());
 }
 

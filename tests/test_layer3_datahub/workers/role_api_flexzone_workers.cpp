@@ -54,7 +54,6 @@
 #include "utils/role_api_base.hpp"
 #include "utils/role_host_core.hpp"
 
-#include "utils/crypto_utils.hpp"
 #include "utils/logger.hpp"
 #include "utils/lifecycle.hpp"
 #include "utils/data_block.hpp"
@@ -62,7 +61,7 @@
 #include "utils/zmq_context.hpp"
 #include "utils/security/shm_capability_channel.hpp"
 
-#include "curve_test_setup.h"   // CurveKeyStoreFixture
+#include "curve_test_setup.h"   // seed_curve_identities
 #include "shared_test_helpers.h"
 #include "test_entrypoint.h"
 #include "test_schema_helpers.h"
@@ -94,10 +93,9 @@ namespace
 {
 
 /// Lifecycle modules every flexzone worker needs.  Logger for worker-
-/// begin/end milestones; CryptoUtils + ZMQContext + DataBlock for the
+/// begin/end milestones; SecureSubsystem + ZMQContext + DataBlock for the
 /// RoleAPIBase + SHM queue construction.
 static auto logger_module() { return Logger::GetLifecycleModule(); }
-static auto crypto_module() { return ::pylabhub::crypto::GetLifecycleModule(); }
 static auto zmq_module()    { return ::pylabhub::hub::GetZMQContextModule(); }
 static auto hub_module()    { return ::pylabhub::hub::GetDataBlockModule(); }
 
@@ -438,7 +436,7 @@ int shm_roundtrip()
             pair.prod->close_queues();
         },
         "role_api_flexzone::shm_roundtrip",
-        logger_module(), crypto_module(), zmq_module(), hub_module());
+        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module(), hub_module());
 }
 
 // ============================================================================
@@ -457,14 +455,13 @@ int zmq_tx_null()
             // calling.  Without this seed the factory returns null
             // and ASSERT_TRUE on build_tx_queue fails.
             auto curve = pylabhub::tests::make_curve_setup({"prod.zmq-fz.tx"});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture(
-                "test.l3", "test.role_api_flexzone.harness", curve);
+            pylabhub::tests::seed_curve_identities(curve);
             // The role-side data path uses the canonical production
             // name `kRoleIdentityName` (build_tx_queue uses it).  Add
             // that name pointing at the test's hub keypair (any
             // valid CURVE keypair works; this test doesn't exercise
             // wire authentication).
-            pylabhub::utils::security::key_store().add_identity_from_z85(
+            pylabhub::utils::security::secure().keys().add_identity_from_z85(
                 pylabhub::utils::security::kRoleIdentityName,
                 curve.hub.public_z85, curve.hub.secret_z85);
 
@@ -517,7 +514,7 @@ int zmq_tx_null()
                       pylabhub::hub::Mechanism::Uninitialized);
         },
         "role_api_flexzone::zmq_tx_null",
-        logger_module(), crypto_module(), zmq_module(), hub_module());
+        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module(), hub_module());
 }
 
 // ============================================================================
@@ -542,9 +539,8 @@ int zmq_rx_null()
             // flexzone contract without actually completing a CURVE
             // handshake.
             auto curve = pylabhub::tests::make_curve_setup({"prod.zmq-fz.rx"});
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture(
-                "test.l3", "test.role_api_flexzone.harness", curve);
-            pylabhub::utils::security::key_store().add_identity_from_z85(
+            pylabhub::tests::seed_curve_identities(curve);
+            pylabhub::utils::security::secure().keys().add_identity_from_z85(
                 pylabhub::utils::security::kRoleIdentityName,
                 curve.hub.public_z85, curve.hub.secret_z85);
 
@@ -587,7 +583,7 @@ int zmq_rx_null()
             api->close_queues();
         },
         "role_api_flexzone::zmq_rx_null",
-        logger_module(), crypto_module(), zmq_module(), hub_module());
+        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module(), hub_module());
 }
 
 // ============================================================================
@@ -645,7 +641,7 @@ int shm_checksum_roundtrip()
             pair.prod->close_queues();
         },
         "role_api_flexzone::shm_checksum_roundtrip",
-        logger_module(), crypto_module(), zmq_module(), hub_module());
+        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module(), hub_module());
 }
 
 // ============================================================================
@@ -720,7 +716,7 @@ int shm_roundtrip_padding_sensitive()
             pair.prod->close_queues();
         },
         "role_api_flexzone::shm_roundtrip_padding_sensitive",
-        logger_module(), crypto_module(), zmq_module(), hub_module());
+        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module(), hub_module());
 }
 
 // ============================================================================
@@ -827,7 +823,7 @@ int shm_roundtrip_all_types()
             pair.prod->close_queues();
         },
         "role_api_flexzone::shm_roundtrip_all_types",
-        logger_module(), crypto_module(), zmq_module(), hub_module());
+        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module(), hub_module());
 }
 
 // ============================================================================
@@ -882,7 +878,7 @@ int shm_roundtrip_array_field()
             pair.prod->close_queues();
         },
         "role_api_flexzone::shm_roundtrip_array_field",
-        logger_module(), crypto_module(), zmq_module(), hub_module());
+        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module(), hub_module());
 }
 
 // ============================================================================
@@ -1142,7 +1138,7 @@ int shm_slot_checksum_corrupt_detected()
             prod->close_queues();
         },
         "role_api_flexzone::shm_slot_checksum_corrupt_detected",
-        logger_module(), crypto_module(), zmq_module(), hub_module());
+        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module(), hub_module());
 }
 
 // ----------------------------------------------------------------------------
@@ -1297,7 +1293,7 @@ int shm_flexzone_checksum_corrupt_detected()
             prod->close_queues();
         },
         "role_api_flexzone::shm_flexzone_checksum_corrupt_detected",
-        logger_module(), crypto_module(), zmq_module(), hub_module());
+        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module(), hub_module());
 }
 
 } // namespace pylabhub::tests::worker::role_api_flexzone

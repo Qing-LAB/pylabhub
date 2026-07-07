@@ -316,9 +316,9 @@ void ProducerRoleHost::worker_main_()
             presences.push_back(std::move(p));
         }
 
-        // HEP-CORE-0040 §173: CURVE keypair lives in `key_store()`
+        // HEP-CORE-0040 §173: CURVE keypair lives in `secure().keys()`
         // (LockedKey-backed).  Handler / build_tx_queue / BRC connect
-        // path read it on-site via `key_store().with_seckey` /
+        // path read it on-site via `secure().keys().with_seckey` /
         // `pubkey` — no plumbing through RoleAPIBase.
 
         auto handler = std::make_unique<scripting::RoleHandler>(
@@ -353,7 +353,7 @@ void ProducerRoleHost::worker_main_()
         // consumers via CONSUMER_REG_ACK.producers[] so the consumer can
         // use it as the data-plane curve_serverkey.
         reg_in.zmq_pubkey        = std::string(
-            pylabhub::utils::security::key_store().pubkey(pylabhub::utils::security::kRoleIdentityName));
+            pylabhub::utils::security::secure().keys().pubkey(pylabhub::utils::security::kRoleIdentityName));
         // HEP-CORE-0041 §5.1 (substep 1g #254) — SHM channels publish
         // the producer's per-channel L2 capability-transport endpoint
         // so the broker can echo it back to authorized consumers via

@@ -13,7 +13,6 @@
 
 #include "plh_platform.hpp"
 #include "utils/backoff_strategy.hpp"
-#include "utils/crypto_utils.hpp"
 #include "utils/lifecycle.hpp"
 #include "utils/logger.hpp"
 #include "utils/security/curve_keypair.hpp"    // HEP-CORE-0035 §2 — shared keygen
@@ -28,7 +27,6 @@
 #include "cppzmq/zmq.hpp"
 #include "cppzmq/zmq_addon.hpp"
 #include "utils/json_fwd.hpp"
-#include <sodium.h>
 #include <zmq.h>
 
 #include <algorithm>
@@ -1018,7 +1016,7 @@ void BrokerServiceImpl::run()
     // half flows from LockedKey → libzmq inside `with_seckey` scope;
     // no std::string copy of the seckey lives at broker scope.
     namespace sec = pylabhub::utils::security;
-    auto      &ks = sec::key_store();
+    auto      &ks = sec::secure().keys();
     router.set(zmq::sockopt::curve_server, 1);
     router.set(zmq::sockopt::curve_publickey,
                ks.pubkey(sec::kHubIdentityName));
@@ -2382,7 +2380,7 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
         pylabhub::schema::SchemaRecord rec;
         rec.owner_uid = role_uid;
         rec.schema_id = "inbox";
-        rec.hash      = pylabhub::crypto::compute_blake2b_array(
+        rec.hash      = pylabhub::utils::security::secure().compute_blake2b_array(
             canonical.data(), canonical.size());
         rec.packing   = p_inbox.inbox_packing;
         rec.blds      = p_inbox.inbox_schema_json;
@@ -5932,18 +5930,18 @@ BrokerService::BrokerService(Config cfg, pylabhub::hub::HubState& state)
     // HEP-CORE-0040 §172 — hub identity bytes live in the process
     // KeyStore under `"hub_identity"`; production seeds it via
     // `HubConfig::load_keypair(password)` before `HubHost::startup`
-    // constructs the broker, tests via `CurveKeyStoreFixture`.  An
-    // absent KeyStore entry is a programmer error (no-bypass
-    // discipline, §4.6.5).
+    // constructs the broker, tests via `seed_curve_identities()`
+    // (curve_test_setup.h).  An absent KeyStore entry is a
+    // programmer error (no-bypass discipline, §4.6.5).
     namespace sec = pylabhub::utils::security;
-    if (!sec::key_store_ready() || !sec::key_store().has(sec::kHubIdentityName))
+    if (!sec::sodium_ready() || !sec::secure().keys().has(sec::kHubIdentityName))
         throw std::logic_error(
             "BrokerService: KeyStore entry 'hub_identity' is REQUIRED "
             "(HEP-CORE-0035 §2; HEP-CORE-0040 §172).  Production: "
             "route through HubHost::startup (HubConfig::load_keypair "
-            "seeds the KeyStore from HubVault).  Tests: construct a "
-            "`pylabhub::tests::CurveKeyStoreFixture` before building "
-            "the broker.");
+            "seeds the KeyStore from HubVault).  Tests: call "
+            "`pylabhub::tests::seed_curve_identities(setup)` before "
+            "building the broker.");
     pImpl->cfg = std::move(cfg);
     pImpl->hub_state_ = &state;  // non-owning; HubHost (or test fixture) owns it
 
@@ -5965,9 +5963,9 @@ BrokerService::BrokerService(Config cfg, pylabhub::hub::HubState& state)
         // HEP-CORE-0040 §5.2 contract, so this is safe on cold
         // start too.  Broker restart semantics = fresh keypair,
         // exactly matching HEP-CORE-0041 §D1(d) design.
-        sec::key_store().remove("broker.observer");
+        sec::secure().keys().remove("broker.observer");
         pImpl->broker_observer_pubkey_z85 =
-            sec::key_store().generate_and_add_identity("broker.observer");
+            sec::secure().keys().generate_and_add_identity("broker.observer");
         LOGGER_INFO(
             "[broker] event=BrokerObserverKeypairGenerated "
             "pubkey_z85='{}'",

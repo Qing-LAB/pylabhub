@@ -122,7 +122,7 @@ struct HubHostBrokerHandle
 /// Start a HubHost broker with a freshly-initialized hub directory.
 ///
 /// CALLER CONTRACT (HEP-CORE-0040 §172): the caller MUST have a
-/// `pylabhub::tests::CurveKeyStoreFixture` in scope BEFORE calling.
+/// `pylabhub::tests::seed_curve_identities` in scope BEFORE calling.
 /// That fixture seeds the process KeyStore with `"hub_identity"`
 /// from `setup.hub` and one `"role.<uid>"` entry per role uid in
 /// `setup.role_keys`.  This helper only READS the KeyStore; it
@@ -131,13 +131,13 @@ struct HubHostBrokerHandle
 /// BYPASS PATTERN (HEP-CORE-0035 §4.6.5 sanction):
 ///   - SKIPPED: the on-disk vault round-trip — production goes
 ///     `vault file → HubConfig::load_keypair (Argon2id decrypt) →
-///     key_store().add_identity_from_z85()`.  The fixture goes
-///     `setup.hub → key_store().add_identity_from_z85()` directly.
+///     secure().keys().add_identity_from_z85()`.  The fixture goes
+///     `setup.hub → secure().keys().add_identity_from_z85()` directly.
 ///   - WHY: Argon2id adds ~200ms per scenario; multiplied by 50+
 ///     L3 scenarios that's measurable wall-clock waste in a test
 ///     suite where the vault layer is not the subject under test.
 ///   - STILL EXERCISED: HubHost::startup → BrokerService ctor's
-///     `key_store().has("hub_identity")` check, the full broker
+///     `secure().keys().has("hub_identity")` check, the full broker
 ///     bind ROUTER + CURVE + ZAP install, BRC connect path, every
 ///     wire-relevant code path that depends on the KeyStore state.
 ///     Tests pass through identical production code from this
@@ -199,7 +199,7 @@ struct BrcHandle
 
     /// Connect a BRC to a HubHost broker.  Caller is responsible for
     /// having seeded the process KeyStore (typically via
-    /// `CurveKeyStoreFixture`) under the name `keystore_name` BEFORE
+    /// `seed_curve_identities()`) under the name `keystore_name` BEFORE
     /// calling.  `keystore_name` MUST be the same name used to seed
     /// the KeyStore — the canonical form is
     /// `pylabhub::tests::role_keystore_name(role_uid)`.
@@ -218,9 +218,9 @@ struct BrcHandle
 // there is EXACTLY ONE pubkey per role uid (KnownRolesStore::add() enforces
 // the injective mapping at load time).  The pubkey is therefore functionally
 // derivable from the role_uid — the helper looks it up from the process
-// `key_store()` via the canonical `role.<uid>` entry name
+// `secure().keys()` via the canonical `role.<uid>` entry name
 // (`pylabhub::tests::role_keystore_name`).  Callers MUST have seeded the
-// keystore via `CurveKeyStoreFixture` before calling.
+// keystore via `seed_curve_identities()` before calling.
 //
 // Pre-2026-06-29 the 5 L3 worker files each carried a private copy with
 // divergent signatures (3-param "caller-supplies-pubkey" vs 2-param

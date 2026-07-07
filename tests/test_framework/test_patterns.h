@@ -5,7 +5,7 @@
  *
  * ## Why three patterns?
  *
- * Lifecycle modules (Logger, FileLock, JsonConfig, CryptoUtils) are process-global
+ * Lifecycle modules (Logger, FileLock, JsonConfig, SecureSubsystem) are process-global
  * singletons. A test that panics, calls finalize(), or crashes will corrupt the
  * lifecycle state for every subsequent test in the same process. CTest hides this
  * because it spawns a fresh executable per suite; running an executable directly

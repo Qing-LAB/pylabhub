@@ -31,7 +31,6 @@ using namespace pylabhub::hub;
 using namespace pylabhub::broker;
 
 static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
-static auto crypto_module() { return ::pylabhub::crypto::GetLifecycleModule(); }
 static auto hub_module()    { return ::pylabhub::hub::GetDataBlockModule(); }
 static auto zmq_module()    { return ::pylabhub::hub::GetZMQContextModule(); }
 
@@ -45,7 +44,7 @@ struct ChannelClient
     std::thread poll_thread;
 
     /// HEP-CORE-0040 §172: identity is referenced by name; the caller
-    /// has a `CurveKeyStoreFixture` in scope that seeded the keystore.
+    /// has a `seed_curve_identities()` in scope that seeded the keystore.
     void connect(const std::string &ep, const std::string &pk,
                  const std::string &uid, const std::string &name,
                  const std::string &keystore_name)
@@ -78,14 +77,13 @@ struct ChannelClient
 
 int channel_join_leave()
 {
-    auto mods = utils::MakeModDefList(logger_module(), crypto_module(), hub_module(), zmq_module());
+    auto mods = utils::MakeModDefList(logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
     utils::LifecycleGuard guard(std::move(mods));
 
     const std::string uid_a = "prod.role.a.uid00000001";
     const std::string uid_b = "prod.role.b.uid00000002";
     auto curve = pylabhub::tests::make_curve_setup({uid_a, uid_b});
-    pylabhub::tests::CurveKeyStoreFixture ks_fixture(
-        "test.l3", "test.channel_group.harness", curve);
+    pylabhub::tests::seed_curve_identities(curve);
     BrokerService::Config bcfg;
     bcfg.endpoint = "tcp://127.0.0.1:0";
     auto broker = pylabhub::tests::start_direct_broker(std::move(bcfg), curve);
@@ -149,14 +147,13 @@ int channel_join_leave()
 
 int channel_msg_fanout()
 {
-    auto mods = utils::MakeModDefList(logger_module(), crypto_module(), hub_module(), zmq_module());
+    auto mods = utils::MakeModDefList(logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
     utils::LifecycleGuard guard(std::move(mods));
 
     const std::string uid_a = "prod.sender.uid00000001";
     const std::string uid_b = "cons.recvr.uid00000002";
     auto curve = pylabhub::tests::make_curve_setup({uid_a, uid_b});
-    pylabhub::tests::CurveKeyStoreFixture ks_fixture(
-        "test.l3", "test.channel_group.harness", curve);
+    pylabhub::tests::seed_curve_identities(curve);
     BrokerService::Config bcfg;
     bcfg.endpoint = "tcp://127.0.0.1:0";
     auto broker = pylabhub::tests::start_direct_broker(std::move(bcfg), curve);
@@ -214,14 +211,13 @@ int channel_msg_fanout()
 
 int channel_join_notify()
 {
-    auto mods = utils::MakeModDefList(logger_module(), crypto_module(), hub_module(), zmq_module());
+    auto mods = utils::MakeModDefList(logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
     utils::LifecycleGuard guard(std::move(mods));
 
     const std::string uid_a = "prod.first.uid00000001";
     const std::string uid_b = "prod.second.uid00000002";
     auto curve = pylabhub::tests::make_curve_setup({uid_a, uid_b});
-    pylabhub::tests::CurveKeyStoreFixture ks_fixture(
-        "test.l3", "test.channel_group.harness", curve);
+    pylabhub::tests::seed_curve_identities(curve);
     BrokerService::Config bcfg;
     bcfg.endpoint = "tcp://127.0.0.1:0";
     auto broker = pylabhub::tests::start_direct_broker(std::move(bcfg), curve);
@@ -272,14 +268,13 @@ int channel_join_notify()
 
 int roleapi_channel()
 {
-    auto mods = utils::MakeModDefList(logger_module(), crypto_module(), hub_module(), zmq_module());
+    auto mods = utils::MakeModDefList(logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
     utils::LifecycleGuard guard(std::move(mods));
 
     const std::string uid_a = "prod.role.a.uid00000100";
     const std::string uid_b = "prod.role.b.uid00000200";
     auto curve = pylabhub::tests::make_curve_setup({uid_a, uid_b});
-    pylabhub::tests::CurveKeyStoreFixture ks_fixture(
-        "test.l3", "test.channel_group.harness", curve);
+    pylabhub::tests::seed_curve_identities(curve);
     BrokerService::Config bcfg;
     bcfg.endpoint = "tcp://127.0.0.1:0";
     auto broker = pylabhub::tests::start_direct_broker(std::move(bcfg), curve);
@@ -410,14 +405,13 @@ int roleapi_channel()
 
 int channel_leave_notify()
 {
-    auto mods = utils::MakeModDefList(logger_module(), crypto_module(), hub_module(), zmq_module());
+    auto mods = utils::MakeModDefList(logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
     utils::LifecycleGuard guard(std::move(mods));
 
     const std::string uid_a = "prod.stayer.uid00000001";
     const std::string uid_b = "prod.leaver.uid00000002";
     auto curve = pylabhub::tests::make_curve_setup({uid_a, uid_b});
-    pylabhub::tests::CurveKeyStoreFixture ks_fixture(
-        "test.l3", "test.channel_group.harness", curve);
+    pylabhub::tests::seed_curve_identities(curve);
     BrokerService::Config bcfg;
     bcfg.endpoint = "tcp://127.0.0.1:0";
     auto broker = pylabhub::tests::start_direct_broker(std::move(bcfg), curve);
@@ -471,14 +465,13 @@ int channel_leave_notify()
 
 int channel_self_excluded()
 {
-    auto mods = utils::MakeModDefList(logger_module(), crypto_module(), hub_module(), zmq_module());
+    auto mods = utils::MakeModDefList(logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
     utils::LifecycleGuard guard(std::move(mods));
 
     const std::string uid_a = "prod.sender.uid00000001";
     const std::string uid_b = "cons.recvr.uid00000002";
     auto curve = pylabhub::tests::make_curve_setup({uid_a, uid_b});
-    pylabhub::tests::CurveKeyStoreFixture ks_fixture(
-        "test.l3", "test.channel_group.harness", curve);
+    pylabhub::tests::seed_curve_identities(curve);
     BrokerService::Config bcfg;
     bcfg.endpoint = "tcp://127.0.0.1:0";
     auto broker = pylabhub::tests::start_direct_broker(std::move(bcfg), curve);
@@ -530,14 +523,13 @@ int channel_self_excluded()
 
 int channel_multi_channel()
 {
-    auto mods = utils::MakeModDefList(logger_module(), crypto_module(), hub_module(), zmq_module());
+    auto mods = utils::MakeModDefList(logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
     utils::LifecycleGuard guard(std::move(mods));
 
     const std::string uid_a = "prod.multi.uid00000001";
     const std::string uid_b = "prod.other.uid00000002";
     auto curve = pylabhub::tests::make_curve_setup({uid_a, uid_b});
-    pylabhub::tests::CurveKeyStoreFixture ks_fixture(
-        "test.l3", "test.channel_group.harness", curve);
+    pylabhub::tests::seed_curve_identities(curve);
     BrokerService::Config bcfg;
     bcfg.endpoint = "tcp://127.0.0.1:0";
     auto broker = pylabhub::tests::start_direct_broker(std::move(bcfg), curve);

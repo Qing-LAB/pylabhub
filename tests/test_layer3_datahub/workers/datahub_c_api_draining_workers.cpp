@@ -41,7 +41,6 @@ namespace pylabhub::tests::worker::c_api_draining
 {
 
 static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
-static auto crypto_module() { return ::pylabhub::crypto::GetLifecycleModule(); }
 static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
 
 // Helper: build a 1-slot Latest_only config (forces wraparound on second write)
@@ -136,7 +135,7 @@ int draining_state_entered_on_wraparound()
 
             // FdBackedDataBlock dtor releases consumer → producer → transport.
         },
-        "draining_state_entered_on_wraparound", logger_module(), crypto_module(), hub_module());
+        "draining_state_entered_on_wraparound", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -206,7 +205,7 @@ int draining_rejects_new_readers()
 
             // FdBackedDataBlock dtor releases consumer → producer → transport.
         },
-        "draining_rejects_new_readers", logger_module(), crypto_module(), hub_module());
+        "draining_rejects_new_readers", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -281,7 +280,7 @@ int draining_resolves_after_reader_release()
 
             // FdBackedDataBlock dtor releases consumer → producer → transport.
         },
-        "draining_resolves_after_reader_release", logger_module(), crypto_module(), hub_module());
+        "draining_resolves_after_reader_release", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -361,7 +360,7 @@ int draining_timeout_restores_committed()
 
             // FdBackedDataBlock dtor releases consumer → producer → transport.
         },
-        "draining_timeout_restores_committed", logger_module(), crypto_module(), hub_module());
+        "draining_timeout_restores_committed", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -415,7 +414,7 @@ int no_reader_races_on_clean_wraparound()
 
             // FdBackedDataBlock dtor releases consumer → producer → transport.
         },
-        "no_reader_races_on_clean_wraparound", logger_module(), crypto_module(), hub_module());
+        "no_reader_races_on_clean_wraparound", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -509,7 +508,7 @@ int single_reader_ring_full_blocks_not_draining()
             (void)consumer->release_consume_slot(*rh);
             // FdBackedDataBlock dtor releases consumer → producer → transport.
         },
-        "single_reader_ring_full_blocks_not_draining", logger_module(), crypto_module(),
+        "single_reader_ring_full_blocks_not_draining", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         hub_module());
 }
 
@@ -611,7 +610,7 @@ int sync_reader_ring_full_blocks_not_draining()
             // (consumer2 already released above so its memory mapping
             // unwinds before transport closes the underlying memfd).
         },
-        "sync_reader_ring_full_blocks_not_draining", logger_module(), crypto_module(),
+        "sync_reader_ring_full_blocks_not_draining", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         hub_module());
 }
 
@@ -698,7 +697,7 @@ int drain_hold_true_never_returns_nullptr()
 
             // FdBackedDataBlock dtor releases consumer → producer → transport.
         },
-        "drain_hold_true_never_returns_nullptr", logger_module(), crypto_module(), hub_module());
+        "drain_hold_true_never_returns_nullptr", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -774,7 +773,7 @@ int drain_hold_true_metrics_accumulated()
 
             // FdBackedDataBlock dtor releases consumer → producer → transport.
         },
-        "drain_hold_true_metrics_accumulated", logger_module(), crypto_module(), hub_module());
+        "drain_hold_true_metrics_accumulated", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 } // namespace pylabhub::tests::worker::c_api_draining

@@ -33,7 +33,7 @@
 #include "utils/hub_zmq_queue.hpp"
 #include "utils/hub_queue.hpp"
 #include "utils/security/key_store.hpp"
-#include "utils/security/secure_memory_subsystem.hpp"
+#include "utils/security/secure_subsystem.hpp"
 #include "utils/security/zap_router.hpp"   // ZapPumpThread for CURVE roundtrip tests
 
 #include <array>
@@ -102,14 +102,14 @@ inline uint8_t data_pattern(size_t i) noexcept
 
 PLH_BINARY_LIFECYCLE_MODULES(
     pylabhub::utils::Logger::GetLifecycleModule(),
-    pylabhub::crypto::GetLifecycleModule(),
+    pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
     pylabhub::hub::GetZMQContextModule()
 )
 
 // ─── KeyStore identity seeding (C4 #160 + HEP-CORE-0040 §5.3) ────────────
 //
 // Post-C4 the lib has no plaintext factory path; every ZmqQueue is CURVE-
-// wired and reads its identity from `key_store().pubkey(kRoleIdentityName)`
+// wired and reads its identity from `secure().keys().pubkey(kRoleIdentityName)`
 // + `with_seckey(...)`.  This file's tests are about queue mechanics
 // (schema/buffer-depth/checksum) — CURVE is incidental — but the type
 // system forces them to seed an identity anyway.
@@ -129,15 +129,11 @@ class ZmqQueueTestEnvironment : public ::testing::Environment
 public:
     void SetUp() override
     {
-        namespace sec = pylabhub::utils::security;
-        if (!sec::key_store_ready())
-        {
-            // Stash these as `static` so they outlive the SetUp call
-            // and survive for the binary's lifetime.
-            static sec::SecureMemorySubsystem sms;
-            static sec::KeyStore              ks{"l2", "test_layer2_zmq_queue"};
-        }
-        auto &ks = pylabhub::utils::security::key_store();
+        // SMS+KeyStore are brought up by PLH_BINARY_LIFECYCLE_MODULES
+        // above via SecureSubsystem::GetLifecycleModule() (HEP-CORE-0043
+        // §2.2 — KeyStore is a member of SMS).  This SetUp only seeds
+        // the canonical role identity used by tests.
+        auto &ks = pylabhub::utils::security::secure().keys();
         if (!ks.has(pylabhub::utils::security::kRoleIdentityName))
         {
             const auto kp = pylabhub::tests::gen_curve_keypair();
@@ -166,13 +162,13 @@ const pylabhub::utils::security::Z85PublicKey kEmptyServerKey;
 /// Used on PULL/connect-side helpers — both ends in these L2 tests
 /// share the single test identity, so the consumer presents the
 /// producer's own pubkey for the CURVE handshake.  Cached lazily so
-/// `key_store()` is queried exactly once.
+/// `secure().keys()` is queried exactly once.
 inline const pylabhub::utils::security::Z85PublicKey &
 test_server_key()
 {
     namespace sec = pylabhub::utils::security;
     static const sec::Z85PublicKey cached = sec::Z85PublicKey::validate(
-        sec::key_store().pubkey(sec::kRoleIdentityName));
+        sec::secure().keys().pubkey(sec::kRoleIdentityName));
     return cached;
 }
 
@@ -244,7 +240,7 @@ inline bool seed_self_allowlist(pylabhub::hub::ZmqQueue &q)
     namespace sec = pylabhub::utils::security;
     sec::PeerAllowlist allow;
     allow.peers.insert(sec::PeerIdentity{
-        "curve", std::string{sec::key_store().pubkey(sec::kRoleIdentityName)}});
+        "curve", std::string{sec::secure().keys().pubkey(sec::kRoleIdentityName)}});
     return q.set_peer_allowlist(std::move(allow));
 }
 

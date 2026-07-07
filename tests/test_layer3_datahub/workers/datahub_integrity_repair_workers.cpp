@@ -26,7 +26,6 @@ namespace pylabhub::tests::worker::integrity_repair
 {
 
 static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
-static auto crypto_module() { return ::pylabhub::crypto::GetLifecycleModule(); }
 static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
 
 static DataBlockConfig make_integrity_config(uint64_t secret, ChecksumPolicy cp)
@@ -86,7 +85,7 @@ int validate_integrity_fresh_checksum_block_passes()
             cleanup_test_datablock(channel);
         },
         "validate_integrity_fresh_checksum_block_passes",
-        logger_module(), crypto_module(), hub_module());
+        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -158,7 +157,7 @@ int validate_integrity_detects_layout_checksum_mismatch()
             cleanup_test_datablock(channel);
         },
         "validate_integrity_detects_layout_checksum_mismatch",
-        logger_module(), crypto_module(), hub_module());
+        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -205,7 +204,7 @@ int validate_integrity_detects_magic_number_corruption()
             cleanup_test_datablock(channel);
         },
         "validate_integrity_detects_magic_number_corruption",
-        logger_module(), crypto_module(), hub_module());
+        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 } // namespace pylabhub::tests::worker::integrity_repair

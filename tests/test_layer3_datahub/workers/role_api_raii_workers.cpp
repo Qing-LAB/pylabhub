@@ -41,7 +41,6 @@ namespace
 {
 
 static auto logger_module() { return utils::Logger::GetLifecycleModule(); }
-static auto crypto_module() { return ::pylabhub::crypto::GetLifecycleModule(); }
 static auto hub_module()    { return ::pylabhub::hub::GetDataBlockModule(); }
 
 /// #275-S2: `secret` param dropped — fd-source typed factory ignores
@@ -106,7 +105,7 @@ int slot_iterator_fixed_rate_pacing()
                 << "something stalled far beyond the 4x30ms minimum";
         },
         "role_api_raii::slot_iterator_fixed_rate_pacing",
-        logger_module(), crypto_module(), hub_module());
+        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ----------------------------------------------------------------------------
@@ -141,7 +140,7 @@ int ctx_metrics_pass_through()
                 << "ctx.metrics() must alias producer->metrics() Pimpl storage";
         },
         "role_api_raii::ctx_metrics_pass_through",
-        logger_module(), crypto_module(), hub_module());
+        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ----------------------------------------------------------------------------
@@ -197,7 +196,7 @@ int raii_producer_last_slot_work_us_multi_iter()
                 << "RAII multi-iter: last_slot_exec_us should reflect ~5ms body";
         },
         "role_api_raii::raii_producer_last_slot_work_us_multi_iter",
-        logger_module(), crypto_module(), hub_module());
+        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ----------------------------------------------------------------------------
@@ -244,7 +243,7 @@ int raii_producer_metrics_via_slots()
             EXPECT_GT(m.context_elapsed_us_val(), uint64_t{0});
         },
         "role_api_raii::raii_producer_metrics_via_slots",
-        logger_module(), crypto_module(), hub_module());
+        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ----------------------------------------------------------------------------
@@ -295,7 +294,7 @@ int raii_consumer_last_slot_work_us()
                 << "RAII consumer: last_slot_exec_us should reflect ~2ms body";
         },
         "role_api_raii::raii_consumer_last_slot_work_us",
-        logger_module(), crypto_module(), hub_module());
+        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 } // namespace pylabhub::tests::worker::role_api_raii

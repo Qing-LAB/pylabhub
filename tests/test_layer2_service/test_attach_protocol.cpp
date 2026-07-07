@@ -29,7 +29,10 @@
  * Test isolation: each TEST_F gets a unique socket path under
  * /tmp/plh_l2_attach_<pid>_<counter>.sock; fixture TearDown unlinks.
  */
+#include "binary_lifecycle.h"
+#include "utils/logger.hpp"
 #include "utils/security/attach_protocol.hpp"
+#include "utils/security/key_store.hpp"          // secure().keys().add_identity_from_z85
 #include "utils/security/shm_capability_channel.hpp"
 
 #include <gtest/gtest.h>
@@ -60,13 +63,22 @@ char *zmq_z85_encode(char *dest, const uint8_t *data, size_t size);
 
 namespace fs = std::filesystem;
 
+// Binary-wide LifecycleGuard: Logger (test helpers emit LOGGER_*) +
+// SMS (test seeds keypairs into `secure().keys()`).  Post-2026-07-07
+// AttachProtocol resolves seckeys by KeyStore ENTRY NAME
+// (HEP-CORE-0043 §6), so SMS must be up before any `add_identity_*`
+// or `initiate_consumer_handshake` call.
+PLH_BINARY_LIFECYCLE_MODULES(
+    pylabhub::utils::Logger::GetLifecycleModule(),
+    pylabhub::utils::security::SecureSubsystem::GetLifecycleModule())
+
 using pylabhub::utils::security::AttachProtocolAcceptor;
 using pylabhub::utils::security::AuthenticatedConsumer;
 using pylabhub::utils::security::ConsumerAuthMaterial;
 using pylabhub::utils::security::IShmCapabilityProducer;
-using pylabhub::utils::security::SeckeyAccessor;
 using pylabhub::utils::security::create_shm_capability_producer;
 using pylabhub::utils::security::initiate_consumer_handshake;
+using pylabhub::utils::security::secure;
 
 namespace
 {
@@ -76,32 +88,43 @@ constexpr std::size_t kRawKeyBytes = 32;
 struct TestKeypair
 {
     std::array<unsigned char, kRawKeyBytes> pub_raw{};
+    /// `sec_raw` is retained on `TestKeypair` ONLY for the manual-
+    /// crafting negative-path tests (`RejectsConsumerWithWrongSeckey`,
+    /// `RejectsTamperedCiphertext`, `RejectsTamperedNonce`) that
+    /// bypass the SMS API to build hand-crafted Frame 2 payloads.
+    /// PRODUCTION callers cite the seckey by KeyStore name via
+    /// `own_seckey_name` and NEVER see raw bytes; the AttachProtocol
+    /// API surface enforces that.  These test-file lookups sit
+    /// beneath the API to prove the crypto layer rejects malformed
+    /// input — a legitimate white-box test scenario.
     std::array<unsigned char, kRawKeyBytes> sec_raw{};
     std::string                             pub_z85;
+    std::string                             name;   // KeyStore entry name
 };
 
+/// Mint + seed a fresh CURVE keypair into the process KeyStore under
+/// `name` (HEP-CORE-0043 §6 use-not-export).  Caller MUST call
+/// `secure().keys().remove(name)` in teardown to avoid cross-test
+/// pollution (process-wide KeyStore).  The `sec_raw` field is
+/// preserved on the returned `TestKeypair` for manual-crafting
+/// negative-path tests; the SAME bytes are also seeded into KeyStore
+/// so production-parity calls succeed under `own_seckey_name = name`.
 TestKeypair
-make_test_keypair()
+make_and_seed_test_keypair(std::string_view name)
 {
-    // No self-init: sodium_init is SecureMemorySubsystem's job.  Test
-    // fixture must construct SMS before reaching here.
     TestKeypair kp;
     ::crypto_box_keypair(kp.pub_raw.data(), kp.sec_raw.data());
-    char z85[41] = {};
-    if (::zmq_z85_encode(z85, kp.pub_raw.data(), kRawKeyBytes) == nullptr)
-        throw std::runtime_error("make_test_keypair: zmq_z85_encode failed");
-    kp.pub_z85 = std::string(z85, 40);
+    char pub_z85[41] = {};
+    char sec_z85[41] = {};
+    if (::zmq_z85_encode(pub_z85, kp.pub_raw.data(), kRawKeyBytes) == nullptr)
+        throw std::runtime_error("make_and_seed_test_keypair: zmq_z85_encode pub failed");
+    if (::zmq_z85_encode(sec_z85, kp.sec_raw.data(), kRawKeyBytes) == nullptr)
+        throw std::runtime_error("make_and_seed_test_keypair: zmq_z85_encode sec failed");
+    kp.pub_z85 = std::string(pub_z85, 40);
+    kp.name    = std::string(name);
+    secure().keys().add_identity_from_z85(
+        kp.name, kp.pub_z85, std::string(sec_z85, 40));
     return kp;
-}
-
-SeckeyAccessor
-make_seckey_accessor(const TestKeypair &kp)
-{
-    return [&kp](auto use_sk) {
-        use_sk(std::span<const std::byte>{
-            reinterpret_cast<const std::byte *>(kp.sec_raw.data()),
-            kRawKeyBytes});
-    };
 }
 
 class AttachProtocolTest : public ::testing::Test
@@ -115,6 +138,10 @@ class AttachProtocolTest : public ::testing::Test
             fs::remove(p, ec);
         }
         paths_.clear();
+        // Purge KeyStore entries seeded during the test.
+        for (const auto &name : seeded_names_)
+            secure().keys().remove(name);
+        seeded_names_.clear();
     }
 
     std::string
@@ -129,7 +156,21 @@ class AttachProtocolTest : public ::testing::Test
         return p.string();
     }
 
-    std::vector<fs::path> paths_;
+    /// Mint + seed a fresh CURVE keypair under a unique KeyStore name.
+    /// Recorded for TearDown cleanup.
+    TestKeypair
+    MakeKeypair(const char *tag)
+    {
+        static std::atomic<int> ctr{0};
+        std::string             name = "test.attach." + std::string(tag) + "." +
+                          std::to_string(ctr.fetch_add(1));
+        TestKeypair kp = make_and_seed_test_keypair(name);
+        seeded_names_.push_back(name);
+        return kp;
+    }
+
+    std::vector<fs::path>    paths_;
+    std::vector<std::string> seeded_names_;
 };
 
 // Helpers for the negative-path tests that send hand-crafted bytes
@@ -217,18 +258,18 @@ drain_frame1(int fd)
 
 TEST_F(AttachProtocolTest, RoundTrip_HelloAndChallengeResponse)
 {
-    const auto prod = make_test_keypair();
-    const auto cons = make_test_keypair();
+    const auto prod = MakeKeypair("prod");
+    const auto cons = MakeKeypair("cons");
     const auto path = unique_socket_path("roundtrip");
 
     auto transport = create_shm_capability_producer(4096);
     ASSERT_TRUE(transport->bind_endpoint(path));
 
     AttachProtocolAcceptor acceptor{*transport, ::getuid(),
-                                    make_seckey_accessor(prod)};
+                                    prod.name};
 
     ConsumerAuthMaterial cons_auth{"consumer.test.roundtrip", cons.pub_z85,
-                                   make_seckey_accessor(cons)};
+                                   cons.name};
 
     std::optional<int> connected_fd;
     std::exception_ptr cons_exc;
@@ -268,20 +309,20 @@ TEST_F(AttachProtocolTest, RejectsConsumerWithWrongSeckey)
     // but claims K_legit.pub in the hello.  Producer's
     // crypto_box_open_easy with (K_legit.pub, producer.sec) MUST fail
     // MAC verification.
-    const auto prod      = make_test_keypair();
-    const auto k_legit   = make_test_keypair();  // claimed pubkey
-    const auto k_attacker = make_test_keypair();  // actual seckey used
+    const auto prod      = MakeKeypair("prod");
+    const auto k_legit   = MakeKeypair("test");  // claimed pubkey
+    const auto k_attacker = MakeKeypair("test");  // actual seckey used
     const auto path      = unique_socket_path("wrong_sk");
 
     auto transport = create_shm_capability_producer(4096);
     ASSERT_TRUE(transport->bind_endpoint(path));
 
     AttachProtocolAcceptor acceptor{*transport, ::getuid(),
-                                    make_seckey_accessor(prod)};
+                                    prod.name};
 
     ConsumerAuthMaterial impersonator{
         "impersonator.test", k_legit.pub_z85,
-        make_seckey_accessor(k_attacker)};  // <-- wrong seckey
+        k_attacker.name};  // <-- wrong seckey
 
     std::thread cons_thread{[&] {
         try
@@ -315,15 +356,15 @@ TEST_F(AttachProtocolTest, RejectsTamperedCipher)
     // Consumer encrypts correctly, then this test (acting as a MitM)
     // flips one bit in the cipher before the producer sees it.
     // crypto_box_open_easy MAC verification must fail.
-    const auto prod = make_test_keypair();
-    const auto cons = make_test_keypair();
+    const auto prod = MakeKeypair("prod");
+    const auto cons = MakeKeypair("cons");
     const auto path = unique_socket_path("tampered");
 
     auto transport = create_shm_capability_producer(4096);
     ASSERT_TRUE(transport->bind_endpoint(path));
 
     AttachProtocolAcceptor acceptor{*transport, ::getuid(),
-                                    make_seckey_accessor(prod)};
+                                    prod.name};
 
     std::thread cons_thread{[&] {
         try
@@ -414,14 +455,14 @@ TEST_F(AttachProtocolTest, RejectsTamperedCipher)
 
 TEST_F(AttachProtocolTest, AcceptOneReturnsNulloptOnTimeout)
 {
-    const auto prod = make_test_keypair();
+    const auto prod = MakeKeypair("prod");
     const auto path = unique_socket_path("timeout");
 
     auto transport = create_shm_capability_producer(4096);
     ASSERT_TRUE(transport->bind_endpoint(path));
 
     AttachProtocolAcceptor acceptor{*transport, ::getuid(),
-                                    make_seckey_accessor(prod)};
+                                    prod.name};
 
     const auto start = std::chrono::steady_clock::now();
     auto       res   = acceptor.accept_one(std::chrono::milliseconds{50});
@@ -439,14 +480,14 @@ TEST_F(AttachProtocolTest, AcceptOneReturnsNulloptOnTimeout)
 
 TEST_F(AttachProtocolTest, RejectsHelloWithWrongProtocolVersion)
 {
-    const auto prod = make_test_keypair();
+    const auto prod = MakeKeypair("prod");
     const auto path = unique_socket_path("badproto");
 
     auto transport = create_shm_capability_producer(4096);
     ASSERT_TRUE(transport->bind_endpoint(path));
 
     AttachProtocolAcceptor acceptor{*transport, ::getuid(),
-                                    make_seckey_accessor(prod)};
+                                    prod.name};
 
     std::thread cons_thread{[&] {
         try
@@ -473,14 +514,14 @@ TEST_F(AttachProtocolTest, RejectsHelloWithWrongProtocolVersion)
 
 TEST_F(AttachProtocolTest, RejectsHelloWithMissingRoleUid)
 {
-    const auto prod = make_test_keypair();
+    const auto prod = MakeKeypair("prod");
     const auto path = unique_socket_path("noroleuid");
 
     auto transport = create_shm_capability_producer(4096);
     ASSERT_TRUE(transport->bind_endpoint(path));
 
     AttachProtocolAcceptor acceptor{*transport, ::getuid(),
-                                    make_seckey_accessor(prod)};
+                                    prod.name};
 
     std::thread cons_thread{[&] {
         try
@@ -506,14 +547,14 @@ TEST_F(AttachProtocolTest, RejectsHelloWithMissingRoleUid)
 
 TEST_F(AttachProtocolTest, RejectsHelloOversizedFrame)
 {
-    const auto prod = make_test_keypair();
+    const auto prod = MakeKeypair("prod");
     const auto path = unique_socket_path("oversize");
 
     auto transport = create_shm_capability_producer(4096);
     ASSERT_TRUE(transport->bind_endpoint(path));
 
     AttachProtocolAcceptor acceptor{*transport, ::getuid(),
-                                    make_seckey_accessor(prod)};
+                                    prod.name};
 
     std::thread cons_thread{[&] {
         try
@@ -537,14 +578,14 @@ TEST_F(AttachProtocolTest, RejectsHelloOversizedFrame)
 
 TEST_F(AttachProtocolTest, RejectsHelloWithMalformedJson)
 {
-    const auto prod = make_test_keypair();
+    const auto prod = MakeKeypair("prod");
     const auto path = unique_socket_path("badjson");
 
     auto transport = create_shm_capability_producer(4096);
     ASSERT_TRUE(transport->bind_endpoint(path));
 
     AttachProtocolAcceptor acceptor{*transport, ::getuid(),
-                                    make_seckey_accessor(prod)};
+                                    prod.name};
 
     std::thread cons_thread{[&] {
         try
@@ -568,14 +609,14 @@ TEST_F(AttachProtocolTest, RejectsHelloWithMalformedJson)
 
 TEST_F(AttachProtocolTest, ConsumerHandshakeReturnsNulloptOnAbsentEndpoint)
 {
-    const auto cons = make_test_keypair();
-    const auto prod = make_test_keypair();
+    const auto cons = MakeKeypair("cons");
+    const auto prod = MakeKeypair("prod");
     const std::string nonexistent =
         "/tmp/plh_l2_attach_no_such_endpoint_" +
         std::to_string(::getpid()) + ".sock";
 
     ConsumerAuthMaterial cons_auth{"consumer.test", cons.pub_z85,
-                                   make_seckey_accessor(cons)};
+                                   cons.name};
     auto res = initiate_consumer_handshake(nonexistent, cons_auth,
                                            prod.pub_z85,
                                            std::chrono::milliseconds{100});
@@ -610,18 +651,18 @@ TEST_F(AttachProtocolTest, MutualAuth_RoundTripSucceeds)
     // supplies the REAL producer's pubkey as its expectation.  Producer
     // sees the consumer's Frame 2 extras + generates Frame 3.  Consumer
     // verifies against the matching pubkey.  Both proven.
-    const auto prod = make_test_keypair();
-    const auto cons = make_test_keypair();
+    const auto prod = MakeKeypair("prod");
+    const auto cons = MakeKeypair("cons");
     const auto path = unique_socket_path("mutual_ok");
 
     auto transport = create_shm_capability_producer(4096);
     ASSERT_TRUE(transport->bind_endpoint(path));
 
     AttachProtocolAcceptor acceptor{*transport, ::getuid(),
-                                    make_seckey_accessor(prod)};
+                                    prod.name};
 
     ConsumerAuthMaterial cons_auth{"consumer.mutual.happy", cons.pub_z85,
-                                   make_seckey_accessor(cons)};
+                                   cons.name};
 
     std::optional<int> connected_fd;
     std::exception_ptr cons_exc;
@@ -675,9 +716,9 @@ TEST_F(AttachProtocolTest, MutualAuth_RejectsWrongProducerPubkey)
     // consumer detects the mismatch against its expectation (X)
     // and throws with the attach_producer_not_authenticated marker.
     // This is the PRIMARY THREAT MODEL closed by §D4.5.
-    const auto real_prod  = make_test_keypair();  // actual server
-    const auto other_prod = make_test_keypair();  // consumer's expectation
-    const auto cons       = make_test_keypair();
+    const auto real_prod  = MakeKeypair("test");  // actual server
+    const auto other_prod = MakeKeypair("test");  // consumer's expectation
+    const auto cons       = MakeKeypair("test");
     const auto path       = unique_socket_path("mutual_mismatch");
 
     auto transport = create_shm_capability_producer(4096);
@@ -686,10 +727,10 @@ TEST_F(AttachProtocolTest, MutualAuth_RejectsWrongProducerPubkey)
     // Server holds real_prod.sec; consumer will supply other_prod.pub_z85
     // as its EXPECTED producer pubkey.
     AttachProtocolAcceptor acceptor{*transport, ::getuid(),
-                                    make_seckey_accessor(real_prod)};
+                                    real_prod.name};
 
     ConsumerAuthMaterial cons_auth{"consumer.mutual.squatter", cons.pub_z85,
-                                   make_seckey_accessor(cons)};
+                                   cons.name};
 
     std::string        cons_error;
     std::exception_ptr cons_exc;
@@ -757,18 +798,18 @@ TEST_F(AttachProtocolTest, MutualAuth_BackwardCompat_OldConsumerNoFrame3)
     // does NOT send Frame 3.  Handshake completes with the original
     // 2-frame flow.  This is the guarantee for pre-#262 role builds
     // deployed against post-#262 producers.
-    const auto prod = make_test_keypair();
-    const auto cons = make_test_keypair();
+    const auto prod = MakeKeypair("prod");
+    const auto cons = MakeKeypair("cons");
     const auto path = unique_socket_path("mutual_backcompat");
 
     auto transport = create_shm_capability_producer(4096);
     ASSERT_TRUE(transport->bind_endpoint(path));
 
     AttachProtocolAcceptor acceptor{*transport, ::getuid(),
-                                    make_seckey_accessor(prod)};
+                                    prod.name};
 
     ConsumerAuthMaterial cons_auth{"consumer.mutual.backcompat", cons.pub_z85,
-                                   make_seckey_accessor(cons)};
+                                   cons.name};
 
     std::optional<int> connected_fd;
     std::exception_ptr cons_exc;

@@ -33,7 +33,7 @@
  * (Logger is lifecycle-backed.)").  M4 tests also need
  * `crypto::GetLifecycleModule` + `hub::GetZMQContextModule` because
  * `BRC::connect()` constructs a CURVE-wired DEALER socket on the
- * process ZMQ context and reads its seckey from `key_store()` via
+ * process ZMQ context and reads its seckey from `secure().keys()` via
  * `kRoleIdentityName` (HEP-CORE-0040 §172).
  *
  * Compiled as its own executable `test_layer2_role_handler` — NOT
@@ -49,7 +49,7 @@
 #include "utils/role_handler.hpp"
 #include "utils/role_host_core.hpp"
 #include "utils/security/key_store.hpp"
-#include "utils/security/secure_memory_subsystem.hpp"
+#include "utils/security/secure_subsystem.hpp"
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -61,7 +61,7 @@
 // `LifecycleGuard` owner in this binary by design — see file header.
 PLH_BINARY_LIFECYCLE_MODULES(
     pylabhub::utils::Logger::GetLifecycleModule(),
-    pylabhub::crypto::GetLifecycleModule(),
+    pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
     pylabhub::hub::GetZMQContextModule()
 )
 
@@ -104,7 +104,7 @@ Presence make_presence(const std::string &channel,
 //
 // `RoleHandler::start_connections(api)` constructs a `BRC::Config` for
 // each connection and calls `brc.connect(cfg)`.  `connect()` reads the
-// role's seckey from `key_store()` via `kRoleIdentityName` per
+// role's seckey from `secure().keys()` via `kRoleIdentityName` per
 // HEP-CORE-0040 §172; an unseeded store causes `connect()` to return
 // false and `start_connections()` to fail.  Seed once per binary,
 // mirroring the pattern in `test_hub_zmq_queue.cpp` lines 109-152.
@@ -122,15 +122,11 @@ public:
     void SetUp() override
     {
         namespace sec = pylabhub::utils::security;
-        if (!sec::key_store_ready())
-        {
-            // Stash these as `static` so they outlive `SetUp()` and
-            // survive for the binary's lifetime.
-            static sec::SecureMemorySubsystem sms;
-            static sec::KeyStore              ks{"l2",
-                                                 "test_layer2_role_handler"};
-        }
-        auto &ks = sec::key_store();
+        // SMS+KeyStore are brought up by PLH_BINARY_LIFECYCLE_MODULES
+        // above via SecureSubsystem::GetLifecycleModule() (HEP-CORE-0043
+        // §2.2 — KeyStore is a member of SMS).  This SetUp only seeds
+        // the canonical role identity used by tests.
+        auto &ks = sec::secure().keys();
         if (!ks.has(sec::kRoleIdentityName))
         {
             const auto kp = pylabhub::tests::gen_curve_keypair();
@@ -157,7 +153,7 @@ HubRefConfig make_curve_hub(const std::string &endpoint)
     HubRefConfig h;
     h.broker        = endpoint;
     h.broker_pubkey =
-        std::string{sec::key_store().pubkey(sec::kRoleIdentityName)};
+        std::string{sec::secure().keys().pubkey(sec::kRoleIdentityName)};
     return h;
 }
 

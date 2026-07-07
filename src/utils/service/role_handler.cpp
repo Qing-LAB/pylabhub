@@ -184,7 +184,7 @@ bool RoleHandler::start_connections(const RoleAPIBase &owner)
     //   broker_endpoint, broker_pubkey, keystore_name, role_uid, role_name.
     // Per-HubConnection (broker_endpoint/broker_pubkey) come from the
     // dedup identity; role-wide fields come from `owner`.  Post-HEP-CORE-0040
-    // (#172) the BRC reads the client keypair from `key_store()` at
+    // (#172) the BRC reads the client keypair from `secure().keys()` at
     // connect() time via `keystore_name` — no `client_pubkey/_seckey`
     // fields are plumbed through the Config struct anymore.
     for (auto &c : connections_)
@@ -195,7 +195,7 @@ bool RoleHandler::start_connections(const RoleAPIBase &owner)
         cfg.broker_endpoint = c.broker_endpoint;
         cfg.broker_pubkey   = c.broker_pubkey;
         // HEP-CORE-0040 §172: BRC reads the role's CURVE identity at
-        // connect time via `key_store().with_seckey(kRoleIdentityName, ...)`
+        // connect time via `secure().keys().with_seckey(kRoleIdentityName, ...)`
         // + `pubkey(...)`.  No plumbing through Config.
         cfg.role_uid        = owner.uid();
         cfg.role_name       = owner.name();

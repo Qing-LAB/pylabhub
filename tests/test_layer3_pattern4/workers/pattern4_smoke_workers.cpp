@@ -27,7 +27,7 @@
  * task #220 follow-up (Pattern 4 doc § "Quit mechanism").
  *
  * Mandatory KeyStore seeding (HEP-CORE-0040 §172): each subprocess
- * constructs its own `CurveKeyStoreFixture` from the setup bundle
+ * constructs its own `seed_curve_identities()` from the setup bundle
  * BEFORE building the broker / BRC instance.  This mirrors the
  * production constraint that role identity keypairs live only in
  * the process `KeyStore` (locked memory).
@@ -48,7 +48,7 @@
 #include "utils/hub_state.hpp"
 #include "utils/json_config.hpp"
 #include "utils/logger.hpp"
-#include "utils/security/secure_memory_subsystem.hpp"
+#include "utils/security/secure_subsystem.hpp"
 #include "utils/security/key_store.hpp"
 #include "utils/timeout_constants.hpp"
 #include "utils/zmq_context.hpp"
@@ -98,11 +98,10 @@ int pattern4_smoke_broker(const char *temp_dir_arg)
             const auto     setup    = read_pattern4_setup(temp_dir / "setup.json");
 
             // HEP-CORE-0040 §172: seed KeyStore with hub identity
-            // before building BrokerService.  CurveKeyStoreFixture
+            // before building BrokerService.  seed_curve_identities
             // also seeds role.* identities — harmless for the broker
             // (it doesn't read them) and matches what test_helpers do.
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture(
-                "pattern4", "smoke.broker", setup.curve);
+            pylabhub::tests::seed_curve_identities(setup.curve);
 
             // BrokerService::Config — explicit bind endpoint + admission
             // rules.  Production wire path (CURVE + ZAP unconditional).
@@ -207,6 +206,7 @@ int pattern4_smoke_broker(const char *temp_dir_arg)
         },
         "pattern4_smoke.broker",
         pylabhub::utils::Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         pylabhub::utils::FileLock::GetLifecycleModule(),
         pylabhub::utils::JsonConfig::GetLifecycleModule(),
         pylabhub::hub::GetZMQContextModule());
@@ -223,10 +223,9 @@ int pattern4_smoke_role_x(const char *temp_dir_arg)
             const std::string role_uid = "role.x";
 
             // HEP-CORE-0040 §172: seed KeyStore with role identity.
-            // CurveKeyStoreFixture seeds hub_identity too (harmless on
+            // seed_curve_identities seeds hub_identity too (harmless on
             // role side — broker never asks).
-            pylabhub::tests::CurveKeyStoreFixture ks_fixture(
-                "pattern4", "smoke.role_x", setup.curve);
+            pylabhub::tests::seed_curve_identities(setup.curve);
 
             // BRC config — production shape.
             pylabhub::hub::BrokerRequestComm::Config brc_cfg;
@@ -284,6 +283,7 @@ int pattern4_smoke_role_x(const char *temp_dir_arg)
         },
         "pattern4_smoke.role_x",
         pylabhub::utils::Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         pylabhub::utils::FileLock::GetLifecycleModule(),
         pylabhub::utils::JsonConfig::GetLifecycleModule(),
         pylabhub::hub::GetZMQContextModule());

@@ -12,7 +12,6 @@
 // The canonical schema field list lives next to SharedMemoryHeader in data_block.hpp
 // (PYLABHUB_SHARED_MEMORY_HEADER_SCHEMA_FIELDS). Update that list and the struct together.
 
-#include "utils/crypto_utils.hpp"
 #include "utils/logger.hpp"
 #include "utils/data_block.hpp"
 #include "utils/deterministic_checksum.hpp"
@@ -127,7 +126,7 @@ void store_layout_checksum(SharedMemoryHeader *header)
     std::array<uint8_t, LAYOUT_CHECKSUM_INPUT_BYTES> buf{};
     layout_checksum_fill(buf.data(), header);
     uint8_t *out = header->reserved_header + detail::LAYOUT_CHECKSUM_OFFSET;
-    if (!pylabhub::crypto::compute_blake2b(out, buf.data(), buf.size()))
+    if (!pylabhub::utils::security::secure().compute_blake2b(out, buf.data(), buf.size()))
     {
         // A zero checksum would silently pass future validate_layout_checksum() calls if the
         // computed hash also happened to be zero — a security blind spot. Throw so the caller
@@ -147,7 +146,7 @@ bool validate_layout_checksum(const SharedMemoryHeader *header)
     std::array<uint8_t, LAYOUT_CHECKSUM_INPUT_BYTES> buf{};
     layout_checksum_fill(buf.data(), header);
     std::array<uint8_t, detail::CHECKSUM_BYTES> computed;
-    if (!pylabhub::crypto::compute_blake2b(computed.data(), buf.data(), buf.size()))
+    if (!pylabhub::utils::security::secure().compute_blake2b(computed.data(), buf.data(), buf.size()))
     {
         return false;
     }

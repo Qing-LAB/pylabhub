@@ -10,7 +10,7 @@
  * @par Lifecycle
  * create_datablock_producer() and find_datablock_consumer() require the Data Exchange Hub
  * module to be initialized. In main(), create a LifecycleGuard with
- * pylabhub::hub::GetDataBlockModule() (depends on CryptoUtils + Logger). See role_main_helpers.hpp
+ * pylabhub::hub::GetDataBlockModule() (depends on SecureSubsystem + Logger). See role_main_helpers.hpp
  * or docs/IMPLEMENTATION_GUIDANCE.md.
  */
 #include "pylabhub_utils_export.h"
@@ -1378,7 +1378,7 @@ inline std::string_view logical_name(std::string_view full_name) noexcept
     return full_name.substr(0, pos);
 }
 
-/// Lifecycle module for DataBlock (SHM facility). Depends on CryptoUtils + Logger.
+/// Lifecycle module for DataBlock (SHM facility). Depends on SecureSubsystem + Logger.
 /// Include in LifecycleGuard before creating any DataBlockProducer/Consumer.
 PYLABHUB_UTILS_EXPORT pylabhub::utils::ModuleDef GetDataBlockModule();
 

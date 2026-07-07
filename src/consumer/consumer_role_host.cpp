@@ -291,7 +291,7 @@ void ConsumerRoleHost::worker_main_()
             presences.push_back(std::move(p));
         }
 
-        // HEP-CORE-0040 §173: CURVE keypair lives in `key_store()`
+        // HEP-CORE-0040 §173: CURVE keypair lives in `secure().keys()`
         // — read on-site via `with_seckey` / `pubkey`.  No plumbing
         // through RoleAPIBase.
         auto handler = std::make_unique<scripting::RoleHandler>(
@@ -312,7 +312,7 @@ void ConsumerRoleHost::worker_main_()
         auto reg_opts = hub::build_consumer_reg_payload(
             hub::ConsumerRegInputs{ch, id.uid, id.name,
                                     std::string(pylabhub::utils::security::
-                                                key_store().pubkey(pylabhub::utils::security::kRoleIdentityName))});
+                                                secure().keys().pubkey(pylabhub::utils::security::kRoleIdentityName))});
 
         // Citation fields (HEP-CORE-0034 §10.3) — named-mode vs anonymous
         // vs absent decided by the schema JSON shape; broker enforces the

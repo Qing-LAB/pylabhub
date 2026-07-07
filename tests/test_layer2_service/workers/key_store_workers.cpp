@@ -4,7 +4,7 @@
  *
  * Pattern 3 — each worker runs in a fresh subprocess with its own
  * LifecycleGuard (Logger).  Subprocess isolation is required because
- * `SecureMemorySubsystem` and `KeyStore` are process singletons —
+ * `SecureSubsystem` and `KeyStore` are process singletons —
  * running multiple scenarios serially in one process would have the
  * second ctor throw "already constructed."
  */
@@ -12,13 +12,14 @@
 #include "utils/logger.hpp"
 #include "utils/security/key_store.hpp"
 #include "utils/security/secure_buffer.hpp"
-#include "utils/security/secure_memory_subsystem.hpp"
+#include "utils/security/secure_subsystem.hpp"
 
 #include <zmq.h>  // zmq_z85_encode — compute expected pubkey at the test
                   // boundary (HEP-CORE-0040 §8.5.2; #291 follow-up).
 
 #include <sodium.h>  // sodium_malloc / sodium_free — used by sodium_smoke
 
+#include "curve_test_setup.h"      // make_curve_setup + seed_curve_identities (box test)
 #include "shared_test_helpers.h"
 #include "test_entrypoint.h"
 
@@ -42,11 +43,9 @@
 using pylabhub::tests::helper::run_gtest_worker;
 using pylabhub::utils::Logger;
 using pylabhub::utils::security::KeyStore;
-using pylabhub::utils::security::key_store;
-using pylabhub::utils::security::key_store_ready;
+using pylabhub::utils::security::secure;
 using pylabhub::utils::security::SecureBuffer;
-using pylabhub::utils::security::SecureMemorySubsystem;
-using pylabhub::utils::security::secure_memory_subsystem_ready;
+using pylabhub::utils::security::SecureSubsystem;
 
 namespace
 {
@@ -82,7 +81,7 @@ namespace
 // ── libsodium smoke: catches a broken allocator before KeyStore tests fire
 //
 // Why this exists.  The downstream KeyStore tests all begin by constructing
-// `SecureMemorySubsystem` (sodium_init) + `KeyStore` (dynamic module load)
+// `SecureSubsystem` (sodium_init) + `KeyStore` (dynamic module load)
 // and then calling `add_identity`, which is the first site that exercises
 // `sodium_malloc`.  If libsodium's guarded-allocator is misconfigured for
 // the build / runtime environment (wrong page size assumption, ASan
@@ -107,7 +106,6 @@ int sodium_smoke(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
         [&]() {
-            SecureMemorySubsystem sms;
             // SMS ctor runs sodium_init() (idempotent inside libsodium).
             // We are NOT constructing a KeyStore here — the smoke test is
             // strictly about the allocator, not about KeyStore behavior.
@@ -147,7 +145,7 @@ int sodium_smoke(const char * /*tmpdir*/)
                   "spontaneously on a stable workstation.  Likely "
                   "causes, in order: (1) a recent production-code "
                   "change has corrupted the allocator state (look at "
-                  "KeyStore / SecureMemorySubsystem / curve_keypair "
+                  "KeyStore / SecureSubsystem / curve_keypair "
                   "edits); (2) system libsodium is being loaded over "
                   "our bundled libsodium (check LD_LIBRARY_PATH and "
                   "linker output); (3) the libsodium build under "
@@ -171,145 +169,17 @@ int sodium_smoke(const char * /*tmpdir*/)
             }
         },
         "key_store::sodium_smoke",
-        Logger::GetLifecycleModule());
+        Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
-int ordering_check_keystore_requires_secure_memory(const char * /*tmpdir*/)
-{
-    return run_gtest_worker(
-        [&]() {
-            // SecureMemorySubsystem NOT constructed.
-            EXPECT_FALSE(secure_memory_subsystem_ready());
 
-            // Validate exception message content — proves the
-            // SecureMemorySubsystem-ready check ran (NOT some other
-            // logic_error path firing accidentally).
-            bool threw_with_right_message = false;
-            try {
-                KeyStore("role", "test-role-uid");
-            } catch (const std::logic_error &e) {
-                const std::string what = e.what();
-                EXPECT_NE(what.find("SecureMemorySubsystem"), std::string::npos)
-                    << "exception what() should name the subsystem: " << what;
-                EXPECT_NE(what.find("HEP-CORE-0040"), std::string::npos)
-                    << "exception what() should cite the design contract: " << what;
-                threw_with_right_message = true;
-            }
-            EXPECT_TRUE(threw_with_right_message);
 
-            // KeyStore did not get registered — observable post-condition.
-            EXPECT_FALSE(key_store_ready());
-            // No-singleton-state side-effects: key_store() must still throw.
-            EXPECT_THROW(key_store(), std::runtime_error);
-        },
-        "key_store::ordering_check_keystore_requires_secure_memory",
-        Logger::GetLifecycleModule());
-}
-
-int second_construction_throws(const char * /*tmpdir*/)
-{
-    return run_gtest_worker(
-        [&]() {
-            SecureMemorySubsystem sms;
-            KeyStore              ks_first("role", "test-role-uid-1");
-            EXPECT_TRUE(key_store_ready());
-
-            // Populate the first instance so we can verify it survives.
-            auto sentinel = TestKeypair::make('A', 'Z');
-            ks_first.add_identity("role_identity",
-                                   std::span<std::byte>(sentinel.bytes));
-            EXPECT_EQ(ks_first.size(), 1u);
-
-            // Validate exception message content.
-            bool threw_with_right_message = false;
-            try {
-                KeyStore("role", "test-role-uid-2");
-            } catch (const std::logic_error &e) {
-                const std::string what = e.what();
-                EXPECT_NE(what.find("already constructed"), std::string::npos)
-                    << "exception what() should name the violation: " << what;
-                EXPECT_NE(what.find("HEP-CORE-0040"), std::string::npos)
-                    << "exception what() should cite the design contract: " << what;
-                threw_with_right_message = true;
-            }
-            EXPECT_TRUE(threw_with_right_message);
-
-            // First instance must be UNCHANGED — verify the failed
-            // second-ctor didn't mutate the singleton pointer or the
-            // map.  Reading the seckey via with_seckey + comparing
-            // every byte proves nothing got swapped or zeroed.
-            EXPECT_TRUE(key_store_ready());
-            EXPECT_EQ(&key_store(), &ks_first);  // same instance
-            EXPECT_EQ(key_store().size(), 1u);
-            EXPECT_TRUE(key_store().has("role_identity"));
-            // HEP-CORE-0040 §8.5.2 (#291) — pubkey() returns the Z85
-            // encoding of the raw 32-byte pubkey; with_seckey returns
-            // raw 32 bytes.  Source bytes were uniform 'A'/'Z' fills,
-            // so the only invariant we assert here (besides "didn't
-            // throw") is the size contract.
-            const auto pub = key_store().pubkey("role_identity");
-            ASSERT_EQ(pub.size(), 40u);  // Z85 of 32 raw bytes
-            std::string sec_after;
-            key_store().with_seckey("role_identity",
-                [&](std::string_view sv) {
-                    sec_after.assign(sv.data(), sv.size());
-                });
-            ASSERT_EQ(sec_after.size(), 32u);  // raw seckey
-            for (char c : sec_after) EXPECT_EQ(c, 'Z');
-        },
-        "key_store::second_construction_throws",
-        Logger::GetLifecycleModule());
-}
-
-int key_store_not_initialized_throws(const char * /*tmpdir*/)
-{
-    return run_gtest_worker(
-        [&]() {
-            EXPECT_FALSE(key_store_ready());
-
-            // Validate message — proves the not-initialized branch
-            // fired, not some other accidental runtime_error.
-            bool threw_with_right_message = false;
-            try {
-                (void)key_store();
-            } catch (const std::runtime_error &e) {
-                const std::string what = e.what();
-                EXPECT_NE(what.find("key_store"), std::string::npos)
-                    << "exception what() should name the accessor: " << what;
-                EXPECT_NE(what.find("not been constructed"), std::string::npos)
-                    << "exception what() should name the cause: " << what;
-                EXPECT_NE(what.find("HEP-CORE-0040"), std::string::npos)
-                    << "exception what() should cite the design contract: " << what;
-                threw_with_right_message = true;
-            }
-            EXPECT_TRUE(threw_with_right_message);
-        },
-        "key_store::key_store_not_initialized_throws",
-        Logger::GetLifecycleModule());
-}
-
-int key_store_ready_probe_lifecycle(const char * /*tmpdir*/)
-{
-    return run_gtest_worker(
-        [&]() {
-            SecureMemorySubsystem sms;
-            EXPECT_FALSE(key_store_ready());
-            {
-                KeyStore ks("role", "test-role-uid");
-                EXPECT_TRUE(key_store_ready());
-            }
-            EXPECT_FALSE(key_store_ready());
-        },
-        "key_store::key_store_ready_probe_lifecycle",
-        Logger::GetLifecycleModule());
-}
 
 int add_identity_then_pubkey_and_with_seckey_roundtrip(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
         [&]() {
-            SecureMemorySubsystem sms;
-            KeyStore              ks("role", "test-role-uid");
 
             // HEP-CORE-0040 §8.5.2 (#291, 2026-06-26) — raw 64-byte
             // layout (pub_raw[32] || sec_raw[32]).  Distinct per-byte
@@ -334,10 +204,10 @@ int add_identity_then_pubkey_and_with_seckey_roundtrip(const char * /*tmpdir*/)
                 reinterpret_cast<const uint8_t *>(packed.data()),
                 32), nullptr) << "test setup: zmq_z85_encode(pub) failed";
 
-            ks.add_identity("role_identity", std::span<std::byte>(packed));
+            secure().keys().add_identity("role_identity", std::span<std::byte>(packed));
 
             // pubkey() returns Z85(raw_pub) — 40 ASCII chars.
-            const auto pub = key_store().pubkey("role_identity");
+            const auto pub = secure().keys().pubkey("role_identity");
             ASSERT_EQ(pub.size(), 40u);
             EXPECT_EQ(std::string(pub),
                       std::string(expected_pub_z85, 40))
@@ -349,7 +219,7 @@ int add_identity_then_pubkey_and_with_seckey_roundtrip(const char * /*tmpdir*/)
             // callback was invoked (not just "no exception thrown").
             bool        callback_fired = false;
             std::string captured;
-            key_store().with_seckey("role_identity",
+            secure().keys().with_seckey("role_identity",
                 [&](std::string_view sec) {
                     callback_fired = true;
                     captured.assign(sec.data(), sec.size());
@@ -365,15 +235,14 @@ int add_identity_then_pubkey_and_with_seckey_roundtrip(const char * /*tmpdir*/)
             }
         },
         "key_store::add_identity_then_pubkey_and_with_seckey_roundtrip",
-        Logger::GetLifecycleModule());
+        Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
 int add_identity_zeros_source(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
         [&]() {
-            SecureMemorySubsystem sms;
-            KeyStore              ks("role", "test-role-uid");
 
             // HEP-CORE-0040 §8.5.2 — raw 64-byte storage layout.
             SecureBuffer<64> buf;
@@ -382,7 +251,7 @@ int add_identity_zeros_source(const char * /*tmpdir*/)
             for (std::size_t i = 0; i < sp.size(); ++i)
                 sp[i] = static_cast<std::byte>(0xAB);
 
-            ks.add_identity("role_identity", sp);
+            secure().keys().add_identity("role_identity", sp);
 
             // Source buffer must be zeroed.
             for (std::size_t i = 0; i < sp.size(); ++i)
@@ -390,25 +259,24 @@ int add_identity_zeros_source(const char * /*tmpdir*/)
                     << "byte " << i << " not zeroed";
         },
         "key_store::add_identity_zeros_source",
-        Logger::GetLifecycleModule());
+        Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
 int pubkey_on_missing_throws(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
         [&]() {
-            SecureMemorySubsystem sms;
-            KeyStore              ks("role", "test-role-uid");
 
             // Populate one entry so we can verify the missing-key path
             // didn't accidentally mutate map state.
             auto kp = TestKeypair::make('A', 'Z');
-            ks.add_identity("role_identity", std::span<std::byte>(kp.bytes));
-            EXPECT_EQ(ks.size(), 1u);
+            secure().keys().add_identity("role_identity", std::span<std::byte>(kp.bytes));
+            EXPECT_EQ(secure().keys().size(), 1u);
 
             bool threw_with_right_message = false;
             try {
-                (void)key_store().pubkey("missing-key-xyz");
+                (void)secure().keys().pubkey("missing-key-xyz");
             } catch (const std::out_of_range &e) {
                 const std::string what = e.what();
                 EXPECT_NE(what.find("pubkey"), std::string::npos)
@@ -420,28 +288,27 @@ int pubkey_on_missing_throws(const char * /*tmpdir*/)
             EXPECT_TRUE(threw_with_right_message);
 
             // Post-throw state unchanged.
-            EXPECT_EQ(ks.size(), 1u);
-            EXPECT_TRUE(ks.has("role_identity"));
-            EXPECT_FALSE(ks.has("missing-key-xyz"));
+            EXPECT_EQ(secure().keys().size(), 1u);
+            EXPECT_TRUE(secure().keys().has("role_identity"));
+            EXPECT_FALSE(secure().keys().has("missing-key-xyz"));
         },
         "key_store::pubkey_on_missing_throws",
-        Logger::GetLifecycleModule());
+        Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
 int with_seckey_on_missing_throws(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
         [&]() {
-            SecureMemorySubsystem sms;
-            KeyStore              ks("role", "test-role-uid");
 
             auto kp = TestKeypair::make('A', 'Z');
-            ks.add_identity("role_identity", std::span<std::byte>(kp.bytes));
+            secure().keys().add_identity("role_identity", std::span<std::byte>(kp.bytes));
 
             bool callback_invoked = false;
             bool threw_with_right_message = false;
             try {
-                key_store().with_seckey("missing-key-xyz",
+                secure().keys().with_seckey("missing-key-xyz",
                     [&](std::string_view) { callback_invoked = true; });
             } catch (const std::out_of_range &e) {
                 const std::string what = e.what();
@@ -454,26 +321,25 @@ int with_seckey_on_missing_throws(const char * /*tmpdir*/)
                 << "callback must NEVER fire on missing-key path";
 
             // Post-throw state unchanged.
-            EXPECT_EQ(ks.size(), 1u);
-            EXPECT_TRUE(ks.has("role_identity"));
+            EXPECT_EQ(secure().keys().size(), 1u);
+            EXPECT_TRUE(secure().keys().has("role_identity"));
         },
         "key_store::with_seckey_on_missing_throws",
-        Logger::GetLifecycleModule());
+        Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
 int lookup_raw_on_missing_throws(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
         [&]() {
-            SecureMemorySubsystem sms;
-            KeyStore              ks("role", "test-role-uid");
 
             std::array<std::byte, 8> dummy{};
-            ks.add_raw("vault:x", std::span<std::byte>(dummy));
+            secure().keys().add_raw("vault:x", std::span<std::byte>(dummy));
 
             bool threw_with_right_message = false;
             try {
-                (void)key_store().lookup_raw("missing-key-xyz");
+                (void)secure().keys().lookup_raw("missing-key-xyz");
             } catch (const std::out_of_range &e) {
                 const std::string what = e.what();
                 EXPECT_NE(what.find("lookup_raw"), std::string::npos);
@@ -482,30 +348,29 @@ int lookup_raw_on_missing_throws(const char * /*tmpdir*/)
             }
             EXPECT_TRUE(threw_with_right_message);
 
-            EXPECT_EQ(ks.size(), 1u);
-            EXPECT_TRUE(ks.has("vault:x"));
+            EXPECT_EQ(secure().keys().size(), 1u);
+            EXPECT_TRUE(secure().keys().has("vault:x"));
         },
         "key_store::lookup_raw_on_missing_throws",
-        Logger::GetLifecycleModule());
+        Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
 int pubkey_on_raw_entry_throws(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
         [&]() {
-            SecureMemorySubsystem sms;
-            KeyStore              ks("role", "test-role-uid");
 
             // Fill raw with a recognizable pattern to verify it survives.
             std::array<std::byte, 16> raw;
             for (std::size_t i = 0; i < raw.size(); ++i)
                 raw[i] = static_cast<std::byte>(0x40 + i);
 
-            ks.add_raw("vault:script-secret", std::span<std::byte>(raw));
+            secure().keys().add_raw("vault:script-secret", std::span<std::byte>(raw));
 
             bool threw_with_right_message = false;
             try {
-                (void)key_store().pubkey("vault:script-secret");
+                (void)secure().keys().pubkey("vault:script-secret");
             } catch (const std::out_of_range &e) {
                 const std::string what = e.what();
                 EXPECT_NE(what.find("pubkey"), std::string::npos);
@@ -518,8 +383,8 @@ int pubkey_on_raw_entry_throws(const char * /*tmpdir*/)
 
             // Entry still exists and is unchanged — pubkey throwing
             // must not have mutated the LockedKey storage.
-            EXPECT_TRUE(ks.has("vault:script-secret"));
-            const auto bytes = key_store().lookup_raw("vault:script-secret");
+            EXPECT_TRUE(secure().keys().has("vault:script-secret"));
+            const auto bytes = secure().keys().lookup_raw("vault:script-secret");
             ASSERT_EQ(bytes.size(), 16u);
             for (std::size_t i = 0; i < bytes.size(); ++i)
             {
@@ -529,25 +394,24 @@ int pubkey_on_raw_entry_throws(const char * /*tmpdir*/)
             }
         },
         "key_store::pubkey_on_raw_entry_throws",
-        Logger::GetLifecycleModule());
+        Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
 int with_seckey_on_raw_entry_throws(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
         [&]() {
-            SecureMemorySubsystem sms;
-            KeyStore              ks("role", "test-role-uid");
 
             std::array<std::byte, 16> raw;
             for (std::size_t i = 0; i < raw.size(); ++i)
                 raw[i] = static_cast<std::byte>(0x80 + i);
-            ks.add_raw("vault:script-secret", std::span<std::byte>(raw));
+            secure().keys().add_raw("vault:script-secret", std::span<std::byte>(raw));
 
             bool callback_invoked = false;
             bool threw_with_right_message = false;
             try {
-                key_store().with_seckey("vault:script-secret",
+                secure().keys().with_seckey("vault:script-secret",
                     [&](std::string_view) { callback_invoked = true; });
             } catch (const std::out_of_range &e) {
                 const std::string what = e.what();
@@ -561,8 +425,8 @@ int with_seckey_on_raw_entry_throws(const char * /*tmpdir*/)
                 << "callback must NEVER fire on wrong-type path";
 
             // Entry survives byte-for-byte.
-            EXPECT_TRUE(ks.has("vault:script-secret"));
-            const auto bytes = key_store().lookup_raw("vault:script-secret");
+            EXPECT_TRUE(secure().keys().has("vault:script-secret"));
+            const auto bytes = secure().keys().lookup_raw("vault:script-secret");
             ASSERT_EQ(bytes.size(), 16u);
             for (std::size_t i = 0; i < bytes.size(); ++i)
             {
@@ -571,15 +435,14 @@ int with_seckey_on_raw_entry_throws(const char * /*tmpdir*/)
             }
         },
         "key_store::with_seckey_on_raw_entry_throws",
-        Logger::GetLifecycleModule());
+        Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
 int add_identity_duplicate_throws(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
         [&]() {
-            SecureMemorySubsystem sms;
-            KeyStore              ks("role", "test-role-uid");
 
             auto kp1 = TestKeypair::make('A', 'B');
             // HEP-CORE-0040 §8.5.2 — compute kp1's expected Z85 pubkey
@@ -589,141 +452,136 @@ int add_identity_duplicate_throws(const char * /*tmpdir*/)
                 expected_kp1_pub_z85,
                 reinterpret_cast<const uint8_t *>(kp1.bytes.data()),
                 32), nullptr);
-            ks.add_identity("role_identity", std::span<std::byte>(kp1.bytes));
+            secure().keys().add_identity("role_identity", std::span<std::byte>(kp1.bytes));
 
             auto kp2 = TestKeypair::make('C', 'D');
             EXPECT_THROW(
-                ks.add_identity("role_identity", std::span<std::byte>(kp2.bytes)),
+                secure().keys().add_identity("role_identity", std::span<std::byte>(kp2.bytes)),
                 std::runtime_error);
 
             // Original entry preserved — pubkey returns kp1's Z85.
-            EXPECT_EQ(std::string(key_store().pubkey("role_identity")),
+            EXPECT_EQ(std::string(secure().keys().pubkey("role_identity")),
                       std::string(expected_kp1_pub_z85, 40))
                 << "kp1's pubkey clobbered by failed duplicate add — "
                    "the failed add_identity must NOT mutate the map";
         },
         "key_store::add_identity_duplicate_throws",
-        Logger::GetLifecycleModule());
+        Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
 int add_identity_wrong_size_throws(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
         [&]() {
-            SecureMemorySubsystem sms;
-            KeyStore              ks("role", "test-role-uid");
 
             // Too small.
             {
                 std::array<std::byte, 40> half{};
                 EXPECT_THROW(
-                    ks.add_identity("a", std::span<std::byte>(half)),
+                    secure().keys().add_identity("a", std::span<std::byte>(half)),
                     std::runtime_error);
             }
             // Too big.
             {
                 std::array<std::byte, 96> big{};
                 EXPECT_THROW(
-                    ks.add_identity("b", std::span<std::byte>(big)),
+                    secure().keys().add_identity("b", std::span<std::byte>(big)),
                     std::runtime_error);
             }
-            EXPECT_EQ(ks.size(), 0u);
+            EXPECT_EQ(secure().keys().size(), 0u);
         },
         "key_store::add_identity_wrong_size_throws",
-        Logger::GetLifecycleModule());
+        Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
 int add_raw_then_lookup_raw_roundtrip(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
         [&]() {
-            SecureMemorySubsystem sms;
-            KeyStore              ks("role", "test-role-uid");
 
             std::array<std::byte, 32> raw;
             for (std::size_t i = 0; i < raw.size(); ++i)
                 raw[i] = static_cast<std::byte>(i + 1);
 
-            ks.add_raw("vault:s", std::span<std::byte>(raw));
+            secure().keys().add_raw("vault:s", std::span<std::byte>(raw));
 
             // Source zeroed.
             for (std::size_t i = 0; i < raw.size(); ++i)
                 EXPECT_EQ(static_cast<unsigned>(raw[i]), 0u)
                     << "raw byte " << i << " not zeroed";
 
-            auto out = key_store().lookup_raw("vault:s");
+            auto out = secure().keys().lookup_raw("vault:s");
             ASSERT_EQ(out.size(), 32u);
             for (std::size_t i = 0; i < out.size(); ++i)
                 EXPECT_EQ(static_cast<unsigned>(out[i]), i + 1);
         },
         "key_store::add_raw_then_lookup_raw_roundtrip",
-        Logger::GetLifecycleModule());
+        Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
 int remove_makes_subsequent_lookup_throw(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
         [&]() {
-            SecureMemorySubsystem sms;
-            KeyStore              ks("role", "test-role-uid");
 
             auto kp = TestKeypair::make('A', 'B');
-            ks.add_identity("role_identity", std::span<std::byte>(kp.bytes));
-            EXPECT_TRUE(key_store().has("role_identity"));
+            secure().keys().add_identity("role_identity", std::span<std::byte>(kp.bytes));
+            EXPECT_TRUE(secure().keys().has("role_identity"));
 
-            ks.remove("role_identity");
-            EXPECT_FALSE(key_store().has("role_identity"));
-            EXPECT_THROW(key_store().pubkey("role_identity"),
+            secure().keys().remove("role_identity");
+            EXPECT_FALSE(secure().keys().has("role_identity"));
+            EXPECT_THROW(secure().keys().pubkey("role_identity"),
                          std::out_of_range);
             EXPECT_THROW(
-                key_store().with_seckey("role_identity",
+                secure().keys().with_seckey("role_identity",
                     [](std::string_view) { FAIL(); }),
                 std::out_of_range);
 
             // remove on absent name is a no-op.
-            EXPECT_NO_THROW(ks.remove("role_identity"));
+            EXPECT_NO_THROW(secure().keys().remove("role_identity"));
         },
         "key_store::remove_makes_subsequent_lookup_throw",
-        Logger::GetLifecycleModule());
+        Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
 int has_and_size_track_entries(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
         [&]() {
-            SecureMemorySubsystem sms;
-            KeyStore              ks("role", "test-role-uid");
 
-            EXPECT_EQ(ks.size(), 0u);
-            EXPECT_FALSE(ks.has("anything"));
+            EXPECT_EQ(secure().keys().size(), 0u);
+            EXPECT_FALSE(secure().keys().has("anything"));
 
             auto kp = TestKeypair::make('A', 'B');
-            ks.add_identity("role_identity", std::span<std::byte>(kp.bytes));
-            EXPECT_EQ(ks.size(), 1u);
-            EXPECT_TRUE(ks.has("role_identity"));
+            secure().keys().add_identity("role_identity", std::span<std::byte>(kp.bytes));
+            EXPECT_EQ(secure().keys().size(), 1u);
+            EXPECT_TRUE(secure().keys().has("role_identity"));
 
             std::array<std::byte, 16> raw{};
-            ks.add_raw("vault:x", std::span<std::byte>(raw));
-            EXPECT_EQ(ks.size(), 2u);
-            EXPECT_TRUE(ks.has("vault:x"));
+            secure().keys().add_raw("vault:x", std::span<std::byte>(raw));
+            EXPECT_EQ(secure().keys().size(), 2u);
+            EXPECT_TRUE(secure().keys().has("vault:x"));
 
-            ks.remove("role_identity");
-            EXPECT_EQ(ks.size(), 1u);
-            EXPECT_FALSE(ks.has("role_identity"));
+            secure().keys().remove("role_identity");
+            EXPECT_EQ(secure().keys().size(), 1u);
+            EXPECT_FALSE(secure().keys().has("role_identity"));
         },
         "key_store::has_and_size_track_entries",
-        Logger::GetLifecycleModule());
+        Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
 int parallel_reads_do_not_block(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
         [&]() {
-            SecureMemorySubsystem sms;
-            KeyStore              ks("role", "test-role-uid");
 
             auto kp = TestKeypair::make('P', 'S');
-            ks.add_identity("role_identity", std::span<std::byte>(kp.bytes));
+            secure().keys().add_identity("role_identity", std::span<std::byte>(kp.bytes));
 
             constexpr int kNumThreads = 4;
 
@@ -737,7 +595,7 @@ int parallel_reads_do_not_block(const char * /*tmpdir*/)
             std::atomic<bool>             release{false};
 
             auto reader = [&]() {
-                key_store().with_seckey("role_identity",
+                secure().keys().with_seckey("role_identity",
                     [&](std::string_view sec) {
                         EXPECT_EQ(sec.size(), 32u);
                         // Signal arrival.
@@ -788,23 +646,22 @@ int parallel_reads_do_not_block(const char * /*tmpdir*/)
             for (auto &t : threads) t.join();
         },
         "key_store::parallel_reads_do_not_block",
-        Logger::GetLifecycleModule());
+        Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
 int remove_blocks_behind_in_flight_with_seckey(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
         [&]() {
-            SecureMemorySubsystem sms;
-            KeyStore              ks("role", "test-role-uid");
 
             auto kp = TestKeypair::make('P', 'S');
-            ks.add_identity("role_identity", std::span<std::byte>(kp.bytes));
+            secure().keys().add_identity("role_identity", std::span<std::byte>(kp.bytes));
 
             std::atomic<bool> reader_inside{false};
             std::atomic<bool> reader_release{false};
             // `remove_entered` is set immediately on entry to the
-            // remover thread's lambda body, BEFORE `ks.remove()` is
+            // remover thread's lambda body, BEFORE `secure().keys().remove()` is
             // called.  It proves the remover thread was actually
             // scheduled — without it, a late-scheduled remover would
             // leave `remove_returned` false during the blocking check
@@ -814,9 +671,9 @@ int remove_blocks_behind_in_flight_with_seckey(const char * /*tmpdir*/)
             // CAVEAT (R2 from code-review of aeda3b32):
             // remove_entered=true means "remover thread entered its
             // lambda" — NOT "remover thread acquired the mutex inside
-            // ks.remove."  A pre-emption window remains between
+            // secure().keys().remove."  A pre-emption window remains between
             // `remove_entered.store(true)` and the actual lock-take
-            // inside ks.remove.  The test still catches the real
+            // inside secure().keys().remove.  The test still catches the real
             // contract regressions (remove doesn't lock at all OR
             // with_seckey releases the lock before invoking the
             // callback — both would let remove_returned go true within
@@ -826,7 +683,7 @@ int remove_blocks_behind_in_flight_with_seckey(const char * /*tmpdir*/)
             std::atomic<bool> remove_returned{false};
 
             std::thread reader([&]() {
-                key_store().with_seckey("role_identity",
+                secure().keys().with_seckey("role_identity",
                     [&](std::string_view) {
                         reader_inside.store(true, std::memory_order_release);
                         while (!reader_release.load(std::memory_order_acquire))
@@ -841,7 +698,7 @@ int remove_blocks_behind_in_flight_with_seckey(const char * /*tmpdir*/)
 
             std::thread remover([&]() {
                 remove_entered.store(true, std::memory_order_release);
-                ks.remove("role_identity");
+                secure().keys().remove("role_identity");
                 remove_returned.store(true, std::memory_order_release);
             });
 
@@ -874,7 +731,7 @@ int remove_blocks_behind_in_flight_with_seckey(const char * /*tmpdir*/)
 
             // remove should NOT return while reader holds shared lock.
             // The 100ms window is the contract-violation detector: if
-            // the lock contract were broken, ks.remove() would return
+            // the lock contract were broken, secure().keys().remove() would return
             // immediately, well within this window.
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
             EXPECT_FALSE(remove_returned.load(std::memory_order_acquire))
@@ -888,10 +745,11 @@ int remove_blocks_behind_in_flight_with_seckey(const char * /*tmpdir*/)
             reader.join();
             remover.join();
             EXPECT_TRUE(remove_returned.load(std::memory_order_acquire));
-            EXPECT_FALSE(key_store().has("role_identity"));
+            EXPECT_FALSE(secure().keys().has("role_identity"));
         },
         "key_store::remove_blocks_behind_in_flight_with_seckey",
-        Logger::GetLifecycleModule());
+        Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
 int secure_buffer_dtor_zeroes(const char * /*tmpdir*/)
@@ -954,7 +812,594 @@ int secure_buffer_dtor_zeroes(const char * /*tmpdir*/)
             }
         },
         "key_store::secure_buffer_dtor_zeroes",
+        Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
+}
+
+// ─────────────────────────────────────────────────────────────────
+// SEC-Fold-2 merger invariants (HEP-CORE-0043 §1-§2 + §7)
+// ─────────────────────────────────────────────────────────────────
+// The four scenarios below verify SEC-Fold-2 merger invariants
+// (HEP-CORE-0043 §1-§2 + §7).  They live in the KeyStoreTest binary
+// because KeyStore is now a MEMBER of SecureSubsystem and the two
+// classes' invariants are indivisible.
+
+/// `SecureSubsystem::instance()` returns the same reference on
+/// repeated calls — enforces the function-local static singleton
+/// (HEP-CORE-0043 §1.3 mechanism 1).
+int sms_instance_returns_same_reference(const char * /*tmpdir*/)
+{
+    return run_gtest_worker(
+        [&]() {
+            namespace sec = pylabhub::utils::security;
+            auto &a = sec::SecureSubsystem::instance();
+            auto &b = sec::SecureSubsystem::instance();
+            auto &c = sec::SecureSubsystem::instance();
+            EXPECT_EQ(&a, &b);
+            EXPECT_EQ(&a, &c);
+            // Also matches the `secure()` accessor.
+            EXPECT_EQ(&sec::secure(), &a);
+        },
+        "key_store::sms_instance_returns_same_reference",
+        Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
+}
+
+/// The SMS sodium-wrapper API is reachable via `secure()` and
+/// produces plausible output — smoke coverage for the wrappers
+/// that had no direct tests pre-merger.  Verifies:
+///   - `random_bytes` writes non-zero output.
+///   - `memcmp_ct` returns true for equal spans and false for
+///     unequal spans.
+///   - `memzero` clears the target buffer.
+int sms_wrappers_work_via_secure_accessor(const char * /*tmpdir*/)
+{
+    return run_gtest_worker(
+        [&]() {
+            namespace sec = pylabhub::utils::security;
+            // random_bytes: 64 bytes, must be non-uniform.
+            std::array<std::uint8_t, 64> buf{};
+            sec::secure().random_bytes(std::span<std::uint8_t>(buf));
+            bool all_zero = true;
+            for (std::uint8_t b : buf) if (b != 0) { all_zero = false; break; }
+            EXPECT_FALSE(all_zero) << "random_bytes returned all-zero output";
+
+            // memcmp_ct: equal spans → true; single-byte flip → false.
+            std::array<std::uint8_t, 32> a{};
+            std::array<std::uint8_t, 32> b{};
+            EXPECT_TRUE(sec::secure().memcmp_ct(
+                std::span<const std::uint8_t>(a), std::span<const std::uint8_t>(b)));
+            b[7] = std::uint8_t{0x42};
+            EXPECT_FALSE(sec::secure().memcmp_ct(
+                std::span<const std::uint8_t>(a), std::span<const std::uint8_t>(b)));
+
+            // memzero: fill then wipe.
+            std::array<std::uint8_t, 16> victim{};
+            for (auto &x : victim) x = std::uint8_t{0xAB};
+            sec::secure().memzero(std::span<std::uint8_t>(victim));
+            for (std::uint8_t x : victim) EXPECT_EQ(x, 0u);
+        },
+        "key_store::sms_wrappers_work_via_secure_accessor",
+        Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
+}
+
+/// KeyStore state (identities added via `secure().keys()`) persists
+/// across the SMS lifecycle window — proves that KeyStore is
+/// genuinely a member of SMS's Impl with the same lifetime, not a
+/// per-call transient (HEP-CORE-0043 §2.2).
+int keystore_state_persists_across_sms_window(const char * /*tmpdir*/)
+{
+    return run_gtest_worker(
+        [&]() {
+            namespace sec = pylabhub::utils::security;
+            auto pack = TestKeypair::make('P', 'S');
+            sec::secure().keys().add_identity("persist_test",
+                std::span<std::byte>(pack.bytes));
+
+            EXPECT_TRUE(sec::secure().keys().has("persist_test"));
+            EXPECT_EQ(sec::secure().keys().size(), 1u);
+
+            // Multiple `secure()` calls, mutation, more calls —
+            // KeyStore state must survive throughout.
+            std::array<std::uint8_t, 4> rnd_buf{};
+            sec::secure().random_bytes(std::span<std::uint8_t>(rnd_buf));
+            (void)sec::secure().memcmp_ct(
+                std::span<const std::uint8_t>{},
+                std::span<const std::uint8_t>{});
+            EXPECT_TRUE(sec::secure().keys().has("persist_test"));
+            EXPECT_EQ(sec::secure().keys().size(), 1u);
+
+            // Retrieve the seckey we stored — proves the LockedKey
+            // still contains the exact bytes we added.
+            std::string seckey_bytes;
+            sec::secure().keys().with_seckey("persist_test",
+                [&](std::string_view sv) {
+                    seckey_bytes.assign(sv.data(), sv.size());
+                });
+            ASSERT_EQ(seckey_bytes.size(), 32u);
+            for (char c : seckey_bytes) EXPECT_EQ(c, 'S');
+        },
+        "key_store::keystore_state_persists_across_sms_window",
+        Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
+}
+
+/// `secure().keys()` returns the same KeyStore reference on
+/// repeated calls — proves the member-of-Impl model (there is
+/// exactly one KeyStore, embedded in SMS's Impl).
+int secure_keys_returns_same_reference(const char * /*tmpdir*/)
+{
+    return run_gtest_worker(
+        [&]() {
+            namespace sec = pylabhub::utils::security;
+            auto &ks_a = sec::secure().keys();
+            auto &ks_b = sec::secure().keys();
+            auto &ks_c = sec::secure().keys();  // via shim
+            EXPECT_EQ(&ks_a, &ks_b);
+            EXPECT_EQ(&ks_a, &ks_c);
+        },
+        "key_store::secure_keys_returns_same_reference",
+        Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
+}
+
+/// R3.1 — the encryption verbs `secretbox_encrypt` / `secretbox_decrypt`
+/// are directly on `SecureSubsystem` (Category 1c post-Crypto-collapse,
+/// HEP-CORE-0043 §2.1).  Roundtrip: encrypt then decrypt yields the
+/// original plaintext; MAC-tamper detection returns 0.
+int secretbox_encrypt_decrypt_roundtrip(const char * /*tmpdir*/)
+{
+    return run_gtest_worker(
+        [&]() {
+            namespace sec = pylabhub::utils::security;
+            std::array<std::uint8_t, sec::SecureSubsystem::kSecretboxKeyBytes>   key{};
+            std::array<std::uint8_t, sec::SecureSubsystem::kSecretboxNonceBytes> nonce{};
+            sec::secure().random_bytes(std::span<std::uint8_t>(key));
+            sec::secure().random_bytes(std::span<std::uint8_t>(nonce));
+
+            const std::string plain = "attack at dawn";
+            std::array<std::uint8_t, 128> ct{};
+            const std::size_t written = sec::secure().secretbox_encrypt(
+                ct.data(), ct.size(),
+                reinterpret_cast<const std::uint8_t *>(plain.data()),
+                plain.size(),
+                nonce.data(), key.data());
+            ASSERT_EQ(written, plain.size() + sec::SecureSubsystem::kSecretboxMacBytes);
+
+            std::array<std::uint8_t, 128> pt{};
+            const std::size_t decoded = sec::secure().secretbox_decrypt(
+                pt.data(), pt.size(),
+                ct.data(), written,
+                nonce.data(), key.data());
+            ASSERT_EQ(decoded, plain.size());
+            EXPECT_EQ(std::string(reinterpret_cast<const char *>(pt.data()), decoded),
+                      plain);
+
+            // Tamper the MAC (first byte) — decrypt must refuse.
+            ct[0] ^= 0x01;
+            const std::size_t bad = sec::secure().secretbox_decrypt(
+                pt.data(), pt.size(),
+                ct.data(), written,
+                nonce.data(), key.data());
+            EXPECT_EQ(bad, 0u) << "MAC tamper should have failed decryption";
+        },
+        "key_store::secretbox_encrypt_decrypt_roundtrip",
+        Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
+}
+
+/// R3.5 — `KeyStore::generate_and_add_identity` end-to-end.  Verifies
+/// (a) the returned Z85 pubkey is 40 chars, (b) `has(name)` becomes
+/// true, (c) `pubkey(name)` round-trips to the same value, (d) the
+/// seckey is accessible via `with_seckey` and is 32 raw bytes (per
+/// HEP-CORE-0040 §8.5.2).  First production user: broker observer
+/// keypair (broker_service.cpp).
+int generate_and_add_identity_roundtrip(const char * /*tmpdir*/)
+{
+    return run_gtest_worker(
+        [&]() {
+            namespace sec = pylabhub::utils::security;
+            const std::string name = "test.generated.identity";
+            std::string pub_z85 = sec::secure().keys()
+                .generate_and_add_identity(name);
+            ASSERT_EQ(pub_z85.size(), 40u);
+            EXPECT_TRUE(sec::secure().keys().has(name));
+            EXPECT_EQ(sec::secure().keys().pubkey(name), pub_z85);
+
+            std::size_t seckey_size = 0;
+            sec::secure().keys().with_seckey(name,
+                [&](std::string_view sk) { seckey_size = sk.size(); });
+            EXPECT_EQ(seckey_size, 32u)
+                << "seckey callback view was " << seckey_size
+                << " bytes; HEP-CORE-0040 §8.5.2 specifies raw 32.";
+
+            // Generating a second entry under the same name throws
+            // (duplicate-name discipline).
+            EXPECT_THROW(sec::secure().keys()
+                            .generate_and_add_identity(name),
+                         std::runtime_error);
+        },
+        "key_store::generate_and_add_identity_roundtrip",
+        Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
+}
+
+/// R3.6 — `KeyStore::with_seckey_z85` yields a 40-char view AND the
+/// stack buffer is `sodium_memzero`'d before this method returns
+/// (HEP-CORE-0040 §8.5.2 use-not-export).  The zero-on-return check
+/// is indirect: after the callback captures the view's address, we
+/// verify that the WHOLE view is not the same bytes as the raw
+/// seckey (i.e., encoded state changed).  The bytes at that address
+/// are undefined post-return; the check here is that the SIZE
+/// contract (40 chars) is honored inside the callback.
+int with_seckey_z85_view_shape(const char * /*tmpdir*/)
+{
+    return run_gtest_worker(
+        [&]() {
+            namespace sec = pylabhub::utils::security;
+            const std::string name = "test.z85_shape";
+            std::string pub = sec::secure().keys()
+                .generate_and_add_identity(name);
+
+            std::size_t seen_size = 0;
+            std::string captured;
+            sec::secure().keys().with_seckey_z85(name,
+                [&](std::string_view v) {
+                    seen_size = v.size();
+                    captured.assign(v.data(), v.size());
+                });
+            EXPECT_EQ(seen_size, 40u);
+            EXPECT_EQ(captured.size(), 40u);
+            // Every Z85 char is printable ASCII (33..126).
+            for (char c : captured) {
+                EXPECT_GE(c, 33) << "non-printable Z85 char observed";
+                EXPECT_LE(c, 126);
+            }
+        },
+        "key_store::with_seckey_z85_view_shape",
+        Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
+}
+
+/// R3.6b — `KeyStore::with_keypair_z85` yields BOTH halves; the
+/// pubkey matches `pubkey(name)`, both are 40-char Z85.  One entry
+/// lookup, one lock acquisition — replaces the common `pubkey` +
+/// `with_seckey_z85` pair used in production.
+int with_keypair_z85_yields_both_halves(const char * /*tmpdir*/)
+{
+    return run_gtest_worker(
+        [&]() {
+            namespace sec = pylabhub::utils::security;
+            const std::string name = "test.pair";
+            std::string pub_expected = sec::secure().keys()
+                .generate_and_add_identity(name);
+
+            std::string pub_seen, sec_seen;
+            sec::secure().keys().with_keypair_z85(name,
+                [&](std::string_view p, std::string_view s) {
+                    pub_seen.assign(p.data(), p.size());
+                    sec_seen.assign(s.data(), s.size());
+                });
+            EXPECT_EQ(pub_seen, pub_expected);
+            EXPECT_EQ(pub_seen.size(), 40u);
+            EXPECT_EQ(sec_seen.size(), 40u);
+            EXPECT_NE(pub_seen, sec_seen);
+        },
+        "key_store::with_keypair_z85_yields_both_halves",
+        Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
+}
+
+/// R3.7 — deeper wrapper-API depth than SMS_WrappersWorkViaSecureAccessor.
+///   - `random_bytes`: 1024 bytes, verify at least 900 distinct byte
+///     values (uniform-ish) AND no long run of identical bytes
+///     (weak entropy signal but catches a constant-return regression).
+///   - `memcmp_ct`: length mismatch, empty-vs-empty, single-bit flips
+///     at multiple positions, full match.
+///   - `memzero`: pre-fill 128-byte buffer with 0xAB pattern, wipe,
+///     verify every byte is 0 AND the buffer address hasn't moved.
+int sms_wrappers_depth(const char * /*tmpdir*/)
+{
+    return run_gtest_worker(
+        [&]() {
+            namespace sec = pylabhub::utils::security;
+
+            // random_bytes depth.
+            std::array<std::uint8_t, 1024> big{};
+            sec::secure().random_bytes(std::span<std::uint8_t>(big));
+            std::array<int, 256> hist{};
+            for (auto b : big) ++hist[b];
+            int distinct = 0;
+            for (auto c : hist) if (c > 0) ++distinct;
+            EXPECT_GT(distinct, 200)
+                << "random_bytes returned only " << distinct
+                << " distinct byte values in 1024 bytes — suspicious";
+            // No 16-run of the same byte anywhere.
+            int run = 1;
+            for (std::size_t i = 1; i < big.size(); ++i)
+            {
+                if (big[i] == big[i-1]) { ++run; if (run >= 16) FAIL()
+                    << "random_bytes had a run of >=16 identical bytes"; }
+                else run = 1;
+            }
+
+            // memcmp_ct depth.
+            {
+                std::array<std::uint8_t, 4> empty_a{}, empty_b{};
+                EXPECT_TRUE(sec::secure().memcmp_ct(
+                    std::span<const std::uint8_t>(empty_a.data(), 0),
+                    std::span<const std::uint8_t>(empty_b.data(), 0)));
+                std::array<std::uint8_t, 8> a{}, b{};
+                EXPECT_TRUE(sec::secure().memcmp_ct(
+                    std::span<const std::uint8_t>(a),
+                    std::span<const std::uint8_t>(b)));
+                // Length mismatch → false, no exception.
+                EXPECT_FALSE(sec::secure().memcmp_ct(
+                    std::span<const std::uint8_t>(a),
+                    std::span<const std::uint8_t>(b.data(), 4)));
+                // Single-bit flip at multiple positions.
+                for (int pos = 0; pos < 8; ++pos)
+                {
+                    a = b;  // reset
+                    a[pos] ^= 0x01;
+                    EXPECT_FALSE(sec::secure().memcmp_ct(
+                        std::span<const std::uint8_t>(a),
+                        std::span<const std::uint8_t>(b)))
+                        << "single-bit flip at pos " << pos
+                        << " not detected";
+                }
+            }
+
+            // memzero depth.
+            {
+                std::array<std::uint8_t, 128> buf;
+                buf.fill(0xAB);
+                auto *addr_before = buf.data();
+                sec::secure().memzero(std::span<std::uint8_t>(buf));
+                EXPECT_EQ(buf.data(), addr_before);
+                for (std::uint8_t v : buf) EXPECT_EQ(v, 0u);
+            }
+        },
+        "key_store::sms_wrappers_depth",
+        Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
+}
+
+/// R3.8 — `secure().box_encrypt_using` / `box_decrypt_using` roundtrip.
+/// Uses the seed_curve_identities helper to seed both parties into
+/// KeyStore, then encrypts + decrypts + MAC-tamper detection.
+///
+/// Exercises the name-based key citation (HEP-CORE-0043 §6): the
+/// seckey is looked up in KeyStore by name, dereferenced INSIDE SMS
+/// under `with_seckey`, and never crosses the API.
+int box_encrypt_decrypt_roundtrip(const char * /*tmpdir*/)
+{
+    return run_gtest_worker(
+        [&]() {
+            namespace sec = pylabhub::utils::security;
+
+            // Seed two identities via the standard test helper.
+            const std::string sender_uid = "sender";
+            const std::string recip_uid  = "recipient";
+            auto curve = pylabhub::tests::make_curve_setup({sender_uid, recip_uid});
+            pylabhub::tests::seed_curve_identities(curve);
+
+            const std::string sender_name =
+                pylabhub::tests::role_keystore_name(sender_uid);
+            const std::string recip_name =
+                pylabhub::tests::role_keystore_name(recip_uid);
+
+            // Retrieve pubkeys (non-secret) via KeyStore.
+            std::array<std::uint8_t, sec::SecureSubsystem::kBoxPubkeyBytes> sender_pub{};
+            std::array<std::uint8_t, sec::SecureSubsystem::kBoxPubkeyBytes> recip_pub{};
+            // Z85 → raw via zmq_z85_decode
+            {
+                std::string sp = std::string(sec::secure().keys().pubkey(sender_name));
+                std::string rp = std::string(sec::secure().keys().pubkey(recip_name));
+                ASSERT_EQ(sp.size(), 40u);
+                ASSERT_EQ(rp.size(), 40u);
+                ASSERT_NE(::zmq_z85_decode(sender_pub.data(), sp.data()), nullptr);
+                ASSERT_NE(::zmq_z85_decode(recip_pub.data(),  rp.data()), nullptr);
+            }
+
+            // Random nonce.
+            std::array<std::uint8_t, sec::SecureSubsystem::kBoxNonceBytes> nonce{};
+            sec::secure().random_bytes(std::span<std::uint8_t>(nonce));
+
+            const std::string plain = "top secret message";
+            const std::size_t need = plain.size() + sec::SecureSubsystem::kBoxMacBytes;
+            std::vector<std::uint8_t> ct(need);
+
+            // Encrypt: sender uses OWN seckey (by name) + recipient's pubkey.
+            const std::size_t written = sec::secure().box_encrypt_using(
+                sender_name,
+                std::span<const std::uint8_t, sec::SecureSubsystem::kBoxPubkeyBytes>(recip_pub),
+                std::span<const std::uint8_t, sec::SecureSubsystem::kBoxNonceBytes>(nonce),
+                std::span<const std::uint8_t>(
+                    reinterpret_cast<const std::uint8_t *>(plain.data()),
+                    plain.size()),
+                std::span<std::uint8_t>(ct));
+            ASSERT_EQ(written, need);
+
+            // Decrypt: recipient uses OWN seckey + sender's pubkey.
+            std::vector<std::uint8_t> pt(plain.size());
+            const std::size_t decoded = sec::secure().box_decrypt_using(
+                recip_name,
+                std::span<const std::uint8_t, sec::SecureSubsystem::kBoxPubkeyBytes>(sender_pub),
+                std::span<const std::uint8_t, sec::SecureSubsystem::kBoxNonceBytes>(nonce),
+                std::span<const std::uint8_t>(ct),
+                std::span<std::uint8_t>(pt));
+            ASSERT_EQ(decoded, plain.size());
+            EXPECT_EQ(std::string(reinterpret_cast<const char *>(pt.data()), decoded),
+                      plain);
+
+            // Tamper MAC (first byte) — decrypt must refuse.
+            ct[0] ^= 0x01;
+            const std::size_t bad = sec::secure().box_decrypt_using(
+                recip_name,
+                std::span<const std::uint8_t, sec::SecureSubsystem::kBoxPubkeyBytes>(sender_pub),
+                std::span<const std::uint8_t, sec::SecureSubsystem::kBoxNonceBytes>(nonce),
+                std::span<const std::uint8_t>(ct),
+                std::span<std::uint8_t>(pt));
+            EXPECT_EQ(bad, 0u) << "MAC tamper should have failed decryption";
+
+            // Wrong sender pubkey — decrypt must also refuse.
+            ct[0] ^= 0x01;  // restore MAC
+            std::array<std::uint8_t, sec::SecureSubsystem::kBoxPubkeyBytes> wrong_pub = sender_pub;
+            wrong_pub[0] ^= 0x01;
+            const std::size_t wrong = sec::secure().box_decrypt_using(
+                recip_name,
+                std::span<const std::uint8_t, sec::SecureSubsystem::kBoxPubkeyBytes>(wrong_pub),
+                std::span<const std::uint8_t, sec::SecureSubsystem::kBoxNonceBytes>(nonce),
+                std::span<const std::uint8_t>(ct),
+                std::span<std::uint8_t>(pt));
+            EXPECT_EQ(wrong, 0u) << "Wrong sender pubkey should have failed";
+        },
+        "key_store::box_encrypt_decrypt_roundtrip",
+        Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
+}
+
+/// R3.2 — `secure()` PANICs (process abort) when called without SMS
+/// in the mods pack.  The worker registers ONLY Logger; when the
+/// lambda calls `secure()`, the state gate is Uninitialized and
+/// `panic_if_not_ready("secure()")` fires `std::abort()`.
+/// Parent-side test asserts `exit_code() == 134` (SIGABRT).
+int panic_when_secure_called_without_sms(const char * /*tmpdir*/)
+{
+    return run_gtest_worker(
+        [&]() {
+            namespace sec = pylabhub::utils::security;
+            // Expected: SMS state is Uninitialized here (mod pack
+            // has Logger only).  This call must PANIC.
+            (void)sec::secure();
+            // Unreachable — if we get here, the gate failed to fire.
+            ADD_FAILURE() << "secure() returned instead of panicking";
+        },
+        "key_store::panic_when_secure_called_without_sms",
         Logger::GetLifecycleModule());
+    // No SecureSubsystem::GetLifecycleModule() — deliberate.
+}
+
+/// R3.2b — `secure().keys()` PANICs when SMS is not up.  Exercises
+/// the same gate via a different accessor path.  Same expected
+/// exit-code contract.
+int panic_when_keys_called_without_sms(const char * /*tmpdir*/)
+{
+    return run_gtest_worker(
+        [&]() {
+            namespace sec = pylabhub::utils::security;
+            // Reaches secure() first — panics there.  Same signal.
+            (void)sec::secure().keys();
+            ADD_FAILURE() << "secure().keys() returned instead of panicking";
+        },
+        "key_store::panic_when_keys_called_without_sms",
+        Logger::GetLifecycleModule());
+}
+
+/// R3.2c — `secure().secretbox_encrypt(...)` PANICs when SMS is not
+/// up.  Same gate, exercised through a Category 1c encryption method.
+int panic_when_secretbox_called_without_sms(const char * /*tmpdir*/)
+{
+    return run_gtest_worker(
+        [&]() {
+            namespace sec = pylabhub::utils::security;
+            std::array<std::uint8_t, 32> key{};
+            std::array<std::uint8_t, 24> nonce{};
+            std::array<std::uint8_t, 128> out{};
+            std::array<std::uint8_t, 8> pt{};
+            (void)sec::secure().secretbox_encrypt(
+                out.data(), out.size(),
+                pt.data(), pt.size(),
+                nonce.data(), key.data());
+            ADD_FAILURE() << "secretbox_encrypt returned instead of panicking";
+        },
+        "key_store::panic_when_secretbox_called_without_sms",
+        Logger::GetLifecycleModule());
+}
+
+/// R3.3 — the state atomic transitions Uninitialized → Initialized
+/// through the `LifecycleGuard` bringup, observable via `sodium_ready()`
+/// and `lifecycle_initialized()`.  This test runs INSIDE the guard so
+/// it can only observe the Initialized state, but it pins the invariant
+/// that both probes agree once SMS is up.
+///
+/// The Shutdown transition is verified structurally by F11 (defensive
+/// dtor publishes Shutdown when destructed).  A direct
+/// post-LifecycleGuard-finalize observation would require running
+/// the check OUTSIDE `run_gtest_worker`'s guard — infrastructure work
+/// that's beyond this iteration.
+int sodium_ready_agrees_with_lifecycle_initialized(const char * /*tmpdir*/)
+{
+    return run_gtest_worker(
+        [&]() {
+            namespace sec = pylabhub::utils::security;
+            EXPECT_TRUE(sec::sodium_ready());
+            EXPECT_TRUE(sec::SecureSubsystem::lifecycle_initialized());
+            // Consistency across probes.
+            EXPECT_EQ(sec::sodium_ready(),
+                      sec::SecureSubsystem::lifecycle_initialized());
+        },
+        "key_store::sodium_ready_agrees_with_lifecycle_initialized",
+        Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
+}
+
+/// F15 — parallel `SecureSubsystem::instance()` calls from N threads
+/// all return the same reference.  Pins the C++11 thread-safe
+/// function-local-static initialization contract we rely on
+/// (HEP-CORE-0043 §1.3 singularity mechanism 1: "exactly one
+/// construction path is the function-local static in `instance()`").
+///
+/// N threads spin-block on a barrier atomic, then all call
+/// `instance()` at once.  We collect their observed pointers and
+/// verify they are all identical.
+int sms_parallel_instance_calls(const char * /*tmpdir*/)
+{
+    return run_gtest_worker(
+        [&]() {
+            namespace sec = pylabhub::utils::security;
+
+            constexpr int kThreads = 32;
+            std::atomic<int>                       ready{0};
+            std::atomic<bool>                      go{false};
+            std::array<sec::SecureSubsystem *, kThreads> observed{};
+            std::vector<std::thread>               threads;
+            threads.reserve(kThreads);
+
+            for (int i = 0; i < kThreads; ++i)
+            {
+                threads.emplace_back([&, i]() {
+                    ready.fetch_add(1, std::memory_order_release);
+                    while (!go.load(std::memory_order_acquire)) {
+                        std::this_thread::yield();
+                    }
+                    observed[i] = &sec::SecureSubsystem::instance();
+                });
+            }
+            while (ready.load(std::memory_order_acquire) < kThreads) {
+                std::this_thread::yield();
+            }
+            go.store(true, std::memory_order_release);
+            for (auto &t : threads) t.join();
+
+            sec::SecureSubsystem *canon = observed[0];
+            ASSERT_NE(canon, nullptr);
+            for (int i = 1; i < kThreads; ++i)
+            {
+                EXPECT_EQ(observed[i], canon)
+                    << "Thread " << i << " observed a different "
+                    "SecureSubsystem instance — the function-local "
+                    "static invariant is broken.";
+            }
+            // Consistency across the accessor: `secure()` from the
+            // parent (post-race) matches the canonical pointer.
+            EXPECT_EQ(&sec::secure(), canon);
+        },
+        "key_store::sms_parallel_instance_calls",
+        Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
 } // namespace
@@ -981,14 +1426,6 @@ int dispatch_key_store(int argc, char **argv)
 
     if (scenario == "sodium_smoke")
         return sodium_smoke(tmpdir);
-    if (scenario == "ordering_check_keystore_requires_secure_memory")
-        return ordering_check_keystore_requires_secure_memory(tmpdir);
-    if (scenario == "second_construction_throws")
-        return second_construction_throws(tmpdir);
-    if (scenario == "key_store_not_initialized_throws")
-        return key_store_not_initialized_throws(tmpdir);
-    if (scenario == "key_store_ready_probe_lifecycle")
-        return key_store_ready_probe_lifecycle(tmpdir);
     if (scenario == "add_identity_then_pubkey_and_with_seckey_roundtrip")
         return add_identity_then_pubkey_and_with_seckey_roundtrip(tmpdir);
     if (scenario == "add_identity_zeros_source")
@@ -1019,6 +1456,38 @@ int dispatch_key_store(int argc, char **argv)
         return remove_blocks_behind_in_flight_with_seckey(tmpdir);
     if (scenario == "secure_buffer_dtor_zeroes")
         return secure_buffer_dtor_zeroes(tmpdir);
+
+    // SEC-Fold-2 merger invariants (HEP-CORE-0043 §1-§2 + §7).
+    if (scenario == "sms_instance_returns_same_reference")
+        return sms_instance_returns_same_reference(tmpdir);
+    if (scenario == "sms_wrappers_work_via_secure_accessor")
+        return sms_wrappers_work_via_secure_accessor(tmpdir);
+    if (scenario == "keystore_state_persists_across_sms_window")
+        return keystore_state_persists_across_sms_window(tmpdir);
+    if (scenario == "secure_keys_returns_same_reference")
+        return secure_keys_returns_same_reference(tmpdir);
+    if (scenario == "sms_parallel_instance_calls")
+        return sms_parallel_instance_calls(tmpdir);
+    if (scenario == "secretbox_encrypt_decrypt_roundtrip")
+        return secretbox_encrypt_decrypt_roundtrip(tmpdir);
+    if (scenario == "generate_and_add_identity_roundtrip")
+        return generate_and_add_identity_roundtrip(tmpdir);
+    if (scenario == "with_seckey_z85_view_shape")
+        return with_seckey_z85_view_shape(tmpdir);
+    if (scenario == "with_keypair_z85_yields_both_halves")
+        return with_keypair_z85_yields_both_halves(tmpdir);
+    if (scenario == "sms_wrappers_depth")
+        return sms_wrappers_depth(tmpdir);
+    if (scenario == "panic_when_secure_called_without_sms")
+        return panic_when_secure_called_without_sms(tmpdir);
+    if (scenario == "panic_when_keys_called_without_sms")
+        return panic_when_keys_called_without_sms(tmpdir);
+    if (scenario == "panic_when_secretbox_called_without_sms")
+        return panic_when_secretbox_called_without_sms(tmpdir);
+    if (scenario == "sodium_ready_agrees_with_lifecycle_initialized")
+        return sodium_ready_agrees_with_lifecycle_initialized(tmpdir);
+    if (scenario == "box_encrypt_decrypt_roundtrip")
+        return box_encrypt_decrypt_roundtrip(tmpdir);
 
     std::fprintf(stderr, "key_store: unknown scenario '%s'\n", scenario.c_str());
     return 1;

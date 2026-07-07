@@ -13,12 +13,12 @@
  * @see schema_field_layout.hpp for layout computation (compute_field_layout)
  */
 
-#include "utils/crypto_utils.hpp"
 #include "utils/format_tools.hpp"
 #include "utils/hub_zmq_queue.hpp"
 #include "utils/schema_field_layout.hpp"
 #include "utils/schema_loader.hpp"
 #include "utils/schema_record.hpp"  // SchemaRecord (HEP-CORE-0034)
+#include "utils/security/secure_subsystem.hpp"  // secure().compute_blake2b_array
 
 #include "utils/json_fwd.hpp"
 
@@ -256,7 +256,7 @@ inline std::string compute_schema_hash(const SchemaSpec &slot_spec, const Schema
         canonical += fz_spec.packing;
     }
 
-    const auto hash = pylabhub::crypto::compute_blake2b_array(
+    const auto hash = pylabhub::utils::security::secure().compute_blake2b_array(
         canonical.data(), canonical.size());
     return std::string(reinterpret_cast<const char *>(hash.data()), hash.size());
 }
@@ -292,7 +292,7 @@ compute_canonical_hash_from_wire(const std::string &slot_blds,
         canonical += slot_blds.empty() ? "|pack:" : "|fzpack:";
         canonical += fz_packing;
     }
-    return pylabhub::crypto::compute_blake2b_array(canonical.data(), canonical.size());
+    return pylabhub::utils::security::secure().compute_blake2b_array(canonical.data(), canonical.size());
 }
 
 // ── HEP-CORE-0034 §12 hub-global record helpers ─────────────────────────────

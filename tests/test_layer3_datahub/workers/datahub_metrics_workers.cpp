@@ -19,12 +19,12 @@
  * AdminService + ThreadManager-backed run-loop), wired through
  * `pylabhub::tests::start_hubhost_broker(overrides, curve)` from
  * `broker_test_harness.h`.  CURVE identities are seeded via
- * `CurveKeyStoreFixture` per HEP-CORE-0040 §172 use-not-export.
+ * `seed_curve_identities()` per HEP-CORE-0040 §172 use-not-export.
  * Per the test-design principle in
  * `feedback_test_layering_and_no_mocks.md`, regressions in HubHost's
  * threading / lifecycle / state-ownership wiring are actually caught.
  *
- * Module surface: Logger + FileLock + JsonConfig + CryptoUtils +
+ * Module surface: Logger + FileLock + JsonConfig + SecureSubsystem +
  * ZMQContext.  FileLock + JsonConfig are needed because the
  * canonical harness reads hub.json via the JsonConfig module (which
  * uses FileLock) when emitting the temp hub directory.  Matches the
@@ -70,7 +70,6 @@
 #include <utility>
 #include <vector>
 
-using pylabhub::tests::CurveKeyStoreFixture;
 using pylabhub::tests::CurveSetup;
 using pylabhub::tests::HubHostBrokerHandle;
 using pylabhub::tests::LogCaptureFixture;
@@ -187,7 +186,7 @@ json raw_request(const std::string                  &endpoint,
     Logger::GetLifecycleModule(),                                              \
     FileLock::GetLifecycleModule(),                                            \
     JsonConfig::GetLifecycleModule(),                                          \
-    pylabhub::crypto::GetLifecycleModule(),                                    \
+    pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),                        \
     pylabhub::hub::GetZMQContextModule()
 
 /// Per-worker fixture: install LogCaptureFixture, seed a CurveKeyStore
@@ -238,8 +237,7 @@ int run_with_broker(std::string_view              worker_name,
                 log_cap.ExpectLogWarn(w);
 
             auto curve = pylabhub::tests::make_curve_setup(role_uids);
-            CurveKeyStoreFixture ks_fixture(
-                "test.l3", "datahub_metrics.harness", curve);
+            pylabhub::tests::seed_curve_identities(curve);
             auto broker = pylabhub::tests::start_hubhost_broker(
                 hub_overrides_baseline(), curve);
             ASSERT_TRUE(broker.host && broker.host->is_running());
@@ -876,8 +874,7 @@ int old_metrics_report_req_gets_unknown_msg_type()
                 "' missing or zero producer_pid");
 
             auto curve = pylabhub::tests::make_curve_setup({uid});
-            CurveKeyStoreFixture ks_fixture(
-                "test.l3", "datahub_metrics.retired", curve);
+            pylabhub::tests::seed_curve_identities(curve);
             auto broker = pylabhub::tests::start_hubhost_broker(
                 hub_overrides_baseline(), curve);
             ASSERT_TRUE(broker.host && broker.host->is_running());

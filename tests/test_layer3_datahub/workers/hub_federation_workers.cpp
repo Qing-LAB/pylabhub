@@ -4,7 +4,7 @@
  *
  * Migrated 2026-05-13 from the in-process `SetUpTestSuite`-owned
  * `LifecycleGuard` antipattern.  Each scenario constructs two
- * `BrokerService` instances → transitively touches Logger / CryptoUtils /
+ * `BrokerService` instances → transitively touches Logger / SecureSubsystem /
  * ZMQContext lifecycle modules; per README_testing.md § "Choosing a test
  * pattern", the body must run in a worker subprocess.
  */
@@ -234,7 +234,7 @@ int hello_handshake_fires_on_hub_connected()
         },
         "hub_federation::hello_handshake_fires_on_hub_connected",
         Logger::GetLifecycleModule(),
-        pylabhub::crypto::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         pylabhub::hub::GetZMQContextModule());
 }
 
@@ -309,7 +309,7 @@ int targeted_message_fires_on_hub_message()
         },
         "hub_federation::targeted_message_fires_on_hub_message",
         Logger::GetLifecycleModule(),
-        pylabhub::crypto::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         pylabhub::hub::GetZMQContextModule());
 }
 
@@ -369,7 +369,7 @@ int peer_bye_triggers_on_hub_disconnected()
         },
         "hub_federation::peer_bye_triggers_on_hub_disconnected",
         Logger::GetLifecycleModule(),
-        pylabhub::crypto::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         pylabhub::hub::GetZMQContextModule());
 }
 

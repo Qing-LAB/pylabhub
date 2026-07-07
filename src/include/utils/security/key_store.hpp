@@ -1,41 +1,107 @@
 #pragma once
 /**
  * @file key_store.hpp
- * @brief Process-wide locked-memory secret store (HEP-CORE-0040 §5).
+ * @brief Process-wide locked-memory secret store — the ONE holder of
+ *        long-term identities and ephemeral runtime keys.
  *
- * Public class + guarded global accessor.  Exactly one instance per OS
- * process; consumer access is via the namespace accessor below, NOT via
- * LifecycleManager (which has no instance-retrieval API — see
- * HEP-CORE-0001 + HEP-CORE-0040 §5.6).
+ * @author  pyLabHub team
+ * @date    2026-06-06 (use-not-export ship) /
+ *          2026-07-06 (KeyStore-as-member of SMS::Impl)
+ * @copyright  MIT
+ * @see  HEP-CORE-0043 §2.2 + §7  (KeyStore contract)
+ * @see  HEP-CORE-0040 §5, §6, §8.5.2  (LockedKey RAII, raw-64 layout)
+ * @see  secure_subsystem.hpp  (facade + `secure().keys()` accessor)
  *
- * Lifecycle: ctor calls `secure_memory_subsystem_ready()` and throws if
- * false (HEP-CORE-0040 §4.5 ordering invariant), then registers a
- * dynamic lifecycle module named `"KeyStore"` with dependencies on
- * `"SecureMemory"` + `"pylabhub::utils::Logger"`; startup/shutdown
- * thunks are no-ops.  Mirrors HEP-CORE-0031 §3 ThreadManager pattern.
+ * # Ownership + lifecycle
  *
- * Use-not-export design (HEP-CORE-0040 §5.2 + §8.2, round-5 2026-06-06):
- * the security module exposes OPERATIONS on secret material, not byte
- * exports.  Public-half keys (pubkey) return as `std::string_view`
- * into LockedKey-owned bytes.  Secret-half keys (seckey) are accessed
- * only via `with_seckey(name, callback)` — bytes never leave the
- * LockedKey region; the callback's view parameter is valid only for
- * callback scope.
+ * KeyStore is a MEMBER of `SecureSubsystem::Impl` (field `keys_`).
+ * There is EXACTLY ONE KeyStore per process, brought up automatically
+ * when `SecureSubsystem::GetLifecycleModule()` fires its startup
+ * thunk.  KeyStore has:
+ * - **Private ctor** (`friend struct SecureSubsystem::Impl`) — no
+ *   external construction site can compile.
+ * - **No independent lifecycle module** — its lifetime is bound to
+ *   SMS's.  LifecycleManager sees ONE module (`"SecureSubsystem"`),
+ *   not two.
+ * - **Access via `secure().keys()`** — the SMS gate ensures sodium
+ *   is initialized before any KeyStore method runs.
  *
- * Internally owns a name → `LockedKey` map under a shared mutex.  All
- * `LockedKey` instances are constructed via `sodium_malloc` (mlock +
- * guard pages + canary + auto-wipe); destructed via `sodium_memzero` +
- * `sodium_free`.  See `key_store.cpp` for `LockedKey` definition.
+ * # Use-not-export contract
  *
- * Concurrency: `pubkey` / `with_seckey` / `lookup_raw` / `has` / `size`
- * take a shared lock (parallel reads OK); `add_identity` / `add_raw` /
- * `remove` take an exclusive lock.  `with_seckey`'s callback runs
- * under the shared lock — callback MUST be prompt (microseconds, no
- * blocking I/O) — concurrent `remove(name)` waits for the callback to
- * return.  See HEP-CORE-0040 §5.5 for the full thread-safety contract.
+ * The security module exposes OPERATIONS on secret material, not
+ * byte exports (HEP-CORE-0040 §5.2 + §8.2, round-5 2026-06-06):
+ *
+ * - **Public-half keys (`pubkey`)** — returned as `std::string_view`
+ *   into non-secret cache bytes owned by the Entry.  Non-secret;
+ *   safe to copy, log, pass across boundaries.
+ * - **Secret-half keys (`with_seckey`)** — accessed only via a
+ *   callback.  The seckey `std::string_view` handed to the callback
+ *   is valid ONLY for callback scope; bytes NEVER leave the mlocked
+ *   `LockedKey` region as data.
+ * - **Raw HEP-0038 secrets (`lookup_raw`)** — returned as
+ *   `std::span<const std::byte>` into LockedKey-owned bytes.
+ *   Script bindings must materialize into a script-owned buffer
+ *   before returning to the script layer.
+ *
+ * # Storage layout
+ *
+ * Internally owns a name → `LockedKey` map under a shared mutex.
+ * Each `LockedKey`:
+ * - Allocated via `sodium_malloc` (mlock + guard pages + canary).
+ * - Destructed via `sodium_memzero` + `sodium_free`.
+ * - Full definition lives in `key_store.cpp` (anonymous namespace);
+ *   not exposed at the public surface (HEP-CORE-0043 §2.1 R7).
+ *
+ * Identity keypairs are stored as RAW 64 bytes: `pub_raw[32]` +
+ * `sec_raw[32]` (HEP-CORE-0040 §8.5.2, #291 flip 2026-06-26).  Z85
+ * conversion happens at the wire/file/display boundary via
+ * `add_identity_from_z85` / `pubkey()` / `with_seckey_z85`.
+ *
+ * # Concurrency
+ *
+ * - **Read-mostly** (shared lock, parallel):
+ *   `pubkey`, `with_seckey`, `with_seckey_z85`, `with_keypair_z85`,
+ *   `lookup_raw`, `has`, `size`.
+ * - **Write** (exclusive lock):
+ *   `add_identity`, `add_identity_from_z85`,
+ *   `generate_and_add_identity`, `add_raw`, `remove`.
+ *
+ * The `with_seckey` callback runs under the SHARED lock.  Callback
+ * MUST be prompt (microseconds — no blocking I/O, no syscalls beyond
+ * consuming the bytes).  A concurrent `remove(name)` blocks until
+ * every in-flight `with_seckey` callback for that name returns —
+ * this is the security guarantee that "bytes become unreachable for
+ * every caller as soon as `remove()` returns."
+ *
+ * Full thread-safety contract: HEP-CORE-0040 §5.5.
+ *
+ * # Canonical entry names
+ *
+ * - `kHubIdentityName` = `"hub_identity"` — the hub's CURVE identity.
+ * - `kRoleIdentityName` = `"role_identity"` — the role's CURVE identity.
+ *
+ * At most one of each per process (HEP-CORE-0040 §5.3).  Federation
+ * testing requires separate processes; Pattern-3 subprocess isolation
+ * is the test-side pattern.  Test conventions (e.g.
+ * `role_keystore_name(uid)`) live in
+ * `tests/test_framework/curve_test_setup.h` — NOT production names,
+ * MUST NOT be used by library code.
  */
 
 #include "pylabhub_utils_export.h"
+// Transitive include contract (F19, 2026-07-06):
+//   Every consumer of `KeyStore` reaches the process's instance via
+//   `secure().keys()`.  `secure()` is declared in
+//   `secure_subsystem.hpp`; the friend declaration below also names
+//   `SecureSubsystem::Impl`.  Both of those require the SMS header
+//   to be visible when `key_store.hpp` is #included.  We pull SMS's
+//   header here so consumers only need one #include for the
+//   `secure().keys().X()` idiom.  Consumers that touch other SMS
+//   surfaces (`secure().secretbox_encrypt()`, `secure().random_bytes()`,
+//   `sodium_ready()`) may include `secure_subsystem.hpp` directly
+//   without relying on this transitive pull — it's a convenience,
+//   not a substitute for explicit includes at the SMS use site.
+#include "utils/security/secure_subsystem.hpp"
 
 #include <cstddef>
 #include <functional>
@@ -70,24 +136,10 @@ inline constexpr std::string_view kRoleIdentityName = "role_identity";
 class PYLABHUB_UTILS_EXPORT KeyStore
 {
 public:
-    /// Construct the process's KeyStore.
-    ///
-    /// @param scope_tag  Owner kind: `"hub"` (in plh_hub) or `"role"`
-    ///                   (in plh_role).  Non-empty.
-    /// @param owner_id   Owner uid (e.g. `"hub.lab1.uid00000001"`).
-    ///                   Non-empty.
-    ///
-    /// Throws `std::logic_error` if another KeyStore already exists in
-    /// this process (HEP-CORE-0040 §5.1 — exactly one per process) or
-    /// if `SecureMemorySubsystem` has not been constructed
-    /// (HEP-CORE-0040 §4.5).
-    /// Throws `std::invalid_argument` if either identity string is empty.
-    KeyStore(std::string scope_tag, std::string owner_id);
-
     /// Destroys all stored LockedKey instances (each `sodium_memzero` +
-    /// `sodium_free`) and deregisters the lifecycle module.
-    /// Defined in `.cpp` so `Impl` is complete at the dtor site
-    /// (canonical pImpl per `IMPLEMENTATION_GUIDANCE §"pImpl Idiom"`).
+    /// `sodium_free`).  Defined in `.cpp` so `Impl` is complete at the
+    /// dtor site (canonical pImpl per `IMPLEMENTATION_GUIDANCE §"pImpl
+    /// Idiom"`).
     ~KeyStore();
 
     KeyStore(const KeyStore &)            = delete;
@@ -255,25 +307,25 @@ public:
     /// Number of stored secrets.  Snapshot under shared lock.
     [[nodiscard]] std::size_t size() const noexcept;
 
-    /// Implementation state.  Declared public so the free-function
-    /// lifecycle thunks (in `key_store.cpp`) can dispatch against it.
-    /// Still opaque — struct definition lives in the `.cpp`.  Same
-    /// pattern as `pylabhub::utils::ThreadManager::Impl`.
+private:
+    /// Private default ctor — F8 discipline.  KeyStore is a MEMBER
+    /// of `SecureSubsystem::Impl` (HEP-CORE-0043 §2.2); the ONLY
+    /// construction path is `SecureSubsystem::Impl`'s member-init
+    /// list.  External code MUST access the process's instance via
+    /// `secure().keys()`.  Making the ctor private enforces this
+    /// at compile time.
+    KeyStore();
+
+    /// `SecureSubsystem::Impl` needs access to the private ctor
+    /// for its `KeyStore keys_;` member-init.  Sole friend.
+    friend struct SecureSubsystem::Impl;
+
+    /// Implementation state — opaque pImpl.  Struct definition
+    /// lives in the `.cpp`.  Same pattern as
+    /// `pylabhub::utils::ThreadManager::Impl`.
     struct Impl;
 
-private:
     std::unique_ptr<Impl> pImpl;
 };
-
-/// Global access — guarded singleton accessor (HEP-CORE-0040 §5.6).
-/// Returns a reference to the process's `KeyStore` instance.  Throws
-/// `std::runtime_error` if not yet constructed.
-[[nodiscard]] PYLABHUB_UTILS_EXPORT KeyStore &key_store();
-
-/// Non-throwing probe — true once a KeyStore has been constructed
-/// (and not yet destructed).  Used by tests + by code paths that
-/// want to dispatch on KeyStore availability without exception
-/// machinery.
-[[nodiscard]] PYLABHUB_UTILS_EXPORT bool key_store_ready() noexcept;
 
 } // namespace pylabhub::utils::security

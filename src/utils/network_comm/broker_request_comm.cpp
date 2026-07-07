@@ -551,12 +551,12 @@ bool BrokerRequestComm::connect(const Config &cfg)
         // to populate the BRC config — surface the misconfiguration
         // at connect() rather than producing a stuck handshake.
         // HEP-CORE-0040 §172: read the role's CURVE identity on-site
-        // from key_store() by the caller-supplied keystore_name.
+        // from secure().keys() by the caller-supplied keystore_name.
         // Absence → refuse the connect (loud, not silent).
         if (cfg.broker_pubkey.empty()
          || cfg.keystore_name.empty()
-         || !pylabhub::utils::security::key_store_ready()
-         || !pylabhub::utils::security::key_store().has(cfg.keystore_name))
+         || !pylabhub::utils::security::sodium_ready()
+         || !pylabhub::utils::security::secure().keys().has(cfg.keystore_name))
         {
             LOGGER_ERROR(
                 "BrokerRequestComm: broker_pubkey empty or KeyStore entry "
@@ -566,7 +566,7 @@ bool BrokerRequestComm::connect(const Config &cfg)
             pImpl->dealer.reset();
             return false;
         }
-        auto &ks = pylabhub::utils::security::key_store();
+        auto &ks = pylabhub::utils::security::secure().keys();
         // One-shot per BRC::connect — surface the CURVE values the
         // socket was configured with so silent handshake failures
         // (wrong serverkey, missing client identity) have an

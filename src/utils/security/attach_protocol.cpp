@@ -4,11 +4,29 @@
  *        for HEP-CORE-0041 SHM channels (substep 1c).
  *
  * See attach_protocol.hpp for the full design + protocol flow.  This
- * file owns the JSON length-prefixed framing, the libsodium
- * `crypto_box` challenge-response, and the per-call error closure
- * (close peer fd before any throw so callers don't leak).
+ * file owns the JSON length-prefixed framing and the per-call error
+ * closure (close peer fd before any throw so callers don't leak).
+ *
+ * All cryptographic PROTOCOL operations route through SMS
+ * (HEP-CORE-0043 §6):
+ *   - Challenge-response ciphers: `secure().box_encrypt_using(name, ...)`
+ *     / `secure().box_decrypt_using(name, ...)` — name-based seckey
+ *     citation, bytes never cross the API boundary.
+ *   - Nonces + challenge: `secure().random_bytes(...)`.
+ *   - Constant-time compare: `secure().memcmp_ct(...)`.
+ *   - Scrub: `secure().memzero(...)`.
+ *
+ * Base64 encode/decode of the JSON payload (not a crypto primitive,
+ * just a text-safe binary encoding) still uses libsodium's
+ * `sodium_bin2base64` / `sodium_base642bin` directly.  Since
+ * `attach_protocol.cpp` lives INSIDE `src/utils/security/`, this is
+ * legal per HEP-CORE-0043 §1.2 mechanism 4 (sodium.h stays inside
+ * the security-module directory).  Base64 helpers may migrate to
+ * SMS as Category 1a in a follow-up if other callers ever need them.
  */
 #include "utils/security/attach_protocol.hpp"
+#include "utils/security/attach_channel_shm.hpp"  // Phase 3 transport-abstraction seam
+#include "utils/security/key_store.hpp"  // needed for secure().keys().{pubkey, with_seckey}
 
 #include <array>
 #include <cerrno>
@@ -20,10 +38,11 @@
 #include <vector>
 
 #include <nlohmann/json.hpp>
-#include <sodium.h>
+#include <sodium.h>  // Base64 helpers only — see file docstring.
 
 #if defined(PYLABHUB_PLATFORM_LINUX)
-#    include <poll.h>
+// <poll.h> removed 2026-07-07 (Priority 3/B4) — all polling is inside
+// `attach_channel_shm.cpp` after the Phase 3 framing extraction.
 #    include <sys/socket.h>
 #    include <sys/un.h>
 #    include <unistd.h>
@@ -36,12 +55,6 @@ extern "C"
 // (curve_keypair.cpp comment cites zmq_z85_decode as the canonical
 // path for CURVE keys).
 uint8_t *zmq_z85_decode(uint8_t *dest, const char *src);
-// libzmq's Z85 encoder.  Converts 32 raw bytes into a 40-char Z85 string
-// (plus null terminator).  Used only by the #262 mutual-auth Frame 3
-// path to encode the pubkey the producer derives on the fly via
-// `crypto_scalarmult_base`; the rest of the codebase gets pubkey_z85
-// already-encoded from `KeyStore::add_identity` at startup.
-char    *zmq_z85_encode(char *dest, const uint8_t *src, size_t size);
 } // extern "C"
 #endif
 
@@ -53,203 +66,25 @@ namespace pylabhub::utils::security
 namespace
 {
 
-constexpr std::size_t kMaxFrameBytes   = 4096;
+// kMaxFrameBytes moved to `IAttachChannel::kMaxAttachFrameBytes`
+// (Priority 3/B1 consolidation, 2026-07-07) — this file no longer
+// framesbytes and no longer needs the constant.
 constexpr std::size_t kZ85PubkeyChars  = 40;
-constexpr std::size_t kRawKeyBytes     = 32;
-constexpr std::size_t kNonceBytes      = crypto_box_NONCEBYTES;   // 24
+constexpr std::size_t kRawKeyBytes     = SecureSubsystem::kBoxPubkeyBytes;   // 32
+constexpr std::size_t kNonceBytes      = SecureSubsystem::kBoxNonceBytes;    // 24
 constexpr std::size_t kChallengeBytes  = 16;
-constexpr std::size_t kMacBytes        = crypto_box_MACBYTES;     // 16
+constexpr std::size_t kMacBytes        = SecureSubsystem::kBoxMacBytes;      // 16
 constexpr const char *kProtocolVersion = "hep-0041-1";
 
-[[nodiscard]] std::runtime_error
-make_errno_error(const char *side, const char *what, int captured_errno)
-{
-    return std::runtime_error(std::string{"AttachProtocol::"} + side + ": " +
-                              what + ": " + std::strerror(captured_errno));
-}
-
-// Compute remaining budget from an absolute deadline; zero if past.
-// Used to bound each recv/send call against a SHARED deadline so an
-// entire multi-call handshake step (recv len + recv body, or send len
-// + send body) is bounded at exactly `timeout` — not `2 * timeout`.
-[[nodiscard]] inline std::chrono::milliseconds
-remaining_ms(std::chrono::steady_clock::time_point deadline)
-{
-    const auto now = std::chrono::steady_clock::now();
-    if (now >= deadline) return std::chrono::milliseconds{0};
-    return std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
-}
-
-// recv_all variant that takes an absolute deadline directly.  Kept
-// alongside the timeout-based overload for callers that don't need
-// deadline sharing (unit tests, one-shot recv).
-void
-recv_all_until(int fd, void *buf, std::size_t n,
-               std::chrono::steady_clock::time_point deadline,
-               const char *side)
-{
-    auto      *p        = static_cast<std::byte *>(buf);
-    std::size_t got     = 0;
-    while (got < n)
-    {
-        const auto rem = remaining_ms(deadline);
-        if (rem.count() == 0)
-        {
-            throw AttachProtocolTimeout(std::string{"AttachProtocol::"} + side +
-                                         ": timeout waiting for " +
-                                         std::to_string(n) + " bytes (got " +
-                                         std::to_string(got) + ")");
-        }
-        pollfd pfd{fd, POLLIN, 0};
-        const int rc = ::poll(&pfd, 1, static_cast<int>(rem.count()));
-        if (rc == 0)
-        {
-            throw AttachProtocolTimeout(std::string{"AttachProtocol::"} + side +
-                                         ": poll timed out");
-        }
-        if (rc < 0)
-        {
-            const int e = errno;
-            if (e == EINTR)
-                continue;
-            throw make_errno_error(side, "poll failed", e);
-        }
-        const ssize_t r = ::recv(fd, p + got, n - got, 0);
-        if (r == 0)
-        {
-            throw std::runtime_error(std::string{"AttachProtocol::"} + side +
-                                     ": peer closed connection mid-frame "
-                                     "(got " + std::to_string(got) + " of " +
-                                     std::to_string(n) + ")");
-        }
-        if (r < 0)
-        {
-            const int e = errno;
-            if (e == EINTR)
-                continue;
-            throw make_errno_error(side, "recv failed", e);
-        }
-        got += static_cast<std::size_t>(r);
-    }
-}
-
-// #319 (2026-07-02): send_all now takes an absolute deadline and
-// polls POLLOUT with remaining budget before each ::send call.  Prior
-// version had no deadline — a peer that connects then stops reading
-// could stall the accept thread indefinitely, defeating
-// ThreadManager::shutdown_requested() poll and blocking role teardown
-// past the 5s stop-handler-threads quiescence budget.
-void
-send_all(int fd, const void *buf, std::size_t n,
-         std::chrono::steady_clock::time_point deadline,
-         const char *side)
-{
-    const auto *p    = static_cast<const std::byte *>(buf);
-    std::size_t sent = 0;
-    while (sent < n)
-    {
-        const auto rem = remaining_ms(deadline);
-        if (rem.count() == 0)
-        {
-            throw AttachProtocolTimeout(
-                std::string{"AttachProtocol::"} + side +
-                ": send timeout (sent " + std::to_string(sent) + " of " +
-                std::to_string(n) + " bytes) — peer socket buffer full "
-                "or reader stalled");
-        }
-        pollfd pfd{fd, POLLOUT, 0};
-        const int rc = ::poll(&pfd, 1, static_cast<int>(rem.count()));
-        if (rc == 0)
-        {
-            throw AttachProtocolTimeout(
-                std::string{"AttachProtocol::"} + side +
-                ": send poll timed out (sent " + std::to_string(sent) +
-                " of " + std::to_string(n) + " bytes)");
-        }
-        if (rc < 0)
-        {
-            const int e = errno;
-            if (e == EINTR)
-                continue;
-            throw make_errno_error(side, "send poll failed", e);
-        }
-        const ssize_t r = ::send(fd, p + sent, n - sent,
-                                  MSG_NOSIGNAL | MSG_DONTWAIT);
-        if (r < 0)
-        {
-            const int e = errno;
-            if (e == EINTR || e == EAGAIN || e == EWOULDBLOCK)
-                continue;
-            throw make_errno_error(side, "send failed", e);
-        }
-        sent += static_cast<std::size_t>(r);
-    }
-}
-
-void
-send_frame(int fd, const nlohmann::json &body,
-           std::chrono::steady_clock::time_point deadline,
-           const char *side)
-{
-    const std::string s = body.dump();
-    if (s.size() > kMaxFrameBytes)
-    {
-        throw std::runtime_error(std::string{"AttachProtocol::"} + side +
-                                 ": frame too large (" +
-                                 std::to_string(s.size()) + " > " +
-                                 std::to_string(kMaxFrameBytes) + ")");
-    }
-    const auto len = static_cast<std::uint32_t>(s.size());
-    const std::uint8_t lb[4] = {
-        static_cast<std::uint8_t>(len & 0xFF),
-        static_cast<std::uint8_t>((len >> 8) & 0xFF),
-        static_cast<std::uint8_t>((len >> 16) & 0xFF),
-        static_cast<std::uint8_t>((len >> 24) & 0xFF),
-    };
-    send_all(fd, lb, 4, deadline, side);
-    send_all(fd, s.data(), s.size(), deadline, side);
-}
-
-// #318 (2026-07-02): receive_frame now takes an absolute deadline so
-// the recv-length + recv-body pair is bounded at exactly `deadline`
-// wall time.  Prior version passed the SAME `timeout` value to both
-// recv_all calls — worst case handshake step burned 2× the documented
-// budget (frame 1 lands right before deadline → frame 2 gets full
-// timeout again).
-nlohmann::json
-receive_frame(int fd, std::chrono::steady_clock::time_point deadline,
-              const char *side)
-{
-    std::uint8_t lb[4]{};
-    recv_all_until(fd, lb, 4, deadline, side);
-    const std::uint32_t len = static_cast<std::uint32_t>(lb[0]) |
-                              (static_cast<std::uint32_t>(lb[1]) << 8) |
-                              (static_cast<std::uint32_t>(lb[2]) << 16) |
-                              (static_cast<std::uint32_t>(lb[3]) << 24);
-    if (len == 0)
-    {
-        throw std::runtime_error(std::string{"AttachProtocol::"} + side +
-                                 ": frame length is zero");
-    }
-    if (len > kMaxFrameBytes)
-    {
-        throw std::runtime_error(std::string{"AttachProtocol::"} + side +
-                                 ": frame length " + std::to_string(len) +
-                                 " exceeds DoS cap " +
-                                 std::to_string(kMaxFrameBytes));
-    }
-    std::vector<char> body(len);
-    recv_all_until(fd, body.data(), len, deadline, side);
-    try
-    {
-        return nlohmann::json::parse(body.begin(), body.end());
-    }
-    catch (const std::exception &e)
-    {
-        throw std::runtime_error(std::string{"AttachProtocol::"} + side +
-                                 ": JSON parse failed: " + e.what());
-    }
-}
+// `make_errno_error` lives in `attach_channel.hpp` as
+// `attach_make_errno_error` (Priority 3/B3 consolidation) — this file
+// uses it directly for AF_UNIX socket()/connect()/close() error paths.
+//
+// Framing (length-prefixed JSON) + deadline discipline lives in
+// `ShmAttachChannel` (attach_channel_shm.cpp) since Phase 3 —
+// `AttachProtocolAcceptor` here wraps the fd in a channel and
+// delegates.  See `attach_channel.hpp` for the transport-abstraction
+// seam.
 
 std::string
 b64_encode(std::span<const unsigned char> bin)
@@ -319,17 +154,17 @@ z85_pubkey_to_raw(const std::string &z85)
 
 AttachProtocolAcceptor::AttachProtocolAcceptor(
     IShmCapabilityProducer &transport, uid_t expected_uid,
-    SeckeyAccessor producer_seckey_accessor,
+    std::string            own_seckey_name,
     ObserverPubkeyAccessor broker_observer_pubkey_accessor)
     : transport_(transport),
       expected_uid_(expected_uid),
-      producer_seckey_accessor_(std::move(producer_seckey_accessor)),
+      own_seckey_name_(std::move(own_seckey_name)),
       broker_observer_pubkey_accessor_(std::move(broker_observer_pubkey_accessor))
 {
-    if (!producer_seckey_accessor_)
+    if (own_seckey_name_.empty())
     {
         throw std::invalid_argument(
-            "AttachProtocolAcceptor: producer_seckey_accessor must be set");
+            "AttachProtocolAcceptor: own_seckey_name must be non-empty");
     }
 }
 
@@ -375,6 +210,11 @@ AttachProtocolAcceptor::accept_one(std::chrono::milliseconds timeout)
         std::chrono::steady_clock::now() + timeout;
 
     // ── 1. SO_PEERCRED uid sanity (HEP-CORE-0036 §I8) ────────────────────
+    // Transport-layer peer identity check.  This is SHM-specific
+    // (POSIX-uid semantics on AF_UNIX + SO_PEERCRED); a future ZMQ
+    // AttachProtocol acceptor would substitute a ZAP-verified CURVE
+    // pubkey check here.  Everything AFTER this point is
+    // transport-agnostic and flows through `IAttachChannel`.
     if (peer->uid != expected_uid_)
     {
         throw std::runtime_error(
@@ -383,293 +223,30 @@ AttachProtocolAcceptor::accept_one(std::chrono::milliseconds timeout)
             std::to_string(peer->uid) + ")");
     }
 
-    // ── 2. Generate nonce + challenge ────────────────────────────────────
-    unsigned char nonce[kNonceBytes]{};
-    unsigned char challenge[kChallengeBytes]{};
-    ::randombytes_buf(nonce, kNonceBytes);
-    ::randombytes_buf(challenge, kChallengeBytes);
+    // Wrap the fd in a channel — subsequent send/recv route through
+    // the transport-agnostic seam (Phase 3).  Channel is non-owning;
+    // `guard` above retains fd close responsibility.
+    ShmAttachChannel channel(fd, "producer");
 
-    // ── 3. Send frame 1 ──────────────────────────────────────────────────
-    {
-        nlohmann::json out;
-        out["protocol_version"] = kProtocolVersion;
-        out["nonce_b64"]        = b64_encode({nonce, kNonceBytes});
-        out["challenge_b64"]    = b64_encode({challenge, kChallengeBytes});
-        send_frame(fd, out, handshake_deadline, "producer");
-    }
-
-    // ── 4. Receive frame 2 ───────────────────────────────────────────────
-    const nlohmann::json hello = receive_frame(fd, handshake_deadline,
-                                                 "producer");
-
-    // ── 5. Validate hello shape ──────────────────────────────────────────
-    if (hello.value("protocol_version", std::string{}) != kProtocolVersion)
-    {
-        throw std::runtime_error(
-            "AttachProtocol::producer: hello protocol_version mismatch");
-    }
-    const std::string role_uid = hello.value("role_uid", std::string{});
-    if (role_uid.empty())
-    {
-        throw std::runtime_error("AttachProtocol::producer: hello role_uid empty");
-    }
-    // HEP-CORE-0041 §10.5 observer-role wiring (#317 C.1, 2026-07-03).
-    // Route on `role_type`: `"consumer"` OR empty string OR absent field
-    // → existing CURVE-against-channel-allowlist path (pre-#317 role
-    // builds emit no field; JSON serializers that always emit every
-    // key produce empty-string; both must map to consumer).  Fix per
-    // 2026-07-03 code review Finding #12.  `"observer"` → broker-
-    // observer path (not yet implemented; reject with clear diagnostic
-    // until #317 Phase C.2 broker-dial lands).  Any other value →
-    // protocol violation.
-    const std::string role_type =
-        hello.value("role_type", std::string{"consumer"});
-    if (!role_type.empty() && role_type != "consumer" && role_type != "observer")
-    {
-        throw std::runtime_error(
-            "AttachProtocol::producer: hello role_type must be "
-            "\"consumer\", \"observer\", or empty (got \"" + role_type + "\")");
-    }
-    const std::string pubkey_z85 = hello.value("pubkey_z85", std::string{});
-    if (pubkey_z85.size() != kZ85PubkeyChars)
-    {
-        throw std::runtime_error(
-            "AttachProtocol::producer: hello pubkey_z85 must be " +
-            std::to_string(kZ85PubkeyChars) + " chars (got " +
-            std::to_string(pubkey_z85.size()) + ")");
-    }
-    if (role_type == "observer")
-    {
-        // HEP-CORE-0041 §D1(d) observer handshake (task #317 C.2.b).
-        //
-        // The observer path shadows the consumer path with ONE
-        // distinguishing check: the observer's claimed pubkey MUST
-        // equal the broker observer pubkey the producer stashed via
-        // its REG_ACK path (task #317 D2 / f7d3a51e).  No channel
-        // allowlist involvement — the broker is not a channel peer,
-        // it's the sole trusted observer.
-        //
-        // Fall-through into the standard challenge-response validation
-        // below after the pubkey identity check succeeds.  This means
-        // the observer must ALSO hold the seckey corresponding to the
-        // pubkey the producer trusts — a compromised broker pubkey
-        // stash on the producer AND a squatter with a matching keypair
-        // would both need to occur simultaneously to defeat this.
-        if (!broker_observer_pubkey_accessor_)
-        {
-            throw std::runtime_error(
-                "AttachProtocol::producer: role_type=\"observer\" received "
-                "but no observer pubkey accessor installed on this acceptor "
-                "(role host must pass one at AttachProtocolAcceptor "
-                "construction — HEP-CORE-0041 §D1(d) task #317 C.2.b).");
-        }
-        const std::string trusted_broker_pubkey =
-            broker_observer_pubkey_accessor_();
-        if (trusted_broker_pubkey.empty())
-        {
-            // Broker's REG_ACK hasn't populated the stash yet, OR broker
-            // failed to generate its observer keypair at startup.  Either
-            // way the observer path is not currently trusted; reject.
-            throw std::runtime_error(
-                "AttachProtocol::producer: role_type=\"observer\" received "
-                "but no broker observer pubkey known yet (broker did not "
-                "publish `broker_observer_pubkey_z85` on REG_ACK, or "
-                "REG_ACK has not been processed yet — HEP-CORE-0041 "
-                "§D1(d) task #317 C.2.a).");
-        }
-        if (pubkey_z85.size() != trusted_broker_pubkey.size() ||
-            ::sodium_memcmp(pubkey_z85.data(), trusted_broker_pubkey.data(),
-                            pubkey_z85.size()) != 0)
-        {
-            // Constant-time compare — pubkeys are not secret, but this
-            // is the standard discipline for identity-check paths and
-            // makes drift-testing easier.
-            throw std::runtime_error(
-                "AttachProtocol::producer: role_type=\"observer\" hello "
-                "pubkey_z85 does not match the broker observer pubkey "
-                "the producer trusts (rejecting; possible squatter or "
-                "broker-restart with unlearned new keypair).");
-        }
-        // Identity check passed.  Fall through — the crypto_box_open_easy
-        // challenge verification below (§7) verifies the observer holds
-        // the seckey matching pubkey_z85.  On success the acceptor
-        // hands over the memfd via the same SCM_RIGHTS path as the
-        // consumer flow.  Observer sees the header page; no data-plane
-        // access (DataBlockObserverHandle enforces read-only mapping).
-    }
-    const std::string response_b64 =
-        hello.value("challenge_response_b64", std::string{});
-    if (response_b64.empty())
-    {
-        throw std::runtime_error(
-            "AttachProtocol::producer: hello challenge_response_b64 missing");
-    }
-
-    // ── 6. Decode pubkey + cipher ────────────────────────────────────────
-    const auto consumer_pk_raw = z85_pubkey_to_raw(pubkey_z85);
-    const auto cipher          = b64_decode(response_b64);
-    if (cipher.size() != kChallengeBytes + kMacBytes)
-    {
-        throw std::runtime_error(
-            "AttachProtocol::producer: challenge_response size mismatch "
-            "(expected " +
-            std::to_string(kChallengeBytes + kMacBytes) + " bytes, got " +
-            std::to_string(cipher.size()) + ")");
-    }
-
-    // ── 7. Verify under producer's seckey ────────────────────────────────
-    bool verified = false;
-    producer_seckey_accessor_(
-        [&](std::span<const std::byte> producer_sk_span) {
-            if (producer_sk_span.size() != kRawKeyBytes)
-            {
-                throw std::runtime_error(
-                    "AttachProtocol::producer: producer_sk span must be " +
-                    std::to_string(kRawKeyBytes) + " bytes (got " +
-                    std::to_string(producer_sk_span.size()) + ")");
-            }
-            unsigned char plaintext[kChallengeBytes]{};
-            const int     rc = ::crypto_box_open_easy(
-                plaintext, cipher.data(), cipher.size(), nonce,
-                consumer_pk_raw.data(),
-                reinterpret_cast<const unsigned char *>(producer_sk_span.data()));
-            if (rc == 0 &&
-                ::sodium_memcmp(plaintext, challenge, kChallengeBytes) == 0)
-            {
-                verified = true;
-            }
-            // Wipe local plaintext before leaving (it equals the
-            // issued challenge, which isn't secret long-term, but
-            // discipline matters).
-            ::sodium_memzero(plaintext, kChallengeBytes);
-        });
-
-    if (!verified)
-    {
-        throw std::runtime_error(
-            "AttachProtocol::producer: challenge-response verification "
-            "failed (consumer does not hold the seckey corresponding to "
-            "the claimed pubkey)");
-    }
-
-    // ── 8. Optional mutual-auth Frame 3 (HEP-CORE-0041 §D4.5, #262) ──────
-    //
-    // If the consumer sent `consumer_nonce_b64` + `consumer_challenge_b64`
-    // on Frame 2, respond with Frame 3 proving possession of our seckey.
-    // Absent fields → pre-#262 consumer that doesn't want mutual auth;
-    // skip Frame 3 (backward compat).
-    {
-        // 2026-07-03 code review Finding #10 — catch json::type_error
-        // for mutual-auth field type mismatches, symmetric with the
-        // consumer-side Frame 3 wrap.  A peer sending
-        // {"consumer_nonce_b64": null, ...} would otherwise throw a
-        // bare nlohmann type_error that escapes past acceptor-side
-        // callers.
-        std::string cons_nonce_b64;
-        std::string cons_challenge_b64;
-        try
-        {
-            cons_nonce_b64 =
-                hello.value("consumer_nonce_b64", std::string{});
-            cons_challenge_b64 =
-                hello.value("consumer_challenge_b64", std::string{});
-        }
-        catch (const nlohmann::json::exception &e)
-        {
-            throw std::runtime_error(
-                std::string("AttachProtocol::producer: consumer mutual-auth "
-                            "field wrong type — ") + e.what());
-        }
-        if (!cons_nonce_b64.empty() || !cons_challenge_b64.empty())
-        {
-            if (cons_nonce_b64.empty() || cons_challenge_b64.empty())
-            {
-                throw std::runtime_error(
-                    "AttachProtocol::producer: consumer sent partial "
-                    "mutual-auth fields (consumer_nonce_b64 and "
-                    "consumer_challenge_b64 must both be present or both absent)");
-            }
-            const auto cons_nonce_vec     = b64_decode(cons_nonce_b64);
-            const auto cons_challenge_vec = b64_decode(cons_challenge_b64);
-            if (cons_nonce_vec.size() != kNonceBytes ||
-                cons_challenge_vec.size() != kChallengeBytes)
-            {
-                throw std::runtime_error(
-                    "AttachProtocol::producer: consumer mutual-auth field size "
-                    "mismatch (expected nonce=" +
-                    std::to_string(kNonceBytes) + ", challenge=" +
-                    std::to_string(kChallengeBytes) + ")");
-            }
-
-            std::vector<unsigned char> proof_cipher(kChallengeBytes + kMacBytes);
-            std::array<unsigned char, kRawKeyBytes> producer_pk_raw{};
-            bool proof_ok = false;
-            producer_seckey_accessor_(
-                [&](std::span<const std::byte> producer_sk_span) {
-                    if (producer_sk_span.size() != kRawKeyBytes)
-                    {
-                        throw std::runtime_error(
-                            "AttachProtocol::producer: seckey span must be " +
-                            std::to_string(kRawKeyBytes) + " bytes for Frame 3");
-                    }
-                    // Derive our pubkey from the seckey inside the accessor
-                    // scope so we don't need to store or receive it separately.
-                    // X25519: pubkey = base_point^seckey.  Same primitive
-                    // crypto_box uses.
-                    if (::crypto_scalarmult_base(
-                            producer_pk_raw.data(),
-                            reinterpret_cast<const unsigned char *>(producer_sk_span.data())) != 0)
-                    {
-                        throw std::runtime_error(
-                            "AttachProtocol::producer: crypto_scalarmult_base "
-                            "failed while deriving pubkey for Frame 3");
-                    }
-                    const int rc = ::crypto_box_easy(
-                        proof_cipher.data(),
-                        cons_challenge_vec.data(), kChallengeBytes,
-                        cons_nonce_vec.data(), consumer_pk_raw.data(),
-                        reinterpret_cast<const unsigned char *>(producer_sk_span.data()));
-                    if (rc != 0)
-                    {
-                        throw std::runtime_error(
-                            "AttachProtocol::producer: crypto_box_easy for "
-                            "Frame 3 proof failed (rc=" +
-                            std::to_string(rc) + ")");
-                    }
-                    proof_ok = true;
-                });
-            if (!proof_ok)
-            {
-                throw std::runtime_error(
-                    "AttachProtocol::producer: seckey accessor did not run "
-                    "for Frame 3 (programmer error)");
-            }
-
-            // Encode derived pubkey to z85 for the wire.
-            char producer_pk_z85_buf[kZ85PubkeyChars + 1] = {};
-            if (::zmq_z85_encode(producer_pk_z85_buf, producer_pk_raw.data(),
-                                  kRawKeyBytes) == nullptr)
-            {
-                throw std::runtime_error(
-                    "AttachProtocol::producer: zmq_z85_encode failed for "
-                    "Frame 3 pubkey");
-            }
-            nlohmann::json proof;
-            proof["producer_pubkey_z85"] = std::string(producer_pk_z85_buf);
-            proof["proof_response_b64"] =
-                b64_encode({proof_cipher.data(), proof_cipher.size()});
-            send_frame(fd, proof, handshake_deadline, "producer");
-        }
-    }
+    // Phase 4b delegate — the actual Frame 1/2/3 crypto flow lives in
+    // `run_producer_handshake`, a transport-agnostic helper.  This
+    // method's ONLY remaining SHM-specific concerns are:
+    //   (a) the transport accept + SO_PEERCRED uid check above,
+    //   (b) the SCM_RIGHTS fd handoff below (guard.release()).
+    const ProducerHandshakeResult phr = run_producer_handshake(
+        channel, own_seckey_name_,
+        broker_observer_pubkey_accessor_,
+        handshake_deadline);
 
     // ── 9. Success.  Release the fd to the caller. ──────────────────────
     guard.release();
     AuthenticatedConsumer ac;
     ac.raw_peer            = *peer;
-    ac.consumer_role_uid   = role_uid;
-    ac.consumer_pubkey_z85 = pubkey_z85;
+    ac.consumer_role_uid   = phr.consumer_role_uid;
+    ac.consumer_pubkey_z85 = phr.consumer_pubkey_z85;
     return ac;
 }
+
 
 // ============================================================================
 //   Consumer-side handshake
@@ -725,17 +302,17 @@ initiate_consumer_handshake(const std::string          &endpoint,
             "initiate_consumer_handshake: producer_pubkey_z85 must be " +
             std::to_string(kZ85PubkeyChars) + " chars");
     }
-    if (!self.seckey_accessor)
+    if (self.own_seckey_name.empty())
     {
         throw std::invalid_argument(
-            "initiate_consumer_handshake: self.seckey_accessor must be set");
+            "initiate_consumer_handshake: self.own_seckey_name must be non-empty");
     }
 
     // ── 1. Connect ───────────────────────────────────────────────────────
     int fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (fd == -1)
     {
-        throw make_errno_error("consumer", "socket failed", errno);
+        throw attach_make_errno_error("consumer", "socket failed", errno);
     }
     addr.sun_family = AF_UNIX;
     std::memcpy(addr.sun_path, sock_path.c_str(), sock_path.size());
@@ -751,7 +328,7 @@ initiate_consumer_handshake(const std::string          &endpoint,
             // can poll back.
             return std::nullopt;
         }
-        throw make_errno_error(
+        throw attach_make_errno_error(
             "consumer", ("connect to '" + endpoint + "' failed").c_str(), e);
     }
 
@@ -773,32 +350,329 @@ initiate_consumer_handshake(const std::string          &endpoint,
     const auto handshake_deadline =
         std::chrono::steady_clock::now() + timeout;
 
-    // ── 2. Receive + parse frame 1 ───────────────────────────────────────
-    //
-    // #300 (2026-07-03): if the receive TIMES OUT (producer bound the
-    // Unix socket but the L2 accept thread hasn't spawned yet — the
-    // exact H3a race the caller's retry loop was written to absorb),
-    // return nullopt so the caller retries.  This mirrors the ENOENT /
-    // ECONNREFUSED nullopt path above at the `connect` step.  A
-    // protocol-level throw (framing / JSON / crypto — a plain
-    // std::runtime_error) still propagates so callers bail on real
-    // contract violations.
-    nlohmann::json challenge_in;
+    // Wrap the fd in a channel — Phase 3 transport-abstraction seam.
+    // Channel is non-owning; `guard` retains fd close responsibility.
+    ShmAttachChannel channel(fd, "consumer");
+
+    // Phase 4b delegate — Frame 1/2/3 crypto flow lives in the
+    // transport-agnostic helper.  On Frame 1 recv or Frame 2 send
+    // timeout (H3a race), the helper throws `AttachProtocolTimeout`;
+    // convert to nullopt so callers retry the connect+handshake.
     try
     {
-        challenge_in = receive_frame(fd, handshake_deadline, "consumer");
+        run_consumer_handshake(channel, self, producer_pubkey_z85,
+                               handshake_deadline, require_mutual_auth);
     }
     catch (const AttachProtocolTimeout &)
     {
+        // #300 (2026-07-03): pre-Frame-3 timeouts are the H3a race
+        // class — producer bound the socket but the L2 accept thread
+        // isn't ready yet.  Return nullopt so the caller retries.
+        // Frame 3 timeout is converted to std::runtime_error inside
+        // `run_consumer_handshake`, so this catch only sees the
+        // retryable path.
         return std::nullopt;
     }
-    if (challenge_in.value("protocol_version", std::string{}) != kProtocolVersion)
+
+    // ── 6. Success.  Hand fd to caller. ─────────────────────────────────
+    guard.release();
+    return fd;
+}
+
+// ============================================================================
+//   Transport-agnostic handshake helpers (Phase 4b — 2026-07-07)
+// ============================================================================
+//
+// See header for the design rationale and public contract.  These two
+// helpers own the Frame 1/2/3 cryptographic flow; the transport
+// wrapper (`AttachProtocolAcceptor::accept_one` / `initiate_consumer_handshake`
+// / future `ZmqAttachProtocolAcceptor`) owns accept + peer identity +
+// post-handshake completion.  Both helpers use ONLY the `IAttachChannel`
+// abstraction for I/O — no direct fd, socket, or ZMQ operations.
+
+ProducerHandshakeResult
+run_producer_handshake(IAttachChannel                       &channel,
+                       const std::string                    &own_seckey_name,
+                       const ObserverPubkeyAccessor         &observer_pubkey_accessor,
+                       std::chrono::steady_clock::time_point deadline)
+{
+    if (own_seckey_name.empty())
+    {
+        throw std::invalid_argument(
+            "run_producer_handshake: own_seckey_name must be non-empty");
+    }
+
+    // ── 2. Generate nonce + challenge ────────────────────────────────────
+    unsigned char nonce[kNonceBytes]{};
+    unsigned char challenge[kChallengeBytes]{};
+    secure().random_bytes(nonce,     kNonceBytes);
+    secure().random_bytes(challenge, kChallengeBytes);
+
+    // ── 3. Send frame 1 ──────────────────────────────────────────────────
+    {
+        nlohmann::json out;
+        out["protocol_version"] = kProtocolVersion;
+        out["nonce_b64"]        = b64_encode({nonce, kNonceBytes});
+        out["challenge_b64"]    = b64_encode({challenge, kChallengeBytes});
+        channel.send_frame(out, deadline);
+    }
+
+    // ── 4. Receive frame 2 ───────────────────────────────────────────────
+    const nlohmann::json hello = channel.recv_frame(deadline);
+
+    // ── 5. Validate hello shape ──────────────────────────────────────────
+    if (hello.value("protocol_version", std::string{}) != kProtocolVersion)
+    {
+        throw std::runtime_error(
+            "AttachProtocol::producer: hello protocol_version mismatch");
+    }
+    const std::string role_uid = hello.value("role_uid", std::string{});
+    if (role_uid.empty())
+    {
+        throw std::runtime_error("AttachProtocol::producer: hello role_uid empty");
+    }
+    // HEP-CORE-0041 §10.5 observer-role wiring (#317 C.1, 2026-07-03).
+    // See original in-place documentation (pre-Phase-4b) for the full
+    // route-on-role_type rationale.  Canonicalize empty/absent to
+    // "consumer" so callers see a non-empty `role_type` in the result.
+    std::string role_type =
+        hello.value("role_type", std::string{"consumer"});
+    if (role_type.empty()) role_type = "consumer";
+    if (role_type != "consumer" && role_type != "observer")
+    {
+        throw std::runtime_error(
+            "AttachProtocol::producer: hello role_type must be "
+            "\"consumer\", \"observer\", or empty (got \"" + role_type + "\")");
+    }
+    const std::string pubkey_z85 = hello.value("pubkey_z85", std::string{});
+    if (pubkey_z85.size() != kZ85PubkeyChars)
+    {
+        throw std::runtime_error(
+            "AttachProtocol::producer: hello pubkey_z85 must be " +
+            std::to_string(kZ85PubkeyChars) + " chars (got " +
+            std::to_string(pubkey_z85.size()) + ")");
+    }
+    if (role_type == "observer")
+    {
+        // HEP-CORE-0041 §D1(d) observer handshake identity check.
+        if (!observer_pubkey_accessor)
+        {
+            throw std::runtime_error(
+                "AttachProtocol::producer: role_type=\"observer\" received "
+                "but no observer pubkey accessor installed (caller must "
+                "pass one — HEP-CORE-0041 §D1(d) task #317 C.2.b).");
+        }
+        const std::string trusted_broker_pubkey = observer_pubkey_accessor();
+        if (trusted_broker_pubkey.empty())
+        {
+            throw std::runtime_error(
+                "AttachProtocol::producer: role_type=\"observer\" received "
+                "but no broker observer pubkey known yet (broker did not "
+                "publish `broker_observer_pubkey_z85` on REG_ACK, or "
+                "REG_ACK has not been processed yet — HEP-CORE-0041 "
+                "§D1(d) task #317 C.2.a).");
+        }
+        if (pubkey_z85.size() != trusted_broker_pubkey.size() ||
+            !secure().memcmp_ct(
+                std::span<const std::uint8_t>(
+                    reinterpret_cast<const std::uint8_t *>(pubkey_z85.data()),
+                    pubkey_z85.size()),
+                std::span<const std::uint8_t>(
+                    reinterpret_cast<const std::uint8_t *>(trusted_broker_pubkey.data()),
+                    trusted_broker_pubkey.size())))
+        {
+            throw std::runtime_error(
+                "AttachProtocol::producer: role_type=\"observer\" hello "
+                "pubkey_z85 does not match the broker observer pubkey "
+                "the producer trusts (rejecting; possible squatter or "
+                "broker-restart with unlearned new keypair).");
+        }
+    }
+    const std::string response_b64 =
+        hello.value("challenge_response_b64", std::string{});
+    if (response_b64.empty())
+    {
+        throw std::runtime_error(
+            "AttachProtocol::producer: hello challenge_response_b64 missing");
+    }
+
+    // ── 6. Decode pubkey + cipher ────────────────────────────────────────
+    const auto consumer_pk_raw = z85_pubkey_to_raw(pubkey_z85);
+    const auto cipher          = b64_decode(response_b64);
+    if (cipher.size() != kChallengeBytes + kMacBytes)
+    {
+        throw std::runtime_error(
+            "AttachProtocol::producer: challenge_response size mismatch "
+            "(expected " +
+            std::to_string(kChallengeBytes + kMacBytes) + " bytes, got " +
+            std::to_string(cipher.size()) + ")");
+    }
+
+    // ── 7. Verify challenge under producer's seckey (SMS Cat 1c) ─────────
+    unsigned char plaintext[kChallengeBytes]{};
+    const std::size_t decoded = secure().box_decrypt_using(
+        own_seckey_name,
+        std::span<const std::uint8_t, SecureSubsystem::kBoxPubkeyBytes>(
+            reinterpret_cast<const std::uint8_t *>(consumer_pk_raw.data()),
+            SecureSubsystem::kBoxPubkeyBytes),
+        std::span<const std::uint8_t, SecureSubsystem::kBoxNonceBytes>(
+            nonce, SecureSubsystem::kBoxNonceBytes),
+        std::span<const std::uint8_t>(cipher.data(), cipher.size()),
+        std::span<std::uint8_t>(plaintext, kChallengeBytes));
+    const bool verified =
+        (decoded == kChallengeBytes) &&
+        secure().memcmp_ct(
+            std::span<const std::uint8_t>(plaintext, kChallengeBytes),
+            std::span<const std::uint8_t>(challenge, kChallengeBytes));
+    secure().memzero(std::span<std::uint8_t>(plaintext, kChallengeBytes));
+
+    if (!verified)
+    {
+        throw std::runtime_error(
+            "AttachProtocol::producer: challenge-response verification "
+            "failed (consumer does not hold the seckey corresponding to "
+            "the claimed pubkey)");
+    }
+
+    // ── 8. Optional mutual-auth Frame 3 (HEP-CORE-0041 §D4.5, #262) ──────
+    {
+        std::string cons_nonce_b64;
+        std::string cons_challenge_b64;
+        try
+        {
+            cons_nonce_b64 =
+                hello.value("consumer_nonce_b64", std::string{});
+            cons_challenge_b64 =
+                hello.value("consumer_challenge_b64", std::string{});
+        }
+        catch (const nlohmann::json::exception &e)
+        {
+            throw std::runtime_error(
+                std::string("AttachProtocol::producer: consumer mutual-auth "
+                            "field wrong type — ") + e.what());
+        }
+        if (!cons_nonce_b64.empty() || !cons_challenge_b64.empty())
+        {
+            if (cons_nonce_b64.empty() || cons_challenge_b64.empty())
+            {
+                throw std::runtime_error(
+                    "AttachProtocol::producer: consumer sent partial "
+                    "mutual-auth fields (consumer_nonce_b64 and "
+                    "consumer_challenge_b64 must both be present or both absent)");
+            }
+            const auto cons_nonce_vec     = b64_decode(cons_nonce_b64);
+            const auto cons_challenge_vec = b64_decode(cons_challenge_b64);
+            if (cons_nonce_vec.size() != kNonceBytes ||
+                cons_challenge_vec.size() != kChallengeBytes)
+            {
+                throw std::runtime_error(
+                    "AttachProtocol::producer: consumer mutual-auth field size "
+                    "mismatch (expected nonce=" +
+                    std::to_string(kNonceBytes) + ", challenge=" +
+                    std::to_string(kChallengeBytes) + ")");
+            }
+
+            std::vector<unsigned char> proof_cipher(kChallengeBytes + kMacBytes);
+            const std::size_t proof_written = secure().box_encrypt_using(
+                own_seckey_name,
+                std::span<const std::uint8_t, SecureSubsystem::kBoxPubkeyBytes>(
+                    reinterpret_cast<const std::uint8_t *>(consumer_pk_raw.data()),
+                    SecureSubsystem::kBoxPubkeyBytes),
+                std::span<const std::uint8_t, SecureSubsystem::kBoxNonceBytes>(
+                    cons_nonce_vec.data(), SecureSubsystem::kBoxNonceBytes),
+                std::span<const std::uint8_t>(
+                    cons_challenge_vec.data(), kChallengeBytes),
+                std::span<std::uint8_t>(
+                    proof_cipher.data(), proof_cipher.size()));
+            if (proof_written != proof_cipher.size())
+            {
+                throw std::runtime_error(
+                    "AttachProtocol::producer: box_encrypt_using for "
+                    "Frame 3 proof failed (secret " + own_seckey_name +
+                    " missing from KeyStore, or sodium error)");
+            }
+
+            const std::string_view producer_pk_z85 =
+                secure().keys().pubkey(own_seckey_name);
+            nlohmann::json proof;
+            proof["producer_pubkey_z85"] = std::string(producer_pk_z85);
+            proof["proof_response_b64"] =
+                b64_encode({proof_cipher.data(), proof_cipher.size()});
+            channel.send_frame(proof, deadline);
+        }
+    }
+
+    ProducerHandshakeResult result;
+    result.consumer_role_uid   = role_uid;
+    result.consumer_pubkey_z85 = pubkey_z85;
+    result.role_type           = std::move(role_type);
+    return result;
+}
+
+void
+run_consumer_handshake(IAttachChannel                       &channel,
+                       const ConsumerAuthMaterial           &self,
+                       const std::string                    &producer_pubkey_z85,
+                       std::chrono::steady_clock::time_point deadline,
+                       bool                                  require_mutual_auth)
+{
+    if (self.role_uid.empty())
+    {
+        throw std::invalid_argument(
+            "run_consumer_handshake: self.role_uid must be non-empty");
+    }
+    if (self.pubkey_z85.size() != kZ85PubkeyChars)
+    {
+        throw std::invalid_argument(
+            "run_consumer_handshake: self.pubkey_z85 must be " +
+            std::to_string(kZ85PubkeyChars) + " chars");
+    }
+    if (producer_pubkey_z85.size() != kZ85PubkeyChars)
+    {
+        throw std::invalid_argument(
+            "run_consumer_handshake: producer_pubkey_z85 must be " +
+            std::to_string(kZ85PubkeyChars) + " chars");
+    }
+    if (self.own_seckey_name.empty())
+    {
+        throw std::invalid_argument(
+            "run_consumer_handshake: self.own_seckey_name must be non-empty");
+    }
+
+    // ── 2. Receive + parse frame 1 ───────────────────────────────────────
+    // Frame 1 recv timeout AND Frame 2 send timeout bubble up as
+    // AttachProtocolTimeout — the caller decides whether to convert
+    // to a nullopt-retry (SHM H3a race) or rethrow.
+    const nlohmann::json challenge_in = channel.recv_frame(deadline);
+    // Priority 6/D1 (2026-07-07): wrap `.value()` in try/catch so a
+    // peer sending `{"protocol_version": 42, ...}` (wrong-typed
+    // field) surfaces as an AttachProtocol-branded error rather than
+    // an uncaught nlohmann `type_error.302`.  Symmetric with the
+    // Frame 3 wrap below.
+    std::string protocol_version;
+    std::string nonce_b64_field;
+    std::string challenge_b64_field;
+    try
+    {
+        protocol_version =
+            challenge_in.value("protocol_version", std::string{});
+        nonce_b64_field =
+            challenge_in.value("nonce_b64", std::string{});
+        challenge_b64_field =
+            challenge_in.value("challenge_b64", std::string{});
+    }
+    catch (const nlohmann::json::exception &e)
+    {
+        throw std::runtime_error(
+            std::string("AttachProtocol::consumer: Frame 1 field wrong "
+                        "type — ") + e.what());
+    }
+    if (protocol_version != kProtocolVersion)
     {
         throw std::runtime_error(
             "AttachProtocol::consumer: challenge protocol_version mismatch");
     }
-    const auto nonce_dec =
-        b64_decode(challenge_in.value("nonce_b64", std::string{}));
+    const auto nonce_dec = b64_decode(nonce_b64_field);
     if (nonce_dec.size() != kNonceBytes)
     {
         throw std::runtime_error(
@@ -806,8 +680,7 @@ initiate_consumer_handshake(const std::string          &endpoint,
             std::to_string(kNonceBytes) + " bytes, got " +
             std::to_string(nonce_dec.size()) + ")");
     }
-    const auto challenge_dec =
-        b64_decode(challenge_in.value("challenge_b64", std::string{}));
+    const auto challenge_dec = b64_decode(challenge_b64_field);
     if (challenge_dec.size() != kChallengeBytes)
     {
         throw std::runtime_error(
@@ -818,38 +691,26 @@ initiate_consumer_handshake(const std::string          &endpoint,
 
     std::array<unsigned char, kNonceBytes>     nonce{};
     std::array<unsigned char, kChallengeBytes> challenge{};
-    std::memcpy(nonce.data(), nonce_dec.data(), kNonceBytes);
+    std::memcpy(nonce.data(),     nonce_dec.data(),     kNonceBytes);
     std::memcpy(challenge.data(), challenge_dec.data(), kChallengeBytes);
 
-    // ── 3. Encrypt response under consumer's seckey ──────────────────────
+    // ── 3. Encrypt response under consumer's seckey (SMS Cat 1c) ─────────
     const auto producer_pk_raw = z85_pubkey_to_raw(producer_pubkey_z85);
     std::vector<unsigned char> cipher(kChallengeBytes + kMacBytes);
-    bool                       encrypted = false;
-    self.seckey_accessor([&](std::span<const std::byte> consumer_sk_span) {
-        if (consumer_sk_span.size() != kRawKeyBytes)
-        {
-            throw std::runtime_error(
-                "AttachProtocol::consumer: consumer_sk span must be " +
-                std::to_string(kRawKeyBytes) + " bytes (got " +
-                std::to_string(consumer_sk_span.size()) + ")");
-        }
-        const int rc = ::crypto_box_easy(
-            cipher.data(), challenge.data(), kChallengeBytes, nonce.data(),
-            producer_pk_raw.data(),
-            reinterpret_cast<const unsigned char *>(consumer_sk_span.data()));
-        if (rc != 0)
-        {
-            throw std::runtime_error(
-                "AttachProtocol::consumer: crypto_box_easy failed (rc=" +
-                std::to_string(rc) + ")");
-        }
-        encrypted = true;
-    });
-    if (!encrypted)
+    const std::size_t written = secure().box_encrypt_using(
+        self.own_seckey_name,
+        std::span<const std::uint8_t, SecureSubsystem::kBoxPubkeyBytes>(
+            reinterpret_cast<const std::uint8_t *>(producer_pk_raw.data()),
+            SecureSubsystem::kBoxPubkeyBytes),
+        std::span<const std::uint8_t, SecureSubsystem::kBoxNonceBytes>(
+            nonce.data(), SecureSubsystem::kBoxNonceBytes),
+        std::span<const std::uint8_t>(challenge.data(), kChallengeBytes),
+        std::span<std::uint8_t>(cipher.data(), cipher.size()));
+    if (written != cipher.size())
     {
         throw std::runtime_error(
-            "AttachProtocol::consumer: seckey_accessor returned without "
-            "invoking the callback (programmer error)");
+            "AttachProtocol::consumer: box_encrypt_using failed (secret '" +
+            self.own_seckey_name + "' missing from KeyStore, or sodium error)");
     }
 
     // ── 4. Build + send frame 2 ──────────────────────────────────────────
@@ -858,47 +719,22 @@ initiate_consumer_handshake(const std::string          &endpoint,
     hello["role_uid"]               = self.role_uid;
     hello["pubkey_z85"]             = self.pubkey_z85;
     hello["challenge_response_b64"] = b64_encode({cipher.data(), cipher.size()});
-    // HEP-CORE-0041 §10.5 observer-role wiring (#317 C.1, 2026-07-03).
-    // Explicit `role_type` field on the hello so producer's acceptor
-    // can route consumer handshakes vs. broker-observer handshakes to
-    // different verification paths.  Emitted as `"consumer"` here;
-    // broker's observer-attach client will send `"observer"` (Phase C
-    // when that path lands, still TODO).  Empty / absent field is
-    // treated as `"consumer"` by the producer's acceptor for backward
-    // compatibility with pre-#317 role builds.
     hello["role_type"]              = "consumer";
 
     // HEP-CORE-0041 §D4.5 mutual-auth extension (#262, opt-in 2026-07-03).
-    // Consumer piggybacks its own nonce+challenge onto Frame 2 so the
-    // producer can prove possession of its seckey in Frame 3.  Producer
-    // that sees these fields responds with Frame 3; consumer that sent
-    // them requires Frame 3.  Pre-#262 producers ignore the extras and
-    // never send Frame 3 — which the consumer's requirement then flags
-    // as `PRODUCER_NOT_AUTHENTICATED` (correct fail-loud behaviour when
-    // the operator opted in to mutual auth against an outdated peer).
     std::array<unsigned char, kNonceBytes>     consumer_nonce{};
     std::array<unsigned char, kChallengeBytes> consumer_challenge{};
     if (require_mutual_auth)
     {
-        ::randombytes_buf(consumer_nonce.data(), kNonceBytes);
-        ::randombytes_buf(consumer_challenge.data(), kChallengeBytes);
+        secure().random_bytes(consumer_nonce.data(),     kNonceBytes);
+        secure().random_bytes(consumer_challenge.data(), kChallengeBytes);
         hello["consumer_nonce_b64"] =
             b64_encode({consumer_nonce.data(), kNonceBytes});
         hello["consumer_challenge_b64"] =
             b64_encode({consumer_challenge.data(), kChallengeBytes});
     }
 
-    // #300 (2026-07-03): send timeout (producer's L2 accept thread
-    // spawned but stalled reading) is same H3a-race class as the
-    // recv timeout above — nullopt for retry, not a protocol error.
-    try
-    {
-        send_frame(fd, hello, handshake_deadline, "consumer");
-    }
-    catch (const AttachProtocolTimeout &)
-    {
-        return std::nullopt;
-    }
+    channel.send_frame(hello, deadline);
 
     // ── 5. Mutual-auth Frame 3 (opt-in per §D4.5) ────────────────────────
     if (require_mutual_auth)
@@ -906,7 +742,7 @@ initiate_consumer_handshake(const std::string          &endpoint,
         nlohmann::json proof;
         try
         {
-            proof = receive_frame(fd, handshake_deadline, "consumer");
+            proof = channel.recv_frame(deadline);
         }
         catch (const AttachProtocolTimeout &)
         {
@@ -920,14 +756,6 @@ initiate_consumer_handshake(const std::string          &endpoint,
                 "pre-#262 build that does not support mutual auth, or the peer "
                 "is not the real producer");
         }
-        // 2026-07-03 code review Finding #7 — catch json::type_error
-        // from `.value<string>()` when the field is present but
-        // non-string.  Without this wrap, a peer sending
-        // {"producer_pubkey_z85": 42, ...} triggers nlohmann's
-        // `type_error.302` which escapes with the bare nlohmann
-        // message, bypassing the intended
-        // `attach_producer_not_authenticated` marker that §D4.5
-        // callers grep for.
         std::string proof_producer_pk;
         std::string proof_response_b64;
         try
@@ -954,8 +782,6 @@ initiate_consumer_handshake(const std::string          &endpoint,
         }
         if (proof_producer_pk != producer_pubkey_z85)
         {
-            // Peer identified with a different pubkey than the broker
-            // told us to expect.  Squatter scenario per §D4.5 threat model.
             throw std::runtime_error(
                 "AttachProtocol::consumer: producer_pubkey_z85 mismatch "
                 "(attach_producer_not_authenticated) — expected '" +
@@ -971,41 +797,35 @@ initiate_consumer_handshake(const std::string          &endpoint,
                 std::to_string(kChallengeBytes + kMacBytes) + " bytes, got " +
                 std::to_string(proof_cipher.size()));
         }
-        // Verify with our seckey against producer's expected pubkey.
-        // Same use-not-export pattern as consumer's own signing above.
-        bool proof_verified = false;
-        self.seckey_accessor([&](std::span<const std::byte> consumer_sk_span) {
-            if (consumer_sk_span.size() != kRawKeyBytes)
-            {
-                throw std::runtime_error(
-                    "AttachProtocol::consumer: consumer_sk span must be " +
-                    std::to_string(kRawKeyBytes) + " bytes for Frame 3 verify");
-            }
-            std::array<unsigned char, kChallengeBytes> proof_plain{};
-            const int rc = ::crypto_box_open_easy(
-                proof_plain.data(), proof_cipher.data(), proof_cipher.size(),
-                consumer_nonce.data(), producer_pk_raw.data(),
-                reinterpret_cast<const unsigned char *>(consumer_sk_span.data()));
-            if (rc == 0 && ::sodium_memcmp(proof_plain.data(),
-                                            consumer_challenge.data(),
-                                            kChallengeBytes) == 0)
-            {
-                proof_verified = true;
-            }
-            ::sodium_memzero(proof_plain.data(), kChallengeBytes);
-        });
+        std::array<unsigned char, kChallengeBytes> proof_plain{};
+        const std::size_t proof_decoded = secure().box_decrypt_using(
+            self.own_seckey_name,
+            std::span<const std::uint8_t, SecureSubsystem::kBoxPubkeyBytes>(
+                reinterpret_cast<const std::uint8_t *>(producer_pk_raw.data()),
+                SecureSubsystem::kBoxPubkeyBytes),
+            std::span<const std::uint8_t, SecureSubsystem::kBoxNonceBytes>(
+                consumer_nonce.data(), SecureSubsystem::kBoxNonceBytes),
+            std::span<const std::uint8_t>(
+                proof_cipher.data(), proof_cipher.size()),
+            std::span<std::uint8_t>(proof_plain.data(), kChallengeBytes));
+        const bool proof_verified =
+            (proof_decoded == kChallengeBytes) &&
+            secure().memcmp_ct(
+                std::span<const std::uint8_t>(
+                    proof_plain.data(), kChallengeBytes),
+                std::span<const std::uint8_t>(
+                    consumer_challenge.data(), kChallengeBytes));
+        secure().memzero(
+            std::span<std::uint8_t>(proof_plain.data(), kChallengeBytes));
         if (!proof_verified)
         {
             throw std::runtime_error(
-                "AttachProtocol::consumer: Frame 3 crypto verify failed "
-                "(attach_producer_not_authenticated) — producer does not hold "
-                "the seckey corresponding to the expected pubkey");
+                "AttachProtocol::consumer: Frame 3 proof verification "
+                "failed (attach_producer_not_authenticated) — producer "
+                "does not hold the seckey corresponding to the pubkey "
+                "the broker told us to expect");
         }
     }
-
-    // ── 6. Success.  Hand fd to caller. ─────────────────────────────────
-    guard.release();
-    return fd;
 }
 
 #else // !PYLABHUB_PLATFORM_LINUX

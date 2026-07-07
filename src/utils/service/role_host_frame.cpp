@@ -21,7 +21,7 @@
 #include "utils/schema_utils.hpp"               // compute_schema_size
 #include "utils/data_block.hpp"                 // datablock_layout_total_size + DataBlockConfig
 #include "utils/security/attach_protocol.hpp"   // AttachProtocolAcceptor + SeckeyAccessor
-#include "utils/security/key_store.hpp"         // key_store() + kRoleIdentityName
+#include "utils/security/key_store.hpp"         // secure().keys() + kRoleIdentityName
 #include "utils/security/shm_attach_orchestrator.hpp"
 #include "utils/security/shm_capability_channel.hpp"
 #include "utils/thread_manager.hpp"             // ThreadManager::SlotContext
@@ -498,20 +498,6 @@ bool RoleHostFrame::spawn_shm_auth_listener_()
     const std::string tx_ch        = this->config().out_channel();
     const std::string producer_uid = api_ref.uid();
 
-    // SeckeyAccessor: read the role's own seckey via HEP-CORE-0040
-    // §8.5.1 use-not-export discipline.  The string_view → span<const
-    // byte> shim adapts KeyStore's signature to AttachProtocol's.
-    sec::SeckeyAccessor seckey_accessor =
-        [](std::function<void(std::span<const std::byte>)> use) {
-            sec::key_store().with_seckey(
-                sec::kRoleIdentityName,
-                [&](std::string_view sv) {
-                    use(std::span<const std::byte>(
-                        reinterpret_cast<const std::byte *>(sv.data()),
-                        sv.size()));
-                });
-        };
-
     // HEP-CORE-0041 §D1(d) observer pubkey accessor (task #317 C.2.b).
     // The acceptor calls this ONCE per observer handshake to fetch the
     // broker observer pubkey the producer trusts (learned via REG_ACK
@@ -529,7 +515,7 @@ bool RoleHostFrame::spawn_shm_auth_listener_()
         shm_acceptor_ = std::make_unique<sec::AttachProtocolAcceptor>(
             *shm_transport_,
             ::getuid(),  // SO_PEERCRED uid sanity (HEP-0036 §I8)
-            std::move(seckey_accessor),
+            std::string(sec::kRoleIdentityName),  // KeyStore name — SMS reads it
             std::move(observer_pubkey_accessor));
     }
     catch (const std::exception &e)

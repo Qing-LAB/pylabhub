@@ -42,12 +42,17 @@
  * **Wire format:** every frame is a 4-byte little-endian length
  * prefix followed by a JSON body.  4 KiB DoS cap on body size.
  *
- * **Use-not-export discipline** (HEP-CORE-0040 §5.2): callers give
- * the AttachProtocol access to their seckey via a callback that
- * scopes the seckey span to the callback body.  Bytes never leave
- * the security module's view; production wires this to
- * `KeyStore::with_seckey(...)`; tests inject a test-local seckey
- * directly without dragging KeyStore lifecycle into Pattern 1 tests.
+ * **Use-not-export discipline** (HEP-CORE-0043 §1.4 / §6): callers
+ * identify their own identity keypair by KeyStore ENTRY NAME (e.g.
+ * `kRoleIdentityName`, `kHubIdentityName`, `"broker.observer"`).
+ * The seckey bytes never cross the AttachProtocol API — SMS
+ * resolves the name via `keys().with_seckey(name, ...)` inside
+ * `secure().box_encrypt_using(name, ...)` /
+ * `secure().box_decrypt_using(name, ...)` and dereferences the
+ * bytes inside the security module only.  Tests seed their
+ * test-local identity into KeyStore via `seed_curve_identities()`
+ * before constructing the acceptor / consumer material — same
+ * production-shaped path.
  *
  * **Platform support today:** Linux only.  The non-Linux blocks in
  * the .cpp `#error` symmetrically with the L1 backend, because the
@@ -66,6 +71,9 @@
 
 #include "plh_platform.hpp"
 #include "pylabhub_utils_export.h"
+#include "utils/security/attach_channel.hpp"        // Phase 4b — IAttachChannel
+#include "utils/security/attach_channel_zmq.hpp"    // Phase 4c — ZmqAttachChannel + zmq::socket_t
+#include "utils/security/secure_subsystem.hpp"      // secure() facade
 #include "utils/security/shm_capability_channel.hpp"
 
 #include <chrono>
@@ -82,22 +90,6 @@
 
 namespace pylabhub::utils::security
 {
-
-/// Use-not-export accessor for a CURVE seckey.
-///
-/// The owner passes a callback that the AttachProtocol invokes with
-/// the seckey bytes (32 raw bytes from Curve25519) within a scoped
-/// lifetime.  Production wires this to
-/// `KeyStore::with_seckey(kRoleIdentityName, ...)`; tests can wire a
-/// local seckey directly.
-///
-/// **Lifecycle.**  Caller invokes `accessor(use_seckey)`; the
-/// accessor looks up its seckey and calls `use_seckey(span_over_32_bytes)`;
-/// `use_seckey` does the crypto and returns; the accessor may then
-/// wipe and release.  After `accessor` returns, the seckey span is
-/// no longer valid.
-using SeckeyAccessor =
-    std::function<void(std::function<void(std::span<const std::byte>)>)>;
 
 /// HEP-CORE-0041 §D1(d) broker observer pubkey accessor (task #317 C.2.b).
 /// Called by the acceptor when a Frame 2 hello arrives with
@@ -136,11 +128,20 @@ class PYLABHUB_UTILS_EXPORT AttachProtocolTimeout : public std::runtime_error
 /// from its KeyStore + the producer's pubkey from CONSUMER_REG_ACK
 /// (HEP-CORE-0036 §6.4 `producers[i].zmq_pubkey` — same shape for
 /// SHM channels under HEP-0041).
+///
+/// The consumer's own identity keypair is cited by KeyStore ENTRY
+/// NAME (`own_seckey_name`).  SMS resolves it internally via
+/// `secure().box_encrypt_using(name, ...)` — the raw seckey bytes
+/// never appear at the AttachProtocol API boundary (HEP-CORE-0043
+/// §1.4 use-not-export).  Standard values: `kRoleIdentityName` in
+/// production; a test-local name after `seed_curve_identities()`
+/// in tests.  `pubkey_z85` is the caller's own public half (Z85);
+/// travels on the wire in Frame 2 for the producer to encrypt to.
 struct ConsumerAuthMaterial
 {
-    std::string    role_uid;
-    std::string    pubkey_z85;
-    SeckeyAccessor seckey_accessor;
+    std::string role_uid;
+    std::string pubkey_z85;
+    std::string own_seckey_name;
 };
 
 /// What the producer-side L2 returns after a successful accept +
@@ -168,13 +169,26 @@ public:
     ///                              outlive this acceptor.
     /// @param expected_uid          Deployment's uid; SO_PEERCRED.uid
     ///                              must match or the peer is rejected.
-    /// @param producer_seckey_accessor
-    ///                              Scoped access to the producer's
-    ///                              seckey for `crypto_box_open_easy`.
-    ///                              Must be non-empty.
+    /// @param own_seckey_name       KeyStore entry name for the
+    ///                              producer's identity keypair.  SMS
+    ///                              resolves it internally via
+    ///                              `secure().box_decrypt_using(name,
+    ///                              ...)` and
+    ///                              `secure().box_encrypt_using(name,
+    ///                              ...)` (Frame-3 mutual-auth); the
+    ///                              seckey bytes never cross the
+    ///                              AttachProtocol API boundary
+    ///                              (HEP-CORE-0043 §1.4 / §6).
+    ///                              MUST be present in `secure().keys()`
+    ///                              before `accept_one` is called.
+    /// @param broker_observer_pubkey_accessor
+    ///                              Callback returning the current
+    ///                              known broker-observer pubkey Z85
+    ///                              (dynamic, updated via REG_ACK).
+    ///                              Optional.
     AttachProtocolAcceptor(IShmCapabilityProducer &transport,
                            uid_t                   expected_uid,
-                           SeckeyAccessor          producer_seckey_accessor,
+                           std::string             own_seckey_name,
                            ObserverPubkeyAccessor  broker_observer_pubkey_accessor = nullptr);
 
     ~AttachProtocolAcceptor() = default;
@@ -207,7 +221,7 @@ public:
 private:
     IShmCapabilityProducer &transport_;
     uid_t                   expected_uid_;
-    SeckeyAccessor          producer_seckey_accessor_;
+    std::string             own_seckey_name_;
     ObserverPubkeyAccessor  broker_observer_pubkey_accessor_;
 };
 
@@ -246,4 +260,263 @@ initiate_consumer_handshake(const std::string          &endpoint,
 
 #endif // PYLABHUB_PLATFORM_LINUX
 
+// NOTE — Phase 4b + Phase 4c declarations that follow are conceptually
+// portable (they use only IAttachChannel + SMS + JSON) but are
+// currently declared inside the same `PYLABHUB_PLATFORM_LINUX` guard
+// because their DEFINITIONS in `attach_protocol.cpp` /
+// `attach_protocol_zmq.cpp` live alongside the SHM-specific code
+// and share the anonymous-namespace utility helpers (b64_encode /
+// z85_pubkey_to_raw / constants).  When non-Linux SHM backends land
+// (tasks #259 / #260 / #261), the correct fix is to hoist the
+// utility helpers + Phase 4b/4c out of the platform guard in the
+// .cpp — then this outer guard can be dropped.  Gating now keeps
+// declaration and definition in lockstep and avoids the "declared
+// on all platforms, defined only on Linux" linker error.
+#if defined(PYLABHUB_PLATFORM_LINUX)
+
+// ============================================================================
+//   Transport-agnostic handshake helpers (Phase 4b — 2026-07-07)
+// ============================================================================
+//
+// These free functions run the AttachProtocol challenge-response over
+// ANY conforming `IAttachChannel`.  The caller owns the transport
+// (SHM fd, ZMQ ROUTER, future backends), performs the transport-layer
+// peer identity check (SO_PEERCRED uid for SHM, ZAP-verified pubkey
+// for ZMQ), wraps the transport in a channel, and calls the helper.
+// The channel abstracts framing; these helpers own the crypto flow.
+//
+// SEPARATION OF CONCERNS:
+//   - Transport-specific (SHM AttachProtocolAcceptor / ZMQ acceptor):
+//     accept + peer identity check + channel construction + on-success
+//     completion (SCM_RIGHTS handoff for SHM, channel_url response for
+//     ZMQ).
+//   - Transport-agnostic (these helpers): Frame 1/2/3 challenge-
+//     response over IAttachChannel, using SMS for all crypto.
+
+/// Result of a successful producer-side handshake — everything the
+/// transport-specific acceptor needs to complete its post-handshake
+/// step (fd handoff or channel_url response).
+struct ProducerHandshakeResult
+{
+    /// Consumer's role UID as declared in Frame 2.
+    std::string consumer_role_uid;
+    /// Consumer's Z85-encoded CURVE pubkey as declared in Frame 2
+    /// (verified: consumer proved possession of the matching seckey
+    /// via the challenge-response).
+    std::string consumer_pubkey_z85;
+    /// `"consumer"` (default / pre-#317) or `"observer"` (HEP-CORE-0041
+    /// §D1(d) broker-observer path).  Never empty in the returned
+    /// result — the helper canonicalizes empty/absent to `"consumer"`.
+    std::string role_type;
+};
+
+/// Run the producer-side AttachProtocol challenge-response over
+/// `channel`.  Transport-agnostic — the caller has already accepted
+/// the peer and verified its transport-layer identity (SO_PEERCRED
+/// uid for SHM, ZAP-verified CURVE pubkey for ZMQ).
+///
+/// @param channel             Per-peer channel already bound to the
+///                            accepted peer.
+/// @param own_seckey_name     KeyStore entry name for the producer's
+///                            own seckey (SMS reads it internally via
+///                            `keys().with_seckey`).
+/// @param observer_pubkey_accessor
+///                            Callable returning the broker's
+///                            observer pubkey Z85.  Empty return
+///                            OR nullptr callable rejects any Frame 2
+///                            with `role_type == "observer"`.  See
+///                            HEP-CORE-0041 §D1(d) task #317 C.2.a.
+/// @param deadline            Absolute deadline for the entire
+///                            handshake (Frame 1 send + Frame 2 recv
+///                            + optional Frame 3 send).
+///
+/// @return  Verified handshake result on success.
+/// @throws  AttachProtocolTimeout  on any deadline expiry.
+/// @throws  std::runtime_error     on protocol violation, wrong
+///                                 pubkey, MAC verify failure, etc.
+[[nodiscard]] PYLABHUB_UTILS_EXPORT ProducerHandshakeResult
+run_producer_handshake(IAttachChannel                       &channel,
+                       const std::string                    &own_seckey_name,
+                       const ObserverPubkeyAccessor         &observer_pubkey_accessor,
+                       std::chrono::steady_clock::time_point deadline);
+
+/// Run the consumer-side AttachProtocol challenge-response over
+/// `channel`.  Transport-agnostic — the caller has already connected
+/// to the endpoint and wrapped the connection in a channel.
+///
+/// @param channel               Per-peer channel already bound to the
+///                              producer.
+/// @param self                  Consumer's own auth material (role UID,
+///                              own pubkey Z85, KeyStore name for own
+///                              seckey).
+/// @param producer_pubkey_z85   Producer's expected Z85 pubkey (from
+///                              broker's CONSUMER_REG_ACK).
+/// @param deadline              Absolute deadline for the whole
+///                              handshake.
+/// @param require_mutual_auth   If true, consumer sends Frame 2 with
+///                              its own nonce+challenge and requires
+///                              a matching Frame 3 producer proof.
+///
+/// @throws AttachProtocolTimeout  on Frame 1 recv timeout OR Frame 2
+///                                send timeout — signals H3a race
+///                                (caller should retry the whole
+///                                connect+handshake).  Frame 3 recv
+///                                timeout maps to `std::runtime_error`
+///                                below.
+/// @throws std::runtime_error     on protocol violation, cipher
+///                                verification failure, Frame 3
+///                                timeout (a producer that spoke
+///                                Frames 1+2 then went quiet is
+///                                affirmatively refusing to
+///                                authenticate — no retry).
+PYLABHUB_UTILS_EXPORT void
+run_consumer_handshake(IAttachChannel                       &channel,
+                       const ConsumerAuthMaterial           &self,
+                       const std::string                    &producer_pubkey_z85,
+                       std::chrono::steady_clock::time_point deadline,
+                       bool                                  require_mutual_auth);
+
 } // namespace pylabhub::utils::security
+
+// ============================================================================
+//   ZMQ AttachProtocol acceptor + consumer entry (Phase 4c minimal —
+//   2026-07-07)
+// ============================================================================
+//
+// Wraps the `IAttachChannel` seam with a ZMQ ROUTER/DEALER transport
+// (parallel to `AttachProtocolAcceptor` + `initiate_consumer_handshake`
+// on the SHM side).  These entries compose:
+//   ZmqAttachChannel  +  run_{producer,consumer}_handshake
+//
+// # Intended integration (Phase 4c-cont, deferred)
+//
+// These entries are the building blocks for BrokerService's future
+// belt-and-braces AttachProtocol layer on top of CURVE.  In that
+// design:
+//   - Broker's REG_REQ handler captures the peer's routing identity
+//     from the incoming ROUTER frame.
+//   - Handler pauses REG_REQ processing, invokes
+//     `ZmqAttachProtocolAcceptor::run_handshake(router, peer_routing_id, timeout)`,
+//     receives a verified `ProducerHandshakeResult`.
+//   - Only after successful verification does the broker send
+//     REG_ACK and mark the peer `Authorized`.
+//   - Role side runs `initiate_zmq_consumer_handshake` on its DEALER
+//     immediately after sending REG_REQ, before treating any
+//     REG_ACK as authoritative.
+//
+// **Current status: not yet wired.**  Phase 4c minimal ships the
+// building blocks + L2 tests demonstrating the ZMQ transport works
+// end-to-end; BrokerService integration is Phase 4c-cont (tracked in
+// `docs/todo/AUTH_TODO.md`).  That integration requires reorganizing
+// the broker's single-turn REG_REQ handler into a per-peer state
+// machine so handshake frames from peer A can interleave with normal
+// messages from peer B on the shared ROUTER — a structural refactor
+// larger than adding these entries.
+
+namespace pylabhub::utils::security
+{
+
+/// ZMQ AttachProtocol acceptor — composes `ZmqAttachChannel` +
+/// `run_producer_handshake`.  Transport-symmetric parallel to
+/// `AttachProtocolAcceptor` (SHM).  The caller provides an already-
+/// bound ROUTER socket + the peer's routing identity (usually
+/// captured from an earlier ROUTER recv).
+///
+/// ⚠  SECURITY REQUIREMENT — belt-and-braces layering only.
+/// ------------------------------------------------------------------
+/// This acceptor is designed to run AFTER libzmq's ZAP has already
+/// pinned the peer's routing identity to an allowlisted CURVE
+/// pubkey.  AttachProtocol on its own only proves "peer holds *some*
+/// seckey matching *some* pubkey they claimed" — an attacker can
+/// mint a fresh keypair, claim its pubkey, and pass every crypto
+/// check here.  Without a prior CURVE + ZAP allowlist pin at the
+/// TRANSPORT layer, this acceptor accepts any self-consistent
+/// identity and is NOT a security boundary.
+///
+/// Caller invariants:
+///   1. The ROUTER socket is configured with `ZMQ_CURVE_SERVER = 1`
+///      (or an equivalent authenticated transport).
+///   2. A ZAP handler has already validated the peer's CURVE public
+///      key against the operator's allowlist BEFORE the peer's
+///      routing identity reached the caller.
+///   3. The `peer_routing_id` passed to `run_handshake` came from
+///      a ROUTER recv on THAT authenticated socket — never from
+///      user input or an unauthenticated source.
+///
+/// Violate any of the above and this acceptor provides no
+/// meaningful authentication.  Phase 4c-cont's BrokerService
+/// wiring will encode this as a compile-time / runtime check;
+/// this Phase 4c minimal doesn't yet enforce it programmatically.
+/// ------------------------------------------------------------------
+class PYLABHUB_UTILS_EXPORT ZmqAttachProtocolAcceptor
+{
+public:
+    /// @param own_seckey_name           KeyStore entry name for
+    ///                                  producer's own seckey.
+    /// @param observer_pubkey_accessor  Optional accessor for the
+    ///                                  broker's observer pubkey
+    ///                                  (empty = observer path
+    ///                                  rejected).
+    ZmqAttachProtocolAcceptor(std::string             own_seckey_name,
+                              ObserverPubkeyAccessor  observer_pubkey_accessor);
+
+    ~ZmqAttachProtocolAcceptor() = default;
+
+    ZmqAttachProtocolAcceptor(const ZmqAttachProtocolAcceptor &)            = delete;
+    ZmqAttachProtocolAcceptor &operator=(const ZmqAttachProtocolAcceptor &) = delete;
+    ZmqAttachProtocolAcceptor(ZmqAttachProtocolAcceptor &&)                 = delete;
+    ZmqAttachProtocolAcceptor &operator=(ZmqAttachProtocolAcceptor &&)      = delete;
+
+    /// Run the producer-side AttachProtocol handshake with a specific
+    /// peer already identified on the ROUTER.
+    ///
+    /// @param router            Already-bound ZMQ ROUTER socket.
+    /// @param peer_routing_id   Peer's routing identity (from prior
+    ///                          ROUTER recv metadata).
+    /// @param timeout           Wall-clock budget for the entire
+    ///                          handshake (Frame 1 send + Frame 2
+    ///                          recv + optional Frame 3 send).
+    ///
+    /// @return  Verified handshake result — role_uid, pubkey_z85,
+    ///          role_type.
+    /// @throws  AttachProtocolTimeout  on deadline expiry.
+    /// @throws  std::runtime_error     on protocol violation, crypto
+    ///                                 verification failure, etc.
+    [[nodiscard]] ProducerHandshakeResult
+    run_handshake(zmq::socket_t             &router,
+                  const std::string         &peer_routing_id,
+                  std::chrono::milliseconds  timeout);
+
+private:
+    std::string             own_seckey_name_;
+    ObserverPubkeyAccessor  observer_pubkey_accessor_;
+};
+
+/// Consumer-side entry for a ZMQ AttachProtocol handshake.  Assumes
+/// `dealer` is already connected to the broker's ROUTER.  Runs the
+/// same crypto flow as `initiate_consumer_handshake` (SHM) via the
+/// `IAttachChannel` seam.
+///
+/// @param dealer               ZMQ DEALER socket, already connected.
+/// @param self                 Consumer's own auth material.
+/// @param producer_pubkey_z85  Producer's expected Z85 pubkey.
+/// @param timeout              Wall-clock budget for the handshake.
+/// @param require_mutual_auth  Opt-in for Frame 3 producer proof.
+///
+/// @throws AttachProtocolTimeout  on Frame 1 recv OR Frame 2 send
+///                                timeout — signals the H3a race
+///                                (caller may retry).
+/// @throws std::runtime_error     on protocol violation, Frame 3
+///                                timeout, crypto verification
+///                                failure, etc.
+PYLABHUB_UTILS_EXPORT void
+initiate_zmq_consumer_handshake(
+    zmq::socket_t              &dealer,
+    const ConsumerAuthMaterial &self,
+    const std::string          &producer_pubkey_z85,
+    std::chrono::milliseconds   timeout,
+    bool                        require_mutual_auth = false);
+
+} // namespace pylabhub::utils::security
+
+#endif // PYLABHUB_PLATFORM_LINUX — see the NOTE above line 262

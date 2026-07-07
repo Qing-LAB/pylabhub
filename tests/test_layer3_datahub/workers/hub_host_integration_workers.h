@@ -8,7 +8,7 @@
  * isolation: each scenario constructs a `HubHost` (which spawns a
  * `BrokerService` thread) and runs a `BrokerRequestComm` poll loop
  * against it, transitively touching Logger / FileLock / JsonConfig /
- * CryptoUtils / ZMQContext.  Cross-process hub-death observability is
+ * SecureSubsystem / ZMQContext.  Cross-process hub-death observability is
  * tracked as L4 task #296 (HEP-CORE-0023 §2.5.3).
  */
 
