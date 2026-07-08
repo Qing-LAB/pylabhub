@@ -82,7 +82,7 @@ Revision history:
   DEREG" → "Dialing-side DEREG" (terminology drift back after rev 4
   normalization).  No design changes; documentation cleanup only.
   Design LOCKED status preserved.
-- **Rev 7** (this) — second cleanup pass on residuals that survived
+- **Rev 7** (`80609380`) — second cleanup pass on residuals that survived
   rev 6.  §10 tier-boundary diagram: script Tier 1 line updated from
   `peer_count()` to the four split accessor names.  §11.1 broker_service.cpp
   row expanded to mention the `phase` field emission mechanism (was
@@ -98,6 +98,22 @@ Revision history:
   internal map, split accessors for the script surface.
   No design changes; documentation cleanup only.  Design LOCKED
   status preserved.
+- **Rev 8** (this) — cross-ref cleanup for pre-rev-5 metadata that
+  survived every previous review because it's in table row order + count
+  references + cross-references to obsolete section structure, not in
+  semantic prose.  §11.4 HEP-files-affected table reordered to numerical
+  HEP order (HEP-CORE-0007 moved from row 8 to row 1); HEP-CORE-0007 row
+  expanded to note the `phase` field wire schema addition;
+  HEP-CORE-0036 row expanded to note `phase=live` semantics; count line
+  added at bottom ("Nine HEPs total").  §12 Phase A: "7 HEPs above" →
+  "nine HEPs listed in §11.4" (count was wrong; nine actual).  §12
+  Phase G + §14: dropped stale "§13.3 open question" parentheticals
+  (§13 was restructured in rev 5 as a flat list — no subsections — and
+  item 1 was resolved as plain PUB, so the parentheticals referred to a
+  section that doesn't exist AND to a resolved question).  §13 item 1
+  answer: `peer_count` → "live-peer count / `live_peers[channel]` map"
+  for vocabulary consistency with the rest of the doc.  No design
+  changes; documentation cleanup only.  Design LOCKED status preserved.
 
 The draft supersedes two recent commits that need to be re-evaluated in
 light of this design:
@@ -1440,15 +1456,17 @@ revision.
 
 | HEP | Sections affected | Change type |
 |---|---|---|
+| **HEP-CORE-0007** | §12 wire catalog + REG_REQ / CONSUMER_REG_REQ schema + CONSUMER_REG_ACK schema + error-code catalog | **Update** — add `channel_topology` (REQUIRED); add scalar `data_endpoint` + `data_pubkey` to dialing-side ACKs; retire per-producer array; add error codes: `TOPOLOGY_MISMATCH`, `TOPOLOGY_NOT_SUPPORTED_FOR_TRANSPORT`, `FAN_IN_IS_SINGLE_CONSUMER`, `FAN_OUT_IS_SINGLE_PRODUCER`, `ONE_TO_ONE_CARDINALITY_VIOLATED`, `CHANNEL_CLOSED`.  Also: extend `CHANNEL_AUTH_CHANGED_NOTIFY` schema with `phase` field (`admitted` \| `live` \| `left`) + `role_uid` + `role_type` per §5.5. |
 | **HEP-CORE-0017** | §3.3, §4.6, §4.6.1 | **Major rewrite** — replace per-peer connect model with binding-side-single-endpoint. |
 | **HEP-CORE-0021** | §16 | **Reparametrize** — "producer" → "binding side" throughout. |
 | **HEP-CORE-0023** | §2.1.1 | **Generalize** — channel-death rule "binding side dies → channel dies." |
 | **HEP-CORE-0028** | Script API surface | **Amend** — add four accessors on every role's api: `consumer_count(channel)`, `producer_count(channel)`, `consumers(channel)`, `producers(channel)`.  Objective Live counts; cross-engine parity (Lua + Python + Native). |
 | **HEP-CORE-0033** | §2994 wire catalog + §1247 code catalog + `ChannelEntry` description | **Update** — `topology` + `data_endpoint` + `data_endpoint_resolved` fields; ATTACH_REQ family retires; `CHANNEL_PRODUCERS_CHANGED_NOTIFY` chain retires. |
-| **HEP-CORE-0036** | §3.5.3, §6.4, §6.5, §6.5.1, §I7, §5.2 R6, §14 | **Symmetrize** — R6 gate direction generalizes; NOTIFY chain aims at binding side; §I7 endpoint disclosure section reflects topology-parametric shape. |
+| **HEP-CORE-0036** | §3.5.3, §6.4, §6.5, §6.5.1, §I7, §5.2 R6, §14 | **Symmetrize** — R6 gate direction generalizes; NOTIFY chain aims at binding side; §I7 endpoint disclosure section reflects topology-parametric shape.  Add `phase=live` semantics (§5.5): dialing-side first-heartbeat triggers a NOTIFY to the binding side without waking R6. |
 | **HEP-CORE-0042** | Entire HEP | **Major scope narrowing** — retire §5 dispatch + §7.1 pre-attach loop.  Preserve `confirmed_version` bookkeeping (now scalar per channel).  Preserve HEP-0044 AttachProtocol reference. |
-| **HEP-CORE-0007** | §12 wire catalog + REG_REQ / CONSUMER_REG_REQ schema + CONSUMER_REG_ACK schema + error-code catalog | **Update** — add `channel_topology` (REQUIRED); add scalar `data_endpoint` + `data_pubkey` to dialing-side ACKs; retire per-producer array; add error codes: `TOPOLOGY_MISMATCH`, `TOPOLOGY_NOT_SUPPORTED_FOR_TRANSPORT`, `FAN_IN_IS_SINGLE_CONSUMER`, `FAN_OUT_IS_SINGLE_PRODUCER`, `ONE_TO_ONE_CARDINALITY_VIOLATED`, `CHANNEL_CLOSED`. |
 | **HEP-CORE-0044** | §5 wire consumers | **Small update** — SHM-attach helpers read `data_endpoint` / `data_pubkey` (renamed from `shm_capability_endpoint` / `producer_pubkey_z85` on the wire). |
+
+**Nine HEPs total** in this amendment package — rows sorted numerically for review convenience.
 
 ## 12. Migration ordering (phased)
 
@@ -1456,8 +1474,8 @@ The migration MUST land in phases to keep the tree green.  Each phase
 should be one commit (or a small tight batch).
 
 1. **Phase A — HEP amendments (docs only).**  Draft coordinated
-   amendments for the 7 HEPs above.  Get user approval on the design
-   before touching any code.
+   amendments for the nine HEPs listed in §11.4.  Get user approval
+   on the design before touching any code.
 2. **Phase B — Broker state field + wire schema + confirmed_version collapse.**
    Add `ChannelEntry.topology` + `data_endpoint` + `data_endpoint_resolved`
    + scalar `confirmed_version` (collapsed from `[K][P]` map per Q3b
@@ -1488,11 +1506,11 @@ should be one commit (or a small tight batch).
    for that demo's role structure).  Update L4 tests to reflect flipped
    bind directions where applicable.  Remove pid-based port workarounds
    (binding side uses ephemeral port via `tcp://host:0`).
-7. **Phase G — Fan-out ZMQ implementation.**  Add PUB/SUB (or XPUB/XSUB
-   per §13.3 open question) socket paths in ZmqQueue.  Add L4 test
-   `ZmqE2E_FanOut_OneProducerTwoConsumers`.  NOT optional — fan-out ZMQ
-   is a first-class supported topology per §2.  Phase E's factory
-   retirement assumes this phase has landed.
+7. **Phase G — Fan-out ZMQ implementation.**  Add PUB/SUB socket paths
+   in ZmqQueue (item 1 resolved plain PUB in rev 5 — no XPUB).  Add
+   L4 test `ZmqE2E_FanOut_OneProducerTwoConsumers`.  NOT optional —
+   fan-out ZMQ is a first-class supported topology per §2.  Phase E's
+   factory retirement assumes this phase has landed.
 8. **Phase H — Verification.**  Full ctest sweep.  Verify HEP-0044 (SHM
    AttachProtocol) + HEP-0045 (broker observer) unaffected.  Verify
    HEP-0041 SHM fan-out unaffected.
@@ -1526,9 +1544,10 @@ should be one commit (or a small tight batch).
 
 5. **Item 1 — XPUB vs PUB for fan-out ZMQ binding side.** ✅ Plain PUB.
    Broker is the sole admission authority (§3.5.1); the framework
-   derives `peer_count` from the broker's Live-transition NOTIFY
-   (phase=live per §5.5).  XPUB would be redundant observation of a
-   decision the broker already delivered.  See §7.7.
+   derives the live-peer count from `phase=live` NOTIFY events per
+   §5.5, backed by the binding-side `live_peers[channel]` map.  XPUB
+   would be redundant observation of a decision the broker already
+   delivered.  See §7.7.
 6. **Item 2 — Script API accessor naming.** ✅ Split naming.  Four
    accessors on every role's api object: `consumer_count(channel)`,
    `producer_count(channel)`, `consumers(channel)`, `producers(channel)`.
@@ -1546,8 +1565,9 @@ evening; the draft is complete pending user's final review.)*
 
 ## 14. What this design does NOT do
 
-- Does not add new socket types beyond PUSH/PULL/PUB/SUB (see §13.3 for
-  the XPUB open question — if adopted, add XPUB/XSUB to the set).
+- Does not add new socket types beyond PUSH/PULL/PUB/SUB.  Item 1
+  (rev 5) resolved the XPUB question as "plain PUB" — no XPUB/XSUB
+  in this design.
 - Does not change SHM's transport-layer behavior (HEP-0041 capability
   socket + AttachProtocol handshake unchanged); only the wire around it
   changes (topology declaration + scalar `data_endpoint`).
