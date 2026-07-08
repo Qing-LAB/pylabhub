@@ -1,9 +1,14 @@
 # TOPOLOGY_TODO.md — Singular-side ownership migration
 
-**Scope:** Migration to topology-parametric data-plane design.  Fan-in ZMQ
-consumer binds / producers connect.  Fan-out ZMQ producer binds / consumers
-connect.  Fan-out SHM unchanged.  Singular side owns endpoint and ZAP
-allowlist.
+**Scope:** Migration to topology-parametric data-plane design.  Three
+explicit topologies:
+- **Fan-in** (N→1): ZMQ only; consumer binds PULL, producers connect PUSH.
+- **Fan-out** (1→N): ZMQ (PUB/SUB, producer binds) or SHM (producer creates DataBlock).
+- **1-to-1** (1→1): ZMQ (PUSH/PULL, producer binds) or SHM (producer creates DataBlock).
+
+Singular side (or producer, for 1-to-1) owns endpoint and ZAP allowlist.
+`channel_topology` is REQUIRED on every REG_REQ — no lenient default.
+Cardinality enforcement at broker's REG_REQ handler.
 
 **Design authority:** [`docs/tech_draft/DRAFT_topology_singular_side_2026-07.md`](../tech_draft/DRAFT_topology_singular_side_2026-07.md)
 
@@ -56,7 +61,8 @@ lands in a single commit; the batch lands together after full review.
 - [ ] **HEP-CORE-0036 §3.5.3, §6.4, §6.5, §6.5.1, §I7, §5.2 R6, §14** — symmetrize.  R6 gate direction generalizes.  NOTIFY chain direction parameterizes.  Endpoint disclosure rule updates.  Rollout tables un-mark HEP-0042 as active work; note as retiring.
 - [ ] **HEP-CORE-0042 (major scope narrowing)** — retire §5 dispatch + §7.1 pre-attach loop.  Preserve `confirmed_version` bookkeeping (now scalar).  Preserve HEP-0044 AttachProtocol reference (SHM, orthogonal).  Note: the whole "pre-attach coordination" concept is subsumed by the REG_REQ R6 gate.
 - [ ] **HEP-CORE-0023 §2.1.1** — generalize channel-existence rule.  "Last producer disconnected → channel torn down" becomes "singular side disconnected → channel torn down."
-- [ ] **HEP-CORE-0007 §12** — wire catalog updates.  Add `channel_topology` field to REG_REQ / CONSUMER_REG_REQ.  Add `data_endpoint` + `data_pubkey` fields to plural-side ACKs.  Retire per-producer array on CONSUMER_REG_ACK.  Add `TOPOLOGY_MISMATCH` + `TOPOLOGY_NOT_SUPPORTED_FOR_TRANSPORT` error codes.  Update wire request-response table with retirements.
+- [ ] **HEP-CORE-0007 §12** — wire catalog updates.  Add `channel_topology` field to REG_REQ / CONSUMER_REG_REQ (REQUIRED — no default).  Wire values: `"fan-in"` / `"fan-out"` / `"one-to-one"`.  Add `data_endpoint` + `data_pubkey` fields to dialing-side ACKs.  Retire per-producer array on CONSUMER_REG_ACK.  Add error codes: `TOPOLOGY_MISMATCH`, `TOPOLOGY_NOT_SUPPORTED_FOR_TRANSPORT`, `FAN_IN_IS_SINGLE_CONSUMER`, `FAN_OUT_IS_SINGLE_PRODUCER`, `ONE_TO_ONE_CARDINALITY_VIOLATED`, `CHANNEL_CLOSED` (for pending REGs when channel torn down).
+- [ ] **HEP-CORE-0028** — script API accessor amendment.  Add `api.peer_count(channel_name)` + `api.peers(channel_name)` for both binding-side roles (producer under fan-out/1-to-1, consumer under fan-in).  Cross-engine parity (Lua + Python + Native).  Update wire request-response table with retirements.
 
 **Blocking:** none.  Purely documentation.
 
@@ -64,18 +70,22 @@ lands in a single commit; the batch lands together after full review.
 
 ---
 
-### Phase B — Broker state field + wire schema (small commit)
+### Phase B — Broker state + wire schema + confirmed_version collapse (bigger atomic commit)
 
-Add the new state fields + wire schema parsing without changing behavior.
+Q3 answered (2026-07-08): `channel_topology` REQUIRED (no lenient
+default), `confirmed_version` collapses to scalar in Phase B (not
+deferred).  Consequence: Phase B is a bigger atomic change — broker
+handler + ALL tests + ALL demos must update in the same commit.
 
-- [ ] `src/include/utils/hub_state.hpp` — Add `ChannelTopology` enum + `topology` + `data_endpoint` + `data_endpoint_resolved` fields on `ChannelEntry`.  Do NOT yet retire `ProducerEntry.zmq_node_endpoint` (transitional coexistence).
-- [ ] `src/utils/hub/hub_state.cpp` — Add `set_channel_data_endpoint` + `channel_data_endpoint` accessors.
-- [ ] `src/utils/ipc/broker_service.cpp` — Add `channel_topology` field parsing in REG_REQ / CONSUMER_REG_REQ handlers.  Validate transport × topology matrix.  Reject `TOPOLOGY_MISMATCH` on second REG_REQ with disagreeing topology.  Default to fan-in if `channel_topology` absent (backwards-compat during migration).
-- [ ] L2 broker unit tests — Add `TopologyValidation` + `TopologyMismatch` + `TopologyNotSupportedForTransport` tests.  Existing tests keep passing (default = fan-in matches current behavior).
+- [ ] `src/include/utils/hub_state.hpp` — Add `ChannelTopology` enum (`FanIn` / `FanOut` / `OneToOne`) + `topology` + `data_endpoint` + `data_endpoint_resolved` fields on `ChannelEntry`.  Collapse `confirmed_version` from `[K][P]` map to scalar `[K]`.  Retire `ProducerEntry.zmq_node_endpoint` with a mirror-and-mark-read-only guard for transitional callers.
+- [ ] `src/utils/hub/hub_state.cpp` — Add `set_channel_data_endpoint` + `channel_data_endpoint` accessors.  Update all `confirmed_version` read sites to scalar shape.
+- [ ] `src/utils/ipc/broker_service.cpp` — REG_REQ / CONSUMER_REG_REQ handlers: (a) require `channel_topology` field (reject `INVALID_REQUEST` if missing), (b) validate transport × topology matrix upfront (reject `TOPOLOGY_NOT_SUPPORTED_FOR_TRANSPORT`), (c) check cardinality per topology (reject with specific error codes), (d) extract `create_or_join_channel(topology, transport, ...)` shared internal.
+- [ ] All existing demos + L4 tests updated in same commit to declare `channel_topology` explicitly.
+- [ ] L2 broker unit tests — Add `TopologyValidation` + `TopologyMissingField` + `TopologyMismatch` + `TopologyNotSupportedForTransport` + `CardinalityViolation` × 3 tests.
 
 **Blocking:** Phase A HEP amendments adopted.
 
-**Success criterion:** State fields live in code; existing L4 tests continue to pass unchanged.
+**Success criterion:** State fields live; full ctest passes with explicit topology on all REG_REQs; no `confirmed_version` map shape remains.
 
 ---
 
@@ -85,8 +95,8 @@ Add topology-aware factory alongside the legacy factories.  Both should
 coexist during transition.
 
 - [ ] `src/include/utils/hub_zmq_queue.hpp` — Add new factory signatures: `Queue::create_reader(topology, transport, opts)` + `create_writer`.  Keep `pull_from` / `push_to` legacy factories (transitional).  Add `zmq::socket_type::pub` / `sub` code paths behind topology dispatch.
-- [ ] `src/utils/hub/hub_zmq_queue.cpp` — Implement single-bind-single-connect paths per §6.2 matrix.  Fan-in ZMQ: PULL bind (consumer) + PUSH connect (producer).  Fan-out ZMQ: PUB bind (producer) + SUB connect (consumer).  Reuse existing CURVE + ZAP wiring; only bind/connect direction changes.
-- [ ] L2 queue tests — Add `create_reader/writer` factory tests for all 4 (side × topology) combos.  Add PUB/SUB CURVE tests.
+- [ ] `src/utils/hub/hub_zmq_queue.cpp` — Implement per §6.2 decision matrix.  All six (side × topology × transport) combos handled.  Fan-in ZMQ: PULL bind (consumer) + PUSH connect (producer).  Fan-out ZMQ: PUB bind (producer) + SUB connect (consumer) + `setsockopt(ZMQ_SUBSCRIBE, "")`.  1-to-1 ZMQ: PUSH bind (producer) + PULL connect (consumer).  SHM paths unchanged (fan-out + 1-to-1 use existing capability transport).  Reuse existing CURVE + ZAP wiring; only bind/connect direction changes.
+- [ ] L2 queue tests — Add `create_reader/writer` factory tests for all six (side × topology × transport) combos.  Add PUB/SUB CURVE tests.  Add 1-to-1 PUSH/PULL tests.
 
 **Blocking:** Phase B state fields live.
 
@@ -129,7 +139,8 @@ Delete the code paths that this design supersedes.
 - [ ] `share/py-demo-single-processor-zmq/consumer/consumer.json` — Set `in_zmq_bind: true`, add `channel_topology: "fan-in"`.  Set `in_zmq_endpoint: "tcp://127.0.0.1:0"` (ephemeral bind).
 - [ ] `share/py-demo-single-processor-zmq/processor/processor.json` — Flip in-side bind (consumer of upstream channel).  Add topology.
 - [ ] Other ZMQ demos under `share/` — same pattern.
-- [ ] `tests/test_layer4_plh_hub/test_plh_hub_role_zmq_e2e.cpp` — Flip Scenario A + Scenario C to consumer-binds pattern.  Add `channel_topology: "fan-in"` to configs.  Remove pid-based port workaround (consumer binds `tcp://127.0.0.1:0`).  Distinguisher-value assertion (`offsets_seen=0,100`) transfers unchanged.
+- [ ] `tests/test_layer4_plh_hub/test_plh_hub_role_zmq_e2e.cpp` — Flip Scenario A + Scenario C to consumer-binds pattern.  Add `channel_topology: "fan-in"` to configs.  Remove pid-based port workaround (consumer binds `tcp://127.0.0.1:0`).  Distinguisher-value assertion (`offsets_seen=0,100`) transfers unchanged.  Add new tests: `ZmqE2E_OneToOne_ProducerBinds`, `ZmqE2E_FanIn_SecondConsumerRejected`, `ZmqE2E_FanOut_SecondProducerRejected`, `ZmqE2E_OneToOne_SecondSideRejected`.
+- [ ] L4 SHM 1-to-1 test — `test_plh_hub_role_shm_e2e.cpp` add `ShmE2E_OneToOne_SingleConsumer` + cardinality-rejection variant.
 
 **Blocking:** Phase E retirements complete.
 
@@ -162,11 +173,19 @@ support.
 
 ---
 
-## 3. Open sub-questions carried from design
+## 3. Design questions — answered 2026-07-08
 
-1. **PUB/SUB slow-joiner handling.**  Under R6 gating, producer becomes Live before any consumer has subscribed.  Data loop pushes into a void.  Draft lean: producer's data loop starts only after first `CONSUMER_JOINED` notify.  User decision needed before Phase G.
-2. **Backwards-compat default for `channel_topology`.**  During transition (Phases B-F), REG_REQ without `channel_topology` defaults to fan-in.  Post-migration (Phase F complete), make required.  User decision on when to require.
-3. **`confirmed_version[K][P]` scalar collapse timing.**  Draft lean: collapse in Phase E as part of retirements.  User may prefer earlier.
+- **Q1** (fan-in channel death when consumer dies): ✅ intended per user — "no consumer, what's the point of fan-in?"
+- **Q2** (PUB/SUB slow joiner): ✅ script decides via `api.peer_count()` accessor.  Framework doesn't baby-sit.  See [[feedback_framework_mechanism_not_policy]] in memory.
+- **Q3a** (topology field default): ✅ REQUIRED, no default.  Missing → `INVALID_REQUEST`.
+- **Q3b** (`confirmed_version` collapse): ✅ Phase B (early).  Single source of truth from day one.
+- **1-to-1 topology added** (2026-07-08 user request) — distinct from fan-out because broker enforces exactly-one-consumer cardinality.
+
+## 3.5. Still-open items (not blocking Phase A drafting)
+
+1. **XPUB vs PUB for fan-out ZMQ binding side.**  XPUB gives socket-level subscription events, which the role host can bubble to `api.peer_count()` as wire-level truth (vs broker-level bookkeeping).  Draft lean: **XPUB**.  Confirm in Phase A.
+2. **Script API accessor exact names.**  `api.peer_count()` unified vs `api.consumer_count()` + `api.producer_count()` split.  Under HEP-CORE-0028 amendment in Phase A.
+3. **Recent commit fate.**  `2c604280` (multi-endpoint PULL) + `9d0ca4c8` (HEP-0021 §16 amendment) forward-migrate rather than revert.  Retirement of the multi-endpoint PULL code lands in Phase E; the §16 amendment gets rewritten in Phase A.
 
 ---
 
