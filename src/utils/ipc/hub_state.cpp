@@ -84,6 +84,29 @@ const char *to_string(ChannelObservable o) noexcept
     return "unknown";
 }
 
+// ChannelTopology serialization — Phase B slice 0 (topology migration).
+// The canonical wire strings ship on REG_REQ / CONSUMER_REG_REQ per
+// HEP-CORE-0007 §12.3.  parse_channel_topology + to_string form the
+// wire<->enum boundary at the broker's REG handlers.
+const char *to_string(ChannelTopology t) noexcept
+{
+    switch (t)
+    {
+    case ChannelTopology::FanIn:    return "fan-in";
+    case ChannelTopology::FanOut:   return "fan-out";
+    case ChannelTopology::OneToOne: return "one-to-one";
+    }
+    return "unknown";
+}
+
+std::optional<ChannelTopology> parse_channel_topology(std::string_view s) noexcept
+{
+    if (s == "fan-in")     return ChannelTopology::FanIn;
+    if (s == "fan-out")    return ChannelTopology::FanOut;
+    if (s == "one-to-one") return ChannelTopology::OneToOne;
+    return std::nullopt;
+}
+
 // ─── Impl ───────────────────────────────────────────────────────────────────
 
 struct HubState::Impl

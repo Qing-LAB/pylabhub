@@ -117,6 +117,43 @@ enum class ChannelObservable
 
 PYLABHUB_UTILS_EXPORT const char *to_string(ChannelObservable o) noexcept;
 
+/// Channel topology — HEP-CORE-0017 §3.3 topology-parametric model
+/// (introduced 2026-07-08 topology migration; see
+/// `docs/tech_draft/DRAFT_topology_singular_side_2026-07.md` §2 for
+/// scope and `docs/HEP/HEP-CORE-0017-Pipeline-Architecture.md`
+/// §3.3.0 for the decision matrix).
+///
+/// Every channel has exactly one topology declared on the wire via
+/// `REG_REQ.channel_topology` / `CONSUMER_REG_REQ.channel_topology`
+/// (REQUIRED as of Phase B; see HEP-CORE-0007 §12.3).  Cardinality
+/// gates and the transport × topology compatibility check enforce
+/// the declared topology at broker admission time.
+///
+/// Wire-value mapping (parse_channel_topology / to_string):
+///   `"fan-in"`     ↔ ChannelTopology::FanIn
+///   `"fan-out"`    ↔ ChannelTopology::FanOut
+///   `"one-to-one"` ↔ ChannelTopology::OneToOne
+///
+/// This enum ships in Phase B slice 0 as infrastructure; the
+/// `ChannelEntry::topology` field + broker enforcement lands in
+/// the atomic Phase B commit (broker + all tests + all demos
+/// updated together, per tech draft §12 Phase B).
+enum class ChannelTopology
+{
+    FanIn,     ///< N producers → 1 consumer.  ZMQ only.  Consumer is BINDING side.
+    FanOut,    ///< 1 producer → N consumers.  ZMQ or SHM.  Producer is BINDING side.
+    OneToOne,  ///< 1 producer → 1 consumer.   ZMQ or SHM.  Producer is BINDING side.
+};
+
+PYLABHUB_UTILS_EXPORT const char *to_string(ChannelTopology t) noexcept;
+
+/// Parse a wire `channel_topology` string.  Returns `std::nullopt` if
+/// the input is not one of the three canonical wire values.  Callers
+/// (broker REG_REQ handlers) translate an empty optional into the
+/// `INVALID_REQUEST` error code per tech draft §5.1.
+PYLABHUB_UTILS_EXPORT std::optional<ChannelTopology>
+parse_channel_topology(std::string_view s) noexcept;
+
 // ─── Entry types (HEP-CORE-0033 §8) ─────────────────────────────────────────
 
 /// Consumer attached to a channel.
