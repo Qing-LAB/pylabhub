@@ -493,6 +493,77 @@ struct ChannelEntry
     // (2026-05-10).  Per-producer endpoint lives on
     // `ProducerEntry.zmq_node_endpoint` (HEP-CORE-0021 §16.3).
 
+    // ── 2026-07-08 topology migration state fields ────────────────────
+    //
+    // Phase B slice 1 additions.  Ships defaulted so the broker + all
+    // existing callers work unchanged during the prep sub-slices.  The
+    // atomic Phase B commit — broker requires REG_REQ.channel_topology
+    // and all tests + demos updated to send it — is what makes these
+    // fields authoritative (topology stops being "always FanOut",
+    // data_endpoint stops being "always empty").
+    //
+    // Full design authority:
+    //   docs/tech_draft/DRAFT_topology_singular_side_2026-07.md §4.1
+    //   docs/HEP/HEP-CORE-0033-Hub-Character.md §5 (ChannelEntry row
+    //   amendment)
+    //   docs/HEP/HEP-CORE-0017-Pipeline-Architecture.md §3.3
+
+    /// Channel topology declared on the wire at channel creation
+    /// (`REG_REQ.channel_topology` / `CONSUMER_REG_REQ.channel_topology`,
+    /// HEP-CORE-0007 §12.3).  Immutable once set — subsequent REG_REQs
+    /// with a different `channel_topology` are rejected with
+    /// `TOPOLOGY_MISMATCH` (HEP-CORE-0007 §12.4a).
+    ///
+    /// Backwards-compat default `FanOut` during Phase B slices; the
+    /// atomic commit populates this from the wire and enforces the
+    /// declared value.
+    ChannelTopology topology{ChannelTopology::FanOut};
+
+    /// Single data-plane endpoint for the channel — owned by the
+    /// BINDING side of the topology (fan-in: consumer; fan-out /
+    /// 1-to-1: producer).  Populated by `ENDPOINT_UPDATE_REQ` per
+    /// HEP-CORE-0021 §16 (post-bind endpoint publish).
+    ///
+    /// - Fan-in ZMQ: consumer's PULL bind endpoint (`tcp://host:port`).
+    /// - Fan-out ZMQ: producer's PUB bind endpoint (`tcp://host:port`).
+    /// - Fan-out SHM: producer's capability-transport socket
+    ///   (`ipc:///run/plh/<uid>.sock`).
+    /// - 1-to-1 ZMQ: producer's PUSH bind endpoint.
+    /// - 1-to-1 SHM: producer's capability-transport socket.
+    ///
+    /// Empty during Phase B slice 1 — the atomic commit's
+    /// `ENDPOINT_UPDATE_REQ` handler + broker admission path
+    /// populates this from the wire.
+    std::string     data_endpoint;
+
+    /// True once the binding side has published its resolved endpoint
+    /// via `ENDPOINT_UPDATE_REQ` (HEP-CORE-0021 §16.4 state machine).
+    /// R6-gated dialing-side REG_REQs pend until this flips true.
+    bool            data_endpoint_resolved{false};
+
+    /// Monotonic version bumped each time the ZAP allowlist changes
+    /// (dialing-side REG admitted or DEREG'd/timed-out — phase=admitted
+    /// or phase=left per HEP-CORE-0007 §12.5).  NOT bumped on
+    /// phase=live NOTIFYs (those don't change the allowlist).
+    ///
+    /// `role_registration_version` for a pending dialing-side REG_REQ
+    /// captures the value of `channel_version` at admission time; R6
+    /// releases the REG_REQ once `confirmed_version >= role_registration_version`.
+    uint64_t        channel_version{0};
+
+    /// Scalar per-channel `confirmed_version` (tech draft §5.6):
+    /// tracks the binding side's applied-allowlist snapshot.  Collapsed
+    /// from the pre-migration `[K][P]` per-producer map (HEP-CORE-0042
+    /// §5.4) since there is exactly one binding side per channel.
+    ///
+    /// Bumped by `CHANNEL_AUTH_APPLIED_REQ` handler when the binding
+    /// side confirms it applied allowlist version V.  Ships as
+    /// backwards-compat default 0 during Phase B slice 1; the atomic
+    /// commit + APPLIED_REQ handler wire-up makes it authoritative.
+    uint64_t        confirmed_version{0};
+
+    // ── end 2026-07-08 topology migration state fields ────────────────
+
     // Inbox info is per-producer (HEP-CORE-0023 §2.1.1 + HEP-CORE-0027);
     // see ProducerEntry.inbox_*.  Removed from ChannelEntry 2026-05-10
     // as part of Wave M2 MP2 because multi-producer channels need
