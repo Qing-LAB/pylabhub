@@ -66,7 +66,7 @@ Revision history:
   accessors + Live-derived semantics; §7.7 NEW documents the plain-PUB
   rationale; §10.4 wake handler distinguishes R6-waking events from
   `phase=live` NOTIFY firings; §13 all three items marked ANSWERED.
-- **Rev 6** (this) — consistency cleanup after a fresh-eye pass
+- **Rev 6** (`980de31e`) — consistency cleanup after a fresh-eye pass
   identified five categories of residual drift from rev 5 that hadn't
   propagated to every back-reference: §5.4 step 4 + concurrent example
   + §5.7 step 2 + §5.11 DEREG note now specify `phase=admitted` /
@@ -82,6 +82,22 @@ Revision history:
   DEREG" → "Dialing-side DEREG" (terminology drift back after rev 4
   normalization).  No design changes; documentation cleanup only.
   Design LOCKED status preserved.
+- **Rev 7** (this) — second cleanup pass on residuals that survived
+  rev 6.  §10 tier-boundary diagram: script Tier 1 line updated from
+  `peer_count()` to the four split accessor names.  §11.1 broker_service.cpp
+  row expanded to mention the `phase` field emission mechanism (was
+  only "invert direction," missing the mechanism).  §11.1 Script API
+  section header + Lua row + LOC estimates updated for four accessors
+  (was still saying `peer_count`/`peers` and single-accessor LOC).
+  §11.1 per-role api.cpp row gains cross-ref to `live_peers` backing
+  store.  Internal state terminology renamed in §5.5 phase table + §5.6:
+  `peer_count / live_peers map` → just `live_peers map` (the map is
+  the source data structure; `consumer_count` / `producer_count`
+  accessors read from it filtered by role_type).  All script API
+  references now use one consistent vocabulary — `live_peers` for the
+  internal map, split accessors for the script surface.
+  No design changes; documentation cleanup only.  Design LOCKED
+  status preserved.
 
 The draft supersedes two recent commits that need to be re-evaluated in
 light of this design:
@@ -463,9 +479,9 @@ Live" (their data channel is ready to receive).
 
 | Phase | Fires when | Binding side action |
 |---|---|---|
-| `admitted` | Broker admits a dialing-side REG_REQ (pubkey added to allowlist).  Fires BEFORE the dialing side's REG_ACK is sent — the binding side must have the pubkey in ZAP allowlist before the dialing side attempts CURVE handshake. | Update ZAP allowlist (add pubkey).  Do NOT update `peer_count` — the dialing side hasn't finished S3 setup yet. |
-| `live` | Broker receives first heartbeat from the dialing side.  Per §3.5.5, the heartbeat is emitted AFTER the dialing side's S3 completes (bind/connect done, subscription frame sent).  So `live` means "wire is ready to deliver." | Update `peer_count` / `live_peers` map (add role_uid).  Do NOT change allowlist — already present from `admitted` event. |
-| `left` | Dialing-side role DEREGs, times out on heartbeat, or is revoked. | Remove from ZAP allowlist AND from `peer_count` / `live_peers`.  Idempotent (safe if peer was never Live). |
+| `admitted` | Broker admits a dialing-side REG_REQ (pubkey added to allowlist).  Fires BEFORE the dialing side's REG_ACK is sent — the binding side must have the pubkey in ZAP allowlist before the dialing side attempts CURVE handshake. | Update `zap_allowlist` map (add pubkey).  Do NOT update `live_peers` — the dialing side hasn't finished S3 setup yet. |
+| `live` | Broker receives first heartbeat from the dialing side.  Per §3.5.5, the heartbeat is emitted AFTER the dialing side's S3 completes (bind/connect done, subscription frame sent).  So `live` means "wire is ready to deliver." | Update `live_peers` map (add role_uid).  Do NOT change `zap_allowlist` — already present from `admitted` event.  `api.consumer_count()` / `api.producer_count()` read from `live_peers` filtered by role_type. |
+| `left` | Dialing-side role DEREGs, times out on heartbeat, or is revoked. | Remove from `zap_allowlist` AND from `live_peers`.  Idempotent (safe if peer was never Live). |
 
 **Wire schema:**
 
@@ -505,7 +521,7 @@ the BINDING side pulls and confirms.
 response to `phase=admitted` and `phase=left` NOTIFYs.  It does NOT
 pull in response to `phase=live` NOTIFYs (the allowlist hasn't
 changed).  The `phase=live` handler is a lightweight local update to
-the `peer_count` / `live_peers` map — no wire round-trip.
+the `live_peers` map — no wire round-trip.
 
 The `confirmed_version` versioning stays; it now tracks the **binding
 side's** applied snapshot per channel.  Because there's exactly one
@@ -1042,7 +1058,9 @@ Every example below respects a **three-tier separation**:
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │ Tier 1 — Script                                              │
-│   sees: api.read_acquire() / write_acquire() / peer_count()  │
+│   sees: api.read_acquire() / write_acquire() /               │
+│         consumer_count() / producer_count() / consumers() /  │
+│         producers()                                          │
 │   does NOT see: sockets, wire, topology values               │
 ├──────────────────────────────────────────────────────────────┤
 │ Tier 2 — Role host (role_api_base.cpp)                       │
@@ -1353,17 +1371,17 @@ revision.
 
 | File | Change | LOC est. |
 |---|---|---|
-| `src/utils/ipc/broker_service.cpp` | New topology validation + cardinality check + R6 gating in `handle_reg_req` / `handle_consumer_reg_req`.  Retire `handle_consumer_attach_req_zmq` (~213 LOC) + `drain_pending_attach_queue_*` (~150 LOC) + `sweep_pending_attach_timeouts_` (~70 LOC).  Extract shared `create_or_join_channel(topology, transport, ...)`.  Invert `CHANNEL_AUTH_CHANGED_NOTIFY` direction.  Retire `handle_channel_producers_changed_notify` + `handle_get_channel_producers_req`.  Update `CONSUMER_REG_ACK` builder for scalar `data_endpoint` + `data_pubkey`.  Add stale-pubkey cleanup on R6 timeout (§10.5).  Update R6 rejection sites (lines 2731, 2966, 3022, 3034). | ~500 change / ~700 delete |
+| `src/utils/ipc/broker_service.cpp` | New topology validation + cardinality check + R6 gating in `handle_reg_req` / `handle_consumer_reg_req`.  Retire `handle_consumer_attach_req_zmq` (~213 LOC) + `drain_pending_attach_queue_*` (~150 LOC) + `sweep_pending_attach_timeouts_` (~70 LOC).  Extract shared `create_or_join_channel(topology, transport, ...)`.  Invert `CHANNEL_AUTH_CHANGED_NOTIFY` direction + add `phase` field (§5.5): emit `phase=admitted` in `admit_dialing_side`, `phase=left` in DEREG/timeout handlers, `phase=live` on first-heartbeat transitions per §10.4.  Retire `handle_channel_producers_changed_notify` + `handle_get_channel_producers_req`.  Update `CONSUMER_REG_ACK` builder for scalar `data_endpoint` + `data_pubkey`.  Add stale-pubkey cleanup on R6 timeout (§10.5).  Update R6 rejection sites (lines 2731, 2966, 3022, 3034). | ~500 change / ~700 delete |
 | `src/include/utils/broker_request_comm.hpp` + `.cpp` | Retire `consumer_attach_zmq` client method (~55 LOC).  `send_endpoint_update` unchanged but callable from binding side of any topology (add cross-ref comment). | ~20 change / ~80 delete |
 
-**Script API (for `api.peer_count()` per HEP-CORE-0028 amendment):**
+**Script API (four split accessors per HEP-CORE-0028 amendment — `consumer_count`, `producer_count`, `consumers`, `producers`):**
 
 | File | Change | LOC est. |
 |---|---|---|
-| `src/scripting/lua_engine.cpp` (line 384, 2607, 2630) | Bind `peer_count` / `peers` accessors to Lua. | ~30 change |
-| `src/scripting/hub_api_python.cpp` + `python_helpers.hpp` | Bind to Python (pybind). | ~30 change |
-| `src/producer/producer_api.cpp` (line 388), `src/consumer/consumer_api.cpp` (line 354), `src/processor/processor_api.cpp` (line 333) | Expose accessors on each role's api object. | ~60 change |
-| `src/utils/service/native_engine.cpp` + `src/include/utils/native_invoke_types.h` (line 147) | Native C++ accessor + type entry. | ~40 change |
+| `src/scripting/lua_engine.cpp` (line 384, 2607, 2630) | Bind `consumer_count` / `producer_count` / `consumers` / `producers` accessors to Lua. | ~40 change |
+| `src/scripting/hub_api_python.cpp` + `python_helpers.hpp` | Bind all four to Python (pybind). | ~40 change |
+| `src/producer/producer_api.cpp` (line 388), `src/consumer/consumer_api.cpp` (line 354), `src/processor/processor_api.cpp` (line 333) | Expose all four accessors on each role's api object; backing lookup goes through `live_peers[channel]` filtered by role_type. | ~80 change |
+| `src/utils/service/native_engine.cpp` + `src/include/utils/native_invoke_types.h` (line 147) | Native C++ accessors (four) + type entries. | ~50 change |
 
 **Estimated net code delta:** ~+1600 changed, ~−1500 deleted → **~+100 LOC net** (up from the earlier ~50 estimate).  Architecturally significantly simpler despite the near-flat line count because ONE coordination protocol retires entirely (HEP-0042 §7.1) and multiple parallel state models collapse to one.
 
