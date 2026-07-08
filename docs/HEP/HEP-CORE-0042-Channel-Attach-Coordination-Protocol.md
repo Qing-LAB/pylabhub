@@ -130,7 +130,7 @@ Broker tracks three counters:
 | §5.5.4 `snapshot_version` echo on `PRODUCER_REG_ACK` + `GET_CHANNEL_AUTH_ACK` | 3a.3a | ✅ shipped 2026-07-02 |
 | §5.5.2 producer captures + emits `CHANNEL_AUTH_APPLIED_REQ` (initial REG + NOTIFY-triggered paths) | 3a.3b | ✅ shipped 2026-07-02 |
 | Phase 3a L3 close-out: error-path pin via real idle producer (timeout drain) | 3a.4 | ✅ shipped 2026-07-02 |
-| Phase 3a L4 close-out: happy-path + wider error scenarios via real cycle-driving producer | 3a follow-up | ⏳ deferred to L4 (see `docs/todo/TESTING_TODO.md`) |
+| Phase 3a L4 close-out: happy-path + fan-in via real cycle-driving producer | 3a follow-up | ✅ shipped 2026-07-02 (single-producer, un-skip `ZmqE2E_AuthorizedConsumerReceivesAllSlots`) + 2026-07-08 (multi-producer `ZmqE2E_MultiProducer_TwoAuthorized`).  L4 test surfaced HEP-CORE-0017 §3.3 multi-endpoint PULL gap in `ZmqQueue::apply_master_approval`; tracked in `docs/todo/TESTING_TODO.md` under the review-B follow-ups.  Wider partial-success + malformed-entry error scenarios stay at L3 per `test_pattern4_attach_coordination.cpp` (deterministic wire coverage). |
 | §7.1 BRC `consumer_attach_zmq` method (declared + impl) | 3b.1 | ✅ shipped 2026-07-02 |
 | §7.1 consumer pre-attach loop in `apply_consumer_reg_ack` (Option A placement) + L3 rung 4 retirement | 3b.2 | ✅ shipped 2026-07-02 |
 | Phase 3b coverage | L3 wire + L4 e2e | ✅ complete — L3 attach coordination tests pin broker wire decisions; L4 `test_plh_hub_role_zmq_e2e.cpp` pins full-stack consumer loop.  No dedicated L2 layer — the feature has no L2-scope surface (pure decision helpers would be tautologies of the impl).  Multi-producer L4 augmentation lives with the Phase 3a L4 follow-up in `docs/todo/TESTING_TODO.md`. |

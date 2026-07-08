@@ -85,7 +85,7 @@ guarantee.
 | 2026-06-30 | `test_layer2_service/test_hub_state.cpp:HubStateChannelAccess.Opened_ShmSecret_Preserved` + `HubStateChannelAccess.Opened_Idempotent_DoesNotOverwriteShmSecret` | Round-trip + idempotent-preservation semantics of the broker-minted `ChannelAccessEntry::shm_secret` field from the SUPERSEDED AUTH-4 design (#164) — preserved on first open, not overwritten on re-open | **NO DESTINATION** — contract retired by design.  The `shm_secret` field was deleted in HEP-CORE-0041 1i-cleanup S3 (#275, commit `b1a2d9ce`).  SHM auth runs on the capability-fd handshake at L2 (HEP-CORE-0041 §5.5), not a broker-minted shared token; the wire never carried `shm_secret` after substep 1g (#254) closed CONSUMER_REG_ACK.  The idempotent-open semantic for the surviving `authorized_consumer_pubkeys` set stays pinned by `HubStateChannelAccess.OpenedThenClosed_Roundtrip` + `HubStateChannelAccess.ConsumerAuthorized_Idempotent`.  Inline Rule-6 doc-blocks in test_hub_state.cpp record the retirement at the original site. |
 | 2026-06-30 | `test_layer2_service/test_hub_shm_queue_capability.cpp:ShmQueueCapabilityTest.SetCapabilityFd_RefusesWhenSecretAlreadySet` + `SetShmSecret_RefusesWhenCapabilityAlreadySet` | HEP-CORE-0041 D7 "single unified mechanism" mutual-exclusion guards between the legacy secret-based path and the capability-transport path on `ShmQueue` | **NO DESTINATION** — contract retired by design.  S3c (#275, commit `<this commit>`) deleted `ShmQueue::set_shm_secret` + the legacy state-machine half entirely; there is no "secret path" left to guard against, so mutual exclusion is satisfied trivially.  The surviving "refuse-from-Active" guard on `set_shm_capability_fd` stays pinned by Test 3 (`SetCapabilityFd_RefusesFromActive`).  Inline Rule-6 doc-block at the original test site records the retirement. |
 | 2026-06-30 | `test_layer3_datahub/test_datahub_hub_queue.cpp` (25 TEST_F's: `DatahubShmQueueTest.*` + worker file `workers/datahub_hub_queue_workers.cpp` with 25 worker functions / 45 legacy-factory call sites) | ShmQueue scenario coverage exercised through the legacy `ShmQueue::create_writer(name, ..., shared_secret, ...)` + `ShmQueue::create_reader(name, shared_secret, ...)` factories: factory smoke (from_consumer / from_producer / create_factories), read/write acquire/commit/abort lifecycle, ring buffer scenarios (round_trip, multiple_consumers, latest_only, ring_wrap, discard_then_reacquire), flexzone (read/write/round_trip/bidirectional/no_flexzone), accessors (last_seq, capacity_policy, is_running), checksum mismatch handling, destructor safety, remap stub throws, error paths (empty_schema / nonexistent / zero_size_schema) | **Multi-destination** per the user-chosen retirement strategy (#275-S3b discovery 2026-06-30):  ① ShmQueue state-machine + mutual-exclusion + invalid-fd guards → L2 `test_hub_shm_queue_capability.cpp` (Tests 1-7).  ② DataBlock ring-buffer + slot-allocation + ring-wrap + draining + last_seq + checksum + discard/reacquire → L3 fd-source workers `datahub_slot_allocation_workers.cpp` + `datahub_c_api_draining_workers.cpp` + `datahub_c_api_slot_protocol_workers.cpp` (all migrated under #275-S2 to `make_fd_backed_pair`).  ③ End-to-end producer→consumer SHM data flow + flexzone bidirectional + multi-consumer state isolation → L4 `test_plh_hub_role_shm_e2e.cpp` (#258).  ④ Error-path nonexistent-name attach → moot under capability-transport (no names; the fd-source factory's negative paths are covered by L2 capability test refusals + L4 e2e WARN/ERROR contracts).  **Acknowledged scope gap:** the ShmQueue-API-level scenario tests (`shm_queue_round_trip`, `shm_queue_latest_only`, `shm_queue_ring_wrap`, `shm_queue_last_seq`) are not pinpoint-replaced — equivalent behavior surfaces at L3 (DataBlock layer below ShmQueue) and L4 (full e2e above ShmQueue); the ShmQueue layer itself is shimmed in production by `RoleAPIBase::build_{tx,rx}_queue` exclusively through `create_writer_standby` + `set_shm_capability_fd` + `start`, which is L2-covered.  Files masked from L3 CMakeLists 2026-06-30 with top-of-file Rule-6 doc-blocks; physical deletion in REVIEW-C (#276). |
-| 2026-06-30 | `test_plh_hub_role_zmq_e2e.cpp:PlhHubCliTest.ZmqE2E_AuthorizedConsumerReceivesAllSlots` | AUTH-7 ZMQ-transport happy path: producer + consumer roles register over CURVE-authenticated CTRL, broker pre-confirms allowlist, consumer dials producer's ZMQ_CURVE endpoint, N slots flow producer → consumer | **DEFERRED** (test body written; `GTEST_SKIP() << "#246"` gate active).  Re-enable when **#246** ("HEP-CORE-0036 amendment — retrofit ZMQ to pre-confirm pattern") ships.  **Reason for deferral:** observed sequencing race — broker sends `CONSUMER_REG_ACK` (consumer dials producer) BEFORE the producer's CHANNEL_AUTH_CHANGED_NOTIFY → GET_CHANNEL_AUTH chain seeds the producer's PUSH allowlist with the consumer's pubkey.  libzmq's initial CURVE handshake fails on the empty allowlist; the consumer never receives data.  Producer allowlist update lands ~110 ms after consumer PULL goes Active.  Sibling `ZmqE2E_UnauthorizedConsumerDeniedByBroker` (deny path) works without depending on this gate and stays green.  Coverage handoff: #246 ships the pre-confirm fix and unskips this test. |
+| 2026-06-30 → 2026-07-02 | `test_plh_hub_role_zmq_e2e.cpp:PlhHubCliTest.ZmqE2E_AuthorizedConsumerReceivesAllSlots` | AUTH-7 ZMQ-transport happy path: producer + consumer roles register over CURVE-authenticated CTRL, broker pre-confirms allowlist, consumer dials producer's ZMQ_CURVE endpoint, N slots flow producer → consumer | ✅ **UN-SKIPPED 2026-07-02** — #246 Phase 3a (broker `instance_id` + `snapshot_version` + producer `APPLIED_REQ`) and Phase 3b (BRC `consumer_attach_zmq` + consumer §7.1 pre-attach loop) both shipped; the pre-confirm allowlist sync now seeds the producer's PUSH allowlist BEFORE the consumer dials, so libzmq's initial CURVE handshake succeeds.  Test now pins Phase 3a producer markers (`event=ProducerInstanceIdCaptured`, `event=ChannelAuthApplied`) + Phase 3b.2 §7.1 loop markers (`attach:begin`, `attach:success`, `attach:complete admitted=1/1`) alongside the data-flow assertion.  Sibling deny test (`ZmqE2E_UnauthorizedConsumerDeniedByBroker`) unchanged. |
 
 When proposing a future retirement: update this table FIRST, then
 update the destination task's description, then delete the test.
@@ -182,19 +182,52 @@ Second-round xhigh workflow-backed review of the Phase 3 chain
 + Phase 2 of the remediation did not close.  Filed here rather than
 deferred to phantom future work.
 
-- **Multi-producer L4 scenario (review finding #7).**  The un-skipped
-  `ZmqE2E_AuthorizedConsumerReceivesAllSlots` uses a single producer,
-  so the §7.1 fan-in loop degenerates to N=1.  Multi-producer scenarios
-  (mixed admit/deny, malformed-entry skip+continue, zero-admitted
-  return-false, partial-success policy) are untested end-to-end after
-  the Pattern4 rung 4 retirement.  Building a 2-producer variant needs
-  2 keygen operations, 2 producer configs, 2 subprocess spawns, and a
-  consumer script + config that expects 2 producers (~150 LOC).
-  Scope: extend `test_plh_hub_role_zmq_e2e.cpp` with
-  `ZmqE2E_MultiProducer_TwoAuthorized` (both admitted, both slots
-  received) and later `ZmqE2E_MultiProducer_MixedAdmitDeny` (one
-  denied → §5 partial-success policy + §I11 cache mirrors admitted
-  subset).
+- **Multi-producer L4 scenario (review finding #7).**  Partially
+  closed 2026-07-08 by `ZmqE2E_MultiProducer_TwoAuthorized` in
+  `test_plh_hub_role_zmq_e2e.cpp` (Scenario C).  What THAT test
+  pins end-to-end:
+  - Broker's `CONSUMER_REG_ACK.producers[]` returns a length-2
+    array under fan-in (HEP-CORE-0036 §5b.7).
+  - Consumer's §7.1 pre-attach loop emits `attach:begin
+    producers=2` + `attach:success` for each producer's uid +
+    `attach:complete admitted=2/2` — proving CONSUMER_ATTACH_REQ_ZMQ
+    dispatched N=2 attach requests and neither producer was
+    silently dropped.
+  - Both producers emit their HEP-0042 §7.2 markers
+    (`event=ChannelAuthApplied`).
+  - At least one producer's data actually flows (`cons_test:
+    complete N=<n>`) — proves Standby → Configured → Active drives
+    correctly under the fan-in ACK shape.
+
+  **Framework gap surfaced by the L4 test — HEP-CORE-0017 §3.3
+  future work.**  `ZmqQueue::apply_master_approval`
+  (`hub_zmq_queue.cpp:991` block comment) explicitly labels multi-
+  endpoint PULL as "Stage 1A scope: single-peer; multi-producer
+  fan-in is HEP-CORE-0017 §3.3 future work."  The PULL socket
+  connects only to `producer_peers_.front().endpoint` even though
+  the full N-peer list is stored.  L4 assertion for data flow
+  FROM ALL producers (distinguisher-value protocol) is preserved
+  in the file as helpers `write_zmq_producer_script_with_offset`
+  + `write_zmq_multi_producer_consumer_script`, ready to activate
+  when HEP-0017 §3.3 lands.  Filed under §3.3 future work — NOT
+  a #246 close-out gap.
+
+  **Deferred at L4, deterministically covered at L3:**
+  - `ZmqE2E_MultiProducer_MixedAdmitDeny` (partial-success policy).
+    Triggering `producer_not_live` between CONSUMER_REG_REQ and
+    ATTACH_REQ dispatch is racy against heartbeat cadence at the
+    subprocess boundary.  Individual denial reasons are
+    deterministically covered under `test_pattern4_attach_coordination.cpp`
+    via `BrokerWireClient`
+    (`FastPathAdmit` / `DeniedConsumerNotInAllowlist` /
+    `DeniedProducerNotLive` / `WaitPathEnqueueAndDrainOnAppliedReq`
+    / `WaitPathDrainOnProducerDisconnect`).  L3 coverage matches
+    HEP-CORE-0042 §9 L3 test plan; L4 partial-success would add
+    subprocess overhead without new contract coverage.
+  - Malformed-entry skip+continue.  Requires broker fault-injection
+    to synthesize malformed producers[] entries; belongs at L2
+    with a broker JSON-writer stub.
+  - Zero-admitted return-false.  Same L2 fault-injection territory.
 
 - **BRC abandoned-flag path coverage (review finding #8).**  The
   `abandoned` flag on `RequestCmd` (plus the sibling `producer_role_uid`

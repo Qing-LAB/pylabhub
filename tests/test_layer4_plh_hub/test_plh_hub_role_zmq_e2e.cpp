@@ -197,6 +197,99 @@ void write_zmq_consumer_config(const fs::path &cfg_path,
     f << j.dump(2);
 }
 
+/// Multi-producer variant of `write_zmq_producer_script`.  Each
+/// producer's script writes a producer-specific value range so the
+/// consumer can distinguish which producer a received slot came
+/// from: `value = value_offset + (iter % n_slots)`.  Distinct
+/// non-overlapping offsets (e.g. 0 vs 100) let the consumer verify
+/// slots arrived from BOTH producers, not just one — the load-
+/// bearing assertion for fan-in coverage per HEP-CORE-0042 §7.1.
+///
+/// Otherwise byte-identical to the single-producer variant: infinite
+/// write loop (necessary because ZMQ PUSH/PULL drops pre-attach
+/// slots per HEP-CORE-0036 §6.5), `prod_test:` log prefix, first
+/// 2*N iterations logged then quiet.
+void write_zmq_producer_script_with_offset(const fs::path &script_dir,
+                                            int n_slots,
+                                            int value_offset)
+{
+    std::error_code ec;
+    fs::create_directories(script_dir, ec);
+    std::ofstream f(script_dir / "__init__.py");
+    f << "_N_SLOTS = " << n_slots << "\n"
+      << "_OFFSET  = " << value_offset << "\n"
+      << "_iter = [0]\n\n"
+         "def on_init(api):\n"
+         "    api.log('info', 'prod_test: init offset=' + str(_OFFSET))\n"
+         "\n"
+         "def on_produce(tx, msgs, api):\n"
+         "    if tx.slot is None:\n"
+         "        return False\n"
+         "    n = _iter[0] % _N_SLOTS\n"
+         "    tx.slot.value = float(_OFFSET + n)\n"
+         "    if _iter[0] < 2 * _N_SLOTS:\n"
+         "        api.log('info', 'prod_test: wrote slot N=' + str(n) +\n"
+         "                ' value=' + str(_OFFSET + n) +\n"
+         "                ' iter=' + str(_iter[0]))\n"
+         "    _iter[0] += 1\n"
+         "    return True\n"
+         "\n"
+         "def on_stop(api):\n"
+         "    api.log('info', 'prod_test: stop iter=' + str(_iter[0]))\n";
+}
+
+/// Multi-producer variant of `write_zmq_consumer_script`.  The
+/// consumer tracks which per-producer VALUE RANGES it has observed
+/// via a script-local `seen_offsets` set derived from
+/// `int(value // 100)`.  When (a) `expected_slots` total slots have
+/// arrived AND (b) the observed offset set matches
+/// `required_offsets` (comma-separated string of ints), emits
+/// `cons_test: complete N=<n> offsets_seen=<sorted_list>`.
+///
+/// This design pins the HEP-CORE-0042 §7.1 fan-in contract at L4:
+/// the loop admitted N producers → data ACTUALLY flows from all N,
+/// not just from a subset.  A regression that admits N producers
+/// but only wires one into the queue fails here even if slot count
+/// alone reaches the target.
+void write_zmq_multi_producer_consumer_script(const fs::path &script_dir,
+                                               int expected_slots,
+                                               const std::string &required_offsets)
+{
+    std::error_code ec;
+    fs::create_directories(script_dir, ec);
+    std::ofstream f(script_dir / "__init__.py");
+    f << "_EXPECTED  = " << expected_slots << "\n"
+      << "_REQUIRED  = set(int(x) for x in \"" << required_offsets
+      <<   "\".split(',') if x)\n"
+      << "_received  = [0]\n"
+         "_seen      = set()\n"
+         "_done      = [False]\n\n"
+         "def on_init(api):\n"
+         "    api.log('info', 'cons_test: init required_offsets=' +\n"
+         "                    ','.join(str(x) for x in sorted(_REQUIRED)))\n"
+         "\n"
+         "def on_consume(rx, msgs, api):\n"
+         "    if rx.slot is None:\n"
+         "        return True\n"
+         "    _received[0] += 1\n"
+         "    off = int(rx.slot.value // 100) * 100\n"
+         "    _seen.add(off)\n"
+         "    api.log('info', 'cons_test: read slot N=' + str(_received[0]) +\n"
+         "                    ' value=' + str(rx.slot.value) +\n"
+         "                    ' offset=' + str(off))\n"
+         "    if (_received[0] >= _EXPECTED and\n"
+         "        _seen >= _REQUIRED and not _done[0]):\n"
+         "        _done[0] = True\n"
+         "        api.log('info', 'cons_test: complete N=' + str(_received[0]) +\n"
+         "                        ' offsets_seen=' +\n"
+         "                        ','.join(str(x) for x in sorted(_seen)))\n"
+         "    return True\n"
+         "\n"
+         "def on_stop(api):\n"
+         "    api.log('info', 'cons_test: stop offsets_seen=' +\n"
+         "                    ','.join(str(x) for x in sorted(_seen)))\n";
+}
+
 /// Consumer script — counts slots received, emits
 /// `cons_test: complete N=<n>` when target reached.  Same shape as
 /// the SHM e2e consumer script.
@@ -592,6 +685,290 @@ TEST_F(PlhHubCliTest, ZmqE2E_UnauthorizedConsumerDeniedByBroker)
 
     hub.send_signal(SIGTERM);
     EXPECT_EQ(hub.wait_for_exit(10), 0) << hub.get_stderr();
+
+    ::unsetenv("PYLABHUB_HUB_PASSWORD");
+    ::unsetenv("PYLABHUB_ROLE_PASSWORD");
+}
+
+// ─── Scenario C: fan-in with two authorized producers ─────────────────────
+//
+// #246 Phase 3a L4 close-out — multi-producer coverage at the
+// coordination-protocol layer (HEP-CORE-0042 §7.1).  Extends
+// AUTH-7's single-producer Scenario A by pinning the fan-in
+// behaviour of the consumer's §7.1 pre-attach loop when the broker
+// hands back `CONSUMER_REG_ACK.producers[]` with more than one entry.
+//
+// What THIS test pins (all shipped-and-in-scope for #246):
+//   (1) Broker's `CONSUMER_REG_ACK.producers[]` (HEP-CORE-0036
+//       §5b.7) actually returns a length-N array under fan-in, not
+//       just length-1.
+//   (2) The consumer's §7.1 loop emits `attach:success` for EACH
+//       producer, and the `attach:complete` line reports
+//       `admitted=2/2` — the load-bearing marker that the loop
+//       iterated to completion and neither producer was silently
+//       dropped.
+//   (3) Both producer-side HEP-CORE-0042 §7.2 markers fire (each
+//       producer captures its instance_id and each emits an
+//       APPLIED_REQ against its own confirmed_version state).
+//   (4) At least ONE producer's data actually flows through — pinned
+//       by `cons_test: complete N=<n>` under the shared consumer
+//       script.  Combined with (2) this proves the §7.1 loop admits
+//       both producers AND drives Standby → Active on the queue.
+//
+// What THIS test does NOT pin (out of scope for #246; tracked
+// under HEP-CORE-0017 §3.3):
+//   - Data from ALL admitted producers actually arriving at the
+//     consumer.  `ZmqQueue::apply_master_approval` (see
+//     `hub_zmq_queue.cpp:991` block comment) explicitly documents:
+//     "Stage 1A scope: single-peer; multi-producer fan-in is
+//     HEP-CORE-0017 §3.3 future work."  The PULL socket connects
+//     only to peer[0]'s endpoint even though `producer_peers_`
+//     holds all N.  A future test asserting distinguisher-value
+//     coverage across all N producers lands when HEP-0017 §3.3
+//     multi-endpoint PULL ships; the surrounding scaffold in this
+//     file (`write_zmq_producer_script_with_offset` +
+//     `write_zmq_multi_producer_consumer_script`) is preserved for
+//     that follow-up.
+//
+// L3 coverage note: individual denial reasons
+// (consumer_not_in_channel_allowlist / producer_not_live /
+// timeout / channel_closing) are covered deterministically under
+// `test_pattern4_attach_coordination.cpp` via `BrokerWireClient`
+// (HEP-CORE-0042 §9 L3 test plan).  This L4 test focuses on the
+// end-to-end fan-in loop where all producers succeed — the shape
+// exercised by production deployments.
+//
+// The MixedAdmitDeny partial-success L4 scenario is deferred:
+// triggering `producer_not_live` between CONSUMER_REG_REQ and
+// ATTACH_REQ dispatch is racy against heartbeat cadence at the
+// subprocess boundary, and the L3 coverage above pins the wire-
+// level behaviour deterministically.  Tracked in TESTING_TODO.
+
+TEST_F(PlhHubCliTest, ZmqE2E_MultiProducer_TwoAuthorized)
+{
+    using std::chrono::seconds;
+
+    const std::string channel   = "lab.l4.zmq.e2e.fanin";
+    const std::string prod_a_uid = "prod.l4zmq.uid11111111";
+    const std::string prod_b_uid = "prod.l4zmq.uid22222222";
+    const std::string cons_uid   = "cons.l4zmq.uid11223344";
+    constexpr int kSlotsPerProducer = 5;
+
+    // Distinct port range from Scenarios A + B; PID-derived offset
+    // for concurrent test runs.
+    const int prod_a_port = 21000 + (::getpid() % 1000);
+    const int prod_b_port = 22000 + (::getpid() % 1000);
+
+    // Distinct value-offset windows so consumer can distinguish
+    // producers: A writes 0..N-1, B writes 100..100+N-1.
+    constexpr int kOffsetA = 0;
+    constexpr int kOffsetB = 100;
+
+    // ── Hub init + keygen + ZAP install ───────────────────────────────
+    const fs::path hub_dir = tmp("zmqe2e_fanin_hub");
+    {
+        WorkerProcess init(plh_hub_binary(), "--init",
+            {hub_dir.string(), "--name", "L4ZmqFanInHub"});
+        ASSERT_EQ(init.wait_for_exit(), 0) << init.get_stderr();
+    }
+    {
+        nlohmann::json j;
+        { std::ifstream f(hub_dir / "hub.json"); f >> j; }
+        j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0";
+        j["admin"]["enabled"]           = false;
+        j["script"]["path"]             = "";
+        std::ofstream f(hub_dir / "hub.json");
+        f << j.dump(2);
+    }
+    ::setenv("PYLABHUB_HUB_PASSWORD", "zmqe2e-fanin-hub-pw", /*overwrite=*/1);
+    {
+        WorkerProcess kg(plh_hub_binary(), "--config",
+            {(hub_dir / "hub.json").string(), "--keygen"});
+        ASSERT_EQ(kg.wait_for_exit(), 0) << kg.get_stderr();
+    }
+
+    // ── Two producers + consumer keygen + known_roles ─────────────────
+    const fs::path prod_a_dir = tmp("zmqe2e_fanin_prod_a");
+    const fs::path prod_b_dir = tmp("zmqe2e_fanin_prod_b");
+    const fs::path cons_dir   = tmp("zmqe2e_fanin_cons");
+    std::error_code ec;
+    fs::create_directories(prod_a_dir / "vault", ec);
+    fs::create_directories(prod_b_dir / "vault", ec);
+    fs::create_directories(cons_dir   / "vault", ec);
+
+    // Both producers share the SAME channel — that's the fan-in shape.
+    // Distinct value offsets in their scripts is what lets the consumer
+    // distinguish them.
+    write_zmq_producer_config(prod_a_dir / "producer.json", hub_dir,
+                               prod_a_uid, channel, prod_a_port);
+    write_zmq_producer_script_with_offset(prod_a_dir / "script" / "python",
+                                           kSlotsPerProducer, kOffsetA);
+    write_zmq_producer_config(prod_b_dir / "producer.json", hub_dir,
+                               prod_b_uid, channel, prod_b_port);
+    write_zmq_producer_script_with_offset(prod_b_dir / "script" / "python",
+                                           kSlotsPerProducer, kOffsetB);
+    write_zmq_consumer_config(cons_dir / "consumer.json", hub_dir,
+                               cons_uid, channel);
+    // Consumer script pins "at least kSlotsPerProducer flow through
+    // successfully" — a single-producer data-flow proof.  Per the
+    // block comment above, distinguisher-value coverage across all
+    // N producers is deferred until HEP-CORE-0017 §3.3.  Shared
+    // script is used here (not the offset variant) so a future
+    // regression that breaks EVEN single-producer flow under fan-in
+    // fails on the same load-bearing marker as Scenario A.
+    write_zmq_consumer_script(cons_dir / "script" / "python",
+                               kSlotsPerProducer);
+
+    ::setenv("PYLABHUB_ROLE_PASSWORD", "zmqe2e-fanin-role-pw", /*overwrite=*/1);
+
+    const std::string prod_a_pubkey =
+        keygen_role_and_read_pubkey(prod_a_dir, "producer", prod_a_uid,
+                                     "zmqe2e-fanin-role-pw");
+    const std::string prod_b_pubkey =
+        keygen_role_and_read_pubkey(prod_b_dir, "producer", prod_b_uid,
+                                     "zmqe2e-fanin-role-pw");
+    const std::string cons_pubkey =
+        keygen_role_and_read_pubkey(cons_dir, "consumer", cons_uid,
+                                     "zmqe2e-fanin-role-pw");
+
+    add_known_role(hub_dir, "zmqe2e_fanin_prod_a", prod_a_uid, "producer",
+                   prod_a_pubkey);
+    add_known_role(hub_dir, "zmqe2e_fanin_prod_b", prod_b_uid, "producer",
+                   prod_b_pubkey);
+    add_known_role(hub_dir, "zmqe2e_fanin_cons", cons_uid, "consumer",
+                   cons_pubkey);
+
+    // ── Spawn hub run-mode ────────────────────────────────────────────
+    WorkerProcess hub(plh_hub_binary(), hub_dir.string(), {});
+    ASSERT_TRUE(wait_for_hub_marker(hub_dir, "Broker: listening on"))
+        << "hub never bound.  Log:\n" << read_hub_log(hub_dir);
+
+    const std::string bound_ep =
+        extract_bound_endpoint(read_hub_log(hub_dir));
+    ASSERT_FALSE(bound_ep.empty()) << "no bound endpoint in hub log";
+    {
+        nlohmann::json j;
+        { std::ifstream f(hub_dir / "hub.json"); f >> j; }
+        j["network"]["broker_endpoint"] = bound_ep;
+        std::ofstream f(hub_dir / "hub.json");
+        f << j.dump(2);
+    }
+
+    // ── Spawn both producers ──────────────────────────────────────────
+    WorkerProcess prod_a(plh_role_binary(), "--role",
+        {"producer", prod_a_dir.string()});
+    WorkerProcess prod_b(plh_role_binary(), "--role",
+        {"producer", prod_b_dir.string()});
+
+    auto dump_all = [&](const std::string &where) -> std::string {
+        std::string s;
+        s += "[fail at: " + where + "]\n";
+        s += "── producer A log ──\n" + read_role_log(prod_a_dir) + "\n";
+        s += "── producer A stderr ──\n" + prod_a.get_stderr() + "\n";
+        s += "── producer B log ──\n" + read_role_log(prod_b_dir) + "\n";
+        s += "── producer B stderr ──\n" + prod_b.get_stderr() + "\n";
+        s += "── hub log ──\n" + read_hub_log(hub_dir) + "\n";
+        return s;
+    };
+
+    // Hub sees both producers' REG_REQ.  Both must reach kLive (first
+    // heartbeat) before the consumer's CONSUMER_REG_REQ can be
+    // accepted (HEP-CORE-0036 §5.2 R6 producer-kLive gate).
+    ASSERT_TRUE(wait_for_hub_marker(hub_dir,
+        "event=RegReqAccepted role='" + prod_a_uid + "' channel='" +
+        channel + "'", seconds(7)))
+        << dump_all("producer A RegReqAccepted");
+    ASSERT_TRUE(wait_for_hub_marker(hub_dir,
+        "event=RegReqAccepted role='" + prod_b_uid + "' channel='" +
+        channel + "'", seconds(7)))
+        << dump_all("producer B RegReqAccepted");
+    ASSERT_TRUE(wait_for_role_marker(prod_a_dir, prod_a,
+        "event=RegAckReceived", seconds(5)))
+        << dump_all("producer A RegAckReceived");
+    ASSERT_TRUE(wait_for_role_marker(prod_b_dir, prod_b,
+        "event=RegAckReceived", seconds(5)))
+        << dump_all("producer B RegAckReceived");
+
+    // ── Spawn consumer ────────────────────────────────────────────────
+    WorkerProcess cons(plh_role_binary(), "--role",
+        {"consumer", cons_dir.string()});
+
+    auto dump_full = [&](const std::string &where) -> std::string {
+        std::string s = dump_all(where);
+        s += "── consumer log ──\n" + read_role_log(cons_dir) + "\n";
+        s += "── consumer stderr ──\n" + cons.get_stderr() + "\n";
+        return s;
+    };
+
+    ASSERT_TRUE(wait_for_hub_marker(hub_dir,
+        "event=ConsumerRegReqAccepted role='" + cons_uid +
+        "' channel='" + channel + "'", seconds(10)))
+        << dump_full("ConsumerRegReqAccepted");
+    ASSERT_TRUE(wait_for_role_marker(cons_dir, cons,
+        "event=ConsumerRegAckReceived", seconds(5)))
+        << dump_full("ConsumerRegAckReceived");
+
+    // ── HEP-CORE-0042 §7.1 fan-in markers ─────────────────────────────
+    // Loop entry.
+    ASSERT_TRUE(wait_for_role_marker(cons_dir, cons,
+        "attach:begin channel=" + channel + " producers=2", seconds(5)))
+        << dump_full("attach:begin producers=2 (fan-in loop entry)");
+
+    // BOTH producers must appear in attach:success.  Order not guaranteed
+    // (broker iterates ch->producers[] in insertion order but the loop
+    // is single-consumer-authoritative so we don't pin order).
+    ASSERT_TRUE(wait_for_role_marker(cons_dir, cons,
+        "attach:success channel=" + channel + " producer=" + prod_a_uid,
+        seconds(5)))
+        << dump_full("attach:success for producer A");
+    ASSERT_TRUE(wait_for_role_marker(cons_dir, cons,
+        "attach:success channel=" + channel + " producer=" + prod_b_uid,
+        seconds(5)))
+        << dump_full("attach:success for producer B");
+
+    // Fan-in loop end — the load-bearing "both admitted" marker.
+    ASSERT_TRUE(wait_for_role_marker(cons_dir, cons,
+        "attach:complete channel=" + channel + " admitted=2/2",
+        seconds(5)))
+        << dump_full("attach:complete admitted=2/2");
+
+    // ── Data flow verification (at least one producer flows) ──────────
+    // Per the scope block above: the fan-in loop admits N=2, but the
+    // ZmqQueue PULL socket connects only to peer[0]'s endpoint under
+    // HEP-CORE-0017 §3.3 Stage 1A.  Assert that AT LEAST that one
+    // producer's data flows through — proving Standby → Configured →
+    // Active drives correctly under the fan-in ACK shape and that
+    // the queue's single-endpoint behaviour is not broken by having
+    // multiple entries in `apply_master_approval`'s producers[].
+    // A regression that breaks single-producer flow under fan-in
+    // would fail on this exact marker.
+    ASSERT_TRUE(wait_for_role_marker(cons_dir, cons,
+        "cons_test: complete N=" + std::to_string(kSlotsPerProducer),
+        seconds(15)))
+        << dump_full("cons_test: complete (at least one producer flows)");
+
+    // ── Shutdown ──────────────────────────────────────────────────────
+    cons.send_signal(SIGTERM);
+    EXPECT_EQ(cons.wait_for_exit(10), 0) << cons.get_stderr();
+    prod_a.send_signal(SIGTERM);
+    EXPECT_EQ(prod_a.wait_for_exit(10), 0) << prod_a.get_stderr();
+    prod_b.send_signal(SIGTERM);
+    EXPECT_EQ(prod_b.wait_for_exit(10), 0) << prod_b.get_stderr();
+    hub.send_signal(SIGTERM);
+    EXPECT_EQ(hub.wait_for_exit(10), 0) << hub.get_stderr();
+
+    // Class-D gate: no [ERROR ] in any log.
+    auto contains_error = [](const std::string &s) {
+        return s.find("[ERROR ]") != std::string::npos;
+    };
+    EXPECT_FALSE(contains_error(read_hub_log(hub_dir)))
+        << "hub log [ERROR ]:\n" << read_hub_log(hub_dir);
+    EXPECT_FALSE(contains_error(prod_a.get_stderr()))
+        << "producer A stderr [ERROR ]:\n" << prod_a.get_stderr();
+    EXPECT_FALSE(contains_error(prod_b.get_stderr()))
+        << "producer B stderr [ERROR ]:\n" << prod_b.get_stderr();
+    EXPECT_FALSE(contains_error(cons.get_stderr()))
+        << "consumer stderr [ERROR ]:\n" << cons.get_stderr();
 
     ::unsetenv("PYLABHUB_HUB_PASSWORD");
     ::unsetenv("PYLABHUB_ROLE_PASSWORD");
