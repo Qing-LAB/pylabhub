@@ -441,10 +441,10 @@ migration MUST move together so no commit leaves the suite broken.
 | 4 — Framework crypto primitives | #247 (script-side); native part of Phase 4 | `PYLABHUB_UTILS_EXPORT` AEAD (ChaCha20-Poly1305) + HKDF wrappers; sibling `api.crypto.*` bindings (Python/Lua/Native) |
 | 5 — HEP-0036 ZMQ retrofit | #246 (design ✅ shipped 2026-07-01 as HEP-CORE-0042; impl phases 2+ pending) | Retrofit ZMQ to pre-attach broker-confirmation pattern; producer's ZAP handler stops being load-bearing; cache becomes observability for ZMQ too |
 
-**AttachProtocol transport unification — SEC-Fold-2 Phase 3 / 4a
-SHIPPED 2026-07-07; Phases 4b / 4c OPEN.**
+**AttachProtocol transport unification — Phases 3 / 4a / 4b / 4c
+minimal SHIPPED 2026-07-07; Phase 4c-cont OPEN.**
 
-Sub-plan under Phase 5 above.  Extracts the AttachProtocol
+Sub-plan under Phase 5 above.  Extracted the AttachProtocol
 challenge-response into a transport-agnostic form so the SAME crypto
 logic runs over SHM (existing) AND ZMQ (Phase 5 target).
 
@@ -452,8 +452,9 @@ logic runs over SHM (existing) AND ZMQ (Phase 5 target).
 |---|---|---|
 | 3 — `IAttachChannel` interface + `ShmAttachChannel` | ✅ SHIPPED 2026-07-07 | Extracted length-prefixed JSON framing from `attach_protocol.cpp` into `attach_channel_shm.hpp/cpp` behind virtual `IAttachChannel` seam |
 | 4a — `ZmqAttachChannel` (transport binding) | ✅ SHIPPED 2026-07-07 | Two-part multipart `[routing_id][json_body]` on ROUTER, single-part on DEALER; L2 tests for roundtrip + deadline + DoS cap + cross-talk + trailing-parts + JSON-parse (7 tests) |
-| 4b — Extract `run_producer_handshake` / `run_consumer_handshake` as transport-agnostic helpers | OPEN | Move the whole Frame 1/2/3 body of `AttachProtocolAcceptor::accept_one` + `initiate_consumer_handshake` into helpers taking `IAttachChannel &`.  Currently the crypto flow is entangled with SHM-specific SO_PEERCRED uid + SCM_RIGHTS fd-handoff logic; Phase 4b pulls apart the seam so a `ZmqAttachProtocolAcceptor` can call the SAME helper with a `ZmqAttachChannel`.  Priority 6 finding from the 2026-07-07 fresh-eyes review — the current seam is at framing, not at protocol-flow, which blocks symmetric SHM/ZMQ acceptors. |
-| 4c — `ZmqAttachProtocolAcceptor` + BrokerService REG_REQ / CONSUMER_REG_REQ wiring | OPEN | Add belt-and-braces AttachProtocol handshake on top of CURVE.  Broker receives REG_REQ → runs AttachProtocol challenge-response via `ZmqAttachChannel` before granting `Authorized`.  Even if CURVE were misconfigured, AttachProtocol still catches an impersonator.  Requires broker's REG_REQ handler to be reorganized around a per-peer state machine (currently the handler is single-turn — see Phase 5 pre-attach broker-confirmation pattern). |
+| 4b — Extract `run_producer_handshake` / `run_consumer_handshake` as transport-agnostic helpers | ✅ SHIPPED 2026-07-07 | Moved the whole Frame 1/2/3 body of `AttachProtocolAcceptor::accept_one` + `initiate_consumer_handshake` into helpers taking `IAttachChannel &`.  SHM acceptor and future ZMQ acceptor share the same ~500 LOC of crypto flow.  Priority 6 finding from the 2026-07-07 fresh-eyes review closed — the seam is now at protocol-flow, not at framing. |
+| 4c minimal — `ZmqAttachProtocolAcceptor` + `initiate_zmq_consumer_handshake` (broker + role entries) | ✅ SHIPPED 2026-07-07 | Composed `ZmqAttachChannel` + `run_producer_handshake` / `run_consumer_handshake`.  4 L2 end-to-end tests with real KeyStore + SMS crypto (mutual + no-mutual + impersonator rejection + quiet-peer timeout).  Documented ⚠ SECURITY REQUIREMENT: caller must run CURVE + ZAP allowlist check FIRST — AttachProtocol alone is not a security boundary without it. |
+| 4c-cont — BrokerService REG_REQ / CONSUMER_REG_REQ wiring | OPEN | Wire `ZmqAttachProtocolAcceptor::run_handshake` into broker's REG_REQ / CONSUMER_REG_REQ handler as belt-and-braces on top of CURVE.  Requires reorganizing the broker's single-turn REG_REQ handler into a per-peer state machine so handshake frames from peer A can interleave with normal messages from peer B on the shared ROUTER.  Structural refactor across `broker_service.cpp` + `broker_request_comm.cpp`.  Small coverage-gap follow-ups also open: (a) ZMQ observer role_type E2E test — needs `role_type` field on `ConsumerAuthMaterial` or a dedicated `initiate_zmq_observer_handshake` client entry; (b) ZMQ consumer-side Frame 3 rejection test — needs a mismatched producer/impersonator harness. |
 
 **Sequencing rationale.**  Phase 1 establishes the pre-confirm
 contract on Linux/FreeBSD where the threat model is sharpest;

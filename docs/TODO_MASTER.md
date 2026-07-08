@@ -10,59 +10,94 @@ see `docs/DOC_STRUCTURE.md` §2.1.1.
 
 ---
 
-## Resume point (2026-07-05, IN-SESSION latest)
+## Resume point (2026-07-07, IN-SESSION latest)
 
 **Session-start reading order (mandatory):**
-1. `docs/tech_draft/DRAFT_sec_fold_2_resume_state_2026-07.md`
-   — current position, unpushed commits, attempts+reverts, next
-   action.
-2. `docs/tech_draft/DRAFT_sec_fold_2_plan_and_guidance_2026-07.md`
-   — authoritative plan; §1 naming discipline and §2 absolute
-   rules MUST be re-read before any code work.
-3. `docs/HEP/HEP-CORE-0043-Security-Subsystem.md` (§0-§2).
-4. `docs/README/README_testing.md` § "framework contract (absolute)".
-5. Memory files listed in resume-state §0.
+1. `docs/HEP/HEP-CORE-0043-Security-Subsystem.md` (§0-§6 for
+   authoritative SMS surface; §9 for wire-protocol touchpoints).
+2. `docs/README/README_testing.md` § "framework contract (absolute)".
+3. Subtopic TODOs for the area you're touching (`docs/todo/*.md`).
+4. `docs/todo/AUTH_TODO.md` § "HEP-0041 Phases 2-5" for the
+   AttachProtocol transport-unification sub-plan (Phases 4b/4c
+   status + Phase 4c-cont scope).
 
-**Where we are:**
+Prior SEC-Fold-2 planning drafts (`DRAFT_sec_fold_2_resume_state_2026-07.md`,
+`DRAFT_sec_fold_2_plan_and_guidance_2026-07.md`) archived to
+`docs/archive/transient-2026-07-06/` — SEC-Fold-2 is complete;
+those drafts are historical.
+
+**Where we are (SEC-Fold-2 finale + AttachProtocol transport unification):**
 - SEC-Fold-1 (HEP consolidation) shipped.
-- SEC-Fold-2 foundation shipped (three-state atomic + PANIC gate
-  + `SecureSubsystem` alias + wrapper stubs + broker log-race fix).
-- SEC-Fold-2 Phase B attempted, reverted (`bf6ae2c6`) — test-side
-  scaffold pattern.
-- SEC-Fold-2 Phase C.0 attempted, reverted (`9e19fc89`) — same.
-- Root cause of both reverts + full plan captured in the two
-  transient docs above.  Follow the plan; do not re-attempt the
-  reverted approaches.
+- **SEC-Fold-2 SHIPPED end-to-end** (commits `5a24b410` + `ab944b55`,
+  2026-07-07):
+  - `SecureMemorySubsystem` → `SecureSubsystem` (class + files renamed).
+  - `pylabhub::crypto` namespace DELETED — all primitives folded into
+    SMS Category 1a/1b/1c (verified: only historical prose comments
+    reference the retired name).
+  - `Crypto` sub-container collapsed — encryption verbs flat on SMS
+    (`secretbox_encrypt`/`_decrypt`, `box_encrypt_using`/`_decrypt_using`).
+  - `key_store()` / `key_store_ready()` shims deleted — access via
+    `secure().keys()` throughout production + tests.
+  - `KeyStore` moved to member of `SecureSubsystem::Impl` (private
+    ctor + `friend`).
+  - Gate softened: only `keys()` requires SMS `Initialized`; every
+    other Category 1 method is a stateless libsodium wrapper.
+  - HEP-CORE-0043 authoritative for §0-§7 + §11-§13; §8-§10 remain
+    section stubs pointing at HEP-0036/0038/0040/0041.
+- **AttachProtocol transport unification SHIPPED** (same commits):
+  - Phase 3: `IAttachChannel` interface + `ShmAttachChannel` binding.
+  - Phase 4a: `ZmqAttachChannel` binding + 7 L2 transport tests.
+  - Phase 4b: `run_producer_handshake` / `run_consumer_handshake`
+    extracted as transport-agnostic helpers taking `IAttachChannel &`.
+    `AttachProtocolAcceptor::accept_one` + `initiate_consumer_handshake`
+    reduced to thin SHM wrappers that compose channel + delegate to
+    the helpers.
+  - Phase 4c minimal: `ZmqAttachProtocolAcceptor` +
+    `initiate_zmq_consumer_handshake` + 4 L2 end-to-end tests with
+    real KeyStore + SMS crypto (mutual + no-mutual + impersonator
+    rejection + quiet-peer timeout).
+- **Name-based key citation SHIPPED** (part of Phase 2 above):
+  `AttachProtocolAcceptor` ctor + `ConsumerAuthMaterial` take a
+  `std::string own_seckey_name` (KeyStore entry) instead of the
+  previous `SeckeyAccessor` callback that leaked raw bytes.  Seckey
+  never crosses the AttachProtocol API boundary (HEP-CORE-0043 §1.4
+  + §6 use-not-export).
+- **#262 mutual-auth Frame 3 SHIPPED** as part of the transport-
+  symmetric helpers — `require_mutual_auth` is a parameter on
+  `run_consumer_handshake`; `run_producer_handshake` sends Frame 3
+  when the consumer's hello carries `consumer_nonce_b64` +
+  `consumer_challenge_b64`.
+- Test suite: 2343/2343 passing (up from 2328 at session start;
+  +15 new tests across Phase 4a/4c + SMS review).
 
-**Next action on resume:**
-See resume-state doc §6.  Executive summary: Phase A — SMS becomes
-a proper STATIC lifecycle module in the LOGGER/FileLock shape
-(function-local `instance()`, friend startup/shutdown thunks
-driving `Impl::bringup()`, `GetLifecycleModule()` registered via
-mod pack).  Then **Phase A2 (2026-07-05 amendment) — CryptoUtils
-FULL MERGE into SMS**: `pylabhub::crypto` namespace deleted; ~11
-prod callers migrate to `secure().X(...)`; ~43 mod-pack entries
-removed.  Then Phases B/C delete stack-local `SMS sms;` usages
-(one prod main.cpp / one worker file at a time).
+**Next action on resume (Phase 4c-cont):**
+Wire `ZmqAttachProtocolAcceptor::run_handshake` + role-side
+`initiate_zmq_consumer_handshake` into BrokerService REG_REQ /
+CONSUMER_REG_REQ as belt-and-braces on top of CURVE.  Structural
+prerequisite: reorganize the broker's single-turn REG_REQ handler
+into a per-peer state machine that interleaves AttachProtocol
+frames with normal broker traffic on the shared ROUTER.
+Full scope + rationale: `docs/todo/AUTH_TODO.md` §
+"HEP-0041 Phases 2-5" table (4b ✅ / 4a ✅ / 4c ✅ minimal /
+4c-cont OPEN).
 
-**Downstream tasks paused:**
-- #317 C.2.c-C.5 (broker SHM observer) — resume after SEC-Fold-2
-  Phase E class-rename completes.
-- #262 SHM mutual auth L4 squatter test — orthogonal, can complete
-  anytime.
-- SEC-Fold-1b (HEP-0043 §3-§10 content migration) — Phase G.
+**Downstream tasks unblocked by SEC-Fold-2 completion:**
+- #317 C.2.c-C.5 (broker SHM observer) — SEC-Fold-2 class-rename
+  and gate-softening dependencies both cleared.  Design record
+  under `docs/tech_draft/DRAFT_broker_shm_observer_2026-07.md`.
+  Shipped slices: C.2.a `029bbe31`, C.2.b `ce956972`, D1 slice A
+  `d6f5d621`, D2 storage `f7d3a51e`.  Remaining: C.2.c
+  (PeerDeathWatcher), C.2.d (broker dial + fd cache), D5 (opt-out),
+  C.3 (metrics_source), C.4 (L4 tests), C.5 (HEP status sync).
+- #262 SHM mutual auth L4 squatter test — Frame 3 wire mechanism +
+  role wiring + producer/consumer helpers all shipped; only the L4
+  squatter test + default-`require_mutual_auth=true` flip remain.
+- SEC-Fold-1b (HEP-0043 §3-§10 content migration) — §3-§7 authoritative
+  as of this session; §8-§10 remain stubs.
 
-**In-flight, unfinished:**
-- #317 C.2 chain: C.2.a ✅ `029bbe31`, C.2.b ✅ `ce956972`, C.2.c-C.5
-  pending.  D2 storage ✅ `f7d3a51e`, D1 slice A ✅ `d6f5d621`.
-  Design record: `docs/tech_draft/DRAFT_broker_shm_observer_2026-07.md`.
-- #262 mutual auth: wire mechanism + role wiring shipped
-  (`b6914077`, `5c8d04c1`); L4 squatter test + default flip pending.
-- #327 strict_abi_mismatch: fully shipped.
-
-**HEP-0032 ABI fingerprint chain:** fully shipped this session
-(broker echo, role verify, strict-mode reject, tests).  Documented
-in HEP-CORE-0041 §D4.5 status sync (`678a5868`).
+**HEP-0032 ABI fingerprint chain:** fully shipped (broker echo, role
+verify, strict-mode reject, tests).  Documented in HEP-CORE-0041
+§D4.5 status sync (`678a5868`).
 
 ---
 

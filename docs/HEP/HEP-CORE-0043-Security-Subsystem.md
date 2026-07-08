@@ -4,7 +4,7 @@
 |-----------------|-------|
 | **HEP**         | `HEP-CORE-0043` |
 | **Title**       | Security Subsystem — unified module + HEP consolidation |
-| **Status**      | 🚀 **IN PROGRESS — SEC-Fold-2 §2 + §7 SHIPPED 2026-07-06.**  §0-§2 (architecture, three-category facade, module fold) authoritative and matches the shipped C++ code (`SecureSubsystem` + `KeyStore` member of `Impl` + `Crypto` sub-container stub).  §7 (KeyStore API surface) authoritative.  §3-§6 + §8-§10 remain SECTION STUBS pointing to HEP-CORE-0036 / 0038 / 0040 / 0041 for full detail; those HEPs are **PARTIALLY SUPERSEDED** — their content remains authoritative for the not-yet-migrated sections until SEC-Fold-2b content migration completes. |
+| **Status**      | 🚀 **§0-§7 + §11-§13 AUTHORITATIVE (SEC-Fold-2 complete 2026-07-07)** — §0-§2 architecture + two-category facade shipped; §3 random+hash shipped; §4 pwhash shipped; §5 secretbox shipped; §6 asymmetric box shipped (`box_encrypt_using` / `box_decrypt_using` with name-based key citation); §7 KeyStore submodule shipped as member of `SecureSubsystem::Impl`.  The `Crypto` sub-container was collapsed 2026-07-07 — encryption verbs live flat on `SecureSubsystem` alongside the sodium primitives.  §8-§10 remain SECTION STUBS pointing to HEP-CORE-0036 / 0038 / 0041; those HEPs are **PARTIALLY SUPERSEDED** for the migrated sections (§9.1/§9.2 wire touchpoints updated) and remain authoritative for the not-yet-migrated §8 vault + §10 script-crypto detail. |
 | **Created**     | 2026-07-04 |
 | **Area**        | Framework Architecture (security module, libsodium ownership, key management, wire auth) |
 | **Depends on**  | HEP-CORE-0001 (Hybrid Lifecycle Model), HEP-CORE-0031 (ThreadManager pattern) |
