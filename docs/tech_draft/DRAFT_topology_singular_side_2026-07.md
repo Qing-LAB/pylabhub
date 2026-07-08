@@ -1,6 +1,6 @@
 ---
 title: "Singular-side ownership: topology-parameterized data-plane design"
-status: DRAFT (not adopted; supersedes recent commits 2c604280 + 9d0ca4c8 pending user approval)
+status: DESIGN LOCKED (2026-07-08, rev 5).  All open items resolved.  Ready for Phase A HEP amendment drafting.  Supersedes commits 2c604280 + 9d0ca4c8 via forward-migration (retirement lands in Phase E and rewrite in Phase A respectively).
 authors: qing + claude (session 2026-07-08)
 supersedes-if-adopted:
   - HEP-CORE-0017 §3.3 (per-peer connect model)
@@ -16,9 +16,10 @@ target-tasks: task #94 (ephemeral binding — subsumed), and new topology-migrat
 
 ## 0. Status
 
-Draft revision 3 (2026-07-08 evening).  Not adopted.  Awaiting user
-review and approval.  If approved, this document becomes the design
-authority for a coordinated multi-HEP amendment package.
+**DESIGN LOCKED — rev 5, 2026-07-08 evening.**  All three open items
+from §13 resolved by user this session.  Document is the design
+authority for a coordinated multi-HEP amendment package; Phase A
+drafting begins in a subsequent session.
 
 Revision history:
 - **Rev 1** (`bdc30116`) — initial design; fan-in + fan-out only.
@@ -33,7 +34,7 @@ Revision history:
   6 additional test files, script API sites, corrected LOC estimates);
   §12 Phase G no longer "optional"; §14 aligned with §13.3 XPUB
   discussion; §11.4 gains HEP-CORE-0028 + HEP-CORE-0044.
-- **Rev 4** (this) — terminology normalization + substantive
+- **Rev 4** (`b4426ab6`) — terminology normalization + substantive
   corrections found in another fresh-eye pass.  Normalized
   `singular/plural side` → `binding/dialing side` throughout §§5.2,
   5.4, 5.4a, 5.9, 7.6, 8.1, 8.2, 9, 10.3 (pseudocode comments), 11.2,
@@ -46,6 +47,25 @@ Revision history:
   Conceptual/principle uses of "singular side" in §1, §3, §4.2 are
   retained deliberately — those describe the design principle at an
   abstract level rather than picking out a specific role.
+- **Rev 5** (this) — resolved all three remaining open items from
+  §13.  Extended `CHANNEL_AUTH_CHANGED_NOTIFY` with a `phase` field
+  (`admitted` / `live` / `left`) so binding side distinguishes
+  "allowlist changed" from "peer wire-ready" (Option A per user
+  decision).  Item 1 (XPUB vs PUB): plain PUB with broker-derived
+  `peer_count` derived from `phase=live` NOTIFY events — broker is
+  sole admission authority so XPUB observation would be redundant.
+  Item 2 (accessor naming): split — `consumer_count`, `producer_count`,
+  `consumers`, `producers` on every role, objective counts.  Item 3
+  (recent-commit fate): forward-migrate both `2c604280` and
+  `9d0ca4c8`; neither reverted, both retire naturally as part of the
+  phased migration (Phase E and Phase A respectively).  Sections
+  updated: §5.5 rewritten with phase field, wire schema, wake
+  semantics; §5.6 clarified `GET_CHANNEL_AUTH_REQ` fires only on
+  allowlist-changing NOTIFYs (not `phase=live`); §7.1-§7.4 sequence
+  diagrams add the `phase=live` NOTIFY step; §7.6 rewritten with split
+  accessors + Live-derived semantics; §7.7 NEW documents the plain-PUB
+  rationale; §10.4 wake handler distinguishes R6-waking events from
+  `phase=live` NOTIFY firings; §13 all three items marked ANSWERED.
 
 The draft supersedes two recent commits that need to be re-evaluated in
 light of this design:
@@ -394,22 +414,53 @@ dialing-side REG_REQs are pending in R6, broker:
 Dialing-side clients treat `CHANNEL_CLOSED` as a transient error and MAY
 retry after a backoff (same class as pre-first-heartbeat REG_REQs today).
 
-### 5.5 `CHANNEL_AUTH_CHANGED_NOTIFY` — direction inverts by topology
+### 5.5 `CHANNEL_AUTH_CHANGED_NOTIFY` — direction inverts + phase field
 
-Today: broker → producer (informs of consumer joins/leaves).
+Today: broker → producer (informs of consumer joins/leaves).  Single
+event per state change.
 
 Under this design, broker's NOTIFY is aimed at the BINDING side for
-this channel (§6.2 decision matrix):
+this channel (§6.2 decision matrix), and gains a `phase` field so the
+binding side can distinguish "peer admitted to allowlist" from "peer
+Live" (their data channel is ready to receive).
 
-| Topology | Transport | NOTIFY target | Reason values |
-|---|---|---|---|
-| Fan-in    | ZMQ | Consumer | `producer_joined`, `producer_left` |
-| Fan-out   | ZMQ | Producer | `consumer_joined`, `consumer_left` |
-| Fan-out   | SHM | Producer | `consumer_joined`, `consumer_left` |
-| 1-to-1    | ZMQ | Producer | `consumer_joined`, `consumer_left` |
-| 1-to-1    | SHM | Producer | `consumer_joined`, `consumer_left` |
+**Direction table:**
 
-Mechanically identical to today's flow; direction generalizes.
+| Topology | Transport | NOTIFY target |
+|---|---|---|
+| Fan-in    | ZMQ | Consumer (binding side) |
+| Fan-out   | ZMQ | Producer (binding side) |
+| Fan-out   | SHM | Producer (binding side) |
+| 1-to-1    | ZMQ | Producer (binding side) |
+| 1-to-1    | SHM | Producer (binding side) |
+
+**Phase field values:**
+
+| Phase | Fires when | Binding side action |
+|---|---|---|
+| `admitted` | Broker admits a dialing-side REG_REQ (pubkey added to allowlist).  Fires BEFORE the dialing side's REG_ACK is sent — the binding side must have the pubkey in ZAP allowlist before the dialing side attempts CURVE handshake. | Update ZAP allowlist (add pubkey).  Do NOT update `peer_count` — the dialing side hasn't finished S3 setup yet. |
+| `live` | Broker receives first heartbeat from the dialing side.  Per §3.5.5, the heartbeat is emitted AFTER the dialing side's S3 completes (bind/connect done, subscription frame sent).  So `live` means "wire is ready to deliver." | Update `peer_count` / `live_peers` map (add role_uid).  Do NOT change allowlist — already present from `admitted` event. |
+| `left` | Dialing-side role DEREGs, times out on heartbeat, or is revoked. | Remove from ZAP allowlist AND from `peer_count` / `live_peers`.  Idempotent (safe if peer was never Live). |
+
+**Wire schema:**
+
+```json
+{
+  "msg_type": "CHANNEL_AUTH_CHANGED_NOTIFY",
+  "channel_name": "lab.sensor.temp",
+  "channel_version": 42,          // bumped on admitted / left; unchanged on live
+  "role_uid":       "cons.aggregator.uid5678",
+  "role_type":      "consumer",   // "producer" | "consumer"
+  "phase":          "live"        // "admitted" | "live" | "left"
+}
+```
+
+**Wake semantics.**  `phase=admitted` and `phase=left` change the ZAP
+allowlist, so they bump `channel_version` and can wake R6-pending
+REG_REQs (§10.4).  `phase=live` does NOT change the allowlist and does
+NOT bump `channel_version` — it's a readiness signal only.  This
+avoids spurious R6 wakes that would just re-check unchanged
+conditions.
 
 ### 5.6 `GET_CHANNEL_AUTH_REQ` + `CHANNEL_AUTH_APPLIED_REQ` — direction inverts
 
@@ -423,6 +474,13 @@ the BINDING side pulls and confirms.
 | Fan-out   | SHM | Producer (pulls consumer pubkeys, as today) |
 | 1-to-1    | ZMQ | Producer (pulls consumer pubkeys) |
 | 1-to-1    | SHM | Producer (pulls consumer pubkeys) |
+
+**Fires only on allowlist-changing NOTIFY.**  The binding side pulls via
+`GET_CHANNEL_AUTH_REQ` and confirms via `CHANNEL_AUTH_APPLIED_REQ` in
+response to `phase=admitted` and `phase=left` NOTIFYs.  It does NOT
+pull in response to `phase=live` NOTIFYs (the allowlist hasn't
+changed).  The `phase=live` handler is a lightweight local update to
+the `peer_count` / `live_peers` map — no wire round-trip.
 
 The `confirmed_version` versioning stays; it now tracks the **binding
 side's** applied snapshot per channel.  Because there's exactly one
@@ -659,10 +717,10 @@ sequenceDiagram
     Note over PS,B: Producer arrives (any time after or before consumer Live)
     PS->>B: REG_REQ (topology=fan-in, transport=zmq, pubkey=P1)
     Note over B: R6 blocks: needs consumer Live<br/>+ endpoint_resolved<br/>+ allowlist confirms P1
-    B->>CS: CHANNEL_AUTH_CHANGED_NOTIFY (reason=producer_joined)
+    B->>CS: CHANNEL_AUTH_CHANGED_NOTIFY<br/>phase=admitted, role_type=producer, role_uid=P1
     CS->>B: GET_CHANNEL_AUTH_REQ
     B-->>CS: GET_CHANNEL_AUTH_ACK (allowlist=[P1, ...])
-    CS->>CQ: set_peer_allowlist(allowlist)
+    CS->>CQ: set_peer_allowlist(allowlist)<br/>(ZAP admits P1 on next handshake)
     CS->>B: CHANNEL_AUTH_APPLIED_REQ (channel_version=N)
     B-->>CS: CHANNEL_AUTH_APPLIED_ACK (ok)<br/>confirmed_version=N
     Note over B: R6 wakes for producer REG_REQ
@@ -670,7 +728,9 @@ sequenceDiagram
     PS->>PQ: apply_master_approval(ACK) + start()
     PQ->>PQ: PUSH connect(data_endpoint)<br/>curve_serverkey=data_pubkey<br/>curve_client
     PQ-->>CQ: (CURVE handshake — consumer's ZAP admits via allowlist)
-    PS->>B: HEARTBEAT (first) → producer=Live
+    PS->>B: HEARTBEAT (first) → broker marks producer=Live
+    B->>CS: CHANNEL_AUTH_CHANGED_NOTIFY<br/>phase=live, role_type=producer, role_uid=P1
+    Note over CS: Consumer role host updates live_peers[K]<br/>api.producer_count() now returns count+1
     Note over PS,CS: Data flows
     PS->>PQ: write_acquire → write_commit
     PQ->>CQ: (slot bytes over PUSH→PULL)
@@ -701,17 +761,19 @@ sequenceDiagram
     Note over CS,B: Consumer arrives
     CS->>B: CONSUMER_REG_REQ (topology=fan-out, transport=zmq, pubkey=C1)
     Note over B: R6 blocks: producer Live + endpoint_resolved<br/>+ allowlist confirms C1
-    B->>PS: CHANNEL_AUTH_CHANGED_NOTIFY (reason=consumer_joined)
+    B->>PS: CHANNEL_AUTH_CHANGED_NOTIFY<br/>phase=admitted, role_type=consumer, role_uid=C1
     PS->>B: GET_CHANNEL_AUTH_REQ
     B-->>PS: GET_CHANNEL_AUTH_ACK (allowlist=[C1, ...])
-    PS->>PQ: set_peer_allowlist(allowlist)
+    PS->>PQ: set_peer_allowlist(allowlist)<br/>(ZAP admits C1 on next handshake)
     PS->>B: CHANNEL_AUTH_APPLIED_REQ (channel_version=N)
     B-->>PS: CHANNEL_AUTH_APPLIED_ACK (ok)<br/>confirmed_version=N
     B-->>CS: CONSUMER_REG_ACK (status=ok, data_endpoint, data_pubkey)
     CS->>CQ: apply_master_approval(ACK) + start()
     CQ->>CQ: SUB connect(data_endpoint)<br/>curve_serverkey=data_pubkey<br/>SUB subscribe (empty filter)
     CQ-->>PQ: (CURVE handshake — producer's ZAP admits via allowlist)
-    CS->>B: HEARTBEAT (first) → consumer=Live
+    CS->>B: HEARTBEAT (first) → broker marks consumer=Live
+    B->>PS: CHANNEL_AUTH_CHANGED_NOTIFY<br/>phase=live, role_type=consumer, role_uid=C1
+    Note over PS: Producer role host updates live_peers[K]<br/>api.consumer_count() now returns count+1
     Note over PS,CS: Data flows (broadcast)
     PS->>PQ: write_acquire → write_commit
     PQ->>CQ: (message via PUB→SUB — each consumer sees every message)
@@ -748,13 +810,15 @@ sequenceDiagram
     Note over CS,B: Consumer arrives
     CS->>B: CONSUMER_REG_REQ (topology=fan-out, transport=shm)
     Note over B: R6 blocks: producer Live + endpoint_resolved<br/>+ allowlist confirms consumer
-    B->>PS: CHANNEL_AUTH_CHANGED_NOTIFY (consumer_joined)
+    B->>PS: CHANNEL_AUTH_CHANGED_NOTIFY<br/>phase=admitted, role_type=consumer
     PS->>B: GET_CHANNEL_AUTH_REQ → CHANNEL_AUTH_APPLIED_REQ
     B-->>CS: CONSUMER_REG_ACK (data_endpoint=<sock path>, data_pubkey)
     CS->>CQ: apply_master_approval(ACK)<br/>connect capability socket
     CQ->>PQ: AttachProtocol Frame 1/2/3 (per HEP-CORE-0044)
     PQ->>CQ: SCM_RIGHTS fd → attach DataBlock
-    CS->>B: HEARTBEAT → consumer=Live
+    CS->>B: HEARTBEAT → broker marks consumer=Live
+    B->>PS: CHANNEL_AUTH_CHANGED_NOTIFY<br/>phase=live, role_type=consumer
+    Note over PS: api.consumer_count() now returns count+1
     Note over PS,CS: Data flows via shared memory
     PS->>PQ: write_acquire → write_commit (into DataBlock slot)
     CQ->>CS: read_acquire → read_release (from DataBlock slot)
@@ -784,13 +848,15 @@ sequenceDiagram
     Note over CS,B: Consumer arrives
     CS->>B: CONSUMER_REG_REQ (topology=one-to-one, transport=zmq, pubkey=C1)
     Note over B: R6 blocks: producer Live + endpoint_resolved<br/>+ allowlist confirms C1<br/>+ cardinality check (no other consumer yet)
-    B->>PS: CHANNEL_AUTH_CHANGED_NOTIFY (consumer_joined)
+    B->>PS: CHANNEL_AUTH_CHANGED_NOTIFY<br/>phase=admitted, role_type=consumer, role_uid=C1
     PS->>B: GET_CHANNEL_AUTH_REQ → APPLIED_REQ
     B-->>CS: CONSUMER_REG_ACK (data_endpoint, data_pubkey)
     CS->>CQ: apply_master_approval(ACK) + start()
     CQ->>CQ: PULL connect(data_endpoint)<br/>curve_serverkey=data_pubkey<br/>curve_client
     CQ-->>PQ: (CURVE handshake — producer's ZAP admits via allowlist)
-    CS->>B: HEARTBEAT → consumer=Live
+    CS->>B: HEARTBEAT → broker marks consumer=Live
+    B->>PS: CHANNEL_AUTH_CHANGED_NOTIFY<br/>phase=live, role_type=consumer, role_uid=C1
+    Note over PS: api.consumer_count() now returns 1
     Note over PS,CS: Data flows point-to-point
     PS->>PQ: write_acquire → write_commit
     PQ->>CQ: (slot bytes over PUSH→PULL, no round-robin — single peer)
@@ -810,27 +876,77 @@ Identical to fan-out SHM (§7.3) with two broker-side additions:
 Wire and transport layer are identical to fan-out SHM.  Only the
 cardinality-guard differs.
 
-### 7.6 Note on producer-side readiness signal (Q2 answered)
+### 7.6 Script-facing readiness accessors (Q2 + item 2 answered)
 
-When a dialing-side peer joins (fan-out consumer, fan-in producer, 1-to-1 consumer), the
-broker fires `CHANNEL_AUTH_CHANGED_NOTIFY` with `reason="consumer_joined"`
-or `"producer_joined"` to the binding side.  The binding side's role host
-tracks the aggregate peer set and exposes it via script API accessors:
+The framework exposes the broker's Live-peer view to scripts via four
+symmetric accessors on every role's api object:
 
-- `api.peer_count(channel_name) -> int` — current count of peers whose
-  auth handshake completed.
-- `api.peers(channel_name) -> list[str]` — role_uid list.
+```
+api.consumer_count(channel_name: str) -> int
+api.producer_count(channel_name: str) -> int
+api.consumers(channel_name: str)      -> list[str]  # role_uids
+api.producers(channel_name: str)      -> list[str]  # role_uids
+```
 
-**The framework does NOT auto-hold the data loop.**  Under fan-out ZMQ
+**Semantics.**  Count of Live consumers / producers of that channel per
+the broker's authoritative view.  Live means the broker has received
+the peer's first heartbeat (§3.5.2); per §3.5.5 S3, that heartbeat is
+emitted AFTER the peer's data-plane socket is set up (bind or
+connect+subscribe issued).  So Live ≈ "wire is ready to deliver."
+
+**Objective, not role-relative.**  The count includes self if self is
+a consumer/producer of the channel.  Fan-in `consumer_count()` returns
+1 (the singular consumer) regardless of who's asking; fan-out
+`producer_count()` returns 1 similarly; 1-to-1 both return 0 or 1.
+The script knows its own role, so trivial self-count cases don't
+create confusion.
+
+**How the framework knows.**  The binding side's role host receives
+`CHANNEL_AUTH_CHANGED_NOTIFY` with `phase=live` (§5.5) each time a
+dialing-side peer transitions to Live at the broker; it updates
+`live_peers[channel]` locally.  On `phase=left` it removes.  Under
+fan-out/1-to-1 the producer role is binding; under fan-in the consumer
+role is binding.  Dialing-side roles get the same signal via their own
+role host if useful, but for fan-in producer / fan-out consumer /
+1-to-1 dialing side, the "peer count" is trivially 0 or 1 anyway.
+
+**Framework does NOT auto-hold the data loop.**  Under fan-out ZMQ
 specifically (PUB drops messages sent before SUB subscribes), the
-producer's script is expected to consult `api.peer_count()` in
-`on_produce` and return early if no consumers are subscribed yet.  The
-framework's job is to deliver accurate signals; the script's job is to
-decide when the channel is "ready enough" to push data.  This applies
-symmetrically to:
+producer's script is expected to consult `api.consumer_count()` in
+`on_produce` and return early if no consumers are subscribed yet:
 
-- fan-in consumers (may check producer count before invoking upstream-triggered work),
-- 1-to-1 both sides (either can check that the other has connected).
+```python
+def on_produce(tx, msgs, api):
+    if api.consumer_count("data.stream") == 0:
+        return   # nobody to send to; skip iteration
+    # produce
+```
+
+The framework's job is to deliver accurate signals; the script's job
+is to decide when the channel is "ready enough" to push data.  This
+applies symmetrically to fan-in consumers (`api.producer_count()`
+before upstream-triggered work) and 1-to-1 both sides.  See
+`feedback_framework_mechanism_not_policy.md` in session memory for
+the broader principle.
+
+### 7.7 Why plain PUB (not XPUB) for fan-out ZMQ (item 1 answered)
+
+The broker is the sole admission authority (§3.5.1 auth-door
+principle).  A dialing-side role cannot reach the data plane without
+receiving `data_endpoint` + `data_pubkey` from its REG_ACK — which the
+broker only sends after admission.  So the broker's Live-peer view IS
+the wire-truth for readiness: nobody can be "ready to receive" without
+the broker having admitted them, and Live means the peer's data-plane
+setup completed before the heartbeat fired.
+
+Under XPUB the framework would observe subscription frames at the
+socket layer, but that observation is redundant — it's just a
+downstream consequence of the broker's decision, which the framework
+already learns via the `phase=live` NOTIFY.  Two observations of the
+same event would create potential for divergence during transient
+windows; one observation from the authority is simpler and canonical.
+
+Plain PUB, broker-derived counts, one source of truth.
 
 Rationale for this delegation: the framework has no way to know what
 "ready enough" means for a given deployment.  A control loop that must
@@ -1110,29 +1226,46 @@ flip; the "producer_is_binding" check becomes "consumer_is_binding =
 `check_consumer_cardinality`.  Everything else is structurally identical
 including R6 gate + allowlist admission + `create_or_join_channel`.
 
-### 10.4 Broker — R6 wake on ENDPOINT_UPDATE_REQ ACK
+### 10.4 Broker — R6 wake handler + `phase=live` NOTIFY fire
 
 Every mechanism that can satisfy an R6 pending condition must wake the
-pending REG_REQ queue:
+pending REG_REQ queue.  Additionally, the broker fires `phase=live`
+NOTIFYs on dialing-side first-heartbeat events (readiness signal to
+the binding side; does NOT wake R6):
 
 ```cpp
 // In broker_service.cpp handle_endpoint_update_req, after ACK sent.
-
-// Wake any REG_REQs that were pending on binding_side_live_and_resolved
-// or endpoint_resolved for this channel.
+// Wake REG_REQs pending on endpoint_resolved for this channel.
 wake_pending_regs_for(channel_name, WakeReason::EndpointResolved);
 
 // In handle_channel_auth_applied_req, after confirmed_version bump:
 wake_pending_regs_for(channel_name, WakeReason::AllowlistApplied);
 
-// In handle_heartbeat, if this is the first heartbeat from binding side:
-if (first_heartbeat_arrived) {
+// In handle_heartbeat.
+if (first_heartbeat_from_binding_side) {
+    // R6 wake — binding side just went Live; dialing REGs can proceed.
     wake_pending_regs_for(channel_name, WakeReason::BindingSideLive);
+}
+if (first_heartbeat_from_dialing_side) {
+    // NOT an R6 wake — dialing side going Live doesn't unblock any
+    // pending REGs (they were waiting on binding side, not this
+    // peer).  Instead, fire phase=live NOTIFY to the binding side so
+    // it can update live_peers + api.{consumer,producer}_count().
+    fire_channel_auth_changed_notify(channel_name, NotifyPayload{
+        .role_uid   = peer_role_uid,
+        .role_type  = peer_role_type,   // "producer" | "consumer"
+        .phase      = "live",
+        // channel_version unchanged — allowlist not affected
+    });
 }
 ```
 
-The wake function scans pending REG_REQs for the channel and re-evaluates
-each; those whose R6 conditions are now satisfied receive their REG_ACK.
+The wake function scans pending REG_REQs for the channel and
+re-evaluates each; those whose R6 conditions are now satisfied receive
+their REG_ACK.  Dialing-side `phase=live` NOTIFYs do NOT wake R6
+because the binding side is what dialing-side REGs pend on, not other
+dialing-side peers.  Firing R6 wake on every dialing-side Live event
+would just re-check unchanged conditions.
 
 ### 10.5 Stale-pubkey cleanup on R6 timeout
 
@@ -1186,7 +1319,7 @@ revision.
 
 | File | Change | LOC est. |
 |---|---|---|
-| `src/utils/service/role_api_base.cpp` | Rewire `build_rx_queue` + `build_tx_queue` for the new factory + topology.  Producer's `apply_producer_reg_ack` receives `data_endpoint` + `data_pubkey` under fan-in (dialing) or none under fan-out/1-to-1 (binding).  Retire HEP-0042 §7.1 consumer attach loop (~255 LOC in `apply_consumer_reg_ack`).  Add `ENDPOINT_UPDATE_REQ` call for binding side.  Add `api.peer_count()` / `api.peers()` state tracking. | ~300 change / ~400 delete |
+| `src/utils/service/role_api_base.cpp` | Rewire `build_rx_queue` + `build_tx_queue` for the new factory + topology.  Producer's `apply_producer_reg_ack` receives `data_endpoint` + `data_pubkey` under fan-in (dialing) or none under fan-out/1-to-1 (binding).  Retire HEP-0042 §7.1 consumer attach loop (~255 LOC in `apply_consumer_reg_ack`).  Add `ENDPOINT_UPDATE_REQ` call for binding side.  Add `phase=admitted/live/left` NOTIFY handlers on the binding side maintaining per-channel `zap_allowlist` + `live_peers` maps.  Add `consumer_count` / `producer_count` / `consumers` / `producers` accessors on every role's api. | ~350 change / ~400 delete |
 | `src/include/utils/role_api_base.hpp` | Options struct: add `channel_topology`; remove `producer_peers` field. | ~40 change / ~10 delete |
 | `src/utils/service/role_config_translation.cpp` | Parse `channel_topology` from config; validate + reject dialing-side `endpoint` hints; retire `zmq_node_endpoint`. | ~40 change / ~20 delete |
 | `src/include/utils/role_config_translation.hpp` | Config-struct shape updates. | ~15 change |
@@ -1239,7 +1372,7 @@ revision.
 
 | File | Change |
 |---|---|
-| `tests/test_layer2_service/test_broker_service.cpp` | Add: topology validation (SHM+fan-in reject `TOPOLOGY_NOT_SUPPORTED_FOR_TRANSPORT`), topology mismatch (`TOPOLOGY_MISMATCH`), missing-field (`INVALID_REQUEST`), cardinality violations × 3 error codes, R6 pending/drain, `CHANNEL_CLOSED` on channel teardown, cardinality-rejected doesn't bump `channel_version`, stale-pubkey cleanup on R6 timeout, cross-topology same-channel-name collision, `data_transport` mismatch handling. |
+| `tests/test_layer2_service/test_broker_service.cpp` | Add: topology validation (SHM+fan-in reject `TOPOLOGY_NOT_SUPPORTED_FOR_TRANSPORT`), topology mismatch (`TOPOLOGY_MISMATCH`), missing-field (`INVALID_REQUEST`), cardinality violations × 3 error codes, R6 pending/drain, `CHANNEL_CLOSED` on channel teardown, cardinality-rejected doesn't bump `channel_version`, stale-pubkey cleanup on R6 timeout, cross-topology same-channel-name collision, `data_transport` mismatch handling.  Add `phase` field tests: `phase=admitted` fires before REG_ACK, `phase=live` fires on first heartbeat, `phase=left` fires on DEREG / heartbeat-timeout; `phase=live` does NOT wake R6; `phase=admitted`/`left` bump `channel_version`, `phase=live` does not. |
 | `tests/test_layer2_service/test_zmq_queue_auth.cpp` | Update factory calls to new signature.  Add PUB/SUB + XPUB/XSUB (if adopted) coverage.  Add 1-to-1 PUSH/PULL coverage. |
 | `tests/test_layer2_service/test_role_reg_payload.cpp` | Update for retired `zmq_node_endpoint` + new `channel_topology` field. |
 | `tests/test_layer2_service/test_setup_infrastructure_translation.cpp` (lines 17, 389, 493) | Rewrite for scalar `data_endpoint` on `CONSUMER_REG_ACK` (no per-producer array). |
@@ -1270,7 +1403,7 @@ revision.
 | **HEP-CORE-0017** | §3.3, §4.6, §4.6.1 | **Major rewrite** — replace per-peer connect model with binding-side-single-endpoint. |
 | **HEP-CORE-0021** | §16 | **Reparametrize** — "producer" → "binding side" throughout. |
 | **HEP-CORE-0023** | §2.1.1 | **Generalize** — channel-death rule "binding side dies → channel dies." |
-| **HEP-CORE-0028** | Script API surface | **Amend** — add `api.peer_count(channel)` + `api.peers(channel)` accessors; cross-engine parity (Lua + Python + Native). |
+| **HEP-CORE-0028** | Script API surface | **Amend** — add four accessors on every role's api: `consumer_count(channel)`, `producer_count(channel)`, `consumers(channel)`, `producers(channel)`.  Objective Live counts; cross-engine parity (Lua + Python + Native). |
 | **HEP-CORE-0033** | §2994 wire catalog + §1247 code catalog + `ChannelEntry` description | **Update** — `topology` + `data_endpoint` + `data_endpoint_resolved` fields; ATTACH_REQ family retires; `CHANNEL_PRODUCERS_CHANGED_NOTIFY` chain retires. |
 | **HEP-CORE-0036** | §3.5.3, §6.4, §6.5, §6.5.1, §I7, §5.2 R6, §14 | **Symmetrize** — R6 gate direction generalizes; NOTIFY chain aims at binding side; §I7 endpoint disclosure section reflects topology-parametric shape. |
 | **HEP-CORE-0042** | Entire HEP | **Major scope narrowing** — retire §5 dispatch + §7.1 pre-attach loop.  Preserve `confirmed_version` bookkeeping (now scalar per channel).  Preserve HEP-0044 AttachProtocol reference. |
@@ -1348,28 +1481,27 @@ should be one commit (or a small tight batch).
    (early), not Phase E.  Explicit single source of truth avoids the
    parallel-state disagreement class of bug.
 
+### Answered 2026-07-08 (evening, rev 5):
+
+5. **Item 1 — XPUB vs PUB for fan-out ZMQ binding side.** ✅ Plain PUB.
+   Broker is the sole admission authority (§3.5.1); the framework
+   derives `peer_count` from the broker's Live-transition NOTIFY
+   (phase=live per §5.5).  XPUB would be redundant observation of a
+   decision the broker already delivered.  See §7.7.
+6. **Item 2 — Script API accessor naming.** ✅ Split naming.  Four
+   accessors on every role's api object: `consumer_count(channel)`,
+   `producer_count(channel)`, `consumers(channel)`, `producers(channel)`.
+   Objective counts (self-inclusive when applicable).  See §7.6.
+7. **Item 3 — Recent-commit fate.** ✅ Forward-migrate both.
+   `2c604280` HEP-0017 §3.3 multi-endpoint PULL code retires in Phase E.
+   `9d0ca4c8` HEP-0021 §16 amendment gets rewritten in Phase A.  Neither
+   commit is reverted; both continue passing tests through the
+   migration until the code path retires as part of the phased plan.
+
 ### Still open:
 
-1. **Recent commits — clean revert or forward migration?**
-   - Commit `2c604280` HEP-0017 §3.3 multi-endpoint PULL: forward
-     migration — code stays until Phase E, then deletes as part of
-     retirement.
-   - Commit `9d0ca4c8` HEP-0021 §16 amendment: forward reparametrization
-     — doc rewritten in Phase A, not reverted.
-   Draft lean: forward migration for both.  Confirm before Phase E.
-2. **Script API accessor naming.**  `api.peer_count()` vs
-   `api.consumer_count()` + `api.producer_count()` vs
-   something else.  Deferred to Phase A HEP-CORE-0028 amendment; not
-   design-blocking.
-3. **XPUB vs PUB for fan-out ZMQ binding side.**  XPUB emits
-   subscription-state events on its read side (which we could bubble to
-   the role host as authoritative "consumers subscribed" signal, better
-   than trusting the allowlist NOTIFY count).  Plain PUB does not.  If
-   we adopt XPUB, script accessor updates automatically when SUB
-   subscribes / unsubscribes at the socket layer, not just when broker
-   observes CONSUMER_REG_REQ / DEREG.  Draft lean: **use XPUB** because
-   it makes the script API's `peer_count` reflect wire-level truth, not
-   just broker-level bookkeeping.  Confirm during Phase A.
+*(none — all three previously-open items are answered as of 2026-07-08
+evening; the draft is complete pending user's final review.)*
 
 ## 14. What this design does NOT do
 
