@@ -152,30 +152,71 @@ returns `CHANNEL_NOT_FOUND` (consumers treat either signal as
 
 #### 2.1.1 Multi-producer channels (transport-agnostic)
 
-A data channel may have **one or more producers**.  HEP-CORE-0008's
-abstract queue (QueueReader/QueueWriter) is the contract role/hub
-code operates against; multi-producer is a queue-pattern question,
-not a control-plane assumption.
+> **Amendment (2026-07-08) — topology migration.**  The
+> channel-existence predicate generalizes from "at least one live
+> producer" to "BINDING side is live" per the declared
+> topology (fan-in / fan-out / one-to-one, see HEP-CORE-0017 §3.3
+> + §4.5-§4.6).  Under fan-in the binding side is the CONSUMER;
+> its death tears the channel down and fans `CHANNEL_CLOSING_NOTIFY`
+> out to all producers.  Under fan-out and one-to-one the binding
+> side is the PRODUCER (matches the pre-migration rule with N=1
+> producer).  See tech draft §4.2 + §5.11 for the generalized
+> teardown rule.  Cardinality guards (fan-out / one-to-one
+> single-producer-only; fan-in single-consumer-only) prevent
+> mixed-topology admission — see HEP-CORE-0007 §12.4a for the
+> `FAN_IN_IS_SINGLE_CONSUMER` / `FAN_OUT_IS_SINGLE_PRODUCER` /
+> `ONE_TO_ONE_CARDINALITY_VIOLATED` error codes.
 
-- **ZMQ-backed channels** support multiple producers natively
-  (PUSH–PULL with multiple PUSHers, PUB–SUB with multiple PUBs,
-  etc.).  Each producer issues its own REG_REQ on the same
-  `channel_name` and is admitted as an independent
-  `ProducerEntry` on `ChannelEntry.producers`.  Per-producer
+A data channel may have **one or more producers** OR **one or
+more consumers** (depending on topology).  HEP-CORE-0008's
+abstract queue (QueueReader/QueueWriter) is the contract role/hub
+code operates against; multi-role admission is a queue-pattern
+question, not a control-plane assumption.
+
+- **ZMQ-backed channels** support all three topologies (fan-in
+  ZMQ = multi-producer / single-consumer; fan-out ZMQ =
+  single-producer / multi-consumer via PUB-SUB; one-to-one ZMQ =
+  single of each via PUSH-PULL).  Each role issues its own
+  REG_REQ / CONSUMER_REG_REQ on the same `channel_name` with the
+  declared `channel_topology`.  Under fan-in, multi-producer
+  admission adds to `ChannelEntry.producers`; per-producer
   identity (pid, hostname, role_uid, zmq_identity) is preserved.
 - **SHM-backed channels** are physically single-producer (one
-  writer to the shared-memory ring).  The broker rejects a second
-  REG_REQ on an SHM channel with
-  `MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM` (HEP-CORE-0007 §12.4a).
+  writer to the shared-memory ring).  SHM supports fan-out (1
+  producer → N consumers) and one-to-one (1 producer → 1
+  consumer); SHM does NOT support fan-in.  The broker rejects
+  `channel_topology: "fan-in"` + `data_transport: "shm"` with
+  `TOPOLOGY_NOT_SUPPORTED_FOR_TRANSPORT` upfront at REG_REQ entry
+  (HEP-CORE-0007 §12.4a).  The pre-migration
+  `MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM` code stays live for legacy
+  handlers that didn't declare topology (superseded by the
+  topology check but preserved for backward compat during Phase B).
 
-**Channel-existence predicate (the source of truth):**
+**Channel-existence predicate (the source of truth) — generalized 2026-07-08:**
 
-> A `ChannelEntry` exists iff at least one producer-presence is
-> currently alive (state ≠ Disconnected).  When the last live
-> producer-presence transitions to Disconnected, HubState removes
-> the entry and broadcasts `CHANNEL_CLOSING_NOTIFY` to every
-> remaining member (consumers and any peer hubs that relay this
-> channel).
+> A `ChannelEntry` exists iff its BINDING side is currently alive
+> (state ≠ Disconnected):
+>
+> - **Fan-in ZMQ:** the CONSUMER (there is exactly one).  When the
+>   consumer transitions to Disconnected, HubState removes the
+>   entry and broadcasts `CHANNEL_CLOSING_NOTIFY` to every
+>   producer.
+> - **Fan-out ZMQ / SHM:** the PRODUCER (there is exactly one).
+>   Producer disconnected → teardown + fan-out to consumers.
+> - **One-to-one ZMQ / SHM:** the PRODUCER (there is exactly one,
+>   by the topology's cardinality guard).  Producer disconnected
+>   → teardown + notify to the sole consumer.
+>
+> Dialing-side disconnects are just `phase=left` NOTIFY events to
+> the binding side; they do NOT tear the channel down.
+>
+> **Pre-2026-07-08 (superseded)** rule: "A `ChannelEntry` exists
+> iff at least one producer-presence is currently alive; the LAST
+> live producer's Disconnected transition tears the channel down."
+> Preserved for archaeological reference; the new rule generalizes
+> it (fan-out and 1-to-1 still have exactly one producer, so the
+> old rule matches; fan-in now has consumer-as-binding-side
+> semantics, which the new rule captures).
 
 Mechanically: every path that transitions a producer-presence to
 Disconnected (pending-timeout sweep, voluntary DEREG_REQ, admin
