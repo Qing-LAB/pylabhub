@@ -1264,7 +1264,9 @@ Fire-and-forget:
   stays retired; the new variant binds at S3 and publishes the
   resolved port over the CURVE-authenticated CTRL.
 
-  Retired (2026-07-08 topology migration):
+  Retired (2026-07-08 topology migration) — companion set to
+  the §18.2 wire-catalog retirement rows for
+  `GET_CHANNEL_PRODUCERS_REQ` + `CHANNEL_PRODUCERS_CHANGED_NOTIFY`:
     - GET_CHANNEL_PRODUCERS_REQ — consumers no longer maintain a
       dial-target producer set (fan-in consumers are BINDING;
       fan-out and 1-to-1 consumers dial one endpoint from
@@ -3043,7 +3045,7 @@ classes are also disjoint — no message dual-classifies.
 | `CHECKSUM_ERROR_REPORT` | A | Consumer-detected; routes by channel. |
 | `HEARTBEAT_REQ` (per-presence — HEP-CORE-0019 §2.3) | A | Refreshes the `(uid, role_type)` presence row in `RoleEntry` (§2.1 of HEP-CORE-0023) and writes the matching `MetricsStore` row.  Each heartbeat refreshes only its own presence row — channel observability is derived from the producer-presence's state. |
 | `GET_CHANNEL_AUTH_REQ` | A | Producer pulls current consumer allowlist for a channel it produces; triggered by CHANNEL_AUTH_CHANGED_NOTIFY doorbell.  Broker checks caller is registered producer; reply carries `allowlist[]` (HEP-CORE-0036 §6.5 notify-then-pull). |
-| ~~`GET_CHANNEL_PRODUCERS_REQ`~~ | — | **RETIRED 2026-07-08 (topology migration)**.  Under the binding/dialing model (tech draft §5.8), consumers no longer maintain a dial-target producer set: fan-in consumers are BINDING (producers dial in; consumer's ZAP allowlist is synced via `CHANNEL_AUTH_CHANGED_NOTIFY` with the new `phase` field); fan-out and 1-to-1 consumers dial one endpoint from `CONSUMER_REG_ACK.data_endpoint`.  See HEP-CORE-0007 §12.3 (retirement schema) + HEP-CORE-0017 §3.3 (new architecture). |
+| ~~`GET_CHANNEL_PRODUCERS_REQ`~~ | — | **RETIRED 2026-07-08 (topology migration)**.  Under the binding/dialing model (tech draft §5.8), consumers no longer maintain a dial-target producer set: fan-in consumers are BINDING (producers dial in; consumer's ZAP allowlist is synced via `CHANNEL_AUTH_CHANGED_NOTIFY` with the new `phase` field); fan-out and 1-to-1 consumers dial one endpoint from `CONSUMER_REG_ACK.data_endpoint`.  See HEP-CORE-0007 §12.3 (retirement schema) + HEP-CORE-0017 §3.3 (new architecture) + §9.2 code-catalog retirement block below for the full 2026-07-08 topology-migration retirement set. |
 | `BAND_JOIN_REQ` / `BAND_LEAVE_REQ` / `BAND_BROADCAST_REQ` / `BAND_MEMBERS_REQ` | D | Band lives on the hub the role chooses at join time. |
 | `ROLE_PRESENCE_REQ` | B | "Is uid X alive?" — fall-through. |
 | `ROLE_INFO_REQ` | B | Inbox-discovery — fall-through (HEP-CORE-0027 §4.2). |
@@ -3062,7 +3064,7 @@ classes are also disjoint — no message dual-classifies.
 | `CHANNEL_ERROR_NOTIFY` | A | Schema mismatch, etc. |
 | `CONSUMER_DIED_NOTIFY` | A | Producer of channel (when broker detects a consumer process is dead). |
 | `CHANNEL_AUTH_CHANGED_NOTIFY` | A | To the **BINDING side** of the channel (fan-in: consumer; fan-out / 1-to-1: producer).  Direction inverted 2026-07-08 (topology migration); pre-migration was "to every kLive producer."  Gains three REQUIRED payload fields: `role_uid`, `role_type`, `phase` ("admitted" \| "live" \| "left").  Doorbell that triggers `GET_CHANNEL_AUTH_REQ` pull ONLY on `phase=admitted` and `phase=left` (allowlist-changing); `phase=live` is a lightweight local update to the binding side's `live_peers` map that feeds `api.consumer_count()` / `api.producer_count()` per HEP-CORE-0028.  See HEP-CORE-0007 §12.5 for the new payload schema and HEP-CORE-0036 §6.5 for the semantics.  Old `reason` field ({consumer_joined, consumer_left, consumer_timeout, federation_peer_death}) is retired; the semantics collapse into phase + role_type. |
-| ~~`CHANNEL_PRODUCERS_CHANGED_NOTIFY`~~ | — | **RETIRED 2026-07-08 (topology migration)**.  Symmetric to the retirement of `GET_CHANNEL_PRODUCERS_REQ` above.  Under the binding/dialing model, the producer_joined / producer_left semantics collapse into `CHANNEL_AUTH_CHANGED_NOTIFY(phase=..., role_type="producer")` sent to the fan-in consumer (binding side).  See HEP-CORE-0007 §12.5 (retirement schema).  Historical payload: {channel_name, reason} where reason ∈ {producer_joined, producer_left, heartbeat_timeout, process_dead}. |
+| ~~`CHANNEL_PRODUCERS_CHANGED_NOTIFY`~~ | — | **RETIRED 2026-07-08 (topology migration)**.  Symmetric to the retirement of `GET_CHANNEL_PRODUCERS_REQ` above.  Under the binding/dialing model, the producer_joined / producer_left semantics collapse into `CHANNEL_AUTH_CHANGED_NOTIFY(phase=..., role_type="producer")` sent to the fan-in consumer (binding side).  See HEP-CORE-0007 §12.5 (retirement schema) + §9.2 code-catalog retirement block for the full 2026-07-08 topology-migration retirement set.  Historical payload: {channel_name, reason} where reason ∈ {producer_joined, producer_left, heartbeat_timeout, process_dead}. |
 | ~~`FORCE_SHUTDOWN`~~ | — | **Removed 2026-05-07** — the prior design used this to force-close lingering consumers after a `Closing` grace window expired; that whole grace path was removed when the channel-FSM was retired (HEP-CORE-0023 §2.1).  Channel teardown is now atomic on producer-presence Disconnected; consumers learn via `CHANNEL_CLOSING_NOTIFY` (best-effort) and any subsequent `DISC_REQ` returns `CHANNEL_NOT_FOUND`. |
 | `BAND_JOIN_NOTIFY` / `BAND_LEAVE_NOTIFY` / `BAND_BROADCAST_NOTIFY` | D | Band members. |
 

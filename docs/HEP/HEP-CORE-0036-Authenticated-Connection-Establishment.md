@@ -4600,6 +4600,41 @@ via the api's `has_tx_side()` / `has_rx_side()` accessors.
 
 ## 9. Multi-producer / multi-consumer scenarios
 
+> **Amendment (2026-07-08) — topology migration.**  The scenario
+> matrix below is SUPERSEDED by the three-topologies-only scope of
+> the post-migration model.  Under the binding/dialing model
+> (tech draft §2) only three channel topologies exist:
+> **fan-in** (N producers → 1 consumer, ZMQ only, consumer binds),
+> **fan-out** (1 producer → N consumers, ZMQ or SHM, producer
+> binds), and **one-to-one** (1 producer → 1 consumer, ZMQ or
+> SHM, producer binds).  The "N producers, N consumers" row is
+> EXPLICITLY OUT OF SCOPE — the framework no longer supports it as
+> a single channel.  Deployments that need N×M semantics must
+> compose fan-in and fan-out on separate channels.
+>
+> The pre-migration wire references in the matrix below
+> (`producers[]` array on `CONSUMER_REG_ACK`; per-producer
+> `zmq_node_endpoint` in `REG_REQ`; queue-per-consumer-that-handles-
+> N-producer-plumbing) are RETIRED per Phase A step 1
+> (HEP-CORE-0007 §12.3) and step 2 (HEP-CORE-0033 §5 ChannelEntry
+> model).  Under the new model:
+>
+> - **Fan-in ZMQ:** consumer's PULL binds once; producers' PUSH
+>   connect.  Consumer's `CONSUMER_REG_ACK` is a plain success
+>   (consumer is BINDING side; already owns its endpoint).
+>   Producer's `REG_ACK` carries scalar `data_endpoint` +
+>   `data_pubkey` (pointing at the consumer).
+> - **Fan-out ZMQ / SHM:** producer's PUB or DataBlock binds;
+>   consumers dial via `data_endpoint` from their
+>   `CONSUMER_REG_ACK`.  Symmetric.
+> - **1-to-1 ZMQ / SHM:** producer binds (PUSH or DataBlock);
+>   consumer dials.  Cardinality-1 on both sides enforced by
+>   broker via `ONE_TO_ONE_CARDINALITY_VIOLATED`.
+>
+> Historical matrix preserved below for archaeological reference.
+> See HEP-CORE-0017 §3.3 + §4.5-§4.6 for the current architectural
+> model, tech draft §11.4 for the coordinated amendment package.
+
 Combination matrix from the 2026-05-26 audit, expanded with HEP-0036
 auth semantics:
 
@@ -4611,6 +4646,18 @@ auth semantics:
 | N producers, N consumers | ZMQ: each consumer sends ONE CONSUMER_REG_REQ per channel and receives the `producers[]` array (N elements) per §6.4.  Each consumer's framework feeds the array into its single rx `ZmqQueue` (per HEP-0017 §3.3 — queue handles N producers internally).  Broker fires `CHANNEL_AUTH_CHANGED_NOTIFY` to EVERY producer; each producer pulls the updated allowlist via `GET_CHANNEL_AUTH_REQ` (§6.5 notify-then-pull amended 2026-06-04).  Each producer's PUSH uses its own identity keypair; consumers use their own identity keypair as PULL CURVE-client.  Totals: M+P broker registrations (M consumer + P producer); on the data plane, ONE queue per consumer presents the aggregated stream from all P producers — internal CURVE sessions are M×P but never exposed above the queue boundary per I9. | N/A — SHM doesn't support multi-producer. |
 
 ### 9.1 Per-producer fan-in nuance
+
+> **Amendment (2026-07-08) — topology migration.**  The per-producer
+> fan-in nuance described below is SUPERSEDED by the "consumer
+> binds; producers dial" model of fan-in ZMQ.  Under the new
+> model, producers do NOT register their own endpoints (fan-in
+> producers are DIALING side; they connect to the consumer's
+> single bound endpoint delivered via `REG_ACK.data_endpoint`).
+> The `ProducerEntry::zmq_node_endpoint` field retires per HEP-CORE-0033
+> §5 (Phase A step 2).  The `ENDPOINT_UPDATE_REQ` un-retirement
+> (HEP-CORE-0021 §16) applies to the BINDING side of any topology,
+> not per-producer under fan-in.  Historical text preserved below
+> for archaeological reference until Phase E code retirement.
 
 In a Fan-In channel, each producer registers its own endpoint
 directly in `REG_REQ.zmq_node_endpoint` (per §3.5 — the legacy
