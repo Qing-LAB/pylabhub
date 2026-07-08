@@ -784,18 +784,42 @@ set LINGER=0 immediately after.
 Status: **ADOPTED 2026-07-08** (draft; supersedes the RESERVED
 notice of 2026-06-12).  Amendment closes task #94.
 
+> **Amendment (2026-07-08 evening) — topology migration
+> reparametrization.**  When §16 was drafted earlier this session
+> (commit `9d0ca4c8`), the design was producer-centric because the
+> pre-migration framework hardcoded "producer binds."  Under the
+> post-migration binding/dialing model, ephemeral port binding
+> applies to whichever side is BINDING per the channel's
+> topology:
+>
+> - **Fan-in ZMQ:** BINDING side is the CONSUMER (PULL bind).
+> - **Fan-out ZMQ:** BINDING side is the PRODUCER (PUB bind).
+> - **1-to-1 ZMQ:** BINDING side is the PRODUCER (PUSH bind).
+> - **SHM (fan-out / 1-to-1):** BINDING side is the PRODUCER
+>   (capability-transport socket bind).
+>
+> Read every "producer" reference in §16.1-§16.13 below as
+> "binding side of the channel's topology."  Mechanism unchanged
+> — same state machine, same mid-life rules, same R6 extension
+> semantics.  Only the SIDE varies by topology.  Design
+> authority: `docs/tech_draft/DRAFT_topology_singular_side_2026-07.md`
+> (status: DESIGN LOCKED); §11.4 lists the coordinated amendment
+> package.
+
 ### 16.1 What this section does
 
-Lets a producer's config declare an unresolved port
+Lets a BINDING-side role's config declare an unresolved port
 (`tcp://host:0`) and have the operating system pick a free port at
-bind time.  The broker's record of that producer's endpoint is
-updated to the resolved port before any consumer can attach.
+bind time.  The broker's record of that role's endpoint (per
+channel — held on `ChannelEntry.data_endpoint`, not
+per-producer under the post-migration model) is updated to the
+resolved port before any DIALING-side role attempts to connect.
 
-Fixed-port producers (config declares `tcp://host:5555`) are
-unaffected: the same code path runs, the broker's endpoint record
-matches the config claim, and the update is a no-op at the state
-level.  Every producer runs the same startup sequence, port-0 or
-not.
+Fixed-port binding-side roles (config declares
+`tcp://host:5555`) are unaffected: the same code path runs, the
+broker's endpoint record matches the config claim, and the update
+is a no-op at the state level.  Every binding-side role runs the
+same startup sequence, port-0 or not.
 
 ### 16.2 What stays retired
 
@@ -811,14 +835,33 @@ the auth door before auth") forbids.  Any future proposal to move
 bind pre-REG is out of scope; the design below binds
 POST-REG_ACK.
 
-### 16.3 Per-producer endpoint scope (Wave M2.5)
+### 16.3 Endpoint scope — per-channel single-scalar (post-2026-07-08 topology migration)
 
-The producer's data-plane endpoint lives on `ProducerEntry`, not
-on `ChannelEntry`.  Fan-in channels (N > 1 producers) carry N
-distinct endpoints — one per producer.  This has been true in the
-code since Wave M2.5 (2026-06) and is documented at
-`src/include/utils/hub_state.hpp:193`.  This section is the HEP-
-level authority for that invariant.
+> **Amendment (2026-07-08 evening) — topology migration.**  The
+> pre-migration model that this section originally documented
+> (per-producer endpoints on `ProducerEntry`, N distinct
+> endpoints per fan-in channel) is SUPERSEDED.  Under the
+> binding/dialing model there is EXACTLY ONE data_endpoint per
+> channel — the binding side's endpoint — held on
+> `ChannelEntry.data_endpoint` (scalar).  The pre-migration
+> `ProducerEntry.zmq_node_endpoint` field retires.  See tech
+> draft §4.1 for the ChannelEntry state model + HEP-CORE-0033
+> §5 ChannelEntry description amendment.
+
+Post-migration model: the binding side of the channel's topology
+owns a single `data_endpoint`, held on `ChannelEntry.data_endpoint`
+(scalar string).  Dialing-side roles receive this endpoint via
+their REG_ACK (fan-in producer, fan-out consumer, 1-to-1 consumer);
+they never own their own endpoint.  This section is the HEP-level
+authority for the single-endpoint invariant.
+
+**Pre-migration model** (SUPERSEDED; archaeological reference):
+the producer's data-plane endpoint lived on `ProducerEntry`, not
+on `ChannelEntry`.  Fan-in channels (N > 1 producers) carried N
+distinct endpoints — one per producer.  That model was true in the
+code since Wave M2.5 (2026-06) and documented at
+`src/include/utils/hub_state.hpp:193`.  Retirement lands in Phase E
+of the code migration per tech draft §12.
 
 Code sites that read this section's contract:
 
