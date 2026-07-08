@@ -98,7 +98,7 @@ Revision history:
   internal map, split accessors for the script surface.
   No design changes; documentation cleanup only.  Design LOCKED
   status preserved.
-- **Rev 8** (this) — cross-ref cleanup for pre-rev-5 metadata that
+- **Rev 8** (`82dc9a2e`) — cross-ref cleanup for pre-rev-5 metadata that
   survived every previous review because it's in table row order + count
   references + cross-references to obsolete section structure, not in
   semantic prose.  §11.4 HEP-files-affected table reordered to numerical
@@ -114,6 +114,18 @@ Revision history:
   answer: `peer_count` → "live-peer count / `live_peers[channel]` map"
   for vocabulary consistency with the rest of the doc.  No design
   changes; documentation cleanup only.  Design LOCKED status preserved.
+- **Rev 9** (this) — one-line title normalization: §5.11a
+  "Singular-side restart under fan-in" → "Binding-side restart under
+  fan-in."  Rev 4 normalized "singular / plural side" → "binding /
+  dialing side" for role-specific references throughout the doc;
+  §5.11a's section title picked out a specific role (the consumer,
+  who is the binding side under fan-in) but had escaped that pass.
+  Conceptual/principle uses of "singular side" in the document title
+  (line 2, line 15) and §15 (line 1602) are retained deliberately —
+  those describe the design at an abstract level, not a specific
+  role.  No design changes.  Design LOCKED status preserved.  This
+  is expected to be the terminal revision — the review-cycle
+  asymptote is here.
 
 The draft supersedes two recent commits that need to be re-evaluated in
 light of this design:
@@ -618,7 +630,7 @@ consumer) removes that role from the allowlist and fires
 the channel survives.  Binding side updates BOTH `zap_allowlist` and
 `live_peers` on the `phase=left` NOTIFY.
 
-### 5.11a Singular-side restart under fan-in (post-crash)
+### 5.11a Binding-side restart under fan-in (post-crash)
 
 When a fan-in consumer crashes, the channel dies (§4.2, §5.11).  All
 producers receive `CHANNEL_CLOSING_NOTIFY` and — per HEP-CORE-0036
