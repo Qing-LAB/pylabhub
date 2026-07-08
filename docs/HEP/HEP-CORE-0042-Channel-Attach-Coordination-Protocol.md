@@ -1,8 +1,71 @@
 # HEP-CORE-0042: Channel Attach Coordination Protocol
 
+> **⚠ MAJOR SCOPE NARROWING — 2026-07-08 topology migration.**
+>
+> This HEP's original substance — the pre-attach coordination
+> protocol between consumers and producers, mediated by the broker
+> via `CONSUMER_ATTACH_REQ_ZMQ` + `CHANNEL_AUTH_APPLIED_REQ` — is
+> **RETIRED 2026-07-08** as part of the topology migration.  Under
+> the post-migration binding/dialing model, the coordination
+> collapses into the REG_REQ path itself:
+>
+> 1. Dialing-side REG_REQ arrives → broker blocks at R6 (tech
+>    draft §5.4).
+> 2. Broker fires `CHANNEL_AUTH_CHANGED_NOTIFY(phase=admitted)` to
+>    binding side.
+> 3. Binding side pulls `GET_CHANNEL_AUTH_REQ`, applies to ZAP,
+>    sends `CHANNEL_AUTH_APPLIED_REQ` (the wire this HEP defined —
+>    reused; no separate CONSUMER_ATTACH_REQ needed).
+> 4. Broker's R6 wakes; REG_ACK carries `data_endpoint` + `data_pubkey`.
+> 5. Dialing side connects; CURVE handshake succeeds (allowlist
+>    already in place).
+>
+> **What retires from this HEP:**
+> - §5 Abstract protocol (whole section — the coordination
+>   layer's abstract handler flow is subsumed by R6 in
+>   HEP-CORE-0036 §6.5).
+> - §5.5.1 `CONSUMER_ATTACH_REQ_ZMQ` + `_ACK_ZMQ` wire (retires
+>   entirely — HEP-CORE-0007 §12.3 has the retirement schema).
+> - §6.1 Bindings.SHM `CONSUMER_ATTACH_REQ_SHM` (retires
+>   symmetrically — same rationale, HEP-CORE-0044 AttachProtocol
+>   still owns the SHM crypto handshake at the data-plane socket).
+> - §6.2 Bindings.ZMQ (retires with §5.5.1).
+> - §7.1 Consumer role side pre-attach loop (retires — REG_REQ
+>   path handles it).
+> - §8 script accessors `producers_declared` / `producers_connected` /
+>   `producer_attach_status` / `producer_attach_reason` retire.
+>   Replaced by HEP-CORE-0028's four topology-parametric accessors
+>   (`consumer_count`, `producer_count`, `consumers`, `producers`).
+>
+> **What survives:**
+> - §5.5.2 `CHANNEL_AUTH_APPLIED_REQ` / `_ACK` wire — REUSED under
+>   HEP-CORE-0036 §6.5 for the notify-then-pull-then-confirm
+>   cycle.  Fires on `phase=admitted` and `phase=left` NOTIFYs.
+> - §5.5.3 `PRODUCER_REG_ACK.instance_id` — REUSED as the
+>   stale-instance guard (HEP-CORE-0033 §5 ProducerEntry).
+> - `confirmed_version` bookkeeping — REUSED but collapsed from
+>   `[K][P]` per-producer map to a scalar per channel (there's
+>   exactly one binding side per channel).
+> - `PeerDeathWatcher` and observer references — orthogonal to
+>   this scope narrowing; owned by HEP-CORE-0045.
+> - HEP-CORE-0044 AttachProtocol reference — orthogonal; AttachProtocol
+>   is the SHM data-plane crypto handshake, not the coordination
+>   layer.  Continues under HEP-0044 unchanged.
+>
+> Design authority: `docs/tech_draft/DRAFT_topology_singular_side_2026-07.md`
+> (status: DESIGN LOCKED, rev 9).  Tech draft §5.7 documents the
+> collapse; §11.4 lists the coordinated amendment package.
+>
+> **Historical text of §5 + §6.1 + §6.2 + §7.1 + §8 below is
+> preserved for archaeological reference until Phase E of the code
+> migration (tech draft §12) deletes the corresponding
+> `test_pattern4_attach_coordination.cpp` (~1002 LOC) and the
+> broker's `handle_consumer_attach_req_zmq` + drain / sweep
+> pathways (~433 LOC).**
+
 ## 1. Status banner
 
-**Adopted:** 2026-07-01 (promoted from `docs/tech_draft/DRAFT_HEP-0036_zmq-pre-confirm_2026-06-30.md`, task #246 Phase 1).
+**Adopted:** 2026-07-01 (promoted from `docs/tech_draft/DRAFT_HEP-0036_zmq-pre-confirm_2026-06-30.md`, task #246 Phase 1).  **Major scope narrowed 2026-07-08** — see amendment banner above.
 
 **Scope.**  Transport-agnostic coordination protocol for channel attach.  Specifies how the broker mediates a channel attach between a producer and a consumer so that the consumer's data-plane handshake (CURVE for ZMQ, `crypto_box` for SHM) succeeds against a producer whose per-connection auth cache reflects the broker's current allowlist.
 
@@ -77,6 +140,15 @@ Any amendment to this HEP MUST be checked against these principles.  A finding t
 ---
 
 ## 5. Abstract protocol
+
+> **⚠ RETIRED 2026-07-08 (topology migration).**  This entire
+> section describes the pre-attach coordination layer that retires
+> under the binding/dialing model — the coordination collapses into
+> the R6-gated REG_REQ path per tech draft §5.7.  See the amendment
+> banner at the top of this HEP for what survives (5.5.2 wire +
+> instance_id + confirmed_version bookkeeping) and what retires
+> (5.5.1 wire + abstract handler flow).  Content below is preserved
+> for archaeological reference.
 
 ### 5.0 Scope of the abstract protocol
 
@@ -356,6 +428,19 @@ Fully documented in §5.5.2; ZMQ producer sends after `ZmqQueue::set_peer_allowl
 ## 7. Producer + consumer role flows
 
 ### 7.1 Consumer role side (ZMQ; `RoleAPIBase::apply_consumer_reg_ack`)
+
+> **⚠ RETIRED 2026-07-08 (topology migration).**  The consumer's
+> §7.1 pre-attach loop retires — under the binding/dialing model,
+> the consumer (fan-in binding side) doesn't attach to producers
+> individually.  Producers dial into the consumer; the consumer's
+> ZAP allowlist gates admission, kept synced via
+> `CHANNEL_AUTH_CHANGED_NOTIFY(phase=admitted/left)` per
+> HEP-CORE-0036 §6.5.  The `attach:begin` / `attach:success` /
+> `attach:complete` log markers this section defines retire with
+> the loop; new observability lands via HEP-CORE-0028's
+> `api.producer_count(channel)` accessor.  Preserved for
+> archaeological reference until Phase E code retirement.
+
 
 Runs during `apply_consumer_reg_ack`; between `register_consumer` returning REG_ACK and the consumer dialing producers.
 
