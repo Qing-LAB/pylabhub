@@ -688,6 +688,23 @@ and `DatahubSlotDrainingTest.SyncReaderRingFullBlocksNotDraining`.
 > The new protocol replaces asymmetric producer-owned channels with symmetric
 > broker-hosted pub/sub groups (bands). See HEP-CORE-0030 for the replacement protocol.
 
+> **Amendment (2026-07-08) — topology migration.**  Every
+> `REG_REQ` / `CONSUMER_REG_REQ` gains a REQUIRED `channel_topology`
+> field (`"fan-in"` \| `"fan-out"` \| `"one-to-one"`).  Dialing-side
+> ACKs gain a scalar `data_endpoint` + `data_pubkey` pair; the
+> per-producer `CONSUMER_REG_ACK.producers[]` array RETIRES.
+> `CHANNEL_AUTH_CHANGED_NOTIFY` gains `phase`, `role_uid`,
+> `role_type` fields.  Six new error codes land in the taxonomy
+> (§12.4a).  `GET_CHANNEL_PRODUCERS_REQ` +
+> `CHANNEL_PRODUCERS_CHANGED_NOTIFY` retire — the REG_REQ path
+> subsumes their function under the new binding/dialing model.
+> See HEP-CORE-0017 §3.3 + §4.6 for the architectural rewrite,
+> HEP-CORE-0036 §6.5 for the extended NOTIFY semantics, and
+> `docs/tech_draft/DRAFT_topology_singular_side_2026-07.md` for the
+> full design.  Amendment scope is coordinated across nine HEPs
+> (0007, 0017, 0021, 0023, 0028, 0033, 0036, 0042, 0044) — see the
+> tech draft §11.4 for the coordination table.
+
 This section is the authoritative reference for the **ZMQ control plane** — all broker
 protocol messages, unsolicited notifications, and how they flow through the system
 to script callbacks.
@@ -731,7 +748,7 @@ Messages are grouped into four categories based on their flow pattern:
 
 | Category | Pattern | Examples |
 |----------|---------|---------|
-| **Request/Response** | Client → Broker → Client | REG_REQ/ACK, DISC_REQ/ACK, CHANNEL_LIST_REQ/ACK, METRICS_REQ/ACK, ROLE_PRESENCE_REQ/ACK, ROLE_INFO_REQ/ACK, GET_CHANNEL_AUTH_REQ/ACK, GET_CHANNEL_PRODUCERS_REQ/ACK, ENDPOINT_UPDATE_REQ/ACK (post-bind endpoint publish — see HEP-CORE-0021 §16.5) |
+| **Request/Response** | Client → Broker → Client | REG_REQ/ACK, DISC_REQ/ACK, CHANNEL_LIST_REQ/ACK, METRICS_REQ/ACK, ROLE_PRESENCE_REQ/ACK, ROLE_INFO_REQ/ACK, GET_CHANNEL_AUTH_REQ/ACK, ~~GET_CHANNEL_PRODUCERS_REQ/ACK~~ (**RETIRED 2026-07-08** per topology migration — REG_REQ path subsumes; see the amendment banner at §12), ENDPOINT_UPDATE_REQ/ACK (post-bind endpoint publish — see HEP-CORE-0021 §16.5) |
 | **Fire-and-Forget** | Client → Broker (no reply) | HEARTBEAT_REQ, CHECKSUM_ERROR_REPORT, BAND_BROADCAST_REQ |
 | **Unsolicited Push** | Broker → Client (async) | CHANNEL_CLOSING_NOTIFY, CONSUMER_DIED_NOTIFY, BAND_JOIN_NOTIFY, BAND_LEAVE_NOTIFY, BAND_BROADCAST_NOTIFY, ROLE_REGISTERED_NOTIFY, ROLE_DEREGISTERED_NOTIFY |
 | **Band Pub/Sub** | Role → Broker → Members (HEP-CORE-0030) | BAND_JOIN_REQ/ACK, BAND_LEAVE_REQ/ACK, BAND_BROADCAST_REQ, BAND_MEMBERS_REQ/ACK |
@@ -851,6 +868,16 @@ schema invariant applies uniformly.
 
 Payload (REG_REQ):
   channel_name          string   Channel identifier (e.g. "lab.sensors.raw")
+  channel_topology      string   REQUIRED as of 2026-07-08 topology migration.
+                                 One of "fan-in" | "fan-out" | "one-to-one".
+                                 Broker validates transport × topology
+                                 compatibility and cardinality per HEP-CORE-0017
+                                 §3.3 + §4.6.  Missing field → INVALID_REQUEST.
+                                 SHM + fan-in rejected with
+                                 TOPOLOGY_NOT_SUPPORTED_FOR_TRANSPORT.  Existing
+                                 channel with mismatched topology → TOPOLOGY_MISMATCH.
+                                 Second REG_REQ under fan-out or one-to-one →
+                                 topology-specific cardinality violation code.
   shm_name              string   SHM segment name (= channel_name when has_shared_memory)
   producer_pid          uint64   Producer process ID
   has_shared_memory     bool     Whether SHM segment exists
@@ -877,10 +904,15 @@ Payload (REG_REQ):
   # AFTER REG_ACK is received — NOT at queue construction (S1) and
   # NOT before REG_REQ accept (HEP-CORE-0036 §3.5.1 "nothing
   # happens behind the auth door before auth").  Field shape:
-  zmq_node_endpoint     string   (REQUIRED if data_transport="zmq")
-                                 Producer's TCP endpoint per HEP-CORE-0021 §16.3 (per-producer scope authority)
+  zmq_node_endpoint     string   (REQUIRED if data_transport="zmq" AND producer is BINDING side —
+                                 i.e., topology in {"fan-out", "one-to-one"}).
+                                 Producer's TCP bind endpoint per HEP-CORE-0021 §16.3
                                  + HEP-CORE-0036 §3.5 + §6.4.  May be `tcp://host:0` (ephemeral — resolved at
                                  S3 bind, published via ENDPOINT_UPDATE_REQ per HEP-CORE-0021 §16.6).
+                                 **Amended 2026-07-08 (topology migration).**  Under fan-in ZMQ the
+                                 producer is the DIALING side and does not bind an endpoint — this
+                                 field is OMITTED for fan-in producers; the consumer's endpoint arrives
+                                 in the REG_ACK as `data_endpoint` + `data_pubkey`.
   zmq_pubkey            string   (REQUIRED if data_transport="zmq")
                                  Producer's IDENTITY CURVE pubkey (Z85, 40 chars).
                                  Per HEP-CORE-0036 I6 the broker mints NO data-plane
@@ -896,7 +928,7 @@ Payload (REG_ACK):
                                    interval_ms             int     Heartbeat cadence
                                    ready_miss_heartbeats   int     Misses before Connected→Pending
                                    pending_miss_heartbeats int     Misses before Pending→Disconnected (atomic teardown)
-  initial_allowlist     array    (REQUIRED if data_transport="zmq")
+  initial_allowlist     array    (REQUIRED if data_transport="zmq" AND producer is BINDING side)
                                  Array of authorized consumer pubkeys (Z85 strings)
                                  at REG_REQ-handling time.  Producer's framework
                                  feeds this into the ZAP cache seed inside
@@ -905,6 +937,19 @@ Payload (REG_ACK):
                                  consumers have registered yet.  Subsequent
                                  allowlist changes arrive via
                                  `CHANNEL_AUTH_CHANGED_NOTIFY` (§6.5).
+                                 **Amended 2026-07-08 (topology migration).**  Under fan-in ZMQ the
+                                 producer is DIALING; it does not own an allowlist.  This field is
+                                 OMITTED for fan-in producers.
+  data_endpoint         string   (REQUIRED if producer is DIALING side — i.e., topology="fan-in")
+                                 The BINDING side's (consumer's) bound endpoint that this producer
+                                 must dial.  Topology-agnostic scalar shape unified across ZMQ
+                                 (`tcp://host:port`) and SHM (`ipc:///...` capability socket).
+                                 **New 2026-07-08 (topology migration).**  See tech draft §5.2.
+  data_pubkey           string   (REQUIRED if producer is DIALING side)
+                                 The binding side's identity CURVE pubkey (Z85, 40 chars).
+                                 Producer sets `curve_serverkey = data_pubkey` when constructing its
+                                 PUSH client socket (fan-in) so the CURVE handshake against the
+                                 consumer's PULL server succeeds.  **New 2026-07-08.**
   correlation_id        string   (opt) Echo of request correlation_id if provided.
 
 role_type field (added 2026-03-10):
@@ -1062,6 +1107,14 @@ Sequence:
 
 Payload (CONSUMER_REG_REQ):
   channel_name          string
+  channel_topology      string   REQUIRED as of 2026-07-08 topology migration.
+                                 One of "fan-in" | "fan-out" | "one-to-one".
+                                 MUST match the topology declared by the channel's
+                                 REG_REQ; mismatch → TOPOLOGY_MISMATCH.  Missing
+                                 field → INVALID_REQUEST.  Under fan-in, a second
+                                 consumer's CONSUMER_REG_REQ is rejected with
+                                 FAN_IN_IS_SINGLE_CONSUMER; under one-to-one with
+                                 ONE_TO_ONE_CARDINALITY_VIOLATED.
   consumer_pid          uint64
   consumer_hostname     string
   consumer_uid          string   (opt) Consumer UID
@@ -1085,7 +1138,32 @@ Payload (CONSUMER_REG_ACK):
   heartbeat             object   Per-presence heartbeat configuration block — same
                                  shape as REG_ACK.heartbeat (HEP-CORE-0023 §2.5).
   correlation_id        string   (opt) Echo of request correlation_id if provided.
-  producers             array    (HEP-CORE-0036 §6.4, T1 locked 2026-05-28;
+
+  # 2026-07-08 topology migration: per-producer array retired; scalar
+  # data_endpoint + data_pubkey added for the dialing-side cases.
+
+  data_endpoint         string   (REQUIRED if consumer is DIALING side — i.e., topology in
+                                 {"fan-out", "one-to-one"}; OMITTED under fan-in where the
+                                 consumer is the BINDING side).
+                                 The producer's bound endpoint the consumer must dial.  Topology-
+                                 agnostic scalar shape unified across ZMQ (`tcp://host:port`) and
+                                 SHM (`ipc:///...` capability socket).  **New 2026-07-08.**
+  data_pubkey           string   (REQUIRED if consumer is DIALING side)
+                                 The producer's identity CURVE pubkey (Z85, 40 chars).  Consumer
+                                 sets `curve_serverkey = data_pubkey` when constructing its SUB
+                                 (fan-out ZMQ) or PULL (one-to-one ZMQ) or capability-transport
+                                 client (SHM) socket.  **New 2026-07-08.**
+  ~~producers~~         array    **RETIRED 2026-07-08 (topology migration).**  The per-producer
+                                 descriptor array is replaced by the scalar `data_endpoint` +
+                                 `data_pubkey` pair.  Under the new binding/dialing model, the
+                                 consumer never needs to enumerate per-producer endpoints:
+                                 fan-in consumers own the endpoint (producers dial in); fan-out
+                                 and one-to-one consumers dial the singular producer's endpoint.
+                                 The dynamic peer set that motivated the array shape is now
+                                 tracked via `CHANNEL_AUTH_CHANGED_NOTIFY` phase transitions
+                                 (§CHANNEL_AUTH_CHANGED_NOTIFY below).
+                                 Historical payload text (for archaeological reference):
+                                 (HEP-CORE-0036 §6.4, T1 locked 2026-05-28;
                                  HEP-CORE-0021 §5.2 sibling-sync 2026-05-28)
                                  Per-producer descriptors for the channel.  Length 1
                                  for single-producer channels; length N for fan-in
@@ -1160,7 +1238,22 @@ Payload (GET_CHANNEL_AUTH_ACK):
 Error codes: CHANNEL_NOT_FOUND (channel not in ChannelAccessIndex);
 PRODUCER_NOT_AUTHORIZED (caller is not a registered producer of the channel — defense-in-depth per HEP-CORE-0036 §6.6).
 
-#### GET_CHANNEL_PRODUCERS_REQ / GET_CHANNEL_PRODUCERS_ACK — Pull current channel producer set (consumer)
+#### ~~GET_CHANNEL_PRODUCERS_REQ / GET_CHANNEL_PRODUCERS_ACK~~ — **RETIRED 2026-07-08 (topology migration)**
+
+**Retirement rationale.**  Under the binding/dialing model, consumers no
+longer need to enumerate per-producer endpoints:
+- Fan-in ZMQ consumers are the BINDING side; producers dial in.  The
+  consumer's ZAP allowlist is what admits producers, and it's kept in
+  sync via `CHANNEL_AUTH_CHANGED_NOTIFY` (§6.5) — no consumer-side dial
+  list needed.
+- Fan-out ZMQ / one-to-one / SHM consumers dial ONE binding-side
+  endpoint delivered via `CONSUMER_REG_ACK.data_endpoint` — no runtime
+  producer set to sync.
+
+The `CHANNEL_PRODUCERS_CHANGED_NOTIFY` doorbell that motivated this
+REQ is also retired (§12.5).
+
+Historical schema (for archaeological reference):
 
 Direction: consumer → broker (REQ), broker → consumer (ACK).
 Trigger: consumer's BRC poll loop receives a `CHANNEL_PRODUCERS_CHANGED_NOTIFY` doorbell (HEP-CORE-0036 §6.5.1) and fires this sync request to refresh its producer-set cache.  Symmetric to GET_CHANNEL_AUTH_REQ.
@@ -1533,7 +1626,13 @@ same change.
 | `NOT_REGISTERED` | DEREG_REQ where the (producer_pid, role_uid) tuple doesn't match any admitted producer; CONSUMER_DEREG_REQ where the (consumer_pid, role_uid) tuple doesn't match any admitted consumer.  broker_proto 2→3 (2026-05-15): role_uid mismatch is a NOT_REGISTERED variant; missing role_uid is INVALID_REQUEST instead. | Verify the calling process actually registered first and is sending its own role_uid (not someone else's).  No retry — the request itself is logically wrong. |
 | `NOT_CHANNEL_OWNER` | ENDPOINT_UPDATE_REQ where the ZMTP-identity of the sender does not match any registered producer of the channel (broker uses connection-bound identity, not a wire `role_uid`, per HEP-CORE-0021 §16.5).  **Un-retired 2026-07-08** — HEP-CORE-0021 §16 reinstated ENDPOINT_UPDATE_REQ for post-bind endpoint publish. | Programming error: sender is not a producer of this channel.  No retry — the request is logically wrong. |
 | `SCHEMA_MISMATCH` | REG_REQ for an existing channel where the new producer's schema_hash differs from the channel-wide invariant (HEP-CORE-0023 §2.1.1: all producers on a channel must agree). | Reconcile schemas across producers; the channel cannot be re-registered with a different schema. |
-| `MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM` | Second REG_REQ on a `data_transport == "shm"` channel from a different `role_uid` (HEP-CORE-0023 §2.1.1: SHM is physically single-producer; multi-producer channels require ZMQ transport).  Same-`role_uid` does NOT reach this code path — the broker resolves same-uid first and rejects with `UID_CONFLICT` (see next row).  Structurally, the check lives in `ChannelEntry::add_producer` itself rather than the wire layer, so the wire handler cannot bypass it. | Choose a different channel name, or use ZMQ transport for multi-producer Fan-In topologies (HEP-CORE-0017 §4.6). |
+| `MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM` | Second REG_REQ on a `data_transport == "shm"` channel from a different `role_uid` (HEP-CORE-0023 §2.1.1: SHM is physically single-producer; multi-producer channels require ZMQ transport).  Same-`role_uid` does NOT reach this code path — the broker resolves same-uid first and rejects with `UID_CONFLICT` (see next row).  Structurally, the check lives in `ChannelEntry::add_producer` itself rather than the wire layer, so the wire handler cannot bypass it.  **Superseded 2026-07-08** by `TOPOLOGY_NOT_SUPPORTED_FOR_TRANSPORT` for the SHM+fan-in case (checked upfront at REG_REQ entry before any state mutation).  The older code stays live for legacy handlers; new code paths should prefer the topology-aware error. | Choose a different channel name, or use ZMQ transport for multi-producer Fan-In topologies (HEP-CORE-0017 §4.6). |
+| `TOPOLOGY_NOT_SUPPORTED_FOR_TRANSPORT` | REG_REQ / CONSUMER_REG_REQ with an incompatible `channel_topology` × `data_transport` combination.  Currently the only rejected pair is `topology="fan-in"` with `transport="shm"` (SHM is physically single-producer per HEP-CORE-0023 §2.1.1; fan-in requires multiple producers).  Checked upfront in the handler entry gate BEFORE any channel state mutation (tech draft §5.1 rule 2). **New 2026-07-08 (topology migration).** | Programming error or misconfiguration.  Choose a transport that supports the intended topology.  See HEP-CORE-0017 §3.3 for the topology × transport support matrix. |
+| `TOPOLOGY_MISMATCH` | REG_REQ / CONSUMER_REG_REQ where the declared `channel_topology` doesn't match the topology recorded on the existing `ChannelEntry` (the value set at channel-creation time by whichever side's REG_REQ arrived first).  Broker atomically checks this under the channel-state mutex.  **New 2026-07-08.** | Programming error or config drift — reconcile the config's `channel_topology` value across all roles registering for the same channel name.  No retry with the same topology; either fix the config or use a different channel name. |
+| `FAN_IN_IS_SINGLE_CONSUMER` | Second `CONSUMER_REG_REQ` on a `channel_topology == "fan-in"` channel.  Fan-in permits N producers → exactly 1 consumer per HEP-CORE-0017 §3.3.  Cardinality check fires synchronously at REG_REQ entry before any state mutation — the second consumer's REG_REQ does NOT bump `channel_version` or leave allowlist residue.  **New 2026-07-08.** | Programming error: fan-in channels are single-consumer by definition.  Use a different channel name if you need a second sink; use fan-out or a bespoke pipeline topology otherwise. |
+| `FAN_OUT_IS_SINGLE_PRODUCER` | Second `REG_REQ` on a `channel_topology == "fan-out"` channel.  Fan-out permits exactly 1 producer → N consumers per HEP-CORE-0017 §3.3.  Same synchronous-check semantics as `FAN_IN_IS_SINGLE_CONSUMER`.  **New 2026-07-08.** | Programming error.  Fan-out is single-source by definition.  Use fan-in if multiple upstream producers converge; use a distinct channel for a second producer's stream. |
+| `ONE_TO_ONE_CARDINALITY_VIOLATED` | Second `REG_REQ` OR second `CONSUMER_REG_REQ` on a `channel_topology == "one-to-one"` channel.  Both sides are cardinality-1 in this topology.  Same synchronous-check semantics.  **New 2026-07-08.** | Programming error.  Use fan-in / fan-out for higher-cardinality needs; 1-to-1 exists for the strict single-producer-single-consumer pattern. |
+| `CHANNEL_CLOSED` | REG_REQ / CONSUMER_REG_REQ that was pending in the R6 gate when the binding side died (heartbeat timeout, DEREG, or crash).  Broker resolves ALL pending REG_REQs for the torn-down channel with this code (tech draft §5.4a).  **New 2026-07-08 (topology migration).** | Transient error.  MAY retry after a backoff (analogous to pre-first-heartbeat REG_REQs today).  If retries continue to see CHANNEL_CLOSED, the binding side may be flapping or misconfigured. |
 | `UID_CONFLICT` | REG_REQ / CONSUMER_REG_REQ carrying a `role_uid` that already exists in HubState — regardless of whether the existing entry is active (HEP-CORE-0023 §2.1 Connected/Pending) or stale-residue.  Proper uid construction (`tag.name.unique` per HEP-CORE-0033 §G2.2.0b) makes a same-uid collision effectively impossible, so any collision indicates either bookkeeping residue (hub-side bug) or a remote-side breach/violation.  Broker logs at `LOGGER_ERROR`. | Retry with a clean state — if your role process restarted, regenerate a fresh `unique` component for the uid.  Persistent failures after restart mean hub-side residue (file a bug). |
 | `SCHEMA_HASH_MISMATCH_SELF` | Same `(role_uid, schema_id)` re-registered with a different schema_hash (HEP-CORE-0034 §8 namespace-by-owner self-conflict). | Reconcile your own producer's schema; do not re-register conflicting versions under the same id. |
 | `SCHEMA_ID_MISMATCH` | CONSUMER_REG_REQ with `expected_schema_id` that disagrees with the producer's stored schema_id. | Programming error or version drift; reconcile expected schema_id. |
@@ -1673,31 +1772,85 @@ Script host delivery: Event dict in msgs:
    "reason": "<string>"}
 ```
 
-#### CHANNEL_AUTH_CHANGED_NOTIFY — Producer-side Allowlist Doorbell (HEP-CORE-0036 §6.5)
+#### CHANNEL_AUTH_CHANGED_NOTIFY — Binding-side Peer Doorbell (HEP-CORE-0036 §6.5)
 
 ```
-Direction:  Broker → every kLive producer on the channel
-              (every ProducerEntry on `ChannelEntry.producers`)
-Trigger:    Consumer-presence membership change that affects the
-            channel's authorized-consumer set: consumer_joined,
-            consumer_left, consumer_timeout (presence
-            Pending→Disconnected), federation_peer_death.
-Effect:     Doorbell — fire-and-forget; carries no payload data.
-            Producer's framework responds by issuing
-            `GET_CHANNEL_AUTH_REQ` to pull the fresh allowlist
-            (notify-then-pull pattern per HEP-CORE-0036 §6.5).
+Direction:  Broker → the BINDING side of the channel
+              (fan-in: consumer; fan-out/one-to-one: producer)
+Trigger:    Dialing-side peer state transition affecting the channel's
+            authorized set OR the binding-side's live-peer view.  The
+            phase field (added 2026-07-08 topology migration)
+            distinguishes three trigger classes:
+
+              phase="admitted"  — broker admits a dialing-side REG_REQ
+                                  (pubkey added to allowlist).  Fires
+                                  BEFORE the dialing side's REG_ACK is
+                                  sent so binding side's ZAP allowlist
+                                  is ready when the CURVE handshake
+                                  begins.
+              phase="live"      — broker receives first heartbeat from
+                                  a dialing-side role (§3.5.5 heartbeat
+                                  is emitted AFTER S3 completes, so
+                                  live ≈ "wire is ready to deliver").
+                                  Does NOT change the allowlist and
+                                  does NOT bump `channel_version`.
+              phase="left"      — dialing-side role DEREGs, times out,
+                                  or is revoked.  Removes from both
+                                  allowlist and live-peer set.
+
+Effect:     phase=admitted / phase=left — allowlist changed.  Binding
+            side responds with `GET_CHANNEL_AUTH_REQ` +
+            `CHANNEL_AUTH_APPLIED_REQ` (notify-then-pull-then-confirm
+            per HEP-CORE-0036 §6.5).  Bumps `channel_version`.  May
+            wake R6-pending REG_REQs.
+            phase=live — local map update only.  Binding side updates
+            its `live_peers[channel]` map; script API accessors
+            (`consumer_count` / `producer_count` per HEP-CORE-0028)
+            reflect the new value.  Does NOT bump `channel_version`;
+            does NOT wake R6.
 
 Payload:
   channel_name          string
-  reason                string   ("consumer_joined" | "consumer_left" |
-                                  "consumer_timeout" | "federation_peer_death")
+  channel_version       uint64   Bumped on phase=admitted / phase=left;
+                                 unchanged on phase=live.
+  role_uid              string   REQUIRED as of 2026-07-08.  role_uid of the
+                                 dialing-side role that transitioned.
+  role_type             string   REQUIRED as of 2026-07-08.  "producer" |
+                                 "consumer".  Determines which script accessor
+                                 the binding side updates.
+  phase                 string   REQUIRED as of 2026-07-08.  "admitted" | "live" | "left".
+
+  # Pre-2026-07-08 payload had only `channel_name` + `reason` string
+  # ("consumer_joined" | "consumer_left" | "consumer_timeout" |
+  # "federation_peer_death").  reason is retired; the reason semantics
+  # collapse into phase + role_type: phase=admitted / phase=left carry
+  # the join/leave meaning, phase=live carries the readiness meaning
+  # (which had no pre-migration equivalent — the binding side used to
+  # rely on the heartbeat arrival being observed via the presence
+  # tracking rather than a dedicated NOTIFY).
 
 Cross-reference: HEP-CORE-0033 §18.2 (message inventory); HEP-CORE-0036
-§6.5 (broker→producer allowlist sync); HEP-CORE-0036 §3.5 (post-auth
-allowlist updates).
+§6.5 (broker→binding-side allowlist + readiness sync); HEP-CORE-0036
+§3.5 (post-auth allowlist updates); HEP-CORE-0028 (script API accessors
+backed by phase=live signals).
 ```
 
-#### CHANNEL_PRODUCERS_CHANGED_NOTIFY — Consumer-side Producer-Set Doorbell (HEP-CORE-0036 §6.5.1)
+#### ~~CHANNEL_PRODUCERS_CHANGED_NOTIFY~~ — **RETIRED 2026-07-08 (topology migration)**
+
+**Retirement rationale.**  Symmetric to the retirement of
+`GET_CHANNEL_PRODUCERS_REQ` (§12.3 above).  Under the binding/dialing
+model, consumers no longer maintain a dial-target set to sync:
+
+- Fan-in consumers are the BINDING side — they own the ZAP allowlist,
+  synced via `CHANNEL_AUTH_CHANGED_NOTIFY` (see above, phase field).
+- Fan-out / one-to-one consumers dial a single binding-side endpoint
+  delivered via `CONSUMER_REG_ACK.data_endpoint`.
+
+The `producer_joined` / `producer_left` semantics that this NOTIFY
+carried collapse into `CHANNEL_AUTH_CHANGED_NOTIFY(phase=...,
+role_type="producer")` under the new schema.
+
+Historical schema (for archaeological reference):
 
 ```
 Direction:  Broker → every kLive consumer on the channel
