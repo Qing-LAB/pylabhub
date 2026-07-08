@@ -16,6 +16,29 @@ The whole security-and-communication work chain sorts into **three
 independent lines** that share only the SMS crypto primitives.  Keep
 them separate when planning; do not mix scope.
 
+### ⚠ Architectural direction under review (2026-07-08)
+
+**Singular-side ownership migration — DESIGN DRAFT, not adopted.**
+Sessions 2026-07-08 developed a topology-parameterized design:
+fan-in (N producers → 1 consumer) has consumer bind, producers
+connect; fan-out (1 producer → N consumers) has producer bind,
+consumers connect.  Consequences: HEP-CORE-0017 §3.3 multi-endpoint
+PULL code (`2c604280`) becomes vestigial, HEP-CORE-0042 §7.1
+pre-attach coordination retires, HEP-CORE-0021 §16 amendment
+(`9d0ca4c8`) reparametrizes.  Net ~50 LOC delta; ~1000 LOC of
+retirement.
+
+- **Design authority:** `docs/tech_draft/DRAFT_topology_singular_side_2026-07.md`
+- **Migration plan:** `docs/todo/TOPOLOGY_TODO.md` (8 phases, docs-first)
+
+If adopted, this migration REPLACES most of Line 1's remaining
+items (#246 L4 close-out, #275 S2, #257, REVIEW-C onwards will
+land against the new design, not the pre-migration codebase).  If
+rejected, Line 1 continues per the plan below.
+
+Do not begin coding this migration in any session until user
+approves the design.
+
 ### Line 1 — Main auth chain (CURVE end-to-end across ZMQ + SHM)
 
 Symmetric CURVE integration across the ZMQ and SHM data paths so
