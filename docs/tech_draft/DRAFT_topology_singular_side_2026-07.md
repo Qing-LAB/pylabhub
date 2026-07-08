@@ -16,9 +16,23 @@ target-tasks: task #94 (ephemeral binding — subsumed), and new topology-migrat
 
 ## 0. Status
 
-Draft.  Not adopted.  Awaiting user review and approval.  If approved, this
-document becomes the design authority for a coordinated multi-HEP amendment
-package.
+Draft revision 3 (2026-07-08 evening).  Not adopted.  Awaiting user
+review and approval.  If approved, this document becomes the design
+authority for a coordinated multi-HEP amendment package.
+
+Revision history:
+- **Rev 1** (`bdc30116`) — initial design; fan-in + fan-out only.
+- **Rev 2** (`54177894`) — added 1-to-1 topology; Q1/Q2/Q3 answers locked.
+- **Rev 3** (this) — folded fresh-eye review findings + code-scan agent
+  results.  Fixes: enum + wire lists updated for 1-to-1; §7 adds full
+  1-to-1 ZMQ sequence + upgraded fan-out SHM diagram; §6.0 new topology
+  decision flowchart; §10 gains tier-boundary preamble + all-3-topology
+  broker pseudocode + R6 wake handler + stale-pubkey cleanup; §5 gains
+  singular-side restart rule (§5.11a) + plural-side ENDPOINT_UPDATE
+  rejection rule; §11 substantially expanded (12 additional code sites,
+  6 additional test files, script API sites, corrected LOC estimates);
+  §12 Phase G no longer "optional"; §14 aligned with §13.3 XPUB
+  discussion; §11.4 gains HEP-CORE-0028 + HEP-CORE-0044.
 
 The draft supersedes two recent commits that need to be re-evaluated in
 light of this design:
@@ -140,7 +154,7 @@ struct ProducerEntry {
 **After (this design):**
 
 ```cpp
-enum class ChannelTopology { FanIn, FanOut };
+enum class ChannelTopology { FanIn, FanOut, OneToOne };
 
 struct ChannelEntry {
     ChannelTopology topology;                   // NEW — declared at creation
@@ -148,10 +162,12 @@ struct ChannelEntry {
     std::string     schema_hash;
     // ...
 
-    // Singular side's bound data-plane endpoint.
-    //   Fan-In  ZMQ: consumer's PULL bind endpoint  (tcp://...)
-    //   Fan-Out ZMQ: producer's PUB  bind endpoint  (tcp://...)
-    //   Fan-Out SHM: producer's capability endpoint (ipc://...)
+    // Binding side's bound data-plane endpoint.
+    //   Fan-In     ZMQ: consumer's PULL bind endpoint  (tcp://...)
+    //   Fan-Out    ZMQ: producer's PUB  bind endpoint  (tcp://...)
+    //   Fan-Out    SHM: producer's capability endpoint (ipc://...)
+    //   1-to-1     ZMQ: producer's PUSH bind endpoint  (tcp://...)
+    //   1-to-1     SHM: producer's capability endpoint (ipc://...)
     std::string     data_endpoint;
     bool            data_endpoint_resolved{false};
 
@@ -207,7 +223,7 @@ mutation, no NOTIFY, no side effects.
   "role_uid": "prod.temp01.uid12345",
   "channel_name": "lab.sensor.temp",
   "data_transport": "zmq",
-  "channel_topology": "fan-in",           // NEW — one of "fan-in" | "fan-out"
+  "channel_topology": "fan-in",           // NEW — one of "fan-in" | "fan-out" | "one-to-one"
   "zmq_pubkey": "...",
   "schema_hash": "...",
   ...
@@ -261,17 +277,27 @@ pubkey and hasn't bound yet at ACK time.  Its endpoint is published via
 
 ### 5.3 `ENDPOINT_UPDATE_REQ` — reparametrize
 
-The wire and handler stay as-is.  What changes: the sender is
-whichever side is singular for the channel's topology.
+The wire and handler stay as-is.  What changes: the sender is the
+BINDING side of the channel (§6.2 decision matrix).
 
-- Fan-in ZMQ: consumer sends after PULL bind.
-- Fan-out ZMQ: producer sends after PUB bind.
-- Fan-out SHM: producer sends after capability socket bind (Unix socket).
+| Topology | Transport | Sender | After |
+|---|---|---|---|
+| Fan-in    | ZMQ | Consumer | PULL bind |
+| Fan-out   | ZMQ | Producer | PUB bind |
+| Fan-out   | SHM | Producer | Capability socket bind (Unix socket) |
+| 1-to-1    | ZMQ | Producer | PUSH bind |
+| 1-to-1    | SHM | Producer | Capability socket bind (Unix socket) |
 
-The broker's handler already resolves the sender via ZMTP identity, so the
-mechanism doesn't change.  What DOES change: the previously-drafted
+**Plural-side ENDPOINT_UPDATE_REQ is rejected.**  The broker's handler
+resolves the sender via ZMTP identity and checks whether the sender is
+the binding side of the target channel.  A dialing-side role that sends
+`ENDPOINT_UPDATE_REQ` gets `NOT_CHANNEL_OWNER` — dialing-side roles have
+no data-plane endpoint to publish.
+
+The broker's handler already resolves the sender via ZMTP identity, so
+the mechanism doesn't change.  What DOES change: the previously-drafted
 HEP-CORE-0021 §16 amendment reparametrizes — replace "producer" with
-"singular side of the channel's topology" everywhere.  State machine,
+"binding side of the channel's topology" everywhere.  State machine,
 mid-life rules, R6 extension all carry over unchanged in mechanism, just
 aimed at the right side.
 
@@ -342,23 +368,31 @@ retry after a backoff (same class as pre-first-heartbeat REG_REQs today).
 
 Today: broker → producer (informs of consumer joins/leaves).
 
-Under this design:
+Under this design, broker's NOTIFY is aimed at the BINDING side for
+this channel (§6.2 decision matrix):
 
-- **Fan-in ZMQ:** broker → consumer (informs of producer joins/leaves).
-- **Fan-out ZMQ:** broker → producer (unchanged direction).
-- **Fan-out SHM:** broker → producer (unchanged direction).
+| Topology | Transport | NOTIFY target | Reason values |
+|---|---|---|---|
+| Fan-in    | ZMQ | Consumer | `producer_joined`, `producer_left` |
+| Fan-out   | ZMQ | Producer | `consumer_joined`, `consumer_left` |
+| Fan-out   | SHM | Producer | `consumer_joined`, `consumer_left` |
+| 1-to-1    | ZMQ | Producer | `consumer_joined`, `consumer_left` |
+| 1-to-1    | SHM | Producer | `consumer_joined`, `consumer_left` |
 
-Mechanically: broker's NOTIFY is aimed at **whoever binds** for this
-channel.
+Mechanically identical to today's flow; direction generalizes.
 
 ### 5.6 `GET_CHANNEL_AUTH_REQ` + `CHANNEL_AUTH_APPLIED_REQ` — direction inverts
 
 Today: producer pulls allowlist and confirms applied.  Under this design:
-whoever binds pulls and confirms.
+the BINDING side pulls and confirms.
 
-- Fan-in ZMQ: consumer pulls consumer-side allowlist (producer pubkeys),
-  applies to PULL's ZAP, confirms via APPLIED_REQ.
-- Fan-out (both transports): producer pulls consumer allowlist (as today).
+| Topology | Transport | Puller / Confirmer |
+|---|---|---|
+| Fan-in    | ZMQ | Consumer (pulls producer pubkeys) |
+| Fan-out   | ZMQ | Producer (pulls consumer pubkeys, as today) |
+| Fan-out   | SHM | Producer (pulls consumer pubkeys, as today) |
+| 1-to-1    | ZMQ | Producer (pulls consumer pubkeys) |
+| 1-to-1    | SHM | Producer (pulls consumer pubkeys) |
 
 The `confirmed_version` versioning stays; it now tracks the **binding
 side's** applied snapshot per channel.  Because there's exactly one
@@ -392,17 +426,23 @@ to be informed of producer endpoints.  Allowlist changes flow through
 needs.  The `CHANNEL_PRODUCERS_CHANGED_NOTIFY` chain becomes dead code
 for fan-in ZMQ.  (Fan-out ZMQ has one producer, so it's moot there too.)
 
-### 5.9 `CONSUMER_REG_ACK.producers[]` — retires for fan-in ZMQ
+### 5.9 `CONSUMER_REG_ACK.producers[]` — retires; per-topology shape
 
-Under fan-in, consumer doesn't need per-producer endpoints — producers
-dial in.  The per-producer array collapses to a plain success response.
+The per-producer `producers[]` array retires entirely.  Every topology
+converges on a scalar `data_endpoint` + `data_pubkey` (or empty) on the
+CONSUMER_REG_ACK:
 
-For fan-out SHM, `CONSUMER_REG_ACK` continues to carry the producer's
-capability endpoint + pubkey (single-producer, so a scalar `data_endpoint`
-+ `data_pubkey` suffices).
+| Topology | Transport | `CONSUMER_REG_ACK` shape |
+|---|---|---|
+| Fan-in    | ZMQ | Success flag only.  Consumer is BINDING side; already has its own endpoint locally. |
+| Fan-out   | ZMQ | Scalar `data_endpoint` (producer's PUB address) + `data_pubkey`. |
+| Fan-out   | SHM | Scalar `data_endpoint` (producer's capability socket) + `data_pubkey`. |
+| 1-to-1    | ZMQ | Scalar `data_endpoint` (producer's PUSH address) + `data_pubkey`. |
+| 1-to-1    | SHM | Scalar `data_endpoint` (producer's capability socket) + `data_pubkey`. |
 
-For fan-out ZMQ, `CONSUMER_REG_ACK` carries the producer's PUB endpoint +
-pubkey (same scalar shape).
+The plural-side REG_ACK always carries the scalar; the binding-side ACK
+never does.  Symmetric for PRODUCER_REG_ACK under fan-in (producer is
+plural → REG_ACK carries the consumer's endpoint + pubkey).
 
 ### 5.10 `DISC_REQ` / `DISC_REQ_ACK` — simplify
 
@@ -412,9 +452,35 @@ there is no per-producer array anymore.
 
 ### 5.11 `DEREG_REQ` — wire unchanged; semantics parameterize
 
-Channel-death rule generalizes: **singular side dies → channel dies**.
-- Fan-in: consumer's DEREG or heartbeat-timeout → all producers get `CHANNEL_CLOSING_NOTIFY`.
-- Fan-out: producer's DEREG or heartbeat-timeout → all consumers get `CHANNEL_CLOSING_NOTIFY`.
+Channel-death rule generalizes: **binding side dies → channel dies**.
+
+| Topology | Whose death kills the channel | Recipients of `CHANNEL_CLOSING_NOTIFY` |
+|---|---|---|
+| Fan-in    | Consumer (binding side) | All producers |
+| Fan-out   | Producer (binding side) | All consumers |
+| 1-to-1    | Either side (both are singular) | The other side |
+
+Plural-side DEREG (fan-in producer, fan-out consumer) removes that role
+from the allowlist and fires `CHANNEL_AUTH_CHANGED_NOTIFY` to the binding
+side (§5.5); the channel survives.
+
+### 5.11a Singular-side restart under fan-in (post-crash)
+
+When a fan-in consumer crashes, the channel dies (§4.2, §5.11).  All
+producers receive `CHANNEL_CLOSING_NOTIFY` and — per HEP-CORE-0036
+§3.5.1 fatal-on-registration-failure principle — SHOULD exit cleanly.
+No auto-re-registration in the current design.
+
+A subsequent consumer with the same channel name creates a FRESH channel
+(new `ChannelEntry`, new `channel_version` starting at 0, empty
+allowlist).  This is not "consumer re-registration for the same channel"
+— the identity is a name reuse, not a state carry-over.
+
+Deployments that need consumer restart to preserve channel state should
+supervise the consumer at a higher layer (process-supervisor with
+restart-in-place) so from the framework's perspective the consumer
+never dies.  Framework does not baby-sit restart semantics
+([[feedback_framework_mechanism_not_policy]]).
 
 ### 5.12 Retirement summary
 
@@ -427,6 +493,40 @@ Channel-death rule generalizes: **singular side dies → channel dies**.
 | Per-producer `ProducerEntry.zmq_node_endpoint` | Whole framework | Moves to `ChannelEntry.data_endpoint`. |
 
 ## 6. Queue abstraction — how it's smart
+
+### 6.0 Topology decision flowchart
+
+```mermaid
+flowchart TD
+    Start[Role config parsed] --> HasTopology{channel_topology<br/>declared?}
+    HasTopology -->|No| Reject1[FAIL: CONFIG_INVALID<br/>channel_topology required]
+    HasTopology -->|Yes| ParseTopology{Which value?}
+
+    ParseTopology -->|"fan-in"| FanIn[Topology = FanIn]
+    ParseTopology -->|"fan-out"| FanOut[Topology = FanOut]
+    ParseTopology -->|"one-to-one"| OneToOne[Topology = OneToOne]
+    ParseTopology -->|other| Reject2[FAIL: CONFIG_INVALID<br/>unknown topology]
+
+    FanIn --> CheckTransportIn{transport == shm?}
+    CheckTransportIn -->|Yes| Reject3[FAIL: TOPOLOGY_NOT_SUPPORTED_FOR_TRANSPORT<br/>SHM has no fan-in]
+    CheckTransportIn -->|No| RoleKindIn{Role kind?}
+
+    FanOut --> RoleKindOut{Role kind?}
+    OneToOne --> RoleKindOne{Role kind?}
+
+    RoleKindIn -->|Producer| FanInProducer[PUSH connect socket<br/>CURVE client<br/>Dialing side]
+    RoleKindIn -->|Consumer| FanInConsumer[PULL bind socket<br/>CURVE server + ZAP<br/>Binding side, owns allowlist]
+
+    RoleKindOut -->|Producer, ZMQ| FanOutProdZMQ[PUB bind socket<br/>CURVE server + ZAP<br/>Binding side]
+    RoleKindOut -->|Producer, SHM| FanOutProdSHM[DataBlock create<br/>capability socket bind<br/>Binding side]
+    RoleKindOut -->|Consumer, ZMQ| FanOutConsZMQ[SUB connect socket<br/>curve_serverkey=data_pubkey<br/>SUB subscribe empty topic<br/>Dialing side]
+    RoleKindOut -->|Consumer, SHM| FanOutConsSHM[capability socket connect<br/>AttachProtocol handshake<br/>Dialing side]
+
+    RoleKindOne -->|Producer, ZMQ| OneProdZMQ[PUSH bind socket<br/>CURVE server + ZAP<br/>Binding side]
+    RoleKindOne -->|Producer, SHM| OneProdSHM[DataBlock create<br/>capability socket bind<br/>Binding side]
+    RoleKindOne -->|Consumer, ZMQ| OneConsZMQ[PULL connect socket<br/>curve_serverkey=data_pubkey<br/>Dialing side]
+    RoleKindOne -->|Consumer, SHM| OneConsSHM[capability socket connect<br/>AttachProtocol handshake<br/>Dialing side]
+```
 
 ### 6.1 Factory API
 
@@ -479,11 +579,14 @@ part of this design; adding it would be a separate future extension.
 The role passes:
 
 - **`side`** — implicit from the role kind (producer role or consumer role).
-- **`topology`** — from config (`channel_topology: "fan-in" | "fan-out"`).
-- **`transport`** — from config.
-- **`endpoint_hint`** — for the binding side, may be `tcp://host:0` (ephemeral).  For the connecting side, this is retired — the endpoint comes from the ACK.
+- **`topology`** — from config: `channel_topology: "fan-in" | "fan-out" | "one-to-one"`.
+- **`transport`** — from config: `"zmq" | "shm"`.
+- **`endpoint_hint`** — for the binding side, may be `tcp://host:0` (ephemeral).  For the dialing side, this field is REJECTED at config-load with `CONFIG_INVALID` — the dialing side must not pre-declare an endpoint (the endpoint comes from the ACK).
 
-Nothing in the role code touches sockets.
+**Abstraction contract preserved.**  Nothing in the role code touches
+sockets.  The role passes strings + enums; the queue owns all libzmq /
+DataBlock interaction.  See §10 for concrete examples respecting this
+boundary.
 
 ### 6.4 CURVE + ZAP fit cleanly
 
@@ -582,33 +685,97 @@ sequenceDiagram
     CQ->>CS: read_acquire → read_release
 ```
 
-### 7.3 Fan-out SHM — unchanged from HEP-CORE-0041
+### 7.3 Fan-out SHM — sequence
 
-The capability-transport flow (Unix socket dial → crypto_box handshake →
-SCM_RIGHTS fd) is orthogonal to this design.  The only touchpoint: the
-producer's capability socket is `data_endpoint` on `ChannelEntry`, and
-consumer's `CONSUMER_REG_ACK` carries it as `data_endpoint` +
-`data_pubkey`.  No sequence change; the wire field naming aligns with
-ZMQ.
+The AttachProtocol / capability transport (Unix socket dial → crypto_box
+handshake → SCM_RIGHTS fd) is inherited from HEP-CORE-0041 unchanged at
+the transport layer.  What DOES change: the WIRE — configs now declare
+`channel_topology: "fan-out"` explicitly, and `CONSUMER_REG_ACK` carries
+the scalar `data_endpoint` (capability socket path) + `data_pubkey`
+instead of the retired per-producer array.
 
-### 7.4 1-to-1 ZMQ — degenerates to fan-out with cardinality=1
+```mermaid
+sequenceDiagram
+    autonumber
+    participant PS as Producer script/host
+    participant PQ as Producer ShmQueue<br/>+ AttachProtocolAcceptor
+    participant B  as Broker
+    participant CQ as Consumer ShmQueue<br/>+ AttachProtocol client
+    participant CS as Consumer script/host
 
-Startup sequence is identical to fan-out ZMQ (§7.2) with the following
-differences at the broker:
+    Note over PS,CS: Fan-out SHM — producer creates DataBlock, consumers attach
+    PS->>B: REG_REQ (topology=fan-out, transport=shm)
+    B-->>PS: REG_ACK (initial_allowlist=[...])
+    PS->>PQ: apply_master_approval(ACK) → create DataBlock<br/>bind capability socket ipc:///run/plh/<uid>.sock
+    PQ-->>PS: actual_endpoint = ipc:///run/plh/<uid>.sock
+    PS->>B: ENDPOINT_UPDATE_REQ (endpoint=<sock path>)
+    B-->>PS: ENDPOINT_UPDATE_ACK (ok)
+    PS->>B: HEARTBEAT → producer=Live
+
+    Note over CS,B: Consumer arrives
+    CS->>B: CONSUMER_REG_REQ (topology=fan-out, transport=shm)
+    Note over B: R6 blocks: producer Live + endpoint_resolved<br/>+ allowlist confirms consumer
+    B->>PS: CHANNEL_AUTH_CHANGED_NOTIFY (consumer_joined)
+    PS->>B: GET_CHANNEL_AUTH_REQ → CHANNEL_AUTH_APPLIED_REQ
+    B-->>CS: CONSUMER_REG_ACK (data_endpoint=<sock path>, data_pubkey)
+    CS->>CQ: apply_master_approval(ACK)<br/>connect capability socket
+    CQ->>PQ: AttachProtocol Frame 1/2/3 (per HEP-CORE-0044)
+    PQ->>CQ: SCM_RIGHTS fd → attach DataBlock
+    CS->>B: HEARTBEAT → consumer=Live
+    Note over PS,CS: Data flows via shared memory
+    PS->>PQ: write_acquire → write_commit (into DataBlock slot)
+    CQ->>CS: read_acquire → read_release (from DataBlock slot)
+```
+
+### 7.4 1-to-1 ZMQ — full startup sequence
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant PS as Producer script/host
+    participant PQ as Producer PUSH queue
+    participant B  as Broker
+    participant CQ as Consumer PULL queue
+    participant CS as Consumer script/host
+
+    Note over PS,CS: 1-to-1 ZMQ — producer binds PUSH, consumer connects PULL
+    PS->>B: REG_REQ (topology=one-to-one, transport=zmq)
+    B-->>PS: REG_ACK (initial_allowlist=[...])
+    PS->>PQ: apply_master_approval(ACK) + start()
+    PQ->>PQ: PUSH bind tcp://host:0<br/>ZAP domain registered<br/>curve_server=1
+    PQ-->>PS: actual_endpoint = tcp://host:52345
+    PS->>B: ENDPOINT_UPDATE_REQ (endpoint=tcp://host:52345)
+    B-->>PS: ENDPOINT_UPDATE_ACK (ok)
+    PS->>B: HEARTBEAT → producer=Live
+
+    Note over CS,B: Consumer arrives
+    CS->>B: CONSUMER_REG_REQ (topology=one-to-one, transport=zmq, pubkey=C1)
+    Note over B: R6 blocks: producer Live + endpoint_resolved<br/>+ allowlist confirms C1<br/>+ cardinality check (no other consumer yet)
+    B->>PS: CHANNEL_AUTH_CHANGED_NOTIFY (consumer_joined)
+    PS->>B: GET_CHANNEL_AUTH_REQ → APPLIED_REQ
+    B-->>CS: CONSUMER_REG_ACK (data_endpoint, data_pubkey)
+    CS->>CQ: apply_master_approval(ACK) + start()
+    CQ->>CQ: PULL connect(data_endpoint)<br/>curve_serverkey=data_pubkey<br/>curve_client
+    CQ-->>PQ: (CURVE handshake — producer's ZAP admits via allowlist)
+    CS->>B: HEARTBEAT → consumer=Live
+    Note over PS,CS: Data flows point-to-point
+    PS->>PQ: write_acquire → write_commit
+    PQ->>CQ: (slot bytes over PUSH→PULL, no round-robin — single peer)
+    CQ->>CS: read_acquire → read_release
+
+    Note over B,B: If second CONSUMER_REG_REQ arrives → ONE_TO_ONE_CARDINALITY_VIOLATED
+    Note over B,B: If second REG_REQ (producer) arrives → ONE_TO_ONE_CARDINALITY_VIOLATED
+```
+
+### 7.5 1-to-1 SHM — sequence
+
+Identical to fan-out SHM (§7.3) with two broker-side additions:
 
 - REG_REQ / CONSUMER_REG_REQ MUST declare `channel_topology: "one-to-one"`.
-- Broker rejects a second producer REG_REQ with
-  `ONE_TO_ONE_CARDINALITY_VIOLATED`.
-- Broker rejects a second consumer CONSUMER_REG_REQ with the same code.
-- Queue-level: uses PUSH/PULL (not PUB/SUB).  Producer's PUSH binds;
-  consumer's PULL connects.  No `SUBSCRIBE` step.
+- Broker rejects a second consumer CONSUMER_REG_REQ with `ONE_TO_ONE_CARDINALITY_VIOLATED` (fan-out SHM would accept it).
 
-### 7.5 1-to-1 SHM — identical to fan-out SHM with cardinality=1
-
-Producer creates DataBlock via capability transport.  Broker enforces
-"exactly one consumer" at CONSUMER_REG_REQ time via the cardinality
-check; second consumer REG_REQ is rejected with
-`ONE_TO_ONE_CARDINALITY_VIOLATED`.
+Wire and transport layer are identical to fan-out SHM.  Only the
+cardinality-guard differs.
 
 ### 7.6 Note on producer-side readiness signal (Q2 answered)
 
@@ -627,8 +794,10 @@ producer's script is expected to consult `api.peer_count()` in
 `on_produce` and return early if no consumers are subscribed yet.  The
 framework's job is to deliver accurate signals; the script's job is to
 decide when the channel is "ready enough" to push data.  This applies
-symmetrically to fan-in consumers (which may check
-`api.producer_count()` before invoking upstream-triggered work).
+symmetrically to:
+
+- fan-in consumers (may check producer count before invoking upstream-triggered work),
+- 1-to-1 both sides (either can check that the other has connected).
 
 Rationale for this delegation: the framework has no way to know what
 "ready enough" means for a given deployment.  A control loop that must
@@ -695,7 +864,27 @@ auth") is preserved on both sides:
 The retired pre-REG bind design (2026-06-12) stays retired.  Neither side
 binds nor connects before its own REG_ACK.
 
-## 10. Example code snippets
+## 10. Example code — tier-boundary discipline
+
+Every example below respects a **three-tier separation**:
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│ Tier 1 — Script                                              │
+│   sees: api.read_acquire() / write_acquire() / peer_count()  │
+│   does NOT see: sockets, wire, topology values               │
+├──────────────────────────────────────────────────────────────┤
+│ Tier 2 — Role host (role_api_base.cpp)                       │
+│   sees: RxOptions / TxOptions, BRC client, queue accessors   │
+│   does NOT see: libzmq calls, ZAP handler internals          │
+├──────────────────────────────────────────────────────────────┤
+│ Tier 3 — Queue + BRC                                         │
+│   sees: sockets, allowlists, CURVE keys, wire frames         │
+└──────────────────────────────────────────────────────────────┘
+```
+
+Role-host code (Tier 2) NEVER calls libzmq directly.  All transport
+decisions live in the queue (Tier 3) behind the factory.
 
 ### 10.1 Consumer role — fan-in ZMQ (post-migration)
 
@@ -793,111 +982,267 @@ while (running) {
 }
 ```
 
-### 10.3 Broker — REG_REQ handler for fan-in producer (post-migration)
+### 10.3 Broker — `handle_reg_req` covering all three topologies
+
+Pseudocode below shows the producer-side REG_REQ handler.  The
+consumer-side (`handle_consumer_reg_req`) is structurally identical
+with the "producer / consumer" labels flipped.  Both handlers call
+the shared `create_or_join_channel` internal.
 
 ```cpp
-// In broker_service.cpp — pseudocode for the R6-gated REG_REQ path.
+// In broker_service.cpp — post-migration REG_REQ handler for producer.
+// State mutex held throughout the atomic section.
 
 nlohmann::json BrokerServiceImpl::handle_reg_req(
     const nlohmann::json &req, const zmq::message_t &identity)
 {
-    // Standard validation (known_roles, pubkey, schema)...
-    // ...
+    const std::string corr_id       = req.value("correlation_id", "");
+    const std::string channel_name  = req.value("channel_name", "");
+    const std::string role_uid      = req.value("role_uid", "");
+    const std::string transport     = req.value("data_transport", "");
 
-    // Extract topology + transport.
-    const auto topology = parse_topology(req);       // FanIn | FanOut
-    const auto transport = req.value("data_transport", "");
+    // ── 1. Standard validation (known_roles, pubkey, schema) ───
+    if (auto err = validate_reg_req_basics(req); !err.empty())
+        return err;
 
-    // Validate transport × topology matrix.
-    if (transport == "shm" && topology == FanIn)
+    // ── 2. channel_topology is REQUIRED ───────────────────────
+    if (!req.contains("channel_topology"))
+        return make_error(corr_id, "INVALID_REQUEST",
+                          "channel_topology field is required");
+    auto topology_opt = parse_topology(req.value("channel_topology", ""));
+    if (!topology_opt)
+        return make_error(corr_id, "INVALID_REQUEST",
+                          "channel_topology must be one of: "
+                          "\"fan-in\", \"fan-out\", \"one-to-one\"");
+    const ChannelTopology topology = *topology_opt;
+
+    // ── 3. Transport × topology compatibility check ───────────
+    if (transport == "shm" && topology == ChannelTopology::FanIn)
         return make_error(corr_id, "TOPOLOGY_NOT_SUPPORTED_FOR_TRANSPORT",
                           "SHM does not support fan-in");
 
-    // Under fan-in, producer is the PLURAL side — its REG_REQ is
-    // R6-gated.  Under fan-out, producer is the singular side — its
-    // REG_REQ creates the channel (or joins an existing one with a
-    // matching declaration).
-    auto entry = hub_state_->channel(req.value("channel_name", ""));
+    // ── 4. Enter state mutex; all following steps atomic ──────
+    std::lock_guard<std::mutex> lock(hub_state_mutex_);
 
-    if (topology == FanIn) {
-        // Producer is plural.  Check R6 gate.
-        if (!entry.has_value()
-            || !singular_side_live_and_resolved(*entry)
-            || !confirmed_version_covers(*entry, my_version)) {
-            // Pend the REQ.  Broker's request-queue mechanism will
-            // re-evaluate on each of the wake events (heartbeat,
-            // endpoint_update, applied_req).
-            pend_reg_req(identity, req, PendReason::AwaitingSingularSide);
-            return {};  // No immediate reply.
-        }
-        // R6 satisfied.
-        auto producer_id = add_producer_to_channel(*entry, req);
-        auto reg_ack = build_reg_ack(entry->data_endpoint,
+    auto entry = hub_state_->channel(channel_name);
+
+    // ── 5. Cardinality pre-check ──────────────────────────────
+    if (entry.has_value()) {
+        if (entry->topology != topology)
+            return make_error(corr_id, "TOPOLOGY_MISMATCH",
+                              "existing channel declared different topology");
+        if (auto err = check_producer_cardinality(*entry, topology, corr_id);
+            !err.empty()) return err;
+    }
+
+    // ── 6. Branch by "am I singular or plural side" for this topology ──
+    const bool producer_is_binding =
+        (topology == ChannelTopology::FanOut) ||
+        (topology == ChannelTopology::OneToOne);
+    // Fan-in: producer is plural (dialing side).
+    // Fan-out / 1-to-1: producer is singular (binding side).
+
+    if (producer_is_binding) {
+        // Producer creates the channel (or joins fan-out with extra
+        // consumers already present, though that shape is rare —
+        // typically consumers arrive later).
+        create_or_join_channel(topology, transport, req);
+        return build_reg_ack_binding_side();   // no data_endpoint yet
+    }
+
+    // Producer is DIALING side (fan-in).  R6 gate.
+    if (!entry.has_value())
+        return pend_reg_req(identity, req, PendReason::ChannelNotYetCreated);
+    if (!binding_side_live_and_resolved(*entry))
+        return pend_reg_req(identity, req, PendReason::AwaitingBindingSide);
+
+    // Add pubkey to allowlist; bump channel_version; assign my_version.
+    // NOTIFY fires to the binding side.
+    const uint64_t my_version = admit_dialing_side(*entry, req);
+
+    // If not yet confirmed, pend waiting for confirmed_version >= my_version.
+    if (entry->confirmed_version < my_version)
+        return pend_reg_req(identity, req,
+                             PendReason::AwaitingConfirmedVersion, my_version);
+
+    // Fast path: allowlist already confirmed for this version.
+    return build_reg_ack_dialing_side(entry->data_endpoint,
                                       entry->data_pubkey);
-        return reg_ack;
-    }
-
-    // Under fan-out, producer is singular.  Create channel (or reject
-    // if this producer is second — fan-out is 1-producer).
-    if (entry.has_value() && !entry->producers.empty()) {
-        return make_error(corr_id, "FAN_OUT_IS_SINGLE_PRODUCER",
-                          "Channel already has a producer");
-    }
-    create_or_join_channel(topology, transport, req);
-    auto reg_ack = build_reg_ack_singular();  // no data_endpoint yet
-    return reg_ack;
 }
 ```
 
+**Where `handle_consumer_reg_req` differs:** producer / consumer labels
+flip; the "producer_is_binding" check becomes "consumer_is_binding =
+(topology == FanIn)"; cardinality checks route through
+`check_consumer_cardinality`.  Everything else is structurally identical
+including R6 gate + allowlist admission + `create_or_join_channel`.
+
+### 10.4 Broker — R6 wake on ENDPOINT_UPDATE_REQ ACK
+
+Every mechanism that can satisfy an R6 pending condition must wake the
+pending REG_REQ queue:
+
+```cpp
+// In broker_service.cpp handle_endpoint_update_req, after ACK sent.
+
+// Wake any REG_REQs that were pending on binding_side_live_and_resolved
+// or endpoint_resolved for this channel.
+wake_pending_regs_for(channel_name, WakeReason::EndpointResolved);
+
+// In handle_channel_auth_applied_req, after confirmed_version bump:
+wake_pending_regs_for(channel_name, WakeReason::AllowlistApplied);
+
+// In handle_heartbeat, if this is the first heartbeat from binding side:
+if (first_heartbeat_arrived) {
+    wake_pending_regs_for(channel_name, WakeReason::BindingSideLive);
+}
+```
+
+The wake function scans pending REG_REQs for the channel and re-evaluates
+each; those whose R6 conditions are now satisfied receive their REG_ACK.
+
+### 10.5 Stale-pubkey cleanup on R6 timeout
+
+If a dialing-side REG_REQ pends and the client times out (BRC gives up),
+broker's pending-queue sweep eventually expires the entry.  The
+allowlist pubkey added in step 6 above must be REMOVED at expiry to
+avoid stale-admission of a dead client's future connection:
+
+```cpp
+// In broker_service.cpp sweep_pending_reg_timeouts_, periodically.
+
+for (auto &pending : pending_regs_) {
+    if (pending.expired()) {
+        // Remove the pubkey we added when admit_dialing_side ran.
+        revoke_dialing_side(pending.channel, pending.role_uid);
+        // This bumps channel_version and fires NOTIFY to binding side.
+        pending_regs_.erase(pending);
+    }
+}
+```
+
+Reason: broker's admit_dialing_side added the pubkey optimistically to
+close the auth-door race (§9).  If the REG_REQ never completes, that
+optimism becomes a security hole.  Sweep closes it.
+
 ## 11. File-by-file impact
+
+Estimates below are informed by a 2026-07-08 code-scan pass; several
+files and LOC targets are revised upward vs the previous draft
+revision.
 
 ### 11.1 Code changes
 
-| File | Change | LOC estimate |
-|---|---|---|
-| `src/include/utils/hub_state.hpp` | Add `ChannelTopology` enum + `topology` + `data_endpoint` + `data_endpoint_resolved` fields on `ChannelEntry`; retire `ProducerEntry.zmq_node_endpoint`; simplify `confirmed_version` to scalar. | ~50 change / ~30 delete |
-| `src/utils/hub/hub_state.cpp` | Adjust `add_producer`, `set_producer_zmq_node_endpoint` → `set_channel_data_endpoint`, `producer_zmq_node_endpoint` → `channel_data_endpoint`. | ~80 change |
-| `src/include/utils/hub_zmq_queue.hpp` | New factory signatures: `Queue::create_reader(topology, transport, opts)` + `create_writer`.  Retire `pull_from(endpoint, key, ...)` legacy factory.  Retire `add_producer_peer` / `remove_producer_peer` / `set_producer_peers` (peer set is scalar now). | ~40 change / ~40 delete |
-| `src/utils/hub/hub_zmq_queue.cpp` | Rewrite `start()` PULL branch: single-bind for fan-in, single-connect for fan-out ZMQ SUB.  Rewrite PUSH: single-connect for fan-in, single-bind for fan-out ZMQ PUB.  New socket types: `zmq::socket_type::pub`, `zmq::socket_type::sub`.  Remove multi-endpoint PULL loop from commit `2c604280`. | ~200 change / ~120 delete |
-| `src/utils/service/role_api_base.cpp` | Rewire `build_rx_queue` + `build_tx_queue` for the factory.  Producer's `apply_producer_reg_ack` receives `data_endpoint` + `data_pubkey` from REG_ACK (fan-in) or none (fan-out).  Consumer's `apply_consumer_reg_ack` similar.  Retire HEP-0042 §7.1 consumer attach loop.  Add ENDPOINT_UPDATE_REQ call for singular side. | ~250 change / ~350 delete |
-| `src/include/utils/role_api_base.hpp` | Options struct additions: `channel_topology`.  Remove `producer_peers` field (peer set is scalar). | ~30 change |
-| `src/utils/ipc/broker_service.cpp` | Add `handle_reg_req` topology validation + R6 gating for plural-side.  Retire `handle_consumer_attach_req_zmq`.  Retire pre-attach queue draining logic.  Invert `CHANNEL_AUTH_CHANGED_NOTIFY` direction based on topology.  Retire `handle_channel_producers_changed` broadcast.  Add `create_or_join_channel(topology, transport, ...)`.  Update `CONSUMER_REG_ACK` to carry `data_endpoint` + `data_pubkey` scalar (no producers[] array for fan-in). | ~400 change / ~500 delete |
-| `src/include/utils/broker_request_comm.hpp` + `.cpp` | Retire `consumer_attach_zmq` client method.  Add `send_reg_req_with_topology` (or extend existing).  `send_endpoint_update` unchanged. | ~20 change / ~80 delete |
+**Core state + wire:**
 
-**Estimated net code delta:** +~1070 changed, −~1120 deleted → **~50 LOC net simpler**, but architecturally much cleaner.
+| File | Change | LOC est. |
+|---|---|---|
+| `src/include/utils/hub_state.hpp` | Add `ChannelTopology` enum (`FanIn`/`FanOut`/`OneToOne`) + `topology` + `data_endpoint` + `data_endpoint_resolved` on `ChannelEntry`; retire `ProducerEntry.zmq_node_endpoint`; collapse `confirmed_version` to scalar. | ~60 change / ~30 delete |
+| `src/utils/hub/hub_state.cpp` | `add_producer` / `add_consumer` cardinality checks; `set_channel_data_endpoint` / `channel_data_endpoint` accessors replace per-producer variants. | ~80 change |
+| `src/utils/ipc/hub_state_json.cpp` | JSON (de)serialization of new + retired fields. | ~30 change / ~15 delete |
+| `src/include/utils/role_reg_payload.hpp` | Wire schema doc: retire `zmq_node_endpoint`; add `channel_topology`. | ~15 change |
+
+**Queue:**
+
+| File | Change | LOC est. |
+|---|---|---|
+| `src/include/utils/hub_zmq_queue.hpp` | New factories `create_reader/writer(topology, transport, opts)`.  Retire `pull_from` / `push_to` legacy factories.  Retire `add_producer_peer` / `remove_producer_peer` / `set_producer_peers`. | ~50 change / ~50 delete |
+| `src/utils/hub/hub_zmq_queue.cpp` | Rewrite `start()` for all 6 (side × topology × transport) combos: fan-in PULL bind / PUSH connect; fan-out PUB bind / SUB connect + `SUBSCRIBE ""`; 1-to-1 PUSH bind / PULL connect.  Remove multi-endpoint PULL loop from `2c604280`.  Update stale block comments (lines 184-215, 199-200) referencing HEP-0036 §6.5.1 chain. | ~230 change / ~140 delete |
+
+**Role layer:**
+
+| File | Change | LOC est. |
+|---|---|---|
+| `src/utils/service/role_api_base.cpp` | Rewire `build_rx_queue` + `build_tx_queue` for the new factory + topology.  Producer's `apply_producer_reg_ack` receives `data_endpoint` + `data_pubkey` under fan-in (dialing) or none under fan-out/1-to-1 (binding).  Retire HEP-0042 §7.1 consumer attach loop (~255 LOC in `apply_consumer_reg_ack`).  Add `ENDPOINT_UPDATE_REQ` call for binding side.  Add `api.peer_count()` / `api.peers()` state tracking. | ~300 change / ~400 delete |
+| `src/include/utils/role_api_base.hpp` | Options struct: add `channel_topology`; remove `producer_peers` field. | ~40 change / ~10 delete |
+| `src/utils/service/role_config_translation.cpp` | Parse `channel_topology` from config; validate + reject dialing-side `endpoint` hints; retire `zmq_node_endpoint`. | ~40 change / ~20 delete |
+| `src/include/utils/role_config_translation.hpp` | Config-struct shape updates. | ~15 change |
+| `src/producer/producer_role_host.cpp` (line 349) | Retire `reg_in.zmq_node_endpoint` assignment; route through translation. | ~10 change / ~5 delete |
+| `src/processor/processor_role_host.cpp` (line 377) | Same. | ~10 change / ~5 delete |
+| `src/utils/service/cycle_ops.hpp` (lines 498, 656) | Update stale comment references to retired `CHANNEL_PRODUCERS_CHANGED_NOTIFY`. | ~10 change |
+
+**Broker:**
+
+| File | Change | LOC est. |
+|---|---|---|
+| `src/utils/ipc/broker_service.cpp` | New topology validation + cardinality check + R6 gating in `handle_reg_req` / `handle_consumer_reg_req`.  Retire `handle_consumer_attach_req_zmq` (~213 LOC) + `drain_pending_attach_queue_*` (~150 LOC) + `sweep_pending_attach_timeouts_` (~70 LOC).  Extract shared `create_or_join_channel(topology, transport, ...)`.  Invert `CHANNEL_AUTH_CHANGED_NOTIFY` direction.  Retire `handle_channel_producers_changed_notify` + `handle_get_channel_producers_req`.  Update `CONSUMER_REG_ACK` builder for scalar `data_endpoint` + `data_pubkey`.  Add stale-pubkey cleanup on R6 timeout (§10.5).  Update R6 rejection sites (lines 2731, 2966, 3022, 3034). | ~500 change / ~700 delete |
+| `src/include/utils/broker_request_comm.hpp` + `.cpp` | Retire `consumer_attach_zmq` client method (~55 LOC).  `send_endpoint_update` unchanged but callable from binding side of any topology (add cross-ref comment). | ~20 change / ~80 delete |
+
+**Script API (for `api.peer_count()` per HEP-CORE-0028 amendment):**
+
+| File | Change | LOC est. |
+|---|---|---|
+| `src/scripting/lua_engine.cpp` (line 384, 2607, 2630) | Bind `peer_count` / `peers` accessors to Lua. | ~30 change |
+| `src/scripting/hub_api_python.cpp` + `python_helpers.hpp` | Bind to Python (pybind). | ~30 change |
+| `src/producer/producer_api.cpp` (line 388), `src/consumer/consumer_api.cpp` (line 354), `src/processor/processor_api.cpp` (line 333) | Expose accessors on each role's api object. | ~60 change |
+| `src/utils/service/native_engine.cpp` + `src/include/utils/native_invoke_types.h` (line 147) | Native C++ accessor + type entry. | ~40 change |
+
+**Estimated net code delta:** ~+1600 changed, ~−1500 deleted → **~+100 LOC net** (up from the earlier ~50 estimate).  Architecturally significantly simpler despite the near-flat line count because ONE coordination protocol retires entirely (HEP-0042 §7.1) and multiple parallel state models collapse to one.
 
 ### 11.2 Test changes
 
+**L4 (subprocess end-to-end):**
+
 | File | Change |
 |---|---|
-| `tests/test_layer4_plh_hub/test_plh_hub_role_zmq_e2e.cpp` | Flip Scenario A (single-producer) + Scenario C (multi-producer) to consumer-binds pattern.  Add `channel_topology: "fan-in"` to configs.  Retire pid-based port workaround.  Distinguisher-value protocol carries over unchanged.  Add new `ZmqE2E_FanOut_OneProducerTwoConsumers` test.  Add new `ZmqE2E_OneToOne_ProducerBinds` test.  Add cardinality-rejection tests (`ZmqE2E_FanIn_SecondConsumerRejected`, `ZmqE2E_FanOut_SecondProducerRejected`, `ZmqE2E_OneToOne_SecondSideRejected`). |
-| `tests/test_layer3_pattern4/test_pattern4_attach_coordination.cpp` | **RETIRES ENTIRELY** — HEP-0042 §5/§7.1 wire removed.  ~500 LOC deleted. |
-| `tests/test_layer3_pattern4/test_pattern4_registration.cpp` | Update for R6 gate direction (producer waits for consumer under fan-in). |
-| `tests/test_layer3_pattern4/test_pattern4_heartbeat.cpp` | Update for symmetric R6 waits. |
-| `tests/test_layer2_service/test_zmq_queue_auth.cpp` | Update factory calls for new signature.  Add fan-out ZMQ (PUB/SUB) coverage. |
-| `tests/test_layer2_service/test_broker_service.cpp` | Add topology validation tests (SHM+fan-in rejection via `TOPOLOGY_NOT_SUPPORTED_FOR_TRANSPORT`).  Add topology mismatch test (`TOPOLOGY_MISMATCH`).  Add cardinality rejection tests for all three violation error codes (`FAN_IN_IS_SINGLE_CONSUMER`, `FAN_OUT_IS_SINGLE_PRODUCER`, `ONE_TO_ONE_CARDINALITY_VIOLATED`).  Add missing-field test (`INVALID_REQUEST` when `channel_topology` absent).  Add fan-in producer R6 pending/drain tests.  Add pending-REG-gets-CHANNEL_CLOSED-on-channel-teardown test. |
-| `tests/test_layer3_datahub/test_datahub_zmq_endpoint_registry.cpp` | Update — `data_endpoint` moves to ChannelEntry.  Add fan-in variant tests. |
+| `tests/test_layer4_plh_hub/test_plh_hub_role_zmq_e2e.cpp` | Flip Scenario A + Scenario C to consumer-binds fan-in pattern.  Add `channel_topology: "fan-in"` to configs.  Retire pid-based port workaround.  Distinguisher-value protocol carries over.  Add new tests: `ZmqE2E_FanOut_OneProducerTwoConsumers`, `ZmqE2E_OneToOne_ProducerBinds`, `ZmqE2E_FanIn_SecondConsumerRejected`, `ZmqE2E_FanOut_SecondProducerRejected`, `ZmqE2E_OneToOne_SecondSideRejected`. |
+| `tests/test_layer4_plh_hub/test_plh_hub_role_shm_e2e.cpp` | Add `channel_topology: "fan-out"` to existing configs (unchanged transport behavior).  Add new tests: `ShmE2E_OneToOne_SingleConsumer`, `ShmE2E_OneToOne_SecondConsumerRejected`. |
+
+**L3 (in-process pattern4 + datahub):**
+
+| File | Change |
+|---|---|
+| `tests/test_layer3_pattern4/test_pattern4_attach_coordination.cpp` | **RETIRES ENTIRELY** — HEP-0042 §5/§7.1 wire removed.  **~1002 LOC deleted** (measured, not estimated). |
+| `tests/test_layer3_pattern4/CMakeLists.txt` (line 27) | Remove `test_pattern4_attach_coordination.cpp` from build list. |
+| `tests/test_layer3_pattern4/test_pattern4_consumer_lifecycle.cpp` (lines 112, 158, 273, 310) | Delete or rewrite — sends/asserts `CONSUMER_ATTACH_REQ_ZMQ` / `_ACK`. |
+| `tests/test_layer3_pattern4/test_pattern4_broker_wire_smoke.cpp` (line 18) | Update comment header; may retire wire-shape tests around attach. |
+| `tests/test_layer3_pattern4/test_pattern4_registration.cpp` (~175 LOC) | Update for R6 gate direction inversion. |
+| `tests/test_layer3_pattern4/test_pattern4_heartbeat.cpp` (~331 LOC) | Update for symmetric R6. |
+| `tests/test_layer3_datahub/test_datahub_broker_consumer.cpp:64` + `workers/broker_consumer_workers.cpp:440-510` | Retire `consumer_reg_ack_emits_producers_zmq` — array shape gone. |
+| `tests/test_layer3_datahub/test_role_api_flexzone.cpp` + `workers/role_api_flexzone_workers.cpp:568` | Rewrite paths depending on `CONSUMER_ATTACH_REQ_ZMQ`. |
+| `tests/test_layer3_datahub/test_datahub_zmq_endpoint_registry.cpp` | Update to `ChannelEntry.data_endpoint` scalar form.  Add fan-in / 1-to-1 variants.  Add plural-side `ENDPOINT_UPDATE_REQ` rejection test. |
+
+**L2 (in-process broker + queue unit):**
+
+| File | Change |
+|---|---|
+| `tests/test_layer2_service/test_broker_service.cpp` | Add: topology validation (SHM+fan-in reject `TOPOLOGY_NOT_SUPPORTED_FOR_TRANSPORT`), topology mismatch (`TOPOLOGY_MISMATCH`), missing-field (`INVALID_REQUEST`), cardinality violations × 3 error codes, R6 pending/drain, `CHANNEL_CLOSED` on channel teardown, cardinality-rejected doesn't bump `channel_version`, stale-pubkey cleanup on R6 timeout, cross-topology same-channel-name collision, `data_transport` mismatch handling. |
+| `tests/test_layer2_service/test_zmq_queue_auth.cpp` | Update factory calls to new signature.  Add PUB/SUB + XPUB/XSUB (if adopted) coverage.  Add 1-to-1 PUSH/PULL coverage. |
+| `tests/test_layer2_service/test_role_reg_payload.cpp` | Update for retired `zmq_node_endpoint` + new `channel_topology` field. |
+| `tests/test_layer2_service/test_setup_infrastructure_translation.cpp` (lines 17, 389, 493) | Rewrite for scalar `data_endpoint` on `CONSUMER_REG_ACK` (no per-producer array). |
+
+**Test framework:**
+
+| File | Change |
+|---|---|
+| `tests/test_framework/broker_wire_client.h` (lines 10-13) | Update helper doc header referencing HEP-0042. |
+| `tests/test_framework/hub_state_test_access.h` | Retire per-producer endpoint accessors; add scalar `data_endpoint` accessor. |
+| `tests/test_framework/broker_test_harness.cpp` | Same. |
 
 ### 11.3 Demo configs to flip
 
 | File | Change |
 |---|---|
-| `share/py-demo-single-processor-zmq/producer/producer.json` | `out_zmq_bind: true → false` (fan-in default).  Add `channel_topology: "fan-in"`. |
+| `share/py-demo-single-processor-zmq/producer/producer.json` | `out_zmq_bind: true → false`.  Add `channel_topology: "fan-in"`. |
 | `share/py-demo-single-processor-zmq/consumer/consumer.json` | `in_zmq_bind: false → true`.  Add `channel_topology: "fan-in"`. |
-| `share/py-demo-single-processor-zmq/processor/processor.json` | For its in-side (consumer of upstream channel): flip bind.  Add topology. |
-| Other ZMQ demos | Same pattern. |
+| `share/py-demo-single-processor-zmq/processor/processor.json` | Flip in-side bind + add topology. |
+| `share/py-demo-dual-hub-processor-zmq/{producer,processor,consumer}/*.json` | Same pattern. |
+| `share/py-demo-dual-processor-bridge/run_demo.sh` (line 9) | Update ASCII diagram in comments. |
+| All SHM demos under `share/py-demo-*-shm*/` | Add `channel_topology: "fan-out"` (or `"one-to-one"` for single-consumer demos) explicitly. |
 
 ### 11.4 HEP files affected
 
 | HEP | Sections affected | Change type |
 |---|---|---|
-| **HEP-CORE-0017** | §3.3, §4.6, §4.6.1 | **Major rewrite** — replace per-peer connect model with singular-binds-plural-dials model. |
-| **HEP-CORE-0021** | §16 | **Reparametrize** — the previously drafted amendment stays valid conceptually; replace "producer" with "singular side" throughout. |
-| **HEP-CORE-0033** | §2994 (wire catalog) + §1247 (code catalog) + ChannelEntry description | **Update** — `data_endpoint` on ChannelEntry; retirement of ATTACH_REQ family. |
-| **HEP-CORE-0036** | §3.5.3, §6.4, §6.5, §6.5.1, §I7, §5.2 R6, §14 (rollout tables) | **Symmetrize** — R6 direction generalizes; NOTIFY chain direction parameterizes by topology. |
-| **HEP-CORE-0042** | Entire HEP | **Narrow scope** — retire §5 dispatch + §7.1 pre-attach loop.  Preserve confirmed_version bookkeeping (now scalar).  Preserve HEP-0044 AttachProtocol reference (that's SHM, orthogonal). |
-| **HEP-CORE-0023** | §2.1.1 channel-existence rule | **Generalize** — "last producer dies → channel dies" → "singular side dies → channel dies." |
-| **HEP-CORE-0007** | §12 wire catalog + REG_REQ schema + CONSUMER_REG_ACK schema + error codes | **Update** — add `channel_topology` to REG_REQs; add `data_endpoint`/`data_pubkey` to plural-side ACKs; retire per-producer array; add `TOPOLOGY_MISMATCH` + `TOPOLOGY_NOT_SUPPORTED_FOR_TRANSPORT`. |
+| **HEP-CORE-0017** | §3.3, §4.6, §4.6.1 | **Major rewrite** — replace per-peer connect model with binding-side-single-endpoint. |
+| **HEP-CORE-0021** | §16 | **Reparametrize** — "producer" → "binding side" throughout. |
+| **HEP-CORE-0023** | §2.1.1 | **Generalize** — channel-death rule "binding side dies → channel dies." |
+| **HEP-CORE-0028** | Script API surface | **Amend** — add `api.peer_count(channel)` + `api.peers(channel)` accessors; cross-engine parity (Lua + Python + Native). |
+| **HEP-CORE-0033** | §2994 wire catalog + §1247 code catalog + `ChannelEntry` description | **Update** — `topology` + `data_endpoint` + `data_endpoint_resolved` fields; ATTACH_REQ family retires; `CHANNEL_PRODUCERS_CHANGED_NOTIFY` chain retires. |
+| **HEP-CORE-0036** | §3.5.3, §6.4, §6.5, §6.5.1, §I7, §5.2 R6, §14 | **Symmetrize** — R6 gate direction generalizes; NOTIFY chain aims at binding side; §I7 endpoint disclosure section reflects topology-parametric shape. |
+| **HEP-CORE-0042** | Entire HEP | **Major scope narrowing** — retire §5 dispatch + §7.1 pre-attach loop.  Preserve `confirmed_version` bookkeeping (now scalar per channel).  Preserve HEP-0044 AttachProtocol reference. |
+| **HEP-CORE-0007** | §12 wire catalog + REG_REQ / CONSUMER_REG_REQ schema + CONSUMER_REG_ACK schema + error-code catalog | **Update** — add `channel_topology` (REQUIRED); add scalar `data_endpoint` + `data_pubkey` to plural-side ACKs; retire per-producer array; add error codes: `TOPOLOGY_MISMATCH`, `TOPOLOGY_NOT_SUPPORTED_FOR_TRANSPORT`, `FAN_IN_IS_SINGLE_CONSUMER`, `FAN_OUT_IS_SINGLE_PRODUCER`, `ONE_TO_ONE_CARDINALITY_VIOLATED`, `CHANNEL_CLOSED`. |
+| **HEP-CORE-0044** | §5 wire consumers | **Small update** — SHM-attach helpers read `data_endpoint` / `data_pubkey` (renamed from `shm_capability_endpoint` / `producer_pubkey_z85` on the wire). |
 
 ## 12. Migration ordering (phased)
 
@@ -929,9 +1274,11 @@ should be one commit (or a small tight batch).
    endpoint tracking.  Retire `test_pattern4_attach_coordination.cpp`.
 6. **Phase F — Demo + L4 flip.**  Update every ZMQ demo config to use
    fan-in explicitly with the new bind direction.  Update L4 tests.
-7. **Phase G — Fan-out ZMQ implementation.**  Add PUB/SUB socket paths
-   in ZmqQueue.  Add L4 test `ZmqE2E_FanOut_OneProducerTwoConsumers`.
-   (Optional — may defer if not immediately needed.)
+7. **Phase G — Fan-out ZMQ implementation.**  Add PUB/SUB (or XPUB/XSUB
+   per §13.3 open question) socket paths in ZmqQueue.  Add L4 test
+   `ZmqE2E_FanOut_OneProducerTwoConsumers`.  NOT optional — fan-out ZMQ
+   is a first-class supported topology per §2.  Phase E's factory
+   retirement assumes this phase has landed.
 8. **Phase H — Verification.**  Full ctest sweep.  Verify HEP-0044 (SHM
    AttachProtocol) + HEP-0045 (broker observer) unaffected.  Verify
    HEP-0041 SHM fan-out unaffected.
@@ -985,14 +1332,25 @@ should be one commit (or a small tight batch).
 
 ## 14. What this design does NOT do
 
-- Does not add new socket types beyond PUSH/PULL/PUB/SUB.
-- Does not touch SHM (HEP-0041) — fan-out SHM already fits.
-- Does not touch AttachProtocol (HEP-0044) or broker SHM observer (HEP-0045).
+- Does not add new socket types beyond PUSH/PULL/PUB/SUB (see §13.3 for
+  the XPUB open question — if adopted, add XPUB/XSUB to the set).
+- Does not change SHM's transport-layer behavior (HEP-0041 capability
+  socket + AttachProtocol handshake unchanged); only the wire around it
+  changes (topology declaration + scalar `data_endpoint`).
+- Does not touch AttachProtocol (HEP-0044) internal protocol.  Field
+  naming on `CONSUMER_REG_ACK` shifts from
+  `shm_capability_endpoint` / `producer_pubkey_z85` to unified
+  `data_endpoint` / `data_pubkey`; HEP-0044's SHM-attach helpers read
+  the new names in Phase B.
+- Does not touch broker SHM observer (HEP-0045) — orthogonal Line 3.
 - Does not introduce dynamic runtime peer add/remove wire — the
-  `CHANNEL_AUTH_CHANGED_NOTIFY` chain covers it via allowlist updates,
-  no separate producer-endpoint-notification wire needed.
+  `CHANNEL_AUTH_CHANGED_NOTIFY` chain covers it via allowlist updates.
 - Does not solve the DISC_REQ per-producer array migration — that goes
   away entirely (no per-producer array anymore).
+- Does not preserve federated-broker cross-version compatibility —
+  federation trust (HEP-0035) requires all federated brokers migrate in
+  lockstep.  Rolling-upgrade of federated deployments is not supported
+  by this migration.
 
 ## 15. Interaction with existing code
 
