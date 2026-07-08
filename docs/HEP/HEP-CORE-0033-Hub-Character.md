@@ -11,6 +11,20 @@
 | **Amends**     | HEP-CORE-0019 §3-4 — the periodic broker-pull metrics model is replaced by a query-driven model. HEP-CORE-0019 §3.2 (live SHM-derived block merge) is retained. |
 | **Reference**  | This HEP is the authoritative design.                                                    |
 
+> **Amendment (2026-07-08) — topology migration.**  `ChannelEntry`
+> gains `topology` (ChannelTopology enum), `data_endpoint`,
+> `data_endpoint_resolved`, `channel_version`, and `confirmed_version`
+> fields.  `ProducerEntry::zmq_node_endpoint` retires — its role is
+> subsumed by the channel-scope `data_endpoint`.  Channel teardown
+> rule generalizes from "last producer disconnects" to "BINDING side
+> disconnects" (per topology).  Four wire retirements at §18.2:
+> `GET_CHANNEL_PRODUCERS_REQ`, `CHANNEL_PRODUCERS_CHANGED_NOTIFY`,
+> `CONSUMER_ATTACH_REQ_ZMQ/_ACK_ZMQ`, `CONSUMER_ATTACH_REQ_SHM`.
+> Six new error codes at HEP-CORE-0007 §12.4a.  See tech draft
+> `docs/tech_draft/DRAFT_topology_singular_side_2026-07.md` (status:
+> DESIGN LOCKED) for the full design; §11.4 lists all nine
+> coordinated HEP amendments.
+
 ---
 
 ## 1. Motivation
@@ -1145,7 +1159,7 @@ struct HubState
 
 | Entry | Updated by | Holds |
 |---|---|---|
-| `ChannelEntry` | REG_REQ / CONSUMER_REG_REQ / CONSUMER_DEREG_REQ / CHANNEL_CLOSING / broker-internal | **Channel-wide invariants only**: name, schema_owner/schema_id/schema_hash/blds/packing (HEP-CORE-0023 §2.1.1 — all producers must agree), data_transport, channel_pattern, has_shared_memory, shm_name, created_at.  **Per-party rows**: `producers[]` (vector of `ProducerEntry`; 1..N per HEP-CORE-0023 §2.1.1), `consumers[]` (vector of `ConsumerEntry`).  **Per-producer attributes live on `ProducerEntry`**, NOT at channel scope (Wave M2.5): `zmq_node_endpoint`, `metadata`, `inbox_*` (HEP-CORE-0027), plus identity (`role_uid` / `role_name` / `producer_pid` / `producer_hostname` / `zmq_identity`).  DISC_REQ_ACK aggregates per-producer metadata into a tree keyed by `role_uid` (HEP-CORE-0007 §12.4).  **Does NOT store FSM state** — both channel **observability** (HEP-CORE-0023 §2.2) and channel **existence** (HEP-CORE-0023 §2.1.1) are derived queries over the producer-presences across roles.  Channel teardown is atomic on the LAST producer-presence transitioning to Disconnected; no separate channel FSM.  All state-bearing fields are accessed through the controlled-access API on `ChannelEntry` (`add_producer` / `remove_producer` / per-producer setters / typed observable accessor); direct field mutation is forbidden, so the multi-producer overwrite-class bug cannot recur. |
+| `ChannelEntry` | REG_REQ / CONSUMER_REG_REQ / CONSUMER_DEREG_REQ / ENDPOINT_UPDATE_REQ / CHANNEL_CLOSING / broker-internal | **Channel-wide invariants only**: name, schema_owner/schema_id/schema_hash/blds/packing (HEP-CORE-0023 §2.1.1 — all producers must agree), data_transport, channel_pattern, has_shared_memory, shm_name, created_at.  **Amendment 2026-07-08 (topology migration)**: gains three new fields — `topology` (ChannelTopology enum: FanIn / FanOut / OneToOne, declared at channel creation and immutable — tech draft §4.1), `data_endpoint` (scalar string owned by the BINDING side per topology — tech draft §4.1), `data_endpoint_resolved` (bool flag flipped by ENDPOINT_UPDATE_REQ per HEP-CORE-0021 §16.4).  Also gains `channel_version` (uint64, bumped on allowlist changes) and `confirmed_version` (scalar per channel — collapsed from the pre-migration `[K][P]` per-producer map since the binding side is unique per channel).  **Per-party rows**: `producers[]` (vector of `ProducerEntry`; 1..N per HEP-CORE-0023 §2.1.1), `consumers[]` (vector of `ConsumerEntry`).  **Per-producer attributes live on `ProducerEntry`**, NOT at channel scope (Wave M2.5): `metadata`, `inbox_*` (HEP-CORE-0027), plus identity (`role_uid` / `role_name` / `producer_pid` / `producer_hostname` / `zmq_identity`).  The pre-migration `ProducerEntry::zmq_node_endpoint` field retires 2026-07-08 — its role is subsumed by `ChannelEntry::data_endpoint` (single per-channel endpoint owned by whichever side is BINDING under the declared topology).  DISC_REQ_ACK aggregates per-producer metadata into a tree keyed by `role_uid` (HEP-CORE-0007 §12.4); post-migration DISC_REQ_ACK carries the scalar `data_endpoint` instead of per-producer endpoints.  **Does NOT store FSM state** — both channel **observability** (HEP-CORE-0023 §2.2) and channel **existence** (HEP-CORE-0023 §2.1.1) are derived queries over the producer-presences across roles.  Channel teardown is atomic on the BINDING side's transition to Disconnected (generalized from the pre-migration "last producer" rule — see HEP-CORE-0023 §2.1.1); no separate channel FSM.  All state-bearing fields are accessed through the controlled-access API on `ChannelEntry` (`add_producer` / `remove_producer` / `set_channel_data_endpoint` / per-producer setters / typed observable accessor); direct field mutation is forbidden, so the multi-producer overwrite-class bug cannot recur. |
 | `RoleEntry` | REG / per-presence HEARTBEAT_REQ / DISC / role-side timeout | uid, name, role_tag, first_seen, **`presences[]`** — one row per `(channel, role_type)` carrying the FSM `state` (Connected / Pending / Disconnected per HEP-CORE-0023 §2.1), `last_heartbeat`, `state_since`, `latest_metrics`, `metrics_collected_at`.  Each heartbeat refreshes only its matching presence row.  `MetricsStore` is keyed `(channel_name, uid, role_type)` — see §18.4. |
 | `BandEntry` | BAND_JOIN / BAND_LEAVE | name, members[], last_activity |
 | `PeerEntry` | HUB_PEER_HELLO / HUB_PEER_BYE / federation heartbeat | uid, endpoint, state, last_seen |
@@ -1249,6 +1263,34 @@ Fire-and-forget:
   closes task #94).  The pre-REG bind variant retired 2026-06-12
   stays retired; the new variant binds at S3 and publishes the
   resolved port over the CURVE-authenticated CTRL.
+
+  Retired (2026-07-08 topology migration):
+    - GET_CHANNEL_PRODUCERS_REQ — consumers no longer maintain a
+      dial-target producer set (fan-in consumers are BINDING;
+      fan-out and 1-to-1 consumers dial one endpoint from
+      CONSUMER_REG_ACK.data_endpoint).
+    - CHANNEL_PRODUCERS_CHANGED_NOTIFY — symmetric retirement;
+      producer_joined / producer_left semantics collapse into
+      CHANNEL_AUTH_CHANGED_NOTIFY(phase, role_type="producer")
+      under fan-in.
+    - CONSUMER_ATTACH_REQ_ZMQ + _ACK_ZMQ (HEP-CORE-0042 §5) —
+      pre-attach coordination protocol collapses into the R6-gated
+      REG_REQ path per tech draft §5.7.  See HEP-CORE-0042 for the
+      full scope narrowing (§5 + §7.1 retire).
+    - CONSUMER_ATTACH_REQ_SHM — retired symmetric with the ZMQ
+      variant.  SHM consumer's attach coordination is now the
+      REG_REQ path + AttachProtocol handshake (HEP-CORE-0044)
+      inside the resulting data-plane session.
+
+  New (2026-07-08 topology migration):
+    - CHANNEL_AUTH_CHANGED_NOTIFY gains phase field (admitted /
+      live / left) + role_uid + role_type.  See HEP-CORE-0007
+      §12.5 for schema.  Direction inverted: broker → BINDING
+      side of the channel per topology.
+    - REG_REQ / CONSUMER_REG_REQ gain channel_topology field
+      (REQUIRED).  See HEP-CORE-0007 §12.3.
+    - Six new error codes for topology + cardinality validation.
+      See HEP-CORE-0007 §12.4a.
 ```
 
 When adding a new msg_type, the contributor MUST classify it
@@ -3001,7 +3043,7 @@ classes are also disjoint — no message dual-classifies.
 | `CHECKSUM_ERROR_REPORT` | A | Consumer-detected; routes by channel. |
 | `HEARTBEAT_REQ` (per-presence — HEP-CORE-0019 §2.3) | A | Refreshes the `(uid, role_type)` presence row in `RoleEntry` (§2.1 of HEP-CORE-0023) and writes the matching `MetricsStore` row.  Each heartbeat refreshes only its own presence row — channel observability is derived from the producer-presence's state. |
 | `GET_CHANNEL_AUTH_REQ` | A | Producer pulls current consumer allowlist for a channel it produces; triggered by CHANNEL_AUTH_CHANGED_NOTIFY doorbell.  Broker checks caller is registered producer; reply carries `allowlist[]` (HEP-CORE-0036 §6.5 notify-then-pull). |
-| `GET_CHANNEL_PRODUCERS_REQ` | A | Consumer pulls current producer set for a channel it consumes; triggered by CHANNEL_PRODUCERS_CHANGED_NOTIFY doorbell.  Broker checks caller is registered consumer; reply carries `producers[]` (HEP-CORE-0036 §6.5.1). |
+| ~~`GET_CHANNEL_PRODUCERS_REQ`~~ | — | **RETIRED 2026-07-08 (topology migration)**.  Under the binding/dialing model (tech draft §5.8), consumers no longer maintain a dial-target producer set: fan-in consumers are BINDING (producers dial in; consumer's ZAP allowlist is synced via `CHANNEL_AUTH_CHANGED_NOTIFY` with the new `phase` field); fan-out and 1-to-1 consumers dial one endpoint from `CONSUMER_REG_ACK.data_endpoint`.  See HEP-CORE-0007 §12.3 (retirement schema) + HEP-CORE-0017 §3.3 (new architecture). |
 | `BAND_JOIN_REQ` / `BAND_LEAVE_REQ` / `BAND_BROADCAST_REQ` / `BAND_MEMBERS_REQ` | D | Band lives on the hub the role chooses at join time. |
 | `ROLE_PRESENCE_REQ` | B | "Is uid X alive?" — fall-through. |
 | `ROLE_INFO_REQ` | B | Inbox-discovery — fall-through (HEP-CORE-0027 §4.2). |
@@ -3019,8 +3061,8 @@ classes are also disjoint — no message dual-classifies.
 | `CHANNEL_BROADCAST_NOTIFY` | A | Fan-out result of `CHANNEL_BROADCAST_REQ`. |
 | `CHANNEL_ERROR_NOTIFY` | A | Schema mismatch, etc. |
 | `CONSUMER_DIED_NOTIFY` | A | Producer of channel (when broker detects a consumer process is dead). |
-| `CHANNEL_AUTH_CHANGED_NOTIFY` | A | To every kLive producer of the channel.  Doorbell that triggers `GET_CHANNEL_AUTH_REQ` pull (HEP-CORE-0036 §6.5 notify-then-pull).  Reason ∈ {consumer_joined, consumer_left, consumer_timeout, federation_peer_death}. |
-| `CHANNEL_PRODUCERS_CHANGED_NOTIFY` | A | To every kLive consumer of the channel.  Doorbell that triggers `GET_CHANNEL_PRODUCERS_REQ` pull (HEP-CORE-0036 §6.5.1).  Reason ∈ {producer_joined, producer_left, heartbeat_timeout, process_dead}.  Per HEP-CORE-0036 §3.5.4 INV2 the broker MUST fire `producer_joined` on the producer's first-heartbeat-received edge (channel observable kRegistering → kLive), NOT on REG_REQ accept. |
+| `CHANNEL_AUTH_CHANGED_NOTIFY` | A | To the **BINDING side** of the channel (fan-in: consumer; fan-out / 1-to-1: producer).  Direction inverted 2026-07-08 (topology migration); pre-migration was "to every kLive producer."  Gains three REQUIRED payload fields: `role_uid`, `role_type`, `phase` ("admitted" \| "live" \| "left").  Doorbell that triggers `GET_CHANNEL_AUTH_REQ` pull ONLY on `phase=admitted` and `phase=left` (allowlist-changing); `phase=live` is a lightweight local update to the binding side's `live_peers` map that feeds `api.consumer_count()` / `api.producer_count()` per HEP-CORE-0028.  See HEP-CORE-0007 §12.5 for the new payload schema and HEP-CORE-0036 §6.5 for the semantics.  Old `reason` field ({consumer_joined, consumer_left, consumer_timeout, federation_peer_death}) is retired; the semantics collapse into phase + role_type. |
+| ~~`CHANNEL_PRODUCERS_CHANGED_NOTIFY`~~ | — | **RETIRED 2026-07-08 (topology migration)**.  Symmetric to the retirement of `GET_CHANNEL_PRODUCERS_REQ` above.  Under the binding/dialing model, the producer_joined / producer_left semantics collapse into `CHANNEL_AUTH_CHANGED_NOTIFY(phase=..., role_type="producer")` sent to the fan-in consumer (binding side).  See HEP-CORE-0007 §12.5 (retirement schema).  Historical payload: {channel_name, reason} where reason ∈ {producer_joined, producer_left, heartbeat_timeout, process_dead}. |
 | ~~`FORCE_SHUTDOWN`~~ | — | **Removed 2026-05-07** — the prior design used this to force-close lingering consumers after a `Closing` grace window expired; that whole grace path was removed when the channel-FSM was retired (HEP-CORE-0023 §2.1).  Channel teardown is now atomic on producer-presence Disconnected; consumers learn via `CHANNEL_CLOSING_NOTIFY` (best-effort) and any subsequent `DISC_REQ` returns `CHANNEL_NOT_FOUND`. |
 | `BAND_JOIN_NOTIFY` / `BAND_LEAVE_NOTIFY` / `BAND_BROADCAST_NOTIFY` | D | Band members. |
 
