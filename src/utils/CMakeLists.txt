@@ -59,10 +59,8 @@ set(UTILS_SOURCES
   security/secure_subsystem.cpp # pylabhub::utils::security (HEP-CORE-0043 §1 + §2 — libsodium boundary + lifecycle facade)
   security/key_store.cpp        # pylabhub::utils::security (HEP-CORE-0043 §2.2 + §7 — key management sub-container)
   security/shm_capability_channel.cpp # pylabhub::utils::security (HEP-CORE-0041 §6 — cross-platform SHM capability transport; backend lands task #249)
-  security/attach_protocol.cpp     # pylabhub::utils::security (HEP-CORE-0041 §9 D4 — L2 producer-side challenge-response handshake; task #250)
-  security/attach_channel_shm.cpp  # pylabhub::utils::security (Phase 3 transport-abstraction — SHM/AF_UNIX binding of IAttachChannel)
-  security/attach_channel_zmq.cpp  # pylabhub::utils::security (Phase 4a transport-abstraction — ZMQ ROUTER/DEALER binding of IAttachChannel)
-  security/attach_protocol_zmq.cpp # pylabhub::utils::security (Phase 4c minimal — ZmqAttachProtocolAcceptor + initiate_zmq_consumer_handshake)
+  security/attach_protocol.cpp     # pylabhub::utils::security (HEP-CORE-0044 §7 transport-agnostic protocol helpers + HEP-CORE-0041 §5 SHM binding wrappers)
+  security/attach_channel_shm.cpp  # pylabhub::utils::security (HEP-CORE-0044 §6.3 — SHM/AF_UNIX binding of IAttachChannel)
   security/shm_attach_orchestrator.cpp # pylabhub::utils::security (HEP-CORE-0041 §9 D4 steps 6-7 — broker pre-confirm + divergence WARN + send; task #252)
 
   # --- role hosts: lifecycle + data loop for each role ---

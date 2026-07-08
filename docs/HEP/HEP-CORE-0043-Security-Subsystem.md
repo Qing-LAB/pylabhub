@@ -4,12 +4,13 @@
 |-----------------|-------|
 | **HEP**         | `HEP-CORE-0043` |
 | **Title**       | Security Subsystem — unified module + HEP consolidation |
-| **Status**      | 🚀 **§0-§7 + §11-§13 AUTHORITATIVE (SEC-Fold-2 complete 2026-07-07)** — §0-§2 architecture + two-category facade shipped; §3 random+hash shipped; §4 pwhash shipped; §5 secretbox shipped; §6 asymmetric box shipped (`box_encrypt_using` / `box_decrypt_using` with name-based key citation); §7 KeyStore submodule shipped as member of `SecureSubsystem::Impl`.  The `Crypto` sub-container was collapsed 2026-07-07 — encryption verbs live flat on `SecureSubsystem` alongside the sodium primitives.  §8-§10 remain SECTION STUBS pointing to HEP-CORE-0036 / 0038 / 0041; those HEPs are **PARTIALLY SUPERSEDED** for the migrated sections (§9.1/§9.2 wire touchpoints updated) and remain authoritative for the not-yet-migrated §8 vault + §10 script-crypto detail. |
+| **Status**      | 🚀 **§0-§7 + §11-§13 AUTHORITATIVE (SEC-Fold-2 complete 2026-07-07; HEP-0044/0045 promoted 2026-07-08)** — §0-§2 architecture + two-category facade shipped; §3 random+hash shipped; §4 pwhash shipped; §5 secretbox shipped; §6 asymmetric box shipped (`box_encrypt_using` / `box_decrypt_using` with name-based key citation, primary consumer is HEP-CORE-0044); §7 KeyStore submodule shipped as member of `SecureSubsystem::Impl`.  §8-§10 are pointer sections: §9.1 → HEP-CORE-0036 (ZMQ CURVE + ZAP), §9.2 → HEP-CORE-0044 (AttachProtocol primitive) + HEP-CORE-0041 (SHM binding) + HEP-CORE-0042 (attach coordination), §9.3 → HEP-CORE-0045 (Broker SHM Observer, promoted 2026-07-08).  §8 vault + §10 script-crypto detail still live in HEP-CORE-0038. |
 | **Created**     | 2026-07-04 |
 | **Area**        | Framework Architecture (security module, libsodium ownership, key management, wire auth) |
 | **Depends on**  | HEP-CORE-0001 (Hybrid Lifecycle Model), HEP-CORE-0031 (ThreadManager pattern) |
 | **Related**     | HEP-CORE-0035 (Hub-Role Auth + Federation Trust — NOT folded; stays independent per SEC-Fold R5), HEP-CORE-0042 (Channel Attach Coordination — NOT folded; stays independent per SEC-Fold R5) |
-| **Supersedes**  | **HEP-CORE-0036** (Authenticated Connection Establishment) → §9.1 of this HEP; **HEP-CORE-0038** (Script-Accessible Vault Keystore) → §8 + §10; **HEP-CORE-0040** (Locked Key Memory) → §2 + §7; **HEP-CORE-0041** (SHM Channel Auth) → §9.2 + §9.3 |
+| **Supersedes**  | **HEP-CORE-0036** (Authenticated Connection Establishment) — status pointer only; wire content authoritative until further §9.1 migration; **HEP-CORE-0038** (Script-Accessible Vault Keystore) → §8 + §10 (content authoritative in HEP-0038); **HEP-CORE-0040** (Locked Key Memory) → §2 + §7 (raw-32-byte seckey contract in HEP-0040 §8.5.2 still authoritative). |
+| **Splits from** | **HEP-CORE-0041 §5.5 / §D4.5 / §10.5** — application-layer AttachProtocol + Frame 3 mutual auth hoisted to **HEP-CORE-0044** (2026-07-08); observer path hoisted to **HEP-CORE-0045** (2026-07-08). |
 
 ---
 
@@ -67,7 +68,7 @@ historical R1-R8 reasoning trace.
 - **Federation crypto**, **hub-to-hub trust chains** — future
   work, will land in HEP-0035 amendments.
 
-### 0.4 Migration status (2026-07-07)
+### 0.4 Migration status (2026-07-08)
 
 - **§0-§2** — authoritative; describes the shipped design.
 - **§2.1 (SecureSubsystem class — two-category facade) — SHIPPED
@@ -92,12 +93,13 @@ historical R1-R8 reasoning trace.
 - **§7 (KeyStore API surface) — SHIPPED 2026-07-06** — carries the
   full API surface preserved from HEP-CORE-0040 §5.2.  Now the
   primary reference.
-- **§8–§10** — SECTION STUBS with pointers to existing HEPs
-  as the authoritative source of full detail until content migration
-  completes.  Old HEPs marked **PARTIALLY SUPERSEDED** — the sections
-  each stub points at remain valid; sections describing lifecycle /
-  singleton / registration are superseded and flagged inline in the
-  old HEPs.
+- **§8–§10** — SECTION STUBS with pointers to authoritative HEPs.
+  §9.1 → HEP-CORE-0036 (ZMQ CURVE + ZAP).  §9.2 → **HEP-CORE-0044**
+  (AttachProtocol primitive) + HEP-CORE-0041 (SHM capability
+  transport) + HEP-CORE-0042 (attach coordination).  §9.3 →
+  **HEP-CORE-0045** (Broker SHM Observer, promoted 2026-07-08).
+  §8 vault → HEP-CORE-0038.  §10 script API → HEP-CORE-0038 +
+  task #247.
 - **§11-§13** — supporting.
 
 **Retired frameworks (deleted from the codebase):**
@@ -807,6 +809,12 @@ inherit the `keys()` gate transitively (PANIC if SMS not
 `Initialized`).  All other Category 1 methods are ungated per §1.2
 mechanism 3.
 
+**Primary consumer.**  `HEP-CORE-0044 (AttachProtocol)` uses
+`box_encrypt_using` / `box_decrypt_using` as its cryptographic
+contract at every frame (see HEP-0044 §4.1).  Both the consumer-attach
+path (HEP-0041 §5) and the broker-observer path (HEP-0045 §3.4) route
+through HEP-0044, which routes through the SMS surface here.
+
 **Callers migrated (2026-07-07):**
 - `attach_protocol.cpp` — Frame 2 consumer response verify (producer
   side calls `box_decrypt_using`) and Frame 2 challenge encrypt
@@ -905,34 +913,40 @@ Migration touchpoints under this HEP:
 
 ### 9.2 SHM channel handshake
 
-**Full detail: HEP-CORE-0041** (1591 lines).  Marked
-SUPERSEDED-STATUS-ONLY.
+**AttachProtocol primitive:** `HEP-CORE-0044` (application-layer
+challenge-response; frames, state machine, `IAttachChannel` seam,
+Frame 3 mutual auth).  Uses SMS Category 1c `box_encrypt_using` /
+`box_decrypt_using` (§6).
 
-Migration touchpoints:
-- `AttachProtocol` (acceptor + initiator) stays as its own
-  protocol.
-- Its crypto calls move through `secure().box_*_using(...)`.
-- `ShmCapabilityChannel` + `memfd_create` + `SCM_RIGHTS` handover
-  logic stays platform-scoped.
+**SHM binding + capability transport:** `HEP-CORE-0041` (memfd +
+`SCM_RIGHTS` handover, `ShmCapabilityChannel`, per-platform L1
+backend matrix).  §5 in HEP-0041 uses HEP-0044's protocol as its
+Layer-2b handshake.
 
-Cross-references: HEP-CORE-0042 (Channel Attach Coordination) —
-NOT folded per R5.  §9.2 references it for wire ordering.
+**Broker mediation for attach timing:** `HEP-CORE-0042` (Channel
+Attach Coordination — `CONSUMER_ATTACH_REQ_SHM` and per-transport
+version tracking).
 
 ### 9.3 Broker SHM observer
 
-**Full detail:**
-`docs/tech_draft/DRAFT_broker_shm_observer_2026-07.md` — 4-
-decision (D1-D4) + risks (7 items) + 8-slice impl plan.  Task #317.
+**Full detail: `HEP-CORE-0045` (Broker SHM Channel Observer).**
+Promoted 2026-07-08 from
+`docs/tech_draft/DRAFT_broker_shm_observer_2026-07.md`.  Coverage:
+motivation, D1-D5 design decisions, trust chain, observer
+capability, broker dial + fd cache, cross-platform teardown,
+opt-out, metrics wiring, test plan, and the task #317 slice map.
 
-D1 slice A (`d6f5d621`), D2 slice (`f7d3a51e`), C.2.a
-(`029bbe31`), C.2.b (`ce956972`) shipped.  Remaining: C.2.c
+Shipped: D1 slice A (`d6f5d621`), D2 slice (`f7d3a51e`), C.2.a
+(`029bbe31`), C.2.b (`ce956972`).  Remaining: C.2.c
 (PeerDeathWatcher), C.2.d (broker dial + fd cache), D5 (opt-out),
-C.3 (metrics_source), C.4 (L4 tests), C.5 (HEP status sync).
+C.3 (`metrics_source`), C.4 (L4 tests), C.5 (HEP status sync).
 
-After SEC-Fold-2 lands, the observer's ephemeral keypair
-generation moves from `key_store().generate_and_add_identity(...)`
-to `secure().keys().generate_and_add_identity(...)`.  Observer
-verify path uses `secure().box_open_using(...)`.
+The observer keypair is generated via
+`secure().keys().generate_and_add_identity("broker.observer")` and
+travels on `PRODUCER_REG_ACK.broker_observer_pubkey_z85`.  Observer
+verify path uses the `role_type="observer"` extension of
+AttachProtocol (HEP-0044 §9) against the broker-observer trust
+anchor stashed on the producer.
 
 ## 10. Script-facing crypto API
 

@@ -1,24 +1,26 @@
 # Authentication / PeerAdmission TODO
 
-**Scope:** Open items for HEP-CORE-0035 (Hub-Role auth + federation
-trust), HEP-CORE-0036 (Authenticated Connection Establishment),
-HEP-CORE-0040 (Locked Key Memory), HEP-CORE-0041 (SHM Channel Auth).
-Compressed 2026-06-27 from 1616 → ~500 lines; completed-phase
-narratives extracted to
-`docs/archive/transient-2026-06-27/todo-completions/AUTH_TODO_completions.md`.
+**Scope: Line 1 (Main auth chain — CURVE end-to-end across ZMQ + SHM)
+of the three-line breakdown in `docs/TODO_MASTER.md`.**  For Line 2
+(SMS consolidation) see HEP-CORE-0043 §0.4; for Line 3 (Broker SHM
+observer) see HEP-CORE-0045 §10.
 
-**Authoritative design lives in:**
+**Line 1 authoritative design lives in:**
 
 - `docs/HEP/HEP-CORE-0035-Hub-Role-Authentication-and-Federation-Trust.md`
 - `docs/HEP/HEP-CORE-0036-Authenticated-Connection-Establishment.md`
 - `docs/HEP/HEP-CORE-0017-Queue-Abstraction.md` §3.3
 - `docs/HEP/HEP-CORE-0040-Locked-Key-Memory.md` (incl. §8.5.2
-  NORMATIVE seckey representation at security-module boundary —
-  added 2026-06-26)
+  NORMATIVE seckey representation at security-module boundary)
 - `docs/HEP/HEP-CORE-0041-SHM-Channel-Auth.md`
+- `docs/HEP/HEP-CORE-0042-Channel-Attach-Coordination-Protocol.md`
+- **`docs/HEP/HEP-CORE-0044-AttachProtocol.md`** — AttachProtocol
+  primitive (Frame 1/2/3 wire spec + `IAttachChannel` seam + protocol
+  helpers).  Consumed by HEP-0041 §5 for consumer-attach and by
+  HEP-CORE-0045 for observer-attach.
 
-**Status source of truth:** `docs/TODO_MASTER.md` § "Current Sprint
-Focus" — Phase 0/1/2a/2b/3 plan locked 2026-06-27.
+**Status source of truth:** `docs/TODO_MASTER.md` § "Resume point"
+— three-line summary + per-line remaining work (2026-07-08).
 
 **Completed-work archives (verbatim prose retained for context):**
 
@@ -441,20 +443,34 @@ migration MUST move together so no commit leaves the suite broken.
 | 4 — Framework crypto primitives | #247 (script-side); native part of Phase 4 | `PYLABHUB_UTILS_EXPORT` AEAD (ChaCha20-Poly1305) + HKDF wrappers; sibling `api.crypto.*` bindings (Python/Lua/Native) |
 | 5 — HEP-0036 ZMQ retrofit | #246 (design ✅ shipped 2026-07-01 as HEP-CORE-0042; impl phases 2+ pending) | Retrofit ZMQ to pre-attach broker-confirmation pattern; producer's ZAP handler stops being load-bearing; cache becomes observability for ZMQ too |
 
-**AttachProtocol transport unification — Phases 3 / 4a / 4b / 4c
-minimal SHIPPED 2026-07-07; Phase 4c-cont OPEN.**
+**AttachProtocol primitive extraction — SHIPPED 2026-07-07 (SHM
+refactor).**
 
-Sub-plan under Phase 5 above.  Extracted the AttachProtocol
-challenge-response into a transport-agnostic form so the SAME crypto
-logic runs over SHM (existing) AND ZMQ (Phase 5 target).
+SHM AttachProtocol internals were refactored to sit behind a
+transport-agnostic seam so both consumer-attach (this sub-chain)
+and broker-observer (Line 3 / HEP-CORE-0045) compose over the same
+Frame 1/2/3 crypto helpers.  **Not a new capability; an internal
+factoring.**  Authoritative design: **HEP-CORE-0044 (AttachProtocol
+primitive)**, promoted 2026-07-08.
 
-| Sub-phase | Status | Scope |
+| Piece | Status | Where |
 |---|---|---|
-| 3 — `IAttachChannel` interface + `ShmAttachChannel` | ✅ SHIPPED 2026-07-07 | Extracted length-prefixed JSON framing from `attach_protocol.cpp` into `attach_channel_shm.hpp/cpp` behind virtual `IAttachChannel` seam |
-| 4a — `ZmqAttachChannel` (transport binding) | ✅ SHIPPED 2026-07-07 | Two-part multipart `[routing_id][json_body]` on ROUTER, single-part on DEALER; L2 tests for roundtrip + deadline + DoS cap + cross-talk + trailing-parts + JSON-parse (7 tests) |
-| 4b — Extract `run_producer_handshake` / `run_consumer_handshake` as transport-agnostic helpers | ✅ SHIPPED 2026-07-07 | Moved the whole Frame 1/2/3 body of `AttachProtocolAcceptor::accept_one` + `initiate_consumer_handshake` into helpers taking `IAttachChannel &`.  SHM acceptor and future ZMQ acceptor share the same ~500 LOC of crypto flow.  Priority 6 finding from the 2026-07-07 fresh-eyes review closed — the seam is now at protocol-flow, not at framing. |
-| 4c minimal — `ZmqAttachProtocolAcceptor` + `initiate_zmq_consumer_handshake` (broker + role entries) | ✅ SHIPPED 2026-07-07 | Composed `ZmqAttachChannel` + `run_producer_handshake` / `run_consumer_handshake`.  4 L2 end-to-end tests with real KeyStore + SMS crypto (mutual + no-mutual + impersonator rejection + quiet-peer timeout).  Documented ⚠ SECURITY REQUIREMENT: caller must run CURVE + ZAP allowlist check FIRST — AttachProtocol alone is not a security boundary without it. |
-| 4c-cont — BrokerService REG_REQ / CONSUMER_REG_REQ wiring | OPEN | Wire `ZmqAttachProtocolAcceptor::run_handshake` into broker's REG_REQ / CONSUMER_REG_REQ handler as belt-and-braces on top of CURVE.  Requires reorganizing the broker's single-turn REG_REQ handler into a per-peer state machine so handshake frames from peer A can interleave with normal messages from peer B on the shared ROUTER.  Structural refactor across `broker_service.cpp` + `broker_request_comm.cpp`.  Small coverage-gap follow-ups also open: (a) ZMQ observer role_type E2E test — needs `role_type` field on `ConsumerAuthMaterial` or a dedicated `initiate_zmq_observer_handshake` client entry; (b) ZMQ consumer-side Frame 3 rejection test — needs a mismatched producer/impersonator harness. |
+| `IAttachChannel` interface + `ShmAttachChannel` | ✅ SHIPPED 2026-07-07 | `attach_channel.hpp` + `attach_channel_shm.hpp/cpp` — HEP-0044 §6 |
+| `run_producer_handshake` / `run_consumer_handshake` | ✅ SHIPPED 2026-07-07 | `attach_protocol.hpp/cpp` — HEP-0044 §7 |
+| Name-based key citation (`own_seckey_name` replaces `SeckeyAccessor` callback) | ✅ SHIPPED 2026-07-07 | `AttachProtocolAcceptor` ctor + `ConsumerAuthMaterial` — HEP-0043 §1.4 + §6, HEP-0044 §4.1 |
+| Frame 3 mutual auth (#262) preserved through refactor | ✅ SHIPPED | HEP-0044 §8 |
+| `role_type="observer"` extension preserved | ✅ SHIPPED | HEP-0044 §9 |
+
+**Speculative ZMQ AttachProtocol code REVERTED 2026-07-08.**  A
+previous session (`5a24b410`) shipped `ZmqAttachChannel`,
+`ZmqAttachProtocolAcceptor`, `initiate_zmq_consumer_handshake`,
+plus two L2 test binaries — as speculative foundation for a
+hypothetical belt-and-braces layer on top of CURVE.  On review,
+none of the three lines of work (main auth chain / SMS
+consolidation / broker observer) needs it: HEP-0036 makes CURVE +
+ZAP + broker allowlist the whole ZMQ auth story; HEP-0044 §10
+formalizes why AttachProtocol is not deployed on ZMQ.  Code and
+tests deleted; TODO row cleaned up.
 
 **Sequencing rationale.**  Phase 1 establishes the pre-confirm
 contract on Linux/FreeBSD where the threat model is sharpest;

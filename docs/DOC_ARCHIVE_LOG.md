@@ -6,6 +6,42 @@
 
 ## Archive batches
 
+### 2026-07-08 (HEP-CORE-0044 + HEP-CORE-0045 promoted)
+
+Two new HEPs promoted to authoritative status; one tech draft
+archived; two content-migration blocks in HEP-CORE-0041 replaced by
+pointers.
+
+- **HEP-CORE-0044 (AttachProtocol)** authored fresh — the
+  transport-agnostic application-layer challenge-response primitive
+  that HEP-CORE-0041 §5.5 / §D4 / §D4.5 / §10.5 previously specified
+  by name.  Wire spec, `IAttachChannel` seam, transport-agnostic
+  protocol helpers (`run_producer_handshake` /
+  `run_consumer_handshake`), Frame 3 mutual auth, and the
+  `role_type="observer"` extension are all authoritative here now.
+- **HEP-CORE-0045 (Broker SHM Channel Observer)** promoted from
+  `docs/tech_draft/DRAFT_broker_shm_observer_2026-07.md`.  The design
+  captured D1-D5 decisions + risks + slice map for task #317; the
+  promoted HEP wraps them with a plain-language overview + worked
+  example + refactored section structure for single-source lookup.
+- Archived:
+  `docs/archive/transient-2026-07-08/DRAFT_broker_shm_observer_2026-07.md`
+  — content lives in HEP-CORE-0045.
+- HEP-CORE-0041 §5.5 replaced with a pointer to HEP-CORE-0044.
+- HEP-CORE-0041 §D4.5 replaced with a pointer to HEP-CORE-0044 §8.
+- HEP-CORE-0041 §10.5 replaced with a pointer to HEP-CORE-0045.
+- HEP-CORE-0043 §6 cross-references HEP-CORE-0044 as the primary
+  consumer of `box_encrypt_using` / `box_decrypt_using`.
+- HEP-CORE-0043 §9.2 / §9.3 updated to point at HEP-CORE-0044 /
+  HEP-CORE-0045 respectively.
+- Speculative code deleted: `attach_channel_zmq.hpp/cpp`,
+  `attach_protocol_zmq.cpp`, `test_zmq_attach_channel.cpp`,
+  `test_zmq_attach_protocol.cpp`.  Rationale: none of the three
+  lines of work (main auth chain / SMS consolidation / broker
+  observer) needs a ZMQ AttachProtocol binding; HEP-0036 makes
+  CURVE + ZAP the whole ZMQ auth story.  HEP-CORE-0044 §10
+  formalizes why.
+
 ### 2026-07-06 (SEC-Fold-2 KeyStore merger — HEP-CORE-0043 §2.2 + §7 SHIPPED)
 
 The KeyStore-into-SecureSubsystem merger shipped 2026-07-06 alongside

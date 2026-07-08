@@ -10,85 +10,123 @@ see `docs/DOC_STRUCTURE.md` §2.1.1.
 
 ---
 
-## Resume point (2026-07-07, IN-SESSION latest)
+## Resume point (2026-07-08)
 
-**Session-start reading order (mandatory):**
-1. `docs/HEP/HEP-CORE-0043-Security-Subsystem.md` (§0-§6 for
-   authoritative SMS surface; §9 for wire-protocol touchpoints).
-2. `docs/README/README_testing.md` § "framework contract (absolute)".
-3. Subtopic TODOs for the area you're touching (`docs/todo/*.md`).
-4. `docs/todo/AUTH_TODO.md` § "HEP-0041 Phases 2-5" for the
-   AttachProtocol transport-unification sub-plan (Phases 4b/4c
-   status + Phase 4c-cont scope).
+The whole security-and-communication work chain sorts into **three
+independent lines** that share only the SMS crypto primitives.  Keep
+them separate when planning; do not mix scope.
 
-Prior SEC-Fold-2 planning drafts (`DRAFT_sec_fold_2_resume_state_2026-07.md`,
-`DRAFT_sec_fold_2_plan_and_guidance_2026-07.md`) archived to
+### Line 1 — Main auth chain (CURVE end-to-end across ZMQ + SHM)
+
+Symmetric CURVE integration across the ZMQ and SHM data paths so
+every role/broker connection is gated by authentication.  ZMQ uses
+libzmq CURVE + ZAP at the socket layer.  SHM uses `AttachProtocol`
+at the application layer (HEP-CORE-0044, promoted 2026-07-08).
+
+**Authoritative HEPs:** HEP-0035 (Hub-Role Auth), HEP-0036 (ZMQ
+CURVE), HEP-0041 (SHM channel auth), HEP-0042 (attach
+coordination), HEP-0044 (AttachProtocol primitive).
+
+**Shipped:** Phase D1/D2/D3 (HEP-0035); AUTH-1/2/3 (ZMQ role side);
+HEP-0041 substeps 1a-1h + 1i-mig-1..5 + 1i-cleanup S1-S5 + 1k (SHM
+channel auth); HEP-0042 Phases 0-3b (ZMQ pre-attach coordination);
+#262 mutual-auth wire mechanism; AUTH-5 (doc sync); AUTH-6 batches
+C0-C6 (L3 test revival); AUTH-7 SHM happy+deny + AUTH-7 ZMQ deny.
+
+**Remaining, in dependency order:**
+1. **★ #246 Phase 3a L4 close-out** — real cycle-driving producer
+   L4 test.  Unblocks AUTH-7 ZMQ happy path (the last AUTH-7 gap).
+2. #275 S2 remainder — 4-5 datahub worker files still to scan for
+   legacy `secret` params.
+3. #257 (1j) — L3 broker tests for HEP-0041 (success / denied /
+   divergence-WARN).
+4. REVIEW-C (#276) — gates after 1j + #275 close.
+5. #262 close-out — L4 squatter test + default-flip
+   `shm_require_mutual_auth` to `true`.
+6. REVIEW-D (#277) → REVIEW-E (#278) — Phase 1 production-ready.
+7. AUTH-6 bookkeeping — File 10 Suite 2 delete on #152.
+
+### Line 2 — Security Module (SMS) consolidation
+
+One lifecycle module (`SecureSubsystem`) owns libsodium init, all
+sodium wrappers, KeyStore, and encryption/decryption API.  Replaces
+the scattered sodium_init sites + fragmented crypto surface.
+
+**Authoritative HEP:** HEP-0043 (Security Subsystem).
+
+**Shipped end-to-end (commits `5a24b410` + `ab944b55`, 2026-07-07;
+SEC-Fold-2 finale + review fixes):**
+- `SecureMemorySubsystem` → `SecureSubsystem` rename.
+- `pylabhub::crypto` namespace deleted (Category 1a/1b/1c on SMS).
+- `Crypto` sub-container collapsed.
+- `key_store()` / `key_store_ready()` shims deleted; access is
+  `secure().keys()`.
+- `KeyStore` is member of `SecureSubsystem::Impl` (private ctor).
+- Gate softened: only `keys()` requires SMS `Initialized`.
+- `box_encrypt_using` / `box_decrypt_using` shipped as the
+  name-based cited-seckey Category 1c methods.
+- HEP-0043 §0-§7 + §11-§13 authoritative.
+
+**Remaining:** SEC-Fold-1b — HEP-0043 §8 vault content + §10
+script-crypto content migration from HEP-0038 (housekeeping).
+
+### Line 3 — Broker SHM observer (broker probes producer's SHM metrics)
+
+Broker gains authenticated read-only access to producer SHM header
+pages (metrics) under HEP-0041's capability-transport model.  Uses
+AttachProtocol with `role_type="observer"` and a distinct trust
+anchor (broker's ephemeral observer pubkey).
+
+**Authoritative HEP:** HEP-0045 (Broker SHM Channel Observer,
+promoted 2026-07-08 from `DRAFT_broker_shm_observer_2026-07.md`).
+
+**Shipped:** Phase A (`b3d5e36d`) — `datablock_get_metrics_from_fd`;
+Phase B (`da2a5e76`) — `DataBlockObserverHandle`; D1 slice A
+(`d6f5d621`) — `KeyStore::generate_and_add_identity`; D2 slice
+(`f7d3a51e`) — REG_ACK extraction + `RoleAPIBase` setter;
+C.2.a (`029bbe31`) — broker generates + emits observer pubkey;
+C.2.b (`ce956972`) — producer verify path.
+
+**Remaining, in dependency order (per HEP-0045 §10):**
+1. C.2.c — `PeerDeathWatcher` interface + Linux `epoll` backend.
+2. C.2.d — Broker dial worker + fd cache map + teardown.
+3. D5 — Producer `startup.shm_metrics_observer` opt-out.
+4. C.3 — `collect_shm_info` fd lookup + `metrics_source` field.
+5. C.4 — L4 tests (e2e, opt-out, crash-safety, broker restart,
+   multi-producer).
+6. C.5 — HEP-0043 §9.3 + HEP-0041 §10.5 pointer refresh.
+
+### Line 4 (foundation, no active work)
+
+`IAttachChannel` seam + `run_producer_handshake` /
+`run_consumer_handshake` transport-agnostic helpers.  Shipped
+2026-07-07 as refactor of the SHM AttachProtocol internals; now
+authoritative as HEP-0044.  Both Line 1 SHM and Line 3 observer
+compose over the same helpers.  No standalone next-action.
+
+### Session-start reading order
+
+1. `docs/HEP/HEP-CORE-0044-AttachProtocol.md` — AttachProtocol
+   primitive (protocol, `IAttachChannel`, `run_*_handshake`).
+2. `docs/HEP/HEP-CORE-0045-Broker-SHM-Observer.md` — Line 3.
+3. `docs/HEP/HEP-CORE-0043-Security-Subsystem.md` (§0-§7) — SMS
+   API surface for all lines.
+4. `docs/HEP/HEP-CORE-0041-SHM-Channel-Auth.md` — Line 1 SHM.
+5. `docs/HEP/HEP-CORE-0036-Authenticated-Connection-Establishment.md`
+   (§5b canonical wire schema) — Line 1 ZMQ.
+6. `docs/HEP/HEP-CORE-0042-Channel-Attach-Coordination-Protocol.md`
+   — Line 1 attach coordination.
+7. `docs/todo/AUTH_TODO.md` — Line 1 tracker detail.
+8. `docs/README/README_testing.md` § "framework contract (absolute)".
+
+Prior SEC-Fold-2 planning drafts
+(`DRAFT_sec_fold_2_*_2026-07.md`) archived to
 `docs/archive/transient-2026-07-06/` — SEC-Fold-2 is complete;
 those drafts are historical.
 
-**Where we are (SEC-Fold-2 finale + AttachProtocol transport unification):**
-- SEC-Fold-1 (HEP consolidation) shipped.
-- **SEC-Fold-2 SHIPPED end-to-end** (commits `5a24b410` + `ab944b55`,
-  2026-07-07):
-  - `SecureMemorySubsystem` → `SecureSubsystem` (class + files renamed).
-  - `pylabhub::crypto` namespace DELETED — all primitives folded into
-    SMS Category 1a/1b/1c (verified: only historical prose comments
-    reference the retired name).
-  - `Crypto` sub-container collapsed — encryption verbs flat on SMS
-    (`secretbox_encrypt`/`_decrypt`, `box_encrypt_using`/`_decrypt_using`).
-  - `key_store()` / `key_store_ready()` shims deleted — access via
-    `secure().keys()` throughout production + tests.
-  - `KeyStore` moved to member of `SecureSubsystem::Impl` (private
-    ctor + `friend`).
-  - Gate softened: only `keys()` requires SMS `Initialized`; every
-    other Category 1 method is a stateless libsodium wrapper.
-  - HEP-CORE-0043 authoritative for §0-§7 + §11-§13; §8-§10 remain
-    section stubs pointing at HEP-0036/0038/0040/0041.
-- **AttachProtocol transport unification SHIPPED** (same commits):
-  - Phase 3: `IAttachChannel` interface + `ShmAttachChannel` binding.
-  - Phase 4a: `ZmqAttachChannel` binding + 7 L2 transport tests.
-  - Phase 4b: `run_producer_handshake` / `run_consumer_handshake`
-    extracted as transport-agnostic helpers taking `IAttachChannel &`.
-    `AttachProtocolAcceptor::accept_one` + `initiate_consumer_handshake`
-    reduced to thin SHM wrappers that compose channel + delegate to
-    the helpers.
-  - Phase 4c minimal: `ZmqAttachProtocolAcceptor` +
-    `initiate_zmq_consumer_handshake` + 4 L2 end-to-end tests with
-    real KeyStore + SMS crypto (mutual + no-mutual + impersonator
-    rejection + quiet-peer timeout).
-- **Name-based key citation SHIPPED** (part of Phase 2 above):
-  `AttachProtocolAcceptor` ctor + `ConsumerAuthMaterial` take a
-  `std::string own_seckey_name` (KeyStore entry) instead of the
-  previous `SeckeyAccessor` callback that leaked raw bytes.  Seckey
-  never crosses the AttachProtocol API boundary (HEP-CORE-0043 §1.4
-  + §6 use-not-export).
-- **#262 mutual-auth Frame 3 SHIPPED** as part of the transport-
-  symmetric helpers — `require_mutual_auth` is a parameter on
-  `run_consumer_handshake`; `run_producer_handshake` sends Frame 3
-  when the consumer's hello carries `consumer_nonce_b64` +
-  `consumer_challenge_b64`.
-- Test suite: 2343/2343 passing (up from 2328 at session start;
-  +15 new tests across Phase 4a/4c + SMS review).
-
-**Next action on resume (Phase 4c-cont):**
-Wire `ZmqAttachProtocolAcceptor::run_handshake` + role-side
-`initiate_zmq_consumer_handshake` into BrokerService REG_REQ /
-CONSUMER_REG_REQ as belt-and-braces on top of CURVE.  Structural
-prerequisite: reorganize the broker's single-turn REG_REQ handler
-into a per-peer state machine that interleaves AttachProtocol
-frames with normal broker traffic on the shared ROUTER.
-Full scope + rationale: `docs/todo/AUTH_TODO.md` §
-"HEP-0041 Phases 2-5" table (4b ✅ / 4a ✅ / 4c ✅ minimal /
-4c-cont OPEN).
-
-**Downstream tasks unblocked by SEC-Fold-2 completion:**
-- #317 C.2.c-C.5 (broker SHM observer) — SEC-Fold-2 class-rename
-  and gate-softening dependencies both cleared.  Design record
-  under `docs/tech_draft/DRAFT_broker_shm_observer_2026-07.md`.
-  Shipped slices: C.2.a `029bbe31`, C.2.b `ce956972`, D1 slice A
-  `d6f5d621`, D2 storage `f7d3a51e`.  Remaining: C.2.c
-  (PeerDeathWatcher), C.2.d (broker dial + fd cache), D5 (opt-out),
-  C.3 (metrics_source), C.4 (L4 tests), C.5 (HEP status sync).
+**Test suite:** 2332/2332 passing (2026-07-08; -11 from 2343 =
+speculative ZMQ AttachProtocol code + its tests deleted this
+session as YAGNI, none of the three lines needed them).
 - #262 SHM mutual auth L4 squatter test — Frame 3 wire mechanism +
   role wiring + producer/consumer helpers all shipped; only the L4
   squatter test + default-`require_mutual_auth=true` flip remain.
