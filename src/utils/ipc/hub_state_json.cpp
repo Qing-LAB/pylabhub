@@ -54,6 +54,20 @@ nlohmann::json channel_to_json(const ChannelEntry &c, ChannelObservable obs)
     // (Wave M2.5 step 3 — HEP-CORE-0021 §16.3 per-producer scope).
     // Channel-scope ChannelEntry.zmq_node_endpoint is deprecated; admin
     // clients iterate `producers[]`.
+
+    // ── 2026-07-08 topology migration fields ──────────────────────────
+    // Phase B slice 3 — additive serialization of the new
+    // ChannelEntry state fields.  Existing readers (admin dumps, L2
+    // tests) can ignore these; new readers can consume them.  The
+    // atomic Phase B commit + broker enforcement of channel_topology
+    // is what makes these fields carry non-default values.
+    // Design authority: tech draft §4.1 + HEP-CORE-0033 §5.
+    j["channel_topology"]        = to_string(c.channel_topology());
+    j["data_endpoint"]           = c.channel_data_endpoint();
+    j["data_endpoint_resolved"]  = c.channel_endpoint_resolved();
+    j["channel_version"]         = c.current_channel_version();
+    j["confirmed_version"]       = c.current_confirmed_version();
+
     j["_collected_at"]       = fmt_time(c.created_at);
     j["observable"]          = to_string(obs);
 
