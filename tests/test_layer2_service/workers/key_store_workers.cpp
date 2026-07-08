@@ -964,14 +964,16 @@ int secretbox_encrypt_decrypt_roundtrip(const char * /*tmpdir*/)
                 ct.data(), ct.size(),
                 reinterpret_cast<const std::uint8_t *>(plain.data()),
                 plain.size(),
-                nonce.data(), key.data());
+                std::span<const std::uint8_t, 24>(nonce),
+                std::span<const std::uint8_t, 32>(key));
             ASSERT_EQ(written, plain.size() + sec::SecureSubsystem::kSecretboxMacBytes);
 
             std::array<std::uint8_t, 128> pt{};
             const std::size_t decoded = sec::secure().secretbox_decrypt(
                 pt.data(), pt.size(),
                 ct.data(), written,
-                nonce.data(), key.data());
+                std::span<const std::uint8_t, 24>(nonce),
+                std::span<const std::uint8_t, 32>(key));
             ASSERT_EQ(decoded, plain.size());
             EXPECT_EQ(std::string(reinterpret_cast<const char *>(pt.data()), decoded),
                       plain);
@@ -981,7 +983,8 @@ int secretbox_encrypt_decrypt_roundtrip(const char * /*tmpdir*/)
             const std::size_t bad = sec::secure().secretbox_decrypt(
                 pt.data(), pt.size(),
                 ct.data(), written,
-                nonce.data(), key.data());
+                std::span<const std::uint8_t, 24>(nonce),
+                std::span<const std::uint8_t, 32>(key));
             EXPECT_EQ(bad, 0u) << "MAC tamper should have failed decryption";
         },
         "key_store::secretbox_encrypt_decrypt_roundtrip",
@@ -1261,61 +1264,19 @@ int box_encrypt_decrypt_roundtrip(const char * /*tmpdir*/)
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
-/// R3.2 — `secure()` PANICs (process abort) when called without SMS
-/// in the mods pack.  The worker registers ONLY Logger; when the
-/// lambda calls `secure()`, the state gate is Uninitialized and
-/// `panic_if_not_ready("secure()")` fires `std::abort()`.
-/// Parent-side test asserts `exit_code() == 134` (SIGABRT).
-int panic_when_secure_called_without_sms(const char * /*tmpdir*/)
-{
-    return run_gtest_worker(
-        [&]() {
-            namespace sec = pylabhub::utils::security;
-            // Expected: SMS state is Uninitialized here (mod pack
-            // has Logger only).  This call must PANIC.
-            (void)sec::secure();
-            // Unreachable — if we get here, the gate failed to fire.
-            ADD_FAILURE() << "secure() returned instead of panicking";
-        },
-        "key_store::panic_when_secure_called_without_sms",
-        Logger::GetLifecycleModule());
-    // No SecureSubsystem::GetLifecycleModule() — deliberate.
-}
-
-/// R3.2b — `secure().keys()` PANICs when SMS is not up.  Exercises
-/// the same gate via a different accessor path.  Same expected
-/// exit-code contract.
+/// R3.2 — `secure().keys()` PANICs when SMS is not up.  The gate on
+/// `keys()` is the ONLY gate on `SecureSubsystem`'s public surface
+/// (softened 2026-07-07; see `secure_subsystem.cpp` "Gate policy"
+/// block).  Parent-side test asserts `exit_code() == 134` (SIGABRT).
 int panic_when_keys_called_without_sms(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
         [&]() {
             namespace sec = pylabhub::utils::security;
-            // Reaches secure() first — panics there.  Same signal.
             (void)sec::secure().keys();
             ADD_FAILURE() << "secure().keys() returned instead of panicking";
         },
         "key_store::panic_when_keys_called_without_sms",
-        Logger::GetLifecycleModule());
-}
-
-/// R3.2c — `secure().secretbox_encrypt(...)` PANICs when SMS is not
-/// up.  Same gate, exercised through a Category 1c encryption method.
-int panic_when_secretbox_called_without_sms(const char * /*tmpdir*/)
-{
-    return run_gtest_worker(
-        [&]() {
-            namespace sec = pylabhub::utils::security;
-            std::array<std::uint8_t, 32> key{};
-            std::array<std::uint8_t, 24> nonce{};
-            std::array<std::uint8_t, 128> out{};
-            std::array<std::uint8_t, 8> pt{};
-            (void)sec::secure().secretbox_encrypt(
-                out.data(), out.size(),
-                pt.data(), pt.size(),
-                nonce.data(), key.data());
-            ADD_FAILURE() << "secretbox_encrypt returned instead of panicking";
-        },
-        "key_store::panic_when_secretbox_called_without_sms",
         Logger::GetLifecycleModule());
 }
 
@@ -1330,6 +1291,180 @@ int panic_when_secretbox_called_without_sms(const char * /*tmpdir*/)
 /// post-LifecycleGuard-finalize observation would require running
 /// the check OUTSIDE `run_gtest_worker`'s guard — infrastructure work
 /// that's beyond this iteration.
+/// R3.9 — `pwhash_argon2id` end-to-end.  Verifies:
+///   - Non-null buffers succeed.
+///   - Same (password, salt) is deterministic → identical key.
+///   - Different password OR different salt → different key.
+///   - Null pointer argument returns false.
+int pwhash_argon2id_roundtrip(const char * /*tmpdir*/)
+{
+    return run_gtest_worker(
+        [&]() {
+            namespace sec = pylabhub::utils::security;
+            std::array<std::uint8_t, sec::SecureSubsystem::kPwhashSaltBytes> salt_a{};
+            std::array<std::uint8_t, sec::SecureSubsystem::kPwhashSaltBytes> salt_b{};
+            ASSERT_TRUE(sec::secure().derive_pwhash_salt(salt_a.data(), "vault.role.uid.a"));
+            ASSERT_TRUE(sec::secure().derive_pwhash_salt(salt_b.data(), "vault.role.uid.b"));
+            ASSERT_NE(salt_a, salt_b) << "different domains must give different salts";
+
+            const char *password_a = "correct horse battery staple";
+            const char *password_b = "an entirely different password";
+
+            std::array<std::uint8_t, 32> key_a1{};
+            std::array<std::uint8_t, 32> key_a2{};
+            std::array<std::uint8_t, 32> key_b{};
+            std::array<std::uint8_t, 32> key_a_alt{};
+
+            ASSERT_TRUE(sec::secure().pwhash_argon2id(
+                key_a1.data(), key_a1.size(),
+                password_a, std::strlen(password_a),
+                salt_a.data()));
+            ASSERT_TRUE(sec::secure().pwhash_argon2id(
+                key_a2.data(), key_a2.size(),
+                password_a, std::strlen(password_a),
+                salt_a.data()));
+            EXPECT_EQ(key_a1, key_a2)
+                << "same (password, salt) must produce identical derived key";
+
+            ASSERT_TRUE(sec::secure().pwhash_argon2id(
+                key_b.data(), key_b.size(),
+                password_b, std::strlen(password_b),
+                salt_a.data()));
+            EXPECT_NE(key_a1, key_b)
+                << "different password (same salt) must give different key";
+
+            ASSERT_TRUE(sec::secure().pwhash_argon2id(
+                key_a_alt.data(), key_a_alt.size(),
+                password_a, std::strlen(password_a),
+                salt_b.data()));
+            EXPECT_NE(key_a1, key_a_alt)
+                << "different salt (same password) must give different key";
+
+            // Null pointer → false.
+            EXPECT_FALSE(sec::secure().pwhash_argon2id(
+                nullptr, 32, password_a, std::strlen(password_a), salt_a.data()));
+            EXPECT_FALSE(sec::secure().pwhash_argon2id(
+                key_a1.data(), key_a1.size(),
+                nullptr, 0, salt_a.data()));
+            EXPECT_FALSE(sec::secure().pwhash_argon2id(
+                key_a1.data(), key_a1.size(),
+                password_a, std::strlen(password_a), nullptr));
+        },
+        "key_store::pwhash_argon2id_roundtrip",
+        Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
+}
+
+/// R3.10 — `derive_pwhash_salt` determinism.  Load-bearing for vault
+/// reproducibility: if this ever gained entropy (e.g. current time),
+/// existing vault files would silently become undecryptable.
+int derive_pwhash_salt_deterministic(const char * /*tmpdir*/)
+{
+    return run_gtest_worker(
+        [&]() {
+            namespace sec = pylabhub::utils::security;
+            constexpr std::size_t N = sec::SecureSubsystem::kPwhashSaltBytes;
+            std::array<std::uint8_t, N> a{};
+            std::array<std::uint8_t, N> b{};
+            std::array<std::uint8_t, N> c{};
+
+            const std::string_view domain = "vault.role.uid.42";
+            ASSERT_TRUE(sec::secure().derive_pwhash_salt(a.data(), domain));
+            ASSERT_TRUE(sec::secure().derive_pwhash_salt(b.data(), domain));
+            EXPECT_EQ(a, b)
+                << "same domain input must give identical salt across calls";
+
+            // Different domain → different salt.
+            ASSERT_TRUE(sec::secure().derive_pwhash_salt(
+                c.data(), std::string_view{"vault.role.uid.43"}));
+            EXPECT_NE(a, c)
+                << "different domain must give different salt";
+
+            // Empty domain is valid (yields BLAKE2b-16 of empty input).
+            std::array<std::uint8_t, N> empty_1{};
+            std::array<std::uint8_t, N> empty_2{};
+            ASSERT_TRUE(sec::secure().derive_pwhash_salt(empty_1.data(), std::string_view{""}));
+            ASSERT_TRUE(sec::secure().derive_pwhash_salt(empty_2.data(), std::string_view{""}));
+            EXPECT_EQ(empty_1, empty_2)
+                << "empty domain must still be deterministic";
+
+            // Null output → false.
+            EXPECT_FALSE(sec::secure().derive_pwhash_salt(nullptr, domain));
+        },
+        "key_store::derive_pwhash_salt_deterministic",
+        Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
+}
+
+/// R3.11 — `bin2hex` produces lowercase hex + null terminator.
+int bin2hex_roundtrip(const char * /*tmpdir*/)
+{
+    return run_gtest_worker(
+        [&]() {
+            namespace sec = pylabhub::utils::security;
+            const std::array<std::uint8_t, 4> bin{0x00, 0x0f, 0xab, 0xff};
+            char hex[16] = {};  // > 4*2+1 = 9
+            sec::secure().bin2hex(hex, sizeof(hex),
+                                    bin.data(), bin.size());
+            EXPECT_STREQ(hex, "000fabff")
+                << "bin2hex should produce lowercase hex with null terminator";
+
+            // Empty input → empty string.
+            char hex_empty[2] = {'X', 'X'};
+            sec::secure().bin2hex(hex_empty, sizeof(hex_empty),
+                                    bin.data(), 0);
+            EXPECT_STREQ(hex_empty, "")
+                << "bin2hex of empty input should produce empty string";
+
+            // Null pointer must not crash.
+            sec::secure().bin2hex(nullptr, 0, bin.data(), bin.size());
+            sec::secure().bin2hex(hex, sizeof(hex), nullptr, 0);
+        },
+        "key_store::bin2hex_roundtrip",
+        Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
+}
+
+/// R3.12 — `verify_blake2b` matches on correct hash, rejects on
+/// tamper and on wrong-length input.
+int verify_blake2b_roundtrip(const char * /*tmpdir*/)
+{
+    return run_gtest_worker(
+        [&]() {
+            namespace sec = pylabhub::utils::security;
+            const std::string msg  = "the quick brown fox jumps over the lazy dog";
+            const std::string msg2 = "a completely different message";
+
+            const auto hash = sec::secure().compute_blake2b_array(
+                msg.data(), msg.size());
+            EXPECT_TRUE(sec::secure().verify_blake2b(
+                hash, msg.data(), msg.size()))
+                << "verify against the same message must succeed";
+
+            // Different message → must fail.
+            EXPECT_FALSE(sec::secure().verify_blake2b(
+                hash, msg2.data(), msg2.size()))
+                << "verify against a different message must fail";
+
+            // Single-bit tamper of the STORED hash → must fail.
+            auto tampered = hash;
+            tampered[0] ^= 0x01;
+            EXPECT_FALSE(sec::secure().verify_blake2b(
+                tampered, msg.data(), msg.size()))
+                << "verify with single-bit-flipped stored hash must fail";
+
+            // Pointer overload + null args → must fail (not crash).
+            EXPECT_FALSE(sec::secure().verify_blake2b(
+                static_cast<const std::uint8_t *>(nullptr),
+                msg.data(), msg.size()));
+            EXPECT_FALSE(sec::secure().verify_blake2b(
+                hash.data(), nullptr, 0));
+        },
+        "key_store::verify_blake2b_roundtrip",
+        Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
+}
+
 int sodium_ready_agrees_with_lifecycle_initialized(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
@@ -1478,16 +1613,20 @@ int dispatch_key_store(int argc, char **argv)
         return with_keypair_z85_yields_both_halves(tmpdir);
     if (scenario == "sms_wrappers_depth")
         return sms_wrappers_depth(tmpdir);
-    if (scenario == "panic_when_secure_called_without_sms")
-        return panic_when_secure_called_without_sms(tmpdir);
     if (scenario == "panic_when_keys_called_without_sms")
         return panic_when_keys_called_without_sms(tmpdir);
-    if (scenario == "panic_when_secretbox_called_without_sms")
-        return panic_when_secretbox_called_without_sms(tmpdir);
     if (scenario == "sodium_ready_agrees_with_lifecycle_initialized")
         return sodium_ready_agrees_with_lifecycle_initialized(tmpdir);
     if (scenario == "box_encrypt_decrypt_roundtrip")
         return box_encrypt_decrypt_roundtrip(tmpdir);
+    if (scenario == "pwhash_argon2id_roundtrip")
+        return pwhash_argon2id_roundtrip(tmpdir);
+    if (scenario == "derive_pwhash_salt_deterministic")
+        return derive_pwhash_salt_deterministic(tmpdir);
+    if (scenario == "bin2hex_roundtrip")
+        return bin2hex_roundtrip(tmpdir);
+    if (scenario == "verify_blake2b_roundtrip")
+        return verify_blake2b_roundtrip(tmpdir);
 
     std::fprintf(stderr, "key_store: unknown scenario '%s'\n", scenario.c_str());
     return 1;

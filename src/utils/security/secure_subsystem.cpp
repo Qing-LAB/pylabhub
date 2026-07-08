@@ -87,12 +87,12 @@ namespace pylabhub::utils::security
 // Memory model — release-acquire discipline (F12):
 //   - `bringup()` (below) publishes `Initialized` with release order:
 //     every write performed during bringup (sodium_init effects,
-//     RLIMIT changes, KeyStore + Crypto ctor-time allocations)
-//     happens-before any consumer's acquire load of `Initialized`.
-//   - Every accessor (`secure()`, `keys()`, `crypto()`, wrapper
-//     methods, `sodium_ready()`, `lifecycle_initialized()`) loads
-//     the atomic with acquire order.  Reading `Initialized` means
-//     the reader observes all of bringup's writes.
+//     RLIMIT changes, KeyStore ctor-time allocations) happens-before
+//     any consumer's acquire load of `Initialized`.
+//   - Every accessor (`secure()`, `keys()`, wrapper methods,
+//     `sodium_ready()`, `lifecycle_initialized()`) loads the atomic
+//     with acquire order.  Reading `Initialized` means the reader
+//     observes all of bringup's writes.
 //   - `shutdown_module()` publishes `ShuttingDown` then `Shutdown`
 //     with release order.  Callers observing `Shutdown` see the
 //     dtor's effects; callers observing `ShuttingDown` see bringup
@@ -117,8 +117,9 @@ constexpr unsigned long kMemlockWarnThresholdBytes = 256UL * 1024UL;
 
 // ── Unified state-gate helper (F6) ───────────────────────────────
 // One PANIC message template for the "SMS not Initialized" case.
-// Every accessor (`secure()`, `keys()`, `crypto()`, wrapper methods)
-// routes through this — one code path, one wording, no drift.
+// Post-2026-07-07 softening only `keys()` routes through this —
+// see "Gate policy" block below.  Kept as a single helper so any
+// future gate additions share the same wording.
 [[nodiscard]] SubsystemState load_state() noexcept
 {
     return g_state.load(std::memory_order_acquire);
@@ -326,9 +327,9 @@ void SecureSubsystem::Impl::bringup()
 #endif
 
     // Step 5: publish Initialized with release order.  All writes
-    // above (sodium_init effects, RLIMIT changes, KeyStore + Crypto
-    // ctor-time allocations) happen-before any consumer's acquire
-    // load observing `Initialized` (F12).
+    // above (sodium_init effects, RLIMIT changes, KeyStore ctor-time
+    // allocations) happen-before any consumer's acquire load
+    // observing `Initialized` (F12).
     g_state.store(SubsystemState::Initialized, std::memory_order_release);
 }
 
@@ -547,11 +548,11 @@ bool SecureSubsystem::derive_pwhash_salt(std::uint8_t *salt_out,
 std::array<std::uint8_t, 32>
 SecureSubsystem::compute_blake2b_array(const void *data, std::size_t len)
 {
+    // hash is default-init to zero; on compute_blake2b failure the
+    // buffer STAYS all-zero (documented failure signal — see header
+    // for the rationale).  No redundant `hash.fill(0)` needed.
     std::array<std::uint8_t, 32> hash{};
-    if (!compute_blake2b(hash.data(), data, len))
-    {
-        hash.fill(0);
-    }
+    (void)compute_blake2b(hash.data(), data, len);
     return hash;
 }
 
@@ -586,14 +587,15 @@ bool SecureSubsystem::verify_blake2b(
 std::size_t SecureSubsystem::secretbox_encrypt(
     std::uint8_t *out, std::size_t out_max_len,
     const std::uint8_t *plaintext, std::size_t plaintext_len,
-    const std::uint8_t *nonce,
-    const std::uint8_t *key)
+    std::span<const std::uint8_t, 24> nonce,
+    std::span<const std::uint8_t, 32> key)
 {
-    if (out == nullptr || nonce == nullptr || key == nullptr) return 0;
+    if (out == nullptr) return 0;
     if (plaintext == nullptr && plaintext_len > 0) return 0;
     const std::size_t need = plaintext_len + kSecretboxMacBytes;
     if (out_max_len < need) return 0;
-    if (::crypto_secretbox_easy(out, plaintext, plaintext_len, nonce, key) != 0)
+    if (::crypto_secretbox_easy(out, plaintext, plaintext_len,
+                                 nonce.data(), key.data()) != 0)
         return 0;
     return need;
 }
@@ -601,15 +603,15 @@ std::size_t SecureSubsystem::secretbox_encrypt(
 std::size_t SecureSubsystem::secretbox_decrypt(
     std::uint8_t *out, std::size_t out_max_len,
     const std::uint8_t *ciphertext, std::size_t ciphertext_len,
-    const std::uint8_t *nonce,
-    const std::uint8_t *key)
+    std::span<const std::uint8_t, 24> nonce,
+    std::span<const std::uint8_t, 32> key)
 {
-    if (out == nullptr || ciphertext == nullptr ||
-        nonce == nullptr || key == nullptr) return 0;
+    if (out == nullptr || ciphertext == nullptr) return 0;
     if (ciphertext_len < kSecretboxMacBytes) return 0;
     const std::size_t need = ciphertext_len - kSecretboxMacBytes;
     if (out_max_len < need) return 0;
-    if (::crypto_secretbox_open_easy(out, ciphertext, ciphertext_len, nonce, key) != 0)
+    if (::crypto_secretbox_open_easy(out, ciphertext, ciphertext_len,
+                                      nonce.data(), key.data()) != 0)
         return 0;
     return need;
 }
@@ -686,6 +688,18 @@ bool SecureSubsystem::pwhash_argon2id(
     if (out == nullptr || password == nullptr || salt == nullptr)
     {
         LOGGER_ERROR("[SecureSubsystem] pwhash_argon2id: null pointer argument");
+        return false;
+    }
+    if (out_len < crypto_pwhash_BYTES_MIN ||
+        out_len > crypto_pwhash_BYTES_MAX)
+    {
+        LOGGER_ERROR(
+            "[SecureSubsystem] pwhash_argon2id: out_len {} outside "
+            "sodium's [{}, {}] valid range — crypto_pwhash would "
+            "reject; failing early with a clear diagnostic",
+            out_len,
+            static_cast<unsigned long long>(crypto_pwhash_BYTES_MIN),
+            static_cast<unsigned long long>(crypto_pwhash_BYTES_MAX));
         return false;
     }
     const int rc = ::crypto_pwhash(

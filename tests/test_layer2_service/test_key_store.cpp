@@ -348,6 +348,57 @@ TEST_F(SecureSubsystemTest, KeysAccessor_PanicsWhenSmsNotInPack)
     expect_sigabrt(w, "secure().keys()");
 }
 
+// R3.9 — `pwhash_argon2id` end-to-end: deterministic under (password,
+// salt); different password OR different salt → different key; null
+// arguments return false.  The three null-pointer sub-cases each emit
+// one ERROR log line — expected substrings are declared so the fixture
+// doesn't treat them as unexpected regressions.
+TEST_F(SecureSubsystemTest, PwhashArgon2id_Roundtrip)
+{
+    auto w = SpawnWorker("key_store.pwhash_argon2id_roundtrip",
+                         {unique_dir("pwhash_argon2id")});
+    ExpectWorkerOk(w, {}, {
+        "pwhash_argon2id: null pointer argument",
+        "pwhash_argon2id: null pointer argument",
+        "pwhash_argon2id: null pointer argument",
+    });
+}
+
+// R3.10 — `derive_pwhash_salt` is DETERMINISTIC.  Load-bearing for
+// vault reproducibility: if this ever gained entropy, existing vault
+// files would silently become undecryptable.
+TEST_F(SecureSubsystemTest, DerivePwhashSalt_Deterministic)
+{
+    auto w = SpawnWorker("key_store.derive_pwhash_salt_deterministic",
+                         {unique_dir("pwhash_salt_det")});
+    ExpectWorkerOk(w, {}, {
+        "derive_pwhash_salt: null output pointer",
+    });
+}
+
+// R3.11 — `bin2hex` produces lowercase hex + null terminator; empty
+// input is safe; null pointers must not crash.
+TEST_F(SecureSubsystemTest, Bin2Hex_Roundtrip)
+{
+    auto w = SpawnWorker("key_store.bin2hex_roundtrip",
+                         {unique_dir("bin2hex")});
+    ExpectWorkerOk(w, {}, {
+        "bin2hex: null pointer argument",
+        "bin2hex: null pointer argument",
+    });
+}
+
+// R3.12 — `verify_blake2b` accepts the correct hash, rejects tamper.
+TEST_F(SecureSubsystemTest, VerifyBlake2b_Roundtrip)
+{
+    auto w = SpawnWorker("key_store.verify_blake2b_roundtrip",
+                         {unique_dir("verify_blake2b")});
+    ExpectWorkerOk(w, {}, {
+        "verify_blake2b: null pointer argument",
+        "verify_blake2b: null pointer argument",
+    });
+}
+
 // R3.3/R3.4 — `sodium_ready()` and `SecureSubsystem::lifecycle_initialized()`
 // agree once SMS is up.  Both probes read the same atomic; a divergence
 // would signal a state-machine drift.

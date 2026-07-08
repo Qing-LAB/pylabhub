@@ -277,7 +277,8 @@ void vault_write(const fs::path &path,
         ciphertext.data(), ciphertext.size(),
         reinterpret_cast<const std::uint8_t *>(json_payload.data()),
         json_payload.size(),
-        nonce, key.data());
+        std::span<const std::uint8_t, 24>(nonce, kVaultNonceBytes),
+        std::span<const std::uint8_t, 32>(key.data(), kVaultKeyBytes));
     if (written == 0)
     {
         throw std::runtime_error("vault: secretbox_encrypt failed");
@@ -333,11 +334,13 @@ std::size_t vault_read_secure(const fs::path           &path,
         }
     } key_guard{key};
 
-    // Decrypt into the caller's span via Crypto sub-container
-    // (HEP-CORE-0043 §2.1 category 2).
+    // Decrypt into the caller's span via SMS Category 1c
+    // (HEP-CORE-0043 §5).
     const std::size_t decoded = sec::secure().secretbox_decrypt(
         span_as_u8.data(), span_as_u8.size(),
-        ciphertext, clen, nonce, key.data());
+        ciphertext, clen,
+        std::span<const std::uint8_t, 24>(nonce, kVaultNonceBytes),
+        std::span<const std::uint8_t, 32>(key.data(), kVaultKeyBytes));
     if (decoded == 0)
     {
         sec::secure().memzero(span_as_u8);

@@ -5,7 +5,10 @@
  *        owns libsodium and mediates every access to it.
  *
  * @author  pyLabHub team
- * @date    2026-07-04 (created) / 2026-07-07 (two-category shipped)
+ * @date    2026-07-04 (created) / 2026-07-06 (Crypto sub-container
+ *          collapsed; two categories shipped) / 2026-07-07 (Category
+ *          1c `box_encrypt_using` / `box_decrypt_using` shipped with
+ *          name-based key citation; gate softened to `keys()` only)
  * @copyright  MIT
  * @see     HEP-CORE-0043 (Security Subsystem) — authoritative design
  * @see     HEP-CORE-0040 §5.2 (KeyStore API surface)
@@ -32,8 +35,9 @@
  *     - **1b. Hash + KDF** — `compute_blake2b`, `verify_blake2b`,
  *       `pwhash_argon2id`.
  *     - **1c. Encryption / decryption** — `secretbox_encrypt`,
- *       `secretbox_decrypt`.  Future: `box_encrypt/_decrypt`,
- *       `aead_encrypt/_decrypt`, `sealed_box_*`.
+ *       `secretbox_decrypt`, `box_encrypt_using`, `box_decrypt_using`
+ *       (all shipped).  Future: `aead_encrypt/_decrypt`,
+ *       `sealed_box_*`.
  *   Category 1 has NO instance state — every method is stateless.
  *
  * - **Category 2 — Key management.**  Nested sub-container
@@ -68,12 +72,33 @@
  *
  * # Gate discipline
  *
- * Every accessor — `secure()`, `keys()`, `random_bytes`, `memzero`,
- * `secretbox_encrypt`, all Category 1 methods — routes through one
- * helper `panic_if_not_ready(context)` that PANICs (process abort)
- * if the state gate is not `Initialized`.  Reaching a `secure().*`
- * method before SMS is up is a PROGRAMMER ERROR, not a recoverable
- * exception.  This matches `FileLock` and `Logger` discipline.
+ * The state gate protects OUR state (KeyStore) — NOT libsodium's.
+ * Only `keys()` requires SMS to be `Initialized`; every other method
+ * on `SecureSubsystem` is a stateless wrapper on libsodium primitives
+ * that libsodium self-initializes on first use.  This softened gate
+ * (revised 2026-07-07) matches the actual failure surface: gating a
+ * primitive like `random_bytes` on SMS state added an artificial
+ * failure mode without buying real security — production processes
+ * always run under the mod pack, and libsodium's implicit init makes
+ * `random_bytes()` work correctly even without SMS bringup.
+ *
+ * - **Gated (PANICs on non-`Initialized`):** `keys()` — bypass path
+ *   via `SecureSubsystem::instance().keys()` also PANICs (double gate).
+ * - **Ungated (safe pre-bringup):** `secure()`, `sodium_ready()`,
+ *   `lifecycle_initialized()`, and every Category 1 method
+ *   (`random_bytes`, `memcmp_ct`, `memzero`, `bin2hex`,
+ *   `compute_blake2b`, `verify_blake2b`, `derive_pwhash_salt`,
+ *   `pwhash_argon2id`, `secretbox_encrypt`, `secretbox_decrypt`).
+ *
+ * Note: `box_encrypt_using` / `box_decrypt_using` reach through
+ * `keys()` internally to resolve the seckey by name — they inherit
+ * the `keys()` gate transitively.  Callers get the PANIC if they
+ * invoke these methods without SMS being up.
+ *
+ * See `secure_subsystem.cpp` "Gate policy" block for the full
+ * rationale.  Reaching `keys()` before SMS is up is a PROGRAMMER
+ * ERROR, not a recoverable exception — same discipline as
+ * `FileLock` and `Logger`.
  *
  * # Standard usage
  *
@@ -220,6 +245,13 @@ public:
     /// Encode raw bytes to lowercase hex (wrapper for
     /// `sodium_bin2hex`).  `hex_max_len` must be at least
     /// `bin_len * 2 + 1`.
+    ///
+    /// Failure signal: LOGS + no-ops on null-pointer arguments.
+    /// Callers are expected to pass non-null buffers with the
+    /// correct size — the failure mode is a programmer error, and
+    /// the log line is the diagnostic.  If the caller cannot
+    /// guarantee non-null upstream, they must check the arguments
+    /// themselves before calling.
     void bin2hex(char *hex, std::size_t hex_max_len,
                  const std::uint8_t *bin, std::size_t bin_len);
 
@@ -240,7 +272,22 @@ public:
     bool compute_blake2b(std::uint8_t *out, const void *data,
                          std::size_t len);
 
-    /// BLAKE2b-256 as std::array.  Returns all-zeros on failure.
+    /// BLAKE2b-256 as std::array.  Failure signal: returns all-zeros.
+    ///
+    /// The failure paths (`data == nullptr` and internal
+    /// `crypto_generichash` non-zero rc) are both essentially
+    /// impossible in production — the former is caught by input
+    /// validation upstream, the latter has never been observed in
+    /// libsodium 1.0.18+ for the constant-size 32-byte output.
+    /// Callers that want a hard-failure signal should use
+    /// `compute_blake2b(out, data, len) → bool` instead.
+    ///
+    /// All-zeros can also be a LEGITIMATE hash output for a
+    /// specific input; treating it as a failure marker is
+    /// intentionally weak.  The alternative — returning
+    /// `std::optional<std::array<...>>` — would churn ~15 caller
+    /// sites without buying meaningful safety over "does your input
+    /// non-null and non-empty" upstream checks.
     [[nodiscard]] std::array<std::uint8_t, 32>
     compute_blake2b_array(const void *data, std::size_t len);
 
@@ -321,8 +368,14 @@ public:
     /// under 32-byte `key` and 24-byte `nonce`.  Ciphertext contains
     /// the MAC as the first 16 bytes (combined mode) — do NOT
     /// interpret bytes 0..15 as data.  Writes
-    /// `plaintext_len + kSecretboxMacBytes` bytes to `out`.
+    /// `plaintext.size() + kSecretboxMacBytes` bytes to `out`.
     /// Returns the number of bytes written, 0 on failure.
+    ///
+    /// Nonce and key are statically-sized spans — the compiler
+    /// enforces exact 24-byte / 32-byte inputs at each call site
+    /// (Priority 7 of the SMS review — replaces the previous
+    /// unsafe `const std::uint8_t *nonce, const std::uint8_t *key`
+    /// signature that would silently read past a shorter buffer).
     ///
     /// Use case: symmetric file-at-rest encryption where the key is
     /// derived from a password (vault_crypto.cpp).  Both parties are
@@ -330,8 +383,8 @@ public:
     [[nodiscard]] std::size_t secretbox_encrypt(
         std::uint8_t *out, std::size_t out_max_len,
         const std::uint8_t *plaintext, std::size_t plaintext_len,
-        const std::uint8_t *nonce,
-        const std::uint8_t *key);
+        std::span<const std::uint8_t, 24> nonce,
+        std::span<const std::uint8_t, 32> key);
 
     /// XSalsa20-Poly1305 authenticated symmetric decryption
     /// (wrapper for `crypto_secretbox_open_easy`).  Verifies the MAC
@@ -339,11 +392,14 @@ public:
     /// `ciphertext_len - kSecretboxMacBytes` on success, 0 on MAC
     /// failure or bad input.  A 0 return means the ciphertext was
     /// tampered with or the key is wrong — CALLERS MUST CHECK.
+    ///
+    /// Nonce and key are statically-sized spans — same rationale as
+    /// `secretbox_encrypt` above.
     [[nodiscard]] std::size_t secretbox_decrypt(
         std::uint8_t *out, std::size_t out_max_len,
         const std::uint8_t *ciphertext, std::size_t ciphertext_len,
-        const std::uint8_t *nonce,
-        const std::uint8_t *key);
+        std::span<const std::uint8_t, 24> nonce,
+        std::span<const std::uint8_t, 32> key);
 
     /// `crypto_secretbox_KEYBYTES` (32) — the exact secretbox key
     /// size.  Exposed so callers can size their key buffers without

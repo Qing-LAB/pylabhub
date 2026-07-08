@@ -84,10 +84,11 @@ historical R1-R8 reasoning trace.
 - **§4 (KDF pwhash_argon2id) — SHIPPED 2026-07-07** — Category 1b.
 - **§5 (Symmetric secretbox) — SHIPPED 2026-07-07** — Category 1c;
   `vault_crypto.cpp` migrated.
-- **§6 (Asymmetric box) — NOT SHIPPED** — future migration of
-  `attach_protocol.cpp` will fold it into Category 1c methods on
-  `SecureSubsystem`.  Attach protocol currently uses sodium
-  directly within the security-module boundary (legal per §1.2).
+- **§6 (Asymmetric box) — SHIPPED 2026-07-07** — Category 1c on
+  `SecureSubsystem`: `box_encrypt_using(name, peer_pk, nonce, pt, out)`
+  / `box_decrypt_using(...)` cite the seckey by KeyStore entry name
+  (use-not-export, §1.4).  `attach_protocol.cpp` migrated
+  (Frame 2 verify + Frame 3 mutual-auth signing).
 - **§7 (KeyStore API surface) — SHIPPED 2026-07-06** — carries the
   full API surface preserved from HEP-CORE-0040 §5.2.  Now the
   primary reference.
@@ -170,25 +171,39 @@ Mechanism, four layers deep:
    as its first step.  A successful return (>= 0) sets
    `pImpl->sodium_initialized = true`.  Failure throws
    `std::runtime_error` — the process cannot proceed.
-2. **The flag is exposed as a probe.**  Public methods
-   `SecureSubsystem::sodium_initialized() const noexcept` and the
-   free function `pylabhub::utils::security::sodium_ready()
-   noexcept` both return `true` iff the singleton exists AND its
-   init flag is true.  Non-throwing, safe to call from any
-   context including test fixtures and unrelated startup code.
-3. **Every wrapper method PANICS on gate violation.**  Every
-   public method on `SecureSubsystem` that touches libsodium
-   (`random_bytes`, `memcmp_ct`, `memzero`, and every future
-   wrapper for hash/KDF/AEAD/box) starts with
-   `if (!sodium_ready()) PLH_PANIC(...)` — same pattern FileLock
-   and Logger use when their static module is called before
-   init.  Reaching a `SecureSubsystem` method without having
-   constructed the subsystem is a **programmer error**, not a
-   recoverable exception.  The program aborts.  No per-call
-   carve-outs, no "this specific primitive tolerates pre-init"
-   exceptions — the module owns the boundary uniformly.
-   KeyStore's public methods (`add_identity`, `add_raw`, ...)
-   follow the same PANIC pattern.
+2. **The state atomic is exposed as two probes.**  Static method
+   `SecureSubsystem::lifecycle_initialized() noexcept` returns
+   `true` iff the state is NOT `Uninitialized`.  Free function
+   `pylabhub::utils::security::sodium_ready() noexcept` returns
+   `true` iff the state is exactly `Initialized`.  Both non-
+   throwing, safe to call from any context including test
+   fixtures and unrelated startup code.  The two agree once
+   bringup completes; they can diverge during shutdown
+   (`ShuttingDown`/`Shutdown` → `sodium_ready() == false` but
+   `lifecycle_initialized() == true`).
+3. **The state gate protects OUR state (KeyStore), not
+   libsodium's.**  Softened 2026-07-07 after the original
+   "gate every wrapper" policy proved over-defensive: gating
+   `random_bytes`, `compute_blake2b`, etc. on SMS state added
+   an artificial failure surface without buying real security
+   (libsodium self-initializes those primitives on first call,
+   and production processes always run under the mod pack
+   anyway).  The gate now applies to:
+   - **`keys()`** — accesses SMS's `KeyStore` state; PANICs on
+     non-`Initialized` state (bypass path
+     `SecureSubsystem::instance().keys()` also PANICs).
+   - **`box_encrypt_using` / `box_decrypt_using`** — reach
+     through `keys().with_seckey(name, ...)` internally to
+     resolve the seckey; inherit the `keys()` gate transitively.
+
+   Everything else on `SecureSubsystem` (Category 1a byte
+   primitives, 1b hash/KDF, 1c `secretbox_*`) is a stateless
+   wrapper that libsodium self-initializes.  These succeed
+   without SMS bringup.  Full rationale + failure modes closed
+   by this softening (Layer 0 UUID tests, vault-file unit
+   tests) documented in `secure_subsystem.cpp` "Gate policy"
+   block.  Reaching a gated accessor before SMS is up remains
+   a **programmer error** — the program aborts via `PLH_PANIC`.
 4. **Compile-time enforcement (post-SEC-Fold-2).**  Once all
    consumer files migrate to the wrapper API, `<sodium.h>` is
    included ONLY in `src/utils/security/*.cpp`.  Any file
@@ -412,9 +427,12 @@ public:
                                   const void *data, std::size_t len);
     bool          verify_blake2b(const std::array<std::uint8_t, 32> &stored,
                                   const void *data, std::size_t len);
+    bool          derive_pwhash_salt(std::uint8_t *salt_out,
+                                       std::string_view domain);
     bool          pwhash_argon2id(std::uint8_t *out, std::size_t out_len,
                                    const char *password, std::size_t password_len,
                                    const std::uint8_t *salt);
+    static constexpr std::size_t kPwhashSaltBytes = 16;
 
     // ── Category 1c: encryption / decryption ──────────────────
     // Symmetric authenticated (XSalsa20-Poly1305):
@@ -429,9 +447,27 @@ public:
     static constexpr std::size_t kSecretboxKeyBytes   = 32;
     static constexpr std::size_t kSecretboxNonceBytes = 24;
     static constexpr std::size_t kSecretboxMacBytes   = 16;
+    // Asymmetric authenticated (Curve25519 + XSalsa20-Poly1305);
+    // seckey cited by KeyStore entry name (use-not-export, §1.4).
+    // These methods transitively gate on `keys()` — PANIC if SMS
+    // not `Initialized`.
+    std::size_t   box_encrypt_using(std::string_view own_seckey_name,
+                                     std::span<const std::uint8_t, 32> peer_pubkey_raw,
+                                     std::span<const std::uint8_t, 24> nonce,
+                                     std::span<const std::uint8_t>     plaintext,
+                                     std::span<std::uint8_t>           out);
+    std::size_t   box_decrypt_using(std::string_view own_seckey_name,
+                                     std::span<const std::uint8_t, 32> peer_pubkey_raw,
+                                     std::span<const std::uint8_t, 24> nonce,
+                                     std::span<const std::uint8_t>     ciphertext,
+                                     std::span<std::uint8_t>           out);
+    static constexpr std::size_t kBoxPubkeyBytes = 32;
+    static constexpr std::size_t kBoxSeckeyBytes = 32;
+    static constexpr std::size_t kBoxNonceBytes  = 24;
+    static constexpr std::size_t kBoxMacBytes    = 16;
 
-    // Future encryption verbs (crypto_box_*, crypto_aead_*, sealed_box)
-    // will land as additional flat methods on this class.
+    // Future encryption verbs (crypto_aead_*, sealed_box) will land as
+    // additional flat methods on this class.
 
     struct Impl;                 // opaque, defined in .cpp
 
@@ -597,6 +633,9 @@ functions folded here 2026-07-07:
 | `verify_blake2b(stored, data, len)` | `pylabhub::crypto::verify_blake2b` | data_block (slot integrity) |
 | `derive_pwhash_salt(out, domain)` | (new — replaces inline `crypto_generichash(salt, 16, uid, ...)` in vault_crypto) | vault_crypto (Argon2 salt) |
 | `bin2hex(hex, hex_max_len, bin, bin_len)` | `sodium_bin2hex` | hub_vault (admin token) |
+| `secretbox_encrypt` / `secretbox_decrypt` | `crypto_secretbox_easy` / `_open_easy` | vault_crypto (file-at-rest AEAD) |
+| `box_encrypt_using(name, peer_pk, nonce, pt, out)` | `crypto_box_easy` under a name-cited seckey (Phase 4 SEC-Fold-2, 2026-07-07) | attach_protocol (Frame 2 encrypt, Frame 3 sign) |
+| `box_decrypt_using(name, peer_pk, nonce, ct, out)` | `crypto_box_open_easy` under a name-cited seckey | attach_protocol (Frame 2 verify, Frame 3 verify) |
 
 The `pylabhub::crypto` namespace + its `GetLifecycleModule()` are
 DELETED (2026-07-07).  Consumer files are grep-verifiable: zero
@@ -743,20 +782,39 @@ the SAME party (or same process instance) is on both sides — e.g.
 file-at-rest with a password-derived key.  For two-party mutual
 auth (broker ↔ role, hub ↔ hub), use `box_*` methods (§6).
 
-## 6. Asymmetric box (crypto_box — wire + observer, Category 1c — NOT YET SHIPPED)
+## 6. Asymmetric box (crypto_box — wire + observer, Category 1c — SHIPPED 2026-07-07)
 
-**Status.**  Design for future migration; not yet shipped.  Current
-callers still touch sodium directly inside the security module
-(`attach_protocol.cpp`), which is legal per §1.2 mechanism 4
-(sodium.h boundary confined to `src/utils/security/*`).
+**Shipped surface** (Category 1c on `SecureSubsystem`):
 
-Expected surface (Category 1c on `SecureSubsystem`):
-- `box_encrypt_using(seckey_name, peer_pubkey, nonce, plaintext, out)` —
-  wrapper that reads the seckey via `KeyStore::with_seckey` and
-  calls `crypto_box_easy` internally.  Seckey never leaves the
-  LockedKey region (use-not-export, §1.4).
-- `box_decrypt_using(seckey_name, peer_pubkey, nonce, ciphertext, out)` —
-  same pattern for `crypto_box_open_easy`.
+- `box_encrypt_using(own_seckey_name, peer_pubkey_raw, nonce, plaintext, out)` —
+  wrapper that reads the seckey via `KeyStore::with_seckey` (inside SMS)
+  and calls `crypto_box_easy` inside the callback.  Seckey bytes never
+  leave the LockedKey region and never cross the API boundary
+  (use-not-export, §1.4).  Returns bytes written on success (==
+  `plaintext.size() + kBoxMacBytes`), 0 on failure.
+- `box_decrypt_using(own_seckey_name, peer_pubkey_raw, nonce, ciphertext, out)` —
+  same pattern for `crypto_box_open_easy`.  Returns bytes written on
+  MAC-verify success, 0 on failure — callers MUST check the return
+  value; a 0 return is the SOLE authentication signal.
+
+**Constants** exposed as public `static constexpr` on `SecureSubsystem`:
+`kBoxPubkeyBytes` (32), `kBoxSeckeyBytes` (32), `kBoxNonceBytes` (24),
+`kBoxMacBytes` (16).  Static_asserts in `secure_subsystem.cpp` pin them
+to sodium's `crypto_box_*BYTES` at build time.
+
+**Gate.**  Both methods reach through `keys()` internally — they
+inherit the `keys()` gate transitively (PANIC if SMS not
+`Initialized`).  All other Category 1 methods are ungated per §1.2
+mechanism 3.
+
+**Callers migrated (2026-07-07):**
+- `attach_protocol.cpp` — Frame 2 consumer response verify (producer
+  side calls `box_decrypt_using`) and Frame 2 challenge encrypt
+  (consumer side calls `box_encrypt_using`); Frame 3 mutual-auth
+  producer proof calls `box_encrypt_using` on the acceptor side and
+  `box_decrypt_using` on the consumer side.
+- Test suite — `SecureSubsystemTest.BoxEncryptDecrypt_Roundtrip`
+  covers happy path + MAC tamper + wrong sender pubkey.
 
 **Use-case boundary.**  Asymmetric box is appropriate for two-party
 mutual authentication where both parties have their own long-term
