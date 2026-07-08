@@ -809,15 +809,16 @@ TEST_F(PlhHubCliTest, ZmqE2E_MultiProducer_TwoAuthorized)
                                            kSlotsPerProducer, kOffsetB);
     write_zmq_consumer_config(cons_dir / "consumer.json", hub_dir,
                                cons_uid, channel);
-    // Consumer script pins "at least kSlotsPerProducer flow through
-    // successfully" — a single-producer data-flow proof.  Per the
-    // block comment above, distinguisher-value coverage across all
-    // N producers is deferred until HEP-CORE-0017 §3.3.  Shared
-    // script is used here (not the offset variant) so a future
-    // regression that breaks EVEN single-producer flow under fan-in
-    // fails on the same load-bearing marker as Scenario A.
-    write_zmq_consumer_script(cons_dir / "script" / "python",
-                               kSlotsPerProducer);
+    // Multi-producer consumer script: requires slots from BOTH offset
+    // windows (0 = producer A, 100 = producer B) before emitting
+    // `cons_test: complete`.  This is the load-bearing proof that
+    // HEP-CORE-0017 §3.3 multi-endpoint PULL actually works — the
+    // fan-in loop admitted N producers AND libzmq's PULL socket
+    // fair-queues data from all N connected PUSH peers.
+    write_zmq_multi_producer_consumer_script(
+        cons_dir / "script" / "python",
+        /*expected_slots=*/ 2 * kSlotsPerProducer,
+        /*required_offsets=*/ "0,100");
 
     ::setenv("PYLABHUB_ROLE_PASSWORD", "zmqe2e-fanin-role-pw", /*overwrite=*/1);
 
@@ -932,20 +933,27 @@ TEST_F(PlhHubCliTest, ZmqE2E_MultiProducer_TwoAuthorized)
         seconds(5)))
         << dump_full("attach:complete admitted=2/2");
 
-    // ── Data flow verification (at least one producer flows) ──────────
-    // Per the scope block above: the fan-in loop admits N=2, but the
-    // ZmqQueue PULL socket connects only to peer[0]'s endpoint under
-    // HEP-CORE-0017 §3.3 Stage 1A.  Assert that AT LEAST that one
-    // producer's data flows through — proving Standby → Configured →
-    // Active drives correctly under the fan-in ACK shape and that
-    // the queue's single-endpoint behaviour is not broken by having
-    // multiple entries in `apply_master_approval`'s producers[].
-    // A regression that breaks single-producer flow under fan-in
-    // would fail on this exact marker.
+    // ── Data flow verification (BOTH producers flow) ──────────────────
+    // The multi-producer consumer script only emits `cons_test: complete`
+    // when BOTH the total-slot-count AND both-offsets-seen conditions
+    // hold.  Reaching this marker proves the PULL socket actually
+    // received slots from BOTH producer A (values 0..N-1, offset=0)
+    // AND producer B (values 100..100+N-1, offset=100).  A regression
+    // that admits N producers but only wires one into the queue's
+    // connect loop (the pre-#246 §3.3 Stage 1A behaviour) fails here
+    // even if the total slot count reaches 2N (which it can't, since
+    // only one producer would be dialed).
     ASSERT_TRUE(wait_for_role_marker(cons_dir, cons,
-        "cons_test: complete N=" + std::to_string(kSlotsPerProducer),
-        seconds(15)))
-        << dump_full("cons_test: complete (at least one producer flows)");
+        "cons_test: complete N=", seconds(15)))
+        << dump_full("cons_test: complete (both offsets seen)");
+    // Extra pin: the completion line MUST mention both offsets.
+    {
+        const std::string cons_log = read_role_log(cons_dir);
+        EXPECT_NE(cons_log.find("offsets_seen=0,100"), std::string::npos)
+            << "cons_test: complete did not include both offsets — "
+               "one producer's data never reached the consumer.  Full log:\n"
+            << cons_log;
+    }
 
     // ── Shutdown ──────────────────────────────────────────────────────
     cons.send_signal(SIGTERM);

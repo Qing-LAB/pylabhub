@@ -199,18 +199,19 @@ deferred to phantom future work.
     complete N=<n>`) — proves Standby → Configured → Active drives
     correctly under the fan-in ACK shape.
 
-  **Framework gap surfaced by the L4 test — HEP-CORE-0017 §3.3
-  future work.**  `ZmqQueue::apply_master_approval`
-  (`hub_zmq_queue.cpp:991` block comment) explicitly labels multi-
-  endpoint PULL as "Stage 1A scope: single-peer; multi-producer
-  fan-in is HEP-CORE-0017 §3.3 future work."  The PULL socket
-  connects only to `producer_peers_.front().endpoint` even though
-  the full N-peer list is stored.  L4 assertion for data flow
-  FROM ALL producers (distinguisher-value protocol) is preserved
-  in the file as helpers `write_zmq_producer_script_with_offset`
-  + `write_zmq_multi_producer_consumer_script`, ready to activate
-  when HEP-0017 §3.3 lands.  Filed under §3.3 future work — NOT
-  a #246 close-out gap.
+  **HEP-CORE-0017 §3.3 multi-endpoint PULL — ✅ SHIPPED
+  2026-07-08.**  `ZmqQueue::start()` PULL branch now iterates
+  `producer_peers_` and issues per-peer `connect()` with per-peer
+  `curve_serverkey`; libzmq fair-queues data from all N connected
+  PUSH peers.  `is_configured()` and the peer[0]-promotion in
+  `apply_master_approval` preserve the HEP-0036 §6.7 Option B
+  contract (bare `set_producer_peers` still buffers, doesn't
+  transition).  The L4 test now activates the distinguisher-value
+  protocol: producer A writes 0..N-1, producer B writes 100..100+N-1,
+  and the consumer script requires BOTH offset windows before
+  emitting `cons_test: complete N=<n> offsets_seen=0,100`.  A
+  regression that reverts to single-peer connect fails the
+  `offsets_seen=0,100` substring check.
 
   **Deferred at L4, deterministically covered at L3:**
   - `ZmqE2E_MultiProducer_MixedAdmitDeny` (partial-success policy).

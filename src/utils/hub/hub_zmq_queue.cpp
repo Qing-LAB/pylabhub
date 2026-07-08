@@ -183,12 +183,18 @@ struct ZmqQueueImpl
 
     // PULL/connect side producer-peer membership (HEP-CORE-0017 §3.3,
     // #103 A2 + HEP-CORE-0036 §6.7 Standby state #188).  Two roles:
-    //   (a) Single-peer transport artifacts.  `set_producer_peers(list)`
-    //       takes `list[0].pubkey_z85` → `server_pubkey_z85_` and
-    //       `list[0].endpoint` → `endpoint` when the queue is in
-    //       Standby, transitioning to Configured.  Multi-producer
-    //       fan-in (Pattern A/B socket layout) is HEP-CORE-0017
-    //       §3.3 future work piggybacking on §6.5.1 pull path.
+    //   (a) Multi-endpoint connect target (HEP-CORE-0017 §3.3
+    //       Pattern B, closed 2026-07-08).  `start()` iterates
+    //       `producer_peers_` and issues per-peer `connect()` calls
+    //       with per-peer `curve_serverkey`, so libzmq's PULL
+    //       fair-queues data from all N connected PUSH peers.  Under
+    //       the canonical HEP-CORE-0036 §6.4 flow, `apply_master_approval
+    //       (CONSUMER_REG_ACK)` seeds this vector from `producers[]`
+    //       and drives Standby → Configured → Active.  `apply_master_
+    //       approval` also promotes peer[0] into `endpoint` +
+    //       `server_pubkey_z85_` as the `is_configured()` flag saying
+    //       "apply_master_approval has run" — bare `set_producer_peers`
+    //       must NOT transition the queue per HEP-0036 §6.7 Option B.
     //   (b) Membership snapshot.  Dispatch layer on
     //       `CHANNEL_PRODUCERS_CHANGED_NOTIFY` →
     //       `GET_CHANNEL_PRODUCERS_ACK` (HEP-CORE-0036 §6.5.1 —
@@ -986,12 +992,18 @@ bool ZmqQueue::apply_master_approval(const nlohmann::json& artifacts) noexcept
             if (!set_producer_peers(std::move(peers)))
                 return false;
 
-            // Promote peer[0] into the queue's transport-artifact
-            // fields (server_pubkey_z85_, endpoint).  Stage 1A scope:
-            // single-peer; multi-producer fan-in is HEP-CORE-0017 §3.3
-            // future work.  Only promote when Standby; on an Active
-            // queue these fields are baked into the running socket
-            // and not safely mutable from outside start().
+            // Standby → Configured flag: promote peer[0] into
+            // `endpoint` + `server_pubkey_z85_`.  `start()` reads
+            // `producer_peers_` DIRECTLY for the per-peer connect
+            // loop (HEP-CORE-0017 §3.3 multi-endpoint PULL); these
+            // fields are used ONLY as the `is_configured()` flag
+            // saying "apply_master_approval has run" — bare
+            // `set_producer_peers` must NOT transition the queue
+            // per HEP-CORE-0036 §6.7 Option B, so those fields
+            // remain the canonical apply_master_approval signal.
+            // Only mutate on Standby (already_running == false);
+            // on an Active queue the fields are held stable for
+            // the socket's lifetime.
             if (!already_running)
             {
                 std::lock_guard<std::mutex> lock(pImpl->producer_peers_mu_);
@@ -1106,6 +1118,17 @@ bool ZmqQueue::is_configured() const noexcept
     std::lock_guard<std::mutex> lock(pImpl->producer_peers_mu_);
     if (pImpl->bind_socket)
         return !pImpl->endpoint.empty();
+
+    // PULL/connect side: Configured iff `apply_master_approval` has
+    // run (or the legacy `pull_from(endpoint, key)` factory
+    // populated `endpoint` + `server_pubkey_z85_` at construction).
+    // The peer[0] promote block in `apply_master_approval` writes
+    // these fields as the "I have run" flag — HEP-CORE-0036 §6.7
+    // Option B requires that bare `set_producer_peers` NOT
+    // transition the queue; only `apply_master_approval` does.
+    // `start()` reads `producer_peers_` directly for the per-peer
+    // connect (HEP-CORE-0017 §3.3); these fields are used ONLY as
+    // the Standby→Configured flag here.
     return !pImpl->server_pubkey_z85_.empty()
            && !pImpl->endpoint.empty();
 }
@@ -1286,22 +1309,81 @@ bool ZmqQueue::start()
                     sec::ZapRouter::instance().register_domain(
                         pImpl->resolved_zap_domain_, *this));
             }
-            else
-            {
-                // Client side: present serverkey.  Non-empty is
-                // guaranteed by `pull_from`'s validator — the
-                // factory is the only path to a constructed
-                // ZmqQueue (the ctor is private), so a private-API
-                // bypass cannot occur.
-                pImpl->socket.set(zmq::sockopt::curve_serverkey,
-                                  pImpl->server_pubkey_z85_);
-            }
+            // Client side: CURVE `serverkey` is set per-connect below
+            // (HEP-CORE-0017 §3.3 multi-endpoint PULL).  The legacy
+            // `pull_from(endpoint, serverkey)` factory populates
+            // `endpoint` + `server_pubkey_z85_` for single-peer L2 tests
+            // and is threaded through the same per-connect loop as
+            // producer_peers_-driven multi-peer configurations.
         }
 
         if (pImpl->bind_socket)
+        {
             pImpl->socket.bind(pImpl->endpoint);
+        }
         else
-            pImpl->socket.connect(pImpl->endpoint);
+        {
+            // ── PULL side connect (HEP-CORE-0017 §3.3) ──────────────
+            //
+            // Per-peer connect with per-peer `curve_serverkey`.  The
+            // libzmq option `ZMQ_CURVE_SERVERKEY` is set on the socket
+            // and captured into the session state at the following
+            // `connect()` call, so alternating (set, connect) pairs
+            // produce N independent CURVE-authenticated connections,
+            // one per producer.  Reference: ZMTP/CURVE handshake is
+            // per-connection; the option is a client-side input that
+            // libzmq snapshots at connect time.
+            //
+            // Two configuration sources feed the loop:
+            //   (a) `producer_peers_` (populated by
+            //       `set_producer_peers` / `apply_master_approval`)
+            //       — the HEP-CORE-0036 §6.4 canonical path.  Handles
+            //       multi-producer fan-in.
+            //   (b) `endpoint` + `server_pubkey_z85_` populated by
+            //       the legacy `pull_from(endpoint, key)` factory
+            //       — single-peer L2 test path.  This branch fires
+            //       ONLY when `producer_peers_` is empty; the two
+            //       sources are never used simultaneously.
+            //
+            // Both branches take the same producer_peers_mu_ so a
+            // concurrent `set_producer_peers` on the role-host thread
+            // sees a consistent view.  CURVE key mutation between
+            // connects is a client-side no-op with respect to already-
+            // established connections — only the NEXT connect is
+            // affected.
+            std::lock_guard<std::mutex> peers_lock(
+                pImpl->producer_peers_mu_);
+
+            const bool curve_wired = !pImpl->identity_key_name_.empty();
+
+            auto connect_one = [&](const std::string &pubkey_z85,
+                                    const std::string &ep) {
+                if (curve_wired && !pubkey_z85.empty())
+                {
+                    pImpl->socket.set(zmq::sockopt::curve_serverkey,
+                                      pubkey_z85);
+                }
+                pImpl->socket.connect(ep);
+            };
+
+            if (!pImpl->producer_peers_.empty())
+            {
+                // (a) HEP-0036 canonical multi-peer path.
+                for (const auto &peer : pImpl->producer_peers_)
+                {
+                    if (peer.endpoint.empty()) continue;
+                    connect_one(peer.pubkey_z85, peer.endpoint);
+                    LOGGER_INFO("[hub::ZmqQueue] event=PullPeerConnected "
+                                "role_uid='{}' endpoint='{}'",
+                                peer.role_uid, peer.endpoint);
+                }
+            }
+            else
+            {
+                // (b) Legacy pull_from single-peer path.
+                connect_one(pImpl->server_pubkey_z85_, pImpl->endpoint);
+            }
+        }
 
         // ── CURVE engagement guard (HEP-CORE-0035 §2 + #161 C5) ─────────
         // After all CURVE setsockopts and bind/connect have completed,
