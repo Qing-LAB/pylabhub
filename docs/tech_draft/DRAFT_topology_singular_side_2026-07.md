@@ -23,16 +23,29 @@ authority for a coordinated multi-HEP amendment package.
 Revision history:
 - **Rev 1** (`bdc30116`) — initial design; fan-in + fan-out only.
 - **Rev 2** (`54177894`) — added 1-to-1 topology; Q1/Q2/Q3 answers locked.
-- **Rev 3** (this) — folded fresh-eye review findings + code-scan agent
+- **Rev 3** (`a310651c`) — folded fresh-eye review findings + code-scan agent
   results.  Fixes: enum + wire lists updated for 1-to-1; §7 adds full
   1-to-1 ZMQ sequence + upgraded fan-out SHM diagram; §6.0 new topology
   decision flowchart; §10 gains tier-boundary preamble + all-3-topology
   broker pseudocode + R6 wake handler + stale-pubkey cleanup; §5 gains
-  singular-side restart rule (§5.11a) + plural-side ENDPOINT_UPDATE
+  binding-side restart rule (§5.11a) + dialing-side ENDPOINT_UPDATE
   rejection rule; §11 substantially expanded (12 additional code sites,
   6 additional test files, script API sites, corrected LOC estimates);
   §12 Phase G no longer "optional"; §14 aligned with §13.3 XPUB
   discussion; §11.4 gains HEP-CORE-0028 + HEP-CORE-0044.
+- **Rev 4** (this) — terminology normalization + substantive
+  corrections found in another fresh-eye pass.  Normalized
+  `singular/plural side` → `binding/dialing side` throughout §§5.2,
+  5.4, 5.4a, 5.9, 7.6, 8.1, 8.2, 9, 10.3 (pseudocode comments), 11.2,
+  11.4, 12 Phase D — the older "singular/plural" language breaks under
+  1-to-1 where both sides are singular.  Substantive fixes: §6.2
+  "two facts" → "three facts (side + topology + transport)"; §6.4
+  "singular side" → "binding side"; §12 Phase C now enumerates all
+  six supported combos; §12 Phase F broadened from ZMQ-only to
+  ZMQ+SHM; §14 clarified which ACK carries renamed fields.
+  Conceptual/principle uses of "singular side" in §1, §3, §4.2 are
+  retained deliberately — those describe the design principle at an
+  abstract level rather than picking out a specific role.
 
 The draft supersedes two recent commits that need to be re-evaluated in
 light of this design:
@@ -45,23 +58,40 @@ light of this design:
 
 ## 1. Executive summary (plain language)
 
-Each data channel has exactly **one side** that is stable and singular, and
-one side that is plural and dynamic.  For a channel where many producers
-feed into one consumer (fan-in), the consumer is singular.  For a channel
-where one producer feeds many consumers (fan-out), the producer is
-singular.  The current framework mixes these — producer always binds
-regardless of topology — and that mismatch is the root cause of a stack of
-complexity we've been accumulating (multi-endpoint PULL, per-producer
-attach coordination, N-endpoint tracking on the broker).
+Each data channel has exactly **one side** that owns the data endpoint
+(binds) and **one side** that dials in.  For fan-in (many producers → 1
+consumer), the consumer is the binding side.  For fan-out (1 producer →
+many consumers), the producer is the binding side.  For 1-to-1 (both
+sides cardinality-1), the producer is the binding side by convention.
+The current framework doesn't distinguish these — producer always
+binds regardless of topology — and that mismatch is the root cause of
+a stack of complexity we've been accumulating (multi-endpoint PULL,
+per-producer attach coordination, N-endpoint tracking on the broker).
 
-The design principle: **the singular side of the topology owns the
-channel's data endpoint and binds; the plural side dials in.**  Everything
+The design principle: **the binding side of the topology owns the
+channel's data endpoint and CURVE server role; the dialing side
+connects using the endpoint + pubkey from its REG_ACK.**  Everything
 else — state model, wire messages, queue internals — follows from that
 one fact.
 
-Consequence: significantly less code, one fewer coordination protocol, and
-a state model that generalizes to both fan-in and fan-out with the same
-mechanism.
+Consequence: significantly less code, one fewer coordination protocol,
+and a state model that generalizes to all three topologies with the
+same mechanism.
+
+### 1.1 Terminology conventions
+
+The draft uses two consistent pairs of labels for the sides of a
+channel:
+
+- **binding side / dialing side** — precise; used everywhere a specific
+  role is meant.  Binding side runs the CURVE server + owns the ZAP
+  allowlist + publishes `data_endpoint`.  Dialing side runs the CURVE
+  client + connects using the ACK-delivered endpoint.
+- **singular side** — used only at the conceptual/principle level in
+  §§1, 3, 4.2 (design ownership).  Under fan-in and fan-out, "singular"
+  and "binding" pick out the same role; under 1-to-1, both sides are
+  singular by cardinality but only the producer is the binding side.
+  When precision matters, use binding/dialing.
 
 ## 2. Scope
 
@@ -256,22 +286,22 @@ schema, ...)` called from both `handle_reg_req` and
 `handle_consumer_reg_req`.  Whichever side's REG_REQ arrives first wins
 the create race; the other joins the existing entry.
 
-### 5.2 Plural-side REG_ACK — carry `data_endpoint` + `data_pubkey`
+### 5.2 Dialing-side REG_ACK — carry `data_endpoint` + `data_pubkey`
 
-Plural side needs to know where and how to dial.  Its REG_ACK gains:
+The dialing side needs to know where and how to dial.  Its REG_ACK gains:
 
 ```json
 {
   "status": "success",
   "channel_name": "lab.sensor.temp",
   ...
-  "data_endpoint": "tcp://192.168.1.10:51234",    // singular side's bound endpoint
-  "data_pubkey":   "...40-char Z85..."            // singular side's identity pubkey
+  "data_endpoint": "tcp://192.168.1.10:51234",    // binding side's bound endpoint
+  "data_pubkey":   "...40-char Z85..."            // binding side's identity pubkey
                                                   // (curve_serverkey for the dial)
 }
 ```
 
-Singular-side REG_ACK stays lean — the singular side already has its own
+Binding-side REG_ACK stays lean — the binding side already has its own
 pubkey and hasn't bound yet at ACK time.  Its endpoint is published via
 `ENDPOINT_UPDATE_REQ` at S3.
 
@@ -306,12 +336,12 @@ aimed at the right side.
 Today R6 blocks consumer REG_REQ until producer is Live.  Under this
 design, R6 becomes symmetric:
 
-**Plural-side REG_REQ (or 1-to-1's second-side REG_REQ) pends iff any of:**
+**Dialing-side REG_REQ pends iff any of:**
 
-- Channel doesn't exist yet (singular side hasn't registered).
-- Singular side's presence != Live.
-- Singular side's `data_endpoint_resolved == false`.
-- Singular side's `confirmed_version < this_role_registration_version`
+- Channel doesn't exist yet (binding side hasn't registered).
+- Binding side's presence != Live.
+- Binding side's `data_endpoint_resolved == false`.
+- Binding side's `confirmed_version < this_role_registration_version`
   (see §5.6 — allowlist propagation must complete before dial-safe).
 
 Same mechanism (pend the REQ, re-evaluate on relevant events, ACK on
@@ -319,7 +349,7 @@ first satisfaction).  Parameterized by "dialing side waits for binding
 side."
 
 **Definition — `role_registration_version`.**  When broker receives a
-plural-side REG_REQ that passes the cardinality + compatibility gates
+dialing-side REG_REQ that passes the cardinality + compatibility gates
 (§4.2), broker atomically:
 
 1. Adds the role's pubkey to `ChannelEntry`'s ZAP allowlist.
@@ -353,7 +383,7 @@ role host SHOULD coalesce for efficiency but is not required to.
 ### 5.4a DEREG / channel death mid-pending
 
 If the binding side dies (heartbeat timeout, DEREG_REQ, or crash) while
-plural-side REG_REQs are pending in R6, broker:
+dialing-side REG_REQs are pending in R6, broker:
 
 1. Tears down the channel (per §4.2 ownership rule).
 2. Resolves ALL pending REG_REQs with `error_code = CHANNEL_CLOSED`,
@@ -361,7 +391,7 @@ plural-side REG_REQs are pending in R6, broker:
 3. Fires no NOTIFYs for the pending ones (they never joined the
    allowlist).
 
-Plural-side clients treat `CHANNEL_CLOSED` as a transient error and MAY
+Dialing-side clients treat `CHANNEL_CLOSED` as a transient error and MAY
 retry after a backoff (same class as pre-first-heartbeat REG_REQs today).
 
 ### 5.5 `CHANNEL_AUTH_CHANGED_NOTIFY` — direction inverts by topology
@@ -440,9 +470,11 @@ CONSUMER_REG_ACK:
 | 1-to-1    | ZMQ | Scalar `data_endpoint` (producer's PUSH address) + `data_pubkey`. |
 | 1-to-1    | SHM | Scalar `data_endpoint` (producer's capability socket) + `data_pubkey`. |
 
-The plural-side REG_ACK always carries the scalar; the binding-side ACK
-never does.  Symmetric for PRODUCER_REG_ACK under fan-in (producer is
-plural → REG_ACK carries the consumer's endpoint + pubkey).
+The dialing-side REG_ACK always carries the scalar; the binding-side
+ACK never does.  Symmetric across all topologies: under fan-in the
+producer's REG_ACK carries the consumer's endpoint + pubkey; under
+fan-out and 1-to-1 the consumer's CONSUMER_REG_ACK carries the
+producer's endpoint + pubkey.
 
 ### 5.10 `DISC_REQ` / `DISC_REQ_ACK` — simplify
 
@@ -565,8 +597,9 @@ decision matrix.
 | Writer (producer) | 1-to-1     | ZMQ | PUSH | **bind**    | — | server | self |
 | Writer (producer) | 1-to-1     | SHM | DataBlock write | (creates DataBlock) | — | (owner of capability socket) | self |
 
-Two facts (side + topology) uniquely determine everything below.  The
-role never sees these decisions.
+Three facts (side + topology + transport) uniquely determine everything
+below.  The role never sees these decisions — it hands the three inputs
+to the factory (§6.1) and receives an already-configured queue.
 
 **SUB empty-topic subscribe.**  Under fan-out ZMQ, a SUB socket receives
 NOTHING until it calls `setsockopt(ZMQ_SUBSCRIBE, <topic>)`.  The
@@ -592,10 +625,10 @@ boundary.
 
 The binding side is always CURVE server (has one identity keypair; sets
 `curve_publickey` + `curve_secretkey` + `curve_server=1`, registers ZAP
-domain).  The connecting side is always CURVE client (sets
+domain).  The dialing side is always CURVE client (sets
 `curve_serverkey = data_pubkey from ACK` + `curve_publickey` +
-`curve_secretkey`).  No per-peer serverkey mutation because on the connect
-side, the "peer" is the singular side — one entity.
+`curve_secretkey`).  No per-peer serverkey mutation because on the
+dialing side, the "peer" is the binding side — one entity by design.
 
 The ZAP allowlist lives on the binding side, mutated via the
 `CHANNEL_AUTH_CHANGED_NOTIFY` chain aimed at the binding side.
@@ -779,7 +812,7 @@ cardinality-guard differs.
 
 ### 7.6 Note on producer-side readiness signal (Q2 answered)
 
-When a plural-side peer joins (fan-out consumer, fan-in producer), the
+When a dialing-side peer joins (fan-out consumer, fan-in producer, 1-to-1 consumer), the
 broker fires `CHANNEL_AUTH_CHANGED_NOTIFY` with `reason="consumer_joined"`
 or `"producer_joined"` to the binding side.  The binding side's role host
 tracks the aggregate peer set and exposes it via script API accessors:
@@ -815,21 +848,21 @@ exact naming settled in Phase A.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> unset: singular side REG_REQ<br/>(broker creates ChannelEntry)
+    [*] --> unset: binding side REG_REQ<br/>(broker creates ChannelEntry)
 
-    unset --> resolved: singular side<br/>ENDPOINT_UPDATE_REQ(X)<br/>[X valid, port != 0]
+    unset --> resolved: binding side<br/>ENDPOINT_UPDATE_REQ(X)<br/>[X valid, port != 0]
 
-    resolved --> resolved: singular side<br/>ENDPOINT_UPDATE_REQ(X)<br/>[same X — idempotent]
+    resolved --> resolved: binding side<br/>ENDPOINT_UPDATE_REQ(X)<br/>[same X — idempotent]
 
-    resolved --> resolved: singular side<br/>ENDPOINT_UPDATE_REQ(Y ≠ X)<br/>[no consumers attached]<br/>data_endpoint = Y
+    resolved --> resolved: binding side<br/>ENDPOINT_UPDATE_REQ(Y ≠ X)<br/>[no dialing side attached]<br/>data_endpoint = Y
 
-    resolved --> resolved: singular side<br/>ENDPOINT_UPDATE_REQ(Y ≠ X)<br/>[consumers attached]<br/>REJECTED: ENDPOINT_CHANGE_FORBIDDEN
+    resolved --> resolved: binding side<br/>ENDPOINT_UPDATE_REQ(Y ≠ X)<br/>[dialing side attached]<br/>REJECTED: ENDPOINT_CHANGE_FORBIDDEN
 
-    unset --> [*]: singular side DEREG / heartbeat-timeout / crash<br/>(channel teardown; CHANNEL_CLOSING fans out; pending REGs get CHANNEL_CLOSED)
-    resolved --> [*]: singular side DEREG / heartbeat-timeout / crash<br/>(same teardown path)
+    unset --> [*]: binding side DEREG / heartbeat-timeout / crash<br/>(channel teardown; CHANNEL_CLOSING fans out; pending REGs get CHANNEL_CLOSED)
+    resolved --> [*]: binding side DEREG / heartbeat-timeout / crash<br/>(same teardown path)
 ```
 
-### 8.2 Plural-side REG_REQ pending state (R6 extended)
+### 8.2 Dialing-side REG_REQ pending state (R6 extended)
 
 ```mermaid
 stateDiagram-v2
@@ -839,7 +872,7 @@ stateDiagram-v2
 
     state R6_check <<choice>>
     pending --> R6_check: event=heartbeat<br/>or ENDPOINT_UPDATE_REQ<br/>or CHANNEL_AUTH_APPLIED_REQ
-    R6_check --> approved: [channel exists<br/>+ singular Live<br/>+ endpoint_resolved<br/>+ confirmed_version >= my_version]
+    R6_check --> approved: [channel exists<br/>+ binding side Live<br/>+ endpoint_resolved<br/>+ confirmed_version >= my_version]
     R6_check --> pending: [any condition unmet]
 
     pending --> denied: broker timeout<br/>(REG_ACK not sent within budget)
@@ -852,13 +885,13 @@ stateDiagram-v2
 The HEP-CORE-0036 §3.5.1 principle ("no data-plane footprint before
 auth") is preserved on both sides:
 
-- **Singular side:** binds at S3 (post-REG_ACK), publishes endpoint via
+- **Binding side:** binds at S3 (post-REG_ACK), publishes endpoint via
   `ENDPOINT_UPDATE_REQ` BEFORE heartbeat.  Bind is the data-plane
   footprint, and it exists only after registration is approved.
-- **Plural side:** connects at S3 (post-REG_ACK) using `data_endpoint` +
+- **Dialing side:** connects at S3 (post-REG_ACK) using `data_endpoint` +
   `data_pubkey` from the ACK.  Connect is the data-plane footprint;
   exists only after ACK.  R6 gate ensures the ACK only arrives when the
-  singular side's allowlist admits this plural-side pubkey — so the
+  binding side's allowlist admits this dialing-side pubkey — so the
   first CURVE handshake succeeds.
 
 The retired pre-REG bind design (2026-06-12) stays retired.  Neither side
@@ -1035,12 +1068,12 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(
             !err.empty()) return err;
     }
 
-    // ── 6. Branch by "am I singular or plural side" for this topology ──
+    // ── 6. Branch by "am I binding or dialing side" for this topology ──
     const bool producer_is_binding =
         (topology == ChannelTopology::FanOut) ||
         (topology == ChannelTopology::OneToOne);
-    // Fan-in: producer is plural (dialing side).
-    // Fan-out / 1-to-1: producer is singular (binding side).
+    // Fan-in: producer is dialing side.
+    // Fan-out / 1-to-1: producer is binding side.
 
     if (producer_is_binding) {
         // Producer creates the channel (or joins fan-out with extra
@@ -1200,7 +1233,7 @@ revision.
 | `tests/test_layer3_pattern4/test_pattern4_heartbeat.cpp` (~331 LOC) | Update for symmetric R6. |
 | `tests/test_layer3_datahub/test_datahub_broker_consumer.cpp:64` + `workers/broker_consumer_workers.cpp:440-510` | Retire `consumer_reg_ack_emits_producers_zmq` — array shape gone. |
 | `tests/test_layer3_datahub/test_role_api_flexzone.cpp` + `workers/role_api_flexzone_workers.cpp:568` | Rewrite paths depending on `CONSUMER_ATTACH_REQ_ZMQ`. |
-| `tests/test_layer3_datahub/test_datahub_zmq_endpoint_registry.cpp` | Update to `ChannelEntry.data_endpoint` scalar form.  Add fan-in / 1-to-1 variants.  Add plural-side `ENDPOINT_UPDATE_REQ` rejection test. |
+| `tests/test_layer3_datahub/test_datahub_zmq_endpoint_registry.cpp` | Update to `ChannelEntry.data_endpoint` scalar form.  Add fan-in / 1-to-1 variants.  Add dialing-side `ENDPOINT_UPDATE_REQ` rejection test (should get `NOT_CHANNEL_OWNER`). |
 
 **L2 (in-process broker + queue unit):**
 
@@ -1241,7 +1274,7 @@ revision.
 | **HEP-CORE-0033** | §2994 wire catalog + §1247 code catalog + `ChannelEntry` description | **Update** — `topology` + `data_endpoint` + `data_endpoint_resolved` fields; ATTACH_REQ family retires; `CHANNEL_PRODUCERS_CHANGED_NOTIFY` chain retires. |
 | **HEP-CORE-0036** | §3.5.3, §6.4, §6.5, §6.5.1, §I7, §5.2 R6, §14 | **Symmetrize** — R6 gate direction generalizes; NOTIFY chain aims at binding side; §I7 endpoint disclosure section reflects topology-parametric shape. |
 | **HEP-CORE-0042** | Entire HEP | **Major scope narrowing** — retire §5 dispatch + §7.1 pre-attach loop.  Preserve `confirmed_version` bookkeeping (now scalar per channel).  Preserve HEP-0044 AttachProtocol reference. |
-| **HEP-CORE-0007** | §12 wire catalog + REG_REQ / CONSUMER_REG_REQ schema + CONSUMER_REG_ACK schema + error-code catalog | **Update** — add `channel_topology` (REQUIRED); add scalar `data_endpoint` + `data_pubkey` to plural-side ACKs; retire per-producer array; add error codes: `TOPOLOGY_MISMATCH`, `TOPOLOGY_NOT_SUPPORTED_FOR_TRANSPORT`, `FAN_IN_IS_SINGLE_CONSUMER`, `FAN_OUT_IS_SINGLE_PRODUCER`, `ONE_TO_ONE_CARDINALITY_VIOLATED`, `CHANNEL_CLOSED`. |
+| **HEP-CORE-0007** | §12 wire catalog + REG_REQ / CONSUMER_REG_REQ schema + CONSUMER_REG_ACK schema + error-code catalog | **Update** — add `channel_topology` (REQUIRED); add scalar `data_endpoint` + `data_pubkey` to dialing-side ACKs; retire per-producer array; add error codes: `TOPOLOGY_MISMATCH`, `TOPOLOGY_NOT_SUPPORTED_FOR_TRANSPORT`, `FAN_IN_IS_SINGLE_CONSUMER`, `FAN_OUT_IS_SINGLE_PRODUCER`, `ONE_TO_ONE_CARDINALITY_VIOLATED`, `CHANNEL_CLOSED`. |
 | **HEP-CORE-0044** | §5 wire consumers | **Small update** — SHM-attach helpers read `data_endpoint` / `data_pubkey` (renamed from `shm_capability_endpoint` / `producer_pubkey_z85` on the wire). |
 
 ## 12. Migration ordering (phased)
@@ -1263,17 +1296,25 @@ should be one commit (or a small tight batch).
    tests + demos MUST be updated in the same commit that requires the
    field.
 3. **Phase C — Queue factory rewire.**  Add
-   `Queue::create_reader/writer(topology, transport, opts)`.  Both
-   fan-in ZMQ and fan-out ZMQ paths work under new factory.  Keep old
-   factories transitionally.
-4. **Phase D — R6 gate symmetrization.**  Add plural-side pending logic
-   + wake events.  Redirect `CHANNEL_AUTH_CHANGED_NOTIFY` based on
-   topology.
+   `Queue::create_reader/writer(topology, transport, opts)`.  All six
+   (side × topology × transport) combos per §6.2 decision matrix work
+   under the new factory (fan-in ZMQ, fan-out ZMQ, fan-out SHM, 1-to-1
+   ZMQ, 1-to-1 SHM — the SHM+fan-in combo is a compile-time impossible
+   under §2.1).  Keep legacy `pull_from` / `push_to` factories
+   transitionally.
+4. **Phase D — R6 gate symmetrization.**  Add dialing-side pending logic
+   + wake events (§10.4).  Redirect `CHANNEL_AUTH_CHANGED_NOTIFY` at the
+   binding side per topology (§5.5 table).  Add stale-pubkey cleanup on
+   R6 timeout per §10.5.
 5. **Phase E — Retirements.**  Delete `handle_consumer_attach_req_zmq`,
    the pre-attach queue, `CHANNEL_PRODUCERS_CHANGED_NOTIFY`, per-producer
-   endpoint tracking.  Retire `test_pattern4_attach_coordination.cpp`.
-6. **Phase F — Demo + L4 flip.**  Update every ZMQ demo config to use
-   fan-in explicitly with the new bind direction.  Update L4 tests.
+   endpoint tracking.  Retire `test_pattern4_attach_coordination.cpp`
+   (~1002 LOC).
+6. **Phase F — Demo + L4 flip.**  Update every ZMQ + SHM demo config to
+   declare `channel_topology` explicitly (whatever the appropriate value
+   for that demo's role structure).  Update L4 tests to reflect flipped
+   bind directions where applicable.  Remove pid-based port workarounds
+   (binding side uses ephemeral port via `tcp://host:0`).
 7. **Phase G — Fan-out ZMQ implementation.**  Add PUB/SUB (or XPUB/XSUB
    per §13.3 open question) socket paths in ZmqQueue.  Add L4 test
    `ZmqE2E_FanOut_OneProducerTwoConsumers`.  NOT optional — fan-out ZMQ
@@ -1338,10 +1379,12 @@ should be one commit (or a small tight batch).
   socket + AttachProtocol handshake unchanged); only the wire around it
   changes (topology declaration + scalar `data_endpoint`).
 - Does not touch AttachProtocol (HEP-0044) internal protocol.  Field
-  naming on `CONSUMER_REG_ACK` shifts from
-  `shm_capability_endpoint` / `producer_pubkey_z85` to unified
-  `data_endpoint` / `data_pubkey`; HEP-0044's SHM-attach helpers read
-  the new names in Phase B.
+  naming on dialing-side ACKs (`CONSUMER_REG_ACK` under fan-out/1-to-1;
+  `REG_ACK` under fan-in) unifies from the pre-migration names
+  (`shm_capability_endpoint` / `producer_pubkey_z85` on the SHM ACK;
+  per-producer `producers[]` array on the ZMQ ACK) to the topology-
+  agnostic scalar pair `data_endpoint` / `data_pubkey`.  HEP-0044's
+  SHM-attach helpers read the new names in Phase B.
 - Does not touch broker SHM observer (HEP-0045) — orthogonal Line 3.
 - Does not introduce dynamic runtime peer add/remove wire — the
   `CHANNEL_AUTH_CHANGED_NOTIFY` chain covers it via allowlist updates.
