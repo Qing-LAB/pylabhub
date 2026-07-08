@@ -314,9 +314,12 @@ transport the response carries a `producers[]` array (length 1 for
 single-producer channels, length N for fan-in), each element being
 `{role_uid, pubkey, endpoint}`.  The producer pubkey is the producer's
 IDENTITY pubkey (HEP-CORE-0036 I6 — broker mints NO data-plane keys);
-the endpoint is the producer's bound TCP endpoint (config-resolved
-at startup per HEP-CORE-0036 §3.5.1; §16 RESERVED for ephemeral path
-under task #94).
+the endpoint is the producer's bound TCP endpoint (resolved at
+S3 bind per HEP-CORE-0036 §3.5.1; may involve port-0 ephemeral
+binding per §16 adopted 2026-07-08, in which case the resolved
+port is published to the broker via ENDPOINT_UPDATE_REQ before
+first heartbeat — R6-gated per §16.7 so consumers never see an
+unresolved endpoint).
 
 ```
 CONSUMER_REG_ACK (broker → consumer)
@@ -351,8 +354,10 @@ admission (`MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM` per HEP-CORE-0007
 **Coordinated migration**: this array shape is the sibling of the
 DISC_REQ_ACK "per-producer arrays" lift (referenced in
 `broker_service.cpp:1745-1794` comment).  Both responses should
-land in one wire-format change.  Tracked under task #94 (which
-also owns the future ephemeral-binding production path; see §16).
+land in one wire-format change.  Task #94 (ephemeral-binding
+production path) closed 2026-07-08 with the §16 amendment; the
+DISC_REQ_ACK per-producer array lift is a sibling doc-cleanup
+item that survives that closure.
 
 **Retired wire fields**: the legacy singular `zmq_endpoint` +
 `producer_zmq_pubkey` are REPLACED by the `producers[]` array.  The
@@ -599,7 +604,7 @@ No `zmq_in_endpoint` in Processor-B — it is discovered from Hub A at runtime.
 | Scenario | Behavior |
 |----------|----------|
 | ZMQ endpoint not yet bound (producer not started) | `CONSUMER_REG_REQ` succeeds (broker has the entry); ZMQ PULL socket connects and queues internally until PUSH becomes available. Same as SHM race condition — producer must be running before consumer reads. |
-| Producer restarts with new ephemeral port | RETIRED 2026-06-12 — port-0 ephemeral binding is rejected at config-load per HEP-CORE-0036 §3.5.1.  Resurrected only if HEP-CORE-0021 §16 ephemeral-binding design is reinstated under task #94. |
+| Producer restarts with new ephemeral port | Handled by §16 (adopted 2026-07-08).  Restart is a fresh REG_REQ → REG_ACK → S3 bind → ENDPOINT_UPDATE_REQ cycle; broker's `ProducerEntry.zmq_node_endpoint_resolved` transitions correctly per the state machine in §16.4.  If any consumer had been admitted to the pre-restart instance, mid-life change is rejected with `ENDPOINT_CHANGE_FORBIDDEN` — restart with a fresh instance is the supported migration.  Consumers of the previous instance re-run their attach loop against the new instance and learn the new endpoint via `CONSUMER_REG_ACK.producers[]`. |
 | Consumer discovers endpoint but PUSH never binds | ZMQ PULL socket's reconnect loop retries silently. After `channel_timeout`, broker drops the channel entry (no heartbeat from producer). |
 | Cross-machine deployment | ZMQ endpoints are network addresses — works natively. SHM channels remain same-machine only (no change). |
 | Schema validation | Schema fields in REG_REQ are optional for `transport=zmq`. If provided, broker stores them and echoes back — consumer may validate format independently. |
@@ -630,7 +635,7 @@ No `zmq_in_endpoint` in Processor-B — it is discovered from Hub A at runtime.
 | 5 | `ProcessorConfig` cleanup: remove `in_transport`/`zmq_in_endpoint`; keep `out_transport`/`zmq_out_endpoint` | Done | `processor_config.hpp/cpp` |
 | 6 | Demo update: Processor-B uses `in_hub_dir` only, no hardcoded ZMQ endpoint | Done | `share/py-demo-dual-processor-bridge/` |
 | Tests | 12 L3 protocol tests (ZmqEndpointRegistryTest) | Done | `test_datahub_zmq_endpoint_registry.cpp` |
-| 7 | Ephemeral port binding (RESERVED — retired 2026-06-12 per HEP-CORE-0036 §3.5.1; tracked under task #94) | Reserved | §16 |
+| 7 | Ephemeral port binding — post-REG bind + ENDPOINT_UPDATE_REQ (see §16, adopted 2026-07-08; closes task #94) | Design adopted 2026-07-08; production code wiring pending in `role_api_base.cpp` S3 sequence | §16 |
 
 ---
 
@@ -774,16 +779,366 @@ set LINGER=0 immediately after.
 
 ---
 
-## 16. Ephemeral port binding (RESERVED)
+## 16. Ephemeral port binding
 
-This section previously described a port-0 ephemeral binding
-design in which producers would bind to port 0 before sending
-REG_REQ (to learn the resolved port for the wire payload), then
-issue ENDPOINT_UPDATE_REQ after the bind resolved.  That design
-is incompatible with HEP-CORE-0036 §3.5.1 ("nothing happens
-behind the auth door before auth") and was retired 2026-06-12.
+Status: **ADOPTED 2026-07-08** (draft; supersedes the RESERVED
+notice of 2026-06-12).  Amendment closes task #94.
 
-A future ephemeral-binding design that respects HEP-CORE-0036
-§3.5 is tracked under task #94.  Until #94 ships, producer
-endpoints MUST be fully resolved at config-load time
-(`tr.zmq_endpoint` carries a real `tcp://host:port`).
+### 16.1 What this section does
+
+Lets a producer's config declare an unresolved port
+(`tcp://host:0`) and have the operating system pick a free port at
+bind time.  The broker's record of that producer's endpoint is
+updated to the resolved port before any consumer can attach.
+
+Fixed-port producers (config declares `tcp://host:5555`) are
+unaffected: the same code path runs, the broker's endpoint record
+matches the config claim, and the update is a no-op at the state
+level.  Every producer runs the same startup sequence, port-0 or
+not.
+
+### 16.2 What stays retired
+
+The **pre-registration** ephemeral-binding design retired
+2026-06-12 stays retired.  In that design the producer would:
+
+1. Bind to port 0 BEFORE sending REG_REQ (to learn the port).
+2. Put the resolved port into the REG_REQ payload.
+
+Step 1 opens a bound TCP socket before the broker has authorized
+the channel, which HEP-CORE-0036 §3.5.1 ("nothing happens behind
+the auth door before auth") forbids.  Any future proposal to move
+bind pre-REG is out of scope; the design below binds
+POST-REG_ACK.
+
+### 16.3 Per-producer endpoint scope (Wave M2.5)
+
+The producer's data-plane endpoint lives on `ProducerEntry`, not
+on `ChannelEntry`.  Fan-in channels (N > 1 producers) carry N
+distinct endpoints — one per producer.  This has been true in the
+code since Wave M2.5 (2026-06) and is documented at
+`src/include/utils/hub_state.hpp:193`.  This section is the HEP-
+level authority for that invariant.
+
+Code sites that read this section's contract:
+
+| Site | What it does |
+|---|---|
+| `hub_state.hpp:193` (`ProducerEntry::zmq_node_endpoint`) | Per-producer endpoint storage. |
+| `hub_state.hpp:651` (`set_producer_zmq_node_endpoint`) | Per-producer mutator used by `handle_endpoint_update_req`. |
+| `broker_service.cpp:4451` (`handle_endpoint_update_req`) | Per-producer scoping via identity-based sender resolution. |
+
+### 16.4 Producer endpoint state on `ProducerEntry`
+
+Add one flag to `ProducerEntry`:
+
+```cpp
+struct ProducerEntry {
+    // ... existing fields ...
+    std::string zmq_node_endpoint;   ///< §16.3 per-producer endpoint
+
+    /// §16.4 explicit "endpoint has been resolved by the producer
+    /// and confirmed to the broker" state.  Set to false when the
+    /// entry is created by handle_reg_req; set to true when
+    /// handle_endpoint_update_req accepts an update for this
+    /// producer (either unset → resolved, or resolved(X) →
+    /// resolved(X) idempotent).  Cleared to false on re-registration
+    /// (new instance_id — see §5.5.2).  Consumer admission is gated
+    /// on `Live AND (transport==SHM OR zmq_node_endpoint_resolved)`
+    /// per §16.7.
+    bool zmq_node_endpoint_resolved{false};
+};
+```
+
+Two-state machine (per producer, per registration instance):
+
+```
+                     ┌──────────────────────────────────────┐
+                     │                                      │
+   REG_REQ           │  ENDPOINT_UPDATE_REQ                 │
+   ┌────────────┐    │  ┌──────────────────────────────┐    │
+   │ (does not  │    │  │ resolved(X) → resolved(X)    │    │
+   │  exist)    │    │  │ idempotent                   │    │
+   └──────┬─────┘    │  └──────────────────────────────┘    │
+          │          │           │                          │
+          ▼          │           ▼                          │
+   ┌──────────────┐  │    ┌───────────────┐                 │
+   │   unset      │──┴───▶│   resolved    │─────────────────┘
+   │              │       │   (endpoint)  │
+   │ (endpoint_   │       │               │
+   │  resolved =  │       │ (endpoint_    │
+   │  false)      │       │  resolved =   │
+   └──────────────┘       │  true)        │
+          ▲               └───────┬───────┘
+          │                       │
+          │      DEREG_REQ /      │
+          │      heartbeat timeout│
+          └───────────────────────┘
+```
+
+Transitions on the record of a **specific instance** of a
+producer:
+
+| From | Event | To | Broker reply |
+|---|---|---|---|
+| does-not-exist | valid REG_REQ | `unset` | REG_ACK ok |
+| `unset` | ENDPOINT_UPDATE_REQ with any valid endpoint | `resolved(X)` | ACK ok |
+| `resolved(X)` | ENDPOINT_UPDATE_REQ with endpoint X | `resolved(X)` | ACK ok (idempotent) |
+| `resolved(X)` | ENDPOINT_UPDATE_REQ with endpoint Y (Y≠X), no consumers attached | `resolved(Y)` | ACK ok |
+| `resolved(X)` | ENDPOINT_UPDATE_REQ with endpoint Y (Y≠X), consumers attached | `resolved(X)` | ERROR `ENDPOINT_CHANGE_FORBIDDEN` |
+| any | producer DEREG or heartbeat-timeout kDead | (entry removed) | — |
+
+The `resolved(X) → resolved(X)` idempotent branch is what lets
+fixed-port producers run the same startup sequence: the config-
+declared endpoint matches the resolved endpoint, the update lands
+as a no-op state-wise, and the broker's ACK just confirms.
+
+### 16.5 The `ENDPOINT_UPDATE_REQ` wire
+
+The wire has been in the code since Wave M2.5.  This section is
+the design authority.
+
+```
+ENDPOINT_UPDATE_REQ (producer → broker, over CURVE-encrypted CTRL)
+  correlation_id     string   (BRC envelope)
+  channel_name       string   Channel the producer is registered for
+  endpoint_type      string   "zmq_node" (only value accepted)
+  endpoint           string   Resolved endpoint (must be tcp://host:PORT
+                              with PORT ≠ 0)
+
+ENDPOINT_UPDATE_ACK (broker → producer)
+  correlation_id     string
+  status             string   "ok"
+
+ERROR (broker → producer, alternative reply)
+  correlation_id     string
+  error_code         string   INVALID_REQUEST | INVALID_ENDPOINT
+                            | CHANNEL_NOT_FOUND | NOT_CHANNEL_OWNER
+                            | UNKNOWN_ENDPOINT_TYPE
+                            | INBOX_UPDATE_NOT_SUPPORTED
+                            | ENDPOINT_CHANGE_FORBIDDEN (new, §16.8)
+  message            string
+```
+
+**Shape:** REQ / ACK matched pair per HEP-CORE-0007 §12.2.
+Producer blocks briefly waiting for the reply.  Not fire-and-
+forget — the producer WILL know whether the update succeeded and
+can take a definitive action on failure.
+
+**Sender resolution:** the broker does NOT trust a wire
+`role_uid` field on this request.  The sender's identity is taken
+from the ZMTP connection identity (which is bound to the CURVE-
+authenticated CTRL socket).  The producer whose `ProducerEntry.
+zmq_identity` matches the connection identity is the target.  A
+sender that isn't a registered producer of the channel gets
+`NOT_CHANNEL_OWNER`.  See `broker_service.cpp:4487-4503`.
+
+**Endpoint type:** only `zmq_node` is accepted for updates.
+Inbox endpoints (`endpoint_type == "inbox"`) are rejected with
+`INBOX_UPDATE_NOT_SUPPORTED` — the inbox must be resolved before
+REG_REQ per HEP-CORE-0027 §210.  There is no post-hoc inbox
+update path.
+
+### 16.6 Producer S3 sequence — bind, resolve, publish
+
+Producer startup (S1 → S2 → S3 per HEP-CORE-0036 §3.5.5).  The
+new steps are at S3.
+
+```mermaid
+sequenceDiagram
+    participant P as Producer role host
+    participant Bind as ZMQ PUSH socket
+    participant B as Broker
+
+    Note over P: S1: build queue in Standby (§6.7)
+    P->>B: REG_REQ (zmq_node_endpoint = "tcp://host:0")
+    B-->>P: REG_ACK (initial_allowlist=[...])
+
+    Note over P: S3 begins
+    P->>P: set_peer_allowlist(REG_ACK.initial_allowlist)
+    P->>Bind: bind("tcp://host:0")
+    Bind-->>P: bound (OS assigned port 51234)
+    P->>Bind: getsockopt(ZMQ_LAST_ENDPOINT)
+    Bind-->>P: "tcp://host:51234"
+
+    P->>B: ENDPOINT_UPDATE_REQ<br/>(endpoint_type="zmq_node",<br/> endpoint="tcp://host:51234")
+    Note over B: State on ProducerEntry:<br/>unset → resolved("tcp://host:51234")
+    B-->>P: ENDPOINT_UPDATE_ACK (status=ok)
+
+    P->>P: start heartbeat task
+    P->>B: HEARTBEAT (first)
+    Note over B: Presence:<br/>Registered → Live
+```
+
+**Uniform path for fixed-port producers.**  A producer with
+`zmq_node_endpoint = "tcp://host:5555"` in config runs the same
+sequence.  Its bind produces `"tcp://host:5555"`, the
+`ENDPOINT_UPDATE_REQ` carries that same string, the broker's
+transition is `unset → resolved("tcp://host:5555")`, the ACK is
+ok, heartbeat starts.  Same wire, same code path, same test
+surface as port-0 producers.
+
+**Backwards-compat note.**  This section's contract is
+build-time coherent — every producer binary that ships with the
+amended `role_api_base.cpp` sends `ENDPOINT_UPDATE_REQ` before
+starting heartbeat, regardless of whether config declared port 0
+or a fixed port.  There is no "old producer that skips the
+update" code path in the tree; producer-side wiring lands in the
+same code slice as the broker-side state field addition.  A
+hypothetical producer built against pre-amendment code would
+never satisfy R6 (§16.7) and consumers targeting its channel
+would block indefinitely — the safe behaviour, but not one that
+occurs in practice.
+
+**Ordering is not load-bearing.**  A producer that (for some
+reason) sent HEARTBEAT before ENDPOINT_UPDATE_REQ would still be
+gated correctly at the consumer-admission point (§16.7) — the
+broker would mark it Live but consumer R6 would block on
+`endpoint_resolved`.  The producer's own code SHOULD emit update
+before heartbeat for clarity, but a reordering bug does not
+corrupt the invariant.
+
+**Failure handling.**  If `ENDPOINT_UPDATE_REQ` fails (typed
+error, timeout, or transport error), the producer:
+
+1. Logs a fatal ERROR with the specific error_code.
+2. Does NOT start the heartbeat task.
+3. Tears down the bound socket.
+4. Exits the process with a clean non-zero status.
+
+The producer does NOT retry.  This mirrors §3.5.1's fatal-on-
+registration-failure principle: a producer that cannot get its
+endpoint into the broker's record has no path to being live, so
+it should not linger holding a bound port with no way to be
+reached.
+
+### 16.7 Broker readiness gate — R6 extended
+
+The existing R6 gate (HEP-CORE-0036 §5.2 R6) blocks a consumer's
+CONSUMER_REG_REQ until at least one producer of the channel is
+Live.  This section extends the gate:
+
+**R6 (extended for §16.4):** a consumer's REG_REQ is approved only
+when the channel has at least one producer satisfying **both**:
+
+- `presence == Live` (first heartbeat received), AND
+- `transport == SHM  OR  zmq_node_endpoint_resolved == true`.
+
+SHM producers do not use `zmq_node_endpoint`; the flag is
+irrelevant for them.  ZMQ producers must have completed the
+endpoint-update round-trip.
+
+**What the consumer sees.**  A consumer whose REG_REQ arrives
+before any admissible producer exists is held pending by the
+broker per the existing R6 mechanism.  As producers become
+admissible, R6 unblocks and CONSUMER_REG_ACK carries the up-to-
+date `producers[]` array with resolved endpoints only.  The wire
+shape is unchanged.
+
+### 16.8 Mid-life re-update rules
+
+A producer whose endpoint state is already `resolved(X)` sends
+another `ENDPOINT_UPDATE_REQ`.  Two outcomes:
+
+**Idempotent (Y == X).**  Accepted.  The state stays
+`resolved(X)`.  ACK ok.  This is what fixed-port producers do
+implicitly on every startup, and what a producer would do if it
+retried its own update after a transient network hiccup.
+
+**Change (Y ≠ X).**  Rejected iff any consumer has been admitted
+to this channel targeting this producer.  "Admitted" means the
+consumer has completed the HEP-CORE-0042 §7.1 pre-attach loop and
+this producer appeared in the loop's `attach:success` set (i.e.,
+the broker sent an `ENDPOINT_UPDATE_ACK` for this producer to at
+least one consumer's `CONSUMER_REG_ACK.producers[]`).
+
+Rationale: consumers are already dialing the old endpoint `X`.
+Their PULL sockets have live TCP connections to `X`.  Silently
+switching the broker's record to `Y` would leave those consumers
+stranded on connections that go nowhere new; they would not
+automatically re-dial `Y` because HEP-CORE-0036 §I5 makes
+existing connections trusted for the session.  The right way to
+change a producer's endpoint is DEREG → REG with a fresh instance
+— consumers re-run their attach loop against the new instance and
+learn `Y` cleanly.
+
+**Wire:** rejection uses `error_code = ENDPOINT_CHANGE_FORBIDDEN`
+(see HEP-CORE-0007 §12 error-code catalog for the canonical
+row) with a message identifying the number of admitted consumers.
+The producer's expected action on this error: log an ERROR, keep
+running with the existing bound port (the broker's record is
+correct — the socket at X is still the live one), and do NOT
+attempt further updates.  Restart-with-new-instance is the only
+supported migration path.
+
+**Special case: zero consumers admitted.**  Change accepted (state
+transitions `resolved(X) → resolved(Y)`).  This covers pre-first-
+consumer administrative migrations.
+
+### 16.9 §3.5.1 auth-door compliance
+
+Every step in §16.6 happens **post-REG_ACK**.  The producer's PUSH
+socket exists in Standby (unbound) at S1 and S2.  Bind is at S3,
+which by §3.5.5 requires REG_ACK to have arrived.  ENDPOINT_UPDATE_REQ
+travels on the same CURVE-authenticated CTRL socket the producer
+used for REG_REQ.  No pre-auth data-plane footprint exists at any
+point.
+
+The retired 2026-06-12 design failed because it bound at S1 to
+learn the port for REG_REQ.  This design binds at S3 to learn the
+port for ENDPOINT_UPDATE_REQ — same physical operation, different
+temporal position, and that difference is what §3.5.1 turns on.
+
+### 16.10 Observability
+
+Log markers emitted by the flow (all follow the HEP-CORE-0004
+`event=` convention per README_testing.md §"Log-marker format
+convention"):
+
+| Marker | Emitted by | When |
+|---|---|---|
+| `event=EndpointUpdateReqAccepted role='<uid>' channel='<ch>' endpoint='<ep>' transition='unset→resolved'` | broker | First successful update per instance. |
+| `event=EndpointUpdateReqAccepted role='<uid>' channel='<ch>' endpoint='<ep>' transition='idempotent'` | broker | X == Y match. |
+| `event=EndpointUpdateReqAccepted role='<uid>' channel='<ch>' endpoint='<ep>' transition='resolved→resolved'` | broker | Y ≠ X, no consumers, accepted. |
+| `event=EndpointUpdateReqRejected role='<uid>' channel='<ch>' error='<code>' consumers_attached=<N>` | broker | Any rejection path. |
+| `event=EndpointUpdatePublished channel='<ch>' resolved_endpoint='<ep>'` | producer | After ACK ok. |
+| `event=EndpointUpdateFailed channel='<ch>' error='<code>'` | producer | On any error; precedes fatal exit. |
+
+L4 tests grep on these; changes require a HEP amendment.
+
+### 16.11 Test surface
+
+| Layer | Test | What it pins |
+|---|---|---|
+| L2 | Broker handler unit tests (existing) | Wire validation, sender-identity resolution, port-zero rejection, unknown endpoint_type rejection. |
+| L3 | `test_datahub_zmq_endpoint_registry.cpp` (existing) | Round-trip; happy path; non-producer rejection; port-zero rejection; discovery-after-update. |
+| L3 (new) | `EndpointUpdate_RejectedWhenConsumerAttached` | §16.8 mid-life change rejection contract. |
+| L3 (new) | `EndpointUpdate_Idempotent_FixedPortProducer` | Fixed-port producer's implicit idempotent update. |
+| L4 (new) | `ZmqE2E_EphemeralPort_Resolves` | `tcp://host:0` config → consumer sees real port and data flows. |
+| L4 (cleanup) | Remove `pid % 1000` port workaround in existing tests. | Now uses `tcp://127.0.0.1:0`. |
+
+### 16.12 Interaction with related HEPs
+
+- **HEP-CORE-0033 §2994** (`ENDPOINT_UPDATE_REQ` "RETIRED") — un-retire
+  the wire for the S3 post-bind update use.  The retirement note stays
+  in force for the retired **pre-REG bind** design; the wire itself is
+  reinstated for this section's producer-side use.
+- **HEP-CORE-0036 §I7** ("Endpoint disclosure follows authorization") —
+  remove the "Post-task-#94 (future)" caveat that flagged ephemeral
+  binding as reintroducing a pre-REG bind requirement.  This section
+  does not reintroduce that; the bind is at S3.
+- **HEP-CORE-0027 §210** (port-0 inbox endpoints) — unaffected.  Inbox
+  updates remain unsupported; only `zmq_node` is updatable.
+- **HEP-CORE-0042 §5.5.2** (stale-instance guard on `CHANNEL_AUTH_APPLIED_REQ`)
+  — no change, but the same reasoning applies to `ENDPOINT_UPDATE_REQ`:
+  a stale-instance update would fail the sender-identity check at the
+  broker because the ZMTP identity binds to the new-instance CTRL
+  connection, not the dead one.
+
+### 16.13 Change log
+
+| Date | Change |
+|---|---|
+| 2026-06-12 | Original pre-REG bind design retired. |
+| 2026-07-08 | This amendment — post-REG bind design ADOPTED, closes task #94. |
+

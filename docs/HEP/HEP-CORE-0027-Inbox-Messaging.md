@@ -207,15 +207,23 @@ S3 (apply_*_reg_ack) — ACTIVATE (behind the auth door):
        — under ThreadManager scope per HEP-CORE-0036 §3.5.4 invariant 4.
 ```
 
-**Port-0 ephemeral inbox endpoints (task #94 scope).** When the
-config specifies port 0 to request an ephemeral bind, the role
-cannot put a resolved endpoint into REG_REQ at step 3 without
-binding first — this is the same chicken-and-egg the data PUSH
-side faces under HEP-CORE-0021 §16 (RESERVED — task #94).  Under §3.5.1 the resolution
-is task #94's ephemeral-binding production path; until then the
-inbox config endpoint MUST be a fully-resolved address.  A
-freshly-installed `plh_role` rejects port-0 inbox endpoints with a
-clear error.
+**Port-0 inbox endpoints remain unsupported.**  HEP-CORE-0021 §16
+(adopted 2026-07-08, closes task #94) enables post-bind endpoint
+resolution for the data PUSH side via `ENDPOINT_UPDATE_REQ`, but
+that path is scoped to `endpoint_type == "zmq_node"` only.  The
+handler explicitly rejects `endpoint_type == "inbox"` with
+`INBOX_UPDATE_NOT_SUPPORTED` per HEP-CORE-0021 §16.5.  Inbox
+endpoints stay one-time-set at REG_REQ; port-0 inbox is
+rejected at config-load with a clear error.
+
+Rationale: the data PUSH endpoint change is inexpensive to
+coordinate because consumer discovery happens exclusively via
+`CONSUMER_REG_ACK` after CONSUMER_REG_REQ — the broker mediates
+every read.  Inbox endpoints, by contrast, are discovered via
+`ROLE_INFO_REQ` on demand from any peer at any time; a post-bind
+update would create a window in which some peers cached the
+port-0 placeholder and others the resolved port.  Not worth the
+complexity for a message-per-second control path.
 
 **Why advertise on every presence.**  ROLE_INFO_REQ (used by senders
 to discover a target's inbox — see §4.2) is a Class B fall-through
@@ -327,10 +335,13 @@ for federation to relay.
   receiver's bind to a routable address.
 - Endpoint reachable but receiver process is down: same observable
   symptom (255 on send) until the receiver restarts and rebinds.
-- Receiver restarts with a new ephemeral port (port 0 → OS-assigned):
-  cached `InboxClient` instances are stale.  Senders should refresh
-  via a fresh `api.open_inbox(uid)` after detecting repeated 255
-  acks, which re-runs ROLE_INFO_REQ and gets the new endpoint.
+- Receiver restarts with a new fixed port (config change or
+  operator-driven redeployment): cached `InboxClient` instances
+  are stale.  Senders should refresh via a fresh
+  `api.open_inbox(uid)` after detecting repeated 255 acks, which
+  re-runs ROLE_INFO_REQ and gets the new endpoint.  Note: inbox
+  endpoints cannot use port-0 ephemeral binding — see §4.1
+  "Port-0 inbox endpoints remain unsupported" above.
 
 ---
 

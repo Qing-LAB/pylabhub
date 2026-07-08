@@ -1244,8 +1244,11 @@ Fire-and-forget:
   Retired (M1.4, 2026-05-11): METRICS_REPORT_REQ — metrics piggyback
   on HEARTBEAT_REQ per HEP-CORE-0019 §2.3 Phase 6.
 
-  Retired (2026-06-12): ENDPOINT_UPDATE_REQ — config endpoint goes
-  directly in REG_REQ.zmq_node_endpoint per HEP-CORE-0036 §3.5.
+  Un-retired (2026-07-08): ENDPOINT_UPDATE_REQ — post-bind
+  endpoint publish per HEP-CORE-0021 §16 (adopted 2026-07-08,
+  closes task #94).  The pre-REG bind variant retired 2026-06-12
+  stays retired; the new variant binds at S3 and publishes the
+  resolved port over the CURVE-authenticated CTRL.
 ```
 
 When adding a new msg_type, the contributor MUST classify it
@@ -2991,7 +2994,7 @@ classes are also disjoint — no message dual-classifies.
 | `DEREG_REQ` | A | Producer voluntary close. |
 | `CONSUMER_DEREG_REQ` | A | Consumer voluntary leave. |
 | `DISC_REQ` | A | Discover channel's connection info. |
-| ~~`ENDPOINT_UPDATE_REQ`~~ | — | **RETIRED 2026-06-12** per HEP-CORE-0036 §3.5.  Config-determined endpoint goes directly in `REG_REQ.zmq_node_endpoint`; no separate post-bind update.  Port-0 ephemeral binding is incompatible with §3.5.1 and is tracked under task #94 as a separate design problem. |
+| `ENDPOINT_UPDATE_REQ` | A | Post-bind endpoint publish per **HEP-CORE-0021 §16** (adopted 2026-07-08; closes task #94).  Producer sends after S3 bind resolves (may involve port 0 → OS-assigned).  Broker transitions `ProducerEntry.zmq_node_endpoint_resolved` to true; consumer admission gated on this per §16.7.  Idempotent for fixed-port producers.  The pre-REG bind variant retired 2026-06-12 stays retired — see HEP-CORE-0021 §16.2. |
 | `SCHEMA_REQ` | A (owner-bound) | Routes via the connection where the owning record lives — see HEP-CORE-0034 §10.3. |
 | `CHANNEL_NOTIFY_REQ` | A | Fire-and-forget channel-targeted event. |
 | `CHANNEL_BROADCAST_REQ` | A | Fan-out broadcast on a channel. |

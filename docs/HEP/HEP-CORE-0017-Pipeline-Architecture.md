@@ -259,7 +259,7 @@ with no special-cased options struct.
 struct ProducerPeer
 {
     std::string role_uid;       ///< Producer's role uid (HEP-CORE-0033 §G2.2.0b).
-    std::string endpoint;       ///< tcp://host:port (HEP-CORE-0007 §12.3 zmq_node_endpoint).
+    std::string endpoint;       ///< tcp://host:port (HEP-CORE-0021 §16.3 per-producer scope).
     std::string pubkey_z85;     ///< Producer's identity pubkey
                                 ///<  (HEP-CORE-0036 I6 — used by consumer-side
                                 ///<   ZAP wiring if any; the broker-side ZAP

@@ -565,7 +565,7 @@ The legacy text was:
 **The data-plane endpoint is broker-mediated, not directly
 config-discoverable to consumers.**  Two production paths exist:
 
-- **MVP / current path** — operator-pinned endpoints.  Producer
+- **Fixed-port path** — operator-pinned endpoints.  Producer
   config declares a full `tcp://host:port` string for its PUSH
   endpoint; the role's REG_REQ carries that string in
   `zmq_node_endpoint`; broker stores it on
@@ -576,12 +576,17 @@ config-discoverable to consumers.**  Two production paths exist:
   is a *claim* in REG_REQ that becomes *live* at S3 — pre-S3 the
   endpoint is unbound and any external probe meets connection
   refused.
-- **Post-task-#94 (future)** — ephemeral binding.  Producer config
-  declares a channel name + port-0 hint; the actual endpoint is
-  resolved at producer bind time per HEP-CORE-0021 §16 (RESERVED — task #94).  This path
-  reintroduces a pre-REG bind requirement (port-0 must resolve
-  before REG_REQ); §3.5 carves out task #94 as the migration
-  vehicle.
+- **Ephemeral-port path** (adopted 2026-07-08, closes task #94) —
+  per **HEP-CORE-0021 §16**.  Producer config may declare
+  `tcp://host:0`; the port is resolved at S3 bind (post-REG_ACK,
+  §3.5.1-compliant); producer publishes the resolved endpoint via
+  `ENDPOINT_UPDATE_REQ` over the CURVE-authenticated CTRL BEFORE
+  starting its heartbeat.  Consumer admission is gated on both
+  `Live` AND `zmq_node_endpoint_resolved` (R6 extension per
+  HEP-CORE-0021 §16.7).  Fixed-port producers run the same
+  sequence — the update is idempotent when the resolved port
+  matches the config claim.  Note this path does NOT reintroduce
+  a pre-REG bind requirement; bind is at S3 in both paths.
 
 In both paths, a consumer learns the endpoint only via
 `CONSUMER_REG_ACK` after broker authorization.  Pre-authorization
@@ -3164,14 +3169,16 @@ broadcasts) drive `queue.add_producer_peer(...)` /
 `queue.remove_producer_peer(role_uid)` calls from the framework.
 Scripts never see this array.
 
-**Coordination with task #94 / HEP-CORE-0021 §16 (RESERVED).**  The DISC_REQ
+**Coordination with the DISC_REQ per-producer array migration.**  The DISC_REQ
 response in `broker_service.cpp:1745-1794` today returns the FIRST
 producer's endpoint + pubkey only (transitional single-producer
 wire shape; comment at line 1745 explicitly calls it "step 5 will
 lift to per-producer arrays").  HEP-0036's `producers[]` array on
 CONSUMER_REG_ACK is the sibling change for the registration path;
-both should land coordinated as one wire-format migration.  See
-§14.1 for the HEP-0021 update list.
+both should land coordinated as one wire-format migration.  Task
+#94 (ephemeral-binding) closed 2026-07-08 with HEP-CORE-0021 §16
+adopted; the DISC_REQ per-producer lift is a separate item that
+survives.  See §14.1 for the HEP-0021 update list.
 
 ### 6.5 Channel-state synchronization (notify-then-pull)
 
@@ -3650,7 +3657,7 @@ Added to HEP-CORE-0007 §12.4a Error Code Taxonomy:
 |---|---|
 | `UNKNOWN_ROLE` | REG_REQ / CONSUMER_REG_REQ where `body.role_uid` is empty or not present in `cfg.known_roles[]` (§6.1 / §6.3 Layer-2 verification step 1).  Operator-side fix: add the role to `<hub_dir>/vault/known_roles.json` via `plh_hub --add-known-role`. |
 | `PUBKEY_MISMATCH` | REG_REQ / CONSUMER_REG_REQ where `body.role_uid` exists in `cfg.known_roles[]` but `body.zmq_pubkey` does not equal the configured `pubkey_z85` for that uid (§6.1 / §6.3 Layer-2 verification step 2).  Indicates either credential drift (role's vault rotated; operator's known_roles entry stale) or a registration attempt under a stolen role uid using the wrong pubkey. |
-| `CHANNEL_NOT_READY` | CONSUMER_REG_REQ for a channel that isn't admissible right now.  `reason` field distinguishes the cause: `awaiting_first_heartbeat` (no producer has reached `kLive` — gate per §3.5.4 INV2) or `heartbeat_stalled` (producer presence in `kStalled` per HEP-CORE-0023 §2.6).  Port-0 `awaiting_endpoint` reason is RETIRED 2026-06-12 — port-0 ephemeral binding is rejected at config-load per §3.5.1 (resurrected only if HEP-CORE-0021 §16 (RESERVED — task #94) ephemeral-binding design is reinstated). |
+| `CHANNEL_NOT_READY` | CONSUMER_REG_REQ for a channel that isn't admissible right now.  `reason` field distinguishes the cause: `awaiting_first_heartbeat` (no producer has reached `kLive` — gate per §3.5.4 INV2) or `heartbeat_stalled` (producer presence in `kStalled` per HEP-CORE-0023 §2.6).  HEP-CORE-0021 §16 (adopted 2026-07-08, closes task #94) extends R6 to also require `zmq_node_endpoint_resolved` for ZMQ producers, but this does NOT surface as a distinct `reason` — the REG_REQ is held pending on R6 the same way `awaiting_first_heartbeat` holds it; the pre-2026-06-12 `awaiting_endpoint` reason string stays retired. |
 | `CHANNEL_NOT_FOUND` | `GET_CHANNEL_AUTH_REQ` for a channel that does not exist in `ChannelAccessIndex`. |
 | `PRODUCER_NOT_AUTHORIZED` | `GET_CHANNEL_AUTH_REQ` from a caller that is not a registered producer of the named channel.  Defence-in-depth: the broker should never return another channel's allowlist to a non-producer. |
 | `CONSUMER_NOT_AUTHORIZED` | `GET_CHANNEL_PRODUCERS_REQ` from a caller that is not a registered consumer of the named channel.  Defence-in-depth: the broker should never return a channel's producer set to a non-consumer.  Symmetric with `PRODUCER_NOT_AUTHORIZED`. |
@@ -4508,9 +4515,11 @@ in response to channel-event broadcasts (HEP-CORE-0033 §12).
 SHM rejects multi-producer (physical constraint).  But today's
 DISC_REQ_ACK still returns only the FIRST producer's endpoint +
 pubkey (`broker_service.cpp:1745-1794`, transitional shape).
-HEP-0036 + task #94 / HEP-CORE-0021 §16 (RESERVED) together complete the
-per-producer array migration for BOTH DISC_REQ_ACK AND
-CONSUMER_REG_ACK as one coordinated wire change (§14.1).
+HEP-0036's CONSUMER_REG_ACK `producers[]` array (T1, 2026-05-28)
+completed the registration-path per-producer migration.  The
+sibling DISC_REQ_ACK migration is separate follow-up work.  Task
+#94 (ephemeral-binding) closed 2026-07-08 with HEP-CORE-0021 §16
+adopted, orthogonal to the DISC_REQ array shape.
 
 ### 9.2 SHM per-consumer authorization
 
@@ -4887,15 +4896,15 @@ eviction work from earlier draft scope per I5 (revocation is passive).
 | Phase | Scope | Notes |
 |---|---|---|
 | 0 | **Prerequisites — HEP-0035 §4.1 Layer-1 ZAP + §4.6 file ACLs + §4.7 runtime hardening.**  Broker ROUTER installs a ZAP handler; `hub.known_roles[]` from hub.json populates the pubkey allowlist; ZAP rejects unknown pubkeys at handshake.  Legacy `check_role_identity()` + `RoleIdentityPolicy` enum REMOVED (HEP-0035 §4.5).  Both binaries verify key-file ACLs (§4.6, task #101) and apply runtime hardening (§4.7, task #102).  Tracked under tasks #74 + #101 + #102; HEP-0036 phases below depend on these being live. | Not HEP-0036 work proper, but listed here as the prerequisite that closes I1 condition (2).  HEP-0036's data-plane wiring is meaningless without it. |
-| 0.7 | **Add `RegistrationState::Authorized`** (T2).  5th enum value between `Registered` and `Deregistered`.  Under §3.5 symmetric Option-α, BOTH producer and consumer presences transition Registered → Authorized SYNCHRONOUSLY at the end of their respective `apply_*_reg_ack` (§3.5.5 S3) — producer's after ZAP install + PUSH bind + allowlist seed from REG_ACK.initial_allowlist; consumer's after CONSUMER_REG_ACK + per-producer PULL connect with producers[] from the ACK.  Both sides bind/connect POST-REG, behind the auth door (§3.5.1).  ENDPOINT_UPDATE_REQ is retired — the config-determined endpoint is carried directly in REG_REQ.zmq_node_endpoint.  No socket monitor needed — data-plane CURVE handshakes are transport-internal per I9.  Data loop's outer guard adds `any_presence_authorized()` (HEP-0036 §8.2). | Per-presence FSM is independent across multi-presence roles (processor). |
+| 0.7 | **Add `RegistrationState::Authorized`** (T2).  5th enum value between `Registered` and `Deregistered`.  Under §3.5 symmetric Option-α, BOTH producer and consumer presences transition Registered → Authorized SYNCHRONOUSLY at the end of their respective `apply_*_reg_ack` (§3.5.5 S3) — producer's after ZAP install + PUSH bind + allowlist seed from REG_ACK.initial_allowlist; consumer's after CONSUMER_REG_ACK + per-producer PULL connect with producers[] from the ACK.  Both sides bind/connect POST-REG, behind the auth door (§3.5.1).  Producer's PUSH bind at S3 may be to `tcp://host:0` (ephemeral) and is followed by `ENDPOINT_UPDATE_REQ` per HEP-CORE-0021 §16 (adopted 2026-07-08, closes task #94) — heartbeat starts only after the update ACK lands, so R6 gates consumers on both `Live` and `endpoint_resolved` per §16.7.  No socket monitor needed — data-plane CURVE handshakes are transport-internal per I9.  Data loop's outer guard adds `any_presence_authorized()` (HEP-0036 §8.2). | Per-presence FSM is independent across multi-presence roles (processor). |
 | 0.8 | **Broker CONSUMER_REG_REQ gates on `first_heartbeat_seen`** (~5 LOC).  Match DISC_REQ's existing check at `broker_service.cpp:1720`.  Return `CHANNEL_NOT_READY{reason="awaiting_first_heartbeat"}` if producer presence hasn't been observed as `kLive`. | Pre-existing inconsistency between DISC_REQ and CONSUMER_REG_REQ becomes symmetric.  Standalone fix; doesn't depend on later phases. |
 | 1 | `ChannelAccessIndex` skeleton in HubState.  Broker creates entries on REG_REQ; stores allowlist + producer's identity pubkey (verified from `REG_REQ.zmq_pubkey` body field against `cfg.known_roles[role_uid]` via `verify_known_role_binding` per §6.1 / §6.3 Layer-2 verification).  **No data-plane keypair minting** — per T1 / I6, broker holds no data-plane secrets. | Replaces the earlier draft's "broker mints keypair on REG_REQ" with allowlist-only management. |
 | 2 | Producer side: `setup_infrastructure_` builds the tx queue in Standby (§6.7) — NO PUSH bind, NO ZAP arm.  `apply_producer_reg_ack` (post-REG, §3.5.5 S3) installs ZAP handler on ZMQ context BEFORE binding PUSH (per §5.1 internal-ordering invariant 4); PUSH configured `curve_server=1` with ROLE'S IDENTITY KEYPAIR (KeyStore-resident per HEP-0035 §4.6 + HEP-CORE-0040).  ZAP cache seeded from `REG_ACK.initial_allowlist` (NOT empty — §I4 + §6.5).  Runtime additions arrive via `CHANNEL_AUTH_CHANGED_NOTIFY` → `GET_CHANNEL_AUTH_REQ` pull (§6.5 notify-then-pull amended 2026-06-04). | No new key distribution needed — producer already has its identity keypair from startup. |
 | 3 | Broker side: on CONSUMER_REG_REQ, verify consumer's claimed `zmq_pubkey` body field against `cfg.known_roles[role_uid]` via `verify_known_role_binding` per §6.1 / §6.3 Layer-2 verification (rejecting UNKNOWN_ROLE / PUBKEY_MISMATCH — no self-claims); on pass, add to the channel's authorized set; fire `CHANNEL_AUTH_CHANGED_NOTIFY {channel, reason="consumer_joined"}` (fire-and-forget per §6.5 amended 2026-06-04) to every `kLive` producer of the channel; return CONSUMER_REG_ACK with `producers[]` array per §6.4 — iterate `ChannelEntry::producers[]` to populate `(role_uid, pubkey, endpoint)` per element.  PRODUCER-SIDE EQUIVALENT (Phase 2 wires): `producer_joined` notify to consumers (`CHANNEL_PRODUCERS_CHANGED_NOTIFY` per §6.5.1) MUST fire on the channel observable's `kRegistering → kLive` transition (driven by `first_heartbeat_seen=true` on the producer presence; HEP-CORE-0023 §2.6), NOT on REG_REQ accept (§3.5.4 invariant 2) — otherwise consumers connect to unbound endpoints. | Closes the loop: consumer can now connect after auth.  Producer's initial ZAP cache comes from REG_ACK.initial_allowlist at S3 inside apply_master_approval per §3.5.3; runtime mutations converge via §6.5 notify→pull within one BRC round-trip.  Same wire shape works for single-producer (length 1) and fan-in (length N). |
-| 4 | Consumer side: `setup_infrastructure_` builds the rx queue in Standby (§6.7) — NO PULL connect.  `apply_consumer_reg_ack` (post-REG, §3.5.5 S3) reads `producers[]` array from CONSUMER_REG_ACK; framework feeds the array into `RxQueueOptions::producer_peers` (per HEP-CORE-0017 §3.3); ZmqQueue handles per-peer transport plumbing internally (curve config per peer, ZAP enforcement, fair-queue) per I9.  Authorized fires synchronously at the end of `apply_consumer_reg_ack` — auth was completed at REG (control plane), endpoints in CONSUMER_REG_ACK ARE the auth proof.  Data loop gates on `Authorized` per §8.  A brief re-handshake window may exist while the producer's `GET_CHANNEL_AUTH_REQ` pull catches up (§5.2 property note); ZeroMQ's reconnect-on-handshake-failure bridges it.  Uniform shape for single-producer and fan-in — script sees one rx queue regardless. | End-to-end ZMQ auth working for both topologies.  Coordinates with task #94 / HEP-CORE-0021 §16 (RESERVED) (per-producer DISC_REQ_ACK array shape — same migration family) and task #103 (ZmqQueue dynamic peer API). |
+| 4 | Consumer side: `setup_infrastructure_` builds the rx queue in Standby (§6.7) — NO PULL connect.  `apply_consumer_reg_ack` (post-REG, §3.5.5 S3) reads `producers[]` array from CONSUMER_REG_ACK; framework feeds the array into `RxQueueOptions::producer_peers` (per HEP-CORE-0017 §3.3); ZmqQueue handles per-peer transport plumbing internally (curve config per peer, ZAP enforcement, fair-queue) per I9.  Authorized fires synchronously at the end of `apply_consumer_reg_ack` — auth was completed at REG (control plane), endpoints in CONSUMER_REG_ACK ARE the auth proof.  Data loop gates on `Authorized` per §8.  A brief re-handshake window may exist while the producer's `GET_CHANNEL_AUTH_REQ` pull catches up (§5.2 property note); ZeroMQ's reconnect-on-handshake-failure bridges it.  Uniform shape for single-producer and fan-in — script sees one rx queue regardless. | End-to-end ZMQ auth working for both topologies.  Ephemeral port binding closed under HEP-CORE-0021 §16 (2026-07-08, closes task #94); coordinates with the sibling DISC_REQ_ACK per-producer array migration (separate follow-up) and task #103 (ZmqQueue dynamic peer API). |
 | 5 | SHM parallel: broker generates `shm_secret` per channel (uint64 guard token; unrelated to CURVE per I6); `CONSUMER_REG_ACK` releases it only on auth.  Retire config-supplied `out_shm_secret`. | SHM secret stays broker-generated because the DataBlock attach mechanism (HEP-0002) is secret-based, not CURVE-based. |
 | 6 | Passive revocation paths: on CONSUMER_DEREG, on heartbeat timeout, on hub-dead cascade — broker mutates the channel's authorized set to remove the failed/leaving consumer, then fires `CHANNEL_AUTH_CHANGED_NOTIFY {reason="consumer_left"\|"consumer_timeout"\|"federation_peer_death"}` to all `kLive` producers (per §6.5 amended 2026-06-04; fire-and-forget; producers pull on receipt to update their caches).  Role-side hub-dead handling: `Authorized → Unregistered` after `hub_dead_grace`; tear down data sockets + clear ZAP cache; await BRC reconnect.  No force-disconnect (per I5). | Closes lifetime-alignment loop; no new socket-level APIs. |
-| 7 | **Multi-producer fan-in VERIFICATION** (no new code).  Phases 3-4 already produce the uniform `producers[]` array wire shape that handles 1..N producers identically.  Phase 7 is the L3 end-to-end test for the fan-in case: spawn 2 producers + 1 consumer on the same ZMQ channel; verify consumer receives data from both producers via M×P CURVE sessions.  Validates that the array shape, allowlist propagation to each producer's ZAP cache, and per-PULL handshake monitoring all work for N>1. | Sanity-check, not new functionality.  Coordinates with task #94 / HEP-CORE-0021 §16 (RESERVED) DISC_REQ_ACK array migration (verification scope). |
+| 7 | **Multi-producer fan-in VERIFICATION** (no new code).  Phases 3-4 already produce the uniform `producers[]` array wire shape that handles 1..N producers identically.  Phase 7 is the L3 end-to-end test for the fan-in case: spawn 2 producers + 1 consumer on the same ZMQ channel; verify consumer receives data from both producers via M×P CURVE sessions.  Validates that the array shape, allowlist propagation to each producer's ZAP cache, and per-PULL handshake monitoring all work for N>1. | Sanity-check, not new functionality.  Ephemeral port binding closed under HEP-CORE-0021 §16 (2026-07-08); the DISC_REQ_ACK per-producer array lift remains as a separate follow-up. |
 | 8 | Inbox + bands: inbox inherits the data channel's allowlist (no new wiring on top of §7); bands inherit the hub's `known_roles[]` allowlist (already enforced by HEP-0035 §4.1 Layer-1 ZAP on the broker ROUTER for any CURVE handshake — control plane and data plane alike per T1 / I6).  Verification only — no new code. | Sanity-check §9.3 + §9.4 hold at runtime. |
 | 9 | Dev-mode escape hatch + loopback-enforcement; manual key-distribution workflow doc per §11.3. | Operator-facing surface. |
 | 10 | Test coverage: L2 unit tests for ZAP handler cache, broker allowlist updates; L3 for end-to-end auth on dual-hub-processor scenarios; demo framework verification (the regression in the 2026-05-26 demo run becomes the regression test). | Sign-off gate. |
@@ -5057,10 +5066,12 @@ principles at the time of consolidation.
   `data_server_pubkey` / `zmq_node_endpoint` shape with a
   `producers[]` array per HEP-0036 §6.4: each element
   `{role_uid, pubkey, endpoint}`, length 1 for single-producer
-  channels, length N for fan-in.  This is the SAME per-producer
-  array migration that **task #94 / §16 (RESERVED) ephemeral-binding
-  production path** has been tracking for `DISC_REQ_ACK`; both
-  responses must land coordinated as ONE wire-format change.  Per
+  channels, length N for fan-in.  The sibling per-producer array
+  migration for `DISC_REQ_ACK` (currently first-producer
+  transitional shape at `broker_service.cpp:1745-1794`) is a
+  separate follow-up item — task #94 (ephemeral-binding) closed
+  2026-07-08 under HEP-CORE-0021 §16, orthogonal to the
+  DISC_REQ_ACK lift.  Per
   T1 / I6 the producer pubkey in each element is the producer's
   IDENTITY pubkey (sourced from
   `ChannelEntry::producers[i].zmq_pubkey`, populated at REG time
@@ -5069,14 +5080,15 @@ principles at the time of consolidation.
   verification).
 - **§5.2 / §16 wire field `shm_secret`** — clarify it is now
   broker-generated (HEP-0036 §6.4), not echoed from config.
-- **§16 (RESERVED — task #94) production path** — the auth wiring (HEP-0036
-  Phase 1-4) AND the per-producer array migration land together;
-  they were always intended to be the same wire-format change.
+- **DISC_REQ_ACK per-producer array lift** (separate follow-up
+  from the CONSUMER_REG_ACK lift completed in T1 2026-05-28).
   Specifically: `broker_service.cpp:1745-1794` DISC_REQ handler's
   current "first-producer transitional shape" gets lifted to a
-  `producers[]` array; the same array shape is used in
+  `producers[]` array; the same array shape is already used in
   CONSUMER_REG_ACK; producer identity pubkey lookup is via
-  `ProducerEntry::zmq_pubkey` for both code paths.
+  `ProducerEntry::zmq_pubkey` for both code paths.  Task #94
+  (ephemeral-binding) closed 2026-07-08 with HEP-CORE-0021 §16
+  adopted; the DISC_REQ_ACK lift survives that closure.
 - **New §17** — one-paragraph stub pointing to HEP-0036 for the auth
   layer.
 
@@ -5150,8 +5162,11 @@ Updated in lock-step with HEP-0036 across two commits:
   inbox endpoint goes into REG_REQ as a claim; the actual bind +
   CURVE/ZAP install happens at S3 after the broker accepts the
   role onto the channel(s) the inbox will serve.  Port-0 ephemeral
-  inbox endpoints are blocked until task #94 / HEP-CORE-0021 §16 (RESERVED)
-  ships the ephemeral-binding production path.
+  inbox endpoints remain unsupported: HEP-CORE-0021 §16 (adopted
+  2026-07-08, closes task #94) enables post-bind endpoint publish
+  for the data PUSH side (`endpoint_type == "zmq_node"`) but
+  explicitly rejects inbox updates (`INBOX_UPDATE_NOT_SUPPORTED`
+  per §16.5).  Inbox endpoints stay one-time-set at REG_REQ.
 
 ### 14.6 HEP-CORE-0030 (Band Messaging Protocol)
 

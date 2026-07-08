@@ -6,6 +6,70 @@
 
 ## Archive batches
 
+### 2026-07-08 (HEP-CORE-0021 §16 amendment — task #94 closes)
+
+Doc-only consolidation.  No code changes.  Task #94 (ephemeral
+port binding) closes with a normative amendment to HEP-CORE-0021
+§16 (previously RESERVED) that respects HEP-CORE-0036 §3.5.1
+("no data-plane footprint before auth") by binding at S3
+(post-REG_ACK) and publishing the resolved port over the
+CURVE-authenticated CTRL via `ENDPOINT_UPDATE_REQ` before the
+producer's first heartbeat.  Consumer admission gated on
+`Live AND (SHM OR zmq_node_endpoint_resolved)` via an extended
+R6 gate.  Mid-life re-update rejected with a new
+`ENDPOINT_CHANGE_FORBIDDEN` error code when consumers are
+already attached (prevents stranding live PULL connections).
+
+Pre-existing code/doc drift resolved: the broker's
+`handle_endpoint_update_req` at `broker_service.cpp:4451` has
+been alive since Wave M2.5 and still emits `INVALID_ENDPOINT`,
+`NOT_CHANNEL_OWNER`, `INBOX_UPDATE_NOT_SUPPORTED`,
+`UNKNOWN_ENDPOINT_TYPE` — but HEP-CORE-0007 §12 lines
+1535/1554/1555/1556 marked all four as RETIRED 2026-06-12.  The
+amendment un-retires the four (they were live in the handler)
+and adds `ENDPOINT_CHANGE_FORBIDDEN` for the new mid-life
+change contract.  `ENDPOINT_ALREADY_SET` stays retired — it
+belonged to the pre-REG bind variant and is superseded by the
+idempotent-if-same / consumers-attached-forbidden semantics.
+
+Cross-references cascaded so HEP-CORE-0021 §16 is the single
+source of truth for the ENDPOINT_UPDATE_REQ wire and state
+machine:
+
+- **HEP-CORE-0007 §12** — Request/Response table row + wire
+  catalog list + REG_REQ `zmq_node_endpoint` field comment
+  updated to point at HEP-CORE-0021 §16.5 / §16.6.  Error-code
+  catalog: 4 rows un-retired, `ENDPOINT_CHANGE_FORBIDDEN` added,
+  `ENDPOINT_ALREADY_SET` clarified.
+- **HEP-CORE-0033** — code-catalog comment §1247 + wire-catalog
+  row §2994 un-retired with pointers to HEP-CORE-0021 §16.
+- **HEP-CORE-0036 §I7** — "Post-task-#94 (future)" caveat
+  replaced with the shipped-design pointer.  Explicitly notes
+  the new path does NOT reintroduce a pre-REG bind requirement.
+- **HEP-CORE-0027 §4.1 / §4.2** — clarified that port-0 inbox
+  endpoints remain unsupported (rejected via
+  `INBOX_UPDATE_NOT_SUPPORTED`); only `zmq_node` is updatable.
+  Rationale explained (inbox discovery via ROLE_INFO_REQ on
+  demand creates cache-consistency issues that post-bind update
+  wouldn't cleanly solve).
+- **HEP-CORE-0017 §3.3** — `ProducerPeer::endpoint` pointer
+  redirected from HEP-CORE-0007 §12.3 to HEP-CORE-0021 §16.3
+  (the per-producer scope authority).
+
+No HEPs merged or retired.  Each keeps its distinct purpose:
+HEP-CORE-0007 is the wire catalog (short pointers to owning
+HEPs); HEP-CORE-0021 owns ENDPOINT_UPDATE_REQ; HEP-CORE-0033
+is the broker-character index; HEP-CORE-0036 owns the
+auth-door principle; HEP-CORE-0027 owns inbox messaging.
+
+Amendment marked "ADOPTED 2026-07-08 (draft)" — flips to
+"(final)" when user approves the completed design + doc-only
+consolidation.  Production code wiring (`role_api_base.cpp` S3
+sequence) and L3/L4 tests land in a follow-up commit after
+approval.
+
+---
+
 ### 2026-07-08 (HEP-CORE-0044 + HEP-CORE-0045 promoted)
 
 Two new HEPs promoted to authoritative status; one tech draft
