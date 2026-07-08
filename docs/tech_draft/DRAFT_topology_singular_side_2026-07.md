@@ -1477,8 +1477,9 @@ revision.
 | **HEP-CORE-0036** | §3.5.3, §6.4, §6.5, §6.5.1, §I7, §5.2 R6, §14 | **Symmetrize** — R6 gate direction generalizes; NOTIFY chain aims at binding side; §I7 endpoint disclosure section reflects topology-parametric shape.  Add `phase=live` semantics (§5.5): dialing-side first-heartbeat triggers a NOTIFY to the binding side without waking R6. |
 | **HEP-CORE-0042** | Entire HEP | **Major scope narrowing** — retire §5 dispatch + §7.1 pre-attach loop.  Preserve `confirmed_version` bookkeeping (now scalar per channel).  Preserve HEP-0044 AttachProtocol reference. |
 | **HEP-CORE-0044** | §5 wire consumers | **Small update** — SHM-attach helpers read `data_endpoint` / `data_pubkey` (renamed from `shm_capability_endpoint` / `producer_pubkey_z85` on the wire). |
+| **HEP-CORE-0018** | §5 Config Schema (§5.1 / §5.2 examples + §5.3 / §5.4 field reference rows) | **Small update (added Phase A rev 3, 2026-07-08)** — add `channel_topology` field to `producer.json` + `consumer.json` schema.  REQUIRED per §5.1 rule 2; legal values `"fan-in"` \| `"fan-out"` \| `"one-to-one"`.  Cross-refs HEP-CORE-0007 §12.3 (wire schema) + HEP-CORE-0017 §3.3 (topology decision matrix).  Landed 2026-07-08 evening as a completeness fix — HEP-0018 §5 is the config authority for the wire fields the other amendments define; the original nine-HEP scope map missed it. |
 
-**Nine HEPs total** in this amendment package — rows sorted numerically for review convenience.
+**Ten HEPs total** in this amendment package (Phase A rev 3 added HEP-CORE-0018 to close a completeness gap; nine landed 2026-07-08 morning + one afternoon rev 3) — rows sorted numerically for review convenience.
 
 ## 12. Migration ordering (phased)
 
