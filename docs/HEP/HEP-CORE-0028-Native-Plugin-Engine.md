@@ -5,6 +5,33 @@
 **Updated**: 2026-06-11 (#194 Phase C — Two-Layer Plugin Authoring Model: C ABI v6 with int+macro returns, visitor pattern, opaque metrics snapshot; expanded C++ wrapper with typed enums, concepts, handle types, std::span view; lifetime + security contract.  Supersedes v5 API.)
 **Scope**: NativeEngine, native_engine_api.h, C/C++ native engine lifecycle, ABI verification, schema validation
 
+> **Amendment (2026-07-08) — topology migration.**  Adds four new
+> script-facing accessors to the api object shared with role
+> scripts across all three engines (Lua, Python, Native C++):
+>
+> - `api.consumer_count(channel_name: str) -> int`
+> - `api.producer_count(channel_name: str) -> int`
+> - `api.consumers(channel_name: str)     -> list[str]`
+> - `api.producers(channel_name: str)     -> list[str]`
+>
+> Objective Live counts per channel (self-inclusive when applicable).
+> Backed by the binding-side role host's `live_peers[channel]` map,
+> maintained by `CHANNEL_AUTH_CHANGED_NOTIFY(phase=live)` events
+> from the broker per HEP-CORE-0036 §6.5.  Full accessor semantics
+> in the new §5 "Topology-parametric peer accessors" section
+> below.
+>
+> Retires HEP-CORE-0042 §8's four accessors
+> (`producers_declared` / `producers_connected` /
+> `producer_attach_status` / `producer_attach_reason`) — those
+> were tied to the pre-attach coordination protocol which retires
+> per HEP-CORE-0042 scope narrowing.
+>
+> Design authority: `docs/tech_draft/DRAFT_topology_singular_side_2026-07.md`
+> (status: DESIGN LOCKED).  See tech draft §7.6 for the
+> mechanism-vs-policy rationale (framework provides accurate
+> mechanisms, script decides policy).
+
 ---
 
 ## 1. Motivation
@@ -1488,6 +1515,157 @@ The same size cross-validation applies to all three engine types:
 If the native engine does not export `native_schema_<Name>` for a given type name, the
 schema string check is skipped with a warning. But `native_sizeof_<Name>` is always
 required — without it, the framework cannot guarantee memory safety.
+
+---
+
+## 6a. Topology-parametric peer accessors (2026-07-08 amendment)
+
+Added as part of the coordinated topology migration amendment
+package (tech draft §11.4 row 8; DESIGN LOCKED 2026-07-08).
+Provides script code with real-time visibility into the channel's
+live-peer set — the mechanism that Q2 of the migration resolved
+(framework provides accurate signals; script decides policy).
+
+### 6a.1 Signatures
+
+```
+api.consumer_count(channel_name: str) -> int
+api.producer_count(channel_name: str) -> int
+api.consumers(channel_name: str)      -> list[str]  # role_uids
+api.producers(channel_name: str)      -> list[str]  # role_uids
+```
+
+Cross-engine parity — same shape across Lua, Python, and Native C++
+engines (§6.4 ABI Compatibility applies).
+
+### 6a.2 Semantics
+
+**Count of Live consumers / producers of the channel per the
+broker's authoritative view.**  Live means the broker has received
+the peer's first heartbeat per HEP-CORE-0036 §3.5.2; per §3.5.5 S3
+the heartbeat is emitted AFTER the peer's data-plane socket setup
+completes (bind or connect+subscribe issued).  So Live ≈ "wire is
+ready to deliver."
+
+**Objective, not role-relative.**  The count includes self if self
+is a consumer/producer of the channel:
+
+- Fan-in channel: `consumer_count("X")` returns 1 (the singular
+  consumer, self-inclusive) regardless of who's asking.
+- Fan-out channel: `producer_count("X")` returns 1 similarly.
+- 1-to-1 channel: both return 0 or 1.
+- Otherwise: reflects the true count of Live peers of that type.
+
+Scripts know their own role, so trivial self-count cases (e.g.,
+consumer script calling `consumer_count` under fan-in) return an
+honest value without creating confusion — the script just doesn't
+consult that accessor for its own decisions.
+
+### 6a.3 How the framework knows
+
+The binding side's role host receives
+`CHANNEL_AUTH_CHANGED_NOTIFY(phase=live)` (HEP-CORE-0007 §12.5) each
+time a dialing-side peer transitions to Live at the broker.  Role
+host maintains `live_peers[channel]` as a set of role_uids +
+role_types; the accessors read from this set filtered by role_type.
+On `phase=left` NOTIFY, the peer is removed.
+
+Under fan-out / 1-to-1, the producer's role host owns the map (feeds
+`consumer_count` / `consumers`).  Under fan-in, the consumer's role
+host owns it (feeds `producer_count` / `producers`).  Dialing-side
+roles' accessors read from a symmetric — but usually trivial — local
+tracking, because the dialing side has at most one peer (the binding
+side).
+
+### 6a.4 Script usage pattern
+
+Producer script under fan-out ZMQ (where PUB drops messages sent
+before SUB subscribes):
+
+```python
+def on_produce(tx, msgs, api):
+    if api.consumer_count("data.stream") == 0:
+        return   # nobody to send to; skip iteration
+    # produce
+```
+
+Consumer script under fan-in ZMQ (checking whether any upstream
+producer is Live):
+
+```python
+def on_consume(rx, msgs, api):
+    if api.producer_count("data.stream") == 0:
+        return   # no upstream data flowing; skip work
+    # process
+```
+
+Processor role (both roles):
+
+```python
+def on_process(rx, tx, msgs, api):
+    if api.producer_count("input.channel") == 0:
+        return   # upstream fell silent
+    if api.consumer_count("output.channel") == 0:
+        return   # nobody reading my output
+    # transform
+```
+
+### 6a.5 Native C++ signature (v7 ABI)
+
+Function pointers on `PlhNativeContext`:
+
+```c
+typedef struct PlhNativeContext {
+    // ... existing fields (v6 baseline) ...
+
+    // Topology-parametric peer accessors (v7, 2026-07-08 amendment).
+    // channel_name is UTF-8 C string.  Returns non-negative on success;
+    // -1 with plh_get_last_error() set if channel not registered.
+    int  (*consumer_count)(struct PlhNativeContext* ctx, const char* channel_name);
+    int  (*producer_count)(struct PlhNativeContext* ctx, const char* channel_name);
+    // consumers / producers: caller-supplied buffer + length; returns
+    // number of entries written (or negative on error).  role_uids are
+    // UTF-8 C strings written into out_buf as null-terminated
+    // consecutive entries; out_buf_size is total bytes available.
+    int  (*consumers)(struct PlhNativeContext* ctx, const char* channel_name,
+                      char* out_buf, size_t out_buf_size);
+    int  (*producers)(struct PlhNativeContext* ctx, const char* channel_name,
+                      char* out_buf, size_t out_buf_size);
+} PlhNativeContext;
+```
+
+C++ wrapper provides `std::vector<std::string_view>` view over the
+out_buf entries for ergonomic use (see §4.7 Framework API pattern).
+
+### 6a.6 Retirement of HEP-CORE-0042 §8 accessors
+
+The following accessors documented in HEP-CORE-0042 §8 are
+RETIRED 2026-07-08:
+
+- `api.producers_declared(channel)`
+- `api.producers_connected(channel)`
+- `api.producer_attach_status(channel, uid)`
+- `api.producer_attach_reason(channel, uid)`
+
+They were tied to the pre-attach coordination protocol
+(CONSUMER_ATTACH_REQ_ZMQ) which retires as part of the topology
+migration (HEP-CORE-0042 scope narrowing).  Scripts should migrate
+to the four accessors above:
+
+| Retired | Replacement |
+|---|---|
+| `producers_declared(ch)` | `producers(ch)` — objectivity criterion is now "Live" not "declared in ACK." |
+| `producers_connected(ch)` | `producers(ch)` — same set now (connected = Live under new model). |
+| `producer_attach_status(ch, uid)` | `uid in producers(ch)` — status collapses to boolean membership. |
+| `producer_attach_reason(ch, uid)` | Retired — reason was tied to the ATTACH_REQ error taxonomy; under new model, denials happen at broker's ZAP layer with standard log markers per HEP-CORE-0036 §I11. |
+
+### 6a.7 Cross-references
+
+- HEP-CORE-0036 §6.5 — `CHANNEL_AUTH_CHANGED_NOTIFY(phase=live)` semantics.
+- HEP-CORE-0007 §12.5 — NOTIFY wire schema.
+- HEP-CORE-0017 §3.3.2 — script-facing accessors in the pipeline
+  architecture context.
+- Tech draft §7.6 — script decides policy principle.
 
 ---
 
