@@ -22,6 +22,44 @@
 | **Depends on**  | HEP-CORE-0021 (ZMQ Endpoint Registry — endpoint discovery via broker), HEP-CORE-0035 (Hub-Role Authentication — broker-side ZAP + pubkey index), HEP-CORE-0023 (Startup Coordination — presence FSM), HEP-CORE-0040 (Locked Key Memory — KeyStore/LockedKey for role identity secrets), HEP-CORE-0041 (SHM Channel Auth — cross-platform capability-transport SHM auth; supersedes HEP-0036's shm_secret model) |
 | **Blocks**      | Production deployment (data plane currently unauthenticated; see §3 gap analysis)                            |
 
+> **Amendment (2026-07-08) — topology migration.**  This HEP's
+> auth-chain machinery becomes topology-parameterized:
+>
+> - **R6 gate direction symmetrizes.**  Pre-migration R6 blocked
+>   consumer REG_REQ until producer was Live.  Post-migration the
+>   DIALING side's REG_REQ pends until the BINDING side is Live +
+>   `data_endpoint_resolved` + `confirmed_version >= role_registration_version`.
+>   Under fan-in the consumer is BINDING (producers pend); under
+>   fan-out and 1-to-1 the producer is BINDING (consumers pend).
+>   See tech draft §5.4.
+>
+> - **`CHANNEL_AUTH_CHANGED_NOTIFY` direction inverts.**  Broker
+>   aims at the BINDING side of the channel per topology, not
+>   hardcoded producer.  Payload gains `phase` field
+>   (`admitted` \| `live` \| `left`) + `role_uid` + `role_type`
+>   per HEP-CORE-0007 §12.5.  Old `reason` field retires; the
+>   semantics collapse into phase + role_type.
+>
+> - **`phase=live` new semantics.**  Broker fires
+>   `CHANNEL_AUTH_CHANGED_NOTIFY(phase=live)` when a dialing-side
+>   role becomes Live (first heartbeat received per §3.5.2).  Feeds
+>   the binding side's `live_peers[channel]` map, backing the
+>   `api.consumer_count()` / `api.producer_count()` accessors
+>   (HEP-CORE-0028).  Does NOT bump `channel_version` and does NOT
+>   wake R6 — it's a readiness signal only.
+>
+> - **§I7 endpoint disclosure.**  Pre-migration wire path
+>   (per-producer array on CONSUMER_REG_ACK) generalizes: the
+>   dialing side's REG_ACK carries a single scalar `data_endpoint`
+>   + `data_pubkey` pointing at the binding side.  The per-producer
+>   array retires per HEP-CORE-0007 §12.3.
+>
+> Design authority: `docs/tech_draft/DRAFT_topology_singular_side_2026-07.md`
+> (status: DESIGN LOCKED).  Coordinated with HEP-CORE-0007
+> (wire catalog), HEP-CORE-0017 (pipeline architecture), HEP-CORE-0033
+> (broker character), HEP-CORE-0028 (script API), and five more —
+> see the tech draft §11.4 for the full amendment package.
+
 ---
 
 ## 1. Status banner
@@ -561,6 +599,23 @@ The legacy text was:
 > (HEP-CORE-0002), which is unrelated to CURVE.  See §5.6.
 
 ### I7 — Endpoint disclosure follows authorization
+
+> **Amendment (2026-07-08) — topology migration.**  Under the
+> binding/dialing model, the DIRECTION of endpoint disclosure
+> parameterizes by topology:
+> - **Fan-in ZMQ:** consumer's CONSUMER_REG_ACK omits data_endpoint
+>   (consumer IS the binding side, already owns its endpoint).
+>   Producer's REG_ACK carries the consumer's `data_endpoint` +
+>   `data_pubkey` (dialing-side ACK).
+> - **Fan-out / 1-to-1 ZMQ / SHM:** producer's REG_ACK omits
+>   data_endpoint (producer IS the binding side).  Consumer's
+>   CONSUMER_REG_ACK carries the producer's `data_endpoint` +
+>   `data_pubkey`.
+>
+> In every case, the DIALING side's REG_ACK carries a single
+> scalar `data_endpoint` + `data_pubkey` pair (no per-producer
+> array).  The per-producer array shape retires per HEP-CORE-0007
+> §12.3.  See tech draft §5.2 + §5.9 for the schemas.
 
 **The data-plane endpoint is broker-mediated, not directly
 config-discoverable to consumers.**  Two production paths exist:
@@ -1123,6 +1178,22 @@ of liveness in operational dashboards.  Fatal-on-failure makes
 this category of error impossible by construction.
 
 ### 3.5.2 Role readiness — the broker decides when a role is live
+
+> **Amendment (2026-07-08) — topology migration.**  Under the
+> binding/dialing model, the role that pends waiting for
+> readiness parameterizes by topology:
+> - **Fan-in:** producer's REG_REQ pends until consumer (binding
+>   side) is Live + `data_endpoint_resolved` + allowlist confirmed.
+> - **Fan-out / 1-to-1:** consumer's REG_REQ pends until producer
+>   (binding side) is Live + `data_endpoint_resolved` + allowlist
+>   confirmed.
+> The "first heartbeat" test itself is unchanged — it's the
+> per-role Live transition that binds side + condition to R6
+> semantics.  Broker fires
+> `CHANNEL_AUTH_CHANGED_NOTIFY(phase=live)` on this transition to
+> feed the binding side's `live_peers[channel]` map (backing
+> `api.consumer_count()` / `api.producer_count()`).  See tech
+> draft §5.4 for the R6 gate parameterization.
 
 A role doesn't get to decide when it's ready to participate on a
 channel.  The broker decides.  And the broker's decision rests on
@@ -3136,6 +3207,24 @@ design-archaeology only and is frozen alongside the also-frozen
 
 ### 6.4 `CONSUMER_REG_ACK` (broker → consumer) — additions
 
+> **Amendment (2026-07-08) — topology migration.**  The
+> per-producer `producers[]` array retires.  Under the
+> binding/dialing model, `CONSUMER_REG_ACK` shape depends on
+> whether the consumer is BINDING or DIALING:
+> - **Fan-in consumer (BINDING):** no `data_endpoint` / `data_pubkey`
+>   / `producers[]` — success flag only.  Consumer already owns
+>   the channel's endpoint (its own bound PULL).
+> - **Fan-out consumer (DIALING) / 1-to-1 consumer (DIALING):**
+>   scalar `data_endpoint` + `data_pubkey` pointing at the producer
+>   (binding side).
+> - **Fan-out SHM consumer (DIALING):** same scalar pair, where
+>   `data_endpoint` is the producer's capability-transport socket
+>   (`ipc://...`).
+>
+> Full schema in HEP-CORE-0007 §12.3.  The `producers[]` per-producer
+> array + `shm_secret` + `data_server_pubkey` shapes below are
+> SUPERSEDED-BUT-PRESERVED for archaeological reference.
+
 Per HEP-CORE-0023 §2.1.1, a ZMQ channel admits 1..N producers
 (fan-in).  CONSUMER_REG_ACK MUST return data for ALL admitted
 producers so the consumer's framework can feed them into its rx
@@ -3181,6 +3270,48 @@ adopted; the DISC_REQ per-producer lift is a separate item that
 survives.  See §14.1 for the HEP-0021 update list.
 
 ### 6.5 Channel-state synchronization (notify-then-pull)
+
+> **Amendment (2026-07-08) — topology migration.**  The
+> notify-then-pull mechanism generalizes:
+>
+> - **Direction inverts by topology.**  `CHANNEL_AUTH_CHANGED_NOTIFY`
+>   now aims at the BINDING side of the channel per topology:
+>   fan-in consumer, fan-out or 1-to-1 producer.  Pre-migration
+>   this was hardcoded to "every kLive producer."
+>
+> - **Payload gains `phase` field.**  Values:
+>   - `phase=admitted` — pubkey added to allowlist BEFORE
+>     dialing-side REG_ACK is sent.  Binding side responds with
+>     `GET_CHANNEL_AUTH_REQ` + `CHANNEL_AUTH_APPLIED_REQ`.  Bumps
+>     `channel_version`; may wake R6.
+>   - `phase=live` — first heartbeat from dialing-side role
+>     received.  Binding side updates its `live_peers[channel]`
+>     map locally (no wire round-trip).  Does NOT bump
+>     `channel_version`; does NOT wake R6.  Backs
+>     `api.consumer_count()` / `api.producer_count()` accessors
+>     (HEP-CORE-0028).
+>   - `phase=left` — dialing-side role DEREG / heartbeat-timeout
+>     / revocation.  Binding side updates both `zap_allowlist`
+>     and `live_peers` maps.  Bumps `channel_version`; may wake
+>     R6.
+>
+> - **`role_uid` + `role_type` fields added.**  Identify which
+>   dialing-side role transitioned (`role_type` is
+>   "producer" | "consumer") so the binding side updates the
+>   appropriate accessor map.
+>
+> - **Old `reason` field retires.**  The
+>   `{consumer_joined, consumer_left, consumer_timeout,
+>   federation_peer_death}` reason enum semantics collapse into
+>   phase + role_type + implicit context (e.g., DEREG vs timeout
+>   distinction moves to log markers rather than wire).
+>
+> Wire schema authoritative in HEP-CORE-0007 §12.5.  Producer-side
+> `CHANNEL_PRODUCERS_CHANGED_NOTIFY` + `GET_CHANNEL_PRODUCERS_REQ`
+> chain retires (HEP-CORE-0007 §12.5 retirement note) — those
+> semantics collapse into `phase=admitted/left` NOTIFY targeting
+> the binding-side consumer under fan-in.
+
 
 **Relationship to HEP-CORE-0042 (added 2026-07-01, task #246).**  This
 section owns the notify-then-pull *mechanism* that synchronizes
