@@ -830,6 +830,89 @@ struct ChannelEntry
         return std::nullopt;
     }
 
+    // ── 2026-07-08 topology migration accessors ───────────────────────
+    //
+    // Phase B slice 2 additions.  Read + write access to the new
+    // channel-scope fields (topology / data_endpoint /
+    // data_endpoint_resolved / channel_version / confirmed_version).
+    //
+    // These accessors are inert during Phase B slices 2-N-1: no code
+    // path calls them.  The atomic Phase B commit wires the broker's
+    // REG_REQ / ENDPOINT_UPDATE_REQ / CHANNEL_AUTH_APPLIED_REQ
+    // handlers to invoke them; until then the fields keep their
+    // default values.
+    //
+    // Design authority: tech draft §4.1 + §5.4 + §5.5 + §5.6;
+    // HEP-CORE-0033 §5 (ChannelEntry row amendment).
+
+    /// Set the channel's data-plane endpoint per HEP-CORE-0021 §16.4.
+    /// Called by the broker's `ENDPOINT_UPDATE_REQ` handler after
+    /// validating the sender is the BINDING side of the channel.
+    /// Idempotent: setting the same value again is a no-op that
+    /// preserves `data_endpoint_resolved=true`.
+    void set_channel_data_endpoint(std::string endpoint) noexcept
+    {
+        data_endpoint          = std::move(endpoint);
+        data_endpoint_resolved = true;
+    }
+
+    /// Look up the channel's data-plane endpoint.  Empty string means
+    /// the binding side has not yet published its endpoint via
+    /// ENDPOINT_UPDATE_REQ (`data_endpoint_resolved` is false).
+    const std::string &channel_data_endpoint() const noexcept
+    {
+        return data_endpoint;
+    }
+
+    /// True once the binding side has published the endpoint.
+    bool channel_endpoint_resolved() const noexcept
+    {
+        return data_endpoint_resolved;
+    }
+
+    /// The channel's declared topology (default `FanOut` during Phase
+    /// B slices; populated from the wire in the atomic Phase B commit).
+    ChannelTopology channel_topology() const noexcept
+    {
+        return topology;
+    }
+
+    /// Bump `channel_version` atomically and return the new value.
+    /// Called by the broker's admission path when a dialing-side role
+    /// is added to or removed from the ZAP allowlist (phase=admitted
+    /// / phase=left NOTIFYs per HEP-CORE-0007 §12.5).  NOT called on
+    /// phase=live transitions — those don't change the allowlist.
+    uint64_t bump_channel_version() noexcept
+    {
+        return ++channel_version;
+    }
+
+    /// Read the current allowlist version.
+    uint64_t current_channel_version() const noexcept
+    {
+        return channel_version;
+    }
+
+    /// Record the binding side's confirmed-applied version (called by
+    /// the broker's `CHANNEL_AUTH_APPLIED_REQ` handler).  Monotonic:
+    /// silently ignores calls with `applied <= confirmed_version`
+    /// (out-of-order or duplicate APPLIED_REQs).
+    void set_confirmed_version(uint64_t applied) noexcept
+    {
+        if (applied > confirmed_version)
+            confirmed_version = applied;
+    }
+
+    /// Read the binding side's confirmed-applied version.  Used by
+    /// the broker's R6 gate to test `confirmed_version >=
+    /// role_registration_version` for pending dialing-side REG_REQs.
+    uint64_t current_confirmed_version() const noexcept
+    {
+        return confirmed_version;
+    }
+
+    // ── end 2026-07-08 topology migration accessors ───────────────────
+
     /// Set the per-producer metadata blob (HEP-CORE-0007 §12.4).
     /// Returns true iff the producer was found.  Producers may
     /// publish orthogonal blobs; channel-level read paths aggregate
