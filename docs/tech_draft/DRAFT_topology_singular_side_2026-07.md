@@ -47,7 +47,7 @@ Revision history:
   Conceptual/principle uses of "singular side" in §1, §3, §4.2 are
   retained deliberately — those describe the design principle at an
   abstract level rather than picking out a specific role.
-- **Rev 5** (this) — resolved all three remaining open items from
+- **Rev 5** (`e6d085b3`) — resolved all three remaining open items from
   §13.  Extended `CHANNEL_AUTH_CHANGED_NOTIFY` with a `phase` field
   (`admitted` / `live` / `left`) so binding side distinguishes
   "allowlist changed" from "peer wire-ready" (Option A per user
@@ -66,6 +66,22 @@ Revision history:
   accessors + Live-derived semantics; §7.7 NEW documents the plain-PUB
   rationale; §10.4 wake handler distinguishes R6-waking events from
   `phase=live` NOTIFY firings; §13 all three items marked ANSWERED.
+- **Rev 6** (this) — consistency cleanup after a fresh-eye pass
+  identified five categories of residual drift from rev 5 that hadn't
+  propagated to every back-reference: §5.4 step 4 + concurrent example
+  + §5.7 step 2 + §5.11 DEREG note now specify `phase=admitted` /
+  `phase=live` / `phase=left` on all `CHANNEL_AUTH_CHANGED_NOTIFY`
+  mentions (were unadorned); §7.7 lost three orphan paragraphs
+  that survived the rev 5 rewrite of §7.6 (a duplicate rationale
+  paragraph + a stale "accessor names settled in Phase A" note that
+  contradicted rev 5's item 2 resolution); §13 Q2 answer summary
+  rewritten with `phase=live` + split accessor names (was still using
+  the old `reason=consumer_joined` / `api.peer_count()` / `api.peers()`
+  language); §5.7 LOC estimate for L3 test retirement corrected from
+  ~500 to ~1002 (measured by code-scan agent); §5.11 "Plural-side
+  DEREG" → "Dialing-side DEREG" (terminology drift back after rev 4
+  normalization).  No design changes; documentation cleanup only.
+  Design LOCKED status preserved.
 
 The draft supersedes two recent commits that need to be re-evaluated in
 light of this design:
@@ -375,9 +391,11 @@ dialing-side REG_REQ that passes the cardinality + compatibility gates
 1. Adds the role's pubkey to `ChannelEntry`'s ZAP allowlist.
 2. Bumps `channel_version` to `V_new`.
 3. Assigns `role_registration_version = V_new` for this REG_REQ.
-4. Fires ONE `CHANNEL_AUTH_CHANGED_NOTIFY` to the binding side (see §5.5
-   direction rule) — the notify covers the aggregate allowlist state at
-   `V_new`, not per-role.
+4. Fires ONE `CHANNEL_AUTH_CHANGED_NOTIFY(phase=admitted)` to the
+   binding side (see §5.5 direction rule) — the notify covers the
+   aggregate allowlist state at `V_new`, not per-role.  A subsequent
+   `phase=live` NOTIFY fires later when the dialing side's first
+   heartbeat arrives.
 5. Pends the REG_REQ waiting for `confirmed_version >= V_new`.
 
 **Concurrent REG_REQs (multiple producers under fan-in arriving at once).**
@@ -385,20 +403,27 @@ Each REG_REQ locks the state mutex serially, so version assignments are
 strictly ordered.  If producers A, B, C arrive nearly simultaneously:
 
 - A locks → allowlist gains A → `channel_version = 1` → A's
-  `role_registration_version = 1` → NOTIFY(v=1) fired.
+  `role_registration_version = 1` → NOTIFY(phase=admitted, v=1) fired.
 - B locks (after A releases) → allowlist gains B → `channel_version = 2`
-  → B's `role_registration_version = 2` → NOTIFY(v=2) fired.
-- C locks similarly → `channel_version = 3` → NOTIFY(v=3) fired.
+  → B's `role_registration_version = 2` → NOTIFY(phase=admitted, v=2) fired.
+- C locks similarly → `channel_version = 3` → NOTIFY(phase=admitted, v=3) fired.
 
-Consumer receives 3 NOTIFYs.  It may pull the aggregate allowlist once
-and send `CHANNEL_AUTH_APPLIED_REQ(applied_version=3)`.  That single
-APPLIED_REQ wakes all 3 pending producer REG_REQs simultaneously
-(all three `V >= their_role_registration_version` conditions become
-true).  Broker sends all 3 REG_ACKs.
+Consumer receives 3 admitted NOTIFYs.  It may pull the aggregate
+allowlist once and send `CHANNEL_AUTH_APPLIED_REQ(applied_version=3)`.
+That single APPLIED_REQ wakes all 3 pending producer REG_REQs
+simultaneously (all three `V >= their_role_registration_version`
+conditions become true).  Broker sends all 3 REG_ACKs.  Each producer
+subsequently goes Live (first heartbeat) and the broker fires three
+independent `phase=live` NOTIFYs — one per producer — which update
+the consumer's `live_peers` map without waking R6.
 
-Consumer MAY coalesce NOTIFYs (apply once for the aggregate) or apply
-per-notify (three round-trips).  The wire allows either; the framework's
-role host SHOULD coalesce for efficiency but is not required to.
+Consumer MAY coalesce admitted NOTIFYs (apply once for the aggregate)
+or apply per-notify (three round-trips).  The wire allows either; the
+framework's role host SHOULD coalesce for efficiency but is not
+required to.  `phase=live` NOTIFYs are not coalescible in general
+because each carries a distinct role_uid; but their handling is a
+local map update, not a wire round-trip, so batching brings no wire
+savings.
 
 ### 5.4a DEREG / channel death mid-pending
 
@@ -496,15 +521,20 @@ consumer BINDS; consumer OWNS the allowlist.  The whole coordination
 collapses into the REG_REQ path:
 
 1. Producer REG_REQ arrives → broker blocks at R6.
-2. Broker fires `CHANNEL_AUTH_CHANGED_NOTIFY` → consumer.
+2. Broker fires `CHANNEL_AUTH_CHANGED_NOTIFY(phase=admitted)` → consumer.
 3. Consumer pulls, applies to ZAP, sends `CHANNEL_AUTH_APPLIED_REQ`.
 4. Broker's R6 wake — pending producer REG_REQs drain.
 5. Producer REG_ACK carries `data_endpoint` + `data_pubkey`.
 6. Producer dials.  Consumer's ZAP admits.
+7. Producer sends first heartbeat → broker marks Live → broker fires
+   `CHANNEL_AUTH_CHANGED_NOTIFY(phase=live)` → consumer's
+   `api.producer_count()` increments.
 
 **No CONSUMER_ATTACH_REQ_ZMQ.**  No `attach:begin` / `attach:success` /
 `attach:complete` log markers.  No pre-attach loop.  ~400 LOC of broker
-code + ~500 LOC of L3 tests retire.
+code + ~1002 LOC of L3 tests retire (measured by code-scan agent
+2026-07-08 against `test_pattern4_attach_coordination.cpp`; earlier
+draft estimated ~500).
 
 ### 5.8 `CHANNEL_PRODUCERS_CHANGED_NOTIFY` + `GET_CHANNEL_PRODUCERS_REQ` — retire for fan-in
 
@@ -550,9 +580,11 @@ Channel-death rule generalizes: **binding side dies → channel dies**.
 | Fan-out   | Producer (binding side) | All consumers |
 | 1-to-1    | Either side (both are singular) | The other side |
 
-Plural-side DEREG (fan-in producer, fan-out consumer) removes that role
-from the allowlist and fires `CHANNEL_AUTH_CHANGED_NOTIFY` to the binding
-side (§5.5); the channel survives.
+Dialing-side DEREG (fan-in producer, fan-out consumer, 1-to-1
+consumer) removes that role from the allowlist and fires
+`CHANNEL_AUTH_CHANGED_NOTIFY(phase=left)` to the binding side (§5.5);
+the channel survives.  Binding side updates BOTH `zap_allowlist` and
+`live_peers` on the `phase=left` NOTIFY.
 
 ### 5.11a Singular-side restart under fan-in (post-crash)
 
@@ -947,16 +979,6 @@ same event would create potential for divergence during transient
 windows; one observation from the authority is simpler and canonical.
 
 Plain PUB, broker-derived counts, one source of truth.
-
-Rationale for this delegation: the framework has no way to know what
-"ready enough" means for a given deployment.  A control loop that must
-run at fixed cadence regardless of consumer state has different needs
-from a sensor that suppresses expensive computation until at least one
-consumer is subscribed.  See [[feedback_framework_mechanism_not_policy]]
-in session memory.
-
-Script API accessor names + cross-engine parity land under HEP-CORE-0028;
-exact naming settled in Phase A.
 
 ## 8. State diagrams
 
@@ -1467,11 +1489,12 @@ should be one commit (or a small tight batch).
    this explicitly.
 2. **Q2 — PUB/SUB slow joiner for fan-out ZMQ.**  Framework does NOT
    auto-hold the data loop.  Producer receives
-   `CHANNEL_AUTH_CHANGED_NOTIFY(reason=consumer_joined)` and exposes
-   peer state to script via accessors (`api.peer_count()` /
-   `api.peers()`).  Script decides when to produce.  See §7.6.
-   Underlying principle: framework provides mechanisms, script decides
-   policy.
+   `CHANNEL_AUTH_CHANGED_NOTIFY(phase=live)` when a consumer reaches
+   Live at the broker (§7.6) and exposes count to script via
+   `api.consumer_count()` / `api.consumers()`.  Script decides when
+   to produce.  Underlying principle: framework provides mechanisms,
+   script decides policy.  Naming resolution (item 2) locked the split
+   accessor shape — see §7.6.
 3. **Q3a — `channel_topology` requirement.**  REQUIRED on every REG_REQ.
    Missing → `INVALID_REQUEST`.  No lenient default during transition.
    Consequence: Phase B is a bigger atomic change (broker + all tests +
