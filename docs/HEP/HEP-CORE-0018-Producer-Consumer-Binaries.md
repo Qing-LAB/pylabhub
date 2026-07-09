@@ -22,19 +22,78 @@
 > historical reference; all CLI-surface content is superseded by
 > HEP-CORE-0024 §11 and `src/include/utils/role_cli.hpp`.
 
-> **Amendment (2026-07-08) — topology migration config schema.**  §5
-> Config Schema (producer.json / consumer.json) gains the REQUIRED
-> `channel_topology` field.  Legal values: `"fan-in"` | `"fan-out"` |
-> `"one-to-one"`.  See §5.1 / §5.2 for updated examples and §5.3 /
-> §5.4 for the field reference rows.  Coordinated with the
-> nine-HEP amendment package landed in Phase A (commits
-> `007b749d..c920938d`); the tenth item in Phase A rev 3 closes an
-> oversight — HEP-0018 §5 was not in the original amendment table
-> despite being the config authority for the wire fields those
-> amendments define.  Design authority:
+> **Amendment (2026-07-08 evening) — topology migration config schema.**
+> §5 Config Schema (producer.json / consumer.json) gains the OPTIONAL
+> per-direction fields `out_channel_topology` (producer) and
+> `in_channel_topology` (consumer / processor-input side).  Legal
+> values: `"fan-in"` | `"fan-out"` | `"one-to-one"`.  **Default when
+> omitted: `"one-to-one"`** (revised from the earlier
+> "REQUIRED, no lenient default" per user direction 2026-07-08 evening).
+> See §5.1 / §5.2 for updated examples and §5.3 / §5.4 for the field
+> reference rows.
+>
+> Naming rationale: fields follow the codebase's existing
+> `in_channel` / `out_channel` directional-prefix convention
+> (parsed by `role_config.cpp:223-224`).  Processors that consume
+> from a fan-in channel and produce to a fan-out channel declare
+> BOTH `in_channel_topology="fan-in"` and
+> `out_channel_topology="fan-out"`.
+>
+> Lenient-default rationale: one-to-one is the simplest and most
+> common topology; simple existing configs (both demos and
+> user-written roles) don't need to change.  Only configs that
+> need fan-in or fan-out semantics need to declare the field
+> explicitly.
+>
+> **Overwrite semantics — only explicit declarations can set or
+> change a channel's stored topology.**
+>
+> - **First REG_REQ / CONSUMER_REG_REQ on a channel with an
+>   EXPLICIT `*_channel_topology`** — broker records that
+>   topology on `ChannelEntry.topology` and applies it going
+>   forward.
+> - **First REG_REQ on a channel with no `*_channel_topology`
+>   (defaulted)** — broker records `ChannelEntry.topology =
+>   OneToOne` provisionally.  This is the same as "explicit
+>   `one-to-one`" for cardinality-check purposes, but flagged
+>   internally as "defaulted" so a later EXPLICIT declaration on
+>   the same channel can promote it.
+> - **Subsequent REG_REQ on an existing channel with EXPLICIT
+>   `*_channel_topology`** — broker compares against the stored
+>   topology:
+>     - If stored is EXPLICIT and matches → OK.
+>     - If stored is EXPLICIT and differs → `TOPOLOGY_MISMATCH`.
+>     - If stored is DEFAULTED (`one-to-one`) → broker promotes
+>       the channel to the new explicit topology (only if the
+>       promotion is consistent with existing cardinality — e.g.
+>       promoting to `fan-in` requires exactly 0 other producers
+>       already registered; otherwise `TOPOLOGY_MISMATCH`).
+> - **Subsequent REG_REQ with NO `*_channel_topology` (defaulted)**
+>   — broker treats as "inherit whatever's stored," no attempted
+>   overwrite.  No mismatch check fires even if stored topology is
+>   `fan-in` or `fan-out`.  The defaulted role simply participates
+>   in the channel's declared topology.
+>
+> Cardinality gates
+> (`FAN_IN_IS_SINGLE_CONSUMER` / `FAN_OUT_IS_SINGLE_PRODUCER` /
+> `ONE_TO_ONE_CARDINALITY_VIOLATED`) apply based on the EFFECTIVE
+> topology (whether explicitly declared or defaulted / inherited).
+>
+> Coordinated with the nine-HEP amendment package landed in Phase
+> A (commits `007b749d..c920938d`); this rev 3 (2026-07-08 evening)
+> closes an oversight — HEP-0018 §5 was not in the original
+> amendment table despite being the config authority for the wire
+> fields those amendments define.  Design authority:
 > `docs/tech_draft/DRAFT_topology_singular_side_2026-07.md` (status:
-> DESIGN LOCKED, rev 9) §5.1 rule 2 — REQUIRED field, no lenient
-> default.  Wire schema authoritative in HEP-CORE-0007 §12.3.
+> DESIGN LOCKED, rev 9) — Q3a "REQUIRED, no lenient default"
+> supersedes to "OPTIONAL, default `one-to-one`" per user
+> direction 2026-07-08 evening (rev 10 update pending).  Wire
+> schema authoritative in HEP-CORE-0007 §12.3.
+>
+> Pre-existing doc drift also fixed: §5.1 example JSON showed
+> `"channel"` at top level, but the actual parser reads
+> `in_channel` / `out_channel` (directional prefix per
+> role_config.cpp).  Examples corrected in the same amendment.
 
 ---
 
@@ -184,8 +243,8 @@ Created by `pylabhub-consumer --init <dir>`:
   },
 
   "broker":      "tcp://127.0.0.1:5570",
-  "channel":     "lab.sensors.temperature",
-  "channel_topology": "fan-out",
+  "out_channel": "lab.sensors.temperature",
+  "out_channel_topology": "fan-out",
 
   "target_period_ms": 100,
   "transport": "shm",
@@ -226,8 +285,8 @@ Created by `pylabhub-consumer --init <dir>`:
   },
 
   "broker":     "tcp://127.0.0.1:5570",
-  "channel":    "lab.sensors.temperature",
-  "channel_topology": "fan-out",
+  "in_channel": "lab.sensors.temperature",
+  "in_channel_topology": "fan-out",
 
   "queue_type": "shm",
 
@@ -264,9 +323,9 @@ Created by `pylabhub-consumer --init <dir>`:
 | `broker` | yes | — | Broker endpoint (`tcp://host:port`) |
 | `broker_pubkey` | no | `""` | CurveZMQ broker public key Z85 |
 | `hub_dir` | no | — | Hub directory; reads `hub.json` to derive `broker`/`broker_pubkey` |
-| `channel` | yes | — | Channel name to publish on |
-| `channel_topology` | **yes**★ | — | Channel topology declaration (2026-07-08 topology migration).  Legal values: `"fan-in"` (N producers → 1 consumer, ZMQ only, consumer binds), `"fan-out"` (1 producer → N consumers, ZMQ or SHM, producer binds), `"one-to-one"` (1 producer → 1 consumer, ZMQ or SHM, producer binds).  MUST match the value the channel was created with — mismatch → broker rejects with `TOPOLOGY_MISMATCH` (HEP-CORE-0007 §12.4a).  Cardinality constraints per topology enforced by the broker (`FAN_IN_IS_SINGLE_CONSUMER` / `FAN_OUT_IS_SINGLE_PRODUCER` / `ONE_TO_ONE_CARDINALITY_VIOLATED`).  See HEP-CORE-0017 §3.3 for the topology × transport decision matrix, HEP-CORE-0007 §12.3 for the wire schema. |
-| `transport` | no | `"shm"` | `"shm"` (SHM ring buffer) or `"zmq"` (ZMQ PUSH/PUB socket depending on topology).  Must be compatible with `channel_topology` — SHM does NOT support `"fan-in"` (rejected with `TOPOLOGY_NOT_SUPPORTED_FOR_TRANSPORT`). |
+| `out_channel` | yes | — | Channel name to publish on.  (Naming: directional-prefix per `role_config.cpp:224` — the pre-2026-07-08 doc drift that showed `"channel"` at top level was a documentation error; the parser has always read `out_channel`.) |
+| `out_channel_topology` | no★ | `"one-to-one"` | Channel topology declaration for the producer's output channel (2026-07-08 topology migration).  Legal values: `"fan-in"` (N producers → 1 consumer, ZMQ only, consumer binds), `"fan-out"` (1 producer → N consumers, ZMQ or SHM, producer binds), `"one-to-one"` (1 producer → 1 consumer, ZMQ or SHM, producer binds).  Overwrite semantics: only EXPLICIT declarations set or change a channel's stored topology; defaulted `one-to-one` inherits from any pre-existing channel topology.  Explicit mismatch → `TOPOLOGY_MISMATCH` (HEP-CORE-0007 §12.4a).  Cardinality constraints per topology enforced by the broker (`FAN_IN_IS_SINGLE_CONSUMER` / `FAN_OUT_IS_SINGLE_PRODUCER` / `ONE_TO_ONE_CARDINALITY_VIOLATED`).  See HEP-CORE-0017 §3.3 for the topology × transport decision matrix, HEP-CORE-0007 §12.3 for the wire schema. |
+| `transport` | no | `"shm"` | `"shm"` (SHM ring buffer) or `"zmq"` (ZMQ PUSH/PUB socket depending on topology).  Must be compatible with `out_channel_topology` — SHM does NOT support `"fan-in"` (rejected with `TOPOLOGY_NOT_SUPPORTED_FOR_TRANSPORT`). |
 | `zmq_out_endpoint` | no† | — | Required when `transport=zmq`; ZMQ PUSH endpoint (e.g. `"tcp://0.0.0.0:5581"`) |
 | `zmq_out_bind` | no | `true` | PUSH default=bind; set false to connect to a remote PULL |
 | `zmq_buffer_depth` | no | `64` | Internal send buffer depth (>0); for `transport=zmq` |
@@ -286,7 +345,7 @@ Created by `pylabhub-consumer --init <dir>`:
 | `script.path` | yes | `"."` | Base script directory; C++ resolves `<path>/script/<type>/__init__.py` |
 
 † Required when `transport=zmq`. § Required when `shm.enabled=true`.
-★ **REQUIRED as of 2026-07-08 topology migration.**  No lenient default — missing → `INVALID_REQUEST` at broker admission.  Per tech draft §5.1 rule 2 the broker validates `channel_topology` upfront in the REG_REQ entry gate BEFORE any state mutation.
+★ **OPTIONAL as of 2026-07-08 topology migration (evening rev).**  Default `"one-to-one"` when the field is omitted.  Only EXPLICIT declarations can set or change a channel's stored topology; defaulted `one-to-one` inherits (see the "Overwrite semantics" bullet in the amendment banner at the top of this HEP).  Broker validates topology (whether explicit or defaulted) upfront in the REG_REQ entry gate BEFORE any state mutation.
 
 ### 5.4 Field Reference — Consumer
 
@@ -299,9 +358,9 @@ Created by `pylabhub-consumer --init <dir>`:
 | `broker` | yes | — | Broker endpoint |
 | `broker_pubkey` | no | `""` | CurveZMQ broker public key Z85 |
 | `hub_dir` | no | — | Hub directory; derives `broker`/`broker_pubkey` from `hub.json` |
-| `channel` | yes | — | Channel name to subscribe to |
-| `channel_topology` | **yes**★ | — | Channel topology declaration (2026-07-08 topology migration).  Same wire-value semantics as the producer-side field — see §5.3 row above.  MUST match the value the channel was created with; broker rejects mismatch with `TOPOLOGY_MISMATCH`.  Consumer-side cardinality gates: under `"fan-in"` a second `CONSUMER_REG_REQ` is rejected with `FAN_IN_IS_SINGLE_CONSUMER`; under `"one-to-one"` a second consumer is rejected with `ONE_TO_ONE_CARDINALITY_VIOLATED`. |
-| `queue_type` | no | `"shm"` | `"shm"` (SHM read via DataBlockConsumer) or `"zmq"` (ZMQ PULL/SUB depending on topology; endpoint from broker under fan-out / 1-to-1 topology, consumer binds under fan-in topology).  Must be compatible with `channel_topology` — SHM does NOT support `"fan-in"`. |
+| `in_channel` | yes | — | Channel name to subscribe to.  (Naming: directional-prefix per `role_config.cpp:223`.) |
+| `in_channel_topology` | no★ | `"one-to-one"` | Channel topology declaration for the consumer's input channel (2026-07-08 topology migration).  Same wire-value semantics + overwrite semantics as the producer-side field — see §5.3 row above.  Consumer-side cardinality gates: under `"fan-in"` a second `CONSUMER_REG_REQ` is rejected with `FAN_IN_IS_SINGLE_CONSUMER`; under `"one-to-one"` a second consumer is rejected with `ONE_TO_ONE_CARDINALITY_VIOLATED`. |
+| `queue_type` | no | `"shm"` | `"shm"` (SHM read via DataBlockConsumer) or `"zmq"` (ZMQ PULL/SUB depending on topology; endpoint from broker under fan-out / 1-to-1 topology, consumer binds under fan-in topology).  Must be compatible with `in_channel_topology` — SHM does NOT support `"fan-in"`. |
 | `slot_schema` | yes‡ | — | Expected input slot layout (must match producer's schema) |
 | `flexzone_schema` | no | absent | Flexzone layout (zero-copy writable view, user-coordinated R/W); SHM only |
 | `verify_checksum` | no | `false` | Enable framework-level BLAKE2b slot verification on `read_acquire()` (SHM only; no-op for ZMQ) |
@@ -318,20 +377,22 @@ Created by `pylabhub-consumer --init <dir>`:
 
 ‡ Exactly one of the inline `slot_schema` block or `schema_id` string is required
 (Phase 2 after HEP-CORE-0016 Phase 3).
-★ **REQUIRED as of 2026-07-08 topology migration.**  No lenient default —
-missing → `INVALID_REQUEST` at broker admission.
+★ **OPTIONAL as of 2026-07-08 topology migration (evening rev).**  Default `"one-to-one"`
+when the field is omitted.  Only EXPLICIT declarations can set or change a
+channel's stored topology; defaulted `one-to-one` inherits (see the "Overwrite
+semantics" bullet in the amendment banner at the top of this HEP).
 
 **ZMQ transport note**: When `queue_type=zmq`, the consumer's role in the connection
-depends on `channel_topology` (2026-07-08 topology migration):
+depends on `in_channel_topology` (2026-07-08 topology migration):
 
-- **`channel_topology=fan-in`** — consumer is BINDING side.  Consumer binds a PULL
+- **`in_channel_topology="fan-in"`** — consumer is BINDING side.  Consumer binds a PULL
   socket at an ephemeral or fixed endpoint per HEP-CORE-0021 §16.  Producers dial in
   after their REG_REQ succeeds (R6 gate ensures the consumer's endpoint is resolved
   before producer's REG_REQ wakes).
-- **`channel_topology=fan-out`** — consumer is DIALING side.  Consumer discovers the
+- **`in_channel_topology="fan-out"`** — consumer is DIALING side.  Consumer discovers the
   producer's SUB endpoint from `CONSUMER_REG_ACK.data_endpoint` and connects a SUB
   socket with empty subscription filter.
-- **`channel_topology=one-to-one`** — consumer is DIALING side.  Consumer discovers
+- **`in_channel_topology="one-to-one"`** (default) — consumer is DIALING side.  Consumer discovers
   the producer's PUSH endpoint from `CONSUMER_REG_ACK.data_endpoint` and connects
   a PULL socket.
 

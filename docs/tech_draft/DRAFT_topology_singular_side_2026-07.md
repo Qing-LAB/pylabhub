@@ -342,22 +342,41 @@ mutation, no NOTIFY, no side effects.
 
 Broker rules (all evaluated under the channel-state mutex, atomically):
 
-1. `channel_topology` is **REQUIRED** on every REG_REQ.  Missing field →
-   `INVALID_REQUEST`.  No lenient default.
+1. `channel_topology` is **OPTIONAL** on every REG_REQ (revised 2026-07-08
+   evening from initial "REQUIRED" per user direction; earlier rule text
+   preserved below in strikethrough for archaeological reference).  Missing
+   field → default value `"one-to-one"`.  The broker tracks whether the
+   channel's stored topology was set EXPLICITLY (an incoming REG_REQ
+   carried the field with a non-empty value) or DEFAULTED (missing wire
+   field).
+   ~~"REQUIRED on every REG_REQ. Missing field → INVALID_REQUEST. No lenient default."~~
 2. Compatibility matrix check (§2.1) fires first — invalid transport ×
    topology combo → `TOPOLOGY_NOT_SUPPORTED_FOR_TRANSPORT`.
 3. Cardinality pre-check (§4.2 table): if this REG_REQ would violate the
-   topology's cardinality, reject with the topology-specific error code
-   (`FAN_IN_IS_SINGLE_CONSUMER` / `FAN_OUT_IS_SINGLE_PRODUCER` /
+   effective topology's cardinality, reject with the topology-specific
+   error code (`FAN_IN_IS_SINGLE_CONSUMER` / `FAN_OUT_IS_SINGLE_PRODUCER` /
    `ONE_TO_ONE_CARDINALITY_VIOLATED`).
-4. Channel-lookup:
+4. Channel-lookup + overwrite semantics:
    - Channel does not exist: broker creates `ChannelEntry` with the
-     declared topology + transport.  No "first REG_REQ" ordering
-     ambiguity because all state mutations are under the mutex — the
-     losing side of a race sees the channel already-existing and
-     proceeds to rule 5.
-   - Channel exists: `channel_topology` MUST match the recorded value,
-     else `TOPOLOGY_MISMATCH`.
+     declared (or defaulted `one-to-one`) topology + transport.  Sets an
+     internal `topology_explicit=true` flag when the incoming REG_REQ
+     carried the field; `false` when defaulted.  No "first REG_REQ"
+     ordering ambiguity because all state mutations are under the mutex.
+   - Channel exists:
+     - Incoming REG_REQ EXPLICIT (field present):
+       - Stored topology EXPLICIT and matches → OK.
+       - Stored topology EXPLICIT and mismatches → `TOPOLOGY_MISMATCH`.
+       - Stored topology DEFAULTED (`one-to-one`) → broker PROMOTES the
+         channel's topology to the new explicit value (only if the
+         promotion is consistent with existing cardinality — e.g.
+         promoting to `fan-in` requires 0 other producers already
+         registered; otherwise `TOPOLOGY_MISMATCH`).  Sets
+         `topology_explicit=true`.
+     - Incoming REG_REQ DEFAULTED (field absent):
+       - Silently inherits whatever's stored (whether explicit or
+         defaulted).  NO mismatch check fires even if stored is
+         `fan-in` or `fan-out`.  Rationale: a defaulted role opts
+         into whatever the channel already declares.
 5. All other REG_REQ validation (schema, known_roles, etc.) unchanged.
 
 **Channel creation is topology-driven, not side-driven.**  The broker
@@ -1477,7 +1496,7 @@ revision.
 | **HEP-CORE-0036** | §3.5.3, §6.4, §6.5, §6.5.1, §I7, §5.2 R6, §14 | **Symmetrize** — R6 gate direction generalizes; NOTIFY chain aims at binding side; §I7 endpoint disclosure section reflects topology-parametric shape.  Add `phase=live` semantics (§5.5): dialing-side first-heartbeat triggers a NOTIFY to the binding side without waking R6. |
 | **HEP-CORE-0042** | Entire HEP | **Major scope narrowing** — retire §5 dispatch + §7.1 pre-attach loop.  Preserve `confirmed_version` bookkeeping (now scalar per channel).  Preserve HEP-0044 AttachProtocol reference. |
 | **HEP-CORE-0044** | §5 wire consumers | **Small update** — SHM-attach helpers read `data_endpoint` / `data_pubkey` (renamed from `shm_capability_endpoint` / `producer_pubkey_z85` on the wire). |
-| **HEP-CORE-0018** | §5 Config Schema (§5.1 / §5.2 examples + §5.3 / §5.4 field reference rows) | **Small update (added Phase A rev 3, 2026-07-08)** — add `channel_topology` field to `producer.json` + `consumer.json` schema.  REQUIRED per §5.1 rule 2; legal values `"fan-in"` \| `"fan-out"` \| `"one-to-one"`.  Cross-refs HEP-CORE-0007 §12.3 (wire schema) + HEP-CORE-0017 §3.3 (topology decision matrix).  Landed 2026-07-08 evening as a completeness fix — HEP-0018 §5 is the config authority for the wire fields the other amendments define; the original nine-HEP scope map missed it. |
+| **HEP-CORE-0018** | §5 Config Schema (§5.1 / §5.2 examples + §5.3 / §5.4 field reference rows) | **Small update (added Phase A rev 3, 2026-07-08; revised same evening as rev 3.1 for directional naming + lenient default).**  Add `out_channel_topology` (producer.json) and `in_channel_topology` (consumer.json) fields — directional-prefix naming matches the codebase's existing `in_channel` / `out_channel` convention (parsed by `role_config.cpp:223-224`).  OPTIONAL with default `"one-to-one"`.  Only EXPLICIT declarations set or change a channel's stored topology; defaulted `one-to-one` inherits.  Cross-refs HEP-CORE-0007 §12.3 (wire schema) + HEP-CORE-0017 §3.3 (topology decision matrix).  Also fixes a pre-existing doc drift: §5.1/§5.2 example JSON showed `"channel"` at top level, but the parser has always read `in_channel` / `out_channel`. |
 
 **Ten HEPs total** in this amendment package (Phase A rev 3 added HEP-CORE-0018 to close a completeness gap; nine landed 2026-07-08 morning + one afternoon rev 3) — rows sorted numerically for review convenience.
 
@@ -1544,11 +1563,23 @@ should be one commit (or a small tight batch).
    to produce.  Underlying principle: framework provides mechanisms,
    script decides policy.  Naming resolution (item 2) locked the split
    accessor shape — see §7.6.
-3. **Q3a — `channel_topology` requirement.**  REQUIRED on every REG_REQ.
-   Missing → `INVALID_REQUEST`.  No lenient default during transition.
-   Consequence: Phase B is a bigger atomic change (broker + all tests +
-   all demos in one commit), but the resulting state is unambiguous
-   from day one.
+3. **Q3a — `channel_topology` requirement.**  ~~REQUIRED on every REG_REQ.
+   Missing → INVALID_REQUEST. No lenient default during transition.~~
+   **REVISED 2026-07-08 evening per user direction: OPTIONAL with default
+   `one-to-one`.**  Only EXPLICIT declarations set or change a channel's
+   stored topology; a defaulted `one-to-one` inherits from any
+   pre-existing channel topology.  See §5.1 rule 1 + rule 4 for the
+   overwrite semantics.  Consequence: Phase B atomic commit shrinks —
+   existing 1-to-1 demos and tests don't need config changes; only
+   fan-in and fan-out flows need explicit declaration.  Original Q3a
+   rationale ("resulting state unambiguous from day one") holds
+   differently: with lenient default + only-explicit-overwrite, the
+   channel's stored topology is still unambiguous once ANY role has
+   explicitly declared, and defaulted roles are unambiguous because
+   they opt into whatever's stored.  The ambiguous state (no explicit
+   declaration anywhere) collapses to `one-to-one`, which is safe
+   because the cardinality gates prevent bad configurations at
+   admission time.
 4. **Q3b — `confirmed_version` collapse timing.**  Collapse in Phase B
    (early), not Phase E.  Explicit single source of truth avoids the
    parallel-state disagreement class of bug.

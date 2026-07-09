@@ -689,8 +689,12 @@ and `DatahubSlotDrainingTest.SyncReaderRingFullBlocksNotDraining`.
 > broker-hosted pub/sub groups (bands). See HEP-CORE-0030 for the replacement protocol.
 
 > **Amendment (2026-07-08) — topology migration.**  Every
-> `REG_REQ` / `CONSUMER_REG_REQ` gains a REQUIRED `channel_topology`
-> field (`"fan-in"` \| `"fan-out"` \| `"one-to-one"`).  Dialing-side
+> `REG_REQ` / `CONSUMER_REG_REQ` gains an OPTIONAL `channel_topology`
+> field (`"fan-in"` \| `"fan-out"` \| `"one-to-one"`; default when
+> omitted: `"one-to-one"`, revised 2026-07-08 evening from the
+> earlier "REQUIRED" per user direction — see §12.3 "Overwrite
+> semantics" for the only-explicit-overwrite rule and HEP-CORE-0018
+> §5 for the config-side reflection).  Dialing-side
 > ACKs gain a scalar `data_endpoint` + `data_pubkey` pair; the
 > per-producer `CONSUMER_REG_ACK.producers[]` array RETIRES.
 > `CHANNEL_AUTH_CHANGED_NOTIFY` gains `phase`, `role_uid`,
@@ -868,14 +872,26 @@ schema invariant applies uniformly.
 
 Payload (REG_REQ):
   channel_name          string   Channel identifier (e.g. "lab.sensors.raw")
-  channel_topology      string   REQUIRED as of 2026-07-08 topology migration.
+  channel_topology      string   OPTIONAL as of 2026-07-08 evening rev
+                                 (revised from initial "REQUIRED" earlier
+                                 same day per user direction).  Default
+                                 when omitted: "one-to-one".  Only EXPLICIT
+                                 declarations set or change the channel's
+                                 stored topology; a defaulted "one-to-one"
+                                 inherits from any pre-existing channel
+                                 topology.  See "Overwrite semantics" below.
                                  One of "fan-in" | "fan-out" | "one-to-one".
                                  Broker validates transport × topology
                                  compatibility and cardinality per HEP-CORE-0017
-                                 §3.3 + §4.6.  Missing field → INVALID_REQUEST.
+                                 §3.3 + §4.6.  Missing field → default
+                                 "one-to-one" (subject to overwrite semantics).
                                  SHM + fan-in rejected with
                                  TOPOLOGY_NOT_SUPPORTED_FOR_TRANSPORT.  Existing
-                                 channel with mismatched topology → TOPOLOGY_MISMATCH.
+                                 channel with mismatched EXPLICIT topology →
+                                 TOPOLOGY_MISMATCH.  Defaulted "one-to-one"
+                                 inherits from any pre-existing topology on
+                                 the channel; no MISMATCH fires from a
+                                 defaulted-vs-explicit combination.
                                  Second REG_REQ under fan-out or one-to-one →
                                  topology-specific cardinality violation code.
   shm_name              string   SHM segment name (= channel_name when has_shared_memory)
@@ -1107,12 +1123,22 @@ Sequence:
 
 Payload (CONSUMER_REG_REQ):
   channel_name          string
-  channel_topology      string   REQUIRED as of 2026-07-08 topology migration.
+  channel_topology      string   OPTIONAL as of 2026-07-08 evening rev
+                                 (revised from initial "REQUIRED" earlier
+                                 same day per user direction).  Default
+                                 when omitted: "one-to-one".  Only EXPLICIT
+                                 declarations set or change the channel's
+                                 stored topology; a defaulted "one-to-one"
+                                 inherits from any pre-existing channel
+                                 topology.  See "Overwrite semantics" below.
                                  One of "fan-in" | "fan-out" | "one-to-one".
-                                 MUST match the topology declared by the channel's
-                                 REG_REQ; mismatch → TOPOLOGY_MISMATCH.  Missing
-                                 field → INVALID_REQUEST.  Under fan-in, a second
-                                 consumer's CONSUMER_REG_REQ is rejected with
+                                 EXPLICIT declarations MUST match the topology
+                                 declared by the channel's REG_REQ; explicit
+                                 mismatch → TOPOLOGY_MISMATCH.  Missing field
+                                 → default "one-to-one" (inherits from channel's
+                                 pre-existing topology per overwrite semantics).
+                                 Under fan-in, a second consumer's
+                                 CONSUMER_REG_REQ is rejected with
                                  FAN_IN_IS_SINGLE_CONSUMER; under one-to-one with
                                  ONE_TO_ONE_CARDINALITY_VIOLATED.
   consumer_pid          uint64
