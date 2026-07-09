@@ -55,6 +55,15 @@ struct ZmqQueueImpl
 {
     enum class Mode { Read, Write } mode;
 
+    /// Socket pattern.  `PushPull` is the pre-2026-07-08 default and
+    /// remains the shape produced by `pull_from` / `push_to` /
+    /// `create_reader(FanIn|OneToOne)` / `create_writer(FanIn|OneToOne)`.
+    /// `PubSub` is added for fan-out ZMQ (HEP-CORE-0017 §3.3.0):
+    /// producer binds PUB, consumer connects SUB (subscribes to empty
+    /// topic).  The pattern is fixed at construction time and drives
+    /// libzmq socket-type selection at `start()`.
+    enum class SocketPattern { PushPull, PubSub } socket_pattern{SocketPattern::PushPull};
+
     std::string endpoint;
     std::string actual_endpoint; ///< Resolved after zmq_bind() — e.g. port 0 → actual port.
     bool        bind_socket{false};
@@ -856,13 +865,35 @@ ZmqQueue::create_reader(pylabhub::hub::ChannelTopology topology,
                           std::move(opts.schema_tag),
                           std::move(opts.instance_id));
     case ChannelTopology::FanOut:
-        // Consumer DIALING side, SUB connect.  Not yet implemented —
-        // PUB/SUB support lands in a subsequent Phase C commit.
-        LOGGER_WARN(
-            "[hub::ZmqQueue::create_reader] fan-out ZMQ (SUB connect) "
-            "not yet implemented — Phase C step 2 (endpoint='{}')",
-            opts.endpoint);
-        return nullptr;
+    {
+        // Consumer DIALING side, SUB connect.  Fan-out consumers must
+        // provide the producer's identity pubkey as curve_serverkey
+        // — same shape as OneToOne consumer.
+        const std::string server_pubkey_str =
+            opts.server_pubkey.empty()
+                ? std::string{}
+                : std::string{opts.server_pubkey.str()};
+        if (auto err = validate_curve_factory_params(
+                opts.identity_key_name, server_pubkey_str,
+                /*bind_side=*/false);
+            !err.empty())
+        {
+            LOGGER_ERROR(
+                "[hub::ZmqQueue::create_reader] fan-out SUB: invalid "
+                "auth params for '{}': {}", opts.endpoint, err);
+            return nullptr;
+        }
+        auto reader = build_plaintext_reader_(
+            opts.endpoint, std::move(opts.schema), std::move(opts.packing),
+            /*bind=*/false, opts.max_buffer_depth,
+            std::move(opts.schema_tag), std::move(opts.instance_id));
+        if (!reader) return nullptr;
+        std::unique_ptr<ZmqQueue> z(static_cast<ZmqQueue *>(reader.release()));
+        z->pImpl->socket_pattern       = ZmqQueueImpl::SocketPattern::PubSub;
+        z->pImpl->identity_key_name_   = std::string{opts.identity_key_name};
+        z->pImpl->server_pubkey_z85_   = server_pubkey_str;
+        return z;
+    }
     }
     return nullptr;  // unreachable under well-formed enum
 }
@@ -903,13 +934,34 @@ ZmqQueue::create_writer(pylabhub::hub::ChannelTopology topology,
                         opts.send_retry_interval_ms,
                         std::move(opts.instance_id));
     case ChannelTopology::FanOut:
-        // Producer BINDING side, PUB bind.  Not yet implemented —
-        // PUB/SUB support lands in a subsequent Phase C commit.
-        LOGGER_WARN(
-            "[hub::ZmqQueue::create_writer] fan-out ZMQ (PUB bind) "
-            "not yet implemented — Phase C step 2 (endpoint='{}')",
-            opts.endpoint);
-        return nullptr;
+    {
+        // Producer BINDING side, PUB bind.  Same CURVE-server wiring
+        // as OneToOne producer bind (ZAP gates admission by pubkey).
+        if (auto err = validate_curve_factory_params(
+                opts.identity_key_name, /*server_pubkey_z85=*/{},
+                /*bind_side=*/true);
+            !err.empty())
+        {
+            LOGGER_ERROR(
+                "[hub::ZmqQueue::create_writer] fan-out PUB: invalid "
+                "auth params for '{}': {}", opts.endpoint, err);
+            return nullptr;
+        }
+        auto writer = build_plaintext_writer_(
+            opts.endpoint, std::move(opts.schema), std::move(opts.packing),
+            /*bind=*/true, std::move(opts.schema_tag),
+            opts.sndhwm, opts.send_buffer_depth, opts.overflow_policy,
+            opts.send_retry_interval_ms, std::move(opts.instance_id));
+        if (!writer) return nullptr;
+        std::unique_ptr<ZmqQueue> z(static_cast<ZmqQueue *>(writer.release()));
+        z->pImpl->socket_pattern     = ZmqQueueImpl::SocketPattern::PubSub;
+        z->pImpl->identity_key_name_ = std::string{opts.identity_key_name};
+        z->pImpl->zap_domain_        = std::move(opts.zap_domain);
+        // Initial allowlist intentionally NOT seeded — caller invokes
+        // `set_peer_allowlist()` after `start()`.  Empty == deny-all
+        // secure default (same contract as `push_to`).
+        return z;
+    }
     }
     return nullptr;  // unreachable under well-formed enum
 }
@@ -1306,13 +1358,36 @@ bool ZmqQueue::start()
 
     try
     {
-        const zmq::socket_type stype = (pImpl->mode == ZmqQueueImpl::Mode::Read)
-                                           ? zmq::socket_type::pull
-                                           : zmq::socket_type::push;
+        // Socket-type selection: mode × pattern (HEP-CORE-0017 §3.3.0).
+        //   Read  + PushPull → PULL   (fan-in consumer bind; 1-to-1 consumer connect)
+        //   Write + PushPull → PUSH   (fan-in producer connect; 1-to-1 producer bind)
+        //   Read  + PubSub   → SUB    (fan-out consumer connect; subscribes to empty topic)
+        //   Write + PubSub   → PUB    (fan-out producer bind)
+        zmq::socket_type stype;
+        if (pImpl->socket_pattern == ZmqQueueImpl::SocketPattern::PushPull)
+        {
+            stype = (pImpl->mode == ZmqQueueImpl::Mode::Read)
+                        ? zmq::socket_type::pull
+                        : zmq::socket_type::push;
+        }
+        else  // PubSub
+        {
+            stype = (pImpl->mode == ZmqQueueImpl::Mode::Read)
+                        ? zmq::socket_type::sub
+                        : zmq::socket_type::pub;
+        }
         pImpl->socket = zmq::socket_t(pylabhub::hub::get_zmq_context(), stype);
         pImpl->socket.set(zmq::sockopt::linger, 0);
 
-        // [ZQ8] Apply SNDHWM on PUSH sockets when caller requested a specific value.
+        // SUB sockets require an explicit subscription; empty topic
+        // filter matches every message (HEP-CORE-0017 §3.3.1 — script
+        // owns any per-message filtering above the queue layer).
+        if (stype == zmq::socket_type::sub)
+        {
+            pImpl->socket.set(zmq::sockopt::subscribe, "");
+        }
+
+        // [ZQ8] Apply SNDHWM on PUSH / PUB sockets when caller requested a specific value.
         if (pImpl->mode == ZmqQueueImpl::Mode::Write && pImpl->sndhwm > 0)
             pImpl->socket.set(zmq::sockopt::sndhwm, pImpl->sndhwm);
 

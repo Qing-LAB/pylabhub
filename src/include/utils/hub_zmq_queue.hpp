@@ -347,8 +347,8 @@ public:
     /// - `OneToOne`: PULL connect (consumer is DIALING).
     ///   `opts.server_pubkey` is the producer's identity pubkey.
     /// - `FanOut`: SUB connect (consumer is DIALING).
-    ///   **PUB/SUB path lands in a subsequent Phase C commit — for
-    ///   now returns nullptr + WARN log.**
+    ///   `opts.server_pubkey` is the producer's identity pubkey.
+    ///   Subscribes to empty topic (all messages) on start().
     [[nodiscard]] static std::unique_ptr<ZmqQueue>
     create_reader(pylabhub::hub::ChannelTopology topology,
                   RxCreateOptions                opts);
@@ -356,9 +356,9 @@ public:
     /// Construct the producer-side ZMQ queue for `topology`.
     /// - `OneToOne`: PUSH bind (producer is BINDING).
     /// - `FanIn`: PUSH connect (producer is DIALING).
-    /// - `FanOut`: PUB bind (producer is BINDING).
-    ///   **PUB/SUB path lands in a subsequent Phase C commit — for
-    ///   now returns nullptr + WARN log.**
+    /// - `FanOut`: PUB bind (producer is BINDING).  Same CURVE-server
+    ///   + ZAP wiring as `OneToOne`; caller seeds allowlist via
+    ///   `set_peer_allowlist()` after `start()`.
     [[nodiscard]] static std::unique_ptr<ZmqQueue>
     create_writer(pylabhub::hub::ChannelTopology topology,
                   TxCreateOptions                opts);

@@ -2495,31 +2495,79 @@ TEST_F(ZmqQueueTest, TopologyFactory_FanInPlusOneToOne_Roundtrip)
     pull->stop();
 }
 
-TEST_F(ZmqQueueTest, TopologyFactory_FanOut_NotYetImplemented)
+TEST_F(ZmqQueueTest, TopologyFactory_FanOut_ProducerBinds_PubSocket)
 {
-    // Fan-out ZMQ (PUB bind / SUB connect) lands in a subsequent Phase C
-    // commit.  For now the factory returns nullptr + logs a WARN so
-    // callers get a distinct failure signal (not e.g. a spurious CURVE
-    // rejection).
+    // Fan-out producer is BINDING side — PUB bind, publishes resolved
+    // endpoint.  Confirms the factory produces a start()-able PUB
+    // socket with CURVE server wiring.
     using pylabhub::hub::ChannelTopology;
     using pylabhub::hub::ZmqQueue;
 
-    ExpectLogWarn("fan-out ZMQ (PUB bind) not yet implemented");
-    ExpectLogWarn("fan-out ZMQ (SUB connect) not yet implemented");
+    ZmqQueue::TxCreateOptions opts;
+    opts.endpoint = "tcp://127.0.0.1:0";
+    opts.schema   = blob_schema(kItemSize);
+    opts.packing  = "aligned";
 
+    auto pub = ZmqQueue::create_writer(ChannelTopology::FanOut, std::move(opts));
+    ASSERT_NE(pub, nullptr);
+    ASSERT_TRUE(pub->start());
+    ASSERT_TRUE(seed_self_allowlist(*pub));
+    EXPECT_FALSE(pub->actual_endpoint().empty())
+        << "fan-out producer must bind and publish its resolved endpoint";
+    pub->stop();
+}
+
+TEST_F(ZmqQueueTest, TopologyFactory_FanOut_Roundtrip_PubSubSingleSubscriber)
+{
+    // End-to-end round-trip via the fan-out factory: PUB bind on
+    // producer, SUB connect on consumer.  Confirms:
+    //   - Fan-out create_writer produces PUB with CURVE-server ZAP.
+    //   - Fan-out create_reader produces SUB with curve_serverkey +
+    //     empty-topic subscription set at start.
+    //   - Data flows from PUB → SUB when the subscriber has completed
+    //     its handshake (kZmqSlowJoinerSleepMs is applied before send).
+    using pylabhub::hub::ChannelTopology;
+    using pylabhub::hub::ZmqQueue;
+
+    // Producer: FanOut (BINDING).
     ZmqQueue::TxCreateOptions tx;
     tx.endpoint = "tcp://127.0.0.1:0";
     tx.schema   = blob_schema(kItemSize);
     tx.packing  = "aligned";
     auto pub = ZmqQueue::create_writer(ChannelTopology::FanOut, std::move(tx));
-    EXPECT_EQ(pub, nullptr)
-        << "fan-out ZMQ (PUB) not yet implemented — should return nullptr";
+    ASSERT_NE(pub, nullptr);
+    ASSERT_TRUE(pub->start());
+    ASSERT_TRUE(seed_self_allowlist(*pub));
+    const std::string ep = pub->actual_endpoint();
+    ASSERT_FALSE(ep.empty());
 
+    // Consumer: FanOut (DIALING).
     ZmqQueue::RxCreateOptions rx;
-    rx.endpoint = "tcp://127.0.0.1:65535";
-    rx.schema   = blob_schema(kItemSize);
-    rx.packing  = "aligned";
+    rx.endpoint      = ep;
+    rx.server_pubkey = test_server_key();
+    rx.schema        = blob_schema(kItemSize);
+    rx.packing       = "aligned";
     auto sub = ZmqQueue::create_reader(ChannelTopology::FanOut, std::move(rx));
-    EXPECT_EQ(sub, nullptr)
-        << "fan-out ZMQ (SUB) not yet implemented — should return nullptr";
+    ASSERT_NE(sub, nullptr);
+    ASSERT_TRUE(sub->start());
+
+    // PUB/SUB has an inherent "slow joiner" window — messages sent
+    // before the SUB completes its subscription round-trip are dropped.
+    // 200ms is generous (typical <10ms locally); the round-trip test
+    // shouldn't be flaky.
+    std::this_thread::sleep_for(200ms);
+
+    void *wbuf = pub->write_acquire(1000ms);
+    ASSERT_NE(wbuf, nullptr);
+    std::memset(wbuf, 0xF0, kItemSize);
+    pub->write_commit();
+
+    const void *rbuf = sub->read_acquire(2000ms);
+    ASSERT_NE(rbuf, nullptr)
+        << "fan-out PUB → SUB round-trip must deliver after slow-joiner window";
+    EXPECT_EQ(static_cast<const uint8_t *>(rbuf)[0], 0xF0);
+    sub->read_release();
+
+    pub->stop();
+    sub->stop();
 }
