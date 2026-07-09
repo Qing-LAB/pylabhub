@@ -876,10 +876,11 @@ Payload (REG_REQ):
                                  (revised from initial "REQUIRED" earlier
                                  same day per user direction).  Default
                                  when omitted: "one-to-one".  Only EXPLICIT
-                                 declarations set or change the channel's
-                                 stored topology; a defaulted "one-to-one"
-                                 inherits from any pre-existing channel
-                                 topology.  See "Overwrite semantics" below.
+                                 declarations set the channel's stored topology;
+                                 immutable at creation (no promotion path).
+                                 A defaulted "one-to-one" inherits from any
+                                 pre-existing channel topology.  See
+                                 "Overwrite semantics" below.
                                  One of "fan-in" | "fan-out" | "one-to-one".
                                  Broker validates transport × topology
                                  compatibility and cardinality per HEP-CORE-0017
@@ -1127,10 +1128,11 @@ Payload (CONSUMER_REG_REQ):
                                  (revised from initial "REQUIRED" earlier
                                  same day per user direction).  Default
                                  when omitted: "one-to-one".  Only EXPLICIT
-                                 declarations set or change the channel's
-                                 stored topology; a defaulted "one-to-one"
-                                 inherits from any pre-existing channel
-                                 topology.  See "Overwrite semantics" below.
+                                 declarations set the channel's stored topology;
+                                 immutable at creation (no promotion path).
+                                 A defaulted "one-to-one" inherits from any
+                                 pre-existing channel topology.  See
+                                 "Overwrite semantics" below.
                                  One of "fan-in" | "fan-out" | "one-to-one".
                                  EXPLICIT declarations MUST match the topology
                                  declared by the channel's REG_REQ; explicit

@@ -69,27 +69,25 @@ struct ProducerRegInputs
     /// for the consumer to dial via `attach_shm_capability_consumer`.
     std::string shm_capability_endpoint;
 
-    /// Channel topology declared on the wire (2026-07-08 topology
-    /// migration).  Wire-value strings per
-    /// `pylabhub::hub::to_string(ChannelTopology)`:
+    /// Channel topology declared on the wire.  Wire-value strings per
+    /// `pylabhub::hub::topology::to_string`:
     ///   "fan-in"     — N producers → 1 consumer (ZMQ only).
     ///   "fan-out"    — 1 producer → N consumers (ZMQ or SHM).
     ///   "one-to-one" — 1 producer → 1 consumer (ZMQ or SHM).
     ///
-    /// Config authority: HEP-CORE-0018 §5.3 (producer config field
-    /// reference — REQUIRED, no lenient default).  Wire schema
-    /// authority: HEP-CORE-0007 §12.3.  Broker rejects: missing →
-    /// `INVALID_REQUEST`; mismatch with channel's declared topology
-    /// → `TOPOLOGY_MISMATCH`; incompatible transport (fan-in × shm)
-    /// → `TOPOLOGY_NOT_SUPPORTED_FOR_TRANSPORT`.  Cardinality gate:
-    /// second REG_REQ under fan-out or one-to-one →
-    /// `FAN_OUT_IS_SINGLE_PRODUCER` / `ONE_TO_ONE_CARDINALITY_VIOLATED`.
+    /// OPTIONAL — empty string means no wire declaration.  Broker
+    /// applies the overwrite semantics per HEP-CORE-0018 §5:
+    ///   - Existing channel: empty inherits stored topology; explicit
+    ///     mismatch → `TOPOLOGY_MISMATCH`.
+    ///   - Fresh channel: empty defaults to `one-to-one`; explicit
+    ///     value used verbatim.  Topology is IMMUTABLE at creation.
     ///
-    /// Phase B state: OPTIONAL during prep sub-slices — empty string
-    /// preserves current behavior (broker doesn't yet enforce).  The
-    /// atomic Phase B commit makes this REQUIRED per tech draft §5.1
-    /// rule 2; all configs + demos + tests must populate this field
-    /// in the same commit that flips enforcement.
+    /// Config authority: HEP-CORE-0018 §5.3.  Wire schema authority:
+    /// HEP-CORE-0007 §12.3.  Rejection codes:
+    /// `TOPOLOGY_MISMATCH` (explicit mismatch),
+    /// `TOPOLOGY_NOT_SUPPORTED_FOR_TRANSPORT` (fan-in × shm),
+    /// `FAN_OUT_IS_SINGLE_PRODUCER` / `ONE_TO_ONE_CARDINALITY_VIOLATED`
+    /// (cardinality gate).
     std::string channel_topology;
 };
 
@@ -113,20 +111,13 @@ struct ConsumerRegInputs
     /// `zmq_pubkey`.
     std::string zmq_pubkey;
 
-    /// Channel topology declared on the wire (2026-07-08 topology
-    /// migration).  Same wire-value semantics as
-    /// `ProducerRegInputs::channel_topology`; MUST match the value
-    /// the channel was created with (broker rejects mismatch with
-    /// `TOPOLOGY_MISMATCH`).  Consumer-side cardinality gates:
-    /// second CONSUMER_REG_REQ under fan-in → `FAN_IN_IS_SINGLE_CONSUMER`;
-    /// under one-to-one → `ONE_TO_ONE_CARDINALITY_VIOLATED`.
+    /// Channel topology declared on the wire.  Same wire-value
+    /// semantics + overwrite rules as `ProducerRegInputs::channel_topology`.
+    /// Consumer-side cardinality gates: `FAN_IN_IS_SINGLE_CONSUMER`
+    /// (second CONSUMER_REG_REQ under fan-in),
+    /// `ONE_TO_ONE_CARDINALITY_VIOLATED` (second consumer under 1-to-1).
     ///
-    /// Config authority: HEP-CORE-0018 §5.4 (consumer config field
-    /// reference — REQUIRED, no lenient default).  Wire schema
-    /// authority: HEP-CORE-0007 §12.3.
-    ///
-    /// Phase B state: OPTIONAL during prep sub-slices — empty string
-    /// preserves current behavior.  Atomic commit flips enforcement.
+    /// Config authority: HEP-CORE-0018 §5.4.  Wire schema: HEP-CORE-0007 §12.3.
     std::string channel_topology;
 };
 
@@ -185,14 +176,11 @@ inline nlohmann::json build_producer_reg_payload(const ProducerRegInputs &in)
         reg["build_id"] = bid;
     }
 
-    // Channel topology (2026-07-08 topology migration).  Emitted only
-    // when the caller populates in.channel_topology — empty preserves
-    // pre-migration behavior during Phase B prep sub-slices.  The
-    // atomic Phase B commit makes this REQUIRED at the caller
-    // (config parsers populate the field before this builder runs)
-    // and REQUIRED at the broker (missing → INVALID_REQUEST).
-    // Config authority: HEP-CORE-0018 §5.3.  Wire schema:
-    // HEP-CORE-0007 §12.3.
+    // Channel topology.  Emitted only when the caller populates
+    // in.channel_topology — empty means no wire declaration, and
+    // the broker applies the overwrite semantics (inherit stored
+    // topology on existing channels; default to one-to-one on
+    // fresh channels) per HEP-CORE-0018 §5 / HEP-CORE-0007 §12.3.
     if (!in.channel_topology.empty())
     {
         reg["channel_topology"] = in.channel_topology;
@@ -251,11 +239,8 @@ inline nlohmann::json build_consumer_reg_payload(const ConsumerRegInputs &in)
     reg["consumer_pid"] = pylabhub::platform::get_pid();
     reg["zmq_pubkey"]   = in.zmq_pubkey;
 
-    // Channel topology (2026-07-08 topology migration).  Same
-    // semantics as the producer-side builder above — emitted only
-    // when non-empty during Phase B prep sub-slices; REQUIRED at
-    // caller + broker after the atomic Phase B commit.  Config
-    // authority: HEP-CORE-0018 §5.4.
+    // Channel topology — same emit-when-non-empty semantics as the
+    // producer-side builder above.  Config authority: HEP-CORE-0018 §5.4.
     if (!in.channel_topology.empty())
     {
         reg["channel_topology"] = in.channel_topology;

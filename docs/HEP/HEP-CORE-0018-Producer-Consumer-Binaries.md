@@ -343,7 +343,7 @@ Created by `pylabhub-consumer --init <dir>`:
 | `script.path` | yes | `"."` | Base script directory; C++ resolves `<path>/script/<type>/__init__.py` |
 
 † Required when `transport=zmq`. § Required when `shm.enabled=true`.
-★ **OPTIONAL as of 2026-07-08 topology migration (evening rev).**  Default `"one-to-one"` when the field is omitted.  Only EXPLICIT declarations can set or change a channel's stored topology; defaulted `one-to-one` inherits (see the "Overwrite semantics" bullet in the amendment banner at the top of this HEP).  Broker validates topology (whether explicit or defaulted) upfront in the REG_REQ entry gate BEFORE any state mutation.
+★ **OPTIONAL as of 2026-07-08 topology migration (evening rev).**  Default `"one-to-one"` when the field is omitted.  Only EXPLICIT declarations set a channel's stored topology (immutable at creation); defaulted `one-to-one` inherits (see the "Overwrite semantics" bullet in the amendment banner at the top of this HEP).  Broker validates topology (whether explicit or defaulted) upfront in the REG_REQ entry gate BEFORE any state mutation.
 
 ### 5.4 Field Reference — Consumer
 

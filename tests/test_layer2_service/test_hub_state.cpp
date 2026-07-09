@@ -4265,7 +4265,7 @@ TEST(HubStateHep0042, ProducerConfirmed_NoOpOnMissingChannel)
     EXPECT_FALSE(s.channel_access("ch.hep42.does-not-exist").has_value());
 }
 
-// 2026-07-08 topology migration — Phase B slice 7 unit tests for the
+// 2026-07-08 topology migration — unit tests for the
 // admission-path helpers.  Tech draft §5.1 rule 4 + HEP-CORE-0017 §3.3.0.
 
 TEST(ChannelTopology, ParseWireValues)
