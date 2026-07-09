@@ -154,6 +154,45 @@ PYLABHUB_UTILS_EXPORT const char *to_string(ChannelTopology t) noexcept;
 PYLABHUB_UTILS_EXPORT std::optional<ChannelTopology>
 parse_channel_topology(std::string_view s) noexcept;
 
+/// True iff `topology` is valid for `data_transport` per HEP-CORE-0017
+/// §3.3.0 decision matrix (topology migration, 2026-07-08):
+///
+/// - Fan-in    × zmq → OK.  fan-in × shm → REJECTED (SHM is physically
+///   single-producer; broker returns `TOPOLOGY_NOT_SUPPORTED_FOR_TRANSPORT`).
+/// - Fan-out   × zmq → OK.  Fan-out   × shm → OK.
+/// - OneToOne  × zmq → OK.  OneToOne  × shm → OK.
+///
+/// `data_transport` is compared literally against the wire strings
+/// `"zmq"` and `"shm"`.  Unknown transports return `false` (defensive —
+/// callers should have already rejected an unknown transport via
+/// `INVALID_REQUEST` at the earlier data_transport parse gate).
+PYLABHUB_UTILS_EXPORT bool
+transport_topology_compatible(ChannelTopology topology,
+                              std::string_view data_transport) noexcept;
+
+/// Three-branch check of an incoming REG_REQ / CONSUMER_REG_REQ's
+/// `channel_topology` wire field against an existing channel's stored
+/// topology.  Called from the broker's admission path AFTER the channel
+/// has been looked up + confirmed to exist.  Tech draft §5.1 rule 4.
+///
+/// Return value:
+///  - `nullptr` on match / inherit — admission proceeds.
+///  - `"TOPOLOGY_MISMATCH"` when `incoming_wire_value` is non-empty
+///    and parses to a topology different from `stored`.
+///  - `"INVALID_REQUEST"` when `incoming_wire_value` is non-empty and
+///    doesn't parse to any legal topology (broker fills in an
+///    appropriate message text at the call site).
+///
+/// Empty `incoming_wire_value` always returns `nullptr` (the "inherit
+/// stored" branch — a role that didn't declare topology opts into
+/// whatever the channel already has).
+///
+/// The stored topology is IMMUTABLE at channel creation; no promotion
+/// path exists (tech draft §5.1 rule 4, Phase B slice 6).
+PYLABHUB_UTILS_EXPORT const char *
+check_topology_against_stored(ChannelTopology stored,
+                              std::string_view incoming_wire_value) noexcept;
+
 // ─── Entry types (HEP-CORE-0033 §8) ─────────────────────────────────────────
 
 /// Consumer attached to a channel.

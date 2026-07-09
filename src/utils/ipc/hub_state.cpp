@@ -107,6 +107,35 @@ std::optional<ChannelTopology> parse_channel_topology(std::string_view s) noexce
     return std::nullopt;
 }
 
+bool transport_topology_compatible(ChannelTopology topology,
+                                    std::string_view data_transport) noexcept
+{
+    // HEP-CORE-0017 §3.3.0 decision matrix: the only rejected combination
+    // is fan-in × shm — SHM is physically single-producer.  All other
+    // (topology × transport) pairs are supported.
+    if (topology == ChannelTopology::FanIn && data_transport == "shm")
+        return false;
+    // Defensively reject unknown transports; the earlier data_transport
+    // parse gate should have caught these.
+    if (data_transport != "zmq" && data_transport != "shm")
+        return false;
+    return true;
+}
+
+const char *check_topology_against_stored(ChannelTopology stored,
+                                           std::string_view incoming_wire_value) noexcept
+{
+    // Empty incoming → inherit branch.  Silent OK per tech draft §5.1
+    // rule 4 — a role that didn't declare topology opts into whatever
+    // the channel already has, no matter what.
+    if (incoming_wire_value.empty()) return nullptr;
+
+    const auto parsed = parse_channel_topology(incoming_wire_value);
+    if (!parsed) return "INVALID_REQUEST";
+
+    return (*parsed == stored) ? nullptr : "TOPOLOGY_MISMATCH";
+}
+
 // ─── Impl ───────────────────────────────────────────────────────────────────
 
 struct HubState::Impl

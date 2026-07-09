@@ -45,6 +45,11 @@ using pylabhub::hub::BandMember;
 using pylabhub::hub::ChannelCloseReason;
 using pylabhub::hub::ChannelEntry;
 using pylabhub::hub::ChannelObservable;
+using pylabhub::hub::ChannelTopology;
+using pylabhub::hub::parse_channel_topology;
+using pylabhub::hub::to_string;
+using pylabhub::hub::transport_topology_compatible;
+using pylabhub::hub::check_topology_against_stored;
 using pylabhub::hub::ConsumerEntry;
 using pylabhub::hub::ProducerEntry;
 using pylabhub::hub::HandlerId;
@@ -4252,5 +4257,83 @@ TEST(HubStateHep0042, ProducerConfirmed_NoOpOnMissingChannel)
               0u);
     // Verify no access record magically appeared.
     EXPECT_FALSE(s.channel_access("ch.hep42.does-not-exist").has_value());
+}
+
+// 2026-07-08 topology migration — Phase B slice 7 unit tests for the
+// admission-path helpers.  Tech draft §5.1 rule 4 + HEP-CORE-0017 §3.3.0.
+
+TEST(ChannelTopology, ParseWireValues)
+{
+    EXPECT_EQ(parse_channel_topology("fan-in"),     ChannelTopology::FanIn);
+    EXPECT_EQ(parse_channel_topology("fan-out"),    ChannelTopology::FanOut);
+    EXPECT_EQ(parse_channel_topology("one-to-one"), ChannelTopology::OneToOne);
+    EXPECT_FALSE(parse_channel_topology(""));
+    EXPECT_FALSE(parse_channel_topology("FanIn"));         // case-sensitive
+    EXPECT_FALSE(parse_channel_topology("fan_in"));        // underscore vs dash
+    EXPECT_FALSE(parse_channel_topology("garbage"));
+}
+
+TEST(ChannelTopology, ToStringRoundTrip)
+{
+    for (auto t : {ChannelTopology::FanIn,
+                    ChannelTopology::FanOut,
+                    ChannelTopology::OneToOne})
+    {
+        EXPECT_EQ(parse_channel_topology(to_string(t)), t);
+    }
+}
+
+TEST(ChannelTopology, TransportCompatibility)
+{
+    // HEP-CORE-0017 §3.3.0 decision matrix: only fan-in × shm is rejected.
+    EXPECT_TRUE (transport_topology_compatible(ChannelTopology::FanIn,    "zmq"));
+    EXPECT_FALSE(transport_topology_compatible(ChannelTopology::FanIn,    "shm"));
+    EXPECT_TRUE (transport_topology_compatible(ChannelTopology::FanOut,   "zmq"));
+    EXPECT_TRUE (transport_topology_compatible(ChannelTopology::FanOut,   "shm"));
+    EXPECT_TRUE (transport_topology_compatible(ChannelTopology::OneToOne, "zmq"));
+    EXPECT_TRUE (transport_topology_compatible(ChannelTopology::OneToOne, "shm"));
+    // Unknown transports rejected defensively.
+    EXPECT_FALSE(transport_topology_compatible(ChannelTopology::FanOut,   ""));
+    EXPECT_FALSE(transport_topology_compatible(ChannelTopology::FanOut,   "tcp"));
+}
+
+TEST(ChannelTopology, CheckAgainstStored_InheritOnEmpty)
+{
+    // Empty incoming → always OK, no mismatch check.  Tech draft §5.1
+    // rule 4 branch 3 — defaulted role opts into stored topology.
+    EXPECT_EQ(nullptr, check_topology_against_stored(ChannelTopology::FanIn,    ""));
+    EXPECT_EQ(nullptr, check_topology_against_stored(ChannelTopology::FanOut,   ""));
+    EXPECT_EQ(nullptr, check_topology_against_stored(ChannelTopology::OneToOne, ""));
+}
+
+TEST(ChannelTopology, CheckAgainstStored_MatchOnEqual)
+{
+    // Non-empty matching → OK.
+    EXPECT_EQ(nullptr, check_topology_against_stored(ChannelTopology::FanIn,    "fan-in"));
+    EXPECT_EQ(nullptr, check_topology_against_stored(ChannelTopology::FanOut,   "fan-out"));
+    EXPECT_EQ(nullptr, check_topology_against_stored(ChannelTopology::OneToOne, "one-to-one"));
+}
+
+TEST(ChannelTopology, CheckAgainstStored_MismatchFires)
+{
+    // Non-empty non-matching → TOPOLOGY_MISMATCH.
+    EXPECT_STREQ("TOPOLOGY_MISMATCH",
+                 check_topology_against_stored(ChannelTopology::FanIn,    "fan-out"));
+    EXPECT_STREQ("TOPOLOGY_MISMATCH",
+                 check_topology_against_stored(ChannelTopology::FanOut,   "one-to-one"));
+    EXPECT_STREQ("TOPOLOGY_MISMATCH",
+                 check_topology_against_stored(ChannelTopology::OneToOne, "fan-in"));
+}
+
+TEST(ChannelTopology, CheckAgainstStored_InvalidWireValue)
+{
+    // Non-empty non-parseable → INVALID_REQUEST.  Distinguishes from
+    // TOPOLOGY_MISMATCH so the broker can return the right error code.
+    EXPECT_STREQ("INVALID_REQUEST",
+                 check_topology_against_stored(ChannelTopology::FanIn,    "garbage"));
+    EXPECT_STREQ("INVALID_REQUEST",
+                 check_topology_against_stored(ChannelTopology::OneToOne, "FanIn"));
+    EXPECT_STREQ("INVALID_REQUEST",
+                 check_topology_against_stored(ChannelTopology::FanOut,   "one_to_one"));
 }
 
