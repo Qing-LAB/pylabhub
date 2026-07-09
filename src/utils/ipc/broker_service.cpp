@@ -672,7 +672,8 @@ public:
                                            zmq::socket_t&        socket);
     nlohmann::json handle_consumer_dereg_req(zmq::socket_t& socket,
                                               const nlohmann::json& req);
-    void           handle_heartbeat_req(const nlohmann::json& req);
+    void           handle_heartbeat_req(zmq::socket_t&        socket,
+                                          const nlohmann::json& req);
 
     /// `GET_CHANNEL_AUTH_REQ` handler (HEP-CORE-0036 §6.5).  Returns
     /// the channel's current `authorized_consumer_pubkeys` allowlist
@@ -1689,7 +1690,10 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
         // Fire-and-forget from client.  Presence FSM transitions (e.g.
         // first-heartbeat sub-Live → Live; Pending → Connected recovery)
         // happen inside hub_state_->_on_heartbeat() called from the handler.
-        handle_heartbeat_req(payload);
+        // Socket is forwarded so the handler can fire
+        // CHANNEL_AUTH_CHANGED_NOTIFY(phase=live) to the binding side
+        // on first-heartbeat detection (HEP-CORE-0007 lines 1819-1822).
+        handle_heartbeat_req(socket, payload);
     }
     else if (msg_type == "CHECKSUM_ERROR_REPORT")
     {
@@ -4466,7 +4470,8 @@ void BrokerServiceImpl::fire_channel_auth_changed_notify(
                  fanned, binding_side_total);
 }
 
-void BrokerServiceImpl::handle_heartbeat_req(const nlohmann::json& req)
+void BrokerServiceImpl::handle_heartbeat_req(zmq::socket_t&        socket,
+                                              const nlohmann::json& req)
 {
     const std::string channel_name = req.value("channel_name", "");
     // Audit R3.5b (2026-05-19): channel_name grammar check at the gate
@@ -4609,11 +4614,39 @@ void BrokerServiceImpl::handle_heartbeat_req(const nlohmann::json& req)
     // at the wire layer (here) rather than inside HubState because
     // HubState is a pure state machine; wire-protocol observability
     // belongs at the wire layer.
+    //
+    // HEP-CORE-0007 §CHANNEL_AUTH_CHANGED_NOTIFY line 1819-1822: the
+    // same first-heartbeat gate also drives `phase=live` — "broker
+    // receives first heartbeat from a DIALING-side role" so binding
+    // side's `live_peers` accessor reflects the new peer.  The gate
+    // fires only for the DIALING side per topology; binding-side
+    // roles are the notification target, not the trigger.
     if (eff.presence_found && !eff.was_first_heartbeat_seen)
     {
         LOGGER_INFO("Broker: first heartbeat received from role='{}' "
                     "channel='{}' role_type='{}'",
                     wire_uid, channel_name, wire_role_type);
+
+        // Topology-role → is this the dialing side?  Fan-in producers
+        // dial; fan-out / one-to-one consumers dial.  (Symmetric with
+        // fan-out target dispatch in fire_channel_auth_changed_notify.)
+        auto ch = hub_state_->channel(channel_name);
+        if (ch.has_value())
+        {
+            const bool is_fan_in =
+                (ch->topology == pylabhub::hub::ChannelTopology::FanIn);
+            const bool is_dialing_side =
+                (is_fan_in && wire_role_type == "producer") ||
+                (!is_fan_in && wire_role_type == "consumer");
+            if (is_dialing_side)
+            {
+                fire_channel_auth_changed_notify(
+                    socket, channel_name,
+                    /*phase=*/"live",
+                    /*role_uid=*/wire_uid,
+                    /*role_type=*/wire_role_type);
+            }
+        }
     }
 }
 
