@@ -4414,7 +4414,7 @@ TEST(ChannelTopology, Cardinality_FanIn_AdmitsProducers)
     {
         EXPECT_EQ(nullptr,
                   topology::check_cardinality(ChannelTopology::FanIn,
-                                              /*is_consumer_reg=*/false,
+                                              topology::AdmissionSide::Producer,
                                               /*existing_producers=*/p,
                                               /*existing_consumers=*/0));
     }
@@ -4424,11 +4424,11 @@ TEST(ChannelTopology, Cardinality_FanIn_FirstConsumerAdmittedSecondRejected)
 {
     // Fan-in permits exactly 1 consumer.
     EXPECT_EQ(nullptr,
-              topology::check_cardinality(ChannelTopology::FanIn, true, 0, 0));
+              topology::check_cardinality(ChannelTopology::FanIn, topology::AdmissionSide::Consumer, 0, 0));
     EXPECT_STREQ("FAN_IN_IS_SINGLE_CONSUMER",
-                 topology::check_cardinality(ChannelTopology::FanIn, true, 0, 1));
+                 topology::check_cardinality(ChannelTopology::FanIn, topology::AdmissionSide::Consumer, 0, 1));
     EXPECT_STREQ("FAN_IN_IS_SINGLE_CONSUMER",
-                 topology::check_cardinality(ChannelTopology::FanIn, true, 5, 1));
+                 topology::check_cardinality(ChannelTopology::FanIn, topology::AdmissionSide::Consumer, 5, 1));
 }
 
 TEST(ChannelTopology, Cardinality_FanOut_AdmitsConsumers)
@@ -4439,7 +4439,7 @@ TEST(ChannelTopology, Cardinality_FanOut_AdmitsConsumers)
     {
         EXPECT_EQ(nullptr,
                   topology::check_cardinality(ChannelTopology::FanOut,
-                                              /*is_consumer_reg=*/true,
+                                              topology::AdmissionSide::Consumer,
                                               /*existing_producers=*/1,
                                               /*existing_consumers=*/c));
     }
@@ -4448,35 +4448,35 @@ TEST(ChannelTopology, Cardinality_FanOut_AdmitsConsumers)
 TEST(ChannelTopology, Cardinality_FanOut_FirstProducerAdmittedSecondRejected)
 {
     EXPECT_EQ(nullptr,
-              topology::check_cardinality(ChannelTopology::FanOut, false, 0, 0));
+              topology::check_cardinality(ChannelTopology::FanOut, topology::AdmissionSide::Producer, 0, 0));
     EXPECT_STREQ("FAN_OUT_IS_SINGLE_PRODUCER",
-                 topology::check_cardinality(ChannelTopology::FanOut, false, 1, 0));
+                 topology::check_cardinality(ChannelTopology::FanOut, topology::AdmissionSide::Producer, 1, 0));
     EXPECT_STREQ("FAN_OUT_IS_SINGLE_PRODUCER",
-                 topology::check_cardinality(ChannelTopology::FanOut, false, 1, 3));
+                 topology::check_cardinality(ChannelTopology::FanOut, topology::AdmissionSide::Producer, 1, 3));
 }
 
 TEST(ChannelTopology, Cardinality_OneToOne_BothSidesCardinalityOne)
 {
     // Both first REG and first CONSUMER_REG admitted.
     EXPECT_EQ(nullptr,
-              topology::check_cardinality(ChannelTopology::OneToOne, false, 0, 0));
+              topology::check_cardinality(ChannelTopology::OneToOne, topology::AdmissionSide::Producer, 0, 0));
     EXPECT_EQ(nullptr,
-              topology::check_cardinality(ChannelTopology::OneToOne, true, 0, 0));
+              topology::check_cardinality(ChannelTopology::OneToOne, topology::AdmissionSide::Consumer, 0, 0));
     EXPECT_EQ(nullptr,
-              topology::check_cardinality(ChannelTopology::OneToOne, true, 1, 0));
+              topology::check_cardinality(ChannelTopology::OneToOne, topology::AdmissionSide::Consumer, 1, 0));
     EXPECT_EQ(nullptr,
-              topology::check_cardinality(ChannelTopology::OneToOne, false, 0, 1));
+              topology::check_cardinality(ChannelTopology::OneToOne, topology::AdmissionSide::Producer, 0, 1));
 
     // Second producer rejected.
     EXPECT_STREQ("ONE_TO_ONE_CARDINALITY_VIOLATED",
-                 topology::check_cardinality(ChannelTopology::OneToOne, false, 1, 0));
+                 topology::check_cardinality(ChannelTopology::OneToOne, topology::AdmissionSide::Producer, 1, 0));
     EXPECT_STREQ("ONE_TO_ONE_CARDINALITY_VIOLATED",
-                 topology::check_cardinality(ChannelTopology::OneToOne, false, 1, 1));
+                 topology::check_cardinality(ChannelTopology::OneToOne, topology::AdmissionSide::Producer, 1, 1));
 
     // Second consumer rejected.
     EXPECT_STREQ("ONE_TO_ONE_CARDINALITY_VIOLATED",
-                 topology::check_cardinality(ChannelTopology::OneToOne, true, 0, 1));
+                 topology::check_cardinality(ChannelTopology::OneToOne, topology::AdmissionSide::Consumer, 0, 1));
     EXPECT_STREQ("ONE_TO_ONE_CARDINALITY_VIOLATED",
-                 topology::check_cardinality(ChannelTopology::OneToOne, true, 1, 1));
+                 topology::check_cardinality(ChannelTopology::OneToOne, topology::AdmissionSide::Consumer, 1, 1));
 }
 

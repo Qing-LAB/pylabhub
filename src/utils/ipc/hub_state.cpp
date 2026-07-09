@@ -121,24 +121,25 @@ bool transport_compatible(ChannelTopology t,
 }
 
 const char *check_cardinality(ChannelTopology t,
-                              bool is_consumer_reg,
-                              std::size_t existing_producers,
-                              std::size_t existing_consumers) noexcept
+                              AdmissionSide   side,
+                              std::size_t     existing_producers,
+                              std::size_t     existing_consumers) noexcept
 {
+    const bool is_consumer = (side == AdmissionSide::Consumer);
     switch (t)
     {
     case ChannelTopology::FanIn:
-        if (is_consumer_reg && existing_consumers >= 1)
+        if (is_consumer && existing_consumers >= 1)
             return "FAN_IN_IS_SINGLE_CONSUMER";
         return nullptr;
     case ChannelTopology::FanOut:
-        if (!is_consumer_reg && existing_producers >= 1)
+        if (!is_consumer && existing_producers >= 1)
             return "FAN_OUT_IS_SINGLE_PRODUCER";
         return nullptr;
     case ChannelTopology::OneToOne:
-        if (is_consumer_reg && existing_consumers >= 1)
+        if (is_consumer && existing_consumers >= 1)
             return "ONE_TO_ONE_CARDINALITY_VIOLATED";
-        if (!is_consumer_reg && existing_producers >= 1)
+        if (!is_consumer && existing_producers >= 1)
             return "ONE_TO_ONE_CARDINALITY_VIOLATED";
         return nullptr;
     }
@@ -614,7 +615,7 @@ HubState::_add_consumer(const std::string&              channel,
         if (!is_reregistration)
         {
             if (const char *err = topology::check_cardinality(
-                    channel_entry.topology, /*is_consumer_reg=*/true,
+                    channel_entry.topology, topology::AdmissionSide::Consumer,
                     channel_entry.producers.size(), cons.size()))
             {
                 result.topology_error_code = err;
@@ -1181,7 +1182,7 @@ HubState::_on_producer_added(const std::string&              channel_name,
                 // Cardinality gate under stored topology.  Reflects live
                 // counts because we hold the writer lock — no TOCTOU.
                 if (const char *err = topology::check_cardinality(
-                        cur.topology, /*is_consumer_reg=*/false,
+                        cur.topology, topology::AdmissionSide::Producer,
                         cur.producers.size(), cur.consumers.size()))
                 {
                     result.topology_error_code = err;

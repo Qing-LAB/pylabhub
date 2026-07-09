@@ -147,6 +147,15 @@ enum class ChannelTopology
 namespace topology
 {
 
+/// Which side of the admission gate an incoming REG_REQ represents.
+/// Used by `check_cardinality` to key the topology-specific
+/// admission table without a read-hostile boolean argument.
+enum class AdmissionSide
+{
+    Producer,  ///< REG_REQ from a producer role.
+    Consumer,  ///< CONSUMER_REG_REQ from a consumer role.
+};
+
 /// Enum ↔ wire string.  Round-trips with `parse` for the three
 /// canonical values; unknown enum returns `"unknown"`.
 PYLABHUB_UTILS_EXPORT const char *to_string(ChannelTopology t) noexcept;
@@ -184,9 +193,9 @@ transport_compatible(ChannelTopology t,
 /// HEP-CORE-0007 §12.4a for error-code semantics.
 PYLABHUB_UTILS_EXPORT const char *
 check_cardinality(ChannelTopology t,
-                  bool is_consumer_reg,
-                  std::size_t existing_producers,
-                  std::size_t existing_consumers) noexcept;
+                  AdmissionSide   side,
+                  std::size_t     existing_producers,
+                  std::size_t     existing_consumers) noexcept;
 
 } // namespace topology
 
