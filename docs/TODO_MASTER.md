@@ -16,7 +16,7 @@ The whole security-and-communication work chain sorts into **three
 independent lines** that share only the SMS crypto primitives.  Keep
 them separate when planning; do not mix scope.
 
-### ⭐ Topology migration — Phases A + B COMPLETE (2026-07-08)
+### ⭐ Topology migration — Phases A + B + C COMPLETE (2026-07-09)
 
 **Singular-side ownership migration.**  Every channel has exactly
 one data-plane endpoint, owned by the singular side of its topology.
@@ -31,17 +31,29 @@ for Q3a revision).
 - ✅ **Phase A** — 10 coordinated HEP amendments (commits
   `007b749d..e6a80070`).
 - ✅ **Phase B** — 10 code slices, atomic completion
-  (`2c960cca`).  L2 1592/1592 + L4 133/133.
+  (`2c960cca`); rev 1 correctness bugs + rev 2 groups A/B/C.
+- ✅ **Phase C step 1** — topology-parametric factory API +
+  PUSH/PULL dispatch (`50ceb5b6`).
+- ✅ **Phase C step 2** — PUB/SUB support, fan-out ZMQ live
+  (`58c1a321`).
+- ✅ **Phase C step 2 rev 2 A+B** — drift + defensive polish +
+  PUB/SUB test coverage (`60fe0921`).
+- ✅ **Phase C step 2 rev 2.3** — B1 fix (fan-in producer PUSH-
+  connect CURVE wire) + unified peer-list wire shape
+  (`b71dd9ec`).  Full ctest 2362/2362.
 
 **Active next:**
-- ⏳ **Phase B rev 1** — multi-agent review surfaced 23 findings:
-  15 to fix in rev 1 (2 correctness bugs, 5 architecture, 1 state
-  model, 7 cleanup), 7 deferred to Phase C/D/E, 1 false positive.
-  **Start here** in next session.
+- ⏳ **Phase D** — CHANNEL_AUTH_CHANGED_NOTIFY phase field wiring
+  + R6 gate symmetrization.  **Delta pinned to HEP-CORE-0007
+  §CHANNEL_AUTH_CHANGED_NOTIFY (lines 1803-1864) in
+  `docs/todo/TOPOLOGY_TODO.md` §Phase D delta.**  Existing plumbing
+  (`fire_channel_auth_changed_notify`, `handle_channel_auth_notifies`,
+  `ConsumerEntry.zmq_identity`, `allowed_peers` binding pattern) is
+  extended, not duplicated.  Do NOT propose socket_monitor or new
+  parallel structures — the mechanism is broker→NOTIFY.
 
-**Ahead:** Phase C (queue factory rewire) → D (R6 gate
-symmetrization) → E (retirements) → F (demos + L4 flip) → G
-(fan-out ZMQ) → H (verification).
+**Ahead:** Phase D → E (retirements) → F (demos + L4 flip) → G
+(fan-out ZMQ role-host integration) → H (verification).
 
 **Consequences of migration:** HEP-CORE-0017 §3.3 multi-endpoint
 PULL code (`2c604280`) retires in Phase E.  HEP-CORE-0042 §5 + §7.1

@@ -15,19 +15,60 @@ admission.
 
 ---
 
-## Status snapshot (2026-07-08 evening)
+## Status snapshot (2026-07-09)
 
 | Phase | Description | Status | Next action |
 |---|---|---|---|
 | A | HEP amendments (docs only) | ✅ **COMPLETE** — 9 steps + rev 2/3/3.1 landed | — |
-| B | Broker state + wire schema + admission gates | ✅ **COMPLETE** — 10 slices landed | Phase B rev 1 (review findings) |
-| **B rev 1** | **Review findings — correctness + architecture + cleanup** | ⏳ **PENDING** | **Start here** |
-| C | Queue factory rewire (topology-parametric bind/connect + PUB/SUB) | ⏳ Blocked on B rev 1 | Phase C plan below |
-| D | R6 gate symmetrization (dialing side pends on binding side Live) | ⏳ Blocked on C | Phase D plan below |
+| B | Broker state + wire schema + admission gates | ✅ **COMPLETE** — 10 slices landed | — |
+| B rev 1 | Review findings — correctness + architecture + cleanup | ✅ **COMPLETE** — bugs #1/#2/#3 fixed | — |
+| B rev 2 | Group C: AdmissionSide enum replaces is_consumer_reg bool | ✅ **COMPLETE** (`58b29ba8`) | — |
+| C step 1 | Topology-parametric queue factory API + PUSH/PULL dispatch | ✅ **COMPLETE** (`50ceb5b6`) | — |
+| C step 2 | PUB/SUB support — fan-out ZMQ live | ✅ **COMPLETE** (`58c1a321`) | — |
+| C step 2 rev 2 A+B | Drift, defensive polish, PUB/SUB coverage | ✅ **COMPLETE** (`60fe0921`) | — |
+| C step 2 rev 2.3 | B1 fix + unified peer-list wire shape | ✅ **COMPLETE** (`b71dd9ec`) | — |
+| **D** | **CHANNEL_AUTH_CHANGED_NOTIFY phase field + R6 gate symmetrization** | ⏳ **PENDING** | **See §Phase D delta below** |
 | E | Retirements (delete pre-attach queue + per-producer endpoints + old test file) | ⏳ Blocked on D | Phase E plan below |
 | F | Demo + L4 flip | ⏳ Blocked on E | — |
-| G | Fan-out ZMQ implementation (PUB/SUB paths) | ⏳ Blocked on F | — |
+| G | Fan-out ZMQ role-host integration + demo | ⏳ Blocked on F | — |
 | H | Full verification sweep | ⏳ Blocked on G | — |
+
+### Phase D — verified delta vs. HEP-CORE-0007 §CHANNEL_AUTH_CHANGED_NOTIFY (lines 1803-1864)
+
+**Source of truth:** HEP-CORE-0007 lines 1803-1864 already specifies
+the post-2026-07-08 wire payload (REQUIRED: `channel_name`,
+`channel_version`, `role_uid`, `role_type`, `phase`).  Scope is
+match-code-to-doc, not invent-new-mechanism.
+
+**What already exists in code — DO NOT reinvent:**
+- `ChannelEntry::consumer_count()` / `producer_count()` (`hub_state.hpp:721-722`) — broker-side state accessors.
+- `fire_channel_auth_changed_notify` (`broker_service.cpp:4351`) — fan-out helper; needs payload extension only.
+- `ConsumerEntry.zmq_identity` (`hub_state.hpp:218`) — enables `send_to_identity` fan-out to binding-side consumers.
+- `handle_channel_auth_notifies` (`role_api_base.cpp:1961`) — role-side handler; needs phase dispatch.
+- `RoleAPIBase::allowed_peers(channel)` script accessor + binding — pattern for `consumer_count`/`producer_count`.
+- `handle_heartbeat_req` (`broker_service.cpp:4413`) — insertion point for first-heartbeat detection.
+
+**Gaps (exact code deltas):**
+
+1. `broker_service.cpp:4379-4381` — payload emits `{channel_name, reason}`; extend to `{channel_name, channel_version, role_uid, role_type, phase}` per HEP-0007 lines 1840-1849.  Retire `reason`.
+2. `broker_service.cpp:4351` signature — accept `(phase, role_uid, role_type, channel_version)`.
+3. `broker_service.cpp:4384` fan-out target — currently `ch->producers`; dispatch by topology: fan-in → `ch->consumers`, fan-out/OneToOne → `ch->producers` (HEP-0007 line 1806).
+4. Call sites `broker_service.cpp:3370` (`"consumer_joined"`), `:3544` (`"consumer_left"`), `:4020` (targeted doorbell) — pass phase/role_uid/role_type instead of reason.
+5. `broker_service.cpp:handle_heartbeat_req` — first-heartbeat detection per role_uid per channel; on first heartbeat, fire `phase=live` NOTIFY (HEP-0007 lines 1819-1822).
+6. `role_api_base.cpp:1961 handle_channel_auth_notifies` — dispatch on `phase`: `admitted`/`left` = pull `get_channel_auth` (current behavior); `live` = local map update, no pull (HEP-0007 lines 1829-1838).
+7. `RoleAPIBase::pImpl` — add `live_peers` map (channel → set of live role_uids by role_type).
+8. `RoleAPIBase` — add `consumer_count(channel)` / `producer_count(channel)` accessors reading from `live_peers` (HEP-CORE-0028 §6a).
+9. Engine bindings — bind `consumer_count`/`producer_count` in native/lua/python; multi-engine parity audit per `feedback_multi_engine_parity_audit`.
+10. L4 test — fan-out slow-joiner scenario using `consumer_count()` gate (retires the 200ms sleep in the L2 `TopologyFactory_FanOut_Roundtrip_PubSubSingleSubscriber` test).
+
+**Anti-scope (things I proposed but were wrong — DO NOT touch):**
+- Socket monitor on PUB/SUB.  libzmq has no per-message HWM-drop event; the readiness mechanism is broker→NOTIFY, not framework introspection.
+- New `NOTIFY` message type or new wire field beyond the four listed above.
+- New `live_peers` structure on broker side — broker already has `ChannelEntry.consumers`/`producers` and can derive.
+- HEP doc updates — HEP-CORE-0007 lines 1803-1864 + HEP-CORE-0028 §6a already document the target design.  Only new material would be an amendment banner if the wire schema drifts, which it should not.
+
+**Blocking (Phase D wire migration for the still-legacy tests):**
+- L4 `PlhHubCliTest.ZmqE2E_MultiProducer_TwoAuthorized` currently uses legacy PUSH-bind / PULL-connect fan-in.  Phase D wire ships the `phase=live` mechanism; the topology-model L4 flip lands in Phase F.  Phase D can keep the legacy L4 green by not breaking `phase=admitted`/`phase=left` back-compat during migration.
 
 ---
 
