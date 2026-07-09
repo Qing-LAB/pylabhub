@@ -294,6 +294,21 @@ struct RoleAPIBase::Impl
     PeerCache allowlist_cache;
     PeerCache producer_peer_cache;
 
+    // HEP-CORE-0007 §CHANNEL_AUTH_CHANGED_NOTIFY (lines 1834-1838) —
+    // binding-side live-peer map maintained by phase=live / phase=left
+    // NOTIFY dispatch in `handle_channel_auth_notifies`.  Backs the
+    // script-observable `consumer_count(channel)` / `producer_count(channel)`
+    // accessors (HEP-CORE-0028 §6a).  Distinct from `allowlist_cache`
+    // (allowlist snapshot for `allowed_peers`) — a peer may be admitted
+    // (in allowlist) without yet being live (past first heartbeat).
+    //   Shape: channel_name → role_type → set<role_uid>.
+    // Mutex-guarded because the BRC poll thread writes and the script
+    // reads via the accessors on the script thread.
+    mutable std::mutex                                                     live_peers_mu;
+    std::unordered_map<std::string,
+        std::unordered_map<std::string,
+            std::unordered_set<std::string>>> live_peers;
+
     // ── Thread-local / set-once-before-spawn state ─────────────────────
     //
     // Every field below this banner is either:
@@ -1934,6 +1949,43 @@ RoleAPIBase::producers(const std::string &channel) const
     return pImpl->producer_peer_cache.snapshot(channel);
 }
 
+namespace
+{
+/// Shared body for `consumer_count` / `producer_count`.  Snapshots the
+/// binding-side live-peer set for `(channel, role_type)` under the
+/// lock and returns its size.  0 if the channel is unknown to this
+/// role or no live peers have been observed yet.
+std::size_t live_peer_count(
+    const std::mutex &mu_ref,
+    const std::unordered_map<std::string,
+        std::unordered_map<std::string,
+            std::unordered_set<std::string>>> &map_ref,
+    const std::string &channel,
+    const char *role_type)
+{
+    std::lock_guard<std::mutex> lk(const_cast<std::mutex &>(mu_ref));
+    auto ch_it = map_ref.find(channel);
+    if (ch_it == map_ref.end()) return 0;
+    auto rt_it = ch_it->second.find(role_type);
+    if (rt_it == ch_it->second.end()) return 0;
+    return rt_it->second.size();
+}
+} // namespace
+
+std::size_t
+RoleAPIBase::consumer_count(const std::string &channel) const
+{
+    return live_peer_count(pImpl->live_peers_mu, pImpl->live_peers,
+                            channel, "consumer");
+}
+
+std::size_t
+RoleAPIBase::producer_count(const std::string &channel) const
+{
+    return live_peer_count(pImpl->live_peers_mu, pImpl->live_peers,
+                            channel, "producer");
+}
+
 bool RoleAPIBase::is_channel_ready(const std::string &channel) const noexcept
 {
     // HEP-CORE-0036 §6.7 (#190) — script-visible state-machine query.
@@ -1983,6 +2035,51 @@ void RoleAPIBase::handle_channel_auth_notifies(
                 pImpl->short_tag, pImpl->uid);
             it = msgs.erase(it);
             continue;
+        }
+
+        // HEP-CORE-0007 §CHANNEL_AUTH_CHANGED_NOTIFY (lines 1829-1838)
+        // — phase-driven dispatch.
+        //   phase=admitted / phase=left → allowlist changed, pull
+        //                                  GET_CHANNEL_AUTH_REQ; on left
+        //                                  also drop from live_peers.
+        //   phase=live                  → local live_peers update
+        //                                  only; no pull.
+        //   phase absent (pre-migration NOTIFY) → treat as admitted
+        //                                  for back-compat.
+        const std::string phase =
+            it->details.value("phase", std::string{});
+        const std::string role_uid =
+            it->details.value("role_uid", std::string{});
+        const std::string role_type =
+            it->details.value("role_type", std::string{});
+
+        if (phase == "live")
+        {
+            if (!role_uid.empty() && !role_type.empty())
+            {
+                std::lock_guard<std::mutex> lk(pImpl->live_peers_mu);
+                pImpl->live_peers[channel][role_type].insert(role_uid);
+                LOGGER_INFO(
+                    "[{}/{}] event=ChannelAuthLive channel='{}' "
+                    "role_uid='{}' role_type='{}' (HEP-CORE-0007 §CHANNEL_"
+                    "AUTH_CHANGED_NOTIFY phase=live)",
+                    pImpl->short_tag, pImpl->uid, channel,
+                    role_uid, role_type);
+            }
+            it = msgs.erase(it);
+            continue;
+        }
+        if (phase == "left" && !role_uid.empty() && !role_type.empty())
+        {
+            std::lock_guard<std::mutex> lk(pImpl->live_peers_mu);
+            auto ch_it = pImpl->live_peers.find(channel);
+            if (ch_it != pImpl->live_peers.end())
+            {
+                auto rt_it = ch_it->second.find(role_type);
+                if (rt_it != ch_it->second.end())
+                    rt_it->second.erase(role_uid);
+            }
+            // Fall through to pull — allowlist did change.
         }
 
         // Channel-bound routing: find the BRC that owns this channel.

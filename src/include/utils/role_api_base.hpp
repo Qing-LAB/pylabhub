@@ -374,6 +374,22 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     [[nodiscard]] std::vector<AllowedPeer>
     producers(const std::string &channel) const;
 
+    /// HEP-CORE-0028 §6a + HEP-CORE-0007 §CHANNEL_AUTH_CHANGED_NOTIFY
+    /// (lines 1834-1838) — script-observable live-peer count for the
+    /// named channel, backed by the broker's `phase=live` NOTIFY
+    /// stream.  Counts the DIALING-side roles currently past first-
+    /// heartbeat.  Returns 0 if no live peers, if the channel is
+    /// unknown to this role, or if this role is itself the dialing
+    /// side (only the BINDING side receives live-peer NOTIFYs).
+    /// Thread-safe; snapshot under the internal lock.
+    ///
+    /// Use case: fan-out producer gates the first publish until at
+    /// least one consumer is live (closes the libzmq PUB/SUB
+    /// slow-joiner window).  Fan-in consumer gates admission logic
+    /// until N producers are live.
+    [[nodiscard]] std::size_t consumer_count(const std::string &channel) const;
+    [[nodiscard]] std::size_t producer_count(const std::string &channel) const;
+
     /// HEP-CORE-0036 §6.7 (#190) — script-side state-machine query.
     /// True iff the queue serving the named channel is in the Active
     /// state (`start()` succeeded post-Configured gate).  Resolver:
