@@ -2423,9 +2423,12 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     // The early Cat-1 schema_hash gate above caught the most common
     // re-registration failure mode (with CHANNEL_ERROR_NOTIFY fan-out).
     // Remaining reject modes are: UID_CONFLICT (uid spoof or hub-side
-    // residue), MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM (SHM cardinality),
-    // and the broader invariant-mismatch class (schema_version,
-    // schema_blds, schema_owner, schema_id, data_transport).
+    // residue); the topology gate (TOPOLOGY_MISMATCH,
+    // TOPOLOGY_NOT_SUPPORTED_FOR_TRANSPORT, FAN_OUT_IS_SINGLE_PRODUCER,
+    // ONE_TO_ONE_CARDINALITY_VIOLATED) — the latter subsumes the
+    // retired MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM check; and the
+    // broader invariant-mismatch class (schema_version, schema_blds,
+    // schema_owner, schema_id, data_transport).
     // (HEP-CORE-0036 §5b.4 retired the legacy duplicates
     // has_shared_memory / shm_name / channel_pattern.)
     // A reject in those remaining cases CAN leave an orphan schema record in
@@ -3403,7 +3406,10 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     //
     // SHM is single-producer per HEP-CORE-0023 §2.1.1 cardinality;
     // the broker has already rejected a second SHM producer at
-    // REG_REQ time with MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM, so for
+    // REG_REQ time via the topology cardinality gate
+    // (ONE_TO_ONE_CARDINALITY_VIOLATED under the default topology;
+    // FAN_OUT_IS_SINGLE_PRODUCER under fan-out; the pre-migration
+    // MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM is retired), so for
     // SHM channels `producers[]` has length 1 by construction.
     //
     // The legacy AUTH-4 / task #164 design (a single `shm_secret`

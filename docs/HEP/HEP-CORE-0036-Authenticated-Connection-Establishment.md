@@ -28,7 +28,8 @@
 > - **R6 gate direction symmetrizes.**  Pre-migration R6 blocked
 >   consumer REG_REQ until producer was Live.  Post-migration the
 >   DIALING side's REG_REQ pends until the BINDING side is Live +
->   `data_endpoint_resolved` + `confirmed_version >= role_registration_version`.
+>   `data_endpoint.has_value()` (binding side has published its
+>   endpoint) + `confirmed_version >= role_registration_version`.
 >   Under fan-in the consumer is BINDING (producers pend); under
 >   fan-out and 1-to-1 the producer is BINDING (consumers pend).
 >   See tech draft §5.4.
@@ -1183,9 +1184,9 @@ this category of error impossible by construction.
 > binding/dialing model, the role that pends waiting for
 > readiness parameterizes by topology:
 > - **Fan-in:** producer's REG_REQ pends until consumer (binding
->   side) is Live + `data_endpoint_resolved` + allowlist confirmed.
+>   side) is Live + `data_endpoint.has_value()` + allowlist confirmed.
 > - **Fan-out / 1-to-1:** consumer's REG_REQ pends until producer
->   (binding side) is Live + `data_endpoint_resolved` + allowlist
+>   (binding side) is Live + `data_endpoint.has_value()` + allowlist
 >   confirmed.
 > The "first heartbeat" test itself is unchanged — it's the
 > per-role Live transition that binds side + condition to R6

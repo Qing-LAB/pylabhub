@@ -113,8 +113,10 @@ using ZmqSchemaField = SchemaFieldDesc;
 /// single producer the consumer's RX queue may receive data from.
 /// One entry per producer in `CONSUMER_REG_ACK.producers[]`.  For
 /// ZMQ transport `producer_peers` admits N entries (fan-in); for
-/// SHM transport `producer_peers.size() ≤ 1` (HEP-CORE-0007 §12.4a
-/// `MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM`).  Scripts never see this
+/// SHM transport `producer_peers.size() ≤ 1` (HEP-CORE-0017 §3.3.0
+/// topology decision matrix — SHM is physically single-producer;
+/// the topology cardinality gate at REG_REQ enforces this before
+/// this queue-level structure is populated).  Scripts never see this
 /// surface; ZmqQueue uses these internally for connect direction +
 /// per-peer ZAP cache.
 struct ProducerPeer

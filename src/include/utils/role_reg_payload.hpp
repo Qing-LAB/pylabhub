@@ -121,6 +121,38 @@ struct ConsumerRegInputs
     std::string channel_topology;
 };
 
+/// Apply the wire envelope that both REG_REQ and CONSUMER_REG_REQ
+/// carry: ABI fingerprint (HEP-CORE-0032 §8.2), optional `build_id`
+/// sibling, and optional `channel_topology` (HEP-CORE-0018 §5 /
+/// HEP-CORE-0007 §12.3).  Extracted to keep the producer + consumer
+/// builders consistent — a drift on either was a real risk before
+/// consolidation (2026-07-09).
+inline void apply_common_reg_envelope(nlohmann::json &   reg,
+                                       const std::string &channel_topology)
+{
+    // HEP-CORE-0032 §8.2 — ABI fingerprint envelope (15-field
+    // ComponentVersions).  Broker verifies via `verify_peer_versions()`
+    // on ingest.  Emitted unconditionally; broker's ingest treats
+    // absence as verdict='ABSENT' + accept during the roll-out window
+    // (§8.5 lenient default).  Future MAJOR bump on broker_proto
+    // promotes to REQUIRED.
+    reg["abi_fingerprint"] = pylabhub::version::to_json_object(
+        pylabhub::version::current());
+    if (const char *bid = pylabhub::version::build_id())
+    {
+        reg["build_id"] = bid;
+    }
+    // Channel topology — emitted only when non-empty.  Empty means no
+    // wire declaration; broker applies the overwrite semantics
+    // (inherit stored topology on existing channels; default to
+    // one-to-one on fresh channels) per HEP-CORE-0018 §5 /
+    // HEP-CORE-0007 §12.3.
+    if (!channel_topology.empty())
+    {
+        reg["channel_topology"] = channel_topology;
+    }
+}
+
 /// Build the producer-side REG_REQ payload (channel/identity/transport
 /// fields, no schema).  Equivalent to the manual JSON construction
 /// duplicated in producer_role_host.cpp / processor_role_host.cpp
@@ -157,34 +189,7 @@ inline nlohmann::json build_producer_reg_payload(const ProducerRegInputs &in)
     // there is no fallback.
     reg["zmq_pubkey"]        = in.zmq_pubkey;
 
-    // HEP-CORE-0032 §8.2 — ABI fingerprint envelope.  The
-    // 15-field ComponentVersions object.  Broker verifies via
-    // `verify_peer_versions()` on ingest and logs per §8.6.  In slice C
-    // (2026-07-03) this is emitted UNCONDITIONALLY; broker's ingest
-    // treats absence as verdict='ABSENT' + accept during the roll-out
-    // window (§8.5 default lenient policy).  A future MAJOR bump on
-    // broker_proto promotes to REQUIRED.
-    reg["abi_fingerprint"] = pylabhub::version::to_json_object(
-        pylabhub::version::current());
-    // Optional sibling: build_id is a per-build identifier, only
-    // populated when compiled with build-id support
-    // (PYLABHUB_HAVE_BUILD_ID).  Serialized as a bare string next to
-    // abi_fingerprint per §8.2 last paragraph so it can be omitted
-    // independently of the ComponentVersions block.
-    if (const char *bid = pylabhub::version::build_id())
-    {
-        reg["build_id"] = bid;
-    }
-
-    // Channel topology.  Emitted only when the caller populates
-    // in.channel_topology — empty means no wire declaration, and
-    // the broker applies the overwrite semantics (inherit stored
-    // topology on existing channels; default to one-to-one on
-    // fresh channels) per HEP-CORE-0018 §5 / HEP-CORE-0007 §12.3.
-    if (!in.channel_topology.empty())
-    {
-        reg["channel_topology"] = in.channel_topology;
-    }
+    apply_common_reg_envelope(reg, in.channel_topology);
 
     if (in.is_zmq_transport)
     {
@@ -239,23 +244,7 @@ inline nlohmann::json build_consumer_reg_payload(const ConsumerRegInputs &in)
     reg["consumer_pid"] = pylabhub::platform::get_pid();
     reg["zmq_pubkey"]   = in.zmq_pubkey;
 
-    // Channel topology — same emit-when-non-empty semantics as the
-    // producer-side builder above.  Config authority: HEP-CORE-0018 §5.4.
-    if (!in.channel_topology.empty())
-    {
-        reg["channel_topology"] = in.channel_topology;
-    }
-
-    // HEP-CORE-0032 §8.2 — same ABI fingerprint envelope as
-    // build_producer_reg_payload.  See that function's comment for
-    // slice-C roll-out policy (verdict='ABSENT' + accept during
-    // migration window).
-    reg["abi_fingerprint"] = pylabhub::version::to_json_object(
-        pylabhub::version::current());
-    if (const char *bid = pylabhub::version::build_id())
-    {
-        reg["build_id"] = bid;
-    }
+    apply_common_reg_envelope(reg, in.channel_topology);
     return reg;
 }
 

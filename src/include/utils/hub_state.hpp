@@ -167,25 +167,6 @@ PYLABHUB_UTILS_EXPORT bool
 transport_compatible(ChannelTopology t,
                      std::string_view data_transport) noexcept;
 
-/// Three-branch check of an incoming REG_REQ / CONSUMER_REG_REQ's
-/// `channel_topology` wire field against an existing channel's
-/// stored topology.  Tech draft §5.1 rule 4.
-///
-/// Return value:
-///  - `nullptr` on match or empty-inherit — admission proceeds.
-///  - `"TOPOLOGY_MISMATCH"` when non-empty wire parses to a
-///    topology different from `stored`.
-///  - `"INVALID_REQUEST"` when non-empty wire doesn't parse.
-///
-/// Empty `wire` always returns `nullptr` — a role that didn't
-/// declare topology opts into whatever the channel already has.
-///
-/// Stored topology is IMMUTABLE at channel creation; no promotion
-/// path.
-PYLABHUB_UTILS_EXPORT const char *
-check_against_stored(ChannelTopology stored,
-                     std::string_view wire) noexcept;
-
 /// Cardinality gate for the broker's REG_REQ / CONSUMER_REG_REQ
 /// admission.  Called BEFORE any state mutation per tech draft
 /// §5.1 rule 3.  Inputs describe the STATE BEFORE the incoming
@@ -616,18 +597,19 @@ struct ChannelEntry
     /// REG_REQs with no wire field silently inherit.
     ///
     /// Written on channel creation inside `_on_producer_added`; not
-    /// otherwise mutated.  Initializer omitted deliberately — every
-    /// live `ChannelEntry` is either created via `_on_producer_added`
-    /// (which sets this field) or default-constructed as a
-    /// placeholder that must not be observed before it's written.
+    /// otherwise mutated.  Default `OneToOne` matches the broker's
+    /// wire-absent default (HEP-CORE-0018 §5 + HEP-CORE-0007 §12.3):
+    /// a default-constructed placeholder that leaks into a query
+    /// reports the same topology as a channel created via a REG_REQ
+    /// with no `channel_topology` field — no ambiguity.
     ChannelTopology topology{ChannelTopology::OneToOne};
 
     /// Single data-plane endpoint for the channel — owned by the
     /// BINDING side of the topology (fan-in: consumer; fan-out /
     /// 1-to-1: producer).  Populated by `ENDPOINT_UPDATE_REQ` per
     /// HEP-CORE-0021 §16.  `std::nullopt` until the binding side
-    /// publishes.  R6-gated dialing-side REG_REQs check this via
-    /// `endpoint_resolved()`.
+    /// publishes.  R6-gated dialing-side REG_REQs check
+    /// `data_endpoint.has_value()`.
     ///
     /// Per-topology shape:
     /// - Fan-in ZMQ: consumer's PULL bind endpoint (`tcp://host:port`).

@@ -12,10 +12,13 @@
 | **Reference**  | This HEP is the authoritative design.                                                    |
 
 > **Amendment (2026-07-08) — topology migration.**  `ChannelEntry`
-> gains `topology` (ChannelTopology enum), `data_endpoint`,
-> `data_endpoint_resolved`, `channel_version`, and `confirmed_version`
-> fields.  `ProducerEntry::zmq_node_endpoint` retires — its role is
-> subsumed by the channel-scope `data_endpoint`.  Channel teardown
+> gains `topology` (ChannelTopology enum), `data_endpoint`
+> (`std::optional<std::string>` — `has_value()` conveys the "binding
+> side has published its endpoint" bit, previously carried by a
+> separate `data_endpoint_resolved` bool), `channel_version`, and
+> `confirmed_version` fields.  `ProducerEntry::zmq_node_endpoint`
+> retires — its role is subsumed by the channel-scope `data_endpoint`.
+> Channel teardown
 > rule generalizes from "last producer disconnects" to "BINDING side
 > disconnects" (per topology).  Four wire retirements at §18.2:
 > `GET_CHANNEL_PRODUCERS_REQ`, `CHANNEL_PRODUCERS_CHANGED_NOTIFY`,

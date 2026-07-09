@@ -82,11 +82,19 @@ ChannelEntry make_channel(const std::string &name,
     e.name           = name;
     e.schema_hash    = std::string(64, 'a');
     e.schema_version = 1;
-    // Test-helper channels default to FanIn (matches pre-migration
-    // multi-producer test patterns).  Multi-consumer tests should
-    // pass `ChannelTopology::FanOut`.  Tests that want the atomic
-    // admission path with default topology can go through
-    // `_on_producer_added` instead.
+    // Test-helper channels default to `FanIn` (matches pre-migration
+    // multi-producer test patterns).  Multi-consumer skeleton tests
+    // should pass `ChannelTopology::FanOut`.  Tests that want the
+    // atomic admission path with the production-default `OneToOne`
+    // topology go through `_on_producer_added`.
+    //
+    // Divergence risk: production default (`_on_producer_added` +
+    // absent wire) is `OneToOne`, not `FanIn`.  A regression that
+    // only fires on the `OneToOne` default path is NOT caught by
+    // skeleton tests using this helper — see the explicit
+    // `HubStateTopologyAdmission` tests below (esp.
+    // `SecondProducer_ShmDefaultTopology_RejectedOneToOne`) for
+    // production-default coverage.
     e.topology       = topology;
     ProducerEntry p;
     p.producer_pid = 4242;
@@ -1817,7 +1825,7 @@ ChannelTransportInvariants make_zmq_transport()
     return t;
 }
 
-ChannelTransportInvariants make_shm_transport(const std::string & /*shm_name*/)
+ChannelTransportInvariants make_shm_transport()
 {
     ChannelTransportInvariants t;
     t.data_transport    = "shm";
@@ -2697,7 +2705,7 @@ TEST(HubStateTopologyAdmission, SecondProducer_ShmDefaultTopology_RejectedOneToO
     ASSERT_EQ(HubStateTestAccess::on_producer_added(
                   s, "ch.thermo.shm-cardinality",
                   make_schema_invariants(),
-                  make_shm_transport("ch.thermo.shm-cardinality-shm"),
+                  make_shm_transport(),
                   make_producer("prod.thermoA.uid00000003", 3001))
                   .producer_result,
               AddProducerResult::Created);
@@ -2705,7 +2713,7 @@ TEST(HubStateTopologyAdmission, SecondProducer_ShmDefaultTopology_RejectedOneToO
     auto r = HubStateTestAccess::on_producer_added(
         s, "ch.thermo.shm-cardinality",
         make_schema_invariants(),
-        make_shm_transport("ch.thermo.shm-cardinality-shm"),
+        make_shm_transport(),
         make_producer("prod.thermoB.uid00000004", 3002));  // distinct uid
 
     EXPECT_STREQ(r.topology_error_code, "ONE_TO_ONE_CARDINALITY_VIOLATED");
@@ -4396,47 +4404,7 @@ TEST(ChannelTopology, TransportCompatibility)
     EXPECT_FALSE(topology::transport_compatible(ChannelTopology::FanOut,   "tcp"));
 }
 
-TEST(ChannelTopology, CheckAgainstStored_InheritOnEmpty)
-{
-    // Empty incoming → always OK, no mismatch check.  Tech draft §5.1
-    // rule 4 branch 3 — defaulted role opts into stored topology.
-    EXPECT_EQ(nullptr, topology::check_against_stored(ChannelTopology::FanIn,    ""));
-    EXPECT_EQ(nullptr, topology::check_against_stored(ChannelTopology::FanOut,   ""));
-    EXPECT_EQ(nullptr, topology::check_against_stored(ChannelTopology::OneToOne, ""));
-}
-
-TEST(ChannelTopology, CheckAgainstStored_MatchOnEqual)
-{
-    // Non-empty matching → OK.
-    EXPECT_EQ(nullptr, topology::check_against_stored(ChannelTopology::FanIn,    "fan-in"));
-    EXPECT_EQ(nullptr, topology::check_against_stored(ChannelTopology::FanOut,   "fan-out"));
-    EXPECT_EQ(nullptr, topology::check_against_stored(ChannelTopology::OneToOne, "one-to-one"));
-}
-
-TEST(ChannelTopology, CheckAgainstStored_MismatchFires)
-{
-    // Non-empty non-matching → TOPOLOGY_MISMATCH.
-    EXPECT_STREQ("TOPOLOGY_MISMATCH",
-                 topology::check_against_stored(ChannelTopology::FanIn,    "fan-out"));
-    EXPECT_STREQ("TOPOLOGY_MISMATCH",
-                 topology::check_against_stored(ChannelTopology::FanOut,   "one-to-one"));
-    EXPECT_STREQ("TOPOLOGY_MISMATCH",
-                 topology::check_against_stored(ChannelTopology::OneToOne, "fan-in"));
-}
-
-TEST(ChannelTopology, CheckAgainstStored_InvalidWireValue)
-{
-    // Non-empty non-parseable → INVALID_REQUEST.  Distinguishes from
-    // TOPOLOGY_MISMATCH so the broker can return the right error code.
-    EXPECT_STREQ("INVALID_REQUEST",
-                 topology::check_against_stored(ChannelTopology::FanIn,    "garbage"));
-    EXPECT_STREQ("INVALID_REQUEST",
-                 topology::check_against_stored(ChannelTopology::OneToOne, "FanIn"));
-    EXPECT_STREQ("INVALID_REQUEST",
-                 topology::check_against_stored(ChannelTopology::FanOut,   "one_to_one"));
-}
-
-// Cardinality gate — slice 8.
+// Cardinality gate.
 
 TEST(ChannelTopology, Cardinality_FanIn_AdmitsProducers)
 {

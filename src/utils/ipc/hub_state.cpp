@@ -120,15 +120,6 @@ bool transport_compatible(ChannelTopology t,
     return true;
 }
 
-const char *check_against_stored(ChannelTopology stored,
-                                 std::string_view wire) noexcept
-{
-    if (wire.empty()) return nullptr;
-    const auto parsed = parse(wire);
-    if (!parsed) return "INVALID_REQUEST";
-    return (*parsed == stored) ? nullptr : "TOPOLOGY_MISMATCH";
-}
-
 const char *check_cardinality(ChannelTopology t,
                               bool is_consumer_reg,
                               std::size_t existing_producers,

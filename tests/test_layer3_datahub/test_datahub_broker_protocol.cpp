@@ -61,7 +61,7 @@ TEST_F(BrokerProtocolTest, ChecksumErrorReport_UnknownChannel_Silent)
 // ============================================================================
 
 TEST_F(BrokerProtocolTest,
-       DuplicateReg_TwoDistinctProducers_OnShmChannel_RejectedShmCardinality)
+       DuplicateReg_TwoDistinctProducers_OnShmChannel_RejectedOneToOneCardinality)
 {
     auto w = SpawnWorker("broker_protocol.duplicate_reg_shm_cardinality");
     ExpectWorkerOk(w);

@@ -263,8 +263,9 @@ to symmetrize the R6 gate).  What changes:
 **Dialing side S3 flow** (fan-in producer; fan-out or 1-to-1 consumer):
 
 1. REG_REQ pends at broker R6 gate until binding side is Live +
-   `data_endpoint_resolved` + `confirmed_version >= role_registration_version`
-   (all three conditions per tech draft §5.4).
+   `data_endpoint.has_value()` (endpoint published) +
+   `confirmed_version >= role_registration_version` (all three
+   conditions per tech draft §5.4).
 2. REG_ACK arrives carrying `data_endpoint` + `data_pubkey`.
 3. `apply_master_approval(REG_ACK)` — queue sets
    `curve_serverkey = data_pubkey`, connects to `data_endpoint`,

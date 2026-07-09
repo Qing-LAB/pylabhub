@@ -322,7 +322,7 @@ Created by `pylabhub-consumer --init <dir>`:
 | `broker_pubkey` | no | `""` | CurveZMQ broker public key Z85 |
 | `hub_dir` | no | — | Hub directory; reads `hub.json` to derive `broker`/`broker_pubkey` |
 | `out_channel` | yes | — | Channel name to publish on.  (Naming: directional-prefix per `role_config.cpp:224` — the pre-2026-07-08 doc drift that showed `"channel"` at top level was a documentation error; the parser has always read `out_channel`.) |
-| `out_channel_topology` | no★ | `"one-to-one"` | Channel topology declaration for the producer's output channel (2026-07-08 topology migration).  Legal values: `"fan-in"` (N producers → 1 consumer, ZMQ only, consumer binds), `"fan-out"` (1 producer → N consumers, ZMQ or SHM, producer binds), `"one-to-one"` (1 producer → 1 consumer, ZMQ or SHM, producer binds).  Overwrite semantics: only EXPLICIT declarations set or change a channel's stored topology; defaulted `one-to-one` inherits from any pre-existing channel topology.  Explicit mismatch → `TOPOLOGY_MISMATCH` (HEP-CORE-0007 §12.4a).  Cardinality constraints per topology enforced by the broker (`FAN_IN_IS_SINGLE_CONSUMER` / `FAN_OUT_IS_SINGLE_PRODUCER` / `ONE_TO_ONE_CARDINALITY_VIOLATED`).  See HEP-CORE-0017 §3.3 for the topology × transport decision matrix, HEP-CORE-0007 §12.3 for the wire schema. |
+| `out_channel_topology` | no★ | `"one-to-one"` | Channel topology declaration for the producer's output channel (2026-07-08 topology migration).  Legal values: `"fan-in"` (N producers → 1 consumer, ZMQ only, consumer binds), `"fan-out"` (1 producer → N consumers, ZMQ or SHM, producer binds), `"one-to-one"` (1 producer → 1 consumer, ZMQ or SHM, producer binds).  Overwrite semantics: only EXPLICIT declarations set a channel's stored topology, immutable at creation (no promotion path); defaulted `one-to-one` inherits from any pre-existing channel topology.  Explicit mismatch → `TOPOLOGY_MISMATCH` (HEP-CORE-0007 §12.4a).  Cardinality constraints per topology enforced by the broker (`FAN_IN_IS_SINGLE_CONSUMER` / `FAN_OUT_IS_SINGLE_PRODUCER` / `ONE_TO_ONE_CARDINALITY_VIOLATED`).  See HEP-CORE-0017 §3.3 for the topology × transport decision matrix, HEP-CORE-0007 §12.3 for the wire schema. |
 | `transport` | no | `"shm"` | `"shm"` (SHM ring buffer) or `"zmq"` (ZMQ PUSH/PUB socket depending on topology).  Must be compatible with `out_channel_topology` — SHM does NOT support `"fan-in"` (rejected with `TOPOLOGY_NOT_SUPPORTED_FOR_TRANSPORT`). |
 | `zmq_out_endpoint` | no† | — | Required when `transport=zmq`; ZMQ PUSH endpoint (e.g. `"tcp://0.0.0.0:5581"`) |
 | `zmq_out_bind` | no | `true` | PUSH default=bind; set false to connect to a remote PULL |
@@ -376,9 +376,9 @@ Created by `pylabhub-consumer --init <dir>`:
 ‡ Exactly one of the inline `slot_schema` block or `schema_id` string is required
 (Phase 2 after HEP-CORE-0016 Phase 3).
 ★ **OPTIONAL as of 2026-07-08 topology migration (evening rev).**  Default `"one-to-one"`
-when the field is omitted.  Only EXPLICIT declarations can set or change a
-channel's stored topology; defaulted `one-to-one` inherits (see the "Overwrite
-semantics" bullet in the amendment banner at the top of this HEP).
+when the field is omitted.  Only EXPLICIT declarations set a channel's stored
+topology (immutable at creation); defaulted `one-to-one` inherits (see the
+"Overwrite semantics" bullet in the amendment banner at the top of this HEP).
 
 **ZMQ transport note**: When `queue_type=zmq`, the consumer's role in the connection
 depends on `in_channel_topology` (2026-07-08 topology migration):
