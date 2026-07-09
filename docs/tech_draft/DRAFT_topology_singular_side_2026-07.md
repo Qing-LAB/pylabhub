@@ -1,25 +1,41 @@
 ---
 title: "Singular-side ownership: topology-parameterized data-plane design"
-status: DESIGN LOCKED (2026-07-08, rev 5).  All open items resolved.  Ready for Phase A HEP amendment drafting.  Supersedes commits 2c604280 + 9d0ca4c8 via forward-migration (retirement lands in Phase E and rewrite in Phase A respectively).
+status: DESIGN LOCKED (2026-07-08, current rev 9 + rev 10 pending for Q3a revision).  Phase A HEP amendments ✅ COMPLETE.  Phase B state model + broker admission ✅ COMPLETE.  Phase B rev 1 (review findings) ⏳ PENDING.  Phases C-H ahead.
 authors: qing + claude (session 2026-07-08)
 supersedes-if-adopted:
-  - HEP-CORE-0017 §3.3 (per-peer connect model)
-  - HEP-CORE-0017 §4.6.1 (dynamic membership under HEP-0036)
-  - HEP-CORE-0021 §16 amendment as drafted (reparametrizes)
-  - HEP-CORE-0042 §5 + §7.1 (pre-attach coordination — retires)
+  - HEP-CORE-0017 §3.3 (per-peer connect model) — retires in Phase E
+  - HEP-CORE-0017 §4.6.1 (dynamic membership under HEP-0036) — retires in Phase E
+  - HEP-CORE-0021 §16 amendment as drafted — reparametrized in Phase A step 6
+  - HEP-CORE-0042 §5 + §7.1 (pre-attach coordination) — retires in Phase E
 touches:
-  - HEP-CORE-0007, 0017, 0021, 0023, 0033, 0036, 0042
-target-tasks: task #94 (ephemeral binding — subsumed), and new topology-migration task
+  - HEP-CORE-0007, 0017, 0018, 0021, 0023, 0028, 0033, 0036, 0042, 0044 (ten HEPs)
+target-tasks: task #94 (ephemeral binding — subsumed); topology migration Phases A + B landed 2026-07-08.
 ---
 
 # Singular-side ownership: topology-parameterized data-plane design
 
 ## 0. Status
 
-**DESIGN LOCKED — rev 5, 2026-07-08 evening.**  All three open items
-from §13 resolved by user this session.  Document is the design
-authority for a coordinated multi-HEP amendment package; Phase A
-drafting begins in a subsequent session.
+**DESIGN LOCKED — current rev 9 (rev 10 pending for the Q3a revision
+landed in Phase A rev 3.1).**  All three original open items from
+§13 resolved 2026-07-08 morning.  Phase A HEP amendments landed
+2026-07-08 across commits `007b749d..e6a80070`; Phase B code
+migration landed same day across `bba5e401..2c960cca`.
+
+**Post-Phase-B state (2026-07-08 evening):**
+- Design is the authoritative reference for downstream Phase C-H
+  work.  All in-tree behavior matches this document with the
+  following documented deviations, all captured in
+  `docs/todo/TOPOLOGY_TODO.md`:
+  - Q3a revised (§13.1 amended, rev 10 pending): `channel_topology`
+    OPTIONAL with default `one-to-one`, only explicit declarations
+    set stored topology, immutable at creation.
+  - §5.1 rule 4 rewritten (rev 9→10) to the simpler three-branch
+    check + immutability model (no promotion path).
+- Multi-agent code + doc review 2026-07-08 evening surfaced 23
+  findings.  15 are Phase B rev 1 scope (correctness + architecture
+  + cleanup); 7 are deferrals to Phases C-E (documented by phase in
+  `docs/todo/TOPOLOGY_TODO.md` §5); 1 false positive.
 
 Revision history:
 - **Rev 1** (`bdc30116`) — initial design; fan-in + fan-out only.

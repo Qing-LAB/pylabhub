@@ -16,28 +16,46 @@ The whole security-and-communication work chain sorts into **three
 independent lines** that share only the SMS crypto primitives.  Keep
 them separate when planning; do not mix scope.
 
-### ⚠ Architectural direction under review (2026-07-08)
+### ⭐ Topology migration — Phases A + B COMPLETE (2026-07-08)
 
-**Singular-side ownership migration — DESIGN DRAFT, not adopted.**
-Sessions 2026-07-08 developed a topology-parameterized design:
-fan-in (N producers → 1 consumer) has consumer bind, producers
-connect; fan-out (1 producer → N consumers) has producer bind,
-consumers connect.  Consequences: HEP-CORE-0017 §3.3 multi-endpoint
-PULL code (`2c604280`) becomes vestigial, HEP-CORE-0042 §7.1
-pre-attach coordination retires, HEP-CORE-0021 §16 amendment
-(`9d0ca4c8`) reparametrizes.  Net ~50 LOC delta; ~1000 LOC of
-retirement.
+**Singular-side ownership migration.**  Every channel has exactly
+one data-plane endpoint, owned by the singular side of its topology.
+Three topologies (fan-in / fan-out / one-to-one) declared per
+channel; cardinality + transport-compatibility gates enforced at
+broker admission.
+
+**Design status:** DESIGN LOCKED (tech draft rev 9 + rev 10 pending
+for Q3a revision).
+
+**Phases done:**
+- ✅ **Phase A** — 10 coordinated HEP amendments (commits
+  `007b749d..e6a80070`).
+- ✅ **Phase B** — 10 code slices, atomic completion
+  (`2c960cca`).  L2 1592/1592 + L4 133/133.
+
+**Active next:**
+- ⏳ **Phase B rev 1** — multi-agent review surfaced 23 findings:
+  15 to fix in rev 1 (2 correctness bugs, 5 architecture, 1 state
+  model, 7 cleanup), 7 deferred to Phase C/D/E, 1 false positive.
+  **Start here** in next session.
+
+**Ahead:** Phase C (queue factory rewire) → D (R6 gate
+symmetrization) → E (retirements) → F (demos + L4 flip) → G
+(fan-out ZMQ) → H (verification).
+
+**Consequences of migration:** HEP-CORE-0017 §3.3 multi-endpoint
+PULL code (`2c604280`) retires in Phase E.  HEP-CORE-0042 §5 + §7.1
+pre-attach coordination retires in Phase E.  HEP-CORE-0021 §16
+reparametrized in Phase A step 6 (`adc448fe`).  Q3a REVISED to
+OPTIONAL default `one-to-one` in rev 3.1.
 
 - **Design authority:** `docs/tech_draft/DRAFT_topology_singular_side_2026-07.md`
-- **Migration plan:** `docs/todo/TOPOLOGY_TODO.md` (8 phases, docs-first)
+- **Migration plan + finding detail:** `docs/todo/TOPOLOGY_TODO.md`
 
-If adopted, this migration REPLACES most of Line 1's remaining
-items (#246 L4 close-out, #275 S2, #257, REVIEW-C onwards will
-land against the new design, not the pre-migration codebase).  If
-rejected, Line 1 continues per the plan below.
-
-Do not begin coding this migration in any session until user
-approves the design.
+**Legacy Line 1 remaining items** (#246 Phase 3a L4 close-out,
+#275 S2, #257, REVIEW-C) are largely subsumed by the migration;
+Phase E retirement wave collapses the pre-attach coordination they
+depended on.
 
 ### Line 1 — Main auth chain (CURVE end-to-end across ZMQ + SHM)
 
