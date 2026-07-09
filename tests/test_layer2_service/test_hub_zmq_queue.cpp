@@ -2936,3 +2936,160 @@ TEST_F(ZmqQueueTest, TopologyFactory_FanOut_SubSetProducerPeers_MultiPeerRefused
     EXPECT_FALSE(sub->set_producer_peers(std::move(peers)))
         << "SUB fan-out must refuse multi-peer set_producer_peers";
 }
+
+// ─── B1 pin: fan-in producer PUSH-connect CURVE end-to-end ────────────
+
+TEST_F(ZmqQueueTest, TopologyFactory_FanInProducerBoundToConsumer_CurveRoundtrip)
+{
+    // B1 pin (rev 2.3 2026-07-09) — fan-in producer under the topology
+    // model is PUSH-connect DIALING; it needs the consumer's data
+    // pubkey to complete the CURVE handshake.  Pre-fix, `push_to` had
+    // no `server_pubkey` parameter and `apply_master_approval` Write
+    // branch didn't extract it from REG_ACK, so `create_writer(FanIn)`
+    // produced a queue whose `is_configured()` was permanently false
+    // and `start()` refused.  This test drives the fixed path:
+    //   1. Fan-in consumer BINDING with allowlist seeded via
+    //      apply_master_approval(CONSUMER_REG_ACK with producers[] =
+    //      producer allowlist snapshot).
+    //   2. Fan-in producer DIALING via create_writer(FanIn) with
+    //      opts.server_pubkey = consumer's data pubkey.
+    //   3. Producer sends, consumer receives.
+    using pylabhub::hub::ChannelTopology;
+    using pylabhub::hub::ZmqQueue;
+
+    // Consumer: fan-in BINDING (PULL bind).  Single test identity
+    // means consumer + producer share the CURVE pubkey; the consumer
+    // will allowlist the producer using its own pubkey.
+    ZmqQueue::RxCreateOptions rx;
+    rx.endpoint = "tcp://127.0.0.1:0";
+    rx.schema   = blob_schema(kItemSize);
+    rx.packing  = "aligned";
+    auto pull = ZmqQueue::create_reader(ChannelTopology::FanIn, std::move(rx));
+    ASSERT_NE(pull, nullptr);
+    ASSERT_TRUE(pull->start());
+    ASSERT_TRUE(seed_self_allowlist(*pull));
+    const std::string ep = pull->actual_endpoint();
+    ASSERT_FALSE(ep.empty());
+
+    // Producer: fan-in DIALING (PUSH connect) via create_writer(FanIn)
+    // with opts.server_pubkey populated — the B1 fix path.
+    ZmqQueue::TxCreateOptions tx;
+    tx.endpoint      = ep;
+    tx.server_pubkey = test_server_key();
+    tx.schema        = blob_schema(kItemSize);
+    tx.packing       = "aligned";
+    auto push = ZmqQueue::create_writer(ChannelTopology::FanIn, std::move(tx));
+    ASSERT_NE(push, nullptr);
+    ASSERT_TRUE(push->start())
+        << "fan-in producer with opts.server_pubkey must reach Configured "
+           "at factory time and start successfully (B1 pin)";
+    // CURVE handshake settle — same pattern as OneToOne round-trip test.
+    std::this_thread::sleep_for(100ms);
+
+    void *wbuf = push->write_acquire(1000ms);
+    ASSERT_NE(wbuf, nullptr);
+    std::memset(wbuf, 0xB1, kItemSize);
+    push->write_commit();
+
+    const void *rbuf = pull->read_acquire(2000ms);
+    ASSERT_NE(rbuf, nullptr)
+        << "fan-in PUSH → PULL round-trip must deliver "
+           "(pre-B1-fix this would hang because producer never started)";
+    EXPECT_EQ(static_cast<const uint8_t *>(rbuf)[0], 0xB1);
+    pull->read_release();
+
+    push->stop();
+    pull->stop();
+}
+
+TEST_F(ZmqQueueTest, TopologyFactory_FanInProducer_WireApplyMasterApproval)
+{
+    // B1 pin (rev 2.3 2026-07-09) — same end-to-end fan-in producer
+    // path, but this time server_pubkey arrives via
+    // apply_master_approval(REG_ACK.initial_allowlist[0]) instead of
+    // opts.server_pubkey.  Pins the wire migration: broker's REG_ACK
+    // for a fan-in producer emits initial_allowlist[] with exactly
+    // one object entry (endpoint + pubkey_z85 of the consumer).
+    using pylabhub::hub::ChannelTopology;
+    using pylabhub::hub::ZmqQueue;
+
+    ZmqQueue::RxCreateOptions rx;
+    rx.endpoint = "tcp://127.0.0.1:0";
+    rx.schema   = blob_schema(kItemSize);
+    rx.packing  = "aligned";
+    auto pull = ZmqQueue::create_reader(ChannelTopology::FanIn, std::move(rx));
+    ASSERT_NE(pull, nullptr);
+    ASSERT_TRUE(pull->start());
+    ASSERT_TRUE(seed_self_allowlist(*pull));
+    const std::string ep = pull->actual_endpoint();
+
+    // Producer: fan-in DIALING — construct WITHOUT opts.server_pubkey.
+    // The queue stays in Standby until apply_master_approval seeds it.
+    ZmqQueue::TxCreateOptions tx;
+    tx.endpoint = ep;
+    tx.schema   = blob_schema(kItemSize);
+    tx.packing  = "aligned";
+    auto push = ZmqQueue::create_writer(ChannelTopology::FanIn, std::move(tx));
+    ASSERT_NE(push, nullptr);
+    EXPECT_FALSE(push->start())
+        << "start() must refuse a Standby fan-in producer with no serverkey";
+
+    // Wire path: broker's REG_ACK.initial_allowlist[] carries one entry
+    // with the consumer's endpoint + pubkey.  apply_master_approval
+    // extracts, promotes into server_pubkey_z85_ + endpoint, and
+    // drives Standby → Active.
+    nlohmann::json reg_ack;
+    reg_ack["initial_allowlist"] = nlohmann::json::array();
+    reg_ack["initial_allowlist"].push_back({
+        {"role_uid",   "consumer0"},
+        {"endpoint",   ep},
+        {"pubkey_z85", std::string{test_server_key().str()}}});
+    ASSERT_TRUE(push->apply_master_approval(reg_ack))
+        << "apply_master_approval must promote initial_allowlist[0] "
+           "endpoint + pubkey_z85 on a DIALING PUSH queue";
+    EXPECT_TRUE(push->is_running())
+        << "apply_master_approval drives Standby → Active";
+    std::this_thread::sleep_for(100ms);
+
+    void *wbuf = push->write_acquire(1000ms);
+    ASSERT_NE(wbuf, nullptr);
+    std::memset(wbuf, 0xB2, kItemSize);
+    push->write_commit();
+
+    const void *rbuf = pull->read_acquire(2000ms);
+    ASSERT_NE(rbuf, nullptr);
+    EXPECT_EQ(static_cast<const uint8_t *>(rbuf)[0], 0xB2);
+    pull->read_release();
+
+    push->stop();
+    pull->stop();
+}
+
+TEST_F(ZmqQueueTest, ApplyMasterApproval_FanOutDialingRejectsMultiPeer)
+{
+    // Rev 2.3 pin — fan-out DIALING (SUB) has size-1 constraint per
+    // HEP-CORE-0017 §3.3.0 (SUB has exactly one PUB peer).  PushPull
+    // DIALING accepts multi (legacy fan-in consumer + post-migration
+    // one-to-one both handled by the same connect loop); only PubSub
+    // DIALING enforces the singular contract in this layer.
+    using pylabhub::hub::ChannelTopology;
+    using pylabhub::hub::ZmqQueue;
+
+    ExpectLogWarnMustFire("fan-out DIALING (SUB) must have at most one entry");
+
+    ZmqQueue::RxCreateOptions opts;
+    opts.endpoint      = "tcp://127.0.0.1:1234";
+    opts.server_pubkey = test_server_key();
+    opts.schema        = blob_schema(kItemSize);
+    opts.packing       = "aligned";
+    auto sub = ZmqQueue::create_reader(ChannelTopology::FanOut, std::move(opts));
+    ASSERT_NE(sub, nullptr);
+
+    const std::string pk{test_server_key().str()};
+    nlohmann::json ack;
+    ack["producers"] = nlohmann::json::array();
+    ack["producers"].push_back({{"endpoint", "tcp://127.0.0.1:1"}, {"pubkey_z85", pk}});
+    ack["producers"].push_back({{"endpoint", "tcp://127.0.0.1:2"}, {"pubkey_z85", pk}});
+    EXPECT_FALSE(sub->apply_master_approval(ack))
+        << "fan-out DIALING (SUB) must refuse N>1 peer list";
+}

@@ -811,10 +811,14 @@ ZmqQueue::push_to(const std::string& endpoint,
                         size_t send_buffer_depth,
                         OverflowPolicy overflow_policy,
                         int send_retry_interval_ms,
-                        std::string instance_id)
+                        std::string instance_id,
+                        pylabhub::utils::security::Z85PublicKey server_pubkey)
 {
+    const std::string server_pubkey_str = server_pubkey.empty()
+        ? std::string{}
+        : std::string{server_pubkey.str()};
     if (auto err = validate_curve_factory_params(
-            identity_key_name, /*server_pubkey_z85=*/{},
+            identity_key_name, server_pubkey_str,
             /*bind_side=*/bind);
         !err.empty())
     {
@@ -840,6 +844,11 @@ ZmqQueue::push_to(const std::string& endpoint,
 
     z->pImpl->identity_key_name_ = std::string{identity_key_name};
     z->pImpl->zap_domain_        = std::move(zap_domain);
+    // Dialing-side serverkey — used by start() as curve_serverkey
+    // when this queue is a PUSH-connect (fan-in producer).  Empty on
+    // BINDING sides; `apply_master_approval(REG_ACK)` may populate
+    // from initial_allowlist[0] on the wire path.
+    z->pImpl->server_pubkey_z85_ = server_pubkey_str;
     // initial allowlist intentionally NOT seeded — caller invokes
     // `set_peer_allowlist()` AFTER `start()`.  Empty == deny-all
     // secure default.
@@ -958,7 +967,16 @@ ZmqQueue::create_writer(pylabhub::hub::ChannelTopology topology,
     switch (topology)
     {
     case ChannelTopology::OneToOne:
-        // Producer BINDING side.  PUSH bind.
+        // Producer BINDING side.  PUSH bind.  server_pubkey is ignored
+        // on the binding side (curve_serverkey doesn't apply — the
+        // binding side is the CURVE server, gates via ZAP allowlist).
+        if (!opts.server_pubkey.empty())
+        {
+            LOGGER_WARN("[hub::ZmqQueue::create_writer] one-to-one "
+                        "producer (BINDING) ignores opts.server_pubkey "
+                        "for '{}'; the binding side is the CURVE "
+                        "server. Drop or check topology.", opts.endpoint);
+        }
         return push_to(std::move(opts.endpoint),
                         std::move(opts.schema),
                         std::move(opts.packing),
@@ -970,12 +988,18 @@ ZmqQueue::create_writer(pylabhub::hub::ChannelTopology topology,
                         opts.send_buffer_depth,
                         opts.overflow_policy,
                         opts.send_retry_interval_ms,
-                        std::move(opts.instance_id));
+                        std::move(opts.instance_id),
+                        /*server_pubkey=*/{});
     case ChannelTopology::FanIn:
         // Producer DIALING side.  PUSH connect to consumer's bind
         // endpoint.  zap_domain is ignored on the dialing side (ZAP is
         // the binding side's admission gate).  Warn when caller passes
         // a non-empty domain — likely a topology/side mixup.
+        // server_pubkey (consumer's CURVE identity pubkey) is
+        // FORWARDED — it drives curve_serverkey on the PUSH-connect
+        // side.  Empty is tolerated at the factory (Standby buffer
+        // per HEP-CORE-0036 §6.7); apply_master_approval(REG_ACK)
+        // populates from initial_allowlist[0] on the wire path.
         if (!opts.zap_domain.empty())
         {
             LOGGER_WARN("[hub::ZmqQueue::create_writer] fan-in producer "
@@ -994,11 +1018,20 @@ ZmqQueue::create_writer(pylabhub::hub::ChannelTopology topology,
                         opts.send_buffer_depth,
                         opts.overflow_policy,
                         opts.send_retry_interval_ms,
-                        std::move(opts.instance_id));
+                        std::move(opts.instance_id),
+                        std::move(opts.server_pubkey));
     case ChannelTopology::FanOut:
     {
         // Producer BINDING side, PUB bind.  Same CURVE-server wiring
         // as OneToOne producer bind (ZAP gates admission by pubkey).
+        // server_pubkey ignored on binding side; WARN on caller mixup.
+        if (!opts.server_pubkey.empty())
+        {
+            LOGGER_WARN("[hub::ZmqQueue::create_writer] fan-out producer "
+                        "(BINDING) ignores opts.server_pubkey for '{}'; "
+                        "the binding side is the CURVE server. Drop or "
+                        "check topology.", opts.endpoint);
+        }
         if (auto err = validate_curve_factory_params(
                 opts.identity_key_name, /*server_pubkey_z85=*/{},
                 /*bind_side=*/true);
@@ -1040,11 +1073,12 @@ bool ZmqQueue::set_peer_allowlist(
     pylabhub::utils::security::PeerAllowlist allowlist)
 {
     if (!pImpl) return false;
-    // Only the PUSH/bind side has an allowlist concept.  Refusing on
-    // the PULL side surfaces a caller misuse (broker should not push
-    // allowlists to the consumer queue — the consumer trusts the
-    // server via curve_serverkey).
-    if (pImpl->mode != ZmqQueueImpl::Mode::Write || !pImpl->bind_socket)
+    // BINDING side has the ZAP allowlist — both PUSH bind (OneToOne
+    // producer), PUB bind (FanOut producer), AND PULL bind (FanIn
+    // consumer, under HEP-CORE-0017 §3.3.0 topology migration).
+    // DIALING sides authenticate the peer via curve_serverkey; the
+    // inherited PeerAllowlist mutator is inert on them.
+    if (!pImpl->bind_socket)
         return false;
     pImpl->allowlist_.store(
         std::make_shared<const pylabhub::utils::security::PeerAllowlist>(
@@ -1057,7 +1091,10 @@ std::optional<pylabhub::utils::security::PeerAllowlist>
 ZmqQueue::peer_allowlist_snapshot() const
 {
     if (!pImpl) return std::nullopt;
-    if (pImpl->mode != ZmqQueueImpl::Mode::Write || !pImpl->bind_socket)
+    // BINDING side has the ZAP allowlist (PUSH/PUB bind and PULL bind
+    // under fan-in topology).  DIALING sides authenticate the peer via
+    // curve_serverkey; no allowlist to snapshot.
+    if (!pImpl->bind_socket)
         return std::nullopt;
     auto snap = pImpl->allowlist_.load(std::memory_order_acquire);
     if (!snap) return std::nullopt;
@@ -1068,7 +1105,9 @@ bool ZmqQueue::is_peer_allowed(
     const pylabhub::utils::security::PeerIdentity& peer) const
 {
     if (!pImpl) return false;
-    if (pImpl->mode != ZmqQueueImpl::Mode::Write || !pImpl->bind_socket)
+    // BINDING side gates admission via allowlist (PUSH/PUB bind, PULL
+    // bind under fan-in).  DIALING side has no inbound handshakes.
+    if (!pImpl->bind_socket)
         return false;
     auto snap = pImpl->allowlist_.load(std::memory_order_acquire);
     if (!snap) return false;
@@ -1168,85 +1207,150 @@ bool ZmqQueue::apply_master_approval(const nlohmann::json& artifacts) noexcept
     try
     {
         // Already-running queues: apply runtime updates per §6.7 Active
-        // column.  PULL side does snapshot-replace of producer_peers_;
-        // PUSH side re-seeds the allowlist.  Either way no socket
-        // bind/connect — that already happened in the prior
-        // apply_master_approval call that drove Standby → Active.
+        // column.  Either way no socket bind/connect — that already
+        // happened in the prior apply_master_approval call that drove
+        // Standby → Active.
         const bool already_running =
             pImpl->running_.load(std::memory_order_acquire);
 
-        if (pImpl->mode == ZmqQueueImpl::Mode::Read)
+        // ── Unified peer-list wire field (HEP-CORE-0036 §6.2 + §6.4) ──
+        //
+        // Both REG_ACK and CONSUMER_REG_ACK carry a peer-list under
+        // sender-specific historical field names.  The payload schema
+        // is unified: array of `{role_uid?, endpoint?, pubkey_z85}`
+        // objects.  Interpretation is topology-role driven:
+        //
+        //   BINDING side (bind_socket == true):
+        //     - peers.size() == 0..N — allowlist snapshot
+        //     - each entry: pubkey_z85 REQUIRED; endpoint may be empty
+        //       (BINDING doesn't dial); role_uid optional metadata
+        //
+        //   DIALING side (bind_socket == false):
+        //     - peers.size() == 0..N — dial targets (legacy multi-
+        //       producer fan-in supported; post-Phase-G migration
+        //       converges to size == 1 for OneToOne/FanOut consumers
+        //       and fan-in producers, but that's a wire-shape
+        //       constraint enforced by the broker builder, NOT here)
+        //     - each entry: pubkey_z85 REQUIRED (curve_serverkey);
+        //       endpoint REQUIRED (dial target); role_uid optional
+        //
+        // No-op tolerance: if the ACK lacks the peer field the queue
+        // is unchanged.  Used by SHM ACKs (SHM branch doesn't touch
+        // ZmqQueue) and by runtime refresh ACKs.
+        const bool is_read  = (pImpl->mode == ZmqQueueImpl::Mode::Read);
+        const char *field   = is_read ? "producers" : "initial_allowlist";
+        const bool is_dialing = !pImpl->bind_socket;
+
+        std::vector<ProducerPeer> peers;
+        bool have_peers = false;
+
+        if (artifacts.contains(field))
         {
-            // ── PULL (consumer) side ──
-            //
-            // Extract CONSUMER_REG_ACK.producers[] (HEP-CORE-0036 §6.4):
-            // array of objects with {role_uid, endpoint, pubkey_z85}.
-            // No-op tolerance: if the ACK lacks "producers" the queue
-            // is unchanged.  Useful for SHM consumers' ACK that goes
-            // through the SHM branch and for runtime refresh ACKs.
-            if (!artifacts.contains("producers"))
-                return true;
-            const auto& arr = artifacts.at("producers");
+            const auto& arr = artifacts.at(field);
             if (!arr.is_array())
             {
                 LOGGER_WARN("[hub::ZmqQueue::apply_master_approval] "
-                            "'producers' field is not an array — refusing");
+                            "'{}' field is not an array — refusing", field);
                 return false;
             }
-            std::vector<ProducerPeer> peers;
+            // Fan-out (PubSub) enforces singular DIALING per
+            // HEP-CORE-0017 §3.3.0 — SUB has exactly one PUB peer.
+            // PushPull DIALING may still be multi (legacy fan-in
+            // consumer / one-to-one after Phase G).
+            if (is_dialing
+                && pImpl->socket_pattern == ZmqQueueImpl::SocketPattern::PubSub
+                && arr.size() > 1)
+            {
+                LOGGER_WARN("[hub::ZmqQueue::apply_master_approval] "
+                            "'{}' on fan-out DIALING (SUB) must have at "
+                            "most one entry per HEP-CORE-0017 §3.3.0; "
+                            "got {}", field, arr.size());
+                return false;
+            }
             peers.reserve(arr.size());
             for (const auto& entry : arr)
             {
                 if (!entry.is_object())
                 {
                     LOGGER_WARN("[hub::ZmqQueue::apply_master_approval] "
-                                "'producers' entry not an object — refusing");
+                                "'{}' entry not an object — refusing", field);
                     return false;
                 }
                 ProducerPeer p;
-                p.role_uid    = entry.value("role_uid",    std::string{});
-                p.endpoint    = entry.value("endpoint",    std::string{});
-                // HEP-CORE-0036 §5b B-4 (#289, 2026-06-25) — single
-                // canonical key `pubkey_z85`.  Pre-B-4 the broker
-                // emitted `pubkey` on producers[] entries and we
-                // accepted both spellings here; B-4 unified the
-                // broker emit to `pubkey_z85` and dropped the dual
-                // name on both readers (here + role_api_base.cpp).
+                p.role_uid   = entry.value("role_uid",   std::string{});
+                p.endpoint   = entry.value("endpoint",   std::string{});
                 p.pubkey_z85 = entry.value("pubkey_z85", std::string{});
-                if (p.role_uid.empty() || p.endpoint.empty()
-                    || p.pubkey_z85.empty())
+                if (p.pubkey_z85.size() != 40)
                 {
                     LOGGER_WARN("[hub::ZmqQueue::apply_master_approval] "
-                                "producer entry missing required field: "
-                                "role_uid='{}', endpoint='{}', "
-                                "pubkey_z85.size={}",
-                                p.role_uid, p.endpoint,
-                                p.pubkey_z85.size());
+                                "'{}' entry pubkey_z85 wrong length: {} "
+                                "(expected 40 Z85 chars)",
+                                field, p.pubkey_z85.size());
+                    return false;
+                }
+                if (is_dialing && p.endpoint.empty())
+                {
+                    LOGGER_WARN("[hub::ZmqQueue::apply_master_approval] "
+                                "'{}' entry on DIALING side missing "
+                                "required endpoint", field);
                     return false;
                 }
                 peers.push_back(std::move(p));
             }
-            if (!set_producer_peers(std::move(peers)))
-                return false;
+            have_peers = true;
+        }
 
-            // Standby → Configured flag: promote peer[0] into
-            // `endpoint` + `server_pubkey_z85_`.  `start()` reads
-            // `producer_peers_` DIRECTLY for the per-peer connect
-            // loop (HEP-CORE-0017 §3.3 multi-endpoint PULL); these
-            // fields are used ONLY as the `is_configured()` flag
-            // saying "apply_master_approval has run" — bare
-            // `set_producer_peers` must NOT transition the queue
-            // per HEP-CORE-0036 §6.7 Option B, so those fields
-            // remain the canonical apply_master_approval signal.
-            // Only mutate on Standby (already_running == false);
-            // on an Active queue the fields are held stable for
-            // the socket's lifetime.
-            if (!already_running)
+        // Apply peers per (mode × bind_socket) role.
+        if (have_peers)
+        {
+            if (is_read)
             {
-                std::lock_guard<std::mutex> lock(pImpl->producer_peers_mu_);
-                if (!pImpl->producer_peers_.empty())
+                // Read side — buffer full peer list into producer_peers_
+                // regardless of bind/connect direction.  start() reads
+                // producer_peers_ directly for the connect loop on the
+                // DIALING side; BINDING side ignores it.
+                if (!set_producer_peers(std::move(peers)))
+                    return false;
+            }
+            if (pImpl->bind_socket)
+            {
+                // BINDING side (both PULL bind and PUSH/PUB bind) —
+                // peers are ZAP allowlist entries.  Snapshot from
+                // pubkey_z85 (PeerIdentity kind="curve" matches
+                // handle_channel_auth_notifies + ZAP router lookups).
+                pylabhub::utils::security::PeerAllowlist allowlist;
+                const auto &src = is_read ? pImpl->producer_peers_ : peers;
                 {
-                    const auto &p0 = pImpl->producer_peers_.front();
+                    std::unique_lock<std::mutex> lock(
+                        pImpl->producer_peers_mu_, std::defer_lock);
+                    if (is_read) lock.lock();
+                    for (const auto &p : src)
+                    {
+                        allowlist.peers.insert(
+                            pylabhub::utils::security::PeerIdentity{
+                                "curve", p.pubkey_z85});
+                    }
+                }
+                if (!set_peer_allowlist(std::move(allowlist)))
+                    return false;
+            }
+            else if (!already_running)
+            {
+                // DIALING side — promote peer[0] into is_configured()
+                // flag artifacts.  start() reads server_pubkey_z85_ +
+                // endpoint for the CURVE-authenticated connect (Read
+                // side also reads producer_peers_ for the per-peer
+                // connect loop; these fields are the "Standby ->
+                // Configured" flag per HEP-CORE-0036 §6.7 Option B).
+                // Only mutate on Standby; on Active, held stable for
+                // the socket's lifetime.
+                std::unique_lock<std::mutex> lock(
+                    pImpl->producer_peers_mu_, std::defer_lock);
+                if (is_read) lock.lock();
+                const auto &src = is_read ? pImpl->producer_peers_ : peers;
+                if (!src.empty())
+                {
+                    const auto &p0 = src.front();
                     if (pImpl->server_pubkey_z85_.empty()
                         && !p0.pubkey_z85.empty())
                         pImpl->server_pubkey_z85_ = p0.pubkey_z85;
@@ -1254,68 +1358,11 @@ bool ZmqQueue::apply_master_approval(const nlohmann::json& artifacts) noexcept
                         pImpl->endpoint = p0.endpoint;
                 }
             }
-
-            // Drive Standby → Configured → Active.  start() is the
-            // private implementation detail invoked here per §6.7
-            // Option B; production code does not call start() directly.
-            if (already_running)
-                return true;
-            LOGGER_INFO("[hub::ZmqQueue] event=QueueStateTransition side={} "
-                        "from=Standby to=Configured queue='{}' endpoint='{}'",
-                        socket_type_label(pImpl->mode, pImpl->socket_pattern),
-                        pImpl->queue_name, pImpl->endpoint);
-            return start();
         }
 
-        // ── PUSH (producer) side ──
-        //
-        // Extract REG_ACK.initial_allowlist (HEP-CORE-0036 §6.2):
-        // array of Z85 pubkey strings (40-char each).  No-op tolerance
-        // if absent — the queue retains its prior allowlist state.
-        if (artifacts.contains("initial_allowlist"))
-        {
-            const auto& arr = artifacts.at("initial_allowlist");
-            if (!arr.is_array())
-            {
-                LOGGER_WARN("[hub::ZmqQueue::apply_master_approval] "
-                            "'initial_allowlist' not an array — refusing");
-                return false;
-            }
-            pylabhub::utils::security::PeerAllowlist allowlist;
-            for (const auto& entry : arr)
-            {
-                if (!entry.is_string())
-                {
-                    LOGGER_WARN("[hub::ZmqQueue::apply_master_approval] "
-                                "'initial_allowlist' entry not a string "
-                                "(per HEP-0036 §6.5 the wire shape is array "
-                                "of Z85 pubkey strings)");
-                    return false;
-                }
-                const auto pk = entry.get<std::string>();
-                if (pk.size() != 40)
-                {
-                    LOGGER_WARN("[hub::ZmqQueue::apply_master_approval] "
-                                "allowlist pubkey wrong length: {} "
-                                "(expected 40 Z85 chars)", pk.size());
-                    return false;
-                }
-                // PeerIdentity kind="curve" matches the convention
-                // used by `handle_channel_auth_notifies` (role_api_base.cpp)
-                // and the ZAP router's lookups — empty kind would
-                // never compare equal under PeerIdentity's byte-exact
-                // operator==.
-                allowlist.peers.insert(
-                    pylabhub::utils::security::PeerIdentity{"curve", pk});
-            }
-            if (!set_peer_allowlist(std::move(allowlist)))
-                return false;
-        }
-
-        // Drive Standby → Configured → Active for the PUSH/bind side.
-        // start() refuses unless is_configured() returns true — the
-        // PUSH side just needs a non-empty endpoint (already set at
-        // factory time from the role's config).
+        // Drive Standby → Configured → Active.  start() is the private
+        // implementation detail invoked here per HEP-CORE-0036 §6.7
+        // Option B; production code does not call start() directly.
         if (already_running)
             return true;
         LOGGER_INFO("[hub::ZmqQueue] event=QueueStateTransition side={} "

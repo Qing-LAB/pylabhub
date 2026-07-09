@@ -2610,6 +2610,17 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     // exists in practice, but a future federation-relay thread or
     // background sweep would silently corrupt this pairing.  One
     // access grab = one lock scope = truly atomic.
+    // HEP-CORE-0036 §6.2 (rev 2.3 2026-07-09) — payload shape
+    // unified with CONSUMER_REG_ACK.producers[]: array of
+    // `{role_uid?, endpoint?, pubkey_z85}` objects.  Topology-driven
+    // size + endpoint semantics per HEP-CORE-0017 §3.3.0:
+    //   - Producer BINDING (OneToOne/FanOut): 0..N allowlist entries;
+    //     pubkey_z85 required, endpoint may be empty (binding side
+    //     doesn't dial), role_uid optional metadata.
+    //   - Producer DIALING (FanIn): 1 entry — the consumer's bind
+    //     endpoint + CURVE identity pubkey.  (Emission path lands
+    //     with the fan-in producer wire glue in Phase G; the
+    //     BINDING-side path is what this call site owns today.)
     nlohmann::json allowlist = nlohmann::json::array();
     std::uint64_t snapshot_version = 0;
     if (auto access = hub_state_->channel_access(channel_name);
@@ -2617,7 +2628,9 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     {
         for (const auto &pk : access->authorized_consumer_pubkeys)
         {
-            allowlist.push_back(pk);
+            nlohmann::json entry;
+            entry["pubkey_z85"] = pk;
+            allowlist.push_back(std::move(entry));
         }
         snapshot_version = access->channel_version;
     }

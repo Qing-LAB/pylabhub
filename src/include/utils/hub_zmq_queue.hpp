@@ -274,6 +274,14 @@ public:
             std::optional<std::array<uint8_t, 8>> schema_tag = std::nullopt,
             std::string instance_id = {});
 
+    /// `server_pubkey` is the peer's CURVE identity pubkey — needed
+    /// when the writer is DIALING (fan-in producer PUSH-connect).
+    /// On BINDING (OneToOne/FanOut producer) the writer is the CURVE
+    /// server itself; server_pubkey is not applicable and callers
+    /// should pass the default (empty) sentinel.  Populates
+    /// `server_pubkey_z85_` at factory time when non-empty;
+    /// `apply_master_approval(REG_ACK)` sets the same field from
+    /// `initial_allowlist[0]` on the DIALING wire path.
     [[nodiscard]] static std::unique_ptr<ZmqQueue>
     push_to(const std::string& endpoint,
             std::vector<ZmqSchemaField> schema,
@@ -287,7 +295,8 @@ public:
             size_t send_buffer_depth = kZmqDefaultBufferDepth,
             OverflowPolicy overflow_policy = OverflowPolicy::Drop,
             int send_retry_interval_ms = 10,
-            std::string instance_id = {});
+            std::string instance_id = {},
+            ::pylabhub::utils::security::Z85PublicKey server_pubkey = {});
 
     // ─── Topology-parametric factories (HEP-CORE-0017 §3.3.0, Phase C) ─────
     //
@@ -334,10 +343,15 @@ public:
     /// - Fan-out / one-to-one producer (BINDING): `endpoint` is a bind
     ///   hint.
     /// - Fan-in producer (DIALING): `endpoint` is the consumer's
-    ///   resolved bind endpoint (carried on `REG_ACK.data_endpoint`).
+    ///   resolved bind endpoint (carried on `REG_ACK.initial_allowlist[0].endpoint`).
+    ///
+    /// `server_pubkey` is the peer's CURVE identity pubkey — needed
+    /// only on DIALING (fan-in producer PUSH-connect); passed as
+    /// `curve_serverkey`.  Ignored on BINDING sides.
     struct TxCreateOptions
     {
         std::string                    endpoint;
+        ::pylabhub::utils::security::Z85PublicKey server_pubkey{};
         std::vector<ZmqSchemaField>    schema;
         std::string                    packing;
         std::string_view               identity_key_name =

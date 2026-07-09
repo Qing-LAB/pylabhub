@@ -874,10 +874,13 @@ int auth_apply_master_approval_seeds_initial_allowlist(const char *)
             //    initial_allowlist.  The mutator MUST drive Standby →
             //    Configured → Active AND materialise the supplied
             //    allowlist onto the running queue.
+            // HEP-CORE-0036 §6.2 (rev 2.3 2026-07-09) — initial_allowlist
+            // payload shape unified with producers[]: array of
+            // {role_uid?, endpoint?, pubkey_z85} objects, not strings.
             nlohmann::json reg_ack;
             reg_ack["initial_allowlist"] = nlohmann::json::array();
-            reg_ack["initial_allowlist"].push_back(alice_pub);
-            reg_ack["initial_allowlist"].push_back(bob_pub);
+            reg_ack["initial_allowlist"].push_back({{"pubkey_z85", alice_pub}});
+            reg_ack["initial_allowlist"].push_back({{"pubkey_z85", bob_pub}});
             ASSERT_TRUE(producer->apply_master_approval(reg_ack))
                 << "apply_master_approval(REG_ACK) with a non-empty "
                    "initial_allowlist MUST succeed on a Standby PUSH "

@@ -1717,11 +1717,19 @@ bool RoleAPIBase::apply_producer_reg_ack(const nlohmann::json &ack)
             std::vector<AllowedPeer> script_view;
             for (const auto &entry : initial_allowlist)
             {
-                if (!entry.is_string()) continue;
-                const auto pk = entry.get<std::string>();
-                if (pk.empty()) continue;
-                script_view.push_back(AllowedPeer{
-                    /*role_uid=*/std::string{}, pk});
+                // HEP-CORE-0036 §6.2 (rev 2.3 2026-07-09) — payload
+                // shape unified with CONSUMER_REG_ACK.producers[]:
+                // array of {role_uid?, endpoint?, pubkey_z85} objects
+                // (topology-driven size/endpoint per §3.3.0).  Script
+                // view exposes IDENTITY half only ({role_uid, pubkey})
+                // — endpoint is transport-layer detail per §I11
+                // (scripts read membership, not connection mechanics).
+                if (!entry.is_object()) continue;
+                AllowedPeer p;
+                p.role_uid = entry.value("role_uid", std::string{});
+                p.pubkey   = entry.value("pubkey_z85", std::string{});
+                if (p.pubkey.empty()) continue;
+                script_view.push_back(std::move(p));
             }
             pImpl->allowlist_cache.put(channel_name, script_view);
             LOGGER_INFO(
