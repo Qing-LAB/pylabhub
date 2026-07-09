@@ -77,7 +77,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstring>
-#include <nlohmann/json_fwd.hpp>
+#include "utils/json_fwd.hpp"
 #include <stdexcept>
 #include <string>
 
