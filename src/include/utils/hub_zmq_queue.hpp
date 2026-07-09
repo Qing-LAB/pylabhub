@@ -78,6 +78,7 @@
  * socket. The shared ZMQ context is NOT closed here.
  */
 #include "utils/hub_queue.hpp"
+#include "utils/hub_state.hpp"                // ChannelTopology (for topology-parametric factories)
 #include "utils/schema_field_layout.hpp"
 #include "utils/security/curve_keypair.hpp"   // Z85PublicKey strong type
 #include "utils/security/key_store.hpp"       // kRoleIdentityName canonical default
@@ -276,6 +277,91 @@ public:
             OverflowPolicy overflow_policy = OverflowPolicy::Drop,
             int send_retry_interval_ms = 10,
             std::string instance_id = {});
+
+    // ─── Topology-parametric factories (HEP-CORE-0017 §3.3.0, Phase C) ─────
+    //
+    // Wraps the legacy `pull_from` / `push_to` with the
+    // side + topology + transport decision matrix built in.  The
+    // caller declares the channel's topology (from config); the
+    // factory picks socket type + bind direction accordingly.  Role
+    // code never touches libzmq; role-host code never makes
+    // bind/connect decisions.
+    //
+    // Legacy factories stay live during transition; existing L4 tests
+    // continue to use them.  The role-host migration to these new
+    // factories lands in Phase G alongside the fan-out ZMQ integration.
+
+    /// Options passed to `create_reader` — the consumer-side queue.
+    ///
+    /// Endpoint semantics vary by side (which is determined by
+    /// topology):
+    /// - Fan-in consumer (BINDING): `endpoint` is a bind hint (may be
+    ///   `tcp://host:0` for ephemeral port; queue publishes resolved
+    ///   port via `actual_endpoint()` for ENDPOINT_UPDATE_REQ).
+    /// - Fan-out / one-to-one consumer (DIALING): `endpoint` is the
+    ///   binding-side's resolved endpoint (carried on
+    ///   `CONSUMER_REG_ACK.data_endpoint`).
+    /// - `server_pubkey` is the peer's CURVE identity pubkey — needed
+    ///   only when consumer is dialing (DIALING side sets
+    ///   `curve_serverkey`).  On the BINDING side pass empty.
+    struct RxCreateOptions
+    {
+        std::string endpoint;
+        ::pylabhub::utils::security::Z85PublicKey server_pubkey{};
+        std::vector<ZmqSchemaField>    schema;
+        std::string                    packing;
+        std::string_view               identity_key_name =
+            ::pylabhub::utils::security::kRoleIdentityName;
+        size_t                         max_buffer_depth = kZmqDefaultBufferDepth;
+        std::optional<std::array<uint8_t, 8>> schema_tag;
+        std::string                    instance_id;
+    };
+
+    /// Options passed to `create_writer` — the producer-side queue.
+    ///
+    /// Endpoint semantics:
+    /// - Fan-out / one-to-one producer (BINDING): `endpoint` is a bind
+    ///   hint.
+    /// - Fan-in producer (DIALING): `endpoint` is the consumer's
+    ///   resolved bind endpoint (carried on `REG_ACK.data_endpoint`).
+    struct TxCreateOptions
+    {
+        std::string                    endpoint;
+        std::vector<ZmqSchemaField>    schema;
+        std::string                    packing;
+        std::string_view               identity_key_name =
+            ::pylabhub::utils::security::kRoleIdentityName;
+        std::string                    zap_domain;
+        std::optional<std::array<uint8_t, 8>> schema_tag;
+        int                            sndhwm = 0;
+        size_t                         send_buffer_depth = kZmqDefaultBufferDepth;
+        OverflowPolicy                 overflow_policy = OverflowPolicy::Drop;
+        int                            send_retry_interval_ms = 10;
+        std::string                    instance_id;
+    };
+
+    /// Construct the consumer-side ZMQ queue for `topology`.
+    /// Dispatch per HEP-CORE-0017 §3.3.0:
+    /// - `FanIn`: PULL bind (consumer is BINDING).  `opts.server_pubkey`
+    ///   ignored — server key doesn't apply on binding side.
+    /// - `OneToOne`: PULL connect (consumer is DIALING).
+    ///   `opts.server_pubkey` is the producer's identity pubkey.
+    /// - `FanOut`: SUB connect (consumer is DIALING).
+    ///   **PUB/SUB path lands in a subsequent Phase C commit — for
+    ///   now returns nullptr + WARN log.**
+    [[nodiscard]] static std::unique_ptr<ZmqQueue>
+    create_reader(pylabhub::hub::ChannelTopology topology,
+                  RxCreateOptions                opts);
+
+    /// Construct the producer-side ZMQ queue for `topology`.
+    /// - `OneToOne`: PUSH bind (producer is BINDING).
+    /// - `FanIn`: PUSH connect (producer is DIALING).
+    /// - `FanOut`: PUB bind (producer is BINDING).
+    ///   **PUB/SUB path lands in a subsequent Phase C commit — for
+    ///   now returns nullptr + WARN log.**
+    [[nodiscard]] static std::unique_ptr<ZmqQueue>
+    create_writer(pylabhub::hub::ChannelTopology topology,
+                  TxCreateOptions                opts);
 
 private:
     // ─── Internal plaintext queue builders ─────────────────────────────────

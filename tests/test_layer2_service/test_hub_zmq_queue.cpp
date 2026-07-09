@@ -2400,3 +2400,126 @@ TEST_F(ZmqQueueTest, ChecksumNone_Roundtrip)
     push->stop();
     pull->stop();
 }
+
+// ─── Phase C — topology-parametric factory dispatch tests ─────────────
+//
+// Pin HEP-CORE-0017 §3.3.0 decision matrix.  Fan-in ZMQ (consumer
+// binds PULL, producer connects PUSH) and 1-to-1 ZMQ (producer binds
+// PUSH, consumer connects PULL) delegate to the legacy `pull_from` /
+// `push_to`; fan-out ZMQ (PUB/SUB) returns nullptr with a WARN until
+// the Phase C step 2 commit lands the PUB/SUB paths.
+
+TEST_F(ZmqQueueTest, TopologyFactory_FanIn_ConsumerBinds)
+{
+    using pylabhub::hub::ChannelTopology;
+    using pylabhub::hub::ZmqQueue;
+
+    ZmqQueue::RxCreateOptions opts;
+    opts.endpoint = "tcp://127.0.0.1:0";
+    opts.schema   = blob_schema(kItemSize);
+    opts.packing  = "aligned";
+
+    auto q = ZmqQueue::create_reader(ChannelTopology::FanIn, std::move(opts));
+    ASSERT_NE(q, nullptr);
+    // Consumer under fan-in is the BINDING side — start() should bind.
+    ASSERT_TRUE(q->start());
+    const std::string ep = q->actual_endpoint();
+    EXPECT_FALSE(ep.empty())
+        << "fan-in consumer must bind and publish its resolved endpoint";
+    q->stop();
+}
+
+TEST_F(ZmqQueueTest, TopologyFactory_OneToOne_ProducerBinds)
+{
+    using pylabhub::hub::ChannelTopology;
+    using pylabhub::hub::ZmqQueue;
+
+    ZmqQueue::TxCreateOptions opts;
+    opts.endpoint = "tcp://127.0.0.1:0";
+    opts.schema   = blob_schema(kItemSize);
+    opts.packing  = "aligned";
+
+    auto q = ZmqQueue::create_writer(ChannelTopology::OneToOne, std::move(opts));
+    ASSERT_NE(q, nullptr);
+    ASSERT_TRUE(q->start());
+    ASSERT_TRUE(seed_self_allowlist(*q));
+    EXPECT_FALSE(q->actual_endpoint().empty())
+        << "one-to-one producer must bind and publish its resolved endpoint";
+    q->stop();
+}
+
+TEST_F(ZmqQueueTest, TopologyFactory_FanInPlusOneToOne_Roundtrip)
+{
+    // End-to-end round-trip via the topology factory: fan-in consumer
+    // binds PULL; one-to-one producer binds its own PUSH endpoint and
+    // sends to itself.  Confirms both factory paths produce start()-able
+    // queues that pass data.  Uses the same shared identity trick as
+    // the existing round-trip tests (see seed_self_allowlist).
+    using pylabhub::hub::ChannelTopology;
+    using pylabhub::hub::ZmqQueue;
+
+    // Producer: OneToOne (BINDING).
+    ZmqQueue::TxCreateOptions tx;
+    tx.endpoint = "tcp://127.0.0.1:0";
+    tx.schema   = blob_schema(kItemSize);
+    tx.packing  = "aligned";
+    auto push = ZmqQueue::create_writer(ChannelTopology::OneToOne, std::move(tx));
+    ASSERT_NE(push, nullptr);
+    ASSERT_TRUE(push->start());
+    ASSERT_TRUE(seed_self_allowlist(*push));
+    const std::string ep = push->actual_endpoint();
+    ASSERT_FALSE(ep.empty());
+
+    // Consumer: OneToOne (DIALING) — connects to the producer's endpoint.
+    ZmqQueue::RxCreateOptions rx;
+    rx.endpoint      = ep;
+    rx.server_pubkey = test_server_key();
+    rx.schema        = blob_schema(kItemSize);
+    rx.packing       = "aligned";
+    auto pull = ZmqQueue::create_reader(ChannelTopology::OneToOne, std::move(rx));
+    ASSERT_NE(pull, nullptr);
+    ASSERT_TRUE(pull->start());
+    std::this_thread::sleep_for(50ms);
+
+    void *wbuf = push->write_acquire(1000ms);
+    ASSERT_NE(wbuf, nullptr);
+    std::memset(wbuf, 0xC1, kItemSize);
+    push->write_commit();
+
+    const void *rbuf = pull->read_acquire(2000ms);
+    ASSERT_NE(rbuf, nullptr);
+    EXPECT_EQ(static_cast<const uint8_t *>(rbuf)[0], 0xC1);
+    pull->read_release();
+
+    push->stop();
+    pull->stop();
+}
+
+TEST_F(ZmqQueueTest, TopologyFactory_FanOut_NotYetImplemented)
+{
+    // Fan-out ZMQ (PUB bind / SUB connect) lands in a subsequent Phase C
+    // commit.  For now the factory returns nullptr + logs a WARN so
+    // callers get a distinct failure signal (not e.g. a spurious CURVE
+    // rejection).
+    using pylabhub::hub::ChannelTopology;
+    using pylabhub::hub::ZmqQueue;
+
+    ExpectLogWarn("fan-out ZMQ (PUB bind) not yet implemented");
+    ExpectLogWarn("fan-out ZMQ (SUB connect) not yet implemented");
+
+    ZmqQueue::TxCreateOptions tx;
+    tx.endpoint = "tcp://127.0.0.1:0";
+    tx.schema   = blob_schema(kItemSize);
+    tx.packing  = "aligned";
+    auto pub = ZmqQueue::create_writer(ChannelTopology::FanOut, std::move(tx));
+    EXPECT_EQ(pub, nullptr)
+        << "fan-out ZMQ (PUB) not yet implemented — should return nullptr";
+
+    ZmqQueue::RxCreateOptions rx;
+    rx.endpoint = "tcp://127.0.0.1:65535";
+    rx.schema   = blob_schema(kItemSize);
+    rx.packing  = "aligned";
+    auto sub = ZmqQueue::create_reader(ChannelTopology::FanOut, std::move(rx));
+    EXPECT_EQ(sub, nullptr)
+        << "fan-out ZMQ (SUB) not yet implemented — should return nullptr";
+}

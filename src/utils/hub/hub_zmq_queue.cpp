@@ -810,6 +810,111 @@ ZmqQueue::push_to(const std::string& endpoint,
 }
 
 // ============================================================================
+// Topology-parametric factories — HEP-CORE-0017 §3.3.0 (Phase C)
+// ============================================================================
+//
+// Dispatch table (consumer side / producer side × topology):
+//
+//   Topology  | Consumer (create_reader)      | Producer (create_writer)
+//   ----------+-------------------------------+-------------------------------
+//   FanIn     | PULL bind (BINDING)           | PUSH connect (DIALING)
+//   OneToOne  | PULL connect (DIALING)        | PUSH bind (BINDING)
+//   FanOut    | SUB connect (DIALING)         | PUB bind (BINDING)
+//              [PUB/SUB path lands in a subsequent Phase C commit —
+//              for now returns nullptr + WARN log.]
+
+std::unique_ptr<ZmqQueue>
+ZmqQueue::create_reader(pylabhub::hub::ChannelTopology topology,
+                        RxCreateOptions                opts)
+{
+    using pylabhub::hub::ChannelTopology;
+    switch (topology)
+    {
+    case ChannelTopology::FanIn:
+        // Consumer BINDING side.  server_pubkey is ignored on
+        // the binding side (curve_serverkey doesn't apply — the
+        // binding side is the CURVE server, gates via ZAP allowlist).
+        return pull_from(std::move(opts.endpoint),
+                          /*server_pubkey=*/{},
+                          std::move(opts.schema),
+                          std::move(opts.packing),
+                          opts.identity_key_name,
+                          /*bind=*/true,
+                          opts.max_buffer_depth,
+                          std::move(opts.schema_tag),
+                          std::move(opts.instance_id));
+    case ChannelTopology::OneToOne:
+        // Consumer DIALING side.  server_pubkey is the producer's
+        // identity pubkey; passed as curve_serverkey.
+        return pull_from(std::move(opts.endpoint),
+                          std::move(opts.server_pubkey),
+                          std::move(opts.schema),
+                          std::move(opts.packing),
+                          opts.identity_key_name,
+                          /*bind=*/false,
+                          opts.max_buffer_depth,
+                          std::move(opts.schema_tag),
+                          std::move(opts.instance_id));
+    case ChannelTopology::FanOut:
+        // Consumer DIALING side, SUB connect.  Not yet implemented —
+        // PUB/SUB support lands in a subsequent Phase C commit.
+        LOGGER_WARN(
+            "[hub::ZmqQueue::create_reader] fan-out ZMQ (SUB connect) "
+            "not yet implemented — Phase C step 2 (endpoint='{}')",
+            opts.endpoint);
+        return nullptr;
+    }
+    return nullptr;  // unreachable under well-formed enum
+}
+
+std::unique_ptr<ZmqQueue>
+ZmqQueue::create_writer(pylabhub::hub::ChannelTopology topology,
+                        TxCreateOptions                opts)
+{
+    using pylabhub::hub::ChannelTopology;
+    switch (topology)
+    {
+    case ChannelTopology::OneToOne:
+        // Producer BINDING side.  PUSH bind.
+        return push_to(std::move(opts.endpoint),
+                        std::move(opts.schema),
+                        std::move(opts.packing),
+                        opts.identity_key_name,
+                        std::move(opts.zap_domain),
+                        /*bind=*/true,
+                        std::move(opts.schema_tag),
+                        opts.sndhwm,
+                        opts.send_buffer_depth,
+                        opts.overflow_policy,
+                        opts.send_retry_interval_ms,
+                        std::move(opts.instance_id));
+    case ChannelTopology::FanIn:
+        // Producer DIALING side.  PUSH connect to consumer's bind endpoint.
+        return push_to(std::move(opts.endpoint),
+                        std::move(opts.schema),
+                        std::move(opts.packing),
+                        opts.identity_key_name,
+                        /*zap_domain=*/{},   // no ZAP on dialing side
+                        /*bind=*/false,
+                        std::move(opts.schema_tag),
+                        opts.sndhwm,
+                        opts.send_buffer_depth,
+                        opts.overflow_policy,
+                        opts.send_retry_interval_ms,
+                        std::move(opts.instance_id));
+    case ChannelTopology::FanOut:
+        // Producer BINDING side, PUB bind.  Not yet implemented —
+        // PUB/SUB support lands in a subsequent Phase C commit.
+        LOGGER_WARN(
+            "[hub::ZmqQueue::create_writer] fan-out ZMQ (PUB bind) "
+            "not yet implemented — Phase C step 2 (endpoint='{}')",
+            opts.endpoint);
+        return nullptr;
+    }
+    return nullptr;  // unreachable under well-formed enum
+}
+
+// ============================================================================
 // PeerAdmission overrides (`PeerAdmission` interface)
 // ============================================================================
 
